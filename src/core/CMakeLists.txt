@@ -9,6 +9,7 @@ add_subdirectory(appflow)
 add_subdirectory(os)
 add_subdirectory(vkcore)
 add_subdirectory(material)
+add_subdirectory(model)
 add_subdirectory(loader)
 
 target_sources(pelican_core PRIVATE)

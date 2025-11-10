@@ -1,4 +1,6 @@
 #include "materialrender.hpp"
+#include "../model/primitivebufcontainer.hpp"
+#include "../model/vertbufcontainer.hpp"
 #include "../vkcore/core.hpp"
 #include "battery/embed.hpp"
 
@@ -102,10 +104,11 @@ static vk::UniqueShaderModule createShaderModule(vk::Device device, size_t len, 
     return device.createShaderModuleUnique(create_info);
 }
 
-MaterialRenderer::MaterialRenderer(DependencyContainer &con)
-    : pipeline_layout{createDefaultPipelineLayout(con.get<VulkanManageCore>().getDevice())} {
+MaterialRenderer::MaterialRenderer(DependencyContainer &_con)
+    : con{_con}, pipeline_layout{createDefaultPipelineLayout(con.get<VulkanManageCore>().getDevice())} {
     const auto device = con.get<VulkanManageCore>().getDevice();
 
+    // for test
     const auto vert_shader = b::embed<"test_simple.vert.spv">();
     shaders.insert({0, createShaderModule(device, vert_shader.length(), vert_shader.data())});
 
@@ -117,9 +120,21 @@ MaterialRenderer::MaterialRenderer(DependencyContainer &con)
 }
 
 void MaterialRenderer::render(vk::CommandBuffer cmd_buf) const {
+    const auto &primitive_buf_container = con.get<PrimitiveBufContainer>();
+    const auto &vert_buf_container = con.get<VertBufContainer>();
+
     for (const auto &[id, material] : materials) {
         cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipelines.at(material.pipeline_id).get());
         cmd_buf.draw(3, 1, 0, 0);
+
+        // const auto vert_buf = vert_buf_container.getVertexBuffer(/* TODO */);
+        // const auto indirect_draw_buf = primitive_buf_container.getIndirectDrawBuffer(/* TODO */);
+        // const auto instance_buf = primitive_buf_container.getInstanceBuffer(/* TODO */);
+        // const auto offset = 0; // TODO
+        // const auto count = 0;  // TODO
+
+        // cmd_buf.bindVertexBuffers(0, {vert_buf, instance_buf}, {0, 0});
+        // cmd_buf.drawIndexedIndirect(indirect_draw_buf, offset, count, sizeof(vk::DrawIndexedIndirectCommand));
     }
 }
 
