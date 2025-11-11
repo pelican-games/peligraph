@@ -242,7 +242,8 @@ std::vector<vk::UniqueSemaphore> VulkanManageCore::createSemaphores(size_t num) 
 }
 
 BufferWrapper VulkanManageCore::allocBuf(vk::DeviceSize bytes_num, vk::BufferUsageFlags usage,
-                                         vma::MemoryUsage mem_usage, VulkanProcessType type) const {
+                                         vma::MemoryUsage mem_usage, vma::AllocationCreateFlags alloc_flags,
+                                         VulkanProcessType type) const {
     vk::BufferCreateInfo create_info;
     create_info.size = bytes_num;
     create_info.usage = usage;
@@ -257,6 +258,7 @@ BufferWrapper VulkanManageCore::allocBuf(vk::DeviceSize bytes_num, vk::BufferUsa
     }
 
     vma::AllocationCreateInfo alloc_info;
+    alloc_info.flags = alloc_flags;
     alloc_info.usage = mem_usage;
 
     auto buf = allocator->createBufferUnique(create_info, alloc_info);
@@ -265,6 +267,11 @@ BufferWrapper VulkanManageCore::allocBuf(vk::DeviceSize bytes_num, vk::BufferUsa
         .buffer = std::move(buf.first),
         .allocation = std::move(buf.second),
     };
+}
+
+void VulkanManageCore::writeBuf(const BufferWrapper &dst, void *src, vk::DeviceSize offset,
+                                vk::DeviceSize bytes_num) const {
+    allocator->copyMemoryToAllocation(src, dst.allocation.get(), offset, bytes_num);
 }
 
 } // namespace Pelican

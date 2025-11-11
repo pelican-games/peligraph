@@ -14,7 +14,8 @@ static vk::UniquePipelineLayout createDefaultPipelineLayout(vk::Device device) {
 }
 
 static vk::UniquePipeline createDefaultPipeline(vk::Device device, vk::PipelineLayout layout,
-                                                vk::ShaderModule vert_shader, vk::ShaderModule frag_shader) {
+                                                vk::ShaderModule vert_shader, vk::ShaderModule frag_shader,
+                                                VertBufContainer::CommonVertDataDescription input_descs) {
     vk::PipelineShaderStageCreateInfo vert_stage;
     vert_stage.stage = vk::ShaderStageFlagBits::eVertex;
     vert_stage.module = vert_shader;
@@ -27,8 +28,8 @@ static vk::UniquePipeline createDefaultPipeline(vk::Device device, vk::PipelineL
     const auto stages = {vert_stage, frag_stage};
 
     vk::PipelineVertexInputStateCreateInfo vertex_input_info;
-    // vertex_input_info.setVertexAttributeDescriptions();
-    // vertex_input_info.setVertexBindingDescriptions();
+    vertex_input_info.setVertexAttributeDescriptions(input_descs.attr_descs);
+    vertex_input_info.setVertexBindingDescriptions(input_descs.binding_descs);
 
     vk::PipelineInputAssemblyStateCreateInfo input_assembly;
     input_assembly.topology = vk::PrimitiveTopology::eTriangleList;
@@ -115,7 +116,9 @@ MaterialRenderer::MaterialRenderer(DependencyContainer &_con)
     const auto frag_shader = b::embed<"test_simple.frag.spv">();
     shaders.insert({1, createShaderModule(device, frag_shader.length(), frag_shader.data())});
 
-    pipelines.insert({0, createDefaultPipeline(device, pipeline_layout.get(), shaders[0].get(), shaders[1].get())});
+    const auto &vert_buf_container = con.get<VertBufContainer>();
+    pipelines.insert({0, createDefaultPipeline(device, pipeline_layout.get(), shaders[0].get(), shaders[1].get(),
+                                               vert_buf_container.getDescription())});
     materials.insert({0, Material{.pipeline_id = 0}});
 }
 
@@ -123,17 +126,17 @@ void MaterialRenderer::render(vk::CommandBuffer cmd_buf) const {
     const auto &primitive_buf_container = con.get<PrimitiveBufContainer>();
     const auto &vert_buf_container = con.get<VertBufContainer>();
 
+    vert_buf_container.bindVertexBuffer(cmd_buf);
+
     for (const auto &[id, material] : materials) {
         cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipelines.at(material.pipeline_id).get());
         cmd_buf.draw(3, 1, 0, 0);
 
-        // const auto vert_buf = vert_buf_container.getVertexBuffer(/* TODO */);
         // const auto indirect_draw_buf = primitive_buf_container.getIndirectDrawBuffer(/* TODO */);
         // const auto instance_buf = primitive_buf_container.getInstanceBuffer(/* TODO */);
         // const auto offset = 0; // TODO
         // const auto count = 0;  // TODO
 
-        // cmd_buf.bindVertexBuffers(0, {vert_buf, instance_buf}, {0, 0});
         // cmd_buf.drawIndexedIndirect(indirect_draw_buf, offset, count, sizeof(vk::DrawIndexedIndirectCommand));
     }
 }

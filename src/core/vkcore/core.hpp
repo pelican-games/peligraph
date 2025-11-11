@@ -43,7 +43,9 @@ class VulkanManageCore {
     std::vector<vk::UniqueSemaphore> createSemaphores(size_t num) const;
 
     BufferWrapper allocBuf(vk::DeviceSize bytes_num, vk::BufferUsageFlags usage, vma::MemoryUsage mem_usage,
+                           vma::AllocationCreateFlags alloc_flags,
                            VulkanProcessType type = VulkanProcessType::graphics) const;
+    void writeBuf(const BufferWrapper &dst, void *src, vk::DeviceSize offset, vk::DeviceSize bytes_num) const;
 };
 
 } // namespace Pelican

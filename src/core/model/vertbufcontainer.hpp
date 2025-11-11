@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../container.hpp"
+#include "../vkcore/buf.hpp"
 #include "modeltemplate.hpp"
 #include <glm/glm.hpp>
 #include <vector>
@@ -19,11 +20,25 @@ struct CommonPolygonVertData {
 };
 
 class VertBufContainer {
+    DependencyContainer &con;
+    BufferWrapper indices_mem_pool;
+    BufferWrapper vertices_mem_pool;
+
+    uint32_t indices_offset;
+    uint32_t vertices_offset;
+
   public:
     VertBufContainer(DependencyContainer &con);
     ModelTemplate::PrimitiveRefInfo addPrimitiveEntry(CommonPolygonVertData &&data);
     void removePrimitiveEntry(/* TODO */);
-    vk::Buffer getVertexBuffer(/* TODO */) const;
+
+    void bindVertexBuffer(vk::CommandBuffer cmd_buf /* TODO */) const;
+
+    struct CommonVertDataDescription {
+        std::vector<vk::VertexInputBindingDescription> binding_descs;
+        std::vector<vk::VertexInputAttributeDescription> attr_descs;
+    };
+    CommonVertDataDescription getDescription() const;
 };
 
 } // namespace Pelican
