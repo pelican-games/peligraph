@@ -2,11 +2,16 @@
 
 #include "../container.hpp"
 #include "material.hpp"
+#include <glm/glm.hpp>
 #include <map>
 #include <span>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
+
+struct PushConstantStruct {
+    glm::mat4 mvp;
+};
 
 class MaterialContainer {
     vk::Device device;
@@ -18,6 +23,7 @@ class MaterialContainer {
     };
     std::map<GlobalMaterialId, InternalMaterialInfo> materials;
     std::map<GlobalShaderId, vk::UniqueShaderModule> shaders;
+
   public:
     MaterialContainer(DependencyContainer &con);
     ~MaterialContainer();
@@ -27,6 +33,7 @@ class MaterialContainer {
     GlobalMaterialId registerMaterial(MaterialInfo info);
 
     void bindResource(vk::CommandBuffer cmd_buf, GlobalMaterialId material) const;
+    vk::PipelineLayout getPipelineLayout() const;
 };
 
 } // namespace Pelican

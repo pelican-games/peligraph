@@ -15,3 +15,5 @@ endfunction(embed_shader)
 
 embed_shader(test_simple.vert)
 embed_shader(test_simple.frag)
+embed_shader(default.vert)
+embed_shader(default.frag)

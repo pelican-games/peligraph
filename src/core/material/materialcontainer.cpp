@@ -6,8 +6,13 @@
 namespace Pelican {
 
 static vk::UniquePipelineLayout createDefaultPipelineLayout(vk::Device device) {
+    vk::PushConstantRange push_constant_range;
+    push_constant_range.stageFlags = vk::ShaderStageFlagBits::eVertex;
+    push_constant_range.offset = 0;
+    push_constant_range.size = sizeof(PushConstantStruct);
+
     vk::PipelineLayoutCreateInfo create_info;
-    create_info.setPushConstantRanges({});
+    create_info.setPushConstantRanges({push_constant_range});
     create_info.setSetLayouts({});
     return device.createPipelineLayoutUnique(create_info);
 }
@@ -107,12 +112,20 @@ static vk::UniqueShaderModule createShaderModule(vk::Device device, size_t len, 
 MaterialContainer::MaterialContainer(DependencyContainer &con)
     : device{con.get<VulkanManageCore>().getDevice()},
       pipeline_layout{createDefaultPipelineLayout(con.get<VulkanManageCore>().getDevice())} {
-    // for test
-    const auto vert_shader = b::embed<"test_simple.vert.spv">();
+    const auto vert_shader = b::embed<"default.vert.spv">();
     shaders.insert({GlobalShaderId{0}, createShaderModule(device, vert_shader.length(), vert_shader.data())});
 
-    const auto frag_shader = b::embed<"test_simple.frag.spv">();
+    const auto frag_shader = b::embed<"default.frag.spv">();
     shaders.insert({GlobalShaderId{1}, createShaderModule(device, frag_shader.length(), frag_shader.data())});
+
+    // for test
+    const auto test_vert_shader = b::embed<"test_simple.vert.spv">();
+    shaders.insert(
+        {GlobalShaderId{-1}, createShaderModule(device, test_vert_shader.length(), test_vert_shader.data())});
+
+    const auto test_frag_shader = b::embed<"test_simple.frag.spv">();
+    shaders.insert(
+        {GlobalShaderId{-2}, createShaderModule(device, test_frag_shader.length(), test_frag_shader.data())});
 }
 MaterialContainer::~MaterialContainer() {}
 
@@ -137,4 +150,7 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
 void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, GlobalMaterialId material) const {
     cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, materials.at(material).pipeline.get());
 }
+
+vk::PipelineLayout MaterialContainer::getPipelineLayout() const { return pipeline_layout.get(); }
+
 } // namespace Pelican
