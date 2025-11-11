@@ -61,7 +61,7 @@ void VertBufContainer::bindVertexBuffer(vk::CommandBuffer cmd_buf) const {
     cmd_buf.bindVertexBuffers(0, {*vertices_mem_pool.buffer}, {0});
 }
 
-VertBufContainer::CommonVertDataDescription VertBufContainer::getDescription() const {
+VertBufContainer::CommonVertDataDescription VertBufContainer::getDescription() {
     VertBufContainer::CommonVertDataDescription descs;
 
     vk::VertexInputBindingDescription pos_binding;

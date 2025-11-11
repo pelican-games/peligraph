@@ -4,17 +4,18 @@
 #include <tiny_gltf.h>
 
 #include "../log.hpp"
+#include "../material/material.hpp"
 #include "gltf.hpp"
-#include "primitivebufcontainer.hpp"
 #include "vertbufcontainer.hpp"
 
 namespace Pelican {
 
 struct RecursiveLoader {
+    using ModelLocalMaterialId = int;
+
     VertBufContainer &buf_container;
-    ModelTemplate &model_template;
     tinygltf::Model &model;
-    std::unordered_map<int, std::vector<ModelTemplate::PrimitiveRefInfo>> tmp_material_primitives;
+    std::unordered_map<ModelLocalMaterialId, std::vector<ModelTemplate::PrimitiveRefInfo>> tmp_material_primitives;
 
     template <class InType, class OutType>
     std::vector<OutType> readComponentByType(const unsigned char *p_data, size_t count, int stride) {
@@ -122,7 +123,7 @@ struct RecursiveLoader {
         for (const auto child_index : node.children) {
             loadNode(model.nodes[child_index]);
         }
-        if (node.mesh < 0) 
+        if (node.mesh < 0)
             return;
         const auto &mesh = model.meshes[node.mesh];
         for (const auto &primitive : mesh.primitives) {
@@ -146,10 +147,20 @@ struct RecursiveLoader {
             tmp_material_primitives[primitive.material].emplace_back(std::move(primitive_info));
         }
     }
-    void load() {
+    ModelTemplate load() {
         const auto &scene = model.scenes[model.defaultScene < 0 ? 0 : model.defaultScene];
         const auto &root_node = model.nodes[scene.nodes[0]];
         loadNode(root_node);
+
+        ModelTemplate m;
+        for (const auto &[local_material_id, primitive] : tmp_material_primitives) {
+            m.material_primitives.emplace_back(ModelTemplate::MaterialPrimitives{
+                .material = local_material_id,
+                .primitives = std::move(primitive),
+            });
+        }
+
+        return m;
     }
 };
 
@@ -169,10 +180,8 @@ ModelTemplate GltfLoader::loadGltf(std::string path) {
         throw std::runtime_error("failed to load gltf file : " + path);
 
     ModelTemplate model_template;
-    RecursiveLoader tmp_loader{con.get<VertBufContainer>(), model_template, model};
-    tmp_loader.load();
-
-    return model_template;
+    RecursiveLoader tmp_loader{con.get<VertBufContainer>(), model};
+    return tmp_loader.load();
 }
 
 } // namespace Pelican

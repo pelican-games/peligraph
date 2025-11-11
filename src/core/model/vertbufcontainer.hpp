@@ -38,7 +38,7 @@ class VertBufContainer {
         std::vector<vk::VertexInputBindingDescription> binding_descs;
         std::vector<vk::VertexInputAttributeDescription> attr_descs;
     };
-    CommonVertDataDescription getDescription() const;
+    static CommonVertDataDescription getDescription();
 };
 
 } // namespace Pelican
