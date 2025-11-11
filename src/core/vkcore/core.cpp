@@ -8,6 +8,8 @@
 
 namespace Pelican {
 
+constexpr auto vulkan_api_version = VK_MAKE_API_VERSION(0, 1, 3, 283);
+
 static vk::UniqueInstance vulkanCreateInstance(Window &window) {
     LOG_INFO(logger, "initializing vulkan instance...");
 
@@ -16,7 +18,7 @@ static vk::UniqueInstance vulkanCreateInstance(Window &window) {
     app_info.applicationVersion = 0;
     app_info.pEngineName = engine_name;
     app_info.engineVersion = engine_version;
-    app_info.apiVersion = VK_MAKE_API_VERSION(0, 1, 3, 283);
+    app_info.apiVersion = vulkan_api_version;
 
     std::vector<const char *> layers, exts;
 
@@ -181,6 +183,15 @@ static vk::UniqueCommandPool createCommandPool(vk::Device device, uint32_t queue
     return device.createCommandPoolUnique(create_info);
 }
 
+static vma::UniqueAllocator createAllocator(vk::PhysicalDevice phys_device, vk::Device device, vk::Instance instance) {
+    vma::AllocatorCreateInfo create_info;
+    create_info.vulkanApiVersion = vulkan_api_version;
+    create_info.physicalDevice = phys_device;
+    create_info.device = device;
+    create_info.instance = instance;
+    return vma::createAllocatorUnique(create_info);
+}
+
 VulkanManageCore::VulkanManageCore(DependencyContainer &container)
     : instance{vulkanCreateInstance(container.get<Window>())},
       surface{container.get<Window>().getVulkanSurface(instance.get())},
@@ -191,7 +202,8 @@ VulkanManageCore::VulkanManageCore(DependencyContainer &container)
       presen_queue{device->getQueue(queue_set.presentation_queue, 0)},
       compute_queue{device->getQueue(queue_set.compute_queue, 0)},
       graphic_cmd_pool{createCommandPool(device.get(), queue_set.graphic_queue)}, // command pools
-      compute_cmd_pool{createCommandPool(device.get(), queue_set.compute_queue)} {
+      compute_cmd_pool{createCommandPool(device.get(), queue_set.compute_queue)},
+      allocator{createAllocator(phys_device, device.get(), instance.get())} {
     LOG_INFO(logger, "vulkan core initialized");
 }
 VulkanManageCore::~VulkanManageCore() {}
@@ -227,6 +239,32 @@ std::vector<vk::UniqueSemaphore> VulkanManageCore::createSemaphores(size_t num) 
     }
 
     return semaphores;
+}
+
+BufferWrapper VulkanManageCore::allocBuf(vk::DeviceSize bytes_num, vk::BufferUsageFlags usage,
+                                         vma::MemoryUsage mem_usage, VulkanProcessType type) const {
+    vk::BufferCreateInfo create_info;
+    create_info.size = bytes_num;
+    create_info.usage = usage;
+    create_info.sharingMode = vk::SharingMode::eExclusive;
+    std::array<uint32_t, 1> queue_families;
+    if (type == VulkanProcessType::graphics) {
+        queue_families[0] = queue_set.graphic_queue;
+        create_info.setQueueFamilyIndices(queue_families);
+    } else {
+        queue_families[0] = queue_set.compute_queue;
+        create_info.setQueueFamilyIndices(queue_families);
+    }
+
+    vma::AllocationCreateInfo alloc_info;
+    alloc_info.usage = mem_usage;
+
+    auto buf = allocator->createBufferUnique(create_info, alloc_info);
+
+    return BufferWrapper{
+        .buffer = std::move(buf.first),
+        .allocation = std::move(buf.second),
+    };
 }
 
 } // namespace Pelican

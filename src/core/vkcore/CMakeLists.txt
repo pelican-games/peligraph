@@ -3,4 +3,5 @@ target_sources(pelican_core PRIVATE
     cmdbuf.cpp
     rendertarget.cpp
     renderer.cpp
+    vma_impl.cpp
 )
