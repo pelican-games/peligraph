@@ -1,11 +1,12 @@
 #define TINYGLTF_IMPLEMENTATION
 #define STB_IMAGE_IMPLEMENTATION
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <tiny_gltf.h>
 
-#include "gltf.hpp"
 #include "../log.hpp"
+#include "gltf.hpp"
 #include "primitivebufcontainer.hpp"
 #include "vertbufcontainer.hpp"
-#include <tiny_gltf.h>
 
 namespace Pelican {
 
@@ -118,6 +119,11 @@ struct RecursiveLoader {
         return {};
     }
     void loadNode(const tinygltf::Node &node) {
+        for (const auto child_index : node.children) {
+            loadNode(model.nodes[child_index]);
+        }
+        if (node.mesh < 0) 
+            return;
         const auto &mesh = model.meshes[node.mesh];
         for (const auto &primitive : mesh.primitives) {
             CommonPolygonVertData dat;
@@ -138,9 +144,6 @@ struct RecursiveLoader {
 
             auto primitive_info = buf_container.addPrimitiveEntry(std::move(dat));
             tmp_material_primitives[primitive.material].emplace_back(std::move(primitive_info));
-        }
-        for (const auto child_index : node.children) {
-            loadNode(model.nodes[child_index]);
         }
     }
     void load() {
