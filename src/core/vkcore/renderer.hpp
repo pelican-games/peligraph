@@ -1,18 +1,14 @@
 #pragma once
 
 #include "../container.hpp"
-#include "../material/materialrender.hpp"
 #include "cmdbuf.hpp"
-#include "rendertarget.hpp"
 #include <array>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
 
 class Renderer {
-    RenderTarget &rt;
-    MaterialRenderer &mat_renderer;
-
+    DependencyContainer &con;
     vk::Device device;
 
   public:

@@ -2,7 +2,7 @@
 
 #include "../container.hpp"
 #include "../material/material.hpp"
-#include "modeltemplate.hpp"
+#include "../model/modeltemplate.hpp"
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {

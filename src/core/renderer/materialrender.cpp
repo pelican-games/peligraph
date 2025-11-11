@@ -1,8 +1,8 @@
 #include "materialrender.hpp"
-#include "../model/polygoninstancecontainer.hpp"
+#include "../material/materialcontainer.hpp"
 #include "../model/vertbufcontainer.hpp"
 #include "../vkcore/core.hpp"
-#include "materialcontainer.hpp"
+#include "polygoninstancecontainer.hpp"
 
 namespace Pelican {
 

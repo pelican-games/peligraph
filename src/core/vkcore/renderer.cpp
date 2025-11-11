@@ -1,16 +1,19 @@
 #include "renderer.hpp"
 #include "../log.hpp"
+#include "../renderer/materialrender.hpp"
 #include "core.hpp"
+#include "rendertarget.hpp"
 
 namespace Pelican {
 
-Renderer::Renderer(DependencyContainer &con)
-    : rt{con.get<RenderTarget>()}, mat_renderer{con.get<MaterialRenderer>()},
-      device{con.get<VulkanManageCore>().getDevice()} {}
+Renderer::Renderer(DependencyContainer &_con) : con{_con}, device{con.get<VulkanManageCore>().getDevice()} {}
 
 Renderer::~Renderer() {}
 
 void Renderer::render() {
+    auto &rt = con.get<RenderTarget>();
+    auto &mat_renderer = con.get<MaterialRenderer>();
+
     const auto render_ctx = rt.render_begin();
 
     const auto cmd_buf = render_ctx.cmd_buf;

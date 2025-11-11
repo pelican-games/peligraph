@@ -1,6 +1,6 @@
 target_sources(pelican_core PRIVATE
     vertbufcontainer.cpp
-    polygoninstancecontainer.cpp
+    modeltemplatecontainer.cpp
     gltf.cpp
 )
 
