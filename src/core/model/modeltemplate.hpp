@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../material/material.hpp"
+
 namespace Pelican {
 
 using ModelTemplateId = int;
@@ -8,11 +10,11 @@ struct ModelTemplate {
     struct PrimitiveRefInfo {
         uint32_t index_count;
         uint32_t index_offset;
-        uint32_t vert_offset;
+        int32_t vert_offset;
     };
 
     struct MaterialPrimitives {
-        int material;
+        GlobalMaterialId material;
         std::vector<PrimitiveRefInfo> primitives;
     };
 

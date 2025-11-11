@@ -142,5 +142,7 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     return id;
 }
 
-void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, GlobalMaterialId material) const {}
+void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, GlobalMaterialId material) const {
+    cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, materials.at(material).pipeline.get());
+}
 } // namespace Pelican
