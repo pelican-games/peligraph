@@ -25,7 +25,7 @@ class VertBufContainer {
     BufferWrapper vertices_mem_pool;
 
     uint32_t indices_offset;
-    uint32_t vertices_offset;
+    int32_t vertices_offset;
 
   public:
     VertBufContainer(DependencyContainer &con);

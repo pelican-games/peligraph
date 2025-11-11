@@ -15,6 +15,9 @@ struct PolygonInstance {
 struct ModelInstanceId {};
 
 class PolygonInstanceContainer {
+    DependencyContainer &con;
+    std::vector<PolygonInstance> instances;
+
   public:
     PolygonInstanceContainer(DependencyContainer &con);
     ModelInstanceId placeModelInstance(ModelTemplate &model);
