@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../container.hpp"
+#include "modeltemplate.hpp"
 
 namespace Pelican {
 
@@ -9,8 +10,7 @@ class GltfLoader {
 
   public:
     GltfLoader(DependencyContainer &con);
-    void loadGltf(std::string path);
-    void placeModel(/* TODO */);
+    ModelTemplate loadGltf(std::string path);
 };
 
 } // namespace Pelican

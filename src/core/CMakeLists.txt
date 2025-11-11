@@ -18,3 +18,4 @@ target_include_directories(pelican_core INTERFACE .)
 
 target_include_directories(pelican_core PRIVATE ${Vulkan_INCLUDE_DIRS})
 target_link_libraries(pelican_core PRIVATE ${Vulkan_LIBRARIES})
+target_link_libraries(pelican_core PRIVATE glm)
