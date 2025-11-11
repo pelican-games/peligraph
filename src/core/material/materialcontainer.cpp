@@ -113,14 +113,6 @@ MaterialContainer::MaterialContainer(DependencyContainer &con)
 
     const auto frag_shader = b::embed<"test_simple.frag.spv">();
     shaders.insert({GlobalShaderId{1}, createShaderModule(device, frag_shader.length(), frag_shader.data())});
-
-    materials.insert({
-        GlobalMaterialId{0},
-        InternalMaterialInfo{
-            .pipeline = createDefaultPipeline(device, pipeline_layout.get(), shaders[GlobalShaderId{0}].get(),
-                                              shaders[GlobalShaderId{1}].get(), VertBufContainer::getDescription()),
-        },
-    });
 }
 MaterialContainer::~MaterialContainer() {}
 
@@ -131,7 +123,7 @@ GlobalTextuerId MaterialContainer::registerTexture() {
     return {}; // TODO
 }
 GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
-    const auto id = GlobalMaterialId{materials.rend()->first.value + 1}; // TODO
+    const auto id = GlobalMaterialId{static_cast<int>(materials.size())}; // TODO
     materials.insert({
         id,
         InternalMaterialInfo{

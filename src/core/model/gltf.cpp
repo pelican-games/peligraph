@@ -5,6 +5,7 @@
 
 #include "../log.hpp"
 #include "../material/material.hpp"
+#include "../material/materialcontainer.hpp"
 #include "gltf.hpp"
 #include "vertbufcontainer.hpp"
 
@@ -13,8 +14,10 @@ namespace Pelican {
 struct RecursiveLoader {
     using ModelLocalMaterialId = int;
 
+    MaterialContainer &mat_container;
     VertBufContainer &buf_container;
     tinygltf::Model &model;
+    std::vector<GlobalMaterialId> material_map;
     std::unordered_map<ModelLocalMaterialId, std::vector<ModelTemplate::PrimitiveRefInfo>> tmp_material_primitives;
 
     template <class InType, class OutType>
@@ -148,6 +151,15 @@ struct RecursiveLoader {
         }
     }
     ModelTemplate load() {
+        material_map.resize(model.materials.size());
+        for (int i = 0; i < model.materials.size(); i++) {
+            material_map[i] = mat_container.registerMaterial(Pelican::MaterialInfo{
+                .vert_shader = {0}, // TODO
+                .frag_shader = {1}, // TODO
+                .base_color_texture = {},
+            });
+        }
+
         const auto &scene = model.scenes[model.defaultScene < 0 ? 0 : model.defaultScene];
         const auto &root_node = model.nodes[scene.nodes[0]];
         loadNode(root_node);
@@ -155,7 +167,7 @@ struct RecursiveLoader {
         ModelTemplate m;
         for (const auto &[local_material_id, primitive] : tmp_material_primitives) {
             m.material_primitives.emplace_back(ModelTemplate::MaterialPrimitives{
-                .material = local_material_id,
+                .material = material_map.at(local_material_id),
                 .primitives = std::move(primitive),
             });
         }
@@ -180,7 +192,7 @@ ModelTemplate GltfLoader::loadGltf(std::string path) {
         throw std::runtime_error("failed to load gltf file : " + path);
 
     ModelTemplate model_template;
-    RecursiveLoader tmp_loader{con.get<VertBufContainer>(), model};
+    RecursiveLoader tmp_loader{con.get<MaterialContainer>(), con.get<VertBufContainer>(), model};
     return tmp_loader.load();
 }
 
