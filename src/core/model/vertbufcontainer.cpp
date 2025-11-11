@@ -3,8 +3,8 @@
 
 namespace Pelican {
 
-constexpr uint32_t initial_indices_num = 65536;
-constexpr uint32_t initial_vertices_num = 32768;
+constexpr uint32_t initial_indices_num = 65536 * 2;
+constexpr uint32_t initial_vertices_num = 32768 * 2;
 
 static BufferWrapper createIndexBuf(VulkanManageCore &vkcore, size_t num) {
     return vkcore.allocBuf(sizeof(uint32_t) * num, vk::BufferUsageFlagBits::eIndexBuffer,
@@ -33,8 +33,9 @@ ModelTemplate::PrimitiveRefInfo VertBufContainer::addPrimitiveEntry(CommonPolygo
     ModelTemplate::PrimitiveRefInfo info{
         .index_count = static_cast<uint32_t>(data.indices.size()),
         .index_offset = indices_offset,
-        .vert_offset = 0,
+        .vert_offset = vertices_offset,
     };
+    uint32_t vert_count = static_cast<uint32_t>(data.pos.size());
     if (info.index_offset + info.index_count >= initial_indices_num) {
         LOG_ERROR(logger, "VertBufContainer: buffer overflow {} >= {}", info.index_offset + info.index_count,
                   initial_indices_num);
@@ -49,6 +50,8 @@ ModelTemplate::PrimitiveRefInfo VertBufContainer::addPrimitiveEntry(CommonPolygo
                                          sizeof(uint32_t) * data.indices.size());
     con.get<VulkanManageCore>().writeBuf(vertices_mem_pool, data.pos.data(), sizeof(glm::vec3) * vertices_offset,
                                          sizeof(uint32_t) * data.indices.size());
+    indices_offset += info.index_count;
+    vertices_offset += vert_count;
     return info;
 }
 void VertBufContainer::removePrimitiveEntry(/* TODO */) {}
