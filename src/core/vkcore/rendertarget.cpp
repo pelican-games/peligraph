@@ -82,22 +82,44 @@ createImageViewsFromImages(vk::Device device, const std::vector<vk::Image> &imag
     return image_views;
 }
 
+static vk::UniqueImageView createImageViewsForDepth(vk::Device device, const ImageWrapper &image) {
+    vk::ImageViewCreateInfo create_info;
+    create_info.image = image.image.get();
+    create_info.viewType = vk::ImageViewType::e2D;
+    create_info.format = image.format;
+    create_info.components.r = vk::ComponentSwizzle::eR;
+    create_info.components.g = vk::ComponentSwizzle::eG;
+    create_info.components.b = vk::ComponentSwizzle::eB;
+    create_info.components.a = vk::ComponentSwizzle::eA;
+    create_info.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eDepth;
+    create_info.subresourceRange.baseMipLevel = 0;
+    create_info.subresourceRange.levelCount = 1;
+    create_info.subresourceRange.baseArrayLayer = 0;
+    create_info.subresourceRange.layerCount = 1;
+
+    return device.createImageViewUnique(create_info);
+}
+
 static vk::Extent2D getSurfaceExtent(vk::PhysicalDevice phys_device, vk::SurfaceKHR surface) {
     return phys_device.getSurfaceCapabilitiesKHR(surface).currentExtent;
 }
 
 RenderTarget::RenderTarget(DependencyContainer &container)
     : device{container.get<VulkanManageCore>().getDevice()},
+      extent{getSurfaceExtent(container.get<VulkanManageCore>().getPhysDevice(),
+                              container.get<VulkanManageCore>().getSurface())},
       presen_queue{container.get<VulkanManageCore>().getPresentationQueue()},
       swapchain{createSwapchain(container.get<VulkanManageCore>().getDevice(),
                                 container.get<VulkanManageCore>().getPhysDevice(),
                                 container.get<VulkanManageCore>().getSurface())},
-      images{getImageFromSwapchain(device, swapchain.swapchain.get())},
-      image_views{createImageViewsFromImages(device, images, swapchain.format)},
+      swapchain_images{getImageFromSwapchain(device, swapchain.swapchain.get())},
+      swapchain_image_views{createImageViewsFromImages(device, swapchain_images, swapchain.format)},
+      depth_image{container.get<VulkanManageCore>().allocImage(vk::Extent3D{extent, 1}, vk::Format::eD32Sfloat,
+                                                               vk::ImageUsageFlagBits::eDepthStencilAttachment,
+                                                               vma::MemoryUsage::eAutoPreferDevice, {})},
+      depth_image_view{createImageViewsForDepth(device, depth_image)},
       image_acquire_semaphores{container.get<VulkanManageCore>().createSemaphores(in_flight_frames_num)},
       rendered_semaphores{container.get<VulkanManageCore>().createSemaphores(in_flight_frames_num)}, render_cmd_bufs{},
-      extent{getSurfaceExtent(container.get<VulkanManageCore>().getPhysDevice(),
-                              container.get<VulkanManageCore>().getSurface())},
       in_flight_frame_index{0} {
     const auto &vkcore = container.get<VulkanManageCore>();
     {
@@ -157,7 +179,8 @@ FrameRenderContext RenderTarget::render_begin() {
 
     return FrameRenderContext{
         .cmd_buf = *cmd_buf,
-        .color_attachment = image_views[image_acquire_result.value].get(),
+        .color_attachment = swapchain_image_views[image_acquire_result.value].get(),
+        .depth_attachment = depth_image_view.get(),
         .extent = extent,
         .image_prepared_semaphore = image_prepared_semaphore,
         .required_layout = vk::ImageLayout::ePresentSrcKHR,
@@ -171,7 +194,7 @@ void RenderTarget::render_end() {
     barrier.srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
     barrier.oldLayout = vk::ImageLayout::eUndefined;
     barrier.newLayout = vk::ImageLayout::ePresentSrcKHR;
-    barrier.image = images[current_image_index];
+    barrier.image = swapchain_images[current_image_index];
     barrier.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
     barrier.subresourceRange.baseArrayLayer = 0;
     barrier.subresourceRange.layerCount = 1;

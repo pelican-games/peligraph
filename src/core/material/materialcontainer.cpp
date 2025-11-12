@@ -80,6 +80,13 @@ static vk::UniquePipeline createDefaultPipeline(vk::Device device, vk::PipelineL
     multisample.rasterizationSamples = vk::SampleCountFlagBits::e1;
     multisample.sampleShadingEnable = false;
 
+    vk::PipelineDepthStencilStateCreateInfo depth;
+    depth.depthTestEnable = true;
+    depth.depthWriteEnable = true;
+    depth.depthCompareOp = vk::CompareOp::eLess;
+    depth.depthBoundsTestEnable = false;
+    depth.stencilTestEnable = false;
+
     vk::PipelineColorBlendAttachmentState blend_attachment;
     blend_attachment.blendEnable = false;
     blend_attachment.colorWriteMask = vk::ColorComponentFlagBits::eA | vk::ColorComponentFlagBits::eR |
@@ -97,7 +104,7 @@ static vk::UniquePipeline createDefaultPipeline(vk::Device device, vk::PipelineL
     vk::Format color_format = vk::Format::eB8G8R8A8Unorm;
     vk::PipelineRenderingCreateInfo rendering_info;
     rendering_info.setColorAttachmentFormats(color_format);
-    // rendering_info.depthAttachmentFormat = vk::Format::eD32Sfloat;
+    rendering_info.depthAttachmentFormat = vk::Format::eD32Sfloat;
 
     vk::GraphicsPipelineCreateInfo create_info;
     create_info.setStages(stages);
@@ -107,7 +114,7 @@ static vk::UniquePipeline createDefaultPipeline(vk::Device device, vk::PipelineL
     create_info.pViewportState = &viewport;
     create_info.pRasterizationState = &rasterization;
     create_info.pMultisampleState = &multisample;
-    // create_info.pDepthStencilState = ;
+    create_info.pDepthStencilState = &depth;
     create_info.pColorBlendState = &blend;
     create_info.pDynamicState = &dynamic_state_info;
     create_info.layout = layout;
