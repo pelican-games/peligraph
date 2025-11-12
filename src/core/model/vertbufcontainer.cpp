@@ -13,14 +13,8 @@ static BufferWrapper createIndexBuf(VulkanManageCore &vkcore, size_t num) {
 }
 
 static BufferWrapper createVertBuf(VulkanManageCore &vkcore, size_t num) {
-    size_t vert_sz = sizeof(glm::vec3)      // pos
-                     + sizeof(glm::vec3)    // normal
-                     + sizeof(glm::vec2)    // texcoord
-                     + sizeof(glm::vec3)    // color
-                     + sizeof(glm::i16vec4) // joint
-                     + sizeof(glm::vec4)    // weight
-        ;
-    return vkcore.allocBuf(vert_sz * num, vk::BufferUsageFlagBits::eVertexBuffer, vma::MemoryUsage::eAutoPreferDevice,
+    return vkcore.allocBuf(sizeof(CommonVertStruct) * num, vk::BufferUsageFlagBits::eVertexBuffer,
+                           vma::MemoryUsage::eAutoPreferDevice,
                            vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
 }
 
@@ -46,13 +40,16 @@ ModelTemplate::PrimitiveRefInfo VertBufContainer::addPrimitiveEntry(CommonPolygo
                   vertices_cap);
         throw std::runtime_error("VertBufContainer: buffer overflow");
     }
+
+    std::vector<CommonVertStruct> tmp_buf(vert_count);
+    for (uint32_t i = 0; i < vert_count; i++)
+        tmp_buf[i].pos = data.pos[i];
+    for (uint32_t i = 0; i < vert_count; i++)
+        tmp_buf[i].texcoord = data.texcoord[i];
     con.get<VulkanManageCore>().writeBuf(indices_mem_pool, data.indices.data(), sizeof(uint32_t) * indices_offset,
                                          sizeof(uint32_t) * data.indices.size());
-    con.get<VulkanManageCore>().writeBuf(vertices_mem_pool, data.pos.data(), sizeof(glm::vec3) * vertices_offset,
-                                         sizeof(uint32_t) * data.indices.size());
-    con.get<VulkanManageCore>().writeBuf(vertices_mem_pool, data.pos.data(),
-                                         sizeof(glm::vec3) * vertices_cap + sizeof(glm::vec2) * vertices_offset,
-                                         sizeof(uint32_t) * data.indices.size());
+    con.get<VulkanManageCore>().writeBuf(vertices_mem_pool, tmp_buf.data(), sizeof(CommonVertStruct) * vertices_offset,
+                                         sizeof(CommonVertStruct) * vert_count);
     indices_offset += info.index_count;
     vertices_offset += vert_count;
     return info;
@@ -61,8 +58,7 @@ void VertBufContainer::removePrimitiveEntry(/* TODO */) {}
 
 void VertBufContainer::bindVertexBuffer(vk::CommandBuffer cmd_buf) const {
     cmd_buf.bindIndexBuffer(*indices_mem_pool.buffer, 0, vk::IndexType::eUint32);
-    cmd_buf.bindVertexBuffers(0, {*vertices_mem_pool.buffer, *vertices_mem_pool.buffer},
-                              {0, sizeof(glm::vec3) * vertices_cap});
+    cmd_buf.bindVertexBuffers(0, {*vertices_mem_pool.buffer}, {0});
 }
 
 VertBufContainer::CommonVertDataDescription VertBufContainer::getDescription() {
@@ -71,26 +67,20 @@ VertBufContainer::CommonVertDataDescription VertBufContainer::getDescription() {
     vk::VertexInputBindingDescription pos_binding;
     pos_binding.binding = 0;
     pos_binding.inputRate = vk::VertexInputRate::eVertex;
-    pos_binding.stride = sizeof(glm::vec3);
+    pos_binding.stride = sizeof(CommonVertStruct);
     descs.binding_descs.push_back(pos_binding);
 
     vk::VertexInputAttributeDescription pos_attr;
     pos_attr.binding = 0;
     pos_attr.location = 0;
-    pos_attr.offset = 0;
+    pos_attr.offset = offsetof(CommonVertStruct, pos);
     pos_attr.format = vk::Format::eR32G32B32Sfloat;
     descs.attr_descs.push_back(pos_attr);
 
-    vk::VertexInputBindingDescription texcoord_binding;
-    texcoord_binding.binding = 1;
-    texcoord_binding.inputRate = vk::VertexInputRate::eVertex;
-    texcoord_binding.stride = sizeof(glm::vec2);
-    descs.binding_descs.push_back(texcoord_binding);
-
     vk::VertexInputAttributeDescription texcoord_attr;
-    texcoord_attr.binding = 1;
+    texcoord_attr.binding = 0;
     texcoord_attr.location = 1;
-    texcoord_attr.offset = 0;
+    texcoord_attr.offset = offsetof(CommonVertStruct, texcoord);
     texcoord_attr.format = vk::Format::eR32G32Sfloat;
     descs.attr_descs.push_back(texcoord_attr);
 
