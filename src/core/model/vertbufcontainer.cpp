@@ -50,6 +50,9 @@ ModelTemplate::PrimitiveRefInfo VertBufContainer::addPrimitiveEntry(CommonPolygo
                                          sizeof(uint32_t) * data.indices.size());
     con.get<VulkanManageCore>().writeBuf(vertices_mem_pool, data.pos.data(), sizeof(glm::vec3) * vertices_offset,
                                          sizeof(uint32_t) * data.indices.size());
+    con.get<VulkanManageCore>().writeBuf(vertices_mem_pool, data.pos.data(),
+                                         sizeof(glm::vec3) * initial_vertices_num + sizeof(glm::vec2) * vertices_offset,
+                                         sizeof(uint32_t) * data.indices.size());
     indices_offset += info.index_count;
     vertices_offset += vert_count;
     return info;
@@ -58,7 +61,8 @@ void VertBufContainer::removePrimitiveEntry(/* TODO */) {}
 
 void VertBufContainer::bindVertexBuffer(vk::CommandBuffer cmd_buf) const {
     cmd_buf.bindIndexBuffer(*indices_mem_pool.buffer, 0, vk::IndexType::eUint32);
-    cmd_buf.bindVertexBuffers(0, {*vertices_mem_pool.buffer}, {0});
+    cmd_buf.bindVertexBuffers(0, {*vertices_mem_pool.buffer, *vertices_mem_pool.buffer},
+                              {0, sizeof(glm::vec3) * initial_vertices_num});
 }
 
 VertBufContainer::CommonVertDataDescription VertBufContainer::getDescription() {
@@ -76,6 +80,19 @@ VertBufContainer::CommonVertDataDescription VertBufContainer::getDescription() {
     pos_attr.offset = 0;
     pos_attr.format = vk::Format::eR32G32B32Sfloat;
     descs.attr_descs.push_back(pos_attr);
+
+    vk::VertexInputBindingDescription texcoord_binding;
+    texcoord_binding.binding = 1;
+    texcoord_binding.inputRate = vk::VertexInputRate::eVertex;
+    texcoord_binding.stride = sizeof(glm::vec2);
+    descs.binding_descs.push_back(texcoord_binding);
+
+    vk::VertexInputAttributeDescription texcoord_attr;
+    texcoord_attr.binding = 1;
+    texcoord_attr.location = 1;
+    texcoord_attr.offset = 0;
+    texcoord_attr.format = vk::Format::eR32G32Sfloat;
+    descs.attr_descs.push_back(texcoord_attr);
 
     return descs;
 }

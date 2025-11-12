@@ -6,7 +6,10 @@ layout(push_constant) uniform SceneData {
 } drawInfo;
 
 layout(location = 0) in vec3 inPos;
+layout(location = 1) in vec2 inTexUV;
+layout(location = 0) out vec2 outTexUV;
 
 void main() {
     gl_Position = drawInfo.mvpMatrix * vec4(inPos, 1.0);
+    outTexUV = inTexUV;
 }
