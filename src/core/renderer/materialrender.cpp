@@ -2,8 +2,8 @@
 #include "../material/materialcontainer.hpp"
 #include "../model/vertbufcontainer.hpp"
 #include "../vkcore/core.hpp"
+#include "camera.hpp"
 #include "polygoninstancecontainer.hpp"
-#include <glm/gtc/matrix_transform.hpp>
 
 namespace Pelican {
 
@@ -18,11 +18,7 @@ void MaterialRenderer::render(vk::CommandBuffer cmd_buf) const {
 
     const auto pipeline_layout = material_container.getPipelineLayout();
     PushConstantStruct push_constant;
-    // for test
-    push_constant.mvp =
-        glm::perspective(glm::radians(45.0f), 16 / (float)9, 0.1f, 100.0f) *
-        glm::lookAt(glm::vec3(5.0f, 5.0f, 5.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f)) *
-        glm::rotate(glm::mat4(1.0f), 0.0f, glm::vec3(0.0f, 0.0f, 1.0f));
+    push_constant.mvp = con.get<Camera>().getVPMatrix();
 
     GlobalMaterialId current_material{-1};
     for (const auto &polygon : instance_container.getPolygons()) {

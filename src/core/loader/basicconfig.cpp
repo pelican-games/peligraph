@@ -16,4 +16,13 @@ bool ProjectBasicConfig::initialFullScreenState() const { return false; }
 
 float ProjectBasicConfig::framerateTarget() const { return 60.0f; }
 
+ProjectBasicConfig::InitialCameraProperty ProjectBasicConfig::initailCameraProperty() const {
+    return InitialCameraProperty{
+        .up = glm::vec3(0.0f, -1.0f, 0.0f),
+        .fov_y = 45.0f,
+        .near = 0.1f,
+        .far = 100.0f,
+    };
+}
+
 } // namespace Pelican
