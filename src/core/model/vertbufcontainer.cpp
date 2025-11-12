@@ -51,10 +51,32 @@ ModelTemplate::PrimitiveRefInfo VertBufContainer::addPrimitiveEntry(CommonPolygo
     }
 
     std::vector<CommonVertStruct> tmp_buf(vert_count);
+
     for (uint32_t i = 0; i < vert_count; i++)
         tmp_buf[i].pos = data.pos[i];
-    for (uint32_t i = 0; i < vert_count; i++)
-        tmp_buf[i].texcoord = data.texcoord[i];
+
+    if (!data.normal.empty()) {
+        for (uint32_t i = 0; i < vert_count; i++)
+            tmp_buf[i].normal = data.normal[i];
+    } else {
+        for (uint32_t i = 0; i < vert_count; i++)
+            tmp_buf[i].normal = glm::vec3(0.0, 0.0, 0.0);
+    }
+    if (!data.texcoord.empty()) {
+        for (uint32_t i = 0; i < vert_count; i++)
+            tmp_buf[i].texcoord = data.texcoord[i];
+    } else {
+        for (uint32_t i = 0; i < vert_count; i++)
+            tmp_buf[i].texcoord = glm::vec2(0.0, 0.0);
+    }
+    if (!data.color.empty()) {
+        for (uint32_t i = 0; i < vert_count; i++)
+            tmp_buf[i].color = data.color[i];
+    } else {
+        for (uint32_t i = 0; i < vert_count; i++)
+            tmp_buf[i].color = glm::vec3(0.0, 0.0, 0.0);
+    }
+
     con.get<VulkanManageCore>().writeBuf(indices_mem_pool, data.indices.data(), sizeof(uint32_t) * indices_offset,
                                          sizeof(uint32_t) * data.indices.size());
     con.get<VulkanManageCore>().writeBuf(vertices_mem_pool, tmp_buf.data(), sizeof(CommonVertStruct) * vertices_offset,
@@ -86,12 +108,26 @@ VertBufContainer::CommonVertDataDescription VertBufContainer::getDescription() {
     pos_attr.format = vk::Format::eR32G32B32Sfloat;
     descs.attr_descs.push_back(pos_attr);
 
+    vk::VertexInputAttributeDescription normal_attr;
+    normal_attr.binding = 0;
+    normal_attr.location = 1;
+    normal_attr.offset = offsetof(CommonVertStruct, normal);
+    normal_attr.format = vk::Format::eR32G32B32Sfloat;
+    descs.attr_descs.push_back(normal_attr);
+
     vk::VertexInputAttributeDescription texcoord_attr;
     texcoord_attr.binding = 0;
-    texcoord_attr.location = 1;
+    texcoord_attr.location = 2;
     texcoord_attr.offset = offsetof(CommonVertStruct, texcoord);
     texcoord_attr.format = vk::Format::eR32G32Sfloat;
     descs.attr_descs.push_back(texcoord_attr);
+
+    vk::VertexInputAttributeDescription color_attr;
+    color_attr.binding = 0;
+    color_attr.location = 3;
+    color_attr.offset = offsetof(CommonVertStruct, color);
+    color_attr.format = vk::Format::eR32G32B32Sfloat;
+    descs.attr_descs.push_back(color_attr);
 
     return descs;
 }
