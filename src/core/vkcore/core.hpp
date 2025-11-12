@@ -51,7 +51,7 @@ class VulkanManageCore {
     ImageWrapper allocImage(vk::Extent3D extent, vk::Format format, vk::ImageUsageFlags usage,
                             vma::MemoryUsage mem_usage, vma::AllocationCreateFlags alloc_flags,
                             VulkanProcessType type = VulkanProcessType::graphics) const;
-    void writeImage(const ImageWrapper &dst, void *src, vk::DeviceSize bytes_num) const;
+    void writeImage(const ImageWrapper &dst, const void *src, vk::DeviceSize bytes_num) const;
 };
 
 } // namespace Pelican

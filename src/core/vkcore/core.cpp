@@ -311,7 +311,7 @@ ImageWrapper VulkanManageCore::allocImage(vk::Extent3D extent, vk::Format format
         .allocation = std::move(image.second),
     };
 }
-void VulkanManageCore::writeImage(const ImageWrapper &dst, void *src, vk::DeviceSize bytes_num) const {
+void VulkanManageCore::writeImage(const ImageWrapper &dst, const void *src, vk::DeviceSize bytes_num) const {
     allocator->copyMemoryToAllocation(src, dst.allocation.get(), 0, bytes_num);
 }
 
