@@ -148,6 +148,18 @@ struct RecursiveLoader {
                 dat.color.resize(tmp_color.size());
                 std::transform(tmp_color.begin(), tmp_color.end(), dat.color.begin(),
                                [](glm::vec3 v3) { return glm::vec4{v3, 1.0f}; });
+            } else if (primitive.material >= 0 &&
+                       model.materials[primitive.material].pbrMetallicRoughness.baseColorTexture.index < 0 &&
+                       !model.materials[primitive.material].pbrMetallicRoughness.baseColorFactor.empty()) {
+                const auto &base_color = model.materials[primitive.material].pbrMetallicRoughness.baseColorFactor;
+                const glm::vec4 base_color_vec4{
+                    base_color[0],
+                    base_color[1],
+                    base_color[2],
+                    base_color[3],
+                };
+                dat.color.resize(dat.pos.size());
+                std::fill(dat.color.begin(), dat.color.end(), base_color_vec4);
             }
             if (auto it = primitive.attributes.find("JOINTS_0"); it != primitive.attributes.end())
                 dat.joint = getDataFromAccessor<TINYGLTF_TYPE_VEC4, glm::i16vec4>(it->second);
