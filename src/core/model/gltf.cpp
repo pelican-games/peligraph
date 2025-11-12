@@ -173,7 +173,7 @@ struct RecursiveLoader {
 
             const auto base_color_texture_index = material.pbrMetallicRoughness.baseColorTexture.index;
             const auto base_color_texture =
-                base_color_texture_index >= 0 ? texture_map[base_color_texture_index] : GlobalTextureId{0};
+                base_color_texture_index >= 0 ? texture_map[base_color_texture_index] : std_mat.transparentTexture();
             material_map[i] = mat_container.registerMaterial(Pelican::MaterialInfo{
                 .vert_shader = std_mat.standardVertShader(),
                 .frag_shader = std_mat.standardFragShader(),
