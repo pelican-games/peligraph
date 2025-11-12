@@ -1,6 +1,7 @@
 #include "materialcontainer.hpp"
 #include "../model/vertbufcontainer.hpp"
 #include "../vkcore/core.hpp"
+#include "../vkcore/util.hpp"
 #include "battery/embed.hpp"
 
 namespace Pelican {
@@ -207,10 +208,19 @@ GlobalTextureId MaterialContainer::registerTexture(vk::Extent3D extent, const vo
     auto &descset = descsets[0];
 
     const auto &vkcore = con.get<VulkanManageCore>();
-    auto image =
-        vkcore.allocImage(extent, vk::Format::eR8G8B8A8Unorm, vk::ImageUsageFlagBits::eSampled,
-                          vma::MemoryUsage::eAutoPreferHost, vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
-    vkcore.writeImage(image, data, extent.width * extent.height * extent.depth * 4);
+    auto image = vkcore.allocImage(
+        extent, vk::Format::eR8G8B8A8Unorm, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
+        vma::MemoryUsage::eAutoPreferHost, vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
+
+    auto &vkutil = con.get<VulkanUtils>();
+    vkutil.safeTransferMemoryToImage(image, data, extent.width * extent.height * extent.depth * 4,
+                                     VulkanUtils::ImageTransferInfo{
+                                         .old_layout = vk::ImageLayout::eUndefined,
+                                         .new_layout = vk::ImageLayout::eShaderReadOnlyOptimal,
+                                         .dst_stage = vk::PipelineStageFlagBits::eFragmentShader,
+                                         .dst_access = vk::AccessFlagBits::eShaderRead,
+                                     });
+
     auto image_view = createImageView(device, image);
 
     vk::DescriptorImageInfo image_info;
