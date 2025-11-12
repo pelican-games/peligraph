@@ -74,7 +74,7 @@ ModelTemplate::PrimitiveRefInfo VertBufContainer::addPrimitiveEntry(CommonPolygo
             tmp_buf[i].color = data.color[i];
     } else {
         for (uint32_t i = 0; i < vert_count; i++)
-            tmp_buf[i].color = glm::vec3(0.0, 0.0, 0.0);
+            tmp_buf[i].color = glm::vec4(0.0, 0.0, 0.0, 0.0);
     }
 
     con.get<VulkanManageCore>().writeBuf(indices_mem_pool, data.indices.data(), sizeof(uint32_t) * indices_offset,
@@ -126,7 +126,7 @@ VertBufContainer::CommonVertDataDescription VertBufContainer::getDescription() {
     color_attr.binding = 0;
     color_attr.location = 3;
     color_attr.offset = offsetof(CommonVertStruct, color);
-    color_attr.format = vk::Format::eR32G32B32Sfloat;
+    color_attr.format = vk::Format::eR32G32B32A32Sfloat;
     descs.attr_descs.push_back(color_attr);
 
     return descs;

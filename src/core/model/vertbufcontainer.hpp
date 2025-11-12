@@ -14,7 +14,7 @@ struct CommonPolygonVertData {
     std::vector<glm::vec3> pos;
     std::vector<glm::vec3> normal;
     std::vector<glm::vec2> texcoord;
-    std::vector<glm::vec3> color;
+    std::vector<glm::vec4> color;
     std::vector<glm::i16vec4> joint;
     std::vector<glm::vec4> weight;
 };
@@ -23,14 +23,14 @@ struct CommonVertStruct {
     glm::vec3 pos;
     glm::vec3 normal;
     glm::vec2 texcoord;
-    glm::vec3 color;
+    glm::vec4 color;
 };
 
 struct CommonSkinningVertStruct {
     glm::vec3 pos;
     glm::vec3 normal;
     glm::vec2 texcoord;
-    glm::vec3 color;
+    glm::vec4 color;
     glm::i16vec4 joint;
     glm::vec4 weight;
 };

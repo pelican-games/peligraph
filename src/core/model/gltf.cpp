@@ -143,8 +143,12 @@ struct RecursiveLoader {
                 dat.normal = getDataFromAccessor<TINYGLTF_TYPE_VEC3, glm::vec3>(it->second);
             if (auto it = primitive.attributes.find("TEXCOORD_0"); it != primitive.attributes.end())
                 dat.texcoord = getDataFromAccessor<TINYGLTF_TYPE_VEC2, glm::vec2>(it->second);
-            if (auto it = primitive.attributes.find("COLOR_0"); it != primitive.attributes.end())
-                dat.color = getDataFromAccessor<TINYGLTF_TYPE_VEC3, glm::vec3>(it->second);
+            if (auto it = primitive.attributes.find("COLOR_0"); it != primitive.attributes.end()) {
+                const auto &tmp_color = getDataFromAccessor<TINYGLTF_TYPE_VEC3, glm::vec3>(it->second);
+                dat.color.resize(tmp_color.size());
+                std::transform(tmp_color.begin(), tmp_color.end(), dat.color.begin(),
+                               [](glm::vec3 v3) { return glm::vec4{v3, 1.0f}; });
+            }
             if (auto it = primitive.attributes.find("JOINTS_0"); it != primitive.attributes.end())
                 dat.joint = getDataFromAccessor<TINYGLTF_TYPE_VEC4, glm::i16vec4>(it->second);
             if (auto it = primitive.attributes.find("WEIGHTS_0"); it != primitive.attributes.end())
