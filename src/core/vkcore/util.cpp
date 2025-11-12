@@ -59,24 +59,26 @@ void VulkanUtils::safeTransferMemoryToImage(const ImageWrapper &image, const voi
     image_copy.imageOffset = vk::Offset3D{0, 0, 0};
     image_copy.imageExtent = image.extent;
 
-    executeOneTimeCmd([&](vk::CommandBuffer cmd_buf) {
-        changeImageLayoutCommand(cmd_buf, image, info.old_layout, vk::ImageLayout::eTransferDstOptimal,
-                                 ChangeImageLayoutInfo{
-                                     .src_stage = vk::PipelineStageFlagBits::eTopOfPipe,
-                                     .dst_stage = vk::PipelineStageFlagBits::eTransfer,
-                                     .src_access = {},
-                                     .dst_access = vk::AccessFlagBits::eTransferWrite,
-                                 });
-        cmd_buf.copyBufferToImage(staging_buf.buffer.get(), image.image.get(), vk::ImageLayout::eTransferDstOptimal,
-                                  {image_copy});
-        changeImageLayoutCommand(cmd_buf, image, vk::ImageLayout::eTransferDstOptimal, info.new_layout,
-                                 ChangeImageLayoutInfo{
-                                     .src_stage = vk::PipelineStageFlagBits::eTransfer,
-                                     .dst_stage = info.dst_stage,
-                                     .src_access = vk::AccessFlagBits::eTransferWrite,
-                                     .dst_access = info.dst_access,
-                                 });
-    });
+    executeOneTimeCmd(
+        [&](vk::CommandBuffer cmd_buf) {
+            changeImageLayoutCommand(cmd_buf, image, info.old_layout, vk::ImageLayout::eTransferDstOptimal,
+                                     ChangeImageLayoutInfo{
+                                         .src_stage = vk::PipelineStageFlagBits::eTopOfPipe,
+                                         .dst_stage = vk::PipelineStageFlagBits::eTransfer,
+                                         .src_access = {},
+                                         .dst_access = vk::AccessFlagBits::eTransferWrite,
+                                     });
+            cmd_buf.copyBufferToImage(staging_buf.buffer.get(), image.image.get(), vk::ImageLayout::eTransferDstOptimal,
+                                      {image_copy});
+            changeImageLayoutCommand(cmd_buf, image, vk::ImageLayout::eTransferDstOptimal, info.new_layout,
+                                     ChangeImageLayoutInfo{
+                                         .src_stage = vk::PipelineStageFlagBits::eTransfer,
+                                         .dst_stage = info.dst_stage,
+                                         .src_access = vk::AccessFlagBits::eTransferWrite,
+                                         .dst_access = info.dst_access,
+                                     });
+        },
+        true);
 }
 
 } // namespace Pelican

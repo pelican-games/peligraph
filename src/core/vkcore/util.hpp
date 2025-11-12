@@ -16,13 +16,15 @@ class VulkanUtils {
   public:
     VulkanUtils(DependencyContainer &con);
 
-    template <class F> void executeOneTimeCmd(F &&f) {
+    template <class F> void executeOneTimeCmd(F &&f, bool wait = false) {
         const auto &cmd_buf = genpurpose_cmd_bufs[genpurpose_cmd_bufs_index];
         cmd_buf.recordBegin();
         f(*cmd_buf);
         cmd_buf.recordEndSubmit({}, {});
         genpurpose_cmd_bufs_index++;
         genpurpose_cmd_bufs_index %= genpurpose_cmd_bufs.size();
+        if (wait)
+            device.waitForFences({cmd_buf.getFence()}, true, UINT64_MAX);
     }
 
     struct ChangeImageLayoutInfo {
