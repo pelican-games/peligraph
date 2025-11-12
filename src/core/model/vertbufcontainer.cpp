@@ -25,9 +25,9 @@ static BufferWrapper createVertBuf(VulkanManageCore &vkcore, size_t num) {
 }
 
 VertBufContainer::VertBufContainer(DependencyContainer &_con)
-    : con{_con}, indices_mem_pool{createIndexBuf(con.get<VulkanManageCore>(), initial_indices_num)},
-      vertices_mem_pool{createVertBuf(con.get<VulkanManageCore>(), initial_vertices_num)}, indices_offset{0},
-      vertices_offset{0} {}
+    : con{_con}, indices_offset{0}, vertices_offset{0}, indices_cap{initial_indices_num},
+      vertices_cap{initial_vertices_num}, indices_mem_pool{createIndexBuf(con.get<VulkanManageCore>(), indices_cap)},
+      vertices_mem_pool{createVertBuf(con.get<VulkanManageCore>(), vertices_cap)} {}
 
 ModelTemplate::PrimitiveRefInfo VertBufContainer::addPrimitiveEntry(CommonPolygonVertData &&data) {
     ModelTemplate::PrimitiveRefInfo info{
@@ -36,14 +36,14 @@ ModelTemplate::PrimitiveRefInfo VertBufContainer::addPrimitiveEntry(CommonPolygo
         .vert_offset = vertices_offset,
     };
     uint32_t vert_count = static_cast<uint32_t>(data.pos.size());
-    if (info.index_offset + info.index_count >= initial_indices_num) {
+    if (info.index_offset + info.index_count >= indices_cap) {
         LOG_ERROR(logger, "VertBufContainer: buffer overflow {} >= {}", info.index_offset + info.index_count,
-                  initial_indices_num);
+                  indices_cap);
         throw std::runtime_error("VertBufContainer: buffer overflow");
     }
-    if (info.vert_offset + data.pos.size() >= initial_vertices_num) {
+    if (info.vert_offset + data.pos.size() >= vertices_cap) {
         LOG_ERROR(logger, "VertBufContainer: buffer overflow {} >= {}", info.vert_offset + data.pos.size(),
-                  initial_vertices_num);
+                  vertices_cap);
         throw std::runtime_error("VertBufContainer: buffer overflow");
     }
     con.get<VulkanManageCore>().writeBuf(indices_mem_pool, data.indices.data(), sizeof(uint32_t) * indices_offset,
@@ -51,7 +51,7 @@ ModelTemplate::PrimitiveRefInfo VertBufContainer::addPrimitiveEntry(CommonPolygo
     con.get<VulkanManageCore>().writeBuf(vertices_mem_pool, data.pos.data(), sizeof(glm::vec3) * vertices_offset,
                                          sizeof(uint32_t) * data.indices.size());
     con.get<VulkanManageCore>().writeBuf(vertices_mem_pool, data.pos.data(),
-                                         sizeof(glm::vec3) * initial_vertices_num + sizeof(glm::vec2) * vertices_offset,
+                                         sizeof(glm::vec3) * vertices_cap + sizeof(glm::vec2) * vertices_offset,
                                          sizeof(uint32_t) * data.indices.size());
     indices_offset += info.index_count;
     vertices_offset += vert_count;
@@ -62,7 +62,7 @@ void VertBufContainer::removePrimitiveEntry(/* TODO */) {}
 void VertBufContainer::bindVertexBuffer(vk::CommandBuffer cmd_buf) const {
     cmd_buf.bindIndexBuffer(*indices_mem_pool.buffer, 0, vk::IndexType::eUint32);
     cmd_buf.bindVertexBuffers(0, {*vertices_mem_pool.buffer, *vertices_mem_pool.buffer},
-                              {0, sizeof(glm::vec3) * initial_vertices_num});
+                              {0, sizeof(glm::vec3) * vertices_cap});
 }
 
 VertBufContainer::CommonVertDataDescription VertBufContainer::getDescription() {

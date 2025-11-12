@@ -19,13 +19,31 @@ struct CommonPolygonVertData {
     std::vector<glm::vec4> weight;
 };
 
+struct CommonVertStruct {
+    glm::vec3 pos;
+    glm::vec3 normal;
+    glm::vec2 texcoord;
+    glm::vec3 color;
+};
+
+struct CommonSkinningVertStruct {
+    glm::vec3 pos;
+    glm::vec3 normal;
+    glm::vec2 texcoord;
+    glm::vec3 color;
+    glm::i16vec4 joint;
+    glm::vec4 weight;
+};
+
 class VertBufContainer {
     DependencyContainer &con;
-    BufferWrapper indices_mem_pool;
-    BufferWrapper vertices_mem_pool;
 
     uint32_t indices_offset;
     int32_t vertices_offset;
+    uint32_t indices_cap;
+    uint32_t vertices_cap;
+    BufferWrapper indices_mem_pool;
+    BufferWrapper vertices_mem_pool;
 
   public:
     VertBufContainer(DependencyContainer &con);
