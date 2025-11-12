@@ -7,5 +7,6 @@ layout(location = 0) in vec2 texUV;
 layout(location = 0) out vec4 outColor;
 
 void main() {
-    outColor = texture(texSampler, texUV);
+    vec4 tex_sampled = texture(texSampler, texUV);
+    outColor = vec4(tex_sampled.rgb * tex_sampled.a, 1.0);
 }
