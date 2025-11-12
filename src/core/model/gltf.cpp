@@ -18,6 +18,7 @@ struct RecursiveLoader {
     VertBufContainer &buf_container;
     tinygltf::Model &model;
     std::vector<GlobalMaterialId> material_map;
+    std::vector<GlobalTextureId> texture_map;
     std::unordered_map<ModelLocalMaterialId, std::vector<ModelTemplate::PrimitiveRefInfo>> tmp_material_primitives;
 
     template <class InType, class OutType>
@@ -152,11 +153,24 @@ struct RecursiveLoader {
     }
     ModelTemplate load() {
         material_map.resize(model.materials.size());
+        texture_map.resize(model.textures.size());
+
+        for (int i = 0; i < model.textures.size(); i++) {
+            const auto &image = model.images[model.textures[i].source];
+            texture_map[i] = mat_container.registerTexture(
+                vk::Extent3D{
+                    static_cast<uint32_t>(image.width),
+                    static_cast<uint32_t>(image.height),
+                    1,
+                },
+                image.image.data());
+        }
         for (int i = 0; i < model.materials.size(); i++) {
+            const auto &material = model.materials[i];
             material_map[i] = mat_container.registerMaterial(Pelican::MaterialInfo{
                 .vert_shader = {0}, // TODO
                 .frag_shader = {1}, // TODO
-                .base_color_texture = {},
+                .base_color_texture = {texture_map.at(material.pbrMetallicRoughness.baseColorTexture.index)},
             });
         }
 

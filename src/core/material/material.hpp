@@ -17,14 +17,14 @@ struct GlobalShaderId {
     bool operator<(GlobalShaderId o) const { return value < o.value; }
 };
 
-struct GlobalTextuerId {
+struct GlobalTextureId {
     int value;
-    bool operator<(GlobalTextuerId o) const { return value < o.value; }
+    bool operator<(GlobalTextureId o) const { return value < o.value; }
 };
 
 struct MaterialInfo {
     GlobalShaderId vert_shader, frag_shader;
-    GlobalTextuerId base_color_texture;
+    GlobalTextureId base_color_texture;
 };
 
 } // namespace Pelican
