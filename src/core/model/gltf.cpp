@@ -175,8 +175,9 @@ struct RecursiveLoader {
         }
 
         const auto &scene = model.scenes[model.defaultScene < 0 ? 0 : model.defaultScene];
-        const auto &root_node = model.nodes[scene.nodes[0]];
-        loadNode(root_node);
+        for (const auto &node : scene.nodes) {
+            loadNode(model.nodes[node]);
+        }
 
         ModelTemplate m;
         for (const auto &[local_material_id, primitive] : tmp_material_primitives) {
