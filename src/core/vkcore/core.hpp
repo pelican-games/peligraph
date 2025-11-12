@@ -3,6 +3,7 @@
 #include "../container.hpp"
 #include "buf.hpp"
 #include "cmdbuf.hpp"
+#include "image.hpp"
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
@@ -46,6 +47,11 @@ class VulkanManageCore {
                            vma::AllocationCreateFlags alloc_flags,
                            VulkanProcessType type = VulkanProcessType::graphics) const;
     void writeBuf(const BufferWrapper &dst, void *src, vk::DeviceSize offset, vk::DeviceSize bytes_num) const;
+
+    ImageWrapper allocImage(vk::Extent3D extent, vk::Format format, vk::ImageUsageFlags usage,
+                            vma::MemoryUsage mem_usage, vma::AllocationCreateFlags alloc_flags,
+                            VulkanProcessType type = VulkanProcessType::graphics) const;
+    void writeImage(const ImageWrapper &dst, void *src, vk::DeviceSize bytes_num) const;
 };
 
 } // namespace Pelican

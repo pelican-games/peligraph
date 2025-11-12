@@ -274,4 +274,45 @@ void VulkanManageCore::writeBuf(const BufferWrapper &dst, void *src, vk::DeviceS
     allocator->copyMemoryToAllocation(src, dst.allocation.get(), offset, bytes_num);
 }
 
+ImageWrapper VulkanManageCore::allocImage(vk::Extent3D extent, vk::Format format, vk::ImageUsageFlags usage,
+                                          vma::MemoryUsage mem_usage, vma::AllocationCreateFlags alloc_flags,
+                                          VulkanProcessType type) const {
+    vk::ImageCreateInfo create_info;
+    create_info.imageType = vk::ImageType::e2D;
+    create_info.format = format;
+    create_info.extent = extent;
+    create_info.mipLevels = 1;
+    create_info.arrayLayers = 1;
+    create_info.samples = vk::SampleCountFlagBits::e1;
+    create_info.tiling = vk::ImageTiling::eOptimal;
+    create_info.usage = usage;
+    create_info.sharingMode = vk::SharingMode::eExclusive;
+    create_info.initialLayout = vk::ImageLayout::eUndefined;
+
+    std::array<uint32_t, 1> queue_families;
+    if (type == VulkanProcessType::graphics) {
+        queue_families[0] = queue_set.graphic_queue;
+        create_info.setQueueFamilyIndices(queue_families);
+    } else {
+        queue_families[0] = queue_set.compute_queue;
+        create_info.setQueueFamilyIndices(queue_families);
+    }
+
+    vma::AllocationCreateInfo alloc_info;
+    alloc_info.flags = alloc_flags;
+    alloc_info.usage = mem_usage;
+
+    auto image = allocator->createImageUnique(create_info, alloc_info);
+
+    return ImageWrapper{
+        .extent = extent,
+        .format = format,
+        .image = std::move(image.first),
+        .allocation = std::move(image.second),
+    };
+}
+void VulkanManageCore::writeImage(const ImageWrapper &dst, void *src, vk::DeviceSize bytes_num) const {
+    allocator->copyMemoryToAllocation(src, dst.allocation.get(), 0, bytes_num);
+}
+
 } // namespace Pelican
