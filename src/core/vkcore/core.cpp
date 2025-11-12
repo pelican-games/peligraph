@@ -269,7 +269,7 @@ BufferWrapper VulkanManageCore::allocBuf(vk::DeviceSize bytes_num, vk::BufferUsa
     };
 }
 
-void VulkanManageCore::writeBuf(const BufferWrapper &dst, void *src, vk::DeviceSize offset,
+void VulkanManageCore::writeBuf(const BufferWrapper &dst, const void *src, vk::DeviceSize offset,
                                 vk::DeviceSize bytes_num) const {
     allocator->copyMemoryToAllocation(src, dst.allocation.get(), offset, bytes_num);
 }

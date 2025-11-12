@@ -46,7 +46,7 @@ class VulkanManageCore {
     BufferWrapper allocBuf(vk::DeviceSize bytes_num, vk::BufferUsageFlags usage, vma::MemoryUsage mem_usage,
                            vma::AllocationCreateFlags alloc_flags,
                            VulkanProcessType type = VulkanProcessType::graphics) const;
-    void writeBuf(const BufferWrapper &dst, void *src, vk::DeviceSize offset, vk::DeviceSize bytes_num) const;
+    void writeBuf(const BufferWrapper &dst, const void *src, vk::DeviceSize offset, vk::DeviceSize bytes_num) const;
 
     ImageWrapper allocImage(vk::Extent3D extent, vk::Format format, vk::ImageUsageFlags usage,
                             vma::MemoryUsage mem_usage, vma::AllocationCreateFlags alloc_flags,
