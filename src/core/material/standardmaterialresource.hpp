@@ -1,0 +1,21 @@
+#pragma once
+
+#include "../container.hpp"
+#include "material.hpp"
+namespace Pelican {
+
+class StandardMaterialResource {
+    GlobalShaderId std_vert, std_frag;
+    GlobalTextureId tex_transparent, tex_white, tex_black;
+
+  public:
+    StandardMaterialResource(DependencyContainer &con);
+
+    GlobalShaderId standardVertShader() const { return std_vert; };
+    GlobalShaderId standardFragShader() const { return std_frag; };
+    GlobalTextureId transparentTexture() const { return tex_transparent; };
+    GlobalTextureId whiteTexture() const { return tex_white; };
+    GlobalTextureId blackTexture() const { return tex_black; };
+};
+
+} // namespace Pelican

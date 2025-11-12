@@ -6,6 +6,7 @@
 #include "../log.hpp"
 #include "../material/material.hpp"
 #include "../material/materialcontainer.hpp"
+#include "../material/standardmaterialresource.hpp"
 #include "gltf.hpp"
 #include "vertbufcontainer.hpp"
 
@@ -15,6 +16,7 @@ struct RecursiveLoader {
     using ModelLocalMaterialId = int;
 
     MaterialContainer &mat_container;
+    StandardMaterialResource &std_mat;
     VertBufContainer &buf_container;
     tinygltf::Model &model;
     std::vector<GlobalMaterialId> material_map;
@@ -168,10 +170,14 @@ struct RecursiveLoader {
         }
         for (int i = 0; i < model.materials.size(); i++) {
             const auto &material = model.materials[i];
+
+            const auto base_color_texture_index = material.pbrMetallicRoughness.baseColorTexture.index;
+            const auto base_color_texture =
+                base_color_texture_index >= 0 ? texture_map[base_color_texture_index] : GlobalTextureId{0};
             material_map[i] = mat_container.registerMaterial(Pelican::MaterialInfo{
-                .vert_shader = {0}, // TODO
-                .frag_shader = {1}, // TODO
-                .base_color_texture = {texture_map.at(material.pbrMetallicRoughness.baseColorTexture.index)},
+                .vert_shader = std_mat.standardVertShader(),
+                .frag_shader = std_mat.standardFragShader(),
+                .base_color_texture = base_color_texture,
             });
         }
 
@@ -208,7 +214,12 @@ ModelTemplate GltfLoader::loadGltf(std::string path) {
         throw std::runtime_error("failed to load gltf file : " + path);
 
     ModelTemplate model_template;
-    RecursiveLoader tmp_loader{con.get<MaterialContainer>(), con.get<VertBufContainer>(), model};
+    RecursiveLoader tmp_loader{
+        con.get<MaterialContainer>(),
+        con.get<StandardMaterialResource>(),
+        con.get<VertBufContainer>(),
+        model,
+    };
     return tmp_loader.load();
 }
 

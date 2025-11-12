@@ -2,7 +2,6 @@
 #include "../model/vertbufcontainer.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/util.hpp"
-#include "battery/embed.hpp"
 
 namespace Pelican {
 
@@ -194,17 +193,13 @@ MaterialContainer::MaterialContainer(DependencyContainer &_con)
       descset_layouts{createDefaultDescriptorSetLayout(device)},
       pipeline_layout{createDefaultPipelineLayout(con.get<VulkanManageCore>().getDevice(), descset_layouts)},
       nearest_sampler{createSampler(device, vk::Filter::eNearest)},
-      linear_sampler{createSampler(device, vk::Filter::eLinear)}, desc_pool{createDescriptorPool(device)} {
-    const auto vert_shader = b::embed<"default.vert.spv">();
-    shaders.insert({GlobalShaderId{0}, createShaderModule(device, vert_shader.length(), vert_shader.data())});
-
-    const auto frag_shader = b::embed<"default.frag.spv">();
-    shaders.insert({GlobalShaderId{1}, createShaderModule(device, frag_shader.length(), frag_shader.data())});
-}
+      linear_sampler{createSampler(device, vk::Filter::eLinear)}, desc_pool{createDescriptorPool(device)} {}
 MaterialContainer::~MaterialContainer() {}
 
-GlobalShaderId MaterialContainer::registerShader() {
-    return {}; // TODO
+GlobalShaderId MaterialContainer::registerShader(size_t len, const char *data) {
+    GlobalShaderId id{shaders.size() + 1}; // TODO
+    shaders.insert({id, createShaderModule(device, len, data)});
+    return id;
 }
 GlobalTextureId MaterialContainer::registerTexture(vk::Extent3D extent, const void *data) {
     vk::DescriptorSetAllocateInfo desc_alloc_info;

@@ -15,7 +15,7 @@ struct PushConstantStruct {
 };
 
 class MaterialContainer {
-    DependencyContainer&con;
+    DependencyContainer &con;
 
     vk::Device device;
     std::vector<vk::UniqueDescriptorSetLayout> descset_layouts;
@@ -42,7 +42,7 @@ class MaterialContainer {
     MaterialContainer(DependencyContainer &con);
     ~MaterialContainer();
 
-    GlobalShaderId registerShader(/* TODO */);
+    GlobalShaderId registerShader(size_t len, const char *data);
     GlobalTextureId registerTexture(vk::Extent3D extent, const void *data);
     GlobalMaterialId registerMaterial(MaterialInfo info);
 
