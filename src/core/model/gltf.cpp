@@ -133,7 +133,8 @@ struct RecursiveLoader {
         for (const auto &primitive : mesh.primitives) {
             CommonPolygonVertData dat;
 
-            dat.indices = getDataFromAccessor<TINYGLTF_TYPE_SCALAR, uint32_t>(primitive.indices);
+            if (primitive.indices >= 0)
+                dat.indices = getDataFromAccessor<TINYGLTF_TYPE_SCALAR, uint32_t>(primitive.indices);
             if (auto it = primitive.attributes.find("POSITION"); it != primitive.attributes.end())
                 dat.pos = getDataFromAccessor<TINYGLTF_TYPE_VEC3, glm::vec3>(it->second);
             if (auto it = primitive.attributes.find("NORMAL"); it != primitive.attributes.end())

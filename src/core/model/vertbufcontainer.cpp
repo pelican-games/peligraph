@@ -1,5 +1,6 @@
 #include "vertbufcontainer.hpp"
 #include "../vkcore/core.hpp"
+#include <numeric>
 
 namespace Pelican {
 
@@ -24,12 +25,20 @@ VertBufContainer::VertBufContainer(DependencyContainer &_con)
       vertices_mem_pool{createVertBuf(con.get<VulkanManageCore>(), vertices_cap)} {}
 
 ModelTemplate::PrimitiveRefInfo VertBufContainer::addPrimitiveEntry(CommonPolygonVertData &&data) {
+    uint32_t vert_count = static_cast<uint32_t>(data.pos.size());
+    if (vert_count == 0) {
+        LOG_ERROR(logger, "invalid primitive: empty vertices position data");
+        throw std::runtime_error("invalid model data");
+    }
+    if (data.indices.empty()) {
+        data.indices.resize(vert_count);
+        std::iota(data.indices.begin(), data.indices.end(), 0);
+    }
     ModelTemplate::PrimitiveRefInfo info{
         .index_count = static_cast<uint32_t>(data.indices.size()),
         .index_offset = indices_offset,
         .vert_offset = vertices_offset,
     };
-    uint32_t vert_count = static_cast<uint32_t>(data.pos.size());
     if (info.index_offset + info.index_count >= indices_cap) {
         LOG_ERROR(logger, "VertBufContainer: buffer overflow {} >= {}", info.index_offset + info.index_count,
                   indices_cap);
