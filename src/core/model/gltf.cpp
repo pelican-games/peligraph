@@ -189,7 +189,8 @@ struct RecursiveLoader {
         ModelTemplate m;
         for (const auto &[local_material_id, primitive] : tmp_material_primitives) {
             m.material_primitives.emplace_back(ModelTemplate::MaterialPrimitives{
-                .material = material_map.at(local_material_id),
+                .material =
+                    local_material_id >= 0 ? material_map.at(local_material_id) : std_mat.standardTransparentMaterial(),
                 .primitives = std::move(primitive),
             });
         }

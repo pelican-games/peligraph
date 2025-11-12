@@ -7,6 +7,7 @@ namespace Pelican {
 class StandardMaterialResource {
     GlobalShaderId std_vert, std_frag;
     GlobalTextureId tex_transparent, tex_white, tex_black;
+    GlobalMaterialId mat_transparent;
 
   public:
     StandardMaterialResource(DependencyContainer &con);
@@ -16,6 +17,7 @@ class StandardMaterialResource {
     GlobalTextureId transparentTexture() const { return tex_transparent; };
     GlobalTextureId whiteTexture() const { return tex_white; };
     GlobalTextureId blackTexture() const { return tex_black; };
+    GlobalMaterialId standardTransparentMaterial() const { return mat_transparent; };
 };
 
 } // namespace Pelican

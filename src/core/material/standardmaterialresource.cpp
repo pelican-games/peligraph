@@ -39,6 +39,12 @@ StandardMaterialResource::StandardMaterialResource(DependencyContainer &con) {
         texdata_black[i * 4 + 3] = 255;
     }
     tex_black = mat_con.registerTexture(vk::Extent3D(4, 4, 1), texdata_black);
+
+    mat_transparent = mat_con.registerMaterial(MaterialInfo{
+        .vert_shader = std_vert,
+        .frag_shader = std_frag,
+        .base_color_texture = tex_transparent,
+    });
 }
 
 } // namespace Pelican
