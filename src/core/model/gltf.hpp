@@ -10,6 +10,7 @@ class GltfLoader {
 
   public:
     GltfLoader(DependencyContainer &con);
+    ModelTemplate loadGltfBinary(std::string path);
     ModelTemplate loadGltf(std::string path);
 };
 

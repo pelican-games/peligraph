@@ -12,7 +12,7 @@
 
 namespace Pelican {
 
-struct RecursiveLoader {
+struct InternalGltfLoader {
     using ModelLocalMaterialId = int;
 
     MaterialContainer &mat_container;
@@ -217,7 +217,7 @@ struct RecursiveLoader {
 
 GltfLoader::GltfLoader(DependencyContainer &_con) : con{_con} {}
 
-ModelTemplate GltfLoader::loadGltf(std::string path) {
+ModelTemplate GltfLoader::loadGltfBinary(std::string path) {
     tinygltf::TinyGLTF loader;
     tinygltf::Model model;
 
@@ -231,7 +231,30 @@ ModelTemplate GltfLoader::loadGltf(std::string path) {
         throw std::runtime_error("failed to load gltf file : " + path);
 
     ModelTemplate model_template;
-    RecursiveLoader tmp_loader{
+    InternalGltfLoader tmp_loader{
+        con.get<MaterialContainer>(),
+        con.get<StandardMaterialResource>(),
+        con.get<VertBufContainer>(),
+        model,
+    };
+    return tmp_loader.load();
+}
+
+ModelTemplate GltfLoader::loadGltf(std::string path) {
+    tinygltf::TinyGLTF loader;
+    tinygltf::Model model;
+
+    std::string err, warn;
+    auto ret = loader.LoadASCIIFromFile(&model, &err, &warn, path);
+    if (!warn.empty())
+        LOG_WARNING(logger, "loading gltf file \"{}\" : {}", path, warn);
+    if (!err.empty())
+        LOG_ERROR(logger, "loading gltf file \"{}\" : {}", path, err);
+    if (!ret)
+        throw std::runtime_error("failed to load gltf file : " + path);
+
+    ModelTemplate model_template;
+    InternalGltfLoader tmp_loader{
         con.get<MaterialContainer>(),
         con.get<StandardMaterialResource>(),
         con.get<VertBufContainer>(),
