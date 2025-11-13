@@ -130,6 +130,11 @@ static vk::PhysicalDevice pickPhysicalDevice(vk::Instance instance, vk::SurfaceK
                 supported_exts_names.push_back(ext.extensionName.data());
             }
         }
+        {
+            const auto feature = phys_device.getFeatures();
+            if (!feature.multiDrawIndirect)
+                continue;
+        }
 
         score_index_pair.push_back({score, i});
     }
@@ -165,8 +170,12 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
     create_info.setPEnabledExtensionNames(exts);
     create_info.setQueueCreateInfos(queues);
 
+    vk::PhysicalDeviceFeatures2 features;
+    features.features.multiDrawIndirect = true; // necessary for multi draw indirect
+
     vk::StructureChain create_info_chain{
         create_info,
+        features,
         vk::PhysicalDeviceDynamicRenderingFeatures{VK_TRUE}, // necessary for dynamic rendering
     };
 

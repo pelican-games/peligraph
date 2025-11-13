@@ -10,7 +10,7 @@ namespace Pelican {
 MaterialRenderer::MaterialRenderer(DependencyContainer &_con) : con{_con} {}
 
 void MaterialRenderer::render(vk::CommandBuffer cmd_buf) const {
-    const auto &instance_container = con.get<PolygonInstanceContainer>();
+    auto &instance_container = con.get<PolygonInstanceContainer>();
     const auto &vert_buf_container = con.get<VertBufContainer>();
     const auto &material_container = con.get<MaterialContainer>();
 
@@ -20,17 +20,17 @@ void MaterialRenderer::render(vk::CommandBuffer cmd_buf) const {
     PushConstantStruct push_constant;
     push_constant.mvp = con.get<Camera>().getVPMatrix();
 
-    GlobalMaterialId current_material{-1};
-    for (const auto &polygon : instance_container.getPolygons()) {
+    instance_container.triggerUpdate();
+
+    const auto &indirect_buf = instance_container.getIndirectBuf();
+    const auto &draw_calls = instance_container.getDrawCalls();
+
+    for (const auto &draw_call : draw_calls) {
         cmd_buf.pushConstants(pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(push_constant),
                               &push_constant);
-
-        if (polygon.material.value != current_material.value) {
-            current_material = polygon.material;
-            material_container.bindResource(cmd_buf, current_material);
-        }
-        cmd_buf.drawIndexed(polygon.command.indexCount, polygon.command.instanceCount, polygon.command.firstIndex,
-                            polygon.command.vertexOffset, polygon.command.firstInstance);
+        material_container.bindResource(cmd_buf, draw_call.material);
+        cmd_buf.drawIndexedIndirect(indirect_buf.buffer.get(), draw_call.offset, draw_call.draw_count,
+                                    draw_call.stride);
     }
 }
 
