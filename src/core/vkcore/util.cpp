@@ -81,4 +81,14 @@ void VulkanUtils::safeTransferMemoryToImage(const ImageWrapper &image, const voi
         true);
 }
 
+void VulkanUtils::bufferCopy(const BufferWrapper &src, const BufferWrapper &dst, vk::DeviceSize src_offset,
+                             vk::DeviceSize dst_offset, vk::DeviceSize bytes_num) {
+    vk::BufferCopy copy_info;
+    copy_info.size = bytes_num;
+    copy_info.srcOffset = src_offset;
+    copy_info.dstOffset = dst_offset;
+    executeOneTimeCmd(
+        [&](vk::CommandBuffer cmd_buf) { cmd_buf.copyBuffer(src.buffer.get(), dst.buffer.get(), {copy_info}); }, true);
+}
+
 } // namespace Pelican

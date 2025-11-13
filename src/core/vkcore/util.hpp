@@ -41,6 +41,9 @@ class VulkanUtils {
     };
     void safeTransferMemoryToImage(const ImageWrapper &image, const void *src, vk::DeviceSize bytes_num,
                                    const ImageTransferInfo &info);
+
+    void bufferCopy(const BufferWrapper &src, const BufferWrapper &dst, vk::DeviceSize src_offset,
+                    vk::DeviceSize dst_offset, vk::DeviceSize bytes_num);
 };
 
 } // namespace Pelican

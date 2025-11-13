@@ -1,20 +1,25 @@
 #include "vertbufcontainer.hpp"
 #include "../vkcore/core.hpp"
+#include "../vkcore/util.hpp"
 #include <numeric>
 
 namespace Pelican {
 
-constexpr uint32_t initial_indices_num = 65536 * 2;
-constexpr uint32_t initial_vertices_num = 32768 * 2;
+constexpr uint32_t initial_indices_num = 65536;
+constexpr uint32_t initial_vertices_num = 32768;
 
 static BufferWrapper createIndexBuf(VulkanManageCore &vkcore, size_t num) {
-    return vkcore.allocBuf(sizeof(uint32_t) * num, vk::BufferUsageFlagBits::eIndexBuffer,
+    return vkcore.allocBuf(sizeof(uint32_t) * num,
+                           vk::BufferUsageFlagBits::eIndexBuffer | vk::BufferUsageFlagBits::eTransferSrc |
+                               vk::BufferUsageFlagBits::eTransferDst,
                            vma::MemoryUsage::eAutoPreferDevice,
                            vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
 }
 
 static BufferWrapper createVertBuf(VulkanManageCore &vkcore, size_t num) {
-    return vkcore.allocBuf(sizeof(CommonVertStruct) * num, vk::BufferUsageFlagBits::eVertexBuffer,
+    return vkcore.allocBuf(sizeof(CommonVertStruct) * num,
+                           vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eTransferSrc |
+                               vk::BufferUsageFlagBits::eTransferDst,
                            vma::MemoryUsage::eAutoPreferDevice,
                            vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
 }
@@ -39,15 +44,24 @@ ModelTemplate::PrimitiveRefInfo VertBufContainer::addPrimitiveEntry(CommonPolygo
         .index_offset = indices_offset,
         .vert_offset = vertices_offset,
     };
-    if (info.index_offset + info.index_count >= indices_cap) {
-        LOG_ERROR(logger, "VertBufContainer: buffer overflow {} >= {}", info.index_offset + info.index_count,
-                  indices_cap);
-        throw std::runtime_error("VertBufContainer: buffer overflow");
+    if (const auto req = info.index_offset + info.index_count; req > indices_cap) {
+        const auto old_cap = indices_cap;
+        while (req > indices_cap)
+            indices_cap <<= 1;
+        auto new_indices_mem_pool = createIndexBuf(con.get<VulkanManageCore>(), indices_cap);
+        con.get<VulkanUtils>().bufferCopy(indices_mem_pool, new_indices_mem_pool, 0, 0, sizeof(uint32_t) * old_cap);
+        std::swap(indices_mem_pool, new_indices_mem_pool);
+        LOG_INFO(logger, "VertBufContainer: reallocated index buffer");
     }
-    if (info.vert_offset + data.pos.size() >= vertices_cap) {
-        LOG_ERROR(logger, "VertBufContainer: buffer overflow {} >= {}", info.vert_offset + data.pos.size(),
-                  vertices_cap);
-        throw std::runtime_error("VertBufContainer: buffer overflow");
+    if (const auto req = info.vert_offset + data.pos.size(); req > vertices_cap) {
+        const auto old_cap = vertices_cap;
+        while (req > vertices_cap)
+            vertices_cap <<= 1;
+        auto new_vertices_mem_pool = createVertBuf(con.get<VulkanManageCore>(), vertices_cap);
+        con.get<VulkanUtils>().bufferCopy(vertices_mem_pool, new_vertices_mem_pool, 0, 0,
+                                          sizeof(CommonVertStruct) * old_cap);
+        std::swap(vertices_mem_pool, new_vertices_mem_pool);
+        LOG_INFO(logger, "VertBufContainer: reallocated vertex buffer");
     }
 
     std::vector<CommonVertStruct> tmp_buf(vert_count);
