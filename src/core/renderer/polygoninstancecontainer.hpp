@@ -9,7 +9,7 @@
 
 namespace Pelican {
 
-struct PolygonInstance {
+struct RenderCommand {
     vk::DrawIndexedIndirectCommand command;
     GlobalMaterialId material;
 };
@@ -20,14 +20,15 @@ struct ScenePrimitiveData {
 
 struct DrawIndirectInfo {
     GlobalMaterialId material;
-    vk::DeviceSize offset, draw_count, stride;
+    vk::DeviceSize offset;
+    uint32_t draw_count, stride;
 };
 
 struct ModelInstanceId {};
 
 class PolygonInstanceContainer {
     DependencyContainer &con;
-    std::vector<PolygonInstance> instances;
+    std::vector<RenderCommand> render_commands;
     BufferWrapper indirect_buf;
     std::vector<DrawIndirectInfo> draw_calls;
 

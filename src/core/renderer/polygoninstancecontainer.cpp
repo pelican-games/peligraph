@@ -4,7 +4,7 @@
 namespace Pelican {
 
 static BufferWrapper createIndirectBuf(VulkanManageCore &vkcore, size_t num) {
-    return vkcore.allocBuf(sizeof(PolygonInstance) * num,
+    return vkcore.allocBuf(sizeof(RenderCommand) * num,
                            vk::BufferUsageFlagBits::eIndirectBuffer | vk::BufferUsageFlagBits::eTransferSrc |
                                vk::BufferUsageFlagBits::eTransferDst,
                            vma::MemoryUsage::eAutoPreferDevice,
@@ -18,7 +18,7 @@ ModelInstanceId PolygonInstanceContainer::placeModelInstance(ModelTemplate &mode
     auto &instance_container = con.get<PolygonInstanceContainer>();
     for (const auto &material : model.material_primitives) {
         for (const auto &primitive : material.primitives) {
-            PolygonInstance instance{
+            RenderCommand instance{
                 .command =
                     vk::DrawIndexedIndirectCommand{
                         primitive.index_count,
@@ -29,7 +29,7 @@ ModelInstanceId PolygonInstanceContainer::placeModelInstance(ModelTemplate &mode
                     },
                 .material = material.material,
             };
-            instances.push_back(instance);
+            render_commands.push_back(instance);
         }
     }
     return {}; // TODO
@@ -39,32 +39,32 @@ void PolygonInstanceContainer::triggerUpdate() {
     // clear previous frame
     draw_calls.clear();
 
-    if (instances.empty())
+    if (render_commands.empty())
         return;
 
     // prepare indirect buffer
-    std::sort(instances.begin(), instances.end(),
-              [](const PolygonInstance &p, const PolygonInstance &q) { return p.material.value < q.material.value; });
-    con.get<VulkanManageCore>().writeBuf(indirect_buf, instances.data(), 0, sizeof(PolygonInstance) * instances.size());
+    std::sort(render_commands.begin(), render_commands.end(),
+              [](const RenderCommand &p, const RenderCommand &q) { return p.material.value < q.material.value; });
+    con.get<VulkanManageCore>().writeBuf(indirect_buf, render_commands.data(), 0, sizeof(RenderCommand) * render_commands.size());
 
     // prepare drawindirect information
-    DrawIndirectInfo draw_call{.stride = sizeof(PolygonInstance)};
+    DrawIndirectInfo draw_call{.stride = sizeof(RenderCommand)};
     size_t prev_offset_index;
 
     prev_offset_index = 0;
-    draw_call.material = instances[0].material;
-    draw_call.offset = prev_offset_index * sizeof(PolygonInstance);
-    for (int i = 1; i < instances.size(); i++) {
-        if (instances[i].material.value != instances[i - 1].material.value) {
+    draw_call.material = render_commands[0].material;
+    draw_call.offset = prev_offset_index * sizeof(RenderCommand);
+    for (int i = 1; i < render_commands.size(); i++) {
+        if (render_commands[i].material.value != render_commands[i - 1].material.value) {
             draw_call.draw_count = i - prev_offset_index;
             draw_calls.push_back(draw_call);
 
             prev_offset_index = i;
-            draw_call.material = instances[i].material;
-            draw_call.offset = prev_offset_index * sizeof(PolygonInstance);
+            draw_call.material = render_commands[i].material;
+            draw_call.offset = prev_offset_index * sizeof(RenderCommand);
         }
     }
-    draw_call.draw_count = instances.size() - prev_offset_index;
+    draw_call.draw_count = render_commands.size() - prev_offset_index;
     draw_calls.push_back(draw_call);
 }
 
