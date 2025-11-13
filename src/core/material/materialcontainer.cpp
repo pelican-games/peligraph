@@ -286,12 +286,40 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     return id;
 }
 
+void MaterialContainer::setModelMatBuf(const BufferWrapper &buf) {
+    vk::DescriptorSetAllocateInfo desc_alloc_info;
+    desc_alloc_info.descriptorPool = desc_pool.get();
+    desc_alloc_info.setSetLayouts({descset_layouts[modelMatDescriptorSetNumber].get()});
+
+    auto descsets = device.allocateDescriptorSetsUnique(desc_alloc_info);
+    auto &descset = descsets[0];
+
+    vk::DescriptorBufferInfo buf_info;
+    buf_info.buffer = buf.buffer.get();
+    buf_info.offset = 0;
+    buf_info.range = vk::WholeSize;
+
+    vk::WriteDescriptorSet write_descset;
+    write_descset.dstSet = descset.get();
+    write_descset.dstBinding = modelMatDescriptorBinding;
+    write_descset.dstArrayElement = 0;
+    write_descset.setBufferInfo({buf_info});
+    write_descset.descriptorType = vk::DescriptorType::eStorageBuffer;
+    device.updateDescriptorSets({write_descset}, {});
+
+    model_mat_buf_descset = std::move(descset);
+}
+
 void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, GlobalMaterialId material_id) const {
     const auto &material = materials.at(material_id);
     const auto &texture = textures.at(material.base_color_texture);
     cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, material.pipeline.get());
-    cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout.get(), imageDescriptorSetNumber,
-                               {texture.descset.get()}, {});
+    cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout.get(), 0,
+                               {
+                                   model_mat_buf_descset.get(), // model matrix buffer: set = 0
+                                   texture.descset.get(),       // texture: set = 1
+                               },
+                               {});
 }
 
 vk::PipelineLayout MaterialContainer::getPipelineLayout() const { return pipeline_layout.get(); }

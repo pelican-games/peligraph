@@ -7,7 +7,12 @@
 
 namespace Pelican {
 
-MaterialRenderer::MaterialRenderer(DependencyContainer &_con) : con{_con} {}
+MaterialRenderer::MaterialRenderer(DependencyContainer &_con) : con{_con} {
+    const auto &instance_container = con.get<PolygonInstanceContainer>();
+    auto &material_container = con.get<MaterialContainer>();
+
+    material_container.setModelMatBuf(instance_container.getObjectBuf());
+}
 
 void MaterialRenderer::render(vk::CommandBuffer cmd_buf) const {
     auto &instance_container = con.get<PolygonInstanceContainer>();

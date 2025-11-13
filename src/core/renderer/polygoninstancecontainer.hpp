@@ -14,23 +14,24 @@ struct RenderCommand {
     GlobalMaterialId material;
 };
 
-struct ScenePrimitiveData {
-    glm::mat4 model;
-};
-
 struct DrawIndirectInfo {
     GlobalMaterialId material;
     vk::DeviceSize offset;
     uint32_t draw_count, stride;
 };
 
-struct ModelInstanceId {};
+struct ModelInstanceId {
+    uint32_t value;
+};
 
 class PolygonInstanceContainer {
     DependencyContainer &con;
     std::vector<RenderCommand> render_commands;
     BufferWrapper indirect_buf;
     std::vector<DrawIndirectInfo> draw_calls;
+
+    std::vector<glm::mat4> model_instances_data;
+    BufferWrapper model_data_buffer;
 
   public:
     PolygonInstanceContainer(DependencyContainer &con);
@@ -39,6 +40,7 @@ class PolygonInstanceContainer {
     void triggerUpdate();
 
     const BufferWrapper &getIndirectBuf() const;
+    const BufferWrapper &getObjectBuf() const;
     const std::vector<DrawIndirectInfo> &getDrawCalls() const;
 };
 

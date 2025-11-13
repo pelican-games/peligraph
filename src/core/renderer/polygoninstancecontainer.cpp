@@ -1,5 +1,6 @@
 #include "polygoninstancecontainer.hpp"
 #include "../vkcore/core.hpp"
+#include <glm/ext/matrix_transform.hpp>
 
 namespace Pelican {
 
@@ -11,11 +12,28 @@ static BufferWrapper createIndirectBuf(VulkanManageCore &vkcore, size_t num) {
                            vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
 }
 
+static BufferWrapper createModelInstanceDataBuf(VulkanManageCore &vkcore, size_t num) {
+    return vkcore.allocBuf(sizeof(glm::mat4) * num,
+                           vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc |
+                               vk::BufferUsageFlagBits::eTransferDst,
+                           vma::MemoryUsage::eAutoPreferDevice,
+                           vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
+}
+
 PolygonInstanceContainer::PolygonInstanceContainer(DependencyContainer &_con)
-    : con{_con}, indirect_buf{createIndirectBuf(con.get<VulkanManageCore>(), 1024)} {}
+    : con{_con},
+      indirect_buf{
+          createIndirectBuf(con.get<VulkanManageCore>(), 1024),
+      },
+      model_data_buffer{
+          createModelInstanceDataBuf(con.get<VulkanManageCore>(), 1024),
+      } {}
 
 ModelInstanceId PolygonInstanceContainer::placeModelInstance(ModelTemplate &model) {
     auto &instance_container = con.get<PolygonInstanceContainer>();
+    ModelInstanceId id{model_instances_data.size()}; // TODO
+    model_instances_data.push_back(glm::identity<glm::mat4>());
+
     for (const auto &material : model.material_primitives) {
         for (const auto &primitive : material.primitives) {
             RenderCommand instance{
@@ -25,7 +43,7 @@ ModelInstanceId PolygonInstanceContainer::placeModelInstance(ModelTemplate &mode
                         1,
                         primitive.index_offset,
                         primitive.vert_offset,
-                        0,
+                        id.value,
                     },
                 .material = material.material,
             };
@@ -45,7 +63,8 @@ void PolygonInstanceContainer::triggerUpdate() {
     // prepare indirect buffer
     std::sort(render_commands.begin(), render_commands.end(),
               [](const RenderCommand &p, const RenderCommand &q) { return p.material.value < q.material.value; });
-    con.get<VulkanManageCore>().writeBuf(indirect_buf, render_commands.data(), 0, sizeof(RenderCommand) * render_commands.size());
+    con.get<VulkanManageCore>().writeBuf(indirect_buf, render_commands.data(), 0,
+                                         sizeof(RenderCommand) * render_commands.size());
 
     // prepare drawindirect information
     DrawIndirectInfo draw_call{.stride = sizeof(RenderCommand)};
@@ -66,9 +85,13 @@ void PolygonInstanceContainer::triggerUpdate() {
     }
     draw_call.draw_count = render_commands.size() - prev_offset_index;
     draw_calls.push_back(draw_call);
+
+    con.get<VulkanManageCore>().writeBuf(model_data_buffer, model_instances_data.data(), 0,
+                                         sizeof(glm::mat4) * model_instances_data.size());
 }
 
 const BufferWrapper &PolygonInstanceContainer::getIndirectBuf() const { return indirect_buf; }
+const BufferWrapper &PolygonInstanceContainer::getObjectBuf() const { return model_data_buffer; }
 const std::vector<DrawIndirectInfo> &PolygonInstanceContainer::getDrawCalls() const { return draw_calls; }
 
 } // namespace Pelican

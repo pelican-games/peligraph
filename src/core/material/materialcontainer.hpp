@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../container.hpp"
+#include "../vkcore/buf.hpp"
 #include "../vkcore/image.hpp"
 #include "material.hpp"
 #include <glm/glm.hpp>
@@ -38,6 +39,8 @@ class MaterialContainer {
     std::map<GlobalMaterialId, InternalMaterialInfo> materials;
     std::map<GlobalShaderId, vk::UniqueShaderModule> shaders;
 
+    vk::UniqueDescriptorSet model_mat_buf_descset;
+
   public:
     MaterialContainer(DependencyContainer &con);
     ~MaterialContainer();
@@ -45,6 +48,8 @@ class MaterialContainer {
     GlobalShaderId registerShader(size_t len, const char *data);
     GlobalTextureId registerTexture(vk::Extent3D extent, const void *data);
     GlobalMaterialId registerMaterial(MaterialInfo info);
+
+    void setModelMatBuf(const BufferWrapper &buf);
 
     void bindResource(vk::CommandBuffer cmd_buf, GlobalMaterialId material) const;
     vk::PipelineLayout getPipelineLayout() const;
