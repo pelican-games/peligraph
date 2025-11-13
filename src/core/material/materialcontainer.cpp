@@ -275,11 +275,20 @@ GlobalTextureId MaterialContainer::registerTexture(vk::Extent3D extent, const vo
 }
 GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     const auto id = GlobalMaterialId{static_cast<int>(materials.size())}; // TODO
+
+    PipelineId pipeline_id = info.vert_shader.value << 16 | info.frag_shader.value; // TODO
+    if (pipelines.find(pipeline_id) == pipelines.end()) {
+        pipelines.insert({
+            pipeline_id,
+            createDefaultPipeline(device, pipeline_layout.get(), shaders.at(info.vert_shader).get(),
+                                  shaders.at(info.frag_shader).get(), VertBufContainer::getDescription()),
+        });
+    }
+
     materials.insert({
         id,
         InternalMaterialInfo{
-            .pipeline = createDefaultPipeline(device, pipeline_layout.get(), shaders.at(info.vert_shader).get(),
-                                              shaders.at(info.frag_shader).get(), VertBufContainer::getDescription()),
+            .pipeline = pipeline_id,
             .base_color_texture = info.base_color_texture,
         },
     });
@@ -310,16 +319,31 @@ void MaterialContainer::setModelMatBuf(const BufferWrapper &buf) {
     model_mat_buf_descset = std::move(descset);
 }
 
-void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, GlobalMaterialId material_id) const {
+void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, GlobalMaterialId material_id,
+                                     GlobalMaterialId prev_material_id) const {
     const auto &material = materials.at(material_id);
     const auto &texture = textures.at(material.base_color_texture);
-    cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, material.pipeline.get());
-    cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout.get(), 0,
-                               {
-                                   model_mat_buf_descset.get(), // model matrix buffer: set = 0
-                                   texture.descset.get(),       // texture: set = 1
-                               },
-                               {});
+
+    if (prev_material_id.value < 0) {
+        cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipelines.at(material.pipeline).get());
+        cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout.get(), 0,
+                                   {
+                                       model_mat_buf_descset.get(), // model matrix buffer: set = 0
+                                       texture.descset.get(),       // texture: set = 1
+                                   },
+                                   {});
+    } else {
+        const auto prev_material = materials.at(prev_material_id);
+        if (material.pipeline != prev_material.pipeline)
+            cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipelines.at(material.pipeline).get());
+        if (material.base_color_texture.value != prev_material.base_color_texture.value)
+            cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout.get(),
+                                       imageDescriptorSetNumber,
+                                       {
+                                           texture.descset.get(), // texture: set = 1
+                                       },
+                                       {});
+    }
 }
 
 vk::PipelineLayout MaterialContainer::getPipelineLayout() const { return pipeline_layout.get(); }

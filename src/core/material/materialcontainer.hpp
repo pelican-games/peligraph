@@ -32,12 +32,14 @@ class MaterialContainer {
     };
     std::map<GlobalTextureId, InternalTextureResource> textures;
 
+    using PipelineId = uint32_t;
     struct InternalMaterialInfo {
-        vk::UniquePipeline pipeline;
+        PipelineId pipeline;
         GlobalTextureId base_color_texture;
     };
-    std::map<GlobalMaterialId, InternalMaterialInfo> materials;
     std::map<GlobalShaderId, vk::UniqueShaderModule> shaders;
+    std::map<PipelineId, vk::UniquePipeline> pipelines;
+    std::map<GlobalMaterialId, InternalMaterialInfo> materials;
 
     vk::UniqueDescriptorSet model_mat_buf_descset;
 
@@ -51,7 +53,7 @@ class MaterialContainer {
 
     void setModelMatBuf(const BufferWrapper &buf);
 
-    void bindResource(vk::CommandBuffer cmd_buf, GlobalMaterialId material) const;
+    void bindResource(vk::CommandBuffer cmd_buf, GlobalMaterialId material, GlobalMaterialId prev_material_id) const;
     vk::PipelineLayout getPipelineLayout() const;
 };
 
