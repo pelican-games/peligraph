@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../container.hpp"
+#include "../resourcecontainer.hpp"
 #include "../vkcore/buf.hpp"
 #include "../vkcore/image.hpp"
 #include "material.hpp"
@@ -30,16 +31,16 @@ class MaterialContainer {
         vk::UniqueImageView image_view;
         vk::UniqueDescriptorSet descset;
     };
-    std::unordered_map<GlobalTextureId, InternalTextureResource, GlobalTextureId::Hash> textures;
+    ResourceContainer<GlobalTextureId, InternalTextureResource> textures;
 
     PELICAN_DEFINE_HANDLE(PipelineId, uint32_t)
     struct InternalMaterialInfo {
         PipelineId pipeline;
         GlobalTextureId base_color_texture;
     };
-    std::unordered_map<GlobalShaderId, vk::UniqueShaderModule, GlobalShaderId::Hash> shaders;
+    ResourceContainer<GlobalShaderId, vk::UniqueShaderModule> shaders;
     std::unordered_map<PipelineId, vk::UniquePipeline, PipelineId::Hash> pipelines;
-    std::unordered_map<GlobalMaterialId, InternalMaterialInfo, GlobalMaterialId::Hash> materials;
+    ResourceContainer<GlobalMaterialId, InternalMaterialInfo> materials;
 
     vk::UniqueDescriptorSet model_mat_buf_descset;
 
