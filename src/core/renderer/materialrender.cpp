@@ -25,9 +25,8 @@ void MaterialRenderer::render(vk::CommandBuffer cmd_buf) const {
     const auto &indirect_buf = instance_container.getIndirectBuf();
     const auto &draw_calls = instance_container.getDrawCalls();
 
+    cmd_buf.pushConstants(pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(push_constant), &push_constant);
     for (const auto &draw_call : draw_calls) {
-        cmd_buf.pushConstants(pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(push_constant),
-                              &push_constant);
         material_container.bindResource(cmd_buf, draw_call.material);
         cmd_buf.drawIndexedIndirect(indirect_buf.buffer.get(), draw_call.offset, draw_call.draw_count,
                                     draw_call.stride);
