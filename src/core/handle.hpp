@@ -13,6 +13,7 @@ template <class T, class Base> struct BasicHandle {
     struct Hash {
         size_t operator()(T key) const { return std::hash<Base>{}(key.value); }
     };
+    using BaseType = Base;
 };
 
 struct Hoge : public BasicHandle<Hoge, uint32_t> {};
