@@ -50,7 +50,7 @@ class VertBufContainer {
     ModelTemplate::PrimitiveRefInfo addPrimitiveEntry(CommonPolygonVertData &&data);
     void removePrimitiveEntry(/* TODO */);
 
-    void bindVertexBuffer(vk::CommandBuffer cmd_buf /* TODO */) const;
+    void bindVertexBuffer(vk::CommandBuffer cmd_buf) const;
 
     struct CommonVertDataDescription {
         std::vector<vk::VertexInputBindingDescription> binding_descs;

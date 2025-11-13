@@ -50,7 +50,7 @@ ModelInstanceId PolygonInstanceContainer::placeModelInstance(ModelTemplate &mode
             render_commands.push_back(instance);
         }
     }
-    return {}; // TODO
+    return id;
 }
 void PolygonInstanceContainer::removeModelInstance(ModelInstanceId id) {}
 void PolygonInstanceContainer::triggerUpdate() {

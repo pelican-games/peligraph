@@ -221,7 +221,7 @@ MaterialContainer::MaterialContainer(DependencyContainer &_con)
 MaterialContainer::~MaterialContainer() {}
 
 GlobalShaderId MaterialContainer::registerShader(size_t len, const char *data) {
-    GlobalShaderId id{shaders.size() + 1}; // TODO
+    GlobalShaderId id{shaders.size()}; // TODO
     shaders.insert({id, createShaderModule(device, len, data)});
     return id;
 }
@@ -262,7 +262,7 @@ GlobalTextureId MaterialContainer::registerTexture(vk::Extent3D extent, const vo
     write_descset.descriptorType = vk::DescriptorType::eCombinedImageSampler;
     device.updateDescriptorSets({write_descset}, {});
 
-    GlobalTextureId id{textures.size() + 1}; // TODO
+    GlobalTextureId id{textures.size()}; // TODO
     textures.insert({
         id,
         InternalTextureResource{
