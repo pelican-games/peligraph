@@ -1,0 +1,17 @@
+{
+  "basic_config": {
+    "window_title": "Pelican App",
+    "window_size": {
+      "width": 1280,
+      "height": 720
+    },
+    "fullscreen": false,
+    "framerate": 60,
+    "camera": {
+      "fov_y": 45.0,
+      "near": 0.1,
+      "far": 1000,
+      "up": [0.0, -1.0, 0.0]
+    }
+  }
+}
