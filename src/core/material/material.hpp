@@ -1,26 +1,15 @@
 #pragma once
 
 #include "../container.hpp"
-#include <map>
+#include "../handle.hpp"
 #include <span>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
 
-struct GlobalMaterialId {
-    int value;
-    bool operator<(GlobalMaterialId o) const { return value < o.value; }
-};
-
-struct GlobalShaderId {
-    int value;
-    bool operator<(GlobalShaderId o) const { return value < o.value; }
-};
-
-struct GlobalTextureId {
-    int value;
-    bool operator<(GlobalTextureId o) const { return value < o.value; }
-};
+PELICAN_DEFINE_HANDLE(GlobalMaterialId, int);
+PELICAN_DEFINE_HANDLE(GlobalShaderId, int);
+PELICAN_DEFINE_HANDLE(GlobalTextureId, int);
 
 struct MaterialInfo {
     GlobalShaderId vert_shader, frag_shader;

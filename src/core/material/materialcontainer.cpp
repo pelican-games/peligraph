@@ -276,7 +276,7 @@ GlobalTextureId MaterialContainer::registerTexture(vk::Extent3D extent, const vo
 GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     const auto id = GlobalMaterialId{static_cast<int>(materials.size())}; // TODO
 
-    PipelineId pipeline_id = info.vert_shader.value << 16 | info.frag_shader.value; // TODO
+    PipelineId pipeline_id = {info.vert_shader.value << 16 | info.frag_shader.value};
     if (pipelines.find(pipeline_id) == pipelines.end()) {
         pipelines.insert({
             pipeline_id,

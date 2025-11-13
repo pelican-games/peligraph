@@ -30,16 +30,16 @@ class MaterialContainer {
         vk::UniqueImageView image_view;
         vk::UniqueDescriptorSet descset;
     };
-    std::map<GlobalTextureId, InternalTextureResource> textures;
+    std::unordered_map<GlobalTextureId, InternalTextureResource, GlobalTextureId::Hash> textures;
 
-    using PipelineId = uint32_t;
+    PELICAN_DEFINE_HANDLE(PipelineId, uint32_t)
     struct InternalMaterialInfo {
         PipelineId pipeline;
         GlobalTextureId base_color_texture;
     };
-    std::map<GlobalShaderId, vk::UniqueShaderModule> shaders;
-    std::map<PipelineId, vk::UniquePipeline> pipelines;
-    std::map<GlobalMaterialId, InternalMaterialInfo> materials;
+    std::unordered_map<GlobalShaderId, vk::UniqueShaderModule, GlobalShaderId::Hash> shaders;
+    std::unordered_map<PipelineId, vk::UniquePipeline, PipelineId::Hash> pipelines;
+    std::unordered_map<GlobalMaterialId, InternalMaterialInfo, GlobalMaterialId::Hash> materials;
 
     vk::UniqueDescriptorSet model_mat_buf_descset;
 
