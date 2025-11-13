@@ -4,6 +4,7 @@
 #include "../material/material.hpp"
 #include "../model/modeltemplate.hpp"
 #include "../vkcore/buf.hpp"
+#include <glm/glm.hpp>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
@@ -11,6 +12,10 @@ namespace Pelican {
 struct PolygonInstance {
     vk::DrawIndexedIndirectCommand command;
     GlobalMaterialId material;
+};
+
+struct ScenePrimitiveData {
+    glm::mat4 model;
 };
 
 struct DrawIndirectInfo {
@@ -31,7 +36,7 @@ class PolygonInstanceContainer {
     ModelInstanceId placeModelInstance(ModelTemplate &model);
     void removeModelInstance(ModelInstanceId id);
     void triggerUpdate();
-    const std::vector<PolygonInstance> &getPolygons() const;
+
     const BufferWrapper &getIndirectBuf() const;
     const std::vector<DrawIndirectInfo> &getDrawCalls() const;
 };

@@ -67,7 +67,6 @@ void PolygonInstanceContainer::triggerUpdate() {
     draw_call.draw_count = instances.size() - prev_offset_index;
     draw_calls.push_back(draw_call);
 }
-const std::vector<PolygonInstance> &PolygonInstanceContainer::getPolygons() const { return instances; }
 
 const BufferWrapper &PolygonInstanceContainer::getIndirectBuf() const { return indirect_buf; }
 const std::vector<DrawIndirectInfo> &PolygonInstanceContainer::getDrawCalls() const { return draw_calls; }
