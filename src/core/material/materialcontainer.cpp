@@ -5,10 +5,25 @@
 
 namespace Pelican {
 
+constexpr uint32_t modelMatDescriptorBinding = 0;
+constexpr uint32_t modelMatDescriptorArrayCount = 1;
 constexpr uint32_t imageDescriptorBinding = 0;
 constexpr uint32_t imageDescriptorArrayCount = 1;
 
-static std::vector<vk::UniqueDescriptorSetLayout> createDefaultDescriptorSetLayout(vk::Device device) {
+static vk::UniqueDescriptorSetLayout createModelBufDescriptorSetLayout(vk::Device device) {
+    std::array<vk::DescriptorSetLayoutBinding, 1> bindings;
+    bindings[0].binding = modelMatDescriptorBinding;
+    bindings[0].descriptorType = vk::DescriptorType::eStorageBuffer;
+    bindings[0].descriptorCount = modelMatDescriptorArrayCount;
+    bindings[0].stageFlags = vk::ShaderStageFlagBits::eVertex;
+
+    vk::DescriptorSetLayoutCreateInfo create_info;
+    create_info.setBindings(bindings);
+
+    return device.createDescriptorSetLayoutUnique(create_info);
+}
+
+static vk::UniqueDescriptorSetLayout createTextureDescriptorSetLayout(vk::Device device) {
     std::array<vk::DescriptorSetLayoutBinding, 1> bindings;
     bindings[0].binding = imageDescriptorBinding;
     bindings[0].descriptorType = vk::DescriptorType::eCombinedImageSampler;
@@ -18,8 +33,13 @@ static std::vector<vk::UniqueDescriptorSetLayout> createDefaultDescriptorSetLayo
     vk::DescriptorSetLayoutCreateInfo create_info;
     create_info.setBindings(bindings);
 
-    std::vector<vk::UniqueDescriptorSetLayout> descset_layouts(1);
-    descset_layouts[0] = device.createDescriptorSetLayoutUnique(create_info);
+    return device.createDescriptorSetLayoutUnique(create_info);
+}
+
+static std::vector<vk::UniqueDescriptorSetLayout> createDefaultDescriptorSetLayouts(vk::Device device) {
+    std::vector<vk::UniqueDescriptorSetLayout> descset_layouts(2);
+    descset_layouts[0] = createTextureDescriptorSetLayout(device);
+    descset_layouts[1] = createModelBufDescriptorSetLayout(device);
     return descset_layouts;
 }
 
@@ -132,9 +152,11 @@ static vk::UniquePipeline createDefaultPipeline(vk::Device device, vk::PipelineL
 }
 
 static vk::UniqueDescriptorPool createDescriptorPool(vk::Device device) {
-    vk::DescriptorPoolSize pool_size;
-    pool_size.type = vk::DescriptorType::eCombinedImageSampler;
-    pool_size.descriptorCount = 1024;
+    vk::DescriptorPoolSize pool_size[2];
+    pool_size[0].type = vk::DescriptorType::eStorageBuffer;
+    pool_size[0].descriptorCount = 1024;
+    pool_size[1].type = vk::DescriptorType::eCombinedImageSampler;
+    pool_size[1].descriptorCount = 1024;
 
     vk::DescriptorPoolCreateInfo create_info;
     create_info.maxSets = 1024;
@@ -190,7 +212,7 @@ static vk::UniqueImageView createImageView(vk::Device device, const ImageWrapper
 
 MaterialContainer::MaterialContainer(DependencyContainer &_con)
     : con{_con}, device{con.get<VulkanManageCore>().getDevice()},
-      descset_layouts{createDefaultDescriptorSetLayout(device)},
+      descset_layouts{createDefaultDescriptorSetLayouts(device)},
       pipeline_layout{createDefaultPipelineLayout(con.get<VulkanManageCore>().getDevice(), descset_layouts)},
       nearest_sampler{createSampler(device, vk::Filter::eNearest)},
       linear_sampler{createSampler(device, vk::Filter::eLinear)}, desc_pool{createDescriptorPool(device)} {}
