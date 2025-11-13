@@ -5,8 +5,10 @@
 
 namespace Pelican {
 
+constexpr uint32_t modelMatDescriptorSetNumber = 0;
 constexpr uint32_t modelMatDescriptorBinding = 0;
 constexpr uint32_t modelMatDescriptorArrayCount = 1;
+constexpr uint32_t imageDescriptorSetNumber = 1;
 constexpr uint32_t imageDescriptorBinding = 0;
 constexpr uint32_t imageDescriptorArrayCount = 1;
 
@@ -38,8 +40,8 @@ static vk::UniqueDescriptorSetLayout createTextureDescriptorSetLayout(vk::Device
 
 static std::vector<vk::UniqueDescriptorSetLayout> createDefaultDescriptorSetLayouts(vk::Device device) {
     std::vector<vk::UniqueDescriptorSetLayout> descset_layouts(2);
-    descset_layouts[0] = createTextureDescriptorSetLayout(device);
-    descset_layouts[1] = createModelBufDescriptorSetLayout(device);
+    descset_layouts[modelMatDescriptorSetNumber] = createModelBufDescriptorSetLayout(device);
+    descset_layouts[imageDescriptorSetNumber] = createTextureDescriptorSetLayout(device);
     return descset_layouts;
 }
 
@@ -226,7 +228,7 @@ GlobalShaderId MaterialContainer::registerShader(size_t len, const char *data) {
 GlobalTextureId MaterialContainer::registerTexture(vk::Extent3D extent, const void *data) {
     vk::DescriptorSetAllocateInfo desc_alloc_info;
     desc_alloc_info.descriptorPool = desc_pool.get();
-    desc_alloc_info.setSetLayouts({descset_layouts[0].get()});
+    desc_alloc_info.setSetLayouts({descset_layouts[imageDescriptorSetNumber].get()});
 
     auto descsets = device.allocateDescriptorSetsUnique(desc_alloc_info);
     auto &descset = descsets[0];
@@ -288,7 +290,8 @@ void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, GlobalMaterialId
     const auto &material = materials.at(material_id);
     const auto &texture = textures.at(material.base_color_texture);
     cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, material.pipeline.get());
-    cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout.get(), 0, {texture.descset.get()}, {});
+    cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout.get(), imageDescriptorSetNumber,
+                               {texture.descset.get()}, {});
 }
 
 vk::PipelineLayout MaterialContainer::getPipelineLayout() const { return pipeline_layout.get(); }
