@@ -172,10 +172,13 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
 
     vk::PhysicalDeviceFeatures2 features;
     features.features.multiDrawIndirect = true; // necessary for multi draw indirect
+    vk::PhysicalDeviceVulkan11Features vk11features;
+    vk11features.shaderDrawParameters = true; // necessary for using gl_BaseIndex in shader
 
     vk::StructureChain create_info_chain{
         create_info,
         features,
+        vk11features,
         vk::PhysicalDeviceDynamicRenderingFeatures{VK_TRUE}, // necessary for dynamic rendering
     };
 
