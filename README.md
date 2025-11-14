@@ -15,3 +15,5 @@ only player:
 cmake . -B build -DSKIP_DEVSTUDIO
 cmake --build ./build
 ```
+
+vulkan SDK 1.4.321以下
