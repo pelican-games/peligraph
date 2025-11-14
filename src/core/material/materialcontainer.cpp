@@ -234,7 +234,7 @@ GlobalTextureId MaterialContainer::registerTexture(vk::Extent3D extent, const vo
     const auto &vkcore = con.get<VulkanManageCore>();
     auto image = vkcore.allocImage(
         extent, vk::Format::eR8G8B8A8Unorm, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
-        vma::MemoryUsage::eAutoPreferHost, vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
+        vma::MemoryUsage::eAutoPreferDevice, {});
 
     auto &vkutil = con.get<VulkanUtils>();
     vkutil.safeTransferMemoryToImage(image, data, extent.width * extent.height * extent.depth * 4,
