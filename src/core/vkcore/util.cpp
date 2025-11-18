@@ -12,9 +12,9 @@ template <class T, size_t N> static std::array<T, N> vectorToArray(std::vector<T
     return arr;
 }
 
-VulkanUtils::VulkanUtils(DependencyContainer &_con)
-    : con{_con}, device{con.get<VulkanManageCore>().getDevice()},
-      genpurpose_cmd_bufs{vectorToArray<CommandBufWrapper, 8>(con.get<VulkanManageCore>().allocCmdBufs(8))},
+VulkanUtils::VulkanUtils()
+    : device{GET_MODULE(VulkanManageCore).getDevice()},
+      genpurpose_cmd_bufs{vectorToArray<CommandBufWrapper, 8>(GET_MODULE(VulkanManageCore).allocCmdBufs(8))},
       genpurpose_cmd_bufs_index{0} {}
 
 static void changeImageLayoutCommand(vk::CommandBuffer cmd_buf, const ImageWrapper &image, vk::ImageLayout old_layout,
@@ -43,7 +43,7 @@ void VulkanUtils::changeImageLayout(const ImageWrapper &image, vk::ImageLayout o
 
 void VulkanUtils::safeTransferMemoryToImage(const ImageWrapper &image, const void *src, vk::DeviceSize bytes_num,
                                             const ImageTransferInfo &info) {
-    const auto &vkcore = con.get<VulkanManageCore>();
+    const auto &vkcore = GET_MODULE(VulkanManageCore);
 
     const auto &staging_buf =
         vkcore.allocBuf(bytes_num, vk::BufferUsageFlagBits::eTransferSrc, vma::MemoryUsage::eAutoPreferHost,

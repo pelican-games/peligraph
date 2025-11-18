@@ -215,7 +215,7 @@ struct InternalGltfLoader {
     }
 };
 
-GltfLoader::GltfLoader(DependencyContainer &_con) : con{_con} {}
+GltfLoader::GltfLoader() {}
 
 ModelTemplate GltfLoader::loadGltfBinary(std::string path) {
     tinygltf::TinyGLTF loader;
@@ -232,9 +232,9 @@ ModelTemplate GltfLoader::loadGltfBinary(std::string path) {
 
     ModelTemplate model_template;
     InternalGltfLoader tmp_loader{
-        con.get<MaterialContainer>(),
-        con.get<StandardMaterialResource>(),
-        con.get<VertBufContainer>(),
+        GET_MODULE(MaterialContainer),
+        GET_MODULE(StandardMaterialResource),
+        GET_MODULE(VertBufContainer),
         model,
     };
     return tmp_loader.load();
@@ -255,9 +255,9 @@ ModelTemplate GltfLoader::loadGltf(std::string path) {
 
     ModelTemplate model_template;
     InternalGltfLoader tmp_loader{
-        con.get<MaterialContainer>(),
-        con.get<StandardMaterialResource>(),
-        con.get<VertBufContainer>(),
+        GET_MODULE(MaterialContainer),
+        GET_MODULE(StandardMaterialResource),
+        GET_MODULE(VertBufContainer),
         model,
     };
     return tmp_loader.load();

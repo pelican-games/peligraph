@@ -5,11 +5,11 @@
 
 namespace Pelican {
 
-class MaterialRenderer {
-    DependencyContainer &con;
+DECLARE_MODULE(MaterialRenderer) {
+    
 
   public:
-    MaterialRenderer(DependencyContainer &con);
+    MaterialRenderer();
     void render(vk::CommandBuffer cmd_buf) const;
 };
 

@@ -20,17 +20,16 @@ static BufferWrapper createModelInstanceDataBuf(VulkanManageCore &vkcore, size_t
                            vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
 }
 
-PolygonInstanceContainer::PolygonInstanceContainer(DependencyContainer &_con)
-    : con{_con},
-      indirect_buf{
-          createIndirectBuf(con.get<VulkanManageCore>(), 1024),
+PolygonInstanceContainer::PolygonInstanceContainer()
+    : indirect_buf{
+          createIndirectBuf(GET_MODULE(VulkanManageCore), 1024),
       },
       model_data_buffer{
-          createModelInstanceDataBuf(con.get<VulkanManageCore>(), 1024),
+          createModelInstanceDataBuf(GET_MODULE(VulkanManageCore), 1024),
       } {}
 
 ModelInstanceId PolygonInstanceContainer::placeModelInstance(ModelTemplate &model) {
-    auto &instance_container = con.get<PolygonInstanceContainer>();
+    auto &instance_container = GET_MODULE(PolygonInstanceContainer);
     ModelInstanceId id{model_instances_data.size()}; // TODO
     model_instances_data.push_back(glm::identity<glm::mat4>());
 
@@ -63,7 +62,7 @@ void PolygonInstanceContainer::triggerUpdate() {
     // prepare indirect buffer
     std::sort(render_commands.begin(), render_commands.end(),
               [](const RenderCommand &p, const RenderCommand &q) { return p.material.value < q.material.value; });
-    con.get<VulkanManageCore>().writeBuf(indirect_buf, render_commands.data(), 0,
+    GET_MODULE(VulkanManageCore).writeBuf(indirect_buf, render_commands.data(), 0,
                                          sizeof(RenderCommand) * render_commands.size());
 
     // prepare drawindirect information
@@ -86,7 +85,7 @@ void PolygonInstanceContainer::triggerUpdate() {
     draw_call.draw_count = render_commands.size() - prev_offset_index;
     draw_calls.push_back(draw_call);
 
-    con.get<VulkanManageCore>().writeBuf(model_data_buffer, model_instances_data.data(), 0,
+    GET_MODULE(VulkanManageCore).writeBuf(model_data_buffer, model_instances_data.data(), 0,
                                          sizeof(glm::mat4) * model_instances_data.size());
 }
 

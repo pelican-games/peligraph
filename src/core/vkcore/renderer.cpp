@@ -6,13 +6,13 @@
 
 namespace Pelican {
 
-Renderer::Renderer(DependencyContainer &_con) : con{_con}, device{con.get<VulkanManageCore>().getDevice()} {}
+Renderer::Renderer() : device{GET_MODULE(VulkanManageCore).getDevice()} {}
 
 Renderer::~Renderer() {}
 
 void Renderer::render() {
-    auto &rt = con.get<RenderTarget>();
-    auto &mat_renderer = con.get<MaterialRenderer>();
+    auto &rt = GET_MODULE(RenderTarget);
+    auto &mat_renderer = GET_MODULE(MaterialRenderer);
 
     const auto render_ctx = rt.render_begin();
 

@@ -19,7 +19,7 @@ struct KeyState {
     std::bitset<buttons_num> pressing, pressing_old, just_pressed, just_released;
 };
 
-class Window {
+DECLARE_MODULE(Window) {
     GLFWwindow *window;
 
     KeyState key_state;
@@ -27,7 +27,7 @@ class Window {
     float cursor_x, cursor_y;
 
   public:
-    Window(DependencyContainer &container);
+    Window();
     ~Window();
 
     vk::UniqueSurfaceKHR getVulkanSurface(vk::Instance instance);

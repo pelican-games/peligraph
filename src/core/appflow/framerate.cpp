@@ -8,8 +8,8 @@ namespace Pelican {
 
 constexpr auto max_frame_counter = 256;
 
-FramerateAdjust::FramerateAdjust(DependencyContainer &con) {
-    setFramerate(con.get<ProjectBasicConfig>().framerateTarget());
+FramerateAdjust::FramerateAdjust() {
+    setFramerate(GET_MODULE(ProjectBasicConfig).framerateTarget());
 }
 
 void FramerateAdjust::reset() {

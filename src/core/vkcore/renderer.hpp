@@ -7,12 +7,12 @@
 
 namespace Pelican {
 
-class Renderer {
-    DependencyContainer &con;
+DECLARE_MODULE(Renderer) {
+    
     vk::Device device;
 
   public:
-    Renderer(DependencyContainer &container);
+    Renderer();
     ~Renderer();
     void render();
 };

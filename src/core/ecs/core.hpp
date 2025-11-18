@@ -10,7 +10,7 @@ namespace Pelican {
 
 using EntityId = uint64_t;
 
-class ECSCore {
+DECLARE_MODULE(ECSCore) {
     using ChunkIndex = uint32_t;
     using WithinChunkIndex = uint32_t;
 

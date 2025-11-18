@@ -4,8 +4,8 @@
 
 namespace Pelican {
 
-Camera::Camera(DependencyContainer &con) {
-    const auto &config = con.get<ProjectBasicConfig>();
+Camera::Camera() {
+    const auto &config = GET_MODULE(ProjectBasicConfig);
     pos = {0.0f, 0.0f, 0.0f};
     dir = {1.0f, 0.0f, 0.0f};
 

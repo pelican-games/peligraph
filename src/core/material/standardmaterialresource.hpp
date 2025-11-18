@@ -4,13 +4,13 @@
 #include "material.hpp"
 namespace Pelican {
 
-class StandardMaterialResource {
+DECLARE_MODULE(StandardMaterialResource) {
     GlobalShaderId std_vert, std_frag;
     GlobalTextureId tex_transparent, tex_white, tex_black;
     GlobalMaterialId mat_transparent;
 
   public:
-    StandardMaterialResource(DependencyContainer &con);
+    StandardMaterialResource();
 
     GlobalShaderId standardVertShader() const { return std_vert; };
     GlobalShaderId standardFragShader() const { return std_frag; };

@@ -23,7 +23,7 @@ struct FrameRenderContext {
 
 constexpr size_t in_flight_frames_num = 2;
 
-class RenderTarget {
+DECLARE_MODULE(RenderTarget) {
     vk::Device device;
     vk::Extent2D extent;
     vk::Queue presen_queue;
@@ -38,7 +38,7 @@ class RenderTarget {
     uint32_t current_image_index, in_flight_frame_index;
 
   public:
-    RenderTarget(DependencyContainer &container);
+    RenderTarget();
     ~RenderTarget();
 
     FrameRenderContext render_begin();

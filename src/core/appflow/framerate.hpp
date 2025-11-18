@@ -4,13 +4,13 @@
 
 namespace Pelican {
 
-class FramerateAdjust {
+DECLARE_MODULE(FramerateAdjust) {
     float current_fps_target;
     std::chrono::system_clock::time_point base;
     int frame_index;
 
   public:
-    FramerateAdjust(DependencyContainer &con);
+    FramerateAdjust();
     void reset();
     void setFramerate(float frame_per_second);
     void wait();

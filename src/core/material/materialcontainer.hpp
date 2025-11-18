@@ -16,8 +16,8 @@ struct PushConstantStruct {
     glm::mat4 mvp;
 };
 
-class MaterialContainer {
-    DependencyContainer &con;
+DECLARE_MODULE(MaterialContainer) {
+    
 
     vk::Device device;
     std::vector<vk::UniqueDescriptorSetLayout> descset_layouts;
@@ -45,7 +45,7 @@ class MaterialContainer {
     vk::UniqueDescriptorSet model_mat_buf_descset;
 
   public:
-    MaterialContainer(DependencyContainer &con);
+    MaterialContainer();
     ~MaterialContainer();
 
     GlobalShaderId registerShader(size_t len, const char *data);

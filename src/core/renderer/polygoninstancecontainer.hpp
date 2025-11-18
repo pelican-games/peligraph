@@ -24,8 +24,8 @@ struct ModelInstanceId {
     uint32_t value;
 };
 
-class PolygonInstanceContainer {
-    DependencyContainer &con;
+DECLARE_MODULE(PolygonInstanceContainer) {
+    
     std::vector<RenderCommand> render_commands;
     BufferWrapper indirect_buf;
     std::vector<DrawIndirectInfo> draw_calls;
@@ -34,7 +34,7 @@ class PolygonInstanceContainer {
     BufferWrapper model_data_buffer;
 
   public:
-    PolygonInstanceContainer(DependencyContainer &con);
+    PolygonInstanceContainer();
     ModelInstanceId placeModelInstance(ModelTemplate &model);
     void removeModelInstance(ModelInstanceId id);
     void triggerUpdate();

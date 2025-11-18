@@ -24,10 +24,10 @@ static BufferWrapper createVertBuf(VulkanManageCore &vkcore, size_t num) {
                            vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
 }
 
-VertBufContainer::VertBufContainer(DependencyContainer &_con)
-    : con{_con}, indices_offset{0}, vertices_offset{0}, indices_cap{initial_indices_num},
-      vertices_cap{initial_vertices_num}, indices_mem_pool{createIndexBuf(con.get<VulkanManageCore>(), indices_cap)},
-      vertices_mem_pool{createVertBuf(con.get<VulkanManageCore>(), vertices_cap)} {}
+VertBufContainer::VertBufContainer()
+    : indices_offset{0}, vertices_offset{0}, indices_cap{initial_indices_num},
+      vertices_cap{initial_vertices_num}, indices_mem_pool{createIndexBuf(GET_MODULE(VulkanManageCore), indices_cap)},
+      vertices_mem_pool{createVertBuf(GET_MODULE(VulkanManageCore), vertices_cap)} {}
 
 ModelTemplate::PrimitiveRefInfo VertBufContainer::addPrimitiveEntry(CommonPolygonVertData &&data) {
     uint32_t vert_count = static_cast<uint32_t>(data.pos.size());
@@ -48,8 +48,8 @@ ModelTemplate::PrimitiveRefInfo VertBufContainer::addPrimitiveEntry(CommonPolygo
         const auto old_cap = indices_cap;
         while (req > indices_cap)
             indices_cap <<= 1;
-        auto new_indices_mem_pool = createIndexBuf(con.get<VulkanManageCore>(), indices_cap);
-        con.get<VulkanUtils>().bufferCopy(indices_mem_pool, new_indices_mem_pool, 0, 0, sizeof(uint32_t) * old_cap);
+        auto new_indices_mem_pool = createIndexBuf(GET_MODULE(VulkanManageCore), indices_cap);
+        GET_MODULE(VulkanUtils).bufferCopy(indices_mem_pool, new_indices_mem_pool, 0, 0, sizeof(uint32_t) * old_cap);
         std::swap(indices_mem_pool, new_indices_mem_pool);
         LOG_INFO(logger, "VertBufContainer: reallocated index buffer");
     }
@@ -57,8 +57,8 @@ ModelTemplate::PrimitiveRefInfo VertBufContainer::addPrimitiveEntry(CommonPolygo
         const auto old_cap = vertices_cap;
         while (req > vertices_cap)
             vertices_cap <<= 1;
-        auto new_vertices_mem_pool = createVertBuf(con.get<VulkanManageCore>(), vertices_cap);
-        con.get<VulkanUtils>().bufferCopy(vertices_mem_pool, new_vertices_mem_pool, 0, 0,
+        auto new_vertices_mem_pool = createVertBuf(GET_MODULE(VulkanManageCore), vertices_cap);
+        GET_MODULE(VulkanUtils).bufferCopy(vertices_mem_pool, new_vertices_mem_pool, 0, 0,
                                           sizeof(CommonVertStruct) * old_cap);
         std::swap(vertices_mem_pool, new_vertices_mem_pool);
         LOG_INFO(logger, "VertBufContainer: reallocated vertex buffer");
@@ -91,9 +91,9 @@ ModelTemplate::PrimitiveRefInfo VertBufContainer::addPrimitiveEntry(CommonPolygo
             tmp_buf[i].color = glm::vec4(0.0, 0.0, 0.0, 0.0);
     }
 
-    con.get<VulkanManageCore>().writeBuf(indices_mem_pool, data.indices.data(), sizeof(uint32_t) * indices_offset,
+    GET_MODULE(VulkanManageCore).writeBuf(indices_mem_pool, data.indices.data(), sizeof(uint32_t) * indices_offset,
                                          sizeof(uint32_t) * data.indices.size());
-    con.get<VulkanManageCore>().writeBuf(vertices_mem_pool, tmp_buf.data(), sizeof(CommonVertStruct) * vertices_offset,
+    GET_MODULE(VulkanManageCore).writeBuf(vertices_mem_pool, tmp_buf.data(), sizeof(CommonVertStruct) * vertices_offset,
                                          sizeof(CommonVertStruct) * vert_count);
     indices_offset += info.index_count;
     vertices_offset += vert_count;

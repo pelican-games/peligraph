@@ -5,7 +5,7 @@
 
 namespace Pelican {
 
-ProjectBasicConfig::ProjectBasicConfig(DependencyContainer &con) {
+ProjectBasicConfig::ProjectBasicConfig() {
     const auto proj_data = GET_MODULE(ProjectSource).loadSource();
     const auto parsed = nlohmann::json::parse(proj_data);
 

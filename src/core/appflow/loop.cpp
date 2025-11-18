@@ -12,16 +12,16 @@
 
 namespace Pelican {
 
-Loop::Loop(DependencyContainer &_con) : con{_con} {}
+Loop::Loop() {}
 
 void Loop::run() {
 #ifdef _WIN32
     SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
 #endif
 
-    auto &window = con.get<Window>();
-    auto &renderer = con.get<Renderer>();
-    auto &framerate_adjuster = con.get<FramerateAdjust>();
+    auto &window = GET_MODULE(Window);
+    auto &renderer = GET_MODULE(Renderer);
+    auto &framerate_adjuster = GET_MODULE(FramerateAdjust);
 
     LOG_INFO(logger, "starting main loop");
 

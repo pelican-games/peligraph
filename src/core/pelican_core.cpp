@@ -15,10 +15,10 @@ void PelicanCore::run() {
     try {
         setupLogger();
 
-        DependencyContainer container;
+        FastModuleContainer container;
         GET_MODULE(ProjectSource).setSourceByData(b::embed<"default_config.json">().str());
 
-        auto &loop = container.get<Loop>();
+        auto &loop = GET_MODULE(Loop);
         loop.run();
     } catch (std::exception &e) {
         LOG_ERROR(logger, "Pelican fatal error : {}", e.what());

@@ -4,8 +4,8 @@
 
 namespace Pelican {
 
-StandardMaterialResource::StandardMaterialResource(DependencyContainer &con) {
-    auto &mat_con = con.get<MaterialContainer>();
+StandardMaterialResource::StandardMaterialResource() {
+    auto &mat_con = GET_MODULE(MaterialContainer);
 
     const auto vert_shader = b::embed<"default.vert.spv">();
     std_vert = mat_con.registerShader(vert_shader.length(), vert_shader.data());

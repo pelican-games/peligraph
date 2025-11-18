@@ -104,24 +104,24 @@ static vk::Extent2D getSurfaceExtent(vk::PhysicalDevice phys_device, vk::Surface
     return phys_device.getSurfaceCapabilitiesKHR(surface).currentExtent;
 }
 
-RenderTarget::RenderTarget(DependencyContainer &container)
-    : device{container.get<VulkanManageCore>().getDevice()},
-      extent{getSurfaceExtent(container.get<VulkanManageCore>().getPhysDevice(),
-                              container.get<VulkanManageCore>().getSurface())},
-      presen_queue{container.get<VulkanManageCore>().getPresentationQueue()},
-      swapchain{createSwapchain(container.get<VulkanManageCore>().getDevice(),
-                                container.get<VulkanManageCore>().getPhysDevice(),
-                                container.get<VulkanManageCore>().getSurface())},
+RenderTarget::RenderTarget()
+    : device{GET_MODULE(VulkanManageCore).getDevice()},
+      extent{getSurfaceExtent(GET_MODULE(VulkanManageCore).getPhysDevice(),
+                              GET_MODULE(VulkanManageCore).getSurface())},
+      presen_queue{GET_MODULE(VulkanManageCore).getPresentationQueue()},
+      swapchain{createSwapchain(GET_MODULE(VulkanManageCore).getDevice(),
+                                GET_MODULE(VulkanManageCore).getPhysDevice(),
+                                GET_MODULE(VulkanManageCore).getSurface())},
       swapchain_images{getImageFromSwapchain(device, swapchain.swapchain.get())},
       swapchain_image_views{createImageViewsFromImages(device, swapchain_images, swapchain.format)},
-      depth_image{container.get<VulkanManageCore>().allocImage(vk::Extent3D{extent, 1}, vk::Format::eD32Sfloat,
+      depth_image{GET_MODULE(VulkanManageCore).allocImage(vk::Extent3D{extent, 1}, vk::Format::eD32Sfloat,
                                                                vk::ImageUsageFlagBits::eDepthStencilAttachment,
                                                                vma::MemoryUsage::eAutoPreferDevice, {})},
       depth_image_view{createImageViewsForDepth(device, depth_image)},
-      image_acquire_semaphores{container.get<VulkanManageCore>().createSemaphores(in_flight_frames_num)},
-      rendered_semaphores{container.get<VulkanManageCore>().createSemaphores(in_flight_frames_num)}, render_cmd_bufs{},
+      image_acquire_semaphores{GET_MODULE(VulkanManageCore).createSemaphores(in_flight_frames_num)},
+      rendered_semaphores{GET_MODULE(VulkanManageCore).createSemaphores(in_flight_frames_num)}, render_cmd_bufs{},
       in_flight_frame_index{0} {
-    const auto &vkcore = container.get<VulkanManageCore>();
+    const auto &vkcore = GET_MODULE(VulkanManageCore);
     {
         auto tmp_cmd_bufs = vkcore.allocCmdBufs(in_flight_frames_num);
         assert(tmp_cmd_bufs.size() == in_flight_frames_num);

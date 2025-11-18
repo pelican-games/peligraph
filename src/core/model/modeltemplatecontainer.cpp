@@ -2,7 +2,7 @@
 
 namespace Pelican {
 
-ModelTemplateContainer::ModelTemplateContainer(DependencyContainer &con) {}
+ModelTemplateContainer::ModelTemplateContainer() {}
 ModelTemplateContainer::~ModelTemplateContainer() {}
 
 } // namespace Pelican

@@ -4,10 +4,10 @@
 
 namespace Pelican {
 
-Window::Window(DependencyContainer &container) {
+Window::Window() {
     LOG_INFO(logger, "GLFW initializing...");
 
-    const auto &config = container.get<ProjectBasicConfig>();
+    const auto &config = GET_MODULE(ProjectBasicConfig);
 
     const auto window_size = config.initialWindowSize();
     const auto title = config.windowTitle();

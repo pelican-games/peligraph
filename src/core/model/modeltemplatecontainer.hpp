@@ -6,12 +6,12 @@
 
 namespace Pelican {
 
-class ModelTemplateContainer {
+DECLARE_MODULE(ModelTemplateContainer) {
   private:
     std::unordered_map<ModelTemplateId, ModelTemplate> model_db;
 
   public:
-    ModelTemplateContainer(DependencyContainer &con);
+    ModelTemplateContainer();
     ~ModelTemplateContainer();
 };
 

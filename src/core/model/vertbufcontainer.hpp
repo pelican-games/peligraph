@@ -35,8 +35,8 @@ struct CommonSkinningVertStruct {
     glm::vec4 weight;
 };
 
-class VertBufContainer {
-    DependencyContainer &con;
+DECLARE_MODULE(VertBufContainer) {
+    
 
     uint32_t indices_offset;
     int32_t vertices_offset;
@@ -46,7 +46,7 @@ class VertBufContainer {
     BufferWrapper vertices_mem_pool;
 
   public:
-    VertBufContainer(DependencyContainer &con);
+    VertBufContainer();
     ModelTemplate::PrimitiveRefInfo addPrimitiveEntry(CommonPolygonVertData &&data);
     void removePrimitiveEntry(/* TODO */);
 

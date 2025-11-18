@@ -19,7 +19,7 @@ enum class VulkanProcessType {
     compute,
 };
 
-class VulkanManageCore {
+DECLARE_MODULE(VulkanManageCore) {
     vk::UniqueInstance instance;
     vk::UniqueSurfaceKHR surface;
     vk::PhysicalDevice phys_device;
@@ -32,7 +32,7 @@ class VulkanManageCore {
     vma::UniqueAllocator allocator;
 
   public:
-    VulkanManageCore(DependencyContainer &container);
+    VulkanManageCore();
     ~VulkanManageCore();
 
     vk::Device getDevice() const { return device.get(); };

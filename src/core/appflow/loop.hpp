@@ -4,11 +4,11 @@
 
 namespace Pelican {
 
-class Loop {
-    DependencyContainer &con;
+DECLARE_MODULE(Loop) {
+    
 
   public:
-    Loop(DependencyContainer &_con);
+    Loop();
     void run();
 };
 

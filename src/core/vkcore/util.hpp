@@ -7,14 +7,14 @@
 
 namespace Pelican {
 
-class VulkanUtils {
-    DependencyContainer &con;
+DECLARE_MODULE(VulkanUtils) {
+    
     vk::Device device;
     std::array<CommandBufWrapper, 8> genpurpose_cmd_bufs;
     uint32_t genpurpose_cmd_bufs_index;
 
   public:
-    VulkanUtils(DependencyContainer &con);
+    VulkanUtils();
 
     template <class F> void executeOneTimeCmd(F &&f, bool wait = false) {
         const auto &cmd_buf = genpurpose_cmd_bufs[genpurpose_cmd_bufs_index];

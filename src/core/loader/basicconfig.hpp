@@ -5,7 +5,7 @@
 
 namespace Pelican {
 
-class ProjectBasicConfig {
+DECLARE_MODULE(ProjectBasicConfig) {
   public:
     struct window_size {
         int width, height;
@@ -23,7 +23,7 @@ class ProjectBasicConfig {
     InitialCameraProperty camera_prop;
 
   public:
-    ProjectBasicConfig(DependencyContainer &container);
+    ProjectBasicConfig();
 
     std::string windowTitle() const;
     window_size initialWindowSize() const;

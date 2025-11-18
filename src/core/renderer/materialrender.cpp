@@ -7,23 +7,23 @@
 
 namespace Pelican {
 
-MaterialRenderer::MaterialRenderer(DependencyContainer &_con) : con{_con} {
-    const auto &instance_container = con.get<PolygonInstanceContainer>();
-    auto &material_container = con.get<MaterialContainer>();
+MaterialRenderer::MaterialRenderer() {
+    const auto &instance_container = GET_MODULE(PolygonInstanceContainer);
+    auto &material_container = GET_MODULE(MaterialContainer);
 
     material_container.setModelMatBuf(instance_container.getObjectBuf());
 }
 
 void MaterialRenderer::render(vk::CommandBuffer cmd_buf) const {
-    auto &instance_container = con.get<PolygonInstanceContainer>();
-    const auto &vert_buf_container = con.get<VertBufContainer>();
-    const auto &material_container = con.get<MaterialContainer>();
+    auto &instance_container = GET_MODULE(PolygonInstanceContainer);
+    const auto &vert_buf_container = GET_MODULE(VertBufContainer);
+    const auto &material_container = GET_MODULE(MaterialContainer);
 
     vert_buf_container.bindVertexBuffer(cmd_buf);
 
     const auto pipeline_layout = material_container.getPipelineLayout();
     PushConstantStruct push_constant;
-    push_constant.mvp = con.get<Camera>().getVPMatrix();
+    push_constant.mvp = GET_MODULE(Camera).getVPMatrix();
 
     instance_container.triggerUpdate();
 
