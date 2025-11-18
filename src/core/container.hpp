@@ -1,10 +1,9 @@
 #pragma once
 
 #include "./log.hpp"
-#include <memory>
 #include <optional>
 #include <typeindex>
-#include <unordered_map>
+#include <utility>
 
 #define DECLARE_MODULE(name) class name : public ModuleBase<name>
 #define GET_MODULE(name) FastModuleContainer::get<name>()
