@@ -4,11 +4,11 @@
 
 namespace Pelican {
 
-class ProjectSource {
+DECLARE_MODULE(ProjectSource) {
     std::string path, raw_data;
 
   public:
-    ProjectSource(DependencyContainer &con);
+    ProjectSource();
     ~ProjectSource();
 
     void setSourceByFile(std::string _path) { path = _path; }

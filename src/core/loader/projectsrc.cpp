@@ -4,7 +4,7 @@
 
 namespace Pelican {
 
-ProjectSource::ProjectSource(DependencyContainer &con) {}
+ProjectSource::ProjectSource() {}
 ProjectSource::~ProjectSource() {}
 
 std::string ProjectSource::loadSource() const {

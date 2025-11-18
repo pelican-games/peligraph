@@ -16,7 +16,7 @@ void PelicanCore::run() {
         setupLogger();
 
         DependencyContainer container;
-        container.get<ProjectSource>().setSourceByData(b::embed<"default_config.json">().str());
+        GET_MODULE(ProjectSource).setSourceByData(b::embed<"default_config.json">().str());
 
         auto &loop = container.get<Loop>();
         loop.run();
