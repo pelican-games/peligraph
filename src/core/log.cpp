@@ -17,7 +17,7 @@ void setupLogger() {
 #ifdef _DEBUG
     auto sink = quill::Frontend::create_or_get_sink<quill::ConsoleSink>("default_sink");
 #else
-    auto sink = quill::Frontend::create_or_get_sink<quill::FileSink>(log_file_name);
+    auto sink = quill::Frontend::create_or_get_sink<quill::FileSink>(logFileName);
 #endif
     logger = quill::Frontend::create_or_get_logger("pelican", std::move(sink));
 

@@ -16,8 +16,8 @@ static vk::UniqueInstance vulkanCreateInstance(Window &window) {
     vk::ApplicationInfo app_info;
     app_info.pApplicationName = "Pelican App";
     app_info.applicationVersion = 0;
-    app_info.pEngineName = engine_name;
-    app_info.engineVersion = engine_version;
+    app_info.pEngineName = engineName;
+    app_info.engineVersion = engineVersion;
     app_info.apiVersion = vulkan_api_version;
 
     std::vector<const char *> layers, exts;
