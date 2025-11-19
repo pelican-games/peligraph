@@ -1,5 +1,6 @@
 #include "rendertarget.hpp"
 #include "../log.hpp"
+#include "../renderer/camera.hpp"
 #include "core.hpp"
 #include <stdexcept>
 
@@ -104,23 +105,27 @@ static vk::Extent2D getSurfaceExtent(vk::PhysicalDevice phys_device, vk::Surface
     return phys_device.getSurfaceCapabilitiesKHR(surface).currentExtent;
 }
 
+void RenderTarget::surfaceDependantsSetup() {
+    extent = getSurfaceExtent(GET_MODULE(VulkanManageCore).getPhysDevice(), GET_MODULE(VulkanManageCore).getSurface());
+    GET_MODULE(Camera).setScreenSize(extent.width, extent.height);
+    presen_queue = GET_MODULE(VulkanManageCore).getPresentationQueue();
+    swapchain = createSwapchain(GET_MODULE(VulkanManageCore).getDevice(), GET_MODULE(VulkanManageCore).getPhysDevice(),
+                                GET_MODULE(VulkanManageCore).getSurface());
+    swapchain_images = getImageFromSwapchain(device, swapchain.swapchain.get());
+    swapchain_image_views = createImageViewsFromImages(device, swapchain_images, swapchain.format);
+    depth_image =
+        GET_MODULE(VulkanManageCore)
+            .allocImage(vk::Extent3D{extent, 1}, vk::Format::eD32Sfloat,
+                        vk::ImageUsageFlagBits::eDepthStencilAttachment, vma::MemoryUsage::eAutoPreferDevice, {});
+    depth_image_view = createImageViewsForDepth(device, depth_image);
+}
+
 RenderTarget::RenderTarget()
     : device{GET_MODULE(VulkanManageCore).getDevice()},
-      extent{getSurfaceExtent(GET_MODULE(VulkanManageCore).getPhysDevice(),
-                              GET_MODULE(VulkanManageCore).getSurface())},
-      presen_queue{GET_MODULE(VulkanManageCore).getPresentationQueue()},
-      swapchain{createSwapchain(GET_MODULE(VulkanManageCore).getDevice(),
-                                GET_MODULE(VulkanManageCore).getPhysDevice(),
-                                GET_MODULE(VulkanManageCore).getSurface())},
-      swapchain_images{getImageFromSwapchain(device, swapchain.swapchain.get())},
-      swapchain_image_views{createImageViewsFromImages(device, swapchain_images, swapchain.format)},
-      depth_image{GET_MODULE(VulkanManageCore).allocImage(vk::Extent3D{extent, 1}, vk::Format::eD32Sfloat,
-                                                               vk::ImageUsageFlagBits::eDepthStencilAttachment,
-                                                               vma::MemoryUsage::eAutoPreferDevice, {})},
-      depth_image_view{createImageViewsForDepth(device, depth_image)},
       image_acquire_semaphores{GET_MODULE(VulkanManageCore).createSemaphores(in_flight_frames_num)},
       rendered_semaphores{GET_MODULE(VulkanManageCore).createSemaphores(in_flight_frames_num)}, render_cmd_bufs{},
       in_flight_frame_index{0} {
+
     const auto &vkcore = GET_MODULE(VulkanManageCore);
     {
         auto tmp_cmd_bufs = vkcore.allocCmdBufs(in_flight_frames_num);
@@ -129,6 +134,8 @@ RenderTarget::RenderTarget()
             render_cmd_bufs[i] = std::move(tmp_cmd_bufs[i]);
         }
     }
+
+    surfaceDependantsSetup();
 
     LOG_INFO(logger, "rendertarget initialized");
 }
@@ -144,47 +151,56 @@ RenderTarget::~RenderTarget() {
 }
 
 FrameRenderContext RenderTarget::render_begin() {
-    const auto image_prepared_semaphore = image_acquire_semaphores[in_flight_frame_index].get();
-    const auto &cmd_buf = render_cmd_bufs[in_flight_frame_index];
+    do {
+        const auto image_prepared_semaphore = image_acquire_semaphores[in_flight_frame_index].get();
+        const auto &cmd_buf = render_cmd_bufs[in_flight_frame_index];
 
-    if (auto result = device.waitForFences({cmd_buf.getFence()}, VK_TRUE, UINT64_MAX); result != vk::Result::eSuccess) {
-        LOG_WARNING(logger, "vkWaitForFences didn't succeed : {}", vk::to_string(result));
-    }
-    device.resetFences({cmd_buf.getFence()});
+        if (auto result = device.waitForFences({cmd_buf.getFence()}, VK_TRUE, UINT64_MAX);
+            result != vk::Result::eSuccess) {
+            LOG_WARNING(logger, "vkWaitForFences didn't succeed : {}", vk::to_string(result));
+        }
 
-    auto image_acquire_result =
-        device.acquireNextImageKHR(swapchain.swapchain.get(), UINT64_MAX, image_prepared_semaphore);
-    if (image_acquire_result.result != vk::Result::eSuccess) {
-        throw std::runtime_error("failed on vkAcquireNextImageKHR : " + vk::to_string(image_acquire_result.result));
-    }
-    current_image_index = image_acquire_result.value;
+        auto image_acquire_result =
+            device.acquireNextImageKHR(swapchain.swapchain.get(), UINT64_MAX, image_prepared_semaphore);
+        if (image_acquire_result.result == vk::Result::eSuboptimalKHR ||
+            image_acquire_result.result == vk::Result::eErrorOutOfDateKHR) {
+            surfaceDependantsSetup();
+            continue;
+        }
+        if (image_acquire_result.result != vk::Result::eSuccess) {
+            throw std::runtime_error("failed on vkAcquireNextImageKHR : " + vk::to_string(image_acquire_result.result));
+        }
 
-    cmd_buf.recordBegin();
+        device.resetFences({cmd_buf.getFence()});
+        current_image_index = image_acquire_result.value;
 
-    {
-        vk::Viewport viewport;
-        viewport.x = 0;
-        viewport.y = 0;
-        viewport.width = static_cast<float>(extent.width);
-        viewport.height = static_cast<float>(extent.height);
-        viewport.minDepth = 0.0f;
-        viewport.maxDepth = 1.0f;
-        cmd_buf->setViewport(0, {viewport});
+        cmd_buf.recordBegin();
 
-        vk::Rect2D scissor;
-        scissor.offset = vk::Offset2D{0, 0};
-        scissor.extent = extent;
-        cmd_buf->setScissor(0, {scissor});
-    }
+        {
+            vk::Viewport viewport;
+            viewport.x = 0;
+            viewport.y = 0;
+            viewport.width = static_cast<float>(extent.width);
+            viewport.height = static_cast<float>(extent.height);
+            viewport.minDepth = 0.0f;
+            viewport.maxDepth = 1.0f;
+            cmd_buf->setViewport(0, {viewport});
 
-    return FrameRenderContext{
-        .cmd_buf = *cmd_buf,
-        .color_attachment = swapchain_image_views[image_acquire_result.value].get(),
-        .depth_attachment = depth_image_view.get(),
-        .extent = extent,
-        .image_prepared_semaphore = image_prepared_semaphore,
-        .required_layout = vk::ImageLayout::ePresentSrcKHR,
-    };
+            vk::Rect2D scissor;
+            scissor.offset = vk::Offset2D{0, 0};
+            scissor.extent = extent;
+            cmd_buf->setScissor(0, {scissor});
+        }
+
+        return FrameRenderContext{
+            .cmd_buf = *cmd_buf,
+            .color_attachment = swapchain_image_views[image_acquire_result.value].get(),
+            .depth_attachment = depth_image_view.get(),
+            .extent = extent,
+            .image_prepared_semaphore = image_prepared_semaphore,
+            .required_layout = vk::ImageLayout::ePresentSrcKHR,
+        };
+    } while (true);
 }
 
 void RenderTarget::render_end() {
