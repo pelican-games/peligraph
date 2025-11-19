@@ -4,9 +4,7 @@
 #include "vkcore/core.hpp"
 
 #include "loader/projectsrc.hpp"
-#include "model/gltf.hpp"
-#include "renderer/camera.hpp"
-#include "renderer/polygoninstancecontainer.hpp"
+#include "loader/scene.hpp"
 
 #include "battery/embed.hpp"
 
@@ -18,6 +16,8 @@ void PelicanCore::run() {
 
         FastModuleContainer container;
         GET_MODULE(ProjectSource).setSourceByData(b::embed<"default_config.json">().str());
+
+        GET_MODULE(Scene).load();
 
         auto &loop = GET_MODULE(Loop);
         loop.run();
