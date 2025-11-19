@@ -205,8 +205,7 @@ static vma::UniqueAllocator createAllocator(vk::PhysicalDevice phys_device, vk::
 }
 
 VulkanManageCore::VulkanManageCore()
-    : instance{vulkanCreateInstance(GET_MODULE(Window))},
-      surface{GET_MODULE(Window).getVulkanSurface(instance.get())},
+    : instance{vulkanCreateInstance(GET_MODULE(Window))}, surface{GET_MODULE(Window).getVulkanSurface(instance.get())},
       phys_device{pickPhysicalDevice(instance.get(), surface.get())},
       queue_set{pickQueues(phys_device, phys_device.getQueueFamilyProperties(), surface.get()).value()},
       device{createLogicalDevice(phys_device, queue_set)},
@@ -219,6 +218,8 @@ VulkanManageCore::VulkanManageCore()
     LOG_INFO(logger, "vulkan core initialized");
 }
 VulkanManageCore::~VulkanManageCore() {}
+
+void VulkanManageCore::waitIdle() const { device->waitIdle(); }
 
 std::vector<CommandBufWrapper> VulkanManageCore::allocCmdBufs(size_t num) const {
     vk::CommandBufferAllocateInfo alloc_info;

@@ -140,15 +140,7 @@ RenderTarget::RenderTarget()
     LOG_INFO(logger, "rendertarget initialized");
 }
 
-RenderTarget::~RenderTarget() {
-    std::array<vk::Fence, in_flight_frames_num> fences;
-    for (int i = 0; i < in_flight_frames_num; i++) {
-        fences[i] = render_cmd_bufs[i].getFence();
-    }
-    if (auto result = device.waitForFences(fences, VK_TRUE, 500'000'000); result != vk::Result::eSuccess) {
-        LOG_WARNING(logger, "vkWaitForFences didn't succeed : {}", vk::to_string(result));
-    }
-}
+RenderTarget::~RenderTarget() {}
 
 FrameRenderContext RenderTarget::render_begin() {
     do {

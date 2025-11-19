@@ -40,6 +40,8 @@ DECLARE_MODULE(VulkanManageCore) {
     vk::SurfaceKHR getSurface() const { return surface.get(); };
     vk::Queue getPresentationQueue() const { return presen_queue; }
 
+    void waitIdle() const;
+
     std::vector<CommandBufWrapper> allocCmdBufs(size_t num) const;
     std::vector<vk::UniqueSemaphore> createSemaphores(size_t num) const;
 
