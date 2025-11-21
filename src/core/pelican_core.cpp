@@ -3,6 +3,7 @@
 #include "log.hpp"
 #include "vkcore/core.hpp"
 
+#include "loader/basicconfig.hpp"
 #include "loader/projectsrc.hpp"
 #include "loader/scene.hpp"
 
@@ -17,7 +18,7 @@ void PelicanCore::run() {
         FastModuleContainer container;
         GET_MODULE(ProjectSource).setSourceByData(b::embed<"default_config.json">().str());
 
-        GET_MODULE(Scene).load();
+        GET_MODULE(SceneLoader).load(GET_MODULE(ProjectBasicConfig).defaultSceneId());
 
         auto &loop = GET_MODULE(Loop);
         loop.run();

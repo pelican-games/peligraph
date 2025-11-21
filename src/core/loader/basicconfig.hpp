@@ -22,6 +22,9 @@ DECLARE_MODULE(ProjectBasicConfig) {
     float framerate_target;
     InitialCameraProperty camera_prop;
 
+    std::string default_scene_id;
+    std::string scene_data_json;
+
   public:
     ProjectBasicConfig();
 
@@ -31,6 +34,9 @@ DECLARE_MODULE(ProjectBasicConfig) {
     float framerateTarget() const;
 
     InitialCameraProperty initailCameraProperty() const;
+
+    std::string defaultSceneId() const;
+    std::string sceneDataJson() const;
 };
 
 } // namespace Pelican

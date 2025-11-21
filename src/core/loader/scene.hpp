@@ -4,12 +4,14 @@
 
 namespace Pelican {
 
-DECLARE_MODULE(Scene) {
-  public:
-    Scene();
-    ~Scene();
+using SceneId = std::string;
 
-    void load();
+DECLARE_MODULE(SceneLoader) {
+  public:
+    SceneLoader();
+    ~SceneLoader();
+
+    void load(SceneId scene_id);
 };
 
 } // namespace Pelican

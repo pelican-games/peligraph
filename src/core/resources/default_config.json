@@ -12,6 +12,8 @@
       "near": 0.1,
       "far": 1000,
       "up": [0.0, -1.0, 0.0]
-    }
+    },
+    "default_scene_id": "default_scene",
+    "scene_data_json": "example_scene_data.json"
   }
 }
