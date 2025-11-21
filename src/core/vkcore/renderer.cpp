@@ -1,6 +1,7 @@
 #include "renderer.hpp"
 #include "../log.hpp"
 #include "../renderer/materialrender.hpp"
+#include "../renderer/uirenderer.hpp"
 #include "core.hpp"
 #include "rendertarget.hpp"
 
@@ -13,6 +14,7 @@ Renderer::~Renderer() {}
 void Renderer::render() {
     auto &rt = GET_MODULE(RenderTarget);
     auto &mat_renderer = GET_MODULE(MaterialRenderer);
+    auto &ui_renderer = GET_MODULE(UiRenderer);
 
     const auto render_ctx = rt.render_begin();
 
@@ -41,6 +43,7 @@ void Renderer::render() {
     cmd_buf.beginRendering(render_info);
 
     mat_renderer.render(cmd_buf);
+    ui_renderer.render(cmd_buf);
 
     cmd_buf.endRendering();
 
