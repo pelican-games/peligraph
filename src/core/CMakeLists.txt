@@ -7,11 +7,12 @@ add_subdirectory(resources)
 
 add_subdirectory(appflow)
 add_subdirectory(os)
+add_subdirectory(ecs)
+add_subdirectory(loader)
 add_subdirectory(vkcore)
 add_subdirectory(material)
 add_subdirectory(model)
 add_subdirectory(renderer)
-add_subdirectory(loader)
 
 target_sources(pelican_core PRIVATE)
 

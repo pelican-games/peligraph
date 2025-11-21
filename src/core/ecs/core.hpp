@@ -4,6 +4,7 @@
 #include <array>
 #include <memory>
 #include <queue>
+#include <span>
 #include <typeindex>
 #include <unordered_map>
 #include <unordered_set>
@@ -12,7 +13,25 @@
 namespace Pelican {
 
 using EntityId = uint64_t;
+using ComponentId = uint64_t;
 using SystemId = uint64_t;
+
+template <class T> constexpr ComponentId getComponentIdFromType(std::type_info &type) {
+    return 0; // TODO
+}
+
+constexpr const std::type_info &getTypeFromComponentId(ComponentId id) {
+    return typeid(int); // TODO
+}
+
+constexpr uint32_t getSizeFromComponentId(ComponentId id) {
+    return sizeof(int); // TODO
+}
+
+struct ComponentDataRef {
+    ComponentId component_id;
+    void *p_data;
+};
 
 DECLARE_MODULE(ECSCore) {
     using ChunkIndex = uint32_t;
@@ -23,10 +42,10 @@ DECLARE_MODULE(ECSCore) {
         uint32_t stride;
         std::vector<uint8_t> arr;
 
-        template <class T> static VariedArray make() {
+        static VariedArray make(uint32_t stride) {
             return VariedArray{
                 .count = 0,
-                .stride = sizeof(T),
+                .stride = stride,
                 .arr = {},
             };
         }
@@ -37,6 +56,15 @@ DECLARE_MODULE(ECSCore) {
             arr.resize((++count) * stride);
             back<T>() = val;
         }
+
+        uint8_t *data_dynamic() { return arr.data(); }
+        uint8_t *at_dynamic(size_t index) { return data_dynamic() + stride * index; }
+        void *back_dynamic() { return at_dynamic(count - 1); }
+        void push_dynamic(uint8_t *val) {
+            arr.resize((++count) * stride);
+            std::memcpy(back_dynamic(), val, stride);
+        }
+
         void erase(WithinChunkIndex index) {
             std::memcpy(arr.data() + index * stride, arr.data() + (--count) * stride, stride);
             arr.resize(count * stride);
@@ -60,6 +88,20 @@ DECLARE_MODULE(ECSCore) {
                    && (has_all<TComponent...>());                   // component type is match
         }
 
+        bool has_dynamic(ComponentId component_id) const {
+            std::type_index tid{getTypeFromComponentId(component_id)};
+            return component_arrays.find(tid) != component_arrays.end();
+        }
+        bool has_all_dynamic(std::span<ComponentId> components_id) const {
+            for (const auto component_id : components_id)
+                if (!has_dynamic(component_id))
+                    return false;
+            return true;
+        }
+        bool match_type_dynamic(std::span<ComponentId> components_id) const {
+            return component_arrays.size() == components_id.size() && has_all_dynamic(components_id);
+        }
+
         // construct with recording component types
         template <typename... TComponent> static ECSComponentChunk make() {
             return ECSComponentChunk{
@@ -67,10 +109,23 @@ DECLARE_MODULE(ECSCore) {
                 .component_arrays{
                     // each component arrays
                     {
-                        std::type_index{typeid(TComponent)}, // type
-                        VariedArray::make<TComponent>(),     // empty array
+                        std::type_index{typeid(TComponent)},   // type
+                        VariedArray::make(sizeof(TComponent)), // empty array
                     }...,
                 },
+            };
+        }
+        static ECSComponentChunk make_dynamic(std::span<ComponentId> components_id) {
+            std::unordered_map<std::type_index, VariedArray> arr;
+            for (const auto component : components_id) {
+                arr.insert({
+                    std::type_index{getTypeFromComponentId(component)},   // type
+                    VariedArray::make(getSizeFromComponentId(component)), // empty array
+                });
+            }
+            return ECSComponentChunk{
+                .count = 0, // empty -> count = 0
+                .component_arrays = std::move(arr),
             };
         }
 
@@ -87,6 +142,14 @@ DECLARE_MODULE(ECSCore) {
                 arr.erase(index);
             count--;
             return moved_components;
+        }
+
+        WithinChunkIndex insert_dynamic(std::span<ComponentDataRef> components) {
+            for (const auto component : components) {
+                std::type_index tid{getTypeFromComponentId(component.component_id)};
+                component_arrays.at(tid).push_dynamic(static_cast<uint8_t *>(component.p_data));
+            }
+            return count++;
         }
     };
     std::vector<ECSComponentChunk> chunks_storage;
@@ -123,6 +186,39 @@ DECLARE_MODULE(ECSCore) {
         EntityRef entity_ref{
             .chunk_index = chunk_index,
             .array_index = chunks_storage[chunk_index].insert(entity_id, std::move(component)...),
+        };
+
+        id_to_ref.emplace_back(entity_ref);
+        return entity_id;
+    }
+
+    EntityId insert_dynamic(std::span<ComponentDataRef> components) {
+        std::vector<ComponentId> components_id;
+        for (const auto component : components) {
+            components_id.push_back(component.component_id);
+        }
+
+        // find suitable chunk
+        ChunkIndex chunk_index = UINT32_MAX;
+        for (uint32_t i = 0; i < chunks_storage.size(); i++) {
+            if (chunks_storage[i].match_type_dynamic(components_id)) {
+                chunk_index = i;
+                break;
+            }
+        }
+
+        // add new chunk if suitable chunk is not found
+        if (chunk_index == UINT32_MAX) {
+            chunk_index = chunks_storage.size();
+            chunks_storage.emplace_back(ECSComponentChunk::make());
+        }
+
+        // insert entity
+        EntityId entity_id = id_to_ref.size();
+
+        EntityRef entity_ref{
+            .chunk_index = chunk_index,
+            .array_index = chunks_storage[chunk_index].insert_dynamic(components),
         };
 
         id_to_ref.emplace_back(entity_ref);
@@ -181,37 +277,7 @@ DECLARE_MODULE(ECSCore) {
         systems.erase(system_id);
     }
 
-    void update() {
-        std::vector<SystemId> sorted_systems;
-
-        // topological sort
-        std::queue<SystemId> que;
-        std::unordered_map<SystemId, size_t> dependency_graph;
-
-        for (const auto &[id, sys] : systems) {
-            dependency_graph.insert({id, sys.depends_list.size()});
-            if (sys.depends_list.empty())
-                que.push(id);
-        }
-        while (!que.empty()) {
-            auto next = que.front();
-            que.pop();
-            sorted_systems.push_back(next);
-
-            for (const auto depended : systems.at(next).depended_by) {
-                auto &dep_count = dependency_graph.at(depended);
-                dep_count--;
-                if (dep_count == 0)
-                    que.push(depended);
-            }
-        }
-
-        // invoke
-        for (auto sys_id : sorted_systems) {
-            auto &sys = systems.at(sys_id);
-            sys.p_func(*this, sys.system_ref);
-        }
-    }
+    void update();
 };
 
 } // namespace Pelican
