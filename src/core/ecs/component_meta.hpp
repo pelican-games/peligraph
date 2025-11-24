@@ -1,6 +1,10 @@
 #pragma once
 
+#include "../container.hpp"
+
 #include <cstdint>
+#include <nlohmann/json.hpp>
+#include <unordered_map>
 
 #include "component.hpp"
 
@@ -10,6 +14,30 @@
 
 namespace Pelican {
 
+struct ComponentInfo {
+    ComponentId id;
+    uint32_t size;
+    std::string name;
+    void (*cb_init)(void *ptr);
+    void (*cb_deinit)(void *ptr);
+
+    void (*cb_load_by_json)(void *ptr, const nlohmann::json &json);
+};
+
+DECLARE_MODULE(ComponentInfoManager) {
+    std::vector<ComponentInfo> infos;
+    std::unordered_map<std::string, ComponentId> name_id_map;
+
+  public:
+    ComponentInfoManager();
+
+    void registerComponent(ComponentInfo info);
+
+    uint32_t getSizeFromComponentId(ComponentId id) const;
+    ComponentId getComponentIdByName(const std::string &name) const;
+    void loadByJson(void *ptr, const nlohmann::json &json) const;
+};
+
 template <class T> struct ComponentIdByType {
     static constexpr ComponentId value;
 };
@@ -18,18 +46,6 @@ template <class T> struct ComponentIdByType {
     template <> struct ComponentIdByType<_name> {                                                                      \
         static constexpr ComponentId value = _id;                                                                      \
     };
-
-#define DECLARE_COMPONENT_SIZE(_name, _id)                                                                             \
-    case _id:                                                                                                          \
-        return sizeof(_name);
-
-inline uint32_t getSizeFromComponentId(ComponentId id) {
-    switch (id) {
-        DECLARE_COMPONENT_SIZE(EntityId, 0)
-        DECLARE_COMPONENT_SIZE(TransformComponent, 1)
-        DECLARE_COMPONENT_SIZE(SimpleModelViewComponent, 2)
-    }
-}
 
 // predefined
 DECLARE_COMPONENT(EntityId, 0);

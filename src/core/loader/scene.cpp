@@ -3,10 +3,9 @@
 #include "../ecs/core.hpp"
 #include "../model/gltf.hpp"
 #include "../renderer/camera.hpp"
-#include "../renderer/polygoninstancecontainer.hpp"
 
+#include "../ecs/component_meta.hpp"
 #include "basicconfig.hpp"
-#include "component.hpp"
 #include <nlohmann/json.hpp>
 
 namespace Pelican {
@@ -33,7 +32,7 @@ void SceneLoader::load(SceneId scene_id) {
         components_id.reserve(components_json.size());
         for (const auto &component : components_json) {
             const std::string name = component.at("name");
-            components_id.push_back(GET_MODULE(ComponentLoader).componentIdFromName(name.c_str()));
+            components_id.push_back(GET_MODULE(ComponentInfoManager).getComponentIdByName(name.c_str()));
         }
 
         std::vector<void *> components_ptr;
@@ -43,7 +42,7 @@ void SceneLoader::load(SceneId scene_id) {
         for (int i = 0; const auto &component : components_json) {
             const std::string name = component.at("name");
 
-            GET_MODULE(ComponentLoader).initByJson(components_ptr[i], component);
+            GET_MODULE(ComponentInfoManager).loadByJson(components_ptr[i], component);
 
             i++;
         }

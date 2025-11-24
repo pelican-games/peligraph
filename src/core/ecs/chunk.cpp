@@ -9,8 +9,8 @@ ECSComponentChunk::ECSComponentChunk(std::span<const ComponentId> _component_ids
     std::copy(_component_ids.begin(), _component_ids.end(), std::back_inserter(component_ids));
     for (const auto component : component_ids) {
         component_arrays.insert({
-            component,                                      // type
-            VariedArray(getSizeFromComponentId(component)), // empty array
+            component,                                                                       // type
+            VariedArray(GET_MODULE(ComponentInfoManager).getSizeFromComponentId(component)), // empty array
         });
     }
 }
