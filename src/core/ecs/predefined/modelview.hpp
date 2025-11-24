@@ -1,11 +1,12 @@
 #pragma once
 
+#include "../../renderer/modelinstance.hpp"
 #include <cstdint>
 
 namespace Pelican {
 
 struct SimpleModelViewComponent {
-    uint32_t model_instance_id;
+    ModelInstanceId model_instance_id;
 };
 
 } // namespace Pelican

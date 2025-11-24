@@ -9,9 +9,6 @@
 #include "component.hpp"
 #include <nlohmann/json.hpp>
 
-#include "../ecs/predefined/modelview.hpp"
-#include "../ecs/predefined/transform.hpp"
-
 namespace Pelican {
 
 SceneLoader::SceneLoader() {}
@@ -26,13 +23,6 @@ void SceneLoader::load(SceneId scene_id) {
     auto &ecs = GET_MODULE(ECSCore);
     auto &config = GET_MODULE(ProjectBasicConfig);
 
-    // TODO: load from config file
-    // TODO: separate into asset loader class
-    {
-        auto &loader = GET_MODULE(GltfLoader);
-        auto model = loader.loadGltfBinary("AliciaSolid.vrm");
-    }
-
     // load from json
     const auto scene_data = nlohmann::json::parse(config.sceneDataJson()).at(scene_id);
     const auto &objects = scene_data.at("objects");
@@ -43,12 +33,20 @@ void SceneLoader::load(SceneId scene_id) {
         components_id.reserve(components_json.size());
         for (const auto &component : components_json) {
             const std::string name = component.at("name");
-
-            // TODO
+            components_id.push_back(GET_MODULE(ComponentLoader).componentIdFromName(name.c_str()));
         }
 
         std::vector<void *> components_ptr;
         components_ptr.resize(components_id.size());
+        ecs.allocateEntity(components_id, components_ptr, 1);
+
+        for (int i = 0; const auto &component : components_json) {
+            const std::string name = component.at("name");
+
+            GET_MODULE(ComponentLoader).initByJson(components_ptr[i], component);
+
+            i++;
+        }
     }
 }
 

@@ -4,6 +4,7 @@
 #include "../material/material.hpp"
 #include "../model/modeltemplate.hpp"
 #include "../vkcore/buf.hpp"
+#include "modelinstance.hpp"
 #include <glm/glm.hpp>
 #include <vulkan/vulkan.hpp>
 
@@ -20,12 +21,8 @@ struct DrawIndirectInfo {
     uint32_t draw_count, stride;
 };
 
-struct ModelInstanceId {
-    uint32_t value;
-};
-
 DECLARE_MODULE(PolygonInstanceContainer) {
-    
+
     std::vector<RenderCommand> render_commands;
     BufferWrapper indirect_buf;
     std::vector<DrawIndirectInfo> draw_calls;
@@ -35,7 +32,7 @@ DECLARE_MODULE(PolygonInstanceContainer) {
 
   public:
     PolygonInstanceContainer();
-    ModelInstanceId placeModelInstance(ModelTemplate &model);
+    ModelInstanceId placeModelInstance(ModelTemplate & model);
     void removeModelInstance(ModelInstanceId id);
     void triggerUpdate();
 
