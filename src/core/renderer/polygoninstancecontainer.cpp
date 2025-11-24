@@ -2,6 +2,9 @@
 #include "../vkcore/core.hpp"
 #include <glm/ext/matrix_transform.hpp>
 
+#define GLM_ENABLE_EXPERIMENTAL
+#include <glm/gtx/quaternion.hpp>
+
 namespace Pelican {
 
 static BufferWrapper createIndirectBuf(VulkanManageCore &vkcore, size_t num) {
@@ -62,8 +65,8 @@ void PolygonInstanceContainer::triggerUpdate() {
     // prepare indirect buffer
     std::sort(render_commands.begin(), render_commands.end(),
               [](const RenderCommand &p, const RenderCommand &q) { return p.material.value < q.material.value; });
-    GET_MODULE(VulkanManageCore).writeBuf(indirect_buf, render_commands.data(), 0,
-                                         sizeof(RenderCommand) * render_commands.size());
+    GET_MODULE(VulkanManageCore)
+        .writeBuf(indirect_buf, render_commands.data(), 0, sizeof(RenderCommand) * render_commands.size());
 
     // prepare drawindirect information
     DrawIndirectInfo draw_call{.stride = sizeof(RenderCommand)};
@@ -85,8 +88,13 @@ void PolygonInstanceContainer::triggerUpdate() {
     draw_call.draw_count = render_commands.size() - prev_offset_index;
     draw_calls.push_back(draw_call);
 
-    GET_MODULE(VulkanManageCore).writeBuf(model_data_buffer, model_instances_data.data(), 0,
-                                         sizeof(glm::mat4) * model_instances_data.size());
+    GET_MODULE(VulkanManageCore)
+        .writeBuf(model_data_buffer, model_instances_data.data(), 0, sizeof(glm::mat4) * model_instances_data.size());
+}
+
+void PolygonInstanceContainer::setTrs(ModelInstanceId id, glm::vec3 pos, glm::quat rotation, glm::vec3 scale) {
+    model_instances_data[id.value] =
+        glm::translate(glm::toMat4(rotation) * glm::scale(glm::identity<glm::mat4>(), scale), pos);
 }
 
 const BufferWrapper &PolygonInstanceContainer::getIndirectBuf() const { return indirect_buf; }

@@ -5,6 +5,7 @@
 #include "../model/modeltemplate.hpp"
 #include "../vkcore/buf.hpp"
 #include "modelinstance.hpp"
+#include <glm/ext/quaternion_float.hpp>
 #include <glm/glm.hpp>
 #include <vulkan/vulkan.hpp>
 
@@ -22,7 +23,6 @@ struct DrawIndirectInfo {
 };
 
 DECLARE_MODULE(PolygonInstanceContainer) {
-
     std::vector<RenderCommand> render_commands;
     BufferWrapper indirect_buf;
     std::vector<DrawIndirectInfo> draw_calls;
@@ -35,6 +35,8 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     ModelInstanceId placeModelInstance(ModelTemplate & model);
     void removeModelInstance(ModelInstanceId id);
     void triggerUpdate();
+
+    void setTrs(ModelInstanceId id, glm::vec3 pos, glm::quat rotation, glm::vec3 scale);
 
     const BufferWrapper &getIndirectBuf() const;
     const BufferWrapper &getObjectBuf() const;

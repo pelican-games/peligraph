@@ -6,6 +6,21 @@
 
 namespace Pelican {
 
+DECLARE_MODULE(SimpleModelViewTransformSystem) {
+  public:
+    using QueryComponents = std::tuple<TransformComponent *, SimpleModelViewComponent *>;
+
+    void process(QueryComponents components, size_t count) {
+        auto transforms = std::get<TransformComponent *>(components);
+        auto models = std::get<SimpleModelViewComponent *>(components);
+
+        auto &pic = GET_MODULE(PolygonInstanceContainer);
+        for (int i = 0; i < count; i++) {
+            pic.setTrs(models[i].model_instance_id, transforms[i].pos, transforms[i].rotation, transforms[i].scale);
+        }
+    }
+};
+
 void ECSPredefinedRegistration::reg() {
     // predefined component
     GET_MODULE(ComponentInfoManager)
@@ -71,6 +86,9 @@ void ECSPredefinedRegistration::reg() {
                     model.model_instance_id = pic.placeModelInstance(asset_con.getModelTemplateByName(model_name));
                 },
         });
+
+    GET_MODULE(ECSCore).registerSystem<SimpleModelViewTransformSystem, TransformComponent, SimpleModelViewComponent>(
+        GET_MODULE(SimpleModelViewTransformSystem), {});
 }
 
 } // namespace Pelican
