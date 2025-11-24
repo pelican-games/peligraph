@@ -1,4 +1,4 @@
-#include "component_meta.hpp"
+#include "componentinfo.hpp"
 #include "../asset/model.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
 

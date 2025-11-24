@@ -4,7 +4,7 @@
 #include "../model/gltf.hpp"
 #include "../renderer/camera.hpp"
 
-#include "../ecs/component_meta.hpp"
+#include "../ecs/componentinfo.hpp"
 #include "basicconfig.hpp"
 #include <nlohmann/json.hpp>
 
@@ -40,10 +40,7 @@ void SceneLoader::load(SceneId scene_id) {
         ecs.allocateEntity(components_id, components_ptr, 1);
 
         for (int i = 0; const auto &component : components_json) {
-            const std::string name = component.at("name");
-
             GET_MODULE(ComponentInfoManager).loadByJson(components_ptr[i], component);
-
             i++;
         }
     }

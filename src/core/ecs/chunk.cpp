@@ -1,6 +1,6 @@
 #include "chunk.hpp"
 
-#include "component_meta.hpp"
+#include "componentinfo.hpp"
 #include <iterator>
 
 namespace Pelican {

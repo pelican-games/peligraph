@@ -8,7 +8,7 @@
 #include <vector>
 
 #include "chunk.hpp"
-#include "component_meta.hpp"
+#include "componentinfo.hpp"
 
 namespace Pelican {
 

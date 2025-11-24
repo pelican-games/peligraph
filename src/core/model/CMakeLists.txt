@@ -1,6 +1,5 @@
 target_sources(pelican_core PRIVATE
     vertbufcontainer.cpp
-    modeltemplatecontainer.cpp
     gltf.cpp
 )
 
