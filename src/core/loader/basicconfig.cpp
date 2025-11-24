@@ -36,6 +36,17 @@ ProjectBasicConfig::ProjectBasicConfig() {
 
         scene_data_json = loaded_data;
     }
+    {
+        const std::string asset_data_json_path = config.at("asset_data_json");
+
+        const auto sz = std::filesystem::file_size(asset_data_json_path);
+        std::ifstream f{asset_data_json_path, std::ios_base::binary};
+        std::string loaded_data;
+        loaded_data.resize(sz, '\0');
+        f.read(loaded_data.data(), sz);
+
+        asset_data_json = loaded_data;
+    }
 
     LOG_INFO(logger, "project basic config loaded");
 }
@@ -50,5 +61,6 @@ ProjectBasicConfig::InitialCameraProperty ProjectBasicConfig::initailCameraPrope
 
 std::string ProjectBasicConfig::defaultSceneId() const { return default_scene_id; }
 std::string ProjectBasicConfig::sceneDataJson() const { return scene_data_json; }
+std::string ProjectBasicConfig::assetDataJson() const { return asset_data_json; }
 
 } // namespace Pelican

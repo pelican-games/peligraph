@@ -14,6 +14,7 @@
       "up": [0.0, -1.0, 0.0]
     },
     "default_scene_id": "default_scene",
-    "scene_data_json": "example_scene_data.json"
+    "scene_data_json": "example_scene_data.json",
+    "asset_data_json": "example_asset_data.json"
   }
 }
