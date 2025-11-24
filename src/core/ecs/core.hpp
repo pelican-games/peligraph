@@ -69,7 +69,7 @@ DECLARE_MODULE(ECSCore) {
                         for (auto &chunk : ecs.chunks_storage) {
                             if (chunk.has_all(components))
                                 system.process(std::make_tuple(static_cast<TComponents *>(
-                                                   chunk.get(ComponentIdByType<TComponents>::value))...),
+                                                   chunk.get(ComponentIdByType<TComponents>::value).ptr)...),
                                                chunk.size());
                         }
                     },
