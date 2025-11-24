@@ -15,6 +15,8 @@ namespace Pelican {
 using SystemId = uint64_t;
 
 DECLARE_MODULE(ECSCore) {
+    // Component Management
+  private:
     using ChunkIndex = uint32_t;
     using WithinChunkIndex = uint32_t;
 
@@ -34,6 +36,7 @@ DECLARE_MODULE(ECSCore) {
     void remove(EntityId id);
     void compaction();
 
+    // System Management
   private:
     struct InternalSystemWrapper {
         std::vector<SystemId> depends_list;
