@@ -1,5 +1,6 @@
 #include "loop.hpp"
 
+#include "../ecs/core.hpp"
 #include "../log.hpp"
 #include "../os/window.hpp"
 #include "../vkcore/core.hpp"
@@ -21,6 +22,7 @@ void Loop::run() {
 
     auto &window = GET_MODULE(Window);
     auto &renderer = GET_MODULE(Renderer);
+    auto &ecs = GET_MODULE(ECSCore);
     auto &framerate_adjuster = GET_MODULE(FramerateAdjust);
 
     LOG_INFO(logger, "starting main loop");
@@ -28,6 +30,7 @@ void Loop::run() {
     while (true) {
         if (!window.process())
             break;
+        ecs.update();
         renderer.render();
         framerate_adjuster.wait();
     }
