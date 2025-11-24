@@ -1,8 +1,10 @@
 #include "predefined.hpp"
-#include "../asset/model.hpp"
-#include "../renderer/polygoninstancecontainer.hpp"
 #include "componentinfo.hpp"
 #include "core.hpp"
+
+#include "../asset/model.hpp"
+#include "../renderer/camera.hpp"
+#include "../renderer/polygoninstancecontainer.hpp"
 
 namespace Pelican {
 
@@ -17,6 +19,22 @@ DECLARE_MODULE(SimpleModelViewTransformSystem) {
         auto &pic = GET_MODULE(PolygonInstanceContainer);
         for (int i = 0; i < count; i++) {
             pic.setTrs(models[i].model_instance_id, transforms[i].pos, transforms[i].rotation, transforms[i].scale);
+        }
+    }
+};
+
+DECLARE_MODULE(CameraSystem) {
+  public:
+    using QueryComponents = std::tuple<TransformComponent *, CameraComponent *>;
+
+    void process(QueryComponents components, size_t count) {
+        auto transforms = std::get<TransformComponent *>(components);
+        auto cameraconfig = std::get<CameraComponent *>(components);
+
+        auto &camera = GET_MODULE(Camera);
+        for (int i = 0; i < 1; i++) {
+            camera.setPos(transforms[i].pos);
+            camera.setDir(transforms[i].rotation * glm::vec3{0.0, 0.0, 1.0});
         }
     }
 };
@@ -86,9 +104,20 @@ void ECSPredefinedRegistration::reg() {
                     model.model_instance_id = pic.placeModelInstance(asset_con.getModelTemplateByName(model_name));
                 },
         });
+    GET_MODULE(ComponentInfoManager)
+        .registerComponent(ComponentInfo{
+            .id = 3,
+            .size = sizeof(CameraComponent),
+            .name = "camera",
+            .cb_init = [](void *ptr) {},
+            .cb_deinit = [](void *ptr) {},
+            .cb_load_by_json = [](void *ptr, const nlohmann::json &hint) {},
+        });
 
     GET_MODULE(ECSCore).registerSystem<SimpleModelViewTransformSystem, TransformComponent, SimpleModelViewComponent>(
         GET_MODULE(SimpleModelViewTransformSystem), {});
+    GET_MODULE(ECSCore).registerSystem<CameraSystem, TransformComponent, CameraComponent>(
+        GET_MODULE(CameraSystem), {});
 }
 
 } // namespace Pelican

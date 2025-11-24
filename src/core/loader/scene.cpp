@@ -14,11 +14,6 @@ SceneLoader::SceneLoader() {}
 SceneLoader::~SceneLoader() {}
 
 void SceneLoader::load(SceneId scene_id) {
-    // for test
-    auto &camera = GET_MODULE(Camera);
-    camera.setPos({3.0, 3.0, 3.0});
-    camera.setDir({-3.0, -3.0, -3.0});
-
     auto &ecs = GET_MODULE(ECSCore);
     auto &config = GET_MODULE(ProjectBasicConfig);
 
