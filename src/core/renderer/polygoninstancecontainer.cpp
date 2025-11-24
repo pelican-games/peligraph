@@ -93,8 +93,8 @@ void PolygonInstanceContainer::triggerUpdate() {
 }
 
 void PolygonInstanceContainer::setTrs(ModelInstanceId id, glm::vec3 pos, glm::quat rotation, glm::vec3 scale) {
-    model_instances_data[id.value] =
-        glm::translate(glm::toMat4(rotation) * glm::scale(glm::identity<glm::mat4>(), scale), pos);
+    model_instances_data[id.value] = glm::translate(glm::identity<glm::mat4>(), pos) * glm::toMat4(rotation) *
+                                     glm::scale(glm::identity<glm::mat4>(), scale);
 }
 
 const BufferWrapper &PolygonInstanceContainer::getIndirectBuf() const { return indirect_buf; }
