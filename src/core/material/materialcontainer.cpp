@@ -213,8 +213,7 @@ static vk::UniqueImageView createImageView(vk::Device device, const ImageWrapper
 }
 
 MaterialContainer::MaterialContainer()
-    : device{GET_MODULE(VulkanManageCore).getDevice()},
-      descset_layouts{createDefaultDescriptorSetLayouts(device)},
+    : device{GET_MODULE(VulkanManageCore).getDevice()}, descset_layouts{createDefaultDescriptorSetLayouts(device)},
       pipeline_layout{createDefaultPipelineLayout(GET_MODULE(VulkanManageCore).getDevice(), descset_layouts)},
       nearest_sampler{createSampler(device, vk::Filter::eNearest)},
       linear_sampler{createSampler(device, vk::Filter::eLinear)}, desc_pool{createDescriptorPool(device)} {}
@@ -232,9 +231,9 @@ GlobalTextureId MaterialContainer::registerTexture(vk::Extent3D extent, const vo
     auto &descset = descsets[0];
 
     const auto &vkcore = GET_MODULE(VulkanManageCore);
-    auto image = vkcore.allocImage(
-        extent, vk::Format::eR8G8B8A8Unorm, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
-        vma::MemoryUsage::eAutoPreferDevice, {});
+    auto image = vkcore.allocImage(extent, vk::Format::eR8G8B8A8Unorm,
+                                   vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
+                                   vma::MemoryUsage::eAutoPreferDevice, {});
 
     auto &vkutil = GET_MODULE(VulkanUtils);
     vkutil.safeTransferMemoryToImage(image, data, extent.width * extent.height * extent.depth * 4,
@@ -304,6 +303,10 @@ void MaterialContainer::setModelMatBuf(const BufferWrapper &buf) {
     device.updateDescriptorSets({write_descset}, {});
 
     model_mat_buf_descset = std::move(descset);
+}
+
+bool MaterialContainer::isRenderRequired(int pass_id, GlobalMaterialId material) const {
+    return true; // TODO
 }
 
 void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, int pass_id, GlobalMaterialId material_id,

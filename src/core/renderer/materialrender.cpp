@@ -34,6 +34,8 @@ void MaterialRenderer::render(vk::CommandBuffer cmd_buf, int pass_id) const {
 
     GlobalMaterialId current_material_id{-1};
     for (const auto &draw_call : draw_calls) {
+        if (!material_container.isRenderRequired(pass_id, draw_call.material))
+            continue;
         material_container.bindResource(cmd_buf, pass_id, draw_call.material, current_material_id);
         current_material_id = draw_call.material;
         cmd_buf.drawIndexedIndirect(indirect_buf.buffer.get(), draw_call.offset, draw_call.draw_count,
