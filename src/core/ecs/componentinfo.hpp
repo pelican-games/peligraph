@@ -7,11 +7,7 @@
 #include <unordered_map>
 
 #include "component.hpp"
-
 #include "entity.hpp"
-#include "predefined/camera.hpp"
-#include "predefined/modelview.hpp"
-#include "predefined/transform.hpp"
 
 namespace Pelican {
 
@@ -48,10 +44,6 @@ template <class T> struct ComponentIdByType {
         static constexpr ComponentId value = _id;                                                                      \
     };
 
-// predefined
 DECLARE_COMPONENT(EntityId, 0);
-DECLARE_COMPONENT(TransformComponent, 1);
-DECLARE_COMPONENT(SimpleModelViewComponent, 2);
-DECLARE_COMPONENT(CameraComponent, 3);
 
 } // namespace Pelican
