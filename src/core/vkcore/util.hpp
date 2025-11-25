@@ -8,7 +8,7 @@
 namespace Pelican {
 
 DECLARE_MODULE(VulkanUtils) {
-    
+
     vk::Device device;
     std::array<CommandBufWrapper, 8> genpurpose_cmd_bufs;
     uint32_t genpurpose_cmd_bufs_index;
@@ -16,7 +16,7 @@ DECLARE_MODULE(VulkanUtils) {
   public:
     VulkanUtils();
 
-    template <class F> void executeOneTimeCmd(F &&f, bool wait = false) {
+    template <class F> void executeOneTimeCmd(F && f, bool wait = false) {
         const auto &cmd_buf = genpurpose_cmd_bufs[genpurpose_cmd_bufs_index];
         cmd_buf.recordBegin();
         f(*cmd_buf);
@@ -31,6 +31,8 @@ DECLARE_MODULE(VulkanUtils) {
         vk::PipelineStageFlags src_stage, dst_stage;
         vk::AccessFlags src_access, dst_access;
     };
+    void changeImageLayoutCmd(vk::CommandBuffer cmd_buf, const ImageWrapper &image, vk::ImageLayout old_layout,
+                              vk::ImageLayout new_layout, const ChangeImageLayoutInfo &info);
     void changeImageLayout(const ImageWrapper &image, vk::ImageLayout old_layout, vk::ImageLayout new_layout,
                            const ChangeImageLayoutInfo &info);
 

@@ -35,6 +35,11 @@ static void changeImageLayoutCommand(vk::CommandBuffer cmd_buf, const ImageWrapp
     cmd_buf.pipelineBarrier(info.src_stage, info.dst_stage, {}, {}, {}, {barrior});
 }
 
+void VulkanUtils::changeImageLayoutCmd(vk::CommandBuffer cmd_buf, const ImageWrapper &image, vk::ImageLayout old_layout,
+                                       vk::ImageLayout new_layout, const ChangeImageLayoutInfo &info) {
+    changeImageLayoutCommand(cmd_buf, image, old_layout, new_layout, info);
+}
+
 void VulkanUtils::changeImageLayout(const ImageWrapper &image, vk::ImageLayout old_layout, vk::ImageLayout new_layout,
                                     const ChangeImageLayoutInfo &info) {
     executeOneTimeCmd(
