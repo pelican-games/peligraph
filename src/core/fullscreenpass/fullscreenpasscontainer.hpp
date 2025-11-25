@@ -6,6 +6,8 @@
 namespace Pelican {
 
 DECLARE_MODULE(FullscreenPassContainer) {
+    // TODO
+
   public:
     void registerFullscreenPass(/* TODO */);
     void bindResource(vk::CommandBuffer cmd_buf, int pass_id);
