@@ -1,4 +1,5 @@
 #include "standardmaterialresource.hpp"
+#include "../shader/shadercontainer.hpp"
 #include "battery/embed.hpp"
 #include "materialcontainer.hpp"
 
@@ -6,12 +7,13 @@ namespace Pelican {
 
 StandardMaterialResource::StandardMaterialResource() {
     auto &mat_con = GET_MODULE(MaterialContainer);
+    auto &shader_con = GET_MODULE(ShaderContainer);
 
     const auto vert_shader = b::embed<"default.vert.spv">();
-    std_vert = mat_con.registerShader(vert_shader.length(), vert_shader.data());
+    std_vert = shader_con.registerShader(vert_shader.length(), vert_shader.data());
 
     const auto frag_shader = b::embed<"default.frag.spv">();
-    std_frag = mat_con.registerShader(frag_shader.length(), frag_shader.data());
+    std_frag = shader_con.registerShader(frag_shader.length(), frag_shader.data());
 
     uint8_t texdata_transparent[4 * 16];
     for (int i = 0; i < 16; i++) {

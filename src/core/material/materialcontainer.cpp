@@ -1,5 +1,6 @@
 #include "materialcontainer.hpp"
 #include "../model/vertbufcontainer.hpp"
+#include "../shader/shadercontainer.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/util.hpp"
 
@@ -186,14 +187,6 @@ static vk::UniqueSampler createSampler(vk::Device device, vk::Filter filter) {
     return device.createSamplerUnique(create_info);
 }
 
-static vk::UniqueShaderModule createShaderModule(vk::Device device, size_t len, const char *data) {
-    vk::ShaderModuleCreateInfo create_info;
-    create_info.codeSize = len;
-    create_info.pCode = reinterpret_cast<const uint32_t *>(data);
-
-    return device.createShaderModuleUnique(create_info);
-}
-
 static vk::UniqueImageView createImageView(vk::Device device, const ImageWrapper &image) {
     vk::ImageViewCreateInfo create_info;
     create_info.image = image.image.get();
@@ -219,9 +212,6 @@ MaterialContainer::MaterialContainer()
       linear_sampler{createSampler(device, vk::Filter::eLinear)}, desc_pool{createDescriptorPool(device)} {}
 MaterialContainer::~MaterialContainer() {}
 
-GlobalShaderId MaterialContainer::registerShader(size_t len, const char *data) {
-    return shaders.reg(createShaderModule(device, len, data));
-}
 GlobalTextureId MaterialContainer::registerTexture(vk::Extent3D extent, const void *data) {
     vk::DescriptorSetAllocateInfo desc_alloc_info;
     desc_alloc_info.descriptorPool = desc_pool.get();
@@ -270,8 +260,9 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     if (pipelines.find(pipeline_id) == pipelines.end()) {
         pipelines.insert({
             pipeline_id,
-            createDefaultPipeline(device, pipeline_layout.get(), shaders.get(info.vert_shader).get(),
-                                  shaders.get(info.frag_shader).get(), VertBufContainer::getDescription()),
+            createDefaultPipeline(
+                device, pipeline_layout.get(), GET_MODULE(ShaderContainer).getShader(info.vert_shader),
+                GET_MODULE(ShaderContainer).getShader(info.frag_shader), VertBufContainer::getDescription()),
         });
     }
 

@@ -38,7 +38,6 @@ DECLARE_MODULE(MaterialContainer) {
         PipelineId pipeline;
         GlobalTextureId base_color_texture;
     };
-    ResourceContainer<GlobalShaderId, vk::UniqueShaderModule> shaders;
     std::unordered_map<PipelineId, vk::UniquePipeline, PipelineId::Hash> pipelines;
     ResourceContainer<GlobalMaterialId, InternalMaterialInfo> materials;
 
@@ -48,7 +47,6 @@ DECLARE_MODULE(MaterialContainer) {
     MaterialContainer();
     ~MaterialContainer();
 
-    GlobalShaderId registerShader(size_t len, const char *data);
     GlobalTextureId registerTexture(vk::Extent3D extent, const void *data);
     GlobalMaterialId registerMaterial(MaterialInfo info);
 

@@ -2,13 +2,13 @@
 
 #include "../container.hpp"
 #include "../handle.hpp"
+#include "../shader/shader.hpp"
 #include <span>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
 
 PELICAN_DEFINE_HANDLE(GlobalMaterialId, int);
-PELICAN_DEFINE_HANDLE(GlobalShaderId, int);
 PELICAN_DEFINE_HANDLE(GlobalTextureId, int);
 
 struct MaterialInfo {
