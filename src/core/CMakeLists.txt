@@ -14,6 +14,7 @@ add_subdirectory(vkcore)
 add_subdirectory(material)
 add_subdirectory(model)
 add_subdirectory(renderer)
+add_subdirectory(fullscreenpass)
 
 target_sources(pelican_core PRIVATE)
 
