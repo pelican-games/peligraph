@@ -1,12 +1,10 @@
 #pragma once
 
 #include "../container.hpp"
+#include "renderingpass.hpp"
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
-
-using RenderingPassId = uint64_t;
-using PassId = uint64_t;
 
 DECLARE_MODULE(RenderingPassContainer) {
   public:

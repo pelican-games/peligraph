@@ -45,7 +45,7 @@ void Renderer::render() {
 
         cmd_buf.beginRendering(render_info);
 
-        mat_renderer.render(cmd_buf, 0);
+        mat_renderer.render(cmd_buf, 0 /* TODO */);
 
         cmd_buf.endRendering();
     }

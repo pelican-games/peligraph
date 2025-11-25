@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../container.hpp"
+#include "../renderingpass/renderingpass.hpp"
 #include "../resourcecontainer.hpp"
 #include "../vkcore/buf.hpp"
 #include "../vkcore/image.hpp"
@@ -17,7 +18,6 @@ struct PushConstantStruct {
 };
 
 DECLARE_MODULE(MaterialContainer) {
-    
 
     vk::Device device;
     std::vector<vk::UniqueDescriptorSetLayout> descset_layouts;
@@ -54,8 +54,9 @@ DECLARE_MODULE(MaterialContainer) {
 
     void setModelMatBuf(const BufferWrapper &buf);
 
-    bool isRenderRequired(int pass_id, GlobalMaterialId material) const;
-    void bindResource(vk::CommandBuffer cmd_buf, int pass_id, GlobalMaterialId material, GlobalMaterialId prev_material_id) const;
+    bool isRenderRequired(PassId pass_id, GlobalMaterialId material) const;
+    void bindResource(vk::CommandBuffer cmd_buf, PassId pass_id, GlobalMaterialId material,
+                      GlobalMaterialId prev_material_id) const;
     vk::PipelineLayout getPipelineLayout() const;
 };
 

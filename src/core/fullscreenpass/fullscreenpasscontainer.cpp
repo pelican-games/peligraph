@@ -5,7 +5,7 @@ namespace Pelican {
 void FullscreenPassContainer::registerFullscreenPass(/* TODO */) {
     // TODO
 }
-void FullscreenPassContainer::bindResource(vk::CommandBuffer cmd_buf, int pass_id) {
+void FullscreenPassContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pass_id) {
     // TODO
 }
 

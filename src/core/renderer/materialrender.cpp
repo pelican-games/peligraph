@@ -14,7 +14,7 @@ MaterialRenderer::MaterialRenderer() {
     material_container.setModelMatBuf(instance_container.getObjectBuf());
 }
 
-void MaterialRenderer::render(vk::CommandBuffer cmd_buf, int pass_id) const {
+void MaterialRenderer::render(vk::CommandBuffer cmd_buf, PassId pass_id) const {
     auto &instance_container = GET_MODULE(PolygonInstanceContainer);
     const auto &vert_buf_container = GET_MODULE(VertBufContainer);
     const auto &material_container = GET_MODULE(MaterialContainer);

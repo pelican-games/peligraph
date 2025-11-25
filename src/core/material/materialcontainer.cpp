@@ -305,11 +305,11 @@ void MaterialContainer::setModelMatBuf(const BufferWrapper &buf) {
     model_mat_buf_descset = std::move(descset);
 }
 
-bool MaterialContainer::isRenderRequired(int pass_id, GlobalMaterialId material) const {
+bool MaterialContainer::isRenderRequired(PassId pass_id, GlobalMaterialId material) const {
     return true; // TODO
 }
 
-void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, int pass_id, GlobalMaterialId material_id,
+void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pass_id, GlobalMaterialId material_id,
                                      GlobalMaterialId prev_material_id) const {
     const auto &material = materials.get(material_id);
     const auto &texture = textures.get(material.base_color_texture);
