@@ -1,23 +1,27 @@
 #include "pelican_core.hpp"
-#include "appflow/loop.hpp"
-#include "log.hpp"
-#include "vkcore/core.hpp"
+#include "../appflow/loop.hpp"
+#include "../log.hpp"
+#include "../vkcore/core.hpp"
 
-#include "ecs/predefined.hpp"
-#include "loader/basicconfig.hpp"
-#include "loader/projectsrc.hpp"
-#include "loader/scene.hpp"
+#include "../ecs/predefined.hpp"
+#include "../loader/basicconfig.hpp"
+#include "../loader/projectsrc.hpp"
+#include "../loader/scene.hpp"
 
 #include "battery/embed.hpp"
 
 namespace Pelican {
+
+PelicanCore::PelicanCore() { settings_str = b::embed<"default_config.json">().str(); }
+
+PelicanCore::PelicanCore(std::string _settings_str) { settings_str = _settings_str; }
 
 void PelicanCore::run() {
     try {
         setupLogger();
 
         FastModuleContainer container;
-        GET_MODULE(ProjectSource).setSourceByData(b::embed<"default_config.json">().str());
+        GET_MODULE(ProjectSource).setSourceByData(settings_str);
 
         GET_MODULE(ECSPredefinedRegistration).reg();
         GET_MODULE(SceneLoader).load(GET_MODULE(ProjectBasicConfig).defaultSceneId());

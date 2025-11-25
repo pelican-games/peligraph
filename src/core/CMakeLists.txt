@@ -1,4 +1,4 @@
-add_library(pelican_core pelican_core.cpp log.cpp)
+add_library(pelican_core log.cpp)
 
 target_link_libraries(pelican_core PRIVATE quill)
 set_target_properties(pelican_core PROPERTIES CXX_STANDARD 20)
@@ -20,7 +20,8 @@ add_subdirectory(fullscreenpass)
 
 target_sources(pelican_core PRIVATE)
 
-target_include_directories(pelican_core INTERFACE .)
+add_subdirectory(userpublic)
+target_include_directories(pelican_core INTERFACE ./userpublic)
 
 FetchContent_Declare(
   vma
