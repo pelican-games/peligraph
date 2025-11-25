@@ -54,7 +54,7 @@ DECLARE_MODULE(MaterialContainer) {
 
     void setModelMatBuf(const BufferWrapper &buf);
 
-    void bindResource(vk::CommandBuffer cmd_buf, GlobalMaterialId material, GlobalMaterialId prev_material_id) const;
+    void bindResource(vk::CommandBuffer cmd_buf, int pass_id, GlobalMaterialId material, GlobalMaterialId prev_material_id) const;
     vk::PipelineLayout getPipelineLayout() const;
 };
 

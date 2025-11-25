@@ -6,11 +6,9 @@
 namespace Pelican {
 
 DECLARE_MODULE(MaterialRenderer) {
-    
-
   public:
     MaterialRenderer();
-    void render(vk::CommandBuffer cmd_buf) const;
+    void render(vk::CommandBuffer cmd_buf, int pass_id) const;
 };
 
 } // namespace Pelican

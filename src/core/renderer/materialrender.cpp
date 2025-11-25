@@ -14,7 +14,7 @@ MaterialRenderer::MaterialRenderer() {
     material_container.setModelMatBuf(instance_container.getObjectBuf());
 }
 
-void MaterialRenderer::render(vk::CommandBuffer cmd_buf) const {
+void MaterialRenderer::render(vk::CommandBuffer cmd_buf, int pass_id) const {
     auto &instance_container = GET_MODULE(PolygonInstanceContainer);
     const auto &vert_buf_container = GET_MODULE(VertBufContainer);
     const auto &material_container = GET_MODULE(MaterialContainer);
@@ -34,7 +34,7 @@ void MaterialRenderer::render(vk::CommandBuffer cmd_buf) const {
 
     GlobalMaterialId current_material_id{-1};
     for (const auto &draw_call : draw_calls) {
-        material_container.bindResource(cmd_buf, draw_call.material, current_material_id);
+        material_container.bindResource(cmd_buf, pass_id, draw_call.material, current_material_id);
         current_material_id = draw_call.material;
         cmd_buf.drawIndexedIndirect(indirect_buf.buffer.get(), draw_call.offset, draw_call.draw_count,
                                     draw_call.stride);
