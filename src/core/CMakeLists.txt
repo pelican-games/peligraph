@@ -13,6 +13,7 @@ add_subdirectory(loader)
 add_subdirectory(vkcore)
 add_subdirectory(material)
 add_subdirectory(model)
+add_subdirectory(renderingpass)
 add_subdirectory(renderer)
 add_subdirectory(fullscreenpass)
 
