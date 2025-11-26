@@ -8,11 +8,9 @@
 #include "../loader/projectsrc.hpp"
 #include "../loader/scene.hpp"
 
-#include "battery/embed.hpp"
-
 namespace Pelican {
 
-PelicanCore::PelicanCore() { settings_str = b::embed<"default_config.json">().str(); }
+PelicanCore::PelicanCore() { settings_str = "{}"; }
 
 PelicanCore::PelicanCore(std::string _settings_str) { settings_str = _settings_str; }
 
