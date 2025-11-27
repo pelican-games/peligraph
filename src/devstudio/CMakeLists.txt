@@ -1,4 +1,6 @@
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/dist$<$<CONFIG:Debug>:_debug>)
 add_executable(pelican_studio main.cpp)
+unset(CMAKE_RUNTIME_OUTPUT_DIRECTORY)
 
 target_link_libraries(pelican_studio PRIVATE pelican_core)
 
