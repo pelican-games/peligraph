@@ -7,3 +7,9 @@ set_property(TARGET app PROPERTY RUNTIME_OUTPUT_DIRECTORY ${PELICAN_OUTPUT_DIR})
 set_property(TARGET app PROPERTY RUNTIME_OUTPUT_DIRECTORY_RELEASE ${PELICAN_OUTPUT_DIR})
 set_property(TARGET app PROPERTY OUTPUT_NAME {{executable_name}})
 set_property(TARGET app PROPERTY OUTPUT_NAME_RELEASE {{executable_name}})
+
+set_target_properties(app PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+target_include_directories(app PRIVATE ${PELICAN_INCLUDE_DIR})
+target_link_directories(app PRIVATE ${PELICAN_LIB_DIR})
+target_link_libraries(app PRIVATE pelican_core vulkan-1)

@@ -34,6 +34,7 @@ int main(int argc, char *argv[]) {
     bool mode_prebuild = program.get<bool>("--prebuild");
     bool mode_build = program.get<bool>("--build");
 
+    std::filesystem::path pelican_path = std::filesystem::absolute(argv[0]).parent_path();
     std::filesystem::path project_path = std::filesystem::absolute(program.get("dir"));
     std::filesystem::path output_path = std::filesystem::absolute(program.get("-o"));
     if (output_path == "") {
@@ -45,6 +46,7 @@ int main(int argc, char *argv[]) {
     mustache::data dat;
     dat.set("project_name", "myproject");
     dat.set("executable_name", "hoge");
+    dat.set("settings", "{}");
 
     create_file(appended(build_path, "CMakeLists.txt"),
                 mustache::mustache{b::embed<"CMakeLists.txt.template">().str()}.render(dat));
@@ -54,7 +56,9 @@ int main(int argc, char *argv[]) {
     {
         std::ostringstream build_script;
         build_script << "cmake " << build_path.string() << " -B " << cmake_build_path.string()
-                     << " -DPELICAN_OUTPUT_DIR=" << output_path.string();
+                     << " -DPELICAN_OUTPUT_DIR=" << output_path.string()
+                     << " -DPELICAN_LIB_DIR=" << appended(pelican_path, "lib").string()
+                     << " -DPELICAN_INCLUDE_DIR=" << appended(pelican_path, "lib/include").string();
         std::system(build_script.str().c_str());
     }
     {
