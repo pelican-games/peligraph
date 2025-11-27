@@ -1,4 +1,7 @@
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/dist$<$<CONFIG:Debug>:_debug>/lib)
+set(PELICAN_LIB_DIR ${CMAKE_SOURCE_DIR}/dist$<$<CONFIG:Debug>:_debug>/lib/bin)
+set(PELICAN_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/dist$<$<CONFIG:Debug>:_debug>/lib/include)
+
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${PELICAN_LIB_DIR})
 add_library(pelican_core log.cpp)
 unset(CMAKE_ARCHIVE_OUTPUT_DIRECTORY)
 set_target_properties(pelican_core PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -44,20 +47,26 @@ add_subdirectory(userpublic)
 target_include_directories(pelican_core INTERFACE ./userpublic)
 
 # dependencies
-get_target_property(PELICAN_DEPENDS pelican_core LINK_LIBRARIES)
-list(FILTER PELICAN_DEPENDS EXCLUDE REGEX "::@")
-foreach(DEP IN LISTS PELICAN_DEPENDS)
-message(STATUS "pelican depdends: ${DEP}")
+get_target_property(PELICAN_DEPENDS_RAW pelican_core LINK_LIBRARIES)
+foreach(DEP IN LISTS PELICAN_DEPENDS_RAW)
+  if(TARGET ${DEP})
+    get_target_property(DEPTYPE ${DEP} TYPE)
+    if(${DEPTYPE} MATCHES "STATIC_LIBRARY")
+      message(STATUS "pelican depdends: ${DEP}")
+      list(APPEND PELICAN_DEPENDS $<TARGET_FILE:${DEP}>)
+    endif()
+  elseif(EXISTS ${DEP})
+    list(APPEND PELICAN_DEPENDS ${DEP})
+    message(STATUS "pelican depdends: ${DEP}")
+  endif()
 endforeach()
 
-set(PELICAN_LIB_DIR ${CMAKE_SOURCE_DIR}/dist$<$<CONFIG:Debug>:_debug>/lib)
-set(PELICAN_INCLUDE_DIR ${PELICAN_LIB_DIR}/include)
 file(GLOB PELICAN_PUBLIC_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/userpublic/*.hpp)
 
 add_custom_command(
   TARGET pelican_core POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E make_directory ${PELICAN_INCLUDE_DIR} ${PELICAN_LIB_DIR}
   COMMAND ${CMAKE_COMMAND} -E copy_if_different ${PELICAN_PUBLIC_HEADERS} ${PELICAN_INCLUDE_DIR}
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different ${Vulkan_LIBRARY} ${PELICAN_LIB_DIR}
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different ${PELICAN_DEPENDS} ${PELICAN_LIB_DIR}
   COMMAND_EXPAND_LISTS
 )

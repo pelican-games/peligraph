@@ -57,7 +57,7 @@ int main(int argc, char *argv[]) {
         std::ostringstream build_script;
         build_script << "cmake " << build_path.string() << " -B " << cmake_build_path.string()
                      << " -DPELICAN_OUTPUT_DIR=" << output_path.string()
-                     << " -DPELICAN_LIB_DIR=" << appended(pelican_path, "lib").string()
+                     << " -DPELICAN_LIB_DIR=" << appended(pelican_path, "lib/bin").string()
                      << " -DPELICAN_INCLUDE_DIR=" << appended(pelican_path, "lib/include").string();
         std::system(build_script.str().c_str());
     }
