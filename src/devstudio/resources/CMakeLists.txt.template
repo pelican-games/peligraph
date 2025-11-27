@@ -1,0 +1,9 @@
+cmake_minimum_required(VERSION 3.5)
+
+project({{project_name}})
+
+add_executable(app main.cpp)
+set_property(TARGET app PROPERTY RUNTIME_OUTPUT_DIRECTORY ${PELICAN_OUTPUT_DIR})
+set_property(TARGET app PROPERTY RUNTIME_OUTPUT_DIRECTORY_RELEASE ${PELICAN_OUTPUT_DIR})
+set_property(TARGET app PROPERTY OUTPUT_NAME {{executable_name}})
+set_property(TARGET app PROPERTY OUTPUT_NAME_RELEASE {{executable_name}})
