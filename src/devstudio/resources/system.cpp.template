@@ -1,0 +1,9 @@
+{{origin}}
+
+#include <systeminfo.hpp>
+
+void __registerSystem_{{filename}}() {
+    {{#systems}}
+    registerSystem({{system_name}})
+    {{/systems}}
+}

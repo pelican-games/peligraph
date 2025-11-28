@@ -1,0 +1,9 @@
+{{origin}}
+
+#include <componentinfo.hpp>
+
+void __registerComponent_{{filename}}() {
+    {{#components}}
+    registerComponent({{component_name}})
+    {{/components}}
+}
