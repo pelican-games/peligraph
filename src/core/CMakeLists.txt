@@ -42,6 +42,8 @@ target_link_libraries(pelican_core PRIVATE ${Vulkan_LIBRARIES})
 target_link_libraries(pelican_core PRIVATE VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_link_libraries(pelican_core PRIVATE glm)
 
+target_link_libraries(pelican_core PRIVATE nlohmann_json)
+
 # list up dependencies
 get_target_property(PELICAN_DEPENDS_RAW pelican_core LINK_LIBRARIES)
 foreach(DEP IN LISTS PELICAN_DEPENDS_RAW)
