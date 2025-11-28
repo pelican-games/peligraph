@@ -12,7 +12,8 @@ endif()
 
 include(FetchContent)
 
-# Logging
+# external dependencies
+## Logging
 FetchContent_Declare(
   quill
   GIT_REPOSITORY https://github.com/odygrd/quill.git
@@ -20,7 +21,7 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(quill)
 
-# embed
+## embed
 set(B_PRODUCTION_MODE ON)
 FetchContent_Declare(
   battery-embed
@@ -29,7 +30,7 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(battery-embed)
 
-# vector operation
+## vector operation
 FetchContent_Declare(
   glm
   GIT_REPOSITORY https://github.com/g-truc/glm.git
@@ -37,16 +38,29 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(glm)
 
+## json
+FetchContent_Declare(
+  nlohmann
+  GIT_REPOSITORY https://github.com/nlohmann/json.git
+  GIT_TAG        v3.12.0
+)
+FetchContent_MakeAvailable(nlohmann)
+target_link_libraries(pelican_core PRIVATE nlohmann_json)
+
+## vulkan
 find_package(Vulkan)
 
+# main
+## pelican lib
 add_subdirectory(src/core)
 add_subdirectory(src/player)
 
+## pelican studio
 if(NOT SKIP_DEVSTUDIO)
 add_subdirectory(src/devstudio)
 endif()
 
-# test
+## test
 if(NOT SKIP_TEST)
 enable_testing()
 add_subdirectory(test)
