@@ -45,7 +45,6 @@ FetchContent_Declare(
   GIT_TAG        v3.12.0
 )
 FetchContent_MakeAvailable(nlohmann)
-target_link_libraries(pelican_core PRIVATE nlohmann_json)
 
 ## vulkan
 find_package(Vulkan)
