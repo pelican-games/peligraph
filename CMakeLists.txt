@@ -45,3 +45,9 @@ add_subdirectory(src/player)
 if(NOT SKIP_DEVSTUDIO)
 add_subdirectory(src/devstudio)
 endif()
+
+# test
+if(NOT SKIP_TEST)
+enable_testing()
+add_subdirectory(test)
+endif()
