@@ -8,6 +8,8 @@
 
 #include "component.hpp"
 #include "entity.hpp"
+#include "predefined/transform.hpp"
+#include "predefined/modelview.hpp"
 
 namespace Pelican {
 
@@ -35,9 +37,7 @@ DECLARE_MODULE(ComponentInfoManager) {
     void loadByJson(void *ptr, const nlohmann::json &json) const;
 };
 
-template <class T> struct ComponentIdByType {
-    static constexpr ComponentId value;
-};
+template <class T> struct ComponentIdByType;
 
 #define DECLARE_COMPONENT(_name, _id)                                                                                  \
     template <> struct ComponentIdByType<_name> {                                                                      \
@@ -45,5 +45,19 @@ template <class T> struct ComponentIdByType {
     };
 
 DECLARE_COMPONENT(EntityId, 0);
+DECLARE_COMPONENT(TransformComponent, 1);
+DECLARE_COMPONENT(SimpleModelViewComponent, 2);
+
+// [BENCHMARK_ONLY] Start
+struct VelocityComponent {
+    glm::vec3 velocity;
+};
+struct RenderComponent {
+    uint32_t mesh_id;
+    uint32_t material_id;
+};
+DECLARE_COMPONENT(VelocityComponent, 3);
+DECLARE_COMPONENT(RenderComponent, 4);
+// [BENCHMARK_ONLY] End
 
 } // namespace Pelican
