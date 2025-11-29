@@ -23,7 +23,7 @@ add_subdirectory(userpublic)
 target_include_directories(pelican_core INTERFACE ./userpublic)
 
 # external libraries
-target_link_libraries(pelican_core PRIVATE quill)
+target_link_libraries(pelican_core PUBLIC quill)
 FetchContent_Declare(
   vma
   GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
@@ -42,7 +42,7 @@ target_link_libraries(pelican_core PRIVATE ${Vulkan_LIBRARIES})
 target_link_libraries(pelican_core PRIVATE VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_link_libraries(pelican_core PUBLIC glm) # [BENCHMARK_ONLY] Changed PRIVATE to PUBLIC
 
-target_link_libraries(pelican_core PRIVATE nlohmann_json)
+target_link_libraries(pelican_core PUBLIC nlohmann_json)
 
 # list up dependencies
 get_target_property(PELICAN_DEPENDS_RAW pelican_core LINK_LIBRARIES)

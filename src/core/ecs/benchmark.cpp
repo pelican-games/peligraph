@@ -1,6 +1,7 @@
 #include "core.hpp"
 #include "../profiler.hpp"
 #include "componentinfo.hpp"
+#include "predefined.hpp"
 #include "predefined/transform.hpp"
 #include <iostream>
 #include <vector>
@@ -37,8 +38,10 @@ struct RenderSystem {
 };
 
 int main() {
+    Pelican::setupLogger();
+
     // Initialize ComponentInfoManager
-    ComponentInfoManager componentInfoManager;
+    auto& componentInfoManager = GET_MODULE(ComponentInfoManager);
     componentInfoManager.registerComponent(ComponentInfo{
         .id = ComponentIdByType<EntityId>::value,
         .size = sizeof(EntityId),
