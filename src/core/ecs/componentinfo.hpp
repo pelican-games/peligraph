@@ -5,11 +5,10 @@
 #include <cstdint>
 #include <nlohmann/json.hpp>
 #include <unordered_map>
+#include <glm/glm.hpp>
 
 #include "component.hpp"
 #include "entity.hpp"
-#include "predefined/transform.hpp"
-#include "predefined/modelview.hpp"
 
 namespace Pelican {
 
@@ -45,8 +44,6 @@ template <class T> struct ComponentIdByType;
     };
 
 DECLARE_COMPONENT(EntityId, 0);
-DECLARE_COMPONENT(TransformComponent, 1);
-DECLARE_COMPONENT(SimpleModelViewComponent, 2);
 
 // [BENCHMARK_ONLY] Start
 struct VelocityComponent {
@@ -56,8 +53,8 @@ struct RenderComponent {
     uint32_t mesh_id;
     uint32_t material_id;
 };
-DECLARE_COMPONENT(VelocityComponent, 3);
-DECLARE_COMPONENT(RenderComponent, 4);
+DECLARE_COMPONENT(VelocityComponent, 10);
+DECLARE_COMPONENT(RenderComponent, 11);
 // [BENCHMARK_ONLY] End
 
 } // namespace Pelican
