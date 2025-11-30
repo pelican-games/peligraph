@@ -1,4 +1,3 @@
-set(PELICAN_INSTALL_DIR ${CMAKE_SOURCE_DIR}/dist$<$<CONFIG:Debug>:_debug>)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PELICAN_INSTALL_DIR})
 add_executable(pelican_cli main.cpp)
 unset(CMAKE_RUNTIME_OUTPUT_DIRECTORY)

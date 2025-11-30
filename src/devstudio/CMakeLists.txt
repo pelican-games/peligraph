@@ -1,7 +1,6 @@
 find_package(Qt6 REQUIRED COMPONENTS Core Widgets)
 qt_standard_project_setup()
 
-set(PELICAN_INSTALL_DIR ${CMAKE_SOURCE_DIR}/dist$<$<CONFIG:Debug>:_debug>)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PELICAN_INSTALL_DIR})
 qt_add_executable(pelican_studio main.cpp mainwindow.cpp)
 unset(CMAKE_RUNTIME_OUTPUT_DIRECTORY)

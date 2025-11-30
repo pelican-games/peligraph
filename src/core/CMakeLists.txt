@@ -44,7 +44,8 @@ target_link_libraries(pelican_core PRIVATE glm)
 
 target_link_libraries(pelican_core PRIVATE nlohmann_json)
 
-# list up dependencies
+# build distributable dir
+## list up static lib dependencies
 get_target_property(PELICAN_DEPENDS_RAW pelican_core LINK_LIBRARIES)
 foreach(DEP IN LISTS PELICAN_DEPENDS_RAW)
   if(TARGET ${DEP})
@@ -59,11 +60,10 @@ foreach(DEP IN LISTS PELICAN_DEPENDS_RAW)
   endif()
 endforeach()
 
-# build distributable dir
-set(PELICAN_LIB_DIR ${CMAKE_SOURCE_DIR}/dist$<$<CONFIG:Debug>:_debug>/lib/bin)
-set(PELICAN_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/dist$<$<CONFIG:Debug>:_debug>/lib/include)
+## list up public headers
 file(GLOB PELICAN_PUBLIC_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/userpublic/*.hpp)
 
+## copy
 add_custom_command(
   TARGET pelican_core POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E make_directory ${PELICAN_INCLUDE_DIR} ${PELICAN_LIB_DIR}

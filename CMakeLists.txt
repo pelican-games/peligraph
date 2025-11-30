@@ -12,6 +12,11 @@ endif()
 
 include(FetchContent)
 
+# variable definition
+set(PELICAN_INSTALL_DIR ${CMAKE_SOURCE_DIR}/dist$<$<CONFIG:Debug>:_debug>)
+set(PELICAN_LIB_DIR ${PELICAN_INSTALL_DIR}/lib/bin)
+set(PELICAN_INCLUDE_DIR ${PELICAN_INSTALL_DIR}/lib/include)
+
 # external dependencies
 ## Logging
 FetchContent_Declare(
