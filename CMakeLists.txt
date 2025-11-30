@@ -46,6 +46,14 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(nlohmann)
 
+## argparse
+FetchContent_Declare(
+  argparse
+  GIT_REPOSITORY https://github.com/p-ranav/argparse.git
+  GIT_TAG        v3.2
+)
+FetchContent_MakeAvailable(argparse)
+
 ## vulkan
 find_package(Vulkan)
 
@@ -53,6 +61,7 @@ find_package(Vulkan)
 ## pelican lib
 add_subdirectory(src/core)
 add_subdirectory(src/player)
+add_subdirectory(src/devcli)
 
 ## pelican studio
 if(NOT SKIP_DEVSTUDIO)
