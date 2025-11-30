@@ -2,10 +2,15 @@
 
 game engine
 
+## Requisites
+
+- Vulkan <= 1.4.321
+- Qt6
+
 ## How to build
 
 ```sh
-cmake . -B build
+cmake . -B build -DCMAKE_PREFIX_PATH=(Qt install path)   # ex. CMAKE_PREFIX_PATH=C:/Qt/6.10.2/msvc2022_64
 cmake --build ./build
 ```
 
@@ -22,8 +27,6 @@ skip test:
 cmake . -B build -DSKIP_TEST
 cmake --build ./build
 ```
-
-vulkan SDK 1.4.321以下
 
 ## Test
 

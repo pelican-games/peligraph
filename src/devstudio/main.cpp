@@ -1,4 +1,6 @@
 #include "battery/embed.hpp"
+#include "mainwindow.hpp"
+#include <QtWidgets/QApplication>
 #include <argparse/argparse.hpp>
 #include <filesystem>
 #include <fstream>
@@ -17,6 +19,13 @@ void create_file(std::filesystem::path path, const std::string &data) {
 }
 
 int main(int argc, char *argv[]) {
+    if (argc == 1) {
+        QApplication a(argc, argv);
+        MainWindow w;
+        w.show();
+        return a.exec();
+    }
+
     argparse::ArgumentParser program("Pelican Studio");
     program.add_argument("--build").default_value(false).implicit_value(true).help("build project");
     program.add_argument("--prebuild").default_value(false).implicit_value(true).help("prebuild project");
