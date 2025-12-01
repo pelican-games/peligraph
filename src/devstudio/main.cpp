@@ -1,9 +1,6 @@
-#include "mainwindow.hpp"
-#include <QtWidgets/QApplication>
+#include "view/uimain.hpp"
 #include <argparse/argparse.hpp>
-#include <filesystem>
-#include <fstream>
-#include <sstream>
+#include <iostream>
 
 int main(int argc, char *argv[]) {
     argparse::ArgumentParser program("Pelican Studio");
@@ -16,8 +13,5 @@ int main(int argc, char *argv[]) {
         return -1;
     }
 
-    QApplication a(argc, argv);
-    MainWindow w;
-    w.show();
-    return a.exec();
+    return PelicanStudio::uimain(argc, argv);
 }

@@ -1,8 +1,15 @@
-find_package(Qt6 REQUIRED COMPONENTS Core Widgets)
+# qt target settings
+find_package(Qt6 REQUIRED COMPONENTS Core Widgets Quick)
 qt_standard_project_setup()
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PELICAN_INSTALL_DIR})
-qt_add_executable(pelican_studio main.cpp mainwindow.cpp)
+add_executable(pelican_studio main.cpp)
+
+qt_add_qml_module(pelican_studio
+    URI pelican_studio
+    QML_FILES
+        view/MainWindow.qml
+)
 unset(CMAKE_RUNTIME_OUTPUT_DIRECTORY)
 
 add_custom_command(
@@ -10,7 +17,10 @@ add_custom_command(
   COMMAND ${WINDEPLOYQT_EXECUTABLE} $<TARGET_FILE:pelican_studio>
 )
 
-target_link_libraries(pelican_studio PRIVATE Qt6::Core Qt6::Widgets)
+# external libs
 target_link_libraries(pelican_studio PRIVATE pelican_core)
 target_link_libraries(pelican_studio PRIVATE argparse)
 
+# subdirs
+add_subdirectory(model)
+add_subdirectory(view)
