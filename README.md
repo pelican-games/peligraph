@@ -28,6 +28,13 @@ cmake . -B build -DSKIP_TEST
 cmake --build ./build
 ```
 
+## Debug
+
+run Pelican Studio:
+```sh
+cmake --build ./build --target run_studio
+```
+
 ## Test
 
 ```sh
