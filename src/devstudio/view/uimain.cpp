@@ -12,7 +12,7 @@ int uimain(int argc, char **argv) {
 
     std::cout << "starting Pelican Studio..." << std::endl;
 
-    engine.load(QUrl(QStringLiteral("qrc:/qt/qml/pelican_studio/view/MainWindow.qml")));
+    engine.load(QUrl(QStringLiteral("qrc:/qt/qml/pelican_studio/MainWindow.qml")));
     return app.exec();
 }
 

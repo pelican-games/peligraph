@@ -1,34 +1,6 @@
-# qt target settings
-find_package(Qt6 REQUIRED COMPONENTS Core Widgets Quick)
-qt_standard_project_setup(REQUIRES 6.10)
-
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PELICAN_INSTALL_DIR})
 add_executable(pelican_studio main.cpp)
 unset(CMAKE_RUNTIME_OUTPUT_DIRECTORY)
-
-qt_add_qml_module(pelican_studio
-    URI pelican_studio
-    QML_FILES
-        view/MainWindow.qml
-)
-
-# custom target for debug
-if(WIN32)
-add_custom_command(
-  TARGET pelican_studio POST_BUILD
-  COMMAND ${WINDEPLOYQT_EXECUTABLE} $<TARGET_FILE:pelican_studio>
-)
-add_custom_target(run_studio
-    COMMAND set QML2_IMPORT_PATH=${QT_DIR}/qml
-    COMMAND $<TARGET_FILE:pelican_studio>
-    DEPENDS pelican_studio
-)
-else()
-add_custom_target(run_studio
-    COMMAND env QML2_IMPORT_PATH=${QT_DIR}/qml $<TARGET_FILE:pelican_studio>
-    DEPENDS pelican_studio
-)
-endif()
 
 # external libs
 target_link_libraries(pelican_studio PRIVATE pelican_core)
