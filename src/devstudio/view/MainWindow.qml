@@ -5,4 +5,7 @@ Window {
     height: 720
     visible: true
     title: qsTr("Pelican Studio")
+
+    ProjectEdit {
+    }
 }
