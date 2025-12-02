@@ -2,6 +2,7 @@
 #include <QApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
+#include <iostream>
 
 namespace PelicanStudio {
 
@@ -9,7 +10,7 @@ int uimain(int argc, char **argv) {
     QGuiApplication app(argc, argv);
     QQmlApplicationEngine engine;
 
-    engine.loadFromModule("pelican_studio", "MainWindow");
+    engine.load(QUrl(QStringLiteral("qrc:/qt/qml/pelican_studio/view/MainWindow.qml")));
     return app.exec();
 }
 

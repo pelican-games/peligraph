@@ -1,6 +1,6 @@
 # qt target settings
 find_package(Qt6 REQUIRED COMPONENTS Core Widgets Quick)
-qt_standard_project_setup()
+qt_standard_project_setup(REQUIRES 6.10)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PELICAN_INSTALL_DIR})
 add_executable(pelican_studio main.cpp)

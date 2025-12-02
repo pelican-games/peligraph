@@ -1,5 +1,4 @@
 import QtQuick
-import QtQuick.Controls
 
 Window {
     width: 1280
