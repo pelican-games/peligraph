@@ -1,4 +1,5 @@
 #include "uimain.hpp"
+#include "mainwindow.hpp"
 #include <QApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -7,20 +8,22 @@
 namespace PelicanStudio {
 
 int uimain(int argc, char **argv) {
-    QGuiApplication app(argc, argv);
+    QApplication app(argc, argv);
     QQmlApplicationEngine engine;
 
     std::cout << "starting Pelican Studio..." << std::endl;
 
     // necessary for exiting if error
     QObject::connect(
-        &engine, &QQmlApplicationEngine::objectCreationFailed, &app, []() { 
+        &engine, &QQmlApplicationEngine::objectCreationFailed, &app,
+        []() {
             std::cerr << "failed to launch Qt application" << std::endl;
-            QCoreApplication::exit(-1); 
+            QCoreApplication::exit(-1);
         },
         Qt::QueuedConnection);
 
-    engine.load(QUrl(QStringLiteral("qrc:/qt/qml/pelican_studio/MainWindow.qml")));
+    MainWindow window;
+    window.show();
     return app.exec();
 }
 

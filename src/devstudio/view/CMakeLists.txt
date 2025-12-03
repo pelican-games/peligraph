@@ -1,21 +1,22 @@
-# qt target settings
-find_package(Qt6 REQUIRED COMPONENTS Core Widgets Quick QuickControls2)
-qt_standard_project_setup(REQUIRES 6.10)
-
 target_sources(pelican_studio PRIVATE
     uimain.cpp
+    mainwindow.cpp
 )
+
+set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
+
+add_subdirectory(viewmodel)
 
 qt_add_library(pelican_studio_qml STATIC)
 qt_add_qml_module(pelican_studio_qml
     URI pelican_studio
     QML_FILES
-        MainWindow.qml
         ProjectEdit.qml
 )
 
 target_link_libraries(pelican_studio PRIVATE pelican_studio_qmlplugin)
-target_link_libraries(pelican_studio PRIVATE Qt6::Core Qt6::Widgets Qt6::Quick Qt6::QuickControls2)
+target_link_libraries(pelican_studio PRIVATE Qt6::Core Qt6::Widgets Qt6::Quick Qt6::QuickWidgets Qt6::QuickControls2)
 
 # custom target for debug
 if(WIN32)
