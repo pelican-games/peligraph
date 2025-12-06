@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <nlohmann/json.hpp>
 #include <unordered_map>
+#include <glm/glm.hpp>
 
 #include "component.hpp"
 #include "entity.hpp"
@@ -35,9 +36,7 @@ DECLARE_MODULE(ComponentInfoManager) {
     void loadByJson(void *ptr, const nlohmann::json &json) const;
 };
 
-template <class T> struct ComponentIdByType {
-    static constexpr ComponentId value;
-};
+template <class T> struct ComponentIdByType;
 
 #define DECLARE_COMPONENT(_name, _id)                                                                                  \
     template <> struct ComponentIdByType<_name> {                                                                      \
@@ -45,5 +44,17 @@ template <class T> struct ComponentIdByType {
     };
 
 DECLARE_COMPONENT(EntityId, 0);
+
+// [BENCHMARK_ONLY] Start
+struct VelocityComponent {
+    glm::vec3 velocity;
+};
+struct RenderComponent {
+    uint32_t mesh_id;
+    uint32_t material_id;
+};
+DECLARE_COMPONENT(VelocityComponent, 10);
+DECLARE_COMPONENT(RenderComponent, 11);
+// [BENCHMARK_ONLY] End
 
 } // namespace Pelican

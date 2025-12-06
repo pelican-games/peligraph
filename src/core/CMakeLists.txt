@@ -1,4 +1,4 @@
-add_library(pelican_core log.cpp)
+add_library(pelican_core log.cpp profiler.cpp) # [BENCHMARK_ONLY] Added profiler.cpp
 
 # settings
 set_target_properties(pelican_core PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -23,7 +23,7 @@ add_subdirectory(userpublic)
 target_include_directories(pelican_core INTERFACE ./userpublic)
 
 # external libraries
-target_link_libraries(pelican_core PRIVATE quill)
+target_link_libraries(pelican_core PUBLIC quill)
 FetchContent_Declare(
   vma
   GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
@@ -40,9 +40,9 @@ FetchContent_MakeAvailable(vma-hpp)
 target_include_directories(pelican_core PRIVATE ${Vulkan_INCLUDE_DIRS})
 target_link_libraries(pelican_core PRIVATE ${Vulkan_LIBRARIES})
 target_link_libraries(pelican_core PRIVATE VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
-target_link_libraries(pelican_core PRIVATE glm)
+target_link_libraries(pelican_core PUBLIC glm) # [BENCHMARK_ONLY] Changed PRIVATE to PUBLIC
 
-target_link_libraries(pelican_core PRIVATE nlohmann_json)
+target_link_libraries(pelican_core PUBLIC nlohmann_json)
 
 # build distributable dir
 ## list up static lib dependencies
