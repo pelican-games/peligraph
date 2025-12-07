@@ -40,9 +40,9 @@ FetchContent_MakeAvailable(vma-hpp)
 target_include_directories(pelican_core PRIVATE ${Vulkan_INCLUDE_DIRS})
 target_link_libraries(pelican_core PRIVATE ${Vulkan_LIBRARIES})
 target_link_libraries(pelican_core PRIVATE VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
-target_link_libraries(pelican_core PUBLIC glm) # [BENCHMARK_ONLY] Changed PRIVATE to PUBLIC
+target_link_libraries(pelican_core PRIVATE glm)
 
-target_link_libraries(pelican_core PUBLIC nlohmann_json)
+target_link_libraries(pelican_core PRIVATE nlohmann_json)
 
 # build distributable dir
 ## list up static lib dependencies
