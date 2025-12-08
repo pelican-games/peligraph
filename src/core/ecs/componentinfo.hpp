@@ -5,7 +5,6 @@
 #include <cstdint>
 #include <nlohmann/json.hpp>
 #include <unordered_map>
-#include <glm/glm.hpp>
 
 #include "component.hpp"
 #include "entity.hpp"
@@ -44,17 +43,5 @@ template <class T> struct ComponentIdByType;
     };
 
 DECLARE_COMPONENT(EntityId, 0);
-
-// [BENCHMARK_ONLY] Start
-struct VelocityComponent {
-    glm::vec3 velocity;
-};
-struct RenderComponent {
-    uint32_t mesh_id;
-    uint32_t material_id;
-};
-DECLARE_COMPONENT(VelocityComponent, 10);
-DECLARE_COMPONENT(RenderComponent, 11);
-// [BENCHMARK_ONLY] End
 
 } // namespace Pelican

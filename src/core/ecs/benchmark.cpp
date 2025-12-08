@@ -6,8 +6,23 @@
 #include <iostream>
 #include <vector>
 #include <random>
+#include <glm/glm.hpp>
 
 using namespace Pelican;
+
+namespace Pelican {
+
+struct VelocityComponent {
+    glm::vec3 velocity;
+};
+struct RenderComponent {
+    uint32_t mesh_id;
+    uint32_t material_id;
+};
+DECLARE_COMPONENT(VelocityComponent, 10);
+DECLARE_COMPONENT(RenderComponent, 11);
+
+}
 
 // Systems
 struct PhysicsSystem {
