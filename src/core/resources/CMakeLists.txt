@@ -15,5 +15,7 @@ endfunction(embed_shader)
 
 embed_shader(default.vert)
 embed_shader(default.frag)
+embed_shader(fullscreen.vert)
+embed_shader(fullscreen.frag)
 
 b_embed(pelican_resources default_config.json)

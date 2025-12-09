@@ -47,6 +47,8 @@ DECLARE_MODULE(RenderTarget) {
 
     FrameRenderContext render_begin();
     void render_end();
+
+    vk::Format getSwapchainFormat() const;
 };
 
 } // namespace Pelican

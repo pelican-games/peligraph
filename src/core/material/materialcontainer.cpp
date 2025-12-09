@@ -162,6 +162,7 @@ static vk::UniqueDescriptorPool createDescriptorPool(vk::Device device) {
     pool_size[1].descriptorCount = 1024;
 
     vk::DescriptorPoolCreateInfo create_info;
+    create_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
     create_info.maxSets = 1024;
     create_info.setPoolSizes(pool_size);
     return device.createDescriptorPoolUnique(create_info);

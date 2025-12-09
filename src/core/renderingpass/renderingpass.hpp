@@ -1,10 +1,14 @@
 #pragma once
 
 #include "../container.hpp"
+#include "../handle.hpp"
 
 namespace Pelican {
 
-using RenderingPassId = uint64_t;
-using PassId = uint64_t;
+PELICAN_DEFINE_HANDLE(RenderingPassId, int)
+PELICAN_DEFINE_HANDLE(PassId, int)
+
+
+PELICAN_DEFINE_HANDLE(GlobalRenderTargetId, int)
 
 } // namespace Pelican

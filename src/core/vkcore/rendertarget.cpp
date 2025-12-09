@@ -228,4 +228,8 @@ void RenderTarget::render_end() {
     in_flight_frame_index %= in_flight_frames_num;
 }
 
+vk::Format RenderTarget::getSwapchainFormat() const {
+    return swapchain.format;
+}
+
 } // namespace Pelican
