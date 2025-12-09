@@ -8,6 +8,7 @@
 
 #include "component.hpp"
 #include "entity.hpp"
+#include <details/ecs/componentdeclare.hpp>
 
 namespace Pelican {
 
@@ -34,16 +35,5 @@ DECLARE_MODULE(ComponentInfoManager) {
     ComponentId getComponentIdByName(const std::string &name) const;
     void loadByJson(void *ptr, const nlohmann::json &json) const;
 };
-
-template <class T> struct ComponentIdByType {
-    static constexpr ComponentId value;
-};
-
-#define DECLARE_COMPONENT(_name, _id)                                                                                  \
-    template <> struct ComponentIdByType<_name> {                                                                      \
-        static constexpr ComponentId value = _id;                                                                      \
-    };
-
-DECLARE_COMPONENT(EntityId, 0);
 
 } // namespace Pelican

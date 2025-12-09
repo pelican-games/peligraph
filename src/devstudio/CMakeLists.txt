@@ -1,3 +1,5 @@
+include(view/ui_depended_setup.cmake)
+
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PELICAN_INSTALL_DIR})
 add_executable(pelican_studio main.cpp)
 unset(CMAKE_RUNTIME_OUTPUT_DIRECTORY)

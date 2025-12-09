@@ -1,4 +1,4 @@
-add_library(pelican_core log.cpp)
+add_library(pelican_core log.cpp profiler.cpp) # [BENCHMARK_ONLY] Added profiler.cpp
 
 # settings
 set_target_properties(pelican_core PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -20,10 +20,10 @@ add_subdirectory(renderer)
 add_subdirectory(fullscreenpass)
 
 add_subdirectory(userpublic)
-target_include_directories(pelican_core INTERFACE ./userpublic)
+target_include_directories(pelican_core PUBLIC ./userpublic)
 
 # external libraries
-target_link_libraries(pelican_core PRIVATE quill)
+target_link_libraries(pelican_core PUBLIC quill)
 FetchContent_Declare(
   vma
   GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
@@ -60,15 +60,28 @@ foreach(DEP IN LISTS PELICAN_DEPENDS_RAW)
   endif()
 endforeach()
 
-## list up public headers
-file(GLOB PELICAN_PUBLIC_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/userpublic/*.hpp)
-
-## copy
+## copy library files
 add_custom_command(
   TARGET pelican_core POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E make_directory ${PELICAN_INCLUDE_DIR} ${PELICAN_LIB_DIR}
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different ${PELICAN_PUBLIC_HEADERS} ${PELICAN_INCLUDE_DIR}
   COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:pelican_core> ${PELICAN_LIB_DIR}
   COMMAND ${CMAKE_COMMAND} -E copy_if_different ${PELICAN_DEPENDS} ${PELICAN_LIB_DIR}
   COMMAND_EXPAND_LISTS
 )
+
+## list up public headers
+function(pelican_copy_headers SRC_PATH DST_PATH)
+  message(STATUS "pelican_copy_headers ${SRC_PATH} -> ${DST_PATH}")
+  file(GLOB_RECURSE HEADERS ${SRC_PATH}/*.hpp)
+  message(STATUS "headers: ${HEADERS}")
+  foreach(HEADERFILE ${HEADERS})
+    file(RELATIVE_PATH RPATH ${SRC_PATH} ${HEADERFILE})
+    message(STATUS "header ${HEADERFILE} -> ${PELICAN_INCLUDE_DIR}/${DST_PATH}/${RPATH}")
+    add_custom_command(
+      TARGET pelican_core POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different ${HEADERFILE} ${PELICAN_INCLUDE_DIR}/${DST_PATH}/${RPATH}
+    )
+  endforeach()
+endfunction()
+pelican_copy_headers(${CMAKE_CURRENT_SOURCE_DIR}/userpublic .)
+pelican_copy_headers(${CMAKE_CURRENT_SOURCE_DIR}/ecs ./ecs)

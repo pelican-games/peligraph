@@ -3,8 +3,10 @@
 #include <span>
 #include <unordered_map>
 #include <vector>
+#include <optional>
+#include <array>
 
-#include "component.hpp"
+#include <details/ecs/component.hpp>
 
 namespace Pelican {
 
@@ -32,12 +34,14 @@ class ECSComponentChunk {
     };
 
     uint32_t count;
-    std::unordered_map<ComponentId, VariedArray> component_arrays;
+    std::vector<std::optional<VariedArray>> component_arrays;
     std::vector<ComponentId> component_ids;
 
   public:
     uint32_t size() const { return count; }
-    bool has(ComponentId component_id) const { return component_arrays.find(component_id) != component_arrays.end(); }
+    bool has(ComponentId component_id) const {
+        return component_id < component_arrays.size() && component_arrays[component_id].has_value();
+    }
     bool has_all(std::span<const ComponentId> component_ids) const {
         for (const auto component_id : component_ids)
             if (!has(component_id))
@@ -45,10 +49,10 @@ class ECSComponentChunk {
         return true;
     }
     bool match_type(std::span<const ComponentId> component_ids) const {
-        return component_arrays.size() == component_ids.size() && has_all(component_ids);
+        return this->component_ids.size() == component_ids.size() && has_all(component_ids);
     }
     ComponentRef get(ComponentId component_id) {
-        auto &arr = component_arrays.at(component_id);
+        auto &arr = *component_arrays[component_id];
         return ComponentRef{
             .ptr = arr.data(),
             .stride = arr.size_one(),
