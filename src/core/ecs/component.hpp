@@ -1,14 +1,3 @@
 #pragma once
 
-#include <cstdint>
-
-namespace Pelican {
-
-using ComponentId = uint64_t;
-
-struct ComponentRef {
-    void* ptr;
-    uint32_t stride;
-};
-
-}
+#include <details/ecs/component.hpp>

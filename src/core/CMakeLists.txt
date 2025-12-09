@@ -20,7 +20,7 @@ add_subdirectory(renderer)
 add_subdirectory(fullscreenpass)
 
 add_subdirectory(userpublic)
-target_include_directories(pelican_core INTERFACE ./userpublic)
+target_include_directories(pelican_core PUBLIC ./userpublic)
 
 # external libraries
 target_link_libraries(pelican_core PUBLIC quill)
