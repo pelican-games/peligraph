@@ -1,14 +1,14 @@
 #pragma once
 
-#include "core.hpp"
-#include "../profiler.hpp"
+#include "coretemplate.hpp"
+#include "../../../profiler.hpp"
 
 #include <queue>
 #include <algorithm>
 
 namespace Pelican {
 
-void ECSCore::updateSystemChunkCache(ChunkIndex chunk_index) {
+void ECSCoreTemplatePublic::updateSystemChunkCache(ChunkIndex chunk_index) {
     auto &chunk = chunks_storage[chunk_index];
     for (auto &[id, sys] : systems) {
         if (sys.matches(chunk)) {
@@ -17,7 +17,7 @@ void ECSCore::updateSystemChunkCache(ChunkIndex chunk_index) {
     }
 }
 
-EntityId ECSCore::allocateEntity(std::span<const ComponentId> component_ids, std::span<void *> component_ptrs,
+EntityId ECSCoreTemplatePublic::allocateEntity(std::span<const ComponentId> component_ids, std::span<void *> component_ptrs,
                                  size_t count) {
     TimeProfilerStart("ECS_AllocateEntity");
     // entity id is recorded as implicit component
@@ -76,7 +76,7 @@ EntityId ECSCore::allocateEntity(std::span<const ComponentId> component_ids, std
     return entity_id_first;
 }
 
-void ECSCore::remove(EntityId id) {
+void ECSCoreTemplatePublic::remove(EntityId id) {
     const auto ref = id_to_ref[id];
     auto &chunk = chunks_storage[ref.chunk_index];
 
@@ -95,16 +95,16 @@ void ECSCore::remove(EntityId id) {
     id_to_ref[moved_id].array_index = ref.array_index;
 }
 
-void ECSCore::compaction() { /* TODO */ }
+void ECSCoreTemplatePublic::compaction() { /* TODO */ }
 
-void ECSCore::unregisterSystem(SystemId system_id) {
+void ECSCoreTemplatePublic::unregisterSystem(SystemId system_id) {
     for (const auto depends : systems.at(system_id).depends_list) {
         systems.at(depends).depended_by.erase(system_id);
     }
     systems.erase(system_id);
 }
 
-void ECSCore::update() {
+void ECSCoreTemplatePublic::update() {
     TimeProfilerStart("ECS_Update_Sort");
     std::vector<SystemId> sorted_systems;
 

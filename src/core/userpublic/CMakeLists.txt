@@ -3,3 +3,5 @@ target_sources(pelican_core PRIVATE
     gameobjects.cpp
     userinput.cpp
 )
+
+add_subdirectory(details/ecs)

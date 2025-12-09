@@ -6,7 +6,7 @@
 #include <optional>
 #include <array>
 
-#include "component.hpp"
+#include <details/ecs/component.hpp>
 
 namespace Pelican {
 

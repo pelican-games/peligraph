@@ -1,7 +1,8 @@
 #include "chunk.hpp"
 
-#include "componentinfo.hpp"
+#include "componentdeclare.hpp"
 #include <iterator>
+#include "../../../ecs/componentinfo.hpp"
 
 namespace Pelican {
 
