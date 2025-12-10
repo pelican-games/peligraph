@@ -13,6 +13,8 @@ DECLARE_MODULE(ECSCore) {
     ECSCoreTemplatePublic sub;
 
   public:
+    ECSCoreTemplatePublic &getTemplatePublicModule() { return sub; }
+
     EntityId allocateEntity(std::span<const ComponentId> component_ids, std::span<void *> component_ptrs,
                             size_t count) {
         return sub.allocateEntity(component_ids, component_ptrs, count);
