@@ -12,15 +12,15 @@ namespace Pelican {
 
 class ECSComponentChunk {
     class VariedArray {
-        uint32_t count;
-        uint32_t stride;
+        size_t count;
+        size_t stride;
         std::vector<uint8_t> arr;
 
       public:
-        VariedArray(uint32_t _stride) : count{0}, stride{_stride}, arr{} {}
+        VariedArray(size_t _stride) : count{0}, stride{_stride}, arr{} {}
 
-        uint32_t size() const { return count; }
-        uint32_t size_one() const { return stride; }
+        size_t size() const { return count; }
+        size_t size_one() const { return stride; }
         void *data() { return arr.data(); }
         void *at(size_t index) { return static_cast<uint8_t *>(data()) + stride * index; }
         void expand(size_t ex_count) {
@@ -36,18 +36,20 @@ class ECSComponentChunk {
         }
     };
 
-    uint32_t count;
+
     // Indexed by Dense Index
     std::vector<std::optional<VariedArray>> component_arrays;
-    std::vector<uint32_t> indices;
+    std::vector<size_t> indices;
     std::vector<ComponentId> component_ids;
     std::vector<uint64_t> component_versions; // Indexed by ComponentId (Dense Index)
     size_t count = 0;
+    uint64_t mask = 0;
 
   public:
     static constexpr size_t CHUNK_CAPACITY = 4096;
 
-    uint32_t size() const { return count; }
+    size_t size() const { return count; }
+    uint64_t getMask() const { return mask; }
 
     bool has(ComponentId component_id) {
         if (component_id >= component_arrays.size())
@@ -57,13 +59,13 @@ class ECSComponentChunk {
 
     VariedArray &get(ComponentId component_id) { return *component_arrays[component_id]; }
 
-    void updateVersion(uint32_t index, uint64_t tick) {
+    void updateVersion(size_t index, uint64_t tick) {
         if (index < component_versions.size()) {
             component_versions[index] = tick;
         }
     }
 
-    uint64_t getVersion(uint32_t index) const {
+    uint64_t getVersion(size_t index) const {
         if (index < component_versions.size()) {
             return component_versions[index];
         }
@@ -71,7 +73,7 @@ class ECSComponentChunk {
     }
 
     // Check if chunk has all components specified by INDICES
-    bool has_all(std::span<const uint32_t> req_indices) {
+    bool has_all(std::span<const size_t> req_indices) {
         for(auto req : req_indices) {
              bool found = false;
              for(auto exists : indices) {
@@ -82,7 +84,7 @@ class ECSComponentChunk {
         return true;
     }
 
-    ComponentRef getRef(uint32_t index) {
+    ComponentRef getRef(size_t index) {
         return ComponentRef{
             .ptr = component_arrays[index]->data(),
             .stride = component_arrays[index]->size_one()
@@ -90,15 +92,15 @@ class ECSComponentChunk {
     }
 
     std::span<const ComponentId> getComponentList() const { return component_ids; }
-    std::span<const uint32_t> getIndices() const { return indices; }
+    std::span<const size_t> getIndices() const { return indices; }
     
     // Chunk Constructor
-    ECSComponentChunk(std::span<const uint32_t> component_indices, std::span<const ComponentId> generic_ids);
+    ECSComponentChunk(std::span<const size_t> component_indices, std::span<const ComponentId> generic_ids);
 
     // returns allocated count
-    uint32_t allocate(std::span<const ComponentId> component_ids, std::span<void *> component_ptrs, size_t ex_count);
+    size_t allocate(std::span<const size_t> component_indices, std::span<void *> component_ptrs, size_t ex_count);
 
-    void free(uint32_t free_count);
+    void free(size_t free_count);
 };
 
 } // namespace Pelican

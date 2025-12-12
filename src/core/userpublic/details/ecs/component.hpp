@@ -8,7 +8,7 @@ using ComponentId = uint64_t;
 
 struct ComponentRef {
     void* ptr;
-    uint32_t stride;
+    size_t stride;
 };
 
 }

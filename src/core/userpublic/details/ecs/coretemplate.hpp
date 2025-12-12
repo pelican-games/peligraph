@@ -4,10 +4,13 @@
 #include <span>
 #include <unordered_map>
 #include <unordered_set>
+#include <set>
 #include <vector>
+#include <functional>
 
 #include <details/ecs/componentdeclare.hpp>
 #include <details/ecs/chunk.hpp>
+#include "../../../ecs/componentinfo.hpp"
 
 namespace Pelican {
 
@@ -16,8 +19,8 @@ using SystemId = uint64_t;
 class ECSCoreTemplatePublic {
     // Component Management
   private:
-    using ChunkIndex = uint32_t;
-    using WithinChunkIndex = uint32_t;
+    using ChunkIndex = size_t;
+    using WithinChunkIndex = size_t;
 
     std::vector<ECSComponentChunk> chunks_storage;
 
@@ -51,17 +54,17 @@ class ECSCoreTemplatePublic {
 
     struct InternalSystemWrapper {
         SystemId id;
-        std::function<bool(ECSComponentChunk &)> matches;
+        ComponentMask matching_mask = 0;
         // p_func receives dense indices
-        std::function<void(ECSCoreTemplatePublic &, void*, const std::vector<ChunkIndex> &, const std::vector<uint32_t>&)> p_func;
+        std::function<void(ECSCoreTemplatePublic &, void*, const std::vector<ChunkIndex> &, const std::vector<size_t>&)> p_func;
         
         void *system_ref; // Pointer to actual system instance
         std::vector<SystemId> depends_list;
         std::set<SystemId> depended_by;
         std::vector<ChunkIndex> matching_chunk_indices;
-        std::vector<uint32_t> component_indices; // Stored dense indices for this system
-        std::vector<uint32_t> read_indices;      // Indices this system reads (const T*)
-        std::vector<uint32_t> write_indices;     // Indices this system writes (T*)
+        std::vector<size_t> component_indices; // Stored dense indices for this system
+        std::vector<size_t> read_indices;      // Indices this system reads (const T*)
+        std::vector<size_t> write_indices;     // Indices this system writes (T*)
         uint64_t last_run_tick = 0;
     };
 
@@ -77,16 +80,18 @@ class ECSCoreTemplatePublic {
         // Resolve Component Indices
         auto& mgr = GET_MODULE(ComponentInfoManager);
         
-        std::vector<uint32_t> comp_indices;
-        std::vector<uint32_t> read_indices;
-        std::vector<uint32_t> write_indices;
+        std::vector<size_t> comp_indices;
+        std::vector<size_t> read_indices;
+        std::vector<size_t> write_indices;
+        ComponentMask matching_mask = 0;
         
         // Deduction Helper
         auto process_component = [&](auto* ptr) {
             using Type = typename std::remove_pointer<decltype(ptr)>::type;
             ComponentId cid = ComponentIdByType<typename std::remove_const<Type>::type>::value;
-            uint32_t idx = mgr.getIndexFromComponentId(cid);
+            size_t idx = mgr.getIndexFromComponentId(cid);
             comp_indices.push_back(idx);
+            matching_mask |= (1ULL << idx);
             
             if (std::is_const<Type>::value) {
                 read_indices.push_back(idx);
@@ -105,33 +110,29 @@ class ECSCoreTemplatePublic {
         wrapper.component_indices = comp_indices;
         wrapper.read_indices = read_indices;
         wrapper.write_indices = write_indices;
+        wrapper.matching_mask = matching_mask;
         
         // Setup dependency graph
         for (auto dep : wrapper.depends_list) {
             systems.at(dep).depended_by.insert(id);
         }
         
-        // Match function (using Indices)
-        wrapper.matches = [comp_indices](ECSComponentChunk &chunk) {
-            return chunk.has_all(std::span(comp_indices));
-        };
-
         // Process function
-        wrapper.p_func = [id](ECSCoreTemplatePublic &core, void* sys_ptr, const std::vector<ChunkIndex> &chunks, const std::vector<uint32_t>& indices) {
+        wrapper.p_func = [id](ECSCoreTemplatePublic &core, void* sys_ptr, const std::vector<ChunkIndex> &chunks, const std::vector<size_t>& indices) {
             TSystem &sys = *static_cast<TSystem *>(sys_ptr);
             auto& sys_wrapper = core.systems.at(id);
             
             for (auto chunk_idx : chunks) {
                 auto &chunk = core.chunks_storage[chunk_idx];
                 
-                // Skipping logic
+                // Change Detection
                 uint64_t max_version = 0;
-                for(auto idx : indices) { // Check all dependencies
+                for(auto idx : indices) {
                      uint64_t v = chunk.getVersion(idx);
                      if(v > max_version) max_version = v;
                 }
                 
-                // If nothing changed since last run, skip
+                // Skip if no changes since last run
                 if (max_version <= sys_wrapper.last_run_tick && sys_wrapper.last_run_tick > 0) {
                      continue; 
                 }
@@ -144,7 +145,7 @@ class ECSCoreTemplatePublic {
                 
                 sys.process(tuple, chunk.size());
                 
-                // Update versions for Write Indices using CURRENT global_tick
+                // Update versions for Write Indices
                 for (auto w_idx : sys_wrapper.write_indices) {
                     chunk.updateVersion(w_idx, core.global_tick);
                 }
@@ -156,7 +157,7 @@ class ECSCoreTemplatePublic {
         
         // Check existing chunks
         for (size_t i = 0; i < chunks_storage.size(); ++i) {
-            if (systems.at(id).matches(chunks_storage[i])) {
+            if ((chunks_storage[i].getMask() & matching_mask) == matching_mask) {
                 systems.at(id).matching_chunk_indices.push_back(i);
             }
         }

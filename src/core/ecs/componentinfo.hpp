@@ -31,7 +31,8 @@ DECLARE_MODULE(ComponentInfoManager) {
 
     void registerComponent(ComponentInfo info);
 
-    uint32_t getSizeFromComponentId(ComponentId id) const;
+    size_t getIndexFromComponentId(ComponentId id) const;
+    size_t getSizeFromIndex(size_t index) const;
     ComponentId getComponentIdByName(const std::string &name) const;
     void loadByJson(void *ptr, const nlohmann::json &json) const;
 };

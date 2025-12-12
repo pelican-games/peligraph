@@ -6,10 +6,10 @@
 
 namespace Pelican {
 
-ECSComponentChunk::ECSComponentChunk(std::span<const uint32_t> component_indices, std::span<const ComponentId> generic_ids) 
-    : count{0}, component_ids(generic_ids.begin(), generic_ids.end()), indices(component_indices.begin(), component_indices.end()) {
+ECSComponentChunk::ECSComponentChunk(std::span<const size_t> component_indices, std::span<const ComponentId> generic_ids) 
+    : count{0}, component_ids(generic_ids.begin(), generic_ids.end()), indices(component_indices.begin(), component_indices.end()), mask{0} {
     
-    uint32_t max_index = 0;
+    size_t max_index = 0;
     for (const auto idx : indices) {
         if (idx > max_index) max_index = idx;
     }
@@ -20,12 +20,14 @@ ECSComponentChunk::ECSComponentChunk(std::span<const uint32_t> component_indices
     for (const auto index : indices) {
         auto& arr = component_arrays[index].emplace(GET_MODULE(ComponentInfoManager).getSizeFromIndex(index));
         arr.reserve(CHUNK_CAPACITY);
+        mask |= (1ULL << index);
     }
 }
 
-uint32_t ECSComponentChunk::allocate(std::span<const uint32_t> component_indices, std::span<void *> component_ptrs,
+size_t ECSComponentChunk::allocate(std::span<const size_t> component_indices, std::span<void *> component_ptrs,
                                      size_t ex_count) {
-    for (int i = 0; const auto idx : component_indices) {
+    size_t i = 0;
+    for (const auto idx : component_indices) {
         auto &arr = *component_arrays[idx];
 
         auto old_count = arr.size();
