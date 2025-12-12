@@ -18,6 +18,7 @@ DECLARE_MODULE(Camera) {
     Camera();
 
     void setPos(glm::vec3 new_pos) { pos = new_pos; }
+    glm::vec3 getPos() const { return pos; }
     void setDir(glm::vec3 new_dir) { dir = new_dir; }
     void setUp(glm::vec3 new_up) { up = new_up; }
     void setScreenSize(uint32_t width, uint32_t height);

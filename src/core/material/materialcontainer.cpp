@@ -10,8 +10,12 @@ constexpr uint32_t modelMatDescriptorSetNumber = 0;
 constexpr uint32_t modelMatDescriptorBinding = 0;
 constexpr uint32_t modelMatDescriptorArrayCount = 1;
 constexpr uint32_t imageDescriptorSetNumber = 1;
-constexpr uint32_t imageDescriptorBinding = 0;
-constexpr uint32_t imageDescriptorArrayCount = 1;
+constexpr uint32_t baseColorBinding = 0;
+constexpr uint32_t metallicRoughnessBinding = 1;
+constexpr uint32_t normalBinding = 2;
+constexpr uint32_t materialTextureBindingCount = 3;
+
+
 
 static vk::UniqueDescriptorSetLayout createModelBufDescriptorSetLayout(vk::Device device) {
     std::array<vk::DescriptorSetLayoutBinding, 1> bindings;
@@ -27,11 +31,22 @@ static vk::UniqueDescriptorSetLayout createModelBufDescriptorSetLayout(vk::Devic
 }
 
 static vk::UniqueDescriptorSetLayout createTextureDescriptorSetLayout(vk::Device device) {
-    std::array<vk::DescriptorSetLayoutBinding, 1> bindings;
-    bindings[0].binding = imageDescriptorBinding;
+    std::array<vk::DescriptorSetLayoutBinding, materialTextureBindingCount> bindings{};
+
+    bindings[0].binding = baseColorBinding;
     bindings[0].descriptorType = vk::DescriptorType::eCombinedImageSampler;
-    bindings[0].descriptorCount = imageDescriptorArrayCount;
+    bindings[0].descriptorCount = 1;
     bindings[0].stageFlags = vk::ShaderStageFlagBits::eFragment;
+
+    bindings[1].binding = metallicRoughnessBinding;
+    bindings[1].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = vk::ShaderStageFlagBits::eFragment;
+
+    bindings[2].binding = normalBinding;
+    bindings[2].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+    bindings[2].descriptorCount = 1;
+    bindings[2].stageFlags = vk::ShaderStageFlagBits::eFragment;
 
     vk::DescriptorSetLayoutCreateInfo create_info;
     create_info.setBindings(bindings);
@@ -109,23 +124,31 @@ static vk::UniquePipeline createDefaultPipeline(vk::Device device, vk::PipelineL
     depth.depthBoundsTestEnable = false;
     depth.stencilTestEnable = false;
 
-    vk::PipelineColorBlendAttachmentState blend_attachment;
-    blend_attachment.blendEnable = false;
-    blend_attachment.colorWriteMask = vk::ColorComponentFlagBits::eA | vk::ColorComponentFlagBits::eR |
-                                      vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB;
+    std::array<vk::PipelineColorBlendAttachmentState, 4> blend_attachments{};
+    for (auto &blend_attachment : blend_attachments) {
+        blend_attachment.blendEnable = false;
+        blend_attachment.colorWriteMask = vk::ColorComponentFlagBits::eA | vk::ColorComponentFlagBits::eR |
+                                          vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB;
+    }
 
     vk::PipelineColorBlendStateCreateInfo blend;
     blend.logicOpEnable = false;
-    blend.setAttachments({blend_attachment});
+    blend.setAttachments(blend_attachments);
 
     auto dynamic_states = {vk::DynamicState::eViewport, vk::DynamicState::eScissor};
 
     vk::PipelineDynamicStateCreateInfo dynamic_state_info;
     dynamic_state_info.setDynamicStates(dynamic_states);
 
-    vk::Format color_format = vk::Format::eB8G8R8A8Unorm;
+    const std::array<vk::Format, 4> color_formats = {
+        vk::Format::eB8G8R8A8Unorm,      // albedo
+        vk::Format::eR16G16B16A16Sfloat, // normal
+        vk::Format::eR8G8B8A8Unorm,      // material
+        vk::Format::eR16G16B16A16Sfloat, // worldpos
+    };
+
     vk::PipelineRenderingCreateInfo rendering_info;
-    rendering_info.setColorAttachmentFormats(color_format);
+    rendering_info.setColorAttachmentFormats(color_formats);
     rendering_info.depthAttachmentFormat = vk::Format::eD32Sfloat;
 
     vk::GraphicsPipelineCreateInfo create_info;
@@ -214,13 +237,6 @@ MaterialContainer::MaterialContainer()
 MaterialContainer::~MaterialContainer() {}
 
 GlobalTextureId MaterialContainer::registerTexture(vk::Extent3D extent, const void *data) {
-    vk::DescriptorSetAllocateInfo desc_alloc_info;
-    desc_alloc_info.descriptorPool = desc_pool.get();
-    desc_alloc_info.setSetLayouts({descset_layouts[imageDescriptorSetNumber].get()});
-
-    auto descsets = device.allocateDescriptorSetsUnique(desc_alloc_info);
-    auto &descset = descsets[0];
-
     const auto &vkcore = GET_MODULE(VulkanManageCore);
     auto image = vkcore.allocImage(extent, vk::Format::eR8G8B8A8Unorm,
                                    vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
@@ -237,27 +253,15 @@ GlobalTextureId MaterialContainer::registerTexture(vk::Extent3D extent, const vo
 
     auto image_view = createImageView(device, image);
 
-    vk::DescriptorImageInfo image_info;
-    image_info.imageView = image_view.get();
-    image_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-    image_info.sampler = linear_sampler.get();
-
-    vk::WriteDescriptorSet write_descset;
-    write_descset.dstSet = descset.get();
-    write_descset.dstBinding = imageDescriptorBinding;
-    write_descset.dstArrayElement = 0;
-    write_descset.setImageInfo({image_info});
-    write_descset.descriptorType = vk::DescriptorType::eCombinedImageSampler;
-    device.updateDescriptorSets({write_descset}, {});
-
     return textures.reg(InternalTextureResource{
         .image = std::move(image),
         .image_view = std::move(image_view),
-        .descset = std::move(descset),
     });
 }
 GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
-    PipelineId pipeline_id = {info.vert_shader.value << 16 | info.frag_shader.value};
+    const uint32_t pipeline_key = (static_cast<uint32_t>(info.vert_shader.value) << 16) |
+                                  static_cast<uint32_t>(info.frag_shader.value);
+    PipelineId pipeline_id{pipeline_key};
     if (pipelines.find(pipeline_id) == pipelines.end()) {
         pipelines.insert({
             pipeline_id,
@@ -267,9 +271,70 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         });
     }
 
+    vk::DescriptorSetAllocateInfo desc_alloc_info;
+    desc_alloc_info.descriptorPool = desc_pool.get();
+    desc_alloc_info.setSetLayouts({descset_layouts[imageDescriptorSetNumber].get()});
+
+    auto descsets = device.allocateDescriptorSetsUnique(desc_alloc_info);
+    auto &descset = descsets[0];
+
+    // テクスチャを先に取得してimage_infosを構築
+    std::array<vk::DescriptorImageInfo, materialTextureBindingCount> image_infos{};
+    
+    // Base Color
+    {
+        const auto &tex = textures.get(info.base_color_texture);
+        image_infos[0].imageView = tex.image_view.get();
+        image_infos[0].imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        image_infos[0].sampler = linear_sampler.get();
+    }
+    
+    // Metallic Roughness
+    {
+        const auto &tex = textures.get(info.metallic_roughness_texture);
+        image_infos[1].imageView = tex.image_view.get();
+        image_infos[1].imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        image_infos[1].sampler = linear_sampler.get();
+    }
+    
+    // Normal
+    {
+        const auto &tex = textures.get(info.normal_texture);
+        image_infos[2].imageView = tex.image_view.get();
+        image_infos[2].imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        image_infos[2].sampler = linear_sampler.get();
+    }
+
+    std::array<vk::WriteDescriptorSet, materialTextureBindingCount> writes{};
+    writes[0].dstSet = descset.get();
+    writes[0].dstBinding = baseColorBinding;
+    writes[0].dstArrayElement = 0;
+    writes[0].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+    writes[0].descriptorCount = 1;
+    writes[0].pImageInfo = &image_infos[0];
+
+    writes[1].dstSet = descset.get();
+    writes[1].dstBinding = metallicRoughnessBinding;
+    writes[1].dstArrayElement = 0;
+    writes[1].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+    writes[1].descriptorCount = 1;
+    writes[1].pImageInfo = &image_infos[1];
+
+    writes[2].dstSet = descset.get();
+    writes[2].dstBinding = normalBinding;
+    writes[2].dstArrayElement = 0;
+    writes[2].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+    writes[2].descriptorCount = 1;
+    writes[2].pImageInfo = &image_infos[2];
+
+    device.updateDescriptorSets(writes, {});
+
     return materials.reg(InternalMaterialInfo{
         .pipeline = pipeline_id,
         .base_color_texture = info.base_color_texture,
+        .metallic_roughness_texture = info.metallic_roughness_texture,
+        .normal_texture = info.normal_texture,
+        .descset = std::move(descset),
     });
 }
 
@@ -304,27 +369,22 @@ bool MaterialContainer::isRenderRequired(PassId pass_id, GlobalMaterialId materi
 void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pass_id, GlobalMaterialId material_id,
                                      GlobalMaterialId prev_material_id) const {
     const auto &material = materials.get(material_id);
-    const auto &texture = textures.get(material.base_color_texture);
 
     if (prev_material_id.value < 0) {
         cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipelines.at(material.pipeline).get());
         cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout.get(), 0,
                                    {
                                        model_mat_buf_descset.get(), // model matrix buffer: set = 0
-                                       texture.descset.get(),       // texture: set = 1
+                                       material.descset.get(),      // material textures: set = 1
                                    },
                                    {});
     } else {
-        const auto prev_material = materials.get(prev_material_id);
+        const auto &prev_material = materials.get(prev_material_id);
         if (material.pipeline != prev_material.pipeline)
             cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipelines.at(material.pipeline).get());
-        if (material.base_color_texture.value != prev_material.base_color_texture.value)
+        if (material.descset.get() != prev_material.descset.get())
             cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout.get(),
-                                       imageDescriptorSetNumber,
-                                       {
-                                           texture.descset.get(), // texture: set = 1
-                                       },
-                                       {});
+                                       imageDescriptorSetNumber, {material.descset.get()}, {});
     }
 }
 

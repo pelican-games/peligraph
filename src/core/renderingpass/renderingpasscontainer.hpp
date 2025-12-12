@@ -24,11 +24,17 @@ struct PassDefinition {
     PassType type;
     
     // 出力ターゲット
-    GlobalRenderTargetId output_color;
+    std::vector<GlobalRenderTargetId> output_color;
     GlobalRenderTargetId output_depth;  // -1なら深度なし
     
     // 入力ターゲット（フルスクリーンパス用）
     std::vector<GlobalRenderTargetId> input_targets;
+
+    // マテリアルパス用：レンダリング対象のマテリアル範囲
+    struct {
+        uint32_t material_start = 0;    // 開始マテリアルインデックス
+        uint32_t material_count = 0;
+    } material_info;
     
     // フルスクリーンパスの場合のパイプライン情報
     struct {

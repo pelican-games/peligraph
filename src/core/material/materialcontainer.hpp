@@ -29,7 +29,6 @@ DECLARE_MODULE(MaterialContainer) {
     struct InternalTextureResource {
         ImageWrapper image;
         vk::UniqueImageView image_view;
-        vk::UniqueDescriptorSet descset;
     };
     ResourceContainer<GlobalTextureId, InternalTextureResource> textures;
 
@@ -37,6 +36,9 @@ DECLARE_MODULE(MaterialContainer) {
     struct InternalMaterialInfo {
         PipelineId pipeline;
         GlobalTextureId base_color_texture;
+        GlobalTextureId metallic_roughness_texture;
+        GlobalTextureId normal_texture;
+        vk::UniqueDescriptorSet descset;
     };
     std::unordered_map<PipelineId, vk::UniquePipeline, PipelineId::Hash> pipelines;
     ResourceContainer<GlobalMaterialId, InternalMaterialInfo> materials;

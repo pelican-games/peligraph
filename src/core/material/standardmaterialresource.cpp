@@ -42,10 +42,32 @@ StandardMaterialResource::StandardMaterialResource() {
     }
     tex_black = mat_con.registerTexture(vk::Extent3D(4, 4, 1), texdata_black);
 
+    // Roughness=1.0 (G=255), Metallic=0.0 (B=0), AO=1.0 (R=255)
+    uint8_t texdata_metallic_roughness[4 * 16];
+    for (int i = 0; i < 16; i++) {
+        texdata_metallic_roughness[i * 4 + 0] = 255; // occlusion
+        texdata_metallic_roughness[i * 4 + 1] = 255; // roughness
+        texdata_metallic_roughness[i * 4 + 2] = 0;   // metallic
+        texdata_metallic_roughness[i * 4 + 3] = 255;
+    }
+    tex_metallic_roughness_default = mat_con.registerTexture(vk::Extent3D(4, 4, 1), texdata_metallic_roughness);
+
+    // Normal map default (0.5, 0.5, 1.0)
+    uint8_t texdata_normal[4 * 16];
+    for (int i = 0; i < 16; i++) {
+        texdata_normal[i * 4 + 0] = 128;
+        texdata_normal[i * 4 + 1] = 128;
+        texdata_normal[i * 4 + 2] = 255;
+        texdata_normal[i * 4 + 3] = 255;
+    }
+    tex_normal_default = mat_con.registerTexture(vk::Extent3D(4, 4, 1), texdata_normal);
+
     mat_transparent = mat_con.registerMaterial(MaterialInfo{
         .vert_shader = std_vert,
         .frag_shader = std_frag,
         .base_color_texture = tex_transparent,
+        .metallic_roughness_texture = tex_metallic_roughness_default,
+        .normal_texture = tex_normal_default,
     });
 }
 

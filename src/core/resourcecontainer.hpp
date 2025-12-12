@@ -13,7 +13,7 @@ template <typename THandle, typename TResource> class ResourceContainer {
     THandle reg(TResource &&rsrc) {
         const auto new_handle = THandle{counter};
         counter++;
-        kv.insert({new_handle, std::move(rsrc)});
+        kv.emplace(new_handle, std::move(rsrc));
         return new_handle;
     }
     void unreg(THandle handle) { kv.erase(handle); }

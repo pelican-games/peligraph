@@ -7,31 +7,34 @@
 namespace Pelican {
 
 static vk::UniqueDescriptorSetLayout createInputDescSetLayout(vk::Device device, uint32_t maxInputs = 8) {
-    vk::DescriptorSetLayoutBinding binding{};
-    binding.binding = 0;
-    binding.descriptorType = vk::DescriptorType::eCombinedImageSampler;
-    binding.descriptorCount = 1;
-    binding.stageFlags = vk::ShaderStageFlagBits::eFragment;
+    // 複数のbindingを作成（最大maxInputs個）
+    std::vector<vk::DescriptorSetLayoutBinding> bindings(maxInputs);
+    for (uint32_t i = 0; i < maxInputs; ++i) {
+        bindings[i].binding = i;
+        bindings[i].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        bindings[i].descriptorCount = 1;
+        bindings[i].stageFlags = vk::ShaderStageFlagBits::eFragment;
+    }
     
     vk::DescriptorSetLayoutCreateInfo ci{};
-    ci.bindingCount = 1;
-    ci.pBindings = &binding;
+    ci.bindingCount = maxInputs;
+    ci.pBindings = bindings.data();
     return device.createDescriptorSetLayoutUnique(ci);
 }
 
 static vk::UniquePipelineLayout createDefaultPipelineLayout(vk::Device device,
                                                             std::span<vk::UniqueDescriptorSetLayout> layouts) {
     vk::PushConstantRange push_constant_range;
-    push_constant_range.stageFlags = vk::ShaderStageFlagBits::eVertex;
+    push_constant_range.stageFlags = vk::ShaderStageFlagBits::eFragment;
     push_constant_range.offset = 0;
-    push_constant_range.size = sizeof(PushConstantStruct);
+    push_constant_range.size = sizeof(float) * 4; // vec4 cameraPos
 
     std::vector<vk::DescriptorSetLayout> layouts_raw(layouts.size());
-    for (int i = 0; i < layouts.size(); i++)
+    for (size_t i = 0; i < layouts.size(); ++i)
         layouts_raw[i] = layouts[i].get();
 
     vk::PipelineLayoutCreateInfo create_info;
-    //create_info.setPushConstantRanges({push_constant_range});
+    create_info.setPushConstantRanges(push_constant_range);
     create_info.setSetLayouts(layouts_raw);
     return device.createPipelineLayoutUnique(create_info);
 }
@@ -180,50 +183,71 @@ FullscreenPassContainer::PipelineId FullscreenPassContainer::registerFullscreenP
 }
 
 void FullscreenPassContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pass_id) {
-    // パイプラインとディスクリプタセットをバインド
-    auto pipeline_id = PipelineId{static_cast<uint32_t>(pass_id.value)};  // PassIdからPipelineIdへの変換が必要な場合
-    
-    if (pipelines.find(pipeline_id) != pipelines.end()) {
-        cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipelines.at(pipeline_id).get());
-        
-        if (input_attachments_descset) {
-            cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, 
-                                      pipeline_layout.get(), 
-                                      0,
-                                      {input_attachments_descset.get()}, 
-                                      {});
-        }
+    if (pass_id.value < 0) return;
+
+    const auto pipeline_id = PipelineId{static_cast<uint32_t>(pass_id.value)};
+    auto pit = pipelines.find(pipeline_id);
+    if (pit == pipelines.end()) return;
+
+    // パイプラインをバインド
+    cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, pit->second.get());
+
+    // ディスクリプタセットをバインド
+    auto it = input_textures.find(pass_id.value);
+    if (it != input_textures.end()) {
+        cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout.get(), 
+                                  0, it->second.descset.get(), {});
     }
 }
 
-void FullscreenPassContainer::setInputTexture(GlobalRenderTargetId input_rt) {
+void FullscreenPassContainer::setInputTextures(PassId pass_id, const std::vector<GlobalRenderTargetId>& input_rts) {
     auto& rt_container = GET_MODULE(RenderTargetContainer);
-    const auto& rt = rt_container.get(input_rt);
     
-    // ディスクリプタセット割り当て
+    // Descriptor set を作成
+    vk::DescriptorSetLayout layout = descset_layouts[0].get();
+    
     vk::DescriptorSetAllocateInfo alloc_info;
     alloc_info.descriptorPool = desc_pool.get();
     alloc_info.descriptorSetCount = 1;
-    alloc_info.pSetLayouts = &descset_layouts[0].get();
+    alloc_info.pSetLayouts = &layout;
     
-    auto desc_sets = device.allocateDescriptorSetsUnique(alloc_info);
-    input_attachments_descset = std::move(desc_sets[0]);
+    auto descsets = device.allocateDescriptorSetsUnique(alloc_info);
+    auto descset = std::move(descsets[0]);
     
-    // ディスクリプタ更新
-    vk::DescriptorImageInfo image_info;
-    image_info.sampler = linear_sampler.get();
-    image_info.imageView = rt.image_view.get();
-    image_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+    // 各入力テクスチャをバインド
+    std::vector<vk::WriteDescriptorSet> writes;
+    std::vector<vk::DescriptorImageInfo> image_infos;
+    image_infos.reserve(input_rts.size());
     
-    vk::WriteDescriptorSet write;
-    write.dstSet = input_attachments_descset.get();
-    write.dstBinding = 0;
-    write.dstArrayElement = 0;
-    write.descriptorCount = 1;
-    write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
-    write.pImageInfo = &image_info;
+    for (uint32_t i = 0; i < input_rts.size(); ++i) {
+        const auto& rt_id = input_rts[i];
+        if (rt_id.value < 0) continue;
+        
+        const auto& rt = rt_container.get(rt_id);
+        
+        vk::DescriptorImageInfo image_info;
+        image_info.sampler = linear_sampler.get();
+        image_info.imageView = rt.image_view.get();
+        image_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        image_infos.push_back(image_info);
+        
+        vk::WriteDescriptorSet write;
+        write.dstSet = descset.get();
+        write.dstBinding = i;
+        write.dstArrayElement = 0;
+        write.descriptorCount = 1;
+        write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        write.pImageInfo = &image_infos.back();
+        writes.push_back(write);
+    }
     
-    device.updateDescriptorSets({write}, {});
+    device.updateDescriptorSets(writes, {});
+    
+    // 保存
+    input_textures.emplace(pass_id.value, InputTextureInfo{
+        std::move(descset),
+        input_rts
+    });
 }
 
 } // namespace Pelican

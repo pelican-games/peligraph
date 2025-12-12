@@ -16,6 +16,7 @@ vk::Format stringToFormat(const std::string& format_str) {
     static const std::unordered_map<std::string, vk::Format> format_map = {
         {"B8G8R8A8_UNORM", vk::Format::eB8G8R8A8Unorm},
         {"R8G8B8A8_UNORM", vk::Format::eR8G8B8A8Unorm},
+        {"R16G16B16A16_SFLOAT", vk::Format::eR16G16B16A16Sfloat},
         {"D32_SFLOAT", vk::Format::eD32Sfloat},
         {"D24_UNORM_S8_UINT", vk::Format::eD24UnormS8Uint},
         {"D16_UNORM", vk::Format::eD16Unorm},
@@ -78,16 +79,19 @@ RenderingPassId RenderingPassContainer::registerRenderingPass(const RenderingPas
         
         if (pass_def.type == PassType::eFullscreen) {
             // フルスクリーンパスのパイプライン登録
-            // スワップチェーン出力の場合はスキップ（-2の場合）
             auto& rt_module = GET_MODULE(RenderTarget);
             auto& rt_container = GET_MODULE(RenderTargetContainer);
 
+            // 複数出力対応：最初のカラー出力フォーマットを使用
             vk::Format color_fmt{};
-            if (pass_def.output_color.value >= 0) {
-                const auto& output_rt = rt_container.get(pass_def.output_color);
-                color_fmt = output_rt.image.format;
-            } else { // swapchain
-                color_fmt = rt_module.getSwapchainFormat();
+            if (!pass_def.output_color.empty()) {
+                const auto& first_color = pass_def.output_color[0];
+                if (first_color.value >= 0) {
+                    const auto& output_rt = rt_container.get(first_color);
+                    color_fmt = output_rt.image.format;
+                } else { // swapchain
+                    color_fmt = rt_module.getSwapchainFormat();
+                }
             }
 
             auto& shader_container = GET_MODULE(ShaderContainer);
@@ -96,10 +100,16 @@ RenderingPassId RenderingPassContainer::registerRenderingPass(const RenderingPas
 
             auto& fs_container = GET_MODULE(FullscreenPassContainer);
             auto pipeline_id = fs_container.registerFullscreenPass(color_fmt, vert_shader, frag_shader);
+            
+            // 入力テクスチャをバインド
+            PassId pass_id{static_cast<int>(pipeline_id.value)};
+            if (!pass_def.input_targets.empty()) {
+                fs_container.setInputTextures(pass_id, pass_def.input_targets);
+            }
 
-            internal_pass.pass_ids.push_back(PassId{static_cast<int>(pipeline_id.value)});
+            internal_pass.pass_ids.push_back(pass_id);
         } else {
-            // ジオメトリパスの場合はインデックスをそのまま使用
+            // マテリアルパスの場合はインデックスをそのまま使用
             internal_pass.pass_ids.push_back(PassId{i});
         }
     }
@@ -114,7 +124,7 @@ void RenderingPassContainer::registerRenderingPassFromJson(const std::string& js
     auto& rt_container = GET_MODULE(RenderTargetContainer);
     auto& shader_container = GET_MODULE(ShaderContainer);
 
-    // JSONファイルを読み込み (scene.cppと同じパターン)
+    // JSONファイルを読み込み
     std::string json_str;
     {
         const auto sz = std::filesystem::file_size(json_path);
@@ -174,16 +184,24 @@ void RenderingPassContainer::registerRenderingPassFromJson(const std::string& js
                 
                 // 出力ターゲット
                 const auto& output = pass_json.at("output");
-                const std::string output_color_name = output.at("color");
+                auto color_output = output.at("color");
                 
-                if (output_color_name != "swapchain") {
-                    individual_pass.output_color = rt_container.getRenderTargetIdByName(output_color_name);
-                    if (individual_pass.output_color.value < 0) {
-                        throw std::runtime_error("Render target not found: " + output_color_name);
+                // 単数でも複数でも配列に統一
+                if (!color_output.is_array()) {
+                    color_output = nlohmann::json::array({color_output});
+                }
+                
+                for (const auto& color_name_json : color_output) {
+                    const std::string color_name = color_name_json;
+                    if (color_name != "swapchain") {
+                        auto rt_id = rt_container.getRenderTargetIdByName(color_name);
+                        if (rt_id.value < 0) {
+                            throw std::runtime_error("Render target not found: " + color_name);
+                        }
+                        individual_pass.output_color.push_back(rt_id);
+                    } else {
+                        individual_pass.output_color.push_back(GlobalRenderTargetId{-2});
                     }
-                } else {
-                    // スワップチェーン用の特殊ID（-2など、-1以外の無効値）
-                    individual_pass.output_color = GlobalRenderTargetId{-2};
                 }
                 
                 // 深度ターゲット（nullable）
@@ -194,60 +212,62 @@ void RenderingPassContainer::registerRenderingPassFromJson(const std::string& js
                     individual_pass.output_depth = GlobalRenderTargetId{-1};
                 }
                 
-                // フルスクリーンパスの場合
-                if (individual_pass.type == PassType::eFullscreen) {
-                    // 入力ターゲット
-                    if (pass_json.contains("input")) {
-                        const auto& inputs = pass_json.at("input");
-                        for (const auto& input_name_json : inputs) {
-                            const std::string input_name = input_name_json;
-                            individual_pass.input_targets.push_back(
-                                rt_container.getRenderTargetIdByName(input_name)
-                            );
-                        }
-                    }
-
-                    if (!individual_pass.input_targets.empty()) {
-                        GET_MODULE(FullscreenPassContainer).setInputTexture(individual_pass.input_targets[0]);
+                // マテリアルパス用：マテリアル範囲指定（オプション）
+                if (individual_pass.type == PassType::eMaterial && pass_json.contains("material_range")) {
+                    const auto& mat_range = pass_json.at("material_range");
+                    individual_pass.material_info.material_start = mat_range.at("start");
+                    individual_pass.material_info.material_count = mat_range.at("count");
+                }
+                if (pass_json.contains("input")) {
+                    auto input_output = pass_json.at("input");
+                    if (!input_output.is_array()) {
+                        input_output = nlohmann::json::array({input_output});
                     }
                     
-                    // シェーダーファイルパスからシェーダーを読み込んで登録
-                    if (pass_json.contains("shader")) {
-                        const auto& shader = pass_json.at("shader");
-                        const std::string vert_shader_path = shader.at("vertex");
-                        const std::string frag_shader_path = shader.at("fragment");
-                        
-                        // 頂点シェーダーを読み込み
-                        {
-                            const auto vert_sz = std::filesystem::file_size(vert_shader_path);
-                            std::ifstream vert_f{vert_shader_path, std::ios_base::binary};
-                            if (!vert_f.is_open()) {
-                                throw std::runtime_error("Failed to open vertex shader: " + vert_shader_path);
-                            }
-                            std::vector<char> vert_data(vert_sz);
-                            vert_f.read(vert_data.data(), vert_sz);
-                            individual_pass.fullscreen_info.vert_shader = shader_container.registerShader(
-                                vert_sz,
-                                vert_data.data()
-                            );
-                        }
-                        
-                        // フラグメントシェーダーを読み込み
-                        {
-                            const auto frag_sz = std::filesystem::file_size(frag_shader_path);
-                            std::ifstream frag_f{frag_shader_path, std::ios_base::binary};
-                            if (!frag_f.is_open()) {
-                                throw std::runtime_error("Failed to open fragment shader: " + frag_shader_path);
-                            }
-                            std::vector<char> frag_data(frag_sz);
-                            frag_f.read(frag_data.data(), frag_sz);
-                            individual_pass.fullscreen_info.frag_shader = shader_container.registerShader(
-                                frag_sz,
-                                frag_data.data()
-                            );
-                        }
+                    for (const auto& input_name_json : input_output) {
+                        const std::string input_name = input_name_json;
+                        individual_pass.input_targets.push_back(
+                            rt_container.getRenderTargetIdByName(input_name)
+                        );
                     }
-                }   
+                }
+                
+                // フルスクリーンパス用：シェーダー読み込み
+                if (individual_pass.type == PassType::eFullscreen && pass_json.contains("shader")) {
+                    const auto& shader = pass_json.at("shader");
+                    const std::string vert_shader_path = shader.at("vertex");
+                    const std::string frag_shader_path = shader.at("fragment");
+                    
+                    // 頂点シェーダーを読み込み
+                    {
+                        const auto vert_sz = std::filesystem::file_size(vert_shader_path);
+                        std::ifstream vert_f{vert_shader_path, std::ios_base::binary};
+                        if (!vert_f.is_open()) {
+                            throw std::runtime_error("Failed to open vertex shader: " + vert_shader_path);
+                        }
+                        std::vector<char> vert_data(vert_sz);
+                        vert_f.read(vert_data.data(), vert_sz);
+                        individual_pass.fullscreen_info.vert_shader = shader_container.registerShader(
+                            vert_sz,
+                            vert_data.data()
+                        );
+                    }
+                    
+                    // フラグメントシェーダーを読み込み
+                    {
+                        const auto frag_sz = std::filesystem::file_size(frag_shader_path);
+                        std::ifstream frag_f{frag_shader_path, std::ios_base::binary};
+                        if (!frag_f.is_open()) {
+                            throw std::runtime_error("Failed to open fragment shader: " + frag_shader_path);
+                        }
+                        std::vector<char> frag_data(frag_sz);
+                        frag_f.read(frag_data.data(), frag_sz);
+                        individual_pass.fullscreen_info.frag_shader = shader_container.registerShader(
+                            frag_sz,
+                            frag_data.data()
+                        );
+                    }
+                }
                 pass_def.passes.push_back(std::move(individual_pass));
             }
             registerRenderingPass(pass_def);
