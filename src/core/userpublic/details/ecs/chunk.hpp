@@ -41,6 +41,7 @@ class ECSComponentChunk {
     std::vector<std::optional<VariedArray>> component_arrays;
     std::vector<uint32_t> indices;
     std::vector<ComponentId> component_ids;
+    std::vector<uint64_t> component_versions; // Indexed by ComponentId (Dense Index)
     size_t count = 0;
 
   public:
@@ -55,6 +56,19 @@ class ECSComponentChunk {
     }
 
     VariedArray &get(ComponentId component_id) { return *component_arrays[component_id]; }
+
+    void updateVersion(uint32_t index, uint64_t tick) {
+        if (index < component_versions.size()) {
+            component_versions[index] = tick;
+        }
+    }
+
+    uint64_t getVersion(uint32_t index) const {
+        if (index < component_versions.size()) {
+            return component_versions[index];
+        }
+        return 0;
+    }
 
     // Check if chunk has all components specified by INDICES
     bool has_all(std::span<const uint32_t> req_indices) {

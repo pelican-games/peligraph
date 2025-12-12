@@ -73,6 +73,11 @@ EntityId ECSCoreTemplatePublic::allocateEntity(std::span<const ComponentId> comp
     
     const auto allocated_count = chunks_storage[chunk_index].allocate(component_indices_ex, component_ptrs_ex, count);
     
+    // Set version of all components in this chunk to global_tick
+    for(auto idx : component_indices_ex) {
+         chunks_storage[chunk_index].updateVersion(idx, global_tick);
+    }
+
     std::copy(component_ptrs_ex.begin() + 1, component_ptrs_ex.end(), component_ptrs.begin());
 
     EntityId *entity_ids = static_cast<EntityId *>(chunks_storage[chunk_index].getRef(entity_id_comp_idx).ptr);
@@ -123,6 +128,7 @@ void ECSCoreTemplatePublic::unregisterSystem(SystemId system_id) {
 }
 
 void ECSCoreTemplatePublic::update() {
+    global_tick++; 
     JobSystem::Get().init(); 
 
     TimeProfilerStart("ECS_Update_Sort");
