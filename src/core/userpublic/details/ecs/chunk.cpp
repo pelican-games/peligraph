@@ -17,6 +17,7 @@ ECSComponentChunk::ECSComponentChunk(std::span<const ComponentId> _component_ids
 
     for (const auto component : component_ids) {
         component_arrays[component].emplace(GET_MODULE(ComponentInfoManager).getSizeFromComponentId(component));
+        component_arrays[component]->reserve(CHUNK_CAPACITY);
     }
 }
 

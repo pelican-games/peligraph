@@ -35,8 +35,10 @@ EntityId ECSCoreTemplatePublic::allocateEntity(std::span<const ComponentId> comp
     auto it = archetype_to_chunks.find(archetype_key);
     if (it != archetype_to_chunks.end()) {
         for (auto idx : it->second) {
-            chunk_index = idx;
-            break; 
+            if (chunks_storage[idx].size() + count <= ECSComponentChunk::CHUNK_CAPACITY) {
+                chunk_index = idx;
+                break;
+            }
         }
     }
 
