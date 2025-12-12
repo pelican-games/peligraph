@@ -37,7 +37,7 @@ class ECSComponentChunk {
     };
 
     uint32_t count;
-    // Indexed by ComponentId (Dense Index)
+    // Indexed by Dense Index
     std::vector<std::optional<VariedArray>> component_arrays;
     std::vector<uint32_t> indices;
     std::vector<ComponentId> component_ids;
@@ -78,7 +78,7 @@ class ECSComponentChunk {
     std::span<const ComponentId> getComponentList() const { return component_ids; }
     std::span<const uint32_t> getIndices() const { return indices; }
     
-    // Opt E Constructor
+    // Chunk Constructor
     ECSComponentChunk(std::span<const uint32_t> component_indices, std::span<const ComponentId> generic_ids);
 
     // returns allocated count

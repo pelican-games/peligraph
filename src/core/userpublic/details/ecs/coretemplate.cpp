@@ -20,19 +20,19 @@ void ECSCoreTemplatePublic::updateSystemChunkCache(ChunkIndex chunk_index) {
 EntityId ECSCoreTemplatePublic::allocateEntity(std::span<const ComponentId> component_ids, std::span<void *> component_ptrs,
                                  size_t count) {
     TimeProfilerStart("ECS_AllocateEntity");
-    // entity id is recorded as implicit component
+    // Entity id is recorded as implicit component
     std::vector<ComponentId> component_ids_ex(component_ids.size() + 1);
     component_ids_ex[0] = ComponentIdByType<EntityId>::value;
     std::copy(component_ids.begin(), component_ids.end(), component_ids_ex.begin() + 1);
 
-    // convert to Dense Indices
+    // Convert to Dense Indices
     auto& mgr = GET_MODULE(ComponentInfoManager);
     std::vector<uint32_t> component_indices_ex(component_ids_ex.size());
     for(size_t i=0; i<component_ids_ex.size(); ++i) {
         component_indices_ex[i] = mgr.getIndexFromComponentId(component_ids_ex[i]);
     }
 
-    // Sort component IDs to form the archetype key (Keep Key as Generic)
+    // Sort component IDs to form the archetype key
     std::vector<ComponentId> archetype_key = component_ids_ex;
     std::sort(archetype_key.begin(), archetype_key.end());
     
@@ -71,7 +71,6 @@ EntityId ECSCoreTemplatePublic::allocateEntity(std::span<const ComponentId> comp
 
     std::vector<void *> component_ptrs_ex(component_ids.size() + 1);
     
-    // allocate uses INDICES
     const auto allocated_count = chunks_storage[chunk_index].allocate(component_indices_ex, component_ptrs_ex, count);
     
     std::copy(component_ptrs_ex.begin() + 1, component_ptrs_ex.end(), component_ptrs.begin());
@@ -101,8 +100,7 @@ void ECSCoreTemplatePublic::remove(EntityId id) {
 
     EntityId moved_id = static_cast<EntityId *>(chunk.getRef(entity_id_idx).ptr)[chunk.size() - 1];
 
-    // swap and erase
-    // Use stored indices in chunk for iteration
+    // Swap and erase
     for (const auto index : chunk.getIndices()) {
         auto component_arr = chunk.getRef(index);
 
@@ -125,38 +123,62 @@ void ECSCoreTemplatePublic::unregisterSystem(SystemId system_id) {
 }
 
 void ECSCoreTemplatePublic::update() {
+    JobSystem::Get().init(); 
+
     TimeProfilerStart("ECS_Update_Sort");
-    std::vector<SystemId> sorted_systems;
-
-    // topological sort
-    std::queue<SystemId> que;
-    std::unordered_map<SystemId, size_t> dependency_graph;
-
+    
+    // Level-based Topological Sort
+    std::unordered_map<SystemId, int> in_degree;
+    std::queue<SystemId> zero_degree_queue; 
+    
     for (const auto &[id, sys] : systems) {
-        dependency_graph.insert({id, sys.depends_list.size()});
-        if (sys.depends_list.empty())
-            que.push(id);
+        int d = sys.depends_list.size();
+        in_degree[id] = d;
+        if (d == 0) zero_degree_queue.push(id);
     }
-    while (!que.empty()) {
-        auto next = que.front();
-        que.pop();
-        sorted_systems.push_back(next);
-
-        for (const auto depended : systems.at(next).depended_by) {
-            auto &dep_count = dependency_graph.at(depended);
-            dep_count--;
-            if (dep_count == 0)
-                que.push(depended);
+    
+    std::vector<std::vector<SystemId>> execution_levels;
+    
+    while (!zero_degree_queue.empty()) {
+        std::vector<SystemId> current_level;
+        int level_size = zero_degree_queue.size();
+        for(int i=0; i<level_size; ++i) {
+            SystemId id = zero_degree_queue.front();
+            zero_degree_queue.pop();
+            current_level.push_back(id);
+        }
+        
+        execution_levels.push_back(std::move(current_level));
+        
+        for (const auto& executed_id : execution_levels.back()) {
+            for (const auto depended : systems.at(executed_id).depended_by) {
+                in_degree[depended]--;
+                if (in_degree[depended] == 0) {
+                    zero_degree_queue.push(depended);
+                }
+            }
         }
     }
+
     TimeProfilerEnd("ECS_Update_Sort");
 
     TimeProfilerStart("ECS_Update_Execution");
-    // invoke
-    for (auto sys_id : sorted_systems) {
-        auto &sys = systems.at(sys_id);
-        sys.p_func(*this, sys.system_ref, sys.matching_chunk_indices, sys.component_indices);
+
+    // Execute levels
+    for (const auto& level : execution_levels) {
+        if (level.empty()) continue;
+        
+        for (const auto& sys_id : level) {
+             JobSystem::Get().schedule([this, sys_id]() {
+                auto &sys = systems.at(sys_id);
+                // Pass component_indices to p_func
+                sys.p_func(*this, sys.system_ref, sys.matching_chunk_indices, sys.component_indices);
+             });
+        }
+        
+        JobSystem::Get().wait();
     }
+    
     TimeProfilerEnd("ECS_Update_Execution");
 }
 
