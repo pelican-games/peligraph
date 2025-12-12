@@ -37,36 +37,49 @@ class ECSComponentChunk {
     };
 
     uint32_t count;
+    // Indexed by ComponentId (Dense Index)
     std::vector<std::optional<VariedArray>> component_arrays;
+    std::vector<uint32_t> indices;
     std::vector<ComponentId> component_ids;
+    size_t count = 0;
 
   public:
     static constexpr size_t CHUNK_CAPACITY = 4096;
 
     uint32_t size() const { return count; }
-    bool has(ComponentId component_id) const {
-        return component_id < component_arrays.size() && component_arrays[component_id].has_value();
+
+    bool has(ComponentId component_id) {
+        if (component_id >= component_arrays.size())
+            return false;
+        return component_arrays[component_id].has_value();
     }
-    bool has_all(std::span<const ComponentId> component_ids) const {
-        for (const auto component_id : component_ids)
-            if (!has(component_id))
-                return false;
+
+    VariedArray &get(ComponentId component_id) { return *component_arrays[component_id]; }
+
+    // Check if chunk has all components specified by INDICES
+    bool has_all(std::span<const uint32_t> req_indices) {
+        for(auto req : req_indices) {
+             bool found = false;
+             for(auto exists : indices) {
+                 if(exists == req) { found = true; break; }
+             }
+             if(!found) return false;
+        }
         return true;
     }
-    bool match_type(std::span<const ComponentId> component_ids) const {
-        return this->component_ids.size() == component_ids.size() && has_all(component_ids);
-    }
-    ComponentRef get(ComponentId component_id) {
-        auto &arr = *component_arrays[component_id];
+
+    ComponentRef getRef(uint32_t index) {
         return ComponentRef{
-            .ptr = arr.data(),
-            .stride = arr.size_one(),
+            .ptr = component_arrays[index]->data(),
+            .stride = component_arrays[index]->size_one()
         };
     }
-    std::span<const ComponentId> getComponentList() const { return component_ids; }
 
-    // construct with recording component types
-    ECSComponentChunk(std::span<const ComponentId> _component_ids);
+    std::span<const ComponentId> getComponentList() const { return component_ids; }
+    std::span<const uint32_t> getIndices() const { return indices; }
+    
+    // Opt E Constructor
+    ECSComponentChunk(std::span<const uint32_t> component_indices, std::span<const ComponentId> generic_ids);
 
     // returns allocated count
     uint32_t allocate(std::span<const ComponentId> component_ids, std::span<void *> component_ptrs, size_t ex_count);

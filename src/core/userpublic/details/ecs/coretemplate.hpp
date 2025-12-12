@@ -50,62 +50,79 @@ class ECSCoreTemplatePublic {
     void updateSystemChunkCache(ChunkIndex chunk_index);
 
     struct InternalSystemWrapper {
+        SystemId id;
+        std::function<bool(ECSComponentChunk &)> matches;
+        // p_func receives dense indices
+        std::function<void(ECSCoreTemplatePublic &, void*, const std::vector<ChunkIndex> &, const std::vector<uint32_t>&)> p_func;
+        
+        void *system_ref; // Pointer to actual system instance
         std::vector<SystemId> depends_list;
-        std::unordered_set<SystemId> depended_by;
-        std::vector<ChunkIndex> matching_chunk_indices; // Cache of chunks that match this system
-        void *system_ref;
-        void (*p_func)(ECSCoreTemplatePublic &ecs, void *system, std::span<ChunkIndex> chunks);
-        bool (*matches)(ECSComponentChunk &chunk);
+        std::set<SystemId> depended_by;
+        std::vector<ChunkIndex> matching_chunk_indices;
+        std::vector<uint32_t> component_indices; // Stored dense indices for this system
     };
-    uint64_t systems_counter = 0;
+
     std::unordered_map<SystemId, InternalSystemWrapper> systems;
+    uint64_t system_id_counter = 0;
 
   public:
     template <class TSystem, class... TComponents>
     SystemId registerSystem(TSystem &system, std::vector<SystemId> &&depends_list) {
-        static_assert(std::is_same<typename TSystem::QueryComponents, std::tuple<TComponents *...>>::value);
-        SystemId new_sys_id = systems_counter++;
-
-        for (const auto depends : depends_list) {
-            systems.at(depends).depended_by.insert(new_sys_id);
+        SystemId id =  ++system_id_counter;
+        
+        // Resolve Component Indices
+        auto& mgr = GET_MODULE(ComponentInfoManager);
+        std::vector<uint32_t> comp_indices = { mgr.getIndexFromComponentId(ComponentIdByType<typename std::remove_const<TComponents>::type>::value)... };
+        
+        InternalSystemWrapper wrapper;
+        wrapper.id = id;
+        wrapper.system_ref = &system;
+        wrapper.depends_list = std::move(depends_list);
+        wrapper.component_indices = comp_indices;
+        
+        // Setup dependency graph
+        for (auto dep : wrapper.depends_list) {
+            systems.at(dep).depended_by.insert(id);
         }
+        
+        // Match function (using Indices)
+        wrapper.matches = [comp_indices](ECSComponentChunk &chunk) {
+            return chunk.has_all(std::span(comp_indices));
+        };
 
-        // Find existing chunks that match this system
-        std::vector<ChunkIndex> matching_chunks;
-        static const ComponentId components[] = {ComponentIdByType<TComponents>::value...};
+        // Process function
+        wrapper.p_func = [](ECSCoreTemplatePublic &core, void* sys_ptr, const std::vector<ChunkIndex> &chunks, const std::vector<uint32_t>& indices) {
+            TSystem &sys = *static_cast<TSystem *>(sys_ptr);
+            
+            // We can get indices from `indices` vector by position.
+            
+            for (auto chunk_idx : chunks) {
+                auto &chunk = core.chunks_storage[chunk_idx];
+                
+                // Construct tuple using Indices
+                // Note: std::get<i>(indices) corresponds to TComponents... element i
+                // We use an integer sequence to unpack
+                // We use `chunk.getRef(indices[Is]).ptr` (which is void*) -> static_cast<TComponents*>
+                auto tuple = [&]<size_t... Is>(std::index_sequence<Is...>) {
+                    return std::make_tuple(
+                        static_cast<TComponents *>(chunk.getRef(indices[Is]).ptr)...
+                    );
+                }(std::make_index_sequence<sizeof...(TComponents)>{});
+                
+                sys.process(tuple, chunk.size());
+            }
+        };
+
+        systems.emplace(id, std::move(wrapper));
+        
+        // Check existing chunks
         for (size_t i = 0; i < chunks_storage.size(); ++i) {
-            if (chunks_storage[i].has_all(std::span(components))) {
-                matching_chunks.push_back(i);
+            if (systems.at(id).matches(chunks_storage[i])) {
+                systems.at(id).matching_chunk_indices.push_back(i);
             }
         }
 
-        systems.insert({
-            new_sys_id,
-            InternalSystemWrapper{
-                .depends_list = std::move(depends_list),
-                .depended_by = {},
-                .matching_chunk_indices = std::move(matching_chunks),
-                .system_ref = &system,
-                .p_func =
-                    [](ECSCoreTemplatePublic &ecs, void *p_system, std::span<ChunkIndex> chunks) {
-                        static const ComponentId components[] = {ComponentIdByType<TComponents>::value...};
-                        TSystem &system = *static_cast<TSystem *>(p_system);
-                        for (auto chunk_idx : chunks) {
-                            auto &chunk = ecs.chunks_storage[chunk_idx];
-                            // No need to check has_all here, it's guaranteed by the cache
-                            system.process(std::make_tuple(static_cast<TComponents *>(
-                                               chunk.get(ComponentIdByType<TComponents>::value).ptr)...),
-                                           chunk.size());
-                        }
-                    },
-                .matches = [](ECSComponentChunk &chunk) -> bool {
-                    static const ComponentId components[] = {ComponentIdByType<TComponents>::value...};
-                    return chunk.has_all(std::span(components));
-                },
-            },
-        });
-
-        return new_sys_id;
+        return id;
     }
     void unregisterSystem(SystemId system_id);
 
