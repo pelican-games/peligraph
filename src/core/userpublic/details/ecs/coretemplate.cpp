@@ -1,7 +1,11 @@
 #pragma once
 
 #include "coretemplate.hpp"
+#include "coretemplate.hpp"
 #include "../../../profiler.hpp"
+#include "../../../job_system.hpp"
+#include "../../../container.hpp"
+#include "../../../ecs/componentinfo.hpp"
 
 #include <queue>
 #include <algorithm>
@@ -11,29 +15,31 @@ namespace Pelican {
 void ECSCoreTemplatePublic::updateSystemChunkCache(ChunkIndex chunk_index) {
     auto &chunk = chunks_storage[chunk_index];
     for (auto &[id, sys] : systems) {
-        if (sys.matches(chunk)) {
+        if ((chunk.getMask() & sys.matching_mask) == sys.matching_mask) {
             sys.matching_chunk_indices.push_back(chunk_index);
         }
     }
 }
 
-EntityId ECSCoreTemplatePublic::allocateEntity(std::span<const ComponentId> component_ids, std::span<void *> component_ptrs,
+    EntityId ECSCoreTemplatePublic::allocateEntity(std::span<const ComponentId> component_ids, std::span<void *> component_ptrs,
                                  size_t count) {
     TimeProfilerStart("ECS_AllocateEntity");
     // Entity id is recorded as implicit component
-    std::vector<ComponentId> component_ids_ex(component_ids.size() + 1);
+    ComponentId component_ids_ex[65]; // MAX_COMPONENTS + 1
+    size_t ex_size = component_ids.size() + 1;
+    if(ex_size > 65) { return 1; }
     component_ids_ex[0] = ComponentIdByType<EntityId>::value;
-    std::copy(component_ids.begin(), component_ids.end(), component_ids_ex.begin() + 1);
+    for(size_t i=0; i<component_ids.size();++i) component_ids_ex[i+1] = component_ids[i];
 
     // Convert to Dense Indices
     auto& mgr = GET_MODULE(ComponentInfoManager);
-    std::vector<uint32_t> component_indices_ex(component_ids_ex.size());
-    for(size_t i=0; i<component_ids_ex.size(); ++i) {
+    std::vector<size_t> component_indices_ex(ex_size);
+    for(size_t i=0; i<ex_size; ++i) {
         component_indices_ex[i] = mgr.getIndexFromComponentId(component_ids_ex[i]);
     }
 
     // Sort component IDs to form the archetype key
-    std::vector<ComponentId> archetype_key = component_ids_ex;
+    std::vector<ComponentId> archetype_key(component_ids_ex, component_ids_ex + ex_size);
     std::sort(archetype_key.begin(), archetype_key.end());
     
     // find suitable chunk using archetype index
@@ -58,7 +64,7 @@ EntityId ECSCoreTemplatePublic::allocateEntity(std::span<const ComponentId> comp
     if (chunk_index == UINT32_MAX) {
         chunk_index = chunks_storage.size();
         // Construct with INDICES and GENERIC IDs
-        chunks_storage.emplace_back(std::span(component_indices_ex), std::span(component_ids_ex));
+        chunks_storage.emplace_back(std::span(component_indices_ex), std::span(component_ids_ex, ex_size));
         
         // Register in archetype map
         archetype_to_chunks[archetype_key].push_back(chunk_index);
@@ -82,7 +88,7 @@ EntityId ECSCoreTemplatePublic::allocateEntity(std::span<const ComponentId> comp
 
     EntityId *entity_ids = static_cast<EntityId *>(chunks_storage[chunk_index].getRef(entity_id_comp_idx).ptr);
 
-    for (int i = 0; i < count; i++) {
+    for (size_t i = 0; i < count; i++) {
         EntityRef entity_ref{
             .chunk_index = chunk_index,
             .array_index = static_cast<WithinChunkIndex>(first_index + i),
@@ -101,7 +107,7 @@ void ECSCoreTemplatePublic::remove(EntityId id) {
 
     // Get EntityId component array using Dense Index
     auto& mgr = GET_MODULE(ComponentInfoManager);
-    uint32_t entity_id_idx = mgr.getIndexFromComponentId(ComponentIdByType<EntityId>::value);
+    size_t entity_id_idx = mgr.getIndexFromComponentId(ComponentIdByType<EntityId>::value);
 
     EntityId moved_id = static_cast<EntityId *>(chunk.getRef(entity_id_idx).ptr)[chunk.size() - 1];
 
@@ -134,11 +140,11 @@ void ECSCoreTemplatePublic::update() {
     TimeProfilerStart("ECS_Update_Sort");
     
     // Level-based Topological Sort
-    std::unordered_map<SystemId, int> in_degree;
+    std::unordered_map<SystemId, size_t> in_degree;
     std::queue<SystemId> zero_degree_queue; 
     
     for (const auto &[id, sys] : systems) {
-        int d = sys.depends_list.size();
+        size_t d = sys.depends_list.size();
         in_degree[id] = d;
         if (d == 0) zero_degree_queue.push(id);
     }
@@ -147,8 +153,8 @@ void ECSCoreTemplatePublic::update() {
     
     while (!zero_degree_queue.empty()) {
         std::vector<SystemId> current_level;
-        int level_size = zero_degree_queue.size();
-        for(int i=0; i<level_size; ++i) {
+        size_t level_size = zero_degree_queue.size();
+        for(size_t i = 0; i < level_size; ++i) {
             SystemId id = zero_degree_queue.front();
             zero_degree_queue.pop();
             current_level.push_back(id);

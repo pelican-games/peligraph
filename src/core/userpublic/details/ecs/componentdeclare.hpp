@@ -14,4 +14,7 @@ template <class T> struct ComponentIdByType;
 
 DECLARE_COMPONENT(EntityId, 0);
 
+static constexpr size_t MAX_COMPONENTS = 64;
+using ComponentMask = uint64_t;
+
 } // namespace Pelican

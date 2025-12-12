@@ -11,7 +11,8 @@ void ComponentInfoManager::registerComponent(ComponentInfo info) {
     name_id_map.insert({info.name, info.id});
 }
 
-uint32_t ComponentInfoManager::getSizeFromComponentId(ComponentId id) const { return infos[id].size; }
+size_t ComponentInfoManager::getIndexFromComponentId(ComponentId id) const { return static_cast<size_t>(id); }
+size_t ComponentInfoManager::getSizeFromIndex(size_t index) const { return infos[index].size; }
 ComponentId ComponentInfoManager::getComponentIdByName(const std::string &name) const { return name_id_map.at(name); }
 
 void ComponentInfoManager::loadByJson(void *dst_ptr, const nlohmann::json &hint) const {
