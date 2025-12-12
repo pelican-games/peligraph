@@ -15,6 +15,7 @@ ECSComponentChunk::ECSComponentChunk(std::span<const uint32_t> component_indices
     }
     // Resize to Max Index
     component_arrays.resize(max_index + 1);
+    component_versions.resize(max_index + 1, 0); // Initialize versions to 0
 
     for (const auto index : indices) {
         auto& arr = component_arrays[index].emplace(GET_MODULE(ComponentInfoManager).getSizeFromIndex(index));
