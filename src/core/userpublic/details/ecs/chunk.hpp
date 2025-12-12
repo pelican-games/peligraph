@@ -31,6 +31,9 @@ class ECSComponentChunk {
             arr.resize((count - shrink_count) * stride);
             count -= shrink_count;
         }
+        void reserve(size_t capacity) {
+            arr.reserve(capacity * stride);
+        }
     };
 
     uint32_t count;
@@ -38,6 +41,8 @@ class ECSComponentChunk {
     std::vector<ComponentId> component_ids;
 
   public:
+    static constexpr size_t CHUNK_CAPACITY = 4096;
+
     uint32_t size() const { return count; }
     bool has(ComponentId component_id) const {
         return component_id < component_arrays.size() && component_arrays[component_id].has_value();
