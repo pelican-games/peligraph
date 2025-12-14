@@ -5,6 +5,7 @@
 #include "../asset/model.hpp"
 #include "../renderer/camera.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
+#include <components/localtransform.hpp>
 
 namespace Pelican {
 
@@ -43,13 +44,13 @@ void ECSPredefinedRegistration::reg() {
     // predefined component
     GET_MODULE(ComponentInfoManager)
         .registerComponent(ComponentInfo{
-            .id = 0,
+            .id = ComponentIdByType<EntityId>::value,
             .size = sizeof(EntityId),
             .name = "eid",
         });
     GET_MODULE(ComponentInfoManager)
         .registerComponent(ComponentInfo{
-            .id = 1,
+            .id = ComponentIdByType<TransformComponent>::value,
             .size = sizeof(TransformComponent),
             .name = "transform",
             .cb_init =
@@ -81,7 +82,7 @@ void ECSPredefinedRegistration::reg() {
         });
     GET_MODULE(ComponentInfoManager)
         .registerComponent(ComponentInfo{
-            .id = 2,
+            .id = ComponentIdByType<SimpleModelViewComponent>::value,
             .size = sizeof(SimpleModelViewComponent),
             .name = "simplemodelview",
             .cb_init =
@@ -106,7 +107,7 @@ void ECSPredefinedRegistration::reg() {
         });
     GET_MODULE(ComponentInfoManager)
         .registerComponent(ComponentInfo{
-            .id = 3,
+            .id = ComponentIdByType<CameraComponent>::value,
             .size = sizeof(CameraComponent),
             .name = "camera",
             .cb_init = [](void *ptr) {},
@@ -114,10 +115,36 @@ void ECSPredefinedRegistration::reg() {
             .cb_load_by_json = [](void *ptr, const nlohmann::json &hint) {},
         });
 
+    GET_MODULE(ComponentInfoManager)
+        .registerComponent(ComponentInfo{
+            .id = ComponentIdByType<LocalTransformComponent>::value,
+            .size = sizeof(LocalTransformComponent),
+            .name = "localtransform",
+            .cb_init = [](void *ptr) {},
+            .cb_deinit = [](void *ptr) {},
+            .cb_load_by_json =
+                [](void *ptr, const nlohmann::json &hint) {
+                    LocalTransformComponent &transform = *static_cast<LocalTransformComponent *>(ptr);
+
+                    const auto &pos = hint.at("pos");
+                    const auto &rot = hint.at("rotation");
+                    const auto &scale = hint.at("scale");
+                    transform.pos.x = pos[0];
+                    transform.pos.y = pos[1];
+                    transform.pos.z = pos[2];
+                    transform.rotation.x = rot[0];
+                    transform.rotation.y = rot[1];
+                    transform.rotation.z = rot[2];
+                    transform.rotation.w = rot[3];
+                    transform.scale.x = scale[0];
+                    transform.scale.y = scale[1];
+                    transform.scale.z = scale[2];
+                },
+        });
+
     GET_MODULE(ECSCore).registerSystem<SimpleModelViewTransformSystem, TransformComponent, SimpleModelViewComponent>(
         GET_MODULE(SimpleModelViewTransformSystem), {});
-    GET_MODULE(ECSCore).registerSystem<CameraSystem, TransformComponent, CameraComponent>(
-        GET_MODULE(CameraSystem), {});
+    GET_MODULE(ECSCore).registerSystem<CameraSystem, TransformComponent, CameraComponent>(GET_MODULE(CameraSystem), {});
 }
 
 } // namespace Pelican
