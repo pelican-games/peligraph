@@ -8,7 +8,7 @@ namespace Pelican {
 template <class T> struct ComponentIdByType;
 
 #define DECLARE_COMPONENT(_name, _id)                                                                                  \
-    template <> struct ComponentIdByType<_name> {                                                                      \
+    template <> struct Pelican::ComponentIdByType<_name> {                                                                      \
         static constexpr ComponentId value = _id;                                                                      \
     };
 

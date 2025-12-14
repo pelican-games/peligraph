@@ -3,6 +3,7 @@
 #include "core.hpp"
 
 #include "../asset/model.hpp"
+#include "../geomhelper/geomhelper.hpp"
 #include "../renderer/camera.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
 #include <components/localtransform.hpp>
@@ -36,6 +37,22 @@ DECLARE_MODULE(CameraSystem) {
         for (int i = 0; i < 1; i++) {
             camera.setPos(transforms[i].pos);
             camera.setDir(transforms[i].rotation * glm::vec3{0.0, 0.0, 1.0});
+        }
+    }
+};
+
+DECLARE_MODULE(LocalTransformSystem) {
+  public:
+    using QueryComponents = std::tuple<TransformComponent *, LocalTransformComponent *>;
+
+    void process(QueryComponents components, size_t count) {
+        auto transforms = std::get<TransformComponent *>(components);
+        auto localtransforms = std::get<LocalTransformComponent *>(components);
+
+        for (int i = 0; i < count; i++) {
+            transforms[i].pos = to_glm(localtransforms[i].pos);
+            transforms[i].rotation = to_glm(localtransforms[i].rotation);
+            transforms[i].scale = to_glm(localtransforms[i].scale);
         }
     }
 };
@@ -145,6 +162,7 @@ void ECSPredefinedRegistration::reg() {
     GET_MODULE(ECSCore).registerSystem<SimpleModelViewTransformSystem, TransformComponent, SimpleModelViewComponent>(
         GET_MODULE(SimpleModelViewTransformSystem), {});
     GET_MODULE(ECSCore).registerSystem<CameraSystem, TransformComponent, CameraComponent>(GET_MODULE(CameraSystem), {});
+    GET_MODULE(ECSCore).registerSystem<LocalTransformSystem, TransformComponent, LocalTransformComponent>(GET_MODULE(LocalTransformSystem), {});
 }
 
 } // namespace Pelican
