@@ -20,7 +20,7 @@ void JobSystem::init(int thread_count) {
     }
 
     for (int i = 0; i < thread_count; ++i) {
-        workers.emplace_back([this] {
+        workers.emplace_back([this, i] {
             while (true) {
                 std::function<void()> job;
                 {
@@ -34,15 +34,20 @@ void JobSystem::init(int thread_count) {
                 }
                 
                 try {
+                    //LOG_INFO(logger, "JobSystem: Worker {} starting job", i);
                     job();
+                    //LOG_INFO(logger, "JobSystem: Worker {} finished job", i);
                 } catch (const std::exception& e) {
-                   std::cerr << "JobSystem Exception: " << e.what() << std::endl;
+                   LOG_ERROR(logger, "JobSystem Exception: {}", e.what());
                 } catch (...) {
-                   std::cerr << "JobSystem Unknown Exception" << std::endl;
+                   LOG_ERROR(logger, "JobSystem Unknown Exception");
                 }
                 
-                active_jobs--;
-                wait_condition.notify_all();
+                {
+                    std::lock_guard<std::mutex> lock(wait_mutex);
+                    active_jobs--;
+                    wait_condition.notify_all();
+                }
             }
         });
     }
