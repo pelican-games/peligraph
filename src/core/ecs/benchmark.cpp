@@ -52,6 +52,43 @@ struct RenderSystem {
     }
 };
 
+// ...
+
+
+// ...
+struct CrashSystem {
+    // Disable crash for now to test Global View
+    void process(std::tuple<EntityId*> components, size_t count) {
+        /* 
+        auto [entities] = components;
+        for (size_t i = 0; i < count; ++i) {
+             if (entities[i] % 100 == 0) { 
+                 GET_MODULE(ECSCore).remove(entities[i]);
+             }
+        }
+        */
+    }
+};
+
+/*
+struct GlobalCheckSystem {
+    // Test Global View
+    void process_all(std::span<ChunkView<TransformComponent>> chunks) {
+        size_t total_entities = 0;
+        for (auto& chunk : chunks) {
+            total_entities += chunk.count;
+            
+            // Verify access
+            auto [transforms] = chunk.components;
+            // Simple read to ensure valid styling
+            volatile float x = transforms[0].pos.x; 
+            (void)x;
+        }
+        // std::cout << "GlobalCheckSystem saw " << total_entities << " entities." << std::endl;
+    }
+};
+*/
+
 int main() {
     Pelican::setupLogger();
 
@@ -81,14 +118,18 @@ int main() {
     ECSCore ecs;
     PhysicsSystem physicsSystem;
     RenderSystem renderSystem;
+    CrashSystem crashSystem;
+// GlobalCheckSystem globalSystem;
 
     // Register systems
     ecs.registerSystem<PhysicsSystem, TransformComponent, VelocityComponent>(physicsSystem, {});
     ecs.registerSystem<RenderSystem, TransformComponent, RenderComponent>(renderSystem, {});
+    ecs.registerSystem<CrashSystem, EntityId>(crashSystem, {});
+// ecs.registerSystem<GlobalCheckSystem, TransformComponent>(globalSystem, {});
 
     // Allocate entities with mixed archetypes
-    const int entityCount = 10000000;
-    std::cout << "Allocating " << entityCount << " entities with mixed archetypes..." << std::endl;
+    const int entityCount = 100000000; 
+    std::cout << "Allocating " << entityCount << " entities for functionality test..." << std::endl;
 
     // Archetype 1: Static (Transform) - 40%
     {
@@ -140,15 +181,13 @@ int main() {
         }
     }
 
-    std::cout << "Starting realistic benchmark..." << std::endl;
+    std::cout << "Starting benchmark with Global View..." << std::endl;
 
-    TimeProfilerStart("ECS_Benchmark_Realistic_Total");
+    TimeProfilerStart("ECS_Benchmark_Total");
     for (int i = 0; i < 100; ++i) {
-        TimeProfilerStart("ECS_Update");
         ecs.update();
-        TimeProfilerEnd("ECS_Update");
     }
-    TimeProfilerEnd("ECS_Benchmark_Realistic_Total");
+    TimeProfilerEnd("ECS_Benchmark_Total");
 
     std::cout << "Benchmark finished." << std::endl;
     

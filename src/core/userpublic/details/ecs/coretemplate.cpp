@@ -12,6 +12,13 @@
 
 namespace Pelican {
 
+namespace internal {
+    size_t getIndexFromComponentId_Ref(ComponentId id) {
+        auto& mgr = GET_MODULE(ComponentInfoManager);
+        return mgr.getIndexFromComponentId(id);
+    }
+}
+
 void ECSCoreTemplatePublic::updateSystemChunkCache(ChunkIndex chunk_index) {
     auto &chunk = chunks_storage[chunk_index];
     for (auto &[id, sys] : systems) {
