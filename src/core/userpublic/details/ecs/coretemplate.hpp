@@ -69,6 +69,7 @@ class ECSCoreTemplatePublic {
         std::vector<size_t> read_indices;      // Indices this system reads (const T*)
         std::vector<size_t> write_indices;     // Indices this system writes (T*)
         uint64_t last_run_tick = 0;
+        bool force_update = false;
     };
 
     std::unordered_map<SystemId, InternalSystemWrapper> systems;
@@ -77,7 +78,7 @@ class ECSCoreTemplatePublic {
 
   public:
     template <class TSystem, class... TComponents>
-    SystemId registerSystem(TSystem &system, std::vector<SystemId> &&depends_list) {
+    SystemId registerSystem(TSystem &system, std::vector<SystemId> &&depends_list, bool force_update = false) {
         SystemId id =  ++system_id_counter;
         
 
@@ -111,6 +112,7 @@ class ECSCoreTemplatePublic {
         wrapper.read_indices = read_indices;
         wrapper.write_indices = write_indices;
         wrapper.matching_mask = matching_mask;
+        wrapper.force_update = force_update;
         
         // Setup dependency graph
         for (auto dep : wrapper.depends_list) {
@@ -132,8 +134,8 @@ class ECSCoreTemplatePublic {
                      if(v > max_version) max_version = v;
                 }
                 
-                // Skip if no changes since last run
-                if (max_version <= sys_wrapper.last_run_tick && sys_wrapper.last_run_tick > 0) {
+                // Skip if no changes since last run and not forced
+                if (!sys_wrapper.force_update && max_version <= sys_wrapper.last_run_tick && sys_wrapper.last_run_tick > 0) {
                      continue; 
                 }
 

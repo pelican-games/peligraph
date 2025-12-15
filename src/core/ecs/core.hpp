@@ -24,7 +24,12 @@ DECLARE_MODULE(ECSCore) {
 
     template <class TSystem, class... TComponents>
     SystemId registerSystem(TSystem & system, std::vector<SystemId> && depends_list) {
-        return sub.registerSystem<TSystem, TComponents...>(system, std::move(depends_list));
+        return sub.registerSystem<TSystem, TComponents...>(system, std::move(depends_list), false);
+    }
+    
+    template <class TSystem, class... TComponents>
+    SystemId registerSystemForce(TSystem & system, std::vector<SystemId> && depends_list) {
+        return sub.registerSystem<TSystem, TComponents...>(system, std::move(depends_list), true);
     }
     void unregisterSystem(SystemId system_id) { sub.unregisterSystem(system_id); }
 
