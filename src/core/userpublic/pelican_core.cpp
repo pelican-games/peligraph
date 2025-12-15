@@ -10,14 +10,15 @@
 
 namespace Pelican {
 
-PelicanCore::PelicanCore() { settings_str = "{}"; }
+PelicanCore::PelicanCore() {
+    setupLogger();
+    settings_str = "{}";
+}
 
 PelicanCore::PelicanCore(std::string _settings_str) { settings_str = _settings_str; }
 
 void PelicanCore::run() {
     try {
-        setupLogger();
-
         FastModuleContainer container;
         GET_MODULE(ProjectSource).setSourceByData(settings_str);
 
