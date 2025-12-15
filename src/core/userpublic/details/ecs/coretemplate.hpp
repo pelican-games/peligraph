@@ -10,9 +10,12 @@
 
 #include <details/ecs/componentdeclare.hpp>
 #include <details/ecs/chunk.hpp>
-#include "../../../ecs/componentinfo.hpp"
 
 namespace Pelican {
+
+namespace internal {
+    size_t getIndexFromComponentId_Ref(ComponentId id);
+}
 
 using SystemId = uint64_t;
 
@@ -77,19 +80,16 @@ class ECSCoreTemplatePublic {
     SystemId registerSystem(TSystem &system, std::vector<SystemId> &&depends_list) {
         SystemId id =  ++system_id_counter;
         
-        // Resolve Component Indices
-        auto& mgr = GET_MODULE(ComponentInfoManager);
-        
+
         std::vector<size_t> comp_indices;
         std::vector<size_t> read_indices;
         std::vector<size_t> write_indices;
         ComponentMask matching_mask = 0;
-        
-        // Deduction Helper
+
         auto process_component = [&](auto* ptr) {
             using Type = typename std::remove_pointer<decltype(ptr)>::type;
             ComponentId cid = ComponentIdByType<typename std::remove_const<Type>::type>::value;
-            size_t idx = mgr.getIndexFromComponentId(cid);
+            size_t idx = Pelican::internal::getIndexFromComponentId_Ref(cid);
             comp_indices.push_back(idx);
             matching_mask |= (1ULL << idx);
             
