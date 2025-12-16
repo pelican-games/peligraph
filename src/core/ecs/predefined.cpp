@@ -2,11 +2,14 @@
 #include "componentinfo.hpp"
 #include "core.hpp"
 
+#include "predefined/camera.hpp"
+#include "predefined/modelview.hpp"
+#include "predefined/transform.hpp"
+
 #include "../asset/model.hpp"
 #include "../geomhelper/geomhelper.hpp"
 #include "../renderer/camera.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
-#include <components/localtransform.hpp>
 
 namespace Pelican {
 
@@ -159,10 +162,13 @@ void ECSPredefinedRegistration::reg() {
                 },
         });
 
-    GET_MODULE(ECSCore).registerSystemForce<SimpleModelViewTransformSystem, TransformComponent, SimpleModelViewComponent>(
-        GET_MODULE(SimpleModelViewTransformSystem), {});
-    GET_MODULE(ECSCore).registerSystemForce<CameraSystem, TransformComponent, CameraComponent>(GET_MODULE(CameraSystem), {});
-    GET_MODULE(ECSCore).registerSystemForce<LocalTransformSystem, TransformComponent, LocalTransformComponent>(GET_MODULE(LocalTransformSystem), {});
+    GET_MODULE(ECSCore)
+        .registerSystemForce<SimpleModelViewTransformSystem, TransformComponent, SimpleModelViewComponent>(
+            GET_MODULE(SimpleModelViewTransformSystem), {});
+    GET_MODULE(ECSCore).registerSystemForce<CameraSystem, TransformComponent, CameraComponent>(GET_MODULE(CameraSystem),
+                                                                                               {});
+    GET_MODULE(ECSCore).registerSystemForce<LocalTransformSystem, TransformComponent, LocalTransformComponent>(
+        GET_MODULE(LocalTransformSystem), {});
 }
 
 } // namespace Pelican
