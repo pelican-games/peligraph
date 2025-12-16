@@ -14,6 +14,6 @@ struct LocalTransformComponent {
     EntityId parent;
 };
 
-DECLARE_COMPONENT(LocalTransformComponent, 128);
+DECLARE_COMPONENT(LocalTransformComponent, 16);
 
 } // namespace Pelican
