@@ -2,6 +2,7 @@
 
 #include "../../renderer/modelinstance.hpp"
 #include <cstdint>
+#include <string>
 
 namespace Pelican {
 
@@ -10,6 +11,9 @@ struct SimpleModelViewComponent {
     std::string model_name;
 
     template <class T> void ref(T &ar) { ar.prop("model", model_name); }
+
+    void init();
+    void deinit();
 };
 
 } // namespace Pelican
