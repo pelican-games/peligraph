@@ -25,6 +25,9 @@ void ComponentInfoManager::loadByJson(void *dst_ptr, const nlohmann::json &hint)
         JsonArchiveLoader ar{static_cast<const void *>(&hint)};
         infos[id].cb_load_by_json2(dst_ptr, ar);
     }
+
+    if (infos[id].cb_init)
+        infos[id].cb_init(dst_ptr);
 }
 
 } // namespace Pelican
