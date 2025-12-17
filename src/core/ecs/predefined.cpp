@@ -10,6 +10,7 @@
 #include "../geomhelper/geomhelper.hpp"
 #include "../renderer/camera.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
+#include <details/component/registerer.hpp>
 
 namespace Pelican {
 
@@ -134,33 +135,7 @@ void ECSPredefinedRegistration::reg() {
             .cb_deinit = [](void *ptr) {},
             .cb_load_by_json = [](void *ptr, const nlohmann::json &hint) {},
         });
-
-    GET_MODULE(ComponentInfoManager)
-        .registerComponent(ComponentInfo{
-            .id = ComponentIdByType<LocalTransformComponent>::value,
-            .size = sizeof(LocalTransformComponent),
-            .name = "localtransform",
-            .cb_init = [](void *ptr) {},
-            .cb_deinit = [](void *ptr) {},
-            .cb_load_by_json =
-                [](void *ptr, const nlohmann::json &hint) {
-                    LocalTransformComponent &transform = *static_cast<LocalTransformComponent *>(ptr);
-
-                    const auto &pos = hint.at("pos");
-                    const auto &rot = hint.at("rotation");
-                    const auto &scale = hint.at("scale");
-                    transform.pos.x = pos[0];
-                    transform.pos.y = pos[1];
-                    transform.pos.z = pos[2];
-                    transform.rotation.x = rot[0];
-                    transform.rotation.y = rot[1];
-                    transform.rotation.z = rot[2];
-                    transform.rotation.w = rot[3];
-                    transform.scale.x = scale[0];
-                    transform.scale.y = scale[1];
-                    transform.scale.z = scale[2];
-                },
-        });
+    internal::getComponentRegisterer().registerComponent<LocalTransformComponent>("localtransform");
 
     GET_MODULE(ECSCore)
         .registerSystemForce<SimpleModelViewTransformSystem, TransformComponent, SimpleModelViewComponent>(
