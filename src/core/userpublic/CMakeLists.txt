@@ -4,5 +4,6 @@ target_sources(pelican_core PRIVATE
     userinput.cpp
 )
 
+add_subdirectory(serialize)
 add_subdirectory(details/component)
 add_subdirectory(details/ecs)
