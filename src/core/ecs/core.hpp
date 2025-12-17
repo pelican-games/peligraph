@@ -23,8 +23,8 @@ DECLARE_MODULE(ECSCore) {
     void compaction() { sub.compaction(); }
 
     template <class TSystem, class... TComponents>
-    SystemId registerSystem(TSystem & system, std::vector<SystemId> && depends_list) {
-        return sub.registerSystem<TSystem, TComponents...>(system, std::move(depends_list), false);
+    SystemId registerSystem(TSystem & system, std::vector<SystemId> && depends_list, bool force_update = false) {
+        return sub.registerSystem<TSystem, TComponents...>(system, std::move(depends_list), force_update);
     }
     
     template <class TSystem, class... TComponents>

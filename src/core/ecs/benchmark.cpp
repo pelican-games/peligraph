@@ -70,7 +70,7 @@ struct CrashSystem {
     }
 };
 
-/*
+// 全部のChnukに対して適用する例 std::span<ChunkView<TComponents...>>をもつメソッドを持っているかで、全部に判定するかどうかを自動で選択している(こういうことじゃなかったらごめんなさい...)
 struct GlobalCheckSystem {
     // Test Global View
     void process_all(std::span<ChunkView<TransformComponent>> chunks) {
@@ -87,7 +87,7 @@ struct GlobalCheckSystem {
         // std::cout << "GlobalCheckSystem saw " << total_entities << " entities." << std::endl;
     }
 };
-*/
+
 
 int main() {
     Pelican::setupLogger();
@@ -128,7 +128,7 @@ int main() {
 // ecs.registerSystem<GlobalCheckSystem, TransformComponent>(globalSystem, {});
 
     // Allocate entities with mixed archetypes
-    const int entityCount = 100000000; 
+    const int entityCount = 100000; 
     std::cout << "Allocating " << entityCount << " entities for functionality test..." << std::endl;
 
     // Archetype 1: Static (Transform) - 40%
