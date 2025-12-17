@@ -17,7 +17,14 @@ ComponentId ComponentInfoManager::getComponentIdByName(const std::string &name) 
 
 void ComponentInfoManager::loadByJson(void *dst_ptr, const nlohmann::json &hint) const {
     const auto id = getComponentIdByName(hint.at("name"));
-    infos[id].cb_load_by_json(dst_ptr, hint);
+
+    if (infos[id].cb_load_by_json)
+        infos[id].cb_load_by_json(dst_ptr, hint);
+
+    if (infos[id].cb_load_by_json2) {
+        JsonArchiveLoader ar{static_cast<const void *>(&hint)};
+        infos[id].cb_load_by_json2(dst_ptr, ar);
+    }
 }
 
 } // namespace Pelican

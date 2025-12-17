@@ -19,7 +19,7 @@ void UserComponentRegistererTemplatePublic::__registerComponent(ComponentId id, 
     info.size = sz;
     info.cb_init = [](void *ptr) {};
     info.cb_deinit = [](void *ptr) {};
-    info.cb_load_by_json = [](void *ptr, const nlohmann::json &json) {};
+    info.cb_load_by_json2 = loader.json_loader;
 
     GET_MODULE(ComponentInfoManager).registerComponent(info);
 }
