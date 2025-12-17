@@ -17,8 +17,8 @@ void UserComponentRegistererTemplatePublic::__registerComponent(ComponentId id, 
     info.id = id;
     info.name = loader.name;
     info.size = sz;
-    info.cb_init = [](void *ptr) {};
-    info.cb_deinit = [](void *ptr) {};
+    info.cb_init = loader.init;
+    info.cb_deinit = loader.deinit;
     info.cb_load_by_json2 = loader.json_loader;
 
     GET_MODULE(ComponentInfoManager).registerComponent(info);
