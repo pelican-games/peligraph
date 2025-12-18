@@ -56,6 +56,8 @@ PassType stringToPassType(const std::string& type_str) {
         return PassType::eMaterial;
     } else if (type_str == "fullscreen") {
         return PassType::eFullscreen;
+    } else if (type_str == "ui") {
+        return PassType::eUi;
     }
     throw std::runtime_error("Unknown pass type: " + type_str);
 }

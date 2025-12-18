@@ -184,6 +184,22 @@ FrameRenderContext RenderTarget::render_begin() {
             cmd_buf->setScissor(0, {scissor});
         }
 
+        {
+            vk::ImageMemoryBarrier barrier;
+            barrier.oldLayout = vk::ImageLayout::ePresentSrcKHR;
+            barrier.newLayout = vk::ImageLayout::eColorAttachmentOptimal;
+            barrier.image = swapchain_images[current_image_index];
+            barrier.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
+            barrier.subresourceRange.baseMipLevel = 0;
+            barrier.subresourceRange.levelCount = 1;
+            barrier.subresourceRange.baseArrayLayer = 0;
+            barrier.subresourceRange.layerCount = 1;
+            barrier.srcAccessMask = vk::AccessFlagBits::eMemoryRead;
+            barrier.dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
+            cmd_buf->pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput,
+                                     vk::PipelineStageFlagBits::eColorAttachmentOutput, {}, {}, {}, {barrier});
+        }
+
         return FrameRenderContext{
             .cmd_buf = *cmd_buf,
             .color_attachment = swapchain_image_views[image_acquire_result.value].get(),
@@ -200,7 +216,7 @@ void RenderTarget::render_end() {
 
     vk::ImageMemoryBarrier barrier;
     barrier.srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
-    barrier.oldLayout = vk::ImageLayout::eUndefined;
+    barrier.oldLayout = vk::ImageLayout::eColorAttachmentOptimal;
     barrier.newLayout = vk::ImageLayout::ePresentSrcKHR;
     barrier.image = swapchain_images[current_image_index];
     barrier.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;

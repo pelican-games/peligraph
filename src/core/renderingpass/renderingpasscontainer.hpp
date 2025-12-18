@@ -16,6 +16,7 @@ namespace Pelican {
 enum class PassType {
     eMaterial,      // マテリアルレンダリング
     eFullscreen,    // フルスクリーンポストプロセス
+    eUi,            // UI オーバーレイ
 };
 
 // 1つのパスの定義

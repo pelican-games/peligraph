@@ -17,5 +17,7 @@ embed_shader(default.vert)
 embed_shader(default.frag)
 embed_shader(fullscreen.vert)
 embed_shader(fullscreen.frag)
+embed_shader(ui.vert)
+embed_shader(ui.frag)
 
 b_embed(pelican_resources default_config.json)

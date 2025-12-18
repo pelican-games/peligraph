@@ -13,6 +13,8 @@
 #include "util.hpp"
 #include "battery/embed.hpp"
 #include <filesystem>
+#include <cmath>
+#include <chrono>
 
 namespace Pelican {
 
@@ -38,6 +40,7 @@ Renderer::~Renderer() {}
 
 void Renderer::render() {
     static bool is_first_frame = true;
+    static auto start_time = std::chrono::high_resolution_clock::now();
     
     auto &rt = GET_MODULE(RenderTarget);
     auto &mat_renderer = GET_MODULE(MaterialRenderer);
@@ -76,64 +79,73 @@ void Renderer::render() {
             is_first_frame = false;
         }
 
-        // 複数のカラーアタッチメント設定
-        std::vector<vk::RenderingAttachmentInfo> color_attachments;
-        for (const auto& rt_id : pass_def.output_color) {
-            vk::RenderingAttachmentInfo color_att;
-            
-            if (rt_id.value < 0) {
-                // スワップチェーン出力
-                color_att.imageView = render_ctx.color_attachment;
-            } else {
-                // オフスクリーン出力
-                const auto& output_rt = rt_container.get(rt_id);
-                color_att.imageView = output_rt.image_view.get();
+        if (pass_def.type == PassType::eUi) {
+            if (!pass_def.output_color.empty()) {
+                const auto rt_id = pass_def.output_color.front();
+                vk::ImageView target_view = (rt_id.value < 0) ? render_ctx.color_attachment
+                                                              : rt_container.get(rt_id).image_view.get();
+                ui_renderer.render(cmd_buf, UiDrawRequest{target_view, render_ctx.extent});
             }
+        } else {
+            // 複数のカラーアタッチメント設定
+            std::vector<vk::RenderingAttachmentInfo> color_attachments;
+            for (const auto& rt_id : pass_def.output_color) {
+                vk::RenderingAttachmentInfo color_att;
+                
+                if (rt_id.value < 0) {
+                    // スワップチェーン出力
+                    color_att.imageView = render_ctx.color_attachment;
+                } else {
+                    // オフスクリーン出力
+                    const auto& output_rt = rt_container.get(rt_id);
+                    color_att.imageView = output_rt.image_view.get();
+                }
+                
+                color_att.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+                color_att.loadOp = pass_def.color_load_op;
+                color_att.storeOp = pass_def.color_store_op;
+                color_att.clearValue.color = pass_def.clear_color;
+                color_attachments.push_back(color_att);
+            }
+
+            vk::RenderingInfo render_info;
+            render_info.renderArea = vk::Rect2D{{0, 0}, render_ctx.extent};
+            render_info.layerCount = 1;
+            render_info.setColorAttachments(color_attachments);
+
+            // 深度アタッチメント
+            vk::RenderingAttachmentInfo depth_attachment;
+            if (pass_def.output_depth.value >= 0) {
+                const auto& depth_rt = rt_container.get(pass_def.output_depth);
+                depth_attachment.imageView = depth_rt.image_view.get();
+                depth_attachment.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
+                depth_attachment.loadOp = vk::AttachmentLoadOp::eClear;
+                depth_attachment.storeOp = vk::AttachmentStoreOp::eDontCare;
+                depth_attachment.clearValue.depthStencil = vk::ClearDepthStencilValue{1.0f, 0};
+                render_info.pDepthAttachment = &depth_attachment;
+            }
+
+            cmd_buf.beginRendering(render_info);
+
+            // ビューポート設定
+            vk::Viewport viewport{0.0f, 0.0f, 
+                                 static_cast<float>(render_ctx.extent.width), 
+                                 static_cast<float>(render_ctx.extent.height), 
+                                 0.0f, 1.0f};
+            cmd_buf.setViewport(0, viewport);
             
-            color_att.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
-            color_att.loadOp = pass_def.color_load_op;
-            color_att.storeOp = pass_def.color_store_op;
-            color_att.clearValue.color = pass_def.clear_color;
-            color_attachments.push_back(color_att);
+            vk::Rect2D scissor{{0, 0}, render_ctx.extent};
+            cmd_buf.setScissor(0, scissor);
+
+            // パスタイプに応じてレンダリング
+            if (pass_def.type == PassType::eMaterial) {
+                mat_renderer.render(cmd_buf, pass_id);
+            } else if (pass_def.type == PassType::eFullscreen) {
+                fs_renderer.render(cmd_buf, pass_id);
+            }
+
+            cmd_buf.endRendering();
         }
-
-        vk::RenderingInfo render_info;
-        render_info.renderArea = vk::Rect2D{{0, 0}, render_ctx.extent};
-        render_info.layerCount = 1;
-        render_info.setColorAttachments(color_attachments);
-
-        // 深度アタッチメント
-        vk::RenderingAttachmentInfo depth_attachment;
-        if (pass_def.output_depth.value >= 0) {
-            const auto& depth_rt = rt_container.get(pass_def.output_depth);
-            depth_attachment.imageView = depth_rt.image_view.get();
-            depth_attachment.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
-            depth_attachment.loadOp = vk::AttachmentLoadOp::eClear;
-            depth_attachment.storeOp = vk::AttachmentStoreOp::eDontCare;
-            depth_attachment.clearValue.depthStencil = vk::ClearDepthStencilValue{1.0f, 0};
-            render_info.pDepthAttachment = &depth_attachment;
-        }
-
-        cmd_buf.beginRendering(render_info);
-
-        // ビューポート設定
-        vk::Viewport viewport{0.0f, 0.0f, 
-                             static_cast<float>(render_ctx.extent.width), 
-                             static_cast<float>(render_ctx.extent.height), 
-                             0.0f, 1.0f};
-        cmd_buf.setViewport(0, viewport);
-        
-        vk::Rect2D scissor{{0, 0}, render_ctx.extent};
-        cmd_buf.setScissor(0, scissor);
-
-        // パスタイプに応じてレンダリング
-        if (pass_def.type == PassType::eMaterial) {
-            mat_renderer.render(cmd_buf, pass_id);
-        } else if (pass_def.type == PassType::eFullscreen) {
-            fs_renderer.render(cmd_buf, pass_id);
-        }
-
-        cmd_buf.endRendering();
 
         // マテリアルパス終了後：次がフルスクリーンパスなら入力テクスチャを SHADER_READ_ONLY_OPTIMAL に遷移
         if (pass_def.type == PassType::eMaterial && i < pass_count - 1) {
