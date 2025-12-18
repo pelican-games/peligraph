@@ -7,6 +7,7 @@
 #include <set>
 #include <vector>
 #include <functional>
+#include <tuple>
 
 #include <details/ecs/componentdeclare.hpp>
 #include <details/ecs/chunk.hpp>
@@ -18,6 +19,12 @@ namespace internal {
 }
 
 using SystemId = uint64_t;
+
+template <class... TComponents>
+struct ChunkView {
+    std::tuple<TComponents*...> components;
+    size_t count;
+};
 
 class ECSCoreTemplatePublic {
     // Component Management
@@ -123,36 +130,86 @@ class ECSCoreTemplatePublic {
         wrapper.p_func = [id](ECSCoreTemplatePublic &core, void* sys_ptr, const std::vector<ChunkIndex> &chunks, const std::vector<size_t>& indices) {
             TSystem &sys = *static_cast<TSystem *>(sys_ptr);
             auto& sys_wrapper = core.systems.at(id);
-            
-            for (auto chunk_idx : chunks) {
-                auto &chunk = core.chunks_storage[chunk_idx];
-                
-                // Change Detection
-                uint64_t max_version = 0;
-                for(auto idx : indices) {
-                     uint64_t v = chunk.getVersion(idx);
-                     if(v > max_version) max_version = v;
-                }
-                
-                // Skip if no changes since last run and not forced
-                if (!sys_wrapper.force_update && max_version <= sys_wrapper.last_run_tick && sys_wrapper.last_run_tick > 0) {
-                     continue; 
-                }
+            const uint64_t start_last_run_tick = sys_wrapper.last_run_tick;
+            bool executed_any = false;
 
-                auto tuple = [&]<size_t... Is>(std::index_sequence<Is...>) {
-                    return std::make_tuple(
-                        static_cast<TComponents *>(chunk.getRef(indices[Is]).ptr)...
-                    );
-                }(std::make_index_sequence<sizeof...(TComponents)>{});
+            // 1. Process All (Batch)
+            if constexpr (requires { sys.process(std::span<ChunkView<TComponents...>>{}); }) {
+                std::vector<ChunkView<TComponents...>> views;
+                views.reserve(chunks.size());
                 
-                sys.process(tuple, chunk.size());
+                bool any_change = sys_wrapper.force_update;
+                if (start_last_run_tick == 0) any_change = true;
+
+                for (auto chunk_idx : chunks) {
+                     auto &chunk = core.chunks_storage[chunk_idx];
+                     
+                     if (!any_change) {
+                         uint64_t max_version = 0;
+                         for(auto idx : indices) {
+                             uint64_t v = chunk.getVersion(idx);
+                             if(v > max_version) max_version = v;
+                         }
+                         if (max_version >= start_last_run_tick) any_change = true;
+                     }
+
+                    auto tuple = [&]<size_t... Is>(std::index_sequence<Is...>) {
+                        return std::make_tuple(
+                            static_cast<TComponents *>(chunk.getRef(indices[Is]).ptr)...
+                        );
+                    }(std::make_index_sequence<sizeof...(TComponents)>{});
+                    
+                    views.push_back({tuple, chunk.size()});
+                }
                 
-                // Update versions for Write Indices
-                for (auto w_idx : sys_wrapper.write_indices) {
-                    chunk.updateVersion(w_idx, core.global_tick);
+                if (any_change) {
+                    sys.process(views);
+                    executed_any = true;
+                    
+                    for (auto chunk_idx : chunks) {
+                        auto &chunk = core.chunks_storage[chunk_idx];
+                        for (auto w_idx : sys_wrapper.write_indices) {
+                            chunk.updateVersion(w_idx, core.global_tick);
+                        }
+                    }
                 }
             }
-            sys_wrapper.last_run_tick = core.global_tick;
+            
+            // 2. Process (Per Chunk)
+            if constexpr (requires { sys.process(std::tuple<TComponents*...>{}, size_t{}); }) {
+                for (auto chunk_idx : chunks) {
+                    auto &chunk = core.chunks_storage[chunk_idx];
+                    
+                    // Change Detection
+                    uint64_t max_version = 0;
+                    for(auto idx : indices) {
+                         uint64_t v = chunk.getVersion(idx);
+                         if(v > max_version) max_version = v;
+                    }
+                    
+                    // Skip if no changes since last run and not forced (using start_last_run_tick)
+                    if (!sys_wrapper.force_update && max_version < start_last_run_tick) {
+                         continue; 
+                    }
+
+                    auto tuple = [&]<size_t... Is>(std::index_sequence<Is...>) {
+                        return std::make_tuple(
+                            static_cast<TComponents *>(chunk.getRef(indices[Is]).ptr)...
+                        );
+                    }(std::make_index_sequence<sizeof...(TComponents)>{});
+                    
+                    sys.process(tuple, chunk.size());
+                    executed_any = true;
+                    
+                    for (auto w_idx : sys_wrapper.write_indices) {
+                        chunk.updateVersion(w_idx, core.global_tick);
+                    }
+                }
+            }
+
+            if (executed_any) {
+                sys_wrapper.last_run_tick = core.global_tick;
+            }
         };
 
         systems.emplace(id, std::move(wrapper));
