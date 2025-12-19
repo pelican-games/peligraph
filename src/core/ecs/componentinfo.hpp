@@ -20,7 +20,6 @@ struct ComponentInfo {
     void (*cb_init)(void *ptr) = nullptr;
     void (*cb_deinit)(void *ptr) = nullptr;
 
-    void (*cb_load_by_json)(void *ptr, const nlohmann::json &json) = nullptr;
     void (*cb_load_by_json2)(void *ptr, JsonArchiveLoader &json) = nullptr;
 };
 
@@ -37,6 +36,7 @@ DECLARE_MODULE(ComponentInfoManager) {
     size_t getSizeFromIndex(size_t index) const;
     ComponentId getComponentIdByName(const std::string &name) const;
     void loadByJson(void *ptr, const nlohmann::json &json) const;
+    void initComponent(ComponentId id, void *ptr) const;
 };
 
 } // namespace Pelican
