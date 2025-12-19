@@ -13,6 +13,7 @@ struct CommonPolygonVertData {
     std::vector<uint32_t> indices;
     std::vector<glm::vec3> pos;
     std::vector<glm::vec3> normal;
+    std::vector<glm::vec4> tangent;
     std::vector<glm::vec2> texcoord;
     std::vector<glm::vec4> color;
     std::vector<glm::i16vec4> joint;
@@ -22,6 +23,7 @@ struct CommonPolygonVertData {
 struct CommonVertStruct {
     glm::vec3 pos;
     glm::vec3 normal;
+    glm::vec4 tangent;
     glm::vec2 texcoord;
     glm::vec4 color;
 };

@@ -141,6 +141,8 @@ struct InternalGltfLoader {
                 dat.pos = getDataFromAccessor<TINYGLTF_TYPE_VEC3, glm::vec3>(it->second);
             if (auto it = primitive.attributes.find("NORMAL"); it != primitive.attributes.end())
                 dat.normal = getDataFromAccessor<TINYGLTF_TYPE_VEC3, glm::vec3>(it->second);
+            if (auto it = primitive.attributes.find("TANGENT"); it != primitive.attributes.end())
+                dat.tangent = getDataFromAccessor<TINYGLTF_TYPE_VEC4, glm::vec4>(it->second);
             if (auto it = primitive.attributes.find("TEXCOORD_0"); it != primitive.attributes.end())
                 dat.texcoord = getDataFromAccessor<TINYGLTF_TYPE_VEC2, glm::vec2>(it->second);
             if (auto it = primitive.attributes.find("COLOR_0"); it != primitive.attributes.end()) {

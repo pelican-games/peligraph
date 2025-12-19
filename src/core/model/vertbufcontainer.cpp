@@ -76,6 +76,13 @@ ModelTemplate::PrimitiveRefInfo VertBufContainer::addPrimitiveEntry(CommonPolygo
         for (uint32_t i = 0; i < vert_count; i++)
             tmp_buf[i].normal = glm::vec3(0.0, 0.0, 0.0);
     }
+    if (!data.tangent.empty()) {
+        for (uint32_t i = 0; i < vert_count; i++)
+            tmp_buf[i].tangent = data.tangent[i];
+    } else {
+        for (uint32_t i = 0; i < vert_count; i++)
+            tmp_buf[i].tangent = glm::vec4(0.0, 0.0, 0.0, 0.0);
+    }
     if (!data.texcoord.empty()) {
         for (uint32_t i = 0; i < vert_count; i++)
             tmp_buf[i].texcoord = data.texcoord[i];
@@ -142,6 +149,13 @@ VertBufContainer::CommonVertDataDescription VertBufContainer::getDescription() {
     color_attr.offset = offsetof(CommonVertStruct, color);
     color_attr.format = vk::Format::eR32G32B32A32Sfloat;
     descs.attr_descs.push_back(color_attr);
+
+    vk::VertexInputAttributeDescription tangent_attr;
+    tangent_attr.binding = 0;
+    tangent_attr.location = 4;
+    tangent_attr.offset = offsetof(CommonVertStruct, tangent);
+    tangent_attr.format = vk::Format::eR32G32B32A32Sfloat;
+    descs.attr_descs.push_back(tangent_attr);
 
     return descs;
 }

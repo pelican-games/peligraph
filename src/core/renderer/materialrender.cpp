@@ -1,4 +1,5 @@
 #include "materialrender.hpp"
+#include "../light/lightcontainer.hpp"
 #include "../material/materialcontainer.hpp"
 #include "../model/vertbufcontainer.hpp"
 #include "../vkcore/core.hpp"
@@ -6,6 +7,7 @@
 #include "polygoninstancecontainer.hpp"
 
 namespace Pelican {
+
 
 MaterialRenderer::MaterialRenderer() {
     const auto &instance_container = GET_MODULE(PolygonInstanceContainer);
@@ -18,7 +20,9 @@ void MaterialRenderer::render(vk::CommandBuffer cmd_buf, PassId pass_id) const {
     auto &instance_container = GET_MODULE(PolygonInstanceContainer);
     const auto &vert_buf_container = GET_MODULE(VertBufContainer);
     const auto &material_container = GET_MODULE(MaterialContainer);
+    auto &light_container = GET_MODULE(LightContainer);
 
+    light_container.Update();
     vert_buf_container.bindVertexBuffer(cmd_buf);
 
     const auto pipeline_layout = material_container.getPipelineLayout();
@@ -36,7 +40,8 @@ void MaterialRenderer::render(vk::CommandBuffer cmd_buf, PassId pass_id) const {
     for (const auto &draw_call : draw_calls) {
         if (!material_container.isRenderRequired(pass_id, draw_call.material))
             continue;
-        material_container.bindResource(cmd_buf, pass_id, draw_call.material, current_material_id);
+        
+        material_container.bindResource(cmd_buf, pass_id, draw_call.material, current_material_id, light_container.GetDescriptorSet());
         current_material_id = draw_call.material;
         cmd_buf.drawIndexedIndirect(indirect_buf.buffer.get(), draw_call.offset, draw_call.draw_count,
                                     draw_call.stride);
@@ -48,7 +53,9 @@ void MaterialRenderer::renderWithMaterialRange(vk::CommandBuffer cmd_buf, PassId
     auto &instance_container = GET_MODULE(PolygonInstanceContainer);
     const auto &vert_buf_container = GET_MODULE(VertBufContainer);
     const auto &material_container = GET_MODULE(MaterialContainer);
+    auto &light_container = GET_MODULE(LightContainer);
 
+    light_container.Update();
     vert_buf_container.bindVertexBuffer(cmd_buf);
 
     const auto pipeline_layout = material_container.getPipelineLayout();
@@ -78,7 +85,7 @@ void MaterialRenderer::renderWithMaterialRange(vk::CommandBuffer cmd_buf, PassId
             }
         }
         
-        material_container.bindResource(cmd_buf, pass_id, draw_call.material, current_material_id);
+        material_container.bindResource(cmd_buf, pass_id, draw_call.material, current_material_id, light_container.GetDescriptorSet());
         current_material_id = draw_call.material;
         cmd_buf.drawIndexedIndirect(indirect_buf.buffer.get(), draw_call.offset, draw_call.draw_count,
                                     draw_call.stride);

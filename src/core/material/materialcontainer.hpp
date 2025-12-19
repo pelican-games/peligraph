@@ -56,7 +56,7 @@ DECLARE_MODULE(MaterialContainer) {
 
     bool isRenderRequired(PassId pass_id, GlobalMaterialId material) const;
     void bindResource(vk::CommandBuffer cmd_buf, PassId pass_id, GlobalMaterialId material,
-                      GlobalMaterialId prev_material_id) const;
+                      GlobalMaterialId prev_material_id, vk::DescriptorSet light_desc_set) const;
     vk::PipelineLayout getPipelineLayout() const;
 };
 

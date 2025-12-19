@@ -18,6 +18,7 @@ add_subdirectory(model)
 add_subdirectory(renderingpass)
 add_subdirectory(renderer)
 add_subdirectory(fullscreenpass)
+add_subdirectory(light)
 
 add_subdirectory(userpublic)
 target_include_directories(pelican_core PUBLIC ./userpublic)

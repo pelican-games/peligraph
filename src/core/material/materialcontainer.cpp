@@ -1,10 +1,12 @@
 #include "materialcontainer.hpp"
+#include "../light/lightcontainer.hpp"
 #include "../model/vertbufcontainer.hpp"
 #include "../shader/shadercontainer.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/util.hpp"
 
 namespace Pelican {
+
 
 constexpr uint32_t modelMatDescriptorSetNumber = 0;
 constexpr uint32_t modelMatDescriptorBinding = 0;
@@ -14,8 +16,6 @@ constexpr uint32_t baseColorBinding = 0;
 constexpr uint32_t metallicRoughnessBinding = 1;
 constexpr uint32_t normalBinding = 2;
 constexpr uint32_t materialTextureBindingCount = 3;
-
-
 
 static vk::UniqueDescriptorSetLayout createModelBufDescriptorSetLayout(vk::Device device) {
     std::array<vk::DescriptorSetLayoutBinding, 1> bindings;
@@ -62,19 +62,15 @@ static std::vector<vk::UniqueDescriptorSetLayout> createDefaultDescriptorSetLayo
 }
 
 static vk::UniquePipelineLayout createDefaultPipelineLayout(vk::Device device,
-                                                            std::span<vk::UniqueDescriptorSetLayout> layouts) {
+                                                            std::span<vk::DescriptorSetLayout> layouts) {
     vk::PushConstantRange push_constant_range;
     push_constant_range.stageFlags = vk::ShaderStageFlagBits::eVertex;
     push_constant_range.offset = 0;
     push_constant_range.size = sizeof(PushConstantStruct);
 
-    std::vector<vk::DescriptorSetLayout> layouts_raw(layouts.size());
-    for (int i = 0; i < layouts.size(); i++)
-        layouts_raw[i] = layouts[i].get();
-
     vk::PipelineLayoutCreateInfo create_info;
     create_info.setPushConstantRanges({push_constant_range});
-    create_info.setSetLayouts(layouts_raw);
+    create_info.setSetLayouts(layouts);
     return device.createPipelineLayoutUnique(create_info);
 }
 
@@ -231,9 +227,19 @@ static vk::UniqueImageView createImageView(vk::Device device, const ImageWrapper
 
 MaterialContainer::MaterialContainer()
     : device{GET_MODULE(VulkanManageCore).getDevice()}, descset_layouts{createDefaultDescriptorSetLayouts(device)},
-      pipeline_layout{createDefaultPipelineLayout(GET_MODULE(VulkanManageCore).getDevice(), descset_layouts)},
       nearest_sampler{createSampler(device, vk::Filter::eNearest)},
-      linear_sampler{createSampler(device, vk::Filter::eLinear)}, desc_pool{createDescriptorPool(device)} {}
+      linear_sampler{createSampler(device, vk::Filter::eLinear)}, desc_pool{createDescriptorPool(device)}
+{
+    auto& light_container = GET_MODULE(LightContainer);
+
+    std::vector<vk::DescriptorSetLayout> layouts;
+    for (const auto& layout : descset_layouts) {
+        layouts.push_back(layout.get());
+    }
+    layouts.push_back(light_container.GetDescriptorSetLayout());
+
+    pipeline_layout = createDefaultPipelineLayout(device, layouts);
+}
 MaterialContainer::~MaterialContainer() {}
 
 GlobalTextureId MaterialContainer::registerTexture(vk::Extent3D extent, const void *data) {
@@ -367,7 +373,7 @@ bool MaterialContainer::isRenderRequired(PassId pass_id, GlobalMaterialId materi
 }
 
 void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pass_id, GlobalMaterialId material_id,
-                                     GlobalMaterialId prev_material_id) const {
+                                     GlobalMaterialId prev_material_id, vk::DescriptorSet light_desc_set) const {
     const auto &material = materials.get(material_id);
 
     if (prev_material_id.value < 0) {
@@ -376,6 +382,7 @@ void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pass_id, 
                                    {
                                        model_mat_buf_descset.get(), // model matrix buffer: set = 0
                                        material.descset.get(),      // material textures: set = 1
+                                       light_desc_set,              // lights: set = 2
                                    },
                                    {});
     } else {

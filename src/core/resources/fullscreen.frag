@@ -8,6 +8,28 @@ layout(set = 0, binding = 1) uniform sampler2D normalSampler;
 layout(set = 0, binding = 2) uniform sampler2D materialSampler; // R: roughness, G: metallic, B: AO
 layout(set = 0, binding = 3) uniform sampler2D worldPosSampler;
 
+struct DirectionalLight {
+    vec3 direction;
+    float intensity;
+    vec3 color;
+    float padding; // for alignment
+};
+
+struct PointLight {
+    vec3 position;
+    float intensity;
+    vec3 color;
+    float padding; // for alignment
+};
+
+layout(set = 1, binding = 0) uniform LightUBO {
+    uint directionalLightCount;
+    uint pointLightCount;
+    vec2 padding;
+    DirectionalLight directionalLights[4];
+    PointLight pointLights[4];
+} lightUBO;
+
 layout(push_constant) uniform PushConstants {
     vec4 cameraPos;
 } pushConsts;
@@ -60,32 +82,41 @@ void main() {
     
     vec3 V = normalize(cameraPos - worldPos);
     
-    // リアルなスタジオライティング配置（3つのライト）
-    vec3 lightPositions[3] = vec3[](
-        vec3(0.0, 0.0, -5.0),   // 手前の赤色ライト（カメラ側）
-        vec3(-4.0, 3.0, 4.0),   // フィルライト（反対側から柔らかく）
-        vec3(0.0, -3.0, 3.0)    // リムライト（下から輪郭を強調）
-    );
-    
-    vec3 lightColors[3] = vec3[](
-        vec3(100.0, 0.0, 0.0),    // 赤色
-        vec3(40.0, 50.0, 60.0),   // 寒色系フィルライト
-        vec3(30.0, 30.0, 35.0)    // ニュートラルリムライト
-    );
-    
     // F0（表面の基底反射率）- 金属はalbedo色、非金属は0.04
     vec3 F0 = vec3(0.04);
     F0 = mix(F0, albedo, metallic);
     
     // 反射率方程式
     vec3 Lo = vec3(0.0);
-    
-    for(int i = 0; i < 3; ++i) {
-        vec3 L = normalize(lightPositions[i] - worldPos);
+
+    for(int i = 0; i < lightUBO.directionalLightCount; ++i) {
+        vec3 L = normalize(-lightUBO.directionalLights[i].direction);
         vec3 H = normalize(V + L);
-        float distance = length(lightPositions[i] - worldPos);
+        vec3 radiance = lightUBO.directionalLights[i].color * lightUBO.directionalLights[i].intensity;
+        
+        // Cook-Torrance BRDF
+        float NDF = DistributionGGX(normal, H, roughness);
+        float G = GeometrySmith(normal, V, L, roughness);
+        vec3 F = fresnelSchlick(max(dot(H, V), 0.0), F0);
+        
+        vec3 kS = F;
+        vec3 kD = vec3(1.0) - kS;
+        kD *= 1.0 - metallic;
+        
+        vec3 numerator = NDF * G * F;
+        float denominator = 4.0 * max(dot(normal, V), 0.0) * max(dot(normal, L), 0.0) + 0.0001;
+        vec3 specular = numerator / denominator;
+        
+        float NdotL = max(dot(normal, L), 0.0);
+        Lo += (kD * albedo / PI + specular) * radiance * NdotL;
+    }
+
+    for(int i = 0; i < lightUBO.pointLightCount; ++i) {
+        vec3 L = normalize(lightUBO.pointLights[i].position - worldPos);
+        vec3 H = normalize(V + L);
+        float distance = length(lightUBO.pointLights[i].position - worldPos);
         float attenuation = 1.0 / (distance * distance + 0.01);
-        vec3 radiance = lightColors[i] * attenuation;
+        vec3 radiance = lightUBO.pointLights[i].color * lightUBO.pointLights[i].intensity * attenuation;
         
         // Cook-Torrance BRDF
         float NDF = DistributionGGX(normal, H, roughness);

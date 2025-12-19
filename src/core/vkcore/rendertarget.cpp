@@ -186,7 +186,7 @@ FrameRenderContext RenderTarget::render_begin() {
 
         {
             vk::ImageMemoryBarrier barrier;
-            barrier.oldLayout = vk::ImageLayout::ePresentSrcKHR;
+            barrier.oldLayout = vk::ImageLayout::eUndefined;
             barrier.newLayout = vk::ImageLayout::eColorAttachmentOptimal;
             barrier.image = swapchain_images[current_image_index];
             barrier.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
@@ -194,9 +194,9 @@ FrameRenderContext RenderTarget::render_begin() {
             barrier.subresourceRange.levelCount = 1;
             barrier.subresourceRange.baseArrayLayer = 0;
             barrier.subresourceRange.layerCount = 1;
-            barrier.srcAccessMask = vk::AccessFlagBits::eMemoryRead;
+            barrier.srcAccessMask = {};
             barrier.dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
-            cmd_buf->pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput,
+            cmd_buf->pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe,
                                      vk::PipelineStageFlagBits::eColorAttachmentOutput, {}, {}, {}, {barrier});
         }
 

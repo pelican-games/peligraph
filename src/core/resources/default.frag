@@ -9,6 +9,8 @@ layout(location = 0) in vec2 texUV;
 layout(location = 1) in vec4 inColor;
 layout(location = 2) in vec3 inNormal;
 layout(location = 3) in vec3 inWorldPos;
+layout(location = 4) in vec3 inTangent;
+layout(location = 5) in vec3 inBitangent;
 
 // G-Buffer出力
 layout(location = 0) out vec4 outAlbedo;      // RGB: Albedo, A: Alpha
@@ -21,8 +23,19 @@ void main() {
     vec4 baseColor = texture(baseColorSampler, texUV);
     outAlbedo = baseColor;
 
-    // Normal
-    vec3 worldNormal = normalize(inNormal);
+    vec3 worldNormal;
+    // If tangent is zero, it means no normal mapping data is available.
+    if (length(inTangent) == 0.0)
+    {
+        worldNormal = normalize(inNormal);
+    }
+    else
+    {
+        // Normal Mapping
+        mat3 TBN = mat3(normalize(inTangent), normalize(inBitangent), normalize(inNormal));
+        vec3 tangentNormal = texture(normalSampler, texUV).xyz * 2.0 - 1.0;
+        worldNormal = normalize(TBN * tangentNormal);
+    }
     outNormal = vec4(worldNormal * 0.5 + 0.5, 1.0);
 
     // Metallic-Roughness（glTF形式: G=roughness, B=metallic）

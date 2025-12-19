@@ -8,6 +8,7 @@
 #include "../renderingpass/rendertargetcontainer.hpp"
 #include "../shader/shadercontainer.hpp"
 #include "../loader/basicconfig.hpp"
+#include "../light/lightcontainer.hpp"
 #include "core.hpp"
 #include "rendertarget.hpp"
 #include "util.hpp"
@@ -49,6 +50,14 @@ void Renderer::render() {
     auto &pass_container = GET_MODULE(RenderingPassContainer);
     auto &rt_container = GET_MODULE(RenderTargetContainer);
     auto &vk_utils = GET_MODULE(VulkanUtils);
+
+    // --- Temporary Light Animation (easily removable) ---
+    {
+        auto current_time = std::chrono::high_resolution_clock::now();
+        float time = std::chrono::duration<float, std::chrono::seconds::period>(current_time - start_time).count();
+        GET_MODULE(LightContainer).UpdateAnimation(time);
+    }
+    // ----------------------------------------------------
 
     const auto render_ctx = rt.render_begin();
     const auto cmd_buf = render_ctx.cmd_buf;
@@ -147,35 +156,16 @@ void Renderer::render() {
             cmd_buf.endRendering();
         }
 
-        // マテリアルパス終了後：次がフルスクリーンパスなら入力テクスチャを SHADER_READ_ONLY_OPTIMAL に遷移
-        if (pass_def.type == PassType::eMaterial && i < pass_count - 1) {
-            const auto& next_pass_def = pass_container.getPassDefinition(rendering_pass_id, i + 1);
-            if (next_pass_def.type == PassType::eFullscreen) {
-                // 出力された全てのターゲットをSHADER_READ_ONLY_OPTIMALに遷移
-                for (const auto& rt_id : pass_def.output_color) {
-                    if (rt_id.value < 0) continue;
-                    
-                    const auto& output_rt = rt_container.get(rt_id);
-                    vk_utils.changeImageLayoutCmd(cmd_buf, output_rt.image,
-                        vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
-                        {vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::PipelineStageFlagBits::eFragmentShader,
-                         vk::AccessFlagBits::eColorAttachmentWrite, vk::AccessFlagBits::eShaderRead});
-                }
-            }
-        }
-        // フルスクリーンパス終了後：入力テクスチャを COLOR_ATTACHMENT_OPTIMAL に戻す（次フレーム用）
-        else if (pass_def.type == PassType::eFullscreen && i > 0) {
-            const auto& prev_pass_def = pass_container.getPassDefinition(rendering_pass_id, i - 1);
-            if (prev_pass_def.type == PassType::eMaterial) {
-                for (const auto& rt_id : prev_pass_def.output_color) {
-                    if (rt_id.value < 0) continue;
-                    
-                    const auto& output_rt = rt_container.get(rt_id);
-                    vk_utils.changeImageLayoutCmd(cmd_buf, output_rt.image,
-                        vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageLayout::eColorAttachmentOptimal,
-                        {vk::PipelineStageFlagBits::eFragmentShader, vk::PipelineStageFlagBits::eColorAttachmentOutput,
-                         vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eColorAttachmentWrite});
-                }
+        // マテリアルパス終了後：出力テクスチャを SHADER_READ_ONLY_OPTIMAL に遷移
+        if (pass_def.type == PassType::eMaterial) {
+            for (const auto& rt_id : pass_def.output_color) {
+                if (rt_id.value < 0) continue;
+                
+                const auto& output_rt = rt_container.get(rt_id);
+                vk_utils.changeImageLayoutCmd(cmd_buf, output_rt.image,
+                    vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
+                    {vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::PipelineStageFlagBits::eFragmentShader,
+                        vk::AccessFlagBits::eColorAttachmentWrite, vk::AccessFlagBits::eShaderRead});
             }
         }
     }

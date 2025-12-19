@@ -3,6 +3,7 @@
 #include "../vkcore/util.hpp"
 #include "../material/materialcontainer.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
+#include "../light/lightcontainer.hpp"
 
 namespace Pelican {
 
@@ -23,19 +24,15 @@ static vk::UniqueDescriptorSetLayout createInputDescSetLayout(vk::Device device,
 }
 
 static vk::UniquePipelineLayout createDefaultPipelineLayout(vk::Device device,
-                                                            std::span<vk::UniqueDescriptorSetLayout> layouts) {
+                                                            std::span<vk::DescriptorSetLayout> layouts) {
     vk::PushConstantRange push_constant_range;
     push_constant_range.stageFlags = vk::ShaderStageFlagBits::eFragment;
     push_constant_range.offset = 0;
     push_constant_range.size = sizeof(float) * 4; // vec4 cameraPos
 
-    std::vector<vk::DescriptorSetLayout> layouts_raw(layouts.size());
-    for (size_t i = 0; i < layouts.size(); ++i)
-        layouts_raw[i] = layouts[i].get();
-
     vk::PipelineLayoutCreateInfo create_info;
     create_info.setPushConstantRanges(push_constant_range);
-    create_info.setSetLayouts(layouts_raw);
+    create_info.setSetLayouts(layouts);
     return device.createPipelineLayoutUnique(create_info);
 }
 
@@ -164,8 +161,17 @@ FullscreenPassContainer::FullscreenPassContainer()
       linear_sampler{createSampler(device, vk::Filter::eLinear)},
       desc_pool{createDescPool(device)} {
     
-    descset_layouts.push_back(createInputDescSetLayout(device));
-    pipeline_layout = createDefaultPipelineLayout(device, descset_layouts);
+    auto& light_container = GET_MODULE(LightContainer);
+
+    auto input_desc_layout = createInputDescSetLayout(device);
+
+    std::vector<vk::DescriptorSetLayout> layouts = {
+        input_desc_layout.get(),
+        light_container.GetDescriptorSetLayout()
+    };
+    
+    pipeline_layout = createDefaultPipelineLayout(device, layouts);
+    descset_layouts.push_back(std::move(input_desc_layout));
 }
 
 FullscreenPassContainer::~FullscreenPassContainer() {}

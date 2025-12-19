@@ -6,6 +6,7 @@
 
 #include "../ecs/componentinfo.hpp"
 #include "basicconfig.hpp"
+#include "../light/lightcontainer.hpp"
 #include <nlohmann/json.hpp>
 
 namespace Pelican {
@@ -19,6 +20,9 @@ void SceneLoader::load(SceneId scene_id) {
 
     // load from json
     const auto scene_data = nlohmann::json::parse(config.sceneDataJson()).at(scene_id);
+
+    GET_MODULE(LightContainer).Load(scene_data);
+
     const auto &objects = scene_data.at("objects");
 
     for (const auto &object : objects) {
