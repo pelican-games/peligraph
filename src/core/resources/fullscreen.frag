@@ -22,12 +22,23 @@ struct PointLight {
     float padding; // for alignment
 };
 
+struct SpotLight {
+	vec3 position;
+    float innerConeAngle; // cos(angle)
+    vec3 direction;
+    float outerConeAngle; // cos(angle)
+    vec3 color;
+    float intensity;
+};
+
 layout(set = 1, binding = 0) uniform LightUBO {
     uint directionalLightCount;
     uint pointLightCount;
-    vec2 padding;
-    DirectionalLight directionalLights[4];
-    PointLight pointLights[4];
+    uint spotLightCount;
+    float padding;
+    DirectionalLight directionalLights[8];
+    PointLight pointLights[16];
+    SpotLight spotLights[8];
 } lightUBO;
 
 layout(push_constant) uniform PushConstants {
@@ -133,6 +144,39 @@ void main() {
         
         float NdotL = max(dot(normal, L), 0.0);
         Lo += (kD * albedo / PI + specular) * radiance * NdotL;
+    }
+
+    for(int i = 0; i < lightUBO.spotLightCount; ++i) {
+        vec3 L = normalize(lightUBO.spotLights[i].position - worldPos);
+        vec3 H = normalize(V + L);
+
+        // Spotlight intensity calculation
+        float spotDirDotL = dot(normalize(-L), normalize(lightUBO.spotLights[i].direction));
+        float spotFactor = smoothstep(lightUBO.spotLights[i].outerConeAngle, lightUBO.spotLights[i].innerConeAngle, spotDirDotL);
+        
+        // Attenuation and radiance
+        float distance = length(lightUBO.spotLights[i].position - worldPos);
+        float attenuation = 1.0 / (distance * distance + 0.01);
+        vec3 radiance = lightUBO.spotLights[i].color * lightUBO.spotLights[i].intensity * attenuation * spotFactor;
+
+        if (spotFactor > 0.0)
+        {
+            // Cook-Torrance BRDF
+            float NDF = DistributionGGX(normal, H, roughness);
+            float G = GeometrySmith(normal, V, L, roughness);
+            vec3 F = fresnelSchlick(max(dot(H, V), 0.0), F0);
+            
+            vec3 kS = F;
+            vec3 kD = vec3(1.0) - kS;
+            kD *= 1.0 - metallic;
+            
+            vec3 numerator = NDF * G * F;
+            float denominator = 4.0 * max(dot(normal, V), 0.0) * max(dot(normal, L), 0.0) + 0.0001;
+            vec3 specular = numerator / denominator;
+            
+            float NdotL = max(dot(normal, L), 0.0);
+            Lo += (kD * albedo / PI + specular) * radiance * NdotL;
+        }
     }
     
     // 環境光をより充実させる

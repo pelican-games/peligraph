@@ -133,17 +133,46 @@ namespace Pelican
 									lightJson["color"][2].get<float>()
 								);
 				
-								if (!light.name.empty())
-								{
-									m_PointLightNameMap[light.name] = static_cast<uint32_t>(m_PointLights.size());
-								}
-								m_PointLights.push_back(light);
-							}
-						}
-						m_OriginalDirectionalLights = m_DirectionalLights;
-						m_OriginalPointLights = m_PointLights;
-					}		
-		    DirectionalLight* LightContainer::GetLight(const std::string& name)
+												if (!light.name.empty())
+												{
+													m_PointLightNameMap[light.name] = static_cast<uint32_t>(m_PointLights.size());
+												}
+												m_PointLights.push_back(light);
+											}
+											else if (type == "spot")
+											{
+												SpotLight light{};
+												light.name = lightJson.value("name", "");
+												light.position = glm::vec3(
+													lightJson["position"][0].get<float>(),
+													lightJson["position"][1].get<float>(),
+													lightJson["position"][2].get<float>()
+												);
+												light.direction = glm::vec3(
+													lightJson["direction"][0].get<float>(),
+													lightJson["direction"][1].get<float>(),
+													lightJson["direction"][2].get<float>()
+												);
+												light.intensity = lightJson.value("intensity", 1.0f);
+												light.innerConeAngle = lightJson.value("innerConeAngle", 12.5f);
+												light.outerConeAngle = lightJson.value("outerConeAngle", 17.5f);
+												light.color = glm::vec3(
+													lightJson["color"][0].get<float>(),
+													lightJson["color"][1].get<float>(),
+													lightJson["color"][2].get<float>()
+												);
+								
+												if (!light.name.empty())
+												{
+													m_SpotLightNameMap[light.name] = static_cast<uint32_t>(m_SpotLights.size());
+												}
+												m_SpotLights.push_back(light);
+											}
+										}
+										m_OriginalDirectionalLights = m_DirectionalLights;
+										m_OriginalPointLights = m_PointLights;
+										m_OriginalSpotLights = m_SpotLights;
+									}		    DirectionalLight* LightContainer::GetLight(const std::string& name)
 		    {
 		        auto it = m_LightNameMap.find(name);
 		        if (it != m_LightNameMap.end())
@@ -153,53 +182,74 @@ namespace Pelican
 		        return nullptr;
 		    }
 		
-		    PointLight* LightContainer::GetPointLight(const std::string& name)
-		    {
-		        auto it = m_PointLightNameMap.find(name);
-		        if (it != m_PointLightNameMap.end())
-		        {
-		            return &m_PointLights[it->second];
-		        }
-		        return nullptr;
-		    }
+		    	PointLight* LightContainer::GetPointLight(const std::string& name)
+		    	{
+		    		auto it = m_PointLightNameMap.find(name);
+		    		if (it != m_PointLightNameMap.end())
+		    		{
+		    			return &m_PointLights[it->second];
+		    		}
+		    		return nullptr;
+		    	}
 		
-		    void LightContainer::UpdateAnimation(float time)
-		    {
-		        // Rotate the key light
-		        if (DirectionalLight* keyLight = GetLight("KeyLight"))
-		        {
-		            auto it = m_LightNameMap.find("KeyLight");
-		            if (it != m_LightNameMap.end())
-		            {
-		                const auto& originalLight = m_OriginalDirectionalLights[it->second];
-		                glm::mat4 rotation = glm::rotate(glm::mat4(1.0f), time, glm::vec3(0.0f, 1.0f, 0.0f));
-		                keyLight->direction = glm::vec3(rotation * glm::vec4(originalLight.direction, 0.0f));
-		            }
-		        }
+		    	SpotLight* LightContainer::GetSpotLight(const std::string& name)
+		    	{
+		    		auto it = m_SpotLightNameMap.find(name);
+		    		if (it != m_SpotLightNameMap.end())
+		    		{
+		    			return &m_SpotLights[it->second];
+		    		}
+		    		return nullptr;
+		    	}   
 		
-		        // Make the fill light blink
-		        if (DirectionalLight* fillLight = GetLight("FillLight"))
-		        {
-		            auto it = m_LightNameMap.find("FillLight");
-		            if (it != m_LightNameMap.end())
-		            {
-		                const auto& originalLight = m_OriginalDirectionalLights[it->second];
-		                fillLight->intensity = originalLight.intensity * (0.5f + 0.5f * sinf(time * 5.0f));
-		            }
-		        }
+		    	void LightContainer::UpdateAnimation(float time)
+		    	{
+		    		// Rotate the key light
+		    		if (DirectionalLight* keyLight = GetLight("KeyLight"))
+		    		{
+		    			auto it = m_LightNameMap.find("KeyLight");
+		    			if (it != m_LightNameMap.end())
+		    			{
+		    				const auto& originalLight = m_OriginalDirectionalLights[it->second];
+		    				glm::mat4 rotation = glm::rotate(glm::mat4(1.0f), time, glm::vec3(0.0f, 1.0f, 0.0f));
+		    				keyLight->direction = glm::vec3(rotation * glm::vec4(originalLight.direction, 0.0f));
+		    			}
+		    		}
 		
-		        // Orbit a point light
-		        if (PointLight* pointLight = GetPointLight("PointLight1"))
-		        {
-		            auto it = m_PointLightNameMap.find("PointLight1");
-		            if (it != m_PointLightNameMap.end())
-		            {
-		                const auto& originalLight = m_OriginalPointLights[it->second];
-		                pointLight->position.x = originalLight.position.x + cos(time) * 2.0f;
-		                pointLight->position.z = originalLight.position.z + sin(time) * 2.0f;
-		            }
-		        }
-		    }
+		    		// Make the fill light blink
+		    		if (DirectionalLight* fillLight = GetLight("FillLight"))
+		    		{
+		    			auto it = m_LightNameMap.find("FillLight");
+		    			if (it != m_LightNameMap.end())
+		    			{
+		    				const auto& originalLight = m_OriginalDirectionalLights[it->second];
+		    				fillLight->intensity = originalLight.intensity * (0.5f + 0.5f * sinf(time * 5.0f));
+		    			}
+		    		}
+		
+		    		// Orbit a point light
+		    		if (PointLight* pointLight = GetPointLight("PointLight1"))
+		    		{
+		    			auto it = m_PointLightNameMap.find("PointLight1");
+		    			if (it != m_PointLightNameMap.end())
+		    			{
+		    				const auto& originalLight = m_OriginalPointLights[it->second];
+		    				pointLight->position.x = originalLight.position.x + cos(time) * 2.0f;
+		    				pointLight->position.z = originalLight.position.z + sin(time) * 2.0f;
+		    			}
+		    		}
+		    		// Swing a spotlight
+		    		if (SpotLight* spotLight = GetSpotLight("SpotLight1"))
+		    		{
+		    			auto it = m_SpotLightNameMap.find("SpotLight1");
+		    			if (it != m_SpotLightNameMap.end())
+		    			{
+		    				const auto& originalLight = m_OriginalSpotLights[it->second];
+		    				glm::mat4 rotation = glm::rotate(glm::mat4(1.0f), sinf(time * 0.5f) * 0.5f, glm::vec3(0.0f, 1.0f, 0.0f));
+		    				spotLight->direction = glm::vec3(rotation * glm::vec4(originalLight.direction, 0.0f));
+		    			}
+		    		}
+		    	}
 		
 		    	void LightContainer::Update()
 		    	{
@@ -218,6 +268,17 @@ namespace Pelican
 		    			ubo.pointLights[i].intensity = m_PointLights[i].intensity;
 		    			ubo.pointLights[i].color = m_PointLights[i].color;
 		    		}
-		    
+		    		ubo.spotLightCount = static_cast<uint32_t>(m_SpotLights.size());
+		    		for (size_t i = 0; i < m_SpotLights.size() && i < MAX_SPOT_LIGHTS; ++i)
+		    		{
+		    			ubo.spotLights[i].position = m_SpotLights[i].position;
+		    			ubo.spotLights[i].direction = m_SpotLights[i].direction;
+		    			ubo.spotLights[i].intensity = m_SpotLights[i].intensity;
+		    			ubo.spotLights[i].color = m_SpotLights[i].color;
+		    			ubo.spotLights[i].innerConeAngle = cos(glm::radians(m_SpotLights[i].innerConeAngle));
+		    			ubo.spotLights[i].outerConeAngle = cos(glm::radians(m_SpotLights[i].outerConeAngle));
+		    		}
+		
 		    		GET_MODULE(VulkanManageCore).writeBuf(m_LightUBO, &ubo, 0, sizeof(ubo));
-		    	}		}
+		    	}
+		    }

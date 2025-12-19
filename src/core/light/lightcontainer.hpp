@@ -26,6 +26,7 @@ namespace Pelican
 
 		DirectionalLight* GetLight(const std::string& name);
 		PointLight* GetPointLight(const std::string& name);
+		SpotLight* GetSpotLight(const std::string& name);
 
 		vk::DescriptorSetLayout GetDescriptorSetLayout() const { return m_DescriptorSetLayout.get(); }
 		vk::DescriptorSet GetDescriptorSet() const { return m_DescriptorSet.get(); }
@@ -38,6 +39,10 @@ namespace Pelican
 		std::vector<PointLight> m_PointLights;
 		std::vector<PointLight> m_OriginalPointLights;
 		std::unordered_map<std::string, uint32_t> m_PointLightNameMap;
+
+		std::vector<SpotLight> m_SpotLights;
+		std::vector<SpotLight> m_OriginalSpotLights;
+		std::unordered_map<std::string, uint32_t> m_SpotLightNameMap;
 
 		BufferWrapper m_LightUBO;
 		vk::UniqueDescriptorPool m_DescriptorPool;
