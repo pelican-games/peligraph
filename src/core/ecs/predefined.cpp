@@ -45,17 +45,25 @@ DECLARE_MODULE(CameraSystem) {
 };
 
 DECLARE_MODULE(LocalTransformSystem) {
+    struct TempTransform {
+        LocalTransformComponent *local;
+        TransformComponent *dst_ptr;
+    };
+    std::vector<TempTransform> tmpbuf;
+    std::vector<bool> tmpappearbuf;
+
   public:
-    using QueryComponents = std::tuple<TransformComponent *, LocalTransformComponent *>;
+    using Query = std::span<ChunkView<EntityId, TransformComponent, LocalTransformComponent>>;
+    void process(Query chunks) {
+        for (auto &chunk : chunks) {
+            auto transforms = std::get<TransformComponent *>(chunk.components);
+            auto localtransforms = std::get<LocalTransformComponent *>(chunk.components);
 
-    void process(QueryComponents components, size_t count) {
-        auto transforms = std::get<TransformComponent *>(components);
-        auto localtransforms = std::get<LocalTransformComponent *>(components);
-
-        for (int i = 0; i < count; i++) {
-            transforms[i].pos = to_glm(localtransforms[i].pos);
-            transforms[i].rotation = to_glm(localtransforms[i].rotation);
-            transforms[i].scale = to_glm(localtransforms[i].scale);
+            for (int i = 0; i < chunk.count; i++) {
+                transforms[i].pos = to_glm(localtransforms[i].pos);
+                transforms[i].rotation = to_glm(localtransforms[i].rotation);
+                transforms[i].scale = to_glm(localtransforms[i].scale);
+            }
         }
     }
 };
@@ -78,8 +86,9 @@ void ECSPredefinedRegistration::reg() {
             GET_MODULE(SimpleModelViewTransformSystem), {});
     GET_MODULE(ECSCore).registerSystemForce<CameraSystem, TransformComponent, CameraComponent>(GET_MODULE(CameraSystem),
                                                                                                {});
-    GET_MODULE(ECSCore).registerSystemForce<LocalTransformSystem, TransformComponent, LocalTransformComponent>(
-        GET_MODULE(LocalTransformSystem), {});
+    GET_MODULE(ECSCore)
+        .registerSystemForce<LocalTransformSystem, EntityId, TransformComponent, LocalTransformComponent>(
+            GET_MODULE(LocalTransformSystem), {});
 }
 
 } // namespace Pelican
