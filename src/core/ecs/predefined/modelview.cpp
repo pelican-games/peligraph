@@ -5,11 +5,10 @@
 
 namespace Pelican {
 
-void SimpleModelViewComponent::init() {
-    auto &pic = GET_MODULE(PolygonInstanceContainer);
-    auto &asset_con = GET_MODULE(ModelAssetContainer);
-    model_instance_id = pic.placeModelInstance(asset_con.getModelTemplateByName(model_name));
+void SimpleModelViewComponent::init() {}
+void SimpleModelViewComponent::deinit() {
+    if (model_instance_id)
+        GET_MODULE(PolygonInstanceContainer).removeModelInstance(*model_instance_id);
 }
-void SimpleModelViewComponent::deinit() { GET_MODULE(PolygonInstanceContainer).removeModelInstance(model_instance_id); }
 
 } // namespace Pelican

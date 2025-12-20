@@ -10,7 +10,10 @@ void SimpleModelViewTransformSystem::process(QueryComponents components, size_t 
 
     auto &pic = GET_MODULE(PolygonInstanceContainer);
     for (int i = 0; i < count; i++) {
-        pic.setTrs(models[i].model_instance_id, transforms[i].pos, transforms[i].rotation, transforms[i].scale);
+        if (models[i].model_instance_id.has_value()) {
+            pic.setTrs(models[i].model_instance_id.value(), transforms[i].pos, transforms[i].rotation,
+                       transforms[i].scale);
+        }
     }
 }
 

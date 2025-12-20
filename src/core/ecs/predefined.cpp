@@ -10,6 +10,7 @@
 #include "predefined/camerasystem.hpp"
 #include "predefined/localtransformsystem.hpp"
 #include "predefined/modelviewtransoformsystem.hpp"
+#include "predefined/modelviewupdatesystem.hpp"
 
 #include <details/component/registerer.hpp>
 
@@ -24,9 +25,10 @@ void ECSPredefinedRegistration::reg() {
             .name = "eid",
         });
     internal::getComponentRegisterer().registerComponent<TransformComponent>("transform");
-    internal::getComponentRegisterer().registerComponent<SimpleModelViewComponent>("simplemodelview");
-    internal::getComponentRegisterer().registerComponent<CameraComponent>("camera");
     internal::getComponentRegisterer().registerComponent<LocalTransformComponent>("localtransform");
+    internal::getComponentRegisterer().registerComponent<SimpleModelViewComponent>("simplemodelview");
+    internal::getComponentRegisterer().registerComponent<SimpleModelViewUpdateComponent>("simplemodelviewupdate");
+    internal::getComponentRegisterer().registerComponent<CameraComponent>("camera");
 
     GET_MODULE(ECSCore)
         .registerSystemForce<SimpleModelViewTransformSystem, TransformComponent, SimpleModelViewComponent>(
@@ -39,6 +41,10 @@ void ECSPredefinedRegistration::reg() {
 
     GET_MODULE(ECSCore).registerSystemForce<SimpleCollisionSystem, TransformComponent, SphereColliderComponent>(
         GET_MODULE(SimpleCollisionSystem), {});
+
+    GET_MODULE(ECSCore)
+        .registerSystemForce<SimpleModelViewUpdateSystem, SimpleModelViewComponent, SimpleModelViewUpdateComponent>(
+            GET_MODULE(SimpleModelViewUpdateSystem), {});
 }
 
 } // namespace Pelican
