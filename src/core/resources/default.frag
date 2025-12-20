@@ -4,6 +4,7 @@
 layout(set = 1, binding = 0) uniform sampler2D baseColorSampler;
 layout(set = 1, binding = 1) uniform sampler2D metallicRoughnessSampler;
 layout(set = 1, binding = 2) uniform sampler2D normalSampler;
+layout(set = 1, binding = 3) uniform sampler2D emissiveSampler;
 
 layout(location = 0) in vec2 texUV;
 layout(location = 1) in vec4 inColor;
@@ -17,6 +18,7 @@ layout(location = 0) out vec4 outAlbedo;      // RGB: Albedo, A: Alpha
 layout(location = 1) out vec4 outNormal;      // RGB: 法線(0-1に正規化), A: reserved
 layout(location = 2) out vec4 outMaterial;    // R: Roughness, G: Metallic, B: AO, A: reserved
 layout(location = 3) out vec4 outWorldPos;    // RGB: WorldPos, A: reserved
+layout(location = 4) out vec4 outEmissive;    // RGB: Emissive, A: reserved
 
 void main() {
     // Base Color（テクスチャのみ、頂点カラーは無視）
@@ -46,4 +48,7 @@ void main() {
 
     // World Position
     outWorldPos = vec4(inWorldPos, 1.0);
+
+    // Emissive
+    outEmissive = texture(emissiveSampler, texUV);
 }

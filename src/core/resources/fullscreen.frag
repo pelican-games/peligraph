@@ -7,6 +7,7 @@ layout(set = 0, binding = 0) uniform sampler2D albedoSampler;
 layout(set = 0, binding = 1) uniform sampler2D normalSampler;
 layout(set = 0, binding = 2) uniform sampler2D materialSampler; // R: roughness, G: metallic, B: AO
 layout(set = 0, binding = 3) uniform sampler2D worldPosSampler;
+layout(set = 0, binding = 4) uniform sampler2D emissiveSampler;
 
 struct DirectionalLight {
     vec3 direction;
@@ -84,6 +85,7 @@ void main() {
     vec3 normal = normalize(texture(normalSampler, inUV).rgb * 2.0 - 1.0);
     vec3 material = texture(materialSampler, inUV).rgb;
     vec3 worldPos = texture(worldPosSampler, inUV).rgb;
+    vec3 emissive = texture(emissiveSampler, inUV).rgb;
     
     float roughness = clamp(material.r, 0.04, 1.0);  // material.r = roughness
     float metallic = clamp(material.g, 0.0, 1.0);   // material.g = metallic
@@ -181,7 +183,7 @@ void main() {
     
     // 環境光をより充実させる
     vec3 ambient = mix(vec3(0.03) * albedo, albedo * 0.12, metallic) * ao;
-    vec3 color = ambient + Lo;
+    vec3 color = ambient + Lo + emissive;
     
     // HDRトーンマッピング（ACES approximation）
     color = color / (color + vec3(0.155)) * 1.019;

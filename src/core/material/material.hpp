@@ -16,6 +16,7 @@ struct MaterialInfo {
     GlobalTextureId base_color_texture;
     GlobalTextureId metallic_roughness_texture;
     GlobalTextureId normal_texture;
+    GlobalTextureId emissive_texture;
 };
 
 } // namespace Pelican

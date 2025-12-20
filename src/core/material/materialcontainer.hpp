@@ -38,6 +38,7 @@ DECLARE_MODULE(MaterialContainer) {
         GlobalTextureId base_color_texture;
         GlobalTextureId metallic_roughness_texture;
         GlobalTextureId normal_texture;
+        GlobalTextureId emissive_texture;
         vk::UniqueDescriptorSet descset;
     };
     std::unordered_map<PipelineId, vk::UniquePipeline, PipelineId::Hash> pipelines;

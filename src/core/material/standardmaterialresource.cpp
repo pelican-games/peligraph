@@ -62,12 +62,15 @@ StandardMaterialResource::StandardMaterialResource() {
     }
     tex_normal_default = mat_con.registerTexture(vk::Extent3D(4, 4, 1), texdata_normal);
 
+    tex_emissive_default = tex_black;
+
     mat_transparent = mat_con.registerMaterial(MaterialInfo{
         .vert_shader = std_vert,
         .frag_shader = std_frag,
         .base_color_texture = tex_transparent,
         .metallic_roughness_texture = tex_metallic_roughness_default,
         .normal_texture = tex_normal_default,
+        .emissive_texture = tex_emissive_default,
     });
 }
 

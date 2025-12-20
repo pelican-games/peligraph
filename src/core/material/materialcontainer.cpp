@@ -15,7 +15,8 @@ constexpr uint32_t imageDescriptorSetNumber = 1;
 constexpr uint32_t baseColorBinding = 0;
 constexpr uint32_t metallicRoughnessBinding = 1;
 constexpr uint32_t normalBinding = 2;
-constexpr uint32_t materialTextureBindingCount = 3;
+constexpr uint32_t emissiveBinding = 3;
+constexpr uint32_t materialTextureBindingCount = 4;
 
 static vk::UniqueDescriptorSetLayout createModelBufDescriptorSetLayout(vk::Device device) {
     std::array<vk::DescriptorSetLayoutBinding, 1> bindings;
@@ -47,6 +48,11 @@ static vk::UniqueDescriptorSetLayout createTextureDescriptorSetLayout(vk::Device
     bindings[2].descriptorType = vk::DescriptorType::eCombinedImageSampler;
     bindings[2].descriptorCount = 1;
     bindings[2].stageFlags = vk::ShaderStageFlagBits::eFragment;
+    
+    bindings[3].binding = emissiveBinding;
+    bindings[3].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+    bindings[3].descriptorCount = 1;
+    bindings[3].stageFlags = vk::ShaderStageFlagBits::eFragment;
 
     vk::DescriptorSetLayoutCreateInfo create_info;
     create_info.setBindings(bindings);
@@ -120,7 +126,7 @@ static vk::UniquePipeline createDefaultPipeline(vk::Device device, vk::PipelineL
     depth.depthBoundsTestEnable = false;
     depth.stencilTestEnable = false;
 
-    std::array<vk::PipelineColorBlendAttachmentState, 4> blend_attachments{};
+    std::array<vk::PipelineColorBlendAttachmentState, 5> blend_attachments{};
     for (auto &blend_attachment : blend_attachments) {
         blend_attachment.blendEnable = false;
         blend_attachment.colorWriteMask = vk::ColorComponentFlagBits::eA | vk::ColorComponentFlagBits::eR |
@@ -136,11 +142,12 @@ static vk::UniquePipeline createDefaultPipeline(vk::Device device, vk::PipelineL
     vk::PipelineDynamicStateCreateInfo dynamic_state_info;
     dynamic_state_info.setDynamicStates(dynamic_states);
 
-    const std::array<vk::Format, 4> color_formats = {
+    const std::array<vk::Format, 5> color_formats = {
         vk::Format::eB8G8R8A8Unorm,      // albedo
         vk::Format::eR16G16B16A16Sfloat, // normal
         vk::Format::eR8G8B8A8Unorm,      // material
         vk::Format::eR16G16B16A16Sfloat, // worldpos
+        vk::Format::eR8G8B8A8Unorm,      // emissive
     };
 
     vk::PipelineRenderingCreateInfo rendering_info;
@@ -310,6 +317,14 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         image_infos[2].imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
         image_infos[2].sampler = linear_sampler.get();
     }
+    
+    // Emissive
+    {
+        const auto &tex = textures.get(info.emissive_texture);
+        image_infos[3].imageView = tex.image_view.get();
+        image_infos[3].imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        image_infos[3].sampler = linear_sampler.get();
+    }
 
     std::array<vk::WriteDescriptorSet, materialTextureBindingCount> writes{};
     writes[0].dstSet = descset.get();
@@ -332,6 +347,13 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     writes[2].descriptorType = vk::DescriptorType::eCombinedImageSampler;
     writes[2].descriptorCount = 1;
     writes[2].pImageInfo = &image_infos[2];
+    
+    writes[3].dstSet = descset.get();
+    writes[3].dstBinding = emissiveBinding;
+    writes[3].dstArrayElement = 0;
+    writes[3].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+    writes[3].descriptorCount = 1;
+    writes[3].pImageInfo = &image_infos[3];
 
     device.updateDescriptorSets(writes, {});
 
@@ -340,6 +362,7 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         .base_color_texture = info.base_color_texture,
         .metallic_roughness_texture = info.metallic_roughness_texture,
         .normal_texture = info.normal_texture,
+        .emissive_texture = info.emissive_texture,
         .descset = std::move(descset),
     });
 }

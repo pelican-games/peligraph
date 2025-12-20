@@ -198,13 +198,17 @@ struct InternalGltfLoader {
             const auto normal_texture_index = material.normalTexture.index;
             const auto normal_texture =
                 normal_texture_index >= 0 ? texture_map[normal_texture_index] : std_mat.normalDefaultTexture();
+            const auto emissive_texture_index = material.emissiveTexture.index;
+            const auto emissive_texture =
+                emissive_texture_index >= 0 ? texture_map[emissive_texture_index] : std_mat.emissiveDefaultTexture();
 
             material_map[i] = mat_container.registerMaterial(Pelican::MaterialInfo{
                 .vert_shader = std_mat.standardVertShader(),
                 .frag_shader = std_mat.standardFragShader(),
                 .base_color_texture = base_color_texture,
                 .metallic_roughness_texture = metallic_roughness_texture,
-                .normal_texture = normal_texture
+                .normal_texture = normal_texture,
+                .emissive_texture = emissive_texture
             });
         }
 
