@@ -19,5 +19,10 @@ embed_shader(fullscreen.vert)
 embed_shader(fullscreen.frag)
 embed_shader(ui.vert)
 embed_shader(ui.frag)
+embed_shader(bloom_blur_h.frag)
+embed_shader(bloom_blur_v.frag)
+embed_shader(bloom_highpass.frag)
+embed_shader(bloom_composite.frag)
+
 
 b_embed(pelican_resources default_config.json)

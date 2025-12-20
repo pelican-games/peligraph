@@ -23,18 +23,32 @@ Renderer::Renderer() : device{GET_MODULE(VulkanManageCore).getDevice()} {
     auto& rt_container = GET_MODULE(RenderTargetContainer);
     auto& shader_container = GET_MODULE(ShaderContainer);
     auto& pass_container = GET_MODULE(RenderingPassContainer);
+    auto& rt_main = GET_MODULE(RenderTarget); // Get the main RenderTarget module
 
+    // Load the unified main rendering configuration JSON.
+    // This JSON now defines all render targets and passes, including bloom.
     try {
-        // JSONファイルが存在するか確認
-        std::string json_path = "example_renderingpass_data.json";
-        if (std::filesystem::exists(json_path)) {
-            pass_container.registerRenderingPassFromJson(json_path);
+        std::string main_config_path = "main_rendering_config.json";
+        if (std::filesystem::exists(main_config_path)) {
+            // This registerRenderingPassFromJson should also handle render target registration
+            // as per the new unified JSON format.
+            // Assuming RenderingPassContainer::registerRenderingPassFromJson is extended
+            // to process both "render_targets" and "rendering_passes".
+            // If not, a custom parser function would be needed here.
+            pass_container.registerRenderingPassFromJson(main_config_path);
         } else {
-            LOG_WARNING(logger, "Rendering pass JSON file not found: {}", json_path);
+            LOG_ERROR(logger, "Main rendering configuration JSON file not found: {}", main_config_path);
+            // Handle error: e.g., throw exception or load a default minimal config
         }
     } catch (const std::exception& e) {
-        LOG_ERROR(logger, "Failed to load rendering pass: {}", e.what());
+        LOG_ERROR(logger, "Failed to load main rendering configuration: {}", e.what());
+        // Handle error
     }
+
+    // Now that passes are loaded, get the ID for "lit_color" which serves as the scene color RT.
+    // This assumes "lit_color" is consistently used as the scene color output before post-processing.
+    m_scene_color_rt_id = rt_container.getRenderTargetIdByName("lit_color");
+
 }
 
 Renderer::~Renderer() {}
@@ -69,6 +83,12 @@ void Renderer::render() {
     for (size_t i = 0; i < pass_count; ++i) {
         const auto& pass_def = pass_container.getPassDefinition(rendering_pass_id, i);
         const auto pass_id = passes[i];
+
+        // Determine target extent for this pass
+        vk::Extent2D target_extent = render_ctx.extent; // Default to swapchain extent
+        if (!pass_def.output_color.empty() && pass_def.output_color[0].value >= 0) {
+             target_extent = vk::Extent2D(rt_container.get(pass_def.output_color[0]).image.extent.width, rt_container.get(pass_def.output_color[0]).image.extent.height);
+        }
 
         // マテリアルパス開始前：レイアウト遷移（複数出力対応）
         if (pass_def.type == PassType::eMaterial) {
@@ -118,7 +138,7 @@ void Renderer::render() {
             }
 
             vk::RenderingInfo render_info;
-            render_info.renderArea = vk::Rect2D{{0, 0}, render_ctx.extent};
+            render_info.renderArea = vk::Rect2D{{0, 0}, target_extent};
             render_info.layerCount = 1;
             render_info.setColorAttachments(color_attachments);
 
@@ -154,21 +174,40 @@ void Renderer::render() {
             }
 
             cmd_buf.endRendering();
-        }
 
-        // マテリアルパス終了後：出力テクスチャを SHADER_READ_ONLY_OPTIMAL に遷移
-        if (pass_def.type == PassType::eMaterial) {
-            for (const auto& rt_id : pass_def.output_color) {
-                if (rt_id.value < 0) continue;
-                
-                const auto& output_rt = rt_container.get(rt_id);
-                vk_utils.changeImageLayoutCmd(cmd_buf, output_rt.image,
-                    vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
-                    {vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::PipelineStageFlagBits::eFragmentShader,
-                        vk::AccessFlagBits::eColorAttachmentWrite, vk::AccessFlagBits::eShaderRead});
+            // Transition fullscreen pass outputs to be readable by the next pass
+            if (pass_def.type == PassType::eFullscreen) {
+                for (const auto& rt_id : pass_def.output_color) {
+                    if (rt_id.value < 0) continue; // Don't transition swapchain
+                    
+                    const auto& output_rt = rt_container.get(rt_id);
+                    vk_utils.changeImageLayoutCmd(cmd_buf, output_rt.image,
+                        vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
+                        {vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::PipelineStageFlagBits::eFragmentShader,
+                         vk::AccessFlagBits::eColorAttachmentWrite, vk::AccessFlagBits::eShaderRead});
+                }
+            }
+
+            // マテリアルパス終了後：出力テクスチャを SHADER_READ_ONLY_OPTIMAL に遷移
+            if (pass_def.type == PassType::eMaterial) {
+                for (const auto& rt_id : pass_def.output_color) {
+                    // Skip if it's the scene color RT, as it's handled after the loop
+                    if (rt_id == m_scene_color_rt_id) continue;
+                    if (rt_id.value < 0) continue;
+                    
+                    const auto& output_rt = rt_container.get(rt_id);
+                    vk_utils.changeImageLayoutCmd(cmd_buf, output_rt.image,
+                        vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
+                        {vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::PipelineStageFlagBits::eFragmentShader,
+                            vk::AccessFlagBits::eColorAttachmentWrite, vk::AccessFlagBits::eShaderRead});
+                }
             }
         }
     }
+
+    
+
+
 
     rt.render_end();
 }
