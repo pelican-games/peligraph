@@ -23,6 +23,9 @@ embed_shader(bloom_blur_h.frag)
 embed_shader(bloom_blur_v.frag)
 embed_shader(bloom_highpass.frag)
 embed_shader(bloom_composite.frag)
+embed_shader(ssao.frag)
+embed_shader(ssao_blur.frag)
+embed_shader(debug_texture.frag)
 
 
 b_embed(pelican_resources default_config.json)

@@ -8,6 +8,7 @@ layout(set = 0, binding = 1) uniform sampler2D normalSampler;
 layout(set = 0, binding = 2) uniform sampler2D materialSampler; // R: roughness, G: metallic, B: AO
 layout(set = 0, binding = 3) uniform sampler2D worldPosSampler;
 layout(set = 0, binding = 4) uniform sampler2D emissiveSampler;
+layout(set = 0, binding = 5) uniform sampler2D ssaoSampler;
 
 struct DirectionalLight {
     vec3 direction;
@@ -89,7 +90,15 @@ void main() {
     
     float roughness = clamp(material.r, 0.04, 1.0);  // material.r = roughness
     float metallic = clamp(material.g, 0.0, 1.0);   // material.g = metallic
-    float ao = material.b;
+    float materialAO = material.b;
+
+    // Sample SSAO
+    float ssao = texture(ssaoSampler, inUV).r;
+    
+    // Combine material AO with SSAO
+    // You can adjust the power to control the strength of the SSAO effect.
+    // A higher power will make the shadows darker.
+    float ao = min(materialAO, pow(ssao, 3.0));
     
     vec3 cameraPos = pushConsts.cameraPos.xyz;
     
@@ -121,7 +130,7 @@ void main() {
         vec3 specular = numerator / denominator;
         
         float NdotL = max(dot(normal, L), 0.0);
-        Lo += (kD * albedo / PI + specular) * radiance * NdotL;
+        Lo += (kD * albedo / PI * ao + specular) * radiance * NdotL;
     }
 
     for(int i = 0; i < lightUBO.pointLightCount; ++i) {
@@ -145,7 +154,7 @@ void main() {
         vec3 specular = numerator / denominator;
         
         float NdotL = max(dot(normal, L), 0.0);
-        Lo += (kD * albedo / PI + specular) * radiance * NdotL;
+        Lo += (kD * albedo / PI * ao + specular) * radiance * NdotL;
     }
 
     for(int i = 0; i < lightUBO.spotLightCount; ++i) {
@@ -177,12 +186,12 @@ void main() {
             vec3 specular = numerator / denominator;
             
             float NdotL = max(dot(normal, L), 0.0);
-            Lo += (kD * albedo / PI + specular) * radiance * NdotL;
+            Lo += (kD * albedo / PI * ao + specular) * radiance * NdotL;
         }
     }
     
     // 環境光をより充実させる
-    vec3 ambient = mix(vec3(0.03) * albedo, albedo * 0.12, metallic) * ao;
+    vec3 ambient = mix(vec3(0.03) * albedo * ao, albedo * 0.12 * ao, metallic);
     vec3 color = ambient + Lo + emissive;
     
     // HDRトーンマッピング（ACES approximation）

@@ -16,6 +16,7 @@ vk::Format stringToFormat(const std::string& format_str) {
     static const std::unordered_map<std::string, vk::Format> format_map = {
         {"B8G8R8A8_UNORM", vk::Format::eB8G8R8A8Unorm},
         {"R8G8B8A8_UNORM", vk::Format::eR8G8B8A8Unorm},
+        {"R8_UNORM", vk::Format::eR8Unorm},
         {"R16G16B16A16_SFLOAT", vk::Format::eR16G16B16A16Sfloat},
         {"D32_SFLOAT", vk::Format::eD32Sfloat},
         {"D24_UNORM_S8_UINT", vk::Format::eD24UnormS8Uint},
@@ -232,6 +233,11 @@ void RenderingPassContainer::registerRenderingPassFromJson(const std::string& js
                             rt_container.getRenderTargetIdByName(input_name)
                         );
                     }
+                }
+
+                // Check for special data requirements
+                if (pass_json.contains("needs_projection_matrix") && pass_json.at("needs_projection_matrix").is_boolean()) {
+                    individual_pass.needs_projection_matrix = pass_json.at("needs_projection_matrix");
                 }
                 
                 // フルスクリーンパス用：シェーダー読み込み

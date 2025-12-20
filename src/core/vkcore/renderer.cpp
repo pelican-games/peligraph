@@ -170,7 +170,7 @@ void Renderer::render() {
             if (pass_def.type == PassType::eMaterial) {
                 mat_renderer.render(cmd_buf, pass_id);
             } else if (pass_def.type == PassType::eFullscreen) {
-                fs_renderer.render(cmd_buf, pass_id);
+                fs_renderer.render(cmd_buf, pass_id, pass_def);
             }
 
             cmd_buf.endRendering();

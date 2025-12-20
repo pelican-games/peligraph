@@ -2,8 +2,8 @@
   "basic_config": {
     "window_title": "Pelican App",
     "window_size": {
-      "width": 1280,
-      "height": 720
+      "width": 1920,
+      "height": 1080
     },
     "fullscreen": false,
     "framerate": 60,

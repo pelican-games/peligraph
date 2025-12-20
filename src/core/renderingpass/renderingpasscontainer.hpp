@@ -42,6 +42,8 @@ struct PassDefinition {
         GlobalShaderId vert_shader;
         GlobalShaderId frag_shader;
     } fullscreen_info;
+
+    bool needs_projection_matrix = false;
     
     // レンダリング設定
     vk::AttachmentLoadOp color_load_op = vk::AttachmentLoadOp::eClear;

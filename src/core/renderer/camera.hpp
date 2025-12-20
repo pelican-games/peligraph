@@ -2,6 +2,7 @@
 
 #include "../container.hpp"
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 namespace Pelican {
 
@@ -24,6 +25,8 @@ DECLARE_MODULE(Camera) {
     void setScreenSize(uint32_t width, uint32_t height);
     void setNearFar(float new_fov_y, float new_near, float new_far);
     glm::mat4 getVPMatrix() const;
+    glm::mat4 getProjectionMatrix() const { return perspective_matrix; }
+    glm::mat4 getViewMatrix() const { return glm::lookAt(pos, pos + dir, up); }
 };
 
 } // namespace Pelican
