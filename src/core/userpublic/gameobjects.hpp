@@ -3,6 +3,7 @@
 #include <details/ecs/componentdeclare.hpp>
 
 #include <cstdint>
+#include <iostream>
 #include <span>
 #include <tuple>
 #include <utility>
@@ -34,14 +35,14 @@ class GameObjects {
     };
     template <size_t... index> struct IndexHolder {
         template <size_t new_index> using Append = IndexHolder<index..., new_index>;
-        static constexpr size_t _first = IndicesDecoder<index...>::first;
-        using _Remain = IndicesDecoder<index...>::Remain;
+        static constexpr size_t first = IndicesDecoder<index...>::first;
+        using RemainDecoder = IndicesDecoder<index...>::Remain;
     };
     template <class Indices, size_t i> struct IndicesAt {
-        static constexpr size_t value = IndicesAt<Indices::_Remain, i - 1>::value;
+        static constexpr size_t value = IndicesAt<Indices::RemainDecoder, i - 1>::value;
     };
     template <class Indices> struct IndicesAt<Indices, 0> {
-        static constexpr size_t value = Indices::_first;
+        static constexpr size_t value = Indices::first;
     };
 
     static GameObjectId alloc(const ComponentId *ids, void **ptrs, uint32_t components_count);
@@ -49,8 +50,11 @@ class GameObjects {
 
     template <class Indices, class Tuple, size_t... Seq>
     static void copy(void **ptrs, Tuple t, Indices indices, std::index_sequence<Seq...>) {
-        (((*static_cast<std::remove_cvref_t<std::tuple_element_t<Seq, Tuple>> *>(
-              ptrs[IndicesAt<Indices, Seq>::value])) = std::get<Seq>(t)),
+        (([&]() {
+             using TComponent = std::remove_cvref_t<std::tuple_element_t<Seq, Tuple>>;
+             constexpr size_t i = IndicesAt<Indices, Seq>::value;
+             *static_cast<TComponent *>(ptrs[i]) = std::get<Seq>(t);
+         })(),
          ...);
     }
 

@@ -15,7 +15,8 @@ void SimpleModelViewUpdateSystem::process(QueryComponents components, size_t cou
         if (m[i].model_instance_id.has_value())
             GET_MODULE(PolygonInstanceContainer).removeModelInstance(m[i].model_instance_id.value());
 
-        auto &model_template = GET_MODULE(ModelAssetContainer).getModelTemplateByName(mu[i].model_name);
+        auto model_name = mu[i].model_name;
+        auto &model_template = GET_MODULE(ModelAssetContainer).getModelTemplateByName(model_name);
         m[i].model_instance_id = GET_MODULE(PolygonInstanceContainer).placeModelInstance(model_template);
         mu[i].dirty = false;
     }
