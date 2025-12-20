@@ -15,7 +15,10 @@ PelicanCore::PelicanCore() {
     settings_str = "{}";
 }
 
-PelicanCore::PelicanCore(std::string _settings_str) { settings_str = _settings_str; }
+PelicanCore::PelicanCore(std::string _settings_str) {
+    setupLogger();
+    settings_str = _settings_str;
+}
 
 void PelicanCore::run() {
     try {
