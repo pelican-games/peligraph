@@ -1,6 +1,11 @@
 #pragma once
 
+#include <details/ecs/componentdeclare.hpp>
+
 #include <cstdint>
+#include <span>
+#include <tuple>
+#include <utility>
 
 namespace Pelican {
 
@@ -10,17 +15,85 @@ using ComponentId = uint64_t;
 
 class GameObjects {
   private:
-    static GameObjectId add(ComponentId *ids, void **ptrs, uint32_t components_count);
+    template <ComponentId... id> struct ComponentIdHolder {
+        template <class T> using Append = ComponentIdHolder<id..., ComponentIdByType<T>::value>;
+        constexpr static std::span<ComponentId> ids() {
+            constexpr ComponentId _ids[] = {id...};
+            return _ids;
+        }
+        static constexpr size_t len = sizeof...(id);
+    };
+
+    template <size_t index, size_t... indices> struct IndicesDecoder {
+        static constexpr size_t first = index;
+        using Remain = IndicesDecoder<indices...>;
+    };
+    template <size_t... index> struct IndexHolder {
+        template <size_t new_index> using Append = IndexHolder<index..., new_index>;
+        static constexpr size_t _first = IndicesDecoder<index...>::first;
+        using _Remain = IndicesDecoder<index...>::Remain;
+    };
+    template <class Indices, size_t i> struct IndicesAt {
+        static constexpr size_t value = IndicesAt<Indices::_Remain, i - 1>::value;
+    };
+    template <class Indices> struct IndicesAt<Indices, 0> {
+        static constexpr size_t value = Indices::_first;
+    };
+
+    static GameObjectId alloc(ComponentId *ids, void **ptrs, uint32_t components_count);
+    static void commit(ComponentId *ids, void **ptrs, uint32_t components_count);
+
+    template <class Indices, class Tuple, size_t... Seq>
+    static void copy(void **ptrs, Tuple t, Indices indices, std::index_sequence<Seq...>) {
+        (((std::tuple_element_t<Seq, Tuple> *)ptrs[IndicesAt<Indices, Seq>::value] = std::get<Seq>(t)), ...);
+    }
 
   public:
-    template <class... TComponents> static GameObjectId add(const TComponents &...component) {
-        // TODO
-        // ComponentId ids[] = {ComponentIdByType<TComponents>()::value...};
-        // void *ptrs[sizeof...(TComponents)];
-        // GameObjectId oid = add(ids, ptrs, sizeof...(TComponents));
-        // return oid;
-        return 0;
-    }
+    template <class ComponentIds, class DataComponentIndices, class ComponentDataTuple> struct AddGameObjectContext {
+        ComponentDataTuple data;
+        template <class T> auto addComponent() {
+            using NewComponentIds = typename ComponentIds::template Append<T>;
+            return AddGameObjectContext<NewComponentIds, DataComponentIndices, ComponentDataTuple>{data};
+        }
+        template <class T> auto addComponent(const T &component) {
+            using NewComponentIds = typename ComponentIds::template Append<T>;
+            using NewComponentIndices = typename DataComponentIndices::template Append<ComponentIds::len>;
+            auto data2 = std::tuple_cat(data, std::tuple<const T &>(component));
+            return AddGameObjectContext<NewComponentIds, NewComponentIndices, decltype(data2)>{data2};
+        }
+        void finish() {
+            auto ids = ComponentIds::ids();
+            void *ptrs[ComponentIds::len];
+            GameObjects::alloc(ids, ptrs, std::size(ptrs));
+            GameObjects::copy(ptrs, data, DataComponentIndices{},
+                              std::index_sequence(std::tuple_size<ComponentDataTuple>::value));
+        };
+    };
+
+    template <class ComponentIds> struct AddGameObjectContextWithoutData {
+        template <class T> auto addComponent() {
+            using NewComponentIds = ComponentIds::template Append<T>;
+            return AddGameObjectContextWithoutData<NewComponentIds>{};
+        }
+        template <class T> auto addComponent(const T &component) {
+            using NewComponentIds = ComponentIds::template Append<T>;
+            auto data = std::tuple<const T &>(component);
+            return AddGameObjectContext<NewComponentIds, IndexHolder<ComponentIds::len>, decltype(data)>{data};
+        }
+    };
+
+    struct AddGameObjectContextEmpty {
+        template <class T> auto addComponent() {
+            return AddGameObjectContextWithoutData<ComponentIdHolder<ComponentIdByType<T>::value>>{};
+        }
+        template <class T> auto addComponent(const T &component) {
+            auto data = std::tuple<const T &>(component);
+            return AddGameObjectContext<ComponentIdHolder<ComponentIdByType<T>::value>, IndexHolder<0>, decltype(data)>{
+                data};
+        }
+    };
+
+    auto add() { return AddGameObjectContextEmpty{}; }
     static void remove(GameObjectId id);
 };
 
