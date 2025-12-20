@@ -1,1 +1,4 @@
-target_sources(pelican_core PRIVATE modelview.cpp)
+target_sources(pelican_core PRIVATE 
+    modelview.cpp
+    collision.cpp
+)
