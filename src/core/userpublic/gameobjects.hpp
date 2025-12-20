@@ -17,9 +17,9 @@ class GameObjects {
   private:
     template <ComponentId... id> struct ComponentIdHolder {
         template <class T> using Append = ComponentIdHolder<id..., ComponentIdByType<T>::value>;
-        constexpr static std::span<ComponentId> ids() {
-            constexpr ComponentId _ids[] = {id...};
-            return _ids;
+        constexpr static std::span<const ComponentId> ids() {
+            static constexpr ComponentId _ids[] = {id...};
+            return std::span<const ComponentId>{_ids, sizeof...(id)};
         }
         static constexpr size_t len = sizeof...(id);
     };
@@ -27,6 +27,10 @@ class GameObjects {
     template <size_t index, size_t... indices> struct IndicesDecoder {
         static constexpr size_t first = index;
         using Remain = IndicesDecoder<indices...>;
+    };
+    template <size_t index> struct IndicesDecoder<index> {
+        static constexpr size_t first = index;
+        using Remain = void;
     };
     template <size_t... index> struct IndexHolder {
         template <size_t new_index> using Append = IndexHolder<index..., new_index>;
@@ -40,12 +44,14 @@ class GameObjects {
         static constexpr size_t value = Indices::_first;
     };
 
-    static GameObjectId alloc(ComponentId *ids, void **ptrs, uint32_t components_count);
-    static void commit(ComponentId *ids, void **ptrs, uint32_t components_count);
+    static GameObjectId alloc(const ComponentId *ids, void **ptrs, uint32_t components_count);
+    static void commit(const ComponentId *ids, void *const *ptrs, uint32_t components_count);
 
     template <class Indices, class Tuple, size_t... Seq>
     static void copy(void **ptrs, Tuple t, Indices indices, std::index_sequence<Seq...>) {
-        (((std::tuple_element_t<Seq, Tuple> *)ptrs[IndicesAt<Indices, Seq>::value] = std::get<Seq>(t)), ...);
+        (((*static_cast<std::remove_cvref_t<std::tuple_element_t<Seq, Tuple>> *>(
+              ptrs[IndicesAt<Indices, Seq>::value])) = std::get<Seq>(t)),
+         ...);
     }
 
   public:
@@ -64,9 +70,10 @@ class GameObjects {
         void finish() {
             auto ids = ComponentIds::ids();
             void *ptrs[ComponentIds::len];
-            GameObjects::alloc(ids, ptrs, std::size(ptrs));
+            GameObjects::alloc(ids.data(), ptrs, std::size(ptrs));
             GameObjects::copy(ptrs, data, DataComponentIndices{},
-                              std::index_sequence(std::tuple_size<ComponentDataTuple>::value));
+                              std::make_index_sequence<std::tuple_size<ComponentDataTuple>::value>());
+            GameObjects::commit(ids.data(), ptrs, std::size(ptrs));
         };
     };
 
@@ -80,6 +87,12 @@ class GameObjects {
             auto data = std::tuple<const T &>(component);
             return AddGameObjectContext<NewComponentIds, IndexHolder<ComponentIds::len>, decltype(data)>{data};
         }
+        void finish() {
+            auto ids = ComponentIds::ids();
+            void *ptrs[ComponentIds::len];
+            GameObjects::alloc(ids.data(), ptrs, std::size(ptrs));
+            GameObjects::commit(ids.data(), ptrs, std::size(ptrs));
+        };
     };
 
     struct AddGameObjectContextEmpty {
@@ -93,7 +106,7 @@ class GameObjects {
         }
     };
 
-    auto add() { return AddGameObjectContextEmpty{}; }
+    static auto add() { return AddGameObjectContextEmpty{}; }
     static void remove(GameObjectId id);
 };
 
