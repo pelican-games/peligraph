@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
+#include <stdexcept>
 #include <unordered_map>
 #include <vector>
 
@@ -45,6 +46,8 @@ vk::ImageUsageFlags stringToUsageFlags(const std::vector<std::string> &usage_str
     for (const auto &usage_str : usage_strs) {
         if (auto it = usage_map.find(usage_str); it != usage_map.end()) {
             flags |= it->second;
+        } else {
+            throw std::runtime_error("Unknown image usage flag: " + usage_str);
         }
     }
     return flags;
@@ -229,10 +232,14 @@ void parseFullscreenInfo(PassDefinition &pass_def, const nlohmann::json &pass_js
         fullscreenInfo.uses_light_data = true;
     }
     if (!pass_json.contains("shader")) {
-        return;
+        throw std::runtime_error("Fullscreen pass requires shader: " + pass_def.name);
     }
 
     const auto &shader = pass_json.at("shader");
+    if (!shader.contains("vertex") || !shader.contains("fragment")) {
+        throw std::runtime_error("Fullscreen pass shader requires vertex and fragment: " + pass_def.name);
+    }
+
     fullscreenInfo.vert_shader = registerShaderFromFile(shader_container, shader.at("vertex"));
     fullscreenInfo.frag_shader = registerShaderFromFile(shader_container, shader.at("fragment"));
 }
