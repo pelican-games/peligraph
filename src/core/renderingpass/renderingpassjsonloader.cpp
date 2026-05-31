@@ -271,6 +271,28 @@ void validatePassOutputs(const PassDefinition &pass_def) {
     }
 }
 
+void validatePassSpecificFields(const PassDefinition &pass_def, const nlohmann::json &pass_json) {
+    if (!pass_def.isMaterial() && pass_json.contains("material_range")) {
+        throw std::runtime_error("Only material passes support material_range: " + pass_def.name);
+    }
+
+    if (pass_def.isFullscreen()) {
+        return;
+    }
+
+    static constexpr std::array fullscreen_fields{
+        "shader",
+        "push_constants",
+        "uses_light_data",
+        "needs_projection_matrix",
+    };
+    for (const char *field : fullscreen_fields) {
+        if (pass_json.contains(field)) {
+            throw std::runtime_error("Only fullscreen passes support " + std::string{field} + ": " + pass_def.name);
+        }
+    }
+}
+
 void parseMaterialInfo(PassDefinition &pass_def, const nlohmann::json &pass_json) {
     if (!pass_def.isMaterial() || !pass_json.contains("material_range")) {
         return;
@@ -336,6 +358,7 @@ PassDefinition parsePassDefinition(const nlohmann::json &pass_json, RenderTarget
     pass_def.output_depth = parseDepthOutput(rt_container, output.at("depth"));
 
     validatePassOutputs(pass_def);
+    validatePassSpecificFields(pass_def, pass_json);
 
     parseMaterialInfo(pass_def, pass_json);
 
