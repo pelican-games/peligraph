@@ -1,0 +1,149 @@
+#include "render_pass_executor.hpp"
+#include "../renderingpass/rendertargetcontainer.hpp"
+#include "../renderer/fullscreenpassrenderer.hpp"
+#include "../renderer/materialrender.hpp"
+#include "../renderer/uirenderer.hpp"
+#include "util.hpp"
+#include <vector>
+
+namespace Pelican {
+
+namespace {
+
+vk::Extent2D getTargetExtent(const FrameRenderContext &frame, const PassDefinition &pass_def,
+                             RenderTargetContainer &rt_container) {
+    if (!pass_def.output_color.empty() && pass_def.output_color[0].value >= 0) {
+        const auto &output_rt = rt_container.get(pass_def.output_color[0]);
+        return vk::Extent2D{output_rt.image.extent.width, output_rt.image.extent.height};
+    }
+    return frame.extent;
+}
+
+void transitionOutputsToAttachmentLayouts(vk::CommandBuffer cmd_buf, const PassDefinition &pass_def,
+                                          RenderTargetContainer &rt_container, VulkanUtils &vk_utils,
+                                          RenderTargetLayoutTracker &layout_tracker) {
+    for (const auto &rt_id : pass_def.output_color) {
+        layout_tracker.transition(cmd_buf, rt_container, vk_utils, rt_id, vk::ImageLayout::eColorAttachmentOptimal);
+    }
+    layout_tracker.transition(cmd_buf, rt_container, vk_utils, pass_def.output_depth,
+                              vk::ImageLayout::eDepthAttachmentOptimal);
+}
+
+void transitionColorOutputsToShaderRead(vk::CommandBuffer cmd_buf, const PassDefinition &pass_def,
+                                        RenderTargetContainer &rt_container, VulkanUtils &vk_utils,
+                                        RenderTargetLayoutTracker &layout_tracker) {
+    for (const auto &rt_id : pass_def.output_color) {
+        layout_tracker.transition(cmd_buf, rt_container, vk_utils, rt_id, vk::ImageLayout::eShaderReadOnlyOptimal);
+    }
+}
+
+std::vector<vk::RenderingAttachmentInfo> createColorAttachments(const FrameRenderContext &frame,
+                                                                const PassDefinition &pass_def,
+                                                                RenderTargetContainer &rt_container) {
+    std::vector<vk::RenderingAttachmentInfo> color_attachments;
+    color_attachments.reserve(pass_def.output_color.size());
+
+    for (const auto &rt_id : pass_def.output_color) {
+        vk::RenderingAttachmentInfo color_att;
+        if (rt_id.value < 0) {
+            color_att.imageView = frame.color_attachment;
+        } else {
+            color_att.imageView = rt_container.get(rt_id).image_view.get();
+        }
+
+        color_att.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+        color_att.loadOp = pass_def.color_load_op;
+        color_att.storeOp = pass_def.color_store_op;
+        color_att.clearValue.color = pass_def.clear_color;
+        color_attachments.push_back(color_att);
+    }
+
+    return color_attachments;
+}
+
+vk::RenderingAttachmentInfo createDepthAttachment(const PassDefinition &pass_def,
+                                                  RenderTargetContainer &rt_container) {
+    vk::RenderingAttachmentInfo depth_attachment;
+    const auto &depth_rt = rt_container.get(pass_def.output_depth);
+    depth_attachment.imageView = depth_rt.image_view.get();
+    depth_attachment.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
+    depth_attachment.loadOp = vk::AttachmentLoadOp::eClear;
+    depth_attachment.storeOp = vk::AttachmentStoreOp::eDontCare;
+    depth_attachment.clearValue.depthStencil = vk::ClearDepthStencilValue{1.0f, 0};
+    return depth_attachment;
+}
+
+void setDynamicViewportAndScissor(vk::CommandBuffer cmd_buf, vk::Extent2D extent) {
+    vk::Viewport viewport{0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height), 0.0f,
+                          1.0f};
+    cmd_buf.setViewport(0, viewport);
+
+    vk::Rect2D scissor{{0, 0}, extent};
+    cmd_buf.setScissor(0, scissor);
+}
+
+void renderMaterialPass(vk::CommandBuffer cmd_buf, PassId pass_id, const PassDefinition &pass_def) {
+    auto &mat_renderer = GET_MODULE(MaterialRenderer);
+    if (pass_def.material_info.material_count > 0) {
+        mat_renderer.renderWithMaterialRange(cmd_buf, pass_id, pass_def.material_info.material_start,
+                                             pass_def.material_info.material_count);
+    } else {
+        mat_renderer.render(cmd_buf, pass_id);
+    }
+}
+
+void renderFullscreenPass(vk::CommandBuffer cmd_buf, PassId pass_id, const PassDefinition &pass_def) {
+    GET_MODULE(FullscreenPassRenderer).render(cmd_buf, pass_id, pass_def);
+}
+
+} // namespace
+
+void RenderPassExecutor::execute(const FrameRenderContext &frame, const PassDefinition &pass_def, PassId pass_id,
+                                 RenderTargetLayoutTracker &layout_tracker) const {
+    auto &rt_container = GET_MODULE(RenderTargetContainer);
+    auto &vk_utils = GET_MODULE(VulkanUtils);
+    const auto cmd_buf = frame.cmd_buf;
+    const auto target_extent = getTargetExtent(frame, pass_def, rt_container);
+
+    transitionOutputsToAttachmentLayouts(cmd_buf, pass_def, rt_container, vk_utils, layout_tracker);
+
+    if (pass_def.type == PassType::eUi) {
+        if (pass_def.output_color.empty()) {
+            return;
+        }
+
+        const auto rt_id = pass_def.output_color.front();
+        const vk::ImageView target_view = (rt_id.value < 0) ? frame.color_attachment
+                                                            : rt_container.get(rt_id).image_view.get();
+        GET_MODULE(UiRenderer).render(cmd_buf, UiDrawRequest{target_view, target_extent});
+        transitionColorOutputsToShaderRead(cmd_buf, pass_def, rt_container, vk_utils, layout_tracker);
+        return;
+    }
+
+    auto color_attachments = createColorAttachments(frame, pass_def, rt_container);
+
+    vk::RenderingInfo render_info;
+    render_info.renderArea = vk::Rect2D{{0, 0}, target_extent};
+    render_info.layerCount = 1;
+    render_info.setColorAttachments(color_attachments);
+
+    vk::RenderingAttachmentInfo depth_attachment;
+    if (pass_def.output_depth.value >= 0) {
+        depth_attachment = createDepthAttachment(pass_def, rt_container);
+        render_info.pDepthAttachment = &depth_attachment;
+    }
+
+    cmd_buf.beginRendering(render_info);
+    setDynamicViewportAndScissor(cmd_buf, target_extent);
+
+    if (pass_def.type == PassType::eMaterial) {
+        renderMaterialPass(cmd_buf, pass_id, pass_def);
+    } else if (pass_def.type == PassType::eFullscreen) {
+        renderFullscreenPass(cmd_buf, pass_id, pass_def);
+    }
+
+    cmd_buf.endRendering();
+    transitionColorOutputsToShaderRead(cmd_buf, pass_def, rt_container, vk_utils, layout_tracker);
+}
+
+} // namespace Pelican

@@ -1,11 +1,9 @@
 #pragma once
 
 #include "../container.hpp"
-#include "cmdbuf.hpp"
 #include "render_target_layout_tracker.hpp"
-#include <array>
+#include "../renderingpass/renderingpass.hpp"
 #include <vulkan/vulkan.hpp>
-#include "../renderingpass/renderingpass.hpp" // Added for GlobalRenderTargetId
 
 namespace Pelican {
 
