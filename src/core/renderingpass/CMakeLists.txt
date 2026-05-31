@@ -3,6 +3,7 @@ target_sources(pelican_core PRIVATE
     renderingpassdefinitionjsonparser.cpp
     renderingpassjsonhelpers.cpp
     renderingpassjsonloader.cpp
+    renderingpassruntimecompiler.cpp
     renderingpasstargetjsonparser.cpp
     renderingpassvalidation.cpp
     rendertargetjsonparser.cpp
