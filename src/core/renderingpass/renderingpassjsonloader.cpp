@@ -573,26 +573,23 @@ PassDefinition parsePassDefinition(const nlohmann::json &pass_json, RenderTarget
 
 void validatePassInputsProduced(const PassDefinition &pass_def,
                                 const std::unordered_set<GlobalRenderTargetId, GlobalRenderTargetId::Hash>
-                                    &produced_targets,
+                                    &produced_color_targets,
                                 RenderTargetContainer &rt_container) {
     for (const auto &rt_id : pass_def.input_targets) {
-        if (produced_targets.find(rt_id) == produced_targets.end()) {
+        if (produced_color_targets.find(rt_id) == produced_color_targets.end()) {
             const auto &rt = rt_container.get(rt_id);
-            throw std::runtime_error("Pass input target is not produced by an earlier pass: " + rt.name +
+            throw std::runtime_error("Pass input target is not produced as an earlier color output: " + rt.name +
                                      " in pass: " + pass_def.name);
         }
     }
 }
 
 void recordPassOutputs(const PassDefinition &pass_def,
-                       std::unordered_set<GlobalRenderTargetId, GlobalRenderTargetId::Hash> &produced_targets) {
+                       std::unordered_set<GlobalRenderTargetId, GlobalRenderTargetId::Hash> &produced_color_targets) {
     for (const auto &rt_id : pass_def.output_color) {
         if (rt_id.value >= 0) {
-            produced_targets.insert(rt_id);
+            produced_color_targets.insert(rt_id);
         }
-    }
-    if (pass_def.output_depth.value >= 0) {
-        produced_targets.insert(pass_def.output_depth);
     }
 }
 
@@ -615,7 +612,7 @@ RenderingPassDefinition parseRenderingPassDefinition(const nlohmann::json &pass_
     }
 
     std::unordered_set<std::string> pass_names;
-    std::unordered_set<GlobalRenderTargetId, GlobalRenderTargetId::Hash> produced_targets;
+    std::unordered_set<GlobalRenderTargetId, GlobalRenderTargetId::Hash> produced_color_targets;
     for (const auto &pass_json : passes_json) {
         const std::string pass_name = parseStringField(pass_json, "name", "pass");
         if (!pass_names.insert(pass_name).second) {
@@ -623,8 +620,8 @@ RenderingPassDefinition parseRenderingPassDefinition(const nlohmann::json &pass_
         }
 
         auto parsed_pass = parsePassDefinition(pass_json, rt_container, shader_container);
-        validatePassInputsProduced(parsed_pass, produced_targets, rt_container);
-        recordPassOutputs(parsed_pass, produced_targets);
+        validatePassInputsProduced(parsed_pass, produced_color_targets, rt_container);
+        recordPassOutputs(parsed_pass, produced_color_targets);
         pass_def.passes.push_back(std::move(parsed_pass));
     }
 
