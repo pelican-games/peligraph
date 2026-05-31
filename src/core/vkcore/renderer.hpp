@@ -11,7 +11,7 @@ namespace Pelican {
 DECLARE_MODULE(Renderer) {
     
     vk::Device device;
-    GlobalRenderTargetId m_scene_color_rt_id; // Added for offscreen scene color output
+    RenderingPassId current_rendering_pass_id;
 
   public:
     Renderer();

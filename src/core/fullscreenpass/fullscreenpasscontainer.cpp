@@ -25,10 +25,12 @@ static vk::UniqueDescriptorSetLayout createInputDescSetLayout(vk::Device device,
 
 static vk::UniquePipelineLayout createDefaultPipelineLayout(vk::Device device,
                                                             std::span<vk::DescriptorSetLayout> layouts) {
+    constexpr uint32_t fullscreenPushConstantBytes = sizeof(float) * 32; // two mat4 values
+
     vk::PushConstantRange push_constant_range;
     push_constant_range.stageFlags = vk::ShaderStageFlagBits::eFragment;
     push_constant_range.offset = 0;
-    push_constant_range.size = sizeof(float) * 4; // vec4 cameraPos
+    push_constant_range.size = fullscreenPushConstantBytes;
 
     vk::PipelineLayoutCreateInfo create_info;
     create_info.setPushConstantRanges(push_constant_range);
@@ -167,7 +169,7 @@ FullscreenPassContainer::FullscreenPassContainer()
 
     std::vector<vk::DescriptorSetLayout> layouts = {
         input_desc_layout.get(),
-        light_container.GetDescriptorSetLayout()
+        light_container.getDescriptorSetLayout()
     };
     
     pipeline_layout = createDefaultPipelineLayout(device, layouts);

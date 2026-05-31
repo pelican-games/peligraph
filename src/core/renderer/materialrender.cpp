@@ -8,6 +8,9 @@
 
 namespace Pelican {
 
+namespace {
+constexpr uint32_t lightDescriptorSetNumber = 2;
+}
 
 MaterialRenderer::MaterialRenderer() {
     const auto &instance_container = GET_MODULE(PolygonInstanceContainer);
@@ -22,7 +25,7 @@ void MaterialRenderer::render(vk::CommandBuffer cmd_buf, PassId pass_id) const {
     const auto &material_container = GET_MODULE(MaterialContainer);
     auto &light_container = GET_MODULE(LightContainer);
 
-    light_container.Update();
+    light_container.update();
     vert_buf_container.bindVertexBuffer(cmd_buf);
 
     const auto pipeline_layout = material_container.getPipelineLayout();
@@ -41,7 +44,10 @@ void MaterialRenderer::render(vk::CommandBuffer cmd_buf, PassId pass_id) const {
         if (!material_container.isRenderRequired(pass_id, draw_call.material))
             continue;
         
-        material_container.bindResource(cmd_buf, pass_id, draw_call.material, current_material_id, light_container.GetDescriptorSet());
+        material_container.bindResource(cmd_buf, pass_id, draw_call.material, current_material_id);
+        if (current_material_id.value < 0) {
+            light_container.bindResource(cmd_buf, pipeline_layout, lightDescriptorSetNumber);
+        }
         current_material_id = draw_call.material;
         cmd_buf.drawIndexedIndirect(indirect_buf.buffer.get(), draw_call.offset, draw_call.draw_count,
                                     draw_call.stride);
@@ -55,7 +61,7 @@ void MaterialRenderer::renderWithMaterialRange(vk::CommandBuffer cmd_buf, PassId
     const auto &material_container = GET_MODULE(MaterialContainer);
     auto &light_container = GET_MODULE(LightContainer);
 
-    light_container.Update();
+    light_container.update();
     vert_buf_container.bindVertexBuffer(cmd_buf);
 
     const auto pipeline_layout = material_container.getPipelineLayout();
@@ -85,7 +91,10 @@ void MaterialRenderer::renderWithMaterialRange(vk::CommandBuffer cmd_buf, PassId
             }
         }
         
-        material_container.bindResource(cmd_buf, pass_id, draw_call.material, current_material_id, light_container.GetDescriptorSet());
+        material_container.bindResource(cmd_buf, pass_id, draw_call.material, current_material_id);
+        if (current_material_id.value < 0) {
+            light_container.bindResource(cmd_buf, pipeline_layout, lightDescriptorSetNumber);
+        }
         current_material_id = draw_call.material;
         cmd_buf.drawIndexedIndirect(indirect_buf.buffer.get(), draw_call.offset, draw_call.draw_count,
                                     draw_call.stride);

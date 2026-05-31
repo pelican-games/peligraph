@@ -6,6 +6,10 @@
 
 namespace Pelican {
 
+namespace {
+constexpr uint32_t lightDescriptorSetNumber = 1;
+}
+
 FullscreenPassRenderer::FullscreenPassRenderer() {}
 FullscreenPassRenderer::~FullscreenPassRenderer() {}
 
@@ -16,7 +20,7 @@ void FullscreenPassRenderer::render(vk::CommandBuffer cmd_buf, PassId pass_id, c
 
     container.bindResource(cmd_buf, pass_id);
 
-    cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, container.getPipelineLayout(), 1, {light_container.GetDescriptorSet()}, {});
+    light_container.bindResource(cmd_buf, container.getPipelineLayout(), lightDescriptorSetNumber);
 
     // Define push constant structures for different passes
     struct CameraPosPC {

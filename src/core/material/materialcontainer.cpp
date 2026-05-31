@@ -243,7 +243,7 @@ MaterialContainer::MaterialContainer()
     for (const auto& layout : descset_layouts) {
         layouts.push_back(layout.get());
     }
-    layouts.push_back(light_container.GetDescriptorSetLayout());
+    layouts.push_back(light_container.getDescriptorSetLayout());
 
     pipeline_layout = createDefaultPipelineLayout(device, layouts);
 }
@@ -396,7 +396,7 @@ bool MaterialContainer::isRenderRequired(PassId pass_id, GlobalMaterialId materi
 }
 
 void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pass_id, GlobalMaterialId material_id,
-                                     GlobalMaterialId prev_material_id, vk::DescriptorSet light_desc_set) const {
+                                     GlobalMaterialId prev_material_id) const {
     const auto &material = materials.get(material_id);
 
     if (prev_material_id.value < 0) {
@@ -405,7 +405,6 @@ void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pass_id, 
                                    {
                                        model_mat_buf_descset.get(), // model matrix buffer: set = 0
                                        material.descset.get(),      // material textures: set = 1
-                                       light_desc_set,              // lights: set = 2
                                    },
                                    {});
     } else {

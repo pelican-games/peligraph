@@ -5,10 +5,12 @@
 #include "rendertargetcontainer.hpp"
 #include "../shader/shader.hpp"
 #include "../vkcore/image.hpp"
-#include <vulkan/vulkan.hpp>
-#include <vector>
+#include <array>
+#include <span>
 #include <string>
 #include <unordered_map>
+#include <vulkan/vulkan.hpp>
+#include <vector>
 
 namespace Pelican {
 
@@ -21,6 +23,8 @@ enum class PassType {
 
 // 1つのパスの定義
 struct PassDefinition {
+    PassDefinition() : output_depth{-1} {}
+
     std::string name;
     PassType type;
     
@@ -87,7 +91,6 @@ DECLARE_MODULE(RenderingPassContainer) {
     const PassDefinition& getPassDefinition(RenderingPassId rendering_pass_id, size_t pass_index) const;
     
     // パス数を取得
-    size_t getPassCount(RenderingPassId rendering_pass_id) const;
 };
 
 } // namespace Pelican

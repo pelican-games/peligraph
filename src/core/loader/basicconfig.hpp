@@ -25,6 +25,9 @@ DECLARE_MODULE(ProjectBasicConfig) {
     std::string default_scene_id;
     std::string scene_data_json;
     std::string asset_data_json;
+    std::string rendering_config_json;
+    std::string default_rendering_pass;
+    std::string ui_config_json;
 
   public:
     ProjectBasicConfig();
@@ -39,6 +42,9 @@ DECLARE_MODULE(ProjectBasicConfig) {
     std::string defaultSceneId() const;
     std::string sceneDataJson() const;
     std::string assetDataJson() const;
+    std::string renderingConfigJson() const;
+    std::string defaultRenderingPass() const;
+    std::string uiConfigJson() const;
 };
 
 } // namespace Pelican

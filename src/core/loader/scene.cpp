@@ -21,7 +21,7 @@ void SceneLoader::load(SceneId scene_id) {
     // load from json
     const auto scene_data = nlohmann::json::parse(config.sceneDataJson()).at(scene_id);
 
-    GET_MODULE(LightContainer).Load(scene_data);
+    GET_MODULE(LightContainer).load(scene_data);
 
     const auto &objects = scene_data.at("objects");
 

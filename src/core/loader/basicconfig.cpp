@@ -72,6 +72,9 @@ ProjectBasicConfig::ProjectBasicConfig() {
     camera_prop.up = {camera_up[0], camera_up[1], camera_up[2]};
 
     default_scene_id = loader.getVal("basic_config/default_scene_id");
+    rendering_config_json = loader.getVal("basic_config/rendering_config_json");
+    default_rendering_pass = loader.getVal("basic_config/default_rendering_pass");
+    ui_config_json = loader.getVal("basic_config/ui_config_json");
     {
         const std::string scene_data_json_path = loader.getVal("basic_config/scene_data_json");
 
@@ -109,5 +112,8 @@ ProjectBasicConfig::InitialCameraProperty ProjectBasicConfig::initailCameraPrope
 std::string ProjectBasicConfig::defaultSceneId() const { return default_scene_id; }
 std::string ProjectBasicConfig::sceneDataJson() const { return scene_data_json; }
 std::string ProjectBasicConfig::assetDataJson() const { return asset_data_json; }
+std::string ProjectBasicConfig::renderingConfigJson() const { return rendering_config_json; }
+std::string ProjectBasicConfig::defaultRenderingPass() const { return default_rendering_pass; }
+std::string ProjectBasicConfig::uiConfigJson() const { return ui_config_json; }
 
 } // namespace Pelican

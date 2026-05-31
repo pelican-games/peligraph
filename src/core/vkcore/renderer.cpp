@@ -16,19 +16,77 @@
 #include <filesystem>
 #include <cmath>
 #include <chrono>
+#include <unordered_map>
 
 namespace Pelican {
 
+namespace {
+
+using RenderTargetLayoutMap =
+    std::unordered_map<GlobalRenderTargetId, vk::ImageLayout, GlobalRenderTargetId::Hash>;
+
+VulkanUtils::ChangeImageLayoutInfo makeTransitionInfo(vk::ImageLayout old_layout, vk::ImageLayout new_layout) {
+    VulkanUtils::ChangeImageLayoutInfo info{
+        .src_stage = vk::PipelineStageFlagBits::eTopOfPipe,
+        .dst_stage = vk::PipelineStageFlagBits::eTopOfPipe,
+        .src_access = {},
+        .dst_access = {},
+    };
+
+    if (old_layout == vk::ImageLayout::eShaderReadOnlyOptimal) {
+        info.src_stage = vk::PipelineStageFlagBits::eFragmentShader;
+        info.src_access = vk::AccessFlagBits::eShaderRead;
+    } else if (old_layout == vk::ImageLayout::eColorAttachmentOptimal) {
+        info.src_stage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+        info.src_access = vk::AccessFlagBits::eColorAttachmentWrite;
+    } else if (old_layout == vk::ImageLayout::eDepthAttachmentOptimal) {
+        info.src_stage = vk::PipelineStageFlagBits::eLateFragmentTests;
+        info.src_access = vk::AccessFlagBits::eDepthStencilAttachmentWrite;
+    }
+
+    if (new_layout == vk::ImageLayout::eShaderReadOnlyOptimal) {
+        info.dst_stage = vk::PipelineStageFlagBits::eFragmentShader;
+        info.dst_access = vk::AccessFlagBits::eShaderRead;
+    } else if (new_layout == vk::ImageLayout::eColorAttachmentOptimal) {
+        info.dst_stage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+        info.dst_access = vk::AccessFlagBits::eColorAttachmentWrite;
+    } else if (new_layout == vk::ImageLayout::eDepthAttachmentOptimal) {
+        info.dst_stage = vk::PipelineStageFlagBits::eEarlyFragmentTests;
+        info.dst_access = vk::AccessFlagBits::eDepthStencilAttachmentWrite;
+    }
+
+    return info;
+}
+
+void transitionRenderTarget(vk::CommandBuffer cmd_buf, RenderTargetContainer& rt_container, VulkanUtils& vk_utils,
+                            RenderTargetLayoutMap& layouts, GlobalRenderTargetId rt_id,
+                            vk::ImageLayout new_layout) {
+    if (rt_id.value < 0) {
+        return;
+    }
+
+    auto [it, inserted] = layouts.try_emplace(rt_id, vk::ImageLayout::eUndefined);
+    const auto old_layout = it->second;
+    if (old_layout == new_layout) {
+        return;
+    }
+
+    const auto& rt = rt_container.get(rt_id);
+    vk_utils.changeImageLayoutCmd(cmd_buf, rt.image, old_layout, new_layout,
+                                  makeTransitionInfo(old_layout, new_layout));
+    it->second = new_layout;
+}
+
+} // namespace
+
 Renderer::Renderer() : device{GET_MODULE(VulkanManageCore).getDevice()} {
-    auto& rt_container = GET_MODULE(RenderTargetContainer);
-    auto& shader_container = GET_MODULE(ShaderContainer);
     auto& pass_container = GET_MODULE(RenderingPassContainer);
-    auto& rt_main = GET_MODULE(RenderTarget); // Get the main RenderTarget module
+    const auto& config = GET_MODULE(ProjectBasicConfig);
 
     // Load the unified main rendering configuration JSON.
     // This JSON now defines all render targets and passes, including bloom.
     try {
-        std::string main_config_path = "main_rendering_config.json";
+        const auto main_config_path = config.renderingConfigJson();
         if (std::filesystem::exists(main_config_path)) {
             // This registerRenderingPassFromJson should also handle render target registration
             // as per the new unified JSON format.
@@ -37,25 +95,24 @@ Renderer::Renderer() : device{GET_MODULE(VulkanManageCore).getDevice()} {
             // If not, a custom parser function would be needed here.
             pass_container.registerRenderingPassFromJson(main_config_path);
         } else {
-            LOG_ERROR(logger, "Main rendering configuration JSON file not found: {}", main_config_path);
-            // Handle error: e.g., throw exception or load a default minimal config
+            throw std::runtime_error("Main rendering configuration JSON file not found: " + main_config_path);
         }
     } catch (const std::exception& e) {
         LOG_ERROR(logger, "Failed to load main rendering configuration: {}", e.what());
-        // Handle error
+        throw;
     }
 
-    // Now that passes are loaded, get the ID for "lit_color" which serves as the scene color RT.
-    // This assumes "lit_color" is consistently used as the scene color output before post-processing.
-    m_scene_color_rt_id = rt_container.getRenderTargetIdByName("lit_color");
-
+    current_rendering_pass_id = pass_container.getRenderingPassIdByName(config.defaultRenderingPass());
+    if (current_rendering_pass_id.value < 0) {
+        throw std::runtime_error("Rendering pass not found: " + config.defaultRenderingPass());
+    }
 }
 
 Renderer::~Renderer() {}
 
 void Renderer::render() {
-    static bool is_first_frame = true;
     static auto start_time = std::chrono::high_resolution_clock::now();
+    static RenderTargetLayoutMap rt_layouts;
     
     auto &rt = GET_MODULE(RenderTarget);
     auto &mat_renderer = GET_MODULE(MaterialRenderer);
@@ -69,19 +126,17 @@ void Renderer::render() {
     {
         auto current_time = std::chrono::high_resolution_clock::now();
         float time = std::chrono::duration<float, std::chrono::seconds::period>(current_time - start_time).count();
-        GET_MODULE(LightContainer).UpdateAnimation(time);
+        GET_MODULE(LightContainer).updateAnimation(time);
     }
     // ----------------------------------------------------
 
     const auto render_ctx = rt.render_begin();
     const auto cmd_buf = render_ctx.cmd_buf;
 
-    RenderingPassId rendering_pass_id{0};
-    const auto passes = pass_container.getPasses(rendering_pass_id);
-    const size_t pass_count = pass_container.getPassCount(rendering_pass_id);
+    const auto passes = pass_container.getPasses(current_rendering_pass_id);
 
-    for (size_t i = 0; i < pass_count; ++i) {
-        const auto& pass_def = pass_container.getPassDefinition(rendering_pass_id, i);
+    for (size_t i = 0; i < passes.size(); ++i) {
+        const auto& pass_def = pass_container.getPassDefinition(current_rendering_pass_id, i);
         const auto pass_id = passes[i];
 
         // Determine target extent for this pass
@@ -90,30 +145,23 @@ void Renderer::render() {
              target_extent = vk::Extent2D(rt_container.get(pass_def.output_color[0]).image.extent.width, rt_container.get(pass_def.output_color[0]).image.extent.height);
         }
 
-        // マテリアルパス開始前：レイアウト遷移（複数出力対応）
-        if (pass_def.type == PassType::eMaterial) {
-            for (const auto& rt_id : pass_def.output_color) {
-                if (rt_id.value < 0) continue;  // swapchain等は対象外
-                
-                const auto& offscreen_rt = rt_container.get(rt_id);
-                
-                // 毎フレーム確実にカラー用レイアウトへ戻す
-                const vk::ImageLayout old_layout = is_first_frame ? vk::ImageLayout::eUndefined
-                                                                   : vk::ImageLayout::eShaderReadOnlyOptimal;
-                vk_utils.changeImageLayoutCmd(cmd_buf, offscreen_rt.image,
-                    old_layout, vk::ImageLayout::eColorAttachmentOptimal,
-                    {vk::PipelineStageFlagBits::eFragmentShader, vk::PipelineStageFlagBits::eColorAttachmentOutput,
-                     vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eColorAttachmentWrite});
-            }
-            is_first_frame = false;
+        for (const auto& rt_id : pass_def.output_color) {
+            transitionRenderTarget(cmd_buf, rt_container, vk_utils, rt_layouts, rt_id,
+                                   vk::ImageLayout::eColorAttachmentOptimal);
         }
+        transitionRenderTarget(cmd_buf, rt_container, vk_utils, rt_layouts, pass_def.output_depth,
+                               vk::ImageLayout::eDepthAttachmentOptimal);
 
         if (pass_def.type == PassType::eUi) {
             if (!pass_def.output_color.empty()) {
                 const auto rt_id = pass_def.output_color.front();
                 vk::ImageView target_view = (rt_id.value < 0) ? render_ctx.color_attachment
                                                               : rt_container.get(rt_id).image_view.get();
-                ui_renderer.render(cmd_buf, UiDrawRequest{target_view, render_ctx.extent});
+                ui_renderer.render(cmd_buf, UiDrawRequest{target_view, target_extent});
+                for (const auto& output_rt_id : pass_def.output_color) {
+                    transitionRenderTarget(cmd_buf, rt_container, vk_utils, rt_layouts, output_rt_id,
+                                           vk::ImageLayout::eShaderReadOnlyOptimal);
+                }
             }
         } else {
             // 複数のカラーアタッチメント設定
@@ -157,50 +205,32 @@ void Renderer::render() {
             cmd_buf.beginRendering(render_info);
 
             // ビューポート設定
-            vk::Viewport viewport{0.0f, 0.0f, 
-                                 static_cast<float>(render_ctx.extent.width), 
-                                 static_cast<float>(render_ctx.extent.height), 
+            vk::Viewport viewport{0.0f, 0.0f,
+                                 static_cast<float>(target_extent.width),
+                                 static_cast<float>(target_extent.height),
                                  0.0f, 1.0f};
             cmd_buf.setViewport(0, viewport);
             
-            vk::Rect2D scissor{{0, 0}, render_ctx.extent};
+            vk::Rect2D scissor{{0, 0}, target_extent};
             cmd_buf.setScissor(0, scissor);
 
             // パスタイプに応じてレンダリング
             if (pass_def.type == PassType::eMaterial) {
-                mat_renderer.render(cmd_buf, pass_id);
+                if (pass_def.material_info.material_count > 0) {
+                    mat_renderer.renderWithMaterialRange(cmd_buf, pass_id, pass_def.material_info.material_start,
+                                                         pass_def.material_info.material_count);
+                } else {
+                    mat_renderer.render(cmd_buf, pass_id);
+                }
             } else if (pass_def.type == PassType::eFullscreen) {
                 fs_renderer.render(cmd_buf, pass_id, pass_def);
             }
 
             cmd_buf.endRendering();
 
-            // Transition fullscreen pass outputs to be readable by the next pass
-            if (pass_def.type == PassType::eFullscreen) {
-                for (const auto& rt_id : pass_def.output_color) {
-                    if (rt_id.value < 0) continue; // Don't transition swapchain
-                    
-                    const auto& output_rt = rt_container.get(rt_id);
-                    vk_utils.changeImageLayoutCmd(cmd_buf, output_rt.image,
-                        vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
-                        {vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::PipelineStageFlagBits::eFragmentShader,
-                         vk::AccessFlagBits::eColorAttachmentWrite, vk::AccessFlagBits::eShaderRead});
-                }
-            }
-
-            // マテリアルパス終了後：出力テクスチャを SHADER_READ_ONLY_OPTIMAL に遷移
-            if (pass_def.type == PassType::eMaterial) {
-                for (const auto& rt_id : pass_def.output_color) {
-                    // Skip if it's the scene color RT, as it's handled after the loop
-                    if (rt_id == m_scene_color_rt_id) continue;
-                    if (rt_id.value < 0) continue;
-                    
-                    const auto& output_rt = rt_container.get(rt_id);
-                    vk_utils.changeImageLayoutCmd(cmd_buf, output_rt.image,
-                        vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
-                        {vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::PipelineStageFlagBits::eFragmentShader,
-                            vk::AccessFlagBits::eColorAttachmentWrite, vk::AccessFlagBits::eShaderRead});
-                }
+            for (const auto& rt_id : pass_def.output_color) {
+                transitionRenderTarget(cmd_buf, rt_container, vk_utils, rt_layouts, rt_id,
+                                       vk::ImageLayout::eShaderReadOnlyOptimal);
             }
         }
     }

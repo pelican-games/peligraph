@@ -4,6 +4,7 @@
 #include "../container.hpp"
 #include "../vkcore/buf.hpp"
 
+#include <string>
 #include <vector>
 #include <nlohmann/json_fwd.hpp>
 #include <vulkan/vulkan.hpp>
@@ -17,21 +18,19 @@ namespace Pelican
 		LightContainer();
 		~LightContainer();
 
-		void Init();
-		void Terminate();
+		void load(const nlohmann::json& json);
+		void update();
+		void updateAnimation(float time);
 
-		void Load(const nlohmann::json& json);
-		void Update();
-		void UpdateAnimation(float time);
+		void bindResource(vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout, uint32_t set_number) const;
 
-		DirectionalLight* GetLight(const std::string& name);
-		PointLight* GetPointLight(const std::string& name);
-		SpotLight* GetSpotLight(const std::string& name);
-
-		vk::DescriptorSetLayout GetDescriptorSetLayout() const { return m_DescriptorSetLayout.get(); }
-		vk::DescriptorSet GetDescriptorSet() const { return m_DescriptorSet.get(); }
+		vk::DescriptorSetLayout getDescriptorSetLayout() const { return m_DescriptorSetLayout.get(); }
 
 	private:
+		DirectionalLight* getLight(const std::string& name);
+		PointLight* getPointLight(const std::string& name);
+		SpotLight* getSpotLight(const std::string& name);
+
 		std::vector<DirectionalLight> m_DirectionalLights;
 		std::vector<DirectionalLight> m_OriginalDirectionalLights;
 		std::unordered_map<std::string, uint32_t> m_LightNameMap;

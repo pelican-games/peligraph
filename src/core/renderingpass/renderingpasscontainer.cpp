@@ -63,6 +63,42 @@ PassType stringToPassType(const std::string& type_str) {
     throw std::runtime_error("Unknown pass type: " + type_str);
 }
 
+vk::AttachmentLoadOp stringToLoadOp(const std::string& op_str) {
+    if (op_str == "Clear" || op_str == "clear") {
+        return vk::AttachmentLoadOp::eClear;
+    }
+    if (op_str == "Load" || op_str == "load") {
+        return vk::AttachmentLoadOp::eLoad;
+    }
+    if (op_str == "DontCare" || op_str == "dont_care" || op_str == "dontCare") {
+        return vk::AttachmentLoadOp::eDontCare;
+    }
+    throw std::runtime_error("Unknown attachment load op: " + op_str);
+}
+
+vk::AttachmentStoreOp stringToStoreOp(const std::string& op_str) {
+    if (op_str == "Store" || op_str == "store") {
+        return vk::AttachmentStoreOp::eStore;
+    }
+    if (op_str == "DontCare" || op_str == "dont_care" || op_str == "dontCare") {
+        return vk::AttachmentStoreOp::eDontCare;
+    }
+    throw std::runtime_error("Unknown attachment store op: " + op_str);
+}
+
+vk::ClearColorValue jsonToClearColor(const nlohmann::json& json) {
+    if (!json.is_array() || json.size() != 4) {
+        throw std::runtime_error("clear_color must be an array of four floats");
+    }
+
+    return vk::ClearColorValue{std::array{
+        json.at(0).get<float>(),
+        json.at(1).get<float>(),
+        json.at(2).get<float>(),
+        json.at(3).get<float>(),
+    }};
+}
+
 RenderingPassContainer::RenderingPassContainer() {}
 
 RenderingPassContainer::~RenderingPassContainer() {}
@@ -87,6 +123,9 @@ RenderingPassId RenderingPassContainer::registerRenderingPass(const RenderingPas
 
             // 複数出力対応：最初のカラー出力フォーマットを使用
             vk::Format color_fmt{};
+            if (pass_def.output_color.empty()) {
+                throw std::runtime_error("Fullscreen pass has no color output: " + pass_def.name);
+            }
             if (!pass_def.output_color.empty()) {
                 const auto& first_color = pass_def.output_color[0];
                 if (first_color.value >= 0) {
@@ -211,6 +250,9 @@ void RenderingPassContainer::registerRenderingPassFromJson(const std::string& js
                 if (!output.at("depth").is_null()) {
                     const std::string output_depth_name = output.at("depth");
                     individual_pass.output_depth = rt_container.getRenderTargetIdByName(output_depth_name);
+                    if (individual_pass.output_depth.value < 0) {
+                        throw std::runtime_error("Depth render target not found: " + output_depth_name);
+                    }
                 } else {
                     individual_pass.output_depth = GlobalRenderTargetId{-1};
                 }
@@ -229,15 +271,26 @@ void RenderingPassContainer::registerRenderingPassFromJson(const std::string& js
                     
                     for (const auto& input_name_json : input_output) {
                         const std::string input_name = input_name_json;
-                        individual_pass.input_targets.push_back(
-                            rt_container.getRenderTargetIdByName(input_name)
-                        );
+                        auto input_id = rt_container.getRenderTargetIdByName(input_name);
+                        if (input_id.value < 0) {
+                            throw std::runtime_error("Input render target not found: " + input_name);
+                        }
+                        individual_pass.input_targets.push_back(input_id);
                     }
                 }
 
                 // Check for special data requirements
                 if (pass_json.contains("needs_projection_matrix") && pass_json.at("needs_projection_matrix").is_boolean()) {
                     individual_pass.needs_projection_matrix = pass_json.at("needs_projection_matrix");
+                }
+                if (pass_json.contains("clear_color")) {
+                    individual_pass.clear_color = jsonToClearColor(pass_json.at("clear_color"));
+                }
+                if (pass_json.contains("color_load_op")) {
+                    individual_pass.color_load_op = stringToLoadOp(pass_json.at("color_load_op").get<std::string>());
+                }
+                if (pass_json.contains("color_store_op")) {
+                    individual_pass.color_store_op = stringToStoreOp(pass_json.at("color_store_op").get<std::string>());
                 }
                 
                 // フルスクリーンパス用：シェーダー読み込み
@@ -298,11 +351,6 @@ std::span<const PassId> RenderingPassContainer::getPasses(RenderingPassId render
 const PassDefinition& RenderingPassContainer::getPassDefinition(RenderingPassId rendering_pass_id, size_t pass_index) const {
     const auto& pass = rendering_passes.get(rendering_pass_id);
     return pass.definition.passes[pass_index];
-}
-
-size_t RenderingPassContainer::getPassCount(RenderingPassId rendering_pass_id) const {
-    const auto& pass = rendering_passes.get(rendering_pass_id);
-    return pass.definition.passes.size();
 }
 
 } // namespace Pelican

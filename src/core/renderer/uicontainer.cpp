@@ -1,5 +1,6 @@
 #include "uicontainer.hpp"
 #include "../log.hpp"
+#include "../loader/basicconfig.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/util.hpp"
 #include <filesystem>
@@ -104,7 +105,7 @@ UIContainer::UIContainer()
 
     // JSON設定からUI画像を読み込む
     try {
-        const std::string json_path = "ui_overlay.json";
+        const std::string json_path = GET_MODULE(ProjectBasicConfig).uiConfigJson();
         if (std::filesystem::exists(json_path)) {
             std::ifstream ifs(json_path, std::ios::binary);
             const std::string data((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
@@ -143,7 +144,7 @@ UIContainer::UIContainer()
                 }
             }
         } else {
-            LOG_WARNING(logger, "ui_overlay.json not found. UI overlay will be skipped.");
+            LOG_WARNING(logger, "UI config JSON not found: {}. UI overlay will be skipped.", json_path);
         }
     } catch (const std::exception &e) {
         LOG_WARNING(logger, "UI config load failed: {}", e.what());

@@ -17,6 +17,19 @@ VulkanUtils::VulkanUtils()
       genpurpose_cmd_bufs{vectorToArray<CommandBufWrapper, 8>(GET_MODULE(VulkanManageCore).allocCmdBufs(8))},
       genpurpose_cmd_bufs_index{0} {}
 
+static vk::ImageAspectFlags aspectMaskForFormat(vk::Format format) {
+    switch (format) {
+    case vk::Format::eD16Unorm:
+    case vk::Format::eD32Sfloat:
+        return vk::ImageAspectFlagBits::eDepth;
+    case vk::Format::eD24UnormS8Uint:
+    case vk::Format::eD32SfloatS8Uint:
+        return vk::ImageAspectFlagBits::eDepth | vk::ImageAspectFlagBits::eStencil;
+    default:
+        return vk::ImageAspectFlagBits::eColor;
+    }
+}
+
 static void changeImageLayoutCommand(vk::CommandBuffer cmd_buf, const ImageWrapper &image, vk::ImageLayout old_layout,
                                      vk::ImageLayout new_layout, const VulkanUtils::ChangeImageLayoutInfo &info) {
     vk::ImageMemoryBarrier barrior;
@@ -25,7 +38,7 @@ static void changeImageLayoutCommand(vk::CommandBuffer cmd_buf, const ImageWrapp
     barrior.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrior.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrior.image = image.image.get();
-    barrior.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
+    barrior.subresourceRange.aspectMask = aspectMaskForFormat(image.format);
     barrior.subresourceRange.baseMipLevel = 0;
     barrior.subresourceRange.levelCount = 1;
     barrior.subresourceRange.baseArrayLayer = 0;

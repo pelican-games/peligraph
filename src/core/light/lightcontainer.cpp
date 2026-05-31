@@ -1,5 +1,6 @@
 #include "lightcontainer.hpp"
 #include "../vkcore/core.hpp"
+#include <algorithm>
 #include <nlohmann/json.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -20,17 +21,16 @@ namespace Pelican
 		}
 	}
 
-	LightContainer::LightContainer()
-	{
-		Init();
-	}
-
 	LightContainer::~LightContainer()
 	{
-		Terminate();
 	}
 
-	void LightContainer::Init()
+	void LightContainer::bindResource(vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout, uint32_t set_number) const
+	{
+		cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout, set_number, {m_DescriptorSet.get()}, {});
+	}
+
+	LightContainer::LightContainer()
 	{
 		auto& vkcore = GET_MODULE(VulkanManageCore);
 		auto device = vkcore.getDevice();
@@ -79,12 +79,7 @@ namespace Pelican
 		device.updateDescriptorSets(descriptorWrite, nullptr);
 	}
 
-	void LightContainer::Terminate()
-	{
-		// vk::Unique handles will automatically clean up resources.
-	}
-
-	void LightContainer::Load(const nlohmann::json& json)
+	void LightContainer::load(const nlohmann::json& json)
 	{
 		if (json.find("lights") == json.end())
 		{
@@ -172,7 +167,7 @@ namespace Pelican
 										m_OriginalDirectionalLights = m_DirectionalLights;
 										m_OriginalPointLights = m_PointLights;
 										m_OriginalSpotLights = m_SpotLights;
-									}		    DirectionalLight* LightContainer::GetLight(const std::string& name)
+									}		    DirectionalLight* LightContainer::getLight(const std::string& name)
 		    {
 		        auto it = m_LightNameMap.find(name);
 		        if (it != m_LightNameMap.end())
@@ -182,7 +177,7 @@ namespace Pelican
 		        return nullptr;
 		    }
 		
-		    	PointLight* LightContainer::GetPointLight(const std::string& name)
+	PointLight* LightContainer::getPointLight(const std::string& name)
 		    	{
 		    		auto it = m_PointLightNameMap.find(name);
 		    		if (it != m_PointLightNameMap.end())
@@ -192,7 +187,7 @@ namespace Pelican
 		    		return nullptr;
 		    	}
 		
-		    	SpotLight* LightContainer::GetSpotLight(const std::string& name)
+	SpotLight* LightContainer::getSpotLight(const std::string& name)
 		    	{
 		    		auto it = m_SpotLightNameMap.find(name);
 		    		if (it != m_SpotLightNameMap.end())
@@ -202,10 +197,10 @@ namespace Pelican
 		    		return nullptr;
 		    	}   
 		
-		    	void LightContainer::UpdateAnimation(float time)
+	void LightContainer::updateAnimation(float time)
 		    	{
 		    		// Rotate the key light
-		    		if (DirectionalLight* keyLight = GetLight("KeyLight"))
+		if (DirectionalLight* keyLight = getLight("KeyLight"))
 		    		{
 		    			auto it = m_LightNameMap.find("KeyLight");
 		    			if (it != m_LightNameMap.end())
@@ -217,7 +212,7 @@ namespace Pelican
 		    		}
 		
 		    		// Make the fill light blink
-		    		if (DirectionalLight* fillLight = GetLight("FillLight"))
+		if (DirectionalLight* fillLight = getLight("FillLight"))
 		    		{
 		    			auto it = m_LightNameMap.find("FillLight");
 		    			if (it != m_LightNameMap.end())
@@ -228,7 +223,7 @@ namespace Pelican
 		    		}
 		
 		    		// Orbit a point light
-		    		if (PointLight* pointLight = GetPointLight("PointLight1"))
+		if (PointLight* pointLight = getPointLight("PointLight1"))
 		    		{
 		    			auto it = m_PointLightNameMap.find("PointLight1");
 		    			if (it != m_PointLightNameMap.end())
@@ -239,7 +234,7 @@ namespace Pelican
 		    			}
 		    		}
 		    		// Swing a spotlight
-		    		if (SpotLight* spotLight = GetSpotLight("SpotLight1"))
+		if (SpotLight* spotLight = getSpotLight("SpotLight1"))
 		    		{
 		    			auto it = m_SpotLightNameMap.find("SpotLight1");
 		    			if (it != m_SpotLightNameMap.end())
@@ -251,25 +246,28 @@ namespace Pelican
 		    		}
 		    	}
 		
-		    	void LightContainer::Update()
+	void LightContainer::update()
 		    	{
 		    		LightUBO ubo{};
-		    		ubo.directionalLightCount = static_cast<uint32_t>(m_DirectionalLights.size());
-		    		for (size_t i = 0; i < m_DirectionalLights.size() && i < MAX_DIRECTIONAL_LIGHTS; ++i)
+                ubo.directionalLightCount =
+                    std::min<uint32_t>(static_cast<uint32_t>(m_DirectionalLights.size()), MAX_DIRECTIONAL_LIGHTS);
+                for (size_t i = 0; i < ubo.directionalLightCount; ++i)
 		    		{
 		    			ubo.directionalLights[i].direction = m_DirectionalLights[i].direction;
 		    			ubo.directionalLights[i].intensity = m_DirectionalLights[i].intensity;
 		    			ubo.directionalLights[i].color = m_DirectionalLights[i].color;
 		    		}
-		    		ubo.pointLightCount = static_cast<uint32_t>(m_PointLights.size());
-		    		for (size_t i = 0; i < m_PointLights.size() && i < MAX_POINT_LIGHTS; ++i)
+                ubo.pointLightCount =
+                    std::min<uint32_t>(static_cast<uint32_t>(m_PointLights.size()), MAX_POINT_LIGHTS);
+                for (size_t i = 0; i < ubo.pointLightCount; ++i)
 		    		{
 		    			ubo.pointLights[i].position = m_PointLights[i].position;
 		    			ubo.pointLights[i].intensity = m_PointLights[i].intensity;
 		    			ubo.pointLights[i].color = m_PointLights[i].color;
 		    		}
-		    		ubo.spotLightCount = static_cast<uint32_t>(m_SpotLights.size());
-		    		for (size_t i = 0; i < m_SpotLights.size() && i < MAX_SPOT_LIGHTS; ++i)
+                ubo.spotLightCount =
+                    std::min<uint32_t>(static_cast<uint32_t>(m_SpotLights.size()), MAX_SPOT_LIGHTS);
+                for (size_t i = 0; i < ubo.spotLightCount; ++i)
 		    		{
 		    			ubo.spotLights[i].position = m_SpotLights[i].position;
 		    			ubo.spotLights[i].direction = m_SpotLights[i].direction;
