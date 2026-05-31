@@ -10,6 +10,7 @@
 #include <fstream>
 #include <limits>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
@@ -344,6 +345,31 @@ void validatePassTargetUsage(const PassDefinition &pass_def, RenderTargetContain
     }
 }
 
+void validatePassOutputExtents(const PassDefinition &pass_def, RenderTargetContainer &rt_container) {
+    std::optional<vk::Extent3D> expected_extent;
+
+    const auto check_extent = [&](const auto &rt) {
+        if (!expected_extent.has_value()) {
+            expected_extent = rt.image.extent;
+            return;
+        }
+        if (rt.image.extent.width != expected_extent->width ||
+            rt.image.extent.height != expected_extent->height) {
+            throw std::runtime_error("Pass output target extent mismatch: " + rt.name +
+                                     " in pass: " + pass_def.name);
+        }
+    };
+
+    for (const auto &rt_id : pass_def.output_color) {
+        if (rt_id.value >= 0) {
+            check_extent(rt_container.get(rt_id));
+        }
+    }
+    if (pass_def.output_depth.value >= 0) {
+        check_extent(rt_container.get(pass_def.output_depth));
+    }
+}
+
 void validateMaterialPassAttachments(const PassDefinition &pass_def, RenderTargetContainer &rt_container) {
     if (!pass_def.isMaterial()) {
         return;
@@ -553,6 +579,7 @@ PassDefinition parsePassDefinition(const nlohmann::json &pass_json, RenderTarget
     }
     validatePassInputs(pass_def);
     validatePassTargetUsage(pass_def, rt_container);
+    validatePassOutputExtents(pass_def, rt_container);
     validateMaterialPassAttachments(pass_def, rt_container);
 
     if (pass_json.contains("clear_color")) {
