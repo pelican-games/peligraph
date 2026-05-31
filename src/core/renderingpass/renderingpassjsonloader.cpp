@@ -259,6 +259,36 @@ void validatePassInputs(const PassDefinition &pass_def) {
     }
 }
 
+void validatePassTargetUsage(const PassDefinition &pass_def, RenderTargetContainer &rt_container) {
+    for (const auto &rt_id : pass_def.output_color) {
+        if (rt_id.value < 0) {
+            continue;
+        }
+
+        const auto &rt = rt_container.get(rt_id);
+        if (!(rt.usage & vk::ImageUsageFlagBits::eColorAttachment)) {
+            throw std::runtime_error("Color output target missing COLOR_ATTACHMENT usage: " + rt.name +
+                                     " in pass: " + pass_def.name);
+        }
+    }
+
+    if (pass_def.output_depth.value >= 0) {
+        const auto &rt = rt_container.get(pass_def.output_depth);
+        if (!(rt.usage & vk::ImageUsageFlagBits::eDepthStencilAttachment)) {
+            throw std::runtime_error("Depth output target missing DEPTH_STENCIL_ATTACHMENT usage: " + rt.name +
+                                     " in pass: " + pass_def.name);
+        }
+    }
+
+    for (const auto &rt_id : pass_def.input_targets) {
+        const auto &rt = rt_container.get(rt_id);
+        if (!(rt.usage & vk::ImageUsageFlagBits::eSampled)) {
+            throw std::runtime_error("Input target missing SAMPLED usage: " + rt.name + " in pass: " +
+                                     pass_def.name);
+        }
+    }
+}
+
 void validatePassOutputs(const PassDefinition &pass_def) {
     if (pass_def.output_color.empty() && pass_def.output_depth.value < 0) {
         throw std::runtime_error("Pass must output color or depth: " + pass_def.name);
@@ -378,6 +408,7 @@ PassDefinition parsePassDefinition(const nlohmann::json &pass_json, RenderTarget
         pass_def.input_targets = parseInputTargets(rt_container, pass_json.at("input"));
     }
     validatePassInputs(pass_def);
+    validatePassTargetUsage(pass_def, rt_container);
 
     if (pass_json.contains("clear_color")) {
         pass_def.clear_color = jsonToClearColor(pass_json.at("clear_color"));

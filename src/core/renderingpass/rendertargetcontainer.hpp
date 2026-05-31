@@ -14,6 +14,7 @@ DECLARE_MODULE(RenderTargetContainer) {
 
     struct InternalRenderTarget {
         std::string name;
+        vk::ImageUsageFlags usage;
         ImageWrapper image;
         vk::UniqueImageView image_view;
     };

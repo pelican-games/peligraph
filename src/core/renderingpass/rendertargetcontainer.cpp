@@ -75,6 +75,7 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
     // 登録
     GlobalRenderTargetId id = render_targets.reg(InternalRenderTarget{
         .name = name,
+        .usage = usage,
         .image = std::move(image),
         .image_view = std::move(image_view),
     });
