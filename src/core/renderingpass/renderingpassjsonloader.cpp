@@ -267,6 +267,7 @@ std::vector<GlobalRenderTargetId> parseColorOutputs(RenderTargetContainer &rt_co
             throw std::runtime_error("Color output must be a render target name");
         }
         const std::string color_name = color_name_json;
+        validateName(color_name, "Color output target");
         if (color_name == "swapchain") {
             output_color.push_back(GlobalRenderTargetId{-2});
         } else {
@@ -284,7 +285,12 @@ GlobalRenderTargetId parseDepthOutput(RenderTargetContainer &rt_container, const
         throw std::runtime_error("Depth output must be null or a render target name");
     }
 
-    return resolveRenderTarget(rt_container, depth_output.get<std::string>(), "Depth");
+    const std::string depth_name = depth_output.get<std::string>();
+    validateName(depth_name, "Depth output target");
+    if (depth_name == "swapchain") {
+        throw std::runtime_error("Depth output target cannot be swapchain");
+    }
+    return resolveRenderTarget(rt_container, depth_name, "Depth");
 }
 
 std::vector<GlobalRenderTargetId> parseInputTargets(RenderTargetContainer &rt_container,
@@ -302,6 +308,10 @@ std::vector<GlobalRenderTargetId> parseInputTargets(RenderTargetContainer &rt_co
             throw std::runtime_error("Input target must be a render target name");
         }
         const std::string input_name = input_name_json.get<std::string>();
+        validateName(input_name, "Input target");
+        if (input_name == "swapchain") {
+            throw std::runtime_error("Input target cannot be swapchain");
+        }
         input_targets.push_back(resolveRenderTarget(rt_container, input_name, "Input"));
     }
     return input_targets;
