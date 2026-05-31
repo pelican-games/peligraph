@@ -250,7 +250,7 @@ void FullscreenPassContainer::setInputTextures(PassId pass_id, const std::vector
     
     for (uint32_t i = 0; i < input_rts.size(); ++i) {
         const auto& rt_id = input_rts[i];
-        if (rt_id.value < 0) {
+        if (!isConcreteRenderTarget(rt_id)) {
             throw std::runtime_error("Fullscreen pass input texture must be a render target");
         }
         

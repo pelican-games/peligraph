@@ -43,7 +43,7 @@ VulkanUtils::ChangeImageLayoutInfo makeTransitionInfo(vk::ImageLayout old_layout
 void RenderTargetLayoutTracker::transition(vk::CommandBuffer cmd_buf, RenderTargetContainer &rt_container,
                                            VulkanUtils &vk_utils, GlobalRenderTargetId rt_id,
                                            vk::ImageLayout new_layout) {
-    if (rt_id.value < 0) {
+    if (isSpecialRenderTarget(rt_id)) {
         return;
     }
 

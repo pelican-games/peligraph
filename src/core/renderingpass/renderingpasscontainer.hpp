@@ -38,7 +38,7 @@ struct UiPassInfo {};
 using PassInfo = std::variant<MaterialPassInfo, FullscreenPassInfo, UiPassInfo>;
 
 struct PassDefinition {
-    PassDefinition() : output_depth{-1} {}
+    PassDefinition() : output_depth{noRenderTargetId()} {}
 
     std::string name;
 

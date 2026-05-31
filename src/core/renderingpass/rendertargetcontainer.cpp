@@ -88,7 +88,7 @@ GlobalRenderTargetId RenderTargetContainer::getRenderTargetIdByName(const std::s
     if (auto it = name_to_id.find(name); it != name_to_id.end()) {
         return it->second;
     }
-    return GlobalRenderTargetId{-1};
+    return noRenderTargetId();
 }
 
 } // namespace Pelican

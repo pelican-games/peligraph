@@ -24,7 +24,7 @@ GlobalShaderId registerShaderFromFile(ShaderContainer &shader_container, const s
 GlobalRenderTargetId resolveRenderTarget(RenderTargetContainer &rt_container, const std::string &name,
                                          const std::string &role) {
     const auto rt_id = rt_container.getRenderTargetIdByName(name);
-    if (rt_id.value < 0) {
+    if (!isConcreteRenderTarget(rt_id)) {
         throw std::runtime_error(role + " render target not found: " + name);
     }
     return rt_id;
@@ -94,7 +94,7 @@ std::vector<GlobalRenderTargetId> parseColorOutputs(RenderTargetContainer &rt_co
         const std::string color_name = color_name_json;
         validateName(color_name, "Color output target");
         if (color_name == "swapchain") {
-            output_color.push_back(GlobalRenderTargetId{-2});
+            output_color.push_back(swapchainRenderTargetId());
         } else {
             output_color.push_back(resolveRenderTarget(rt_container, color_name, "Color"));
         }
@@ -104,7 +104,7 @@ std::vector<GlobalRenderTargetId> parseColorOutputs(RenderTargetContainer &rt_co
 
 GlobalRenderTargetId parseDepthOutput(RenderTargetContainer &rt_container, const nlohmann::json &depth_output) {
     if (depth_output.is_null()) {
-        return GlobalRenderTargetId{-1};
+        return noRenderTargetId();
     }
     if (!depth_output.is_string()) {
         throw std::runtime_error("Depth output must be null or a render target name");

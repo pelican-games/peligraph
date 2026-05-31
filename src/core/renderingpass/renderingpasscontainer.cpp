@@ -33,7 +33,7 @@ RenderingPassId RenderingPassContainer::registerRenderingPass(const RenderingPas
 
             vk::Format color_fmt{};
             const auto &first_color = pass_def.output_color[0];
-            if (first_color.value >= 0) {
+            if (isConcreteRenderTarget(first_color)) {
                 color_fmt = rt_container.get(first_color).image.format;
             } else {
                 color_fmt = rt_module.getSwapchainFormat();

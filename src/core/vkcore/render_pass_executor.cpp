@@ -14,12 +14,12 @@ namespace {
 vk::Extent2D getTargetExtent(const FrameRenderContext &frame, const PassDefinition &pass_def,
                              RenderTargetContainer &rt_container) {
     for (const auto &rt_id : pass_def.output_color) {
-        if (rt_id.value >= 0) {
+        if (isConcreteRenderTarget(rt_id)) {
             const auto &output_rt = rt_container.get(rt_id);
             return vk::Extent2D{output_rt.image.extent.width, output_rt.image.extent.height};
         }
     }
-    if (pass_def.output_depth.value >= 0) {
+    if (isConcreteRenderTarget(pass_def.output_depth)) {
         const auto &output_rt = rt_container.get(pass_def.output_depth);
         return vk::Extent2D{output_rt.image.extent.width, output_rt.image.extent.height};
     }
@@ -52,7 +52,7 @@ std::vector<vk::RenderingAttachmentInfo> createColorAttachments(const FrameRende
 
     for (const auto &rt_id : pass_def.output_color) {
         vk::RenderingAttachmentInfo color_att;
-        if (rt_id.value < 0) {
+        if (isSwapchainRenderTarget(rt_id)) {
             color_att.imageView = frame.color_attachment;
         } else {
             color_att.imageView = rt_container.get(rt_id).image_view.get();
@@ -140,7 +140,7 @@ void RenderPassExecutor::execute(const FrameRenderContext &frame, const PassDefi
         }
 
         const auto rt_id = pass_def.output_color.front();
-        const bool targets_swapchain = rt_id.value < 0;
+        const bool targets_swapchain = isSwapchainRenderTarget(rt_id);
         const auto &rt_module = GET_MODULE(RenderTarget);
         const vk::ImageView target_view = targets_swapchain ? frame.color_attachment
                                                             : rt_container.get(rt_id).image_view.get();
@@ -160,7 +160,7 @@ void RenderPassExecutor::execute(const FrameRenderContext &frame, const PassDefi
     render_info.setColorAttachments(color_attachments);
 
     vk::RenderingAttachmentInfo depth_attachment;
-    if (pass_def.output_depth.value >= 0) {
+    if (isConcreteRenderTarget(pass_def.output_depth)) {
         depth_attachment = createDepthAttachment(pass_def, rt_container);
         render_info.pDepthAttachment = &depth_attachment;
     }

@@ -26,7 +26,7 @@ void validatePassInputs(const PassDefinition &pass_def) {
 
 void validatePassTargetUsage(const PassDefinition &pass_def, RenderTargetContainer &rt_container) {
     for (const auto &rt_id : pass_def.output_color) {
-        if (rt_id.value < 0) {
+        if (isSpecialRenderTarget(rt_id)) {
             continue;
         }
 
@@ -37,7 +37,7 @@ void validatePassTargetUsage(const PassDefinition &pass_def, RenderTargetContain
         }
     }
 
-    if (pass_def.output_depth.value >= 0) {
+    if (isConcreteRenderTarget(pass_def.output_depth)) {
         const auto &rt = rt_container.get(pass_def.output_depth);
         if (!(rt.usage & vk::ImageUsageFlagBits::eDepthStencilAttachment)) {
             throw std::runtime_error("Depth output target missing DEPTH_STENCIL_ATTACHMENT usage: " + rt.name +
@@ -57,7 +57,7 @@ void validatePassTargetUsage(const PassDefinition &pass_def, RenderTargetContain
 namespace {
 
 std::string renderTargetDisplayName(GlobalRenderTargetId rt_id, RenderTargetContainer &rt_container) {
-    if (rt_id.value < 0) {
+    if (isSwapchainRenderTarget(rt_id)) {
         return "swapchain";
     }
     return rt_container.get(rt_id).name;
@@ -94,11 +94,11 @@ void validatePassOutputExtents(const PassDefinition &pass_def, RenderTargetConta
     };
 
     for (const auto &rt_id : pass_def.output_color) {
-        if (rt_id.value >= 0) {
+        if (isConcreteRenderTarget(rt_id)) {
             check_extent(rt_container.get(rt_id));
         }
     }
-    if (pass_def.output_depth.value >= 0) {
+    if (isConcreteRenderTarget(pass_def.output_depth)) {
         check_extent(rt_container.get(pass_def.output_depth));
     }
 }
@@ -111,13 +111,13 @@ void validateMaterialPassAttachments(const PassDefinition &pass_def, RenderTarge
     if (pass_def.output_color.size() != materialPassColorAttachmentFormats.size()) {
         throw std::runtime_error("Material pass requires exactly five color outputs: " + pass_def.name);
     }
-    if (pass_def.output_depth.value < 0) {
+    if (!isConcreteRenderTarget(pass_def.output_depth)) {
         throw std::runtime_error("Material pass requires depth output: " + pass_def.name);
     }
 
     for (size_t i = 0; i < pass_def.output_color.size(); ++i) {
         const auto rt_id = pass_def.output_color[i];
-        if (rt_id.value < 0) {
+        if (isSpecialRenderTarget(rt_id)) {
             throw std::runtime_error("Material pass does not support swapchain color output: " + pass_def.name);
         }
 
@@ -136,7 +136,7 @@ void validateMaterialPassAttachments(const PassDefinition &pass_def, RenderTarge
 }
 
 void validatePassOutputs(const PassDefinition &pass_def) {
-    if (pass_def.output_color.empty() && pass_def.output_depth.value < 0) {
+    if (pass_def.output_color.empty() && !isConcreteRenderTarget(pass_def.output_depth)) {
         throw std::runtime_error("Pass must output color or depth: " + pass_def.name);
     }
 
@@ -144,7 +144,7 @@ void validatePassOutputs(const PassDefinition &pass_def) {
         if (pass_def.output_color.size() != 1) {
             throw std::runtime_error("Fullscreen pass requires exactly one color output: " + pass_def.name);
         }
-        if (pass_def.output_depth.value >= 0) {
+        if (isConcreteRenderTarget(pass_def.output_depth)) {
             throw std::runtime_error("Fullscreen pass does not support depth output: " + pass_def.name);
         }
     }
@@ -153,7 +153,7 @@ void validatePassOutputs(const PassDefinition &pass_def) {
         if (pass_def.output_color.size() != 1) {
             throw std::runtime_error("UI pass requires exactly one color output: " + pass_def.name);
         }
-        if (pass_def.output_depth.value >= 0) {
+        if (isConcreteRenderTarget(pass_def.output_depth)) {
             throw std::runtime_error("UI pass does not support depth output: " + pass_def.name);
         }
     }
@@ -195,7 +195,7 @@ void validatePassInputsProduced(const PassDefinition &pass_def,
 
 void recordPassOutputs(const PassDefinition &pass_def, ProducedColorTargetSet &produced_color_targets) {
     for (const auto &rt_id : pass_def.output_color) {
-        if (rt_id.value >= 0) {
+        if (isConcreteRenderTarget(rt_id)) {
             produced_color_targets.insert(rt_id);
         }
     }

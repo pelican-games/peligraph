@@ -20,7 +20,7 @@ bool outputsToSwapchain(const RenderingPassContainer &pass_container, RenderingP
     for (size_t i = 0; i < passes.size(); ++i) {
         const auto &pass_def = pass_container.getPassDefinition(rendering_pass_id, i);
         for (const auto &rt_id : pass_def.output_color) {
-            if (rt_id.value < 0) {
+            if (isSwapchainRenderTarget(rt_id)) {
                 return true;
             }
         }
