@@ -19,6 +19,15 @@ namespace Pelican {
 
 namespace {
 
+constexpr std::array<vk::Format, 5> materialPassColorFormats = {
+    vk::Format::eB8G8R8A8Unorm,
+    vk::Format::eR16G16B16A16Sfloat,
+    vk::Format::eR8G8B8A8Unorm,
+    vk::Format::eR16G16B16A16Sfloat,
+    vk::Format::eR8G8B8A8Unorm,
+};
+constexpr vk::Format materialPassDepthFormat = vk::Format::eD32Sfloat;
+
 vk::Format stringToFormat(const std::string &format_str) {
     static const std::unordered_map<std::string, vk::Format> format_map = {
         {"B8G8R8A8_UNORM", vk::Format::eB8G8R8A8Unorm},
@@ -343,6 +352,38 @@ void validatePassTargetUsage(const PassDefinition &pass_def, RenderTargetContain
     }
 }
 
+void validateMaterialPassAttachments(const PassDefinition &pass_def, RenderTargetContainer &rt_container) {
+    if (!pass_def.isMaterial()) {
+        return;
+    }
+
+    if (pass_def.output_color.size() != materialPassColorFormats.size()) {
+        throw std::runtime_error("Material pass requires exactly five color outputs: " + pass_def.name);
+    }
+    if (pass_def.output_depth.value < 0) {
+        throw std::runtime_error("Material pass requires depth output: " + pass_def.name);
+    }
+
+    for (size_t i = 0; i < pass_def.output_color.size(); ++i) {
+        const auto rt_id = pass_def.output_color[i];
+        if (rt_id.value < 0) {
+            throw std::runtime_error("Material pass does not support swapchain color output: " + pass_def.name);
+        }
+
+        const auto &rt = rt_container.get(rt_id);
+        if (rt.image.format != materialPassColorFormats[i]) {
+            throw std::runtime_error("Material pass color output format mismatch: " + rt.name + " in pass: " +
+                                     pass_def.name);
+        }
+    }
+
+    const auto &depth_rt = rt_container.get(pass_def.output_depth);
+    if (depth_rt.image.format != materialPassDepthFormat) {
+        throw std::runtime_error("Material pass depth output format mismatch: " + depth_rt.name +
+                                 " in pass: " + pass_def.name);
+    }
+}
+
 void validatePassOutputs(const PassDefinition &pass_def) {
     if (pass_def.output_color.empty() && pass_def.output_depth.value < 0) {
         throw std::runtime_error("Pass must output color or depth: " + pass_def.name);
@@ -520,6 +561,7 @@ PassDefinition parsePassDefinition(const nlohmann::json &pass_json, RenderTarget
     }
     validatePassInputs(pass_def);
     validatePassTargetUsage(pass_def, rt_container);
+    validateMaterialPassAttachments(pass_def, rt_container);
 
     if (pass_json.contains("clear_color")) {
         pass_def.clear_color = jsonToClearColor(pass_json.at("clear_color"));
