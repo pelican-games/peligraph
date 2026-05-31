@@ -13,8 +13,14 @@ namespace {
 
 vk::Extent2D getTargetExtent(const FrameRenderContext &frame, const PassDefinition &pass_def,
                              RenderTargetContainer &rt_container) {
-    if (!pass_def.output_color.empty() && pass_def.output_color[0].value >= 0) {
-        const auto &output_rt = rt_container.get(pass_def.output_color[0]);
+    for (const auto &rt_id : pass_def.output_color) {
+        if (rt_id.value >= 0) {
+            const auto &output_rt = rt_container.get(rt_id);
+            return vk::Extent2D{output_rt.image.extent.width, output_rt.image.extent.height};
+        }
+    }
+    if (pass_def.output_depth.value >= 0) {
+        const auto &output_rt = rt_container.get(pass_def.output_depth);
         return vk::Extent2D{output_rt.image.extent.width, output_rt.image.extent.height};
     }
     return frame.extent;
