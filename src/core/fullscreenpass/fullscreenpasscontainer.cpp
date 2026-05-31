@@ -1,11 +1,14 @@
 #include "fullscreenpasscontainer.hpp"
 #include "fullscreenpass_push_constants.hpp"
-#include "../vkcore/core.hpp"
-#include "../vkcore/util.hpp"
+#include "../light/lightcontainer.hpp"
 #include "../material/materialcontainer.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
-#include "../light/lightcontainer.hpp"
+#include "../vkcore/core.hpp"
+#include "../vkcore/util.hpp"
+#include <span>
 #include <stdexcept>
+#include <utility>
+#include <vector>
 
 namespace Pelican {
 
@@ -20,10 +23,7 @@ uint32_t requireFullscreenPipelineValue(PassId pass_id) {
     return static_cast<uint32_t>(pass_id.value);
 }
 
-} // namespace
-
-static vk::UniqueDescriptorSetLayout createInputDescSetLayout(vk::Device device, uint32_t maxInputs) {
-    // 複数のbindingを作成（最大maxInputs個）
+vk::UniqueDescriptorSetLayout createInputDescSetLayout(vk::Device device, uint32_t maxInputs) {
     std::vector<vk::DescriptorSetLayoutBinding> bindings(maxInputs);
     for (uint32_t i = 0; i < maxInputs; ++i) {
         bindings[i].binding = i;
@@ -31,15 +31,14 @@ static vk::UniqueDescriptorSetLayout createInputDescSetLayout(vk::Device device,
         bindings[i].descriptorCount = 1;
         bindings[i].stageFlags = vk::ShaderStageFlagBits::eFragment;
     }
-    
+
     vk::DescriptorSetLayoutCreateInfo ci{};
-    ci.bindingCount = maxInputs;
-    ci.pBindings = bindings.data();
+    ci.setBindings(bindings);
     return device.createDescriptorSetLayoutUnique(ci);
 }
 
-static vk::UniquePipelineLayout createDefaultPipelineLayout(vk::Device device,
-                                                            std::span<vk::DescriptorSetLayout> layouts) {
+vk::UniquePipelineLayout createDefaultPipelineLayout(vk::Device device,
+                                                     std::span<vk::DescriptorSetLayout> layouts) {
     vk::PushConstantRange push_constant_range;
     push_constant_range.stageFlags = vk::ShaderStageFlagBits::eFragment;
     push_constant_range.offset = 0;
@@ -51,22 +50,20 @@ static vk::UniquePipelineLayout createDefaultPipelineLayout(vk::Device device,
     return device.createPipelineLayoutUnique(create_info);
 }
 
-static vk::UniquePipeline createFullscreenPipeline(vk::Device device, vk::PipelineLayout layout,
-                                                   vk::Format colorFormat, vk::ShaderModule vertShader,
-                                                   vk::ShaderModule fragShader) {
+vk::UniquePipeline createFullscreenPipeline(vk::Device device, vk::PipelineLayout layout, vk::Format color_format,
+                                            vk::ShaderModule vert_shader, vk::ShaderModule frag_shader) {
     vk::PipelineShaderStageCreateInfo vert_stage;
     vert_stage.stage = vk::ShaderStageFlagBits::eVertex;
-    vert_stage.module = vertShader;
+    vert_stage.module = vert_shader;
     vert_stage.pName = "main";
-    
+
     vk::PipelineShaderStageCreateInfo frag_stage;
     frag_stage.stage = vk::ShaderStageFlagBits::eFragment;
-    frag_stage.module = fragShader;
+    frag_stage.module = frag_shader;
     frag_stage.pName = "main";
 
     const auto stages = {vert_stage, frag_stage};
 
-    // フルスクリーンクワッドは頂点バッファ不要
     vk::PipelineVertexInputStateCreateInfo vertex_input_info;
 
     vk::PipelineInputAssemblyStateCreateInfo input_assembly;
@@ -110,7 +107,7 @@ static vk::UniquePipeline createFullscreenPipeline(vk::Device device, vk::Pipeli
     dynamic_state_info.setDynamicStates(dynamic_states);
 
     vk::PipelineRenderingCreateInfo rendering_info;
-    rendering_info.setColorAttachmentFormats(colorFormat);
+    rendering_info.setColorAttachmentFormats(color_format);
 
     vk::GraphicsPipelineCreateInfo create_info;
     create_info.setStages(stages);
@@ -137,11 +134,11 @@ static vk::UniquePipeline createFullscreenPipeline(vk::Device device, vk::Pipeli
     return std::move(result.value);
 }
 
-static vk::UniqueDescriptorPool createDescPool(vk::Device device, uint32_t maxSets = 64) {
+vk::UniqueDescriptorPool createDescPool(vk::Device device, uint32_t maxSets = 64) {
     vk::DescriptorPoolSize poolSize{};
     poolSize.type = vk::DescriptorType::eCombinedImageSampler;
     poolSize.descriptorCount = maxSets * fullscreenInputBindingCount;
-    
+
     vk::DescriptorPoolCreateInfo ci{};
     ci.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
     ci.maxSets = maxSets;
@@ -150,7 +147,7 @@ static vk::UniqueDescriptorPool createDescPool(vk::Device device, uint32_t maxSe
     return device.createDescriptorPoolUnique(ci);
 }
 
-static vk::UniqueSampler createSampler(vk::Device device, vk::Filter filter) {
+vk::UniqueSampler createSampler(vk::Device device, vk::Filter filter) {
     vk::SamplerCreateInfo create_info;
     create_info.magFilter = filter;
     create_info.minFilter = filter;
@@ -170,36 +167,37 @@ static vk::UniqueSampler createSampler(vk::Device device, vk::Filter filter) {
     return device.createSamplerUnique(create_info);
 }
 
+} // namespace
+
 FullscreenPassContainer::FullscreenPassContainer()
     : device{GET_MODULE(VulkanManageCore).getDevice()},
       nearest_sampler{createSampler(device, vk::Filter::eNearest)},
       linear_sampler{createSampler(device, vk::Filter::eLinear)},
       desc_pool{createDescPool(device)} {
-    
-    auto& light_container = GET_MODULE(LightContainer);
+
+    auto &light_container = GET_MODULE(LightContainer);
 
     auto input_desc_layout = createInputDescSetLayout(device, fullscreenInputBindingCount);
 
-    std::vector<vk::DescriptorSetLayout> layouts = {
-        input_desc_layout.get(),
-        light_container.getDescriptorSetLayout()
-    };
-    
+    std::vector<vk::DescriptorSetLayout> layouts = {input_desc_layout.get(),
+                                                    light_container.getDescriptorSetLayout()};
+
     pipeline_layout = createDefaultPipelineLayout(device, layouts);
     descset_layouts.push_back(std::move(input_desc_layout));
 }
 
 FullscreenPassContainer::~FullscreenPassContainer() {}
 
-FullscreenPassContainer::PipelineId FullscreenPassContainer::registerFullscreenPass(vk::Format colorFormat, vk::ShaderModule vertShader,
-                                                           vk::ShaderModule fragShader) {
+FullscreenPassContainer::PipelineId
+FullscreenPassContainer::registerFullscreenPass(vk::Format colorFormat, vk::ShaderModule vertShader,
+                                                vk::ShaderModule fragShader) {
     PipelineId pipeline_id = {static_cast<uint32_t>(pipelines.size())};
-    
+
     pipelines.insert({
         pipeline_id,
         createFullscreenPipeline(device, pipeline_layout.get(), colorFormat, vertShader, fragShader)
     });
-    
+
     return pipeline_id;
 }
 
@@ -210,19 +208,17 @@ void FullscreenPassContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pas
         throw std::runtime_error("Fullscreen pipeline not found");
     }
 
-    // パイプラインをバインド
     cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, pit->second.get());
 
-    // ディスクリプタセットをバインド
     auto it = input_textures.find(pass_id.value);
     if (it != input_textures.end()) {
-        cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout.get(), 
-                                  0, it->second.descset.get(), {});
+        cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout.get(), 0,
+                                   it->second.descset.get(), {});
     }
 }
 
-void FullscreenPassContainer::setInputTextures(PassId pass_id, const std::vector<GlobalRenderTargetId>& input_rts) {
-    auto& rt_container = GET_MODULE(RenderTargetContainer);
+void FullscreenPassContainer::setInputTextures(PassId pass_id, const std::vector<GlobalRenderTargetId> &input_rts) {
+    auto &rt_container = GET_MODULE(RenderTargetContainer);
     const auto pipeline_id = PipelineId{requireFullscreenPipelineValue(pass_id)};
     if (pipelines.find(pipeline_id) == pipelines.end()) {
         throw std::runtime_error("Fullscreen pipeline not found");
@@ -231,37 +227,35 @@ void FullscreenPassContainer::setInputTextures(PassId pass_id, const std::vector
     if (input_rts.size() > fullscreenInputBindingCount) {
         throw std::runtime_error("Fullscreen pass has too many input textures");
     }
-    
-    // Descriptor set を作成
+
     vk::DescriptorSetLayout layout = descset_layouts[0].get();
-    
+
     vk::DescriptorSetAllocateInfo alloc_info;
     alloc_info.descriptorPool = desc_pool.get();
     alloc_info.descriptorSetCount = 1;
     alloc_info.pSetLayouts = &layout;
-    
+
     auto descsets = device.allocateDescriptorSetsUnique(alloc_info);
     auto descset = std::move(descsets[0]);
-    
-    // 各入力テクスチャをバインド
+
     std::vector<vk::WriteDescriptorSet> writes;
     std::vector<vk::DescriptorImageInfo> image_infos;
     image_infos.reserve(input_rts.size());
-    
+
     for (uint32_t i = 0; i < input_rts.size(); ++i) {
-        const auto& rt_id = input_rts[i];
+        const auto &rt_id = input_rts[i];
         if (!isConcreteRenderTarget(rt_id)) {
             throw std::runtime_error("Fullscreen pass input texture must be a render target");
         }
-        
-        const auto& rt = rt_container.get(rt_id);
-        
+
+        const auto &rt = rt_container.get(rt_id);
+
         vk::DescriptorImageInfo image_info;
         image_info.sampler = linear_sampler.get();
         image_info.imageView = rt.image_view.get();
         image_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
         image_infos.push_back(image_info);
-        
+
         vk::WriteDescriptorSet write;
         write.dstSet = descset.get();
         write.dstBinding = i;
@@ -271,10 +265,9 @@ void FullscreenPassContainer::setInputTextures(PassId pass_id, const std::vector
         write.pImageInfo = &image_infos.back();
         writes.push_back(write);
     }
-    
+
     device.updateDescriptorSets(writes, {});
-    
-    // 保存
+
     input_textures.emplace(pass_id.value, InputTextureInfo{
         std::move(descset),
         input_rts

@@ -41,9 +41,10 @@ void MaterialRenderer::render(vk::CommandBuffer cmd_buf, PassId pass_id) const {
 
     GlobalMaterialId current_material_id = invalidMaterialId();
     for (const auto &draw_call : draw_calls) {
-        if (!material_container.isRenderRequired(pass_id, draw_call.material))
+        if (!material_container.isRenderRequired(pass_id, draw_call.material)) {
             continue;
-        
+        }
+
         material_container.bindResource(cmd_buf, pass_id, draw_call.material, current_material_id);
         if (!isValidMaterialId(current_material_id)) {
             light_container.bindResource(cmd_buf, pipeline_layout, lightDescriptorSetNumber);
@@ -55,7 +56,7 @@ void MaterialRenderer::render(vk::CommandBuffer cmd_buf, PassId pass_id) const {
 }
 
 void MaterialRenderer::renderWithMaterialRange(vk::CommandBuffer cmd_buf, PassId pass_id,
-                                              uint32_t material_start, uint32_t material_count) const {
+                                               uint32_t material_start, uint32_t material_count) const {
     auto &instance_container = GET_MODULE(PolygonInstanceContainer);
     const auto &vert_buf_container = GET_MODULE(VertBufContainer);
     const auto &material_container = GET_MODULE(MaterialContainer);
@@ -77,20 +78,21 @@ void MaterialRenderer::renderWithMaterialRange(vk::CommandBuffer cmd_buf, PassId
 
     GlobalMaterialId current_material_id = invalidMaterialId();
     uint32_t material_index = 0;
-    
+
     for (const auto &draw_call : draw_calls) {
-        if (!material_container.isRenderRequired(pass_id, draw_call.material))
+        if (!material_container.isRenderRequired(pass_id, draw_call.material)) {
             continue;
-        
-        // material_count == 0の場合は全てをレンダリング
+        }
+
         if (material_count > 0) {
-            // 範囲チェック
-            if (material_index < material_start || material_index >= material_start + material_count) {
+            const bool outside_range = material_index < material_start ||
+                                       material_index - material_start >= material_count;
+            if (outside_range) {
                 material_index++;
                 continue;
             }
         }
-        
+
         material_container.bindResource(cmd_buf, pass_id, draw_call.material, current_material_id);
         if (!isValidMaterialId(current_material_id)) {
             light_container.bindResource(cmd_buf, pipeline_layout, lightDescriptorSetNumber);

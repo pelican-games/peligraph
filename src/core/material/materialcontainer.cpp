@@ -284,7 +284,6 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     auto descsets = device.allocateDescriptorSetsUnique(desc_alloc_info);
     auto &descset = descsets[0];
 
-    // テクスチャを先に取得してimage_infosを構築
     std::array<vk::DescriptorImageInfo, materialTextureBindingCount> image_infos{};
     
     // Base Color
@@ -385,7 +384,8 @@ void MaterialContainer::setModelMatBuf(const BufferWrapper &buf) {
 }
 
 bool MaterialContainer::isRenderRequired(PassId pass_id, GlobalMaterialId material) const {
-    return true; // TODO
+    // Pass-specific material filtering is not defined yet.
+    return true;
 }
 
 void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pass_id, GlobalMaterialId material_id,

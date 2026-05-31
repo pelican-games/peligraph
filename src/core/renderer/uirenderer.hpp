@@ -15,7 +15,6 @@ struct UiDrawRequest {
     vk::ClearColorValue clear_color;
 };
 
-// UI レンダリング実行モジュール
 DECLARE_MODULE(UiRenderer) {
     vk::Device device;
     vk::UniquePipelineLayout pipeline_layout;
