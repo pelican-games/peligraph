@@ -2,9 +2,18 @@
 #include "../log.hpp"
 #include "../renderer/camera.hpp"
 #include "core.hpp"
+#include <algorithm>
 #include <stdexcept>
 
 namespace Pelican {
+
+static uint32_t chooseSwapchainImageCount(const vk::SurfaceCapabilitiesKHR &surface_cap) {
+    uint32_t image_count = surface_cap.minImageCount + 1;
+    if (surface_cap.maxImageCount > 0) {
+        image_count = std::min(image_count, surface_cap.maxImageCount);
+    }
+    return image_count;
+}
 
 static SwapchainWithFmt createSwapchain(vk::Device device, const vk::PhysicalDevice &phys_device,
                                         vk::SurfaceKHR surface) {
@@ -17,6 +26,12 @@ static SwapchainWithFmt createSwapchain(vk::Device device, const vk::PhysicalDev
     const auto surface_cap = phys_device.getSurfaceCapabilitiesKHR(surface);
     auto surface_fmts = phys_device.getSurfaceFormatsKHR(surface);
     auto surface_presentmodes = phys_device.getSurfacePresentModesKHR(surface);
+    if (surface_fmts.empty()) {
+        throw std::runtime_error("No Vulkan surface formats available");
+    }
+    if (surface_presentmodes.empty()) {
+        throw std::runtime_error("No Vulkan present modes available");
+    }
 
     const auto pred_fmt = [](const vk::SurfaceFormatKHR &format1, const vk::SurfaceFormatKHR &format2) {
         const auto score_func = [](vk::SurfaceFormatKHR format) {
@@ -37,7 +52,7 @@ static SwapchainWithFmt createSwapchain(vk::Device device, const vk::PhysicalDev
     };
     std::stable_sort(surface_presentmodes.begin(), surface_presentmodes.end(), pred_mode);
 
-    create_info.minImageCount = surface_cap.minImageCount + 1;
+    create_info.minImageCount = chooseSwapchainImageCount(surface_cap);
     create_info.imageFormat = surface_fmts[0].format;
     create_info.imageColorSpace = surface_fmts[0].colorSpace;
     create_info.imageExtent = surface_cap.currentExtent;
