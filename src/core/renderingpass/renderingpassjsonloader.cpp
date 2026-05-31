@@ -63,6 +63,19 @@ PassInfo makePassInfo(const std::string &type_str) {
     throw std::runtime_error("Unknown pass type: " + type_str);
 }
 
+FullscreenPushConstantData stringToFullscreenPushConstantData(const std::string &data_str) {
+    if (data_str == "none") {
+        return FullscreenPushConstantData::eNone;
+    }
+    if (data_str == "camera_position") {
+        return FullscreenPushConstantData::eCameraPosition;
+    }
+    if (data_str == "projection_view") {
+        return FullscreenPushConstantData::eProjectionView;
+    }
+    throw std::runtime_error("Unknown fullscreen push constant data: " + data_str);
+}
+
 vk::AttachmentLoadOp stringToLoadOp(const std::string &op_str) {
     if (op_str == "Clear" || op_str == "clear") {
         return vk::AttachmentLoadOp::eClear;
@@ -198,8 +211,16 @@ void parseFullscreenInfo(PassDefinition &pass_def, const nlohmann::json &pass_js
     }
 
     auto &fullscreenInfo = pass_def.fullscreenInfo();
-    if (pass_json.contains("needs_projection_matrix") && pass_json.at("needs_projection_matrix").is_boolean()) {
-        fullscreenInfo.needs_projection_matrix = pass_json.at("needs_projection_matrix");
+    if (pass_json.contains("push_constants")) {
+        fullscreenInfo.push_constants =
+            stringToFullscreenPushConstantData(pass_json.at("push_constants").get<std::string>());
+    } else if (pass_json.contains("needs_projection_matrix") &&
+               pass_json.at("needs_projection_matrix").is_boolean() &&
+               pass_json.at("needs_projection_matrix").get<bool>()) {
+        fullscreenInfo.push_constants = FullscreenPushConstantData::eProjectionView;
+    } else if (pass_def.name == "lighting_pass") {
+        // Keep old project configs working until they declare push_constants explicitly.
+        fullscreenInfo.push_constants = FullscreenPushConstantData::eCameraPosition;
     }
     if (!pass_json.contains("shader")) {
         return;

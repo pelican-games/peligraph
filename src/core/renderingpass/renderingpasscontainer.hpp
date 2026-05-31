@@ -20,10 +20,16 @@ struct MaterialPassInfo {
     uint32_t material_count = 0;
 };
 
+enum class FullscreenPushConstantData {
+    eNone,
+    eCameraPosition,
+    eProjectionView,
+};
+
 struct FullscreenPassInfo {
     GlobalShaderId vert_shader;
     GlobalShaderId frag_shader;
-    bool needs_projection_matrix = false;
+    FullscreenPushConstantData push_constants = FullscreenPushConstantData::eNone;
 };
 
 struct UiPassInfo {};

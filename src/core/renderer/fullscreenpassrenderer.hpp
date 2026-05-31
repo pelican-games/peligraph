@@ -12,7 +12,7 @@ DECLARE_MODULE(FullscreenPassRenderer) {
     FullscreenPassRenderer();
     ~FullscreenPassRenderer();
 
-    void render(vk::CommandBuffer cmd_buf, PassId pass_id, const PassDefinition& pass_def) const;
+    void render(vk::CommandBuffer cmd_buf, PassId pass_id, const PassDefinition &pass_def) const;
 };
 
 } // namespace Pelican
