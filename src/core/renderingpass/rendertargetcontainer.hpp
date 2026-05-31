@@ -26,12 +26,13 @@ DECLARE_MODULE(RenderTargetContainer) {
     RenderTargetContainer();
     ~RenderTargetContainer();
 
-    GlobalRenderTargetId registerRenderTarget(const std::string& name, vk::Extent2D extent, vk::Format format, vk::ImageUsageFlags usage, vma::MemoryUsage memUsage);
+    GlobalRenderTargetId registerRenderTarget(const std::string &name, vk::Extent2D extent, vk::Format format,
+                                              vk::ImageUsageFlags usage, vma::MemoryUsage memUsage);
     GlobalRenderTargetId getRenderTargetIdByName(const std::string &name) const;
 
-    // 追加: 外部アクセス用アクセサ
-    const InternalRenderTarget& get(GlobalRenderTargetId id) const { return render_targets.get(id); }
-    InternalRenderTarget& get(GlobalRenderTargetId id) { return render_targets.get(id); }
+    // Accessors for render target resources owned by the container.
+    const InternalRenderTarget &get(GlobalRenderTargetId id) const { return render_targets.get(id); }
+    InternalRenderTarget &get(GlobalRenderTargetId id) { return render_targets.get(id); }
 };
 
 } // namespace Pelican
