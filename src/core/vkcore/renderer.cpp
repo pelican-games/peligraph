@@ -11,73 +11,12 @@
 #include "../light/lightcontainer.hpp"
 #include "core.hpp"
 #include "rendertarget.hpp"
-#include "util.hpp"
 #include "battery/embed.hpp"
 #include <filesystem>
 #include <cmath>
 #include <chrono>
-#include <unordered_map>
 
 namespace Pelican {
-
-namespace {
-
-using RenderTargetLayoutMap =
-    std::unordered_map<GlobalRenderTargetId, vk::ImageLayout, GlobalRenderTargetId::Hash>;
-
-VulkanUtils::ChangeImageLayoutInfo makeTransitionInfo(vk::ImageLayout old_layout, vk::ImageLayout new_layout) {
-    VulkanUtils::ChangeImageLayoutInfo info{
-        .src_stage = vk::PipelineStageFlagBits::eTopOfPipe,
-        .dst_stage = vk::PipelineStageFlagBits::eTopOfPipe,
-        .src_access = {},
-        .dst_access = {},
-    };
-
-    if (old_layout == vk::ImageLayout::eShaderReadOnlyOptimal) {
-        info.src_stage = vk::PipelineStageFlagBits::eFragmentShader;
-        info.src_access = vk::AccessFlagBits::eShaderRead;
-    } else if (old_layout == vk::ImageLayout::eColorAttachmentOptimal) {
-        info.src_stage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
-        info.src_access = vk::AccessFlagBits::eColorAttachmentWrite;
-    } else if (old_layout == vk::ImageLayout::eDepthAttachmentOptimal) {
-        info.src_stage = vk::PipelineStageFlagBits::eLateFragmentTests;
-        info.src_access = vk::AccessFlagBits::eDepthStencilAttachmentWrite;
-    }
-
-    if (new_layout == vk::ImageLayout::eShaderReadOnlyOptimal) {
-        info.dst_stage = vk::PipelineStageFlagBits::eFragmentShader;
-        info.dst_access = vk::AccessFlagBits::eShaderRead;
-    } else if (new_layout == vk::ImageLayout::eColorAttachmentOptimal) {
-        info.dst_stage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
-        info.dst_access = vk::AccessFlagBits::eColorAttachmentWrite;
-    } else if (new_layout == vk::ImageLayout::eDepthAttachmentOptimal) {
-        info.dst_stage = vk::PipelineStageFlagBits::eEarlyFragmentTests;
-        info.dst_access = vk::AccessFlagBits::eDepthStencilAttachmentWrite;
-    }
-
-    return info;
-}
-
-void transitionRenderTarget(vk::CommandBuffer cmd_buf, RenderTargetContainer& rt_container, VulkanUtils& vk_utils,
-                            RenderTargetLayoutMap& layouts, GlobalRenderTargetId rt_id,
-                            vk::ImageLayout new_layout) {
-    if (rt_id.value < 0) {
-        return;
-    }
-
-    auto [it, inserted] = layouts.try_emplace(rt_id, vk::ImageLayout::eUndefined);
-    const auto old_layout = it->second;
-    if (old_layout == new_layout) {
-        return;
-    }
-
-    const auto& rt = rt_container.get(rt_id);
-    vk_utils.changeImageLayoutCmd(cmd_buf, rt.image, old_layout, new_layout,
-                                  makeTransitionInfo(old_layout, new_layout));
-    it->second = new_layout;
-}
-
-} // namespace
 
 Renderer::Renderer() : device{GET_MODULE(VulkanManageCore).getDevice()} {
     auto& pass_container = GET_MODULE(RenderingPassContainer);
@@ -112,7 +51,6 @@ Renderer::~Renderer() {}
 
 void Renderer::render() {
     static auto start_time = std::chrono::high_resolution_clock::now();
-    static RenderTargetLayoutMap rt_layouts;
     
     auto &rt = GET_MODULE(RenderTarget);
     auto &mat_renderer = GET_MODULE(MaterialRenderer);
@@ -146,11 +84,11 @@ void Renderer::render() {
         }
 
         for (const auto& rt_id : pass_def.output_color) {
-            transitionRenderTarget(cmd_buf, rt_container, vk_utils, rt_layouts, rt_id,
-                                   vk::ImageLayout::eColorAttachmentOptimal);
+            render_target_layout_tracker.transition(cmd_buf, rt_container, vk_utils, rt_id,
+                                                    vk::ImageLayout::eColorAttachmentOptimal);
         }
-        transitionRenderTarget(cmd_buf, rt_container, vk_utils, rt_layouts, pass_def.output_depth,
-                               vk::ImageLayout::eDepthAttachmentOptimal);
+        render_target_layout_tracker.transition(cmd_buf, rt_container, vk_utils, pass_def.output_depth,
+                                                vk::ImageLayout::eDepthAttachmentOptimal);
 
         if (pass_def.type == PassType::eUi) {
             if (!pass_def.output_color.empty()) {
@@ -159,8 +97,8 @@ void Renderer::render() {
                                                               : rt_container.get(rt_id).image_view.get();
                 ui_renderer.render(cmd_buf, UiDrawRequest{target_view, target_extent});
                 for (const auto& output_rt_id : pass_def.output_color) {
-                    transitionRenderTarget(cmd_buf, rt_container, vk_utils, rt_layouts, output_rt_id,
-                                           vk::ImageLayout::eShaderReadOnlyOptimal);
+                    render_target_layout_tracker.transition(cmd_buf, rt_container, vk_utils, output_rt_id,
+                                                            vk::ImageLayout::eShaderReadOnlyOptimal);
                 }
             }
         } else {
@@ -229,8 +167,8 @@ void Renderer::render() {
             cmd_buf.endRendering();
 
             for (const auto& rt_id : pass_def.output_color) {
-                transitionRenderTarget(cmd_buf, rt_container, vk_utils, rt_layouts, rt_id,
-                                       vk::ImageLayout::eShaderReadOnlyOptimal);
+                render_target_layout_tracker.transition(cmd_buf, rt_container, vk_utils, rt_id,
+                                                        vk::ImageLayout::eShaderReadOnlyOptimal);
             }
         }
     }
