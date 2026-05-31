@@ -1,4 +1,5 @@
 #include "renderingpassjsonloader.hpp"
+#include "materialpassattachments.hpp"
 #include "renderingpasscontainer.hpp"
 #include "rendertargetcontainer.hpp"
 #include "../loader/basicconfig.hpp"
@@ -18,15 +19,6 @@
 namespace Pelican {
 
 namespace {
-
-constexpr std::array<vk::Format, 5> materialPassColorFormats = {
-    vk::Format::eB8G8R8A8Unorm,
-    vk::Format::eR16G16B16A16Sfloat,
-    vk::Format::eR8G8B8A8Unorm,
-    vk::Format::eR16G16B16A16Sfloat,
-    vk::Format::eR8G8B8A8Unorm,
-};
-constexpr vk::Format materialPassDepthFormat = vk::Format::eD32Sfloat;
 
 vk::Format stringToFormat(const std::string &format_str) {
     static const std::unordered_map<std::string, vk::Format> format_map = {
@@ -357,7 +349,7 @@ void validateMaterialPassAttachments(const PassDefinition &pass_def, RenderTarge
         return;
     }
 
-    if (pass_def.output_color.size() != materialPassColorFormats.size()) {
+    if (pass_def.output_color.size() != materialPassColorAttachmentFormats.size()) {
         throw std::runtime_error("Material pass requires exactly five color outputs: " + pass_def.name);
     }
     if (pass_def.output_depth.value < 0) {
@@ -371,14 +363,14 @@ void validateMaterialPassAttachments(const PassDefinition &pass_def, RenderTarge
         }
 
         const auto &rt = rt_container.get(rt_id);
-        if (rt.image.format != materialPassColorFormats[i]) {
+        if (rt.image.format != materialPassColorAttachmentFormats[i]) {
             throw std::runtime_error("Material pass color output format mismatch: " + rt.name + " in pass: " +
                                      pass_def.name);
         }
     }
 
     const auto &depth_rt = rt_container.get(pass_def.output_depth);
-    if (depth_rt.image.format != materialPassDepthFormat) {
+    if (depth_rt.image.format != materialPassDepthAttachmentFormat) {
         throw std::runtime_error("Material pass depth output format mismatch: " + depth_rt.name +
                                  " in pass: " + pass_def.name);
     }

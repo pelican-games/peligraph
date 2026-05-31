@@ -1,6 +1,7 @@
 #include "materialcontainer.hpp"
 #include "../light/lightcontainer.hpp"
 #include "../model/vertbufcontainer.hpp"
+#include "../renderingpass/materialpassattachments.hpp"
 #include "../shader/shadercontainer.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/util.hpp"
@@ -142,17 +143,9 @@ static vk::UniquePipeline createDefaultPipeline(vk::Device device, vk::PipelineL
     vk::PipelineDynamicStateCreateInfo dynamic_state_info;
     dynamic_state_info.setDynamicStates(dynamic_states);
 
-    const std::array<vk::Format, 5> color_formats = {
-        vk::Format::eB8G8R8A8Unorm,      // albedo
-        vk::Format::eR16G16B16A16Sfloat, // normal
-        vk::Format::eR8G8B8A8Unorm,      // material
-        vk::Format::eR16G16B16A16Sfloat, // worldpos
-        vk::Format::eR8G8B8A8Unorm,      // emissive
-    };
-
     vk::PipelineRenderingCreateInfo rendering_info;
-    rendering_info.setColorAttachmentFormats(color_formats);
-    rendering_info.depthAttachmentFormat = vk::Format::eD32Sfloat;
+    rendering_info.setColorAttachmentFormats(materialPassColorAttachmentFormats);
+    rendering_info.depthAttachmentFormat = materialPassDepthAttachmentFormat;
 
     vk::GraphicsPipelineCreateInfo create_info;
     create_info.setStages(stages);
