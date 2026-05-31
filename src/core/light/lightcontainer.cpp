@@ -81,6 +81,16 @@ namespace Pelican
 
 	void LightContainer::load(const nlohmann::json& json)
 	{
+		m_DirectionalLights.clear();
+		m_OriginalDirectionalLights.clear();
+		m_LightNameMap.clear();
+		m_PointLights.clear();
+		m_OriginalPointLights.clear();
+		m_PointLightNameMap.clear();
+		m_SpotLights.clear();
+		m_OriginalSpotLights.clear();
+		m_SpotLightNameMap.clear();
+
 		if (json.find("lights") == json.end())
 		{
 			return;
