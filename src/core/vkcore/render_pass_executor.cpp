@@ -1,5 +1,6 @@
 #include "render_pass_executor.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
+#include "../renderer/camera.hpp"
 #include "../renderer/fullscreenpassrenderer.hpp"
 #include "../renderer/materialrender.hpp"
 #include "../renderer/uirenderer.hpp"
@@ -93,8 +94,26 @@ void renderMaterialPass(vk::CommandBuffer cmd_buf, PassId pass_id, const PassDef
     }
 }
 
+FullscreenPassCameraData createFullscreenPassCameraData(FullscreenPushConstantData push_constants) {
+    FullscreenPassCameraData camera_data;
+    if (push_constants == FullscreenPushConstantData::eNone) {
+        return camera_data;
+    }
+
+    const auto &camera = GET_MODULE(Camera);
+    if (push_constants == FullscreenPushConstantData::eCameraPosition) {
+        camera_data.position = camera.getPos();
+    } else if (push_constants == FullscreenPushConstantData::eProjectionView) {
+        camera_data.projection = camera.getProjectionMatrix();
+        camera_data.view = camera.getViewMatrix();
+    }
+    return camera_data;
+}
+
 void renderFullscreenPass(vk::CommandBuffer cmd_buf, PassId pass_id, const PassDefinition &pass_def) {
-    GET_MODULE(FullscreenPassRenderer).render(cmd_buf, pass_id, pass_def);
+    const auto &fullscreenInfo = pass_def.fullscreenInfo();
+    const auto camera_data = createFullscreenPassCameraData(fullscreenInfo.push_constants);
+    GET_MODULE(FullscreenPassRenderer).render(cmd_buf, pass_id, pass_def, camera_data);
 }
 
 } // namespace
