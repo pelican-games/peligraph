@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace Pelican {
@@ -424,6 +425,31 @@ PassDefinition parsePassDefinition(const nlohmann::json &pass_json, RenderTarget
     return pass_def;
 }
 
+void validatePassInputsProduced(const PassDefinition &pass_def,
+                                const std::unordered_set<GlobalRenderTargetId, GlobalRenderTargetId::Hash>
+                                    &produced_targets,
+                                RenderTargetContainer &rt_container) {
+    for (const auto &rt_id : pass_def.input_targets) {
+        if (produced_targets.find(rt_id) == produced_targets.end()) {
+            const auto &rt = rt_container.get(rt_id);
+            throw std::runtime_error("Pass input target is not produced by an earlier pass: " + rt.name +
+                                     " in pass: " + pass_def.name);
+        }
+    }
+}
+
+void recordPassOutputs(const PassDefinition &pass_def,
+                       std::unordered_set<GlobalRenderTargetId, GlobalRenderTargetId::Hash> &produced_targets) {
+    for (const auto &rt_id : pass_def.output_color) {
+        if (rt_id.value >= 0) {
+            produced_targets.insert(rt_id);
+        }
+    }
+    if (pass_def.output_depth.value >= 0) {
+        produced_targets.insert(pass_def.output_depth);
+    }
+}
+
 RenderingPassDefinition parseRenderingPassDefinition(const nlohmann::json &pass_set_json,
                                                      RenderTargetContainer &rt_container,
                                                      ShaderContainer &shader_container) {
@@ -436,12 +462,17 @@ RenderingPassDefinition parseRenderingPassDefinition(const nlohmann::json &pass_
     }
 
     std::unordered_set<std::string> pass_names;
+    std::unordered_set<GlobalRenderTargetId, GlobalRenderTargetId::Hash> produced_targets;
     for (const auto &pass_json : passes_json) {
         const std::string pass_name = pass_json.at("name");
         if (!pass_names.insert(pass_name).second) {
             throw std::runtime_error("Duplicate pass name: " + pass_name);
         }
-        pass_def.passes.push_back(parsePassDefinition(pass_json, rt_container, shader_container));
+
+        auto parsed_pass = parsePassDefinition(pass_json, rt_container, shader_container);
+        validatePassInputsProduced(parsed_pass, produced_targets, rt_container);
+        recordPassOutputs(parsed_pass, produced_targets);
+        pass_def.passes.push_back(std::move(parsed_pass));
     }
 
     return pass_def;
