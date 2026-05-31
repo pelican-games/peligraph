@@ -33,6 +33,10 @@ vk::Format stringToFormat(const std::string &format_str) {
 }
 
 vk::ImageUsageFlags stringToUsageFlags(const std::vector<std::string> &usage_strs) {
+    if (usage_strs.empty()) {
+        throw std::runtime_error("Image usage flags must not be empty");
+    }
+
     vk::ImageUsageFlags flags;
     static const std::unordered_map<std::string, vk::ImageUsageFlagBits> usage_map = {
         {"COLOR_ATTACHMENT", vk::ImageUsageFlagBits::eColorAttachment},
@@ -154,10 +158,18 @@ void registerRenderTargets(const nlohmann::json &data, vk::Extent2D base_extent,
         const std::string format_str = rt_json.at("format");
         const std::vector<std::string> usage_strs = rt_json.at("usage");
 
+        if (extent_scale <= 0.0f) {
+            throw std::runtime_error("Render target extent_scale must be positive: " + name);
+        }
+
         const vk::Extent2D extent{
             static_cast<uint32_t>(base_extent.width * extent_scale),
             static_cast<uint32_t>(base_extent.height * extent_scale),
         };
+
+        if (extent.width == 0 || extent.height == 0) {
+            throw std::runtime_error("Render target extent became zero-sized: " + name);
+        }
 
         rt_container.registerRenderTarget(name, extent, stringToFormat(format_str), stringToUsageFlags(usage_strs),
                                           vma::MemoryUsage::eAutoPreferDevice);
