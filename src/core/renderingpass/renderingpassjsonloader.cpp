@@ -205,6 +205,17 @@ std::vector<GlobalRenderTargetId> parseColorOutputs(RenderTargetContainer &rt_co
     return output_color;
 }
 
+GlobalRenderTargetId parseDepthOutput(RenderTargetContainer &rt_container, const nlohmann::json &depth_output) {
+    if (depth_output.is_null()) {
+        return GlobalRenderTargetId{-1};
+    }
+    if (!depth_output.is_string()) {
+        throw std::runtime_error("Depth output must be null or a render target name");
+    }
+
+    return resolveRenderTarget(rt_container, depth_output.get<std::string>(), "Depth");
+}
+
 std::vector<GlobalRenderTargetId> parseInputTargets(RenderTargetContainer &rt_container,
                                                     nlohmann::json input_output) {
     if (input_output.is_null()) {
@@ -310,14 +321,14 @@ PassDefinition parsePassDefinition(const nlohmann::json &pass_json, RenderTarget
     pass_def.pass_info = makePassInfo(pass_json.at("type"));
 
     const auto &output = pass_json.at("output");
-    pass_def.output_color = parseColorOutputs(rt_container, output.at("color"));
-
-    if (!output.at("depth").is_null()) {
-        const std::string output_depth_name = output.at("depth");
-        pass_def.output_depth = resolveRenderTarget(rt_container, output_depth_name, "Depth");
-    } else {
-        pass_def.output_depth = GlobalRenderTargetId{-1};
+    if (!output.is_object()) {
+        throw std::runtime_error("Pass output must be an object: " + pass_def.name);
     }
+    if (!output.contains("color") || !output.contains("depth")) {
+        throw std::runtime_error("Pass output requires color and depth fields: " + pass_def.name);
+    }
+    pass_def.output_color = parseColorOutputs(rt_container, output.at("color"));
+    pass_def.output_depth = parseDepthOutput(rt_container, output.at("depth"));
 
     validatePassOutputs(pass_def);
 
