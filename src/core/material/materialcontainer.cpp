@@ -392,7 +392,7 @@ void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pass_id, 
                                      GlobalMaterialId prev_material_id) const {
     const auto &material = materials.get(material_id);
 
-    if (prev_material_id.value < 0) {
+    if (!isValidMaterialId(prev_material_id)) {
         cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipelines.at(material.pipeline).get());
         cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout.get(), 0,
                                    {

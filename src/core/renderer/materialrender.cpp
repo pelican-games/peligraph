@@ -39,13 +39,13 @@ void MaterialRenderer::render(vk::CommandBuffer cmd_buf, PassId pass_id) const {
 
     cmd_buf.pushConstants(pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(push_constant), &push_constant);
 
-    GlobalMaterialId current_material_id{-1};
+    GlobalMaterialId current_material_id = invalidMaterialId();
     for (const auto &draw_call : draw_calls) {
         if (!material_container.isRenderRequired(pass_id, draw_call.material))
             continue;
         
         material_container.bindResource(cmd_buf, pass_id, draw_call.material, current_material_id);
-        if (current_material_id.value < 0) {
+        if (!isValidMaterialId(current_material_id)) {
             light_container.bindResource(cmd_buf, pipeline_layout, lightDescriptorSetNumber);
         }
         current_material_id = draw_call.material;
@@ -75,7 +75,7 @@ void MaterialRenderer::renderWithMaterialRange(vk::CommandBuffer cmd_buf, PassId
 
     cmd_buf.pushConstants(pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(push_constant), &push_constant);
 
-    GlobalMaterialId current_material_id{-1};
+    GlobalMaterialId current_material_id = invalidMaterialId();
     uint32_t material_index = 0;
     
     for (const auto &draw_call : draw_calls) {
@@ -92,7 +92,7 @@ void MaterialRenderer::renderWithMaterialRange(vk::CommandBuffer cmd_buf, PassId
         }
         
         material_container.bindResource(cmd_buf, pass_id, draw_call.material, current_material_id);
-        if (current_material_id.value < 0) {
+        if (!isValidMaterialId(current_material_id)) {
             light_container.bindResource(cmd_buf, pipeline_layout, lightDescriptorSetNumber);
         }
         current_material_id = draw_call.material;
