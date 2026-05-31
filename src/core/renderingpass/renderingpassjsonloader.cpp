@@ -153,8 +153,13 @@ void registerRenderTargets(const nlohmann::json &data, vk::Extent2D base_extent,
         return;
     }
 
+    const auto &render_targets = data.at("render_targets");
+    if (!render_targets.is_array()) {
+        throw std::runtime_error("render_targets must be an array");
+    }
+
     std::unordered_set<std::string> render_target_names;
-    for (const auto &rt_json : data.at("render_targets")) {
+    for (const auto &rt_json : render_targets) {
         const std::string name = rt_json.at("name");
         if (!render_target_names.insert(name).second) {
             throw std::runtime_error("Duplicate render target name: " + name);
@@ -359,8 +364,13 @@ RenderingPassDefinition parseRenderingPassDefinition(const nlohmann::json &pass_
     RenderingPassDefinition pass_def;
     pass_def.name = pass_set_json.at("name");
 
+    const auto &passes_json = pass_set_json.at("passes");
+    if (!passes_json.is_array()) {
+        throw std::runtime_error("Rendering pass requires passes array: " + pass_def.name);
+    }
+
     std::unordered_set<std::string> pass_names;
-    for (const auto &pass_json : pass_set_json.at("passes")) {
+    for (const auto &pass_json : passes_json) {
         const std::string pass_name = pass_json.at("name");
         if (!pass_names.insert(pass_name).second) {
             throw std::runtime_error("Duplicate pass name: " + pass_name);
@@ -393,8 +403,13 @@ void RenderingPassJsonLoader::registerRenderingPassesFromJson(const std::string 
         return;
     }
 
+    const auto &rendering_passes = rendering_pass_data.at("rendering_passes");
+    if (!rendering_passes.is_array()) {
+        throw std::runtime_error("rendering_passes must be an array");
+    }
+
     std::unordered_set<std::string> rendering_pass_names;
-    for (const auto &pass_set_json : rendering_pass_data.at("rendering_passes")) {
+    for (const auto &pass_set_json : rendering_passes) {
         const std::string rendering_pass_name = pass_set_json.at("name");
         if (!rendering_pass_names.insert(rendering_pass_name).second) {
             throw std::runtime_error("Duplicate rendering pass name: " + rendering_pass_name);
