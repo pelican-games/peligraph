@@ -120,6 +120,12 @@ std::string parseStringField(const nlohmann::json &json, const std::string &fiel
     return json.at(field_name).get<std::string>();
 }
 
+void validateName(const std::string &name, const std::string &context) {
+    if (name.empty()) {
+        throw std::runtime_error(context + " name must not be empty");
+    }
+}
+
 float parseFloatField(const nlohmann::json &json, const std::string &field_name,
                       const std::string &context) {
     if (!json.contains(field_name) || !json.at(field_name).is_number()) {
@@ -217,6 +223,10 @@ void registerRenderTargets(const nlohmann::json &data, vk::Extent2D base_extent,
         }
 
         const std::string name = parseStringField(rt_json, "name", "render target");
+        validateName(name, "Render target");
+        if (name == "swapchain") {
+            throw std::runtime_error("Render target name is reserved: swapchain");
+        }
         if (!render_target_names.insert(name).second) {
             throw std::runtime_error("Duplicate render target name: " + name);
         }
@@ -571,6 +581,7 @@ PassDefinition parsePassDefinition(const nlohmann::json &pass_json, RenderTarget
 
     PassDefinition pass_def;
     pass_def.name = parseStringField(pass_json, "name", "pass");
+    validateName(pass_def.name, "Pass");
     pass_def.pass_info = makePassInfo(parseStringField(pass_json, "type", "pass: " + pass_def.name));
     applyPassDefaults(pass_def);
 
@@ -649,6 +660,7 @@ RenderingPassDefinition parseRenderingPassDefinition(const nlohmann::json &pass_
 
     RenderingPassDefinition pass_def;
     pass_def.name = parseStringField(pass_set_json, "name", "rendering pass");
+    validateName(pass_def.name, "Rendering pass");
 
     if (!pass_set_json.contains("passes")) {
         throw std::runtime_error("Rendering pass requires passes array: " + pass_def.name);
@@ -662,6 +674,7 @@ RenderingPassDefinition parseRenderingPassDefinition(const nlohmann::json &pass_
     std::unordered_set<GlobalRenderTargetId, GlobalRenderTargetId::Hash> produced_color_targets;
     for (const auto &pass_json : passes_json) {
         const std::string pass_name = parseStringField(pass_json, "name", "pass");
+        validateName(pass_name, "Pass");
         if (!pass_names.insert(pass_name).second) {
             throw std::runtime_error("Duplicate pass name: " + pass_name);
         }
@@ -709,6 +722,7 @@ void RenderingPassJsonLoader::registerRenderingPassesFromJson(const std::string 
         }
 
         const std::string rendering_pass_name = parseStringField(pass_set_json, "name", "rendering pass");
+        validateName(rendering_pass_name, "Rendering pass");
         if (!rendering_pass_names.insert(rendering_pass_name).second) {
             throw std::runtime_error("Duplicate rendering pass name: " + rendering_pass_name);
         }
