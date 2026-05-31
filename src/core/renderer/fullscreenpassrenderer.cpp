@@ -38,7 +38,7 @@ void FullscreenPassRenderer::render(vk::CommandBuffer cmd_buf, PassId pass_id, c
         pc.cameraPos = glm::vec4(camera.getPos(), 1.0f);
         cmd_buf.pushConstants(container.getPipelineLayout(), vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
     }
-    else if (pass_def.fullscreen_info.needs_projection_matrix) { // This flag is now a bit of a misnomer, but it works.
+    else if (pass_def.fullscreenInfo().needs_projection_matrix) { // This flag is now a bit of a misnomer, but it works.
         PVMatPC pc;
         pc.proj = camera.getProjectionMatrix();
         pc.view = camera.getViewMatrix();

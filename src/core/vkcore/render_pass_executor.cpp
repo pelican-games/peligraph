@@ -84,9 +84,10 @@ void setDynamicViewportAndScissor(vk::CommandBuffer cmd_buf, vk::Extent2D extent
 
 void renderMaterialPass(vk::CommandBuffer cmd_buf, PassId pass_id, const PassDefinition &pass_def) {
     auto &mat_renderer = GET_MODULE(MaterialRenderer);
-    if (pass_def.material_info.material_count > 0) {
-        mat_renderer.renderWithMaterialRange(cmd_buf, pass_id, pass_def.material_info.material_start,
-                                             pass_def.material_info.material_count);
+    const auto &materialInfo = pass_def.materialInfo();
+    if (materialInfo.material_count > 0) {
+        mat_renderer.renderWithMaterialRange(cmd_buf, pass_id, materialInfo.material_start,
+                                             materialInfo.material_count);
     } else {
         mat_renderer.render(cmd_buf, pass_id);
     }
@@ -107,7 +108,7 @@ void RenderPassExecutor::execute(const FrameRenderContext &frame, const PassDefi
 
     transitionOutputsToAttachmentLayouts(cmd_buf, pass_def, rt_container, vk_utils, layout_tracker);
 
-    if (pass_def.type == PassType::eUi) {
+    if (pass_def.isUi()) {
         if (pass_def.output_color.empty()) {
             return;
         }
@@ -136,9 +137,9 @@ void RenderPassExecutor::execute(const FrameRenderContext &frame, const PassDefi
     cmd_buf.beginRendering(render_info);
     setDynamicViewportAndScissor(cmd_buf, target_extent);
 
-    if (pass_def.type == PassType::eMaterial) {
+    if (pass_def.isMaterial()) {
         renderMaterialPass(cmd_buf, pass_id, pass_def);
-    } else if (pass_def.type == PassType::eFullscreen) {
+    } else if (pass_def.isFullscreen()) {
         renderFullscreenPass(cmd_buf, pass_id, pass_def);
     }
 

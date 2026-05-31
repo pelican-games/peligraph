@@ -23,7 +23,7 @@ RenderingPassId RenderingPassContainer::registerRenderingPass(const RenderingPas
     for (int i = 0; i < definition.passes.size(); ++i) {
         const auto &pass_def = definition.passes[i];
 
-        if (pass_def.type == PassType::eFullscreen) {
+        if (pass_def.isFullscreen()) {
             auto &rt_module = GET_MODULE(RenderTarget);
             auto &rt_container = GET_MODULE(RenderTargetContainer);
 
@@ -40,8 +40,9 @@ RenderingPassId RenderingPassContainer::registerRenderingPass(const RenderingPas
             }
 
             auto &shader_container = GET_MODULE(ShaderContainer);
-            auto vert_shader = shader_container.getShader(pass_def.fullscreen_info.vert_shader);
-            auto frag_shader = shader_container.getShader(pass_def.fullscreen_info.frag_shader);
+            const auto &fullscreenInfo = pass_def.fullscreenInfo();
+            auto vert_shader = shader_container.getShader(fullscreenInfo.vert_shader);
+            auto frag_shader = shader_container.getShader(fullscreenInfo.frag_shader);
 
             auto &fs_container = GET_MODULE(FullscreenPassContainer);
             auto pipeline_id = fs_container.registerFullscreenPass(color_fmt, vert_shader, frag_shader);

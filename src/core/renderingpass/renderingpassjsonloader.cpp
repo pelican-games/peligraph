@@ -50,15 +50,15 @@ vk::ImageUsageFlags stringToUsageFlags(const std::vector<std::string> &usage_str
     return flags;
 }
 
-PassType stringToPassType(const std::string &type_str) {
+PassInfo makePassInfo(const std::string &type_str) {
     if (type_str == "material") {
-        return PassType::eMaterial;
+        return MaterialPassInfo{};
     }
     if (type_str == "fullscreen") {
-        return PassType::eFullscreen;
+        return FullscreenPassInfo{};
     }
     if (type_str == "ui") {
-        return PassType::eUi;
+        return UiPassInfo{};
     }
     throw std::runtime_error("Unknown pass type: " + type_str);
 }
@@ -181,31 +181,40 @@ std::vector<GlobalRenderTargetId> parseInputTargets(RenderTargetContainer &rt_co
 }
 
 void parseMaterialInfo(PassDefinition &pass_def, const nlohmann::json &pass_json) {
-    if (pass_def.type != PassType::eMaterial || !pass_json.contains("material_range")) {
+    if (!pass_def.isMaterial() || !pass_json.contains("material_range")) {
         return;
     }
 
     const auto &mat_range = pass_json.at("material_range");
-    pass_def.material_info.material_start = mat_range.at("start");
-    pass_def.material_info.material_count = mat_range.at("count");
+    auto &materialInfo = pass_def.materialInfo();
+    materialInfo.material_start = mat_range.at("start");
+    materialInfo.material_count = mat_range.at("count");
 }
 
 void parseFullscreenInfo(PassDefinition &pass_def, const nlohmann::json &pass_json,
                          ShaderContainer &shader_container) {
-    if (pass_def.type != PassType::eFullscreen || !pass_json.contains("shader")) {
+    if (!pass_def.isFullscreen()) {
+        return;
+    }
+
+    auto &fullscreenInfo = pass_def.fullscreenInfo();
+    if (pass_json.contains("needs_projection_matrix") && pass_json.at("needs_projection_matrix").is_boolean()) {
+        fullscreenInfo.needs_projection_matrix = pass_json.at("needs_projection_matrix");
+    }
+    if (!pass_json.contains("shader")) {
         return;
     }
 
     const auto &shader = pass_json.at("shader");
-    pass_def.fullscreen_info.vert_shader = registerShaderFromFile(shader_container, shader.at("vertex"));
-    pass_def.fullscreen_info.frag_shader = registerShaderFromFile(shader_container, shader.at("fragment"));
+    fullscreenInfo.vert_shader = registerShaderFromFile(shader_container, shader.at("vertex"));
+    fullscreenInfo.frag_shader = registerShaderFromFile(shader_container, shader.at("fragment"));
 }
 
 PassDefinition parsePassDefinition(const nlohmann::json &pass_json, RenderTargetContainer &rt_container,
                                    ShaderContainer &shader_container) {
     PassDefinition pass_def;
     pass_def.name = pass_json.at("name");
-    pass_def.type = stringToPassType(pass_json.at("type"));
+    pass_def.pass_info = makePassInfo(pass_json.at("type"));
 
     const auto &output = pass_json.at("output");
     pass_def.output_color = parseColorOutputs(rt_container, output.at("color"));
@@ -221,9 +230,6 @@ PassDefinition parsePassDefinition(const nlohmann::json &pass_json, RenderTarget
 
     if (pass_json.contains("input")) {
         pass_def.input_targets = parseInputTargets(rt_container, pass_json.at("input"));
-    }
-    if (pass_json.contains("needs_projection_matrix") && pass_json.at("needs_projection_matrix").is_boolean()) {
-        pass_def.fullscreen_info.needs_projection_matrix = pass_json.at("needs_projection_matrix");
     }
     if (pass_json.contains("clear_color")) {
         pass_def.clear_color = jsonToClearColor(pass_json.at("clear_color"));

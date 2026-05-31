@@ -9,16 +9,11 @@
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <variant>
 #include <vector>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
-
-enum class PassType {
-    eMaterial,
-    eFullscreen,
-    eUi,
-};
 
 struct MaterialPassInfo {
     uint32_t material_start = 0;
@@ -33,23 +28,31 @@ struct FullscreenPassInfo {
 
 struct UiPassInfo {};
 
+using PassInfo = std::variant<MaterialPassInfo, FullscreenPassInfo, UiPassInfo>;
+
 struct PassDefinition {
     PassDefinition() : output_depth{-1} {}
 
     std::string name;
-    PassType type;
 
     std::vector<GlobalRenderTargetId> output_color;
     GlobalRenderTargetId output_depth;
     std::vector<GlobalRenderTargetId> input_targets;
 
-    MaterialPassInfo material_info;
-    FullscreenPassInfo fullscreen_info;
-    UiPassInfo ui_info;
+    PassInfo pass_info = MaterialPassInfo{};
 
     vk::AttachmentLoadOp color_load_op = vk::AttachmentLoadOp::eClear;
     vk::AttachmentStoreOp color_store_op = vk::AttachmentStoreOp::eStore;
     vk::ClearColorValue clear_color = vk::ClearColorValue{std::array{0.0f, 0.0f, 0.0f, 1.0f}};
+
+    bool isMaterial() const { return std::holds_alternative<MaterialPassInfo>(pass_info); }
+    bool isFullscreen() const { return std::holds_alternative<FullscreenPassInfo>(pass_info); }
+    bool isUi() const { return std::holds_alternative<UiPassInfo>(pass_info); }
+
+    MaterialPassInfo &materialInfo() { return std::get<MaterialPassInfo>(pass_info); }
+    const MaterialPassInfo &materialInfo() const { return std::get<MaterialPassInfo>(pass_info); }
+    FullscreenPassInfo &fullscreenInfo() { return std::get<FullscreenPassInfo>(pass_info); }
+    const FullscreenPassInfo &fullscreenInfo() const { return std::get<FullscreenPassInfo>(pass_info); }
 };
 
 struct RenderingPassDefinition {
