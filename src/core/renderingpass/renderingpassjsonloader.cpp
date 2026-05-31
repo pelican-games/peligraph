@@ -470,6 +470,12 @@ void parseFullscreenInfo(PassDefinition &pass_def, const nlohmann::json &pass_js
     fullscreenInfo.frag_shader = registerShaderFromFile(shader_container, shader.at("fragment").get<std::string>());
 }
 
+void applyPassDefaults(PassDefinition &pass_def) {
+    if (pass_def.isUi()) {
+        pass_def.color_load_op = vk::AttachmentLoadOp::eLoad;
+    }
+}
+
 PassDefinition parsePassDefinition(const nlohmann::json &pass_json, RenderTargetContainer &rt_container,
                                    ShaderContainer &shader_container) {
     if (!pass_json.is_object()) {
@@ -479,6 +485,7 @@ PassDefinition parsePassDefinition(const nlohmann::json &pass_json, RenderTarget
     PassDefinition pass_def;
     pass_def.name = parseStringField(pass_json, "name", "pass");
     pass_def.pass_info = makePassInfo(parseStringField(pass_json, "type", "pass: " + pass_def.name));
+    applyPassDefaults(pass_def);
 
     if (!pass_json.contains("output")) {
         throw std::runtime_error("Pass requires output field: " + pass_def.name);
