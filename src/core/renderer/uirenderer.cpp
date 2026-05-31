@@ -158,8 +158,9 @@ void UiRenderer::render(vk::CommandBuffer cmd_buf, const UiDrawRequest &request)
     vk::RenderingAttachmentInfo attachment;
     attachment.imageView = request.target_view;
     attachment.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
-    attachment.loadOp = vk::AttachmentLoadOp::eLoad;
-    attachment.storeOp = vk::AttachmentStoreOp::eStore;
+    attachment.loadOp = request.load_op;
+    attachment.storeOp = request.store_op;
+    attachment.clearValue.color = request.clear_color;
 
     vk::RenderingInfo rendering_info;
     rendering_info.renderArea = vk::Rect2D{{0, 0}, request.target_extent};

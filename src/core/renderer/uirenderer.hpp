@@ -10,6 +10,9 @@ struct UiDrawRequest {
     vk::ImageView target_view;
     vk::Extent2D target_extent;
     vk::Format target_format;
+    vk::AttachmentLoadOp load_op;
+    vk::AttachmentStoreOp store_op;
+    vk::ClearColorValue clear_color;
 };
 
 // UI レンダリング実行モジュール

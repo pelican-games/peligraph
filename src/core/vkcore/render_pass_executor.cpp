@@ -154,7 +154,9 @@ void RenderPassExecutor::execute(const FrameRenderContext &frame, const PassDefi
                                                             : rt_container.get(rt_id).image_view.get();
         const vk::Format target_format = targets_swapchain ? rt_module.getSwapchainFormat()
                                                            : rt_container.get(rt_id).image.format;
-        GET_MODULE(UiRenderer).render(cmd_buf, UiDrawRequest{target_view, target_extent, target_format});
+        GET_MODULE(UiRenderer).render(cmd_buf, UiDrawRequest{target_view, target_extent, target_format,
+                                                             pass_def.color_load_op, pass_def.color_store_op,
+                                                             pass_def.clear_color});
         transitionColorOutputsToShaderRead(cmd_buf, pass_def, rt_container, vk_utils, layout_tracker);
         return;
     }
