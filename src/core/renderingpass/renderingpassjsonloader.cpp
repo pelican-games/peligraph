@@ -4,8 +4,10 @@
 #include "../loader/basicconfig.hpp"
 #include "../shader/shadercontainer.hpp"
 #include <array>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <unordered_map>
@@ -336,15 +338,43 @@ void validatePassSpecificFields(const PassDefinition &pass_def, const nlohmann::
     }
 }
 
+uint32_t parseUint32Field(const nlohmann::json &json, const std::string &field_name,
+                          const std::string &context) {
+    if (!json.contains(field_name) || !json.at(field_name).is_number_integer()) {
+        throw std::runtime_error(context + " requires non-negative integer field: " + field_name);
+    }
+
+    uint64_t value = 0;
+    const auto &field = json.at(field_name);
+    if (field.is_number_unsigned()) {
+        value = field.get<uint64_t>();
+    } else {
+        const int64_t signed_value = field.get<int64_t>();
+        if (signed_value < 0) {
+            throw std::runtime_error(context + " requires non-negative integer field: " + field_name);
+        }
+        value = static_cast<uint64_t>(signed_value);
+    }
+
+    if (value > std::numeric_limits<uint32_t>::max()) {
+        throw std::runtime_error(context + " field is too large: " + field_name);
+    }
+    return static_cast<uint32_t>(value);
+}
+
 void parseMaterialInfo(PassDefinition &pass_def, const nlohmann::json &pass_json) {
     if (!pass_def.isMaterial() || !pass_json.contains("material_range")) {
         return;
     }
 
     const auto &mat_range = pass_json.at("material_range");
+    if (!mat_range.is_object()) {
+        throw std::runtime_error("material_range must be an object: " + pass_def.name);
+    }
+
     auto &materialInfo = pass_def.materialInfo();
-    materialInfo.material_start = mat_range.at("start");
-    materialInfo.material_count = mat_range.at("count");
+    materialInfo.material_start = parseUint32Field(mat_range, "start", "material_range in pass: " + pass_def.name);
+    materialInfo.material_count = parseUint32Field(mat_range, "count", "material_range in pass: " + pass_def.name);
 }
 
 void parseFullscreenInfo(PassDefinition &pass_def, const nlohmann::json &pass_json,
