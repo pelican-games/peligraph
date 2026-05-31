@@ -36,6 +36,20 @@ namespace Pelican
 				value.at(2).get<float>()
 			);
 		}
+
+		void registerLightName(std::unordered_map<std::string, uint32_t>& name_map, const std::string& name,
+			uint32_t index, const std::string& light_type)
+		{
+			if (name.empty())
+			{
+				return;
+			}
+			if (name_map.find(name) != name_map.end())
+			{
+				throw std::runtime_error("Duplicate " + light_type + " light name: " + name);
+			}
+			name_map.emplace(name, index);
+		}
 	}
 
 	LightContainer::~LightContainer()
@@ -130,10 +144,8 @@ namespace Pelican
 								light.intensity = lightJson.value("intensity", 1.0f);
 								light.color = readVec3(lightJson, "color", light.name);
 				
-								if (!light.name.empty())
-								{
-									m_LightNameMap[light.name] = static_cast<uint32_t>(m_DirectionalLights.size());
-								}
+								registerLightName(m_LightNameMap, light.name, static_cast<uint32_t>(m_DirectionalLights.size()),
+									"directional");
 								m_DirectionalLights.push_back(light);
 							}
 							else if (type == "point")
@@ -144,10 +156,8 @@ namespace Pelican
 								light.intensity = lightJson.value("intensity", 1.0f);
 								light.color = readVec3(lightJson, "color", light.name);
 				
-												if (!light.name.empty())
-												{
-													m_PointLightNameMap[light.name] = static_cast<uint32_t>(m_PointLights.size());
-												}
+												registerLightName(m_PointLightNameMap, light.name,
+													static_cast<uint32_t>(m_PointLights.size()), "point");
 												m_PointLights.push_back(light);
 											}
 											else if (type == "spot")
@@ -161,10 +171,8 @@ namespace Pelican
 												light.outerConeAngle = lightJson.value("outerConeAngle", 17.5f);
 												light.color = readVec3(lightJson, "color", light.name);
 								
-												if (!light.name.empty())
-												{
-													m_SpotLightNameMap[light.name] = static_cast<uint32_t>(m_SpotLights.size());
-												}
+												registerLightName(m_SpotLightNameMap, light.name,
+													static_cast<uint32_t>(m_SpotLights.size()), "spot");
 												m_SpotLights.push_back(light);
 											}
 			else
