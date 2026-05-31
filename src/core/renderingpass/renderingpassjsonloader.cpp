@@ -467,10 +467,17 @@ void parseFullscreenInfo(PassDefinition &pass_def, const nlohmann::json &pass_js
 
 PassDefinition parsePassDefinition(const nlohmann::json &pass_json, RenderTargetContainer &rt_container,
                                    ShaderContainer &shader_container) {
-    PassDefinition pass_def;
-    pass_def.name = pass_json.at("name");
-    pass_def.pass_info = makePassInfo(pass_json.at("type"));
+    if (!pass_json.is_object()) {
+        throw std::runtime_error("passes entries must be objects");
+    }
 
+    PassDefinition pass_def;
+    pass_def.name = parseStringField(pass_json, "name", "pass");
+    pass_def.pass_info = makePassInfo(parseStringField(pass_json, "type", "pass: " + pass_def.name));
+
+    if (!pass_json.contains("output")) {
+        throw std::runtime_error("Pass requires output field: " + pass_def.name);
+    }
     const auto &output = pass_json.at("output");
     if (!output.is_object()) {
         throw std::runtime_error("Pass output must be an object: " + pass_def.name);
@@ -534,9 +541,16 @@ void recordPassOutputs(const PassDefinition &pass_def,
 RenderingPassDefinition parseRenderingPassDefinition(const nlohmann::json &pass_set_json,
                                                      RenderTargetContainer &rt_container,
                                                      ShaderContainer &shader_container) {
-    RenderingPassDefinition pass_def;
-    pass_def.name = pass_set_json.at("name");
+    if (!pass_set_json.is_object()) {
+        throw std::runtime_error("rendering_passes entries must be objects");
+    }
 
+    RenderingPassDefinition pass_def;
+    pass_def.name = parseStringField(pass_set_json, "name", "rendering pass");
+
+    if (!pass_set_json.contains("passes")) {
+        throw std::runtime_error("Rendering pass requires passes array: " + pass_def.name);
+    }
     const auto &passes_json = pass_set_json.at("passes");
     if (!passes_json.is_array()) {
         throw std::runtime_error("Rendering pass requires passes array: " + pass_def.name);
@@ -545,7 +559,7 @@ RenderingPassDefinition parseRenderingPassDefinition(const nlohmann::json &pass_
     std::unordered_set<std::string> pass_names;
     std::unordered_set<GlobalRenderTargetId, GlobalRenderTargetId::Hash> produced_targets;
     for (const auto &pass_json : passes_json) {
-        const std::string pass_name = pass_json.at("name");
+        const std::string pass_name = parseStringField(pass_json, "name", "pass");
         if (!pass_names.insert(pass_name).second) {
             throw std::runtime_error("Duplicate pass name: " + pass_name);
         }
@@ -588,7 +602,11 @@ void RenderingPassJsonLoader::registerRenderingPassesFromJson(const std::string 
 
     std::unordered_set<std::string> rendering_pass_names;
     for (const auto &pass_set_json : rendering_passes) {
-        const std::string rendering_pass_name = pass_set_json.at("name");
+        if (!pass_set_json.is_object()) {
+            throw std::runtime_error("rendering_passes entries must be objects");
+        }
+
+        const std::string rendering_pass_name = parseStringField(pass_set_json, "name", "rendering pass");
         if (!rendering_pass_names.insert(rendering_pass_name).second) {
             throw std::runtime_error("Duplicate rendering pass name: " + rendering_pass_name);
         }
