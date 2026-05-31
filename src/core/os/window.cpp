@@ -1,8 +1,45 @@
 #include "window.hpp"
 #include "../loader/basicconfig.hpp"
 #include "../log.hpp"
+#include <stdexcept>
 
 namespace Pelican {
+
+namespace {
+
+struct WindowCreateInfo {
+    int width = 0;
+    int height = 0;
+    GLFWmonitor *monitor = nullptr;
+};
+
+WindowCreateInfo makeWindowCreateInfo(ProjectBasicConfig::window_size window_size, bool fullscreen) {
+    if (!fullscreen) {
+        if (window_size.width <= 0 || window_size.height <= 0) {
+            throw std::runtime_error("Window size must be positive");
+        }
+        return WindowCreateInfo{window_size.width, window_size.height, nullptr};
+    }
+
+    auto *monitor = glfwGetPrimaryMonitor();
+    if (monitor == nullptr) {
+        throw std::runtime_error("Fullscreen mode requires a primary monitor");
+    }
+
+    const auto *mode = glfwGetVideoMode(monitor);
+    if (mode == nullptr) {
+        throw std::runtime_error("Failed to get primary monitor video mode");
+    }
+
+    glfwWindowHint(GLFW_RED_BITS, mode->redBits);
+    glfwWindowHint(GLFW_GREEN_BITS, mode->greenBits);
+    glfwWindowHint(GLFW_BLUE_BITS, mode->blueBits);
+    glfwWindowHint(GLFW_REFRESH_RATE, mode->refreshRate);
+
+    return WindowCreateInfo{mode->width, mode->height, monitor};
+}
+
+} // namespace
 
 Window::Window() {
     LOG_INFO(logger, "GLFW initializing...");
@@ -13,9 +50,21 @@ Window::Window() {
     const auto title = config.windowTitle();
     const auto fullscreen = config.initialFullScreenState();
 
-    glfwInit();
+    if (glfwInit() != GLFW_TRUE) {
+        throw std::runtime_error("glfwInit failed");
+    }
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    window = glfwCreateWindow(window_size.width, window_size.height, title.c_str(), nullptr, nullptr);
+
+    try {
+        const auto create_info = makeWindowCreateInfo(window_size, fullscreen);
+        window = glfwCreateWindow(create_info.width, create_info.height, title.c_str(), create_info.monitor, nullptr);
+        if (window == nullptr) {
+            throw std::runtime_error("glfwCreateWindow failed");
+        }
+    } catch (...) {
+        glfwTerminate();
+        throw;
+    }
     glfwSetWindowUserPointer(window, this);
 
     LOG_INFO(logger, "GLFW window initialized");
@@ -42,7 +91,13 @@ Window::Window() {
     });
 }
 
-Window::~Window() {}
+Window::~Window() {
+    if (window != nullptr) {
+        glfwDestroyWindow(window);
+        window = nullptr;
+    }
+    glfwTerminate();
+}
 
 vk::Extent2D Window::waitFramebufferExtent() const {
     int width = 0;
