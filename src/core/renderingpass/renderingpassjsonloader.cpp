@@ -245,6 +245,18 @@ void validatePassInputs(const PassDefinition &pass_def) {
     if (!pass_def.input_targets.empty() && !pass_def.isFullscreen()) {
         throw std::runtime_error("Only fullscreen passes support input targets: " + pass_def.name);
     }
+
+    for (const auto &input_rt : pass_def.input_targets) {
+        for (const auto &output_rt : pass_def.output_color) {
+            if (input_rt == output_rt) {
+                throw std::runtime_error("Pass cannot read and write the same color target: " + pass_def.name);
+            }
+        }
+
+        if (input_rt == pass_def.output_depth) {
+            throw std::runtime_error("Pass cannot read and write the same depth target: " + pass_def.name);
+        }
+    }
 }
 
 void validatePassOutputs(const PassDefinition &pass_def) {
