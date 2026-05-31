@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <nlohmann/json.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <stdexcept>
 
 namespace Pelican
 {
@@ -97,6 +98,11 @@ namespace Pelican
 		}
 
 		const auto& lightsJson = json["lights"];
+		if (!lightsJson.is_array())
+		{
+			throw std::runtime_error("lights must be an array");
+		}
+
 		for (const auto& lightJson : lightsJson)
 		{
 			const auto type = lightJson.value("type", "");
@@ -173,6 +179,10 @@ namespace Pelican
 												}
 												m_SpotLights.push_back(light);
 											}
+			else
+			{
+				throw std::runtime_error("Unknown light type: " + type);
+			}
 										}
 										m_OriginalDirectionalLights = m_DirectionalLights;
 										m_OriginalPointLights = m_PointLights;
