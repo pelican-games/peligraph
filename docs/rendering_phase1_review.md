@@ -1,5 +1,12 @@
 # Rendering Phase 1 Review Notes
 
+## Status
+
+Phase 1 is closed on the `codex/rendering-phase1-refactor` branch without a PR.
+The branch is intended to stay reviewable as a commit series: first the
+behavior-preserving rendering split, then small correctness fixes, tests, and
+cleanup.
+
 ## Scope
 
 Phase 1 keeps the current rendering behavior, but separates the rendering pass
@@ -43,3 +50,10 @@ configuration and execution code into smaller units.
 - Replace fixed polygon instance and indirect draw capacities with growable
   buffers or explicit config.
 - Clean up remaining renderer comments and naming while avoiding behavior churn.
+
+## Phase 2 Entry Point
+
+Start Phase 2 by moving runtime rendering-pass compilation out of
+`RenderingPassContainer`. The container should become mostly a storage and lookup
+module, while compilation owns pass-id assignment, fullscreen pipeline creation,
+and descriptor binding setup.
