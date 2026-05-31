@@ -13,6 +13,13 @@ namespace {
 
 constexpr uint32_t fullscreenInputBindingCount = 8;
 
+uint32_t requireFullscreenPipelineValue(PassId pass_id) {
+    if (pass_id.value < 0) {
+        throw std::runtime_error("Fullscreen pass id is invalid");
+    }
+    return static_cast<uint32_t>(pass_id.value);
+}
+
 } // namespace
 
 static vk::UniqueDescriptorSetLayout createInputDescSetLayout(vk::Device device, uint32_t maxInputs) {
@@ -197,11 +204,11 @@ FullscreenPassContainer::PipelineId FullscreenPassContainer::registerFullscreenP
 }
 
 void FullscreenPassContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pass_id) {
-    if (pass_id.value < 0) return;
-
-    const auto pipeline_id = PipelineId{static_cast<uint32_t>(pass_id.value)};
+    const auto pipeline_id = PipelineId{requireFullscreenPipelineValue(pass_id)};
     auto pit = pipelines.find(pipeline_id);
-    if (pit == pipelines.end()) return;
+    if (pit == pipelines.end()) {
+        throw std::runtime_error("Fullscreen pipeline not found");
+    }
 
     // パイプラインをバインド
     cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, pit->second.get());
@@ -216,6 +223,10 @@ void FullscreenPassContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pas
 
 void FullscreenPassContainer::setInputTextures(PassId pass_id, const std::vector<GlobalRenderTargetId>& input_rts) {
     auto& rt_container = GET_MODULE(RenderTargetContainer);
+    const auto pipeline_id = PipelineId{requireFullscreenPipelineValue(pass_id)};
+    if (pipelines.find(pipeline_id) == pipelines.end()) {
+        throw std::runtime_error("Fullscreen pipeline not found");
+    }
 
     if (input_rts.size() > fullscreenInputBindingCount) {
         throw std::runtime_error("Fullscreen pass has too many input textures");
