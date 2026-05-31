@@ -345,6 +345,24 @@ void validatePassTargetUsage(const PassDefinition &pass_def, RenderTargetContain
     }
 }
 
+std::string renderTargetDisplayName(GlobalRenderTargetId rt_id, RenderTargetContainer &rt_container) {
+    if (rt_id.value < 0) {
+        return "swapchain";
+    }
+    return rt_container.get(rt_id).name;
+}
+
+void validateUniqueRenderTargets(const std::vector<GlobalRenderTargetId> &targets, const std::string &target_kind,
+                                 const PassDefinition &pass_def, RenderTargetContainer &rt_container) {
+    std::unordered_set<GlobalRenderTargetId, GlobalRenderTargetId::Hash> seen_targets;
+    for (const auto &rt_id : targets) {
+        if (!seen_targets.insert(rt_id).second) {
+            throw std::runtime_error("Pass has duplicate " + target_kind + " target: " +
+                                     renderTargetDisplayName(rt_id, rt_container) + " in pass: " + pass_def.name);
+        }
+    }
+}
+
 void validatePassOutputExtents(const PassDefinition &pass_def, RenderTargetContainer &rt_container) {
     std::optional<vk::Extent3D> expected_extent;
 
@@ -579,6 +597,8 @@ PassDefinition parsePassDefinition(const nlohmann::json &pass_json, RenderTarget
     }
     validatePassInputs(pass_def);
     validatePassTargetUsage(pass_def, rt_container);
+    validateUniqueRenderTargets(pass_def.output_color, "color output", pass_def, rt_container);
+    validateUniqueRenderTargets(pass_def.input_targets, "input", pass_def, rt_container);
     validatePassOutputExtents(pass_def, rt_container);
     validateMaterialPassAttachments(pass_def, rt_container);
 
