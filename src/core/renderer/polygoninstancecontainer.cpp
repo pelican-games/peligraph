@@ -1,11 +1,27 @@
 #include "polygoninstancecontainer.hpp"
 #include "../vkcore/core.hpp"
 #include <glm/ext/matrix_transform.hpp>
+#include <limits>
+#include <stdexcept>
 
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/quaternion.hpp>
 
 namespace Pelican {
+
+namespace {
+
+constexpr size_t maxModelInstances = 1024;
+constexpr size_t maxRenderCommands = 1024;
+
+uint32_t checkedDrawCount(size_t count) {
+    if (count > std::numeric_limits<uint32_t>::max()) {
+        throw std::runtime_error("Draw call count exceeds uint32_t range");
+    }
+    return static_cast<uint32_t>(count);
+}
+
+} // namespace
 
 static BufferWrapper createIndirectBuf(VulkanManageCore &vkcore, size_t num) {
     return vkcore.allocBuf(sizeof(RenderCommand) * num,
@@ -25,15 +41,27 @@ static BufferWrapper createModelInstanceDataBuf(VulkanManageCore &vkcore, size_t
 
 PolygonInstanceContainer::PolygonInstanceContainer()
     : indirect_buf{
-          createIndirectBuf(GET_MODULE(VulkanManageCore), 1024),
+          createIndirectBuf(GET_MODULE(VulkanManageCore), maxRenderCommands),
       },
       model_data_buffer{
-          createModelInstanceDataBuf(GET_MODULE(VulkanManageCore), 1024),
+          createModelInstanceDataBuf(GET_MODULE(VulkanManageCore), maxModelInstances),
       } {}
 
 ModelInstanceId PolygonInstanceContainer::placeModelInstance(ModelTemplate &model) {
-    auto &instance_container = GET_MODULE(PolygonInstanceContainer);
-    ModelInstanceId id{model_instances_data.size()}; // TODO
+    if (model_instances_data.size() >= maxModelInstances) {
+        throw std::runtime_error("Model instance capacity exceeded");
+    }
+
+    size_t primitive_count = 0;
+    for (const auto &material : model.material_primitives) {
+        primitive_count += material.primitives.size();
+    }
+    if (render_commands.size() > maxRenderCommands ||
+        primitive_count > maxRenderCommands - render_commands.size()) {
+        throw std::runtime_error("Render command capacity exceeded");
+    }
+
+    ModelInstanceId id{static_cast<uint32_t>(model_instances_data.size())};
     model_instances_data.push_back(glm::identity<glm::mat4>());
 
     for (const auto &material : model.material_primitives) {
@@ -75,9 +103,9 @@ void PolygonInstanceContainer::triggerUpdate() {
     prev_offset_index = 0;
     draw_call.material = render_commands[0].material;
     draw_call.offset = prev_offset_index * sizeof(RenderCommand);
-    for (int i = 1; i < render_commands.size(); i++) {
+    for (size_t i = 1; i < render_commands.size(); i++) {
         if (render_commands[i].material.value != render_commands[i - 1].material.value) {
-            draw_call.draw_count = i - prev_offset_index;
+            draw_call.draw_count = checkedDrawCount(i - prev_offset_index);
             draw_calls.push_back(draw_call);
 
             prev_offset_index = i;
@@ -85,7 +113,7 @@ void PolygonInstanceContainer::triggerUpdate() {
             draw_call.offset = prev_offset_index * sizeof(RenderCommand);
         }
     }
-    draw_call.draw_count = render_commands.size() - prev_offset_index;
+    draw_call.draw_count = checkedDrawCount(render_commands.size() - prev_offset_index);
     draw_calls.push_back(draw_call);
 
     GET_MODULE(VulkanManageCore)
