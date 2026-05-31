@@ -202,16 +202,28 @@ std::vector<GlobalRenderTargetId> parseColorOutputs(RenderTargetContainer &rt_co
 
 std::vector<GlobalRenderTargetId> parseInputTargets(RenderTargetContainer &rt_container,
                                                     nlohmann::json input_output) {
+    if (input_output.is_null()) {
+        return {};
+    }
     if (!input_output.is_array()) {
         input_output = nlohmann::json::array({input_output});
     }
 
     std::vector<GlobalRenderTargetId> input_targets;
     for (const auto &input_name_json : input_output) {
-        const std::string input_name = input_name_json;
+        if (!input_name_json.is_string()) {
+            throw std::runtime_error("Input target must be a render target name");
+        }
+        const std::string input_name = input_name_json.get<std::string>();
         input_targets.push_back(resolveRenderTarget(rt_container, input_name, "Input"));
     }
     return input_targets;
+}
+
+void validatePassInputs(const PassDefinition &pass_def) {
+    if (!pass_def.input_targets.empty() && !pass_def.isFullscreen()) {
+        throw std::runtime_error("Only fullscreen passes support input targets: " + pass_def.name);
+    }
 }
 
 void validatePassOutputs(const PassDefinition &pass_def) {
@@ -309,6 +321,8 @@ PassDefinition parsePassDefinition(const nlohmann::json &pass_json, RenderTarget
     if (pass_json.contains("input")) {
         pass_def.input_targets = parseInputTargets(rt_container, pass_json.at("input"));
     }
+    validatePassInputs(pass_def);
+
     if (pass_json.contains("clear_color")) {
         pass_def.clear_color = jsonToClearColor(pass_json.at("clear_color"));
     }
