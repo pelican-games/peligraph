@@ -20,6 +20,22 @@ namespace Pelican
 			create_info.setPoolSizes(pool_size);
 			return device.createDescriptorPoolUnique(create_info);
 		}
+
+		glm::vec3 readVec3(const nlohmann::json& json, const std::string& field, const std::string& light_name)
+		{
+			if (!json.contains(field) || !json.at(field).is_array() || json.at(field).size() != 3)
+			{
+				const auto display_name = light_name.empty() ? std::string{"<unnamed>"} : light_name;
+				throw std::runtime_error("Light '" + display_name + "' requires vec3 field: " + field);
+			}
+
+			const auto& value = json.at(field);
+			return glm::vec3(
+				value.at(0).get<float>(),
+				value.at(1).get<float>(),
+				value.at(2).get<float>()
+			);
+		}
 	}
 
 	LightContainer::~LightContainer()
@@ -110,17 +126,9 @@ namespace Pelican
 			{
 				DirectionalLight light{};
 				light.name = lightJson.value("name", "");
-				light.direction = glm::vec3(
-					lightJson["direction"][0].get<float>(),
-					lightJson["direction"][1].get<float>(),
-					lightJson["direction"][2].get<float>()
-				);
+				light.direction = readVec3(lightJson, "direction", light.name);
 								light.intensity = lightJson.value("intensity", 1.0f);
-								light.color = glm::vec3(
-									lightJson["color"][0].get<float>(),
-									lightJson["color"][1].get<float>(),
-									lightJson["color"][2].get<float>()
-								);
+								light.color = readVec3(lightJson, "color", light.name);
 				
 								if (!light.name.empty())
 								{
@@ -132,17 +140,9 @@ namespace Pelican
 							{
 								PointLight light{};
 								light.name = lightJson.value("name", "");
-								light.position = glm::vec3(
-									lightJson["position"][0].get<float>(),
-									lightJson["position"][1].get<float>(),
-									lightJson["position"][2].get<float>()
-								);
+								light.position = readVec3(lightJson, "position", light.name);
 								light.intensity = lightJson.value("intensity", 1.0f);
-								light.color = glm::vec3(
-									lightJson["color"][0].get<float>(),
-									lightJson["color"][1].get<float>(),
-									lightJson["color"][2].get<float>()
-								);
+								light.color = readVec3(lightJson, "color", light.name);
 				
 												if (!light.name.empty())
 												{
@@ -154,24 +154,12 @@ namespace Pelican
 											{
 												SpotLight light{};
 												light.name = lightJson.value("name", "");
-												light.position = glm::vec3(
-													lightJson["position"][0].get<float>(),
-													lightJson["position"][1].get<float>(),
-													lightJson["position"][2].get<float>()
-												);
-												light.direction = glm::vec3(
-													lightJson["direction"][0].get<float>(),
-													lightJson["direction"][1].get<float>(),
-													lightJson["direction"][2].get<float>()
-												);
+												light.position = readVec3(lightJson, "position", light.name);
+												light.direction = readVec3(lightJson, "direction", light.name);
 												light.intensity = lightJson.value("intensity", 1.0f);
 												light.innerConeAngle = lightJson.value("innerConeAngle", 12.5f);
 												light.outerConeAngle = lightJson.value("outerConeAngle", 17.5f);
-												light.color = glm::vec3(
-													lightJson["color"][0].get<float>(),
-													lightJson["color"][1].get<float>(),
-													lightJson["color"][2].get<float>()
-												);
+												light.color = readVec3(lightJson, "color", light.name);
 								
 												if (!light.name.empty())
 												{
