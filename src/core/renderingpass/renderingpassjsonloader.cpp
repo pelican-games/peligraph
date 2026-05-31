@@ -110,6 +110,38 @@ vk::AttachmentStoreOp stringToStoreOp(const std::string &op_str) {
     throw std::runtime_error("Unknown attachment store op: " + op_str);
 }
 
+std::string parseStringField(const nlohmann::json &json, const std::string &field_name,
+                             const std::string &context) {
+    if (!json.contains(field_name) || !json.at(field_name).is_string()) {
+        throw std::runtime_error(context + " requires string field: " + field_name);
+    }
+    return json.at(field_name).get<std::string>();
+}
+
+float parseFloatField(const nlohmann::json &json, const std::string &field_name,
+                      const std::string &context) {
+    if (!json.contains(field_name) || !json.at(field_name).is_number()) {
+        throw std::runtime_error(context + " requires numeric field: " + field_name);
+    }
+    return json.at(field_name).get<float>();
+}
+
+std::vector<std::string> parseStringArrayField(const nlohmann::json &json, const std::string &field_name,
+                                               const std::string &context) {
+    if (!json.contains(field_name) || !json.at(field_name).is_array()) {
+        throw std::runtime_error(context + " requires string array field: " + field_name);
+    }
+
+    std::vector<std::string> values;
+    for (const auto &value_json : json.at(field_name)) {
+        if (!value_json.is_string()) {
+            throw std::runtime_error(context + " requires string array field: " + field_name);
+        }
+        values.push_back(value_json.get<std::string>());
+    }
+    return values;
+}
+
 vk::ClearColorValue jsonToClearColor(const nlohmann::json &json) {
     if (!json.is_array() || json.size() != 4) {
         throw std::runtime_error("clear_color must be an array of four floats");
@@ -163,13 +195,17 @@ void registerRenderTargets(const nlohmann::json &data, vk::Extent2D base_extent,
 
     std::unordered_set<std::string> render_target_names;
     for (const auto &rt_json : render_targets) {
-        const std::string name = rt_json.at("name");
+        if (!rt_json.is_object()) {
+            throw std::runtime_error("render_targets entries must be objects");
+        }
+
+        const std::string name = parseStringField(rt_json, "name", "render target");
         if (!render_target_names.insert(name).second) {
             throw std::runtime_error("Duplicate render target name: " + name);
         }
-        const float extent_scale = rt_json.at("extent_scale");
-        const std::string format_str = rt_json.at("format");
-        const std::vector<std::string> usage_strs = rt_json.at("usage");
+        const float extent_scale = parseFloatField(rt_json, "extent_scale", "render target: " + name);
+        const std::string format_str = parseStringField(rt_json, "format", "render target: " + name);
+        const std::vector<std::string> usage_strs = parseStringArrayField(rt_json, "usage", "render target: " + name);
 
         if (extent_scale <= 0.0f) {
             throw std::runtime_error("Render target extent_scale must be positive: " + name);
