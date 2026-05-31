@@ -20,6 +20,19 @@ enum class PassType {
     eUi,
 };
 
+struct MaterialPassInfo {
+    uint32_t material_start = 0;
+    uint32_t material_count = 0;
+};
+
+struct FullscreenPassInfo {
+    GlobalShaderId vert_shader;
+    GlobalShaderId frag_shader;
+    bool needs_projection_matrix = false;
+};
+
+struct UiPassInfo {};
+
 struct PassDefinition {
     PassDefinition() : output_depth{-1} {}
 
@@ -30,17 +43,9 @@ struct PassDefinition {
     GlobalRenderTargetId output_depth;
     std::vector<GlobalRenderTargetId> input_targets;
 
-    struct {
-        uint32_t material_start = 0;
-        uint32_t material_count = 0;
-    } material_info;
-
-    struct {
-        GlobalShaderId vert_shader;
-        GlobalShaderId frag_shader;
-    } fullscreen_info;
-
-    bool needs_projection_matrix = false;
+    MaterialPassInfo material_info;
+    FullscreenPassInfo fullscreen_info;
+    UiPassInfo ui_info;
 
     vk::AttachmentLoadOp color_load_op = vk::AttachmentLoadOp::eClear;
     vk::AttachmentStoreOp color_store_op = vk::AttachmentStoreOp::eStore;

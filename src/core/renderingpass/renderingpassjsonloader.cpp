@@ -223,7 +223,7 @@ PassDefinition parsePassDefinition(const nlohmann::json &pass_json, RenderTarget
         pass_def.input_targets = parseInputTargets(rt_container, pass_json.at("input"));
     }
     if (pass_json.contains("needs_projection_matrix") && pass_json.at("needs_projection_matrix").is_boolean()) {
-        pass_def.needs_projection_matrix = pass_json.at("needs_projection_matrix");
+        pass_def.fullscreen_info.needs_projection_matrix = pass_json.at("needs_projection_matrix");
     }
     if (pass_json.contains("clear_color")) {
         pass_def.clear_color = jsonToClearColor(pass_json.at("clear_color"));
