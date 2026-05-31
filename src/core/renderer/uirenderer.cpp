@@ -3,11 +3,11 @@
 
 #include "../log.hpp"
 #include "../vkcore/core.hpp"
-#include "../vkcore/rendertarget.hpp"
 #include "../shader/shadercontainer.hpp"
 #include "battery/embed.hpp"
 #include <array>
 #include <glm/glm.hpp>
+#include <stdexcept>
 
 namespace Pelican {
 
@@ -131,17 +131,27 @@ UiRenderer::UiRenderer()
     const auto vert_shader = shader_con.registerShader(vert.length(), vert.data());
     const auto frag_shader = shader_con.registerShader(frag.length(), frag.data());
 
-    const auto color_format = GET_MODULE(RenderTarget).getSwapchainFormat();
     pipeline_layout = createPipelineLayout(device, ui_container.getDescriptorSetLayout());
-    pipeline = createPipeline(device, pipeline_layout.get(), shader_con.getShader(vert_shader),
-                              shader_con.getShader(frag_shader), color_format);
+    this->vert_shader = shader_con.getShader(vert_shader);
+    this->frag_shader = shader_con.getShader(frag_shader);
     
     LOG_INFO(logger, "UI Renderer initialized");
 }
 
 UiRenderer::~UiRenderer() {}
 
-void UiRenderer::render(vk::CommandBuffer cmd_buf, const UiDrawRequest &request) const {
+vk::Pipeline UiRenderer::getPipeline(vk::Format color_format) {
+    const auto key = static_cast<int>(color_format);
+    if (auto it = pipelines.find(key); it != pipelines.end()) {
+        return it->second.get();
+    }
+
+    auto pipeline = createPipeline(device, pipeline_layout.get(), vert_shader, frag_shader, color_format);
+    auto it = pipelines.emplace(key, std::move(pipeline)).first;
+    return it->second.get();
+}
+
+void UiRenderer::render(vk::CommandBuffer cmd_buf, const UiDrawRequest &request) {
     auto &ui_container = GET_MODULE(UIContainer);
     const auto &ui_textures = ui_container.getAllTextures();
     
@@ -157,7 +167,7 @@ void UiRenderer::render(vk::CommandBuffer cmd_buf, const UiDrawRequest &request)
     rendering_info.setColorAttachments(attachment);
 
     cmd_buf.beginRendering(rendering_info);
-    cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.get());
+    cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, getPipeline(request.target_format));
 
     for (const auto &[name, tex] : ui_textures) {
         const float aspect_ratio = static_cast<float>(tex.pixel_size.width) / 

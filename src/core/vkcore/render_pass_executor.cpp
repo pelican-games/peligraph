@@ -139,9 +139,13 @@ void RenderPassExecutor::execute(const FrameRenderContext &frame, const PassDefi
         }
 
         const auto rt_id = pass_def.output_color.front();
-        const vk::ImageView target_view = (rt_id.value < 0) ? frame.color_attachment
+        const bool targets_swapchain = rt_id.value < 0;
+        const auto &rt_module = GET_MODULE(RenderTarget);
+        const vk::ImageView target_view = targets_swapchain ? frame.color_attachment
                                                             : rt_container.get(rt_id).image_view.get();
-        GET_MODULE(UiRenderer).render(cmd_buf, UiDrawRequest{target_view, target_extent});
+        const vk::Format target_format = targets_swapchain ? rt_module.getSwapchainFormat()
+                                                           : rt_container.get(rt_id).image.format;
+        GET_MODULE(UiRenderer).render(cmd_buf, UiDrawRequest{target_view, target_extent, target_format});
         transitionColorOutputsToShaderRead(cmd_buf, pass_def, rt_container, vk_utils, layout_tracker);
         return;
     }
