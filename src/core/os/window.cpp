@@ -1,6 +1,7 @@
 #include "window.hpp"
 #include "../loader/basicconfig.hpp"
 #include "../log.hpp"
+#include <algorithm>
 #include <stdexcept>
 
 namespace Pelican {
@@ -39,9 +40,17 @@ WindowCreateInfo makeWindowCreateInfo(ProjectBasicConfig::window_size window_siz
     return WindowCreateInfo{mode->width, mode->height, monitor};
 }
 
+bool isKeyboardKeyTracked(int key) {
+    return key >= 0 && key <= GLFW_KEY_LAST;
+}
+
+bool isMouseButtonTracked(int button) {
+    return button >= 0 && button <= GLFW_MOUSE_BUTTON_LAST;
+}
+
 } // namespace
 
-Window::Window() {
+Window::Window() : window{nullptr}, gamepad_axis{}, cursor_x{0.0f}, cursor_y{0.0f} {
     LOG_INFO(logger, "GLFW initializing...");
 
     const auto &config = GET_MODULE(ProjectBasicConfig);
@@ -70,18 +79,22 @@ Window::Window() {
     LOG_INFO(logger, "GLFW window initialized");
 
     glfwSetKeyCallback(window, [](GLFWwindow *window, int key, int scancode, int action, int mods) {
-        if (action == GLFW_REPEAT)
+        if (action == GLFW_REPEAT || !isKeyboardKeyTracked(key)) {
             return;
+        }
         const auto thiz = static_cast<Window *>(glfwGetWindowUserPointer(window));
 
         // action: GLFW_PRESS == 1, GLFW_RELEASE == 0
-        thiz->key_state.pressing.set(button_id_offset_keyboard + key, action & 1);
+        thiz->key_state.pressing.set(button_id_offset_keyboard + key, action == GLFW_PRESS);
     });
     glfwSetMouseButtonCallback(window, [](GLFWwindow *window, int button, int action, int mods) {
+        if (!isMouseButtonTracked(button)) {
+            return;
+        }
         const auto thiz = static_cast<Window *>(glfwGetWindowUserPointer(window));
 
         // action: GLFW_PRESS == 1, GLFW_RELEASE == 0
-        thiz->key_state.pressing.set(button_id_offset_mouse_button + button, action & 1);
+        thiz->key_state.pressing.set(button_id_offset_mouse_button + button, action == GLFW_PRESS);
     });
     glfwSetCursorPosCallback(window, [](GLFWwindow *window, double xpos, double ypos) {
         const auto thiz = static_cast<Window *>(glfwGetWindowUserPointer(window));
@@ -119,14 +132,15 @@ bool Window::process() {
     glfwPollEvents();
 
     {
-        GLFWgamepadstate state;
-        glfwGetGamepadState(GLFW_JOYSTICK_1, &state);
+        GLFWgamepadstate state{};
+        const bool gamepad_connected = glfwGetGamepadState(GLFW_JOYSTICK_1, &state) == GLFW_TRUE;
         for (int i = 0; i <= GLFW_GAMEPAD_BUTTON_LAST; i++) {
             // GLFW_PRESS == 1, GLFW_RELEASE == 0
-            key_state.pressing.set(button_id_offset_gamepad + i, state.buttons[i] & 1);
+            key_state.pressing.set(button_id_offset_gamepad + i,
+                                   gamepad_connected && state.buttons[i] == GLFW_PRESS);
         }
         for (int i = 0; i <= GLFW_GAMEPAD_AXIS_LAST; i++) {
-            gamepad_axis[i] = state.axes[i];
+            gamepad_axis[i] = gamepad_connected ? state.axes[i] : 0.0f;
         }
     }
 
