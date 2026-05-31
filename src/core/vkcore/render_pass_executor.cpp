@@ -44,14 +44,6 @@ void transitionInputsToShaderRead(vk::CommandBuffer cmd_buf, const PassDefinitio
     }
 }
 
-void transitionColorOutputsToShaderRead(vk::CommandBuffer cmd_buf, const PassDefinition &pass_def,
-                                        RenderTargetContainer &rt_container, VulkanUtils &vk_utils,
-                                        RenderTargetLayoutTracker &layout_tracker) {
-    for (const auto &rt_id : pass_def.output_color) {
-        layout_tracker.transition(cmd_buf, rt_container, vk_utils, rt_id, vk::ImageLayout::eShaderReadOnlyOptimal);
-    }
-}
-
 std::vector<vk::RenderingAttachmentInfo> createColorAttachments(const FrameRenderContext &frame,
                                                                 const PassDefinition &pass_def,
                                                                 RenderTargetContainer &rt_container) {
@@ -157,7 +149,6 @@ void RenderPassExecutor::execute(const FrameRenderContext &frame, const PassDefi
         GET_MODULE(UiRenderer).render(cmd_buf, UiDrawRequest{target_view, target_extent, target_format,
                                                              pass_def.color_load_op, pass_def.color_store_op,
                                                              pass_def.clear_color});
-        transitionColorOutputsToShaderRead(cmd_buf, pass_def, rt_container, vk_utils, layout_tracker);
         return;
     }
 
@@ -184,7 +175,6 @@ void RenderPassExecutor::execute(const FrameRenderContext &frame, const PassDefi
     }
 
     cmd_buf.endRendering();
-    transitionColorOutputsToShaderRead(cmd_buf, pass_def, rt_container, vk_utils, layout_tracker);
 }
 
 } // namespace Pelican
