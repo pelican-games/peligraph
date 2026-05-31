@@ -1,6 +1,7 @@
 #include "renderingpassjsonloader.hpp"
 #include "renderingpasscontainer.hpp"
 #include "renderingpassjsonhelpers.hpp"
+#include "renderingpasstargetjsonparser.hpp"
 #include "renderingpassvalidation.hpp"
 #include "rendertargetcontainer.hpp"
 #include "rendertargetjsonparser.hpp"
@@ -11,7 +12,6 @@
 #include <stdexcept>
 #include <unordered_set>
 #include <utility>
-#include <vector>
 
 namespace Pelican {
 
@@ -20,80 +20,6 @@ namespace {
 GlobalShaderId registerShaderFromFile(ShaderContainer &shader_container, const std::string &path) {
     const auto data = readBinaryFile(path);
     return shader_container.registerShader(data.size(), data.data());
-}
-
-GlobalRenderTargetId resolveRenderTarget(RenderTargetContainer &rt_container, const std::string &name,
-                                         const std::string &role) {
-    const auto rt_id = rt_container.getRenderTargetIdByName(name);
-    if (!isConcreteRenderTarget(rt_id)) {
-        throw std::runtime_error(role + " render target not found: " + name);
-    }
-    return rt_id;
-}
-
-std::vector<GlobalRenderTargetId> parseColorOutputs(RenderTargetContainer &rt_container,
-                                                    nlohmann::json color_output) {
-    if (color_output.is_null()) {
-        return {};
-    }
-    if (!color_output.is_array()) {
-        color_output = nlohmann::json::array({color_output});
-    }
-
-    std::vector<GlobalRenderTargetId> output_color;
-    for (const auto &color_name_json : color_output) {
-        if (!color_name_json.is_string()) {
-            throw std::runtime_error("Color output must be a render target name");
-        }
-        const std::string color_name = color_name_json;
-        validateName(color_name, "Color output target");
-        if (color_name == "swapchain") {
-            output_color.push_back(swapchainRenderTargetId());
-        } else {
-            output_color.push_back(resolveRenderTarget(rt_container, color_name, "Color"));
-        }
-    }
-    return output_color;
-}
-
-GlobalRenderTargetId parseDepthOutput(RenderTargetContainer &rt_container, const nlohmann::json &depth_output) {
-    if (depth_output.is_null()) {
-        return noRenderTargetId();
-    }
-    if (!depth_output.is_string()) {
-        throw std::runtime_error("Depth output must be null or a render target name");
-    }
-
-    const std::string depth_name = depth_output.get<std::string>();
-    validateName(depth_name, "Depth output target");
-    if (depth_name == "swapchain") {
-        throw std::runtime_error("Depth output target cannot be swapchain");
-    }
-    return resolveRenderTarget(rt_container, depth_name, "Depth");
-}
-
-std::vector<GlobalRenderTargetId> parseInputTargets(RenderTargetContainer &rt_container,
-                                                    nlohmann::json input_output) {
-    if (input_output.is_null()) {
-        return {};
-    }
-    if (!input_output.is_array()) {
-        input_output = nlohmann::json::array({input_output});
-    }
-
-    std::vector<GlobalRenderTargetId> input_targets;
-    for (const auto &input_name_json : input_output) {
-        if (!input_name_json.is_string()) {
-            throw std::runtime_error("Input target must be a render target name");
-        }
-        const std::string input_name = input_name_json.get<std::string>();
-        validateName(input_name, "Input target");
-        if (input_name == "swapchain") {
-            throw std::runtime_error("Input target cannot be swapchain");
-        }
-        input_targets.push_back(resolveRenderTarget(rt_container, input_name, "Input"));
-    }
-    return input_targets;
 }
 
 void parseMaterialInfo(PassDefinition &pass_def, const nlohmann::json &pass_json) {
@@ -191,8 +117,8 @@ PassDefinition parsePassDefinition(const nlohmann::json &pass_json, RenderTarget
     if (!output.contains("color") || !output.contains("depth")) {
         throw std::runtime_error("Pass output requires color and depth fields: " + pass_def.name);
     }
-    pass_def.output_color = parseColorOutputs(rt_container, output.at("color"));
-    pass_def.output_depth = parseDepthOutput(rt_container, output.at("depth"));
+    pass_def.output_color = parseColorOutputTargetsFromJson(rt_container, output.at("color"));
+    pass_def.output_depth = parseDepthOutputTargetFromJson(rt_container, output.at("depth"));
 
     validatePassOutputs(pass_def);
     validatePassSpecificFields(pass_def, pass_json);
@@ -200,7 +126,7 @@ PassDefinition parsePassDefinition(const nlohmann::json &pass_json, RenderTarget
     parseMaterialInfo(pass_def, pass_json);
 
     if (pass_json.contains("input")) {
-        pass_def.input_targets = parseInputTargets(rt_container, pass_json.at("input"));
+        pass_def.input_targets = parseInputTargetsFromJson(rt_container, pass_json.at("input"));
     }
     validatePassInputs(pass_def);
     validatePassTargetUsage(pass_def, rt_container);
