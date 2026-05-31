@@ -222,6 +222,12 @@ void parseFullscreenInfo(PassDefinition &pass_def, const nlohmann::json &pass_js
         // Keep old project configs working until they declare push_constants explicitly.
         fullscreenInfo.push_constants = FullscreenPushConstantData::eCameraPosition;
     }
+    if (pass_json.contains("uses_light_data")) {
+        fullscreenInfo.uses_light_data = pass_json.at("uses_light_data").get<bool>();
+    } else if (pass_def.name == "lighting_pass") {
+        // Keep old project configs working until they declare uses_light_data explicitly.
+        fullscreenInfo.uses_light_data = true;
+    }
     if (!pass_json.contains("shader")) {
         return;
     }

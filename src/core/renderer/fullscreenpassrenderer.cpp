@@ -56,14 +56,16 @@ FullscreenPassRenderer::~FullscreenPassRenderer() {}
 
 void FullscreenPassRenderer::render(vk::CommandBuffer cmd_buf, PassId pass_id, const PassDefinition &pass_def) const {
     auto &container = GET_MODULE(FullscreenPassContainer);
-    auto &light_container = GET_MODULE(LightContainer);
+    const auto &fullscreenInfo = pass_def.fullscreenInfo();
     const auto pipeline_layout = container.getPipelineLayout();
 
     container.bindResource(cmd_buf, pass_id);
 
-    light_container.bindResource(cmd_buf, pipeline_layout, lightDescriptorSetNumber);
+    if (fullscreenInfo.uses_light_data) {
+        GET_MODULE(LightContainer).bindResource(cmd_buf, pipeline_layout, lightDescriptorSetNumber);
+    }
 
-    pushFullscreenConstants(cmd_buf, pipeline_layout, pass_def.fullscreenInfo().push_constants);
+    pushFullscreenConstants(cmd_buf, pipeline_layout, fullscreenInfo.push_constants);
 
     cmd_buf.draw(6, 1, 0, 0);
 }

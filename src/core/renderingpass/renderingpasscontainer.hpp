@@ -30,6 +30,7 @@ struct FullscreenPassInfo {
     GlobalShaderId vert_shader;
     GlobalShaderId frag_shader;
     FullscreenPushConstantData push_constants = FullscreenPushConstantData::eNone;
+    bool uses_light_data = false;
 };
 
 struct UiPassInfo {};
