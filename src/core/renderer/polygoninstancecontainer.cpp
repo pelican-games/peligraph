@@ -1,5 +1,6 @@
 #include "polygoninstancecontainer.hpp"
 #include "../vkcore/core.hpp"
+#include <algorithm>
 #include <glm/ext/matrix_transform.hpp>
 #include <limits>
 #include <stdexcept>
@@ -82,7 +83,18 @@ ModelInstanceId PolygonInstanceContainer::placeModelInstance(ModelTemplate &mode
     }
     return id;
 }
-void PolygonInstanceContainer::removeModelInstance(ModelInstanceId id) {}
+void PolygonInstanceContainer::removeModelInstance(ModelInstanceId id) {
+    if (id.value >= model_instances_data.size()) {
+        return;
+    }
+
+    const auto first_instance = id.value;
+    std::erase_if(render_commands, [first_instance](const RenderCommand &command) {
+        return command.command.firstInstance == first_instance;
+    });
+    model_instances_data[id.value] = glm::identity<glm::mat4>();
+}
+
 void PolygonInstanceContainer::triggerUpdate() {
     // clear previous frame
     draw_calls.clear();
@@ -121,6 +133,10 @@ void PolygonInstanceContainer::triggerUpdate() {
 }
 
 void PolygonInstanceContainer::setTrs(ModelInstanceId id, glm::vec3 pos, glm::quat rotation, glm::vec3 scale) {
+    if (id.value >= model_instances_data.size()) {
+        throw std::runtime_error("Model instance not found");
+    }
+
     model_instances_data[id.value] = glm::translate(glm::identity<glm::mat4>(), pos) * glm::toMat4(rotation) *
                                      glm::scale(glm::identity<glm::mat4>(), scale);
 }
