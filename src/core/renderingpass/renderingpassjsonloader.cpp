@@ -9,6 +9,7 @@
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace Pelican {
@@ -152,8 +153,12 @@ void registerRenderTargets(const nlohmann::json &data, vk::Extent2D base_extent,
         return;
     }
 
+    std::unordered_set<std::string> render_target_names;
     for (const auto &rt_json : data.at("render_targets")) {
         const std::string name = rt_json.at("name");
+        if (!render_target_names.insert(name).second) {
+            throw std::runtime_error("Duplicate render target name: " + name);
+        }
         const float extent_scale = rt_json.at("extent_scale");
         const std::string format_str = rt_json.at("format");
         const std::vector<std::string> usage_strs = rt_json.at("usage");
@@ -343,7 +348,12 @@ RenderingPassDefinition parseRenderingPassDefinition(const nlohmann::json &pass_
     RenderingPassDefinition pass_def;
     pass_def.name = pass_set_json.at("name");
 
+    std::unordered_set<std::string> pass_names;
     for (const auto &pass_json : pass_set_json.at("passes")) {
+        const std::string pass_name = pass_json.at("name");
+        if (!pass_names.insert(pass_name).second) {
+            throw std::runtime_error("Duplicate pass name: " + pass_name);
+        }
         pass_def.passes.push_back(parsePassDefinition(pass_json, rt_container, shader_container));
     }
 
@@ -372,7 +382,12 @@ void RenderingPassJsonLoader::registerRenderingPassesFromJson(const std::string 
         return;
     }
 
+    std::unordered_set<std::string> rendering_pass_names;
     for (const auto &pass_set_json : rendering_pass_data.at("rendering_passes")) {
+        const std::string rendering_pass_name = pass_set_json.at("name");
+        if (!rendering_pass_names.insert(rendering_pass_name).second) {
+            throw std::runtime_error("Duplicate rendering pass name: " + rendering_pass_name);
+        }
         pass_container.registerRenderingPass(
             parseRenderingPassDefinition(pass_set_json, rt_container, shader_container));
     }
