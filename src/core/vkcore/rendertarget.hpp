@@ -40,6 +40,7 @@ DECLARE_MODULE(RenderTarget) {
     vk::UniqueImageView depth_image_view;
 
     void surfaceDependantsSetup();
+    void recreateSurfaceDependants();
 
   public:
     RenderTarget();

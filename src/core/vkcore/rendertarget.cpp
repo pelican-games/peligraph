@@ -135,6 +135,11 @@ void RenderTarget::surfaceDependantsSetup() {
     depth_image_view = createImageViewsForDepth(device, depth_image);
 }
 
+void RenderTarget::recreateSurfaceDependants() {
+    device.waitIdle();
+    surfaceDependantsSetup();
+}
+
 RenderTarget::RenderTarget()
     : device{GET_MODULE(VulkanManageCore).getDevice()},
       image_acquire_semaphores{GET_MODULE(VulkanManageCore).createSemaphores(in_flight_frames_num)},
@@ -171,7 +176,7 @@ FrameRenderContext RenderTarget::render_begin() {
             device.acquireNextImageKHR(swapchain.swapchain.get(), UINT64_MAX, image_prepared_semaphore);
         if (image_acquire_result.result == vk::Result::eSuboptimalKHR ||
             image_acquire_result.result == vk::Result::eErrorOutOfDateKHR) {
-            surfaceDependantsSetup();
+            recreateSurfaceDependants();
             continue;
         }
         if (image_acquire_result.result != vk::Result::eSuccess) {
@@ -251,8 +256,11 @@ void RenderTarget::render_end() {
     presen_info.setImageIndices(current_image_index);
     presen_info.setWaitSemaphores(rendered_semaphores[in_flight_frame_index].get());
 
-    if (auto result = presen_queue.presentKHR(presen_info); result != vk::Result::eSuccess) {
-        throw std::runtime_error("failed on vkQueuePresentKHR : " + vk::to_string(result));
+    const auto present_result = presen_queue.presentKHR(presen_info);
+    if (present_result == vk::Result::eSuboptimalKHR || present_result == vk::Result::eErrorOutOfDateKHR) {
+        recreateSurfaceDependants();
+    } else if (present_result != vk::Result::eSuccess) {
+        throw std::runtime_error("failed on vkQueuePresentKHR : " + vk::to_string(present_result));
     }
 
     in_flight_frame_index++;
