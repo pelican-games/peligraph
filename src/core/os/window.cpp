@@ -44,6 +44,21 @@ Window::Window() {
 
 Window::~Window() {}
 
+vk::Extent2D Window::waitFramebufferExtent() const {
+    int width = 0;
+    int height = 0;
+    while (true) {
+        glfwGetFramebufferSize(window, &width, &height);
+        if (width > 0 && height > 0) {
+            return vk::Extent2D{static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
+        }
+        if (glfwWindowShouldClose(window)) {
+            throw std::runtime_error("Window closed while waiting for non-zero framebuffer size");
+        }
+        glfwWaitEvents();
+    }
+}
+
 bool Window::process() {
     key_state.pressing_old = key_state.pressing;
     glfwPollEvents();

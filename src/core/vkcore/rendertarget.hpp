@@ -11,6 +11,7 @@ namespace Pelican {
 struct SwapchainWithFmt {
     vk::UniqueSwapchainKHR swapchain;
     vk::Format format;
+    vk::Extent2D extent;
 };
 
 struct FrameRenderContext {

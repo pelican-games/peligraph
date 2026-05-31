@@ -1,8 +1,10 @@
 #include "rendertarget.hpp"
 #include "../log.hpp"
+#include "../os/window.hpp"
 #include "../renderer/camera.hpp"
 #include "core.hpp"
 #include <algorithm>
+#include <limits>
 #include <stdexcept>
 
 namespace Pelican {
@@ -15,8 +17,20 @@ static uint32_t chooseSwapchainImageCount(const vk::SurfaceCapabilitiesKHR &surf
     return image_count;
 }
 
+static vk::Extent2D chooseSwapchainExtent(const vk::SurfaceCapabilitiesKHR &surface_cap,
+                                          vk::Extent2D framebuffer_extent) {
+    if (surface_cap.currentExtent.width != std::numeric_limits<uint32_t>::max()) {
+        return surface_cap.currentExtent;
+    }
+
+    return vk::Extent2D{
+        std::clamp(framebuffer_extent.width, surface_cap.minImageExtent.width, surface_cap.maxImageExtent.width),
+        std::clamp(framebuffer_extent.height, surface_cap.minImageExtent.height, surface_cap.maxImageExtent.height),
+    };
+}
+
 static SwapchainWithFmt createSwapchain(vk::Device device, const vk::PhysicalDevice &phys_device,
-                                        vk::SurfaceKHR surface) {
+                                        vk::SurfaceKHR surface, vk::Extent2D framebuffer_extent) {
     LOG_INFO(logger, "vulkan swapchain creating...");
 
     vk::SwapchainCreateInfoKHR create_info;
@@ -52,10 +66,12 @@ static SwapchainWithFmt createSwapchain(vk::Device device, const vk::PhysicalDev
     };
     std::stable_sort(surface_presentmodes.begin(), surface_presentmodes.end(), pred_mode);
 
+    const auto swapchain_extent = chooseSwapchainExtent(surface_cap, framebuffer_extent);
+
     create_info.minImageCount = chooseSwapchainImageCount(surface_cap);
     create_info.imageFormat = surface_fmts[0].format;
     create_info.imageColorSpace = surface_fmts[0].colorSpace;
-    create_info.imageExtent = surface_cap.currentExtent;
+    create_info.imageExtent = swapchain_extent;
     create_info.imageArrayLayers = 1;
     create_info.imageUsage = vk::ImageUsageFlagBits::eColorAttachment;
     create_info.imageSharingMode = vk::SharingMode::eExclusive;
@@ -63,7 +79,7 @@ static SwapchainWithFmt createSwapchain(vk::Device device, const vk::PhysicalDev
     create_info.presentMode = surface_presentmodes[0];
     create_info.clipped = VK_TRUE;
 
-    return SwapchainWithFmt{device.createSwapchainKHRUnique(create_info), surface_fmts[0].format};
+    return SwapchainWithFmt{device.createSwapchainKHRUnique(create_info), surface_fmts[0].format, swapchain_extent};
 }
 
 static std::vector<vk::Image> getImageFromSwapchain(vk::Device device, vk::SwapchainKHR swapchain) {
@@ -116,10 +132,6 @@ static vk::UniqueImageView createImageViewsForDepth(vk::Device device, const Ima
     return device.createImageViewUnique(create_info);
 }
 
-static vk::Extent2D getSurfaceExtent(vk::PhysicalDevice phys_device, vk::SurfaceKHR surface) {
-    return phys_device.getSurfaceCapabilitiesKHR(surface).currentExtent;
-}
-
 void RenderTarget::releaseSurfaceDependants() {
     depth_image_view.reset();
     depth_image = ImageWrapper{};
@@ -129,12 +141,13 @@ void RenderTarget::releaseSurfaceDependants() {
 }
 
 void RenderTarget::surfaceDependantsSetup() {
+    const auto framebuffer_extent = GET_MODULE(Window).waitFramebufferExtent();
     releaseSurfaceDependants();
-    extent = getSurfaceExtent(GET_MODULE(VulkanManageCore).getPhysDevice(), GET_MODULE(VulkanManageCore).getSurface());
+    swapchain = createSwapchain(GET_MODULE(VulkanManageCore).getDevice(), GET_MODULE(VulkanManageCore).getPhysDevice(),
+                                GET_MODULE(VulkanManageCore).getSurface(), framebuffer_extent);
+    extent = swapchain.extent;
     GET_MODULE(Camera).setScreenSize(extent.width, extent.height);
     presen_queue = GET_MODULE(VulkanManageCore).getPresentationQueue();
-    swapchain = createSwapchain(GET_MODULE(VulkanManageCore).getDevice(), GET_MODULE(VulkanManageCore).getPhysDevice(),
-                                GET_MODULE(VulkanManageCore).getSurface());
     swapchain_images = getImageFromSwapchain(device, swapchain.swapchain.get());
     swapchain_image_views = createImageViewsFromImages(device, swapchain_images, swapchain.format);
     depth_image =

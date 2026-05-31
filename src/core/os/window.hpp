@@ -30,6 +30,7 @@ DECLARE_MODULE(Window) {
     Window();
     ~Window();
 
+    vk::Extent2D waitFramebufferExtent() const;
     vk::UniqueSurfaceKHR getVulkanSurface(vk::Instance instance);
     std::vector<const char *> getRequiredVulkanInstanceExts();
 
