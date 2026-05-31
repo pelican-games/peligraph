@@ -3,6 +3,7 @@
 #include "../renderer/fullscreenpassrenderer.hpp"
 #include "../renderer/materialrender.hpp"
 #include "../renderer/uirenderer.hpp"
+#include <stdexcept>
 
 namespace Pelican {
 
@@ -46,7 +47,7 @@ void renderFullscreenPass(vk::CommandBuffer cmd_buf, PassId pass_id, const PassD
 void renderUiPass(vk::CommandBuffer cmd_buf, const FrameRenderContext &frame, const PassDefinition &pass_def,
                   vk::Extent2D target_extent, RenderTargetContainer &rt_container) {
     if (pass_def.output_color.empty()) {
-        return;
+        throw std::runtime_error("UI pass has no color output: " + pass_def.name);
     }
 
     const auto rt_id = pass_def.output_color.front();
