@@ -1,6 +1,6 @@
 #pragma once
 
-#include "renderingpasscontainer.hpp"
+#include "renderingpass.hpp"
 #include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
