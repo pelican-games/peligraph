@@ -697,6 +697,9 @@ void RenderingPassJsonLoader::registerRenderingPassesFromJson(const std::string 
     auto &pass_container = GET_MODULE(RenderingPassContainer);
 
     const auto rendering_pass_data = nlohmann::json::parse(readBinaryFile(json_path));
+    if (!rendering_pass_data.is_object()) {
+        throw std::runtime_error("Rendering config must be an object: " + json_path);
+    }
 
     const auto window_size = config.initialWindowSize();
     const vk::Extent2D base_extent{
