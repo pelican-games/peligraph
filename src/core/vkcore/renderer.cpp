@@ -3,6 +3,7 @@
 #include "../loader/basicconfig.hpp"
 #include "../log.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
+#include "../renderingpass/renderingpassjsonloader.hpp"
 #include "battery/embed.hpp"
 #include "core.hpp"
 #include "render_pass_executor.hpp"
@@ -19,7 +20,7 @@ Renderer::Renderer() : device{GET_MODULE(VulkanManageCore).getDevice()} {
     try {
         const auto main_config_path = config.renderingConfigJson();
         if (std::filesystem::exists(main_config_path)) {
-            pass_container.registerRenderingPassFromJson(main_config_path);
+            GET_MODULE(RenderingPassJsonLoader).registerRenderingPassesFromJson(main_config_path);
         } else {
             throw std::runtime_error("Main rendering configuration JSON file not found: " + main_config_path);
         }
