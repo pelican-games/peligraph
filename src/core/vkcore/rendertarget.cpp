@@ -120,7 +120,16 @@ static vk::Extent2D getSurfaceExtent(vk::PhysicalDevice phys_device, vk::Surface
     return phys_device.getSurfaceCapabilitiesKHR(surface).currentExtent;
 }
 
+void RenderTarget::releaseSurfaceDependants() {
+    depth_image_view.reset();
+    depth_image = ImageWrapper{};
+    swapchain_image_views.clear();
+    swapchain_images.clear();
+    swapchain = SwapchainWithFmt{};
+}
+
 void RenderTarget::surfaceDependantsSetup() {
+    releaseSurfaceDependants();
     extent = getSurfaceExtent(GET_MODULE(VulkanManageCore).getPhysDevice(), GET_MODULE(VulkanManageCore).getSurface());
     GET_MODULE(Camera).setScreenSize(extent.width, extent.height);
     presen_queue = GET_MODULE(VulkanManageCore).getPresentationQueue();

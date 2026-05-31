@@ -39,6 +39,7 @@ DECLARE_MODULE(RenderTarget) {
     ImageWrapper depth_image;
     vk::UniqueImageView depth_image_view;
 
+    void releaseSurfaceDependants();
     void surfaceDependantsSetup();
     void recreateSurfaceDependants();
 
