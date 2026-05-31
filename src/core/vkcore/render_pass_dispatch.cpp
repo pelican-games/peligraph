@@ -67,6 +67,8 @@ void renderDynamicPassDrawCalls(vk::CommandBuffer cmd_buf, PassId pass_id, const
         renderMaterialPass(cmd_buf, pass_id, pass_def);
     } else if (pass_def.isFullscreen()) {
         renderFullscreenPass(cmd_buf, pass_id, pass_def);
+    } else {
+        throw std::runtime_error("Unsupported dynamic render pass type: " + pass_def.name);
     }
 }
 
