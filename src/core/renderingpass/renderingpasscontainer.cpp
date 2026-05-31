@@ -67,7 +67,7 @@ RenderingPassId RenderingPassContainer::getRenderingPassIdByName(const std::stri
     if (auto it = name_to_id.find(name); it != name_to_id.end()) {
         return it->second;
     }
-    return RenderingPassId{-1};
+    return invalidRenderingPassId();
 }
 
 std::span<const PassId> RenderingPassContainer::getPasses(RenderingPassId rendering_pass_id) const {

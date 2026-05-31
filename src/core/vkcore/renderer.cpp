@@ -47,7 +47,7 @@ Renderer::Renderer() : device{GET_MODULE(VulkanManageCore).getDevice()} {
     }
 
     current_rendering_pass_id = pass_container.getRenderingPassIdByName(config.defaultRenderingPass());
-    if (current_rendering_pass_id.value < 0) {
+    if (!isValidRenderingPassId(current_rendering_pass_id)) {
         throw std::runtime_error("Rendering pass not found: " + config.defaultRenderingPass());
     }
     if (!outputsToSwapchain(pass_container, current_rendering_pass_id)) {
