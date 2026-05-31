@@ -5,10 +5,17 @@
 #include "../material/materialcontainer.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
 #include "../light/lightcontainer.hpp"
+#include <stdexcept>
 
 namespace Pelican {
 
-static vk::UniqueDescriptorSetLayout createInputDescSetLayout(vk::Device device, uint32_t maxInputs = 8) {
+namespace {
+
+constexpr uint32_t fullscreenInputBindingCount = 8;
+
+} // namespace
+
+static vk::UniqueDescriptorSetLayout createInputDescSetLayout(vk::Device device, uint32_t maxInputs) {
     // 複数のbindingを作成（最大maxInputs個）
     std::vector<vk::DescriptorSetLayoutBinding> bindings(maxInputs);
     for (uint32_t i = 0; i < maxInputs; ++i) {
@@ -126,7 +133,7 @@ static vk::UniquePipeline createFullscreenPipeline(vk::Device device, vk::Pipeli
 static vk::UniqueDescriptorPool createDescPool(vk::Device device, uint32_t maxSets = 64) {
     vk::DescriptorPoolSize poolSize{};
     poolSize.type = vk::DescriptorType::eCombinedImageSampler;
-    poolSize.descriptorCount = maxSets * 8;  // 1セットあたり最大8入力想定
+    poolSize.descriptorCount = maxSets * fullscreenInputBindingCount;
     
     vk::DescriptorPoolCreateInfo ci{};
     ci.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
@@ -164,7 +171,7 @@ FullscreenPassContainer::FullscreenPassContainer()
     
     auto& light_container = GET_MODULE(LightContainer);
 
-    auto input_desc_layout = createInputDescSetLayout(device);
+    auto input_desc_layout = createInputDescSetLayout(device, fullscreenInputBindingCount);
 
     std::vector<vk::DescriptorSetLayout> layouts = {
         input_desc_layout.get(),
@@ -209,6 +216,10 @@ void FullscreenPassContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pas
 
 void FullscreenPassContainer::setInputTextures(PassId pass_id, const std::vector<GlobalRenderTargetId>& input_rts) {
     auto& rt_container = GET_MODULE(RenderTargetContainer);
+
+    if (input_rts.size() > fullscreenInputBindingCount) {
+        throw std::runtime_error("Fullscreen pass has too many input textures");
+    }
     
     // Descriptor set を作成
     vk::DescriptorSetLayout layout = descset_layouts[0].get();
@@ -228,7 +239,9 @@ void FullscreenPassContainer::setInputTextures(PassId pass_id, const std::vector
     
     for (uint32_t i = 0; i < input_rts.size(); ++i) {
         const auto& rt_id = input_rts[i];
-        if (rt_id.value < 0) continue;
+        if (rt_id.value < 0) {
+            throw std::runtime_error("Fullscreen pass input texture must be a render target");
+        }
         
         const auto& rt = rt_container.get(rt_id);
         
