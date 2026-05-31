@@ -3,5 +3,6 @@ target_sources(pelican_core PRIVATE
     renderingpassjsonhelpers.cpp
     renderingpassjsonloader.cpp
     renderingpassvalidation.cpp
+    rendertargetjsonparser.cpp
     rendertargetcontainer.cpp
 )
