@@ -146,6 +146,11 @@ vk::ClearColorValue jsonToClearColor(const nlohmann::json &json) {
     if (!json.is_array() || json.size() != 4) {
         throw std::runtime_error("clear_color must be an array of four floats");
     }
+    for (const auto &value_json : json) {
+        if (!value_json.is_number()) {
+            throw std::runtime_error("clear_color must be an array of four floats");
+        }
+    }
 
     return vk::ClearColorValue{std::array{
         json.at(0).get<float>(),
@@ -503,10 +508,12 @@ PassDefinition parsePassDefinition(const nlohmann::json &pass_json, RenderTarget
         pass_def.clear_color = jsonToClearColor(pass_json.at("clear_color"));
     }
     if (pass_json.contains("color_load_op")) {
-        pass_def.color_load_op = stringToLoadOp(pass_json.at("color_load_op").get<std::string>());
+        pass_def.color_load_op =
+            stringToLoadOp(parseStringField(pass_json, "color_load_op", "pass: " + pass_def.name));
     }
     if (pass_json.contains("color_store_op")) {
-        pass_def.color_store_op = stringToStoreOp(pass_json.at("color_store_op").get<std::string>());
+        pass_def.color_store_op =
+            stringToStoreOp(parseStringField(pass_json, "color_store_op", "pass: " + pass_def.name));
     }
 
     parseFullscreenInfo(pass_def, pass_json, shader_container);
