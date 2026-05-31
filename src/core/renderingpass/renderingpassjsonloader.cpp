@@ -178,12 +178,18 @@ void registerRenderTargets(const nlohmann::json &data, vk::Extent2D base_extent,
 
 std::vector<GlobalRenderTargetId> parseColorOutputs(RenderTargetContainer &rt_container,
                                                     nlohmann::json color_output) {
+    if (color_output.is_null()) {
+        return {};
+    }
     if (!color_output.is_array()) {
         color_output = nlohmann::json::array({color_output});
     }
 
     std::vector<GlobalRenderTargetId> output_color;
     for (const auto &color_name_json : color_output) {
+        if (!color_name_json.is_string()) {
+            throw std::runtime_error("Color output must be a render target name");
+        }
         const std::string color_name = color_name_json;
         if (color_name == "swapchain") {
             output_color.push_back(GlobalRenderTargetId{-2});
@@ -206,6 +212,30 @@ std::vector<GlobalRenderTargetId> parseInputTargets(RenderTargetContainer &rt_co
         input_targets.push_back(resolveRenderTarget(rt_container, input_name, "Input"));
     }
     return input_targets;
+}
+
+void validatePassOutputs(const PassDefinition &pass_def) {
+    if (pass_def.output_color.empty() && pass_def.output_depth.value < 0) {
+        throw std::runtime_error("Pass must output color or depth: " + pass_def.name);
+    }
+
+    if (pass_def.isFullscreen()) {
+        if (pass_def.output_color.size() != 1) {
+            throw std::runtime_error("Fullscreen pass requires exactly one color output: " + pass_def.name);
+        }
+        if (pass_def.output_depth.value >= 0) {
+            throw std::runtime_error("Fullscreen pass does not support depth output: " + pass_def.name);
+        }
+    }
+
+    if (pass_def.isUi()) {
+        if (pass_def.output_color.size() != 1) {
+            throw std::runtime_error("UI pass requires exactly one color output: " + pass_def.name);
+        }
+        if (pass_def.output_depth.value >= 0) {
+            throw std::runtime_error("UI pass does not support depth output: " + pass_def.name);
+        }
+    }
 }
 
 void parseMaterialInfo(PassDefinition &pass_def, const nlohmann::json &pass_json) {
@@ -271,6 +301,8 @@ PassDefinition parsePassDefinition(const nlohmann::json &pass_json, RenderTarget
     } else {
         pass_def.output_depth = GlobalRenderTargetId{-1};
     }
+
+    validatePassOutputs(pass_def);
 
     parseMaterialInfo(pass_def, pass_json);
 
