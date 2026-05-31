@@ -36,6 +36,14 @@ void transitionOutputsToAttachmentLayouts(vk::CommandBuffer cmd_buf, const PassD
                               vk::ImageLayout::eDepthAttachmentOptimal);
 }
 
+void transitionInputsToShaderRead(vk::CommandBuffer cmd_buf, const PassDefinition &pass_def,
+                                  RenderTargetContainer &rt_container, VulkanUtils &vk_utils,
+                                  RenderTargetLayoutTracker &layout_tracker) {
+    for (const auto &rt_id : pass_def.input_targets) {
+        layout_tracker.transition(cmd_buf, rt_container, vk_utils, rt_id, vk::ImageLayout::eShaderReadOnlyOptimal);
+    }
+}
+
 void transitionColorOutputsToShaderRead(vk::CommandBuffer cmd_buf, const PassDefinition &pass_def,
                                         RenderTargetContainer &rt_container, VulkanUtils &vk_utils,
                                         RenderTargetLayoutTracker &layout_tracker) {
@@ -131,6 +139,7 @@ void RenderPassExecutor::execute(const FrameRenderContext &frame, const PassDefi
     const auto cmd_buf = frame.cmd_buf;
     const auto target_extent = getTargetExtent(frame, pass_def, rt_container);
 
+    transitionInputsToShaderRead(cmd_buf, pass_def, rt_container, vk_utils, layout_tracker);
     transitionOutputsToAttachmentLayouts(cmd_buf, pass_def, rt_container, vk_utils, layout_tracker);
 
     if (pass_def.isUi()) {
