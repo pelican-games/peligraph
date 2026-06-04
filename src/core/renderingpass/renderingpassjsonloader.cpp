@@ -2,6 +2,7 @@
 #include "renderingpasscontainer.hpp"
 #include "renderingpassconfigjsonparser.hpp"
 #include "renderingpassjsonhelpers.hpp"
+#include "renderingpassruntimecompiler.hpp"
 #include "rendertargetcontainer.hpp"
 #include "rendertargetjsonparser.hpp"
 #include "../loader/basicconfig.hpp"
@@ -33,7 +34,7 @@ void RenderingPassJsonLoader::registerRenderingPassesFromJson(const std::string 
     const auto pass_definitions =
         parseRenderingPassDefinitionsFromConfigJson(rendering_pass_data, rt_container);
     for (const auto &pass_definition : pass_definitions) {
-        pass_container.registerRenderingPass(pass_definition);
+        pass_container.registerCompiledRenderingPass(compileRenderingPassRuntime(pass_definition));
     }
 }
 

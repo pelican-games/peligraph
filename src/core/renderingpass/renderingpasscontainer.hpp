@@ -3,11 +3,9 @@
 #include "../container.hpp"
 #include "../resourcecontainer.hpp"
 #include "renderingpass.hpp"
-#include <cstddef>
 #include <span>
 #include <string>
 #include <unordered_map>
-#include <vector>
 
 namespace Pelican {
 
@@ -19,7 +17,7 @@ DECLARE_MODULE(RenderingPassContainer) {
     RenderingPassContainer();
     ~RenderingPassContainer();
 
-    RenderingPassId registerRenderingPass(const RenderingPassDefinition &definition);
+    RenderingPassId registerCompiledRenderingPass(CompiledRenderingPass pass);
     RenderingPassId getRenderingPassIdByName(const std::string &name) const;
     std::span<const CompiledPass> getCompiledPasses(RenderingPassId rendering_pass_id) const;
 };

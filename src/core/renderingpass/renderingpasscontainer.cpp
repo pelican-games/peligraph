@@ -1,5 +1,4 @@
 #include "renderingpasscontainer.hpp"
-#include "renderingpassruntimecompiler.hpp"
 #include <utility>
 
 namespace Pelican {
@@ -8,14 +7,14 @@ RenderingPassContainer::RenderingPassContainer() {}
 
 RenderingPassContainer::~RenderingPassContainer() {}
 
-RenderingPassId RenderingPassContainer::registerRenderingPass(const RenderingPassDefinition &definition) {
-    if (auto it = name_to_id.find(definition.name); it != name_to_id.end()) {
+RenderingPassId RenderingPassContainer::registerCompiledRenderingPass(CompiledRenderingPass pass) {
+    if (auto it = name_to_id.find(pass.name); it != name_to_id.end()) {
         return it->second;
     }
 
-    auto compiled_pass = compileRenderingPassRuntime(definition);
-    auto id = rendering_passes.reg(std::move(compiled_pass));
-    name_to_id.emplace(definition.name, id);
+    const auto pass_name = pass.name;
+    auto id = rendering_passes.reg(std::move(pass));
+    name_to_id.emplace(pass_name, id);
     return id;
 }
 
