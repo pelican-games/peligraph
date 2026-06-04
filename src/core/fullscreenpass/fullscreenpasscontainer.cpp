@@ -2,7 +2,7 @@
 #include "fullscreenpass_push_constants.hpp"
 #include "../light/lightcontainer.hpp"
 #include "../material/materialcontainer.hpp"
-#include "../renderingpass/rendertargetcontainer.hpp"
+#include "../renderingpass/rendertargetimageviewresolver.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/util.hpp"
 #include <span>
@@ -218,7 +218,7 @@ void FullscreenPassContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pas
 }
 
 void FullscreenPassContainer::setInputTextures(PassId pass_id, const std::vector<GlobalRenderTargetId> &input_rts,
-                                               RenderTargetContainer &rt_container) {
+                                               const RenderTargetImageViewResolver &rt_views) {
     const auto pipeline_id = PipelineId{requireFullscreenPipelineValue(pass_id)};
     if (pipelines.find(pipeline_id) == pipelines.end()) {
         throw std::runtime_error("Fullscreen pipeline not found");
@@ -250,7 +250,7 @@ void FullscreenPassContainer::setInputTextures(PassId pass_id, const std::vector
 
         vk::DescriptorImageInfo image_info;
         image_info.sampler = linear_sampler.get();
-        image_info.imageView = rt_container.getImageView(rt_id);
+        image_info.imageView = rt_views.getImageView(rt_id);
         image_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
         image_infos.push_back(image_info);
 

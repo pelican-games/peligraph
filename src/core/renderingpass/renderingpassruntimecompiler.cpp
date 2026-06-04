@@ -1,5 +1,6 @@
 #include "renderingpassruntimecompiler.hpp"
-#include "rendertargetcontainer.hpp"
+#include "rendertargetimageviewresolver.hpp"
+#include "rendertargetmetadataresolver.hpp"
 #include "../fullscreenpass/fullscreenpasscontainer.hpp"
 #include "../loader/fileio.hpp"
 #include "../profiler.hpp"
@@ -14,7 +15,8 @@ namespace {
 
 struct FullscreenRuntimeDependencies {
     RenderTarget &render_target;
-    RenderTargetContainer &render_target_container;
+    const RenderTargetMetadataResolver &render_target_metadata;
+    const RenderTargetImageViewResolver &render_target_views;
     ShaderContainer &shader_container;
     FullscreenPassContainer &fullscreen_pass_container;
 };
@@ -25,14 +27,14 @@ struct FullscreenShaderModules {
 };
 
 vk::Format resolveFirstColorFormat(const PassDefinition &pass_def, RenderTarget &rt_module,
-                                   RenderTargetContainer &rt_container) {
+                                   const RenderTargetMetadataResolver &rt_metadata) {
     if (pass_def.output_color.empty()) {
         throw std::runtime_error("Fullscreen pass has no color output: " + pass_def.name);
     }
 
     const auto &first_color = pass_def.output_color.front();
     if (isConcreteRenderTarget(first_color)) {
-        return rt_container.getMetadata(first_color).format;
+        return rt_metadata.get(first_color).format;
     }
     return rt_module.getSwapchainFormat();
 }
@@ -54,16 +56,18 @@ PassId fullscreenPipelineValueToPassId(uint32_t pipeline_value) {
 FullscreenRuntimeDependencies requireFullscreenDependencies(
     const PassDefinition &pass_def,
     const RenderingPassRuntimeDependencies &dependencies) {
-    if (dependencies.render_target == nullptr || dependencies.render_target_container == nullptr ||
-        dependencies.shader_container == nullptr || dependencies.fullscreen_pass_container == nullptr) {
+    if (dependencies.render_target == nullptr || dependencies.render_target_metadata == nullptr ||
+        dependencies.render_target_views == nullptr || dependencies.shader_container == nullptr ||
+        dependencies.fullscreen_pass_container == nullptr) {
         throw std::runtime_error(
-            "Fullscreen pass runtime compile requires render target, render target container, shader container, "
-            "and fullscreen pass container dependencies: " +
+            "Fullscreen pass runtime compile requires render target, render target metadata, render target views, "
+            "shader container, and fullscreen pass container dependencies: " +
             pass_def.name);
     }
     return FullscreenRuntimeDependencies{
         *dependencies.render_target,
-        *dependencies.render_target_container,
+        *dependencies.render_target_metadata,
+        *dependencies.render_target_views,
         *dependencies.shader_container,
         *dependencies.fullscreen_pass_container,
     };
@@ -85,7 +89,7 @@ FullscreenShaderModules registerFullscreenShaders(const FullscreenPassInfo &full
 
 PassId registerFullscreenPipeline(const PassDefinition &pass_def, FullscreenRuntimeDependencies dependencies) {
     const auto color_format =
-        resolveFirstColorFormat(pass_def, dependencies.render_target, dependencies.render_target_container);
+        resolveFirstColorFormat(pass_def, dependencies.render_target, dependencies.render_target_metadata);
     const auto shaders = registerFullscreenShaders(pass_def.fullscreenInfo(), dependencies.shader_container);
     const auto pipeline_id = dependencies.fullscreen_pass_container.registerFullscreenPass(
         color_format, shaders.vert_shader, shaders.frag_shader);
@@ -97,7 +101,7 @@ PassId compileFullscreenPass(const PassDefinition &pass_def, FullscreenRuntimeDe
 
     if (!pass_def.input_targets.empty()) {
         dependencies.fullscreen_pass_container.setInputTextures(
-            pass_id, pass_def.input_targets, dependencies.render_target_container);
+            pass_id, pass_def.input_targets, dependencies.render_target_views);
     }
 
     return pass_id;

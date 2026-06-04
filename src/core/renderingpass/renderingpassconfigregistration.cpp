@@ -4,6 +4,7 @@
 #include "renderingpasscontainer.hpp"
 #include "renderingpassruntimecompiler.hpp"
 #include "rendertargetconfigregistration.hpp"
+#include "rendertargetimageviewresolver.hpp"
 #include "rendertargetjsonparser.hpp"
 #include "rendertargetmetadataresolver.hpp"
 #include "rendertargetnameresolver.hpp"
@@ -14,10 +15,13 @@ namespace Pelican {
 namespace {
 
 RenderingPassRuntimeDependencies toRuntimeDependencies(
-    RenderingPassConfigRegistrationDependencies &dependencies) {
+    RenderingPassConfigRegistrationDependencies &dependencies,
+    const RenderTargetMetadataResolver &rt_metadata,
+    const RenderTargetImageViewResolver &rt_views) {
     return RenderingPassRuntimeDependencies{
         &dependencies.render_target,
-        &dependencies.render_target_container,
+        &rt_metadata,
+        &rt_views,
         &dependencies.shader_container,
         &dependencies.fullscreen_pass_container,
     };
@@ -33,9 +37,11 @@ void registerRenderingPassConfigFromJson(const std::string &json_path, vk::Exten
 
     const RenderTargetNameResolver rt_resolver{dependencies.render_target_container};
     const RenderTargetMetadataResolver rt_metadata{dependencies.render_target_container};
+    const RenderTargetImageViewResolver rt_views{dependencies.render_target_container};
     const auto pass_definitions =
         parseRenderingPassDefinitionsFromConfigJson(rendering_pass_data, rt_resolver, rt_metadata);
-    auto compiled_passes = compileRenderingPassesRuntime(pass_definitions, toRuntimeDependencies(dependencies));
+    auto compiled_passes =
+        compileRenderingPassesRuntime(pass_definitions, toRuntimeDependencies(dependencies, rt_metadata, rt_views));
     for (auto &compiled_pass : compiled_passes) {
         dependencies.pass_container.registerCompiledRenderingPass(std::move(compiled_pass));
     }

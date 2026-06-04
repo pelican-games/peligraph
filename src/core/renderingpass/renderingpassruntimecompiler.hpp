@@ -7,12 +7,14 @@ namespace Pelican {
 
 class FullscreenPassContainer;
 class RenderTarget;
-class RenderTargetContainer;
+class RenderTargetImageViewResolver;
+class RenderTargetMetadataResolver;
 class ShaderContainer;
 
 struct RenderingPassRuntimeDependencies {
     RenderTarget *render_target = nullptr;
-    RenderTargetContainer *render_target_container = nullptr;
+    const RenderTargetMetadataResolver *render_target_metadata = nullptr;
+    const RenderTargetImageViewResolver *render_target_views = nullptr;
     ShaderContainer *shader_container = nullptr;
     FullscreenPassContainer *fullscreen_pass_container = nullptr;
 };
