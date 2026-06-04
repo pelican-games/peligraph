@@ -53,8 +53,8 @@ void RenderTargetLayoutTracker::transition(vk::CommandBuffer cmd_buf, RenderTarg
         return;
     }
 
-    const auto &rt = rt_container.get(rt_id);
-    vk_utils.changeImageLayoutCmd(cmd_buf, rt.image, old_layout, new_layout,
+    const auto &image = rt_container.getImage(rt_id);
+    vk_utils.changeImageLayoutCmd(cmd_buf, image, old_layout, new_layout,
                                   makeTransitionInfo(old_layout, new_layout));
     it->second = new_layout;
 }

@@ -38,10 +38,8 @@ DECLARE_MODULE(RenderTargetContainer) {
                                               vk::ImageUsageFlags usage, vma::MemoryUsage memUsage);
     GlobalRenderTargetId getRenderTargetIdByName(const std::string &name) const;
     RenderTargetMetadata getMetadata(GlobalRenderTargetId id) const;
-
-    // Accessors for render target resources owned by the container.
-    const InternalRenderTarget &get(GlobalRenderTargetId id) const { return render_targets.get(id); }
-    InternalRenderTarget &get(GlobalRenderTargetId id) { return render_targets.get(id); }
+    const ImageWrapper &getImage(GlobalRenderTargetId id) const;
+    vk::ImageView getImageView(GlobalRenderTargetId id) const;
 };
 
 } // namespace Pelican

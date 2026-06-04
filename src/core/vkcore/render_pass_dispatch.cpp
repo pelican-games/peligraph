@@ -54,7 +54,7 @@ void renderUiPass(vk::CommandBuffer cmd_buf, const FrameRenderContext &frame, co
     const bool targets_swapchain = isSwapchainRenderTarget(rt_id);
     const auto &rt_module = GET_MODULE(RenderTarget);
     const vk::ImageView target_view = targets_swapchain ? frame.color_attachment
-                                                        : rt_container.get(rt_id).image_view.get();
+                                                        : rt_container.getImageView(rt_id);
     const vk::Format target_format = targets_swapchain ? rt_module.getSwapchainFormat()
                                                        : rt_container.getMetadata(rt_id).format;
     GET_MODULE(UiRenderer).render(cmd_buf, UiDrawRequest{target_view, target_extent, target_format,

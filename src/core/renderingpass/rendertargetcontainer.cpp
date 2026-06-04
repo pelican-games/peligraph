@@ -88,4 +88,12 @@ RenderTargetMetadata RenderTargetContainer::getMetadata(GlobalRenderTargetId id)
     };
 }
 
+const ImageWrapper &RenderTargetContainer::getImage(GlobalRenderTargetId id) const {
+    return render_targets.get(id).image;
+}
+
+vk::ImageView RenderTargetContainer::getImageView(GlobalRenderTargetId id) const {
+    return render_targets.get(id).image_view.get();
+}
+
 } // namespace Pelican

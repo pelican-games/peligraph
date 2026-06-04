@@ -248,11 +248,9 @@ void FullscreenPassContainer::setInputTextures(PassId pass_id, const std::vector
             throw std::runtime_error("Fullscreen pass input texture must be a render target");
         }
 
-        const auto &rt = rt_container.get(rt_id);
-
         vk::DescriptorImageInfo image_info;
         image_info.sampler = linear_sampler.get();
-        image_info.imageView = rt.image_view.get();
+        image_info.imageView = rt_container.getImageView(rt_id);
         image_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
         image_infos.push_back(image_info);
 

@@ -44,7 +44,7 @@ std::vector<vk::RenderingAttachmentInfo> createColorAttachments(const FrameRende
         if (isSwapchainRenderTarget(rt_id)) {
             color_att.imageView = frame.color_attachment;
         } else {
-            color_att.imageView = rt_container.get(rt_id).image_view.get();
+            color_att.imageView = rt_container.getImageView(rt_id);
         }
 
         color_att.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
@@ -60,8 +60,7 @@ std::vector<vk::RenderingAttachmentInfo> createColorAttachments(const FrameRende
 vk::RenderingAttachmentInfo createDepthAttachment(const PassDefinition &pass_def,
                                                   RenderTargetContainer &rt_container) {
     vk::RenderingAttachmentInfo depth_attachment;
-    const auto &depth_rt = rt_container.get(pass_def.output_depth);
-    depth_attachment.imageView = depth_rt.image_view.get();
+    depth_attachment.imageView = rt_container.getImageView(pass_def.output_depth);
     depth_attachment.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
     depth_attachment.loadOp = vk::AttachmentLoadOp::eClear;
     depth_attachment.storeOp = vk::AttachmentStoreOp::eDontCare;
