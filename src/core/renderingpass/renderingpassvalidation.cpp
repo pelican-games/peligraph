@@ -1,5 +1,6 @@
 #include "renderingpassvalidation.hpp"
 #include "materialpassattachments.hpp"
+#include "rendertargetcontainer.hpp"
 #include <array>
 #include <optional>
 #include <stdexcept>

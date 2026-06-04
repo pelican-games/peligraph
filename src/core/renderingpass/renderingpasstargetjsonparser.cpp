@@ -1,5 +1,6 @@
 #include "renderingpasstargetjsonparser.hpp"
 #include "renderingpassjsonhelpers.hpp"
+#include "rendertargetcontainer.hpp"
 #include <stdexcept>
 #include <string>
 
