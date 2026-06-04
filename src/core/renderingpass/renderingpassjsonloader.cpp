@@ -5,6 +5,7 @@
 #include "rendertargetcontainer.hpp"
 #include "rendertargetjsonparser.hpp"
 #include "../loader/basicconfig.hpp"
+#include "../loader/fileio.hpp"
 #include <cstdint>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
