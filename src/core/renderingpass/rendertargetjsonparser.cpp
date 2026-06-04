@@ -1,5 +1,6 @@
 #include "rendertargetjsonparser.hpp"
 #include "renderingpassjsonhelpers.hpp"
+#include "rendertargetcontainer.hpp"
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -8,10 +9,11 @@
 
 namespace Pelican {
 
-void registerRenderTargetsFromJson(const nlohmann::json &data, vk::Extent2D base_extent,
-                                   RenderTargetContainer &rt_container) {
+std::vector<RenderTargetDefinition> parseRenderTargetDefinitionsFromJson(const nlohmann::json &data,
+                                                                         vk::Extent2D base_extent) {
+    std::vector<RenderTargetDefinition> definitions;
     if (!data.contains("render_targets")) {
-        return;
+        return definitions;
     }
 
     const auto &render_targets = data.at("render_targets");
@@ -20,6 +22,7 @@ void registerRenderTargetsFromJson(const nlohmann::json &data, vk::Extent2D base
     }
 
     std::unordered_set<std::string> render_target_names;
+    definitions.reserve(render_targets.size());
     for (const auto &rt_json : render_targets) {
         if (!rt_json.is_object()) {
             throw std::runtime_error("render_targets entries must be objects");
@@ -50,7 +53,21 @@ void registerRenderTargetsFromJson(const nlohmann::json &data, vk::Extent2D base
             throw std::runtime_error("Render target extent became zero-sized: " + name);
         }
 
-        rt_container.registerRenderTarget(name, extent, stringToFormat(format_str), stringToUsageFlags(usage_strs),
+        definitions.push_back(RenderTargetDefinition{
+            name,
+            extent,
+            stringToFormat(format_str),
+            stringToUsageFlags(usage_strs),
+        });
+    }
+
+    return definitions;
+}
+
+void registerRenderTargetDefinitions(const std::vector<RenderTargetDefinition> &definitions,
+                                     RenderTargetContainer &rt_container) {
+    for (const auto &definition : definitions) {
+        rt_container.registerRenderTarget(definition.name, definition.extent, definition.format, definition.usage,
                                           vma::MemoryUsage::eAutoPreferDevice);
     }
 }

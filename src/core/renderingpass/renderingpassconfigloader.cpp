@@ -18,7 +18,8 @@ std::vector<RenderingPassDefinition> loadRenderingPassDefinitionsFromJson(const 
         throw std::runtime_error("Rendering config must be an object: " + json_path);
     }
 
-    registerRenderTargetsFromJson(rendering_pass_data, base_extent, rt_container);
+    const auto render_target_definitions = parseRenderTargetDefinitionsFromJson(rendering_pass_data, base_extent);
+    registerRenderTargetDefinitions(render_target_definitions, rt_container);
 
     return parseRenderingPassDefinitionsFromConfigJson(rendering_pass_data, rt_container);
 }

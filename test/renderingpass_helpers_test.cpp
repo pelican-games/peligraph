@@ -1,5 +1,6 @@
 #include "../src/core/renderingpass/renderingpassjsonhelpers.hpp"
 #include "../src/core/renderingpass/renderingpassruntimecompiler.hpp"
+#include "../src/core/renderingpass/rendertargetjsonparser.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
@@ -55,6 +56,28 @@ TEST_CASE("rendering pass JSON helpers parse known values", "[renderingpass]") {
     REQUIRE(clear_color.float32[3] == 1.0f);
 }
 
+TEST_CASE("render target JSON parser returns target definitions", "[renderingpass]") {
+    const nlohmann::json config{
+        {"render_targets",
+         nlohmann::json::array({{
+             {"name", "half_color"},
+             {"extent_scale", 0.5},
+             {"format", "R8_UNORM"},
+             {"usage", nlohmann::json::array({"COLOR_ATTACHMENT", "SAMPLED"})},
+         }})},
+    };
+
+    const auto definitions = parseRenderTargetDefinitionsFromJson(config, vk::Extent2D{1280, 720});
+
+    REQUIRE(definitions.size() == 1);
+    REQUIRE(definitions[0].name == "half_color");
+    REQUIRE(definitions[0].extent.width == 640);
+    REQUIRE(definitions[0].extent.height == 360);
+    REQUIRE(definitions[0].format == vk::Format::eR8Unorm);
+    REQUIRE(static_cast<bool>(definitions[0].usage & vk::ImageUsageFlagBits::eColorAttachment));
+    REQUIRE(static_cast<bool>(definitions[0].usage & vk::ImageUsageFlagBits::eSampled));
+}
+
 TEST_CASE("rendering pass JSON helpers reject malformed values", "[renderingpass]") {
     REQUIRE_THROWS_AS(stringToFormat("UNKNOWN"), std::runtime_error);
     REQUIRE_THROWS_AS(stringToUsageFlags({}), std::runtime_error);
@@ -71,6 +94,9 @@ TEST_CASE("rendering pass JSON helpers reject malformed values", "[renderingpass
                       std::runtime_error);
     REQUIRE_THROWS_AS(parseUint32Field(nlohmann::json{{"count", -1}}, "count", "test"), std::runtime_error);
     REQUIRE_THROWS_AS(jsonToClearColor(nlohmann::json::array({1.0f, 0.0f, 0.0f})), std::runtime_error);
+    REQUIRE_THROWS_AS(parseRenderTargetDefinitionsFromJson(nlohmann::json{{"render_targets", 1}},
+                                                           vk::Extent2D{1280, 720}),
+                      std::runtime_error);
 }
 
 TEST_CASE("rendering pass runtime compiler pairs definitions with pass ids", "[renderingpass]") {
