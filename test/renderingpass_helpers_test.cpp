@@ -1,4 +1,5 @@
 #include "../src/core/renderingpass/renderingpassjsonhelpers.hpp"
+#include "../src/core/renderingpass/renderingpassruntimecompiler.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
@@ -70,6 +71,30 @@ TEST_CASE("rendering pass JSON helpers reject malformed values", "[renderingpass
                       std::runtime_error);
     REQUIRE_THROWS_AS(parseUint32Field(nlohmann::json{{"count", -1}}, "count", "test"), std::runtime_error);
     REQUIRE_THROWS_AS(jsonToClearColor(nlohmann::json::array({1.0f, 0.0f, 0.0f})), std::runtime_error);
+}
+
+TEST_CASE("rendering pass runtime compiler pairs definitions with pass ids", "[renderingpass]") {
+    PassDefinition material_pass;
+    material_pass.name = "geometry";
+    material_pass.pass_info = MaterialPassInfo{};
+
+    PassDefinition ui_pass;
+    ui_pass.name = "ui";
+    ui_pass.pass_info = UiPassInfo{};
+
+    RenderingPassDefinition definition;
+    definition.name = "main";
+    definition.passes = {material_pass, ui_pass};
+
+    const auto compiled = compileRenderingPassRuntime(definition);
+
+    REQUIRE(compiled.name == "main");
+    REQUIRE(compiled.passes.size() == 2);
+    REQUIRE(compiled.passes[0].definition.name == "geometry");
+    REQUIRE(compiled.passes[0].pass_id.value == 0);
+    REQUIRE(compiled.passes[1].definition.name == "ui");
+    REQUIRE(compiled.passes[1].pass_id.value == 1);
+    REQUIRE(compiled.passes[1].definition.isUi());
 }
 
 } // namespace Pelican
