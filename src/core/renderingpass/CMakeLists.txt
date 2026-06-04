@@ -10,6 +10,7 @@ target_sources(pelican_core PRIVATE
     renderingpassvalidation.cpp
     rendertargetconfigregistration.cpp
     rendertargetjsonparser.cpp
+    rendertargetmetadataresolver.cpp
     rendertargetnameresolver.cpp
     rendertargetcontainer.cpp
 )

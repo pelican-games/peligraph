@@ -2,6 +2,7 @@
 #include "renderingpassjsonhelpers.hpp"
 #include "renderingpasstargetjsonparser.hpp"
 #include "renderingpassvalidation.hpp"
+#include "rendertargetmetadataresolver.hpp"
 #include "rendertargetnameresolver.hpp"
 #include <stdexcept>
 #include <string>
@@ -86,7 +87,7 @@ void applyPassDefaults(PassDefinition &pass_def) {
 
 PassDefinition parsePassDefinition(const nlohmann::json &pass_json,
                                    const RenderTargetNameResolver &rt_resolver,
-                                   RenderTargetContainer &rt_container) {
+                                   const RenderTargetMetadataResolver &rt_metadata) {
     if (!pass_json.is_object()) {
         throw std::runtime_error("passes entries must be objects");
     }
@@ -119,11 +120,11 @@ PassDefinition parsePassDefinition(const nlohmann::json &pass_json,
         pass_def.input_targets = parseInputTargetsFromJson(rt_resolver, pass_json.at("input"));
     }
     validatePassInputs(pass_def);
-    validatePassTargetUsage(pass_def, rt_container);
-    validateUniqueRenderTargets(pass_def.output_color, "color output", pass_def, rt_container);
-    validateUniqueRenderTargets(pass_def.input_targets, "input", pass_def, rt_container);
-    validatePassOutputExtents(pass_def, rt_container);
-    validateMaterialPassAttachments(pass_def, rt_container);
+    validatePassTargetUsage(pass_def, rt_metadata);
+    validateUniqueRenderTargets(pass_def.output_color, "color output", pass_def, rt_metadata);
+    validateUniqueRenderTargets(pass_def.input_targets, "input", pass_def, rt_metadata);
+    validatePassOutputExtents(pass_def, rt_metadata);
+    validateMaterialPassAttachments(pass_def, rt_metadata);
 
     if (pass_json.contains("clear_color")) {
         pass_def.clear_color = jsonToClearColor(pass_json.at("clear_color"));
@@ -164,6 +165,7 @@ RenderingPassDefinition parseRenderingPassDefinitionFromJson(const nlohmann::jso
     std::unordered_set<std::string> pass_names;
     ProducedColorTargetSet produced_color_targets;
     const RenderTargetNameResolver rt_resolver{rt_container};
+    const RenderTargetMetadataResolver rt_metadata{rt_container};
     for (const auto &pass_json : passes_json) {
         const std::string pass_name = parseStringField(pass_json, "name", "pass");
         validateName(pass_name, "Pass");
@@ -171,8 +173,8 @@ RenderingPassDefinition parseRenderingPassDefinitionFromJson(const nlohmann::jso
             throw std::runtime_error("Duplicate pass name: " + pass_name);
         }
 
-        auto parsed_pass = parsePassDefinition(pass_json, rt_resolver, rt_container);
-        validatePassInputsProduced(parsed_pass, produced_color_targets, rt_container);
+        auto parsed_pass = parsePassDefinition(pass_json, rt_resolver, rt_metadata);
+        validatePassInputsProduced(parsed_pass, produced_color_targets, rt_metadata);
         recordPassOutputs(parsed_pass, produced_color_targets);
         pass_def.passes.push_back(std::move(parsed_pass));
     }

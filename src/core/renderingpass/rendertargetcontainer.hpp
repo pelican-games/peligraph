@@ -4,17 +4,11 @@
 #include "../resourcecontainer.hpp"
 #include "../vkcore/buf.hpp"
 #include "../vkcore/image.hpp"
+#include "rendertargetmetadata.hpp"
 #include <string>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
-
-struct RenderTargetMetadata {
-    std::string name;
-    vk::ImageUsageFlags usage;
-    vk::Format format;
-    vk::Extent2D extent;
-};
 
 DECLARE_MODULE(RenderTargetContainer) {
 

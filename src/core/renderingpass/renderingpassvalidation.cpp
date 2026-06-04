@@ -1,6 +1,6 @@
 #include "renderingpassvalidation.hpp"
 #include "materialpassattachments.hpp"
-#include "rendertargetcontainer.hpp"
+#include "rendertargetmetadataresolver.hpp"
 #include <array>
 #include <optional>
 #include <stdexcept>
@@ -25,13 +25,13 @@ void validatePassInputs(const PassDefinition &pass_def) {
     }
 }
 
-void validatePassTargetUsage(const PassDefinition &pass_def, RenderTargetContainer &rt_container) {
+void validatePassTargetUsage(const PassDefinition &pass_def, const RenderTargetMetadataResolver &rt_metadata) {
     for (const auto &rt_id : pass_def.output_color) {
         if (isSpecialRenderTarget(rt_id)) {
             continue;
         }
 
-        const auto rt = rt_container.getMetadata(rt_id);
+        const auto rt = rt_metadata.get(rt_id);
         if (!(rt.usage & vk::ImageUsageFlagBits::eColorAttachment)) {
             throw std::runtime_error("Color output target missing COLOR_ATTACHMENT usage: " + rt.name +
                                      " in pass: " + pass_def.name);
@@ -39,7 +39,7 @@ void validatePassTargetUsage(const PassDefinition &pass_def, RenderTargetContain
     }
 
     if (isConcreteRenderTarget(pass_def.output_depth)) {
-        const auto rt = rt_container.getMetadata(pass_def.output_depth);
+        const auto rt = rt_metadata.get(pass_def.output_depth);
         if (!(rt.usage & vk::ImageUsageFlagBits::eDepthStencilAttachment)) {
             throw std::runtime_error("Depth output target missing DEPTH_STENCIL_ATTACHMENT usage: " + rt.name +
                                      " in pass: " + pass_def.name);
@@ -47,7 +47,7 @@ void validatePassTargetUsage(const PassDefinition &pass_def, RenderTargetContain
     }
 
     for (const auto &rt_id : pass_def.input_targets) {
-        const auto rt = rt_container.getMetadata(rt_id);
+        const auto rt = rt_metadata.get(rt_id);
         if (!(rt.usage & vk::ImageUsageFlagBits::eSampled)) {
             throw std::runtime_error("Input target missing SAMPLED usage: " + rt.name + " in pass: " +
                                      pass_def.name);
@@ -57,11 +57,11 @@ void validatePassTargetUsage(const PassDefinition &pass_def, RenderTargetContain
 
 namespace {
 
-std::string renderTargetDisplayName(GlobalRenderTargetId rt_id, RenderTargetContainer &rt_container) {
+std::string renderTargetDisplayName(GlobalRenderTargetId rt_id, const RenderTargetMetadataResolver &rt_metadata) {
     if (isSwapchainRenderTarget(rt_id)) {
         return "swapchain";
     }
-    return rt_container.getMetadata(rt_id).name;
+    return rt_metadata.get(rt_id).name;
 }
 
 } // namespace
@@ -69,17 +69,17 @@ std::string renderTargetDisplayName(GlobalRenderTargetId rt_id, RenderTargetCont
 void validateUniqueRenderTargets(const std::vector<GlobalRenderTargetId> &targets,
                                  const std::string &target_kind,
                                  const PassDefinition &pass_def,
-                                 RenderTargetContainer &rt_container) {
+                                 const RenderTargetMetadataResolver &rt_metadata) {
     std::unordered_set<GlobalRenderTargetId, GlobalRenderTargetId::Hash> seen_targets;
     for (const auto &rt_id : targets) {
         if (!seen_targets.insert(rt_id).second) {
             throw std::runtime_error("Pass has duplicate " + target_kind + " target: " +
-                                     renderTargetDisplayName(rt_id, rt_container) + " in pass: " + pass_def.name);
+                                     renderTargetDisplayName(rt_id, rt_metadata) + " in pass: " + pass_def.name);
         }
     }
 }
 
-void validatePassOutputExtents(const PassDefinition &pass_def, RenderTargetContainer &rt_container) {
+void validatePassOutputExtents(const PassDefinition &pass_def, const RenderTargetMetadataResolver &rt_metadata) {
     std::optional<vk::Extent2D> expected_extent;
 
     const auto check_extent = [&](const RenderTargetMetadata &rt) {
@@ -95,15 +95,15 @@ void validatePassOutputExtents(const PassDefinition &pass_def, RenderTargetConta
 
     for (const auto &rt_id : pass_def.output_color) {
         if (isConcreteRenderTarget(rt_id)) {
-            check_extent(rt_container.getMetadata(rt_id));
+            check_extent(rt_metadata.get(rt_id));
         }
     }
     if (isConcreteRenderTarget(pass_def.output_depth)) {
-        check_extent(rt_container.getMetadata(pass_def.output_depth));
+        check_extent(rt_metadata.get(pass_def.output_depth));
     }
 }
 
-void validateMaterialPassAttachments(const PassDefinition &pass_def, RenderTargetContainer &rt_container) {
+void validateMaterialPassAttachments(const PassDefinition &pass_def, const RenderTargetMetadataResolver &rt_metadata) {
     if (!pass_def.isMaterial()) {
         return;
     }
@@ -121,14 +121,14 @@ void validateMaterialPassAttachments(const PassDefinition &pass_def, RenderTarge
             throw std::runtime_error("Material pass does not support swapchain color output: " + pass_def.name);
         }
 
-        const auto rt = rt_container.getMetadata(rt_id);
+        const auto rt = rt_metadata.get(rt_id);
         if (rt.format != materialPassColorAttachmentFormats[i]) {
             throw std::runtime_error("Material pass color output format mismatch: " + rt.name + " in pass: " +
                                      pass_def.name);
         }
     }
 
-    const auto depth_rt = rt_container.getMetadata(pass_def.output_depth);
+    const auto depth_rt = rt_metadata.get(pass_def.output_depth);
     if (depth_rt.format != materialPassDepthAttachmentFormat) {
         throw std::runtime_error("Material pass depth output format mismatch: " + depth_rt.name +
                                  " in pass: " + pass_def.name);
@@ -183,10 +183,10 @@ void validatePassSpecificFields(const PassDefinition &pass_def, const nlohmann::
 
 void validatePassInputsProduced(const PassDefinition &pass_def,
                                 const ProducedColorTargetSet &produced_color_targets,
-                                RenderTargetContainer &rt_container) {
+                                const RenderTargetMetadataResolver &rt_metadata) {
     for (const auto &rt_id : pass_def.input_targets) {
         if (produced_color_targets.find(rt_id) == produced_color_targets.end()) {
-            const auto rt = rt_container.getMetadata(rt_id);
+            const auto rt = rt_metadata.get(rt_id);
             throw std::runtime_error("Pass input target is not produced as an earlier color output: " + rt.name +
                                      " in pass: " + pass_def.name);
         }
