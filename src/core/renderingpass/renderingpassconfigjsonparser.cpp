@@ -10,8 +10,7 @@ namespace Pelican {
 
 std::vector<RenderingPassDefinition>
 parseRenderingPassDefinitionsFromConfigJson(const nlohmann::json &rendering_pass_data,
-                                            RenderTargetContainer &rt_container,
-                                            ShaderContainer &shader_container) {
+                                            RenderTargetContainer &rt_container) {
     std::vector<RenderingPassDefinition> definitions;
     if (!rendering_pass_data.contains("rendering_passes")) {
         return definitions;
@@ -36,8 +35,7 @@ parseRenderingPassDefinitionsFromConfigJson(const nlohmann::json &rendering_pass
             throw std::runtime_error("Duplicate rendering pass name: " + rendering_pass_name);
         }
 
-        definitions.push_back(
-            parseRenderingPassDefinitionFromJson(pass_set_json, rt_container, shader_container));
+        definitions.push_back(parseRenderingPassDefinitionFromJson(pass_set_json, rt_container));
     }
 
     return definitions;

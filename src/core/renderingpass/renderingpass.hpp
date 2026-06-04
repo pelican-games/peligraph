@@ -2,7 +2,6 @@
 
 #include "../container.hpp"
 #include "../handle.hpp"
-#include "../shader/shader.hpp"
 #include <array>
 #include <cstdint>
 #include <string>
@@ -61,8 +60,8 @@ enum class FullscreenPushConstantData {
 };
 
 struct FullscreenPassInfo {
-    GlobalShaderId vert_shader;
-    GlobalShaderId frag_shader;
+    std::string vert_shader_path;
+    std::string frag_shader_path;
     FullscreenPushConstantData push_constants = FullscreenPushConstantData::eNone;
     bool uses_light_data = false;
 };

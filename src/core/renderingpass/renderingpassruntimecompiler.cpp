@@ -1,4 +1,5 @@
 #include "renderingpassruntimecompiler.hpp"
+#include "renderingpassjsonhelpers.hpp"
 #include "rendertargetcontainer.hpp"
 #include "../fullscreenpass/fullscreenpasscontainer.hpp"
 #include "../shader/shadercontainer.hpp"
@@ -38,8 +39,12 @@ PassId compileFullscreenPass(const PassDefinition &pass_def) {
 
     const auto color_format = resolveFirstColorFormat(pass_def, rt_module, rt_container);
     const auto &fullscreen_info = pass_def.fullscreenInfo();
-    const auto vert_shader = shader_container.getShader(fullscreen_info.vert_shader);
-    const auto frag_shader = shader_container.getShader(fullscreen_info.frag_shader);
+    const auto vert_shader_data = readBinaryFile(fullscreen_info.vert_shader_path);
+    const auto frag_shader_data = readBinaryFile(fullscreen_info.frag_shader_path);
+    const auto vert_shader_id = shader_container.registerShader(vert_shader_data.size(), vert_shader_data.data());
+    const auto frag_shader_id = shader_container.registerShader(frag_shader_data.size(), frag_shader_data.data());
+    const auto vert_shader = shader_container.getShader(vert_shader_id);
+    const auto frag_shader = shader_container.getShader(frag_shader_id);
 
     const auto pipeline_id = fs_container.registerFullscreenPass(color_format, vert_shader, frag_shader);
     if (pipeline_id.value > static_cast<uint32_t>(std::numeric_limits<int>::max())) {

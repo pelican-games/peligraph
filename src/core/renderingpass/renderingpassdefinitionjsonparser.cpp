@@ -11,11 +11,6 @@ namespace Pelican {
 
 namespace {
 
-GlobalShaderId registerShaderFromFile(ShaderContainer &shader_container, const std::string &path) {
-    const auto data = readBinaryFile(path);
-    return shader_container.registerShader(data.size(), data.data());
-}
-
 void parseMaterialInfo(PassDefinition &pass_def, const nlohmann::json &pass_json) {
     if (!pass_def.isMaterial() || !pass_json.contains("material_range")) {
         return;
@@ -31,8 +26,7 @@ void parseMaterialInfo(PassDefinition &pass_def, const nlohmann::json &pass_json
     materialInfo.material_count = parseUint32Field(mat_range, "count", "material_range in pass: " + pass_def.name);
 }
 
-void parseFullscreenInfo(PassDefinition &pass_def, const nlohmann::json &pass_json,
-                         ShaderContainer &shader_container) {
+void parseFullscreenInfo(PassDefinition &pass_def, const nlohmann::json &pass_json) {
     if (!pass_def.isFullscreen()) {
         return;
     }
@@ -79,8 +73,8 @@ void parseFullscreenInfo(PassDefinition &pass_def, const nlohmann::json &pass_js
         throw std::runtime_error("Fullscreen pass shader paths must be strings: " + pass_def.name);
     }
 
-    fullscreenInfo.vert_shader = registerShaderFromFile(shader_container, shader.at("vertex").get<std::string>());
-    fullscreenInfo.frag_shader = registerShaderFromFile(shader_container, shader.at("fragment").get<std::string>());
+    fullscreenInfo.vert_shader_path = shader.at("vertex").get<std::string>();
+    fullscreenInfo.frag_shader_path = shader.at("fragment").get<std::string>();
 }
 
 void applyPassDefaults(PassDefinition &pass_def) {
@@ -89,8 +83,7 @@ void applyPassDefaults(PassDefinition &pass_def) {
     }
 }
 
-PassDefinition parsePassDefinition(const nlohmann::json &pass_json, RenderTargetContainer &rt_container,
-                                   ShaderContainer &shader_container) {
+PassDefinition parsePassDefinition(const nlohmann::json &pass_json, RenderTargetContainer &rt_container) {
     if (!pass_json.is_object()) {
         throw std::runtime_error("passes entries must be objects");
     }
@@ -141,15 +134,14 @@ PassDefinition parsePassDefinition(const nlohmann::json &pass_json, RenderTarget
             stringToStoreOp(parseStringField(pass_json, "color_store_op", "pass: " + pass_def.name));
     }
 
-    parseFullscreenInfo(pass_def, pass_json, shader_container);
+    parseFullscreenInfo(pass_def, pass_json);
     return pass_def;
 }
 
 } // namespace
 
 RenderingPassDefinition parseRenderingPassDefinitionFromJson(const nlohmann::json &pass_set_json,
-                                                             RenderTargetContainer &rt_container,
-                                                             ShaderContainer &shader_container) {
+                                                             RenderTargetContainer &rt_container) {
     if (!pass_set_json.is_object()) {
         throw std::runtime_error("rendering_passes entries must be objects");
     }
@@ -175,7 +167,7 @@ RenderingPassDefinition parseRenderingPassDefinitionFromJson(const nlohmann::jso
             throw std::runtime_error("Duplicate pass name: " + pass_name);
         }
 
-        auto parsed_pass = parsePassDefinition(pass_json, rt_container, shader_container);
+        auto parsed_pass = parsePassDefinition(pass_json, rt_container);
         validatePassInputsProduced(parsed_pass, produced_color_targets, rt_container);
         recordPassOutputs(parsed_pass, produced_color_targets);
         pass_def.passes.push_back(std::move(parsed_pass));
