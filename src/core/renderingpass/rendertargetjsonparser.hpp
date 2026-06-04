@@ -6,7 +6,6 @@
 
 namespace Pelican {
 
-std::vector<RenderTargetDefinition> parseRenderTargetDefinitionsFromJson(const nlohmann::json &data,
-                                                                         vk::Extent2D base_extent);
+std::vector<RenderTargetDefinition> parseRenderTargetDefinitionsFromJson(const nlohmann::json &data);
 
 } // namespace Pelican

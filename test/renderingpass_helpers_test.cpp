@@ -67,12 +67,11 @@ TEST_CASE("render target JSON parser returns target definitions", "[renderingpas
          }})},
     };
 
-    const auto definitions = parseRenderTargetDefinitionsFromJson(config, vk::Extent2D{1280, 720});
+    const auto definitions = parseRenderTargetDefinitionsFromJson(config);
 
     REQUIRE(definitions.size() == 1);
     REQUIRE(definitions[0].name == "half_color");
-    REQUIRE(definitions[0].extent.width == 640);
-    REQUIRE(definitions[0].extent.height == 360);
+    REQUIRE(definitions[0].extent_scale == 0.5f);
     REQUIRE(definitions[0].format == vk::Format::eR8Unorm);
     REQUIRE(static_cast<bool>(definitions[0].usage & vk::ImageUsageFlagBits::eColorAttachment));
     REQUIRE(static_cast<bool>(definitions[0].usage & vk::ImageUsageFlagBits::eSampled));
@@ -94,8 +93,7 @@ TEST_CASE("rendering pass JSON helpers reject malformed values", "[renderingpass
                       std::runtime_error);
     REQUIRE_THROWS_AS(parseUint32Field(nlohmann::json{{"count", -1}}, "count", "test"), std::runtime_error);
     REQUIRE_THROWS_AS(jsonToClearColor(nlohmann::json::array({1.0f, 0.0f, 0.0f})), std::runtime_error);
-    REQUIRE_THROWS_AS(parseRenderTargetDefinitionsFromJson(nlohmann::json{{"render_targets", 1}},
-                                                           vk::Extent2D{1280, 720}),
+    REQUIRE_THROWS_AS(parseRenderTargetDefinitionsFromJson(nlohmann::json{{"render_targets", 1}}),
                       std::runtime_error);
 }
 

@@ -26,8 +26,8 @@ RenderingPassRuntimeDependencies toRuntimeDependencies(
 void registerRenderingPassConfigFromJson(const std::string &json_path, vk::Extent2D base_extent,
                                          RenderingPassConfigRegistrationDependencies dependencies) {
     const auto rendering_pass_data = loadRenderingPassConfigJson(json_path);
-    const auto render_target_definitions = parseRenderTargetDefinitionsFromJson(rendering_pass_data, base_extent);
-    registerRenderTargetDefinitions(render_target_definitions, dependencies.render_target_container);
+    const auto render_target_definitions = parseRenderTargetDefinitionsFromJson(rendering_pass_data);
+    registerRenderTargetDefinitions(render_target_definitions, base_extent, dependencies.render_target_container);
 
     const auto pass_definitions =
         parseRenderingPassDefinitionsFromConfigJson(rendering_pass_data, dependencies.render_target_container);

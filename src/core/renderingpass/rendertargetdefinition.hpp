@@ -7,7 +7,7 @@ namespace Pelican {
 
 struct RenderTargetDefinition {
     std::string name;
-    vk::Extent2D extent;
+    float extent_scale = 1.0f;
     vk::Format format;
     vk::ImageUsageFlags usage;
 };

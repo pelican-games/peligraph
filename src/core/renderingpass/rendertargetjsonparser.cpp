@@ -1,6 +1,5 @@
 #include "rendertargetjsonparser.hpp"
 #include "renderingpassjsonhelpers.hpp"
-#include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
@@ -8,8 +7,7 @@
 
 namespace Pelican {
 
-std::vector<RenderTargetDefinition> parseRenderTargetDefinitionsFromJson(const nlohmann::json &data,
-                                                                         vk::Extent2D base_extent) {
+std::vector<RenderTargetDefinition> parseRenderTargetDefinitionsFromJson(const nlohmann::json &data) {
     std::vector<RenderTargetDefinition> definitions;
     if (!data.contains("render_targets")) {
         return definitions;
@@ -43,18 +41,9 @@ std::vector<RenderTargetDefinition> parseRenderTargetDefinitionsFromJson(const n
             throw std::runtime_error("Render target extent_scale must be positive: " + name);
         }
 
-        const vk::Extent2D extent{
-            static_cast<uint32_t>(base_extent.width * extent_scale),
-            static_cast<uint32_t>(base_extent.height * extent_scale),
-        };
-
-        if (extent.width == 0 || extent.height == 0) {
-            throw std::runtime_error("Render target extent became zero-sized: " + name);
-        }
-
         definitions.push_back(RenderTargetDefinition{
             name,
-            extent,
+            extent_scale,
             stringToFormat(format_str),
             stringToUsageFlags(usage_strs),
         });
