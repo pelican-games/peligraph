@@ -5,6 +5,7 @@
 #include "../renderingpass/renderingpassconfigregistry.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "core.hpp"
+#include <cstdint>
 #include <filesystem>
 #include <stdexcept>
 
@@ -23,13 +24,21 @@ bool outputsToSwapchain(const CompiledRenderingPass &rendering_pass) {
     return false;
 }
 
+vk::Extent2D baseExtentFromConfig(const ProjectBasicConfig &config) {
+    const auto window_size = config.initialWindowSize();
+    return vk::Extent2D{
+        static_cast<uint32_t>(window_size.width),
+        static_cast<uint32_t>(window_size.height),
+    };
+}
+
 void registerConfiguredRenderingPasses(const ProjectBasicConfig &config) {
     ScopedLogTimer timer{"register configured rendering passes"};
 
     try {
         const auto main_config_path = config.renderingConfigJson();
         if (std::filesystem::exists(main_config_path)) {
-            GET_MODULE(RenderingPassConfigRegistry).registerFromJson(main_config_path);
+            GET_MODULE(RenderingPassConfigRegistry).registerFromJson(main_config_path, baseExtentFromConfig(config));
         } else {
             throw std::runtime_error("Main rendering configuration JSON file not found: " + main_config_path);
         }
