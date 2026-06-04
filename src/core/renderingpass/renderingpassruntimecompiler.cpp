@@ -94,4 +94,15 @@ CompiledRenderingPass compileRenderingPassRuntime(const RenderingPassDefinition 
     return compiled_pass;
 }
 
+std::vector<CompiledRenderingPass> compileRenderingPassesRuntime(
+    const std::vector<RenderingPassDefinition> &definitions,
+    RenderingPassRuntimeDependencies dependencies) {
+    std::vector<CompiledRenderingPass> compiled_passes;
+    compiled_passes.reserve(definitions.size());
+    for (const auto &definition : definitions) {
+        compiled_passes.push_back(compileRenderingPassRuntime(definition, dependencies));
+    }
+    return compiled_passes;
+}
+
 } // namespace Pelican

@@ -123,6 +123,27 @@ TEST_CASE("rendering pass runtime compiler pairs definitions with pass ids", "[r
     REQUIRE(compiled.passes[1].definition.isUi());
 }
 
+TEST_CASE("rendering pass runtime compiler compiles definition lists", "[renderingpass]") {
+    PassDefinition material_pass;
+    material_pass.name = "geometry";
+    material_pass.pass_info = MaterialPassInfo{};
+
+    RenderingPassDefinition main_definition;
+    main_definition.name = "main";
+    main_definition.passes = {material_pass};
+
+    RenderingPassDefinition shadow_definition;
+    shadow_definition.name = "shadow";
+    shadow_definition.passes = {material_pass};
+
+    const auto compiled = compileRenderingPassesRuntime({main_definition, shadow_definition});
+
+    REQUIRE(compiled.size() == 2);
+    REQUIRE(compiled[0].name == "main");
+    REQUIRE(compiled[1].name == "shadow");
+    REQUIRE(compiled[1].passes[0].pass_id.value == 0);
+}
+
 TEST_CASE("rendering pass runtime compiler requires fullscreen dependencies", "[renderingpass]") {
     PassDefinition fullscreen_pass;
     fullscreen_pass.name = "postprocess";

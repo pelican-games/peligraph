@@ -1,6 +1,7 @@
 #pragma once
 
 #include "renderingpass.hpp"
+#include <vector>
 
 namespace Pelican {
 
@@ -18,5 +19,8 @@ struct RenderingPassRuntimeDependencies {
 
 CompiledRenderingPass compileRenderingPassRuntime(const RenderingPassDefinition &definition,
                                                   RenderingPassRuntimeDependencies dependencies = {});
+std::vector<CompiledRenderingPass> compileRenderingPassesRuntime(
+    const std::vector<RenderingPassDefinition> &definitions,
+    RenderingPassRuntimeDependencies dependencies = {});
 
 } // namespace Pelican
