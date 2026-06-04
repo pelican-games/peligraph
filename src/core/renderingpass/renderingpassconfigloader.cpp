@@ -1,6 +1,5 @@
 #include "renderingpassconfigloader.hpp"
 #include "renderingpassconfigjsonparser.hpp"
-#include "renderingpassruntimecompiler.hpp"
 #include "rendertargetjsonparser.hpp"
 #include "../loader/fileio.hpp"
 #include "../profiler.hpp"
@@ -9,11 +8,10 @@
 
 namespace Pelican {
 
-std::vector<CompiledRenderingPass> loadCompiledRenderingPassesFromJson(const std::string &json_path,
-                                                                       vk::Extent2D base_extent,
-                                                                       RenderTargetContainer &rt_container,
-                                                                       RenderingPassRuntimeDependencies dependencies) {
-    ScopedLogTimer timer{"load compiled rendering passes from json"};
+std::vector<RenderingPassDefinition> loadRenderingPassDefinitionsFromJson(const std::string &json_path,
+                                                                          vk::Extent2D base_extent,
+                                                                          RenderTargetContainer &rt_container) {
+    ScopedLogTimer timer{"load rendering pass definitions from json"};
 
     const auto rendering_pass_data = nlohmann::json::parse(readBinaryFile(json_path));
     if (!rendering_pass_data.is_object()) {
@@ -21,18 +19,8 @@ std::vector<CompiledRenderingPass> loadCompiledRenderingPassesFromJson(const std
     }
 
     registerRenderTargetsFromJson(rendering_pass_data, base_extent, rt_container);
-    dependencies.render_target_container = &rt_container;
 
-    const auto pass_definitions =
-        parseRenderingPassDefinitionsFromConfigJson(rendering_pass_data, rt_container);
-
-    std::vector<CompiledRenderingPass> compiled_passes;
-    compiled_passes.reserve(pass_definitions.size());
-    for (const auto &pass_definition : pass_definitions) {
-        compiled_passes.push_back(compileRenderingPassRuntime(pass_definition, dependencies));
-    }
-
-    return compiled_passes;
+    return parseRenderingPassDefinitionsFromConfigJson(rendering_pass_data, rt_container);
 }
 
 } // namespace Pelican
