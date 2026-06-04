@@ -1,15 +1,10 @@
 #pragma once
 
-#include "renderingpass.hpp"
-#include "rendertargetcontainer.hpp"
+#include <nlohmann/json.hpp>
 #include <string>
-#include <vector>
-#include <vulkan/vulkan.hpp>
 
 namespace Pelican {
 
-std::vector<RenderingPassDefinition> loadRenderingPassDefinitionsFromJson(const std::string &json_path,
-                                                                          vk::Extent2D base_extent,
-                                                                          RenderTargetContainer &rt_container);
+nlohmann::json loadRenderingPassConfigJson(const std::string &json_path);
 
 } // namespace Pelican
