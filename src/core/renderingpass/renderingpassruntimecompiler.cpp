@@ -2,6 +2,7 @@
 #include "rendertargetcontainer.hpp"
 #include "../fullscreenpass/fullscreenpasscontainer.hpp"
 #include "../loader/fileio.hpp"
+#include "../profiler.hpp"
 #include "../shader/shadercontainer.hpp"
 #include "../vkcore/rendertarget.hpp"
 #include <limits>
@@ -62,6 +63,8 @@ PassId compileFullscreenPass(const PassDefinition &pass_def) {
 } // namespace
 
 CompiledRenderingPass compileRenderingPassRuntime(const RenderingPassDefinition &definition) {
+    ScopedLogTimer timer{"compile rendering pass runtime"};
+
     CompiledRenderingPass compiled_pass;
     compiled_pass.name = definition.name;
     compiled_pass.passes.reserve(definition.passes.size());

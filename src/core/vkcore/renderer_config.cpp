@@ -1,6 +1,7 @@
 #include "renderer_config.hpp"
 #include "../loader/basicconfig.hpp"
 #include "../log.hpp"
+#include "../profiler.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../renderingpass/renderingpassjsonloader.hpp"
 #include "core.hpp"
@@ -23,6 +24,8 @@ bool outputsToSwapchain(const CompiledRenderingPass &rendering_pass) {
 }
 
 void registerConfiguredRenderingPasses(const ProjectBasicConfig &config) {
+    ScopedLogTimer timer{"register configured rendering passes"};
+
     try {
         const auto main_config_path = config.renderingConfigJson();
         if (std::filesystem::exists(main_config_path)) {
@@ -39,6 +42,8 @@ void registerConfiguredRenderingPasses(const ProjectBasicConfig &config) {
 } // namespace
 
 RenderingPassId loadDefaultRenderingPassFromConfig() {
+    ScopedLogTimer timer{"load default rendering pass from config"};
+
     auto &pass_container = GET_MODULE(RenderingPassContainer);
     const auto &config = GET_MODULE(ProjectBasicConfig);
 

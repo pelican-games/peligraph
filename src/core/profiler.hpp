@@ -18,6 +18,16 @@ private:
     std::unordered_map<std::string, std::chrono::high_resolution_clock::time_point> start_times;
 };
 
+class ScopedLogTimer {
+public:
+    explicit ScopedLogTimer(const char* zone_name);
+    ~ScopedLogTimer();
+
+private:
+    const char* zone_name;
+    std::chrono::high_resolution_clock::time_point start_time;
+};
+
 void TimeProfilerStart(const char* zone_name);
 void TimeProfilerEnd(const char* zone_name);
 

@@ -45,6 +45,22 @@ void Profiler::End(const char* zone_name) {
     }
 }
 
+ScopedLogTimer::ScopedLogTimer(const char* zone_name)
+    : zone_name{zone_name},
+      start_time{std::chrono::high_resolution_clock::now()} {}
+
+ScopedLogTimer::~ScopedLogTimer() {
+#ifndef PELICAN_NO_LOG
+    if (!logger) {
+        return;
+    }
+
+    const auto end_time = std::chrono::high_resolution_clock::now();
+    const auto duration_us = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
+    LOG_INFO(logger, "Timer: {} took {} us", zone_name, duration_us);
+#endif
+}
+
 void TimeProfilerStart(const char* zone_name) {
     Profiler::Get().Start(zone_name);
 }

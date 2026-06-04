@@ -3,6 +3,7 @@
 #include "renderingpassruntimecompiler.hpp"
 #include "rendertargetjsonparser.hpp"
 #include "../loader/fileio.hpp"
+#include "../profiler.hpp"
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 
@@ -11,6 +12,8 @@ namespace Pelican {
 std::vector<CompiledRenderingPass> loadCompiledRenderingPassesFromJson(const std::string &json_path,
                                                                        vk::Extent2D base_extent,
                                                                        RenderTargetContainer &rt_container) {
+    ScopedLogTimer timer{"load compiled rendering passes from json"};
+
     const auto rendering_pass_data = nlohmann::json::parse(readBinaryFile(json_path));
     if (!rendering_pass_data.is_object()) {
         throw std::runtime_error("Rendering config must be an object: " + json_path);
