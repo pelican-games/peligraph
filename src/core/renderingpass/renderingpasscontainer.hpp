@@ -12,12 +12,7 @@
 namespace Pelican {
 
 DECLARE_MODULE(RenderingPassContainer) {
-    struct InternalRenderingPass {
-        RenderingPassDefinition definition;
-        std::vector<PassId> pass_ids;
-    };
-
-    ResourceContainer<RenderingPassId, InternalRenderingPass> rendering_passes;
+    ResourceContainer<RenderingPassId, CompiledRenderingPass> rendering_passes;
     std::unordered_map<std::string, RenderingPassId> name_to_id;
 
   public:
@@ -26,8 +21,7 @@ DECLARE_MODULE(RenderingPassContainer) {
 
     RenderingPassId registerRenderingPass(const RenderingPassDefinition &definition);
     RenderingPassId getRenderingPassIdByName(const std::string &name) const;
-    std::span<const PassId> getPasses(RenderingPassId rendering_pass_id) const;
-    const PassDefinition &getPassDefinition(RenderingPassId rendering_pass_id, size_t pass_index) const;
+    std::span<const CompiledPass> getPasses(RenderingPassId rendering_pass_id) const;
 };
 
 } // namespace Pelican

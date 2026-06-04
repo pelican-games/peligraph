@@ -9,7 +9,7 @@ namespace Pelican {
 
 DECLARE_MODULE(RenderPassExecutor) {
   public:
-    void execute(const FrameRenderContext &frame, const PassDefinition &pass_def, PassId pass_id,
+    void execute(const FrameRenderContext &frame, const CompiledPass &pass,
                  RenderTargetLayoutTracker &layout_tracker) const;
 };
 

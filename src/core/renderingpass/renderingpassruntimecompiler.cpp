@@ -61,20 +61,21 @@ PassId compileFullscreenPass(const PassDefinition &pass_def) {
 
 } // namespace
 
-std::vector<PassId> compileRenderingPassRuntime(const RenderingPassDefinition &definition) {
-    std::vector<PassId> pass_ids;
-    pass_ids.reserve(definition.passes.size());
+CompiledRenderingPass compileRenderingPassRuntime(const RenderingPassDefinition &definition) {
+    CompiledRenderingPass compiled_pass;
+    compiled_pass.name = definition.name;
+    compiled_pass.passes.reserve(definition.passes.size());
 
     for (size_t i = 0; i < definition.passes.size(); ++i) {
         const auto &pass_def = definition.passes[i];
         if (pass_def.isFullscreen()) {
-            pass_ids.push_back(compileFullscreenPass(pass_def));
+            compiled_pass.passes.push_back(CompiledPass{pass_def, compileFullscreenPass(pass_def)});
         } else {
-            pass_ids.push_back(passIndexToPassId(i));
+            compiled_pass.passes.push_back(CompiledPass{pass_def, passIndexToPassId(i)});
         }
     }
 
-    return pass_ids;
+    return compiled_pass;
 }
 
 } // namespace Pelican

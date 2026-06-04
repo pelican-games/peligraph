@@ -5,11 +5,12 @@
 
 namespace Pelican {
 
-void RenderPassExecutor::execute(const FrameRenderContext &frame, const PassDefinition &pass_def, PassId pass_id,
+void RenderPassExecutor::execute(const FrameRenderContext &frame, const CompiledPass &pass,
                                  RenderTargetLayoutTracker &layout_tracker) const {
     auto &rt_container = GET_MODULE(RenderTargetContainer);
     auto &vk_utils = GET_MODULE(VulkanUtils);
     const auto cmd_buf = frame.cmd_buf;
+    const auto &pass_def = pass.definition;
     const auto target_extent = getRenderPassTargetExtent(frame, pass_def, rt_container);
 
     transitionPassInputsToShaderRead(cmd_buf, pass_def, rt_container, vk_utils, layout_tracker);
@@ -36,7 +37,7 @@ void RenderPassExecutor::execute(const FrameRenderContext &frame, const PassDefi
     cmd_buf.beginRendering(render_info);
     setDynamicViewportAndScissor(cmd_buf, target_extent);
 
-    renderDynamicPassDrawCalls(cmd_buf, pass_id, pass_def);
+    renderDynamicPassDrawCalls(cmd_buf, pass.pass_id, pass_def);
 
     cmd_buf.endRendering();
 }

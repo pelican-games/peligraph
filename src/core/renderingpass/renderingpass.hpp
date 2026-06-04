@@ -100,4 +100,14 @@ struct RenderingPassDefinition {
     std::vector<PassDefinition> passes;
 };
 
+struct CompiledPass {
+    PassDefinition definition;
+    PassId pass_id;
+};
+
+struct CompiledRenderingPass {
+    std::string name;
+    std::vector<CompiledPass> passes;
+};
+
 } // namespace Pelican

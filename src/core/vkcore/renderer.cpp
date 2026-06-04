@@ -17,9 +17,8 @@ namespace {
 
 bool outputsToSwapchain(const RenderingPassContainer &pass_container, RenderingPassId rendering_pass_id) {
     const auto passes = pass_container.getPasses(rendering_pass_id);
-    for (size_t i = 0; i < passes.size(); ++i) {
-        const auto &pass_def = pass_container.getPassDefinition(rendering_pass_id, i);
-        for (const auto &rt_id : pass_def.output_color) {
+    for (const auto &pass : passes) {
+        for (const auto &rt_id : pass.definition.output_color) {
             if (isSwapchainRenderTarget(rt_id)) {
                 return true;
             }
@@ -75,9 +74,8 @@ void Renderer::render() {
     const auto render_ctx = rt.render_begin();
     const auto passes = pass_container.getPasses(current_rendering_pass_id);
 
-    for (size_t i = 0; i < passes.size(); ++i) {
-        const auto &pass_def = pass_container.getPassDefinition(current_rendering_pass_id, i);
-        pass_executor.execute(render_ctx, pass_def, passes[i], render_target_layout_tracker);
+    for (const auto &pass : passes) {
+        pass_executor.execute(render_ctx, pass, render_target_layout_tracker);
     }
 
     rt.render_end();
