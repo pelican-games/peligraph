@@ -6,13 +6,11 @@ vk::Extent2D getRenderPassTargetExtent(const FrameRenderContext &frame, const Pa
                                        RenderTargetContainer &rt_container) {
     for (const auto &rt_id : pass_def.output_color) {
         if (isConcreteRenderTarget(rt_id)) {
-            const auto &output_rt = rt_container.get(rt_id);
-            return vk::Extent2D{output_rt.image.extent.width, output_rt.image.extent.height};
+            return rt_container.getMetadata(rt_id).extent;
         }
     }
     if (isConcreteRenderTarget(pass_def.output_depth)) {
-        const auto &output_rt = rt_container.get(pass_def.output_depth);
-        return vk::Extent2D{output_rt.image.extent.width, output_rt.image.extent.height};
+        return rt_container.getMetadata(pass_def.output_depth).extent;
     }
     return frame.extent;
 }
