@@ -2,8 +2,8 @@
 #include "../loader/basicconfig.hpp"
 #include "../log.hpp"
 #include "../profiler.hpp"
+#include "../renderingpass/renderingpassconfigregistry.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
-#include "../renderingpass/renderingpassjsonloader.hpp"
 #include "core.hpp"
 #include <filesystem>
 #include <stdexcept>
@@ -29,7 +29,7 @@ void registerConfiguredRenderingPasses(const ProjectBasicConfig &config) {
     try {
         const auto main_config_path = config.renderingConfigJson();
         if (std::filesystem::exists(main_config_path)) {
-            GET_MODULE(RenderingPassJsonLoader).registerRenderingPassesFromJson(main_config_path);
+            GET_MODULE(RenderingPassConfigRegistry).registerFromJson(main_config_path);
         } else {
             throw std::runtime_error("Main rendering configuration JSON file not found: " + main_config_path);
         }

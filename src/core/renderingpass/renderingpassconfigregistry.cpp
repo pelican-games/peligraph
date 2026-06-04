@@ -1,6 +1,6 @@
-#include "renderingpassjsonloader.hpp"
-#include "renderingpasscontainer.hpp"
+#include "renderingpassconfigregistry.hpp"
 #include "renderingpassconfigloader.hpp"
+#include "renderingpasscontainer.hpp"
 #include "rendertargetcontainer.hpp"
 #include "../loader/basicconfig.hpp"
 #include <cstdint>
@@ -8,7 +8,7 @@
 
 namespace Pelican {
 
-void RenderingPassJsonLoader::registerRenderingPassesFromJson(const std::string &json_path) const {
+void RenderingPassConfigRegistry::registerFromJson(const std::string &json_path) const {
     auto &config = GET_MODULE(ProjectBasicConfig);
     auto &rt_container = GET_MODULE(RenderTargetContainer);
     auto &pass_container = GET_MODULE(RenderingPassContainer);
