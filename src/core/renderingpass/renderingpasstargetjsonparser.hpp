@@ -6,13 +6,13 @@
 
 namespace Pelican {
 
-class RenderTargetContainer;
+class RenderTargetNameResolver;
 
-std::vector<GlobalRenderTargetId> parseColorOutputTargetsFromJson(RenderTargetContainer &rt_container,
+std::vector<GlobalRenderTargetId> parseColorOutputTargetsFromJson(const RenderTargetNameResolver &rt_resolver,
                                                                   nlohmann::json color_output);
-GlobalRenderTargetId parseDepthOutputTargetFromJson(RenderTargetContainer &rt_container,
+GlobalRenderTargetId parseDepthOutputTargetFromJson(const RenderTargetNameResolver &rt_resolver,
                                                     const nlohmann::json &depth_output);
-std::vector<GlobalRenderTargetId> parseInputTargetsFromJson(RenderTargetContainer &rt_container,
+std::vector<GlobalRenderTargetId> parseInputTargetsFromJson(const RenderTargetNameResolver &rt_resolver,
                                                             nlohmann::json input_output);
 
 } // namespace Pelican

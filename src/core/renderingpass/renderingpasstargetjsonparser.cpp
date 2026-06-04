@@ -1,6 +1,6 @@
 #include "renderingpasstargetjsonparser.hpp"
 #include "renderingpassjsonhelpers.hpp"
-#include "rendertargetcontainer.hpp"
+#include "rendertargetnameresolver.hpp"
 #include <stdexcept>
 #include <string>
 
@@ -8,9 +8,9 @@ namespace Pelican {
 
 namespace {
 
-GlobalRenderTargetId resolveRenderTarget(RenderTargetContainer &rt_container, const std::string &name,
+GlobalRenderTargetId resolveRenderTarget(const RenderTargetNameResolver &rt_resolver, const std::string &name,
                                          const std::string &role) {
-    const auto rt_id = rt_container.getRenderTargetIdByName(name);
+    const auto rt_id = rt_resolver.resolve(name);
     if (!isConcreteRenderTarget(rt_id)) {
         throw std::runtime_error(role + " render target not found: " + name);
     }
@@ -19,7 +19,7 @@ GlobalRenderTargetId resolveRenderTarget(RenderTargetContainer &rt_container, co
 
 } // namespace
 
-std::vector<GlobalRenderTargetId> parseColorOutputTargetsFromJson(RenderTargetContainer &rt_container,
+std::vector<GlobalRenderTargetId> parseColorOutputTargetsFromJson(const RenderTargetNameResolver &rt_resolver,
                                                                   nlohmann::json color_output) {
     if (color_output.is_null()) {
         return {};
@@ -38,13 +38,13 @@ std::vector<GlobalRenderTargetId> parseColorOutputTargetsFromJson(RenderTargetCo
         if (color_name == "swapchain") {
             output_color.push_back(swapchainRenderTargetId());
         } else {
-            output_color.push_back(resolveRenderTarget(rt_container, color_name, "Color"));
+            output_color.push_back(resolveRenderTarget(rt_resolver, color_name, "Color"));
         }
     }
     return output_color;
 }
 
-GlobalRenderTargetId parseDepthOutputTargetFromJson(RenderTargetContainer &rt_container,
+GlobalRenderTargetId parseDepthOutputTargetFromJson(const RenderTargetNameResolver &rt_resolver,
                                                     const nlohmann::json &depth_output) {
     if (depth_output.is_null()) {
         return noRenderTargetId();
@@ -58,10 +58,10 @@ GlobalRenderTargetId parseDepthOutputTargetFromJson(RenderTargetContainer &rt_co
     if (depth_name == "swapchain") {
         throw std::runtime_error("Depth output target cannot be swapchain");
     }
-    return resolveRenderTarget(rt_container, depth_name, "Depth");
+    return resolveRenderTarget(rt_resolver, depth_name, "Depth");
 }
 
-std::vector<GlobalRenderTargetId> parseInputTargetsFromJson(RenderTargetContainer &rt_container,
+std::vector<GlobalRenderTargetId> parseInputTargetsFromJson(const RenderTargetNameResolver &rt_resolver,
                                                             nlohmann::json input_output) {
     if (input_output.is_null()) {
         return {};
@@ -80,7 +80,7 @@ std::vector<GlobalRenderTargetId> parseInputTargetsFromJson(RenderTargetContaine
         if (input_name == "swapchain") {
             throw std::runtime_error("Input target cannot be swapchain");
         }
-        input_targets.push_back(resolveRenderTarget(rt_container, input_name, "Input"));
+        input_targets.push_back(resolveRenderTarget(rt_resolver, input_name, "Input"));
     }
     return input_targets;
 }
