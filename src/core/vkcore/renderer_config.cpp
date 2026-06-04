@@ -41,8 +41,8 @@ void registerConfiguredRenderingPasses(const ProjectBasicConfig &config) {
         if (std::filesystem::exists(main_config_path)) {
             auto &rt_container = GET_MODULE(RenderTargetContainer);
             auto &pass_container = GET_MODULE(RenderingPassContainer);
-            GET_MODULE(RenderingPassConfigRegistry)
-                .registerFromJson(main_config_path, baseExtentFromConfig(config), rt_container, pass_container);
+            registerRenderingPassConfigFromJson(main_config_path, baseExtentFromConfig(config), rt_container,
+                                                pass_container);
         } else {
             throw std::runtime_error("Main rendering configuration JSON file not found: " + main_config_path);
         }
