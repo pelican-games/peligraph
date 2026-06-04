@@ -1,6 +1,7 @@
 #pragma once
 
 #include "renderingpass.hpp"
+#include "renderingpassruntimecompiler.hpp"
 #include "rendertargetcontainer.hpp"
 #include <string>
 #include <vector>
@@ -10,6 +11,7 @@ namespace Pelican {
 
 std::vector<CompiledRenderingPass> loadCompiledRenderingPassesFromJson(const std::string &json_path,
                                                                        vk::Extent2D base_extent,
-                                                                       RenderTargetContainer &rt_container);
+                                                                       RenderTargetContainer &rt_container,
+                                                                       RenderingPassRuntimeDependencies dependencies);
 
 } // namespace Pelican

@@ -11,7 +11,8 @@ namespace Pelican {
 
 std::vector<CompiledRenderingPass> loadCompiledRenderingPassesFromJson(const std::string &json_path,
                                                                        vk::Extent2D base_extent,
-                                                                       RenderTargetContainer &rt_container) {
+                                                                       RenderTargetContainer &rt_container,
+                                                                       RenderingPassRuntimeDependencies dependencies) {
     ScopedLogTimer timer{"load compiled rendering passes from json"};
 
     const auto rendering_pass_data = nlohmann::json::parse(readBinaryFile(json_path));
@@ -20,6 +21,7 @@ std::vector<CompiledRenderingPass> loadCompiledRenderingPassesFromJson(const std
     }
 
     registerRenderTargetsFromJson(rendering_pass_data, base_extent, rt_container);
+    dependencies.render_target_container = &rt_container;
 
     const auto pass_definitions =
         parseRenderingPassDefinitionsFromConfigJson(rendering_pass_data, rt_container);
@@ -27,7 +29,7 @@ std::vector<CompiledRenderingPass> loadCompiledRenderingPassesFromJson(const std
     std::vector<CompiledRenderingPass> compiled_passes;
     compiled_passes.reserve(pass_definitions.size());
     for (const auto &pass_definition : pass_definitions) {
-        compiled_passes.push_back(compileRenderingPassRuntime(pass_definition));
+        compiled_passes.push_back(compileRenderingPassRuntime(pass_definition, dependencies));
     }
 
     return compiled_passes;

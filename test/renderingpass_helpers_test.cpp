@@ -97,4 +97,17 @@ TEST_CASE("rendering pass runtime compiler pairs definitions with pass ids", "[r
     REQUIRE(compiled.passes[1].definition.isUi());
 }
 
+TEST_CASE("rendering pass runtime compiler requires fullscreen dependencies", "[renderingpass]") {
+    PassDefinition fullscreen_pass;
+    fullscreen_pass.name = "postprocess";
+    fullscreen_pass.pass_info = FullscreenPassInfo{};
+    fullscreen_pass.output_color = {swapchainRenderTargetId()};
+
+    RenderingPassDefinition definition;
+    definition.name = "main";
+    definition.passes = {fullscreen_pass};
+
+    REQUIRE_THROWS_AS(compileRenderingPassRuntime(definition), std::runtime_error);
+}
+
 } // namespace Pelican

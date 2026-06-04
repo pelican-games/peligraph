@@ -1,11 +1,14 @@
 #include "renderer_config.hpp"
+#include "../fullscreenpass/fullscreenpasscontainer.hpp"
 #include "../loader/basicconfig.hpp"
 #include "../log.hpp"
 #include "../profiler.hpp"
 #include "../renderingpass/renderingpassconfigregistration.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
+#include "../shader/shadercontainer.hpp"
 #include "core.hpp"
+#include "rendertarget.hpp"
 #include <cstdint>
 #include <filesystem>
 #include <stdexcept>
@@ -39,10 +42,15 @@ void registerConfiguredRenderingPasses(const ProjectBasicConfig &config) {
     try {
         const auto main_config_path = config.renderingConfigJson();
         if (std::filesystem::exists(main_config_path)) {
+            auto &rt_module = GET_MODULE(RenderTarget);
             auto &rt_container = GET_MODULE(RenderTargetContainer);
+            auto &shader_container = GET_MODULE(ShaderContainer);
+            auto &fs_container = GET_MODULE(FullscreenPassContainer);
             auto &pass_container = GET_MODULE(RenderingPassContainer);
-            registerRenderingPassConfigFromJson(main_config_path, baseExtentFromConfig(config), rt_container,
-                                                pass_container);
+            registerRenderingPassConfigFromJson(
+                main_config_path, baseExtentFromConfig(config), rt_container,
+                RenderingPassRuntimeDependencies{&rt_module, &rt_container, &shader_container, &fs_container},
+                pass_container);
         } else {
             throw std::runtime_error("Main rendering configuration JSON file not found: " + main_config_path);
         }

@@ -32,11 +32,23 @@ PassId passIndexToPassId(size_t pass_index) {
     return PassId{static_cast<int>(pass_index)};
 }
 
-PassId compileFullscreenPass(const PassDefinition &pass_def) {
-    auto &rt_module = GET_MODULE(RenderTarget);
-    auto &rt_container = GET_MODULE(RenderTargetContainer);
-    auto &shader_container = GET_MODULE(ShaderContainer);
-    auto &fs_container = GET_MODULE(FullscreenPassContainer);
+void requireFullscreenDependencies(const PassDefinition &pass_def, const RenderingPassRuntimeDependencies &dependencies) {
+    if (dependencies.render_target == nullptr || dependencies.render_target_container == nullptr ||
+        dependencies.shader_container == nullptr || dependencies.fullscreen_pass_container == nullptr) {
+        throw std::runtime_error(
+            "Fullscreen pass runtime compile requires render target, render target container, shader container, "
+            "and fullscreen pass container dependencies: " +
+            pass_def.name);
+    }
+}
+
+PassId compileFullscreenPass(const PassDefinition &pass_def, const RenderingPassRuntimeDependencies &dependencies) {
+    requireFullscreenDependencies(pass_def, dependencies);
+
+    auto &rt_module = *dependencies.render_target;
+    auto &rt_container = *dependencies.render_target_container;
+    auto &shader_container = *dependencies.shader_container;
+    auto &fs_container = *dependencies.fullscreen_pass_container;
 
     const auto color_format = resolveFirstColorFormat(pass_def, rt_module, rt_container);
     const auto &fullscreen_info = pass_def.fullscreenInfo();
@@ -62,7 +74,8 @@ PassId compileFullscreenPass(const PassDefinition &pass_def) {
 
 } // namespace
 
-CompiledRenderingPass compileRenderingPassRuntime(const RenderingPassDefinition &definition) {
+CompiledRenderingPass compileRenderingPassRuntime(const RenderingPassDefinition &definition,
+                                                  RenderingPassRuntimeDependencies dependencies) {
     ScopedLogTimer timer{"compile rendering pass runtime"};
 
     CompiledRenderingPass compiled_pass;
@@ -72,7 +85,7 @@ CompiledRenderingPass compileRenderingPassRuntime(const RenderingPassDefinition 
     for (size_t i = 0; i < definition.passes.size(); ++i) {
         const auto &pass_def = definition.passes[i];
         if (pass_def.isFullscreen()) {
-            compiled_pass.passes.push_back(CompiledPass{pass_def, compileFullscreenPass(pass_def)});
+            compiled_pass.passes.push_back(CompiledPass{pass_def, compileFullscreenPass(pass_def, dependencies)});
         } else {
             compiled_pass.passes.push_back(CompiledPass{pass_def, passIndexToPassId(i)});
         }
