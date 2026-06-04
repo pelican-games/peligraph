@@ -1,6 +1,6 @@
 #include "renderingpassjsonloader.hpp"
 #include "renderingpasscontainer.hpp"
-#include "renderingpassdefinitionjsonparser.hpp"
+#include "renderingpassconfigjsonparser.hpp"
 #include "renderingpassjsonhelpers.hpp"
 #include "rendertargetcontainer.hpp"
 #include "rendertargetjsonparser.hpp"
@@ -9,7 +9,6 @@
 #include <cstdint>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
-#include <unordered_set>
 
 namespace Pelican {
 
@@ -32,28 +31,10 @@ void RenderingPassJsonLoader::registerRenderingPassesFromJson(const std::string 
 
     registerRenderTargetsFromJson(rendering_pass_data, base_extent, rt_container);
 
-    if (!rendering_pass_data.contains("rendering_passes")) {
-        return;
-    }
-
-    const auto &rendering_passes = rendering_pass_data.at("rendering_passes");
-    if (!rendering_passes.is_array()) {
-        throw std::runtime_error("rendering_passes must be an array");
-    }
-
-    std::unordered_set<std::string> rendering_pass_names;
-    for (const auto &pass_set_json : rendering_passes) {
-        if (!pass_set_json.is_object()) {
-            throw std::runtime_error("rendering_passes entries must be objects");
-        }
-
-        const std::string rendering_pass_name = parseStringField(pass_set_json, "name", "rendering pass");
-        validateName(rendering_pass_name, "Rendering pass");
-        if (!rendering_pass_names.insert(rendering_pass_name).second) {
-            throw std::runtime_error("Duplicate rendering pass name: " + rendering_pass_name);
-        }
-        pass_container.registerRenderingPass(
-            parseRenderingPassDefinitionFromJson(pass_set_json, rt_container, shader_container));
+    const auto pass_definitions =
+        parseRenderingPassDefinitionsFromConfigJson(rendering_pass_data, rt_container, shader_container);
+    for (const auto &pass_definition : pass_definitions) {
+        pass_container.registerRenderingPass(pass_definition);
     }
 }
 
