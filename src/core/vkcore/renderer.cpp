@@ -16,7 +16,7 @@ namespace Pelican {
 namespace {
 
 bool outputsToSwapchain(const RenderingPassContainer &pass_container, RenderingPassId rendering_pass_id) {
-    const auto passes = pass_container.getPasses(rendering_pass_id);
+    const auto passes = pass_container.getCompiledPasses(rendering_pass_id);
     for (const auto &pass : passes) {
         for (const auto &rt_id : pass.definition.output_color) {
             if (isSwapchainRenderTarget(rt_id)) {
@@ -72,7 +72,7 @@ void Renderer::render() {
     }
 
     const auto render_ctx = rt.render_begin();
-    const auto passes = pass_container.getPasses(current_rendering_pass_id);
+    const auto passes = pass_container.getCompiledPasses(current_rendering_pass_id);
 
     for (const auto &pass : passes) {
         pass_executor.execute(render_ctx, pass, render_target_layout_tracker);

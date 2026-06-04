@@ -21,7 +21,7 @@ DECLARE_MODULE(RenderingPassContainer) {
 
     RenderingPassId registerRenderingPass(const RenderingPassDefinition &definition);
     RenderingPassId getRenderingPassIdByName(const std::string &name) const;
-    std::span<const CompiledPass> getPasses(RenderingPassId rendering_pass_id) const;
+    std::span<const CompiledPass> getCompiledPasses(RenderingPassId rendering_pass_id) const;
 };
 
 } // namespace Pelican

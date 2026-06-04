@@ -26,7 +26,7 @@ RenderingPassId RenderingPassContainer::getRenderingPassIdByName(const std::stri
     return invalidRenderingPassId();
 }
 
-std::span<const CompiledPass> RenderingPassContainer::getPasses(RenderingPassId rendering_pass_id) const {
+std::span<const CompiledPass> RenderingPassContainer::getCompiledPasses(RenderingPassId rendering_pass_id) const {
     const auto &pass = rendering_passes.get(rendering_pass_id);
     return pass.passes;
 }
