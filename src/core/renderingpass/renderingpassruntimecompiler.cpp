@@ -19,6 +19,11 @@ struct FullscreenRuntimeDependencies {
     FullscreenPassContainer &fullscreen_pass_container;
 };
 
+struct FullscreenShaderModules {
+    vk::ShaderModule vert_shader;
+    vk::ShaderModule frag_shader;
+};
+
 vk::Format resolveFirstColorFormat(const PassDefinition &pass_def, RenderTarget &rt_module,
                                    RenderTargetContainer &rt_container) {
     if (pass_def.output_color.empty()) {
@@ -39,6 +44,13 @@ PassId passIndexToPassId(size_t pass_index) {
     return PassId{static_cast<int>(pass_index)};
 }
 
+PassId fullscreenPipelineValueToPassId(uint32_t pipeline_value) {
+    if (pipeline_value > static_cast<uint32_t>(std::numeric_limits<int>::max())) {
+        throw std::runtime_error("Fullscreen pipeline id is too large");
+    }
+    return PassId{static_cast<int>(pipeline_value)};
+}
+
 FullscreenRuntimeDependencies requireFullscreenDependencies(
     const PassDefinition &pass_def,
     const RenderingPassRuntimeDependencies &dependencies) {
@@ -57,25 +69,31 @@ FullscreenRuntimeDependencies requireFullscreenDependencies(
     };
 }
 
-PassId compileFullscreenPass(const PassDefinition &pass_def, FullscreenRuntimeDependencies dependencies) {
+vk::ShaderModule registerShaderFromFile(ShaderContainer &shader_container, const std::string &shader_path) {
+    const auto shader_data = readBinaryFile(shader_path);
+    const auto shader_id = shader_container.registerShader(shader_data.size(), shader_data.data());
+    return shader_container.getShader(shader_id);
+}
+
+FullscreenShaderModules registerFullscreenShaders(const FullscreenPassInfo &fullscreen_info,
+                                                  ShaderContainer &shader_container) {
+    return FullscreenShaderModules{
+        registerShaderFromFile(shader_container, fullscreen_info.vert_shader_path),
+        registerShaderFromFile(shader_container, fullscreen_info.frag_shader_path),
+    };
+}
+
+PassId registerFullscreenPipeline(const PassDefinition &pass_def, FullscreenRuntimeDependencies dependencies) {
     const auto color_format =
         resolveFirstColorFormat(pass_def, dependencies.render_target, dependencies.render_target_container);
-    const auto &fullscreen_info = pass_def.fullscreenInfo();
-    const auto vert_shader_data = readBinaryFile(fullscreen_info.vert_shader_path);
-    const auto frag_shader_data = readBinaryFile(fullscreen_info.frag_shader_path);
-    const auto vert_shader_id =
-        dependencies.shader_container.registerShader(vert_shader_data.size(), vert_shader_data.data());
-    const auto frag_shader_id =
-        dependencies.shader_container.registerShader(frag_shader_data.size(), frag_shader_data.data());
-    const auto vert_shader = dependencies.shader_container.getShader(vert_shader_id);
-    const auto frag_shader = dependencies.shader_container.getShader(frag_shader_id);
+    const auto shaders = registerFullscreenShaders(pass_def.fullscreenInfo(), dependencies.shader_container);
+    const auto pipeline_id = dependencies.fullscreen_pass_container.registerFullscreenPass(
+        color_format, shaders.vert_shader, shaders.frag_shader);
+    return fullscreenPipelineValueToPassId(pipeline_id.value);
+}
 
-    const auto pipeline_id =
-        dependencies.fullscreen_pass_container.registerFullscreenPass(color_format, vert_shader, frag_shader);
-    if (pipeline_id.value > static_cast<uint32_t>(std::numeric_limits<int>::max())) {
-        throw std::runtime_error("Fullscreen pipeline id is too large");
-    }
-    const PassId pass_id{static_cast<int>(pipeline_id.value)};
+PassId compileFullscreenPass(const PassDefinition &pass_def, FullscreenRuntimeDependencies dependencies) {
+    const auto pass_id = registerFullscreenPipeline(pass_def, dependencies);
 
     if (!pass_def.input_targets.empty()) {
         dependencies.fullscreen_pass_container.setInputTextures(
