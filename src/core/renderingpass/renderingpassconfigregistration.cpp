@@ -5,6 +5,8 @@
 #include "renderingpassruntimecompiler.hpp"
 #include "rendertargetconfigregistration.hpp"
 #include "rendertargetjsonparser.hpp"
+#include "rendertargetmetadataresolver.hpp"
+#include "rendertargetnameresolver.hpp"
 #include <utility>
 
 namespace Pelican {
@@ -29,8 +31,10 @@ void registerRenderingPassConfigFromJson(const std::string &json_path, vk::Exten
     const auto render_target_definitions = parseRenderTargetDefinitionsFromJson(rendering_pass_data);
     registerRenderTargetDefinitions(render_target_definitions, base_extent, dependencies.render_target_container);
 
+    const RenderTargetNameResolver rt_resolver{dependencies.render_target_container};
+    const RenderTargetMetadataResolver rt_metadata{dependencies.render_target_container};
     const auto pass_definitions =
-        parseRenderingPassDefinitionsFromConfigJson(rendering_pass_data, dependencies.render_target_container);
+        parseRenderingPassDefinitionsFromConfigJson(rendering_pass_data, rt_resolver, rt_metadata);
     auto compiled_passes = compileRenderingPassesRuntime(pass_definitions, toRuntimeDependencies(dependencies));
     for (auto &compiled_pass : compiled_passes) {
         dependencies.pass_container.registerCompiledRenderingPass(std::move(compiled_pass));

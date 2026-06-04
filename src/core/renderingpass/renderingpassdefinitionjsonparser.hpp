@@ -5,9 +5,11 @@
 
 namespace Pelican {
 
-class RenderTargetContainer;
+class RenderTargetMetadataResolver;
+class RenderTargetNameResolver;
 
 RenderingPassDefinition parseRenderingPassDefinitionFromJson(const nlohmann::json &pass_set_json,
-                                                             RenderTargetContainer &rt_container);
+                                                             const RenderTargetNameResolver &rt_resolver,
+                                                             const RenderTargetMetadataResolver &rt_metadata);
 
 } // namespace Pelican

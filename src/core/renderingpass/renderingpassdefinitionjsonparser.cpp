@@ -2,8 +2,6 @@
 #include "renderingpassjsonhelpers.hpp"
 #include "renderingpasstargetjsonparser.hpp"
 #include "renderingpassvalidation.hpp"
-#include "rendertargetmetadataresolver.hpp"
-#include "rendertargetnameresolver.hpp"
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
@@ -145,7 +143,8 @@ PassDefinition parsePassDefinition(const nlohmann::json &pass_json,
 } // namespace
 
 RenderingPassDefinition parseRenderingPassDefinitionFromJson(const nlohmann::json &pass_set_json,
-                                                             RenderTargetContainer &rt_container) {
+                                                             const RenderTargetNameResolver &rt_resolver,
+                                                             const RenderTargetMetadataResolver &rt_metadata) {
     if (!pass_set_json.is_object()) {
         throw std::runtime_error("rendering_passes entries must be objects");
     }
@@ -164,8 +163,6 @@ RenderingPassDefinition parseRenderingPassDefinitionFromJson(const nlohmann::jso
 
     std::unordered_set<std::string> pass_names;
     ProducedColorTargetSet produced_color_targets;
-    const RenderTargetNameResolver rt_resolver{rt_container};
-    const RenderTargetMetadataResolver rt_metadata{rt_container};
     for (const auto &pass_json : passes_json) {
         const std::string pass_name = parseStringField(pass_json, "name", "pass");
         validateName(pass_name, "Pass");
