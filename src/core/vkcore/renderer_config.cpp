@@ -48,9 +48,14 @@ void registerConfiguredRenderingPasses(const ProjectBasicConfig &config) {
             auto &fs_container = GET_MODULE(FullscreenPassContainer);
             auto &pass_container = GET_MODULE(RenderingPassContainer);
             registerRenderingPassConfigFromJson(
-                main_config_path, baseExtentFromConfig(config), rt_container,
-                RenderingPassRuntimeDependencies{&rt_module, &rt_container, &shader_container, &fs_container},
-                pass_container);
+                main_config_path, baseExtentFromConfig(config),
+                RenderingPassConfigRegistrationDependencies{
+                    rt_module,
+                    rt_container,
+                    shader_container,
+                    fs_container,
+                    pass_container,
+                });
         } else {
             throw std::runtime_error("Main rendering configuration JSON file not found: " + main_config_path);
         }
