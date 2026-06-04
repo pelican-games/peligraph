@@ -2,7 +2,7 @@
 #include "../loader/basicconfig.hpp"
 #include "../log.hpp"
 #include "../profiler.hpp"
-#include "../renderingpass/renderingpassconfigregistry.hpp"
+#include "../renderingpass/renderingpassconfigregistration.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
 #include "core.hpp"

@@ -1,4 +1,4 @@
-#include "renderingpassconfigregistry.hpp"
+#include "renderingpassconfigregistration.hpp"
 #include "renderingpassconfigloader.hpp"
 #include "renderingpasscontainer.hpp"
 #include "rendertargetcontainer.hpp"
