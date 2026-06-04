@@ -66,7 +66,7 @@ PassId compileFullscreenPass(const PassDefinition &pass_def, const RenderingPass
     const PassId pass_id{static_cast<int>(pipeline_id.value)};
 
     if (!pass_def.input_targets.empty()) {
-        fs_container.setInputTextures(pass_id, pass_def.input_targets);
+        fs_container.setInputTextures(pass_id, pass_def.input_targets, rt_container);
     }
 
     return pass_id;

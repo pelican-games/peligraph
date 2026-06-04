@@ -217,8 +217,8 @@ void FullscreenPassContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pas
     }
 }
 
-void FullscreenPassContainer::setInputTextures(PassId pass_id, const std::vector<GlobalRenderTargetId> &input_rts) {
-    auto &rt_container = GET_MODULE(RenderTargetContainer);
+void FullscreenPassContainer::setInputTextures(PassId pass_id, const std::vector<GlobalRenderTargetId> &input_rts,
+                                               RenderTargetContainer &rt_container) {
     const auto pipeline_id = PipelineId{requireFullscreenPipelineValue(pass_id)};
     if (pipelines.find(pipeline_id) == pipelines.end()) {
         throw std::runtime_error("Fullscreen pipeline not found");

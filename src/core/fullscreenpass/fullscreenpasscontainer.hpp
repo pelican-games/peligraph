@@ -8,6 +8,8 @@
 
 namespace Pelican {
 
+class RenderTargetContainer;
+
 DECLARE_MODULE(FullscreenPassContainer) {
     vk::Device device;
     std::vector<vk::UniqueDescriptorSetLayout> descset_layouts;
@@ -31,7 +33,8 @@ DECLARE_MODULE(FullscreenPassContainer) {
 
     PipelineId registerFullscreenPass(vk::Format colorFormat, vk::ShaderModule vertShader, vk::ShaderModule fragShader);
     void bindResource(vk::CommandBuffer cmd_buf, PassId pass_id);
-    void setInputTextures(PassId pass_id, const std::vector<GlobalRenderTargetId> &input_rts);
+    void setInputTextures(PassId pass_id, const std::vector<GlobalRenderTargetId> &input_rts,
+                          RenderTargetContainer &rt_container);
     vk::PipelineLayout getPipelineLayout() const { return pipeline_layout.get(); }
 };
 
