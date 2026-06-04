@@ -1,6 +1,5 @@
 #include "rendertargetjsonparser.hpp"
 #include "renderingpassjsonhelpers.hpp"
-#include "rendertargetcontainer.hpp"
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -62,14 +61,6 @@ std::vector<RenderTargetDefinition> parseRenderTargetDefinitionsFromJson(const n
     }
 
     return definitions;
-}
-
-void registerRenderTargetDefinitions(const std::vector<RenderTargetDefinition> &definitions,
-                                     RenderTargetContainer &rt_container) {
-    for (const auto &definition : definitions) {
-        rt_container.registerRenderTarget(definition.name, definition.extent, definition.format, definition.usage,
-                                          vma::MemoryUsage::eAutoPreferDevice);
-    }
 }
 
 } // namespace Pelican

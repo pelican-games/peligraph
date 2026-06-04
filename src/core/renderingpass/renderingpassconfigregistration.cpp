@@ -3,7 +3,7 @@
 #include "renderingpassconfigloader.hpp"
 #include "renderingpasscontainer.hpp"
 #include "renderingpassruntimecompiler.hpp"
-#include "rendertargetcontainer.hpp"
+#include "rendertargetconfigregistration.hpp"
 #include "rendertargetjsonparser.hpp"
 #include <utility>
 
