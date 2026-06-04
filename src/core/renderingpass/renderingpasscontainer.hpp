@@ -3,7 +3,6 @@
 #include "../container.hpp"
 #include "../resourcecontainer.hpp"
 #include "renderingpass.hpp"
-#include <span>
 #include <string>
 #include <unordered_map>
 
@@ -19,7 +18,7 @@ DECLARE_MODULE(RenderingPassContainer) {
 
     RenderingPassId registerCompiledRenderingPass(CompiledRenderingPass pass);
     RenderingPassId getRenderingPassIdByName(const std::string &name) const;
-    std::span<const CompiledPass> getCompiledPasses(RenderingPassId rendering_pass_id) const;
+    const CompiledRenderingPass &getCompiledRenderingPass(RenderingPassId rendering_pass_id) const;
 };
 
 } // namespace Pelican

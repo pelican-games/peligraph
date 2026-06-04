@@ -15,9 +15,8 @@ namespace Pelican {
 
 namespace {
 
-bool outputsToSwapchain(const RenderingPassContainer &pass_container, RenderingPassId rendering_pass_id) {
-    const auto passes = pass_container.getCompiledPasses(rendering_pass_id);
-    for (const auto &pass : passes) {
+bool outputsToSwapchain(const CompiledRenderingPass &rendering_pass) {
+    for (const auto &pass : rendering_pass.passes) {
         for (const auto &rt_id : pass.definition.output_color) {
             if (isSwapchainRenderTarget(rt_id)) {
                 return true;
@@ -49,7 +48,8 @@ Renderer::Renderer() : device{GET_MODULE(VulkanManageCore).getDevice()} {
     if (!isValidRenderingPassId(current_rendering_pass_id)) {
         throw std::runtime_error("Rendering pass not found: " + config.defaultRenderingPass());
     }
-    if (!outputsToSwapchain(pass_container, current_rendering_pass_id)) {
+    const auto &default_rendering_pass = pass_container.getCompiledRenderingPass(current_rendering_pass_id);
+    if (!outputsToSwapchain(default_rendering_pass)) {
         throw std::runtime_error("Default rendering pass does not output to swapchain: " +
                                  config.defaultRenderingPass());
     }
@@ -72,9 +72,9 @@ void Renderer::render() {
     }
 
     const auto render_ctx = rt.render_begin();
-    const auto passes = pass_container.getCompiledPasses(current_rendering_pass_id);
+    const auto &rendering_pass = pass_container.getCompiledRenderingPass(current_rendering_pass_id);
 
-    for (const auto &pass : passes) {
+    for (const auto &pass : rendering_pass.passes) {
         pass_executor.execute(render_ctx, pass, render_target_layout_tracker);
     }
 
