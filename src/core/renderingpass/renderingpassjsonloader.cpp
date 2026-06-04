@@ -1,15 +1,10 @@
 #include "renderingpassjsonloader.hpp"
 #include "renderingpasscontainer.hpp"
-#include "renderingpassconfigjsonparser.hpp"
-#include "renderingpassjsonhelpers.hpp"
-#include "renderingpassruntimecompiler.hpp"
+#include "renderingpassconfigloader.hpp"
 #include "rendertargetcontainer.hpp"
-#include "rendertargetjsonparser.hpp"
 #include "../loader/basicconfig.hpp"
-#include "../loader/fileio.hpp"
 #include <cstdint>
-#include <nlohmann/json.hpp>
-#include <stdexcept>
+#include <utility>
 
 namespace Pelican {
 
@@ -18,23 +13,15 @@ void RenderingPassJsonLoader::registerRenderingPassesFromJson(const std::string 
     auto &rt_container = GET_MODULE(RenderTargetContainer);
     auto &pass_container = GET_MODULE(RenderingPassContainer);
 
-    const auto rendering_pass_data = nlohmann::json::parse(readBinaryFile(json_path));
-    if (!rendering_pass_data.is_object()) {
-        throw std::runtime_error("Rendering config must be an object: " + json_path);
-    }
-
     const auto window_size = config.initialWindowSize();
     const vk::Extent2D base_extent{
         static_cast<uint32_t>(window_size.width),
         static_cast<uint32_t>(window_size.height),
     };
 
-    registerRenderTargetsFromJson(rendering_pass_data, base_extent, rt_container);
-
-    const auto pass_definitions =
-        parseRenderingPassDefinitionsFromConfigJson(rendering_pass_data, rt_container);
-    for (const auto &pass_definition : pass_definitions) {
-        pass_container.registerCompiledRenderingPass(compileRenderingPassRuntime(pass_definition));
+    auto compiled_passes = loadCompiledRenderingPassesFromJson(json_path, base_extent, rt_container);
+    for (auto &compiled_pass : compiled_passes) {
+        pass_container.registerCompiledRenderingPass(std::move(compiled_pass));
     }
 }
 
