@@ -20,7 +20,7 @@ vk::Format resolveFirstColorFormat(const PassDefinition &pass_def, RenderTarget 
 
     const auto &first_color = pass_def.output_color.front();
     if (isConcreteRenderTarget(first_color)) {
-        return rt_container.get(first_color).image.format;
+        return rt_container.getMetadata(first_color).format;
     }
     return rt_module.getSwapchainFormat();
 }

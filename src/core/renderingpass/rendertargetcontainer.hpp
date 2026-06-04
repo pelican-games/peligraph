@@ -4,9 +4,17 @@
 #include "../resourcecontainer.hpp"
 #include "../vkcore/buf.hpp"
 #include "../vkcore/image.hpp"
+#include <string>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
+
+struct RenderTargetMetadata {
+    std::string name;
+    vk::ImageUsageFlags usage;
+    vk::Format format;
+    vk::Extent2D extent;
+};
 
 DECLARE_MODULE(RenderTargetContainer) {
 
@@ -29,6 +37,7 @@ DECLARE_MODULE(RenderTargetContainer) {
     GlobalRenderTargetId registerRenderTarget(const std::string &name, vk::Extent2D extent, vk::Format format,
                                               vk::ImageUsageFlags usage, vma::MemoryUsage memUsage);
     GlobalRenderTargetId getRenderTargetIdByName(const std::string &name) const;
+    RenderTargetMetadata getMetadata(GlobalRenderTargetId id) const;
 
     // Accessors for render target resources owned by the container.
     const InternalRenderTarget &get(GlobalRenderTargetId id) const { return render_targets.get(id); }

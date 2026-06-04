@@ -78,4 +78,14 @@ GlobalRenderTargetId RenderTargetContainer::getRenderTargetIdByName(const std::s
     return noRenderTargetId();
 }
 
+RenderTargetMetadata RenderTargetContainer::getMetadata(GlobalRenderTargetId id) const {
+    const auto &rt = render_targets.get(id);
+    return RenderTargetMetadata{
+        rt.name,
+        rt.usage,
+        rt.image.format,
+        vk::Extent2D{rt.image.extent.width, rt.image.extent.height},
+    };
+}
+
 } // namespace Pelican
