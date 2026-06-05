@@ -12,6 +12,7 @@ struct FullscreenPassRendererDependencies;
 class FullscreenPassRenderer;
 struct MaterialRendererDependencies;
 class MaterialRenderer;
+struct UiRendererDependencies;
 class UiRenderer;
 
 struct RenderPassDispatchDependencies {
@@ -20,6 +21,7 @@ struct RenderPassDispatchDependencies {
     FullscreenPassRenderer &fullscreen_pass_renderer;
     const FullscreenPassRendererDependencies &fullscreen_pass_renderer_dependencies;
     UiRenderer &ui_renderer;
+    const UiRendererDependencies &ui_renderer_dependencies;
     const Camera &camera;
     vk::Format swapchain_color_format;
 };

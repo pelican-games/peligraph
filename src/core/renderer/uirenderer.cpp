@@ -151,9 +151,9 @@ vk::Pipeline UiRenderer::getPipeline(vk::Format color_format) {
     return it->second.get();
 }
 
-void UiRenderer::render(vk::CommandBuffer cmd_buf, const UiDrawRequest &request) {
-    auto &ui_container = GET_MODULE(UIContainer);
-    const auto &ui_textures = ui_container.getAllTextures();
+void UiRenderer::render(vk::CommandBuffer cmd_buf, const UiDrawRequest &request,
+                        const UiRendererDependencies &dependencies) {
+    const auto &ui_textures = dependencies.ui_container.getAllTextures();
     
     vk::RenderingAttachmentInfo attachment;
     attachment.imageView = request.target_view;

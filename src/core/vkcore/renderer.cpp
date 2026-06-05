@@ -3,6 +3,7 @@
 #include "../renderer/fullscreenpassrenderer.hpp"
 #include "../renderer/materialrender.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
+#include "../renderer/uicontainer.hpp"
 #include "../renderer/uirenderer.hpp"
 #include "../light/lightcontainer.hpp"
 #include "../fullscreenpass/fullscreenpasscontainer.hpp"
@@ -41,6 +42,7 @@ void Renderer::render() {
     auto &fullscreen_pass_renderer = GET_MODULE(FullscreenPassRenderer);
     auto &fullscreen_pass_container = GET_MODULE(FullscreenPassContainer);
     auto &ui_renderer = GET_MODULE(UiRenderer);
+    const auto &ui_container = GET_MODULE(UIContainer);
     const auto &camera = GET_MODULE(Camera);
     auto &light_container = GET_MODULE(LightContainer);
 
@@ -57,9 +59,10 @@ void Renderer::render() {
         instance_container, vert_buf_container, material_container, light_container, camera};
     const FullscreenPassRendererDependencies fullscreen_pass_renderer_dependencies{
         fullscreen_pass_container, light_container};
+    const UiRendererDependencies ui_renderer_dependencies{ui_container};
     const RenderPassDispatchDependencies pass_dispatch_dependencies{
         material_renderer, material_renderer_dependencies, fullscreen_pass_renderer,
-        fullscreen_pass_renderer_dependencies, ui_renderer, camera, rt.getSwapchainFormat()};
+        fullscreen_pass_renderer_dependencies, ui_renderer, ui_renderer_dependencies, camera, rt.getSwapchainFormat()};
     const RenderPassExecutorDependencies pass_executor_dependencies{
         rt_container, vk_utils, pass_dispatch_dependencies};
 

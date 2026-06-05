@@ -6,6 +6,8 @@
 
 namespace Pelican {
 
+class UIContainer;
+
 struct UiDrawRequest {
     vk::ImageView target_view;
     vk::Extent2D target_extent;
@@ -13,6 +15,10 @@ struct UiDrawRequest {
     vk::AttachmentLoadOp load_op;
     vk::AttachmentStoreOp store_op;
     vk::ClearColorValue clear_color;
+};
+
+struct UiRendererDependencies {
+    const UIContainer &ui_container;
 };
 
 DECLARE_MODULE(UiRenderer) {
@@ -28,7 +34,8 @@ DECLARE_MODULE(UiRenderer) {
     UiRenderer();
     ~UiRenderer();
 
-    void render(vk::CommandBuffer cmd_buf, const UiDrawRequest &request);
+    void render(vk::CommandBuffer cmd_buf, const UiDrawRequest &request,
+                const UiRendererDependencies &dependencies);
 };
 
 } // namespace Pelican

@@ -62,7 +62,8 @@ void renderUiPass(vk::CommandBuffer cmd_buf, const FrameRenderContext &frame, co
                                                        : rt_container.getMetadata(rt_id).format;
     dependencies.ui_renderer.render(cmd_buf, UiDrawRequest{target_view, target_extent, target_format,
                                                            pass_def.color_load_op, pass_def.color_store_op,
-                                                           pass_def.clear_color});
+                                                           pass_def.clear_color},
+                                    dependencies.ui_renderer_dependencies);
 }
 
 void renderDynamicPassDrawCalls(vk::CommandBuffer cmd_buf, PassId pass_id, const PassDefinition &pass_def,
