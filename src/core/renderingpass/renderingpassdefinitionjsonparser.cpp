@@ -1,4 +1,5 @@
 #include "renderingpassdefinitionjsonparser.hpp"
+#include "fullscreenpassinfojsonparser.hpp"
 #include "renderingpassjsonhelpers.hpp"
 #include "renderingpasstargetjsonparser.hpp"
 #include "renderingpassvalidation.hpp"
@@ -31,50 +32,7 @@ void parseFullscreenInfo(PassDefinition &pass_def, const nlohmann::json &pass_js
         return;
     }
 
-    auto &fullscreenInfo = pass_def.fullscreenInfo();
-    if (pass_json.contains("push_constants")) {
-        if (!pass_json.at("push_constants").is_string()) {
-            throw std::runtime_error("Fullscreen pass push_constants must be a string: " + pass_def.name);
-        }
-        fullscreenInfo.push_constants =
-            stringToFullscreenPushConstantData(pass_json.at("push_constants").get<std::string>());
-    } else if (pass_json.contains("needs_projection_matrix")) {
-        if (!pass_json.at("needs_projection_matrix").is_boolean()) {
-            throw std::runtime_error("Fullscreen pass needs_projection_matrix must be a boolean: " + pass_def.name);
-        }
-        if (pass_json.at("needs_projection_matrix").get<bool>()) {
-            fullscreenInfo.push_constants = FullscreenPushConstantData::eProjectionView;
-        }
-    } else if (pass_def.name == "lighting_pass") {
-        // Keep old project configs working until they declare push_constants explicitly.
-        fullscreenInfo.push_constants = FullscreenPushConstantData::eCameraPosition;
-    }
-    if (pass_json.contains("uses_light_data")) {
-        if (!pass_json.at("uses_light_data").is_boolean()) {
-            throw std::runtime_error("Fullscreen pass uses_light_data must be a boolean: " + pass_def.name);
-        }
-        fullscreenInfo.uses_light_data = pass_json.at("uses_light_data").get<bool>();
-    } else if (pass_def.name == "lighting_pass") {
-        // Keep old project configs working until they declare uses_light_data explicitly.
-        fullscreenInfo.uses_light_data = true;
-    }
-    if (!pass_json.contains("shader")) {
-        throw std::runtime_error("Fullscreen pass requires shader: " + pass_def.name);
-    }
-
-    const auto &shader = pass_json.at("shader");
-    if (!shader.is_object()) {
-        throw std::runtime_error("Fullscreen pass shader must be an object: " + pass_def.name);
-    }
-    if (!shader.contains("vertex") || !shader.contains("fragment")) {
-        throw std::runtime_error("Fullscreen pass shader requires vertex and fragment: " + pass_def.name);
-    }
-    if (!shader.at("vertex").is_string() || !shader.at("fragment").is_string()) {
-        throw std::runtime_error("Fullscreen pass shader paths must be strings: " + pass_def.name);
-    }
-
-    fullscreenInfo.vert_shader_path = shader.at("vertex").get<std::string>();
-    fullscreenInfo.frag_shader_path = shader.at("fragment").get<std::string>();
+    pass_def.fullscreenInfo() = parseFullscreenPassInfoFromJson(pass_json, pass_def.name);
 }
 
 void applyPassDefaults(PassDefinition &pass_def) {

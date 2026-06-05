@@ -1,3 +1,4 @@
+#include "../src/core/renderingpass/fullscreenpassinfojsonparser.hpp"
 #include "../src/core/renderingpass/renderingpassjsonhelpers.hpp"
 #include "../src/core/renderingpass/renderingpassruntimecompiler.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
@@ -75,6 +76,32 @@ TEST_CASE("render target JSON parser returns target definitions", "[renderingpas
     REQUIRE(definitions[0].format == vk::Format::eR8Unorm);
     REQUIRE(static_cast<bool>(definitions[0].usage & vk::ImageUsageFlagBits::eColorAttachment));
     REQUIRE(static_cast<bool>(definitions[0].usage & vk::ImageUsageFlagBits::eSampled));
+}
+
+TEST_CASE("fullscreen pass JSON parser reads explicit fullscreen options", "[renderingpass]") {
+    const nlohmann::json pass_json{
+        {"push_constants", "camera_position"},
+        {"uses_light_data", true},
+        {"shader", {{"vertex", "fullscreen.vert.spv"}, {"fragment", "lighting.frag.spv"}}},
+    };
+
+    const auto info = parseFullscreenPassInfoFromJson(pass_json, "lighting_pass");
+
+    REQUIRE(info.push_constants == FullscreenPushConstantData::eCameraPosition);
+    REQUIRE(info.uses_light_data);
+    REQUIRE(info.vert_shader_path == "fullscreen.vert.spv");
+    REQUIRE(info.frag_shader_path == "lighting.frag.spv");
+}
+
+TEST_CASE("fullscreen pass JSON parser does not infer options from pass name", "[renderingpass]") {
+    const nlohmann::json pass_json{
+        {"shader", {{"vertex", "fullscreen.vert.spv"}, {"fragment", "lighting.frag.spv"}}},
+    };
+
+    const auto info = parseFullscreenPassInfoFromJson(pass_json, "lighting_pass");
+
+    REQUIRE(info.push_constants == FullscreenPushConstantData::eNone);
+    REQUIRE_FALSE(info.uses_light_data);
 }
 
 TEST_CASE("rendering pass JSON helpers reject malformed values", "[renderingpass]") {
