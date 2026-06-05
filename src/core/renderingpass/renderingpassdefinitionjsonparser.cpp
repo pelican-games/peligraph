@@ -1,9 +1,6 @@
 #include "renderingpassdefinitionjsonparser.hpp"
-#include "materialpassinfojsonparser.hpp"
-#include "passattachmentoptionsjsonparser.hpp"
-#include "passinfojsonparser.hpp"
+#include "passdefinitionjsonparser.hpp"
 #include "renderingpassjsonhelpers.hpp"
-#include "renderingpasstargetjsonparser.hpp"
 #include "renderingpassvalidation.hpp"
 #include <stdexcept>
 #include <string>
@@ -11,41 +8,6 @@
 #include <utility>
 
 namespace Pelican {
-
-namespace {
-
-PassDefinition parsePassDefinition(const nlohmann::json &pass_json,
-                                   const RenderTargetNameResolver &rt_resolver,
-                                   const RenderTargetMetadataResolver &rt_metadata) {
-    if (!pass_json.is_object()) {
-        throw std::runtime_error("passes entries must be objects");
-    }
-
-    PassDefinition pass_def;
-    pass_def.name = parseStringField(pass_json, "name", "pass");
-    validateName(pass_def.name, "Pass");
-    parsePassTypeFromJson(pass_def, pass_json);
-
-    parsePassOutputTargetsFromJson(pass_def, rt_resolver, pass_json);
-    validatePassOutputs(pass_def);
-    validatePassSpecificFields(pass_def, pass_json);
-
-    parseMaterialPassInfoFromJson(pass_def, pass_json);
-
-    parsePassInputTargetsFromJson(pass_def, rt_resolver, pass_json);
-    validatePassInputs(pass_def);
-    validatePassTargetUsage(pass_def, rt_metadata);
-    validateUniqueRenderTargets(pass_def.output_color, "color output", pass_def, rt_metadata);
-    validateUniqueRenderTargets(pass_def.input_targets, "input", pass_def, rt_metadata);
-    validatePassOutputExtents(pass_def, rt_metadata);
-    validateMaterialPassAttachments(pass_def, rt_metadata);
-
-    parsePassAttachmentOptionsFromJson(pass_def, pass_json);
-    parseFullscreenPassInfoIntoDefinition(pass_def, pass_json);
-    return pass_def;
-}
-
-} // namespace
 
 RenderingPassDefinition parseRenderingPassDefinitionFromJson(const nlohmann::json &pass_set_json,
                                                              const RenderTargetNameResolver &rt_resolver,
@@ -75,7 +37,7 @@ RenderingPassDefinition parseRenderingPassDefinitionFromJson(const nlohmann::jso
             throw std::runtime_error("Duplicate pass name: " + pass_name);
         }
 
-        auto parsed_pass = parsePassDefinition(pass_json, rt_resolver, rt_metadata);
+        auto parsed_pass = parsePassDefinitionFromJson(pass_json, rt_resolver, rt_metadata);
         validatePassInputsProduced(parsed_pass, produced_color_targets, rt_metadata);
         recordPassOutputs(parsed_pass, produced_color_targets);
         pass_def.passes.push_back(std::move(parsed_pass));

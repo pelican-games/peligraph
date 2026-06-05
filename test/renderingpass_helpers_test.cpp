@@ -1,10 +1,12 @@
 #include "../src/core/renderingpass/fullscreenpassinfojsonparser.hpp"
 #include "../src/core/renderingpass/materialpassinfojsonparser.hpp"
 #include "../src/core/renderingpass/passattachmentoptionsjsonparser.hpp"
+#include "../src/core/renderingpass/passdefinitionjsonparser.hpp"
 #include "../src/core/renderingpass/passinfojsonparser.hpp"
 #include "../src/core/renderingpass/renderingpassjsonhelpers.hpp"
 #include "../src/core/renderingpass/renderingpassruntimecompiler.hpp"
 #include "../src/core/renderingpass/renderingpasstargetjsonparser.hpp"
+#include "../src/core/renderingpass/rendertargetmetadataresolver.hpp"
 #include "../src/core/renderingpass/rendertargetnameresolver.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
 #include <catch2/catch_test_macros.hpp>
@@ -213,6 +215,52 @@ TEST_CASE("rendering pass target JSON parser rejects malformed pass outputs", "[
                       std::runtime_error);
     REQUIRE_THROWS_AS(parsePassOutputTargetsFromJson(pass_def, resolver,
                                                      nlohmann::json{{"output", {{"color", "swapchain"}}}}),
+                      std::runtime_error);
+}
+
+TEST_CASE("pass definition JSON parser builds a fullscreen pass definition", "[renderingpass]") {
+    const auto name_resolver = RenderTargetNameResolver{[](const std::string &name) {
+        if (name == "half_color") {
+            return GlobalRenderTargetId{3};
+        }
+        return noRenderTargetId();
+    }};
+    const auto metadata_resolver = RenderTargetMetadataResolver{[](GlobalRenderTargetId id) {
+        if (id == GlobalRenderTargetId{3}) {
+            return RenderTargetMetadata{"half_color", vk::ImageUsageFlagBits::eColorAttachment |
+                                                          vk::ImageUsageFlagBits::eSampled,
+                                        vk::Format::eR8G8B8A8Unorm, vk::Extent2D{1280, 720}};
+        }
+        throw std::runtime_error("unexpected render target metadata lookup");
+    }};
+
+    const nlohmann::json pass_json{
+        {"name", "debug_texture"},
+        {"type", "fullscreen"},
+        {"output", {{"color", "half_color"}, {"depth", nullptr}}},
+        {"shader", {{"vertex", "fullscreen.vert.spv"}, {"fragment", "debug_texture.frag.spv"}}},
+        {"push_constants", "projection_view"},
+        {"clear_color", nlohmann::json::array({0.0f, 0.0f, 0.0f, 1.0f})},
+    };
+
+    const auto pass_def = parsePassDefinitionFromJson(pass_json, name_resolver, metadata_resolver);
+
+    REQUIRE(pass_def.name == "debug_texture");
+    REQUIRE(pass_def.isFullscreen());
+    REQUIRE(pass_def.output_color.size() == 1);
+    REQUIRE(pass_def.output_color[0] == GlobalRenderTargetId{3});
+    REQUIRE(pass_def.output_depth == noRenderTargetId());
+    REQUIRE(pass_def.fullscreenInfo().frag_shader_path == "debug_texture.frag.spv");
+    REQUIRE(pass_def.fullscreenInfo().push_constants == FullscreenPushConstantData::eProjectionView);
+}
+
+TEST_CASE("pass definition JSON parser rejects invalid pass object", "[renderingpass]") {
+    const auto name_resolver = RenderTargetNameResolver{[](const std::string &) { return noRenderTargetId(); }};
+    const auto metadata_resolver = RenderTargetMetadataResolver{[](GlobalRenderTargetId) -> RenderTargetMetadata {
+        throw std::runtime_error("unexpected render target metadata lookup");
+    }};
+
+    REQUIRE_THROWS_AS(parsePassDefinitionFromJson(nlohmann::json::array(), name_resolver, metadata_resolver),
                       std::runtime_error);
 }
 
