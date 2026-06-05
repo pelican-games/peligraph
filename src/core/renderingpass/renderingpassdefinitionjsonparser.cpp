@@ -1,5 +1,6 @@
 #include "renderingpassdefinitionjsonparser.hpp"
 #include "fullscreenpassinfojsonparser.hpp"
+#include "passattachmentoptionsjsonparser.hpp"
 #include "renderingpassjsonhelpers.hpp"
 #include "renderingpasstargetjsonparser.hpp"
 #include "renderingpassvalidation.hpp"
@@ -82,18 +83,7 @@ PassDefinition parsePassDefinition(const nlohmann::json &pass_json,
     validatePassOutputExtents(pass_def, rt_metadata);
     validateMaterialPassAttachments(pass_def, rt_metadata);
 
-    if (pass_json.contains("clear_color")) {
-        pass_def.clear_color = jsonToClearColor(pass_json.at("clear_color"));
-    }
-    if (pass_json.contains("color_load_op")) {
-        pass_def.color_load_op =
-            stringToLoadOp(parseStringField(pass_json, "color_load_op", "pass: " + pass_def.name));
-    }
-    if (pass_json.contains("color_store_op")) {
-        pass_def.color_store_op =
-            stringToStoreOp(parseStringField(pass_json, "color_store_op", "pass: " + pass_def.name));
-    }
-
+    parsePassAttachmentOptionsFromJson(pass_def, pass_json);
     parseFullscreenInfo(pass_def, pass_json);
     return pass_def;
 }

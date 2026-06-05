@@ -1,5 +1,6 @@
 target_sources(pelican_core PRIVATE
     fullscreenpassinfojsonparser.cpp
+    passattachmentoptionsjsonparser.cpp
     renderingpasscontainer.cpp
     renderingpassconfigloader.cpp
     renderingpassconfigjsonparser.cpp

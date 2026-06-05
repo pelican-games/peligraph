@@ -1,4 +1,5 @@
 #include "../src/core/renderingpass/fullscreenpassinfojsonparser.hpp"
+#include "../src/core/renderingpass/passattachmentoptionsjsonparser.hpp"
 #include "../src/core/renderingpass/renderingpassjsonhelpers.hpp"
 #include "../src/core/renderingpass/renderingpassruntimecompiler.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
@@ -111,6 +112,40 @@ TEST_CASE("fullscreen pass JSON parser rejects deprecated projection matrix flag
     };
 
     REQUIRE_THROWS_AS(parseFullscreenPassInfoFromJson(pass_json, "ssao_pass"), std::runtime_error);
+}
+
+TEST_CASE("pass attachment options parser applies explicit color attachment options", "[renderingpass]") {
+    PassDefinition pass_def;
+    pass_def.name = "bloom_composite";
+
+    const nlohmann::json pass_json{
+        {"clear_color", nlohmann::json::array({0.25f, 0.5f, 0.75f, 1.0f})},
+        {"color_load_op", "Load"},
+        {"color_store_op", "DontCare"},
+    };
+
+    parsePassAttachmentOptionsFromJson(pass_def, pass_json);
+
+    REQUIRE(pass_def.clear_color.float32[0] == 0.25f);
+    REQUIRE(pass_def.clear_color.float32[1] == 0.5f);
+    REQUIRE(pass_def.clear_color.float32[2] == 0.75f);
+    REQUIRE(pass_def.clear_color.float32[3] == 1.0f);
+    REQUIRE(pass_def.color_load_op == vk::AttachmentLoadOp::eLoad);
+    REQUIRE(pass_def.color_store_op == vk::AttachmentStoreOp::eDontCare);
+}
+
+TEST_CASE("pass attachment options parser preserves defaults when fields are omitted", "[renderingpass]") {
+    PassDefinition pass_def;
+    pass_def.name = "geometry";
+
+    parsePassAttachmentOptionsFromJson(pass_def, nlohmann::json::object());
+
+    REQUIRE(pass_def.clear_color.float32[0] == 0.0f);
+    REQUIRE(pass_def.clear_color.float32[1] == 0.0f);
+    REQUIRE(pass_def.clear_color.float32[2] == 0.0f);
+    REQUIRE(pass_def.clear_color.float32[3] == 1.0f);
+    REQUIRE(pass_def.color_load_op == vk::AttachmentLoadOp::eClear);
+    REQUIRE(pass_def.color_store_op == vk::AttachmentStoreOp::eStore);
 }
 
 TEST_CASE("rendering pass JSON helpers reject malformed values", "[renderingpass]") {
