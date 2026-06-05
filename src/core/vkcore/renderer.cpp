@@ -1,10 +1,12 @@
 #include "renderer.hpp"
 #include "../light/lightcontainer.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
+#include "../renderingpass/rendertargetcontainer.hpp"
 #include "core.hpp"
 #include "render_pass_executor.hpp"
 #include "renderer_config.hpp"
 #include "rendertarget.hpp"
+#include "util.hpp"
 #include <chrono>
 
 namespace Pelican {
@@ -19,8 +21,10 @@ void Renderer::render() {
     static auto start_time = std::chrono::high_resolution_clock::now();
 
     auto &rt = GET_MODULE(RenderTarget);
+    auto &rt_container = GET_MODULE(RenderTargetContainer);
     auto &pass_container = GET_MODULE(RenderingPassContainer);
     auto &pass_executor = GET_MODULE(RenderPassExecutor);
+    auto &vk_utils = GET_MODULE(VulkanUtils);
 
     {
         auto current_time = std::chrono::high_resolution_clock::now();
@@ -31,9 +35,10 @@ void Renderer::render() {
 
     const auto render_ctx = rt.render_begin();
     const auto &rendering_pass = pass_container.getCompiledRenderingPass(current_rendering_pass_id);
+    const RenderPassExecutorDependencies pass_executor_dependencies{rt_container, vk_utils};
 
     for (const auto &pass : rendering_pass.passes) {
-        pass_executor.execute(render_ctx, pass, render_target_layout_tracker);
+        pass_executor.execute(render_ctx, pass, pass_executor_dependencies, render_target_layout_tracker);
     }
 
     rt.render_end();

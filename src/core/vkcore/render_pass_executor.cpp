@@ -6,9 +6,10 @@
 namespace Pelican {
 
 void RenderPassExecutor::execute(const FrameRenderContext &frame, const CompiledPass &pass,
+                                 const RenderPassExecutorDependencies &dependencies,
                                  RenderTargetLayoutTracker &layout_tracker) const {
-    auto &rt_container = GET_MODULE(RenderTargetContainer);
-    auto &vk_utils = GET_MODULE(VulkanUtils);
+    auto &rt_container = dependencies.render_target_container;
+    auto &vk_utils = dependencies.vk_utils;
     const auto cmd_buf = frame.cmd_buf;
     const auto &pass_def = pass.definition;
     const auto target_extent = getRenderPassTargetExtent(frame, pass_def, rt_container);

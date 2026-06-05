@@ -7,9 +7,18 @@
 
 namespace Pelican {
 
+class RenderTargetContainer;
+class VulkanUtils;
+
+struct RenderPassExecutorDependencies {
+    RenderTargetContainer &render_target_container;
+    VulkanUtils &vk_utils;
+};
+
 DECLARE_MODULE(RenderPassExecutor) {
   public:
     void execute(const FrameRenderContext &frame, const CompiledPass &pass,
+                 const RenderPassExecutorDependencies &dependencies,
                  RenderTargetLayoutTracker &layout_tracker) const;
 };
 
