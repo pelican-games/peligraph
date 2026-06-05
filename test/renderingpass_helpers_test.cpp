@@ -3,6 +3,7 @@
 #include "../src/core/renderingpass/passattachmentoptionsjsonparser.hpp"
 #include "../src/core/renderingpass/passdefinitionjsonparser.hpp"
 #include "../src/core/renderingpass/passinfojsonparser.hpp"
+#include "../src/core/renderingpass/passsequencejsonparser.hpp"
 #include "../src/core/renderingpass/renderingpassjsonhelpers.hpp"
 #include "../src/core/renderingpass/renderingpassruntimecompiler.hpp"
 #include "../src/core/renderingpass/renderingpasstargetjsonparser.hpp"
@@ -261,6 +262,82 @@ TEST_CASE("pass definition JSON parser rejects invalid pass object", "[rendering
     }};
 
     REQUIRE_THROWS_AS(parsePassDefinitionFromJson(nlohmann::json::array(), name_resolver, metadata_resolver),
+                      std::runtime_error);
+}
+
+TEST_CASE("pass sequence JSON parser validates produced input order", "[renderingpass]") {
+    const auto name_resolver = RenderTargetNameResolver{[](const std::string &name) {
+        if (name == "source_color") {
+            return GlobalRenderTargetId{3};
+        }
+        if (name == "final_color") {
+            return GlobalRenderTargetId{4};
+        }
+        return noRenderTargetId();
+    }};
+    const auto metadata_resolver = RenderTargetMetadataResolver{[](GlobalRenderTargetId id) {
+        if (id == GlobalRenderTargetId{3}) {
+            return RenderTargetMetadata{"source_color", vk::ImageUsageFlagBits::eColorAttachment |
+                                                            vk::ImageUsageFlagBits::eSampled,
+                                        vk::Format::eR8G8B8A8Unorm, vk::Extent2D{1280, 720}};
+        }
+        if (id == GlobalRenderTargetId{4}) {
+            return RenderTargetMetadata{"final_color", vk::ImageUsageFlagBits::eColorAttachment,
+                                        vk::Format::eR8G8B8A8Unorm, vk::Extent2D{1280, 720}};
+        }
+        throw std::runtime_error("unexpected render target metadata lookup");
+    }};
+
+    const nlohmann::json pass_set_json{
+        {"passes",
+         nlohmann::json::array({
+             {{"name", "source"}, {"type", "fullscreen"},
+              {"output", {{"color", "source_color"}, {"depth", nullptr}}},
+              {"shader", {{"vertex", "fullscreen.vert.spv"}, {"fragment", "source.frag.spv"}}}},
+             {{"name", "composite"}, {"type", "fullscreen"}, {"input", "source_color"},
+              {"output", {{"color", "final_color"}, {"depth", nullptr}}},
+              {"shader", {{"vertex", "fullscreen.vert.spv"}, {"fragment", "composite.frag.spv"}}}},
+         })},
+    };
+
+    const auto passes = parsePassSequenceFromJson(pass_set_json, "main", name_resolver, metadata_resolver);
+
+    REQUIRE(passes.size() == 2);
+    REQUIRE(passes[0].name == "source");
+    REQUIRE(passes[1].input_targets.size() == 1);
+    REQUIRE(passes[1].input_targets[0] == GlobalRenderTargetId{3});
+}
+
+TEST_CASE("pass sequence JSON parser rejects duplicate pass names", "[renderingpass]") {
+    const auto name_resolver = RenderTargetNameResolver{[](const std::string &) { return noRenderTargetId(); }};
+    const auto metadata_resolver = RenderTargetMetadataResolver{[](GlobalRenderTargetId) -> RenderTargetMetadata {
+        throw std::runtime_error("unexpected render target metadata lookup");
+    }};
+
+    const nlohmann::json pass_set_json{
+        {"passes",
+         nlohmann::json::array({
+             {{"name", "same"}, {"type", "fullscreen"}, {"output", {{"color", "swapchain"}, {"depth", nullptr}}},
+              {"shader", {{"vertex", "fullscreen.vert.spv"}, {"fragment", "one.frag.spv"}}}},
+             {{"name", "same"}, {"type", "fullscreen"}, {"output", {{"color", "swapchain"}, {"depth", nullptr}}},
+              {"shader", {{"vertex", "fullscreen.vert.spv"}, {"fragment", "two.frag.spv"}}}},
+         })},
+    };
+
+    REQUIRE_THROWS_AS(parsePassSequenceFromJson(pass_set_json, "main", name_resolver, metadata_resolver),
+                      std::runtime_error);
+}
+
+TEST_CASE("pass sequence JSON parser rejects malformed pass list", "[renderingpass]") {
+    const auto name_resolver = RenderTargetNameResolver{[](const std::string &) { return noRenderTargetId(); }};
+    const auto metadata_resolver = RenderTargetMetadataResolver{[](GlobalRenderTargetId) -> RenderTargetMetadata {
+        throw std::runtime_error("unexpected render target metadata lookup");
+    }};
+
+    REQUIRE_THROWS_AS(parsePassSequenceFromJson(nlohmann::json::object(), "main", name_resolver, metadata_resolver),
+                      std::runtime_error);
+    REQUIRE_THROWS_AS(parsePassSequenceFromJson(nlohmann::json{{"passes", 1}}, "main", name_resolver,
+                                                metadata_resolver),
                       std::runtime_error);
 }
 

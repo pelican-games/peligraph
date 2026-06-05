@@ -4,6 +4,7 @@ target_sources(pelican_core PRIVATE
     passattachmentoptionsjsonparser.cpp
     passdefinitionjsonparser.cpp
     passinfojsonparser.cpp
+    passsequencejsonparser.cpp
     renderingpasscontainer.cpp
     renderingpassconfigloader.cpp
     renderingpassconfigjsonparser.cpp
