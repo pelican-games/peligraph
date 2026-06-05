@@ -126,7 +126,7 @@
           "type": "fullscreen",
           "output": { "color": ["ssao_output"], "depth": null },
           "input": ["gbuffer_worldpos", "gbuffer_normal"],
-          "needs_projection_matrix": true,
+          "push_constants": "projection_view",
           "shader": {
             "vertex": "../../../../src/core/resources/fullscreen.vert.spv",
             "fragment": "../../../../src/core/resources/ssao.frag.spv"

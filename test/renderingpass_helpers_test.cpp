@@ -104,6 +104,15 @@ TEST_CASE("fullscreen pass JSON parser does not infer options from pass name", "
     REQUIRE_FALSE(info.uses_light_data);
 }
 
+TEST_CASE("fullscreen pass JSON parser rejects deprecated projection matrix flag", "[renderingpass]") {
+    const nlohmann::json pass_json{
+        {"needs_projection_matrix", true},
+        {"shader", {{"vertex", "fullscreen.vert.spv"}, {"fragment", "ssao.frag.spv"}}},
+    };
+
+    REQUIRE_THROWS_AS(parseFullscreenPassInfoFromJson(pass_json, "ssao_pass"), std::runtime_error);
+}
+
 TEST_CASE("rendering pass JSON helpers reject malformed values", "[renderingpass]") {
     REQUIRE_THROWS_AS(stringToFormat("UNKNOWN"), std::runtime_error);
     REQUIRE_THROWS_AS(stringToUsageFlags({}), std::runtime_error);

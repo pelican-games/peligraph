@@ -164,6 +164,12 @@ void validatePassSpecificFields(const PassDefinition &pass_def, const nlohmann::
         throw std::runtime_error("Only material passes support material_range: " + pass_def.name);
     }
 
+    if (pass_json.contains("needs_projection_matrix")) {
+        throw std::runtime_error(
+            "Pass field needs_projection_matrix is deprecated; use push_constants: projection_view: " +
+            pass_def.name);
+    }
+
     if (pass_def.isFullscreen()) {
         return;
     }
@@ -172,7 +178,6 @@ void validatePassSpecificFields(const PassDefinition &pass_def, const nlohmann::
         "shader",
         "push_constants",
         "uses_light_data",
-        "needs_projection_matrix",
     };
     for (const char *field : fullscreen_fields) {
         if (pass_json.contains(field)) {
