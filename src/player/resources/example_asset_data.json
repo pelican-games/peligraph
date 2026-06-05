@@ -1,0 +1,24 @@
+{
+  "models": [
+    {
+      "name": "alicia",
+      "path": "AliciaSolid.vrm"
+    },
+    {
+      "name": "DamagedHelmet",
+      "path": "DamagedHelmet.glb"
+    },
+    {
+      "name": "sponza",
+      "path": "sponza.glb"
+    },
+    {
+      "name": "sotai",
+      "path": "Sotai_D.glb"
+    },
+    {
+      "name": "character",
+      "path": "character.glb"
+    }
+  ]
+}
