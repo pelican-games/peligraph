@@ -1,6 +1,7 @@
 #include "../src/core/renderingpass/fullscreenpassinfojsonparser.hpp"
 #include "../src/core/renderingpass/materialpassinfojsonparser.hpp"
 #include "../src/core/renderingpass/passattachmentoptionsjsonparser.hpp"
+#include "../src/core/renderingpass/passinfojsonparser.hpp"
 #include "../src/core/renderingpass/renderingpassjsonhelpers.hpp"
 #include "../src/core/renderingpass/renderingpassruntimecompiler.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
@@ -113,6 +114,38 @@ TEST_CASE("fullscreen pass JSON parser rejects deprecated projection matrix flag
     };
 
     REQUIRE_THROWS_AS(parseFullscreenPassInfoFromJson(pass_json, "ssao_pass"), std::runtime_error);
+}
+
+TEST_CASE("pass info JSON parser reads pass type and applies UI defaults", "[renderingpass]") {
+    PassDefinition pass_def;
+    pass_def.name = "ui";
+
+    parsePassTypeFromJson(pass_def, nlohmann::json{{"type", "ui"}});
+
+    REQUIRE(pass_def.isUi());
+    REQUIRE(pass_def.color_load_op == vk::AttachmentLoadOp::eLoad);
+}
+
+TEST_CASE("pass info JSON parser applies fullscreen info only to fullscreen passes", "[renderingpass]") {
+    PassDefinition fullscreen_pass;
+    fullscreen_pass.name = "debug_texture";
+    parsePassTypeFromJson(fullscreen_pass, nlohmann::json{{"type", "fullscreen"}});
+
+    const nlohmann::json fullscreen_json{
+        {"shader", {{"vertex", "fullscreen.vert.spv"}, {"fragment", "debug_texture.frag.spv"}}},
+        {"push_constants", "projection_view"},
+    };
+    parseFullscreenPassInfoIntoDefinition(fullscreen_pass, fullscreen_json);
+
+    REQUIRE(fullscreen_pass.fullscreenInfo().frag_shader_path == "debug_texture.frag.spv");
+    REQUIRE(fullscreen_pass.fullscreenInfo().push_constants == FullscreenPushConstantData::eProjectionView);
+
+    PassDefinition material_pass;
+    material_pass.name = "geometry";
+    material_pass.pass_info = MaterialPassInfo{};
+    parseFullscreenPassInfoIntoDefinition(material_pass, nlohmann::json::object());
+
+    REQUIRE(material_pass.isMaterial());
 }
 
 TEST_CASE("pass attachment options parser applies explicit color attachment options", "[renderingpass]") {

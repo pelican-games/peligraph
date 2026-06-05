@@ -1,7 +1,7 @@
 #include "renderingpassdefinitionjsonparser.hpp"
-#include "fullscreenpassinfojsonparser.hpp"
 #include "materialpassinfojsonparser.hpp"
 #include "passattachmentoptionsjsonparser.hpp"
+#include "passinfojsonparser.hpp"
 #include "renderingpassjsonhelpers.hpp"
 #include "renderingpasstargetjsonparser.hpp"
 #include "renderingpassvalidation.hpp"
@@ -14,20 +14,6 @@ namespace Pelican {
 
 namespace {
 
-void parseFullscreenInfo(PassDefinition &pass_def, const nlohmann::json &pass_json) {
-    if (!pass_def.isFullscreen()) {
-        return;
-    }
-
-    pass_def.fullscreenInfo() = parseFullscreenPassInfoFromJson(pass_json, pass_def.name);
-}
-
-void applyPassDefaults(PassDefinition &pass_def) {
-    if (pass_def.isUi()) {
-        pass_def.color_load_op = vk::AttachmentLoadOp::eLoad;
-    }
-}
-
 PassDefinition parsePassDefinition(const nlohmann::json &pass_json,
                                    const RenderTargetNameResolver &rt_resolver,
                                    const RenderTargetMetadataResolver &rt_metadata) {
@@ -38,8 +24,7 @@ PassDefinition parsePassDefinition(const nlohmann::json &pass_json,
     PassDefinition pass_def;
     pass_def.name = parseStringField(pass_json, "name", "pass");
     validateName(pass_def.name, "Pass");
-    pass_def.pass_info = makePassInfo(parseStringField(pass_json, "type", "pass: " + pass_def.name));
-    applyPassDefaults(pass_def);
+    parsePassTypeFromJson(pass_def, pass_json);
 
     if (!pass_json.contains("output")) {
         throw std::runtime_error("Pass requires output field: " + pass_def.name);
@@ -70,7 +55,7 @@ PassDefinition parsePassDefinition(const nlohmann::json &pass_json,
     validateMaterialPassAttachments(pass_def, rt_metadata);
 
     parsePassAttachmentOptionsFromJson(pass_def, pass_json);
-    parseFullscreenInfo(pass_def, pass_json);
+    parseFullscreenPassInfoIntoDefinition(pass_def, pass_json);
     return pass_def;
 }
 
