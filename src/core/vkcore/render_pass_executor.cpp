@@ -18,7 +18,7 @@ void RenderPassExecutor::execute(const FrameRenderContext &frame, const Compiled
     transitionPassOutputsToAttachmentLayouts(cmd_buf, pass_def, rt_container, vk_utils, layout_tracker);
 
     if (pass_def.isUi()) {
-        renderUiPass(cmd_buf, frame, pass_def, target_extent, rt_container);
+        renderUiPass(cmd_buf, frame, pass_def, target_extent, rt_container, dependencies.dispatch);
         return;
     }
 
@@ -38,7 +38,7 @@ void RenderPassExecutor::execute(const FrameRenderContext &frame, const Compiled
     cmd_buf.beginRendering(render_info);
     setDynamicViewportAndScissor(cmd_buf, target_extent);
 
-    renderDynamicPassDrawCalls(cmd_buf, pass.pass_id, pass_def);
+    renderDynamicPassDrawCalls(cmd_buf, pass.pass_id, pass_def, dependencies.dispatch);
 
     cmd_buf.endRendering();
 }

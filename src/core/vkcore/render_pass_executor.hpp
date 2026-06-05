@@ -8,11 +8,13 @@
 namespace Pelican {
 
 class RenderTargetContainer;
+struct RenderPassDispatchDependencies;
 class VulkanUtils;
 
 struct RenderPassExecutorDependencies {
     RenderTargetContainer &render_target_container;
     VulkanUtils &vk_utils;
+    const RenderPassDispatchDependencies &dispatch;
 };
 
 DECLARE_MODULE(RenderPassExecutor) {
