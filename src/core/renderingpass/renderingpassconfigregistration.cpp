@@ -15,7 +15,7 @@ namespace Pelican {
 namespace {
 
 RenderingPassRuntimeDependencies toRuntimeDependencies(
-    RenderingPassConfigRegistrationDependencies &dependencies,
+    RenderingPassConfigRuntimeDependencies &dependencies,
     const RenderTargetMetadataResolver &rt_metadata,
     const RenderTargetImageViewResolver &rt_views) {
     return RenderingPassRuntimeDependencies{
@@ -33,15 +33,17 @@ void registerRenderingPassConfigFromJson(const std::string &json_path, vk::Exten
                                          RenderingPassConfigRegistrationDependencies dependencies) {
     const auto rendering_pass_data = loadRenderingPassConfigJson(json_path);
     const auto render_target_definitions = parseRenderTargetDefinitionsFromJson(rendering_pass_data);
-    registerRenderTargetDefinitions(render_target_definitions, base_extent, dependencies.render_target_container);
+    registerRenderTargetDefinitions(render_target_definitions, base_extent,
+                                    dependencies.render_targets.render_target_container);
 
-    const RenderTargetNameResolver rt_resolver{dependencies.render_target_container};
-    const RenderTargetMetadataResolver rt_metadata{dependencies.render_target_container};
-    const RenderTargetImageViewResolver rt_views{dependencies.render_target_container};
+    const RenderTargetNameResolver rt_resolver{dependencies.render_targets.render_target_container};
+    const RenderTargetMetadataResolver rt_metadata{dependencies.render_targets.render_target_container};
+    const RenderTargetImageViewResolver rt_views{dependencies.render_targets.render_target_container};
     const auto pass_definitions =
         parseRenderingPassDefinitionsFromConfigJson(rendering_pass_data, rt_resolver, rt_metadata);
     auto compiled_passes =
-        compileRenderingPassesRuntime(pass_definitions, toRuntimeDependencies(dependencies, rt_metadata, rt_views));
+        compileRenderingPassesRuntime(pass_definitions,
+                                      toRuntimeDependencies(dependencies.runtime, rt_metadata, rt_views));
     for (auto &compiled_pass : compiled_passes) {
         dependencies.pass_container.registerCompiledRenderingPass(std::move(compiled_pass));
     }

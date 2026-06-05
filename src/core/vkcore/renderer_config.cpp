@@ -50,10 +50,14 @@ void registerConfiguredRenderingPasses(const ProjectBasicConfig &config) {
             registerRenderingPassConfigFromJson(
                 main_config_path, baseExtentFromConfig(config),
                 RenderingPassConfigRegistrationDependencies{
-                    rt_module,
-                    rt_container,
-                    shader_container,
-                    fs_container,
+                    RenderingPassConfigRenderTargetDependencies{
+                        rt_container,
+                    },
+                    RenderingPassConfigRuntimeDependencies{
+                        rt_module,
+                        shader_container,
+                        fs_container,
+                    },
                     pass_container,
                 });
         } else {

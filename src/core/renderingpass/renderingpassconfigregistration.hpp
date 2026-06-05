@@ -11,11 +11,19 @@ class RenderTarget;
 class RenderTargetContainer;
 class ShaderContainer;
 
-struct RenderingPassConfigRegistrationDependencies {
-    RenderTarget &render_target;
+struct RenderingPassConfigRenderTargetDependencies {
     RenderTargetContainer &render_target_container;
+};
+
+struct RenderingPassConfigRuntimeDependencies {
+    RenderTarget &render_target;
     ShaderContainer &shader_container;
     FullscreenPassContainer &fullscreen_pass_container;
+};
+
+struct RenderingPassConfigRegistrationDependencies {
+    RenderingPassConfigRenderTargetDependencies render_targets;
+    RenderingPassConfigRuntimeDependencies runtime;
     RenderingPassContainer &pass_container;
 };
 
