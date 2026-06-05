@@ -45,15 +45,16 @@ FullscreenPassRenderer::FullscreenPassRenderer() {}
 FullscreenPassRenderer::~FullscreenPassRenderer() {}
 
 void FullscreenPassRenderer::render(vk::CommandBuffer cmd_buf, PassId pass_id, const PassDefinition &pass_def,
-                                    const FullscreenPassCameraData &camera_data) const {
-    auto &container = GET_MODULE(FullscreenPassContainer);
+                                    const FullscreenPassCameraData &camera_data,
+                                    const FullscreenPassRendererDependencies &dependencies) const {
+    auto &container = dependencies.fullscreen_pass_container;
     const auto &fullscreenInfo = pass_def.fullscreenInfo();
     const auto pipeline_layout = container.getPipelineLayout();
 
     container.bindResource(cmd_buf, pass_id);
 
     if (fullscreenInfo.uses_light_data) {
-        GET_MODULE(LightContainer).bindResource(cmd_buf, pipeline_layout, lightDescriptorSetNumber);
+        dependencies.light_container.bindResource(cmd_buf, pipeline_layout, lightDescriptorSetNumber);
     }
 
     pushFullscreenConstants(cmd_buf, pipeline_layout, fullscreenInfo.push_constants, camera_data);

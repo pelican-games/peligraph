@@ -40,7 +40,8 @@ void renderFullscreenPass(vk::CommandBuffer cmd_buf, PassId pass_id, const PassD
                           const RenderPassDispatchDependencies &dependencies) {
     const auto &fullscreenInfo = pass_def.fullscreenInfo();
     const auto camera_data = createFullscreenPassCameraData(fullscreenInfo.push_constants, dependencies.camera);
-    dependencies.fullscreen_pass_renderer.render(cmd_buf, pass_id, pass_def, camera_data);
+    dependencies.fullscreen_pass_renderer.render(cmd_buf, pass_id, pass_def, camera_data,
+                                                 dependencies.fullscreen_pass_renderer_dependencies);
 }
 
 } // namespace
