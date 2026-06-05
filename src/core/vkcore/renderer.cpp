@@ -11,7 +11,6 @@
 #include "../model/vertbufcontainer.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
-#include "core.hpp"
 #include "render_pass_dispatch.hpp"
 #include "render_pass_executor.hpp"
 #include "renderer_config.hpp"
@@ -21,56 +20,101 @@
 
 namespace Pelican {
 
-Renderer::Renderer() : device{GET_MODULE(VulkanManageCore).getDevice()} {
+namespace {
+
+using FrameClock = std::chrono::high_resolution_clock;
+
+struct RenderFrameModules {
+    RenderTarget &render_target;
+    RenderTargetContainer &render_target_container;
+    RenderingPassContainer &rendering_pass_container;
+    RenderPassExecutor &pass_executor;
+    VulkanUtils &vk_utils;
+    MaterialRenderer &material_renderer;
+    PolygonInstanceContainer &instance_container;
+    const VertBufContainer &vert_buf_container;
+    const MaterialContainer &material_container;
+    FullscreenPassRenderer &fullscreen_pass_renderer;
+    FullscreenPassContainer &fullscreen_pass_container;
+    UiRenderer &ui_renderer;
+    const UIContainer &ui_container;
+    const Camera &camera;
+    LightContainer &light_container;
+};
+
+RenderFrameModules resolveRenderFrameModules() {
+    return RenderFrameModules{
+        GET_MODULE(RenderTarget),
+        GET_MODULE(RenderTargetContainer),
+        GET_MODULE(RenderingPassContainer),
+        GET_MODULE(RenderPassExecutor),
+        GET_MODULE(VulkanUtils),
+        GET_MODULE(MaterialRenderer),
+        GET_MODULE(PolygonInstanceContainer),
+        GET_MODULE(VertBufContainer),
+        GET_MODULE(MaterialContainer),
+        GET_MODULE(FullscreenPassRenderer),
+        GET_MODULE(FullscreenPassContainer),
+        GET_MODULE(UiRenderer),
+        GET_MODULE(UIContainer),
+        GET_MODULE(Camera),
+        GET_MODULE(LightContainer),
+    };
+}
+
+void updateFrameAnimation(LightContainer &light_container, FrameClock::time_point start_time) {
+    const auto current_time = FrameClock::now();
+    const float time = std::chrono::duration<float, std::chrono::seconds::period>(current_time - start_time).count();
+    light_container.updateAnimation(time);
+}
+
+void executeRenderingPasses(const FrameRenderContext &render_ctx, const CompiledRenderingPass &rendering_pass,
+                            RenderFrameModules &modules, RenderTargetLayoutTracker &layout_tracker) {
+    const MaterialRendererDependencies material_renderer_dependencies{modules.instance_container,
+                                                                      modules.vert_buf_container,
+                                                                      modules.material_container,
+                                                                      modules.light_container,
+                                                                      modules.camera};
+    const FullscreenPassRendererDependencies fullscreen_pass_renderer_dependencies{modules.fullscreen_pass_container,
+                                                                                  modules.light_container};
+    const UiRendererDependencies ui_renderer_dependencies{modules.ui_container};
+    const RenderPassDispatchDependencies pass_dispatch_dependencies{
+        modules.material_renderer,
+        material_renderer_dependencies,
+        modules.fullscreen_pass_renderer,
+        fullscreen_pass_renderer_dependencies,
+        modules.ui_renderer,
+        ui_renderer_dependencies,
+        modules.camera,
+        modules.render_target.getSwapchainFormat()};
+    const RenderPassExecutorDependencies pass_executor_dependencies{modules.render_target_container, modules.vk_utils,
+                                                                    pass_dispatch_dependencies};
+
+    for (const auto &pass : rendering_pass.passes) {
+        modules.pass_executor.execute(render_ctx, pass, pass_executor_dependencies, layout_tracker);
+    }
+}
+
+} // namespace
+
+Renderer::Renderer() {
     current_rendering_pass_id = loadDefaultRenderingPassFromConfig();
 }
 
-Renderer::~Renderer() {}
+Renderer::~Renderer() = default;
 
 void Renderer::render() {
-    static auto start_time = std::chrono::high_resolution_clock::now();
+    static const auto start_time = FrameClock::now();
 
-    auto &rt = GET_MODULE(RenderTarget);
-    auto &rt_container = GET_MODULE(RenderTargetContainer);
-    auto &pass_container = GET_MODULE(RenderingPassContainer);
-    auto &pass_executor = GET_MODULE(RenderPassExecutor);
-    auto &vk_utils = GET_MODULE(VulkanUtils);
-    auto &material_renderer = GET_MODULE(MaterialRenderer);
-    auto &instance_container = GET_MODULE(PolygonInstanceContainer);
-    const auto &vert_buf_container = GET_MODULE(VertBufContainer);
-    const auto &material_container = GET_MODULE(MaterialContainer);
-    auto &fullscreen_pass_renderer = GET_MODULE(FullscreenPassRenderer);
-    auto &fullscreen_pass_container = GET_MODULE(FullscreenPassContainer);
-    auto &ui_renderer = GET_MODULE(UiRenderer);
-    const auto &ui_container = GET_MODULE(UIContainer);
-    const auto &camera = GET_MODULE(Camera);
-    auto &light_container = GET_MODULE(LightContainer);
+    auto modules = resolveRenderFrameModules();
+    updateFrameAnimation(modules.light_container, start_time);
 
-    {
-        auto current_time = std::chrono::high_resolution_clock::now();
-        const float time =
-            std::chrono::duration<float, std::chrono::seconds::period>(current_time - start_time).count();
-        light_container.updateAnimation(time);
-    }
+    const auto render_ctx = modules.render_target.render_begin();
+    const auto &rendering_pass =
+        modules.rendering_pass_container.getCompiledRenderingPass(current_rendering_pass_id);
+    executeRenderingPasses(render_ctx, rendering_pass, modules, render_target_layout_tracker);
 
-    const auto render_ctx = rt.render_begin();
-    const auto &rendering_pass = pass_container.getCompiledRenderingPass(current_rendering_pass_id);
-    const MaterialRendererDependencies material_renderer_dependencies{
-        instance_container, vert_buf_container, material_container, light_container, camera};
-    const FullscreenPassRendererDependencies fullscreen_pass_renderer_dependencies{
-        fullscreen_pass_container, light_container};
-    const UiRendererDependencies ui_renderer_dependencies{ui_container};
-    const RenderPassDispatchDependencies pass_dispatch_dependencies{
-        material_renderer, material_renderer_dependencies, fullscreen_pass_renderer,
-        fullscreen_pass_renderer_dependencies, ui_renderer, ui_renderer_dependencies, camera, rt.getSwapchainFormat()};
-    const RenderPassExecutorDependencies pass_executor_dependencies{
-        rt_container, vk_utils, pass_dispatch_dependencies};
-
-    for (const auto &pass : rendering_pass.passes) {
-        pass_executor.execute(render_ctx, pass, pass_executor_dependencies, render_target_layout_tracker);
-    }
-
-    rt.render_end();
+    modules.render_target.render_end();
 }
 
 } // namespace Pelican
