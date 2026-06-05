@@ -2,9 +2,12 @@
 #include "../renderer/camera.hpp"
 #include "../renderer/fullscreenpassrenderer.hpp"
 #include "../renderer/materialrender.hpp"
+#include "../renderer/polygoninstancecontainer.hpp"
 #include "../renderer/uirenderer.hpp"
 #include "../light/lightcontainer.hpp"
 #include "../fullscreenpass/fullscreenpasscontainer.hpp"
+#include "../material/materialcontainer.hpp"
+#include "../model/vertbufcontainer.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
 #include "core.hpp"
@@ -32,6 +35,9 @@ void Renderer::render() {
     auto &pass_executor = GET_MODULE(RenderPassExecutor);
     auto &vk_utils = GET_MODULE(VulkanUtils);
     auto &material_renderer = GET_MODULE(MaterialRenderer);
+    auto &instance_container = GET_MODULE(PolygonInstanceContainer);
+    const auto &vert_buf_container = GET_MODULE(VertBufContainer);
+    const auto &material_container = GET_MODULE(MaterialContainer);
     auto &fullscreen_pass_renderer = GET_MODULE(FullscreenPassRenderer);
     auto &fullscreen_pass_container = GET_MODULE(FullscreenPassContainer);
     auto &ui_renderer = GET_MODULE(UiRenderer);
@@ -47,11 +53,13 @@ void Renderer::render() {
 
     const auto render_ctx = rt.render_begin();
     const auto &rendering_pass = pass_container.getCompiledRenderingPass(current_rendering_pass_id);
+    const MaterialRendererDependencies material_renderer_dependencies{
+        instance_container, vert_buf_container, material_container, light_container, camera};
     const FullscreenPassRendererDependencies fullscreen_pass_renderer_dependencies{
         fullscreen_pass_container, light_container};
     const RenderPassDispatchDependencies pass_dispatch_dependencies{
-        material_renderer, fullscreen_pass_renderer, fullscreen_pass_renderer_dependencies, ui_renderer, camera,
-        rt.getSwapchainFormat()};
+        material_renderer, material_renderer_dependencies, fullscreen_pass_renderer,
+        fullscreen_pass_renderer_dependencies, ui_renderer, camera, rt.getSwapchainFormat()};
     const RenderPassExecutorDependencies pass_executor_dependencies{
         rt_container, vk_utils, pass_dispatch_dependencies};
 

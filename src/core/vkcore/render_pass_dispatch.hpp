@@ -10,11 +10,13 @@ namespace Pelican {
 class Camera;
 struct FullscreenPassRendererDependencies;
 class FullscreenPassRenderer;
+struct MaterialRendererDependencies;
 class MaterialRenderer;
 class UiRenderer;
 
 struct RenderPassDispatchDependencies {
     MaterialRenderer &material_renderer;
+    const MaterialRendererDependencies &material_renderer_dependencies;
     FullscreenPassRenderer &fullscreen_pass_renderer;
     const FullscreenPassRendererDependencies &fullscreen_pass_renderer_dependencies;
     UiRenderer &ui_renderer;

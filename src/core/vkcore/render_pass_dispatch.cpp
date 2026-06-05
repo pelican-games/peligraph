@@ -14,9 +14,10 @@ void renderMaterialPass(vk::CommandBuffer cmd_buf, PassId pass_id, const PassDef
     const auto &materialInfo = pass_def.materialInfo();
     if (materialInfo.material_count > 0) {
         dependencies.material_renderer.renderWithMaterialRange(cmd_buf, pass_id, materialInfo.material_start,
-                                                               materialInfo.material_count);
+                                                               materialInfo.material_count,
+                                                               dependencies.material_renderer_dependencies);
     } else {
-        dependencies.material_renderer.render(cmd_buf, pass_id);
+        dependencies.material_renderer.render(cmd_buf, pass_id, dependencies.material_renderer_dependencies);
     }
 }
 
