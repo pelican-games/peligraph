@@ -1,5 +1,6 @@
 #include "renderingpassdefinitionjsonparser.hpp"
 #include "fullscreenpassinfojsonparser.hpp"
+#include "materialpassinfojsonparser.hpp"
 #include "passattachmentoptionsjsonparser.hpp"
 #include "renderingpassjsonhelpers.hpp"
 #include "renderingpasstargetjsonparser.hpp"
@@ -12,21 +13,6 @@
 namespace Pelican {
 
 namespace {
-
-void parseMaterialInfo(PassDefinition &pass_def, const nlohmann::json &pass_json) {
-    if (!pass_def.isMaterial() || !pass_json.contains("material_range")) {
-        return;
-    }
-
-    const auto &mat_range = pass_json.at("material_range");
-    if (!mat_range.is_object()) {
-        throw std::runtime_error("material_range must be an object: " + pass_def.name);
-    }
-
-    auto &materialInfo = pass_def.materialInfo();
-    materialInfo.material_start = parseUint32Field(mat_range, "start", "material_range in pass: " + pass_def.name);
-    materialInfo.material_count = parseUint32Field(mat_range, "count", "material_range in pass: " + pass_def.name);
-}
 
 void parseFullscreenInfo(PassDefinition &pass_def, const nlohmann::json &pass_json) {
     if (!pass_def.isFullscreen()) {
@@ -71,7 +57,7 @@ PassDefinition parsePassDefinition(const nlohmann::json &pass_json,
     validatePassOutputs(pass_def);
     validatePassSpecificFields(pass_def, pass_json);
 
-    parseMaterialInfo(pass_def, pass_json);
+    parseMaterialPassInfoFromJson(pass_def, pass_json);
 
     if (pass_json.contains("input")) {
         pass_def.input_targets = parseInputTargetsFromJson(rt_resolver, pass_json.at("input"));

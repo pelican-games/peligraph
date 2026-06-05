@@ -1,4 +1,5 @@
 #include "../src/core/renderingpass/fullscreenpassinfojsonparser.hpp"
+#include "../src/core/renderingpass/materialpassinfojsonparser.hpp"
 #include "../src/core/renderingpass/passattachmentoptionsjsonparser.hpp"
 #include "../src/core/renderingpass/renderingpassjsonhelpers.hpp"
 #include "../src/core/renderingpass/renderingpassruntimecompiler.hpp"
@@ -146,6 +147,44 @@ TEST_CASE("pass attachment options parser preserves defaults when fields are omi
     REQUIRE(pass_def.clear_color.float32[3] == 1.0f);
     REQUIRE(pass_def.color_load_op == vk::AttachmentLoadOp::eClear);
     REQUIRE(pass_def.color_store_op == vk::AttachmentStoreOp::eStore);
+}
+
+TEST_CASE("material pass info parser applies explicit material range", "[renderingpass]") {
+    PassDefinition pass_def;
+    pass_def.name = "geometry";
+    pass_def.pass_info = MaterialPassInfo{};
+
+    const nlohmann::json pass_json{
+        {"material_range", {{"start", 3}, {"count", 7}}},
+    };
+
+    parseMaterialPassInfoFromJson(pass_def, pass_json);
+
+    REQUIRE(pass_def.materialInfo().material_start == 3);
+    REQUIRE(pass_def.materialInfo().material_count == 7);
+}
+
+TEST_CASE("material pass info parser preserves defaults when material range is omitted", "[renderingpass]") {
+    PassDefinition pass_def;
+    pass_def.name = "geometry";
+    pass_def.pass_info = MaterialPassInfo{};
+
+    parseMaterialPassInfoFromJson(pass_def, nlohmann::json::object());
+
+    REQUIRE(pass_def.materialInfo().material_start == 0);
+    REQUIRE(pass_def.materialInfo().material_count == 0);
+}
+
+TEST_CASE("material pass info parser rejects malformed material range", "[renderingpass]") {
+    PassDefinition pass_def;
+    pass_def.name = "geometry";
+    pass_def.pass_info = MaterialPassInfo{};
+
+    const nlohmann::json pass_json{
+        {"material_range", 1},
+    };
+
+    REQUIRE_THROWS_AS(parseMaterialPassInfoFromJson(pass_def, pass_json), std::runtime_error);
 }
 
 TEST_CASE("rendering pass JSON helpers reject malformed values", "[renderingpass]") {
