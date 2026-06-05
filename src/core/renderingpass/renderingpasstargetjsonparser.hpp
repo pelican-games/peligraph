@@ -8,6 +8,10 @@ namespace Pelican {
 
 class RenderTargetNameResolver;
 
+void parsePassOutputTargetsFromJson(PassDefinition &pass_def, const RenderTargetNameResolver &rt_resolver,
+                                    const nlohmann::json &pass_json);
+void parsePassInputTargetsFromJson(PassDefinition &pass_def, const RenderTargetNameResolver &rt_resolver,
+                                   const nlohmann::json &pass_json);
 std::vector<GlobalRenderTargetId> parseColorOutputTargetsFromJson(const RenderTargetNameResolver &rt_resolver,
                                                                   nlohmann::json color_output);
 GlobalRenderTargetId parseDepthOutputTargetFromJson(const RenderTargetNameResolver &rt_resolver,

@@ -26,27 +26,13 @@ PassDefinition parsePassDefinition(const nlohmann::json &pass_json,
     validateName(pass_def.name, "Pass");
     parsePassTypeFromJson(pass_def, pass_json);
 
-    if (!pass_json.contains("output")) {
-        throw std::runtime_error("Pass requires output field: " + pass_def.name);
-    }
-    const auto &output = pass_json.at("output");
-    if (!output.is_object()) {
-        throw std::runtime_error("Pass output must be an object: " + pass_def.name);
-    }
-    if (!output.contains("color") || !output.contains("depth")) {
-        throw std::runtime_error("Pass output requires color and depth fields: " + pass_def.name);
-    }
-    pass_def.output_color = parseColorOutputTargetsFromJson(rt_resolver, output.at("color"));
-    pass_def.output_depth = parseDepthOutputTargetFromJson(rt_resolver, output.at("depth"));
-
+    parsePassOutputTargetsFromJson(pass_def, rt_resolver, pass_json);
     validatePassOutputs(pass_def);
     validatePassSpecificFields(pass_def, pass_json);
 
     parseMaterialPassInfoFromJson(pass_def, pass_json);
 
-    if (pass_json.contains("input")) {
-        pass_def.input_targets = parseInputTargetsFromJson(rt_resolver, pass_json.at("input"));
-    }
+    parsePassInputTargetsFromJson(pass_def, rt_resolver, pass_json);
     validatePassInputs(pass_def);
     validatePassTargetUsage(pass_def, rt_metadata);
     validateUniqueRenderTargets(pass_def.output_color, "color output", pass_def, rt_metadata);

@@ -4,6 +4,8 @@
 #include "../src/core/renderingpass/passinfojsonparser.hpp"
 #include "../src/core/renderingpass/renderingpassjsonhelpers.hpp"
 #include "../src/core/renderingpass/renderingpassruntimecompiler.hpp"
+#include "../src/core/renderingpass/renderingpasstargetjsonparser.hpp"
+#include "../src/core/renderingpass/rendertargetnameresolver.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <nlohmann/json.hpp>
@@ -146,6 +148,72 @@ TEST_CASE("pass info JSON parser applies fullscreen info only to fullscreen pass
     parseFullscreenPassInfoIntoDefinition(material_pass, nlohmann::json::object());
 
     REQUIRE(material_pass.isMaterial());
+}
+
+TEST_CASE("rendering pass target JSON parser applies output and input targets", "[renderingpass]") {
+    const auto resolver = RenderTargetNameResolver{[](const std::string &name) {
+        if (name == "color_target") {
+            return GlobalRenderTargetId{3};
+        }
+        if (name == "depth_target") {
+            return GlobalRenderTargetId{4};
+        }
+        if (name == "input_target") {
+            return GlobalRenderTargetId{5};
+        }
+        return noRenderTargetId();
+    }};
+
+    PassDefinition pass_def;
+    pass_def.name = "postprocess";
+
+    const nlohmann::json pass_json{
+        {"output", {{"color", "color_target"}, {"depth", "depth_target"}}},
+        {"input", "input_target"},
+    };
+
+    parsePassOutputTargetsFromJson(pass_def, resolver, pass_json);
+    parsePassInputTargetsFromJson(pass_def, resolver, pass_json);
+
+    REQUIRE(pass_def.output_color.size() == 1);
+    REQUIRE(pass_def.output_color[0] == GlobalRenderTargetId{3});
+    REQUIRE(pass_def.output_depth == GlobalRenderTargetId{4});
+    REQUIRE(pass_def.input_targets.size() == 1);
+    REQUIRE(pass_def.input_targets[0] == GlobalRenderTargetId{5});
+}
+
+TEST_CASE("rendering pass target JSON parser handles swapchain and omitted input", "[renderingpass]") {
+    const auto resolver = RenderTargetNameResolver{[](const std::string &) { return noRenderTargetId(); }};
+
+    PassDefinition pass_def;
+    pass_def.name = "present";
+
+    const nlohmann::json pass_json{
+        {"output", {{"color", "swapchain"}, {"depth", nullptr}}},
+    };
+
+    parsePassOutputTargetsFromJson(pass_def, resolver, pass_json);
+    parsePassInputTargetsFromJson(pass_def, resolver, pass_json);
+
+    REQUIRE(pass_def.output_color.size() == 1);
+    REQUIRE(isSwapchainRenderTarget(pass_def.output_color[0]));
+    REQUIRE(pass_def.output_depth == noRenderTargetId());
+    REQUIRE(pass_def.input_targets.empty());
+}
+
+TEST_CASE("rendering pass target JSON parser rejects malformed pass outputs", "[renderingpass]") {
+    const auto resolver = RenderTargetNameResolver{[](const std::string &) { return noRenderTargetId(); }};
+
+    PassDefinition pass_def;
+    pass_def.name = "bad_pass";
+
+    REQUIRE_THROWS_AS(parsePassOutputTargetsFromJson(pass_def, resolver, nlohmann::json::object()),
+                      std::runtime_error);
+    REQUIRE_THROWS_AS(parsePassOutputTargetsFromJson(pass_def, resolver, nlohmann::json{{"output", 1}}),
+                      std::runtime_error);
+    REQUIRE_THROWS_AS(parsePassOutputTargetsFromJson(pass_def, resolver,
+                                                     nlohmann::json{{"output", {{"color", "swapchain"}}}}),
+                      std::runtime_error);
 }
 
 TEST_CASE("pass attachment options parser applies explicit color attachment options", "[renderingpass]") {

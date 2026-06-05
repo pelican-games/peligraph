@@ -19,6 +19,33 @@ GlobalRenderTargetId resolveRenderTarget(const RenderTargetNameResolver &rt_reso
 
 } // namespace
 
+void parsePassOutputTargetsFromJson(PassDefinition &pass_def, const RenderTargetNameResolver &rt_resolver,
+                                    const nlohmann::json &pass_json) {
+    if (!pass_json.contains("output")) {
+        throw std::runtime_error("Pass requires output field: " + pass_def.name);
+    }
+
+    const auto &output = pass_json.at("output");
+    if (!output.is_object()) {
+        throw std::runtime_error("Pass output must be an object: " + pass_def.name);
+    }
+    if (!output.contains("color") || !output.contains("depth")) {
+        throw std::runtime_error("Pass output requires color and depth fields: " + pass_def.name);
+    }
+
+    pass_def.output_color = parseColorOutputTargetsFromJson(rt_resolver, output.at("color"));
+    pass_def.output_depth = parseDepthOutputTargetFromJson(rt_resolver, output.at("depth"));
+}
+
+void parsePassInputTargetsFromJson(PassDefinition &pass_def, const RenderTargetNameResolver &rt_resolver,
+                                   const nlohmann::json &pass_json) {
+    if (!pass_json.contains("input")) {
+        return;
+    }
+
+    pass_def.input_targets = parseInputTargetsFromJson(rt_resolver, pass_json.at("input"));
+}
+
 std::vector<GlobalRenderTargetId> parseColorOutputTargetsFromJson(const RenderTargetNameResolver &rt_resolver,
                                                                   nlohmann::json color_output) {
     if (color_output.is_null()) {
