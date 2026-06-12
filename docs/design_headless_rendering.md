@@ -131,10 +131,11 @@ frames 既定 3 の理由: in-flight とリソース初期化の遅延を流し�
 
 ### 3.6 リサイズ追従の修正(§2.3)
 
+編成方針: **`SwapchainFrameTarget` は extent 変更をフラグで通知するだけ**(`IFrameTarget::consumeExtentChanged()`)とし、再生成の編成は `Renderer` が行う。vkcore 層から renderingpass 層への include 依存を作らないため。
+
 - `RenderTargetContainer` に `recreateForExtent(vk::Extent2D)` を追加(extent_scale 付きで登録された RT を再確保。ロード時に scale を `InternalRenderTarget` に保存しておく)
-- `FullscreenPassContainer::setInputTextures` の再実行(入力 RT の view が変わるため)。compiled pass が input_targets を保持しているので再バインド可能
-- `RenderTargetLayoutTracker` のリセット
-- 呼び出し順: `recreateSurfaceDependants()` → 上記 3 つ。`device.waitIdle()` 中なので遅延破棄(本線 2)導入前でも安全
+- `Renderer::render()` が `render_begin()` 後にフラグを確認し、立っていれば (a) `recreateForExtent` (b) compiled pass の `input_targets` 再バインド(`FullscreenPassContainer::setInputTextures` 再実行) (c) `RenderTargetLayoutTracker` リセット、を編成する
+- `recreateSurfaceDependants()` 内で `device.waitIdle()` が先行するため、遅延破棄(本線 2)導入前でも安全
 - 注: 本修正はウィンドウありモードの品質修正であり、headless とコードを共有する(`recreateForExtent` は将来 capture サイズ変更にも使う)
 
 ## 4. テスト計画

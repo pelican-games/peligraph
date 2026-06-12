@@ -194,6 +194,16 @@ DECLARE_MODULE(PipelineFactory) {
 - 共有ヘッダは言語ごとに用意する(GLSL と HLSL で構文互換がないため)。番号や構造体レイアウトの両言語間の一致は、リフレクション結果を比較する単体テストで担保する
 - C++ とシェーダの構造体共有は「シェーダ側を正とし、C++ 側に同レイアウトの struct を置いて static_assert でサイズ検証」から始める(コード生成は将来課題)
 
+### 4.5 PipelineFactory の段階スコープ
+
+初期実装(fullscreen 移行時)は **fullscreen パスを動かす最小限**に限定する: `vert/frag/color_formats` + 固定ステート(vertex input なし、depth なし、blend なし、cull なし)。§4.4 の完全形(vertex layout、depth/blend/cull オプション)は material/ui 移行の段で一般化する。最初から汎用を作らないこと。
+
+### 4.6 リロードのトランザクション規約(仕様)
+
+1. `ShaderLibrary::reload()` は新 module + 新 reflection が完成するまで現 Bundle を一切変更しない。失敗時は旧版維持 + false 返却 + ログ
+2. `PipelineFactory::rebuildDirty()` は新パイプライン生成に成功してから handle の指す先を swap する。失敗時は旧パイプライン続行
+3. 旧パイプライン・旧 module の破棄は必ず DeletionQueue 経由(即時 destroy 禁止)
+
 ## 7. 移行手順(各段で動作を保ったまま)
 
 1. **shaderc + spirv-reflect の導入**(FetchContent 追加のみ。既存経路は無変更)

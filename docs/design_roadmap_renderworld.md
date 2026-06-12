@@ -28,7 +28,7 @@
 
 | # | 項目 | 概要 | ECS への影響 |
 |---|------|------|--------------|
-| A | RenderWorld 形式化 | 本文書 §3〜§5。**合意が必要なのはここだけ** | 境界 API の合意 |
+| A | RenderWorld 形式化 | 本文書 §3〜§5。**合意が必要なのはここだけ**。実装開始条件 = ECS 合意 + headless テスト基盤完了(それまで設計合意トラックに留める)。最初の共同 PR はライトアニメーション移管(§4.3-1)を予定 | 境界 API の合意 |
 | B | コマンド層 (JSON-RPC) | エンジンをテキストコマンドで操作可能に(エージェント/外部ツール対応) | なし |
 | C | GUI 再配線 → DCC 連携 | devstudio をコマンド層クライアント化、Blender 等からのプレビュー | なし |
 
@@ -40,7 +40,7 @@ Blender 向け動画作成ツール群(物理シミュレーション、ポー�
 
 - **仮想時刻の注入**: 現在 `Renderer::render()` が壁時計(`FrameClock::now()`)依存。時刻源を差し替え可能にし、コマンド層に `set_time` / `step_frame` を設ける。シミュ再生・動画化・テスト決定性の前提
 - **連番画像出力**: ヘッドレスの `--render-out` を `out/%04d.png` 形式の連番に対応(`design_headless_rendering.md` §6 参照)
-- **コマンド層(B)に追加する命令**: `load_gltf` / `set_time` / `step_frame` / `render_frame` / `capture`。これが揃うとツール→エンジンのプレビューループが成立する
+- **コマンド層(B)は 3 段階で最小に始める**: (1) ファイル連携(`--render-out` 連番)を正とする → (2) stdio 行 JSON で `set_time` / `step_frame` / `render_frame` / `capture` の 4 命令のみ(JSON-RPC サーバはまだ作らない) → (3) `load_gltf` / `update_transforms` は RenderWorld 合意後に追加
 - **剛体シミュ結果の再生**: ベイク済み transform 列は `RenderWorld::updateTransforms(span)` でそのまま受けられる(追加設計不要)
 - **スケルタルアニメ/スキニング**: ポーズ推定の活用に将来必要。新規領域のため別途設計(ロードマップ未組込)
 
