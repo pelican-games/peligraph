@@ -14,6 +14,7 @@ std::string ProjectSource::loadSource() const {
         std::string loaded_data;
         loaded_data.resize(sz, '\0');
         f.read(loaded_data.data(), sz);
+        return loaded_data;
     }
     if (!raw_data.empty())
         return raw_data;
