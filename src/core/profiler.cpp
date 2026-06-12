@@ -23,7 +23,7 @@ void Profiler::End(const char* zone_name) {
         
 #ifndef PELICAN_NO_LOG
         if (logger) {
-            LOG_INFO(logger, "Profiler: {} took {} us", zone_name, duration);
+            // LOG_INFO(logger, "Profiler: {} took {} us", zone_name, duration);
         } else {
             std::cout << "Profiler: " << zone_name << " took " << duration << " us" << std::endl;
         }

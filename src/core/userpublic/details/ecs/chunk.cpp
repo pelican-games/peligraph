@@ -6,24 +6,29 @@
 
 namespace Pelican {
 
-ECSComponentChunk::ECSComponentChunk(std::span<const ComponentId> _component_ids) : count{0} {
-    std::copy(_component_ids.begin(), _component_ids.end(), std::back_inserter(component_ids));
+ECSComponentChunk::ECSComponentChunk(std::span<const size_t> component_indices, std::span<const ComponentId> generic_ids) 
+    : count{0}, component_ids(generic_ids.begin(), generic_ids.end()), indices(component_indices.begin(), component_indices.end()), mask{0} {
     
-    ComponentId max_id = 0;
-    for (const auto component : component_ids) {
-        if (component > max_id) max_id = component;
+    size_t max_index = 0;
+    for (const auto idx : indices) {
+        if (idx > max_index) max_index = idx;
     }
-    component_arrays.resize(max_id + 1);
+    // Resize to Max Index
+    component_arrays.resize(max_index + 1);
+    component_versions.resize(max_index + 1, 0); // Initialize versions to 0
 
-    for (const auto component : component_ids) {
-        component_arrays[component].emplace(GET_MODULE(ComponentInfoManager).getSizeFromComponentId(component));
+    for (const auto index : indices) {
+        auto& arr = component_arrays[index].emplace(GET_MODULE(ComponentInfoManager).getSizeFromIndex(index));
+        arr.reserve(CHUNK_CAPACITY);
+        mask |= (1ULL << index);
     }
 }
 
-uint32_t ECSComponentChunk::allocate(std::span<const ComponentId> component_ids, std::span<void *> component_ptrs,
+size_t ECSComponentChunk::allocate(std::span<const size_t> component_indices, std::span<void *> component_ptrs,
                                      size_t ex_count) {
-    for (int i = 0; const auto component_id : component_ids) {
-        auto &arr = *component_arrays[component_id];
+    size_t i = 0;
+    for (const auto idx : component_indices) {
+        auto &arr = *component_arrays[idx];
 
         auto old_count = arr.size();
         arr.expand(ex_count);
@@ -35,11 +40,12 @@ uint32_t ECSComponentChunk::allocate(std::span<const ComponentId> component_ids,
     return ex_count;
 }
 
-void ECSComponentChunk::free(uint32_t free_count) {
-    for (const auto component_id : component_ids) {
-        (*component_arrays[component_id]).shrink(free_count);
+void ECSComponentChunk::free(size_t ex_count) {
+    for (const auto idx : indices) {
+        auto &arr = *component_arrays[idx];
+        arr.shrink(ex_count);
     }
-    count -= free_count;
+    count -= ex_count;
 }
 
 } // namespace Pelican

@@ -4,20 +4,33 @@
 #include <span>
 #include <unordered_map>
 #include <unordered_set>
+#include <set>
 #include <vector>
+#include <functional>
+#include <tuple>
 
 #include <details/ecs/componentdeclare.hpp>
 #include <details/ecs/chunk.hpp>
 
 namespace Pelican {
 
+namespace internal {
+    size_t getIndexFromComponentId_Ref(ComponentId id);
+}
+
 using SystemId = uint64_t;
+
+template <class... TComponents>
+struct ChunkView {
+    std::tuple<TComponents*...> components;
+    size_t count;
+};
 
 class ECSCoreTemplatePublic {
     // Component Management
   private:
-    using ChunkIndex = uint32_t;
-    using WithinChunkIndex = uint32_t;
+    using ChunkIndex = size_t;
+    using WithinChunkIndex = size_t;
 
     std::vector<ECSComponentChunk> chunks_storage;
 
@@ -50,62 +63,165 @@ class ECSCoreTemplatePublic {
     void updateSystemChunkCache(ChunkIndex chunk_index);
 
     struct InternalSystemWrapper {
+        SystemId id;
+        ComponentMask matching_mask = 0;
+        // p_func receives dense indices
+        std::function<void(ECSCoreTemplatePublic &, void*, const std::vector<ChunkIndex> &, const std::vector<size_t>&)> p_func;
+        
+        void *system_ref; // Pointer to actual system instance
         std::vector<SystemId> depends_list;
-        std::unordered_set<SystemId> depended_by;
-        std::vector<ChunkIndex> matching_chunk_indices; // Cache of chunks that match this system
-        void *system_ref;
-        void (*p_func)(ECSCoreTemplatePublic &ecs, void *system, std::span<ChunkIndex> chunks);
-        bool (*matches)(ECSComponentChunk &chunk);
+        std::set<SystemId> depended_by;
+        std::vector<ChunkIndex> matching_chunk_indices;
+        std::vector<size_t> component_indices; // Stored dense indices for this system
+        std::vector<size_t> read_indices;      // Indices this system reads (const T*)
+        std::vector<size_t> write_indices;     // Indices this system writes (T*)
+        uint64_t last_run_tick = 0;
+        bool force_update = false;
     };
-    uint64_t systems_counter = 0;
+
     std::unordered_map<SystemId, InternalSystemWrapper> systems;
+    uint64_t system_id_counter = 0;
+    uint64_t global_tick = 1; // Starts at 1
 
   public:
     template <class TSystem, class... TComponents>
-    SystemId registerSystem(TSystem &system, std::vector<SystemId> &&depends_list) {
-        static_assert(std::is_same<typename TSystem::QueryComponents, std::tuple<TComponents *...>>::value);
-        SystemId new_sys_id = systems_counter++;
+    SystemId registerSystem(TSystem &system, std::vector<SystemId> &&depends_list, bool force_update = false) {
+        SystemId id =  ++system_id_counter;
+        
 
-        for (const auto depends : depends_list) {
-            systems.at(depends).depended_by.insert(new_sys_id);
+        std::vector<size_t> comp_indices;
+        std::vector<size_t> read_indices;
+        std::vector<size_t> write_indices;
+        ComponentMask matching_mask = 0;
+
+        auto process_component = [&](auto* ptr) {
+            using Type = typename std::remove_pointer<decltype(ptr)>::type;
+            ComponentId cid = ComponentIdByType<typename std::remove_const<Type>::type>::value;
+            size_t idx = Pelican::internal::getIndexFromComponentId_Ref(cid);
+            comp_indices.push_back(idx);
+            matching_mask |= (1ULL << idx);
+            
+            if (std::is_const<Type>::value) {
+                read_indices.push_back(idx);
+            } else {
+                write_indices.push_back(idx);
+            }
+        };
+
+        // Fold expression to process all components
+        (process_component(static_cast<TComponents*>(nullptr)), ...);
+        
+        InternalSystemWrapper wrapper;
+        wrapper.id = id;
+        wrapper.system_ref = &system;
+        wrapper.depends_list = std::move(depends_list);
+        wrapper.component_indices = comp_indices;
+        wrapper.read_indices = read_indices;
+        wrapper.write_indices = write_indices;
+        wrapper.matching_mask = matching_mask;
+        wrapper.force_update = force_update;
+        
+        // Setup dependency graph
+        for (auto dep : wrapper.depends_list) {
+            systems.at(dep).depended_by.insert(id);
         }
+        
+        // Process function
+        wrapper.p_func = [id](ECSCoreTemplatePublic &core, void* sys_ptr, const std::vector<ChunkIndex> &chunks, const std::vector<size_t>& indices) {
+            TSystem &sys = *static_cast<TSystem *>(sys_ptr);
+            auto& sys_wrapper = core.systems.at(id);
+            const uint64_t start_last_run_tick = sys_wrapper.last_run_tick;
+            bool executed_any = false;
 
-        // Find existing chunks that match this system
-        std::vector<ChunkIndex> matching_chunks;
-        static const ComponentId components[] = {ComponentIdByType<TComponents>::value...};
+            // 1. Process All (Batch)
+            if constexpr (requires { sys.process(std::span<ChunkView<TComponents...>>{}); }) {
+                std::vector<ChunkView<TComponents...>> views;
+                views.reserve(chunks.size());
+                
+                bool any_change = sys_wrapper.force_update;
+                if (start_last_run_tick == 0) any_change = true;
+
+                for (auto chunk_idx : chunks) {
+                     auto &chunk = core.chunks_storage[chunk_idx];
+                     
+                     if (!any_change) {
+                         uint64_t max_version = 0;
+                         for(auto idx : indices) {
+                             uint64_t v = chunk.getVersion(idx);
+                             if(v > max_version) max_version = v;
+                         }
+                         if (max_version >= start_last_run_tick) any_change = true;
+                     }
+
+                    auto tuple = [&]<size_t... Is>(std::index_sequence<Is...>) {
+                        return std::make_tuple(
+                            static_cast<TComponents *>(chunk.getRef(indices[Is]).ptr)...
+                        );
+                    }(std::make_index_sequence<sizeof...(TComponents)>{});
+                    
+                    views.push_back({tuple, chunk.size()});
+                }
+                
+                if (any_change) {
+                    sys.process(views);
+                    executed_any = true;
+                    
+                    for (auto chunk_idx : chunks) {
+                        auto &chunk = core.chunks_storage[chunk_idx];
+                        for (auto w_idx : sys_wrapper.write_indices) {
+                            chunk.updateVersion(w_idx, core.global_tick);
+                        }
+                    }
+                }
+            }
+            
+            // 2. Process (Per Chunk)
+            if constexpr (requires { sys.process(std::tuple<TComponents*...>{}, size_t{}); }) {
+                for (auto chunk_idx : chunks) {
+                    auto &chunk = core.chunks_storage[chunk_idx];
+                    
+                    // Change Detection
+                    uint64_t max_version = 0;
+                    for(auto idx : indices) {
+                         uint64_t v = chunk.getVersion(idx);
+                         if(v > max_version) max_version = v;
+                    }
+                    
+                    // Skip if no changes since last run and not forced (using start_last_run_tick)
+                    if (!sys_wrapper.force_update && max_version < start_last_run_tick) {
+                         continue; 
+                    }
+
+                    auto tuple = [&]<size_t... Is>(std::index_sequence<Is...>) {
+                        return std::make_tuple(
+                            static_cast<TComponents *>(chunk.getRef(indices[Is]).ptr)...
+                        );
+                    }(std::make_index_sequence<sizeof...(TComponents)>{});
+                    
+                    sys.process(tuple, chunk.size());
+                    executed_any = true;
+                    
+                    for (auto w_idx : sys_wrapper.write_indices) {
+                        chunk.updateVersion(w_idx, core.global_tick);
+                    }
+                }
+            }
+
+            if (executed_any) {
+                sys_wrapper.last_run_tick = core.global_tick;
+            }
+        };
+
+        systems.emplace(id, std::move(wrapper));
+        
+        // Check existing chunks
         for (size_t i = 0; i < chunks_storage.size(); ++i) {
-            if (chunks_storage[i].has_all(std::span(components))) {
-                matching_chunks.push_back(i);
+            if ((chunks_storage[i].getMask() & matching_mask) == matching_mask) {
+                systems.at(id).matching_chunk_indices.push_back(i);
             }
         }
 
-        systems.insert({
-            new_sys_id,
-            InternalSystemWrapper{
-                .depends_list = std::move(depends_list),
-                .depended_by = {},
-                .matching_chunk_indices = std::move(matching_chunks),
-                .system_ref = &system,
-                .p_func =
-                    [](ECSCoreTemplatePublic &ecs, void *p_system, std::span<ChunkIndex> chunks) {
-                        static const ComponentId components[] = {ComponentIdByType<TComponents>::value...};
-                        TSystem &system = *static_cast<TSystem *>(p_system);
-                        for (auto chunk_idx : chunks) {
-                            auto &chunk = ecs.chunks_storage[chunk_idx];
-                            // No need to check has_all here, it's guaranteed by the cache
-                            system.process(std::make_tuple(static_cast<TComponents *>(
-                                               chunk.get(ComponentIdByType<TComponents>::value).ptr)...),
-                                           chunk.size());
-                        }
-                    },
-                .matches = [](ECSComponentChunk &chunk) -> bool {
-                    static const ComponentId components[] = {ComponentIdByType<TComponents>::value...};
-                    return chunk.has_all(std::span(components));
-                },
-            },
-        });
-
-        return new_sys_id;
+        return id;
     }
     void unregisterSystem(SystemId system_id);
 

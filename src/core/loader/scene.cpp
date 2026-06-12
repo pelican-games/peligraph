@@ -9,6 +9,8 @@
 #include "../light/lightcontainer.hpp"
 #include <nlohmann/json.hpp>
 
+#include <components/localtransform.hpp>
+
 namespace Pelican {
 
 SceneLoader::SceneLoader() {}

@@ -3,6 +3,8 @@ target_sources(pelican_core PRIVATE
     predefined.cpp
 )
 
+add_subdirectory(predefined)
+
 # [BENCHMARK_ONLY] Start
 add_executable(ecs_benchmark benchmark.cpp)
 target_link_libraries(ecs_benchmark PRIVATE pelican_core)

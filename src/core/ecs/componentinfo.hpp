@@ -9,6 +9,7 @@
 #include "component.hpp"
 #include "entity.hpp"
 #include <details/ecs/componentdeclare.hpp>
+#include <serialize/jsonarchive.hpp>
 
 namespace Pelican {
 
@@ -16,10 +17,10 @@ struct ComponentInfo {
     ComponentId id;
     uint32_t size;
     std::string name;
-    void (*cb_init)(void *ptr);
-    void (*cb_deinit)(void *ptr);
+    void (*cb_init)(void *ptr) = nullptr;
+    void (*cb_deinit)(void *ptr) = nullptr;
 
-    void (*cb_load_by_json)(void *ptr, const nlohmann::json &json);
+    void (*cb_load_by_json2)(void *ptr, JsonArchiveLoader &json) = nullptr;
 };
 
 DECLARE_MODULE(ComponentInfoManager) {
@@ -31,9 +32,11 @@ DECLARE_MODULE(ComponentInfoManager) {
 
     void registerComponent(ComponentInfo info);
 
-    uint32_t getSizeFromComponentId(ComponentId id) const;
+    size_t getIndexFromComponentId(ComponentId id) const;
+    size_t getSizeFromIndex(size_t index) const;
     ComponentId getComponentIdByName(const std::string &name) const;
     void loadByJson(void *ptr, const nlohmann::json &json) const;
+    void initComponent(ComponentId id, void *ptr) const;
 };
 
 } // namespace Pelican
