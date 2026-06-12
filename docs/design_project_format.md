@@ -1,7 +1,8 @@
 # プロジェクトファイル設計(エンジンとコンテンツの分離)
 
 対象読者: エンジン担当 + DCC/ツール側担当。
-ステータス: ドラフト(レビュー待ち)。
+ステータス: ドラフト v2(2026-06-12 レビュー 1 巡を反映: パス分類、相対基準の固定、
+設定優先順位、暗黙プロジェクト警告、example アセット管理、escape 拒否の実装方針、受け入れ基準拡充)。
 前提: `design_roadmap_renderworld.md`(ロードマップ・肥大化対策 §6)、
 `docs/implementation_plan.md`(WP1 EngineLaunchConfig、WP17 SeqPlayer)、
 `docs/dcc_integration_qa_2026-06-12.md` §1(DCC bridge)。
@@ -17,20 +18,20 @@ Unity の Project / Godot の project.godot に相当する**プロジェクト�
 |------|------|
 | `PelicanCore(settings_str)` に JSON 文字列を渡す(player は `"{}"`)。不足分は埋め込み `default_config.json` で補完 | プロジェクトという単位が存在せず、コンテンツの置き場が定義されていない |
 | `scene_data_json` / `asset_data_json` / モデルパスは **cwd 相対**で解決 | **exe のあるディレクトリから起動しないと即死**(実際に踏んだ罠。DCC bridge の subprocess 呼び出しでも必ず踏む) |
-| バイナリアセットは手コピーで exe 隣に配置(POST_BUILD コピーは応急処置) | クリーンで消える/マシン間で揃わない/git に置けない |
+| バイナリアセットは手コピーで exe 隣に配置(POST_BUILD コピーは応急処置) | クリーンで消える/マシン間で揃わない/「自分の環境では出るが他では黒背景」の温床 |
 | `ProjectSource::loadSource()` の path 経路は**読み込んだデータを返さない**(`loaded_data` を構築後に破棄して fallthrough) | 潜在バグ。現状 raw_data(settings_str)経路しか機能していない |
 
 ## 1. 原則
 
 1. **プロジェクト = 1 ディレクトリ。** ルートに `project.json`(マニフェスト)。
    これを「開く・実行する・配布する」の単位にする。
-2. **パス解決はすべてプロジェクトルート相対。cwd は一切参照しない。**
-   エンジン内のファイルアクセスは PathResolver(§4)経由に統一する。
-3. **エンジン既定リソースは embed 継続。** プロジェクト側に同名設定があれば上書き
-   (現行の JsonLoader の fallback 構造をそのまま流用)。
+2. **パス解決は §3 の分類に従い、cwd は一切参照しない。**
+   エンジン内のファイルアクセスは PathResolver(§5)経由に統一する。
+3. **エンジン既定リソースは embed 継続**(`engine://` 名前空間、§3)。
+   設定値(basic_config)は §4 の優先順位で合成する。
 4. **「機能はなるべくアセットに」(ロードマップ §6)との接続**: パス定義 JSON・
-   ランタイムコンパイルシェーダ・UI 定義もプロジェクト側に置けるようにする。
-   エンジンの資産(bloom 等の標準パス)は embed、プロジェクトはそれを参照 or 差し替え。
+   ランタイムコンパイルシェーダ・UI 定義もプロジェクト側に置ける。
+   エンジン標準資産(bloom 等)は embed、プロジェクトはそれを参照 or 自前を置いて参照先を変える。
 5. **外部ツール(mocap lab / droplet_lab / cloth_lab / toon_baker)の納品物は
    プロジェクト内に着地する。** ツール側は R3/R4 の標準形式を書くだけ(契約は不変)。
 
@@ -54,7 +55,27 @@ myproject/
   (規約を強制しない。整理はプロジェクト側の自由)。
 - `imports/` だけは DCC bridge / ツール CLI の既定出力先として意味を持たせる。
 
-## 3. `project.json` v1
+## 3. パス参照の分類と解決規則(v1 で確定)
+
+すべてのファイル参照は次の 3 種類に分類される。JSON・CLI・将来のコマンド層で共通。
+
+| 形式 | 解決先 | 用途 |
+|------|--------|------|
+| 素の相対パス(`assets/models/a.glb`)| **常にプロジェクトルート基準**。`project://assets/models/a.glb` の省略形 | 通常のコンテンツ参照(これが既定) |
+| `engine://<id>`(例 `engine://passes/bloom.json`)| エンジン埋め込みリソース(b::embed の id 空間にマップ) | 標準パス定義・標準シェーダ・default_config 等 |
+| 絶対パス | **デバッグ専用**。`--allow-absolute-paths`(既定 OFF)指定時のみ許可し、使用のたびに WARN ログ | ローカル実験。CI・配布物では禁止 |
+
+規則(曖昧さを残さないための決定):
+
+1. **nested JSON の相対基準は「その JSON ファイルの場所」ではなく、常にプロジェクトルート。**
+   scene / asset / pass / ui / shader / texture すべての参照に適用(v1 固定)。
+   理由: JSON を移動しても参照が壊れない、解決則が 1 つで実装・デバッグが単純。
+2. **暗黙のシャドーイングはしない。** プロジェクトに同名ファイルがあっても
+   `engine://` 参照は埋め込みを読む。差し替えたいときは参照側を
+   `project://` パスに書き換える(どちらを読んでいるかが常に参照を見れば分かる)。
+3. 命名は ASCII(R7 と同じ理由: プロトコル・パス安全)。
+
+## 4. `project.json` v1 と設定の優先順位
 
 ```json
 {
@@ -79,44 +100,77 @@ myproject/
 }
 ```
 
-- `basic_config` の中身は**現行 `default_config.json` / settings_str と同形を維持**
-  (ProjectBasicConfig の読み手がほぼそのまま使える)。
-- 追加必須フィールドは `schema` / `version` / `name` のみ(R10 と同じバージョニング流儀)。
-- `asset_data_json` が指すファイル内のモデルパス(`AliciaSolid.vrm` 等)も
-  プロジェクトルート相対に統一する。
-- 命名は ASCII(R7 と同じ理由: プロトコル・パス安全)。
+- `basic_config` の中身は**現行 `default_config.json` / settings_str と同形を維持**。
+  追加必須フィールドは `schema` / `version` / `name` のみ(R10 と同じバージョニング流儀)。
+- **設定の優先順位(v1 で確定): CLI 引数 > project.json > 埋め込み default。**
+  `EngineLaunchConfig`(WP1)が CLI 値を保持し、`ProjectBasicConfig` は読み出し時に
+  この順で合成する(現行 JsonLoader の 2 段 fallback を 3 段にする)。
+  例: `--size 640x360` は project.json の window_size に勝つ。headless 検証で多用する。
+- 肥大化対策(将来課題として予告): basic_config が「起動設定 / コンテンツ参照 /
+  デバッグ設定」で膨らんできたら**キー空間で分離**する(ファイル分割より先に)。
+  v1 では分割しない。
 
-## 4. エンジン側の実装(WP18 として提案)
+## 5. エンジン側の実装(WP18 として提案)
 
 依存: WP1(EngineLaunchConfig)。規模: 中。
 
 1. **P0 — `ProjectSource::loadSource()` の path 経路バグ修正**(読んだ `loaded_data` を
-   return する。2 行)。これは WP18 を待たず単独で直してよい
-2. **PathResolver モジュール**(`core/loader/pathresolver.{hpp,cpp}`):
-   `setProjectRoot(abs_path)` / `resolve(rel) -> abs`。プロジェクトルート外への
-   `..` 脱出は reject(将来のコマンド層で外部入力がパスに乗るため、今から閉じる)
+   return する。2 行)。WP18 を待たず単独で直してよい
+2. **PathResolver モジュール**(`core/loader/pathresolver.{hpp,cpp}`)。解決手順を固定:
+
+   ```
+   resolve(ref, allow_absolute):
+     1. scheme 判定(engine:// は embed 空間へ。以降はファイル系のみ)
+     2. 絶対パス・UNC(\\server\...)は allow_absolute(--allow-absolute-paths)時のみ
+        許可+WARN。project:// 文脈では常に reject
+     3. joined = project_root / ref
+     4. canon = std::filesystem::weakly_canonical(joined)   // symlink 解決込み
+     5. canon が canonical(project_root) をプレフィックスに持つことを確認。
+        Windows ではパス比較を大文字小文字を畳んで行う
+     6. 持たなければ reject(throw)。".." での脱出も、symlink 経由の脱出も
+        canonical 化後の判定なのでここで落ちる
+   ```
+
+   実装注意(レビュー指摘の事故ポイント): Windows の case-insensitive 比較、
+   symlink / junction、UNC、長パスプレフィックス(`\\?\`)。判定は必ず
+   **正規化後のパス文字列**に対して行い、入力文字列に対する `..` の字句検査だけで
+   済ませない
 3. **CLI**: `--project <dir | path/to/project.json>`(WP1 の argparse に追加)。
-   省略時は「exe のあるディレクトリ」をプロジェクトルートとみなす(後方互換。
-   現行の exe 隣コピー構成がそのまま「暗黙のプロジェクト」になる)
+   **省略時は exe のあるディレクトリを暗黙プロジェクトとし、起動ログに
+   `implicit project root = <path> (pass --project to silence)` を WARN で必ず出す**。
+   ctest・golden テスト・DCC bridge からの起動は `--project` 明示を必須とする
+   (テスト規約に追記。暗黙モードはあくまで人間の互換起動用)
 4. **ProjectBasicConfig / ModelAssetContainer / シーン・UI・パス読み込みの
    ファイルアクセスを PathResolver 経由に置換**(cwd 依存の根絶)
 5. **example プロジェクトの切り出し**: `src/player/resources/` → `projects/example/` に
-   §2 レイアウトで移設(JSON は git 管理、バイナリは現行どおり ignore)。
-   POST_BUILD コピーは**削除**(`--project` が刺されば不要になる。2026-06-12 に入れた
+   §2 レイアウトで移設。POST_BUILD コピーは**削除**(2026-06-12 に入れた
    バイナリコピー拡張は本 WP までの応急処置)
-6. 受け入れ基準: **任意の cwd から** `pelican_player --project <repo>/projects/example`
-   で 3D シーンが表示される。`--project` 省略の従来起動も従来どおり動く
+6. **`projects/example/README.md` を必須成果物にする**: 期待バイナリアセットの
+   一覧表(ファイル名 / 入手元 / sha256 / サイズ)を記載。JSON は git 管理、
+   バイナリは ignore 継続。「環境によって黒背景」の再発防止はこの表が第一防衛線。
+   将来は `assets.manifest.json` + 起動前検証(`--check-assets` or pelican_cli doctor)に
+   昇格させる(v1 ではやらない。代わりに 7-c のエラー仕様で補う)
+
+### 受け入れ基準(WP18)
+
+- a. **任意の cwd から** `pelican_player --project <repo>/projects/example` で 3D シーンが表示される
+- b. `--project` なしの互換起動も従来どおり動き、暗黙プロジェクトの WARN ログが出る
+- c. アセット欠落時のエラーメッセージに**解決後の絶対パス**が含まれる
+  (どこを探して無かったのかが一目で分かる)
+- d. `../outside.png` のような脱出参照が reject される(単体テスト。symlink 経由も)
+- e. scene / asset / pass / ui 内の参照がプロジェクトルート基準で解決される(単体テスト)
+- f. POST_BUILD コピーが削除されている
 
 ### 後続(WP18 のスコープ外、設計だけ整合)
 
-- WP14(ホットリロード)の監視対象 = プロジェクトの `shaders/`
+- WP14(ホットリロード)の監視対象 = プロジェクトの `shaders/`(`engine://` シェーダは対象外)
 - WP17(SeqPlayer)の `--play-seq` 相対パスはプロジェクトルート基準
-- コマンド層 stage 3 の `load_gltf {path}` はプロジェクト相対パスのみ受ける
-  (PathResolver の脱出防止がそのまま効く)
+- コマンド層 stage 3 の `load_gltf {path}` はプロジェクト相対のみ受ける
+  (PathResolver の脱出防止がそのまま外部入力の防壁になる)
 - devstudio は起動時にプロジェクトを開く(ダイアログ+最近使ったプロジェクト)
 - 配布パッケージ化(プロジェクトの zip/pak 化)は需要が出るまで設計しない
 
-## 5. ツール連携との接続
+## 6. ツール連携との接続
 
 - DCC bridge(M1)の「出力先」と SeqPlayer の入力は**プロジェクトの `imports/`** が既定。
   Blender 側 UI は「プロジェクトディレクトリ」を 1 つ覚えるだけでよくなる
@@ -124,21 +178,28 @@ myproject/
   プロジェクトを知る必要はない — 知るのは呼び出し側(人間 or bridge)
 - 将来の `pelican_cli import`(納品物を asset_data_json に登録する補助)は需要が出てから
 
-## 6. Git と配布の扱い
+## 7. Git と配布の扱い
 
-- **エンジンリポジトリ**: `projects/example/` の JSON のみコミット。バイナリアセットは
-  ignore 継続(入手方法を projects/example/README に明記)。Git LFS はエンジン repo では
-  使わない(クローンを重くしない)
+- **エンジンリポジトリ**: `projects/example/` の JSON + README(アセット一覧表)のみコミット。
+  バイナリアセットは ignore 継続。Git LFS はエンジン repo では使わない(クローンを重くしない)
 - **ユーザプロジェクト**: エンジンとは独立のディレクトリ/リポジトリ。LFS 採用は
   プロジェクト側の自由
 - エンジンとプロジェクトのバージョン整合は `engine_min_version` + 起動時警告(将来は
   schema version で破壊的変更を管理。R10 と同じ運用)
 
-## 7. 未決事項(レビューで決めたい)
+## 8. 決定済み事項と未決事項
 
-1. `project.json` 1 ファイル集約か、`basic_config` を別ファイル参照にするか
-   (本書は 1 ファイル集約を提案 — 小さいプロジェクトで散らばらない)
-2. シーン JSON の分割(1 シーン 1 ファイル)を v1 でやるか
-   (現行 `example_scene_data.json` は全シーン 1 ファイル。本書は据え置きを提案)
-3. `--project` の既定値: exe ディレクトリ(本書の提案)か、必須引数にするか
-4. devstudio のプロジェクト UX(最近開いた一覧など)の優先度
+レビュー 1 巡(2026-06-12)で確定したもの:
+
+- nested JSON の相対基準 = **常にプロジェクトルート**(ファイル基準は採用しない)
+- パス分類 = 素の相対(=project://)/ `engine://` / 絶対(デバッグ専用・要フラグ)
+- 設定優先順位 = **CLI > project.json > embedded default**
+- `--project` 省略 = 互換起動として許可、ただし WARN ログ必須+CI/テストでは明示必須
+- escape 判定 = weakly_canonical 正規化後のプレフィックス比較(Windows は case-fold)
+
+未決(実装前に決めなくてよいもの):
+
+1. シーン JSON の分割(1 シーン 1 ファイル)を v1 でやるか(本書は据え置きを提案)
+2. `engine://` の id 空間と b::embed 一覧の対応表をどこに置くか(自動生成が望ましい)
+3. devstudio のプロジェクト UX(最近開いた一覧など)の優先度
+4. assets.manifest.json(チェックサム検証)への昇格時期
