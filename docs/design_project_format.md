@@ -1,9 +1,9 @@
 # プロジェクトファイル設計(エンジンとコンテンツの分離)
 
 対象読者: エンジン担当 + DCC/ツール側担当。
-ステータス: v4(2026-06-12 レビュー 3 巡を反映: 参照由来別の resolve 分離、
-EngineResourceRegistry、PathResolver の利用範囲規律、schema/version 検証の hard error 化)。
-**実装着手可(WP18)**。実装順: P0(ProjectSource バグ)→ PathResolver 型+
+ステータス: v5(2026-06-12 レビュー 4 巡を反映: 絶対パス許可の注入点、project root
+未設定時の `engine://`、resolveExistingCliFile の予約、受け入れ基準 i/j)。
+**設計確定・実装中**。実装順: P0(ProjectSource バグ)→ PathResolver 型+
 EngineResourceRegistry 最小実装 → `--project` / 読み込み置換 / example 切り出し。
 前提: `design_roadmap_renderworld.md`(ロードマップ・肥大化対策 §6)、
 `docs/implementation_plan.md`(WP1 EngineLaunchConfig、WP17 SeqPlayer)、
@@ -144,10 +144,13 @@ myproject/
 
    DECLARE_MODULE(PathResolver) {
      public:
-       void setProjectRoot(const std::filesystem::path &abs); // 存在必須。ここで canonical 化して保持
+       // 起動配線が一度だけ呼ぶ。root は存在必須(ここで canonical 化して保持)。
+       // allow_absolute_paths は EngineLaunchConfig(--allow-absolute-paths)から注入され、
+       // 以後 Resolver 内部の状態となる(呼び出しごとの引数にはしない — 呼び側に判定材料を持たせない)
+       void setup(const std::filesystem::path &project_root_abs, bool allow_absolute_paths);
        // 永続化 JSON・プロジェクト文脈の参照(解決のみ・存在チェックなし)。絶対パスは常に reject
        ResolvedRef resolveProjectRef(std::string_view ref) const;
-       // CLI 引数由来の参照。絶対パスは --allow-absolute-paths のときのみ許可+WARN
+       // CLI 引数由来の参照。絶対パスは setup で注入された allow_absolute_paths が真のときのみ許可+WARN
        ResolvedRef resolveCliRef(std::string_view ref) const;
        // ファイル限定+存在チェック(プロジェクト文脈)。engine:// や欠落時は「解決後の絶対パス」入りで throw
        std::filesystem::path resolveExistingFile(std::string_view ref) const;
@@ -170,6 +173,12 @@ myproject/
      v1 は `default_config.json` の 1 エントリを手書き登録。未知 id の throw メッセージには
      **登録済み id の一覧**を含める(タイポ即発見)。embed を増やすときはこの表に 1 行
      追加する運用とし、ビルド時自動生成(§8 未決 2)に将来置換する
+   - **`engine://` は project root 未設定でも解決できる**(Registry 直のためファイルシステム
+     不要)。初期化順で詰まらないことを保証する: `loadText("engine://...")` は
+     `setup()` 前でも成功し、プロジェクト相対参照を root 未設定で解決しようとした場合のみ
+     明確なエラー(「setup 前」と分かるメッセージ)で throw。なお loader 内部が
+     `b::embed<"default_config.json">()` を直接読む現行コードは規律違反ではない
+     (Registry は文字列 id を受ける境界のための仕組み)
    - **依存の散逸防止**: `GET_MODULE(PathResolver)` を直接呼んでよいのは
      **`core/loader/` 配下と起動配線のみ**。それ以外(レンダラ・ECS・feature・playback)が
      パス解決を必要とする場合は、§0 共通規則の依存構造体パターン(`XxxDependencies`、
@@ -224,11 +233,16 @@ myproject/
 - g. 永続化 JSON 内の絶対パスが `--allow-absolute-paths` の有無に関係なく reject される(単体テスト)
 - h. `engine_min_version` が現行より新しい project.json は起動拒否、
   `--ignore-engine-version` で WARN 降格(単体テスト)
+- i. `schema` 不一致・`version` 超過の project.json が起動拒否される
+  (`--ignore-engine-version` でも降格しない)(単体テスト)
+- j. 未知の `engine://` id が登録済み id 一覧入りのメッセージで throw される(単体テスト)
 
 ### 後続(WP18 のスコープ外、設計だけ整合)
 
 - WP14(ホットリロード)の監視対象 = プロジェクトの `shaders/`(`engine://` シェーダは対象外)
-- WP17(SeqPlayer)の `--play-seq` 相対パスはプロジェクトルート基準
+- WP17(SeqPlayer)の `--play-seq` 相対パスはプロジェクトルート基準。
+  「CLI 由来+存在チェック」が必要になるため **`resolveExistingCliFile`** を WP17 側で追加する
+  (名前だけここで予約。WP18 には含めない)
 - コマンド層 stage 3 の `load_gltf {path}` はプロジェクト相対のみ受ける
   (PathResolver の脱出防止がそのまま外部入力の防壁になる)
 - devstudio は起動時にプロジェクトを開く(ダイアログ+最近使ったプロジェクト)
