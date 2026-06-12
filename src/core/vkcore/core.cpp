@@ -274,11 +274,12 @@ BufferWrapper VulkanManageCore::allocBuf(vk::DeviceSize bytes_num, vk::BufferUsa
     alloc_info.flags = alloc_flags;
     alloc_info.usage = mem_usage;
 
-    auto buf = allocator->createBufferUnique(create_info, alloc_info);
+    // vma-hpp v3.3.0 以降、戻り値は pair<UniqueAllocation, UniqueBuffer> (allocation が先)
+    auto [allocation, buffer] = allocator->createBufferUnique(create_info, alloc_info);
 
     return BufferWrapper{
-        .buffer = std::move(buf.first),
-        .allocation = std::move(buf.second),
+        .buffer = std::move(buffer),
+        .allocation = std::move(allocation),
     };
 }
 
@@ -315,13 +316,14 @@ ImageWrapper VulkanManageCore::allocImage(vk::Extent3D extent, vk::Format format
     alloc_info.flags = alloc_flags;
     alloc_info.usage = mem_usage;
 
-    auto image = allocator->createImageUnique(create_info, alloc_info);
+    // vma-hpp v3.3.0 以降、戻り値は pair<UniqueAllocation, UniqueImage> (allocation が先)
+    auto [allocation, image] = allocator->createImageUnique(create_info, alloc_info);
 
     return ImageWrapper{
         .extent = extent,
         .format = format,
-        .image = std::move(image.first),
-        .allocation = std::move(image.second),
+        .image = std::move(image),
+        .allocation = std::move(allocation),
     };
 }
 void VulkanManageCore::writeImage(const ImageWrapper &dst, const void *src, vk::DeviceSize bytes_num) const {

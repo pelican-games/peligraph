@@ -4,7 +4,7 @@ game engine
 
 ## Requisites
 
-- Vulkan <= 1.4.321
+- Vulkan SDK 1.4.x (verified with 1.4.350; 1.3.x is no longer supported since vma-hpp v3.3.0)
 - Qt6
 
 ## How to build

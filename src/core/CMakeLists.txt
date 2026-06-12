@@ -25,16 +25,15 @@ target_include_directories(pelican_core PUBLIC ./userpublic)
 
 # external libraries
 target_link_libraries(pelican_core PUBLIC quill)
-FetchContent_Declare(
-  vma
-  GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
-  GIT_TAG        v3.2.1
-)
-FetchContent_MakeAvailable(vma)
+# vma-hpp v3.3.0+3 (VMA 3.3.0 対応) 以降は例外送出を vulkan.hpp の
+# vk::detail::resultCheck に委譲するため、Vulkan SDK 1.4 系の例外クラス改名
+# (ValidationFailedEXTError → ValidationFailedError) の影響を受けない。
+# また VMA 本体をサブモジュールとして同梱し VulkanMemoryAllocator ターゲットを
+# 自前で定義するため、VMA を別途 FetchContent するとターゲット名が衝突する。
 FetchContent_Declare(
   vma-hpp
   GIT_REPOSITORY https://github.com/YaaZ/VulkanMemoryAllocator-Hpp.git
-  GIT_TAG        v3.2.1
+  GIT_TAG        6e5ce659439afffa52094a7a5d54017a194935f1 # tag v3.3.0+3(タグは張り替え可能なのでハッシュで固定)
 )
 FetchContent_MakeAvailable(vma-hpp)
 
