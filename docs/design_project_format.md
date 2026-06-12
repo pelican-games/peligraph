@@ -1,9 +1,10 @@
 # プロジェクトファイル設計(エンジンとコンテンツの分離)
 
 対象読者: エンジン担当 + DCC/ツール側担当。
-ステータス: ドラフト v3(2026-06-12 レビュー 2 巡を反映: PathResolver の戻り値型、
-component 単位の prefix 判定、絶対パスの文脈分離、engine_min_version の hard error 化、
-`engine://` 最小 id 規則、resolve の存在チェック分離)。**実装着手可(WP18)**。
+ステータス: v4(2026-06-12 レビュー 3 巡を反映: 参照由来別の resolve 分離、
+EngineResourceRegistry、PathResolver の利用範囲規律、schema/version 検証の hard error 化)。
+**実装着手可(WP18)**。実装順: P0(ProjectSource バグ)→ PathResolver 型+
+EngineResourceRegistry 最小実装 → `--project` / 読み込み置換 / example 切り出し。
 前提: `design_roadmap_renderworld.md`(ロードマップ・肥大化対策 §6)、
 `docs/implementation_plan.md`(WP1 EngineLaunchConfig、WP17 SeqPlayer)、
 `docs/dcc_integration_qa_2026-06-12.md` §1(DCC bridge)。
@@ -116,6 +117,8 @@ myproject/
 - **`engine_min_version` を満たせない場合は hard error で起動しない**("min" の意味論どおり)。
   実験用に `--ignore-engine-version` フラグで WARN への降格を許す(既定 OFF)。
   警告止まりだと「動いたように見えて新機能の挙動だけ壊れる」が起きるため。
+- 同様に **`schema` が `"pelican.project"` でない/`version` がエンジンの対応範囲より
+  新しい場合も hard error**(読めるふりをしない。`--ignore-engine-version` の対象外)。
 - **設定の優先順位(v1 で確定): CLI 引数 > project.json > 埋め込み default。**
   `EngineLaunchConfig`(WP1)が CLI 値を保持し、`ProjectBasicConfig` は読み出し時に
   この順で合成する(現行 JsonLoader の 2 段 fallback を 3 段にする)。
@@ -142,19 +145,36 @@ myproject/
    DECLARE_MODULE(PathResolver) {
      public:
        void setProjectRoot(const std::filesystem::path &abs); // 存在必須。ここで canonical 化して保持
-       // 解決のみ(存在チェックなし)。escape は常に検査
-       ResolvedRef resolve(std::string_view ref) const;
-       // ファイル限定+存在チェック。engine:// や欠落時は「解決後の絶対パス」入りで throw
+       // 永続化 JSON・プロジェクト文脈の参照(解決のみ・存在チェックなし)。絶対パスは常に reject
+       ResolvedRef resolveProjectRef(std::string_view ref) const;
+       // CLI 引数由来の参照。絶対パスは --allow-absolute-paths のときのみ許可+WARN
+       ResolvedRef resolveCliRef(std::string_view ref) const;
+       // ファイル限定+存在チェック(プロジェクト文脈)。engine:// や欠落時は「解決後の絶対パス」入りで throw
        std::filesystem::path resolveExistingFile(std::string_view ref) const;
-       // file / engine 両対応の統一読み出し(ほとんどの呼び出し側はこれだけ使う)
+       // file / engine 両対応の統一読み出し(プロジェクト文脈。ほとんどの呼び出し側はこれだけ使う)
        std::string loadText(std::string_view ref) const;
        std::vector<std::byte> loadBytes(std::string_view ref) const;
    };
    ```
 
+   - **参照の由来はフラグ引数ではなくメソッド分離で表す**(`resolveProjectRef` /
+     `resolveCliRef`)。絶対パス許可の判定材料が Resolver の外にある状態を作らず、
+     呼び間違いがシグネチャに現れるようにする(レビュー 3 巡の指摘)
    - **呼び出し側の原則**: 内容が欲しいだけなら `loadText/loadBytes`(バックエンド非依存)。
      OS パスが本当に必要な箇所(ホットリロードの監視、外部プロセスへのパス渡し)だけ
      `resolveExistingFile` を使う — そこは `engine://` 非対応であることが型と例外で明示される
+   - **EngineResourceRegistry(最小 runtime dispatch)**: `b::embed<"...">()` は
+     コンパイル時キーのため、文字列 id からの解決には小さな実行時対応表が要る。
+     `core/loader/engineresources.{hpp,cpp}` に
+     `std::optional<std::string_view> engineResource(std::string_view id)` を置き、
+     v1 は `default_config.json` の 1 エントリを手書き登録。未知 id の throw メッセージには
+     **登録済み id の一覧**を含める(タイポ即発見)。embed を増やすときはこの表に 1 行
+     追加する運用とし、ビルド時自動生成(§8 未決 2)に将来置換する
+   - **依存の散逸防止**: `GET_MODULE(PathResolver)` を直接呼んでよいのは
+     **`core/loader/` 配下と起動配線のみ**。それ以外(レンダラ・ECS・feature・playback)が
+     パス解決を必要とする場合は、§0 共通規則の依存構造体パターン(`XxxDependencies`、
+     `implementation_plan.md` §0 参照)で PathResolver か解決済みの値を受け取る。
+     直接 GET_MODULE をレビューで弾く
 
    解決手順(ファイル系):
 
@@ -228,8 +248,8 @@ myproject/
   バイナリアセットは ignore 継続。Git LFS はエンジン repo では使わない(クローンを重くしない)
 - **ユーザプロジェクト**: エンジンとは独立のディレクトリ/リポジトリ。LFS 採用は
   プロジェクト側の自由
-- エンジンとプロジェクトのバージョン整合は `engine_min_version` + 起動時警告(将来は
-  schema version で破壊的変更を管理。R10 と同じ運用)
+- エンジンとプロジェクトのバージョン整合は `engine_min_version` の **hard error ゲート**(§4)
+  で行う(破壊的変更は schema version で管理。R10 と同じ運用)
 
 ## 8. 決定済み事項と未決事項
 
@@ -243,11 +263,16 @@ myproject/
 - escape 判定 = weakly_canonical(error_code 版)正規化後、**path component 単位**の
   先頭一致(Windows は case-fold。文字列 starts_with 禁止)
 - **PathResolver の戻り値** = `variant<fs::path, EngineResourceId>`。
-  存在チェックなしの `resolve` / ファイル限定+存在チェックの `resolveExistingFile` /
-  統一読み出しの `loadText・loadBytes` を分離
+  参照の由来は **メソッド分離**(`resolveProjectRef` / `resolveCliRef`)で表し、
+  ファイル限定+存在チェックの `resolveExistingFile` / 統一読み出しの
+  `loadText・loadBytes` を分離
 - **`engine://` の id** = b::embed のキー(`src/core/resources/` 相対)。
-  v1 必須は `engine://default_config.json` のみ
-- **`engine_min_version` 不適合は hard error**(`--ignore-engine-version` で WARN 降格)
+  v1 必須は `engine://default_config.json` のみ。文字列 id → embed の実行時対応は
+  **EngineResourceRegistry**(v1 手書き 1 エントリ、未知 id は登録済み一覧入りで throw)
+- **PathResolver の利用範囲** = `GET_MODULE` 直呼びは core/loader と起動配線のみ。
+  他層は依存構造体(`XxxDependencies`)経由
+- **`engine_min_version` 不適合は hard error**(`--ignore-engine-version` で WARN 降格)。
+  **`schema` 不一致・`version` 超過も hard error**(降格フラグの対象外)
 
 未決(実装前に決めなくてよいもの):
 
