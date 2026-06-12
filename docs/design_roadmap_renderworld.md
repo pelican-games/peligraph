@@ -170,6 +170,24 @@ API の形(§4.2):
 10. include/リンク方向の制約と CMake ターゲット分割に合意できるか
 11. 更新順序(`ecs.update() → renderer.render()`)の固定化に合意できるか
 
+追加議題(2026-06-12、DCC 連携 Q&A を受けて):
+
+12. **EngineTime の読み取り規約**: ECS/ゲームロジック側も壁時計ではなく
+    `EngineTime.now()/dt()` を読む(進めるのは Loop のみ)。headless・リプレイの決定性を
+    ECS 側ロジックにも及ぼすための前提。合意できるか
+13. **フレーム内更新順序の拡張**: 11 の合意を
+    `ecs.update() → feature/再生系の step(ClothWorld・SeqPlayer)→ RenderWorld::commit() → renderer.render()`
+    まで広げて固定したい。feature の step をこの位置に差し込む流儀に異議がないか
+14. **インスタンス可視性 API**: transform_seq の `hidden` 規約(要求書 R4 追補)を
+    真面目に受けるため、将来 RenderWorld に `setVisible(id, bool)`(または
+    updateTransforms への可視フラグ同梱)を足したい。draw command 生成 seam(§4.5)で
+    skip する想定。API の形に希望はあるか
+15. **スケルタルアニメ/スキニング(E2)の設計に ECS を最初から巻き込む**:
+    ジョイント行列の所有者(ECS コンポーネントか RenderWorld か)、アニメ評価の置き場所、
+    スキンメッシュ用コンポーネントの形は境界 API そのもの。E2 は外部ツール連携の
+    最大の未設計領域(ポーズ推定の motion.glb とモーフウェイトの両方が堰き止められている)。
+    設計開始時期の希望を聞きたい
+
 ## 6. 肥大化対策の方針(機構ではなく規律)
 
 専用のパージ機構やプラグインシステムは作らない。以下の 3 点で代替する:

@@ -324,9 +324,10 @@ DECLARE_MODULE(DeletionQueue) {    // 薄いラッパ。寿命ピン留めはこ
 3. 起動時: ヘッダ行を検証(schema/version 不一致は fail-fast)、objects ごとに `PolygonInstanceContainer::placeModelInstance`。v1 は**全オブジェクト共有メッシュ 1 つ**(`builtin:sphere` は単位球を生成、glb 指定時は最初のメッシュ)。オブジェクト名→glb ノード名の個別対応は v2
 4. 毎フレーム(`ecs.update()` 後・`renderer.render()` 前に Loop から呼ぶ。core→core なのでレイヤ規則に抵触しない): `EngineTime.now()` で該当サンプル行を選択(v1 は floor サンプル・補間なし、末端 clamp、`--seq-loop` で周回)、全インスタンスに `setTrs`
 5. `hidden`(R4 追補)の扱い: 契約は「描かない」。現行の indirect draw 構成でインスタンス単位スキップが重い場合、**v1 の内部実装は scale 1e-6 への縮退で代用してよい**(0 でなく ε なのは法線行列の特異化回避。RenderWorld の draw command seam 実装後に真の draw skip へ置換)
-6. テスト: (a) パース+サンプリング単体(GPU 不要、固定 fixture)、(b) headless 結合: 2 オブジェクト×3 フレームの golden jsonl → `--render-out` 連番で位置が動くこと(WP7 の流儀)
+6. `--camera "px,py,pz,tx,ty,tz,fov_deg"`(glTF 座標、position / 注視点 / 垂直 FOV 度)。省略時は既存シーンカメラ。プレビューのフレーミングに必須(`dcc_integration_qa_2026-06-12.md` §12)
+7. テスト: (a) パース+サンプリング単体(GPU 不要、固定 fixture)、(b) headless 結合: 2 オブジェクト×3 フレームの golden jsonl → `--render-out` 連番で位置が動くこと(WP7 の流儀)
 
-受け入れ基準: `pelican_player --headless --frames 90 --play-seq droplets.jsonl --seq-mesh builtin:sphere --render-out out/%04d.png` で球が動く連番が出る。通常起動無変更。
+受け入れ基準: `pelican_player --headless --frames 90 --play-seq droplets.jsonl --seq-mesh builtin:sphere --camera "0,1,3,0,0.5,0,40" --render-out out/%04d.png` で球が動く連番が出る。通常起動無変更。
 
 ## 3. 保留中のトラック(WP 化待ち)
 
@@ -334,7 +335,41 @@ DECLARE_MODULE(DeletionQueue) {    // 薄いラッパ。寿命ピン留めはこ
 - **RenderWorld**: 当面は設計合意トラック(`design_roadmap_renderworld.md` §5 を ECS 担当とレビュー中)。**実装開始条件 = ECS 合意 + WP7 完了**。ECS 側変更を含む最初の小 PR は「ライトアニメーション更新の ECS 側移管」(同 §4.3-1)を予定
 - compute パス / GPU 計測 / bindless / RT: それぞれ設計文書を書いてから WP 化(ロードマップ §2 の順)
 
-## 4. 依頼時のテンプレート
+## 4. マルチエージェント運用(ブランチとマージ)
+
+### 規則
+
+1. **main を常にグリーンに保つ**: 受け入れ基準を満たした PR だけが main に入る。マージ後に `ctest` が割れたら最優先で revert
+2. **1 WP = 1 ブランチ(`agent/wpN-...`)= 1 PR = squash マージ**: main の履歴が「1 コミット ≒ 1 WP」になり、bisect と revert が WP 単位でできる
+3. **ブランチは必ず main から切る。ブランチのスタック禁止**: 依存 WP が未マージなら着手しない(待ち時間は別の独立 WP を取る)。マージはレビュー通過後ただちに(長生きブランチを作らない)
+4. **契約文書(`external_tools_requirements.md` / schemas)は WP の PR に混ぜない**: 専用 PR+人間レビュー+ツール側コピー同期(`dcc_integration_qa_2026-06-12.md` §3 の規約)
+5. **現行の docs ブランチ(codex/rendering-phase1-refactor)は次の WP 着手前に main へマージする**: 全エージェントの分岐元を 1 つにするため
+
+### 競合が予想されるファイルと作法
+
+| ファイル | 触る WP | 作法 |
+|---|---|---|
+| `appflow/loop.cpp` | 2, 5, 17 | 直列にスケジュール(下のウェーブ)。同時に走らせない |
+| `vkcore/renderer.cpp` | 2, 8, 13, 14 | 同上 |
+| ルート CMakeLists.txt(FetchContent 節) | 6, 10 | 追記のみ・アルファベット順。競合しても自明に解決できる形を保つ |
+| `test/CMakeLists.txt` | ほぼ全 WP | `pelican_define_test` の追記のみ |
+
+### ウェーブ(依存を満たしつつ並列度を上げる依頼順)
+
+| ウェーブ | 並列依頼 | 備考 |
+|---|---|---|
+| 1 | WP1, WP3, WP9, WP10 | 互いに独立。最大 4 エージェント |
+| 2 | WP2, WP4, WP11(+WP8) | WP8 は renderer.cpp が WP2 と重なるため WP2 マージ後に開始 |
+| 3 | WP5, WP12, WP17 | WP17 は loop.cpp が WP5 と重なるため WP5 マージ後に開始 |
+| 4 | WP6, WP13 | |
+| 5 | WP7, WP14, WP16 | WP7 完了 = headless 検証基盤(統合チェックポイント) |
+| 6 | WP15 | 大物・高リスク。単独で走らせ、他 WP と並走させない |
+
+統合チェックポイント: ウェーブ 1 完了後と WP7 完了後に、人間が pelican_player の手動起動確認
+(`rendering_phase1_review.md` の Validation Run と同じ流儀)を行う。WP16 以降は
+golden テストが回帰を機械的に守る。
+
+## 5. 依頼時のテンプレート
 
 ```
 リポジトリ: pelican2 / ブランチ: main から agent/wpN-xxx を作成

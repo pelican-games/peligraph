@@ -67,7 +67,7 @@ stderr は Blender テキストブロックに保存(失敗時の一次情報)�
 |----------|----------|------|
 | Addon Preferences | エンジン exe パス、一時出力ディレクトリ、タイムアウト秒 | マシン固有。.blend に入れない(共有時に他人のパスが混入しない) |
 | Scene の PropertyGroup + 3D View サイドバー「Pelican2」パネル | seq path(`.jsonl`)、mesh source(enum: `builtin:sphere` / glb パス)、出力先 override(空なら一時dir) | ショット固有。.blend に保存され、ファイルを開き直しても残る |
-| シーンから自動取得(UI に出さない) | frames(シーンの frame range)、fps(`scene.render.fps`)、size(`scene.render.resolution_x/y`) | Blender 側の設定と二重管理しない。operator が CLI 引数に転記するだけ |
+| シーンから自動取得(UI に出さない) | frames(シーンの frame range)、fps(`scene.render.fps`)、size(`scene.render.resolution_x/y`)、camera(アクティブカメラ → `--camera` に変換) | Blender 側の設定と二重管理しない。operator が CLI 引数に転記するだけ |
 
 operator(Render in Pelican2)は上記を読んで CLI 引数を組むだけで、独自状態を持たない。
 mmd_mocap_bridge の既存パターン(Scene PropertyGroup + パネル + operator)と同じ構造。
@@ -296,4 +296,30 @@ implementation_plan.md(WP9 改訂 + WP17 追加)、design_roadmap_renderworld.md
 5. `design_roadmap_renderworld.md` §2.1: 同上のプロトコル文言修正と、E0 の「追加設計不要」→「WP17 で受ける」
 
 ツール側は requirements コピー同期・tool_suite_design の hidden 化を 2026-06-12 に適用済み。
-cloth_design_2026-06-12.md ほか未コミット文書のコミットはツール側 TODO。
+cloth_design_2026-06-12.md ほか未コミット文書のコミットはツール側 TODO(→ 同日コミット済み)。
+
+## 12. ポーズ以外の DCC ヘルパー横断監査(2026-06-12 3 巡目)
+
+「ポーズ推定が先行しているため契約が偏っていないか」の確認。結論:
+**契約(glb / transform_seq / VAT / NDJSON JSON-RPC)はレーン非依存で、偏りはほぼない。
+むしろエンジン側の受け口が一番欠けているのはポーズレーン自身(E2 スケルタル)**。
+実ギャップは 3 つ(表の太字)。
+
+| レーン | エンジンへの納品物 | 使う契約 | エンジン側前提 | ギャップ/判断 |
+|---|---|---|---|---|
+| ポーズ推定 | motion.glb(スケルタルクリップ) | R3 | **E2(スケルタル/スキニング)= 未設計** | エンジン最大の未設計領域。E2 設計には ECS を最初から巻き込む(roadmap §5 追加議題) |
+| ビート同期 | なし(edit_log 経由でモーション側に反映) | — | なし | エンジン接点なし |
+| トゥーンベイカー | ランプ/SDF PNG、アウトライン glb、params JSON | R3, R7, R10 | 本線 3(シェーダ自由化キット)+パスアセット | 契約は足りる。params の extras 語彙(`pelican.outline` 等)は T1 実装時に requirements 追補 |
+| 液滴 drops | transform_seq | R4(hidden 含む) | WP17 | 解消済み |
+| 液滴 strands | strand_seq(未合意)or カプセル列 | R4 | スプライン描画は遠い | **当面カプセルフォールバックを正式運用**。strand_seq の合意は描画手段が見えてから |
+| クロス R-A | transform_seq /(将来)motion.glb | R4 / R3 | WP17 / E2 | drops と同経路 |
+| クロス R-C | VAT 入り glb | R5 追補 | E1(小 glue WP) | 解消済み |
+| リップシンク・表情 | glTF morph weights アニメ | R3(weights チャネルで表現可) | **エンジンのモーフ対応 = 未設計(E2 隣接)** | 契約は R3 の範囲内で足りる。E2 設計時に「ジョイント行列+モーフウェイト」をセットで扱うこと |
+| カメラ | glb カメラノードアニメ | R3, R6 | **プレビュー時のカメラ指定手段がない** | WP17 に `--camera` を追加(下記)。本格対応はコマンド層 stage 3 で `set_camera` を検討 |
+| レンダ一致 QA | SSIM レポート | — | WP16 | WP16 の tolerance 比較に接続。設計済み |
+
+### WP17 への追加(カメラギャップの最小解消)
+
+`--camera "px,py,pz,tx,ty,tz,fov_deg"`(glTF 座標、position / 注視点 / 垂直 FOV 度)を
+WP17 に追加。省略時は既存シーンのカメラ。droplet/cloth のプレビューはフレーミングが
+命なので M1 成立要件に含める。Blender bridge はアクティブカメラから operator が自動変換して渡す。
