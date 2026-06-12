@@ -1,9 +1,9 @@
 # プロジェクトファイル設計(エンジンとコンテンツの分離)
 
 対象読者: エンジン担当 + DCC/ツール側担当。
-ステータス: v5(2026-06-12 レビュー 4 巡を反映: 絶対パス許可の注入点、project root
-未設定時の `engine://`、resolveExistingCliFile の予約、受け入れ基準 i/j)。
-**設計確定・実装中**。実装順: P0(ProjectSource バグ)→ PathResolver 型+
+ステータス: v6(2026-06-12 レビュー 5 巡・最終整理: locator 引数の適用除外、
+`project://` の v1 正式対応、setup 再呼び出し方針)。**設計凍結・実装中**。
+実装順: P0(ProjectSource バグ、684494f で完了)→ PathResolver 型+
 EngineResourceRegistry 最小実装 → `--project` / 読み込み置換 / example 切り出し。
 前提: `design_roadmap_renderworld.md`(ロードマップ・肥大化対策 §6)、
 `docs/implementation_plan.md`(WP1 EngineLaunchConfig、WP17 SeqPlayer)、
@@ -76,16 +76,23 @@ myproject/
    `engine://` 参照は埋め込みを読む。差し替えたいときは参照側を
    `project://` パスに書き換える(どちらを読んでいるかが常に参照を見れば分かる)。
 3. **絶対パスの許可は文脈で分ける**: `--allow-absolute-paths` が効くのは
-   **CLI 引数として渡された参照のみ**(`--play-seq` 等の一時指定)。
+   **CLI 引数として渡されたコンテンツ参照のみ**(`--play-seq` 等の一時指定)。
    `project.json`・scene/asset/pass/ui 等の**永続化された JSON 内の絶対パスは
    フラグに関係なく常に reject**(配布したプロジェクトが他人のマシンで壊れる事故を
    形式レベルで防ぐ)。
-4. **`engine://` の id 規則(v1 確定)**: id = **b::embed のキー文字列**
+   ただし**プロジェクトの外を指すことが本務の起動引数(locator/出力先)は
+   この規則の対象外**: `--project <abs>` や `--render-out <abs>` はフラグなしで
+   絶対パスを受ける。これらは PathResolver を通らない素のパスであり、
+   PathResolver が管轄するのは「プロジェクト内へのコンテンツ参照」だけ、と整理する。
+4. **`project://` プレフィックスは v1 で正式対応**: parse して strip し、素の相対パスと
+   完全等価に扱う(`project://assets/a.glb` ≡ `assets/a.glb`)。明示したい場面
+   (ドキュメント・エラーメッセージ・将来のプロトコル)で使えるようにしておく。
+5. **`engine://` の id 規則(v1 確定)**: id = **b::embed のキー文字列**
    (= `src/core/resources/` からの相対パス)。例: `engine://default_config.json`。
    v1 で必要なのは現状 embed されている `default_config.json` のみで、標準 shader /
    標準 pass はシェーダ自由化キット(WP12/13/15)で embed 化する際に同じ規則で
    id が付与される。embed 一覧と id の対応表はビルド時自動生成に将来昇格(§8)。
-5. 命名は ASCII(R7 と同じ理由: プロトコル・パス安全)。
+6. 命名は ASCII(R7 と同じ理由: プロトコル・パス安全)。
 
 ## 4. `project.json` v1 と設定の優先順位
 
@@ -135,7 +142,7 @@ myproject/
    return する。2 行)。WP18 を待たず単独で直してよい
 2. **PathResolver モジュール**(`core/loader/pathresolver.{hpp,cpp}`)。
 
-   **戻り値型(v3 で確定)**: `engine://` は `std::filesystem::path` に解決できないため、
+   **戻り値型(確定)**: `engine://` は `std::filesystem::path` に解決できないため、
    resolve の結果は variant で返し、ファイル前提の API と分離する:
 
    ```cpp
@@ -146,8 +153,10 @@ myproject/
      public:
        // 起動配線が一度だけ呼ぶ。root は存在必須(ここで canonical 化して保持)。
        // allow_absolute_paths は EngineLaunchConfig(--allow-absolute-paths)から注入され、
-       // 以後 Resolver 内部の状態となる(呼び出しごとの引数にはしない — 呼び側に判定材料を持たせない)
+       // 以後 Resolver 内部の状態となる(呼び出しごとの引数にはしない — 呼び側に判定材料を持たせない)。
+       // 二重呼び出しは throw(本番経路の配線ミス検出)。テストは resetForTesting() で再構成する
        void setup(const std::filesystem::path &project_root_abs, bool allow_absolute_paths);
+       void resetForTesting();  // テスト専用。本番コードからの呼び出しはレビューで禁止
        // 永続化 JSON・プロジェクト文脈の参照(解決のみ・存在チェックなし)。絶対パスは常に reject
        ResolvedRef resolveProjectRef(std::string_view ref) const;
        // CLI 引数由来の参照。絶対パスは setup で注入された allow_absolute_paths が真のときのみ許可+WARN
@@ -236,6 +245,8 @@ myproject/
 - i. `schema` 不一致・`version` 超過の project.json が起動拒否される
   (`--ignore-engine-version` でも降格しない)(単体テスト)
 - j. 未知の `engine://` id が登録済み id 一覧入りのメッセージで throw される(単体テスト)
+- k. `project://assets/a.glb` と `assets/a.glb` が同一に解決される(単体テスト)。
+  `--project` の絶対パス指定は `--allow-absolute-paths` なしで通る
 
 ### 後続(WP18 のスコープ外、設計だけ整合)
 
@@ -267,7 +278,7 @@ myproject/
 
 ## 8. 決定済み事項と未決事項
 
-レビュー 1〜2 巡(2026-06-12)で確定したもの:
+レビュー(2026-06-12・全 5 巡)で確定したもの:
 
 - nested JSON の相対基準 = **常にプロジェクトルート**(ファイル基準は採用しない)
 - パス分類 = 素の相対(=project://)/ `engine://` / 絶対(CLI 限定デバッグ・要フラグ)
@@ -287,6 +298,10 @@ myproject/
   他層は依存構造体(`XxxDependencies`)経由
 - **`engine_min_version` 不適合は hard error**(`--ignore-engine-version` で WARN 降格)。
   **`schema` 不一致・`version` 超過も hard error**(降格フラグの対象外)
+- **locator 引数(`--project`・`--render-out` 等)は絶対パス規則の対象外**
+  (PathResolver を通らない。管轄は「プロジェクト内へのコンテンツ参照」のみ)
+- **`project://` プレフィックスは v1 正式対応**(parse して strip、素の相対と完全等価)
+- **setup 二重呼び出しは throw、テストは `resetForTesting()`**(本番からの呼び出し禁止)
 
 未決(実装前に決めなくてよいもの):
 
