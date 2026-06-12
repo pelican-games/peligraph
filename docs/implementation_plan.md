@@ -68,9 +68,11 @@ ctest --test-dir ./build -C Debug --output-on-failure
 | 14 | シェーダホットリロード | 13 | 中 | 中 |
 | 15 | MaterialContainer / UiRenderer 移行 + desc 一般化 + set 規約 | 13 | 大 | 高 |
 | 16 | ゴールデンイメージテスト基盤 | 7, 11 | 中 | 低 |
+| 17 | SeqPlayer(transform_seq 再生) | 1, 2 | 中 | 低 |
 
 - **並列依頼可能**: WP1, 3, 9, 10(互いに独立)。WP2 は WP1 直後に
 - **クリティカルパス**: 1 → 4 → 5 → 6 → 7(headless 検証基盤)
+- **DCC bridge M1(Blender からのプレビュー)の成立条件 = WP6 + WP17**(WP17 単体は WP2 後に実装・通常起動で確認可能)
 - compute、GPU 計測、bindless、RT、コマンド層、RenderWorld は §3 参照(設計合意・前提 WP 完了待ち)
 
 ## 2. WP 詳細
@@ -192,21 +194,32 @@ DECLARE_MODULE(EngineTime) {
 1. `src/core/vkcore/deletionqueue.{hpp,cpp}`:
 
 ```cpp
-DECLARE_MODULE(DeletionQueue) {
+// 純ロジック。モジュール機構・Vulkan 非依存 → GPU 不要で単体テスト可能
+class DeletionQueueCore {
     uint64_t current_frame = 0;
+    uint32_t in_flight_frames;
+    std::function<void()> wait_idle_hook;
     std::vector<std::pair<uint64_t, std::function<void()>>> pending;
   public:
-    DeletionQueue();     // ctor で GET_MODULE(VulkanManageCore) を呼ぶこと(下記・生成順ピン留め)
+    DeletionQueueCore(uint32_t in_flight_frames, std::function<void()> wait_idle_hook);
     template <class T> void defer(T &&resource);   // move-only リソースを抱えて遅延破棄
-    void beginFrame();   // current_frame++ し、(current_frame - in_flight_frames_num) 以前を実行
-    void flushAll();     // 全破棄。呼び出し前に waitIdle 済みであることが契約
-    ~DeletionQueue();    // pending 非空なら waitIdle + flushAll + LOG_WARNING(安全網)
+    void beginFrame();   // current_frame++ し、(current_frame - in_flight_frames) 以前を実行
+    void flushAll();     // 全破棄。呼び出し前に wait idle 済みであることが契約
+    ~DeletionQueueCore();// pending 非空なら wait_idle_hook() + flushAll + LOG_WARNING(安全網)
+};
+
+DECLARE_MODULE(DeletionQueue) {    // 薄いラッパ。寿命ピン留めはこちらだけが担う
+    DeletionQueueCore core;
+  public:
+    DeletionQueue();     // ctor で GET_MODULE(VulkanManageCore) を呼び(下記・生成順ピン留め)、
+                         // 実 waitIdle を hook として core に注入。in_flight_frames_num も渡す
+    // defer / beginFrame / flushAll を core へ委譲
 };
 ```
 
-2. **寿命保証(本 WP の核心)**: `FastModuleContainer` は生成の逆順で破棄するため、ctor で `GET_MODULE(VulkanManageCore)` を呼んで「core より後に生成される」ことをピン留めする。これにより DeletionQueue は core より**先に**破棄され、deleter は常に生きた device 上で走る
+2. **寿命保証(本 WP の核心)**: `FastModuleContainer` は生成の逆順で破棄するため、ラッパの ctor で `GET_MODULE(VulkanManageCore)` を呼んで「core より後に生成される」ことをピン留めする。これにより DeletionQueue は core より**先に**破棄され、deleter は常に生きた device 上で走る。ロジックを `DeletionQueueCore` に分離するのは、この ctor 依存が単体テストに Vulkan 初期化を要求しないようにするため(`dcc_integration_qa_2026-06-12.md` §9)
 3. **明示 flush 点**: `Loop::run()` の終了直前に `GET_MODULE(VulkanManageCore).waitIdle(); GET_MODULE(DeletionQueue).flushAll();` を置く(WP5 で入れた waitIdle の直後)。headless 0 フレーム終了でもこの経路を必ず通す。`beginFrame()` は `Renderer::render()` 先頭で呼ぶ
-4. 単体テスト(GPU 不要): カウンタを抱えた fake リソースで、in_flight 数経過後に deleter 実行・flushAll で全実行・dtor 安全網の警告、を検証
+4. 単体テスト(GPU 不要): `DeletionQueueCore` を直接生成(wait_idle_hook はカウンタ付きフェイク)し、カウンタを抱えた fake リソースで、in_flight 数経過後に deleter 実行・flushAll で全実行・dtor 安全網の hook 呼び出し+警告、を検証
 
 受け入れ基準: テストグリーン。既存コードへの組み込みは beginFrame/flushAll の挿入のみ(利用開始は WP8/13 以降)。
 
@@ -300,9 +313,24 @@ DECLARE_MODULE(DeletionQueue) {
 
 受け入れ基準: 3 ケースが GPU あり環境で PASS、GPU なしで SKIP。意図的にシェーダを壊すと FAIL し diff.png が出る。
 
+### WP17: SeqPlayer(transform_seq 再生)
+
+参照: `docs/dcc_integration_qa_2026-06-12.md` §4(設計の経緯)、要求書 R4(`hidden` 追補含む)。
+
+**位置づけ**: SeqPlayer 単体は WP2 完了後に実装・通常ウィンドウ起動で確認可能。**DCC bridge M1(Blender からのプレビュー)として成立するのは WP6 + 本 WP の両方完了後**。droplet/cloth ツールの最初の納品経路の前提でもある。
+
+1. `src/core/playback/seqplayer.{hpp,cpp}`(core モジュール。`SceneLoader` が core/loader に居る前例に合わせる)。**JSONL のパースと時刻サンプリングはモジュール非依存の plain クラスに分離**し、GPU 不要で単体テスト可能にする(WP9 の Core 分離と同じ方針)
+2. CLI 追加(WP1 の argparse): `--play-seq <path.jsonl>`、`--seq-mesh <builtin:sphere|path.glb>`、`--seq-loop`(flag)
+3. 起動時: ヘッダ行を検証(schema/version 不一致は fail-fast)、objects ごとに `PolygonInstanceContainer::placeModelInstance`。v1 は**全オブジェクト共有メッシュ 1 つ**(`builtin:sphere` は単位球を生成、glb 指定時は最初のメッシュ)。オブジェクト名→glb ノード名の個別対応は v2
+4. 毎フレーム(`ecs.update()` 後・`renderer.render()` 前に Loop から呼ぶ。core→core なのでレイヤ規則に抵触しない): `EngineTime.now()` で該当サンプル行を選択(v1 は floor サンプル・補間なし、末端 clamp、`--seq-loop` で周回)、全インスタンスに `setTrs`
+5. `hidden`(R4 追補)の扱い: 契約は「描かない」。現行の indirect draw 構成でインスタンス単位スキップが重い場合、**v1 の内部実装は scale 1e-6 への縮退で代用してよい**(0 でなく ε なのは法線行列の特異化回避。RenderWorld の draw command seam 実装後に真の draw skip へ置換)
+6. テスト: (a) パース+サンプリング単体(GPU 不要、固定 fixture)、(b) headless 結合: 2 オブジェクト×3 フレームの golden jsonl → `--render-out` 連番で位置が動くこと(WP7 の流儀)
+
+受け入れ基準: `pelican_player --headless --frames 90 --play-seq droplets.jsonl --seq-mesh builtin:sphere --render-out out/%04d.png` で球が動く連番が出る。通常起動無変更。
+
 ## 3. 保留中のトラック(WP 化待ち)
 
-- **最小コマンド層**: 3 段階で進める。(1) ファイル連携を正とする(WP6 の `--render-out` で成立済み) → (2) stdio 行 JSON で `set_time` / `step_frame` / `render_frame` / `capture` の 4 命令のみ(WP6 完了後に WP 化可能。JSON-RPC サーバはまだ作らない) → (3) `load_gltf` / `update_transforms` は **RenderWorld 合意後**
+- **最小コマンド層**: 3 段階で進める。(1) ファイル連携を正とする(WP6 の `--render-out` で成立済み) → (2) **stdio NDJSON 上の JSON-RPC 2.0** で `set_time` / `step_frame` / `render_frame` / `capture` の 4 メソッドのみ(WP6 完了後に WP 化可能。独自行プロトコルは作らない。TCP 常駐サーバはまだ作らない。要求書 R8 追補参照) → (3) `load_gltf` / `update_transforms` は **RenderWorld 合意後**
 - **RenderWorld**: 当面は設計合意トラック(`design_roadmap_renderworld.md` §5 を ECS 担当とレビュー中)。**実装開始条件 = ECS 合意 + WP7 完了**。ECS 側変更を含む最初の小 PR は「ライトアニメーション更新の ECS 側移管」(同 §4.3-1)を予定
 - compute パス / GPU 計測 / bindless / RT: それぞれ設計文書を書いてから WP 化(ロードマップ §2 の順)
 

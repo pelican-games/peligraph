@@ -21,8 +21,8 @@
 
 | # | 段階 | エンジン側の作業 | 前提 |
 |---|------|------------------|------|
-| E0 | 剛体セグメントチェーン再生 | **なし**(`RenderWorld::updateTransforms` で受かる、ロードマップ §2.1 のとおり) | transform_seq の搬入経路(ファイル→ローダ or コマンド層) |
-| E1 | VAT(Vertex Animation Texture)再生 | ほぼなし(マテリアルパス JSON+頂点シェーダ=アセット。メタ JSON 読みの薄い glue のみ) | 本線 3(シェーダ自由化キット) |
+| E0 | 剛体セグメントチェーン再生 | 描画機能・ECS 変更なし。**WP17 SeqPlayer(小)が必要**(`implementation_plan.md` WP17。RenderWorld 後は書き込み先を `updateTransforms` に差し替えるだけ) | WP17(ファイル搬入) |
+| E1 | VAT(Vertex Animation Texture)再生 | アセット+**小 glue WP**(RGBA16F bufferView アップロード経路、`pelican.vat` メタ読み、uniform 供給。`dcc_integration_qa_2026-06-12.md` §6) | 本線 3(シェーダ自由化キット) |
 | E2 | スケルタルアニメ/スキニング | 別途設計(ロードマップ未組込のまま。本書はスコープ外と明記) | — |
 | E3 | springbone ライブソルバ | feature モジュール実装(§4) | E2(skinned モード)。rigid モードは E2 前でも可 |
 | E4 | ツールからのライブ注入 | コマンド層に `update_transforms`(R8 で既定義) | 並行トラック B |
@@ -37,13 +37,14 @@
   stiffness / dragForce / gravityPower / gravityDir / hitRadius)。
   **JSON Schema の正本はツール側リポジトリの `schemas/`**(こちらはコピー+正本明記、
   要求書の流儀)。未知の extras は無視してよい(前方互換)。
-- `pelican.transform_seq` v1: 既存 R4。**追加規約案: scale `[0,0,0]` = 非表示**
-  (液滴の出現/消滅、チェーンの LOD にも使う。要合意 → §7)。
+- `pelican.transform_seq` v1: 既存 R4。可視性はフレーム行のオプション `"hidden": [index...]`
+  (R4 の 2026-06-12 追補で**確定**。scale `[0,0,0]` 案は法線行列特異化・意味混線のため不採用)。
 - `pelican.vat` v1(提案): メタ JSON(schema/version/fps/vertex_count/frame_count/
   bounds_min/bounds_max/texture path)+ RGBA16F 位置テクスチャ(行=フレーム、列=頂点、
   bounds 正規化)。頂点シェーダが `gl_VertexIndex` × 時刻でサンプルして再生。
-  法線テクスチャは optional。R5(Alembic 第一候補)への engine 向け追補としてツール側と
-  要求書を更新してから実装する。
+  法線テクスチャは optional。**要求書 R5 に 2026-06-12 追補済み**(完全仕様は
+  `dcc_integration_qa_2026-06-12.md` §6。extras は対象 mesh primitive に置く、
+  1 primitive 1 クリップ)。
 
 ## 4. E3: springbone ソルバ設計スケッチ
 
@@ -57,7 +58,8 @@
 ### 4.2 API スケッチ
 
 ```cpp
-// feature 層: core/phys/clothworld.hpp(phys/ は現在空。最初の住人になる)
+// feature 層: src/feature/phys/clothworld.hpp(src/feature/ を新設、CMake ターゲット分割。
+// 空の src/core/phys/ は E3 着手時に削除。dcc_integration_qa_2026-06-12.md §8)
 namespace Pelican {
 
 struct ClothChainParams {   // cloth_setup v1 と 1:1
@@ -100,15 +102,18 @@ DECLARE_MODULE(ClothWorld) {
 
 ## 6. ツール側との合意事項(チェックリスト)
 
-1. `transform_seq` の scale `[0,0,0]` = 非表示規約(液滴・クロス共通)に合意するか
-2. `cloth_setup` v1 の正本をツール側 `schemas/` に置くことに合意するか
-3. `pelican.vat` v1 のフォーマット(RGBA16F・bounds 正規化・メタ JSON)で要求書 R5 を
-   追補するか(Alembic は Blender レーン用として残置)
+1. ~~`transform_seq` の scale `[0,0,0]` = 非表示規約~~ → **合意済み(2026-06-12)**:
+   `hidden` フィールド方式に変更(R4 追補)
+2. ~~`cloth_setup` v1 の正本をツール側 `schemas/` に置くか~~ → **合意済み**。エンジンは
+   validator を持たず tolerant reader、参照はノード名(qa §7)
+3. ~~`pelican.vat` v1 で要求書 R5 を追補するか~~ → **合意済み(R5 追補、2026-06-12)**。
+   Alembic は Blender レーン用として残置
 4. (隣接)液滴ツールの `pelican.strand_seq` v1(スプライン+半径列、本数可変)を
-   R4 追補として受けるか
-5. springbone の「互換」はスキーマ互換に留め、挙動一致は metrics 基準とすることに合意するか
-6. E0 の transform_seq 搬入経路: 当面ファイル(ローダ)か、コマンド層(トラック B)を
-   待つか
+   R4 追補として受けるか — **未合意**
+5. springbone の「互換」はスキーマ互換に留め、挙動一致は metrics 基準とすることに
+   合意するか — **未合意**(異論は出ていない)
+6. ~~E0 の transform_seq 搬入経路~~ → **確定**: 当面ファイル(WP17 SeqPlayer)。
+   コマンド層経由(`update_transforms`)は E4 のまま
 
 ## 7. 参考
 

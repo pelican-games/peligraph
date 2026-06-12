@@ -59,6 +59,19 @@ class EngineSession:
 subprocess は modal operator + timer でポーリングし UI をブロックしない。
 stderr は Blender テキストブロックに保存(失敗時の一次情報)。
 
+### M1 の入力 UI(2 巡目で確定)
+
+設定は「マシン固有」と「ショット固有」で置き場所を分ける:
+
+| 置き場所 | 持つもの | 理由 |
+|----------|----------|------|
+| Addon Preferences | エンジン exe パス、一時出力ディレクトリ、タイムアウト秒 | マシン固有。.blend に入れない(共有時に他人のパスが混入しない) |
+| Scene の PropertyGroup + 3D View サイドバー「Pelican2」パネル | seq path(`.jsonl`)、mesh source(enum: `builtin:sphere` / glb パス)、出力先 override(空なら一時dir) | ショット固有。.blend に保存され、ファイルを開き直しても残る |
+| シーンから自動取得(UI に出さない) | frames(シーンの frame range)、fps(`scene.render.fps`)、size(`scene.render.resolution_x/y`) | Blender 側の設定と二重管理しない。operator が CLI 引数に転記するだけ |
+
+operator(Render in Pelican2)は上記を読んで CLI 引数を組むだけで、独自状態を持たない。
+mmd_mocap_bridge の既存パターン(Scene PropertyGroup + パネル + operator)と同じ構造。
+
 ## 2. JSON-RPC と stdio 行 JSON の整合
 
 **決定: 最初から「stdio 上の JSON-RPC 2.0、NDJSON フレーミング」。** 両文書の表記は
@@ -108,7 +121,9 @@ stderr は Blender テキストブロックに保存(失敗時の一次情報)�
 ### WP17: SeqPlayer(提案 — implementation_plan へ追記)
 
 依存: WP1(CLI)、WP2(EngineTime)。規模: 中の小。リスク: 低。
-これが DCC bridge M1 と droplet/cloth の最初の納品経路の前提になる。
+**SeqPlayer 単体は WP2 完了後に実装可能で、通常ウィンドウ起動で動作確認できる。
+DCC bridge M1 として成立するのは WP6(headless PNG)+ WP17 の両方完了後**。
+droplet/cloth の最初の納品経路の前提でもある。
 
 1. `src/core/playback/seqplayer.{hpp,cpp}`(core モジュール。`SceneLoader` が core/loader に
    居る前例に合わせる)。JSONL パースとサンプリングは**モジュール非依存の plain 関数/クラス**に
@@ -156,6 +171,8 @@ R5 追補に要点を記載済み。完全版:
 | 時間 | `t = EngineTime.now() - clip_start`(uniform で供給)。末端 clamp、`loop: true` で周回 |
 | 法線 | optional の第 2 テクスチャ(RGB16F 生値、同レイアウト)。**タンジェントは v1 非対応**と明記(異方性ハイライトなしのトゥーン/布では許容) |
 | 格納 | テクスチャ実体は **glb バッファ内 bufferView**(raw half float、little endian)。extras `pelican.vat` が bufferView index を指す。EXR/KTX2 依存を作らない |
+| extras の配置 | **対象 mesh primitive の extras**(`meshes[i].primitives[j].extras["pelican.vat"]`)を正とする。理由: vertex_count の照合対象が primitive 単位、メッシュを複数ノードで共有しても壊れない、material は外観であって形状ではないので不適、root extras は対象への間接参照が必要になるだけで利点がない。読み手は primitives を走査して発見する |
+| 多重クリップ | **1 primitive につき 1 クリップ(v1 で複数クリップは禁止)**。別テイク・別カットは別 glb にする。1 つの glb 内に VAT 付き primitive が複数あるのは可(衣装+髪など) |
 | メタ | `{schema:"pelican.vat", version:1, generator, fps, frame_count, vertex_count, bounds_min, bounds_max, loop, position_view, normal_view?}` |
 
 ### E1「ほぼなし」の正直な再見積もり
@@ -259,7 +276,11 @@ DECLARE_MODULE(DeletionQueue) {   // 薄いラッパ。寿命ピン留めはこ�
   数値計算ライブラリを import したら違反**(subprocess 呼び出しと JSON 読み書きだけが許される)
 - 各 addon の README に対応 Blender バージョン・インストール手順・CLI 設定方法を記載
 
-## 11. 既存文書への反映リスト(実装側で適用してほしい編集)
+## 11. 既存文書への反映リスト
+
+**状況(2026-06-12 2 巡目): 下記 1〜5 はすべて適用済み**(design_cloth_simulation.md、
+implementation_plan.md(WP9 改訂 + WP17 追加)、design_roadmap_renderworld.md)。
+リストは経緯の記録として残す。
 
 本書での決定を受けた、pelican2 側文書の修正箇所:
 

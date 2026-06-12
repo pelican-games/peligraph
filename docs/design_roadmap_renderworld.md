@@ -40,8 +40,8 @@ Blender 向け動画作成ツール群(物理シミュレーション、ポー�
 
 - **仮想時刻の注入**: 現在 `Renderer::render()` が壁時計(`FrameClock::now()`)依存。時刻源を差し替え可能にし、コマンド層に `set_time` / `step_frame` を設ける。シミュ再生・動画化・テスト決定性の前提
 - **連番画像出力**: ヘッドレスの `--render-out` を `out/%04d.png` 形式の連番に対応(`design_headless_rendering.md` §6 参照)
-- **コマンド層(B)は 3 段階で最小に始める**: (1) ファイル連携(`--render-out` 連番)を正とする → (2) stdio 行 JSON で `set_time` / `step_frame` / `render_frame` / `capture` の 4 命令のみ(JSON-RPC サーバはまだ作らない) → (3) `load_gltf` / `update_transforms` は RenderWorld 合意後に追加
-- **剛体シミュ結果の再生**: ベイク済み transform 列は `RenderWorld::updateTransforms(span)` でそのまま受けられる(追加設計不要)
+- **コマンド層(B)は 3 段階で最小に始める**: (1) ファイル連携(`--render-out` 連番)を正とする → (2) **stdio NDJSON 上の JSON-RPC 2.0** で `set_time` / `step_frame` / `render_frame` / `capture` の 4 メソッドのみ(独自行プロトコルは作らない。TCP 常駐サーバはまだ作らない。要求書 R8 追補参照) → (3) `load_gltf` / `update_transforms` は RenderWorld 合意後に追加
+- **剛体シミュ結果の再生**: 受け口 API は現行にも存在する(`PolygonInstanceContainer::setTrs`)。ファイルからの再生は `implementation_plan.md` の **WP17 SeqPlayer** が担い、RenderWorld 実装後は書き込み先を `updateTransforms(span)` に差し替えるだけ(プレイヤー実装は無駄にならない)
 - **スケルタルアニメ/スキニング**: ポーズ推定の活用に将来必要。新規領域のため別途設計(ロードマップ未組込)
 
 ## 3. 現状の境界

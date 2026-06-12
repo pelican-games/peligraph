@@ -59,7 +59,7 @@ glTF アニメーションとして表現できる場合はそれを優先。glT
 - ベース glb の POSITION(と任意で NORMAL)を置換する再生方式。トポロジ・インデックス・UV・頂点数・頂点順序はベース glb と完全固定
 - 位置テクスチャ: 幅 = 頂点数(v1 上限 8192、超過時はベイカー側でメッシュ分割)、高さ = フレーム数、RGBA16F、`(pos - bounds_min) / (bounds_max - bounds_min)` で正規化。座標はメッシュノードのローカル空間(glTF 規約)
 - サンプリングは NEAREST + シェーダ内で隣接 2 フレーム行を手動 lerp(ハードウェア線形フィルタは頂点方向に滲むため禁止)
-- テクスチャ実体は glb バッファ内の bufferView として格納(EXR/KTX2 等の追加フォーマット依存を作らない)。メタは extras `pelican.vat`(schema/version/generator/fps/frame_count/vertex_count/bounds_min/bounds_max/loop/position_view/normal_view?)
+- テクスチャ実体は glb バッファ内の bufferView として格納(EXR/KTX2 等の追加フォーマット依存を作らない)。メタは**対象 mesh primitive の extras** `pelican.vat`(schema/version/generator/fps/frame_count/vertex_count/bounds_min/bounds_max/loop/position_view/normal_view?)。**1 primitive につき 1 クリップ**(複数クリップは v1 禁止、別 glb にする。VAT 付き primitive が 1 glb に複数あるのは可)
 
 ## 3. 座標系・単位規約
 
