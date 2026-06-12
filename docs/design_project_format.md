@@ -1,8 +1,9 @@
 # プロジェクトファイル設計(エンジンとコンテンツの分離)
 
 対象読者: エンジン担当 + DCC/ツール側担当。
-ステータス: ドラフト v2(2026-06-12 レビュー 1 巡を反映: パス分類、相対基準の固定、
-設定優先順位、暗黙プロジェクト警告、example アセット管理、escape 拒否の実装方針、受け入れ基準拡充)。
+ステータス: ドラフト v3(2026-06-12 レビュー 2 巡を反映: PathResolver の戻り値型、
+component 単位の prefix 判定、絶対パスの文脈分離、engine_min_version の hard error 化、
+`engine://` 最小 id 規則、resolve の存在チェック分離)。**実装着手可(WP18)**。
 前提: `design_roadmap_renderworld.md`(ロードマップ・肥大化対策 §6)、
 `docs/implementation_plan.md`(WP1 EngineLaunchConfig、WP17 SeqPlayer)、
 `docs/dcc_integration_qa_2026-06-12.md` §1(DCC bridge)。
@@ -63,7 +64,7 @@ myproject/
 |------|--------|------|
 | 素の相対パス(`assets/models/a.glb`)| **常にプロジェクトルート基準**。`project://assets/models/a.glb` の省略形 | 通常のコンテンツ参照(これが既定) |
 | `engine://<id>`(例 `engine://passes/bloom.json`)| エンジン埋め込みリソース(b::embed の id 空間にマップ) | 標準パス定義・標準シェーダ・default_config 等 |
-| 絶対パス | **デバッグ専用**。`--allow-absolute-paths`(既定 OFF)指定時のみ許可し、使用のたびに WARN ログ | ローカル実験。CI・配布物では禁止 |
+| 絶対パス | **CLI 引数限定のデバッグ用**。`--allow-absolute-paths`(既定 OFF)指定時のみ許可し、使用のたびに WARN ログ | ローカル実験。CI・配布物では禁止 |
 
 規則(曖昧さを残さないための決定):
 
@@ -73,7 +74,17 @@ myproject/
 2. **暗黙のシャドーイングはしない。** プロジェクトに同名ファイルがあっても
    `engine://` 参照は埋め込みを読む。差し替えたいときは参照側を
    `project://` パスに書き換える(どちらを読んでいるかが常に参照を見れば分かる)。
-3. 命名は ASCII(R7 と同じ理由: プロトコル・パス安全)。
+3. **絶対パスの許可は文脈で分ける**: `--allow-absolute-paths` が効くのは
+   **CLI 引数として渡された参照のみ**(`--play-seq` 等の一時指定)。
+   `project.json`・scene/asset/pass/ui 等の**永続化された JSON 内の絶対パスは
+   フラグに関係なく常に reject**(配布したプロジェクトが他人のマシンで壊れる事故を
+   形式レベルで防ぐ)。
+4. **`engine://` の id 規則(v1 確定)**: id = **b::embed のキー文字列**
+   (= `src/core/resources/` からの相対パス)。例: `engine://default_config.json`。
+   v1 で必要なのは現状 embed されている `default_config.json` のみで、標準 shader /
+   標準 pass はシェーダ自由化キット(WP12/13/15)で embed 化する際に同じ規則で
+   id が付与される。embed 一覧と id の対応表はビルド時自動生成に将来昇格(§8)。
+5. 命名は ASCII(R7 と同じ理由: プロトコル・パス安全)。
 
 ## 4. `project.json` v1 と設定の優先順位
 
@@ -102,6 +113,9 @@ myproject/
 
 - `basic_config` の中身は**現行 `default_config.json` / settings_str と同形を維持**。
   追加必須フィールドは `schema` / `version` / `name` のみ(R10 と同じバージョニング流儀)。
+- **`engine_min_version` を満たせない場合は hard error で起動しない**("min" の意味論どおり)。
+  実験用に `--ignore-engine-version` フラグで WARN への降格を許す(既定 OFF)。
+  警告止まりだと「動いたように見えて新機能の挙動だけ壊れる」が起きるため。
 - **設定の優先順位(v1 で確定): CLI 引数 > project.json > 埋め込み default。**
   `EngineLaunchConfig`(WP1)が CLI 値を保持し、`ProjectBasicConfig` は読み出し時に
   この順で合成する(現行 JsonLoader の 2 段 fallback を 3 段にする)。
@@ -116,25 +130,52 @@ myproject/
 
 1. **P0 — `ProjectSource::loadSource()` の path 経路バグ修正**(読んだ `loaded_data` を
    return する。2 行)。WP18 を待たず単独で直してよい
-2. **PathResolver モジュール**(`core/loader/pathresolver.{hpp,cpp}`)。解決手順を固定:
+2. **PathResolver モジュール**(`core/loader/pathresolver.{hpp,cpp}`)。
+
+   **戻り値型(v3 で確定)**: `engine://` は `std::filesystem::path` に解決できないため、
+   resolve の結果は variant で返し、ファイル前提の API と分離する:
+
+   ```cpp
+   struct EngineResourceId { std::string id; };               // b::embed のキー
+   using ResolvedRef = std::variant<std::filesystem::path, EngineResourceId>;
+
+   DECLARE_MODULE(PathResolver) {
+     public:
+       void setProjectRoot(const std::filesystem::path &abs); // 存在必須。ここで canonical 化して保持
+       // 解決のみ(存在チェックなし)。escape は常に検査
+       ResolvedRef resolve(std::string_view ref) const;
+       // ファイル限定+存在チェック。engine:// や欠落時は「解決後の絶対パス」入りで throw
+       std::filesystem::path resolveExistingFile(std::string_view ref) const;
+       // file / engine 両対応の統一読み出し(ほとんどの呼び出し側はこれだけ使う)
+       std::string loadText(std::string_view ref) const;
+       std::vector<std::byte> loadBytes(std::string_view ref) const;
+   };
+   ```
+
+   - **呼び出し側の原則**: 内容が欲しいだけなら `loadText/loadBytes`(バックエンド非依存)。
+     OS パスが本当に必要な箇所(ホットリロードの監視、外部プロセスへのパス渡し)だけ
+     `resolveExistingFile` を使う — そこは `engine://` 非対応であることが型と例外で明示される
+
+   解決手順(ファイル系):
 
    ```
-   resolve(ref, allow_absolute):
-     1. scheme 判定(engine:// は embed 空間へ。以降はファイル系のみ)
-     2. 絶対パス・UNC(\\server\...)は allow_absolute(--allow-absolute-paths)時のみ
-        許可+WARN。project:// 文脈では常に reject
-     3. joined = project_root / ref
-     4. canon = std::filesystem::weakly_canonical(joined)   // symlink 解決込み
-     5. canon が canonical(project_root) をプレフィックスに持つことを確認。
-        Windows ではパス比較を大文字小文字を畳んで行う
-     6. 持たなければ reject(throw)。".." での脱出も、symlink 経由の脱出も
-        canonical 化後の判定なのでここで落ちる
+   1. scheme 判定(engine:// → EngineResourceId を返して終了)
+   2. 絶対パス・UNC(\\server\...)は「CLI 由来 かつ --allow-absolute-paths」のみ許可+WARN。
+      永続化 JSON 由来なら常に reject(§3-3)
+   3. joined = project_root / ref
+   4. canon = std::filesystem::weakly_canonical(joined, ec)   // 例外でなく error_code 版を使う。
+      存在しない末尾は字句正規化される(resolve 段階では存在不要)
+   5. canon と保持済み canonical(project_root) を **path component 単位**で先頭一致比較。
+      Windows では component ごとに case-fold して比較する。
+      文字列 starts_with は使わない(C:\proj と C:\project2 を誤一致させるため)
+   6. 一致しなければ reject(throw)。".." も symlink/junction 経由の脱出も
+      canonical 化後の判定なのでここで落ちる
    ```
 
    実装注意(レビュー指摘の事故ポイント): Windows の case-insensitive 比較、
-   symlink / junction、UNC、長パスプレフィックス(`\\?\`)。判定は必ず
-   **正規化後のパス文字列**に対して行い、入力文字列に対する `..` の字句検査だけで
-   済ませない
+   symlink / junction、UNC、長パスプレフィックス(`\\?\`)、`weakly_canonical` の
+   error_code 処理。判定は必ず**正規化後の path component 列**に対して行い、
+   入力文字列への `..` 字句検査や文字列 prefix 比較で済ませない
 3. **CLI**: `--project <dir | path/to/project.json>`(WP1 の argparse に追加)。
    **省略時は exe のあるディレクトリを暗黙プロジェクトとし、起動ログに
    `implicit project root = <path> (pass --project to silence)` を WARN で必ず出す**。
@@ -160,6 +201,9 @@ myproject/
 - d. `../outside.png` のような脱出参照が reject される(単体テスト。symlink 経由も)
 - e. scene / asset / pass / ui 内の参照がプロジェクトルート基準で解決される(単体テスト)
 - f. POST_BUILD コピーが削除されている
+- g. 永続化 JSON 内の絶対パスが `--allow-absolute-paths` の有無に関係なく reject される(単体テスト)
+- h. `engine_min_version` が現行より新しい project.json は起動拒否、
+  `--ignore-engine-version` で WARN 降格(単体テスト)
 
 ### 後続(WP18 のスコープ外、設計だけ整合)
 
@@ -189,17 +233,25 @@ myproject/
 
 ## 8. 決定済み事項と未決事項
 
-レビュー 1 巡(2026-06-12)で確定したもの:
+レビュー 1〜2 巡(2026-06-12)で確定したもの:
 
 - nested JSON の相対基準 = **常にプロジェクトルート**(ファイル基準は採用しない)
-- パス分類 = 素の相対(=project://)/ `engine://` / 絶対(デバッグ専用・要フラグ)
+- パス分類 = 素の相対(=project://)/ `engine://` / 絶対(CLI 限定デバッグ・要フラグ)
+- **絶対パスの文脈分離** = CLI 引数のみフラグで許可、永続化 JSON 内は常に reject
 - 設定優先順位 = **CLI > project.json > embedded default**
 - `--project` 省略 = 互換起動として許可、ただし WARN ログ必須+CI/テストでは明示必須
-- escape 判定 = weakly_canonical 正規化後のプレフィックス比較(Windows は case-fold)
+- escape 判定 = weakly_canonical(error_code 版)正規化後、**path component 単位**の
+  先頭一致(Windows は case-fold。文字列 starts_with 禁止)
+- **PathResolver の戻り値** = `variant<fs::path, EngineResourceId>`。
+  存在チェックなしの `resolve` / ファイル限定+存在チェックの `resolveExistingFile` /
+  統一読み出しの `loadText・loadBytes` を分離
+- **`engine://` の id** = b::embed のキー(`src/core/resources/` 相対)。
+  v1 必須は `engine://default_config.json` のみ
+- **`engine_min_version` 不適合は hard error**(`--ignore-engine-version` で WARN 降格)
 
 未決(実装前に決めなくてよいもの):
 
 1. シーン JSON の分割(1 シーン 1 ファイル)を v1 でやるか(本書は据え置きを提案)
-2. `engine://` の id 空間と b::embed 一覧の対応表をどこに置くか(自動生成が望ましい)
+2. embed 一覧 ↔ `engine://` id の対応表のビルド時自動生成(規則は確定済み、生成は将来)
 3. devstudio のプロジェクト UX(最近開いた一覧など)の優先度
 4. assets.manifest.json(チェックサム検証)への昇格時期
