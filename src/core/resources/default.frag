@@ -21,8 +21,7 @@ layout(location = 3) out vec4 outWorldPos;    // RGB: WorldPos, A: reserved
 layout(location = 4) out vec4 outEmissive;    // RGB: Emissive, A: reserved
 
 void main() {
-    // Base Color（テクスチャのみ、頂点カラーは無視）
-    vec4 baseColor = texture(baseColorSampler, texUV);
+    vec4 baseColor = texture(baseColorSampler, texUV) * inColor;
     outAlbedo = baseColor;
 
     vec3 worldNormal;

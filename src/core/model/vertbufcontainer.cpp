@@ -95,7 +95,7 @@ ModelTemplate::PrimitiveRefInfo VertBufContainer::addPrimitiveEntry(CommonPolygo
             tmp_buf[i].color = data.color[i];
     } else {
         for (uint32_t i = 0; i < vert_count; i++)
-            tmp_buf[i].color = glm::vec4(0.0, 0.0, 0.0, 0.0);
+            tmp_buf[i].color = glm::vec4(1.0, 1.0, 1.0, 1.0);
     }
 
     GET_MODULE(VulkanManageCore).writeBuf(indices_mem_pool, data.indices.data(), sizeof(uint32_t) * indices_offset,

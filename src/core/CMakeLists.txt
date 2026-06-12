@@ -38,6 +38,9 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(vma-hpp)
 
 target_include_directories(pelican_core PRIVATE ${Vulkan_INCLUDE_DIRS})
+target_compile_definitions(pelican_core PRIVATE
+  "VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic"
+)
 target_link_libraries(pelican_core PRIVATE ${Vulkan_LIBRARIES})
 target_link_libraries(pelican_core PRIVATE VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_link_libraries(pelican_core PRIVATE glm)

@@ -26,6 +26,16 @@ struct ChunkView {
     size_t count;
 };
 
+template <class TSystem, class... TComponents>
+concept HasBatchProcess = requires(TSystem &system, std::span<ChunkView<TComponents...>> views) {
+    system.process(views);
+};
+
+template <class TSystem, class... TComponents>
+concept HasPerChunkProcess = requires(TSystem &system, std::tuple<TComponents *...> components, size_t count) {
+    system.process(components, count);
+};
+
 class ECSCoreTemplatePublic {
     // Component Management
   private:
@@ -86,6 +96,9 @@ class ECSCoreTemplatePublic {
   public:
     template <class TSystem, class... TComponents>
     SystemId registerSystem(TSystem &system, std::vector<SystemId> &&depends_list, bool force_update = false) {
+        static_assert(HasBatchProcess<TSystem, TComponents...> || HasPerChunkProcess<TSystem, TComponents...>,
+                      "Registered ECS system must provide a supported process function");
+
         SystemId id =  ++system_id_counter;
         
 
@@ -134,7 +147,7 @@ class ECSCoreTemplatePublic {
             bool executed_any = false;
 
             // 1. Process All (Batch)
-            if constexpr (requires { sys.process(std::span<ChunkView<TComponents...>>{}); }) {
+            if constexpr (HasBatchProcess<TSystem, TComponents...>) {
                 std::vector<ChunkView<TComponents...>> views;
                 views.reserve(chunks.size());
                 
@@ -153,11 +166,11 @@ class ECSCoreTemplatePublic {
                          if (max_version >= start_last_run_tick) any_change = true;
                      }
 
-                    auto tuple = [&]<size_t... Is>(std::index_sequence<Is...>) {
-                        return std::make_tuple(
-                            static_cast<TComponents *>(chunk.getRef(indices[Is]).ptr)...
-                        );
-                    }(std::make_index_sequence<sizeof...(TComponents)>{});
+                    auto tuple = [&]<size_t... Is>(std::index_sequence<Is...>) -> std::tuple<TComponents *...> {
+                        using ComponentTypes = std::tuple<TComponents...>;
+                        return {static_cast<std::tuple_element_t<Is, ComponentTypes> *>(
+                            chunk.getRef(indices[Is]).ptr)...};
+                    }(std::index_sequence_for<TComponents...>{});
                     
                     views.push_back({tuple, chunk.size()});
                 }
@@ -176,7 +189,7 @@ class ECSCoreTemplatePublic {
             }
             
             // 2. Process (Per Chunk)
-            if constexpr (requires { sys.process(std::tuple<TComponents*...>{}, size_t{}); }) {
+            if constexpr (HasPerChunkProcess<TSystem, TComponents...>) {
                 for (auto chunk_idx : chunks) {
                     auto &chunk = core.chunks_storage[chunk_idx];
                     
@@ -192,11 +205,11 @@ class ECSCoreTemplatePublic {
                          continue; 
                     }
 
-                    auto tuple = [&]<size_t... Is>(std::index_sequence<Is...>) {
-                        return std::make_tuple(
-                            static_cast<TComponents *>(chunk.getRef(indices[Is]).ptr)...
-                        );
-                    }(std::make_index_sequence<sizeof...(TComponents)>{});
+                    auto tuple = [&]<size_t... Is>(std::index_sequence<Is...>) -> std::tuple<TComponents *...> {
+                        using ComponentTypes = std::tuple<TComponents...>;
+                        return {static_cast<std::tuple_element_t<Is, ComponentTypes> *>(
+                            chunk.getRef(indices[Is]).ptr)...};
+                    }(std::index_sequence_for<TComponents...>{});
                     
                     sys.process(tuple, chunk.size());
                     executed_any = true;

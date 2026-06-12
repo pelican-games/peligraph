@@ -191,7 +191,7 @@ struct InternalGltfLoader {
 
             const auto base_color_texture_index = material.pbrMetallicRoughness.baseColorTexture.index;
             const auto base_color_texture =
-                base_color_texture_index >= 0 ? texture_map[base_color_texture_index] : std_mat.transparentTexture();
+                base_color_texture_index >= 0 ? texture_map[base_color_texture_index] : std_mat.whiteTexture();
             const auto metallic_roughness_texture_index = material.pbrMetallicRoughness.metallicRoughnessTexture.index;
             const auto metallic_roughness_texture =
                 metallic_roughness_texture_index >= 0 ? texture_map[metallic_roughness_texture_index] : std_mat.metallicRoughnessDefaultTexture();
