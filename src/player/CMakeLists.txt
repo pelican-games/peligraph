@@ -1,7 +1,8 @@
 add_executable(pelican_player main.cpp)
 set_target_properties(pelican_player PROPERTIES CXX_STANDARD 20)
 
-target_link_libraries(pelican_player pelican_core)
+target_link_libraries(pelican_player pelican_core argparse)
+target_include_directories(pelican_player PRIVATE ${Vulkan_INCLUDE_DIRS})
 
 file(GLOB PELICAN_PLAYER_RUNTIME_JSON CONFIGURE_DEPENDS
   ${CMAKE_CURRENT_SOURCE_DIR}/resources/*.json
