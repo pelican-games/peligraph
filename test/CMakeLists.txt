@@ -18,5 +18,6 @@ catch_discover_tests(${target_name})
 endfunction()
 
 # register tests
+pelican_define_test(deletionqueue_test pelican_core)
 pelican_define_test(hoge_test)
 pelican_define_test(renderingpass_helpers_test pelican_core)

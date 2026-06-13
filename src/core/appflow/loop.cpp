@@ -4,6 +4,7 @@
 #include "../log.hpp"
 #include "../os/window.hpp"
 #include "../vkcore/core.hpp"
+#include "../vkcore/deletionqueue.hpp"
 #include "../vkcore/renderer.hpp"
 #include "framerate.hpp"
 
@@ -34,6 +35,9 @@ void Loop::run() {
         renderer.render();
         framerate_adjuster.wait();
     }
+
+    GET_MODULE(VulkanManageCore).waitIdle();
+    GET_MODULE(DeletionQueue).flushAll();
 }
 
 } // namespace Pelican
