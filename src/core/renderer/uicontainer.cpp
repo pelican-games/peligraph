@@ -154,14 +154,15 @@ UIContainer::UIContainer()
 }
 
 UIContainer::~UIContainer() {
-    if (descset_layout) {
-        device.destroyDescriptorSetLayout(descset_layout);
-    }
+    ui_textures.clear();
     if (sampler) {
         device.destroySampler(sampler);
     }
     if (desc_pool) {
         device.destroyDescriptorPool(desc_pool);
+    }
+    if (descset_layout) {
+        device.destroyDescriptorSetLayout(descset_layout);
     }
 }
 

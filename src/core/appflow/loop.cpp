@@ -1,6 +1,7 @@
 #include "loop.hpp"
 
 #include "../ecs/core.hpp"
+#include "../launchconfig.hpp"
 #include "../log.hpp"
 #include "../os/window.hpp"
 #include "../vkcore/core.hpp"
@@ -20,12 +21,23 @@ void Loop::run() {
     SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
 #endif
 
-    auto &window = GET_MODULE(Window);
+    const auto &launch_config = GET_MODULE(EngineLaunchConfig);
     auto &renderer = GET_MODULE(Renderer);
     auto &ecs = GET_MODULE(ECSCore);
-    auto &framerate_adjuster = GET_MODULE(FramerateAdjust);
 
     LOG_INFO(logger, "starting main loop");
+
+    if (launch_config.headless) {
+        for (uint32_t frame = 0; launch_config.headless_frames == 0 || frame < launch_config.headless_frames;
+             ++frame) {
+            ecs.update();
+            renderer.render();
+        }
+        return;
+    }
+
+    auto &window = GET_MODULE(Window);
+    auto &framerate_adjuster = GET_MODULE(FramerateAdjust);
 
     while (true) {
         if (!window.process())

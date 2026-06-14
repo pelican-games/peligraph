@@ -124,7 +124,7 @@ int main(int argc, char *argv[]) {
     Pelican::PelicanCore pl;
     Pelican::FastModuleContainer::get<Pelican::EngineLaunchConfig>() = launch_config;
     if (launch_config.headless) {
-        LOG_INFO(Pelican::logger, "headless requested but not implemented yet");
+        LOG_INFO(Pelican::logger, "headless mode enabled");
     }
 
     auto &cr = Pelican::internal::getComponentRegisterer();
