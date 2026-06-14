@@ -11,18 +11,16 @@
 #include "../model/vertbufcontainer.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
+#include "../appflow/enginetime.hpp"
 #include "render_pass_dispatch.hpp"
 #include "render_pass_executor.hpp"
 #include "renderer_config.hpp"
 #include "rendertarget.hpp"
 #include "util.hpp"
-#include <chrono>
 
 namespace Pelican {
 
 namespace {
-
-using FrameClock = std::chrono::high_resolution_clock;
 
 struct RenderFrameModules {
     RenderTarget &render_target;
@@ -62,10 +60,8 @@ RenderFrameModules resolveRenderFrameModules() {
     };
 }
 
-void updateFrameAnimation(LightContainer &light_container, FrameClock::time_point start_time) {
-    const auto current_time = FrameClock::now();
-    const float time = std::chrono::duration<float, std::chrono::seconds::period>(current_time - start_time).count();
-    light_container.updateAnimation(time);
+void updateFrameAnimation(LightContainer &light_container, double time) {
+    light_container.updateAnimation(static_cast<float>(time));
 }
 
 void executeRenderingPasses(const FrameRenderContext &render_ctx, const CompiledRenderingPass &rendering_pass,
@@ -104,10 +100,8 @@ Renderer::Renderer() {
 Renderer::~Renderer() = default;
 
 void Renderer::render() {
-    static const auto start_time = FrameClock::now();
-
     auto modules = resolveRenderFrameModules();
-    updateFrameAnimation(modules.light_container, start_time);
+    updateFrameAnimation(modules.light_container, GET_MODULE(EngineTime).now());
 
     const auto render_ctx = modules.render_target.render_begin();
     const auto &rendering_pass =
