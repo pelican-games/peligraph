@@ -75,8 +75,8 @@ vk::UniquePipeline createPipeline(vk::Device device, vk::PipelineLayout layout, 
     blend_att.srcColorBlendFactor = vk::BlendFactor::eSrcAlpha;
     blend_att.dstColorBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha;
     blend_att.colorBlendOp = vk::BlendOp::eAdd;
-    blend_att.srcAlphaBlendFactor = vk::BlendFactor::eOne;
-    blend_att.dstAlphaBlendFactor = vk::BlendFactor::eZero;
+    blend_att.srcAlphaBlendFactor = vk::BlendFactor::eZero;
+    blend_att.dstAlphaBlendFactor = vk::BlendFactor::eOne;
     blend_att.alphaBlendOp = vk::BlendOp::eAdd;
     blend_att.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
                                vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
