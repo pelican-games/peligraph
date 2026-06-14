@@ -9,13 +9,13 @@ class FullscreenPassContainer;
 class RenderTarget;
 class RenderTargetImageViewResolver;
 class RenderTargetMetadataResolver;
-class ShaderContainer;
+class ShaderLibrary;
 
 struct RenderingPassRuntimeDependencies {
     RenderTarget *render_target = nullptr;
     const RenderTargetMetadataResolver *render_target_metadata = nullptr;
     const RenderTargetImageViewResolver *render_target_views = nullptr;
-    ShaderContainer *shader_container = nullptr;
+    ShaderLibrary *shader_library = nullptr;
     FullscreenPassContainer *fullscreen_pass_container = nullptr;
 };
 

@@ -1,6 +1,7 @@
 target_sources(pelican_core PRIVATE
     shadercontainer.cpp
     shadercompiler.cpp
+    shaderlibrary.cpp
     shaderreflection.cpp
 )
 target_compile_definitions(pelican_core PRIVATE
