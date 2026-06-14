@@ -1,5 +1,6 @@
 target_sources(pelican_core PRIVATE
     core.cpp
+    deletionqueue.cpp
     util.cpp
     cmdbuf.cpp
     rendertarget.cpp

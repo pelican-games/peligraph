@@ -11,6 +11,7 @@
 #include "../model/vertbufcontainer.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
+#include "deletionqueue.hpp"
 #include "render_pass_dispatch.hpp"
 #include "render_pass_executor.hpp"
 #include "renderer_config.hpp"
@@ -105,6 +106,8 @@ Renderer::~Renderer() = default;
 
 void Renderer::render() {
     static const auto start_time = FrameClock::now();
+
+    GET_MODULE(DeletionQueue).beginFrame();
 
     auto modules = resolveRenderFrameModules();
     updateFrameAnimation(modules.light_container, start_time);
