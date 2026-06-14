@@ -6,7 +6,7 @@
 #include "../renderingpass/renderingpassconfigregistration.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
-#include "../shader/shadercontainer.hpp"
+#include "../shader/shaderlibrary.hpp"
 #include "core.hpp"
 #include "rendertarget.hpp"
 #include <cstdint>
@@ -44,7 +44,7 @@ void registerConfiguredRenderingPasses(const ProjectBasicConfig &config) {
         if (std::filesystem::exists(main_config_path)) {
             auto &rt_module = GET_MODULE(RenderTarget);
             auto &rt_container = GET_MODULE(RenderTargetContainer);
-            auto &shader_container = GET_MODULE(ShaderContainer);
+            auto &shader_library = GET_MODULE(ShaderLibrary);
             auto &fs_container = GET_MODULE(FullscreenPassContainer);
             auto &pass_container = GET_MODULE(RenderingPassContainer);
             registerRenderingPassConfigFromJson(
@@ -55,7 +55,7 @@ void registerConfiguredRenderingPasses(const ProjectBasicConfig &config) {
                     },
                     RenderingPassConfigRuntimeDependencies{
                         rt_module,
-                        shader_container,
+                        shader_library,
                         fs_container,
                     },
                     pass_container,

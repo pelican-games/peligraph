@@ -49,7 +49,7 @@ void FullscreenPassRenderer::render(vk::CommandBuffer cmd_buf, PassId pass_id, c
                                     const FullscreenPassRendererDependencies &dependencies) const {
     auto &container = dependencies.fullscreen_pass_container;
     const auto &fullscreenInfo = pass_def.fullscreenInfo();
-    const auto pipeline_layout = container.getPipelineLayout();
+    const auto pipeline_layout = container.getPipelineLayout(pass_id);
 
     container.bindResource(cmd_buf, pass_id);
 

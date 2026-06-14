@@ -1,0 +1,75 @@
+#pragma once
+
+#include "shaderlibrary.hpp"
+#include "shaderreflection.hpp"
+#include "../container.hpp"
+#include "../resourcecontainer.hpp"
+#include <filesystem>
+#include <unordered_map>
+#include <vector>
+#include <vulkan/vulkan.hpp>
+
+namespace Pelican {
+
+struct GraphicsPipelineDesc {
+    ShaderBundleId vert;
+    ShaderBundleId frag;
+    std::vector<vk::Format> color_formats;
+    vk::PrimitiveTopology topology = vk::PrimitiveTopology::eTriangleList;
+};
+
+PELICAN_DEFINE_HANDLE(PipelineHandle, int);
+
+DECLARE_MODULE(PipelineFactory) {
+    struct DescriptorSetLayoutKey {
+        std::vector<vk::DescriptorSetLayoutBinding> bindings;
+
+        bool operator==(const DescriptorSetLayoutKey &other) const;
+    };
+
+    struct DescriptorSetLayoutKeyHash {
+        size_t operator()(const DescriptorSetLayoutKey &key) const;
+    };
+
+    struct PipelineRecord {
+        GraphicsPipelineDesc desc;
+        ShaderReflection reflection;
+        std::vector<vk::DescriptorSetLayout> descriptor_set_layouts;
+        vk::UniquePipelineLayout layout;
+        vk::UniquePipeline pipeline;
+    };
+
+    vk::Device device;
+    ShaderLibrary &shader_library;
+    std::filesystem::path pipeline_cache_path;
+    vk::UniquePipelineCache pipeline_cache;
+    std::unordered_map<DescriptorSetLayoutKey, vk::UniqueDescriptorSetLayout, DescriptorSetLayoutKeyHash>
+        descriptor_set_layout_cache;
+    ResourceContainer<PipelineHandle, PipelineRecord> pipelines;
+    std::vector<PipelineHandle> pipeline_handles;
+
+    std::vector<DescriptorSetLayoutKey> descriptorSetLayoutKeysFor(const ShaderReflection &reflection) const;
+    std::vector<vk::DescriptorSetLayout> descriptorSetLayoutsFor(const ShaderReflection &reflection);
+    vk::UniquePipelineLayout createPipelineLayout(const ShaderReflection &reflection,
+                                                  std::span<const vk::DescriptorSetLayout> layouts) const;
+    vk::UniquePipeline createGraphicsPipeline(const GraphicsPipelineDesc &desc,
+                                              vk::PipelineLayout layout) const;
+    PipelineRecord buildGraphicsPipeline(const GraphicsPipelineDesc &desc);
+    void replacePipeline(PipelineHandle handle, PipelineRecord replacement);
+    void savePipelineCache() noexcept;
+
+  public:
+    PipelineFactory();
+    ~PipelineFactory();
+
+    PipelineHandle create(const GraphicsPipelineDesc &desc);
+
+    vk::Pipeline pipeline(PipelineHandle handle) const;
+    vk::PipelineLayout layout(PipelineHandle handle) const;
+    vk::DescriptorSetLayout descriptorSetLayout(PipelineHandle handle, uint32_t set) const;
+    const ShaderReflection &reflection(PipelineHandle handle) const;
+
+    void rebuildDirty();
+};
+
+} // namespace Pelican

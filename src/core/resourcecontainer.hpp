@@ -1,6 +1,7 @@
 #pragma once
 
 #include "handle.hpp"
+#include <unordered_map>
 
 namespace Pelican {
 

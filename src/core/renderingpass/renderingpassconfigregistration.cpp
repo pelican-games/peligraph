@@ -22,7 +22,7 @@ RenderingPassRuntimeDependencies toRuntimeDependencies(
         &dependencies.render_target,
         &rt_metadata,
         &rt_views,
-        &dependencies.shader_container,
+        &dependencies.shader_library,
         &dependencies.fullscreen_pass_container,
     };
 }

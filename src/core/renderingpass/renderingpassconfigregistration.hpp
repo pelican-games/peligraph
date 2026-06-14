@@ -9,7 +9,7 @@ class FullscreenPassContainer;
 class RenderingPassContainer;
 class RenderTarget;
 class RenderTargetContainer;
-class ShaderContainer;
+class ShaderLibrary;
 
 struct RenderingPassConfigRenderTargetDependencies {
     RenderTargetContainer &render_target_container;
@@ -17,7 +17,7 @@ struct RenderingPassConfigRenderTargetDependencies {
 
 struct RenderingPassConfigRuntimeDependencies {
     RenderTarget &render_target;
-    ShaderContainer &shader_container;
+    ShaderLibrary &shader_library;
     FullscreenPassContainer &fullscreen_pass_container;
 };
 
