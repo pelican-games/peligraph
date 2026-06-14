@@ -21,8 +21,8 @@ struct FullscreenRuntimeDependencies {
 };
 
 struct FullscreenShaderModules {
-    vk::ShaderModule vert_shader;
-    vk::ShaderModule frag_shader;
+    ShaderBundleId vert_shader;
+    ShaderBundleId frag_shader;
 };
 
 vk::Format resolveFirstColorFormat(const PassDefinition &pass_def, RenderTarget &rt_module,
@@ -72,9 +72,8 @@ FullscreenRuntimeDependencies requireFullscreenDependencies(
     };
 }
 
-vk::ShaderModule registerShaderFromFile(ShaderLibrary &shader_library, const std::string &shader_path) {
-    const auto shader_id = shader_library.loadFromFile(shader_path);
-    return shader_library.get(shader_id).module.get();
+ShaderBundleId registerShaderFromFile(ShaderLibrary &shader_library, const std::string &shader_path) {
+    return shader_library.loadFromFile(shader_path);
 }
 
 FullscreenShaderModules registerFullscreenShaders(const FullscreenPassInfo &fullscreen_info,

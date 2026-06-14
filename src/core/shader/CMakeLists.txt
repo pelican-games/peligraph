@@ -1,4 +1,5 @@
 target_sources(pelican_core PRIVATE
+    pipelinefactory.cpp
     shadercontainer.cpp
     shadercompiler.cpp
     shaderlibrary.cpp
