@@ -20,6 +20,18 @@ endfunction()
 # register tests
 pelican_define_test(deletionqueue_test pelican_core)
 pelican_define_test(enginetime_test pelican_core)
+pelican_define_test(golden_image_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp spirv-reflect-static stb glm)
+target_compile_definitions(pelican_test_golden_image_test PRIVATE
+    PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    PELICAN_TEST_BINARY_DIR="${CMAKE_BINARY_DIR}"
+)
+if(PELICAN_RUNTIME_SHADER_COMPILER)
+    target_link_libraries(pelican_test_golden_image_test PRIVATE pelican_shaderc)
+    if(COMMAND pelican_copy_shaderc_runtime)
+        pelican_copy_shaderc_runtime(pelican_test_golden_image_test)
+    endif()
+endif()
 pelican_define_test(headless_render_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 pelican_define_test(hoge_test)
 pelican_define_test(renderingpass_helpers_test pelican_core)
