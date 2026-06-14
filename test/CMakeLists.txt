@@ -18,6 +18,7 @@ catch_discover_tests(${target_name})
 endfunction()
 
 # register tests
+pelican_define_test(deletionqueue_test pelican_core)
 pelican_define_test(enginetime_test pelican_core)
 pelican_define_test(headless_render_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 pelican_define_test(hoge_test)

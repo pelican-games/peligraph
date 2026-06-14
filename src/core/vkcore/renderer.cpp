@@ -12,6 +12,7 @@
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
 #include "../appflow/enginetime.hpp"
+#include "deletionqueue.hpp"
 #include "render_pass_dispatch.hpp"
 #include "render_pass_executor.hpp"
 #include "renderer_config.hpp"
@@ -100,6 +101,8 @@ Renderer::Renderer() {
 Renderer::~Renderer() = default;
 
 void Renderer::render() {
+    GET_MODULE(DeletionQueue).beginFrame();
+
     auto modules = resolveRenderFrameModules();
     updateFrameAnimation(modules.light_container, GET_MODULE(EngineTime).now());
 

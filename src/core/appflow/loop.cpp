@@ -5,6 +5,7 @@
 #include "../log.hpp"
 #include "../os/window.hpp"
 #include "../vkcore/core.hpp"
+#include "../vkcore/deletionqueue.hpp"
 #include "../vkcore/renderer.hpp"
 #include "../vkcore/rendertarget.hpp"
 #include "enginetime.hpp"
@@ -116,6 +117,8 @@ void Loop::run() {
         if (launch_config.render_out && !render_out_pattern.has_frame_token && launch_config.headless_frames > 0) {
             GET_MODULE(RenderTarget).captureLastFrameToPng(*launch_config.render_out);
         }
+        GET_MODULE(VulkanManageCore).waitIdle();
+        GET_MODULE(DeletionQueue).flushAll();
         return;
     }
 
@@ -130,6 +133,9 @@ void Loop::run() {
         renderer.render();
         framerate_adjuster.wait();
     }
+
+    GET_MODULE(VulkanManageCore).waitIdle();
+    GET_MODULE(DeletionQueue).flushAll();
 }
 
 } // namespace Pelican
