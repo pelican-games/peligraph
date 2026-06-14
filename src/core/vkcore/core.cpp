@@ -3,6 +3,7 @@
 #include "../launchconfig.hpp"
 #include "../log.hpp"
 #include "../os/window.hpp"
+#include <cstring>
 #include <optional>
 #include <set>
 #include <vector>
@@ -327,6 +328,15 @@ BufferWrapper VulkanManageCore::allocBuf(vk::DeviceSize bytes_num, vk::BufferUsa
 void VulkanManageCore::writeBuf(const BufferWrapper &dst, const void *src, vk::DeviceSize offset,
                                 vk::DeviceSize bytes_num) const {
     allocator->copyMemoryToAllocation(src, dst.allocation.get(), offset, bytes_num);
+}
+
+std::vector<uint8_t> VulkanManageCore::readBuf(const BufferWrapper &src, vk::DeviceSize bytes_num) const {
+    allocator->invalidateAllocation(src.allocation.get(), 0, bytes_num);
+    const auto mapped = allocator->mapMemory(src.allocation.get());
+    std::vector<uint8_t> bytes(static_cast<size_t>(bytes_num));
+    std::memcpy(bytes.data(), mapped, bytes.size());
+    allocator->unmapMemory(src.allocation.get());
+    return bytes;
 }
 
 ImageWrapper VulkanManageCore::allocImage(vk::Extent3D extent, vk::Format format, vk::ImageUsageFlags usage,

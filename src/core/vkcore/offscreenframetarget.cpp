@@ -91,7 +91,8 @@ OffscreenFrameTarget::OffscreenFrameTarget()
       render_cmd_bufs{vectorToArray<CommandBufWrapper, in_flight_frames_num>(
           GET_MODULE(VulkanManageCore).allocCmdBufs(in_flight_frames_num))},
       in_flight_frame_index{0}, extent{GET_MODULE(EngineLaunchConfig).headless_extent},
-      color_format{vk::Format::eR8G8B8A8Unorm}, color_layout{vk::ImageLayout::eUndefined} {
+      color_format{vk::Format::eR8G8B8A8Unorm}, color_layout{vk::ImageLayout::eUndefined},
+      has_rendered_frame{false} {
     auto &vkcore = GET_MODULE(VulkanManageCore);
     const vk::Extent3D image_extent{extent.width, extent.height, 1};
 
@@ -150,6 +151,7 @@ void OffscreenFrameTarget::render_end() {
         result != vk::Result::eSuccess) {
         LOG_WARNING(logger, "vkWaitForFences didn't succeed : {}", vk::to_string(result));
     }
+    has_rendered_frame = true;
 
     in_flight_frame_index++;
     in_flight_frame_index %= in_flight_frames_num;
@@ -164,7 +166,39 @@ FrameTargetCaps OffscreenFrameTarget::caps() const {
 }
 
 std::vector<uint8_t> OffscreenFrameTarget::readbackLastFrameRGBA8() {
-    throw std::runtime_error("OffscreenFrameTarget readback is not implemented yet");
+    if (!has_rendered_frame) {
+        throw std::runtime_error("OffscreenFrameTarget has no rendered frame to read back");
+    }
+    if (color_layout != vk::ImageLayout::eTransferSrcOptimal) {
+        throw std::runtime_error("OffscreenFrameTarget color image is not ready for readback");
+    }
+
+    auto &vkcore = GET_MODULE(VulkanManageCore);
+    const vk::DeviceSize bytes_num = static_cast<vk::DeviceSize>(extent.width) * extent.height * 4;
+    auto staging = vkcore.allocBuf(bytes_num, vk::BufferUsageFlagBits::eTransferDst,
+                                   vma::MemoryUsage::eAutoPreferHost,
+                                   vma::AllocationCreateFlagBits::eHostAccessRandom);
+
+    vk::BufferImageCopy copy_region;
+    copy_region.bufferOffset = 0;
+    copy_region.bufferRowLength = 0;
+    copy_region.bufferImageHeight = 0;
+    copy_region.imageSubresource.aspectMask = vk::ImageAspectFlagBits::eColor;
+    copy_region.imageSubresource.mipLevel = 0;
+    copy_region.imageSubresource.baseArrayLayer = 0;
+    copy_region.imageSubresource.layerCount = 1;
+    copy_region.imageOffset = vk::Offset3D{0, 0, 0};
+    copy_region.imageExtent = vk::Extent3D{extent.width, extent.height, 1};
+
+    GET_MODULE(VulkanUtils)
+        .executeOneTimeCmd(
+            [&](vk::CommandBuffer cmd_buf) {
+                cmd_buf.copyImageToBuffer(color_image.image.get(), vk::ImageLayout::eTransferSrcOptimal,
+                                          staging.buffer.get(), {copy_region});
+            },
+            true);
+
+    return vkcore.readBuf(staging, bytes_num);
 }
 
 } // namespace Pelican

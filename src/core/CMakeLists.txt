@@ -37,7 +37,15 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(vma-hpp)
 
+FetchContent_Declare(
+  stb
+  GIT_REPOSITORY https://github.com/nothings/stb.git
+  GIT_TAG        31c1ad37456438565541f4919958214b6e762fb4
+)
+FetchContent_MakeAvailable(stb)
+
 target_include_directories(pelican_core PRIVATE ${Vulkan_INCLUDE_DIRS})
+target_include_directories(pelican_core PRIVATE ${stb_SOURCE_DIR})
 target_compile_definitions(pelican_core PRIVATE
   "VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic"
 )

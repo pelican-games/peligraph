@@ -22,6 +22,7 @@ class OffscreenFrameTarget : public IFrameTarget {
     ImageWrapper depth_image;
     vk::UniqueImageView depth_image_view;
     vk::ImageLayout color_layout;
+    bool has_rendered_frame;
 
   public:
     OffscreenFrameTarget();

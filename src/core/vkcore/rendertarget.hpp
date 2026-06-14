@@ -5,6 +5,7 @@
 #include "frametarget.hpp"
 #include "image.hpp"
 #include <cstddef>
+#include <filesystem>
 #include <memory>
 #include <vulkan/vulkan.hpp>
 
@@ -31,6 +32,9 @@ DECLARE_MODULE(RenderTarget) {
     void render_end();
 
     vk::Format getSwapchainFormat() const;
+    vk::Extent2D getExtent() const;
+    std::vector<uint8_t> readbackLastFrameRGBA8();
+    void captureLastFrameToPng(const std::filesystem::path &path);
 };
 
 } // namespace Pelican
