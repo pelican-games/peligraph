@@ -1,4 +1,5 @@
 #include "window.hpp"
+#include "../launchconfig.hpp"
 #include "../loader/basicconfig.hpp"
 #include "../log.hpp"
 #include <algorithm>
@@ -51,6 +52,10 @@ bool isMouseButtonTracked(int button) {
 } // namespace
 
 Window::Window() : window{nullptr}, gamepad_axis{}, cursor_x{0.0f}, cursor_y{0.0f} {
+    if (GET_MODULE(EngineLaunchConfig).headless) {
+        throw std::runtime_error("Window module is unavailable in headless mode");
+    }
+
     LOG_INFO(logger, "GLFW initializing...");
 
     const auto &config = GET_MODULE(ProjectBasicConfig);
@@ -162,8 +167,11 @@ vk::UniqueSurfaceKHR Window::getVulkanSurface(vk::Instance instance) {
 }
 
 std::vector<const char *> Window::getRequiredVulkanInstanceExts() {
-    uint32_t count;
+    uint32_t count = 0;
     const char **ext_names_raw = glfwGetRequiredInstanceExtensions(&count);
+    if (ext_names_raw == nullptr) {
+        throw std::runtime_error("glfwGetRequiredInstanceExtensions failed");
+    }
 
     std::vector<const char *> ext_names;
     std::copy(ext_names_raw, ext_names_raw + count, std::back_inserter(ext_names));

@@ -20,3 +20,4 @@ endfunction()
 # register tests
 pelican_define_test(hoge_test)
 pelican_define_test(renderingpass_helpers_test pelican_core)
+pelican_define_test(vulkan_headless_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)

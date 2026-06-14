@@ -1,5 +1,6 @@
 #include "core.hpp"
 #include "../config.hpp"
+#include "../launchconfig.hpp"
 #include "../log.hpp"
 #include "../os/window.hpp"
 #include <optional>
@@ -10,7 +11,7 @@ namespace Pelican {
 
 constexpr auto vulkan_api_version = VK_MAKE_API_VERSION(0, 1, 3, 283);
 
-static vk::UniqueInstance vulkanCreateInstance(Window &window) {
+static vk::UniqueInstance vulkanCreateInstance(bool headless) {
     LOG_INFO(logger, "initializing vulkan instance...");
 
     vk::ApplicationInfo app_info;
@@ -26,13 +27,15 @@ static vk::UniqueInstance vulkanCreateInstance(Window &window) {
     layers.push_back("VK_LAYER_KHRONOS_validation");
 #endif
 
-    exts = window.getRequiredVulkanInstanceExts();
+    if (!headless) {
+        exts = GET_MODULE(Window).getRequiredVulkanInstanceExts();
+    }
+    vk::InstanceCreateInfo create_info;
 #ifdef __APPLE__
     create_info.flags = vk::InstanceCreateFlagBits::eEnumeratePortabilityKHR;
     exts.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
 #endif
 
-    vk::InstanceCreateInfo create_info;
     create_info.pApplicationInfo = &app_info;
     create_info.setPEnabledExtensionNames(exts);
     create_info.setPEnabledLayerNames(layers);
@@ -42,41 +45,52 @@ static vk::UniqueInstance vulkanCreateInstance(Window &window) {
 
 static std::optional<QueueSet> pickQueues(const vk::PhysicalDevice &phys_device,
                                           std::vector<vk::QueueFamilyProperties> queue_families,
-                                          vk::SurfaceKHR surface) {
+                                          vk::SurfaceKHR surface, bool headless) {
     std::optional<uint32_t> graphics_queue;
     std::optional<uint32_t> presentation_queue;
     std::optional<uint32_t> compute_queue;
 
-    for (int i = 0; i < queue_families.size(); i++) {
-        if ((queue_families[i].queueFlags & vk::QueueFlagBits::eGraphics) &&
-            phys_device.getSurfaceSupportKHR(i, surface) &&
-            (queue_families[i].queueFlags & vk::QueueFlagBits::eCompute)) {
-            graphics_queue = i;
-            presentation_queue = i;
-            compute_queue = i;
-            break;
-        }
-    }
-    if (!graphics_queue || !presentation_queue)
+    if (!headless) {
         for (int i = 0; i < queue_families.size(); i++) {
             if ((queue_families[i].queueFlags & vk::QueueFlagBits::eGraphics) &&
-                phys_device.getSurfaceSupportKHR(i, surface)) {
+                phys_device.getSurfaceSupportKHR(i, surface) &&
+                (queue_families[i].queueFlags & vk::QueueFlagBits::eCompute)) {
                 graphics_queue = i;
                 presentation_queue = i;
+                compute_queue = i;
                 break;
             }
         }
+        if (!graphics_queue || !presentation_queue)
+            for (int i = 0; i < queue_families.size(); i++) {
+                if ((queue_families[i].queueFlags & vk::QueueFlagBits::eGraphics) &&
+                    phys_device.getSurfaceSupportKHR(i, surface)) {
+                    graphics_queue = i;
+                    presentation_queue = i;
+                    break;
+                }
+            }
+        if (!presentation_queue)
+            for (int i = 0; i < queue_families.size(); i++) {
+                if (phys_device.getSurfaceSupportKHR(i, surface)) {
+                    presentation_queue = i;
+                    break;
+                }
+            }
+    } else {
+        for (int i = 0; i < queue_families.size(); i++) {
+            if ((queue_families[i].queueFlags & vk::QueueFlagBits::eGraphics) &&
+                (queue_families[i].queueFlags & vk::QueueFlagBits::eCompute)) {
+                graphics_queue = i;
+                compute_queue = i;
+                break;
+            }
+        }
+    }
     if (!graphics_queue)
         for (int i = 0; i < queue_families.size(); i++) {
             if (queue_families[i].queueFlags & vk::QueueFlagBits::eGraphics) {
                 graphics_queue = i;
-                break;
-            }
-        }
-    if (!presentation_queue)
-        for (int i = 0; i < queue_families.size(); i++) {
-            if (phys_device.getSurfaceSupportKHR(i, surface)) {
-                presentation_queue = i;
                 break;
             }
         }
@@ -87,6 +101,9 @@ static std::optional<QueueSet> pickQueues(const vk::PhysicalDevice &phys_device,
                 break;
             }
         }
+    if (headless && graphics_queue) {
+        presentation_queue = graphics_queue;
+    }
 
     if (graphics_queue && presentation_queue && compute_queue) {
         return QueueSet{
@@ -99,7 +116,7 @@ static std::optional<QueueSet> pickQueues(const vk::PhysicalDevice &phys_device,
     return std::nullopt;
 }
 
-static vk::PhysicalDevice pickPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surface) {
+static vk::PhysicalDevice pickPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surface, bool headless) {
     LOG_INFO(logger, "initializing vulkan physical device...");
 
     const auto phys_devices = instance.enumeratePhysicalDevices();
@@ -113,14 +130,14 @@ static vk::PhysicalDevice pickPhysicalDevice(vk::Instance instance, vk::SurfaceK
         {
             // evaluate queue
             const auto queue_families = phys_device.getQueueFamilyProperties();
-            const auto queue_set = pickQueues(phys_device, queue_families, surface);
+            const auto queue_set = pickQueues(phys_device, queue_families, surface, headless);
 
             if (!queue_set)
                 continue;
-            if (queue_set->graphic_queue == queue_set->presentation_queue)
+            if (headless || queue_set->graphic_queue == queue_set->presentation_queue)
                 score += 100;
         }
-        {
+        if (!headless) {
             // evaluate extension
             const auto supported_exts = phys_device.enumerateDeviceExtensionProperties();
             std::vector<std::string> supported_exts_names;
@@ -139,16 +156,23 @@ static vk::PhysicalDevice pickPhysicalDevice(vk::Instance instance, vk::SurfaceK
         score_index_pair.push_back({score, i});
     }
 
+    if (score_index_pair.empty()) {
+        throw std::runtime_error("No suitable Vulkan physical device found");
+    }
     std::stable_sort(score_index_pair.rbegin(), score_index_pair.rend());
     const auto choice_index = score_index_pair[0].second;
 
     return phys_devices[choice_index];
 }
 
-static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, const QueueSet &queues_info) {
+static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, const QueueSet &queues_info,
+                                            bool headless) {
     LOG_INFO(logger, "initializing vulkan device...");
 
-    std::vector<const char *> exts = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    std::vector<const char *> exts;
+    if (!headless) {
+        exts.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    }
 
     vk::DeviceQueueCreateInfo graphics_queue_info, presentation_queue_info, compute_queue_info;
 
@@ -167,7 +191,9 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
 
     vk::DeviceCreateInfo create_info;
 
-    create_info.setPEnabledExtensionNames(exts);
+    if (!exts.empty()) {
+        create_info.setPEnabledExtensionNames(exts);
+    }
     create_info.setQueueCreateInfos(queues);
 
     vk::PhysicalDeviceFeatures2 features;
@@ -204,20 +230,35 @@ static vma::UniqueAllocator createAllocator(vk::PhysicalDevice phys_device, vk::
     return vma::createAllocatorUnique(create_info);
 }
 
-VulkanManageCore::VulkanManageCore()
-    : instance{vulkanCreateInstance(GET_MODULE(Window))}, surface{GET_MODULE(Window).getVulkanSurface(instance.get())},
-      phys_device{pickPhysicalDevice(instance.get(), surface.get())},
-      queue_set{pickQueues(phys_device, phys_device.getQueueFamilyProperties(), surface.get()).value()},
-      device{createLogicalDevice(phys_device, queue_set)},
-      graphic_queue{device->getQueue(queue_set.graphic_queue, 0)}, // queues
-      presen_queue{device->getQueue(queue_set.presentation_queue, 0)},
-      compute_queue{device->getQueue(queue_set.compute_queue, 0)},
-      graphic_cmd_pool{createCommandPool(device.get(), queue_set.graphic_queue)}, // command pools
-      compute_cmd_pool{createCommandPool(device.get(), queue_set.compute_queue)},
-      allocator{createAllocator(phys_device, device.get(), instance.get())} {
+VulkanManageCore::VulkanManageCore() {
+    const bool headless = GET_MODULE(EngineLaunchConfig).headless;
+    instance = vulkanCreateInstance(headless);
+    if (!headless) {
+        surface = GET_MODULE(Window).getVulkanSurface(instance.get());
+    }
+    phys_device = pickPhysicalDevice(instance.get(), surface.get(), headless);
+    const auto picked_queues = pickQueues(phys_device, phys_device.getQueueFamilyProperties(), surface.get(), headless);
+    if (!picked_queues) {
+        throw std::runtime_error("No suitable Vulkan queue families found");
+    }
+    queue_set = *picked_queues;
+    device = createLogicalDevice(phys_device, queue_set, headless);
+    graphic_queue = device->getQueue(queue_set.graphic_queue, 0);
+    presen_queue = device->getQueue(queue_set.presentation_queue, 0);
+    compute_queue = device->getQueue(queue_set.compute_queue, 0);
+    graphic_cmd_pool = createCommandPool(device.get(), queue_set.graphic_queue);
+    compute_cmd_pool = createCommandPool(device.get(), queue_set.compute_queue);
+    allocator = createAllocator(phys_device, device.get(), instance.get());
     LOG_INFO(logger, "vulkan core initialized");
 }
 VulkanManageCore::~VulkanManageCore() {}
+
+vk::SurfaceKHR VulkanManageCore::getSurface() const {
+    if (!surface) {
+        throw std::runtime_error("Vulkan surface is unavailable in headless mode");
+    }
+    return surface.get();
+}
 
 void VulkanManageCore::waitIdle() const { device->waitIdle(); }
 
