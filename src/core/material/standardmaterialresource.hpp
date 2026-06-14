@@ -5,7 +5,7 @@
 namespace Pelican {
 
 DECLARE_MODULE(StandardMaterialResource) {
-    GlobalShaderId std_vert, std_frag;
+    ShaderBundleId std_vert, std_frag;
     GlobalTextureId tex_transparent, tex_white, tex_black;
     GlobalTextureId tex_metallic_roughness_default, tex_normal_default;
     GlobalTextureId tex_emissive_default;
@@ -14,8 +14,8 @@ DECLARE_MODULE(StandardMaterialResource) {
   public:
     StandardMaterialResource();
 
-    GlobalShaderId standardVertShader() const { return std_vert; };
-    GlobalShaderId standardFragShader() const { return std_frag; };
+    ShaderBundleId standardVertShader() const { return std_vert; };
+    ShaderBundleId standardFragShader() const { return std_frag; };
     GlobalTextureId transparentTexture() const { return tex_transparent; };
     GlobalTextureId whiteTexture() const { return tex_white; };
     GlobalTextureId blackTexture() const { return tex_black; };

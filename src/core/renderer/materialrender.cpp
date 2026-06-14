@@ -1,5 +1,4 @@
 #include "materialrender.hpp"
-#include "../light/lightcontainer.hpp"
 #include "../material/materialcontainer.hpp"
 #include "../model/vertbufcontainer.hpp"
 #include "../vkcore/core.hpp"
@@ -10,8 +9,6 @@
 namespace Pelican {
 
 namespace {
-constexpr uint32_t lightDescriptorSetNumber = 2;
-
 struct MaterialRange {
     uint32_t start;
     uint32_t count;
@@ -27,22 +24,21 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
     auto &instance_container = dependencies.instance_container;
     const auto &vert_buf_container = dependencies.vert_buf_container;
     const auto &material_container = dependencies.material_container;
-    auto &light_container = dependencies.light_container;
 
-    light_container.update();
     vert_buf_container.bindVertexBuffer(cmd_buf);
+
+    instance_container.triggerUpdate();
+    const auto &draw_calls = instance_container.getDrawCalls();
+    if (draw_calls.empty()) {
+        return;
+    }
 
     const auto pipeline_layout = material_container.getPipelineLayout();
     PushConstantStruct push_constant;
     push_constant.mvp = dependencies.camera.getVPMatrix();
-
-    instance_container.triggerUpdate();
-
-    const auto &indirect_buf = instance_container.getIndirectBuf();
-    const auto &draw_calls = instance_container.getDrawCalls();
-
     cmd_buf.pushConstants(pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(push_constant), &push_constant);
 
+    const auto &indirect_buf = instance_container.getIndirectBuf();
     GlobalMaterialId current_material_id = invalidMaterialId();
     uint32_t material_index = 0;
     for (const auto &draw_call : draw_calls) {
@@ -56,9 +52,6 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
         }
 
         material_container.bindResource(cmd_buf, pass_id, draw_call.material, current_material_id);
-        if (!isValidMaterialId(current_material_id)) {
-            light_container.bindResource(cmd_buf, pipeline_layout, lightDescriptorSetNumber);
-        }
         current_material_id = draw_call.material;
         cmd_buf.drawIndexedIndirect(indirect_buf.buffer.get(), draw_call.offset, draw_call.draw_count,
                                     draw_call.stride);

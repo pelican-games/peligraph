@@ -48,6 +48,7 @@ DECLARE_MODULE(ShaderLibrary) {
     explicit ShaderLibrary(ShaderLibraryModuleMode mode = ShaderLibraryModuleMode::create_modules);
 
     ShaderBundleId loadFromFile(const std::filesystem::path &path);
+    ShaderBundleId loadFromBytes(size_t len, const char *data, std::string_view name);
     ShaderBundleId loadFromSpirv(std::span<const uint32_t> spirv, std::string_view name);
     const ShaderBundle &get(ShaderBundleId id) const;
 

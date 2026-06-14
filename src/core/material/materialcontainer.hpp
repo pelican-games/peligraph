@@ -3,11 +3,13 @@
 #include "../container.hpp"
 #include "../renderingpass/renderingpass.hpp"
 #include "../resourcecontainer.hpp"
+#include "../shader/pipelinefactory.hpp"
 #include "../vkcore/buf.hpp"
 #include "../vkcore/image.hpp"
 #include "material.hpp"
 #include <glm/glm.hpp>
 #include <map>
+#include <optional>
 #include <span>
 #include <vulkan/vulkan.hpp>
 
@@ -20,8 +22,6 @@ struct PushConstantStruct {
 DECLARE_MODULE(MaterialContainer) {
 
     vk::Device device;
-    std::vector<vk::UniqueDescriptorSetLayout> descset_layouts;
-    vk::UniquePipelineLayout pipeline_layout;
 
     vk::UniqueSampler nearest_sampler, linear_sampler;
     vk::UniqueDescriptorPool desc_pool;
@@ -32,18 +32,19 @@ DECLARE_MODULE(MaterialContainer) {
     };
     ResourceContainer<GlobalTextureId, InternalTextureResource> textures;
 
-    PELICAN_DEFINE_HANDLE(PipelineId, uint32_t)
     struct InternalMaterialInfo {
-        PipelineId pipeline;
+        PipelineHandle pipeline;
         GlobalTextureId base_color_texture;
         GlobalTextureId metallic_roughness_texture;
         GlobalTextureId normal_texture;
         GlobalTextureId emissive_texture;
         vk::UniqueDescriptorSet descset;
     };
-    std::unordered_map<PipelineId, vk::UniquePipeline, PipelineId::Hash> pipelines;
+    std::unordered_map<uint64_t, PipelineHandle> pipelines;
+    std::optional<PipelineHandle> default_pipeline;
     ResourceContainer<GlobalMaterialId, InternalMaterialInfo> materials;
 
+    vk::Buffer model_mat_buffer;
     vk::UniqueDescriptorSet model_mat_buf_descset;
 
   public:

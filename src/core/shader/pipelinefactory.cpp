@@ -1,5 +1,6 @@
 #include "pipelinefactory.hpp"
 #include "../log.hpp"
+#include "../model/vertbufcontainer.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/deletionqueue.hpp"
 #include <algorithm>
@@ -97,16 +98,23 @@ uint32_t maxDescriptorSet(const ShaderReflection &reflection) {
     return max_set;
 }
 
-void validateFullscreenReflection(const ShaderReflection &reflection) {
-    if (!reflection.vertex_inputs.empty()) {
-        throw std::runtime_error("Fullscreen PipelineFactory only supports shaders without vertex inputs");
+void validateGraphicsReflection(const GraphicsPipelineDesc &desc, const ShaderReflection &reflection) {
+    if (!desc.use_engine_vertex_layout && !reflection.vertex_inputs.empty()) {
+        throw std::runtime_error("GraphicsPipelineDesc requires use_engine_vertex_layout for vertex input shaders");
     }
 }
 
-std::vector<vk::PipelineColorBlendAttachmentState> makeBlendAttachments(size_t count) {
+std::vector<vk::PipelineColorBlendAttachmentState> makeBlendAttachments(const GraphicsPipelineDesc &desc,
+                                                                        size_t count) {
     std::vector<vk::PipelineColorBlendAttachmentState> attachments(count);
     for (auto &attachment : attachments) {
-        attachment.blendEnable = false;
+        attachment.blendEnable = desc.blend;
+        attachment.srcColorBlendFactor = desc.src_color_blend_factor;
+        attachment.dstColorBlendFactor = desc.dst_color_blend_factor;
+        attachment.colorBlendOp = desc.color_blend_op;
+        attachment.srcAlphaBlendFactor = desc.src_alpha_blend_factor;
+        attachment.dstAlphaBlendFactor = desc.dst_alpha_blend_factor;
+        attachment.alphaBlendOp = desc.alpha_blend_op;
         attachment.colorWriteMask = vk::ColorComponentFlagBits::eA | vk::ColorComponentFlagBits::eR |
                                     vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB;
     }
@@ -193,6 +201,12 @@ vk::UniquePipeline PipelineFactory::createGraphicsPipeline(const GraphicsPipelin
     const auto stages = makeShaderStages(vert.module.get(), frag.module.get());
 
     vk::PipelineVertexInputStateCreateInfo vertex_input_info;
+    VertBufContainer::CommonVertDataDescription engine_vertex_input;
+    if (desc.use_engine_vertex_layout) {
+        engine_vertex_input = VertBufContainer::getDescription();
+        vertex_input_info.setVertexAttributeDescriptions(engine_vertex_input.attr_descs);
+        vertex_input_info.setVertexBindingDescriptions(engine_vertex_input.binding_descs);
+    }
 
     vk::PipelineInputAssemblyStateCreateInfo input_assembly;
     input_assembly.topology = desc.topology;
@@ -206,8 +220,8 @@ vk::UniquePipeline PipelineFactory::createGraphicsPipeline(const GraphicsPipelin
     rasterization.depthClampEnable = false;
     rasterization.rasterizerDiscardEnable = false;
     rasterization.polygonMode = vk::PolygonMode::eFill;
-    rasterization.cullMode = vk::CullModeFlagBits::eNone;
-    rasterization.frontFace = vk::FrontFace::eCounterClockwise;
+    rasterization.cullMode = desc.cull_mode;
+    rasterization.frontFace = desc.front_face;
     rasterization.depthBiasEnable = false;
     rasterization.lineWidth = 1.0f;
 
@@ -216,11 +230,12 @@ vk::UniquePipeline PipelineFactory::createGraphicsPipeline(const GraphicsPipelin
     multisample.sampleShadingEnable = false;
 
     vk::PipelineDepthStencilStateCreateInfo depth;
-    depth.depthTestEnable = false;
-    depth.depthWriteEnable = false;
+    depth.depthTestEnable = desc.depth_test;
+    depth.depthWriteEnable = desc.depth_write;
+    depth.depthCompareOp = desc.depth_compare;
     depth.stencilTestEnable = false;
 
-    auto blend_attachments = makeBlendAttachments(desc.color_formats.size());
+    auto blend_attachments = makeBlendAttachments(desc, desc.color_formats.size());
     vk::PipelineColorBlendStateCreateInfo blend;
     blend.logicOpEnable = false;
     blend.setAttachments(blend_attachments);
@@ -231,6 +246,9 @@ vk::UniquePipeline PipelineFactory::createGraphicsPipeline(const GraphicsPipelin
 
     vk::PipelineRenderingCreateInfo rendering_info;
     rendering_info.setColorAttachmentFormats(desc.color_formats);
+    if (desc.depth_format) {
+        rendering_info.depthAttachmentFormat = *desc.depth_format;
+    }
 
     vk::GraphicsPipelineCreateInfo create_info;
     create_info.setStages(stages);
@@ -267,7 +285,7 @@ PipelineFactory::PipelineRecord PipelineFactory::buildGraphicsPipeline(const Gra
         shader_library.get(desc.frag).reflection,
     };
     auto merged_reflection = merge(stage_reflections);
-    validateFullscreenReflection(merged_reflection);
+    validateGraphicsReflection(desc, merged_reflection);
 
     auto set_layouts = descriptorSetLayoutsFor(merged_reflection);
     auto pipeline_layout = createPipelineLayout(merged_reflection, set_layouts);

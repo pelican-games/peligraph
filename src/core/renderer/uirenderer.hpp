@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../container.hpp"
+#include "../shader/pipelinefactory.hpp"
 #include <unordered_map>
 #include <vulkan/vulkan.hpp>
 
@@ -23,12 +24,11 @@ struct UiRendererDependencies {
 
 DECLARE_MODULE(UiRenderer) {
     vk::Device device;
-    vk::UniquePipelineLayout pipeline_layout;
-    vk::ShaderModule vert_shader;
-    vk::ShaderModule frag_shader;
-    std::unordered_map<int, vk::UniquePipeline> pipelines;
+    ShaderBundleId vert_shader;
+    ShaderBundleId frag_shader;
+    std::unordered_map<int, PipelineHandle> pipelines;
 
-    vk::Pipeline getPipeline(vk::Format color_format);
+    PipelineHandle getPipeline(vk::Format color_format);
 
   public:
     UiRenderer();

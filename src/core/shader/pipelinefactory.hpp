@@ -5,6 +5,7 @@
 #include "../container.hpp"
 #include "../resourcecontainer.hpp"
 #include <filesystem>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 #include <vulkan/vulkan.hpp>
@@ -15,6 +16,20 @@ struct GraphicsPipelineDesc {
     ShaderBundleId vert;
     ShaderBundleId frag;
     std::vector<vk::Format> color_formats;
+    std::optional<vk::Format> depth_format;
+    bool use_engine_vertex_layout = false;
+    bool depth_test = false;
+    bool depth_write = false;
+    vk::CompareOp depth_compare = vk::CompareOp::eLess;
+    vk::CullModeFlags cull_mode = vk::CullModeFlagBits::eNone;
+    vk::FrontFace front_face = vk::FrontFace::eCounterClockwise;
+    bool blend = false;
+    vk::BlendFactor src_color_blend_factor = vk::BlendFactor::eOne;
+    vk::BlendFactor dst_color_blend_factor = vk::BlendFactor::eZero;
+    vk::BlendOp color_blend_op = vk::BlendOp::eAdd;
+    vk::BlendFactor src_alpha_blend_factor = vk::BlendFactor::eOne;
+    vk::BlendFactor dst_alpha_blend_factor = vk::BlendFactor::eZero;
+    vk::BlendOp alpha_blend_op = vk::BlendOp::eAdd;
     vk::PrimitiveTopology topology = vk::PrimitiveTopology::eTriangleList;
 };
 

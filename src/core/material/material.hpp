@@ -2,7 +2,7 @@
 
 #include "../container.hpp"
 #include "../handle.hpp"
-#include "../shader/shader.hpp"
+#include "../shader/shaderlibrary.hpp"
 #include <span>
 #include <vulkan/vulkan.hpp>
 
@@ -22,7 +22,7 @@ inline constexpr bool isValidMaterialId(GlobalMaterialId material_id) {
 }
 
 struct MaterialInfo {
-    GlobalShaderId vert_shader, frag_shader;
+    ShaderBundleId vert_shader, frag_shader;
     GlobalTextureId base_color_texture;
     GlobalTextureId metallic_roughness_texture;
     GlobalTextureId normal_texture;

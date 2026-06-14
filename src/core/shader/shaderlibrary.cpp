@@ -105,6 +105,19 @@ ShaderBundleId ShaderLibrary::loadFromFile(const std::filesystem::path &path) {
     return id;
 }
 
+ShaderBundleId ShaderLibrary::loadFromBytes(size_t len, const char *data, std::string_view name) {
+    if (data == nullptr || len == 0) {
+        throw std::runtime_error("Shader module data must not be empty");
+    }
+    if (len % sizeof(uint32_t) != 0) {
+        throw std::runtime_error("Shader module data size must be a multiple of 4 bytes");
+    }
+
+    std::vector<uint32_t> spirv(len / sizeof(uint32_t));
+    std::memcpy(spirv.data(), data, len);
+    return loadFromSpirv(spirv, name);
+}
+
 ShaderBundleId ShaderLibrary::loadFromSpirv(std::span<const uint32_t> spirv, std::string_view name) {
     const auto id = bundles.reg(buildFromSpirv(spirv, {}, 1, std::string{name}));
     bundle_ids.push_back(id);

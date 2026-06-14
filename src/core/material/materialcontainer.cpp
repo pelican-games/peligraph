@@ -1,17 +1,15 @@
 #include "materialcontainer.hpp"
-#include "../light/lightcontainer.hpp"
-#include "../model/vertbufcontainer.hpp"
 #include "../renderingpass/materialpassattachments.hpp"
-#include "../shader/shadercontainer.hpp"
+#include "../shader/pipelinefactory.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/util.hpp"
+#include <stdexcept>
 
 namespace Pelican {
 
 
 constexpr uint32_t modelMatDescriptorSetNumber = 0;
 constexpr uint32_t modelMatDescriptorBinding = 0;
-constexpr uint32_t modelMatDescriptorArrayCount = 1;
 constexpr uint32_t imageDescriptorSetNumber = 1;
 constexpr uint32_t baseColorBinding = 0;
 constexpr uint32_t metallicRoughnessBinding = 1;
@@ -19,158 +17,24 @@ constexpr uint32_t normalBinding = 2;
 constexpr uint32_t emissiveBinding = 3;
 constexpr uint32_t materialTextureBindingCount = 4;
 
-static vk::UniqueDescriptorSetLayout createModelBufDescriptorSetLayout(vk::Device device) {
-    std::array<vk::DescriptorSetLayoutBinding, 1> bindings;
-    bindings[0].binding = modelMatDescriptorBinding;
-    bindings[0].descriptorType = vk::DescriptorType::eStorageBuffer;
-    bindings[0].descriptorCount = modelMatDescriptorArrayCount;
-    bindings[0].stageFlags = vk::ShaderStageFlagBits::eVertex;
-
-    vk::DescriptorSetLayoutCreateInfo create_info;
-    create_info.setBindings(bindings);
-
-    return device.createDescriptorSetLayoutUnique(create_info);
+static uint64_t makePipelineKey(ShaderBundleId vert_shader, ShaderBundleId frag_shader) {
+    return (static_cast<uint64_t>(static_cast<uint32_t>(vert_shader.value)) << 32) |
+           static_cast<uint32_t>(frag_shader.value);
 }
 
-static vk::UniqueDescriptorSetLayout createTextureDescriptorSetLayout(vk::Device device) {
-    std::array<vk::DescriptorSetLayoutBinding, materialTextureBindingCount> bindings{};
-
-    bindings[0].binding = baseColorBinding;
-    bindings[0].descriptorType = vk::DescriptorType::eCombinedImageSampler;
-    bindings[0].descriptorCount = 1;
-    bindings[0].stageFlags = vk::ShaderStageFlagBits::eFragment;
-
-    bindings[1].binding = metallicRoughnessBinding;
-    bindings[1].descriptorType = vk::DescriptorType::eCombinedImageSampler;
-    bindings[1].descriptorCount = 1;
-    bindings[1].stageFlags = vk::ShaderStageFlagBits::eFragment;
-
-    bindings[2].binding = normalBinding;
-    bindings[2].descriptorType = vk::DescriptorType::eCombinedImageSampler;
-    bindings[2].descriptorCount = 1;
-    bindings[2].stageFlags = vk::ShaderStageFlagBits::eFragment;
-    
-    bindings[3].binding = emissiveBinding;
-    bindings[3].descriptorType = vk::DescriptorType::eCombinedImageSampler;
-    bindings[3].descriptorCount = 1;
-    bindings[3].stageFlags = vk::ShaderStageFlagBits::eFragment;
-
-    vk::DescriptorSetLayoutCreateInfo create_info;
-    create_info.setBindings(bindings);
-
-    return device.createDescriptorSetLayoutUnique(create_info);
-}
-
-static std::vector<vk::UniqueDescriptorSetLayout> createDefaultDescriptorSetLayouts(vk::Device device) {
-    std::vector<vk::UniqueDescriptorSetLayout> descset_layouts(2);
-    descset_layouts[modelMatDescriptorSetNumber] = createModelBufDescriptorSetLayout(device);
-    descset_layouts[imageDescriptorSetNumber] = createTextureDescriptorSetLayout(device);
-    return descset_layouts;
-}
-
-static vk::UniquePipelineLayout createDefaultPipelineLayout(vk::Device device,
-                                                            std::span<vk::DescriptorSetLayout> layouts) {
-    vk::PushConstantRange push_constant_range;
-    push_constant_range.stageFlags = vk::ShaderStageFlagBits::eVertex;
-    push_constant_range.offset = 0;
-    push_constant_range.size = sizeof(PushConstantStruct);
-
-    vk::PipelineLayoutCreateInfo create_info;
-    create_info.setPushConstantRanges({push_constant_range});
-    create_info.setSetLayouts(layouts);
-    return device.createPipelineLayoutUnique(create_info);
-}
-
-static vk::UniquePipeline createDefaultPipeline(vk::Device device, vk::PipelineLayout layout,
-                                                vk::ShaderModule vert_shader, vk::ShaderModule frag_shader,
-                                                VertBufContainer::CommonVertDataDescription input_descs) {
-    vk::PipelineShaderStageCreateInfo vert_stage;
-    vert_stage.stage = vk::ShaderStageFlagBits::eVertex;
-    vert_stage.module = vert_shader;
-    vert_stage.pName = "main";
-    vk::PipelineShaderStageCreateInfo frag_stage;
-    frag_stage.stage = vk::ShaderStageFlagBits::eFragment;
-    frag_stage.module = frag_shader;
-    frag_stage.pName = "main";
-
-    const auto stages = {vert_stage, frag_stage};
-
-    vk::PipelineVertexInputStateCreateInfo vertex_input_info;
-    vertex_input_info.setVertexAttributeDescriptions(input_descs.attr_descs);
-    vertex_input_info.setVertexBindingDescriptions(input_descs.binding_descs);
-
-    vk::PipelineInputAssemblyStateCreateInfo input_assembly;
-    input_assembly.topology = vk::PrimitiveTopology::eTriangleList;
-    input_assembly.primitiveRestartEnable = false;
-
-    vk::PipelineViewportStateCreateInfo viewport; // dynamic state, only count is specified
-    viewport.viewportCount = 1;
-    viewport.scissorCount = 1;
-
-    vk::PipelineRasterizationStateCreateInfo rasterization;
-    rasterization.depthClampEnable = false;
-    rasterization.rasterizerDiscardEnable = false;
-    rasterization.polygonMode = vk::PolygonMode::eFill;
-    rasterization.cullMode = vk::CullModeFlagBits::eBack;
-    rasterization.frontFace = vk::FrontFace::eClockwise;
-    rasterization.depthBiasEnable = false;
-    rasterization.lineWidth = 1.0f;
-
-    vk::PipelineMultisampleStateCreateInfo multisample;
-    multisample.rasterizationSamples = vk::SampleCountFlagBits::e1;
-    multisample.sampleShadingEnable = false;
-
-    vk::PipelineDepthStencilStateCreateInfo depth;
-    depth.depthTestEnable = true;
-    depth.depthWriteEnable = true;
-    depth.depthCompareOp = vk::CompareOp::eLess;
-    depth.depthBoundsTestEnable = false;
-    depth.stencilTestEnable = false;
-
-    std::array<vk::PipelineColorBlendAttachmentState, 5> blend_attachments{};
-    for (auto &blend_attachment : blend_attachments) {
-        blend_attachment.blendEnable = false;
-        blend_attachment.colorWriteMask = vk::ColorComponentFlagBits::eA | vk::ColorComponentFlagBits::eR |
-                                          vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB;
-    }
-
-    vk::PipelineColorBlendStateCreateInfo blend;
-    blend.logicOpEnable = false;
-    blend.setAttachments(blend_attachments);
-
-    auto dynamic_states = {vk::DynamicState::eViewport, vk::DynamicState::eScissor};
-
-    vk::PipelineDynamicStateCreateInfo dynamic_state_info;
-    dynamic_state_info.setDynamicStates(dynamic_states);
-
-    vk::PipelineRenderingCreateInfo rendering_info;
-    rendering_info.setColorAttachmentFormats(materialPassColorAttachmentFormats);
-    rendering_info.depthAttachmentFormat = materialPassDepthAttachmentFormat;
-
-    vk::GraphicsPipelineCreateInfo create_info;
-    create_info.setStages(stages);
-    create_info.pVertexInputState = &vertex_input_info;
-    create_info.pInputAssemblyState = &input_assembly;
-    // create_info.pTessellationState =
-    create_info.pViewportState = &viewport;
-    create_info.pRasterizationState = &rasterization;
-    create_info.pMultisampleState = &multisample;
-    create_info.pDepthStencilState = &depth;
-    create_info.pColorBlendState = &blend;
-    create_info.pDynamicState = &dynamic_state_info;
-    create_info.layout = layout;
-    create_info.subpass = 0;
-
-    vk::StructureChain create_info_chain{
-        create_info,
-        rendering_info,
-    };
-
-    auto result = device.createGraphicsPipelineUnique({}, create_info_chain.get());
-    if (result.result != vk::Result::eSuccess) {
-        throw std::runtime_error("failed on vkCreateGraphicsPipeline : " + vk::to_string(result.result));
-    }
-    return std::move(result.value);
+static GraphicsPipelineDesc makeMaterialPipelineDesc(const MaterialInfo &info) {
+    GraphicsPipelineDesc desc;
+    desc.vert = info.vert_shader;
+    desc.frag = info.frag_shader;
+    desc.color_formats.assign(materialPassColorAttachmentFormats.begin(), materialPassColorAttachmentFormats.end());
+    desc.depth_format = materialPassDepthAttachmentFormat;
+    desc.use_engine_vertex_layout = true;
+    desc.depth_test = true;
+    desc.depth_write = true;
+    desc.depth_compare = vk::CompareOp::eLess;
+    desc.cull_mode = vk::CullModeFlagBits::eBack;
+    desc.front_face = vk::FrontFace::eClockwise;
+    return desc;
 }
 
 static vk::UniqueDescriptorPool createDescriptorPool(vk::Device device) {
@@ -225,21 +89,35 @@ static vk::UniqueImageView createImageView(vk::Device device, const ImageWrapper
     return device.createImageViewUnique(create_info);
 }
 
-MaterialContainer::MaterialContainer()
-    : device{GET_MODULE(VulkanManageCore).getDevice()}, descset_layouts{createDefaultDescriptorSetLayouts(device)},
-      nearest_sampler{createSampler(device, vk::Filter::eNearest)},
-      linear_sampler{createSampler(device, vk::Filter::eLinear)}, desc_pool{createDescriptorPool(device)}
-{
-    auto& light_container = GET_MODULE(LightContainer);
+static vk::UniqueDescriptorSet createModelMatDescriptorSet(vk::Device device, vk::DescriptorPool desc_pool,
+                                                           vk::DescriptorSetLayout layout, vk::Buffer buffer) {
+    vk::DescriptorSetAllocateInfo desc_alloc_info;
+    desc_alloc_info.descriptorPool = desc_pool;
+    desc_alloc_info.setSetLayouts({layout});
 
-    std::vector<vk::DescriptorSetLayout> layouts;
-    for (const auto& layout : descset_layouts) {
-        layouts.push_back(layout.get());
-    }
-    layouts.push_back(light_container.getDescriptorSetLayout());
+    auto descsets = device.allocateDescriptorSetsUnique(desc_alloc_info);
+    auto &descset = descsets[0];
 
-    pipeline_layout = createDefaultPipelineLayout(device, layouts);
+    vk::DescriptorBufferInfo buf_info;
+    buf_info.buffer = buffer;
+    buf_info.offset = 0;
+    buf_info.range = vk::WholeSize;
+
+    vk::WriteDescriptorSet write_descset;
+    write_descset.dstSet = descset.get();
+    write_descset.dstBinding = modelMatDescriptorBinding;
+    write_descset.dstArrayElement = 0;
+    write_descset.setBufferInfo({buf_info});
+    write_descset.descriptorType = vk::DescriptorType::eStorageBuffer;
+    device.updateDescriptorSets({write_descset}, {});
+
+    return std::move(descset);
 }
+
+MaterialContainer::MaterialContainer()
+    : device{GET_MODULE(VulkanManageCore).getDevice()},
+      nearest_sampler{createSampler(device, vk::Filter::eNearest)},
+      linear_sampler{createSampler(device, vk::Filter::eLinear)}, desc_pool{createDescriptorPool(device)} {}
 MaterialContainer::~MaterialContainer() {}
 
 GlobalTextureId MaterialContainer::registerTexture(vk::Extent3D extent, const void *data) {
@@ -265,21 +143,27 @@ GlobalTextureId MaterialContainer::registerTexture(vk::Extent3D extent, const vo
     });
 }
 GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
-    const uint32_t pipeline_key = (static_cast<uint32_t>(info.vert_shader.value) << 16) |
-                                  static_cast<uint32_t>(info.frag_shader.value);
-    PipelineId pipeline_id{pipeline_key};
-    if (pipelines.find(pipeline_id) == pipelines.end()) {
-        pipelines.insert({
-            pipeline_id,
-            createDefaultPipeline(
-                device, pipeline_layout.get(), GET_MODULE(ShaderContainer).getShader(info.vert_shader),
-                GET_MODULE(ShaderContainer).getShader(info.frag_shader), VertBufContainer::getDescription()),
-        });
+    const auto pipeline_key = makePipelineKey(info.vert_shader, info.frag_shader);
+    auto pipeline_it = pipelines.find(pipeline_key);
+    if (pipeline_it == pipelines.end()) {
+        const auto pipeline_handle = GET_MODULE(PipelineFactory).create(makeMaterialPipelineDesc(info));
+        pipeline_it = pipelines.emplace(pipeline_key, pipeline_handle).first;
+        if (!default_pipeline) {
+            default_pipeline = pipeline_handle;
+            if (model_mat_buffer) {
+                const auto model_set_layout =
+                    GET_MODULE(PipelineFactory).descriptorSetLayout(*default_pipeline, modelMatDescriptorSetNumber);
+                model_mat_buf_descset =
+                    createModelMatDescriptorSet(device, desc_pool.get(), model_set_layout, model_mat_buffer);
+            }
+        }
     }
+    const auto pipeline = pipeline_it->second;
 
     vk::DescriptorSetAllocateInfo desc_alloc_info;
     desc_alloc_info.descriptorPool = desc_pool.get();
-    desc_alloc_info.setSetLayouts({descset_layouts[imageDescriptorSetNumber].get()});
+    const auto material_set_layout = GET_MODULE(PipelineFactory).descriptorSetLayout(pipeline, imageDescriptorSetNumber);
+    desc_alloc_info.setSetLayouts({material_set_layout});
 
     auto descsets = device.allocateDescriptorSetsUnique(desc_alloc_info);
     auto &descset = descsets[0];
@@ -350,7 +234,7 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     device.updateDescriptorSets(writes, {});
 
     return materials.reg(InternalMaterialInfo{
-        .pipeline = pipeline_id,
+        .pipeline = pipeline,
         .base_color_texture = info.base_color_texture,
         .metallic_roughness_texture = info.metallic_roughness_texture,
         .normal_texture = info.normal_texture,
@@ -360,27 +244,14 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
 }
 
 void MaterialContainer::setModelMatBuf(const BufferWrapper &buf) {
-    vk::DescriptorSetAllocateInfo desc_alloc_info;
-    desc_alloc_info.descriptorPool = desc_pool.get();
-    desc_alloc_info.setSetLayouts({descset_layouts[modelMatDescriptorSetNumber].get()});
+    model_mat_buffer = buf.buffer.get();
+    if (!default_pipeline) {
+        return;
+    }
 
-    auto descsets = device.allocateDescriptorSetsUnique(desc_alloc_info);
-    auto &descset = descsets[0];
-
-    vk::DescriptorBufferInfo buf_info;
-    buf_info.buffer = buf.buffer.get();
-    buf_info.offset = 0;
-    buf_info.range = vk::WholeSize;
-
-    vk::WriteDescriptorSet write_descset;
-    write_descset.dstSet = descset.get();
-    write_descset.dstBinding = modelMatDescriptorBinding;
-    write_descset.dstArrayElement = 0;
-    write_descset.setBufferInfo({buf_info});
-    write_descset.descriptorType = vk::DescriptorType::eStorageBuffer;
-    device.updateDescriptorSets({write_descset}, {});
-
-    model_mat_buf_descset = std::move(descset);
+    const auto model_set_layout =
+        GET_MODULE(PipelineFactory).descriptorSetLayout(*default_pipeline, modelMatDescriptorSetNumber);
+    model_mat_buf_descset = createModelMatDescriptorSet(device, desc_pool.get(), model_set_layout, model_mat_buffer);
 }
 
 bool MaterialContainer::isRenderRequired(PassId pass_id, GlobalMaterialId material) const {
@@ -391,10 +262,15 @@ bool MaterialContainer::isRenderRequired(PassId pass_id, GlobalMaterialId materi
 void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pass_id, GlobalMaterialId material_id,
                                      GlobalMaterialId prev_material_id) const {
     const auto &material = materials.get(material_id);
+    auto &pipeline_factory = GET_MODULE(PipelineFactory);
+    const auto pipeline_layout = pipeline_factory.layout(material.pipeline);
 
     if (!isValidMaterialId(prev_material_id)) {
-        cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipelines.at(material.pipeline).get());
-        cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout.get(), 0,
+        if (!model_mat_buf_descset) {
+            throw std::runtime_error("MaterialContainer has no model matrix descriptor set");
+        }
+        cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline_factory.pipeline(material.pipeline));
+        cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout, 0,
                                    {
                                        model_mat_buf_descset.get(), // model matrix buffer: set = 0
                                        material.descset.get(),      // material textures: set = 1
@@ -403,13 +279,18 @@ void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pass_id, 
     } else {
         const auto &prev_material = materials.get(prev_material_id);
         if (material.pipeline != prev_material.pipeline)
-            cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipelines.at(material.pipeline).get());
+            cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline_factory.pipeline(material.pipeline));
         if (material.descset.get() != prev_material.descset.get())
-            cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout.get(),
+            cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout,
                                        imageDescriptorSetNumber, {material.descset.get()}, {});
     }
 }
 
-vk::PipelineLayout MaterialContainer::getPipelineLayout() const { return pipeline_layout.get(); }
+vk::PipelineLayout MaterialContainer::getPipelineLayout() const {
+    if (!default_pipeline) {
+        throw std::runtime_error("MaterialContainer has no material pipeline");
+    }
+    return GET_MODULE(PipelineFactory).layout(*default_pipeline);
+}
 
 } // namespace Pelican
