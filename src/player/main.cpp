@@ -4,11 +4,14 @@
 #include <details/ecs/coredist.hpp>
 #include <gameobjects.hpp>
 #include <argparse/argparse.hpp>
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 #include <pelican_core.hpp>
 
 #include "../core/container.hpp"
@@ -36,6 +39,55 @@ vk::Extent2D parseExtent(const std::string &value) {
                         parsePositiveUint(value.substr(separator + 1), "height")};
 }
 
+std::vector<double> parseCommaNumbers(const std::string &value, size_t expected_count, const std::string &name) {
+    std::vector<double> values;
+    std::istringstream stream{value};
+    std::string token;
+    while (std::getline(stream, token, ',')) {
+        if (token.empty()) {
+            throw std::runtime_error(name + " contains an empty value");
+        }
+        size_t parsed_chars = 0;
+        values.push_back(std::stod(token, &parsed_chars));
+        if (parsed_chars != token.size()) {
+            throw std::runtime_error(name + " contains a non-numeric value");
+        }
+    }
+    if (values.size() != expected_count) {
+        throw std::runtime_error(name + " must contain " + std::to_string(expected_count) + " comma-separated values");
+    }
+    return values;
+}
+
+Pelican::EngineLaunchCameraOverride parseCameraOverride(const std::string &value) {
+    const auto values = parseCommaNumbers(value, 7, "--camera");
+    if (values[6] <= 0.0) {
+        throw std::runtime_error("--camera fov_deg must be positive");
+    }
+    return Pelican::EngineLaunchCameraOverride{
+        .position =
+            {static_cast<float>(values[0]), static_cast<float>(values[1]), static_cast<float>(values[2])},
+        .target =
+            {static_cast<float>(values[3]), static_cast<float>(values[4]), static_cast<float>(values[5])},
+        .fov_y = static_cast<float>(values[6]),
+    };
+}
+
+std::filesystem::path resolveExistingCliFile(const std::string &value, const std::string &name) {
+    if (value.empty()) {
+        throw std::runtime_error(name + " must not be empty");
+    }
+
+    auto path = std::filesystem::path{value};
+    if (path.is_relative()) {
+        path = std::filesystem::current_path() / path;
+    }
+    if (!std::filesystem::is_regular_file(path)) {
+        throw std::runtime_error(name + " file not found: " + path.string());
+    }
+    return std::filesystem::weakly_canonical(path);
+}
+
 Pelican::EngineLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
     argparse::ArgumentParser program("Pelican Player");
     program.add_argument("--headless").flag().help("run without a window");
@@ -43,6 +95,19 @@ Pelican::EngineLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
     program.add_argument("--size").default_value(std::string{"1280x720"}).metavar("WxH").help("headless render size");
     program.add_argument("--render-out").default_value(std::string{}).metavar("path").help("render output path");
     program.add_argument("--fps").default_value(60.0).scan<'g', double>().help("headless fixed-step frame rate");
+    program.add_argument("--play-seq")
+        .default_value(std::string{})
+        .metavar("path.jsonl")
+        .help("play a pelican.transform_seq JSONL file");
+    program.add_argument("--seq-mesh")
+        .default_value(std::string{"builtin:sphere"})
+        .metavar("builtin:sphere|path.glb")
+        .help("mesh used for all transform_seq objects");
+    program.add_argument("--seq-loop").flag().help("loop the transform_seq clip");
+    program.add_argument("--camera")
+        .default_value(std::string{})
+        .metavar("px,py,pz,tx,ty,tz,fov_deg")
+        .help("override camera position, target, and vertical FOV");
 
     try {
         program.parse_args(argc, argv);
@@ -67,6 +132,24 @@ Pelican::EngineLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         config.fps = program.get<double>("--fps");
         if (config.fps <= 0.0) {
             throw std::runtime_error("--fps must be positive");
+        }
+
+        const auto play_seq = program.get<std::string>("--play-seq");
+        if (!play_seq.empty()) {
+            config.play_seq = resolveExistingCliFile(play_seq, "--play-seq");
+
+            const auto seq_mesh = program.get<std::string>("--seq-mesh");
+            if (seq_mesh == "builtin:sphere") {
+                config.seq_mesh = std::filesystem::path{seq_mesh};
+            } else {
+                config.seq_mesh = resolveExistingCliFile(seq_mesh, "--seq-mesh");
+            }
+            config.seq_loop = program.get<bool>("--seq-loop");
+        }
+
+        const auto camera = program.get<std::string>("--camera");
+        if (!camera.empty()) {
+            config.camera_override = parseCameraOverride(camera);
         }
 
         return config;

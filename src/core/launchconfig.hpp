@@ -2,12 +2,19 @@
 
 #include "./container.hpp"
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
+
+struct EngineLaunchCameraOverride {
+    std::array<float, 3> position{0.0f, 0.0f, 0.0f};
+    std::array<float, 3> target{0.0f, 0.0f, 0.0f};
+    float fov_y = 45.0f;
+};
 
 DECLARE_MODULE(EngineLaunchConfig) {
   public:
@@ -17,6 +24,10 @@ DECLARE_MODULE(EngineLaunchConfig) {
     std::optional<std::filesystem::path> render_out;
     double fps = 60.0;
     bool shader_hot_reload = true;
+    std::optional<std::filesystem::path> play_seq;
+    std::filesystem::path seq_mesh{"builtin:sphere"};
+    bool seq_loop = false;
+    std::optional<EngineLaunchCameraOverride> camera_override;
 };
 
 } // namespace Pelican

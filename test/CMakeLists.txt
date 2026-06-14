@@ -35,6 +35,7 @@ endif()
 pelican_define_test(headless_render_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 pelican_define_test(hoge_test)
 pelican_define_test(renderingpass_helpers_test pelican_core)
+pelican_define_test(seqplayer_test pelican_core glm)
 pelican_define_test(shader_compile_test spirv-reflect-static stb)
 target_compile_definitions(pelican_test_shader_compile_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
@@ -68,3 +69,13 @@ if(PELICAN_RUNTIME_SHADER_COMPILER)
     endif()
 endif()
 pelican_define_test(vulkan_headless_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+
+add_test(
+    NAME seqplayer_headless_player
+    COMMAND ${CMAKE_COMMAND}
+        -DPLAYER=$<TARGET_FILE:pelican_player>
+        -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+        -DSEQ_FILE=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/seqplayer_two_objects.jsonl
+        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/seqplayer_headless
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_seqplayer_headless.cmake
+)

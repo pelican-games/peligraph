@@ -4,6 +4,7 @@
 #include "../launchconfig.hpp"
 #include "../log.hpp"
 #include "../os/window.hpp"
+#include "../playback/seqplayer.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/deletionqueue.hpp"
 #include "../vkcore/renderer.hpp"
@@ -93,6 +94,7 @@ void Loop::run() {
     auto &renderer = GET_MODULE(Renderer);
     auto &ecs = GET_MODULE(ECSCore);
     auto &engine_time = GET_MODULE(EngineTime);
+    auto &seq_player = GET_MODULE(SeqPlayer);
 
     const auto time_mode =
         launch_config.headless ? EngineTime::Mode::fixed_step : EngineTime::Mode::realtime;
@@ -107,6 +109,7 @@ void Loop::run() {
              ++frame) {
             engine_time.advance();
             ecs.update();
+            seq_player.update(engine_time.now());
             renderer.render();
             if (launch_config.render_out && render_out_pattern.has_frame_token) {
                 GET_MODULE(RenderTarget)
@@ -130,6 +133,7 @@ void Loop::run() {
             break;
         engine_time.advance();
         ecs.update();
+        seq_player.update(engine_time.now());
         renderer.render();
         framerate_adjuster.wait();
     }
