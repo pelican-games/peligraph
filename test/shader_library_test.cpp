@@ -1,5 +1,6 @@
 #include "../src/core/shader/shaderlibrary.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <vector>
@@ -91,6 +92,33 @@ TEST_CASE("shader library accepts GLSL source files when runtime compiler is ena
     ShaderLibrary library{ShaderLibraryModuleMode::reflection_only};
     REQUIRE_THROWS_AS(library.loadFromFile(sourceRoot() / "src/core/resources/default.frag"), std::runtime_error);
 #endif
+}
+
+TEST_CASE("shader library polls modified source files on a fixed interval", "[shader]") {
+    const auto work_dir = sourceRoot() / "build/test_artifacts/pelican_shader_library_poll_test";
+    std::filesystem::remove_all(work_dir);
+    REQUIRE(std::filesystem::create_directories(work_dir));
+    const auto shader_path = work_dir / "poll.vert.spv";
+    std::filesystem::copy_file(sourceRoot() / "src/core/resources/fullscreen.vert.spv", shader_path);
+
+    ShaderLibrary library{ShaderLibraryModuleMode::reflection_only};
+    const auto id = library.loadFromFile(shader_path);
+    const auto start = std::chrono::steady_clock::now();
+
+    REQUIRE(library.reloadModifiedSources(start) == 0);
+    REQUIRE(library.get(id).version == 1);
+
+    const auto previous_write_time = std::filesystem::last_write_time(shader_path);
+    std::filesystem::last_write_time(shader_path, previous_write_time + std::chrono::seconds{2});
+
+    REQUIRE(library.reloadModifiedSources(start + std::chrono::milliseconds{500}) == 0);
+    REQUIRE(library.get(id).version == 1);
+
+    REQUIRE(library.reloadModifiedSources(start + std::chrono::seconds{2}) == 1);
+    REQUIRE(library.get(id).version == 2);
+    const auto dirty = library.takeDirtyBundles();
+    REQUIRE(dirty.size() == 1);
+    REQUIRE(dirty[0] == id);
 }
 
 } // namespace Pelican

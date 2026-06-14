@@ -16,6 +16,7 @@ DECLARE_MODULE(EngineLaunchConfig) {
     uint32_t headless_frames = 3;
     std::optional<std::filesystem::path> render_out;
     double fps = 60.0;
+    bool shader_hot_reload = true;
 };
 
 } // namespace Pelican

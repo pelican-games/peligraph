@@ -49,6 +49,7 @@ Pelican::EngineLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
 
         Pelican::EngineLaunchConfig config;
         config.headless = program.get<bool>("--headless");
+        config.shader_hot_reload = !config.headless;
 
         const int frames = program.get<int>("--frames");
         if (frames < 0) {

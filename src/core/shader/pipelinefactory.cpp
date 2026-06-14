@@ -1,4 +1,5 @@
 #include "pipelinefactory.hpp"
+#include "../log.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/deletionqueue.hpp"
 #include <algorithm>
@@ -347,8 +348,12 @@ void PipelineFactory::rebuildDirty() {
             continue;
         }
 
-        auto replacement = buildGraphicsPipeline(record.desc);
-        replacePipeline(handle, std::move(replacement));
+        try {
+            auto replacement = buildGraphicsPipeline(record.desc);
+            replacePipeline(handle, std::move(replacement));
+        } catch (const std::exception &ex) {
+            LOG_WARNING(logger, "Pipeline hot reload failed; keeping previous pipeline: {}", ex.what());
+        }
     }
 }
 

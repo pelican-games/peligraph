@@ -5,6 +5,7 @@
 #include "../renderer/polygoninstancecontainer.hpp"
 #include "../renderer/uicontainer.hpp"
 #include "../renderer/uirenderer.hpp"
+#include "../launchconfig.hpp"
 #include "../light/lightcontainer.hpp"
 #include "../fullscreenpass/fullscreenpasscontainer.hpp"
 #include "../material/materialcontainer.hpp"
@@ -12,6 +13,8 @@
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../renderingpass/rendertargetimageviewresolver.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
+#include "../shader/pipelinefactory.hpp"
+#include "../shader/shaderlibrary.hpp"
 #include "../appflow/enginetime.hpp"
 #include "deletionqueue.hpp"
 #include "render_pass_dispatch.hpp"
@@ -106,6 +109,19 @@ void rebindFullscreenInputs(RenderFrameModules &modules) {
     }
 }
 
+void handleShaderHotReload(RenderFrameModules &modules) {
+    if (!GET_MODULE(EngineLaunchConfig).shader_hot_reload) {
+        return;
+    }
+
+    if (GET_MODULE(ShaderLibrary).reloadModifiedSources() == 0) {
+        return;
+    }
+
+    GET_MODULE(PipelineFactory).rebuildDirty();
+    rebindFullscreenInputs(modules);
+}
+
 void handleFrameTargetResize(RenderFrameModules &modules, RenderTargetLayoutTracker &layout_tracker) {
     if (!modules.render_target.consumeExtentChanged()) {
         return;
@@ -128,6 +144,7 @@ void Renderer::render() {
     GET_MODULE(DeletionQueue).beginFrame();
 
     auto modules = resolveRenderFrameModules();
+    handleShaderHotReload(modules);
     updateFrameAnimation(modules.light_container, GET_MODULE(EngineTime).now());
 
     const auto render_ctx = modules.render_target.render_begin();

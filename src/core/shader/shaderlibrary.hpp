@@ -4,6 +4,7 @@
 #include "shaderreflection.hpp"
 #include "../container.hpp"
 #include "../resourcecontainer.hpp"
+#include <chrono>
 #include <filesystem>
 #include <span>
 #include <string>
@@ -31,7 +32,10 @@ enum class ShaderLibraryModuleMode {
 
 DECLARE_MODULE(ShaderLibrary) {
     ResourceContainer<ShaderBundleId, ShaderBundle> bundles;
+    std::vector<ShaderBundleId> bundle_ids;
     std::vector<ShaderBundleId> dirty_bundles;
+    std::unordered_map<ShaderBundleId, std::filesystem::file_time_type, ShaderBundleId::Hash> source_write_times;
+    std::chrono::steady_clock::time_point next_source_poll_time{};
     ShaderLibraryModuleMode module_mode = ShaderLibraryModuleMode::create_modules;
 
     ShaderBundle buildFromFile(const std::filesystem::path &path, uint64_t version) const;
@@ -48,6 +52,7 @@ DECLARE_MODULE(ShaderLibrary) {
     const ShaderBundle &get(ShaderBundleId id) const;
 
     bool reload(ShaderBundleId id);
+    size_t reloadModifiedSources(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
     std::vector<ShaderBundleId> takeDirtyBundles();
 };
 
