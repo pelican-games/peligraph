@@ -1,11 +1,14 @@
 #version 460
+#extension GL_GOOGLE_include_directive : enable
+
+#include "pelican_sets.glsl"
 
 layout(location = 0) in vec2 inUV;
 layout(location = 0) out vec4 outColor;
 
 // G-Buffer inputs
-layout(set = 0, binding = 0) uniform sampler2D worldPosSampler;
-layout(set = 0, binding = 1) uniform sampler2D normalSampler;
+layout(set = PELICAN_SET_PASS_INPUT, binding = 0) uniform sampler2D worldPosSampler;
+layout(set = PELICAN_SET_PASS_INPUT, binding = 1) uniform sampler2D normalSampler;
 
 // Push constants with camera matrices
 layout(push_constant) uniform PushConstants {

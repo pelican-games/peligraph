@@ -1,7 +1,10 @@
 #version 460
+#extension GL_GOOGLE_include_directive : enable
 
-layout(binding = 0) uniform sampler2D inputTexture0;
-layout(binding = 1) uniform sampler2D inputTexture1;
+#include "pelican_sets.glsl"
+
+layout(set = PELICAN_SET_PASS_INPUT, binding = 0) uniform sampler2D inputTexture0;
+layout(set = PELICAN_SET_PASS_INPUT, binding = 1) uniform sampler2D inputTexture1;
 
 layout(location = 0) in vec2 inTexCoord;
 layout(location = 0) out vec4 outColor;

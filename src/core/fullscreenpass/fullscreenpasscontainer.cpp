@@ -1,5 +1,6 @@
 #include "fullscreenpasscontainer.hpp"
 #include "../renderingpass/rendertargetimageviewresolver.hpp"
+#include "../shader/pelican_sets.hpp"
 #include "../shader/pipelinefactory.hpp"
 #include "../vkcore/core.hpp"
 #include <stdexcept>
@@ -33,7 +34,7 @@ PipelineHandle requirePipelineHandle(
 
 bool hasInputBinding(const ShaderReflection &reflection, uint32_t binding) {
     for (const auto &reflected : reflection.bindings) {
-        if (reflected.set == 0 && reflected.binding == binding &&
+        if (reflected.set == PELICAN_SET_PASS_INPUT && reflected.binding == binding &&
             reflected.type == vk::DescriptorType::eCombinedImageSampler) {
             return true;
         }
@@ -115,8 +116,8 @@ void FullscreenPassContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pas
 
     auto it = input_textures.find(pass_id.value);
     if (it != input_textures.end()) {
-        cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_factory.layout(pipeline_handle), 0,
-                                   it->second.descset.get(), {});
+        cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_factory.layout(pipeline_handle),
+                                   PELICAN_SET_PASS_INPUT, it->second.descset.get(), {});
     }
 }
 
@@ -134,7 +135,7 @@ void FullscreenPassContainer::setInputTextures(PassId pass_id, const std::vector
         return;
     }
 
-    vk::DescriptorSetLayout layout = pipeline_factory.descriptorSetLayout(pipeline_handle, 0);
+    vk::DescriptorSetLayout layout = pipeline_factory.descriptorSetLayout(pipeline_handle, PELICAN_SET_PASS_INPUT);
 
     vk::DescriptorSetAllocateInfo alloc_info;
     alloc_info.descriptorPool = desc_pool.get();

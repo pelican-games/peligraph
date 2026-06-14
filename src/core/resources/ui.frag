@@ -1,6 +1,9 @@
 #version 460
+#extension GL_GOOGLE_include_directive : enable
 
-layout(set = 0, binding = 0) uniform sampler2D uiTexture;
+#include "pelican_sets.glsl"
+
+layout(set = PELICAN_SET_PASS_INPUT, binding = 0) uniform sampler2D uiTexture;
 
 layout(location = 0) in vec2 inUV;
 layout(location = 0) out vec4 outColor;

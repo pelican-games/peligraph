@@ -4,10 +4,11 @@ function(embed_shader file_name)
     message(STATUS "embed shader code : ${file_name}")
     add_custom_command(
         COMMAND $ENV{VULKAN_SDK}/bin/glslang
+            -I${CMAKE_CURRENT_SOURCE_DIR}/shaders/include
             ${CMAKE_CURRENT_SOURCE_DIR}/${file_name}
             -V
             -o ${CMAKE_CURRENT_SOURCE_DIR}/${file_name}.spv
-        DEPENDS ${file_name}
+        DEPENDS ${file_name} shaders/include/pelican_sets.glsl
         OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/${file_name}.spv
     )
     b_embed(pelican_resources ${file_name}.spv)

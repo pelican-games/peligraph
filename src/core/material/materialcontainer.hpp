@@ -3,6 +3,7 @@
 #include "../container.hpp"
 #include "../renderingpass/renderingpass.hpp"
 #include "../resourcecontainer.hpp"
+#include "../shader/pelican_sets.hpp"
 #include "../shader/pipelinefactory.hpp"
 #include "../vkcore/buf.hpp"
 #include "../vkcore/image.hpp"
@@ -18,6 +19,8 @@ namespace Pelican {
 struct PushConstantStruct {
     glm::mat4 mvp;
 };
+
+static_assert(sizeof(PushConstantStruct) == PELICAN_PUSH_ENGINE_BYTES);
 
 DECLARE_MODULE(MaterialContainer) {
 

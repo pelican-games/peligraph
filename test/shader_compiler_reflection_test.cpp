@@ -1,4 +1,5 @@
 #include "../src/core/shader/shadercompiler.hpp"
+#include "../src/core/shader/pelican_sets.hpp"
 #include "../src/core/shader/shaderreflection.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <algorithm>
@@ -88,13 +89,13 @@ TEST_CASE("shader reflection reports descriptors, push constants, and vertex inp
     const auto frag_reflection = reflect(frag.spirv);
     const auto merged = merge(std::array{vert_reflection, frag_reflection});
 
-    const auto *object_buffer = findBinding(merged, 0, 0);
+    const auto *object_buffer = findBinding(merged, PELICAN_SET_FRAME, 0);
     REQUIRE(object_buffer != nullptr);
     REQUIRE(object_buffer->type == vk::DescriptorType::eStorageBuffer);
     REQUIRE(object_buffer->count == 1);
     REQUIRE(static_cast<bool>(object_buffer->stages & vk::ShaderStageFlagBits::eVertex));
 
-    const auto *base_color = findBinding(merged, 1, 0);
+    const auto *base_color = findBinding(merged, PELICAN_SET_MATERIAL, 0);
     REQUIRE(base_color != nullptr);
     REQUIRE(base_color->type == vk::DescriptorType::eCombinedImageSampler);
     REQUIRE(static_cast<bool>(base_color->stages & vk::ShaderStageFlagBits::eFragment));
@@ -110,15 +111,15 @@ TEST_CASE("shader reflection reports descriptors, push constants, and vertex inp
     REQUIRE(merged.vertex_inputs[2].location == 2);
     REQUIRE(merged.vertex_inputs[2].format == vk::Format::eR32G32Sfloat);
 
-    const auto set0_bindings = makeDescriptorSetLayoutBindings(merged, 0);
+    const auto set0_bindings = makeDescriptorSetLayoutBindings(merged, PELICAN_SET_FRAME);
     REQUIRE(set0_bindings.size() == 1);
     REQUIRE(set0_bindings[0].binding == 0);
     REQUIRE(set0_bindings[0].descriptorType == vk::DescriptorType::eStorageBuffer);
 
-    const auto set1_bindings = makeDescriptorSetLayoutBindings(merged, 1);
-    REQUIRE(set1_bindings.size() == 4);
-    REQUIRE(set1_bindings[3].binding == 3);
-    REQUIRE(set1_bindings[3].descriptorType == vk::DescriptorType::eCombinedImageSampler);
+    const auto set2_bindings = makeDescriptorSetLayoutBindings(merged, PELICAN_SET_MATERIAL);
+    REQUIRE(set2_bindings.size() == 4);
+    REQUIRE(set2_bindings[3].binding == 3);
+    REQUIRE(set2_bindings[3].descriptorType == vk::DescriptorType::eCombinedImageSampler);
 
     const auto push_ranges = makePushConstantRanges(merged);
     REQUIRE(push_ranges.size() == 1);

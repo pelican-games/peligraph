@@ -1,5 +1,6 @@
 #include "materialcontainer.hpp"
 #include "../renderingpass/materialpassattachments.hpp"
+#include "../shader/pelican_sets.hpp"
 #include "../shader/pipelinefactory.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/util.hpp"
@@ -8,9 +9,9 @@
 namespace Pelican {
 
 
-constexpr uint32_t modelMatDescriptorSetNumber = 0;
+constexpr uint32_t modelMatDescriptorSetNumber = PELICAN_SET_FRAME;
 constexpr uint32_t modelMatDescriptorBinding = 0;
-constexpr uint32_t imageDescriptorSetNumber = 1;
+constexpr uint32_t imageDescriptorSetNumber = PELICAN_SET_MATERIAL;
 constexpr uint32_t baseColorBinding = 0;
 constexpr uint32_t metallicRoughnessBinding = 1;
 constexpr uint32_t normalBinding = 2;
@@ -270,12 +271,10 @@ void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pass_id, 
             throw std::runtime_error("MaterialContainer has no model matrix descriptor set");
         }
         cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline_factory.pipeline(material.pipeline));
-        cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout, 0,
-                                   {
-                                       model_mat_buf_descset.get(), // model matrix buffer: set = 0
-                                       material.descset.get(),      // material textures: set = 1
-                                   },
-                                   {});
+        cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout, modelMatDescriptorSetNumber,
+                                   {model_mat_buf_descset.get()}, {});
+        cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout, imageDescriptorSetNumber,
+                                   {material.descset.get()}, {});
     } else {
         const auto &prev_material = materials.get(prev_material_id);
         if (material.pipeline != prev_material.pipeline)

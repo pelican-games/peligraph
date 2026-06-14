@@ -1,11 +1,14 @@
 #version 460
 #extension GL_ARB_separate_shader_objects : enable
+#extension GL_GOOGLE_include_directive : enable
+
+#include "pelican_sets.glsl"
 
 struct ObjectData{
     mat4 model;
 };
 
-layout(set = 0, binding = 0) readonly buffer ObjectBuffer{
+layout(set = PELICAN_SET_FRAME, binding = 0) readonly buffer ObjectBuffer{
     ObjectData objects[];
 } object_buffer;
 

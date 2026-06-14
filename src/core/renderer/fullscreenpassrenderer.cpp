@@ -3,11 +3,12 @@
 #include "../fullscreenpass/fullscreenpass_push_constants.hpp"
 #include "../fullscreenpass/fullscreenpasscontainer.hpp"
 #include "../light/lightcontainer.hpp"
+#include "../shader/pelican_sets.hpp"
 
 namespace Pelican {
 
 namespace {
-constexpr uint32_t lightDescriptorSetNumber = 1;
+constexpr uint32_t lightDescriptorSetNumber = PELICAN_SET_FRAME;
 
 void pushCameraPosition(vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout,
                         const FullscreenPassCameraData &camera_data) {

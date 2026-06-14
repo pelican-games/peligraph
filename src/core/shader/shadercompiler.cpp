@@ -185,7 +185,9 @@ ShaderCompileResult ShaderCompiler::compileFile(const std::filesystem::path &pat
 #if PELICAN_RUNTIME_SHADER_COMPILER
     auto compile_include_dirs = include_dirs;
     if (path.has_parent_path()) {
-        compile_include_dirs.insert(compile_include_dirs.begin(), normalizedPath(path.parent_path()));
+        const auto source_dir = normalizedPath(path.parent_path());
+        compile_include_dirs.insert(compile_include_dirs.begin(), source_dir / "shaders" / "include");
+        compile_include_dirs.insert(compile_include_dirs.begin(), source_dir);
     }
     return compileGlsl(readTextFile(path), stage, normalizedPath(path).string(), opts.entry_point, compile_include_dirs);
 #else

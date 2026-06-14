@@ -2,6 +2,7 @@
 #include "uicontainer.hpp"
 
 #include "../log.hpp"
+#include "../shader/pelican_sets.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include "../vkcore/core.hpp"
 #include "battery/embed.hpp"
@@ -18,6 +19,8 @@ struct UiPushConstant {
     glm::vec2 size;
     float _pad2, _pad3;
 };
+
+static_assert(sizeof(UiPushConstant) <= PELICAN_PUSH_ENGINE_BYTES);
 
 GraphicsPipelineDesc makeUiPipelineDesc(ShaderBundleId vert_shader, ShaderBundleId frag_shader,
                                         vk::Format color_format) {
@@ -112,7 +115,8 @@ void UiRenderer::render(vk::CommandBuffer cmd_buf, const UiDrawRequest &request,
         vk::Rect2D scissor{{0, 0}, request.target_extent};
         cmd_buf.setScissor(0, scissor);
 
-        cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout, 0, {tex.descset.get()}, {});
+        cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout, PELICAN_SET_PASS_INPUT,
+                                   {tex.descset.get()}, {});
         cmd_buf.pushConstants(pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(UiPushConstant), &pc);
         cmd_buf.draw(6, 1, 0, 0);
     }
