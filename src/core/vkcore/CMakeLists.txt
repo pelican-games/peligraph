@@ -3,6 +3,7 @@ target_sources(pelican_core PRIVATE
     util.cpp
     cmdbuf.cpp
     rendertarget.cpp
+    swapchainframetarget.cpp
     render_pass_dispatch.cpp
     render_pass_executor.cpp
     render_pass_frame_setup.cpp

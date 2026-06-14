@@ -2,17 +2,13 @@
 
 #include "../container.hpp"
 #include "cmdbuf.hpp"
+#include "frametarget.hpp"
 #include "image.hpp"
-#include <initializer_list>
+#include <cstddef>
+#include <memory>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
-
-struct SwapchainWithFmt {
-    vk::UniqueSwapchainKHR swapchain;
-    vk::Format format;
-    vk::Extent2D extent;
-};
 
 struct FrameRenderContext {
     vk::CommandBuffer cmd_buf;
@@ -25,24 +21,7 @@ struct FrameRenderContext {
 constexpr size_t in_flight_frames_num = 2;
 
 DECLARE_MODULE(RenderTarget) {
-    vk::Device device;
-    std::vector<vk::UniqueSemaphore> image_acquire_semaphores, rendered_semaphores;
-    std::array<CommandBufWrapper, in_flight_frames_num> render_cmd_bufs;
-
-    uint32_t current_image_index, in_flight_frame_index;
-
-    // surface dependants
-    vk::Extent2D extent;
-    vk::Queue presen_queue;
-    SwapchainWithFmt swapchain;
-    std::vector<vk::Image> swapchain_images;
-    std::vector<vk::UniqueImageView> swapchain_image_views;
-    ImageWrapper depth_image;
-    vk::UniqueImageView depth_image_view;
-
-    void releaseSurfaceDependants();
-    void surfaceDependantsSetup();
-    void recreateSurfaceDependants();
+    std::unique_ptr<IFrameTarget> impl;
 
   public:
     RenderTarget();
