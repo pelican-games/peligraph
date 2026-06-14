@@ -165,6 +165,8 @@ FrameTargetCaps OffscreenFrameTarget::caps() const {
     };
 }
 
+bool OffscreenFrameTarget::consumeExtentChanged() { return false; }
+
 std::vector<uint8_t> OffscreenFrameTarget::readbackLastFrameRGBA8() {
     if (!has_rendered_frame) {
         throw std::runtime_error("OffscreenFrameTarget has no rendered frame to read back");

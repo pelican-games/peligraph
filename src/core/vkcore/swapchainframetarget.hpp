@@ -31,6 +31,7 @@ class SwapchainFrameTarget : public IFrameTarget {
     std::vector<vk::UniqueImageView> swapchain_image_views;
     ImageWrapper depth_image;
     vk::UniqueImageView depth_image_view;
+    bool extent_changed = false;
 
     void releaseSurfaceDependants();
     void surfaceDependantsSetup();
@@ -43,6 +44,7 @@ class SwapchainFrameTarget : public IFrameTarget {
     FrameRenderContext render_begin() override;
     void render_end() override;
     FrameTargetCaps caps() const override;
+    bool consumeExtentChanged() override;
     std::vector<uint8_t> readbackLastFrameRGBA8() override;
 };
 

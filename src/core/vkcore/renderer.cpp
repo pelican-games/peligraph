@@ -10,6 +10,7 @@
 #include "../material/materialcontainer.hpp"
 #include "../model/vertbufcontainer.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
+#include "../renderingpass/rendertargetimageviewresolver.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
 #include "../appflow/enginetime.hpp"
 #include "deletionqueue.hpp"
@@ -92,6 +93,29 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx, const Compiled
     }
 }
 
+void rebindFullscreenInputs(RenderFrameModules &modules) {
+    RenderTargetImageViewResolver rt_views{modules.render_target_container};
+    for (const auto pass_id : modules.rendering_pass_container.getRegisteredPassIds()) {
+        const auto &compiled_pass = modules.rendering_pass_container.getCompiledRenderingPass(pass_id);
+        for (const auto &pass : compiled_pass.passes) {
+            if (pass.definition.isFullscreen() && !pass.definition.input_targets.empty()) {
+                modules.fullscreen_pass_container.setInputTextures(pass.pass_id, pass.definition.input_targets,
+                                                                   rt_views);
+            }
+        }
+    }
+}
+
+void handleFrameTargetResize(RenderFrameModules &modules, RenderTargetLayoutTracker &layout_tracker) {
+    if (!modules.render_target.consumeExtentChanged()) {
+        return;
+    }
+
+    modules.render_target_container.recreateForExtent(modules.render_target.getExtent());
+    rebindFullscreenInputs(modules);
+    layout_tracker.reset();
+}
+
 } // namespace
 
 Renderer::Renderer() {
@@ -107,6 +131,8 @@ void Renderer::render() {
     updateFrameAnimation(modules.light_container, GET_MODULE(EngineTime).now());
 
     const auto render_ctx = modules.render_target.render_begin();
+    handleFrameTargetResize(modules, render_target_layout_tracker);
+
     const auto &rendering_pass =
         modules.rendering_pass_container.getCompiledRenderingPass(current_rendering_pass_id);
     executeRenderingPasses(render_ctx, rendering_pass, modules, render_target_layout_tracker);

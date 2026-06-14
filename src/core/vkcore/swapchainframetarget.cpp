@@ -160,8 +160,14 @@ void SwapchainFrameTarget::surfaceDependantsSetup() {
 }
 
 void SwapchainFrameTarget::recreateSurfaceDependants() {
+    const auto previous_extent = extent;
+    const auto previous_format = swapchain.format;
     device.waitIdle();
     surfaceDependantsSetup();
+    if (previous_extent.width != extent.width || previous_extent.height != extent.height ||
+        previous_format != swapchain.format) {
+        extent_changed = true;
+    }
 }
 
 SwapchainFrameTarget::SwapchainFrameTarget()
@@ -297,6 +303,12 @@ FrameTargetCaps SwapchainFrameTarget::caps() const {
         .extent = extent,
         .presents = true,
     };
+}
+
+bool SwapchainFrameTarget::consumeExtentChanged() {
+    const auto changed = extent_changed;
+    extent_changed = false;
+    return changed;
 }
 
 std::vector<uint8_t> SwapchainFrameTarget::readbackLastFrameRGBA8() {

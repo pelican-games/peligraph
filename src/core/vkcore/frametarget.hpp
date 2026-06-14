@@ -20,6 +20,7 @@ class IFrameTarget {
     virtual FrameRenderContext render_begin() = 0;
     virtual void render_end() = 0;
     virtual FrameTargetCaps caps() const = 0;
+    virtual bool consumeExtentChanged() = 0;
     virtual std::vector<uint8_t> readbackLastFrameRGBA8() = 0;
 };
 

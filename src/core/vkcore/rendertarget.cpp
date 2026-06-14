@@ -33,6 +33,8 @@ vk::Format RenderTarget::getSwapchainFormat() const { return impl->caps().color_
 
 vk::Extent2D RenderTarget::getExtent() const { return impl->caps().extent; }
 
+bool RenderTarget::consumeExtentChanged() { return impl->consumeExtentChanged(); }
+
 std::vector<uint8_t> RenderTarget::readbackLastFrameRGBA8() { return impl->readbackLastFrameRGBA8(); }
 
 void RenderTarget::captureLastFrameToPng(const std::filesystem::path &path) {

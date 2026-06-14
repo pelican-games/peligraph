@@ -15,6 +15,7 @@ RenderingPassId RenderingPassContainer::registerCompiledRenderingPass(CompiledRe
     const auto pass_name = pass.name;
     auto id = rendering_passes.reg(std::move(pass));
     name_to_id.emplace(pass_name, id);
+    registered_pass_ids.push_back(id);
     return id;
 }
 
@@ -27,6 +28,10 @@ RenderingPassId RenderingPassContainer::getRenderingPassIdByName(const std::stri
 
 const CompiledRenderingPass &RenderingPassContainer::getCompiledRenderingPass(RenderingPassId rendering_pass_id) const {
     return rendering_passes.get(rendering_pass_id);
+}
+
+const std::vector<RenderingPassId> &RenderingPassContainer::getRegisteredPassIds() const {
+    return registered_pass_ids;
 }
 
 } // namespace Pelican

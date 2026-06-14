@@ -33,6 +33,7 @@ DECLARE_MODULE(RenderTarget) {
 
     vk::Format getSwapchainFormat() const;
     vk::Extent2D getExtent() const;
+    bool consumeExtentChanged();
     std::vector<uint8_t> readbackLastFrameRGBA8();
     void captureLastFrameToPng(const std::filesystem::path &path);
 };

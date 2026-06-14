@@ -16,7 +16,10 @@ DECLARE_MODULE(RenderTargetContainer) {
 
     struct InternalRenderTarget {
         std::string name;
+        float extent_scale;
+        vk::Format format;
         vk::ImageUsageFlags usage;
+        vma::MemoryUsage memory_usage;
         ImageWrapper image;
         vk::UniqueImageView image_view;
     };
@@ -28,8 +31,10 @@ DECLARE_MODULE(RenderTargetContainer) {
     RenderTargetContainer();
     ~RenderTargetContainer();
 
-    GlobalRenderTargetId registerRenderTarget(const std::string &name, vk::Extent2D extent, vk::Format format,
-                                              vk::ImageUsageFlags usage, vma::MemoryUsage memUsage);
+    GlobalRenderTargetId registerRenderTarget(const std::string &name, vk::Extent2D base_extent,
+                                              float extent_scale, vk::Format format, vk::ImageUsageFlags usage,
+                                              vma::MemoryUsage memUsage);
+    void recreateForExtent(vk::Extent2D base_extent);
     GlobalRenderTargetId getRenderTargetIdByName(const std::string &name) const;
     RenderTargetMetadata getMetadata(GlobalRenderTargetId id) const;
     const ImageWrapper &getImage(GlobalRenderTargetId id) const;

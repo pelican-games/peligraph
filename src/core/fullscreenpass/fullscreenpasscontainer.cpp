@@ -266,10 +266,10 @@ void FullscreenPassContainer::setInputTextures(PassId pass_id, const std::vector
 
     device.updateDescriptorSets(writes, {});
 
-    input_textures.emplace(pass_id.value, InputTextureInfo{
-        std::move(descset),
-        input_rts
-    });
+    input_textures.insert_or_assign(pass_id.value, InputTextureInfo{
+                                                       std::move(descset),
+                                                       input_rts,
+                                                   });
 }
 
 } // namespace Pelican

@@ -1,8 +1,30 @@
 #include "rendertargetcontainer.hpp"
+#include "../vkcore/deletionqueue.hpp"
 #include "../vkcore/core.hpp"
+#include <cstdint>
+#include <stdexcept>
 #include <utility>
 
 namespace Pelican {
+
+namespace {
+
+struct RetiredRenderTargetResources {
+    ImageWrapper image;
+    vk::UniqueImageView image_view;
+};
+
+vk::Extent2D resolveRenderTargetExtent(const std::string &name, vk::Extent2D base_extent, float extent_scale) {
+    const vk::Extent2D extent{
+        static_cast<uint32_t>(base_extent.width * extent_scale),
+        static_cast<uint32_t>(base_extent.height * extent_scale),
+    };
+
+    if (extent.width == 0 || extent.height == 0) {
+        throw std::runtime_error("Render target extent became zero-sized: " + name);
+    }
+    return extent;
+}
 
 static vk::UniqueImageView createImageView(vk::Device device, const ImageWrapper &image) {
     vk::ImageViewCreateInfo ci;
@@ -33,12 +55,23 @@ static vk::UniqueImageView createImageView(vk::Device device, const ImageWrapper
     return device.createImageViewUnique(ci);
 }
 
+ImageWrapper createRenderTargetImage(const std::string &name, vk::Extent2D base_extent, float extent_scale,
+                                     vk::Format format, vk::ImageUsageFlags usage,
+                                     vma::MemoryUsage memory_usage) {
+    const auto extent = resolveRenderTargetExtent(name, base_extent, extent_scale);
+    return GET_MODULE(VulkanManageCore)
+        .allocImage(vk::Extent3D{extent.width, extent.height, 1}, format, usage, memory_usage, {});
+}
+
+} // namespace
+
 RenderTargetContainer::RenderTargetContainer() : device{GET_MODULE(VulkanManageCore).getDevice()} {}
 
 RenderTargetContainer::~RenderTargetContainer() {}
 
 GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::string &name,
-                                                                 vk::Extent2D extent,
+                                                                 vk::Extent2D base_extent,
+                                                                 float extent_scale,
                                                                  vk::Format format,
                                                                  vk::ImageUsageFlags usage,
                                                                  vma::MemoryUsage memUsage) {
@@ -47,28 +80,39 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
         return it->second;
     }
 
-    const auto &vkcore = GET_MODULE(VulkanManageCore);
-
-    vk::Extent3D extent3D{extent.width, extent.height, 1};
-    ImageWrapper image = vkcore.allocImage(
-        extent3D,
-        format,
-        usage,
-        memUsage,
-        {} // createFlags
-    );
-
+    ImageWrapper image = createRenderTargetImage(name, base_extent, extent_scale, format, usage, memUsage);
     auto image_view = createImageView(device, image);
 
     GlobalRenderTargetId id = render_targets.reg(InternalRenderTarget{
         .name = name,
+        .extent_scale = extent_scale,
+        .format = format,
         .usage = usage,
+        .memory_usage = memUsage,
         .image = std::move(image),
         .image_view = std::move(image_view),
     });
 
     name_to_id.emplace(name, id);
     return id;
+}
+
+void RenderTargetContainer::recreateForExtent(vk::Extent2D base_extent) {
+    for (const auto &[name, id] : name_to_id) {
+        auto &rt = render_targets.get(id);
+        auto next_image =
+            createRenderTargetImage(rt.name, base_extent, rt.extent_scale, rt.format, rt.usage, rt.memory_usage);
+        auto next_view = createImageView(device, next_image);
+
+        GET_MODULE(DeletionQueue)
+            .defer(RetiredRenderTargetResources{
+                .image = std::move(rt.image),
+                .image_view = std::move(rt.image_view),
+            });
+
+        rt.image = std::move(next_image);
+        rt.image_view = std::move(next_view);
+    }
 }
 
 GlobalRenderTargetId RenderTargetContainer::getRenderTargetIdByName(const std::string &name) const {
