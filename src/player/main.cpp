@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
@@ -19,6 +20,11 @@
 #include "../core/log.hpp"
 
 namespace {
+
+struct ParsedLaunchConfig {
+    Pelican::EngineLaunchConfig engine;
+    std::string project_settings{"{}"};
+};
 
 uint32_t parsePositiveUint(const std::string &value, const std::string &name) {
     size_t parsed_chars = 0;
@@ -88,12 +94,26 @@ std::filesystem::path resolveExistingCliFile(const std::string &value, const std
     return std::filesystem::weakly_canonical(path);
 }
 
-Pelican::EngineLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
+std::string readTextFile(const std::filesystem::path &path) {
+    std::ifstream file{path, std::ios::binary};
+    if (!file) {
+        throw std::runtime_error("failed to open project settings file: " + path.string());
+    }
+    std::ostringstream stream;
+    stream << file.rdbuf();
+    return stream.str();
+}
+
+ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
     argparse::ArgumentParser program("Pelican Player");
     program.add_argument("--headless").flag().help("run without a window");
     program.add_argument("--frames").default_value(3).scan<'i', int>().help("headless frame count");
     program.add_argument("--size").default_value(std::string{"1280x720"}).metavar("WxH").help("headless render size");
     program.add_argument("--render-out").default_value(std::string{}).metavar("path").help("render output path");
+    program.add_argument("--project-settings")
+        .default_value(std::string{})
+        .metavar("settings.json")
+        .help("load project settings JSON passed to PelicanCore");
     program.add_argument("--fps").default_value(60.0).scan<'g', double>().help("headless fixed-step frame rate");
     program.add_argument("--play-seq")
         .default_value(std::string{})
@@ -112,7 +132,8 @@ Pelican::EngineLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
     try {
         program.parse_args(argc, argv);
 
-        Pelican::EngineLaunchConfig config;
+        ParsedLaunchConfig parsed;
+        auto &config = parsed.engine;
         config.headless = program.get<bool>("--headless");
         config.shader_hot_reload = !config.headless;
 
@@ -127,6 +148,11 @@ Pelican::EngineLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         const auto render_out = program.get<std::string>("--render-out");
         if (!render_out.empty()) {
             config.render_out = std::filesystem::path{render_out};
+        }
+
+        const auto project_settings = program.get<std::string>("--project-settings");
+        if (!project_settings.empty()) {
+            parsed.project_settings = readTextFile(resolveExistingCliFile(project_settings, "--project-settings"));
         }
 
         config.fps = program.get<double>("--fps");
@@ -152,7 +178,7 @@ Pelican::EngineLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
             config.camera_override = parseCameraOverride(camera);
         }
 
-        return config;
+        return parsed;
     } catch (const std::exception &err) {
         std::cerr << err.what() << std::endl;
         std::cerr << program;
@@ -198,14 +224,15 @@ class MyCharSystem {
 };
 
 int main(int argc, char *argv[]) {
-    Pelican::EngineLaunchConfig launch_config;
+    ParsedLaunchConfig parsed_launch_config;
     try {
-        launch_config = parseLaunchConfig(argc, argv);
+        parsed_launch_config = parseLaunchConfig(argc, argv);
     } catch (const std::exception &) {
         return -1;
     }
 
-    Pelican::PelicanCore pl;
+    const auto &launch_config = parsed_launch_config.engine;
+    Pelican::PelicanCore pl{parsed_launch_config.project_settings};
     Pelican::FastModuleContainer::get<Pelican::EngineLaunchConfig>() = launch_config;
     if (launch_config.headless) {
         LOG_INFO(Pelican::logger, "headless mode enabled");

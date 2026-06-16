@@ -9,6 +9,11 @@
 #include "../material/standardmaterialresource.hpp"
 #include "gltf.hpp"
 #include "vertbufcontainer.hpp"
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 namespace Pelican {
 
@@ -22,6 +27,49 @@ struct InternalGltfLoader {
     std::vector<GlobalMaterialId> material_map;
     std::vector<GlobalTextureId> texture_map;
     std::unordered_map<ModelLocalMaterialId, std::vector<ModelTemplate::PrimitiveRefInfo>> tmp_material_primitives;
+
+    uint8_t toUnorm8(double value) {
+        return static_cast<uint8_t>(std::lround(std::clamp(value, 0.0, 1.0) * 255.0));
+    }
+
+    double vectorValueOr(const std::vector<double> &values, size_t index, double fallback) {
+        return index < values.size() ? values[index] : fallback;
+    }
+
+    GlobalTextureId registerSolidTexture(uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255) {
+        std::array<uint8_t, 4 * 16> data{};
+        for (size_t i = 0; i < 16; ++i) {
+            data[i * 4 + 0] = r;
+            data[i * 4 + 1] = g;
+            data[i * 4 + 2] = b;
+            data[i * 4 + 3] = a;
+        }
+        return mat_container.registerTexture(vk::Extent3D{4, 4, 1}, data.data());
+    }
+
+    GlobalTextureId metallicRoughnessTextureForMaterial(const tinygltf::Material &material) {
+        const auto texture_index = material.pbrMetallicRoughness.metallicRoughnessTexture.index;
+        if (texture_index >= 0) {
+            return texture_map[texture_index];
+        }
+
+        return registerSolidTexture(
+            toUnorm8(material.occlusionTexture.strength),
+            toUnorm8(material.pbrMetallicRoughness.roughnessFactor),
+            toUnorm8(material.pbrMetallicRoughness.metallicFactor));
+    }
+
+    GlobalTextureId emissiveTextureForMaterial(const tinygltf::Material &material) {
+        const auto texture_index = material.emissiveTexture.index;
+        if (texture_index >= 0) {
+            return texture_map[texture_index];
+        }
+
+        return registerSolidTexture(
+            toUnorm8(vectorValueOr(material.emissiveFactor, 0, 0.0)),
+            toUnorm8(vectorValueOr(material.emissiveFactor, 1, 0.0)),
+            toUnorm8(vectorValueOr(material.emissiveFactor, 2, 0.0)));
+    }
 
     template <class InType, class OutType>
     std::vector<OutType> readComponentByType(const unsigned char *p_data, size_t count, int stride) {
@@ -125,9 +173,68 @@ struct InternalGltfLoader {
                   accessor.componentType);
         return {};
     }
-    void loadNode(const tinygltf::Node &node) {
+    glm::mat4 nodeTransform(const tinygltf::Node &node) {
+        if (node.matrix.size() == 16) {
+            glm::mat4 matrix{1.0f};
+            for (int col = 0; col < 4; ++col) {
+                for (int row = 0; row < 4; ++row) {
+                    matrix[col][row] = static_cast<float>(node.matrix[static_cast<size_t>(col * 4 + row)]);
+                }
+            }
+            return matrix;
+        }
+
+        glm::vec3 translation{0.0f};
+        if (node.translation.size() == 3) {
+            translation = {
+                static_cast<float>(node.translation[0]),
+                static_cast<float>(node.translation[1]),
+                static_cast<float>(node.translation[2]),
+            };
+        }
+
+        glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
+        if (node.rotation.size() == 4) {
+            rotation = glm::quat{
+                static_cast<float>(node.rotation[3]),
+                static_cast<float>(node.rotation[0]),
+                static_cast<float>(node.rotation[1]),
+                static_cast<float>(node.rotation[2]),
+            };
+        }
+
+        glm::vec3 scale{1.0f};
+        if (node.scale.size() == 3) {
+            scale = {
+                static_cast<float>(node.scale[0]),
+                static_cast<float>(node.scale[1]),
+                static_cast<float>(node.scale[2]),
+            };
+        }
+
+        return glm::translate(glm::mat4{1.0f}, translation) * glm::mat4_cast(rotation) *
+               glm::scale(glm::mat4{1.0f}, scale);
+    }
+
+    void transformVertexData(CommonPolygonVertData &data, const glm::mat4 &transform) {
+        for (auto &position : data.pos) {
+            position = glm::vec3{transform * glm::vec4{position, 1.0f}};
+        }
+
+        const auto normal_transform = glm::transpose(glm::inverse(glm::mat3{transform}));
+        for (auto &normal : data.normal) {
+            normal = glm::normalize(normal_transform * normal);
+        }
+        for (auto &tangent : data.tangent) {
+            const auto transformed = glm::normalize(normal_transform * glm::vec3{tangent});
+            tangent = glm::vec4{transformed, tangent.w};
+        }
+    }
+
+    void loadNode(const tinygltf::Node &node, const glm::mat4 &parent_transform) {
+        const auto world_transform = parent_transform * nodeTransform(node);
         for (const auto child_index : node.children) {
-            loadNode(model.nodes[child_index]);
+            loadNode(model.nodes[child_index], world_transform);
         }
         if (node.mesh < 0)
             return;
@@ -168,6 +275,7 @@ struct InternalGltfLoader {
             if (auto it = primitive.attributes.find("WEIGHTS_0"); it != primitive.attributes.end())
                 dat.weight = getDataFromAccessor<TINYGLTF_TYPE_VEC4, glm::vec4>(it->second);
 
+            transformVertexData(dat, world_transform);
             auto primitive_info = buf_container.addPrimitiveEntry(std::move(dat));
             tmp_material_primitives[primitive.material].emplace_back(std::move(primitive_info));
         }
@@ -192,15 +300,11 @@ struct InternalGltfLoader {
             const auto base_color_texture_index = material.pbrMetallicRoughness.baseColorTexture.index;
             const auto base_color_texture =
                 base_color_texture_index >= 0 ? texture_map[base_color_texture_index] : std_mat.whiteTexture();
-            const auto metallic_roughness_texture_index = material.pbrMetallicRoughness.metallicRoughnessTexture.index;
-            const auto metallic_roughness_texture =
-                metallic_roughness_texture_index >= 0 ? texture_map[metallic_roughness_texture_index] : std_mat.metallicRoughnessDefaultTexture();
+            const auto metallic_roughness_texture = metallicRoughnessTextureForMaterial(material);
             const auto normal_texture_index = material.normalTexture.index;
             const auto normal_texture =
                 normal_texture_index >= 0 ? texture_map[normal_texture_index] : std_mat.normalDefaultTexture();
-            const auto emissive_texture_index = material.emissiveTexture.index;
-            const auto emissive_texture =
-                emissive_texture_index >= 0 ? texture_map[emissive_texture_index] : std_mat.emissiveDefaultTexture();
+            const auto emissive_texture = emissiveTextureForMaterial(material);
 
             material_map[i] = mat_container.registerMaterial(Pelican::MaterialInfo{
                 .vert_shader = std_mat.standardVertShader(),
@@ -214,7 +318,7 @@ struct InternalGltfLoader {
 
         const auto &scene = model.scenes[model.defaultScene < 0 ? 0 : model.defaultScene];
         for (const auto &node : scene.nodes) {
-            loadNode(model.nodes[node]);
+            loadNode(model.nodes[node], glm::mat4{1.0f});
         }
 
         ModelTemplate m;
