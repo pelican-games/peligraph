@@ -1,0 +1,29 @@
+[
+  {
+    "file": "valid/project_relative.json",
+    "expect": "ok"
+  },
+  {
+    "file": "valid/project_scheme.json",
+    "expect": "ok"
+  },
+  {
+    "file": "valid/engine_default_config.json",
+    "expect": "ok"
+  },
+  {
+    "file": "invalid/escape_parent.json",
+    "expect": "error",
+    "error_kind": "escape"
+  },
+  {
+    "file": "invalid/absolute_project_ref.json",
+    "expect": "error",
+    "error_kind": "absolute"
+  },
+  {
+    "file": "invalid/unknown_engine.json",
+    "expect": "error",
+    "error_kind": "unknown_engine_id"
+  }
+]

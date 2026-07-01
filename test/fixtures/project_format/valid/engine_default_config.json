@@ -1,0 +1,6 @@
+{
+  "mode": "load_text",
+  "ref": "engine://default_config.json",
+  "kind": "text_contains",
+  "contains": "basic_config"
+}

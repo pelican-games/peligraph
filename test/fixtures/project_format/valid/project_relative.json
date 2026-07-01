@@ -1,0 +1,6 @@
+{
+  "mode": "resolve_project",
+  "ref": "assets/a.txt",
+  "kind": "path",
+  "same_as": "project://assets/a.txt"
+}

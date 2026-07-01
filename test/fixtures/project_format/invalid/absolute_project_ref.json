@@ -1,0 +1,4 @@
+{
+  "mode": "resolve_project",
+  "ref": "$ABSOLUTE_OUTSIDE_FILE"
+}
