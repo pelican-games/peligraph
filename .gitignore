@@ -3,7 +3,7 @@ dist/
 dist_debug/
 
 # Large example assets live next to the JSON scene configs but stay out of git
-# (hand-copied between machines; the build copies them beside the player exe)
-src/player/resources/*.glb
-src/player/resources/*.vrm
-src/player/resources/*.png
+# (hand-copied between machines; project JSON stays tracked)
+projects/example/assets/models/*.glb
+projects/example/assets/models/*.vrm
+projects/example/assets/textures/*.png

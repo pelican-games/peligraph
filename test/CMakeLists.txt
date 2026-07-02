@@ -98,6 +98,7 @@ add_test(
     COMMAND ${CMAKE_COMMAND}
         -DPLAYER=$<TARGET_FILE:pelican_player>
         -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+        -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/example
         -DSEQ_FILE=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/seqplayer_two_objects.jsonl
         -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/seqplayer_headless
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_seqplayer_headless.cmake

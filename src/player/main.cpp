@@ -125,9 +125,32 @@ std::filesystem::path executableDirectory(char *argv0) {
     return exe_path.parent_path();
 }
 
+std::optional<std::filesystem::path> findExampleProjectNearExecutable(const std::filesystem::path &exe_dir) {
+    auto current = exe_dir;
+    while (!current.empty()) {
+        const auto project_file = current / "projects" / "example" / "project.json";
+        if (std::filesystem::is_regular_file(project_file)) {
+            return weaklyCanonicalPath(project_file.parent_path(), "implicit example project");
+        }
+
+        const auto parent = current.parent_path();
+        if (parent.empty() || parent == current) {
+            break;
+        }
+        current = parent;
+    }
+    return std::nullopt;
+}
+
 void configureImplicitProject(ParsedLaunchConfig &parsed, char *argv0) {
     parsed.project_root = executableDirectory(argv0);
-    const auto project_file = parsed.project_root / "project.json";
+    auto project_file = parsed.project_root / "project.json";
+    if (!std::filesystem::is_regular_file(project_file)) {
+        if (const auto example_project = findExampleProjectNearExecutable(parsed.project_root)) {
+            parsed.project_root = *example_project;
+            project_file = parsed.project_root / "project.json";
+        }
+    }
     if (std::filesystem::is_regular_file(project_file)) {
         parsed.project_json = readTextFile(project_file);
     }

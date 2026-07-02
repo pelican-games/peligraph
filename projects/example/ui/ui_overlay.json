@@ -2,14 +2,14 @@
   "images": [
     {
       "name": "ui_test",
-      "file": "Frame84.png",
+      "file": "assets/textures/Frame84.png",
       "position": [0.5, 0.5, 0.1],
       "center": [0.5, 0.5],
       "scale": 0.6
     },
     {
       "name": "explosion",
-      "file": "explosion06.png",
+      "file": "assets/textures/explosion06.png",
       "position": [0.8, 0.5, 0.2],
       "center": [0.5, 0.5],
       "scale": 1.0

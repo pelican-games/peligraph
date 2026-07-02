@@ -4,6 +4,9 @@ endif()
 if(NOT DEFINED PLAYER_DIR)
     message(FATAL_ERROR "PLAYER_DIR is required")
 endif()
+if(NOT DEFINED PROJECT_DIR)
+    message(FATAL_ERROR "PROJECT_DIR is required")
+endif()
 if(NOT DEFINED SEQ_FILE)
     message(FATAL_ERROR "SEQ_FILE is required")
 endif()
@@ -17,6 +20,7 @@ file(MAKE_DIRECTORY "${OUT_DIR}")
 execute_process(
     COMMAND "${PLAYER}"
         --headless
+        --project "${PROJECT_DIR}"
         --frames 3
         --size 160x90
         --fps 30

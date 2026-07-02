@@ -64,8 +64,8 @@
           },
           "input": ["gbuffer_albedo", "gbuffer_normal", "gbuffer_material", "gbuffer_worldpos", "g_emissive"],
           "shader": {
-            "vertex": "../../../../src/core/resources/fullscreen.vert.spv",
-            "fragment": "../../../../src/core/resources/fullscreen.frag.spv"
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://fullscreen"
           },
           "push_constants": "camera_position",
           "uses_light_data": true
