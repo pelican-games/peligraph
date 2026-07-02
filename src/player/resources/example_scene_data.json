@@ -1,238 +1,1174 @@
 {
-  "default_scene": {
-    "lights": [
-                  {
-                    "name": "BlueSpot",
-                    "type": "spot",
-                    "position": [2.0, 0.5, 2.0],
-                    "direction": [0.0, -0.5, -1.0],
-                    "intensity": 1.8,
-                    "color": [0.6, 0.7, 1.0],
-                    "innerConeAngle": 18.0,
-                    "outerConeAngle": 28.0
-                  },
-                  {
-                    "name": "RedPoint",
-                    "type": "point",
-                    "position": [-2.0, 0.3, 1.0],
-                    "intensity": 1.5,
-                    "color": [1.0, 0.4, 0.3]
-                  },
+  "schema": "pelican.scene",
+  "version": 1,
+  "scenes": {
+    "default_scene": {
+      "objects": [
+        {
+          "components": [
             {
-              "name": "KeyLight",
-              "type": "directional",
-              "direction": [0.5, -0.2, 0.5],
-              "intensity": 0.05,
-              "color": [1.0, 0.8, 0.6]
+              "name": "transform",
+              "pos": [
+                0,
+                0,
+                -3
+              ],
+              "rotation": [
+                0,
+                0.1736,
+                0,
+                0.348
+              ],
+              "scale": [
+                1,
+                1,
+                1
+              ]
             },
             {
-              "name": "KeyLight2",
-              "type": "directional",
-              "direction": [-0.4, -0.2, 0.6],
-              "intensity": 0.05,
-              "color": [1.0, 0.8, 0.6]
-            },
-            {
-              "name": "FillLight",
-              "type": "directional",
-              "direction": [-0.5, -0.2, 0.0],
-              "intensity": 0.05,
-              "color": [1.0, 0.7, 0.5]
-            },
-            {
-              "name": "FillLight2",
-              "type": "directional",
-              "direction": [0.3, -0.2, -0.4],
-              "intensity": 0.05,
-              "color": [1.0, 0.7, 0.5]
-            },
-            {
-              "name": "RimLight",
-              "type": "directional",
-              "direction": [0.0, -0.2, -0.5],
-              "intensity": 0.05,
-              "color": [1.0, 0.6, 0.3]
-            },
-            {
-              "name": "RimLight2",
-              "type": "directional",
-              "direction": [0.2, -0.2, -0.6],
-              "intensity": 0.05,
-              "color": [1.0, 0.6, 0.3]
-            },
-            {
-              "name": "Backlight",
-              "type": "directional",
-              "direction": [-0.3, -0.2, -1.0],
-              "intensity": 0.5,
-              "color": [1.0, 0.7, 0.4]
-            },
-            {
-              "name": "Backlight2",
-              "type": "directional",
-              "direction": [0.3, -0.2, -1.0],
-              "intensity": 0.5,
-              "color": [1.0, 0.7, 0.4]
-            },
-            {
-              "name": "PointLight1",
-              "type": "point",
-              "position": [0.0, 0.2, -2.0],
-              "intensity": 0.5,
-              "color": [1.0, 0.8, 0.5]
-            },
-            {
-              "name": "PointLight2",
-              "type": "point",
-              "position": [1.5, 0.2, -1.0],
-              "intensity": 0.5,
-              "color": [1.0, 0.8, 0.5]
-            },
-            {
-              "name": "SpotLight1",
-              "type": "spot",
-              "position": [0.0, 0.2, -2.0],
-              "direction": [0.0, -0.5, 1.0],
-              "intensity": 1.0,
-              "color": [1.0, 0.8, 0.5],
-              "innerConeAngle": 20.0,
-              "outerConeAngle": 25.0
-            },
-            {
-              "name": "SpotLight2",
-              "type": "spot",
-              "position": [-1.5, 0.2, -1.0],
-              "direction": [0.0, -0.5, 1.0],
-              "intensity": 1.0,
-              "color": [1.0, 0.8, 0.5],
-              "innerConeAngle": 20.0,
-              "outerConeAngle": 25.0
+              "name": "camera"
             }
-        ],
-    "objects": [
-      {
-        "components": [
-          {
-            "name": "transform",
-            "pos": [0.0, 0.0, -3.0],
-            "rotation": [0.0, 0.1736, 0.0, 0.348],
-            "scale": [1.0, 1.0, 1.0]
-          },
-          {
-            "name": "camera"
-          }
-        ]
-      },
-      {
-        "components": [
-          {
-            "name": "transform",
-            "pos": [0.0, -1.3, 3.0],
-            "rotation": [0, 0.707, -0.707, 0],
-            "scale": [0.25, 0.25, 0.25]
-          },
-          {
-            "name": "simplemodelview",
-            "model": "sotai"
-          }
-        ]
-      },
-      {
-        "components": [
-          { "name": "transform", "pos": [1.7, -1.3, 4.5], "rotation": [0, 0.707, -0.707, 0], "scale": [0.25, 0.25, 0.25] },
-          { "name": "simplemodelview", "model": "sotai" }
-        ]
-      },
-      {
-        "components": [
-          { "name": "transform", "pos": [-1.3, -1.3, 5.2], "rotation": [0, 0.707, -0.707, 0], "scale": [0.25, 0.25, 0.25] },
-          { "name": "simplemodelview", "model": "sotai" }
-        ]
-      },
-      {
-        "components": [
-          { "name": "transform", "pos": [0.8, -1.3, 6.0], "rotation": [0, 0.707, -0.707, 0], "scale": [0.25, 0.25, 0.25] },
-          { "name": "simplemodelview", "model": "sotai" }
-        ]
-      },
-      {
-        "components": [
-          { "name": "transform", "pos": [-2.1, -1.3, 6.7], "rotation": [0, 0.707, -0.707, 0], "scale": [0.25, 0.25, 0.25] },
-          { "name": "simplemodelview", "model": "sotai" }
-        ]
-      },
-      {
-        "components": [
-          { "name": "transform", "pos": [1.2, -1.3, 7.5], "rotation": [0, 0.707, -0.707, 0], "scale": [0.25, 0.25, 0.25] },
-          { "name": "simplemodelview", "model": "sotai" }
-        ]
-      },
-      {
-        "components": [
-          { "name": "transform", "pos": [-0.9, -1.3, 8.2], "rotation": [0, 0.707, -0.707, 0], "scale": [0.25, 0.25, 0.25] },
-          { "name": "simplemodelview", "model": "sotai" }
-        ]
-      },
-      {
-        "components": [
-          { "name": "transform", "pos": [2.3, -1.3, 9.0], "rotation": [0, 0.707, -0.707, 0], "scale": [0.25, 0.25, 0.25] },
-          { "name": "simplemodelview", "model": "sotai" }
-        ]
-      },
-      {
-        "components": [
-          { "name": "transform", "pos": [-1.8, -1.3, 9.7], "rotation": [0, 0.707, -0.707, 0], "scale": [0.25, 0.25, 0.25] },
-          { "name": "simplemodelview", "model": "sotai" }
-        ]
-      },
-      { "components": [ { "name": "transform", "pos": [-3.8, -1.3, 2.7], "rotation": [0, 0.707, -0.707, 0], "scale": [0.25, 0.25, 0.25] }, { "name": "simplemodelview", "model": "sotai" } ] },
-      { "components": [ { "name": "transform", "pos": [-3.2, -1.3, 4.7], "rotation": [0, 0.707, -0.707, 0], "scale": [0.25, 0.25, 0.25] }, { "name": "simplemodelview", "model": "sotai" } ] },
-      { "components": [ { "name": "transform", "pos": [-2.7, -1.3, 7.0], "rotation": [0, 0.707, -0.707, 0], "scale": [0.25, 0.25, 0.25] }, { "name": "simplemodelview", "model": "sotai" } ] },
-      { "components": [ { "name": "transform", "pos": [-2.2, -1.3, 9.5], "rotation": [0, 0.707, -0.707, 0], "scale": [0.25, 0.25, 0.25] }, { "name": "simplemodelview", "model": "sotai" } ] },
-      { "components": [ { "name": "transform", "pos": [-1.6, -1.3, 9.7], "rotation": [0, 0.707, -0.707, 0], "scale": [0.25, 0.25, 0.25] }, { "name": "simplemodelview", "model": "sotai" } ] },
-      { "components": [ { "name": "transform", "pos": [-1.1, -1.3, 11.9], "rotation": [0, 0.707, -0.707, 0], "scale": [0.25, 0.25, 0.25] }, { "name": "simplemodelview", "model": "sotai" } ] },
-      { "components": [ { "name": "transform", "pos": [-0.4, -1.3, 13.2], "rotation": [0, 0.707, -0.707, 0], "scale": [0.25, 0.25, 0.25] }, { "name": "simplemodelview", "model": "sotai" } ] },
-      { "components": [ { "name": "transform", "pos": [0.2, -1.3, 15.7], "rotation": [0, 0.707, -0.707, 0], "scale": [0.25, 0.25, 0.25] }, { "name": "simplemodelview", "model": "sotai" } ] },
-      { "components": [ { "name": "transform", "pos": [0.7, -1.3, 17.9], "rotation": [0, 0.707, -0.707, 0], "scale": [0.25, 0.25, 0.25] }, { "name": "simplemodelview", "model": "sotai" } ] },
-      { "components": [ { "name": "transform", "pos": [1.3, -1.3, 19.5], "rotation": [0, 0.707, -0.707, 0], "scale": [0.25, 0.25, 0.25] }, { "name": "simplemodelview", "model": "sotai" } ] },
-      { "components": [ { "name": "transform", "pos": [1.9, -1.3, 21.8], "rotation": [0, 0.707, -0.707, 0], "scale": [0.25, 0.25, 0.25] }, { "name": "simplemodelview", "model": "sotai" } ] },
-      { "components": [ { "name": "transform", "pos": [2.4, -1.3, 23.6], "rotation": [0, 0.707, -0.707, 0], "scale": [0.25, 0.25, 0.25] }, { "name": "simplemodelview", "model": "sotai" } ] },
-      { "components": [ { "name": "transform", "pos": [2.9, -1.3, 25.9], "rotation": [0, 0.707, -0.707, 0], "scale": [0.25, 0.25, 0.25] }, { "name": "simplemodelview", "model": "sotai" } ] },
-      { "components": [ { "name": "transform", "pos": [3.5, -1.3, 27.3], "rotation": [0, 0.707, -0.707, 0], "scale": [0.25, 0.25, 0.25] }, { "name": "simplemodelview", "model": "sotai" } ] },
-      { "components": [ { "name": "transform", "pos": [4.0, -1.3, 29.6], "rotation": [0, 0.707, -0.707, 0], "scale": [0.25, 0.25, 0.25] }, { "name": "simplemodelview", "model": "sotai" } ] },
-      { "components": [ { "name": "transform", "pos": [4.6, -1.3, 31.2], "rotation": [0, 0.707, -0.707, 0], "scale": [0.25, 0.25, 0.25] }, { "name": "simplemodelview", "model": "sotai" } ] },
-      { "components": [ { "name": "transform", "pos": [5.1, -1.3, 33.7], "rotation": [0, 0.707, -0.707, 0], "scale": [0.25, 0.25, 0.25] }, { "name": "simplemodelview", "model": "sotai" } ] },
-      { "components": [ { "name": "transform", "pos": [5.7, -1.3, 35.5], "rotation": [0, 0.707, -0.707, 0], "scale": [0.25, 0.25, 0.25] }, { "name": "simplemodelview", "model": "sotai" } ] },
-      { "components": [ { "name": "transform", "pos": [6.2, -1.3, 37.8], "rotation": [0, 0.707, -0.707, 0], "scale": [0.25, 0.25, 0.25] }, { "name": "simplemodelview", "model": "sotai" } ] },
-      { "components": [ { "name": "transform", "pos": [6.8, -1.3, 39.9], "rotation": [0, 0.707, -0.707, 0], "scale": [0.25, 0.25, 0.25] }, { "name": "simplemodelview", "model": "sotai" } ] },
-      {
-        "components": [
-          {
-            "name": "transform",
-            "pos": [-0.7, -1.2, 1.0],
-            "rotation": [0.6830, 0.0, -0.1830, 0.7071],
-            "scale": [0.25, 0.25, 0.25]
-          },
-          {
-            "name": "simplemodelview",
-            "model": "character"
-          }
-        ]
-      },
-      {
-        "components": [
-          {
-            "name": "transform",
-            "pos": [0.0, -2.0, 0.0],
-            "rotation": [0.0, 0.7071, 0.0, 0.7071],
-            "scale": [0.1, 0.1, 0.1]
-          },
-          {
-            "name": "simplemodelview",
-            "model": "sponza"
-          }
-        ]
-      }
-    ]
+          ]
+        },
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                0,
+                -1.3,
+                3
+              ],
+              "rotation": [
+                0,
+                0.707,
+                -0.707,
+                0
+              ],
+              "scale": [
+                0.25,
+                0.25,
+                0.25
+              ]
+            },
+            {
+              "name": "simplemodelview",
+              "model": "sotai"
+            }
+          ]
+        },
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                1.7,
+                -1.3,
+                4.5
+              ],
+              "rotation": [
+                0,
+                0.707,
+                -0.707,
+                0
+              ],
+              "scale": [
+                0.25,
+                0.25,
+                0.25
+              ]
+            },
+            {
+              "name": "simplemodelview",
+              "model": "sotai"
+            }
+          ]
+        },
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                -1.3,
+                -1.3,
+                5.2
+              ],
+              "rotation": [
+                0,
+                0.707,
+                -0.707,
+                0
+              ],
+              "scale": [
+                0.25,
+                0.25,
+                0.25
+              ]
+            },
+            {
+              "name": "simplemodelview",
+              "model": "sotai"
+            }
+          ]
+        },
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                0.8,
+                -1.3,
+                6
+              ],
+              "rotation": [
+                0,
+                0.707,
+                -0.707,
+                0
+              ],
+              "scale": [
+                0.25,
+                0.25,
+                0.25
+              ]
+            },
+            {
+              "name": "simplemodelview",
+              "model": "sotai"
+            }
+          ]
+        },
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                -2.1,
+                -1.3,
+                6.7
+              ],
+              "rotation": [
+                0,
+                0.707,
+                -0.707,
+                0
+              ],
+              "scale": [
+                0.25,
+                0.25,
+                0.25
+              ]
+            },
+            {
+              "name": "simplemodelview",
+              "model": "sotai"
+            }
+          ]
+        },
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                1.2,
+                -1.3,
+                7.5
+              ],
+              "rotation": [
+                0,
+                0.707,
+                -0.707,
+                0
+              ],
+              "scale": [
+                0.25,
+                0.25,
+                0.25
+              ]
+            },
+            {
+              "name": "simplemodelview",
+              "model": "sotai"
+            }
+          ]
+        },
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                -0.9,
+                -1.3,
+                8.2
+              ],
+              "rotation": [
+                0,
+                0.707,
+                -0.707,
+                0
+              ],
+              "scale": [
+                0.25,
+                0.25,
+                0.25
+              ]
+            },
+            {
+              "name": "simplemodelview",
+              "model": "sotai"
+            }
+          ]
+        },
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                2.3,
+                -1.3,
+                9
+              ],
+              "rotation": [
+                0,
+                0.707,
+                -0.707,
+                0
+              ],
+              "scale": [
+                0.25,
+                0.25,
+                0.25
+              ]
+            },
+            {
+              "name": "simplemodelview",
+              "model": "sotai"
+            }
+          ]
+        },
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                -1.8,
+                -1.3,
+                9.7
+              ],
+              "rotation": [
+                0,
+                0.707,
+                -0.707,
+                0
+              ],
+              "scale": [
+                0.25,
+                0.25,
+                0.25
+              ]
+            },
+            {
+              "name": "simplemodelview",
+              "model": "sotai"
+            }
+          ]
+        },
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                -3.8,
+                -1.3,
+                2.7
+              ],
+              "rotation": [
+                0,
+                0.707,
+                -0.707,
+                0
+              ],
+              "scale": [
+                0.25,
+                0.25,
+                0.25
+              ]
+            },
+            {
+              "name": "simplemodelview",
+              "model": "sotai"
+            }
+          ]
+        },
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                -3.2,
+                -1.3,
+                4.7
+              ],
+              "rotation": [
+                0,
+                0.707,
+                -0.707,
+                0
+              ],
+              "scale": [
+                0.25,
+                0.25,
+                0.25
+              ]
+            },
+            {
+              "name": "simplemodelview",
+              "model": "sotai"
+            }
+          ]
+        },
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                -2.7,
+                -1.3,
+                7
+              ],
+              "rotation": [
+                0,
+                0.707,
+                -0.707,
+                0
+              ],
+              "scale": [
+                0.25,
+                0.25,
+                0.25
+              ]
+            },
+            {
+              "name": "simplemodelview",
+              "model": "sotai"
+            }
+          ]
+        },
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                -2.2,
+                -1.3,
+                9.5
+              ],
+              "rotation": [
+                0,
+                0.707,
+                -0.707,
+                0
+              ],
+              "scale": [
+                0.25,
+                0.25,
+                0.25
+              ]
+            },
+            {
+              "name": "simplemodelview",
+              "model": "sotai"
+            }
+          ]
+        },
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                -1.6,
+                -1.3,
+                9.7
+              ],
+              "rotation": [
+                0,
+                0.707,
+                -0.707,
+                0
+              ],
+              "scale": [
+                0.25,
+                0.25,
+                0.25
+              ]
+            },
+            {
+              "name": "simplemodelview",
+              "model": "sotai"
+            }
+          ]
+        },
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                -1.1,
+                -1.3,
+                11.9
+              ],
+              "rotation": [
+                0,
+                0.707,
+                -0.707,
+                0
+              ],
+              "scale": [
+                0.25,
+                0.25,
+                0.25
+              ]
+            },
+            {
+              "name": "simplemodelview",
+              "model": "sotai"
+            }
+          ]
+        },
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                -0.4,
+                -1.3,
+                13.2
+              ],
+              "rotation": [
+                0,
+                0.707,
+                -0.707,
+                0
+              ],
+              "scale": [
+                0.25,
+                0.25,
+                0.25
+              ]
+            },
+            {
+              "name": "simplemodelview",
+              "model": "sotai"
+            }
+          ]
+        },
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                0.2,
+                -1.3,
+                15.7
+              ],
+              "rotation": [
+                0,
+                0.707,
+                -0.707,
+                0
+              ],
+              "scale": [
+                0.25,
+                0.25,
+                0.25
+              ]
+            },
+            {
+              "name": "simplemodelview",
+              "model": "sotai"
+            }
+          ]
+        },
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                0.7,
+                -1.3,
+                17.9
+              ],
+              "rotation": [
+                0,
+                0.707,
+                -0.707,
+                0
+              ],
+              "scale": [
+                0.25,
+                0.25,
+                0.25
+              ]
+            },
+            {
+              "name": "simplemodelview",
+              "model": "sotai"
+            }
+          ]
+        },
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                1.3,
+                -1.3,
+                19.5
+              ],
+              "rotation": [
+                0,
+                0.707,
+                -0.707,
+                0
+              ],
+              "scale": [
+                0.25,
+                0.25,
+                0.25
+              ]
+            },
+            {
+              "name": "simplemodelview",
+              "model": "sotai"
+            }
+          ]
+        },
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                1.9,
+                -1.3,
+                21.8
+              ],
+              "rotation": [
+                0,
+                0.707,
+                -0.707,
+                0
+              ],
+              "scale": [
+                0.25,
+                0.25,
+                0.25
+              ]
+            },
+            {
+              "name": "simplemodelview",
+              "model": "sotai"
+            }
+          ]
+        },
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                2.4,
+                -1.3,
+                23.6
+              ],
+              "rotation": [
+                0,
+                0.707,
+                -0.707,
+                0
+              ],
+              "scale": [
+                0.25,
+                0.25,
+                0.25
+              ]
+            },
+            {
+              "name": "simplemodelview",
+              "model": "sotai"
+            }
+          ]
+        },
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                2.9,
+                -1.3,
+                25.9
+              ],
+              "rotation": [
+                0,
+                0.707,
+                -0.707,
+                0
+              ],
+              "scale": [
+                0.25,
+                0.25,
+                0.25
+              ]
+            },
+            {
+              "name": "simplemodelview",
+              "model": "sotai"
+            }
+          ]
+        },
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                3.5,
+                -1.3,
+                27.3
+              ],
+              "rotation": [
+                0,
+                0.707,
+                -0.707,
+                0
+              ],
+              "scale": [
+                0.25,
+                0.25,
+                0.25
+              ]
+            },
+            {
+              "name": "simplemodelview",
+              "model": "sotai"
+            }
+          ]
+        },
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                4,
+                -1.3,
+                29.6
+              ],
+              "rotation": [
+                0,
+                0.707,
+                -0.707,
+                0
+              ],
+              "scale": [
+                0.25,
+                0.25,
+                0.25
+              ]
+            },
+            {
+              "name": "simplemodelview",
+              "model": "sotai"
+            }
+          ]
+        },
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                4.6,
+                -1.3,
+                31.2
+              ],
+              "rotation": [
+                0,
+                0.707,
+                -0.707,
+                0
+              ],
+              "scale": [
+                0.25,
+                0.25,
+                0.25
+              ]
+            },
+            {
+              "name": "simplemodelview",
+              "model": "sotai"
+            }
+          ]
+        },
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                5.1,
+                -1.3,
+                33.7
+              ],
+              "rotation": [
+                0,
+                0.707,
+                -0.707,
+                0
+              ],
+              "scale": [
+                0.25,
+                0.25,
+                0.25
+              ]
+            },
+            {
+              "name": "simplemodelview",
+              "model": "sotai"
+            }
+          ]
+        },
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                5.7,
+                -1.3,
+                35.5
+              ],
+              "rotation": [
+                0,
+                0.707,
+                -0.707,
+                0
+              ],
+              "scale": [
+                0.25,
+                0.25,
+                0.25
+              ]
+            },
+            {
+              "name": "simplemodelview",
+              "model": "sotai"
+            }
+          ]
+        },
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                6.2,
+                -1.3,
+                37.8
+              ],
+              "rotation": [
+                0,
+                0.707,
+                -0.707,
+                0
+              ],
+              "scale": [
+                0.25,
+                0.25,
+                0.25
+              ]
+            },
+            {
+              "name": "simplemodelview",
+              "model": "sotai"
+            }
+          ]
+        },
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                6.8,
+                -1.3,
+                39.9
+              ],
+              "rotation": [
+                0,
+                0.707,
+                -0.707,
+                0
+              ],
+              "scale": [
+                0.25,
+                0.25,
+                0.25
+              ]
+            },
+            {
+              "name": "simplemodelview",
+              "model": "sotai"
+            }
+          ]
+        },
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                -0.7,
+                -1.2,
+                1
+              ],
+              "rotation": [
+                0.683,
+                0,
+                -0.183,
+                0.7071
+              ],
+              "scale": [
+                0.25,
+                0.25,
+                0.25
+              ]
+            },
+            {
+              "name": "simplemodelview",
+              "model": "character"
+            }
+          ]
+        },
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                0,
+                -2,
+                0
+              ],
+              "rotation": [
+                0,
+                0.7071,
+                0,
+                0.7071
+              ],
+              "scale": [
+                0.1,
+                0.1,
+                0.1
+              ]
+            },
+            {
+              "name": "simplemodelview",
+              "model": "sponza"
+            }
+          ]
+        },
+        {
+          "name": "BlueSpot",
+          "components": [
+            {
+              "name": "light",
+              "type": "spot",
+              "position": [
+                2,
+                0.5,
+                2
+              ],
+              "direction": [
+                0,
+                -0.5,
+                -1
+              ],
+              "intensity": 1.8,
+              "color": [
+                0.6,
+                0.7,
+                1
+              ],
+              "innerConeAngle": 18,
+              "outerConeAngle": 28
+            }
+          ]
+        },
+        {
+          "name": "RedPoint",
+          "components": [
+            {
+              "name": "light",
+              "type": "point",
+              "position": [
+                -2,
+                0.3,
+                1
+              ],
+              "intensity": 1.5,
+              "color": [
+                1,
+                0.4,
+                0.3
+              ]
+            }
+          ]
+        },
+        {
+          "name": "KeyLight",
+          "components": [
+            {
+              "name": "light",
+              "type": "directional",
+              "direction": [
+                0.5,
+                -0.2,
+                0.5
+              ],
+              "intensity": 0.05,
+              "color": [
+                1,
+                0.8,
+                0.6
+              ]
+            }
+          ]
+        },
+        {
+          "name": "KeyLight2",
+          "components": [
+            {
+              "name": "light",
+              "type": "directional",
+              "direction": [
+                -0.4,
+                -0.2,
+                0.6
+              ],
+              "intensity": 0.05,
+              "color": [
+                1,
+                0.8,
+                0.6
+              ]
+            }
+          ]
+        },
+        {
+          "name": "FillLight",
+          "components": [
+            {
+              "name": "light",
+              "type": "directional",
+              "direction": [
+                -0.5,
+                -0.2,
+                0
+              ],
+              "intensity": 0.05,
+              "color": [
+                1,
+                0.7,
+                0.5
+              ]
+            }
+          ]
+        },
+        {
+          "name": "FillLight2",
+          "components": [
+            {
+              "name": "light",
+              "type": "directional",
+              "direction": [
+                0.3,
+                -0.2,
+                -0.4
+              ],
+              "intensity": 0.05,
+              "color": [
+                1,
+                0.7,
+                0.5
+              ]
+            }
+          ]
+        },
+        {
+          "name": "RimLight",
+          "components": [
+            {
+              "name": "light",
+              "type": "directional",
+              "direction": [
+                0,
+                -0.2,
+                -0.5
+              ],
+              "intensity": 0.05,
+              "color": [
+                1,
+                0.6,
+                0.3
+              ]
+            }
+          ]
+        },
+        {
+          "name": "RimLight2",
+          "components": [
+            {
+              "name": "light",
+              "type": "directional",
+              "direction": [
+                0.2,
+                -0.2,
+                -0.6
+              ],
+              "intensity": 0.05,
+              "color": [
+                1,
+                0.6,
+                0.3
+              ]
+            }
+          ]
+        },
+        {
+          "name": "Backlight",
+          "components": [
+            {
+              "name": "light",
+              "type": "directional",
+              "direction": [
+                -0.3,
+                -0.2,
+                -1
+              ],
+              "intensity": 0.5,
+              "color": [
+                1,
+                0.7,
+                0.4
+              ]
+            }
+          ]
+        },
+        {
+          "name": "Backlight2",
+          "components": [
+            {
+              "name": "light",
+              "type": "directional",
+              "direction": [
+                0.3,
+                -0.2,
+                -1
+              ],
+              "intensity": 0.5,
+              "color": [
+                1,
+                0.7,
+                0.4
+              ]
+            }
+          ]
+        },
+        {
+          "name": "PointLight1",
+          "components": [
+            {
+              "name": "light",
+              "type": "point",
+              "position": [
+                0,
+                0.2,
+                -2
+              ],
+              "intensity": 0.5,
+              "color": [
+                1,
+                0.8,
+                0.5
+              ]
+            }
+          ]
+        },
+        {
+          "name": "PointLight2",
+          "components": [
+            {
+              "name": "light",
+              "type": "point",
+              "position": [
+                1.5,
+                0.2,
+                -1
+              ],
+              "intensity": 0.5,
+              "color": [
+                1,
+                0.8,
+                0.5
+              ]
+            }
+          ]
+        },
+        {
+          "name": "SpotLight1",
+          "components": [
+            {
+              "name": "light",
+              "type": "spot",
+              "position": [
+                0,
+                0.2,
+                -2
+              ],
+              "direction": [
+                0,
+                -0.5,
+                1
+              ],
+              "intensity": 1,
+              "color": [
+                1,
+                0.8,
+                0.5
+              ],
+              "innerConeAngle": 20,
+              "outerConeAngle": 25
+            }
+          ]
+        },
+        {
+          "name": "SpotLight2",
+          "components": [
+            {
+              "name": "light",
+              "type": "spot",
+              "position": [
+                -1.5,
+                0.2,
+                -1
+              ],
+              "direction": [
+                0,
+                -0.5,
+                1
+              ],
+              "intensity": 1,
+              "color": [
+                1,
+                0.8,
+                0.5
+              ],
+              "innerConeAngle": 20,
+              "outerConeAngle": 25
+            }
+          ]
+        }
+      ]
+    }
   }
 }

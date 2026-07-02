@@ -67,5 +67,28 @@
     "file": "invalid/shader_stem_missing.json",
     "expect": "error",
     "error_kind": "shader_stem_missing"
+  },
+  {
+    "file": "valid/scene_v1.json",
+    "expect": "ok"
+  },
+  {
+    "file": "valid/scene_legacy.json",
+    "expect": "ok"
+  },
+  {
+    "file": "invalid/scene_bad_schema.json",
+    "expect": "error",
+    "error_kind": "schema"
+  },
+  {
+    "file": "invalid/scene_future_version.json",
+    "expect": "error",
+    "error_kind": "version"
+  },
+  {
+    "file": "invalid/scene_duplicate_name.json",
+    "expect": "error",
+    "error_kind": "duplicate_name"
   }
 ]
