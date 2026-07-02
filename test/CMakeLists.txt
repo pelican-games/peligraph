@@ -13,6 +13,9 @@ set(target_name pelican_test_${source_name})
 add_executable(${target_name} ${source_name}.cpp)
 set_target_properties(${target_name} PROPERTIES CXX_STANDARD 20)
 target_include_directories(${target_name} PRIVATE ${Vulkan_INCLUDE_DIRS})
+target_compile_definitions(${target_name} PRIVATE
+    "VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic"
+)
 target_link_libraries(${target_name} PRIVATE Catch2::Catch2WithMain nlohmann_json ${ARGN})
 catch_discover_tests(${target_name})
 endfunction()
@@ -38,6 +41,7 @@ target_compile_definitions(pelican_test_headless_render_test PRIVATE
     VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic
 )
 pelican_define_test(hoge_test)
+pelican_define_test(imageloader_test pelican_core tinyexr)
 pelican_define_test(pathresolver_test pelican_core)
 target_compile_definitions(pelican_test_pathresolver_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"

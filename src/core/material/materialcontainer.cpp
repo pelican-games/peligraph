@@ -122,13 +122,19 @@ MaterialContainer::MaterialContainer()
 MaterialContainer::~MaterialContainer() {}
 
 GlobalTextureId MaterialContainer::registerTexture(vk::Extent3D extent, const void *data) {
+    return registerTexture(extent, data, vk::Format::eR8G8B8A8Unorm,
+                           static_cast<vk::DeviceSize>(extent.width) * extent.height * extent.depth * 4);
+}
+
+GlobalTextureId MaterialContainer::registerTexture(vk::Extent3D extent, const void *data, vk::Format format,
+                                                   vk::DeviceSize bytes_num) {
     const auto &vkcore = GET_MODULE(VulkanManageCore);
-    auto image = vkcore.allocImage(extent, vk::Format::eR8G8B8A8Unorm,
+    auto image = vkcore.allocImage(extent, format,
                                    vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
                                    vma::MemoryUsage::eAutoPreferDevice, {});
 
     auto &vkutil = GET_MODULE(VulkanUtils);
-    vkutil.safeTransferMemoryToImage(image, data, extent.width * extent.height * extent.depth * 4,
+    vkutil.safeTransferMemoryToImage(image, data, bytes_num,
                                      VulkanUtils::ImageTransferInfo{
                                          .old_layout = vk::ImageLayout::eUndefined,
                                          .new_layout = vk::ImageLayout::eShaderReadOnlyOptimal,

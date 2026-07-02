@@ -55,6 +55,8 @@ DECLARE_MODULE(MaterialContainer) {
     ~MaterialContainer();
 
     GlobalTextureId registerTexture(vk::Extent3D extent, const void *data);
+    GlobalTextureId registerTexture(vk::Extent3D extent, const void *data, vk::Format format,
+                                    vk::DeviceSize bytes_num);
     GlobalMaterialId registerMaterial(MaterialInfo info);
 
     void setModelMatBuf(const BufferWrapper &buf);
