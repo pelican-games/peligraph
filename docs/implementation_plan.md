@@ -359,7 +359,9 @@ DECLARE_MODULE(DeletionQueue) {    // 薄いラッパ。寿命ピン留めはこ
    - project.json ロード: `schema`/`version`/`engine_min_version` の hard error ゲート([PF] §4)。設定合成を CLI > project.json > embedded default の 3 段に
    - ProjectBasicConfig / ModelAssetContainer / シーン・UI・パス読み込みのファイルアクセスを PathResolver 経由に置換(**cwd 参照の根絶**。`GET_MODULE(PathResolver)` 直呼びは core/loader と起動配線のみ、他層は依存構造体経由 — [PF] §5-2)
    - 単体テスト: [PF] 受け入れ基準 e, h, i
-3. **WP18c — example プロジェクト切り出し**(ウェーブ 9: WP19・WP25 マージ後):
+3. **WP18c — example プロジェクト切り出し**(ウェーブ 9: WP19・WP25 マージ後。
+   2026-07-02 実装・レビュー済み。実装時の設計追記: 暗黙プロジェクトの
+   開発ビルド向け fallback = [PF] v6.1):
    - `src/player/resources/` → `projects/example/` へ [PF] §2 レイアウトで移設。POST_BUILD コピー削除。`projects/example/README.md`(バイナリアセット一覧表: ファイル名/入手元/sha256/サイズ)を作成([PF] §5-5, 5-6)
    - **rendering config は stem 形式(WP19)、scene は pelican.scene v1(WP25)の
      最終形で書く**。`../../../../src/core/resources/*.spv` 参照はここで完全に消える

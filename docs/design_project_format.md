@@ -3,6 +3,11 @@
 対象読者: エンジン担当 + DCC/ツール側担当。
 ステータス: v6(2026-06-12 レビュー 5 巡・最終整理: locator 引数の適用除外、
 `project://` の v1 正式対応、setup 再呼び出し方針)。**設計凍結・実装中**。
+v6.1(2026-07-02 追記・形式自体の変更なし): §5-3 の暗黙プロジェクトに
+**開発ビルド向け fallback** を追加 — exe ディレクトリに project.json が無い場合、
+親ディレクトリ方向へ `projects/example/project.json` を探索して暗黙ルートにする
+(WP18c 実装レビューで受理。POST_BUILD コピー廃止後も `--project` なし互換起動を
+成立させるため。選ばれた root は従来どおり WARN ログで開示される)。
 実装順: P0(ProjectSource バグ、684494f で完了)→ PathResolver 型+
 EngineResourceRegistry 最小実装 → `--project` / 読み込み置換 / example 切り出し。
 前提: `design_roadmap_renderworld.md`(ロードマップ・肥大化対策 §6)、
