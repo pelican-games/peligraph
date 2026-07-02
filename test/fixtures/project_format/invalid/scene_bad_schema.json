@@ -1,0 +1,12 @@
+{
+  "mode": "scene_format",
+  "document": {
+    "schema": "not.pelican.scene",
+    "version": 1,
+    "scenes": {
+      "default_scene": {
+        "objects": []
+      }
+    }
+  }
+}

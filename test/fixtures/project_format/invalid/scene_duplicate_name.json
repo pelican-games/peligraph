@@ -1,0 +1,25 @@
+{
+  "mode": "scene_format",
+  "document": {
+    "schema": "pelican.scene",
+    "version": 1,
+    "scenes": {
+      "default_scene": {
+        "objects": [
+          {
+            "name": "Repeated",
+            "components": [
+              {"name": "transform"}
+            ]
+          },
+          {
+            "name": "Repeated",
+            "components": [
+              {"name": "simplemodelview"}
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

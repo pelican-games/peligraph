@@ -110,7 +110,7 @@ namespace Pelican
 		device.updateDescriptorSets(descriptorWrite, nullptr);
 	}
 
-	void LightContainer::load(const nlohmann::json& json)
+	void LightContainer::load(const std::vector<LightLoadEntry>& lights)
 	{
 		m_DirectionalLights.clear();
 		m_OriginalDirectionalLights.clear();
@@ -122,68 +122,61 @@ namespace Pelican
 		m_OriginalSpotLights.clear();
 		m_SpotLightNameMap.clear();
 
-		if (json.find("lights") == json.end())
+		for (const auto& lightEntry : lights)
 		{
-			return;
-		}
-
-		const auto& lightsJson = json["lights"];
-		if (!lightsJson.is_array())
-		{
-			throw std::runtime_error("lights must be an array");
-		}
-
-		for (const auto& lightJson : lightsJson)
-		{
+			const auto& lightJson = lightEntry.component;
 			const auto type = lightJson.value("type", "");
 			if (type == "directional")
 			{
 				DirectionalLight light{};
-				light.name = lightJson.value("name", "");
+				light.name = lightEntry.name;
 				light.direction = readVec3(lightJson, "direction", light.name);
-								light.intensity = lightJson.value("intensity", 1.0f);
-								light.color = readVec3(lightJson, "color", light.name);
-				
-								registerLightName(m_LightNameMap, light.name, static_cast<uint32_t>(m_DirectionalLights.size()),
-									"directional");
-								m_DirectionalLights.push_back(light);
-							}
-							else if (type == "point")
-							{
-								PointLight light{};
-								light.name = lightJson.value("name", "");
-								light.position = readVec3(lightJson, "position", light.name);
-								light.intensity = lightJson.value("intensity", 1.0f);
-								light.color = readVec3(lightJson, "color", light.name);
-				
-												registerLightName(m_PointLightNameMap, light.name,
-													static_cast<uint32_t>(m_PointLights.size()), "point");
-												m_PointLights.push_back(light);
-											}
-											else if (type == "spot")
-											{
-												SpotLight light{};
-												light.name = lightJson.value("name", "");
-												light.position = readVec3(lightJson, "position", light.name);
-												light.direction = readVec3(lightJson, "direction", light.name);
-												light.intensity = lightJson.value("intensity", 1.0f);
-												light.innerConeAngle = lightJson.value("innerConeAngle", 12.5f);
-												light.outerConeAngle = lightJson.value("outerConeAngle", 17.5f);
-												light.color = readVec3(lightJson, "color", light.name);
-								
-												registerLightName(m_SpotLightNameMap, light.name,
-													static_cast<uint32_t>(m_SpotLights.size()), "spot");
-												m_SpotLights.push_back(light);
-											}
+				light.intensity = lightJson.value("intensity", 1.0f);
+				light.color = readVec3(lightJson, "color", light.name);
+
+				registerLightName(m_LightNameMap, light.name, static_cast<uint32_t>(m_DirectionalLights.size()),
+					"directional");
+				m_DirectionalLights.push_back(light);
+			}
+			else if (type == "point")
+			{
+				PointLight light{};
+				light.name = lightEntry.name;
+				light.position = readVec3(lightJson, "position", light.name);
+				light.intensity = lightJson.value("intensity", 1.0f);
+				light.color = readVec3(lightJson, "color", light.name);
+
+				registerLightName(m_PointLightNameMap, light.name, static_cast<uint32_t>(m_PointLights.size()),
+					"point");
+				m_PointLights.push_back(light);
+			}
+			else if (type == "spot")
+			{
+				SpotLight light{};
+				light.name = lightEntry.name;
+				light.position = readVec3(lightJson, "position", light.name);
+				light.direction = readVec3(lightJson, "direction", light.name);
+				light.intensity = lightJson.value("intensity", 1.0f);
+				light.innerConeAngle = lightJson.value("innerConeAngle", 12.5f);
+				light.outerConeAngle = lightJson.value("outerConeAngle", 17.5f);
+				light.color = readVec3(lightJson, "color", light.name);
+
+				registerLightName(m_SpotLightNameMap, light.name, static_cast<uint32_t>(m_SpotLights.size()),
+					"spot");
+				m_SpotLights.push_back(light);
+			}
 			else
 			{
 				throw std::runtime_error("Unknown light type: " + type);
 			}
-										}
-										m_OriginalDirectionalLights = m_DirectionalLights;
-										m_OriginalPointLights = m_PointLights;
-										m_OriginalSpotLights = m_SpotLights;
-									}		    DirectionalLight* LightContainer::getLight(const std::string& name)
+		}
+
+		m_OriginalDirectionalLights = m_DirectionalLights;
+		m_OriginalPointLights = m_PointLights;
+		m_OriginalSpotLights = m_SpotLights;
+	}
+
+	DirectionalLight* LightContainer::getLight(const std::string& name)
 		    {
 		        auto it = m_LightNameMap.find(name);
 		        if (it != m_LightNameMap.end())

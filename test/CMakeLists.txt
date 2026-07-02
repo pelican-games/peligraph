@@ -43,6 +43,10 @@ target_compile_definitions(pelican_test_projectconfig_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 pelican_define_test(renderingpass_helpers_test pelican_core)
+pelican_define_test(sceneformat_test pelican_core glm)
+target_compile_definitions(pelican_test_sceneformat_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
 pelican_define_test(seqplayer_test pelican_core glm)
 pelican_define_test(shader_compile_test spirv-reflect-static stb)
 target_compile_definitions(pelican_test_shader_compile_test PRIVATE

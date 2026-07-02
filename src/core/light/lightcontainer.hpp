@@ -6,19 +6,25 @@
 
 #include <string>
 #include <vector>
-#include <nlohmann/json_fwd.hpp>
+#include <nlohmann/json.hpp>
 #include <vulkan/vulkan.hpp>
 #include <unordered_map>
 
 namespace Pelican
 {
+	struct LightLoadEntry
+	{
+		std::string name;
+		nlohmann::json component;
+	};
+
 	DECLARE_MODULE(LightContainer)
 	{
 	public:
 		LightContainer();
 		~LightContainer();
 
-		void load(const nlohmann::json& json);
+		void load(const std::vector<LightLoadEntry>& lights);
 		void update();
 		void updateAnimation(float time);
 
