@@ -384,7 +384,11 @@ struct は将来 `pelican_project` ターゲットへ移動できるよう
 1. ShaderLibrary に stem+ステージ → モジュール解決を追加: `<stem>.vert` / `<stem>.frag`(ソース、実行時コンパイル)を先に試し、無ければ `<stem>.vert.spv` / `<stem>.frag.spv`。`PELICAN_RUNTIME_SHADER_COMPILER=OFF` 時は .spv のみ。パス解決は PathResolver 経由(`engine://` stem も同規則で Registry を引く)
 2. rendering pass parser: `shader.vertex` / `shader.fragment` の値に既知拡張子(`.spv` `.vert` `.frag` `.wgsl`)が**ない**場合を stem 参照として受理。拡張子付きは従来どおり動作させつつ、project.json 経由で開いたプロジェクト内では WARN(「バックエンド固有参照・非可搬」)
 3. `projects/example` の rendering config を stem 形式に書き換え(`../../../../src/core/resources/*.spv` 参照はここで完全に消える)
-4. fixture: stem の valid / invalid(未解決 stem)ケースを `test/fixtures/project_format/` に追加
+4. fixture: stem の valid / invalid(未解決 stem)ケースを `test/fixtures/project_format/` に追加。
+   あわせて `engine_resources.json`(engine:// id 一覧の fixture)が
+   `registeredEngineResourceIds()` と一致することを検証する単体テストを追加
+   (web 側 WW2 の鏡像チェックと同じ fixture を共有する。registry に id を
+   増やしたらこの fixture も更新する運用)
 5. golden テスト(WP16)で移行前後の描画一致を確認
 
 受け入れ基準: (a) stem 参照で従来と同一の描画(golden 比較) (b) `.spv` 明示参照の後方互換が保たれる (c) 未解決 stem のエラーメッセージに試行したパス一覧(`.vert` → `.vert.spv` の順)が含まれる (d) fixture が expectations.json 込みで追加されている (e) `resolveShaderPaths` による JSON 書き換えが削除され、rendering config の解釈が純ロジックの struct 経由になっている。
