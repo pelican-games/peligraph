@@ -1,11 +1,13 @@
 #include "../src/core/container.hpp"
 #include "../src/core/launchconfig.hpp"
+#include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/shader/pipelinefactory.hpp"
 #include "../src/core/shader/shadercompiler.hpp"
 #include "../src/core/shader/shaderlibrary.hpp"
 #include "../src/core/vkcore/core.hpp"
+#include "../src/core/vkcore/renderer.hpp"
 #include "../src/core/vkcore/rendertarget.hpp"
 
 #include <algorithm>
@@ -98,6 +100,7 @@ std::filesystem::path makeTempProjectDir(const std::string &case_name) {
 }
 
 void writeTextFile(const std::filesystem::path &path, const std::string &contents) {
+    std::filesystem::create_directories(path.parent_path());
     std::ofstream file{path, std::ios::binary};
     file << contents;
 }
@@ -109,6 +112,29 @@ nlohmann::json makeProjectConfig(const std::filesystem::path &scene_path, const 
              {"window_size", {{"width", goldenWidth}, {"height", goldenHeight}}},
              {"scene_data_json", scene_path.generic_string()},
              {"asset_data_json", asset_path.generic_string()},
+         }},
+    };
+}
+
+nlohmann::json makeStemProjectJson() {
+    return nlohmann::json{
+        {"schema", "pelican.project"},
+        {"version", 1},
+        {"name", "stem golden"},
+        {"engine_min_version", "0.1.0"},
+        {"basic_config",
+         {
+             {"window_title", "Stem Golden"},
+             {"window_size", {{"width", goldenWidth}, {"height", goldenHeight}}},
+             {"fullscreen", false},
+             {"framerate", 60},
+             {"camera", {{"fov_y", 60.0}, {"near", 0.1}, {"far", 100.0}, {"up", {0, 1, 0}}}},
+             {"default_scene_id", "default_scene"},
+             {"scene_data_json", "scene.json"},
+             {"asset_data_json", "assets.json"},
+             {"rendering_config_json", "passes/main.json"},
+             {"ui_config_json", "ui/ui.json"},
+             {"default_rendering_pass", "main"},
          }},
     };
 }
@@ -208,6 +234,26 @@ void main() {
 )glsl";
 }
 
+const char *stemFullscreenVertexShader() {
+    return R"glsl(
+#version 450
+layout(location = 0) out vec2 outUV;
+vec2 positions[6] = vec2[](
+    vec2(-1.0, -1.0),
+    vec2( 1.0, -1.0),
+    vec2( 1.0,  1.0),
+    vec2(-1.0, -1.0),
+    vec2( 1.0,  1.0),
+    vec2(-1.0,  1.0)
+);
+void main() {
+    vec2 pos = positions[gl_VertexIndex];
+    outUV = pos * 0.5 + 0.5;
+    gl_Position = vec4(pos, 0.0, 1.0);
+}
+)glsl";
+}
+
 ShaderBundleId compileShaderToBundle(ShaderLibrary &library, const std::string &source,
                                      vk::ShaderStageFlagBits stage, const std::string &name) {
 #if PELICAN_RUNTIME_SHADER_COMPILER
@@ -262,14 +308,54 @@ void renderFullscreenFrame(RenderTarget &render_target, const std::string &fragm
     render_target.render_end();
 }
 
+void writeStemProject(const std::filesystem::path &root) {
+    writeTextFile(root / "project.json", makeStemProjectJson().dump(2));
+    writeTextFile(root / "scene.json", "{}");
+    writeTextFile(root / "assets.json", R"json({"models":[]})json");
+    writeTextFile(root / "ui" / "ui.json", R"json({"images":[]})json");
+    writeTextFile(root / "shaders" / "solid.vert", stemFullscreenVertexShader());
+    writeTextFile(root / "shaders" / "solid.frag", solidFullscreenFragmentShader());
+    writeTextFile(root / "passes" / "main.json", R"json({
+  "render_targets": [],
+  "rendering_passes": [
+    {
+      "name": "main",
+      "passes": [
+        {
+          "name": "solid",
+          "type": "fullscreen",
+          "output": {"color": "swapchain", "depth": null},
+          "shader": {
+            "vertex": "shaders/solid",
+            "fragment": "shaders/solid"
+          }
+        }
+      ]
+    }
+  ]
+})json");
+}
+
+void renderStemFullscreenFrame(RenderTarget &render_target) {
+    GET_MODULE(Renderer).render();
+    GET_MODULE(VulkanManageCore).waitIdle();
+    (void)render_target;
+}
+
 RenderedCase renderCase(const GoldenCase &golden_case) {
     FastModuleContainer modules;
     const auto temp_dir = makeTempProjectDir(golden_case.name);
-    const auto scene_path = temp_dir / "scene.json";
-    const auto asset_path = temp_dir / "assets.json";
-    writeTextFile(scene_path, "{}");
-    writeTextFile(asset_path, "{}");
-    GET_MODULE(ProjectSource).setSourceByData(makeProjectConfig(scene_path, asset_path).dump());
+    if (golden_case.mode == "stem_fullscreen") {
+        writeStemProject(temp_dir);
+        GET_MODULE(PathResolver).setup(temp_dir, false);
+        GET_MODULE(ProjectSource).setProjectData(makeStemProjectJson().dump());
+    } else {
+        const auto scene_path = temp_dir / "scene.json";
+        const auto asset_path = temp_dir / "assets.json";
+        writeTextFile(scene_path, "{}");
+        writeTextFile(asset_path, "{}");
+        GET_MODULE(ProjectSource).setSourceByData(makeProjectConfig(scene_path, asset_path).dump());
+    }
 
     auto &launch_config = GET_MODULE(EngineLaunchConfig);
     launch_config.headless = true;
@@ -282,6 +368,8 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         renderClearFrame(render_target, vk::ClearColorValue{std::array{0.1f, 0.2f, 0.3f, 1.0f}});
     } else if (golden_case.mode == "fullscreen") {
         renderFullscreenFrame(render_target, solidFullscreenFragmentShader());
+    } else if (golden_case.mode == "stem_fullscreen") {
+        renderStemFullscreenFrame(render_target);
     } else if (golden_case.mode == "triangle") {
         renderFullscreenFrame(render_target, triangleMaskFragmentShader());
     } else {
@@ -341,7 +429,7 @@ void writeFailureMetadata(const std::filesystem::path &path, const GoldenCase &g
 TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     setupLogger();
     const auto cases = discoverGoldenCases();
-    REQUIRE(cases.size() == 3);
+    REQUIRE(cases.size() == 4);
 
     for (const auto &golden_case : cases) {
         DYNAMIC_SECTION(golden_case.name) {

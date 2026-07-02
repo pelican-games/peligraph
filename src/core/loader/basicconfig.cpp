@@ -161,40 +161,6 @@ std::string rewriteAssetPaths(std::string data) {
     return json.dump();
 }
 
-void resolveShaderPaths(nlohmann::json &node, PathResolver &resolver) {
-    if (node.is_object()) {
-        if (node.contains("shader") && node.at("shader").is_object()) {
-            auto &shader = node.at("shader");
-            for (const auto field : {"vertex", "fragment"}) {
-                if (shader.contains(field) && shader.at(field).is_string()) {
-                    shader[field] = resolveExistingFileString(resolver, shader.at(field).get<std::string>());
-                }
-            }
-        }
-
-        for (auto &entry : node.items()) {
-            resolveShaderPaths(entry.value(), resolver);
-        }
-        return;
-    }
-
-    if (node.is_array()) {
-        for (auto &entry : node) {
-            resolveShaderPaths(entry, resolver);
-        }
-    }
-}
-
-std::string rewriteRenderingConfigPaths(std::string data, bool rewrite_shader_paths) {
-    if (!rewrite_shader_paths) {
-        return data;
-    }
-
-    auto json = nlohmann::json::parse(data);
-    resolveShaderPaths(json, GET_MODULE(PathResolver));
-    return json.dump();
-}
-
 std::string rewriteUiPaths(std::string data) {
     auto json = nlohmann::json::parse(data);
     if (!json.contains("images") || !json.at("images").is_array()) {
@@ -214,6 +180,7 @@ std::string rewriteUiPaths(std::string data) {
 
 ProjectBasicConfig::ProjectBasicConfig() {
     const auto &source = GET_MODULE(ProjectSource);
+    project_source = source.hasProjectSource();
     JsonLoader loader{
         source.loadSource(),
         projectBasicConfigSource(source),
@@ -267,9 +234,7 @@ std::string ProjectBasicConfig::assetDataJson() const {
 
 std::string ProjectBasicConfig::renderingConfigJson() const {
     if (!rendering_config_json) {
-        const auto should_rewrite_shader_paths = GET_MODULE(ProjectSource).hasProjectSource();
-        rendering_config_json = rewriteRenderingConfigPaths(
-            GET_MODULE(PathResolver).loadText(rendering_config_json_ref), should_rewrite_shader_paths);
+        rendering_config_json = GET_MODULE(PathResolver).loadText(rendering_config_json_ref);
     }
     return *rendering_config_json;
 }

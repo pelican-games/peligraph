@@ -2,6 +2,7 @@
 
 #include "../container.hpp"
 #include "../handle.hpp"
+#include "../shader/shaderreference.hpp"
 #include <array>
 #include <cstdint>
 #include <string>
@@ -60,8 +61,8 @@ enum class FullscreenPushConstantData {
 };
 
 struct FullscreenPassInfo {
-    std::string vert_shader_path;
-    std::string frag_shader_path;
+    ShaderReference vert_shader = ShaderReference{"", ShaderStage::vertex, ShaderReferenceKind::explicit_file, false};
+    ShaderReference frag_shader = ShaderReference{"", ShaderStage::fragment, ShaderReferenceKind::explicit_file, false};
     FullscreenPushConstantData push_constants = FullscreenPushConstantData::eNone;
     bool uses_light_data = false;
 };

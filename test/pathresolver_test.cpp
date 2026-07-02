@@ -11,6 +11,7 @@
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #ifndef PELICAN_TEST_SOURCE_DIR
 #define PELICAN_TEST_SOURCE_DIR "."
@@ -185,6 +186,20 @@ TEST_CASE("PathResolver resolves engine resources before setup", "[pathresolver]
                         Catch::Matchers::ContainsSubstring("setup"));
 
     resolver.resetForTesting();
+}
+
+TEST_CASE("Engine resource registry matches project format fixture", "[pathresolver]") {
+    const auto fixture = readJson(fixtureRoot() / "engine_resources.json");
+    REQUIRE(fixture.at("schema").get<std::string>() == "pelican.engine_resources");
+    REQUIRE(fixture.at("version").get<int>() == 1);
+
+    const auto fixture_ids = fixture.at("ids").get<std::vector<std::string>>();
+    std::vector<std::string> registered_ids;
+    for (const auto id : registeredEngineResourceIds()) {
+        registered_ids.emplace_back(id);
+    }
+
+    REQUIRE(registered_ids == fixture_ids);
 }
 
 TEST_CASE("PathResolver setup is single-use outside tests", "[pathresolver]") {

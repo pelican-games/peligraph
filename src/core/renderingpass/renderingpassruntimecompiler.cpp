@@ -2,6 +2,8 @@
 #include "rendertargetimageviewresolver.hpp"
 #include "rendertargetmetadataresolver.hpp"
 #include "../fullscreenpass/fullscreenpasscontainer.hpp"
+#include "../loader/pathresolver.hpp"
+#include "../log.hpp"
 #include "../profiler.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include "../vkcore/rendertarget.hpp"
@@ -18,6 +20,8 @@ struct FullscreenRuntimeDependencies {
     const RenderTargetImageViewResolver &render_target_views;
     ShaderLibrary &shader_library;
     FullscreenPassContainer &fullscreen_pass_container;
+    const PathResolver &path_resolver;
+    bool warn_backend_specific_shader_refs = false;
 };
 
 struct FullscreenShaderModules {
@@ -57,10 +61,10 @@ FullscreenRuntimeDependencies requireFullscreenDependencies(
     const RenderingPassRuntimeDependencies &dependencies) {
     if (dependencies.render_target == nullptr || dependencies.render_target_metadata == nullptr ||
         dependencies.render_target_views == nullptr || dependencies.shader_library == nullptr ||
-        dependencies.fullscreen_pass_container == nullptr) {
+        dependencies.fullscreen_pass_container == nullptr || dependencies.path_resolver == nullptr) {
         throw std::runtime_error(
             "Fullscreen pass runtime compile requires render target, render target metadata, render target views, "
-            "shader library, and fullscreen pass container dependencies: " +
+            "shader library, fullscreen pass container, and path resolver dependencies: " +
             pass_def.name);
     }
     return FullscreenRuntimeDependencies{
@@ -69,25 +73,41 @@ FullscreenRuntimeDependencies requireFullscreenDependencies(
         *dependencies.render_target_views,
         *dependencies.shader_library,
         *dependencies.fullscreen_pass_container,
+        *dependencies.path_resolver,
+        dependencies.warn_backend_specific_shader_refs,
     };
 }
 
-ShaderBundleId registerShaderFromFile(ShaderLibrary &shader_library, const std::string &shader_path) {
-    return shader_library.loadFromFile(shader_path);
+void warnBackendSpecificShaderReference(const ShaderReference &reference, bool enabled) {
+    if (!enabled || !reference.backend_specific) {
+        return;
+    }
+    LOG_WARNING(logger, "backend-specific shader reference is not portable; use a stem reference: {}",
+                reference.ref);
+}
+
+ShaderBundleId registerShaderReference(ShaderLibrary &shader_library, const PathResolver &path_resolver,
+                                       const ShaderReference &reference, bool warn_backend_specific) {
+    warnBackendSpecificShaderReference(reference, warn_backend_specific);
+    return shader_library.loadFromReference(reference, path_resolver, warn_backend_specific);
 }
 
 FullscreenShaderModules registerFullscreenShaders(const FullscreenPassInfo &fullscreen_info,
-                                                  ShaderLibrary &shader_library) {
+                                                  FullscreenRuntimeDependencies dependencies) {
     return FullscreenShaderModules{
-        registerShaderFromFile(shader_library, fullscreen_info.vert_shader_path),
-        registerShaderFromFile(shader_library, fullscreen_info.frag_shader_path),
+        registerShaderReference(dependencies.shader_library, dependencies.path_resolver,
+                                fullscreen_info.vert_shader,
+                                dependencies.warn_backend_specific_shader_refs),
+        registerShaderReference(dependencies.shader_library, dependencies.path_resolver,
+                                fullscreen_info.frag_shader,
+                                dependencies.warn_backend_specific_shader_refs),
     };
 }
 
 PassId registerFullscreenPipeline(const PassDefinition &pass_def, FullscreenRuntimeDependencies dependencies) {
     const auto color_format =
         resolveFirstColorFormat(pass_def, dependencies.render_target, dependencies.render_target_metadata);
-    const auto shaders = registerFullscreenShaders(pass_def.fullscreenInfo(), dependencies.shader_library);
+    const auto shaders = registerFullscreenShaders(pass_def.fullscreenInfo(), dependencies);
     const auto pipeline_id = dependencies.fullscreen_pass_container.registerFullscreenPass(
         color_format, shaders.vert_shader, shaders.frag_shader);
     return fullscreenPipelineValueToPassId(pipeline_id.value);

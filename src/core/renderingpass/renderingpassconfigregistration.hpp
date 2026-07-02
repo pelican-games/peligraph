@@ -7,6 +7,7 @@
 namespace Pelican {
 
 class FullscreenPassContainer;
+class PathResolver;
 class RenderingPassContainer;
 class RenderTarget;
 class RenderTargetContainer;
@@ -20,6 +21,8 @@ struct RenderingPassConfigRuntimeDependencies {
     RenderTarget &render_target;
     ShaderLibrary &shader_library;
     FullscreenPassContainer &fullscreen_pass_container;
+    const PathResolver &path_resolver;
+    bool warn_backend_specific_shader_refs = false;
 };
 
 struct RenderingPassConfigRegistrationDependencies {

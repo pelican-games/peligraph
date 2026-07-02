@@ -1,0 +1,6 @@
+{
+  "mode": "shader_stem",
+  "stage": "vertex",
+  "ref": "shaders/fullscreen",
+  "source": "spv"
+}

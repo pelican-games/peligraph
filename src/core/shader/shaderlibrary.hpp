@@ -1,8 +1,10 @@
 #pragma once
 
 #include "shader.hpp"
+#include "shaderreference.hpp"
 #include "shaderreflection.hpp"
 #include "../container.hpp"
+#include "../loader/pathresolver.hpp"
 #include "../resourcecontainer.hpp"
 #include <chrono>
 #include <filesystem>
@@ -41,13 +43,20 @@ DECLARE_MODULE(ShaderLibrary) {
     ShaderBundle buildFromFile(const std::filesystem::path &path, uint64_t version) const;
     ShaderBundle buildFromSpirv(std::span<const uint32_t> spirv, std::filesystem::path source_path,
                                 uint64_t version, std::string log) const;
+    ShaderBundle buildFromEngineSource(std::string_view source, ShaderStage stage,
+                                       std::string_view name, uint64_t version) const;
     vk::UniqueShaderModule createShaderModule(std::span<const uint32_t> spirv) const;
+    ShaderBundleId loadResolvedReference(const ResolvedRef &resolved, const ShaderReference &reference,
+                                         std::string_view display_name);
+    ShaderBundleId loadFromStemReference(const ShaderReference &reference, const PathResolver &resolver);
     void markDirty(ShaderBundleId id);
 
   public:
     explicit ShaderLibrary(ShaderLibraryModuleMode mode = ShaderLibraryModuleMode::create_modules);
 
     ShaderBundleId loadFromFile(const std::filesystem::path &path);
+    ShaderBundleId loadFromReference(const ShaderReference &reference, const PathResolver &resolver,
+                                     bool project_context);
     ShaderBundleId loadFromBytes(size_t len, const char *data, std::string_view name);
     ShaderBundleId loadFromSpirv(std::span<const uint32_t> spirv, std::string_view name);
     const ShaderBundle &get(ShaderBundleId id) const;

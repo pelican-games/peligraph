@@ -1,5 +1,28 @@
 {
   "schema": "pelican.engine_resources",
   "version": 1,
-  "ids": ["default_config.json"]
+  "ids": [
+    "bloom_blur_h.frag.spv",
+    "bloom_blur_v.frag.spv",
+    "bloom_composite.frag.spv",
+    "bloom_highpass.frag.spv",
+    "debug_texture.frag.spv",
+    "default_config.json",
+    "default.frag.spv",
+    "default.vert.spv",
+    "fullscreen.frag.spv",
+    "fullscreen.vert.spv",
+    "shader_lab_base_lit.frag.spv",
+    "shader_lab_bloom_composite.frag.spv",
+    "shader_lab_bloom_threshold.frag.spv",
+    "shader_lab_blur_h.frag.spv",
+    "shader_lab_blur_v.frag.spv",
+    "shader_lab_gltf_lighting.frag.spv",
+    "shader_lab_hello.frag.spv",
+    "shader_lab_present.frag.spv",
+    "ssao.frag.spv",
+    "ssao_blur.frag.spv",
+    "ui.frag.spv",
+    "ui.vert.spv"
+  ]
 }

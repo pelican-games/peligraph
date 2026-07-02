@@ -25,6 +25,8 @@ RenderingPassRuntimeDependencies toRuntimeDependencies(
         &rt_views,
         &dependencies.shader_library,
         &dependencies.fullscreen_pass_container,
+        &dependencies.path_resolver,
+        dependencies.warn_backend_specific_shader_refs,
     };
 }
 

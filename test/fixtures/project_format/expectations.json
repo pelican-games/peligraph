@@ -54,5 +54,18 @@
     "file": "invalid/project_future_version.json",
     "expect": "error",
     "error_kind": "version"
+  },
+  {
+    "file": "valid/shader_stem_spv.json",
+    "expect": "ok"
+  },
+  {
+    "file": "valid/shader_stem_engine.json",
+    "expect": "ok"
+  },
+  {
+    "file": "invalid/shader_stem_missing.json",
+    "expect": "error",
+    "error_kind": "shader_stem_missing"
   }
 ]

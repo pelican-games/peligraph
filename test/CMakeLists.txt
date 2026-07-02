@@ -22,6 +22,7 @@ pelican_define_test(deletionqueue_test pelican_core)
 pelican_define_test(enginetime_test pelican_core)
 pelican_define_test(golden_image_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp spirv-reflect-static stb glm)
 target_compile_definitions(pelican_test_golden_image_test PRIVATE
+    VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     PELICAN_TEST_BINARY_DIR="${CMAKE_BINARY_DIR}"
@@ -33,6 +34,9 @@ if(PELICAN_RUNTIME_SHADER_COMPILER)
     endif()
 endif()
 pelican_define_test(headless_render_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+target_compile_definitions(pelican_test_headless_render_test PRIVATE
+    VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic
+)
 pelican_define_test(hoge_test)
 pelican_define_test(pathresolver_test pelican_core)
 target_compile_definitions(pelican_test_pathresolver_test PRIVATE
@@ -77,6 +81,9 @@ if(PELICAN_RUNTIME_SHADER_COMPILER)
     endif()
 endif()
 pelican_define_test(vulkan_headless_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+target_compile_definitions(pelican_test_vulkan_headless_test PRIVATE
+    VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic
+)
 
 add_test(
     NAME seqplayer_headless_player

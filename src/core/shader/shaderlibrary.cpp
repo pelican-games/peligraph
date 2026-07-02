@@ -1,14 +1,19 @@
 #include "shaderlibrary.hpp"
 #include "shadercompiler.hpp"
+#include "../loader/engineresources.hpp"
 #include "../loader/fileio.hpp"
+#include "../loader/pathresolver.hpp"
 #include "../vkcore/core.hpp"
 #include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <cstring>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <system_error>
+#include <utility>
+#include <variant>
 
 namespace Pelican {
 
@@ -40,6 +45,40 @@ std::optional<std::filesystem::file_time_type> lastWriteTime(const std::filesyst
         return std::nullopt;
     }
     return timestamp;
+}
+
+vk::ShaderStageFlagBits toVkStage(ShaderStage stage) {
+    switch (stage) {
+    case ShaderStage::vertex:
+        return vk::ShaderStageFlagBits::eVertex;
+    case ShaderStage::fragment:
+        return vk::ShaderStageFlagBits::eFragment;
+    }
+    throw std::runtime_error("unknown shader stage");
+}
+
+std::string appendShaderExtension(std::string_view ref, ShaderStage stage, bool spirv) {
+    std::string candidate{ref};
+    candidate += shaderStageSourceExtension(stage);
+    if (spirv) {
+        candidate += ".spv";
+    }
+    return candidate;
+}
+
+bool hasScheme(std::string_view ref) {
+    return ref.find("://") != std::string_view::npos;
+}
+
+std::string joinTriedCandidates(const std::vector<std::string> &tried) {
+    std::ostringstream stream;
+    for (size_t i = 0; i < tried.size(); ++i) {
+        if (i > 0) {
+            stream << " -> ";
+        }
+        stream << tried[i];
+    }
+    return stream.str();
 }
 
 } // namespace
@@ -75,6 +114,24 @@ ShaderBundle ShaderLibrary::buildFromSpirv(std::span<const uint32_t> spirv, std:
     return bundle;
 }
 
+ShaderBundle ShaderLibrary::buildFromEngineSource(std::string_view source, ShaderStage stage,
+                                                  std::string_view name, uint64_t version) const {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    ShaderCompiler compiler;
+    const auto result = compiler.compileSource(source, toVkStage(stage), name);
+    if (!result.ok) {
+        throw std::runtime_error("Shader compile failed: " + std::string{name} + "\n" + result.log);
+    }
+    return buildFromSpirv(result.spirv, {}, version, result.log);
+#else
+    (void)source;
+    (void)stage;
+    (void)version;
+    throw std::runtime_error("Runtime shader compiler is disabled; only .spv shader files are accepted: " +
+                             std::string{name});
+#endif
+}
+
 vk::UniqueShaderModule ShaderLibrary::createShaderModule(std::span<const uint32_t> spirv) const {
     if (spirv.empty()) {
         throw std::runtime_error("Shader module data must not be empty");
@@ -103,6 +160,71 @@ ShaderBundleId ShaderLibrary::loadFromFile(const std::filesystem::path &path) {
         source_write_times[id] = *timestamp;
     }
     return id;
+}
+
+ShaderBundleId ShaderLibrary::loadResolvedReference(const ResolvedRef &resolved,
+                                                    const ShaderReference &reference,
+                                                    std::string_view display_name) {
+    if (const auto path = std::get_if<std::filesystem::path>(&resolved)) {
+        return loadFromFile(*path);
+    }
+
+    const auto &engine_id = std::get<EngineResourceId>(resolved).id;
+    const auto resource = engineResourceOrThrow(engine_id);
+    ShaderBundle bundle;
+    if (lowerExtension(engine_id) == ".spv") {
+        bundle = buildFromSpirv(bytesToSpirv(resource, engine_id), {}, 1, std::string{display_name});
+    } else {
+        bundle = buildFromEngineSource(resource, reference.stage, display_name, 1);
+    }
+    const auto id = bundles.reg(std::move(bundle));
+    bundle_ids.push_back(id);
+    return id;
+}
+
+ShaderBundleId ShaderLibrary::loadFromStemReference(const ShaderReference &reference,
+                                                    const PathResolver &resolver) {
+    std::vector<std::string> candidate_refs;
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    candidate_refs.push_back(appendShaderExtension(reference.ref, reference.stage, false));
+#endif
+    candidate_refs.push_back(appendShaderExtension(reference.ref, reference.stage, true));
+
+    std::vector<std::string> tried;
+    for (const auto &candidate_ref : candidate_refs) {
+        const auto resolved = resolver.resolveProjectRef(candidate_ref);
+        if (const auto path = std::get_if<std::filesystem::path>(&resolved)) {
+            std::error_code ec;
+            if (!std::filesystem::is_regular_file(*path, ec) || ec) {
+                tried.push_back(candidate_ref + " (" + path->string() + ")");
+                continue;
+            }
+            return loadResolvedReference(resolved, reference, candidate_ref);
+        }
+
+        const auto &engine_id = std::get<EngineResourceId>(resolved).id;
+        if (!engineResource(engine_id)) {
+            tried.push_back(candidate_ref + " (engine id not registered)");
+            continue;
+        }
+        return loadResolvedReference(resolved, reference, candidate_ref);
+    }
+
+    throw std::runtime_error("Shader stem could not be resolved: " + reference.ref +
+                             " (" + shaderStageName(reference.stage) + "). Tried: " +
+                             joinTriedCandidates(tried));
+}
+
+ShaderBundleId ShaderLibrary::loadFromReference(const ShaderReference &reference,
+                                                const PathResolver &resolver,
+                                                bool project_context) {
+    if (reference.kind == ShaderReferenceKind::stem) {
+        return loadFromStemReference(reference, resolver);
+    }
+    if (!project_context && !hasScheme(reference.ref)) {
+        return loadFromFile(reference.ref);
+    }
+    return loadResolvedReference(resolver.resolveProjectRef(reference.ref), reference, reference.ref);
 }
 
 ShaderBundleId ShaderLibrary::loadFromBytes(size_t len, const char *data, std::string_view name) {

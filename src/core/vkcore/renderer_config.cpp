@@ -1,6 +1,7 @@
 #include "renderer_config.hpp"
 #include "../fullscreenpass/fullscreenpasscontainer.hpp"
 #include "../loader/basicconfig.hpp"
+#include "../loader/pathresolver.hpp"
 #include "../log.hpp"
 #include "../profiler.hpp"
 #include "../renderingpass/renderingpassconfigregistration.hpp"
@@ -45,6 +46,7 @@ void registerConfiguredRenderingPasses(const ProjectBasicConfig &config) {
         auto &shader_library = GET_MODULE(ShaderLibrary);
         auto &fs_container = GET_MODULE(FullscreenPassContainer);
         auto &pass_container = GET_MODULE(RenderingPassContainer);
+        auto &path_resolver = GET_MODULE(PathResolver);
         registerRenderingPassConfigFromJsonData(
             main_config_json, baseExtentFromConfig(config),
             RenderingPassConfigRegistrationDependencies{
@@ -55,6 +57,8 @@ void registerConfiguredRenderingPasses(const ProjectBasicConfig &config) {
                     rt_module,
                     shader_library,
                     fs_container,
+                    path_resolver,
+                    config.usesProjectSource(),
                 },
                 pass_container,
             });

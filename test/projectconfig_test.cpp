@@ -142,10 +142,8 @@ void requireProjectConfigOk(const nlohmann::json &project, const ProjectSandbox 
     const auto rendering = nlohmann::json::parse(config.renderingConfigJson());
     const auto shader =
         rendering.at("rendering_passes").at(0).at("passes").at(0).at("shader");
-    REQUIRE(shader.at("vertex").get<std::string>() ==
-            weaklyCanonical(sandbox.root / "shaders" / "fullscreen.vert.spv").string());
-    REQUIRE(shader.at("fragment").get<std::string>() ==
-            weaklyCanonical(sandbox.root / "shaders" / "fullscreen.frag.spv").string());
+    REQUIRE(shader.at("vertex").get<std::string>() == "shaders/fullscreen.vert.spv");
+    REQUIRE(shader.at("fragment").get<std::string>() == "shaders/fullscreen.frag.spv");
 
     const auto ui = nlohmann::json::parse(config.uiConfigJson());
     REQUIRE(ui.at("images").at(0).at("file").get<std::string>() ==

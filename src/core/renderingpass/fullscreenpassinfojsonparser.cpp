@@ -44,8 +44,10 @@ FullscreenPassInfo parseFullscreenPassInfoFromJson(const nlohmann::json &pass_js
         throw std::runtime_error("Fullscreen pass shader paths must be strings: " + pass_name);
     }
 
-    fullscreen_info.vert_shader_path = shader.at("vertex").get<std::string>();
-    fullscreen_info.frag_shader_path = shader.at("fragment").get<std::string>();
+    fullscreen_info.vert_shader =
+        makeShaderReference(shader.at("vertex").get<std::string>(), ShaderStage::vertex);
+    fullscreen_info.frag_shader =
+        makeShaderReference(shader.at("fragment").get<std::string>(), ShaderStage::fragment);
     return fullscreen_info;
 }
 

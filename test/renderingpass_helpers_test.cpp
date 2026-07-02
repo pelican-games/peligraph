@@ -97,8 +97,10 @@ TEST_CASE("fullscreen pass JSON parser reads explicit fullscreen options", "[ren
 
     REQUIRE(info.push_constants == FullscreenPushConstantData::eCameraPosition);
     REQUIRE(info.uses_light_data);
-    REQUIRE(info.vert_shader_path == "fullscreen.vert.spv");
-    REQUIRE(info.frag_shader_path == "lighting.frag.spv");
+    REQUIRE(info.vert_shader.ref == "fullscreen.vert.spv");
+    REQUIRE(info.vert_shader.kind == ShaderReferenceKind::explicit_file);
+    REQUIRE(info.frag_shader.ref == "lighting.frag.spv");
+    REQUIRE(info.frag_shader.kind == ShaderReferenceKind::explicit_file);
 }
 
 TEST_CASE("fullscreen pass JSON parser does not infer options from pass name", "[renderingpass]") {
@@ -142,7 +144,7 @@ TEST_CASE("pass info JSON parser applies fullscreen info only to fullscreen pass
     };
     parseFullscreenPassInfoIntoDefinition(fullscreen_pass, fullscreen_json);
 
-    REQUIRE(fullscreen_pass.fullscreenInfo().frag_shader_path == "debug_texture.frag.spv");
+    REQUIRE(fullscreen_pass.fullscreenInfo().frag_shader.ref == "debug_texture.frag.spv");
     REQUIRE(fullscreen_pass.fullscreenInfo().push_constants == FullscreenPushConstantData::eProjectionView);
 
     PassDefinition material_pass;
@@ -251,8 +253,24 @@ TEST_CASE("pass definition JSON parser builds a fullscreen pass definition", "[r
     REQUIRE(pass_def.output_color.size() == 1);
     REQUIRE(pass_def.output_color[0] == GlobalRenderTargetId{3});
     REQUIRE(pass_def.output_depth == noRenderTargetId());
-    REQUIRE(pass_def.fullscreenInfo().frag_shader_path == "debug_texture.frag.spv");
+    REQUIRE(pass_def.fullscreenInfo().frag_shader.ref == "debug_texture.frag.spv");
     REQUIRE(pass_def.fullscreenInfo().push_constants == FullscreenPushConstantData::eProjectionView);
+}
+
+TEST_CASE("fullscreen pass JSON parser accepts shader stem references", "[renderingpass]") {
+    const nlohmann::json pass_json{
+        {"shader", {{"vertex", "shaders/fullscreen"}, {"fragment", "engine://bloom_blur_h"}}},
+    };
+
+    const auto info = parseFullscreenPassInfoFromJson(pass_json, "stem_pass");
+
+    REQUIRE(info.vert_shader.ref == "shaders/fullscreen");
+    REQUIRE(info.vert_shader.stage == ShaderStage::vertex);
+    REQUIRE(info.vert_shader.kind == ShaderReferenceKind::stem);
+    REQUIRE_FALSE(info.vert_shader.backend_specific);
+    REQUIRE(info.frag_shader.ref == "engine://bloom_blur_h");
+    REQUIRE(info.frag_shader.stage == ShaderStage::fragment);
+    REQUIRE(info.frag_shader.kind == ShaderReferenceKind::stem);
 }
 
 TEST_CASE("pass definition JSON parser rejects invalid pass object", "[renderingpass]") {
