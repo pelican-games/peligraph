@@ -76,9 +76,11 @@ ctest --test-dir ./build -C Debug --output-on-failure
 | 19 | シェーダ stem 解決 + rendering config の struct 化 | 12, 18a/b | 中 | 中 |
 | 25 | pelican.scene v1(エンベロープ + light コンポーネント化) | 18a/b | 中 | 中 |
 | 26 | EXR リーダ(tinyexr・限定スコープ) | 18a/b | 小〜中 | 低 |
+| 20 | VAT 再生(pelican.vat v1) | 15, 16, 18, 19 | 大 | 高 |
+| 21 | devcli `import`(pelican.import manifest) | 18 | 中 | 低 |
 
-(WP20〜24 は設計文書側で候補予約のみ: WP20 VAT 再生 / WP21 pelican_cli import /
-WP22 pointcache / WP23 KTX2 / WP24 音声。着手前に本書へ正式記載する)
+(WP22〜24 は設計文書側で候補予約のみ: WP22 pointcache / WP23 KTX2 / WP24 音声。
+着手前に本書へ正式記載する)
 
 - **並列依頼可能**: WP1, 3, 9, 10(互いに独立)。WP2 は WP1 直後に
 - **クリティカルパス**: 1 → 4 → 5 → 6 → 7(headless 検証基盤)
@@ -442,6 +444,57 @@ struct は将来 `pelican_project` ターゲットへ移動できるよう
 (b) 非対応 EXR が用途の分かるエラーで落ちる (c) PNG/JPG 経路が無変更
 (d) `PELICAN_RUNTIME_SHADER_COMPILER=OFF` 構成でもビルドが通る。
 
+### WP20: VAT 再生(pelican.vat v1)
+
+参照: **`docs/dcc_integration_qa_2026-06-12.md` §6 が pelican.vat v1 仕様の正**、
+`external_tools_requirements.md` R5、`design_project_dcc_houdini.md` §5。
+依存: WP15, 16, 18, 19。**規模: 大・リスク高。分割 PR(a: パーサ / b: GPU 再生)可**。
+
+1. **WP20a — 形式パーサ(純ロジック)**: `core/model/vatformat.{hpp,cpp}` に
+   mesh primitive extras `pelican.vat` の検証(schema/version/fps/frame_count/
+   vertex_count/bounds_min/bounds_max/loop/position_view/normal_view?)と
+   bufferView 参照の解決を実装。**モジュール・GPU 非依存**
+   (sceneformat.{hpp,cpp} が手本)。仕様の制約を fail-fast で検証:
+   頂点数上限 8192・1 primitive 1 クリップ・トポロジ/頂点順序はベース glb と固定
+2. **WP20b — GPU 再生**: 位置テクスチャ(幅=頂点数、高さ=フレーム数、RGBA16F)を
+   glb バッファから生成し、頂点シェーダで **NEAREST + 隣接 2 フレーム行の手動 lerp**
+   (ハードウェア線形フィルタ禁止 — 仕様)+ bounds 正規化の復元。
+   パイプラインは PipelineFactory 経由の vertex バリアント。
+   再生時刻は `EngineTime.now()` × fps、`loop` 対応。
+   再生制御の置き場所は SeqPlayer(WP17)の前例に合わせ `core/playback`
+3. CLI: `--play-vat <path.glb>`(WP17 の `--play-seq` の流儀。プロジェクト相対)
+4. テスト: (a) パーサ単体 — fixture glb はテスト内で生成(数頂点×数フレーム、
+   GPU 不要) (b) golden — 小 VAT fixture で複数フレームの絵が動くこと
+   (`--render-out` 連番、WP17 テストの流儀)
+
+受け入れ基準: (a) 仕様の制約違反(上限超過・複数クリップ・view 欠落)が
+明確なエラーで reject される(単体テスト) (b) golden で VAT 再生の絵が固定される
+(c) VAT なし glb の描画経路が無変更(golden 全ケース維持) (d) 通常起動無変更。
+
+### WP21: devcli `import`(pelican.import manifest)
+
+参照: **`design_project_dcc_houdini.md` §3 が manifest 仕様の正**。依存: WP18。規模: 中。
+
+1. `core/loader/importmanifest.{hpp,cpp}`(純ロジック、モジュール非依存):
+   pelican.import v1 のパース + 検証 — schema/version ゲート、
+   `outputs[].file` は manifest からの相対のみ(絶対・`..` 脱出は reject)、
+   sha256 必須。`source.file` は検証しない(ツール側パスのまま保持 — 仕様どおり)
+2. sha256 計算はヘッダオンリー実装(PicoSHA2 等)を FetchContent 追加
+   (ルート CMakeLists、アルファベット順)
+3. devcli にサブコマンド `import <delivery_dir> --project <dir|project.json>`:
+   manifest 検証 → outputs の実在 + sha256 照合 → プロジェクトの
+   asset_data_json へ登録(v1 は glb のみ `models` へ追記。name は stem、
+   path はプロジェクト相対。transform_seq 等は検証のみで登録対象外)。
+   **冪等**: 同じ納品を再 import しても重複登録しない(name 一致は上書き確認 or skip)
+4. テスト: fixture manifest の valid / invalid(sha256 不一致・絶対パス outputs・
+   未知 schema・脱出参照)を `test/fixtures/import_manifest/` に置き fixture 駆動で
+   (GPU 不要)
+
+受け入れ基準: (a) 正しい納品 dir の import が成功し asset_data_json が更新される
+(b) 再実行で重複登録されない (c) sha256 不一致・絶対パス・未知 schema が
+用途の分かるエラーで落ちる(fixture 駆動テスト) (d) エンジン本体(player)の
+挙動無変更(manifest はエンジンが読まない — 設計どおり)。
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **最小コマンド層**: 3 段階で進める。(1) ファイル連携を正とする(WP6 の `--render-out` で成立済み) → (2) **stdio NDJSON 上の JSON-RPC 2.0** で `set_time` / `step_frame` / `render_frame` / `capture` の 4 メソッドのみ(WP6 完了後に WP 化可能。独自行プロトコルは作らない。TCP 常駐サーバはまだ作らない。要求書 R8 追補参照) → (3) `load_gltf` / `update_transforms` は **RenderWorld 合意後**
@@ -488,6 +541,7 @@ struct は将来 `pelican_project` ターゲットへ移動できるよう
 | 7 | WP18a → WP18b | 完了済み(2026-07-02 レビュー合格)。web 側 WW1 も完了 |
 | 8 | WP19, WP25, WP26(+ WW2 別リポジトリ) | WP18b マージ後に並列 3 本。競合回避: basicconfig.{hpp,cpp} は WP19 専有(WP25 は触らない規約)、WP26 は画像経路と CMake FetchContent 節のみ |
 | 9 | WP18c | **WP19・WP25 マージ後**(example の shader 参照を stem 形式・scene を v1 形式という最終形で一度に書くため)。WW3(web stem)もこのウェーブから開始可 |
+| 10 | WP20(a→b), WP21(+ WW5・houdini-adapter は別リポジトリ) | WP20 と WP21 は並列可。競合: test/CMakeLists.txt(追記のみ)とルート CMakeLists FetchContent 節(WP21 のみ追記)。WP20 = model/playback/shader 系、WP21 = devcli/loader 系で分離 |
 
 統合チェックポイント: ウェーブ 1 完了後と WP7 完了後に、人間が pelican_player の手動起動確認
 (`rendering_phase1_review.md` の Validation Run と同じ流儀)を行う。WP16 以降は
