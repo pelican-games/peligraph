@@ -1,12 +1,12 @@
 #include "uicontainer.hpp"
 #include "../log.hpp"
 #include "../loader/basicconfig.hpp"
+#include "../loader/imageloader.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/util.hpp"
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
-#include <stb_image.h>
 
 namespace Pelican {
 
@@ -50,22 +50,30 @@ vk::UniqueDescriptorPool createDescriptorPool(vk::Device device, uint32_t max_se
     return device.createDescriptorPoolUnique(ci);
 }
 
-ImageWrapper createImageFromStb(const std::string &file, vk::Device device) {
-    int tex_w = 0, tex_h = 0, tex_comp = 0;
-    stbi_uc *pixels = stbi_load(file.c_str(), &tex_w, &tex_h, &tex_comp, STBI_rgb_alpha);
-    if (!pixels) {
-        throw std::runtime_error("Failed to load UI image: " + file);
+vk::Format vkFormatForImage(ImagePixelFormat format) {
+    switch (format) {
+    case ImagePixelFormat::Rgba8Unorm:
+        return vk::Format::eR8G8B8A8Unorm;
+    case ImagePixelFormat::Rgba16Sfloat:
+        return vk::Format::eR16G16B16A16Sfloat;
+    case ImagePixelFormat::Rgba32Sfloat:
+        return vk::Format::eR32G32B32A32Sfloat;
     }
+    throw std::runtime_error("Unknown UI image pixel format");
+}
 
-    vk::Extent3D extent{static_cast<uint32_t>(tex_w), static_cast<uint32_t>(tex_h), 1};
+ImageWrapper createImageFromFile(const std::string &file, vk::Device device) {
+    const auto loaded = loadImageFile(file);
+
+    vk::Extent3D extent{loaded.width, loaded.height, 1};
 
     const auto &vkcore = GET_MODULE(VulkanManageCore);
-    auto image = vkcore.allocImage(extent, vk::Format::eR8G8B8A8Unorm,
+    auto image = vkcore.allocImage(extent, vkFormatForImage(loaded.format),
                                    vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
                                    vma::MemoryUsage::eAutoPreferDevice, {});
 
     GET_MODULE(VulkanUtils).safeTransferMemoryToImage(
-        image, pixels, extent.width * extent.height * 4,
+        image, loaded.pixels.data(), loaded.pixels.size(),
         VulkanUtils::ImageTransferInfo{
             .old_layout = vk::ImageLayout::eUndefined,
             .new_layout = vk::ImageLayout::eShaderReadOnlyOptimal,
@@ -73,7 +81,6 @@ ImageWrapper createImageFromStb(const std::string &file, vk::Device device) {
             .dst_access = vk::AccessFlagBits::eShaderRead,
         });
 
-    stbi_image_free(pixels);
     return image;
 }
 
@@ -164,7 +171,7 @@ void UIContainer::registerUI(const std::string& name, const std::string& file_pa
     try {
         UiTexture texture;
         texture.name = name;
-        texture.image = createImageFromStb(file_path, device);
+        texture.image = createImageFromFile(file_path, device);
         texture.view = createImageView(device, texture.image);
         texture.pixel_size = vk::Extent2D{texture.image.extent.width, texture.image.extent.height};
         texture.position = position;

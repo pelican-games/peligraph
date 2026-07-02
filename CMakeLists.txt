@@ -83,6 +83,30 @@ if(NOT TARGET stb)
   target_include_directories(stb INTERFACE ${stb_SOURCE_DIR})
 endif()
 
+FetchContent_Declare(
+  tinyexr
+  GIT_REPOSITORY https://github.com/syoyo/tinyexr.git
+  GIT_TAG        v3.1.0
+)
+FetchContent_GetProperties(tinyexr)
+if(NOT tinyexr_POPULATED)
+  if(POLICY CMP0169)
+    cmake_policy(PUSH)
+    cmake_policy(SET CMP0169 OLD)
+  endif()
+  FetchContent_Populate(tinyexr)
+  if(POLICY CMP0169)
+    cmake_policy(POP)
+  endif()
+endif()
+if(NOT TARGET tinyexr)
+  add_library(tinyexr INTERFACE)
+  target_include_directories(tinyexr INTERFACE
+    ${tinyexr_SOURCE_DIR}
+    ${tinyexr_SOURCE_DIR}/deps/miniz
+  )
+endif()
+
 ## vulkan
 find_package(Vulkan)
 

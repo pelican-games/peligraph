@@ -53,6 +53,7 @@ target_compile_definitions(pelican_core PRIVATE
 target_link_libraries(pelican_core PRIVATE ${Vulkan_LIBRARIES})
 target_link_libraries(pelican_core PRIVATE VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_link_libraries(pelican_core PRIVATE glm)
+target_link_libraries(pelican_core PRIVATE tinyexr)
 
 target_link_libraries(pelican_core PRIVATE nlohmann_json)
 
