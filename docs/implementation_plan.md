@@ -7,8 +7,11 @@
 - `docs/design_roadmap_renderworld.md` — 全体順序と ECS 境界
 - `docs/design_headless_rendering.md` — ヘッドレス描画の設計(以下 [HL])
 - `docs/design_shader_freedom_kit.md` — シェーダ基盤の設計(以下 [SF])
+- `docs/design_project_format.md` — プロジェクト形式の設計(以下 [PF]。v6 凍結)
+- `docs/design_project_format_web_profile.md` — 共通形式 Web プロファイル(以下 [PFW])
 
 改訂履歴: v2 で実装者レビューを反映し WP を再分割・採番し直した。旧番号との対応: 旧WP1→WP1、旧WP2→WP3、旧WP3→WP4+5+6、旧WP4→WP7、旧WP5→WP8、旧WP6→WP9、旧WP7→WP10、旧WP8→WP11、旧WP9→WP12、旧WP10→WP13、旧WP11→WP14、旧WP12→WP15、旧WP13→WP16。WP2(EngineTime)は新設。
+v3(2026-07-02): WP1〜17 完了を受けて WP18(プロジェクト形式)・WP19(シェーダ stem)を追加。設計の正に [PF] / [PFW] を追加。web 側の対応作業(WW1〜3)は my_webpage リポジトリの `docs/implementation_plan_web.md` にある(本書の管轄外)。
 
 ## 0. 全 WP 共通規則
 
@@ -69,10 +72,18 @@ ctest --test-dir ./build -C Debug --output-on-failure
 | 15 | MaterialContainer / UiRenderer 移行 + desc 一般化 + set 規約 | 13 | 大 | 高 |
 | 16 | ゴールデンイメージテスト基盤 | 7, 11 | 中 | 低 |
 | 17 | SeqPlayer(transform_seq 再生) | 1, 2 | 中 | 低 |
+| 18 | プロジェクト形式(project.json + PathResolver + example 切り出し) | 1 | 大 | 中 |
+| 19 | シェーダ stem 解決 + rendering config の struct 化 | 12, 18a/b | 中 | 中 |
+| 25 | pelican.scene v1(エンベロープ + light コンポーネント化) | 18a/b | 中 | 中 |
+| 26 | EXR リーダ(tinyexr・限定スコープ) | 18a/b | 小〜中 | 低 |
+
+(WP20〜24 は設計文書側で候補予約のみ: WP20 VAT 再生 / WP21 pelican_cli import /
+WP22 pointcache / WP23 KTX2 / WP24 音声。着手前に本書へ正式記載する)
 
 - **並列依頼可能**: WP1, 3, 9, 10(互いに独立)。WP2 は WP1 直後に
 - **クリティカルパス**: 1 → 4 → 5 → 6 → 7(headless 検証基盤)
 - **DCC bridge M1(Blender からのプレビュー)の成立条件 = WP6 + WP17**(WP17 単体は WP2 後に実装・通常起動で確認可能)
+- **共通プロジェクト形式(2026-07 開始)のクリティカルパス = 18 → 19**。web 側 WW1〜3([PFW] §8)は形式凍結済みのため WP18 のエンジン実装完了を待たずに並行できる
 - compute、GPU 計測、bindless、RT、コマンド層、RenderWorld は §3 参照(設計合意・前提 WP 完了待ち)
 
 ## 2. WP 詳細
@@ -329,10 +340,102 @@ DECLARE_MODULE(DeletionQueue) {    // 薄いラッパ。寿命ピン留めはこ
 
 受け入れ基準: `pelican_player --headless --frames 90 --play-seq droplets.jsonl --seq-mesh builtin:sphere --camera "0,1,3,0,0.5,0,40" --render-out out/%04d.png` で球が動く連番が出る。通常起動無変更。
 
+### WP18: プロジェクト形式(project.json + PathResolver + example 切り出し)
+
+参照: **[PF] §5 が仕様の正**(API・解決手順・レビュー済み事故ポイントまで確定済み)。本節は作業分割と追加成果物のみ。[PF] §3(パス分類)・§4(project.json v1 と設定優先順位)を実装前に必ず読むこと。
+
+**規模が大きいので 3 PR に分割してよい**(ブランチは `agent/wp18a-...` 等)。分割する場合も受け入れ基準は最終 PR で全項目を満たす。
+
+1. **WP18a — PathResolver 基盤**(他と独立に完結):
+   - `core/loader/pathresolver.{hpp,cpp}`: [PF] §5-2 の API・解決手順どおり。**Windows の case-fold 比較・path component 単位判定・`weakly_canonical` の error_code 版**は [PF] に明記された事故ポイントなので省略しないこと
+   - `core/loader/engineresources.{hpp,cpp}`: EngineResourceRegistry(v1 は `default_config.json` 1 エントリ手書き。未知 id の throw に登録済み一覧を含める)
+   - 単体テスト: [PF] 受け入れ基準 d, g, j, k に対応するケース(GPU 不要)
+2. **WP18b — 配線と読み込み置換**:
+   - **PathResolver の参照規則追従(WW1 レビュー由来・[PFW] §2-6)**: `resolveRef` で
+     (a) `\` を含む参照 (b) 空文字列の参照 を reject(web 実装と同一挙動)。
+     fixture に `invalid/backslash_separator.json`・`invalid/empty_ref.json` を追加し
+     expectations.json を更新(error_kind は `separator` / `empty`)
+   - `--project <dir|project.json>` を argparse に追加(WP1)。省略時は exe ディレクトリを暗黙ルートとし WARN([PF] §5-3)
+   - project.json ロード: `schema`/`version`/`engine_min_version` の hard error ゲート([PF] §4)。設定合成を CLI > project.json > embedded default の 3 段に
+   - ProjectBasicConfig / ModelAssetContainer / シーン・UI・パス読み込みのファイルアクセスを PathResolver 経由に置換(**cwd 参照の根絶**。`GET_MODULE(PathResolver)` 直呼びは core/loader と起動配線のみ、他層は依存構造体経由 — [PF] §5-2)
+   - 単体テスト: [PF] 受け入れ基準 e, h, i
+3. **WP18c — example プロジェクト切り出し**:
+   - `src/player/resources/` → `projects/example/` へ [PF] §2 レイアウトで移設。POST_BUILD コピー削除。`projects/example/README.md`(バイナリアセット一覧表: ファイル名/入手元/sha256/サイズ)を作成([PF] §5-5, 5-6)
+   - ctest・golden テストの起動を `--project` 明示に変更
+4. **追加成果物(本 WP で新規): 適合 fixture の整備**([PFW] §6-1)。
+   `test/fixtures/project_format/` に valid/invalid の JSON 一式と機械可読な期待値 `expectations.json`(`{file, expect: "ok"|"error", error_kind}`)を置く。上記単体テストはこの fixture を読んで走らせる形にする(web 側 WW2 が同じ fixture を取り込むため、**テストコードに JSON をインライン埋め込みしない**)
+
+受け入れ基準: [PF] §5 の a〜k 全項目 + fixture ディレクトリが expectations.json 込みで存在し、C++ テストが fixture 駆動であること。
+
+### WP19: シェーダ stem 解決(共通形式対応)
+
+参照: [PFW] §4(規約の正)、`design_project_dcc_houdini.md` ではなく
+**`design_project_interpretation_layer.md` §3-2 を必読**。依存: WP12, WP18。
+
+**WP18b 実装との整合(2026-07-02 決定)**: WP18b の `resolveShaderPaths`
+(basicconfig.cpp)は shader 参照を解決済み絶対パスに書き換える方式だが、
+stem 参照(拡張子なし)は実在ファイル名が確定しないため両立しない。
+**解釈レイヤ設計 §3-2 の (b) を採用**: 本 WP で rendering config の解釈を
+struct ベース(パース + 解決済み参照を持つ plain struct)へ寄せ、
+`resolveShaderPaths` の JSON 書き換えはこの WP で廃止する。
+struct は将来 `pelican_project` ターゲットへ移動できるよう
+純ロジック(モジュール非依存)で書くこと(DeletionQueueCore 方式)。
+
+1. ShaderLibrary に stem+ステージ → モジュール解決を追加: `<stem>.vert` / `<stem>.frag`(ソース、実行時コンパイル)を先に試し、無ければ `<stem>.vert.spv` / `<stem>.frag.spv`。`PELICAN_RUNTIME_SHADER_COMPILER=OFF` 時は .spv のみ。パス解決は PathResolver 経由(`engine://` stem も同規則で Registry を引く)
+2. rendering pass parser: `shader.vertex` / `shader.fragment` の値に既知拡張子(`.spv` `.vert` `.frag` `.wgsl`)が**ない**場合を stem 参照として受理。拡張子付きは従来どおり動作させつつ、project.json 経由で開いたプロジェクト内では WARN(「バックエンド固有参照・非可搬」)
+3. `projects/example` の rendering config を stem 形式に書き換え(`../../../../src/core/resources/*.spv` 参照はここで完全に消える)
+4. fixture: stem の valid / invalid(未解決 stem)ケースを `test/fixtures/project_format/` に追加
+5. golden テスト(WP16)で移行前後の描画一致を確認
+
+受け入れ基準: (a) stem 参照で従来と同一の描画(golden 比較) (b) `.spv` 明示参照の後方互換が保たれる (c) 未解決 stem のエラーメッセージに試行したパス一覧(`.vert` → `.vert.spv` の順)が含まれる (d) fixture が expectations.json 込みで追加されている (e) `resolveShaderPaths` による JSON 書き換えが削除され、rendering config の解釈が純ロジックの struct 経由になっている。
+
+### WP25: pelican.scene v1(エンベロープ + light コンポーネント化)
+
+参照: **`design_scene_format.md` §1〜3 が仕様の正**(手順は同 §3 の 1〜6)、
+`design_project_interpretation_layer.md` §2(純ロジック規律)。依存: WP18a/b。
+
+補足(ファイル配置と競合回避):
+
+1. エンベロープ検証・レガシー検出(scenes 包み・lights → light コンポーネント変換)・
+   name 一意性検証は `core/loader/sceneformat.{hpp,cpp}` に**純ロジック**
+   (モジュール機構・GPU 非依存)として実装。GPU 不要の単体テストを付ける
+2. SceneLoader(バインダ)と `LightContainer::load` の入力調整は同 §3-2 のとおり
+3. **`basicconfig.{hpp,cpp}` には触れない**(WP19 と並走させるための競合回避。
+   `sceneDataJson()` は従来どおりテキストを返し、解釈は sceneformat 側で行う)
+4. `src/core/ecs/` 以下も触れない(light は ComponentInfoManager を経由しない
+   特別扱い — 設計文書 §2-3)
+
+受け入れ基準: (a) v1 形式・レガシー形式の両方でシーンが読める(レガシーは WARN)
+(b) golden テストで移行前後の描画一致(ライト経路を触るため必須)
+(c) name 重複・schema 不一致・version 超過が hard error(fixture 駆動テスト)
+(d) 未知コンポーネント名のエラーに object name が含まれる
+(e) fixture が expectations.json 込みで追加されている。
+
+### WP26: EXR リーダ(tinyexr・限定スコープ)
+
+参照: **`design_asset_format_policy.md` §1 が仕様の正**。依存: WP18a/b。
+
+1. tinyexr を FetchContent 追加(ヘッダオンリー。ルート CMakeLists の
+   FetchContent 節にアルファベット順で追記)
+2. 画像読み込み経路(stb_image を使っている箇所)に `.exr` 分岐を追加:
+   single-part・scanline・half/float のみ対応、RGBA16F/32F として GPU へ。
+   deep / multi-part / タイルは明確なエラーメッセージで reject
+3. テクスチャとしての用途登録(asset_data_json 経由)は既存の画像と同じ扱い
+4. 単体テスト: 小さな .exr fixture(数ピクセル、テスト内生成でもよい)の
+   読み込み成功 + 非対応 EXR の reject。既存 PNG 経路の無変更をテストで担保
+
+受け入れ基準: (a) .exr テクスチャがプロジェクトから参照・表示できる
+(b) 非対応 EXR が用途の分かるエラーで落ちる (c) PNG/JPG 経路が無変更
+(d) `PELICAN_RUNTIME_SHADER_COMPILER=OFF` 構成でもビルドが通る。
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **最小コマンド層**: 3 段階で進める。(1) ファイル連携を正とする(WP6 の `--render-out` で成立済み) → (2) **stdio NDJSON 上の JSON-RPC 2.0** で `set_time` / `step_frame` / `render_frame` / `capture` の 4 メソッドのみ(WP6 完了後に WP 化可能。独自行プロトコルは作らない。TCP 常駐サーバはまだ作らない。要求書 R8 追補参照) → (3) `load_gltf` / `update_transforms` は **RenderWorld 合意後**
-- **RenderWorld**: 当面は設計合意トラック(`design_roadmap_renderworld.md` §5 を ECS 担当とレビュー中)。**実装開始条件 = ECS 合意 + WP7 完了**。ECS 側変更を含む最初の小 PR は「ライトアニメーション更新の ECS 側移管」(同 §4.3-1)を予定
+- **RenderWorld**: (2026-07-02 方針変更)**ECS 側との合意形成は後回しにし、統合ブランチ系列(`codex/rendering-phase1-refactor` 由来)を当面の開発本線として独自に進める**。JSON 規約(シーン形式等)は現行形式から離れすぎない範囲で本線側が自由に定義してよい(`design_scene_format.md` 参照)。ただし (a) `src/core/ecs/` コア本体の変更禁止は維持(コンポーネント追加は `userpublic/components` で完結するため通常は不要)、(b) main との将来の合流可能性を壊さないため、main に随時追従 merge する運用は続ける。ライトアニメーション更新の ECS 側移管は本線で実施してよい(単独 PR)
+- **コマンド層の WebSocket 展開**: stage 2(stdio JSON-RPC)実装後、同じメソッド群を WebSocket に載せると devstudio と web viewer(my_webpage)が同一プロトコルでエンジンを叩ける([PFW] §7)。stage 2 の後に設計文書を書いてから WP 化
+- **asset manifest(sha256)**: `assets.manifest.json` + 起動前検証([PF] §5-6 の予告)。WP18c の README 一覧表で当面代替し、需要(=黒背景事故の再発 or web 側キャッシュ検証の要求)が出たら WP 化
+- **naga 変換のビルドスクリプト化**: [PFW] §4-3(a) の WGSL→SPIR-V 一括変換を node CLI 化(web repo 側作業。実績コードは `apps/site/src/lib/shader/nagaSpirvCompiler.ts`)。WW3 の後
+- **プロジェクト解釈レイヤ(pelican_project 分離)**: `design_project_interpretation_layer.md`(v1 ドラフト)。解釈(パース・検証・パス解決・正規化)をエンジン非依存の静的ライブラリに分離し、エンジン側は薄いバインダにする。WP19 で rendering config の解釈から着手し、CMake ターゲット分離は後続の小 WP(移動+委譲のみ、WP3 の流儀)。WP21(pelican_cli import)がライブラリの最初のエンジン外利用者になる予定
 - compute パス / GPU 計測 / bindless / RT: それぞれ設計文書を書いてから WP 化(ロードマップ §2 の順)
 
 ## 4. マルチエージェント運用(ブランチとマージ)
@@ -356,6 +459,7 @@ DECLARE_MODULE(DeletionQueue) {    // 薄いラッパ。寿命ピン留めはこ
 | `vkcore/renderer.cpp` | 2, 8, 13, 14 | 同上 |
 | ルート CMakeLists.txt(FetchContent 節) | 6, 10 | 追記のみ・アルファベット順。競合しても自明に解決できる形を保つ |
 | `test/CMakeLists.txt` | ほぼ全 WP | `pelican_define_test` の追記のみ |
+| `core/loader/*`・`player/main.cpp` | 18, 19 | WP18 の分割 PR(a→b→c)は直列。WP19 は WP18 マージ後 |
 
 ### ウェーブ(依存を満たしつつ並列度を上げる依頼順)
 
@@ -367,6 +471,9 @@ DECLARE_MODULE(DeletionQueue) {    // 薄いラッパ。寿命ピン留めはこ
 | 4 | WP6, WP13 | |
 | 5 | WP7, WP14, WP16 | WP7 完了 = headless 検証基盤(統合チェックポイント) |
 | 6 | WP15 | 大物・高リスク。単独で走らせ、他 WP と並走させない |
+| 7 | WP18a → WP18b | 完了済み(2026-07-02 レビュー合格)。web 側 WW1 も完了 |
+| 8 | WP19, WP25, WP26(+ WW2 別リポジトリ) | WP18b マージ後に並列 3 本。競合回避: basicconfig.{hpp,cpp} は WP19 専有(WP25 は触らない規約)、WP26 は画像経路と CMake FetchContent 節のみ |
+| 9 | WP18c | **WP19・WP25 マージ後**(example の shader 参照を stem 形式・scene を v1 形式という最終形で一度に書くため)。WW3(web stem)もこのウェーブから開始可 |
 
 統合チェックポイント: ウェーブ 1 完了後と WP7 完了後に、人間が pelican_player の手動起動確認
 (`rendering_phase1_review.md` の Validation Run と同じ流儀)を行う。WP16 以降は
