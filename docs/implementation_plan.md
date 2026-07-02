@@ -359,8 +359,10 @@ DECLARE_MODULE(DeletionQueue) {    // 薄いラッパ。寿命ピン留めはこ
    - project.json ロード: `schema`/`version`/`engine_min_version` の hard error ゲート([PF] §4)。設定合成を CLI > project.json > embedded default の 3 段に
    - ProjectBasicConfig / ModelAssetContainer / シーン・UI・パス読み込みのファイルアクセスを PathResolver 経由に置換(**cwd 参照の根絶**。`GET_MODULE(PathResolver)` 直呼びは core/loader と起動配線のみ、他層は依存構造体経由 — [PF] §5-2)
    - 単体テスト: [PF] 受け入れ基準 e, h, i
-3. **WP18c — example プロジェクト切り出し**:
+3. **WP18c — example プロジェクト切り出し**(ウェーブ 9: WP19・WP25 マージ後):
    - `src/player/resources/` → `projects/example/` へ [PF] §2 レイアウトで移設。POST_BUILD コピー削除。`projects/example/README.md`(バイナリアセット一覧表: ファイル名/入手元/sha256/サイズ)を作成([PF] §5-5, 5-6)
+   - **rendering config は stem 形式(WP19)、scene は pelican.scene v1(WP25)の
+     最終形で書く**。`../../../../src/core/resources/*.spv` 参照はここで完全に消える
    - ctest・golden テストの起動を `--project` 明示に変更
 4. **追加成果物(本 WP で新規): 適合 fixture の整備**([PFW] §6-1)。
    `test/fixtures/project_format/` に valid/invalid の JSON 一式と機械可読な期待値 `expectations.json`(`{file, expect: "ok"|"error", error_kind}`)を置く。上記単体テストはこの fixture を読んで走らせる形にする(web 側 WW2 が同じ fixture を取り込むため、**テストコードに JSON をインライン埋め込みしない**)
@@ -383,7 +385,13 @@ struct は将来 `pelican_project` ターゲットへ移動できるよう
 
 1. ShaderLibrary に stem+ステージ → モジュール解決を追加: `<stem>.vert` / `<stem>.frag`(ソース、実行時コンパイル)を先に試し、無ければ `<stem>.vert.spv` / `<stem>.frag.spv`。`PELICAN_RUNTIME_SHADER_COMPILER=OFF` 時は .spv のみ。パス解決は PathResolver 経由(`engine://` stem も同規則で Registry を引く)
 2. rendering pass parser: `shader.vertex` / `shader.fragment` の値に既知拡張子(`.spv` `.vert` `.frag` `.wgsl`)が**ない**場合を stem 参照として受理。拡張子付きは従来どおり動作させつつ、project.json 経由で開いたプロジェクト内では WARN(「バックエンド固有参照・非可搬」)
-3. `projects/example` の rendering config を stem 形式に書き換え(`../../../../src/core/resources/*.spv` 参照はここで完全に消える)
+3. (2026-07-02 訂正: `projects/example` は WP18c で作られるため本 WP の対象外)
+   **`src/player/resources/` の既存 config と既存 golden case は書き換えない** —
+   レガシー後方互換(受け入れ基準 b)の回帰アンカーとして維持する。
+   stem 参照の描画検証は、**fixture ベースの一時プロジェクト**
+   (projectconfig_test の ProjectSandbox 方式で stem 参照 config + シェーダを
+   生成)を使った golden または headless 比較で行う。
+   `../../../../*.spv` 参照の根絶と example の stem 化は WP18c(ウェーブ 9)が行う
 4. fixture: stem の valid / invalid(未解決 stem)ケースを `test/fixtures/project_format/` に追加。
    あわせて `engine_resources.json`(engine:// id 一覧の fixture)が
    `registeredEngineResourceIds()` と一致することを検証する単体テストを追加
