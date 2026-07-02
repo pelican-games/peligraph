@@ -73,7 +73,7 @@ struct Sandbox {
 std::string materializeRef(const nlohmann::json &scenario, const Sandbox &sandbox) {
     auto ref = scenario.at("ref").get<std::string>();
     if (ref == "$ABSOLUTE_OUTSIDE_FILE") {
-        ref = (sandbox.outside / "outside.txt").string();
+        ref = (sandbox.outside / "outside.txt").generic_string();
     }
     return ref;
 }
@@ -104,6 +104,10 @@ void requireErrorKind(std::string_view message, std::string_view error_kind) {
     } else if (error_kind == "unknown_engine_id") {
         REQUIRE(contains(message, "Unknown engine resource id"));
         REQUIRE(contains(message, "default_config.json"));
+    } else if (error_kind == "separator") {
+        REQUIRE(contains(message, "Backslash path separators"));
+    } else if (error_kind == "empty") {
+        REQUIRE(contains(message, "Empty project path"));
     } else {
         FAIL("unknown fixture error_kind: " << error_kind);
     }
@@ -148,22 +152,24 @@ TEST_CASE("PathResolver project format fixtures", "[pathresolver]") {
         const auto file = entry.at("file").get<std::string>();
         DYNAMIC_SECTION(file) {
             const auto scenario = readJson(fixtureRoot() / file);
-            const auto expected = entry.at("expect").get<std::string>();
+            const auto mode = scenario.value("mode", std::string{});
+            if (mode == "resolve_project" || mode == "load_text") {
+                const auto expected = entry.at("expect").get<std::string>();
 
-            if (expected == "ok") {
-                REQUIRE_NOTHROW(runScenario(scenario, sandbox));
-                continue;
+                if (expected == "ok") {
+                    REQUIRE_NOTHROW(runScenario(scenario, sandbox));
+                } else {
+                    std::string message;
+                    try {
+                        runScenario(scenario, sandbox);
+                    } catch (const std::exception &ex) {
+                        message = ex.what();
+                    }
+
+                    REQUIRE_FALSE(message.empty());
+                    requireErrorKind(message, entry.at("error_kind").get<std::string>());
+                }
             }
-
-            std::string message;
-            try {
-                runScenario(scenario, sandbox);
-            } catch (const std::exception &ex) {
-                message = ex.what();
-            }
-
-            REQUIRE_FALSE(message.empty());
-            requireErrorKind(message, entry.at("error_kind").get<std::string>());
         }
     }
 

@@ -1,0 +1,17 @@
+{
+  "mode": "project_config",
+  "project": {
+    "schema": "pelican.project",
+    "version": 1,
+    "name": "fixture",
+    "engine_min_version": "0.1.0",
+    "basic_config": {
+      "window_title": "Fixture Project",
+      "window_size": {"width": 320, "height": 180},
+      "scene_data_json": "scenes/main.scene.json",
+      "asset_data_json": "assets/assets.json",
+      "rendering_config_json": "passes/main.json",
+      "ui_config_json": "ui/ui.json"
+    }
+  }
+}

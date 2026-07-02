@@ -8,6 +8,7 @@
 #include "rendertargetjsonparser.hpp"
 #include "rendertargetmetadataresolver.hpp"
 #include "rendertargetnameresolver.hpp"
+#include <string_view>
 #include <utility>
 
 namespace Pelican {
@@ -27,11 +28,8 @@ RenderingPassRuntimeDependencies toRuntimeDependencies(
     };
 }
 
-} // namespace
-
-void registerRenderingPassConfigFromJson(const std::string &json_path, vk::Extent2D base_extent,
-                                         RenderingPassConfigRegistrationDependencies dependencies) {
-    const auto rendering_pass_data = loadRenderingPassConfigJson(json_path);
+void registerRenderingPassConfigData(const nlohmann::json &rendering_pass_data, vk::Extent2D base_extent,
+                                     RenderingPassConfigRegistrationDependencies dependencies) {
     const auto render_target_definitions = parseRenderTargetDefinitionsFromJson(rendering_pass_data);
     registerRenderTargetDefinitions(render_target_definitions, base_extent,
                                     dependencies.render_targets.render_target_container);
@@ -47,6 +45,19 @@ void registerRenderingPassConfigFromJson(const std::string &json_path, vk::Exten
     for (auto &compiled_pass : compiled_passes) {
         dependencies.pass_container.registerCompiledRenderingPass(std::move(compiled_pass));
     }
+}
+
+} // namespace
+
+void registerRenderingPassConfigFromJson(const std::string &json_path, vk::Extent2D base_extent,
+                                         RenderingPassConfigRegistrationDependencies dependencies) {
+    registerRenderingPassConfigData(loadRenderingPassConfigJson(json_path), base_extent, std::move(dependencies));
+}
+
+void registerRenderingPassConfigFromJsonData(std::string_view json_data, vk::Extent2D base_extent,
+                                             RenderingPassConfigRegistrationDependencies dependencies) {
+    registerRenderingPassConfigData(loadRenderingPassConfigJsonFromString(json_data, "ProjectBasicConfig"),
+                                    base_extent, std::move(dependencies));
 }
 
 } // namespace Pelican

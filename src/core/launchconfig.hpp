@@ -24,6 +24,7 @@ DECLARE_MODULE(EngineLaunchConfig) {
     std::optional<std::filesystem::path> render_out;
     double fps = 60.0;
     bool shader_hot_reload = true;
+    bool allow_absolute_paths = false;
     std::optional<std::filesystem::path> play_seq;
     std::filesystem::path seq_mesh{"builtin:sphere"};
     bool seq_loop = false;

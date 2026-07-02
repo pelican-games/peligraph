@@ -1,0 +1,10 @@
+{
+  "mode": "project_config",
+  "project": {
+    "schema": "pelican.project",
+    "version": 999,
+    "name": "future-version",
+    "engine_min_version": "0.1.0",
+    "basic_config": {}
+  }
+}

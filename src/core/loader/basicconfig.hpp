@@ -1,6 +1,7 @@
 #include "../container.hpp"
 
 #include <glm/glm.hpp>
+#include <optional>
 #include <string>
 
 namespace Pelican {
@@ -23,11 +24,16 @@ DECLARE_MODULE(ProjectBasicConfig) {
     InitialCameraProperty camera_prop;
 
     std::string default_scene_id;
-    std::string scene_data_json;
-    std::string asset_data_json;
-    std::string rendering_config_json;
+    std::string scene_data_json_ref;
+    std::string asset_data_json_ref;
+    std::string rendering_config_json_ref;
     std::string default_rendering_pass;
-    std::string ui_config_json;
+    std::string ui_config_json_ref;
+
+    mutable std::optional<std::string> scene_data_json;
+    mutable std::optional<std::string> asset_data_json;
+    mutable std::optional<std::string> rendering_config_json;
+    mutable std::optional<std::string> ui_config_json;
 
   public:
     ProjectBasicConfig();

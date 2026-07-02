@@ -10,7 +10,6 @@
 #include "core.hpp"
 #include "rendertarget.hpp"
 #include <cstdint>
-#include <filesystem>
 #include <stdexcept>
 
 namespace Pelican {
@@ -40,29 +39,25 @@ void registerConfiguredRenderingPasses(const ProjectBasicConfig &config) {
     ScopedLogTimer timer{"register configured rendering passes"};
 
     try {
-        const auto main_config_path = config.renderingConfigJson();
-        if (std::filesystem::exists(main_config_path)) {
-            auto &rt_module = GET_MODULE(RenderTarget);
-            auto &rt_container = GET_MODULE(RenderTargetContainer);
-            auto &shader_library = GET_MODULE(ShaderLibrary);
-            auto &fs_container = GET_MODULE(FullscreenPassContainer);
-            auto &pass_container = GET_MODULE(RenderingPassContainer);
-            registerRenderingPassConfigFromJson(
-                main_config_path, baseExtentFromConfig(config),
-                RenderingPassConfigRegistrationDependencies{
-                    RenderingPassConfigRenderTargetDependencies{
-                        rt_container,
-                    },
-                    RenderingPassConfigRuntimeDependencies{
-                        rt_module,
-                        shader_library,
-                        fs_container,
-                    },
-                    pass_container,
-                });
-        } else {
-            throw std::runtime_error("Main rendering configuration JSON file not found: " + main_config_path);
-        }
+        const auto main_config_json = config.renderingConfigJson();
+        auto &rt_module = GET_MODULE(RenderTarget);
+        auto &rt_container = GET_MODULE(RenderTargetContainer);
+        auto &shader_library = GET_MODULE(ShaderLibrary);
+        auto &fs_container = GET_MODULE(FullscreenPassContainer);
+        auto &pass_container = GET_MODULE(RenderingPassContainer);
+        registerRenderingPassConfigFromJsonData(
+            main_config_json, baseExtentFromConfig(config),
+            RenderingPassConfigRegistrationDependencies{
+                RenderingPassConfigRenderTargetDependencies{
+                    rt_container,
+                },
+                RenderingPassConfigRuntimeDependencies{
+                    rt_module,
+                    shader_library,
+                    fs_container,
+                },
+                pass_container,
+            });
     } catch (const std::exception &e) {
         LOG_ERROR(logger, "Failed to load main rendering configuration: {}", e.what());
         throw;

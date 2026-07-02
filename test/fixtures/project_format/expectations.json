@@ -25,5 +25,34 @@
     "file": "invalid/unknown_engine.json",
     "expect": "error",
     "error_kind": "unknown_engine_id"
+  },
+  {
+    "file": "invalid/backslash_separator.json",
+    "expect": "error",
+    "error_kind": "separator"
+  },
+  {
+    "file": "invalid/empty_ref.json",
+    "expect": "error",
+    "error_kind": "empty"
+  },
+  {
+    "file": "valid/project_basic_config.json",
+    "expect": "ok"
+  },
+  {
+    "file": "invalid/project_newer_engine.json",
+    "expect": "error",
+    "error_kind": "engine_version"
+  },
+  {
+    "file": "invalid/project_bad_schema.json",
+    "expect": "error",
+    "error_kind": "schema"
+  },
+  {
+    "file": "invalid/project_future_version.json",
+    "expect": "error",
+    "error_kind": "version"
   }
 ]

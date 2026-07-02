@@ -105,46 +105,39 @@ UIContainer::UIContainer()
 
     // JSON設定からUI画像を読み込む
     try {
-        const std::string json_path = GET_MODULE(ProjectBasicConfig).uiConfigJson();
-        if (std::filesystem::exists(json_path)) {
-            std::ifstream ifs(json_path, std::ios::binary);
-            const std::string data((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
-            const auto json = nlohmann::json::parse(data);
-            const auto images = json.value("images", nlohmann::json::array());
-            
-            for (const auto &img : images) {
-                if (!img.contains("file"))
-                    continue;
+        const auto json = nlohmann::json::parse(GET_MODULE(ProjectBasicConfig).uiConfigJson());
+        const auto images = json.value("images", nlohmann::json::array());
 
-                const std::string file = img.value("file", "");
-                const std::string ui_name = img.value("name", file);
-                const float scale = img.value("scale", 1.0f);
-                
-                const auto pos_arr = img.value("position", std::vector<float>{0.0f, 0.0f, 0.0f});
-                glm::vec3 pos{0.0f};
-                if (pos_arr.size() >= 2) {
-                    pos.x = pos_arr[0];
-                    pos.y = pos_arr[1];
-                }
-                if (pos_arr.size() >= 3) {
-                    pos.z = pos_arr[2];
-                }
+        for (const auto &img : images) {
+            if (!img.contains("file"))
+                continue;
 
-                const auto center_arr = img.value("center", std::vector<float>{0.5f, 0.5f});
-                glm::vec2 center{0.5f, 0.5f};
-                if (center_arr.size() >= 2) {
-                    center.x = center_arr[0];
-                    center.y = center_arr[1];
-                }
+            const std::string file = img.value("file", "");
+            const std::string ui_name = img.value("name", file);
+            const float scale = img.value("scale", 1.0f);
 
-                if (std::filesystem::exists(file)) {
-                    registerUI(ui_name, file, pos, center, scale);
-                } else {
-                    LOG_WARNING(logger, "UI image file not found: {}", file);
-                }
+            const auto pos_arr = img.value("position", std::vector<float>{0.0f, 0.0f, 0.0f});
+            glm::vec3 pos{0.0f};
+            if (pos_arr.size() >= 2) {
+                pos.x = pos_arr[0];
+                pos.y = pos_arr[1];
             }
-        } else {
-            LOG_WARNING(logger, "UI config JSON not found: {}. UI overlay will be skipped.", json_path);
+            if (pos_arr.size() >= 3) {
+                pos.z = pos_arr[2];
+            }
+
+            const auto center_arr = img.value("center", std::vector<float>{0.5f, 0.5f});
+            glm::vec2 center{0.5f, 0.5f};
+            if (center_arr.size() >= 2) {
+                center.x = center_arr[0];
+                center.y = center_arr[1];
+            }
+
+            if (std::filesystem::exists(file)) {
+                registerUI(ui_name, file, pos, center, scale);
+            } else {
+                LOG_WARNING(logger, "UI image file not found: {}", file);
+            }
         }
     } catch (const std::exception &e) {
         LOG_WARNING(logger, "UI config load failed: {}", e.what());

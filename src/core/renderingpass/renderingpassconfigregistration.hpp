@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
@@ -29,5 +30,7 @@ struct RenderingPassConfigRegistrationDependencies {
 
 void registerRenderingPassConfigFromJson(const std::string &json_path, vk::Extent2D base_extent,
                                          RenderingPassConfigRegistrationDependencies dependencies);
+void registerRenderingPassConfigFromJsonData(std::string_view json_data, vk::Extent2D base_extent,
+                                             RenderingPassConfigRegistrationDependencies dependencies);
 
 } // namespace Pelican

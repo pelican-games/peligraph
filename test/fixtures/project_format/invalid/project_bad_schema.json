@@ -1,0 +1,10 @@
+{
+  "mode": "project_config",
+  "project": {
+    "schema": "not.pelican",
+    "version": 1,
+    "name": "bad-schema",
+    "engine_min_version": "0.1.0",
+    "basic_config": {}
+  }
+}

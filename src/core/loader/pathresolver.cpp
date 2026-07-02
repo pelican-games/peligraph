@@ -121,6 +121,16 @@ std::string refForMessage(std::string_view ref) {
     return ref.empty() ? std::string{"<empty>"} : std::string{ref};
 }
 
+void validateRefSyntax(std::string_view ref) {
+    if (ref.empty()) {
+        throw std::runtime_error("Empty project path references are not allowed");
+    }
+    if (ref.find('\\') != std::string_view::npos) {
+        throw std::runtime_error("Backslash path separators are not allowed in project references: " +
+                                 refForMessage(ref));
+    }
+}
+
 } // namespace
 
 void PathResolver::setup(const std::filesystem::path &project_root, bool allow_absolute) {
@@ -148,6 +158,8 @@ ResolvedRef PathResolver::resolveCliRef(std::string_view ref) const {
 }
 
 ResolvedRef PathResolver::resolveRef(std::string_view ref, bool cli_origin) const {
+    validateRefSyntax(ref);
+
     if (startsWith(ref, engine_scheme)) {
         return EngineResourceId{std::string{ref.substr(engine_scheme.size())}};
     }
@@ -157,6 +169,7 @@ ResolvedRef PathResolver::resolveRef(std::string_view ref, bool cli_origin) cons
     }
 
     const auto ref_string = stripProjectScheme(ref);
+    validateRefSyntax(ref_string);
     const std::filesystem::path ref_path{ref_string};
     if (hasAbsoluteSyntax(ref_path, ref_string)) {
         if (!cli_origin) {

@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -17,6 +18,8 @@
 
 #include "../core/container.hpp"
 #include "../core/launchconfig.hpp"
+#include "../core/loader/pathresolver.hpp"
+#include "../core/loader/projectsrc.hpp"
 #include "../core/log.hpp"
 
 namespace {
@@ -24,6 +27,10 @@ namespace {
 struct ParsedLaunchConfig {
     Pelican::EngineLaunchConfig engine;
     std::string project_settings{"{}"};
+    std::filesystem::path project_root;
+    std::optional<std::string> project_json;
+    bool project_explicit = false;
+    bool ignore_engine_version = false;
 };
 
 uint32_t parsePositiveUint(const std::string &value, const std::string &name) {
@@ -104,16 +111,78 @@ std::string readTextFile(const std::filesystem::path &path) {
     return stream.str();
 }
 
+std::filesystem::path weaklyCanonicalPath(const std::filesystem::path &path, const std::string &name) {
+    std::error_code ec;
+    const auto canonical = std::filesystem::weakly_canonical(path, ec);
+    if (ec) {
+        throw std::runtime_error(name + " failed to normalize path: " + path.string() + " (" + ec.message() + ")");
+    }
+    return canonical;
+}
+
+std::filesystem::path executableDirectory(char *argv0) {
+    const auto exe_path = weaklyCanonicalPath(std::filesystem::absolute(std::filesystem::path{argv0}), "executable");
+    return exe_path.parent_path();
+}
+
+void configureImplicitProject(ParsedLaunchConfig &parsed, char *argv0) {
+    parsed.project_root = executableDirectory(argv0);
+    const auto project_file = parsed.project_root / "project.json";
+    if (std::filesystem::is_regular_file(project_file)) {
+        parsed.project_json = readTextFile(project_file);
+    }
+}
+
+void configureExplicitProject(ParsedLaunchConfig &parsed, const std::string &value) {
+    if (value.empty()) {
+        throw std::runtime_error("--project must not be empty");
+    }
+
+    auto path = std::filesystem::path{value};
+    if (path.is_relative()) {
+        path = std::filesystem::current_path() / path;
+    }
+    path = weaklyCanonicalPath(path, "--project");
+
+    std::filesystem::path project_file;
+    if (std::filesystem::is_directory(path)) {
+        parsed.project_root = path;
+        project_file = path / "project.json";
+    } else if (std::filesystem::is_regular_file(path)) {
+        parsed.project_root = path.parent_path();
+        project_file = path;
+    } else {
+        throw std::runtime_error("--project must point to a directory or project.json file: " + path.string());
+    }
+
+    if (!std::filesystem::is_regular_file(project_file)) {
+        throw std::runtime_error("--project project.json file not found: " + project_file.string());
+    }
+
+    parsed.project_json = readTextFile(project_file);
+    parsed.project_explicit = true;
+}
+
 ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
     argparse::ArgumentParser program("Pelican Player");
     program.add_argument("--headless").flag().help("run without a window");
     program.add_argument("--frames").default_value(3).scan<'i', int>().help("headless frame count");
     program.add_argument("--size").default_value(std::string{"1280x720"}).metavar("WxH").help("headless render size");
     program.add_argument("--render-out").default_value(std::string{}).metavar("path").help("render output path");
+    program.add_argument("--project")
+        .default_value(std::string{})
+        .metavar("dir|project.json")
+        .help("load a Pelican project directory or project.json");
     program.add_argument("--project-settings")
         .default_value(std::string{})
         .metavar("settings.json")
         .help("load project settings JSON passed to PelicanCore");
+    program.add_argument("--allow-absolute-paths")
+        .flag()
+        .help("allow absolute paths in CLI-provided project content references");
+    program.add_argument("--ignore-engine-version")
+        .flag()
+        .help("warn instead of failing when project engine_min_version is newer");
     program.add_argument("--fps").default_value(60.0).scan<'g', double>().help("headless fixed-step frame rate");
     program.add_argument("--play-seq")
         .default_value(std::string{})
@@ -136,6 +205,15 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         auto &config = parsed.engine;
         config.headless = program.get<bool>("--headless");
         config.shader_hot_reload = !config.headless;
+        config.allow_absolute_paths = program.get<bool>("--allow-absolute-paths");
+        parsed.ignore_engine_version = program.get<bool>("--ignore-engine-version");
+
+        const auto project = program.get<std::string>("--project");
+        if (project.empty()) {
+            configureImplicitProject(parsed, argv[0]);
+        } else {
+            configureExplicitProject(parsed, project);
+        }
 
         const int frames = program.get<int>("--frames");
         if (frames < 0) {
@@ -234,6 +312,18 @@ int main(int argc, char *argv[]) {
     const auto &launch_config = parsed_launch_config.engine;
     Pelican::PelicanCore pl{parsed_launch_config.project_settings};
     Pelican::FastModuleContainer::get<Pelican::EngineLaunchConfig>() = launch_config;
+    Pelican::FastModuleContainer::get<Pelican::PathResolver>()
+        .setup(parsed_launch_config.project_root, launch_config.allow_absolute_paths);
+    auto &project_source = Pelican::FastModuleContainer::get<Pelican::ProjectSource>();
+    if (parsed_launch_config.project_json) {
+        project_source.setProjectData(*parsed_launch_config.project_json);
+    }
+    project_source.setIgnoreEngineVersion(parsed_launch_config.ignore_engine_version);
+
+    if (!parsed_launch_config.project_explicit) {
+        LOG_WARNING(Pelican::logger, "implicit project root = {} (pass --project to silence)",
+                    parsed_launch_config.project_root.string());
+    }
     if (launch_config.headless) {
         LOG_INFO(Pelican::logger, "headless mode enabled");
     }
