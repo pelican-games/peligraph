@@ -12,6 +12,9 @@ StandardMaterialResource::StandardMaterialResource() {
     const auto vert_shader = b::embed<"default.vert.spv">();
     std_vert = shader_library.loadFromBytes(vert_shader.length(), vert_shader.data(), "default.vert.spv");
 
+    const auto vat_vert_shader = b::embed<"vat.vert.spv">();
+    vat_vert = shader_library.loadFromBytes(vat_vert_shader.length(), vat_vert_shader.data(), "vat.vert.spv");
+
     const auto frag_shader = b::embed<"default.frag.spv">();
     std_frag = shader_library.loadFromBytes(frag_shader.length(), frag_shader.data(), "default.frag.spv");
 

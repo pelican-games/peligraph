@@ -20,6 +20,10 @@ target_link_libraries(${target_name} PRIVATE Catch2::Catch2WithMain nlohmann_jso
 catch_discover_tests(${target_name})
 endfunction()
 
+add_executable(pelican_test_vat_fixture_writer vat_fixture_writer.cpp)
+set_target_properties(pelican_test_vat_fixture_writer PROPERTIES CXX_STANDARD 20)
+target_link_libraries(pelican_test_vat_fixture_writer PRIVATE nlohmann_json)
+
 # register tests
 pelican_define_test(deletionqueue_test pelican_core)
 pelican_define_test(enginetime_test pelican_core)
@@ -56,6 +60,7 @@ target_compile_definitions(pelican_test_sceneformat_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 pelican_define_test(seqplayer_test pelican_core glm)
+pelican_define_test(vatformat_test pelican_core glm)
 pelican_define_test(shader_compile_test spirv-reflect-static stb)
 target_compile_definitions(pelican_test_shader_compile_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
@@ -102,4 +107,15 @@ add_test(
         -DSEQ_FILE=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/seqplayer_two_objects.jsonl
         -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/seqplayer_headless
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_seqplayer_headless.cmake
+)
+
+add_test(
+    NAME vatplayer_headless_player
+    COMMAND ${CMAKE_COMMAND}
+        -DPLAYER=$<TARGET_FILE:pelican_player>
+        -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+        -DWRITER=$<TARGET_FILE:pelican_test_vat_fixture_writer>
+        -DEXAMPLE_PASS=${CMAKE_SOURCE_DIR}/projects/example/passes/main_rendering_config.json
+        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/vatplayer_headless
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_vatplayer_headless.cmake
 )

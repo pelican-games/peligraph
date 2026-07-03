@@ -10,7 +10,7 @@ namespace Pelican {
 
 namespace {
 
-constexpr std::array<std::string_view, 22> registered_ids{
+constexpr std::array<std::string_view, 23> registered_ids{
     "bloom_blur_h.frag.spv",
     "bloom_blur_v.frag.spv",
     "bloom_composite.frag.spv",
@@ -33,6 +33,7 @@ constexpr std::array<std::string_view, 22> registered_ids{
     "ssao_blur.frag.spv",
     "ui.frag.spv",
     "ui.vert.spv",
+    "vat.vert.spv",
 };
 
 } // namespace
@@ -70,6 +71,7 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("ssao_blur.frag.spv")
     PELICAN_ENGINE_RESOURCE("ui.frag.spv")
     PELICAN_ENGINE_RESOURCE("ui.vert.spv")
+    PELICAN_ENGINE_RESOURCE("vat.vert.spv")
 #undef PELICAN_ENGINE_RESOURCE
 
     return std::nullopt;

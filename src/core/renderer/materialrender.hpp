@@ -18,6 +18,7 @@ struct MaterialRendererDependencies {
     const MaterialContainer &material_container;
     LightContainer &light_container;
     const Camera &camera;
+    double time_seconds = 0.0;
 };
 
 DECLARE_MODULE(MaterialRenderer) {

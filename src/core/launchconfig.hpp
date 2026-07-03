@@ -26,6 +26,7 @@ DECLARE_MODULE(EngineLaunchConfig) {
     bool shader_hot_reload = true;
     bool allow_absolute_paths = false;
     std::optional<std::filesystem::path> play_seq;
+    std::optional<std::filesystem::path> play_vat;
     std::filesystem::path seq_mesh{"builtin:sphere"};
     bool seq_loop = false;
     std::optional<EngineLaunchCameraOverride> camera_override;

@@ -33,11 +33,6 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
         return;
     }
 
-    const auto pipeline_layout = material_container.getPipelineLayout();
-    PushConstantStruct push_constant;
-    push_constant.mvp = dependencies.camera.getVPMatrix();
-    cmd_buf.pushConstants(pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(push_constant), &push_constant);
-
     const auto &indirect_buf = instance_container.getIndirectBuf();
     GlobalMaterialId current_material_id = invalidMaterialId();
     uint32_t material_index = 0;
@@ -52,6 +47,11 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
         }
 
         material_container.bindResource(cmd_buf, pass_id, draw_call.material, current_material_id);
+        const auto push_constant = material_container.makePushConstants(
+            draw_call.material, dependencies.camera.getVPMatrix(), dependencies.time_seconds);
+        cmd_buf.pushConstants(material_container.pipelineLayout(draw_call.material),
+                              vk::ShaderStageFlagBits::eVertex, 0,
+                              material_container.pushConstantBytes(draw_call.material), &push_constant);
         current_material_id = draw_call.material;
         cmd_buf.drawIndexedIndirect(indirect_buf.buffer.get(), draw_call.offset, draw_call.draw_count,
                                     draw_call.stride);

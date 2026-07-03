@@ -101,6 +101,33 @@ std::filesystem::path resolveExistingCliFile(const std::string &value, const std
     return std::filesystem::weakly_canonical(path);
 }
 
+std::filesystem::path resolveExistingProjectCliFile(const std::string &value, const std::string &name,
+                                                    const std::filesystem::path &project_root,
+                                                    bool allow_absolute_paths) {
+    if (value.empty()) {
+        throw std::runtime_error(name + " must not be empty");
+    }
+
+    auto path = std::filesystem::path{value};
+    if (path.is_absolute() || path.has_root_name()) {
+        if (!allow_absolute_paths) {
+            throw std::runtime_error(name + " absolute paths require --allow-absolute-paths: " + value);
+        }
+    } else {
+        path = project_root / path;
+    }
+
+    std::error_code ec;
+    path = std::filesystem::weakly_canonical(path, ec);
+    if (ec) {
+        throw std::runtime_error(name + " failed to normalize path: " + path.string() + " (" + ec.message() + ")");
+    }
+    if (!std::filesystem::is_regular_file(path)) {
+        throw std::runtime_error(name + " file not found: " + path.string());
+    }
+    return path;
+}
+
 std::string readTextFile(const std::filesystem::path &path) {
     std::ifstream file{path, std::ios::binary};
     if (!file) {
@@ -211,6 +238,10 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         .default_value(std::string{})
         .metavar("path.jsonl")
         .help("play a pelican.transform_seq JSONL file");
+    program.add_argument("--play-vat")
+        .default_value(std::string{})
+        .metavar("path.glb")
+        .help("play a GLB containing pelican.vat primitive extras");
     program.add_argument("--seq-mesh")
         .default_value(std::string{"builtin:sphere"})
         .metavar("builtin:sphere|path.glb")
@@ -272,6 +303,12 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
                 config.seq_mesh = resolveExistingCliFile(seq_mesh, "--seq-mesh");
             }
             config.seq_loop = program.get<bool>("--seq-loop");
+        }
+
+        const auto play_vat = program.get<std::string>("--play-vat");
+        if (!play_vat.empty()) {
+            config.play_vat = resolveExistingProjectCliFile(play_vat, "--play-vat", parsed.project_root,
+                                                            config.allow_absolute_paths);
         }
 
         const auto camera = program.get<std::string>("--camera");

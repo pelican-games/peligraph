@@ -4,7 +4,9 @@
 #include "../shader/pipelinefactory.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/util.hpp"
+#include <array>
 #include <stdexcept>
+#include <vector>
 
 namespace Pelican {
 
@@ -16,7 +18,10 @@ constexpr uint32_t baseColorBinding = 0;
 constexpr uint32_t metallicRoughnessBinding = 1;
 constexpr uint32_t normalBinding = 2;
 constexpr uint32_t emissiveBinding = 3;
-constexpr uint32_t materialTextureBindingCount = 4;
+constexpr uint32_t vatPositionBinding = 4;
+constexpr uint32_t vatNormalBinding = 5;
+constexpr uint32_t baseMaterialTextureBindingCount = 4;
+constexpr uint32_t vatMaterialTextureBindingCount = 6;
 
 static uint64_t makePipelineKey(ShaderBundleId vert_shader, ShaderBundleId frag_shader) {
     return (static_cast<uint64_t>(static_cast<uint32_t>(vert_shader.value)) << 32) |
@@ -43,7 +48,7 @@ static vk::UniqueDescriptorPool createDescriptorPool(vk::Device device) {
     pool_size[0].type = vk::DescriptorType::eStorageBuffer;
     pool_size[0].descriptorCount = 1024;
     pool_size[1].type = vk::DescriptorType::eCombinedImageSampler;
-    pool_size[1].descriptorCount = 1024;
+    pool_size[1].descriptorCount = 2048;
 
     vk::DescriptorPoolCreateInfo create_info;
     create_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
@@ -138,7 +143,8 @@ GlobalTextureId MaterialContainer::registerTexture(vk::Extent3D extent, const vo
                                      VulkanUtils::ImageTransferInfo{
                                          .old_layout = vk::ImageLayout::eUndefined,
                                          .new_layout = vk::ImageLayout::eShaderReadOnlyOptimal,
-                                         .dst_stage = vk::PipelineStageFlagBits::eFragmentShader,
+                                         .dst_stage = vk::PipelineStageFlagBits::eVertexShader |
+                                                      vk::PipelineStageFlagBits::eFragmentShader,
                                          .dst_access = vk::AccessFlagBits::eShaderRead,
                                      });
 
@@ -175,68 +181,47 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     auto descsets = device.allocateDescriptorSetsUnique(desc_alloc_info);
     auto &descset = descsets[0];
 
-    std::array<vk::DescriptorImageInfo, materialTextureBindingCount> image_infos{};
-    
-    // Base Color
-    {
-        const auto &tex = textures.get(info.base_color_texture);
-        image_infos[0].imageView = tex.image_view.get();
-        image_infos[0].imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-        image_infos[0].sampler = linear_sampler.get();
-    }
-    
-    // Metallic Roughness
-    {
-        const auto &tex = textures.get(info.metallic_roughness_texture);
-        image_infos[1].imageView = tex.image_view.get();
-        image_infos[1].imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-        image_infos[1].sampler = linear_sampler.get();
-    }
-    
-    // Normal
-    {
-        const auto &tex = textures.get(info.normal_texture);
-        image_infos[2].imageView = tex.image_view.get();
-        image_infos[2].imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-        image_infos[2].sampler = linear_sampler.get();
-    }
-    
-    // Emissive
-    {
-        const auto &tex = textures.get(info.emissive_texture);
-        image_infos[3].imageView = tex.image_view.get();
-        image_infos[3].imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-        image_infos[3].sampler = linear_sampler.get();
+    const auto texture_binding_count =
+        info.vat ? vatMaterialTextureBindingCount : baseMaterialTextureBindingCount;
+    std::array<vk::DescriptorImageInfo, vatMaterialTextureBindingCount> image_infos{};
+
+    const auto setImageInfo = [&](uint32_t binding, GlobalTextureId texture, vk::Sampler sampler) {
+        const auto &tex = textures.get(texture);
+        image_infos[binding].imageView = tex.image_view.get();
+        image_infos[binding].imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        image_infos[binding].sampler = sampler;
+    };
+
+    setImageInfo(baseColorBinding, info.base_color_texture, linear_sampler.get());
+    setImageInfo(metallicRoughnessBinding, info.metallic_roughness_texture, linear_sampler.get());
+    setImageInfo(normalBinding, info.normal_texture, linear_sampler.get());
+    setImageInfo(emissiveBinding, info.emissive_texture, linear_sampler.get());
+    if (info.vat) {
+        setImageInfo(vatPositionBinding, info.vat->position_texture, nearest_sampler.get());
+        setImageInfo(vatNormalBinding, info.vat->normal_texture, nearest_sampler.get());
     }
 
-    std::array<vk::WriteDescriptorSet, materialTextureBindingCount> writes{};
-    writes[0].dstSet = descset.get();
-    writes[0].dstBinding = baseColorBinding;
-    writes[0].dstArrayElement = 0;
-    writes[0].descriptorType = vk::DescriptorType::eCombinedImageSampler;
-    writes[0].descriptorCount = 1;
-    writes[0].pImageInfo = &image_infos[0];
+    std::vector<vk::WriteDescriptorSet> writes;
+    writes.reserve(texture_binding_count);
+    const auto addImageWrite = [&](uint32_t binding) {
+        vk::WriteDescriptorSet write;
+        write.dstSet = descset.get();
+        write.dstBinding = binding;
+        write.dstArrayElement = 0;
+        write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        write.descriptorCount = 1;
+        write.pImageInfo = &image_infos[binding];
+        writes.push_back(write);
+    };
 
-    writes[1].dstSet = descset.get();
-    writes[1].dstBinding = metallicRoughnessBinding;
-    writes[1].dstArrayElement = 0;
-    writes[1].descriptorType = vk::DescriptorType::eCombinedImageSampler;
-    writes[1].descriptorCount = 1;
-    writes[1].pImageInfo = &image_infos[1];
-
-    writes[2].dstSet = descset.get();
-    writes[2].dstBinding = normalBinding;
-    writes[2].dstArrayElement = 0;
-    writes[2].descriptorType = vk::DescriptorType::eCombinedImageSampler;
-    writes[2].descriptorCount = 1;
-    writes[2].pImageInfo = &image_infos[2];
-    
-    writes[3].dstSet = descset.get();
-    writes[3].dstBinding = emissiveBinding;
-    writes[3].dstArrayElement = 0;
-    writes[3].descriptorType = vk::DescriptorType::eCombinedImageSampler;
-    writes[3].descriptorCount = 1;
-    writes[3].pImageInfo = &image_infos[3];
+    addImageWrite(baseColorBinding);
+    addImageWrite(metallicRoughnessBinding);
+    addImageWrite(normalBinding);
+    addImageWrite(emissiveBinding);
+    if (info.vat) {
+        addImageWrite(vatPositionBinding);
+        addImageWrite(vatNormalBinding);
+    }
 
     device.updateDescriptorSets(writes, {});
 
@@ -246,6 +231,7 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         .metallic_roughness_texture = info.metallic_roughness_texture,
         .normal_texture = info.normal_texture,
         .emissive_texture = info.emissive_texture,
+        .vat = info.vat,
         .descset = std::move(descset),
     });
 }
@@ -296,6 +282,39 @@ vk::PipelineLayout MaterialContainer::getPipelineLayout() const {
         throw std::runtime_error("MaterialContainer has no material pipeline");
     }
     return GET_MODULE(PipelineFactory).layout(*default_pipeline);
+}
+
+vk::PipelineLayout MaterialContainer::pipelineLayout(GlobalMaterialId material_id) const {
+    const auto &material = materials.get(material_id);
+    return GET_MODULE(PipelineFactory).layout(material.pipeline);
+}
+
+MaterialPushConstantStruct MaterialContainer::makePushConstants(
+    GlobalMaterialId material_id,
+    glm::mat4 vp_matrix,
+    double time_seconds) const {
+    const auto &material = materials.get(material_id);
+
+    MaterialPushConstantStruct push_constant{};
+    push_constant.mvp = vp_matrix;
+
+    if (material.vat) {
+        const auto &vat = *material.vat;
+        const auto bounds_extent = vat.bounds_max - vat.bounds_min;
+        push_constant.vat_bounds_min_time = glm::vec4{vat.bounds_min, static_cast<float>(time_seconds)};
+        push_constant.vat_bounds_extent_frame =
+            glm::vec4{bounds_extent, static_cast<float>(vat.frame_count)};
+        push_constant.vat_playback_flags =
+            glm::vec4{vat.fps, vat.loop ? 1.0f : 0.0f, static_cast<float>(vat.base_vertex),
+                      vat.has_normal ? 1.0f : 0.0f};
+    }
+
+    return push_constant;
+}
+
+uint32_t MaterialContainer::pushConstantBytes(GlobalMaterialId material_id) const {
+    const auto &material = materials.get(material_id);
+    return material.vat ? sizeof(MaterialPushConstantStruct) : sizeof(PushConstantStruct);
 }
 
 } // namespace Pelican

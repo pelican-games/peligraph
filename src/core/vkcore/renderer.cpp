@@ -75,7 +75,8 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx, const Compiled
                                                                       modules.vert_buf_container,
                                                                       modules.material_container,
                                                                       modules.light_container,
-                                                                      modules.camera};
+                                                                      modules.camera,
+                                                                      GET_MODULE(EngineTime).now()};
     const FullscreenPassRendererDependencies fullscreen_pass_renderer_dependencies{modules.fullscreen_pass_container,
                                                                                   modules.light_container};
     const UiRendererDependencies ui_renderer_dependencies{modules.ui_container};

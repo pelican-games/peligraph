@@ -22,6 +22,15 @@ struct PushConstantStruct {
 
 static_assert(sizeof(PushConstantStruct) == PELICAN_PUSH_ENGINE_BYTES);
 
+struct MaterialPushConstantStruct {
+    glm::mat4 mvp;
+    glm::vec4 vat_bounds_min_time;
+    glm::vec4 vat_bounds_extent_frame;
+    glm::vec4 vat_playback_flags;
+};
+
+static_assert(sizeof(MaterialPushConstantStruct) <= PELICAN_PUSH_TOTAL_BYTES);
+
 DECLARE_MODULE(MaterialContainer) {
 
     vk::Device device;
@@ -41,6 +50,7 @@ DECLARE_MODULE(MaterialContainer) {
         GlobalTextureId metallic_roughness_texture;
         GlobalTextureId normal_texture;
         GlobalTextureId emissive_texture;
+        std::optional<MaterialInfo::VatPlaybackInfo> vat;
         vk::UniqueDescriptorSet descset;
     };
     std::unordered_map<uint64_t, PipelineHandle> pipelines;
@@ -65,6 +75,10 @@ DECLARE_MODULE(MaterialContainer) {
     void bindResource(vk::CommandBuffer cmd_buf, PassId pass_id, GlobalMaterialId material,
                       GlobalMaterialId prev_material_id) const;
     vk::PipelineLayout getPipelineLayout() const;
+    vk::PipelineLayout pipelineLayout(GlobalMaterialId material) const;
+    MaterialPushConstantStruct makePushConstants(GlobalMaterialId material, glm::mat4 vp_matrix,
+                                                double time_seconds) const;
+    uint32_t pushConstantBytes(GlobalMaterialId material) const;
 };
 
 } // namespace Pelican

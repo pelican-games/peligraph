@@ -8,14 +8,118 @@
 #include "../material/materialcontainer.hpp"
 #include "../material/standardmaterialresource.hpp"
 #include "gltf.hpp"
+#include "vatformat.hpp"
 #include "vertbufcontainer.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <optional>
+#include <stdexcept>
+#include <unordered_map>
 
 namespace Pelican {
+
+namespace {
+
+size_t vatTextureBytes(const VatPrimitiveInfo &vat) {
+    return static_cast<size_t>(vat.vertex_count) * vat.frame_count * 4 * sizeof(uint16_t);
+}
+
+const tinygltf::Value *objectMember(const tinygltf::Value::Object &object, const char *name) {
+    const auto found = object.find(name);
+    return found == object.end() ? nullptr : &found->second;
+}
+
+std::optional<std::string> valueString(const tinygltf::Value *value) {
+    if (value == nullptr || !value->IsString()) {
+        return std::nullopt;
+    }
+    return value->Get<std::string>();
+}
+
+std::optional<int64_t> valueInteger(const tinygltf::Value *value) {
+    if (value == nullptr || !value->IsInt()) {
+        return std::nullopt;
+    }
+    return value->Get<int>();
+}
+
+std::optional<double> valueNumber(const tinygltf::Value *value) {
+    if (value == nullptr) {
+        return std::nullopt;
+    }
+    if (value->IsInt()) {
+        return static_cast<double>(value->Get<int>());
+    }
+    if (value->IsNumber()) {
+        return value->Get<double>();
+    }
+    return std::nullopt;
+}
+
+std::optional<bool> valueBool(const tinygltf::Value *value) {
+    if (value == nullptr || !value->IsBool()) {
+        return std::nullopt;
+    }
+    return value->Get<bool>();
+}
+
+std::optional<std::array<double, 3>> valueVec3(const tinygltf::Value *value) {
+    if (value == nullptr || !value->IsArray()) {
+        return std::nullopt;
+    }
+    const auto &array = value->Get<tinygltf::Value::Array>();
+    if (array.size() != 3) {
+        return std::nullopt;
+    }
+
+    std::array<double, 3> result{};
+    for (size_t i = 0; i < result.size(); ++i) {
+        const auto component = valueNumber(&array[i]);
+        if (!component) {
+            return std::nullopt;
+        }
+        result[i] = *component;
+    }
+    return result;
+}
+
+VatPrimitiveMeta tinyGltfValueToVatMeta(const tinygltf::Value &extras) {
+    VatPrimitiveMeta meta;
+    if (!extras.IsObject()) {
+        return meta;
+    }
+
+    const auto &extras_object = extras.Get<tinygltf::Value::Object>();
+    const auto *vat_value = objectMember(extras_object, "pelican.vat");
+    if (vat_value == nullptr) {
+        return meta;
+    }
+
+    meta.present = true;
+    if (!vat_value->IsObject()) {
+        meta.single_clip_object = false;
+        return meta;
+    }
+
+    const auto &vat = vat_value->Get<tinygltf::Value::Object>();
+    meta.schema = valueString(objectMember(vat, "schema"));
+    meta.version = valueInteger(objectMember(vat, "version"));
+    meta.generator = valueString(objectMember(vat, "generator"));
+    meta.fps = valueNumber(objectMember(vat, "fps"));
+    meta.frame_count = valueInteger(objectMember(vat, "frame_count"));
+    meta.vertex_count = valueInteger(objectMember(vat, "vertex_count"));
+    meta.bounds_min = valueVec3(objectMember(vat, "bounds_min"));
+    meta.bounds_max = valueVec3(objectMember(vat, "bounds_max"));
+    meta.loop = valueBool(objectMember(vat, "loop"));
+    meta.position_view = valueInteger(objectMember(vat, "position_view"));
+    meta.normal_view = valueInteger(objectMember(vat, "normal_view"));
+    return meta;
+}
+
+} // namespace
 
 struct InternalGltfLoader {
     using ModelLocalMaterialId = int;
@@ -25,8 +129,11 @@ struct InternalGltfLoader {
     VertBufContainer &buf_container;
     tinygltf::Model &model;
     std::vector<GlobalMaterialId> material_map;
+    std::vector<MaterialInfo> material_infos;
     std::vector<GlobalTextureId> texture_map;
+    std::unordered_map<ModelLocalMaterialId, GlobalMaterialId> resolved_materials;
     std::unordered_map<ModelLocalMaterialId, std::vector<ModelTemplate::PrimitiveRefInfo>> tmp_material_primitives;
+    ModelLocalMaterialId next_generated_material = -2;
 
     uint8_t toUnorm8(double value) {
         return static_cast<uint8_t>(std::lround(std::clamp(value, 0.0, 1.0) * 255.0));
@@ -69,6 +176,83 @@ struct InternalGltfLoader {
             toUnorm8(vectorValueOr(material.emissiveFactor, 0, 0.0)),
             toUnorm8(vectorValueOr(material.emissiveFactor, 1, 0.0)),
             toUnorm8(vectorValueOr(material.emissiveFactor, 2, 0.0)));
+    }
+
+    std::vector<VatBufferViewInfo> vatBufferViewInfos() const {
+        std::vector<VatBufferViewInfo> infos;
+        infos.reserve(model.bufferViews.size());
+        for (size_t i = 0; i < model.bufferViews.size(); ++i) {
+            const auto &view = model.bufferViews[i];
+            infos.push_back(VatBufferViewInfo{
+                .index = static_cast<int>(i),
+                .buffer = view.buffer,
+                .byte_offset = view.byteOffset,
+                .byte_length = view.byteLength,
+            });
+        }
+        return infos;
+    }
+
+    const std::byte *bufferViewData(const VatBufferViewSpan &span, size_t required_bytes) const {
+        if (span.buffer < 0 || span.buffer >= static_cast<int>(model.buffers.size())) {
+            throw std::runtime_error("pelican.vat references invalid buffer index");
+        }
+        const auto &buffer = model.buffers[span.buffer];
+        if (span.byte_offset > buffer.data.size() || required_bytes > buffer.data.size() - span.byte_offset) {
+            throw std::runtime_error("pelican.vat bufferView range exceeds GLB buffer data");
+        }
+        return reinterpret_cast<const std::byte *>(buffer.data.data() + span.byte_offset);
+    }
+
+    GlobalTextureId registerVatTexture(const VatBufferViewSpan &span, uint32_t vertex_count,
+                                       uint32_t frame_count, size_t required_bytes) const {
+        const auto *data = bufferViewData(span, required_bytes);
+        return mat_container.registerTexture(vk::Extent3D{vertex_count, frame_count, 1}, data,
+                                             vk::Format::eR16G16B16A16Sfloat, required_bytes);
+    }
+
+    MaterialInfo materialInfoForPrimitive(int local_material_id) const {
+        if (local_material_id >= 0) {
+            return material_infos.at(local_material_id);
+        }
+
+        return MaterialInfo{
+            .vert_shader = std_mat.standardVertShader(),
+            .frag_shader = std_mat.standardFragShader(),
+            .base_color_texture = std_mat.whiteTexture(),
+            .metallic_roughness_texture = std_mat.metallicRoughnessDefaultTexture(),
+            .normal_texture = std_mat.normalDefaultTexture(),
+            .emissive_texture = std_mat.emissiveDefaultTexture(),
+        };
+    }
+
+    ModelLocalMaterialId registerVatMaterial(int local_material_id, const VatPrimitiveInfo &vat,
+                                             const ModelTemplate::PrimitiveRefInfo &primitive_info) {
+        const auto required_bytes = vatTextureBytes(vat);
+        auto material_info = materialInfoForPrimitive(local_material_id);
+        const auto position_texture =
+            registerVatTexture(vat.position_view, vat.vertex_count, vat.frame_count, required_bytes);
+        const auto normal_texture =
+            vat.normal_view ? registerVatTexture(*vat.normal_view, vat.vertex_count, vat.frame_count,
+                                                 required_bytes)
+                            : std_mat.normalDefaultTexture();
+
+        material_info.vert_shader = std_mat.vatVertShader();
+        material_info.vat = MaterialInfo::VatPlaybackInfo{
+            .position_texture = position_texture,
+            .normal_texture = normal_texture,
+            .bounds_min = vat.bounds_min,
+            .bounds_max = vat.bounds_max,
+            .fps = static_cast<float>(vat.fps),
+            .frame_count = vat.frame_count,
+            .base_vertex = primitive_info.vert_offset,
+            .loop = vat.loop,
+            .has_normal = vat.normal_view.has_value(),
+        };
+
+        const auto generated_material = next_generated_material--;
+        resolved_materials[generated_material] = mat_container.registerMaterial(material_info);
+        return generated_material;
     }
 
     template <class InType, class OutType>
@@ -275,13 +459,25 @@ struct InternalGltfLoader {
             if (auto it = primitive.attributes.find("WEIGHTS_0"); it != primitive.attributes.end())
                 dat.weight = getDataFromAccessor<TINYGLTF_TYPE_VEC4, glm::vec4>(it->second);
 
+            const auto vat_info = parseVatPrimitiveExtras(
+                tinyGltfValueToVatMeta(primitive.extras), static_cast<uint32_t>(dat.pos.size()),
+                vatBufferViewInfos());
+            const auto primitive_mode = primitive.mode < 0 ? TINYGLTF_MODE_TRIANGLES : primitive.mode;
+            if (vat_info && primitive_mode != TINYGLTF_MODE_TRIANGLES) {
+                throw std::runtime_error("pelican.vat only supports TRIANGLES topology");
+            }
+
             transformVertexData(dat, world_transform);
             auto primitive_info = buf_container.addPrimitiveEntry(std::move(dat));
-            tmp_material_primitives[primitive.material].emplace_back(std::move(primitive_info));
+            const auto material_id =
+                vat_info ? registerVatMaterial(primitive.material, *vat_info, primitive_info)
+                         : primitive.material;
+            tmp_material_primitives[material_id].emplace_back(std::move(primitive_info));
         }
     }
     ModelTemplate load() {
         material_map.resize(model.materials.size());
+        material_infos.resize(model.materials.size());
         texture_map.resize(model.textures.size());
 
         for (int i = 0; i < model.textures.size(); i++) {
@@ -306,14 +502,16 @@ struct InternalGltfLoader {
                 normal_texture_index >= 0 ? texture_map[normal_texture_index] : std_mat.normalDefaultTexture();
             const auto emissive_texture = emissiveTextureForMaterial(material);
 
-            material_map[i] = mat_container.registerMaterial(Pelican::MaterialInfo{
+            material_infos[i] = Pelican::MaterialInfo{
                 .vert_shader = std_mat.standardVertShader(),
                 .frag_shader = std_mat.standardFragShader(),
                 .base_color_texture = base_color_texture,
                 .metallic_roughness_texture = metallic_roughness_texture,
                 .normal_texture = normal_texture,
                 .emissive_texture = emissive_texture
-            });
+            };
+            material_map[i] = mat_container.registerMaterial(material_infos[i]);
+            resolved_materials[i] = material_map[i];
         }
 
         const auto &scene = model.scenes[model.defaultScene < 0 ? 0 : model.defaultScene];
@@ -323,9 +521,9 @@ struct InternalGltfLoader {
 
         ModelTemplate m;
         for (const auto &[local_material_id, primitive] : tmp_material_primitives) {
+            const auto found = resolved_materials.find(local_material_id);
             m.material_primitives.emplace_back(ModelTemplate::MaterialPrimitives{
-                .material =
-                    local_material_id >= 0 ? material_map.at(local_material_id) : std_mat.standardTransparentMaterial(),
+                .material = found != resolved_materials.end() ? found->second : std_mat.standardTransparentMaterial(),
                 .primitives = std::move(primitive),
             });
         }

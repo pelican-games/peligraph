@@ -23,6 +23,7 @@
     "ssao.frag.spv",
     "ssao_blur.frag.spv",
     "ui.frag.spv",
-    "ui.vert.spv"
+    "ui.vert.spv",
+    "vat.vert.spv"
   ]
 }

@@ -5,6 +5,7 @@
 #include "../log.hpp"
 #include "../os/window.hpp"
 #include "../playback/seqplayer.hpp"
+#include "../playback/vatplayer.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/deletionqueue.hpp"
 #include "../vkcore/renderer.hpp"
@@ -95,6 +96,8 @@ void Loop::run() {
     auto &ecs = GET_MODULE(ECSCore);
     auto &engine_time = GET_MODULE(EngineTime);
     auto &seq_player = GET_MODULE(SeqPlayer);
+    auto &vat_player = GET_MODULE(VatPlayer);
+    (void)vat_player;
 
     const auto time_mode =
         launch_config.headless ? EngineTime::Mode::fixed_step : EngineTime::Mode::realtime;

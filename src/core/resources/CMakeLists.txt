@@ -15,6 +15,7 @@ function(embed_shader file_name)
 endfunction(embed_shader)
 
 embed_shader(default.vert)
+embed_shader(vat.vert)
 embed_shader(default.frag)
 embed_shader(fullscreen.vert)
 embed_shader(fullscreen.frag)

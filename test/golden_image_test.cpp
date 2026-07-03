@@ -1,14 +1,17 @@
 #include "../src/core/container.hpp"
+#include "../src/core/appflow/enginetime.hpp"
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/log.hpp"
+#include "../src/core/playback/vatplayer.hpp"
 #include "../src/core/shader/pipelinefactory.hpp"
 #include "../src/core/shader/shadercompiler.hpp"
 #include "../src/core/shader/shaderlibrary.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/vkcore/renderer.hpp"
 #include "../src/core/vkcore/rendertarget.hpp"
+#include "vat_fixture.hpp"
 
 #include <algorithm>
 #include <array>
@@ -135,6 +138,29 @@ nlohmann::json makeStemProjectJson() {
              {"rendering_config_json", "passes/main.json"},
              {"ui_config_json", "ui/ui.json"},
              {"default_rendering_pass", "main"},
+         }},
+    };
+}
+
+nlohmann::json makeVatProjectJson() {
+    return nlohmann::json{
+        {"schema", "pelican.project"},
+        {"version", 1},
+        {"name", "vat golden"},
+        {"engine_min_version", "0.1.0"},
+        {"basic_config",
+         {
+             {"window_title", "VAT Golden"},
+             {"window_size", {{"width", goldenWidth}, {"height", goldenHeight}}},
+             {"fullscreen", false},
+             {"framerate", 60},
+             {"camera", {{"fov_y", 45.0}, {"near", 0.1}, {"far", 1000.0}, {"up", {0, 1, 0}}}},
+             {"default_scene_id", "default_scene"},
+             {"scene_data_json", "scenes/main.scene.json"},
+             {"asset_data_json", "assets/asset_data.json"},
+             {"rendering_config_json", "passes/main_rendering_config.json"},
+             {"ui_config_json", "ui/ui_overlay.json"},
+             {"default_rendering_pass", "main_render"},
          }},
     };
 }
@@ -336,7 +362,54 @@ void writeStemProject(const std::filesystem::path &root) {
 })json");
 }
 
+void writeVatProject(const std::filesystem::path &root) {
+    writeTextFile(root / "project.json", makeVatProjectJson().dump(2));
+    writeTextFile(root / "scenes" / "main.scene.json", R"json({
+  "schema": "pelican.scene",
+  "version": 1,
+  "scenes": {
+    "default_scene": {
+      "objects": []
+    }
+  }
+})json");
+    writeTextFile(root / "assets" / "asset_data.json", R"json({"models":[]})json");
+    writeTextFile(root / "ui" / "ui_overlay.json", R"json({"images":[]})json");
+
+    std::filesystem::create_directories(root / "passes");
+    std::filesystem::copy_file(sourceRoot() / "projects/example/passes/main_rendering_config.json",
+                               root / "passes/main_rendering_config.json",
+                               std::filesystem::copy_options::overwrite_existing);
+}
+
 void renderStemFullscreenFrame(RenderTarget &render_target) {
+    GET_MODULE(Renderer).render();
+    GET_MODULE(VulkanManageCore).waitIdle();
+    (void)render_target;
+}
+
+void renderVatPlaybackFrame(RenderTarget &render_target, const std::filesystem::path &root) {
+    const auto vat_path = root / "tiny_vat.glb";
+    TestVatFixture::writeTinyVatGlb(vat_path);
+
+    auto &path_resolver = GET_MODULE(PathResolver);
+    if (!path_resolver.isSetup()) {
+        path_resolver.setup(root, false);
+    }
+
+    auto &launch_config = GET_MODULE(EngineLaunchConfig);
+    launch_config.play_vat = vat_path;
+    launch_config.camera_override = EngineLaunchCameraOverride{
+        .position = {0.0f, 0.0f, 2.0f},
+        .target = {0.0f, 0.0f, 0.0f},
+        .fov_y = 45.0f,
+    };
+
+    auto &engine_time = GET_MODULE(EngineTime);
+    engine_time.setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
+    engine_time.setTime(1.0);
+
+    (void)GET_MODULE(VatPlayer);
     GET_MODULE(Renderer).render();
     GET_MODULE(VulkanManageCore).waitIdle();
     (void)render_target;
@@ -349,6 +422,10 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         writeStemProject(temp_dir);
         GET_MODULE(PathResolver).setup(temp_dir, false);
         GET_MODULE(ProjectSource).setProjectData(makeStemProjectJson().dump());
+    } else if (golden_case.mode == "vat_playback") {
+        writeVatProject(temp_dir);
+        GET_MODULE(PathResolver).setup(temp_dir, false);
+        GET_MODULE(ProjectSource).setProjectData(makeVatProjectJson().dump());
     } else {
         const auto scene_path = temp_dir / "scene.json";
         const auto asset_path = temp_dir / "assets.json";
@@ -372,6 +449,8 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         renderStemFullscreenFrame(render_target);
     } else if (golden_case.mode == "triangle") {
         renderFullscreenFrame(render_target, triangleMaskFragmentShader());
+    } else if (golden_case.mode == "vat_playback") {
+        renderVatPlaybackFrame(render_target, temp_dir);
     } else {
         throw std::runtime_error("unknown golden case mode: " + golden_case.mode);
     }
@@ -429,7 +508,7 @@ void writeFailureMetadata(const std::filesystem::path &path, const GoldenCase &g
 TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     setupLogger();
     const auto cases = discoverGoldenCases();
-    REQUIRE(cases.size() == 4);
+    REQUIRE(cases.size() == 5);
 
     for (const auto &golden_case : cases) {
         DYNAMIC_SECTION(golden_case.name) {
