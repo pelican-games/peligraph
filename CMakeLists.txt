@@ -61,6 +61,28 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(argparse)
 
+## sha256
+FetchContent_Declare(
+  picosha2
+  GIT_REPOSITORY https://github.com/okdshin/PicoSHA2.git
+  GIT_TAG        v1.0.1
+)
+FetchContent_GetProperties(picosha2)
+if(NOT picosha2_POPULATED)
+  if(POLICY CMP0169)
+    cmake_policy(PUSH)
+    cmake_policy(SET CMP0169 OLD)
+  endif()
+  FetchContent_Populate(picosha2)
+  if(POLICY CMP0169)
+    cmake_policy(POP)
+  endif()
+endif()
+if(NOT TARGET picosha2)
+  add_library(picosha2 INTERFACE)
+  target_include_directories(picosha2 INTERFACE ${picosha2_SOURCE_DIR})
+endif()
+
 ## shader tool dependencies
 FetchContent_Declare(
   spirv_reflect

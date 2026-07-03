@@ -103,3 +103,17 @@ add_test(
         -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/seqplayer_headless
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_seqplayer_headless.cmake
 )
+
+pelican_define_test(importmanifest_test pelican_core)
+target_compile_definitions(pelican_test_importmanifest_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
+add_test(
+    NAME devcli_import_command
+    COMMAND ${CMAKE_COMMAND}
+        -DCLI=$<TARGET_FILE:pelican_cli>
+        -DFIXTURE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/import_manifest
+        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/devcli_import
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_import.cmake
+)

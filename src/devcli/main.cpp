@@ -1,9 +1,12 @@
+#include "importcommand.hpp"
+
 #include "battery/embed.hpp"
 #include <argparse/argparse.hpp>
 #include <filesystem>
 #include <fstream>
 #include <mustache.hpp>
 #include <sstream>
+#include <string_view>
 using namespace kainjow;
 
 std::filesystem::path appended(std::filesystem::path path, auto child) {
@@ -17,6 +20,10 @@ void create_file(std::filesystem::path path, const std::string &data) {
 }
 
 int main(int argc, char *argv[]) {
+    if (argc > 1 && std::string_view{argv[1]} == "import") {
+        return Pelican::DevCli::runImportCommand(argc - 1, argv + 1);
+    }
+
     argparse::ArgumentParser program("Pelican Cli");
     program.add_argument("--build").default_value(false).implicit_value(true).help("build project");
     program.add_argument("--prebuild").default_value(false).implicit_value(true).help("prebuild project");

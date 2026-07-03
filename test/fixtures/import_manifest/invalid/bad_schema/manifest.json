@@ -1,0 +1,14 @@
+{
+  "schema": "pelican.not_import",
+  "version": 1,
+  "tool": {"name": "houdini-adapter"},
+  "source": {"file": "C:/show/shots/destruction_a.hip"},
+  "created": "2026-07-02T12:00:00Z",
+  "outputs": [
+    {
+      "file": "debris.glb",
+      "schema": "gltf",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ]
+}
