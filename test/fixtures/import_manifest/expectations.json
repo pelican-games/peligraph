@@ -1,0 +1,34 @@
+[
+  {
+    "file": "valid/manifest.json",
+    "expect": "ok",
+    "output_count": 2,
+    "source_file": "C:/show/shots/destruction_a.hip"
+  },
+  {
+    "file": "invalid/sha_mismatch/manifest.json",
+    "expect": "ok",
+    "output_count": 1,
+    "source_file": "C:/show/shots/destruction_a.hip"
+  },
+  {
+    "file": "invalid/absolute_output/manifest.json",
+    "expect": "error",
+    "error_kind": "absolute"
+  },
+  {
+    "file": "invalid/escape_output/manifest.json",
+    "expect": "error",
+    "error_kind": "escape"
+  },
+  {
+    "file": "invalid/unknown_schema/manifest.json",
+    "expect": "error",
+    "error_kind": "unknown_schema"
+  },
+  {
+    "file": "invalid/bad_schema/manifest.json",
+    "expect": "error",
+    "error_kind": "schema"
+  }
+]

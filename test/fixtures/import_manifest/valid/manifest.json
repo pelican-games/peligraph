@@ -1,0 +1,28 @@
+{
+  "schema": "pelican.import",
+  "version": 1,
+  "tool": {
+    "name": "houdini-adapter",
+    "version": "0.3.0",
+    "dcc": "houdini 21.0.512"
+  },
+  "source": {
+    "file": "C:/show/shots/destruction_a.hip",
+    "node": "/out/pelican_rbd",
+    "seed": 42
+  },
+  "created": "2026-07-02T12:00:00Z",
+  "outputs": [
+    {
+      "file": "debris.glb",
+      "schema": "gltf",
+      "sha256": "50247eeaca40ca0bb1a5fb171799f32aba3cae2c8e33030bb4ba21f8d2c146c6"
+    },
+    {
+      "file": "debris_sim.jsonl",
+      "schema": "pelican.transform_seq",
+      "version": 1,
+      "sha256": "71167e92620243049421920148cb99b9a6088987be63e7118807e51eca237dd6"
+    }
+  ]
+}
