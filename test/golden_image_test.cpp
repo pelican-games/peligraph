@@ -189,6 +189,29 @@ nlohmann::json makeFeatureProjectJson() {
     };
 }
 
+nlohmann::json makeHdrProjectJson() {
+    return nlohmann::json{
+        {"schema", "pelican.project"},
+        {"version", 1},
+        {"name", "hdr golden"},
+        {"engine_min_version", "0.1.0"},
+        {"basic_config",
+         {
+             {"window_title", "HDR Golden"},
+             {"window_size", {{"width", goldenWidth}, {"height", goldenHeight}}},
+             {"fullscreen", false},
+             {"framerate", 60},
+             {"camera", {{"fov_y", 45.0}, {"near", 0.1}, {"far", 100.0}, {"up", {0, 1, 0}}}},
+             {"default_scene_id", "default_scene"},
+             {"scene_data_json", "scene.json"},
+             {"asset_data_json", "assets.json"},
+             {"rendering_config_json", "passes/main.json"},
+             {"ui_config_json", "ui/ui.json"},
+             {"default_rendering_pass", "main"},
+         }},
+    };
+}
+
 RgbaImage loadPng(const std::filesystem::path &path) {
     int width = 0;
     int height = 0;
@@ -280,6 +303,28 @@ void main() {
     } else {
         outColor = vec4(0.0, 0.0, 0.0, 1.0);
     }
+}
+)glsl";
+}
+
+const char *hdrSourceFragmentShader() {
+    return R"glsl(
+#version 450
+layout(location = 0) out vec4 outColor;
+void main() {
+    outColor = vec4(4.0, 1.5, 0.5, 1.0);
+}
+)glsl";
+}
+
+const char *copyInputFragmentShader() {
+    return R"glsl(
+#version 450
+layout(set = 1, binding = 0) uniform sampler2D inputTexture;
+layout(location = 0) in vec2 inUV;
+layout(location = 0) out vec4 outColor;
+void main() {
+    outColor = texture(inputTexture, inUV);
 }
 )glsl";
 }
@@ -522,6 +567,72 @@ void main() {
 })json");
 }
 
+nlohmann::json makeHdrRenderingConfig(bool hdr_enabled) {
+    auto config = nlohmann::json{
+        {"render_targets",
+         nlohmann::json::array({
+             {
+                 {"name", "lit_color"},
+                 {"extent_scale", 1.0},
+                 {"format", "B8G8R8A8_UNORM"},
+                 {"usage", nlohmann::json::array({"COLOR_ATTACHMENT", "SAMPLED"})},
+             },
+         })},
+        {"rendering_passes",
+         nlohmann::json::array({
+             {
+                 {"name", "main"},
+                 {"passes",
+                  nlohmann::json::array({
+                      {
+                          {"name", "hdr_source"},
+                          {"type", "fullscreen"},
+                          {"output", {{"color", "lit_color"}, {"depth", nullptr}}},
+                          {"shader", {{"vertex", "shaders/fullscreen"}, {"fragment", "shaders/hdr_source"}}},
+                      },
+                      {
+                          {"name", "copy_to_swapchain"},
+                          {"type", "fullscreen"},
+                          {"output", {{"color", "swapchain"}, {"depth", nullptr}}},
+                          {"input", nlohmann::json::array({"lit_color"})},
+                          {"shader", {{"vertex", "shaders/fullscreen"}, {"fragment", "shaders/copy_input"}}},
+                          {"clear_color", nlohmann::json::array({0.0, 0.0, 0.0, 1.0})},
+                      },
+                      {
+                          {"name", "present"},
+                          {"type", "ui"},
+                          {"output", {{"color", "swapchain"}, {"depth", nullptr}}},
+                      },
+                  })},
+             },
+         })},
+    };
+
+    if (hdr_enabled) {
+        config["features"] = nlohmann::json::array({"engine://features/hdr.json"});
+    }
+    return config;
+}
+
+void writeHdrProject(const std::filesystem::path &root, bool hdr_enabled) {
+    writeTextFile(root / "project.json", makeHdrProjectJson().dump(2));
+    writeTextFile(root / "scene.json", R"json({
+  "schema": "pelican.scene",
+  "version": 1,
+  "scenes": {
+    "default_scene": {
+      "objects": []
+    }
+  }
+})json");
+    writeTextFile(root / "assets.json", R"json({"models":[]})json");
+    writeTextFile(root / "ui" / "ui.json", R"json({"images":[]})json");
+    writeTextFile(root / "shaders" / "fullscreen.vert", stemFullscreenVertexShader());
+    writeTextFile(root / "shaders" / "hdr_source.frag", hdrSourceFragmentShader());
+    writeTextFile(root / "shaders" / "copy_input.frag", copyInputFragmentShader());
+    writeTextFile(root / "passes" / "main.json", makeHdrRenderingConfig(hdr_enabled).dump(2));
+}
+
 void renderStemFullscreenFrame(RenderTarget &render_target) {
     GET_MODULE(Renderer).render();
     GET_MODULE(VulkanManageCore).waitIdle();
@@ -573,6 +684,10 @@ void renderDebugDrawFrame(RenderTarget &render_target) {
     (void)render_target;
 }
 
+bool isHdrGoldenMode(const std::string &mode) {
+    return mode == "hdr_off" || mode == "hdr_on";
+}
+
 RenderedCase renderCase(const GoldenCase &golden_case) {
     FastModuleContainer modules;
     const auto temp_dir = makeTempProjectDir(golden_case.name);
@@ -592,6 +707,10 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         writeDebugDrawProject(temp_dir);
         GET_MODULE(PathResolver).setup(temp_dir, false);
         GET_MODULE(ProjectSource).setProjectData(makeFeatureProjectJson().dump());
+    } else if (isHdrGoldenMode(golden_case.mode)) {
+        writeHdrProject(temp_dir, golden_case.mode == "hdr_on");
+        GET_MODULE(PathResolver).setup(temp_dir, false);
+        GET_MODULE(ProjectSource).setProjectData(makeHdrProjectJson().dump());
     } else {
         const auto scene_path = temp_dir / "scene.json";
         const auto asset_path = temp_dir / "assets.json";
@@ -621,6 +740,8 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         renderFeatureFrame(render_target);
     } else if (golden_case.mode == "debug_draw_feature") {
         renderDebugDrawFrame(render_target);
+    } else if (isHdrGoldenMode(golden_case.mode)) {
+        renderFeatureFrame(render_target);
     } else {
         throw std::runtime_error("unknown golden case mode: " + golden_case.mode);
     }
@@ -678,7 +799,7 @@ void writeFailureMetadata(const std::filesystem::path &path, const GoldenCase &g
 TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     setupLogger();
     const auto cases = discoverGoldenCases();
-    REQUIRE(cases.size() == 7);
+    REQUIRE(cases.size() == 9);
 
     for (const auto &golden_case : cases) {
         DYNAMIC_SECTION(golden_case.name) {

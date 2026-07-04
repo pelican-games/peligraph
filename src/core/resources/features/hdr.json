@@ -1,0 +1,30 @@
+{
+  "schema": "pelican.render_feature",
+  "version": 1,
+  "name": "hdr",
+  "render_target_overrides": {
+    "lit_color": {
+      "format": "R16G16B16A16_SFLOAT"
+    }
+  },
+  "passes": [
+    {
+      "insert": "before:present",
+      "pass": {
+        "name": "hdr_tonemap",
+        "type": "fullscreen",
+        "output": {
+          "color": "swapchain",
+          "depth": null
+        },
+        "input": ["lit_color"],
+        "shader": {
+          "vertex": "engine://tonemap",
+          "fragment": "engine://tonemap"
+        },
+        "clear_color": [0.0, 0.0, 0.0, 1.0]
+      }
+    }
+  ],
+  "shader_defines": ["PELICAN_FEATURE_HDR"]
+}

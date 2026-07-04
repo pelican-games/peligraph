@@ -1,4 +1,5 @@
 #include "../src/core/renderingpass/featurecompose.hpp"
+#include "../src/core/loader/engineresources.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <filesystem>
@@ -81,6 +82,14 @@ nlohmann::json baseConfigWithFeature(std::string feature_ref) {
 
 std::string loadFixtureFeature(std::string_view ref) {
     return readText(fixtureRoot() / std::string{ref});
+}
+
+std::string loadEngineFeature(std::string_view ref) {
+    constexpr std::string_view engine_prefix = "engine://";
+    if (ref.rfind(engine_prefix, 0) != 0) {
+        throw std::runtime_error("expected engine feature ref");
+    }
+    return engineResourceOrThrow(ref.substr(engine_prefix.size()));
 }
 
 std::vector<std::string> passNames(const nlohmann::json &config) {
@@ -203,6 +212,34 @@ TEST_CASE("passless render feature records its feature name", "[render-feature]"
     REQUIRE(result.feature_names == std::vector<std::string>{"gpu_timing"});
     REQUIRE_FALSE(result.config.contains("features"));
     REQUIRE(result.config.at("rendering_passes").at(0).at("passes").empty());
+}
+
+TEST_CASE("HDR render feature overrides lit target and inserts tonemap before present", "[render-feature]") {
+    const auto result = composeRenderFeatureConfig(
+        baseConfigWithFeature("engine://features/hdr.json"),
+        RenderFeatureComposeDependencies{
+            loadEngineFeature,
+            true,
+        });
+
+    REQUIRE(result.used_features);
+    REQUIRE_FALSE(result.config.contains("features"));
+    REQUIRE(passNames(result.config) ==
+            std::vector<std::string>{"prepare", "hdr_tonemap", "present"});
+    REQUIRE(result.shader_defines == std::vector<std::string>{"PELICAN_FEATURE_HDR"});
+
+    const auto &lit_color = result.config.at("render_targets").at(0);
+    REQUIRE(lit_color.at("name").get<std::string>() == "lit_color");
+    REQUIRE(lit_color.at("format").get<std::string>() == "R16G16B16A16_SFLOAT");
+    REQUIRE(lit_color.at("usage").get<std::vector<std::string>>() ==
+            std::vector<std::string>{"COLOR_ATTACHMENT", "SAMPLED"});
+
+    const auto &tonemap = result.config.at("rendering_passes").at(0).at("passes").at(1);
+    REQUIRE(tonemap.at("name").get<std::string>() == "hdr_tonemap");
+    REQUIRE(tonemap.at("input").get<std::vector<std::string>>() ==
+            std::vector<std::string>{"lit_color"});
+    REQUIRE(tonemap.at("shader").at("vertex").get<std::string>() == "engine://tonemap");
+    REQUIRE(tonemap.at("shader").at("fragment").get<std::string>() == "engine://tonemap");
 }
 
 TEST_CASE("render features require the runtime shader compiler", "[render-feature]") {
