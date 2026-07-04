@@ -150,5 +150,51 @@ CPU タスク(アニメサンプリング・物理・ストリーミング等)�
    (コマンド層 stage 3 / ゲームロジック設計と同時に確定)
 2. indirect dispatch(GPU 駆動のディスパッチ数)— v1 は CPU 指定のみ
 3. compute 結果の CPU readback(rpc `capture` 類似)— 需要が出てから
-4. プランダンプの JSON スキーマ(プラン比較テストの fixture 形式)— F0 実装時に確定
+4. プランダンプの JSON スキーマ(プラン比較テストの fixture 形式)— **解決済み**:
+   F0 では `pelican.frame_plan` v1 とし、`schema` / `version` / `graph` /
+   `nodes` / `levels` / `barriers` を持つ。`nodes[*].kind` は
+   `"render" | "compute"`、将来追加用に `"cpu"` を予約する。
 5. 非同期キュー導入時期(v2)
+
+### 7-4. プランダンプ JSON スキーマ(F0 確定)
+
+F0 のプラン比較 fixture は次の形を正とする。
+
+```json
+{
+  "schema": "pelican.frame_plan",
+  "version": 1,
+  "graph": "main_render",
+  "nodes": [
+    {
+      "name": "gbuffer_pass",
+      "kind": "render",
+      "declaration_index": 0,
+      "order": 0,
+      "level": 0,
+      "reads": [],
+      "writes": ["gbuffer_albedo"]
+    }
+  ],
+  "levels": [["gbuffer_pass"]],
+  "barriers": [
+    {
+      "kind": "read_after_write",
+      "resource": "gbuffer_albedo",
+      "from": "gbuffer_pass",
+      "to": "lighting_pass"
+    }
+  ]
+}
+```
+
+規則:
+
+1. `nodes` は導出実行順。`declaration_index` は元 config 内の宣言順で、
+   トポロジカルソートの安定タイブレークに使う。
+2. `levels` は依存のないノードを同じ層にまとめたもの。各層内の並びも
+   導出実行順に従う。
+3. `barriers` は F0 では計画上の依存可視化に留める。実バリア発行は F1 以降で
+   既存 `RenderTargetLayoutTracker` と統合し、二重管理にしない。
+4. `kind` は `"render" | "compute"` を v1 の有効値とし、CPU タスク統合時の
+   追加値として `"cpu"` を予約する。
