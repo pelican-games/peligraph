@@ -216,6 +216,7 @@ void configureExplicitProject(ParsedLaunchConfig &parsed, const std::string &val
 ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
     argparse::ArgumentParser program("Pelican Player");
     program.add_argument("--headless").flag().help("run without a window");
+    program.add_argument("--rpc").flag().help("run stdio JSON-RPC mode; requires --headless");
     program.add_argument("--frames").default_value(3).scan<'i', int>().help("headless frame count");
     program.add_argument("--size").default_value(std::string{"1280x720"}).metavar("WxH").help("headless render size");
     program.add_argument("--render-out").default_value(std::string{}).metavar("path").help("render output path");
@@ -258,6 +259,10 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         ParsedLaunchConfig parsed;
         auto &config = parsed.engine;
         config.headless = program.get<bool>("--headless");
+        config.rpc = program.get<bool>("--rpc");
+        if (config.rpc && !config.headless) {
+            throw std::runtime_error("--rpc requires --headless in protocol v1");
+        }
         config.shader_hot_reload = !config.headless;
         config.allow_absolute_paths = program.get<bool>("--allow-absolute-paths");
         parsed.ignore_engine_version = program.get<bool>("--ignore-engine-version");
@@ -370,7 +375,7 @@ int main(int argc, char *argv[]) {
     }
 
     const auto &launch_config = parsed_launch_config.engine;
-    Pelican::PelicanCore pl{parsed_launch_config.project_settings};
+    Pelican::PelicanCore pl{parsed_launch_config.project_settings, launch_config.rpc};
     Pelican::FastModuleContainer::get<Pelican::EngineLaunchConfig>() = launch_config;
     Pelican::FastModuleContainer::get<Pelican::PathResolver>()
         .setup(parsed_launch_config.project_root, launch_config.allow_absolute_paths);

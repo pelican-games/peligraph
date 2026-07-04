@@ -7,6 +7,7 @@ set_target_properties(pelican_core PROPERTIES CXX_STANDARD 20)
 # modules
 add_subdirectory(resources)
 add_subdirectory(appflow)
+add_subdirectory(communication)
 add_subdirectory(os)
 add_subdirectory(ecs)
 add_subdirectory(asset)

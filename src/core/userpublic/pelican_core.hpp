@@ -10,6 +10,7 @@ class PelicanCore {
   public:
     PelicanCore();
     PelicanCore(std::string settings);
+    PelicanCore(std::string settings, bool reserve_stdout_for_protocol);
     void run();
 };
 

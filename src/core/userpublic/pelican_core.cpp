@@ -8,6 +8,8 @@
 #include "../loader/projectsrc.hpp"
 #include "../loader/scene.hpp"
 
+#include <utility>
+
 namespace Pelican {
 
 PelicanCore::PelicanCore() {
@@ -15,8 +17,10 @@ PelicanCore::PelicanCore() {
     settings_str = "{}";
 }
 
-PelicanCore::PelicanCore(std::string _settings_str) {
-    setupLogger();
+PelicanCore::PelicanCore(std::string _settings_str) : PelicanCore(std::move(_settings_str), false) {}
+
+PelicanCore::PelicanCore(std::string _settings_str, bool reserve_stdout_for_protocol) {
+    setupLogger(reserve_stdout_for_protocol);
     settings_str = _settings_str;
 }
 

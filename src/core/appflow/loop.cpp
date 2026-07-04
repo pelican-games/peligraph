@@ -3,6 +3,7 @@
 #include "../ecs/core.hpp"
 #include "../launchconfig.hpp"
 #include "../log.hpp"
+#include "../communication/rpcserver.hpp"
 #include "../os/window.hpp"
 #include "../playback/seqplayer.hpp"
 #include "../playback/vatplayer.hpp"
@@ -15,6 +16,7 @@
 
 #include <filesystem>
 #include <iomanip>
+#include <iostream>
 #include <sstream>
 #include <string>
 
@@ -106,6 +108,13 @@ void Loop::run() {
     LOG_INFO(logger, "starting main loop");
 
     if (launch_config.headless) {
+        if (launch_config.rpc) {
+            runEngineRpcServer(std::cin, std::cout);
+            GET_MODULE(VulkanManageCore).waitIdle();
+            GET_MODULE(DeletionQueue).flushAll();
+            return;
+        }
+
         const auto render_out_pattern =
             launch_config.render_out ? parseRenderOutPattern(*launch_config.render_out) : RenderOutPattern{};
         for (uint32_t frame = 0; launch_config.headless_frames == 0 || frame < launch_config.headless_frames;

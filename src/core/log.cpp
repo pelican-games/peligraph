@@ -8,14 +8,17 @@
 #include <quill/sinks/FileSink.h>
 #include <quill/sinks/JsonSink.h>
 
+#include <utility>
+
 namespace Pelican {
 
 quill::Logger *logger;
-void setupLogger() {
+void setupLogger(bool reserve_stdout_for_protocol) {
     quill::Backend::start();
 
 #ifdef _DEBUG
-    auto sink = quill::Frontend::create_or_get_sink<quill::ConsoleSink>("default_sink");
+    auto sink = reserve_stdout_for_protocol ? quill::Frontend::create_or_get_sink<quill::FileSink>(logFileName)
+                                            : quill::Frontend::create_or_get_sink<quill::ConsoleSink>("default_sink");
 #else
     auto sink = quill::Frontend::create_or_get_sink<quill::FileSink>(logFileName);
 #endif

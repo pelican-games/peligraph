@@ -19,6 +19,7 @@ struct EngineLaunchCameraOverride {
 DECLARE_MODULE(EngineLaunchConfig) {
   public:
     bool headless = false;
+    bool rpc = false;
     vk::Extent2D headless_extent{1280, 720};
     uint32_t headless_frames = 3;
     std::optional<std::filesystem::path> render_out;
