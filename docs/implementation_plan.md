@@ -79,6 +79,16 @@ ctest --test-dir ./build -C Debug --output-on-failure
 | 20 | VAT 再生(pelican.vat v1) | 15, 16, 18, 19 | 大 | 高 |
 | 21 | devcli `import`(pelican.import manifest) | 18 | 中 | 低 |
 | 27 | コマンド層 stage 2(stdio JSON-RPC 2.0) | 2, 6, 18 | 中 | 中 |
+| 28 | feature 合成基盤(fragment / defines / overrides) | 12, 13, 18 | 中 | 中 |
+| 33 | フレームグラフ F0(プランナ + シャドー検証) | 18 | 中 | 低 |
+| 37 | 入力システム(フレーム同期 + エッジ + 記録可能形) | 1 | 中 | 低 |
+| 29 | feature 実証(debug_draw)+ GPU/CPU 計測 | 28 | 中 | 中 |
+| 30 | HDR / トーンマップ feature | 26, 28 | 中 | 中 |
+| 34 | フレームグラフ F1(compute 実行系) | 13, 33 | 大 | 高 |
+| 35 | フレームグラフ F2(render 切替 + プランダンプ + rpc) | 27, 33, 34 | 中 | 中 |
+
+(WP31 shadow / WP32 IBL / WP36 GPU パーティクル / WP38 スケルタルアニメーションは
+設計文書側で予約済み。着手ウェーブが近づいたら本書へ詳細登録する)
 
 (WP22〜24 は設計文書側で候補予約のみ: WP22 pointcache / WP23 KTX2 / WP24 音声。
 着手前に本書へ正式記載する)
@@ -531,6 +541,154 @@ struct は将来 `pelican_project` ターゲットへ移動できるよう
 仕様どおりのエラーコードで応答され、プロセスは落ちない (c) stdout に応答以外が
 混ざらない (d) 通常起動・既存 headless 経路が無変更 (e) 単体テストは GPU 不要。
 
+### WP28: feature 合成基盤(fragment / defines / overrides)
+
+参照: **`design_render_feature_modules.md` §1 が仕様の正**(fragment 形式・合成規則)。
+依存: WP12, 13, 18。**feature を 1 つも使わない構成での挙動不変が絶対条件**。
+
+1. 合成純ロジック: `core/renderingpass/featurecompose.{hpp,cpp}` —
+   `pelican.render_feature` v1 のパース + 合成(features 配列順 / RT・パス名衝突は
+   hard error / `insert` アンカー `before:<pass>`・`after:<pass>`・`end` /
+   `render_target_overrides` は format・usage 追加のみ)。モジュール・GPU 非依存
+   (sceneformat の流儀)。fragment 参照の解決は PathResolver 経由(engine:// 可)。
+   合成結果は既存 parser / validation に流す(合成は前段の変換に徹する)
+2. `ShaderCompileOptions` に `std::vector<std::string> defines` を追加し、
+   shaderc の macro definition に接続。合成後 config の `shader_defines` を
+   その config 由来の全シェーダコンパイルに注入(runtimecompiler / ShaderLibrary 経由)
+3. `PELICAN_RUNTIME_SHADER_COMPILER=OFF` ビルドで features 使用 config は
+   「feature には実行時コンパイラが必要」の明確なエラーで拒否
+4. PipelineFactory のパイプラインキャッシュキーに define 集合を含める
+5. `src/core/resources/shaders/include/pelican_features.glsl` を新設
+   (v1 は器。既存シェーダへの include 追加はしない — 各 feature WP の仕事)
+6. fixture: `test/fixtures/render_features/` に valid(パス 1 本挿入のダミー
+   feature)/ invalid(名前衝突・不明アンカー・override 不正)+ expectations.json
+   (project_format と同じ流儀・fixture 駆動テスト)
+
+受け入れ基準(= マージ基準): (a) **features 未使用の全既存 config で挙動不変**
+(golden 全ケース維持) (b) ダミー feature を使う fixture プロジェクトが headless で
+描画され、挿入パスの効果が golden で固定される (c) 衝突・不明アンカー・不正
+override が hard error(fixture 駆動テスト) (d) defines がコンパイル結果に
+到達することの単体テスト(GPU 不要: コンパイル成功/失敗の分岐で検証)
+(e) OFF ビルドでのビルド成功 + 明確な実行時エラー (f) 合成単体テストは GPU 不要。
+
+### WP33: フレームグラフ F0(プランナ + シャドー検証)
+
+参照: **`design_compute_task_graph.md` §1〜3・§5 F0・§6-5 が仕様の正**。依存: WP18。
+**実行系(renderer / vkcore / renderingpass の実行コード)への変更は禁止** —
+本 WP はプランナの追加とテストのみ。
+
+1. `core/renderingpass/frameplanner.{hpp,cpp}`(純ロジック・モジュール非依存):
+   - render pass からの依存導出: `input` → reads、`output` → writes、
+     `color_load_op` / depth load が `load` のものは reads + writes
+   - `buffers` / `compute_tasks` / `after` / `before` のパース(形式受理と
+     プラン算出まで。実行はしない)
+   - DAG 構築 → 順序導出不能な writes-writes は hard error → トポロジカルソート
+     (**宣言順を安定タイブレーク**とする)→ 依存のないノードの層別 → バリア計画
+   - プランの JSON 直列化: ノードに `"kind": "render" | "compute"`
+     (将来 `"cpu"` を追加できる形 — §6-5 の語彙予約)
+2. **シャドー検証テスト**: 既存の全 config(projects/example の
+   main_rendering_config、golden 各ケースの config、fixture 群)について
+   「導出順 = 現行の配列順」を assert
+3. エラー系 fixture: writes-writes 曖昧・循環(after/before 起因含む)・
+   未知リソース参照
+4. プラン比較テストの初期形: example config のプラン JSON を fixture として保存し
+   一致を assert(スキーマは本 WP で確定し、設計文書 §7-4 の未決を解消して追記する)
+
+受け入れ基準(= マージ基準): (a) **実行系の diff がゼロ**(src/core/vkcore・
+renderer・既存 renderingpass 実行コードに変更なし。golden 全維持は当然)
+(b) シャドー検証が全既存 config でグリーン (c) エラー系 fixture 駆動テスト
+(d) プラン JSON に kind フィールド (e) 全テスト GPU 不要。
+
+### WP37: 入力システム
+
+設計文書がないため本節が仕様(WP2 の流儀)。現状 `userpublic/userinput.hpp` は
+空スタブ(KeyCode enum が空・実装なし)。依存: WP1。`src/core/ecs/` 変更禁止は継続。
+
+目的: フレーム同期の入力状態。**決定性を最初から設計に入れる** —
+フレームごとの入力スナップショットが直列化可能な値であること(将来の記録再生の器)。
+
+1. `core/os/inputstate.{hpp,cpp}`(純ロジック): v1 スコープはキーボード + マウス
+   (ゲームパッドは v2)。`KeyCode` enum(英数字・矢印・修飾キー・Space/Enter/Esc・
+   マウスボタン)。イベント列(press/release/移動)を受けてフレームスナップショット
+   (down / pushed / released のエッジ + マウス位置・デルタ)を確定する
+   plain クラス。スナップショットは POD 的な直列化可能構造体
+2. Window(GLFW)のコールバックでイベントをキューに積み、`Loop::run()` が
+   **フレーム先頭で 1 回だけ**スナップショットを確定(フレーム内で入力状態は不変)。
+   headless / rpc モードでは空スナップショット(挙動不変)
+3. `userpublic/userinput.{hpp,cpp}` の静的 API(`getKey` / `isKeyPushed` /
+   `isKeyReleased`)を実装し、スナップショットへ委譲。KeyCode enum を埋める
+4. 動作確認用の最小配線を **1 つだけ**入れる(例: F1 で現在フレームの入力状態を
+   LOG_INFO)。ゲーム的な機能は入れない
+
+受け入れ基準(= マージ基準): (a) エッジ検出の純ロジック単体テスト(イベント列 →
+複数フレームの pushed/released 遷移。GLFW・GPU 不要) (b) 通常起動でキー入力が
+ログで確認できる(手動確認を PR に記録) (c) headless・golden・rpc 全経路が無変更
+(d) スナップショット構造体が直列化可能(static_assert or 単体テストで示す)。
+
+### WP29: feature 実証(debug_draw)+ GPU/CPU 計測
+
+参照: `design_render_feature_modules.md` §2(debug_draw / gpu_timing 行)、
+`design_compute_task_graph.md` §6(CPU 計測の位置づけ)。依存: WP28。
+
+1. `engine://features/gpu_timing.json`(パスなし fragment)+ パス境界の
+   timestamp query。CPU 側もフレーム内訳(update / render / present 待ち)を計測。
+   出力は quill(既定 1 秒ごとに集計 1 行)。恒常オーバーヘッドは feature
+   不参照時ゼロ(query pool 自体を作らない)
+2. `engine://features/debug_draw.json` + `DebugDraw` モジュール(line 頂点を
+   CPU バッファに積む API。feature 不参照時は no-op)+ line 描画パス + シェーダ
+   (engine:// stem)
+3. 検証: debug_draw で描いた既知の線分の golden ケース / feature 不参照時の
+   golden 全維持 / 計測ログのスモークテスト(値が出ること)
+
+受け入れ基準: (a) 両 feature とも「1 行有効化・不参照で挙動とコスト不変」
+(b) debug_draw の golden (c) 計測ログの結合テスト(headless で数値行が出る)。
+
+### WP30: HDR / トーンマップ feature
+
+参照: `design_render_feature_modules.md` §2(HDR 行)。依存: WP26, 28。
+
+1. `engine://features/hdr.json`: `render_target_overrides` で中間 RT を
+   RGBA16F 化 + tonemap fullscreen pass(`engine://tonemap` stem)を
+   `before:present` 相当のアンカーで挿入 + `PELICAN_FEATURE_HDR` define
+2. トーンマップは v1 で 1 種(ACES 近似 or Reinhard — 実装時にシンプルな方)
+3. 検証: HDR on/off の golden 両ケース、EXR テクスチャ(WP26)を光源値 >1 で
+   使う fixture シーンで飽和が消えることを golden 固定
+
+受け入れ基準: (a) off で挙動不変 (b) on の golden (c) RT override の
+効果(フォーマット変更)が検証される。
+
+### WP34: フレームグラフ F1(compute 実行系)
+
+参照: `design_compute_task_graph.md` §2〜3・§5 F1。依存: WP13, 33。
+**規模大・リスク高: 単独ウェーブで走らせる**。
+
+1. `buffers` の確保(VMA、persistent/transient は v1 とも単純確保)
+2. compute パイプライン(PipelineFactory 拡張 + `.comp` stem 対応)
+3. WP33 のプランどおりにバリア発行・dispatch(`groups_from` は v1 固定値 +
+   名前付きパラメータの CPU 設定 API 最小)。per_frame の配置はプラン準拠
+4. パスグラフ接続: compute の書いた RT/バッファをパスが読むケースを 1 つ実証
+5. 検証: (a) compute なし構成の挙動不変(golden 全維持) (b) 「バッファに
+   書き込む → 結果を色として描く」最小 fixture の golden (c) validation エラーなし
+   (結合テストで検出 — run_rpc_headless の流儀)
+
+受け入れ基準: 上記 (a)〜(c) + プラン(WP33)との整合が実行時 assert で守られる。
+
+### WP35: フレームグラフ F2(render 切替 + プランダンプ + rpc)
+
+参照: `design_compute_task_graph.md` §1(手詰め層)・§5 F2。依存: WP27, 33, 34。
+
+1. render pass の実行順をプランナ由来に切替(F0 のシャドー検証により既存 config
+   では同一計画 = 挙動不変が構成的に保証されている。golden で再確認)
+2. `--dump-frame-plan`(起動時に stderr/ファイルへ)+ rpc `get_frame_plan`
+   (コマンド層にメソッド追加。stdout プロトコル純度は維持)
+3. `after` / `before` の明示エッジを render pass でも受理(WP33 のパーサは
+   受理済み — 実行に反映されることの確認)
+4. プラン比較テストを CI の常設に昇格(example + feature 使用 config)
+
+受け入れ基準: (a) golden 全維持 (b) 明示エッジで順序が変わることの golden or
+プラン比較テスト (c) `get_frame_plan` の結合テスト(rpc 経由でプラン JSON が返り、
+スキーマが WP33 の fixture と一致) (d) 通常起動無変更。
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **最小コマンド層**: 3 段階で進める。(1) ファイル連携(WP6 で成立済み) → (2) **WP27 として登録済み(2026-07-04)** → (3) `load_gltf` / `update_transforms` は WP27 完了後に WP 化(合意後回し方針により本線で進めてよい。scene v1 / asset 登録との整合設計が先)
@@ -578,6 +736,11 @@ struct は将来 `pelican_project` ターゲットへ移動できるよう
 | 8 | WP19, WP25, WP26(+ WW2 別リポジトリ) | WP18b マージ後に並列 3 本。競合回避: basicconfig.{hpp,cpp} は WP19 専有(WP25 は触らない規約)、WP26 は画像経路と CMake FetchContent 節のみ |
 | 9 | WP18c | **WP19・WP25 マージ後**(example の shader 参照を stem 形式・scene を v1 形式という最終形で一度に書くため)。WW3(web stem)もこのウェーブから開始可 |
 | 10 | WP20(a→b), WP21(+ WW5・houdini-adapter は別リポジトリ) | WP20 と WP21 は並列可。競合: test/CMakeLists.txt(追記のみ)とルート CMakeLists FetchContent 節(WP21 のみ追記)。WP20 = model/playback/shader 系、WP21 = devcli/loader 系で分離 |
+| 11 | WP28, WP33, WP37 | 並列 3 本。WP28 = featurecompose + shader/pipelinefactory 系(renderingpassconfigloader は WP28 専有)、WP33 = frameplanner 新設 + テストのみ(**実行系変更禁止**)、WP37 = os/入力系。共有追記は test/CMakeLists.txt のみ |
+| 12 | WP29, WP30 | WP28 マージ後。WP29 = renderer 計測系、WP30 = feature アセット中心で接触面小 |
+| 13 | WP34 | 実行系の大物。単独で走らせる |
+| 14 | WP35(+ WP31 詳細登録) | WP35 は renderer の順序切替のため WP34 マージ後 |
+| 15 | WP31, WP32, WP36, WP38 | 着手前に詳細登録 |
 
 統合チェックポイント: ウェーブ 1 完了後と WP7 完了後に、人間が pelican_player の手動起動確認
 (`rendering_phase1_review.md` の Validation Run と同じ流儀)を行う。WP16 以降は
