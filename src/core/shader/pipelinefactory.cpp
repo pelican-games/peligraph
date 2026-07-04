@@ -10,6 +10,8 @@
 #include <span>
 #include <stdexcept>
 #include <system_error>
+#include <type_traits>
+#include <variant>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -135,6 +137,21 @@ std::vector<vk::PipelineShaderStageCreateInfo> makeShaderStages(vk::ShaderModule
 
 bool containsShader(std::span<const ShaderBundleId> shaders, ShaderBundleId shader) {
     return std::find(shaders.begin(), shaders.end(), shader) != shaders.end();
+}
+
+bool pipelineUsesShader(const std::variant<GraphicsPipelineDesc, ComputePipelineDesc> &desc,
+                        std::span<const ShaderBundleId> dirty_shaders) {
+    return std::visit(
+        [dirty_shaders](const auto &pipeline_desc) {
+            using Desc = std::decay_t<decltype(pipeline_desc)>;
+            if constexpr (std::is_same_v<Desc, GraphicsPipelineDesc>) {
+                return containsShader(dirty_shaders, pipeline_desc.vert) ||
+                       containsShader(dirty_shaders, pipeline_desc.frag);
+            } else {
+                return containsShader(dirty_shaders, pipeline_desc.shader);
+            }
+        },
+        desc);
 }
 
 } // namespace
@@ -275,6 +292,26 @@ vk::UniquePipeline PipelineFactory::createGraphicsPipeline(const GraphicsPipelin
     return std::move(result.value);
 }
 
+vk::UniquePipeline PipelineFactory::createComputePipeline(const ComputePipelineDesc &desc,
+                                                          vk::PipelineLayout layout) const {
+    const auto &shader = shader_library.get(desc.shader);
+
+    vk::PipelineShaderStageCreateInfo stage;
+    stage.stage = vk::ShaderStageFlagBits::eCompute;
+    stage.module = shader.module.get();
+    stage.pName = "main";
+
+    vk::ComputePipelineCreateInfo create_info;
+    create_info.stage = stage;
+    create_info.layout = layout;
+
+    auto result = device.createComputePipelineUnique(pipeline_cache.get(), create_info);
+    if (result.result != vk::Result::eSuccess) {
+        throw std::runtime_error("failed on vkCreateComputePipeline : " + vk::to_string(result.result));
+    }
+    return std::move(result.value);
+}
+
 PipelineFactory::PipelineRecord PipelineFactory::buildGraphicsPipeline(const GraphicsPipelineDesc &desc) {
     if (desc.color_formats.empty()) {
         throw std::runtime_error("GraphicsPipelineDesc requires at least one color format");
@@ -300,6 +337,21 @@ PipelineFactory::PipelineRecord PipelineFactory::buildGraphicsPipeline(const Gra
     };
 }
 
+PipelineFactory::PipelineRecord PipelineFactory::buildComputePipeline(const ComputePipelineDesc &desc) {
+    auto reflection = shader_library.get(desc.shader).reflection;
+    auto set_layouts = descriptorSetLayoutsFor(reflection);
+    auto pipeline_layout = createPipelineLayout(reflection, set_layouts);
+    auto pipeline_object = createComputePipeline(desc, pipeline_layout.get());
+
+    return PipelineRecord{
+        desc,
+        std::move(reflection),
+        std::move(set_layouts),
+        std::move(pipeline_layout),
+        std::move(pipeline_object),
+    };
+}
+
 void PipelineFactory::savePipelineCache() noexcept {
     if (!pipeline_cache) {
         return;
@@ -318,6 +370,12 @@ void PipelineFactory::savePipelineCache() noexcept {
 
 PipelineHandle PipelineFactory::create(const GraphicsPipelineDesc &desc) {
     auto handle = pipelines.reg(buildGraphicsPipeline(desc));
+    pipeline_handles.push_back(handle);
+    return handle;
+}
+
+PipelineHandle PipelineFactory::createCompute(const ComputePipelineDesc &desc) {
+    auto handle = pipelines.reg(buildComputePipeline(desc));
     pipeline_handles.push_back(handle);
     return handle;
 }
@@ -362,12 +420,21 @@ void PipelineFactory::rebuildDirty() {
 
     for (const auto handle : pipeline_handles) {
         const auto &record = pipelines.get(handle);
-        if (!containsShader(dirty_shaders, record.desc.vert) && !containsShader(dirty_shaders, record.desc.frag)) {
+        if (!pipelineUsesShader(record.desc, dirty_shaders)) {
             continue;
         }
 
         try {
-            auto replacement = buildGraphicsPipeline(record.desc);
+            auto replacement = std::visit(
+                [this](const auto &pipeline_desc) {
+                    using Desc = std::decay_t<decltype(pipeline_desc)>;
+                    if constexpr (std::is_same_v<Desc, GraphicsPipelineDesc>) {
+                        return buildGraphicsPipeline(pipeline_desc);
+                    } else {
+                        return buildComputePipeline(pipeline_desc);
+                    }
+                },
+                record.desc);
             replacePipeline(handle, std::move(replacement));
         } catch (const std::exception &ex) {
             LOG_WARNING(logger, "Pipeline hot reload failed; keeping previous pipeline: {}", ex.what());

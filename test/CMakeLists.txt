@@ -132,6 +132,15 @@ add_test(
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_rpc_headless.cmake
 )
 
+add_test(
+    NAME compute_buffer_headless_player
+    COMMAND ${CMAKE_COMMAND}
+        -DPLAYER=$<TARGET_FILE:pelican_player>
+        -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/compute_buffer_headless
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_compute_headless.cmake
+)
+
 pelican_define_test(importmanifest_test pelican_core)
 target_compile_definitions(pelican_test_importmanifest_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"

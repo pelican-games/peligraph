@@ -1,4 +1,5 @@
 #include "renderingpassruntimecompiler.hpp"
+#include "computetask.hpp"
 #include "rendertargetimageviewresolver.hpp"
 #include "rendertargetmetadataresolver.hpp"
 #include "../fullscreenpass/fullscreenpasscontainer.hpp"
@@ -21,6 +22,7 @@ struct FullscreenRuntimeDependencies {
     const RenderTargetImageViewResolver &render_target_views;
     ShaderLibrary &shader_library;
     FullscreenPassContainer &fullscreen_pass_container;
+    FrameGraphResourceContainer &frame_graph_resources;
     const PathResolver &path_resolver;
     std::vector<std::string> shader_defines;
     bool warn_backend_specific_shader_refs = false;
@@ -73,10 +75,11 @@ FullscreenRuntimeDependencies requireFullscreenDependencies(
     const RenderingPassRuntimeDependencies &dependencies) {
     if (dependencies.render_target == nullptr || dependencies.render_target_metadata == nullptr ||
         dependencies.render_target_views == nullptr || dependencies.shader_library == nullptr ||
-        dependencies.fullscreen_pass_container == nullptr || dependencies.path_resolver == nullptr) {
+        dependencies.fullscreen_pass_container == nullptr || dependencies.frame_graph_resources == nullptr ||
+        dependencies.path_resolver == nullptr) {
         throw std::runtime_error(
             "Fullscreen pass runtime compile requires render target, render target metadata, render target views, "
-            "shader library, fullscreen pass container, and path resolver dependencies: " +
+            "shader library, fullscreen pass container, frame graph resources, and path resolver dependencies: " +
             pass_def.name);
     }
     return FullscreenRuntimeDependencies{
@@ -85,6 +88,7 @@ FullscreenRuntimeDependencies requireFullscreenDependencies(
         *dependencies.render_target_views,
         *dependencies.shader_library,
         *dependencies.fullscreen_pass_container,
+        *dependencies.frame_graph_resources,
         *dependencies.path_resolver,
         dependencies.shader_defines,
         dependencies.warn_backend_specific_shader_refs,
@@ -154,9 +158,10 @@ PassId registerFullscreenPipeline(const PassDefinition &pass_def, FullscreenRunt
 PassId compileFullscreenPass(const PassDefinition &pass_def, FullscreenRuntimeDependencies dependencies) {
     const auto pass_id = registerFullscreenPipeline(pass_def, dependencies);
 
-    if (!pass_def.input_targets.empty()) {
-        dependencies.fullscreen_pass_container.setInputTextures(
-            pass_id, pass_def.input_targets, dependencies.render_target_views);
+    if (!pass_def.input_targets.empty() || !pass_def.input_buffers.empty()) {
+        dependencies.fullscreen_pass_container.setInputResources(
+            pass_id, pass_def.input_targets, pass_def.input_buffers, dependencies.render_target_views,
+            dependencies.frame_graph_resources);
     }
 
     return pass_id;

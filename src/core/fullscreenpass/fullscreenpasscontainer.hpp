@@ -10,6 +10,7 @@
 namespace Pelican {
 
 class RenderTargetImageViewResolver;
+class FrameGraphResourceContainer;
 
 DECLARE_MODULE(FullscreenPassContainer) {
   public:
@@ -26,6 +27,7 @@ DECLARE_MODULE(FullscreenPassContainer) {
     struct InputTextureInfo {
         vk::UniqueDescriptorSet descset;
         std::vector<GlobalRenderTargetId> input_rt_ids;
+        std::vector<std::string> input_buffer_names;
     };
     std::unordered_map<int, InputTextureInfo> input_textures;
 
@@ -38,6 +40,10 @@ DECLARE_MODULE(FullscreenPassContainer) {
     void bindResource(vk::CommandBuffer cmd_buf, PassId pass_id);
     void setInputTextures(PassId pass_id, const std::vector<GlobalRenderTargetId> &input_rts,
                           const RenderTargetImageViewResolver &rt_views);
+    void setInputResources(PassId pass_id, const std::vector<GlobalRenderTargetId> &input_rts,
+                           const std::vector<std::string> &input_buffers,
+                           const RenderTargetImageViewResolver &rt_views,
+                           const FrameGraphResourceContainer &frame_graph_resources);
     vk::PipelineLayout getPipelineLayout(PassId pass_id) const;
 };
 

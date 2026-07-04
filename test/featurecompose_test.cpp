@@ -214,6 +214,46 @@ TEST_CASE("passless render feature records its feature name", "[render-feature]"
     REQUIRE(result.config.at("rendering_passes").at(0).at("passes").empty());
 }
 
+TEST_CASE("render features append buffers and compute tasks", "[render-feature]") {
+    const auto config = nlohmann::json::parse(R"json({
+  "features": ["compute_feature.json"],
+  "render_targets": [],
+  "rendering_passes": [
+    {"name": "main", "passes": []}
+  ]
+})json");
+
+    const auto result = composeRenderFeatureConfig(
+        config,
+        RenderFeatureComposeDependencies{
+            [](std::string_view) {
+                return std::string{R"json({
+  "schema": "pelican.render_feature",
+  "version": 1,
+  "name": "compute_feature",
+  "buffers": [
+    {"name": "compute_color", "size": 16, "lifetime": "persistent"}
+  ],
+  "compute_tasks": [
+    {
+      "name": "write_color",
+      "shader": "shaders/write_color",
+      "writes": ["compute_color"],
+      "before": ["present"],
+      "dispatch": {"groups": [1, 1, 1]}
+    }
+  ]
+})json"};
+            },
+            true,
+        });
+
+    REQUIRE(result.used_features);
+    REQUIRE(result.feature_names == std::vector<std::string>{"compute_feature"});
+    REQUIRE(result.config.at("buffers").at(0).at("name").get<std::string>() == "compute_color");
+    REQUIRE(result.config.at("compute_tasks").at(0).at("name").get<std::string>() == "write_color");
+}
+
 TEST_CASE("HDR render feature overrides lit target and inserts tonemap before present", "[render-feature]") {
     const auto result = composeRenderFeatureConfig(
         baseConfigWithFeature("engine://features/hdr.json"),

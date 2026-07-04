@@ -8,7 +8,7 @@
 namespace Pelican {
 
 void validatePassInputs(const PassDefinition &pass_def) {
-    if (!pass_def.input_targets.empty() && !pass_def.isFullscreen()) {
+    if ((!pass_def.input_targets.empty() || !pass_def.input_buffers.empty()) && !pass_def.isFullscreen()) {
         throw std::runtime_error("Only fullscreen passes support input targets: " + pass_def.name);
     }
 

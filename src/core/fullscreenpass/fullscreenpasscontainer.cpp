@@ -1,8 +1,10 @@
 #include "fullscreenpasscontainer.hpp"
+#include "../renderingpass/computetask.hpp"
 #include "../renderingpass/rendertargetimageviewresolver.hpp"
 #include "../shader/pelican_sets.hpp"
 #include "../shader/pipelinefactory.hpp"
 #include "../vkcore/core.hpp"
+#include <array>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -42,24 +44,41 @@ bool hasInputBinding(const ShaderReflection &reflection, uint32_t binding) {
     return false;
 }
 
-void requireInputBindings(const ShaderReflection &reflection, size_t input_count) {
+bool hasStorageBufferBinding(const ShaderReflection &reflection, uint32_t binding) {
+    for (const auto &reflected : reflection.bindings) {
+        if (reflected.set == PELICAN_SET_PASS_INPUT && reflected.binding == binding &&
+            reflected.type == vk::DescriptorType::eStorageBuffer) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void requireInputBindings(const ShaderReflection &reflection, size_t texture_count, size_t buffer_count) {
+    const auto input_count = texture_count + buffer_count;
     for (uint32_t binding = 0; binding < input_count; ++binding) {
-        if (!hasInputBinding(reflection, binding)) {
-            throw std::runtime_error("Fullscreen pass input texture does not match shader reflection");
+        if (binding < texture_count) {
+            if (!hasInputBinding(reflection, binding)) {
+                throw std::runtime_error("Fullscreen pass input texture does not match shader reflection");
+            }
+        } else if (!hasStorageBufferBinding(reflection, binding)) {
+            throw std::runtime_error("Fullscreen pass input buffer does not match shader reflection");
         }
     }
 }
 
 vk::UniqueDescriptorPool createDescPool(vk::Device device, uint32_t maxSets = 64) {
-    vk::DescriptorPoolSize poolSize{};
-    poolSize.type = vk::DescriptorType::eCombinedImageSampler;
-    poolSize.descriptorCount = maxSets * fullscreenInputBindingCount;
+    std::array<vk::DescriptorPoolSize, 2> pool_sizes{
+        vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler,
+                               maxSets * fullscreenInputBindingCount},
+        vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer,
+                               maxSets * fullscreenInputBindingCount},
+    };
 
     vk::DescriptorPoolCreateInfo ci{};
     ci.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
     ci.maxSets = maxSets;
-    ci.poolSizeCount = 1;
-    ci.pPoolSizes = &poolSize;
+    ci.setPoolSizes(pool_sizes);
     return device.createDescriptorPoolUnique(ci);
 }
 
@@ -126,14 +145,23 @@ void FullscreenPassContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pas
 
 void FullscreenPassContainer::setInputTextures(PassId pass_id, const std::vector<GlobalRenderTargetId> &input_rts,
                                                const RenderTargetImageViewResolver &rt_views) {
+    setInputResources(pass_id, input_rts, {}, rt_views, GET_MODULE(FrameGraphResourceContainer));
+}
+
+void FullscreenPassContainer::setInputResources(PassId pass_id,
+                                                const std::vector<GlobalRenderTargetId> &input_rts,
+                                                const std::vector<std::string> &input_buffers,
+                                                const RenderTargetImageViewResolver &rt_views,
+                                                const FrameGraphResourceContainer &frame_graph_resources) {
     const auto pipeline_handle = requirePipelineHandle(pass_id, pipelines);
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
-    requireInputBindings(pipeline_factory.reflection(pipeline_handle), input_rts.size());
+    requireInputBindings(pipeline_factory.reflection(pipeline_handle), input_rts.size(), input_buffers.size());
 
-    if (input_rts.size() > fullscreenInputBindingCount) {
-        throw std::runtime_error("Fullscreen pass has too many input textures");
+    const auto input_count = input_rts.size() + input_buffers.size();
+    if (input_count > fullscreenInputBindingCount) {
+        throw std::runtime_error("Fullscreen pass has too many inputs");
     }
-    if (input_rts.empty()) {
+    if (input_count == 0) {
         input_textures.erase(pass_id.value);
         return;
     }
@@ -150,7 +178,9 @@ void FullscreenPassContainer::setInputTextures(PassId pass_id, const std::vector
 
     std::vector<vk::WriteDescriptorSet> writes;
     std::vector<vk::DescriptorImageInfo> image_infos;
+    std::vector<vk::DescriptorBufferInfo> buffer_infos;
     image_infos.reserve(input_rts.size());
+    buffer_infos.reserve(input_buffers.size());
 
     for (uint32_t i = 0; i < input_rts.size(); ++i) {
         const auto &rt_id = input_rts[i];
@@ -173,12 +203,26 @@ void FullscreenPassContainer::setInputTextures(PassId pass_id, const std::vector
         write.pImageInfo = &image_infos.back();
         writes.push_back(write);
     }
+    for (uint32_t i = 0; i < input_buffers.size(); ++i) {
+        const auto binding = static_cast<uint32_t>(input_rts.size()) + i;
+        buffer_infos.push_back(frame_graph_resources.descriptorInfo(input_buffers[i]));
+
+        vk::WriteDescriptorSet write;
+        write.dstSet = descset.get();
+        write.dstBinding = binding;
+        write.dstArrayElement = 0;
+        write.descriptorCount = 1;
+        write.descriptorType = vk::DescriptorType::eStorageBuffer;
+        write.pBufferInfo = &buffer_infos.back();
+        writes.push_back(write);
+    }
 
     device.updateDescriptorSets(writes, {});
 
     input_textures.insert_or_assign(pass_id.value, InputTextureInfo{
                                                        std::move(descset),
                                                        input_rts,
+                                                       input_buffers,
                                                    });
 }
 

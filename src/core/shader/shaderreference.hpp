@@ -8,6 +8,7 @@ namespace Pelican {
 enum class ShaderStage {
     vertex,
     fragment,
+    compute,
 };
 
 enum class ShaderReferenceKind {

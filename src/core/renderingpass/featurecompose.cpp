@@ -156,6 +156,49 @@ std::unordered_set<std::string> collectPassNames(const nlohmann::json &config) {
     return names;
 }
 
+std::unordered_set<std::string> collectBufferNames(const nlohmann::json &config) {
+    std::unordered_set<std::string> names;
+    if (!config.contains("buffers")) {
+        return names;
+    }
+    const auto &buffers = config.at("buffers");
+    if (!buffers.is_array()) {
+        throw std::runtime_error("buffers must be an array");
+    }
+    for (const auto &buffer : buffers) {
+        std::string name;
+        if (buffer.is_string()) {
+            name = buffer.get<std::string>();
+        } else if (buffer.is_object()) {
+            name = requireStringField(buffer, "name", "buffer");
+        } else {
+            throw std::runtime_error("buffers entries must be strings or objects");
+        }
+        if (!names.insert(name).second) {
+            throw std::runtime_error("Duplicate buffer name: " + name);
+        }
+    }
+    return names;
+}
+
+std::unordered_set<std::string> collectComputeTaskNames(const nlohmann::json &config) {
+    std::unordered_set<std::string> names;
+    if (!config.contains("compute_tasks")) {
+        return names;
+    }
+    const auto &tasks = config.at("compute_tasks");
+    if (!tasks.is_array()) {
+        throw std::runtime_error("compute_tasks must be an array");
+    }
+    for (const auto &task : tasks) {
+        if (!task.is_object()) {
+            throw std::runtime_error("compute_tasks entries must be objects");
+        }
+        names.insert(requireStringField(task, "name", "compute task"));
+    }
+    return names;
+}
+
 nlohmann::json *findRenderTarget(nlohmann::json &config, const std::string &name) {
     auto &targets = ensureArray(config, "render_targets");
     for (auto &target : targets) {
@@ -183,6 +226,30 @@ void addRenderTargets(nlohmann::json &config, const nlohmann::json &feature,
             throw std::runtime_error("Render feature render target name collides: " + name);
         }
         targets.push_back(target);
+    }
+}
+
+void addBuffers(nlohmann::json &config, const nlohmann::json &feature,
+                std::unordered_set<std::string> &buffer_names) {
+    if (!feature.contains("buffers")) {
+        return;
+    }
+
+    const auto &feature_buffers = requireArrayField(feature, "buffers", "render feature");
+    auto &buffers = ensureArray(config, "buffers");
+    for (const auto &buffer : feature_buffers) {
+        std::string name;
+        if (buffer.is_string()) {
+            name = buffer.get<std::string>();
+        } else if (buffer.is_object()) {
+            name = requireStringField(buffer, "name", "render feature buffer");
+        } else {
+            throw std::runtime_error("render feature buffers entries must be strings or objects");
+        }
+        if (!buffer_names.insert(name).second) {
+            throw std::runtime_error("Render feature buffer name collides: " + name);
+        }
+        buffers.push_back(buffer);
     }
 }
 
@@ -328,6 +395,25 @@ void addFeaturePasses(nlohmann::json &config, const nlohmann::json &feature,
     }
 }
 
+void addFeatureComputeTasks(nlohmann::json &config, const nlohmann::json &feature,
+                            std::unordered_set<std::string> &task_names) {
+    if (!feature.contains("compute_tasks")) {
+        return;
+    }
+    const auto &tasks = requireArrayField(feature, "compute_tasks", "render feature");
+    auto &compute_tasks = ensureArray(config, "compute_tasks");
+    for (const auto &task : tasks) {
+        if (!task.is_object()) {
+            throw std::runtime_error("render feature compute_tasks entries must be objects");
+        }
+        const auto task_name = requireStringField(task, "name", "render feature compute task");
+        if (!task_names.insert(task_name).second) {
+            throw std::runtime_error("Render feature compute task name collides: " + task_name);
+        }
+        compute_tasks.push_back(task);
+    }
+}
+
 void appendShaderDefines(std::vector<std::string> &defines, const nlohmann::json &json,
                          std::string_view context) {
     if (!json.contains("shader_defines")) {
@@ -360,14 +446,18 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
 
     auto target_names = collectRenderTargetNames(composed);
     auto pass_names = collectPassNames(composed);
+    auto buffer_names = collectBufferNames(composed);
+    auto task_names = collectComputeTaskNames(composed);
     std::vector<std::string> feature_names;
 
     for (const auto &feature_ref : feature_refs) {
         auto feature = loadFeatureJson(feature_ref, dependencies);
         appendUnique(feature_names, validateFeatureEnvelope(feature, feature_ref));
         addRenderTargets(composed, feature, target_names);
+        addBuffers(composed, feature, buffer_names);
         applyRenderTargetOverrides(composed, feature);
         addFeaturePasses(composed, feature, pass_names);
+        addFeatureComputeTasks(composed, feature, task_names);
         appendShaderDefines(shader_defines, feature, "render feature");
     }
 

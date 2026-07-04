@@ -5,6 +5,8 @@
 #include "../log.hpp"
 #include "../profiler.hpp"
 #include "../renderer/debugdraw.hpp"
+#include "../renderingpass/computetask.hpp"
+#include "../renderingpass/framegraphruntime.hpp"
 #include "../renderingpass/renderingpassconfigregistration.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
@@ -47,6 +49,9 @@ void registerConfiguredRenderingPasses(const ProjectBasicConfig &config) {
         auto &shader_library = GET_MODULE(ShaderLibrary);
         auto &fs_container = GET_MODULE(FullscreenPassContainer);
         auto &pass_container = GET_MODULE(RenderingPassContainer);
+        auto &frame_graph_resources = GET_MODULE(FrameGraphResourceContainer);
+        auto &compute_task_container = GET_MODULE(ComputeTaskContainer);
+        auto &frame_graph_runtime = GET_MODULE(FrameGraphRuntimeContainer);
         auto &path_resolver = GET_MODULE(PathResolver);
         registerRenderingPassConfigFromJsonData(
             main_config_json, baseExtentFromConfig(config),
@@ -63,6 +68,9 @@ void registerConfiguredRenderingPasses(const ProjectBasicConfig &config) {
                     config.usesProjectSource(),
                     []() -> DebugDraw & { return GET_MODULE(DebugDraw); },
                 },
+                frame_graph_resources,
+                compute_task_container,
+                frame_graph_runtime,
                 pass_container,
             });
     } catch (const std::exception &e) {

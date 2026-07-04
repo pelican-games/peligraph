@@ -3,6 +3,7 @@
 #include "rendertargetnameresolver.hpp"
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 
 namespace Pelican {
 
@@ -38,12 +39,13 @@ void parsePassOutputTargetsFromJson(PassDefinition &pass_def, const RenderTarget
 }
 
 void parsePassInputTargetsFromJson(PassDefinition &pass_def, const RenderTargetNameResolver &rt_resolver,
-                                   const nlohmann::json &pass_json) {
+                                   const nlohmann::json &pass_json,
+                                   const std::unordered_set<std::string> &buffer_names) {
     if (!pass_json.contains("input")) {
         return;
     }
 
-    pass_def.input_targets = parseInputTargetsFromJson(rt_resolver, pass_json.at("input"));
+    parseInputResourcesFromJson(pass_def, rt_resolver, pass_json.at("input"), buffer_names);
 }
 
 std::vector<GlobalRenderTargetId> parseColorOutputTargetsFromJson(const RenderTargetNameResolver &rt_resolver,
@@ -110,6 +112,33 @@ std::vector<GlobalRenderTargetId> parseInputTargetsFromJson(const RenderTargetNa
         input_targets.push_back(resolveRenderTarget(rt_resolver, input_name, "Input"));
     }
     return input_targets;
+}
+
+void parseInputResourcesFromJson(PassDefinition &pass_def, const RenderTargetNameResolver &rt_resolver,
+                                 nlohmann::json input_output,
+                                 const std::unordered_set<std::string> &buffer_names) {
+    if (input_output.is_null()) {
+        return;
+    }
+    if (!input_output.is_array()) {
+        input_output = nlohmann::json::array({input_output});
+    }
+
+    for (const auto &input_name_json : input_output) {
+        if (!input_name_json.is_string()) {
+            throw std::runtime_error("Input target must be a render target or buffer name");
+        }
+        const std::string input_name = input_name_json.get<std::string>();
+        validateName(input_name, "Input target");
+        if (input_name == "swapchain") {
+            throw std::runtime_error("Input target cannot be swapchain");
+        }
+        if (buffer_names.find(input_name) != buffer_names.end()) {
+            pass_def.input_buffers.push_back(input_name);
+            continue;
+        }
+        pass_def.input_targets.push_back(resolveRenderTarget(rt_resolver, input_name, "Input"));
+    }
 }
 
 } // namespace Pelican
