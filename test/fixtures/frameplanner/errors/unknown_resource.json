@@ -1,0 +1,6 @@
+{
+  "name": "unknown_resource",
+  "compute_tasks": [
+    {"name": "read_missing", "reads": ["missing"], "writes": ["out"]}
+  ]
+}

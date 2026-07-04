@@ -1,0 +1,221 @@
+{
+  "barriers": [
+    {"from": "gbuffer_pass", "kind": "read_after_write", "resource": "gbuffer_worldpos", "to": "ssao_pass"},
+    {"from": "gbuffer_pass", "kind": "read_after_write", "resource": "gbuffer_normal", "to": "ssao_pass"},
+    {"from": "ssao_pass", "kind": "read_after_write", "resource": "ssao_output", "to": "ssao_blur_pass"},
+    {"from": "gbuffer_pass", "kind": "read_after_write", "resource": "gbuffer_albedo", "to": "lighting_pass"},
+    {"from": "gbuffer_pass", "kind": "read_after_write", "resource": "gbuffer_normal", "to": "lighting_pass"},
+    {"from": "gbuffer_pass", "kind": "read_after_write", "resource": "gbuffer_material", "to": "lighting_pass"},
+    {"from": "gbuffer_pass", "kind": "read_after_write", "resource": "gbuffer_worldpos", "to": "lighting_pass"},
+    {"from": "gbuffer_pass", "kind": "read_after_write", "resource": "g_emissive", "to": "lighting_pass"},
+    {"from": "ssao_blur_pass", "kind": "read_after_write", "resource": "ssao_blur", "to": "lighting_pass"},
+    {"from": "lighting_pass", "kind": "read_after_write", "resource": "lit_color", "to": "HighLuminanceExtraction"},
+    {"from": "HighLuminanceExtraction", "kind": "read_after_write", "resource": "Bloom_Threshold_RT", "to": "HorizontalBlur_0"},
+    {"from": "HorizontalBlur_0", "kind": "read_after_write", "resource": "Bloom_Downsample_H_0_RT", "to": "VerticalBlur_0"},
+    {"from": "VerticalBlur_0", "kind": "read_after_write", "resource": "Bloom_Upsample_V_0_RT", "to": "HorizontalBlur_1"},
+    {"from": "HorizontalBlur_1", "kind": "read_after_write", "resource": "Bloom_Downsample_H_1_RT", "to": "VerticalBlur_1"},
+    {"from": "VerticalBlur_1", "kind": "read_after_write", "resource": "Bloom_Upsample_V_1_RT", "to": "HorizontalBlur_2"},
+    {"from": "HorizontalBlur_2", "kind": "read_after_write", "resource": "Bloom_Downsample_H_2_RT", "to": "VerticalBlur_2"},
+    {"from": "VerticalBlur_2", "kind": "read_after_write", "resource": "Bloom_Upsample_V_2_RT", "to": "HorizontalBlur_3"},
+    {"from": "HorizontalBlur_3", "kind": "read_after_write", "resource": "Bloom_Downsample_H_3_RT", "to": "VerticalBlur_3"},
+    {"from": "VerticalBlur_3", "kind": "read_after_write", "resource": "Bloom_Upsample_V_3_RT", "to": "UpsampleBlend_3"},
+    {"from": "VerticalBlur_2", "kind": "read_after_write", "resource": "Bloom_Upsample_V_2_RT", "to": "UpsampleBlend_3"},
+    {"from": "HorizontalBlur_2", "kind": "read_after_write", "resource": "Bloom_Downsample_H_2_RT", "to": "UpsampleBlend_3"},
+    {"from": "UpsampleBlend_3", "kind": "read_after_write", "resource": "Bloom_Downsample_H_2_RT", "to": "UpsampleBlend_2"},
+    {"from": "VerticalBlur_1", "kind": "read_after_write", "resource": "Bloom_Upsample_V_1_RT", "to": "UpsampleBlend_2"},
+    {"from": "HorizontalBlur_1", "kind": "read_after_write", "resource": "Bloom_Downsample_H_1_RT", "to": "UpsampleBlend_2"},
+    {"from": "UpsampleBlend_2", "kind": "read_after_write", "resource": "Bloom_Downsample_H_1_RT", "to": "UpsampleBlend_1"},
+    {"from": "VerticalBlur_0", "kind": "read_after_write", "resource": "Bloom_Upsample_V_0_RT", "to": "UpsampleBlend_1"},
+    {"from": "HorizontalBlur_0", "kind": "read_after_write", "resource": "Bloom_Downsample_H_0_RT", "to": "UpsampleBlend_1"},
+    {"from": "lighting_pass", "kind": "read_after_write", "resource": "lit_color", "to": "FinalBloomComposite"},
+    {"from": "UpsampleBlend_1", "kind": "read_after_write", "resource": "Bloom_Downsample_H_0_RT", "to": "FinalBloomComposite"},
+    {"from": "FinalBloomComposite", "kind": "read_after_write", "resource": "swapchain", "to": "ui_pass"}
+  ],
+  "graph": "main_render",
+  "levels": [
+    ["gbuffer_pass"],
+    ["ssao_pass"],
+    ["ssao_blur_pass"],
+    ["lighting_pass"],
+    ["HighLuminanceExtraction"],
+    ["HorizontalBlur_0"],
+    ["VerticalBlur_0"],
+    ["HorizontalBlur_1"],
+    ["VerticalBlur_1"],
+    ["HorizontalBlur_2"],
+    ["VerticalBlur_2"],
+    ["HorizontalBlur_3"],
+    ["VerticalBlur_3"],
+    ["UpsampleBlend_3"],
+    ["UpsampleBlend_2"],
+    ["UpsampleBlend_1"],
+    ["FinalBloomComposite"],
+    ["ui_pass"]
+  ],
+  "nodes": [
+    {
+      "declaration_index": 0,
+      "kind": "render",
+      "level": 0,
+      "name": "gbuffer_pass",
+      "order": 0,
+      "reads": [],
+      "writes": ["gbuffer_albedo", "gbuffer_normal", "gbuffer_material", "gbuffer_worldpos", "g_emissive", "offscreen_depth"]
+    },
+    {
+      "declaration_index": 1,
+      "kind": "render",
+      "level": 1,
+      "name": "ssao_pass",
+      "order": 1,
+      "reads": ["gbuffer_worldpos", "gbuffer_normal"],
+      "writes": ["ssao_output"]
+    },
+    {
+      "declaration_index": 2,
+      "kind": "render",
+      "level": 2,
+      "name": "ssao_blur_pass",
+      "order": 2,
+      "reads": ["ssao_output"],
+      "writes": ["ssao_blur"]
+    },
+    {
+      "declaration_index": 3,
+      "kind": "render",
+      "level": 3,
+      "name": "lighting_pass",
+      "order": 3,
+      "reads": ["gbuffer_albedo", "gbuffer_normal", "gbuffer_material", "gbuffer_worldpos", "g_emissive", "ssao_blur"],
+      "writes": ["lit_color"]
+    },
+    {
+      "declaration_index": 4,
+      "kind": "render",
+      "level": 4,
+      "name": "HighLuminanceExtraction",
+      "order": 4,
+      "reads": ["lit_color"],
+      "writes": ["Bloom_Threshold_RT"]
+    },
+    {
+      "declaration_index": 5,
+      "kind": "render",
+      "level": 5,
+      "name": "HorizontalBlur_0",
+      "order": 5,
+      "reads": ["Bloom_Threshold_RT"],
+      "writes": ["Bloom_Downsample_H_0_RT"]
+    },
+    {
+      "declaration_index": 6,
+      "kind": "render",
+      "level": 6,
+      "name": "VerticalBlur_0",
+      "order": 6,
+      "reads": ["Bloom_Downsample_H_0_RT"],
+      "writes": ["Bloom_Upsample_V_0_RT"]
+    },
+    {
+      "declaration_index": 7,
+      "kind": "render",
+      "level": 7,
+      "name": "HorizontalBlur_1",
+      "order": 7,
+      "reads": ["Bloom_Upsample_V_0_RT"],
+      "writes": ["Bloom_Downsample_H_1_RT"]
+    },
+    {
+      "declaration_index": 8,
+      "kind": "render",
+      "level": 8,
+      "name": "VerticalBlur_1",
+      "order": 8,
+      "reads": ["Bloom_Downsample_H_1_RT"],
+      "writes": ["Bloom_Upsample_V_1_RT"]
+    },
+    {
+      "declaration_index": 9,
+      "kind": "render",
+      "level": 9,
+      "name": "HorizontalBlur_2",
+      "order": 9,
+      "reads": ["Bloom_Upsample_V_1_RT"],
+      "writes": ["Bloom_Downsample_H_2_RT"]
+    },
+    {
+      "declaration_index": 10,
+      "kind": "render",
+      "level": 10,
+      "name": "VerticalBlur_2",
+      "order": 10,
+      "reads": ["Bloom_Downsample_H_2_RT"],
+      "writes": ["Bloom_Upsample_V_2_RT"]
+    },
+    {
+      "declaration_index": 11,
+      "kind": "render",
+      "level": 11,
+      "name": "HorizontalBlur_3",
+      "order": 11,
+      "reads": ["Bloom_Upsample_V_2_RT"],
+      "writes": ["Bloom_Downsample_H_3_RT"]
+    },
+    {
+      "declaration_index": 12,
+      "kind": "render",
+      "level": 12,
+      "name": "VerticalBlur_3",
+      "order": 12,
+      "reads": ["Bloom_Downsample_H_3_RT"],
+      "writes": ["Bloom_Upsample_V_3_RT"]
+    },
+    {
+      "declaration_index": 13,
+      "kind": "render",
+      "level": 13,
+      "name": "UpsampleBlend_3",
+      "order": 13,
+      "reads": ["Bloom_Upsample_V_3_RT", "Bloom_Upsample_V_2_RT", "Bloom_Downsample_H_2_RT"],
+      "writes": ["Bloom_Downsample_H_2_RT"]
+    },
+    {
+      "declaration_index": 14,
+      "kind": "render",
+      "level": 14,
+      "name": "UpsampleBlend_2",
+      "order": 14,
+      "reads": ["Bloom_Downsample_H_2_RT", "Bloom_Upsample_V_1_RT", "Bloom_Downsample_H_1_RT"],
+      "writes": ["Bloom_Downsample_H_1_RT"]
+    },
+    {
+      "declaration_index": 15,
+      "kind": "render",
+      "level": 15,
+      "name": "UpsampleBlend_1",
+      "order": 15,
+      "reads": ["Bloom_Downsample_H_1_RT", "Bloom_Upsample_V_0_RT", "Bloom_Downsample_H_0_RT"],
+      "writes": ["Bloom_Downsample_H_0_RT"]
+    },
+    {
+      "declaration_index": 16,
+      "kind": "render",
+      "level": 16,
+      "name": "FinalBloomComposite",
+      "order": 16,
+      "reads": ["lit_color", "Bloom_Downsample_H_0_RT", "swapchain"],
+      "writes": ["swapchain"]
+    },
+    {
+      "declaration_index": 17,
+      "kind": "render",
+      "level": 17,
+      "name": "ui_pass",
+      "order": 17,
+      "reads": ["swapchain"],
+      "writes": ["swapchain"]
+    }
+  ],
+  "schema": "pelican.frame_plan",
+  "version": 1
+}

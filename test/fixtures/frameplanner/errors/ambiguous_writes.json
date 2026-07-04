@@ -1,0 +1,8 @@
+{
+  "name": "ambiguous_writes",
+  "buffers": ["shared"],
+  "compute_tasks": [
+    {"name": "write_a", "writes": ["shared"]},
+    {"name": "write_b", "writes": ["shared"]}
+  ]
+}

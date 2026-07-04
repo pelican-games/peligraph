@@ -1,0 +1,14 @@
+[
+  {
+    "file": "ambiguous_writes.json",
+    "contains": "Ambiguous writes-writes dependency"
+  },
+  {
+    "file": "cycle_after.json",
+    "contains": "Cycle detected"
+  },
+  {
+    "file": "unknown_resource.json",
+    "contains": "Unknown resource reference"
+  }
+]

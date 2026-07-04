@@ -1,0 +1,8 @@
+{
+  "name": "cycle_after",
+  "buffers": ["a", "b"],
+  "compute_tasks": [
+    {"name": "a", "writes": ["a"], "after": ["b"]},
+    {"name": "b", "writes": ["b"], "after": ["a"]}
+  ]
+}
