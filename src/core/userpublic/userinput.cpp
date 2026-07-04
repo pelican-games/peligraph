@@ -1,21 +1,18 @@
 #include "userinput.hpp"
-#include "../os/window.hpp"
+#include "../os/inputstate.hpp"
 
 namespace Pelican {
 
 bool UserInput::getKey(KeyCode code) {
-    GET_MODULE(Window); // TODO
-    return false;
+    return GET_MODULE(InputState).currentSnapshot().getKey(code);
 }
 
 bool UserInput::isKeyPushed(KeyCode code) {
-    GET_MODULE(Window); // TODO
-    return false;
+    return GET_MODULE(InputState).currentSnapshot().isKeyPushed(code);
 }
 
 bool UserInput::isKeyReleased(KeyCode code) {
-    GET_MODULE(Window); // TODO
-    return false;
+    return GET_MODULE(InputState).currentSnapshot().isKeyReleased(code);
 }
 
 } // namespace Pelican

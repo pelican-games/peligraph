@@ -4,9 +4,11 @@
 #include "../launchconfig.hpp"
 #include "../log.hpp"
 #include "../communication/rpcserver.hpp"
+#include "../os/inputstate.hpp"
 #include "../os/window.hpp"
 #include "../playback/seqplayer.hpp"
 #include "../playback/vatplayer.hpp"
+#include "../userpublic/userinput.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/deletionqueue.hpp"
 #include "../vkcore/renderer.hpp"
@@ -84,6 +86,16 @@ std::filesystem::path formatRenderOutPath(const std::filesystem::path &path, con
     return std::filesystem::path{path_string};
 }
 
+void logInputSnapshotIfRequested(const InputSnapshot &snapshot) {
+    if (!UserInput::isKeyPushed(KeyCode::F1)) {
+        return;
+    }
+
+    LOG_INFO(logger, "input snapshot: down={} pushed={} released={} mouse=({}, {}) delta=({}, {})",
+             snapshot.downCount(), snapshot.pushedCount(), snapshot.releasedCount(), snapshot.mouse_x,
+             snapshot.mouse_y, snapshot.mouse_delta_x, snapshot.mouse_delta_y);
+}
+
 } // namespace
 
 Loop::Loop() {}
@@ -99,6 +111,7 @@ void Loop::run() {
     auto &engine_time = GET_MODULE(EngineTime);
     auto &seq_player = GET_MODULE(SeqPlayer);
     auto &vat_player = GET_MODULE(VatPlayer);
+    auto &input_state = GET_MODULE(InputState);
     (void)vat_player;
 
     const auto time_mode =
@@ -119,6 +132,7 @@ void Loop::run() {
             launch_config.render_out ? parseRenderOutPattern(*launch_config.render_out) : RenderOutPattern{};
         for (uint32_t frame = 0; launch_config.headless_frames == 0 || frame < launch_config.headless_frames;
              ++frame) {
+            input_state.clear();
             engine_time.advance();
             ecs.update();
             seq_player.update(engine_time.now());
@@ -143,6 +157,9 @@ void Loop::run() {
     while (true) {
         if (!window.process())
             break;
+        input_state.queueEvents(window.drainInputEvents());
+        input_state.beginFrame();
+        logInputSnapshotIfRequested(input_state.currentSnapshot());
         engine_time.advance();
         ecs.update();
         seq_player.update(engine_time.now());
