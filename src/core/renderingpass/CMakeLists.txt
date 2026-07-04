@@ -1,5 +1,6 @@
 target_sources(pelican_core PRIVATE
     fullscreenpassinfojsonparser.cpp
+    featurecompose.cpp
     materialpassinfojsonparser.cpp
     passattachmentoptionsjsonparser.cpp
     passdefinitionjsonparser.cpp

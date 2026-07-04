@@ -58,6 +58,7 @@ void registerConfiguredRenderingPasses(const ProjectBasicConfig &config) {
                     shader_library,
                     fs_container,
                     path_resolver,
+                    {},
                     config.usesProjectSource(),
                 },
                 pass_container,

@@ -1,0 +1,28 @@
+[
+  {
+    "file": "valid/dummy_feature.json",
+    "expect": "ok",
+    "expected_pass_order": ["prepare", "present", "feature_present"],
+    "expected_shader_defines": ["PELICAN_FEATURE_DUMMY"]
+  },
+  {
+    "file": "invalid/rt_collision.json",
+    "expect": "error",
+    "error_kind": "render_target_collision"
+  },
+  {
+    "file": "invalid/pass_collision.json",
+    "expect": "error",
+    "error_kind": "pass_collision"
+  },
+  {
+    "file": "invalid/missing_anchor.json",
+    "expect": "error",
+    "error_kind": "missing_anchor"
+  },
+  {
+    "file": "invalid/bad_override.json",
+    "expect": "error",
+    "error_kind": "bad_override"
+  }
+]

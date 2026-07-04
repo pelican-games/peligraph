@@ -1,0 +1,10 @@
+{
+  "schema": "pelican.render_feature",
+  "version": 1,
+  "name": "bad_override",
+  "render_target_overrides": {
+    "lit_color": {
+      "extent_scale": 0.5
+    }
+  }
+}

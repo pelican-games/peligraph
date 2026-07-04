@@ -1,0 +1,19 @@
+{
+  "schema": "pelican.render_feature",
+  "version": 1,
+  "name": "missing_anchor",
+  "passes": [
+    {
+      "insert": "before:not_here",
+      "pass": {
+        "name": "feature_present",
+        "type": "fullscreen",
+        "output": {"color": "swapchain", "depth": null},
+        "shader": {
+          "vertex": "shaders/fullscreen",
+          "fragment": "shaders/feature"
+        }
+      }
+    }
+  ]
+}

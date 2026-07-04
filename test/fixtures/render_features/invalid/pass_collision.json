@@ -1,0 +1,19 @@
+{
+  "schema": "pelican.render_feature",
+  "version": 1,
+  "name": "pass_collision",
+  "passes": [
+    {
+      "insert": "end",
+      "pass": {
+        "name": "present",
+        "type": "fullscreen",
+        "output": {"color": "swapchain", "depth": null},
+        "shader": {
+          "vertex": "shaders/fullscreen",
+          "fragment": "shaders/feature"
+        }
+      }
+    }
+  ]
+}

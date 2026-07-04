@@ -6,6 +6,7 @@
 #include "../resourcecontainer.hpp"
 #include <filesystem>
 #include <optional>
+#include <string>
 #include <unordered_map>
 #include <vector>
 #include <vulkan/vulkan.hpp>
@@ -17,6 +18,7 @@ struct GraphicsPipelineDesc {
     ShaderBundleId frag;
     std::vector<vk::Format> color_formats;
     std::optional<vk::Format> depth_format;
+    std::vector<std::string> shader_defines;
     bool use_engine_vertex_layout = false;
     bool depth_test = false;
     bool depth_write = false;

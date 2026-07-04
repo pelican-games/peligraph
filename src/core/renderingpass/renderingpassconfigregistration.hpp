@@ -2,6 +2,7 @@
 
 #include <string>
 #include <string_view>
+#include <vector>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
@@ -22,6 +23,7 @@ struct RenderingPassConfigRuntimeDependencies {
     ShaderLibrary &shader_library;
     FullscreenPassContainer &fullscreen_pass_container;
     const PathResolver &path_resolver;
+    std::vector<std::string> shader_defines;
     bool warn_backend_specific_shader_refs = false;
 };
 
