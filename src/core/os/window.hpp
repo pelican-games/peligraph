@@ -1,30 +1,20 @@
 #pragma once
 
 
+#include "inputstate.hpp"
+
 #include <vulkan/vulkan.hpp>
 // include order must NOT be swap
 #include <GLFW/glfw3.h>
 
 #include "../container.hpp"
-#include <bitset>
+#include <vector>
 
 namespace Pelican {
 
-constexpr size_t buttons_num = (GLFW_KEY_LAST + 1) + (GLFW_GAMEPAD_BUTTON_LAST + 1) + (GLFW_MOUSE_BUTTON_LAST + 1);
-constexpr int button_id_offset_keyboard = 0;
-constexpr int button_id_offset_gamepad = (GLFW_KEY_LAST + 1);
-constexpr int button_id_offset_mouse_button = (GLFW_KEY_LAST + 1) + (GLFW_GAMEPAD_BUTTON_LAST + 1);
-
-struct KeyState {
-    std::bitset<buttons_num> pressing, pressing_old, just_pressed, just_released;
-};
-
 DECLARE_MODULE(Window) {
     GLFWwindow *window;
-
-    KeyState key_state;
-    float gamepad_axis[6];
-    float cursor_x, cursor_y;
+    std::vector<InputEvent> input_events;
 
   public:
     Window();
@@ -36,6 +26,7 @@ DECLARE_MODULE(Window) {
 
     // false to close
     bool process();
+    std::vector<InputEvent> drainInputEvents();
 };
 
 } // namespace Pelican

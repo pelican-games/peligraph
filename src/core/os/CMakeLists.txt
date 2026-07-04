@@ -1,4 +1,5 @@
 target_sources(pelican_core PRIVATE
+    inputstate.cpp
     window.cpp
 )
 

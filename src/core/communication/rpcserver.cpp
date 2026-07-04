@@ -2,6 +2,7 @@
 
 #include "../appflow/enginetime.hpp"
 #include "../ecs/core.hpp"
+#include "../os/inputstate.hpp"
 #include "../playback/seqplayer.hpp"
 #include "../vkcore/renderer.hpp"
 #include "../vkcore/rendertarget.hpp"
@@ -55,6 +56,7 @@ nlohmann::json frameResult() {
 }
 
 void updateFrameState(EngineTime &engine_time) {
+    GET_MODULE(InputState).clear();
     GET_MODULE(ECSCore).update();
     GET_MODULE(SeqPlayer).update(engine_time.now());
 }
@@ -142,6 +144,7 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
 
     server.setHandler("render_frame", [](const nlohmann::json &params) {
         requireObjectParams(params, "render_frame");
+        GET_MODULE(InputState).clear();
         GET_MODULE(SeqPlayer).update(GET_MODULE(EngineTime).now());
         GET_MODULE(Renderer).render();
         return frameResult();

@@ -3,6 +3,7 @@
 #include "../loader/basicconfig.hpp"
 #include "../log.hpp"
 #include <algorithm>
+#include <optional>
 #include <stdexcept>
 
 namespace Pelican {
@@ -41,17 +42,104 @@ WindowCreateInfo makeWindowCreateInfo(ProjectBasicConfig::window_size window_siz
     return WindowCreateInfo{mode->width, mode->height, monitor};
 }
 
-bool isKeyboardKeyTracked(int key) {
-    return key >= 0 && key <= GLFW_KEY_LAST;
+std::optional<KeyCode> keyCodeFromGlfwKey(int key) {
+    if (key >= GLFW_KEY_A && key <= GLFW_KEY_Z) {
+        return static_cast<KeyCode>(static_cast<int>(KeyCode::A) + (key - GLFW_KEY_A));
+    }
+    if (key >= GLFW_KEY_0 && key <= GLFW_KEY_9) {
+        return static_cast<KeyCode>(static_cast<int>(KeyCode::Num0) + (key - GLFW_KEY_0));
+    }
+
+    switch (key) {
+    case GLFW_KEY_UP:
+        return KeyCode::ArrowUp;
+    case GLFW_KEY_DOWN:
+        return KeyCode::ArrowDown;
+    case GLFW_KEY_LEFT:
+        return KeyCode::ArrowLeft;
+    case GLFW_KEY_RIGHT:
+        return KeyCode::ArrowRight;
+    case GLFW_KEY_SPACE:
+        return KeyCode::Space;
+    case GLFW_KEY_ENTER:
+        return KeyCode::Enter;
+    case GLFW_KEY_ESCAPE:
+        return KeyCode::Escape;
+    case GLFW_KEY_TAB:
+        return KeyCode::Tab;
+    case GLFW_KEY_BACKSPACE:
+        return KeyCode::Backspace;
+    case GLFW_KEY_LEFT_SHIFT:
+        return KeyCode::LeftShift;
+    case GLFW_KEY_RIGHT_SHIFT:
+        return KeyCode::RightShift;
+    case GLFW_KEY_LEFT_CONTROL:
+        return KeyCode::LeftControl;
+    case GLFW_KEY_RIGHT_CONTROL:
+        return KeyCode::RightControl;
+    case GLFW_KEY_LEFT_ALT:
+        return KeyCode::LeftAlt;
+    case GLFW_KEY_RIGHT_ALT:
+        return KeyCode::RightAlt;
+    case GLFW_KEY_LEFT_SUPER:
+        return KeyCode::LeftSuper;
+    case GLFW_KEY_RIGHT_SUPER:
+        return KeyCode::RightSuper;
+    case GLFW_KEY_F1:
+        return KeyCode::F1;
+    case GLFW_KEY_F2:
+        return KeyCode::F2;
+    case GLFW_KEY_F3:
+        return KeyCode::F3;
+    case GLFW_KEY_F4:
+        return KeyCode::F4;
+    case GLFW_KEY_F5:
+        return KeyCode::F5;
+    case GLFW_KEY_F6:
+        return KeyCode::F6;
+    case GLFW_KEY_F7:
+        return KeyCode::F7;
+    case GLFW_KEY_F8:
+        return KeyCode::F8;
+    case GLFW_KEY_F9:
+        return KeyCode::F9;
+    case GLFW_KEY_F10:
+        return KeyCode::F10;
+    case GLFW_KEY_F11:
+        return KeyCode::F11;
+    case GLFW_KEY_F12:
+        return KeyCode::F12;
+    default:
+        return std::nullopt;
+    }
 }
 
-bool isMouseButtonTracked(int button) {
-    return button >= 0 && button <= GLFW_MOUSE_BUTTON_LAST;
+std::optional<KeyCode> keyCodeFromGlfwMouseButton(int button) {
+    switch (button) {
+    case GLFW_MOUSE_BUTTON_LEFT:
+        return KeyCode::MouseLeft;
+    case GLFW_MOUSE_BUTTON_RIGHT:
+        return KeyCode::MouseRight;
+    case GLFW_MOUSE_BUTTON_MIDDLE:
+        return KeyCode::MouseMiddle;
+    case GLFW_MOUSE_BUTTON_4:
+        return KeyCode::MouseButton4;
+    case GLFW_MOUSE_BUTTON_5:
+        return KeyCode::MouseButton5;
+    case GLFW_MOUSE_BUTTON_6:
+        return KeyCode::MouseButton6;
+    case GLFW_MOUSE_BUTTON_7:
+        return KeyCode::MouseButton7;
+    case GLFW_MOUSE_BUTTON_8:
+        return KeyCode::MouseButton8;
+    default:
+        return std::nullopt;
+    }
 }
 
 } // namespace
 
-Window::Window() : window{nullptr}, gamepad_axis{}, cursor_x{0.0f}, cursor_y{0.0f} {
+Window::Window() : window{nullptr} {
     if (GET_MODULE(EngineLaunchConfig).headless) {
         throw std::runtime_error("Window module is unavailable in headless mode");
     }
@@ -84,28 +172,36 @@ Window::Window() : window{nullptr}, gamepad_axis{}, cursor_x{0.0f}, cursor_y{0.0
     LOG_INFO(logger, "GLFW window initialized");
 
     glfwSetKeyCallback(window, [](GLFWwindow *window, int key, int scancode, int action, int mods) {
-        if (action == GLFW_REPEAT || !isKeyboardKeyTracked(key)) {
+        (void)scancode;
+        (void)mods;
+        if (action != GLFW_PRESS && action != GLFW_RELEASE) {
+            return;
+        }
+        const auto code = keyCodeFromGlfwKey(key);
+        if (!code) {
             return;
         }
         const auto thiz = static_cast<Window *>(glfwGetWindowUserPointer(window));
 
-        // action: GLFW_PRESS == 1, GLFW_RELEASE == 0
-        thiz->key_state.pressing.set(button_id_offset_keyboard + key, action == GLFW_PRESS);
+        thiz->input_events.push_back(InputEvent::button(*code, action == GLFW_PRESS));
     });
     glfwSetMouseButtonCallback(window, [](GLFWwindow *window, int button, int action, int mods) {
-        if (!isMouseButtonTracked(button)) {
+        (void)mods;
+        if (action != GLFW_PRESS && action != GLFW_RELEASE) {
+            return;
+        }
+        const auto code = keyCodeFromGlfwMouseButton(button);
+        if (!code) {
             return;
         }
         const auto thiz = static_cast<Window *>(glfwGetWindowUserPointer(window));
 
-        // action: GLFW_PRESS == 1, GLFW_RELEASE == 0
-        thiz->key_state.pressing.set(button_id_offset_mouse_button + button, action == GLFW_PRESS);
+        thiz->input_events.push_back(InputEvent::button(*code, action == GLFW_PRESS));
     });
     glfwSetCursorPosCallback(window, [](GLFWwindow *window, double xpos, double ypos) {
         const auto thiz = static_cast<Window *>(glfwGetWindowUserPointer(window));
 
-        thiz->cursor_x = static_cast<float>(xpos);
-        thiz->cursor_y = static_cast<float>(ypos);
+        thiz->input_events.push_back(InputEvent::cursorMove(static_cast<float>(xpos), static_cast<float>(ypos)));
     });
 }
 
@@ -133,26 +229,15 @@ vk::Extent2D Window::waitFramebufferExtent() const {
 }
 
 bool Window::process() {
-    key_state.pressing_old = key_state.pressing;
     glfwPollEvents();
 
-    {
-        GLFWgamepadstate state{};
-        const bool gamepad_connected = glfwGetGamepadState(GLFW_JOYSTICK_1, &state) == GLFW_TRUE;
-        for (int i = 0; i <= GLFW_GAMEPAD_BUTTON_LAST; i++) {
-            // GLFW_PRESS == 1, GLFW_RELEASE == 0
-            key_state.pressing.set(button_id_offset_gamepad + i,
-                                   gamepad_connected && state.buttons[i] == GLFW_PRESS);
-        }
-        for (int i = 0; i <= GLFW_GAMEPAD_AXIS_LAST; i++) {
-            gamepad_axis[i] = gamepad_connected ? state.axes[i] : 0.0f;
-        }
-    }
-
-    key_state.just_pressed = key_state.pressing & ~key_state.pressing_old;
-    key_state.just_released = ~key_state.pressing & key_state.pressing_old;
-
     return !glfwWindowShouldClose(window);
+}
+
+std::vector<InputEvent> Window::drainInputEvents() {
+    std::vector<InputEvent> events;
+    events.swap(input_events);
+    return events;
 }
 
 vk::UniqueSurfaceKHR Window::getVulkanSurface(vk::Instance instance) {

@@ -46,6 +46,7 @@ target_compile_definitions(pelican_test_headless_render_test PRIVATE
 )
 pelican_define_test(hoge_test)
 pelican_define_test(imageloader_test pelican_core tinyexr)
+pelican_define_test(inputstate_test pelican_core)
 pelican_define_test(jsonrpc_test pelican_core)
 pelican_define_test(pathresolver_test pelican_core)
 target_compile_definitions(pelican_test_pathresolver_test PRIVATE
