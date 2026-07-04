@@ -1,4 +1,5 @@
 #include "passinfojsonparser.hpp"
+#include "debugdrawpassinfojsonparser.hpp"
 #include "fullscreenpassinfojsonparser.hpp"
 #include "renderingpassjsonhelpers.hpp"
 
@@ -18,6 +19,14 @@ void parseFullscreenPassInfoIntoDefinition(PassDefinition &pass_def, const nlohm
     }
 
     pass_def.fullscreenInfo() = parseFullscreenPassInfoFromJson(pass_json, pass_def.name);
+}
+
+void parseDebugDrawPassInfoIntoDefinition(PassDefinition &pass_def, const nlohmann::json &pass_json) {
+    if (!pass_def.isDebugDraw()) {
+        return;
+    }
+
+    pass_def.debugDrawInfo() = parseDebugDrawPassInfoFromJson(pass_json, pass_def.name);
 }
 
 } // namespace Pelican

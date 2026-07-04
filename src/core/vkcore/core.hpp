@@ -41,6 +41,7 @@ DECLARE_MODULE(VulkanManageCore) {
     vk::PhysicalDevice getPhysDevice() const { return phys_device; };
     vk::SurfaceKHR getSurface() const;
     vk::Queue getPresentationQueue() const { return presen_queue; }
+    uint32_t getGraphicsQueueFamilyIndex() const { return queue_set.graphic_queue; }
 
     void waitIdle() const;
 

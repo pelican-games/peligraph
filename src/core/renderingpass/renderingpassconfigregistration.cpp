@@ -30,10 +30,11 @@ RenderingPassRuntimeDependencies toRuntimeDependencies(
         &dependencies.path_resolver,
         dependencies.shader_defines,
         dependencies.warn_backend_specific_shader_refs,
+        dependencies.debug_draw_provider,
     };
 }
 
-nlohmann::json composeRenderFeaturesForRegistration(
+RenderFeatureComposeResult composeRenderFeaturesForRegistration(
     const nlohmann::json &rendering_pass_data,
     RenderingPassConfigRuntimeDependencies &dependencies) {
     const auto composed = composeRenderFeatureConfig(
@@ -49,13 +50,14 @@ nlohmann::json composeRenderFeaturesForRegistration(
 #endif
         });
     dependencies.shader_defines = composed.shader_defines;
-    return composed.config;
+    return composed;
 }
 
 void registerRenderingPassConfigData(const nlohmann::json &rendering_pass_data, vk::Extent2D base_extent,
                                      RenderingPassConfigRegistrationDependencies dependencies) {
-    const auto composed_rendering_pass_data =
+    const auto composed =
         composeRenderFeaturesForRegistration(rendering_pass_data, dependencies.runtime);
+    const auto &composed_rendering_pass_data = composed.config;
     const auto render_target_definitions = parseRenderTargetDefinitionsFromJson(composed_rendering_pass_data);
     registerRenderTargetDefinitions(render_target_definitions, base_extent,
                                     dependencies.render_targets.render_target_container);
@@ -68,6 +70,7 @@ void registerRenderingPassConfigData(const nlohmann::json &rendering_pass_data, 
     auto compiled_passes =
         compileRenderingPassesRuntime(pass_definitions,
                                       toRuntimeDependencies(dependencies.runtime, rt_metadata, rt_views));
+    dependencies.pass_container.setEnabledFeatures(composed.feature_names);
     for (auto &compiled_pass : compiled_passes) {
         dependencies.pass_container.registerCompiledRenderingPass(std::move(compiled_pass));
     }

@@ -9,6 +9,7 @@
 #include "../light/lightcontainer.hpp"
 #include "../fullscreenpass/fullscreenpasscontainer.hpp"
 #include "../material/materialcontainer.hpp"
+#include "../renderer/debugdraw.hpp"
 #include "../model/vertbufcontainer.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../renderingpass/rendertargetimageviewresolver.hpp"
@@ -21,6 +22,7 @@
 #include "render_pass_executor.hpp"
 #include "renderer_config.hpp"
 #include "rendertarget.hpp"
+#include "rendertiming.hpp"
 #include "util.hpp"
 
 namespace Pelican {
@@ -41,15 +43,23 @@ struct RenderFrameModules {
     FullscreenPassContainer &fullscreen_pass_container;
     UiRenderer &ui_renderer;
     const UIContainer &ui_container;
+    DebugDraw *debug_draw;
+    RenderTiming *render_timing;
     const Camera &camera;
     LightContainer &light_container;
 };
 
 RenderFrameModules resolveRenderFrameModules() {
+    auto &rendering_pass_container = GET_MODULE(RenderingPassContainer);
+    DebugDraw *debug_draw =
+        rendering_pass_container.isFeatureEnabled("debug_draw") ? &GET_MODULE(DebugDraw) : nullptr;
+    RenderTiming *render_timing =
+        rendering_pass_container.isFeatureEnabled("gpu_timing") ? &GET_MODULE(RenderTiming) : nullptr;
+
     return RenderFrameModules{
         GET_MODULE(RenderTarget),
         GET_MODULE(RenderTargetContainer),
-        GET_MODULE(RenderingPassContainer),
+        rendering_pass_container,
         GET_MODULE(RenderPassExecutor),
         GET_MODULE(VulkanUtils),
         GET_MODULE(MaterialRenderer),
@@ -60,6 +70,8 @@ RenderFrameModules resolveRenderFrameModules() {
         GET_MODULE(FullscreenPassContainer),
         GET_MODULE(UiRenderer),
         GET_MODULE(UIContainer),
+        debug_draw,
+        render_timing,
         GET_MODULE(Camera),
         GET_MODULE(LightContainer),
     };
@@ -87,13 +99,34 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx, const Compiled
         fullscreen_pass_renderer_dependencies,
         modules.ui_renderer,
         ui_renderer_dependencies,
+        modules.debug_draw,
         modules.camera,
         modules.render_target.getSwapchainFormat()};
     const RenderPassExecutorDependencies pass_executor_dependencies{modules.render_target_container, modules.vk_utils,
                                                                     pass_dispatch_dependencies};
 
-    for (const auto &pass : rendering_pass.passes) {
+    if (modules.render_timing != nullptr) {
+        std::vector<std::string> pass_names;
+        pass_names.reserve(rendering_pass.passes.size());
+        for (const auto &pass : rendering_pass.passes) {
+            pass_names.push_back(pass.definition.name);
+        }
+        modules.render_timing->beginGpuFrame(render_ctx.cmd_buf, pass_names);
+    }
+
+    for (uint32_t pass_index = 0; pass_index < rendering_pass.passes.size(); ++pass_index) {
+        const auto &pass = rendering_pass.passes[pass_index];
+        if (modules.render_timing != nullptr) {
+            modules.render_timing->writePassStart(render_ctx.cmd_buf, pass_index);
+        }
         modules.pass_executor.execute(render_ctx, pass, pass_executor_dependencies, layout_tracker);
+        if (modules.render_timing != nullptr) {
+            modules.render_timing->writePassEnd(render_ctx.cmd_buf, pass_index);
+        }
+    }
+
+    if (modules.render_timing != nullptr) {
+        modules.render_timing->endGpuFrame();
     }
 }
 

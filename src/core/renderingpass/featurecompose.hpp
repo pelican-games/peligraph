@@ -16,6 +16,7 @@ struct RenderFeatureComposeDependencies {
 struct RenderFeatureComposeResult {
     nlohmann::json config;
     std::vector<std::string> shader_defines;
+    std::vector<std::string> feature_names;
     bool used_features = false;
 };
 

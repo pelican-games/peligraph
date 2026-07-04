@@ -1,5 +1,6 @@
 #include "render_pass_dispatch.hpp"
 #include "../renderer/camera.hpp"
+#include "../renderer/debugdraw.hpp"
 #include "../renderer/fullscreenpassrenderer.hpp"
 #include "../renderer/materialrender.hpp"
 #include "../renderer/uirenderer.hpp"
@@ -45,6 +46,14 @@ void renderFullscreenPass(vk::CommandBuffer cmd_buf, PassId pass_id, const PassD
                                                  dependencies.fullscreen_pass_renderer_dependencies);
 }
 
+void renderDebugDrawPass(vk::CommandBuffer cmd_buf, PassId pass_id,
+                         const RenderPassDispatchDependencies &dependencies) {
+    if (dependencies.debug_draw == nullptr) {
+        throw std::runtime_error("DebugDraw pass requires DebugDraw dependency");
+    }
+    dependencies.debug_draw->render(cmd_buf, pass_id);
+}
+
 } // namespace
 
 void renderUiPass(vk::CommandBuffer cmd_buf, const FrameRenderContext &frame, const PassDefinition &pass_def,
@@ -72,6 +81,8 @@ void renderDynamicPassDrawCalls(vk::CommandBuffer cmd_buf, PassId pass_id, const
         renderMaterialPass(cmd_buf, pass_id, pass_def, dependencies);
     } else if (pass_def.isFullscreen()) {
         renderFullscreenPass(cmd_buf, pass_id, pass_def, dependencies);
+    } else if (pass_def.isDebugDraw()) {
+        renderDebugDrawPass(cmd_buf, pass_id, dependencies);
     } else {
         throw std::runtime_error("Unsupported dynamic render pass type: " + pass_def.name);
     }

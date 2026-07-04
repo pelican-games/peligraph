@@ -8,15 +8,18 @@
 #include "../os/window.hpp"
 #include "../playback/seqplayer.hpp"
 #include "../playback/vatplayer.hpp"
+#include "../renderingpass/renderingpasscontainer.hpp"
 #include "../userpublic/userinput.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/deletionqueue.hpp"
 #include "../vkcore/renderer.hpp"
 #include "../vkcore/rendertarget.hpp"
+#include "../vkcore/rendertiming.hpp"
 #include "enginetime.hpp"
 #include "framerate.hpp"
 
 #include <filesystem>
+#include <chrono>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -29,6 +32,12 @@
 namespace Pelican {
 
 namespace {
+
+using Clock = std::chrono::steady_clock;
+
+double elapsedMs(Clock::time_point start, Clock::time_point end) {
+    return std::chrono::duration<double, std::milli>{end - start}.count();
+}
 
 struct RenderOutPattern {
     bool has_frame_token = false;
@@ -113,6 +122,8 @@ void Loop::run() {
     auto &vat_player = GET_MODULE(VatPlayer);
     auto &input_state = GET_MODULE(InputState);
     (void)vat_player;
+    RenderTiming *render_timing =
+        GET_MODULE(RenderingPassContainer).isFeatureEnabled("gpu_timing") ? &GET_MODULE(RenderTiming) : nullptr;
 
     const auto time_mode =
         launch_config.headless ? EngineTime::Mode::fixed_step : EngineTime::Mode::realtime;
@@ -133,10 +144,22 @@ void Loop::run() {
         for (uint32_t frame = 0; launch_config.headless_frames == 0 || frame < launch_config.headless_frames;
              ++frame) {
             input_state.clear();
+            const auto update_start = Clock::now();
             engine_time.advance();
             ecs.update();
             seq_player.update(engine_time.now());
+            const auto update_end = Clock::now();
+
+            const auto render_start = Clock::now();
             renderer.render();
+            const auto render_end = Clock::now();
+            if (render_timing != nullptr) {
+                render_timing->recordCpuFrame(CpuFrameDurations{
+                    elapsedMs(update_start, update_end),
+                    elapsedMs(render_start, render_end),
+                    0.0,
+                });
+            }
             if (launch_config.render_out && render_out_pattern.has_frame_token) {
                 GET_MODULE(RenderTarget)
                     .captureLastFrameToPng(formatRenderOutPath(*launch_config.render_out, render_out_pattern,
@@ -147,6 +170,9 @@ void Loop::run() {
             GET_MODULE(RenderTarget).captureLastFrameToPng(*launch_config.render_out);
         }
         GET_MODULE(VulkanManageCore).waitIdle();
+        if (render_timing != nullptr) {
+            render_timing->flush();
+        }
         GET_MODULE(DeletionQueue).flushAll();
         return;
     }
@@ -160,14 +186,32 @@ void Loop::run() {
         input_state.queueEvents(window.drainInputEvents());
         input_state.beginFrame();
         logInputSnapshotIfRequested(input_state.currentSnapshot());
+        const auto update_start = Clock::now();
         engine_time.advance();
         ecs.update();
         seq_player.update(engine_time.now());
+        const auto update_end = Clock::now();
+
+        const auto render_start = Clock::now();
         renderer.render();
+        const auto render_end = Clock::now();
+
+        const auto wait_start = Clock::now();
         framerate_adjuster.wait();
+        const auto wait_end = Clock::now();
+        if (render_timing != nullptr) {
+            render_timing->recordCpuFrame(CpuFrameDurations{
+                elapsedMs(update_start, update_end),
+                elapsedMs(render_start, render_end),
+                elapsedMs(wait_start, wait_end),
+            });
+        }
     }
 
     GET_MODULE(VulkanManageCore).waitIdle();
+    if (render_timing != nullptr) {
+        render_timing->flush();
+    }
     GET_MODULE(DeletionQueue).flushAll();
 }
 

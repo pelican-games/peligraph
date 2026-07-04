@@ -127,6 +127,7 @@ TEST_CASE("render feature composition is a no-op without features", "[render-fea
     REQUIRE_FALSE(result.used_features);
     REQUIRE_FALSE(loader_called);
     REQUIRE(result.shader_defines == std::vector<std::string>{"PELICAN_BASE_DEFINE"});
+    REQUIRE(result.feature_names.empty());
     REQUIRE(result.config == config);
 }
 
@@ -148,6 +149,7 @@ TEST_CASE("render feature fixtures compose and reject expected cases", "[render-
 
                 REQUIRE(result.used_features);
                 REQUIRE_FALSE(result.config.contains("features"));
+                REQUIRE(result.feature_names == std::vector<std::string>{"dummy_feature"});
                 REQUIRE(passNames(result.config) ==
                         entry.at("expected_pass_order").get<std::vector<std::string>>());
                 REQUIRE(result.shader_defines ==
@@ -172,6 +174,35 @@ TEST_CASE("render feature fixtures compose and reject expected cases", "[render-
             }
         }
     }
+}
+
+TEST_CASE("passless render feature records its feature name", "[render-feature]") {
+    const auto config = nlohmann::json::parse(R"json({
+  "features": ["engine://features/gpu_timing.json"],
+  "render_targets": [],
+  "rendering_passes": [
+    {"name": "main", "passes": []}
+  ]
+})json");
+
+    const auto result = composeRenderFeatureConfig(
+        config,
+        RenderFeatureComposeDependencies{
+            [](std::string_view ref) {
+                REQUIRE(std::string{ref} == "engine://features/gpu_timing.json");
+                return std::string{R"json({
+  "schema": "pelican.render_feature",
+  "version": 1,
+  "name": "gpu_timing"
+})json"};
+            },
+            true,
+        });
+
+    REQUIRE(result.used_features);
+    REQUIRE(result.feature_names == std::vector<std::string>{"gpu_timing"});
+    REQUIRE_FALSE(result.config.contains("features"));
+    REQUIRE(result.config.at("rendering_passes").at(0).at("passes").empty());
 }
 
 TEST_CASE("render features require the runtime shader compiler", "[render-feature]") {

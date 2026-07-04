@@ -1,4 +1,5 @@
 target_sources(pelican_core PRIVATE
+    debugdrawpassinfojsonparser.cpp
     frameplanner.cpp
     fullscreenpassinfojsonparser.cpp
     featurecompose.cpp

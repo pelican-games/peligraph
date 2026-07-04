@@ -1,4 +1,5 @@
 #include "renderingpasscontainer.hpp"
+#include <algorithm>
 #include <utility>
 
 namespace Pelican {
@@ -32,6 +33,19 @@ const CompiledRenderingPass &RenderingPassContainer::getCompiledRenderingPass(Re
 
 const std::vector<RenderingPassId> &RenderingPassContainer::getRegisteredPassIds() const {
     return registered_pass_ids;
+}
+
+void RenderingPassContainer::setEnabledFeatures(std::vector<std::string> feature_names) {
+    enabled_feature_names = std::move(feature_names);
+}
+
+bool RenderingPassContainer::isFeatureEnabled(std::string_view feature_name) const {
+    return std::find(enabled_feature_names.begin(), enabled_feature_names.end(), feature_name) !=
+           enabled_feature_names.end();
+}
+
+const std::vector<std::string> &RenderingPassContainer::getEnabledFeatures() const {
+    return enabled_feature_names;
 }
 
 } // namespace Pelican

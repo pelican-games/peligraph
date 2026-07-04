@@ -67,9 +67,14 @@ struct FullscreenPassInfo {
     bool uses_light_data = false;
 };
 
+struct DebugDrawPassInfo {
+    ShaderReference vert_shader = ShaderReference{"", ShaderStage::vertex, ShaderReferenceKind::explicit_file, false};
+    ShaderReference frag_shader = ShaderReference{"", ShaderStage::fragment, ShaderReferenceKind::explicit_file, false};
+};
+
 struct UiPassInfo {};
 
-using PassInfo = std::variant<MaterialPassInfo, FullscreenPassInfo, UiPassInfo>;
+using PassInfo = std::variant<MaterialPassInfo, FullscreenPassInfo, DebugDrawPassInfo, UiPassInfo>;
 
 struct PassDefinition {
     PassDefinition() : output_depth{noRenderTargetId()} {}
@@ -88,12 +93,15 @@ struct PassDefinition {
 
     bool isMaterial() const { return std::holds_alternative<MaterialPassInfo>(pass_info); }
     bool isFullscreen() const { return std::holds_alternative<FullscreenPassInfo>(pass_info); }
+    bool isDebugDraw() const { return std::holds_alternative<DebugDrawPassInfo>(pass_info); }
     bool isUi() const { return std::holds_alternative<UiPassInfo>(pass_info); }
 
     MaterialPassInfo &materialInfo() { return std::get<MaterialPassInfo>(pass_info); }
     const MaterialPassInfo &materialInfo() const { return std::get<MaterialPassInfo>(pass_info); }
     FullscreenPassInfo &fullscreenInfo() { return std::get<FullscreenPassInfo>(pass_info); }
     const FullscreenPassInfo &fullscreenInfo() const { return std::get<FullscreenPassInfo>(pass_info); }
+    DebugDrawPassInfo &debugDrawInfo() { return std::get<DebugDrawPassInfo>(pass_info); }
+    const DebugDrawPassInfo &debugDrawInfo() const { return std::get<DebugDrawPassInfo>(pass_info); }
 };
 
 struct RenderingPassDefinition {

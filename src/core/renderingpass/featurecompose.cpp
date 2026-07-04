@@ -61,7 +61,7 @@ void appendUnique(std::vector<std::string> &values, const std::vector<std::strin
     }
 }
 
-void validateFeatureEnvelope(const nlohmann::json &feature, std::string_view ref) {
+std::string validateFeatureEnvelope(const nlohmann::json &feature, std::string_view ref) {
     if (!feature.is_object()) {
         throw std::runtime_error("render feature must be an object: " + std::string{ref});
     }
@@ -74,7 +74,7 @@ void validateFeatureEnvelope(const nlohmann::json &feature, std::string_view ref
     if (feature.at("version").get<int>() != supported_feature_version) {
         throw std::runtime_error("render feature version is not supported: " + std::string{ref});
     }
-    (void)requireStringField(feature, "name", "render feature");
+    return requireStringField(feature, "name", "render feature");
 }
 
 nlohmann::json loadFeatureJson(std::string_view ref,
@@ -349,7 +349,7 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     std::vector<std::string> shader_defines;
     appendShaderDefines(shader_defines, config, "rendering config");
     if (feature_refs.empty()) {
-        return RenderFeatureComposeResult{config, std::move(shader_defines), false};
+        return RenderFeatureComposeResult{config, std::move(shader_defines), {}, false};
     }
     if (!dependencies.runtime_shader_compiler_enabled) {
         throw std::runtime_error(std::string{runtime_compiler_required_message});
@@ -360,10 +360,11 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
 
     auto target_names = collectRenderTargetNames(composed);
     auto pass_names = collectPassNames(composed);
+    std::vector<std::string> feature_names;
 
     for (const auto &feature_ref : feature_refs) {
         auto feature = loadFeatureJson(feature_ref, dependencies);
-        validateFeatureEnvelope(feature, feature_ref);
+        appendUnique(feature_names, validateFeatureEnvelope(feature, feature_ref));
         addRenderTargets(composed, feature, target_names);
         applyRenderTargetOverrides(composed, feature);
         addFeaturePasses(composed, feature, pass_names);
@@ -373,7 +374,8 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     if (!shader_defines.empty()) {
         composed["shader_defines"] = shader_defines;
     }
-    return RenderFeatureComposeResult{std::move(composed), std::move(shader_defines), true};
+    return RenderFeatureComposeResult{std::move(composed), std::move(shader_defines),
+                                      std::move(feature_names), true};
 }
 
 } // namespace Pelican

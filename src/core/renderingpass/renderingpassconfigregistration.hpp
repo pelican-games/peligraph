@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -7,6 +8,7 @@
 
 namespace Pelican {
 
+class DebugDraw;
 class FullscreenPassContainer;
 class PathResolver;
 class RenderingPassContainer;
@@ -25,6 +27,7 @@ struct RenderingPassConfigRuntimeDependencies {
     const PathResolver &path_resolver;
     std::vector<std::string> shader_defines;
     bool warn_backend_specific_shader_refs = false;
+    std::function<DebugDraw &()> debug_draw_provider;
 };
 
 struct RenderingPassConfigRegistrationDependencies {

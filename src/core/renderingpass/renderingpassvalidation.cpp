@@ -149,12 +149,12 @@ void validatePassOutputs(const PassDefinition &pass_def) {
         }
     }
 
-    if (pass_def.isUi()) {
+    if (pass_def.isDebugDraw() || pass_def.isUi()) {
         if (pass_def.output_color.size() != 1) {
-            throw std::runtime_error("UI pass requires exactly one color output: " + pass_def.name);
+            throw std::runtime_error("Single-color pass requires exactly one color output: " + pass_def.name);
         }
         if (isConcreteRenderTarget(pass_def.output_depth)) {
-            throw std::runtime_error("UI pass does not support depth output: " + pass_def.name);
+            throw std::runtime_error("Single-color pass does not support depth output: " + pass_def.name);
         }
     }
 }
@@ -170,16 +170,19 @@ void validatePassSpecificFields(const PassDefinition &pass_def, const nlohmann::
             pass_def.name);
     }
 
+    if (!pass_def.isFullscreen() && !pass_def.isDebugDraw() && pass_json.contains("shader")) {
+        throw std::runtime_error("Only fullscreen and debug_draw passes support shader: " + pass_def.name);
+    }
+
     if (pass_def.isFullscreen()) {
         return;
     }
 
-    static constexpr std::array fullscreen_fields{
-        "shader",
+    static constexpr std::array fullscreen_only_fields{
         "push_constants",
         "uses_light_data",
     };
-    for (const char *field : fullscreen_fields) {
+    for (const char *field : fullscreen_only_fields) {
         if (pass_json.contains(field)) {
             throw std::runtime_error("Only fullscreen passes support " + std::string{field} + ": " + pass_def.name);
         }

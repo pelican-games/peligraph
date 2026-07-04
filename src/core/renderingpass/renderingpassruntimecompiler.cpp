@@ -5,6 +5,7 @@
 #include "../loader/pathresolver.hpp"
 #include "../log.hpp"
 #include "../profiler.hpp"
+#include "../renderer/debugdraw.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include "../vkcore/rendertarget.hpp"
 #include <limits>
@@ -25,6 +26,16 @@ struct FullscreenRuntimeDependencies {
     bool warn_backend_specific_shader_refs = false;
 };
 
+struct DebugDrawRuntimeDependencies {
+    RenderTarget &render_target;
+    const RenderTargetMetadataResolver &render_target_metadata;
+    ShaderLibrary &shader_library;
+    DebugDraw &debug_draw;
+    const PathResolver &path_resolver;
+    std::vector<std::string> shader_defines;
+    bool warn_backend_specific_shader_refs = false;
+};
+
 struct FullscreenShaderModules {
     ShaderBundleId vert_shader;
     ShaderBundleId frag_shader;
@@ -33,7 +44,7 @@ struct FullscreenShaderModules {
 vk::Format resolveFirstColorFormat(const PassDefinition &pass_def, RenderTarget &rt_module,
                                    const RenderTargetMetadataResolver &rt_metadata) {
     if (pass_def.output_color.empty()) {
-        throw std::runtime_error("Fullscreen pass has no color output: " + pass_def.name);
+        throw std::runtime_error("Render pass has no color output: " + pass_def.name);
     }
 
     const auto &first_color = pass_def.output_color.front();
@@ -74,6 +85,28 @@ FullscreenRuntimeDependencies requireFullscreenDependencies(
         *dependencies.render_target_views,
         *dependencies.shader_library,
         *dependencies.fullscreen_pass_container,
+        *dependencies.path_resolver,
+        dependencies.shader_defines,
+        dependencies.warn_backend_specific_shader_refs,
+    };
+}
+
+DebugDrawRuntimeDependencies requireDebugDrawDependencies(
+    const PassDefinition &pass_def,
+    const RenderingPassRuntimeDependencies &dependencies) {
+    if (dependencies.render_target == nullptr || dependencies.render_target_metadata == nullptr ||
+        dependencies.shader_library == nullptr || dependencies.path_resolver == nullptr ||
+        !dependencies.debug_draw_provider) {
+        throw std::runtime_error(
+            "DebugDraw pass runtime compile requires render target, render target metadata, "
+            "shader library, path resolver, and debug draw dependencies: " +
+            pass_def.name);
+    }
+    return DebugDrawRuntimeDependencies{
+        *dependencies.render_target,
+        *dependencies.render_target_metadata,
+        *dependencies.shader_library,
+        dependencies.debug_draw_provider(),
         *dependencies.path_resolver,
         dependencies.shader_defines,
         dependencies.warn_backend_specific_shader_refs,
@@ -129,6 +162,22 @@ PassId compileFullscreenPass(const PassDefinition &pass_def, FullscreenRuntimeDe
     return pass_id;
 }
 
+PassId compileDebugDrawPass(const PassDefinition &pass_def, DebugDrawRuntimeDependencies dependencies) {
+    const auto color_format =
+        resolveFirstColorFormat(pass_def, dependencies.render_target, dependencies.render_target_metadata);
+    const auto &debug_info = pass_def.debugDrawInfo();
+    const auto vert_shader = registerShaderReference(dependencies.shader_library, dependencies.path_resolver,
+                                                     debug_info.vert_shader,
+                                                     dependencies.warn_backend_specific_shader_refs,
+                                                     dependencies.shader_defines);
+    const auto frag_shader = registerShaderReference(dependencies.shader_library, dependencies.path_resolver,
+                                                     debug_info.frag_shader,
+                                                     dependencies.warn_backend_specific_shader_refs,
+                                                     dependencies.shader_defines);
+    return dependencies.debug_draw.registerPass(color_format, vert_shader, frag_shader,
+                                                dependencies.shader_defines);
+}
+
 } // namespace
 
 CompiledRenderingPass compileRenderingPassRuntime(const RenderingPassDefinition &definition,
@@ -145,6 +194,10 @@ CompiledRenderingPass compileRenderingPassRuntime(const RenderingPassDefinition 
             const auto fullscreen_dependencies = requireFullscreenDependencies(pass_def, dependencies);
             compiled_pass.passes.push_back(
                 CompiledPass{pass_def, compileFullscreenPass(pass_def, fullscreen_dependencies)});
+        } else if (pass_def.isDebugDraw()) {
+            const auto debug_draw_dependencies = requireDebugDrawDependencies(pass_def, dependencies);
+            compiled_pass.passes.push_back(
+                CompiledPass{pass_def, compileDebugDrawPass(pass_def, debug_draw_dependencies)});
         } else {
             compiled_pass.passes.push_back(CompiledPass{pass_def, passIndexToPassId(i)});
         }

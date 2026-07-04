@@ -5,6 +5,7 @@
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/playback/vatplayer.hpp"
+#include "../src/core/renderer/debugdraw.hpp"
 #include "../src/core/shader/pipelinefactory.hpp"
 #include "../src/core/shader/shadercompiler.hpp"
 #include "../src/core/shader/shaderlibrary.hpp"
@@ -478,6 +479,49 @@ void main() {
 })json");
 }
 
+void writeDebugDrawProject(const std::filesystem::path &root) {
+    writeTextFile(root / "project.json", makeFeatureProjectJson().dump(2));
+    writeTextFile(root / "scene.json", R"json({
+  "schema": "pelican.scene",
+  "version": 1,
+  "scenes": {
+    "default_scene": {
+      "objects": []
+    }
+  }
+})json");
+    writeTextFile(root / "assets.json", R"json({"models":[]})json");
+    writeTextFile(root / "ui" / "ui.json", R"json({"images":[]})json");
+    writeTextFile(root / "shaders" / "fullscreen.vert", stemFullscreenVertexShader());
+    writeTextFile(root / "shaders" / "present.frag", R"glsl(
+#version 450
+layout(location = 0) out vec4 outColor;
+void main() {
+    outColor = vec4(0.02, 0.02, 0.04, 1.0);
+}
+)glsl");
+    writeTextFile(root / "passes" / "main.json", R"json({
+  "features": ["engine://features/debug_draw.json"],
+  "render_targets": [],
+  "rendering_passes": [
+    {
+      "name": "main",
+      "passes": [
+        {
+          "name": "present",
+          "type": "fullscreen",
+          "output": {"color": "swapchain", "depth": null},
+          "shader": {
+            "vertex": "shaders/fullscreen",
+            "fragment": "shaders/present"
+          }
+        }
+      ]
+    }
+  ]
+})json");
+}
+
 void renderStemFullscreenFrame(RenderTarget &render_target) {
     GET_MODULE(Renderer).render();
     GET_MODULE(VulkanManageCore).waitIdle();
@@ -517,6 +561,18 @@ void renderFeatureFrame(RenderTarget &render_target) {
     (void)render_target;
 }
 
+void renderDebugDrawFrame(RenderTarget &render_target) {
+    auto &renderer = GET_MODULE(Renderer);
+    auto &debug_draw = GET_MODULE(DebugDraw);
+    debug_draw.line({-0.8125f, 0.0625f, 0.0f}, {0.8125f, 0.0625f, 0.0f},
+                    {1.0f, 0.05f, 0.02f, 1.0f});
+    debug_draw.line({0.0625f, -0.8125f, 0.0f}, {0.0625f, 0.8125f, 0.0f},
+                    {0.10f, 0.95f, 0.25f, 1.0f});
+    renderer.render();
+    GET_MODULE(VulkanManageCore).waitIdle();
+    (void)render_target;
+}
+
 RenderedCase renderCase(const GoldenCase &golden_case) {
     FastModuleContainer modules;
     const auto temp_dir = makeTempProjectDir(golden_case.name);
@@ -530,6 +586,10 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         GET_MODULE(ProjectSource).setProjectData(makeVatProjectJson().dump());
     } else if (golden_case.mode == "feature_compose") {
         writeFeatureProject(temp_dir);
+        GET_MODULE(PathResolver).setup(temp_dir, false);
+        GET_MODULE(ProjectSource).setProjectData(makeFeatureProjectJson().dump());
+    } else if (golden_case.mode == "debug_draw_feature") {
+        writeDebugDrawProject(temp_dir);
         GET_MODULE(PathResolver).setup(temp_dir, false);
         GET_MODULE(ProjectSource).setProjectData(makeFeatureProjectJson().dump());
     } else {
@@ -559,6 +619,8 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         renderVatPlaybackFrame(render_target, temp_dir);
     } else if (golden_case.mode == "feature_compose") {
         renderFeatureFrame(render_target);
+    } else if (golden_case.mode == "debug_draw_feature") {
+        renderDebugDrawFrame(render_target);
     } else {
         throw std::runtime_error("unknown golden case mode: " + golden_case.mode);
     }
@@ -616,7 +678,7 @@ void writeFailureMetadata(const std::filesystem::path &path, const GoldenCase &g
 TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     setupLogger();
     const auto cases = discoverGoldenCases();
-    REQUIRE(cases.size() == 6);
+    REQUIRE(cases.size() == 7);
 
     for (const auto &golden_case : cases) {
         DYNAMIC_SECTION(golden_case.name) {

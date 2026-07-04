@@ -10,7 +10,7 @@ namespace Pelican {
 
 namespace {
 
-constexpr std::array<std::string_view, 23> registered_ids{
+constexpr std::array<std::string_view, 27> registered_ids{
     "bloom_blur_h.frag.spv",
     "bloom_blur_v.frag.spv",
     "bloom_composite.frag.spv",
@@ -19,6 +19,10 @@ constexpr std::array<std::string_view, 23> registered_ids{
     "default_config.json",
     "default.frag.spv",
     "default.vert.spv",
+    "debug_draw.frag.spv",
+    "debug_draw.vert.spv",
+    "features/debug_draw.json",
+    "features/gpu_timing.json",
     "fullscreen.frag.spv",
     "fullscreen.vert.spv",
     "shader_lab_base_lit.frag.spv",
@@ -57,6 +61,16 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     }
     PELICAN_ENGINE_RESOURCE("default.frag.spv")
     PELICAN_ENGINE_RESOURCE("default.vert.spv")
+    PELICAN_ENGINE_RESOURCE("debug_draw.frag.spv")
+    PELICAN_ENGINE_RESOURCE("debug_draw.vert.spv")
+    if (id == "features/debug_draw.json") {
+        static const std::string feature = b::embed<"features/debug_draw.json">().str();
+        return std::string_view{feature};
+    }
+    if (id == "features/gpu_timing.json") {
+        static const std::string feature = b::embed<"features/gpu_timing.json">().str();
+        return std::string_view{feature};
+    }
     PELICAN_ENGINE_RESOURCE("fullscreen.frag.spv")
     PELICAN_ENGINE_RESOURCE("fullscreen.vert.spv")
     PELICAN_ENGINE_RESOURCE("shader_lab_base_lit.frag.spv")

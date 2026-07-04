@@ -4,6 +4,7 @@
 #include "../loader/pathresolver.hpp"
 #include "../log.hpp"
 #include "../profiler.hpp"
+#include "../renderer/debugdraw.hpp"
 #include "../renderingpass/renderingpassconfigregistration.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
@@ -60,6 +61,7 @@ void registerConfiguredRenderingPasses(const ProjectBasicConfig &config) {
                     path_resolver,
                     {},
                     config.usesProjectSource(),
+                    []() -> DebugDraw & { return GET_MODULE(DebugDraw); },
                 },
                 pass_container,
             });

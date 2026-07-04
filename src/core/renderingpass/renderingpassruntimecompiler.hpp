@@ -1,11 +1,13 @@
 #pragma once
 
 #include "renderingpass.hpp"
+#include <functional>
 #include <string>
 #include <vector>
 
 namespace Pelican {
 
+class DebugDraw;
 class FullscreenPassContainer;
 class PathResolver;
 class RenderTarget;
@@ -22,6 +24,7 @@ struct RenderingPassRuntimeDependencies {
     const PathResolver *path_resolver = nullptr;
     std::vector<std::string> shader_defines;
     bool warn_backend_specific_shader_refs = false;
+    std::function<DebugDraw &()> debug_draw_provider;
 };
 
 CompiledRenderingPass compileRenderingPassRuntime(const RenderingPassDefinition &definition,

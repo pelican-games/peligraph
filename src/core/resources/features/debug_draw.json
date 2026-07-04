@@ -1,0 +1,20 @@
+{
+  "schema": "pelican.render_feature",
+  "version": 1,
+  "name": "debug_draw",
+  "passes": [
+    {
+      "insert": "end",
+      "pass": {
+        "name": "debug_draw",
+        "type": "debug_draw",
+        "output": {"color": "swapchain", "depth": null},
+        "color_load_op": "load",
+        "shader": {
+          "vertex": "engine://debug_draw",
+          "fragment": "engine://debug_draw"
+        }
+      }
+    }
+  ]
+}

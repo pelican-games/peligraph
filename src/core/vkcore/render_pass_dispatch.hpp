@@ -8,6 +8,7 @@
 namespace Pelican {
 
 class Camera;
+class DebugDraw;
 struct FullscreenPassRendererDependencies;
 class FullscreenPassRenderer;
 struct MaterialRendererDependencies;
@@ -22,6 +23,7 @@ struct RenderPassDispatchDependencies {
     const FullscreenPassRendererDependencies &fullscreen_pass_renderer_dependencies;
     UiRenderer &ui_renderer;
     const UiRendererDependencies &ui_renderer_dependencies;
+    DebugDraw *debug_draw = nullptr;
     const Camera &camera;
     vk::Format swapchain_color_format;
 };

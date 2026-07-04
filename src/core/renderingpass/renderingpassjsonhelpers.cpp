@@ -55,6 +55,9 @@ PassInfo makePassInfo(const std::string &type_str) {
     if (type_str == "fullscreen") {
         return FullscreenPassInfo{};
     }
+    if (type_str == "debug_draw") {
+        return DebugDrawPassInfo{};
+    }
     if (type_str == "ui") {
         return UiPassInfo{};
     }

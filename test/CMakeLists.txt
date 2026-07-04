@@ -166,3 +166,14 @@ if(PELICAN_RUNTIME_SHADER_COMPILER)
         pelican_copy_shaderc_runtime(pelican_test_shader_defines_test)
     endif()
 endif()
+
+pelican_define_test(debugdraw_test pelican_core glm VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+
+add_test(
+    NAME gpu_timing_headless_player
+    COMMAND ${CMAKE_COMMAND}
+        -DPLAYER=$<TARGET_FILE:pelican_player>
+        -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/gpu_timing_headless
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_gpu_timing_headless.cmake
+)
