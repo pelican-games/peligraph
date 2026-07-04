@@ -21,6 +21,7 @@ struct FullscreenRuntimeDependencies {
     ShaderLibrary &shader_library;
     FullscreenPassContainer &fullscreen_pass_container;
     const PathResolver &path_resolver;
+    std::vector<std::string> shader_defines;
     bool warn_backend_specific_shader_refs = false;
 };
 
@@ -74,6 +75,7 @@ FullscreenRuntimeDependencies requireFullscreenDependencies(
         *dependencies.shader_library,
         *dependencies.fullscreen_pass_container,
         *dependencies.path_resolver,
+        dependencies.shader_defines,
         dependencies.warn_backend_specific_shader_refs,
     };
 }
@@ -87,9 +89,10 @@ void warnBackendSpecificShaderReference(const ShaderReference &reference, bool e
 }
 
 ShaderBundleId registerShaderReference(ShaderLibrary &shader_library, const PathResolver &path_resolver,
-                                       const ShaderReference &reference, bool warn_backend_specific) {
+                                       const ShaderReference &reference, bool warn_backend_specific,
+                                       const std::vector<std::string> &shader_defines) {
     warnBackendSpecificShaderReference(reference, warn_backend_specific);
-    return shader_library.loadFromReference(reference, path_resolver, warn_backend_specific);
+    return shader_library.loadFromReference(reference, path_resolver, warn_backend_specific, shader_defines);
 }
 
 FullscreenShaderModules registerFullscreenShaders(const FullscreenPassInfo &fullscreen_info,
@@ -97,10 +100,12 @@ FullscreenShaderModules registerFullscreenShaders(const FullscreenPassInfo &full
     return FullscreenShaderModules{
         registerShaderReference(dependencies.shader_library, dependencies.path_resolver,
                                 fullscreen_info.vert_shader,
-                                dependencies.warn_backend_specific_shader_refs),
+                                dependencies.warn_backend_specific_shader_refs,
+                                dependencies.shader_defines),
         registerShaderReference(dependencies.shader_library, dependencies.path_resolver,
                                 fullscreen_info.frag_shader,
-                                dependencies.warn_backend_specific_shader_refs),
+                                dependencies.warn_backend_specific_shader_refs,
+                                dependencies.shader_defines),
     };
 }
 
@@ -109,7 +114,7 @@ PassId registerFullscreenPipeline(const PassDefinition &pass_def, FullscreenRunt
         resolveFirstColorFormat(pass_def, dependencies.render_target, dependencies.render_target_metadata);
     const auto shaders = registerFullscreenShaders(pass_def.fullscreenInfo(), dependencies);
     const auto pipeline_id = dependencies.fullscreen_pass_container.registerFullscreenPass(
-        color_format, shaders.vert_shader, shaders.frag_shader);
+        color_format, shaders.vert_shader, shaders.frag_shader, dependencies.shader_defines);
     return fullscreenPipelineValueToPassId(pipeline_id.value);
 }
 

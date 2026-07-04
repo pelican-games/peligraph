@@ -165,6 +165,29 @@ nlohmann::json makeVatProjectJson() {
     };
 }
 
+nlohmann::json makeFeatureProjectJson() {
+    return nlohmann::json{
+        {"schema", "pelican.project"},
+        {"version", 1},
+        {"name", "feature golden"},
+        {"engine_min_version", "0.1.0"},
+        {"basic_config",
+         {
+             {"window_title", "Feature Golden"},
+             {"window_size", {{"width", goldenWidth}, {"height", goldenHeight}}},
+             {"fullscreen", false},
+             {"framerate", 60},
+             {"camera", {{"fov_y", 45.0}, {"near", 0.1}, {"far", 100.0}, {"up", {0, 1, 0}}}},
+             {"default_scene_id", "default_scene"},
+             {"scene_data_json", "scene.json"},
+             {"asset_data_json", "assets.json"},
+             {"rendering_config_json", "passes/main.json"},
+             {"ui_config_json", "ui/ui.json"},
+             {"default_rendering_pass", "main"},
+         }},
+    };
+}
+
 RgbaImage loadPng(const std::filesystem::path &path) {
     int width = 0;
     int height = 0;
@@ -382,6 +405,79 @@ void writeVatProject(const std::filesystem::path &root) {
                                std::filesystem::copy_options::overwrite_existing);
 }
 
+void writeFeatureProject(const std::filesystem::path &root) {
+    writeTextFile(root / "project.json", makeFeatureProjectJson().dump(2));
+    writeTextFile(root / "scene.json", R"json({
+  "schema": "pelican.scene",
+  "version": 1,
+  "scenes": {
+    "default_scene": {
+      "objects": []
+    }
+  }
+})json");
+    writeTextFile(root / "assets.json", R"json({"models":[]})json");
+    writeTextFile(root / "ui" / "ui.json", R"json({"images":[]})json");
+    writeTextFile(root / "shaders" / "fullscreen.vert", stemFullscreenVertexShader());
+    writeTextFile(root / "shaders" / "present.frag", R"glsl(
+#version 450
+layout(location = 0) out vec4 outColor;
+void main() {
+    outColor = vec4(0.02, 0.02, 0.04, 1.0);
+}
+)glsl");
+    writeTextFile(root / "shaders" / "feature.frag", R"glsl(
+#version 450
+#ifndef PELICAN_FEATURE_DUMMY
+#error PELICAN_FEATURE_DUMMY must be defined
+#endif
+layout(location = 0) out vec4 outColor;
+void main() {
+    outColor = vec4(0.15, 0.70, 0.95, 1.0);
+}
+)glsl");
+    writeTextFile(root / "features" / "dummy.json", R"json({
+  "schema": "pelican.render_feature",
+  "version": 1,
+  "name": "dummy_feature",
+  "passes": [
+    {
+      "insert": "after:present",
+      "pass": {
+        "name": "feature_present",
+        "type": "fullscreen",
+        "output": {"color": "swapchain", "depth": null},
+        "shader": {
+          "vertex": "shaders/fullscreen",
+          "fragment": "shaders/feature"
+        }
+      }
+    }
+  ],
+  "shader_defines": ["PELICAN_FEATURE_DUMMY"]
+})json");
+    writeTextFile(root / "passes" / "main.json", R"json({
+  "features": ["features/dummy.json"],
+  "render_targets": [],
+  "rendering_passes": [
+    {
+      "name": "main",
+      "passes": [
+        {
+          "name": "present",
+          "type": "fullscreen",
+          "output": {"color": "swapchain", "depth": null},
+          "shader": {
+            "vertex": "shaders/fullscreen",
+            "fragment": "shaders/present"
+          }
+        }
+      ]
+    }
+  ]
+})json");
+}
+
 void renderStemFullscreenFrame(RenderTarget &render_target) {
     GET_MODULE(Renderer).render();
     GET_MODULE(VulkanManageCore).waitIdle();
@@ -415,6 +511,12 @@ void renderVatPlaybackFrame(RenderTarget &render_target, const std::filesystem::
     (void)render_target;
 }
 
+void renderFeatureFrame(RenderTarget &render_target) {
+    GET_MODULE(Renderer).render();
+    GET_MODULE(VulkanManageCore).waitIdle();
+    (void)render_target;
+}
+
 RenderedCase renderCase(const GoldenCase &golden_case) {
     FastModuleContainer modules;
     const auto temp_dir = makeTempProjectDir(golden_case.name);
@@ -426,6 +528,10 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         writeVatProject(temp_dir);
         GET_MODULE(PathResolver).setup(temp_dir, false);
         GET_MODULE(ProjectSource).setProjectData(makeVatProjectJson().dump());
+    } else if (golden_case.mode == "feature_compose") {
+        writeFeatureProject(temp_dir);
+        GET_MODULE(PathResolver).setup(temp_dir, false);
+        GET_MODULE(ProjectSource).setProjectData(makeFeatureProjectJson().dump());
     } else {
         const auto scene_path = temp_dir / "scene.json";
         const auto asset_path = temp_dir / "assets.json";
@@ -451,6 +557,8 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         renderFullscreenFrame(render_target, triangleMaskFragmentShader());
     } else if (golden_case.mode == "vat_playback") {
         renderVatPlaybackFrame(render_target, temp_dir);
+    } else if (golden_case.mode == "feature_compose") {
+        renderFeatureFrame(render_target);
     } else {
         throw std::runtime_error("unknown golden case mode: " + golden_case.mode);
     }
@@ -508,7 +616,7 @@ void writeFailureMetadata(const std::filesystem::path &path, const GoldenCase &g
 TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     setupLogger();
     const auto cases = discoverGoldenCases();
-    REQUIRE(cases.size() == 5);
+    REQUIRE(cases.size() == 6);
 
     for (const auto &golden_case : cases) {
         DYNAMIC_SECTION(golden_case.name) {

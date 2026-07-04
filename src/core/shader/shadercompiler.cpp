@@ -127,11 +127,15 @@ class FileIncluder final : public shaderc::CompileOptions::IncluderInterface {
 
 ShaderCompileResult compileGlsl(std::string_view source, vk::ShaderStageFlagBits stage, std::string_view name,
                                 std::string_view entry_point,
-                                const std::vector<std::filesystem::path> &include_dirs) {
+                                const std::vector<std::filesystem::path> &include_dirs,
+                                const std::vector<std::string> &defines) {
     shaderc::Compiler compiler;
     shaderc::CompileOptions options;
     options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_2);
     options.SetIncluder(std::make_unique<FileIncluder>(include_dirs));
+    for (const auto &define : defines) {
+        options.AddMacroDefinition(define);
+    }
 
     const std::string source_text{source};
     const std::string source_name{name};
@@ -189,7 +193,8 @@ ShaderCompileResult ShaderCompiler::compileFile(const std::filesystem::path &pat
         compile_include_dirs.insert(compile_include_dirs.begin(), source_dir / "shaders" / "include");
         compile_include_dirs.insert(compile_include_dirs.begin(), source_dir);
     }
-    return compileGlsl(readTextFile(path), stage, normalizedPath(path).string(), opts.entry_point, compile_include_dirs);
+    return compileGlsl(readTextFile(path), stage, normalizedPath(path).string(), opts.entry_point,
+                       compile_include_dirs, opts.defines);
 #else
     (void)path;
     return {{}, "Runtime shader compiler is disabled", false};
@@ -197,13 +202,14 @@ ShaderCompileResult ShaderCompiler::compileFile(const std::filesystem::path &pat
 }
 
 ShaderCompileResult ShaderCompiler::compileSource(std::string_view source, vk::ShaderStageFlagBits stage,
-                                                  std::string_view name) {
+                                                  std::string_view name, const ShaderCompileOptions &opts) {
 #if PELICAN_RUNTIME_SHADER_COMPILER
-    return compileGlsl(source, stage, name, "main", include_dirs);
+    return compileGlsl(source, stage, name, opts.entry_point, include_dirs, opts.defines);
 #else
     (void)source;
     (void)stage;
     (void)name;
+    (void)opts;
     return {{}, "Runtime shader compiler is disabled", false};
 #endif
 }

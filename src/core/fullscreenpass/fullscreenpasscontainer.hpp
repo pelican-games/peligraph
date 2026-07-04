@@ -33,7 +33,8 @@ DECLARE_MODULE(FullscreenPassContainer) {
     FullscreenPassContainer();
     ~FullscreenPassContainer();
 
-    PipelineId registerFullscreenPass(vk::Format colorFormat, ShaderBundleId vertShader, ShaderBundleId fragShader);
+    PipelineId registerFullscreenPass(vk::Format colorFormat, ShaderBundleId vertShader, ShaderBundleId fragShader,
+                                      std::vector<std::string> shader_defines = {});
     void bindResource(vk::CommandBuffer cmd_buf, PassId pass_id);
     void setInputTextures(PassId pass_id, const std::vector<GlobalRenderTargetId> &input_rts,
                           const RenderTargetImageViewResolver &rt_views);

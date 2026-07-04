@@ -23,6 +23,7 @@ struct ShaderBundle {
     vk::UniqueShaderModule module;
     ShaderReflection reflection;
     std::filesystem::path source_path;
+    std::vector<std::string> defines;
     uint64_t version = 1;
     std::string log;
 };
@@ -40,23 +41,27 @@ DECLARE_MODULE(ShaderLibrary) {
     std::chrono::steady_clock::time_point next_source_poll_time{};
     ShaderLibraryModuleMode module_mode = ShaderLibraryModuleMode::create_modules;
 
-    ShaderBundle buildFromFile(const std::filesystem::path &path, uint64_t version) const;
+    ShaderBundle buildFromFile(const std::filesystem::path &path, uint64_t version,
+                               std::vector<std::string> defines = {}) const;
     ShaderBundle buildFromSpirv(std::span<const uint32_t> spirv, std::filesystem::path source_path,
-                                uint64_t version, std::string log) const;
+                                uint64_t version, std::string log, std::vector<std::string> defines = {}) const;
     ShaderBundle buildFromEngineSource(std::string_view source, ShaderStage stage,
-                                       std::string_view name, uint64_t version) const;
+                                       std::string_view name, uint64_t version,
+                                       std::vector<std::string> defines = {}) const;
     vk::UniqueShaderModule createShaderModule(std::span<const uint32_t> spirv) const;
     ShaderBundleId loadResolvedReference(const ResolvedRef &resolved, const ShaderReference &reference,
-                                         std::string_view display_name);
-    ShaderBundleId loadFromStemReference(const ShaderReference &reference, const PathResolver &resolver);
+                                         std::string_view display_name,
+                                         const std::vector<std::string> &defines);
+    ShaderBundleId loadFromStemReference(const ShaderReference &reference, const PathResolver &resolver,
+                                         const std::vector<std::string> &defines = {});
     void markDirty(ShaderBundleId id);
 
   public:
     explicit ShaderLibrary(ShaderLibraryModuleMode mode = ShaderLibraryModuleMode::create_modules);
 
-    ShaderBundleId loadFromFile(const std::filesystem::path &path);
+    ShaderBundleId loadFromFile(const std::filesystem::path &path, std::vector<std::string> defines = {});
     ShaderBundleId loadFromReference(const ShaderReference &reference, const PathResolver &resolver,
-                                     bool project_context);
+                                     bool project_context, std::vector<std::string> defines = {});
     ShaderBundleId loadFromBytes(size_t len, const char *data, std::string_view name);
     ShaderBundleId loadFromSpirv(std::span<const uint32_t> spirv, std::string_view name);
     const ShaderBundle &get(ShaderBundleId id) const;

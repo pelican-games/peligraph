@@ -149,3 +149,19 @@ pelican_define_test(frameplanner_test pelican_core)
 target_compile_definitions(pelican_test_frameplanner_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
+
+pelican_define_test(featurecompose_test pelican_core)
+target_compile_definitions(pelican_test_featurecompose_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
+pelican_define_test(shader_defines_test pelican_core)
+target_compile_definitions(pelican_test_shader_defines_test PRIVATE
+    PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
+)
+if(PELICAN_RUNTIME_SHADER_COMPILER)
+    target_link_libraries(pelican_test_shader_defines_test PRIVATE pelican_shaderc)
+    if(COMMAND pelican_copy_shaderc_runtime)
+        pelican_copy_shaderc_runtime(pelican_test_shader_defines_test)
+    endif()
+endif()

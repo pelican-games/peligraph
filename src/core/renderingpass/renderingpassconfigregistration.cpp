@@ -1,4 +1,5 @@
 #include "renderingpassconfigregistration.hpp"
+#include "featurecompose.hpp"
 #include "renderingpassconfigjsonparser.hpp"
 #include "renderingpassconfigloader.hpp"
 #include "renderingpasscontainer.hpp"
@@ -8,6 +9,7 @@
 #include "rendertargetjsonparser.hpp"
 #include "rendertargetmetadataresolver.hpp"
 #include "rendertargetnameresolver.hpp"
+#include "../loader/pathresolver.hpp"
 #include <string_view>
 #include <utility>
 
@@ -26,13 +28,35 @@ RenderingPassRuntimeDependencies toRuntimeDependencies(
         &dependencies.shader_library,
         &dependencies.fullscreen_pass_container,
         &dependencies.path_resolver,
+        dependencies.shader_defines,
         dependencies.warn_backend_specific_shader_refs,
     };
 }
 
+nlohmann::json composeRenderFeaturesForRegistration(
+    const nlohmann::json &rendering_pass_data,
+    RenderingPassConfigRuntimeDependencies &dependencies) {
+    const auto composed = composeRenderFeatureConfig(
+        rendering_pass_data,
+        RenderFeatureComposeDependencies{
+            [&dependencies](std::string_view ref) {
+                return dependencies.path_resolver.loadText(ref);
+            },
+#if PELICAN_RUNTIME_SHADER_COMPILER
+            true,
+#else
+            false,
+#endif
+        });
+    dependencies.shader_defines = composed.shader_defines;
+    return composed.config;
+}
+
 void registerRenderingPassConfigData(const nlohmann::json &rendering_pass_data, vk::Extent2D base_extent,
                                      RenderingPassConfigRegistrationDependencies dependencies) {
-    const auto render_target_definitions = parseRenderTargetDefinitionsFromJson(rendering_pass_data);
+    const auto composed_rendering_pass_data =
+        composeRenderFeaturesForRegistration(rendering_pass_data, dependencies.runtime);
+    const auto render_target_definitions = parseRenderTargetDefinitionsFromJson(composed_rendering_pass_data);
     registerRenderTargetDefinitions(render_target_definitions, base_extent,
                                     dependencies.render_targets.render_target_container);
 
@@ -40,7 +64,7 @@ void registerRenderingPassConfigData(const nlohmann::json &rendering_pass_data, 
     const RenderTargetMetadataResolver rt_metadata{dependencies.render_targets.render_target_container};
     const RenderTargetImageViewResolver rt_views{dependencies.render_targets.render_target_container};
     const auto pass_definitions =
-        parseRenderingPassDefinitionsFromConfigJson(rendering_pass_data, rt_resolver, rt_metadata);
+        parseRenderingPassDefinitionsFromConfigJson(composed_rendering_pass_data, rt_resolver, rt_metadata);
     auto compiled_passes =
         compileRenderingPassesRuntime(pass_definitions,
                                       toRuntimeDependencies(dependencies.runtime, rt_metadata, rt_views));

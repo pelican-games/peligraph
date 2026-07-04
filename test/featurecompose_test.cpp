@@ -1,0 +1,194 @@
+#include "../src/core/renderingpass/featurecompose.hpp"
+
+#include <catch2/catch_test_macros.hpp>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <nlohmann/json.hpp>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#ifndef PELICAN_TEST_SOURCE_DIR
+#define PELICAN_TEST_SOURCE_DIR "."
+#endif
+
+namespace Pelican {
+
+namespace {
+
+std::filesystem::path fixtureRoot() {
+    return std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" / "fixtures" / "render_features";
+}
+
+nlohmann::json readJson(const std::filesystem::path &path) {
+    std::ifstream file{path, std::ios_base::binary};
+    if (!file.is_open()) {
+        throw std::runtime_error("failed to open fixture: " + path.string());
+    }
+    return nlohmann::json::parse(file);
+}
+
+std::string readText(const std::filesystem::path &path) {
+    std::ifstream file{path, std::ios_base::binary};
+    if (!file.is_open()) {
+        throw std::runtime_error("failed to open fixture: " + path.string());
+    }
+    return std::string{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
+}
+
+bool contains(std::string_view haystack, std::string_view needle) {
+    return haystack.find(needle) != std::string_view::npos;
+}
+
+nlohmann::json baseConfigWithFeature(std::string feature_ref) {
+    auto config = nlohmann::json::parse(R"json({
+  "features": [],
+  "render_targets": [
+    {
+      "name": "lit_color",
+      "extent_scale": 1.0,
+      "format": "B8G8R8A8_UNORM",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    }
+  ],
+  "rendering_passes": [
+    {
+      "name": "main",
+      "passes": [
+        {
+          "name": "prepare",
+          "type": "fullscreen",
+          "output": {"color": "lit_color", "depth": null},
+          "shader": {"vertex": "shaders/fullscreen", "fragment": "shaders/base"}
+        },
+        {
+          "name": "present",
+          "type": "fullscreen",
+          "output": {"color": "swapchain", "depth": null},
+          "input": ["lit_color"],
+          "shader": {"vertex": "shaders/fullscreen", "fragment": "shaders/present"}
+        }
+      ]
+    }
+  ]
+})json")
+    ;
+    config["features"] = nlohmann::json::array({std::move(feature_ref)});
+    return config;
+}
+
+std::string loadFixtureFeature(std::string_view ref) {
+    return readText(fixtureRoot() / std::string{ref});
+}
+
+std::vector<std::string> passNames(const nlohmann::json &config) {
+    std::vector<std::string> names;
+    for (const auto &pass : config.at("rendering_passes").at(0).at("passes")) {
+        names.push_back(pass.at("name").get<std::string>());
+    }
+    return names;
+}
+
+void requireErrorKind(std::string_view message, std::string_view error_kind) {
+    if (error_kind == "render_target_collision") {
+        REQUIRE(contains(message, "render target name collides"));
+    } else if (error_kind == "pass_collision") {
+        REQUIRE(contains(message, "pass name collides"));
+    } else if (error_kind == "missing_anchor") {
+        REQUIRE(contains(message, "anchor was not found"));
+    } else if (error_kind == "bad_override") {
+        REQUIRE(contains(message, "only supports format and usage"));
+    } else {
+        FAIL("unknown render feature error_kind: " << error_kind);
+    }
+}
+
+} // namespace
+
+TEST_CASE("render feature composition is a no-op without features", "[render-feature]") {
+    const auto config = nlohmann::json::parse(R"json({
+  "shader_defines": ["PELICAN_BASE_DEFINE"],
+  "render_targets": [],
+  "rendering_passes": []
+})json");
+    bool loader_called = false;
+    const auto result = composeRenderFeatureConfig(
+        config,
+        RenderFeatureComposeDependencies{
+            [&loader_called](std::string_view) {
+                loader_called = true;
+                return std::string{};
+            },
+            false,
+        });
+
+    REQUIRE_FALSE(result.used_features);
+    REQUIRE_FALSE(loader_called);
+    REQUIRE(result.shader_defines == std::vector<std::string>{"PELICAN_BASE_DEFINE"});
+    REQUIRE(result.config == config);
+}
+
+TEST_CASE("render feature fixtures compose and reject expected cases", "[render-feature]") {
+    const auto expectations = readJson(fixtureRoot() / "expectations.json");
+
+    for (const auto &entry : expectations) {
+        const auto file = entry.at("file").get<std::string>();
+        DYNAMIC_SECTION(file) {
+            const auto expected = entry.at("expect").get<std::string>();
+            const auto config = baseConfigWithFeature(file);
+            if (expected == "ok") {
+                const auto result = composeRenderFeatureConfig(
+                    config,
+                    RenderFeatureComposeDependencies{
+                        loadFixtureFeature,
+                        true,
+                    });
+
+                REQUIRE(result.used_features);
+                REQUIRE_FALSE(result.config.contains("features"));
+                REQUIRE(passNames(result.config) ==
+                        entry.at("expected_pass_order").get<std::vector<std::string>>());
+                REQUIRE(result.shader_defines ==
+                        entry.at("expected_shader_defines").get<std::vector<std::string>>());
+                REQUIRE(result.config.at("render_targets").size() == 2);
+                REQUIRE(result.config.at("render_targets").at(0).at("usage").get<std::vector<std::string>>() ==
+                        std::vector<std::string>{"COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"});
+            } else {
+                std::string message;
+                try {
+                    (void)composeRenderFeatureConfig(
+                        config,
+                        RenderFeatureComposeDependencies{
+                            loadFixtureFeature,
+                            true,
+                        });
+                } catch (const std::exception &ex) {
+                    message = ex.what();
+                }
+                REQUIRE_FALSE(message.empty());
+                requireErrorKind(message, entry.at("error_kind").get<std::string>());
+            }
+        }
+    }
+}
+
+TEST_CASE("render features require the runtime shader compiler", "[render-feature]") {
+    std::string message;
+    try {
+        (void)composeRenderFeatureConfig(
+            baseConfigWithFeature("valid/dummy_feature.json"),
+            RenderFeatureComposeDependencies{
+                loadFixtureFeature,
+                false,
+            });
+    } catch (const std::exception &ex) {
+        message = ex.what();
+    }
+    REQUIRE(contains(message, "feature"));
+    REQUIRE(contains(message, "実行時コンパイラ"));
+    REQUIRE(contains(message, "runtime shader compiler"));
+}
+
+} // namespace Pelican

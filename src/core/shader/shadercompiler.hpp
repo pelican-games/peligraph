@@ -19,6 +19,7 @@ struct ShaderCompileResult {
 struct ShaderCompileOptions {
     std::optional<vk::ShaderStageFlagBits> stage;
     std::string entry_point = "main";
+    std::vector<std::string> defines;
 };
 
 std::optional<vk::ShaderStageFlagBits> inferShaderStageFromPath(const std::filesystem::path &path);
@@ -28,7 +29,8 @@ DECLARE_MODULE(ShaderCompiler) {
 
   public:
     ShaderCompileResult compileFile(const std::filesystem::path &path, const ShaderCompileOptions &opts = {});
-    ShaderCompileResult compileSource(std::string_view source, vk::ShaderStageFlagBits stage, std::string_view name);
+    ShaderCompileResult compileSource(std::string_view source, vk::ShaderStageFlagBits stage,
+                                      std::string_view name, const ShaderCompileOptions &opts = {});
     void addIncludeDir(const std::filesystem::path &dir);
 };
 

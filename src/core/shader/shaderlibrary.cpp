@@ -85,48 +85,61 @@ std::string joinTriedCandidates(const std::vector<std::string> &tried) {
 
 ShaderLibrary::ShaderLibrary(ShaderLibraryModuleMode mode) : module_mode{mode} {}
 
-ShaderBundle ShaderLibrary::buildFromFile(const std::filesystem::path &path, uint64_t version) const {
+ShaderBundle ShaderLibrary::buildFromFile(const std::filesystem::path &path, uint64_t version,
+                                          std::vector<std::string> defines) const {
     if (lowerExtension(path) == ".spv") {
+        if (!defines.empty()) {
+            throw std::runtime_error("Shader defines require GLSL source, not SPIR-V: " + path.string());
+        }
         return buildFromSpirv(bytesToSpirv(readBinaryFile(path.string()), path), path, version, "");
     }
 
 #if PELICAN_RUNTIME_SHADER_COMPILER
     ShaderCompiler compiler;
-    const auto result = compiler.compileFile(path);
+    ShaderCompileOptions options;
+    options.defines = defines;
+    const auto result = compiler.compileFile(path, options);
     if (!result.ok) {
         throw std::runtime_error("Shader compile failed: " + path.string() + "\n" + result.log);
     }
-    return buildFromSpirv(result.spirv, path, version, result.log);
+    return buildFromSpirv(result.spirv, path, version, result.log, std::move(defines));
 #else
+    (void)defines;
     throw std::runtime_error("Runtime shader compiler is disabled; only .spv shader files are accepted: " +
                              path.string());
 #endif
 }
 
 ShaderBundle ShaderLibrary::buildFromSpirv(std::span<const uint32_t> spirv, std::filesystem::path source_path,
-                                           uint64_t version, std::string log) const {
+                                           uint64_t version, std::string log,
+                                           std::vector<std::string> defines) const {
     ShaderBundle bundle;
     bundle.module = createShaderModule(spirv);
     bundle.reflection = reflect(spirv);
     bundle.source_path = std::move(source_path);
+    bundle.defines = std::move(defines);
     bundle.version = version;
     bundle.log = std::move(log);
     return bundle;
 }
 
 ShaderBundle ShaderLibrary::buildFromEngineSource(std::string_view source, ShaderStage stage,
-                                                  std::string_view name, uint64_t version) const {
+                                                  std::string_view name, uint64_t version,
+                                                  std::vector<std::string> defines) const {
 #if PELICAN_RUNTIME_SHADER_COMPILER
     ShaderCompiler compiler;
-    const auto result = compiler.compileSource(source, toVkStage(stage), name);
+    ShaderCompileOptions options;
+    options.defines = defines;
+    const auto result = compiler.compileSource(source, toVkStage(stage), name, options);
     if (!result.ok) {
         throw std::runtime_error("Shader compile failed: " + std::string{name} + "\n" + result.log);
     }
-    return buildFromSpirv(result.spirv, {}, version, result.log);
+    return buildFromSpirv(result.spirv, {}, version, result.log, std::move(defines));
 #else
     (void)source;
     (void)stage;
     (void)version;
+    (void)defines;
     throw std::runtime_error("Runtime shader compiler is disabled; only .spv shader files are accepted: " +
                              std::string{name});
 #endif
@@ -153,8 +166,8 @@ void ShaderLibrary::markDirty(ShaderBundleId id) {
     }
 }
 
-ShaderBundleId ShaderLibrary::loadFromFile(const std::filesystem::path &path) {
-    const auto id = bundles.reg(buildFromFile(path, 1));
+ShaderBundleId ShaderLibrary::loadFromFile(const std::filesystem::path &path, std::vector<std::string> defines) {
+    const auto id = bundles.reg(buildFromFile(path, 1, std::move(defines)));
     bundle_ids.push_back(id);
     if (const auto timestamp = lastWriteTime(path)) {
         source_write_times[id] = *timestamp;
@@ -164,18 +177,23 @@ ShaderBundleId ShaderLibrary::loadFromFile(const std::filesystem::path &path) {
 
 ShaderBundleId ShaderLibrary::loadResolvedReference(const ResolvedRef &resolved,
                                                     const ShaderReference &reference,
-                                                    std::string_view display_name) {
+                                                    std::string_view display_name,
+                                                    const std::vector<std::string> &defines) {
     if (const auto path = std::get_if<std::filesystem::path>(&resolved)) {
-        return loadFromFile(*path);
+        return loadFromFile(*path, defines);
     }
 
     const auto &engine_id = std::get<EngineResourceId>(resolved).id;
     const auto resource = engineResourceOrThrow(engine_id);
     ShaderBundle bundle;
     if (lowerExtension(engine_id) == ".spv") {
+        if (!defines.empty()) {
+            throw std::runtime_error("Shader defines require GLSL source, not SPIR-V: engine://" +
+                                     engine_id);
+        }
         bundle = buildFromSpirv(bytesToSpirv(resource, engine_id), {}, 1, std::string{display_name});
     } else {
-        bundle = buildFromEngineSource(resource, reference.stage, display_name, 1);
+        bundle = buildFromEngineSource(resource, reference.stage, display_name, 1, defines);
     }
     const auto id = bundles.reg(std::move(bundle));
     bundle_ids.push_back(id);
@@ -183,7 +201,8 @@ ShaderBundleId ShaderLibrary::loadResolvedReference(const ResolvedRef &resolved,
 }
 
 ShaderBundleId ShaderLibrary::loadFromStemReference(const ShaderReference &reference,
-                                                    const PathResolver &resolver) {
+                                                    const PathResolver &resolver,
+                                                    const std::vector<std::string> &defines) {
     std::vector<std::string> candidate_refs;
 #if PELICAN_RUNTIME_SHADER_COMPILER
     candidate_refs.push_back(appendShaderExtension(reference.ref, reference.stage, false));
@@ -199,7 +218,7 @@ ShaderBundleId ShaderLibrary::loadFromStemReference(const ShaderReference &refer
                 tried.push_back(candidate_ref + " (" + path->string() + ")");
                 continue;
             }
-            return loadResolvedReference(resolved, reference, candidate_ref);
+            return loadResolvedReference(resolved, reference, candidate_ref, defines);
         }
 
         const auto &engine_id = std::get<EngineResourceId>(resolved).id;
@@ -207,7 +226,7 @@ ShaderBundleId ShaderLibrary::loadFromStemReference(const ShaderReference &refer
             tried.push_back(candidate_ref + " (engine id not registered)");
             continue;
         }
-        return loadResolvedReference(resolved, reference, candidate_ref);
+        return loadResolvedReference(resolved, reference, candidate_ref, defines);
     }
 
     throw std::runtime_error("Shader stem could not be resolved: " + reference.ref +
@@ -217,14 +236,15 @@ ShaderBundleId ShaderLibrary::loadFromStemReference(const ShaderReference &refer
 
 ShaderBundleId ShaderLibrary::loadFromReference(const ShaderReference &reference,
                                                 const PathResolver &resolver,
-                                                bool project_context) {
+                                                bool project_context,
+                                                std::vector<std::string> defines) {
     if (reference.kind == ShaderReferenceKind::stem) {
-        return loadFromStemReference(reference, resolver);
+        return loadFromStemReference(reference, resolver, defines);
     }
     if (!project_context && !hasScheme(reference.ref)) {
-        return loadFromFile(reference.ref);
+        return loadFromFile(reference.ref, std::move(defines));
     }
-    return loadResolvedReference(resolver.resolveProjectRef(reference.ref), reference, reference.ref);
+    return loadResolvedReference(resolver.resolveProjectRef(reference.ref), reference, reference.ref, defines);
 }
 
 ShaderBundleId ShaderLibrary::loadFromBytes(size_t len, const char *data, std::string_view name) {
@@ -256,7 +276,7 @@ bool ShaderLibrary::reload(ShaderBundleId id) {
     }
 
     try {
-        auto replacement = buildFromFile(current.source_path, current.version + 1);
+        auto replacement = buildFromFile(current.source_path, current.version + 1, current.defines);
         current.module = std::move(replacement.module);
         current.reflection = std::move(replacement.reflection);
         current.source_path = std::move(replacement.source_path);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "renderingpass.hpp"
+#include <string>
 #include <vector>
 
 namespace Pelican {
@@ -19,6 +20,7 @@ struct RenderingPassRuntimeDependencies {
     ShaderLibrary *shader_library = nullptr;
     FullscreenPassContainer *fullscreen_pass_container = nullptr;
     const PathResolver *path_resolver = nullptr;
+    std::vector<std::string> shader_defines;
     bool warn_backend_specific_shader_refs = false;
 };
 
