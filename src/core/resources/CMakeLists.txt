@@ -39,3 +39,6 @@ embed_shader(shader_lab_gltf_lighting.frag)
 
 
 b_embed(pelican_resources default_config.json)
+b_embed(pelican_resources features/hdr.json)
+b_embed(pelican_resources tonemap.frag)
+b_embed(pelican_resources tonemap.vert)

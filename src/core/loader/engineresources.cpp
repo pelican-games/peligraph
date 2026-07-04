@@ -10,7 +10,7 @@ namespace Pelican {
 
 namespace {
 
-constexpr std::array<std::string_view, 23> registered_ids{
+constexpr std::array<std::string_view, 26> registered_ids{
     "bloom_blur_h.frag.spv",
     "bloom_blur_v.frag.spv",
     "bloom_composite.frag.spv",
@@ -19,6 +19,7 @@ constexpr std::array<std::string_view, 23> registered_ids{
     "default_config.json",
     "default.frag.spv",
     "default.vert.spv",
+    "features/hdr.json",
     "fullscreen.frag.spv",
     "fullscreen.vert.spv",
     "shader_lab_base_lit.frag.spv",
@@ -31,6 +32,8 @@ constexpr std::array<std::string_view, 23> registered_ids{
     "shader_lab_present.frag.spv",
     "ssao.frag.spv",
     "ssao_blur.frag.spv",
+    "tonemap.frag",
+    "tonemap.vert",
     "ui.frag.spv",
     "ui.vert.spv",
     "vat.vert.spv",
@@ -57,6 +60,7 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     }
     PELICAN_ENGINE_RESOURCE("default.frag.spv")
     PELICAN_ENGINE_RESOURCE("default.vert.spv")
+    PELICAN_ENGINE_RESOURCE("features/hdr.json")
     PELICAN_ENGINE_RESOURCE("fullscreen.frag.spv")
     PELICAN_ENGINE_RESOURCE("fullscreen.vert.spv")
     PELICAN_ENGINE_RESOURCE("shader_lab_base_lit.frag.spv")
@@ -69,6 +73,8 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("shader_lab_present.frag.spv")
     PELICAN_ENGINE_RESOURCE("ssao.frag.spv")
     PELICAN_ENGINE_RESOURCE("ssao_blur.frag.spv")
+    PELICAN_ENGINE_RESOURCE("tonemap.frag")
+    PELICAN_ENGINE_RESOURCE("tonemap.vert")
     PELICAN_ENGINE_RESOURCE("ui.frag.spv")
     PELICAN_ENGINE_RESOURCE("ui.vert.spv")
     PELICAN_ENGINE_RESOURCE("vat.vert.spv")

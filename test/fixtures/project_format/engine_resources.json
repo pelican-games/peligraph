@@ -10,6 +10,7 @@
     "default_config.json",
     "default.frag.spv",
     "default.vert.spv",
+    "features/hdr.json",
     "fullscreen.frag.spv",
     "fullscreen.vert.spv",
     "shader_lab_base_lit.frag.spv",
@@ -22,6 +23,8 @@
     "shader_lab_present.frag.spv",
     "ssao.frag.spv",
     "ssao_blur.frag.spv",
+    "tonemap.frag",
+    "tonemap.vert",
     "ui.frag.spv",
     "ui.vert.spv",
     "vat.vert.spv"
