@@ -78,6 +78,7 @@ ctest --test-dir ./build -C Debug --output-on-failure
 | 26 | EXR リーダ(tinyexr・限定スコープ) | 18a/b | 小〜中 | 低 |
 | 20 | VAT 再生(pelican.vat v1) | 15, 16, 18, 19 | 大 | 高 |
 | 21 | devcli `import`(pelican.import manifest) | 18 | 中 | 低 |
+| 27 | コマンド層 stage 2(stdio JSON-RPC 2.0) | 2, 6, 18 | 中 | 中 |
 
 (WP22〜24 は設計文書側で候補予約のみ: WP22 pointcache / WP23 KTX2 / WP24 音声。
 着手前に本書へ正式記載する)
@@ -495,9 +496,44 @@ struct は将来 `pelican_project` ターゲットへ移動できるよう
 用途の分かるエラーで落ちる(fixture 駆動テスト) (d) エンジン本体(player)の
 挙動無変更(manifest はエンジンが読まない — 設計どおり)。
 
+### WP27: コマンド層 stage 2(stdio JSON-RPC 2.0)
+
+参照: **`external_tools_requirements.md` §4 R8 がプロトコルの正**(エンベロープ・
+メソッド表・エラーコード)。依存: WP2(EngineTime)、WP6(readback/PNG)、WP18。規模: 中。
+
+1. **エンベロープ純ロジック**: `core/communication/jsonrpc.{hpp,cpp}` に
+   JSON-RPC 2.0 の request パースと response / error 直列化を
+   **モジュール・GPU 非依存**で実装(sceneformat.{hpp,cpp} の流儀)。R8 の規則:
+   notification 不可(id なしは invalid request)、バッチ配列は v1 非対応(-32600)、
+   パースエラー -32700、未知メソッド -32601、params 不正 -32602、
+   アプリ固有エラーは -32000〜-32099
+2. **ディスパッチャ**: `core/communication/rpcserver.{hpp,cpp}` — stdin から
+   1 行 = 1 リクエスト(NDJSON、UTF-8・改行を含まない)を読み、メソッド表で
+   dispatch し stdout へ 1 行応答。**stdout はプロトコル専用** — quill ログや
+   他の出力が stdout に混ざらないことを確認し、混ざる場合は rpc モード起動時に
+   ログ出力先を stderr/ファイルへ限定する
+3. **4 メソッド**(R8 の表どおり):
+   - `set_time {t}` → `EngineTime::setTime`
+   - `step_frame {}` → advance + ecs.update + render を 1 回
+   - `render_frame {}` → 現時刻で render を 1 回(advance しない)
+   - `capture {path}` → 直近フレームを PNG 保存(WP6 の readback 流用)。
+     path は出力先 locator([PF] §3 の絶対パス規則の対象外)。result に解決後 path
+4. **CLI**: `--rpc`(flag)。**v1 は `--headless` 必須**(非 headless との併用は
+   起動エラー。ウィンドウ付き rpc は将来)。rpc モードの Loop は framerate 待ちを
+   せず stdin をブロッキング読みし、EOF で正常終了(waitIdle → flushAll 経路を通す)
+5. テスト: (a) jsonrpc 単体(GPU 不要)— パース・直列化・全エラーコード
+   (b) 結合 — cmake スクリプト(run_seqplayer_headless の流儀)で
+   `pelican_player --rpc --headless --project <example>` を起動し、NDJSON
+   スクリプトを stdin 供給: set_time → step_frame → render_frame → capture の
+   応答列検証 + PNG 実在 + **同一スクリプト 2 回実行で応答列が一致**(決定性)
+
+受け入れ基準: (a) 結合テストグリーン (b) 不正 JSON・未知メソッド・id なしが
+仕様どおりのエラーコードで応答され、プロセスは落ちない (c) stdout に応答以外が
+混ざらない (d) 通常起動・既存 headless 経路が無変更 (e) 単体テストは GPU 不要。
+
 ## 3. 保留中のトラック(WP 化待ち)
 
-- **最小コマンド層**: 3 段階で進める。(1) ファイル連携を正とする(WP6 の `--render-out` で成立済み) → (2) **stdio NDJSON 上の JSON-RPC 2.0** で `set_time` / `step_frame` / `render_frame` / `capture` の 4 メソッドのみ(WP6 完了後に WP 化可能。独自行プロトコルは作らない。TCP 常駐サーバはまだ作らない。要求書 R8 追補参照) → (3) `load_gltf` / `update_transforms` は **RenderWorld 合意後**
+- **最小コマンド層**: 3 段階で進める。(1) ファイル連携(WP6 で成立済み) → (2) **WP27 として登録済み(2026-07-04)** → (3) `load_gltf` / `update_transforms` は WP27 完了後に WP 化(合意後回し方針により本線で進めてよい。scene v1 / asset 登録との整合設計が先)
 - **RenderWorld**: (2026-07-02 方針変更)**ECS 側との合意形成は後回しにし、統合ブランチ系列(`codex/rendering-phase1-refactor` 由来)を当面の開発本線として独自に進める**。JSON 規約(シーン形式等)は現行形式から離れすぎない範囲で本線側が自由に定義してよい(`design_scene_format.md` 参照)。ただし (a) `src/core/ecs/` コア本体の変更禁止は維持(コンポーネント追加は `userpublic/components` で完結するため通常は不要)、(b) main との将来の合流可能性を壊さないため、main に随時追従 merge する運用は続ける。ライトアニメーション更新の ECS 側移管は本線で実施してよい(単独 PR)
 - **コマンド層の WebSocket 展開**: stage 2(stdio JSON-RPC)実装後、同じメソッド群を WebSocket に載せると devstudio と web viewer(my_webpage)が同一プロトコルでエンジンを叩ける([PFW] §7)。stage 2 の後に設計文書を書いてから WP 化
 - **asset manifest(sha256)**: `assets.manifest.json` + 起動前検証([PF] §5-6 の予告)。WP18c の README 一覧表で当面代替し、需要(=黒背景事故の再発 or web 側キャッシュ検証の要求)が出たら WP 化
