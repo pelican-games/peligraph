@@ -269,6 +269,7 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
     for (const auto target : pass.input_targets) {
         appendUnique(node.reads, renderTargetResourceName(target));
     }
+    appendUnique(node.reads, pass.input_buffers);
     for (const auto target : pass.output_color) {
         appendUnique(node.writes, renderTargetResourceName(target));
     }
@@ -348,12 +349,35 @@ void addEdge(PlannerEdges &planner_edges, size_t from, size_t to) {
 void addDataEdge(PlannerEdges &planner_edges, size_t from, size_t to, const std::string &resource,
                  const FrameGraphDefinition &definition) {
     addEdge(planner_edges, from, to);
-    planner_edges.barriers.push_back(FramePlanBarrier{
+    const auto barrier = FramePlanBarrier{
         "read_after_write",
         resource,
         definition.nodes[from].name,
         definition.nodes[to].name,
-    });
+    };
+    const auto exists = std::find_if(planner_edges.barriers.begin(), planner_edges.barriers.end(),
+                                     [&barrier](const auto &existing) {
+                                         return existing.kind == barrier.kind &&
+                                                existing.resource == barrier.resource &&
+                                                existing.from == barrier.from &&
+                                                existing.to == barrier.to;
+                                     });
+    if (exists == planner_edges.barriers.end()) {
+        planner_edges.barriers.push_back(barrier);
+    }
+}
+
+void addBarriersForOrderedResourceEdges(PlannerEdges &planner_edges, const FrameGraphDefinition &definition) {
+    for (const auto &edge : planner_edges.edges) {
+        const auto &from = definition.nodes[edge.from];
+        const auto &to = definition.nodes[edge.to];
+        for (const auto &written : from.writes) {
+            if (written.empty() || std::find(to.reads.begin(), to.reads.end(), written) == to.reads.end()) {
+                continue;
+            }
+            addDataEdge(planner_edges, edge.from, edge.to, written, definition);
+        }
+    }
 }
 
 PlannerEdges buildEdges(const FrameGraphDefinition &definition,
@@ -395,6 +419,7 @@ PlannerEdges buildEdges(const FrameGraphDefinition &definition,
         }
     }
 
+    addBarriersForOrderedResourceEdges(planner_edges, definition);
     return planner_edges;
 }
 

@@ -12,7 +12,8 @@ namespace Pelican {
 std::vector<PassDefinition> parsePassSequenceFromJson(const nlohmann::json &pass_set_json,
                                                       const std::string &rendering_pass_name,
                                                       const RenderTargetNameResolver &rt_resolver,
-                                                      const RenderTargetMetadataResolver &rt_metadata) {
+                                                      const RenderTargetMetadataResolver &rt_metadata,
+                                                      const std::unordered_set<std::string> &buffer_names) {
     if (!pass_set_json.contains("passes")) {
         throw std::runtime_error("Rendering pass requires passes array: " + rendering_pass_name);
     }
@@ -31,7 +32,7 @@ std::vector<PassDefinition> parsePassSequenceFromJson(const nlohmann::json &pass
             throw std::runtime_error("Duplicate pass name: " + pass_name);
         }
 
-        auto parsed_pass = parsePassDefinitionFromJson(pass_json, rt_resolver, rt_metadata);
+        auto parsed_pass = parsePassDefinitionFromJson(pass_json, rt_resolver, rt_metadata, buffer_names);
         validatePassInputsProduced(parsed_pass, produced_color_targets, rt_metadata);
         recordPassOutputs(parsed_pass, produced_color_targets);
         passes.push_back(std::move(parsed_pass));

@@ -11,7 +11,8 @@ namespace Pelican {
 
 PassDefinition parsePassDefinitionFromJson(const nlohmann::json &pass_json,
                                            const RenderTargetNameResolver &rt_resolver,
-                                           const RenderTargetMetadataResolver &rt_metadata) {
+                                           const RenderTargetMetadataResolver &rt_metadata,
+                                           const std::unordered_set<std::string> &buffer_names) {
     if (!pass_json.is_object()) {
         throw std::runtime_error("passes entries must be objects");
     }
@@ -27,7 +28,7 @@ PassDefinition parsePassDefinitionFromJson(const nlohmann::json &pass_json,
 
     parseMaterialPassInfoFromJson(pass_def, pass_json);
 
-    parsePassInputTargetsFromJson(pass_def, rt_resolver, pass_json);
+    parsePassInputTargetsFromJson(pass_def, rt_resolver, pass_json, buffer_names);
     validatePassInputs(pass_def);
     validatePassTargetUsage(pass_def, rt_metadata);
     validateUniqueRenderTargets(pass_def.output_color, "color output", pass_def, rt_metadata);

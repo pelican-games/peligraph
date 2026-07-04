@@ -212,6 +212,29 @@ nlohmann::json makeHdrProjectJson() {
     };
 }
 
+nlohmann::json makeComputeProjectJson() {
+    return nlohmann::json{
+        {"schema", "pelican.project"},
+        {"version", 1},
+        {"name", "compute buffer golden"},
+        {"engine_min_version", "0.1.0"},
+        {"basic_config",
+         {
+             {"window_title", "Compute Buffer Golden"},
+             {"window_size", {{"width", goldenWidth}, {"height", goldenHeight}}},
+             {"fullscreen", false},
+             {"framerate", 60},
+             {"camera", {{"fov_y", 45.0}, {"near", 0.1}, {"far", 100.0}, {"up", {0, 1, 0}}}},
+             {"default_scene_id", "default_scene"},
+             {"scene_data_json", "scene.json"},
+             {"asset_data_json", "assets.json"},
+             {"rendering_config_json", "passes/main.json"},
+             {"ui_config_json", "ui/ui.json"},
+             {"default_rendering_pass", "main"},
+         }},
+    };
+}
+
 RgbaImage loadPng(const std::filesystem::path &path) {
     int width = 0;
     int height = 0;
@@ -325,6 +348,32 @@ layout(location = 0) in vec2 inUV;
 layout(location = 0) out vec4 outColor;
 void main() {
     outColor = texture(inputTexture, inUV);
+}
+)glsl";
+}
+
+const char *computeWriteColorShader() {
+    return R"glsl(
+#version 450
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 1, binding = 0) buffer ComputeColor {
+    vec4 color;
+} compute_color;
+void main() {
+    compute_color.color = vec4(0.10, 0.75, 0.35, 1.0);
+}
+)glsl";
+}
+
+const char *computeBufferFragmentShader() {
+    return R"glsl(
+#version 450
+layout(std430, set = 1, binding = 0) readonly buffer ComputeColor {
+    vec4 color;
+} compute_color;
+layout(location = 0) out vec4 outColor;
+void main() {
+    outColor = compute_color.color;
 }
 )glsl";
 }
@@ -633,6 +682,56 @@ void writeHdrProject(const std::filesystem::path &root, bool hdr_enabled) {
     writeTextFile(root / "passes" / "main.json", makeHdrRenderingConfig(hdr_enabled).dump(2));
 }
 
+void writeComputeProject(const std::filesystem::path &root) {
+    writeTextFile(root / "project.json", makeComputeProjectJson().dump(2));
+    writeTextFile(root / "scene.json", R"json({
+  "schema": "pelican.scene",
+  "version": 1,
+  "scenes": {
+    "default_scene": {
+      "objects": []
+    }
+  }
+})json");
+    writeTextFile(root / "assets.json", R"json({"models":[]})json");
+    writeTextFile(root / "ui" / "ui.json", R"json({"images":[]})json");
+    writeTextFile(root / "shaders" / "fullscreen.vert", stemFullscreenVertexShader());
+    writeTextFile(root / "shaders" / "write_color.comp", computeWriteColorShader());
+    writeTextFile(root / "shaders" / "compute_present.frag", computeBufferFragmentShader());
+    writeTextFile(root / "passes" / "main.json", R"json({
+  "buffers": [
+    {"name": "compute_color", "size": 16, "lifetime": "persistent"}
+  ],
+  "rendering_passes": [
+    {
+      "name": "main",
+      "passes": [
+        {
+          "name": "present",
+          "type": "fullscreen",
+          "input": ["compute_color"],
+          "output": {"color": "swapchain", "depth": null},
+          "shader": {
+            "vertex": "shaders/fullscreen",
+            "fragment": "shaders/compute_present"
+          }
+        }
+      ]
+    }
+  ],
+  "compute_tasks": [
+    {
+      "name": "write_color",
+      "shader": "shaders/write_color",
+      "writes": ["compute_color"],
+      "before": ["present"],
+      "dispatch": {"groups": [1, 1, 1]},
+      "schedule": "per_frame"
+    }
+  ]
+})json");
+}
+
 void renderStemFullscreenFrame(RenderTarget &render_target) {
     GET_MODULE(Renderer).render();
     GET_MODULE(VulkanManageCore).waitIdle();
@@ -667,6 +766,12 @@ void renderVatPlaybackFrame(RenderTarget &render_target, const std::filesystem::
 }
 
 void renderFeatureFrame(RenderTarget &render_target) {
+    GET_MODULE(Renderer).render();
+    GET_MODULE(VulkanManageCore).waitIdle();
+    (void)render_target;
+}
+
+void renderComputeFrame(RenderTarget &render_target) {
     GET_MODULE(Renderer).render();
     GET_MODULE(VulkanManageCore).waitIdle();
     (void)render_target;
@@ -711,6 +816,10 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         writeHdrProject(temp_dir, golden_case.mode == "hdr_on");
         GET_MODULE(PathResolver).setup(temp_dir, false);
         GET_MODULE(ProjectSource).setProjectData(makeHdrProjectJson().dump());
+    } else if (golden_case.mode == "compute_buffer") {
+        writeComputeProject(temp_dir);
+        GET_MODULE(PathResolver).setup(temp_dir, false);
+        GET_MODULE(ProjectSource).setProjectData(makeComputeProjectJson().dump());
     } else {
         const auto scene_path = temp_dir / "scene.json";
         const auto asset_path = temp_dir / "assets.json";
@@ -742,6 +851,8 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         renderDebugDrawFrame(render_target);
     } else if (isHdrGoldenMode(golden_case.mode)) {
         renderFeatureFrame(render_target);
+    } else if (golden_case.mode == "compute_buffer") {
+        renderComputeFrame(render_target);
     } else {
         throw std::runtime_error("unknown golden case mode: " + golden_case.mode);
     }
@@ -799,7 +910,7 @@ void writeFailureMetadata(const std::filesystem::path &path, const GoldenCase &g
 TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     setupLogger();
     const auto cases = discoverGoldenCases();
-    REQUIRE(cases.size() == 9);
+    REQUIRE(cases.size() == 10);
 
     for (const auto &golden_case : cases) {
         DYNAMIC_SECTION(golden_case.name) {

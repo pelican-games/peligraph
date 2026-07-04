@@ -5,6 +5,7 @@
 #include "../shader/shaderreference.hpp"
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <variant>
 #include <vector>
@@ -16,6 +17,7 @@ PELICAN_DEFINE_HANDLE(RenderingPassId, int)
 PELICAN_DEFINE_HANDLE(PassId, int)
 
 PELICAN_DEFINE_HANDLE(GlobalRenderTargetId, int)
+PELICAN_DEFINE_HANDLE(ComputeTaskId, int)
 
 inline constexpr int invalidRenderingPassIdValue = -1;
 inline constexpr int invalidRenderTargetIdValue = -1;
@@ -84,6 +86,7 @@ struct PassDefinition {
     std::vector<GlobalRenderTargetId> output_color;
     GlobalRenderTargetId output_depth;
     std::vector<GlobalRenderTargetId> input_targets;
+    std::vector<std::string> input_buffers;
 
     PassInfo pass_info = MaterialPassInfo{};
 
@@ -104,6 +107,30 @@ struct PassDefinition {
     const DebugDrawPassInfo &debugDrawInfo() const { return std::get<DebugDrawPassInfo>(pass_info); }
 };
 
+struct ComputeDispatchDefinition {
+    uint32_t groups_x = 1;
+    uint32_t groups_y = 1;
+    uint32_t groups_z = 1;
+    std::string groups_from;
+    uint32_t local_size = 1;
+};
+
+struct ComputeTaskDefinition {
+    std::string name;
+    ShaderReference shader = ShaderReference{"", ShaderStage::compute, ShaderReferenceKind::explicit_file, false};
+    std::vector<std::string> reads;
+    std::vector<std::string> writes;
+    std::vector<std::string> after;
+    std::vector<std::string> before;
+    ComputeDispatchDefinition dispatch;
+    std::string schedule = "per_frame";
+};
+
+struct CompiledComputeTask {
+    ComputeTaskDefinition definition;
+    ComputeTaskId task_id;
+};
+
 struct RenderingPassDefinition {
     std::string name;
     std::vector<PassDefinition> passes;
@@ -117,6 +144,7 @@ struct CompiledPass {
 struct CompiledRenderingPass {
     std::string name;
     std::vector<CompiledPass> passes;
+    std::vector<CompiledComputeTask> compute_tasks;
 };
 
 } // namespace Pelican

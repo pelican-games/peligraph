@@ -53,6 +53,8 @@ vk::ShaderStageFlagBits toVkStage(ShaderStage stage) {
         return vk::ShaderStageFlagBits::eVertex;
     case ShaderStage::fragment:
         return vk::ShaderStageFlagBits::eFragment;
+    case ShaderStage::compute:
+        return vk::ShaderStageFlagBits::eCompute;
     }
     throw std::runtime_error("unknown shader stage");
 }

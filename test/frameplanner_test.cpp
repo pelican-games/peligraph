@@ -229,6 +229,35 @@ TEST_CASE("frame planner accepts compute tasks and serializes node kinds", "[fra
     REQUIRE(plan_json.at("nodes").at(2).at("kind") == "compute");
 }
 
+TEST_CASE("frame planner emits barriers for explicit compute to render resource edges", "[frameplanner]") {
+    const auto graph = parseFrameGraphDefinitionFromJson(nlohmann::json::parse(R"json({
+  "name": "compute_to_present",
+  "buffers": [{"name": "compute_color"}],
+  "passes": [
+    {
+      "name": "present",
+      "type": "fullscreen",
+      "input": ["compute_color"],
+      "output": {"color": "swapchain", "depth": null}
+    }
+  ],
+  "compute_tasks": [
+    {
+      "name": "write_color",
+      "writes": ["compute_color"],
+      "before": ["present"]
+    }
+  ]
+})json"));
+
+    const auto plan = planFrameGraph(graph);
+    REQUIRE(framePlanOrder(plan) == std::vector<std::string>{"write_color", "present"});
+    REQUIRE(plan.barriers.size() == 1);
+    REQUIRE(plan.barriers.front().resource == "compute_color");
+    REQUIRE(plan.barriers.front().from == "write_color");
+    REQUIRE(plan.barriers.front().to == "present");
+}
+
 TEST_CASE("frame planner reports invalid graph fixtures", "[frameplanner]") {
     const auto expectations = readJson(fixtureRoot() / "errors" / "expectations.json");
     for (const auto &entry : expectations) {

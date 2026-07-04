@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <variant>
 #include <vector>
 #include <vulkan/vulkan.hpp>
 
@@ -35,6 +36,11 @@ struct GraphicsPipelineDesc {
     vk::PrimitiveTopology topology = vk::PrimitiveTopology::eTriangleList;
 };
 
+struct ComputePipelineDesc {
+    ShaderBundleId shader;
+    std::vector<std::string> shader_defines;
+};
+
 PELICAN_DEFINE_HANDLE(PipelineHandle, int);
 
 DECLARE_MODULE(PipelineFactory) {
@@ -49,7 +55,7 @@ DECLARE_MODULE(PipelineFactory) {
     };
 
     struct PipelineRecord {
-        GraphicsPipelineDesc desc;
+        std::variant<GraphicsPipelineDesc, ComputePipelineDesc> desc;
         ShaderReflection reflection;
         std::vector<vk::DescriptorSetLayout> descriptor_set_layouts;
         vk::UniquePipelineLayout layout;
@@ -71,7 +77,10 @@ DECLARE_MODULE(PipelineFactory) {
                                                   std::span<const vk::DescriptorSetLayout> layouts) const;
     vk::UniquePipeline createGraphicsPipeline(const GraphicsPipelineDesc &desc,
                                               vk::PipelineLayout layout) const;
+    vk::UniquePipeline createComputePipeline(const ComputePipelineDesc &desc,
+                                             vk::PipelineLayout layout) const;
     PipelineRecord buildGraphicsPipeline(const GraphicsPipelineDesc &desc);
+    PipelineRecord buildComputePipeline(const ComputePipelineDesc &desc);
     void replacePipeline(PipelineHandle handle, PipelineRecord replacement);
     void savePipelineCache() noexcept;
 
@@ -80,6 +89,7 @@ DECLARE_MODULE(PipelineFactory) {
     ~PipelineFactory();
 
     PipelineHandle create(const GraphicsPipelineDesc &desc);
+    PipelineHandle createCompute(const ComputePipelineDesc &desc);
 
     vk::Pipeline pipeline(PipelineHandle handle) const;
     vk::PipelineLayout layout(PipelineHandle handle) const;

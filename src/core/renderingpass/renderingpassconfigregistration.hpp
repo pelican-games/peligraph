@@ -9,7 +9,10 @@
 namespace Pelican {
 
 class DebugDraw;
+class ComputeTaskContainer;
 class FullscreenPassContainer;
+class FrameGraphResourceContainer;
+class FrameGraphRuntimeContainer;
 class PathResolver;
 class RenderingPassContainer;
 class RenderTarget;
@@ -33,6 +36,9 @@ struct RenderingPassConfigRuntimeDependencies {
 struct RenderingPassConfigRegistrationDependencies {
     RenderingPassConfigRenderTargetDependencies render_targets;
     RenderingPassConfigRuntimeDependencies runtime;
+    FrameGraphResourceContainer &frame_graph_resources;
+    ComputeTaskContainer &compute_task_container;
+    FrameGraphRuntimeContainer &frame_graph_runtime;
     RenderingPassContainer &pass_container;
 };
 
