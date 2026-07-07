@@ -247,6 +247,20 @@ bool SceneLoader::hasObjectTransform(std::string_view name) const {
     return object_bindings.find(std::string{name}) != object_bindings.end();
 }
 
+SceneObjectTransform SceneLoader::objectTransform(std::string_view name) const {
+    const auto binding_it = object_bindings.find(std::string{name});
+    if (binding_it == object_bindings.end()) {
+        throw std::runtime_error("unknown object name: " + std::string{name});
+    }
+
+    const auto *bound_transform = static_cast<const TransformComponent *>(binding_it->second.transform);
+    return SceneObjectTransform{
+        .pos = bound_transform->pos,
+        .rotation = bound_transform->rotation,
+        .scale = bound_transform->scale,
+    };
+}
+
 void SceneLoader::applyObjectTransform(std::string_view name, const SceneObjectTransform &transform) {
     const auto binding_it = object_bindings.find(std::string{name});
     if (binding_it == object_bindings.end()) {

@@ -11,6 +11,8 @@
 #include "../src/core/shader/pipelinefactory.hpp"
 #include "../src/core/shader/shadercompiler.hpp"
 #include "../src/core/shader/shaderlibrary.hpp"
+#include "../src/core/userpublic/details/system/registerer.hpp"
+#include "../src/core/userpublic/gamecontext.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/vkcore/renderer.hpp"
 #include "../src/core/vkcore/rendertarget.hpp"
@@ -396,6 +398,25 @@ layout(push_constant) uniform CameraMatrices {
 layout(location = 0) out vec4 outColor;
 void main() {
     outColor = vec4(camera.proj[0][0], camera.proj[1][1], 0.25, 1.0);
+}
+)glsl";
+}
+
+const char *orbitCameraControllerFragmentShader() {
+    return R"glsl(
+#version 450
+layout(push_constant) uniform CameraMatrices {
+    mat4 proj;
+    mat4 view;
+} camera;
+layout(location = 0) out vec4 outColor;
+void main() {
+    outColor = vec4(
+        clamp(-camera.view[3][2] / 8.0, 0.0, 1.0),
+        clamp(camera.view[0][2] * 0.5 + 0.5, 0.0, 1.0),
+        clamp(camera.view[2][0] * 0.5 + 0.5, 0.0, 1.0),
+        1.0
+    );
 }
 )glsl";
 }
@@ -840,6 +861,67 @@ void writeOrthographicCameraProject(const std::filesystem::path &root) {
 })json");
 }
 
+void writeOrbitCameraControllerProject(const std::filesystem::path &root) {
+    writeTextFile(root / "project.json", makeFeatureProjectJson().dump(2));
+    writeTextFile(root / "scene.json", R"json({
+  "schema": "pelican.scene",
+  "version": 1,
+  "scenes": {
+    "default_scene": {
+      "objects": [
+        {
+          "name": "Target",
+          "components": [
+            {"name": "transform", "pos": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [1.0, 1.0, 1.0]}
+          ]
+        },
+        {
+          "name": "OrbitGoldenCamera",
+          "components": [
+            {"name": "transform", "pos": [0.0, 0.0, 4.0], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [1.0, 1.0, 1.0]},
+            {
+              "name": "camera",
+              "controller": {
+                "type": "orbit",
+                "target": "Target",
+                "distance": 4.0,
+                "yaw_degrees": 90.0,
+                "pitch_degrees": 0.0,
+                "damping": 0.0
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+})json");
+    writeTextFile(root / "assets.json", R"json({"models":[]})json");
+    writeTextFile(root / "ui" / "ui.json", R"json({"images":[]})json");
+    writeTextFile(root / "shaders" / "fullscreen.vert", stemFullscreenVertexShader());
+    writeTextFile(root / "shaders" / "orbit_camera.frag", orbitCameraControllerFragmentShader());
+    writeTextFile(root / "passes" / "main.json", R"json({
+  "render_targets": [],
+  "rendering_passes": [
+    {
+      "name": "main",
+      "passes": [
+        {
+          "name": "orbit_camera",
+          "type": "fullscreen",
+          "output": {"color": "swapchain", "depth": null},
+          "shader": {
+            "vertex": "shaders/fullscreen",
+            "fragment": "shaders/orbit_camera"
+          },
+          "push_constants": "projection_view"
+        }
+      ]
+    }
+  ]
+})json");
+}
+
 void renderStemFullscreenFrame(RenderTarget &render_target) {
     GET_MODULE(Renderer).render();
     GET_MODULE(VulkanManageCore).waitIdle();
@@ -886,6 +968,21 @@ void renderComputeFrame(RenderTarget &render_target) {
 }
 
 void renderOrthographicCameraFrame(RenderTarget &render_target) {
+    GET_MODULE(Renderer).render();
+    GET_MODULE(VulkanManageCore).waitIdle();
+    (void)render_target;
+}
+
+void renderOrbitCameraControllerFrame(RenderTarget &render_target) {
+    auto &engine_time = GET_MODULE(EngineTime);
+    engine_time.setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
+    engine_time.setTime(2.0);
+
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    GET_MODULE(SceneLoader).load("default_scene");
+
+    GameContext game_context;
+    internal::updateRegisteredGameSystems(game_context);
     GET_MODULE(Renderer).render();
     GET_MODULE(VulkanManageCore).waitIdle();
     (void)render_target;
@@ -950,6 +1047,10 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         writeOrthographicCameraProject(temp_dir);
         GET_MODULE(PathResolver).setup(temp_dir, false);
         GET_MODULE(ProjectSource).setProjectData(makeFeatureProjectJson().dump());
+    } else if (golden_case.mode == "orbit_camera_controller") {
+        writeOrbitCameraControllerProject(temp_dir);
+        GET_MODULE(PathResolver).setup(temp_dir, false);
+        GET_MODULE(ProjectSource).setProjectData(makeFeatureProjectJson().dump());
     } else {
         const auto scene_path = temp_dir / "scene.json";
         const auto asset_path = temp_dir / "assets.json";
@@ -987,6 +1088,8 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         renderComputeFrame(render_target);
     } else if (golden_case.mode == "orthographic_camera") {
         renderOrthographicCameraFrame(render_target);
+    } else if (golden_case.mode == "orbit_camera_controller") {
+        renderOrbitCameraControllerFrame(render_target);
     } else {
         throw std::runtime_error("unknown golden case mode: " + golden_case.mode);
     }
@@ -1045,9 +1148,9 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     setupLogger();
     const auto cases = discoverGoldenCases();
 #if PELICAN_WITH_VAT
-    REQUIRE(cases.size() == 12);
+    REQUIRE(cases.size() == 13);
 #else
-    REQUIRE(cases.size() == 11);
+    REQUIRE(cases.size() == 12);
 #endif
 
     for (const auto &golden_case : cases) {
