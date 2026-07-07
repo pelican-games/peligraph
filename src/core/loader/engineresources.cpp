@@ -10,7 +10,13 @@ namespace Pelican {
 
 namespace {
 
-constexpr std::array<std::string_view, 30> registered_ids{
+#if PELICAN_WITH_VAT
+constexpr size_t registeredResourceCount = 30;
+#else
+constexpr size_t registeredResourceCount = 29;
+#endif
+
+constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
     "bloom_blur_h.frag.spv",
     "bloom_blur_v.frag.spv",
     "bloom_composite.frag.spv",
@@ -40,7 +46,9 @@ constexpr std::array<std::string_view, 30> registered_ids{
     "tonemap.vert",
     "ui.frag.spv",
     "ui.vert.spv",
+#if PELICAN_WITH_VAT
     "vat.vert.spv",
+#endif
 };
 
 } // namespace
@@ -91,7 +99,9 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("tonemap.vert")
     PELICAN_ENGINE_RESOURCE("ui.frag.spv")
     PELICAN_ENGINE_RESOURCE("ui.vert.spv")
+#if PELICAN_WITH_VAT
     PELICAN_ENGINE_RESOURCE("vat.vert.spv")
+#endif
 #undef PELICAN_ENGINE_RESOURCE
 
     return std::nullopt;

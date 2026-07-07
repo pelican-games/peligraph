@@ -1,8 +1,12 @@
 target_sources(pelican_core PRIVATE
     vertbufcontainer.cpp
-    vatformat.cpp
     gltf.cpp
 )
+if(PELICAN_WITH_VAT)
+target_sources(pelican_core PRIVATE
+    vatformat.cpp
+)
+endif()
 
 FetchContent_Declare(
   tinygltf

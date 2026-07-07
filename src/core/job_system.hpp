@@ -7,6 +7,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
+#include <exception>
 #include "log.hpp"
 
 namespace Pelican {
@@ -44,6 +45,7 @@ private:
     std::atomic<int> active_jobs{0};
     std::mutex wait_mutex;
     std::condition_variable wait_condition;
+    std::exception_ptr first_exception;
 };
 
 } // namespace Pelican

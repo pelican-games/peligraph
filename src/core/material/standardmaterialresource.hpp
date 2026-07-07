@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../build_features.hpp"
 #include "../container.hpp"
 #include "material.hpp"
 namespace Pelican {
@@ -15,7 +16,13 @@ DECLARE_MODULE(StandardMaterialResource) {
     StandardMaterialResource();
 
     ShaderBundleId standardVertShader() const { return std_vert; };
-    ShaderBundleId vatVertShader() const { return vat_vert; };
+    ShaderBundleId vatVertShader() const {
+#if PELICAN_WITH_VAT
+        return vat_vert;
+#else
+        throwBuildFeatureDisabled("PELICAN_WITH_VAT", "vat vertex shader is unavailable");
+#endif
+    };
     ShaderBundleId standardFragShader() const { return std_frag; };
     GlobalTextureId transparentTexture() const { return tex_transparent; };
     GlobalTextureId whiteTexture() const { return tex_white; };

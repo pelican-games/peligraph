@@ -24,7 +24,7 @@ PelicanCore::PelicanCore(std::string _settings_str, bool reserve_stdout_for_prot
     settings_str = _settings_str;
 }
 
-void PelicanCore::run() {
+bool PelicanCore::run() {
     try {
         FastModuleContainer container;
         GET_MODULE(ProjectSource).setSourceByData(settings_str);
@@ -40,8 +40,9 @@ void PelicanCore::run() {
 
     } catch (std::exception &e) {
         LOG_ERROR(logger, "Pelican fatal error : {}", e.what());
-        return;
+        return false;
     }
+    return true;
 }
 
 } // namespace Pelican

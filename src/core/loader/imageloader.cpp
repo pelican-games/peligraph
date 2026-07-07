@@ -1,5 +1,7 @@
 #include "imageloader.hpp"
 
+#include "../build_features.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -15,16 +17,50 @@
 #endif
 #endif
 
-#define TINYEXR_USE_MINIZ 0
-#define TINYEXR_USE_STB_ZLIB 1
-#define TINYEXR_IMPLEMENTATION
-#include <tinyexr.h>
+#if PELICAN_WITH_EXR
+    #define TINYEXR_USE_MINIZ 0
+    #define TINYEXR_USE_STB_ZLIB 1
+    #define TINYEXR_IMPLEMENTATION
+    #include <tinyexr.h>
+#endif
 
 #include <stb_image.h>
 
 namespace Pelican {
 
 namespace {
+
+std::string lowerExtension(const std::filesystem::path &path) {
+    auto extension = path.extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return extension;
+}
+
+bool isExrPath(const std::filesystem::path &path) {
+    return lowerExtension(path) == ".exr";
+}
+
+size_t checkedPixelCount(int width, int height, const std::filesystem::path &path) {
+    if (width <= 0 || height <= 0) {
+        throw std::runtime_error("Invalid image dimensions in " + path.string());
+    }
+
+    const auto w = static_cast<size_t>(width);
+    const auto h = static_cast<size_t>(height);
+    if (w > std::numeric_limits<size_t>::max() / h) {
+        throw std::runtime_error("Image is too large: " + path.string());
+    }
+    return w * h;
+}
+
+void ensureByteSize(size_t pixel_count, size_t bytes_per_pixel, const std::filesystem::path &path) {
+    if (pixel_count > std::numeric_limits<size_t>::max() / bytes_per_pixel) {
+        throw std::runtime_error("Image is too large: " + path.string());
+    }
+}
+
+#if PELICAN_WITH_EXR
 
 constexpr uint16_t halfOne = 0x3c00;
 
@@ -68,36 +104,6 @@ struct ExrImageHandle {
     ExrImageHandle(const ExrImageHandle &) = delete;
     ExrImageHandle &operator=(const ExrImageHandle &) = delete;
 };
-
-std::string lowerExtension(const std::filesystem::path &path) {
-    auto extension = path.extension().string();
-    std::transform(extension.begin(), extension.end(), extension.begin(),
-                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-    return extension;
-}
-
-bool isExrPath(const std::filesystem::path &path) {
-    return lowerExtension(path) == ".exr";
-}
-
-size_t checkedPixelCount(int width, int height, const std::filesystem::path &path) {
-    if (width <= 0 || height <= 0) {
-        throw std::runtime_error("Invalid image dimensions in " + path.string());
-    }
-
-    const auto w = static_cast<size_t>(width);
-    const auto h = static_cast<size_t>(height);
-    if (w > std::numeric_limits<size_t>::max() / h) {
-        throw std::runtime_error("Image is too large: " + path.string());
-    }
-    return w * h;
-}
-
-void ensureByteSize(size_t pixel_count, size_t bytes_per_pixel, const std::filesystem::path &path) {
-    if (pixel_count > std::numeric_limits<size_t>::max() / bytes_per_pixel) {
-        throw std::runtime_error("Image is too large: " + path.string());
-    }
-}
 
 std::runtime_error exrError(const std::filesystem::path &path, std::string_view message) {
     return std::runtime_error("Unsupported EXR texture " + path.string() + ": " + std::string{message});
@@ -278,6 +284,8 @@ LoadedImage loadExrFile(const std::filesystem::path &path) {
                             : packFloatExr(header.header, image.image, path);
 }
 
+#endif
+
 LoadedImage loadStbImageFile(const std::filesystem::path &path) {
     const auto path_string = path.string();
     int width = 0;
@@ -320,7 +328,14 @@ size_t LoadedImage::bytesPerPixel() const {
 }
 
 LoadedImage loadImageFile(const std::filesystem::path &path) {
-    return isExrPath(path) ? loadExrFile(path) : loadStbImageFile(path);
+    if (isExrPath(path)) {
+#if PELICAN_WITH_EXR
+        return loadExrFile(path);
+#else
+        throwBuildFeatureDisabled("PELICAN_WITH_EXR", ".exr texture loading is unavailable: " + path.string());
+#endif
+    }
+    return loadStbImageFile(path);
 }
 
 } // namespace Pelican

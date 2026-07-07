@@ -3,6 +3,12 @@ add_library(pelican_core log.cpp profiler.cpp job_system.cpp) # [BENCHMARK_ONLY]
 # settings
 set_target_properties(pelican_core PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 set_target_properties(pelican_core PROPERTIES CXX_STANDARD 20)
+target_compile_definitions(pelican_core PUBLIC
+  PELICAN_WITH_VAT=$<BOOL:${PELICAN_WITH_VAT}>
+  PELICAN_WITH_EXR=$<BOOL:${PELICAN_WITH_EXR}>
+  PELICAN_WITH_RPC=$<BOOL:${PELICAN_WITH_RPC}>
+  PELICAN_WITH_SEQPLAYER=$<BOOL:${PELICAN_WITH_SEQPLAYER}>
+)
 
 # modules
 add_subdirectory(resources)
@@ -54,7 +60,9 @@ target_compile_definitions(pelican_core PRIVATE
 target_link_libraries(pelican_core PRIVATE ${Vulkan_LIBRARIES})
 target_link_libraries(pelican_core PRIVATE VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_link_libraries(pelican_core PRIVATE glm)
+if(PELICAN_WITH_EXR)
 target_link_libraries(pelican_core PRIVATE tinyexr)
+endif()
 
 target_link_libraries(pelican_core PRIVATE nlohmann_json)
 

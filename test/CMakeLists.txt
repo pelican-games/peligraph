@@ -31,6 +31,7 @@ pelican_define_test(golden_image_test pelican_core VulkanMemoryAllocator VulkanM
 target_compile_definitions(pelican_test_golden_image_test PRIVATE
     VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
+    PELICAN_WITH_VAT=$<BOOL:${PELICAN_WITH_VAT}>
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     PELICAN_TEST_BINARY_DIR="${CMAKE_BINARY_DIR}"
 )
@@ -45,11 +46,16 @@ target_compile_definitions(pelican_test_headless_render_test PRIVATE
     VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic
 )
 pelican_define_test(hoge_test)
+if(PELICAN_WITH_EXR)
 pelican_define_test(imageloader_test pelican_core tinyexr)
+endif()
 pelican_define_test(inputstate_test pelican_core)
+if(PELICAN_WITH_RPC)
 pelican_define_test(jsonrpc_test pelican_core)
+endif()
 pelican_define_test(pathresolver_test pelican_core)
 target_compile_definitions(pelican_test_pathresolver_test PRIVATE
+    PELICAN_WITH_VAT=$<BOOL:${PELICAN_WITH_VAT}>
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 pelican_define_test(projectconfig_test pelican_core glm)
@@ -61,8 +67,12 @@ pelican_define_test(sceneformat_test pelican_core glm)
 target_compile_definitions(pelican_test_sceneformat_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
+if(PELICAN_WITH_SEQPLAYER)
 pelican_define_test(seqplayer_test pelican_core glm)
+endif()
+if(PELICAN_WITH_VAT)
 pelican_define_test(vatformat_test pelican_core glm)
+endif()
 pelican_define_test(shader_compile_test spirv-reflect-static stb)
 target_compile_definitions(pelican_test_shader_compile_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
@@ -100,37 +110,43 @@ target_compile_definitions(pelican_test_vulkan_headless_test PRIVATE
     VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic
 )
 
-add_test(
-    NAME seqplayer_headless_player
-    COMMAND ${CMAKE_COMMAND}
-        -DPLAYER=$<TARGET_FILE:pelican_player>
-        -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
-        -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/example
-        -DSEQ_FILE=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/seqplayer_two_objects.jsonl
-        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/seqplayer_headless
-        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_seqplayer_headless.cmake
-)
+if(PELICAN_WITH_SEQPLAYER)
+    add_test(
+        NAME seqplayer_headless_player
+        COMMAND ${CMAKE_COMMAND}
+            -DPLAYER=$<TARGET_FILE:pelican_player>
+            -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+            -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/example
+            -DSEQ_FILE=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/seqplayer_two_objects.jsonl
+            -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/seqplayer_headless
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_seqplayer_headless.cmake
+    )
+endif()
 
-add_test(
-    NAME vatplayer_headless_player
-    COMMAND ${CMAKE_COMMAND}
-        -DPLAYER=$<TARGET_FILE:pelican_player>
-        -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
-        -DWRITER=$<TARGET_FILE:pelican_test_vat_fixture_writer>
-        -DEXAMPLE_PASS=${CMAKE_SOURCE_DIR}/projects/example/passes/main_rendering_config.json
-        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/vatplayer_headless
-        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_vatplayer_headless.cmake
-)
+if(PELICAN_WITH_VAT)
+    add_test(
+        NAME vatplayer_headless_player
+        COMMAND ${CMAKE_COMMAND}
+            -DPLAYER=$<TARGET_FILE:pelican_player>
+            -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+            -DWRITER=$<TARGET_FILE:pelican_test_vat_fixture_writer>
+            -DEXAMPLE_PASS=${CMAKE_SOURCE_DIR}/projects/example/passes/main_rendering_config.json
+            -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/vatplayer_headless
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_vatplayer_headless.cmake
+    )
+endif()
 
-add_test(
-    NAME rpc_headless_player
-    COMMAND ${CMAKE_COMMAND}
-        -DPLAYER=$<TARGET_FILE:pelican_player>
-        -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
-        -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/example
-        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/rpc_headless
-        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_rpc_headless.cmake
-)
+if(PELICAN_WITH_RPC)
+    add_test(
+        NAME rpc_headless_player
+        COMMAND ${CMAKE_COMMAND}
+            -DPLAYER=$<TARGET_FILE:pelican_player>
+            -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+            -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/example
+            -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/rpc_headless
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_rpc_headless.cmake
+    )
+endif()
 
 add_test(
     NAME compute_buffer_headless_player
