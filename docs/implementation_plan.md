@@ -848,6 +848,30 @@ pressed / axis2 が期待どおり(複数フレーム・セット切替含む)
 (b) スモーク(example コード込みビルド + headless)成功 (c) WASD 手動確認の記録
 (d) adding_features.md レシピ 5 追記(docs は別コミット) (e) ecs コア変更禁止。
 
+### WP44: 解釈レイヤのターゲット分離(pelican_project)
+
+参照: **`design_project_interpretation_layer.md` §2・§3-3 が仕様の正**。
+**このWPは「ファイル移動 + CMake ターゲット新設 + include 修正」以外を含まない**
+(WP3 の流儀。ロジック変更・リファクタ禁止。挙動不変 = 全テスト・golden 維持)。
+
+1. 静的ライブラリターゲット `pelican_project` を `src/project/` に新設。
+   **許可依存: std / nlohmann_json / tinygltf(vatformat が要する場合のみ)**。
+   vulkan・quill・container.hpp(モジュール機構)・b::embed への依存禁止
+2. 移動候補(**各ファイルの依存純度を確認し、条件を満たすものだけ移動**。
+   除外したものと理由をコミットメッセージに列挙):
+   sceneformat / frameplanner / featurecompose / importmanifest(loader)、
+   vatformat(model)、jsonrpc(communication)、actionmap・inputstate(os)
+3. pelican_core が pelican_project をリンク。既存 include パスを修正。
+   PathResolver(モジュール)は**移動しない**(純ロジック分離は将来の別 WP)
+4. devcli も pelican_project を直接リンクできることを確認(dist-config /
+   import が使う解釈コードの独立性の実証)
+5. GPU 不要テスト群のリンク先を pelican_project に切替可能なものは切替
+   (任意。無理はしない)
+
+受け入れ基準: (a) 全テスト・golden 無変更でグリーン (b) `pelican_project` が
+禁止依存を含まない(ターゲットのリンク一覧で機械確認し、確認方法をコミットに記録)
+(c) diff が移動 + CMake + include 修正のみであること(PR 説明で明示)。
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **最小コマンド層**: (1) ファイル連携済み → (2) WP27 実装済み → (3) `load_gltf` / `update_transforms` は **2026-07-07 に実装 GO 決定**。前提はすべて充足(宛先 = scene v1 の objects[].name / アセット意味論 = WP21)。設計時要件: **複数インスタンス運用**(エージェントが複数エンジンを並行駆動する使い方) — stdio rpc は 1 プロセス 1 クライアントの現行構造を維持しつつ、`get_status`(instance id・project・フレーム番号)を追加してインスタンス識別可能に。プロジェクトは読み取り専有なので並行起動は安全(書き込み系操作を入れる際に排他を設計)。複数クライアント同時接続は TCP/WebSocket 展開時の課題として分離
