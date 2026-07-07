@@ -673,21 +673,54 @@ renderer・既存 renderingpass 実行コードに変更なし。golden 全維�
 
 受け入れ基準: 上記 (a)〜(c) + プラン(WP33)との整合が実行時 assert で守られる。
 
-### WP35: フレームグラフ F2(render 切替 + プランダンプ + rpc)
+### WP35: フレームグラフ F2 残作業(プランダンプ + rpc + 明示エッジ検証)
 
-参照: `design_compute_task_graph.md` §1(手詰め層)・§5 F2。依存: WP27, 33, 34。
+(2026-07-04 縮小: **render 切替の中核は WP34 が実装済み** — framegraphruntime が
+render/compute 両ノードをプラン駆動で実行し、golden 全維持で意味論保存を実証済み。
+本 WP は手詰め層の可視化と契約検証のみ。規模: 中 → 小)
 
-1. render pass の実行順をプランナ由来に切替(F0 のシャドー検証により既存 config
-   では同一計画 = 挙動不変が構成的に保証されている。golden で再確認)
-2. `--dump-frame-plan`(起動時に stderr/ファイルへ)+ rpc `get_frame_plan`
-   (コマンド層にメソッド追加。stdout プロトコル純度は維持)
-3. `after` / `before` の明示エッジを render pass でも受理(WP33 のパーサは
-   受理済み — 実行に反映されることの確認)
-4. プラン比較テストを CI の常設に昇格(example + feature 使用 config)
+参照: `design_compute_task_graph.md` §1(手詰め層)・§7-4(プラン JSON スキーマ)。
+依存: WP27, 33, 34。
 
-受け入れ基準: (a) golden 全維持 (b) 明示エッジで順序が変わることの golden or
-プラン比較テスト (c) `get_frame_plan` の結合テスト(rpc 経由でプラン JSON が返り、
-スキーマが WP33 の fixture と一致) (d) 通常起動無変更。
+1. `--dump-frame-plan`: 起動時、合成・プラン確定後の `pelican.frame_plan` JSON を
+   **stderr またはファイル**へ出力(stdout 禁止 — rpc プロトコル純度)
+2. rpc `get_frame_plan`: 現在の実行プランを result で返す
+   (スキーマは WP33 の fixture `plans/example_main_render.json` と同一)
+3. `after` / `before` 明示エッジが実行順に反映されることの検証
+   (パーサは WP33 で受理済み・実行はプラン駆動なので、テストが主작업。
+   プラン比較 fixture で「エッジ追加 → レベル構成が変わる」を固定)
+4. プラン比較テストの CI 常設化(feature 使用 config のプラン fixture を追加)
+
+受け入れ基準: (a) `get_frame_plan` の結合テスト(rpc 経由でスキーマ準拠 JSON、
+stdout 純度維持 — run_rpc_headless の流儀) (b) `--dump-frame-plan` の出力検証
+(c) 明示エッジのプラン比較テスト (d) golden 全維持・通常起動無変更。
+
+### WP39: 入力アクション層(I1)
+
+参照: **`design_input_actions.md` §2 が仕様の正**(§1 四層・§6 I1)。依存: WP37。規模: 中。
+
+1. `core/os/actionmap.{hpp,cpp}`(純ロジック・モジュール非依存):
+   `pelican.input_actions` v1 のパース — schema/version ゲート、action_sets、
+   action type `button` / `axis1` / `axis2` / `pose`(pose は**型のみ受理**、
+   binding 解決は「OpenXR 未対応」の明確なエラー)。binding 記法
+   `kbd:` / `mouse:` は解決、`pad:` / `xr:` は受理のみ(解決は後続 WP)。
+   合成 binding は v1 組み込み 2 つだけ(`kbd:wasd`、`kbd:arrows` → axis2)
+2. アクション評価: InputSnapshot(WP37)→ action set スタック(上のセットが
+   消費した入力は下に流れない)→ ActionState(pressed / released / held / axis 値)
+3. 読み込み: `basic_config.input_actions_json`(**任意キー**。未指定なら
+   アクション層は完全素通り = 既存挙動不変)。PathResolver 経由。
+   [PF] v6.2 の追記に対応(形式拡張はエンジン先行 — サブセット原則)
+4. ゲーム API: `userpublic` に Actions 静的 API(`isPressed("jump")` /
+   `axis2("move")` 等)。KeyCode 直読みの UserInput は残す(低レベル API として)
+5. fixture: `test/fixtures/input_actions/` に valid / invalid(未知 type・
+   action 名重複・不正 binding・pose の binding 解決要求)+ expectations.json
+6. テスト: パース・セットスタック消費・エッジ評価の純ロジックテスト
+   (GPU / GLFW 不要。イベント列 → スナップショット → アクション状態)
+
+受け入れ基準: (a) `input_actions_json` 未指定で全既存テスト・golden 維持
+(b) fixture 駆動テスト (c) サンプル actions.json + キーイベント列で
+pressed / axis2 が期待どおり(複数フレーム・セット切替含む)
+(d) `src/core/ecs/` 変更禁止の維持。
 
 ## 3. 保留中のトラック(WP 化待ち)
 
@@ -738,9 +771,9 @@ renderer・既存 renderingpass 実行コードに変更なし。golden 全維�
 | 10 | WP20(a→b), WP21(+ WW5・houdini-adapter は別リポジトリ) | WP20 と WP21 は並列可。競合: test/CMakeLists.txt(追記のみ)とルート CMakeLists FetchContent 節(WP21 のみ追記)。WP20 = model/playback/shader 系、WP21 = devcli/loader 系で分離 |
 | 11 | WP28, WP33, WP37 | 並列 3 本。WP28 = featurecompose + shader/pipelinefactory 系(renderingpassconfigloader は WP28 専有)、WP33 = frameplanner 新設 + テストのみ(**実行系変更禁止**)、WP37 = os/入力系。共有追記は test/CMakeLists.txt のみ |
 | 12 | WP29, WP30 | WP28 マージ後。WP29 = renderer 計測系、WP30 = feature アセット中心で接触面小 |
-| 13 | WP34 | 実行系の大物。単独で走らせる |
-| 14 | WP35(+ WP31 詳細登録) | WP35 は renderer の順序切替のため WP34 マージ後 |
-| 15 | WP31, WP32, WP36, WP38 | 着手前に詳細登録 |
+| 13 | WP34 | 実行系の大物。単独で走らせる(完了 — render 切替も先取り実装) |
+| 14 | WP35, WP39(+ WW6 別リポジトリ) | 並列 3 本。WP35 = rpc/framegraphruntime 周辺、WP39 = os/入力 + loader 小、WW6 = web。共有は test/CMakeLists.txt 追記のみ |
+| 15 | WP31, WP32, WP36, WP38, 入力 I2〜I4 | 着手前に詳細登録 |
 
 統合チェックポイント: ウェーブ 1 完了後と WP7 完了後に、人間が pelican_player の手動起動確認
 (`rendering_phase1_review.md` の Validation Run と同じ流儀)を行う。WP16 以降は

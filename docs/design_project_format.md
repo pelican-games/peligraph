@@ -8,6 +8,10 @@ v6.1(2026-07-02 追記・形式自体の変更なし): §5-3 の暗黙プロジ�
 親ディレクトリ方向へ `projects/example/project.json` を探索して暗黙ルートにする
 (WP18c 実装レビューで受理。POST_BUILD コピー廃止後も `--project` なし互換起動を
 成立させるため。選ばれた root は従来どおり WARN ログで開示される)。
+v6.2(2026-07-05 追記・任意キー追加): `basic_config.input_actions_json`(任意)を
+追加 — 入力アクション定義 `pelican.input_actions`(`design_input_actions.md`)への
+参照。未指定なら従来挙動。web は理解するまで無視してよい(表示に影響しないため
+features とは異なり無視で安全 — [PFW] §3 の未知キー規則どおり)。
 実装順: P0(ProjectSource バグ、684494f で完了)→ PathResolver 型+
 EngineResourceRegistry 最小実装 → `--project` / 読み込み置換 / example 切り出し。
 前提: `design_roadmap_renderworld.md`(ロードマップ・肥大化対策 §6)、
