@@ -894,6 +894,52 @@ pressed / axis2 が期待どおり(複数フレーム・セット切替含む)
 解析解ケースが境界条件(接する・かすめる)を含む (c) 純ロジック規律
 (GET_MODULE / vulkan / quill 依存なし) (d) 既存テスト・golden 無変更。
 
+### WP47: 物理クエリ P2(シーン接続 + GameContext + 可視化)
+
+参照: **`design_physics_queries.md` §1〜3・P2 が仕様の正**。依存: WP43, 46。
+
+1. collider コンポーネント拡充: 既存 `userpublic/components/collider.{hpp,cpp}`
+   (SphereColliderComponent の骨)を土台に box / capsule を追加。
+   scene v1 の文法(`{"name": "collider", "shape": "...", ...寸法}`)、
+   serialize(`ref`)連携で loadByJson 自動化
+2. クエリワールド: `core/phys/physworld.{hpp,cpp}` — collider を持つオブジェクトの
+   形状 + transform + 名前を保持し、WP46 の physquery に流す薄い集約。
+   transform 追従は v1 = 毎フレーム再収集(設計 未決 2 — 計測で見直す前提)。
+   **ワールド組み立ては純ロジック関数**(コンポーネントデータ列 → 形状列)に
+   分離して GPU 不要テスト可能に
+3. バインダ: SceneLoader が collider コンポーネントを physworld へ振り分け
+   (light の前例と同じ様式)
+4. `GameContext` に `raycastClosest` / `overlapAll` を追加
+5. debug_draw feature 参照時、collider のワイヤ表示(sphere = 3 円、box = 12 辺、
+   capsule = 近似)を DebugDraw へ積む
+6. テスト: (a) 組み立て純ロジック + raycast 期待ヒット(GPU 不要)
+   (b) collider パースの fixture(valid/invalid: 未知 shape・負の寸法)
+   (c) 可視化 golden 1 ケース (d) collider なしシーンの挙動不変(golden 全維持)
+
+受け入れ基準: 上記 a〜d + `src/core/ecs/` 変更禁止 + §0 共通規則。
+
+### WP48: カメラ C1(glTF 1:1 + orthographic + set_camera)
+
+参照: **`design_camera_system.md` §1〜2・C1 が仕様の正**。依存: WP25, 42。
+
+1. camera コンポーネントのパラメータを glTF 1:1 に(perspective:
+   yfov/znear/zfar/aspect(省略可 = ビューポート追従)、orthographic:
+   xmag/ymag/znear/zfar)。**既存キー(fov_y/near/far)はエイリアスとして受理**
+   (既存シーン無変更 — golden 全維持)
+2. orthographic の射影行列分岐(renderer/camera 系)
+3. 複数カメラ: シーン内に camera コンポーネント複数可。アクティブカメラの切替を
+   `GameContext::setCamera(name)` と rpc `set_camera {name}` の両方に追加
+   (宛先は objects[].name。未知名はエラー)
+4. テスト: (a) 両カメラ型 + エイリアスのパース fixture (b) orthographic golden
+   1 ケース (c) rpc set_camera の結合テスト(切替前後で PNG 相違 + 決定性)
+   (d) 既存シーンの golden 全維持
+5. **注意**: カメラ既定値は現在 `basic_config.camera`(ProjectBasicConfig)→
+   renderer の経路。`src/core/ecs/` 以下(predefined/camera.hpp 含む)は
+   **変更禁止** — 拡張パラメータはコンポーネント params とレンダラ側で受け、
+   どうしても ecs 側変更が必要と判断したら実装せず BLOCKED.md で報告
+
+受け入れ基準: 上記 a〜d + ecs 変更禁止 + §0 共通規則。
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **最小コマンド層**: (1) ファイル連携済み → (2) WP27 実装済み → (3) `load_gltf` / `update_transforms` は **2026-07-07 に実装 GO 決定**。前提はすべて充足(宛先 = scene v1 の objects[].name / アセット意味論 = WP21)。設計時要件: **複数インスタンス運用**(エージェントが複数エンジンを並行駆動する使い方) — stdio rpc は 1 プロセス 1 クライアントの現行構造を維持しつつ、`get_status`(instance id・project・フレーム番号)を追加してインスタンス識別可能に。プロジェクトは読み取り専有なので並行起動は安全(書き込み系操作を入れる際に排他を設計)。複数クライアント同時接続は TCP/WebSocket 展開時の課題として分離
