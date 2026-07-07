@@ -62,12 +62,24 @@ InputEvent InputEvent::cursorMove(float x, float y) noexcept {
     };
 }
 
+InputEvent InputEvent::axis(float x, float y) noexcept {
+    return InputEvent{
+        .type = Type::axis,
+        .axis_x = x,
+        .axis_y = y,
+    };
+}
+
 void InputStateCore::queueButtonEvent(KeyCode code, bool pressed) {
     queueEvent(InputEvent::button(code, pressed));
 }
 
 void InputStateCore::queueCursorMove(float x, float y) {
     queueEvent(InputEvent::cursorMove(x, y));
+}
+
+void InputStateCore::queueAxisEvent(float x, float y) {
+    queueEvent(InputEvent::axis(x, y));
 }
 
 void InputStateCore::queueEvent(InputEvent event) {
@@ -84,6 +96,8 @@ void InputStateCore::beginFrame() {
     const float previous_mouse_x = mouse_x;
     const float previous_mouse_y = mouse_y;
     bool saw_mouse_move = false;
+    float axis_delta_x = 0.0f;
+    float axis_delta_y = 0.0f;
 
     for (const auto &event : pending_events) {
         switch (event.type) {
@@ -109,15 +123,21 @@ void InputStateCore::beginFrame() {
             mouse_y = event.mouse_y;
             mouse_position_known = true;
             break;
+        case InputEvent::Type::axis:
+            axis_delta_x += event.axis_x;
+            axis_delta_y += event.axis_y;
+            break;
         }
     }
 
     next_snapshot.down = current_down;
     next_snapshot.mouse_x = mouse_x;
     next_snapshot.mouse_y = mouse_y;
+    next_snapshot.mouse_delta_x = axis_delta_x;
+    next_snapshot.mouse_delta_y = axis_delta_y;
     if (saw_mouse_move && had_mouse_position) {
-        next_snapshot.mouse_delta_x = mouse_x - previous_mouse_x;
-        next_snapshot.mouse_delta_y = mouse_y - previous_mouse_y;
+        next_snapshot.mouse_delta_x += mouse_x - previous_mouse_x;
+        next_snapshot.mouse_delta_y += mouse_y - previous_mouse_y;
     }
 
     pending_events.clear();

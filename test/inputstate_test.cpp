@@ -68,6 +68,19 @@ TEST_CASE("InputStateCore stores mouse position and per-frame delta", "[inputsta
     REQUIRE(input.currentSnapshot().mouse_delta_y == -1.0f);
 }
 
+TEST_CASE("InputStateCore applies injected axis deltas for one frame", "[inputstate]") {
+    InputStateCore input;
+
+    input.queueAxisEvent(3.0f, -2.0f);
+    input.beginFrame();
+    REQUIRE(input.currentSnapshot().mouse_delta_x == 3.0f);
+    REQUIRE(input.currentSnapshot().mouse_delta_y == -2.0f);
+
+    input.beginFrame();
+    REQUIRE(input.currentSnapshot().mouse_delta_x == 0.0f);
+    REQUIRE(input.currentSnapshot().mouse_delta_y == 0.0f);
+}
+
 TEST_CASE("InputStateCore clear returns the snapshot to empty headless state", "[inputstate]") {
     InputStateCore input;
 

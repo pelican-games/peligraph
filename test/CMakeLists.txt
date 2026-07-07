@@ -162,6 +162,27 @@ if(PELICAN_WITH_RPC)
             -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/rpc_set_camera_headless
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_rpc_set_camera_headless.cmake
     )
+    add_executable(
+        pelican_test_rpc_inject_input_player
+        ${CMAKE_SOURCE_DIR}/src/player/main.cpp
+        ${CMAKE_SOURCE_DIR}/projects/example/code/playercontrol.cpp
+    )
+    set_target_properties(pelican_test_rpc_inject_input_player PROPERTIES CXX_STANDARD 20)
+    target_link_libraries(pelican_test_rpc_inject_input_player PRIVATE pelican_core argparse)
+    target_include_directories(pelican_test_rpc_inject_input_player PRIVATE
+        ${Vulkan_INCLUDE_DIRS}
+        ${CMAKE_SOURCE_DIR}/projects/example
+        ${CMAKE_SOURCE_DIR}/projects/example/code
+    )
+    add_test(
+        NAME rpc_inject_input_headless_player
+        COMMAND ${CMAKE_COMMAND}
+            -DPLAYER=$<TARGET_FILE:pelican_test_rpc_inject_input_player>
+            -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_test_rpc_inject_input_player>
+            -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/example
+            -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/rpc_inject_input_headless
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_rpc_inject_input_headless.cmake
+    )
 endif()
 
 add_test(

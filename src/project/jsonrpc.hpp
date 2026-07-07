@@ -3,8 +3,10 @@
 #include <nlohmann/json.hpp>
 
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace Pelican {
 
@@ -34,9 +36,32 @@ struct JsonRpcParseResult {
     std::optional<JsonRpcError> error;
 };
 
+class JsonRpcInvalidParamsError : public std::runtime_error {
+  public:
+    using std::runtime_error::runtime_error;
+};
+
+enum class RpcInputInjectionEventType {
+    keyDown,
+    keyUp,
+    mouseMove,
+    mouseDown,
+    mouseUp,
+    axis,
+};
+
+struct RpcInputInjectionEvent {
+    RpcInputInjectionEventType type = RpcInputInjectionEventType::keyDown;
+    std::string name;
+    double x = 0.0;
+    double y = 0.0;
+    double value = 0.0;
+};
+
 JsonRpcParseResult parseJsonRpcRequest(std::string_view line);
 JsonRpcError makeJsonRpcError(nlohmann::json id, int code, std::string message);
 JsonRpcError makeJsonRpcError(nlohmann::json id, int code, std::string message, nlohmann::json data);
+std::vector<RpcInputInjectionEvent> parseInjectInputParams(const nlohmann::json &params);
 std::string serializeJsonRpcResult(const nlohmann::json &id, const nlohmann::json &result);
 std::string serializeJsonRpcError(const JsonRpcError &error);
 

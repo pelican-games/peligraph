@@ -1,5 +1,6 @@
 #include "jsonrpc.hpp"
 
+#include <cstddef>
 #include <utility>
 
 namespace Pelican {
@@ -22,6 +23,80 @@ JsonRpcParseResult requestResult(JsonRpcRequest request) {
     JsonRpcParseResult result;
     result.request = std::move(request);
     return result;
+}
+
+std::string eventContext(std::size_t index) {
+    return "inject_input events[" + std::to_string(index) + "]";
+}
+
+const nlohmann::json &requireObjectParams(const nlohmann::json &params, const std::string &method) {
+    if (!params.is_object()) {
+        throw JsonRpcInvalidParamsError(method + " params must be an object");
+    }
+    return params;
+}
+
+const nlohmann::json &requireArrayField(const nlohmann::json &object, const char *name, const std::string &method) {
+    if (!object.contains(name) || !object.at(name).is_array()) {
+        throw JsonRpcInvalidParamsError(method + " params requires array field '" + std::string{name} + "'");
+    }
+    return object.at(name);
+}
+
+std::string requireStringField(const nlohmann::json &object, const char *name, const std::string &context) {
+    if (!object.contains(name) || !object.at(name).is_string()) {
+        throw JsonRpcInvalidParamsError(context + " requires string field '" + std::string{name} + "'");
+    }
+    auto value = object.at(name).get<std::string>();
+    if (value.empty()) {
+        throw JsonRpcInvalidParamsError(context + " field '" + std::string{name} + "' must not be empty");
+    }
+    return value;
+}
+
+double requireNumberField(const nlohmann::json &object, const char *name, const std::string &context) {
+    if (!object.contains(name) || !object.at(name).is_number()) {
+        throw JsonRpcInvalidParamsError(context + " requires numeric field '" + std::string{name} + "'");
+    }
+    return object.at(name).get<double>();
+}
+
+RpcInputInjectionEvent parseInjectInputEvent(const nlohmann::json &event_json, std::size_t index) {
+    const auto context = eventContext(index);
+    if (!event_json.is_object()) {
+        throw JsonRpcInvalidParamsError(context + " must be an object");
+    }
+
+    const auto type = requireStringField(event_json, "type", context);
+    if (type == "key_down" || type == "key_up") {
+        return RpcInputInjectionEvent{
+            .type = type == "key_down" ? RpcInputInjectionEventType::keyDown : RpcInputInjectionEventType::keyUp,
+            .name = requireStringField(event_json, "key", context + " type '" + type + "'"),
+        };
+    }
+    if (type == "mouse_move") {
+        return RpcInputInjectionEvent{
+            .type = RpcInputInjectionEventType::mouseMove,
+            .x = requireNumberField(event_json, "x", context + " type 'mouse_move'"),
+            .y = requireNumberField(event_json, "y", context + " type 'mouse_move'"),
+        };
+    }
+    if (type == "mouse_down" || type == "mouse_up") {
+        return RpcInputInjectionEvent{
+            .type = type == "mouse_down" ? RpcInputInjectionEventType::mouseDown
+                                         : RpcInputInjectionEventType::mouseUp,
+            .name = requireStringField(event_json, "button", context + " type '" + type + "'"),
+        };
+    }
+    if (type == "axis") {
+        return RpcInputInjectionEvent{
+            .type = RpcInputInjectionEventType::axis,
+            .name = requireStringField(event_json, "axis", context + " type 'axis'"),
+            .value = requireNumberField(event_json, "value", context + " type 'axis'"),
+        };
+    }
+
+    throw JsonRpcInvalidParamsError(context + " has unknown event type '" + type + "'");
 }
 
 } // namespace
@@ -82,6 +157,18 @@ JsonRpcParseResult parseJsonRpcRequest(std::string_view line) {
         request.params = document.at("params");
     }
     return requestResult(std::move(request));
+}
+
+std::vector<RpcInputInjectionEvent> parseInjectInputParams(const nlohmann::json &params) {
+    const auto &object = requireObjectParams(params, "inject_input");
+    const auto &events_json = requireArrayField(object, "events", "inject_input");
+
+    std::vector<RpcInputInjectionEvent> events;
+    events.reserve(events_json.size());
+    for (std::size_t i = 0; i < events_json.size(); ++i) {
+        events.push_back(parseInjectInputEvent(events_json.at(i), i));
+    }
+    return events;
 }
 
 std::string serializeJsonRpcResult(const nlohmann::json &id, const nlohmann::json &result) {
