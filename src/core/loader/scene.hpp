@@ -36,6 +36,7 @@ DECLARE_MODULE(SceneLoader) {
 
     void load(SceneId scene_id);
     bool hasObjectTransform(std::string_view name) const;
+    SceneObjectTransform objectTransform(std::string_view name) const;
     void applyObjectTransform(std::string_view name, const SceneObjectTransform &transform);
     std::filesystem::path loadTransientGltf(std::string_view path_ref, const std::optional<std::string> &name);
 };

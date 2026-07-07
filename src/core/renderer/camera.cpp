@@ -95,6 +95,106 @@ const nlohmann::json *optionalObject(const nlohmann::json &json, const char *nam
     return &*it;
 }
 
+std::string checkedString(const nlohmann::json &value, const std::string &field, const std::string &camera_name) {
+    if (!value.is_string()) {
+        throw std::runtime_error("camera '" + camera_name + "' field '" + field + "' must be a string");
+    }
+    return value.get<std::string>();
+}
+
+float requireControllerNumber(const nlohmann::json &controller, const char *field,
+                              const std::string &camera_name) {
+    const auto it = controller.find(field);
+    if (it == controller.end()) {
+        throw std::runtime_error("camera '" + camera_name + "' controller requires numeric field '" +
+                                 std::string{field} + "'");
+    }
+    return checkedNumber(*it, std::string{"controller."} + field, camera_name);
+}
+
+std::optional<float> optionalControllerNumber(const nlohmann::json &controller, const char *field,
+                                              const std::string &camera_name) {
+    const auto it = controller.find(field);
+    if (it == controller.end()) {
+        return std::nullopt;
+    }
+    return checkedNumber(*it, std::string{"controller."} + field, camera_name);
+}
+
+float optionalControllerAngle(const nlohmann::json &controller, const char *field, const char *degrees_field,
+                              const std::string &camera_name, float fallback) {
+    if (const auto radians = optionalControllerNumber(controller, field, camera_name)) {
+        return *radians;
+    }
+    if (const auto degrees = optionalControllerNumber(controller, degrees_field, camera_name)) {
+        return degreesToRadians(*degrees);
+    }
+    return fallback;
+}
+
+float optionalControllerNonNegative(const nlohmann::json &controller, const char *field,
+                                    const std::string &camera_name, float fallback) {
+    const auto value = optionalControllerNumber(controller, field, camera_name).value_or(fallback);
+    if (value < 0.0f) {
+        throw std::runtime_error("camera '" + camera_name + "' controller field '" + field +
+                                 "' must be non-negative");
+    }
+    return value;
+}
+
+float requireControllerPositive(const nlohmann::json &controller, const char *field,
+                                const std::string &camera_name) {
+    const auto value = requireControllerNumber(controller, field, camera_name);
+    if (value <= 0.0f) {
+        throw std::runtime_error("camera '" + camera_name + "' controller field '" + field +
+                                 "' must be positive");
+    }
+    return value;
+}
+
+std::string requireControllerString(const nlohmann::json &controller, const char *field,
+                                    const std::string &camera_name) {
+    const auto it = controller.find(field);
+    if (it == controller.end()) {
+        throw std::runtime_error("camera '" + camera_name + "' controller requires string field '" +
+                                 std::string{field} + "'");
+    }
+    return checkedString(*it, std::string{"controller."} + field, camera_name);
+}
+
+std::string requireControllerNonEmptyString(const nlohmann::json &controller, const char *field,
+                                            const std::string &camera_name) {
+    auto value = requireControllerString(controller, field, camera_name);
+    if (value.empty()) {
+        throw std::runtime_error("camera '" + camera_name + "' controller field '" + field +
+                                 "' must not be empty");
+    }
+    return value;
+}
+
+glm::vec3 readControllerVec3(const nlohmann::json &array, const std::string &field,
+                             const std::string &camera_name) {
+    if (!array.is_array() || array.size() != 3) {
+        throw std::runtime_error("camera '" + camera_name + "' controller field '" + field +
+                                 "' must be a vec3 array");
+    }
+    return glm::vec3{
+        checkedNumber(array.at(0), std::string{"controller."} + field, camera_name),
+        checkedNumber(array.at(1), std::string{"controller."} + field, camera_name),
+        checkedNumber(array.at(2), std::string{"controller."} + field, camera_name),
+    };
+}
+
+glm::vec3 requireControllerVec3(const nlohmann::json &controller, const char *field,
+                                const std::string &camera_name) {
+    const auto it = controller.find(field);
+    if (it == controller.end()) {
+        throw std::runtime_error("camera '" + camera_name + "' controller requires vec3 field '" +
+                                 std::string{field} + "'");
+    }
+    return readControllerVec3(*it, field, camera_name);
+}
+
 bool hasAnyCameraProjectionParam(const nlohmann::json &camera_component) {
     static constexpr const char *fields[] = {
         "type", "perspective", "orthographic", "yfov", "fov_y", "znear", "near",
@@ -174,6 +274,83 @@ CameraProjectionSpec parseSceneCameraProjection(const nlohmann::json &camera_com
     return projection;
 }
 
+const nlohmann::json *findControllerObject(const nlohmann::json &camera_component,
+                                           const std::string &camera_name) {
+    const nlohmann::json *controller = nullptr;
+    if (const auto it = camera_component.find("controller"); it != camera_component.end()) {
+        if (!it->is_object()) {
+            throw std::runtime_error("camera '" + camera_name + "' field 'controller' must be an object");
+        }
+        controller = &*it;
+    }
+
+    const auto params_it = camera_component.find("params");
+    if (params_it != camera_component.end() && params_it->is_object()) {
+        const auto nested_it = params_it->find("controller");
+        if (nested_it != params_it->end()) {
+            if (!nested_it->is_object()) {
+                throw std::runtime_error("camera '" + camera_name + "' field 'params.controller' must be an object");
+            }
+            if (controller != nullptr) {
+                throw std::runtime_error("camera '" + camera_name +
+                                         "' controller must be declared only once");
+            }
+            controller = &*nested_it;
+        }
+    }
+
+    return controller;
+}
+
+Camera::SceneCameraController parseSceneCameraController(const nlohmann::json &controller,
+                                                         const std::string &object_name) {
+    const auto camera_name = cameraDisplayName(object_name);
+    if (object_name.empty()) {
+        throw std::runtime_error("camera '" + camera_name + "' controller requires a named scene object");
+    }
+
+    const auto type = requireControllerString(controller, "type", camera_name);
+    Camera::SceneCameraController parsed;
+    parsed.damping = optionalControllerNonNegative(controller, "damping", camera_name, 0.0f);
+
+    if (type == "orbit") {
+        parsed.type = Camera::SceneCameraControllerType::Orbit;
+        parsed.target = requireControllerNonEmptyString(controller, "target", camera_name);
+        parsed.distance = requireControllerPositive(controller, "distance", camera_name);
+        parsed.yaw = optionalControllerAngle(controller, "yaw", "yaw_degrees", camera_name, 0.0f);
+        parsed.pitch = optionalControllerAngle(controller, "pitch", "pitch_degrees", camera_name, 0.0f);
+        parsed.sensitivity = optionalControllerNonNegative(controller, "sensitivity", camera_name, 1.0f);
+        return parsed;
+    }
+
+    if (type == "follow") {
+        parsed.type = Camera::SceneCameraControllerType::Follow;
+        parsed.target = requireControllerNonEmptyString(controller, "target", camera_name);
+        parsed.offset = requireControllerVec3(controller, "offset", camera_name);
+        return parsed;
+    }
+
+    if (type == "fly") {
+        parsed.type = Camera::SceneCameraControllerType::Fly;
+        parsed.speed = requireControllerPositive(controller, "speed", camera_name);
+        parsed.sensitivity = requireControllerPositive(controller, "sensitivity", camera_name);
+        return parsed;
+    }
+
+    throw std::runtime_error("camera '" + camera_name + "' controller type '" + type +
+                             "' is not supported");
+}
+
+std::optional<Camera::SceneCameraController> parseOptionalSceneCameraController(
+    const nlohmann::json &camera_component, const std::string &object_name) {
+    const auto camera_name = cameraDisplayName(object_name);
+    const auto *controller = findControllerObject(camera_component, camera_name);
+    if (controller == nullptr) {
+        return std::nullopt;
+    }
+    return parseSceneCameraController(*controller, object_name);
+}
+
 const nlohmann::json *findComponent(const nlohmann::json &object, std::string_view name) {
     if (!object.contains("components") || !object.at("components").is_array()) {
         return nullptr;
@@ -216,6 +393,7 @@ Camera::SceneCamera parseSceneCamera(const nlohmann::json &object, const nlohman
     Camera::SceneCamera camera;
     camera.name = object.value("name", std::string{});
     camera.projection = parseSceneCameraProjection(camera_component, fallback_projection, camera.name);
+    camera.controller = parseOptionalSceneCameraController(camera_component, camera.name);
     camera.up = fallback_up;
 
     if (const auto *transform = findComponent(object, "transform")) {
@@ -287,6 +465,9 @@ void Camera::loadSceneCameras() {
             first_camera = false;
         }
         if (!scene_camera.name.empty()) {
+            if (scene_camera.controller) {
+                controlled_scene_camera_order.push_back(scene_camera.name);
+            }
             scene_cameras.insert_or_assign(scene_camera.name, std::move(scene_camera));
         }
     }
@@ -331,6 +512,27 @@ void Camera::setNearFar(float new_fov_y, float new_near, float new_far) {
 
 bool Camera::hasSceneCamera(std::string_view name) const {
     return scene_cameras.find(std::string{name}) != scene_cameras.end();
+}
+
+const Camera::SceneCameraController *Camera::sceneCameraController(std::string_view name) const {
+    const auto camera_it = scene_cameras.find(std::string{name});
+    if (camera_it == scene_cameras.end() || !camera_it->second.controller) {
+        return nullptr;
+    }
+    return &*camera_it->second.controller;
+}
+
+bool Camera::acceptsControllerPose(std::string_view name) const {
+    return active_camera_name.empty() || active_camera_name == name;
+}
+
+void Camera::applyControllerPose(std::string_view name, glm::vec3 new_pos, glm::vec3 new_dir, glm::vec3 new_up) {
+    if (!acceptsControllerPose(name)) {
+        return;
+    }
+    pos = new_pos;
+    dir = glm::normalize(new_dir);
+    up = glm::normalize(new_up);
 }
 
 void Camera::setActiveCamera(std::string_view name) {
