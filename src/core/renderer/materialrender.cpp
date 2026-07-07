@@ -1,6 +1,9 @@
 #include "materialrender.hpp"
+#include "../light/lightcontainer.hpp"
 #include "../material/materialcontainer.hpp"
 #include "../model/vertbufcontainer.hpp"
+#include "../shader/pelican_sets.hpp"
+#include "shadowdepthpasscontainer.hpp"
 #include "../vkcore/core.hpp"
 #include "camera.hpp"
 #include "polygoninstancecontainer.hpp"
@@ -13,6 +16,8 @@ struct MaterialRange {
     uint32_t start;
     uint32_t count;
 };
+
+constexpr uint32_t shadowModelDescriptorSetNumber = PELICAN_SET_FRAME;
 
 bool isOutsideMaterialRange(uint32_t material_index, const MaterialRange &range) {
     return material_index < range.start || material_index - range.start >= range.count;
@@ -58,6 +63,37 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
         material_index++;
     }
 }
+
+void renderShadowDepthDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
+                            const ShadowDepthPassContainer &shadow_depth_pass_container,
+                            const MaterialRendererDependencies &dependencies) {
+    auto &instance_container = dependencies.instance_container;
+    const auto &vert_buf_container = dependencies.vert_buf_container;
+    const auto &material_container = dependencies.material_container;
+
+    vert_buf_container.bindVertexBuffer(cmd_buf);
+
+    instance_container.triggerUpdate();
+    const auto &draw_calls = instance_container.getDrawCalls();
+    if (draw_calls.empty()) {
+        return;
+    }
+
+    const auto pipeline_layout = shadow_depth_pass_container.pipelineLayout(pass_id);
+    shadow_depth_pass_container.bind(cmd_buf, pass_id);
+    material_container.bindModelMatrixResource(cmd_buf, pipeline_layout, shadowModelDescriptorSetNumber);
+
+    PushConstantStruct push_constant{};
+    push_constant.mvp = dependencies.light_container.shadowViewProjection();
+    cmd_buf.pushConstants(pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0,
+                          sizeof(push_constant), &push_constant);
+
+    const auto &indirect_buf = instance_container.getIndirectBuf();
+    for (const auto &draw_call : draw_calls) {
+        cmd_buf.drawIndexedIndirect(indirect_buf.buffer.get(), draw_call.offset, draw_call.draw_count,
+                                    draw_call.stride);
+    }
+}
 }
 
 MaterialRenderer::MaterialRenderer() {
@@ -81,6 +117,12 @@ void MaterialRenderer::renderWithMaterialRange(vk::CommandBuffer cmd_buf, PassId
     }
 
     renderMaterialDraws(cmd_buf, pass_id, dependencies, MaterialRange{material_start, material_count});
+}
+
+void MaterialRenderer::renderShadowDepth(vk::CommandBuffer cmd_buf, PassId pass_id,
+                                         const ShadowDepthPassContainer &shadow_depth_pass_container,
+                                         const MaterialRendererDependencies &dependencies) const {
+    renderShadowDepthDraws(cmd_buf, pass_id, shadow_depth_pass_container, dependencies);
 }
 
 } // namespace Pelican

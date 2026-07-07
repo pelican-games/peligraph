@@ -2,6 +2,7 @@
 #extension GL_GOOGLE_include_directive : enable
 
 #include "pelican_sets.glsl"
+#include "pelican_features.glsl"
 
 layout(location = 0) in vec2 inUV;
 layout(location = 0) out vec4 outColor;
@@ -12,6 +13,9 @@ layout(set = PELICAN_SET_PASS_INPUT, binding = 2) uniform sampler2D materialSamp
 layout(set = PELICAN_SET_PASS_INPUT, binding = 3) uniform sampler2D worldPosSampler;
 layout(set = PELICAN_SET_PASS_INPUT, binding = 4) uniform sampler2D emissiveSampler;
 layout(set = PELICAN_SET_PASS_INPUT, binding = 5) uniform sampler2D ssaoSampler;
+#ifdef PELICAN_FEATURE_SHADOW
+layout(set = PELICAN_SET_PASS_INPUT, binding = 6) uniform sampler2D shadowMapSampler;
+#endif
 
 struct DirectionalLight {
     vec3 direction;
@@ -44,6 +48,7 @@ layout(set = PELICAN_SET_FRAME, binding = 0) uniform LightUBO {
     DirectionalLight directionalLights[8];
     PointLight pointLights[16];
     SpotLight spotLights[8];
+    mat4 shadowViewProjection;
 } lightUBO;
 
 layout(push_constant) uniform PushConstants {
@@ -83,6 +88,26 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0) {
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
+#ifdef PELICAN_FEATURE_SHADOW
+float directionalShadowVisibility(vec3 worldPos, vec3 normal, vec3 lightDir) {
+    vec4 shadowClip = lightUBO.shadowViewProjection * vec4(worldPos, 1.0);
+    if (shadowClip.w <= 0.0) {
+        return 1.0;
+    }
+
+    vec3 shadowNdc = shadowClip.xyz / shadowClip.w;
+    vec2 shadowUv = shadowNdc.xy * 0.5 + 0.5;
+    if (shadowUv.x < 0.0 || shadowUv.x > 1.0 || shadowUv.y < 0.0 || shadowUv.y > 1.0 ||
+        shadowNdc.z < 0.0 || shadowNdc.z > 1.0) {
+        return 1.0;
+    }
+
+    float storedDepth = texture(shadowMapSampler, shadowUv).r;
+    float bias = max(0.0025 * (1.0 - dot(normal, lightDir)), 0.0008);
+    return shadowNdc.z - bias <= storedDepth ? 1.0 : 0.35;
+}
+#endif
+
 void main() {
     // G-bufferからデータを読み取る
     vec3 albedo = texture(albedoSampler, inUV).rgb;
@@ -118,6 +143,11 @@ void main() {
         vec3 L = normalize(-lightUBO.directionalLights[i].direction);
         vec3 H = normalize(V + L);
         vec3 radiance = lightUBO.directionalLights[i].color * lightUBO.directionalLights[i].intensity;
+#ifdef PELICAN_FEATURE_SHADOW
+        if (i == 0) {
+            radiance *= directionalShadowVisibility(worldPos, normal, L);
+        }
+#endif
         
         // Cook-Torrance BRDF
         float NDF = DistributionGGX(normal, H, roughness);

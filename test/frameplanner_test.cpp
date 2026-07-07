@@ -154,12 +154,13 @@ struct ParsedRenderTargetResolvers {
         for (size_t i = 0; i < definitions.size(); ++i) {
             const auto id = GlobalRenderTargetId{static_cast<int>(i)};
             ids_by_name.emplace(definitions[i].name, id);
-            const auto extent = static_cast<uint32_t>(definitions[i].extent_scale * 100.0f);
+            const auto scaled_extent = static_cast<uint32_t>(definitions[i].extent_scale * 100.0f);
+            const auto extent = definitions[i].fixed_extent.value_or(vk::Extent2D{scaled_extent, scaled_extent});
             metadata.push_back(RenderTargetMetadata{
                 definitions[i].name,
                 definitions[i].usage,
                 definitions[i].format,
-                vk::Extent2D{extent, extent},
+                extent,
             });
         }
     }
@@ -389,6 +390,62 @@ TEST_CASE("frame planner feature-composed config plan matches fixture", "[framep
 
     const auto plan_json = framePlanToJson(planFrameGraph(graphs.front()));
     REQUIRE(plan_json == readJson(fixtureRoot() / "plans" / "debug_draw_feature_main.json"));
+}
+
+TEST_CASE("frame planner shadow feature plan matches fixture", "[frameplanner]") {
+    const auto config = nlohmann::json::parse(R"json({
+  "features": ["engine://features/shadow_directional.json"],
+  "render_targets": [
+    {"name": "gbuffer_albedo", "extent_scale": 1.0, "format": "B8G8R8A8_UNORM", "usage": ["COLOR_ATTACHMENT", "SAMPLED"]},
+    {"name": "gbuffer_normal", "extent_scale": 1.0, "format": "R16G16B16A16_SFLOAT", "usage": ["COLOR_ATTACHMENT", "SAMPLED"]},
+    {"name": "gbuffer_material", "extent_scale": 1.0, "format": "R8G8B8A8_UNORM", "usage": ["COLOR_ATTACHMENT", "SAMPLED"]},
+    {"name": "gbuffer_worldpos", "extent_scale": 1.0, "format": "R16G16B16A16_SFLOAT", "usage": ["COLOR_ATTACHMENT", "SAMPLED"]},
+    {"name": "g_emissive", "extent_scale": 1.0, "format": "R8G8B8A8_UNORM", "usage": ["COLOR_ATTACHMENT", "SAMPLED"]},
+    {"name": "offscreen_depth", "extent_scale": 1.0, "format": "D32_SFLOAT", "usage": ["DEPTH_STENCIL_ATTACHMENT"]},
+    {"name": "ssao_blur", "extent_scale": 1.0, "format": "R8_UNORM", "usage": ["COLOR_ATTACHMENT", "SAMPLED"]},
+    {"name": "lit_color", "extent_scale": 1.0, "format": "B8G8R8A8_UNORM", "usage": ["COLOR_ATTACHMENT", "SAMPLED"]}
+  ],
+  "rendering_passes": [
+    {
+      "name": "main",
+      "passes": [
+        {
+          "name": "gbuffer_pass",
+          "type": "material",
+          "output": {
+            "color": ["gbuffer_albedo", "gbuffer_normal", "gbuffer_material", "gbuffer_worldpos", "g_emissive"],
+            "depth": "offscreen_depth"
+          }
+        },
+        {
+          "name": "lighting_pass",
+          "type": "fullscreen",
+          "output": {"color": "lit_color", "depth": null},
+          "input": ["gbuffer_albedo", "gbuffer_normal", "gbuffer_material", "gbuffer_worldpos", "g_emissive", "ssao_blur"],
+          "shader": {"vertex": "engine://fullscreen", "fragment": "engine://fullscreen"}
+        }
+      ]
+    }
+  ]
+})json");
+
+    const auto composed = composeRenderFeatureConfig(
+        config,
+        RenderFeatureComposeDependencies{
+            [](std::string_view ref) {
+                if (ref != "engine://features/shadow_directional.json") {
+                    throw std::runtime_error("unexpected feature ref: " + std::string{ref});
+                }
+                return readText(sourceRoot() / "src" / "core" / "resources" / "features" /
+                                "shadow_directional.json");
+            },
+            true,
+        });
+    const auto graphs = parseFrameGraphDefinitionsFromConfigJson(composed.config);
+    REQUIRE(graphs.size() == 1);
+
+    const auto plan_json = framePlanToJson(planFrameGraph(graphs.front()));
+    REQUIRE(plan_json == readJson(fixtureRoot() / "plans" / "shadow_directional_feature_main.json"));
 }
 
 } // namespace Pelican

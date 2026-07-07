@@ -13,6 +13,7 @@
 #include "rendertargetmetadataresolver.hpp"
 #include "rendertargetnameresolver.hpp"
 #include "../loader/pathresolver.hpp"
+#include "../renderer/shadowdepthpasscontainer.hpp"
 #include <string_view>
 #include <unordered_map>
 #include <utility>
@@ -32,6 +33,7 @@ RenderingPassRuntimeDependencies toRuntimeDependencies(
         &rt_views,
         &dependencies.shader_library,
         &dependencies.fullscreen_pass_container,
+        &GET_MODULE(ShadowDepthPassContainer),
         &frame_graph_resources,
         &dependencies.path_resolver,
         dependencies.shader_defines,

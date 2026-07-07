@@ -62,8 +62,8 @@ vk::RenderingAttachmentInfo createDepthAttachment(const PassDefinition &pass_def
     vk::RenderingAttachmentInfo depth_attachment;
     depth_attachment.imageView = rt_container.getImageView(pass_def.output_depth);
     depth_attachment.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
-    depth_attachment.loadOp = vk::AttachmentLoadOp::eClear;
-    depth_attachment.storeOp = vk::AttachmentStoreOp::eDontCare;
+    depth_attachment.loadOp = pass_def.depth_load_op;
+    depth_attachment.storeOp = pass_def.depth_store_op;
     depth_attachment.clearValue.depthStencil = vk::ClearDepthStencilValue{1.0f, 0};
     return depth_attachment;
 }

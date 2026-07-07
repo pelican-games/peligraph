@@ -24,7 +24,7 @@ std::vector<PassDefinition> parsePassSequenceFromJson(const nlohmann::json &pass
 
     std::vector<PassDefinition> passes;
     std::unordered_set<std::string> pass_names;
-    ProducedColorTargetSet produced_color_targets;
+    ProducedRenderTargetSet produced_targets;
     for (const auto &pass_json : passes_json) {
         const std::string pass_name = parseStringField(pass_json, "name", "pass");
         validateName(pass_name, "Pass");
@@ -33,8 +33,8 @@ std::vector<PassDefinition> parsePassSequenceFromJson(const nlohmann::json &pass
         }
 
         auto parsed_pass = parsePassDefinitionFromJson(pass_json, rt_resolver, rt_metadata, buffer_names);
-        validatePassInputsProduced(parsed_pass, produced_color_targets, rt_metadata);
-        recordPassOutputs(parsed_pass, produced_color_targets);
+        validatePassInputsProduced(parsed_pass, produced_targets, rt_metadata);
+        recordPassOutputs(parsed_pass, produced_targets);
         passes.push_back(std::move(parsed_pass));
     }
 

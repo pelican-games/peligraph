@@ -3,6 +3,7 @@
 #include "../renderer/fullscreenpassrenderer.hpp"
 #include "../renderer/materialrender.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
+#include "../renderer/shadowdepthpasscontainer.hpp"
 #include "../renderer/uicontainer.hpp"
 #include "../renderer/uirenderer.hpp"
 #include "../launchconfig.hpp"
@@ -43,6 +44,7 @@ struct RenderFrameModules {
     FrameGraphResourceContainer &frame_graph_resources;
     VulkanUtils &vk_utils;
     MaterialRenderer &material_renderer;
+    ShadowDepthPassContainer &shadow_depth_pass_container;
     PolygonInstanceContainer &instance_container;
     const VertBufContainer &vert_buf_container;
     const MaterialContainer &material_container;
@@ -73,6 +75,7 @@ RenderFrameModules resolveRenderFrameModules() {
         GET_MODULE(FrameGraphResourceContainer),
         GET_MODULE(VulkanUtils),
         GET_MODULE(MaterialRenderer),
+        GET_MODULE(ShadowDepthPassContainer),
         GET_MODULE(PolygonInstanceContainer),
         GET_MODULE(VertBufContainer),
         GET_MODULE(MaterialContainer),
@@ -89,6 +92,7 @@ RenderFrameModules resolveRenderFrameModules() {
 
 void updateFrameAnimation(LightContainer &light_container, double time) {
     light_container.updateAnimation(static_cast<float>(time));
+    light_container.update();
 }
 
 void beginTiming(RenderTiming *render_timing, vk::CommandBuffer cmd_buf, const std::vector<std::string> &node_names) {
@@ -237,6 +241,7 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
         material_renderer_dependencies,
         modules.fullscreen_pass_renderer,
         fullscreen_pass_renderer_dependencies,
+        modules.shadow_depth_pass_container,
         modules.ui_renderer,
         ui_renderer_dependencies,
         modules.debug_draw,

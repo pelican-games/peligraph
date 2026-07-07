@@ -11,15 +11,19 @@ namespace Pelican {
 namespace {
 
 #if PELICAN_WITH_VAT
-constexpr size_t registeredResourceCount = 30;
+constexpr size_t registeredResourceCount = 43;
 #else
-constexpr size_t registeredResourceCount = 29;
+constexpr size_t registeredResourceCount = 42;
 #endif
 
 constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
+    "bloom_blur_h.frag",
     "bloom_blur_h.frag.spv",
+    "bloom_blur_v.frag",
     "bloom_blur_v.frag.spv",
+    "bloom_composite.frag",
     "bloom_composite.frag.spv",
+    "bloom_highpass.frag",
     "bloom_highpass.frag.spv",
     "debug_texture.frag.spv",
     "default_config.json",
@@ -30,8 +34,15 @@ constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
     "features/debug_draw.json",
     "features/gpu_timing.json",
     "features/hdr.json",
+    "features/shadow_directional.json",
+    "fullscreen.frag",
     "fullscreen.frag.spv",
+    "fullscreen.vert",
     "fullscreen.vert.spv",
+    "shaders/include/pelican_features.glsl",
+    "shaders/include/pelican_sets.glsl",
+    "shadow_depth.vert",
+    "shadow_depth.vert.spv",
     "shader_lab_base_lit.frag.spv",
     "shader_lab_bloom_composite.frag.spv",
     "shader_lab_bloom_threshold.frag.spv",
@@ -40,7 +51,9 @@ constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
     "shader_lab_gltf_lighting.frag.spv",
     "shader_lab_hello.frag.spv",
     "shader_lab_present.frag.spv",
+    "ssao.frag",
     "ssao.frag.spv",
+    "ssao_blur.frag",
     "ssao_blur.frag.spv",
     "tonemap.frag",
     "tonemap.vert",
@@ -61,9 +74,13 @@ std::optional<std::string_view> engineResource(std::string_view id) {
         return std::string_view{resource};                       \
     }
 
+    PELICAN_ENGINE_RESOURCE("bloom_blur_h.frag")
     PELICAN_ENGINE_RESOURCE("bloom_blur_h.frag.spv")
+    PELICAN_ENGINE_RESOURCE("bloom_blur_v.frag")
     PELICAN_ENGINE_RESOURCE("bloom_blur_v.frag.spv")
+    PELICAN_ENGINE_RESOURCE("bloom_composite.frag")
     PELICAN_ENGINE_RESOURCE("bloom_composite.frag.spv")
+    PELICAN_ENGINE_RESOURCE("bloom_highpass.frag")
     PELICAN_ENGINE_RESOURCE("bloom_highpass.frag.spv")
     PELICAN_ENGINE_RESOURCE("debug_texture.frag.spv")
     if (id == "default_config.json") {
@@ -83,8 +100,15 @@ std::optional<std::string_view> engineResource(std::string_view id) {
         return std::string_view{feature};
     }
     PELICAN_ENGINE_RESOURCE("features/hdr.json")
+    PELICAN_ENGINE_RESOURCE("features/shadow_directional.json")
+    PELICAN_ENGINE_RESOURCE("fullscreen.frag")
     PELICAN_ENGINE_RESOURCE("fullscreen.frag.spv")
+    PELICAN_ENGINE_RESOURCE("fullscreen.vert")
     PELICAN_ENGINE_RESOURCE("fullscreen.vert.spv")
+    PELICAN_ENGINE_RESOURCE("shaders/include/pelican_features.glsl")
+    PELICAN_ENGINE_RESOURCE("shaders/include/pelican_sets.glsl")
+    PELICAN_ENGINE_RESOURCE("shadow_depth.vert")
+    PELICAN_ENGINE_RESOURCE("shadow_depth.vert.spv")
     PELICAN_ENGINE_RESOURCE("shader_lab_base_lit.frag.spv")
     PELICAN_ENGINE_RESOURCE("shader_lab_bloom_composite.frag.spv")
     PELICAN_ENGINE_RESOURCE("shader_lab_bloom_threshold.frag.spv")
@@ -93,7 +117,9 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("shader_lab_gltf_lighting.frag.spv")
     PELICAN_ENGINE_RESOURCE("shader_lab_hello.frag.spv")
     PELICAN_ENGINE_RESOURCE("shader_lab_present.frag.spv")
+    PELICAN_ENGINE_RESOURCE("ssao.frag")
     PELICAN_ENGINE_RESOURCE("ssao.frag.spv")
+    PELICAN_ENGINE_RESOURCE("ssao_blur.frag")
     PELICAN_ENGINE_RESOURCE("ssao_blur.frag.spv")
     PELICAN_ENGINE_RESOURCE("tonemap.frag")
     PELICAN_ENGINE_RESOURCE("tonemap.vert")

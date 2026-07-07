@@ -71,5 +71,6 @@ namespace Pelican
 		DirectionalLight_UBO directionalLights[MAX_DIRECTIONAL_LIGHTS];
 		PointLight_UBO pointLights[MAX_POINT_LIGHTS];
 		SpotLight_UBO spotLights[MAX_SPOT_LIGHTS];
+		glm::mat4 shadowViewProjection;
 	};
 }

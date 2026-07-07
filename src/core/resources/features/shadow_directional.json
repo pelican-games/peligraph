@@ -1,0 +1,38 @@
+{
+  "schema": "pelican.render_feature",
+  "version": 1,
+  "name": "shadow_directional",
+  "render_targets": [
+    {
+      "name": "shadow_map",
+      "extent_scale": 1.0,
+      "width": 2048,
+      "height": 2048,
+      "format": "D32_SFLOAT",
+      "usage": ["DEPTH_STENCIL_ATTACHMENT", "SAMPLED"]
+    }
+  ],
+  "passes": [
+    {
+      "insert": "before:lighting_pass",
+      "pass": {
+        "name": "shadow_depth",
+        "type": "shadow_depth",
+        "output": {
+          "color": null,
+          "depth": "shadow_map"
+        },
+        "depth_store_op": "store",
+        "shader": {
+          "vertex": "engine://shadow_depth"
+        }
+      }
+    }
+  ],
+  "pass_overrides": {
+    "lighting_pass": {
+      "input": ["shadow_map"]
+    }
+  },
+  "shader_defines": ["PELICAN_FEATURE_SHADOW"]
+}

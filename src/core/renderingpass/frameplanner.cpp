@@ -280,6 +280,9 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
             appendUnique(node.reads, renderTargetResourceName(target));
         }
     }
+    if (pass.depth_load_op == vk::AttachmentLoadOp::eLoad) {
+        appendUnique(node.reads, renderTargetResourceName(pass.output_depth));
+    }
     return node;
 }
 

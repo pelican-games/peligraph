@@ -29,6 +29,7 @@ namespace Pelican
 		void updateAnimation(float time);
 
 		void bindResource(vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout, uint32_t set_number) const;
+		glm::mat4 shadowViewProjection() const;
 
 		vk::DescriptorSetLayout getDescriptorSetLayout() const { return m_DescriptorSetLayout.get(); }
 

@@ -14,6 +14,7 @@ class PathResolver;
 class RenderTarget;
 class RenderTargetImageViewResolver;
 class RenderTargetMetadataResolver;
+class ShadowDepthPassContainer;
 class ShaderLibrary;
 
 struct RenderingPassRuntimeDependencies {
@@ -22,6 +23,7 @@ struct RenderingPassRuntimeDependencies {
     const RenderTargetImageViewResolver *render_target_views = nullptr;
     ShaderLibrary *shader_library = nullptr;
     FullscreenPassContainer *fullscreen_pass_container = nullptr;
+    ShadowDepthPassContainer *shadow_depth_pass_container = nullptr;
     FrameGraphResourceContainer *frame_graph_resources = nullptr;
     const PathResolver *path_resolver = nullptr;
     std::vector<std::string> shader_defines;

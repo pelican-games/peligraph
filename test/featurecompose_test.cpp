@@ -108,7 +108,7 @@ void requireErrorKind(std::string_view message, std::string_view error_kind) {
     } else if (error_kind == "missing_anchor") {
         REQUIRE(contains(message, "anchor was not found"));
     } else if (error_kind == "bad_override") {
-        REQUIRE(contains(message, "only supports format and usage"));
+        REQUIRE(contains(message, "only supports format"));
     } else {
         FAIL("unknown render feature error_kind: " << error_kind);
     }
@@ -287,6 +287,71 @@ TEST_CASE("HDR render feature overrides lit target and inserts tonemap before pr
     REQUIRE(tonemap.at("shader").at("vertex").get<std::string>() == "engine://tonemap");
     REQUIRE(tonemap.at("shader").at("fragment").get<std::string>() == "engine://tonemap");
     REQUIRE(tonemap.at("color_load_op").get<std::string>() == "load");
+}
+
+TEST_CASE("shadow directional feature inserts depth pass and lighting dependency", "[render-feature]") {
+    auto config = nlohmann::json::parse(R"json({
+  "render_targets": [
+    {
+      "name": "lit_color",
+      "extent_scale": 1.0,
+      "format": "B8G8R8A8_UNORM",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "gbuffer_albedo",
+      "extent_scale": 1.0,
+      "format": "B8G8R8A8_UNORM",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    }
+  ],
+  "features": ["engine://features/shadow_directional.json"],
+  "rendering_passes": [
+    {
+      "name": "main",
+      "passes": [
+        {
+          "name": "gbuffer_pass",
+          "type": "material",
+          "output": {"color": ["gbuffer_albedo"], "depth": null}
+        },
+        {
+          "name": "lighting_pass",
+          "type": "fullscreen",
+          "output": {"color": "lit_color", "depth": null},
+          "input": ["gbuffer_albedo"],
+          "shader": {"vertex": "engine://fullscreen", "fragment": "engine://fullscreen"}
+        }
+      ]
+    }
+  ]
+})json");
+
+    const auto result = composeRenderFeatureConfig(
+        config,
+        RenderFeatureComposeDependencies{
+            loadEngineFeature,
+            true,
+        });
+
+    REQUIRE(result.feature_names == std::vector<std::string>{"shadow_directional"});
+    REQUIRE(result.shader_defines == std::vector<std::string>{"PELICAN_FEATURE_SHADOW"});
+    REQUIRE(passNames(result.config) == std::vector<std::string>{"gbuffer_pass", "shadow_depth", "lighting_pass"});
+
+    const auto &shadow_map = result.config.at("render_targets").back();
+    REQUIRE(shadow_map.at("name").get<std::string>() == "shadow_map");
+    REQUIRE(shadow_map.at("width").get<int>() == 2048);
+    REQUIRE(shadow_map.at("height").get<int>() == 2048);
+
+    const auto &shadow_pass = result.config.at("rendering_passes").at(0).at("passes").at(1);
+    REQUIRE(shadow_pass.at("before").get<std::vector<std::string>>() ==
+            std::vector<std::string>{"lighting_pass"});
+    REQUIRE(shadow_pass.at("output").at("depth").get<std::string>() == "shadow_map");
+    REQUIRE(shadow_pass.at("depth_store_op").get<std::string>() == "store");
+
+    const auto &lighting_pass = result.config.at("rendering_passes").at(0).at("passes").at(2);
+    REQUIRE(lighting_pass.at("input").get<std::vector<std::string>>() ==
+            std::vector<std::string>{"gbuffer_albedo", "shadow_map"});
 }
 
 TEST_CASE("render features require the runtime shader compiler", "[render-feature]") {

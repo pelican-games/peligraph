@@ -10,7 +10,7 @@ namespace Pelican {
 
 class RenderTargetMetadataResolver;
 
-using ProducedColorTargetSet = std::unordered_set<GlobalRenderTargetId, GlobalRenderTargetId::Hash>;
+using ProducedRenderTargetSet = std::unordered_set<GlobalRenderTargetId, GlobalRenderTargetId::Hash>;
 
 void validatePassInputs(const PassDefinition &pass_def);
 void validatePassTargetUsage(const PassDefinition &pass_def, const RenderTargetMetadataResolver &rt_metadata);
@@ -23,8 +23,8 @@ void validateMaterialPassAttachments(const PassDefinition &pass_def, const Rende
 void validatePassOutputs(const PassDefinition &pass_def);
 void validatePassSpecificFields(const PassDefinition &pass_def, const nlohmann::json &pass_json);
 void validatePassInputsProduced(const PassDefinition &pass_def,
-                                const ProducedColorTargetSet &produced_color_targets,
+                                const ProducedRenderTargetSet &produced_targets,
                                 const RenderTargetMetadataResolver &rt_metadata);
-void recordPassOutputs(const PassDefinition &pass_def, ProducedColorTargetSet &produced_color_targets);
+void recordPassOutputs(const PassDefinition &pass_def, ProducedRenderTargetSet &produced_targets);
 
 } // namespace Pelican

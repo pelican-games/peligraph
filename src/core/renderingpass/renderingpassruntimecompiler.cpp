@@ -7,6 +7,7 @@
 #include "../log.hpp"
 #include "../profiler.hpp"
 #include "../renderer/debugdraw.hpp"
+#include "../renderer/shadowdepthpasscontainer.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include "../vkcore/rendertarget.hpp"
 #include <limits>
@@ -33,6 +34,15 @@ struct DebugDrawRuntimeDependencies {
     const RenderTargetMetadataResolver &render_target_metadata;
     ShaderLibrary &shader_library;
     DebugDraw &debug_draw;
+    const PathResolver &path_resolver;
+    std::vector<std::string> shader_defines;
+    bool warn_backend_specific_shader_refs = false;
+};
+
+struct ShadowDepthRuntimeDependencies {
+    const RenderTargetMetadataResolver &render_target_metadata;
+    ShaderLibrary &shader_library;
+    ShadowDepthPassContainer &shadow_depth_pass_container;
     const PathResolver &path_resolver;
     std::vector<std::string> shader_defines;
     bool warn_backend_specific_shader_refs = false;
@@ -117,6 +127,26 @@ DebugDrawRuntimeDependencies requireDebugDrawDependencies(
     };
 }
 
+ShadowDepthRuntimeDependencies requireShadowDepthDependencies(
+    const PassDefinition &pass_def,
+    const RenderingPassRuntimeDependencies &dependencies) {
+    if (dependencies.render_target_metadata == nullptr || dependencies.shader_library == nullptr ||
+        dependencies.shadow_depth_pass_container == nullptr || dependencies.path_resolver == nullptr) {
+        throw std::runtime_error(
+            "Shadow depth pass runtime compile requires render target metadata, shader library, "
+            "shadow depth pass container, and path resolver dependencies: " +
+            pass_def.name);
+    }
+    return ShadowDepthRuntimeDependencies{
+        *dependencies.render_target_metadata,
+        *dependencies.shader_library,
+        *dependencies.shadow_depth_pass_container,
+        *dependencies.path_resolver,
+        dependencies.shader_defines,
+        dependencies.warn_backend_specific_shader_refs,
+    };
+}
+
 void warnBackendSpecificShaderReference(const ShaderReference &reference, bool enabled) {
     if (!enabled || !reference.backend_specific) {
         return;
@@ -183,6 +213,16 @@ PassId compileDebugDrawPass(const PassDefinition &pass_def, DebugDrawRuntimeDepe
                                                 dependencies.shader_defines);
 }
 
+PassId compileShadowDepthPass(const PassDefinition &pass_def, ShadowDepthRuntimeDependencies dependencies) {
+    const auto depth_rt = dependencies.render_target_metadata.get(pass_def.output_depth);
+    const auto vert_shader = registerShaderReference(dependencies.shader_library, dependencies.path_resolver,
+                                                     pass_def.shadowDepthInfo().vert_shader,
+                                                     dependencies.warn_backend_specific_shader_refs,
+                                                     dependencies.shader_defines);
+    return dependencies.shadow_depth_pass_container.registerShadowDepthPass(depth_rt.format, vert_shader,
+                                                                           dependencies.shader_defines);
+}
+
 } // namespace
 
 CompiledRenderingPass compileRenderingPassRuntime(const RenderingPassDefinition &definition,
@@ -203,6 +243,10 @@ CompiledRenderingPass compileRenderingPassRuntime(const RenderingPassDefinition 
             const auto debug_draw_dependencies = requireDebugDrawDependencies(pass_def, dependencies);
             compiled_pass.passes.push_back(
                 CompiledPass{pass_def, compileDebugDrawPass(pass_def, debug_draw_dependencies)});
+        } else if (pass_def.isShadowDepth()) {
+            const auto shadow_depth_dependencies = requireShadowDepthDependencies(pass_def, dependencies);
+            compiled_pass.passes.push_back(
+                CompiledPass{pass_def, compileShadowDepthPass(pass_def, shadow_depth_dependencies)});
         } else {
             compiled_pass.passes.push_back(CompiledPass{pass_def, passIndexToPassId(i)});
         }
