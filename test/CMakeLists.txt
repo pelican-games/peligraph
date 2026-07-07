@@ -50,6 +50,7 @@ pelican_define_test(gamesystem_test pelican_core)
 target_compile_definitions(pelican_test_gamesystem_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
+pelican_define_test(camera_test pelican_core glm)
 if(PELICAN_WITH_EXR)
 pelican_define_test(imageloader_test pelican_core tinyexr)
 endif()
@@ -150,6 +151,15 @@ if(PELICAN_WITH_RPC)
             -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/example
             -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/rpc_headless
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_rpc_headless.cmake
+    )
+    add_test(
+        NAME rpc_set_camera_headless_player
+        COMMAND ${CMAKE_COMMAND}
+            -DPLAYER=$<TARGET_FILE:pelican_player>
+            -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+            -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/example
+            -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/rpc_set_camera_headless
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_rpc_set_camera_headless.cmake
     )
 endif()
 

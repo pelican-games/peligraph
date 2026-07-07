@@ -4,6 +4,7 @@
 #include "components/predefined.hpp"
 #include "../ecs/predefined/transform.hpp"
 #include "../log.hpp"
+#include "../renderer/camera.hpp"
 
 namespace Pelican {
 
@@ -78,6 +79,10 @@ LocalTransformComponent GameContext::localTransform(GameObjectId id) const {
 
 void GameContext::setLocalTransform(GameObjectId id, const LocalTransformComponent &transform) const {
     GameObjects::setLocalTransform(id, transform);
+}
+
+void GameContext::setCamera(std::string_view name) const {
+    GET_MODULE(Camera).setActiveCamera(name);
 }
 
 } // namespace Pelican

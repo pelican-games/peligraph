@@ -31,6 +31,7 @@ class GameContext {
     void removeObject(GameObjectId id) const;
     LocalTransformComponent localTransform(GameObjectId id) const;
     void setLocalTransform(GameObjectId id, const LocalTransformComponent &transform) const;
+    void setCamera(std::string_view name) const;
 };
 
 } // namespace Pelican
