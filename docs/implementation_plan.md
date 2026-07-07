@@ -752,7 +752,76 @@ pressed / axis2 が期待どおり(複数フレーム・セット切替含む)
 
 ### WP41: `pelican_cli dist-config` B2(配布プリセット導出)
 
-参照: `docs/design_build_tiers.md` §3。依存: WP21, 40。詳細は WP40 マージ後に確定。
+参照: **`docs/design_build_tiers.md` §3 が仕様の正**。依存: WP21, 40。
+
+1. devcli サブコマンド `dist-config <project> [--with rpc,seqplayer] [--out <file>]`
+2. 判定規則(v1・ユニットは WP40 の 4 つのみ):
+   - `PELICAN_WITH_VAT`: プロジェクトの asset_data_json / import manifest に
+     登録された glb を vatformat(純ロジック)でスキャンし、pelican.vat extras を
+     持つものがあれば ON
+   - `PELICAN_WITH_EXR`: プロジェクト内の参照ファイル(assets / ui)に
+     `.exr` があれば ON
+   - `PELICAN_WITH_RPC` / `PELICAN_WITH_SEQPLAYER`: **既定 OFF**(配布ゲームに
+     不要)。`--with` で明示 ON
+3. 出力: `-C` 用 CMake キャッシュファイル
+   (`set(PELICAN_WITH_X ON|OFF CACHE BOOL "" FORCE)` 列 + ヘッダコメントに
+   生成元プロジェクト・日時・**各判定の根拠 1 行**)
+4. embed サブセット注入(B3)はスコープ外
+5. テスト: fixture プロジェクト(vat あり/なし・exr あり/なし)で出力を検証
+   (GPU 不要)。結合: projects/example に対して生成した preset で
+   configure + build が通ることをスモーク確認(コミットメッセージに記録)
+
+受け入れ基準: (a) example で dist-config → 生成 preset の configure+build 成功
+(b) 判定根拠がコメント出力される (c) GPU 不要の fixture テスト
+(d) 既存挙動・全テスト無変更。
+
+### WP42: コマンド層 stage 3(get_status / update_transforms / load_gltf)
+
+参照: R8 §4(メソッド表)、本書 §3 の GO 記録(複数インスタンス要件)、
+`design_scene_format.md`(objects[].name = 宛先)。依存: WP25, 27。
+
+1. `get_status {}` → `{instance_id, project_root, frame, time}`
+   (instance_id は起動時生成の UUID — 複数インスタンス識別)
+2. `update_transforms {objects: [name...], transforms: [{pos,rot,scale}...]}` —
+   R4 と同形。宛先は scene の `objects[].name`。未知名は
+   アプリエラー(-32000 台)で名前を含めて返す。適用は**フレーム境界**
+   (次の step_frame / render_frame の前に反映)
+3. `load_gltf {path, name?}` — **プロジェクト相対のみ**(PathResolver の
+   脱出防止が防壁 — R8 どおり)。エンティティを生成し、`name` を付ければ
+   以後 update_transforms の宛先になる。**一時的ロード**(scene.json へは
+   書き戻さない — 永続化はエディタ D3 の仕事と明記)
+4. 結合テスト(run_rpc_headless の流儀で拡張 or 新スクリプト):
+   load_gltf(小 fixture glb)→ update_transforms → step_frame → capture で
+   絵が動くこと + **同一スクリプト 2 回で応答列一致** + エラー系
+   (未知名・脱出パス・不正 params)
+5. **並走制約: `appflow/loop.cpp` に触れない**(WP43 専有。適用点は
+   rpcserver / 既存 step_frame 経路内で完結させる)
+
+受け入れ基準: (a) 結合テストグリーン(絵の変化を PNG で検証) (b) エラー系が
+仕様どおりのコードで返る (c) 決定性 (d) 既存 rpc テスト・stdout 純度維持
+(e) get_status の応答検証。
+
+### WP43: ゲームシステム登録 API(G1a)
+
+参照: **`design_game_logic_native.md` §1 が仕様の正**。依存: WP39。
+
+1. `userpublic` に `PELICAN_REGISTER_SYSTEM(Type, order)` 静的登録
+   (registerComponent と同じ黒魔術様式)と `GameContext` facade を新設。
+   GameContext v1 の API 面: Actions(WP39)読み取り・時刻(EngineTime 読み)・
+   LOG・オブジェクト transform 操作(既存 container 経由の最小 facade)。
+   **GET_MODULE をゲームコードに露出しない**
+2. 実行点: `Loop::run()` の固定位置(`ecs.update()` 後・render 前)で
+   全システムの `update(ctx)` を **order 昇順 → 同値は登録名の辞書順**で呼ぶ
+   (静的初期化順に依存しない決定的順序)
+3. 検証用ビルトインデモシステム 1 個(テスト内登録に留め、example の
+   既定挙動は変えない)
+4. テスト: (a) 順序決定性(order/名前のソート、純ロジック) (b) システムが
+   Actions・時刻を読める(イベント注入 → 状態確認) (c) システム未登録時の
+   挙動不変(golden 全維持)
+5. **並走制約: `core/communication/` に触れない**(WP42 専有)。
+   `appflow/loop.cpp` は本 WP 専有。`src/core/ecs/` 変更禁止は継続
+
+受け入れ基準: 上記テスト a〜c + §0 の共通規則。
 
 ## 3. 保留中のトラック(WP 化待ち)
 
@@ -812,7 +881,9 @@ pressed / axis2 が期待どおり(複数フレーム・セット切替含む)
 | 12 | WP29, WP30 | WP28 マージ後。WP29 = renderer 計測系、WP30 = feature アセット中心で接触面小 |
 | 13 | WP34 | 実行系の大物。単独で走らせる(完了 — render 切替も先取り実装) |
 | 14 | WP35, WP39(+ WW6 別リポジトリ) | 並列 3 本。WP35 = rpc/framegraphruntime 周辺、WP39 = os/入力 + loader 小、WW6 = web。共有は test/CMakeLists.txt 追記のみ |
-| 15 | WP31, WP32, WP36, WP38, 入力 I2〜I4 | 着手前に詳細登録 |
+| 15 | WP40 | ビルドユニット化(完了) |
+| 16 | WP41, WP42, WP43 | 並列 3 本。専有: WP41 = devcli、WP42 = communication + loader/scene バインダ(loop.cpp 禁止)、WP43 = appflow/loop + userpublic(communication 禁止)。共有は test/CMakeLists.txt 追記のみ |
+| 17 | WP44(解釈レイヤのターゲット分離 — 移動+委譲のみ、単独)、WP31/32/36/38、入力 I2〜I4 | 着手前に詳細登録 |
 
 統合チェックポイント: ウェーブ 1 完了後と WP7 完了後に、人間が pelican_player の手動起動確認
 (`rendering_phase1_review.md` の Validation Run と同じ流儀)を行う。WP16 以降は
