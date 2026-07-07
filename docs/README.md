@@ -1,6 +1,6 @@
 # pelican2 設計文書 索引
 
-最終更新: 2026-07-07。文書が矛盾したら**凍結済み > ドラフト、設計文書 > 指示書**の順で優先。
+最終更新: 2026-07-08。文書が矛盾したら**凍結済み > ドラフト、設計文書 > 指示書**の順で優先。
 
 ## まずこれを読む(新規参加者・新エージェント)
 
@@ -31,6 +31,10 @@
 | `design_project_dcc_houdini.md` | v1・部分実施 | Houdini レーン・**pelican.import manifest**(WP21 済)。VAT レーン未 |
 | `design_asset_format_policy.md` | v1.1・部分実施 | **二層モデル**(ランタイム層/ソース層)。EXR 済、KTX2/音声未 |
 | `design_build_tiers.md` | v1・実装中(WP40) | **配布ビルド**。PELICAN_WITH_* ユニット + dist-config 導出 |
+| `design_physics_queries.md` | v1・P2 実装済み(WP46/47) | 物理クエリ(raycast/overlap)。collider・PhysWorld・シミュは将来トラック(§6) |
+| `design_camera_system.md` | v1・C2 実装済み(WP48/50) | カメラ glTF 同等以上。定義/コントローラ/演出の三層 |
+| `design_material_shading.md` | v1 ドラフト・未実装 | **pelican.material v1**・シェーダ契約の安定 API 化・variant 規律(M1→M3) |
+| `design_postprocess_temporal.md` | v1 ドラフト・未実装 | **history/velocity + ポストスタック規約**(フレームグラフ v2.5、T1→T3) |
 | `dcc_integration_qa_2026-06-12.md` | — | DCC 連携 QA。**§6 = pelican.vat v1 仕様の正** |
 | `design_roadmap_renderworld.md` | 古い | 全体ロードマップと ECS 境界。合意後回し方針(2026-07-02)で一部失効 |
 | `design_cloth_simulation.md` | 古い | 布シミュ構想。VAT レーンに実質置換 |
@@ -55,6 +59,6 @@
 - devstudio = Qt(`design_devstudio_direction.md`、D1→D3)
 - コマンド層 stage 3 = GO(複数インスタンス要件込み — implementation_plan §3)
 - OpenXR = 推進(view 次元・XrFrameTarget — implementation_plan §3)
-- カメラシステム(glTF 同等以上)/ 2D ゲーム機能 + 2D⇔3D 変換 /
-  アニメーショングラフ / 物理クエリ(必須)— implementation_plan §3 に方向記録。
-  設計文書はこれから
+- 2D ゲーム機能 + 2D⇔3D 変換 / アニメーショングラフ —
+  implementation_plan §3 に方向記録。設計文書はこれから
+- 物理シミュレーション = 将来トラック(`design_physics_queries.md` §6、Jolt 推奨)
