@@ -64,6 +64,23 @@
 導出不能な writes-writes は hard error(解消は明示エッジ or 中間リソース)。
 確認は `--dump-frame-plan` / rpc `get_frame_plan`。
 
+## レシピ 5: プロジェクト内C++コード(静的リンク)
+
+プロジェクト固有のゲームロジックを player に取り込む。エンジンはSDKとして扱い、
+DLL境界は作らない。
+
+1. プロジェクトに `code/CMakeLists.txt` を置き、そこでは
+   `pelican_game_sources(<src>...)` だけを呼ぶ。相対パスは `code/` 基準で解決される。
+2. 実装 `.cpp` は `gamesystem.hpp` など `src/core/userpublic/` の公開APIを使う。
+   毎フレーム処理は `PELICAN_REGISTER_SYSTEM(Type, order)` で登録し、
+   `void update(Pelican::GameContext &ctx)` に書く。
+3. ゲームコードから `GET_MODULE` や `src/core/ecs/` コアへ直接触れない。
+   入力・時刻・transform 操作は `GameContext` / userpublic facade を通す。
+4. ビルドは `cmake -S <engine> -B <build> -DPELICAN_PROJECT=<project>`。
+   未指定時はプロジェクトコードを一切includeせず、従来挙動を維持する。
+5. 入力アクションを使う場合は project.json の
+   `basic_config.input_actions_json` に `pelican.input_actions` JSON を参照させる。
+
 ---
 
 ## チェックリスト: engine:// リソース登録(3+1 箇所)
