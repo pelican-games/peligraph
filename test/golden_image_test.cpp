@@ -1045,7 +1045,7 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     setupLogger();
     const auto cases = discoverGoldenCases();
 #if PELICAN_WITH_VAT
-    REQUIRE(cases.size() == 11);
+    REQUIRE(cases.size() == 12);
 #else
     REQUIRE(cases.size() == 10);
 #endif
