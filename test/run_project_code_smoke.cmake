@@ -86,7 +86,7 @@ file(MAKE_DIRECTORY
     "${ARTIFACT_ROOT}/frames"
 )
 
-file(COPY "${SOURCE_DIR}/src/player/resources/ground.glb" DESTINATION "${ARTIFACT_ROOT}/project/assets/models")
+file(COPY "${SOURCE_DIR}/test/fixtures/ground.glb" DESTINATION "${ARTIFACT_ROOT}/project/assets/models")
 file(RENAME "${ARTIFACT_ROOT}/project/assets/models/ground.glb" "${ARTIFACT_ROOT}/project/assets/models/character.glb")
 configure_file("${SOURCE_DIR}/projects/example/input/actions.json" "${ARTIFACT_ROOT}/project/input/actions.json" COPYONLY)
 configure_file("${SOURCE_DIR}/projects/example/passes/main_rendering_config.json" "${ARTIFACT_ROOT}/project/passes/main_rendering_config.json" COPYONLY)

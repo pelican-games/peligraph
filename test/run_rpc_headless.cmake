@@ -19,7 +19,7 @@ file(MAKE_DIRECTORY
     "${OUT_DIR}/project/ui"
 )
 get_filename_component(source_root "${PROJECT_DIR}/../.." ABSOLUTE)
-configure_file("${source_root}/src/player/resources/ground.glb" "${OUT_DIR}/project/assets/ground.glb" COPYONLY)
+configure_file("${source_root}/test/fixtures/ground.glb" "${OUT_DIR}/project/assets/ground.glb" COPYONLY)
 
 file(WRITE "${OUT_DIR}/project/project.json" [=[
 {
