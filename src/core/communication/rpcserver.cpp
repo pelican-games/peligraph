@@ -7,6 +7,7 @@
 #include "../os/inputstate.hpp"
 #include "../playback/seqplayer.hpp"
 #include "../userpublic/gamecontext.hpp"
+#include "../userpublic/details/system/registerer.hpp"
 #include "../vkcore/renderer.hpp"
 #include "../vkcore/rendertarget.hpp"
 
@@ -15,6 +16,7 @@
 #include <iomanip>
 #include <istream>
 #include <iterator>
+#include <optional>
 #include <ostream>
 #include <random>
 #include <sstream>
@@ -188,6 +190,185 @@ void flushPendingTransforms(std::vector<PendingTransformUpdate> &pending) {
     pending.clear();
 }
 
+std::string lowerAscii(std::string_view value) {
+    std::string lowered;
+    lowered.reserve(value.size());
+    for (const char ch : value) {
+        if (ch >= 'A' && ch <= 'Z') {
+            lowered.push_back(static_cast<char>(ch - 'A' + 'a'));
+        } else {
+            lowered.push_back(ch);
+        }
+    }
+    return lowered;
+}
+
+std::optional<KeyCode> injectedKeyboardKey(std::string_view key_name) {
+    const auto key = lowerAscii(key_name);
+    if (key.size() == 1) {
+        const char ch = key[0];
+        if (ch >= 'a' && ch <= 'z') {
+            return static_cast<KeyCode>(static_cast<int>(KeyCode::A) + (ch - 'a'));
+        }
+        if (ch >= '0' && ch <= '9') {
+            return static_cast<KeyCode>(static_cast<int>(KeyCode::Num0) + (ch - '0'));
+        }
+    }
+
+    if (key == "space") {
+        return KeyCode::Space;
+    }
+    if (key == "enter") {
+        return KeyCode::Enter;
+    }
+    if (key == "escape" || key == "esc") {
+        return KeyCode::Escape;
+    }
+    if (key == "tab") {
+        return KeyCode::Tab;
+    }
+    if (key == "backspace") {
+        return KeyCode::Backspace;
+    }
+    if (key == "left_shift") {
+        return KeyCode::LeftShift;
+    }
+    if (key == "right_shift") {
+        return KeyCode::RightShift;
+    }
+    if (key == "left_control" || key == "left_ctrl") {
+        return KeyCode::LeftControl;
+    }
+    if (key == "right_control" || key == "right_ctrl") {
+        return KeyCode::RightControl;
+    }
+    if (key == "left_alt") {
+        return KeyCode::LeftAlt;
+    }
+    if (key == "right_alt") {
+        return KeyCode::RightAlt;
+    }
+    if (key == "left_super") {
+        return KeyCode::LeftSuper;
+    }
+    if (key == "right_super") {
+        return KeyCode::RightSuper;
+    }
+    if (key == "arrow_up" || key == "up") {
+        return KeyCode::ArrowUp;
+    }
+    if (key == "arrow_down" || key == "down") {
+        return KeyCode::ArrowDown;
+    }
+    if (key == "arrow_left" || key == "left") {
+        return KeyCode::ArrowLeft;
+    }
+    if (key == "arrow_right" || key == "right") {
+        return KeyCode::ArrowRight;
+    }
+    if (key.size() >= 2 && key[0] == 'f') {
+        int value = 0;
+        bool numeric = true;
+        for (std::size_t i = 1; i < key.size(); ++i) {
+            const char ch = key[i];
+            if (ch < '0' || ch > '9') {
+                numeric = false;
+                break;
+            }
+            value = value * 10 + (ch - '0');
+        }
+        if (numeric && value >= 1 && value <= 12) {
+            return static_cast<KeyCode>(static_cast<int>(KeyCode::F1) + (value - 1));
+        }
+    }
+    if (key.size() == 4 && key.substr(0, 3) == "num") {
+        const char ch = key[3];
+        if (ch >= '0' && ch <= '9') {
+            return static_cast<KeyCode>(static_cast<int>(KeyCode::Num0) + (ch - '0'));
+        }
+    }
+
+    return std::nullopt;
+}
+
+std::optional<KeyCode> injectedMouseButton(std::string_view button_name) {
+    const auto button = lowerAscii(button_name);
+    if (button == "left") {
+        return KeyCode::MouseLeft;
+    }
+    if (button == "right") {
+        return KeyCode::MouseRight;
+    }
+    if (button == "middle") {
+        return KeyCode::MouseMiddle;
+    }
+    if (button == "button4") {
+        return KeyCode::MouseButton4;
+    }
+    if (button == "button5") {
+        return KeyCode::MouseButton5;
+    }
+    if (button == "button6") {
+        return KeyCode::MouseButton6;
+    }
+    if (button == "button7") {
+        return KeyCode::MouseButton7;
+    }
+    if (button == "button8") {
+        return KeyCode::MouseButton8;
+    }
+    return std::nullopt;
+}
+
+InputEvent injectedAxisEvent(std::string_view axis_name, double value) {
+    const auto axis = lowerAscii(axis_name);
+    const auto amount = static_cast<float>(value);
+    if (axis == "mouse_delta_x" || axis == "mouse:delta_x" || axis == "delta_x") {
+        return InputEvent::axis(amount, 0.0f);
+    }
+    if (axis == "mouse_delta_y" || axis == "mouse:delta_y" || axis == "delta_y") {
+        return InputEvent::axis(0.0f, amount);
+    }
+    throw JsonRpcHandlerError(JsonRpcErrorCodes::invalidParams,
+                              "inject_input unknown axis control: " + std::string{axis_name});
+}
+
+std::vector<InputEvent> bindInjectedInputEvents(const std::vector<RpcInputInjectionEvent> &rpc_events) {
+    std::vector<InputEvent> events;
+    events.reserve(rpc_events.size());
+    for (const auto &rpc_event : rpc_events) {
+        switch (rpc_event.type) {
+        case RpcInputInjectionEventType::keyDown:
+        case RpcInputInjectionEventType::keyUp: {
+            const auto key = injectedKeyboardKey(rpc_event.name);
+            if (!key) {
+                throw JsonRpcHandlerError(JsonRpcErrorCodes::invalidParams,
+                                          "inject_input unknown key: " + rpc_event.name);
+            }
+            events.push_back(InputEvent::button(*key, rpc_event.type == RpcInputInjectionEventType::keyDown));
+            break;
+        }
+        case RpcInputInjectionEventType::mouseMove:
+            events.push_back(InputEvent::cursorMove(static_cast<float>(rpc_event.x), static_cast<float>(rpc_event.y)));
+            break;
+        case RpcInputInjectionEventType::mouseDown:
+        case RpcInputInjectionEventType::mouseUp: {
+            const auto button = injectedMouseButton(rpc_event.name);
+            if (!button) {
+                throw JsonRpcHandlerError(JsonRpcErrorCodes::invalidParams,
+                                          "inject_input unknown mouse button: " + rpc_event.name);
+            }
+            events.push_back(InputEvent::button(*button, rpc_event.type == RpcInputInjectionEventType::mouseDown));
+            break;
+        }
+        case RpcInputInjectionEventType::axis:
+            events.push_back(injectedAxisEvent(rpc_event.name, rpc_event.value));
+            break;
+        }
+    }
+    return events;
+}
+
 nlohmann::json frameResult() {
     const auto &engine_time = GET_MODULE(EngineTime);
     return nlohmann::json{
@@ -197,8 +378,10 @@ nlohmann::json frameResult() {
 }
 
 void updateFrameState(EngineTime &engine_time) {
-    GET_MODULE(InputState).clear();
+    GET_MODULE(InputState).beginFrame();
+    GameContext game_context;
     GET_MODULE(ECSCore).update();
+    internal::updateRegisteredGameSystems(game_context);
     GET_MODULE(SeqPlayer).update(engine_time.now());
 }
 
@@ -276,6 +459,9 @@ std::string RpcServer::handleLine(std::string_view line) const {
         return serializeJsonRpcResult(request.id, handler->second(request.params));
     } catch (const JsonRpcHandlerError &error) {
         return serializeJsonRpcError(makeJsonRpcError(request.id, error.code(), error.what()));
+    } catch (const JsonRpcInvalidParamsError &error) {
+        return serializeJsonRpcError(
+            makeJsonRpcError(request.id, JsonRpcErrorCodes::invalidParams, error.what()));
     } catch (const std::exception &error) {
         return serializeJsonRpcError(
             makeJsonRpcError(request.id, JsonRpcErrorCodes::applicationError, error.what()));
@@ -306,6 +492,15 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
             {"project_root", projectRootString()},
             {"frame", engine_time.frameIndex()},
             {"time", engine_time.now()},
+        };
+    });
+
+    server.setHandler("inject_input", [](const nlohmann::json &params) {
+        const auto rpc_events = parseInjectInputParams(params);
+        const auto input_events = bindInjectedInputEvents(rpc_events);
+        GET_MODULE(InputState).queueEvents(input_events);
+        return nlohmann::json{
+            {"queued", input_events.size()},
         };
     });
 
@@ -356,7 +551,6 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
     server.setHandler("render_frame", [&pending_transforms](const nlohmann::json &params) {
         requireObjectParams(params, "render_frame");
         flushPendingTransforms(pending_transforms);
-        GET_MODULE(InputState).clear();
         GET_MODULE(SeqPlayer).update(GET_MODULE(EngineTime).now());
         GET_MODULE(Renderer).render();
         return frameResult();

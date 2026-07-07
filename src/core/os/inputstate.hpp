@@ -34,6 +34,7 @@ struct InputEvent {
     enum class Type : std::uint8_t {
         button,
         cursor_move,
+        axis,
     };
 
     Type type = Type::button;
@@ -41,9 +42,12 @@ struct InputEvent {
     std::uint8_t pressed = 0;
     float mouse_x = 0.0f;
     float mouse_y = 0.0f;
+    float axis_x = 0.0f;
+    float axis_y = 0.0f;
 
     static InputEvent button(KeyCode code, bool pressed) noexcept;
     static InputEvent cursorMove(float x, float y) noexcept;
+    static InputEvent axis(float x, float y) noexcept;
 };
 
 static_assert(std::is_trivially_copyable_v<InputSnapshot>);
@@ -62,6 +66,7 @@ class InputStateCore {
   public:
     void queueButtonEvent(KeyCode code, bool pressed);
     void queueCursorMove(float x, float y);
+    void queueAxisEvent(float x, float y);
     void queueEvent(InputEvent event);
     void queueEvents(const std::vector<InputEvent> &events);
     void beginFrame();
