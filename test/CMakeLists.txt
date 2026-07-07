@@ -63,6 +63,7 @@ target_compile_definitions(pelican_test_pathresolver_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 pelican_define_test(physquery_test pelican_core)
+pelican_define_test(physworld_test pelican_core glm)
 pelican_define_test(projectconfig_test pelican_core glm)
 target_compile_definitions(pelican_test_projectconfig_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"

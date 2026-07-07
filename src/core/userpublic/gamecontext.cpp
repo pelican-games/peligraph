@@ -4,6 +4,7 @@
 #include "components/predefined.hpp"
 #include "../ecs/predefined/transform.hpp"
 #include "../log.hpp"
+#include "../phys/physworld.hpp"
 
 namespace Pelican {
 
@@ -78,6 +79,14 @@ LocalTransformComponent GameContext::localTransform(GameObjectId id) const {
 
 void GameContext::setLocalTransform(GameObjectId id, const LocalTransformComponent &transform) const {
     GameObjects::setLocalTransform(id, transform);
+}
+
+std::optional<phys::ObjectRaycastHit> GameContext::raycastClosest(const phys::Ray &ray) const {
+    return GET_MODULE(PhysWorld).raycastClosest(ray);
+}
+
+std::vector<std::string> GameContext::overlapAll(const phys::Shape &shape) const {
+    return GET_MODULE(PhysWorld).overlapAll(shape);
 }
 
 } // namespace Pelican

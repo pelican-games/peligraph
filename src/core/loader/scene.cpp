@@ -10,6 +10,7 @@
 #include "basicconfig.hpp"
 #include "../light/lightcontainer.hpp"
 #include "../log.hpp"
+#include "../phys/physworld.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
 #include "pathresolver.hpp"
 #include "../../project/sceneformat.hpp"
@@ -83,7 +84,19 @@ struct EcsObjectLoad {
     std::string name;
     std::vector<nlohmann::json> components_json;
     std::vector<ComponentId> components_id;
+    std::vector<ColliderComponent> colliders;
 };
+
+ColliderComponent loadColliderComponent(const nlohmann::json &component, const std::string &object_name) {
+    try {
+        ColliderComponent collider;
+        JsonArchiveLoader archive{static_cast<const void *>(&component)};
+        collider.ref(archive);
+        return collider;
+    } catch (const std::exception &ex) {
+        throw std::runtime_error("Invalid collider on object '" + displayObjectName(object_name) + "': " + ex.what());
+    }
+}
 
 std::vector<EcsObjectLoad> prepareSceneBindings(const nlohmann::json &objects, ComponentInfoManager &component_info_manager,
                                                 std::vector<LightLoadEntry> &light_entries) {
@@ -105,13 +118,17 @@ std::vector<EcsObjectLoad> prepareSceneBindings(const nlohmann::json &objects, C
                 light_entries.push_back(LightLoadEntry{object_name, component});
                 continue;
             }
+            if (component_name == "collider") {
+                ecs_object.colliders.push_back(loadColliderComponent(component, object_name));
+                continue;
+            }
 
             ecs_object.components_json.push_back(component);
             ecs_object.components_id.push_back(
                 getComponentIdForObject(component_info_manager, component_name, object_name));
         }
 
-        if (!ecs_object.components_json.empty()) {
+        if (!ecs_object.components_json.empty() || !ecs_object.colliders.empty()) {
             ecs_objects.push_back(std::move(ecs_object));
         }
     }
@@ -137,6 +154,14 @@ SceneObjectTransform identityObjectTransform() {
         .pos = glm::vec3{0.0f, 0.0f, 0.0f},
         .rotation = glm::quat{1.0f, 0.0f, 0.0f, 0.0f},
         .scale = glm::vec3{1.0f, 1.0f, 1.0f},
+    };
+}
+
+PhysWorldTransform identityPhysWorldTransform() {
+    return PhysWorldTransform{
+        .pos = vec3{0.0f, 0.0f, 0.0f},
+        .rotation = quat{0.0f, 0.0f, 0.0f, 1.0f},
+        .scale = vec3{1.0f, 1.0f, 1.0f},
     };
 }
 
@@ -171,6 +196,8 @@ void SceneLoader::load(SceneId scene_id) {
     const auto ecs_objects = prepareSceneBindings(objects, component_info_manager, light_entries);
 
     GET_MODULE(LightContainer).load(light_entries);
+    auto &phys_world = GET_MODULE(PhysWorld);
+    phys_world.clear();
 
     const auto transform_id = component_info_manager.getComponentIdByName("transform");
     const auto simple_model_view_id = component_info_manager.getComponentIdByName("simplemodelview");
@@ -178,21 +205,27 @@ void SceneLoader::load(SceneId scene_id) {
     for (const auto &object : ecs_objects) {
         std::vector<void *> components_ptr;
         components_ptr.resize(object.components_id.size());
-        ecs.allocateEntity(object.components_id, components_ptr, 1);
 
         TransformComponent *transform = nullptr;
         SimpleModelViewComponent *simple_model_view = nullptr;
-        for (int i = 0; const auto &component : object.components_json) {
-            GET_MODULE(ComponentInfoManager).loadByJson(components_ptr[i], component);
-            if (object.components_id[i] == transform_id) {
-                transform = static_cast<TransformComponent *>(components_ptr[i]);
-            } else if (object.components_id[i] == simple_model_view_id) {
-                simple_model_view = static_cast<SimpleModelViewComponent *>(components_ptr[i]);
+        if (!object.components_id.empty()) {
+            ecs.allocateEntity(object.components_id, components_ptr, 1);
+
+            for (int i = 0; const auto &component : object.components_json) {
+                GET_MODULE(ComponentInfoManager).loadByJson(components_ptr[i], component);
+                if (object.components_id[i] == transform_id) {
+                    transform = static_cast<TransformComponent *>(components_ptr[i]);
+                } else if (object.components_id[i] == simple_model_view_id) {
+                    simple_model_view = static_cast<SimpleModelViewComponent *>(components_ptr[i]);
+                }
+                i++;
             }
-            i++;
         }
         if (!object.name.empty() && transform != nullptr) {
             bindObjectTransform(object.name, transform, simple_model_view);
+        }
+        for (const auto &collider : object.colliders) {
+            phys_world.bindCollider(object.name, collider, transform, identityPhysWorldTransform());
         }
     }
 }

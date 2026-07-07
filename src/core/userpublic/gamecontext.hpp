@@ -3,9 +3,13 @@
 #include "components/localtransform.hpp"
 #include "gameobjects.hpp"
 #include "userinput.hpp"
+#include <phys/physquery.hpp>
 
 #include <cstdint>
+#include <optional>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace Pelican {
 
@@ -31,6 +35,9 @@ class GameContext {
     void removeObject(GameObjectId id) const;
     LocalTransformComponent localTransform(GameObjectId id) const;
     void setLocalTransform(GameObjectId id, const LocalTransformComponent &transform) const;
+
+    std::optional<phys::ObjectRaycastHit> raycastClosest(const phys::Ray &ray) const;
+    std::vector<std::string> overlapAll(const phys::Shape &shape) const;
 };
 
 } // namespace Pelican

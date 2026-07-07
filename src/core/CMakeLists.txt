@@ -30,7 +30,7 @@ add_subdirectory(light)
 add_subdirectory(phys)
 
 add_subdirectory(userpublic)
-target_include_directories(pelican_core PUBLIC ./userpublic)
+target_include_directories(pelican_core PUBLIC ./userpublic ${CMAKE_CURRENT_SOURCE_DIR})
 
 # external libraries
 target_link_libraries(pelican_core PUBLIC quill)
@@ -109,3 +109,10 @@ function(pelican_copy_headers SRC_PATH DST_PATH)
 endfunction()
 pelican_copy_headers(${CMAKE_CURRENT_SOURCE_DIR}/userpublic .)
 pelican_copy_headers(${CMAKE_CURRENT_SOURCE_DIR}/ecs ./ecs)
+add_custom_command(
+  TARGET pelican_core POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${PELICAN_INCLUDE_DIR}/phys
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/phys/physquery.hpp
+          ${PELICAN_INCLUDE_DIR}/phys/physquery.hpp
+)
