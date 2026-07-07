@@ -1,8 +1,10 @@
 #include "../src/core/container.hpp"
 #include "../src/core/appflow/enginetime.hpp"
+#include "../src/core/ecs/predefined.hpp"
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
+#include "../src/core/loader/scene.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/playback/vatplayer.hpp"
 #include "../src/core/renderer/debugdraw.hpp"
@@ -622,6 +624,41 @@ void main() {
 })json");
 }
 
+void writeColliderDebugDrawProject(const std::filesystem::path &root) {
+    writeDebugDrawProject(root);
+    writeTextFile(root / "scene.json", R"json({
+  "schema": "pelican.scene",
+  "version": 1,
+  "scenes": {
+    "default_scene": {
+      "objects": [
+        {
+          "name": "ColliderSphere",
+          "components": [
+            {"name": "transform", "pos": [3.0, -0.45, -0.45], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]},
+            {"name": "collider", "shape": "sphere", "radius": 0.28}
+          ]
+        },
+        {
+          "name": "ColliderBox",
+          "components": [
+            {"name": "transform", "pos": [3.0, 0.45, 0.0], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]},
+            {"name": "collider", "shape": "box", "half_extents": [0.28, 0.28, 0.28]}
+          ]
+        },
+        {
+          "name": "ColliderCapsule",
+          "components": [
+            {"name": "transform", "pos": [3.0, -0.35, 0.45], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]},
+            {"name": "collider", "shape": "capsule", "radius": 0.18, "half_height": 0.32}
+          ]
+        }
+      ]
+    }
+  }
+})json");
+}
+
 nlohmann::json makeHdrRenderingConfig(bool hdr_enabled) {
     auto config = nlohmann::json{
         {"render_targets",
@@ -795,6 +832,14 @@ void renderDebugDrawFrame(RenderTarget &render_target) {
     (void)render_target;
 }
 
+void renderColliderDebugDrawFrame(RenderTarget &render_target) {
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    GET_MODULE(SceneLoader).load("default_scene");
+    GET_MODULE(Renderer).render();
+    GET_MODULE(VulkanManageCore).waitIdle();
+    (void)render_target;
+}
+
 bool isHdrGoldenMode(const std::string &mode) {
     return mode == "hdr_off" || mode == "hdr_on";
 }
@@ -816,6 +861,10 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         GET_MODULE(ProjectSource).setProjectData(makeFeatureProjectJson().dump());
     } else if (golden_case.mode == "debug_draw_feature") {
         writeDebugDrawProject(temp_dir);
+        GET_MODULE(PathResolver).setup(temp_dir, false);
+        GET_MODULE(ProjectSource).setProjectData(makeFeatureProjectJson().dump());
+    } else if (golden_case.mode == "collider_debug_draw") {
+        writeColliderDebugDrawProject(temp_dir);
         GET_MODULE(PathResolver).setup(temp_dir, false);
         GET_MODULE(ProjectSource).setProjectData(makeFeatureProjectJson().dump());
     } else if (isHdrGoldenMode(golden_case.mode)) {
@@ -855,6 +904,8 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         renderFeatureFrame(render_target);
     } else if (golden_case.mode == "debug_draw_feature") {
         renderDebugDrawFrame(render_target);
+    } else if (golden_case.mode == "collider_debug_draw") {
+        renderColliderDebugDrawFrame(render_target);
     } else if (isHdrGoldenMode(golden_case.mode)) {
         renderFeatureFrame(render_target);
     } else if (golden_case.mode == "compute_buffer") {
@@ -917,9 +968,9 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     setupLogger();
     const auto cases = discoverGoldenCases();
 #if PELICAN_WITH_VAT
-    REQUIRE(cases.size() == 10);
+    REQUIRE(cases.size() == 11);
 #else
-    REQUIRE(cases.size() == 9);
+    REQUIRE(cases.size() == 10);
 #endif
 
     for (const auto &golden_case : cases) {

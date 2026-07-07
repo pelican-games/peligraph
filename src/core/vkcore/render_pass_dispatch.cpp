@@ -4,6 +4,7 @@
 #include "../renderer/fullscreenpassrenderer.hpp"
 #include "../renderer/materialrender.hpp"
 #include "../renderer/uirenderer.hpp"
+#include "../phys/physworld.hpp"
 #include <stdexcept>
 
 namespace Pelican {
@@ -51,6 +52,7 @@ void renderDebugDrawPass(vk::CommandBuffer cmd_buf, PassId pass_id,
     if (dependencies.debug_draw == nullptr) {
         throw std::runtime_error("DebugDraw pass requires DebugDraw dependency");
     }
+    GET_MODULE(PhysWorld).enqueueDebugDraw(*dependencies.debug_draw, dependencies.camera);
     dependencies.debug_draw->render(cmd_buf, pass_id);
 }
 
