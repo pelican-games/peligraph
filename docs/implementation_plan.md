@@ -940,6 +940,77 @@ pressed / axis2 が期待どおり(複数フレーム・セット切替含む)
 
 受け入れ基準: 上記 a〜d + ecs 変更禁止 + §0 共通規則。
 
+### WP31: shadow directional(feature 合成のシェーダ合流実証)
+
+参照: **`design_render_feature_modules.md`(feature fragment・shader_defines が仕様の正)**
+と `docs/adding_features.md` レシピ 1。依存: WP28, 30, 35。見積: 大。
+
+1. feature fragment `src/core/resources/features/shadow_directional.json`
+   (engine://features/shadow_directional.json として登録 — 3+1 チェックリスト遵守):
+   - shadow map RT(depth-only、D32、既定 2048^2、render_target_overrides で寸法変更可)
+   - depth-only パス(ライト視点、シーンジオメトリを再描画)を main パスの前に
+     挿入(アンカー = after/before 明示エッジとして実体化される既存様式)
+   - `shader_defines: ["PELICAN_FEATURE_SHADOW"]`
+2. ライト行列: directional light(WP25 のライトコンポーネント)から view-proj を
+   導出しライト UBO を拡張。**バインダ/レンダラ側で実装(`src/core/ecs/` 変更禁止)**
+3. lighting シェーダに `#ifdef PELICAN_FEATURE_SHADOW` でシャドウマップ
+   サンプリングを合流(v1 = 単純比較 + 固定バイアス。PCF/cascade は v2)
+4. depth-only パイプライン対応(pipelinefactory — fragment 省略 or 空)が
+   未対応なら最小拡張
+5. フレームグラフ: depth パス writes(shadow map)→ main パス reads の依存が
+   プラン(get_frame_plan / fixture)に正しく現れること
+6. テスト: (a) golden `shadow_on` / `shadow_off`(directional light + 遮蔽物の
+   シーン fixture 追加)(b) frame_plan fixture に shadow 依存鎖 (c) feature
+   不参照の既存 config で golden 全維持 (d) 実行時コンパイル variant の
+   キャッシュキーに defines が入っていること(WP28 の機構を使用 — 新設不要)
+
+受け入れ基準: 上記 a〜d + §0 共通規則。プランナが並べ替えても正しい絵が出る
+(依存宣言のみで順序保証 — 手詰めエッジに頼らないこと。必要なら設計と相談 = BLOCKED.md)。
+
+### WP49: 入力 I2(rpc inject_input + シナリオテスト)
+
+参照: **`design_input_actions.md` §4.1 が仕様の正**。依存: WP27, 37, 39, 42, 45。見積: 中。
+
+1. rpc メソッド `inject_input {events: [...]}`: イベント語彙は WP37 の入力
+   スナップショット層に合わせる(key down/up・mouse move/button・axis)。
+   スキーマのパース・検証は pelican_project 側(jsonrpc の既存様式)、
+   適用はバインダ側
+2. 注入バックエンド: headless/rpc 駆動時に GLFW ポーリングの代わりに注入
+   イベントでスナップショットを構成(既存バックエンドとの合成規則は
+   「rpc 駆動時は注入が正」で単純化してよい)
+3. 注入 → アクション層(WP39)→ GameContext まで届くことを保証
+   (projects/example の WASD デモがそのまま消費者)
+4. シナリオテスト 1 本: NDJSON スクリプトで
+   `inject_input(W 押下) → step_frame ×N → capture` を回し、
+   (a) 開始時と PNG 相違(オブジェクトが動いた)(b) 2 回実行で完全一致(決定性)
+5. 未知イベント種・不正パラメータは名前入り JSON-RPC エラー
+
+受け入れ基準: 上記 4(a)(b) + 5 + 既存テスト・golden 全維持 + §0 共通規則。
+
+### WP50: カメラ C2(コントローラ orbit / follow / fly)
+
+参照: **`design_camera_system.md`(コントローラ = ビルトインシステム様式が仕様の正)**。
+依存: WP39, 43, 48。見積: 中。
+
+1. カメラコンポーネントの params に `controller` キー:
+   `{"controller": {"type": "orbit" | "follow" | "fly", ...}}`。
+   orbit = target(objects[].name)+ distance + 角度 + damping、
+   follow = target + オフセット + damping、fly = 速度 + 感度
+2. 実装はエンジン組み込みのビルトインシステム(WP43 の
+   PELICAN_REGISTER_SYSTEM 様式をエンジン内から使う初例)。
+   **`src/core/ecs/` 変更禁止** — カメラ transform の更新は既存の
+   setLocalTransform / renderer カメラ経路で
+3. orbit / fly は Actions(move / look)を消費。アクション未構成時は不動
+   (エラーにしない — actions.json なしのプロジェクトでも壊れない)
+4. 決定性: コントローラ更新は EngineTime の dt のみに依存(実時間参照禁止)
+5. テスト: (a) controller パース fixture(3 種 + 未知 type は名前入りエラー)
+   (b) orbit の決定的軌道 golden 1 ケース(set_time で角度が定まる — 入力不要)
+   (c) 既存シーン(controller なし)の golden 全維持
+
+受け入れ基準: 上記 a〜c + ecs 変更禁止 + §0 共通規則。エディタカメラ(D1)で
+fly を共用する将来を壊さない(コントローラ状態はコンポーネント params +
+システムローカルに閉じる)。
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **最小コマンド層**: (1) ファイル連携済み → (2) WP27 実装済み → (3) `load_gltf` / `update_transforms` は **2026-07-07 に実装 GO 決定**。前提はすべて充足(宛先 = scene v1 の objects[].name / アセット意味論 = WP21)。設計時要件: **複数インスタンス運用**(エージェントが複数エンジンを並行駆動する使い方) — stdio rpc は 1 プロセス 1 クライアントの現行構造を維持しつつ、`get_status`(instance id・project・フレーム番号)を追加してインスタンス識別可能に。プロジェクトは読み取り専有なので並行起動は安全(書き込み系操作を入れる際に排他を設計)。複数クライアント同時接続は TCP/WebSocket 展開時の課題として分離
@@ -1001,6 +1072,9 @@ pressed / axis2 が期待どおり(複数フレーム・セット切替含む)
 | 15 | WP40 | ビルドユニット化(完了) |
 | 16 | WP41, WP42, WP43 | 並列 3 本。専有: WP41 = devcli、WP42 = communication + loader/scene バインダ(loop.cpp 禁止)、WP43 = appflow/loop + userpublic(communication 禁止)。共有は test/CMakeLists.txt 追記のみ |
 | 17 | WP44(解釈レイヤのターゲット分離 — 移動+委譲のみ、単独)、WP31/32/36/38、入力 I2〜I4 | 着手前に詳細登録 |
+| 18 | WP44, WP46 | 完了(2026-07-07) |
+| 19 | WP47, WP48 | 完了(2026-07-07)。専有: WP47 = phys/scene バインダ/debugdraw、WP48 = renderer/camera + rpcserver |
+| 20 | WP31, WP49(I2), WP50(C2) | 並列 3 本。専有: WP31 = resources/features + シェーダ + renderingpass/pipelinefactory、WP49 = communication/jsonrpc + 入力注入(os/input)、WP50 = userpublic システム + renderer/camera。**3 本とも golden ケースを追加するため件数 REQUIRE は統合時に調整(各自は自分の追加分のみ数える)**。共有は test/CMakeLists.txt 追記のみ |
 
 統合チェックポイント: ウェーブ 1 完了後と WP7 完了後に、人間が pelican_player の手動起動確認
 (`rendering_phase1_review.md` の Validation Run と同じ流儀)を行う。WP16 以降は
