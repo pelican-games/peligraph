@@ -872,6 +872,28 @@ pressed / axis2 が期待どおり(複数フレーム・セット切替含む)
 禁止依存を含まない(ターゲットのリンク一覧で機械確認し、確認方法をコミットに記録)
 (c) diff が移動 + CMake + include 修正のみであること(PR 説明で明示)。
 
+### WP46: 物理クエリ P1(純ロジック)
+
+参照: **`design_physics_queries.md` §1〜3・P1 が仕様の正**。依存: なし(WP44 と並列可)。
+
+1. `core/phys/physquery.{hpp,cpp}`(純ロジック・モジュール/GPU/ECS 非依存):
+   - 形状: Sphere / Box(OBB — 位置 + 回転 + half extents)/ Capsule
+   - レイ交差(解析解): レイ × 3 形状。ヒットは距離・位置・法線
+   - overlap: sphere-sphere / sphere-box / sphere-capsule / box-box(SAT)/
+     capsule-capsule / box-capsule の 6 ペア
+   - 複数形状クエリ: id 付き形状列に対する `raycastClosest` / `overlapAll`。
+     **決定性: 同距離タイは id の辞書順**(設計 §2 の規約)
+2. `src/core/phys/CMakeLists.txt`(現在 0 バイト)にソース登録、pelican_core へ
+3. テスト(GPU 不要): 解析解の期待値テスト(軸整列・回転あり・接触境界・
+   非ヒットの各ケース)+ タイ決定性 + 法線の向き検証
+4. シーン接続(collider コンポーネント → クエリワールド)・rpc・BVH は
+   P2/P3 のスコープ外。**既存コードへの影響ゼロ**(新規ファイルのみ +
+   test/CMakeLists 追記)
+
+受け入れ基準: (a) 上記テスト全グリーン(GPU 不要) (b) レイ・overlap の
+解析解ケースが境界条件(接する・かすめる)を含む (c) 純ロジック規律
+(GET_MODULE / vulkan / quill 依存なし) (d) 既存テスト・golden 無変更。
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **最小コマンド層**: (1) ファイル連携済み → (2) WP27 実装済み → (3) `load_gltf` / `update_transforms` は **2026-07-07 に実装 GO 決定**。前提はすべて充足(宛先 = scene v1 の objects[].name / アセット意味論 = WP21)。設計時要件: **複数インスタンス運用**(エージェントが複数エンジンを並行駆動する使い方) — stdio rpc は 1 プロセス 1 クライアントの現行構造を維持しつつ、`get_status`(instance id・project・フレーム番号)を追加してインスタンス識別可能に。プロジェクトは読み取り専有なので並行起動は安全(書き込み系操作を入れる際に排他を設計)。複数クライアント同時接続は TCP/WebSocket 展開時の課題として分離
