@@ -49,8 +49,12 @@
   `design-engine-gui-system.md`(GUI 三層: tokens/primitives/surfaces)
 - `pelican-houdini-adapter/docs/`: 契約文書のコピー(正本はこちら側)
 
-## 未着手の戦略設計(次に書くべき文書)
+## 方向決定済み・設計/実装待ち(2026-07-07 時点)
 
-1. ゲームロジック実行方式(スクリプト/DLL/データ駆動の選択。アクション層 API は前提済み)
-2. コマンド層 stage 3(load_gltf / update_transforms)
-3. OpenXR 描画トラック(フレームグラフへの view 概念)
+- ゲームロジック = ネイティブ C++(`design_game_logic_native.md`、G1a→G1b→G2)
+- devstudio = Qt(`design_devstudio_direction.md`、D1→D3)
+- コマンド層 stage 3 = GO(複数インスタンス要件込み — implementation_plan §3)
+- OpenXR = 推進(view 次元・XrFrameTarget — implementation_plan §3)
+- カメラシステム(glTF 同等以上)/ 2D ゲーム機能 + 2D⇔3D 変換 /
+  アニメーショングラフ / 物理クエリ(必須)— implementation_plan §3 に方向記録。
+  設計文書はこれから
