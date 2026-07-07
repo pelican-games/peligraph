@@ -1,0 +1,58 @@
+# 物理クエリ: raycast / overlap(v1)
+
+対象読者: エンジン担当。
+ステータス: v1 ドラフト(2026-07-07。必須決定済み・詳細レビュー前)。
+前提: `design_game_logic_native.md`(GameContext = 消費者)、
+`design_devstudio_direction.md` D2(エディタピッキング = 消費者)、
+`design_asset_format_policy.md` §4(コリジョン形状の glb 内規約・予約)。
+
+## 0. スコープ(v1 = クエリのみ)
+
+**シミュレーション(剛体・拘束)は含まない**(動きは Houdini ベイク +
+transform_seq が担う設計のまま)。v1 が提供するのは問い合わせだけ:
+
+- `raycast(origin, dir, max_dist)` → 最初のヒット(object 名・距離・位置・法線)
+- `overlap(shape, transform)` → 重なっている object 名の列
+- (v2 予約)sweep、全ヒット列挙、レイヤ/マスク
+
+## 1. コリジョン形状の宣言
+
+1. **形状はコンポーネント**(scene v1 の文法どおり):
+   `{"name": "collider", "shape": "box|sphere|capsule", ...寸法}` — 既存の
+   `components/collider.{hpp,cpp}` の骨を再評価して土台にする
+2. **メッシュコライダは glb 内規約**(フォーマット方針 §4 の予約を確定):
+   ノード extras `pelican.collision`(`{"shape": "mesh"|"convex"}`)。
+   v1 は AABB / 球 / カプセル + 静的メッシュ(BVH)まで
+3. 休眠中の `collision` ブランチは**部品取り**として再評価(そのままマージしない。
+   現行本線との乖離が大きいため、使える純ロジックだけ移植)
+
+## 2. 実装構造(既存の型に従う)
+
+- **純ロジック**: `src/project/…` ではなく `core/phys/` に
+  `physquery.{hpp,cpp}`(形状・レイ・BVH — モジュール/GPU 非依存、
+  GPU 不要テスト。決定性: 同一シーン + 同一レイ → 同一ヒット。
+  浮動小数の比較順を固定し、同距離タイは object 名の辞書順)
+- **バインダ**: シーンロード時に collider コンポーネント → クエリワールドへ登録。
+  transform 変更(ゲームコード / update_transforms)に追従
+- **消費者 API**: GameContext に `raycast` / `overlap`(ゲームコード)、
+  rpc に `raycast` メソッド(エディタ D2 / エージェント用 — stage 3 の続き)
+- **パージ**: collider を持つシーンがなければクエリワールドは空のまま
+  (素通り原則)。規模が育ったら `PELICAN_WITH_PHYSICS` ユニット化
+
+## 3. 検証
+
+- 純ロジック: 形状×レイの解析解 fixture(GPU 不要)
+- 結合: rpc raycast をシナリオテストに(load_gltf → raycast → 期待ヒット)
+- デバッグ描画: collider の可視化を debug_draw feature に追加(安い・効果大)
+
+## 4. 実装順(WP 候補)
+
+P1: 純ロジック(box/sphere/capsule + レイ、決定性テスト)→
+P2: collider バインダ + GameContext API + debug 可視化 →
+P3: rpc raycast + メッシュ(BVH)+ glb extras 規約。
+
+## 5. 未決事項
+
+1. レイヤ/マスクの表現(v1 は全対象。タグはコンポーネント params 予約)
+2. 動的 BVH 更新の頻度(v1 は毎フレーム再構築で開始し、計測(WP29)で判断)
+3. collision ブランチからの移植範囲(P1 着手時に棚卸し)
