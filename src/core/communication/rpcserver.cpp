@@ -6,6 +6,7 @@
 #include "../loader/scene.hpp"
 #include "../os/inputstate.hpp"
 #include "../playback/seqplayer.hpp"
+#include "../userpublic/gamecontext.hpp"
 #include "../vkcore/renderer.hpp"
 #include "../vkcore/rendertarget.hpp"
 
@@ -332,6 +333,14 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
         result["path"] = path.generic_string();
         result["name"] = name ? nlohmann::json(*name) : nlohmann::json(nullptr);
         return result;
+    });
+
+    server.setHandler("set_camera", [](const nlohmann::json &params) {
+        const auto name = requireStringParam(params, "name", "set_camera");
+        GameContext{}.setCamera(name);
+        return nlohmann::json{
+            {"name", name},
+        };
     });
 
     server.setHandler("step_frame", [&pending_transforms](const nlohmann::json &params) {

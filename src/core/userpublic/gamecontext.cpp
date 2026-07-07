@@ -5,6 +5,7 @@
 #include "../ecs/predefined/transform.hpp"
 #include "../log.hpp"
 #include "../phys/physworld.hpp"
+#include "../renderer/camera.hpp"
 
 namespace Pelican {
 
@@ -87,6 +88,10 @@ std::optional<phys::ObjectRaycastHit> GameContext::raycastClosest(const phys::Ra
 
 std::vector<std::string> GameContext::overlapAll(const phys::Shape &shape) const {
     return GET_MODULE(PhysWorld).overlapAll(shape);
+}
+
+void GameContext::setCamera(std::string_view name) const {
+    GET_MODULE(Camera).setActiveCamera(name);
 }
 
 } // namespace Pelican

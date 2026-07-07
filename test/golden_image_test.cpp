@@ -386,6 +386,20 @@ void main() {
 )glsl";
 }
 
+const char *orthographicCameraFragmentShader() {
+    return R"glsl(
+#version 450
+layout(push_constant) uniform CameraMatrices {
+    mat4 proj;
+    mat4 view;
+} camera;
+layout(location = 0) out vec4 outColor;
+void main() {
+    outColor = vec4(camera.proj[0][0], camera.proj[1][1], 0.25, 1.0);
+}
+)glsl";
+}
+
 const char *stemFullscreenVertexShader() {
     return R"glsl(
 #version 450
@@ -775,6 +789,57 @@ void writeComputeProject(const std::filesystem::path &root) {
 })json");
 }
 
+void writeOrthographicCameraProject(const std::filesystem::path &root) {
+    writeTextFile(root / "project.json", makeFeatureProjectJson().dump(2));
+    writeTextFile(root / "scene.json", R"json({
+  "schema": "pelican.scene",
+  "version": 1,
+  "scenes": {
+    "default_scene": {
+      "objects": [
+        {
+          "name": "OrthoGoldenCamera",
+          "components": [
+            {
+              "name": "camera",
+              "type": "orthographic",
+              "xmag": 2.0,
+              "ymag": 4.0,
+              "znear": 0.1,
+              "zfar": 20.0
+            }
+          ]
+        }
+      ]
+    }
+  }
+})json");
+    writeTextFile(root / "assets.json", R"json({"models":[]})json");
+    writeTextFile(root / "ui" / "ui.json", R"json({"images":[]})json");
+    writeTextFile(root / "shaders" / "fullscreen.vert", stemFullscreenVertexShader());
+    writeTextFile(root / "shaders" / "ortho_camera.frag", orthographicCameraFragmentShader());
+    writeTextFile(root / "passes" / "main.json", R"json({
+  "render_targets": [],
+  "rendering_passes": [
+    {
+      "name": "main",
+      "passes": [
+        {
+          "name": "ortho_camera",
+          "type": "fullscreen",
+          "output": {"color": "swapchain", "depth": null},
+          "shader": {
+            "vertex": "shaders/fullscreen",
+            "fragment": "shaders/ortho_camera"
+          },
+          "push_constants": "projection_view"
+        }
+      ]
+    }
+  ]
+})json");
+}
+
 void renderStemFullscreenFrame(RenderTarget &render_target) {
     GET_MODULE(Renderer).render();
     GET_MODULE(VulkanManageCore).waitIdle();
@@ -815,6 +880,12 @@ void renderFeatureFrame(RenderTarget &render_target) {
 }
 
 void renderComputeFrame(RenderTarget &render_target) {
+    GET_MODULE(Renderer).render();
+    GET_MODULE(VulkanManageCore).waitIdle();
+    (void)render_target;
+}
+
+void renderOrthographicCameraFrame(RenderTarget &render_target) {
     GET_MODULE(Renderer).render();
     GET_MODULE(VulkanManageCore).waitIdle();
     (void)render_target;
@@ -875,6 +946,10 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         writeComputeProject(temp_dir);
         GET_MODULE(PathResolver).setup(temp_dir, false);
         GET_MODULE(ProjectSource).setProjectData(makeComputeProjectJson().dump());
+    } else if (golden_case.mode == "orthographic_camera") {
+        writeOrthographicCameraProject(temp_dir);
+        GET_MODULE(PathResolver).setup(temp_dir, false);
+        GET_MODULE(ProjectSource).setProjectData(makeFeatureProjectJson().dump());
     } else {
         const auto scene_path = temp_dir / "scene.json";
         const auto asset_path = temp_dir / "assets.json";
@@ -910,6 +985,8 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         renderFeatureFrame(render_target);
     } else if (golden_case.mode == "compute_buffer") {
         renderComputeFrame(render_target);
+    } else if (golden_case.mode == "orthographic_camera") {
+        renderOrthographicCameraFrame(render_target);
     } else {
         throw std::runtime_error("unknown golden case mode: " + golden_case.mode);
     }

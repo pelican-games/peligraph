@@ -1,3 +1,4 @@
+#include "../cameradefinition.hpp"
 #include "../container.hpp"
 
 #include <glm/glm.hpp>
@@ -13,7 +14,7 @@ DECLARE_MODULE(ProjectBasicConfig) {
     };
     struct InitialCameraProperty {
         glm::vec3 up;
-        float fov_y, near, far;
+        CameraProjectionSpec projection;
     };
 
   private:

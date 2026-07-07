@@ -76,6 +76,115 @@ struct JsonLoader {
     }
 };
 
+std::string cameraPath(std::string_view field) {
+    return "basic_config/camera/" + std::string{field};
+}
+
+struct CameraParam {
+    nlohmann::json value;
+    bool alias = false;
+};
+
+std::optional<CameraParam> getCameraParam(const JsonLoader &loader, std::string_view primary,
+                                          std::string_view alias = {}) {
+    const JsonHelper *sources[] = {&loader.cli_json, &loader.project_json, &loader.default_json};
+    const auto primary_path = cameraPath(primary);
+    const auto alias_path = alias.empty() ? std::string{} : cameraPath(alias);
+
+    for (const auto *source : sources) {
+        if (auto value = source->getVal(primary_path)) {
+            return CameraParam{*value, false};
+        }
+        if (!alias.empty()) {
+            if (auto value = source->getVal(alias_path)) {
+                return CameraParam{*value, true};
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+float numberFromJson(const nlohmann::json &value, std::string_view field) {
+    if (!value.is_number()) {
+        throw std::runtime_error("basic_config.camera field '" + std::string{field} + "' must be numeric");
+    }
+    return value.get<float>();
+}
+
+float degreesToRadians(float degrees) {
+    return degrees * static_cast<float>(3.14159265358979323846 / 180.0);
+}
+
+float requireCameraNumber(const JsonLoader &loader, std::string_view primary, std::string_view alias = {},
+                          bool alias_is_degrees = false) {
+    const auto param = getCameraParam(loader, primary, alias);
+    if (!param) {
+        auto message = "basic_config.camera requires numeric field '" + std::string{primary} + "'";
+        if (!alias.empty()) {
+            message += " (alias '" + std::string{alias} + "')";
+        }
+        throw std::runtime_error(message);
+    }
+
+    auto value = numberFromJson(param->value, param->alias ? alias : primary);
+    if (param->alias && alias_is_degrees) {
+        value = degreesToRadians(value);
+    }
+    return value;
+}
+
+std::optional<float> optionalCameraNumber(const JsonLoader &loader, std::string_view primary,
+                                          std::string_view alias = {}, bool alias_is_degrees = false) {
+    const auto param = getCameraParam(loader, primary, alias);
+    if (!param) {
+        return std::nullopt;
+    }
+
+    auto value = numberFromJson(param->value, param->alias ? alias : primary);
+    if (param->alias && alias_is_degrees) {
+        value = degreesToRadians(value);
+    }
+    return value;
+}
+
+std::optional<std::string> optionalCameraType(const JsonLoader &loader) {
+    const auto param = getCameraParam(loader, "type");
+    if (!param) {
+        return std::nullopt;
+    }
+    if (!param->value.is_string()) {
+        throw std::runtime_error("basic_config.camera field 'type' must be a string");
+    }
+    return param->value.get<std::string>();
+}
+
+CameraProjectionSpec parseBasicCameraProjection(const JsonLoader &loader) {
+    CameraProjectionSpec projection;
+
+    const auto type = optionalCameraType(loader);
+    const auto has_ortho_fields = optionalCameraNumber(loader, "xmag").has_value() ||
+                                  optionalCameraNumber(loader, "ymag").has_value();
+    if (type && *type != "perspective" && *type != "orthographic") {
+        throw std::runtime_error("basic_config.camera type must be 'perspective' or 'orthographic'");
+    }
+
+    if ((type && *type == "orthographic") || (!type && has_ortho_fields)) {
+        projection.kind = CameraProjectionKind::Orthographic;
+        projection.xmag = requireCameraNumber(loader, "xmag");
+        projection.ymag = requireCameraNumber(loader, "ymag");
+        projection.znear = requireCameraNumber(loader, "znear", "near");
+        projection.zfar = requireCameraNumber(loader, "zfar", "far");
+        return projection;
+    }
+
+    projection.kind = CameraProjectionKind::Perspective;
+    projection.yfov = requireCameraNumber(loader, "yfov", "fov_y", true);
+    projection.znear = requireCameraNumber(loader, "znear", "near");
+    projection.zfar = requireCameraNumber(loader, "zfar", "far");
+    projection.aspect = optionalCameraNumber(loader, "aspect");
+    return projection;
+}
+
 std::vector<int> parseVersion(std::string_view version) {
     std::vector<int> parts;
     std::string token;
@@ -206,9 +315,7 @@ ProjectBasicConfig::ProjectBasicConfig() {
     initial_fullscr_state = loader.getVal("basic_config/fullscreen");
     framerate_target = loader.getVal("basic_config/framerate");
 
-    camera_prop.fov_y = loader.getVal("basic_config/camera/fov_y");
-    camera_prop.near = loader.getVal("basic_config/camera/near");
-    camera_prop.far = loader.getVal("basic_config/camera/far");
+    camera_prop.projection = parseBasicCameraProjection(loader);
     const auto camera_up = loader.getVal("basic_config/camera/up");
     camera_prop.up = {camera_up[0], camera_up[1], camera_up[2]};
 
