@@ -4,6 +4,7 @@ add_library(pelican_core log.cpp profiler.cpp job_system.cpp) # [BENCHMARK_ONLY]
 set_target_properties(pelican_core PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 set_target_properties(pelican_core PROPERTIES CXX_STANDARD 20)
 target_compile_definitions(pelican_core PUBLIC
+  PELICAN_WITH_AUDIO=$<BOOL:${PELICAN_WITH_AUDIO}>
   PELICAN_WITH_VAT=$<BOOL:${PELICAN_WITH_VAT}>
   PELICAN_WITH_EXR=$<BOOL:${PELICAN_WITH_EXR}>
   PELICAN_WITH_RPC=$<BOOL:${PELICAN_WITH_RPC}>
@@ -13,6 +14,7 @@ target_compile_definitions(pelican_core PUBLIC
 # modules
 add_subdirectory(resources)
 add_subdirectory(appflow)
+add_subdirectory(audio)
 add_subdirectory(communication)
 add_subdirectory(os)
 add_subdirectory(ecs)
@@ -65,6 +67,9 @@ target_link_libraries(pelican_core PRIVATE glm)
 if(PELICAN_WITH_EXR)
 target_link_libraries(pelican_core PRIVATE tinyexr)
 endif()
+if(PELICAN_WITH_AUDIO)
+target_link_libraries(pelican_core PRIVATE miniaudio)
+endif()
 
 target_link_libraries(pelican_core PRIVATE nlohmann_json)
 
@@ -109,6 +114,12 @@ function(pelican_copy_headers SRC_PATH DST_PATH)
 endfunction()
 pelican_copy_headers(${CMAKE_CURRENT_SOURCE_DIR}/userpublic .)
 pelican_copy_headers(${CMAKE_CURRENT_SOURCE_DIR}/ecs ./ecs)
+add_custom_command(
+  TARGET pelican_core POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/handle.hpp
+          ${PELICAN_INCLUDE_DIR}/handle.hpp
+)
 add_custom_command(
   TARGET pelican_core POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E make_directory ${PELICAN_INCLUDE_DIR}/phys

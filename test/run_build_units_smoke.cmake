@@ -217,6 +217,14 @@ endfunction()
 file(REMOVE_RECURSE "${ARTIFACT_ROOT}")
 file(MAKE_DIRECTORY "${ARTIFACT_ROOT}")
 
+configure_and_build("audio" "PELICAN_WITH_AUDIO" audio_build_dir)
+find_built_executable("${audio_build_dir}" "pelican_test_audio_disabled_probe" audio_probe)
+expect_disabled_error(
+    "audio_gamecontext_api"
+    "PELICAN_WITH_AUDIO"
+    "${audio_probe}"
+)
+
 configure_and_build("vat" "PELICAN_WITH_VAT" vat_build_dir)
 find_built_executable("${vat_build_dir}" "pelican_player" vat_player)
 find_built_executable("${vat_build_dir}" "pelican_test_vat_fixture_writer" vat_writer)
@@ -267,4 +275,4 @@ expect_disabled_error(
     "${seq_player}" --headless --project "${seq_project}" --frames 0 --play-seq "${seq_file}"
 )
 
-message(STATUS "build-unit OFF smoke passed for VAT, EXR, RPC, and SEQPLAYER")
+message(STATUS "build-unit OFF smoke passed for AUDIO, VAT, EXR, RPC, and SEQPLAYER")

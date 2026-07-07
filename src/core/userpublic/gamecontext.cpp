@@ -1,7 +1,11 @@
 #include "gamecontext.hpp"
 
 #include "../appflow/enginetime.hpp"
+#include "../build_features.hpp"
 #include "components/predefined.hpp"
+#if PELICAN_WITH_AUDIO
+#include "../audio/audio.hpp"
+#endif
 #include "../ecs/predefined/transform.hpp"
 #include "../log.hpp"
 #include "../phys/physworld.hpp"
@@ -92,6 +96,42 @@ std::vector<std::string> GameContext::overlapAll(const phys::Shape &shape) const
 
 void GameContext::setCamera(std::string_view name) const {
     GET_MODULE(Camera).setActiveCamera(name);
+}
+
+SoundHandle GameContext::playSound(std::string_view path) const {
+#if PELICAN_WITH_AUDIO
+    return GET_MODULE(Audio).playSound(path);
+#else
+    throwBuildFeatureDisabled("PELICAN_WITH_AUDIO", "playSound is unavailable");
+#endif
+}
+
+void GameContext::stopSound(SoundHandle handle) const {
+#if PELICAN_WITH_AUDIO
+    GET_MODULE(Audio).stopSound(handle);
+#else
+    (void)handle;
+    throwBuildFeatureDisabled("PELICAN_WITH_AUDIO", "stopSound is unavailable");
+#endif
+}
+
+void GameContext::setBusVolume(std::string_view bus, float volume) const {
+#if PELICAN_WITH_AUDIO
+    GET_MODULE(Audio).setBusVolume(bus, volume);
+#else
+    (void)bus;
+    (void)volume;
+    throwBuildFeatureDisabled("PELICAN_WITH_AUDIO", "setBusVolume is unavailable");
+#endif
+}
+
+bool GameContext::isPlaying(SoundHandle handle) const {
+#if PELICAN_WITH_AUDIO
+    return GET_MODULE(Audio).isPlaying(handle);
+#else
+    (void)handle;
+    throwBuildFeatureDisabled("PELICAN_WITH_AUDIO", "isPlaying is unavailable");
+#endif
 }
 
 } // namespace Pelican

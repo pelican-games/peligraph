@@ -3,6 +3,7 @@
 #include "components/localtransform.hpp"
 #include "gameobjects.hpp"
 #include "userinput.hpp"
+#include <handle.hpp>
 #include <phys/physquery.hpp>
 
 #include <cstdint>
@@ -39,6 +40,11 @@ class GameContext {
     std::optional<phys::ObjectRaycastHit> raycastClosest(const phys::Ray &ray) const;
     std::vector<std::string> overlapAll(const phys::Shape &shape) const;
     void setCamera(std::string_view name) const;
+
+    SoundHandle playSound(std::string_view path) const;
+    void stopSound(SoundHandle handle) const;
+    void setBusVolume(std::string_view bus, float volume) const;
+    bool isPlaying(SoundHandle handle) const;
 };
 
 } // namespace Pelican
