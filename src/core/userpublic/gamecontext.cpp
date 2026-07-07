@@ -95,3 +95,13 @@ void GameContext::setCamera(std::string_view name) const {
 }
 
 } // namespace Pelican
+
+#include "../renderer/debugtext.hpp"
+
+namespace Pelican {
+
+void GameContext::debugText(int x, int y, std::string_view text) const {
+    GET_MODULE(DebugText).text(x, y, text);
+}
+
+} // namespace Pelican

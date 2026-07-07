@@ -74,13 +74,18 @@ struct DebugDrawPassInfo {
     ShaderReference frag_shader = ShaderReference{"", ShaderStage::fragment, ShaderReferenceKind::explicit_file, false};
 };
 
+struct DebugTextPassInfo {
+    ShaderReference vert_shader = ShaderReference{"", ShaderStage::vertex, ShaderReferenceKind::explicit_file, false};
+    ShaderReference frag_shader = ShaderReference{"", ShaderStage::fragment, ShaderReferenceKind::explicit_file, false};
+};
+
 struct ShadowDepthPassInfo {
     ShaderReference vert_shader = ShaderReference{"", ShaderStage::vertex, ShaderReferenceKind::explicit_file, false};
 };
 
 struct UiPassInfo {};
 
-using PassInfo = std::variant<MaterialPassInfo, FullscreenPassInfo, DebugDrawPassInfo, ShadowDepthPassInfo, UiPassInfo>;
+using PassInfo = std::variant<MaterialPassInfo, FullscreenPassInfo, DebugDrawPassInfo, DebugTextPassInfo, ShadowDepthPassInfo, UiPassInfo>;
 
 struct PassDefinition {
     PassDefinition() : output_depth{noRenderTargetId()} {}
@@ -103,6 +108,7 @@ struct PassDefinition {
     bool isMaterial() const { return std::holds_alternative<MaterialPassInfo>(pass_info); }
     bool isFullscreen() const { return std::holds_alternative<FullscreenPassInfo>(pass_info); }
     bool isDebugDraw() const { return std::holds_alternative<DebugDrawPassInfo>(pass_info); }
+    bool isDebugText() const { return std::holds_alternative<DebugTextPassInfo>(pass_info); }
     bool isShadowDepth() const { return std::holds_alternative<ShadowDepthPassInfo>(pass_info); }
     bool isUi() const { return std::holds_alternative<UiPassInfo>(pass_info); }
 
@@ -112,6 +118,8 @@ struct PassDefinition {
     const FullscreenPassInfo &fullscreenInfo() const { return std::get<FullscreenPassInfo>(pass_info); }
     DebugDrawPassInfo &debugDrawInfo() { return std::get<DebugDrawPassInfo>(pass_info); }
     const DebugDrawPassInfo &debugDrawInfo() const { return std::get<DebugDrawPassInfo>(pass_info); }
+    DebugTextPassInfo &debugTextInfo() { return std::get<DebugTextPassInfo>(pass_info); }
+    const DebugTextPassInfo &debugTextInfo() const { return std::get<DebugTextPassInfo>(pass_info); }
     ShadowDepthPassInfo &shadowDepthInfo() { return std::get<ShadowDepthPassInfo>(pass_info); }
     const ShadowDepthPassInfo &shadowDepthInfo() const { return std::get<ShadowDepthPassInfo>(pass_info); }
 };

@@ -5,6 +5,7 @@
 #include "../log.hpp"
 #include "../profiler.hpp"
 #include "../renderer/debugdraw.hpp"
+#include "../renderer/debugtext.hpp"
 #include "../renderingpass/computetask.hpp"
 #include "../renderingpass/framegraphruntime.hpp"
 #include "../renderingpass/renderingpassconfigregistration.hpp"
@@ -67,6 +68,7 @@ void registerConfiguredRenderingPasses(const ProjectBasicConfig &config) {
                     {},
                     config.usesProjectSource(),
                     []() -> DebugDraw & { return GET_MODULE(DebugDraw); },
+                    []() -> DebugText & { return GET_MODULE(DebugText); },
                 },
                 frame_graph_resources,
                 compute_task_container,

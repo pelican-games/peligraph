@@ -1,0 +1,32 @@
+{
+  "barriers": [
+    {"from": "present", "kind": "read_after_write", "resource": "swapchain", "to": "debug_text"}
+  ],
+  "graph": "main",
+  "levels": [
+    ["present"],
+    ["debug_text"]
+  ],
+  "nodes": [
+    {
+      "declaration_index": 0,
+      "kind": "render",
+      "level": 0,
+      "name": "present",
+      "order": 0,
+      "reads": [],
+      "writes": ["swapchain"]
+    },
+    {
+      "declaration_index": 1,
+      "kind": "render",
+      "level": 1,
+      "name": "debug_text",
+      "order": 1,
+      "reads": ["swapchain"],
+      "writes": ["swapchain"]
+    }
+  ],
+  "schema": "pelican.frame_plan",
+  "version": 1
+}

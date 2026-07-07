@@ -24,6 +24,8 @@
     #include <tinyexr.h>
 #endif
 
+#define STB_IMAGE_STATIC
+#define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
 namespace Pelican {
@@ -286,6 +288,27 @@ LoadedImage loadExrFile(const std::filesystem::path &path) {
 
 #endif
 
+LoadedImage packStbPixels(std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> pixels,
+                          int width, int height, std::string_view name) {
+    if (!pixels) {
+        const char *reason = stbi_failure_reason();
+        throw std::runtime_error("Failed to load image " + std::string{name} + ": " +
+                                 (reason ? reason : "unknown error"));
+    }
+
+    const auto pixel_count = checkedPixelCount(width, height, std::filesystem::path{std::string{name}});
+    constexpr size_t bytes_per_pixel = 4;
+    ensureByteSize(pixel_count, bytes_per_pixel, std::filesystem::path{std::string{name}});
+
+    LoadedImage loaded;
+    loaded.width = static_cast<uint32_t>(width);
+    loaded.height = static_cast<uint32_t>(height);
+    loaded.format = ImagePixelFormat::Rgba8Unorm;
+    loaded.pixels.resize(pixel_count * bytes_per_pixel);
+    std::memcpy(loaded.pixels.data(), pixels.get(), loaded.pixels.size());
+    return loaded;
+}
+
 LoadedImage loadStbImageFile(const std::filesystem::path &path) {
     const auto path_string = path.string();
     int width = 0;
@@ -295,22 +318,7 @@ LoadedImage loadStbImageFile(const std::filesystem::path &path) {
         stbi_load(path_string.c_str(), &width, &height, &components, STBI_rgb_alpha),
         stbi_image_free,
     };
-    if (!pixels) {
-        const char *reason = stbi_failure_reason();
-        throw std::runtime_error("Failed to load image " + path_string + ": " + (reason ? reason : "unknown error"));
-    }
-
-    const auto pixel_count = checkedPixelCount(width, height, path);
-    constexpr size_t bytes_per_pixel = 4;
-    ensureByteSize(pixel_count, bytes_per_pixel, path);
-
-    LoadedImage loaded;
-    loaded.width = static_cast<uint32_t>(width);
-    loaded.height = static_cast<uint32_t>(height);
-    loaded.format = ImagePixelFormat::Rgba8Unorm;
-    loaded.pixels.resize(pixel_count * bytes_per_pixel);
-    std::memcpy(loaded.pixels.data(), pixels.get(), loaded.pixels.size());
-    return loaded;
+    return packStbPixels(std::move(pixels), width, height, path_string);
 }
 
 } // namespace
@@ -336,6 +344,26 @@ LoadedImage loadImageFile(const std::filesystem::path &path) {
 #endif
     }
     return loadStbImageFile(path);
+}
+
+LoadedImage loadImageMemory(std::span<const std::byte> data, std::string_view name) {
+    if (data.empty()) {
+        throw std::runtime_error("Image memory is empty: " + std::string{name});
+    }
+    if (data.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        throw std::runtime_error("Image memory is too large: " + std::string{name});
+    }
+
+    int width = 0;
+    int height = 0;
+    int components = 0;
+    std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> pixels{
+        stbi_load_from_memory(reinterpret_cast<const stbi_uc *>(data.data()),
+                              static_cast<int>(data.size()), &width, &height,
+                              &components, STBI_rgb_alpha),
+        stbi_image_free,
+    };
+    return packStbPixels(std::move(pixels), width, height, name);
 }
 
 } // namespace Pelican

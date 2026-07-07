@@ -39,6 +39,7 @@ RenderingPassRuntimeDependencies toRuntimeDependencies(
         dependencies.shader_defines,
         dependencies.warn_backend_specific_shader_refs,
         dependencies.debug_draw_provider,
+        dependencies.debug_text_provider,
     };
 }
 

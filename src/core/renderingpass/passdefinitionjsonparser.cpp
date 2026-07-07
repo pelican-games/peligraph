@@ -39,6 +39,7 @@ PassDefinition parsePassDefinitionFromJson(const nlohmann::json &pass_json,
     parsePassAttachmentOptionsFromJson(pass_def, pass_json);
     parseFullscreenPassInfoIntoDefinition(pass_def, pass_json);
     parseDebugDrawPassInfoIntoDefinition(pass_def, pass_json);
+    parseDebugTextPassInfoIntoDefinition(pass_def, pass_json);
     parseShadowDepthPassInfoIntoDefinition(pass_def, pass_json);
     return pass_def;
 }

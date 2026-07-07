@@ -58,6 +58,9 @@ PassInfo makePassInfo(const std::string &type_str) {
     if (type_str == "debug_draw") {
         return DebugDrawPassInfo{};
     }
+    if (type_str == "debug_text") {
+        return DebugTextPassInfo{};
+    }
     if (type_str == "shadow_depth") {
         return ShadowDepthPassInfo{};
     }

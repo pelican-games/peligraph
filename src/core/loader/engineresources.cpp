@@ -11,9 +11,9 @@ namespace Pelican {
 namespace {
 
 #if PELICAN_WITH_VAT
-constexpr size_t registeredResourceCount = 43;
+constexpr size_t registeredResourceCount = 48;
 #else
-constexpr size_t registeredResourceCount = 42;
+constexpr size_t registeredResourceCount = 47;
 #endif
 
 constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
@@ -31,7 +31,12 @@ constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
     "default.vert.spv",
     "debug_draw.frag.spv",
     "debug_draw.vert.spv",
+    "debug_text.frag.spv",
+    "debug_text.vert.spv",
+    "debug_text_font.json",
+    "debug_text_font.png",
     "features/debug_draw.json",
+    "features/debug_text.json",
     "features/gpu_timing.json",
     "features/hdr.json",
     "features/shadow_directional.json",
@@ -91,8 +96,19 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("default.vert.spv")
     PELICAN_ENGINE_RESOURCE("debug_draw.frag.spv")
     PELICAN_ENGINE_RESOURCE("debug_draw.vert.spv")
+    PELICAN_ENGINE_RESOURCE("debug_text.frag.spv")
+    PELICAN_ENGINE_RESOURCE("debug_text.vert.spv")
+    if (id == "debug_text_font.json") {
+        static const std::string font = b::embed<"debug_text_font.json">().str();
+        return std::string_view{font};
+    }
+    PELICAN_ENGINE_RESOURCE("debug_text_font.png")
     if (id == "features/debug_draw.json") {
         static const std::string feature = b::embed<"features/debug_draw.json">().str();
+        return std::string_view{feature};
+    }
+    if (id == "features/debug_text.json") {
+        static const std::string feature = b::embed<"features/debug_text.json">().str();
         return std::string_view{feature};
     }
     if (id == "features/gpu_timing.json") {

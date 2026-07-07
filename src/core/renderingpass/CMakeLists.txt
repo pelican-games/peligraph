@@ -1,6 +1,7 @@
 target_sources(pelican_core PRIVATE
     computetask.cpp
     debugdrawpassinfojsonparser.cpp
+    debugtextpassinfojsonparser.cpp
     frameplanner.cpp
     framegraphruntime.cpp
     fullscreenpassinfojsonparser.cpp

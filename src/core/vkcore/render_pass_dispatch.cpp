@@ -1,6 +1,7 @@
 #include "render_pass_dispatch.hpp"
 #include "../renderer/camera.hpp"
 #include "../renderer/debugdraw.hpp"
+#include "../renderer/debugtext.hpp"
 #include "../renderer/fullscreenpassrenderer.hpp"
 #include "../renderer/materialrender.hpp"
 #include "../renderer/shadowdepthpasscontainer.hpp"
@@ -57,6 +58,14 @@ void renderDebugDrawPass(vk::CommandBuffer cmd_buf, PassId pass_id,
     dependencies.debug_draw->render(cmd_buf, pass_id);
 }
 
+void renderDebugTextPass(vk::CommandBuffer cmd_buf, PassId pass_id, vk::Extent2D target_extent,
+                         const RenderPassDispatchDependencies &dependencies) {
+    if (dependencies.debug_text == nullptr) {
+        throw std::runtime_error("DebugText pass requires DebugText dependency");
+    }
+    dependencies.debug_text->render(cmd_buf, pass_id, target_extent);
+}
+
 void renderShadowDepthPass(vk::CommandBuffer cmd_buf, PassId pass_id,
                            const RenderPassDispatchDependencies &dependencies) {
     dependencies.material_renderer.renderShadowDepth(cmd_buf, pass_id,
@@ -86,6 +95,7 @@ void renderUiPass(vk::CommandBuffer cmd_buf, const FrameRenderContext &frame, co
 }
 
 void renderDynamicPassDrawCalls(vk::CommandBuffer cmd_buf, PassId pass_id, const PassDefinition &pass_def,
+                                vk::Extent2D target_extent,
                                 const RenderPassDispatchDependencies &dependencies) {
     if (pass_def.isMaterial()) {
         renderMaterialPass(cmd_buf, pass_id, pass_def, dependencies);
@@ -95,6 +105,8 @@ void renderDynamicPassDrawCalls(vk::CommandBuffer cmd_buf, PassId pass_id, const
         renderShadowDepthPass(cmd_buf, pass_id, dependencies);
     } else if (pass_def.isDebugDraw()) {
         renderDebugDrawPass(cmd_buf, pass_id, dependencies);
+    } else if (pass_def.isDebugText()) {
+        renderDebugTextPass(cmd_buf, pass_id, target_extent, dependencies);
     } else {
         throw std::runtime_error("Unsupported dynamic render pass type: " + pass_def.name);
     }

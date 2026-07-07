@@ -1,5 +1,6 @@
 target_sources(pelican_core PRIVATE
     debugdraw.cpp
+    debugtext.cpp
     polygoninstancecontainer.cpp
     materialrender.cpp
     uicontainer.cpp
