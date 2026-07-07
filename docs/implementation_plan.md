@@ -823,6 +823,31 @@ pressed / axis2 が期待どおり(複数フレーム・セット切替含む)
 
 受け入れ基準: 上記テスト a〜c + §0 の共通規則。
 
+### WP45: プロジェクトコード取り込み(G1b)
+
+参照: **`design_game_logic_native.md` §1 が仕様の正**。依存: WP37, 39, 40, 43。
+
+1. CMake オプション `PELICAN_PROJECT`(プロジェクトパス)。指定時、
+   `<project>/code/CMakeLists.txt` を include してソース列を player ターゲットに
+   取り込む(規約: プロジェクト側は `pelican_game_sources(<src>...)` を呼ぶだけ。
+   規約は adding_features.md に**レシピ 5** として追記すること)。
+   **未指定時は完全に従来どおり**(既存テスト・golden が無変更 — 受け入れ基準 a)
+2. projects/example に `code/` を追加: 最小の操作デモ
+   - `input/actions.json`(move = kbd:wasd の axis2、[PF] v6.2 の
+     `input_actions_json` を example の project.json に追加)
+   - システム 1 つ(WP43 の PELICAN_REGISTER_SYSTEM + GameContext):
+     move アクションでシーン内オブジェクト 1 つを平行移動
+3. スモークスクリプト(`test/run_project_code_smoke.cmake` — build units の流儀):
+   `-DPELICAN_PROJECT=projects/example` で configure + build →
+   headless 3 フレームが exit 0 + PNG 出力。通常 ctest には含めない
+   (実行方法をスクリプト冒頭に記載し、必ず 1 回実行して結果をコミットに記録)
+4. 操作の手動確認: 通常起動で WASD によりオブジェクトが動くことを確認し、
+   コミットメッセージに記録
+
+受け入れ基準: (a) `PELICAN_PROJECT` 未指定の全テスト・golden 無変更
+(b) スモーク(example コード込みビルド + headless)成功 (c) WASD 手動確認の記録
+(d) adding_features.md レシピ 5 追記(docs は別コミット) (e) ecs コア変更禁止。
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **最小コマンド層**: (1) ファイル連携済み → (2) WP27 実装済み → (3) `load_gltf` / `update_transforms` は **2026-07-07 に実装 GO 決定**。前提はすべて充足(宛先 = scene v1 の objects[].name / アセット意味論 = WP21)。設計時要件: **複数インスタンス運用**(エージェントが複数エンジンを並行駆動する使い方) — stdio rpc は 1 プロセス 1 クライアントの現行構造を維持しつつ、`get_status`(instance id・project・フレーム番号)を追加してインスタンス識別可能に。プロジェクトは読み取り専有なので並行起動は安全(書き込み系操作を入れる際に排他を設計)。複数クライアント同時接続は TCP/WebSocket 展開時の課題として分離
