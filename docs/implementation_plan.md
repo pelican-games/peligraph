@@ -756,7 +756,9 @@ pressed / axis2 が期待どおり(複数フレーム・セット切替含む)
 
 ## 3. 保留中のトラック(WP 化待ち)
 
-- **最小コマンド層**: 3 段階で進める。(1) ファイル連携(WP6 で成立済み) → (2) **WP27 として登録済み(2026-07-04)** → (3) `load_gltf` / `update_transforms` は WP27 完了後に WP 化(合意後回し方針により本線で進めてよい。scene v1 / asset 登録との整合設計が先)
+- **最小コマンド層**: (1) ファイル連携済み → (2) WP27 実装済み → (3) `load_gltf` / `update_transforms` は **2026-07-07 に実装 GO 決定**。前提はすべて充足(宛先 = scene v1 の objects[].name / アセット意味論 = WP21)。設計時要件: **複数インスタンス運用**(エージェントが複数エンジンを並行駆動する使い方) — stdio rpc は 1 プロセス 1 クライアントの現行構造を維持しつつ、`get_status`(instance id・project・フレーム番号)を追加してインスタンス識別可能に。プロジェクトは読み取り専有なので並行起動は安全(書き込み系操作を入れる際に排他を設計)。複数クライアント同時接続は TCP/WebSocket 展開時の課題として分離
+- **ゲームロジック(ネイティブ C++)**: `design_game_logic_native.md`(2026-07-07 方針決定 — スクリプト不採用、C++ 複数ファイル。G1a システム登録 API → G1b PELICAN_PROJECT ビルド取り込み → G2 DLL ホットリロード)
+- **OpenXR トラック**: **2026-07-07 に推進決定**。入力(アクション層・pose 型)は準備済み。残り = ①ランタイム統合(xrWaitFrame とループ主導権・EngineTime 統合)②描画(フレームグラフに view 次元 = multiview、XrFrameTarget を IFrameTarget の第 3 実装として追加)③PELICAN_WITH_OPENXR ユニット必須・ヘッドセットなし環境のテスト戦略。設計文書を書いてから WP 化
 - **RenderWorld**: (2026-07-02 方針変更)**ECS 側との合意形成は後回しにし、統合ブランチ系列(`codex/rendering-phase1-refactor` 由来)を当面の開発本線として独自に進める**。JSON 規約(シーン形式等)は現行形式から離れすぎない範囲で本線側が自由に定義してよい(`design_scene_format.md` 参照)。ただし (a) `src/core/ecs/` コア本体の変更禁止は維持(コンポーネント追加は `userpublic/components` で完結するため通常は不要)、(b) main との将来の合流可能性を壊さないため、main に随時追従 merge する運用は続ける。ライトアニメーション更新の ECS 側移管は本線で実施してよい(単独 PR)
 - **コマンド層の WebSocket 展開**: stage 2(stdio JSON-RPC)実装後、同じメソッド群を WebSocket に載せると devstudio と web viewer(my_webpage)が同一プロトコルでエンジンを叩ける([PFW] §7)。stage 2 の後に設計文書を書いてから WP 化
 - **asset manifest(sha256)**: `assets.manifest.json` + 起動前検証([PF] §5-6 の予告)。WP18c の README 一覧表で当面代替し、需要(=黒背景事故の再発 or web 側キャッシュ検証の要求)が出たら WP 化
