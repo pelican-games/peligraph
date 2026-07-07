@@ -1047,7 +1047,7 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
 #if PELICAN_WITH_VAT
     REQUIRE(cases.size() == 12);
 #else
-    REQUIRE(cases.size() == 10);
+    REQUIRE(cases.size() == 11);
 #endif
 
     for (const auto &golden_case : cases) {
