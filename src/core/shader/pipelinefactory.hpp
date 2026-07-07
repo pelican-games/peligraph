@@ -16,7 +16,7 @@ namespace Pelican {
 
 struct GraphicsPipelineDesc {
     ShaderBundleId vert;
-    ShaderBundleId frag;
+    std::optional<ShaderBundleId> frag;
     std::vector<vk::Format> color_formats;
     std::optional<vk::Format> depth_format;
     std::vector<std::string> shader_defines;

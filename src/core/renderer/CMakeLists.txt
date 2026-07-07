@@ -5,5 +5,6 @@ target_sources(pelican_core PRIVATE
     uicontainer.cpp
     uirenderer.cpp
     fullscreenpassrenderer.cpp
+    shadowdepthpasscontainer.cpp
     camera.cpp
 )

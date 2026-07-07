@@ -74,9 +74,13 @@ struct DebugDrawPassInfo {
     ShaderReference frag_shader = ShaderReference{"", ShaderStage::fragment, ShaderReferenceKind::explicit_file, false};
 };
 
+struct ShadowDepthPassInfo {
+    ShaderReference vert_shader = ShaderReference{"", ShaderStage::vertex, ShaderReferenceKind::explicit_file, false};
+};
+
 struct UiPassInfo {};
 
-using PassInfo = std::variant<MaterialPassInfo, FullscreenPassInfo, DebugDrawPassInfo, UiPassInfo>;
+using PassInfo = std::variant<MaterialPassInfo, FullscreenPassInfo, DebugDrawPassInfo, ShadowDepthPassInfo, UiPassInfo>;
 
 struct PassDefinition {
     PassDefinition() : output_depth{noRenderTargetId()} {}
@@ -92,11 +96,14 @@ struct PassDefinition {
 
     vk::AttachmentLoadOp color_load_op = vk::AttachmentLoadOp::eClear;
     vk::AttachmentStoreOp color_store_op = vk::AttachmentStoreOp::eStore;
+    vk::AttachmentLoadOp depth_load_op = vk::AttachmentLoadOp::eClear;
+    vk::AttachmentStoreOp depth_store_op = vk::AttachmentStoreOp::eDontCare;
     vk::ClearColorValue clear_color = vk::ClearColorValue{std::array{0.0f, 0.0f, 0.0f, 1.0f}};
 
     bool isMaterial() const { return std::holds_alternative<MaterialPassInfo>(pass_info); }
     bool isFullscreen() const { return std::holds_alternative<FullscreenPassInfo>(pass_info); }
     bool isDebugDraw() const { return std::holds_alternative<DebugDrawPassInfo>(pass_info); }
+    bool isShadowDepth() const { return std::holds_alternative<ShadowDepthPassInfo>(pass_info); }
     bool isUi() const { return std::holds_alternative<UiPassInfo>(pass_info); }
 
     MaterialPassInfo &materialInfo() { return std::get<MaterialPassInfo>(pass_info); }
@@ -105,6 +112,8 @@ struct PassDefinition {
     const FullscreenPassInfo &fullscreenInfo() const { return std::get<FullscreenPassInfo>(pass_info); }
     DebugDrawPassInfo &debugDrawInfo() { return std::get<DebugDrawPassInfo>(pass_info); }
     const DebugDrawPassInfo &debugDrawInfo() const { return std::get<DebugDrawPassInfo>(pass_info); }
+    ShadowDepthPassInfo &shadowDepthInfo() { return std::get<ShadowDepthPassInfo>(pass_info); }
+    const ShadowDepthPassInfo &shadowDepthInfo() const { return std::get<ShadowDepthPassInfo>(pass_info); }
 };
 
 struct ComputeDispatchDefinition {

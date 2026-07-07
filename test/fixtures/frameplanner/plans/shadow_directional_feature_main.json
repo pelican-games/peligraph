@@ -1,0 +1,100 @@
+{
+  "barriers": [
+    {
+      "from": "gbuffer_pass",
+      "kind": "read_after_write",
+      "resource": "gbuffer_albedo",
+      "to": "lighting_pass"
+    },
+    {
+      "from": "gbuffer_pass",
+      "kind": "read_after_write",
+      "resource": "gbuffer_normal",
+      "to": "lighting_pass"
+    },
+    {
+      "from": "gbuffer_pass",
+      "kind": "read_after_write",
+      "resource": "gbuffer_material",
+      "to": "lighting_pass"
+    },
+    {
+      "from": "gbuffer_pass",
+      "kind": "read_after_write",
+      "resource": "gbuffer_worldpos",
+      "to": "lighting_pass"
+    },
+    {
+      "from": "gbuffer_pass",
+      "kind": "read_after_write",
+      "resource": "g_emissive",
+      "to": "lighting_pass"
+    },
+    {
+      "from": "shadow_depth",
+      "kind": "read_after_write",
+      "resource": "shadow_map",
+      "to": "lighting_pass"
+    }
+  ],
+  "graph": "main",
+  "levels": [
+    [
+      "gbuffer_pass",
+      "shadow_depth"
+    ],
+    [
+      "lighting_pass"
+    ]
+  ],
+  "nodes": [
+    {
+      "declaration_index": 0,
+      "kind": "render",
+      "level": 0,
+      "name": "gbuffer_pass",
+      "order": 0,
+      "reads": [],
+      "writes": [
+        "gbuffer_albedo",
+        "gbuffer_normal",
+        "gbuffer_material",
+        "gbuffer_worldpos",
+        "g_emissive",
+        "offscreen_depth"
+      ]
+    },
+    {
+      "declaration_index": 1,
+      "kind": "render",
+      "level": 0,
+      "name": "shadow_depth",
+      "order": 1,
+      "reads": [],
+      "writes": [
+        "shadow_map"
+      ]
+    },
+    {
+      "declaration_index": 2,
+      "kind": "render",
+      "level": 1,
+      "name": "lighting_pass",
+      "order": 2,
+      "reads": [
+        "gbuffer_albedo",
+        "gbuffer_normal",
+        "gbuffer_material",
+        "gbuffer_worldpos",
+        "g_emissive",
+        "ssao_blur",
+        "shadow_map"
+      ],
+      "writes": [
+        "lit_color"
+      ]
+    }
+  ],
+  "schema": "pelican.frame_plan",
+  "version": 1
+}

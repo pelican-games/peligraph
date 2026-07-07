@@ -1,4 +1,5 @@
 #include "shadercompiler.hpp"
+#include "../loader/engineresources.hpp"
 #include <algorithm>
 #include <cctype>
 #include <fstream>
@@ -111,6 +112,13 @@ class FileIncluder final : public shaderc::CompileOptions::IncluderInterface {
                 return makeResult(resolved, readTextFile(candidate));
             } catch (const std::exception &ex) {
                 return makeError(ex.what());
+            }
+        }
+
+        const std::string requested{requested_source};
+        for (const auto &engine_id : {requested, "shaders/include/" + requested}) {
+            if (const auto resource = engineResource(engine_id)) {
+                return makeResult("engine://" + engine_id, std::string{*resource});
             }
         }
 

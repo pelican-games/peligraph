@@ -149,6 +149,15 @@ void validatePassOutputs(const PassDefinition &pass_def) {
         }
     }
 
+    if (pass_def.isShadowDepth()) {
+        if (!pass_def.output_color.empty()) {
+            throw std::runtime_error("Shadow depth pass does not support color output: " + pass_def.name);
+        }
+        if (!isConcreteRenderTarget(pass_def.output_depth)) {
+            throw std::runtime_error("Shadow depth pass requires depth output: " + pass_def.name);
+        }
+    }
+
     if (pass_def.isDebugDraw() || pass_def.isUi()) {
         if (pass_def.output_color.size() != 1) {
             throw std::runtime_error("Single-color pass requires exactly one color output: " + pass_def.name);
@@ -170,8 +179,10 @@ void validatePassSpecificFields(const PassDefinition &pass_def, const nlohmann::
             pass_def.name);
     }
 
-    if (!pass_def.isFullscreen() && !pass_def.isDebugDraw() && pass_json.contains("shader")) {
-        throw std::runtime_error("Only fullscreen and debug_draw passes support shader: " + pass_def.name);
+    if (!pass_def.isFullscreen() && !pass_def.isDebugDraw() && !pass_def.isShadowDepth() &&
+        pass_json.contains("shader")) {
+        throw std::runtime_error("Only fullscreen, debug_draw, and shadow_depth passes support shader: " +
+                                 pass_def.name);
     }
 
     if (pass_def.isFullscreen()) {
@@ -190,22 +201,25 @@ void validatePassSpecificFields(const PassDefinition &pass_def, const nlohmann::
 }
 
 void validatePassInputsProduced(const PassDefinition &pass_def,
-                                const ProducedColorTargetSet &produced_color_targets,
+                                const ProducedRenderTargetSet &produced_targets,
                                 const RenderTargetMetadataResolver &rt_metadata) {
     for (const auto &rt_id : pass_def.input_targets) {
-        if (produced_color_targets.find(rt_id) == produced_color_targets.end()) {
+        if (produced_targets.find(rt_id) == produced_targets.end()) {
             const auto rt = rt_metadata.get(rt_id);
-            throw std::runtime_error("Pass input target is not produced as an earlier color output: " + rt.name +
+            throw std::runtime_error("Pass input target is not produced as an earlier output: " + rt.name +
                                      " in pass: " + pass_def.name);
         }
     }
 }
 
-void recordPassOutputs(const PassDefinition &pass_def, ProducedColorTargetSet &produced_color_targets) {
+void recordPassOutputs(const PassDefinition &pass_def, ProducedRenderTargetSet &produced_targets) {
     for (const auto &rt_id : pass_def.output_color) {
         if (isConcreteRenderTarget(rt_id)) {
-            produced_color_targets.insert(rt_id);
+            produced_targets.insert(rt_id);
         }
+    }
+    if (isConcreteRenderTarget(pass_def.output_depth)) {
+        produced_targets.insert(pass_def.output_depth);
     }
 }
 

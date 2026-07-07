@@ -7,8 +7,9 @@ void registerRenderTargetDefinitions(const std::vector<RenderTargetDefinition> &
                                      vk::Extent2D base_extent,
                                      RenderTargetContainer &rt_container) {
     for (const auto &definition : definitions) {
-        rt_container.registerRenderTarget(definition.name, base_extent, definition.extent_scale, definition.format,
-                                          definition.usage, vma::MemoryUsage::eAutoPreferDevice);
+        rt_container.registerRenderTarget(definition.name, base_extent, definition.extent_scale,
+                                          definition.fixed_extent, definition.format, definition.usage,
+                                          vma::MemoryUsage::eAutoPreferDevice);
     }
 }
 

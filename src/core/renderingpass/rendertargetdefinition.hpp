@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <optional>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
@@ -8,6 +9,7 @@ namespace Pelican {
 struct RenderTargetDefinition {
     std::string name;
     float extent_scale = 1.0f;
+    std::optional<vk::Extent2D> fixed_extent;
     vk::Format format;
     vk::ImageUsageFlags usage;
 };

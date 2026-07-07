@@ -3,6 +3,7 @@
 #include "../renderer/debugdraw.hpp"
 #include "../renderer/fullscreenpassrenderer.hpp"
 #include "../renderer/materialrender.hpp"
+#include "../renderer/shadowdepthpasscontainer.hpp"
 #include "../renderer/uirenderer.hpp"
 #include "../phys/physworld.hpp"
 #include <stdexcept>
@@ -56,6 +57,13 @@ void renderDebugDrawPass(vk::CommandBuffer cmd_buf, PassId pass_id,
     dependencies.debug_draw->render(cmd_buf, pass_id);
 }
 
+void renderShadowDepthPass(vk::CommandBuffer cmd_buf, PassId pass_id,
+                           const RenderPassDispatchDependencies &dependencies) {
+    dependencies.material_renderer.renderShadowDepth(cmd_buf, pass_id,
+                                                     dependencies.shadow_depth_pass_container,
+                                                     dependencies.material_renderer_dependencies);
+}
+
 } // namespace
 
 void renderUiPass(vk::CommandBuffer cmd_buf, const FrameRenderContext &frame, const PassDefinition &pass_def,
@@ -83,6 +91,8 @@ void renderDynamicPassDrawCalls(vk::CommandBuffer cmd_buf, PassId pass_id, const
         renderMaterialPass(cmd_buf, pass_id, pass_def, dependencies);
     } else if (pass_def.isFullscreen()) {
         renderFullscreenPass(cmd_buf, pass_id, pass_def, dependencies);
+    } else if (pass_def.isShadowDepth()) {
+        renderShadowDepthPass(cmd_buf, pass_id, dependencies);
     } else if (pass_def.isDebugDraw()) {
         renderDebugDrawPass(cmd_buf, pass_id, dependencies);
     } else {

@@ -292,8 +292,10 @@ void applyRenderTargetOverrides(nlohmann::json &config, const nlohmann::json &fe
         }
 
         for (auto field = override_json.begin(); field != override_json.end(); ++field) {
-            if (field.key() != "format" && field.key() != "usage") {
-                throw std::runtime_error("render target override only supports format and usage: " + name);
+            if (field.key() != "format" && field.key() != "usage" &&
+                field.key() != "width" && field.key() != "height") {
+                throw std::runtime_error(
+                    "render target override only supports format, usage, width, and height: " + name);
             }
         }
         if (override_json.contains("format")) {
@@ -304,6 +306,18 @@ void applyRenderTargetOverrides(nlohmann::json &config, const nlohmann::json &fe
         }
         if (override_json.contains("usage")) {
             mergeUsage(*target, override_json, name);
+        }
+        if (override_json.contains("width")) {
+            if (!override_json.at("width").is_number_integer()) {
+                throw std::runtime_error("render target override width must be an integer: " + name);
+            }
+            (*target)["width"] = override_json.at("width");
+        }
+        if (override_json.contains("height")) {
+            if (!override_json.at("height").is_number_integer()) {
+                throw std::runtime_error("render target override height must be an integer: " + name);
+            }
+            (*target)["height"] = override_json.at("height");
         }
     }
 }
@@ -415,6 +429,58 @@ void addFeaturePasses(nlohmann::json &config, const nlohmann::json &feature,
     }
 }
 
+nlohmann::json *findPass(nlohmann::json &config, const std::string &pass_name) {
+    auto &rendering_passes = ensureArray(config, "rendering_passes");
+    nlohmann::json *found_pass = nullptr;
+    for (auto &pass_set : rendering_passes) {
+        auto &passes = pass_set.at("passes");
+        for (auto &pass : passes) {
+            if (!pass.is_object() || pass.value("name", std::string{}) != pass_name) {
+                continue;
+            }
+            if (found_pass != nullptr) {
+                throw std::runtime_error("render feature pass override is ambiguous: " + pass_name);
+            }
+            found_pass = &pass;
+        }
+    }
+    return found_pass;
+}
+
+void applyPassOverrides(nlohmann::json &config, const nlohmann::json &feature) {
+    if (!feature.contains("pass_overrides")) {
+        return;
+    }
+    const auto &overrides = feature.at("pass_overrides");
+    if (!overrides.is_object()) {
+        throw std::runtime_error("render feature pass_overrides must be an object");
+    }
+
+    for (auto it = overrides.begin(); it != overrides.end(); ++it) {
+        const auto pass_name = it.key();
+        const auto &override_json = it.value();
+        if (!override_json.is_object()) {
+            throw std::runtime_error("render feature pass override must be an object: " + pass_name);
+        }
+        auto *pass = findPass(config, pass_name);
+        if (pass == nullptr) {
+            throw std::runtime_error("render feature pass override references unknown pass: " + pass_name);
+        }
+
+        for (auto field = override_json.begin(); field != override_json.end(); ++field) {
+            if (field.key() != "input") {
+                throw std::runtime_error("render feature pass override only supports input: " + pass_name);
+            }
+        }
+        if (override_json.contains("input")) {
+            for (const auto &input : parseStringArray(override_json, "input",
+                                                      "render feature pass override: " + pass_name)) {
+                appendStringListValue(*pass, "input", input);
+            }
+        }
+    }
+}
+
 void addFeatureComputeTasks(nlohmann::json &config, const nlohmann::json &feature,
                             std::unordered_set<std::string> &task_names) {
     if (!feature.contains("compute_tasks")) {
@@ -477,6 +543,7 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         addBuffers(composed, feature, buffer_names);
         applyRenderTargetOverrides(composed, feature);
         addFeaturePasses(composed, feature, pass_names);
+        applyPassOverrides(composed, feature);
         addFeatureComputeTasks(composed, feature, task_names);
         appendShaderDefines(shader_defines, feature, "render feature");
     }

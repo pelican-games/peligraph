@@ -41,6 +41,7 @@ TEST_CASE("rendering pass JSON helpers parse known values", "[renderingpass]") {
 
     REQUIRE(std::holds_alternative<MaterialPassInfo>(makePassInfo("material")));
     REQUIRE(std::holds_alternative<FullscreenPassInfo>(makePassInfo("fullscreen")));
+    REQUIRE(std::holds_alternative<ShadowDepthPassInfo>(makePassInfo("shadow_depth")));
     REQUIRE(std::holds_alternative<UiPassInfo>(makePassInfo("ui")));
 
     REQUIRE(stringToFullscreenPushConstantData("projection_view") == FullscreenPushConstantData::eProjectionView);
@@ -81,9 +82,31 @@ TEST_CASE("render target JSON parser returns target definitions", "[renderingpas
     REQUIRE(definitions.size() == 1);
     REQUIRE(definitions[0].name == "half_color");
     REQUIRE(definitions[0].extent_scale == 0.5f);
+    REQUIRE_FALSE(definitions[0].fixed_extent.has_value());
     REQUIRE(definitions[0].format == vk::Format::eR8Unorm);
     REQUIRE(static_cast<bool>(definitions[0].usage & vk::ImageUsageFlagBits::eColorAttachment));
     REQUIRE(static_cast<bool>(definitions[0].usage & vk::ImageUsageFlagBits::eSampled));
+}
+
+TEST_CASE("render target JSON parser accepts fixed extents", "[renderingpass]") {
+    const nlohmann::json config{
+        {"render_targets",
+         nlohmann::json::array({{
+             {"name", "shadow_map"},
+             {"extent_scale", 1.0},
+             {"width", 2048},
+             {"height", 2048},
+             {"format", "D32_SFLOAT"},
+             {"usage", nlohmann::json::array({"DEPTH_STENCIL_ATTACHMENT", "SAMPLED"})},
+         }})},
+    };
+
+    const auto definitions = parseRenderTargetDefinitionsFromJson(config);
+
+    REQUIRE(definitions.size() == 1);
+    REQUIRE(definitions[0].fixed_extent.has_value());
+    REQUIRE(definitions[0].fixed_extent->width == 2048);
+    REQUIRE(definitions[0].fixed_extent->height == 2048);
 }
 
 TEST_CASE("fullscreen pass JSON parser reads explicit fullscreen options", "[renderingpass]") {
@@ -112,6 +135,24 @@ TEST_CASE("fullscreen pass JSON parser does not infer options from pass name", "
 
     REQUIRE(info.push_constants == FullscreenPushConstantData::eNone);
     REQUIRE_FALSE(info.uses_light_data);
+}
+
+TEST_CASE("pass info JSON parser reads shadow depth shader option", "[renderingpass]") {
+    PassDefinition pass_def;
+    pass_def.name = "shadow_depth";
+    parsePassTypeFromJson(pass_def, nlohmann::json{{"type", "shadow_depth"}});
+
+    parseShadowDepthPassInfoIntoDefinition(pass_def, nlohmann::json::object());
+
+    REQUIRE(pass_def.isShadowDepth());
+    REQUIRE(pass_def.shadowDepthInfo().vert_shader.ref == "engine://shadow_depth");
+    REQUIRE(pass_def.shadowDepthInfo().vert_shader.kind == ShaderReferenceKind::stem);
+
+    parseShadowDepthPassInfoIntoDefinition(
+        pass_def,
+        nlohmann::json{{"shader", {{"vertex", "shaders/custom_shadow"}}}});
+
+    REQUIRE(pass_def.shadowDepthInfo().vert_shader.ref == "shaders/custom_shadow");
 }
 
 TEST_CASE("fullscreen pass JSON parser rejects deprecated projection matrix flag", "[renderingpass]") {
@@ -326,6 +367,47 @@ TEST_CASE("pass sequence JSON parser validates produced input order", "[renderin
     REQUIRE(passes[1].input_targets[0] == GlobalRenderTargetId{3});
 }
 
+TEST_CASE("pass sequence JSON parser allows depth output as later input", "[renderingpass]") {
+    const auto name_resolver = RenderTargetNameResolver{[](const std::string &name) {
+        if (name == "shadow_map") {
+            return GlobalRenderTargetId{3};
+        }
+        if (name == "lit_color") {
+            return GlobalRenderTargetId{4};
+        }
+        return noRenderTargetId();
+    }};
+    const auto metadata_resolver = RenderTargetMetadataResolver{[](GlobalRenderTargetId id) {
+        if (id == GlobalRenderTargetId{3}) {
+            return RenderTargetMetadata{"shadow_map", vk::ImageUsageFlagBits::eDepthStencilAttachment |
+                                                          vk::ImageUsageFlagBits::eSampled,
+                                        vk::Format::eD32Sfloat, vk::Extent2D{2048, 2048}};
+        }
+        if (id == GlobalRenderTargetId{4}) {
+            return RenderTargetMetadata{"lit_color", vk::ImageUsageFlagBits::eColorAttachment,
+                                        vk::Format::eR8G8B8A8Unorm, vk::Extent2D{1280, 720}};
+        }
+        throw std::runtime_error("unexpected render target metadata lookup");
+    }};
+
+    const nlohmann::json pass_set_json{
+        {"passes",
+         nlohmann::json::array({
+             {{"name", "shadow_depth"}, {"type", "shadow_depth"},
+              {"output", {{"color", nullptr}, {"depth", "shadow_map"}}}},
+             {{"name", "lighting_pass"}, {"type", "fullscreen"}, {"input", "shadow_map"},
+              {"output", {{"color", "lit_color"}, {"depth", nullptr}}},
+              {"shader", {{"vertex", "fullscreen.vert.spv"}, {"fragment", "lighting.frag.spv"}}}},
+         })},
+    };
+
+    const auto passes = parsePassSequenceFromJson(pass_set_json, "main", name_resolver, metadata_resolver);
+
+    REQUIRE(passes.size() == 2);
+    REQUIRE(passes[0].isShadowDepth());
+    REQUIRE(passes[1].input_targets == std::vector<GlobalRenderTargetId>{GlobalRenderTargetId{3}});
+}
+
 TEST_CASE("pass sequence JSON parser rejects duplicate pass names", "[renderingpass]") {
     const auto name_resolver = RenderTargetNameResolver{[](const std::string &) { return noRenderTargetId(); }};
     const auto metadata_resolver = RenderTargetMetadataResolver{[](GlobalRenderTargetId) -> RenderTargetMetadata {
@@ -367,6 +449,8 @@ TEST_CASE("pass attachment options parser applies explicit color attachment opti
         {"clear_color", nlohmann::json::array({0.25f, 0.5f, 0.75f, 1.0f})},
         {"color_load_op", "Load"},
         {"color_store_op", "DontCare"},
+        {"depth_load_op", "Clear"},
+        {"depth_store_op", "Store"},
     };
 
     parsePassAttachmentOptionsFromJson(pass_def, pass_json);
@@ -377,6 +461,8 @@ TEST_CASE("pass attachment options parser applies explicit color attachment opti
     REQUIRE(pass_def.clear_color.float32[3] == 1.0f);
     REQUIRE(pass_def.color_load_op == vk::AttachmentLoadOp::eLoad);
     REQUIRE(pass_def.color_store_op == vk::AttachmentStoreOp::eDontCare);
+    REQUIRE(pass_def.depth_load_op == vk::AttachmentLoadOp::eClear);
+    REQUIRE(pass_def.depth_store_op == vk::AttachmentStoreOp::eStore);
 }
 
 TEST_CASE("pass attachment options parser preserves defaults when fields are omitted", "[renderingpass]") {

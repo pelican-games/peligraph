@@ -1,6 +1,7 @@
 #include "lightcontainer.hpp"
 #include "../vkcore/core.hpp"
 #include <algorithm>
+#include <cmath>
 #include <nlohmann/json.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <stdexcept>
@@ -50,6 +51,27 @@ namespace Pelican
 			}
 			name_map.emplace(name, index);
 		}
+
+		glm::vec3 safeLightDirection(const std::vector<DirectionalLight>& lights)
+		{
+			if (lights.empty() || glm::length(lights.front().direction) < 0.0001f)
+			{
+				return glm::normalize(glm::vec3{-0.5f, -1.0f, -0.5f});
+			}
+			return glm::normalize(lights.front().direction);
+		}
+
+		glm::mat4 vulkanOrtho(float left, float right, float bottom, float top, float z_near, float z_far)
+		{
+			glm::mat4 projection{1.0f};
+			projection[0][0] = 2.0f / (right - left);
+			projection[1][1] = 2.0f / (top - bottom);
+			projection[2][2] = 1.0f / (z_near - z_far);
+			projection[3][0] = -(right + left) / (right - left);
+			projection[3][1] = -(top + bottom) / (top - bottom);
+			projection[3][2] = z_near / (z_near - z_far);
+			return projection;
+		}
 	}
 
 	LightContainer::~LightContainer()
@@ -59,6 +81,20 @@ namespace Pelican
 	void LightContainer::bindResource(vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout, uint32_t set_number) const
 	{
 		cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout, set_number, {m_DescriptorSet.get()}, {});
+	}
+
+	glm::mat4 LightContainer::shadowViewProjection() const
+	{
+		const auto direction = safeLightDirection(m_DirectionalLights);
+		const glm::vec3 center{0.0f, 0.0f, 0.0f};
+		const glm::vec3 eye = center - direction * 10.0f;
+		const glm::vec3 world_up =
+			std::abs(glm::dot(direction, glm::vec3{0.0f, 1.0f, 0.0f})) > 0.95f
+				? glm::vec3{0.0f, 0.0f, 1.0f}
+				: glm::vec3{0.0f, 1.0f, 0.0f};
+		const auto view = glm::lookAt(eye, center, world_up);
+		const auto projection = vulkanOrtho(-6.0f, 6.0f, -6.0f, 6.0f, 0.1f, 30.0f);
+		return projection * view;
 	}
 
 	LightContainer::LightContainer()
@@ -285,6 +321,7 @@ namespace Pelican
 		    			ubo.spotLights[i].innerConeAngle = cos(glm::radians(m_SpotLights[i].innerConeAngle));
 		    			ubo.spotLights[i].outerConeAngle = cos(glm::radians(m_SpotLights[i].outerConeAngle));
 		    		}
+				ubo.shadowViewProjection = shadowViewProjection();
 		
 		    		GET_MODULE(VulkanManageCore).writeBuf(m_LightUBO, &ubo, 0, sizeof(ubo));
 		    	}

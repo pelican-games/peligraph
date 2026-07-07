@@ -74,6 +74,8 @@ DECLARE_MODULE(MaterialContainer) {
     bool isRenderRequired(PassId pass_id, GlobalMaterialId material) const;
     void bindResource(vk::CommandBuffer cmd_buf, PassId pass_id, GlobalMaterialId material,
                       GlobalMaterialId prev_material_id) const;
+    void bindModelMatrixResource(vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout,
+                                 uint32_t set_number) const;
     vk::PipelineLayout getPipelineLayout() const;
     vk::PipelineLayout pipelineLayout(GlobalMaterialId material) const;
     MaterialPushConstantStruct makePushConstants(GlobalMaterialId material, glm::mat4 vp_matrix,

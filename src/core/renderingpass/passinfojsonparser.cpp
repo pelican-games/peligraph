@@ -2,6 +2,7 @@
 #include "debugdrawpassinfojsonparser.hpp"
 #include "fullscreenpassinfojsonparser.hpp"
 #include "renderingpassjsonhelpers.hpp"
+#include <stdexcept>
 
 namespace Pelican {
 
@@ -27,6 +28,30 @@ void parseDebugDrawPassInfoIntoDefinition(PassDefinition &pass_def, const nlohma
     }
 
     pass_def.debugDrawInfo() = parseDebugDrawPassInfoFromJson(pass_json, pass_def.name);
+}
+
+void parseShadowDepthPassInfoIntoDefinition(PassDefinition &pass_def, const nlohmann::json &pass_json) {
+    if (!pass_def.isShadowDepth()) {
+        return;
+    }
+
+    auto &shadow_info = pass_def.shadowDepthInfo();
+    shadow_info.vert_shader = makeShaderReference("engine://shadow_depth", ShaderStage::vertex);
+
+    if (!pass_json.contains("shader")) {
+        return;
+    }
+    const auto &shader = pass_json.at("shader");
+    if (!shader.is_object()) {
+        throw std::runtime_error("Shadow depth pass shader must be an object: " + pass_def.name);
+    }
+    if (!shader.contains("vertex") || !shader.at("vertex").is_string()) {
+        throw std::runtime_error("Shadow depth pass shader requires vertex string: " + pass_def.name);
+    }
+    if (shader.contains("fragment")) {
+        throw std::runtime_error("Shadow depth pass does not support fragment shader: " + pass_def.name);
+    }
+    shadow_info.vert_shader = makeShaderReference(shader.at("vertex").get<std::string>(), ShaderStage::vertex);
 }
 
 } // namespace Pelican

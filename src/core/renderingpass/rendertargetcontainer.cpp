@@ -2,6 +2,7 @@
 #include "../vkcore/deletionqueue.hpp"
 #include "../vkcore/core.hpp"
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 
@@ -14,11 +15,12 @@ struct RetiredRenderTargetResources {
     vk::UniqueImageView image_view;
 };
 
-vk::Extent2D resolveRenderTargetExtent(const std::string &name, vk::Extent2D base_extent, float extent_scale) {
-    const vk::Extent2D extent{
+vk::Extent2D resolveRenderTargetExtent(const std::string &name, vk::Extent2D base_extent, float extent_scale,
+                                       std::optional<vk::Extent2D> fixed_extent) {
+    const vk::Extent2D extent = fixed_extent.value_or(vk::Extent2D{
         static_cast<uint32_t>(base_extent.width * extent_scale),
         static_cast<uint32_t>(base_extent.height * extent_scale),
-    };
+    });
 
     if (extent.width == 0 || extent.height == 0) {
         throw std::runtime_error("Render target extent became zero-sized: " + name);
@@ -56,9 +58,10 @@ static vk::UniqueImageView createImageView(vk::Device device, const ImageWrapper
 }
 
 ImageWrapper createRenderTargetImage(const std::string &name, vk::Extent2D base_extent, float extent_scale,
+                                     std::optional<vk::Extent2D> fixed_extent,
                                      vk::Format format, vk::ImageUsageFlags usage,
                                      vma::MemoryUsage memory_usage) {
-    const auto extent = resolveRenderTargetExtent(name, base_extent, extent_scale);
+    const auto extent = resolveRenderTargetExtent(name, base_extent, extent_scale, fixed_extent);
     return GET_MODULE(VulkanManageCore)
         .allocImage(vk::Extent3D{extent.width, extent.height, 1}, format, usage, memory_usage, {});
 }
@@ -72,6 +75,7 @@ RenderTargetContainer::~RenderTargetContainer() {}
 GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::string &name,
                                                                  vk::Extent2D base_extent,
                                                                  float extent_scale,
+                                                                 std::optional<vk::Extent2D> fixed_extent,
                                                                  vk::Format format,
                                                                  vk::ImageUsageFlags usage,
                                                                  vma::MemoryUsage memUsage) {
@@ -80,12 +84,14 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
         return it->second;
     }
 
-    ImageWrapper image = createRenderTargetImage(name, base_extent, extent_scale, format, usage, memUsage);
+    ImageWrapper image =
+        createRenderTargetImage(name, base_extent, extent_scale, fixed_extent, format, usage, memUsage);
     auto image_view = createImageView(device, image);
 
     GlobalRenderTargetId id = render_targets.reg(InternalRenderTarget{
         .name = name,
         .extent_scale = extent_scale,
+        .fixed_extent = fixed_extent,
         .format = format,
         .usage = usage,
         .memory_usage = memUsage,
@@ -100,8 +106,8 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
 void RenderTargetContainer::recreateForExtent(vk::Extent2D base_extent) {
     for (const auto &[name, id] : name_to_id) {
         auto &rt = render_targets.get(id);
-        auto next_image =
-            createRenderTargetImage(rt.name, base_extent, rt.extent_scale, rt.format, rt.usage, rt.memory_usage);
+        auto next_image = createRenderTargetImage(rt.name, base_extent, rt.extent_scale,
+                                                  rt.fixed_extent, rt.format, rt.usage, rt.memory_usage);
         auto next_view = createImageView(device, next_image);
 
         GET_MODULE(DeletionQueue)

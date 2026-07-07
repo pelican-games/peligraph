@@ -277,6 +277,16 @@ void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pass_id, 
     }
 }
 
+void MaterialContainer::bindModelMatrixResource(vk::CommandBuffer cmd_buf,
+                                                vk::PipelineLayout pipeline_layout,
+                                                uint32_t set_number) const {
+    if (!model_mat_buf_descset) {
+        throw std::runtime_error("MaterialContainer has no model matrix descriptor set");
+    }
+    cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout, set_number,
+                               {model_mat_buf_descset.get()}, {});
+}
+
 vk::PipelineLayout MaterialContainer::getPipelineLayout() const {
     if (!default_pipeline) {
         throw std::runtime_error("MaterialContainer has no material pipeline");

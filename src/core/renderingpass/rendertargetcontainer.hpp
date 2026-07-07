@@ -5,6 +5,7 @@
 #include "../vkcore/buf.hpp"
 #include "../vkcore/image.hpp"
 #include "rendertargetmetadata.hpp"
+#include <optional>
 #include <string>
 #include <vulkan/vulkan.hpp>
 
@@ -17,6 +18,7 @@ DECLARE_MODULE(RenderTargetContainer) {
     struct InternalRenderTarget {
         std::string name;
         float extent_scale;
+        std::optional<vk::Extent2D> fixed_extent;
         vk::Format format;
         vk::ImageUsageFlags usage;
         vma::MemoryUsage memory_usage;
@@ -32,7 +34,8 @@ DECLARE_MODULE(RenderTargetContainer) {
     ~RenderTargetContainer();
 
     GlobalRenderTargetId registerRenderTarget(const std::string &name, vk::Extent2D base_extent,
-                                              float extent_scale, vk::Format format, vk::ImageUsageFlags usage,
+                                              float extent_scale, std::optional<vk::Extent2D> fixed_extent,
+                                              vk::Format format, vk::ImageUsageFlags usage,
                                               vma::MemoryUsage memUsage);
     void recreateForExtent(vk::Extent2D base_extent);
     GlobalRenderTargetId getRenderTargetIdByName(const std::string &name) const;

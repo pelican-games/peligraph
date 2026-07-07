@@ -124,14 +124,19 @@ std::vector<vk::PipelineColorBlendAttachmentState> makeBlendAttachments(const Gr
 }
 
 std::vector<vk::PipelineShaderStageCreateInfo> makeShaderStages(vk::ShaderModule vert,
-                                                                vk::ShaderModule frag) {
-    std::vector<vk::PipelineShaderStageCreateInfo> stages(2);
+                                                                std::optional<vk::ShaderModule> frag) {
+    std::vector<vk::PipelineShaderStageCreateInfo> stages;
+    stages.reserve(frag ? 2 : 1);
+    stages.emplace_back();
     stages[0].stage = vk::ShaderStageFlagBits::eVertex;
     stages[0].module = vert;
     stages[0].pName = "main";
-    stages[1].stage = vk::ShaderStageFlagBits::eFragment;
-    stages[1].module = frag;
-    stages[1].pName = "main";
+    if (frag) {
+        stages.emplace_back();
+        stages[1].stage = vk::ShaderStageFlagBits::eFragment;
+        stages[1].module = *frag;
+        stages[1].pName = "main";
+    }
     return stages;
 }
 
@@ -146,7 +151,7 @@ bool pipelineUsesShader(const std::variant<GraphicsPipelineDesc, ComputePipeline
             using Desc = std::decay_t<decltype(pipeline_desc)>;
             if constexpr (std::is_same_v<Desc, GraphicsPipelineDesc>) {
                 return containsShader(dirty_shaders, pipeline_desc.vert) ||
-                       containsShader(dirty_shaders, pipeline_desc.frag);
+                       (pipeline_desc.frag && containsShader(dirty_shaders, *pipeline_desc.frag));
             } else {
                 return containsShader(dirty_shaders, pipeline_desc.shader);
             }
@@ -214,8 +219,11 @@ vk::UniquePipelineLayout PipelineFactory::createPipelineLayout(
 vk::UniquePipeline PipelineFactory::createGraphicsPipeline(const GraphicsPipelineDesc &desc,
                                                            vk::PipelineLayout layout) const {
     const auto &vert = shader_library.get(desc.vert);
-    const auto &frag = shader_library.get(desc.frag);
-    const auto stages = makeShaderStages(vert.module.get(), frag.module.get());
+    std::optional<vk::ShaderModule> frag_module;
+    if (desc.frag) {
+        frag_module = shader_library.get(*desc.frag).module.get();
+    }
+    const auto stages = makeShaderStages(vert.module.get(), frag_module);
 
     vk::PipelineVertexInputStateCreateInfo vertex_input_info;
     VertBufContainer::CommonVertDataDescription engine_vertex_input;
@@ -313,14 +321,15 @@ vk::UniquePipeline PipelineFactory::createComputePipeline(const ComputePipelineD
 }
 
 PipelineFactory::PipelineRecord PipelineFactory::buildGraphicsPipeline(const GraphicsPipelineDesc &desc) {
-    if (desc.color_formats.empty()) {
-        throw std::runtime_error("GraphicsPipelineDesc requires at least one color format");
+    if (desc.color_formats.empty() && !desc.depth_format) {
+        throw std::runtime_error("GraphicsPipelineDesc requires at least one color or depth format");
     }
 
-    const auto stage_reflections = std::array{
-        shader_library.get(desc.vert).reflection,
-        shader_library.get(desc.frag).reflection,
-    };
+    std::vector<ShaderReflection> stage_reflections;
+    stage_reflections.push_back(shader_library.get(desc.vert).reflection);
+    if (desc.frag) {
+        stage_reflections.push_back(shader_library.get(*desc.frag).reflection);
+    }
     auto merged_reflection = merge(stage_reflections);
     validateGraphicsReflection(desc, merged_reflection);
 

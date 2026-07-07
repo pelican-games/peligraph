@@ -1,5 +1,6 @@
 #include "../src/core/container.hpp"
 #include "../src/core/appflow/enginetime.hpp"
+#include "../src/core/ecs/core.hpp"
 #include "../src/core/ecs/predefined.hpp"
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/loader/pathresolver.hpp"
@@ -8,6 +9,7 @@
 #include "../src/core/log.hpp"
 #include "../src/core/playback/vatplayer.hpp"
 #include "../src/core/renderer/debugdraw.hpp"
+#include "../src/core/renderer/camera.hpp"
 #include "../src/core/shader/pipelinefactory.hpp"
 #include "../src/core/shader/shadercompiler.hpp"
 #include "../src/core/shader/shaderlibrary.hpp"
@@ -210,6 +212,29 @@ nlohmann::json makeHdrProjectJson() {
              {"fullscreen", false},
              {"framerate", 60},
              {"camera", {{"fov_y", 45.0}, {"near", 0.1}, {"far", 100.0}, {"up", {0, 1, 0}}}},
+             {"default_scene_id", "default_scene"},
+             {"scene_data_json", "scene.json"},
+             {"asset_data_json", "assets.json"},
+             {"rendering_config_json", "passes/main.json"},
+             {"ui_config_json", "ui/ui.json"},
+             {"default_rendering_pass", "main"},
+         }},
+    };
+}
+
+nlohmann::json makeShadowProjectJson() {
+    return nlohmann::json{
+        {"schema", "pelican.project"},
+        {"version", 1},
+        {"name", "shadow golden"},
+        {"engine_min_version", "0.1.0"},
+        {"basic_config",
+         {
+             {"window_title", "Shadow Golden"},
+             {"window_size", {{"width", goldenWidth}, {"height", goldenHeight}}},
+             {"fullscreen", false},
+             {"framerate", 60},
+             {"camera", {{"fov_y", 50.0}, {"near", 0.1}, {"far", 100.0}, {"up", {0, 1, 0}}}},
              {"default_scene_id", "default_scene"},
              {"scene_data_json", "scene.json"},
              {"asset_data_json", "assets.json"},
@@ -739,6 +764,134 @@ void writeHdrProject(const std::filesystem::path &root, bool hdr_enabled) {
     writeTextFile(root / "passes" / "main.json", makeHdrRenderingConfig(hdr_enabled).dump(2));
 }
 
+nlohmann::json makeShadowRenderingConfig(bool shadow_enabled) {
+    auto passes = nlohmann::json::array();
+    passes.push_back({
+        {"name", "gbuffer_pass"},
+        {"type", "material"},
+        {"output",
+         {{"color",
+           nlohmann::json::array({"gbuffer_albedo", "gbuffer_normal", "gbuffer_material",
+                                   "gbuffer_worldpos", "g_emissive"})},
+          {"depth", "offscreen_depth"}}},
+    });
+    passes.push_back({
+        {"name", "ssao_clear"},
+        {"type", "fullscreen"},
+        {"output", {{"color", "ssao_blur"}, {"depth", nullptr}}},
+        {"shader", {{"vertex", "shaders/fullscreen"}, {"fragment", "shaders/white"}}},
+        {"clear_color", nlohmann::json::array({1.0, 1.0, 1.0, 1.0})},
+    });
+    passes.push_back({
+        {"name", "lighting_pass"},
+        {"type", "fullscreen"},
+        {"output", {{"color", "swapchain"}, {"depth", nullptr}}},
+        {"input",
+         nlohmann::json::array({"gbuffer_albedo", "gbuffer_normal", "gbuffer_material",
+                                 "gbuffer_worldpos", "g_emissive", "ssao_blur"})},
+        {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://fullscreen"}}},
+        {"push_constants", "camera_position"},
+        {"uses_light_data", true},
+    });
+
+    auto config = nlohmann::json{
+        {"render_targets",
+         nlohmann::json::array({
+             {{"name", "gbuffer_albedo"},
+              {"extent_scale", 1.0},
+              {"format", "B8G8R8A8_UNORM"},
+              {"usage", nlohmann::json::array({"COLOR_ATTACHMENT", "SAMPLED"})}},
+             {{"name", "gbuffer_normal"},
+              {"extent_scale", 1.0},
+              {"format", "R16G16B16A16_SFLOAT"},
+              {"usage", nlohmann::json::array({"COLOR_ATTACHMENT", "SAMPLED"})}},
+             {{"name", "gbuffer_material"},
+              {"extent_scale", 1.0},
+              {"format", "R8G8B8A8_UNORM"},
+              {"usage", nlohmann::json::array({"COLOR_ATTACHMENT", "SAMPLED"})}},
+             {{"name", "gbuffer_worldpos"},
+              {"extent_scale", 1.0},
+              {"format", "R16G16B16A16_SFLOAT"},
+              {"usage", nlohmann::json::array({"COLOR_ATTACHMENT", "SAMPLED"})}},
+             {{"name", "g_emissive"},
+              {"extent_scale", 1.0},
+              {"format", "R8G8B8A8_UNORM"},
+              {"usage", nlohmann::json::array({"COLOR_ATTACHMENT", "SAMPLED"})}},
+             {{"name", "offscreen_depth"},
+              {"extent_scale", 1.0},
+              {"format", "D32_SFLOAT"},
+              {"usage", nlohmann::json::array({"DEPTH_STENCIL_ATTACHMENT"})}},
+             {{"name", "ssao_blur"},
+              {"extent_scale", 1.0},
+              {"format", "R8_UNORM"},
+              {"usage", nlohmann::json::array({"COLOR_ATTACHMENT", "SAMPLED"})}},
+         })},
+        {"rendering_passes",
+         nlohmann::json::array({
+             {{"name", "main"}, {"passes", passes}},
+         })},
+    };
+
+    if (shadow_enabled) {
+        config["features"] = nlohmann::json::array({"engine://features/shadow_directional.json"});
+    }
+    return config;
+}
+
+void writeShadowProject(const std::filesystem::path &root, bool shadow_enabled) {
+    writeTextFile(root / "project.json", makeShadowProjectJson().dump(2));
+    writeTextFile(root / "scene.json", R"json({
+  "schema": "pelican.scene",
+  "version": 1,
+  "scenes": {
+    "default_scene": {
+      "objects": [
+        {
+          "name": "Ground",
+          "components": [
+            {"name": "transform", "pos": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [4.0, 0.05, 4.0]},
+            {"name": "simplemodelview", "model": "ground"}
+          ]
+        },
+        {
+          "name": "Caster",
+          "components": [
+            {"name": "transform", "pos": [0.0, 0.55, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.7, 0.7, 0.7]},
+            {"name": "simplemodelview", "model": "ground"}
+          ]
+        },
+        {
+          "name": "Sun",
+          "components": [
+            {"name": "light", "type": "directional", "direction": [0.35, -1.0, -0.25], "intensity": 3.0, "color": [1.0, 0.94, 0.82]}
+          ]
+        }
+      ]
+    }
+  }
+})json");
+    writeTextFile(root / "assets.json", R"json({
+  "models": [
+    {"name": "ground", "path": "assets/ground.glb"}
+  ]
+})json");
+    writeTextFile(root / "ui" / "ui.json", R"json({"images":[]})json");
+    writeTextFile(root / "shaders" / "fullscreen.vert", stemFullscreenVertexShader());
+    writeTextFile(root / "shaders" / "white.frag", R"glsl(
+#version 450
+layout(location = 0) out vec4 outColor;
+void main() {
+    outColor = vec4(1.0);
+}
+)glsl");
+    writeTextFile(root / "passes" / "main.json", makeShadowRenderingConfig(shadow_enabled).dump(2));
+
+    std::filesystem::create_directories(root / "assets");
+    std::filesystem::copy_file(sourceRoot() / "test" / "fixtures" / "ground.glb",
+                               root / "assets" / "ground.glb",
+                               std::filesystem::copy_options::overwrite_existing);
+}
+
 void writeComputeProject(const std::filesystem::path &root) {
     writeTextFile(root / "project.json", makeComputeProjectJson().dump(2));
     writeTextFile(root / "scene.json", R"json({
@@ -879,6 +1032,24 @@ void renderFeatureFrame(RenderTarget &render_target) {
     (void)render_target;
 }
 
+void renderShadowFrame(RenderTarget &render_target) {
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    GET_MODULE(SceneLoader).load("default_scene");
+    GET_MODULE(ECSCore).update();
+    GET_MODULE(ECSCore).update();
+
+    auto &camera = GET_MODULE(Camera);
+    const glm::vec3 position{0.0f, 2.0f, -4.5f};
+    const glm::vec3 target{0.0f, 0.25f, 0.0f};
+    camera.setPos(position);
+    camera.setDir(glm::normalize(target - position));
+    camera.setUp({0.0f, 1.0f, 0.0f});
+
+    GET_MODULE(Renderer).render();
+    GET_MODULE(VulkanManageCore).waitIdle();
+    (void)render_target;
+}
+
 void renderComputeFrame(RenderTarget &render_target) {
     GET_MODULE(Renderer).render();
     GET_MODULE(VulkanManageCore).waitIdle();
@@ -915,6 +1086,10 @@ bool isHdrGoldenMode(const std::string &mode) {
     return mode == "hdr_off" || mode == "hdr_on";
 }
 
+bool isShadowGoldenMode(const std::string &mode) {
+    return mode == "shadow_off" || mode == "shadow_on";
+}
+
 RenderedCase renderCase(const GoldenCase &golden_case) {
     FastModuleContainer modules;
     const auto temp_dir = makeTempProjectDir(golden_case.name);
@@ -942,6 +1117,10 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         writeHdrProject(temp_dir, golden_case.mode == "hdr_on");
         GET_MODULE(PathResolver).setup(temp_dir, false);
         GET_MODULE(ProjectSource).setProjectData(makeHdrProjectJson().dump());
+    } else if (isShadowGoldenMode(golden_case.mode)) {
+        writeShadowProject(temp_dir, golden_case.mode == "shadow_on");
+        GET_MODULE(PathResolver).setup(temp_dir, false);
+        GET_MODULE(ProjectSource).setProjectData(makeShadowProjectJson().dump());
     } else if (golden_case.mode == "compute_buffer") {
         writeComputeProject(temp_dir);
         GET_MODULE(PathResolver).setup(temp_dir, false);
@@ -983,6 +1162,8 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         renderColliderDebugDrawFrame(render_target);
     } else if (isHdrGoldenMode(golden_case.mode)) {
         renderFeatureFrame(render_target);
+    } else if (isShadowGoldenMode(golden_case.mode)) {
+        renderShadowFrame(render_target);
     } else if (golden_case.mode == "compute_buffer") {
         renderComputeFrame(render_target);
     } else if (golden_case.mode == "orthographic_camera") {
@@ -1045,9 +1226,9 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     setupLogger();
     const auto cases = discoverGoldenCases();
 #if PELICAN_WITH_VAT
-    REQUIRE(cases.size() == 12);
+    REQUIRE(cases.size() == 14);
 #else
-    REQUIRE(cases.size() == 11);
+    REQUIRE(cases.size() == 13);
 #endif
 
     for (const auto &golden_case : cases) {

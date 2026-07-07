@@ -13,6 +13,7 @@ struct FullscreenPassRendererDependencies;
 class FullscreenPassRenderer;
 struct MaterialRendererDependencies;
 class MaterialRenderer;
+class ShadowDepthPassContainer;
 struct UiRendererDependencies;
 class UiRenderer;
 
@@ -21,6 +22,7 @@ struct RenderPassDispatchDependencies {
     const MaterialRendererDependencies &material_renderer_dependencies;
     FullscreenPassRenderer &fullscreen_pass_renderer;
     const FullscreenPassRendererDependencies &fullscreen_pass_renderer_dependencies;
+    ShadowDepthPassContainer &shadow_depth_pass_container;
     UiRenderer &ui_renderer;
     const UiRendererDependencies &ui_renderer_dependencies;
     DebugDraw *debug_draw = nullptr;
