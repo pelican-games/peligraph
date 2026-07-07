@@ -107,10 +107,8 @@ void registerRenderingPassConfigData(const nlohmann::json &rendering_pass_data, 
     const auto compute_task_definitions = parseComputeTaskDefinitionsFromConfigJson(composed_rendering_pass_data);
     auto compiled_compute_tasks =
         compileComputeTasks(compute_task_definitions, dependencies);
-    auto graph_definitions = compiled_compute_tasks.empty()
-                                 ? std::unordered_map<std::string, FrameGraphDefinition>{}
-                                 : graphDefinitionsByName(parseFrameGraphDefinitionsFromConfigJson(
-                                       composed_rendering_pass_data));
+    auto graph_definitions = graphDefinitionsByName(
+        parseFrameGraphDefinitionsFromConfigJson(composed_rendering_pass_data));
     auto compiled_passes =
         compileRenderingPassesRuntime(pass_definitions,
                                       toRuntimeDependencies(dependencies.runtime, rt_metadata, rt_views,
@@ -120,16 +118,14 @@ void registerRenderingPassConfigData(const nlohmann::json &rendering_pass_data, 
         compiled_pass.compute_tasks = compiled_compute_tasks;
         const auto pass_name = compiled_pass.name;
         const auto rendering_pass_id = dependencies.pass_container.registerCompiledRenderingPass(std::move(compiled_pass));
-        if (!compiled_compute_tasks.empty()) {
-            auto found_graph = graph_definitions.find(pass_name);
-            if (found_graph == graph_definitions.end()) {
-                throw std::runtime_error("Frame graph definition not found for rendering pass: " + pass_name);
-            }
-            dependencies.frame_graph_runtime.registerExecutionPlan(
-                rendering_pass_id,
-                dependencies.pass_container.getCompiledRenderingPass(rendering_pass_id),
-                found_graph->second);
+        auto found_graph = graph_definitions.find(pass_name);
+        if (found_graph == graph_definitions.end()) {
+            throw std::runtime_error("Frame graph definition not found for rendering pass: " + pass_name);
         }
+        dependencies.frame_graph_runtime.registerExecutionPlan(
+            rendering_pass_id,
+            dependencies.pass_container.getCompiledRenderingPass(rendering_pass_id),
+            found_graph->second);
     }
 }
 

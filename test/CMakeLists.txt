@@ -186,3 +186,13 @@ add_test(
         -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/gpu_timing_headless
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_gpu_timing_headless.cmake
 )
+
+add_test(
+    NAME frame_plan_dump_headless_player
+    COMMAND ${CMAKE_COMMAND}
+        -DPLAYER=$<TARGET_FILE:pelican_player>
+        -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+        -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/example
+        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/frame_plan_dump_headless
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_frame_plan_dump_headless.cmake
+)

@@ -1,4 +1,5 @@
 #include "../src/core/renderingpass/frameplanner.hpp"
+#include "../src/core/renderingpass/featurecompose.hpp"
 #include "../src/core/renderingpass/renderingpassconfigjsonparser.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
 #include "../src/core/renderingpass/rendertargetmetadataresolver.hpp"
@@ -6,6 +7,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <stdexcept>
@@ -31,6 +33,14 @@ nlohmann::json readJson(const std::filesystem::path &path) {
         throw std::runtime_error("failed to open json fixture: " + path.string());
     }
     return nlohmann::json::parse(file);
+}
+
+std::string readText(const std::filesystem::path &path) {
+    std::ifstream file{path, std::ios_base::binary};
+    if (!file.is_open()) {
+        throw std::runtime_error("failed to open text fixture: " + path.string());
+    }
+    return std::string{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
 }
 
 bool contains(std::string_view haystack, std::string_view needle) {
@@ -284,6 +294,101 @@ TEST_CASE("frame planner example plan JSON matches fixture", "[frameplanner]") {
 
     const auto plan_json = framePlanToJson(planFrameGraph(graphs.front()));
     REQUIRE(plan_json == readJson(fixtureRoot() / "plans" / "example_main_render.json"));
+}
+
+TEST_CASE("frame planner explicit after and before edges change levels", "[frameplanner]") {
+    const auto base_graph = parseFrameGraphDefinitionFromJson(nlohmann::json::parse(R"json({
+  "name": "explicit_edges_base",
+  "render_targets": [
+    {"name": "rt_a"},
+    {"name": "rt_b"},
+    {"name": "rt_c"}
+  ],
+  "passes": [
+    {"name": "clear_a", "type": "fullscreen", "output": {"color": "rt_a", "depth": null}},
+    {"name": "clear_b", "type": "fullscreen", "output": {"color": "rt_b", "depth": null}},
+    {"name": "clear_c", "type": "fullscreen", "output": {"color": "rt_c", "depth": null}},
+    {
+      "name": "present",
+      "type": "fullscreen",
+      "input": ["rt_a", "rt_b", "rt_c"],
+      "output": {"color": "swapchain", "depth": null}
+    }
+  ]
+})json"));
+    const auto edged_graph = parseFrameGraphDefinitionFromJson(nlohmann::json::parse(R"json({
+  "name": "explicit_edges_after_before",
+  "render_targets": [
+    {"name": "rt_a"},
+    {"name": "rt_b"},
+    {"name": "rt_c"}
+  ],
+  "passes": [
+    {
+      "name": "clear_a",
+      "type": "fullscreen",
+      "after": ["clear_b"],
+      "output": {"color": "rt_a", "depth": null}
+    },
+    {
+      "name": "clear_b",
+      "type": "fullscreen",
+      "before": ["clear_c"],
+      "output": {"color": "rt_b", "depth": null}
+    },
+    {"name": "clear_c", "type": "fullscreen", "output": {"color": "rt_c", "depth": null}},
+    {
+      "name": "present",
+      "type": "fullscreen",
+      "input": ["rt_a", "rt_b", "rt_c"],
+      "output": {"color": "swapchain", "depth": null}
+    }
+  ]
+})json"));
+
+    const auto base_plan_json = framePlanToJson(planFrameGraph(base_graph));
+    const auto edged_plan_json = framePlanToJson(planFrameGraph(edged_graph));
+
+    REQUIRE(base_plan_json == readJson(fixtureRoot() / "plans" / "explicit_edges_base.json"));
+    REQUIRE(edged_plan_json == readJson(fixtureRoot() / "plans" / "explicit_edges_after_before.json"));
+    REQUIRE(base_plan_json.at("levels") != edged_plan_json.at("levels"));
+}
+
+TEST_CASE("frame planner feature-composed config plan matches fixture", "[frameplanner]") {
+    const auto config = nlohmann::json::parse(R"json({
+  "features": ["engine://features/debug_draw.json"],
+  "render_targets": [],
+  "rendering_passes": [
+    {
+      "name": "main",
+      "passes": [
+        {
+          "name": "present",
+          "type": "fullscreen",
+          "output": {"color": "swapchain", "depth": null}
+        }
+      ]
+    }
+  ]
+})json");
+
+    const auto composed = composeRenderFeatureConfig(
+        config,
+        RenderFeatureComposeDependencies{
+            [](std::string_view ref) {
+                if (ref != "engine://features/debug_draw.json") {
+                    throw std::runtime_error("unexpected feature ref: " + std::string{ref});
+                }
+                return readText(sourceRoot() / "src" / "core" / "resources" / "features" /
+                                "debug_draw.json");
+            },
+            true,
+        });
+    const auto graphs = parseFrameGraphDefinitionsFromConfigJson(composed.config);
+    REQUIRE(graphs.size() == 1);
+
+    const auto plan_json = framePlanToJson(planFrameGraph(graphs.front()));
+    REQUIRE(plan_json == readJson(fixtureRoot() / "plans" / "debug_draw_feature_main.json"));
 }
 
 } // namespace Pelican

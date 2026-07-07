@@ -300,6 +300,14 @@ Renderer::Renderer() {
 
 Renderer::~Renderer() = default;
 
+nlohmann::json Renderer::currentFramePlanJson() const {
+    const auto *frame_graph = GET_MODULE(FrameGraphRuntimeContainer).find(current_rendering_pass_id);
+    if (frame_graph == nullptr) {
+        throw std::runtime_error("Current frame plan is not registered");
+    }
+    return framePlanToJson(frame_graph->plan);
+}
+
 void Renderer::render() {
     GET_MODULE(DeletionQueue).beginFrame();
 

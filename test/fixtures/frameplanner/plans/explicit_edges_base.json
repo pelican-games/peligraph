@@ -1,0 +1,52 @@
+{
+  "barriers": [
+    {"from": "clear_a", "kind": "read_after_write", "resource": "rt_a", "to": "present"},
+    {"from": "clear_b", "kind": "read_after_write", "resource": "rt_b", "to": "present"},
+    {"from": "clear_c", "kind": "read_after_write", "resource": "rt_c", "to": "present"}
+  ],
+  "graph": "explicit_edges_base",
+  "levels": [
+    ["clear_a", "clear_b", "clear_c"],
+    ["present"]
+  ],
+  "nodes": [
+    {
+      "declaration_index": 0,
+      "kind": "render",
+      "level": 0,
+      "name": "clear_a",
+      "order": 0,
+      "reads": [],
+      "writes": ["rt_a"]
+    },
+    {
+      "declaration_index": 1,
+      "kind": "render",
+      "level": 0,
+      "name": "clear_b",
+      "order": 1,
+      "reads": [],
+      "writes": ["rt_b"]
+    },
+    {
+      "declaration_index": 2,
+      "kind": "render",
+      "level": 0,
+      "name": "clear_c",
+      "order": 2,
+      "reads": [],
+      "writes": ["rt_c"]
+    },
+    {
+      "declaration_index": 3,
+      "kind": "render",
+      "level": 1,
+      "name": "present",
+      "order": 3,
+      "reads": ["rt_a", "rt_b", "rt_c"],
+      "writes": ["swapchain"]
+    }
+  ],
+  "schema": "pelican.frame_plan",
+  "version": 1
+}

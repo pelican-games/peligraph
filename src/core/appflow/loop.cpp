@@ -105,6 +105,13 @@ void logInputSnapshotIfRequested(const InputSnapshot &snapshot) {
              snapshot.mouse_y, snapshot.mouse_delta_x, snapshot.mouse_delta_y);
 }
 
+void dumpFramePlanIfRequested(const EngineLaunchConfig &launch_config, const Renderer &renderer) {
+    if (!launch_config.dump_frame_plan) {
+        return;
+    }
+    std::cerr << renderer.currentFramePlanJson().dump(2) << std::endl;
+}
+
 } // namespace
 
 Loop::Loop() {}
@@ -128,6 +135,7 @@ void Loop::run() {
     const auto time_mode =
         launch_config.headless ? EngineTime::Mode::fixed_step : EngineTime::Mode::realtime;
     engine_time.setup(time_mode, 1.0 / launch_config.fps);
+    dumpFramePlanIfRequested(launch_config, renderer);
 
     LOG_INFO(logger, "starting main loop");
 

@@ -20,10 +20,11 @@ file(WRITE "${script_path}"
 "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"set_time\",\"params\":{\"t\":1.25}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"step_frame\",\"params\":{}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"render_frame\",\"params\":{}}\n"
-"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"capture\",\"params\":{\"path\":\"${capture_path}\"}}\n"
+"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"get_frame_plan\",\"params\":{}}\n"
+"{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"capture\",\"params\":{\"path\":\"${capture_path}\"}}\n"
 "{bad json\n"
 "{\"jsonrpc\":\"2.0\",\"method\":\"render_frame\",\"params\":{}}\n"
-"{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"missing_method\",\"params\":{}}\n"
+"{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"missing_method\",\"params\":{}}\n"
 )
 
 function(validate_rpc_stdout stdout label)
@@ -36,8 +37,8 @@ function(validate_rpc_stdout stdout label)
 
     string(REPLACE "\n" ";" lines "${trimmed}")
     list(LENGTH lines line_count)
-    if(NOT line_count EQUAL 7)
-        message(FATAL_ERROR "${label}: expected 7 JSON-RPC response lines, got ${line_count}\nstdout:\n${stdout}")
+    if(NOT line_count EQUAL 8)
+        message(FATAL_ERROR "${label}: expected 8 JSON-RPC response lines, got ${line_count}\nstdout:\n${stdout}")
     endif()
 
     foreach(line IN LISTS lines)
@@ -53,6 +54,7 @@ function(validate_rpc_stdout stdout label)
     list(GET lines 4 line4)
     list(GET lines 5 line5)
     list(GET lines 6 line6)
+    list(GET lines 7 line7)
 
     if(NOT line0 MATCHES [=["id":1]=] OR NOT line0 MATCHES [=["result"]=])
         message(FATAL_ERROR "${label}: set_time response did not look successful:\n${line0}")
@@ -63,17 +65,20 @@ function(validate_rpc_stdout stdout label)
     if(NOT line2 MATCHES [=["id":3]=] OR NOT line2 MATCHES [=["frame":1]=])
         message(FATAL_ERROR "${label}: render_frame response did not keep frame 1:\n${line2}")
     endif()
-    if(NOT line3 MATCHES [=["id":4]=] OR NOT line3 MATCHES [=["path"]=])
-        message(FATAL_ERROR "${label}: capture response did not include a path:\n${line3}")
+    if(NOT line3 MATCHES [=["id":4]=] OR NOT line3 MATCHES [=["schema":"pelican\.frame_plan"]=] OR NOT line3 MATCHES [=["version":1]=] OR NOT line3 MATCHES [=["graph":"main_render"]=])
+        message(FATAL_ERROR "${label}: get_frame_plan response did not include the expected frame plan schema:\n${line3}")
     endif()
-    if(NOT line4 MATCHES [=["code":-32700]=])
-        message(FATAL_ERROR "${label}: malformed JSON did not return -32700:\n${line4}")
+    if(NOT line4 MATCHES [=["id":5]=] OR NOT line4 MATCHES [=["path"]=])
+        message(FATAL_ERROR "${label}: capture response did not include a path:\n${line4}")
     endif()
-    if(NOT line5 MATCHES [=["code":-32600]=])
-        message(FATAL_ERROR "${label}: id-less request did not return -32600:\n${line5}")
+    if(NOT line5 MATCHES [=["code":-32700]=])
+        message(FATAL_ERROR "${label}: malformed JSON did not return -32700:\n${line5}")
     endif()
-    if(NOT line6 MATCHES [=["code":-32601]=])
-        message(FATAL_ERROR "${label}: unknown method did not return -32601:\n${line6}")
+    if(NOT line6 MATCHES [=["code":-32600]=])
+        message(FATAL_ERROR "${label}: id-less request did not return -32600:\n${line6}")
+    endif()
+    if(NOT line7 MATCHES [=["code":-32601]=])
+        message(FATAL_ERROR "${label}: unknown method did not return -32601:\n${line7}")
     endif()
 endfunction()
 

@@ -220,6 +220,7 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
     program.add_argument("--frames").default_value(3).scan<'i', int>().help("headless frame count");
     program.add_argument("--size").default_value(std::string{"1280x720"}).metavar("WxH").help("headless render size");
     program.add_argument("--render-out").default_value(std::string{}).metavar("path").help("render output path");
+    program.add_argument("--dump-frame-plan").flag().help("dump the resolved frame plan JSON to stderr");
     program.add_argument("--project")
         .default_value(std::string{})
         .metavar("dir|project.json")
@@ -286,6 +287,7 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         if (!render_out.empty()) {
             config.render_out = std::filesystem::path{render_out};
         }
+        config.dump_frame_plan = program.get<bool>("--dump-frame-plan");
 
         const auto project_settings = program.get<std::string>("--project-settings");
         if (!project_settings.empty()) {

@@ -150,6 +150,11 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
         return frameResult();
     });
 
+    server.setHandler("get_frame_plan", [](const nlohmann::json &params) {
+        requireObjectParams(params, "get_frame_plan");
+        return GET_MODULE(Renderer).currentFramePlanJson();
+    });
+
     server.setHandler("capture", [](const nlohmann::json &params) {
         const auto path = absoluteCapturePath(requireStringParam(params, "path", "capture"));
         GET_MODULE(RenderTarget).captureLastFrameToPng(path);
