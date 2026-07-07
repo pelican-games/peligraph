@@ -67,6 +67,22 @@ class ECSCoreTemplatePublic {
     EntityId allocateEntity(std::span<const ComponentId> component_ids, std::span<void *> component_ptrs, size_t count);
     void remove(EntityId id);
     void compaction();
+    void *tryComponentRaw(EntityId id, ComponentId component_id);
+    void *componentRaw(EntityId id, ComponentId component_id);
+    void markComponentChanged(EntityId id, ComponentId component_id);
+
+    template <class TComponent> TComponent *tryComponent(EntityId id) {
+        return static_cast<TComponent *>(tryComponentRaw(id, ComponentIdByType<TComponent>::value));
+    }
+
+    template <class TComponent> TComponent &component(EntityId id) {
+        return *static_cast<TComponent *>(componentRaw(id, ComponentIdByType<TComponent>::value));
+    }
+
+    template <class TComponent> void setComponent(EntityId id, const TComponent &component_value) {
+        component<TComponent>(id) = component_value;
+        markComponentChanged(id, ComponentIdByType<TComponent>::value);
+    }
 
     // System Management
   private:

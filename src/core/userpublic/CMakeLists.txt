@@ -1,5 +1,6 @@
 target_sources(pelican_core PRIVATE
     pelican_core.cpp
+    gamecontext.cpp
     gameobjects.cpp
     userinput.cpp
 )
@@ -8,3 +9,4 @@ add_subdirectory(serialize)
 add_subdirectory(components)
 add_subdirectory(details/component)
 add_subdirectory(details/ecs)
+add_subdirectory(details/system)

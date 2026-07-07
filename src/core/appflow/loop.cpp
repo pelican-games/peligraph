@@ -9,6 +9,8 @@
 #include "../playback/seqplayer.hpp"
 #include "../playback/vatplayer.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
+#include "../userpublic/details/system/registerer.hpp"
+#include "../userpublic/gamecontext.hpp"
 #include "../userpublic/userinput.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/deletionqueue.hpp"
@@ -128,6 +130,7 @@ void Loop::run() {
     auto &seq_player = GET_MODULE(SeqPlayer);
     auto &vat_player = GET_MODULE(VatPlayer);
     auto &input_state = GET_MODULE(InputState);
+    GameContext game_context;
     (void)vat_player;
     RenderTiming *render_timing =
         GET_MODULE(RenderingPassContainer).isFeatureEnabled("gpu_timing") ? &GET_MODULE(RenderTiming) : nullptr;
@@ -155,6 +158,7 @@ void Loop::run() {
             const auto update_start = Clock::now();
             engine_time.advance();
             ecs.update();
+            internal::updateRegisteredGameSystems(game_context);
             seq_player.update(engine_time.now());
             const auto update_end = Clock::now();
 
@@ -197,6 +201,7 @@ void Loop::run() {
         const auto update_start = Clock::now();
         engine_time.advance();
         ecs.update();
+        internal::updateRegisteredGameSystems(game_context);
         seq_player.update(engine_time.now());
         const auto update_end = Clock::now();
 
