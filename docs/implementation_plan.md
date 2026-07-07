@@ -1011,6 +1011,86 @@ pressed / axis2 が期待どおり(複数フレーム・セット切替含む)
 fly を共用する将来を壊さない(コントローラ状態はコンポーネント params +
 システムローカルに閉じる)。
 
+### WP51: オーディオ A1(ユニット + WAV SE + バス音量)
+
+参照: **`design_audio.md` が仕様の正**。依存: WP40, 43, 45。見積: 中。
+
+1. `PELICAN_WITH_AUDIO` ユニット新設(WP40 の様式: 既定 ON・OFF は明確エラー・
+   OFF スモークを run_build_units_smoke に追加)
+2. miniaudio を FetchContent 追加(ルート CMakeLists — アルファベット順追記)。
+   `src/core/audio/` 新設: デバイスバックエンド + **null バックエンド**
+   (headless / `--rpc` 時は自動で null。デバイス列挙不能時も null に
+   フォールバック — CI で落ちない)
+3. バス 3 本固定(master/bgm/se)+ バス毎音量
+4. WAV の SE 再生(全読み・多重発音)。パスは PathResolver 経由
+   (project:// / engine://、絶対パス拒否)
+5. `GameContext`: playSound / stopSound / setBusVolume / isPlaying
+   (SoundHandle は handle.hpp の既存流儀)。**gamecontext.{hpp,cpp} への追記は
+   ファイル末尾に**(並走 WP と交差するため)
+6. テスト: (a) null バックエンドで play → isPlaying → stop の状態遷移
+   (GPU・音声デバイス不要)(b) 不正 WAV / 未知パスのエラー (c) OFF スモーク
+   (d) 既存テスト・golden 全維持
+
+受け入れ基準: 上記 a〜d + §0 共通規則。Ogg / フェード / 3D 減衰は A2/A3
+(スコープ外 — 手を出さない)。
+
+### WP52: シーン遷移 S1(loadScene + rpc load_scene)
+
+参照: **`design_scene_flow.md` §1 が仕様の正**。依存: WP25, 42, 43。見積: 中。
+
+1. `GameContext::loadScene(name)` / `currentScene()`。update 中の呼び出しは
+   **予約 → フレーム末尾で適用**(イテレーション中の全破棄禁止)
+2. 切替の意味論: 全 GameObject 破棄 → 新シーンを**起動時と同じバインダ経路**で
+   構築(light/collider/camera/material。第 2 経路を作らない)。
+   EngineTime は継続
+3. rpc `load_scene {name}` + `get_status` にシーン名追加。未知名は名前入り
+   エラー。load_gltf の一時オブジェクトは切替で破棄
+4. projects/example に 2 シーン目を追加(検証用の最小シーン)
+5. テスト: (a) rpc 結合 — load_scene 前後で capture の PNG 相違 + 決定性
+   (2 回実行一致)(b) 未知名エラー (c) 切替 ×10 でオブジェクト数が安定
+   (リーク検出)(d) 既存テスト・golden 全維持
+6. **gamecontext.{hpp,cpp} への追記はファイル末尾に**(並走交差対策)
+
+受け入れ基準: 上記 a〜d + `src/core/ecs/` 変更禁止 + §0 共通規則。
+非同期(S2)はスコープ外。
+
+### WP53: 決定性乱数(PCG32 + GameContext + rpc)
+
+参照: **`design_determinism_services.md` が仕様の正**。依存: WP42, 43。見積: 小。
+
+1. PCG32 自前実装(`src/core/userpublic/` 配下 or core — 純ロジック、
+   distribution も自前: randomInt は棄却法、random は 53bit → double)
+2. シード: project.json `basic_config.seed`(省略時 0)。
+   `GameContext`: random / randomInt / randomFloat / setSeed / seed
+   (**追記はファイル末尾に**)
+3. rpc: `set_seed {seed}` 追加、`get_status` に seed 追加
+4. adding_features.md の新サブシステム要件に「wall clock / std::rand /
+   random_device を判定に使わない」を 1 行追記
+5. テスト: (a) 同一シード → 同一列(固定期待値 — 処理系非依存を fixture で
+   証明)(b) setSeed 再現 (c) randomInt の境界(min=max、負範囲)
+   (d) rpc set_seed/get_status 結合 (e) 既存テスト全維持
+
+受け入れ基準: 上記 a〜e + §0 共通規則。ストリーム分離は v2(スコープ外)。
+
+### WP54: debug_text feature(ビットマップ HUD)
+
+参照: **`design_text_hud.md` §1 が仕様の正**。依存: WP28, 29。見積: 中。
+
+1. `engine://features/debug_text.json`(パージ可能 — debug_draw と同型)。
+   スクリーン空間の最後段パス(swapchain 直前)
+2. エンジン埋め込み等幅ビットマップフォント(ASCII 95 字、8x16 目安、
+   **public domain のもの — 出典とライセンスをファイル横に記録**)。
+   PNG アトラス + 座標表を engine:// リソース登録(3+1 チェックリスト)
+3. 文字列 → quad 列。色・整数倍スケール・ピクセル座標(左上原点)
+4. `DebugText` モジュール + `GameContext::debugText(x, y, text)`
+   (immediate 型 — 毎フレーム積み直し、debug_draw と同じ寿命規約。
+   feature 不参照時は no-op で落ちない。**gamecontext 追記はファイル末尾**)
+5. テスト: (a) golden 1 ケース(固定文字列)(b) feature 不参照時の
+   golden 全維持 + no-op (c) クリッピング(画面外座標)で落ちない
+
+受け入れ基準: 上記 a〜c + §0 共通規則。SDF / 日本語 / UI 統合は v2
+(スコープ外 — 手を出さない)。
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **最小コマンド層**: (1) ファイル連携済み → (2) WP27 実装済み → (3) `load_gltf` / `update_transforms` は **2026-07-07 に実装 GO 決定**。前提はすべて充足(宛先 = scene v1 の objects[].name / アセット意味論 = WP21)。設計時要件: **複数インスタンス運用**(エージェントが複数エンジンを並行駆動する使い方) — stdio rpc は 1 プロセス 1 クライアントの現行構造を維持しつつ、`get_status`(instance id・project・フレーム番号)を追加してインスタンス識別可能に。プロジェクトは読み取り専有なので並行起動は安全(書き込み系操作を入れる際に排他を設計)。複数クライアント同時接続は TCP/WebSocket 展開時の課題として分離
@@ -1021,6 +1101,8 @@ fly を共用する将来を壊さない(コントローラ状態はコンポー
 - **アニメーショングラフ**: 2026-07-07 方向決定 — WP38(クリップ再生)の後続。ブレンド・ステートマシンを schema+version 付きアセットとして。WP38 設計時に v1 の器(クリップ参照形式)だけグラフ拡張可能な形にしておく
 - **物理クエリ**: 2026-07-07 **必須決定** — raycast / overlap を GameContext(G1a)とエディタピッキング(D2)の両方に供給する。休眠中の phys モジュール・collision ブランチの再評価から着手。コリジョン形状は glb 内規約(フォーマット方針 §4 予約)と同時に設計
 - **OpenXR トラック**: **2026-07-07 に推進決定**。入力(アクション層・pose 型)は準備済み。残り = ①ランタイム統合(xrWaitFrame とループ主導権・EngineTime 統合)②描画(フレームグラフに view 次元 = multiview、XrFrameTarget を IFrameTarget の第 3 実装として追加)③PELICAN_WITH_OPENXR ユニット必須・ヘッドセットなし環境のテスト戦略。設計文書を書いてから WP 化
+- **イベント層**: `design_event_layer.md` v1 ドラフト(2026-07-08)。**API 意味論(emit/購読の書き味・フレーム境界配送)のユーザーレビューを経てから E1 を WP 化**。E2(物理トリガー)は E1 後
+- **永続化(user:// + 設定/セーブ)**: `design_persistence.md` v1 ドラフト(2026-07-08)。**user:// スキーム追加 = [PF] v6.3 の凍結改訂が必要 — ユーザー承認待ち**。承認後 P1 を WP 化
 - **RenderWorld**: (2026-07-02 方針変更)**ECS 側との合意形成は後回しにし、統合ブランチ系列(`codex/rendering-phase1-refactor` 由来)を当面の開発本線として独自に進める**。JSON 規約(シーン形式等)は現行形式から離れすぎない範囲で本線側が自由に定義してよい(`design_scene_format.md` 参照)。ただし (a) `src/core/ecs/` コア本体の変更禁止は維持(コンポーネント追加は `userpublic/components` で完結するため通常は不要)、(b) main との将来の合流可能性を壊さないため、main に随時追従 merge する運用は続ける。ライトアニメーション更新の ECS 側移管は本線で実施してよい(単独 PR)
 - **コマンド層の WebSocket 展開**: stage 2(stdio JSON-RPC)実装後、同じメソッド群を WebSocket に載せると devstudio と web viewer(my_webpage)が同一プロトコルでエンジンを叩ける([PFW] §7)。stage 2 の後に設計文書を書いてから WP 化
 - **asset manifest(sha256)**: `assets.manifest.json` + 起動前検証([PF] §5-6 の予告)。WP18c の README 一覧表で当面代替し、需要(=黒背景事故の再発 or web 側キャッシュ検証の要求)が出たら WP 化
@@ -1075,6 +1157,7 @@ fly を共用する将来を壊さない(コントローラ状態はコンポー
 | 18 | WP44, WP46 | 完了(2026-07-07) |
 | 19 | WP47, WP48 | 完了(2026-07-07)。専有: WP47 = phys/scene バインダ/debugdraw、WP48 = renderer/camera + rpcserver |
 | 20 | WP31, WP49(I2), WP50(C2) | 並列 3 本。専有: WP31 = resources/features + シェーダ + renderingpass/pipelinefactory、WP49 = communication/jsonrpc + 入力注入(os/input)、WP50 = userpublic システム + renderer/camera。**3 本とも golden ケースを追加するため件数 REQUIRE は統合時に調整(各自は自分の追加分のみ数える)**。共有は test/CMakeLists.txt 追記のみ |
+| 21 | WP51(音), WP52(シーン遷移), WP53(乱数), WP54(debug_text) | 並列 4 本。専有: WP51 = core/audio 新設 + ルート CMakeLists FetchContent、WP52 = loader/scene + GameObjects 破棄経路、WP53 = 乱数(新規ファイル)、WP54 = features/レンダラ。**gamecontext.{hpp,cpp} は 4 本全部が追記する — 各自ファイル末尾に足し、統合時に調整**。rpcserver は WP52/53 が両方 get_status を触る(小競合予定)。golden 追加は WP54 のみ |
 
 統合チェックポイント: ウェーブ 1 完了後と WP7 完了後に、人間が pelican_player の手動起動確認
 (`rendering_phase1_review.md` の Validation Run と同じ流儀)を行う。WP16 以降は

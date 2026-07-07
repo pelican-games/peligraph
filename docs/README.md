@@ -35,6 +35,12 @@
 | `design_camera_system.md` | v1・C2 実装済み(WP48/50) | カメラ glTF 同等以上。定義/コントローラ/演出の三層 |
 | `design_material_shading.md` | v1 ドラフト・未実装 | **pelican.material v1**・シェーダ契約の安定 API 化・variant 規律(M1→M3) |
 | `design_postprocess_temporal.md` | v1 ドラフト・未実装 | **history/velocity + ポストスタック規約**(フレームグラフ v2.5、T1→T3) |
+| `design_scene_flow.md` | v1 ドラフト・S1 実装中(WP52) | シーン遷移(loadScene)+ 非同期ロード(S2 将来) |
+| `design_audio.md` | v1 ドラフト・A1 実装中(WP51) | **PELICAN_WITH_AUDIO** + miniaudio + null バックエンド + バス |
+| `design_persistence.md` | v1 ドラフト・**[PF] v6.3 承認待ち** | user:// スキーム・設定/セーブの三区分 |
+| `design_event_layer.md` | v1 ドラフト・**API レビュー待ち** | フレーム境界配送のイベントバス・物理トリガー |
+| `design_determinism_services.md` | v1 ドラフト・実装中(WP53) | PCG32 決定的乱数 + シード規約 |
+| `design_text_hud.md` | v1 ドラフト・実装中(WP54) | debug_text feature(ビットマップ HUD)。本格テキストは 2D/UI 設計で |
 | `dcc_integration_qa_2026-06-12.md` | — | DCC 連携 QA。**§6 = pelican.vat v1 仕様の正** |
 | `design_roadmap_renderworld.md` | 古い | 全体ロードマップと ECS 境界。合意後回し方針(2026-07-02)で一部失効 |
 | `design_cloth_simulation.md` | 古い | 布シミュ構想。VAT レーンに実質置換 |
