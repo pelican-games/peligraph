@@ -1,6 +1,8 @@
 #include "scene.hpp"
 
 #include "../ecs/core.hpp"
+#include "../ecs/predefined/modelview.hpp"
+#include "../ecs/predefined/transform.hpp"
 #include "../model/gltf.hpp"
 #include "../renderer/camera.hpp"
 
@@ -8,11 +10,18 @@
 #include "basicconfig.hpp"
 #include "../light/lightcontainer.hpp"
 #include "../log.hpp"
+#include "../renderer/polygoninstancecontainer.hpp"
+#include "pathresolver.hpp"
 #include "sceneformat.hpp"
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <array>
+#include <cctype>
 #include <components/localtransform.hpp>
+#include <filesystem>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -71,6 +80,7 @@ ComponentId getComponentIdForObject(ComponentInfoManager &component_info_manager
 }
 
 struct EcsObjectLoad {
+    std::string name;
     std::vector<nlohmann::json> components_json;
     std::vector<ComponentId> components_id;
 };
@@ -85,6 +95,7 @@ std::vector<EcsObjectLoad> prepareSceneBindings(const nlohmann::json &objects, C
         const auto components_json = expandSceneComponents(object.at("components"));
 
         EcsObjectLoad ecs_object;
+        ecs_object.name = object_name;
         ecs_object.components_json.reserve(components_json.size());
         ecs_object.components_id.reserve(components_json.size());
 
@@ -108,11 +119,39 @@ std::vector<EcsObjectLoad> prepareSceneBindings(const nlohmann::json &objects, C
     return ecs_objects;
 }
 
+std::string lowerExtension(const std::filesystem::path &path) {
+    auto extension = path.extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return extension;
+}
+
+ModelTemplate loadGltfTemplate(const std::filesystem::path &path) {
+    auto &loader = GET_MODULE(GltfLoader);
+    const auto path_string = path.string();
+    return lowerExtension(path) == ".gltf" ? loader.loadGltf(path_string) : loader.loadGltfBinary(path_string);
+}
+
+SceneObjectTransform identityObjectTransform() {
+    return SceneObjectTransform{
+        .pos = glm::vec3{0.0f, 0.0f, 0.0f},
+        .rotation = glm::quat{1.0f, 0.0f, 0.0f, 0.0f},
+        .scale = glm::vec3{1.0f, 1.0f, 1.0f},
+    };
+}
+
+void assignTransform(TransformComponent &dst, const SceneObjectTransform &src) {
+    dst.pos = src.pos;
+    dst.rotation = src.rotation;
+    dst.scale = src.scale;
+}
+
 } // namespace
 
 void SceneLoader::load(SceneId scene_id) {
     auto &ecs = GET_MODULE(ECSCore);
     auto &config = GET_MODULE(ProjectBasicConfig);
+    object_bindings.clear();
 
     const auto scene_document = normalizeSceneDataJson(nlohmann::json::parse(config.sceneDataJson()));
     for (const auto &warning : scene_document.warnings) {
@@ -133,16 +172,93 @@ void SceneLoader::load(SceneId scene_id) {
 
     GET_MODULE(LightContainer).load(light_entries);
 
+    const auto transform_id = component_info_manager.getComponentIdByName("transform");
+    const auto simple_model_view_id = component_info_manager.getComponentIdByName("simplemodelview");
+
     for (const auto &object : ecs_objects) {
         std::vector<void *> components_ptr;
         components_ptr.resize(object.components_id.size());
         ecs.allocateEntity(object.components_id, components_ptr, 1);
 
+        TransformComponent *transform = nullptr;
+        SimpleModelViewComponent *simple_model_view = nullptr;
         for (int i = 0; const auto &component : object.components_json) {
             GET_MODULE(ComponentInfoManager).loadByJson(components_ptr[i], component);
+            if (object.components_id[i] == transform_id) {
+                transform = static_cast<TransformComponent *>(components_ptr[i]);
+            } else if (object.components_id[i] == simple_model_view_id) {
+                simple_model_view = static_cast<SimpleModelViewComponent *>(components_ptr[i]);
+            }
             i++;
         }
+        if (!object.name.empty() && transform != nullptr) {
+            bindObjectTransform(object.name, transform, simple_model_view);
+        }
     }
+}
+
+void SceneLoader::bindObjectTransform(const std::string &name, void *transform, void *simple_model_view) {
+    if (name.empty() || transform == nullptr) {
+        return;
+    }
+    if (object_bindings.contains(name)) {
+        throw std::runtime_error("duplicate object name for transform binding: " + name);
+    }
+    object_bindings.emplace(name, ObjectBinding{
+                                      .transform = transform,
+                                      .simple_model_view = simple_model_view,
+                                  });
+}
+
+bool SceneLoader::hasObjectTransform(std::string_view name) const {
+    return object_bindings.find(std::string{name}) != object_bindings.end();
+}
+
+void SceneLoader::applyObjectTransform(std::string_view name, const SceneObjectTransform &transform) {
+    const auto binding_it = object_bindings.find(std::string{name});
+    if (binding_it == object_bindings.end()) {
+        throw std::runtime_error("unknown object name: " + std::string{name});
+    }
+
+    const auto &binding = binding_it->second;
+    auto *bound_transform = static_cast<TransformComponent *>(binding.transform);
+    auto *simple_model_view = static_cast<SimpleModelViewComponent *>(binding.simple_model_view);
+    assignTransform(*bound_transform, transform);
+    if (simple_model_view != nullptr && simple_model_view->model_instance_id) {
+        GET_MODULE(PolygonInstanceContainer)
+            .setTrs(*simple_model_view->model_instance_id, transform.pos, transform.rotation, transform.scale);
+    }
+}
+
+std::filesystem::path SceneLoader::loadTransientGltf(std::string_view path_ref, const std::optional<std::string> &name) {
+    const auto path = GET_MODULE(PathResolver).resolveExistingFile(path_ref);
+    auto model_template = loadGltfTemplate(path);
+    const auto model_instance_id = GET_MODULE(PolygonInstanceContainer).placeModelInstance(model_template);
+
+    auto &component_info_manager = GET_MODULE(ComponentInfoManager);
+    const std::array<ComponentId, 2> component_ids{
+        component_info_manager.getComponentIdByName("transform"),
+        component_info_manager.getComponentIdByName("simplemodelview"),
+    };
+    std::array<void *, 2> component_ptrs{};
+    GET_MODULE(ECSCore).allocateEntity(std::span<const ComponentId>{component_ids}, std::span<void *>{component_ptrs},
+                                       1);
+
+    auto *transform = static_cast<TransformComponent *>(component_ptrs[0]);
+    auto *simple_model_view = static_cast<SimpleModelViewComponent *>(component_ptrs[1]);
+    component_info_manager.initComponent(component_ids[0], transform);
+    component_info_manager.initComponent(component_ids[1], simple_model_view);
+
+    const auto initial_transform = identityObjectTransform();
+    assignTransform(*transform, initial_transform);
+    simple_model_view->model_instance_id = model_instance_id;
+    GET_MODULE(PolygonInstanceContainer)
+        .setTrs(model_instance_id, initial_transform.pos, initial_transform.rotation, initial_transform.scale);
+
+    if (name && !name->empty()) {
+        bindObjectTransform(*name, transform, simple_model_view);
+    }
+    return path;
 }
 
 } // namespace Pelican

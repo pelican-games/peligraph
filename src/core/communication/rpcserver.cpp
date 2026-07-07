@@ -2,15 +2,24 @@
 
 #include "../appflow/enginetime.hpp"
 #include "../ecs/core.hpp"
+#include "../loader/pathresolver.hpp"
+#include "../loader/scene.hpp"
 #include "../os/inputstate.hpp"
 #include "../playback/seqplayer.hpp"
 #include "../vkcore/renderer.hpp"
 #include "../vkcore/rendertarget.hpp"
 
+#include <array>
 #include <filesystem>
+#include <iomanip>
 #include <istream>
+#include <iterator>
 #include <ostream>
+#include <random>
+#include <sstream>
 #include <utility>
+#include <variant>
+#include <vector>
 
 namespace Pelican {
 
@@ -47,6 +56,137 @@ std::string requireStringParam(const nlohmann::json &params, const char *name, c
     return value;
 }
 
+std::optional<std::string> optionalStringParam(const nlohmann::json &params, const char *name,
+                                               const std::string &method) {
+    const auto &object = requireObjectParams(params, method);
+    if (!object.contains(name)) {
+        return std::nullopt;
+    }
+    if (!object.at(name).is_string()) {
+        throw JsonRpcHandlerError(JsonRpcErrorCodes::invalidParams,
+                                  method + " params field '" + std::string{name} + "' must be a string");
+    }
+    return object.at(name).get<std::string>();
+}
+
+bool isR7Identifier(std::string_view value) {
+    if (value.empty()) {
+        return false;
+    }
+    for (const char ch : value) {
+        const bool is_digit = ch >= '0' && ch <= '9';
+        const bool is_upper = ch >= 'A' && ch <= 'Z';
+        const bool is_lower = ch >= 'a' && ch <= 'z';
+        if (!is_digit && !is_upper && !is_lower && ch != '_') {
+            return false;
+        }
+    }
+    return true;
+}
+
+void requireOptionalObjectName(const std::optional<std::string> &name, const std::string &method) {
+    if (name && !isR7Identifier(*name)) {
+        throw JsonRpcHandlerError(JsonRpcErrorCodes::invalidParams,
+                                  method + " params field 'name' must match [a-zA-Z0-9_]");
+    }
+}
+
+const nlohmann::json &requireArrayField(const nlohmann::json &object, const char *name, const std::string &method) {
+    if (!object.contains(name) || !object.at(name).is_array()) {
+        throw JsonRpcHandlerError(JsonRpcErrorCodes::invalidParams,
+                                  method + " params requires array field '" + std::string{name} + "'");
+    }
+    return object.at(name);
+}
+
+float numberAt(const nlohmann::json &array, size_t index, const std::string &field, const std::string &method) {
+    if (!array.at(index).is_number()) {
+        throw JsonRpcHandlerError(JsonRpcErrorCodes::invalidParams,
+                                  method + " transform field '" + field + "' must contain only numbers");
+    }
+    return array.at(index).get<float>();
+}
+
+glm::vec3 requireVec3Field(const nlohmann::json &object, const char *name, const std::string &method) {
+    if (!object.contains(name) || !object.at(name).is_array() || object.at(name).size() != 3) {
+        throw JsonRpcHandlerError(JsonRpcErrorCodes::invalidParams,
+                                  method + " transform requires vec3 field '" + std::string{name} + "'");
+    }
+    const auto &array = object.at(name);
+    return glm::vec3{
+        numberAt(array, 0, name, method),
+        numberAt(array, 1, name, method),
+        numberAt(array, 2, name, method),
+    };
+}
+
+glm::quat requireQuatField(const nlohmann::json &object, const char *name, const std::string &method) {
+    if (!object.contains(name) || !object.at(name).is_array() || object.at(name).size() != 4) {
+        throw JsonRpcHandlerError(JsonRpcErrorCodes::invalidParams,
+                                  method + " transform requires quat field '" + std::string{name} + "'");
+    }
+    const auto &array = object.at(name);
+    const auto x = numberAt(array, 0, name, method);
+    const auto y = numberAt(array, 1, name, method);
+    const auto z = numberAt(array, 2, name, method);
+    const auto w = numberAt(array, 3, name, method);
+    return glm::quat{w, x, y, z};
+}
+
+SceneObjectTransform parseSceneObjectTransform(const nlohmann::json &json, const std::string &method) {
+    if (!json.is_object()) {
+        throw JsonRpcHandlerError(JsonRpcErrorCodes::invalidParams, method + " transforms entries must be objects");
+    }
+    return SceneObjectTransform{
+        .pos = requireVec3Field(json, "pos", method),
+        .rotation = requireQuatField(json, "rot", method),
+        .scale = requireVec3Field(json, "scale", method),
+    };
+}
+
+struct PendingTransformUpdate {
+    std::string object;
+    SceneObjectTransform transform;
+};
+
+std::vector<PendingTransformUpdate> parseTransformUpdates(const nlohmann::json &params) {
+    constexpr auto method = "update_transforms";
+    const auto &object = requireObjectParams(params, method);
+    const auto &objects = requireArrayField(object, "objects", method);
+    const auto &transforms = requireArrayField(object, "transforms", method);
+    if (objects.size() != transforms.size()) {
+        throw JsonRpcHandlerError(JsonRpcErrorCodes::invalidParams,
+                                  "update_transforms objects and transforms counts must match");
+    }
+
+    std::vector<PendingTransformUpdate> updates;
+    updates.reserve(objects.size());
+    auto &scene_loader = GET_MODULE(SceneLoader);
+    for (size_t i = 0; i < objects.size(); ++i) {
+        if (!objects.at(i).is_string()) {
+            throw JsonRpcHandlerError(JsonRpcErrorCodes::invalidParams,
+                                      "update_transforms objects entries must be strings");
+        }
+        auto name = objects.at(i).get<std::string>();
+        if (!scene_loader.hasObjectTransform(name)) {
+            throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError, "unknown object name: " + name);
+        }
+        updates.push_back(PendingTransformUpdate{
+            .object = std::move(name),
+            .transform = parseSceneObjectTransform(transforms.at(i), method),
+        });
+    }
+    return updates;
+}
+
+void flushPendingTransforms(std::vector<PendingTransformUpdate> &pending) {
+    auto &scene_loader = GET_MODULE(SceneLoader);
+    for (const auto &update : pending) {
+        scene_loader.applyObjectTransform(update.object, update.transform);
+    }
+    pending.clear();
+}
+
 nlohmann::json frameResult() {
     const auto &engine_time = GET_MODULE(EngineTime);
     return nlohmann::json{
@@ -59,6 +199,34 @@ void updateFrameState(EngineTime &engine_time) {
     GET_MODULE(InputState).clear();
     GET_MODULE(ECSCore).update();
     GET_MODULE(SeqPlayer).update(engine_time.now());
+}
+
+std::string projectRootString() {
+    const auto resolved = GET_MODULE(PathResolver).resolveProjectRef(".");
+    if (const auto path = std::get_if<std::filesystem::path>(&resolved)) {
+        return path->generic_string();
+    }
+    throw std::runtime_error("project root did not resolve to a filesystem path");
+}
+
+std::string generateUuidV4() {
+    std::array<uint8_t, 16> bytes{};
+    std::random_device random_device;
+    for (auto &byte : bytes) {
+        byte = static_cast<uint8_t>(random_device());
+    }
+    bytes[6] = static_cast<uint8_t>((bytes[6] & 0x0f) | 0x40);
+    bytes[8] = static_cast<uint8_t>((bytes[8] & 0x3f) | 0x80);
+
+    std::ostringstream stream;
+    stream << std::hex << std::setfill('0');
+    for (size_t i = 0; i < bytes.size(); ++i) {
+        if (i == 4 || i == 6 || i == 8 || i == 10) {
+            stream << '-';
+        }
+        stream << std::setw(2) << static_cast<int>(bytes[i]);
+    }
+    return stream.str();
 }
 
 std::filesystem::path absoluteCapturePath(const std::string &value) {
@@ -126,6 +294,19 @@ void RpcServer::run() {
 
 void runEngineRpcServer(std::istream &input, std::ostream &output) {
     RpcServer server{input, output};
+    const auto instance_id = generateUuidV4();
+    std::vector<PendingTransformUpdate> pending_transforms;
+
+    server.setHandler("get_status", [instance_id](const nlohmann::json &params) {
+        requireObjectParams(params, "get_status");
+        const auto &engine_time = GET_MODULE(EngineTime);
+        return nlohmann::json{
+            {"instance_id", instance_id},
+            {"project_root", projectRootString()},
+            {"frame", engine_time.frameIndex()},
+            {"time", engine_time.now()},
+        };
+    });
 
     server.setHandler("set_time", [](const nlohmann::json &params) {
         const auto t = requireNumberParam(params, "t", "set_time");
@@ -133,8 +314,29 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
         return frameResult();
     });
 
-    server.setHandler("step_frame", [](const nlohmann::json &params) {
+    server.setHandler("update_transforms", [&pending_transforms](const nlohmann::json &params) {
+        auto updates = parseTransformUpdates(params);
+        pending_transforms.insert(pending_transforms.end(), std::make_move_iterator(updates.begin()),
+                                  std::make_move_iterator(updates.end()));
+        return nlohmann::json{
+            {"queued", updates.size()},
+        };
+    });
+
+    server.setHandler("load_gltf", [](const nlohmann::json &params) {
+        const auto path_ref = requireStringParam(params, "path", "load_gltf");
+        auto name = optionalStringParam(params, "name", "load_gltf");
+        requireOptionalObjectName(name, "load_gltf");
+        const auto path = GET_MODULE(SceneLoader).loadTransientGltf(path_ref, name);
+        nlohmann::json result;
+        result["path"] = path.generic_string();
+        result["name"] = name ? nlohmann::json(*name) : nlohmann::json(nullptr);
+        return result;
+    });
+
+    server.setHandler("step_frame", [&pending_transforms](const nlohmann::json &params) {
         requireObjectParams(params, "step_frame");
+        flushPendingTransforms(pending_transforms);
         auto &engine_time = GET_MODULE(EngineTime);
         engine_time.advance();
         updateFrameState(engine_time);
@@ -142,8 +344,9 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
         return frameResult();
     });
 
-    server.setHandler("render_frame", [](const nlohmann::json &params) {
+    server.setHandler("render_frame", [&pending_transforms](const nlohmann::json &params) {
         requireObjectParams(params, "render_frame");
+        flushPendingTransforms(pending_transforms);
         GET_MODULE(InputState).clear();
         GET_MODULE(SeqPlayer).update(GET_MODULE(EngineTime).now());
         GET_MODULE(Renderer).render();
