@@ -1,4 +1,5 @@
 #include "uicontainer.hpp"
+#include "../build_features.hpp"
 #include "../log.hpp"
 #include "../loader/basicconfig.hpp"
 #include "../loader/imageloader.hpp"
@@ -147,6 +148,9 @@ UIContainer::UIContainer()
             }
         }
     } catch (const std::exception &e) {
+        if (isBuildFeatureDisabledError(e)) {
+            throw;
+        }
         LOG_WARNING(logger, "UI config load failed: {}", e.what());
     }
     
@@ -205,6 +209,9 @@ void UIContainer::registerUI(const std::string& name, const std::string& file_pa
         
         ui_textures[name] = std::move(texture);
     } catch (const std::exception &e) {
+        if (isBuildFeatureDisabledError(e)) {
+            throw;
+        }
         LOG_WARNING(logger, "Failed to register UI texture ({}): {}", file_path, e.what());
     }
 }

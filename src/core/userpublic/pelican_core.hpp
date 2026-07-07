@@ -11,7 +11,7 @@ class PelicanCore {
     PelicanCore();
     PelicanCore(std::string settings);
     PelicanCore(std::string settings, bool reserve_stdout_for_protocol);
-    void run();
+    bool run();
 };
 
 } // namespace Pelican

@@ -189,6 +189,9 @@ TEST_CASE("PathResolver resolves engine resources before setup", "[pathresolver]
 }
 
 TEST_CASE("Engine resource registry matches project format fixture", "[pathresolver]") {
+#if !PELICAN_WITH_VAT
+    SKIP("engine resource registry fixture is validated only for the full resource set");
+#else
     const auto fixture = readJson(fixtureRoot() / "engine_resources.json");
     REQUIRE(fixture.at("schema").get<std::string>() == "pelican.engine_resources");
     REQUIRE(fixture.at("version").get<int>() == 1);
@@ -200,6 +203,7 @@ TEST_CASE("Engine resource registry matches project format fixture", "[pathresol
     }
 
     REQUIRE(registered_ids == fixture_ids);
+#endif
 }
 
 TEST_CASE("PathResolver setup is single-use outside tests", "[pathresolver]") {

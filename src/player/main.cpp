@@ -16,6 +16,7 @@
 #include <vector>
 #include <pelican_core.hpp>
 
+#include "../core/build_features.hpp"
 #include "../core/container.hpp"
 #include "../core/launchconfig.hpp"
 #include "../core/loader/pathresolver.hpp"
@@ -264,6 +265,11 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         if (config.rpc && !config.headless) {
             throw std::runtime_error("--rpc requires --headless in protocol v1");
         }
+#if !PELICAN_WITH_RPC
+        if (config.rpc) {
+            Pelican::throwBuildFeatureDisabled("PELICAN_WITH_RPC", "--rpc is unavailable");
+        }
+#endif
         config.shader_hot_reload = !config.headless;
         config.allow_absolute_paths = program.get<bool>("--allow-absolute-paths");
         parsed.ignore_engine_version = program.get<bool>("--ignore-engine-version");
@@ -301,6 +307,9 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
 
         const auto play_seq = program.get<std::string>("--play-seq");
         if (!play_seq.empty()) {
+#if !PELICAN_WITH_SEQPLAYER
+            Pelican::throwBuildFeatureDisabled("PELICAN_WITH_SEQPLAYER", "--play-seq is unavailable");
+#else
             config.play_seq = resolveExistingCliFile(play_seq, "--play-seq");
 
             const auto seq_mesh = program.get<std::string>("--seq-mesh");
@@ -310,12 +319,17 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
                 config.seq_mesh = resolveExistingCliFile(seq_mesh, "--seq-mesh");
             }
             config.seq_loop = program.get<bool>("--seq-loop");
+#endif
         }
 
         const auto play_vat = program.get<std::string>("--play-vat");
         if (!play_vat.empty()) {
+#if !PELICAN_WITH_VAT
+            Pelican::throwBuildFeatureDisabled("PELICAN_WITH_VAT", "--play-vat is unavailable");
+#else
             config.play_vat = resolveExistingProjectCliFile(play_vat, "--play-vat", parsed.project_root,
                                                             config.allow_absolute_paths);
+#endif
         }
 
         const auto camera = program.get<std::string>("--camera");
@@ -403,6 +417,5 @@ int main(int argc, char *argv[]) {
     MyCharSystem sys;
     ecs.registerSystem<MyCharSystem, MyCharComponent, Pelican::LocalTransformComponent>(sys, {}, true);
 
-    pl.run();
-    return 0;
+    return pl.run() ? 0 : 1;
 }

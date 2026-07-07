@@ -33,18 +33,24 @@ void JobSystem::init(int thread_count) {
                     jobs.pop();
                 }
                 
+                std::exception_ptr job_exception;
                 try {
                     //LOG_INFO(logger, "JobSystem: Worker {} starting job", i);
                     job();
                     //LOG_INFO(logger, "JobSystem: Worker {} finished job", i);
                 } catch (const std::exception& e) {
                    LOG_ERROR(logger, "JobSystem Exception: {}", e.what());
+                   job_exception = std::current_exception();
                 } catch (...) {
                    LOG_ERROR(logger, "JobSystem Unknown Exception");
+                   job_exception = std::current_exception();
                 }
                 
                 {
                     std::lock_guard<std::mutex> lock(wait_mutex);
+                    if (job_exception && !first_exception) {
+                        first_exception = job_exception;
+                    }
                     active_jobs--;
                     wait_condition.notify_all();
                 }
@@ -64,12 +70,17 @@ void JobSystem::schedule(std::function<void()> job) {
 
 void JobSystem::wait() {
     std::unique_lock<std::mutex> lock(wait_mutex);
-    wait_condition.wait(lock, [this] { 
+    wait_condition.wait(lock, [this] {
         // We need to check if queue is empty AND active_jobs is 0.
         // Actually active_jobs incremented on push, decremented on finish.
         // So active_jobs == 0 means queue is empty AND no one is working.
-        return active_jobs == 0; 
+        return active_jobs == 0;
     });
+    if (first_exception) {
+        auto exception = first_exception;
+        first_exception = nullptr;
+        std::rethrow_exception(exception);
+    }
 }
 
 void JobSystem::cleanup() {
@@ -82,6 +93,7 @@ void JobSystem::cleanup() {
         if (worker.joinable()) worker.join();
     }
     workers.clear();
+    first_exception = nullptr;
     stop = false;
 }
 

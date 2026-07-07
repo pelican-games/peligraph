@@ -84,9 +84,15 @@ std::vector<GoldenCase> discoverGoldenCases() {
         }
         std::ifstream file{config_path};
         const auto config = nlohmann::json::parse(file);
+        const auto mode = config.at("mode").get<std::string>();
+#if !PELICAN_WITH_VAT
+        if (mode == "vat_playback") {
+            continue;
+        }
+#endif
         cases.push_back(GoldenCase{
             entry.path().filename().string(),
-            config.at("mode").get<std::string>(),
+            mode,
             entry.path(),
         });
     }
@@ -910,7 +916,11 @@ void writeFailureMetadata(const std::filesystem::path &path, const GoldenCase &g
 TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     setupLogger();
     const auto cases = discoverGoldenCases();
+#if PELICAN_WITH_VAT
     REQUIRE(cases.size() == 10);
+#else
+    REQUIRE(cases.size() == 9);
+#endif
 
     for (const auto &golden_case : cases) {
         DYNAMIC_SECTION(golden_case.name) {

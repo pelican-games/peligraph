@@ -18,6 +18,10 @@ set(PELICAN_INSTALL_DIR ${CMAKE_SOURCE_DIR}/dist$<$<CONFIG:Debug>:_debug>)
 set(PELICAN_LIB_DIR ${PELICAN_INSTALL_DIR}/lib/bin)
 set(PELICAN_INCLUDE_DIR ${PELICAN_INSTALL_DIR}/lib/include)
 option(PELICAN_RUNTIME_SHADER_COMPILER "Enable runtime GLSL shader compilation with shaderc" ON)
+option(PELICAN_WITH_VAT "Enable pelican.vat GLB playback support" ON)
+option(PELICAN_WITH_EXR "Enable EXR texture loading with tinyexr" ON)
+option(PELICAN_WITH_RPC "Enable stdio JSON-RPC control server" ON)
+option(PELICAN_WITH_SEQPLAYER "Enable transform sequence playback" ON)
 
 # external dependencies
 ## Logging
@@ -105,28 +109,30 @@ if(NOT TARGET stb)
   target_include_directories(stb INTERFACE ${stb_SOURCE_DIR})
 endif()
 
-FetchContent_Declare(
-  tinyexr
-  GIT_REPOSITORY https://github.com/syoyo/tinyexr.git
-  GIT_TAG        v3.1.0
-)
-FetchContent_GetProperties(tinyexr)
-if(NOT tinyexr_POPULATED)
-  if(POLICY CMP0169)
-    cmake_policy(PUSH)
-    cmake_policy(SET CMP0169 OLD)
-  endif()
-  FetchContent_Populate(tinyexr)
-  if(POLICY CMP0169)
-    cmake_policy(POP)
-  endif()
-endif()
-if(NOT TARGET tinyexr)
-  add_library(tinyexr INTERFACE)
-  target_include_directories(tinyexr INTERFACE
-    ${tinyexr_SOURCE_DIR}
-    ${tinyexr_SOURCE_DIR}/deps/miniz
+if(PELICAN_WITH_EXR)
+  FetchContent_Declare(
+    tinyexr
+    GIT_REPOSITORY https://github.com/syoyo/tinyexr.git
+    GIT_TAG        v3.1.0
   )
+  FetchContent_GetProperties(tinyexr)
+  if(NOT tinyexr_POPULATED)
+    if(POLICY CMP0169)
+      cmake_policy(PUSH)
+      cmake_policy(SET CMP0169 OLD)
+    endif()
+    FetchContent_Populate(tinyexr)
+    if(POLICY CMP0169)
+      cmake_policy(POP)
+    endif()
+  endif()
+  if(NOT TARGET tinyexr)
+    add_library(tinyexr INTERFACE)
+    target_include_directories(tinyexr INTERFACE
+      ${tinyexr_SOURCE_DIR}
+      ${tinyexr_SOURCE_DIR}/deps/miniz
+    )
+  endif()
 endif()
 
 ## vulkan

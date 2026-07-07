@@ -12,7 +12,49 @@ if(NOT DEFINED OUT_DIR)
 endif()
 
 file(REMOVE_RECURSE "${OUT_DIR}")
-file(MAKE_DIRECTORY "${OUT_DIR}")
+file(MAKE_DIRECTORY
+    "${OUT_DIR}/project/assets"
+    "${OUT_DIR}/project/scenes"
+    "${OUT_DIR}/project/passes"
+    "${OUT_DIR}/project/ui"
+)
+
+file(WRITE "${OUT_DIR}/project/project.json" [=[
+{
+  "schema": "pelican.project",
+  "version": 1,
+  "name": "rpc_headless",
+  "engine_min_version": "0.1.0",
+  "basic_config": {
+    "window_title": "RPC Headless",
+    "window_size": {"width": 160, "height": 90},
+    "fullscreen": false,
+    "framerate": 30,
+    "camera": {"fov_y": 45.0, "near": 0.1, "far": 1000.0, "up": [0.0, 1.0, 0.0]},
+    "default_scene_id": "default_scene",
+    "scene_data_json": "scenes/main.scene.json",
+    "asset_data_json": "assets/asset_data.json",
+    "rendering_config_json": "passes/main_rendering_config.json",
+    "default_rendering_pass": "main_render",
+    "ui_config_json": "ui/ui_overlay.json"
+  }
+}
+]=])
+
+file(WRITE "${OUT_DIR}/project/scenes/main.scene.json" [=[
+{
+  "schema": "pelican.scene",
+  "version": 1,
+  "scenes": {
+    "default_scene": {
+      "objects": []
+    }
+  }
+}
+]=])
+file(WRITE "${OUT_DIR}/project/assets/asset_data.json" "{\"models\":[]}\n")
+file(WRITE "${OUT_DIR}/project/ui/ui_overlay.json" "{\"images\":[]}\n")
+configure_file("${PROJECT_DIR}/passes/main_rendering_config.json" "${OUT_DIR}/project/passes/main_rendering_config.json" COPYONLY)
 
 set(script_path "${OUT_DIR}/rpc_script.ndjson")
 set(capture_path "${OUT_DIR}/rpc_capture.png")
@@ -88,7 +130,7 @@ function(run_rpc_once label output_var)
         COMMAND "${PLAYER}"
             --rpc
             --headless
-            --project "${PROJECT_DIR}"
+            --project "${OUT_DIR}/project"
             --size 160x90
             --fps 30
         WORKING_DIRECTORY "${PLAYER_DIR}"

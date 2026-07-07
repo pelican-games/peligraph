@@ -4,6 +4,7 @@
 #include <tiny_gltf.h>
 
 #include "../log.hpp"
+#include "../build_features.hpp"
 #include "../material/material.hpp"
 #include "../material/materialcontainer.hpp"
 #include "../material/standardmaterialresource.hpp"
@@ -22,10 +23,6 @@
 namespace Pelican {
 
 namespace {
-
-size_t vatTextureBytes(const VatPrimitiveInfo &vat) {
-    return static_cast<size_t>(vat.vertex_count) * vat.frame_count * 4 * sizeof(uint16_t);
-}
 
 const tinygltf::Value *objectMember(const tinygltf::Value::Object &object, const char *name) {
     const auto found = object.find(name);
@@ -119,6 +116,28 @@ VatPrimitiveMeta tinyGltfValueToVatMeta(const tinygltf::Value &extras) {
     return meta;
 }
 
+void rejectVatModelIfDisabled(const tinygltf::Model &model) {
+#if PELICAN_WITH_VAT
+    (void)model;
+#else
+    for (const auto &mesh : model.meshes) {
+        for (const auto &primitive : mesh.primitives) {
+            if (tinyGltfValueToVatMeta(primitive.extras).present) {
+                throwBuildFeatureDisabled("PELICAN_WITH_VAT", "GLB contains pelican.vat primitive extras");
+            }
+        }
+    }
+#endif
+}
+
+#if PELICAN_WITH_VAT
+
+size_t vatTextureBytes(const VatPrimitiveInfo &vat) {
+    return static_cast<size_t>(vat.vertex_count) * vat.frame_count * 4 * sizeof(uint16_t);
+}
+
+#endif
+
 } // namespace
 
 struct InternalGltfLoader {
@@ -178,6 +197,7 @@ struct InternalGltfLoader {
             toUnorm8(vectorValueOr(material.emissiveFactor, 2, 0.0)));
     }
 
+#if PELICAN_WITH_VAT
     std::vector<VatBufferViewInfo> vatBufferViewInfos() const {
         std::vector<VatBufferViewInfo> infos;
         infos.reserve(model.bufferViews.size());
@@ -254,6 +274,7 @@ struct InternalGltfLoader {
         resolved_materials[generated_material] = mat_container.registerMaterial(material_info);
         return generated_material;
     }
+#endif
 
     template <class InType, class OutType>
     std::vector<OutType> readComponentByType(const unsigned char *p_data, size_t count, int stride) {
@@ -459,19 +480,29 @@ struct InternalGltfLoader {
             if (auto it = primitive.attributes.find("WEIGHTS_0"); it != primitive.attributes.end())
                 dat.weight = getDataFromAccessor<TINYGLTF_TYPE_VEC4, glm::vec4>(it->second);
 
+            const auto vat_meta = tinyGltfValueToVatMeta(primitive.extras);
+#if PELICAN_WITH_VAT
             const auto vat_info = parseVatPrimitiveExtras(
-                tinyGltfValueToVatMeta(primitive.extras), static_cast<uint32_t>(dat.pos.size()),
-                vatBufferViewInfos());
+                vat_meta, static_cast<uint32_t>(dat.pos.size()), vatBufferViewInfos());
             const auto primitive_mode = primitive.mode < 0 ? TINYGLTF_MODE_TRIANGLES : primitive.mode;
             if (vat_info && primitive_mode != TINYGLTF_MODE_TRIANGLES) {
                 throw std::runtime_error("pelican.vat only supports TRIANGLES topology");
             }
+#else
+            if (vat_meta.present) {
+                throwBuildFeatureDisabled("PELICAN_WITH_VAT", "GLB contains pelican.vat primitive extras");
+            }
+#endif
 
             transformVertexData(dat, world_transform);
             auto primitive_info = buf_container.addPrimitiveEntry(std::move(dat));
+#if PELICAN_WITH_VAT
             const auto material_id =
                 vat_info ? registerVatMaterial(primitive.material, *vat_info, primitive_info)
                          : primitive.material;
+#else
+            const auto material_id = primitive.material;
+#endif
             tmp_material_primitives[material_id].emplace_back(std::move(primitive_info));
         }
     }
@@ -546,6 +577,7 @@ ModelTemplate GltfLoader::loadGltfBinary(std::string path) {
         LOG_ERROR(logger, "loading gltf file \"{}\" : {}", path, err);
     if (!ret)
         throw std::runtime_error("failed to load gltf file : " + path);
+    rejectVatModelIfDisabled(model);
 
     ModelTemplate model_template;
     InternalGltfLoader tmp_loader{
@@ -569,6 +601,7 @@ ModelTemplate GltfLoader::loadGltf(std::string path) {
         LOG_ERROR(logger, "loading gltf file \"{}\" : {}", path, err);
     if (!ret)
         throw std::runtime_error("failed to load gltf file : " + path);
+    rejectVatModelIfDisabled(model);
 
     ModelTemplate model_template;
     InternalGltfLoader tmp_loader{
