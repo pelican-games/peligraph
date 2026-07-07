@@ -1,6 +1,6 @@
 #include "importcommand.hpp"
 
-#include "../core/loader/importmanifest.hpp"
+#include "../project/importmanifest.hpp"
 
 #include <argparse/argparse.hpp>
 #include <nlohmann/json.hpp>

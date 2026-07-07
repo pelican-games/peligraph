@@ -12,7 +12,7 @@
 #include "../log.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
 #include "pathresolver.hpp"
-#include "sceneformat.hpp"
+#include "../../project/sceneformat.hpp"
 #include <nlohmann/json.hpp>
 
 #include <algorithm>

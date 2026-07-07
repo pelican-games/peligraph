@@ -1,4 +1,4 @@
-#include "../src/core/communication/jsonrpc.hpp"
+#include "../src/project/jsonrpc.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <nlohmann/json.hpp>

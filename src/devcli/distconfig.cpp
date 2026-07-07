@@ -1,6 +1,6 @@
 #include "distconfig.hpp"
 
-#include "../core/loader/importmanifest.hpp"
+#include "../project/importmanifest.hpp"
 #include "../core/model/vatformat.hpp"
 
 #include <argparse/argparse.hpp>

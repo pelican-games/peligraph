@@ -258,6 +258,7 @@ endif()
 
 # main
 ## pelican lib
+add_subdirectory(src/project)
 add_subdirectory(src/core)
 add_subdirectory(src/player)
 add_subdirectory(src/devcli)

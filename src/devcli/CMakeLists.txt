@@ -5,7 +5,6 @@ unset(CMAKE_RUNTIME_OUTPUT_DIRECTORY)
 target_sources(pelican_cli PRIVATE
   distconfig.cpp
   importcommand.cpp
-  ../core/loader/importmanifest.cpp
   ../core/model/vatformat.cpp
 )
 
@@ -17,5 +16,5 @@ FetchContent_Populate(
   GIT_TAG        v4.1
 )
 
-target_link_libraries(pelican_cli PRIVATE argparse nlohmann_json picosha2 glm)
+target_link_libraries(pelican_cli PRIVATE argparse nlohmann_json picosha2 glm pelican_project)
 target_include_directories(pelican_cli PRIVATE ${mustache_SOURCE_DIR})

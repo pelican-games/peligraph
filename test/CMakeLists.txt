@@ -55,7 +55,7 @@ pelican_define_test(imageloader_test pelican_core tinyexr)
 endif()
 pelican_define_test(inputstate_test pelican_core)
 if(PELICAN_WITH_RPC)
-pelican_define_test(jsonrpc_test pelican_core)
+pelican_define_test(jsonrpc_test pelican_project)
 endif()
 pelican_define_test(pathresolver_test pelican_core)
 target_compile_definitions(pelican_test_pathresolver_test PRIVATE
@@ -161,7 +161,7 @@ add_test(
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_compute_headless.cmake
 )
 
-pelican_define_test(importmanifest_test pelican_core)
+pelican_define_test(importmanifest_test pelican_project)
 target_compile_definitions(pelican_test_importmanifest_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
