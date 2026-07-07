@@ -336,6 +336,24 @@ void insertPassAtEnd(nlohmann::json &config, const nlohmann::json &pass) {
     passes.push_back(pass);
 }
 
+void appendStringListValue(nlohmann::json &json, const std::string &field_name,
+                           const std::string &value) {
+    if (!json.contains(field_name)) {
+        json[field_name] = nlohmann::json::array();
+    } else if (json.at(field_name).is_string()) {
+        json[field_name] = nlohmann::json::array({json.at(field_name).get<std::string>()});
+    }
+    if (!json.at(field_name).is_array()) {
+        throw std::runtime_error("render feature pass explicit edge must be a string or array: " + field_name);
+    }
+
+    auto &values = json.at(field_name);
+    const auto exists = std::find(values.begin(), values.end(), value);
+    if (exists == values.end()) {
+        values.push_back(value);
+    }
+}
+
 void insertPassByAnchor(nlohmann::json &config, const std::string &insert, const nlohmann::json &pass) {
     constexpr std::string_view before_prefix = "before:";
     constexpr std::string_view after_prefix = "after:";
@@ -364,7 +382,9 @@ void insertPassByAnchor(nlohmann::json &config, const std::string &insert, const
 
     auto &passes = *matches.front().passes;
     auto index = matches.front().index + (after ? 1 : 0);
-    passes.insert(passes.begin() + static_cast<nlohmann::json::difference_type>(index), pass);
+    auto anchored_pass = pass;
+    appendStringListValue(anchored_pass, after ? "after" : "before", anchor);
+    passes.insert(passes.begin() + static_cast<nlohmann::json::difference_type>(index), anchored_pass);
 }
 
 void addFeaturePasses(nlohmann::json &config, const nlohmann::json &feature,

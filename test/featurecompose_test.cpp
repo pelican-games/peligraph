@@ -161,6 +161,10 @@ TEST_CASE("render feature fixtures compose and reject expected cases", "[render-
                 REQUIRE(result.feature_names == std::vector<std::string>{"dummy_feature"});
                 REQUIRE(passNames(result.config) ==
                         entry.at("expected_pass_order").get<std::vector<std::string>>());
+                const auto &feature_pass = result.config.at("rendering_passes").at(0).at("passes").at(2);
+                REQUIRE(feature_pass.at("name").get<std::string>() == "feature_present");
+                REQUIRE(feature_pass.at("after").get<std::vector<std::string>>() ==
+                        std::vector<std::string>{"present"});
                 REQUIRE(result.shader_defines ==
                         entry.at("expected_shader_defines").get<std::vector<std::string>>());
                 REQUIRE(result.config.at("render_targets").size() == 2);
@@ -276,10 +280,13 @@ TEST_CASE("HDR render feature overrides lit target and inserts tonemap before pr
 
     const auto &tonemap = result.config.at("rendering_passes").at(0).at("passes").at(1);
     REQUIRE(tonemap.at("name").get<std::string>() == "hdr_tonemap");
+    REQUIRE(tonemap.at("before").get<std::vector<std::string>>() ==
+            std::vector<std::string>{"present"});
     REQUIRE(tonemap.at("input").get<std::vector<std::string>>() ==
             std::vector<std::string>{"lit_color"});
     REQUIRE(tonemap.at("shader").at("vertex").get<std::string>() == "engine://tonemap");
     REQUIRE(tonemap.at("shader").at("fragment").get<std::string>() == "engine://tonemap");
+    REQUIRE(tonemap.at("color_load_op").get<std::string>() == "load");
 }
 
 TEST_CASE("render features require the runtime shader compiler", "[render-feature]") {
