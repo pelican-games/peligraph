@@ -111,6 +111,19 @@ float numberFromJson(const nlohmann::json &value, std::string_view field) {
     return value.get<float>();
 }
 
+std::uint64_t seedFromJson(const nlohmann::json &value) {
+    if (value.is_number_unsigned()) {
+        return value.get<std::uint64_t>();
+    }
+    if (value.is_number_integer()) {
+        const auto signed_value = value.get<std::int64_t>();
+        if (signed_value >= 0) {
+            return static_cast<std::uint64_t>(signed_value);
+        }
+    }
+    throw std::runtime_error("basic_config.seed must be a non-negative integer");
+}
+
 float degreesToRadians(float degrees) {
     return degrees * static_cast<float>(3.14159265358979323846 / 180.0);
 }
@@ -314,6 +327,7 @@ ProjectBasicConfig::ProjectBasicConfig() {
     initial_window_size.height = loader.getVal("basic_config/window_size/height");
     initial_fullscr_state = loader.getVal("basic_config/fullscreen");
     framerate_target = loader.getVal("basic_config/framerate");
+    deterministic_seed = seedFromJson(loader.getVal("basic_config/seed"));
 
     camera_prop.projection = parseBasicCameraProjection(loader);
     const auto camera_up = loader.getVal("basic_config/camera/up");
@@ -340,6 +354,7 @@ ProjectBasicConfig::window_size ProjectBasicConfig::initialWindowSize() const { 
 bool ProjectBasicConfig::initialFullScreenState() const { return initial_fullscr_state; }
 
 float ProjectBasicConfig::framerateTarget() const { return framerate_target; }
+std::uint64_t ProjectBasicConfig::seed() const { return deterministic_seed; }
 
 ProjectBasicConfig::InitialCameraProperty ProjectBasicConfig::initailCameraProperty() const { return camera_prop; }
 

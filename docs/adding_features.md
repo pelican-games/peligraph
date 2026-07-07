@@ -104,6 +104,7 @@ DLL境界は作らない。
   OFF は明確エラー)。音声・ロジック VM・OpenXR は必須
 - **決定性**: 同じ入力 → 同じ出力を壊さない(EngineTime / スナップショット /
   rpc 応答列一致の資産を守る)
+- Determinism rule: wall clock / std::rand / random_device must not drive deterministic decisions.
 - ログは quill(stdout は rpc プロトコル専用)
 - 常駐プロセスをテストで起動したら必ず停止する(エージェント向け)
 
