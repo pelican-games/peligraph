@@ -1,0 +1,12 @@
+{
+  "schema": "pelican.input_actions",
+  "version": 1,
+  "action_sets": [
+    {
+      "name": "gameplay",
+      "actions": [
+        {"name": "move", "type": "vector2", "bindings": ["kbd:wasd"]}
+      ]
+    }
+  ]
+}

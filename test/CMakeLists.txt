@@ -196,3 +196,8 @@ add_test(
         -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/frame_plan_dump_headless
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_frame_plan_dump_headless.cmake
 )
+
+pelican_define_test(inputactions_test pelican_core)
+target_compile_definitions(pelican_test_inputactions_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)

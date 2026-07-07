@@ -1,0 +1,33 @@
+[
+  {
+    "file": "valid/gameplay_menu.json",
+    "expect": "ok",
+    "action_count": 6
+  },
+  {
+    "file": "valid/pose_reserved.json",
+    "expect": "ok",
+    "action_count": 1
+  },
+  {
+    "file": "invalid/unknown_type.json",
+    "expect": "error",
+    "error_kind": "type"
+  },
+  {
+    "file": "invalid/duplicate_action.json",
+    "expect": "error",
+    "error_kind": "duplicate"
+  },
+  {
+    "file": "invalid/bad_binding.json",
+    "expect": "error",
+    "error_kind": "binding"
+  },
+  {
+    "file": "invalid/pose_resolution.json",
+    "expect": "error",
+    "mode": "pose_resolution",
+    "error_kind": "openxr"
+  }
+]

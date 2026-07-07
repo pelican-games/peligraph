@@ -61,6 +61,19 @@ struct JsonLoader {
             return *dat3;
         throw std::runtime_error("config not found: " + std::string{path});
     }
+
+    std::optional<nlohmann::json> getOptionalVal(std::string_view path) const {
+        auto dat = cli_json.getVal(path);
+        if (dat.has_value())
+            return dat;
+        auto dat2 = project_json.getVal(path);
+        if (dat2.has_value())
+            return dat2;
+        auto dat3 = default_json.getVal(path);
+        if (dat3.has_value())
+            return dat3;
+        return std::nullopt;
+    }
 };
 
 std::vector<int> parseVersion(std::string_view version) {
@@ -205,6 +218,12 @@ ProjectBasicConfig::ProjectBasicConfig() {
     ui_config_json_ref = loader.getVal("basic_config/ui_config_json");
     scene_data_json_ref = loader.getVal("basic_config/scene_data_json");
     asset_data_json_ref = loader.getVal("basic_config/asset_data_json");
+    if (const auto input_actions_ref = loader.getOptionalVal("basic_config/input_actions_json")) {
+        if (!input_actions_ref->is_string()) {
+            throw std::runtime_error("basic_config.input_actions_json must be a string");
+        }
+        input_actions_json_ref = input_actions_ref->get<std::string>();
+    }
 
     LOG_INFO(logger, "project basic config loaded");
 }
@@ -246,6 +265,16 @@ std::string ProjectBasicConfig::uiConfigJson() const {
         ui_config_json = rewriteUiPaths(GET_MODULE(PathResolver).loadText(ui_config_json_ref));
     }
     return *ui_config_json;
+}
+
+std::optional<std::string> ProjectBasicConfig::inputActionsJson() const {
+    if (!input_actions_json_ref) {
+        return std::nullopt;
+    }
+    if (!input_actions_json) {
+        input_actions_json = GET_MODULE(PathResolver).loadText(*input_actions_json_ref);
+    }
+    return input_actions_json;
 }
 
 } // namespace Pelican
