@@ -1,6 +1,7 @@
 #pragma once
 
 #include <details/ecs/componentdeclare.hpp>
+#include <components/localtransform.hpp>
 
 #include <cstdint>
 #include <iostream>
@@ -71,13 +72,14 @@ class GameObjects {
             auto data2 = std::tuple_cat(data, std::tuple<const T &>(component));
             return AddGameObjectContext<NewComponentIds, NewComponentIndices, decltype(data2)>{data2};
         }
-        void finish() {
+        GameObjectId finish() {
             auto ids = ComponentIds::ids();
             void *ptrs[ComponentIds::len];
-            GameObjects::alloc(ids.data(), ptrs, std::size(ptrs));
+            const auto id = GameObjects::alloc(ids.data(), ptrs, std::size(ptrs));
             GameObjects::copy(ptrs, data, DataComponentIndices{},
                               std::make_index_sequence<std::tuple_size<ComponentDataTuple>::value>());
             GameObjects::commit(ids.data(), ptrs, std::size(ptrs));
+            return id;
         };
     };
 
@@ -91,11 +93,12 @@ class GameObjects {
             auto data = std::tuple<const T &>(component);
             return AddGameObjectContext<NewComponentIds, IndexHolder<ComponentIds::len>, decltype(data)>{data};
         }
-        void finish() {
+        GameObjectId finish() {
             auto ids = ComponentIds::ids();
             void *ptrs[ComponentIds::len];
-            GameObjects::alloc(ids.data(), ptrs, std::size(ptrs));
+            const auto id = GameObjects::alloc(ids.data(), ptrs, std::size(ptrs));
             GameObjects::commit(ids.data(), ptrs, std::size(ptrs));
+            return id;
         };
     };
 
@@ -112,6 +115,8 @@ class GameObjects {
 
     static auto add() { return AddGameObjectContextEmpty{}; }
     static void remove(GameObjectId id);
+    static LocalTransformComponent localTransform(GameObjectId id);
+    static void setLocalTransform(GameObjectId id, const LocalTransformComponent &transform);
 };
 
 } // namespace Pelican

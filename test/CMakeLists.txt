@@ -46,6 +46,10 @@ target_compile_definitions(pelican_test_headless_render_test PRIVATE
     VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic
 )
 pelican_define_test(hoge_test)
+pelican_define_test(gamesystem_test pelican_core)
+target_compile_definitions(pelican_test_gamesystem_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
 if(PELICAN_WITH_EXR)
 pelican_define_test(imageloader_test pelican_core tinyexr)
 endif()

@@ -9,6 +9,8 @@
 
 #include <queue>
 #include <algorithm>
+#include <cstdint>
+#include <stdexcept>
 
 namespace Pelican {
 
@@ -132,6 +134,58 @@ void ECSCoreTemplatePublic::remove(EntityId id) {
 }
 
 void ECSCoreTemplatePublic::compaction() { /* TODO */ }
+
+void *ECSCoreTemplatePublic::tryComponentRaw(EntityId id, ComponentId component_id) {
+    if (id >= id_to_ref.size()) {
+        return nullptr;
+    }
+
+    const auto ref = id_to_ref[id];
+    if (ref.chunk_index >= chunks_storage.size()) {
+        return nullptr;
+    }
+
+    auto &chunk = chunks_storage[ref.chunk_index];
+    if (ref.array_index >= chunk.size()) {
+        return nullptr;
+    }
+
+    auto &component_info_manager = GET_MODULE(ComponentInfoManager);
+    const auto component_index = component_info_manager.getIndexFromComponentId(component_id);
+    if (!chunk.has(component_index)) {
+        return nullptr;
+    }
+
+    const auto component_ref = chunk.getRef(component_index);
+    return static_cast<std::uint8_t *>(component_ref.ptr) + component_ref.stride * ref.array_index;
+}
+
+void *ECSCoreTemplatePublic::componentRaw(EntityId id, ComponentId component_id) {
+    auto *component = tryComponentRaw(id, component_id);
+    if (component == nullptr) {
+        throw std::runtime_error("ECS component not found on entity");
+    }
+    return component;
+}
+
+void ECSCoreTemplatePublic::markComponentChanged(EntityId id, ComponentId component_id) {
+    if (id >= id_to_ref.size()) {
+        throw std::runtime_error("ECS entity not found");
+    }
+
+    const auto ref = id_to_ref[id];
+    if (ref.chunk_index >= chunks_storage.size()) {
+        throw std::runtime_error("ECS entity chunk not found");
+    }
+
+    auto &component_info_manager = GET_MODULE(ComponentInfoManager);
+    const auto component_index = component_info_manager.getIndexFromComponentId(component_id);
+    auto &chunk = chunks_storage[ref.chunk_index];
+    if (!chunk.has(component_index)) {
+        throw std::runtime_error("ECS component not found on entity");
+    }
+    chunk.updateVersion(component_index, global_tick);
+}
 
 void ECSCoreTemplatePublic::unregisterSystem(SystemId system_id) {
     for (const auto depends : systems.at(system_id).depends_list) {
