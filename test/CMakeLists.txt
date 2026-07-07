@@ -217,3 +217,12 @@ pelican_define_test(inputactions_test pelican_core)
 target_compile_definitions(pelican_test_inputactions_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
+
+add_test(
+    NAME devcli_dist_config_command
+    COMMAND ${CMAKE_COMMAND}
+        -DCLI=$<TARGET_FILE:pelican_cli>
+        -DVAT_WRITER=$<TARGET_FILE:pelican_test_vat_fixture_writer>
+        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/devcli_dist_config
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_dist_config.cmake
+)

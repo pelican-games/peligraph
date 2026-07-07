@@ -1,3 +1,4 @@
+#include "distconfig.hpp"
 #include "importcommand.hpp"
 
 #include "battery/embed.hpp"
@@ -22,6 +23,9 @@ void create_file(std::filesystem::path path, const std::string &data) {
 int main(int argc, char *argv[]) {
     if (argc > 1 && std::string_view{argv[1]} == "import") {
         return Pelican::DevCli::runImportCommand(argc - 1, argv + 1);
+    }
+    if (argc > 1 && std::string_view{argv[1]} == "dist-config") {
+        return Pelican::DevCli::runDistConfigCommand(argc - 1, argv + 1);
     }
 
     argparse::ArgumentParser program("Pelican Cli");
