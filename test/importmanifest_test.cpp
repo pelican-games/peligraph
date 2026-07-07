@@ -1,4 +1,4 @@
-#include "../src/core/loader/importmanifest.hpp"
+#include "../src/project/importmanifest.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <filesystem>

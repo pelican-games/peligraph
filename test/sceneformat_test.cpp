@@ -2,7 +2,7 @@
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/loader/scene.hpp"
-#include "../src/core/loader/sceneformat.hpp"
+#include "../src/project/sceneformat.hpp"
 #include "../src/core/log.hpp"
 
 #include <catch2/catch_test_macros.hpp>

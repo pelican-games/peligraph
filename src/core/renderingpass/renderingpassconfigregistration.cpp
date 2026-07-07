@@ -1,6 +1,6 @@
 #include "renderingpassconfigregistration.hpp"
 #include "computetask.hpp"
-#include "featurecompose.hpp"
+#include "../../project/featurecompose.hpp"
 #include "framegraphruntime.hpp"
 #include "frameplanner.hpp"
 #include "renderingpassconfigjsonparser.hpp"

@@ -33,6 +33,7 @@ target_include_directories(pelican_core PUBLIC ./userpublic)
 
 # external libraries
 target_link_libraries(pelican_core PUBLIC quill)
+target_link_libraries(pelican_core PRIVATE pelican_project)
 # vma-hpp v3.3.0+3 (VMA 3.3.0 対応) 以降は例外送出を vulkan.hpp の
 # vk::detail::resultCheck に委譲するため、Vulkan SDK 1.4 系の例外クラス改名
 # (ValidationFailedEXTError → ValidationFailedError) の影響を受けない。

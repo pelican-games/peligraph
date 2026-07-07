@@ -1,5 +1,5 @@
 #include "../src/core/renderingpass/frameplanner.hpp"
-#include "../src/core/renderingpass/featurecompose.hpp"
+#include "../src/project/featurecompose.hpp"
 #include "../src/core/renderingpass/renderingpassconfigjsonparser.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
 #include "../src/core/renderingpass/rendertargetmetadataresolver.hpp"
