@@ -3,6 +3,7 @@
 #include "../appflow/enginetime.hpp"
 #include "components/predefined.hpp"
 #include "../ecs/predefined/transform.hpp"
+#include "../loader/scene.hpp"
 #include "../log.hpp"
 #include "../phys/physworld.hpp"
 #include "../renderer/camera.hpp"
@@ -92,6 +93,14 @@ std::vector<std::string> GameContext::overlapAll(const phys::Shape &shape) const
 
 void GameContext::setCamera(std::string_view name) const {
     GET_MODULE(Camera).setActiveCamera(name);
+}
+
+void GameContext::loadScene(std::string_view name) const {
+    GET_MODULE(SceneLoader).requestLoad(std::string{name});
+}
+
+std::string GameContext::currentScene() const {
+    return GET_MODULE(SceneLoader).currentScene();
 }
 
 } // namespace Pelican

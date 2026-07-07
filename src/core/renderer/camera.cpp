@@ -413,17 +413,8 @@ Camera::SceneCamera parseSceneCamera(const nlohmann::json &object, const nlohman
 } // namespace
 
 Camera::Camera() {
-    const auto &config = GET_MODULE(ProjectBasicConfig);
-    pos = {0.0f, 0.0f, 0.0f};
-    dir = {1.0f, 0.0f, 0.0f};
-
-    const auto props = config.initailCameraProperty();
-    const auto screen = config.initialWindowSize();
-    up = props.up;
-    viewport_aspect = static_cast<float>(screen.width) / screen.height;
-    projection = props.projection;
-    rebuildProjectionMatrix();
-    loadSceneCameras();
+    resetToConfigDefaults();
+    loadSceneCameras(GET_MODULE(ProjectBasicConfig).defaultSceneId());
 }
 
 void Camera::rebuildProjectionMatrix() {
@@ -438,14 +429,32 @@ void Camera::rebuildProjectionMatrix() {
     projection_matrix = glm::perspective(projection.yfov, aspect, projection.znear, projection.zfar);
 }
 
-void Camera::loadSceneCameras() {
+void Camera::resetToConfigDefaults() {
+    const auto &config = GET_MODULE(ProjectBasicConfig);
+    pos = {0.0f, 0.0f, 0.0f};
+    dir = {1.0f, 0.0f, 0.0f};
+
+    const auto props = config.initailCameraProperty();
+    const auto screen = config.initialWindowSize();
+    up = props.up;
+    viewport_aspect = static_cast<float>(screen.width) / screen.height;
+    projection = props.projection;
+    scene_cameras.clear();
+    controlled_scene_camera_order.clear();
+    active_camera_name.clear();
+    active_scene_camera_locked = false;
+    rebuildProjectionMatrix();
+}
+
+void Camera::loadSceneCameras(std::string_view scene_id) {
+    resetToConfigDefaults();
     if (!GET_MODULE(PathResolver).isSetup()) {
         return;
     }
 
     const auto &config = GET_MODULE(ProjectBasicConfig);
     const auto scene_document = normalizeSceneDataJson(nlohmann::json::parse(config.sceneDataJson()));
-    const auto scene_it = scene_document.scenes.find(config.defaultSceneId());
+    const auto scene_it = scene_document.scenes.find(std::string{scene_id});
     if (scene_it == scene_document.scenes.end()) {
         return;
     }

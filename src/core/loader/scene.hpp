@@ -27,14 +27,20 @@ DECLARE_MODULE(SceneLoader) {
     };
 
     std::unordered_map<std::string, ObjectBinding> object_bindings;
+    SceneId current_scene_id;
+    std::optional<SceneId> pending_scene_id;
 
     void bindObjectTransform(const std::string &name, void *transform, void *simple_model_view);
+    void clearRuntimeScene();
 
   public:
     SceneLoader();
     ~SceneLoader();
 
     void load(SceneId scene_id);
+    void requestLoad(SceneId scene_id);
+    bool applyPendingLoad();
+    const SceneId &currentScene() const;
     bool hasObjectTransform(std::string_view name) const;
     SceneObjectTransform objectTransform(std::string_view name) const;
     void applyObjectTransform(std::string_view name, const SceneObjectTransform &transform);

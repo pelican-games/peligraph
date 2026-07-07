@@ -162,6 +162,15 @@ if(PELICAN_WITH_RPC)
             -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/rpc_set_camera_headless
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_rpc_set_camera_headless.cmake
     )
+    add_test(
+        NAME rpc_scene_flow_headless_player
+        COMMAND ${CMAKE_COMMAND}
+            -DPLAYER=$<TARGET_FILE:pelican_player>
+            -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+            -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/example
+            -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/rpc_scene_flow_headless
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_rpc_scene_flow_headless.cmake
+    )
     add_executable(
         pelican_test_rpc_inject_input_player
         ${CMAKE_SOURCE_DIR}/src/player/main.cpp

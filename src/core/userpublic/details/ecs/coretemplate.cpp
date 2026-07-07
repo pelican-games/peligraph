@@ -133,6 +133,17 @@ void ECSCoreTemplatePublic::remove(EntityId id) {
     id_to_ref[moved_id].array_index = ref.array_index;
 }
 
+void ECSCoreTemplatePublic::clearEntities() {
+    chunks_storage.clear();
+    id_to_ref.clear();
+    archetype_to_chunks.clear();
+    for (auto &[id, sys] : systems) {
+        (void)id;
+        sys.matching_chunk_indices.clear();
+        sys.last_run_tick = 0;
+    }
+}
+
 void ECSCoreTemplatePublic::compaction() { /* TODO */ }
 
 void *ECSCoreTemplatePublic::tryComponentRaw(EntityId id, ComponentId component_id) {

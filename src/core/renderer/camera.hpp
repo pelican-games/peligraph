@@ -54,7 +54,7 @@ DECLARE_MODULE(Camera) {
     bool active_scene_camera_locked = false;
 
     void rebuildProjectionMatrix();
-    void loadSceneCameras();
+    void resetToConfigDefaults();
     void applySceneCamera(const SceneCamera &camera);
 
   public:
@@ -69,6 +69,7 @@ DECLARE_MODULE(Camera) {
     void setScreenSize(uint32_t width, uint32_t height);
     void setNearFar(float new_fov_y, float new_near, float new_far);
     bool hasSceneCamera(std::string_view name) const;
+    void loadSceneCameras(std::string_view scene_id);
     void setActiveCamera(std::string_view name);
     const std::string &activeCameraName() const { return active_camera_name; }
     const std::vector<std::string> &controlledSceneCameraNames() const { return controlled_scene_camera_order; }

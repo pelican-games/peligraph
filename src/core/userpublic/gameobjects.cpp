@@ -7,18 +7,47 @@
 #include "../geomhelper/geomhelper.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
 
+#include <algorithm>
+
 namespace Pelican {
 
+std::vector<GameObjectId> &GameObjects::liveObjects() {
+    static std::vector<GameObjectId> ids;
+    return ids;
+}
+
 GameObjectId GameObjects::alloc(const ComponentId *ids, void **ptrs, uint32_t components_count) {
-    return GET_MODULE(ECSCore).allocateEntity(std::span{ids, components_count}, std::span{ptrs, components_count}, 1);
+    const auto id = GET_MODULE(ECSCore).allocateEntity(std::span{ids, components_count},
+                                                       std::span{ptrs, components_count}, 1);
+    liveObjects().push_back(id);
+    return id;
 }
 void GameObjects::commit(const ComponentId *ids, void *const *ptrs, uint32_t components_count) {
-    for (int i = 0; i < components_count; i++) {
+    for (uint32_t i = 0; i < components_count; i++) {
         GET_MODULE(ComponentInfoManager).initComponent(ids[i], ptrs[i]);
     }
 }
 
-void GameObjects::remove(GameObjectId id) { GET_MODULE(ECSCore).remove(id); }
+GameObjectId GameObjects::allocateRaw(std::span<const ComponentId> ids, std::span<void *> ptrs) {
+    return alloc(ids.data(), ptrs.data(), static_cast<uint32_t>(ids.size()));
+}
+
+void GameObjects::remove(GameObjectId id) {
+    auto &ids = liveObjects();
+    if (const auto it = std::find(ids.begin(), ids.end(), id); it != ids.end()) {
+        ids.erase(it);
+    }
+    GET_MODULE(ECSCore).remove(id);
+}
+
+void GameObjects::removeAll() {
+    liveObjects().clear();
+    GET_MODULE(ECSCore).getTemplatePublicModule().clearEntities();
+}
+
+size_t GameObjects::liveCountForTesting() {
+    return liveObjects().size();
+}
 
 LocalTransformComponent GameObjects::localTransform(GameObjectId id) {
     return GET_MODULE(ECSCore).getTemplatePublicModule().component<LocalTransformComponent>(id);

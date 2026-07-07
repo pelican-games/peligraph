@@ -39,6 +39,9 @@ class GameContext {
     std::optional<phys::ObjectRaycastHit> raycastClosest(const phys::Ray &ray) const;
     std::vector<std::string> overlapAll(const phys::Shape &shape) const;
     void setCamera(std::string_view name) const;
+
+    void loadScene(std::string_view name) const;
+    std::string currentScene() const;
 };
 
 } // namespace Pelican

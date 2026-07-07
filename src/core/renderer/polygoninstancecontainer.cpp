@@ -95,6 +95,12 @@ void PolygonInstanceContainer::removeModelInstance(ModelInstanceId id) {
     model_instances_data[id.value] = glm::identity<glm::mat4>();
 }
 
+void PolygonInstanceContainer::clear() {
+    render_commands.clear();
+    draw_calls.clear();
+    model_instances_data.clear();
+}
+
 void PolygonInstanceContainer::triggerUpdate() {
     // clear previous frame
     draw_calls.clear();
