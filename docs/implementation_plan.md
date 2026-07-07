@@ -86,6 +86,8 @@ ctest --test-dir ./build -C Debug --output-on-failure
 | 30 | HDR / トーンマップ feature | 26, 28 | 中 | 中 |
 | 34 | フレームグラフ F1(compute 実行系) | 13, 33 | 大 | 高 |
 | 35 | フレームグラフ F2(render 切替 + プランダンプ + rpc) | 27, 33, 34 | 中 | 中 |
+| 40 | ビルドユニット化 B1(PELICAN_WITH_* ×4 + OFF スモーク) | 20, 26, 27 | 中 | 中 |
+| 41 | `pelican_cli dist-config` B2(配布プリセット導出) | 21, 40 | 中 | 低 |
 
 (WP31 shadow / WP32 IBL / WP36 GPU パーティクル / WP38 スケルタルアニメーションは
 設計文書側で予約済み。着手ウェーブが近づいたら本書へ詳細登録する)
@@ -721,6 +723,36 @@ stdout 純度維持 — run_rpc_headless の流儀) (b) `--dump-frame-plan` の�
 (b) fixture 駆動テスト (c) サンプル actions.json + キーイベント列で
 pressed / axis2 が期待どおり(複数フレーム・セット切替含む)
 (d) `src/core/ecs/` 変更禁止の維持。
+
+### WP40: ビルドユニット化 B1(PELICAN_WITH_* ×4 + OFF スモーク)
+
+参照: **`docs/design_build_tiers.md` §2 が仕様の正**。依存: WP20, 26, 27(対象機能)。
+
+1. CMake オプション 4 つを新設(**既定すべて ON**):
+   `PELICAN_WITH_VAT`(vatformat / vatplayer / vat.vert / VAT golden)、
+   `PELICAN_WITH_EXR`(imageloader の EXR 分岐 + tinyexr FetchContent ごと)、
+   `PELICAN_WITH_RPC`(jsonrpc / rpcserver / --rpc)、
+   `PELICAN_WITH_SEQPLAYER`(seqplayer / --play-seq)
+2. OFF 時の規約(§2-2): 該当機能を参照する入力(--rpc 指定、VAT extras 付き glb、
+   .exr 参照、--play-seq)には **silent skip ではなく明確なエラー**
+   「この バイナリは PELICAN_WITH_X=OFF でビルドされています」。
+   スタブは最小(登録関数の空実装 or 起動時 throw)
+3. テスト側: 各ユニットの単体・golden・結合テストを対応オプションで
+   条件登録(OFF ビルドでテストターゲット自体を除外)
+4. **OFF スモーク CI**: 単一 OFF × 4 通りの「configure + build が通る +
+   OFF エラーが出る」検証スクリプト(組合せはテストしない — §2-4)。
+   ctest ではなく `test/run_build_units_smoke.cmake` 等の独立スクリプトでよい
+   (フルリビルド 4 回は重いので、通常 ctest には含めず手動/リリース手順用。
+   実行方法を README or スクリプト冒頭に記載)
+
+受け入れ基準: (a) フル構成(全 ON)の全テスト・golden が無変更でグリーン
+(b) 各単一 OFF で configure + build 成功 (c) OFF バイナリへの該当入力が
+明確なエラー(4 ユニット分の検証がスモークスクリプトに含まれる)
+(d) 既定 ON なので通常の開発手順・CI に変化がない。
+
+### WP41: `pelican_cli dist-config` B2(配布プリセット導出)
+
+参照: `docs/design_build_tiers.md` §3。依存: WP21, 40。詳細は WP40 マージ後に確定。
 
 ## 3. 保留中のトラック(WP 化待ち)
 
