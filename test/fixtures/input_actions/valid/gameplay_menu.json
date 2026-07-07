@@ -1,0 +1,22 @@
+{
+  "schema": "pelican.input_actions",
+  "version": 1,
+  "action_sets": [
+    {
+      "name": "gameplay",
+      "actions": [
+        {"name": "move", "type": "axis2", "bindings": ["kbd:wasd", "pad:left_stick"]},
+        {"name": "jump", "type": "button", "bindings": ["kbd:space", "pad:a"]},
+        {"name": "look_x", "type": "axis1", "bindings": ["mouse:delta_x"]},
+        {"name": "fire", "type": "button", "bindings": ["mouse:left"]}
+      ]
+    },
+    {
+      "name": "menu",
+      "actions": [
+        {"name": "confirm", "type": "button", "bindings": ["kbd:space"]},
+        {"name": "navigate", "type": "axis2", "bindings": ["kbd:arrows"]}
+      ]
+    }
+  ]
+}

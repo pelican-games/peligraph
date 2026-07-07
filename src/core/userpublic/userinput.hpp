@@ -2,6 +2,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
+#include <string_view>
+#include <vector>
 
 namespace Pelican {
 
@@ -89,6 +92,35 @@ class UserInput {
     static bool getKey(KeyCode code);
     static bool isKeyPushed(KeyCode code);
     static bool isKeyReleased(KeyCode code);
+};
+
+struct ActionAxis2 {
+    float x = 0.0f;
+    float y = 0.0f;
+};
+
+struct ActionPose {
+    float position[3]{};
+    float orientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
+    bool valid = false;
+};
+
+class Actions {
+  public:
+    static bool isConfigured();
+
+    static bool isPressed(std::string_view action_name);
+    static bool isReleased(std::string_view action_name);
+    static bool isHeld(std::string_view action_name);
+    static float axis1(std::string_view action_name);
+    static ActionAxis2 axis2(std::string_view action_name);
+    static ActionPose pose(std::string_view action_name);
+
+    static void setActionSetStack(const std::vector<std::string> &action_set_stack);
+    static void pushActionSet(std::string action_set_name);
+    static bool popActionSet();
+    static void clearActionSetStack();
+    static std::vector<std::string> actionSetStack();
 };
 
 } // namespace Pelican

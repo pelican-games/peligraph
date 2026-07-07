@@ -1,0 +1,12 @@
+{
+  "schema": "pelican.input_actions",
+  "version": 1,
+  "action_sets": [
+    {
+      "name": "xr",
+      "actions": [
+        {"name": "aim", "type": "pose", "bindings": ["xr:right_hand"]}
+      ]
+    }
+  ]
+}

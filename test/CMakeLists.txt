@@ -186,3 +186,8 @@ add_test(
         -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/gpu_timing_headless
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_gpu_timing_headless.cmake
 )
+
+pelican_define_test(inputactions_test pelican_core)
+target_compile_definitions(pelican_test_inputactions_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)

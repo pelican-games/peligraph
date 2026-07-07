@@ -29,12 +29,14 @@ DECLARE_MODULE(ProjectBasicConfig) {
     std::string rendering_config_json_ref;
     std::string default_rendering_pass;
     std::string ui_config_json_ref;
+    std::optional<std::string> input_actions_json_ref;
     bool project_source = false;
 
     mutable std::optional<std::string> scene_data_json;
     mutable std::optional<std::string> asset_data_json;
     mutable std::optional<std::string> rendering_config_json;
     mutable std::optional<std::string> ui_config_json;
+    mutable std::optional<std::string> input_actions_json;
 
   public:
     ProjectBasicConfig();
@@ -52,6 +54,7 @@ DECLARE_MODULE(ProjectBasicConfig) {
     std::string renderingConfigJson() const;
     std::string defaultRenderingPass() const;
     std::string uiConfigJson() const;
+    std::optional<std::string> inputActionsJson() const;
     bool usesProjectSource() const { return project_source; }
 };
 
