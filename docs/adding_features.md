@@ -26,6 +26,7 @@
    after/before エッジ化される)
 2. シェーダを stem で書く(`<name>.frag` 等)。マテリアル系に合流する場合は
    `#include "pelican_features.glsl"` + `#ifdef PELICAN_FEATURE_<NAME>`
+   (set / push constant / 頂点入力は `docs/shader_contract.md` を確認)
 3. **engine:// 登録 3 点セット**(下のチェックリスト)
 4. golden: 機能 on/off の両ケースを追加。off = 既存 golden 全維持
 5. エンジン側データが要る場合(shadow のライト行列等)のみ C++: 供給側の

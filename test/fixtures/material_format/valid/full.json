@@ -1,0 +1,31 @@
+{
+  "schema": "pelican.material",
+  "version": 1,
+  "generator": "fixture",
+  "materials": [
+    {
+      "name": "lava",
+      "editor": {
+        "color": "orange"
+      },
+      "base": {
+        "baseColorFactor": [1.0, 0.8, 0.6, 1.0],
+        "baseColorTexture": "project://textures/lava_albedo.png",
+        "metallicFactor": 0.0,
+        "roughnessFactor": 0.8,
+        "metallicRoughnessTexture": "engine://default_mr.png",
+        "normalTexture": "project://textures/lava_normal.png",
+        "emissiveFactor": [2.0, 0.5, 0.1],
+        "emissiveTexture": "project://textures/lava_emissive.png",
+        "clearcoatFactor": 0.4
+      },
+      "shader": "project://shaders/lava",
+      "defines": ["LAVA_FLOW", "USE_EMISSIVE"],
+      "params": {
+        "flow_speed": 0.35,
+        "distortion": [0.1, 0.2],
+        "tint": [1.0, 0.4, 0.2, 1.0]
+      }
+    }
+  ]
+}

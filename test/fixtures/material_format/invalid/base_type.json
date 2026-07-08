@@ -1,0 +1,12 @@
+{
+  "schema": "pelican.material",
+  "version": 1,
+  "materials": [
+    {
+      "name": "lava",
+      "base": {
+        "baseColorFactor": [1.0, 1.0, 1.0]
+      }
+    }
+  ]
+}

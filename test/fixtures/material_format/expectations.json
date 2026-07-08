@@ -1,0 +1,44 @@
+[
+  {
+    "file": "valid/minimal.json",
+    "expect": "ok",
+    "material_count": 1,
+    "warning_count": 0
+  },
+  {
+    "file": "valid/full.json",
+    "expect": "ok",
+    "material_count": 1,
+    "warning_count": 3
+  },
+  {
+    "file": "invalid/bad_schema.json",
+    "expect": "error",
+    "error_kind": "schema"
+  },
+  {
+    "file": "invalid/bad_shader_ref.json",
+    "expect": "error",
+    "error_kind": "shader_stem"
+  },
+  {
+    "file": "invalid/define_value.json",
+    "expect": "error",
+    "error_kind": "define"
+  },
+  {
+    "file": "invalid/param_string.json",
+    "expect": "error",
+    "error_kind": "param"
+  },
+  {
+    "file": "invalid/base_type.json",
+    "expect": "error",
+    "error_kind": "base"
+  },
+  {
+    "file": "invalid/bad_texture_ref.json",
+    "expect": "error",
+    "error_kind": "texture_ref"
+  }
+]
