@@ -51,6 +51,9 @@ class GameContext {
     void stopSound(SoundHandle handle) const;
     void setBusVolume(std::string_view bus, float volume) const;
     bool isPlaying(SoundHandle handle) const;
+
+    void loadScene(std::string_view name) const;
+    std::string currentScene() const;
 };
 
 } // namespace Pelican

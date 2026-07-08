@@ -4,6 +4,7 @@
 #include "../launchconfig.hpp"
 #include "../log.hpp"
 #include "../communication/rpcserver.hpp"
+#include "../loader/scene.hpp"
 #include "../os/inputstate.hpp"
 #include "../os/window.hpp"
 #include "../playback/seqplayer.hpp"
@@ -160,6 +161,7 @@ void Loop::run() {
             ecs.update();
             internal::updateRegisteredGameSystems(game_context);
             seq_player.update(engine_time.now());
+            GET_MODULE(SceneLoader).applyPendingLoad();
             const auto update_end = Clock::now();
 
             const auto render_start = Clock::now();
@@ -203,6 +205,7 @@ void Loop::run() {
         ecs.update();
         internal::updateRegisteredGameSystems(game_context);
         seq_player.update(engine_time.now());
+        GET_MODULE(SceneLoader).applyPendingLoad();
         const auto update_end = Clock::now();
 
         const auto render_start = Clock::now();

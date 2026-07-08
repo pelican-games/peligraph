@@ -1169,6 +1169,61 @@
           ]
         }
       ]
+    },
+    "scene_flow_second": {
+      "objects": [
+        {
+          "name": "SceneFlowCamera",
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                0,
+                1,
+                -4
+              ],
+              "rotation": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "scale": [
+                1,
+                1,
+                1
+              ]
+            },
+            {
+              "name": "camera",
+              "type": "perspective",
+              "yfov": 0.78539816339,
+              "znear": 0.1,
+              "zfar": 1000
+            }
+          ]
+        },
+        {
+          "name": "SceneFlowKeyLight",
+          "components": [
+            {
+              "name": "light",
+              "type": "directional",
+              "direction": [
+                -0.5,
+                -0.6,
+                0.2
+              ],
+              "intensity": 2,
+              "color": [
+                0.5,
+                0.8,
+                1
+              ]
+            }
+          ]
+        }
+      ]
     }
   }
 }

@@ -8,6 +8,7 @@
 #include "../audio/audio.hpp"
 #endif
 #include "../ecs/predefined/transform.hpp"
+#include "../loader/scene.hpp"
 #include "../log.hpp"
 #include "../phys/physworld.hpp"
 #include "../renderer/camera.hpp"
@@ -153,6 +154,14 @@ bool GameContext::isPlaying(SoundHandle handle) const {
     (void)handle;
     throwBuildFeatureDisabled("PELICAN_WITH_AUDIO", "isPlaying is unavailable");
 #endif
+}
+
+void GameContext::loadScene(std::string_view name) const {
+    GET_MODULE(SceneLoader).requestLoad(std::string{name});
+}
+
+std::string GameContext::currentScene() const {
+    return GET_MODULE(SceneLoader).currentScene();
 }
 
 } // namespace Pelican

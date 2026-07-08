@@ -34,6 +34,7 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     PolygonInstanceContainer();
     ModelInstanceId placeModelInstance(ModelTemplate & model);
     void removeModelInstance(ModelInstanceId id);
+    void clear();
     void triggerUpdate();
 
     void setTrs(ModelInstanceId id, glm::vec3 pos, glm::quat rotation, glm::vec3 scale);
@@ -41,6 +42,7 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     const BufferWrapper &getIndirectBuf() const;
     const BufferWrapper &getObjectBuf() const;
     const std::vector<DrawIndirectInfo> &getDrawCalls() const;
+    size_t instanceCountForTesting() const { return model_instances_data.size(); }
 };
 
 } // namespace Pelican

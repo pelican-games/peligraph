@@ -1,6 +1,5 @@
 #include "scene.hpp"
 
-#include "../ecs/core.hpp"
 #include "../ecs/predefined/modelview.hpp"
 #include "../ecs/predefined/transform.hpp"
 #include "../model/gltf.hpp"
@@ -12,6 +11,7 @@
 #include "../log.hpp"
 #include "../phys/physworld.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
+#include "../userpublic/gameobjects.hpp"
 #include "pathresolver.hpp"
 #include "../../project/sceneformat.hpp"
 #include <nlohmann/json.hpp>
@@ -174,9 +174,7 @@ void assignTransform(TransformComponent &dst, const SceneObjectTransform &src) {
 } // namespace
 
 void SceneLoader::load(SceneId scene_id) {
-    auto &ecs = GET_MODULE(ECSCore);
     auto &config = GET_MODULE(ProjectBasicConfig);
-    object_bindings.clear();
 
     const auto scene_document = normalizeSceneDataJson(nlohmann::json::parse(config.sceneDataJson()));
     for (const auto &warning : scene_document.warnings) {
@@ -195,13 +193,14 @@ void SceneLoader::load(SceneId scene_id) {
     auto &component_info_manager = GET_MODULE(ComponentInfoManager);
     const auto ecs_objects = prepareSceneBindings(objects, component_info_manager, light_entries);
 
-    GET_MODULE(LightContainer).load(light_entries);
-    auto &phys_world = GET_MODULE(PhysWorld);
-    phys_world.clear();
-
     const auto transform_id = component_info_manager.getComponentIdByName("transform");
     const auto simple_model_view_id = component_info_manager.getComponentIdByName("simplemodelview");
 
+    clearRuntimeScene();
+    GET_MODULE(LightContainer).load(light_entries);
+    GET_MODULE(Camera).loadSceneCameras(scene_id);
+
+    auto &phys_world = GET_MODULE(PhysWorld);
     for (const auto &object : ecs_objects) {
         std::vector<void *> components_ptr;
         components_ptr.resize(object.components_id.size());
@@ -209,7 +208,8 @@ void SceneLoader::load(SceneId scene_id) {
         TransformComponent *transform = nullptr;
         SimpleModelViewComponent *simple_model_view = nullptr;
         if (!object.components_id.empty()) {
-            ecs.allocateEntity(object.components_id, components_ptr, 1);
+            GameObjects::allocateRaw(std::span<const ComponentId>{object.components_id.data(), object.components_id.size()},
+                                     std::span<void *>{components_ptr.data(), components_ptr.size()});
 
             for (int i = 0; const auto &component : object.components_json) {
                 GET_MODULE(ComponentInfoManager).loadByJson(components_ptr[i], component);
@@ -228,6 +228,37 @@ void SceneLoader::load(SceneId scene_id) {
             phys_world.bindCollider(object.name, collider, transform, identityPhysWorldTransform());
         }
     }
+    current_scene_id = std::move(scene_id);
+}
+
+void SceneLoader::requestLoad(SceneId scene_id) {
+    auto &config = GET_MODULE(ProjectBasicConfig);
+    const auto scene_document = normalizeSceneDataJson(nlohmann::json::parse(config.sceneDataJson()));
+    if (scene_document.scenes.find(scene_id) == scene_document.scenes.end()) {
+        throw std::runtime_error("scene not found: " + scene_id);
+    }
+    pending_scene_id = std::move(scene_id);
+}
+
+bool SceneLoader::applyPendingLoad() {
+    if (!pending_scene_id) {
+        return false;
+    }
+    auto scene_id = std::move(*pending_scene_id);
+    pending_scene_id.reset();
+    load(std::move(scene_id));
+    return true;
+}
+
+const SceneId &SceneLoader::currentScene() const {
+    return current_scene_id;
+}
+
+void SceneLoader::clearRuntimeScene() {
+    object_bindings.clear();
+    GET_MODULE(PhysWorld).clear();
+    GameObjects::removeAll();
+    GET_MODULE(PolygonInstanceContainer).clear();
 }
 
 void SceneLoader::bindObjectTransform(const std::string &name, void *transform, void *simple_model_view) {
@@ -288,8 +319,7 @@ std::filesystem::path SceneLoader::loadTransientGltf(std::string_view path_ref, 
         component_info_manager.getComponentIdByName("simplemodelview"),
     };
     std::array<void *, 2> component_ptrs{};
-    GET_MODULE(ECSCore).allocateEntity(std::span<const ComponentId>{component_ids}, std::span<void *>{component_ptrs},
-                                       1);
+    GameObjects::allocateRaw(std::span<const ComponentId>{component_ids}, std::span<void *>{component_ptrs});
 
     auto *transform = static_cast<TransformComponent *>(component_ptrs[0]);
     auto *simple_model_view = static_cast<SimpleModelViewComponent *>(component_ptrs[1]);

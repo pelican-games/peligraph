@@ -8,6 +8,7 @@
 #include <span>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 namespace Pelican {
 
@@ -48,6 +49,7 @@ class GameObjects {
 
     static GameObjectId alloc(const ComponentId *ids, void **ptrs, uint32_t components_count);
     static void commit(const ComponentId *ids, void *const *ptrs, uint32_t components_count);
+    static std::vector<GameObjectId> &liveObjects();
 
     template <class Indices, class Tuple, size_t... Seq>
     static void copy(void **ptrs, Tuple t, Indices indices, std::index_sequence<Seq...>) {
@@ -114,7 +116,10 @@ class GameObjects {
     };
 
     static auto add() { return AddGameObjectContextEmpty{}; }
+    static GameObjectId allocateRaw(std::span<const ComponentId> ids, std::span<void *> ptrs);
     static void remove(GameObjectId id);
+    static void removeAll();
+    static size_t liveCountForTesting();
     static LocalTransformComponent localTransform(GameObjectId id);
     static void setLocalTransform(GameObjectId id, const LocalTransformComponent &transform);
 };

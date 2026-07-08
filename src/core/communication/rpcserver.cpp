@@ -408,6 +408,7 @@ void updateFrameState(EngineTime &engine_time) {
     GET_MODULE(ECSCore).update();
     internal::updateRegisteredGameSystems(game_context);
     GET_MODULE(SeqPlayer).update(engine_time.now());
+    GET_MODULE(SceneLoader).applyPendingLoad();
 }
 
 std::string projectRootString() {
@@ -515,6 +516,7 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
         return nlohmann::json{
             {"instance_id", instance_id},
             {"project_root", projectRootString()},
+            {"scene", GET_MODULE(SceneLoader).currentScene()},
             {"frame", engine_time.frameIndex()},
             {"time", engine_time.now()},
             {"seed", GameContext{}.seed()},
@@ -562,6 +564,15 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
         result["path"] = path.generic_string();
         result["name"] = name ? nlohmann::json(*name) : nlohmann::json(nullptr);
         return result;
+    });
+
+    server.setHandler("load_scene", [&pending_transforms](const nlohmann::json &params) {
+        const auto name = requireStringParam(params, "name", "load_scene");
+        GET_MODULE(SceneLoader).load(name);
+        pending_transforms.clear();
+        return nlohmann::json{
+            {"name", GET_MODULE(SceneLoader).currentScene()},
+        };
     });
 
     server.setHandler("set_camera", [](const nlohmann::json &params) {
