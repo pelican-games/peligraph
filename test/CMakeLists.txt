@@ -209,6 +209,11 @@ target_compile_definitions(pelican_test_importmanifest_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 
+pelican_define_test(materialformat_test pelican_project)
+target_compile_definitions(pelican_test_materialformat_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
 add_test(
     NAME devcli_import_command
     COMMAND ${CMAKE_COMMAND}

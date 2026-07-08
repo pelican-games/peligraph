@@ -1,0 +1,9 @@
+{
+  "schema": "pelican.material",
+  "version": 1,
+  "materials": [
+    {
+      "name": "mat_default"
+    }
+  ]
+}
