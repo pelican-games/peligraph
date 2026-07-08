@@ -90,7 +90,7 @@ stem 規約なので native/web が同じ記述で成立する)。
 | 段 | 書き方 | 書く量 | 位置づけ |
 |----|--------|--------|---------|
 | A: uber | `base` + `defines` + `params` + `textures` のみ(shader キーなし) | ゼロ | 既定。カスタムマテリアルの大半はここで足りる |
-| B: surface | `"surface": "shaders/lava.surface"` — **エンジンのテンプレートがユーザーファイルを include する**(逆 include)。ユーザーは表面関数(+任意で頂点変位)だけ書く | 数行〜数十行 | ライティング・影・スキニング・パス対応はテンプレートが所有 — **機能追加でユーザーファイルは壊れない** |
+| B: surface | `"surface": "shaders/lava.surface"` — ユーザーは表面関数(+任意で頂点変位)だけ書く。**結合機構の第一候補 = SPIR-V ABI リンク(§3-6、WP59 スパイクで検証中。成立すれば B も言語自由)**。fallback = GLSL 逆 include | 数行〜数十行 | ライティング・影・スキニング・パス対応はテンプレートが所有 — **機能追加でユーザーファイルは壊れない** |
 | C: raw | `"shader": "shaders/weird"` — main() まで全部書く。エンジンライブラリ(`engine://shaders/lib/`)の利用は任意 | 全部 | 完全な自由・自己責任(契約追従義務はユーザー側)。**.spv 直接供給もここ** |
 
 B の規律(レビューで確定):
@@ -164,6 +164,36 @@ B の規律(レビューで確定):
 - C 層(生シェーダ)は明示選択(契約文書に両モード記載)。GPU 駆動系の
   bindless 専用技法(GPU 側 draw list 等)は native 専用機能として自然に
   C/native 側に落ちる
+
+### 3-6. B 層の一般化: SPIR-V ABI リンク(2026-07-08 方向・WP59 スパイク検証中)
+
+B の結合を「テキスト include(同一言語必須)」ではなく **SPIR-V の関数 ABI**
+で切る — 全言語が唯一共有する層で契約する:
+
+```
+template.spv(pelican_surface を Import 宣言して呼ぶ・我々が 1 回コンパイル)
+user.spv(pelican_surface を Export。GLSL/HLSL/Slang 何産でもよい)
+→ pelican-spv-link(下記)で結合 → 完成モジュール
+```
+
+- **pelican-spv-link** = SPIRV-Tools 既存パスのオーケストレーション + 薄い糊:
+  ①名前規約で対象関数を特定(マングリング差を無視)②型正規化(行列レイアウト
+  修飾・RelaxedPrecision の掃除)③spirv-link 結合 ④spirv-opt でインライン +
+  DCE ⑤**ユーザー宣言 descriptor の binding remap**(reflection から CPU 側
+  バインド表を自動生成 — ソースレベルの調停不要)⑥spirv-val 必須ゲート
+- **ABI 一致は運でなく構成で保証**: 言語ごとの生成シムヘッダ
+  (`pelican_surface.{glsl,slang,hlsl}` — 同一レイアウトの PelicanSurface 定義)
+  を必ず include させる。ABI 表面の型は scalar/vecN/単純 struct に制限
+- 帰結: **B と C は「契約の広さ」だけの違いに統一**(B = 1 関数の ABI、
+  C = パイプライン全体の ABI)。B スニペットの .spv 直接供給も可能になる
+  (「B はソース専用」制約の解消)。SPIR-V を吐ける将来言語は自動参加
+- 変換は実行時コンパイル時点(variant キャッシュに乗る)。dist-bake は
+  リンク済み最終 .spv を焼く — ランタイム・配布物にツールは漏れない
+- コスト(正直に): 小さなコンパイラツールのオーナーになる。緩和 =
+  spirv-val ゲート + GLSL/Slang 両産スニペットの golden 常設
+- **WP59 スパイク**で最小実証(GLSL 版 + Slang 版の同一 surface をリンクして
+  実行)→ 成立すれば本採用、クロスコンパイラが折れたら
+  「B = Slang 推奨 + GLSL include の第 2 経路」へ後退
 
 ## 4. マテリアルシェーダの契約(安定 API 化)
 

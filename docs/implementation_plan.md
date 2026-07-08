@@ -1171,6 +1171,33 @@ fly を共用する将来を壊さない(コントローラ状態はコンポー
 受け入れ基準: パーサテスト全緑 + 契約文書が実装と一致(レビューで照合)+
 既存テスト全維持 + §0 共通規則。
 
+### WP59: スパイク — pelican-spv-link(B 層の SPIR-V ABI リンク実証)
+
+参照: **`design_material_shading.md` §3-6 が仕様の正**。依存: なし。見積: 中。
+**探索 WP** — 成果物はプロトタイプ + 報告書(golden 追加なし・src/ 変更禁止)。
+
+1. `experiments/spvlink/` に自己完結の実験場を作る(メインビルドに組み込まない。
+   独立 CMake ターゲットか、experiments 内で完結するスクリプト)
+2. 最小テンプレートシェーダ(ライティング直書きで可)を「`pelican_surface` を
+   Import 宣言して呼ぶ」形で SPIR-V 化(glslang の Linkage 対応を調査 —
+   不可なら stub 関数を後で置換する等の代替手段を試してよい。**やり方の発見も
+   スパイクの成果**)
+3. 同一の `pelican_surface`(単純な albedo 加工 + ユーザーテクスチャ 1 枚)を
+   **GLSL 版と Slang 版**で書く。シムヘッダ(PelicanSurface 定義)は手書きで可
+   (生成は本実装の領分)。Slang は prebuilt リリースの取得でよい
+4. リンクパイプライン: spirv-link → spirv-opt(inline + DCE)→
+   binding remap(ユーザー descriptor を空きスロットへ)→ spirv-val。
+   SPIRV-Tools は shaderc 同梱のものを流用できるか調査、だめなら FetchContent
+5. 検証: (a) 両言語版とも spirv-val を通る (b) リンク済みモジュールから
+   VkShaderModule + パイプライン生成が成功(既存 headless 基盤の流用可。
+   絵を出すのはボーナス)(c) defines を変えた再リンク
+6. `experiments/spvlink/REPORT.md`: 型正規化で実際に何を潰したか /
+   glslang・Slang それぞれの落とし穴 / binding remap の実際 /
+   **本採用の可否と推奨**(だめなら何が壁か)
+
+受け入れ基準: 上記 6 の報告書 + (a)(b) の再現手順。既存ビルド・テストに
+影響ゼロ(src/ 不変)。**結論が「不成立」でも、壁の特定ができていれば合格**。
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **最小コマンド層**: (1) ファイル連携済み → (2) WP27 実装済み → (3) `load_gltf` / `update_transforms` は **2026-07-07 に実装 GO 決定**。前提はすべて充足(宛先 = scene v1 の objects[].name / アセット意味論 = WP21)。設計時要件: **複数インスタンス運用**(エージェントが複数エンジンを並行駆動する使い方) — stdio rpc は 1 プロセス 1 クライアントの現行構造を維持しつつ、`get_status`(instance id・project・フレーム番号)を追加してインスタンス識別可能に。プロジェクトは読み取り専有なので並行起動は安全(書き込み系操作を入れる際に排他を設計)。複数クライアント同時接続は TCP/WebSocket 展開時の課題として分離
