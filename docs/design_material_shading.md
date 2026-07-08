@@ -191,9 +191,21 @@ user.spv(pelican_surface を Export。GLSL/HLSL/Slang 何産でもよい)
   リンク済み最終 .spv を焼く — ランタイム・配布物にツールは漏れない
 - コスト(正直に): 小さなコンパイラツールのオーナーになる。緩和 =
   spirv-val ゲート + GLSL/Slang 両産スニペットの golden 常設
-- **WP59 スパイク**で最小実証(GLSL 版 + Slang 版の同一 surface をリンクして
-  実行)→ 成立すれば本採用、クロスコンパイラが折れたら
-  「B = Slang 推奨 + GLSL include の第 2 経路」へ後退
+- **WP59 スパイク結果(2026-07-08): 成立 — 本採用**(`experiments/spvlink/REPORT.md`
+  が一次資料)。GLSL 産と Slang 産の同一 `pelican_surface` が両方リンク・
+  spirv-val 通過・パイプライン生成成功。variant 再リンクも実証。
+  判明した本実装への要件:
+  1. 本実装はテキストアセンブリ書換でなく **SPIRV-Tools/SPIRV-Reflect の API** で
+  2. ABI 表面は scalar/vecN/単純 struct 限定を**確定**(行列・配列・リソース
+     ハンドル・ブロックレイアウト依存型は禁止 — Slang の Offset 修飾除去で
+     型が合流した実測に基づく)
+  3. **combined vs split sampler 問題**: GLSL は combined image sampler、
+     Slang は texture/sampler 分離を出す — CPU バインド表は set/binding に
+     加えて **descriptor type を持つ**こと。シム側で形を強制するか論理
+     テクスチャ→2 リソースの写像規約を生成する
+  4. Slang スニペットは `[noinline]` 必須(勝手に main へインライン化される)、
+     glslang は `--keep-uncalled` 必須
+  5. GLSL include fallback は本リンカの CI 常設まで維持
 
 ## 4. マテリアルシェーダの契約(安定 API 化)
 
