@@ -57,14 +57,28 @@
 
 - `pelican_cli assets manifest` — store 走査 → sha256 + サイズの
   `assets.manifest.json` 生成(pelican.import manifest と同じ流儀の
-  エンベロープ)
-- `pelican_cli assets verify` — 照合。欠落・不一致を**ファイル名込みで列挙**
-- 起動前検証([PF] §5-6 の予告の実体化): project.json の store 宣言に
-  manifest があれば起動時に検証(既定 = 欠落は警告、`--strict-assets` で
-  エラー。未決 1)
+  エンベロープ)。**冪等**(相対パスでソート済み出力)— 再生成の git diff が
+  そのまま「増えた/消えた/変わった」の変更履歴になる。`.pelican/` に
+  サイズ+mtime キャッシュを持ち**変更ファイルのみ再ハッシュ**(`--full` で
+  全再計算)
+- `pelican_cli assets verify` — 照合。欠落・不一致・manifest 外のファイルを
+  **ファイル名込みで列挙**
+- 起動前検証([PF] §5-6 の予告の実体化)。**検証はロードを止めない(原則)**:
+  ファイル置換は開発中に積極的に行われるべき操作なので、不一致 = 警告 +
+  そのままロード。警告には「manifest が古い場合は `assets manifest` を実行」の
+  案内を含める(更新忘れは次の起動が教えてくれる)。エラーで止まるのは
+  `--strict-assets` 明示時(CI 用)と dist ビルド(dist-config が導出)のみ
+- **manifest なし = 検証なし**: manifest を作らなければ何も起きない
+  (ハッカソン既定)。検証が欲しくなった日に 1 コマンドで始められる
+- 更新の上位経路(将来): devstudio のアセットブラウザ操作時に自動再生成 /
+  外部 DAM がツール側で生成(§4 の契約)。git hook への自動組み込みは
+  しない(侵襲的 — やりたいプロジェクトが自分で書く)
 - store(場所)と manifest(内容)は直交 — 外部 store + manifest =
   「どこに置いてもよいが中身は保証される」。将来 `assets fetch`(URL 取得
   キャッシュ)の土台
+- **store 内の相対パス構造は全員共有の契約**(参照も manifest キーも
+  相対パス)。マシンごとに違ってよいのは root の位置だけ — 構造の個人差は
+  verify が名指しで検出する
 - example の README 手書き表はこれで置き換える
 
 ## 3. project init(雛形)
@@ -98,8 +112,8 @@ manifest、の 3 つだけ。社内 DAM・Perforce・任意のパイプライン
 
 ## 6. 未決事項
 
-1. 起動前検証の既定(警告 or エラー)。推奨: 開発 = 警告、dist = エラー
-   (dist-config が導出)
+1. ~~起動前検証の既定~~ → **決定(2026-07-08 ユーザー)**: 開発 = 警告 +
+   ロード続行(置換は開発の日常操作)、strict は明示フラグと dist のみ
 2. LFS を雛形の既定で有効にするか。推奨: コメントアウト同梱(GitHub 無料枠
    1GB/月帯域の事情はプロジェクト次第)
 3. store の read-only 保証(プロジェクト読み取り専有の原則を外部 store にも
