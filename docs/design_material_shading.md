@@ -207,6 +207,37 @@ user.spv(pelican_surface を Export。GLSL/HLSL/Slang 何産でもよい)
      glslang は `--keep-uncalled` 必須
   5. GLSL include fallback は本リンカの CI 常設まで維持
 
+### 3-7. B 層の拡張確定(2026-07-08 第 2 次レビュー — 本節が §3-1 の B 規律 1・2 を改訂)
+
+**原則: エンジンは機構だけを持ち、表現はスニペット(コンテンツ)に置く。
+エンジン同梱の標準マテリアル/アセットは増やさない**(ユーザー方針)。
+
+1. **フックは surface 系 2 点で固定**(`pelican_vertex_displace` /
+   `pelican_surface`)+ **カスタム補間チャネル** `pelican_custom0/1`(vec4 ×2、
+   displace→surface 間の自由データ路)
+2. **ライティングモデル = スニペット**(enum 列挙の廃止): モデルの契約は
+   `pelican_brdf(s, light_dir, view_dir, radiance)`(+任意 `pelican_ambient`)。
+   ライトループ・影・減衰はテンプレート所有のまま、応答だけをモデルが書く。
+   `"lighting": "standard" | "toon"` は**エンジン同梱スニペット(engine://
+   コンテンツ)への別名**で、任意の stem も指せる(surface と同じ spv-link
+   機構・同じ言語自由)。同梱はこの 2 個で打ち止め — 髪・布等は
+   プロジェクト側スニペットの領分。注記: IBL/環境項は独自 BRDF と厳密には
+   整合しない(v1 は標準近似)。独自 BRDF は forward 専用(将来 deferred の
+   G-buffer は固定モデル前提)
+3. **宣言式スクリーン入力**: マテリアルの `"screen_inputs":
+   ["scene_color", "depth"]` 宣言で、フレームグラフが copy パスと描画順を
+   自動配線し、surface からアクセサで読める。屈折・水・深度フェード・
+   ソフトパーティクル・歪みが B 圏内に入る(reads 宣言 → 機械配線の
+   既存哲学の適用)。宣言なし = 現行どおり(コストゼロ)
+4. **web は B まで対応を目標に格上げ**(ユーザー決定): 経路は
+   naga(リンク済み SPIR-V → WGSL)一択 — スニペットの言語を問わない。
+   web サブセット版テンプレートでリンク → naga → .wgsl を **dist-bake の
+   web 版**として焼く(ランタイム変換なし)。C は native 専用のまま
+5. **split sampler を標準形に統一**: texture と sampler を分離宣言
+   (Vulkan GLSL / Slang / WGSL すべて表現可能 — シムのアクセサが強制)。
+   WP59 で発見した combined vs split 問題の解であり、web 対応の要件が
+   スパイクの宿題を解く
+
 ## 4. マテリアルシェーダの契約(安定 API 化)
 
 `docs/shader_contract.md`(新設、adding_features.md から参照)に以下を明文化:
@@ -242,8 +273,9 @@ user.spv(pelican_surface を Export。GLSL/HLSL/Slang 何産でもよい)
 |------|------|------|
 | M1 | pelican.material パーサ + 検証 + 契約文書 | **完了(WP58)** |
 | M2 | **A 完成**: バインダ(params UBO・textures 辞書・material コンポーネント・glb extras・render_state・ダミーテクスチャ)+ `<stem>.params.glsl` 生成 + **contract 記載の実装差分 3 件の解消**(set 0 の意味統一・push constant 分割 enforcement・params UBO)。既定 PBR は現行挙動維持(golden 全維持)。パス variant 要件(§3-3)込み | M1 |
-| M3 | **B 実装**: include 機構(shaderc includer)+ テンプレート(surface/vertex_displace 2 フック + lighting standard/toon)+ PelicanSurface V1 + エラー翻訳 + example に surface マテリアル 1 個 + golden | M2 |
-| M4 | **C 整備 + web**: エンジン GLSL ライブラリ公開 + テンプレートコピー手順文書化 + web 側 A 対応(B/C はフォールバック) | M3 |
+| M3 | **B 実装**: pelican-spv-link 本実装(SPIRV-Tools/Reflect API、テキスト書換禁止)+ テンプレート(displace/surface + custom0/1)+ 同梱 BRDF スニペット 2 個(standard/toon)+ シム生成(split sampler 強制)+ PelicanSurface V1 + エラー翻訳 + example に surface マテリアル 1 個 + golden(GLSL 産と Slang 産の両方) | M2, WP59 |
+| M3.5 | **screen_inputs**(宣言 → copy パス自動配線 + アクセサ)— 屈折/深度フェードの golden | M3 |
+| M4 | **C 整備 + web B ベイク**: エンジンライブラリ公開 + テンプレートコピー手順 + web 側 = A(データ解釈)+ B(naga ベイクレーン、WW 系と接続) | M3 |
 
 ## 7. 未決事項
 
