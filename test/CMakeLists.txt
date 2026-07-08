@@ -275,6 +275,15 @@ add_test(
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_dist_config.cmake
 )
 
+add_test(
+    NAME devcli_project_init_command
+    COMMAND ${CMAKE_COMMAND}
+        -DCLI=$<TARGET_FILE:pelican_cli>
+        -DPLAYER=$<TARGET_FILE:pelican_player>
+        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/devcli_project_init
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_project_init.cmake
+)
+
 if(PELICAN_WITH_AUDIO)
 pelican_define_test(audio_test pelican_core)
 endif()
