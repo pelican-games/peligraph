@@ -28,6 +28,7 @@ target_link_libraries(pelican_test_vat_fixture_writer PRIVATE nlohmann_json)
 pelican_define_test(deletionqueue_test pelican_core)
 pelican_define_test(deterministicrng_test pelican_core)
 pelican_define_test(enginetime_test pelican_core)
+pelican_define_test(eventlayer_test pelican_core)
 pelican_define_test(golden_image_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp spirv-reflect-static stb glm)
 target_compile_definitions(pelican_test_golden_image_test PRIVATE
     VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic
@@ -192,6 +193,26 @@ if(PELICAN_WITH_RPC)
             -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/example
             -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/rpc_inject_input_headless
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_rpc_inject_input_headless.cmake
+    )
+    add_executable(
+        pelican_test_rpc_inject_event_player
+        ${CMAKE_SOURCE_DIR}/src/player/main.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/event_layer_scene_probe.cpp
+    )
+    set_target_properties(pelican_test_rpc_inject_event_player PROPERTIES CXX_STANDARD 20)
+    target_link_libraries(pelican_test_rpc_inject_event_player PRIVATE pelican_core argparse)
+    target_include_directories(pelican_test_rpc_inject_event_player PRIVATE
+        ${Vulkan_INCLUDE_DIRS}
+        ${CMAKE_SOURCE_DIR}/projects/example
+    )
+    add_test(
+        NAME rpc_inject_event_headless_player
+        COMMAND ${CMAKE_COMMAND}
+            -DPLAYER=$<TARGET_FILE:pelican_test_rpc_inject_event_player>
+            -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_test_rpc_inject_event_player>
+            -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/example
+            -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/rpc_inject_event_headless
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_rpc_inject_event_headless.cmake
     )
 endif()
 

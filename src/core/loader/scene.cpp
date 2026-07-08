@@ -11,6 +11,7 @@
 #include "../log.hpp"
 #include "../phys/physworld.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
+#include "../userpublic/events.hpp"
 #include "../userpublic/gameobjects.hpp"
 #include "pathresolver.hpp"
 #include "../../project/sceneformat.hpp"
@@ -229,6 +230,7 @@ void SceneLoader::load(SceneId scene_id) {
         }
     }
     current_scene_id = std::move(scene_id);
+    internal::getEventRegisterer().emit(SceneLoaded{current_scene_id});
 }
 
 void SceneLoader::requestLoad(SceneId scene_id) {

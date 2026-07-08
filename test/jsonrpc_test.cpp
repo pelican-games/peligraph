@@ -19,6 +19,15 @@ std::string invalidParamsMessage(const nlohmann::json &params) {
     return {};
 }
 
+std::string invalidEventParamsMessage(const nlohmann::json &params) {
+    try {
+        (void)parseInjectEventParams(params);
+    } catch (const JsonRpcInvalidParamsError &error) {
+        return error.what();
+    }
+    return {};
+}
+
 } // namespace
 
 TEST_CASE("JSON-RPC request parser accepts valid request objects", "[jsonrpc]") {
@@ -120,6 +129,26 @@ TEST_CASE("inject_input params parser reports named invalid params", "[jsonrpc]"
     message = invalidParamsMessage(
         nlohmann::json{{"events", nlohmann::json::array({{{"type", "axis"}, {"axis", "mouse_delta_x"}}})}});
     REQUIRE(message.find("value") != std::string::npos);
+}
+
+TEST_CASE("inject_event params parser accepts type and payload", "[jsonrpc]") {
+    const auto event = parseInjectEventParams(nlohmann::json{
+        {"type", "Wp56InjectedEvent"},
+        {"payload", {{"seed", 5609}}},
+    });
+
+    REQUIRE(event.type == "Wp56InjectedEvent");
+    REQUIRE(event.payload.at("seed").get<int>() == 5609);
+}
+
+TEST_CASE("inject_event params parser reports named invalid params", "[jsonrpc]") {
+    auto message = invalidEventParamsMessage(nlohmann::json{{"payload", nlohmann::json::object()}});
+    REQUIRE(message.find("inject_event") != std::string::npos);
+    REQUIRE(message.find("type") != std::string::npos);
+
+    message = invalidEventParamsMessage(nlohmann::json{{"type", "Wp56InjectedEvent"}});
+    REQUIRE(message.find("inject_event") != std::string::npos);
+    REQUIRE(message.find("payload") != std::string::npos);
 }
 
 } // namespace Pelican

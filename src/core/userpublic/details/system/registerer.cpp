@@ -39,6 +39,17 @@ void updateRegisteredGameSystems(GameContext &ctx) {
     }
 }
 
+void dispatchEventToRegisteredGameSystems(const QueuedEvent &event, GameContext &ctx) {
+    auto systems = sortGameSystemRegistrations(getGameSystemRegisterer().registeredSystems());
+    for (const auto &system : systems) {
+        for (const auto &handler : system.event_handlers) {
+            if (handler.event_type == event.type && handler.dispatch != nullptr) {
+                handler.dispatch(event.payload.get(), ctx);
+            }
+        }
+    }
+}
+
 } // namespace internal
 
 } // namespace Pelican

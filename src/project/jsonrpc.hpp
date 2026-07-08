@@ -58,10 +58,16 @@ struct RpcInputInjectionEvent {
     double value = 0.0;
 };
 
+struct RpcEventInjection {
+    std::string type;
+    nlohmann::json payload = nlohmann::json::object();
+};
+
 JsonRpcParseResult parseJsonRpcRequest(std::string_view line);
 JsonRpcError makeJsonRpcError(nlohmann::json id, int code, std::string message);
 JsonRpcError makeJsonRpcError(nlohmann::json id, int code, std::string message, nlohmann::json data);
 std::vector<RpcInputInjectionEvent> parseInjectInputParams(const nlohmann::json &params);
+RpcEventInjection parseInjectEventParams(const nlohmann::json &params);
 std::string serializeJsonRpcResult(const nlohmann::json &id, const nlohmann::json &result);
 std::string serializeJsonRpcError(const JsonRpcError &error);
 
