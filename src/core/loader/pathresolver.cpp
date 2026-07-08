@@ -4,10 +4,15 @@
 #include "engineresources.hpp"
 #include "fileio.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <cwctype>
+#include <optional>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <system_error>
@@ -19,6 +24,7 @@ namespace {
 
 constexpr std::string_view engine_scheme = "engine://";
 constexpr std::string_view project_scheme = "project://";
+constexpr std::string_view user_scheme = "user://";
 
 bool startsWithSlashRoot(std::string_view ref) {
     return ref.starts_with("\\\\") || ref.starts_with("//");
@@ -106,6 +112,51 @@ bool isWithinRoot(const std::filesystem::path &root, const std::filesystem::path
     return true;
 }
 
+struct RefPathComponents {
+    std::vector<std::filesystem::path> raw;
+    std::vector<PathString> comparable;
+};
+
+RefPathComponents refPathComponents(const std::filesystem::path &path) {
+    RefPathComponents result;
+    for (const auto &component : path) {
+        if (component.empty() || component == ".") {
+            continue;
+        }
+        result.raw.push_back(component);
+        result.comparable.push_back(comparableComponent(component));
+    }
+    return result;
+}
+
+std::vector<PathString> normalizedRelativeComponents(const std::filesystem::path &path) {
+    return refPathComponents(path.lexically_normal()).comparable;
+}
+
+bool startsWithComponents(const std::vector<PathString> &value, const std::vector<PathString> &prefix) {
+    if (value.size() < prefix.size()) {
+        return false;
+    }
+    for (size_t i = 0; i < prefix.size(); ++i) {
+        if (value[i] != prefix[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool componentsOverlap(const std::vector<PathString> &lhs, const std::vector<PathString> &rhs) {
+    return startsWithComponents(lhs, rhs) || startsWithComponents(rhs, lhs);
+}
+
+std::filesystem::path tailPath(const RefPathComponents &components, size_t prefix_size) {
+    std::filesystem::path result;
+    for (size_t i = prefix_size; i < components.raw.size(); ++i) {
+        result /= components.raw[i];
+    }
+    return result;
+}
+
 bool hasAbsoluteSyntax(const std::filesystem::path &path, std::string_view ref) {
     return path.is_absolute() || path.has_root_name() || startsWithSlashRoot(ref);
 }
@@ -131,22 +182,296 @@ void validateRefSyntax(std::string_view ref) {
     }
 }
 
+bool isFragmentKindChar(char ch) {
+    return std::isalnum(static_cast<unsigned char>(ch)) || ch == '_';
+}
+
+bool isAllAsciiDigits(std::string_view value) {
+    return !value.empty() && std::all_of(value.begin(), value.end(), [](char ch) {
+               return std::isdigit(static_cast<unsigned char>(ch)) != 0;
+           });
+}
+
+std::string unsupportedFragmentMessage(const AssetFragmentRef &fragment) {
+    return "Unsupported asset fragment kind: " + fragment.kind;
+}
+
+ResolvedRef attachFragment(ResolvedRef resolved, const AssetFragmentRef &fragment) {
+    if (auto *path = std::get_if<std::filesystem::path>(&resolved)) {
+        return ResolvedPathFragment{*path, fragment};
+    }
+    if (auto *engine = std::get_if<EngineResourceId>(&resolved)) {
+        return ResolvedEngineFragment{*engine, fragment};
+    }
+    return resolved;
+}
+
+std::filesystem::path absolutePath(const std::filesystem::path &path) {
+    if (path.is_absolute()) {
+        return path;
+    }
+    return std::filesystem::current_path() / path;
+}
+
+std::optional<std::string> projectNameFromJson(const nlohmann::json &project) {
+    if (!project.is_object() || !project.contains("name") || !project.at("name").is_string()) {
+        return std::nullopt;
+    }
+    const auto name = project.at("name").get<std::string>();
+    if (name.empty()) {
+        return std::nullopt;
+    }
+    return name;
+}
+
+std::filesystem::path defaultUserRoot(const std::string &project_name) {
+#ifdef _WIN32
+    const char *appdata = std::getenv("APPDATA");
+    if (appdata == nullptr || std::string_view{appdata}.empty()) {
+        throw std::runtime_error("APPDATA is required to resolve user:// references");
+    }
+    return std::filesystem::path{appdata} / "pelican" / project_name;
+#else
+    if (const char *xdg = std::getenv("XDG_DATA_HOME"); xdg != nullptr && std::string_view{xdg}.size() > 0) {
+        return std::filesystem::path{xdg} / "pelican" / project_name;
+    }
+    const char *home = std::getenv("HOME");
+    if (home == nullptr || std::string_view{home}.empty()) {
+        throw std::runtime_error("HOME is required to resolve user:// references");
+    }
+    return std::filesystem::path{home} / ".local" / "share" / "pelican" / project_name;
+#endif
+}
+
+std::string normalizedGenericRelativeString(const std::filesystem::path &path) {
+    auto normalized = path.lexically_normal().generic_string();
+    if (normalized == ".") {
+        normalized.clear();
+    }
+    return normalized;
+}
+
+void rejectUnexpectedLocalKeys(const nlohmann::json &local) {
+    if (!local.is_object()) {
+        throw std::runtime_error(".pelican/local.json must be an object");
+    }
+    for (const auto &[key, value] : local.items()) {
+        (void)value;
+        if (key != "asset_stores") {
+            throw std::runtime_error(".pelican/local.json contains unsupported key: " + key);
+        }
+    }
+}
+
 } // namespace
 
+ParsedPathRef parsePathReference(std::string_view ref) {
+    const auto marker = ref.find('#');
+    if (marker == std::string_view::npos) {
+        return ParsedPathRef{std::string{ref}, std::nullopt};
+    }
+    if (ref.find('#', marker + 1) != std::string_view::npos) {
+        throw std::runtime_error("Ambiguous asset fragment reference contains multiple '#': " +
+                                 refForMessage(ref));
+    }
+
+    const auto fragment_text = ref.substr(marker + 1);
+    const auto separator = fragment_text.find('/');
+    if (separator == std::string_view::npos || separator == 0 ||
+        separator == fragment_text.size() - 1) {
+        throw std::runtime_error("Invalid asset fragment reference: expected #kind/path in " +
+                                 refForMessage(ref));
+    }
+
+    const auto kind = fragment_text.substr(0, separator);
+    if (!std::all_of(kind.begin(), kind.end(), isFragmentKindChar)) {
+        throw std::runtime_error("Invalid asset fragment kind in reference: " + refForMessage(ref));
+    }
+
+    const auto path = fragment_text.substr(separator + 1);
+    if (path.find('\\') != std::string_view::npos || path.find("//") != std::string_view::npos ||
+        path.starts_with('/') || path.ends_with('/') || isAllAsciiDigits(path)) {
+        throw std::runtime_error("Invalid asset fragment path in reference: " + refForMessage(ref));
+    }
+
+    AssetFragmentRef fragment{
+        .kind = std::string{kind},
+        .path = std::string{path},
+        .address_kind = path.find('/') == std::string_view::npos ? AssetFragmentAddressKind::name
+                                                                  : AssetFragmentAddressKind::full_path,
+    };
+    return ParsedPathRef{std::string{ref.substr(0, marker)}, std::move(fragment)};
+}
+
 void PathResolver::setup(const std::filesystem::path &project_root, bool allow_absolute) {
+    setup(project_root, allow_absolute, std::string_view{});
+}
+
+void PathResolver::setup(const std::filesystem::path &project_root, bool allow_absolute,
+                         std::string_view project_json,
+                         std::optional<std::filesystem::path> user_dir_override) {
     if (configured) {
         throw std::runtime_error("PathResolver setup called more than once");
     }
 
     project_root_abs = canonicalDirectoryOrThrow(project_root);
     allow_absolute_paths = allow_absolute;
+    asset_stores.clear();
+    project_id.reset();
+    user_root_abs.reset();
+
+    nlohmann::json project;
+    const bool has_project_json = !project_json.empty();
+    if (has_project_json) {
+        project = nlohmann::json::parse(project_json);
+        project_id = projectNameFromJson(project);
+        if (project_id) {
+            const auto root = user_dir_override ? absolutePath(*user_dir_override) : defaultUserRoot(*project_id);
+            user_root_abs = weaklyCanonicalOrThrow(root, "PathResolver user root");
+        } else if (user_dir_override) {
+            throw std::runtime_error("--user-dir requires project.json name for user:// resolution");
+        }
+    }
+
+    if (has_project_json && project.is_object() && project.contains("asset_stores")) {
+        const auto &declared = project.at("asset_stores");
+        if (!declared.is_object()) {
+            throw std::runtime_error("project.json asset_stores must be an object");
+        }
+
+        std::set<std::string> declared_names;
+        std::vector<AssetStoreMount> parsed_stores;
+        for (const auto &[name, store] : declared.items()) {
+            if (name.empty()) {
+                throw std::runtime_error("project.json asset_stores store names must not be empty");
+            }
+            if (!declared_names.insert(name).second) {
+                throw std::runtime_error("duplicate asset store declaration: " + name);
+            }
+            if (!store.is_object()) {
+                throw std::runtime_error("project.json asset_stores." + name + " must be an object");
+            }
+            if (!store.contains("mount") || !store.at("mount").is_string()) {
+                throw std::runtime_error("project.json asset_stores." + name + ".mount must be a string");
+            }
+
+            const auto mount = store.at("mount").get<std::string>();
+            validateRefSyntax(mount);
+            const std::filesystem::path mount_path{mount};
+            if (hasAbsoluteSyntax(mount_path, mount)) {
+                throw std::runtime_error("asset store mount must be relative: " + name);
+            }
+            const auto normalized_mount = mount_path.lexically_normal();
+            const auto mount_components = normalizedRelativeComponents(normalized_mount);
+            if (mount_components.empty()) {
+                throw std::runtime_error("asset store mount must not resolve to project root: " + name);
+            }
+
+            for (const auto &existing : parsed_stores) {
+                if (componentsOverlap(mount_components, normalizedRelativeComponents(existing.logical_mount))) {
+                    throw std::runtime_error("asset store mounts overlap: " + existing.name + " and " +
+                                             name);
+                }
+            }
+
+            parsed_stores.push_back(AssetStoreMount{
+                .name = name,
+                .mount = normalizedGenericRelativeString(normalized_mount),
+                .logical_mount = normalized_mount,
+                .root_abs = weaklyCanonicalOrThrow(project_root_abs / normalized_mount,
+                                                   "PathResolver asset store " + name),
+            });
+        }
+
+        const auto local_path = project_root_abs / ".pelican" / "local.json";
+        std::error_code ec;
+        if (std::filesystem::is_regular_file(local_path, ec) && !ec) {
+            const auto local = nlohmann::json::parse(readBinaryFile(pathString(local_path)));
+            rejectUnexpectedLocalKeys(local);
+            if (local.contains("asset_stores")) {
+                const auto &overrides = local.at("asset_stores");
+                if (!overrides.is_object()) {
+                    throw std::runtime_error(".pelican/local.json asset_stores must be an object");
+                }
+                for (const auto &[name, value] : overrides.items()) {
+                    const auto match = std::find_if(parsed_stores.begin(), parsed_stores.end(),
+                                                    [&](const AssetStoreMount &store) {
+                                                        return store.name == name;
+                                                    });
+                    if (match == parsed_stores.end()) {
+                        throw std::runtime_error(".pelican/local.json references undeclared asset store: " +
+                                                 name);
+                    }
+                    if (!value.is_string()) {
+                        throw std::runtime_error(".pelican/local.json asset_stores." + name +
+                                                 " must be a path string");
+                    }
+                    auto override_path = std::filesystem::path{value.get<std::string>()};
+                    if (override_path.is_relative()) {
+                        override_path = project_root_abs / override_path;
+                    }
+                    match->root_abs = weaklyCanonicalOrThrow(override_path,
+                                                             "PathResolver asset store override " + name);
+                }
+            }
+        }
+
+        for (size_t i = 0; i < parsed_stores.size(); ++i) {
+            for (size_t j = i + 1; j < parsed_stores.size(); ++j) {
+                if (isWithinRoot(parsed_stores[i].root_abs, parsed_stores[j].root_abs) ||
+                    isWithinRoot(parsed_stores[j].root_abs, parsed_stores[i].root_abs)) {
+                    throw std::runtime_error("asset store roots overlap: " + parsed_stores[i].name +
+                                             " and " + parsed_stores[j].name);
+                }
+            }
+        }
+
+        asset_stores = std::move(parsed_stores);
+        if (!asset_stores.empty()) {
+            std::ostringstream stream;
+            for (size_t i = 0; i < asset_stores.size(); ++i) {
+                if (i > 0) {
+                    stream << ", ";
+                }
+                stream << asset_stores[i].name << "=" << pathString(asset_stores[i].root_abs);
+            }
+            LOG_INFO(logger, "asset stores resolved: {}", stream.str());
+        }
+    } else {
+        const auto local_path = project_root_abs / ".pelican" / "local.json";
+        std::error_code ec;
+        if (std::filesystem::is_regular_file(local_path, ec) && !ec) {
+            const auto local = nlohmann::json::parse(readBinaryFile(pathString(local_path)));
+            rejectUnexpectedLocalKeys(local);
+            if (local.contains("asset_stores") && !local.at("asset_stores").empty()) {
+                throw std::runtime_error(".pelican/local.json asset_stores requires project.json asset_stores declarations");
+            }
+        }
+    }
+
     configured = true;
 }
 
 void PathResolver::resetForTesting() {
     configured = false;
     project_root_abs.clear();
+    user_root_abs.reset();
+    project_id.reset();
     allow_absolute_paths = false;
+    asset_stores.clear();
+}
+
+std::vector<AssetStoreStatus> PathResolver::stores() const {
+    std::vector<AssetStoreStatus> result;
+    result.reserve(asset_stores.size());
+    for (const auto &store : asset_stores) {
+        result.push_back(AssetStoreStatus{
+            .name = store.name,
+            .mount = store.mount,
+            .root = store.root_abs,
+        });
+    }
+    return result;
 }
 
 ResolvedRef PathResolver::resolveProjectRef(std::string_view ref) const {
@@ -159,16 +484,56 @@ ResolvedRef PathResolver::resolveCliRef(std::string_view ref) const {
 
 ResolvedRef PathResolver::resolveRef(std::string_view ref, bool cli_origin) const {
     validateRefSyntax(ref);
+    const auto parsed = parsePathReference(ref);
+    validateRefSyntax(parsed.path);
 
-    if (startsWith(ref, engine_scheme)) {
-        return EngineResourceId{std::string{ref.substr(engine_scheme.size())}};
+    if (startsWith(parsed.path, engine_scheme)) {
+        ResolvedRef resolved = EngineResourceId{std::string{parsed.path.substr(engine_scheme.size())}};
+        if (parsed.fragment) {
+            resolved = attachFragment(std::move(resolved), *parsed.fragment);
+        }
+        return resolved;
     }
 
-    if (const auto scheme = unsupportedScheme(ref); !scheme.empty() && scheme != "project") {
+    if (const auto scheme = unsupportedScheme(parsed.path);
+        !scheme.empty() && scheme != "project" && scheme != "user") {
         throw std::runtime_error("Unsupported path scheme in project reference: " + scheme);
     }
 
-    const auto ref_string = stripProjectScheme(ref);
+    if (startsWith(parsed.path, user_scheme)) {
+        if (!configured) {
+            throw std::runtime_error("PathResolver setup must be called before resolving user:// paths");
+        }
+        if (!user_root_abs) {
+            throw std::runtime_error("user:// references require project.json name");
+        }
+
+        const auto user_ref = std::string{parsed.path.substr(user_scheme.size())};
+        if (!user_ref.empty()) {
+            validateRefSyntax(user_ref);
+        }
+        const std::filesystem::path user_path{user_ref};
+        if (hasAbsoluteSyntax(user_path, user_ref)) {
+            throw std::runtime_error("Absolute user:// path references are not allowed: " +
+                                     refForMessage(ref));
+        }
+
+        auto resolved_path = weaklyCanonicalOrThrow(*user_root_abs / user_path,
+                                                    "PathResolver user reference");
+        if (!isWithinRoot(*user_root_abs, resolved_path)) {
+            throw std::runtime_error("user:// path escapes user root: " + refForMessage(ref) +
+                                     " resolved to " + pathString(resolved_path) +
+                                     " outside " + pathString(*user_root_abs));
+        }
+
+        ResolvedRef resolved = resolved_path;
+        if (parsed.fragment) {
+            resolved = attachFragment(std::move(resolved), *parsed.fragment);
+        }
+        return resolved;
+    }
+
+    const auto ref_string = stripProjectScheme(parsed.path);
     validateRefSyntax(ref_string);
     const std::filesystem::path ref_path{ref_string};
     if (hasAbsoluteSyntax(ref_path, ref_string)) {
@@ -186,11 +551,38 @@ ResolvedRef PathResolver::resolveRef(std::string_view ref, bool cli_origin) cons
 
         const auto canonical = weaklyCanonicalOrThrow(ref_path, "PathResolver CLI reference");
         LOG_WARNING(logger, "absolute CLI path reference accepted: {}", pathString(canonical));
-        return canonical;
+        ResolvedRef resolved = canonical;
+        if (parsed.fragment) {
+            resolved = attachFragment(std::move(resolved), *parsed.fragment);
+        }
+        return resolved;
     }
 
     if (!configured) {
         throw std::runtime_error("PathResolver setup must be called before resolving project paths");
+    }
+
+    const auto ref_components = refPathComponents(ref_path);
+    for (const auto &store : asset_stores) {
+        const auto mount_components = normalizedRelativeComponents(store.logical_mount);
+        if (!startsWithComponents(ref_components.comparable, mount_components)) {
+            continue;
+        }
+
+        const auto relative_inside_store = tailPath(ref_components, mount_components.size());
+        const auto canonical = weaklyCanonicalOrThrow(store.root_abs / relative_inside_store,
+                                                      "PathResolver asset store reference");
+        if (!isWithinRoot(store.root_abs, canonical)) {
+            throw std::runtime_error("Asset store path escapes mount root '" + store.name + "': " +
+                                     refForMessage(ref) + " resolved to " + pathString(canonical) +
+                                     " outside " + pathString(store.root_abs));
+        }
+
+        ResolvedRef resolved = canonical;
+        if (parsed.fragment) {
+            resolved = attachFragment(std::move(resolved), *parsed.fragment);
+        }
+        return resolved;
     }
 
     const auto joined = project_root_abs / ref_path;
@@ -200,7 +592,11 @@ ResolvedRef PathResolver::resolveRef(std::string_view ref, bool cli_origin) cons
                                  " resolved to " + pathString(canonical) +
                                  " outside " + pathString(project_root_abs));
     }
-    return canonical;
+    ResolvedRef resolved = canonical;
+    if (parsed.fragment) {
+        resolved = attachFragment(std::move(resolved), *parsed.fragment);
+    }
+    return resolved;
 }
 
 std::filesystem::path PathResolver::resolveExistingFile(std::string_view ref) const {
@@ -208,6 +604,12 @@ std::filesystem::path PathResolver::resolveExistingFile(std::string_view ref) co
     if (const auto engine_id = std::get_if<EngineResourceId>(&resolved)) {
         throw std::runtime_error("resolveExistingFile does not accept engine resources: engine://" +
                                  engine_id->id);
+    }
+    if (const auto fragment = std::get_if<ResolvedPathFragment>(&resolved)) {
+        throw std::runtime_error(unsupportedFragmentMessage(fragment->fragment));
+    }
+    if (const auto fragment = std::get_if<ResolvedEngineFragment>(&resolved)) {
+        throw std::runtime_error(unsupportedFragmentMessage(fragment->fragment));
     }
 
     const auto path = std::get<std::filesystem::path>(resolved);
@@ -222,6 +624,12 @@ std::string PathResolver::loadText(std::string_view ref) const {
     const auto resolved = resolveProjectRef(ref);
     if (const auto engine_id = std::get_if<EngineResourceId>(&resolved)) {
         return engineResourceOrThrow(engine_id->id);
+    }
+    if (const auto fragment = std::get_if<ResolvedPathFragment>(&resolved)) {
+        throw std::runtime_error(unsupportedFragmentMessage(fragment->fragment));
+    }
+    if (const auto fragment = std::get_if<ResolvedEngineFragment>(&resolved)) {
+        throw std::runtime_error(unsupportedFragmentMessage(fragment->fragment));
     }
     return readBinaryFile(pathString(std::get<std::filesystem::path>(resolved)));
 }

@@ -419,6 +419,14 @@ std::string projectRootString() {
     throw std::runtime_error("project root did not resolve to a filesystem path");
 }
 
+nlohmann::json assetStoresStatus() {
+    nlohmann::json stores = nlohmann::json::object();
+    for (const auto &store : GET_MODULE(PathResolver).stores()) {
+        stores[store.name] = store.root.generic_string();
+    }
+    return stores;
+}
+
 std::string generateUuidV4() {
     std::array<uint8_t, 16> bytes{};
     std::random_device random_device;
@@ -520,6 +528,7 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
             {"frame", engine_time.frameIndex()},
             {"time", engine_time.now()},
             {"seed", GameContext{}.seed()},
+            {"stores", assetStoresStatus()},
         };
     });
 

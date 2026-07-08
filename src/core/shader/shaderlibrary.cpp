@@ -47,6 +47,10 @@ std::optional<std::filesystem::file_time_type> lastWriteTime(const std::filesyst
     return timestamp;
 }
 
+[[noreturn]] void throwUnsupportedFragment(const AssetFragmentRef &fragment) {
+    throw std::runtime_error("Unsupported asset fragment kind: " + fragment.kind);
+}
+
 vk::ShaderStageFlagBits toVkStage(ShaderStage stage) {
     switch (stage) {
     case ShaderStage::vertex:
@@ -184,6 +188,12 @@ ShaderBundleId ShaderLibrary::loadResolvedReference(const ResolvedRef &resolved,
     if (const auto path = std::get_if<std::filesystem::path>(&resolved)) {
         return loadFromFile(*path, defines);
     }
+    if (const auto fragment = std::get_if<ResolvedPathFragment>(&resolved)) {
+        throwUnsupportedFragment(fragment->fragment);
+    }
+    if (const auto fragment = std::get_if<ResolvedEngineFragment>(&resolved)) {
+        throwUnsupportedFragment(fragment->fragment);
+    }
 
     const auto &engine_id = std::get<EngineResourceId>(resolved).id;
     const auto resource = engineResourceOrThrow(engine_id);
@@ -223,7 +233,17 @@ ShaderBundleId ShaderLibrary::loadFromStemReference(const ShaderReference &refer
             return loadResolvedReference(resolved, reference, candidate_ref, defines);
         }
 
-        const auto &engine_id = std::get<EngineResourceId>(resolved).id;
+        const auto *engine_resource = std::get_if<EngineResourceId>(&resolved);
+        if (engine_resource == nullptr) {
+            if (const auto fragment = std::get_if<ResolvedPathFragment>(&resolved)) {
+                throwUnsupportedFragment(fragment->fragment);
+            }
+            if (const auto fragment = std::get_if<ResolvedEngineFragment>(&resolved)) {
+                throwUnsupportedFragment(fragment->fragment);
+            }
+            throw std::runtime_error("Unsupported resolved shader reference");
+        }
+        const auto &engine_id = engine_resource->id;
         if (!engineResource(engine_id)) {
             tried.push_back(candidate_ref + " (engine id not registered)");
             continue;

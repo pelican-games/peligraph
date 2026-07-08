@@ -30,6 +30,7 @@ struct ParsedLaunchConfig {
     std::string project_settings{"{}"};
     std::filesystem::path project_root;
     std::optional<std::string> project_json;
+    std::optional<std::filesystem::path> user_dir_override;
     bool project_explicit = false;
     bool ignore_engine_version = false;
 };
@@ -233,6 +234,10 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
     program.add_argument("--allow-absolute-paths")
         .flag()
         .help("allow absolute paths in CLI-provided project content references");
+    program.add_argument("--user-dir")
+        .default_value(std::string{})
+        .metavar("dir")
+        .help("override the user:// root directory");
     program.add_argument("--ignore-engine-version")
         .flag()
         .help("warn instead of failing when project engine_min_version is newer");
@@ -273,6 +278,14 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         config.shader_hot_reload = !config.headless;
         config.allow_absolute_paths = program.get<bool>("--allow-absolute-paths");
         parsed.ignore_engine_version = program.get<bool>("--ignore-engine-version");
+        const auto user_dir = program.get<std::string>("--user-dir");
+        if (!user_dir.empty()) {
+            auto user_dir_path = std::filesystem::path{user_dir};
+            if (user_dir_path.is_relative()) {
+                user_dir_path = std::filesystem::current_path() / user_dir_path;
+            }
+            parsed.user_dir_override = weaklyCanonicalPath(user_dir_path, "--user-dir");
+        }
 
         const auto project = program.get<std::string>("--project");
         if (project.empty()) {
@@ -393,8 +406,13 @@ int main(int argc, char *argv[]) {
     const auto &launch_config = parsed_launch_config.engine;
     Pelican::PelicanCore pl{parsed_launch_config.project_settings, launch_config.rpc};
     Pelican::FastModuleContainer::get<Pelican::EngineLaunchConfig>() = launch_config;
-    Pelican::FastModuleContainer::get<Pelican::PathResolver>()
-        .setup(parsed_launch_config.project_root, launch_config.allow_absolute_paths);
+    auto &path_resolver = Pelican::FastModuleContainer::get<Pelican::PathResolver>();
+    if (parsed_launch_config.project_json) {
+        path_resolver.setup(parsed_launch_config.project_root, launch_config.allow_absolute_paths,
+                            *parsed_launch_config.project_json, parsed_launch_config.user_dir_override);
+    } else {
+        path_resolver.setup(parsed_launch_config.project_root, launch_config.allow_absolute_paths);
+    }
     auto &project_source = Pelican::FastModuleContainer::get<Pelican::ProjectSource>();
     if (parsed_launch_config.project_json) {
         project_source.setProjectData(*parsed_launch_config.project_json);
