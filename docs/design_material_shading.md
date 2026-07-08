@@ -266,6 +266,32 @@ user.spv(pelican_surface を Export。GLSL/HLSL/Slang 何産でもよい)
   呼んでいる範囲で乗る(呼ばなければ乗らない — 自由の対価)。
   フック・ライブラリ関数の追加は凍結改訂の流儀、削除・意味変更は不可
 
+### 3-9. deferred 展望とパス振り分け規約(2026-07-08)
+
+**deferred 化してもユーザー契約は無傷**という設計検証済みの見通し:
+
+- A / 深さ 1〜2: 無傷 — `PelicanSurface` は論理 G-buffer(forward = その場で
+  照らす、deferred = エンコードして後で照らす。スニペットは 1 文字も
+  変わらない)。ABI を小さな struct に制限した決定がエンコード可能性を保証
+- 深さ 3(brdf): 無傷 — スニペットは surface とライトにしか依存しないので、
+  **同じ .spv が per-object(forward)にも全画面 deferred ライティングパスにも
+  リンクできる**(ID switch 方式 — G-buffer に数ビットのモデル ID)
+- 深さ 4(lighting 全権)・blend 系: **forward パスへ自動ルーティング**
+  (ハイブリッド — deferred は半透明のためどのみち forward を併設する)
+- 順序制御は統一フレームグラフの既存三層がそのまま効く(依存導出・宣言順・
+  after/before + アンカー標準名)。プラン dump / 比較テストで検証可能
+
+**パス振り分け規約(2026-07-08 ユーザー決定 — deferred 以前の今も有効)**:
+
+- **既定 = エンジンが自動振り分け**: blend/alpha → 透明パス、深さ 4 /
+  screen_inputs → forward、それ以外 → deferred 有効時は G-buffer パス。
+  マテリアルの性質から機械的に決定
+- **明示したいマテリアルだけ** `"pass": "<パス名>"` を書く(rendering config で
+  定義した任意パスも指せる — アウトライン専用パス等への出口)
+- 成立しない指定(blend を deferred_geometry 等)は**名前入りの起動時エラー**
+  (黙って直さない)
+- deferred 設計書(将来)の残宿題 = ハイブリッド用アンカー標準名の追加のみ
+
 ## 4. マテリアルシェーダの契約(安定 API 化)
 
 `docs/shader_contract.md`(新設、adding_features.md から参照)に以下を明文化:
