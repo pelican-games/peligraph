@@ -34,7 +34,18 @@
   絶対パス禁止は維持)。兄弟ディレクトリ配置なら **git worktree 全部が同じ親を
   共有するので追加設定なしで解決**する(2026-07-08 ユーザー案 — 非追跡
   local.json が worktree に付いてこない問題の既定解)。上書き手段は
-  local.json(マシン別)と環境変数 `PELICAN_STORE_<NAME>`(CI/エージェント用)
+  local.json(マシン別)のみ — 環境変数上書きは **YAGNI として不採用**
+  (2026-07-08。必要が実在したら追加)
+- **マウント点の入れ子・重なりは宣言時 hard error**(2026-07-08 決定。
+  最長一致は暗黙の優先順位を生むため不採用 — writes-writes 曖昧と同じ思想)
+- **脱出禁止は mount root 単位で適用**(2026-07-08 決定): 参照の解決結果が
+  正規化後に mount root の外に出たら拒否(`project://assets/../../x` の類)。
+  store 内の symlink も正規化後に mount 外を指せば拒否 — 既存の
+  プロジェクト root 脱出禁止ルールの適用先を mount root に付け替えるだけで、
+  新規機構ではない。外部 mount しても防壁は同じ強度で残る
+- mount 先が存在しない場合の初回体験: `assets status` が期待パス
+  (`../myproj-assets` 等)を名指しで案内(配置規約は init が README 雛形に
+  書き込む)。アセットなしで絵が出ないこと自体は正常(2026-07-08 確認)
 - 複数 store 可(例: `main` + `shared`)。同一パスが複数 store に解決される
   場合は **hard error**(writes-writes 曖昧と同じ思想。フォールバック探索禁止)
 
@@ -157,7 +168,9 @@ pelican_cli の lint に置く:
 | clone 直後に動かない(テキストだけ・アセット欠落の初回体験) | `pelican_cli assets status`(欠落と入手元の一覧)。init が README 雛形に「最初にやること」を書き込む。根本解は fetch |
 | CI strict が外部 store を見られない / manifest 鮮度の強制力がない | **運用 3 段で解消(§2)**: 小規模 = in-repo+LFS(CI 完全機能)、中間 = 人間運用(メインに近い人が manifest 管理)、大規模 = DAM。小規模×外部 store は非想定と明記 |
 | 破損と意図的更新を区別できない(内容不一致 = INFO のため) | 受け入れるトレードオフ。ローダの既存エラーが底、疑った日は `verify --full`(完全照合) |
-| 非追跡 local.json が git worktree に付いてこない(エージェント運用直撃) | mount のプロジェクト外相対パス許可(兄弟配置なら全 worktree 自動解決)+ 環境変数 `PELICAN_STORE_<NAME>` |
+| 非追跡 local.json が git worktree に付いてこない(エージェント運用直撃) | mount のプロジェクト外相対パス許可(兄弟配置なら全 worktree 自動解決)。環境変数上書きは YAGNI で不採用 |
+| マウント点の入れ子・重なり | 宣言時 hard error(§1-1) |
+| 外部 mount による脱出検査の弱体化 | 脱出禁止を mount root 単位で適用(§1-1 — 既存ルールの基準点付け替え) |
 | フラグメント参照が DCC の改名で壊れる(逆引き困難) | `pelican_cli refs check`(全参照の解決テスト、lint 同居)。エラーに参照元ファイル名を必ず含める |
 | local.json が古いことに本人が気づかない | 警告サマリに store 解決先 1 行(§1-2 の get_status 露出と併用) |
 | 大文字小文字(Windows/NAS 非区別 vs Linux CI 区別) | manifest 照合は case-sensitive — 手元で先に検出させる |
