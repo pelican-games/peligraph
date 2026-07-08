@@ -1103,6 +1103,8 @@ fly を共用する将来を壊さない(コントローラ状態はコンポー
 - **OpenXR トラック**: **2026-07-07 に推進決定**。入力(アクション層・pose 型)は準備済み。残り = ①ランタイム統合(xrWaitFrame とループ主導権・EngineTime 統合)②描画(フレームグラフに view 次元 = multiview、XrFrameTarget を IFrameTarget の第 3 実装として追加)③PELICAN_WITH_OPENXR ユニット必須・ヘッドセットなし環境のテスト戦略。設計文書を書いてから WP 化
 - **イベント層**: `design_event_layer.md` v1 ドラフト(2026-07-08)。**API 意味論(emit/購読の書き味・フレーム境界配送)のユーザーレビューを経てから E1 を WP 化**。E2(物理トリガー)は E1 後
 - **永続化(user:// + 設定/セーブ)**: `design_persistence.md` v1 ドラフト(2026-07-08)。**user:// スキーム追加 = [PF] v6.3 の凍結改訂が必要 — ユーザー承認待ち**。承認後 P1 を WP 化
+- **[PF] v6.3 改訂案(一括)**: ①user://(persistence)②asset store マウント + .pelican/local.json(`design_project_vcs.md`)③#フラグメント参照(`design_asset_containers.md`)。**3 点まとめてユーザー承認を取り、1 回の版数改訂で凍結文書へ反映**。承認後の WP: P1 / V1〜V3 / K1〜K4
+- **コンテナアセット**: `design_asset_containers.md` v1 ドラフト。K1 フラグメント参照 → K2 glTF シーン抽出(scene v1 親子改訂と同時)→ K3 pelican-import-tools 創設(PSD = psd-tools、アトラスパック)→ K4 import ルール表。PSD 系はエンジン非リンク(外部ツール契約)
 - **RenderWorld**: (2026-07-02 方針変更)**ECS 側との合意形成は後回しにし、統合ブランチ系列(`codex/rendering-phase1-refactor` 由来)を当面の開発本線として独自に進める**。JSON 規約(シーン形式等)は現行形式から離れすぎない範囲で本線側が自由に定義してよい(`design_scene_format.md` 参照)。ただし (a) `src/core/ecs/` コア本体の変更禁止は維持(コンポーネント追加は `userpublic/components` で完結するため通常は不要)、(b) main との将来の合流可能性を壊さないため、main に随時追従 merge する運用は続ける。ライトアニメーション更新の ECS 側移管は本線で実施してよい(単独 PR)
 - **コマンド層の WebSocket 展開**: stage 2(stdio JSON-RPC)実装後、同じメソッド群を WebSocket に載せると devstudio と web viewer(my_webpage)が同一プロトコルでエンジンを叩ける([PFW] §7)。stage 2 の後に設計文書を書いてから WP 化
 - **asset manifest(sha256)**: `assets.manifest.json` + 起動前検証([PF] §5-6 の予告)。WP18c の README 一覧表で当面代替し、需要(=黒背景事故の再発 or web 側キャッシュ検証の要求)が出たら WP 化

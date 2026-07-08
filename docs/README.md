@@ -39,8 +39,10 @@
 | `design_audio.md` | v1 ドラフト・A1 実装中(WP51) | **PELICAN_WITH_AUDIO** + miniaudio + null バックエンド + バス |
 | `design_persistence.md` | v1 ドラフト・**[PF] v6.3 承認待ち** | user:// スキーム・設定/セーブの三区分 |
 | `design_event_layer.md` | v1 ドラフト・**API レビュー待ち** | フレーム境界配送のイベントバス・物理トリガー |
-| `design_determinism_services.md` | v1 ドラフト・実装中(WP53) | PCG32 決定的乱数 + シード規約 |
-| `design_text_hud.md` | v1 ドラフト・実装中(WP54) | debug_text feature(ビットマップ HUD)。本格テキストは 2D/UI 設計で |
+| `design_determinism_services.md` | v1・実装済み(WP53) | PCG32 決定的乱数 + シード規約 |
+| `design_text_hud.md` | v1・実装済み(WP54) | debug_text feature(ビットマップ HUD)。本格テキストは 2D/UI 設計で |
+| `design_project_vcs.md` | v1 ドラフト・**[PF] v6.3 承認待ち** | asset store(マウント間接化)+ assets manifest + project init 雛形 + 外部 DAM 契約 |
+| `design_asset_containers.md` | v1 ドラフト・**[PF] v6.3 承認待ち** | **#フラグメント参照**・glTF シーン抽出・PSD レーン(psd-tools)・import ルール表 |
 | `dcc_integration_qa_2026-06-12.md` | — | DCC 連携 QA。**§6 = pelican.vat v1 仕様の正** |
 | `design_roadmap_renderworld.md` | 古い | 全体ロードマップと ECS 境界。合意後回し方針(2026-07-02)で一部失効 |
 | `design_cloth_simulation.md` | 古い | 布シミュ構想。VAT レーンに実質置換 |
