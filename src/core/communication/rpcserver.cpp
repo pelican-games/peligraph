@@ -405,6 +405,7 @@ nlohmann::json frameResult() {
 void updateFrameState(EngineTime &engine_time) {
     GET_MODULE(InputState).beginFrame();
     GameContext game_context;
+    internal::dispatchPendingEvents(game_context);
     GET_MODULE(ECSCore).update();
     internal::updateRegisteredGameSystems(game_context);
     GET_MODULE(SeqPlayer).update(engine_time.now());
@@ -546,6 +547,20 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
         GET_MODULE(InputState).queueEvents(input_events);
         return nlohmann::json{
             {"queued", input_events.size()},
+        };
+    });
+
+    server.setHandler("inject_event", [](const nlohmann::json &params) {
+        const auto event = parseInjectEventParams(params);
+        std::size_t queued = 0;
+        try {
+            queued = internal::emitEventByName(event.type, static_cast<const void *>(&event.payload));
+        } catch (const std::exception &error) {
+            throw JsonRpcHandlerError(JsonRpcErrorCodes::invalidParams,
+                                      "inject_event " + std::string{error.what()});
+        }
+        return nlohmann::json{
+            {"queued", queued},
         };
     });
 

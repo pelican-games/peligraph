@@ -158,6 +158,7 @@ void Loop::run() {
             input_state.clear();
             const auto update_start = Clock::now();
             engine_time.advance();
+            internal::dispatchPendingEvents(game_context);
             ecs.update();
             internal::updateRegisteredGameSystems(game_context);
             seq_player.update(engine_time.now());
@@ -202,6 +203,7 @@ void Loop::run() {
         logInputSnapshotIfRequested(input_state.currentSnapshot());
         const auto update_start = Clock::now();
         engine_time.advance();
+        internal::dispatchPendingEvents(game_context);
         ecs.update();
         internal::updateRegisteredGameSystems(game_context);
         seq_player.update(engine_time.now());

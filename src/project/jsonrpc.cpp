@@ -171,6 +171,18 @@ std::vector<RpcInputInjectionEvent> parseInjectInputParams(const nlohmann::json 
     return events;
 }
 
+RpcEventInjection parseInjectEventParams(const nlohmann::json &params) {
+    const auto &object = requireObjectParams(params, "inject_event");
+    const auto type = requireStringField(object, "type", "inject_event");
+    if (!object.contains("payload") || !object.at("payload").is_object()) {
+        throw JsonRpcInvalidParamsError("inject_event params requires object field 'payload'");
+    }
+    return RpcEventInjection{
+        .type = type,
+        .payload = object.at("payload"),
+    };
+}
+
 std::string serializeJsonRpcResult(const nlohmann::json &id, const nlohmann::json &result) {
     nlohmann::ordered_json response;
     response["jsonrpc"] = "2.0";

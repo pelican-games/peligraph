@@ -1,6 +1,7 @@
 #pragma once
 
 #include "components/localtransform.hpp"
+#include "events.hpp"
 #include "gameobjects.hpp"
 #include "userinput.hpp"
 #include <handle.hpp>
@@ -56,6 +57,10 @@ class GameContext {
     std::string currentScene() const;
 
     void debugText(int x, int y, std::string_view text) const;
+
+    template <class Event> void emit(const Event &event) const {
+        internal::getEventRegisterer().emit(event);
+    }
 };
 
 } // namespace Pelican
