@@ -12,6 +12,12 @@ v6.2(2026-07-05 追記・任意キー追加): `basic_config.input_actions_json`(
 追加 — 入力アクション定義 `pelican.input_actions`(`design_input_actions.md`)への
 参照。未指定なら従来挙動。web は理解するまで無視してよい(表示に影響しないため
 features とは異なり無視で安全 — [PFW] §3 の未知キー規則どおり)。
+v6.3(2026-07-08 改訂・ユーザー承認済み): §3-A に 3 点を追加 —
+①`user://`(セーブ/設定の置き場所。正 = `design_persistence.md`)
+②asset store マウント(`asset_stores` 宣言 + 非追跡 `.pelican/local.json`。
+正 = `design_project_vcs.md`)③`#` フラグメント参照(コンテナ内サブアセット。
+正 = `design_asset_containers.md`)。いずれも**未宣言/未使用なら従来挙動と
+完全一致**(既存プロジェクト無変更)。
 実装順: P0(ProjectSource バグ、684494f で完了)→ PathResolver 型+
 EngineResourceRegistry 最小実装 → `--project` / 読み込み置換 / example 切り出し。
 前提: `design_roadmap_renderworld.md`(ロードマップ・肥大化対策 §6)、
@@ -102,6 +108,14 @@ myproject/
    標準 pass はシェーダ自由化キット(WP12/13/15)で embed 化する際に同じ規則で
    id が付与される。embed 一覧と id の対応表はビルド時自動生成に将来昇格(§8)。
 6. 命名は ASCII(R7 と同じ理由: プロトコル・パス安全)。
+
+### 3-A. v6.3 追加(2026-07-08 承認)
+
+| 追加 | 規則 | 仕様の正 |
+|------|------|---------|
+| `user://` | OS ユーザーディレクトリ(`%APPDATA%/pelican/<project_id>/`)。設定・セーブ専用。プロジェクトへの書き込み禁止原則はこれにより恒久化(書く場所が別に在る) | `design_persistence.md` |
+| asset store | `project.json` の `asset_stores` = 論理宣言(mount は相対パスのみ、**プロジェクト外相対は許可**・絶対は禁止)。実パス上書きは非追跡 `.pelican/local.json`(**パス辞書限定** — 意味論の上書きはエラー)。マウント点の入れ子/重なりは宣言時 hard error。**脱出禁止(規則 3)の基準点は mount root 単位に付け替え**(symlink 正規化含む)。宣言なし = 従来挙動 | `design_project_vcs.md` |
+| `#` フラグメント | `<パス>#<種別>/<名前 or 連結パス>`(例 `assets/a.glb#mesh/Cube`、`#node/Root/Arm/Cube`)。**正準形 = コンテナ内フルパス**、短い一意名は糖衣(曖昧はエラー)。フラグメントなし = 丸ごと参照(従来)。web は理解できる種別のみ追従(サブセット原則) | `design_asset_containers.md` |
 
 ## 4. `project.json` v1 と設定の優先順位
 

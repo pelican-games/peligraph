@@ -1091,6 +1091,86 @@ fly を共用する将来を壊さない(コントローラ状態はコンポー
 受け入れ基準: 上記 a〜c + §0 共通規則。SDF / 日本語 / UI 統合は v2
 (スコープ外 — 手を出さない)。
 
+### WP55: [PF] v6.3 リゾルバ拡張(user:// + asset store + #フラグメント構文)
+
+参照: **[PF] §3-A(2026-07-08 承認済み)が仕様の正**。詳細は
+`design_persistence.md` §0-1 / `design_project_vcs.md` §1 /
+`design_asset_containers.md` §1。依存: なし。見積: 中。
+
+1. `user://` スキーム: `%APPDATA%/pelican/<project_id>/` に解決
+   (project_id = project.json の name。ディレクトリは初回書き込み時に作成)。
+   **テスト用に root を起動引数 `--user-dir <path>` で差し替え可能に**
+2. asset store: `project.json` の `asset_stores`(mount = 相対のみ、
+   プロジェクト外相対は許可・絶対は拒否)+ `.pelican/local.json`
+   (**パス辞書限定** — 未知キー・未宣言 store 名・その他の内容はエラー)。
+   マウント入れ子/重なり = 宣言時 hard error。**脱出禁止は mount root 単位**
+   (正規化後に mount 外 = 拒否、symlink 含む)。宣言なし = 従来挙動
+   (既存テスト・golden 全維持で証明)
+3. `#` フラグメント: パス解析で `<パス>#<種別>/<残り>` を分離する型と
+   パーサ(正準形 = フルパス、短名は糖衣)。**本 WP は構文と検証のみ** —
+   実際のサブアセットロードは後続 WP(K2 系)。フラグメント付き参照が
+   ローダに到達したら「未対応の種別」の明確エラー
+4. 起動時に store 解決結果(store 名 → 実パス)を 1 行ログ + `get_status` に
+   `stores` を追加
+5. テスト: (a) user:// 解決 + --user-dir 差し替え (b) store 宣言なし従来一致 /
+   兄弟相対 mount / local.json 上書き / パス辞書違反エラー / 入れ子 hard error /
+   mount root 脱出拒否 (c) フラグメント構文(正常・曖昧・不正)
+   (d) 既存テスト・golden 全維持
+
+受け入れ基準: 上記 a〜d + §0 共通規則。
+
+### WP56: イベント層 E1(バス + SceneLoaded + inject_event)
+
+参照: **`design_event_layer.md`(§2 API は 2026-07-08 承認済み)が仕様の正**。
+依存: WP43, 52。見積: 中。
+
+1. イベントバス: `PELICAN_REGISTER_EVENT(Type)` + `ctx.emit(struct)` +
+   システムの `onEvent(const E &, GameContext &)`(registerComponent の
+   黒魔術と同じ様式で登録を自動化)
+2. **配送は次フレーム頭**(全システム update 前)、配送順 = emit 順。
+   ペイロードは値コピー(参照・ポインタ禁止を静的に強制できる範囲で)
+3. エンジン発行: `SceneLoaded { scene_name }`(WP52 の切替適用点から emit)
+4. rpc `inject_event {type, payload}`(テスト用 — inject_input と同じ価値)
+5. テスト: (a) 純ロジック — 配送順・1 フレーム遅延・配送中の emit
+   (リエントラント)は次々フレーム (b) SceneLoaded の結合(load_scene →
+   次フレームでゲームシステムが受信)(c) inject_event 結合
+   (d) 既存テスト・golden 全維持
+
+受け入れ基準: 上記 a〜d + §0 共通規則。E2(物理トリガー)はスコープ外。
+
+### WP57: project init 雛形(V3)
+
+参照: **`design_project_vcs.md` §3 が仕様の正**。依存: なし。見積: 小。
+
+1. `pelican_cli project init <dir>`: project.json / scenes / assets / input /
+   code の最小雛形(projects/example の縮約 — 動く最小シーン 1 個)
+2. `.gitattributes`(glb/vrm/png/wav/spv = `-text`、LFS track はコメントアウト
+   同梱)+ `.gitignore`(`.pelican/`、build 等)+ README 雛形
+   (アセット配置の「最初にやること」)
+3. 生成したプロジェクトが `pelican_player --project <dir>` でそのまま起動する
+   こと(結合テスト)
+4. 既存ディレクトリへの上書きは拒否(空でない場合エラー)
+
+受け入れ基準: 3 の結合テスト + 4 + 既存テスト全維持 + §0 共通規則。
+
+### WP58: マテリアル M1(pelican.material パーサ + シェーダ契約文書)
+
+参照: **`design_material_shading.md` §3〜5 が仕様の正**。依存: WP44。見積: 中。
+
+1. `src/project/materialformat.{hpp,cpp}`: pelican.material v1 のパース + 検証
+   (純ロジック、nlohmann のみ。base = glTF pbrMetallicRoughness 1:1 キー、
+   shader stem、defines は bool のみ、params は数値/vecN のみ)
+2. エラーは名前入り(未知キーは [PFW] 流儀に従い本体は無視+WARN 相当の
+   結果報告、型違い・不正参照は reject)
+3. `docs/shader_contract.md` 新設: 現行の set 0〜3(pelican_sets.hpp)・
+   push constant 分割・頂点入力 location・defines 合成順を**実装から読み取って
+   文書化**(コード変更はしない — 文書が実装に従う)
+4. テスト: fixture(valid 最小 / full / 各エラー)+ ラウンドトリップ
+   (パース → 構造体 → 期待値)。**バインダ・レンダラには触れない**(M2 の領分)
+
+受け入れ基準: パーサテスト全緑 + 契約文書が実装と一致(レビューで照合)+
+既存テスト全維持 + §0 共通規則。
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **最小コマンド層**: (1) ファイル連携済み → (2) WP27 実装済み → (3) `load_gltf` / `update_transforms` は **2026-07-07 に実装 GO 決定**。前提はすべて充足(宛先 = scene v1 の objects[].name / アセット意味論 = WP21)。設計時要件: **複数インスタンス運用**(エージェントが複数エンジンを並行駆動する使い方) — stdio rpc は 1 プロセス 1 クライアントの現行構造を維持しつつ、`get_status`(instance id・project・フレーム番号)を追加してインスタンス識別可能に。プロジェクトは読み取り専有なので並行起動は安全(書き込み系操作を入れる際に排他を設計)。複数クライアント同時接続は TCP/WebSocket 展開時の課題として分離
@@ -1161,6 +1241,7 @@ fly を共用する将来を壊さない(コントローラ状態はコンポー
 | 19 | WP47, WP48 | 完了(2026-07-07)。専有: WP47 = phys/scene バインダ/debugdraw、WP48 = renderer/camera + rpcserver |
 | 20 | WP31, WP49(I2), WP50(C2) | 並列 3 本。専有: WP31 = resources/features + シェーダ + renderingpass/pipelinefactory、WP49 = communication/jsonrpc + 入力注入(os/input)、WP50 = userpublic システム + renderer/camera。**3 本とも golden ケースを追加するため件数 REQUIRE は統合時に調整(各自は自分の追加分のみ数える)**。共有は test/CMakeLists.txt 追記のみ |
 | 21 | WP51(音), WP52(シーン遷移), WP53(乱数), WP54(debug_text) | 並列 4 本。専有: WP51 = core/audio 新設 + ルート CMakeLists FetchContent、WP52 = loader/scene + GameObjects 破棄経路、WP53 = 乱数(新規ファイル)、WP54 = features/レンダラ。**gamecontext.{hpp,cpp} は 4 本全部が追記する — 各自ファイル末尾に足し、統合時に調整**。rpcserver は WP52/53 が両方 get_status を触る(小競合予定)。golden 追加は WP54 のみ |
+| 22 | WP55([PF] v6.3 リゾルバ), WP56(イベント E1), WP57(init 雛形), WP58(マテリアル M1) | 並列 4 本。専有: WP55 = loader/pathresolver、WP56 = userpublic イベント + gamecontext(単独)、WP57 = devcli、WP58 = src/project 新規 + docs/shader_contract.md。**rpcserver は WP55(get_status stores)と WP56(inject_event)が交差 — 追記形で書き統合時に調整**。golden 追加なし |
 
 統合チェックポイント: ウェーブ 1 完了後と WP7 完了後に、人間が pelican_player の手動起動確認
 (`rendering_phase1_review.md` の Validation Run と同じ流儀)を行う。WP16 以降は

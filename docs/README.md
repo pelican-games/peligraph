@@ -13,7 +13,7 @@
 
 | 文書 | 版 | 内容 |
 |------|----|------|
-| `design_project_format.md` [PF] | v6.2 | プロジェクト形式・PathResolver・パス分類。v6.1 暗黙 fallback、v6.2 input_actions_json |
+| `design_project_format.md` [PF] | v6.3 | プロジェクト形式・PathResolver・パス分類。v6.3(§3-A)= user:// + asset store + #フラグメント(2026-07-08 承認) |
 | `design_project_format_web_profile.md` [PFW] | v1.3 | web 解釈規則・**サブセット原則**(web ⊆ pelican)・シェーダ stem 規約・fixture 共有 |
 | `external_tools_requirements.md` | R1〜R10 | 外部ツール契約(正本)。glTF ハブ、transform_seq、pelican.vat、座標系、JSON-RPC |
 | `design_shader_freedom_kit.md` [SF] | — | シェーダ基盤(コンパイラ/ライブラリ/ファクトリ/set 規約)。実装済み |
@@ -37,12 +37,12 @@
 | `design_postprocess_temporal.md` | v1 ドラフト・未実装 | **history/velocity + ポストスタック規約**(フレームグラフ v2.5、T1→T3) |
 | `design_scene_flow.md` | v1 ドラフト・S1 実装中(WP52) | シーン遷移(loadScene)+ 非同期ロード(S2 将来) |
 | `design_audio.md` | v1 ドラフト・A1 実装中(WP51) | **PELICAN_WITH_AUDIO** + miniaudio + null バックエンド + バス |
-| `design_persistence.md` | v1 ドラフト・**[PF] v6.3 承認待ち** | user:// スキーム・設定/セーブの三区分 |
-| `design_event_layer.md` | v1 ドラフト・**API レビュー待ち** | フレーム境界配送のイベントバス・物理トリガー |
+| `design_persistence.md` | v1・承認済み・実装中(WP55/P1) | user:// スキーム・設定/セーブの三区分 |
+| `design_event_layer.md` | v1・API 承認済み・実装中(WP56) | フレーム境界配送のイベントバス・物理トリガー |
 | `design_determinism_services.md` | v1・実装済み(WP53) | PCG32 決定的乱数 + シード規約 |
 | `design_text_hud.md` | v1・実装済み(WP54) | debug_text feature(ビットマップ HUD)。本格テキストは 2D/UI 設計で |
-| `design_project_vcs.md` | v1 ドラフト・**[PF] v6.3 承認待ち** | asset store(マウント間接化)+ assets manifest + project init 雛形 + 外部 DAM 契約 |
-| `design_asset_containers.md` | v1 ドラフト・**[PF] v6.3 承認待ち** | **#フラグメント参照**・glTF シーン抽出・PSD レーン(psd-tools)・import ルール表 |
+| `design_project_vcs.md` | v1・レビュー 3 巡承認済み・実装中(WP55/57) | asset store(マウント間接化)+ assets manifest + project init 雛形 + 外部 DAM 契約 |
+| `design_asset_containers.md` | v1・レビュー 3 巡承認済み・実装中(WP55〜) | **#フラグメント参照**・glTF シーン抽出・PSD レーン(psd-tools)・import ルール表 |
 | `dcc_integration_qa_2026-06-12.md` | — | DCC 連携 QA。**§6 = pelican.vat v1 仕様の正** |
 | `design_roadmap_renderworld.md` | 古い | 全体ロードマップと ECS 境界。合意後回し方針(2026-07-02)で一部失効 |
 | `design_cloth_simulation.md` | 古い | 布シミュ構想。VAT レーンに実質置換 |
