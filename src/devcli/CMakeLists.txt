@@ -5,6 +5,7 @@ unset(CMAKE_RUNTIME_OUTPUT_DIRECTORY)
 target_sources(pelican_cli PRIVATE
   distconfig.cpp
   importcommand.cpp
+  projectinit.cpp
   ../core/model/vatformat.cpp
 )
 
