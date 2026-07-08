@@ -1,7 +1,8 @@
 # マテリアル/シェーディング接続点(v1)
 
 対象読者: エンジン担当・プロジェクトでカスタムシェーダを書く人。
-ステータス: v1 ドラフト(2026-07-08。レビュー前)。
+ステータス: v1.1(2026-07-08 レビュー反映 — **A/B/C 梯子と textures を追加、
+ユーザー合意済み**。M1 = WP58 実装済み)。
 前提: `design_render_feature_modules.md`(shader_defines・variant 機構)、
 `design_scene_format.md`、[PF] シェーダ stem 規約、[PFW] サブセット原則。
 
@@ -74,6 +75,67 @@ stem 規約なので native/web が同じ記述で成立する)。
 - `params`: 自由スキーマ → **material params UBO**(set 2 に追加 binding)。
   数値(float / vecN / int)のみ、レイアウト規約は宣言順 std140。
   64B の shader push constant は「毎フレーム変わる少量」用として残す
+- `textures`(v1.1 追加): 名前 → パスの辞書(カスタムテクスチャスロット)。
+  set 2 の固定 PBR スロットの後ろに**宣言順で binding を割当**(対応規則は
+  shader_contract.md の契約に含める)。値は通常のパス参照(#フラグメント可)。
+  **std140/binding の手書き一致は要求しない** — params/textures から GLSL の
+  uniform block + sampler 宣言をツールが生成し(`<stem>.params.glsl`)、
+  シェーダは include するだけ(踏み抜き防止。M2 で実装)
+
+### 3-1. 供給の 3 段(A/B/C 梯子 — 2026-07-08 合意)
+
+**書きやすさの主役は A と B**。旗ではなくキーの選択がモードを決める
+(参照 = 存在の原理):
+
+| 段 | 書き方 | 書く量 | 位置づけ |
+|----|--------|--------|---------|
+| A: uber | `base` + `defines` + `params` + `textures` のみ(shader キーなし) | ゼロ | 既定。カスタムマテリアルの大半はここで足りる |
+| B: surface | `"surface": "shaders/lava.surface"` — **エンジンのテンプレートがユーザーファイルを include する**(逆 include)。ユーザーは表面関数(+任意で頂点変位)だけ書く | 数行〜数十行 | ライティング・影・スキニング・パス対応はテンプレートが所有 — **機能追加でユーザーファイルは壊れない** |
+| C: raw | `"shader": "shaders/weird"` — main() まで全部書く。エンジンライブラリ(`engine://shaders/lib/`)の利用は任意 | 全部 | 完全な自由・自己責任(契約追従義務はユーザー側)。**.spv 直接供給もここ** |
+
+B の規律(レビューで確定):
+
+1. **フックは 2 点から開始**(`pelican_surface(inout PelicanSurface)` /
+   `pelican_vertex_displace(...)`)。フック追加はエンジン側の凍結改訂扱い
+   (Unity surface shader の迷宮化を規律で防ぐ)
+2. **ライティングモデルはフックでなく選択肢**: `"lighting": "standard" | "toon"`
+   (defines でテンプレート内ライブラリが切替)。**トゥーンを B の範囲内に
+   収める鍵**(VRM 需要)
+3. `PelicanSurface` 構造体は公開 API — **`PELICAN_SURFACE_V1` で版数を刻み**、
+   意味変更は凍結改訂の流儀
+4. テンプレートのピン留め(project:// へコピー)は**許すが C と同義**
+   (自己責任へ移行)。同時に B→C の公式移行手順を兼ねる(崖をスロープに)
+5. **web は A まで対応**。B/C は native 限定(web は WARN + 既定 PBR
+   フォールバック — サブセット原則の明示的適用)
+6. エラーは**ユーザーファイル起点に翻訳**して表示(include 展開後の
+   テンプレート行番号を出さない)+ マゼンタフォールバック + ホットリロード
+
+### 3-2. SPIR-V ABI が真の契約(自由化との整合)
+
+梯子はすべて**ソースレベルの糖衣**であり、最終形は同一の SPIR-V ABI
+(shader_contract.md)。precompiled .spv の自由は C 層として無傷
+(既存の割り切りどおり .spv は defines variant 対象外の固定 1 バリアント)。
+**B はソース供給専用**(テンプレートと混ぜてからコンパイルするため —
+明文化された唯一の制約)。dist-bake(B4)で B/C も全 variant を .spv 化
+するので、**ランタイム契約に include は漏れない**。
+
+### 3-3. パス variant 規約(影の剥離防止)
+
+マテリアルの頂点ロジック(変位含む)は main パス専用ではなく、
+**同一シェーダを `PELICAN_PASS_DEPTH` / `PELICAN_PASS_VELOCITY` 付きで
+再コンパイルして depth / velocity パスでも使う**(揺れる草の影が揺れない
+事故の構造的防止)。B ではテンプレートが自動で満たす。C では作者責務
+(contract に記載)。M2 実装が main 専用の作りにならないよう最初から要件化。
+
+### 3-4. 属性と欠損の既定
+
+- 頂点属性は現行 5 つ(pos/normal/uv/color/tangent — contract 記載)+
+  **予約 location**(uv1 等)を契約に確保し、存在は `PELICAN_HAS_*` defines
+- 未バインドのテクスチャスロットは**ダミー自動バインド**(白 / 平坦法線)—
+  variant 爆発より「とりあえず動く」を優先。defines 分岐は opt-in
+- `render_state`(v1.1 追加、マテリアルの拡張キー): blend
+  (`opaque|blend|additive`)・depth_write・cull の最小セット。
+  glTF 由来の alphaMode/doubleSided はこれへの別名として受理
 - 適用: scene v1 のオブジェクトに `material` コンポーネント
   (`{"name": "material", "ref": "lava"}`)で割当。glb 側マテリアルの
   上書き。**glb extras**(`pelican_material: "lava"`)でも同じことが言える
@@ -108,13 +170,14 @@ stem 規約なので native/web が同じ記述で成立する)。
 - 配布: dist-bake(B4)がこの variant 列挙を焼く対象になる(設計整合のみ、
   実装は B4)
 
-## 6. 移行(WP 候補)
+## 6. 移行(WP 候補 — v1.1 改訂)
 
 | 段階 | 内容 | 依存 |
 |------|------|------|
-| M1 | pelican.material パーサ + 検証(pelican_project、純ロジック)+ 契約文書 | なし |
-| M2 | バインダ: params UBO・material コンポーネント割当・glb extras。既定 PBR は現行挙動維持(golden 全維持) | M1 |
-| M3 | カスタムシェーダ実証: example に 1 マテリアル + golden。web 側 WW: 同形式を読み既定 PBR にフォールバック(shader が web に無い場合は WARN + 既定)| M2 |
+| M1 | pelican.material パーサ + 検証 + 契約文書 | **完了(WP58)** |
+| M2 | **A 完成**: バインダ(params UBO・textures 辞書・material コンポーネント・glb extras・render_state・ダミーテクスチャ)+ `<stem>.params.glsl` 生成 + **contract 記載の実装差分 3 件の解消**(set 0 の意味統一・push constant 分割 enforcement・params UBO)。既定 PBR は現行挙動維持(golden 全維持)。パス variant 要件(§3-3)込み | M1 |
+| M3 | **B 実装**: include 機構(shaderc includer)+ テンプレート(surface/vertex_displace 2 フック + lighting standard/toon)+ PelicanSurface V1 + エラー翻訳 + example に surface マテリアル 1 個 + golden | M2 |
+| M4 | **C 整備 + web**: エンジン GLSL ライブラリ公開 + テンプレートコピー手順文書化 + web 側 A 対応(B/C はフォールバック) | M3 |
 
 ## 7. 未決事項
 
