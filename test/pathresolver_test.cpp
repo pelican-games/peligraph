@@ -261,4 +261,168 @@ TEST_CASE("PathResolver rejects symlink escapes after canonicalization", "[pathr
     resolver.resetForTesting();
 }
 
+TEST_CASE("PathResolver resolves user scheme with user-dir override", "[pathresolver]") {
+    Sandbox sandbox;
+    const auto user_root = sandbox.base / "user";
+    auto &resolver = resolverForTest();
+    resolver.resetForTesting();
+    resolver.setup(sandbox.root, false, nlohmann::json{{"name", "fixture-project"}}.dump(), user_root);
+
+    const auto resolved = resolver.resolveProjectRef("user://settings.json");
+    REQUIRE(std::get<std::filesystem::path>(resolved) == weaklyCanonical(user_root / "settings.json"));
+    REQUIRE_THROWS_WITH(resolver.resolveProjectRef("user://../secret.json"),
+                        Catch::Matchers::ContainsSubstring("escapes user root"));
+
+    resolver.resetForTesting();
+}
+
+TEST_CASE("PathResolver keeps legacy project paths when no stores are declared", "[pathresolver]") {
+    Sandbox sandbox;
+    auto &resolver = resolverForTest();
+    resolver.resetForTesting();
+    resolver.setup(sandbox.root, false, nlohmann::json{{"name", "fixture-project"}}.dump());
+
+    const auto resolved = resolver.resolveProjectRef("assets/a.txt");
+    REQUIRE(std::get<std::filesystem::path>(resolved) == weaklyCanonical(sandbox.root / "assets" / "a.txt"));
+    REQUIRE(resolver.stores().empty());
+
+    resolver.resetForTesting();
+}
+
+TEST_CASE("PathResolver resolves declared asset stores and local overrides", "[pathresolver]") {
+    Sandbox sandbox;
+    auto &resolver = resolverForTest();
+    resolver.resetForTesting();
+
+    const auto project = nlohmann::json{
+        {"name", "fixture-project"},
+        {"asset_stores", {{"main", {{"mount", "../outside"}}}}},
+    };
+    resolver.setup(sandbox.root, false, project.dump());
+    REQUIRE(std::get<std::filesystem::path>(resolver.resolveProjectRef("../outside/outside.txt")) ==
+            weaklyCanonical(sandbox.outside / "outside.txt"));
+    REQUIRE(resolver.stores().size() == 1);
+    REQUIRE(resolver.stores().front().name == "main");
+    REQUIRE(resolver.stores().front().root == weaklyCanonical(sandbox.outside));
+    resolver.resetForTesting();
+
+    const auto override_root = sandbox.base / "override_assets";
+    writeText(override_root / "a.txt", "override-content");
+    writeText(sandbox.root / ".pelican" / "local.json",
+              nlohmann::json{{"asset_stores", {{"main", override_root.generic_string()}}}}.dump());
+    const auto project_with_assets_store = nlohmann::json{
+        {"name", "fixture-project"},
+        {"asset_stores", {{"main", {{"mount", "assets"}}}}},
+    };
+    resolver.setup(sandbox.root, false, project_with_assets_store.dump());
+    REQUIRE(std::get<std::filesystem::path>(resolver.resolveProjectRef("assets/a.txt")) ==
+            weaklyCanonical(override_root / "a.txt"));
+
+    resolver.resetForTesting();
+}
+
+TEST_CASE("PathResolver rejects invalid asset store declarations and overrides", "[pathresolver]") {
+    {
+        Sandbox sandbox;
+        auto &resolver = resolverForTest();
+        resolver.resetForTesting();
+        const auto project = nlohmann::json{
+            {"name", "fixture-project"},
+            {"asset_stores",
+             {
+                 {"main", {{"mount", "assets"}}},
+                 {"nested", {{"mount", "assets/models"}}},
+             }},
+        };
+        REQUIRE_THROWS_WITH(resolver.setup(sandbox.root, false, project.dump()),
+                            Catch::Matchers::ContainsSubstring("overlap"));
+        resolver.resetForTesting();
+    }
+
+    {
+        Sandbox sandbox;
+        auto &resolver = resolverForTest();
+        resolver.resetForTesting();
+        const auto project = nlohmann::json{
+            {"name", "fixture-project"},
+            {"asset_stores", {{"main", {{"mount", "assets"}}}}},
+        };
+        resolver.setup(sandbox.root, false, project.dump());
+        REQUIRE_THROWS_WITH(resolver.resolveProjectRef("assets/../secret.txt"),
+                            Catch::Matchers::ContainsSubstring("escapes mount root"));
+        resolver.resetForTesting();
+    }
+
+    {
+        Sandbox sandbox;
+        auto &resolver = resolverForTest();
+        resolver.resetForTesting();
+        const auto project = nlohmann::json{
+            {"name", "fixture-project"},
+            {"asset_stores", {{"main", {{"mount", "assets"}}}}},
+        };
+        writeText(sandbox.root / ".pelican" / "local.json",
+                  nlohmann::json{{"asset_stores", {{"missing", sandbox.outside.generic_string()}}}}.dump());
+        REQUIRE_THROWS_WITH(resolver.setup(sandbox.root, false, project.dump()),
+                            Catch::Matchers::ContainsSubstring("undeclared asset store"));
+        resolver.resetForTesting();
+    }
+
+    {
+        Sandbox sandbox;
+        auto &resolver = resolverForTest();
+        resolver.resetForTesting();
+        const auto project = nlohmann::json{
+            {"name", "fixture-project"},
+            {"asset_stores", {{"main", {{"mount", "assets"}}}}},
+        };
+        writeText(sandbox.root / ".pelican" / "local.json",
+                  nlohmann::json{{"asset_stores", {{"main", sandbox.outside.generic_string()}}},
+                                 {"rules", nlohmann::json::object()}}
+                      .dump());
+        REQUIRE_THROWS_WITH(resolver.setup(sandbox.root, false, project.dump()),
+                            Catch::Matchers::ContainsSubstring("unsupported key"));
+        resolver.resetForTesting();
+    }
+}
+
+TEST_CASE("PathResolver parses asset fragments without loading subassets", "[pathresolver]") {
+    const auto canonical = parsePathReference("assets/character.glb#node/Root/Arm/Cube");
+    REQUIRE(canonical.path == "assets/character.glb");
+    REQUIRE(canonical.fragment);
+    REQUIRE(canonical.fragment->kind == "node");
+    REQUIRE(canonical.fragment->path == "Root/Arm/Cube");
+    REQUIRE(canonical.fragment->address_kind == AssetFragmentAddressKind::full_path);
+
+    const auto sugar = parsePathReference("assets/character.glb#mesh/Cube");
+    REQUIRE(sugar.fragment);
+    REQUIRE(sugar.fragment->kind == "mesh");
+    REQUIRE(sugar.fragment->path == "Cube");
+    REQUIRE(sugar.fragment->address_kind == AssetFragmentAddressKind::name);
+
+    REQUIRE_THROWS_WITH(parsePathReference("assets/character.glb#mesh"),
+                        Catch::Matchers::ContainsSubstring("Invalid asset fragment"));
+    REQUIRE_THROWS_WITH(parsePathReference("assets/character.glb#mesh/3"),
+                        Catch::Matchers::ContainsSubstring("Invalid asset fragment"));
+    REQUIRE_THROWS_WITH(parsePathReference("assets/character.glb#mesh/Cube#material/Body"),
+                        Catch::Matchers::ContainsSubstring("multiple '#'"));
+
+    Sandbox sandbox;
+    writeText(sandbox.root / "assets" / "character.glb", "fake glb");
+    auto &resolver = resolverForTest();
+    resolver.resetForTesting();
+    resolver.setup(sandbox.root, false);
+
+    const auto resolved = resolver.resolveProjectRef("assets/character.glb#node/Root/Arm/Cube");
+    const auto *fragment = std::get_if<ResolvedPathFragment>(&resolved);
+    REQUIRE(fragment != nullptr);
+    REQUIRE(fragment->path == weaklyCanonical(sandbox.root / "assets" / "character.glb"));
+    REQUIRE(fragment->fragment.kind == "node");
+
+    REQUIRE_THROWS_WITH(resolver.resolveExistingFile("assets/character.glb#mesh/Cube"),
+                        Catch::Matchers::ContainsSubstring("Unsupported asset fragment kind: mesh"));
+
+    resolver.resetForTesting();
+}
+
 } // namespace Pelican
