@@ -238,6 +238,34 @@ user.spv(pelican_surface を Export。GLSL/HLSL/Slang 何産でもよい)
    WP59 で発見した combined vs split 問題の解であり、web 対応の要件が
    スパイクの宿題を解く
 
+### 3-8. フックの深さ梯子とエンジンシェーダライブラリ ABI(2026-07-08 第 3 次レビュー)
+
+**ユーザー方針: B でなるべくすべてを書けるように。** §3-7-1 の「フック 2 点固定」を
+改訂し、フックを**浅い→深いの梯子**にする(深いほど自由と責任が増える。
+定義された最深フックが優先):
+
+| 深さ | フック | テンプレートが守り続けるもの |
+|------|--------|------------------------------|
+| 1 | `pelican_vertex_displace` | 変換・スキニング・パス variant |
+| 2 | `pelican_surface` | ライティング全部 |
+| 3 | `pelican_brdf`(+`pelican_ambient`) | ライトループ・影・減衰 |
+| 4 | `pelican_lighting`(ライティング段の全権) | パス構造・descriptor・スキニング・variant(**最後まで不可侵**) |
+
+- **エンジンシェーダライブラリ ABI**(深さ 3/4 の部品): `pelican_light_count()` /
+  `pelican_light(i)` / `pelican_shadow(i, world_pos)` / `pelican_env_ambient(n)`
+  等を安定 ABI の関数群として提供。実体は engine lib.spv が Export し
+  スニペットが Import(**spv-link 機構の双方向適用** — WP59 実証の逆向き)。
+  この関数 ABI が抽象境界なので、エンジン内部が clustered 等に進化しても
+  ユーザーのライティングは壊れない
+- **dogfooding 原則**: 同梱の standard / toon ライティングスニペット自体を
+  **この公開ライブラリだけで実装**する(D0「エディタに特権なし」のシェーダ版 —
+  標準シェーダに特権なし)。ABI の十分性をエンジン自身が常時証明し、
+  標準スニペットが C への最良の実例を兼ねる
+- **保証のグラデーション(契約に明記)**: 深さ 1〜3 = エンジンの機能追加が
+  自動で乗る。深さ 4 = コンパイル・動作は壊れないが、新機能はライブラリ関数を
+  呼んでいる範囲で乗る(呼ばなければ乗らない — 自由の対価)。
+  フック・ライブラリ関数の追加は凍結改訂の流儀、削除・意味変更は不可
+
 ## 4. マテリアルシェーダの契約(安定 API 化)
 
 `docs/shader_contract.md`(新設、adding_features.md から参照)に以下を明文化:
@@ -273,7 +301,7 @@ user.spv(pelican_surface を Export。GLSL/HLSL/Slang 何産でもよい)
 |------|------|------|
 | M1 | pelican.material パーサ + 検証 + 契約文書 | **完了(WP58)** |
 | M2 | **A 完成**: バインダ(params UBO・textures 辞書・material コンポーネント・glb extras・render_state・ダミーテクスチャ)+ `<stem>.params.glsl` 生成 + **contract 記載の実装差分 3 件の解消**(set 0 の意味統一・push constant 分割 enforcement・params UBO)。既定 PBR は現行挙動維持(golden 全維持)。パス variant 要件(§3-3)込み | M1 |
-| M3 | **B 実装**: pelican-spv-link 本実装(SPIRV-Tools/Reflect API、テキスト書換禁止)+ テンプレート(displace/surface + custom0/1)+ 同梱 BRDF スニペット 2 個(standard/toon)+ シム生成(split sampler 強制)+ PelicanSurface V1 + エラー翻訳 + example に surface マテリアル 1 個 + golden(GLSL 産と Slang 産の両方) | M2, WP59 |
+| M3 | **B 実装**: pelican-spv-link 本実装(SPIRV-Tools/Reflect API、テキスト書換禁止)+ テンプレート(フック梯子 4 段 + custom0/1)+ **エンジンシェーダライブラリ ABI(lib.spv Export)**+ 同梱ライティングスニペット 2 個(standard/toon — **ライブラリのみで実装 = dogfood**)+ シム生成(split sampler 強制)+ PelicanSurface V1 + エラー翻訳 + example に surface マテリアル 1 個 + golden(GLSL 産と Slang 産の両方) | M2, WP59 |
 | M3.5 | **screen_inputs**(宣言 → copy パス自動配線 + アクセサ)— 屈折/深度フェードの golden | M3 |
 | M4 | **C 整備 + web B ベイク**: エンジンライブラリ公開 + テンプレートコピー手順 + web 側 = A(データ解釈)+ B(naga ベイクレーン、WW 系と接続) | M3 |
 
