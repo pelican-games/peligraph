@@ -141,6 +141,30 @@ B の規律(レビューで確定):
   上書き。**glb extras**(`pelican_material: "lava"`)でも同じことが言える
   (DCC 側で割当を焼く経路 — R6 の extras 規約と同じ)
 
+### 3-5. バインディングモデルの併用(classic + bindless、2026-07-08 方向決定)
+
+**方針: web/モバイルの床に PC を縛らせない。** web に載せたいものは
+シンプルな 3D/2D 程度(ユーザー確認済み)なので、classic を可搬性の床として
+維持しつつ、PC 向けの bindless を併用で進める。
+
+- **規律は 1 つ**: A/B 層のシェーダはテクスチャを直接宣言せず、
+  **生成アクセサ(`<stem>.params.glsl`)経由**で触る。生成 include が
+  `PELICAN_BINDLESS` defines でモード差を吸収し、ユーザーコードは
+  どちらのモードかを知らない
+- classic = set 2 の従来スロット(web・古いモバイル・MoltenVK 安全圏の床)。
+  bindless = set 3(PELICAN_SET_FREE)のグローバル配列 + 添字
+- **M2 の必須要件**: マテリアルデータは「全マテリアル struct を並べた
+  SSBO + テクスチャ参照」で持つ(個別 UBO にしない)。classic 実装でも
+  この形にしておけば、bindless 移行はテクスチャ欄の添字化だけになる
+- bindless バックエンドは後続ユニット/feature(`PELICAN_BINDLESS`)。
+  起動時にデバイス能力(descriptorIndexing・nonUniformIndexing・
+  updateAfterBind limits)を見て variant を選択(実行時コンパイル資産が
+  ここで効く)。dist-bake は両 variant を焼く
+- テスト: golden を bindless on/off で回す(WP40 の OFF スモークと同じ型)
+- C 層(生シェーダ)は明示選択(契約文書に両モード記載)。GPU 駆動系の
+  bindless 専用技法(GPU 側 draw list 等)は native 専用機能として自然に
+  C/native 側に落ちる
+
 ## 4. マテリアルシェーダの契約(安定 API 化)
 
 `docs/shader_contract.md`(新設、adding_features.md から参照)に以下を明文化:

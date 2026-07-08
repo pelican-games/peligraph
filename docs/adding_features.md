@@ -108,6 +108,9 @@ DLL境界は作らない。
 - Determinism rule: wall clock / std::rand / random_device must not drive deterministic decisions.
 - ログは quill(stdout は rpc プロトコル専用)
 - 常駐プロセスをテストで起動したら必ず停止する(エージェント向け)
+- **新しい外部依存(FetchContent)を足すときは Emscripten 対応の有無を
+  一行メモする**(将来の WASM ビルド保険。描画系の依存は対象外 — web には
+  行かない。ゲーム側レイヤの依存のみ)
 
 ## テストの型 早見表
 
