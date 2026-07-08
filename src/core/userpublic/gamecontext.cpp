@@ -2,6 +2,7 @@
 
 #include "../appflow/enginetime.hpp"
 #include "components/predefined.hpp"
+#include "deterministicrng.hpp"
 #include "../ecs/predefined/transform.hpp"
 #include "../log.hpp"
 #include "../phys/physworld.hpp"
@@ -92,6 +93,26 @@ std::vector<std::string> GameContext::overlapAll(const phys::Shape &shape) const
 
 void GameContext::setCamera(std::string_view name) const {
     GET_MODULE(Camera).setActiveCamera(name);
+}
+
+double GameContext::random() {
+    return GET_MODULE(DeterministicRng).random();
+}
+
+int GameContext::randomInt(int min, int max) {
+    return GET_MODULE(DeterministicRng).randomInt(min, max);
+}
+
+float GameContext::randomFloat(float min, float max) {
+    return GET_MODULE(DeterministicRng).randomFloat(min, max);
+}
+
+void GameContext::setSeed(std::uint64_t seed) {
+    GET_MODULE(DeterministicRng).setSeed(seed);
+}
+
+std::uint64_t GameContext::seed() const {
+    return GET_MODULE(DeterministicRng).seed();
 }
 
 } // namespace Pelican

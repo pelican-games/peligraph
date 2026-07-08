@@ -12,6 +12,7 @@
 #include "../vkcore/rendertarget.hpp"
 
 #include <array>
+#include <cstdint>
 #include <filesystem>
 #include <iomanip>
 #include <istream>
@@ -42,6 +43,30 @@ double requireNumberParam(const nlohmann::json &params, const char *name, const 
                                   method + " params requires numeric field '" + std::string{name} + "'");
     }
     return object.at(name).get<double>();
+}
+
+std::uint64_t requireUnsignedIntegerParam(const nlohmann::json &params, const char *name,
+                                          const std::string &method) {
+    const auto &object = requireObjectParams(params, method);
+    if (!object.contains(name)) {
+        throw JsonRpcHandlerError(JsonRpcErrorCodes::invalidParams,
+                                  method + " params requires unsigned integer field '" + std::string{name} + "'");
+    }
+
+    const auto &value = object.at(name);
+    if (value.is_number_unsigned()) {
+        return value.get<std::uint64_t>();
+    }
+    if (value.is_number_integer()) {
+        const auto signed_value = value.get<std::int64_t>();
+        if (signed_value >= 0) {
+            return static_cast<std::uint64_t>(signed_value);
+        }
+    }
+
+    throw JsonRpcHandlerError(JsonRpcErrorCodes::invalidParams,
+                              method + " params field '" + std::string{name} +
+                                  "' must be a non-negative integer");
 }
 
 std::string requireStringParam(const nlohmann::json &params, const char *name, const std::string &method) {
@@ -492,6 +517,15 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
             {"project_root", projectRootString()},
             {"frame", engine_time.frameIndex()},
             {"time", engine_time.now()},
+            {"seed", GameContext{}.seed()},
+        };
+    });
+
+    server.setHandler("set_seed", [](const nlohmann::json &params) {
+        const auto seed = requireUnsignedIntegerParam(params, "seed", "set_seed");
+        GameContext{}.setSeed(seed);
+        return nlohmann::json{
+            {"seed", seed},
         };
     });
 

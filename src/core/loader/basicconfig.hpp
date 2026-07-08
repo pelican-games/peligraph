@@ -1,6 +1,7 @@
 #include "../cameradefinition.hpp"
 #include "../container.hpp"
 
+#include <cstdint>
 #include <glm/glm.hpp>
 #include <optional>
 #include <string>
@@ -22,6 +23,7 @@ DECLARE_MODULE(ProjectBasicConfig) {
     window_size initial_window_size;
     bool initial_fullscr_state;
     float framerate_target;
+    std::uint64_t deterministic_seed = 0;
     InitialCameraProperty camera_prop;
 
     std::string default_scene_id;
@@ -46,6 +48,7 @@ DECLARE_MODULE(ProjectBasicConfig) {
     window_size initialWindowSize() const;
     bool initialFullScreenState() const;
     float framerateTarget() const;
+    std::uint64_t seed() const;
 
     InitialCameraProperty initailCameraProperty() const;
 

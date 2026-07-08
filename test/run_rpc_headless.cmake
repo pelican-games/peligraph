@@ -32,6 +32,7 @@ file(WRITE "${OUT_DIR}/project/project.json" [=[
     "window_size": {"width": 160, "height": 90},
     "fullscreen": false,
     "framerate": 30,
+    "seed": 1234,
     "camera": {"fov_y": 45.0, "near": 0.1, "far": 1000.0, "up": [0.0, 1.0, 0.0]},
     "default_scene_id": "default_scene",
     "scene_data_json": "scenes/main.scene.json",
@@ -93,6 +94,8 @@ file(WRITE "${script_path}"
 "{bad json\n"
 "{\"jsonrpc\":\"2.0\",\"method\":\"render_frame\",\"params\":{}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":15,\"method\":\"missing_method\",\"params\":{}}\n"
+"{\"jsonrpc\":\"2.0\",\"id\":16,\"method\":\"set_seed\",\"params\":{\"seed\":99}}\n"
+"{\"jsonrpc\":\"2.0\",\"id\":17,\"method\":\"get_status\",\"params\":{}}\n"
 )
 
 function(validate_rpc_stdout stdout label)
@@ -105,8 +108,8 @@ function(validate_rpc_stdout stdout label)
 
     string(REPLACE "\n" ";" lines "${trimmed}")
     list(LENGTH lines line_count)
-    if(NOT line_count EQUAL 17)
-        message(FATAL_ERROR "${label}: expected 17 JSON-RPC response lines, got ${line_count}\nstdout:\n${stdout}")
+    if(NOT line_count EQUAL 19)
+        message(FATAL_ERROR "${label}: expected 19 JSON-RPC response lines, got ${line_count}\nstdout:\n${stdout}")
     endif()
 
     foreach(line IN LISTS lines)
@@ -132,8 +135,10 @@ function(validate_rpc_stdout stdout label)
     list(GET lines 14 line14)
     list(GET lines 15 line15)
     list(GET lines 16 line16)
+    list(GET lines 17 line17)
+    list(GET lines 18 line18)
 
-    if(NOT line0 MATCHES [=["id":1]=] OR NOT line0 MATCHES [=["instance_id":"[0-9a-fA-F-]+"]=] OR NOT line0 MATCHES [=["project_root"]=] OR NOT line0 MATCHES [=["frame":0]=] OR NOT line0 MATCHES [=["time":0\.0]=])
+    if(NOT line0 MATCHES [=["id":1]=] OR NOT line0 MATCHES [=["instance_id":"[0-9a-fA-F-]+"]=] OR NOT line0 MATCHES [=["project_root"]=] OR NOT line0 MATCHES [=["frame":0]=] OR NOT line0 MATCHES [=["time":0\.0]=] OR NOT line0 MATCHES [=["seed":1234]=])
         message(FATAL_ERROR "${label}: get_status initial response did not include expected fields:\n${line0}")
     endif()
     if(NOT line1 MATCHES [=["id":2]=] OR NOT line1 MATCHES [=["result"]=] OR NOT line1 MATCHES [=["t":1\.25]=])
@@ -160,7 +165,7 @@ function(validate_rpc_stdout stdout label)
     if(NOT line8 MATCHES [=["id":9]=] OR NOT line8 MATCHES [=["path"]=])
         message(FATAL_ERROR "${label}: second capture response did not include a path:\n${line8}")
     endif()
-    if(NOT line9 MATCHES [=["id":10]=] OR NOT line9 MATCHES [=["instance_id":"[0-9a-fA-F-]+"]=] OR NOT line9 MATCHES [=["frame":1]=])
+    if(NOT line9 MATCHES [=["id":10]=] OR NOT line9 MATCHES [=["instance_id":"[0-9a-fA-F-]+"]=] OR NOT line9 MATCHES [=["frame":1]=] OR NOT line9 MATCHES [=["seed":1234]=])
         message(FATAL_ERROR "${label}: get_status final response did not include expected fields:\n${line9}")
     endif()
     if(NOT line10 MATCHES [=["id":11]=] OR NOT line10 MATCHES [=["schema":"pelican\.frame_plan"]=] OR NOT line10 MATCHES [=["version":1]=] OR NOT line10 MATCHES [=["graph":"main_render"]=])
@@ -183,6 +188,12 @@ function(validate_rpc_stdout stdout label)
     endif()
     if(NOT line16 MATCHES [=["id":15]=] OR NOT line16 MATCHES [=["code":-32601]=])
         message(FATAL_ERROR "${label}: unknown method did not return -32601:\n${line16}")
+    endif()
+    if(NOT line17 MATCHES [=["id":16]=] OR NOT line17 MATCHES [=["seed":99]=])
+        message(FATAL_ERROR "${label}: set_seed response did not include the updated seed:\n${line17}")
+    endif()
+    if(NOT line18 MATCHES [=["id":17]=] OR NOT line18 MATCHES [=["instance_id":"[0-9a-fA-F-]+"]=] OR NOT line18 MATCHES [=["frame":1]=] OR NOT line18 MATCHES [=["seed":99]=])
+        message(FATAL_ERROR "${label}: get_status after set_seed did not include updated seed:\n${line18}")
     endif()
 endfunction()
 
