@@ -18,6 +18,7 @@ set(PELICAN_INSTALL_DIR ${CMAKE_SOURCE_DIR}/dist$<$<CONFIG:Debug>:_debug>)
 set(PELICAN_LIB_DIR ${PELICAN_INSTALL_DIR}/lib/bin)
 set(PELICAN_INCLUDE_DIR ${PELICAN_INSTALL_DIR}/lib/include)
 option(PELICAN_RUNTIME_SHADER_COMPILER "Enable runtime GLSL shader compilation with shaderc" ON)
+option(PELICAN_WITH_AUDIO "Enable WAV sound-effect playback with miniaudio" ON)
 option(PELICAN_WITH_VAT "Enable pelican.vat GLB playback support" ON)
 option(PELICAN_WITH_EXR "Enable EXR texture loading with tinyexr" ON)
 option(PELICAN_WITH_RPC "Enable stdio JSON-RPC control server" ON)
@@ -49,6 +50,30 @@ FetchContent_Declare(
   GIT_TAG        1.0.2
 )
 FetchContent_MakeAvailable(glm)
+
+## miniaudio
+if(PELICAN_WITH_AUDIO)
+  FetchContent_Declare(
+    miniaudio
+    GIT_REPOSITORY https://github.com/mackron/miniaudio.git
+    GIT_TAG        0.11.25
+  )
+  FetchContent_GetProperties(miniaudio)
+  if(NOT miniaudio_POPULATED)
+    if(POLICY CMP0169)
+      cmake_policy(PUSH)
+      cmake_policy(SET CMP0169 OLD)
+    endif()
+    FetchContent_Populate(miniaudio)
+    if(POLICY CMP0169)
+      cmake_policy(POP)
+    endif()
+  endif()
+  if(NOT TARGET miniaudio)
+    add_library(miniaudio INTERFACE)
+    target_include_directories(miniaudio INTERFACE ${miniaudio_SOURCE_DIR})
+  endif()
+endif()
 
 ## json
 FetchContent_Declare(

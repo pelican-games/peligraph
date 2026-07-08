@@ -3,6 +3,7 @@
 #include "components/localtransform.hpp"
 #include "gameobjects.hpp"
 #include "userinput.hpp"
+#include <handle.hpp>
 #include <phys/physquery.hpp>
 
 #include <cstdint>
@@ -45,6 +46,11 @@ class GameContext {
     float randomFloat(float min, float max);
     void setSeed(std::uint64_t seed);
     std::uint64_t seed() const;
+
+    SoundHandle playSound(std::string_view path) const;
+    void stopSound(SoundHandle handle) const;
+    void setBusVolume(std::string_view bus, float volume) const;
+    bool isPlaying(SoundHandle handle) const;
 };
 
 } // namespace Pelican
