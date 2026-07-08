@@ -9,6 +9,7 @@
 #include "../src/core/log.hpp"
 #include "../src/core/playback/vatplayer.hpp"
 #include "../src/core/renderer/debugdraw.hpp"
+#include "../src/core/renderer/debugtext.hpp"
 #include "../src/core/renderer/camera.hpp"
 #include "../src/core/shader/pipelinefactory.hpp"
 #include "../src/core/shader/shadercompiler.hpp"
@@ -684,6 +685,49 @@ void main() {
 })json");
 }
 
+void writeDebugTextProject(const std::filesystem::path &root) {
+    writeTextFile(root / "project.json", makeFeatureProjectJson().dump(2));
+    writeTextFile(root / "scene.json", R"json({
+  "schema": "pelican.scene",
+  "version": 1,
+  "scenes": {
+    "default_scene": {
+      "objects": []
+    }
+  }
+})json");
+    writeTextFile(root / "assets.json", R"json({"models":[]})json");
+    writeTextFile(root / "ui" / "ui.json", R"json({"images":[]})json");
+    writeTextFile(root / "shaders" / "fullscreen.vert", stemFullscreenVertexShader());
+    writeTextFile(root / "shaders" / "present.frag", R"glsl(
+#version 450
+layout(location = 0) out vec4 outColor;
+void main() {
+    outColor = vec4(0.02, 0.02, 0.04, 1.0);
+}
+)glsl");
+    writeTextFile(root / "passes" / "main.json", R"json({
+  "features": ["engine://features/debug_text.json"],
+  "render_targets": [],
+  "rendering_passes": [
+    {
+      "name": "main",
+      "passes": [
+        {
+          "name": "present",
+          "type": "fullscreen",
+          "output": {"color": "swapchain", "depth": null},
+          "shader": {
+            "vertex": "shaders/fullscreen",
+            "fragment": "shaders/present"
+          }
+        }
+      ]
+    }
+  ]
+})json");
+}
+
 void writeColliderDebugDrawProject(const std::filesystem::path &root) {
     writeDebugDrawProject(root);
     writeTextFile(root / "scene.json", R"json({
@@ -1171,6 +1215,19 @@ void renderDebugDrawFrame(RenderTarget &render_target) {
     (void)render_target;
 }
 
+void renderDebugTextFrame(RenderTarget &render_target) {
+    auto &renderer = GET_MODULE(Renderer);
+    auto &debug_text = GET_MODULE(DebugText);
+    debug_text.text(-64, -64, "CLIP", {1.0f, 0.0f, 0.0f, 1.0f});
+
+    GameContext context;
+    context.debugText(0, 0, "WP");
+
+    renderer.render();
+    GET_MODULE(VulkanManageCore).waitIdle();
+    (void)render_target;
+}
+
 void renderColliderDebugDrawFrame(RenderTarget &render_target) {
     GET_MODULE(ECSPredefinedRegistration).reg();
     GET_MODULE(SceneLoader).load("default_scene");
@@ -1204,6 +1261,10 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         GET_MODULE(ProjectSource).setProjectData(makeFeatureProjectJson().dump());
     } else if (golden_case.mode == "debug_draw_feature") {
         writeDebugDrawProject(temp_dir);
+        GET_MODULE(PathResolver).setup(temp_dir, false);
+        GET_MODULE(ProjectSource).setProjectData(makeFeatureProjectJson().dump());
+    } else if (golden_case.mode == "debug_text_feature") {
+        writeDebugTextProject(temp_dir);
         GET_MODULE(PathResolver).setup(temp_dir, false);
         GET_MODULE(ProjectSource).setProjectData(makeFeatureProjectJson().dump());
     } else if (golden_case.mode == "collider_debug_draw") {
@@ -1259,6 +1320,8 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         renderFeatureFrame(render_target);
     } else if (golden_case.mode == "debug_draw_feature") {
         renderDebugDrawFrame(render_target);
+    } else if (golden_case.mode == "debug_text_feature") {
+        renderDebugTextFrame(render_target);
     } else if (golden_case.mode == "collider_debug_draw") {
         renderColliderDebugDrawFrame(render_target);
     } else if (isHdrGoldenMode(golden_case.mode)) {
@@ -1329,9 +1392,9 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     setupLogger();
     const auto cases = discoverGoldenCases();
 #if PELICAN_WITH_VAT
-    REQUIRE(cases.size() == 15);
+    REQUIRE(cases.size() == 16);
 #else
-    REQUIRE(cases.size() == 14);
+    REQUIRE(cases.size() == 15);
 #endif
 
     for (const auto &golden_case : cases) {

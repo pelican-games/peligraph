@@ -12,6 +12,7 @@
 #include "../log.hpp"
 #include "../phys/physworld.hpp"
 #include "../renderer/camera.hpp"
+#include "../renderer/debugtext.hpp"
 
 namespace Pelican {
 
@@ -162,6 +163,10 @@ void GameContext::loadScene(std::string_view name) const {
 
 std::string GameContext::currentScene() const {
     return GET_MODULE(SceneLoader).currentScene();
+}
+
+void GameContext::debugText(int x, int y, std::string_view text) const {
+    GET_MODULE(DebugText).text(x, y, text);
 }
 
 } // namespace Pelican

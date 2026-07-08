@@ -7,6 +7,7 @@
 #include "../log.hpp"
 #include "../profiler.hpp"
 #include "../renderer/debugdraw.hpp"
+#include "../renderer/debugtext.hpp"
 #include "../renderer/shadowdepthpasscontainer.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include "../vkcore/rendertarget.hpp"
@@ -34,6 +35,16 @@ struct DebugDrawRuntimeDependencies {
     const RenderTargetMetadataResolver &render_target_metadata;
     ShaderLibrary &shader_library;
     DebugDraw &debug_draw;
+    const PathResolver &path_resolver;
+    std::vector<std::string> shader_defines;
+    bool warn_backend_specific_shader_refs = false;
+};
+
+struct DebugTextRuntimeDependencies {
+    RenderTarget &render_target;
+    const RenderTargetMetadataResolver &render_target_metadata;
+    ShaderLibrary &shader_library;
+    DebugText &debug_text;
     const PathResolver &path_resolver;
     std::vector<std::string> shader_defines;
     bool warn_backend_specific_shader_refs = false;
@@ -127,6 +138,28 @@ DebugDrawRuntimeDependencies requireDebugDrawDependencies(
     };
 }
 
+DebugTextRuntimeDependencies requireDebugTextDependencies(
+    const PassDefinition &pass_def,
+    const RenderingPassRuntimeDependencies &dependencies) {
+    if (dependencies.render_target == nullptr || dependencies.render_target_metadata == nullptr ||
+        dependencies.shader_library == nullptr || dependencies.path_resolver == nullptr ||
+        !dependencies.debug_text_provider) {
+        throw std::runtime_error(
+            "DebugText pass runtime compile requires render target, render target metadata, "
+            "shader library, path resolver, and debug text dependencies: " +
+            pass_def.name);
+    }
+    return DebugTextRuntimeDependencies{
+        *dependencies.render_target,
+        *dependencies.render_target_metadata,
+        *dependencies.shader_library,
+        dependencies.debug_text_provider(),
+        *dependencies.path_resolver,
+        dependencies.shader_defines,
+        dependencies.warn_backend_specific_shader_refs,
+    };
+}
+
 ShadowDepthRuntimeDependencies requireShadowDepthDependencies(
     const PassDefinition &pass_def,
     const RenderingPassRuntimeDependencies &dependencies) {
@@ -213,6 +246,22 @@ PassId compileDebugDrawPass(const PassDefinition &pass_def, DebugDrawRuntimeDepe
                                                 dependencies.shader_defines);
 }
 
+PassId compileDebugTextPass(const PassDefinition &pass_def, DebugTextRuntimeDependencies dependencies) {
+    const auto color_format =
+        resolveFirstColorFormat(pass_def, dependencies.render_target, dependencies.render_target_metadata);
+    const auto &debug_info = pass_def.debugTextInfo();
+    const auto vert_shader = registerShaderReference(dependencies.shader_library, dependencies.path_resolver,
+                                                     debug_info.vert_shader,
+                                                     dependencies.warn_backend_specific_shader_refs,
+                                                     dependencies.shader_defines);
+    const auto frag_shader = registerShaderReference(dependencies.shader_library, dependencies.path_resolver,
+                                                     debug_info.frag_shader,
+                                                     dependencies.warn_backend_specific_shader_refs,
+                                                     dependencies.shader_defines);
+    return dependencies.debug_text.registerPass(color_format, vert_shader, frag_shader,
+                                                dependencies.shader_defines);
+}
+
 PassId compileShadowDepthPass(const PassDefinition &pass_def, ShadowDepthRuntimeDependencies dependencies) {
     const auto depth_rt = dependencies.render_target_metadata.get(pass_def.output_depth);
     const auto vert_shader = registerShaderReference(dependencies.shader_library, dependencies.path_resolver,
@@ -243,6 +292,10 @@ CompiledRenderingPass compileRenderingPassRuntime(const RenderingPassDefinition 
             const auto debug_draw_dependencies = requireDebugDrawDependencies(pass_def, dependencies);
             compiled_pass.passes.push_back(
                 CompiledPass{pass_def, compileDebugDrawPass(pass_def, debug_draw_dependencies)});
+        } else if (pass_def.isDebugText()) {
+            const auto debug_text_dependencies = requireDebugTextDependencies(pass_def, dependencies);
+            compiled_pass.passes.push_back(
+                CompiledPass{pass_def, compileDebugTextPass(pass_def, debug_text_dependencies)});
         } else if (pass_def.isShadowDepth()) {
             const auto shadow_depth_dependencies = requireShadowDepthDependencies(pass_def, dependencies);
             compiled_pass.passes.push_back(

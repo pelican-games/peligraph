@@ -54,6 +54,8 @@ class GameContext {
 
     void loadScene(std::string_view name) const;
     std::string currentScene() const;
+
+    void debugText(int x, int y, std::string_view text) const;
 };
 
 } // namespace Pelican

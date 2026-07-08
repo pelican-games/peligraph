@@ -158,7 +158,7 @@ void validatePassOutputs(const PassDefinition &pass_def) {
         }
     }
 
-    if (pass_def.isDebugDraw() || pass_def.isUi()) {
+    if (pass_def.isDebugDraw() || pass_def.isDebugText() || pass_def.isUi()) {
         if (pass_def.output_color.size() != 1) {
             throw std::runtime_error("Single-color pass requires exactly one color output: " + pass_def.name);
         }
@@ -179,9 +179,10 @@ void validatePassSpecificFields(const PassDefinition &pass_def, const nlohmann::
             pass_def.name);
     }
 
-    if (!pass_def.isFullscreen() && !pass_def.isDebugDraw() && !pass_def.isShadowDepth() &&
+    if (!pass_def.isFullscreen() && !pass_def.isDebugDraw() && !pass_def.isDebugText() &&
+        !pass_def.isShadowDepth() &&
         pass_json.contains("shader")) {
-        throw std::runtime_error("Only fullscreen, debug_draw, and shadow_depth passes support shader: " +
+        throw std::runtime_error("Only fullscreen, debug_draw, debug_text, and shadow_depth passes support shader: " +
                                  pass_def.name);
     }
 

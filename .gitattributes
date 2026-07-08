@@ -4,3 +4,4 @@ test/fixtures/import_manifest/** -text
 *.glb binary
 *.vrm binary
 *.spv binary
+*.png binary

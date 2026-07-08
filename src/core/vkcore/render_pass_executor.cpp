@@ -38,7 +38,7 @@ void RenderPassExecutor::execute(const FrameRenderContext &frame, const Compiled
     cmd_buf.beginRendering(render_info);
     setDynamicViewportAndScissor(cmd_buf, target_extent);
 
-    renderDynamicPassDrawCalls(cmd_buf, pass.pass_id, pass_def, dependencies.dispatch);
+    renderDynamicPassDrawCalls(cmd_buf, pass.pass_id, pass_def, target_extent, dependencies.dispatch);
 
     cmd_buf.endRendering();
 }

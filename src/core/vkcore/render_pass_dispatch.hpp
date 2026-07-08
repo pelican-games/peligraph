@@ -9,6 +9,7 @@ namespace Pelican {
 
 class Camera;
 class DebugDraw;
+class DebugText;
 struct FullscreenPassRendererDependencies;
 class FullscreenPassRenderer;
 struct MaterialRendererDependencies;
@@ -26,6 +27,7 @@ struct RenderPassDispatchDependencies {
     UiRenderer &ui_renderer;
     const UiRendererDependencies &ui_renderer_dependencies;
     DebugDraw *debug_draw = nullptr;
+    DebugText *debug_text = nullptr;
     const Camera &camera;
     vk::Format swapchain_color_format;
 };
@@ -34,6 +36,7 @@ void renderUiPass(vk::CommandBuffer cmd_buf, const FrameRenderContext &frame, co
                   vk::Extent2D target_extent, RenderTargetContainer &rt_container,
                   const RenderPassDispatchDependencies &dependencies);
 void renderDynamicPassDrawCalls(vk::CommandBuffer cmd_buf, PassId pass_id, const PassDefinition &pass_def,
+                                vk::Extent2D target_extent,
                                 const RenderPassDispatchDependencies &dependencies);
 
 } // namespace Pelican

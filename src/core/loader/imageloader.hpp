@@ -3,6 +3,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <span>
+#include <string_view>
 #include <vector>
 
 namespace Pelican {
@@ -23,5 +25,6 @@ struct LoadedImage {
 };
 
 LoadedImage loadImageFile(const std::filesystem::path &path);
+LoadedImage loadImageMemory(std::span<const std::byte> data, std::string_view name);
 
 } // namespace Pelican

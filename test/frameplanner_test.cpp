@@ -392,6 +392,43 @@ TEST_CASE("frame planner feature-composed config plan matches fixture", "[framep
     REQUIRE(plan_json == readJson(fixtureRoot() / "plans" / "debug_draw_feature_main.json"));
 }
 
+TEST_CASE("frame planner debug text feature plan matches fixture", "[frameplanner]") {
+    const auto config = nlohmann::json::parse(R"json({
+  "features": ["engine://features/debug_text.json"],
+  "render_targets": [],
+  "rendering_passes": [
+    {
+      "name": "main",
+      "passes": [
+        {
+          "name": "present",
+          "type": "fullscreen",
+          "output": {"color": "swapchain", "depth": null}
+        }
+      ]
+    }
+  ]
+})json");
+
+    const auto composed = composeRenderFeatureConfig(
+        config,
+        RenderFeatureComposeDependencies{
+            [](std::string_view ref) {
+                if (ref != "engine://features/debug_text.json") {
+                    throw std::runtime_error("unexpected feature ref: " + std::string{ref});
+                }
+                return readText(sourceRoot() / "src" / "core" / "resources" / "features" /
+                                "debug_text.json");
+            },
+            true,
+        });
+    const auto graphs = parseFrameGraphDefinitionsFromConfigJson(composed.config);
+    REQUIRE(graphs.size() == 1);
+
+    const auto plan_json = framePlanToJson(planFrameGraph(graphs.front()));
+    REQUIRE(plan_json == readJson(fixtureRoot() / "plans" / "debug_text_feature_main.json"));
+}
+
 TEST_CASE("frame planner shadow feature plan matches fixture", "[frameplanner]") {
     const auto config = nlohmann::json::parse(R"json({
   "features": ["engine://features/shadow_directional.json"],

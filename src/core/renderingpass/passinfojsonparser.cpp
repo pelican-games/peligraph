@@ -1,5 +1,6 @@
 #include "passinfojsonparser.hpp"
 #include "debugdrawpassinfojsonparser.hpp"
+#include "debugtextpassinfojsonparser.hpp"
 #include "fullscreenpassinfojsonparser.hpp"
 #include "renderingpassjsonhelpers.hpp"
 #include <stdexcept>
@@ -28,6 +29,14 @@ void parseDebugDrawPassInfoIntoDefinition(PassDefinition &pass_def, const nlohma
     }
 
     pass_def.debugDrawInfo() = parseDebugDrawPassInfoFromJson(pass_json, pass_def.name);
+}
+
+void parseDebugTextPassInfoIntoDefinition(PassDefinition &pass_def, const nlohmann::json &pass_json) {
+    if (!pass_def.isDebugText()) {
+        return;
+    }
+
+    pass_def.debugTextInfo() = parseDebugTextPassInfoFromJson(pass_json, pass_def.name);
 }
 
 void parseShadowDepthPassInfoIntoDefinition(PassDefinition &pass_def, const nlohmann::json &pass_json) {

@@ -11,6 +11,7 @@
 #include "../fullscreenpass/fullscreenpasscontainer.hpp"
 #include "../material/materialcontainer.hpp"
 #include "../renderer/debugdraw.hpp"
+#include "../renderer/debugtext.hpp"
 #include "../model/vertbufcontainer.hpp"
 #include "../renderingpass/computetask.hpp"
 #include "../renderingpass/framegraphruntime.hpp"
@@ -53,6 +54,7 @@ struct RenderFrameModules {
     UiRenderer &ui_renderer;
     const UIContainer &ui_container;
     DebugDraw *debug_draw;
+    DebugText *debug_text;
     RenderTiming *render_timing;
     const Camera &camera;
     LightContainer &light_container;
@@ -62,6 +64,8 @@ RenderFrameModules resolveRenderFrameModules() {
     auto &rendering_pass_container = GET_MODULE(RenderingPassContainer);
     DebugDraw *debug_draw =
         rendering_pass_container.isFeatureEnabled("debug_draw") ? &GET_MODULE(DebugDraw) : nullptr;
+    DebugText *debug_text =
+        rendering_pass_container.isFeatureEnabled("debug_text") ? &GET_MODULE(DebugText) : nullptr;
     RenderTiming *render_timing =
         rendering_pass_container.isFeatureEnabled("gpu_timing") ? &GET_MODULE(RenderTiming) : nullptr;
 
@@ -84,6 +88,7 @@ RenderFrameModules resolveRenderFrameModules() {
         GET_MODULE(UiRenderer),
         GET_MODULE(UIContainer),
         debug_draw,
+        debug_text,
         render_timing,
         GET_MODULE(Camera),
         GET_MODULE(LightContainer),
@@ -245,6 +250,7 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
         modules.ui_renderer,
         ui_renderer_dependencies,
         modules.debug_draw,
+        modules.debug_text,
         modules.camera,
         modules.render_target.getSwapchainFormat()};
     const RenderPassExecutorDependencies pass_executor_dependencies{modules.render_target_container, modules.vk_utils,
