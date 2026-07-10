@@ -458,6 +458,10 @@ void Audio::setBusVolume(std::string_view bus, float volume) {
     updateVoiceVolumes();
 }
 
+float Audio::busVolume(std::string_view bus) const {
+    return bus_volumes[busIndex(audioBusFromName(bus))];
+}
+
 bool Audio::isPlaying(SoundHandle handle) const {
     const auto it = voices.find(handle);
     return it != voices.end() && backend->isPlaying(it->second.backend_id);

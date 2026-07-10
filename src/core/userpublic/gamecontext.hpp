@@ -8,6 +8,8 @@
 #include <phys/physquery.hpp>
 
 #include <cstdint>
+#include <filesystem>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -61,6 +63,20 @@ class GameContext {
     template <class Event> void emit(const Event &event) const {
         internal::getEventRegisterer().emit(event);
     }
+
+    using Json = nlohmann::json;
+    struct SlotInfo {
+        std::string slot;
+        std::filesystem::file_time_type timestamp;
+    };
+
+    Json gameSettings() const;
+    void setGameSettings(Json settings) const;
+    void saveSettings() const;
+
+    void saveData(std::string_view slot, const Json &data) const;
+    std::optional<Json> loadData(std::string_view slot) const;
+    std::vector<SlotInfo> listSaves() const;
 };
 
 } // namespace Pelican

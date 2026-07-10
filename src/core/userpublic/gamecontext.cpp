@@ -10,9 +10,12 @@
 #include "../ecs/predefined/transform.hpp"
 #include "../loader/scene.hpp"
 #include "../log.hpp"
+#include "../persistence/persistence.hpp"
 #include "../phys/physworld.hpp"
 #include "../renderer/camera.hpp"
 #include "../renderer/debugtext.hpp"
+
+#include <utility>
 
 namespace Pelican {
 
@@ -167,6 +170,40 @@ std::string GameContext::currentScene() const {
 
 void GameContext::debugText(int x, int y, std::string_view text) const {
     GET_MODULE(DebugText).text(x, y, text);
+}
+
+GameContext::Json GameContext::gameSettings() const {
+    return GET_MODULE(Persistence).gameSettings();
+}
+
+void GameContext::setGameSettings(Json settings) const {
+    GET_MODULE(Persistence).setGameSettings(std::move(settings));
+}
+
+void GameContext::saveSettings() const {
+    auto &persistence = GET_MODULE(Persistence);
+#if PELICAN_WITH_AUDIO
+    persistence.captureAudioSettings(GET_MODULE(Audio));
+#endif
+    persistence.saveSettings();
+}
+
+void GameContext::saveData(std::string_view slot, const Json &data) const {
+    GET_MODULE(Persistence).saveData(slot, data);
+}
+
+std::optional<GameContext::Json> GameContext::loadData(std::string_view slot) const {
+    return GET_MODULE(Persistence).loadData(slot);
+}
+
+std::vector<GameContext::SlotInfo> GameContext::listSaves() const {
+    const auto saves = GET_MODULE(Persistence).listSaves();
+    std::vector<SlotInfo> result;
+    result.reserve(saves.size());
+    for (const auto &save : saves) {
+        result.push_back(SlotInfo{.slot = save.slot, .timestamp = save.timestamp});
+    }
+    return result;
 }
 
 } // namespace Pelican
