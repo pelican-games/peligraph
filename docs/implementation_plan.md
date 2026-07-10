@@ -1381,6 +1381,44 @@ INFO / 構造逸脱 = WARNING / strict・dist = ERROR)。依存: WP55, 57。見�
 
 受け入れ基準: a〜e + §0 共通規則。fetch・lint はスコープ外。
 
+### WP67: リファクタ R5 後続 — modelview 統合(絆創膏と隠しコンポーネントの撤去)
+
+参照: **`design_ecs_lifecycle.md` §3(ModelViewUpdate 統合)+ 監査 Q3 が背景**。
+依存: WP62(ECS v2.1)。見積: 中。
+
+1. `SimpleModelViewComponent` と `SimpleModelViewUpdateComponent` を統合し
+   1 コンポーネントに(監査判定「JSON を変えるより統合が自然」— **scene JSON の
+   `simplemodelview.model` の書き味は不変**。example の 31 参照が既存利用者)
+2. SceneLoader の隠し `simplemodelviewupdate` 自動生成を撤去
+3. 手動文字列コピーの絆創膏(「データぶっ壊れる」コメント一帯)を撤去 —
+   WP62 のライフサイクル(construct/move/destroy + deinit)が正となったため
+   不要になったことをカナリアで証明
+4. deinit(GPU インスタンス解放)が remove/clear/teardown の全経路で
+   正しく走ることを lifecycle テストに追加(リークカウンタ)
+5. 受け入れ: (a) 既存テスト・golden 全維持(scene JSON 不変の証明)
+   (b) 統合後の登録型が ECS v2.1 の static_assert を素で通る(絆創膏なし)
+   (c) カナリア/リークテスト (d) §0 共通規則
+
+### WP68: マテリアル M2a — .surface パーサと values 方式(形式 drift 解消)
+
+参照: **`design_material_shading.md` v1.2 §3・§3-10 が仕様の正**。
+依存: WP58。見積: 中。**純ロジックのみ — バインダ・レンダラは M2b の領分**。
+
+1. `src/project/surfaceformat.{hpp,cpp}` 新設: `.surface` コンテナのヘッダ
+   パース — `//! pelican.surface v1` ブロック(language / **順序付き params
+   配列**(name・明示型 float|vecN|int・default 必須・min/max/hint 任意)/
+   textures(name・default パス・color_space)/ screen_inputs)+ コード本体の
+   分離。エラーは名前入り(型なし・default なし・重複名・未知 language)
+2. `materialformat` を v1.2 形式へ改訂: `values`(宣言済み param の上書き)方式。
+   旧 v1.1 の JSON 側 params/textures **宣言**は削除(「宣言順 std140」は
+   仕様バグとして廃止済み — レビュー指摘)。未知キーの扱いを確定
+   (warning 報告 — [PFW] 流儀)
+3. fixture: valid(最小/full/多言語ヘッダ)/ invalid(各エラー系)/
+   values の型不一致・未宣言 param 上書きエラー
+4. 受け入れ: (a) パーサテスト全緑 (b) 既存テスト・golden 全維持
+   (c) shader_contract.md との整合(矛盾を見つけたら報告 — 修正は M2b)
+   (d) §0 共通規則
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **最小コマンド層**: (1) ファイル連携済み → (2) WP27 実装済み → (3) `load_gltf` / `update_transforms` は **2026-07-07 に実装 GO 決定**。前提はすべて充足(宛先 = scene v1 の objects[].name / アセット意味論 = WP21)。設計時要件: **複数インスタンス運用**(エージェントが複数エンジンを並行駆動する使い方) — stdio rpc は 1 プロセス 1 クライアントの現行構造を維持しつつ、`get_status`(instance id・project・フレーム番号)を追加してインスタンス識別可能に。プロジェクトは読み取り専有なので並行起動は安全(書き込み系操作を入れる際に排他を設計)。複数クライアント同時接続は TCP/WebSocket 展開時の課題として分離
