@@ -100,9 +100,9 @@ constexpr std::string_view project_json = R"json({
     "fullscreen": false,
     "framerate": 60,
     "camera": {
-      "fov_y": 45.0,
-      "near": 0.1,
-      "far": 1000,
+      "yfov": 0.7853981633974483,
+      "znear": 0.1,
+      "zfar": 1000,
       "up": [0.0, -1.0, 0.0]
     },
     "default_scene_id": "default_scene",
