@@ -1307,6 +1307,37 @@ WP47 の即時可視テスト不変 + §0 共通規則。**内部コミットは
    rejection fixture がエラーメッセージ(新キー名の案内込み)まで検証
    (c) grep で受理コードの残骸ゼロ (d) §0 共通規則
 
+### WP64: リファクタ R4 — legacy 実行系の撤去(F2 の完遂)
+
+参照: **監査 Q1(`docs/design_reviews/2026-07-08_refactor_qa_codex.md` の
+「legacy 実行系の撤去リスク」)が仕様の正** — 意味論差分表と追加受け入れ基準
+8 項目をそのまま採用する。依存: WP35, 62。見積: 大。
+
+1. **撤去前に A/B 差分テストを作る**(同一 WP 内・先行コミット):
+   テスト限定の実行経路セレクタ + **実行 node trace の計装**(実行された
+   node 名/種別/順序、load/store/clear、最終 layout)を追加し、
+   全 Renderer 経由 golden で legacy/planned の trace と画像の一致を検証
+2. `renderer.cpp` の `has_compute` 分岐を撤去し全 config を planned 実行へ。
+   `executeLegacyRenderingPasses` を削除。A/B セレクタはテスト資産として
+   fixture 比較(採取済み trace)に置換
+3. **planned のみが持つ意味論を正式化**: pure-render の before/after 明示
+   エッジが実行順に反映されるケースをテスト追加(legacy は無視していた —
+   これは修正であり回帰ではない、と文書化)
+4. Q1 の残基準: (a) `framePlanOrder(plan)` と実行列の一致テスト
+   (b) **Vulkan validation + synchronization validation を有効にした
+   複数フレーム実行**(waitIdle なし・in-flight 数超、compute↔render 混在)で
+   エラー 0 件 (c) resize / shader hot reload 後の fullscreen 入力 rebind 検証
+   (d) GPU timing の node 名・順序がプランと一致
+   (e) 代表 config の CPU frame time / バリア走査コストを撤去前後で計測し
+   REPORT に記録(バリア走査の per-node 事前コンパイル化は数値が悪ければ実施)
+5. swapchain スモーク(ウィンドウ経路)は既存 player 起動テストで代替可 —
+   resize は (c) に含める。実施不能な項目は理由を REPORT に明記(黙って
+   省略しない)
+
+受け入れ基準: 1〜4 のテスト全緑 + 既存テスト・golden 全維持 + REPORT
+(`docs/design_reviews/2026-07-10_wp64_report.md` — trace 差分の有無・計測値)
++ §0 共通規則。
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **最小コマンド層**: (1) ファイル連携済み → (2) WP27 実装済み → (3) `load_gltf` / `update_transforms` は **2026-07-07 に実装 GO 決定**。前提はすべて充足(宛先 = scene v1 の objects[].name / アセット意味論 = WP21)。設計時要件: **複数インスタンス運用**(エージェントが複数エンジンを並行駆動する使い方) — stdio rpc は 1 プロセス 1 クライアントの現行構造を維持しつつ、`get_status`(instance id・project・フレーム番号)を追加してインスタンス識別可能に。プロジェクトは読み取り専有なので並行起動は安全(書き込み系操作を入れる際に排他を設計)。複数クライアント同時接続は TCP/WebSocket 展開時の課題として分離
