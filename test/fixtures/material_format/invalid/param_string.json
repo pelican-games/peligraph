@@ -5,7 +5,10 @@
     {
       "name": "lava",
       "params": {
-        "flow_speed": "fast"
+        "flow_speed": {
+          "type": "float",
+          "default": 0.35
+        }
       }
     }
   ]

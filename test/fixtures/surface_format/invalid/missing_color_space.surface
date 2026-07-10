@@ -1,0 +1,6 @@
+//! pelican.surface v1
+//! language: glsl
+//! textures:
+//!   - { name: flow_map, default: "project://textures/flow.png" }
+
+void pelican_surface() {}

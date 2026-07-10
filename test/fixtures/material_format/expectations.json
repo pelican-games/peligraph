@@ -29,7 +29,32 @@
   {
     "file": "invalid/param_string.json",
     "expect": "error",
-    "error_kind": "param"
+    "error_kind": "legacy_declaration"
+  },
+  {
+    "file": "invalid/textures_declaration.json",
+    "expect": "error",
+    "error_kind": "legacy_declaration"
+  },
+  {
+    "file": "invalid/value_type_mismatch.json",
+    "expect": "error",
+    "error_kind": "value_type"
+  },
+  {
+    "file": "invalid/undeclared_value.json",
+    "expect": "error",
+    "error_kind": "undeclared_value"
+  },
+  {
+    "file": "invalid/values_without_surface.json",
+    "expect": "error",
+    "error_kind": "values"
+  },
+  {
+    "file": "invalid/bad_surface_ref.json",
+    "expect": "error",
+    "error_kind": "surface_ref"
   },
   {
     "file": "invalid/base_type.json",

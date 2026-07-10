@@ -330,3 +330,8 @@ add_test(
         -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/devcli_assets
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_assets.cmake
 )
+
+pelican_define_test(surfaceformat_test pelican_project)
+target_compile_definitions(pelican_test_surfaceformat_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)

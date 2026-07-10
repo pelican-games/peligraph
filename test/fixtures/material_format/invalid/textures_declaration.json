@@ -1,0 +1,15 @@
+{
+  "schema": "pelican.material",
+  "version": 1,
+  "materials": [
+    {
+      "name": "lava",
+      "textures": {
+        "flow_map": {
+          "default": "engine://textures/flat_gray",
+          "color_space": "linear"
+        }
+      }
+    }
+  ]
+}

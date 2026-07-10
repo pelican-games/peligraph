@@ -1,0 +1,7 @@
+//! pelican.surface v1
+//! language: hlsl
+//! params: []
+//! textures: []
+//! screen_inputs: []
+
+void pelican_surface(in PelicanSurfaceInput i, inout PelicanSurface s) {}

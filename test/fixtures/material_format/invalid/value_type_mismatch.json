@@ -1,0 +1,13 @@
+{
+  "schema": "pelican.material",
+  "version": 1,
+  "materials": [
+    {
+      "name": "lava",
+      "surface": "project://shaders/lava.surface",
+      "values": {
+        "tint": [1.0, 0.5]
+      }
+    }
+  ]
+}
