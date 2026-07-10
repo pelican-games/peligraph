@@ -1275,6 +1275,38 @@ WP47 の即時可視テスト不変 + §0 共通規則。**内部コミットは
 1 つ**(部分マージ不可)。判断に迷ったら設計とレビュー 2 本を読み、それでも
 不明なら BLOCKED.md。
 
+### WP63: リファクタ R3 — strict v1 化(受理の厳格化・アトミック)
+
+参照: **監査 Q4(`docs/design_reviews/2026-07-08_refactor_qa_codex.md`)の
+爆風リストと対応表が作業リストの正**。依存: WP61, 62。見積: 中。
+**パーサ変更 + データ + テストを同一コミットでアトミックに**(途中状態は
+連鎖破壊する — Q4 の指摘)。
+
+1. **version == 1 強制**: project(runtime + devcli distconfig の 2 箇所)と
+   scene を `!= 1` reject に。schema なし top-level scene(legacy)受理と
+   旧 `lights` 変換を削除。fixture `scene_legacy.json` は削除し、
+   **version 0 / -1 / schema なしの rejection fixture を新設**
+   (expectations.json の該当行も error へ)
+2. **camera 別名削除**: fov_y / near / far の受理を止め、
+   **名前入りエラー**(「fov_y は廃止 — yfov(ラジアン)を使え」の形で
+   新キー名を案内)。camera_test の別名受理テストは rejection テストへ反転
+3. **collider 別名削除**: size / height の受理を止め同様の名前入りエラー。
+   physworld_test の互換テスト 2 箇所を rejection へ反転
+4. **rpc の rot → rotation**: パーサとテストデータ(run_rpc_headless /
+   set_camera / scene_flow の該当行 — Q4 に行番号)を同時変更。
+   transform_seq(別スキーマ)は**対象外**(Q4 の判定どおり)
+5. **shader 参照は stem のみ**: makeShaderReference の明示拡張子
+   (.spv/.vert/.frag/.comp/.wgsl)受理を削除(名前入りエラーで stem を案内)。
+   **内部の stem → .spv fallback 解決は維持**。互換を明示テストしていた
+   埋込データ(projectconfig_test / renderingpass_helpers_test /
+   shader_library_test の Q4 記載箇所)は rejection テストへ反転 or 削除
+6. **golden の SKIP 握り修正**: 実行開始後の例外を SKIP にせず fail に
+   (SKIP は「Vulkan デバイスなし」のみ — 過去に実エラーが SKIP に化けた
+   教訓の恒久対策)
+7. 受け入れ: (a) 全テスト・golden 全維持 (b) 全別名・legacy 受理の
+   rejection fixture がエラーメッセージ(新キー名の案内込み)まで検証
+   (c) grep で受理コードの残骸ゼロ (d) §0 共通規則
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **最小コマンド層**: (1) ファイル連携済み → (2) WP27 実装済み → (3) `load_gltf` / `update_transforms` は **2026-07-07 に実装 GO 決定**。前提はすべて充足(宛先 = scene v1 の objects[].name / アセット意味論 = WP21)。設計時要件: **複数インスタンス運用**(エージェントが複数エンジンを並行駆動する使い方) — stdio rpc は 1 プロセス 1 クライアントの現行構造を維持しつつ、`get_status`(instance id・project・フレーム番号)を追加してインスタンス識別可能に。プロジェクトは読み取り専有なので並行起動は安全(書き込み系操作を入れる際に排他を設計)。複数クライアント同時接続は TCP/WebSocket 展開時の課題として分離
