@@ -88,10 +88,17 @@ NDJSON スクリプトで「入力 → step_frame → capture」を回し golden
 
 ### 4.2 収録・リプレイ
 
-- 収録 = L1 スナップショット列を `pelican.input_seq` v1(JSONL、ヘッダ
-  schema/version/fps — R10/R4 の流儀)として書き出す
+- **(2026-07-11 改訂 — UI 設計 v3 の要請)** 収録の記録単位は
+  「L1 スナップショット列」ではなく **ordered InputEvent 列(event_seq +
+  フレーム境界マーカー)**を `pelican.input_seq` v1(JSONL、ヘッダ
+  schema/version/fps)として書き出す。スナップショットはリプレイ時に
+  再構成する。理由: L1 はフレーム内のイベント順序・各イベント時点の座標を
+  捨てるため、UI(press→move→release の区別、capture、ドラッグ)の再現には
+  情報不足(`design_ui_2d_foundation.md` §2-1・v2 レビュー R2)。
+  I3 未実装のため互換負債なし
 - リプレイ = L0 のリプレイバックエンドが input_seq を流す。
-  同一ビルド + 同一プロジェクト + 同一シードなら**完全再現**
+  同一ビルド + 同一プロジェクト + 同一シード + 同一 UI document revision なら
+  **完全再現**
 - 用途: バグ再現・回帰テスト・デモ(アトラクトモード)・リプレイゴースト
 
 ### 4.3 プレビューからゲーム用データを作る(ユーザー要求 3)

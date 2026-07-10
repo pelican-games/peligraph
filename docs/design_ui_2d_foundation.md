@@ -1,9 +1,9 @@
 # 2D 描画基盤と UI システム(v2)
 
 対象読者: エンジン担当・UI/2D を作る人。
-ステータス: v2 ドラフト(2026-07-10。**v1 は codex レビューで Reject —
-`docs/design_reviews/2026-07-10_ui_2d_review_codex.md` の C1〜C12 を全面受理して
-改稿。再レビュー待ち**)。
+ステータス: v3 ドラフト(2026-07-11。v1 Reject(C1〜C12)→ v2 Reject
+(`docs/design_reviews/2026-07-10_ui_2d_v2_review_codex.md` の R1〜R6)→
+**R1〜R6 を全面受理して改稿。再レビュー待ち**)。
 前提: 2026-07-07 決定「UI と 2D ゲームは描画基盤共有・上物分離」、
 2026-07-10 決定「エンジン標準スキン = ツール調 / エンジン UI = ImGui /
 ゲーム UI = pelican.ui」、ECS v2.1(世代付き ID・生ポインタ禁止)、
@@ -26,23 +26,42 @@ subset 定義に依存。ImGui はエンジン UI として別ユニット(§8)�
 ### 1-1. データ形式(CPU/GPU 契約)
 
 ```
-QuadVertex(24B, align 4):
-  float2 position   // framebuffer px(ViewportTransform 適用後)
-  float2 uv         // 正規化。solid は白 1texel ページの UV 固定値
-  u8x4   color      // RGBA8_UNORM straight alpha
+QuadVertex(stride = 20B, align 4 — R1 で 24B 誤記を訂正):
+  offset 0  : float2 position   // framebuffer px(§2-2 の変換・丸めの後)
+  offset 8  : float2 uv         // 正規化。solid は白 1texel ページの UV 固定値
+  offset 16 : u8x4   color      // RGBA8_UNORM・linear・straight alpha
+  // sizeof==20 / alignof==4 / 各 offsetof を static_assert し、
+  // shader reflection fixture(頂点属性の location/format/offset)をゲートにする
+
+index: uint16(quad あたり 6 index、頂点は 4/quad)。
+  既定上限 16384 quad = 65536 頂点で uint16 の境界に収まることを static_assert。
+  DrawRun の first_index:u32 / index_count:u32
+
 QuadCommand(CPU 中間・POD):
-  layer:u16, decl_seq:u32       // ソートキー(この 2 つで全順序が決まる)
-  texture_page:u16              // アトラスページ。0 = 白 1texel 予約ページ
+  layer:u16, decl_seq:u32       // ソートキー(この 2 つで全順序)
+  texture_page:u16              // 0 = 白 1texel 予約ページ
   sampler_key:u8                // nearest | linear
-  kind:u8                       // solid | sprite | glyph(sdf は将来値を予約)
-  clip_id:u16                   // クリップ表への添字
+  kind:u8                       // solid | sprite | glyph(sdf は値予約)
+  clip_id:u16                   // 正規化済みクリップ表への添字
   rect, uv_rect, color
+
 DrawRun:
-  pipeline, texture_page, sampler_key, scissor, first_index, index_count
+  pipeline_key(= kind 系), texture_page, sampler_key, scissor,
+  first_index:u32, index_count:u32
+  // 併合キーは (pipeline_key, texture_page, sampler_key, clip_id) の完全一致
+  //(R1: pipeline を併合条件に明記 — 異 kind を同 run に入れない)
 ```
 
-- 上限: 1 フレームのクアッド数・クリップ数に固定上限(config 宣言、既定
-  16384/256)。**超過は名前入きエラー**(黙って欠けない)
+- **blend(値まで固定)**: color = `(SRC_ALPHA, ONE_MINUS_SRC_ALPHA, ADD)`、
+  alpha = `(ONE, ONE_MINUS_SRC_ALPHA, ADD)` — **debug_text の現行値を採用**
+  (exact golden 維持のため。旧 UI の `(ZERO, ONE)` は置換対象の側)
+- **色の transfer**: JSON/スキンの色は sRGB 表記 → **document パース時に一度だけ
+  linear へ変換**して u8 linear を頂点に積む。テクスチャは sRGB view で
+  サンプリング。出力 attachment はパスの既存 sRGB format(シェーダは linear を
+  書き、エンコードはハードウェア)
+- 上限: 1 フレームのクアッド数(既定 16384)と**正規化後の一意クリップ数**
+  (既定 256 — push 回数ではない)。超過エラーには document key・
+  widget stable id・実数・上限を含める(R1)
 - 「単色 = 白 texel ページ」方式を採用(kind 分岐シェーダより run 併合が単純)
 
 ### 1-2. run 分割(順序の絶対規則)
@@ -85,23 +104,53 @@ struct FrameInput {
 ```
 
 - L0(GLFW / rpc)は既に順序付きキューを持つ — **キューを消さず公開**する形
-- UI ルーティングの位置 = `dispatchPendingEvents の後・ECS update の前`
-  (前フレームの semantic イベントは従来どおり頭で配送され、UI の消費マスクが
-  Actions 評価前に確定する)。rpc ループも同順に揃える
-- **UI 消費マスク**: UI がヒット/capture 中の pointer 入力を Actions 評価から
-  隠す外部マスク API を Actions に追加
-- 再現単位 = **ordered events + UI document revision + ViewportTransform**。
-  `pelican.input_seq` v1 は ordered pointer events を記録する形に改訂
-  (I 系設計への波及として記録)
+- **フレーム位相契約(R2 — 順序の文章でなく queue 分離まで規範化)**:
+
+  ```
+  1. フレーム開始: E1 の pending を immutable な deliver_now へ swap
+  2. ordered input を freeze し、ImGui → pelican.ui の順でルーティング
+  3. UI 消費を適用した Actions フレームを一度だけ確定
+  4. deliver_now を game handler へ配送(以後の emit は常に pending_next 行き
+     — UI が emit した semantic は必ず次フレーム)
+  5. ECS / game systems 更新
+  ```
+
+  この順により「semantic handler が未マスク入力を観測する」穴
+  (現行は dispatchPendingEvents 中の handler が Actions を読める)と
+  「UI emit の同フレーム配送」の両方が閉じる。**rpc ループも同一位相**
+- **消費マスクの意味論(粗粒度で確定)**: UI がポインタをヒット/capture した
+  フレームは、そのポインタのボタン・移動を **frame 単位で** Actions から隠す
+  (同一フレームの「UI クリック + ワールドクリック」の混在は v1 では
+  表現しない — 制限として明記。イベント単位の細粒度マスクは将来拡張)
+- 再現単位 = **ordered events + UI document revision + ViewportTransform**
+- **FrameInput 前提 WP の受け入れ範囲(R2 — I 系に切り出す際の必須項目)**:
+  (a) event_seq の型(u64)・採番点(キュー投入時)・寿命(フレーム内)
+  (b) immutable span の寿命規約 (c) UI 消費の単位(上記 frame 粗粒度)
+  (d) Actions の一回評価化 + 外部マスク API (e) GLFW/rpc/replay の同一
+  InputEvent 化 (f) 通常 loop と rpc loop の位相同一性テスト
+  (g) `pelican.input_seq` の記録単位改訂(下記)
+- **`design_input_actions.md` §4 の正本改訂(本設計と同時)**: 収録の記録単位を
+  「L1 スナップショット列」から「**ordered InputEvent 列(event_seq +
+  フレーム境界マーカー)**」へ変更。スナップショットは再生時に再構成する。
+  I3 未実装のため互換負債なし
 
 ### 2-2. ViewportTransform と DPI(v1 の未決 1 を確定)
 
-- `ViewportTransform { window_points ↔ framebuffer_px ↔ virtual_ui_units }` を
+- `ViewportTransform { window_points ↔ framebuffer_px ↔ ui_units }` を
   フレームごとに 1 個作り、**レイアウト・描画・hit・rpc inject・golden が
-  全て同じ変換を使う**(GLFW の cursor=screen coords / framebuffer=px の
-  不一致を一点で吸収)
-- 仮想解像度を config で宣言(既定 = framebuffer 1:1)。スケールは
-  integer / free を選択、letterbox の余白は入力対象外(規則明記)
+  全て同じ変換を使う**
+- **canonical space と丸め段(R3 で確定)**:
+  - **レイアウトは ui_units の整数で計算**(ui_units = framebuffer_px /
+    ui_scale。ui_scale は config 宣言、integer / free、既定 1.0 = px 1:1)
+  - 座標系: 左上原点・Y 下向き。rect は **edge 表現**(`[left, top, right,
+    bottom]`、右下は排他)
+  - px への変換は **draw command 発行時に一度だけ**: 各 edge を
+    `round(edge * ui_scale)`(half-up)— edge 単位の丸めなので隣接矩形に
+    隙間/重なりが出ない
+  - **hit test は丸め後の px rect**(描画と同じ実体)に対して行う
+  - drag delta は ui_units(イベント間の座標差を逆変換)
+- letterbox の余白は入力対象外(ヒットなし・capture 中の座標は clamp せず
+  そのまま渡す)
 
 ### 2-3. capture 状態機械
 
@@ -127,13 +176,36 @@ struct FrameInput {
 | **semantic** | 次フレーム(イベントバス E1) | `MenuOpened` 等のゲームへの通知 |
 
 - **`emitImmediate` は設けない**(E1 が排除したシステム順依存を復活させない)
+- **UI-local command の commit 境界 = フレーム一括(R4 で確定)**: フレーム中の
+  全イベントは**凍結されたツリースナップショット**に対してルーティングし、
+  UiCommandBuffer はレイアウト/描画の前に一括 commit する。帰結として
+  「同一フレームの 2 回目のクリックは 1 回目の変更前のツリーに当たる」—
+  これは仕様(semantic trace に commit バッチとして記録)
+- **Controller の権限(R4)**: `onPointer` ができるのは ①凍結スナップショットと
+  自状態の読取 ②UiCommandBuffer への積み込み ③semantic sink への emit のみ。
+  **ECS は read-only resolve まで(set 系呼出は禁止)** — ゲーム状態の変更は
+  次フレームの semantic handler だけ。semantic lane の迂回路を作らない
 - ボタンの押し込み表示は同フレームに出る(UI-local)、ゲームの反応は
   次フレーム(semantic)— 見た目の即応と決定性が両立
 - 連続 drag をゲームが同 tick で要る場合は、イベントでなく **frame-scoped
   `UiActionFrame` query**(Actions と同型)を将来オプションとして予約
-- `"emit"` の **payload スキーマは UI ロード時に検証**(未知イベント名・
-  型不一致はロード時の名前入きエラー — click 時まで遅延させない)。
-  drag delta / widget id / 静的値の写像をスキーマで定義
+- **payload スキーマ(R4 — 具体形式)**: UI ロード時に検証(未知イベント名・
+  型不一致はロード時の名前入りエラー)。
+
+  ```json
+  "emit": { "on_click": { "event": "MenuOpened",
+    "fields": [
+      { "name": "source", "from": "stable_id" },
+      { "name": "amount", "from": "static", "value": 1 },
+      { "name": "delta",  "from": "drag_delta_ui" } ] } }
+  ```
+
+  **widget の同一性は `(document_key, stable_id)` を値でコピー**して載せる
+  (semantic は次フレーム配送なので runtime WidgetId は reload/remove で
+  stale になり得る — runtime handle は UI 内部限定)
+- hot reload の swap 時、旧 document 向けの未 commit command は**破棄**し、
+  破棄件数を reload status として返す(cancel コールバックが積んだ command も
+  同様 — R4)
 
 ## 4. pelican.ui v1 — レイアウトの最小閉包(C7)
 
@@ -143,16 +215,45 @@ v1 の「アンカーのみ」を撤回し、以下を v1 に含める(これ未
 1. **size mode(軸ごと)**: `fixed | content | fill`。stack 子には `weight`
    (1 個だけの追加自由度)
 2. **intrinsic size** の算出規則: label = グリフメトリクス、image = sprite
-   実寸、button = label + padding、panel = 9patch マージン + content
+   実寸、button = label + padding、panel = 9patch マージン + content。
+   panel(非 stack)の content = **anchor 子を除外した absolute 子の
+   union bounds**(anchor 子は親サイズに依存するため intrinsic に参加しない)
 3. `min_size` / `max_size`
 4. stack: `direction / gap / padding / align / justify`。**同じ軸を anchor と
    stack の両方が支配しない**(親が stack なら子の anchor は無効 — エラー)
-5. アンカーは 9 方位の点でなく **`anchor_min/anchor_max + offsets`**
-   (edge inset による stretch 表現)
+5. アンカー形式(R3 で確定): `anchor_min` / `anchor_max` は親矩形に対する
+   `[0,1]²` の割合、`offsets = [left, top, right, bottom]`(ui_units、
+   アンカー点からの符号付き距離)
 6. `overflow: visible | clip`、`visible / hidden(空間残す)/ collapsed(残さない)`
-7. **pixel snap**: レイアウトは整数 px、余り px は宣言順に 1px ずつ配分。
-   毎フレーム root から再計算(float 累積を持ち越さない)
-8. v1 は **LTR 固定(明示エラー)**。RTL/safe area は v2 予約
+7. **制約解法(R3 — 規範)**:
+
+   ```
+   pass 1(bottom-up): 全ノードの intrinsic を計算(content 用)
+   pass 2(top-down):
+     stack 軸: fixed → content(=intrinsic)を確定し、
+       残り = 親サイズ − 確定分 − gap/padding
+       残りを fill/weight に比例配分(floor、余り px は宣言順に 1px ずつ)
+       min/max clamp → clamp されたノードを池から除いて再配分
+       (反復は子数回で必ず停止)
+       残りが負: fill 子は 0、超過は overflow 規則に従う
+     非 stack: anchor_min/max + offsets で直接確定
+   循環はロード時エラー: content 親の中の fill 子 /
+     content 親に対する stretch anchor(anchor_min ≠ anchor_max)子
+   ```
+
+8. **pixel snap**: レイアウトは ui_units の整数、px への丸めは §2-2 の
+   1 箇所のみ。毎フレーム root から再計算(float 累積を持ち越さない)
+9. v1 は **LTR 固定(明示エラー)**。RTL/safe area は v2 予約
+10. **PSD → pelican.ui 変換表(R3/C8 — supported subset の確定)**:
+
+    | pelican.layout の要素 | 写像 |
+    |----|----|
+    | group | 非 stack panel(skin なし) |
+    | layer の位置/サイズ | `anchor_min = anchor_max = [0,0]` + absolute offsets |
+    | opacity | color.a への乗算 |
+    | visibility | `hidden` |
+    | normal blend | そのまま |
+    | **mask / layer effects / PSD テキスト / フォント / 非 normal blend** | **変換エラー**(名前入り。flatten は import ツールの将来オプション — 黙って劣化させない) |
 
 スタイル(トークン・状態オーバーレイ・ツール調標準スキン)と語彙 6 種
 (panel/image/label/button/gauge/stack)、拡張 3 段
@@ -214,12 +315,34 @@ UiModule
 | sampler/alpha | draw key + shader ABI + fixture に固定 |
 | reload/クロック | golden 中は禁止。UI アニメは EngineTime fixed step のみ |
 
-**semantic fixture**(pixel golden の手前の防衛線):
+**semantic fixture = 交換形式 `pelican.ui_semantic_fixture` v1(R5 — JSON 契約)**:
 
-- widget ごとの最終 rect / clip / layer / decl_seq
-- 順序付き draw-run 列(pipeline/sampler/texture/clip/first/count)
-- 順序付き入力ルーティング列(event_seq → 対象 WidgetId → consumed/cancel/click/drag)
-- hot reload 前後の capture cancel と Controller init/deinit 列
+```json
+{ "schema": "pelican.ui_semantic_fixture", "version": 1,
+  "viewport": { "framebuffer_px": [1280, 720], "ui_scale": 1.0,
+                "content_rect_px": [0, 0, 1280, 720] },
+  "document": { "key": "hud", "revision": "sha256:..." },
+  "widgets": [
+    { "id": "root/play", "type": "button",
+      "rect_ui": [40, 24, 160, 56], "clip_ui": [0, 0, 1280, 720],
+      "layer": 0, "decl_seq": 3 } ],
+  "draw_runs": [
+    { "pipeline": "rgba_straight", "sampler": "nearest",
+      "texture": "atlas:ui/page:0", "scissor_px": [0, 0, 1280, 720],
+      "first_index": 0, "index_count": 6 } ],
+  "input_trace": [
+    { "event_seq": 17, "kind": "pointer_down", "pointer_id": 0,
+      "button": "left", "position_ui": [20, 10], "target": "root/play",
+      "consumed": ["mouse:left"], "effects": ["capture"] } ],
+  "lifecycle": [] }
+```
+
+規約: rect は ui_units 整数の edge 表現(`[l,t,r,b]`、右下排他)/
+widget の同一性は `document_key + stable id パス`(runtime WidgetId は
+arena 単体テストに分離)/ pipeline・texture は**安定名**(実行時数値 ID 禁止)/
+配列は決定順(widgets = 走査順、runs = 発行順、trace = event_seq 順)/
+optional は省略(null 不使用)/ kind・effects は enum を schema に列挙。
+valid / invalid / expected の fixture 一式を U0 のゲートにする。
 
 ## 8. ImGui(エンジン UI)の隔離規約(C10)
 
@@ -236,8 +359,8 @@ UiModule
   テストで固定
 - ツールコードは公開 API(GameContext / rpc 意味論)のみ使用(D0)。
   ただし「特権なし ≠ 副作用なし」— 本当の隔離は非実行で担保
-- multi-viewport / docking は v1 OFF 固定。clipboard/IME/OS cursor の
-  対応可否を導入 WP で明示
+- multi-viewport / docking は v1 OFF 固定。clipboard/IME/OS cursor・
+  **device loss 時のバックエンド資源再生成**の対応可否を導入 WP で明示(R6 補)
 
 ## 9. 実装順(v2 — U0 起点。レビュー §10 を採用)
 
@@ -245,7 +368,7 @@ UiModule
 |------|------|--------|
 | **U0** | **純 CPU**: スキーマ・レイアウト・WidgetId arena・ordered 入力ルーティング・capture・draw command 生成 | semantic fixture 全通過(GPU なし) |
 | U1 | K3 アトラス接続・quad buffer・stable run・clip・ui feature 化・panel/image | 2 アトラス交互重なり・nested clip・旧 UI 移行・golden |
-| U2 | bitmap label/button・UI-local 状態・E1 emit・rpc の ordered click/drag/replay | **debug_text exact golden 維持**・同フレーム複数 click |
+| U2 | bitmap label/button・UI-local 状態・E1 emit・rpc の ordered click/drag/replay | **debug_text の旧経路/共通経路を同一 fixture に描いて byte-exact 比較する互換ゲート**(R6 — tolerance 0 を緩めない。意図的な色意味論変更時のみ理由記録付きの versioned baseline 更新 → 以後再び 0) |
 | U3 | Controller factory/lifecycle・hot reload トランザクション・gauge/stack/トークン | remove/hide/reload 中の capture cancel・init/deinit 列 |
 | U4 | ImGui ユニット(§8) | OFF/headless/golden/replay の完全不在・入力優先順位 |
 | U5 | PSD subset converter | K3 後。未対応表現の明示エラー |
