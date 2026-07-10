@@ -1,7 +1,0 @@
-#include <pelican_core.hpp>
-
-int main() {
-    Pelican::PelicanCore pl(R"({{settings}})");
-    pl.run();
-    return 0;
-}

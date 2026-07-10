@@ -1,8 +1,3 @@
-#include <components/predefined.hpp>
-#include <details/component/registerer.hpp>
-#include <details/ecs/componentdeclare.hpp>
-#include <details/ecs/coredist.hpp>
-#include <gameobjects.hpp>
 #include <argparse/argparse.hpp>
 #include <array>
 #include <cstdint>
@@ -27,7 +22,6 @@ namespace {
 
 struct ParsedLaunchConfig {
     Pelican::EngineLaunchConfig engine;
-    std::string project_settings{"{}"};
     std::filesystem::path project_root;
     std::optional<std::string> project_json;
     std::optional<std::filesystem::path> user_dir_override;
@@ -227,10 +221,6 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         .default_value(std::string{})
         .metavar("dir|project.json")
         .help("load a Pelican project directory or project.json");
-    program.add_argument("--project-settings")
-        .default_value(std::string{})
-        .metavar("settings.json")
-        .help("load project settings JSON passed to PelicanCore");
     program.add_argument("--allow-absolute-paths")
         .flag()
         .help("allow absolute paths in CLI-provided project content references");
@@ -308,11 +298,6 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         }
         config.dump_frame_plan = program.get<bool>("--dump-frame-plan");
 
-        const auto project_settings = program.get<std::string>("--project-settings");
-        if (!project_settings.empty()) {
-            parsed.project_settings = readTextFile(resolveExistingCliFile(project_settings, "--project-settings"));
-        }
-
         config.fps = program.get<double>("--fps");
         if (config.fps <= 0.0) {
             throw std::runtime_error("--fps must be positive");
@@ -360,41 +345,6 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
 
 } // namespace
 
-struct MyCharComponent {
-    float x;
-
-    template <class TArchive> void ref(TArchive &ar) { ar.prop("x", x); }
-};
-
-DECLARE_COMPONENT(MyCharComponent, 32);
-
-class MyCharSystem {
-  public:
-    using QueryComponents = std::tuple<MyCharComponent *, Pelican::LocalTransformComponent *>;
-    int timer = 0;
-
-    void process(QueryComponents components, size_t count) {
-        auto m = std::get<MyCharComponent *>(components);
-        auto t = std::get<Pelican::LocalTransformComponent *>(components);
-
-        for (int i = 0; i < count; i++) {
-            t[i].pos = Pelican::vec3{m[i].x, 0, 0};
-            t[i].scale = Pelican::vec3{0.1, 0.1, 0.1};
-            t[i].rotation = Pelican::quat{0, 0, 0, 1};
-
-            m[i].x += 0.05;
-        }
-
-        // timer++;
-        // if (timer == 10)
-        //     Pelican::GameObjects::add()
-        //         .addComponent<Pelican::TransformComponent>()
-        //         .addComponent<Pelican::LocalTransformComponent>(t[0])
-        //         .addComponent<Pelican::SimpleModelViewComponent>()
-        //         .finish();
-    }
-};
-
 int main(int argc, char *argv[]) {
     ParsedLaunchConfig parsed_launch_config;
     try {
@@ -404,7 +354,7 @@ int main(int argc, char *argv[]) {
     }
 
     const auto &launch_config = parsed_launch_config.engine;
-    Pelican::PelicanCore pl{parsed_launch_config.project_settings, launch_config.rpc};
+    Pelican::PelicanCore pl{"{}", launch_config.rpc};
     Pelican::FastModuleContainer::get<Pelican::EngineLaunchConfig>() = launch_config;
     auto &path_resolver = Pelican::FastModuleContainer::get<Pelican::PathResolver>();
     if (parsed_launch_config.project_json) {
@@ -426,14 +376,6 @@ int main(int argc, char *argv[]) {
     if (launch_config.headless) {
         LOG_INFO(Pelican::logger, "headless mode enabled");
     }
-
-    auto &cr = Pelican::internal::getComponentRegisterer();
-    auto &ecs = Pelican::internal::getEcsCore();
-
-    cr.registerComponent<MyCharComponent>("mychar");
-
-    MyCharSystem sys;
-    ecs.registerSystem<MyCharSystem, MyCharComponent, Pelican::LocalTransformComponent>(sys, {}, true);
 
     return pl.run() ? 0 : 1;
 }

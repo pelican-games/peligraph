@@ -38,6 +38,4 @@ struct ColliderComponent {
     void deinit();
 };
 
-using SphereColliderComponent = ColliderComponent;
-
 }  // namespace Pelican

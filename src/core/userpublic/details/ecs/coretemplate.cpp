@@ -144,8 +144,6 @@ void ECSCoreTemplatePublic::clearEntities() {
     }
 }
 
-void ECSCoreTemplatePublic::compaction() { /* TODO */ }
-
 void *ECSCoreTemplatePublic::tryComponentRaw(EntityId id, ComponentId component_id) {
     if (id >= id_to_ref.size()) {
         return nullptr;

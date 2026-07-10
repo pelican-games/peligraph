@@ -18,7 +18,6 @@ template <class T, class Base> struct BasicHandle {
     using BaseType = Base;
 };
 
-struct Hoge : public BasicHandle<Hoge, uint32_t> {};
 #define PELICAN_DEFINE_HANDLE(name, base)                                                                              \
     struct name : public BasicHandle<name, base> {};
 
