@@ -1,10 +1,10 @@
 # ECS ライフサイクルと世代付き EntityId(v2)
 
 対象読者: エンジン担当。
-ステータス: v2 ドラフト(2026-07-10。**v1 は codex レビューで Reject —
-`docs/design_reviews/2026-07-10_ecs_lifecycle_review_codex.md` の S0×2 + S1 を
-全面受理して改稿。再レビュー待ち**)。
-前提: ECS 凍結解除、監査 Q2/Q3、v1 レビュー(以下「レビュー」)。
+ステータス: **v2.1 — 確定(実装可)**(2026-07-10。v1 = Reject、v2 = 条件付き
+Accept(`docs/design_reviews/2026-07-10_ecs_lifecycle_v2_review_codex.md`)、
+**条件 C1〜C7 を本文へ反映済み**)。
+前提: ECS 凍結解除、監査 Q2/Q3、v1/v2 レビュー。
 
 ## 0. 目的とスコープ
 
@@ -27,10 +27,16 @@ PhysWorld のスナップショット最適化(§4 — 意味論変更を伴う�
 | `std::is_trivially_destructible_v<T>` | 破棄省略の可否 |
 | `has_deinit`(登録時に明示) | アプリ資源解放の要否 |
 
-- **全コンポーネントは allocate 時に値構築(`T{}` 相当)** — 現行の
-  `vector<uint8_t>::resize` によるゼロ埋めに意味論が最も近い既定
-  (レビュー 1.2)。trivial default constructible なら実装は memset/省略に
-  最適化してよいが、**契約は常に「値構築済み」**
+- **全コンポーネントは allocate 時に値構築**(`std::construct_at(ptr)` 相当を
+  全 slot で実行 — range 化してコンパイラ最適化に委ねる)。
+  **「trivially default constructible なら省略可」は削除(C1)** —
+  trivial でも `T{}` はゼロ値を保証するが未初期化 storage は indeterminate。
+  高速路が要る場合のみ engine-owned trait
+  `value_init_is_all_bits_zero<T>` への**明示 opt-in** + 型ごとの同値テストで
+  正当化する。correctness を性能予算で緩めない
+- builder の populate は copy assignment なので、`addComponent(const T&)` は
+  copy-assignable な型に compile-time 制約し、move-only 型には
+  forwarding/emplace API を別に設ける(C1 補)
 - 登録要件(static_assert): default constructible / **noexcept move
   constructible** / noexcept destructible。**copy fallback は削除**
   (deinit 資源を持つ型で source leak を作るため — レビュー 1.3)。
@@ -49,12 +55,29 @@ v2 の規約:
 construct all → populate all(代入 or serializer)→ init all → handle publish
 ```
 
-- 途中失敗時の rollback: init 済みのみ deinit、construct 済みのみ destroy、
-  chunk count と ID slot を巻き戻す。**publish 前の ID は外部から観測不能**
-  (現行の「commit 前に live list へ載せる」を廃止)
-- `allocateRaw` の公開を廃止し transaction 内部へ隠す(公開を残す場合は
-  コンポーネント毎の app-init bit が必要になり複雑化するため、隠す方を採る)
+- **構造変更の非再入(C2)**: allocate/remove/clear/relocate を共通の
+  mutation guard で囲み、construct/populate/init/deinit/destroy コールバック
+  中の構造 API 再入は**状態を変える前に決定的に拒否**する
+  (シングルスレッドでもコールバック再入は起きる)。将来 nested 生成が
+  必要になったら command queue へ遅延する形で拡張
+- rollback(C2): **逆順**で行う — 完了した init を逆順 deinit、構築済みを
+  逆順 destroy。復元対象は count だけでなく **ID/free-list の順序・
+  component version・transaction が作った fresh chunk と各キャッシュ**を含む
+  (fresh chunk は「空のまま残す」弱保証を採る場合、その決定性とメモリ上限を
+  テストで固定)。失敗した生成が後続の ID 列を変えないこと
+- `init` は「throw 時にアプリ資源を一つも残さない」strong guarantee を契約に
+  (fault injection は資源カウンタ検査込み)
+- **publish 前の ID は外部から観測不能**(現行の「commit 前に live list へ
+  載せる」を廃止)
+- `allocateRaw` の公開を廃止し transaction 内部へ隠す
 - transient glTF 経路も同順序へ統一
+- **batch API の再設計(C3)**: 「先頭 ID + 連続ポインタ」は free-list 再利用・
+  複数 chunk と両立しないため廃止。単体生成(1 transaction → 1 ID)/
+  bulk 生成(内部で chunk 分割、`span<EntityId>` を返し、populate は
+  **chunk ごとのコールバック内でのみ有効な span** で渡す)/
+  low-level chunk batch(`count <= remaining_capacity` を precondition とする
+  private API)の 3 段に分離。4095/4096/4097・10 万件・free/fresh 混在・
+  k 番目 fault を受け入れテストに
 
 ### 1-3. remove / clear / teardown
 
@@ -63,18 +86,24 @@ construct all → populate all(代入 or serializer)→ init all → handle publ
   destroy のみ — moved-from を deinit しない)
 - remove(target = 末尾): deinit → destroy(現行の self-memcpy を廃止)
 - clear: 全 live slot を deinit → destroy
-- **teardown フェーズの新設(レビュー 1.5)**: エンジン終了時、loop 終了後・
+- **teardown フェーズの新設(レビュー 1.5 + C6)**: エンジン終了時、
   モジュール逆順破棄の**前**に「scene/ECS の明示 clear」フェーズを置く。
-  deinit が依存するモジュール(renderer 等)の生存を保証する。
+  **scope guard/runner の no-throw フェーズ**として実装し、正常終了だけでなく
+  **初期シーンロード失敗・loop/update/render の例外時にも一度だけ**呼ばれる
+  ことを保証(現 run() は try 内ローカルの container が catch 前に逆順破棄
+  される構造 — 単に removeAll() を足すだけでは例外経路で走らない)。
+  teardown 自体は throw せず、失敗は記録して残りの cleanup を継続。
   ECS のデストラクタから deinit を呼ぶ設計は**採らない**(GET_MODULE の
-  再生成リスク)
+  再生成リスク)。例外注入で `deinit → destroy → モジュール破棄` の
+  イベント列をテスト
 
 ### 1-4. 登録の一本化(保証の迂回口を塞ぐ)
 
 型情報なしの `registerComponent(ComponentInfo)` 直接呼びを**廃止**し、全型を
 typed 登録に通す(EntityId・benchmark の直接登録も移行 — レビュー 1.4)。
-どうしても残す場合は「POD 専用」を型で明示し lifecycle/alignment メタデータの
-完全指定を要求する API にするが、**第一案は廃止**。
+**typed 登録はシリアライザの有無から分離する(C5)**: 現行 typed registerer は
+ISerializable 制約付きで EntityId 等を通せない — lifecycle/alignment
+メタデータは常に型から生成し、JSON serializer コールバックは optional にする。
 
 ## 2. ストレージ(alignment — 未決 2 の解)
 
@@ -98,18 +127,41 @@ id_table[index] = { optional<ref> chunk_ref, uint32 generation, bool live }
 free_indices: LIFO スタック(再利用順も決定的)
 ```
 
-- **`GameObjectId` と内部 `EntityId` を同一の `{uint32 index, uint32 generation}`
-  value type に統一**(二重定義の解消 — レビュー 3.2 の前者案)。比較・
-  ハッシュ・`index:gen` 表示を提供
-- 無効値 = `index == UINT32_MAX` の定数 `invalidGameObjectId`(既存の
-  `0` sentinel との衝突を回避 — playercontrol / gamesystem_test の `= 0` は
-  移行リストに含める。レビュー 3.3 のコンパイル割れ箇所一覧を WP の
-  作業リストにする)
+- **canonical 定義は 1 箇所(entity.hpp)に置き、デフォルト構築 = invalid(C4)**:
+
+  ```cpp
+  struct EntityId {
+      uint32_t index = UINT32_MAX;   // EntityId{} は必ず invalid
+      uint32_t generation = 0;
+  };
+  using GameObjectId = EntityId;     // 同一型(別 struct にしない)
+  ```
+
+  値構築された `LocalTransformComponent::parent` が最初の entity を指す事故を
+  型レベルで排除。`EntityId{} == invalidGameObjectId`・8 バイト・
+  trivially copyable・比較/hash/`index:gen` 表示をテストで固定。
+  playercontrol / gamesystem_test の `= 0` は移行リストに含める
+  (v1 レビュー 3.3 + v2 レビュー §9 の一覧が WP の作業リスト)
+- **generation の状態遷移を規範化(C4)**: remove/clear は ref 無効化 +
+  `live=false`、`generation == UINT32_MAX` なら**永久 retire**、それ以外は
+  **1 回だけ**進めて free-list(LIFO)へ。allocate は free slot の generation を
+  **進めず**その値を handle に写す。`id_table.size() == UINT32_MAX` は明示的な
+  capacity エラー(invalid index を採番しない)。clear の走査順・push 順は
+  index 順に固定(決定性)
 - **`LocalTransformComponent::parent` も世代付き ID へ**(生 index のままだと
   階層参照だけ ABA が残る — レビュー 3.2)
-- `liveObjects()` の別 vector を廃止し id_table の live 状態へ統合。
-  stale handle の remove は **no-op + bool 戻り値**で規範化(二重 remove を
-  エラーにしない — 決定性と使い勝手のバランス)
+- `liveObjects()` の別 vector を廃止し id_table の live 状態へ統合
+- **stale ポリシーの全経路表(C4 — 再レビューで妥当と判定された no-op+bool を
+  三層に伝播)**:
+
+  | API | dead/invalid ID の挙動 |
+  |-----|------------------------|
+  | remove(ECSCore → GameObjects → GameContext) | **`[[nodiscard]] bool`** — invalid/dead/世代不一致は false、live 削除のみ true(debug assert は入れない — debug/release で有効入力を変えない。厳格版はテスト用 removeOrThrow) |
+  | tryComponent | null |
+  | 必須 component アクセサ | 名前/ID 入り例外 |
+  | set/markChanged | 失敗を返す |
+  | PhysWorld | skip + 遅延 prune |
+  | rpc | オブジェクト名入り application error |
 
 ### 3-2. clear と wrap(v1 の「構造的排除」を本物にする)
 
@@ -127,16 +179,29 @@ free_indices: LIFO スタック(再利用順も決定的)
 **PhysWorld は「書き換え → 即 raycast で新位置」という WP47 の既存契約を
 維持する**(レビュー S1 — physworld_test が固定している観測可能な API)。
 
-- `Binding` は `variant<GameObjectId, PhysWorldTransform(static)>` を保持
-  (collider-only オブジェクトは static — entity を持たない binding が
-  現存するため optional では不足。レビュー 3.3)
+- **Binding の形(C6 — variant は transform 源のみ。name/collider は現行の
+  重複検査・raycast 結果が依存するため維持)**:
+
+  ```cpp
+  struct Binding {
+      std::string name;
+      ColliderComponent collider;
+      std::variant<GameObjectId, PhysWorldTransform> transform_source;
+  };
+  ```
+
 - query ごとに resolve して transform 値を構築(現行と同じ即時性)。
-  死んだ ID は skip + 遅延 prune。**性能が問題になったら**スナップショット/
-  キャッシュ化を計測付きの別 WP として起こし、その時は意味論変更
-  (次フレーム可視)としてユーザー判断を仰ぐ
+  static 枝は値保持。死んだ ID は skip + 遅延 prune — **prune の変異点を
+  規定**: `collectColliders() const` では変異せず、**bind 時に同名の dead
+  binding を先に prune**(query 前の名前再利用が duplicate エラーにならない
+  ように)。**性能が問題になったら**スナップショット/キャッシュ化を計測付きの
+  別 WP として起こし、その時は意味論変更(次フレーム可視)としてユーザー
+  判断を仰ぐ
 - SceneLoader の `ObjectBinding` は ID 1 本にし、transform と simplemodelview の
-  **両方**を使う瞬間に resolve(現行は 2 本の生ポインタ)
-- rpc update_transforms は毎回 resolve — 削除済みは名前入りエラー
+  **両方**を使う瞬間に resolve(現行は 2 本の生ポインタ)。
+  `hasObjectTransform` も map 所属だけでなく resolve する(dead は false/prune)
+- rpc update_transforms は**parse 時と flush 時の両方で resolve**(pending の
+  間に entity が消え得る — C6)。削除済みは名前入りエラー
 
 ## 5. 規約(contributor 規則へ昇格)
 
@@ -164,18 +229,34 @@ id_table/世代 + 全経路 resolve + PhysWorld/SceneLoader/rpc の ID 化 +
   relocate 時の `source move → source destroy(deinit なし)`)— 回数だけでは
   順序の誤りを見逃す
 - fault injection: populate / init が throw するケースの rollback 検証
-- ASan/UBSan(MSVC /fsanitize=address)で remove 中間/末尾・slot 再利用・
-  clear・teardown
+  (**外部資源カウンタの検査込み** — init が資源獲得後に throw するケース)
+- **C7 の追加ケース**: trivially-default-constructible な int メンバが
+  populate なしで `T{}` の値になる / move-only 型の relocation と builder の
+  compile-time 制約 / **コールバックからの構造 API 再入が状態変更前に
+  拒否される** / batch の chunk 境界(4095/4096/4097・10 万件・free/fresh
+  混在・k 番目 fault)/ `EntityId{}` と parent の invalid / MAX generation
+  retire / index 枯渇 / stale 全分類と bool 伝播 / dead binding の
+  skip・prune・同名 rebind / 正常終了と例外終了の teardown 順序
+- ASan(MSVC /fsanitize=address)+ **別途 Clang/GCC 系の UBSan ジョブ**
+  (MSVC の ASan は UBSan を含まない — alignment 検査は UBSan 側)で
+  remove 中間/末尾・slot 再利用・clear・teardown
 - Q2 再現シナリオ: A 削除 → A は hit せず B は同位置/同 ID・rpc の
   削除済み名エラー・シーン切替後の旧 ID resolve 失敗(ABA テスト)
 - alignment カナリア(§2)
 - 既存テスト・golden 全維持(POD 経路の挙動不変の補助証明)
 - 決定性: free list LIFO 込みの 2 回実行一致
 
-## 8. 未決事項
+## 8. 決定事項(v2.1 で未決を解消)
 
-1. benchmark(ecs/benchmark.cpp)の扱い — typed 登録へ移行か、R5 で削除して
-   計測は別途書き直すか(推奨: 削除。生 API の最後の利用者を残さない)
-2. clear の実装形: 全 live の gen 進め(推奨)か world epoch 混入か
-3. R5-core の性能予算(値構築の追加コスト・resolve のハッシュ/添字コスト)—
-   ゲートに入れる回帰閾値
+1. **benchmark は削除せず typed/bounded batch へ書き直す(C7 — 再レビューの
+   反対を受理)**: 数万件 workload は値構築・resolve の回帰を測る唯一の資産。
+   ただし現行の数値は baseline にしない(capacity 超過 batch + assert なし)。
+   Release・固定 seed・warm-up・median/p95、規模別(1/4096/4097/10 万)、
+   POD/string/over-aligned/free-list 混在別、工程別(生成/relocate/
+   resolve hit・miss/PhysWorld query)に計測し、**R5 実装前に有効な baseline を
+   取って許容予算を WP に記録**する
+2. clear の実装形 = **全 live の generation 進め**(world epoch は不採用 —
+   32/32 + retire の証明が単純になる方を採る)
+3. resolve は `id_table[index]` の O(1) 添字(hot path にハッシュを入れない)。
+   POD 値構築は帯域コストが主 — range construction + chunk 分割を先に計測し、
+   足りない場合のみ C1 の opt-in 高速路を追加

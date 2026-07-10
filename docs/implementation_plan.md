@@ -1244,6 +1244,37 @@ fly を共用する将来を壊さない(コントローラ状態はコンポー
    fov_y/near/far が残っていないこと(別名受理テストの埋込データを除く)を
    grep で確認 (c) §0 共通規則
 
+### WP62: リファクタ R5-core — ECS ライフサイクル + 世代付き EntityId(単一ゲート)
+
+参照: **`docs/design_ecs_lifecycle.md` v2.1(確定)が仕様の正**
+(v1/v2 レビュー 2 本が `docs/design_reviews/` にあり、条件 C1〜C7 は
+本文反映済み)。依存: WP60, 61。見積: **特大**(本リファクタトラックの本丸)。
+
+実装内容は設計 §1〜§6 の全部(要約):
+
+1. ストレージ: alignment メタデータ + aligned allocation(`vector<uint8_t>` 廃止)
+   + CHUNK_CAPACITY 契約 + batch API 3 段分離(§1-2 C3)
+2. ライフサイクル: 4 特性 + 全 slot 値構築(construct_at、省略なし)+
+   noexcept 契約(move/destroy/deinit)+ copy fallback 廃止 +
+   `SimpleModelViewUpdateComponent` special members 修正 + 生成 transaction +
+   mutation guard(再入拒否)+ 逆順 rollback + typed 登録一本化
+   (serializer optional 化 C5)
+3. teardown フェーズ(scope guard・no-throw・例外経路含む全終了経路で 1 回)
+4. 世代付き EntityId: canonical 定義(entity.hpp、デフォルト invalid)+
+   id_table + free-list LIFO + clear で世代保持 + MAX retire +
+   全経路 resolve + stale ポリシー表(bool 三層伝播)
+5. 外部参照 ID 化: PhysWorld(variant transform_source・bind 時 prune・
+   即時可視維持)/ SceneLoader(ID 1 本)/ rpc(parse + flush 両 resolve)
+6. benchmark の typed/bounded 書き直し + 実装前 baseline 計測
+7. テスト: 設計 §7 の全部(カナリア イベント列・fault injection + 資源カウンタ・
+   再入拒否・batch 境界・ABA・stale 全分類・teardown 例外経路・
+   ASan + 別 UBSan ジョブ)
+
+受け入れ基準: 設計 §7 全項目 + 既存テスト・golden 全維持(POD 経路不変)+
+WP47 の即時可視テスト不変 + §0 共通規則。**内部コミットは分割可・ゲートは
+1 つ**(部分マージ不可)。判断に迷ったら設計とレビュー 2 本を読み、それでも
+不明なら BLOCKED.md。
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **最小コマンド層**: (1) ファイル連携済み → (2) WP27 実装済み → (3) `load_gltf` / `update_transforms` は **2026-07-07 に実装 GO 決定**。前提はすべて充足(宛先 = scene v1 の objects[].name / アセット意味論 = WP21)。設計時要件: **複数インスタンス運用**(エージェントが複数エンジンを並行駆動する使い方) — stdio rpc は 1 プロセス 1 クライアントの現行構造を維持しつつ、`get_status`(instance id・project・フレーム番号)を追加してインスタンス識別可能に。プロジェクトは読み取り専有なので並行起動は安全(書き込み系操作を入れる際に排他を設計)。複数クライアント同時接続は TCP/WebSocket 展開時の課題として分離
