@@ -374,12 +374,39 @@ void PathResolver::setup(const std::filesystem::path &project_root, bool allow_a
                 }
             }
 
+            std::optional<std::filesystem::path> manifest_abs;
+            std::optional<std::string> manifest_error;
+            if (const auto manifest = store.find("manifest"); manifest != store.end()) {
+                try {
+                    if (!manifest->is_string()) {
+                        throw std::runtime_error("project.json asset_stores." + name +
+                                                 ".manifest must be a string");
+                    }
+                    const auto manifest_ref = manifest->get<std::string>();
+                    validateRefSyntax(manifest_ref);
+                    const std::filesystem::path manifest_path{manifest_ref};
+                    if (hasAbsoluteSyntax(manifest_path, manifest_ref)) {
+                        throw std::runtime_error("asset store manifest must be project-relative: " + name);
+                    }
+                    manifest_abs = weaklyCanonicalOrThrow(project_root_abs / manifest_path,
+                                                          "PathResolver asset store manifest " + name);
+                    if (*manifest_abs == project_root_abs || !isWithinRoot(project_root_abs, *manifest_abs)) {
+                        throw std::runtime_error("asset store manifest escapes project root: " + name);
+                    }
+                } catch (const std::exception &err) {
+                    manifest_abs.reset();
+                    manifest_error = err.what();
+                }
+            }
+
             parsed_stores.push_back(AssetStoreMount{
                 .name = name,
                 .mount = normalizedGenericRelativeString(normalized_mount),
                 .logical_mount = normalized_mount,
                 .root_abs = weaklyCanonicalOrThrow(project_root_abs / normalized_mount,
                                                    "PathResolver asset store " + name),
+                .manifest_abs = std::move(manifest_abs),
+                .manifest_error = std::move(manifest_error),
             });
         }
 
@@ -469,6 +496,8 @@ std::vector<AssetStoreStatus> PathResolver::stores() const {
             .name = store.name,
             .mount = store.mount,
             .root = store.root_abs,
+            .manifest = store.manifest_abs,
+            .manifest_error = store.manifest_error,
         });
     }
     return result;

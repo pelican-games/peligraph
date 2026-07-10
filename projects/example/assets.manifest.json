@@ -1,0 +1,134 @@
+{
+  "schema": "pelican.assets",
+  "version": 1,
+  "tool": {
+    "name": "pelican_cli assets manifest"
+  },
+  "files": [
+    {
+      "file": "asset_data.json",
+      "size": 460,
+      "sha256": "ceecdbce37ea520b0b36858c76e70612c87b59d36ea5dcdb43ad0622058610d5"
+    },
+    {
+      "file": "models/.gitkeep",
+      "size": 2,
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "file": "models/AliciaSolid.vrm",
+      "size": 7878712,
+      "sha256": "237bb02efadf8c13a114af91dd8e860173081457dee87017e51011c448d05dc2"
+    },
+    {
+      "file": "models/DamagedHelmet.glb",
+      "size": 3773916,
+      "sha256": "a1e3b04de97b11de564ce6e53b95f02954a297f0008183ac63a4f5974f6b32d8"
+    },
+    {
+      "file": "models/Sotai_D.glb",
+      "size": 9149820,
+      "sha256": "a0fec93b3d82f7fbf4e32d16afcfb68cf54e25d6f3fbe18a8be00d142cd008a7"
+    },
+    {
+      "file": "models/character.glb",
+      "size": 3416852,
+      "sha256": "b4c7a0f835da99c2a9ca86e9d6ff69a72450ea8b8e1ffdd8792e4031dfc7992e"
+    },
+    {
+      "file": "models/ground.glb",
+      "size": 1948,
+      "sha256": "d84c3de963c7e9c274f4aadd5f4539a1fb3098e6566551ea9016cbe2fbd7915b"
+    },
+    {
+      "file": "models/sponza.glb",
+      "size": 52608696,
+      "sha256": "8eade0d66be99f2925558845680c01abfca8035fac14cc4ead03919309b3bd9f"
+    },
+    {
+      "file": "textures/.gitkeep",
+      "size": 2,
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "file": "textures/01.png",
+      "size": 544154,
+      "sha256": "9a6ba679408cadd48dc6fefee21463cb2d5ce2d39194bc78c065c08824f160e3"
+    },
+    {
+      "file": "textures/02.png",
+      "size": 63162,
+      "sha256": "8dd70c6ee42afe83968e4f45a502df483b386cd6757fe17640d434fabd998e03"
+    },
+    {
+      "file": "textures/03.png",
+      "size": 169451,
+      "sha256": "cc68cfe6da2d234c1206e139318a0c59da07edeb71e4fabef16352e6dce31b49"
+    },
+    {
+      "file": "textures/04.png",
+      "size": 169451,
+      "sha256": "cc68cfe6da2d234c1206e139318a0c59da07edeb71e4fabef16352e6dce31b49"
+    },
+    {
+      "file": "textures/05.png",
+      "size": 312723,
+      "sha256": "5f22f4df549eec30395f2e8700f1b8410d164a07b1bce3450a5e339e72709584"
+    },
+    {
+      "file": "textures/06.png",
+      "size": 312723,
+      "sha256": "5f22f4df549eec30395f2e8700f1b8410d164a07b1bce3450a5e339e72709584"
+    },
+    {
+      "file": "textures/07.png",
+      "size": 413411,
+      "sha256": "d9ea03b09f644bc4d9dc6adb98b1077b705677738ace10c4032300dede3c625f"
+    },
+    {
+      "file": "textures/08.png",
+      "size": 413411,
+      "sha256": "d9ea03b09f644bc4d9dc6adb98b1077b705677738ace10c4032300dede3c625f"
+    },
+    {
+      "file": "textures/09.png",
+      "size": 429152,
+      "sha256": "caf15ebc6eed09813466a5a22ecdf6738c71f58f152bb202e37516f20687fcab"
+    },
+    {
+      "file": "textures/10.png",
+      "size": 429152,
+      "sha256": "caf15ebc6eed09813466a5a22ecdf6738c71f58f152bb202e37516f20687fcab"
+    },
+    {
+      "file": "textures/11.png",
+      "size": 238781,
+      "sha256": "a0ef1a48f009eb9e3902e98124c41bc5d59bad6bc6cd26ab9037da18a0195af0"
+    },
+    {
+      "file": "textures/12.png",
+      "size": 238781,
+      "sha256": "a0ef1a48f009eb9e3902e98124c41bc5d59bad6bc6cd26ab9037da18a0195af0"
+    },
+    {
+      "file": "textures/Frame84.png",
+      "size": 252840,
+      "sha256": "15f9b40f684b3332364b4d34da1f96e46a50c02d23922d61e3ed8a247cf32476"
+    },
+    {
+      "file": "textures/alpha.png",
+      "size": 4318,
+      "sha256": "4c50715a578e7b4b488a37472df6e7bc3244ed6a9b3d92281361481a0e8576be"
+    },
+    {
+      "file": "textures/explosion06.png",
+      "size": 312723,
+      "sha256": "5f22f4df549eec30395f2e8700f1b8410d164a07b1bce3450a5e339e72709584"
+    },
+    {
+      "file": "textures/test.png",
+      "size": 19736,
+      "sha256": "4e69d8f97843a94cd15e81f79581a70067c1902481d6b0dc56c8b426150d84d8"
+    }
+  ]
+}

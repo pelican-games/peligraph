@@ -49,6 +49,8 @@ struct AssetStoreStatus {
     std::string name;
     std::string mount;
     std::filesystem::path root;
+    std::optional<std::filesystem::path> manifest;
+    std::optional<std::string> manifest_error;
 };
 
 ParsedPathRef parsePathReference(std::string_view ref);
@@ -65,6 +67,8 @@ DECLARE_MODULE(PathResolver) {
         std::string mount;
         std::filesystem::path logical_mount;
         std::filesystem::path root_abs;
+        std::optional<std::filesystem::path> manifest_abs;
+        std::optional<std::string> manifest_error;
     };
     std::vector<AssetStoreMount> asset_stores;
 
