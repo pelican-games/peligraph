@@ -62,6 +62,7 @@ struct GoldenCase {
 struct RenderedCase {
     RgbaImage image;
     std::string device_name;
+    nlohmann::json execution_trace;
 };
 
 struct Tolerance {
@@ -1269,7 +1270,12 @@ void requireGoldenVulkanDevice() {
     }
 }
 
-RenderedCase renderCase(const GoldenCase &golden_case) {
+bool usesRenderer(const GoldenCase &golden_case) {
+    return golden_case.mode != "clear" && golden_case.mode != "fullscreen" && golden_case.mode != "triangle";
+}
+
+RenderedCase renderCase(const GoldenCase &golden_case,
+                        RendererExecutionPathForTesting execution_path = RendererExecutionPathForTesting::current) {
     FastModuleContainer modules;
     const auto temp_dir = makeTempProjectDir(golden_case.name);
     if (golden_case.mode == "stem_fullscreen") {
@@ -1331,6 +1337,11 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
     launch_config.headless_frames = 1;
 
     auto &render_target = GET_MODULE(RenderTarget);
+    Renderer *renderer = nullptr;
+    if (usesRenderer(golden_case)) {
+        renderer = &GET_MODULE(Renderer);
+        renderer->setExecutionPathForTesting(execution_path);
+    }
     if (golden_case.mode == "clear") {
         renderClearFrame(render_target, vk::ClearColorValue{std::array{0.1f, 0.2f, 0.3f, 1.0f}});
     } else if (golden_case.mode == "fullscreen") {
@@ -1371,6 +1382,7 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
     return RenderedCase{
         RgbaImage{goldenWidth, goldenHeight, pixels},
         std::string{device_properties.deviceName.data()},
+        renderer != nullptr ? renderer->lastExecutionTraceForTesting() : nlohmann::json{},
     };
 }
 
@@ -1449,6 +1461,28 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
             INFO("average diff=" << comparison.average << " max diff=" << comparison.max);
             REQUIRE(comparison.average <= tolerance.average);
             REQUIRE(comparison.max <= tolerance.max);
+        }
+    }
+}
+
+TEST_CASE("Renderer golden cases have identical current and planned execution", "[golden][headless][framegraph]") {
+    setupLogger();
+    requireGoldenVulkanDevice();
+
+    for (const auto &golden_case : discoverGoldenCases()) {
+        if (!usesRenderer(golden_case)) {
+            continue;
+        }
+        DYNAMIC_SECTION(golden_case.name) {
+            const auto current = renderCase(golden_case, RendererExecutionPathForTesting::current);
+            const auto planned = renderCase(golden_case, RendererExecutionPathForTesting::planned);
+
+            INFO("current trace=" << current.execution_trace.dump(2));
+            INFO("planned trace=" << planned.execution_trace.dump(2));
+            REQUIRE(current.execution_trace == planned.execution_trace);
+            REQUIRE(current.image.width == planned.image.width);
+            REQUIRE(current.image.height == planned.image.height);
+            REQUIRE(current.image.pixels == planned.image.pixels);
         }
     }
 }
