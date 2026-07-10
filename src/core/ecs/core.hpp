@@ -15,11 +15,16 @@ DECLARE_MODULE(ECSCore) {
   public:
     ECSCoreTemplatePublic &getTemplatePublicModule() { return sub; }
 
-    EntityId allocateEntity(std::span<const ComponentId> component_ids, std::span<void *> component_ptrs,
-                            size_t count) {
-        return sub.allocateEntity(component_ids, component_ptrs, count);
+    std::vector<EntityId> createEntities(std::span<const ComponentId> component_ids, size_t count,
+                                         const ECSCoreTemplatePublic::PopulateBatch &populate = {}) {
+        return sub.createEntities(component_ids, count, populate);
     }
-    void remove(EntityId id) { sub.remove(id); }
+    EntityId createEntity(std::span<const ComponentId> component_ids,
+                          const std::function<void(std::span<void *>)> &populate = {}) {
+        return sub.createEntity(component_ids, populate);
+    }
+    [[nodiscard]] bool remove(EntityId id) { return sub.remove(id); }
+    void clearEntities() { sub.clearEntities(); }
 
     template <class TSystem, class... TComponents>
     SystemId registerSystem(TSystem & system, std::vector<SystemId> && depends_list, bool force_update = false) {

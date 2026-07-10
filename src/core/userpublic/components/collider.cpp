@@ -110,6 +110,6 @@ void ColliderComponent::init() {
     validate();
 }
 
-void ColliderComponent::deinit() {}
+void ColliderComponent::deinit() noexcept {}
 
 }  // namespace Pelican

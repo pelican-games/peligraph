@@ -1,9 +1,11 @@
 #include "physworld.hpp"
 
 #include "../ecs/predefined/transform.hpp"
+#include "../ecs/core.hpp"
 #include "../geomhelper/geomhelper.hpp"
 #include "../renderer/camera.hpp"
 #include "../renderer/debugdraw.hpp"
+#include <components/predefined.hpp>
 
 #include <algorithm>
 #include <array>
@@ -212,10 +214,19 @@ void PhysWorld::clear() {
     bindings.clear();
 }
 
-void PhysWorld::bindCollider(std::string name, const ColliderComponent &collider,
-                             const TransformComponent *transform, PhysWorldTransform static_transform) {
+void PhysWorld::bindCollider(std::string name, const ColliderComponent &collider, GameObjectId object_id) {
     if (name.empty()) {
         throw std::runtime_error("Collider object requires a name");
+    }
+    auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
+    bindings.erase(std::remove_if(bindings.begin(), bindings.end(), [&](const Binding &binding) {
+        const auto *bound_id = std::get_if<GameObjectId>(&binding.transform_source);
+        return binding.name == name && bound_id != nullptr &&
+               ecs.tryComponent<TransformComponent>(*bound_id) == nullptr;
+    }), bindings.end());
+    if (ecs.tryComponent<TransformComponent>(object_id) == nullptr) {
+        throw std::runtime_error("Collider object has no live transform: " + name + " (" +
+                                 toString(object_id) + ")");
     }
     if (std::any_of(bindings.begin(), bindings.end(), [&](const Binding &binding) {
             return binding.name == name;
@@ -227,20 +238,47 @@ void PhysWorld::bindCollider(std::string name, const ColliderComponent &collider
     bindings.push_back(Binding{
         .name = std::move(name),
         .collider = collider,
-        .transform = transform,
-        .static_transform = static_transform,
+        .transform_source = object_id,
+    });
+}
+
+void PhysWorld::bindCollider(std::string name, const ColliderComponent &collider,
+                             PhysWorldTransform static_transform) {
+    if (name.empty()) {
+        throw std::runtime_error("Collider object requires a name");
+    }
+    if (std::any_of(bindings.begin(), bindings.end(), [&](const Binding &binding) {
+            return binding.name == name;
+        })) {
+        throw std::runtime_error("Duplicate collider object name: " + name);
+    }
+    collider.validate();
+    bindings.push_back(Binding{
+        .name = std::move(name),
+        .collider = collider,
+        .transform_source = static_transform,
     });
 }
 
 std::vector<phys::Collider> PhysWorld::collectColliders() const {
     std::vector<PhysWorldColliderInput> inputs;
     inputs.reserve(bindings.size());
+    auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
     for (const auto &binding : bindings) {
+        PhysWorldTransform transform;
+        if (const auto *object_id = std::get_if<GameObjectId>(&binding.transform_source)) {
+            const auto *component = ecs.tryComponent<TransformComponent>(*object_id);
+            if (component == nullptr) {
+                continue;
+            }
+            transform = transformFromComponent(*component);
+        } else {
+            transform = std::get<PhysWorldTransform>(binding.transform_source);
+        }
         inputs.push_back(PhysWorldColliderInput{
             .name = binding.name,
             .collider = binding.collider,
-            .transform = binding.transform != nullptr ? transformFromComponent(*binding.transform)
-                                                      : binding.static_transform,
+            .transform = transform,
         });
     }
     return buildPhysColliders(inputs);

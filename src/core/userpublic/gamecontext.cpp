@@ -73,20 +73,20 @@ GameObjectId GameContext::createObject(const LocalTransformComponent &transform)
                         .addComponent<TransformComponent>()
                         .addComponent<LocalTransformComponent>(transform)
                         .finish();
-    GameObjects::setLocalTransform(id, transform);
+    (void)GameObjects::setLocalTransform(id, transform);
     return id;
 }
 
-void GameContext::removeObject(GameObjectId id) const {
-    GameObjects::remove(id);
+bool GameContext::removeObject(GameObjectId id) const {
+    return GameObjects::remove(id);
 }
 
 LocalTransformComponent GameContext::localTransform(GameObjectId id) const {
     return GameObjects::localTransform(id);
 }
 
-void GameContext::setLocalTransform(GameObjectId id, const LocalTransformComponent &transform) const {
-    GameObjects::setLocalTransform(id, transform);
+bool GameContext::setLocalTransform(GameObjectId id, const LocalTransformComponent &transform) const {
+    return GameObjects::setLocalTransform(id, transform);
 }
 
 std::optional<phys::ObjectRaycastHit> GameContext::raycastClosest(const phys::Ray &ray) const {

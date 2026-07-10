@@ -1,5 +1,6 @@
 #include "pelican_core.hpp"
 #include "../appflow/loop.hpp"
+#include "../appflow/teardown.hpp"
 #include "../log.hpp"
 #include "../vkcore/core.hpp"
 
@@ -25,8 +26,10 @@ PelicanCore::PelicanCore(std::string _settings_str, bool reserve_stdout_for_prot
 }
 
 bool PelicanCore::run() {
+    FastModuleContainer container;
+    RuntimeTeardownGuard teardown;
+    bool succeeded = true;
     try {
-        FastModuleContainer container;
         GET_MODULE(ProjectSource).setSourceByData(settings_str);
 
         GET_MODULE(ECSPredefinedRegistration).reg();
@@ -40,9 +43,13 @@ bool PelicanCore::run() {
 
     } catch (std::exception &e) {
         LOG_ERROR(logger, "Pelican fatal error : {}", e.what());
-        return false;
+        succeeded = false;
+    } catch (...) {
+        LOG_ERROR(logger, "Pelican fatal error: non-standard exception");
+        succeeded = false;
     }
-    return true;
+    teardown.run();
+    return succeeded;
 }
 
 } // namespace Pelican

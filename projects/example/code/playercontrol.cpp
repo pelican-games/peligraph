@@ -6,7 +6,7 @@
 namespace {
 
 class ExamplePlayerControl {
-    Pelican::GameObjectId object = 0;
+    Pelican::GameObjectId object = Pelican::invalidGameObjectId;
     bool object_created = false;
 
     Pelican::GameObjectId createControlledObject(Pelican::GameContext &ctx) {
@@ -14,7 +14,7 @@ class ExamplePlayerControl {
             .scale = Pelican::vec3{0.35f, 0.35f, 0.35f},
             .rotation = Pelican::quat{0.0f, 0.7071f, -0.7071f, 0.0f},
             .pos = Pelican::vec3{0.0f, -1.2f, 1.0f},
-            .parent = 0,
+            .parent = Pelican::invalidGameObjectId,
         };
         Pelican::SimpleModelViewUpdateComponent model_update;
         model_update.model_name = "character";
@@ -26,7 +26,7 @@ class ExamplePlayerControl {
                             .addComponent<Pelican::SimpleModelViewComponent>()
                             .addComponent<Pelican::SimpleModelViewUpdateComponent>(model_update)
                             .finish();
-        ctx.setLocalTransform(id, transform);
+        (void)ctx.setLocalTransform(id, transform);
         return id;
     }
 
@@ -51,7 +51,7 @@ class ExamplePlayerControl {
         constexpr float speed = 2.5f;
         transform.pos.x += move.x * speed * dt;
         transform.pos.z += move.y * speed * dt;
-        ctx.setLocalTransform(object, transform);
+        (void)ctx.setLocalTransform(object, transform);
     }
 };
 

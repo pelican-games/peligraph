@@ -35,7 +35,7 @@ struct ColliderComponent {
     void loadFromJsonArchive(const JsonArchiveLoader &archive);
     void validate() const;
     void init();
-    void deinit();
+    void deinit() noexcept;
 };
 
 }  // namespace Pelican

@@ -17,6 +17,10 @@ void UserComponentRegistererTemplatePublic::__registerComponent(ComponentId id, 
     info.id = id;
     info.name = loader.name;
     info.size = sz;
+    info.alignment = loader.alignment;
+    info.cb_construct = loader.construct;
+    info.cb_destroy = loader.destroy;
+    info.cb_relocate = loader.relocate;
     info.cb_init = loader.init;
     info.cb_deinit = loader.deinit;
     info.cb_load_by_json2 = loader.json_loader;

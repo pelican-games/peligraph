@@ -2,6 +2,7 @@
 
 #include "../ecs/predefined/modelview.hpp"
 #include "../ecs/predefined/transform.hpp"
+#include "../ecs/core.hpp"
 #include "../model/gltf.hpp"
 #include "../renderer/camera.hpp"
 
@@ -21,6 +22,7 @@
 #include <array>
 #include <cctype>
 #include <components/localtransform.hpp>
+#include <components/predefined.hpp>
 #include <filesystem>
 #include <optional>
 #include <span>
@@ -195,7 +197,6 @@ void SceneLoader::load(SceneId scene_id) {
     const auto ecs_objects = prepareSceneBindings(objects, component_info_manager, light_entries);
 
     const auto transform_id = component_info_manager.getComponentIdByName("transform");
-    const auto simple_model_view_id = component_info_manager.getComponentIdByName("simplemodelview");
 
     clearRuntimeScene();
     GET_MODULE(LightContainer).load(light_entries);
@@ -203,30 +204,26 @@ void SceneLoader::load(SceneId scene_id) {
 
     auto &phys_world = GET_MODULE(PhysWorld);
     for (const auto &object : ecs_objects) {
-        std::vector<void *> components_ptr;
-        components_ptr.resize(object.components_id.size());
-
-        TransformComponent *transform = nullptr;
-        SimpleModelViewComponent *simple_model_view = nullptr;
+        GameObjectId object_id = invalidGameObjectId;
         if (!object.components_id.empty()) {
-            GameObjects::allocateRaw(std::span<const ComponentId>{object.components_id.data(), object.components_id.size()},
-                                     std::span<void *>{components_ptr.data(), components_ptr.size()});
-
-            for (int i = 0; const auto &component : object.components_json) {
-                GET_MODULE(ComponentInfoManager).loadByJson(components_ptr[i], component);
-                if (object.components_id[i] == transform_id) {
-                    transform = static_cast<TransformComponent *>(components_ptr[i]);
-                } else if (object.components_id[i] == simple_model_view_id) {
-                    simple_model_view = static_cast<SimpleModelViewComponent *>(components_ptr[i]);
+            object_id = GameObjects::createWithComponents(object.components_id, [&](std::span<void *> ptrs) {
+                for (size_t i = 0; i < object.components_json.size(); ++i) {
+                    component_info_manager.loadByJson(ptrs[i], object.components_json[i]);
                 }
-                i++;
-            }
+            });
         }
-        if (!object.name.empty() && transform != nullptr) {
-            bindObjectTransform(object.name, transform, simple_model_view);
+        const bool has_transform = object_id != invalidGameObjectId &&
+                                   std::find(object.components_id.begin(), object.components_id.end(), transform_id) !=
+                                       object.components_id.end();
+        if (!object.name.empty() && has_transform) {
+            bindObjectTransform(object.name, object_id);
         }
         for (const auto &collider : object.colliders) {
-            phys_world.bindCollider(object.name, collider, transform, identityPhysWorldTransform());
+            if (has_transform) {
+                phys_world.bindCollider(object.name, collider, object_id);
+            } else {
+                phys_world.bindCollider(object.name, collider, identityPhysWorldTransform());
+            }
         }
     }
     current_scene_id = std::move(scene_id);
@@ -263,21 +260,36 @@ void SceneLoader::clearRuntimeScene() {
     GET_MODULE(PolygonInstanceContainer).clear();
 }
 
-void SceneLoader::bindObjectTransform(const std::string &name, void *transform, void *simple_model_view) {
-    if (name.empty() || transform == nullptr) {
+void SceneLoader::bindObjectTransform(const std::string &name, GameObjectId object_id) {
+    if (name.empty() ||
+        GET_MODULE(ECSCore).getTemplatePublicModule().tryComponent<TransformComponent>(object_id) == nullptr) {
         return;
     }
-    if (object_bindings.contains(name)) {
-        throw std::runtime_error("duplicate object name for transform binding: " + name);
+    if (const auto existing = object_bindings.find(name); existing != object_bindings.end()) {
+        if (GET_MODULE(ECSCore).getTemplatePublicModule().tryComponent<TransformComponent>(existing->second.object_id) ==
+            nullptr) {
+            object_bindings.erase(existing);
+        } else {
+            throw std::runtime_error("duplicate object name for transform binding: " + name);
+        }
     }
     object_bindings.emplace(name, ObjectBinding{
-                                      .transform = transform,
-                                      .simple_model_view = simple_model_view,
+                                      .object_id = object_id,
                                   });
 }
 
+std::optional<GameObjectId> SceneLoader::objectId(std::string_view name) const {
+    const auto found = object_bindings.find(std::string{name});
+    if (found == object_bindings.end() ||
+        GET_MODULE(ECSCore).getTemplatePublicModule().tryComponent<TransformComponent>(found->second.object_id) ==
+            nullptr) {
+        return std::nullopt;
+    }
+    return found->second.object_id;
+}
+
 bool SceneLoader::hasObjectTransform(std::string_view name) const {
-    return object_bindings.find(std::string{name}) != object_bindings.end();
+    return objectId(name).has_value();
 }
 
 SceneObjectTransform SceneLoader::objectTransform(std::string_view name) const {
@@ -286,7 +298,12 @@ SceneObjectTransform SceneLoader::objectTransform(std::string_view name) const {
         throw std::runtime_error("unknown object name: " + std::string{name});
     }
 
-    const auto *bound_transform = static_cast<const TransformComponent *>(binding_it->second.transform);
+    const auto object_id = binding_it->second.object_id;
+    const auto *bound_transform =
+        GET_MODULE(ECSCore).getTemplatePublicModule().tryComponent<TransformComponent>(object_id);
+    if (bound_transform == nullptr) {
+        throw std::runtime_error("object was deleted: " + std::string{name} + " (" + toString(object_id) + ")");
+    }
     return SceneObjectTransform{
         .pos = bound_transform->pos,
         .rotation = bound_transform->rotation,
@@ -301,9 +318,15 @@ void SceneLoader::applyObjectTransform(std::string_view name, const SceneObjectT
     }
 
     const auto &binding = binding_it->second;
-    auto *bound_transform = static_cast<TransformComponent *>(binding.transform);
-    auto *simple_model_view = static_cast<SimpleModelViewComponent *>(binding.simple_model_view);
+    auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
+    auto *bound_transform = ecs.tryComponent<TransformComponent>(binding.object_id);
+    auto *simple_model_view = ecs.tryComponent<SimpleModelViewComponent>(binding.object_id);
+    if (bound_transform == nullptr) {
+        throw std::runtime_error("object was deleted: " + std::string{name} + " (" +
+                                 toString(binding.object_id) + ")");
+    }
     assignTransform(*bound_transform, transform);
+    (void)ecs.markComponentChanged(binding.object_id, ComponentIdByType<TransformComponent>::value);
     if (simple_model_view != nullptr && simple_model_view->model_instance_id) {
         GET_MODULE(PolygonInstanceContainer)
             .setTrs(*simple_model_view->model_instance_id, transform.pos, transform.rotation, transform.scale);
@@ -320,22 +343,22 @@ std::filesystem::path SceneLoader::loadTransientGltf(std::string_view path_ref, 
         component_info_manager.getComponentIdByName("transform"),
         component_info_manager.getComponentIdByName("simplemodelview"),
     };
-    std::array<void *, 2> component_ptrs{};
-    GameObjects::allocateRaw(std::span<const ComponentId>{component_ids}, std::span<void *>{component_ptrs});
-
-    auto *transform = static_cast<TransformComponent *>(component_ptrs[0]);
-    auto *simple_model_view = static_cast<SimpleModelViewComponent *>(component_ptrs[1]);
-    component_info_manager.initComponent(component_ids[0], transform);
-    component_info_manager.initComponent(component_ids[1], simple_model_view);
-
     const auto initial_transform = identityObjectTransform();
-    assignTransform(*transform, initial_transform);
-    simple_model_view->model_instance_id = model_instance_id;
+    GameObjectId object_id = invalidGameObjectId;
+    try {
+        object_id = GameObjects::createWithComponents(component_ids, [&](std::span<void *> ptrs) {
+            assignTransform(*static_cast<TransformComponent *>(ptrs[0]), initial_transform);
+            static_cast<SimpleModelViewComponent *>(ptrs[1])->model_instance_id = model_instance_id;
+        });
+    } catch (...) {
+        GET_MODULE(PolygonInstanceContainer).removeModelInstance(model_instance_id);
+        throw;
+    }
     GET_MODULE(PolygonInstanceContainer)
         .setTrs(model_instance_id, initial_transform.pos, initial_transform.rotation, initial_transform.scale);
 
     if (name && !name->empty()) {
-        bindObjectTransform(*name, transform, simple_model_view);
+        bindObjectTransform(*name, object_id);
     }
     return path;
 }

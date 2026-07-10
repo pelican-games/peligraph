@@ -1,106 +1,88 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
+#include <memory>
 #include <span>
-#include <unordered_map>
 #include <vector>
-#include <optional>
-#include <array>
 
 #include <details/ecs/component.hpp>
 
 namespace Pelican {
 
+class ECSCoreTemplatePublic;
+
 class ECSComponentChunk {
+    friend class ECSCoreTemplatePublic;
     class VariedArray {
-        size_t count;
-        size_t stride;
-        std::vector<uint8_t> arr;
+        size_t count = 0;
+        size_t stride = 0;
+        size_t alignment = 0;
+        void *storage = nullptr;
+        void (*construct_one)(void *) = nullptr;
+        void (*destroy_one)(void *) noexcept = nullptr;
+        void (*relocate_one)(void *, void *) noexcept = nullptr;
+        void (*deinit_one)(void *) noexcept = nullptr;
+
+        void *atUnchecked(size_t index) const noexcept;
 
       public:
-        VariedArray(size_t _stride) : count{0}, stride{_stride}, arr{} {}
+        VariedArray(size_t stride, size_t alignment, void (*construct)(void *),
+                    void (*destroy)(void *) noexcept, void (*relocate)(void *, void *) noexcept,
+                    void (*deinit)(void *) noexcept);
+        VariedArray(const VariedArray &) = delete;
+        VariedArray &operator=(const VariedArray &) = delete;
+        ~VariedArray();
 
-        size_t size() const { return count; }
-        size_t size_one() const { return stride; }
-        void *data() { return arr.data(); }
-        void *at(size_t index) { return static_cast<uint8_t *>(data()) + stride * index; }
-        void expand(size_t ex_count) {
-            arr.resize((count + ex_count) * stride);
-            count += ex_count;
-        }
-        void shrink(size_t shrink_count) {
-            arr.resize((count - shrink_count) * stride);
-            count -= shrink_count;
-        }
-        void reserve(size_t capacity) {
-            arr.reserve(capacity * stride);
-        }
+        size_t size() const noexcept { return count; }
+        size_t size_one() const noexcept { return stride; }
+        void *data() const noexcept { return storage; }
+        void *at(size_t index) const;
+        void expand(size_t expand_count);
+        void rollbackTail(size_t rollback_count) noexcept;
+        void removeAt(size_t index) noexcept;
+        void clear() noexcept;
     };
 
-
-    // Indexed by Dense Index
-    std::vector<std::optional<VariedArray>> component_arrays;
+    // Indexed by dense component index.
+    std::vector<std::unique_ptr<VariedArray>> component_arrays;
     std::vector<size_t> indices;
     std::vector<ComponentId> component_ids;
-    std::vector<uint64_t> component_versions; // Indexed by ComponentId (Dense Index)
+    std::vector<uint64_t> component_versions;
     size_t count = 0;
     uint64_t mask = 0;
 
   public:
     static constexpr size_t CHUNK_CAPACITY = 4096;
 
-    size_t size() const { return count; }
-    uint64_t getMask() const { return mask; }
-
-    bool has(ComponentId component_id) {
-        if (component_id >= component_arrays.size())
-            return false;
-        return component_arrays[component_id].has_value();
-    }
-
-    VariedArray &get(ComponentId component_id) { return *component_arrays[component_id]; }
-
-    void updateVersion(size_t index, uint64_t tick) {
-        if (index < component_versions.size()) {
-            component_versions[index] = tick;
-        }
-    }
-
-    uint64_t getVersion(size_t index) const {
-        if (index < component_versions.size()) {
-            return component_versions[index];
-        }
-        return 0;
-    }
-
-    // Check if chunk has all components specified by INDICES
-    bool has_all(std::span<const size_t> req_indices) {
-        for(auto req : req_indices) {
-             bool found = false;
-             for(auto exists : indices) {
-                 if(exists == req) { found = true; break; }
-             }
-             if(!found) return false;
-        }
-        return true;
-    }
-
-    ComponentRef getRef(size_t index) {
-        return ComponentRef{
-            .ptr = component_arrays[index]->data(),
-            .stride = component_arrays[index]->size_one()
-        };
-    }
-
-    std::span<const ComponentId> getComponentList() const { return component_ids; }
-    std::span<const size_t> getIndices() const { return indices; }
-    
-    // Chunk Constructor
     ECSComponentChunk(std::span<const size_t> component_indices, std::span<const ComponentId> generic_ids);
+    ECSComponentChunk(const ECSComponentChunk &) = delete;
+    ECSComponentChunk &operator=(const ECSComponentChunk &) = delete;
+    ECSComponentChunk(ECSComponentChunk &&) noexcept = default;
+    ECSComponentChunk &operator=(ECSComponentChunk &&) noexcept = default;
+    ~ECSComponentChunk() = default;
 
-    // returns allocated count
-    size_t allocate(std::span<const size_t> component_indices, std::span<void *> component_ptrs, size_t ex_count);
+    size_t size() const noexcept { return count; }
+    size_t remainingCapacity() const noexcept { return CHUNK_CAPACITY - count; }
+    uint64_t getMask() const noexcept { return mask; }
 
-    void free(size_t free_count);
+    bool has(ComponentId component_index) const noexcept;
+    void updateVersion(size_t index, uint64_t tick) noexcept;
+    uint64_t getVersion(size_t index) const noexcept;
+    bool has_all(std::span<const size_t> required_indices) const noexcept;
+
+    ComponentRef getRef(size_t component_index) const;
+    void *at(size_t component_index, size_t array_index) const;
+    std::span<const ComponentId> getComponentList() const noexcept { return component_ids; }
+    std::span<const size_t> getIndices() const noexcept { return indices; }
+
+  private:
+    // Low-level chunk batch. The caller must keep count <= remainingCapacity().
+    size_t allocate(std::span<const size_t> component_indices, std::span<void *> component_ptrs,
+                    size_t expand_count);
+    void rollbackTail(size_t rollback_count) noexcept;
+    void removeAt(size_t array_index) noexcept;
+    void clear() noexcept;
 };
 
 } // namespace Pelican

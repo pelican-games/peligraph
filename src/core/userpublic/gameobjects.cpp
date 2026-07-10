@@ -1,76 +1,60 @@
 #include "gameobjects.hpp"
-#include "components/predefined.hpp"
-#include "../ecs/componentinfo.hpp"
+
 #include "../ecs/core.hpp"
 #include "../ecs/predefined/modelview.hpp"
 #include "../ecs/predefined/transform.hpp"
 #include "../geomhelper/geomhelper.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
-
-#include <algorithm>
+#include "components/predefined.hpp"
 
 namespace Pelican {
 
-std::vector<GameObjectId> &GameObjects::liveObjects() {
-    static std::vector<GameObjectId> ids;
-    return ids;
+GameObjectId GameObjects::create(std::span<const ComponentId> ids,
+                                 const std::function<void(std::span<void *>)> &populate) {
+    return GET_MODULE(ECSCore).createEntity(ids, populate);
 }
 
-GameObjectId GameObjects::alloc(const ComponentId *ids, void **ptrs, uint32_t components_count) {
-    const auto id = GET_MODULE(ECSCore).allocateEntity(std::span{ids, components_count},
-                                                       std::span{ptrs, components_count}, 1);
-    liveObjects().push_back(id);
-    return id;
-}
-void GameObjects::commit(const ComponentId *ids, void *const *ptrs, uint32_t components_count) {
-    for (uint32_t i = 0; i < components_count; i++) {
-        GET_MODULE(ComponentInfoManager).initComponent(ids[i], ptrs[i]);
-    }
+GameObjectId GameObjects::createWithComponents(
+    std::span<const ComponentId> ids, const std::function<void(std::span<void *>)> &populate) {
+    return create(ids, populate);
 }
 
-GameObjectId GameObjects::allocateRaw(std::span<const ComponentId> ids, std::span<void *> ptrs) {
-    return alloc(ids.data(), ptrs.data(), static_cast<uint32_t>(ids.size()));
-}
-
-void GameObjects::remove(GameObjectId id) {
-    auto &ids = liveObjects();
-    if (const auto it = std::find(ids.begin(), ids.end(), id); it != ids.end()) {
-        ids.erase(it);
-    }
-    GET_MODULE(ECSCore).remove(id);
+bool GameObjects::remove(GameObjectId id) {
+    return GET_MODULE(ECSCore).remove(id);
 }
 
 void GameObjects::removeAll() {
-    liveObjects().clear();
-    GET_MODULE(ECSCore).getTemplatePublicModule().clearEntities();
+    GET_MODULE(ECSCore).clearEntities();
 }
 
 size_t GameObjects::liveCountForTesting() {
-    return liveObjects().size();
+    return GET_MODULE(ECSCore).getTemplatePublicModule().liveCount();
 }
 
 LocalTransformComponent GameObjects::localTransform(GameObjectId id) {
     return GET_MODULE(ECSCore).getTemplatePublicModule().component<LocalTransformComponent>(id);
 }
 
-void GameObjects::setLocalTransform(GameObjectId id, const LocalTransformComponent &transform) {
+bool GameObjects::setLocalTransform(GameObjectId id, const LocalTransformComponent &transform) {
     auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
-    ecs.setComponent<LocalTransformComponent>(id, transform);
+    if (!ecs.setComponent<LocalTransformComponent>(id, transform)) {
+        return false;
+    }
 
-    auto *engine_transform = ecs.tryComponent<TransformComponent>(id);
-    if (engine_transform != nullptr) {
+    if (auto *engine_transform = ecs.tryComponent<TransformComponent>(id)) {
         engine_transform->pos = to_glm(transform.pos);
         engine_transform->rotation = to_glm(transform.rotation);
         engine_transform->scale = to_glm(transform.scale);
-        ecs.markComponentChanged(id, ComponentIdByType<TransformComponent>::value);
+        (void)ecs.markComponentChanged(id, ComponentIdByType<TransformComponent>::value);
     }
 
-    auto *model_view = ecs.tryComponent<SimpleModelViewComponent>(id);
-    if (model_view != nullptr && model_view->model_instance_id.has_value()) {
+    if (auto *model_view = ecs.tryComponent<SimpleModelViewComponent>(id);
+        model_view != nullptr && model_view->model_instance_id.has_value()) {
         GET_MODULE(PolygonInstanceContainer)
             .setTrs(model_view->model_instance_id.value(), to_glm(transform.pos), to_glm(transform.rotation),
                     to_glm(transform.scale));
     }
+    return true;
 }
 
 } // namespace Pelican

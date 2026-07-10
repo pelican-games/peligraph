@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../container.hpp"
+#include <details/ecs/entity.hpp>
 
 #include <filesystem>
 #include <glm/ext/quaternion_float.hpp>
@@ -22,15 +23,14 @@ struct SceneObjectTransform {
 
 DECLARE_MODULE(SceneLoader) {
     struct ObjectBinding {
-        void *transform = nullptr;
-        void *simple_model_view = nullptr;
+        GameObjectId object_id;
     };
 
     std::unordered_map<std::string, ObjectBinding> object_bindings;
     SceneId current_scene_id;
     std::optional<SceneId> pending_scene_id;
 
-    void bindObjectTransform(const std::string &name, void *transform, void *simple_model_view);
+    void bindObjectTransform(const std::string &name, GameObjectId object_id);
     void clearRuntimeScene();
 
   public:
@@ -41,6 +41,7 @@ DECLARE_MODULE(SceneLoader) {
     void requestLoad(SceneId scene_id);
     bool applyPendingLoad();
     const SceneId &currentScene() const;
+    std::optional<GameObjectId> objectId(std::string_view name) const;
     bool hasObjectTransform(std::string_view name) const;
     SceneObjectTransform objectTransform(std::string_view name) const;
     void applyObjectTransform(std::string_view name, const SceneObjectTransform &transform);
