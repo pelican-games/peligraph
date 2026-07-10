@@ -131,7 +131,7 @@ myproject/
     "window_size": {"width": 1920, "height": 1080},
     "fullscreen": false,
     "framerate": 60,
-    "camera": {"fov_y": 60.0, "near": 0.1, "far": 100.0, "up": [0, 1, 0]},
+    "camera": {"yfov": 1.0471975511965976, "znear": 0.1, "zfar": 100.0, "up": [0, 1, 0]},
     "default_scene_id": "default_scene",
     "scene_data_json": "scenes/main.scene.json",
     "asset_data_json": "assets/asset_data.json",
