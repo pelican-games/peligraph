@@ -1198,6 +1198,32 @@ fly を共用する将来を壊さない(コントローラ状態はコンポー
 受け入れ基準: 上記 6 の報告書 + (a)(b) の再現手順。既存ビルド・テストに
 影響ゼロ(src/ 不変)。**結論が「不成立」でも、壁の特定ができていれば合格**。
 
+### WP60: リファクタ R1 — 死荷重の削除(挙動無変化の証明付き)
+
+参照: 2026-07-08 リファクタ監査(ユーザー承認済み)。依存: なし
+(ECS 凍結解除済み)。見積: 中。
+
+1. 旧衝突系の撤去: `src/core/ecs/predefined/collision.{cpp,hpp}`
+   (SimpleCollisionSystem — 毎フレーム 100 万件 reserve・結果未使用)、
+   `predefined.cpp` の強制登録、`SphereColliderComponent` 別名。
+   現行 collider は PhysWorld 経路(scene.cpp)のみが正
+2. player のデモ残骸: `src/player/main.cpp` の MyCharComponent/MyCharSystem と、
+   それだけのために存在する coredist ブリッジ
+3. 旧 pelican_cli 生成器: devcli/main.cpp の旧デフォルト分岐(myproject/hoge)、
+   Mustache 依存(FetchContent 含む)、旧テンプレート 4 つ。正規経路は
+   `project init`(WP57)。**削除前に部品取り(ユーザー指示)**:
+   旧生成器・テンプレートを読み、project init に取り込む価値がある要素
+   (テンプレ内容・生成構成・エラー処理等)を `docs/design_reviews/`
+   に SALVAGE メモとして残すこと(取り込む価値なしならその旨を書く)
+4. 空 API 群: `ECS::compaction()`、`removePrimitiveEntry`、`Hoge` handle と
+   `hoge_test`、空の `sound/CMakeLists.txt`、未使用 adapter API
+5. テスト・fixture の追随削除(旧系専用のもののみ。共用 fixture は触らない)
+
+受け入れ基準: (a) ビルド + 全テスト + **golden 16 ケース + player 起動が
+完全無変化**(= 削除しても何も変わらないことの機械的証明)
+(b) SALVAGE メモ (c) §0 共通規則。**削除対象以外のリファクタに手を出さない**
+(strict v1 化・構造統合は後続 R 系の領分)。
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **最小コマンド層**: (1) ファイル連携済み → (2) WP27 実装済み → (3) `load_gltf` / `update_transforms` は **2026-07-07 に実装 GO 決定**。前提はすべて充足(宛先 = scene v1 の objects[].name / アセット意味論 = WP21)。設計時要件: **複数インスタンス運用**(エージェントが複数エンジンを並行駆動する使い方) — stdio rpc は 1 プロセス 1 クライアントの現行構造を維持しつつ、`get_status`(instance id・project・フレーム番号)を追加してインスタンス識別可能に。プロジェクトは読み取り専有なので並行起動は安全(書き込み系操作を入れる際に排他を設計)。複数クライアント同時接続は TCP/WebSocket 展開時の課題として分離
