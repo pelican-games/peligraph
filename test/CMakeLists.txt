@@ -317,3 +317,5 @@ endif()
 add_executable(pelican_test_audio_disabled_probe audio_disabled_probe.cpp)
 set_target_properties(pelican_test_audio_disabled_probe PROPERTIES CXX_STANDARD 20)
 target_link_libraries(pelican_test_audio_disabled_probe PRIVATE pelican_core)
+
+pelican_define_test(persistence_test pelican_core)

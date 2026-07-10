@@ -20,6 +20,7 @@ add_subdirectory(os)
 add_subdirectory(ecs)
 add_subdirectory(asset)
 add_subdirectory(loader)
+add_subdirectory(persistence)
 add_subdirectory(vkcore)
 add_subdirectory(shader)
 add_subdirectory(material)
@@ -71,7 +72,7 @@ if(PELICAN_WITH_AUDIO)
 target_link_libraries(pelican_core PRIVATE miniaudio)
 endif()
 
-target_link_libraries(pelican_core PRIVATE nlohmann_json)
+target_link_libraries(pelican_core PUBLIC nlohmann_json)
 
 # build distributable dir
 ## list up static lib dependencies

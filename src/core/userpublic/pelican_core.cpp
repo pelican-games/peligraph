@@ -8,6 +8,10 @@
 #include "../loader/basicconfig.hpp"
 #include "../loader/projectsrc.hpp"
 #include "../loader/scene.hpp"
+#include "../persistence/persistence.hpp"
+#if PELICAN_WITH_AUDIO
+#include "../audio/audio.hpp"
+#endif
 
 #include <utility>
 
@@ -31,6 +35,13 @@ bool PelicanCore::run() {
     bool succeeded = true;
     try {
         GET_MODULE(ProjectSource).setSourceByData(settings_str);
+
+        auto &persistence = GET_MODULE(Persistence);
+        if (persistence.loadSettings()) {
+#if PELICAN_WITH_AUDIO
+            persistence.applyAudioSettings(GET_MODULE(Audio));
+#endif
+        }
 
         GET_MODULE(ECSPredefinedRegistration).reg();
         GET_MODULE(SceneLoader).load(GET_MODULE(ProjectBasicConfig).defaultSceneId());

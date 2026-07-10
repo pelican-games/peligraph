@@ -44,6 +44,7 @@ DECLARE_MODULE(Audio) {
     SoundHandle playSound(std::string_view path);
     void stopSound(SoundHandle handle);
     void setBusVolume(std::string_view bus, float volume);
+    float busVolume(std::string_view bus) const;
     bool isPlaying(SoundHandle handle) const;
 };
 
