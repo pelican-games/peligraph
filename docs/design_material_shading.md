@@ -1,8 +1,11 @@
 # マテリアル/シェーディング接続点(v1)
 
 対象読者: エンジン担当・プロジェクトでカスタムシェーダを書く人。
-ステータス: v1.1(2026-07-08 レビュー反映 — **A/B/C 梯子と textures を追加、
-ユーザー合意済み**。M1 = WP58 実装済み)。
+ステータス: v1.2(2026-07-10 — **codex 敵対的レビュー
+`docs/design_reviews/2026-07-08_material_bc_codex.md` の差し戻しを受理**。
+主な改訂: .surface 自己記述コンテナ / spv-link を experimental に降格 /
+ターミナルフック排他 / 版付きシンボル / 名前付きスナップショット /
+実装順の組み替え。M1 = WP58 実装済みだが **v1.2 形式には未追従**(M2a で解消))。
 前提: `design_render_feature_modules.md`(shader_defines・variant 機構)、
 `design_scene_format.md`、[PF] シェーダ stem 規約、[PFW] サブセット原則。
 
@@ -72,15 +75,17 @@ stem 規約なので native/web が同じ記述で成立する)。
   stem から解決(既存規約)。**vert のみ・frag のみの差し替えも可**
   (`shader_vert` / `shader_frag` で個別指定 — 未決 1)
 - `defines`: bool フラグのみ(§5 の規律)
-- `params`: 自由スキーマ → **material params UBO**(set 2 に追加 binding)。
-  数値(float / vecN / int)のみ、レイアウト規約は宣言順 std140。
+- **params/textures の宣言はマテリアル JSON に置かない(v1.2 改訂)** —
+  宣言は `.surface` コンテナ(§3-10)がコード側で持ち、マテリアル JSON は
+  **`values`(値の上書き)だけ**を持つ:
+  `{"name": "lava_blue", "surface": "shaders/lava.surface", "values": {"tint": [0.2,0.5,1.0]}}`。
+  Unity の Shader/Material、Godot の shader/material と同じ分業。
+  旧 v1.1 の「JSON 側 params 宣言 + 宣言順 std140」は**仕様バグとして廃止**
+  (JSON object は順序を持たない — レビュー指摘)
+- 実体は**全マテリアル struct を並べた SSBO**(§3-5 と統一。v1.1 の
+  「params UBO」表記は誤りとして削除)。GLSL 宣言はコンテナのヘッダから
+  エンジンが生成しシム注入(手書きレイアウト一致という概念を廃止)。
   64B の shader push constant は「毎フレーム変わる少量」用として残す
-- `textures`(v1.1 追加): 名前 → パスの辞書(カスタムテクスチャスロット)。
-  set 2 の固定 PBR スロットの後ろに**宣言順で binding を割当**(対応規則は
-  shader_contract.md の契約に含める)。値は通常のパス参照(#フラグメント可)。
-  **std140/binding の手書き一致は要求しない** — params/textures から GLSL の
-  uniform block + sampler 宣言をツールが生成し(`<stem>.params.glsl`)、
-  シェーダは include するだけ(踏み抜き防止。M2 で実装)
 
 ### 3-1. 供給の 3 段(A/B/C 梯子 — 2026-07-08 合意)
 
@@ -191,7 +196,20 @@ user.spv(pelican_surface を Export。GLSL/HLSL/Slang 何産でもよい)
   リンク済み最終 .spv を焼く — ランタイム・配布物にツールは漏れない
 - コスト(正直に): 小さなコンパイラツールのオーナーになる。緩和 =
   spirv-val ゲート + GLSL/Slang 両産スニペットの golden 常設
-- **WP59 スパイク結果(2026-07-08): 成立 — 本採用**(`experiments/spvlink/REPORT.md`
+- **v1.2 改訂: 本採用 → experimental に降格**(codex レビューの差し戻し受理)。
+  スパイクが証明したのは「特定バージョン 3 つ組 + 人工的小関数 + 1 環境」のみで、
+  製品 ABI の将来互換・意味同値・性能・デバッグ・web bake は未検証。
+  **B の production baseline = ソース経路(テンプレート合成)、spv-link は
+  同じ B API の裏の experimental バックエンド**として競争させ、以下の
+  受け入れゲートを全部通過したら昇格を再判断する:
+  ①言語別 10 本以上のコーパス(struct/配列リソース/制御フロー/derivative/
+  discard/複数フック版数)②コンパイラ latest/latest-1 CI + 正規化前後 golden +
+  旧 .spv 互換テスト ③AMD/NVIDIA/Intel/MoltenVK の実機 pipeline+画像テスト +
+  naga web bake テスト ④RenderDoc でユーザーソース行が追える debug プロファイル
+  ⑤monolithic 比の GPU time/ISA/コンパイル時間/hot reload 閾値 ⑥fuzzer による
+  不正 SPIR-V 耐性 ⑦toolchain 全版数 + 入力 hash を含む再現可能キャッシュ。
+  SPIRV-Headers/Tools/Reflect は pin/vendor する(SDK 追従禁止)
+- **WP59 スパイク結果(2026-07-08): 機構成立の実証**(`experiments/spvlink/REPORT.md`
   が一次資料)。GLSL 産と Slang 産の同一 `pelican_surface` が両方リンク・
   spirv-val 通過・パイプライン生成成功。variant 再リンクも実証。
   判明した本実装への要件:
@@ -224,11 +242,15 @@ user.spv(pelican_surface を Export。GLSL/HLSL/Slang 何産でもよい)
    プロジェクト側スニペットの領分。注記: IBL/環境項は独自 BRDF と厳密には
    整合しない(v1 は標準近似)。独自 BRDF は forward 専用(将来 deferred の
    G-buffer は固定モデル前提)
-3. **宣言式スクリーン入力**: マテリアルの `"screen_inputs":
-   ["scene_color", "depth"]` 宣言で、フレームグラフが copy パスと描画順を
-   自動配線し、surface からアクセサで読める。屈折・水・深度フェード・
-   ソフトパーティクル・歪みが B 圏内に入る(reads 宣言 → 機械配線の
-   既存哲学の適用)。宣言なし = 現行どおり(コストゼロ)
+3. **スクリーン入力 = 名前付きスナップショット(v1.2 改訂)**: マテリアルが
+   資源名を並べて自動配線させる方式は**廃止**(Godot の SCREEN_TEXTURE が
+   踏んだ「コピーは 1 回だけ・透明は写らない・重なる屈折は前の結果を見ない」
+   というトレードオフを隠して再実装するだけ — レビュー指摘)。改訂:
+   **rendering config が名前付きスナップショット(コピー点)を定義**し、
+   マテリアルは `"screen_inputs": ["opaque_color"]` で**参照するだけ**。
+   v1 は「opaque 後スナップショット 1 点」のみ・透明同士の逐次屈折は
+   **非対応と明記**・コピーのバイト数はプラン dump に表示・マテリアル起点の
+   暗黙グラフ変更は禁止。屈折・水・深度フェードは v1 の範囲で成立する
 4. **web は B まで対応を目標に格上げ**(ユーザー決定): 経路は
    naga(リンク済み SPIR-V → WGSL)一択 — スニペットの言語を問わない。
    web サブセット版テンプレートでリンク → naga → .wgsl を **dist-bake の
@@ -251,6 +273,18 @@ user.spv(pelican_surface を Export。GLSL/HLSL/Slang 何産でもよい)
 | 3 | `pelican_brdf`(+`pelican_ambient`) | ライトループ・影・減衰 |
 | 4 | `pelican_lighting`(ライティング段の全権) | パス構造・descriptor・スキニング・variant(**最後まで不可侵**) |
 
+**フックの合成規則(v1.2 で「最深優先」を廃止)**: displace と surface は
+**直交**(共存可 — 別ステージ)。**brdf と lighting は排他**(ライティング段の
+ターミナルフックは 1 つ — 両方定義は名前入りエラー。黙った無効化の禁止)。
+surface は brdf/lighting と共存する(surface が struct を埋め、ライティング段が
+それを消費する — 役割が違う)。
+
+**版付きシンボル(v1.2)**: `pelican_surface_v1` のように**シンボル名に版を
+焼く**。v1 struct は永久凍結(field 追加も禁止)、拡張は v2 シンボル + 
+テンプレート側の v1→v2 アダプタで行う。マクロ(PELICAN_SURFACE_V1)は
+ソース再コンパイルの分岐にしかならず、**配布済み .spv の ABI を守れない**
+(レビュー指摘)ため版管理の主手段にしない。
+
 - **エンジンシェーダライブラリ ABI**(深さ 3/4 の部品): `pelican_light_count()` /
   `pelican_light(i)` / `pelican_shadow(i, world_pos)` / `pelican_env_ambient(n)`
   等を安定 ABI の関数群として提供。実体は engine lib.spv が Export し
@@ -266,8 +300,9 @@ user.spv(pelican_surface を Export。GLSL/HLSL/Slang 何産でもよい)
   呼んでいる範囲で乗る(呼ばなければ乗らない — 自由の対価)。
   フック・ライブラリ関数の追加は凍結改訂の流儀、削除・意味変更は不可
 - **深さの指定は不要 — 書いた関数が宣言(2026-07-08 ユーザー決定)**:
-  スニペットの SPIR-V からエクスポート関数名を反射で列挙し、存在するフックを
-  繋ぐ(最深優先)。マテリアル側は `"surface"` の stem 参照 1 行のみ。
+  コンパイル後の反射で定義済みフックを列挙し、存在するものを繋ぐ
+  (合成規則は上記 v1.2 — displace/surface は直交、brdf/lighting は排他)。
+  マテリアル側は `"surface"` の stem 参照 1 行のみ。
   1 ファイルに任意の深さまで書き足せば保存のたびその形で動く。
   variant キャッシュキーに検出結果を含める。事故防止 3 規則:
   ①`pelican_` 始まりの未知エクスポート = 名前入りエラー(タイポの無言
@@ -283,10 +318,12 @@ user.spv(pelican_surface を Export。GLSL/HLSL/Slang 何産でもよい)
 - A / 深さ 1〜2: 無傷 — `PelicanSurface` は論理 G-buffer(forward = その場で
   照らす、deferred = エンコードして後で照らす。スニペットは 1 文字も
   変わらない)。ABI を小さな struct に制限した決定がエンコード可能性を保証
-- 深さ 3(brdf): 無傷 — スニペットは surface とライトにしか依存しないので、
-  **同じ .spv が per-object(forward)にも全画面 deferred ライティングパスにも
-  リンクできる**(ID switch 方式 — G-buffer に数ビットのモデル ID)
-- 深さ 4(lighting 全権)・blend 系: **forward パスへ自動ルーティング**
+- 深さ 3(brdf): **deferred 再利用は effect 検証付き opt-in(v1.2 改訂)** —
+  任意のユーザー関数は derivative・discard・screen 入力等を使えるため、
+  機械的に全画面パスへ移せない(レビュー指摘)。純粋関数性の allowlist を
+  通ったスニペットのみ ID switch で deferred パスに同居。**既定は
+  深さ 3・4 とも forward 行き**
+- blend 系: forward パスへ自動ルーティング
   (ハイブリッド — deferred は半透明のためどのみち forward を併設する)
 - 順序制御は統一フレームグラフの既存三層がそのまま効く(依存導出・宣言順・
   after/before + アンカー標準名)。プラン dump / 比較テストで検証可能
@@ -301,6 +338,55 @@ user.spv(pelican_surface を Export。GLSL/HLSL/Slang 何産でもよい)
 - 成立しない指定(blend を deferred_geometry 等)は**名前入りの起動時エラー**
   (黙って直さない)
 - deferred 設計書(将来)の残宿題 = ハイブリッド用アンカー標準名の追加のみ
+
+### 3-10. .surface 自己記述コンテナ(v1.2 — 形式の中核改訂)
+
+**「シェーダがインターフェースを宣言し、マテリアルは値を与える」**。
+1 ファイル = 構造化ヘッダ(ファイルの正式な一部)+ コード本体:
+
+```glsl
+//! pelican.surface v1
+//! language: glsl
+//! params:
+//!   - { name: flow_speed, type: float, default: 0.35, min: 0.0, max: 2.0 }
+//!   - { name: tint,       type: vec3,  default: [1.0, 0.5, 0.1], hint: color }
+//! textures:
+//!   - { name: flow_map, default: "engine://textures/flat_gray", color_space: linear }
+//! screen_inputs: []
+
+void pelican_surface(in PelicanSurfaceInput i, inout PelicanSurface s) { ... }
+```
+
+- **params は順序付き配列 + 明示型 + default 必須**(min/max/hint は任意 —
+  将来のエディタが widget 生成に使う)。レイアウトと GLSL 宣言はヘッダから
+  エンジンが生成・シム自動注入(作者はレイアウトを書かない。source map 上は
+  仮想ヘッダ)
+- texture の default(engine:// 可)により**アセットなしでも絵が出る**
+- binding 割当はエンジンが一元管理(VAT の 4/5 との衝突もここで解消)
+- マテリアル JSON は `values` で default を上書きするだけ(§3 参照)
+- **合格条件(機械テスト化)**: 「新規プロジェクトに .surface を 1 個置き、
+  マテリアルから 1 行参照するだけで絵が出る」— ブログ共有可能性の定義
+
+### 3-11. B = C の糖衣の構成的保証(v1.2)
+
+dogfooding(標準スニペットを公開ライブラリで書く)は必要条件だが十分条件では
+ない(バインダ/スケジューラの特権を検出できない — レビュー指摘)。追加:
+
+- **`dump-lowered-material`**: すべての B マテリアルを公開 C 記述
+  (pelican.material + resources + パス選択)へ機械的に降ろせること。
+  CI が「降ろした C 記述の直接ロード」と pipeline layout・frame plan・
+  最終 SPIR-V・画像の一致を検証する — **「B は C で作れるものの糖衣」という
+  不変条件のテスト化**
+- 前提として **C の基盤が先**(M2b): 公開 resources manifest(buffer/image/
+  sampler の宣言)、semantic なエンジン供給データ(FrameUBO 再編を含む)、
+  render state 拡張(depth compare / stencil / attachment 別 blend 等、
+  capability 検証付き)。B テンプレートだけが使える私的 descriptor を禁止
+- variant キャッシュキーの拡張: (stem, defines, パス) では不足 —
+  toolchain 名/版/全オプション・シム/テンプレート/lib の hash・ABI 版・
+  フック集合・bindless モードを含める
+- precompiled C(.spv)は**パス別 artifact map**(`stem.depth.spv` 等の命名
+  規約)を持つ — 「.spv は variant 非対応」と §3-3 のパス variant 要求の
+  矛盾の解消
 
 ## 4. マテリアルシェーダの契約(安定 API 化)
 
@@ -331,15 +417,17 @@ user.spv(pelican_surface を Export。GLSL/HLSL/Slang 何産でもよい)
 - 配布: dist-bake(B4)がこの variant 列挙を焼く対象になる(設計整合のみ、
   実装は B4)
 
-## 6. 移行(WP 候補 — v1.1 改訂)
+## 6. 移行(WP 候補 — v1.2 で組み替え)
 
 | 段階 | 内容 | 依存 |
 |------|------|------|
-| M1 | pelican.material パーサ + 検証 + 契約文書 | **完了(WP58)** |
-| M2 | **A 完成**: バインダ(params UBO・textures 辞書・material コンポーネント・glb extras・render_state・ダミーテクスチャ)+ `<stem>.params.glsl` 生成 + **contract 記載の実装差分 3 件の解消**(set 0 の意味統一・push constant 分割 enforcement・params UBO)。既定 PBR は現行挙動維持(golden 全維持)。パス variant 要件(§3-3)込み | M1 |
-| M3 | **B 実装**: pelican-spv-link 本実装(SPIRV-Tools/Reflect API、テキスト書換禁止)+ テンプレート(フック梯子 4 段 + custom0/1)+ **エンジンシェーダライブラリ ABI(lib.spv Export)**+ 同梱ライティングスニペット 2 個(standard/toon — **ライブラリのみで実装 = dogfood**)+ シム生成(split sampler 強制)+ PelicanSurface V1 + エラー翻訳 + example に surface マテリアル 1 個 + golden(GLSL 産と Slang 産の両方) | M2, WP59 |
-| M3.5 | **screen_inputs**(宣言 → copy パス自動配線 + アクセサ)— 屈折/深度フェードの golden | M3 |
-| M4 | **C 整備 + web B ベイク**: エンジンライブラリ公開 + テンプレートコピー手順 + web 側 = A(データ解釈)+ B(naga ベイクレーン、WW 系と接続) | M3 |
+| M1 | pelican.material パーサ + 契約文書 | **完了(WP58 — ただし旧 v1 形式のみ。v1.2 形式は M2a)** |
+| M2a | **形式 drift 解消**: surfaceformat 新設(.surface ヘッダのパース — 順序付き params・明示型・default)+ materialformat を values 方式へ改訂 + 未知キーの扱い確定 | M1 |
+| M2b | **C 基盤**: FrameUBO 新設 + set 0 意味統一 + push constant 分割 enforcement + マテリアル SSBO 化 + 公開 resources manifest + render state 拡張(capability 検証付き)+ `dump-lowered-material` の器。既定 PBR は現行挙動維持(golden 全維持) | M2a |
+| M3a | **B production baseline(ソース経路)**: テンプレート合成(shaderc includer)+ シム自動注入 + ターミナルフック排他 + 版付きシンボル + 同梱 standard/toon(公開ライブラリのみで実装 = dogfood)+ B→C lowering 同値 CI + エラー翻訳 + example 1 個 + golden | M2b |
+| M3b | **spv-link を experimental バックエンドとして追加**(同じ B API の裏)。§3-6 の受け入れゲート 7 項目を全通過するまで既定にしない | M3a |
+| M3.5 | **名前付きスナップショット**(rendering config 定義 + マテリアル参照。opaque 後 1 点から)— 屈折/深度フェードの golden | M3a |
+| M4 | **web = B-web capability プロファイル**(native B の無条件サブセットとしない): dist-bake が link → naga parse/validate → WGSL → wgpu 検証を hard gate に。非対応理由を artifact に記録 | M3a |
 
 ## 7. 未決事項
 
