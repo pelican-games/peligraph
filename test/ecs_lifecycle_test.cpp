@@ -3,7 +3,7 @@
 #include "../src/core/ecs/core.hpp"
 #include "../src/core/ecs/componentinfo.hpp"
 #include "../src/core/log.hpp"
-#include "../src/core/userpublic/components/localtransform.hpp"
+#include "../src/core/userpublic/components/predefined.hpp"
 #include "../src/core/userpublic/details/component/registerer.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -104,6 +104,22 @@ struct TeardownComponent {
     void deinit() noexcept { events.emplace_back("deinit"); }
 };
 
+struct ModelViewGpuInstanceCanary {
+    static inline int live_instances = 0;
+    bool owns_instance = false;
+
+    void init() {
+        owns_instance = true;
+        ++live_instances;
+    }
+    void deinit() noexcept {
+        if (owns_instance) {
+            owns_instance = false;
+            --live_instances;
+        }
+    }
+};
+
 } // namespace
 
 DECLARE_COMPONENT(TrivialValueComponent, 40);
@@ -113,6 +129,7 @@ DECLARE_COMPONENT(InitFaultComponent, 43);
 DECLARE_COMPONENT(ReentrantComponent, 44);
 DECLARE_COMPONENT(MoveOnlyComponent, 45);
 DECLARE_COMPONENT(TeardownComponent, 46);
+DECLARE_COMPONENT(ModelViewGpuInstanceCanary, 47);
 
 DECLARE_MODULE(TeardownMarker) {
   public:
@@ -154,6 +171,84 @@ TEST_CASE("EntityId canonical representation and value construction are fixed", 
     const auto id = core.createEntity(componentIds<TrivialValueComponent>());
     REQUIRE(core.component<TrivialValueComponent>(id).value == 0);
     core.clearEntities();
+}
+
+TEST_CASE("Unified modelview survives JSON population and non-trivial relocation", "[ecs][lifecycle][modelview]") {
+    STATIC_REQUIRE(std::is_default_constructible_v<SimpleModelViewComponent>);
+    STATIC_REQUIRE(std::is_copy_assignable_v<SimpleModelViewComponent>);
+    STATIC_REQUIRE(std::is_nothrow_move_constructible_v<SimpleModelViewComponent>);
+    STATIC_REQUIRE(std::is_nothrow_destructible_v<SimpleModelViewComponent>);
+
+    FastModuleContainer modules;
+    registerComponents<SimpleModelViewComponent>();
+    ECSCoreTemplatePublic core;
+    const std::array<std::string, 2> model_names{
+        "model-name-longer-than-the-small-string-optimization-buffer-a",
+        "model-name-longer-than-the-small-string-optimization-buffer-b",
+    };
+    const auto ids = core.createEntities(
+        componentIds<SimpleModelViewComponent>(), model_names.size(),
+        [&](std::span<const EntityId>, std::span<void *> ptrs, size_t count) {
+            auto *models = static_cast<SimpleModelViewComponent *>(ptrs[0]);
+            for (size_t i = 0; i < count; ++i) {
+                const nlohmann::json component{
+                    {"name", typeid(SimpleModelViewComponent).name()},
+                    {"model", model_names[i]},
+                };
+                GET_MODULE(ComponentInfoManager).loadByJson(&models[i], component);
+            }
+        });
+
+    REQUIRE(core.component<SimpleModelViewComponent>(ids[0]).model_name == model_names[0]);
+    REQUIRE(core.component<SimpleModelViewComponent>(ids[1]).model_name == model_names[1]);
+    REQUIRE(core.component<SimpleModelViewComponent>(ids[0]).dirty == 1);
+    REQUIRE(core.component<SimpleModelViewComponent>(ids[1]).dirty == 1);
+
+    REQUIRE(core.remove(ids[0]));
+    REQUIRE(core.component<SimpleModelViewComponent>(ids[1]).model_name == model_names[1]);
+    core.clearEntities();
+
+    SimpleModelViewComponent transient_model_view;
+    transient_model_view.model_instance_id = ModelInstanceId{7};
+    transient_model_view.init();
+    REQUIRE(transient_model_view.dirty == 0);
+}
+
+TEST_CASE("Modelview GPU instance deinit covers remove clear and teardown", "[ecs][lifecycle][modelview]") {
+    SECTION("remove") {
+        FastModuleContainer modules;
+        registerComponents<ModelViewGpuInstanceCanary>();
+        ECSCoreTemplatePublic core;
+        ModelViewGpuInstanceCanary::live_instances = 0;
+        const auto ids = core.createEntities(componentIds<ModelViewGpuInstanceCanary>(), 2);
+        REQUIRE(ModelViewGpuInstanceCanary::live_instances == 2);
+        REQUIRE(core.remove(ids[0]));
+        REQUIRE(ModelViewGpuInstanceCanary::live_instances == 1);
+        REQUIRE(core.remove(ids[1]));
+        REQUIRE(ModelViewGpuInstanceCanary::live_instances == 0);
+    }
+
+    SECTION("clear") {
+        FastModuleContainer modules;
+        registerComponents<ModelViewGpuInstanceCanary>();
+        ECSCoreTemplatePublic core;
+        ModelViewGpuInstanceCanary::live_instances = 0;
+        (void)core.createEntities(componentIds<ModelViewGpuInstanceCanary>(), 2);
+        REQUIRE(ModelViewGpuInstanceCanary::live_instances == 2);
+        core.clearEntities();
+        REQUIRE(ModelViewGpuInstanceCanary::live_instances == 0);
+    }
+
+    SECTION("teardown") {
+        FastModuleContainer modules;
+        RuntimeTeardownGuard teardown;
+        registerComponents<ModelViewGpuInstanceCanary>();
+        ModelViewGpuInstanceCanary::live_instances = 0;
+        (void)GET_MODULE(ECSCore).createEntities(componentIds<ModelViewGpuInstanceCanary>(), 2);
+        REQUIRE(ModelViewGpuInstanceCanary::live_instances == 2);
+        teardown.run();
+        REQUIRE(ModelViewGpuInstanceCanary::live_instances == 0);
+    }
 }
 
 TEST_CASE("Aligned non-trivial component observes lifecycle and relocation order", "[ecs][lifecycle]") {
