@@ -1338,6 +1338,49 @@ WP47 の即時可視テスト不変 + §0 共通規則。**内部コミットは
 (`docs/design_reviews/2026-07-10_wp64_report.md` — trace 差分の有無・計測値)
 + §0 共通規則。
 
+### WP65: 永続化 P1(user:// 設定 + セーブデータ)
+
+参照: **`design_persistence.md` §1〜2 が仕様の正**([PF] v6.3 承認済み、
+user:// リゾルバは WP55 実装済み)。依存: WP55。見積: 中。
+
+1. `core/persistence/` 新設: pelican.settings v1(エンベロープ +
+   `engine`/`game` 区画)の読み書き。読みは起動時自動、書きは明示
+   (`GameContext::saveSettings()`)。**atomic 書き込み**(temp + rename)、
+   破損時は読み失敗を返す(クラッシュしない・名前入り WARN)
+2. セーブデータ: `GameContext::saveData(slot, json)` / `loadData(slot)` /
+   `listSaves()`(slot 名 + タイムスタンプ)。user://saves/ 配下
+3. engine 既知キー v1: オーディオのバス音量(WP51 連携 — 起動時に適用)。
+   ゲーム自由区画は素の JSON パススルー
+4. テスト: (a) --user-dir 差し替えでの読み書き round-trip (b) atomic
+   (書き込み中断を模した temp 残骸があっても壊れない)(c) 破損 settings で
+   起動継続 + WARN (d) バス音量の適用 (e) 既存テスト・golden 全維持
+5. **gamecontext への追記はファイル末尾に**(並走交差対策)
+
+受け入れ基準: a〜e + §0 共通規則。リバインド差分保存(P2)はスコープ外。
+
+### WP66: asset store V2(assets.manifest 生成・照合・起動時検証)
+
+参照: **`design_project_vcs.md` §2 が仕様の正**(深刻度モデル: 内容不一致 =
+INFO / 構造逸脱 = WARNING / strict・dist = ERROR)。依存: WP55, 57。見積: 中。
+
+1. `pelican_cli assets manifest`: store 走査 → sha256 + サイズの
+   assets.manifest.json(**冪等 — 相対パスソート済み出力**)。`.pelican/` の
+   サイズ+mtime キャッシュで差分ハッシュ、`--full` で全再計算
+2. `pelican_cli assets verify`: 照合(欠落・不一致・manifest 外を名前入り
+   列挙)。`--full` = INFO 級込みの完全照合
+3. 起動時検証: store 宣言に manifest があれば検証。**深刻度モデルどおり**
+   (INFO = 内容不一致 + 「assets manifest で追認」案内 / WARNING = 欠落・
+   参照不能・大文字小文字不一致 / ERROR は `--strict-assets` のみ)。
+   **ロードは止めない**。起動サマリ 1 行(件数 + store 解決先)
+4. `pelican_cli assets status`: 欠落と期待パスの一覧(clone 直後の案内)
+5. projects/example の README 手書き表を manifest 生成に置換(表は削除し
+   「assets manifest で検証」の説明へ)
+6. テスト: (a) 生成の冪等性(2 回実行で byte 一致)(b) 差分ハッシュの正しさ
+   (c) verify の 3 深刻度の分類 (d) 起動時検証がロードを止めないこと
+   (e) 既存テスト・golden 全維持
+
+受け入れ基準: a〜e + §0 共通規則。fetch・lint はスコープ外。
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **最小コマンド層**: (1) ファイル連携済み → (2) WP27 実装済み → (3) `load_gltf` / `update_transforms` は **2026-07-07 に実装 GO 決定**。前提はすべて充足(宛先 = scene v1 の objects[].name / アセット意味論 = WP21)。設計時要件: **複数インスタンス運用**(エージェントが複数エンジンを並行駆動する使い方) — stdio rpc は 1 プロセス 1 クライアントの現行構造を維持しつつ、`get_status`(instance id・project・フレーム番号)を追加してインスタンス識別可能に。プロジェクトは読み取り専有なので並行起動は安全(書き込み系操作を入れる際に排他を設計)。複数クライアント同時接続は TCP/WebSocket 展開時の課題として分離
