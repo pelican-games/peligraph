@@ -317,3 +317,15 @@ endif()
 add_executable(pelican_test_audio_disabled_probe audio_disabled_probe.cpp)
 set_target_properties(pelican_test_audio_disabled_probe PROPERTIES CXX_STANDARD 20)
 target_link_libraries(pelican_test_audio_disabled_probe PRIVATE pelican_core)
+
+pelican_define_test(assetsmanifest_test pelican_project)
+pelican_define_test(assetsverification_test pelican_core)
+
+add_test(
+    NAME devcli_assets_command
+    COMMAND ${CMAKE_COMMAND}
+        -DCLI=$<TARGET_FILE:pelican_cli>
+        -DPLAYER=$<TARGET_FILE:pelican_player>
+        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/devcli_assets
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_assets.cmake
+)

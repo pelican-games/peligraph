@@ -14,6 +14,7 @@
 #include "../core/build_features.hpp"
 #include "../core/container.hpp"
 #include "../core/launchconfig.hpp"
+#include "../core/loader/assetsverification.hpp"
 #include "../core/loader/pathresolver.hpp"
 #include "../core/loader/projectsrc.hpp"
 #include "../core/log.hpp"
@@ -224,6 +225,9 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
     program.add_argument("--allow-absolute-paths")
         .flag()
         .help("allow absolute paths in CLI-provided project content references");
+    program.add_argument("--strict-assets")
+        .flag()
+        .help("treat assets manifest differences as startup errors");
     program.add_argument("--user-dir")
         .default_value(std::string{})
         .metavar("dir")
@@ -267,6 +271,7 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
 #endif
         config.shader_hot_reload = !config.headless;
         config.allow_absolute_paths = program.get<bool>("--allow-absolute-paths");
+        config.strict_assets = program.get<bool>("--strict-assets");
         parsed.ignore_engine_version = program.get<bool>("--ignore-engine-version");
         const auto user_dir = program.get<std::string>("--user-dir");
         if (!user_dir.empty()) {
@@ -362,6 +367,12 @@ int main(int argc, char *argv[]) {
                             *parsed_launch_config.project_json, parsed_launch_config.user_dir_override);
     } else {
         path_resolver.setup(parsed_launch_config.project_root, launch_config.allow_absolute_paths);
+    }
+    const auto assets_summary = Pelican::verifyAssetsAtStartup(
+        path_resolver.stores(), parsed_launch_config.project_root / ".pelican" / "assets-hash-cache.json",
+        launch_config.strict_assets);
+    if (!assets_summary.shouldContinueLoading()) {
+        return 1;
     }
     auto &project_source = Pelican::FastModuleContainer::get<Pelican::ProjectSource>();
     if (parsed_launch_config.project_json) {

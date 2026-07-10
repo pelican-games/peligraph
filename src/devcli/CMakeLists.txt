@@ -4,6 +4,7 @@ set_target_properties(pelican_cli PROPERTIES CXX_STANDARD 20)
 unset(CMAKE_RUNTIME_OUTPUT_DIRECTORY)
 
 target_sources(pelican_cli PRIVATE
+  assetscommand.cpp
   distconfig.cpp
   importcommand.cpp
   projectinit.cpp

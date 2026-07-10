@@ -26,6 +26,7 @@ DECLARE_MODULE(EngineLaunchConfig) {
     double fps = 60.0;
     bool shader_hot_reload = true;
     bool allow_absolute_paths = false;
+    bool strict_assets = false;
     bool dump_frame_plan = false;
     std::optional<std::filesystem::path> play_seq;
     std::optional<std::filesystem::path> play_vat;

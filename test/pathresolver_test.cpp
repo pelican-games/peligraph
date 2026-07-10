@@ -296,7 +296,8 @@ TEST_CASE("PathResolver resolves declared asset stores and local overrides", "[p
 
     const auto project = nlohmann::json{
         {"name", "fixture-project"},
-        {"asset_stores", {{"main", {{"mount", "../outside"}}}}},
+        {"asset_stores", {{"main", {{"mount", "../outside"},
+                                     {"manifest", "assets.manifest.json"}}}}},
     };
     resolver.setup(sandbox.root, false, project.dump());
     REQUIRE(std::get<std::filesystem::path>(resolver.resolveProjectRef("../outside/outside.txt")) ==
@@ -304,6 +305,7 @@ TEST_CASE("PathResolver resolves declared asset stores and local overrides", "[p
     REQUIRE(resolver.stores().size() == 1);
     REQUIRE(resolver.stores().front().name == "main");
     REQUIRE(resolver.stores().front().root == weaklyCanonical(sandbox.outside));
+    REQUIRE(resolver.stores().front().manifest == weaklyCanonical(sandbox.root / "assets.manifest.json"));
     resolver.resetForTesting();
 
     const auto override_root = sandbox.base / "override_assets";
@@ -382,6 +384,23 @@ TEST_CASE("PathResolver rejects invalid asset store declarations and overrides",
                       .dump());
         REQUIRE_THROWS_WITH(resolver.setup(sandbox.root, false, project.dump()),
                             Catch::Matchers::ContainsSubstring("unsupported key"));
+        resolver.resetForTesting();
+    }
+
+    {
+        Sandbox sandbox;
+        auto &resolver = resolverForTest();
+        resolver.resetForTesting();
+        const auto project = nlohmann::json{
+            {"name", "fixture-project"},
+            {"asset_stores", {{"main", {{"mount", "assets"},
+                                         {"manifest", "../assets.manifest.json"}}}}},
+        };
+        resolver.setup(sandbox.root, false, project.dump());
+        REQUIRE_FALSE(resolver.stores().front().manifest);
+        REQUIRE(resolver.stores().front().manifest_error);
+        REQUIRE(resolver.stores().front().manifest_error->find("manifest escapes project root") !=
+                std::string::npos);
         resolver.resetForTesting();
     }
 }

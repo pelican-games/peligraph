@@ -4,6 +4,12 @@
   "name": "example",
   "generator": "hand-written",
   "engine_min_version": "0.1.0",
+  "asset_stores": {
+    "main": {
+      "mount": "assets/",
+      "manifest": "assets.manifest.json"
+    }
+  },
   "basic_config": {
     "window_title": "Pelican App",
     "window_size": {
