@@ -29,59 +29,62 @@ float checkedNumber(const nlohmann::json &value, const std::string &field, const
 struct JsonCameraParam {
     nlohmann::json value;
     std::string field;
-    bool alias = false;
 };
 
 std::optional<JsonCameraParam> findCameraParam(const std::vector<const nlohmann::json *> &roots,
-                                               std::string_view primary, std::string_view alias = {}) {
+                                               std::string_view field) {
     for (const auto *root : roots) {
         if (root == nullptr || !root->is_object()) {
             continue;
         }
-        if (const auto it = root->find(primary); it != root->end()) {
-            return JsonCameraParam{*it, std::string{primary}, false};
-        }
-        if (!alias.empty()) {
-            if (const auto it = root->find(alias); it != root->end()) {
-                return JsonCameraParam{*it, std::string{alias}, true};
-            }
+        if (const auto it = root->find(field); it != root->end()) {
+            return JsonCameraParam{*it, std::string{field}};
         }
     }
     return std::nullopt;
 }
 
 float requireCameraParam(const std::vector<const nlohmann::json *> &roots, std::string_view primary,
-                         const std::string &camera_name, std::string_view alias = {},
-                         bool alias_is_degrees = false) {
-    const auto param = findCameraParam(roots, primary, alias);
+                         const std::string &camera_name) {
+    const auto param = findCameraParam(roots, primary);
     if (!param) {
-        auto message = "camera '" + camera_name + "' requires numeric field '" + std::string{primary} + "'";
-        if (!alias.empty()) {
-            message += " (alias '" + std::string{alias} + "')";
-        }
-        throw std::runtime_error(message);
+        throw std::runtime_error("camera '" + camera_name + "' requires numeric field '" +
+                                 std::string{primary} + "'");
     }
-
-    auto value = checkedNumber(param->value, param->field, camera_name);
-    if (param->alias && alias_is_degrees) {
-        value = degreesToRadians(value);
-    }
-    return value;
+    return checkedNumber(param->value, param->field, camera_name);
 }
 
 std::optional<float> optionalCameraParam(const std::vector<const nlohmann::json *> &roots,
-                                         std::string_view primary, const std::string &camera_name,
-                                         std::string_view alias = {}, bool alias_is_degrees = false) {
-    const auto param = findCameraParam(roots, primary, alias);
+                                         std::string_view primary, const std::string &camera_name) {
+    const auto param = findCameraParam(roots, primary);
     if (!param) {
         return std::nullopt;
     }
 
-    auto value = checkedNumber(param->value, param->field, camera_name);
-    if (param->alias && alias_is_degrees) {
-        value = degreesToRadians(value);
+    return checkedNumber(param->value, param->field, camera_name);
+}
+
+void rejectDeprecatedCameraFields(const std::vector<const nlohmann::json *> &roots,
+                                  const std::string &camera_name) {
+    struct DeprecatedField {
+        std::string_view name;
+        std::string_view replacement;
+        std::string_view suffix;
+    };
+    static constexpr DeprecatedField deprecated_fields[] = {
+        {"fov_y", "yfov", " (radians)"},
+        {"near", "znear", ""},
+        {"far", "zfar", ""},
+    };
+    for (const auto &field : deprecated_fields) {
+        for (const auto *root : roots) {
+            if (root != nullptr && root->is_object() && root->contains(field.name)) {
+                throw std::runtime_error("camera '" + camera_name + "' field '" +
+                                         std::string{field.name} + "' is not supported in v1; use '" +
+                                         std::string{field.replacement} + "'" + std::string{field.suffix});
+            }
+        }
     }
-    return value;
 }
 
 const nlohmann::json *optionalObject(const nlohmann::json &json, const char *name, const std::string &camera_name) {
@@ -222,6 +225,7 @@ CameraProjectionSpec parseSceneCameraProjection(const nlohmann::json &camera_com
 
     const auto *perspective = optionalObject(camera_component, "perspective", camera_name);
     const auto *orthographic = optionalObject(camera_component, "orthographic", camera_name);
+    rejectDeprecatedCameraFields({perspective, orthographic, &camera_component}, camera_name);
 
     std::string type = camera_component.value("type", std::string{});
     if (type.empty()) {
@@ -247,10 +251,10 @@ CameraProjectionSpec parseSceneCameraProjection(const nlohmann::json &camera_com
         } else if (fallback.kind != CameraProjectionKind::Orthographic) {
             projection.ymag = requireCameraParam(roots, "ymag", camera_name);
         }
-        if (auto znear = optionalCameraParam(roots, "znear", camera_name, "near")) {
+        if (auto znear = optionalCameraParam(roots, "znear", camera_name)) {
             projection.znear = *znear;
         }
-        if (auto zfar = optionalCameraParam(roots, "zfar", camera_name, "far")) {
+        if (auto zfar = optionalCameraParam(roots, "zfar", camera_name)) {
             projection.zfar = *zfar;
         }
         projection.aspect.reset();
@@ -259,15 +263,15 @@ CameraProjectionSpec parseSceneCameraProjection(const nlohmann::json &camera_com
 
     projection.kind = CameraProjectionKind::Perspective;
     const std::vector<const nlohmann::json *> roots{perspective, &camera_component};
-    if (auto yfov = optionalCameraParam(roots, "yfov", camera_name, "fov_y", true)) {
+    if (auto yfov = optionalCameraParam(roots, "yfov", camera_name)) {
         projection.yfov = *yfov;
     } else if (fallback.kind != CameraProjectionKind::Perspective) {
-        projection.yfov = requireCameraParam(roots, "yfov", camera_name, "fov_y", true);
+        projection.yfov = requireCameraParam(roots, "yfov", camera_name);
     }
-    if (auto znear = optionalCameraParam(roots, "znear", camera_name, "near")) {
+    if (auto znear = optionalCameraParam(roots, "znear", camera_name)) {
         projection.znear = *znear;
     }
-    if (auto zfar = optionalCameraParam(roots, "zfar", camera_name, "far")) {
+    if (auto zfar = optionalCameraParam(roots, "zfar", camera_name)) {
         projection.zfar = *zfar;
     }
     projection.aspect = optionalCameraParam(roots, "aspect", camera_name);

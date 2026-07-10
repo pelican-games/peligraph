@@ -80,15 +80,15 @@ file(WRITE "${script_path}"
 "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"get_status\",\"params\":{}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"set_time\",\"params\":{\"t\":1.25}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"load_gltf\",\"params\":{\"path\":\"assets/ground.glb\",\"name\":\"movable\"}}\n"
-"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"update_transforms\",\"params\":{\"objects\":[\"movable\"],\"transforms\":[{\"pos\":[3.0,0.0,-0.75],\"rot\":[0.0,0.0,0.0,1.0],\"scale\":[0.6,0.6,0.6]}]}}\n"
+"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"update_transforms\",\"params\":{\"objects\":[\"movable\"],\"transforms\":[{\"pos\":[3.0,0.0,-0.75],\"rotation\":[0.0,0.0,0.0,1.0],\"scale\":[0.6,0.6,0.6]}]}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"step_frame\",\"params\":{}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"capture\",\"params\":{\"path\":\"${capture_left_path}\"}}\n"
-"{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"update_transforms\",\"params\":{\"objects\":[\"movable\"],\"transforms\":[{\"pos\":[3.0,0.0,0.75],\"rot\":[0.0,0.0,0.0,1.0],\"scale\":[0.6,0.6,0.6]}]}}\n"
+"{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"update_transforms\",\"params\":{\"objects\":[\"movable\"],\"transforms\":[{\"pos\":[3.0,0.0,0.75],\"rotation\":[0.0,0.0,0.0,1.0],\"scale\":[0.6,0.6,0.6]}]}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"render_frame\",\"params\":{}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"capture\",\"params\":{\"path\":\"${capture_right_path}\"}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"get_status\",\"params\":{}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"get_frame_plan\",\"params\":{}}\n"
-"{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"update_transforms\",\"params\":{\"objects\":[\"missing_object\"],\"transforms\":[{\"pos\":[0.0,0.0,0.0],\"rot\":[0.0,0.0,0.0,1.0],\"scale\":[1.0,1.0,1.0]}]}}\n"
+"{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"update_transforms\",\"params\":{\"objects\":[\"missing_object\"],\"transforms\":[{\"pos\":[0.0,0.0,0.0],\"rotation\":[0.0,0.0,0.0,1.0],\"scale\":[1.0,1.0,1.0]}]}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":13,\"method\":\"load_gltf\",\"params\":{\"path\":\"../escape.glb\",\"name\":\"escaped\"}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":14,\"method\":\"update_transforms\",\"params\":{\"objects\":[\"movable\"],\"transforms\":[]}}\n"
 "{bad json\n"
@@ -96,6 +96,7 @@ file(WRITE "${script_path}"
 "{\"jsonrpc\":\"2.0\",\"id\":15,\"method\":\"missing_method\",\"params\":{}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":16,\"method\":\"set_seed\",\"params\":{\"seed\":99}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":17,\"method\":\"get_status\",\"params\":{}}\n"
+"{\"jsonrpc\":\"2.0\",\"id\":18,\"method\":\"update_transforms\",\"params\":{\"objects\":[\"movable\"],\"transforms\":[{\"pos\":[0.0,0.0,0.0],\"rot\":[0.0,0.0,0.0,1.0],\"scale\":[1.0,1.0,1.0]}]}}\n"
 )
 
 function(validate_rpc_stdout stdout label)
@@ -108,8 +109,8 @@ function(validate_rpc_stdout stdout label)
 
     string(REPLACE "\n" ";" lines "${trimmed}")
     list(LENGTH lines line_count)
-    if(NOT line_count EQUAL 19)
-        message(FATAL_ERROR "${label}: expected 19 JSON-RPC response lines, got ${line_count}\nstdout:\n${stdout}")
+    if(NOT line_count EQUAL 20)
+        message(FATAL_ERROR "${label}: expected 20 JSON-RPC response lines, got ${line_count}\nstdout:\n${stdout}")
     endif()
 
     foreach(line IN LISTS lines)
@@ -137,6 +138,7 @@ function(validate_rpc_stdout stdout label)
     list(GET lines 16 line16)
     list(GET lines 17 line17)
     list(GET lines 18 line18)
+    list(GET lines 19 line19)
 
     if(NOT line0 MATCHES [=["id":1]=] OR NOT line0 MATCHES [=["instance_id":"[0-9a-fA-F-]+"]=] OR NOT line0 MATCHES [=["project_root"]=] OR NOT line0 MATCHES [=["scene":"default_scene"]=] OR NOT line0 MATCHES [=["frame":0]=] OR NOT line0 MATCHES [=["time":0\.0]=] OR NOT line0 MATCHES [=["seed":1234]=])
         message(FATAL_ERROR "${label}: get_status initial response did not include expected fields:\n${line0}")
@@ -194,6 +196,9 @@ function(validate_rpc_stdout stdout label)
     endif()
     if(NOT line18 MATCHES [=["id":17]=] OR NOT line18 MATCHES [=["instance_id":"[0-9a-fA-F-]+"]=] OR NOT line18 MATCHES [=["frame":1]=] OR NOT line18 MATCHES [=["seed":99]=])
         message(FATAL_ERROR "${label}: get_status after set_seed did not include updated seed:\n${line18}")
+    endif()
+    if(NOT line19 MATCHES [=["id":18]=] OR NOT line19 MATCHES [=["code":-32602]=] OR NOT line19 MATCHES [=['rot']=] OR NOT line19 MATCHES [=['rotation']=])
+        message(FATAL_ERROR "${label}: legacy rot field did not name the rotation replacement:\n${line19}")
     endif()
 endfunction()
 

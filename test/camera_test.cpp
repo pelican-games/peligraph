@@ -1,4 +1,5 @@
 #include "../src/core/container.hpp"
+#include "../src/core/loader/basicconfig.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/log.hpp"
@@ -77,9 +78,9 @@ const char *cameraSceneJson() {
     "default_scene": {
       "objects": [
         {
-          "name": "LegacyCam",
+          "name": "CanonicalCam",
           "components": [
-            {"name": "camera", "fov_y": 60.0, "near": 0.2, "far": 20.0}
+            {"name": "camera", "yfov": 1.0471975511965976, "znear": 0.2, "zfar": 20.0}
           ]
         },
         {
@@ -192,7 +193,7 @@ const char *invalidCameraControllerSceneJson() {
 
 } // namespace
 
-TEST_CASE("Camera parses glTF parameters, legacy aliases, and orthographic projection", "[camera]") {
+TEST_CASE("Camera parses v1 perspective and orthographic projection parameters", "[camera]") {
     ensureLogger();
     Sandbox sandbox;
     writeText(sandbox.root / "scene.json", cameraSceneJson());
@@ -202,11 +203,11 @@ TEST_CASE("Camera parses glTF parameters, legacy aliases, and orthographic proje
     GET_MODULE(ProjectSource).setProjectData(projectJson().dump());
 
     auto &camera = GET_MODULE(Camera);
-    REQUIRE(camera.hasSceneCamera("LegacyCam"));
+    REQUIRE(camera.hasSceneCamera("CanonicalCam"));
     REQUIRE(camera.hasSceneCamera("GltfCam"));
     REQUIRE(camera.hasSceneCamera("OrthoCam"));
 
-    camera.setActiveCamera("LegacyCam");
+    camera.setActiveCamera("CanonicalCam");
     auto spec = camera.getProjectionSpec();
     REQUIRE(spec.kind == CameraProjectionKind::Perspective);
     REQUIRE(spec.yfov == Catch::Approx(pi / 3.0f));
@@ -241,6 +242,97 @@ TEST_CASE("Camera parses glTF parameters, legacy aliases, and orthographic proje
 
     REQUIRE_THROWS_WITH(camera.setActiveCamera("MissingCam"),
                         Catch::Matchers::ContainsSubstring("MissingCam"));
+}
+
+TEST_CASE("Project camera aliases are rejected with v1 replacement names", "[camera]") {
+    ensureLogger();
+    struct AliasCase {
+        const char *name;
+        const char *replacement;
+        double value;
+    };
+    const AliasCase aliases[] = {
+        {"fov_y", "yfov", 45.0},
+        {"near", "znear", 0.1},
+        {"far", "zfar", 100.0},
+    };
+
+    for (const auto &alias : aliases) {
+        DYNAMIC_SECTION(alias.name) {
+            Sandbox sandbox;
+            auto project = projectJson();
+            auto &camera_json = project["basic_config"]["camera"];
+            camera_json.erase(alias.replacement);
+            camera_json[alias.name] = alias.value;
+
+            FastModuleContainer modules;
+            GET_MODULE(PathResolver).setup(sandbox.root, false);
+            GET_MODULE(ProjectSource).setProjectData(project.dump());
+
+            std::string message;
+            try {
+                (void)GET_MODULE(ProjectBasicConfig);
+            } catch (const std::exception &ex) {
+                message = ex.what();
+            }
+            REQUIRE(message.find(alias.name) != std::string::npos);
+            REQUIRE(message.find(alias.replacement) != std::string::npos);
+            if (std::string_view{alias.name} == "fov_y") {
+                REQUIRE(message.find("radians") != std::string::npos);
+            }
+        }
+    }
+}
+
+TEST_CASE("Scene camera aliases are rejected with camera and v1 replacement names", "[camera]") {
+    ensureLogger();
+    struct AliasCase {
+        const char *name;
+        const char *replacement;
+        double value;
+    };
+    const AliasCase aliases[] = {
+        {"fov_y", "yfov", 60.0},
+        {"near", "znear", 0.2},
+        {"far", "zfar", 20.0},
+    };
+
+    for (const auto &alias : aliases) {
+        DYNAMIC_SECTION(alias.name) {
+            Sandbox sandbox;
+            nlohmann::json camera_component{
+                {"name", "camera"}, {"yfov", 0.5}, {"znear", 0.1}, {"zfar", 100.0}};
+            camera_component.erase(alias.replacement);
+            camera_component[alias.name] = alias.value;
+            const nlohmann::json scene{
+                {"schema", "pelican.scene"},
+                {"version", 1},
+                {"scenes",
+                 {{"default_scene",
+                   {{"objects",
+                     nlohmann::json::array({{{"name", "LegacyAliasCam"},
+                                             {"components", nlohmann::json::array({camera_component})}}})}}}}},
+            };
+            writeText(sandbox.root / "scene.json", scene.dump());
+
+            FastModuleContainer modules;
+            GET_MODULE(PathResolver).setup(sandbox.root, false);
+            GET_MODULE(ProjectSource).setProjectData(projectJson().dump());
+
+            std::string message;
+            try {
+                (void)GET_MODULE(Camera);
+            } catch (const std::exception &ex) {
+                message = ex.what();
+            }
+            REQUIRE(message.find("LegacyAliasCam") != std::string::npos);
+            REQUIRE(message.find(alias.name) != std::string::npos);
+            REQUIRE(message.find(alias.replacement) != std::string::npos);
+            if (std::string_view{alias.name} == "fov_y") {
+                REQUIRE(message.find("radians") != std::string::npos);
+            }
+        }
+    }
 }
 
 TEST_CASE("Camera parses orbit, follow, and fly controller params", "[camera]") {

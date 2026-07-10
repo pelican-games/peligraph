@@ -80,28 +80,39 @@ std::string cameraPath(std::string_view field) {
     return "basic_config/camera/" + std::string{field};
 }
 
-struct CameraParam {
-    nlohmann::json value;
-    bool alias = false;
-};
-
-std::optional<CameraParam> getCameraParam(const JsonLoader &loader, std::string_view primary,
-                                          std::string_view alias = {}) {
+std::optional<nlohmann::json> getCameraParam(const JsonLoader &loader, std::string_view field) {
     const JsonHelper *sources[] = {&loader.cli_json, &loader.project_json, &loader.default_json};
-    const auto primary_path = cameraPath(primary);
-    const auto alias_path = alias.empty() ? std::string{} : cameraPath(alias);
+    const auto path = cameraPath(field);
 
     for (const auto *source : sources) {
-        if (auto value = source->getVal(primary_path)) {
-            return CameraParam{*value, false};
-        }
-        if (!alias.empty()) {
-            if (auto value = source->getVal(alias_path)) {
-                return CameraParam{*value, true};
-            }
+        if (auto value = source->getVal(path)) {
+            return value;
         }
     }
     return std::nullopt;
+}
+
+void rejectDeprecatedCameraFields(const JsonLoader &loader) {
+    struct DeprecatedField {
+        std::string_view name;
+        std::string_view replacement;
+        std::string_view suffix;
+    };
+    static constexpr DeprecatedField deprecated_fields[] = {
+        {"fov_y", "yfov", " (radians)"},
+        {"near", "znear", ""},
+        {"far", "zfar", ""},
+    };
+    const JsonHelper *sources[] = {&loader.cli_json, &loader.project_json, &loader.default_json};
+    for (const auto &field : deprecated_fields) {
+        for (const auto *source : sources) {
+            if (source->getVal(cameraPath(field.name))) {
+                throw std::runtime_error("basic_config.camera field '" + std::string{field.name} +
+                                         "' is not supported in v1; use '" +
+                                         std::string{field.replacement} + "'" + std::string{field.suffix});
+            }
+        }
+    }
 }
 
 float numberFromJson(const nlohmann::json &value, std::string_view field) {
@@ -124,40 +135,20 @@ std::uint64_t seedFromJson(const nlohmann::json &value) {
     throw std::runtime_error("basic_config.seed must be a non-negative integer");
 }
 
-float degreesToRadians(float degrees) {
-    return degrees * static_cast<float>(3.14159265358979323846 / 180.0);
-}
-
-float requireCameraNumber(const JsonLoader &loader, std::string_view primary, std::string_view alias = {},
-                          bool alias_is_degrees = false) {
-    const auto param = getCameraParam(loader, primary, alias);
+float requireCameraNumber(const JsonLoader &loader, std::string_view field) {
+    const auto param = getCameraParam(loader, field);
     if (!param) {
-        auto message = "basic_config.camera requires numeric field '" + std::string{primary} + "'";
-        if (!alias.empty()) {
-            message += " (alias '" + std::string{alias} + "')";
-        }
-        throw std::runtime_error(message);
+        throw std::runtime_error("basic_config.camera requires numeric field '" + std::string{field} + "'");
     }
-
-    auto value = numberFromJson(param->value, param->alias ? alias : primary);
-    if (param->alias && alias_is_degrees) {
-        value = degreesToRadians(value);
-    }
-    return value;
+    return numberFromJson(*param, field);
 }
 
-std::optional<float> optionalCameraNumber(const JsonLoader &loader, std::string_view primary,
-                                          std::string_view alias = {}, bool alias_is_degrees = false) {
-    const auto param = getCameraParam(loader, primary, alias);
+std::optional<float> optionalCameraNumber(const JsonLoader &loader, std::string_view field) {
+    const auto param = getCameraParam(loader, field);
     if (!param) {
         return std::nullopt;
     }
-
-    auto value = numberFromJson(param->value, param->alias ? alias : primary);
-    if (param->alias && alias_is_degrees) {
-        value = degreesToRadians(value);
-    }
-    return value;
+    return numberFromJson(*param, field);
 }
 
 std::optional<std::string> optionalCameraType(const JsonLoader &loader) {
@@ -165,13 +156,14 @@ std::optional<std::string> optionalCameraType(const JsonLoader &loader) {
     if (!param) {
         return std::nullopt;
     }
-    if (!param->value.is_string()) {
+    if (!param->is_string()) {
         throw std::runtime_error("basic_config.camera field 'type' must be a string");
     }
-    return param->value.get<std::string>();
+    return param->get<std::string>();
 }
 
 CameraProjectionSpec parseBasicCameraProjection(const JsonLoader &loader) {
+    rejectDeprecatedCameraFields(loader);
     CameraProjectionSpec projection;
 
     const auto type = optionalCameraType(loader);
@@ -185,15 +177,15 @@ CameraProjectionSpec parseBasicCameraProjection(const JsonLoader &loader) {
         projection.kind = CameraProjectionKind::Orthographic;
         projection.xmag = requireCameraNumber(loader, "xmag");
         projection.ymag = requireCameraNumber(loader, "ymag");
-        projection.znear = requireCameraNumber(loader, "znear", "near");
-        projection.zfar = requireCameraNumber(loader, "zfar", "far");
+        projection.znear = requireCameraNumber(loader, "znear");
+        projection.zfar = requireCameraNumber(loader, "zfar");
         return projection;
     }
 
     projection.kind = CameraProjectionKind::Perspective;
-    projection.yfov = requireCameraNumber(loader, "yfov", "fov_y", true);
-    projection.znear = requireCameraNumber(loader, "znear", "near");
-    projection.zfar = requireCameraNumber(loader, "zfar", "far");
+    projection.yfov = requireCameraNumber(loader, "yfov");
+    projection.znear = requireCameraNumber(loader, "znear");
+    projection.zfar = requireCameraNumber(loader, "zfar");
     projection.aspect = optionalCameraNumber(loader, "aspect");
     return projection;
 }
@@ -244,8 +236,8 @@ void validateProjectJson(const nlohmann::json &project, bool ignore_engine_versi
         throw std::runtime_error("project.json requires numeric version");
     }
     const auto version = project.at("version").get<int>();
-    if (version > supported_project_version) {
-        throw std::runtime_error("project.json version is newer than this engine supports");
+    if (version != supported_project_version) {
+        throw std::runtime_error("project.json version must be exactly 1");
     }
 
     if (!project.contains("engine_min_version")) {

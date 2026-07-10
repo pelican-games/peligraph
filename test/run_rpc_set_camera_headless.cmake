@@ -90,7 +90,7 @@ set(perspective_path "${OUT_DIR}/perspective.png")
 set(orthographic_path "${OUT_DIR}/orthographic.png")
 file(WRITE "${script_path}"
 "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"load_gltf\",\"params\":{\"path\":\"assets/ground.glb\",\"name\":\"target\"}}\n"
-"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"update_transforms\",\"params\":{\"objects\":[\"target\"],\"transforms\":[{\"pos\":[0.0,0.0,0.0],\"rot\":[0.0,0.0,0.0,1.0],\"scale\":[0.7,0.7,0.7]}]}}\n"
+"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"update_transforms\",\"params\":{\"objects\":[\"target\"],\"transforms\":[{\"pos\":[0.0,0.0,0.0],\"rotation\":[0.0,0.0,0.0,1.0],\"scale\":[0.7,0.7,0.7]}]}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"step_frame\",\"params\":{}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"set_camera\",\"params\":{\"name\":\"PerspectiveCamera\"}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"render_frame\",\"params\":{}}\n"

@@ -277,8 +277,8 @@ void validateProjectJson(const nlohmann::json &project) {
     if (!project.contains("version") || !project.at("version").is_number_integer()) {
         throw std::runtime_error("project.json requires numeric version");
     }
-    if (project.at("version").get<int>() > supported_project_version) {
-        throw std::runtime_error("project.json version is newer than this engine supports");
+    if (project.at("version").get<int>() != supported_project_version) {
+        throw std::runtime_error("project.json version must be exactly 1");
     }
 }
 

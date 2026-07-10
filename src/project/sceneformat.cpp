@@ -46,43 +46,22 @@ std::string objectContext(const std::string &scene_id, const std::string &object
 
 void validateEnvelope(const nlohmann::json &document) {
     if (document.value("schema", std::string{}) != scene_schema) {
-        throw std::runtime_error("scene data schema is not supported");
+        throw std::runtime_error(
+            "scene data schema is not supported; use schema 'pelican.scene' with version 1 and a 'scenes' object");
     }
     if (!document.contains("version") || !document.at("version").is_number_integer()) {
         throw std::runtime_error("scene data requires numeric version");
     }
     const auto version = document.at("version").get<int>();
-    if (version > supported_scene_version) {
-        throw std::runtime_error("scene data version is newer than this engine supports");
+    if (version != supported_scene_version) {
+        throw std::runtime_error("scene data version must be exactly 1");
     }
     if (!document.contains("scenes") || !document.at("scenes").is_object()) {
         throw std::runtime_error("scene data requires scenes object");
     }
 }
 
-nlohmann::json legacyLightToObject(const nlohmann::json &light, const std::string &scene_id) {
-    if (!light.is_object()) {
-        throw std::runtime_error("legacy light entries must be objects" + sceneContext(scene_id));
-    }
-
-    nlohmann::json component = light;
-    nlohmann::json object = nlohmann::json::object();
-
-    if (const auto name = light.find("name"); name != light.end()) {
-        if (!name->is_string()) {
-            throw std::runtime_error("legacy light name must be a string" + sceneContext(scene_id));
-        }
-        object["name"] = name->get<std::string>();
-    }
-
-    component.erase("name");
-    component["name"] = "light";
-    object["components"] = nlohmann::json::array({component});
-    return object;
-}
-
-nlohmann::json normalizeScene(const nlohmann::json &scene, const std::string &scene_id,
-                              std::vector<std::string> &warnings) {
+nlohmann::json normalizeScene(const nlohmann::json &scene, const std::string &scene_id) {
     if (!scene.is_object()) {
         throw std::runtime_error("scene entry must be an object" + sceneContext(scene_id));
     }
@@ -93,14 +72,8 @@ nlohmann::json normalizeScene(const nlohmann::json &scene, const std::string &sc
     }
 
     if (const auto lights = normalized.find("lights"); lights != normalized.end()) {
-        if (!lights->is_array()) {
-            throw std::runtime_error("legacy lights must be an array" + sceneContext(scene_id));
-        }
-        warnings.push_back("legacy lights section converted to light components in scene '" + scene_id + "'");
-        for (const auto &light : *lights) {
-            normalized["objects"].push_back(legacyLightToObject(light, scene_id));
-        }
-        normalized.erase("lights");
+        throw std::runtime_error("scene field 'lights' is not supported in v1; use named objects with a 'light' "
+                                 "component" + sceneContext(scene_id));
     }
 
     std::unordered_set<std::string> object_names;
@@ -148,20 +121,14 @@ SceneFormatDocument normalizeSceneDataJson(const nlohmann::json &scene_data) {
     }
 
     SceneFormatDocument document;
-    nlohmann::json scenes;
-    if (scene_data.contains("schema")) {
-        validateEnvelope(scene_data);
-        scenes = scene_data.at("scenes");
-    } else {
-        document.warnings.push_back("legacy scene data without schema; treating top-level keys as scenes");
-        scenes = scene_data;
-    }
+    validateEnvelope(scene_data);
+    const auto &scenes = scene_data.at("scenes");
 
     document.scenes = nlohmann::json::object();
     for (auto it = scenes.begin(); it != scenes.end(); ++it) {
         const auto scene_id = it.key();
         requireIdentifier(scene_id, "scene id", "");
-        document.scenes[scene_id] = normalizeScene(it.value(), scene_id, document.warnings);
+        document.scenes[scene_id] = normalizeScene(it.value(), scene_id);
     }
     return document;
 }
