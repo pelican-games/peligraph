@@ -16,15 +16,13 @@ class ExamplePlayerControl {
             .pos = Pelican::vec3{0.0f, -1.2f, 1.0f},
             .parent = Pelican::invalidGameObjectId,
         };
-        Pelican::SimpleModelViewUpdateComponent model_update;
-        model_update.model_name = "character";
-        model_update.dirty = true;
+        Pelican::SimpleModelViewComponent model_view;
+        model_view.model_name = "character";
 
         const auto id = Pelican::GameObjects::add()
                             .addComponent<Pelican::TransformComponent>()
                             .addComponent<Pelican::LocalTransformComponent>(transform)
-                            .addComponent<Pelican::SimpleModelViewComponent>()
-                            .addComponent<Pelican::SimpleModelViewUpdateComponent>(model_update)
+                            .addComponent<Pelican::SimpleModelViewComponent>(model_view)
                             .finish();
         (void)ctx.setLocalTransform(id, transform);
         return id;
