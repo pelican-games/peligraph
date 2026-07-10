@@ -179,8 +179,10 @@ void FullscreenPassContainer::setInputResources(PassId pass_id,
     std::vector<vk::WriteDescriptorSet> writes;
     std::vector<vk::DescriptorImageInfo> image_infos;
     std::vector<vk::DescriptorBufferInfo> buffer_infos;
+    std::vector<vk::ImageView> bound_image_views;
     image_infos.reserve(input_rts.size());
     buffer_infos.reserve(input_buffers.size());
+    bound_image_views.reserve(input_rts.size());
 
     for (uint32_t i = 0; i < input_rts.size(); ++i) {
         const auto &rt_id = input_rts[i];
@@ -193,6 +195,7 @@ void FullscreenPassContainer::setInputResources(PassId pass_id,
         image_info.imageView = rt_views.getImageView(rt_id);
         image_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
         image_infos.push_back(image_info);
+        bound_image_views.push_back(image_info.imageView);
 
         vk::WriteDescriptorSet write;
         write.dstSet = descset.get();
@@ -223,7 +226,22 @@ void FullscreenPassContainer::setInputResources(PassId pass_id,
                                                        std::move(descset),
                                                        input_rts,
                                                        input_buffers,
+                                                       std::move(bound_image_views),
+                                                       next_binding_revision++,
                                                    });
+}
+
+std::vector<vk::ImageView> FullscreenPassContainer::boundInputImageViewsForTesting(PassId pass_id) const {
+    const auto found = input_textures.find(pass_id.value);
+    if (found == input_textures.end()) {
+        return {};
+    }
+    return found->second.bound_image_views;
+}
+
+uint64_t FullscreenPassContainer::inputBindingRevisionForTesting(PassId pass_id) const {
+    const auto found = input_textures.find(pass_id.value);
+    return found == input_textures.end() ? 0 : found->second.binding_revision;
 }
 
 vk::PipelineLayout FullscreenPassContainer::getPipelineLayout(PassId pass_id) const {

@@ -32,6 +32,13 @@ static vk::UniqueInstance vulkanCreateInstance(bool headless) {
         exts = GET_MODULE(Window).getRequiredVulkanInstanceExts();
     }
     vk::InstanceCreateInfo create_info;
+#ifdef _DEBUG
+    const vk::ValidationFeatureEnableEXT synchronization_validation =
+        vk::ValidationFeatureEnableEXT::eSynchronizationValidation;
+    vk::ValidationFeaturesEXT validation_features;
+    validation_features.setEnabledValidationFeatures(synchronization_validation);
+    create_info.pNext = &validation_features;
+#endif
 #ifdef __APPLE__
     create_info.flags = vk::InstanceCreateFlagBits::eEnumeratePortabilityKHR;
     exts.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);

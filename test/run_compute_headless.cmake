@@ -69,37 +69,99 @@ void main() {
 }
 ]=])
 
-file(WRITE "${OUT_DIR}/shaders/write_color.comp" [=[
+file(WRITE "${OUT_DIR}/shaders/transform_image.comp" [=[
 #version 450
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
-layout(std430, set = 1, binding = 0) buffer ComputeColor {
-    vec4 color;
+layout(rgba8, set = 1, binding = 0) uniform readonly image2D seed_image;
+layout(rgba8, set = 1, binding = 1) uniform writeonly image2D result_image;
+void main() {
+    imageStore(result_image, ivec2(0, 0), imageLoad(seed_image, ivec2(0, 0)));
+}
+]=])
+
+file(WRITE "${OUT_DIR}/shaders/sample_image.frag" [=[
+#version 450
+layout(set = 1, binding = 0) uniform sampler2D result_image;
+layout(location = 0) in vec2 outUV;
+layout(location = 0) out vec4 outColor;
+void main() {
+    outColor = texture(result_image, outUV);
+}
+]=])
+
+file(WRITE "${OUT_DIR}/shaders/image_to_buffer.comp" [=[
+#version 450
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+layout(rgba8, set = 1, binding = 0) uniform readonly image2D sampled_color;
+layout(std430, set = 1, binding = 1) buffer RawColor {
+    vec4 value;
+} raw_color;
+void main() {
+    raw_color.value = imageLoad(sampled_color, ivec2(0, 0));
+}
+]=])
+
+file(WRITE "${OUT_DIR}/shaders/transform_color.comp" [=[
+#version 450
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 1, binding = 0) readonly buffer RawColor {
+    vec4 value;
+} raw_color;
+layout(std430, set = 1, binding = 1) buffer ComputeColor {
+    vec4 value;
 } compute_color;
 void main() {
-    compute_color.color = vec4(0.10, 0.75, 0.35, 1.0);
+    compute_color.value = raw_color.value;
 }
 ]=])
 
 file(WRITE "${OUT_DIR}/shaders/compute_present.frag" [=[
 #version 450
 layout(std430, set = 1, binding = 0) readonly buffer ComputeColor {
-    vec4 color;
+    vec4 value;
 } compute_color;
 layout(location = 0) out vec4 outColor;
 void main() {
-    outColor = compute_color.color;
+    outColor = compute_color.value;
 }
 ]=])
 
 file(WRITE "${OUT_DIR}/passes/main.json" [=[
 {
   "buffers": [
+    {"name": "raw_color", "size": 16, "lifetime": "persistent"},
     {"name": "compute_color", "size": 16, "lifetime": "persistent"}
+  ],
+  "render_targets": [
+    {"name": "material_albedo", "extent_scale": 1.0, "format": "B8G8R8A8_UNORM", "usage": ["COLOR_ATTACHMENT"]},
+    {"name": "material_normal", "extent_scale": 1.0, "format": "R16G16B16A16_SFLOAT", "usage": ["COLOR_ATTACHMENT"]},
+    {"name": "seed_image", "extent_scale": 1.0, "format": "R8G8B8A8_UNORM", "usage": ["COLOR_ATTACHMENT", "STORAGE"]},
+    {"name": "material_worldpos", "extent_scale": 1.0, "format": "R16G16B16A16_SFLOAT", "usage": ["COLOR_ATTACHMENT"]},
+    {"name": "result_image", "extent_scale": 1.0, "format": "R8G8B8A8_UNORM", "usage": ["COLOR_ATTACHMENT", "STORAGE", "SAMPLED"]},
+    {"name": "material_depth", "extent_scale": 1.0, "format": "D32_SFLOAT", "usage": ["DEPTH_STENCIL_ATTACHMENT"]},
+    {"name": "sampled_color", "extent_scale": 1.0, "format": "R8G8B8A8_UNORM", "usage": ["COLOR_ATTACHMENT", "STORAGE"]}
   ],
   "rendering_passes": [
     {
       "name": "main",
       "passes": [
+        {
+          "name": "seed_render",
+          "type": "material",
+          "output": {
+            "color": ["material_albedo", "material_normal", "seed_image", "material_worldpos", "result_image"],
+            "depth": "material_depth"
+          },
+          "clear_color": [0.10, 0.75, 0.35, 1.0]
+        },
+        {
+          "name": "sample_render",
+          "type": "fullscreen",
+          "after": ["transform_image"],
+          "input": ["result_image"],
+          "output": {"color": "sampled_color", "depth": null},
+          "shader": {"vertex": "shaders/fullscreen", "fragment": "shaders/sample_image"}
+        },
         {
           "name": "present",
           "type": "fullscreen",
@@ -115,10 +177,27 @@ file(WRITE "${OUT_DIR}/passes/main.json" [=[
   ],
   "compute_tasks": [
     {
-      "name": "write_color",
-      "shader": "shaders/write_color",
+      "name": "transform_image",
+      "shader": "shaders/transform_image",
+      "reads": ["seed_image"],
+      "writes": ["result_image"],
+      "after": ["seed_render"],
+      "dispatch": {"groups": [1, 1, 1]},
+      "schedule": "per_frame"
+    },
+    {
+      "name": "image_to_buffer",
+      "shader": "shaders/image_to_buffer",
+      "reads": ["sampled_color"],
+      "writes": ["raw_color"],
+      "dispatch": {"groups": [1, 1, 1]},
+      "schedule": "per_frame"
+    },
+    {
+      "name": "transform_color",
+      "shader": "shaders/transform_color",
+      "reads": ["raw_color"],
       "writes": ["compute_color"],
-      "before": ["present"],
       "dispatch": {"groups": [1, 1, 1]},
       "schedule": "per_frame"
     }
@@ -130,7 +209,7 @@ execute_process(
     COMMAND "${PLAYER}"
         --headless
         --project "${OUT_DIR}"
-        --frames 1
+        --frames 5
         --size 32x32
         --render-out "${capture_path}"
     WORKING_DIRECTORY "${PLAYER_DIR}"

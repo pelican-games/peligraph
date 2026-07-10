@@ -10,16 +10,23 @@
 
 namespace Pelican {
 
+struct CompiledFrameGraphBarrier {
+    std::string resource;
+    size_t from_node_index = 0;
+    FramePlanNodeKind from_kind = FramePlanNodeKind::render;
+    FramePlanNodeKind to_kind = FramePlanNodeKind::render;
+};
+
 struct FrameGraphExecutionNode {
     FramePlanNodeKind kind = FramePlanNodeKind::render;
     std::string name;
     size_t index = 0;
+    std::vector<CompiledFrameGraphBarrier> incoming_barriers;
 };
 
 struct CompiledFrameGraphExecution {
     FramePlan plan;
     std::vector<FrameGraphExecutionNode> nodes;
-    bool has_compute = false;
 };
 
 DECLARE_MODULE(FrameGraphRuntimeContainer) {

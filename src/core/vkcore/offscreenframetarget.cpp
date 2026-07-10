@@ -51,7 +51,8 @@ VulkanUtils::ChangeImageLayoutInfo transitionInfo(vk::ImageLayout old_layout, vk
 
     if (old_layout == vk::ImageLayout::eColorAttachmentOptimal) {
         info.src_stage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
-        info.src_access = vk::AccessFlagBits::eColorAttachmentWrite;
+        info.src_access = vk::AccessFlagBits::eColorAttachmentRead |
+                          vk::AccessFlagBits::eColorAttachmentWrite;
     } else if (old_layout == vk::ImageLayout::eTransferSrcOptimal) {
         info.src_stage = vk::PipelineStageFlagBits::eTransfer;
         info.src_access = vk::AccessFlagBits::eTransferRead;
@@ -59,7 +60,8 @@ VulkanUtils::ChangeImageLayoutInfo transitionInfo(vk::ImageLayout old_layout, vk
 
     if (new_layout == vk::ImageLayout::eColorAttachmentOptimal) {
         info.dst_stage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
-        info.dst_access = vk::AccessFlagBits::eColorAttachmentWrite;
+        info.dst_access = vk::AccessFlagBits::eColorAttachmentRead |
+                          vk::AccessFlagBits::eColorAttachmentWrite;
     } else if (new_layout == vk::ImageLayout::eTransferSrcOptimal) {
         info.dst_stage = vk::PipelineStageFlagBits::eTransfer;
         info.dst_access = vk::AccessFlagBits::eTransferRead;

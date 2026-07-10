@@ -35,7 +35,6 @@ void FrameGraphRuntimeContainer::registerExecutionPlan(RenderingPassId rendering
     auto task_indices = computeTaskIndices(compiled_pass);
 
     CompiledFrameGraphExecution execution;
-    execution.has_compute = !compiled_pass.compute_tasks.empty();
     execution.plan = std::move(plan);
     execution.nodes.reserve(execution.plan.nodes.size());
 
@@ -45,16 +44,42 @@ void FrameGraphRuntimeContainer::registerExecutionPlan(RenderingPassId rendering
             if (found == pass_indices.end()) {
                 throw std::runtime_error("Frame plan render node is not compiled: " + node.name);
             }
-            execution.nodes.push_back(FrameGraphExecutionNode{node.kind, node.name, found->second});
+            execution.nodes.push_back(FrameGraphExecutionNode{node.kind, node.name, found->second, {}});
         } else if (node.kind == FramePlanNodeKind::compute) {
             auto found = task_indices.find(node.name);
             if (found == task_indices.end()) {
                 throw std::runtime_error("Frame plan compute node is not compiled: " + node.name);
             }
-            execution.nodes.push_back(FrameGraphExecutionNode{node.kind, node.name, found->second});
+            execution.nodes.push_back(FrameGraphExecutionNode{node.kind, node.name, found->second, {}});
         } else {
             throw std::runtime_error("Unsupported frame plan node kind: " + node.name);
         }
+    }
+
+    std::unordered_map<std::string, size_t> plan_indices;
+    for (size_t i = 0; i < execution.plan.nodes.size(); ++i) {
+        plan_indices.emplace(execution.plan.nodes[i].name, i);
+    }
+    for (const auto &barrier : execution.plan.barriers) {
+        if (barrier.kind != "read_after_write") {
+            throw std::runtime_error("Unsupported frame plan barrier kind: " + barrier.kind);
+        }
+        const auto from = plan_indices.find(barrier.from);
+        const auto to = plan_indices.find(barrier.to);
+        if (from == plan_indices.end() || to == plan_indices.end()) {
+            throw std::runtime_error("Frame plan barrier references an unknown node: " + barrier.from +
+                                     " -> " + barrier.to);
+        }
+        if (from->second >= to->second) {
+            throw std::runtime_error("Frame plan barrier source does not precede target: " + barrier.from +
+                                     " -> " + barrier.to);
+        }
+        execution.nodes[to->second].incoming_barriers.push_back(CompiledFrameGraphBarrier{
+            barrier.resource,
+            from->second,
+            execution.plan.nodes[from->second].kind,
+            execution.plan.nodes[to->second].kind,
+        });
     }
 
     graphs.insert_or_assign(rendering_pass_id, std::move(execution));

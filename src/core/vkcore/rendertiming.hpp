@@ -46,6 +46,8 @@ DECLARE_MODULE(RenderTiming) {
     double cpu_present_wait_ms_total = 0.0;
     std::unordered_map<std::string, GpuAggregate> gpu_pass_totals;
     std::chrono::steady_clock::time_point last_log_time;
+    std::vector<std::string> last_frame_node_names;
+    uint32_t last_frame_query_count = 0;
 
     vk::UniqueQueryPool createTimestampQueryPool(uint32_t query_count) const;
     void collectGpuResults(bool wait);
@@ -63,6 +65,11 @@ DECLARE_MODULE(RenderTiming) {
     void endGpuFrame();
     void recordCpuFrame(CpuFrameDurations durations);
     void flush();
+    const std::vector<std::string> &lastFrameNodeNamesForTesting() const { return last_frame_node_names; }
+    uint32_t lastFrameQueryCountForTesting() const { return last_frame_query_count; }
+    bool allGpuQueriesCollectedForTesting() const {
+        return pending_gpu_frames.empty() && !active_gpu_frame.has_value();
+    }
 };
 
 } // namespace Pelican

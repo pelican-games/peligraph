@@ -18,10 +18,12 @@ VulkanUtils::ChangeImageLayoutInfo makeTransitionInfo(vk::ImageLayout old_layout
         info.src_access = vk::AccessFlagBits::eShaderRead;
     } else if (old_layout == vk::ImageLayout::eColorAttachmentOptimal) {
         info.src_stage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
-        info.src_access = vk::AccessFlagBits::eColorAttachmentWrite;
+        info.src_access = vk::AccessFlagBits::eColorAttachmentRead |
+                          vk::AccessFlagBits::eColorAttachmentWrite;
     } else if (old_layout == vk::ImageLayout::eDepthAttachmentOptimal) {
         info.src_stage = vk::PipelineStageFlagBits::eLateFragmentTests;
-        info.src_access = vk::AccessFlagBits::eDepthStencilAttachmentWrite;
+        info.src_access = vk::AccessFlagBits::eDepthStencilAttachmentRead |
+                          vk::AccessFlagBits::eDepthStencilAttachmentWrite;
     } else if (old_layout == vk::ImageLayout::eGeneral) {
         info.src_stage = vk::PipelineStageFlagBits::eComputeShader;
         info.src_access = vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite;
@@ -32,10 +34,12 @@ VulkanUtils::ChangeImageLayoutInfo makeTransitionInfo(vk::ImageLayout old_layout
         info.dst_access = vk::AccessFlagBits::eShaderRead;
     } else if (new_layout == vk::ImageLayout::eColorAttachmentOptimal) {
         info.dst_stage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
-        info.dst_access = vk::AccessFlagBits::eColorAttachmentWrite;
+        info.dst_access = vk::AccessFlagBits::eColorAttachmentRead |
+                          vk::AccessFlagBits::eColorAttachmentWrite;
     } else if (new_layout == vk::ImageLayout::eDepthAttachmentOptimal) {
         info.dst_stage = vk::PipelineStageFlagBits::eEarlyFragmentTests;
-        info.dst_access = vk::AccessFlagBits::eDepthStencilAttachmentWrite;
+        info.dst_access = vk::AccessFlagBits::eDepthStencilAttachmentRead |
+                          vk::AccessFlagBits::eDepthStencilAttachmentWrite;
     } else if (new_layout == vk::ImageLayout::eGeneral) {
         info.dst_stage = vk::PipelineStageFlagBits::eComputeShader;
         info.dst_access = vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite;

@@ -4,26 +4,25 @@
 #include "../renderingpass/renderingpass.hpp"
 #include "render_target_layout_tracker.hpp"
 #include <nlohmann/json.hpp>
+#include <string>
+#include <vector>
 
 namespace Pelican {
-
-enum class RendererExecutionPathForTesting {
-    current,
-    planned,
-};
 
 DECLARE_MODULE(Renderer) {
     RenderingPassId current_rendering_pass_id;
     RenderTargetLayoutTracker render_target_layout_tracker;
-    RendererExecutionPathForTesting execution_path_for_testing = RendererExecutionPathForTesting::current;
+    bool execution_tracing_for_testing = false;
     nlohmann::json last_execution_trace;
 
   public:
     Renderer();
     ~Renderer();
     nlohmann::json currentFramePlanJson() const;
-    void setExecutionPathForTesting(RendererExecutionPathForTesting path) { execution_path_for_testing = path; }
+    std::vector<std::string> currentFramePlanOrderForTesting() const;
+    void setExecutionTracingForTesting(bool enabled) { execution_tracing_for_testing = enabled; }
     const nlohmann::json &lastExecutionTraceForTesting() const { return last_execution_trace; }
+    void recreateRenderTargetsAndRebindForTesting(vk::Extent2D extent);
     void render();
 };
 
