@@ -28,8 +28,7 @@
 #include "rendertarget.hpp"
 #include "rendertiming.hpp"
 #include "util.hpp"
-#include <unordered_map>
-#include <unordered_set>
+#include <map>
 
 namespace Pelican {
 
@@ -112,13 +111,187 @@ void endTiming(RenderTiming *render_timing) {
     }
 }
 
-std::vector<std::string> renderPassNodeNames(const CompiledRenderingPass &rendering_pass) {
-    std::vector<std::string> pass_names;
-    pass_names.reserve(rendering_pass.passes.size());
-    for (const auto &pass : rendering_pass.passes) {
-        pass_names.push_back(pass.definition.name);
+std::string loadOpName(vk::AttachmentLoadOp op) {
+    switch (op) {
+    case vk::AttachmentLoadOp::eLoad:
+        return "load";
+    case vk::AttachmentLoadOp::eClear:
+        return "clear";
+    case vk::AttachmentLoadOp::eDontCare:
+        return "dont_care";
+    default:
+        return vk::to_string(op);
     }
-    return pass_names;
+}
+
+std::string storeOpName(vk::AttachmentStoreOp op) {
+    switch (op) {
+    case vk::AttachmentStoreOp::eStore:
+        return "store";
+    case vk::AttachmentStoreOp::eDontCare:
+        return "dont_care";
+    default:
+        return vk::to_string(op);
+    }
+}
+
+std::string layoutName(vk::ImageLayout layout) {
+    switch (layout) {
+    case vk::ImageLayout::eUndefined:
+        return "undefined";
+    case vk::ImageLayout::eGeneral:
+        return "general";
+    case vk::ImageLayout::eColorAttachmentOptimal:
+        return "color_attachment_optimal";
+    case vk::ImageLayout::eDepthAttachmentOptimal:
+        return "depth_attachment_optimal";
+    case vk::ImageLayout::eShaderReadOnlyOptimal:
+        return "shader_read_only_optimal";
+    case vk::ImageLayout::eTransferSrcOptimal:
+        return "transfer_src_optimal";
+    case vk::ImageLayout::ePresentSrcKHR:
+        return "present_src";
+    default:
+        return vk::to_string(layout);
+    }
+}
+
+std::string renderTargetName(GlobalRenderTargetId rt_id, const RenderTargetContainer &rt_container) {
+    if (isSwapchainRenderTarget(rt_id)) {
+        return "swapchain";
+    }
+    if (!isConcreteRenderTarget(rt_id)) {
+        return "none";
+    }
+    return rt_container.getMetadata(rt_id).name;
+}
+
+std::string trackedLayoutName(GlobalRenderTargetId rt_id, vk::ImageLayout special_layout,
+                              const RenderTargetLayoutTracker &layout_tracker) {
+    return layoutName(isConcreteRenderTarget(rt_id) ? layout_tracker.currentLayout(rt_id) : special_layout);
+}
+
+nlohmann::json clearColorJson(const vk::ClearColorValue &clear_color) {
+    return nlohmann::json::array({clear_color.float32[0], clear_color.float32[1], clear_color.float32[2],
+                                  clear_color.float32[3]});
+}
+
+nlohmann::json renderNodeTrace(const CompiledPass &pass, size_t order,
+                               const RenderTargetContainer &rt_container,
+                               const RenderTargetLayoutTracker &layout_tracker) {
+    const auto &definition = pass.definition;
+    nlohmann::json attachments = nlohmann::json::array();
+    for (const auto target : definition.output_color) {
+        nlohmann::json attachment{
+            {"resource", renderTargetName(target, rt_container)},
+            {"aspect", "color"},
+            {"load", loadOpName(definition.color_load_op)},
+            {"store", storeOpName(definition.color_store_op)},
+            {"final_layout", trackedLayoutName(target, vk::ImageLayout::eColorAttachmentOptimal,
+                                                 layout_tracker)},
+        };
+        if (definition.color_load_op == vk::AttachmentLoadOp::eClear) {
+            attachment["clear"] = clearColorJson(definition.clear_color);
+        }
+        attachments.push_back(std::move(attachment));
+    }
+    if (isConcreteRenderTarget(definition.output_depth)) {
+        nlohmann::json attachment{
+            {"resource", renderTargetName(definition.output_depth, rt_container)},
+            {"aspect", "depth"},
+            {"load", loadOpName(definition.depth_load_op)},
+            {"store", storeOpName(definition.depth_store_op)},
+            {"final_layout", trackedLayoutName(definition.output_depth,
+                                                 vk::ImageLayout::eDepthAttachmentOptimal,
+                                                 layout_tracker)},
+        };
+        if (definition.depth_load_op == vk::AttachmentLoadOp::eClear) {
+            attachment["clear"] = 1.0;
+        }
+        attachments.push_back(std::move(attachment));
+    }
+
+    nlohmann::json inputs = nlohmann::json::array();
+    for (const auto target : definition.input_targets) {
+        inputs.push_back({
+            {"resource", renderTargetName(target, rt_container)},
+            {"final_layout", trackedLayoutName(target, vk::ImageLayout::eShaderReadOnlyOptimal,
+                                                 layout_tracker)},
+        });
+    }
+
+    return nlohmann::json{
+        {"name", definition.name},
+        {"kind", "render"},
+        {"order", order},
+        {"inputs", std::move(inputs)},
+        {"input_buffers", definition.input_buffers},
+        {"attachments", std::move(attachments)},
+    };
+}
+
+nlohmann::json computeNodeTrace(const CompiledComputeTask &task, size_t order,
+                                const RenderTargetContainer &rt_container,
+                                const RenderTargetLayoutTracker &layout_tracker) {
+    const auto trace_resources = [&](const std::vector<std::string> &resources) {
+        nlohmann::json result = nlohmann::json::array();
+        for (const auto &resource : resources) {
+            nlohmann::json entry{{"resource", resource}};
+            const auto target = rt_container.getRenderTargetIdByName(resource);
+            if (isConcreteRenderTarget(target)) {
+                entry["final_layout"] = layoutName(layout_tracker.currentLayout(target));
+            } else {
+                entry["kind"] = "buffer";
+            }
+            result.push_back(std::move(entry));
+        }
+        return result;
+    };
+
+    return nlohmann::json{
+        {"name", task.definition.name},
+        {"kind", "compute"},
+        {"order", order},
+        {"reads", trace_resources(task.definition.reads)},
+        {"writes", trace_resources(task.definition.writes)},
+    };
+}
+
+nlohmann::json finalLayoutsTrace(const CompiledRenderingPass &rendering_pass,
+                                 const RenderTargetContainer &rt_container,
+                                 const RenderTargetLayoutTracker &layout_tracker,
+                                 vk::ImageLayout frame_target_layout) {
+    std::map<std::string, std::string> layouts;
+    const auto add_target = [&](GlobalRenderTargetId target) {
+        if (isSwapchainRenderTarget(target)) {
+            layouts["swapchain"] = layoutName(frame_target_layout);
+        } else if (isConcreteRenderTarget(target)) {
+            layouts[renderTargetName(target, rt_container)] = layoutName(layout_tracker.currentLayout(target));
+        }
+    };
+    for (const auto &pass : rendering_pass.passes) {
+        for (const auto target : pass.definition.input_targets) {
+            add_target(target);
+        }
+        for (const auto target : pass.definition.output_color) {
+            add_target(target);
+        }
+        add_target(pass.definition.output_depth);
+    }
+    for (const auto &task : rendering_pass.compute_tasks) {
+        for (const auto &resource : task.definition.reads) {
+            add_target(rt_container.getRenderTargetIdByName(resource));
+        }
+        for (const auto &resource : task.definition.writes) {
+            add_target(rt_container.getRenderTargetIdByName(resource));
+        }
+    }
+
+    nlohmann::json result = nlohmann::json::array();
+    for (const auto &[resource, layout] : layouts) {
+        result.push_back({{"resource", resource}, {"layout", layout}});
+    }
+    return result;
 }
 
 std::vector<std::string> plannedNodeNames(const CompiledFrameGraphExecution &frame_graph) {
@@ -130,67 +303,16 @@ std::vector<std::string> plannedNodeNames(const CompiledFrameGraphExecution &fra
     return names;
 }
 
-std::unordered_map<std::string, FramePlanNodeKind> plannedNodeKinds(const FramePlan &plan) {
-    std::unordered_map<std::string, FramePlanNodeKind> kinds;
-    for (const auto &node : plan.nodes) {
-        kinds.emplace(node.name, node.kind);
-    }
-    return kinds;
-}
-
-void applyPlanBarriersForNode(vk::CommandBuffer cmd_buf,
-                              const FramePlan &plan,
-                              const std::string &node_name,
-                              const std::unordered_map<std::string, FramePlanNodeKind> &node_kinds,
-                              const std::unordered_set<std::string> &executed_nodes,
-                              ComputeTaskContainer &compute_task_container) {
-    const auto to_kind = node_kinds.at(node_name);
-    for (const auto &barrier : plan.barriers) {
-        if (barrier.to != node_name) {
-            continue;
-        }
-        if (barrier.kind != "read_after_write") {
-            throw std::runtime_error("Unsupported frame plan barrier kind: " + barrier.kind);
-        }
-        if (executed_nodes.find(barrier.from) == executed_nodes.end()) {
-            throw std::runtime_error("Frame plan barrier source was not executed before target: " +
-                                     barrier.from + " -> " + barrier.to);
-        }
-        const auto from_kind = node_kinds.at(barrier.from);
-        compute_task_container.bufferReadAfterWriteBarrier(cmd_buf, barrier.resource, from_kind, to_kind);
-    }
-}
-
-void executeLegacyRenderingPasses(const FrameRenderContext &render_ctx,
-                                  const CompiledRenderingPass &rendering_pass,
-                                  RenderFrameModules &modules,
-                                  RenderTargetLayoutTracker &layout_tracker,
-                                  const RenderPassExecutorDependencies &pass_executor_dependencies) {
-    beginTiming(modules.render_timing, render_ctx.cmd_buf, renderPassNodeNames(rendering_pass));
-
-    for (uint32_t pass_index = 0; pass_index < rendering_pass.passes.size(); ++pass_index) {
-        const auto &pass = rendering_pass.passes[pass_index];
-        if (modules.render_timing != nullptr) {
-            modules.render_timing->writePassStart(render_ctx.cmd_buf, pass_index);
-        }
-        modules.pass_executor.execute(render_ctx, pass, pass_executor_dependencies, layout_tracker);
-        if (modules.render_timing != nullptr) {
-            modules.render_timing->writePassEnd(render_ctx.cmd_buf, pass_index);
-        }
-    }
-
-    endTiming(modules.render_timing);
-}
-
 void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                               const CompiledRenderingPass &rendering_pass,
                               const CompiledFrameGraphExecution &frame_graph,
                               RenderFrameModules &modules,
                               RenderTargetLayoutTracker &layout_tracker,
-                              const RenderPassExecutorDependencies &pass_executor_dependencies) {
-    beginTiming(modules.render_timing, render_ctx.cmd_buf, plannedNodeNames(frame_graph));
-    const auto node_kinds = plannedNodeKinds(frame_graph.plan);
-    std::unordered_set<std::string> executed_nodes;
+                              const RenderPassExecutorDependencies &pass_executor_dependencies,
+                              nlohmann::json *node_trace) {
+    if (modules.render_timing != nullptr) {
+        beginTiming(modules.render_timing, render_ctx.cmd_buf, plannedNodeNames(frame_graph));
+    }
 
     for (uint32_t node_index = 0; node_index < frame_graph.nodes.size(); ++node_index) {
         const auto &execution_node = frame_graph.nodes[node_index];
@@ -200,28 +322,41 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
             throw std::runtime_error("Frame graph execution no longer matches frame plan");
         }
 
-        applyPlanBarriersForNode(render_ctx.cmd_buf, frame_graph.plan, execution_node.name, node_kinds,
-                                 executed_nodes, modules.compute_task_container);
+        for (const auto &barrier : execution_node.incoming_barriers) {
+            if (barrier.from_node_index >= node_index) {
+                throw std::runtime_error("Compiled frame graph barrier source was not executed before target");
+            }
+            modules.compute_task_container.bufferReadAfterWriteBarrier(
+                render_ctx.cmd_buf, barrier.resource, barrier.from_kind, barrier.to_kind);
+        }
 
         if (modules.render_timing != nullptr) {
             modules.render_timing->writePassStart(render_ctx.cmd_buf, node_index);
         }
 
         if (execution_node.kind == FramePlanNodeKind::render) {
-            modules.pass_executor.execute(render_ctx, rendering_pass.passes.at(execution_node.index),
+            const auto &pass = rendering_pass.passes.at(execution_node.index);
+            modules.pass_executor.execute(render_ctx, pass,
                                           pass_executor_dependencies, layout_tracker);
+            if (node_trace != nullptr) {
+                node_trace->push_back(renderNodeTrace(pass, node_index, modules.render_target_container,
+                                                      layout_tracker));
+            }
         } else {
             const auto &task = rendering_pass.compute_tasks.at(execution_node.index);
             modules.compute_task_container.transitionResourcesForDispatch(
                 render_ctx.cmd_buf, task.task_id, modules.render_target_container, modules.vk_utils,
                 layout_tracker);
             modules.compute_task_container.dispatch(render_ctx.cmd_buf, task.task_id);
+            if (node_trace != nullptr) {
+                node_trace->push_back(computeNodeTrace(task, node_index, modules.render_target_container,
+                                                       layout_tracker));
+            }
         }
 
         if (modules.render_timing != nullptr) {
             modules.render_timing->writePassEnd(render_ctx.cmd_buf, node_index);
         }
-        executed_nodes.insert(execution_node.name);
     }
 
     endTiming(modules.render_timing);
@@ -231,7 +366,8 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
                             RenderingPassId rendering_pass_id,
                             const CompiledRenderingPass &rendering_pass,
                             RenderFrameModules &modules,
-                            RenderTargetLayoutTracker &layout_tracker) {
+                            RenderTargetLayoutTracker &layout_tracker,
+                            nlohmann::json *node_trace) {
     const MaterialRendererDependencies material_renderer_dependencies{modules.instance_container,
                                                                       modules.vert_buf_container,
                                                                       modules.material_container,
@@ -257,12 +393,11 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
                                                                     pass_dispatch_dependencies};
 
     const auto *frame_graph = modules.frame_graph_runtime.find(rendering_pass_id);
-    if (frame_graph != nullptr && frame_graph->has_compute) {
-        executePlannedFrameGraph(render_ctx, rendering_pass, *frame_graph, modules, layout_tracker,
-                                 pass_executor_dependencies);
-        return;
+    if (frame_graph == nullptr) {
+        throw std::runtime_error("Frame graph execution is not registered");
     }
-    executeLegacyRenderingPasses(render_ctx, rendering_pass, modules, layout_tracker, pass_executor_dependencies);
+    executePlannedFrameGraph(render_ctx, rendering_pass, *frame_graph, modules, layout_tracker,
+                             pass_executor_dependencies, node_trace);
 }
 
 void rebindFullscreenInputs(RenderFrameModules &modules) {
@@ -319,6 +454,21 @@ nlohmann::json Renderer::currentFramePlanJson() const {
     return framePlanToJson(frame_graph->plan);
 }
 
+std::vector<std::string> Renderer::currentFramePlanOrderForTesting() const {
+    const auto *frame_graph = GET_MODULE(FrameGraphRuntimeContainer).find(current_rendering_pass_id);
+    if (frame_graph == nullptr) {
+        throw std::runtime_error("Current frame plan is not registered");
+    }
+    return framePlanOrder(frame_graph->plan);
+}
+
+void Renderer::recreateRenderTargetsAndRebindForTesting(vk::Extent2D extent) {
+    auto modules = resolveRenderFrameModules();
+    modules.render_target_container.recreateForExtent(extent);
+    rebindFullscreenInputs(modules);
+    render_target_layout_tracker.reset();
+}
+
 void Renderer::render() {
     GET_MODULE(DeletionQueue).beginFrame();
 
@@ -331,10 +481,23 @@ void Renderer::render() {
 
     const auto &rendering_pass =
         modules.rendering_pass_container.getCompiledRenderingPass(current_rendering_pass_id);
+    nlohmann::json node_trace;
+    nlohmann::json *node_trace_ptr = nullptr;
+    if (execution_tracing_for_testing) {
+        node_trace = nlohmann::json::array();
+        node_trace_ptr = &node_trace;
+    }
     executeRenderingPasses(render_ctx, current_rendering_pass_id, rendering_pass, modules,
-                           render_target_layout_tracker);
+                           render_target_layout_tracker, node_trace_ptr);
 
     modules.render_target.render_end();
+    if (execution_tracing_for_testing) {
+        last_execution_trace = nlohmann::json{
+            {"nodes", std::move(node_trace)},
+            {"final_layouts", finalLayoutsTrace(rendering_pass, modules.render_target_container,
+                                                 render_target_layout_tracker, render_ctx.required_layout)},
+        };
+    }
 }
 
 } // namespace Pelican

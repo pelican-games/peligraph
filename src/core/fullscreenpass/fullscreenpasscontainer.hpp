@@ -3,6 +3,7 @@
 #include "../container.hpp"
 #include "../renderingpass/renderingpass.hpp"
 #include "../shader/pipelinefactory.hpp"
+#include <cstdint>
 #include <unordered_map>
 #include <vector>
 #include <vulkan/vulkan.hpp>
@@ -28,8 +29,11 @@ DECLARE_MODULE(FullscreenPassContainer) {
         vk::UniqueDescriptorSet descset;
         std::vector<GlobalRenderTargetId> input_rt_ids;
         std::vector<std::string> input_buffer_names;
+        std::vector<vk::ImageView> bound_image_views;
+        uint64_t binding_revision = 0;
     };
     std::unordered_map<int, InputTextureInfo> input_textures;
+    uint64_t next_binding_revision = 1;
 
   public:
     FullscreenPassContainer();
@@ -44,6 +48,8 @@ DECLARE_MODULE(FullscreenPassContainer) {
                            const std::vector<std::string> &input_buffers,
                            const RenderTargetImageViewResolver &rt_views,
                            const FrameGraphResourceContainer &frame_graph_resources);
+    std::vector<vk::ImageView> boundInputImageViewsForTesting(PassId pass_id) const;
+    uint64_t inputBindingRevisionForTesting(PassId pass_id) const;
     vk::PipelineLayout getPipelineLayout(PassId pass_id) const;
 };
 

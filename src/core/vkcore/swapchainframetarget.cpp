@@ -245,7 +245,8 @@ FrameRenderContext SwapchainFrameTarget::render_begin() {
             barrier.subresourceRange.baseArrayLayer = 0;
             barrier.subresourceRange.layerCount = 1;
             barrier.srcAccessMask = {};
-            barrier.dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
+            barrier.dstAccessMask = vk::AccessFlagBits::eColorAttachmentRead |
+                                    vk::AccessFlagBits::eColorAttachmentWrite;
             cmd_buf->pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe,
                                      vk::PipelineStageFlagBits::eColorAttachmentOutput, {}, {}, {}, {barrier});
         }
@@ -265,7 +266,8 @@ void SwapchainFrameTarget::render_end() {
     const auto &cmd_buf = render_cmd_bufs[in_flight_frame_index];
 
     vk::ImageMemoryBarrier barrier;
-    barrier.srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
+    barrier.srcAccessMask = vk::AccessFlagBits::eColorAttachmentRead |
+                            vk::AccessFlagBits::eColorAttachmentWrite;
     barrier.oldLayout = vk::ImageLayout::eColorAttachmentOptimal;
     barrier.newLayout = vk::ImageLayout::ePresentSrcKHR;
     barrier.image = swapchain_images[current_image_index];
@@ -279,7 +281,7 @@ void SwapchainFrameTarget::render_end() {
 
     cmd_buf.recordEndSubmit({rendered_semaphores[in_flight_frame_index].get()},
                             {image_acquire_semaphores[in_flight_frame_index].get()},
-                            {vk::PipelineStageFlagBits::eColorAttachmentOutput});
+                            {vk::PipelineStageFlagBits::eTopOfPipe});
 
     vk::PresentInfoKHR presen_info;
     presen_info.setSwapchains(swapchain.swapchain.get());

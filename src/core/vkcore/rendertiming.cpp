@@ -42,6 +42,8 @@ vk::UniqueQueryPool RenderTiming::createTimestampQueryPool(uint32_t query_count)
 }
 
 void RenderTiming::beginGpuFrame(vk::CommandBuffer cmd_buf, const std::vector<std::string> &pass_names) {
+    last_frame_node_names = pass_names;
+    last_frame_query_count = 0;
     if (!gpu_timestamps_supported || pass_names.empty()) {
         return;
     }
@@ -50,6 +52,7 @@ void RenderTiming::beginGpuFrame(vk::CommandBuffer cmd_buf, const std::vector<st
     }
 
     const auto query_count = static_cast<uint32_t>(pass_names.size() * 2);
+    last_frame_query_count = query_count;
     auto pool = createTimestampQueryPool(query_count);
     cmd_buf.resetQueryPool(pool.get(), 0, query_count);
     active_gpu_frame = ActiveGpuFrame{std::move(pool), pass_names};

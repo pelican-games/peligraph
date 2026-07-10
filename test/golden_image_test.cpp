@@ -2,6 +2,7 @@
 #include "../src/core/appflow/enginetime.hpp"
 #include "../src/core/ecs/core.hpp"
 #include "../src/core/ecs/predefined.hpp"
+#include "../src/core/fullscreenpass/fullscreenpasscontainer.hpp"
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
@@ -11,6 +12,8 @@
 #include "../src/core/renderer/debugdraw.hpp"
 #include "../src/core/renderer/debugtext.hpp"
 #include "../src/core/renderer/camera.hpp"
+#include "../src/core/renderingpass/renderingpasscontainer.hpp"
+#include "../src/core/renderingpass/rendertargetcontainer.hpp"
 #include "../src/core/shader/pipelinefactory.hpp"
 #include "../src/core/shader/shadercompiler.hpp"
 #include "../src/core/shader/shaderlibrary.hpp"
@@ -19,16 +22,19 @@
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/vkcore/renderer.hpp"
 #include "../src/core/vkcore/rendertarget.hpp"
+#include "../src/core/vkcore/rendertiming.hpp"
 #include "vat_fixture.hpp"
 
 #include <algorithm>
 #include <array>
 #include <catch2/catch_test_macros.hpp>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -62,6 +68,11 @@ struct GoldenCase {
 struct RenderedCase {
     RgbaImage image;
     std::string device_name;
+    nlohmann::json execution_trace;
+    std::vector<std::string> plan_order;
+    std::vector<std::string> gpu_timing_node_names;
+    uint32_t gpu_timing_query_count = 0;
+    bool gpu_timing_queries_collected = false;
 };
 
 struct Tolerance {
@@ -352,6 +363,26 @@ void main() {
 )glsl";
 }
 
+const char *explicitOrderBlueFragmentShader() {
+    return R"glsl(
+#version 450
+layout(location = 0) out vec4 outColor;
+void main() {
+    outColor = vec4(0.05, 0.15, 0.90, 1.0);
+}
+)glsl";
+}
+
+const char *explicitOrderRedFragmentShader() {
+    return R"glsl(
+#version 450
+layout(location = 0) out vec4 outColor;
+void main() {
+    outColor = vec4(0.90, 0.10, 0.05, 1.0);
+}
+)glsl";
+}
+
 const char *triangleMaskFragmentShader() {
     return R"glsl(
 #version 450
@@ -550,6 +581,44 @@ void writeStemProject(const std::filesystem::path &root) {
             "vertex": "shaders/solid",
             "fragment": "shaders/solid"
           }
+        }
+      ]
+    }
+  ]
+})json");
+}
+
+void writeExplicitOrderProject(const std::filesystem::path &root) {
+    writeTextFile(root / "project.json", makeFeatureProjectJson().dump(2));
+    writeTextFile(root / "scene.json", R"json({
+  "schema": "pelican.scene",
+  "version": 1,
+  "scenes": {"default_scene": {"objects": []}}
+})json");
+    writeTextFile(root / "assets.json", R"json({"models":[]})json");
+    writeTextFile(root / "ui" / "ui.json", R"json({"images":[]})json");
+    writeTextFile(root / "shaders" / "fullscreen.vert", stemFullscreenVertexShader());
+    writeTextFile(root / "shaders" / "blue.frag", explicitOrderBlueFragmentShader());
+    writeTextFile(root / "shaders" / "red.frag", explicitOrderRedFragmentShader());
+    writeTextFile(root / "passes" / "main.json", R"json({
+  "features": ["engine://features/gpu_timing.json"],
+  "render_targets": [],
+  "rendering_passes": [
+    {
+      "name": "main",
+      "passes": [
+        {
+          "name": "red_after_blue",
+          "type": "fullscreen",
+          "after": ["blue_first"],
+          "output": {"color": "swapchain", "depth": null},
+          "shader": {"vertex": "shaders/fullscreen", "fragment": "shaders/red"}
+        },
+        {
+          "name": "blue_first",
+          "type": "fullscreen",
+          "output": {"color": "swapchain", "depth": null},
+          "shader": {"vertex": "shaders/fullscreen", "fragment": "shaders/blue"}
         }
       ]
     }
@@ -1269,6 +1338,10 @@ void requireGoldenVulkanDevice() {
     }
 }
 
+bool usesRenderer(const GoldenCase &golden_case) {
+    return golden_case.mode != "clear" && golden_case.mode != "fullscreen" && golden_case.mode != "triangle";
+}
+
 RenderedCase renderCase(const GoldenCase &golden_case) {
     FastModuleContainer modules;
     const auto temp_dir = makeTempProjectDir(golden_case.name);
@@ -1276,6 +1349,10 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         writeStemProject(temp_dir);
         GET_MODULE(PathResolver).setup(temp_dir, false);
         GET_MODULE(ProjectSource).setProjectData(makeStemProjectJson().dump());
+    } else if (golden_case.mode == "explicit_order") {
+        writeExplicitOrderProject(temp_dir);
+        GET_MODULE(PathResolver).setup(temp_dir, false);
+        GET_MODULE(ProjectSource).setProjectData(makeFeatureProjectJson().dump());
     } else if (golden_case.mode == "vat_playback") {
         writeVatProject(temp_dir);
         GET_MODULE(PathResolver).setup(temp_dir, false);
@@ -1331,6 +1408,11 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
     launch_config.headless_frames = 1;
 
     auto &render_target = GET_MODULE(RenderTarget);
+    Renderer *renderer = nullptr;
+    if (usesRenderer(golden_case)) {
+        renderer = &GET_MODULE(Renderer);
+        renderer->setExecutionTracingForTesting(true);
+    }
     if (golden_case.mode == "clear") {
         renderClearFrame(render_target, vk::ClearColorValue{std::array{0.1f, 0.2f, 0.3f, 1.0f}});
     } else if (golden_case.mode == "fullscreen") {
@@ -1339,6 +1421,8 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         renderStemFullscreenFrame(render_target);
     } else if (golden_case.mode == "triangle") {
         renderFullscreenFrame(render_target, triangleMaskFragmentShader());
+    } else if (golden_case.mode == "explicit_order") {
+        renderFeatureFrame(render_target);
     } else if (golden_case.mode == "vat_playback") {
         renderVatPlaybackFrame(render_target, temp_dir);
     } else if (golden_case.mode == "feature_compose") {
@@ -1363,6 +1447,9 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         throw std::runtime_error("unknown golden case mode: " + golden_case.mode);
     }
 
+    if (golden_case.mode == "explicit_order") {
+        GET_MODULE(RenderTiming).flush();
+    }
     const auto pixels = render_target.readbackLastFrameRGBA8();
     const auto device_properties = GET_MODULE(VulkanManageCore).getPhysDevice().getProperties();
     GET_MODULE(VulkanManageCore).waitIdle();
@@ -1371,6 +1458,12 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
     return RenderedCase{
         RgbaImage{goldenWidth, goldenHeight, pixels},
         std::string{device_properties.deviceName.data()},
+        renderer != nullptr ? renderer->lastExecutionTraceForTesting() : nlohmann::json{},
+        renderer != nullptr ? renderer->currentFramePlanOrderForTesting() : std::vector<std::string>{},
+        RenderTiming::__get().has_value() ? RenderTiming::__get()->lastFrameNodeNamesForTesting()
+                                          : std::vector<std::string>{},
+        RenderTiming::__get().has_value() ? RenderTiming::__get()->lastFrameQueryCountForTesting() : 0,
+        RenderTiming::__get().has_value() && RenderTiming::__get()->allGpuQueriesCollectedForTesting(),
     };
 }
 
@@ -1411,6 +1504,23 @@ void writeFailureMetadata(const std::filesystem::path &path, const GoldenCase &g
             }.dump(2);
 }
 
+std::filesystem::path rendererTraceFixturePath() {
+    return sourceRoot() / "test" / "fixtures" / "renderer_execution_traces.json";
+}
+
+bool updateRendererTraceFixturesRequested() {
+    const char *value = std::getenv("PELICAN_UPDATE_RENDERER_TRACE_FIXTURES");
+    return value != nullptr && std::string{value} == "1";
+}
+
+nlohmann::json loadJsonFile(const std::filesystem::path &path) {
+    std::ifstream file{path};
+    if (!file) {
+        throw std::runtime_error("failed to open JSON fixture: " + path.string());
+    }
+    return nlohmann::json::parse(file);
+}
+
 } // namespace
 
 TEST_CASE("golden image cases match expected output", "[golden][headless]") {
@@ -1418,9 +1528,9 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     requireGoldenVulkanDevice();
     const auto cases = discoverGoldenCases();
 #if PELICAN_WITH_VAT
-    REQUIRE(cases.size() == 16);
+    REQUIRE(cases.size() == 17);
 #else
-    REQUIRE(cases.size() == 15);
+    REQUIRE(cases.size() == 16);
 #endif
 
     for (const auto &golden_case : cases) {
@@ -1451,6 +1561,106 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
             REQUIRE(comparison.max <= tolerance.max);
         }
     }
+}
+
+TEST_CASE("Renderer execution matches plan order and captured traces", "[golden][headless][framegraph]") {
+    setupLogger();
+    requireGoldenVulkanDevice();
+    const bool update_fixtures = updateRendererTraceFixturesRequested();
+    const auto fixture_path = rendererTraceFixturePath();
+    const auto expected = update_fixtures ? nlohmann::json::object() : loadJsonFile(fixture_path);
+    nlohmann::json captured = nlohmann::json::object();
+
+    for (const auto &golden_case : discoverGoldenCases()) {
+        if (!usesRenderer(golden_case)) {
+            continue;
+        }
+        CAPTURE(golden_case.name);
+        const auto rendered = renderCase(golden_case);
+        std::vector<std::string> executed_order;
+        for (const auto &node : rendered.execution_trace.at("nodes")) {
+            executed_order.push_back(node.at("name").get<std::string>());
+        }
+
+        REQUIRE(executed_order == rendered.plan_order);
+        if (golden_case.mode == "explicit_order") {
+            REQUIRE(rendered.gpu_timing_node_names == rendered.plan_order);
+            REQUIRE(rendered.gpu_timing_query_count == rendered.plan_order.size() * 2);
+            REQUIRE(rendered.gpu_timing_queries_collected);
+        }
+        captured[golden_case.name] = rendered.execution_trace;
+        if (!update_fixtures) {
+            REQUIRE(rendered.execution_trace == expected.at(golden_case.name));
+        }
+    }
+
+    if (update_fixtures) {
+        writeTextFile(fixture_path, captured.dump(2) + "\n");
+    } else {
+        REQUIRE(captured.size() == expected.size());
+    }
+}
+
+TEST_CASE("fullscreen inputs rebind after shader reload and render-target recreation",
+          "[golden][headless][framegraph][rebind]") {
+    setupLogger();
+    requireGoldenVulkanDevice();
+
+    FastModuleContainer modules;
+    const auto temp_dir = makeTempProjectDir("fullscreen_rebind");
+    writeHdrProject(temp_dir, false);
+    GET_MODULE(PathResolver).setup(temp_dir, false);
+    GET_MODULE(ProjectSource).setProjectData(makeHdrProjectJson().dump());
+
+    auto &launch_config = GET_MODULE(EngineLaunchConfig);
+    launch_config.headless = true;
+    launch_config.shader_hot_reload = true;
+    launch_config.headless_extent = vk::Extent2D{goldenWidth, goldenHeight};
+
+    auto &renderer = GET_MODULE(Renderer);
+    auto &pass_container = GET_MODULE(RenderingPassContainer);
+    std::optional<PassId> input_pass;
+    for (const auto rendering_pass_id : pass_container.getRegisteredPassIds()) {
+        for (const auto &pass : pass_container.getCompiledRenderingPass(rendering_pass_id).passes) {
+            if (pass.definition.isFullscreen() && !pass.definition.input_targets.empty()) {
+                input_pass = pass.pass_id;
+                break;
+            }
+        }
+    }
+    REQUIRE(input_pass.has_value());
+
+    auto &fullscreen_passes = GET_MODULE(FullscreenPassContainer);
+    const auto initial_views = fullscreen_passes.boundInputImageViewsForTesting(*input_pass);
+    const auto initial_revision = fullscreen_passes.inputBindingRevisionForTesting(*input_pass);
+    REQUIRE(initial_views.size() == 1);
+    REQUIRE(initial_revision > 0);
+
+    const auto shader_path = temp_dir / "shaders" / "copy_input.frag";
+    const auto previous_write_time = std::filesystem::last_write_time(shader_path);
+    writeTextFile(shader_path, std::string{copyInputFragmentShader()} + "\n// hot reload rebind probe\n");
+    std::filesystem::last_write_time(shader_path, previous_write_time + std::chrono::seconds{2});
+
+    renderer.render();
+    GET_MODULE(VulkanManageCore).waitIdle();
+    const auto hot_reload_revision = fullscreen_passes.inputBindingRevisionForTesting(*input_pass);
+    REQUIRE(hot_reload_revision > initial_revision);
+    REQUIRE(fullscreen_passes.boundInputImageViewsForTesting(*input_pass) == initial_views);
+
+    auto &render_targets = GET_MODULE(RenderTargetContainer);
+    const auto lit_color = render_targets.getRenderTargetIdByName("lit_color");
+    const auto old_view = render_targets.getImageView(lit_color);
+    renderer.recreateRenderTargetsAndRebindForTesting(vk::Extent2D{32, 32});
+    const auto new_view = render_targets.getImageView(lit_color);
+
+    REQUIRE(new_view != old_view);
+    REQUIRE(fullscreen_passes.inputBindingRevisionForTesting(*input_pass) > hot_reload_revision);
+    REQUIRE(fullscreen_passes.boundInputImageViewsForTesting(*input_pass) ==
+            std::vector<vk::ImageView>{new_view});
+
+    renderer.render();
+    GET_MODULE(VulkanManageCore).waitIdle();
+    std::filesystem::remove_all(temp_dir);
 }
 
 } // namespace Pelican

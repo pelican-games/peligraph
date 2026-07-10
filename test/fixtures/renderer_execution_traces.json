@@ -1,0 +1,1606 @@
+{
+  "collider_debug_draw": {
+    "final_layouts": [
+      {
+        "layout": "transfer_src_optimal",
+        "resource": "swapchain"
+      }
+    ],
+    "nodes": [
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "swapchain",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "present",
+        "order": 0
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "final_layout": "color_attachment_optimal",
+            "load": "load",
+            "resource": "swapchain",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "debug_draw",
+        "order": 1
+      }
+    ]
+  },
+  "compute_buffer": {
+    "final_layouts": [
+      {
+        "layout": "transfer_src_optimal",
+        "resource": "swapchain"
+      }
+    ],
+    "nodes": [
+      {
+        "kind": "compute",
+        "name": "write_color",
+        "order": 0,
+        "reads": [],
+        "writes": [
+          {
+            "kind": "buffer",
+            "resource": "compute_color"
+          }
+        ]
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "swapchain",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [
+          "compute_color"
+        ],
+        "inputs": [],
+        "kind": "render",
+        "name": "present",
+        "order": 1
+      }
+    ]
+  },
+  "debug_draw_feature": {
+    "final_layouts": [
+      {
+        "layout": "transfer_src_optimal",
+        "resource": "swapchain"
+      }
+    ],
+    "nodes": [
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "swapchain",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "present",
+        "order": 0
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "final_layout": "color_attachment_optimal",
+            "load": "load",
+            "resource": "swapchain",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "debug_draw",
+        "order": 1
+      }
+    ]
+  },
+  "debug_text_feature": {
+    "final_layouts": [
+      {
+        "layout": "transfer_src_optimal",
+        "resource": "swapchain"
+      }
+    ],
+    "nodes": [
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "swapchain",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "present",
+        "order": 0
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "final_layout": "color_attachment_optimal",
+            "load": "load",
+            "resource": "swapchain",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "debug_text",
+        "order": 1
+      }
+    ]
+  },
+  "explicit_order": {
+    "final_layouts": [
+      {
+        "layout": "transfer_src_optimal",
+        "resource": "swapchain"
+      }
+    ],
+    "nodes": [
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "swapchain",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "blue_first",
+        "order": 0
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "swapchain",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "red_after_blue",
+        "order": 1
+      }
+    ]
+  },
+  "feature_compose": {
+    "final_layouts": [
+      {
+        "layout": "transfer_src_optimal",
+        "resource": "swapchain"
+      }
+    ],
+    "nodes": [
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "swapchain",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "present",
+        "order": 0
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "swapchain",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "feature_present",
+        "order": 1
+      }
+    ]
+  },
+  "hdr_off": {
+    "final_layouts": [
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "lit_color"
+      },
+      {
+        "layout": "transfer_src_optimal",
+        "resource": "swapchain"
+      }
+    ],
+    "nodes": [
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "lit_color",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "hdr_source",
+        "order": 0
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "swapchain",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "lit_color"
+          }
+        ],
+        "kind": "render",
+        "name": "copy_to_swapchain",
+        "order": 1
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "final_layout": "color_attachment_optimal",
+            "load": "load",
+            "resource": "swapchain",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "present",
+        "order": 2
+      }
+    ]
+  },
+  "hdr_on": {
+    "final_layouts": [
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "lit_color"
+      },
+      {
+        "layout": "transfer_src_optimal",
+        "resource": "swapchain"
+      }
+    ],
+    "nodes": [
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "lit_color",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "hdr_source",
+        "order": 0
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "swapchain",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "lit_color"
+          }
+        ],
+        "kind": "render",
+        "name": "copy_to_swapchain",
+        "order": 1
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "final_layout": "color_attachment_optimal",
+            "load": "load",
+            "resource": "swapchain",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "lit_color"
+          }
+        ],
+        "kind": "render",
+        "name": "hdr_tonemap",
+        "order": 2
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "final_layout": "color_attachment_optimal",
+            "load": "load",
+            "resource": "swapchain",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "present",
+        "order": 3
+      }
+    ]
+  },
+  "orbit_camera_controller": {
+    "final_layouts": [
+      {
+        "layout": "transfer_src_optimal",
+        "resource": "swapchain"
+      }
+    ],
+    "nodes": [
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "swapchain",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "orbit_camera",
+        "order": 0
+      }
+    ]
+  },
+  "orthographic_camera": {
+    "final_layouts": [
+      {
+        "layout": "transfer_src_optimal",
+        "resource": "swapchain"
+      }
+    ],
+    "nodes": [
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "swapchain",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "ortho_camera",
+        "order": 0
+      }
+    ]
+  },
+  "shadow_off": {
+    "final_layouts": [
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "g_emissive"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_albedo"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_material"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_normal"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_worldpos"
+      },
+      {
+        "layout": "depth_attachment_optimal",
+        "resource": "offscreen_depth"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "ssao_blur"
+      },
+      {
+        "layout": "transfer_src_optimal",
+        "resource": "swapchain"
+      }
+    ],
+    "nodes": [
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "gbuffer_albedo",
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "gbuffer_normal",
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "gbuffer_material",
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "gbuffer_worldpos",
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "g_emissive",
+            "store": "store"
+          },
+          {
+            "aspect": "depth",
+            "clear": 1.0,
+            "final_layout": "depth_attachment_optimal",
+            "load": "clear",
+            "resource": "offscreen_depth",
+            "store": "dont_care"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "gbuffer_pass",
+        "order": 0
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "ssao_blur",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "ssao_clear",
+        "order": 1
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "swapchain",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_albedo"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_normal"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_material"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_worldpos"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "g_emissive"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "ssao_blur"
+          }
+        ],
+        "kind": "render",
+        "name": "lighting_pass",
+        "order": 2
+      }
+    ]
+  },
+  "shadow_on": {
+    "final_layouts": [
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "g_emissive"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_albedo"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_material"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_normal"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_worldpos"
+      },
+      {
+        "layout": "depth_attachment_optimal",
+        "resource": "offscreen_depth"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "shadow_map"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "ssao_blur"
+      },
+      {
+        "layout": "transfer_src_optimal",
+        "resource": "swapchain"
+      }
+    ],
+    "nodes": [
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "gbuffer_albedo",
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "gbuffer_normal",
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "gbuffer_material",
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "gbuffer_worldpos",
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "g_emissive",
+            "store": "store"
+          },
+          {
+            "aspect": "depth",
+            "clear": 1.0,
+            "final_layout": "depth_attachment_optimal",
+            "load": "clear",
+            "resource": "offscreen_depth",
+            "store": "dont_care"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "gbuffer_pass",
+        "order": 0
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "ssao_blur",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "ssao_clear",
+        "order": 1
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "depth",
+            "clear": 1.0,
+            "final_layout": "depth_attachment_optimal",
+            "load": "clear",
+            "resource": "shadow_map",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "shadow_depth",
+        "order": 2
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "swapchain",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_albedo"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_normal"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_material"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_worldpos"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "g_emissive"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "ssao_blur"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "shadow_map"
+          }
+        ],
+        "kind": "render",
+        "name": "lighting_pass",
+        "order": 3
+      }
+    ]
+  },
+  "stem_fullscreen": {
+    "final_layouts": [
+      {
+        "layout": "transfer_src_optimal",
+        "resource": "swapchain"
+      }
+    ],
+    "nodes": [
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "swapchain",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "solid",
+        "order": 0
+      }
+    ]
+  },
+  "vat_playback": {
+    "final_layouts": [
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "Bloom_Downsample_H_0_RT"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "Bloom_Downsample_H_1_RT"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "Bloom_Downsample_H_2_RT"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "Bloom_Downsample_H_3_RT"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "Bloom_Threshold_RT"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "Bloom_Upsample_V_0_RT"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "Bloom_Upsample_V_1_RT"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "Bloom_Upsample_V_2_RT"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "Bloom_Upsample_V_3_RT"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "g_emissive"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_albedo"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_material"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_normal"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_worldpos"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "lit_color"
+      },
+      {
+        "layout": "depth_attachment_optimal",
+        "resource": "offscreen_depth"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "ssao_blur"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "ssao_output"
+      },
+      {
+        "layout": "transfer_src_optimal",
+        "resource": "swapchain"
+      }
+    ],
+    "nodes": [
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "gbuffer_albedo",
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "gbuffer_normal",
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "gbuffer_material",
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "gbuffer_worldpos",
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "g_emissive",
+            "store": "store"
+          },
+          {
+            "aspect": "depth",
+            "clear": 1.0,
+            "final_layout": "depth_attachment_optimal",
+            "load": "clear",
+            "resource": "offscreen_depth",
+            "store": "dont_care"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "gbuffer_pass",
+        "order": 0
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "ssao_output",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_worldpos"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_normal"
+          }
+        ],
+        "kind": "render",
+        "name": "ssao_pass",
+        "order": 1
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "ssao_blur",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "ssao_output"
+          }
+        ],
+        "kind": "render",
+        "name": "ssao_blur_pass",
+        "order": 2
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "lit_color",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_albedo"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_normal"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_material"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_worldpos"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "g_emissive"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "ssao_blur"
+          }
+        ],
+        "kind": "render",
+        "name": "lighting_pass",
+        "order": 3
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "Bloom_Threshold_RT",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "lit_color"
+          }
+        ],
+        "kind": "render",
+        "name": "HighLuminanceExtraction",
+        "order": 4
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "Bloom_Downsample_H_0_RT",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "Bloom_Threshold_RT"
+          }
+        ],
+        "kind": "render",
+        "name": "HorizontalBlur_0",
+        "order": 5
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "Bloom_Upsample_V_0_RT",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "Bloom_Downsample_H_0_RT"
+          }
+        ],
+        "kind": "render",
+        "name": "VerticalBlur_0",
+        "order": 6
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "Bloom_Downsample_H_1_RT",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "Bloom_Upsample_V_0_RT"
+          }
+        ],
+        "kind": "render",
+        "name": "HorizontalBlur_1",
+        "order": 7
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "Bloom_Upsample_V_1_RT",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "Bloom_Downsample_H_1_RT"
+          }
+        ],
+        "kind": "render",
+        "name": "VerticalBlur_1",
+        "order": 8
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "Bloom_Downsample_H_2_RT",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "Bloom_Upsample_V_1_RT"
+          }
+        ],
+        "kind": "render",
+        "name": "HorizontalBlur_2",
+        "order": 9
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "Bloom_Upsample_V_2_RT",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "Bloom_Downsample_H_2_RT"
+          }
+        ],
+        "kind": "render",
+        "name": "VerticalBlur_2",
+        "order": 10
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "Bloom_Downsample_H_3_RT",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "Bloom_Upsample_V_2_RT"
+          }
+        ],
+        "kind": "render",
+        "name": "HorizontalBlur_3",
+        "order": 11
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "load": "clear",
+            "resource": "Bloom_Upsample_V_3_RT",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "Bloom_Downsample_H_3_RT"
+          }
+        ],
+        "kind": "render",
+        "name": "VerticalBlur_3",
+        "order": 12
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "final_layout": "color_attachment_optimal",
+            "load": "load",
+            "resource": "Bloom_Downsample_H_2_RT",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "Bloom_Upsample_V_3_RT"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "Bloom_Upsample_V_2_RT"
+          }
+        ],
+        "kind": "render",
+        "name": "UpsampleBlend_3",
+        "order": 13
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "final_layout": "color_attachment_optimal",
+            "load": "load",
+            "resource": "Bloom_Downsample_H_1_RT",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "Bloom_Downsample_H_2_RT"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "Bloom_Upsample_V_1_RT"
+          }
+        ],
+        "kind": "render",
+        "name": "UpsampleBlend_2",
+        "order": 14
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "final_layout": "color_attachment_optimal",
+            "load": "load",
+            "resource": "Bloom_Downsample_H_0_RT",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "Bloom_Downsample_H_1_RT"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "Bloom_Upsample_V_0_RT"
+          }
+        ],
+        "kind": "render",
+        "name": "UpsampleBlend_1",
+        "order": 15
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "final_layout": "color_attachment_optimal",
+            "load": "load",
+            "resource": "swapchain",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "lit_color"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "Bloom_Downsample_H_0_RT"
+          }
+        ],
+        "kind": "render",
+        "name": "FinalBloomComposite",
+        "order": 16
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "final_layout": "color_attachment_optimal",
+            "load": "load",
+            "resource": "swapchain",
+            "store": "store"
+          }
+        ],
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "ui_pass",
+        "order": 17
+      }
+    ]
+  }
+}
