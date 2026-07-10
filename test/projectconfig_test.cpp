@@ -75,8 +75,6 @@ struct ProjectSandbox {
     {"name": "model", "path": "assets/model.glb"}
   ]
 })json");
-        writeText(root / "shaders" / "fullscreen.vert.spv", "fake vertex shader");
-        writeText(root / "shaders" / "fullscreen.frag.spv", "fake fragment shader");
         writeText(root / "passes" / "main.json", R"json({
   "render_targets": [],
   "rendering_passes": [
@@ -87,8 +85,8 @@ struct ProjectSandbox {
           "name": "fullscreen",
           "type": "fullscreen",
           "shader": {
-            "vertex": "shaders/fullscreen.vert.spv",
-            "fragment": "shaders/fullscreen.frag.spv"
+            "vertex": "shaders/fullscreen",
+            "fragment": "shaders/fullscreen"
           }
         }
       ]
@@ -142,8 +140,8 @@ void requireProjectConfigOk(const nlohmann::json &project, const ProjectSandbox 
     const auto rendering = nlohmann::json::parse(config.renderingConfigJson());
     const auto shader =
         rendering.at("rendering_passes").at(0).at("passes").at(0).at("shader");
-    REQUIRE(shader.at("vertex").get<std::string>() == "shaders/fullscreen.vert.spv");
-    REQUIRE(shader.at("fragment").get<std::string>() == "shaders/fullscreen.frag.spv");
+    REQUIRE(shader.at("vertex").get<std::string>() == "shaders/fullscreen");
+    REQUIRE(shader.at("fragment").get<std::string>() == "shaders/fullscreen");
 
     const auto ui = nlohmann::json::parse(config.uiConfigJson());
     REQUIRE(ui.at("images").at(0).at("file").get<std::string>() ==
@@ -157,6 +155,7 @@ void requireErrorKind(std::string_view message, std::string_view error_kind) {
         REQUIRE(contains(message, "schema"));
     } else if (error_kind == "version") {
         REQUIRE(contains(message, "version"));
+        REQUIRE(contains(message, "1"));
     } else {
         FAIL("unknown project config error_kind: " << error_kind);
     }

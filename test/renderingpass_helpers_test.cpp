@@ -113,22 +113,38 @@ TEST_CASE("fullscreen pass JSON parser reads explicit fullscreen options", "[ren
     const nlohmann::json pass_json{
         {"push_constants", "camera_position"},
         {"uses_light_data", true},
-        {"shader", {{"vertex", "fullscreen.vert.spv"}, {"fragment", "lighting.frag.spv"}}},
+        {"shader", {{"vertex", "fullscreen"}, {"fragment", "lighting"}}},
     };
 
     const auto info = parseFullscreenPassInfoFromJson(pass_json, "lighting_pass");
 
     REQUIRE(info.push_constants == FullscreenPushConstantData::eCameraPosition);
     REQUIRE(info.uses_light_data);
-    REQUIRE(info.vert_shader.ref == "fullscreen.vert.spv");
-    REQUIRE(info.vert_shader.kind == ShaderReferenceKind::explicit_file);
-    REQUIRE(info.frag_shader.ref == "lighting.frag.spv");
-    REQUIRE(info.frag_shader.kind == ShaderReferenceKind::explicit_file);
+    REQUIRE(info.vert_shader.ref == "fullscreen");
+    REQUIRE(info.vert_shader.kind == ShaderReferenceKind::stem);
+    REQUIRE(info.frag_shader.ref == "lighting");
+    REQUIRE(info.frag_shader.kind == ShaderReferenceKind::stem);
+}
+
+TEST_CASE("fullscreen pass JSON parser rejects explicit shader files and names the stem form", "[renderingpass]") {
+    const nlohmann::json pass_json{
+        {"shader", {{"vertex", "fullscreen.vert.spv"}, {"fragment", "lighting"}}},
+    };
+
+    std::string message;
+    try {
+        (void)parseFullscreenPassInfoFromJson(pass_json, "lighting_pass");
+    } catch (const std::exception &ex) {
+        message = ex.what();
+    }
+    REQUIRE(message.find("fullscreen.vert.spv") != std::string::npos);
+    REQUIRE(message.find("extensionless") != std::string::npos);
+    REQUIRE(message.find("vertex") != std::string::npos);
 }
 
 TEST_CASE("fullscreen pass JSON parser does not infer options from pass name", "[renderingpass]") {
     const nlohmann::json pass_json{
-        {"shader", {{"vertex", "fullscreen.vert.spv"}, {"fragment", "lighting.frag.spv"}}},
+        {"shader", {{"vertex", "fullscreen"}, {"fragment", "lighting"}}},
     };
 
     const auto info = parseFullscreenPassInfoFromJson(pass_json, "lighting_pass");
@@ -158,7 +174,7 @@ TEST_CASE("pass info JSON parser reads shadow depth shader option", "[renderingp
 TEST_CASE("fullscreen pass JSON parser rejects deprecated projection matrix flag", "[renderingpass]") {
     const nlohmann::json pass_json{
         {"needs_projection_matrix", true},
-        {"shader", {{"vertex", "fullscreen.vert.spv"}, {"fragment", "ssao.frag.spv"}}},
+        {"shader", {{"vertex", "fullscreen"}, {"fragment", "ssao"}}},
     };
 
     REQUIRE_THROWS_AS(parseFullscreenPassInfoFromJson(pass_json, "ssao_pass"), std::runtime_error);
@@ -180,12 +196,12 @@ TEST_CASE("pass info JSON parser applies fullscreen info only to fullscreen pass
     parsePassTypeFromJson(fullscreen_pass, nlohmann::json{{"type", "fullscreen"}});
 
     const nlohmann::json fullscreen_json{
-        {"shader", {{"vertex", "fullscreen.vert.spv"}, {"fragment", "debug_texture.frag.spv"}}},
+        {"shader", {{"vertex", "fullscreen"}, {"fragment", "debug_texture"}}},
         {"push_constants", "projection_view"},
     };
     parseFullscreenPassInfoIntoDefinition(fullscreen_pass, fullscreen_json);
 
-    REQUIRE(fullscreen_pass.fullscreenInfo().frag_shader.ref == "debug_texture.frag.spv");
+    REQUIRE(fullscreen_pass.fullscreenInfo().frag_shader.ref == "debug_texture");
     REQUIRE(fullscreen_pass.fullscreenInfo().push_constants == FullscreenPushConstantData::eProjectionView);
 
     PassDefinition material_pass;
@@ -282,7 +298,7 @@ TEST_CASE("pass definition JSON parser builds a fullscreen pass definition", "[r
         {"name", "debug_texture"},
         {"type", "fullscreen"},
         {"output", {{"color", "half_color"}, {"depth", nullptr}}},
-        {"shader", {{"vertex", "fullscreen.vert.spv"}, {"fragment", "debug_texture.frag.spv"}}},
+        {"shader", {{"vertex", "fullscreen"}, {"fragment", "debug_texture"}}},
         {"push_constants", "projection_view"},
         {"clear_color", nlohmann::json::array({0.0f, 0.0f, 0.0f, 1.0f})},
     };
@@ -294,7 +310,7 @@ TEST_CASE("pass definition JSON parser builds a fullscreen pass definition", "[r
     REQUIRE(pass_def.output_color.size() == 1);
     REQUIRE(pass_def.output_color[0] == GlobalRenderTargetId{3});
     REQUIRE(pass_def.output_depth == noRenderTargetId());
-    REQUIRE(pass_def.fullscreenInfo().frag_shader.ref == "debug_texture.frag.spv");
+    REQUIRE(pass_def.fullscreenInfo().frag_shader.ref == "debug_texture");
     REQUIRE(pass_def.fullscreenInfo().push_constants == FullscreenPushConstantData::eProjectionView);
 }
 
@@ -352,10 +368,10 @@ TEST_CASE("pass sequence JSON parser validates produced input order", "[renderin
          nlohmann::json::array({
              {{"name", "source"}, {"type", "fullscreen"},
               {"output", {{"color", "source_color"}, {"depth", nullptr}}},
-              {"shader", {{"vertex", "fullscreen.vert.spv"}, {"fragment", "source.frag.spv"}}}},
+              {"shader", {{"vertex", "fullscreen"}, {"fragment", "source"}}}},
              {{"name", "composite"}, {"type", "fullscreen"}, {"input", "source_color"},
               {"output", {{"color", "final_color"}, {"depth", nullptr}}},
-              {"shader", {{"vertex", "fullscreen.vert.spv"}, {"fragment", "composite.frag.spv"}}}},
+              {"shader", {{"vertex", "fullscreen"}, {"fragment", "composite"}}}},
          })},
     };
 
@@ -397,7 +413,7 @@ TEST_CASE("pass sequence JSON parser allows depth output as later input", "[rend
               {"output", {{"color", nullptr}, {"depth", "shadow_map"}}}},
              {{"name", "lighting_pass"}, {"type", "fullscreen"}, {"input", "shadow_map"},
               {"output", {{"color", "lit_color"}, {"depth", nullptr}}},
-              {"shader", {{"vertex", "fullscreen.vert.spv"}, {"fragment", "lighting.frag.spv"}}}},
+              {"shader", {{"vertex", "fullscreen"}, {"fragment", "lighting"}}}},
          })},
     };
 
@@ -418,9 +434,9 @@ TEST_CASE("pass sequence JSON parser rejects duplicate pass names", "[renderingp
         {"passes",
          nlohmann::json::array({
              {{"name", "same"}, {"type", "fullscreen"}, {"output", {{"color", "swapchain"}, {"depth", nullptr}}},
-              {"shader", {{"vertex", "fullscreen.vert.spv"}, {"fragment", "one.frag.spv"}}}},
+              {"shader", {{"vertex", "fullscreen"}, {"fragment", "one"}}}},
              {{"name", "same"}, {"type", "fullscreen"}, {"output", {{"color", "swapchain"}, {"depth", nullptr}}},
-              {"shader", {{"vertex", "fullscreen.vert.spv"}, {"fragment", "two.frag.spv"}}}},
+              {"shader", {{"vertex", "fullscreen"}, {"fragment", "two"}}}},
          })},
     };
 

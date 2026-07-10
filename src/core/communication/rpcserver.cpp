@@ -165,9 +165,13 @@ SceneObjectTransform parseSceneObjectTransform(const nlohmann::json &json, const
     if (!json.is_object()) {
         throw JsonRpcHandlerError(JsonRpcErrorCodes::invalidParams, method + " transforms entries must be objects");
     }
+    if (json.contains("rot")) {
+        throw JsonRpcHandlerError(JsonRpcErrorCodes::invalidParams,
+                                  method + " transform field 'rot' is not supported in v1. Use 'rotation'");
+    }
     return SceneObjectTransform{
         .pos = requireVec3Field(json, "pos", method),
-        .rotation = requireQuatField(json, "rot", method),
+        .rotation = requireQuatField(json, "rotation", method),
         .scale = requireVec3Field(json, "scale", method),
     };
 }

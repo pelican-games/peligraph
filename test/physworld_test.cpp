@@ -59,7 +59,7 @@ TEST_CASE("Collider component parses sphere box and capsule scene syntax", "[phy
     const auto box = parseCollider(nlohmann::json{
         {"name", "collider"},
         {"shape", "box"},
-        {"size", {2.0f, 4.0f, 6.0f}},
+        {"half_extents", {1.0f, 2.0f, 3.0f}},
     });
     REQUIRE(box.shape == "box");
     requireVec(box.half_extents, {1.0f, 2.0f, 3.0f});
@@ -68,11 +68,40 @@ TEST_CASE("Collider component parses sphere box and capsule scene syntax", "[phy
         {"name", "collider"},
         {"shape", "capsule"},
         {"radius", 0.5f},
-        {"height", 4.0f},
+        {"half_height", 2.0f},
     });
     REQUIRE(capsule.shape == "capsule");
     REQUIRE(capsule.radius == Catch::Approx(0.5f));
     REQUIRE(capsule.half_height == Catch::Approx(2.0f));
+}
+
+TEST_CASE("Collider component rejects size aliases with v1 replacement names", "[physworld]") {
+    std::string box_message;
+    try {
+        (void)parseCollider(nlohmann::json{
+            {"name", "collider"},
+            {"shape", "box"},
+            {"size", {2.0f, 4.0f, 6.0f}},
+        });
+    } catch (const std::exception &ex) {
+        box_message = ex.what();
+    }
+    REQUIRE(contains(box_message, "size"));
+    REQUIRE(contains(box_message, "half_extents"));
+
+    std::string capsule_message;
+    try {
+        (void)parseCollider(nlohmann::json{
+            {"name", "collider"},
+            {"shape", "capsule"},
+            {"radius", 0.5f},
+            {"height", 4.0f},
+        });
+    } catch (const std::exception &ex) {
+        capsule_message = ex.what();
+    }
+    REQUIRE(contains(capsule_message, "height"));
+    REQUIRE(contains(capsule_message, "half_height"));
 }
 
 TEST_CASE("Collider component rejects unknown shapes and negative dimensions", "[physworld]") {

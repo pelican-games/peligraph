@@ -100,17 +100,32 @@ TEST_CASE("shader library loads SPIR-V files and reports dirty reloads", "[shade
     REQUIRE(library.takeDirtyBundles().empty());
 }
 
-TEST_CASE("shader library loads explicit SPIR-V project references", "[shader]") {
-    ShaderSandbox sandbox;
-    PathResolver resolver;
-    resolver.setup(sandbox.root, false);
+TEST_CASE("shader references reject explicit extensions and name the stem form", "[shader]") {
+    struct ExplicitReference {
+        const char *ref;
+        ShaderStage stage;
+    };
+    const ExplicitReference references[] = {
+        {"shaders/fullscreen.spv", ShaderStage::vertex},
+        {"shaders/fullscreen.vert", ShaderStage::vertex},
+        {"shaders/fullscreen.frag", ShaderStage::fragment},
+        {"shaders/fullscreen.comp", ShaderStage::compute},
+        {"shaders/fullscreen.wgsl", ShaderStage::fragment},
+    };
 
-    ShaderLibrary library{ShaderLibraryModuleMode::reflection_only};
-    const auto id = library.loadFromReference(
-        makeShaderReference("shaders/fullscreen.vert.spv", ShaderStage::vertex), resolver, true);
-
-    REQUIRE(library.get(id).version == 1);
-    REQUIRE(library.get(id).source_path == sandbox.root / "shaders" / "fullscreen.vert.spv");
+    for (const auto &reference : references) {
+        DYNAMIC_SECTION(reference.ref) {
+            std::string message;
+            try {
+                (void)makeShaderReference(reference.ref, reference.stage);
+            } catch (const std::exception &ex) {
+                message = ex.what();
+            }
+            REQUIRE(contains(message, reference.ref));
+            REQUIRE(contains(message, "extensionless"));
+            REQUIRE(contains(message, shaderStageName(reference.stage)));
+        }
+    }
 }
 
 TEST_CASE("shader library resolves shader stem project format fixtures", "[shader]") {

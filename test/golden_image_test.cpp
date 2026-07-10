@@ -523,7 +523,15 @@ void renderFullscreenFrame(RenderTarget &render_target, const std::string &fragm
 
 void writeStemProject(const std::filesystem::path &root) {
     writeTextFile(root / "project.json", makeStemProjectJson().dump(2));
-    writeTextFile(root / "scene.json", "{}");
+    writeTextFile(root / "scene.json", R"json({
+  "schema": "pelican.scene",
+  "version": 1,
+  "scenes": {
+    "default_scene": {
+      "objects": []
+    }
+  }
+})json");
     writeTextFile(root / "assets.json", R"json({"models":[]})json");
     writeTextFile(root / "ui" / "ui.json", R"json({"images":[]})json");
     writeTextFile(root / "shaders" / "solid.vert", stemFullscreenVertexShader());
@@ -1244,6 +1252,23 @@ bool isShadowGoldenMode(const std::string &mode) {
     return mode == "shadow_off" || mode == "shadow_on";
 }
 
+void requireGoldenVulkanDevice() {
+    FastModuleContainer modules;
+    auto &launch_config = GET_MODULE(EngineLaunchConfig);
+    launch_config.headless = true;
+    launch_config.headless_extent = vk::Extent2D{goldenWidth, goldenHeight};
+
+    try {
+        GET_MODULE(VulkanManageCore).waitIdle();
+    } catch (const std::exception &ex) {
+        const std::string message = ex.what();
+        if (message.find("No suitable Vulkan physical device found") != std::string::npos) {
+            SKIP("Golden image rendering requires a Vulkan device: " << message);
+        }
+        throw;
+    }
+}
+
 RenderedCase renderCase(const GoldenCase &golden_case) {
     FastModuleContainer modules;
     const auto temp_dir = makeTempProjectDir(golden_case.name);
@@ -1390,6 +1415,7 @@ void writeFailureMetadata(const std::filesystem::path &path, const GoldenCase &g
 
 TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     setupLogger();
+    requireGoldenVulkanDevice();
     const auto cases = discoverGoldenCases();
 #if PELICAN_WITH_VAT
     REQUIRE(cases.size() == 16);
@@ -1399,12 +1425,7 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
 
     for (const auto &golden_case : cases) {
         DYNAMIC_SECTION(golden_case.name) {
-            RenderedCase rendered;
-            try {
-                rendered = renderCase(golden_case);
-            } catch (const std::exception &ex) {
-                SKIP(std::string{"Golden image rendering unavailable: "} + ex.what());
-            }
+            const auto rendered = renderCase(golden_case);
 
             const auto expected_path = golden_case.root / "expected.png";
             if (updateGoldenRequested()) {

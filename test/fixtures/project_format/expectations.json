@@ -56,6 +56,16 @@
     "error_kind": "version"
   },
   {
+    "file": "invalid/project_version_zero.json",
+    "expect": "error",
+    "error_kind": "version"
+  },
+  {
+    "file": "invalid/project_version_negative.json",
+    "expect": "error",
+    "error_kind": "version"
+  },
+  {
     "file": "valid/shader_stem_spv.json",
     "expect": "ok"
   },
@@ -73,8 +83,9 @@
     "expect": "ok"
   },
   {
-    "file": "valid/scene_legacy.json",
-    "expect": "ok"
+    "file": "invalid/scene_missing_schema.json",
+    "expect": "error",
+    "error_kind": "schema"
   },
   {
     "file": "invalid/scene_bad_schema.json",
@@ -85,6 +96,21 @@
     "file": "invalid/scene_future_version.json",
     "expect": "error",
     "error_kind": "version"
+  },
+  {
+    "file": "invalid/scene_version_zero.json",
+    "expect": "error",
+    "error_kind": "version"
+  },
+  {
+    "file": "invalid/scene_version_negative.json",
+    "expect": "error",
+    "error_kind": "version"
+  },
+  {
+    "file": "invalid/scene_legacy_lights.json",
+    "expect": "error",
+    "error_kind": "legacy_lights"
   },
   {
     "file": "invalid/scene_duplicate_name.json",

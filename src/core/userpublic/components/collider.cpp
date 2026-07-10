@@ -57,10 +57,6 @@ bool allPositive(vec3 value) {
     return value.x > 0.0f && value.y > 0.0f && value.z > 0.0f;
 }
 
-vec3 halfExtentsFromSize(vec3 size) {
-    return {size.x * 0.5f, size.y * 0.5f, size.z * 0.5f};
-}
-
 } // namespace
 
 void ColliderComponent::loadFromJsonArchive(const JsonArchiveLoader &archive) {
@@ -72,12 +68,18 @@ void ColliderComponent::loadFromJsonArchive(const JsonArchiveLoader &archive) {
     if (shape == "sphere") {
         radius = readRequiredFloat(json, "radius");
     } else if (shape == "box") {
-        half_extents = json.contains("half_extents") ? readRequiredVec3(json, "half_extents")
-                                                     : halfExtentsFromSize(readRequiredVec3(json, "size"));
+        if (json.contains("size")) {
+            throw std::runtime_error(
+                "Box collider field 'size' is not supported in v1; use 'half_extents' (size divided by 2)");
+        }
+        half_extents = readRequiredVec3(json, "half_extents");
     } else if (shape == "capsule") {
+        if (json.contains("height")) {
+            throw std::runtime_error(
+                "Capsule collider field 'height' is not supported in v1; use 'half_height' (height divided by 2)");
+        }
         radius = readRequiredFloat(json, "radius");
-        half_height = json.contains("half_height") ? readRequiredFloat(json, "half_height")
-                                                   : readRequiredFloat(json, "height") * 0.5f;
+        half_height = readRequiredFloat(json, "half_height");
     } else {
         throw std::runtime_error("Unknown collider shape: " + shape);
     }

@@ -49,12 +49,16 @@ bool hasKnownShaderExtension(std::string_view ref) {
 }
 
 ShaderReference makeShaderReference(std::string ref, ShaderStage stage) {
-    const bool explicit_file = hasKnownShaderExtension(ref);
+    if (hasKnownShaderExtension(ref)) {
+        throw std::runtime_error("shader reference '" + ref +
+                                 "' uses an explicit file extension; use an extensionless " +
+                                 shaderStageName(stage) + " shader stem");
+    }
     return ShaderReference{
         std::move(ref),
         stage,
-        explicit_file ? ShaderReferenceKind::explicit_file : ShaderReferenceKind::stem,
-        explicit_file,
+        ShaderReferenceKind::stem,
+        false,
     };
 }
 

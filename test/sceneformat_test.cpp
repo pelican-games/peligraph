@@ -73,8 +73,13 @@ std::vector<std::string> lightObjectNames(const nlohmann::json &scene) {
 void requireErrorKind(std::string_view message, std::string_view error_kind) {
     if (error_kind == "schema") {
         REQUIRE(contains(message, "schema"));
+        REQUIRE(contains(message, "pelican.scene"));
     } else if (error_kind == "version") {
         REQUIRE(contains(message, "version"));
+        REQUIRE(contains(message, "1"));
+    } else if (error_kind == "legacy_lights") {
+        REQUIRE(contains(message, "'lights'"));
+        REQUIRE(contains(message, "'light'"));
     } else if (error_kind == "duplicate_name") {
         REQUIRE(contains(message, "duplicate object name"));
     } else {
@@ -97,7 +102,7 @@ std::filesystem::path makeTempProjectDir() {
 
 } // namespace
 
-TEST_CASE("Scene format fixtures normalize v1 and legacy documents", "[scene-format]") {
+TEST_CASE("Scene format fixtures accept only v1 documents", "[scene-format]") {
     const auto expectations = readJson(fixtureRoot() / "expectations.json");
 
     for (const auto &entry : expectations) {
@@ -137,65 +142,33 @@ TEST_CASE("Scene format fixtures normalize v1 and legacy documents", "[scene-for
     }
 }
 
-TEST_CASE("Scene format legacy lights normalize to the v1 light component scene", "[scene-format][golden]") {
-    const auto legacy = normalizeSceneDataJson(nlohmann::json::parse(R"json({
-  "default_scene": {
-    "lights": [
-      {
-        "name": "BlueSpot",
-        "type": "spot",
-        "position": [2.0, 0.5, 2.0],
-        "direction": [0.0, -0.5, -1.0],
-        "intensity": 1.8,
-        "color": [0.6, 0.7, 1.0],
-        "innerConeAngle": 18.0,
-        "outerConeAngle": 28.0
-      }
-    ],
-    "objects": [
-      {
-        "name": "Hero",
-        "components": [
-          {"name": "transform", "pos": [0, 0, 0]}
-        ]
-      }
-    ]
-  }
-})json"));
-
-    const auto v1 = normalizeSceneDataJson(nlohmann::json::parse(R"json({
+TEST_CASE("Scene format rejects legacy lights and names the v1 replacement", "[scene-format]") {
+    const auto legacy_lights = nlohmann::json::parse(R"json({
   "schema": "pelican.scene",
   "version": 1,
   "scenes": {
     "default_scene": {
+      "lights": [{"name": "BlueSpot", "type": "spot"}],
       "objects": [
         {
           "name": "Hero",
           "components": [
             {"name": "transform", "pos": [0, 0, 0]}
           ]
-        },
-        {
-          "name": "BlueSpot",
-          "components": [
-            {
-              "name": "light",
-              "type": "spot",
-              "position": [2.0, 0.5, 2.0],
-              "direction": [0.0, -0.5, -1.0],
-              "intensity": 1.8,
-              "color": [0.6, 0.7, 1.0],
-              "innerConeAngle": 18.0,
-              "outerConeAngle": 28.0
-            }
-          ]
         }
       ]
     }
   }
-})json"));
+})json");
 
-    REQUIRE(legacy.scenes == v1.scenes);
+    std::string message;
+    try {
+        (void)normalizeSceneDataJson(legacy_lights);
+    } catch (const std::exception &ex) {
+        message = ex.what();
+    }
+    REQUIRE(contains(message, "'lights'"));
+    REQUIRE(contains(message, "'light'"));
 }
 
 TEST_CASE("SceneLoader reports object name for unknown component names", "[scene-format]") {
