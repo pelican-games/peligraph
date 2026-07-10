@@ -3,7 +3,6 @@
 #include "core.hpp"
 
 #include "predefined/camera.hpp"
-#include "predefined/collision.hpp"
 #include "predefined/modelview.hpp"
 #include "predefined/transform.hpp"
 
@@ -38,9 +37,6 @@ void ECSPredefinedRegistration::reg() {
     GET_MODULE(ECSCore)
         .registerSystemForce<LocalTransformSystem, EntityId, TransformComponent, LocalTransformComponent>(
             GET_MODULE(LocalTransformSystem), {});
-
-    GET_MODULE(ECSCore).registerSystemForce<SimpleCollisionSystem, TransformComponent, SphereColliderComponent>(
-        GET_MODULE(SimpleCollisionSystem), {});
 
     GET_MODULE(ECSCore)
         .registerSystemForce<SimpleModelViewUpdateSystem, SimpleModelViewComponent, SimpleModelViewUpdateComponent>(

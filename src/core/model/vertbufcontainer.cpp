@@ -106,8 +106,6 @@ ModelTemplate::PrimitiveRefInfo VertBufContainer::addPrimitiveEntry(CommonPolygo
     vertices_offset += vert_count;
     return info;
 }
-void VertBufContainer::removePrimitiveEntry(/* TODO */) {}
-
 void VertBufContainer::bindVertexBuffer(vk::CommandBuffer cmd_buf) const {
     cmd_buf.bindIndexBuffer(*indices_mem_pool.buffer, 0, vk::IndexType::eUint32);
     cmd_buf.bindVertexBuffers(0, {*vertices_mem_pool.buffer}, {0});

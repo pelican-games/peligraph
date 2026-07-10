@@ -3,6 +3,5 @@ target_sources(pelican_core PRIVATE
     localtransformsystem.cpp
     modelviewtransformsystem.cpp
     camerasystem.cpp
-    collision.cpp
     modelviewupdatesystem.cpp
 )

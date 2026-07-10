@@ -20,7 +20,6 @@ DECLARE_MODULE(ECSCore) {
         return sub.allocateEntity(component_ids, component_ptrs, count);
     }
     void remove(EntityId id) { sub.remove(id); }
-    void compaction() { sub.compaction(); }
 
     template <class TSystem, class... TComponents>
     SystemId registerSystem(TSystem & system, std::vector<SystemId> && depends_list, bool force_update = false) {

@@ -67,7 +67,6 @@ class ECSCoreTemplatePublic {
     EntityId allocateEntity(std::span<const ComponentId> component_ids, std::span<void *> component_ptrs, size_t count);
     void remove(EntityId id);
     void clearEntities();
-    void compaction();
     void *tryComponentRaw(EntityId id, ComponentId component_id);
     void *componentRaw(EntityId id, ComponentId component_id);
     void markComponentChanged(EntityId id, ComponentId component_id);

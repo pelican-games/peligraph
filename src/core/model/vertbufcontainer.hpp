@@ -50,7 +50,6 @@ DECLARE_MODULE(VertBufContainer) {
   public:
     VertBufContainer();
     ModelTemplate::PrimitiveRefInfo addPrimitiveEntry(CommonPolygonVertData &&data);
-    void removePrimitiveEntry(/* TODO */);
 
     void bindVertexBuffer(vk::CommandBuffer cmd_buf) const;
 
