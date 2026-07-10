@@ -34,9 +34,9 @@ class GameContext {
     void logError(std::string_view message) const;
 
     GameObjectId createObject(const LocalTransformComponent &transform) const;
-    void removeObject(GameObjectId id) const;
+    [[nodiscard]] bool removeObject(GameObjectId id) const;
     LocalTransformComponent localTransform(GameObjectId id) const;
-    void setLocalTransform(GameObjectId id, const LocalTransformComponent &transform) const;
+    [[nodiscard]] bool setLocalTransform(GameObjectId id, const LocalTransformComponent &transform) const;
 
     std::optional<phys::ObjectRaycastHit> raycastClosest(const phys::Ray &ray) const;
     std::vector<std::string> overlapAll(const phys::Shape &shape) const;

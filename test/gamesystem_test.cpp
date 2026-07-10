@@ -100,7 +100,7 @@ LocalTransformComponent makeTransform(float x, float y, float z) {
         .scale = vec3{1.0f + x, 1.0f + y, 1.0f + z},
         .rotation = quat{0.0f, 0.0f, 0.0f, 1.0f},
         .pos = vec3{x, y, z},
-        .parent = 0,
+        .parent = invalidGameObjectId,
     };
 }
 
@@ -177,11 +177,14 @@ TEST_CASE("GameContext creates and updates local transforms without exposing mod
     REQUIRE(transform.pos.z == Catch::Approx(3.0f));
 
     const auto updated = makeTransform(4.0f, 5.0f, 6.0f);
-    ctx.setLocalTransform(object, updated);
+    REQUIRE(ctx.setLocalTransform(object, updated));
     transform = ctx.localTransform(object);
     REQUIRE(transform.pos.x == Catch::Approx(4.0f));
     REQUIRE(transform.pos.y == Catch::Approx(5.0f));
     REQUIRE(transform.pos.z == Catch::Approx(6.0f));
+    REQUIRE(ctx.removeObject(object));
+    REQUIRE_FALSE(ctx.removeObject(object));
+    REQUIRE_FALSE(ctx.setLocalTransform(object, updated));
 }
 
 } // namespace Pelican

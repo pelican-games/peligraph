@@ -13,7 +13,7 @@ struct SimpleModelViewComponent {
     template <class T> void ref(T &ar) {}
 
     void init();
-    void deinit();
+    void deinit() noexcept;
 };
 
 } // namespace Pelican

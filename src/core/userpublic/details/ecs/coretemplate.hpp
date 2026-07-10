@@ -7,6 +7,7 @@
 #include <set>
 #include <vector>
 #include <functional>
+#include <optional>
 #include <tuple>
 
 #include <details/ecs/componentdeclare.hpp>
@@ -42,13 +43,21 @@ class ECSCoreTemplatePublic {
     using ChunkIndex = size_t;
     using WithinChunkIndex = size_t;
 
-    std::vector<ECSComponentChunk> chunks_storage;
-
     struct EntityRef {
         ChunkIndex chunk_index;
         WithinChunkIndex array_index;
     };
-    std::vector<EntityRef> id_to_ref;
+
+    struct IdEntry {
+        std::optional<EntityRef> ref;
+        std::uint32_t generation = 0;
+        bool live = false;
+    };
+
+    std::vector<ECSComponentChunk> chunks_storage;
+    std::vector<IdEntry> id_table;
+    std::vector<std::uint32_t> free_indices;
+    bool mutation_active = false;
 
     struct VectorHash {
         size_t operator()(const std::vector<ComponentId> &v) const {
@@ -63,13 +72,34 @@ class ECSCoreTemplatePublic {
     // Map from sorted component IDs (Archetype) to list of chunk indices
     std::unordered_map<std::vector<ComponentId>, std::vector<ChunkIndex>, VectorHash> archetype_to_chunks;
 
+    struct MutationScope {
+        ECSCoreTemplatePublic &owner;
+        explicit MutationScope(ECSCoreTemplatePublic &value);
+        ~MutationScope();
+    };
+
+    std::optional<EntityRef> resolve(EntityId id) const noexcept;
+    void rebuildChunkCaches();
+    void releaseId(EntityId id) noexcept;
+
   public:
-    EntityId allocateEntity(std::span<const ComponentId> component_ids, std::span<void *> component_ptrs, size_t count);
-    void remove(EntityId id);
+    using PopulateBatch =
+        std::function<void(std::span<const EntityId>, std::span<void *>, size_t)>;
+
+    std::vector<EntityId> createEntities(std::span<const ComponentId> component_ids, size_t count,
+                                         const PopulateBatch &populate = {});
+    EntityId createEntity(std::span<const ComponentId> component_ids,
+                          const std::function<void(std::span<void *>)> &populate = {});
+    [[nodiscard]] bool remove(EntityId id);
+    void removeOrThrow(EntityId id);
     void clearEntities();
+    bool isAlive(EntityId id) const noexcept { return resolve(id).has_value(); }
+    size_t liveCount() const noexcept;
+    EntityId forceGenerationForTesting(EntityId id, std::uint32_t generation);
+    static void validateFreshIndexCapacityForTesting(size_t id_table_size);
     void *tryComponentRaw(EntityId id, ComponentId component_id);
     void *componentRaw(EntityId id, ComponentId component_id);
-    void markComponentChanged(EntityId id, ComponentId component_id);
+    [[nodiscard]] bool markComponentChanged(EntityId id, ComponentId component_id);
 
     template <class TComponent> TComponent *tryComponent(EntityId id) {
         return static_cast<TComponent *>(tryComponentRaw(id, ComponentIdByType<TComponent>::value));
@@ -79,9 +109,15 @@ class ECSCoreTemplatePublic {
         return *static_cast<TComponent *>(componentRaw(id, ComponentIdByType<TComponent>::value));
     }
 
-    template <class TComponent> void setComponent(EntityId id, const TComponent &component_value) {
-        component<TComponent>(id) = component_value;
-        markComponentChanged(id, ComponentIdByType<TComponent>::value);
+    template <class TComponent>
+        requires std::is_copy_assignable_v<TComponent>
+    [[nodiscard]] bool setComponent(EntityId id, const TComponent &component_value) {
+        auto *target = tryComponent<TComponent>(id);
+        if (target == nullptr) {
+            return false;
+        }
+        *target = component_value;
+        return markComponentChanged(id, ComponentIdByType<TComponent>::value);
     }
 
     // System Management

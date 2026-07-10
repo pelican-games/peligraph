@@ -1,8 +1,11 @@
 #include "../src/core/container.hpp"
 #include "../src/core/ecs/predefined/transform.hpp"
+#include "../src/core/ecs/predefined.hpp"
+#include "../src/core/ecs/core.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/phys/physworld.hpp"
 #include "../src/core/userpublic/gamecontext.hpp"
+#include "../src/core/userpublic/gameobjects.hpp"
 #include "../src/core/userpublic/serialize/jsonarchive.hpp"
 
 #include <catch2/catch_approx.hpp>
@@ -144,6 +147,7 @@ TEST_CASE("PhysWorld pure build feeds deterministic raycast and overlap queries"
 TEST_CASE("PhysWorld module follows bound transforms and GameContext exposes queries", "[physworld]") {
     ensureLogger();
     FastModuleContainer modules;
+    GET_MODULE(ECSPredefinedRegistration).reg();
     auto &world = GET_MODULE(PhysWorld);
 
     TransformComponent transform;
@@ -151,18 +155,19 @@ TEST_CASE("PhysWorld module follows bound transforms and GameContext exposes que
     transform.rotation = glm::quat{1.0f, 0.0f, 0.0f, 0.0f};
     transform.scale = glm::vec3{1.0f, 1.0f, 1.0f};
 
-    world.bindCollider("MovingSphere",
-                       parseCollider(nlohmann::json{
-                           {"name", "collider"},
-                           {"shape", "sphere"},
-                           {"radius", 1.0f},
-                       }),
-                       &transform);
+    const auto collider = parseCollider(nlohmann::json{
+        {"name", "collider"},
+        {"shape", "sphere"},
+        {"radius", 1.0f},
+    });
+    const auto object = GameObjects::add().addComponent<TransformComponent>(transform).finish();
+    world.bindCollider("MovingSphere", collider, object);
 
     GameContext ctx;
     REQUIRE_FALSE(ctx.raycastClosest(phys::Ray{{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, 5.0f}));
 
-    transform.pos = glm::vec3{3.0f, 0.0f, 0.0f};
+    GET_MODULE(ECSCore).getTemplatePublicModule().component<TransformComponent>(object).pos =
+        glm::vec3{3.0f, 0.0f, 0.0f};
     const auto hit = ctx.raycastClosest(phys::Ray{{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, 5.0f});
     REQUIRE(hit);
     REQUIRE(hit->id == "MovingSphere");
@@ -170,6 +175,15 @@ TEST_CASE("PhysWorld module follows bound transforms and GameContext exposes que
 
     const auto overlaps = ctx.overlapAll(phys::Sphere{{3.0f, 0.0f, 0.0f}, 0.25f});
     REQUIRE(overlaps == std::vector<std::string>{"MovingSphere"});
+
+    REQUIRE(GameObjects::remove(object));
+    REQUIRE_FALSE(ctx.raycastClosest(phys::Ray{{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, 5.0f}));
+
+    transform.pos = glm::vec3{2.0f, 0.0f, 0.0f};
+    const auto replacement = GameObjects::add().addComponent<TransformComponent>(transform).finish();
+    REQUIRE_NOTHROW(world.bindCollider("MovingSphere", collider, replacement));
+    REQUIRE(world.colliderCountForTesting() == 1);
+    REQUIRE(ctx.raycastClosest(phys::Ray{{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, 5.0f}));
 }
 
 } // namespace Pelican

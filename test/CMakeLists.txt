@@ -28,6 +28,7 @@ target_link_libraries(pelican_test_vat_fixture_writer PRIVATE nlohmann_json)
 pelican_define_test(deletionqueue_test pelican_core)
 pelican_define_test(deterministicrng_test pelican_core)
 pelican_define_test(enginetime_test pelican_core)
+pelican_define_test(ecs_lifecycle_test pelican_core)
 pelican_define_test(eventlayer_test pelican_core)
 pelican_define_test(golden_image_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp spirv-reflect-static stb glm)
 target_compile_definitions(pelican_test_golden_image_test PRIVATE

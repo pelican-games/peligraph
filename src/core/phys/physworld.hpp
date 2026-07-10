@@ -3,17 +3,18 @@
 #include "physquery.hpp"
 #include "../container.hpp"
 #include "../userpublic/components/collider.hpp"
+#include <details/ecs/entity.hpp>
 
 #include <optional>
 #include <span>
 #include <string>
+#include <variant>
 #include <vector>
 
 namespace Pelican {
 
 class Camera;
 class DebugDraw;
-struct TransformComponent;
 
 struct PhysWorldTransform {
     vec3 pos{0.0f, 0.0f, 0.0f};
@@ -33,16 +34,15 @@ DECLARE_MODULE(PhysWorld) {
     struct Binding {
         std::string name;
         ColliderComponent collider;
-        const TransformComponent *transform = nullptr;
-        PhysWorldTransform static_transform;
+        std::variant<GameObjectId, PhysWorldTransform> transform_source;
     };
 
     std::vector<Binding> bindings;
 
   public:
     void clear();
+    void bindCollider(std::string name, const ColliderComponent &collider, GameObjectId object_id);
     void bindCollider(std::string name, const ColliderComponent &collider,
-                      const TransformComponent *transform = nullptr,
                       PhysWorldTransform static_transform = {});
 
     std::vector<phys::Collider> collectColliders() const;

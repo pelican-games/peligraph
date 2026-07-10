@@ -174,6 +174,7 @@ SceneObjectTransform parseSceneObjectTransform(const nlohmann::json &json, const
 
 struct PendingTransformUpdate {
     std::string object;
+    GameObjectId object_id;
     SceneObjectTransform transform;
 };
 
@@ -196,11 +197,13 @@ std::vector<PendingTransformUpdate> parseTransformUpdates(const nlohmann::json &
                                       "update_transforms objects entries must be strings");
         }
         auto name = objects.at(i).get<std::string>();
-        if (!scene_loader.hasObjectTransform(name)) {
+        const auto object_id = scene_loader.objectId(name);
+        if (!object_id.has_value()) {
             throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError, "unknown object name: " + name);
         }
         updates.push_back(PendingTransformUpdate{
             .object = std::move(name),
+            .object_id = *object_id,
             .transform = parseSceneObjectTransform(transforms.at(i), method),
         });
     }
@@ -210,6 +213,11 @@ std::vector<PendingTransformUpdate> parseTransformUpdates(const nlohmann::json &
 void flushPendingTransforms(std::vector<PendingTransformUpdate> &pending) {
     auto &scene_loader = GET_MODULE(SceneLoader);
     for (const auto &update : pending) {
+        const auto current_id = scene_loader.objectId(update.object);
+        if (!current_id.has_value() || *current_id != update.object_id) {
+            throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError,
+                                      "update_transforms object was deleted: " + update.object);
+        }
         scene_loader.applyObjectTransform(update.object, update.transform);
     }
     pending.clear();
