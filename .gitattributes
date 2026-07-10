@@ -1,6 +1,6 @@
 
-# sha256-verified fixture payloads must be byte-exact; never convert line endings
-test/fixtures/import_manifest/** -text
+# fixture payloads must be byte-exact (sha256 / parser offset contracts); never convert line endings
+test/fixtures/** -text
 *.glb binary
 *.vrm binary
 *.spv binary

@@ -616,7 +616,16 @@ SurfaceFormatDocument parseSurfaceFormat(std::string_view source, std::string_vi
     }
     validateUniqueResourceNames(document, source_name);
     document.code_offset = offset;
-    document.code = std::string{source.substr(offset)};
+    // code は LF 正規化して返す(ヘッダ行の readLine と同じ CRLF 耐性 —
+    // .surface は Windows で CRLF 保存されても同じ結果になる契約)。
+    // code_offset は元バイト列への添字のまま。
+    document.code.reserve(source.size() - offset);
+    for (std::size_t i = offset; i < source.size(); ++i) {
+        if (source[i] == '\r' && i + 1 < source.size() && source[i + 1] == '\n') {
+            continue;
+        }
+        document.code.push_back(source[i]);
+    }
     return document;
 }
 
