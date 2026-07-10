@@ -1224,6 +1224,26 @@ fly を共用する将来を壊さない(コントローラ状態はコンポー
 (b) SALVAGE メモ (c) §0 共通規則。**削除対象以外のリファクタに手を出さない**
 (strict v1 化・構造統合は後続 R 系の領分)。
 
+### WP61: リファクタ R2 — カメラキーの正規形移行(データのみ・受理は両対応のまま)
+
+参照: **監査 Q4 の対応表(`docs/design_reviews/2026-07-08_refactor_qa_codex.md`)が
+作業リストの正**。依存: WP60。見積: 小。
+
+1. スコープ = **データファイルの camera キーを正規形(yfov[ラジアン]/znear/zfar)へ
+   一括変換**。パーサ・受理コードは一切変えない(strict 化は R3 の領分)。
+   fov_y は度 → ラジアン変換(45°→0.7853981633974483 等 — Q4 の換算値)
+2. 対象(Q4 のリストどおり): projects/example/project.json /
+   src/core/resources/default_config.json / devcli projectinit テンプレート /
+   test/camera_test.cpp のデータ部(**別名受理を明示テストする箇所は残す** —
+   それは R3 で rejection テストに変わる)/ golden の project generator 6 箇所 /
+   CMake テスト生成器 11 本
+3. rpc の rot→rotation・shader stem 限定・collider は**やらない**
+   (パーサ変更を伴うため R3)
+4. 受け入れ: (a) 全テスト・golden 完全無変化(変換の正しさの証明 —
+   ラジアン値が正確なら絵は 1px も変わらない)(b) データファイルに
+   fov_y/near/far が残っていないこと(別名受理テストの埋込データを除く)を
+   grep で確認 (c) §0 共通規則
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **最小コマンド層**: (1) ファイル連携済み → (2) WP27 実装済み → (3) `load_gltf` / `update_transforms` は **2026-07-07 に実装 GO 決定**。前提はすべて充足(宛先 = scene v1 の objects[].name / アセット意味論 = WP21)。設計時要件: **複数インスタンス運用**(エージェントが複数エンジンを並行駆動する使い方) — stdio rpc は 1 プロセス 1 クライアントの現行構造を維持しつつ、`get_status`(instance id・project・フレーム番号)を追加してインスタンス識別可能に。プロジェクトは読み取り専有なので並行起動は安全(書き込み系操作を入れる際に排他を設計)。複数クライアント同時接続は TCP/WebSocket 展開時の課題として分離
