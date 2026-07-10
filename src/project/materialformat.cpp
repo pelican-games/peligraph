@@ -18,6 +18,10 @@ bool startsWith(std::string_view value, std::string_view prefix) {
     return value.rfind(prefix, 0) == 0;
 }
 
+bool endsWith(std::string_view value, std::string_view suffix) {
+    return value.size() >= suffix.size() && value.substr(value.size() - suffix.size()) == suffix;
+}
+
 bool hasScheme(std::string_view value) {
     return value.find("://") != std::string_view::npos;
 }
@@ -181,6 +185,27 @@ void validateShaderStem(std::string_view ref, std::string_view context) {
     }
 }
 
+void validateSurfaceReference(std::string_view ref, std::string_view context) {
+    if (ref.empty()) {
+        throw std::runtime_error(std::string{context} + " surface must not be empty");
+    }
+    if (containsBackslash(ref)) {
+        throw std::runtime_error(std::string{context} + " surface must use forward slashes: " +
+                                 std::string{ref});
+    }
+    if (hasScheme(ref) && !startsWith(ref, "project://") && !startsWith(ref, "engine://")) {
+        throw std::runtime_error(std::string{context} +
+                                 " surface must be a project://, engine://, or bare .surface reference: " +
+                                 std::string{ref});
+    }
+    const auto slash = ref.find_last_of('/');
+    const auto filename = slash == std::string_view::npos ? ref : ref.substr(slash + 1);
+    if (filename.size() <= std::string_view{".surface"}.size() || !endsWith(filename, ".surface")) {
+        throw std::runtime_error(std::string{context} + " surface must end in .surface: " +
+                                 std::string{ref});
+    }
+}
+
 void validateGlslIdentifier(std::string_view value, std::string_view context, std::string_view kind) {
     if (!isGlslIdentifier(value)) {
         throw std::runtime_error(std::string{context} + " " + std::string{kind} +
@@ -294,60 +319,114 @@ std::vector<std::string> parseDefines(const nlohmann::json &material, const std:
     return defines;
 }
 
-MaterialParamValue parseParamValue(const nlohmann::json &value, std::string_view context,
-                                   std::string_view name) {
-    MaterialParamValue parsed;
-    if (value.is_number()) {
-        parsed.kind = MaterialParamKind::scalar;
+const SurfaceParamDefinition *findSurfaceParam(const SurfaceFormatDocument &surface,
+                                               std::string_view name) {
+    const auto it = std::find_if(surface.params.begin(), surface.params.end(), [name](const auto &param) {
+        return param.name == name;
+    });
+    return it == surface.params.end() ? nullptr : &*it;
+}
+
+size_t vectorWidth(SurfaceParamType type) {
+    switch (type) {
+    case SurfaceParamType::vec2:
+        return 2;
+    case SurfaceParamType::vec3:
+        return 3;
+    case SurfaceParamType::vec4:
+        return 4;
+    default:
+        return 0;
+    }
+}
+
+SurfaceParamValue parseOverrideValue(const nlohmann::json &value, SurfaceParamType type,
+                                     std::string_view context) {
+    const auto type_error = [&context, type]() {
+        return std::runtime_error(std::string{context} + " must match declared type " +
+                                  std::string{surfaceParamTypeName(type)});
+    };
+
+    SurfaceParamValue parsed;
+    parsed.type = type;
+    if (type == SurfaceParamType::floating) {
+        if (!value.is_number()) {
+            throw type_error();
+        }
         parsed.values[0] = value.get<double>();
         return parsed;
     }
-
-    if (!value.is_array() || value.size() < 2 || value.size() > 4) {
-        throw std::runtime_error(std::string{context} + " param '" + std::string{name} +
-                                 "' must be a number or numeric vec2/vec3/vec4");
+    if (type == SurfaceParamType::integer) {
+        if (!value.is_number_integer() && !value.is_number_unsigned()) {
+            throw type_error();
+        }
+        try {
+            parsed.integer_value = value.get<std::int64_t>();
+        } catch (const nlohmann::json::exception &) {
+            throw std::runtime_error(std::string{context} + " is outside the int range");
+        }
+        return parsed;
     }
-    for (size_t i = 0; i < value.size(); ++i) {
+
+    const auto width = vectorWidth(type);
+    if (!value.is_array() || value.size() != width) {
+        throw type_error();
+    }
+    for (size_t i = 0; i < width; ++i) {
         if (!value.at(i).is_number()) {
-            throw std::runtime_error(std::string{context} + " param '" + std::string{name} +
-                                     "' must be a number or numeric vec2/vec3/vec4");
+            throw type_error();
         }
         parsed.values[i] = value.at(i).get<double>();
-    }
-
-    if (value.size() == 2) {
-        parsed.kind = MaterialParamKind::vec2;
-    } else if (value.size() == 3) {
-        parsed.kind = MaterialParamKind::vec3;
-    } else {
-        parsed.kind = MaterialParamKind::vec4;
     }
     return parsed;
 }
 
-std::vector<MaterialParam> parseParams(const nlohmann::json &material, const std::string &name) {
-    std::vector<MaterialParam> params;
-    const auto it = material.find("params");
+std::vector<MaterialValue> parseValues(const nlohmann::json &material, const std::string &name,
+                                       const std::optional<std::string> &surface_reference,
+                                       const MaterialSurfaceCatalog &surfaces) {
+    std::vector<MaterialValue> values;
+    const auto it = material.find("values");
     if (it == material.end()) {
-        return params;
-    }
-    const auto context = materialContext(name);
-    if (!it->is_object()) {
-        throw std::runtime_error(context + " params must be an object");
+        return values;
     }
 
-    params.reserve(it->size());
-    for (auto param = it->begin(); param != it->end(); ++param) {
-        validateGlslIdentifier(param.key(), context, "param");
-        params.push_back(MaterialParam{
-            param.key(),
-            parseParamValue(param.value(), context, param.key()),
+    const auto context = materialContext(name);
+    if (!it->is_object()) {
+        throw std::runtime_error(context + " values must be an object");
+    }
+    if (!surface_reference) {
+        throw std::runtime_error(context + " values require a named .surface reference");
+    }
+    if (it->empty()) {
+        return values;
+    }
+
+    const auto surface_it = surfaces.find(*surface_reference);
+    if (surface_it == surfaces.end()) {
+        throw std::runtime_error(context + " cannot validate values because surface '" +
+                                 *surface_reference + "' was not provided");
+    }
+
+    values.reserve(it->size());
+    for (auto value = it->begin(); value != it->end(); ++value) {
+        validateGlslIdentifier(value.key(), context, "value");
+        const auto *declaration = findSurfaceParam(surface_it->second, value.key());
+        if (declaration == nullptr) {
+            throw std::runtime_error(context + " value '" + value.key() +
+                                     "' is not declared by surface '" + *surface_reference + "'");
+        }
+        const auto value_context = context + " value '" + value.key() + "' for surface '" +
+                                   *surface_reference + "'";
+        values.push_back(MaterialValue{
+            value.key(),
+            parseOverrideValue(value.value(), declaration->type, value_context),
         });
     }
-    return params;
+    return values;
 }
 
 MaterialDefinition parseMaterial(const nlohmann::json &material, size_t index,
+                                 const MaterialSurfaceCatalog &surfaces,
                                  std::vector<std::string> &warnings) {
     if (!material.is_object()) {
         throw std::runtime_error("materials[" + std::to_string(index) + "] must be an object");
@@ -356,25 +435,43 @@ MaterialDefinition parseMaterial(const nlohmann::json &material, size_t index,
     const auto name = requireString(material, "name", "materials[" + std::to_string(index) + "]");
     validateMaterialName(name);
     const auto context = materialContext(name);
-    appendUnknownKeyWarnings(material, {"name", "base", "shader", "defines", "params"}, context, warnings);
+    if (material.contains("params")) {
+        throw std::runtime_error(context +
+                                 " field 'params' declarations are not supported in v1; move them to "
+                                 ".surface and use 'values' for overrides");
+    }
+    if (material.contains("textures")) {
+        throw std::runtime_error(context +
+                                 " field 'textures' declarations are not supported in v1; move them to "
+                                 ".surface");
+    }
+    appendUnknownKeyWarnings(material, {"name", "base", "shader", "defines", "surface", "values"},
+                             context, warnings);
 
-    auto parsed = MaterialDefinition{
-        name,
-        parseBase(material, name, warnings),
-        std::nullopt,
-        parseDefines(material, name),
-        parseParams(material, name),
-    };
+    MaterialDefinition parsed;
+    parsed.name = name;
+    parsed.base = parseBase(material, name, warnings);
+    parsed.defines = parseDefines(material, name);
     if (const auto shader = optionalString(material, "shader", context)) {
         validateShaderStem(*shader, context);
         parsed.shader = *shader;
     }
+    if (const auto surface = optionalString(material, "surface", context)) {
+        validateSurfaceReference(*surface, context);
+        parsed.surface = *surface;
+    }
+    parsed.values = parseValues(material, name, parsed.surface, surfaces);
     return parsed;
 }
 
 } // namespace
 
 MaterialFormatDocument parseMaterialFormatJson(const nlohmann::json &document_json) {
+    return parseMaterialFormatJson(document_json, {});
+}
+
+MaterialFormatDocument parseMaterialFormatJson(const nlohmann::json &document_json,
+                                               const MaterialSurfaceCatalog &surfaces) {
     MaterialFormatDocument document;
     validateEnvelope(document_json, document.warnings);
 
@@ -382,7 +479,7 @@ MaterialFormatDocument parseMaterialFormatJson(const nlohmann::json &document_js
     document.materials.reserve(materials_json.size());
     std::unordered_set<std::string> material_names;
     for (size_t i = 0; i < materials_json.size(); ++i) {
-        auto material = parseMaterial(materials_json.at(i), i, document.warnings);
+        auto material = parseMaterial(materials_json.at(i), i, surfaces, document.warnings);
         if (!material_names.insert(material.name).second) {
             throw std::runtime_error("duplicate material name: " + material.name);
         }

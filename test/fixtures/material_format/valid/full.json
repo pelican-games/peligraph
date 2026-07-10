@@ -19,12 +19,13 @@
         "emissiveTexture": "project://textures/lava_emissive.png",
         "clearcoatFactor": 0.4
       },
-      "shader": "project://shaders/lava",
+      "surface": "project://shaders/lava.surface",
       "defines": ["LAVA_FLOW", "USE_EMISSIVE"],
-      "params": {
+      "values": {
         "flow_speed": 0.35,
         "distortion": [0.1, 0.2],
-        "tint": [1.0, 0.4, 0.2, 1.0]
+        "tint": [1.0, 0.4, 0.2],
+        "layer_count": 4
       }
     }
   ]

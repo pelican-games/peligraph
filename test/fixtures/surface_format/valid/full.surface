@@ -1,0 +1,16 @@
+//! pelican.surface v1
+//! language: glsl
+//! params:
+//!   - { name: flow_speed, type: float, default: 0.35, min: 0.0, max: 2.0 }
+//!   - { name: distortion, type: vec2, default: [0.1, 0.2] }
+//!   - { name: tint, type: vec3, default: [1.0, 0.5, 0.1], hint: color, editor_group: color }
+//!   - { name: clip_plane, type: vec4, default: [0.0, 1.0, 0.0, 0.0] }
+//!   - { name: layer_count, type: int, default: 3, min: 1, max: 8 }
+//! textures:
+//!   - { name: flow_map, default: "engine://textures/flat_gray", color_space: linear, sampler: repeat }
+//! screen_inputs: [opaque_color, "opaque_depth"]
+//! capabilities: []
+
+void pelican_surface(in PelicanSurfaceInput i, inout PelicanSurface s) {
+    s.base_color *= tint;
+}

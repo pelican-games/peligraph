@@ -1,0 +1,6 @@
+//! pelican.surface v1
+//! language: glsl
+//! params:
+//!   - { name: flow_speed, default: 0.35 }
+
+void pelican_surface() {}

@@ -1,0 +1,6 @@
+//! pelican.surface v1
+//! language: glsl
+//! params:
+//!   - { name: tint, type: vec3 }
+
+void pelican_surface() {}

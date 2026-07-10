@@ -1,0 +1,13 @@
+{
+  "schema": "pelican.material",
+  "version": 1,
+  "materials": [
+    {
+      "name": "lava",
+      "surface": "project://shaders/lava.surface",
+      "values": {
+        "missing_param": 1.0
+      }
+    }
+  ]
+}

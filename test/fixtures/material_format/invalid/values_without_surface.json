@@ -1,0 +1,12 @@
+{
+  "schema": "pelican.material",
+  "version": 1,
+  "materials": [
+    {
+      "name": "lava",
+      "values": {
+        "flow_speed": 1.0
+      }
+    }
+  ]
+}

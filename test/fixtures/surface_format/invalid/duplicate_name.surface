@@ -1,0 +1,8 @@
+//! pelican.surface v1
+//! language: glsl
+//! params:
+//!   - { name: shared, type: float, default: 1.0 }
+//! textures:
+//!   - { name: shared, default: "engine://textures/white", color_space: srgb }
+
+void pelican_surface() {}

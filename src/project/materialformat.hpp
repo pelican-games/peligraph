@@ -1,29 +1,20 @@
 #pragma once
 
+#include "surfaceformat.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <array>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace Pelican {
 
-enum class MaterialParamKind {
-    scalar,
-    vec2,
-    vec3,
-    vec4,
-};
-
-struct MaterialParamValue {
-    MaterialParamKind kind = MaterialParamKind::scalar;
-    std::array<double, 4> values{};
-};
-
-struct MaterialParam {
+struct MaterialValue {
     std::string name;
-    MaterialParamValue value;
+    SurfaceParamValue value;
 };
 
 struct MaterialBase {
@@ -43,7 +34,8 @@ struct MaterialDefinition {
     MaterialBase base;
     std::optional<std::string> shader;
     std::vector<std::string> defines;
-    std::vector<MaterialParam> params;
+    std::optional<std::string> surface;
+    std::vector<MaterialValue> values;
 };
 
 struct MaterialFormatDocument {
@@ -51,6 +43,10 @@ struct MaterialFormatDocument {
     std::vector<std::string> warnings;
 };
 
+using MaterialSurfaceCatalog = std::unordered_map<std::string, SurfaceFormatDocument>;
+
 MaterialFormatDocument parseMaterialFormatJson(const nlohmann::json &document);
+MaterialFormatDocument parseMaterialFormatJson(const nlohmann::json &document,
+                                               const MaterialSurfaceCatalog &surfaces);
 
 } // namespace Pelican
