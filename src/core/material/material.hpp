@@ -3,10 +3,15 @@
 #include "../container.hpp"
 #include "../handle.hpp"
 #include "../shader/shaderlibrary.hpp"
+#include "../../project/materiallowering.hpp"
+#include <array>
+#include <cstddef>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 #include <optional>
 #include <span>
+#include <string>
+#include <vector>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
@@ -48,6 +53,15 @@ struct MaterialInfo {
         bool has_normal = false;
     };
     std::optional<VatPlaybackInfo> vat;
+    struct CustomTextureBinding {
+        std::string name;
+        std::optional<GlobalTextureId> texture;
+        SurfaceTextureRole role = SurfaceTextureRole::data;
+        MaterialDummyTexture missing_default = MaterialDummyTexture::white;
+    };
+    std::vector<CustomTextureBinding> custom_textures;
+    std::vector<std::byte> custom_values;
+    SurfaceRenderState render_state;
 };
 
 struct alignas(16) MaterialGpuData {
@@ -57,8 +71,17 @@ struct alignas(16) MaterialGpuData {
     alignas(16) glm::vec4 vat_bounds_min_frame_count{0.0f};
     alignas(16) glm::vec4 vat_bounds_extent_fps{0.0f};
     alignas(16) glm::ivec4 vat_flags{0};
+    // std140-packed custom values. Generated C/B shims address these words by
+    // the offsets produced by materiallowering. Existing PBR materials leave
+    // the storage zeroed and retain their original fields verbatim.
+    alignas(16) std::array<std::uint32_t, materialCustomValueCapacity / 4> custom_values{};
 };
 
-static_assert(sizeof(MaterialGpuData) == 96);
+static_assert(sizeof(MaterialGpuData) == 96 + materialCustomValueCapacity);
+
+// Applies the engine-independent lowering result to the GPU registration
+// request. Texture slots initially use their semantic dummy and may be
+// replaced by the loader before registerMaterial().
+void applyLoweredMaterial(MaterialInfo &destination, const LoweredMaterial &lowered);
 
 } // namespace Pelican

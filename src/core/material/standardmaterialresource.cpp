@@ -2,6 +2,7 @@
 #include "../shader/shaderlibrary.hpp"
 #include "battery/embed.hpp"
 #include "materialcontainer.hpp"
+#include <stdexcept>
 
 namespace Pelican {
 
@@ -77,6 +78,18 @@ StandardMaterialResource::StandardMaterialResource() {
         .normal_texture = tex_normal_default,
         .emissive_texture = tex_emissive_default,
     });
+}
+
+GlobalTextureId StandardMaterialResource::defaultTexture(MaterialDummyTexture fallback) const {
+    switch (fallback) {
+    case MaterialDummyTexture::white:
+        return tex_white;
+    case MaterialDummyTexture::flat_normal:
+        return tex_normal_default;
+    case MaterialDummyTexture::black:
+        return tex_black;
+    }
+    throw std::runtime_error("unknown material dummy texture");
 }
 
 } // namespace Pelican

@@ -275,6 +275,9 @@ SurfaceParamType parseParamType(std::string_view token, std::string_view context
     if (type == "int") {
         return SurfaceParamType::integer;
     }
+    if (type == "color") {
+        return SurfaceParamType::color;
+    }
     throw std::runtime_error(std::string{context} + " has unknown type '" + type + "'");
 }
 
@@ -285,6 +288,8 @@ std::size_t vectorWidth(SurfaceParamType type) {
     case SurfaceParamType::vec3:
         return 3;
     case SurfaceParamType::vec4:
+        return 4;
+    case SurfaceParamType::color:
         return 4;
     default:
         return 0;
@@ -308,6 +313,7 @@ SurfaceParamValue parseParamValue(std::string_view token, SurfaceParamType type,
             throw std::runtime_error(std::string{context} + " must match declared type float");
         }
         parsed.values[0] = value.get<double>();
+        parsed.component_count = 1;
         return parsed;
     }
     if (type == SurfaceParamType::integer) {
@@ -318,6 +324,24 @@ SurfaceParamValue parseParamValue(std::string_view token, SurfaceParamType type,
             parsed.integer_value = value.get<std::int64_t>();
         } catch (const nlohmann::json::exception &) {
             throw std::runtime_error(std::string{context} + " is outside the int range");
+        }
+        parsed.component_count = 1;
+        return parsed;
+    }
+
+    if (type == SurfaceParamType::color) {
+        if (!value.is_array() || (value.size() != 3 && value.size() != 4)) {
+            throw std::runtime_error(std::string{context} +
+                                     " must match declared type color (RGB or RGBA)");
+        }
+        parsed.values[3] = 1.0;
+        parsed.component_count = static_cast<std::uint8_t>(value.size());
+        for (std::size_t i = 0; i < value.size(); ++i) {
+            if (!value.at(i).is_number()) {
+                throw std::runtime_error(std::string{context} +
+                                         " must match declared type color (RGB or RGBA)");
+            }
+            parsed.values[i] = value.at(i).get<double>();
         }
         return parsed;
     }
@@ -334,6 +358,7 @@ SurfaceParamValue parseParamValue(std::string_view token, SurfaceParamType type,
         }
         parsed.values[i] = value.at(i).get<double>();
     }
+    parsed.component_count = static_cast<std::uint8_t>(width);
     return parsed;
 }
 
@@ -373,7 +398,8 @@ SurfaceParamDefinition parseParamDefinition(std::string_view mapping, std::strin
     const auto name = name_field == nullptr ? std::string{"<unnamed>"}
                                             : parseStringToken(*name_field, base_context + " name");
     const auto context = surfaceContext(source_name) + " param '" + name + "'";
-    appendUnknownFieldWarnings(fields, {"name", "type", "default", "min", "max", "hint"},
+    appendUnknownFieldWarnings(fields,
+                               {"name", "type", "default", "min", "max", "hint", "encoding"},
                                context, warnings);
 
     if (name_field == nullptr) {
@@ -405,6 +431,17 @@ SurfaceParamDefinition parseParamDefinition(std::string_view mapping, std::strin
     if (const auto *hint_field = findField(fields, "hint")) {
         definition.hint = parseStringToken(*hint_field, context + " hint");
     }
+    if (const auto *encoding_field = findField(fields, "encoding")) {
+        definition.encoding = parseStringToken(*encoding_field, context + " encoding");
+        if (definition.encoding != "srgb" && definition.encoding != "linear") {
+            throw std::runtime_error(context + " has unknown encoding '" + definition.encoding + "'");
+        }
+        if (type != SurfaceParamType::color) {
+            throw std::runtime_error(context + " encoding is only valid for type color");
+        }
+    } else if (type == SurfaceParamType::color) {
+        definition.encoding = "srgb";
+    }
     return definition;
 }
 
@@ -418,7 +455,8 @@ SurfaceTextureDefinition parseTextureDefinition(std::string_view mapping,
     const auto name = name_field == nullptr ? std::string{"<unnamed>"}
                                             : parseStringToken(*name_field, base_context + " name");
     const auto context = surfaceContext(source_name) + " texture '" + name + "'";
-    appendUnknownFieldWarnings(fields, {"name", "default", "color_space"}, context, warnings);
+    appendUnknownFieldWarnings(fields, {"name", "default", "color_space", "role"}, context,
+                               warnings);
 
     if (name_field == nullptr) {
         throw std::runtime_error(context + " requires name");
@@ -441,7 +479,23 @@ SurfaceTextureDefinition parseTextureDefinition(std::string_view mapping,
     if (color_space != "linear" && color_space != "srgb") {
         throw std::runtime_error(context + " has unknown color_space '" + color_space + "'");
     }
-    return SurfaceTextureDefinition{name, default_reference, color_space};
+    SurfaceTextureRole role = color_space == "srgb" ? SurfaceTextureRole::color
+                                                     : SurfaceTextureRole::data;
+    if (const auto *role_field = findField(fields, "role")) {
+        const auto role_name = parseStringToken(*role_field, context + " role");
+        if (role_name == "color") {
+            role = SurfaceTextureRole::color;
+        } else if (role_name == "data") {
+            role = SurfaceTextureRole::data;
+        } else {
+            throw std::runtime_error(context + " has unknown role '" + role_name + "'");
+        }
+        if ((role == SurfaceTextureRole::color) != (color_space == "srgb")) {
+            throw std::runtime_error(context + " role '" + role_name +
+                                     "' conflicts with color_space '" + color_space + "'");
+        }
+    }
+    return SurfaceTextureDefinition{name, default_reference, color_space, role};
 }
 
 std::vector<std::string> parseStringArray(std::string_view value, std::string_view context) {
@@ -459,6 +513,93 @@ std::vector<std::string> parseStringArray(std::string_view value, std::string_vi
         result.push_back(parseStringToken(token, context));
     }
     return result;
+}
+
+bool parseBoolToken(std::string_view token, std::string_view context) {
+    try {
+        const auto value = nlohmann::json::parse(trim(token));
+        if (!value.is_boolean()) {
+            throw std::runtime_error(std::string{context} + " must be true or false");
+        }
+        return value.get<bool>();
+    } catch (const nlohmann::json::exception &) {
+        throw std::runtime_error(std::string{context} + " must be true or false");
+    }
+}
+
+SurfaceRenderState parseRenderState(std::string_view value, std::string_view source_name,
+                                    std::vector<std::string> &warnings) {
+    const auto context = surfaceContext(source_name) + " render_state";
+    const auto fields = parseInlineFields(value, context);
+    appendUnknownFieldWarnings(fields,
+                               {"blend", "cull", "depth", "depth_test", "depth_write",
+                                "depth_compare"},
+                               context, warnings);
+
+    SurfaceRenderState state;
+    if (const auto *field = findField(fields, "blend")) {
+        const auto name = parseStringToken(*field, context + " blend");
+        if (name == "opaque") {
+            state.blend = SurfaceBlendMode::opaque;
+        } else if (name == "blend") {
+            state.blend = SurfaceBlendMode::blend;
+        } else if (name == "additive") {
+            state.blend = SurfaceBlendMode::additive;
+        } else {
+            throw std::runtime_error(context + " has unknown blend '" + name + "'");
+        }
+    }
+    if (const auto *field = findField(fields, "cull")) {
+        const auto name = parseStringToken(*field, context + " cull");
+        if (name == "none") {
+            state.cull = SurfaceCullMode::none;
+        } else if (name == "front") {
+            state.cull = SurfaceCullMode::front;
+        } else if (name == "back") {
+            state.cull = SurfaceCullMode::back;
+        } else {
+            throw std::runtime_error(context + " has unknown cull '" + name + "'");
+        }
+    }
+
+    if (const auto *field = findField(fields, "depth")) {
+        const auto name = parseStringToken(*field, context + " depth");
+        if (name == "read_write") {
+            state.depth_test = true;
+            state.depth_write = true;
+        } else if (name == "read_only") {
+            state.depth_test = true;
+            state.depth_write = false;
+        } else if (name == "disabled") {
+            state.depth_test = false;
+            state.depth_write = false;
+        } else {
+            throw std::runtime_error(context + " has unknown depth mode '" + name + "'");
+        }
+    }
+    if (const auto *field = findField(fields, "depth_test")) {
+        state.depth_test = parseBoolToken(*field, context + " depth_test");
+    }
+    if (const auto *field = findField(fields, "depth_write")) {
+        state.depth_write = parseBoolToken(*field, context + " depth_write");
+    }
+    if (const auto *field = findField(fields, "depth_compare")) {
+        const auto name = parseStringToken(*field, context + " depth_compare");
+        if (name == "never") state.depth_compare = SurfaceDepthCompare::never;
+        else if (name == "less") state.depth_compare = SurfaceDepthCompare::less;
+        else if (name == "equal") state.depth_compare = SurfaceDepthCompare::equal;
+        else if (name == "less_equal") state.depth_compare = SurfaceDepthCompare::less_equal;
+        else if (name == "greater") state.depth_compare = SurfaceDepthCompare::greater;
+        else if (name == "not_equal") state.depth_compare = SurfaceDepthCompare::not_equal;
+        else if (name == "greater_equal") state.depth_compare = SurfaceDepthCompare::greater_equal;
+        else if (name == "always") state.depth_compare = SurfaceDepthCompare::always;
+        else throw std::runtime_error(context + " has unknown depth_compare '" + name + "'");
+    }
+    if (!state.depth_test && state.depth_write) {
+        throw std::runtime_error(context +
+                                 " requests depth_write while depth_test is disabled");
+    }
+    return state;
 }
 
 void appendScreenInput(SurfaceFormatDocument &document, std::string input,
@@ -505,6 +646,8 @@ std::string_view surfaceParamTypeName(SurfaceParamType type) {
         return "vec4";
     case SurfaceParamType::integer:
         return "int";
+    case SurfaceParamType::color:
+        return "color";
     }
     return "unknown";
 }
@@ -575,7 +718,7 @@ SurfaceFormatDocument parseSurfaceFormat(std::string_view source, std::string_vi
         }
 
         const bool known_key = key == "language" || key == "params" || key == "textures" ||
-                               key == "screen_inputs";
+                               key == "screen_inputs" || key == "render_state";
         if (known_key && !known_top_level_fields.insert(key).second) {
             throw std::runtime_error(context + " has duplicate header key '" + key + "'");
         }
@@ -603,6 +746,11 @@ SurfaceFormatDocument parseSurfaceFormat(std::string_view source, std::string_vi
                     appendScreenInput(document, std::move(input), source_name);
                 }
             }
+        } else if (key == "render_state") {
+            if (value.empty()) {
+                throw std::runtime_error(context + " render_state requires an inline mapping");
+            }
+            document.render_state = parseRenderState(value, source_name, document.warnings);
         } else {
             document.warnings.push_back(context + " ignored unknown header key '" + key + "'");
             if (value.empty()) {

@@ -1,0 +1,16 @@
+//! pelican.surface v1
+//! language: glsl
+//! params:
+//!   - { name: scalar_first, type: float, default: 2.0 }
+//!   - { name: uv_scale, type: vec2, default: [3.0, 4.0] }
+//!   - { name: direction, type: vec3, default: [5.0, 6.0, 7.0] }
+//!   - { name: packed_after_vec3, type: float, default: 8.0 }
+//!   - { name: layer_count, type: int, default: 9 }
+//!   - { name: tint, type: color, default: [0.5, 0.25, 1.0, 0.75] }
+//! textures:
+//!   - { name: albedo_detail, default: "engine://textures/white", color_space: srgb, role: color }
+//!   - { name: normal_detail, default: "engine://textures/flat_normal", color_space: linear, role: data }
+//!   - { name: emissive_mask, default: "engine://textures/black", color_space: linear, role: data }
+//! render_state: { blend: additive, cull: none, depth: read_only, depth_compare: greater_equal }
+
+void pelican_surface(in PelicanSurfaceInput i, inout PelicanSurface s) {}

@@ -52,7 +52,7 @@ DECLARE_MODULE(MaterialContainer) {
         std::optional<MaterialInfo::VatPlaybackInfo> vat;
         vk::UniqueDescriptorSet descset;
     };
-    std::unordered_map<uint64_t, PipelineHandle> pipelines;
+    std::unordered_map<std::string, PipelineHandle> pipelines;
     std::optional<PipelineHandle> default_pipeline;
     ResourceContainer<GlobalMaterialId, InternalMaterialInfo> materials;
     BufferWrapper material_buffer;

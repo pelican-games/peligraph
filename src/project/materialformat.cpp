@@ -335,6 +335,8 @@ size_t vectorWidth(SurfaceParamType type) {
         return 3;
     case SurfaceParamType::vec4:
         return 4;
+    case SurfaceParamType::color:
+        return 4;
     default:
         return 0;
     }
@@ -354,6 +356,7 @@ SurfaceParamValue parseOverrideValue(const nlohmann::json &value, SurfaceParamTy
             throw type_error();
         }
         parsed.values[0] = value.get<double>();
+        parsed.component_count = 1;
         return parsed;
     }
     if (type == SurfaceParamType::integer) {
@@ -364,6 +367,22 @@ SurfaceParamValue parseOverrideValue(const nlohmann::json &value, SurfaceParamTy
             parsed.integer_value = value.get<std::int64_t>();
         } catch (const nlohmann::json::exception &) {
             throw std::runtime_error(std::string{context} + " is outside the int range");
+        }
+        parsed.component_count = 1;
+        return parsed;
+    }
+
+    if (type == SurfaceParamType::color) {
+        if (!value.is_array() || (value.size() != 3 && value.size() != 4)) {
+            throw type_error();
+        }
+        parsed.values[3] = 1.0;
+        parsed.component_count = static_cast<std::uint8_t>(value.size());
+        for (size_t i = 0; i < value.size(); ++i) {
+            if (!value.at(i).is_number()) {
+                throw type_error();
+            }
+            parsed.values[i] = value.at(i).get<double>();
         }
         return parsed;
     }
@@ -378,6 +397,7 @@ SurfaceParamValue parseOverrideValue(const nlohmann::json &value, SurfaceParamTy
         }
         parsed.values[i] = value.at(i).get<double>();
     }
+    parsed.component_count = static_cast<std::uint8_t>(width);
     return parsed;
 }
 
