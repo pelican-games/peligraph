@@ -1,7 +1,11 @@
 # 2D 描画基盤と UI システム(v8)
 
 対象読者: エンジン担当・UI/2D を作る人。
-ステータス: v8 ドラフト(2026-07-11。v7 は round 4 レビューで **Reject**
+ステータス: v8 — **条件付き Accept**(2026-07-11 round 5、
+`docs/design_reviews/2026-07-11_ui_v8_rereview_codex.md`。
+条件 U-C1〜U-C4 は **WP75(U0)** の受け入れ基準に添付済み —
+`implementation_plan.md` WP75 が正。方式の再審査は不要)。
+v7 は round 4 レビューで Reject
 (`docs/design_reviews/2026-07-11_color_ui_v7_rereview_codex.md` §2)。
 v8 の主変更: ①fixture の rect の座標系・単位を明文化
 (root-content 原点 absolute ui_units)+ viewport に `content_rect_ui` を

@@ -1545,23 +1545,25 @@ TRANSFER_SRC/DST を含む)、§2-2 anchor への旧 pass 写像案、§2-7 の
 **受け入れ = 色 v4 §6 C1a の 4 条件**(完全写像表 + frame-plan diff /
 `resolver_version: 1` = 旧 UNORM 同一解決 / bit-preserving copy /
 旧新 binary の最終 RGBA8 hash 完全一致 — 1 byte の差も不合格)+
-**レビュー条件 C-C1**(round 4 §1.2 の 4 項をそのまま添付):
+**レビュー条件 C-C1(round 4 §1.2 の 4 項の逐語転記 — round 5 WP-C1)**:
 
-1. `display` = `TRANSFER_SRC`、実 target(windowed swapchain・headless)=
-   `TRANSFER_DST` で作成。windowed は swapchain 作成前に
-   `supportedUsageFlags & TRANSFER_DST` を照会し対応時のみ imageUsage に
-   追加。format feature の transfer src/dst bit も role 表で照会
-2. copy 前後の layout 遷移を規範化(display: color write →
-   `TRANSFER_SRC_OPTIMAL` / target: → `TRANSFER_DST_OPTIMAL` → copy 後
-   `PRESENT_SRC_KHR` or readback layout)。stage/access mask・queue
-   ownership・初回旧 layout を frame-plan trace に含める
-3. source/destination の extent・sample count・texel block size・
-   channel order 一致を検証(暗黙変換禁止 — resolver v1 規則を実 target
-   との組にも適用)
-4. `TRANSFER_DST` 非対応 surface では (a) 全 256 code × RGBA 往復
-   byte-exact を実証済みの shader copy を使う、又は (b) C1a windowed path
-   を明示 unsupported とする(capture の `unavailable_windowed`
-   = TRANSFER_SRC 不足とは区別して申告)
+1. `display` を `TRANSFER_SRC`、windowed swapchain と headless/offscreen の
+   実 target を `TRANSFER_DST` で作る。windowed は
+   `supportedUsageFlags & TRANSFER_DST` を swapchain 作成前に照会し、
+   対応時だけ swapchain `imageUsage` に追加する。format feature の
+   transfer source/destination bit も role 表で照会する。
+2. copy の直前に `display` を color-attachment write から
+   `TRANSFER_SRC_OPTIMAL` へ、acquire 済み target を
+   `TRANSFER_DST_OPTIMAL` へ同期し、copy 後は target を `PRESENT_SRC_KHR`
+   又は readback 契約が要求する layout へ遷移する。stage/access mask、
+   queue ownership、初回旧 layout も frame-plan trace に含める。
+3. C1a の source/destination は extent、sample count、texel block size、
+   channel order を一致させる。resolver v1 の「旧 format と同一」規則を
+   実 target との組にも適用し、copy/resolve の暗黙変換を許さない。
+4. `TRANSFER_DST` 非対応 surface では、(a) 全 code byte-exact 実証済みの
+   shader copy を使う、又は (b) C1a windowed path を明示的に unsupported
+   として開始しない。capture の `unavailable_windowed` は `TRANSFER_SRC`
+   不足だけを表すため、この destination 不足と混同しない。
 
 ### WP74: 色 C1b — 色意味論の一括移行 + golden 再基準化(単独ゲート)
 
@@ -1572,6 +1574,45 @@ tolerance 正直化)・§4 テスト表が正**。依存: WP73。見積: 特大�
 view/複製戦略、contract 2、§4 の全 analytic fixture 常設、
 storage edge ±1 code + final golden の誤差検査を含む。
 **再基準化は §3 の 6 手順以外の方法で行ってはならない。**
+
+### WP75: UI U0 — 純 CPU の UI 基盤(schema/layout/入力/semantic validator)
+
+参照: **`docs/design_ui_2d_foundation.md` v8(2026-07-11 round 5 で
+**条件付き Accept** — `docs/design_reviews/2026-07-11_ui_v8_rereview_codex.md`)
+§4・§7・§9 U0 行が正**。依存: **WP71(EventPayloadSchema)完了後**。
+見積: 大。排他: `src/core/ui/`(新設)/ `test/fixtures/ui_semantic/` /
+`docs/schemas/`(UI 系のみ)。GPU 描画(U1)は含まない。
+
+**レビュー添付条件 U-C1〜U-C4(round 5 §6 が正本 — 逐語参照)を
+acceptance criteria に含める。要点**:
+
+- **U-C1(I11 の完全 state machine 化)**: 状態を
+  `pointer_id → {capture: idle | {button, owner, drag_started},
+  hover: none | owner}` に拡張し、全表行に pre-state / event 条件 /
+  許可・必須 effects / next-state。captured 中は `pointer_up.button ==
+  capture.button` 必須、click の owner/target は §2-3 の同一 owner 規則と
+  一致。hover は初回 exit 拒否 + owner 切替の exit→enter 順序。effects の
+  配列順規範 or 集合比較の一方に固定。idle cancel の zero-effect 表現
+  (省略 / 空配列 / 同値扱い)を一意化。negative 6 本 + multi-pointer
+  interleave positive を fixture 追加
+- **U-C2(I12 の変換規則)**: `content_rect_ui = [0,0,w,h]` 固定
+  (letterbox offset は px 側のみ)か edge 個別 half-up 照合かを一意化。
+  I12 を containment / scale・edge-rounding の 2 clause に分割し、
+  scale 1.5・half 境界・1px letterbox・非整除 framebuffer の fixture
+- **U-C3(clause registry の単一正本)**: invariant/clause ID の機械可読
+  registry を置き、設計表・coverage schema をそこから生成 or checker が
+  registry と manifest を完全一致比較(本文にだけ clause を足しても CI が
+  落ちる構成)。I6 の run0/連続/total/上限、I12 の 2 clause、U-C1 の
+  違反クラス全登録
+- **U-C4(coverage witness の実行)**: CTest gate で coverage schema を
+  完全検証(native validator を JSON Schema と同値まで拡張)。各 enum
+  entry の値実在・gate と分類の一致を検査。U0 C++ semantic validator が
+  全 semantic entry を clause 指定で実行(negative = 指定 clause で fail /
+  positive = pass)+ 36 fixture の schema 分類も同 gate に。
+  `check_coverage.mjs` 単体の green を「3 段 gate 完了」と扱わない
+
+受け入れ = §9 U0 の 3 段ゲート + U-C1〜U-C4 の fixture/CTest 実行結果 +
+既存全テスト。
 
 ## 3. 保留中のトラック(WP 化待ち)
 

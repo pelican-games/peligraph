@@ -8,7 +8,8 @@
 v3 は round 3 レビューで Reject
 (`docs/design_reviews/2026-07-11_color_ui_v6_rereview_codex.md` §1)。
 v4 の主変更: ①誤差 budget の単位分離(storage edge = 8bit code 値 /
-最終出力 = linear、hop 加算則の撤回)②anchor 列を一意の全順序に固定 +
+最終出力 = encoded 8-bit RGBA code・golden(linear 比較なし)、
+hop 加算則の撤回)②anchor 列を一意の全順序に固定 +
 postprocess 文書 §3 を本書への規範参照に改訂(同一コミット)
 ③capability 表に COLOR_ATTACHMENT/SAMPLED_IMAGE の基本 bit と windowed
 capture の扱いを追加 ④C1a の byte 不変条件(写像表・resolver mode・
