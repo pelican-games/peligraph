@@ -137,6 +137,17 @@ if(PELICAN_WITH_VAT)
 pelican_define_test(vatformat_test pelican_core glm)
 endif()
 pelican_define_test(shader_compile_test spirv-reflect-static stb)
+pelican_define_test(parallel_prepare_test)
+pelican_define_test(shader_cache_test pelican_core spirv-reflect-static glm)
+target_compile_definitions(pelican_test_shader_cache_test PRIVATE
+    PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
+)
+if(PELICAN_RUNTIME_SHADER_COMPILER)
+    target_link_libraries(pelican_test_shader_cache_test PRIVATE pelican_shaderc)
+    if(COMMAND pelican_copy_shaderc_runtime)
+        pelican_copy_shaderc_runtime(pelican_test_shader_cache_test)
+    endif()
+endif()
 target_compile_definitions(pelican_test_shader_compile_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
 )

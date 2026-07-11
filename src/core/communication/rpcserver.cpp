@@ -1,4 +1,5 @@
 #include "rpcserver.hpp"
+#include "../startup.hpp"
 
 #include "../appflow/framephase.hpp"
 
@@ -528,6 +529,7 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
         requireObjectParams(params, "get_status");
         const auto &engine_time = GET_MODULE(EngineTime);
         const auto color_caps = GET_MODULE(RenderTarget).caps();
+        const auto startup = GET_MODULE(StartupMetrics).snapshot();
         return nlohmann::json{
             {"instance_id", instance_id},
             {"project_root", projectRootString()},
@@ -536,6 +538,14 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
             {"time", engine_time.now()},
             {"seed", GameContext{}.seed()},
             {"stores", assetStoresStatus()},
+            {"startup", {{"config_ms", startup.config_ms},
+                         {"vulkan_ms", startup.vulkan_ms},
+                         {"shaders_ms", startup.shaders_ms},
+                         {"shader_cache_hits", startup.shader_cache_hits},
+                         {"shader_cache_requests", startup.shader_cache_requests},
+                         {"models_ms", startup.models_ms},
+                         {"total_ms", startup.total_ms},
+                         {"complete", startup.complete}}},
             {"color", {{"contract", 2},
                        {"swapchain_format", formatToString(color_caps.color_format)},
                        {"path", color_caps.color_path},

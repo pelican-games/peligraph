@@ -81,6 +81,28 @@ material defines は WP58/M1 時点では parser の結果に保持されるだ�
 M2 以降で合流する場合は、feature 由来 defines の後ろに material 由来 defines を追加するのが
 `design_material_shading.md` の契約である。
 
+## ランタイム SPIR-V ディスクキャッシュ (WP82)
+
+runtime shaderc の出力はプロジェクトローカルの
+`<project>/.pelican/shader_cache/` に保存する。キャッシュキー v1 は次の次元を
+長さ付きで直列化し、その全体を SHA-256 にした値である。
+
+1. root source と、実際の include 解決規則で到達する全 file / virtual / engine include の
+   名前および bytes から作る source graph SHA-256。macro 展開された include も取りこぼさないよう、
+   include root 配下・virtual source・埋込み engine shader source の全候補も保守的に含める
+2. shaderc に渡す全 define（値と順序を含む。source 内で未使用でも含む）
+3. shaderc toolchain version と、runtime が報告する SPIR-V version / revision
+4. target environment (`vulkan-1.2`)、shader stage、entry point
+5. engine shader contract salt (`pelican-shader-contract-v1-wp82-20260712`)
+
+この列挙の変更・shader ABI の変更・compile option の追加は cache key version または
+contract salt の更新を伴う。entry は format version、key、payload SHA-256、word count を持ち、
+完全検証後だけ hit とする。破損・未知形式・read/write 不可は shaderc 再コンパイルへ
+フォールバックし、起動を失敗させない。書込みは同一 directory の一時 file から rename する。
+キャッシュはコンパイル済み bytes を変換しないため、hit/miss は同じ SPIR-V bytes を返す。
+非 literal（macro operand）の include は依存先を完全に証明できないため cache を使わず、
+stale hit を許す代わりに通常 compile へフォールバックする。
+
 ## B 層 source ABI (M3a)
 
 B 層の**既定経路**は GLSL ソース専用で、エンジン所有の

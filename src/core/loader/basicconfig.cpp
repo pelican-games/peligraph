@@ -1,4 +1,5 @@
 #include "basicconfig.hpp"
+#include "../startup.hpp"
 #include "../log.hpp"
 #include "pathresolver.hpp"
 #include "projectsrc.hpp"
@@ -316,6 +317,7 @@ std::string rewriteUiPaths(std::string data) {
 } // namespace
 
 ProjectBasicConfig::ProjectBasicConfig() {
+    StartupPhaseTimer startup_timer{&StartupMetrics::addConfig};
     const auto &source = GET_MODULE(ProjectSource);
     project_source = source.hasProjectSource();
     JsonLoader loader{

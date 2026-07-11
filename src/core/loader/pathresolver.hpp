@@ -82,6 +82,7 @@ DECLARE_MODULE(PathResolver) {
     void resetForTesting();
 
     bool isSetup() const { return configured; }
+    const std::filesystem::path &projectRoot() const { return project_root_abs; }
     std::vector<AssetStoreStatus> stores() const;
 
     ResolvedRef resolveProjectRef(std::string_view ref) const;

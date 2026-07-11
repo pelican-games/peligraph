@@ -7,6 +7,7 @@
 #include "../os/window.hpp"
 #include "../playback/vatplayer.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
+#include "../startup.hpp"
 #include "../userpublic/userinput.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/deletionqueue.hpp"
@@ -133,6 +134,7 @@ void Loop::run() {
         launch_config.headless ? EngineTime::Mode::fixed_step : EngineTime::Mode::realtime;
     engine_time.setup(time_mode, 1.0 / launch_config.fps);
     dumpFramePlanIfRequested(launch_config, renderer);
+    GET_MODULE(StartupMetrics).finishAndLog();
 
     LOG_INFO(logger, "starting main loop");
 

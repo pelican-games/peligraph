@@ -9,6 +9,7 @@
 #include "../material/materialcontainer.hpp"
 #include "../material/standardmaterialresource.hpp"
 #include "gltf.hpp"
+#include "../parallel_prepare.hpp"
 #include "vatformat.hpp"
 #include "vertbufcontainer.hpp"
 #include <algorithm>
@@ -18,6 +19,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <optional>
+#include <memory>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -141,6 +143,145 @@ size_t vatTextureBytes(const VatPrimitiveInfo &vat) {
 }
 
 #endif
+
+} // namespace
+
+struct PreparedGltf::Impl {
+    tinygltf::Model model;
+    std::string source_path;
+    std::optional<AssetFragmentRef> fragment;
+    std::string warning;
+    std::string error;
+    bool scene_node_instance = false;
+};
+
+namespace {
+
+struct EncodedImage {
+    std::vector<unsigned char> bytes;
+    int requested_width = 0;
+    int requested_height = 0;
+};
+
+bool retainEncodedImage(tinygltf::Image *image, int image_index, std::string *, std::string *,
+                        int requested_width, int requested_height, const unsigned char *bytes,
+                        int byte_count, void *user_data) {
+    if (image == nullptr || user_data == nullptr || bytes == nullptr || byte_count <= 0 || image_index < 0) {
+        return false;
+    }
+    auto &encoded = *static_cast<std::vector<std::optional<EncodedImage>> *>(user_data);
+    if (encoded.size() <= static_cast<std::size_t>(image_index)) {
+        encoded.resize(static_cast<std::size_t>(image_index) + 1);
+    }
+    encoded[static_cast<std::size_t>(image_index)] = EncodedImage{
+        .bytes = std::vector<unsigned char>{bytes, bytes + byte_count},
+        .requested_width = requested_width,
+        .requested_height = requested_height,
+    };
+    image->image.clear();
+    return true;
+}
+
+struct DecodedImage {
+    std::vector<unsigned char> pixels;
+    int width = 0;
+    int height = 0;
+    int component = 4;
+    int bits = 8;
+    int pixel_type = TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE;
+};
+
+DecodedImage decodeImage(const EncodedImage &encoded) {
+    DecodedImage decoded;
+    int source_components = 0;
+    const auto *data = encoded.bytes.data();
+    const auto size = static_cast<int>(encoded.bytes.size());
+    if (stbi_is_16_bit_from_memory(data, size)) {
+        auto *pixels = stbi_load_16_from_memory(data, size, &decoded.width, &decoded.height,
+                                                &source_components, 4);
+        if (pixels == nullptr) {
+            throw std::runtime_error(std::string{"failed to decode 16-bit glTF image: "} +
+                                     stbi_failure_reason());
+        }
+        const auto bytes = static_cast<std::size_t>(decoded.width) * decoded.height * 4 * sizeof(stbi_us);
+        const auto *begin = reinterpret_cast<const unsigned char *>(pixels);
+        decoded.pixels.assign(begin, begin + bytes);
+        stbi_image_free(pixels);
+        decoded.bits = 16;
+        decoded.pixel_type = TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT;
+    } else {
+        auto *pixels = stbi_load_from_memory(data, size, &decoded.width, &decoded.height,
+                                             &source_components, 4);
+        if (pixels == nullptr) {
+            throw std::runtime_error(std::string{"failed to decode glTF image: "} + stbi_failure_reason());
+        }
+        const auto bytes = static_cast<std::size_t>(decoded.width) * decoded.height * 4;
+        decoded.pixels.assign(pixels, pixels + bytes);
+        stbi_image_free(pixels);
+    }
+    if ((encoded.requested_width != 0 && decoded.width != encoded.requested_width) ||
+        (encoded.requested_height != 0 && decoded.height != encoded.requested_height)) {
+        throw std::runtime_error("decoded glTF image dimensions do not match the declared dimensions");
+    }
+    return decoded;
+}
+
+void decodeImagesInParallel(tinygltf::Model &model,
+                            const std::vector<std::optional<EncodedImage>> &encoded) {
+    std::vector<std::size_t> indices;
+    for (std::size_t index = 0; index < encoded.size(); ++index) {
+        if (encoded[index]) {
+            indices.push_back(index);
+        }
+    }
+    const auto decoded = parallelPrepareOrdered<DecodedImage>(indices.size(), [&](std::size_t slot) {
+        return decodeImage(*encoded[indices[slot]]);
+    }, 4);
+    for (std::size_t slot = 0; slot < indices.size(); ++slot) {
+        auto &image = model.images.at(indices[slot]);
+        image.image = decoded[slot].pixels;
+        image.width = decoded[slot].width;
+        image.height = decoded[slot].height;
+        image.component = decoded[slot].component;
+        image.bits = decoded[slot].bits;
+        image.pixel_type = decoded[slot].pixel_type;
+    }
+}
+
+std::shared_ptr<PreparedGltf::Impl> prepareGltfImpl(std::string path,
+                                                    std::optional<AssetFragmentRef> fragment,
+                                                    bool binary) {
+    auto extension = std::filesystem::path{path}.extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    const auto required_extension = binary ? ".glb" : ".gltf";
+    if (fragment && extension != required_extension) {
+        throw std::runtime_error(std::string{binary ? "GLB" : "glTF"} +
+                                 " fragment reference requires a " + required_extension + " file: " +
+                                 path + "#" + fragment->kind + "/" + fragment->path);
+    }
+
+    auto prepared = std::make_shared<PreparedGltf::Impl>();
+    prepared->source_path = std::move(path);
+    prepared->fragment = std::move(fragment);
+    tinygltf::TinyGLTF loader;
+    std::vector<std::optional<EncodedImage>> encoded_images;
+    loader.SetImageLoader(retainEncodedImage, &encoded_images);
+    const auto loaded = binary
+                            ? loader.LoadBinaryFromFile(&prepared->model, &prepared->error,
+                                                        &prepared->warning, prepared->source_path)
+                            : loader.LoadASCIIFromFile(&prepared->model, &prepared->error,
+                                                       &prepared->warning, prepared->source_path);
+    if (!loaded) {
+        throw std::runtime_error("failed to load gltf file : " + prepared->source_path +
+                                 (prepared->error.empty() ? std::string{} : " (" + prepared->error + ")"));
+    }
+    decodeImagesInParallel(prepared->model, encoded_images);
+    if (!prepared->fragment) {
+        rejectVatModelIfDisabled(prepared->model);
+    }
+    return prepared;
+}
 
 } // namespace
 
@@ -1154,41 +1295,43 @@ struct InternalGltfLoader {
 
 GltfLoader::GltfLoader() {}
 
-ModelTemplate GltfLoader::loadGltfBinary(std::string path,
-                                         std::optional<AssetFragmentRef> fragment) {
-    auto extension = std::filesystem::path{path}.extension().string();
-    std::transform(extension.begin(), extension.end(), extension.begin(),
-                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-    if (fragment && extension != ".glb") {
-        throw std::runtime_error("GLB fragment reference requires a .glb file: " + path + "#" +
-                                 fragment->kind + "/" + fragment->path);
-    }
-    tinygltf::TinyGLTF loader;
-    tinygltf::Model model;
+PreparedGltf GltfLoader::prepareGltfBinary(std::string path,
+                                           std::optional<AssetFragmentRef> fragment) const {
+    return PreparedGltf{prepareGltfImpl(std::move(path), std::move(fragment), true)};
+}
 
-    std::string err, warn;
-    auto ret = loader.LoadBinaryFromFile(&model, &err, &warn, path);
-    if (!warn.empty())
-        LOG_WARNING(logger, "loading gltf file \"{}\" : {}", path, warn);
-    if (!err.empty())
-        LOG_ERROR(logger, "loading gltf file \"{}\" : {}", path, err);
-    if (!ret)
-        throw std::runtime_error("failed to load gltf file : " + path);
-    if (!fragment) {
-        rejectVatModelIfDisabled(model);
-    }
+PreparedGltf GltfLoader::prepareGltf(std::string path,
+                                     std::optional<AssetFragmentRef> fragment) const {
+    return PreparedGltf{prepareGltfImpl(std::move(path), std::move(fragment), false)};
+}
 
-    ModelTemplate model_template;
-    InternalGltfLoader tmp_loader{
+ModelTemplate GltfLoader::commit(PreparedGltf prepared) const {
+    if (!prepared.impl) {
+        throw std::runtime_error("cannot commit an empty prepared glTF");
+    }
+    if (!prepared.impl->warning.empty()) {
+        LOG_WARNING(logger, "loading gltf file \"{}\" : {}", prepared.impl->source_path,
+                    prepared.impl->warning);
+    }
+    if (!prepared.impl->error.empty()) {
+        LOG_ERROR(logger, "loading gltf file \"{}\" : {}", prepared.impl->source_path,
+                  prepared.impl->error);
+    }
+    InternalGltfLoader loader{
         GET_MODULE(MaterialContainer),
         GET_MODULE(StandardMaterialResource),
         GET_MODULE(VertBufContainer),
-        model,
-        path,
-        std::move(fragment),
-        false,
+        prepared.impl->model,
+        prepared.impl->source_path,
+        std::move(prepared.impl->fragment),
+        prepared.impl->scene_node_instance,
     };
-    return tmp_loader.load();
+    return loader.load();
+}
+
+ModelTemplate GltfLoader::loadGltfBinary(std::string path,
+                                         std::optional<AssetFragmentRef> fragment) {
+    return commit(prepareGltfBinary(std::move(path), std::move(fragment)));
 }
 
 ModelTemplate GltfLoader::loadGltfBinarySceneNode(std::string path, AssetFragmentRef fragment) {
@@ -1196,64 +1339,14 @@ ModelTemplate GltfLoader::loadGltfBinarySceneNode(std::string path, AssetFragmen
         throw std::runtime_error("scene node model reference requires #node fragment: " + path + "#" +
                                  fragment.kind + "/" + fragment.path);
     }
-    tinygltf::TinyGLTF loader;
-    tinygltf::Model model;
-    std::string err, warn;
-    const auto ret = loader.LoadBinaryFromFile(&model, &err, &warn, path);
-    if (!warn.empty())
-        LOG_WARNING(logger, "loading gltf file \"{}\" : {}", path, warn);
-    if (!err.empty())
-        LOG_ERROR(logger, "loading gltf file \"{}\" : {}", path, err);
-    if (!ret)
-        throw std::runtime_error("failed to load gltf file : " + path);
-
-    InternalGltfLoader tmp_loader{
-        GET_MODULE(MaterialContainer),
-        GET_MODULE(StandardMaterialResource),
-        GET_MODULE(VertBufContainer),
-        model,
-        path,
-        std::move(fragment),
-        true,
-    };
-    return tmp_loader.load();
+    auto prepared = prepareGltfBinary(std::move(path), std::move(fragment));
+    prepared.impl->scene_node_instance = true;
+    return commit(std::move(prepared));
 }
 
 ModelTemplate GltfLoader::loadGltf(std::string path,
                                    std::optional<AssetFragmentRef> fragment) {
-    auto extension = std::filesystem::path{path}.extension().string();
-    std::transform(extension.begin(), extension.end(), extension.begin(),
-                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-    if (fragment && extension != ".gltf") {
-        throw std::runtime_error("glTF fragment reference requires a .gltf file: " + path + "#" +
-                                 fragment->kind + "/" + fragment->path);
-    }
-    tinygltf::TinyGLTF loader;
-    tinygltf::Model model;
-
-    std::string err, warn;
-    auto ret = loader.LoadASCIIFromFile(&model, &err, &warn, path);
-    if (!warn.empty())
-        LOG_WARNING(logger, "loading gltf file \"{}\" : {}", path, warn);
-    if (!err.empty())
-        LOG_ERROR(logger, "loading gltf file \"{}\" : {}", path, err);
-    if (!ret)
-        throw std::runtime_error("failed to load gltf file : " + path);
-    if (!fragment) {
-        rejectVatModelIfDisabled(model);
-    }
-
-    ModelTemplate model_template;
-    InternalGltfLoader tmp_loader{
-        GET_MODULE(MaterialContainer),
-        GET_MODULE(StandardMaterialResource),
-        GET_MODULE(VertBufContainer),
-        model,
-        path,
-        std::move(fragment),
-        false,
-    };
-    return tmp_loader.load();
+    return commit(prepareGltf(std::move(path), std::move(fragment)));
 }
 
 } // namespace Pelican

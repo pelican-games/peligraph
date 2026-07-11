@@ -5,6 +5,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 #include <vulkan/vulkan.hpp>
@@ -15,6 +16,8 @@ struct ShaderCompileResult {
     std::vector<uint32_t> spirv;
     std::string log;
     bool ok = false;
+    bool cache_hit = false;
+    std::string cache_key;
 };
 
 struct ShaderCompileOptions {
@@ -31,12 +34,17 @@ std::optional<vk::ShaderStageFlagBits> inferShaderStageFromPath(const std::files
 
 DECLARE_MODULE(ShaderCompiler) {
     std::vector<std::filesystem::path> include_dirs;
+    std::optional<std::filesystem::path> cache_directory;
+    std::unordered_map<std::string, ShaderCompileResult> memory_cache;
+    std::unordered_map<std::string, std::string> source_graph_memory;
 
   public:
+    ShaderCompiler();
     ShaderCompileResult compileFile(const std::filesystem::path &path, const ShaderCompileOptions &opts = {});
     ShaderCompileResult compileSource(std::string_view source, vk::ShaderStageFlagBits stage,
                                       std::string_view name, const ShaderCompileOptions &opts = {});
     void addIncludeDir(const std::filesystem::path &dir);
+    void setCacheDirectory(std::filesystem::path dir);
 };
 
 } // namespace Pelican
