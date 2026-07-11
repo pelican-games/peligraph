@@ -101,14 +101,15 @@ ShaderBundle ShaderLibrary::buildFromFile(const std::filesystem::path &path, uin
     }
 
 #if PELICAN_RUNTIME_SHADER_COMPILER
-    ShaderCompiler compiler;
     ShaderCompileOptions options;
     options.defines = defines;
     const auto result = compiler.compileFile(path, options);
     if (!result.ok) {
         throw std::runtime_error("Shader compile failed: " + path.string() + "\n" + result.log);
     }
-    return buildFromSpirv(result.spirv, path, version, result.log, std::move(defines));
+    auto bundle = buildFromSpirv(result.spirv, path, version, result.log, std::move(defines));
+    bundle.cache_key = result.cache_key;
+    return bundle;
 #else
     (void)defines;
     throw std::runtime_error("Runtime shader compiler is disabled; only .spv shader files are accepted: " +
@@ -133,14 +134,15 @@ ShaderBundle ShaderLibrary::buildFromEngineSource(std::string_view source, Shade
                                                   std::string_view name, uint64_t version,
                                                   std::vector<std::string> defines) const {
 #if PELICAN_RUNTIME_SHADER_COMPILER
-    ShaderCompiler compiler;
     ShaderCompileOptions options;
     options.defines = defines;
     const auto result = compiler.compileSource(source, toVkStage(stage), name, options);
     if (!result.ok) {
         throw std::runtime_error("Shader compile failed: " + std::string{name} + "\n" + result.log);
     }
-    return buildFromSpirv(result.spirv, {}, version, result.log, std::move(defines));
+    auto bundle = buildFromSpirv(result.spirv, {}, version, result.log, std::move(defines));
+    bundle.cache_key = result.cache_key;
+    return bundle;
 #else
     (void)source;
     (void)stage;
@@ -293,7 +295,6 @@ SurfaceShaderBundleIds ShaderLibrary::loadFromSurface(const SurfaceFormatDocumen
                                                       SurfacePass pass,
                                                       std::vector<std::string> defines) {
 #if PELICAN_RUNTIME_SHADER_COMPILER
-    ShaderCompiler compiler;
     const auto composition = composeSurfaceShaders(surface, source_name, pass, defines);
     const auto result = compileSurfaceShaders(compiler, surface, source_name, pass, defines);
     if (!result.vertex.ok || !result.fragment.ok) {

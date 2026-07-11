@@ -143,6 +143,9 @@ function(validate_rpc_stdout stdout label)
     if(NOT line0 MATCHES [=["id":1]=] OR NOT line0 MATCHES [=["instance_id":"[0-9a-fA-F-]+"]=] OR NOT line0 MATCHES [=["project_root"]=] OR NOT line0 MATCHES [=["scene":"default_scene"]=] OR NOT line0 MATCHES [=["frame":0]=] OR NOT line0 MATCHES [=["time":0\.0]=] OR NOT line0 MATCHES [=["seed":1234]=] OR NOT line0 MATCHES [=["contract":2]=] OR NOT line0 MATCHES [=["readback_encoding":"srgb"]=] OR NOT line0 MATCHES [=["capture":"available"]=])
         message(FATAL_ERROR "${label}: get_status initial response did not include expected fields:\n${line0}")
     endif()
+    if(NOT line0 MATCHES [=["startup":\{]=] OR NOT line0 MATCHES [=["config_ms":[0-9]]=] OR NOT line0 MATCHES [=["vulkan_ms":[0-9]]=] OR NOT line0 MATCHES [=["shaders_ms":[0-9]]=] OR NOT line0 MATCHES [=["shader_cache_hits":[0-9]]=] OR NOT line0 MATCHES [=["shader_cache_requests":[0-9]]=] OR NOT line0 MATCHES [=["models_ms":[0-9]]=] OR NOT line0 MATCHES [=["total_ms":[0-9]]=] OR NOT line0 MATCHES [=["complete":true]=])
+        message(FATAL_ERROR "${label}: get_status startup report was incomplete:\n${line0}")
+    endif()
     if(NOT line1 MATCHES [=["id":2]=] OR NOT line1 MATCHES [=["result"]=] OR NOT line1 MATCHES [=["t":1\.25]=])
         message(FATAL_ERROR "${label}: set_time response did not look successful:\n${line1}")
     endif()
@@ -204,6 +207,10 @@ endfunction()
 
 function(normalize_rpc_stdout stdout output_var)
     string(REGEX REPLACE [=["instance_id":"[0-9a-fA-F-]+"]=] [=["instance_id":"<uuid>"]=] normalized "${stdout}")
+    # Startup durations and cold/warm hit counts are observational diagnostics,
+    # not deterministic simulation state. Preserve the field in protocol
+    # validation above, then mask its values for the existing two-run equality gate.
+    string(REGEX REPLACE [=["startup":\{[^\}]*\}]=] [=["startup":"<measured>"]=] normalized "${normalized}")
     set(${output_var} "${normalized}" PARENT_SCOPE)
 endfunction()
 

@@ -1,4 +1,5 @@
 #include "core.hpp"
+#include "../startup.hpp"
 #include "../config.hpp"
 #include "../launchconfig.hpp"
 #include "../log.hpp"
@@ -239,6 +240,7 @@ static vma::UniqueAllocator createAllocator(vk::PhysicalDevice phys_device, vk::
 }
 
 VulkanManageCore::VulkanManageCore() {
+    StartupPhaseTimer startup_timer{&StartupMetrics::addVulkan};
     const bool headless = GET_MODULE(EngineLaunchConfig).headless;
     instance = vulkanCreateInstance(headless);
     if (!headless) {

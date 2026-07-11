@@ -1,6 +1,7 @@
 #include "pelican_core.hpp"
 #include "../appflow/loop.hpp"
 #include "../appflow/teardown.hpp"
+#include "../asset/model.hpp"
 #include "../log.hpp"
 #include "../vkcore/core.hpp"
 
@@ -9,6 +10,7 @@
 #include "../loader/projectsrc.hpp"
 #include "../loader/scene.hpp"
 #include "../persistence/persistence.hpp"
+#include "../startup.hpp"
 #if PELICAN_WITH_AUDIO
 #include "../audio/audio.hpp"
 #endif
@@ -34,6 +36,7 @@ bool PelicanCore::run() {
     RuntimeTeardownGuard teardown;
     bool succeeded = true;
     try {
+        GET_MODULE(StartupMetrics).begin();
         GET_MODULE(ProjectSource).setSourceByData(settings_str);
 
         auto &persistence = GET_MODULE(Persistence);
@@ -45,6 +48,10 @@ bool PelicanCore::run() {
 
         GET_MODULE(ECSPredefinedRegistration).reg();
         GET_MODULE(SceneLoader).load(GET_MODULE(ProjectBasicConfig).defaultSceneId());
+        // Model CPU preparation is parallel, but its Vulkan/resource commit is
+        // deliberately forced onto the startup thread before ECS systems run.
+        // This also makes the permanent startup metric cover the whole phase.
+        (void)GET_MODULE(ModelAssetContainer);
 
         auto &loop = GET_MODULE(Loop);
         loop.run();

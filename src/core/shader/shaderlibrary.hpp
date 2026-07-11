@@ -1,6 +1,7 @@
 #pragma once
 
 #include "shader.hpp"
+#include "shadercompiler.hpp"
 #include "shaderreference.hpp"
 #include "shaderreflection.hpp"
 #include "surfacecompiler.hpp"
@@ -48,6 +49,7 @@ DECLARE_MODULE(ShaderLibrary) {
     std::unordered_map<ShaderBundleId, std::filesystem::file_time_type, ShaderBundleId::Hash> source_write_times;
     std::chrono::steady_clock::time_point next_source_poll_time{};
     ShaderLibraryModuleMode module_mode = ShaderLibraryModuleMode::create_modules;
+    mutable ShaderCompiler compiler;
 
     ShaderBundle buildFromFile(const std::filesystem::path &path, uint64_t version,
                                std::vector<std::string> defines = {}) const;

@@ -2,6 +2,8 @@
 #include "../loader/basicconfig.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../model/gltf.hpp"
+#include "../parallel_prepare.hpp"
+#include "../startup.hpp"
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
@@ -11,25 +13,51 @@
 
 namespace Pelican {
 
+namespace {
+struct ModelDeclaration {
+    std::string name;
+    std::string path;
+    std::optional<AssetFragmentRef> fragment;
+    bool ascii = false;
+};
+} // namespace
+
 ModelAssetContainer::ModelAssetContainer() {
-    auto &loader = GET_MODULE(GltfLoader);
+    StartupPhaseTimer startup_timer{&StartupMetrics::addModels};
 
     const auto model_assets = nlohmann::json::parse(GET_MODULE(ProjectBasicConfig).assetDataJson()).at("models");
+    std::vector<ModelDeclaration> declarations;
+    declarations.reserve(model_assets.size());
     for (const auto &model_asset : model_assets) {
         const auto model_reference = model_asset.at("path").get<std::string>();
         const auto parsed_reference = parsePathReference(model_reference);
         const auto model_path = std::filesystem::path{parsed_reference.path};
-        const auto model_path_string = model_path.string();
         auto extension = model_path.extension().string();
         std::transform(extension.begin(), extension.end(), extension.begin(),
                        [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-
-        model_templates.insert({
-            model_asset.at("name"),
-            extension == ".gltf"
-                ? loader.loadGltf(model_path_string, parsed_reference.fragment)
-                : loader.loadGltfBinary(model_path_string, parsed_reference.fragment),
+        declarations.push_back(ModelDeclaration{
+            .name = model_asset.at("name").get<std::string>(),
+            .path = model_path.string(),
+            .fragment = parsed_reference.fragment,
+            .ascii = extension == ".gltf",
         });
+    }
+
+    // Parsing, buffer extraction, and stb image decode happen on workers. The
+    // commit loop stays on the main thread and in JSON declaration order;
+    // Vulkan uploads and resource/ECS-visible IDs therefore remain serial and
+    // deterministic even when a later model finishes preparing first.
+    const auto prepared = parallelPrepareOrdered<PreparedGltf>(declarations.size(), [&](std::size_t index) {
+        GltfLoader loader;
+        const auto &declaration = declarations[index];
+        return declaration.ascii
+                   ? loader.prepareGltf(declaration.path, declaration.fragment)
+                   : loader.prepareGltfBinary(declaration.path, declaration.fragment);
+    }, 4);
+
+    auto &loader = GET_MODULE(GltfLoader);
+    for (std::size_t index = 0; index < declarations.size(); ++index) {
+        model_templates.emplace(declarations[index].name, loader.commit(prepared[index]));
     }
 }
 
