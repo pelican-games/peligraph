@@ -1834,6 +1834,39 @@ textures 機構を使う)。見積: 特大。
 5. 受け入れ = pytest green(最小 PSD fixture + 合成 PNG fixture・
    決定性 = 2 回実行 byte 一致・トリム/オフセット/透明の解析検証)
 
+### WP82: 起動高速化 — シェーダキャッシュ + モデルロード並列化
+
+参照: 本節が仕様の正(2026-07-12 実測に基づく — rpc headless で
+起動 8.4s の内訳: ランタイムシェーダコンパイル **2.9s** +
+ModelAssetContainer 初期化(モデルロード)**4.9s** が支配的。
+ユーザー要望「起動からの描画が遅い」への回答)。依存: WP78(variant
+キャッシュキー)。見積: 大。排他: `src/core/shader/` のコンパイル入口 /
+`src/core/asset/` / `src/core/model/gltf.*` のロード駆動部。
+
+1. **シェーダディスクキャッシュ**: コンパイル済み SPIR-V を
+   `<project>/.pelican/shader_cache/`(gitignore 済み区画)にキャッシュ。
+   キーは「ソース SHA-256 + 全 defines + shaderc バージョン + target env +
+   エンジンのシェーダ契約 salt」(WP80 の再現可能キー設計と同じ流儀 —
+   **キーに入れ忘れた次元が stale hit を生む**ので列挙を仕様化)。
+   ヒット時は shaderc を呼ばない。破損キャッシュは黙って再コンパイル
+   (エラーにしない)。**キャッシュの有無で golden が変わらないことを
+   同一プロセス連続 2 回コンパイルの byte 比較で固定**
+2. **モデルロードの並列化**: モデル間並列(thread pool)+ glb 内
+   テクスチャの stb デコード並列。**GPU アップロード(queue submit)は
+   直列のまま**(転送 queue の並行化はスコープ外)。ロード完了順の
+   非決定性が **ECS 登録順・描画順に漏れない**こと(登録は宣言順で
+   バリア — 決定性の砦)。rpc/golden/replay の決定性テスト全維持
+3. **起動フェーズレポート常設**: 既存 profiler Timer を集約し、起動完了時に
+   `startup: config Xms / vulkan Xms / shaders Xms (cache hit N/M) /
+   models Xms / total Xms` を 1 行 INFO ログ + get_status.startup に出す
+   (退行検知の観測点)
+4. fixture: キャッシュ hit/miss の挙動(2 回目起動でコンパイル 0 件)・
+   破損キャッシュ回復・並列ロード後の ECS 登録順決定性(2 回実行一致)
+5. 受け入れ = **起動実測の before/after をレポートに記録**(同一マシン)+
+   既存全テスト + golden 全維持(SKIP 0)+ player。目標値: 2 回目以降の
+   起動でシェーダ 2.9s → 0.1s 未満、モデル 4.9s → 2.5s 未満(sponza
+   単体が支配的なら実測根拠つきで目標を修正してよい)
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **最小コマンド層**: (1) ファイル連携済み → (2) WP27 実装済み → (3) `load_gltf` / `update_transforms` は **2026-07-07 に実装 GO 決定**。前提はすべて充足(宛先 = scene v1 の objects[].name / アセット意味論 = WP21)。設計時要件: **複数インスタンス運用**(エージェントが複数エンジンを並行駆動する使い方) — stdio rpc は 1 プロセス 1 クライアントの現行構造を維持しつつ、`get_status`(instance id・project・フレーム番号)を追加してインスタンス識別可能に。プロジェクトは読み取り専有なので並行起動は安全(書き込み系操作を入れる際に排他を設計)。複数クライアント同時接続は TCP/WebSocket 展開時の課題として分離
