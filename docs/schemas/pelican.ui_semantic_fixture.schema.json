@@ -46,7 +46,8 @@
           "rect_ui": { "$ref": "#/$defs/rect_i32" },
           "clip_ui": { "$ref": "#/$defs/rect_i32" },
           "layer": { "$ref": "#/$defs/i32" },
-          "decl_seq": { "type": "integer", "minimum": 0, "maximum": 2147483647 }
+          "decl_seq": { "type": "integer", "minimum": 0, "maximum": 2147483647 },
+          "overflow": { "enum": ["visible", "clip"] }
         }
       }
     },

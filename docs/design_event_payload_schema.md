@@ -1,11 +1,15 @@
 # EventPayloadSchema(v2)
 
 対象読者: イベント層・UI・エディタ(D0)担当。
-ステータス: v2 ドラフト(2026-07-11。v1 は round 2 レビューで **Reject**
-(`docs/design_reviews/2026-07-11_color_ui_v5_rereview_codex.md` §3)。
+ステータス: v2 — **条件付き Accept**(2026-07-11 round 3、
+`docs/design_reviews/2026-07-11_color_ui_v6_rereview_codex.md` §3。
+条件 E-C1〜E-C6 は **WP71** の受け入れ基準に添付済み —
+`implementation_plan.md` WP71 が正)。
 v2 の骨子: **schema の正本は default instance の `ref()` 実行結果ではなく、
 イベント型が宣言する explicit static descriptor**。記録アーカイブは
-debug の一致検査へ降格し、static init 中のイベント構築は行わない)。
+debug の一致検査へ降格し、static init 中のイベント構築は行わない。
+**E-C5 採用決定: Opaque の by-name emit は廃止**(typed C++ emit のみ —
+§2 の 3 状態表の「従来どおり可」は WP71 で置き換わる)。
 前提: イベント層 E1、`design_ui_2d_foundation.md` v6 §3。
 
 ## 0. 現状と目的
@@ -97,7 +101,7 @@ struct MenuOpened {
 |-----------|------|
 | `pelican_payload` 宣言あり | **Typed**(fields 列挙済み) |
 | 宣言なし・`ref` なし・default 構築可 | **Payloadless**(fields 0 個を明示) |
-| 宣言なし・`ref` あり | **Opaque** — by-name emit は従来どおり可、UI バインド不可 |
+| 宣言なし・`ref` あり | **Opaque** — **by-name emit 不可(E-C5)**・UI バインド不可(binding 自体を `no_payload_event` で拒否)。typed C++ emit のみ |
 
 serializable なのに descriptor を書き忘れた型は Opaque になる(UI で使おうと
 した時点で `no_payload_event` — 暗黙に何かを推測しない)。

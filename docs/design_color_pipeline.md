@@ -1,16 +1,17 @@
-# 色パイプライン(v3)
+# 色パイプライン(v4)
 
 対象読者: エンジン担当・シェーダ/UI を書く人。
-ステータス: v3 ドラフト(2026-07-11。v2 は round 2 レビューで **Reject**
-(`docs/design_reviews/2026-07-11_color_ui_v5_rereview_codex.md` §1)。
-本版の主変更: ①dual-use fallback を「複製」に変更(誤色 fallback の廃止)
-②resource role 別 capability 表 ③canonical frame-plan anchor の統一
-(postprocess 文書・UI 文書と同一列)④terminal encode と paired storage
-round-trip の分離計数 + 誤差 budget ⑤debug API の意味を黙って変えない
-⑥capture point の一本化と contract version)。
-前提: HDR/tonemap feature(WP30)、`design_postprocess_temporal.md` §標準パス名、
-`design_ui_2d_foundation.md` v6、`docs/shader_contract.md`、
-UI v2 レビュー R6(baseline 更新の例外手続き)。
+ステータス: v4 ドラフト(2026-07-11。v3 は round 3 レビューで **Reject**
+(`docs/design_reviews/2026-07-11_color_ui_v6_rereview_codex.md` §1)。
+v4 の主変更: ①誤差 budget の単位分離(storage edge = 8bit code 値 /
+最終出力 = linear、hop 加算則の撤回)②anchor 列を一意の全順序に固定 +
+postprocess 文書 §3 を本書への規範参照に改訂(同一コミット)
+③capability 表に COLOR_ATTACHMENT/SAMPLED_IMAGE の基本 bit と windowed
+capture の扱いを追加 ④C1a の byte 不変条件(写像表・resolver mode・
+bit-preserving copy・hash 比較 gate)を明文化)。
+前提: HDR/tonemap feature(WP30)、`design_ui_2d_foundation.md` v7、
+`docs/shader_contract.md`、UI v2 レビュー R6(baseline 更新の例外手続き)。
+`design_postprocess_temporal.md` §3 は本書 §2-2 への参照。
 
 ## 0. 原則と作業空間
 
@@ -116,10 +117,10 @@ swapchain / headless の format 選択と **resource role 別 capability 要件*
 
 | 対象 | format | 必要 feature bit | 非対応時 |
 |------|--------|-----------------|---------|
-| swapchain | `B8G8R8A8_SRGB` / `R8G8B8A8_SRGB` + `VK_COLOR_SPACE_SRGB_NONLINEAR_KHR` 最優先 | (surface format 列挙に従う) | `*_UNORM` フォールバック経路。選択結果と経路名はログ + `get_status` |
+| swapchain | `B8G8R8A8_SRGB` / `R8G8B8A8_SRGB` + `VK_COLOR_SPACE_SRGB_NONLINEAR_KHR` 最優先 | (surface format 列挙に従う)。**windowed capture を提供する場合のみ** surface `supportedUsageFlags` の `TRANSFER_SRC` を照会し swapchain usage に追加(§2-7 — 非対応なら capture 無効を get_status で申告) | `*_UNORM` フォールバック経路。選択結果と経路名はログ + `get_status` |
 | headless/offscreen | `R8G8B8A8_SRGB` | `COLOR_ATTACHMENT` + `TRANSFER_SRC` | UNORM + output_transform 内エンコード。**どちらでも readback バイト = エンコード済み sRGB** |
-| `display` 中間 | `R8G8B8A8_SRGB` | `COLOR_ATTACHMENT_BLEND`(overlay が blend する)+ `SAMPLED_IMAGE` + `SAMPLED_IMAGE_FILTER_LINEAR`(output_transform / snapshot が読む)+ `TRANSFER_SRC`(capture) | **起動エラー**(8bit sRGB のこの組は実質全デバイス対応 — 誤色で続行しない) |
-| `lit_color`(hdr off)/ bloom RT 群 | `R8G8B8A8_SRGB` view | `COLOR_ATTACHMENT_BLEND` + `SAMPLED_IMAGE_FILTER_LINEAR`(bloom は linear filter でサンプル) | 同上(起動エラー) |
+| `display` 中間 | `R8G8B8A8_SRGB` | `COLOR_ATTACHMENT` **かつ** `COLOR_ATTACHMENT_BLEND`(blend bit 単独を完全集合と扱わない)+ `SAMPLED_IMAGE` + `SAMPLED_IMAGE_FILTER_LINEAR`(output_transform / snapshot が読む)+ `TRANSFER_SRC`(snapshot copy) | **起動エラー**(8bit sRGB のこの組は実質全デバイス対応 — 誤色で続行しない) |
+| `lit_color`(hdr off)/ bloom RT 群 | `R8G8B8A8_SRGB` view | `COLOR_ATTACHMENT` + `COLOR_ATTACHMENT_BLEND` + `SAMPLED_IMAGE` + `SAMPLED_IMAGE_FILTER_LINEAR`(bloom は linear filter でサンプル) | 同上(起動エラー) |
 | material texture(color)| `R8G8B8A8_SRGB` view | `SAMPLED_IMAGE` + `SAMPLED_IMAGE_FILTER_LINEAR` | §2-5 の複製戦略に従う(誤色続行はしない) |
 
 原則: **capability 不足の経路は「正しくない色で続行」ではなく、代替戦略
@@ -143,13 +144,18 @@ swapchain` / UI v5 §6: `pelican_ui → debug_text → imgui → present` /
 本書 v2: 「bloom 合成後・overlay 前」)。**本書のこの列を唯一の正本**とし、
 postprocess/UI 文書はここへの参照に改める:
 
+**一意の全順序**(anchor を同順位でまとめない — この列がそのまま
+frame-plan trace golden の順序になる):
+
 ```
 scene passes                     … 出力先 = scene_color 域(format class: scene)
 → [anchor: post_main]            … HDR 域の scene effect(hdr on の bloom はここ)
 → [anchor: tonemap]              … hdr on のみ tonemap pass(scene → display)
 → [anchor: post_ldr]             … display 域の effect(hdr off の bloom 合成到達点)
 → [anchor: pelican_ui]           … UI
-→ [anchor: debug_draw / debug_text / imgui]
+→ [anchor: debug_draw]           … デバッグ形状
+→ [anchor: debug_text]           … デバッグテキスト
+→ [anchor: imgui]                … エンジン UI(有効時のみ実体を持つ)
 → output_transform(エンジンが常設・purge 不可・常に最後)
 → present / readback
 ```
@@ -259,17 +265,27 @@ decode 式は IEC 61966-2-1 区分関数(c ≤ 0.04045 → c/12.92、それ以�
     — 物理的に正しい bloom)。composite は tonemap **前**(§2-2 経路 2)
   - bloom RT の加算 composite は各経路の format 上で行う(hdr off の
     SRGB view 格納でも blend/加算演算自体は linear)
-- **paired round-trip の誤差 budget(hdr off の 8bit SRGB multipass)**:
-  bloom chain は downsample/upsample/composite で複数 hop の
-  HW encode→decode→8bit 量子化を通る。規範:
-  - 経路ごとに trace が hop 数を記録し、**canonical graph の hop 数を fixture
-    に固定**(増えたら fail — 黙って pass が増えない)
-  - 解析 fixture: 既知単色板を bloom chain に通した解析値との誤差を
-    **1 hop あたり最大 ±1/255(linear 換算で sRGB 量子化 1 step)、経路合計
-    max = hop 数**として budget 化。budget 超過 = fail
-  - scene 本線(lit_color → display)は 1 hop なので蓄積しない。蓄積するのは
-    bloom の様な multipass effect のみ — effect 追加時は hop 数と budget を
-    宣言する(feature JSON の必須 metadata に将来昇格)
+- **paired round-trip の誤差検査(hdr off の 8bit SRGB multipass)** —
+  v3 の「1 hop ±1/255(linear)× hop 数」を撤回する(sRGB は非一様量子化で
+  上端の 1 code step は linear ≈0.0089 — linear 単位の一律 1/255 は偽。
+  また filter/加算合成の gain が誤差を増幅するので hop 単純加算にも根拠が
+  ない — round 3 指摘)。**単位を 2 つに分離**した規範:
+  - **storage edge 検査(単位 = 8bit code 値)**: reference 計算は各 SRGB
+    storage edge で「IEC decode → binary64 で pass 演算 → IEC encode →
+    量子化(round-half-even を reference とし、HW の丸め差は ±1 code に
+    収める)」を再現する。**各 edge の実装出力 vs reference は ±1 code**。
+    これは device 非依存の gate
+  - **最終出力検査(単位 = linear / 実質 golden)**: 経路合計の一律
+    解析 bound は置かない。canonical graph の**最終 RGBA8 golden**
+    (supported device set で取得・三者比較手続き §3)が最終値の正
+  - **hop 数の固定**: trace が経路ごとの paired round-trip 数を記録し、
+    canonical graph の hop 数を fixture に固定(増えたら fail — 黙って
+    pass が増えない)
+  - test vector: 0 / 暗部境界(1〜2 code)/ linear 0.5 / 254/255 近傍 /
+    1.0 / **複数枝が同符号にずれる加算 composite**(枝数で worst case が
+    変わることの確認)
+  - effect 追加時は hop 数を宣言する(feature JSON の必須 metadata に
+    将来昇格)
 - **additive パーティクル / 加算合成**(将来の 2D ゲーム層を含む):
   texture RGB = sRGB decode(color)、tint = authored color(§2-4)、
   alpha/強度 = linear。additive の「白飛びの気持ちよさ」が従来の
@@ -289,6 +305,13 @@ readback・PNG の意味論変更は公開 API の観測可能な変更なので
   v2 の記述は撤回 — 二通りに読める契約を残さない)。名前付きスナップショット
   で中間 RT を指名した場合のみその RT のバイト(encoding は RT の format に
   従う — レスポンスに明記)
+- **windowed swapchain の capture は契約の対象条件付き**: 現実装は
+  windowed readback 未対応(swapchain usage が COLOR_ATTACHMENT のみ)。
+  contract 2 では、surface の `supportedUsageFlags` に `TRANSFER_SRC` が
+  あれば usage に追加して capture 可、なければ **capture 不可を
+  `get_status.color.capture: "available" | "unavailable_windowed"` で申告し
+  RPC capture は名前入りエラー**(「全 API が同じ最終バイトを読む」の
+  無条件文は headless/offscreen + capture 可能な windowed に限定)
 - 返るバイト列・PNG = **エンコード済み sRGB(IEC 61966-2-1)、straight alpha
   (alpha は linear のまま)、RGBA order**
 - PNG は stb_image_write 出力のため色メタデータ chunk を持たない。
@@ -354,7 +377,7 @@ C1 は WP70(set 0 再編)と衝突するため **WP70 の後**。C0 は read-onl
 | bloom threshold | linear luminance 閾値の抽出範囲(解析可能な単色板) |
 | hdr off / hdr on | 経路 1/2 の golden(tone curve 1 回・overlay 消失なし) |
 | **hdr 複合 graph gate(新設)** | example 相当の graph(bloom chain + UI + debug overlay)を hdr off/on 両方で描画。trace で「hdr on: bloom は tonemap 前 / overlay は tonemap 後 / output_transform は最後に 1 個」を検査し、pixel golden も持つ(既存 hdr_on golden の合成 graph では観測できない複合経路を埋める) |
-| bloom round-trip budget | 既知単色板の bloom chain 通過を解析値と比較(hop 数固定 + 1 hop ±1/255 budget — §2-6) |
+| bloom round-trip 検査 | 既知単色板の bloom chain: 各 storage edge を reference(IEC decode → binary64 演算 → encode/round-half-even)と比較し ±1 code、hop 数固定、最終値は golden(§2-6 の 2 単位分離) |
 | RPC capture 絶対色 | §2-7 の RPC known-value |
 | frame-plan trace | §3-5 の pass 列 text golden(全経路)。**3 カウンタ(tone curve / terminal encode / paired round-trip)を個別記録**(§0-4)— paired は resource edge ごとに `linear→SRGB storage→linear sample` の対として記録し、terminal encode と混同しない |
 
@@ -372,14 +395,29 @@ C1 は WP70(set 0 再編)と衝突するため **WP70 の後**。C0 は read-onl
 | 段階 | 内容 | 依存 |
 |------|------|------|
 | C0 | 色空間監査 → `color_migration_manifest.json`(コード変更なし)。§2-1 capability 表・§2-2 anchor 写像・§2-7 consumer 欄を manifest 項目に含める | なし(先行可) |
-| C1a | **canonical anchor + format_class + output_transform の graph rewrite**(色意味論は変えない: display/中間はいったん UNORM のまま、output_transform は passthrough)— trace fixture で構造だけ先に固定し、golden は不変のまま通す | C0、**WP70 後** |
+| C1a | **canonical anchor + format_class + output_transform の graph rewrite**(色意味論は変えない)。**byte 不変の成立条件は下記 4 点** | C0、**WP70 後** |
 | C1b | **色意味論の一括移行**(SRGB view 化 + shader 分岐 + view/複製戦略 + authored decode + contract 2)+ §3 手続きの再基準化 + §4 テスト常設(単独ゲート) | C1a |
 
-v2 の「C1 一括」を撤回し 2 段に分割: graph rewrite は RT 宣言・pipeline
-compatibility・descriptor・barrier を横断する大変更であり(round 2 指摘)、
-「構造の変更(pixel 不変)」と「色の変更(全再基準化)」を同一ゲートに
-入れると diff の原因分離ができない。C1a は golden 不変が合格条件なので
-安全に先行できる。
+v2 の「C1 一括」を撤回し 2 段に分割。**「UNORM のまま」だけでは byte
+不変にならない**(round 3 指摘)ため、C1a の合格条件を明文化する:
+
+1. **完全写像表**: 旧 pass/resource → canonical anchor/format_class の
+   対応表を作り、順序・load/store/clear・blend state・MSAA が不変であることを
+   **frame-plan diff**(旧プラン vs 新プラン)で機械検査する
+2. **C1a 専用 format resolver mode**: format_class は C1a では
+   「旧実装と同一の UNORM format・channel order・sample count」に解決する
+   (`resolver_version: 1`)。SRGB/16F 規則への切替は C1b で
+   `resolver_version: 2` に上げる — 規則がバージョンで切り替わることを
+   明示し「暫定でなんとなく UNORM」にしない
+3. **output_transform の C1a path = bit-preserving copy を規範化**:
+   同 format の transfer copy(vkCmdCopyImage 系)を正とする。fullscreen
+   shader copy を使う場合は、texel 1:1 対応・filter/blend/write mask 無効・
+   **全 256 code × RGBA の往復 byte-exact** を supported device set で
+   事前実証してから採用する
+4. **hash 比較 gate**: tolerance 付き golden とは**別に**、旧 binary /
+   新 binary の最終 RGBA8 の byte/hash 完全一致を C1a の合格条件にする
+   (非ゼロ tolerance が小差分を隠すのを防ぐ — 1 byte でも違えば
+   baseline を更新せず写像か copy path を直す)
 
 未決:
 

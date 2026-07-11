@@ -12,6 +12,15 @@
   },
   "widgets": [
     {
+      "id": "root",
+      "type": "panel",
+      "rect_ui": [0, 0, 1280, 720],
+      "clip_ui": [0, 0, 1280, 720],
+      "layer": 0,
+      "decl_seq": 0,
+      "overflow": "visible"
+    },
+    {
       "id": "root/play",
       "type": "button",
       "rect_ui": [40, 24, 160, 56],
@@ -83,6 +92,7 @@
       "pointer_id": 1,
       "button": "right",
       "position_ui": [400, 300],
+      "target": "root",
       "consumed": ["mouse:right", "key:space", "touch:0", "pad:dpad_up"],
       "effects": ["capture"]
     },

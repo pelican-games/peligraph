@@ -1,0 +1,35 @@
+{
+  "schema": "pelican.ui_semantic_fixture",
+  "version": 1,
+  "viewport": {
+    "framebuffer_px": [1280, 720],
+    "ui_scale": 1,
+    "content_rect_px": [0, 0, 1280, 720]
+  },
+  "document": {
+    "key": "hud",
+    "revision": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "widgets": [
+    {
+      "id": "root",
+      "type": "panel",
+      "rect_ui": [0, 0, 1280, 720],
+      "clip_ui": [0, 0, 1280, 720],
+      "layer": 0,
+      "decl_seq": 0
+    }
+  ],
+  "draw_runs": [],
+  "input_trace": [
+    {
+      "event_seq": 1,
+      "kind": "pointer_down",
+      "pointer_id": 0,
+      "button": "left",
+      "position_ui": [10, 10],
+      "effects": ["capture"]
+    }
+  ],
+  "lifecycle": []
+}

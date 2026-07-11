@@ -1471,6 +1471,41 @@ v3 レビュー `docs/design_reviews/2026-07-11_ui_2d_v3_review_codex.md` §3
 スコープ外(M2b-2 へ): .surface values のバインダ・textures 辞書 binding・
 ダミーテクスチャ・resources manifest・render state 拡張・dump-lowered-material。
 
+### WP71: EventPayloadSchema — イベント payload の explicit descriptor
+
+参照: **`docs/design_event_payload_schema.md` v2 が正**(2026-07-11 codex
+round 3 レビューで**条件付き Accept** —
+`docs/design_reviews/2026-07-11_color_ui_v6_rereview_codex.md` §3)。
+依存: なし(E1 済)。**UI U0 の前提**。見積: 小〜中。
+排他: `src/core/userpublic/details/event/`(serialize 層は変更禁止)。
+
+作業内容は設計文書 v2 §1〜§6 のとおり(explicit constexpr descriptor 正本・
+static init での構築ゼロ・構築前 JSON 検証・debug init phase 一致検査・
+4 状態 lookup)。**レビュー添付条件 E-C1〜E-C6 を受け入れ基準に含める**
+(レビュー文書 §3.4 が正 — 要約):
+
+- **E-C1**: descriptor は event 型の static storage が所有(一時 array への
+  span 禁止)。空名/重複名/不正 range は constant evaluation で失敗。
+  MSVC compile-pass 1 件 + 各 compile-fail fixture を CI に
+- **E-C2**: `pelican_payload` を持つ型は `default_initializable` +
+  `ISerializable<T, JsonArchiveLoader>` を registration 時に強制
+  (satisfy しなければ compile error)。`nothrow_default_constructible` も
+  static_assert。副作用なしは counting-constructor テストで担保
+- **E-C3**: prevalidator は Vec2/3/4・Quat の配列長/要素型/有限性/範囲、
+  integer token 規則(`1.0` 不受理)、2^53 境界まで規範化。全 invalid case で
+  loader 呼出 0 回・constructor 0 回・pending event 0 を検査
+- **E-C4**: 全 registered Typed イベントの descriptor↔ref 一致検査を
+  **CI 必須テスト**に(debug 手動起動に依存しない)。追加忘れ/rename/
+  reorder/duplicate/条件分岐の既知限界を個別 fixture に
+- **E-C5**: **Opaque の by-name emit は廃止**(typed C++ emit のみ —
+  レビュー推奨案 1 を採用)。UI は Opaque を fields の有無に関係なく
+  binding 自体で拒否(`no_payload_event`)
+- **E-C6**: state × UI × RPC × payload shape の行列を実装(レビュー §3.4
+  の表が正)。Payloadless/Typed(empty) は「payload 省略 or 厳密 `{}`」を
+  固定し、余分 key は黙って捨てない
+
+受け入れ = 設計 v2 §6 の 8 テスト + E-C1〜E-C6 の各 fixture + 既存全テスト。
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **最小コマンド層**: (1) ファイル連携済み → (2) WP27 実装済み → (3) `load_gltf` / `update_transforms` は **2026-07-07 に実装 GO 決定**。前提はすべて充足(宛先 = scene v1 の objects[].name / アセット意味論 = WP21)。設計時要件: **複数インスタンス運用**(エージェントが複数エンジンを並行駆動する使い方) — stdio rpc は 1 プロセス 1 クライアントの現行構造を維持しつつ、`get_status`(instance id・project・フレーム番号)を追加してインスタンス識別可能に。プロジェクトは読み取り専有なので並行起動は安全(書き込み系操作を入れる際に排他を設計)。複数クライアント同時接続は TCP/WebSocket 展開時の課題として分離

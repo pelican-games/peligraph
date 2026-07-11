@@ -66,28 +66,22 @@ RT 定義に `"history": true` を追加(rendertarget 定義の拡張キー):
 - カメラジッタ(TAA)は**本設計に含めない**(projection への介入はカメラ系。
   未決 2)
 
-## 3. 標準ポストスタック規約(慣習であって機構ではない)
+## 3. 標準ポストスタック規約(正本は色パイプライン文書)
 
-アンカー名を標準化する。機構は既存(アンカー → after/before エッジの実体化、
-WP35)のまま、**名前の慣習**を adding_features.md に載せる:
+**アンカー列と色の正本は `design_color_pipeline.md` v4 §2-2 の canonical
+frame-plan anchor である**(2026-07-11 改訂 — 本節が旧規定していた
+`scene_color → post_main → tonemap → post_ldr → swapchain` の列と
+「scene_color は常に linear HDR」「golden = swapchain 相当」の色方針は
+**撤回**し、色文書への規範参照に置き換える。hdr off の scene 域 format・
+`display`/`output_transform`・capture 契約はすべて色文書が定める)。
 
-```
-scene_color(メインパス出力、HDR)
-  → post_main    (HDR 空間で効くもの: bloom, ao 合成, dof, motion blur)
-  → tonemap      (HDR → LDR。既存 hdr feature がこの位置)
-  → post_ldr     (LDR で効くもの: FXAA, vignette, grain)
-  → swapchain
-```
+本書に残るのは機構でなく慣習の部分のみ:
 
 - 同一アンカー内の順序は宣言順タイブレーク(既存)+ 必要なら明示エッジ
 - **解像度クラス**: 中間 RT の命名慣習 `<name>_half` / `<name>_quarter`。
-  ダウンサンプル済み scene_color(`scene_color_half`)は最初に要求した
+  ダウンサンプル済み scene 色(`scene_color_half`)は最初に要求した
   feature が生成し、以後は reads で共有(bloom と dof が半解像度を
-  二重に作らないための慣習)
-- カラーマネジメント 1 段落(方針の明文化): scene_color は linear HDR
-  (現行 R16G16B16A16)、テクスチャの sRGB は format で吸収、
-  swapchain 直前まで linear を維持。tonemap 後の LDR は表示用 —
-  golden キャプチャは従来どおり swapchain 相当を比較
+  二重に作らないための慣習)。format は色文書の format_class に従う
 
 ## 4. 移行(WP 候補)
 

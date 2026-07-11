@@ -12,6 +12,14 @@
   },
   "widgets": [
     {
+      "id": "root",
+      "type": "panel",
+      "rect_ui": [0, 0, 1280, 720],
+      "clip_ui": [0, 0, 1280, 720],
+      "layer": 0,
+      "decl_seq": 0
+    },
+    {
       "id": "root/gauge",
       "type": "gauge",
       "rect_ui": [10, 10, 210, 34],

@@ -1,7 +1,7 @@
 {
   "schema": "pelican.ui_semantic_fixture.coverage",
   "version": 1,
-  "description": "Maps every enum value / oneOf branch / invalid class of docs/schemas/pelican.ui_semantic_fixture.schema.json to the normative fixture that exercises it. CI fails on any row whose fixture does not exercise the value, and on any schema enum value missing from this manifest.",
+  "description": "Maps schema enum values / oneOf branches / invalid classes / semantic invariants (I1-I12, design_ui_2d_foundation.md v7 §7) to the normative fixture exercising each. Coverage claims: small enums are covered exhaustively; ui_key/ui_pad_control are covered by one representative per vocabulary branch (full-enum sync between $defs and the consumed_control patterns is enforced by a separate CI test, not by fixtures). CI validates this manifest against its own schema, checks every referenced fixture exists and exercises the value, and checks that the machine-extracted set of schema enums/branches/invariants is a subset of the manifest keys.",
   "enum_coverage": {
     "input_trace.kind": {
       "pointer_down": "valid/input_trace_variants.json",
@@ -94,5 +94,19 @@
     "path_traversal": "invalid/traversal_texture.json",
     "unique_items": "invalid/duplicate_effects.json",
     "multiple_of_6": "invalid/index_count_not_quad.json"
+  },
+  "semantic_invariant_coverage": {
+    "I1_rect_order": "semantic_invalid/i01_rect_inverted.json",
+    "I2_ancestor_exists": "semantic_invalid/i02_missing_ancestor.json",
+    "I3_clip_equality": "semantic_invalid/i03_clip_mismatch.json",
+    "I4_id_unique": "semantic_invalid/i04_duplicate_id.json",
+    "I5_seq_monotonic": "semantic_invalid/i05_nonmonotonic_event_seq.json",
+    "I6_run_index": "semantic_invalid/i06_run_index_gap.json",
+    "I7_unique_effects_consumed": "invalid/duplicate_effects.json (schema-enforced; semantic check is a redundant second line)",
+    "I8_scissor_containment": "semantic_invalid/i08_scissor_outside.json",
+    "I9_texture_traversal": "invalid/traversal_texture.json (schema-enforced; semantic check is a redundant second line)",
+    "I10_reference_integrity": "semantic_invalid/i10_dangling_target.json",
+    "I11_capture_state_machine": "semantic_invalid/i11_capture_without_target.json",
+    "I12_viewport_containment": "semantic_invalid/i12_content_rect_outside.json"
   }
 }
