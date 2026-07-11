@@ -1,6 +1,8 @@
 #pragma once
 
 #include "../material/material.hpp"
+#include "skeletalanimation.hpp"
+#include <memory>
 
 namespace Pelican {
 
@@ -11,6 +13,7 @@ struct ModelTemplate {
         uint32_t index_count;
         uint32_t index_offset;
         int32_t vert_offset;
+        bool skinned = false;
     };
 
     struct MaterialPrimitives {
@@ -19,6 +22,7 @@ struct ModelTemplate {
     };
 
     std::vector<MaterialPrimitives> material_primitives;
+    std::shared_ptr<SkeletalModelData> skeletal;
 };
 
 } // namespace Pelican

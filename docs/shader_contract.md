@@ -11,7 +11,7 @@
 | 0 | `PELICAN_SET_FRAME` | 全 pipeline 共通の固定 layout。binding 0 `FrameUBO`、1 `ObjectBuffer` SSBO、2 `LightUBO`。エンジン管理・読み取り専用。 |
 | 1 | `PELICAN_SET_PASS_INPUT` | fullscreen / UI / compute の入力。fullscreen は pass input の texture/buffer を binding 0 から順に割り当てる。UI texture もこの set を使う。 |
 | 2 | `PELICAN_SET_MATERIAL` | 標準 material texture。binding 0 `baseColorSampler`、1 `metallicRoughnessSampler`、2 `normalSampler`、3 `emissiveSampler`。VAT 有効時は 4 `vatPositionSampler`、5 `vatNormalSampler`。binding 6 は全マテリアルを並べた `MaterialBuffer` SSBO。 |
-| 3 | `PELICAN_SET_FREE` | debug/user/future 用の自由枠。現行 debug draw/text は binding 0 の SSBO、debug text fragment は binding 1 の atlas texture を使う。 |
+| 3 | `PELICAN_SET_FREE` | variant ごとの補助枠。debug draw/text は binding 0 の SSBO、debug text fragment は binding 1 の atlas texture、`PELICAN_SKINNED` は binding 2 の `SkinPalette` SSBO を使う。binding 2 はスキン variant だけエンジン所有。 |
 
 機械可読な正本は [`material_resources_manifest.json`](material_resources_manifest.json) に置く。
 `.surface` の custom texture は宣言順に set 2 binding 7 から割り当て、`role: color`
@@ -59,6 +59,12 @@ set 1 以降は従来どおり reflection から生成し、高い set だけを
 
 fullscreen / UI / debug draw / debug text のように `gl_VertexIndex` や SSBO から頂点を生成する
 pipeline は、この vertex input layout を使わない。
+
+`GraphicsPipelineDesc::use_skinned_vertex_layout = true` は別の専用 vertex buffer を使う。
+location 0〜4 は上表と同じ意味・format のまま、location 5 に `JOINTS_0`
+(`R16G16B16A16_SINT`)、location 6 に `WEIGHTS_0` (`R32G32B32A32_SFLOAT`) を追加する。
+非スキン pipeline はこの buffer/layout を参照しない。スキン variant の頂点シェーダは
+set 3 binding 2 の std430 `mat4` palette を `gl_BaseInstance * 128 + joint` で参照する。
 
 ## Defines
 
@@ -114,6 +120,9 @@ surface 名を含むロードエラーになる。
 同じ vertex 合成物を main / `PELICAN_PASS_DEPTH` / `PELICAN_PASS_VELOCITY` で再コンパイルし、
 vertex displacement と custom0/custom1 の経路を全 pass で維持する。B の lowering はこの
 3 variant、公開 template/library、set 2 resource、render state を C-material 記述として出力する。
+`PELICAN_SKINNED` も同じ template の variant であり、テンプレートが
+JOINTS_0/WEIGHTS_0 と palette を適用してからユーザー hook を呼ぶ。したがって B 層の
+`.surface` 本文はスキニング対応のために変更してはならない。
 
 ## B 層 experimental SPIR-V link ABI (M3b / WP80)
 

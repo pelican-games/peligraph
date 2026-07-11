@@ -222,4 +222,24 @@ TEST_CASE("example material is a one-line B surface reference that lowers and co
 #endif
 }
 
+TEST_CASE("unchanged example toon surface compiles all skinned template variants",
+          "[surface-compiler][skeletal]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    const auto path = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects" / "example" /
+                      "shaders" / "toon.surface";
+    const auto authored = readText(path);
+    const auto surface = parseSurfaceFormat(authored, "project://shaders/toon.surface");
+    REQUIRE(authored.substr(surface.code_offset) == surface.code);
+    ShaderCompiler compiler;
+    for (const auto pass : {SurfacePass::main, SurfacePass::depth, SurfacePass::velocity}) {
+        const auto composition = composeSurfaceShaders(surface, "project://shaders/toon.surface", pass,
+                                                       {"PELICAN_SKINNED"});
+        REQUIRE(std::find(composition.defines.begin(), composition.defines.end(), "PELICAN_SKINNED") !=
+                composition.defines.end());
+        requireCompiled(compileSurfaceShaders(compiler, surface, "project://shaders/toon.surface", pass,
+                                              {"PELICAN_SKINNED"}));
+    }
+#endif
+}
+
 } // namespace Pelican

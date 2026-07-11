@@ -133,8 +133,11 @@ void validateFrameBindings(const ShaderReflection &reflection) {
 }
 
 void validateGraphicsReflection(const GraphicsPipelineDesc &desc, const ShaderReflection &reflection) {
-    if (!desc.use_engine_vertex_layout && !reflection.vertex_inputs.empty()) {
+    if (!desc.use_engine_vertex_layout && !desc.use_skinned_vertex_layout && !reflection.vertex_inputs.empty()) {
         throw std::runtime_error("GraphicsPipelineDesc requires use_engine_vertex_layout for vertex input shaders");
+    }
+    if (desc.use_engine_vertex_layout && desc.use_skinned_vertex_layout) {
+        throw std::runtime_error("GraphicsPipelineDesc cannot select both engine vertex layouts");
     }
     validateFrameBindings(reflection);
     validatePushConstantContract(reflection);
@@ -258,8 +261,9 @@ vk::UniquePipeline PipelineFactory::createGraphicsPipeline(const GraphicsPipelin
 
     vk::PipelineVertexInputStateCreateInfo vertex_input_info;
     VertBufContainer::CommonVertDataDescription engine_vertex_input;
-    if (desc.use_engine_vertex_layout) {
-        engine_vertex_input = VertBufContainer::getDescription();
+    if (desc.use_engine_vertex_layout || desc.use_skinned_vertex_layout) {
+        engine_vertex_input = desc.use_skinned_vertex_layout ? VertBufContainer::getSkinnedDescription()
+                                                             : VertBufContainer::getDescription();
         vertex_input_info.setVertexAttributeDescriptions(engine_vertex_input.attr_descs);
         vertex_input_info.setVertexBindingDescriptions(engine_vertex_input.binding_descs);
     }

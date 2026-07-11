@@ -11,9 +11,9 @@ namespace Pelican {
 namespace {
 
 #if PELICAN_WITH_VAT
-constexpr size_t registeredResourceCount = 60;
+constexpr size_t registeredResourceCount = 63;
 #else
-constexpr size_t registeredResourceCount = 59;
+constexpr size_t registeredResourceCount = 62;
 #endif
 
 constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
@@ -54,12 +54,15 @@ constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
     "shaders/include/pelican_sets.glsl",
     "shaders/include/pelican_surface_v1.glsl",
     "shaders/include/pelican_lighting_v1.glsl",
+    "shaders/include/pelican_skinning.glsl",
     "shaders/material/standard_lighting.glsl",
     "shaders/material/toon_lighting.glsl",
     "shaders/material/surface_v1.vert",
     "shaders/material/surface_v1.frag",
     "shadow_depth.vert",
     "shadow_depth.vert.spv",
+    "skinned.vert.spv",
+    "skinned_shadow_depth.vert.spv",
     "shader_lab_base_lit.frag.spv",
     "shader_lab_bloom_composite.frag.spv",
     "shader_lab_bloom_threshold.frag.spv",
@@ -143,12 +146,15 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("shaders/include/pelican_sets.glsl")
     PELICAN_ENGINE_RESOURCE("shaders/include/pelican_surface_v1.glsl")
     PELICAN_ENGINE_RESOURCE("shaders/include/pelican_lighting_v1.glsl")
+    PELICAN_ENGINE_RESOURCE("shaders/include/pelican_skinning.glsl")
     PELICAN_ENGINE_RESOURCE("shaders/material/standard_lighting.glsl")
     PELICAN_ENGINE_RESOURCE("shaders/material/toon_lighting.glsl")
     PELICAN_ENGINE_RESOURCE("shaders/material/surface_v1.vert")
     PELICAN_ENGINE_RESOURCE("shaders/material/surface_v1.frag")
     PELICAN_ENGINE_RESOURCE("shadow_depth.vert")
     PELICAN_ENGINE_RESOURCE("shadow_depth.vert.spv")
+    PELICAN_ENGINE_RESOURCE("skinned.vert.spv")
+    PELICAN_ENGINE_RESOURCE("skinned_shadow_depth.vert.spv")
     PELICAN_ENGINE_RESOURCE("shader_lab_base_lit.frag.spv")
     PELICAN_ENGINE_RESOURCE("shader_lab_bloom_composite.frag.spv")
     PELICAN_ENGINE_RESOURCE("shader_lab_bloom_threshold.frag.spv")

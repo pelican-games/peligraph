@@ -7,6 +7,7 @@
 #include "predefined/transform.hpp"
 
 #include "predefined/camerasystem.hpp"
+#include "predefined/animationsystem.hpp"
 #include "predefined/localtransformsystem.hpp"
 #include "predefined/modelviewtransoformsystem.hpp"
 #include "predefined/modelviewupdatesystem.hpp"
@@ -22,6 +23,7 @@ void ECSPredefinedRegistration::reg() {
     internal::getComponentRegisterer().registerComponent<LocalTransformComponent>("localtransform");
     internal::getComponentRegisterer().registerComponent<SimpleModelViewComponent>("simplemodelview");
     internal::getComponentRegisterer().registerComponent<CameraComponent>("camera");
+    internal::getComponentRegisterer().registerComponent<AnimationComponent>("animation");
 
     auto &ecs = GET_MODULE(ECSCore);
     const auto local_transform_system =
@@ -30,6 +32,8 @@ void ECSPredefinedRegistration::reg() {
     const auto model_update_system =
         ecs.registerSystemForce<SimpleModelViewUpdateSystem, SimpleModelViewComponent>(
             GET_MODULE(SimpleModelViewUpdateSystem), {});
+    ecs.registerSystemForce<AnimationSystem, AnimationComponent, SimpleModelViewComponent>(
+        GET_MODULE(AnimationSystem), {model_update_system});
     ecs.registerSystemForce<SimpleModelViewTransformSystem, TransformComponent, SimpleModelViewComponent>(
         GET_MODULE(SimpleModelViewTransformSystem), {local_transform_system, model_update_system});
     ecs.registerSystemForce<CameraSystem, TransformComponent, CameraComponent>(

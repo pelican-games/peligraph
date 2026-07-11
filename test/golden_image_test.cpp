@@ -1,5 +1,6 @@
 #include "../src/core/container.hpp"
 #include "../src/core/appflow/enginetime.hpp"
+#include "../src/core/asset/model.hpp"
 #include "../src/core/ecs/core.hpp"
 #include "../src/core/ecs/predefined.hpp"
 #include "../src/core/fullscreenpass/fullscreenpasscontainer.hpp"
@@ -8,6 +9,8 @@
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/loader/scene.hpp"
 #include "../src/core/log.hpp"
+#include "../src/core/material/materialcontainer.hpp"
+#include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/playback/vatplayer.hpp"
 #include "../src/core/renderer/debugdraw.hpp"
 #include "../src/core/renderer/debugtext.hpp"
@@ -24,6 +27,9 @@
 #include "../src/core/vkcore/renderer.hpp"
 #include "../src/core/vkcore/rendertarget.hpp"
 #include "../src/core/vkcore/rendertiming.hpp"
+#include "../src/project/materialformat.hpp"
+#include "../src/project/materiallowering.hpp"
+#include "skeletal_fixture.hpp"
 #include "vat_fixture.hpp"
 
 #include <algorithm>
@@ -796,6 +802,32 @@ void main() {
 })json");
 }
 
+void writeSkeletalProject(const std::filesystem::path &root) {
+    auto project = makeVatProjectJson();
+    project["name"] = "skeletal toon golden";
+    project["basic_config"]["scene_data_json"] = "scene.json";
+    project["basic_config"]["asset_data_json"] = "assets.json";
+    project["basic_config"]["ui_config_json"] = "ui/ui.json";
+    project["basic_config"]["rendering_config_json"] = "passes/main.json";
+    project["basic_config"]["default_rendering_pass"] = "main_render";
+    writeTextFile(root / "project.json", project.dump(2));
+    writeTextFile(root / "scene.json", R"json({
+      "schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[{
+        "name":"Character","components":[
+          {"name":"transform","pos":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
+          {"name":"simplemodelview","model":"character"},
+          {"name":"animation","clip":"character.glb#animation/Turn","speed":1.0,"loop":true,"start_time":0.0}
+        ]}, {"name":"Key","components":[
+          {"name":"light","type":"directional","direction":[0.2,-0.3,-1.0],"intensity":3.0,"color":[1.0,0.9,0.8]}
+        ]}]}}})json");
+    writeTextFile(root / "assets.json", R"json({"models":[{"name":"character","path":"character.glb"}]})json");
+    writeTextFile(root / "ui" / "ui.json", R"json({"images":[]})json");
+    std::filesystem::create_directories(root / "passes");
+    std::filesystem::copy_file(sourceRoot() / "projects/example/passes/main_rendering_config.json",
+                               root / "passes/main.json", std::filesystem::copy_options::overwrite_existing);
+    TestSkeletalFixture::writeGlb(root / "character.glb");
+}
+
 void writeDebugDrawProject(const std::filesystem::path &root) {
     writeTextFile(root / "project.json", makeFeatureProjectJson().dump(2));
     writeTextFile(root / "scene.json", R"json({
@@ -1388,6 +1420,61 @@ void renderVatPlaybackFrame(RenderTarget &render_target, const std::filesystem::
     (void)render_target;
 }
 
+void renderSkeletalToonFrame(RenderTarget &render_target) {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    auto &time = GET_MODULE(EngineTime);
+    time.setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
+    time.setTime(0.5);
+
+    const auto example = sourceRoot() / "projects" / "example";
+    std::ifstream surface_file{example / "shaders" / "toon.surface", std::ios::binary};
+    const std::string surface_source{std::istreambuf_iterator<char>{surface_file},
+                                     std::istreambuf_iterator<char>{}};
+    const auto surface = parseSurfaceFormat(surface_source, "project://shaders/toon.surface");
+    const auto bundles = GET_MODULE(ShaderLibrary).loadFromSurface(
+        surface, "project://shaders/toon.surface", SurfacePass::main, {"PELICAN_SKINNED"});
+
+    std::ifstream material_file{example / "materials" / "toon.material.json", std::ios::binary};
+    const auto material_json = nlohmann::json::parse(material_file);
+    MaterialSurfaceCatalog catalog;
+    catalog.emplace("project://shaders/toon.surface", surface);
+    const auto authored = parseMaterialFormatJson(material_json, catalog).materials.front();
+    const auto lowered = lowerMaterial(authored, surface);
+    auto &standard = GET_MODULE(StandardMaterialResource);
+    MaterialInfo info{
+        .vert_shader = bundles.vertex,
+        .frag_shader = bundles.fragment,
+        .skinned = true,
+        .base_color_texture = standard.whiteTexture(),
+        .metallic_roughness_texture = standard.metallicRoughnessDefaultTexture(),
+        .normal_texture = standard.normalDefaultTexture(),
+        .emissive_texture = standard.emissiveDefaultTexture(),
+    };
+    applyLoweredMaterial(info, lowered);
+    info.render_state.cull = SurfaceCullMode::none;
+    const auto toon_material = GET_MODULE(MaterialContainer).registerMaterial(std::move(info));
+    auto &model = GET_MODULE(ModelAssetContainer).getModelTemplateByName("character");
+    for (auto &group : model.material_primitives) group.material = toon_material;
+
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    GET_MODULE(SceneLoader).load("default_scene");
+    GET_MODULE(ECSCore).update();
+
+    auto &camera = GET_MODULE(Camera);
+    const glm::vec3 position{0.0f, 1.0f, -2.5f};
+    const glm::vec3 target{0.25f, 1.0f, 0.0f};
+    camera.setPos(position);
+    camera.setDir(glm::normalize(target - position));
+    camera.setUp({0.0f, 1.0f, 0.0f});
+    GET_MODULE(Renderer).render();
+    GET_MODULE(VulkanManageCore).waitIdle();
+    (void)render_target;
+#else
+    (void)render_target;
+    throw std::runtime_error("runtime shader compiler disabled");
+#endif
+}
+
 void renderFeatureFrame(RenderTarget &render_target) {
     GET_MODULE(Renderer).render();
     GET_MODULE(VulkanManageCore).waitIdle();
@@ -1537,6 +1624,16 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         writeVatProject(temp_dir);
         GET_MODULE(PathResolver).setup(temp_dir, false);
         GET_MODULE(ProjectSource).setProjectData(makeVatProjectJson().dump());
+    } else if (golden_case.mode == "skeletal_toon") {
+        writeSkeletalProject(temp_dir);
+        GET_MODULE(PathResolver).setup(temp_dir, false);
+        auto project = makeVatProjectJson();
+        project["basic_config"]["scene_data_json"] = "scene.json";
+        project["basic_config"]["asset_data_json"] = "assets.json";
+        project["basic_config"]["ui_config_json"] = "ui/ui.json";
+        project["basic_config"]["rendering_config_json"] = "passes/main.json";
+        project["basic_config"]["default_rendering_pass"] = "main_render";
+        GET_MODULE(ProjectSource).setProjectData(project.dump());
     } else if (golden_case.mode == "feature_compose") {
         writeFeatureProject(temp_dir);
         GET_MODULE(PathResolver).setup(temp_dir, false);
@@ -1611,6 +1708,8 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         renderFeatureFrame(render_target);
     } else if (golden_case.mode == "vat_playback") {
         renderVatPlaybackFrame(render_target, temp_dir);
+    } else if (golden_case.mode == "skeletal_toon") {
+        renderSkeletalToonFrame(render_target);
     } else if (golden_case.mode == "feature_compose") {
         renderFeatureFrame(render_target);
     } else if (golden_case.mode == "debug_draw_feature") {
@@ -1729,9 +1828,9 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     requireGoldenVulkanDevice();
     const auto cases = discoverGoldenCases();
 #if PELICAN_WITH_VAT
-    REQUIRE(cases.size() == 19);
+    REQUIRE(cases.size() == 20);
 #else
-    REQUIRE(cases.size() == 18);
+    REQUIRE(cases.size() == 19);
 #endif
 
     for (const auto &golden_case : cases) {
