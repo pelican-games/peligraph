@@ -1,5 +1,6 @@
 #pragma once
 
+#include "payloadschema.hpp"
 #include "../../serialize/jsonarchive.hpp"
 #include "../../serialize/serialize.hpp"
 
@@ -30,20 +31,27 @@ struct QueuedEvent {
 };
 
 using JsonPayloadLoadFn = std::shared_ptr<const void> (*)(const void *payload_json);
+using RefFieldListFn = std::vector<std::string> (*)();
 
 struct EventTypeRegistration {
     std::string name;
     std::type_index type = std::type_index{typeid(void)};
+    EventSchemaState schema_state = EventSchemaState::Opaque;
+    EventPayloadSchema schema{};
     JsonPayloadLoadFn load_json_payload = nullptr;
+    RefFieldListFn list_ref_fields = nullptr;
 };
 
 class UserEventRegistererTemplatePublic {
     std::vector<EventTypeRegistration> event_types;
     std::vector<QueuedEvent> pending_events;
     std::vector<QueuedEvent> deliver_now_events;
+    std::size_t payload_load_calls = 0;
+    bool catalog_frozen = false;
 
     void __registerEvent(EventTypeRegistration registration);
     void __emit(QueuedEvent event);
+    const EventTypeRegistration &validateByName(std::string_view name, const void *payload_json) const;
 
   public:
     template <class Event> void registerEvent(std::string name) {
@@ -52,22 +60,68 @@ class UserEventRegistererTemplatePublic {
         static_assert(!std::is_pointer_v<EventType>, "events must be emitted by value, not pointer");
         static_assert(std::copy_constructible<EventType>, "events must be copy constructible");
 
+        constexpr bool has_descriptor = requires { EventType::pelican_payload; };
+        constexpr bool json_serializable = ISerializable<EventType, JsonArchiveLoader>;
+        constexpr bool record_serializable = ISerializable<EventType, RefFieldRecorder>;
+        if constexpr (has_descriptor) {
+            static_assert(std::default_initializable<EventType>,
+                          "events with pelican_payload must be default initializable");
+            static_assert(json_serializable,
+                          "events with pelican_payload must be serializable with JsonArchiveLoader");
+            static_assert(std::is_nothrow_default_constructible_v<EventType>,
+                          "events with pelican_payload must be nothrow default constructible");
+        }
+
+        if constexpr (has_descriptor) {
+            static_assert(record_serializable,
+                          "typed event ref must support the event catalog recording archive");
+        }
+
         __registerEvent(EventTypeRegistration{
             .name = std::move(name),
             .type = std::type_index{typeid(EventType)},
+            .schema_state = []() constexpr {
+                if constexpr (has_descriptor) {
+                    return EventSchemaState::Typed;
+                } else if constexpr (!json_serializable && !record_serializable &&
+                                     std::default_initializable<EventType>) {
+                    return EventSchemaState::Payloadless;
+                } else {
+                    return EventSchemaState::Opaque;
+                }
+            }(),
+            .schema = []() constexpr {
+                if constexpr (has_descriptor) {
+                    return internal::eventPayloadSchema<EventType>();
+                } else {
+                    return EventPayloadSchema{};
+                }
+            }(),
             .load_json_payload =
                 []() constexpr -> JsonPayloadLoadFn {
-                if constexpr (std::default_initializable<EventType> &&
-                              ISerializable<EventType, JsonArchiveLoader>) {
+                if constexpr (has_descriptor) {
                     return [](const void *payload_json) -> std::shared_ptr<const void> {
                         EventType event{};
                         JsonArchiveLoader archive{payload_json};
                         event.ref(archive);
                         return std::make_shared<EventType>(std::move(event));
                     };
-                } else if constexpr (std::default_initializable<EventType>) {
+                } else if constexpr (!json_serializable && !record_serializable &&
+                                     std::default_initializable<EventType>) {
                     return [](const void *) -> std::shared_ptr<const void> {
                         return std::make_shared<EventType>();
+                    };
+                } else {
+                    return nullptr;
+                }
+            }(),
+            .list_ref_fields = []() constexpr -> RefFieldListFn {
+                if constexpr (has_descriptor) {
+                    return []() -> std::vector<std::string> {
+                        EventType event{};
+                        RefFieldRecorder recorder;
+                        event.ref(recorder);
+                        return recorder.names;
                     };
                 } else {
                     return nullptr;
@@ -94,8 +148,14 @@ class UserEventRegistererTemplatePublic {
     }
 
     std::size_t emitByName(std::string_view name, const void *payload_json);
+    void validateEventPayload(std::string_view name, const void *payload_json) const;
+    EventSchemaLookup findEventSchema(std::string_view name) const;
     const EventTypeRegistration *findByType(std::type_index type) const;
     const EventTypeRegistration *findByName(std::string_view name) const;
+    void validateCatalogAndFreeze();
+    void freezeCatalog() noexcept;
+    std::size_t pendingEventCount() const noexcept;
+    std::size_t payloadLoadCallCount() const noexcept;
     void freezePendingEventsForFrame();
     std::vector<QueuedEvent> drainFrozenEvents();
     void clearPendingEvents();
@@ -106,6 +166,9 @@ void freezePendingEventsForFrame();
 void dispatchFrozenEvents(GameContext &ctx);
 void clearPendingEvents();
 std::size_t emitEventByName(std::string_view name, const void *payload_json);
+void validateEventPayload(std::string_view name, const void *payload_json);
+EventSchemaLookup findEventSchema(std::string_view name);
+void validateEventCatalog();
 
 } // namespace internal
 

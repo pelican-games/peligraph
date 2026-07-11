@@ -7,6 +7,9 @@ namespace {
 struct Wp56InjectedEvent {
     std::uint64_t seed = 0;
 
+    static constexpr auto pelican_payload =
+        Pelican::payloadFields(Pelican::field<&Wp56InjectedEvent::seed>("seed"));
+
     template <class T> void ref(T &ar) {
         ar.prop("seed", seed);
     }

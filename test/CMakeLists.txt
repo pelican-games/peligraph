@@ -30,6 +30,32 @@ pelican_define_test(deterministicrng_test pelican_core)
 pelican_define_test(enginetime_test pelican_core)
 pelican_define_test(ecs_lifecycle_test pelican_core)
 pelican_define_test(eventlayer_test pelican_core)
+pelican_define_test(eventpayloadschema_test pelican_core)
+
+function(pelican_event_schema_compile_fixture fixture expect_failure)
+    set(target_name pelican_event_schema_${fixture})
+    add_executable(${target_name} EXCLUDE_FROM_ALL fixtures/event_payload_schema/${fixture}.cpp)
+    set_target_properties(${target_name} PROPERTIES CXX_STANDARD 20)
+    add_test(
+        NAME event_schema_compile_${fixture}
+        COMMAND ${CMAKE_COMMAND}
+            -DBUILD_DIR=${CMAKE_BINARY_DIR}
+            -DCONFIG=$<CONFIG>
+            -DTARGET_NAME=${target_name}
+            -DEXPECT_FAILURE=${expect_failure}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_event_schema_compile.cmake
+    )
+endfunction()
+
+pelican_event_schema_compile_fixture(compile_pass FALSE)
+pelican_event_schema_compile_fixture(fail_empty_name TRUE)
+pelican_event_schema_compile_fixture(fail_duplicate_name TRUE)
+pelican_event_schema_compile_fixture(fail_range_kind TRUE)
+pelican_event_schema_compile_fixture(fail_quat_range TRUE)
+pelican_event_schema_compile_fixture(fail_min_max TRUE)
+pelican_event_schema_compile_fixture(fail_nonfinite TRUE)
+pelican_event_schema_compile_fixture(fail_f32_bound TRUE)
+pelican_event_schema_compile_fixture(fail_unsupported_type TRUE)
 pelican_define_test(golden_image_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp spirv-reflect-static stb glm)
 target_compile_definitions(pelican_test_golden_image_test PRIVATE
     VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic
