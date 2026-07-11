@@ -45,6 +45,11 @@ function(pelican_event_schema_compile_fixture fixture expect_failure)
             -DEXPECT_FAILURE=${expect_failure}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_event_schema_compile.cmake
     )
+    # These tests drive msbuild on the shared build tree; serialize them so a
+    # parallel ctest run cannot race two builds in the same directory.
+    set_tests_properties(event_schema_compile_${fixture} PROPERTIES
+        RESOURCE_LOCK event_schema_compile_build
+    )
 endfunction()
 
 pelican_event_schema_compile_fixture(compile_pass FALSE)
