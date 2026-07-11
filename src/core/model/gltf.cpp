@@ -555,6 +555,13 @@ struct InternalGltfLoader {
         return result;
     }
 
+    bool skinFitsPalette(int skin_index) const {
+        if (skin_index < 0 || skin_index >= static_cast<int>(model.skins.size())) return false;
+        if (skin_joint_offsets.contains(skin_index)) return true;
+        const auto used = skeletal_data ? skeletal_data->joint_nodes.size() : std::size_t{0};
+        return used + model.skins[skin_index].joints.size() <= maxSkinJoints;
+    }
+
     std::uint32_t selectSkin(int skin_index, std::optional<int> animation_only = std::nullopt) {
         if (skin_index < 0 || skin_index >= static_cast<int>(model.skins.size())) {
             throw std::runtime_error("glTF mesh node references an invalid skin");
@@ -972,8 +979,17 @@ struct InternalGltfLoader {
 
     void loadMesh(int mesh_index, const glm::mat4 &world_transform, int node_index = -1) {
         const auto &mesh = model.meshes.at(mesh_index);
-        const bool skinned = node_index >= 0 && model.nodes.at(node_index).skin >= 0;
+        bool skinned = node_index >= 0 && model.nodes.at(node_index).skin >= 0;
         const auto skin_index = skinned ? model.nodes.at(node_index).skin : -1;
+        if (skinned && !skinFitsPalette(skin_index)) {
+            // Assets whose skins exceed the v1 palette must still load (pre-WP38
+            // parity: skins were ignored entirely). Only explicit animation use
+            // of such a skin is an error (selectSkin still throws there).
+            LOG_WARNING(logger,
+                        "gltf \"{}\": skin {} exceeds the v1 joint palette limit of {}; mesh {} loads without skinning",
+                        source_path, skin_index, maxSkinJoints, mesh_index);
+            skinned = false;
+        }
         const auto joint_offset = skinned ? selectSkin(skin_index) : 0u;
         for (const auto &primitive : mesh.primitives) {
             CommonPolygonVertData dat;
