@@ -30,6 +30,7 @@ constexpr size_t maxMaterials = 1024;
 static std::string makePipelineKey(const MaterialInfo &info) {
     std::ostringstream key;
     key << info.vert_shader.value << ':' << info.frag_shader.value << ':'
+        << info.skinned << ':'
         << static_cast<int>(info.render_state.blend) << ':'
         << static_cast<int>(info.render_state.cull) << ':'
         << info.render_state.depth_test << ':' << info.render_state.depth_write << ':'
@@ -68,7 +69,8 @@ static GraphicsPipelineDesc makeMaterialPipelineDesc(const MaterialInfo &info) {
         GET_MODULE(RenderingPassContainer).isFeatureEnabled("hdr"));
     desc.color_formats.assign(formats.begin(), formats.end());
     desc.depth_format = materialPassDepthAttachmentFormat;
-    desc.use_engine_vertex_layout = true;
+    desc.use_engine_vertex_layout = !info.skinned;
+    desc.use_skinned_vertex_layout = info.skinned;
     desc.depth_test = info.render_state.depth_test;
     desc.depth_write = info.render_state.depth_write;
     desc.depth_compare = toVkCompare(info.render_state.depth_compare);

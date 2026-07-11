@@ -12,12 +12,15 @@ function(embed_shader file_name)
                 shaders/include/pelican_frame.glsl
                 shaders/include/pelican_material.glsl
                 shaders/include/pelican_features.glsl
+                shaders/include/pelican_skinning.glsl
         OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/${file_name}.spv
     )
     b_embed(pelican_resources ${file_name}.spv)
 endfunction(embed_shader)
 
 embed_shader(default.vert)
+embed_shader(skinned.vert)
+embed_shader(skinned_shadow_depth.vert)
 if(PELICAN_WITH_VAT)
 embed_shader(vat.vert)
 endif()
@@ -63,6 +66,7 @@ b_embed(pelican_resources shaders/include/pelican_material.glsl)
 b_embed(pelican_resources shaders/include/pelican_features.glsl)
 b_embed(pelican_resources shaders/include/pelican_surface_v1.glsl)
 b_embed(pelican_resources shaders/include/pelican_lighting_v1.glsl)
+b_embed(pelican_resources shaders/include/pelican_skinning.glsl)
 b_embed(pelican_resources shaders/material/standard_lighting.glsl)
 b_embed(pelican_resources shaders/material/toon_lighting.glsl)
 b_embed(pelican_resources shaders/material/surface_v1.vert)

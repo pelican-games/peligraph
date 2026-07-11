@@ -13,6 +13,10 @@ StandardMaterialResource::StandardMaterialResource() {
     const auto vert_shader = b::embed<"default.vert.spv">();
     std_vert = shader_library.loadFromBytes(vert_shader.length(), vert_shader.data(), "default.vert.spv");
 
+    const auto skinned_vert_shader = b::embed<"skinned.vert.spv">();
+    skinned_vert = shader_library.loadFromBytes(skinned_vert_shader.length(), skinned_vert_shader.data(),
+                                                "skinned.vert.spv");
+
 #if PELICAN_WITH_VAT
     const auto vat_vert_shader = b::embed<"vat.vert.spv">();
     vat_vert = shader_library.loadFromBytes(vat_vert_shader.length(), vat_vert_shader.data(), "vat.vert.spv");

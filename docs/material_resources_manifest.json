@@ -30,9 +30,11 @@
     {
       "set": 3,
       "name": "PELICAN_SET_FREE",
-      "owner": "raw-shader-user",
-      "resources": [],
-      "note": "Resources are declared by the C-layer shader and reflected into the pipeline layout."
+      "owner": "variant-dependent",
+      "resources": [
+        {"binding": 2, "name": "SkinPalette", "type": "storage_buffer", "access": "read", "optional": true, "when": "PELICAN_SKINNED"}
+      ],
+      "note": "Binding 2 is engine-owned only in PELICAN_SKINNED pipelines. Other resources are declared by the C-layer shader and reflected into the pipeline layout."
     }
   ],
   "material_buffer": {

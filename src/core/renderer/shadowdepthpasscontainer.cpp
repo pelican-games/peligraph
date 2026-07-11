@@ -1,4 +1,6 @@
 #include "shadowdepthpasscontainer.hpp"
+#include "../shader/shaderlibrary.hpp"
+#include "battery/embed.hpp"
 
 #include <limits>
 #include <stdexcept>
@@ -14,8 +16,8 @@ PassId pipelineIndexToPassId(size_t pipeline_index) {
     return PassId{static_cast<int>(pipeline_index)};
 }
 
-PipelineHandle requirePipeline(PassId pass_id,
-                               const std::unordered_map<int, PipelineHandle> &pipelines) {
+const ShadowDepthPassContainer::PipelineVariants &requirePipeline(
+    PassId pass_id, const std::unordered_map<int, ShadowDepthPassContainer::PipelineVariants> &pipelines) {
     const auto found = pipelines.find(pass_id.value);
     if (found == pipelines.end()) {
         throw std::runtime_error("Shadow depth pipeline not found");
@@ -42,18 +44,27 @@ PassId ShadowDepthPassContainer::registerShadowDepthPass(vk::Format depth_format
     desc.cull_mode = vk::CullModeFlagBits::eBack;
     desc.front_face = vk::FrontFace::eClockwise;
 
-    pipelines.emplace(pass_id.value, GET_MODULE(PipelineFactory).create(desc));
+    const auto regular = GET_MODULE(PipelineFactory).create(desc);
+    const auto embedded = b::embed<"skinned_shadow_depth.vert.spv">();
+    desc.vert = GET_MODULE(ShaderLibrary).loadFromBytes(
+        embedded.length(), embedded.data(), "skinned_shadow_depth.vert.spv");
+    desc.use_engine_vertex_layout = false;
+    desc.use_skinned_vertex_layout = true;
+    const auto skinned = GET_MODULE(PipelineFactory).create(desc);
+    pipelines.emplace(pass_id.value, PipelineVariants{regular, skinned});
     return pass_id;
 }
 
-void ShadowDepthPassContainer::bind(vk::CommandBuffer cmd_buf, PassId pass_id) const {
-    const auto pipeline = requirePipeline(pass_id, pipelines);
+void ShadowDepthPassContainer::bind(vk::CommandBuffer cmd_buf, PassId pass_id, bool skinned) const {
+    const auto &variants = requirePipeline(pass_id, pipelines);
+    const auto pipeline = skinned ? variants.skinned : variants.regular;
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
     cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline_factory.pipeline(pipeline));
 }
 
-vk::PipelineLayout ShadowDepthPassContainer::pipelineLayout(PassId pass_id) const {
-    return GET_MODULE(PipelineFactory).layout(requirePipeline(pass_id, pipelines));
+vk::PipelineLayout ShadowDepthPassContainer::pipelineLayout(PassId pass_id, bool skinned) const {
+    const auto &variants = requirePipeline(pass_id, pipelines);
+    return GET_MODULE(PipelineFactory).layout(skinned ? variants.skinned : variants.regular);
 }
 
 } // namespace Pelican

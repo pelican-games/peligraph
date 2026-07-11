@@ -29,8 +29,6 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
     const auto &vert_buf_container = dependencies.vert_buf_container;
     const auto &material_container = dependencies.material_container;
 
-    vert_buf_container.bindVertexBuffer(cmd_buf);
-
     instance_container.triggerUpdate();
     const auto &draw_calls = instance_container.getDrawCalls();
     if (draw_calls.empty()) {
@@ -52,7 +50,9 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
 
         material_container.bindResource(cmd_buf, pass_id, draw_call.material, current_material_id);
         const auto pipeline_layout = material_container.pipelineLayout(draw_call.material);
+        vert_buf_container.bindVertexBuffer(cmd_buf, draw_call.skinned);
         dependencies.frame_resources.bindGraphics(cmd_buf, pipeline_layout);
+        if (draw_call.skinned) instance_container.bindSkinning(cmd_buf, pipeline_layout);
         const PushConstantStruct engine_push{dependencies.camera.getVPMatrix()};
         cmd_buf.pushConstants(pipeline_layout,
                               vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0,
@@ -74,25 +74,23 @@ void renderShadowDepthDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
     auto &instance_container = dependencies.instance_container;
     const auto &vert_buf_container = dependencies.vert_buf_container;
 
-    vert_buf_container.bindVertexBuffer(cmd_buf);
-
     instance_container.triggerUpdate();
     const auto &draw_calls = instance_container.getDrawCalls();
     if (draw_calls.empty()) {
         return;
     }
 
-    const auto pipeline_layout = shadow_depth_pass_container.pipelineLayout(pass_id);
-    shadow_depth_pass_container.bind(cmd_buf, pass_id);
-    dependencies.frame_resources.bindGraphics(cmd_buf, pipeline_layout);
-
-    PushConstantStruct push_constant{};
-    push_constant.mvp = dependencies.light_container.shadowViewProjection();
-    cmd_buf.pushConstants(pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0,
-                          sizeof(push_constant), &push_constant);
-
     const auto &indirect_buf = instance_container.getIndirectBuf();
     for (const auto &draw_call : draw_calls) {
+        const auto pipeline_layout = shadow_depth_pass_container.pipelineLayout(pass_id, draw_call.skinned);
+        shadow_depth_pass_container.bind(cmd_buf, pass_id, draw_call.skinned);
+        vert_buf_container.bindVertexBuffer(cmd_buf, draw_call.skinned);
+        dependencies.frame_resources.bindGraphics(cmd_buf, pipeline_layout);
+        if (draw_call.skinned) instance_container.bindSkinning(cmd_buf, pipeline_layout);
+        PushConstantStruct push_constant{};
+        push_constant.mvp = dependencies.light_container.shadowViewProjection();
+        cmd_buf.pushConstants(pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0,
+                              sizeof(push_constant), &push_constant);
         cmd_buf.drawIndexedIndirect(indirect_buf.buffer.get(), draw_call.offset, draw_call.draw_count,
                                     draw_call.stride);
     }

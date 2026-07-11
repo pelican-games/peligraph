@@ -158,8 +158,11 @@ struct InternalGltfLoader {
     std::vector<MaterialInfo> material_infos;
     std::vector<std::optional<GlobalTextureId>> texture_map;
     std::unordered_map<ModelLocalMaterialId, GlobalMaterialId> resolved_materials;
+    std::unordered_map<ModelLocalMaterialId, ModelLocalMaterialId> skinned_material_variants;
     std::unordered_map<ModelLocalMaterialId, std::vector<ModelTemplate::PrimitiveRefInfo>> tmp_material_primitives;
     ModelLocalMaterialId next_generated_material = -2;
+    std::unordered_map<int, std::uint32_t> skin_joint_offsets;
+    std::shared_ptr<SkeletalModelData> skeletal_data;
 
     struct NodeOccurrence {
         int node_index = -1;
@@ -187,6 +190,7 @@ struct InternalGltfLoader {
         bool whole_model = false;
         std::vector<RootSelection> roots;
         std::optional<int> material_only;
+        std::optional<int> animation_only;
     };
 
     uint8_t toUnorm8(double value) {
@@ -407,6 +411,10 @@ struct InternalGltfLoader {
             case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:
                 return readComponentByType<glm::u32vec4, T>(p_data, accessor.count, stride);
             }
+        } else if constexpr (expected_type == TINYGLTF_TYPE_MAT4) {
+            if (accessor.componentType == TINYGLTF_COMPONENT_TYPE_FLOAT) {
+                return readComponentByType<glm::mat4, T>(p_data, accessor.count, stride);
+            }
         }
         LOG_ERROR(logger, "gltf loading error : unsupported accessor, type={},componentType={}", accessor.type,
                   accessor.componentType);
@@ -453,6 +461,143 @@ struct InternalGltfLoader {
 
         return glm::translate(glm::mat4{1.0f}, translation) * glm::mat4_cast(rotation) *
                glm::scale(glm::mat4{1.0f}, scale);
+    }
+
+    SkeletonNodeRestPose nodeRestPose(const tinygltf::Node &node) {
+        SkeletonNodeRestPose pose;
+        if (node.matrix.size() == 16) {
+            const auto matrix = nodeTransform(node);
+            pose.translation = glm::vec3{matrix[3]};
+            pose.scale = {glm::length(glm::vec3{matrix[0]}), glm::length(glm::vec3{matrix[1]}),
+                          glm::length(glm::vec3{matrix[2]})};
+            glm::mat3 rotation{matrix};
+            for (int column = 0; column < 3; ++column) {
+                if (pose.scale[column] != 0.0f) rotation[column] /= pose.scale[column];
+            }
+            pose.rotation = glm::normalize(glm::quat_cast(rotation));
+            return pose;
+        }
+        if (node.translation.size() == 3) {
+            pose.translation = {static_cast<float>(node.translation[0]), static_cast<float>(node.translation[1]),
+                                static_cast<float>(node.translation[2])};
+        }
+        if (node.rotation.size() == 4) {
+            pose.rotation = glm::normalize(glm::quat{static_cast<float>(node.rotation[3]),
+                                                     static_cast<float>(node.rotation[0]),
+                                                     static_cast<float>(node.rotation[1]),
+                                                     static_cast<float>(node.rotation[2])});
+        }
+        if (node.scale.size() == 3) {
+            pose.scale = {static_cast<float>(node.scale[0]), static_cast<float>(node.scale[1]),
+                          static_cast<float>(node.scale[2])};
+        }
+        return pose;
+    }
+
+    SkeletalAnimationClip loadAnimationClip(int animation_index) {
+        const auto &animation = model.animations.at(animation_index);
+        const auto animation_name = animation.name.empty()
+                                        ? std::string{"<animation "} + std::to_string(animation_index) + ">"
+                                        : animation.name;
+        SkeletalAnimationClip result;
+        result.name = animation.name;
+        bool has_keys = false;
+        for (const auto &channel : animation.channels) {
+            if (channel.sampler < 0 || channel.sampler >= static_cast<int>(animation.samplers.size())) {
+                throw std::runtime_error("glTF animation '" + animation_name + "' has an invalid sampler");
+            }
+            const auto &sampler = animation.samplers[channel.sampler];
+            if (sampler.interpolation == "CUBICSPLINE") {
+                throw std::runtime_error("glTF animation '" + animation_name +
+                                         "' uses unsupported CUBICSPLINE interpolation (v1 supports LINEAR/STEP)");
+            }
+            if (!sampler.interpolation.empty() && sampler.interpolation != "LINEAR" &&
+                sampler.interpolation != "STEP") {
+                throw std::runtime_error("glTF animation '" + animation_name +
+                                         "' uses unsupported interpolation '" + sampler.interpolation + "'");
+            }
+            SkeletalAnimationChannel loaded;
+            loaded.node = channel.target_node;
+            loaded.interpolation = sampler.interpolation == "STEP" ? AnimationInterpolation::step
+                                                                     : AnimationInterpolation::linear;
+            loaded.times = getDataFromAccessor<TINYGLTF_TYPE_SCALAR, float>(sampler.input);
+            if (channel.target_path == "translation") {
+                loaded.path = AnimationPath::translation;
+                const auto values = getDataFromAccessor<TINYGLTF_TYPE_VEC3, glm::vec3>(sampler.output);
+                loaded.values.reserve(values.size());
+                for (const auto value : values) loaded.values.emplace_back(value, 0.0f);
+            } else if (channel.target_path == "scale") {
+                loaded.path = AnimationPath::scale;
+                const auto values = getDataFromAccessor<TINYGLTF_TYPE_VEC3, glm::vec3>(sampler.output);
+                loaded.values.reserve(values.size());
+                for (const auto value : values) loaded.values.emplace_back(value, 0.0f);
+            } else if (channel.target_path == "rotation") {
+                loaded.path = AnimationPath::rotation;
+                loaded.values = getDataFromAccessor<TINYGLTF_TYPE_VEC4, glm::vec4>(sampler.output);
+            } else {
+                throw std::runtime_error("glTF animation '" + animation_name + "' targets unsupported path '" +
+                                         channel.target_path + "' (morph targets are outside clip v1)");
+            }
+            if (loaded.times.empty() || loaded.times.size() != loaded.values.size()) {
+                throw std::runtime_error("glTF animation '" + animation_name + "' has mismatched keyframe counts");
+            }
+            const auto [minimum, maximum] = std::minmax_element(loaded.times.begin(), loaded.times.end());
+            if (!has_keys) {
+                result.start = *minimum;
+                result.end = *maximum;
+                has_keys = true;
+            } else {
+                result.start = std::min(result.start, *minimum);
+                result.end = std::max(result.end, *maximum);
+            }
+            result.channels.push_back(std::move(loaded));
+        }
+        return result;
+    }
+
+    std::uint32_t selectSkin(int skin_index, std::optional<int> animation_only = std::nullopt) {
+        if (skin_index < 0 || skin_index >= static_cast<int>(model.skins.size())) {
+            throw std::runtime_error("glTF mesh node references an invalid skin");
+        }
+        if (const auto found = skin_joint_offsets.find(skin_index); found != skin_joint_offsets.end()) {
+            return found->second;
+        }
+        if (!skeletal_data) {
+            skeletal_data = std::make_shared<SkeletalModelData>();
+            skeletal_data->source_path = source_path;
+            skeletal_data->nodes.reserve(model.nodes.size());
+            for (const auto &node : model.nodes) skeletal_data->nodes.push_back(nodeRestPose(node));
+            for (int parent = 0; parent < static_cast<int>(model.nodes.size()); ++parent) {
+                for (const auto child : model.nodes[parent].children) {
+                    if (child >= 0 && child < static_cast<int>(skeletal_data->nodes.size())) {
+                        skeletal_data->nodes[child].parent = parent;
+                    }
+                }
+            }
+            for (int i = 0; i < static_cast<int>(model.animations.size()); ++i) {
+                if (!animation_only || *animation_only == i) skeletal_data->clips.push_back(loadAnimationClip(i));
+            }
+        }
+        const auto &skin = model.skins[skin_index];
+        const auto offset = static_cast<std::uint32_t>(skeletal_data->joint_nodes.size());
+        std::vector<glm::mat4> inverse_bind_matrices;
+        if (skin.inverseBindMatrices >= 0) {
+            inverse_bind_matrices =
+                getDataFromAccessor<TINYGLTF_TYPE_MAT4, glm::mat4>(skin.inverseBindMatrices);
+        } else {
+            inverse_bind_matrices.assign(skin.joints.size(), glm::mat4{1.0f});
+        }
+        if (skin.joints.size() != inverse_bind_matrices.size()) {
+            throw std::runtime_error("glTF skin joint/inverseBindMatrices count mismatch");
+        }
+        if (offset + skin.joints.size() > maxSkinJoints) {
+            throw std::runtime_error("glTF skins exceed the v1 combined joint palette limit of 128");
+        }
+        skeletal_data->joint_nodes.insert(skeletal_data->joint_nodes.end(), skin.joints.begin(), skin.joints.end());
+        skeletal_data->inverse_bind_matrices.insert(skeletal_data->inverse_bind_matrices.end(),
+                                                    inverse_bind_matrices.begin(), inverse_bind_matrices.end());
+        skin_joint_offsets.emplace(skin_index, offset);
+        return offset;
     }
 
     std::string fragmentReference() const {
@@ -673,9 +818,11 @@ struct InternalGltfLoader {
                               selected.parent_transform, false, true});
         } else if (fragment->kind == "material") {
             selection.material_only = selected.object_index;
+        } else if (fragment->kind == "animation") {
+            selection.animation_only = selected.object_index;
         }
-        // Animation GPU/runtime data is not represented by ModelTemplate yet. Resolving it here
-        // deliberately creates no unrelated mesh, material, or texture resources.
+        // An animation fragment carries CPU clip/skin data only and deliberately creates no
+        // unrelated mesh, material, texture, or ECS bone resources.
         return selection;
     }
 
@@ -790,6 +937,22 @@ struct InternalGltfLoader {
         resolved_materials[material_index] = material_map.at(material_index).value();
     }
 
+    ModelLocalMaterialId skinnedMaterial(int local_material_id) {
+        if (const auto found = skinned_material_variants.find(local_material_id);
+            found != skinned_material_variants.end()) return found->second;
+        auto info = local_material_id >= 0 ? material_infos.at(local_material_id) : MaterialInfo{
+            .vert_shader = std_mat.standardVertShader(), .frag_shader = std_mat.standardFragShader(),
+            .base_color_texture = std_mat.whiteTexture(),
+            .metallic_roughness_texture = std_mat.metallicRoughnessDefaultTexture(),
+            .normal_texture = std_mat.normalDefaultTexture(), .emissive_texture = std_mat.emissiveDefaultTexture()};
+        info.vert_shader = std_mat.skinnedVertShader();
+        info.skinned = true;
+        const auto generated = next_generated_material--;
+        resolved_materials[generated] = mat_container.registerMaterial(std::move(info));
+        skinned_material_variants[local_material_id] = generated;
+        return generated;
+    }
+
     std::set<int> texturesForMaterials(const std::set<int> &materials) const {
         std::set<int> textures;
         const auto append = [&](int texture_index) {
@@ -807,8 +970,11 @@ struct InternalGltfLoader {
         return textures;
     }
 
-    void loadMesh(int mesh_index, const glm::mat4 &world_transform) {
+    void loadMesh(int mesh_index, const glm::mat4 &world_transform, int node_index = -1) {
         const auto &mesh = model.meshes.at(mesh_index);
+        const bool skinned = node_index >= 0 && model.nodes.at(node_index).skin >= 0;
+        const auto skin_index = skinned ? model.nodes.at(node_index).skin : -1;
+        const auto joint_offset = skinned ? selectSkin(skin_index) : 0u;
         for (const auto &primitive : mesh.primitives) {
             CommonPolygonVertData dat;
 
@@ -847,14 +1013,32 @@ struct InternalGltfLoader {
             }
 #endif
 
-            transformVertexData(dat, world_transform);
-            auto primitive_info = buf_container.addPrimitiveEntry(std::move(dat));
+            if (skinned && (dat.joint.empty() || dat.weight.empty())) {
+                throw std::runtime_error("glTF skinned primitive requires JOINTS_0 and WEIGHTS_0");
+            }
+            if (skinned) {
+                const auto joint_count = model.skins.at(skin_index).joints.size();
+                for (auto &joints : dat.joint) {
+                    for (int component = 0; component < 4; ++component) {
+                        if (joints[component] < 0 || static_cast<std::size_t>(joints[component]) >= joint_count) {
+                            throw std::runtime_error("glTF JOINTS_0 index exceeds its skin joint array");
+                        }
+                        joints[component] = static_cast<std::int16_t>(joints[component] + joint_offset);
+                    }
+                }
+            }
+            if (!skinned) transformVertexData(dat, world_transform);
+            auto primitive_info = skinned ? buf_container.addSkinnedPrimitiveEntry(std::move(dat))
+                                          : buf_container.addPrimitiveEntry(std::move(dat));
 #if PELICAN_WITH_VAT
+            if (skinned && vat_info) {
+                throw std::runtime_error("glTF skeletal skinning and pelican.vat cannot share one primitive");
+            }
             const auto material_id =
                 vat_info ? registerVatMaterial(primitive.material, *vat_info, primitive_info)
-                         : primitive.material;
+                         : (skinned ? skinnedMaterial(primitive.material) : primitive.material);
 #else
-            const auto material_id = primitive.material;
+            const auto material_id = skinned ? skinnedMaterial(primitive.material) : primitive.material;
 #endif
             tmp_material_primitives[material_id].emplace_back(std::move(primitive_info));
         }
@@ -870,7 +1054,7 @@ struct InternalGltfLoader {
             }
         }
         if (node.mesh >= 0) {
-            loadMesh(node.mesh, world_transform);
+            loadMesh(node.mesh, world_transform, node_index);
         }
     }
 
@@ -880,6 +1064,23 @@ struct InternalGltfLoader {
         texture_map.resize(model.textures.size());
 
         const auto selection = selectLoad();
+        if (selection.animation_only) {
+            if (!model.skins.empty()) {
+                selectSkin(0, selection.animation_only);
+            } else {
+                skeletal_data = std::make_shared<SkeletalModelData>();
+                skeletal_data->source_path = source_path;
+                skeletal_data->nodes.reserve(model.nodes.size());
+                for (const auto &node : model.nodes) skeletal_data->nodes.push_back(nodeRestPose(node));
+                for (int parent = 0; parent < static_cast<int>(model.nodes.size()); ++parent) {
+                    for (const auto child : model.nodes[parent].children) {
+                        if (child >= 0 && child < static_cast<int>(skeletal_data->nodes.size()))
+                            skeletal_data->nodes[child].parent = parent;
+                    }
+                }
+                skeletal_data->clips.push_back(loadAnimationClip(*selection.animation_only));
+            }
+        }
         if (selection.whole_model) {
             for (int i = 0; i < static_cast<int>(model.textures.size()); ++i) {
                 loadTexture(i);
@@ -929,6 +1130,7 @@ struct InternalGltfLoader {
                 .primitives = {},
             });
         }
+        m.skeletal = skeletal_data;
 
         return m;
     }

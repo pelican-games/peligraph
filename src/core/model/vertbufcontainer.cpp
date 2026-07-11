@@ -24,10 +24,20 @@ static BufferWrapper createVertBuf(VulkanManageCore &vkcore, size_t num) {
                            vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
 }
 
+static BufferWrapper createSkinVertBuf(VulkanManageCore &vkcore, size_t num) {
+    return vkcore.allocBuf(sizeof(CommonSkinningVertStruct) * num,
+                           vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eTransferSrc |
+                               vk::BufferUsageFlagBits::eTransferDst,
+                           vma::MemoryUsage::eAutoPreferDevice,
+                           vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
+}
+
 VertBufContainer::VertBufContainer()
     : indices_offset{0}, vertices_offset{0}, indices_cap{initial_indices_num},
-      vertices_cap{initial_vertices_num}, indices_mem_pool{createIndexBuf(GET_MODULE(VulkanManageCore), indices_cap)},
-      vertices_mem_pool{createVertBuf(GET_MODULE(VulkanManageCore), vertices_cap)} {}
+      vertices_cap{initial_vertices_num}, skin_vertices_offset{0}, skin_vertices_cap{initial_vertices_num},
+      indices_mem_pool{createIndexBuf(GET_MODULE(VulkanManageCore), indices_cap)},
+      vertices_mem_pool{createVertBuf(GET_MODULE(VulkanManageCore), vertices_cap)},
+      skin_vertices_mem_pool{createSkinVertBuf(GET_MODULE(VulkanManageCore), skin_vertices_cap)} {}
 
 ModelTemplate::PrimitiveRefInfo VertBufContainer::addPrimitiveEntry(CommonPolygonVertData &&data) {
     uint32_t vert_count = static_cast<uint32_t>(data.pos.size());
@@ -106,9 +116,66 @@ ModelTemplate::PrimitiveRefInfo VertBufContainer::addPrimitiveEntry(CommonPolygo
     vertices_offset += vert_count;
     return info;
 }
-void VertBufContainer::bindVertexBuffer(vk::CommandBuffer cmd_buf) const {
+
+ModelTemplate::PrimitiveRefInfo VertBufContainer::addSkinnedPrimitiveEntry(CommonPolygonVertData &&data) {
+    const auto vert_count = static_cast<uint32_t>(data.pos.size());
+    if (vert_count == 0 || data.joint.size() != vert_count || data.weight.size() != vert_count) {
+        throw std::runtime_error("invalid skinned primitive: POSITION, JOINTS_0, and WEIGHTS_0 counts must match");
+    }
+    if (data.indices.empty()) {
+        data.indices.resize(vert_count);
+        std::iota(data.indices.begin(), data.indices.end(), 0);
+    }
+    ModelTemplate::PrimitiveRefInfo info{
+        .index_count = static_cast<uint32_t>(data.indices.size()),
+        .index_offset = indices_offset,
+        .vert_offset = skin_vertices_offset,
+        .skinned = true,
+    };
+    if (const auto req = info.index_offset + info.index_count; req > indices_cap) {
+        const auto old_cap = indices_cap;
+        while (req > indices_cap) indices_cap <<= 1;
+        auto replacement = createIndexBuf(GET_MODULE(VulkanManageCore), indices_cap);
+        GET_MODULE(VulkanUtils).bufferCopy(indices_mem_pool, replacement, 0, 0,
+                                           sizeof(uint32_t) * old_cap);
+        std::swap(indices_mem_pool, replacement);
+    }
+    if (const auto req = static_cast<uint32_t>(info.vert_offset) + vert_count; req > skin_vertices_cap) {
+        const auto old_cap = skin_vertices_cap;
+        while (req > skin_vertices_cap) skin_vertices_cap <<= 1;
+        auto replacement = createSkinVertBuf(GET_MODULE(VulkanManageCore), skin_vertices_cap);
+        GET_MODULE(VulkanUtils).bufferCopy(skin_vertices_mem_pool, replacement, 0, 0,
+                                           sizeof(CommonSkinningVertStruct) * old_cap);
+        std::swap(skin_vertices_mem_pool, replacement);
+    }
+
+    std::vector<CommonSkinningVertStruct> vertices(vert_count);
+    for (uint32_t i = 0; i < vert_count; ++i) {
+        auto &vertex = vertices[i];
+        vertex.pos = data.pos[i];
+        vertex.normal = data.normal.empty() ? glm::vec3{0.0f} : data.normal[i];
+        vertex.tangent = data.tangent.empty() ? glm::vec4{0.0f} : data.tangent[i];
+        vertex.texcoord = data.texcoord.empty() ? glm::vec2{0.0f} : data.texcoord[i];
+        vertex.color = data.color.empty() ? glm::vec4{1.0f} : data.color[i];
+        vertex.joint = data.joint[i];
+        vertex.weight = data.weight[i];
+        const float sum = vertex.weight.x + vertex.weight.y + vertex.weight.z + vertex.weight.w;
+        if (sum > 0.0f) vertex.weight /= sum;
+    }
+    GET_MODULE(VulkanManageCore).writeBuf(indices_mem_pool, data.indices.data(),
+                                         sizeof(uint32_t) * indices_offset,
+                                         sizeof(uint32_t) * data.indices.size());
+    GET_MODULE(VulkanManageCore).writeBuf(skin_vertices_mem_pool, vertices.data(),
+                                         sizeof(CommonSkinningVertStruct) * skin_vertices_offset,
+                                         sizeof(CommonSkinningVertStruct) * vert_count);
+    indices_offset += info.index_count;
+    skin_vertices_offset += static_cast<int32_t>(vert_count);
+    return info;
+}
+
+void VertBufContainer::bindVertexBuffer(vk::CommandBuffer cmd_buf, bool skinned) const {
     cmd_buf.bindIndexBuffer(*indices_mem_pool.buffer, 0, vk::IndexType::eUint32);
-    cmd_buf.bindVertexBuffers(0, {*vertices_mem_pool.buffer}, {0});
+    cmd_buf.bindVertexBuffers(0, {skinned ? *skin_vertices_mem_pool.buffer : *vertices_mem_pool.buffer}, {0});
 }
 
 VertBufContainer::CommonVertDataDescription VertBufContainer::getDescription() {
@@ -155,6 +222,23 @@ VertBufContainer::CommonVertDataDescription VertBufContainer::getDescription() {
     tangent_attr.format = vk::Format::eR32G32B32A32Sfloat;
     descs.attr_descs.push_back(tangent_attr);
 
+    return descs;
+}
+
+VertBufContainer::CommonVertDataDescription VertBufContainer::getSkinnedDescription() {
+    CommonVertDataDescription descs;
+    descs.binding_descs.push_back(vk::VertexInputBindingDescription{
+        0, sizeof(CommonSkinningVertStruct), vk::VertexInputRate::eVertex});
+    const auto add = [&](uint32_t location, vk::Format format, uint32_t offset) {
+        descs.attr_descs.push_back(vk::VertexInputAttributeDescription{location, 0, format, offset});
+    };
+    add(0, vk::Format::eR32G32B32Sfloat, offsetof(CommonSkinningVertStruct, pos));
+    add(1, vk::Format::eR32G32B32Sfloat, offsetof(CommonSkinningVertStruct, normal));
+    add(2, vk::Format::eR32G32Sfloat, offsetof(CommonSkinningVertStruct, texcoord));
+    add(3, vk::Format::eR32G32B32A32Sfloat, offsetof(CommonSkinningVertStruct, color));
+    add(4, vk::Format::eR32G32B32A32Sfloat, offsetof(CommonSkinningVertStruct, tangent));
+    add(5, vk::Format::eR16G16B16A16Sint, offsetof(CommonSkinningVertStruct, joint));
+    add(6, vk::Format::eR32G32B32A32Sfloat, offsetof(CommonSkinningVertStruct, weight));
     return descs;
 }
 

@@ -6,6 +6,9 @@
 #include "pelican_material.glsl"
 #include "pelican_surface_v1.glsl"
 #include "__pelican_surface_params.glsl"
+#ifdef PELICAN_SKINNED
+#include "pelican_skinning.glsl"
+#endif
 
 #ifdef PELICAN_HAS_VERTEX_DISPLACE_V1
 #include "__pelican_user_surface.glsl"
@@ -16,6 +19,10 @@ layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec2 inTexUV;
 layout(location = 3) in vec4 inColor;
 layout(location = 4) in vec4 inTangent;
+#ifdef PELICAN_SKINNED
+layout(location = 5) in ivec4 inJoints;
+layout(location = 6) in vec4 inWeights;
+#endif
 
 layout(location = 0) out vec2 outTexUV;
 layout(location = 1) out vec4 outColor;
@@ -28,8 +35,14 @@ layout(location = 7) out vec4 outCustom1;
 
 void main() {
     PelicanVertexV1 vertex;
+#ifdef PELICAN_SKINNED
+    mat4 skin_matrix = pelican_skin_matrix(inJoints, inWeights);
+    vertex.position = (skin_matrix * vec4(inPos, 1.0)).xyz;
+    vertex.normal = normalize(mat3(skin_matrix) * inNormal);
+#else
     vertex.position = inPos;
     vertex.normal = inNormal;
+#endif
     vertex.custom0 = vec4(0.0);
     vertex.custom1 = vec4(0.0);
 #ifdef PELICAN_HAS_VERTEX_DISPLACE_V1
@@ -47,7 +60,11 @@ void main() {
     outCustom0 = vertex.custom0;
     outCustom1 = vertex.custom1;
     if (inTangent.w != 0.0) {
-        vec3 tangent = normalize(mat3(model_matrix) * inTangent.xyz);
+        vec3 tangent_local = inTangent.xyz;
+#ifdef PELICAN_SKINNED
+        tangent_local = mat3(skin_matrix) * tangent_local;
+#endif
+        vec3 tangent = normalize(mat3(model_matrix) * tangent_local);
         tangent = normalize(tangent - dot(tangent, normal) * normal);
         outTangent = tangent;
         outBitangent = cross(normal, tangent) * inTangent.w;

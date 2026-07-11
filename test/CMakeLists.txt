@@ -32,6 +32,7 @@ target_link_libraries(pelican_test_gltf_scene_fixture_writer PRIVATE nlohmann_js
 pelican_define_test(deletionqueue_test pelican_core)
 pelican_define_test(deterministicrng_test pelican_core)
 pelican_define_test(enginetime_test pelican_core)
+pelican_define_test(skeletalanimation_test pelican_core glm)
 pelican_define_test(ecs_lifecycle_test pelican_core)
 pelican_define_test(eventlayer_test pelican_core)
 pelican_define_test(eventpayloadschema_test pelican_core)
@@ -80,6 +81,7 @@ if(PELICAN_RUNTIME_SHADER_COMPILER)
     endif()
 endif()
 pelican_define_test(gltf_fragment_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+pelican_define_test(skeletal_gltf_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
 pelican_define_test(gltf_scene_extract_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp argparse tinygltf glm)
 target_sources(pelican_test_gltf_scene_extract_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devcli/gltfsceneextract.cpp

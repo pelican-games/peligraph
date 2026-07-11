@@ -124,6 +124,31 @@ std::vector<EcsObjectLoad> prepareSceneBindings(const nlohmann::json &objects, C
                 continue;
             }
 
+            if (component_name == "animation") {
+                if (component.contains("graph")) {
+                    throw std::runtime_error("animation component on object '" +
+                                             displayObjectName(object_name) +
+                                             "' uses reserved v1 key 'graph'");
+                }
+                if (!component.contains("clip") || !component.at("clip").is_string()) {
+                    throw std::runtime_error("animation component on object '" +
+                                             displayObjectName(object_name) +
+                                             "' requires string clip");
+                }
+                auto normalized_animation = component;
+                normalized_animation["speed"] = component.value("speed", 1.0);
+                normalized_animation["start_time"] = component.value("start_time", 0.0);
+                if (component.contains("loop") && !component.at("loop").is_boolean()) {
+                    throw std::runtime_error("animation component loop must be boolean on object '" +
+                                             displayObjectName(object_name) + "'");
+                }
+                normalized_animation["loop"] = component.value("loop", true) ? 1 : 0;
+                ecs_object.components_json.push_back(std::move(normalized_animation));
+                ecs_object.components_id.push_back(
+                    getComponentIdForObject(component_info_manager, component_name, object_name));
+                continue;
+            }
+
             ecs_object.components_json.push_back(component);
             ecs_object.components_id.push_back(
                 getComponentIdForObject(component_info_manager, component_name, object_name));

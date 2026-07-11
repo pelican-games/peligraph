@@ -31,6 +31,7 @@ struct CommonVertStruct {
 struct CommonSkinningVertStruct {
     glm::vec3 pos;
     glm::vec3 normal;
+    glm::vec4 tangent;
     glm::vec2 texcoord;
     glm::vec4 color;
     glm::i16vec4 joint;
@@ -44,20 +45,25 @@ DECLARE_MODULE(VertBufContainer) {
     int32_t vertices_offset;
     uint32_t indices_cap;
     uint32_t vertices_cap;
+    int32_t skin_vertices_offset;
+    uint32_t skin_vertices_cap;
     BufferWrapper indices_mem_pool;
     BufferWrapper vertices_mem_pool;
+    BufferWrapper skin_vertices_mem_pool;
 
   public:
     VertBufContainer();
     ModelTemplate::PrimitiveRefInfo addPrimitiveEntry(CommonPolygonVertData &&data);
+    ModelTemplate::PrimitiveRefInfo addSkinnedPrimitiveEntry(CommonPolygonVertData &&data);
 
-    void bindVertexBuffer(vk::CommandBuffer cmd_buf) const;
+    void bindVertexBuffer(vk::CommandBuffer cmd_buf, bool skinned = false) const;
 
     struct CommonVertDataDescription {
         std::vector<vk::VertexInputBindingDescription> binding_descs;
         std::vector<vk::VertexInputAttributeDescription> attr_descs;
     };
     static CommonVertDataDescription getDescription();
+    static CommonVertDataDescription getSkinnedDescription();
 };
 
 } // namespace Pelican
