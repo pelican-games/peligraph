@@ -510,21 +510,30 @@ draft 2020-12。本版と同時にコミット済み)。閉じ方の要点:
   | I8 | scissor containment | `0 ≤ left ≤ right ≤ framebuffer_px.x` かつ `0 ≤ top ≤ bottom ≤ framebuffer_px.y`(§4 の「scissor_px はクリップ後」規則の帰結) |
   | I9 | texture 名 | パス走査不可(**schema pattern が一次強制 — semantic 検査は二重線**) |
   | I10 | 参照整合 | (a) input_trace の `target`・lifecycle の `widget` は widgets[] に存在する (b) 例外: `capture_cancel` の reason が `remove | reload | scene_unload` の場合のみ不在を**許す**(不在を強制はしない) |
-  | I11 | capture 状態機械 | 下の遷移表が正(pointer_id ごとに状態 {idle, captured{button, drag_started}} を追跡。**active button は pointer あたり最大 1** — move/cancel が button を持たない schema と整合させるための規範) |
-  | I12 | viewport | content_rect_px ⊆ [0,0,framebuffer_px]、content_rect_ui の縦横比・スケールが ui_scale と整合(`content_rect_px の幅高 = round(content_rect_ui の幅高 × ui_scale)`) |
+  | I11 | capture 状態機械 | 下の遷移表が正(pointer_id ごとに `capture: idle | {button, owner, drag_started}` と `hover: none | owner` を独立に追跡。active button は pointer あたり最大 1) |
+  | I12 | viewport | (a) content_rect_px ⊆ [0,0,framebuffer_px] (b) `content_rect_ui=[0,0,w,h]` 固定、letterbox offset は content_rect_px のみが所有し、px 幅高は §2-2 と同じ edge 個別 binary64 half-up の差に一致 |
 
-  **I11 遷移表(kind × 状態 × effects)** — 行になければ違反:
+  **I11 完全遷移表(kind × per-pointer state × effects)** — 行になければ違反。
+  pointer ごとの状態は独立で、一方の release/cancel は他 pointer を変更しない:
 
-  | kind | 状態 | 許可される effects | 必須の effects |
-  |------|------|------------------|---------------|
-  | pointer_down | idle・`target` あり | `capture`(高々 1 回) | —(capture しない down も適法) |
-  | pointer_down | idle・`target` なし | (capture 系なし) | — |
-  | pointer_down | captured(同 pointer) | (capture 系なし — active button は 1 個) | — |
-  | pointer_move | 任意 | `hover_enter` / `hover_exit`(交互)。captured 時のみ追加で `drag_start`(capture ごとに 1 回)・`drag`(`drag_start` 後のみ) | — |
-  | pointer_up | captured | `click`(**この capture 中に `drag_start` が無い場合のみ**) | `release_capture` |
-  | pointer_up | idle | (capture/click 系なし) | — |
-  | pointer_cancel | captured | — | `cancel` **かつ** `release_capture` |
-  | pointer_cancel | idle | (effects なし) | — |
+  | kind | pre-state / event 条件 | effects(この順) | next-state |
+  |------|------------------------|-------------------|------------|
+  | pointer_down | capture=idle、target あり | `capture` 又は空 | capture={event.button,target,false} 又は idle。hover 不変 |
+  | pointer_down | capture=idle、target なし | 空 | 不変 |
+  | pointer_down | captured | **不許可**(別 button を pressed-state として保持しない) | — |
+  | pointer_move | hover none→target | `hover_enter` | hover=target |
+  | pointer_move | hover owner→none | `hover_exit` | hover=none |
+  | pointer_move | hover owner→別 target | `hover_exit, hover_enter` | hover=target(旧 owner は pre-state から一意) |
+  | pointer_move | hover 不変 | hover effect なし | hover 不変 |
+  | pointer_move | captured | 上記 hover effect の後に、閾値到達時 `drag_start, drag`、以後 `drag`。target を持つ場合は capture.owner と一致 | capture.owner/button を保持、drag_started を更新 |
+  | pointer_up | captured、button= capture.button、target=capture.owner | `release_capture`、drag_started=false かつ同一 owner release の場合のみ続けて `click` | capture=idle、hover 不変 |
+  | pointer_up | idle | capture/click effect なし | 不変 |
+  | pointer_cancel | captured | `cancel, release_capture` | capture=idle、hover=none |
+  | pointer_cancel | idle | zero effect(`effects` 省略と `effects: []` は semantic equality で同値) | hover=none |
+
+  初回 `hover_exit`、owner 切替時の順序/target 不一致、up の button/owner
+  不一致、captured 中の別 button down、idle cancel の非空 effect、上表と異なる
+  effect 順はそれぞれ独立した違反 class とする。
 
   `capture`/`release_capture`/`click`/`drag_start`/`drag`/`cancel` が
   表の「許可」に現れない組で出現したら違反。**effects は網羅的な semantic
@@ -534,6 +543,10 @@ draft 2020-12。本版と同時にコミット済み)。閉じ方の要点:
 
 - **fixture coverage manifest(v8 で実体化)**:
   `test/fixtures/ui_semantic/normative/coverage.json`。
+  invariant/clause ID の単一正本は
+  `docs/schemas/pelican.ui_semantic_clauses.json`。coverage schema は clause 名を
+  複製せず、checker と C++ gate が registry と manifest の key 集合を完全一致
+  検査する。
   - **manifest 自体の正本 schema** =
     `docs/schemas/pelican.ui_semantic_coverage.schema.json`(コミット済み)。
     各エントリは `{ "fixture": <path>, "gate": "schema" | "semantic",

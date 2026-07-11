@@ -1,0 +1,13 @@
+{
+  "description": "pelican.ui emit binding load errors; expected comparison is phase/code/path.",
+  "cases": [
+    {"name":"unknown_event","input":{"schema":"pelican.ui","version":1,"key":"x","root":{"id":"root","type":"button","emit":{"on_click":{"event":"Missing"}}}},"error":{"phase":"parse","code":"unknown_event","path":"/root/emit/on_click/event"}},
+    {"name":"unknown_source","input":{"schema":"pelican.ui","version":1,"key":"x","root":{"id":"root","type":"button","emit":{"on_click":{"event":"Typed","fields":[{"name":"source","from":"mystery"},{"name":"amount","from":"static","value":1}]}}}},"error":{"phase":"parse","code":"unknown_source","path":"/root/emit/on_click/fields/0/from"}},
+    {"name":"unknown_widget_value_path","input":{"schema":"pelican.ui","version":1,"key":"x","root":{"id":"root","type":"button","emit":{"on_click":{"event":"Typed","fields":[{"name":"source","from":"widget_value(foo)"},{"name":"amount","from":"static","value":1}]}}}},"error":{"phase":"parse","code":"unknown_widget_value_path","path":"/root/emit/on_click/fields/0/from"}},
+    {"name":"type_mismatch","input":{"schema":"pelican.ui","version":1,"key":"x","root":{"id":"root","type":"button","emit":{"on_click":{"event":"Typed","fields":[{"name":"source","from":"static","value":1},{"name":"amount","from":"static","value":1}]}}}},"error":{"phase":"parse","code":"type_mismatch","path":"/root/emit/on_click/fields/0"}},
+    {"name":"range_violation","input":{"schema":"pelican.ui","version":1,"key":"x","root":{"id":"root","type":"button","emit":{"on_click":{"event":"Typed","fields":[{"name":"source","from":"stable_id"},{"name":"amount","from":"static","value":99}]}}}},"error":{"phase":"parse","code":"range_violation","path":"/root/emit/on_click/fields/1/value"}},
+    {"name":"required_missing","input":{"schema":"pelican.ui","version":1,"key":"x","root":{"id":"root","type":"button","emit":{"on_click":{"event":"Typed","fields":[{"name":"source","from":"stable_id"}]}}}},"error":{"phase":"parse","code":"required_missing","path":"/root/emit/on_click/fields"}},
+    {"name":"unknown_field","input":{"schema":"pelican.ui","version":1,"key":"x","root":{"id":"root","type":"button","emit":{"on_click":{"event":"Typed","fields":[{"name":"source","from":"stable_id"},{"name":"amount","from":"static","value":1},{"name":"other","from":"static","value":1}]}}}},"error":{"phase":"parse","code":"unknown_field","path":"/root/emit/on_click/fields/2/name"}},
+    {"name":"no_payload_event","input":{"schema":"pelican.ui","version":1,"key":"x","root":{"id":"root","type":"button","emit":{"on_click":{"event":"Payloadless","fields":[{"name":"source","from":"stable_id"}]}}}},"error":{"phase":"parse","code":"no_payload_event","path":"/root/emit/on_click/fields"}}
+  ]
+}

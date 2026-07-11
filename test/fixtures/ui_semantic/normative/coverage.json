@@ -1,6 +1,6 @@
 {
   "schema": "pelican.ui_semantic_fixture.coverage",
-  "version": 2,
+  "version": 3,
   "description": "Structured coverage manifest (schema: docs/schemas/pelican.ui_semantic_coverage.schema.json). Small enums are covered exhaustively; ui_key/ui_pad_control are covered by one representative per vocabulary branch, with full enum<->pattern sync enforced by check_coverage.mjs. Semantic invariants are covered per clause; I7/I9 are schema-enforced (gate: schema) and point at schema-invalid fixtures. check_coverage.mjs enforces exact set equality between machine-extracted schema enums and this manifest, and existence of every referenced fixture.",
   "enum_coverage": {
     "input_trace.kind": {
@@ -103,7 +103,9 @@
     "I5a_decl_seq_monotonic": { "fixture": "semantic_invalid/i05b_nonmonotonic_decl_seq.json", "gate": "semantic" },
     "I5b_event_seq_monotonic": { "fixture": "semantic_invalid/i05_nonmonotonic_event_seq.json", "gate": "semantic" },
     "I6a_run0_zero": { "fixture": "semantic_invalid/i06_run_index_gap.json", "gate": "semantic" },
-    "I6b_total_match": { "fixture": "semantic_invalid/i06b_total_mismatch.json", "gate": "semantic" },
+    "I6b_run_contiguous": { "fixture": "semantic_invalid/i06b_run_gap.json", "gate": "semantic" },
+    "I6c_total_match": { "fixture": "semantic_invalid/i06b_total_mismatch.json", "gate": "semantic" },
+    "I6d_quad_limit": { "fixture": "invalid/total_index_count_limit.json", "gate": "schema" },
     "I7_unique_effects_consumed": { "fixture": "invalid/duplicate_effects.json", "gate": "schema", "clause": "schema uniqueItems is the primary enforcement" },
     "I8_scissor_containment": { "fixture": "semantic_invalid/i08_scissor_outside.json", "gate": "semantic" },
     "I9_texture_traversal": { "fixture": "invalid/traversal_texture.json", "gate": "schema", "clause": "schema pattern is the primary enforcement" },
@@ -114,6 +116,15 @@
     "I11b_capture_only_on_down": { "fixture": "semantic_invalid/i11b_capture_on_move.json", "gate": "semantic" },
     "I11c_up_requires_release": { "fixture": "semantic_invalid/i11c_up_without_release.json", "gate": "semantic" },
     "I11d_click_xor_drag": { "fixture": "semantic_invalid/i11d_click_after_drag.json", "gate": "semantic" },
-    "I12_viewport_containment": { "fixture": "semantic_invalid/i12_content_rect_outside.json", "gate": "semantic" }
+    "I11e_hover_initial_exit": { "fixture": "semantic_invalid/i11e_hover_initial_exit.json", "gate": "semantic" },
+    "I11f_hover_owner_order": { "fixture": "semantic_invalid/i11f_hover_owner.json", "gate": "semantic" },
+    "I11g_up_button_matches_capture": { "fixture": "semantic_invalid/i11g_up_button.json", "gate": "semantic" },
+    "I11h_up_owner_matches_capture": { "fixture": "semantic_invalid/i11h_up_owner.json", "gate": "semantic" },
+    "I11i_captured_second_button": { "fixture": "semantic_invalid/i11i_second_button.json", "gate": "semantic" },
+    "I11j_idle_cancel_empty": { "fixture": "semantic_invalid/i11j_idle_cancel.json", "gate": "semantic" },
+    "I11k_effect_order": { "fixture": "semantic_invalid/i11k_effect_order.json", "gate": "semantic" },
+    "I11l_multi_pointer_independent": { "fixture": "valid/multi_pointer_interleave.json", "gate": "semantic" },
+    "I12a_viewport_containment": { "fixture": "semantic_invalid/i12_content_rect_outside.json", "gate": "semantic" },
+    "I12b_viewport_scale_origin": { "fixture": "semantic_invalid/i12b_scale_rounding.json", "gate": "semantic" }
   }
 }

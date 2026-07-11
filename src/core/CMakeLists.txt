@@ -31,6 +31,7 @@ add_subdirectory(renderer)
 add_subdirectory(fullscreenpass)
 add_subdirectory(light)
 add_subdirectory(phys)
+add_subdirectory(ui)
 
 add_subdirectory(userpublic)
 target_include_directories(pelican_core PUBLIC ./userpublic ${CMAKE_CURRENT_SOURCE_DIR})
