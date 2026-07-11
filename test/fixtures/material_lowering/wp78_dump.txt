@@ -1,0 +1,23 @@
+material: <surface-defaults>
+surface: wp78.surface
+layer: C-material (lowered from B surface source)
+hooks:
+  - pelican_vertex_displace_v1
+  - pelican_surface_v1
+shader_source:
+  vertex: engine://shaders/material/surface_v1.vert
+  fragment: engine://shaders/material/surface_v1.frag
+variants:
+  main: []
+  depth: [PELICAN_PASS_DEPTH]
+  velocity: [PELICAN_PASS_VELOCITY]
+public_libraries:
+  - engine://shaders/include/pelican_surface_v1.glsl
+  - engine://shaders/include/pelican_lighting_v1.glsl
+defines: []
+values: std140 size=16
+  tint type=color offset=0 size=16
+bindings:
+  set=2 binding=6 type=storage_buffer name=MaterialBuffer
+  set=2 binding=7 type=combined_image_sampler name=detail view=SRGB default=engine://textures/white
+render_state: blend=opaque cull=back depth_test=true depth_write=true depth_compare=less

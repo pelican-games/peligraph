@@ -288,6 +288,43 @@ ShaderBundleId ShaderLibrary::loadFromSpirv(std::span<const uint32_t> spirv, std
     return id;
 }
 
+SurfaceShaderBundleIds ShaderLibrary::loadFromSurface(const SurfaceFormatDocument &surface,
+                                                      std::string_view source_name,
+                                                      SurfacePass pass,
+                                                      std::vector<std::string> defines) {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    ShaderCompiler compiler;
+    const auto composition = composeSurfaceShaders(surface, source_name, pass, defines);
+    const auto result = compileSurfaceShaders(compiler, surface, source_name, pass, defines);
+    if (!result.vertex.ok || !result.fragment.ok) {
+        std::ostringstream message;
+        message << "Surface shader compile failed: " << source_name << " ("
+                << surfacePassName(pass) << ")";
+        if (!result.vertex.ok) message << "\nvertex:\n" << result.vertex.log;
+        if (!result.fragment.ok) message << "\nfragment:\n" << result.fragment.log;
+        throw std::runtime_error(message.str());
+    }
+
+    const auto vertex_name = std::string{source_name} + "#" +
+                             std::string{surfacePassName(pass)} + ".vert";
+    const auto fragment_name = std::string{source_name} + "#" +
+                               std::string{surfacePassName(pass)} + ".frag";
+    const auto vertex = bundles.reg(buildFromSpirv(result.vertex.spirv, {}, 1, vertex_name,
+                                                   composition.defines));
+    const auto fragment = bundles.reg(buildFromSpirv(result.fragment.spirv, {}, 1, fragment_name,
+                                                      composition.defines));
+    bundle_ids.push_back(vertex);
+    bundle_ids.push_back(fragment);
+    return {vertex, fragment};
+#else
+    (void)surface;
+    (void)pass;
+    (void)defines;
+    throw std::runtime_error("Runtime shader compiler is disabled; B-layer surface source is unavailable: " +
+                             std::string{source_name});
+#endif
+}
+
 const ShaderBundle &ShaderLibrary::get(ShaderBundleId id) const { return bundles.get(id); }
 
 bool ShaderLibrary::reload(ShaderBundleId id) {

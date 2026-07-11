@@ -1,0 +1,93 @@
+#version 460
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_GOOGLE_cpp_style_line_directive : enable
+
+#include "pelican_material.glsl"
+#include "pelican_lighting_v1.glsl"
+#include "__pelican_surface_params.glsl"
+
+layout(set = PELICAN_SET_MATERIAL, binding = 0) uniform sampler2D baseColorSampler;
+layout(set = PELICAN_SET_MATERIAL, binding = 1) uniform sampler2D metallicRoughnessSampler;
+layout(set = PELICAN_SET_MATERIAL, binding = 2) uniform sampler2D normalSampler;
+layout(set = PELICAN_SET_MATERIAL, binding = 3) uniform sampler2D emissiveSampler;
+
+#include "__pelican_user_surface.glsl"
+#if !defined(PELICAN_HAS_BRDF_V1) && !defined(PELICAN_HAS_LIGHTING_V1)
+#include "shaders/material/standard_lighting.glsl"
+#endif
+
+layout(location = 0) in vec2 texUV;
+layout(location = 1) in vec4 inColor;
+layout(location = 2) in vec3 inNormal;
+layout(location = 3) in vec3 inWorldPos;
+layout(location = 4) in vec3 inTangent;
+layout(location = 5) in vec3 inBitangent;
+layout(location = 6) in vec4 inCustom0;
+layout(location = 7) in vec4 inCustom1;
+
+layout(location = 0) out vec4 outAlbedo;
+layout(location = 1) out vec4 outNormal;
+layout(location = 2) out vec4 outMaterial;
+layout(location = 3) out vec4 outWorldPos;
+layout(location = 4) out vec4 outEmissive;
+
+void main() {
+#ifdef PELICAN_PASS_DEPTH
+    return;
+#else
+    PelicanMaterialData material = pelicanMaterials.materials[pelicanPush.materialIndex];
+    PelicanSurfaceInputV1 input_data;
+    input_data.uv = texUV;
+    input_data.vertex_color = inColor;
+    input_data.world_position = inWorldPos;
+    input_data.normal = normalize(inNormal);
+    input_data.view_direction = normalize(pelicanFrame.camera_position.xyz - inWorldPos);
+    input_data.custom0 = inCustom0;
+    input_data.custom1 = inCustom1;
+
+    PelicanSurfaceV1 surface;
+    surface.base_color = texture(baseColorSampler, texUV) * inColor;
+    surface.normal = input_data.normal;
+    if (length(inTangent) != 0.0) {
+        mat3 tbn = mat3(normalize(inTangent), normalize(inBitangent), input_data.normal);
+        vec3 tangent_normal = texture(normalSampler, texUV).xyz * 2.0 - 1.0;
+        tangent_normal.xy *= material.surfaceFactors.z;
+        surface.normal = normalize(tbn * normalize(tangent_normal));
+    }
+    vec3 mr = texture(metallicRoughnessSampler, texUV).rgb;
+    surface.roughness = mr.g * material.surfaceFactors.y;
+    surface.metallic = mr.b * material.surfaceFactors.x;
+    surface.occlusion = mix(1.0, mr.r, material.surfaceFactors.w);
+    surface.emissive = texture(emissiveSampler, texUV).rgb * material.emissiveFactor.rgb;
+#ifdef PELICAN_HAS_SURFACE_V1
+    pelican_surface_v1(input_data, surface);
+#endif
+
+    vec3 lit;
+#ifdef PELICAN_HAS_LIGHTING_V1
+    lit = pelican_lighting_v1(surface, input_data);
+#elif defined(PELICAN_HAS_BRDF_V1)
+    lit = surface.emissive;
+    for (uint i = 0u; i < pelican_light_count(); ++i) {
+        PelicanLightV1 light = pelican_light(i, input_data.world_position);
+        lit += pelican_brdf_v1(surface, light.direction, input_data.view_direction,
+                              light.radiance) * light.attenuation *
+               pelican_shadow(i, input_data.world_position);
+    }
+#ifdef PELICAN_HAS_AMBIENT_V1
+    lit += pelican_ambient_v1(surface, input_data.view_direction,
+                             pelican_env_ambient(surface.normal));
+#else
+    lit += surface.base_color.rgb * pelican_env_ambient(surface.normal);
+#endif
+#else
+    lit = pelican_lighting_v1(surface, input_data);
+#endif
+
+    outAlbedo = vec4(lit, surface.base_color.a);
+    outNormal = vec4(surface.normal * 0.5 + 0.5, 1.0);
+    outMaterial = vec4(surface.roughness, surface.metallic, surface.occlusion, 1.0);
+    outWorldPos = vec4(input_data.world_position, 1.0);
+    outEmissive = vec4(surface.emissive, 1.0);
+#endif
+}

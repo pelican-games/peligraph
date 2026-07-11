@@ -52,7 +52,7 @@ TEST_CASE("surface format accepts minimal GLSL, HLSL, and Slang headers", "[surf
     REQUIRE(document.screen_inputs.empty());
     REQUIRE(document.warnings.empty());
     REQUIRE(source.substr(document.code_offset) == document.code);
-    REQUIRE(contains(document.code, "pelican_surface"));
+    REQUIRE(contains(document.code, "pelican_surface_v1"));
 }
 
 TEST_CASE("surface format preserves ordered declarations and the code split offset",
@@ -89,7 +89,7 @@ TEST_CASE("surface format preserves ordered declarations and the code split offs
     REQUIRE(contains(document.warnings.at(1), "sampler"));
     REQUIRE(contains(document.warnings.at(2), "capabilities"));
     REQUIRE(source.substr(document.code_offset) == document.code);
-    REQUIRE(document.code.starts_with("\nvoid pelican_surface"));
+    REQUIRE(document.code.starts_with("\nvoid pelican_surface_v1"));
 }
 
 TEST_CASE("surface format errors identify the source and offending declaration",
@@ -103,6 +103,10 @@ TEST_CASE("surface format errors identify the source and offending declaration",
         {"invalid/default_type.surface", "declared type vec3", "tint"},
         {"invalid/bad_texture_default.surface", "project:// or engine://", "flow_map"},
         {"invalid/missing_color_space.surface", "requires color_space", "flow_map"},
+        {"invalid/unknown_hook.surface", "unknown pelican_ function", "pelican_surafce_v1"},
+        {"invalid/exclusive_terminal.surface", "mutually exclusive terminal hooks", "pelican_lighting_v1"},
+        {"invalid/empty_code.surface", "empty code snippet", ""},
+        {"invalid/no_hook.surface", "no recognized pelican_*_v1 hook", ""},
     }));
     const auto &[file, expected_error, declaration_name] = cases;
     const auto source = readText(fixtureRoot() / file);
@@ -120,6 +124,22 @@ TEST_CASE("surface format errors identify the source and offending declaration",
     if (!declaration_name.empty()) {
         REQUIRE(contains(message, declaration_name));
     }
+}
+
+TEST_CASE("surface format reflects versioned hooks without changing code identity",
+          "[surface-format][surface-hooks]") {
+    const auto source = readText(fixtureRoot() / "valid" / "wp78.surface");
+    const auto document = parseSurfaceFormat(source, "wp78.surface");
+    REQUIRE(source.substr(document.code_offset) == document.code);
+    REQUIRE(document.code_line == 7);
+    REQUIRE(document.hooks.vertex_displace_v1);
+    REQUIRE(document.hooks.surface_v1);
+    REQUIRE_FALSE(document.hooks.brdf_v1);
+    REQUIRE_FALSE(document.hooks.lighting_v1);
+    const auto hooks = surfaceHookNames(document.hooks);
+    REQUIRE(hooks.size() == 2);
+    REQUIRE(static_cast<bool>(hooks[0] == "pelican_vertex_displace_v1"));
+    REQUIRE(static_cast<bool>(hooks[1] == "pelican_surface_v1"));
 }
 
 } // namespace Pelican

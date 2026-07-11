@@ -1,0 +1,7 @@
+//! pelican.surface v1
+//! language: glsl
+
+vec3 pelican_brdf_v1(in PelicanSurfaceV1 surface, in vec3 light_dir,
+                     in vec3 view_dir, in vec3 radiance) { return radiance; }
+vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface,
+                         in PelicanSurfaceInputV1 surface_input) { return vec3(1.0); }

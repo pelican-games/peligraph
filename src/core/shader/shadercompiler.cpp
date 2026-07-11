@@ -6,6 +6,7 @@
 #include <memory>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_map>
 
 #if PELICAN_RUNTIME_SHADER_COMPILER
 #include <shaderc/shaderc.hpp>
@@ -63,6 +64,7 @@ struct IncludeResultStorage {
 
 class FileIncluder final : public shaderc::CompileOptions::IncluderInterface {
     std::vector<std::filesystem::path> include_dirs;
+    std::unordered_map<std::string, std::string> virtual_includes;
 
     static shaderc_include_result *makeResult(std::string source_name, std::string content) {
         auto storage = std::make_unique<IncludeResultStorage>();
@@ -79,10 +81,22 @@ class FileIncluder final : public shaderc::CompileOptions::IncluderInterface {
     static shaderc_include_result *makeError(std::string message) { return makeResult("", std::move(message)); }
 
   public:
-    explicit FileIncluder(std::vector<std::filesystem::path> dirs) : include_dirs{std::move(dirs)} {}
+    FileIncluder(std::vector<std::filesystem::path> dirs,
+                 const std::vector<std::pair<std::string, std::string>> &sources)
+        : include_dirs{std::move(dirs)} {
+        for (const auto &[name, content] : sources) {
+            if (!virtual_includes.emplace(name, content).second) {
+                throw std::runtime_error("Duplicate virtual shader include: " + name);
+            }
+        }
+    }
 
     shaderc_include_result *GetInclude(const char *requested_source, shaderc_include_type type,
                                        const char *requesting_source, size_t) override {
+        if (const auto found = virtual_includes.find(requested_source);
+            found != virtual_includes.end()) {
+            return makeResult(found->first, found->second);
+        }
         std::vector<std::filesystem::path> roots;
         if (type == shaderc_include_type_relative && requesting_source != nullptr) {
             const std::filesystem::path requesting_path{requesting_source};
@@ -136,11 +150,12 @@ class FileIncluder final : public shaderc::CompileOptions::IncluderInterface {
 ShaderCompileResult compileGlsl(std::string_view source, vk::ShaderStageFlagBits stage, std::string_view name,
                                 std::string_view entry_point,
                                 const std::vector<std::filesystem::path> &include_dirs,
-                                const std::vector<std::string> &defines) {
+                                const std::vector<std::string> &defines,
+                                const std::vector<std::pair<std::string, std::string>> &virtual_includes) {
     shaderc::Compiler compiler;
     shaderc::CompileOptions options;
     options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_2);
-    options.SetIncluder(std::make_unique<FileIncluder>(include_dirs));
+    options.SetIncluder(std::make_unique<FileIncluder>(include_dirs, virtual_includes));
     for (const auto &define : defines) {
         options.AddMacroDefinition(define);
     }
@@ -202,7 +217,7 @@ ShaderCompileResult ShaderCompiler::compileFile(const std::filesystem::path &pat
         compile_include_dirs.insert(compile_include_dirs.begin(), source_dir);
     }
     return compileGlsl(readTextFile(path), stage, normalizedPath(path).string(), opts.entry_point,
-                       compile_include_dirs, opts.defines);
+                       compile_include_dirs, opts.defines, opts.virtual_includes);
 #else
     (void)path;
     return {{}, "Runtime shader compiler is disabled", false};
@@ -212,7 +227,8 @@ ShaderCompileResult ShaderCompiler::compileFile(const std::filesystem::path &pat
 ShaderCompileResult ShaderCompiler::compileSource(std::string_view source, vk::ShaderStageFlagBits stage,
                                                   std::string_view name, const ShaderCompileOptions &opts) {
 #if PELICAN_RUNTIME_SHADER_COMPILER
-    return compileGlsl(source, stage, name, opts.entry_point, include_dirs, opts.defines);
+    return compileGlsl(source, stage, name, opts.entry_point, include_dirs, opts.defines,
+                       opts.virtual_includes);
 #else
     (void)source;
     (void)stage;

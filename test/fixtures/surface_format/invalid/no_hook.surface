@@ -1,0 +1,4 @@
+//! pelican.surface v1
+//! language: glsl
+
+vec3 ordinary_helper() { return vec3(1.0); }

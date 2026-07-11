@@ -1,0 +1,4 @@
+//! pelican.surface v1
+//! language: glsl
+
+void pelican_surafce_v1(in PelicanSurfaceInputV1 surface_input, inout PelicanSurfaceV1 surface) {}

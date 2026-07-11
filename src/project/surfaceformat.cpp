@@ -632,6 +632,125 @@ void validateUniqueResourceNames(const SurfaceFormatDocument &document,
     }
 }
 
+std::string stripCommentsAndStrings(std::string_view code) {
+    enum class State { code, line_comment, block_comment, string_literal, char_literal };
+    State state = State::code;
+    std::string cleaned{code};
+    for (std::size_t i = 0; i < cleaned.size(); ++i) {
+        const char ch = cleaned[i];
+        const char next = i + 1 < cleaned.size() ? cleaned[i + 1] : '\0';
+        if (state == State::code) {
+            if (ch == '/' && next == '/') {
+                cleaned[i] = cleaned[i + 1] = ' ';
+                ++i;
+                state = State::line_comment;
+            } else if (ch == '/' && next == '*') {
+                cleaned[i] = cleaned[i + 1] = ' ';
+                ++i;
+                state = State::block_comment;
+            } else if (ch == '"') {
+                cleaned[i] = ' ';
+                state = State::string_literal;
+            } else if (ch == '\'') {
+                cleaned[i] = ' ';
+                state = State::char_literal;
+            }
+        } else if (state == State::line_comment) {
+            if (ch == '\n') state = State::code;
+            else cleaned[i] = ' ';
+        } else if (state == State::block_comment) {
+            if (ch == '*' && next == '/') {
+                cleaned[i] = cleaned[i + 1] = ' ';
+                ++i;
+                state = State::code;
+            } else if (ch != '\n') {
+                cleaned[i] = ' ';
+            }
+        } else {
+            const bool escaped = i > 0 && code[i - 1] == '\\';
+            const bool closes = (state == State::string_literal && ch == '"') ||
+                                (state == State::char_literal && ch == '\'');
+            if (closes && !escaped) state = State::code;
+            if (ch != '\n') cleaned[i] = ' ';
+        }
+    }
+    return cleaned;
+}
+
+std::vector<std::string> definedPelicanFunctions(std::string_view code) {
+    const auto cleaned = stripCommentsAndStrings(code);
+    std::vector<std::string> functions;
+    std::size_t cursor = 0;
+    while ((cursor = cleaned.find("pelican_", cursor)) != std::string::npos) {
+        if (cursor > 0 && (std::isalnum(static_cast<unsigned char>(cleaned[cursor - 1])) ||
+                           cleaned[cursor - 1] == '_')) {
+            cursor += 8;
+            continue;
+        }
+        auto end = cursor + 8;
+        while (end < cleaned.size() &&
+               (std::isalnum(static_cast<unsigned char>(cleaned[end])) || cleaned[end] == '_')) {
+            ++end;
+        }
+        auto open = end;
+        while (open < cleaned.size() && std::isspace(static_cast<unsigned char>(cleaned[open]))) ++open;
+        if (open >= cleaned.size() || cleaned[open] != '(') {
+            cursor = end;
+            continue;
+        }
+        int depth = 0;
+        auto close = open;
+        for (; close < cleaned.size(); ++close) {
+            if (cleaned[close] == '(') ++depth;
+            else if (cleaned[close] == ')' && --depth == 0) {
+                ++close;
+                break;
+            }
+        }
+        while (close < cleaned.size() && std::isspace(static_cast<unsigned char>(cleaned[close]))) ++close;
+        if (close < cleaned.size() && cleaned[close] == '{') {
+            functions.emplace_back(cleaned.substr(cursor, end - cursor));
+        }
+        cursor = end;
+    }
+    return functions;
+}
+
+SurfaceHookSet validateSurfaceHooks(std::string_view code, std::string_view source_name) {
+    const auto context = surfaceContext(source_name);
+    const auto cleaned = stripCommentsAndStrings(code);
+    if (std::all_of(cleaned.begin(), cleaned.end(), [](unsigned char ch) {
+            return std::isspace(ch) != 0;
+        })) {
+        throw std::runtime_error(context + " has an empty code snippet");
+    }
+
+    SurfaceHookSet hooks;
+    std::unordered_set<std::string> seen;
+    for (const auto &name : definedPelicanFunctions(code)) {
+        if (!seen.insert(name).second) {
+            throw std::runtime_error(context + " defines hook '" + name + "' more than once");
+        }
+        if (name == "pelican_vertex_displace_v1") hooks.vertex_displace_v1 = true;
+        else if (name == "pelican_surface_v1") hooks.surface_v1 = true;
+        else if (name == "pelican_brdf_v1") hooks.brdf_v1 = true;
+        else if (name == "pelican_ambient_v1") hooks.ambient_v1 = true;
+        else if (name == "pelican_lighting_v1") hooks.lighting_v1 = true;
+        else {
+            throw std::runtime_error(context + " defines unknown pelican_ function '" + name + "'");
+        }
+    }
+    if (hooks.brdf_v1 && hooks.lighting_v1) {
+        throw std::runtime_error(context +
+                                 " defines mutually exclusive terminal hooks "
+                                 "'pelican_brdf_v1' and 'pelican_lighting_v1'");
+    }
+    if (surfaceHookNames(hooks).empty()) {
+        throw std::runtime_error(context + " defines no recognized pelican_*_v1 hook");
+    }
+    return hooks;
+}
+
 } // namespace
 
 std::string_view surfaceParamTypeName(SurfaceParamType type) {
@@ -650,6 +769,16 @@ std::string_view surfaceParamTypeName(SurfaceParamType type) {
         return "color";
     }
     return "unknown";
+}
+
+std::vector<std::string_view> surfaceHookNames(const SurfaceHookSet &hooks) {
+    std::vector<std::string_view> names;
+    if (hooks.vertex_displace_v1) names.push_back("pelican_vertex_displace_v1");
+    if (hooks.surface_v1) names.push_back("pelican_surface_v1");
+    if (hooks.brdf_v1) names.push_back("pelican_brdf_v1");
+    if (hooks.ambient_v1) names.push_back("pelican_ambient_v1");
+    if (hooks.lighting_v1) names.push_back("pelican_lighting_v1");
+    return names;
 }
 
 SurfaceFormatDocument parseSurfaceFormat(std::string_view source, std::string_view source_name) {
@@ -764,7 +893,9 @@ SurfaceFormatDocument parseSurfaceFormat(std::string_view source, std::string_vi
     }
     validateUniqueResourceNames(document, source_name);
     document.code_offset = offset;
+    document.code_line = line_number;
     document.code = std::string{source.substr(offset)};
+    document.hooks = validateSurfaceHooks(document.code, source_name);
     return document;
 }
 

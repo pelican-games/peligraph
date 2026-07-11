@@ -25,6 +25,12 @@ std::string readFixture() {
     return {std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
 }
 
+std::string readText(const std::filesystem::path &path) {
+    std::ifstream file{path, std::ios_base::binary};
+    if (!file.is_open()) throw std::runtime_error("failed to open " + path.string());
+    return {std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
+}
+
 template <typename T>
 T readAt(const std::vector<std::byte> &bytes, std::size_t offset) {
     T value{};
@@ -94,7 +100,7 @@ TEST_CASE("type color supports explicit linear encoding without decoding alpha",
         "//! language: glsl\n"
         "//! params:\n"
         "//!   - { name: tint, type: color, default: [0.5, 0.25, 1.0, 0.4], encoding: linear }\n"
-        "\nvoid pelican_surface() {}\n";
+        "\nvoid pelican_surface_v1(in PelicanSurfaceInputV1 i, inout PelicanSurfaceV1 s) {}\n";
     const auto surface = parseSurfaceFormat(source, "linear_color.surface");
     REQUIRE(source.substr(surface.code_offset) == surface.code);
     const auto values = bindSurfaceValues(surface);
@@ -126,6 +132,18 @@ TEST_CASE("dump includes defines bindings values and render state", "[material-l
     REQUIRE(text.find("binding=7") != std::string::npos);
     REQUIRE(text.find("tint type=color offset=48") != std::string::npos);
     REQUIRE(text.find("blend=additive cull=none") != std::string::npos);
+}
+
+TEST_CASE("B surface lowering has a byte-stable public C description golden",
+          "[material-lowering][golden]") {
+    const auto root = std::filesystem::path{PELICAN_TEST_SOURCE_DIR};
+    const auto source = readText(root / "test" / "fixtures" / "surface_format" / "valid" /
+                                 "wp78.surface");
+    const auto surface = parseSurfaceFormat(source, "wp78.surface");
+    const auto actual = dumpLoweredMaterial(lowerSurfaceDefaults(surface, "wp78.surface"));
+    const auto expected = readText(root / "test" / "fixtures" / "material_lowering" /
+                                   "wp78_dump.txt");
+    REQUIRE(actual == expected);
 }
 
 } // namespace Pelican

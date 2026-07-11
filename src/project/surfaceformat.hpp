@@ -79,6 +79,14 @@ enum class SurfaceDepthCompare {
     always,
 };
 
+struct SurfaceHookSet {
+    bool vertex_displace_v1 = false;
+    bool surface_v1 = false;
+    bool brdf_v1 = false;
+    bool ambient_v1 = false;
+    bool lighting_v1 = false;
+};
+
 struct SurfaceRenderState {
     SurfaceBlendMode blend = SurfaceBlendMode::opaque;
     SurfaceCullMode cull = SurfaceCullMode::back;
@@ -94,7 +102,9 @@ struct SurfaceFormatDocument {
     std::vector<std::string> screen_inputs;
     SurfaceRenderState render_state;
     std::size_t code_offset = 0;
+    std::size_t code_line = 1;
     std::string code;
+    SurfaceHookSet hooks;
     std::vector<std::string> warnings;
 };
 
@@ -102,5 +112,7 @@ SurfaceFormatDocument parseSurfaceFormat(std::string_view source,
                                          std::string_view source_name = "<surface>");
 
 std::string_view surfaceParamTypeName(SurfaceParamType type);
+
+std::vector<std::string_view> surfaceHookNames(const SurfaceHookSet &hooks);
 
 } // namespace Pelican
