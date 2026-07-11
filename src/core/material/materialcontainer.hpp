@@ -32,6 +32,7 @@ static_assert(sizeof(MaterialIndexPushConstant) <= PELICAN_PUSH_SHADER_BYTES);
 DECLARE_MODULE(MaterialContainer) {
 
     vk::Device device;
+    bool split_custom_samplers = false;
 
     vk::UniqueSampler nearest_sampler, linear_sampler;
     vk::UniqueDescriptorPool desc_pool;

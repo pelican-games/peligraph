@@ -27,6 +27,8 @@ struct ShaderBundle {
     std::vector<std::string> defines;
     uint64_t version = 1;
     std::string log;
+    std::vector<SpvLinkBinding> binding_table;
+    std::string cache_key;
 };
 
 struct SurfaceShaderBundleIds {

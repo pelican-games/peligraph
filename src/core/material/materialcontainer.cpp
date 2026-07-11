@@ -3,6 +3,7 @@
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../shader/pelican_sets.hpp"
 #include "../shader/pipelinefactory.hpp"
+#include "../shader/surfacecompiler.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/util.hpp"
 #include "standardmaterialresource.hpp"
@@ -152,17 +153,20 @@ MaterialGpuData makeMaterialGpuData(const MaterialInfo &info) {
     return data;
 }
 
-static vk::UniqueDescriptorPool createDescriptorPool(vk::Device device) {
-    vk::DescriptorPoolSize pool_size[2];
-    pool_size[0].type = vk::DescriptorType::eStorageBuffer;
-    pool_size[0].descriptorCount = 1024;
-    pool_size[1].type = vk::DescriptorType::eCombinedImageSampler;
-    pool_size[1].descriptorCount = 32768;
+static vk::UniqueDescriptorPool createDescriptorPool(vk::Device device, bool split_custom_samplers) {
+    std::vector<vk::DescriptorPoolSize> pool_sizes{
+        {vk::DescriptorType::eStorageBuffer, 1024},
+        {vk::DescriptorType::eCombinedImageSampler, 32768},
+    };
+    if (split_custom_samplers) {
+        pool_sizes.push_back({vk::DescriptorType::eSampledImage, 16384});
+        pool_sizes.push_back({vk::DescriptorType::eSampler, 16384});
+    }
 
     vk::DescriptorPoolCreateInfo create_info;
     create_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
     create_info.maxSets = 1024;
-    create_info.setPoolSizes(pool_size);
+    create_info.setPoolSizes(pool_sizes);
     return device.createDescriptorPoolUnique(create_info);
 }
 
@@ -206,8 +210,10 @@ static vk::UniqueImageView createImageView(vk::Device device, const ImageWrapper
 
 MaterialContainer::MaterialContainer()
     : device{GET_MODULE(VulkanManageCore).getDevice()},
+      split_custom_samplers{surfaceSpvLinkExperimentalEnabled()},
       nearest_sampler{createSampler(device, vk::Filter::eNearest)},
-      linear_sampler{createSampler(device, vk::Filter::eLinear)}, desc_pool{createDescriptorPool(device)},
+      linear_sampler{createSampler(device, vk::Filter::eLinear)},
+      desc_pool{createDescriptorPool(device, split_custom_samplers)},
       material_buffer{GET_MODULE(VulkanManageCore).allocBuf(
           sizeof(MaterialGpuData) * maxMaterials, vk::BufferUsageFlagBits::eStorageBuffer,
           vma::MemoryUsage::eAuto, vma::AllocationCreateFlagBits::eHostAccessSequentialWrite)} {}
@@ -282,8 +288,9 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
 
     const auto texture_binding_count =
         info.vat ? vatMaterialTextureBindingCount : baseMaterialTextureBindingCount;
-    std::vector<vk::DescriptorImageInfo> image_infos(
-        materialCustomTextureFirstBinding + info.custom_textures.size());
+    const auto image_info_count = materialCustomTextureFirstBinding +
+        info.custom_textures.size() * (split_custom_samplers ? 2 : 1);
+    std::vector<vk::DescriptorImageInfo> image_infos(image_info_count);
 
     const auto setImageInfo = [&](uint32_t binding, GlobalTextureId texture, vk::Sampler sampler,
                                   bool srgb) {
@@ -309,8 +316,11 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         const auto texture = custom.texture.value_or(
             GET_MODULE(StandardMaterialResource).defaultTexture(custom.missing_default));
         try {
-            setImageInfo(materialCustomTextureFirstBinding + static_cast<std::uint32_t>(i),
-                         texture, linear_sampler.get(), custom.role == SurfaceTextureRole::color);
+            const auto binding = materialCustomTextureFirstBinding + static_cast<std::uint32_t>(
+                i * (split_custom_samplers ? 2 : 1));
+            setImageInfo(binding, texture, linear_sampler.get(),
+                         custom.role == SurfaceTextureRole::color);
+            if (split_custom_samplers) image_infos[binding + 1] = image_infos[binding];
         } catch (const std::exception &error) {
             throw std::runtime_error("material texture '" + custom.name + "': " + error.what());
         }
@@ -318,27 +328,34 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
 
     std::vector<vk::WriteDescriptorSet> writes;
     writes.reserve(texture_binding_count + info.custom_textures.size() + 1);
-    const auto addImageWrite = [&](uint32_t binding) {
+    const auto addImageWrite = [&](uint32_t binding, vk::DescriptorType type) {
         vk::WriteDescriptorSet write;
         write.dstSet = descset.get();
         write.dstBinding = binding;
         write.dstArrayElement = 0;
-        write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        write.descriptorType = type;
         write.descriptorCount = 1;
         write.pImageInfo = &image_infos[binding];
         writes.push_back(write);
     };
 
-    addImageWrite(baseColorBinding);
-    addImageWrite(metallicRoughnessBinding);
-    addImageWrite(normalBinding);
-    addImageWrite(emissiveBinding);
+    addImageWrite(baseColorBinding, vk::DescriptorType::eCombinedImageSampler);
+    addImageWrite(metallicRoughnessBinding, vk::DescriptorType::eCombinedImageSampler);
+    addImageWrite(normalBinding, vk::DescriptorType::eCombinedImageSampler);
+    addImageWrite(emissiveBinding, vk::DescriptorType::eCombinedImageSampler);
     if (info.vat) {
-        addImageWrite(vatPositionBinding);
-        addImageWrite(vatNormalBinding);
+        addImageWrite(vatPositionBinding, vk::DescriptorType::eCombinedImageSampler);
+        addImageWrite(vatNormalBinding, vk::DescriptorType::eCombinedImageSampler);
     }
     for (std::size_t i = 0; i < info.custom_textures.size(); ++i) {
-        addImageWrite(materialCustomTextureFirstBinding + static_cast<std::uint32_t>(i));
+        const auto binding = materialCustomTextureFirstBinding + static_cast<std::uint32_t>(
+            i * (split_custom_samplers ? 2 : 1));
+        if (split_custom_samplers) {
+            addImageWrite(binding, vk::DescriptorType::eSampledImage);
+            addImageWrite(binding + 1, vk::DescriptorType::eSampler);
+        } else {
+            addImageWrite(binding, vk::DescriptorType::eCombinedImageSampler);
+        }
     }
 
     vk::DescriptorBufferInfo material_buffer_info{material_buffer.buffer.get(), 0, vk::WholeSize};

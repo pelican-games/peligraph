@@ -7,9 +7,11 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <algorithm>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -37,6 +39,27 @@ SurfaceFormatDocument engineLightingSurface(std::string_view resource_name) {
     return parseSurfaceFormat(source, std::string{"engine://"} + std::string{resource_name});
 }
 
+struct ScopedSpvLinkEnvironment {
+    std::optional<std::string> previous;
+    explicit ScopedSpvLinkEnvironment(const char *value) {
+        if (const auto *current = std::getenv("PELICAN_SPV_LINK")) previous = current;
+#ifdef _WIN32
+        _putenv_s("PELICAN_SPV_LINK", value == nullptr ? "" : value);
+#else
+        if (value == nullptr) unsetenv("PELICAN_SPV_LINK");
+        else setenv("PELICAN_SPV_LINK", value, 1);
+#endif
+    }
+    ~ScopedSpvLinkEnvironment() {
+#ifdef _WIN32
+        _putenv_s("PELICAN_SPV_LINK", previous ? previous->c_str() : "");
+#else
+        if (previous) setenv("PELICAN_SPV_LINK", previous->c_str(), 1);
+        else unsetenv("PELICAN_SPV_LINK");
+#endif
+    }
+};
+
 void requireCompiled(const SurfaceCompileResult &result) {
     INFO("vertex log: " << result.vertex.log);
     INFO("fragment log: " << result.fragment.log);
@@ -47,6 +70,65 @@ void requireCompiled(const SurfaceCompileResult &result) {
 }
 
 } // namespace
+
+TEST_CASE("SPV link backend is opt-in and keeps source composition as the default",
+          "[surface-compiler][spv-link]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    ScopedSpvLinkEnvironment environment{nullptr};
+    REQUIRE_FALSE(surfaceSpvLinkExperimentalEnabled());
+    const auto surface = parseSurfaceFormat(readText(fixtureRoot() / "valid" / "wp78.surface"),
+                                            "wp78.surface");
+    ShaderCompiler compiler;
+    const auto result = compileSurfaceShaders(compiler, surface, "wp78.surface");
+    requireCompiled(result);
+    REQUIRE_FALSE(result.experimental_spv_link);
+    REQUIRE(result.vertex_cache_key.empty());
+    REQUIRE(result.fragment_cache_key.empty());
+#endif
+}
+
+TEST_CASE("experimental SPV link compiles B hooks with split descriptor types and stable keys",
+          "[surface-compiler][spv-link]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    ScopedSpvLinkEnvironment environment{"experimental"};
+    REQUIRE(surfaceSpvLinkExperimentalEnabled());
+    const auto surface = parseSurfaceFormat(readText(fixtureRoot() / "valid" / "wp78.surface"),
+                                            "wp78.surface");
+    ShaderCompiler compiler;
+    const auto first = compileSurfaceShaders(compiler, surface, "wp78.surface");
+    const auto second = compileSurfaceShaders(compiler, surface, "wp78.surface");
+    requireCompiled(first);
+    requireCompiled(second);
+    REQUIRE(first.experimental_spv_link);
+    REQUIRE(first.vertex_cache_key == second.vertex_cache_key);
+    REQUIRE(first.fragment_cache_key == second.fragment_cache_key);
+    REQUIRE(first.fragment_cache_key.find("spirv-headers=09913f") != std::string::npos);
+    REQUIRE(first.fragment_cache_key.find("spirv-tools=f289d0") != std::string::npos);
+    REQUIRE(first.fragment_cache_key.find("spirv-reflect=c63785") != std::string::npos);
+    REQUIRE(first.fragment_cache_key.find("template-sha256=") != std::string::npos);
+    REQUIRE(first.fragment_cache_key.find("user-sha256=") != std::string::npos);
+
+    const auto has_binding = [&](std::uint32_t binding, std::string_view type) {
+        return std::any_of(first.fragment_bindings.begin(), first.fragment_bindings.end(),
+                           [&](const auto &item) {
+                               return item.set == 2 && item.binding == binding &&
+                                      item.descriptor_type == type;
+                           });
+    };
+    REQUIRE(has_binding(7, "sampled_image"));
+    REQUIRE(has_binding(8, "sampler"));
+
+    const auto variant = compileSurfaceShaders(compiler, surface, "wp78.surface",
+                                               SurfacePass::main, {"PELICAN_VARIANT_WARM"});
+    requireCompiled(variant);
+    REQUIRE(variant.fragment_cache_key != first.fragment_cache_key);
+
+    ShaderLibrary library{ShaderLibraryModuleMode::reflection_only};
+    const auto bundles = library.loadFromSurface(surface, "wp78.surface");
+    REQUIRE_FALSE(library.get(bundles.fragment).binding_table.empty());
+    REQUIRE(library.get(bundles.fragment).cache_key == first.fragment_cache_key);
+#endif
+}
 
 TEST_CASE("surface source composition compiles main depth and velocity variants",
           "[surface-compiler]") {

@@ -4,6 +4,7 @@
 #include "../../project/materiallowering.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <sstream>
 #include <stdexcept>
 
@@ -51,7 +52,7 @@ std::string accessorFunction(SurfaceParamType type) {
     throw std::runtime_error("unknown surface parameter type while generating GLSL shim");
 }
 
-std::string makeParamsInclude(const SurfaceFormatDocument &surface) {
+std::string makeParamsInclude(const SurfaceFormatDocument &surface, bool split_samplers = false) {
     const auto layout = makeSurfaceStd140Layout(surface);
     std::ostringstream source;
     source << "// Generated public C-layer accessors for this .surface.\n";
@@ -63,11 +64,24 @@ std::string makeParamsInclude(const SurfaceFormatDocument &surface) {
     }
     for (std::size_t i = 0; i < surface.textures.size(); ++i) {
         const auto &texture = surface.textures[i];
-        const auto binding = materialCustomTextureFirstBinding + static_cast<std::uint32_t>(i);
-        source << "layout(set = PELICAN_SET_MATERIAL, binding = " << binding
-               << ") uniform sampler2D pelican_texture_" << texture.name << ";\n";
-        source << "vec4 pelican_sample_" << texture.name
-               << "(vec2 uv) { return texture(pelican_texture_" << texture.name << ", uv); }\n";
+        if (split_samplers) {
+            const auto image_binding = materialCustomTextureFirstBinding +
+                                       static_cast<std::uint32_t>(i * 2);
+            const auto sampler_binding = image_binding + 1;
+            source << "layout(set = PELICAN_SET_MATERIAL, binding = " << image_binding
+                   << ") uniform texture2D pelican_texture_" << texture.name << "_image;\n";
+            source << "layout(set = PELICAN_SET_MATERIAL, binding = " << sampler_binding
+                   << ") uniform sampler pelican_texture_" << texture.name << "_sampler;\n";
+            source << "vec4 pelican_sample_" << texture.name
+                   << "(vec2 uv) { return texture(sampler2D(pelican_texture_" << texture.name
+                   << "_image, pelican_texture_" << texture.name << "_sampler), uv); }\n";
+        } else {
+            const auto binding = materialCustomTextureFirstBinding + static_cast<std::uint32_t>(i);
+            source << "layout(set = PELICAN_SET_MATERIAL, binding = " << binding
+                   << ") uniform sampler2D pelican_texture_" << texture.name << ";\n";
+            source << "vec4 pelican_sample_" << texture.name
+                   << "(vec2 uv) { return texture(pelican_texture_" << texture.name << ", uv); }\n";
+        }
     }
     return source.str();
 }
@@ -78,20 +92,10 @@ void appendUnique(std::vector<std::string> &defines, std::string define) {
     }
 }
 
-} // namespace
-
-std::string_view surfacePassName(SurfacePass pass) {
-    switch (pass) {
-    case SurfacePass::main: return "main";
-    case SurfacePass::depth: return "depth";
-    case SurfacePass::velocity: return "velocity";
-    }
-    return "unknown";
-}
-
-SurfaceShaderComposition composeSurfaceShaders(const SurfaceFormatDocument &surface,
-                                                std::string_view source_name, SurfacePass pass,
-                                                std::vector<std::string> defines) {
+SurfaceShaderComposition composeSurfaceShadersImpl(const SurfaceFormatDocument &surface,
+                                                    std::string_view source_name, SurfacePass pass,
+                                                    std::vector<std::string> defines,
+                                                    bool split_samplers) {
     if (surface.language != SurfaceLanguage::glsl) {
         throw std::runtime_error("surface '" + std::string{source_name} +
                                  "' uses a non-GLSL language; the M3a source backend accepts GLSL only");
@@ -109,15 +113,258 @@ SurfaceShaderComposition composeSurfaceShaders(const SurfaceFormatDocument &surf
     composition.vertex_source = engineResourceOrThrow("shaders/material/surface_v1.vert");
     composition.fragment_source = engineResourceOrThrow("shaders/material/surface_v1.frag");
     composition.virtual_includes.emplace_back(userIncludeName, makeUserInclude(surface, source_name));
-    composition.virtual_includes.emplace_back(paramsIncludeName, makeParamsInclude(surface));
+    composition.virtual_includes.emplace_back(paramsIncludeName, makeParamsInclude(surface, split_samplers));
     composition.defines = std::move(defines);
     return composition;
+}
+
+std::string makeTemplateHookStubs(const SurfaceFormatDocument &surface, vk::ShaderStageFlagBits stage) {
+    std::ostringstream keep_alive;
+    for (const auto &param : surface.params) keep_alive << "pelican_param_" << param.name << "();";
+    for (const auto &texture : surface.textures) {
+        keep_alive << "pelican_sample_" << texture.name << "(vec2(0.0));";
+    }
+    if (stage == vk::ShaderStageFlagBits::eFragment) {
+        keep_alive << "pelican_light_count();pelican_light(0u, vec3(0.0));"
+                      "pelican_shadow(0u, vec3(0.0));pelican_env_ambient(vec3(0.0));";
+    }
+    std::ostringstream source;
+    if (stage == vk::ShaderStageFlagBits::eVertex && surface.hooks.vertex_displace_v1) {
+        source << "void pelican_vertex_displace_v1(inout PelicanVertexV1 vertex) {"
+               << keep_alive.str() << "}\n";
+    }
+    if (stage == vk::ShaderStageFlagBits::eFragment) {
+        if (surface.hooks.surface_v1) {
+            source << "void pelican_surface_v1(in PelicanSurfaceInputV1 input_data, "
+                      "inout PelicanSurfaceV1 surface) {" << keep_alive.str() << "}\n";
+        }
+        if (surface.hooks.brdf_v1) {
+            source << "vec3 pelican_brdf_v1(in PelicanSurfaceV1 surface, vec3 light_dir, "
+                      "vec3 view_dir, vec3 radiance) {" << keep_alive.str()
+                   << "return vec3(0.0); }\n";
+        }
+        if (surface.hooks.ambient_v1) {
+            source << "vec3 pelican_ambient_v1(in PelicanSurfaceV1 surface, vec3 view_dir, "
+                      "vec3 ambient) {" << keep_alive.str() << "return vec3(0.0); }\n";
+        }
+        if (surface.hooks.lighting_v1) {
+            source << "vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, "
+                      "in PelicanSurfaceInputV1 input_data) {" << keep_alive.str()
+                   << "return vec3(0.0); }\n";
+        }
+    }
+    return source.str();
+}
+
+std::vector<std::string> stageHookNames(const SurfaceFormatDocument &surface,
+                                        vk::ShaderStageFlagBits stage) {
+    std::vector<std::string> names;
+    if (stage == vk::ShaderStageFlagBits::eVertex) {
+        if (surface.hooks.vertex_displace_v1) names.emplace_back("pelican_vertex_displace_v1");
+        return names;
+    }
+    if (surface.hooks.surface_v1) names.emplace_back("pelican_surface_v1");
+    if (surface.hooks.brdf_v1) names.emplace_back("pelican_brdf_v1");
+    if (surface.hooks.ambient_v1) names.emplace_back("pelican_ambient_v1");
+    if (surface.hooks.lighting_v1) names.emplace_back("pelican_lighting_v1");
+    return names;
+}
+
+std::string defaultValueForAccessor(SurfaceParamType type) {
+    switch (type) {
+    case SurfaceParamType::floating: return "0.0";
+    case SurfaceParamType::vec2: return "vec2(0.0)";
+    case SurfaceParamType::vec3: return "vec3(0.0)";
+    case SurfaceParamType::vec4:
+    case SurfaceParamType::color: return "vec4(0.0)";
+    case SurfaceParamType::integer: return "0";
+    }
+    throw std::runtime_error("unknown surface parameter type while generating SPIR-V stub");
+}
+
+std::vector<std::string> generatedAccessorNames(const SurfaceFormatDocument &surface) {
+    std::vector<std::string> names;
+    for (const auto &param : surface.params) names.push_back("pelican_param_" + param.name);
+    for (const auto &texture : surface.textures) names.push_back("pelican_sample_" + texture.name);
+    return names;
+}
+
+std::string makeUserLibrarySource(const SurfaceFormatDocument &surface, std::string_view source_name,
+                                  vk::ShaderStageFlagBits stage) {
+    std::ostringstream source;
+    source << "#version 460\n"
+              "#extension GL_GOOGLE_include_directive : enable\n"
+              "#extension GL_GOOGLE_cpp_style_line_directive : enable\n"
+              "#include \"pelican_surface_v1.glsl\"\n";
+    for (const auto &param : surface.params) {
+        source << accessorType(param.type) << " pelican_param_" << param.name
+               << "() { return " << defaultValueForAccessor(param.type) << "; }\n";
+    }
+    for (const auto &texture : surface.textures) {
+        source << "vec4 pelican_sample_" << texture.name
+               << "(vec2 uv) { return vec4(0.0); }\n";
+    }
+    if (stage == vk::ShaderStageFlagBits::eFragment) {
+        source << "uint pelican_light_count() { return 0u; }\n"
+                  "PelicanLightV1 pelican_light(uint index, vec3 world_position) { "
+                  "PelicanLightV1 value; value.direction = vec3(0.0); "
+                  "value.radiance = vec3(0.0); value.attenuation = 0.0; return value; }\n"
+                  "float pelican_shadow(uint index, vec3 world_position) { return 1.0; }\n"
+                  "vec3 pelican_env_ambient(vec3 normal) { return vec3(0.0); }\n";
+    }
+    source << "#include \"" << userIncludeName << "\"\nvoid main() {\n";
+    if (stage == vk::ShaderStageFlagBits::eVertex) {
+        if (surface.hooks.vertex_displace_v1) {
+            source << "PelicanVertexV1 vertex; pelican_vertex_displace_v1(vertex);\n";
+        }
+        // A stage without a user hook is compiled by the unchanged source
+        // backend: no link is needed and no empty export set is manufactured.
+    } else {
+        source << "PelicanSurfaceInputV1 input_data; PelicanSurfaceV1 surface; vec3 sink;\n";
+        if (surface.hooks.surface_v1) source << "pelican_surface_v1(input_data, surface);\n";
+        if (surface.hooks.brdf_v1) {
+            source << "sink = pelican_brdf_v1(surface, vec3(0.0), vec3(0.0), vec3(0.0));\n";
+        }
+        if (surface.hooks.ambient_v1) {
+            source << "sink = pelican_ambient_v1(surface, vec3(0.0), vec3(0.0));\n";
+        }
+        if (surface.hooks.lighting_v1) source << "sink = pelican_lighting_v1(surface, input_data);\n";
+    }
+    for (const auto &param : surface.params) source << "pelican_param_" << param.name << "();\n";
+    for (const auto &texture : surface.textures) {
+        source << "pelican_sample_" << texture.name << "(vec2(0.0));\n";
+    }
+    if (stage == vk::ShaderStageFlagBits::eFragment) {
+        source << "pelican_light_count(); pelican_light(0u, vec3(0.0)); "
+                  "pelican_shadow(0u, vec3(0.0)); pelican_env_ambient(vec3(0.0));\n";
+    }
+    source << "}\n";
+    (void)source_name;
+    return source.str();
+}
+
+std::vector<std::string> engineExports(const SurfaceFormatDocument &surface,
+                                       vk::ShaderStageFlagBits stage) {
+    auto names = generatedAccessorNames(surface);
+    if (stage == vk::ShaderStageFlagBits::eFragment) {
+        names.emplace_back("pelican_light_count");
+        names.emplace_back("pelican_light");
+        names.emplace_back("pelican_shadow");
+        names.emplace_back("pelican_env_ambient");
+    }
+    return names;
+}
+
+ShaderCompileResult compileExperimentalStage(ShaderCompiler &compiler,
+                                             const SurfaceFormatDocument &surface,
+                                             std::string_view source_name,
+                                             const SurfaceShaderComposition &composition,
+                                             vk::ShaderStageFlagBits stage,
+                                             std::vector<SpvLinkBinding> &bindings,
+                                             std::string &cache_key) {
+    auto hooks = stageHookNames(surface, stage);
+    if (stage == vk::ShaderStageFlagBits::eFragment &&
+        std::find(composition.defines.begin(), composition.defines.end(), "PELICAN_PASS_DEPTH") !=
+            composition.defines.end()) {
+        hooks.clear();
+    }
+    if (hooks.empty()) {
+        ShaderCompileOptions options;
+        options.defines = composition.defines;
+        options.virtual_includes = composition.virtual_includes;
+        const auto &template_source = stage == vk::ShaderStageFlagBits::eVertex
+                                          ? composition.vertex_source : composition.fragment_source;
+        const auto template_name = stage == vk::ShaderStageFlagBits::eVertex
+                                       ? "engine://shaders/material/surface_v1.vert"
+                                       : "engine://shaders/material/surface_v1.frag";
+        return compiler.compileSource(template_source, stage, template_name, options);
+    }
+
+    ShaderCompileOptions template_options;
+    template_options.defines = composition.defines;
+    template_options.virtual_includes = composition.virtual_includes;
+    for (auto &[name, contents] : template_options.virtual_includes) {
+        if (name == userIncludeName) contents = makeTemplateHookStubs(surface, stage);
+    }
+    const auto &template_source = stage == vk::ShaderStageFlagBits::eVertex
+                                      ? composition.vertex_source : composition.fragment_source;
+    const auto template_name = stage == vk::ShaderStageFlagBits::eVertex
+                                   ? "engine://spvlink/surface_v1.vert"
+                                   : "engine://spvlink/surface_v1.frag";
+    auto template_result = compiler.compileSource(template_source, stage, template_name,
+                                                  template_options);
+    if (!template_result.ok) return template_result;
+
+    ShaderCompileOptions user_options;
+    user_options.defines = composition.defines;
+    user_options.virtual_includes.emplace_back(userIncludeName,
+                                               makeUserInclude(surface, source_name));
+    auto user_result = compiler.compileSource(makeUserLibrarySource(surface, source_name, stage),
+                                              stage, std::string{source_name} + "#spvlink-user",
+                                              user_options);
+    if (!user_result.ok) return user_result;
+
+    try {
+        SpvLinkRequest request;
+        request.template_module = template_result.spirv;
+        request.user_module = user_result.spirv;
+        request.user_exports = hooks;
+        request.template_exports = engineExports(surface, stage);
+        request.cache_salts = composition.defines;
+        request.cache_salts.emplace_back("surface-abi=v1");
+        request.cache_salts.emplace_back(stage == vk::ShaderStageFlagBits::eVertex
+                                             ? "stage=vertex" : "stage=fragment");
+        request.preserved_descriptor_names = {"pelicanMaterials"};
+        auto linked = linkSpirvModules(request);
+        bindings = std::move(linked.bindings);
+        cache_key = std::move(linked.cache_key);
+        ShaderCompileResult result;
+        result.spirv = std::move(linked.spirv);
+        result.log = template_result.log + user_result.log;
+        result.ok = true;
+        return result;
+    } catch (const std::exception &error) {
+        return {{}, error.what(), false};
+    }
+}
+
+} // namespace
+
+std::string_view surfacePassName(SurfacePass pass) {
+    switch (pass) {
+    case SurfacePass::main: return "main";
+    case SurfacePass::depth: return "depth";
+    case SurfacePass::velocity: return "velocity";
+    }
+    return "unknown";
+}
+
+SurfaceShaderComposition composeSurfaceShaders(const SurfaceFormatDocument &surface,
+                                                std::string_view source_name, SurfacePass pass,
+                                                std::vector<std::string> defines) {
+    return composeSurfaceShadersImpl(surface, source_name, pass, std::move(defines), false);
 }
 
 SurfaceCompileResult compileSurfaceShaders(ShaderCompiler &compiler,
                                            const SurfaceFormatDocument &surface,
                                            std::string_view source_name, SurfacePass pass,
                                            std::vector<std::string> defines) {
+    if (surfaceSpvLinkExperimentalEnabled()) {
+        const auto composition = composeSurfaceShadersImpl(surface, source_name, pass,
+                                                           std::move(defines), true);
+        SurfaceCompileResult result;
+        result.experimental_spv_link = true;
+        result.vertex = compileExperimentalStage(compiler, surface, source_name, composition,
+                                                 vk::ShaderStageFlagBits::eVertex,
+                                                 result.vertex_bindings,
+                                                 result.vertex_cache_key);
+        if (!result.vertex.ok) return result;
+        result.fragment = compileExperimentalStage(compiler, surface, source_name, composition,
+                                                   vk::ShaderStageFlagBits::eFragment,
+                                                   result.fragment_bindings,
+                                                   result.fragment_cache_key);
+        return result;
+    }
     const auto composition = composeSurfaceShaders(surface, source_name, pass, std::move(defines));
     ShaderCompileOptions options;
     options.defines = composition.defines;
@@ -130,6 +377,11 @@ SurfaceCompileResult compileSurfaceShaders(ShaderCompiler &compiler,
                                              vk::ShaderStageFlagBits::eFragment,
                                              "engine://shaders/material/surface_v1.frag", options);
     return result;
+}
+
+bool surfaceSpvLinkExperimentalEnabled() {
+    const auto *value = std::getenv("PELICAN_SPV_LINK");
+    return value != nullptr && std::string_view{value} == "experimental";
 }
 
 } // namespace Pelican
