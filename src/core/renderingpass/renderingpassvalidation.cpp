@@ -108,13 +108,16 @@ void validateMaterialPassAttachments(const PassDefinition &pass_def, const Rende
         return;
     }
 
-    if (pass_def.output_color.size() != materialPassColorAttachmentFormats.size()) {
+    if (pass_def.output_color.size() != materialPassColorAttachmentFormatsSdr.size()) {
         throw std::runtime_error("Material pass requires exactly five color outputs: " + pass_def.name);
     }
     if (!isConcreteRenderTarget(pass_def.output_depth)) {
         throw std::runtime_error("Material pass requires depth output: " + pass_def.name);
     }
 
+    const auto first_format = rt_metadata.get(pass_def.output_color.front()).format;
+    const bool hdr = first_format == vk::Format::eR16G16B16A16Sfloat;
+    const auto &expected_formats = materialPassColorAttachmentFormats(hdr);
     for (size_t i = 0; i < pass_def.output_color.size(); ++i) {
         const auto rt_id = pass_def.output_color[i];
         if (isSpecialRenderTarget(rt_id)) {
@@ -122,7 +125,7 @@ void validateMaterialPassAttachments(const PassDefinition &pass_def, const Rende
         }
 
         const auto rt = rt_metadata.get(rt_id);
-        if (rt.format != materialPassColorAttachmentFormats[i]) {
+        if (rt.format != expected_formats[i]) {
             throw std::runtime_error("Material pass color output format mismatch: " + rt.name + " in pass: " +
                                      pass_def.name);
         }

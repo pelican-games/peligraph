@@ -9,6 +9,7 @@ endif()
 if(MSVC)
 add_compile_options("/utf-8")
 add_compile_options("/MP")
+add_compile_options("/FS")
 endif()
 
 include(FetchContent)

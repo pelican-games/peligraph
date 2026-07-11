@@ -11,9 +11,9 @@ namespace Pelican {
 namespace {
 
 #if PELICAN_WITH_VAT
-constexpr size_t registeredResourceCount = 50;
+constexpr size_t registeredResourceCount = 54;
 #else
-constexpr size_t registeredResourceCount = 49;
+constexpr size_t registeredResourceCount = 53;
 #endif
 
 constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
@@ -33,6 +33,8 @@ constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
     "debug_draw.vert.spv",
     "debug_text.frag.spv",
     "debug_text.vert.spv",
+    "debug_text.frag",
+    "debug_text.vert",
     "debug_text_font.json",
     "debug_text_font.png",
     "features/debug_draw.json",
@@ -44,6 +46,8 @@ constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
     "fullscreen.frag.spv",
     "fullscreen.vert",
     "fullscreen.vert.spv",
+    "output_transform.frag",
+    "output_transform.frag.spv",
     "shaders/include/pelican_features.glsl",
     "shaders/include/pelican_frame.glsl",
     "shaders/include/pelican_material.glsl",
@@ -100,6 +104,8 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("debug_draw.vert.spv")
     PELICAN_ENGINE_RESOURCE("debug_text.frag.spv")
     PELICAN_ENGINE_RESOURCE("debug_text.vert.spv")
+    PELICAN_ENGINE_RESOURCE("debug_text.frag")
+    PELICAN_ENGINE_RESOURCE("debug_text.vert")
     if (id == "debug_text_font.json") {
         static const std::string font = b::embed<"debug_text_font.json">().str();
         return std::string_view{font};
@@ -123,6 +129,8 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("fullscreen.frag.spv")
     PELICAN_ENGINE_RESOURCE("fullscreen.vert")
     PELICAN_ENGINE_RESOURCE("fullscreen.vert.spv")
+    PELICAN_ENGINE_RESOURCE("output_transform.frag")
+    PELICAN_ENGINE_RESOURCE("output_transform.frag.spv")
     PELICAN_ENGINE_RESOURCE("shaders/include/pelican_features.glsl")
     PELICAN_ENGINE_RESOURCE("shaders/include/pelican_frame.glsl")
     PELICAN_ENGINE_RESOURCE("shaders/include/pelican_material.glsl")

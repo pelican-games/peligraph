@@ -190,11 +190,10 @@ void main() {
     vec3 ambient = mix(vec3(0.03) * albedo * ao, albedo * 0.12 * ao, metallic);
     vec3 color = ambient + Lo + emissive;
     
-    // HDRトーンマッピング（ACES approximation）
+#ifndef PELICAN_FEATURE_HDR
+    // HDR off owns the single tone curve here. Transfer encoding is terminal-only.
     color = color / (color + vec3(0.155)) * 1.019;
-    
-    // ガンマ補正
-    color = pow(color, vec3(1.0/2.2));
+#endif
     
     outColor = vec4(color, 1.0);
 }

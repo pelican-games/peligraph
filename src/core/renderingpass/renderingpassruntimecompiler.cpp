@@ -212,6 +212,10 @@ FullscreenShaderModules registerFullscreenShaders(const FullscreenPassInfo &full
 PassId registerFullscreenPipeline(const PassDefinition &pass_def, FullscreenRuntimeDependencies dependencies) {
     const auto color_format =
         resolveFirstColorFormat(pass_def, dependencies.render_target, dependencies.render_target_metadata);
+    if (pass_def.name == "output_transform" &&
+        (color_format == vk::Format::eR8G8B8A8Unorm || color_format == vk::Format::eB8G8R8A8Unorm)) {
+        dependencies.shader_defines.push_back("PELICAN_OUTPUT_UNORM_FALLBACK");
+    }
     const auto shaders = registerFullscreenShaders(pass_def.fullscreenInfo(), dependencies);
     const auto pipeline_id = dependencies.fullscreen_pass_container.registerFullscreenPass(
         color_format, shaders.vert_shader, shaders.frag_shader, dependencies.shader_defines);

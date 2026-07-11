@@ -5,6 +5,7 @@
 #include "cmdbuf.hpp"
 #include "image.hpp"
 #include <cstdint>
+#include <span>
 #include <vector>
 #include <vulkan/vulkan.hpp>
 
@@ -57,7 +58,8 @@ DECLARE_MODULE(VulkanManageCore) {
 
     ImageWrapper allocImage(vk::Extent3D extent, vk::Format format, vk::ImageUsageFlags usage,
                             vma::MemoryUsage mem_usage, vma::AllocationCreateFlags alloc_flags,
-                            VulkanProcessType type = VulkanProcessType::graphics) const;
+                            VulkanProcessType type = VulkanProcessType::graphics,
+                            std::span<const vk::Format> compatible_view_formats = {}) const;
     void writeImage(const ImageWrapper &dst, const void *src, vk::DeviceSize bytes_num) const;
 };
 

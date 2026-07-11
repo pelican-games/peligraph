@@ -348,7 +348,8 @@ std::vector<uint8_t> VulkanManageCore::readBuf(const BufferWrapper &src, vk::Dev
 
 ImageWrapper VulkanManageCore::allocImage(vk::Extent3D extent, vk::Format format, vk::ImageUsageFlags usage,
                                           vma::MemoryUsage mem_usage, vma::AllocationCreateFlags alloc_flags,
-                                          VulkanProcessType type) const {
+                                          VulkanProcessType type,
+                                          std::span<const vk::Format> compatible_view_formats) const {
     vk::ImageCreateInfo create_info;
     create_info.imageType = vk::ImageType::e2D;
     create_info.format = format;
@@ -360,6 +361,12 @@ ImageWrapper VulkanManageCore::allocImage(vk::Extent3D extent, vk::Format format
     create_info.usage = usage;
     create_info.sharingMode = vk::SharingMode::eExclusive;
     create_info.initialLayout = vk::ImageLayout::eUndefined;
+    vk::ImageFormatListCreateInfo format_list;
+    if (!compatible_view_formats.empty()) {
+        create_info.flags |= vk::ImageCreateFlagBits::eMutableFormat;
+        format_list.setViewFormats(compatible_view_formats);
+        create_info.pNext = &format_list;
+    }
 
     std::array<uint32_t, 1> queue_families;
     if (type == VulkanProcessType::graphics) {

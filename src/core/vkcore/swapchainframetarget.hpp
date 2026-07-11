@@ -14,6 +14,7 @@ struct SwapchainWithFmt {
     vk::UniqueSwapchainKHR swapchain;
     vk::Format format;
     vk::Extent2D extent;
+    bool capture_available;
 };
 
 class SwapchainFrameTarget : public IFrameTarget {
@@ -33,6 +34,7 @@ class SwapchainFrameTarget : public IFrameTarget {
     vk::UniqueImageView depth_image_view;
     bool extent_changed = false;
     bool output_transform_recorded = false;
+    bool has_rendered_frame = false;
 
     void releaseSurfaceDependants();
     void surfaceDependantsSetup();

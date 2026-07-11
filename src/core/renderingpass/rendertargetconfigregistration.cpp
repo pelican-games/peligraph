@@ -22,6 +22,7 @@ void registerRenderTargetDefinitions(const std::vector<RenderTargetDefinition> &
             }
         }
         rt_container.registerRenderTarget(definition.name, base_extent, definition.format_class,
+                                          definition.role,
                                           definition.extent_scale,
                                           definition.fixed_extent, definition.format, definition.usage,
                                           vma::MemoryUsage::eAutoPreferDevice);

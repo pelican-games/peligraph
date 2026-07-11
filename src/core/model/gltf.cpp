@@ -522,14 +522,20 @@ struct InternalGltfLoader {
             const auto &base_factor = material.pbrMetallicRoughness.baseColorFactor;
             const bool has_metallic_roughness_texture =
                 material.pbrMetallicRoughness.metallicRoughnessTexture.index >= 0;
-            const bool has_emissive_texture = material.emissiveTexture.index >= 0;
             const auto materialFactor = [&](double value) {
                 return has_metallic_roughness_texture ? static_cast<float>(value) : toUnormFloat(value);
             };
             const auto emissiveFactor = [&](size_t component) {
-                const auto value = vectorValueOr(material.emissiveFactor, component, 0.0);
-                return has_emissive_texture ? static_cast<float>(value) : toUnormFloat(value);
+                return static_cast<float>(vectorValueOr(material.emissiveFactor, component, 0.0));
             };
+            float emissive_strength = 1.0f;
+            if (const auto extension = material.extensions.find("KHR_materials_emissive_strength");
+                extension != material.extensions.end() && extension->second.IsObject()) {
+                const auto &object = extension->second.Get<tinygltf::Value::Object>();
+                if (const auto strength = valueNumber(objectMember(object, "emissiveStrength"))) {
+                    emissive_strength = static_cast<float>(*strength);
+                }
+            }
 
             material_infos[i] = Pelican::MaterialInfo{
                 .vert_shader = std_mat.standardVertShader(),
@@ -545,7 +551,9 @@ struct InternalGltfLoader {
                     static_cast<float>(vectorValueOr(base_factor, 3, 1.0)),
                 },
                 .emissive_factor = glm::vec3{
-                    emissiveFactor(0), emissiveFactor(1), emissiveFactor(2),
+                    emissiveFactor(0) * emissive_strength,
+                    emissiveFactor(1) * emissive_strength,
+                    emissiveFactor(2) * emissive_strength,
                 },
                 .metallic_factor = materialFactor(material.pbrMetallicRoughness.metallicFactor),
                 .roughness_factor = materialFactor(material.pbrMetallicRoughness.roughnessFactor),

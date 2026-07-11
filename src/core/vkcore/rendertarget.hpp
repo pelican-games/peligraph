@@ -36,7 +36,10 @@ DECLARE_MODULE(RenderTarget) {
     vk::Format getSwapchainFormat() const;
     vk::Extent2D getExtent() const;
     bool consumeExtentChanged();
+    FrameTargetCaps caps() const;
+    // Color contract 2: encoded-sRGB RGBA8 bytes with straight, untransferred alpha.
     std::vector<uint8_t> readbackLastFrameRGBA8();
+    // PNGs contain no color chunk; contract 2 requires consumers to interpret them as sRGB.
     void captureLastFrameToPng(const std::filesystem::path &path);
 };
 

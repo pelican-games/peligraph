@@ -8,6 +8,7 @@
 #include "../loader/scene.hpp"
 #include "../os/inputstate.hpp"
 #include "../playback/seqplayer.hpp"
+#include "../renderingpass/renderingpassjsonhelpers.hpp"
 #include "../userpublic/gamecontext.hpp"
 #include "../userpublic/details/system/registerer.hpp"
 #include "../vkcore/renderer.hpp"
@@ -526,6 +527,7 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
     server.setHandler("get_status", [instance_id](const nlohmann::json &params) {
         requireObjectParams(params, "get_status");
         const auto &engine_time = GET_MODULE(EngineTime);
+        const auto color_caps = GET_MODULE(RenderTarget).caps();
         return nlohmann::json{
             {"instance_id", instance_id},
             {"project_root", projectRootString()},
@@ -534,6 +536,12 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
             {"time", engine_time.now()},
             {"seed", GameContext{}.seed()},
             {"stores", assetStoresStatus()},
+            {"color", {{"contract", 2},
+                       {"swapchain_format", formatToString(color_caps.color_format)},
+                       {"path", color_caps.color_path},
+                       {"readback_encoding", "srgb"},
+                       {"capture", color_caps.capture_available ? "available"
+                                                                 : "unavailable_windowed"}}},
         };
     });
 
@@ -639,6 +647,8 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
         GET_MODULE(RenderTarget).captureLastFrameToPng(path);
         return nlohmann::json{
             {"path", weaklyCanonicalOrAbsolute(path).generic_string()},
+            {"encoding", "srgb"},
+            {"contract", 2},
         };
     });
 

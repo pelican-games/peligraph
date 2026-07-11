@@ -12,7 +12,7 @@ namespace {
 
 constexpr std::string_view feature_schema = "pelican.render_feature";
 constexpr int supported_feature_version = 1;
-constexpr int color_format_resolver_version = 1;
+constexpr int color_format_resolver_version = 2;
 constexpr std::string_view runtime_compiler_required_message =
     "render feature には実行時コンパイラが必要です (runtime shader compiler is required)";
 constexpr std::array<std::string_view, 7> canonical_anchors = {
@@ -189,6 +189,10 @@ void addFormatClassesAndDisplay(nlohmann::json &config) {
         if (!target.contains("format_class")) {
             target["format_class"] = inferFormatClass(target);
         }
+        if (!target.contains("role")) {
+            const auto format_class = target.at("format_class").get<std::string>();
+            target["role"] = (format_class == "scene" || format_class == "display") ? "color" : "data";
+        }
     }
     if (has_display) {
         throw std::runtime_error("Render target name is reserved by the canonical color pipeline: display");
@@ -196,9 +200,10 @@ void addFormatClassesAndDisplay(nlohmann::json &config) {
     targets.push_back({
         {"name", "display"},
         {"extent_scale", 1.0},
-        {"format", "FRAME_TARGET_V1"},
+        {"format", "B8G8R8A8_SRGB"},
         {"format_class", "display"},
-        {"usage", nlohmann::json::array({"COLOR_ATTACHMENT", "TRANSFER_SRC"})},
+        {"role", "color"},
+        {"usage", nlohmann::json::array({"COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"})},
     });
 }
 
@@ -248,7 +253,47 @@ nlohmann::json makeOutputTransform() {
         {"type", "output_transform"},
         {"input", nlohmann::json::array({"display"})},
         {"output", {{"color", "swapchain"}, {"depth", nullptr}}},
+        {"shader", {{"vertex", "engine://fullscreen"},
+                    {"fragment", "engine://output_transform"}}},
+        {"color_load_op", "dont_care"},
     };
+}
+
+void prepareHdrSceneOutput(nlohmann::json &config) {
+    auto &targets = ensureArray(config, "render_targets");
+    targets.push_back({
+        {"name", "scene_ldr_in"},
+        {"extent_scale", 1.0},
+        {"format", "B8G8R8A8_UNORM"},
+        {"format_class", "scene"},
+        {"role", "color"},
+        {"usage", nlohmann::json::array({"COLOR_ATTACHMENT", "SAMPLED"})},
+    });
+
+    nlohmann::json *scene_terminal = nullptr;
+    for (auto &pass_set : ensureArray(config, "rendering_passes")) {
+        for (auto &pass : pass_set.at("passes")) {
+            const auto type = pass.value("type", std::string{});
+            if (type != "ui" && type != "debug_draw" && type != "debug_text" &&
+                passWritesSwapchain(pass)) {
+                scene_terminal = &pass;
+            }
+        }
+    }
+    if (scene_terminal == nullptr) {
+        throw std::runtime_error("HDR canonical pipeline requires a scene pass that writes swapchain/display");
+    }
+    replaceSwapchainAlias(scene_terminal->at("output").at("color"));
+    auto &output = scene_terminal->at("output").at("color");
+    if (output.is_string()) {
+        output = "scene_ldr_in";
+    } else {
+        for (auto &entry : output) {
+            if (entry == "display") {
+                entry = "scene_ldr_in";
+            }
+        }
+    }
 }
 
 void appendAfter(nlohmann::json &node, const std::string &dependency) {
@@ -388,10 +433,13 @@ void initializeCanonicalColorPipeline(nlohmann::json &config, bool hdr_enabled) 
     if (config.contains("resolver_version") &&
         (!config.at("resolver_version").is_number_integer() ||
          config.at("resolver_version").get<int>() != color_format_resolver_version)) {
-        throw std::runtime_error("Only rendering resolver_version 1 is supported");
+        throw std::runtime_error("Only rendering resolver_version 2 is supported");
     }
     config["resolver_version"] = color_format_resolver_version;
     addFormatClassesAndDisplay(config);
+    if (hdr_enabled) {
+        prepareHdrSceneOutput(config);
+    }
     canonicalizePasses(config, hdr_enabled);
 }
 
@@ -865,6 +913,10 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     for (auto &target : ensureArray(composed, "render_targets")) {
         if (!target.contains("format_class")) {
             target["format_class"] = inferFormatClass(target);
+        }
+        if (!target.contains("role")) {
+            const auto format_class = target.at("format_class").get<std::string>();
+            target["role"] = (format_class == "scene" || format_class == "display") ? "color" : "data";
         }
     }
     retargetSwapchainAliases(composed);

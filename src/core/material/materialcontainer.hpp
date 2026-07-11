@@ -12,6 +12,7 @@
 #include <map>
 #include <optional>
 #include <span>
+#include <utility>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
@@ -37,7 +38,8 @@ DECLARE_MODULE(MaterialContainer) {
 
     struct InternalTextureResource {
         ImageWrapper image;
-        vk::UniqueImageView image_view;
+        vk::UniqueImageView linear_view;
+        vk::UniqueImageView srgb_view;
     };
     ResourceContainer<GlobalTextureId, InternalTextureResource> textures;
 
@@ -63,6 +65,7 @@ DECLARE_MODULE(MaterialContainer) {
     GlobalTextureId registerTexture(vk::Extent3D extent, const void *data, vk::Format format,
                                     vk::DeviceSize bytes_num);
     GlobalMaterialId registerMaterial(MaterialInfo info);
+    std::pair<vk::ImageView, vk::ImageView> textureViewsForTesting(GlobalTextureId texture) const;
 
     bool isRenderRequired(PassId pass_id, GlobalMaterialId material) const;
     void bindResource(vk::CommandBuffer cmd_buf, PassId pass_id, GlobalMaterialId material,

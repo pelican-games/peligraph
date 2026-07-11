@@ -54,7 +54,7 @@ vk::UniqueDescriptorPool createDescriptorPool(vk::Device device, uint32_t max_se
 vk::Format vkFormatForImage(ImagePixelFormat format) {
     switch (format) {
     case ImagePixelFormat::Rgba8Unorm:
-        return vk::Format::eR8G8B8A8Unorm;
+        return vk::Format::eR8G8B8A8Srgb;
     case ImagePixelFormat::Rgba16Sfloat:
         return vk::Format::eR16G16B16A16Sfloat;
     case ImagePixelFormat::Rgba32Sfloat:
