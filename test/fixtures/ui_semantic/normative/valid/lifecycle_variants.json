@@ -31,7 +31,37 @@
     {
       "kind": "capture_cancel",
       "widget": "root/gauge",
+      "reason": "hide"
+    },
+    {
+      "kind": "capture_cancel",
+      "widget": "root/gauge",
+      "reason": "disable"
+    },
+    {
+      "kind": "capture_cancel",
+      "widget": "root/gauge",
+      "reason": "remove"
+    },
+    {
+      "kind": "capture_cancel",
+      "widget": "root/gauge",
       "reason": "reload"
+    },
+    {
+      "kind": "capture_cancel",
+      "widget": "root/gauge",
+      "reason": "scene_unload"
+    },
+    {
+      "kind": "capture_cancel",
+      "widget": "root/gauge",
+      "reason": "focus_loss"
+    },
+    {
+      "kind": "capture_cancel",
+      "widget": "root/gauge",
+      "reason": "capture_steal"
     },
     {
       "kind": "document_swap",
@@ -43,6 +73,16 @@
       "kind": "command_dropped",
       "count": 2,
       "reason": "reload_swap"
+    },
+    {
+      "kind": "command_dropped",
+      "count": 1,
+      "reason": "target_removed"
+    },
+    {
+      "kind": "command_dropped",
+      "count": 3,
+      "reason": "limit_exceeded"
     },
     {
       "kind": "controller_deinit",

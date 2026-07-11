@@ -1,0 +1,17 @@
+{
+  "schema": "pelican.ui_semantic_fixture",
+  "version": 1,
+  "viewport": {
+    "framebuffer_px": [1280, 720],
+    "ui_scale": 1,
+    "content_rect_px": [0, 0, 1280, 720]
+  },
+  "document": {
+    "key": "empty",
+    "revision": "sha1:da39a3ee5e6b4b0d3255bfef95601890afd80709"
+  },
+  "widgets": [],
+  "draw_runs": [],
+  "input_trace": [],
+  "lifecycle": []
+}

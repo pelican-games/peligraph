@@ -1,0 +1,98 @@
+{
+  "schema": "pelican.ui_semantic_fixture.coverage",
+  "version": 1,
+  "description": "Maps every enum value / oneOf branch / invalid class of docs/schemas/pelican.ui_semantic_fixture.schema.json to the normative fixture that exercises it. CI fails on any row whose fixture does not exercise the value, and on any schema enum value missing from this manifest.",
+  "enum_coverage": {
+    "input_trace.kind": {
+      "pointer_down": "valid/input_trace_variants.json",
+      "pointer_move": "valid/input_trace_variants.json",
+      "pointer_up": "valid/input_trace_variants.json",
+      "pointer_cancel": "valid/input_trace_variants.json"
+    },
+    "input_trace.button": {
+      "left": "valid/input_trace_variants.json",
+      "right": "valid/input_trace_variants.json",
+      "middle": "valid/input_trace_variants.json"
+    },
+    "effects": {
+      "capture": "valid/input_trace_variants.json",
+      "release_capture": "valid/input_trace_variants.json",
+      "click": "valid/input_trace_variants.json",
+      "drag_start": "valid/input_trace_variants.json",
+      "drag": "valid/input_trace_variants.json",
+      "cancel": "valid/input_trace_variants.json",
+      "hover_enter": "valid/input_trace_variants.json",
+      "hover_exit": "valid/input_trace_variants.json"
+    },
+    "consumed_vocabulary_class": {
+      "mouse": "valid/input_trace_variants.json",
+      "key": "valid/input_trace_variants.json",
+      "touch": "valid/input_trace_variants.json",
+      "pad": "valid/input_trace_variants.json"
+    },
+    "lifecycle.kind": {
+      "controller_init": "valid/lifecycle_variants.json",
+      "controller_deinit": "valid/lifecycle_variants.json",
+      "capture_cancel": "valid/lifecycle_variants.json",
+      "document_swap": "valid/lifecycle_variants.json",
+      "command_dropped": "valid/lifecycle_variants.json"
+    },
+    "capture_cancel.reason": {
+      "hide": "valid/lifecycle_variants.json",
+      "disable": "valid/lifecycle_variants.json",
+      "remove": "valid/lifecycle_variants.json",
+      "reload": "valid/lifecycle_variants.json",
+      "scene_unload": "valid/lifecycle_variants.json",
+      "focus_loss": "valid/lifecycle_variants.json",
+      "capture_steal": "valid/lifecycle_variants.json"
+    },
+    "command_dropped.reason": {
+      "reload_swap": "valid/lifecycle_variants.json",
+      "target_removed": "valid/lifecycle_variants.json",
+      "limit_exceeded": "valid/lifecycle_variants.json"
+    },
+    "errors.phase": {
+      "parse": "valid/errors_variants.json",
+      "layout": "valid/errors_variants.json",
+      "route": "valid/errors_variants.json",
+      "commit": "valid/errors_variants.json"
+    },
+    "errors.code": {
+      "unknown_event": "valid/errors_variants.json",
+      "unknown_source": "valid/errors_variants.json",
+      "unknown_widget_value_path": "valid/errors_variants.json",
+      "type_mismatch": "valid/errors_variants.json",
+      "range_violation": "valid/errors_variants.json",
+      "required_missing": "valid/errors_variants.json",
+      "unknown_field": "valid/errors_variants.json",
+      "no_payload_event": "valid/errors_variants.json",
+      "unknown_widget_type": "valid/errors_variants.json",
+      "axis_conflict": "valid/errors_variants.json",
+      "layout_cycle": "valid/errors_variants.json",
+      "duplicate_stable_id": "valid/errors_variants.json",
+      "limit_exceeded": "valid/errors_variants.json",
+      "unsupported_control": "valid/errors_variants.json"
+    },
+    "sampler": {
+      "nearest": "valid/input_trace_variants.json",
+      "linear": "valid/input_trace_variants.json"
+    }
+  },
+  "invalid_class_coverage": {
+    "unknown_root_property": "invalid/unknown_property.json",
+    "unknown_enum_value": "invalid/bad_kind.json",
+    "variant_required_missing": "invalid/move_with_button.json",
+    "variant_forbidden_field": "invalid/cancel_with_position.json",
+    "numeric_range": "invalid/event_seq_out_of_range.json",
+    "wrong_type": "invalid/wrong_type_rect.json",
+    "unknown_error_code": "invalid/bad_error_code.json",
+    "required_root_missing": "invalid/missing_root_field.json",
+    "string_pattern": "invalid/bad_revision.json",
+    "null_value": "invalid/null_value.json",
+    "non_integer": "invalid/noninteger_coord.json",
+    "closed_vocabulary": "invalid/bad_consumed.json",
+    "path_traversal": "invalid/traversal_texture.json",
+    "unique_items": "invalid/duplicate_effects.json",
+    "multiple_of_6": "invalid/index_count_not_quad.json"
+  }
+}

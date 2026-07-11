@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "pelican://schemas/pelican.ui_semantic_fixture/1",
   "title": "pelican.ui_semantic_fixture v1",
-  "description": "Normative closed schema for UI semantic fixtures (design_ui_2d_foundation.md v5 §7). Comparison semantics: parse-level semantic equality; writers must emit integers as integers (no -0, no exponent, no trailing .0); the only float-valued field is viewport.ui_scale.",
+  "description": "Normative STRUCTURAL schema for UI semantic fixtures (design_ui_2d_foundation.md v6 §7). Cross-field/order invariants (rect ordering, id uniqueness, event_seq monotonicity, draw-run index continuity, clip containment) are owned by the normative semantic validator defined in the design doc §7 — schema validity alone does not imply semantic validity. Comparison semantics: parse-level semantic equality; writers must emit integers as integers (no -0, no exponent, no trailing .0); the only float-valued field is viewport.ui_scale.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "version", "viewport", "document", "widgets", "draw_runs", "input_trace", "lifecycle"],
@@ -60,10 +60,10 @@
         "properties": {
           "pipeline": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$", "maxLength": 64 },
           "sampler": { "enum": ["nearest", "linear"] },
-          "texture": { "type": "string", "pattern": "^(atlas:[A-Za-z0-9_/.-]+/page:[0-9]+|white)$" },
+          "texture": { "type": "string", "pattern": "^(atlas:[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*(/[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*)*/page:[0-9]+|white)$" },
           "scissor_px": { "$ref": "#/$defs/rect_i32" },
-          "first_index": { "type": "integer", "minimum": 0, "maximum": 2147483647 },
-          "index_count": { "type": "integer", "minimum": 0, "maximum": 2147483647 }
+          "first_index": { "type": "integer", "minimum": 0, "maximum": 2147483647, "multipleOf": 6 },
+          "index_count": { "type": "integer", "minimum": 0, "maximum": 98304, "multipleOf": 6 }
         }
       }
     },
@@ -214,11 +214,13 @@
     "effect_list": {
       "type": "array",
       "maxItems": 8,
+      "uniqueItems": true,
       "items": { "enum": ["capture", "release_capture", "click", "drag_start", "drag", "cancel", "hover_enter", "hover_exit"] }
     },
     "consumed_list": {
       "type": "array",
       "maxItems": 64,
+      "uniqueItems": true,
       "items": { "$ref": "#/$defs/consumed_control" }
     },
     "consumed_control": {

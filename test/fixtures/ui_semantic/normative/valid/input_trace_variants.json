@@ -98,6 +98,26 @@
       "pointer_id": 0,
       "position_ui": [-20, 900],
       "effects": ["hover_exit"]
+    },
+    {
+      "event_seq": 17,
+      "kind": "pointer_down",
+      "pointer_id": 0,
+      "button": "middle",
+      "position_ui": [50, 30],
+      "target": "root/play",
+      "consumed": ["mouse:middle"],
+      "effects": ["capture"]
+    },
+    {
+      "event_seq": 18,
+      "kind": "pointer_up",
+      "pointer_id": 0,
+      "button": "middle",
+      "position_ui": [50, 30],
+      "target": "root/play",
+      "consumed": ["mouse:middle"],
+      "effects": ["release_capture", "click"]
     }
   ],
   "lifecycle": []

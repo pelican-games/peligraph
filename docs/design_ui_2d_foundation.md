@@ -1,12 +1,14 @@
-# 2D 描画基盤と UI システム(v5)
+# 2D 描画基盤と UI システム(v6)
 
 対象読者: エンジン担当・UI/2D を作る人。
-ステータス: v5 ドラフト(2026-07-11。v4 は codex 再レビューで **Reject**
-(`docs/design_reviews/2026-07-11_color_ui_v4_review_codex.md` U-B2〜U-B4)。
-本版は ①anchor の数値規範と overflow algorithm の一本化 ②payload 照合先を
-新設 `design_event_payload_schema.md` に変更(v4 の「registry が schema を
-持つ」は事実誤認)③semantic fixture の機械可読 closed schema + normative
-fixture の実コミット、を反映。色正本は `design_color_pipeline.md` v2)。
+ステータス: v6 ドラフト(2026-07-11。v5 は round 2 レビューで **Reject**
+(`docs/design_reviews/2026-07-11_color_ui_v5_rereview_codex.md` §2)。
+本版の主変更: ①round の正本を「binary64 演算意味論」に固定(数学的
+half-up との境界差を解消)+ 整数 overflow 規則 ②semantic fixture の
+第 3 ゲートとして **normative semantic validator**(JSON Schema は構造の
+正本、不変条件の正本は §7 の invariant 表)③fixture coverage manifest。
+色正本は `design_color_pipeline.md` v3 — パス列の正本も色 v3 §2-2 の
+canonical anchor(本書 §6 はそこへの参照))。
 前提: 2026-07-07 決定「UI と 2D ゲームは描画基盤共有・上物分離」、
 2026-07-10 決定「エンジン標準スキン = ツール調 / エンジン UI = ImGui /
 ゲーム UI = pelican.ui」、ECS v2.1(世代付き ID・生ポインタ禁止)、
@@ -256,15 +258,29 @@ v1 の「アンカーのみ」を撤回し、以下を v1 に含める(これ未
      計算する — anchor 由来の乗算だけ実数で行い、**round を 1 回だけ**通して
      整数 ui_units の世界に入る(以降の制約解法・fill 配分・min/max は全て
      整数演算)
-     - 演算精度: IEEE 754 binary64。anchor は JSON number を binary64 として
-       読む。演算順は `parent_size × anchor` の積 → `parent_edge` との和
-       (FMA 不使用 — 乗算・加算で binary64 丸め各 1 回)。parent_edge /
-       parent_size / offset は整数なので binary64 で正確に表現される
-     - `round_half_up(x) = floor(x + 0.5)` — **全実数でこの一式**(負値も
-       同じ。絶対値 half-up + 符号復元では**ない**)。test vector(規範):
+     - **正本 = binary64 演算意味論(U-B2 round 2 で確定)**: 「実数としての
+       half-up」ではなく、**各演算を IEEE 754 binary64・RN-even で 1 回ずつ
+       丸めた結果**が規範である。手順(この順・この演算のみ):
+       ①anchor = JSON 小数の correctly-rounded binary64(パーサ要件)
+       ②`t1 = parent_size × anchor`(binary64 乗算)
+       ③`t2 = parent_edge + t1`(binary64 加算)
+       ④`t3 = t2 + 0.5`(binary64 加算 — **この丸め上がりも規範に含む**)
+       ⑤`edge = floor(t3)` + offset(整数加算)
+       FMA・fast-math・x87 拡張精度・rounding mode 変更は禁止(gate で検査)
+     - test vector(規範。⑤の結果):
        `-1.5 → -1`、`-0.5 → 0`、`0.5 → 1`、`1.5 → 2`、
-       `parent_size 101 × anchor 0.5 = 50.5 → 51`
-     - §2-2 の px 変換丸め(`round(edge × ui_scale)` half-up、同じ floor 式)
+       `parent_size 101 × anchor 0.5 = 50.5 → 51`、
+       **`parent_size 1 × anchor 0.49999999999999994`(= nextafter(0.5,0))
+       → ④で 1.0 に丸み上がり → `1`**(数学的 half-up なら 0 だが、
+       binary64 意味論が正)、
+       `parent_size 1 × anchor -0.49999999999999994 → ④で +2⁻⁵⁴ → 0`、
+       `parent_edge 2²⁶ + 0.5 境界`(大きな edge での加算丸め)
+     - **整数 overflow 規則**: ⑤以降の制約解法・fill 配分・offset 加算は
+       **int64** で行い、最終 rect の各 edge が int32 に収まらない場合は
+       レイアウトエラー(error code `limit_exceeded`、path = 当該 widget)。
+       int64 中間での overflow は入力上限(座標・offset は int32 宣言)から
+       到達不能
+     - §2-2 の px 変換丸め(`round(edge × ui_scale)` — 同じ binary64 意味論)
        は「canonical 整数 ui_units → framebuffer px」の**別段の量子化**であり
        二重丸めではない。direct float→px と同値になることは仕様として
        期待しない(例: 幅 101・anchor 0.5 は常にまず 51 ui_units になる)
@@ -339,9 +355,12 @@ UiModule
 ## 6. 描画パスと purge(C9 — 事実誤認の訂正)
 
 - v1 の「post_ldr 以後の ui アンカー」は存在しない(feature 挿入語彙は
-  before/after/end のみ、現行 example は ui_pass 直書き)。v2 では
-  **予約パス名の列を規範化**: `… → pelican_ui → debug_text → imgui → present`。
-  feature 配列順への暗黙依存を排し、この順をプランの fixture で固定
+  before/after/end のみ、現行 example は ui_pass 直書き)。**パス列の正本は
+  `design_color_pipeline.md` v3 §2-2 の canonical frame-plan anchor**
+  (`… → post_ldr → pelican_ui → debug_text → imgui → output_transform →
+  present`)。UI はその `pelican_ui` anchor に入る — 本書独自の列は持たない
+  (v5 までの独自列規定は撤回)。feature 配列順への暗黙依存を排し、
+  この順をプランの fixture で固定
 - ui は `engine://features/ui.json` の **purgeable feature** に移行(現行の
   「shader 無しの特殊 pass 型」を置換)。**不参照時に UiModule・GPU 資源・
   パーサが立ち上がらないこと**をテストで保証
@@ -436,19 +455,48 @@ draft 2020-12。本版と同時にコミット済み)。閉じ方の要点:
   エラー)。event_seq は FrameInput 正本(WP69)の u64 単調列で、リセットは
   **プロセス起動時のみ**。replay/golden は 1 プロセス内で完結させ、
   境界をまたぐ event_seq 比較はしない
+- **JSON Schema は「構造」の正本であり「意味」の正本ではない**(round 2
+  U-B4 の受理): 逆転 rect・重複 id・非単調 event_seq 等は schema-valid に
+  なり得る。意味の正本は次の **normative semantic invariant 表**とし、
+  これを検査する **semantic validator が U0 ゲートの第 3 段**になる
+  (実装と expected が同じ不正値を出しても equality だけでは通らない):
+
+  | invariant | 規則 |
+  |-----------|------|
+  | rect 順序 | 全 rect_ui/clip_ui/scissor_px/content_rect_px で `left ≤ right` かつ `top ≤ bottom` |
+  | clip 包含 | widget の `clip_ui` は祖先 clip チェーンの交差に等しい |
+  | id 一意性 | widgets[].id は fixture 内で一意(重複 = duplicate_stable_id 相当) |
+  | decl_seq | widgets 配列内で狭義単調増加(走査順の定義と一致) |
+  | event_seq | input_trace 配列内で狭義単調増加 |
+  | draw run index | `first_index` は前 run の `first_index + index_count` に等しい(連続)。`index_count` は 6 の倍数(quad ABI)。総 quad 数 ≤ 16384 |
+  | effects / consumed | 配列内重複なし |
+  | texture 名 | パス走査不可(`..` セグメント禁止 — schema pattern でも拒否) |
+  | viewport | content_rect_px ⊆ [0,0,framebuffer_px] |
+
+- **fixture coverage manifest**:
+  `test/fixtures/ui_semantic/normative/coverage.json` に
+  「schema の enum 値 / oneOf branch / invalid class → それを行使する
+  fixture ファイル」の対応表を置き、CI が manifest の全行を実 fixture で
+  検証する(未被覆行 = fail)。enum に値を足したら manifest と fixture を
+  同時に足すことが強制される
 - **normative fixture 一式(本版と同時にコミット済み)**:
   `test/fixtures/ui_semantic/normative/`
-  - `valid/` — schema に適合すべき実物: `minimal.json`(空 document)、
-    `input_trace_variants.json`(kind 4 種 + effects 全種 + consumed)、
-    `lifecycle_variants.json`(kind 5 種)、`errors_variants.json`
-    (error code 全種を含む invalid-document 用期待値の形)
+  - `valid/` — schema に適合すべき実物: `minimal.json`、
+    `input_trace_variants.json`(kind 4 種 + effects 全種 + button 3 種 +
+    consumed 4 語彙クラス)、`lifecycle_variants.json`(kind 5 種 +
+    capture_cancel reason 全 7 種 + command_dropped reason 全 3 種)、
+    `errors_variants.json`(error code 全種)
   - `invalid/` — schema 検証で**落ちるべき**実物(1 違反 1 ファイル):
-    未知 property / 未知 enum 値 / variant 必須欠落(pointer_move に
-    button)/ 範囲外 event_seq / 型違い / 未知 error code
-  - U0 ゲートは 2 段: ①これら fixture の schema 検証結果が期待どおり
-    (validator は CI に組込み)②実装出力 ↔ expected fixture の semantic
-    equality。UI ロードエラー系の入力 document fixture は document JSON
-    文法の確定(U0 実装の最初の成果物)と同時に追加し、期待値側は
+    未知 property / 未知 enum 値 / variant 必須欠落 / variant 禁止 field
+    (pointer_move の button、pointer_cancel の position)/ 範囲外
+    event_seq / 型違い / 未知 error code / root 必須欠落 / 不正 revision
+    pattern / null 値 / 非整数座標 / 不正 consumed / traversal texture 名 /
+    effects 重複(uniqueItems)
+  - U0 ゲートは **3 段**: ①fixture の schema 検証結果が期待どおり +
+    coverage manifest 全行被覆 ②semantic validator(上の invariant 表)
+    ③実装出力 ↔ expected fixture の semantic equality。
+    UI ロードエラー系の入力 document fixture は document JSON 文法の確定
+    (U0 実装の最初の成果物)と同時に追加し、期待値側は
     `errors_variants.json` の形式に従う
 
 ## 8. ImGui(エンジン UI)の隔離規約(C10)
@@ -473,7 +521,7 @@ draft 2020-12。本版と同時にコミット済み)。閉じ方の要点:
 
 | 段階 | 内容 | ゲート |
 |------|------|--------|
-| **U0** | **純 CPU**: スキーマ・レイアウト・WidgetId arena・ordered 入力ルーティング・capture・draw command 生成(**依存: FrameInput WP69(済)+ EventPayloadSchema WP — `design_event_payload_schema.md`**) | semantic fixture 全通過(GPU なし)+ §7 normative fixture の schema 検証 |
+| **U0** | **純 CPU**: スキーマ・レイアウト・WidgetId arena・ordered 入力ルーティング・capture・draw command 生成 + **semantic validator の実装**(**依存: FrameInput WP69(済)+ EventPayloadSchema WP(設計 Accept 後)**) | §7 の 3 段ゲート(schema 検証 + coverage manifest / semantic validator / expected との semantic equality)全通過(GPU なし) |
 | U1 | K3 アトラス接続・quad buffer・stable run・clip・ui feature 化・panel/image(**依存: 色パイプライン C1 の後**) | 2 アトラス交互重なり・nested clip・旧 UI 移行・golden |
 | U2 | bitmap label/button・UI-local 状態・E1 emit・rpc の ordered click/drag/replay | **debug_text の旧経路/共通経路を同一 fixture に描いて byte-exact 比較する互換ゲート**(R6 — tolerance 0 を緩めない。意図的な色意味論変更時のみ理由記録付きの versioned baseline 更新 → 以後再び 0) |
 | U3 | Controller factory/lifecycle・hot reload トランザクション・gauge/stack/トークン | remove/hide/reload 中の capture cancel・init/deinit 列 |
