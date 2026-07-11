@@ -441,6 +441,14 @@ TEST_CASE("PathResolver parses asset fragments without loading subassets", "[pat
     REQUIRE_THROWS_WITH(resolver.resolveExistingFile("assets/character.glb#mesh/Cube"),
                         Catch::Matchers::ContainsSubstring("Unsupported asset fragment kind: mesh"));
 
+    const auto existing =
+        resolver.resolveExistingFileReference("assets/character.glb#mesh/Cube");
+    const auto *existing_fragment = std::get_if<ResolvedPathFragment>(&existing);
+    REQUIRE(existing_fragment != nullptr);
+    REQUIRE(existing_fragment->path ==
+            weaklyCanonical(sandbox.root / "assets" / "character.glb"));
+    REQUIRE(existing_fragment->fragment.path == "Cube");
+
     resolver.resetForTesting();
 }
 

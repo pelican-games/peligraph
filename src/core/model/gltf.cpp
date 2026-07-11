@@ -13,12 +13,16 @@
 #include "vertbufcontainer.hpp"
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <optional>
+#include <set>
+#include <sstream>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace Pelican {
 
@@ -147,12 +151,41 @@ struct InternalGltfLoader {
     StandardMaterialResource &std_mat;
     VertBufContainer &buf_container;
     tinygltf::Model &model;
-    std::vector<GlobalMaterialId> material_map;
+    std::string source_path;
+    std::optional<AssetFragmentRef> fragment;
+    std::vector<std::optional<GlobalMaterialId>> material_map;
     std::vector<MaterialInfo> material_infos;
-    std::vector<GlobalTextureId> texture_map;
+    std::vector<std::optional<GlobalTextureId>> texture_map;
     std::unordered_map<ModelLocalMaterialId, GlobalMaterialId> resolved_materials;
     std::unordered_map<ModelLocalMaterialId, std::vector<ModelTemplate::PrimitiveRefInfo>> tmp_material_primitives;
     ModelLocalMaterialId next_generated_material = -2;
+
+    struct NodeOccurrence {
+        int node_index = -1;
+        std::string full_path;
+        glm::mat4 parent_transform{1.0f};
+    };
+
+    struct FragmentCandidate {
+        int object_index = -1;
+        int node_index = -1;
+        std::string full_path;
+        std::vector<std::string> aliases;
+        glm::mat4 parent_transform{1.0f};
+    };
+
+    struct RootSelection {
+        int node_index = -1;
+        int mesh_index = -1;
+        glm::mat4 parent_transform{1.0f};
+        bool subtree = true;
+    };
+
+    struct LoadSelection {
+        bool whole_model = false;
+        std::vector<RootSelection> roots;
+        std::optional<int> material_only;
+    };
 
     uint8_t toUnorm8(double value) {
         return static_cast<uint8_t>(std::lround(std::clamp(value, 0.0, 1.0) * 255.0));
@@ -180,7 +213,7 @@ struct InternalGltfLoader {
     GlobalTextureId metallicRoughnessTextureForMaterial(const tinygltf::Material &material) {
         const auto texture_index = material.pbrMetallicRoughness.metallicRoughnessTexture.index;
         if (texture_index >= 0) {
-            return texture_map[texture_index];
+            return texture_map.at(texture_index).value();
         }
 
         return registerSolidTexture(
@@ -190,7 +223,7 @@ struct InternalGltfLoader {
     GlobalTextureId emissiveTextureForMaterial(const tinygltf::Material &material) {
         const auto texture_index = material.emissiveTexture.index;
         if (texture_index >= 0) {
-            return texture_map[texture_index];
+            return texture_map.at(texture_index).value();
         }
 
         return std_mat.whiteTexture();
@@ -420,6 +453,228 @@ struct InternalGltfLoader {
                glm::scale(glm::mat4{1.0f}, scale);
     }
 
+    std::string fragmentReference() const {
+        if (!fragment) {
+            return source_path;
+        }
+        return source_path + "#" + fragment->kind + "/" + fragment->path;
+    }
+
+    void collectNodeOccurrence(int node_index, const glm::mat4 &parent_transform,
+                               const std::string &parent_path,
+                               std::vector<NodeOccurrence> &occurrences,
+                               std::set<std::pair<int, std::string>> &seen) {
+        if (node_index < 0 || node_index >= static_cast<int>(model.nodes.size())) {
+            return;
+        }
+        const auto &node = model.nodes[node_index];
+        const auto full_path = parent_path.empty()
+                                   ? node.name
+                                   : node.name.empty() ? parent_path : parent_path + "/" + node.name;
+        if (seen.emplace(node_index, full_path).second) {
+            occurrences.push_back(NodeOccurrence{node_index, full_path, parent_transform});
+        }
+        const auto world_transform = parent_transform * nodeTransform(node);
+        for (const auto child : node.children) {
+            collectNodeOccurrence(child, world_transform, full_path, occurrences, seen);
+        }
+    }
+
+    std::vector<NodeOccurrence> nodeOccurrences() {
+        std::vector<NodeOccurrence> occurrences;
+        std::set<std::pair<int, std::string>> seen;
+        std::vector<bool> is_child(model.nodes.size(), false);
+        for (const auto &node : model.nodes) {
+            for (const auto child : node.children) {
+                if (child >= 0 && child < static_cast<int>(is_child.size())) {
+                    is_child[child] = true;
+                }
+            }
+        }
+
+        for (const auto &scene : model.scenes) {
+            for (const auto root : scene.nodes) {
+                collectNodeOccurrence(root, glm::mat4{1.0f}, {}, occurrences, seen);
+            }
+        }
+        for (int i = 0; i < static_cast<int>(model.nodes.size()); ++i) {
+            if (!is_child[i]) {
+                collectNodeOccurrence(i, glm::mat4{1.0f}, {}, occurrences, seen);
+            }
+        }
+        return occurrences;
+    }
+
+    std::vector<FragmentCandidate> candidatesForKind(const std::string &kind) {
+        std::vector<FragmentCandidate> candidates;
+        if (kind == "node") {
+            for (const auto &occurrence : nodeOccurrences()) {
+                const auto &node = model.nodes[occurrence.node_index];
+                if (occurrence.full_path.empty() || node.name.empty()) {
+                    continue;
+                }
+                candidates.push_back(FragmentCandidate{
+                    occurrence.node_index,
+                    occurrence.node_index,
+                    occurrence.full_path,
+                    {node.name},
+                    occurrence.parent_transform,
+                });
+            }
+            return candidates;
+        }
+        if (kind == "mesh") {
+            std::vector<bool> referenced(model.meshes.size(), false);
+            for (const auto &occurrence : nodeOccurrences()) {
+                const auto &node = model.nodes[occurrence.node_index];
+                if (node.mesh < 0 || node.mesh >= static_cast<int>(model.meshes.size()) ||
+                    occurrence.full_path.empty()) {
+                    continue;
+                }
+                referenced[node.mesh] = true;
+                std::vector<std::string> aliases;
+                if (!node.name.empty()) {
+                    aliases.push_back(node.name);
+                }
+                const auto &mesh_name = model.meshes[node.mesh].name;
+                if (!mesh_name.empty() &&
+                    std::find(aliases.begin(), aliases.end(), mesh_name) == aliases.end()) {
+                    aliases.push_back(mesh_name);
+                }
+                candidates.push_back(FragmentCandidate{
+                    node.mesh,
+                    occurrence.node_index,
+                    occurrence.full_path,
+                    std::move(aliases),
+                    occurrence.parent_transform,
+                });
+            }
+            for (int i = 0; i < static_cast<int>(model.meshes.size()); ++i) {
+                if (!referenced[i] && !model.meshes[i].name.empty()) {
+                    candidates.push_back(FragmentCandidate{
+                        i, -1, model.meshes[i].name, {model.meshes[i].name}, glm::mat4{1.0f}});
+                }
+            }
+            return candidates;
+        }
+
+        const auto append_named = [&](const auto &objects) {
+            for (int i = 0; i < static_cast<int>(objects.size()); ++i) {
+                if (!objects[i].name.empty()) {
+                    candidates.push_back(FragmentCandidate{
+                        i, -1, objects[i].name, {objects[i].name}, glm::mat4{1.0f}});
+                }
+            }
+        };
+        if (kind == "material") {
+            append_named(model.materials);
+        } else if (kind == "animation") {
+            append_named(model.animations);
+        }
+        return candidates;
+    }
+
+    [[noreturn]] void throwDuplicateFullPath(const std::string &kind,
+                                             const std::string &full_path,
+                                             const std::vector<const FragmentCandidate *> &matches) const {
+        std::ostringstream message;
+        message << "Duplicate GLB " << kind << " full path '" << full_path << "' in '"
+                << fragmentReference() << "' (indices: ";
+        for (size_t i = 0; i < matches.size(); ++i) {
+            if (i != 0) {
+                message << ", ";
+            }
+            message << matches[i]->object_index;
+        }
+        message << ")";
+        throw std::runtime_error(message.str());
+    }
+
+    FragmentCandidate resolveFragmentCandidate(const AssetFragmentRef &requested) {
+        if (requested.kind != "mesh" && requested.kind != "material" &&
+            requested.kind != "node" && requested.kind != "animation") {
+            throw std::runtime_error("Unknown GLB fragment kind '" + requested.kind +
+                                     "' in '" + fragmentReference() +
+                                     "' (supported: mesh, material, node, animation)");
+        }
+
+        auto candidates = candidatesForKind(requested.kind);
+        std::unordered_map<std::string, std::vector<const FragmentCandidate *>> by_full_path;
+        for (const auto &candidate : candidates) {
+            by_full_path[candidate.full_path].push_back(&candidate);
+        }
+        std::unordered_set<std::string> checked_paths;
+        for (const auto &candidate : candidates) {
+            if (!checked_paths.insert(candidate.full_path).second) {
+                continue;
+            }
+            const auto &matches = by_full_path.at(candidate.full_path);
+            if (matches.size() > 1) {
+                throwDuplicateFullPath(requested.kind, candidate.full_path, matches);
+            }
+        }
+
+        std::vector<const FragmentCandidate *> matches;
+        if (requested.address_kind == AssetFragmentAddressKind::full_path) {
+            if (const auto found = by_full_path.find(requested.path); found != by_full_path.end()) {
+                matches = found->second;
+            }
+        } else {
+            for (const auto &candidate : candidates) {
+                if (std::find(candidate.aliases.begin(), candidate.aliases.end(), requested.path) !=
+                    candidate.aliases.end()) {
+                    matches.push_back(&candidate);
+                }
+            }
+        }
+
+        if (matches.empty()) {
+            throw std::runtime_error("Unknown GLB " + requested.kind + " fragment '" +
+                                     requested.path + "' in '" + fragmentReference() + "'");
+        }
+        if (matches.size() > 1) {
+            std::ostringstream message;
+            message << "Ambiguous GLB " << requested.kind << " fragment name '" << requested.path
+                    << "' in '" << fragmentReference() << "'; matches: ";
+            for (size_t i = 0; i < matches.size(); ++i) {
+                if (i != 0) {
+                    message << ", ";
+                }
+                message << matches[i]->full_path;
+            }
+            throw std::runtime_error(message.str());
+        }
+        return *matches.front();
+    }
+
+    LoadSelection selectLoad() {
+        if (!fragment) {
+            LoadSelection selection;
+            selection.whole_model = true;
+            const auto &scene = model.scenes[model.defaultScene < 0 ? 0 : model.defaultScene];
+            for (const auto node : scene.nodes) {
+                selection.roots.push_back(RootSelection{node, -1, glm::mat4{1.0f}, true});
+            }
+            return selection;
+        }
+
+        const auto selected = resolveFragmentCandidate(*fragment);
+        LoadSelection selection;
+        if (fragment->kind == "node") {
+            selection.roots.push_back(
+                RootSelection{selected.node_index, -1, selected.parent_transform, true});
+        } else if (fragment->kind == "mesh") {
+            selection.roots.push_back(
+                RootSelection{selected.node_index, selected.object_index,
+                              selected.parent_transform, false});
+        } else if (fragment->kind == "material") {
+            selection.material_only = selected.object_index;
+        }
+        // Animation GPU/runtime data is not represented by ModelTemplate yet. Resolving it here
+        // deliberately creates no unrelated mesh, material, or texture resources.
+        return selection;
+    }
+
     void transformVertexData(CommonPolygonVertData &data, const glm::mat4 &transform) {
         for (auto &position : data.pos) {
             position = glm::vec3{transform * glm::vec4{position, 1.0f}};
@@ -435,14 +690,121 @@ struct InternalGltfLoader {
         }
     }
 
-    void loadNode(const tinygltf::Node &node, const glm::mat4 &parent_transform) {
-        const auto world_transform = parent_transform * nodeTransform(node);
-        for (const auto child_index : node.children) {
-            loadNode(model.nodes[child_index], world_transform);
-        }
-        if (node.mesh < 0)
+    void collectMeshMaterials(int mesh_index, std::set<int> &materials) const {
+        if (mesh_index < 0 || mesh_index >= static_cast<int>(model.meshes.size())) {
             return;
-        const auto &mesh = model.meshes[node.mesh];
+        }
+        for (const auto &primitive : model.meshes[mesh_index].primitives) {
+            if (primitive.material >= 0) {
+                materials.insert(primitive.material);
+            }
+        }
+    }
+
+    void collectNodeMaterials(int node_index, bool subtree, std::set<int> &materials) const {
+        if (node_index < 0 || node_index >= static_cast<int>(model.nodes.size())) {
+            return;
+        }
+        const auto &node = model.nodes[node_index];
+        collectMeshMaterials(node.mesh, materials);
+        if (subtree) {
+            for (const auto child_index : node.children) {
+                collectNodeMaterials(child_index, true, materials);
+            }
+        }
+    }
+
+    void loadTexture(int texture_index) {
+        const auto &image = model.images.at(model.textures.at(texture_index).source);
+        texture_map.at(texture_index) = mat_container.registerTexture(
+            vk::Extent3D{
+                static_cast<uint32_t>(image.width),
+                static_cast<uint32_t>(image.height),
+                1,
+            },
+            image.image.data());
+    }
+
+    void loadMaterial(int material_index) {
+        const auto &material = model.materials.at(material_index);
+
+        const auto base_color_texture_index =
+            material.pbrMetallicRoughness.baseColorTexture.index;
+        const auto base_color_texture = base_color_texture_index >= 0
+                                            ? texture_map.at(base_color_texture_index).value()
+                                            : std_mat.whiteTexture();
+        const auto metallic_roughness_texture = metallicRoughnessTextureForMaterial(material);
+        const auto normal_texture_index = material.normalTexture.index;
+        const auto normal_texture = normal_texture_index >= 0
+                                        ? texture_map.at(normal_texture_index).value()
+                                        : std_mat.normalDefaultTexture();
+        const auto emissive_texture = emissiveTextureForMaterial(material);
+        const auto &base_factor = material.pbrMetallicRoughness.baseColorFactor;
+        const bool has_metallic_roughness_texture =
+            material.pbrMetallicRoughness.metallicRoughnessTexture.index >= 0;
+        const auto materialFactor = [&](double value) {
+            return has_metallic_roughness_texture ? static_cast<float>(value)
+                                                  : toUnormFloat(value);
+        };
+        const auto emissiveFactor = [&](size_t component) {
+            return static_cast<float>(vectorValueOr(material.emissiveFactor, component, 0.0));
+        };
+        float emissive_strength = 1.0f;
+        if (const auto extension = material.extensions.find("KHR_materials_emissive_strength");
+            extension != material.extensions.end() && extension->second.IsObject()) {
+            const auto &object = extension->second.Get<tinygltf::Value::Object>();
+            if (const auto strength = valueNumber(objectMember(object, "emissiveStrength"))) {
+                emissive_strength = static_cast<float>(*strength);
+            }
+        }
+
+        material_infos.at(material_index) = Pelican::MaterialInfo{
+            .vert_shader = std_mat.standardVertShader(),
+            .frag_shader = std_mat.standardFragShader(),
+            .base_color_texture = base_color_texture,
+            .metallic_roughness_texture = metallic_roughness_texture,
+            .normal_texture = normal_texture,
+            .emissive_texture = emissive_texture,
+            .base_color_factor = glm::vec4{
+                static_cast<float>(vectorValueOr(base_factor, 0, 1.0)),
+                static_cast<float>(vectorValueOr(base_factor, 1, 1.0)),
+                static_cast<float>(vectorValueOr(base_factor, 2, 1.0)),
+                static_cast<float>(vectorValueOr(base_factor, 3, 1.0)),
+            },
+            .emissive_factor = glm::vec3{
+                emissiveFactor(0) * emissive_strength,
+                emissiveFactor(1) * emissive_strength,
+                emissiveFactor(2) * emissive_strength,
+            },
+            .metallic_factor = materialFactor(material.pbrMetallicRoughness.metallicFactor),
+            .roughness_factor = materialFactor(material.pbrMetallicRoughness.roughnessFactor),
+            .normal_scale = static_cast<float>(material.normalTexture.scale),
+            .occlusion_strength = static_cast<float>(material.occlusionTexture.strength),
+        };
+        material_map.at(material_index) =
+            mat_container.registerMaterial(material_infos.at(material_index));
+        resolved_materials[material_index] = material_map.at(material_index).value();
+    }
+
+    std::set<int> texturesForMaterials(const std::set<int> &materials) const {
+        std::set<int> textures;
+        const auto append = [&](int texture_index) {
+            if (texture_index >= 0) {
+                textures.insert(texture_index);
+            }
+        };
+        for (const auto material_index : materials) {
+            const auto &material = model.materials.at(material_index);
+            append(material.pbrMetallicRoughness.baseColorTexture.index);
+            append(material.pbrMetallicRoughness.metallicRoughnessTexture.index);
+            append(material.normalTexture.index);
+            append(material.emissiveTexture.index);
+        }
+        return textures;
+    }
+
+    void loadMesh(int mesh_index, const glm::mat4 &world_transform) {
+        const auto &mesh = model.meshes.at(mesh_index);
         for (const auto &primitive : mesh.primitives) {
             CommonPolygonVertData dat;
 
@@ -493,80 +855,59 @@ struct InternalGltfLoader {
             tmp_material_primitives[material_id].emplace_back(std::move(primitive_info));
         }
     }
+
+    void loadNode(int node_index, const glm::mat4 &parent_transform, bool subtree = true) {
+        const auto &node = model.nodes.at(node_index);
+        const auto world_transform = parent_transform * nodeTransform(node);
+        if (subtree) {
+            for (const auto child_index : node.children) {
+                loadNode(child_index, world_transform);
+            }
+        }
+        if (node.mesh >= 0) {
+            loadMesh(node.mesh, world_transform);
+        }
+    }
+
     ModelTemplate load() {
         material_map.resize(model.materials.size());
         material_infos.resize(model.materials.size());
         texture_map.resize(model.textures.size());
 
-        for (int i = 0; i < model.textures.size(); i++) {
-            const auto &image = model.images[model.textures[i].source];
-            texture_map[i] = mat_container.registerTexture(
-                vk::Extent3D{
-                    static_cast<uint32_t>(image.width),
-                    static_cast<uint32_t>(image.height),
-                    1,
-                },
-                image.image.data());
-        }
-        for (int i = 0; i < model.materials.size(); i++) {
-            const auto &material = model.materials[i];
-
-            const auto base_color_texture_index = material.pbrMetallicRoughness.baseColorTexture.index;
-            const auto base_color_texture =
-                base_color_texture_index >= 0 ? texture_map[base_color_texture_index] : std_mat.whiteTexture();
-            const auto metallic_roughness_texture = metallicRoughnessTextureForMaterial(material);
-            const auto normal_texture_index = material.normalTexture.index;
-            const auto normal_texture =
-                normal_texture_index >= 0 ? texture_map[normal_texture_index] : std_mat.normalDefaultTexture();
-            const auto emissive_texture = emissiveTextureForMaterial(material);
-            const auto &base_factor = material.pbrMetallicRoughness.baseColorFactor;
-            const bool has_metallic_roughness_texture =
-                material.pbrMetallicRoughness.metallicRoughnessTexture.index >= 0;
-            const auto materialFactor = [&](double value) {
-                return has_metallic_roughness_texture ? static_cast<float>(value) : toUnormFloat(value);
-            };
-            const auto emissiveFactor = [&](size_t component) {
-                return static_cast<float>(vectorValueOr(material.emissiveFactor, component, 0.0));
-            };
-            float emissive_strength = 1.0f;
-            if (const auto extension = material.extensions.find("KHR_materials_emissive_strength");
-                extension != material.extensions.end() && extension->second.IsObject()) {
-                const auto &object = extension->second.Get<tinygltf::Value::Object>();
-                if (const auto strength = valueNumber(objectMember(object, "emissiveStrength"))) {
-                    emissive_strength = static_cast<float>(*strength);
+        const auto selection = selectLoad();
+        if (selection.whole_model) {
+            for (int i = 0; i < static_cast<int>(model.textures.size()); ++i) {
+                loadTexture(i);
+            }
+            for (int i = 0; i < static_cast<int>(model.materials.size()); ++i) {
+                loadMaterial(i);
+            }
+        } else {
+            std::set<int> selected_materials;
+            if (selection.material_only) {
+                selected_materials.insert(*selection.material_only);
+            }
+            for (const auto &root : selection.roots) {
+                if (root.node_index >= 0) {
+                    collectNodeMaterials(root.node_index, root.subtree, selected_materials);
+                } else {
+                    collectMeshMaterials(root.mesh_index, selected_materials);
                 }
             }
-
-            material_infos[i] = Pelican::MaterialInfo{
-                .vert_shader = std_mat.standardVertShader(),
-                .frag_shader = std_mat.standardFragShader(),
-                .base_color_texture = base_color_texture,
-                .metallic_roughness_texture = metallic_roughness_texture,
-                .normal_texture = normal_texture,
-                .emissive_texture = emissive_texture,
-                .base_color_factor = glm::vec4{
-                    static_cast<float>(vectorValueOr(base_factor, 0, 1.0)),
-                    static_cast<float>(vectorValueOr(base_factor, 1, 1.0)),
-                    static_cast<float>(vectorValueOr(base_factor, 2, 1.0)),
-                    static_cast<float>(vectorValueOr(base_factor, 3, 1.0)),
-                },
-                .emissive_factor = glm::vec3{
-                    emissiveFactor(0) * emissive_strength,
-                    emissiveFactor(1) * emissive_strength,
-                    emissiveFactor(2) * emissive_strength,
-                },
-                .metallic_factor = materialFactor(material.pbrMetallicRoughness.metallicFactor),
-                .roughness_factor = materialFactor(material.pbrMetallicRoughness.roughnessFactor),
-                .normal_scale = static_cast<float>(material.normalTexture.scale),
-                .occlusion_strength = static_cast<float>(material.occlusionTexture.strength),
-            };
-            material_map[i] = mat_container.registerMaterial(material_infos[i]);
-            resolved_materials[i] = material_map[i];
+            for (const auto texture_index : texturesForMaterials(selected_materials)) {
+                loadTexture(texture_index);
+            }
+            for (const auto material_index : selected_materials) {
+                loadMaterial(material_index);
+            }
         }
 
-        const auto &scene = model.scenes[model.defaultScene < 0 ? 0 : model.defaultScene];
-        for (const auto &node : scene.nodes) {
-            loadNode(model.nodes[node], glm::mat4{1.0f});
+        for (const auto &root : selection.roots) {
+            if (root.node_index >= 0) {
+                loadNode(root.node_index, root.parent_transform, root.subtree);
+            } else if (root.mesh_index >= 0) {
+                loadMesh(root.mesh_index, glm::mat4{1.0f});
+            }
         }
 
         ModelTemplate m;
@@ -577,6 +918,12 @@ struct InternalGltfLoader {
                 .primitives = std::move(primitive),
             });
         }
+        if (selection.material_only) {
+            m.material_primitives.emplace_back(ModelTemplate::MaterialPrimitives{
+                .material = resolved_materials.at(*selection.material_only),
+                .primitives = {},
+            });
+        }
 
         return m;
     }
@@ -584,7 +931,15 @@ struct InternalGltfLoader {
 
 GltfLoader::GltfLoader() {}
 
-ModelTemplate GltfLoader::loadGltfBinary(std::string path) {
+ModelTemplate GltfLoader::loadGltfBinary(std::string path,
+                                         std::optional<AssetFragmentRef> fragment) {
+    auto extension = std::filesystem::path{path}.extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    if (fragment && extension != ".glb") {
+        throw std::runtime_error("GLB fragment reference requires a .glb file: " + path + "#" +
+                                 fragment->kind + "/" + fragment->path);
+    }
     tinygltf::TinyGLTF loader;
     tinygltf::Model model;
 
@@ -596,7 +951,9 @@ ModelTemplate GltfLoader::loadGltfBinary(std::string path) {
         LOG_ERROR(logger, "loading gltf file \"{}\" : {}", path, err);
     if (!ret)
         throw std::runtime_error("failed to load gltf file : " + path);
-    rejectVatModelIfDisabled(model);
+    if (!fragment) {
+        rejectVatModelIfDisabled(model);
+    }
 
     ModelTemplate model_template;
     InternalGltfLoader tmp_loader{
@@ -604,11 +961,21 @@ ModelTemplate GltfLoader::loadGltfBinary(std::string path) {
         GET_MODULE(StandardMaterialResource),
         GET_MODULE(VertBufContainer),
         model,
+        path,
+        std::move(fragment),
     };
     return tmp_loader.load();
 }
 
-ModelTemplate GltfLoader::loadGltf(std::string path) {
+ModelTemplate GltfLoader::loadGltf(std::string path,
+                                   std::optional<AssetFragmentRef> fragment) {
+    auto extension = std::filesystem::path{path}.extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    if (fragment && extension != ".gltf") {
+        throw std::runtime_error("glTF fragment reference requires a .gltf file: " + path + "#" +
+                                 fragment->kind + "/" + fragment->path);
+    }
     tinygltf::TinyGLTF loader;
     tinygltf::Model model;
 
@@ -620,7 +987,9 @@ ModelTemplate GltfLoader::loadGltf(std::string path) {
         LOG_ERROR(logger, "loading gltf file \"{}\" : {}", path, err);
     if (!ret)
         throw std::runtime_error("failed to load gltf file : " + path);
-    rejectVatModelIfDisabled(model);
+    if (!fragment) {
+        rejectVatModelIfDisabled(model);
+    }
 
     ModelTemplate model_template;
     InternalGltfLoader tmp_loader{
@@ -628,6 +997,8 @@ ModelTemplate GltfLoader::loadGltf(std::string path) {
         GET_MODULE(StandardMaterialResource),
         GET_MODULE(VertBufContainer),
         model,
+        path,
+        std::move(fragment),
     };
     return tmp_loader.load();
 }

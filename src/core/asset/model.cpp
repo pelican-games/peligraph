@@ -13,15 +13,19 @@ ModelAssetContainer::ModelAssetContainer() {
 
     const auto model_assets = nlohmann::json::parse(GET_MODULE(ProjectBasicConfig).assetDataJson()).at("models");
     for (const auto &model_asset : model_assets) {
-        const std::string model_path_string = model_asset.at("path");
-        const auto model_path = std::filesystem::path{model_path_string};
+        const auto model_reference = model_asset.at("path").get<std::string>();
+        const auto parsed_reference = parsePathReference(model_reference);
+        const auto model_path = std::filesystem::path{parsed_reference.path};
+        const auto model_path_string = model_path.string();
         auto extension = model_path.extension().string();
         std::transform(extension.begin(), extension.end(), extension.begin(),
                        [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
 
         model_templates.insert({
             model_asset.at("name"),
-            extension == ".gltf" ? loader.loadGltf(model_path_string) : loader.loadGltfBinary(model_path_string),
+            extension == ".gltf"
+                ? loader.loadGltf(model_path_string, parsed_reference.fragment)
+                : loader.loadGltfBinary(model_path_string, parsed_reference.fragment),
         });
     }
 }

@@ -1,0 +1,121 @@
+#pragma once
+
+#include <cstdint>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <nlohmann/json.hpp>
+#include <string>
+#include <vector>
+
+namespace Pelican::TestGltfFragmentFixture {
+
+namespace detail {
+
+inline void appendU32(std::vector<uint8_t> &bytes, uint32_t value) {
+    bytes.push_back(static_cast<uint8_t>(value & 0xff));
+    bytes.push_back(static_cast<uint8_t>((value >> 8) & 0xff));
+    bytes.push_back(static_cast<uint8_t>((value >> 16) & 0xff));
+    bytes.push_back(static_cast<uint8_t>((value >> 24) & 0xff));
+}
+
+inline void appendF32(std::vector<uint8_t> &bytes, float value) {
+    uint32_t raw = 0;
+    std::memcpy(&raw, &value, sizeof(value));
+    appendU32(bytes, raw);
+}
+
+inline void writeBytes(const std::filesystem::path &path, const std::vector<uint8_t> &bytes) {
+    std::ofstream file{path, std::ios::binary};
+    file.write(reinterpret_cast<const char *>(bytes.data()),
+               static_cast<std::streamsize>(bytes.size()));
+}
+
+} // namespace detail
+
+inline std::vector<uint8_t> makeGlb(bool duplicate_root_names = false) {
+    std::vector<uint8_t> bin;
+    for (const float value : {
+             -0.5f, -0.5f, 0.0f,
+              0.5f, -0.5f, 0.0f,
+              0.0f,  0.5f, 0.0f,
+         }) {
+        detail::appendF32(bin, value);
+    }
+
+    const std::string second_root = duplicate_root_names ? "RootA" : "RootB";
+    const std::string pixel_png =
+        "data:image/png;base64,"
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFgAI/"
+        "ScLx2QAAAABJRU5ErkJggg==";
+    const nlohmann::json json{
+        {"asset", {{"version", "2.0"}, {"generator", "pelican WP77 fixture"}}},
+        {"scene", 0},
+        {"scenes", {{{"nodes", {0, 2}}}}},
+        {"nodes",
+         {
+             {{"name", "RootA"}, {"children", {1}}},
+             {{"name", "Cube"}, {"mesh", 0}},
+             {{"name", second_root}, {"children", {3}}},
+             {{"name", "Cube"}, {"mesh", 1}},
+         }},
+        {"materials",
+         {
+             {{"name", "MatA"},
+              {"pbrMetallicRoughness",
+               {{"baseColorFactor", {1.0, 0.0, 0.0, 1.0}},
+                {"baseColorTexture", {{"index", 0}}}}}},
+             {{"name", "MatB"},
+              {"pbrMetallicRoughness",
+               {{"baseColorFactor", {0.0, 1.0, 0.0, 1.0}},
+                {"baseColorTexture", {{"index", 1}}}}}},
+         }},
+        {"images", {{{"name", "Red"}, {"uri", pixel_png}},
+                    {{"name", "Green"}, {"uri", pixel_png}}}},
+        {"textures", {{{"source", 0}}, {{"source", 1}}}},
+        {"meshes",
+         {
+             {{"name", "MeshA"},
+              {"primitives", {{{"attributes", {{"POSITION", 0}}}, {"material", 0}}}}},
+             {{"name", "MeshB"},
+              {"primitives", {{{"attributes", {{"POSITION", 0}}}, {"material", 1}}}}},
+         }},
+        {"animations", {{{"name", "Walk"}}}},
+        {"buffers", {{{"byteLength", bin.size()}}}},
+        {"bufferViews", {{{"buffer", 0}, {"byteOffset", 0}, {"byteLength", bin.size()}}}},
+        {"accessors",
+         {{{"bufferView", 0},
+           {"componentType", 5126},
+           {"count", 3},
+           {"type", "VEC3"},
+           {"min", {-0.5, -0.5, 0.0}},
+           {"max", {0.5, 0.5, 0.0}}}}},
+    };
+
+    auto json_bytes = json.dump();
+    while (json_bytes.size() % 4 != 0) {
+        json_bytes.push_back(' ');
+    }
+    while (bin.size() % 4 != 0) {
+        bin.push_back(0);
+    }
+
+    std::vector<uint8_t> glb;
+    const auto total_length = static_cast<uint32_t>(12 + 8 + json_bytes.size() + 8 + bin.size());
+    detail::appendU32(glb, 0x46546c67);
+    detail::appendU32(glb, 2);
+    detail::appendU32(glb, total_length);
+    detail::appendU32(glb, static_cast<uint32_t>(json_bytes.size()));
+    detail::appendU32(glb, 0x4e4f534a);
+    glb.insert(glb.end(), json_bytes.begin(), json_bytes.end());
+    detail::appendU32(glb, static_cast<uint32_t>(bin.size()));
+    detail::appendU32(glb, 0x004e4942);
+    glb.insert(glb.end(), bin.begin(), bin.end());
+    return glb;
+}
+
+inline void writeGlb(const std::filesystem::path &path, bool duplicate_root_names = false) {
+    detail::writeBytes(path, makeGlb(duplicate_root_names));
+}
+
+} // namespace Pelican::TestGltfFragmentFixture
