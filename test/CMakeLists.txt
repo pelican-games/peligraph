@@ -84,6 +84,18 @@ target_compile_definitions(pelican_test_gamesystem_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 pelican_define_test(camera_test pelican_core glm)
+pelican_define_test(color_pipeline_test pelican_core glm)
+pelican_define_test(rpc_color_contract_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp spirv-reflect-static stb glm)
+target_include_directories(pelican_test_rpc_color_contract_test PRIVATE ${stb_SOURCE_DIR})
+target_compile_definitions(pelican_test_rpc_color_contract_test PRIVATE
+    PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
+)
+if(PELICAN_RUNTIME_SHADER_COMPILER)
+    target_link_libraries(pelican_test_rpc_color_contract_test PRIVATE pelican_shaderc)
+    if(COMMAND pelican_copy_shaderc_runtime)
+        pelican_copy_shaderc_runtime(pelican_test_rpc_color_contract_test)
+    endif()
+endif()
 if(PELICAN_WITH_EXR)
 pelican_define_test(imageloader_test pelican_core tinyexr)
 endif()

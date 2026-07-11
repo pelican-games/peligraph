@@ -3,6 +3,7 @@
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/log.hpp"
+#include "../src/core/material/materialcontainer.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/vkcore/rendertarget.hpp"
 
@@ -87,6 +88,14 @@ TEST_CASE("headless render target renders and reads back RGBA8 frames", "[headle
         engine_time.setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
 
         auto &render_target = GET_MODULE(RenderTarget);
+        const std::array<uint8_t, 4> dual_use_pixel{188, 188, 188, 255};
+        const auto dual_use_texture = GET_MODULE(MaterialContainer).registerTexture(
+            vk::Extent3D{1, 1, 1}, dual_use_pixel.data());
+        const auto [data_view, color_view] =
+            GET_MODULE(MaterialContainer).textureViewsForTesting(dual_use_texture);
+        REQUIRE(data_view);
+        REQUIRE(color_view);
+        REQUIRE(data_view != color_view);
         const std::array clears{
             vk::ClearColorValue{std::array{1.0f, 0.0f, 0.0f, 1.0f}},
             vk::ClearColorValue{std::array{0.0f, 0.0f, 1.0f, 1.0f}},
@@ -112,6 +121,18 @@ TEST_CASE("headless render target renders and reads back RGBA8 frames", "[headle
             }
         }
         REQUIRE(mismatched_pixels == 0);
+
+        renderClearFrame(render_target,
+                         vk::ClearColorValue{std::array{0.5f, 0.5f, 0.5f, 0.25f}});
+        const auto known_value = render_target.readbackLastFrameRGBA8();
+        size_t known_value_mismatches = 0;
+        for (size_t i = 0; i < known_value.size(); i += 4) {
+            if (known_value[i + 0] != 188 || known_value[i + 1] != 188 ||
+                known_value[i + 2] != 188 || known_value[i + 3] != 64) {
+                ++known_value_mismatches;
+            }
+        }
+        REQUIRE(known_value_mismatches == 0);
 
         GET_MODULE(VulkanManageCore).waitIdle();
         std::filesystem::remove_all(temp_dir);

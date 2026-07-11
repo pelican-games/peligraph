@@ -30,6 +30,7 @@
 #include "rendertarget.hpp"
 #include "rendertiming.hpp"
 #include "util.hpp"
+#include <algorithm>
 #include <map>
 
 namespace Pelican {
@@ -270,40 +271,50 @@ nlohmann::json anchorNodeTrace(const std::string &name, size_t order) {
 
 nlohmann::json outputTransformTrace(size_t order, vk::ImageLayout source_old_layout,
                                     vk::ImageLayout destination_final_layout,
-                                    const RenderTargetMetadata &display) {
+                                    const RenderTargetMetadata &display,
+                                    vk::Format destination_format,
+                                    const std::vector<std::string> &paired_storage_edges) {
+    const bool fallback = destination_format == vk::Format::eR8G8B8A8Unorm ||
+                          destination_format == vk::Format::eB8G8R8A8Unorm;
     return nlohmann::json{
         {"name", "output_transform"},
         {"kind", "output_transform"},
         {"order", order},
-        {"mode", "transfer_copy_same_format"},
+        {"mode", fallback ? "shader_oetf_unorm_fallback" : "hardware_srgb_encode"},
         {"source", "display"},
         {"destination", "swapchain"},
-        {"format", formatToString(display.format)},
+        {"source_format", formatToString(display.format)},
+        {"destination_format", formatToString(destination_format)},
         {"extent", {display.extent.width, display.extent.height}},
         {"samples", 1},
         {"texel_block_bytes", 4},
+        {"color_counters", {{"tone_curve", 1},
+                            {"terminal_display_encode", 1},
+                            {"shader_oetf", fallback ? 1 : 0},
+                            {"paired_storage_round_trip", paired_storage_edges.size()}}},
+        {"paired_storage_edges", paired_storage_edges},
         {"queue_ownership", "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED"},
         {"transitions",
          nlohmann::json::array({
              {{"resource", "display"},
               {"old_layout", layoutName(source_old_layout)},
-              {"new_layout", "transfer_src_optimal"},
+              {"new_layout", "shader_read_only_optimal"},
               {"src_stage", "color_attachment_output"},
               {"src_access", "color_attachment_read|color_attachment_write"},
-              {"dst_stage", "transfer"},
-              {"dst_access", "transfer_read"}},
+              {"dst_stage", "fragment_shader"},
+              {"dst_access", "shader_read"}},
              {{"resource", "swapchain"},
               {"old_layout", "color_attachment_optimal"},
-              {"new_layout", "transfer_dst_optimal"},
+              {"new_layout", "color_attachment_optimal"},
               {"src_stage", "color_attachment_output"},
               {"src_access", "color_attachment_read|color_attachment_write"},
-              {"dst_stage", "transfer"},
-              {"dst_access", "transfer_write"}},
+              {"dst_stage", "color_attachment_output"},
+              {"dst_access", "color_attachment_write"}},
              {{"resource", "swapchain"},
-              {"old_layout", "transfer_dst_optimal"},
+              {"old_layout", "color_attachment_optimal"},
               {"new_layout", layoutName(destination_final_layout)},
-              {"src_stage", "transfer"},
-              {"src_access", "transfer_write"},
+              {"src_stage", "color_attachment_output"},
+              {"src_access", "color_attachment_write"},
               {"dst_stage", destination_final_layout == vk::ImageLayout::ePresentSrcKHR
                                     ? "bottom_of_pipe"
                                     : "transfer"},
@@ -392,6 +403,38 @@ std::vector<std::string> plannedNodeNames(const CompiledFrameGraphExecution &fra
     return names;
 }
 
+std::vector<std::string> pairedSrgbStorageEdges(
+    const CompiledRenderingPass &rendering_pass,
+    const CompiledFrameGraphExecution &frame_graph,
+    const RenderTargetContainer &rt_container) {
+    std::vector<std::string> edges;
+    for (size_t to = 0; to < frame_graph.nodes.size(); ++to) {
+        const auto &node = frame_graph.nodes[to];
+        for (const auto &barrier : node.incoming_barriers) {
+            const auto target = rt_container.getRenderTargetIdByName(barrier.resource);
+            if (!isConcreteRenderTarget(target)) {
+                continue;
+            }
+            const auto format = rt_container.getMetadata(target).format;
+            if (format != vk::Format::eR8G8B8A8Srgb && format != vk::Format::eB8G8R8A8Srgb) {
+                continue;
+            }
+            bool sampled = node.kind == FramePlanNodeKind::output_transform && barrier.resource == "display";
+            if (node.kind == FramePlanNodeKind::render) {
+                const auto &pass = rendering_pass.passes.at(node.index).definition;
+                sampled = std::find_if(pass.input_targets.begin(), pass.input_targets.end(),
+                                       [&](GlobalRenderTargetId id) { return id == target; }) !=
+                          pass.input_targets.end();
+            }
+            if (sampled) {
+                edges.push_back(frame_graph.nodes[barrier.from_node_index].name + ":" + barrier.resource +
+                                "->" + node.name);
+            }
+        }
+    }
+    return edges;
+}
+
 void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                               const CompiledRenderingPass &rendering_pass,
                               const CompiledFrameGraphExecution &frame_graph,
@@ -402,6 +445,8 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
     if (modules.render_timing != nullptr) {
         beginTiming(modules.render_timing, render_ctx.cmd_buf, plannedNodeNames(frame_graph));
     }
+    const auto paired_storage_edges = pairedSrgbStorageEdges(
+        rendering_pass, frame_graph, modules.render_target_container);
 
     for (uint32_t node_index = 0; node_index < frame_graph.nodes.size(); ++node_index) {
         const auto &execution_node = frame_graph.nodes[node_index];
@@ -452,14 +497,19 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
             }
             const auto display = modules.render_target_container.getMetadata(display_id);
             const auto source_old_layout = layout_tracker.currentLayout(display_id);
-            layout_tracker.transition(render_ctx.cmd_buf, modules.render_target_container, modules.vk_utils,
-                                      display_id, vk::ImageLayout::eTransferSrcOptimal);
-            modules.render_target.recordOutputTransformCopy(
-                render_ctx.cmd_buf, modules.render_target_container.getImage(display_id).image.get(),
-                display.format, display.extent);
+            const auto output_pass = std::find_if(
+                rendering_pass.passes.begin(), rendering_pass.passes.end(),
+                [](const CompiledPass &pass) { return pass.definition.name == "output_transform"; });
+            if (output_pass == rendering_pass.passes.end()) {
+                throw std::runtime_error("output_transform fullscreen pass was not compiled");
+            }
+            modules.pass_executor.execute(render_ctx, *output_pass,
+                                          pass_executor_dependencies, layout_tracker);
             if (node_trace != nullptr) {
                 node_trace->push_back(outputTransformTrace(node_index, source_old_layout,
-                                                           render_ctx.required_layout, display));
+                                                           render_ctx.required_layout, display,
+                                                           modules.render_target.getSwapchainFormat(),
+                                                           paired_storage_edges));
             }
         } else {
             throw std::runtime_error("Unsupported frame graph execution node: " + execution_node.name);

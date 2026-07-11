@@ -2,7 +2,7 @@
   "collider_debug_draw": {
     "final_layouts": [
       {
-        "layout": "transfer_src_optimal",
+        "layout": "shader_read_only_optimal",
         "resource": "display"
       },
       {
@@ -37,7 +37,7 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "R8G8B8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "clear",
             "resource": "display",
             "samples": 1,
@@ -66,7 +66,7 @@
           {
             "aspect": "color",
             "final_layout": "color_attachment_optimal",
-            "format": "R8G8B8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "load",
             "resource": "display",
             "samples": 1,
@@ -91,34 +91,44 @@
         "order": 8
       },
       {
+        "color_counters": {
+          "paired_storage_round_trip": 1,
+          "shader_oetf": 0,
+          "terminal_display_encode": 1,
+          "tone_curve": 1
+        },
         "destination": "swapchain",
+        "destination_format": "R8G8B8A8_SRGB",
         "extent": [
           16,
           16
         ],
-        "format": "R8G8B8A8_UNORM",
         "kind": "output_transform",
-        "mode": "transfer_copy_same_format",
+        "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 9,
+        "paired_storage_edges": [
+          "debug_draw:display->output_transform"
+        ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
         "source": "display",
+        "source_format": "B8G8R8A8_SRGB",
         "texel_block_bytes": 4,
         "transitions": [
           {
-            "dst_access": "transfer_read",
-            "dst_stage": "transfer",
-            "new_layout": "transfer_src_optimal",
+            "dst_access": "shader_read",
+            "dst_stage": "fragment_shader",
+            "new_layout": "shader_read_only_optimal",
             "old_layout": "color_attachment_optimal",
             "resource": "display",
             "src_access": "color_attachment_read|color_attachment_write",
             "src_stage": "color_attachment_output"
           },
           {
-            "dst_access": "transfer_write",
-            "dst_stage": "transfer",
-            "new_layout": "transfer_dst_optimal",
+            "dst_access": "color_attachment_write",
+            "dst_stage": "color_attachment_output",
+            "new_layout": "color_attachment_optimal",
             "old_layout": "color_attachment_optimal",
             "resource": "swapchain",
             "src_access": "color_attachment_read|color_attachment_write",
@@ -128,10 +138,10 @@
             "dst_access": "transfer_read",
             "dst_stage": "transfer",
             "new_layout": "transfer_src_optimal",
-            "old_layout": "transfer_dst_optimal",
+            "old_layout": "color_attachment_optimal",
             "resource": "swapchain",
-            "src_access": "transfer_write",
-            "src_stage": "transfer"
+            "src_access": "color_attachment_write",
+            "src_stage": "color_attachment_output"
           }
         ]
       }
@@ -140,7 +150,7 @@
   "compute_buffer": {
     "final_layouts": [
       {
-        "layout": "transfer_src_optimal",
+        "layout": "shader_read_only_optimal",
         "resource": "display"
       },
       {
@@ -187,7 +197,7 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "R8G8B8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "clear",
             "resource": "display",
             "samples": 1,
@@ -224,34 +234,44 @@
         "order": 8
       },
       {
+        "color_counters": {
+          "paired_storage_round_trip": 1,
+          "shader_oetf": 0,
+          "terminal_display_encode": 1,
+          "tone_curve": 1
+        },
         "destination": "swapchain",
+        "destination_format": "R8G8B8A8_SRGB",
         "extent": [
           16,
           16
         ],
-        "format": "R8G8B8A8_UNORM",
         "kind": "output_transform",
-        "mode": "transfer_copy_same_format",
+        "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 9,
+        "paired_storage_edges": [
+          "present:display->output_transform"
+        ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
         "source": "display",
+        "source_format": "B8G8R8A8_SRGB",
         "texel_block_bytes": 4,
         "transitions": [
           {
-            "dst_access": "transfer_read",
-            "dst_stage": "transfer",
-            "new_layout": "transfer_src_optimal",
+            "dst_access": "shader_read",
+            "dst_stage": "fragment_shader",
+            "new_layout": "shader_read_only_optimal",
             "old_layout": "color_attachment_optimal",
             "resource": "display",
             "src_access": "color_attachment_read|color_attachment_write",
             "src_stage": "color_attachment_output"
           },
           {
-            "dst_access": "transfer_write",
-            "dst_stage": "transfer",
-            "new_layout": "transfer_dst_optimal",
+            "dst_access": "color_attachment_write",
+            "dst_stage": "color_attachment_output",
+            "new_layout": "color_attachment_optimal",
             "old_layout": "color_attachment_optimal",
             "resource": "swapchain",
             "src_access": "color_attachment_read|color_attachment_write",
@@ -261,10 +281,10 @@
             "dst_access": "transfer_read",
             "dst_stage": "transfer",
             "new_layout": "transfer_src_optimal",
-            "old_layout": "transfer_dst_optimal",
+            "old_layout": "color_attachment_optimal",
             "resource": "swapchain",
-            "src_access": "transfer_write",
-            "src_stage": "transfer"
+            "src_access": "color_attachment_write",
+            "src_stage": "color_attachment_output"
           }
         ]
       }
@@ -273,7 +293,7 @@
   "debug_draw_feature": {
     "final_layouts": [
       {
-        "layout": "transfer_src_optimal",
+        "layout": "shader_read_only_optimal",
         "resource": "display"
       },
       {
@@ -308,7 +328,7 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "R8G8B8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "clear",
             "resource": "display",
             "samples": 1,
@@ -337,7 +357,7 @@
           {
             "aspect": "color",
             "final_layout": "color_attachment_optimal",
-            "format": "R8G8B8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "load",
             "resource": "display",
             "samples": 1,
@@ -362,34 +382,44 @@
         "order": 8
       },
       {
+        "color_counters": {
+          "paired_storage_round_trip": 1,
+          "shader_oetf": 0,
+          "terminal_display_encode": 1,
+          "tone_curve": 1
+        },
         "destination": "swapchain",
+        "destination_format": "R8G8B8A8_SRGB",
         "extent": [
           16,
           16
         ],
-        "format": "R8G8B8A8_UNORM",
         "kind": "output_transform",
-        "mode": "transfer_copy_same_format",
+        "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 9,
+        "paired_storage_edges": [
+          "debug_draw:display->output_transform"
+        ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
         "source": "display",
+        "source_format": "B8G8R8A8_SRGB",
         "texel_block_bytes": 4,
         "transitions": [
           {
-            "dst_access": "transfer_read",
-            "dst_stage": "transfer",
-            "new_layout": "transfer_src_optimal",
+            "dst_access": "shader_read",
+            "dst_stage": "fragment_shader",
+            "new_layout": "shader_read_only_optimal",
             "old_layout": "color_attachment_optimal",
             "resource": "display",
             "src_access": "color_attachment_read|color_attachment_write",
             "src_stage": "color_attachment_output"
           },
           {
-            "dst_access": "transfer_write",
-            "dst_stage": "transfer",
-            "new_layout": "transfer_dst_optimal",
+            "dst_access": "color_attachment_write",
+            "dst_stage": "color_attachment_output",
+            "new_layout": "color_attachment_optimal",
             "old_layout": "color_attachment_optimal",
             "resource": "swapchain",
             "src_access": "color_attachment_read|color_attachment_write",
@@ -399,10 +429,10 @@
             "dst_access": "transfer_read",
             "dst_stage": "transfer",
             "new_layout": "transfer_src_optimal",
-            "old_layout": "transfer_dst_optimal",
+            "old_layout": "color_attachment_optimal",
             "resource": "swapchain",
-            "src_access": "transfer_write",
-            "src_stage": "transfer"
+            "src_access": "color_attachment_write",
+            "src_stage": "color_attachment_output"
           }
         ]
       }
@@ -411,7 +441,7 @@
   "debug_text_feature": {
     "final_layouts": [
       {
-        "layout": "transfer_src_optimal",
+        "layout": "shader_read_only_optimal",
         "resource": "display"
       },
       {
@@ -446,7 +476,7 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "R8G8B8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "clear",
             "resource": "display",
             "samples": 1,
@@ -480,7 +510,7 @@
           {
             "aspect": "color",
             "final_layout": "color_attachment_optimal",
-            "format": "R8G8B8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "load",
             "resource": "display",
             "samples": 1,
@@ -500,34 +530,44 @@
         "order": 8
       },
       {
+        "color_counters": {
+          "paired_storage_round_trip": 1,
+          "shader_oetf": 0,
+          "terminal_display_encode": 1,
+          "tone_curve": 1
+        },
         "destination": "swapchain",
+        "destination_format": "R8G8B8A8_SRGB",
         "extent": [
           16,
           16
         ],
-        "format": "R8G8B8A8_UNORM",
         "kind": "output_transform",
-        "mode": "transfer_copy_same_format",
+        "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 9,
+        "paired_storage_edges": [
+          "debug_text:display->output_transform"
+        ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
         "source": "display",
+        "source_format": "B8G8R8A8_SRGB",
         "texel_block_bytes": 4,
         "transitions": [
           {
-            "dst_access": "transfer_read",
-            "dst_stage": "transfer",
-            "new_layout": "transfer_src_optimal",
+            "dst_access": "shader_read",
+            "dst_stage": "fragment_shader",
+            "new_layout": "shader_read_only_optimal",
             "old_layout": "color_attachment_optimal",
             "resource": "display",
             "src_access": "color_attachment_read|color_attachment_write",
             "src_stage": "color_attachment_output"
           },
           {
-            "dst_access": "transfer_write",
-            "dst_stage": "transfer",
-            "new_layout": "transfer_dst_optimal",
+            "dst_access": "color_attachment_write",
+            "dst_stage": "color_attachment_output",
+            "new_layout": "color_attachment_optimal",
             "old_layout": "color_attachment_optimal",
             "resource": "swapchain",
             "src_access": "color_attachment_read|color_attachment_write",
@@ -537,10 +577,10 @@
             "dst_access": "transfer_read",
             "dst_stage": "transfer",
             "new_layout": "transfer_src_optimal",
-            "old_layout": "transfer_dst_optimal",
+            "old_layout": "color_attachment_optimal",
             "resource": "swapchain",
-            "src_access": "transfer_write",
-            "src_stage": "transfer"
+            "src_access": "color_attachment_write",
+            "src_stage": "color_attachment_output"
           }
         ]
       }
@@ -549,7 +589,7 @@
   "explicit_order": {
     "final_layouts": [
       {
-        "layout": "transfer_src_optimal",
+        "layout": "shader_read_only_optimal",
         "resource": "display"
       },
       {
@@ -584,7 +624,7 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "R8G8B8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "clear",
             "resource": "display",
             "samples": 1,
@@ -609,7 +649,7 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "R8G8B8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "clear",
             "resource": "display",
             "samples": 1,
@@ -644,34 +684,44 @@
         "order": 8
       },
       {
+        "color_counters": {
+          "paired_storage_round_trip": 1,
+          "shader_oetf": 0,
+          "terminal_display_encode": 1,
+          "tone_curve": 1
+        },
         "destination": "swapchain",
+        "destination_format": "R8G8B8A8_SRGB",
         "extent": [
           16,
           16
         ],
-        "format": "R8G8B8A8_UNORM",
         "kind": "output_transform",
-        "mode": "transfer_copy_same_format",
+        "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 9,
+        "paired_storage_edges": [
+          "blue_first:display->output_transform"
+        ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
         "source": "display",
+        "source_format": "B8G8R8A8_SRGB",
         "texel_block_bytes": 4,
         "transitions": [
           {
-            "dst_access": "transfer_read",
-            "dst_stage": "transfer",
-            "new_layout": "transfer_src_optimal",
+            "dst_access": "shader_read",
+            "dst_stage": "fragment_shader",
+            "new_layout": "shader_read_only_optimal",
             "old_layout": "color_attachment_optimal",
             "resource": "display",
             "src_access": "color_attachment_read|color_attachment_write",
             "src_stage": "color_attachment_output"
           },
           {
-            "dst_access": "transfer_write",
-            "dst_stage": "transfer",
-            "new_layout": "transfer_dst_optimal",
+            "dst_access": "color_attachment_write",
+            "dst_stage": "color_attachment_output",
+            "new_layout": "color_attachment_optimal",
             "old_layout": "color_attachment_optimal",
             "resource": "swapchain",
             "src_access": "color_attachment_read|color_attachment_write",
@@ -681,10 +731,10 @@
             "dst_access": "transfer_read",
             "dst_stage": "transfer",
             "new_layout": "transfer_src_optimal",
-            "old_layout": "transfer_dst_optimal",
+            "old_layout": "color_attachment_optimal",
             "resource": "swapchain",
-            "src_access": "transfer_write",
-            "src_stage": "transfer"
+            "src_access": "color_attachment_write",
+            "src_stage": "color_attachment_output"
           }
         ]
       }
@@ -693,7 +743,7 @@
   "feature_compose": {
     "final_layouts": [
       {
-        "layout": "transfer_src_optimal",
+        "layout": "shader_read_only_optimal",
         "resource": "display"
       },
       {
@@ -728,7 +778,7 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "R8G8B8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "clear",
             "resource": "display",
             "samples": 1,
@@ -753,7 +803,7 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "R8G8B8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "clear",
             "resource": "display",
             "samples": 1,
@@ -788,34 +838,44 @@
         "order": 8
       },
       {
+        "color_counters": {
+          "paired_storage_round_trip": 1,
+          "shader_oetf": 0,
+          "terminal_display_encode": 1,
+          "tone_curve": 1
+        },
         "destination": "swapchain",
+        "destination_format": "R8G8B8A8_SRGB",
         "extent": [
           16,
           16
         ],
-        "format": "R8G8B8A8_UNORM",
         "kind": "output_transform",
-        "mode": "transfer_copy_same_format",
+        "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 9,
+        "paired_storage_edges": [
+          "feature_present:display->output_transform"
+        ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
         "source": "display",
+        "source_format": "B8G8R8A8_SRGB",
         "texel_block_bytes": 4,
         "transitions": [
           {
-            "dst_access": "transfer_read",
-            "dst_stage": "transfer",
-            "new_layout": "transfer_src_optimal",
+            "dst_access": "shader_read",
+            "dst_stage": "fragment_shader",
+            "new_layout": "shader_read_only_optimal",
             "old_layout": "color_attachment_optimal",
             "resource": "display",
             "src_access": "color_attachment_read|color_attachment_write",
             "src_stage": "color_attachment_output"
           },
           {
-            "dst_access": "transfer_write",
-            "dst_stage": "transfer",
-            "new_layout": "transfer_dst_optimal",
+            "dst_access": "color_attachment_write",
+            "dst_stage": "color_attachment_output",
+            "new_layout": "color_attachment_optimal",
             "old_layout": "color_attachment_optimal",
             "resource": "swapchain",
             "src_access": "color_attachment_read|color_attachment_write",
@@ -825,10 +885,10 @@
             "dst_access": "transfer_read",
             "dst_stage": "transfer",
             "new_layout": "transfer_src_optimal",
-            "old_layout": "transfer_dst_optimal",
+            "old_layout": "color_attachment_optimal",
             "resource": "swapchain",
-            "src_access": "transfer_write",
-            "src_stage": "transfer"
+            "src_access": "color_attachment_write",
+            "src_stage": "color_attachment_output"
           }
         ]
       }
@@ -837,7 +897,11 @@
   "hdr_off": {
     "final_layouts": [
       {
-        "layout": "transfer_src_optimal",
+        "layout": "shader_read_only_optimal",
+        "resource": "Bloom_Threshold_RT"
+      },
+      {
+        "layout": "shader_read_only_optimal",
         "resource": "display"
       },
       {
@@ -861,7 +925,7 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "clear",
             "resource": "lit_color",
             "samples": 1,
@@ -901,9 +965,9 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "R8G8B8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "clear",
-            "resource": "display",
+            "resource": "Bloom_Threshold_RT",
             "samples": 1,
             "store": "store"
           }
@@ -917,20 +981,54 @@
           }
         ],
         "kind": "render",
-        "name": "copy_to_swapchain",
+        "name": "HighLuminanceExtraction",
         "order": 4
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "clear",
+            "resource": "display",
+            "samples": 1,
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "lit_color"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "Bloom_Threshold_RT"
+          }
+        ],
+        "kind": "render",
+        "name": "FinalBloomComposite",
+        "order": 5
       },
       {
         "kind": "anchor",
         "name": "__anchor_pelican_ui",
-        "order": 5
+        "order": 6
       },
       {
         "attachments": [
           {
             "aspect": "color",
             "final_layout": "color_attachment_optimal",
-            "format": "R8G8B8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "load",
             "resource": "display",
             "samples": 1,
@@ -942,52 +1040,84 @@
         "inputs": [],
         "kind": "render",
         "name": "present",
-        "order": 6
-      },
-      {
-        "kind": "anchor",
-        "name": "__anchor_debug_draw",
         "order": 7
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_text",
+        "name": "__anchor_debug_draw",
         "order": 8
       },
       {
         "kind": "anchor",
-        "name": "__anchor_imgui",
+        "name": "__anchor_debug_text",
         "order": 9
       },
       {
+        "attachments": [
+          {
+            "aspect": "color",
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "load",
+            "resource": "display",
+            "samples": 1,
+            "store": "store"
+          }
+        ],
+        "blend": true,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "debug_text",
+        "order": 10
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 11
+      },
+      {
+        "color_counters": {
+          "paired_storage_round_trip": 4,
+          "shader_oetf": 0,
+          "terminal_display_encode": 1,
+          "tone_curve": 1
+        },
         "destination": "swapchain",
+        "destination_format": "R8G8B8A8_SRGB",
         "extent": [
           16,
           16
         ],
-        "format": "R8G8B8A8_UNORM",
         "kind": "output_transform",
-        "mode": "transfer_copy_same_format",
+        "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 10,
+        "order": 12,
+        "paired_storage_edges": [
+          "hdr_source:lit_color->HighLuminanceExtraction",
+          "hdr_source:lit_color->FinalBloomComposite",
+          "HighLuminanceExtraction:Bloom_Threshold_RT->FinalBloomComposite",
+          "debug_text:display->output_transform"
+        ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
         "source": "display",
+        "source_format": "B8G8R8A8_SRGB",
         "texel_block_bytes": 4,
         "transitions": [
           {
-            "dst_access": "transfer_read",
-            "dst_stage": "transfer",
-            "new_layout": "transfer_src_optimal",
+            "dst_access": "shader_read",
+            "dst_stage": "fragment_shader",
+            "new_layout": "shader_read_only_optimal",
             "old_layout": "color_attachment_optimal",
             "resource": "display",
             "src_access": "color_attachment_read|color_attachment_write",
             "src_stage": "color_attachment_output"
           },
           {
-            "dst_access": "transfer_write",
-            "dst_stage": "transfer",
-            "new_layout": "transfer_dst_optimal",
+            "dst_access": "color_attachment_write",
+            "dst_stage": "color_attachment_output",
+            "new_layout": "color_attachment_optimal",
             "old_layout": "color_attachment_optimal",
             "resource": "swapchain",
             "src_access": "color_attachment_read|color_attachment_write",
@@ -997,10 +1127,10 @@
             "dst_access": "transfer_read",
             "dst_stage": "transfer",
             "new_layout": "transfer_src_optimal",
-            "old_layout": "transfer_dst_optimal",
+            "old_layout": "color_attachment_optimal",
             "resource": "swapchain",
-            "src_access": "transfer_write",
-            "src_stage": "transfer"
+            "src_access": "color_attachment_write",
+            "src_stage": "color_attachment_output"
           }
         ]
       }
@@ -1009,12 +1139,20 @@
   "hdr_on": {
     "final_layouts": [
       {
-        "layout": "transfer_src_optimal",
+        "layout": "shader_read_only_optimal",
+        "resource": "Bloom_Threshold_RT"
+      },
+      {
+        "layout": "shader_read_only_optimal",
         "resource": "display"
       },
       {
         "layout": "shader_read_only_optimal",
         "resource": "lit_color"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "scene_ldr_in"
       },
       {
         "layout": "transfer_src_optimal",
@@ -1063,9 +1201,9 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "R8G8B8A8_UNORM",
+            "format": "R16G16B16A16_SFLOAT",
             "load": "clear",
-            "resource": "display",
+            "resource": "Bloom_Threshold_RT",
             "samples": 1,
             "store": "store"
           }
@@ -1079,20 +1217,54 @@
           }
         ],
         "kind": "render",
-        "name": "copy_to_swapchain",
+        "name": "HighLuminanceExtraction",
         "order": 2
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R16G16B16A16_SFLOAT",
+            "load": "clear",
+            "resource": "scene_ldr_in",
+            "samples": 1,
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "lit_color"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "Bloom_Threshold_RT"
+          }
+        ],
+        "kind": "render",
+        "name": "FinalBloomComposite",
+        "order": 3
       },
       {
         "kind": "anchor",
         "name": "__anchor_tonemap",
-        "order": 3
+        "order": 4
       },
       {
         "attachments": [
           {
             "aspect": "color",
             "final_layout": "color_attachment_optimal",
-            "format": "R8G8B8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "load",
             "resource": "display",
             "samples": 1,
@@ -1104,29 +1276,29 @@
         "inputs": [
           {
             "final_layout": "shader_read_only_optimal",
-            "resource": "lit_color"
+            "resource": "scene_ldr_in"
           }
         ],
         "kind": "render",
         "name": "hdr_tonemap",
-        "order": 4
-      },
-      {
-        "kind": "anchor",
-        "name": "__anchor_post_ldr",
         "order": 5
       },
       {
         "kind": "anchor",
-        "name": "__anchor_pelican_ui",
+        "name": "__anchor_post_ldr",
         "order": 6
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_pelican_ui",
+        "order": 7
       },
       {
         "attachments": [
           {
             "aspect": "color",
             "final_layout": "color_attachment_optimal",
-            "format": "R8G8B8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "load",
             "resource": "display",
             "samples": 1,
@@ -1138,52 +1310,81 @@
         "inputs": [],
         "kind": "render",
         "name": "present",
-        "order": 7
-      },
-      {
-        "kind": "anchor",
-        "name": "__anchor_debug_draw",
         "order": 8
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_text",
+        "name": "__anchor_debug_draw",
         "order": 9
       },
       {
         "kind": "anchor",
-        "name": "__anchor_imgui",
+        "name": "__anchor_debug_text",
         "order": 10
       },
       {
+        "attachments": [
+          {
+            "aspect": "color",
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "load",
+            "resource": "display",
+            "samples": 1,
+            "store": "store"
+          }
+        ],
+        "blend": true,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "debug_text",
+        "order": 11
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 12
+      },
+      {
+        "color_counters": {
+          "paired_storage_round_trip": 1,
+          "shader_oetf": 0,
+          "terminal_display_encode": 1,
+          "tone_curve": 1
+        },
         "destination": "swapchain",
+        "destination_format": "R8G8B8A8_SRGB",
         "extent": [
           16,
           16
         ],
-        "format": "R8G8B8A8_UNORM",
         "kind": "output_transform",
-        "mode": "transfer_copy_same_format",
+        "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 11,
+        "order": 13,
+        "paired_storage_edges": [
+          "debug_text:display->output_transform"
+        ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
         "source": "display",
+        "source_format": "B8G8R8A8_SRGB",
         "texel_block_bytes": 4,
         "transitions": [
           {
-            "dst_access": "transfer_read",
-            "dst_stage": "transfer",
-            "new_layout": "transfer_src_optimal",
+            "dst_access": "shader_read",
+            "dst_stage": "fragment_shader",
+            "new_layout": "shader_read_only_optimal",
             "old_layout": "color_attachment_optimal",
             "resource": "display",
             "src_access": "color_attachment_read|color_attachment_write",
             "src_stage": "color_attachment_output"
           },
           {
-            "dst_access": "transfer_write",
-            "dst_stage": "transfer",
-            "new_layout": "transfer_dst_optimal",
+            "dst_access": "color_attachment_write",
+            "dst_stage": "color_attachment_output",
+            "new_layout": "color_attachment_optimal",
             "old_layout": "color_attachment_optimal",
             "resource": "swapchain",
             "src_access": "color_attachment_read|color_attachment_write",
@@ -1193,10 +1394,10 @@
             "dst_access": "transfer_read",
             "dst_stage": "transfer",
             "new_layout": "transfer_src_optimal",
-            "old_layout": "transfer_dst_optimal",
+            "old_layout": "color_attachment_optimal",
             "resource": "swapchain",
-            "src_access": "transfer_write",
-            "src_stage": "transfer"
+            "src_access": "color_attachment_write",
+            "src_stage": "color_attachment_output"
           }
         ]
       }
@@ -1205,7 +1406,7 @@
   "orbit_camera_controller": {
     "final_layouts": [
       {
-        "layout": "transfer_src_optimal",
+        "layout": "shader_read_only_optimal",
         "resource": "display"
       },
       {
@@ -1240,7 +1441,7 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "R8G8B8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "clear",
             "resource": "display",
             "samples": 1,
@@ -1275,34 +1476,44 @@
         "order": 7
       },
       {
+        "color_counters": {
+          "paired_storage_round_trip": 1,
+          "shader_oetf": 0,
+          "terminal_display_encode": 1,
+          "tone_curve": 1
+        },
         "destination": "swapchain",
+        "destination_format": "R8G8B8A8_SRGB",
         "extent": [
           16,
           16
         ],
-        "format": "R8G8B8A8_UNORM",
         "kind": "output_transform",
-        "mode": "transfer_copy_same_format",
+        "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 8,
+        "paired_storage_edges": [
+          "orbit_camera:display->output_transform"
+        ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
         "source": "display",
+        "source_format": "B8G8R8A8_SRGB",
         "texel_block_bytes": 4,
         "transitions": [
           {
-            "dst_access": "transfer_read",
-            "dst_stage": "transfer",
-            "new_layout": "transfer_src_optimal",
+            "dst_access": "shader_read",
+            "dst_stage": "fragment_shader",
+            "new_layout": "shader_read_only_optimal",
             "old_layout": "color_attachment_optimal",
             "resource": "display",
             "src_access": "color_attachment_read|color_attachment_write",
             "src_stage": "color_attachment_output"
           },
           {
-            "dst_access": "transfer_write",
-            "dst_stage": "transfer",
-            "new_layout": "transfer_dst_optimal",
+            "dst_access": "color_attachment_write",
+            "dst_stage": "color_attachment_output",
+            "new_layout": "color_attachment_optimal",
             "old_layout": "color_attachment_optimal",
             "resource": "swapchain",
             "src_access": "color_attachment_read|color_attachment_write",
@@ -1312,10 +1523,10 @@
             "dst_access": "transfer_read",
             "dst_stage": "transfer",
             "new_layout": "transfer_src_optimal",
-            "old_layout": "transfer_dst_optimal",
+            "old_layout": "color_attachment_optimal",
             "resource": "swapchain",
-            "src_access": "transfer_write",
-            "src_stage": "transfer"
+            "src_access": "color_attachment_write",
+            "src_stage": "color_attachment_output"
           }
         ]
       }
@@ -1324,7 +1535,7 @@
   "orthographic_camera": {
     "final_layouts": [
       {
-        "layout": "transfer_src_optimal",
+        "layout": "shader_read_only_optimal",
         "resource": "display"
       },
       {
@@ -1359,7 +1570,7 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "R8G8B8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "clear",
             "resource": "display",
             "samples": 1,
@@ -1394,34 +1605,44 @@
         "order": 7
       },
       {
+        "color_counters": {
+          "paired_storage_round_trip": 1,
+          "shader_oetf": 0,
+          "terminal_display_encode": 1,
+          "tone_curve": 1
+        },
         "destination": "swapchain",
+        "destination_format": "R8G8B8A8_SRGB",
         "extent": [
           16,
           16
         ],
-        "format": "R8G8B8A8_UNORM",
         "kind": "output_transform",
-        "mode": "transfer_copy_same_format",
+        "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 8,
+        "paired_storage_edges": [
+          "ortho_camera:display->output_transform"
+        ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
         "source": "display",
+        "source_format": "B8G8R8A8_SRGB",
         "texel_block_bytes": 4,
         "transitions": [
           {
-            "dst_access": "transfer_read",
-            "dst_stage": "transfer",
-            "new_layout": "transfer_src_optimal",
+            "dst_access": "shader_read",
+            "dst_stage": "fragment_shader",
+            "new_layout": "shader_read_only_optimal",
             "old_layout": "color_attachment_optimal",
             "resource": "display",
             "src_access": "color_attachment_read|color_attachment_write",
             "src_stage": "color_attachment_output"
           },
           {
-            "dst_access": "transfer_write",
-            "dst_stage": "transfer",
-            "new_layout": "transfer_dst_optimal",
+            "dst_access": "color_attachment_write",
+            "dst_stage": "color_attachment_output",
+            "new_layout": "color_attachment_optimal",
             "old_layout": "color_attachment_optimal",
             "resource": "swapchain",
             "src_access": "color_attachment_read|color_attachment_write",
@@ -1431,10 +1652,10 @@
             "dst_access": "transfer_read",
             "dst_stage": "transfer",
             "new_layout": "transfer_src_optimal",
-            "old_layout": "transfer_dst_optimal",
+            "old_layout": "color_attachment_optimal",
             "resource": "swapchain",
-            "src_access": "transfer_write",
-            "src_stage": "transfer"
+            "src_access": "color_attachment_write",
+            "src_stage": "color_attachment_output"
           }
         ]
       }
@@ -1443,7 +1664,7 @@
   "shadow_off": {
     "final_layouts": [
       {
-        "layout": "transfer_src_optimal",
+        "layout": "shader_read_only_optimal",
         "resource": "display"
       },
       {
@@ -1491,7 +1712,7 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "clear",
             "resource": "gbuffer_albedo",
             "samples": 1,
@@ -1551,7 +1772,7 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "R8G8B8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "clear",
             "resource": "g_emissive",
             "samples": 1,
@@ -1609,7 +1830,7 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "R8G8B8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "clear",
             "resource": "display",
             "samples": 1,
@@ -1684,34 +1905,46 @@
         "order": 9
       },
       {
+        "color_counters": {
+          "paired_storage_round_trip": 3,
+          "shader_oetf": 0,
+          "terminal_display_encode": 1,
+          "tone_curve": 1
+        },
         "destination": "swapchain",
+        "destination_format": "R8G8B8A8_SRGB",
         "extent": [
           16,
           16
         ],
-        "format": "R8G8B8A8_UNORM",
         "kind": "output_transform",
-        "mode": "transfer_copy_same_format",
+        "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 10,
+        "paired_storage_edges": [
+          "gbuffer_pass:gbuffer_albedo->lighting_pass",
+          "gbuffer_pass:g_emissive->lighting_pass",
+          "lighting_pass:display->output_transform"
+        ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
         "source": "display",
+        "source_format": "B8G8R8A8_SRGB",
         "texel_block_bytes": 4,
         "transitions": [
           {
-            "dst_access": "transfer_read",
-            "dst_stage": "transfer",
-            "new_layout": "transfer_src_optimal",
+            "dst_access": "shader_read",
+            "dst_stage": "fragment_shader",
+            "new_layout": "shader_read_only_optimal",
             "old_layout": "color_attachment_optimal",
             "resource": "display",
             "src_access": "color_attachment_read|color_attachment_write",
             "src_stage": "color_attachment_output"
           },
           {
-            "dst_access": "transfer_write",
-            "dst_stage": "transfer",
-            "new_layout": "transfer_dst_optimal",
+            "dst_access": "color_attachment_write",
+            "dst_stage": "color_attachment_output",
+            "new_layout": "color_attachment_optimal",
             "old_layout": "color_attachment_optimal",
             "resource": "swapchain",
             "src_access": "color_attachment_read|color_attachment_write",
@@ -1721,10 +1954,10 @@
             "dst_access": "transfer_read",
             "dst_stage": "transfer",
             "new_layout": "transfer_src_optimal",
-            "old_layout": "transfer_dst_optimal",
+            "old_layout": "color_attachment_optimal",
             "resource": "swapchain",
-            "src_access": "transfer_write",
-            "src_stage": "transfer"
+            "src_access": "color_attachment_write",
+            "src_stage": "color_attachment_output"
           }
         ]
       }
@@ -1733,7 +1966,7 @@
   "shadow_on": {
     "final_layouts": [
       {
-        "layout": "transfer_src_optimal",
+        "layout": "shader_read_only_optimal",
         "resource": "display"
       },
       {
@@ -1785,7 +2018,7 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "clear",
             "resource": "gbuffer_albedo",
             "samples": 1,
@@ -1845,7 +2078,7 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "R8G8B8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "clear",
             "resource": "g_emissive",
             "samples": 1,
@@ -1921,7 +2154,7 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "R8G8B8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "clear",
             "resource": "display",
             "samples": 1,
@@ -2000,34 +2233,46 @@
         "order": 10
       },
       {
+        "color_counters": {
+          "paired_storage_round_trip": 3,
+          "shader_oetf": 0,
+          "terminal_display_encode": 1,
+          "tone_curve": 1
+        },
         "destination": "swapchain",
+        "destination_format": "R8G8B8A8_SRGB",
         "extent": [
           16,
           16
         ],
-        "format": "R8G8B8A8_UNORM",
         "kind": "output_transform",
-        "mode": "transfer_copy_same_format",
+        "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 11,
+        "paired_storage_edges": [
+          "gbuffer_pass:gbuffer_albedo->lighting_pass",
+          "gbuffer_pass:g_emissive->lighting_pass",
+          "lighting_pass:display->output_transform"
+        ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
         "source": "display",
+        "source_format": "B8G8R8A8_SRGB",
         "texel_block_bytes": 4,
         "transitions": [
           {
-            "dst_access": "transfer_read",
-            "dst_stage": "transfer",
-            "new_layout": "transfer_src_optimal",
+            "dst_access": "shader_read",
+            "dst_stage": "fragment_shader",
+            "new_layout": "shader_read_only_optimal",
             "old_layout": "color_attachment_optimal",
             "resource": "display",
             "src_access": "color_attachment_read|color_attachment_write",
             "src_stage": "color_attachment_output"
           },
           {
-            "dst_access": "transfer_write",
-            "dst_stage": "transfer",
-            "new_layout": "transfer_dst_optimal",
+            "dst_access": "color_attachment_write",
+            "dst_stage": "color_attachment_output",
+            "new_layout": "color_attachment_optimal",
             "old_layout": "color_attachment_optimal",
             "resource": "swapchain",
             "src_access": "color_attachment_read|color_attachment_write",
@@ -2037,10 +2282,10 @@
             "dst_access": "transfer_read",
             "dst_stage": "transfer",
             "new_layout": "transfer_src_optimal",
-            "old_layout": "transfer_dst_optimal",
+            "old_layout": "color_attachment_optimal",
             "resource": "swapchain",
-            "src_access": "transfer_write",
-            "src_stage": "transfer"
+            "src_access": "color_attachment_write",
+            "src_stage": "color_attachment_output"
           }
         ]
       }
@@ -2049,7 +2294,7 @@
   "stem_fullscreen": {
     "final_layouts": [
       {
-        "layout": "transfer_src_optimal",
+        "layout": "shader_read_only_optimal",
         "resource": "display"
       },
       {
@@ -2084,7 +2329,7 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "R8G8B8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "clear",
             "resource": "display",
             "samples": 1,
@@ -2119,34 +2364,44 @@
         "order": 7
       },
       {
+        "color_counters": {
+          "paired_storage_round_trip": 1,
+          "shader_oetf": 0,
+          "terminal_display_encode": 1,
+          "tone_curve": 1
+        },
         "destination": "swapchain",
+        "destination_format": "R8G8B8A8_SRGB",
         "extent": [
           16,
           16
         ],
-        "format": "R8G8B8A8_UNORM",
         "kind": "output_transform",
-        "mode": "transfer_copy_same_format",
+        "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 8,
+        "paired_storage_edges": [
+          "solid:display->output_transform"
+        ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
         "source": "display",
+        "source_format": "B8G8R8A8_SRGB",
         "texel_block_bytes": 4,
         "transitions": [
           {
-            "dst_access": "transfer_read",
-            "dst_stage": "transfer",
-            "new_layout": "transfer_src_optimal",
+            "dst_access": "shader_read",
+            "dst_stage": "fragment_shader",
+            "new_layout": "shader_read_only_optimal",
             "old_layout": "color_attachment_optimal",
             "resource": "display",
             "src_access": "color_attachment_read|color_attachment_write",
             "src_stage": "color_attachment_output"
           },
           {
-            "dst_access": "transfer_write",
-            "dst_stage": "transfer",
-            "new_layout": "transfer_dst_optimal",
+            "dst_access": "color_attachment_write",
+            "dst_stage": "color_attachment_output",
+            "new_layout": "color_attachment_optimal",
             "old_layout": "color_attachment_optimal",
             "resource": "swapchain",
             "src_access": "color_attachment_read|color_attachment_write",
@@ -2156,10 +2411,10 @@
             "dst_access": "transfer_read",
             "dst_stage": "transfer",
             "new_layout": "transfer_src_optimal",
-            "old_layout": "transfer_dst_optimal",
+            "old_layout": "color_attachment_optimal",
             "resource": "swapchain",
-            "src_access": "transfer_write",
-            "src_stage": "transfer"
+            "src_access": "color_attachment_write",
+            "src_stage": "color_attachment_output"
           }
         ]
       }
@@ -2204,7 +2459,7 @@
         "resource": "Bloom_Upsample_V_3_RT"
       },
       {
-        "layout": "transfer_src_optimal",
+        "layout": "shader_read_only_optimal",
         "resource": "display"
       },
       {
@@ -2260,7 +2515,7 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "clear",
             "resource": "gbuffer_albedo",
             "samples": 1,
@@ -2320,7 +2575,7 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "R8G8B8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "clear",
             "resource": "g_emissive",
             "samples": 1,
@@ -2417,7 +2672,7 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "clear",
             "resource": "lit_color",
             "samples": 1,
@@ -2482,7 +2737,7 @@
               0.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "clear",
             "resource": "Bloom_Threshold_RT",
             "samples": 1,
@@ -2512,7 +2767,7 @@
               0.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "clear",
             "resource": "Bloom_Downsample_H_0_RT",
             "samples": 1,
@@ -2542,7 +2797,7 @@
               0.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "clear",
             "resource": "Bloom_Upsample_V_0_RT",
             "samples": 1,
@@ -2572,7 +2827,7 @@
               0.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "clear",
             "resource": "Bloom_Downsample_H_1_RT",
             "samples": 1,
@@ -2602,7 +2857,7 @@
               0.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "clear",
             "resource": "Bloom_Upsample_V_1_RT",
             "samples": 1,
@@ -2632,7 +2887,7 @@
               0.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "clear",
             "resource": "Bloom_Downsample_H_2_RT",
             "samples": 1,
@@ -2662,7 +2917,7 @@
               0.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "clear",
             "resource": "Bloom_Upsample_V_2_RT",
             "samples": 1,
@@ -2692,7 +2947,7 @@
               0.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "clear",
             "resource": "Bloom_Downsample_H_3_RT",
             "samples": 1,
@@ -2722,7 +2977,7 @@
               0.0
             ],
             "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "clear",
             "resource": "Bloom_Upsample_V_3_RT",
             "samples": 1,
@@ -2746,7 +3001,7 @@
           {
             "aspect": "color",
             "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "load",
             "resource": "Bloom_Downsample_H_2_RT",
             "samples": 1,
@@ -2774,7 +3029,7 @@
           {
             "aspect": "color",
             "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "load",
             "resource": "Bloom_Downsample_H_1_RT",
             "samples": 1,
@@ -2802,7 +3057,7 @@
           {
             "aspect": "color",
             "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "load",
             "resource": "Bloom_Downsample_H_0_RT",
             "samples": 1,
@@ -2830,7 +3085,7 @@
           {
             "aspect": "color",
             "final_layout": "color_attachment_optimal",
-            "format": "R8G8B8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "load",
             "resource": "display",
             "samples": 1,
@@ -2863,7 +3118,7 @@
           {
             "aspect": "color",
             "final_layout": "color_attachment_optimal",
-            "format": "R8G8B8A8_UNORM",
+            "format": "B8G8R8A8_SRGB",
             "load": "load",
             "resource": "display",
             "samples": 1,
@@ -2893,34 +3148,63 @@
         "order": 24
       },
       {
+        "color_counters": {
+          "paired_storage_round_trip": 20,
+          "shader_oetf": 0,
+          "terminal_display_encode": 1,
+          "tone_curve": 1
+        },
         "destination": "swapchain",
+        "destination_format": "R8G8B8A8_SRGB",
         "extent": [
           16,
           16
         ],
-        "format": "R8G8B8A8_UNORM",
         "kind": "output_transform",
-        "mode": "transfer_copy_same_format",
+        "mode": "hardware_srgb_encode",
         "name": "output_transform",
         "order": 25,
+        "paired_storage_edges": [
+          "gbuffer_pass:gbuffer_albedo->lighting_pass",
+          "gbuffer_pass:g_emissive->lighting_pass",
+          "lighting_pass:lit_color->HighLuminanceExtraction",
+          "HighLuminanceExtraction:Bloom_Threshold_RT->HorizontalBlur_0",
+          "HorizontalBlur_0:Bloom_Downsample_H_0_RT->VerticalBlur_0",
+          "VerticalBlur_0:Bloom_Upsample_V_0_RT->HorizontalBlur_1",
+          "HorizontalBlur_1:Bloom_Downsample_H_1_RT->VerticalBlur_1",
+          "VerticalBlur_1:Bloom_Upsample_V_1_RT->HorizontalBlur_2",
+          "HorizontalBlur_2:Bloom_Downsample_H_2_RT->VerticalBlur_2",
+          "VerticalBlur_2:Bloom_Upsample_V_2_RT->HorizontalBlur_3",
+          "HorizontalBlur_3:Bloom_Downsample_H_3_RT->VerticalBlur_3",
+          "VerticalBlur_3:Bloom_Upsample_V_3_RT->UpsampleBlend_3",
+          "VerticalBlur_2:Bloom_Upsample_V_2_RT->UpsampleBlend_3",
+          "UpsampleBlend_3:Bloom_Downsample_H_2_RT->UpsampleBlend_2",
+          "VerticalBlur_1:Bloom_Upsample_V_1_RT->UpsampleBlend_2",
+          "UpsampleBlend_2:Bloom_Downsample_H_1_RT->UpsampleBlend_1",
+          "VerticalBlur_0:Bloom_Upsample_V_0_RT->UpsampleBlend_1",
+          "lighting_pass:lit_color->FinalBloomComposite",
+          "UpsampleBlend_1:Bloom_Downsample_H_0_RT->FinalBloomComposite",
+          "ui_pass:display->output_transform"
+        ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
         "source": "display",
+        "source_format": "B8G8R8A8_SRGB",
         "texel_block_bytes": 4,
         "transitions": [
           {
-            "dst_access": "transfer_read",
-            "dst_stage": "transfer",
-            "new_layout": "transfer_src_optimal",
+            "dst_access": "shader_read",
+            "dst_stage": "fragment_shader",
+            "new_layout": "shader_read_only_optimal",
             "old_layout": "color_attachment_optimal",
             "resource": "display",
             "src_access": "color_attachment_read|color_attachment_write",
             "src_stage": "color_attachment_output"
           },
           {
-            "dst_access": "transfer_write",
-            "dst_stage": "transfer",
-            "new_layout": "transfer_dst_optimal",
+            "dst_access": "color_attachment_write",
+            "dst_stage": "color_attachment_output",
+            "new_layout": "color_attachment_optimal",
             "old_layout": "color_attachment_optimal",
             "resource": "swapchain",
             "src_access": "color_attachment_read|color_attachment_write",
@@ -2930,10 +3214,10 @@
             "dst_access": "transfer_read",
             "dst_stage": "transfer",
             "new_layout": "transfer_src_optimal",
-            "old_layout": "transfer_dst_optimal",
+            "old_layout": "color_attachment_optimal",
             "resource": "swapchain",
-            "src_access": "transfer_write",
-            "src_stage": "transfer"
+            "src_access": "color_attachment_write",
+            "src_stage": "color_attachment_output"
           }
         ]
       }

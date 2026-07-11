@@ -40,17 +40,22 @@ vk::Extent2D RenderTarget::getExtent() const { return impl->caps().extent; }
 
 bool RenderTarget::consumeExtentChanged() { return impl->consumeExtentChanged(); }
 
-std::vector<uint8_t> RenderTarget::readbackLastFrameRGBA8() { return impl->readbackLastFrameRGBA8(); }
+FrameTargetCaps RenderTarget::caps() const { return impl->caps(); }
 
-void RenderTarget::captureLastFrameToPng(const std::filesystem::path &path) {
-    const auto caps = impl->caps();
+std::vector<uint8_t> RenderTarget::readbackLastFrameRGBA8() {
     auto pixels = impl->readbackLastFrameRGBA8();
-
-    if (caps.color_format == vk::Format::eB8G8R8A8Unorm || caps.color_format == vk::Format::eB8G8R8A8Srgb) {
+    const auto format = impl->caps().color_format;
+    if (format == vk::Format::eB8G8R8A8Unorm || format == vk::Format::eB8G8R8A8Srgb) {
         for (size_t i = 0; i + 3 < pixels.size(); i += 4) {
             std::swap(pixels[i], pixels[i + 2]);
         }
     }
+    return pixels;
+}
+
+void RenderTarget::captureLastFrameToPng(const std::filesystem::path &path) {
+    const auto caps = impl->caps();
+    auto pixels = readbackLastFrameRGBA8();
 
     const auto parent = path.parent_path();
     if (!parent.empty()) {

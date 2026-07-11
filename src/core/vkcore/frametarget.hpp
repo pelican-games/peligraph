@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <vector>
 #include <vulkan/vulkan.hpp>
 
@@ -12,6 +13,8 @@ struct FrameTargetCaps {
     vk::Format color_format;
     vk::Extent2D extent;
     bool presents;
+    bool capture_available;
+    std::string color_path;
 };
 
 class IFrameTarget {

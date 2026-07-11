@@ -53,5 +53,5 @@ void main() {
     vec3 ambient = albedo * vec3(0.105, 0.145, 0.125) * occlusion;
     vec3 color = (diffuse + specular) * lightColor * NdotL + ambient + fill + emissive;
     vec3 mapped = vec3(1.0) - exp(-color * 1.38);
-    outColor = vec4(pow(mapped, vec3(0.92)), 1.0);
+    outColor = vec4(mapped, 1.0);
 }

@@ -15,5 +15,5 @@ void main() {
     vec3 bloom = texture(bloomTexture, inTexCoord).rgb;
     vec3 glow = bloom * 1.15;
     vec3 color = vec3(1.0) - exp(-(base + glow * 1.55));
-    outColor = vec4(pow(color, vec3(0.92)), 1.0);
+    outColor = vec4(color, 1.0);
 }

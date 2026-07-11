@@ -133,13 +133,14 @@ file(WRITE "${OUT_DIR}/passes/main.json" [=[
     {"name": "compute_color", "size": 16, "lifetime": "persistent"}
   ],
   "render_targets": [
-    {"name": "material_albedo", "extent_scale": 1.0, "format": "B8G8R8A8_UNORM", "usage": ["COLOR_ATTACHMENT"]},
-    {"name": "material_normal", "extent_scale": 1.0, "format": "R16G16B16A16_SFLOAT", "usage": ["COLOR_ATTACHMENT"]},
-    {"name": "seed_image", "extent_scale": 1.0, "format": "R8G8B8A8_UNORM", "usage": ["COLOR_ATTACHMENT", "STORAGE"]},
-    {"name": "material_worldpos", "extent_scale": 1.0, "format": "R16G16B16A16_SFLOAT", "usage": ["COLOR_ATTACHMENT"]},
-    {"name": "result_image", "extent_scale": 1.0, "format": "R8G8B8A8_UNORM", "usage": ["COLOR_ATTACHMENT", "STORAGE", "SAMPLED"]},
-    {"name": "material_depth", "extent_scale": 1.0, "format": "D32_SFLOAT", "usage": ["DEPTH_STENCIL_ATTACHMENT"]},
-    {"name": "sampled_color", "extent_scale": 1.0, "format": "R8G8B8A8_UNORM", "usage": ["COLOR_ATTACHMENT", "STORAGE"]}
+    {"name": "material_albedo", "extent_scale": 1.0, "format": "B8G8R8A8_UNORM", "format_class": "scene", "role": "color", "usage": ["COLOR_ATTACHMENT"]},
+    {"name": "material_normal", "extent_scale": 1.0, "format": "R16G16B16A16_SFLOAT", "format_class": "data", "role": "data", "usage": ["COLOR_ATTACHMENT"]},
+    {"name": "seed_image", "extent_scale": 1.0, "format": "R8G8B8A8_UNORM", "format_class": "data", "role": "data", "usage": ["COLOR_ATTACHMENT", "STORAGE", "SAMPLED"]},
+    {"name": "material_worldpos", "extent_scale": 1.0, "format": "R16G16B16A16_SFLOAT", "format_class": "data", "role": "data", "usage": ["COLOR_ATTACHMENT"]},
+    {"name": "material_emissive", "extent_scale": 1.0, "format": "B8G8R8A8_UNORM", "format_class": "scene", "role": "color", "usage": ["COLOR_ATTACHMENT"]},
+    {"name": "result_image", "extent_scale": 1.0, "format": "R8G8B8A8_UNORM", "format_class": "data", "role": "data", "usage": ["COLOR_ATTACHMENT", "STORAGE", "SAMPLED"]},
+    {"name": "material_depth", "extent_scale": 1.0, "format": "D32_SFLOAT", "format_class": "data", "role": "data", "usage": ["DEPTH_STENCIL_ATTACHMENT"]},
+    {"name": "sampled_color", "extent_scale": 1.0, "format": "R8G8B8A8_UNORM", "format_class": "data", "role": "data", "usage": ["COLOR_ATTACHMENT", "STORAGE"]}
   ],
   "rendering_passes": [
     {
@@ -149,10 +150,17 @@ file(WRITE "${OUT_DIR}/passes/main.json" [=[
           "name": "seed_render",
           "type": "material",
           "output": {
-            "color": ["material_albedo", "material_normal", "seed_image", "material_worldpos", "result_image"],
+            "color": ["material_albedo", "material_normal", "seed_image", "material_worldpos", "material_emissive"],
             "depth": "material_depth"
           },
           "clear_color": [0.10, 0.75, 0.35, 1.0]
+        },
+        {
+          "name": "initialize_result",
+          "type": "fullscreen",
+          "input": ["seed_image"],
+          "output": {"color": "result_image", "depth": null},
+          "shader": {"vertex": "shaders/fullscreen", "fragment": "shaders/sample_image"}
         },
         {
           "name": "sample_render",
@@ -181,7 +189,7 @@ file(WRITE "${OUT_DIR}/passes/main.json" [=[
       "shader": "shaders/transform_image",
       "reads": ["seed_image"],
       "writes": ["result_image"],
-      "after": ["seed_render"],
+      "after": ["initialize_result"],
       "dispatch": {"groups": [1, 1, 1]},
       "schedule": "per_frame"
     },

@@ -99,23 +99,26 @@ OffscreenFrameTarget::OffscreenFrameTarget()
       render_cmd_bufs{vectorToArray<CommandBufWrapper, in_flight_frames_num>(
           GET_MODULE(VulkanManageCore).allocCmdBufs(in_flight_frames_num))},
       in_flight_frame_index{0}, extent{GET_MODULE(EngineLaunchConfig).headless_extent},
-      color_format{vk::Format::eR8G8B8A8Unorm}, color_layout{vk::ImageLayout::eUndefined},
+      color_format{vk::Format::eR8G8B8A8Srgb}, color_layout{vk::ImageLayout::eUndefined},
       has_rendered_frame{false} {
     auto &vkcore = GET_MODULE(VulkanManageCore);
-    const auto format_features = vkcore.getPhysDevice().getFormatProperties(color_format).optimalTilingFeatures;
+    auto format_features = vkcore.getPhysDevice().getFormatProperties(color_format).optimalTilingFeatures;
     const auto required_features = vk::FormatFeatureFlagBits::eColorAttachment |
-                                   vk::FormatFeatureFlagBits::eTransferSrc |
-                                   vk::FormatFeatureFlagBits::eTransferDst;
-    if ((format_features & required_features) != required_features) {
-        throw std::runtime_error(
-            "offscreen frame target format lacks COLOR_ATTACHMENT/TRANSFER_SRC/TRANSFER_DST support");
+                                   vk::FormatFeatureFlagBits::eTransferSrc;
+    if (GET_MODULE(EngineLaunchConfig).force_unorm_color_path_for_testing ||
+        (format_features & required_features) != required_features) {
+        color_format = vk::Format::eR8G8B8A8Unorm;
+        format_features = vkcore.getPhysDevice().getFormatProperties(color_format).optimalTilingFeatures;
+        if ((format_features & required_features) != required_features) {
+            throw std::runtime_error(
+                "offscreen frame target lacks COLOR_ATTACHMENT/TRANSFER_SRC support");
+        }
     }
     const vk::Extent3D image_extent{extent.width, extent.height, 1};
 
     color_image = vkcore.allocImage(image_extent, color_format,
                                     vk::ImageUsageFlagBits::eColorAttachment |
-                                        vk::ImageUsageFlagBits::eTransferSrc |
-                                        vk::ImageUsageFlagBits::eTransferDst,
+                                        vk::ImageUsageFlagBits::eTransferSrc,
                                     vma::MemoryUsage::eAutoPreferDevice, {});
     color_image_view = createImageView(device, color_image, vk::ImageAspectFlagBits::eColor);
 
@@ -214,6 +217,8 @@ FrameTargetCaps OffscreenFrameTarget::caps() const {
         .color_format = color_format,
         .extent = extent,
         .presents = false,
+        .capture_available = true,
+        .color_path = color_format == vk::Format::eR8G8B8A8Srgb ? "srgb" : "unorm_fallback",
     };
 }
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "color.hpp"
 #include <string>
 
 namespace Pelican {

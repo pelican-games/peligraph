@@ -150,7 +150,7 @@ TEST_CASE("canonical color pipeline is composed even without features", "[render
     REQUIRE_FALSE(loader_called);
     REQUIRE(result.shader_defines == std::vector<std::string>{"PELICAN_BASE_DEFINE"});
     REQUIRE(result.feature_names.empty());
-    REQUIRE(result.config.at("resolver_version").get<int>() == 1);
+    REQUIRE(result.config.at("resolver_version").get<int>() == 2);
     REQUIRE(result.config.at("render_targets").size() == 1);
     REQUIRE(result.config.at("render_targets").at(0).at("name").get<std::string>() == "display");
     REQUIRE(result.config.at("render_targets").at(0).at("format_class").get<std::string>() == "display");
@@ -158,7 +158,7 @@ TEST_CASE("canonical color pipeline is composed even without features", "[render
 
 TEST_CASE("canonical color pipeline rejects unsupported resolver versions", "[render-feature]") {
     const auto config = nlohmann::json{
-        {"resolver_version", 2},
+        {"resolver_version", 1},
         {"render_targets", nlohmann::json::array()},
         {"rendering_passes", nlohmann::json::array()},
     };
@@ -168,7 +168,7 @@ TEST_CASE("canonical color pipeline rejects unsupported resolver versions", "[re
     } catch (const std::exception &ex) {
         message = ex.what();
     }
-    REQUIRE(message == "Only rendering resolver_version 1 is supported");
+    REQUIRE(message == "Only rendering resolver_version 2 is supported");
 }
 
 TEST_CASE("render feature fixtures compose and reject expected cases", "[render-feature]") {
@@ -289,7 +289,7 @@ TEST_CASE("render features append buffers and compute tasks", "[render-feature]"
     REQUIRE(result.config.at("compute_tasks").at(0).at("name").get<std::string>() == "write_color");
 }
 
-TEST_CASE("HDR render feature overrides lit target and uses the canonical tonemap anchor", "[render-feature]") {
+TEST_CASE("HDR render feature marks scene targets and uses the canonical tonemap anchor", "[render-feature]") {
     const auto result = composeRenderFeatureConfig(
         baseConfigWithFeature("engine://features/hdr.json"),
         RenderFeatureComposeDependencies{
@@ -305,7 +305,8 @@ TEST_CASE("HDR render feature overrides lit target and uses the canonical tonema
 
     const auto &lit_color = result.config.at("render_targets").at(0);
     REQUIRE(lit_color.at("name").get<std::string>() == "lit_color");
-    REQUIRE(lit_color.at("format").get<std::string>() == "R16G16B16A16_SFLOAT");
+    REQUIRE(lit_color.at("format_class").get<std::string>() == "scene");
+    REQUIRE(lit_color.at("role").get<std::string>() == "color");
     REQUIRE(lit_color.at("usage").get<std::vector<std::string>>() ==
             std::vector<std::string>{"COLOR_ATTACHMENT", "SAMPLED"});
 
@@ -314,7 +315,7 @@ TEST_CASE("HDR render feature overrides lit target and uses the canonical tonema
     REQUIRE(tonemap.at("after").get<std::vector<std::string>>() ==
             std::vector<std::string>{"__anchor_tonemap"});
     REQUIRE(tonemap.at("input").get<std::vector<std::string>>() ==
-            std::vector<std::string>{"lit_color"});
+            std::vector<std::string>{"scene_ldr_in"});
     REQUIRE(tonemap.at("shader").at("vertex").get<std::string>() == "engine://tonemap");
     REQUIRE(tonemap.at("shader").at("fragment").get<std::string>() == "engine://tonemap");
     REQUIRE(tonemap.at("color_load_op").get<std::string>() == "load");

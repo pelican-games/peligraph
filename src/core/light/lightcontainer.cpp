@@ -1,4 +1,5 @@
 #include "lightcontainer.hpp"
+#include "../userpublic/color.hpp"
 #include "../vkcore/core.hpp"
 #include <algorithm>
 #include <cmath>
@@ -24,6 +25,13 @@ namespace Pelican
 				value.at(1).get<float>(),
 				value.at(2).get<float>()
 			);
+		}
+
+		glm::vec3 readSrgbColor(const nlohmann::json& json, const std::string& light_name)
+		{
+			const auto encoded = readVec3(json, "color", light_name);
+			const auto linear = Pelican::srgb(encoded.r, encoded.g, encoded.b, 1.0f);
+			return glm::vec3{linear};
 		}
 
 		void registerLightName(std::unordered_map<std::string, uint32_t>& name_map, const std::string& name,
@@ -115,7 +123,7 @@ namespace Pelican
 				light.name = lightEntry.name;
 				light.direction = readVec3(lightJson, "direction", light.name);
 				light.intensity = lightJson.value("intensity", 1.0f);
-				light.color = readVec3(lightJson, "color", light.name);
+				light.color = readSrgbColor(lightJson, light.name);
 
 				registerLightName(m_LightNameMap, light.name, static_cast<uint32_t>(m_DirectionalLights.size()),
 					"directional");
@@ -127,7 +135,7 @@ namespace Pelican
 				light.name = lightEntry.name;
 				light.position = readVec3(lightJson, "position", light.name);
 				light.intensity = lightJson.value("intensity", 1.0f);
-				light.color = readVec3(lightJson, "color", light.name);
+				light.color = readSrgbColor(lightJson, light.name);
 
 				registerLightName(m_PointLightNameMap, light.name, static_cast<uint32_t>(m_PointLights.size()),
 					"point");
@@ -142,7 +150,7 @@ namespace Pelican
 				light.intensity = lightJson.value("intensity", 1.0f);
 				light.innerConeAngle = lightJson.value("innerConeAngle", 12.5f);
 				light.outerConeAngle = lightJson.value("outerConeAngle", 17.5f);
-				light.color = readVec3(lightJson, "color", light.name);
+				light.color = readSrgbColor(lightJson, light.name);
 
 				registerLightName(m_SpotLightNameMap, light.name, static_cast<uint32_t>(m_SpotLights.size()),
 					"spot");

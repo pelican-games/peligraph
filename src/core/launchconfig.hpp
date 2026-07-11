@@ -28,6 +28,7 @@ DECLARE_MODULE(EngineLaunchConfig) {
     bool allow_absolute_paths = false;
     bool strict_assets = false;
     bool dump_frame_plan = false;
+    bool force_unorm_color_path_for_testing = false;
     std::optional<std::filesystem::path> play_seq;
     std::optional<std::filesystem::path> play_vat;
     std::filesystem::path seq_mesh{"builtin:sphere"};

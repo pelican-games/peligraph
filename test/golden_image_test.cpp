@@ -323,6 +323,11 @@ bool updateGoldenRequested() {
     return value != nullptr && std::string{value} == "1";
 }
 
+bool writeColorDiffArtifactsRequested() {
+    const char *value = std::getenv("PELICAN_WRITE_COLOR_DIFF_ARTIFACTS");
+    return value != nullptr && std::string{value} == "1";
+}
+
 void renderClearFrame(RenderTarget &render_target, vk::ClearColorValue clear_color) {
     auto frame = render_target.render_begin();
 
@@ -847,6 +852,12 @@ nlohmann::json makeHdrRenderingConfig(bool hdr_enabled) {
                  {"format", "B8G8R8A8_UNORM"},
                  {"usage", nlohmann::json::array({"COLOR_ATTACHMENT", "SAMPLED"})},
              },
+             {
+                 {"name", "Bloom_Threshold_RT"},
+                 {"extent_scale", 1.0},
+                 {"format", "B8G8R8A8_UNORM"},
+                 {"usage", nlohmann::json::array({"COLOR_ATTACHMENT", "SAMPLED"})},
+             },
          })},
         {"rendering_passes",
          nlohmann::json::array({
@@ -861,11 +872,21 @@ nlohmann::json makeHdrRenderingConfig(bool hdr_enabled) {
                           {"shader", {{"vertex", "shaders/fullscreen"}, {"fragment", "shaders/hdr_source"}}},
                       },
                       {
-                          {"name", "copy_to_swapchain"},
+                          {"name", "HighLuminanceExtraction"},
+                          {"type", "fullscreen"},
+                          {"output", {{"color", "Bloom_Threshold_RT"}, {"depth", nullptr}}},
+                          {"input", nlohmann::json::array({"lit_color"})},
+                          {"shader", {{"vertex", "engine://fullscreen"},
+                                      {"fragment", "engine://bloom_highpass"}}},
+                          {"clear_color", nlohmann::json::array({0.0, 0.0, 0.0, 1.0})},
+                      },
+                      {
+                          {"name", "FinalBloomComposite"},
                           {"type", "fullscreen"},
                           {"output", {{"color", "swapchain"}, {"depth", nullptr}}},
-                          {"input", nlohmann::json::array({"lit_color"})},
-                          {"shader", {{"vertex", "shaders/fullscreen"}, {"fragment", "shaders/copy_input"}}},
+                          {"input", nlohmann::json::array({"lit_color", "Bloom_Threshold_RT"})},
+                          {"shader", {{"vertex", "engine://fullscreen"},
+                                      {"fragment", "engine://bloom_composite"}}},
                           {"clear_color", nlohmann::json::array({0.0, 0.0, 0.0, 1.0})},
                       },
                       {
@@ -878,8 +899,9 @@ nlohmann::json makeHdrRenderingConfig(bool hdr_enabled) {
          })},
     };
 
+    config["features"] = nlohmann::json::array({"engine://features/debug_text.json"});
     if (hdr_enabled) {
-        config["features"] = nlohmann::json::array({"engine://features/hdr.json"});
+        config["features"].push_back("engine://features/hdr.json");
     }
     return config;
 }
@@ -901,6 +923,44 @@ void writeHdrProject(const std::filesystem::path &root, bool hdr_enabled) {
     writeTextFile(root / "shaders" / "hdr_source.frag", hdrSourceFragmentShader());
     writeTextFile(root / "shaders" / "copy_input.frag", copyInputFragmentShader());
     writeTextFile(root / "passes" / "main.json", makeHdrRenderingConfig(hdr_enabled).dump(2));
+}
+
+nlohmann::json makeFullscreenRebindRenderingConfig() {
+    return {
+        {"render_targets",
+         nlohmann::json::array({
+             {
+                 {"name", "lit_color"},
+                 {"extent_scale", 1.0},
+                 {"format", "B8G8R8A8_UNORM"},
+                 {"usage", nlohmann::json::array({"COLOR_ATTACHMENT", "SAMPLED"})},
+             },
+         })},
+        {"rendering_passes",
+         nlohmann::json::array({
+             {
+                 {"name", "main"},
+                 {"passes",
+                  nlohmann::json::array({
+                      {
+                          {"name", "source"},
+                          {"type", "fullscreen"},
+                          {"output", {{"color", "lit_color"}, {"depth", nullptr}}},
+                          {"shader", {{"vertex", "shaders/fullscreen"},
+                                      {"fragment", "shaders/hdr_source"}}},
+                      },
+                      {
+                          {"name", "copy_input"},
+                          {"type", "fullscreen"},
+                          {"output", {{"color", "swapchain"}, {"depth", nullptr}}},
+                          {"input", nlohmann::json::array({"lit_color"})},
+                          {"shader", {{"vertex", "shaders/fullscreen"},
+                                      {"fragment", "shaders/copy_input"}}},
+                      },
+                  })},
+             },
+         })},
+    };
 }
 
 nlohmann::json makeShadowRenderingConfig(bool shadow_enabled) {
@@ -1431,7 +1491,7 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
     } else if (golden_case.mode == "collider_debug_draw") {
         renderColliderDebugDrawFrame(render_target);
     } else if (isHdrGoldenMode(golden_case.mode)) {
-        renderFeatureFrame(render_target);
+        renderDebugTextFrame(render_target);
     } else if (isShadowGoldenMode(golden_case.mode)) {
         renderShadowFrame(render_target);
     } else if (golden_case.mode == "compute_buffer") {
@@ -1559,6 +1619,12 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
             const auto comparison = compareImages(expected, rendered.image);
 
             const auto artifact_dir = binaryRoot() / "test_artifacts" / golden_case.name;
+            if (writeColorDiffArtifactsRequested()) {
+                writePng(artifact_dir / "actual.png", rendered.image);
+                writePng(artifact_dir / "diff.png", comparison.diff);
+                writeFailureMetadata(artifact_dir / "wp74_diff.json", golden_case, rendered,
+                                     comparison, tolerance);
+            }
             if (comparison.average > tolerance.average || comparison.max > tolerance.max) {
                 writePng(artifact_dir / "actual.png", rendered.image);
                 writePng(artifact_dir / "diff.png", comparison.diff);
@@ -1581,7 +1647,7 @@ std::string loadTextFile(const std::filesystem::path &path) {
     return std::string{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
 }
 
-TEST_CASE("golden final RGBA8 bytes match the WP73 baseline hashes",
+TEST_CASE("golden final RGBA8 bytes match the WP74 C1b baseline hashes",
           "[golden][headless][byte-exact]") {
     setupLogger();
     requireGoldenVulkanDevice();
@@ -1666,6 +1732,7 @@ TEST_CASE("fullscreen inputs rebind after shader reload and render-target recrea
     FastModuleContainer modules;
     const auto temp_dir = makeTempProjectDir("fullscreen_rebind");
     writeHdrProject(temp_dir, false);
+    writeTextFile(temp_dir / "passes" / "main.json", makeFullscreenRebindRenderingConfig().dump(2));
     GET_MODULE(PathResolver).setup(temp_dir, false);
     GET_MODULE(ProjectSource).setProjectData(makeHdrProjectJson().dump());
 

@@ -15,6 +15,7 @@
 #include "../loader/pathresolver.hpp"
 #include "../renderer/shadowdepthpasscontainer.hpp"
 #include "../vkcore/rendertarget.hpp"
+#include <algorithm>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
@@ -94,9 +95,11 @@ void registerRenderingPassConfigData(const nlohmann::json &rendering_pass_data, 
                                      RenderingPassConfigRegistrationDependencies dependencies) {
     const auto composed =
         composeRenderFeaturesForRegistration(rendering_pass_data, dependencies.runtime);
-    const auto composed_rendering_pass_data = resolveRenderTargetFormatClassesV1(
+    const bool hdr_enabled = std::find(composed.feature_names.begin(), composed.feature_names.end(), "hdr") !=
+                             composed.feature_names.end();
+    const auto composed_rendering_pass_data = resolveRenderTargetFormatClassesV2(
         composed.config, dependencies.runtime.render_target.getSwapchainFormat(),
-        dependencies.runtime.render_target.getExtent());
+        dependencies.runtime.render_target.getExtent(), hdr_enabled);
     const auto render_target_definitions = parseRenderTargetDefinitionsFromJson(composed_rendering_pass_data);
     registerRenderTargetDefinitions(render_target_definitions, base_extent,
                                     dependencies.render_targets.render_target_container);

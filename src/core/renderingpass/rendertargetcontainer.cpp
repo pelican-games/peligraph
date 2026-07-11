@@ -61,9 +61,25 @@ ImageWrapper createRenderTargetImage(const std::string &name, vk::Extent2D base_
                                      std::optional<vk::Extent2D> fixed_extent,
                                      vk::Format format, vk::ImageUsageFlags usage,
                                      vma::MemoryUsage memory_usage) {
+    const auto &vkcore = GET_MODULE(VulkanManageCore);
+    const auto features = vkcore.getPhysDevice().getFormatProperties(format).optimalTilingFeatures;
+    vk::FormatFeatureFlags required;
+    if (usage & vk::ImageUsageFlagBits::eColorAttachment) {
+        required |= vk::FormatFeatureFlagBits::eColorAttachment;
+        if (format == vk::Format::eR8G8B8A8Srgb || format == vk::Format::eB8G8R8A8Srgb) {
+            required |= vk::FormatFeatureFlagBits::eColorAttachmentBlend;
+        }
+    }
+    if (usage & vk::ImageUsageFlagBits::eSampled) {
+        required |= vk::FormatFeatureFlagBits::eSampledImage |
+                    vk::FormatFeatureFlagBits::eSampledImageFilterLinear;
+    }
+    if ((features & required) != required) {
+        throw std::runtime_error("Render target format lacks required color capability: " + name);
+    }
     const auto extent = resolveRenderTargetExtent(name, base_extent, extent_scale, fixed_extent);
-    return GET_MODULE(VulkanManageCore)
-        .allocImage(vk::Extent3D{extent.width, extent.height, 1}, format, usage, memory_usage, {});
+    return vkcore.allocImage(vk::Extent3D{extent.width, extent.height, 1}, format, usage,
+                             memory_usage, {});
 }
 
 } // namespace
@@ -75,6 +91,7 @@ RenderTargetContainer::~RenderTargetContainer() {}
 GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::string &name,
                                                                  vk::Extent2D base_extent,
                                                                  const std::string &format_class,
+                                                                 const std::string &role,
                                                                  float extent_scale,
                                                                  std::optional<vk::Extent2D> fixed_extent,
                                                                  vk::Format format,
@@ -92,6 +109,7 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
     GlobalRenderTargetId id = render_targets.reg(InternalRenderTarget{
         .name = name,
         .format_class = format_class,
+        .role = role,
         .extent_scale = extent_scale,
         .fixed_extent = fixed_extent,
         .format = format,

@@ -9,7 +9,9 @@ namespace Pelican {
 vk::Format stringToFormat(const std::string &format_str) {
     static const std::unordered_map<std::string, vk::Format> format_map = {
         {"B8G8R8A8_UNORM", vk::Format::eB8G8R8A8Unorm},
+        {"B8G8R8A8_SRGB", vk::Format::eB8G8R8A8Srgb},
         {"R8G8B8A8_UNORM", vk::Format::eR8G8B8A8Unorm},
+        {"R8G8B8A8_SRGB", vk::Format::eR8G8B8A8Srgb},
         {"R8_UNORM", vk::Format::eR8Unorm},
         {"R16G16B16A16_SFLOAT", vk::Format::eR16G16B16A16Sfloat},
         {"D32_SFLOAT", vk::Format::eD32Sfloat},
@@ -27,8 +29,12 @@ std::string formatToString(vk::Format format) {
     switch (format) {
     case vk::Format::eB8G8R8A8Unorm:
         return "B8G8R8A8_UNORM";
+    case vk::Format::eB8G8R8A8Srgb:
+        return "B8G8R8A8_SRGB";
     case vk::Format::eR8G8B8A8Unorm:
         return "R8G8B8A8_UNORM";
+    case vk::Format::eR8G8B8A8Srgb:
+        return "R8G8B8A8_SRGB";
     case vk::Format::eR8Unorm:
         return "R8_UNORM";
     case vk::Format::eR16G16B16A16Sfloat:
@@ -40,7 +46,7 @@ std::string formatToString(vk::Format format) {
     case vk::Format::eD16Unorm:
         return "D16_UNORM";
     default:
-        throw std::runtime_error("Unsupported resolver v1 format: " + vk::to_string(format));
+        throw std::runtime_error("Unsupported resolver v2 format: " + vk::to_string(format));
     }
 }
 
@@ -74,6 +80,9 @@ PassInfo makePassInfo(const std::string &type_str) {
         return MaterialPassInfo{};
     }
     if (type_str == "fullscreen") {
+        return FullscreenPassInfo{};
+    }
+    if (type_str == "output_transform") {
         return FullscreenPassInfo{};
     }
     if (type_str == "debug_draw") {

@@ -1,5 +1,6 @@
 #include "materialcontainer.hpp"
 #include "../renderingpass/materialpassattachments.hpp"
+#include "../renderingpass/renderingpasscontainer.hpp"
 #include "../shader/pelican_sets.hpp"
 #include "../shader/pipelinefactory.hpp"
 #include "../vkcore/core.hpp"
@@ -32,7 +33,9 @@ static GraphicsPipelineDesc makeMaterialPipelineDesc(const MaterialInfo &info) {
     GraphicsPipelineDesc desc;
     desc.vert = info.vert_shader;
     desc.frag = info.frag_shader;
-    desc.color_formats.assign(materialPassColorAttachmentFormats.begin(), materialPassColorAttachmentFormats.end());
+    const auto &formats = materialPassColorAttachmentFormats(
+        GET_MODULE(RenderingPassContainer).isFeatureEnabled("hdr"));
+    desc.color_formats.assign(formats.begin(), formats.end());
     desc.depth_format = materialPassDepthAttachmentFormat;
     desc.use_engine_vertex_layout = true;
     desc.depth_test = true;
@@ -93,11 +96,11 @@ static vk::UniqueSampler createSampler(vk::Device device, vk::Filter filter) {
     return device.createSamplerUnique(create_info);
 }
 
-static vk::UniqueImageView createImageView(vk::Device device, const ImageWrapper &image) {
+static vk::UniqueImageView createImageView(vk::Device device, const ImageWrapper &image, vk::Format format) {
     vk::ImageViewCreateInfo create_info;
     create_info.image = image.image.get();
     create_info.viewType = vk::ImageViewType::e2D;
-    create_info.format = image.format;
+    create_info.format = format;
     create_info.components.r = vk::ComponentSwizzle::eR;
     create_info.components.g = vk::ComponentSwizzle::eG;
     create_info.components.b = vk::ComponentSwizzle::eB;
@@ -128,9 +131,13 @@ GlobalTextureId MaterialContainer::registerTexture(vk::Extent3D extent, const vo
 GlobalTextureId MaterialContainer::registerTexture(vk::Extent3D extent, const void *data, vk::Format format,
                                                    vk::DeviceSize bytes_num) {
     const auto &vkcore = GET_MODULE(VulkanManageCore);
+    const bool rgba8 = format == vk::Format::eR8G8B8A8Unorm;
+    const std::array mutable_formats{vk::Format::eR8G8B8A8Unorm, vk::Format::eR8G8B8A8Srgb};
     auto image = vkcore.allocImage(extent, format,
                                    vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
-                                   vma::MemoryUsage::eAutoPreferDevice, {});
+                                   vma::MemoryUsage::eAutoPreferDevice, {}, VulkanProcessType::graphics,
+                                   rgba8 ? std::span<const vk::Format>{mutable_formats}
+                                         : std::span<const vk::Format>{});
 
     auto &vkutil = GET_MODULE(VulkanUtils);
     vkutil.safeTransferMemoryToImage(image, data, bytes_num,
@@ -142,11 +149,24 @@ GlobalTextureId MaterialContainer::registerTexture(vk::Extent3D extent, const vo
                                          .dst_access = vk::AccessFlagBits::eShaderRead,
                                      });
 
-    auto image_view = createImageView(device, image);
+    auto linear_view = createImageView(device, image, format);
+    vk::UniqueImageView srgb_view;
+    if (rgba8) {
+        const auto features = vkcore.getPhysDevice()
+                                  .getFormatProperties(vk::Format::eR8G8B8A8Srgb)
+                                  .optimalTilingFeatures;
+        const auto required = vk::FormatFeatureFlagBits::eSampledImage |
+                              vk::FormatFeatureFlagBits::eSampledImageFilterLinear;
+        if ((features & required) != required) {
+            throw std::runtime_error("SRGB material texture lacks sampled/linear-filter support");
+        }
+        srgb_view = createImageView(device, image, vk::Format::eR8G8B8A8Srgb);
+    }
 
     return textures.reg(InternalTextureResource{
         .image = std::move(image),
-        .image_view = std::move(image_view),
+        .linear_view = std::move(linear_view),
+        .srgb_view = std::move(srgb_view),
     });
 }
 GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
@@ -173,20 +193,24 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         info.vat ? vatMaterialTextureBindingCount : baseMaterialTextureBindingCount;
     std::array<vk::DescriptorImageInfo, vatMaterialTextureBindingCount> image_infos{};
 
-    const auto setImageInfo = [&](uint32_t binding, GlobalTextureId texture, vk::Sampler sampler) {
+    const auto setImageInfo = [&](uint32_t binding, GlobalTextureId texture, vk::Sampler sampler,
+                                  bool srgb) {
         const auto &tex = textures.get(texture);
-        image_infos[binding].imageView = tex.image_view.get();
+        if (srgb && !tex.srgb_view) {
+            throw std::runtime_error("Color texture does not provide an SRGB view");
+        }
+        image_infos[binding].imageView = srgb ? tex.srgb_view.get() : tex.linear_view.get();
         image_infos[binding].imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
         image_infos[binding].sampler = sampler;
     };
 
-    setImageInfo(baseColorBinding, info.base_color_texture, linear_sampler.get());
-    setImageInfo(metallicRoughnessBinding, info.metallic_roughness_texture, linear_sampler.get());
-    setImageInfo(normalBinding, info.normal_texture, linear_sampler.get());
-    setImageInfo(emissiveBinding, info.emissive_texture, linear_sampler.get());
+    setImageInfo(baseColorBinding, info.base_color_texture, linear_sampler.get(), true);
+    setImageInfo(metallicRoughnessBinding, info.metallic_roughness_texture, linear_sampler.get(), false);
+    setImageInfo(normalBinding, info.normal_texture, linear_sampler.get(), false);
+    setImageInfo(emissiveBinding, info.emissive_texture, linear_sampler.get(), true);
     if (info.vat) {
-        setImageInfo(vatPositionBinding, info.vat->position_texture, nearest_sampler.get());
-        setImageInfo(vatNormalBinding, info.vat->normal_texture, nearest_sampler.get());
+        setImageInfo(vatPositionBinding, info.vat->position_texture, nearest_sampler.get(), false);
+        setImageInfo(vatNormalBinding, info.vat->normal_texture, nearest_sampler.get(), false);
     }
 
     std::vector<vk::WriteDescriptorSet> writes;
@@ -237,6 +261,12 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     GET_MODULE(VulkanManageCore)
         .writeBuf(material_buffer, &gpu_data, sizeof(MaterialGpuData) * material_id.value, sizeof(gpu_data));
     return material_id;
+}
+
+std::pair<vk::ImageView, vk::ImageView>
+MaterialContainer::textureViewsForTesting(GlobalTextureId texture) const {
+    const auto &resource = textures.get(texture);
+    return {resource.linear_view.get(), resource.srgb_view.get()};
 }
 
 bool MaterialContainer::isRenderRequired(PassId pass_id, GlobalMaterialId material) const {

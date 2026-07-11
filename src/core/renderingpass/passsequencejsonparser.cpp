@@ -33,7 +33,7 @@ std::vector<PassDefinition> parsePassSequenceFromJson(const nlohmann::json &pass
         }
 
         const auto type = pass_json.value("type", std::string{});
-        if (type == "canonical_anchor" || type == "output_transform") {
+        if (type == "canonical_anchor") {
             continue;
         }
 

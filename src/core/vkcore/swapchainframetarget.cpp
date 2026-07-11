@@ -4,6 +4,7 @@
 #include "../os/window.hpp"
 #include "../renderer/camera.hpp"
 #include "core.hpp"
+#include "util.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -42,10 +43,6 @@ static SwapchainWithFmt createSwapchain(vk::Device device, const vk::PhysicalDev
     create_info.surface = surface;
 
     const auto surface_cap = phys_device.getSurfaceCapabilitiesKHR(surface);
-    if (!(surface_cap.supportedUsageFlags & vk::ImageUsageFlagBits::eTransferDst)) {
-        throw std::runtime_error(
-            "C1a windowed output_transform is unsupported: surface lacks TRANSFER_DST");
-    }
     auto surface_fmts = phys_device.getSurfaceFormatsKHR(surface);
     auto surface_presentmodes = phys_device.getSurfacePresentModesKHR(surface);
     if (surface_fmts.empty()) {
@@ -57,6 +54,9 @@ static SwapchainWithFmt createSwapchain(vk::Device device, const vk::PhysicalDev
 
     const auto pred_fmt = [](const vk::SurfaceFormatKHR &format1, const vk::SurfaceFormatKHR &format2) {
         const auto score_func = [](vk::SurfaceFormatKHR format) {
+            if ((format.format == vk::Format::eR8G8B8A8Srgb || format.format == vk::Format::eB8G8R8A8Srgb) &&
+                format.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear)
+                return 20;
             if ((format.format == vk::Format::eR8G8B8A8Unorm || format.format == vk::Format::eB8G8R8A8Unorm) &&
                 format.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear)
                 return 10;
@@ -83,12 +83,13 @@ static SwapchainWithFmt createSwapchain(vk::Device device, const vk::PhysicalDev
     create_info.imageArrayLayers = 1;
     const auto selected_format_features =
         phys_device.getFormatProperties(surface_fmts[0].format).optimalTilingFeatures;
-    if (!(selected_format_features & vk::FormatFeatureFlagBits::eTransferDst)) {
-        throw std::runtime_error(
-            "C1a windowed output_transform is unsupported: swapchain format lacks TRANSFER_DST");
+    const bool capture_available =
+        static_cast<bool>(surface_cap.supportedUsageFlags & vk::ImageUsageFlagBits::eTransferSrc) &&
+        static_cast<bool>(selected_format_features & vk::FormatFeatureFlagBits::eTransferSrc);
+    create_info.imageUsage = vk::ImageUsageFlagBits::eColorAttachment;
+    if (capture_available) {
+        create_info.imageUsage |= vk::ImageUsageFlagBits::eTransferSrc;
     }
-    create_info.imageUsage = vk::ImageUsageFlagBits::eColorAttachment |
-                             vk::ImageUsageFlagBits::eTransferDst;
     const std::array queue_families{graphics_queue_family, presentation_queue_family};
     if (graphics_queue_family == presentation_queue_family) {
         create_info.imageSharingMode = vk::SharingMode::eExclusive;
@@ -100,7 +101,8 @@ static SwapchainWithFmt createSwapchain(vk::Device device, const vk::PhysicalDev
     create_info.presentMode = surface_presentmodes[0];
     create_info.clipped = VK_TRUE;
 
-    return SwapchainWithFmt{device.createSwapchainKHRUnique(create_info), surface_fmts[0].format, swapchain_extent};
+    return SwapchainWithFmt{device.createSwapchainKHRUnique(create_info), surface_fmts[0].format,
+                            swapchain_extent, capture_available};
 }
 
 static std::vector<vk::Image> getImageFromSwapchain(vk::Device device, vk::SwapchainKHR swapchain) {
@@ -368,6 +370,7 @@ void SwapchainFrameTarget::render_end() {
 
     in_flight_frame_index++;
     in_flight_frame_index %= in_flight_frames_num;
+    has_rendered_frame = true;
 }
 
 FrameTargetCaps SwapchainFrameTarget::caps() const {
@@ -375,6 +378,11 @@ FrameTargetCaps SwapchainFrameTarget::caps() const {
         .color_format = swapchain.format,
         .extent = extent,
         .presents = true,
+        .capture_available = swapchain.capture_available,
+        .color_path = (swapchain.format == vk::Format::eR8G8B8A8Srgb ||
+                       swapchain.format == vk::Format::eB8G8R8A8Srgb)
+                          ? "srgb"
+                          : "unorm_fallback",
     };
 }
 
@@ -385,7 +393,49 @@ bool SwapchainFrameTarget::consumeExtentChanged() {
 }
 
 std::vector<uint8_t> SwapchainFrameTarget::readbackLastFrameRGBA8() {
-    throw std::runtime_error("SwapchainFrameTarget does not support readback");
+    if (!swapchain.capture_available) {
+        throw std::runtime_error("capture unavailable_windowed: surface lacks TRANSFER_SRC support");
+    }
+    if (!has_rendered_frame) {
+        throw std::runtime_error("SwapchainFrameTarget has no rendered frame to read back");
+    }
+
+    device.waitIdle();
+    auto &vkcore = GET_MODULE(VulkanManageCore);
+    const vk::DeviceSize bytes_num = static_cast<vk::DeviceSize>(extent.width) * extent.height * 4;
+    auto staging = vkcore.allocBuf(bytes_num, vk::BufferUsageFlagBits::eTransferDst,
+                                   vma::MemoryUsage::eAutoPreferHost,
+                                   vma::AllocationCreateFlagBits::eHostAccessRandom);
+
+    vk::BufferImageCopy copy_region;
+    copy_region.imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+    copy_region.imageExtent = vk::Extent3D{extent.width, extent.height, 1};
+    const auto image = swapchain_images[current_image_index];
+    GET_MODULE(VulkanUtils).executeOneTimeCmd(
+        [&](vk::CommandBuffer cmd_buf) {
+            vk::ImageMemoryBarrier to_transfer;
+            to_transfer.oldLayout = vk::ImageLayout::ePresentSrcKHR;
+            to_transfer.newLayout = vk::ImageLayout::eTransferSrcOptimal;
+            to_transfer.srcAccessMask = {};
+            to_transfer.dstAccessMask = vk::AccessFlagBits::eTransferRead;
+            to_transfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            to_transfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            to_transfer.image = image;
+            to_transfer.subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+            cmd_buf.pipelineBarrier(vk::PipelineStageFlagBits::eBottomOfPipe,
+                                    vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, {to_transfer});
+            cmd_buf.copyImageToBuffer(image, vk::ImageLayout::eTransferSrcOptimal,
+                                      staging.buffer.get(), {copy_region});
+            vk::ImageMemoryBarrier to_present = to_transfer;
+            to_present.oldLayout = vk::ImageLayout::eTransferSrcOptimal;
+            to_present.newLayout = vk::ImageLayout::ePresentSrcKHR;
+            to_present.srcAccessMask = vk::AccessFlagBits::eTransferRead;
+            to_present.dstAccessMask = {};
+            cmd_buf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                                    vk::PipelineStageFlagBits::eBottomOfPipe, {}, {}, {}, {to_present});
+        },
+        true);
+    return vkcore.readBuf(staging, bytes_num);
 }
 
 } // namespace Pelican

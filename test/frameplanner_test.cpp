@@ -115,6 +115,7 @@ nlohmann::json legacyTargetProjection(const nlohmann::json &config) {
         }
         auto legacy = target;
         legacy.erase("format_class");
+        legacy.erase("role");
         projected.push_back(std::move(legacy));
     }
     return projected;
@@ -204,7 +205,10 @@ struct ParsedRenderTargetResolvers {
     std::vector<RenderTargetMetadata> metadata;
 
     explicit ParsedRenderTargetResolvers(const nlohmann::json &config) {
-        const auto definitions = parseRenderTargetDefinitionsFromJson(config);
+        const auto composed = composeRenderFeatureConfig(config);
+        const auto resolved = resolveRenderTargetFormatClassesV2(
+            composed.config, vk::Format::eB8G8R8A8Srgb, vk::Extent2D{100, 100}, false);
+        const auto definitions = parseRenderTargetDefinitionsFromJson(resolved);
         metadata.reserve(definitions.size());
         for (size_t i = 0; i < definitions.size(); ++i) {
             const auto id = GlobalRenderTargetId{static_cast<int>(i)};
@@ -352,8 +356,8 @@ TEST_CASE("frame planner example plan JSON matches fixture", "[frameplanner]") {
     requirePlanFixture(plan_json, fixtureRoot() / "plans" / "example_main_render.json");
 }
 
-TEST_CASE("canonical C1a frame-plan diff preserves every legacy pass and target field",
-          "[frameplanner][color-c1a]") {
+TEST_CASE("canonical C1b frame-plan diff preserves every legacy pass and target field",
+          "[frameplanner][color-c1b]") {
     const auto legacy = readJson(sourceRoot() / "projects" / "example" / "passes" /
                                  "main_rendering_config.json");
     const auto old_graphs = parseFrameGraphDefinitionsFromConfigJson(legacy);
@@ -361,7 +365,7 @@ TEST_CASE("canonical C1a frame-plan diff preserves every legacy pass and target 
     const auto old_plan = planFrameGraph(old_graphs.front());
 
     const auto composed = composeRenderFeatureConfig(legacy);
-    REQUIRE(composed.config.at("resolver_version").get<int>() == 1);
+    REQUIRE(composed.config.at("resolver_version").get<int>() == 2);
     const auto new_graphs = parseFrameGraphDefinitionsFromConfigJson(composed.config);
     REQUIRE(new_graphs.size() == 1);
     const auto new_plan = planFrameGraph(new_graphs.front());
@@ -378,9 +382,9 @@ TEST_CASE("canonical C1a frame-plan diff preserves every legacy pass and target 
 
     const auto &display = composed.config.at("render_targets").back();
     REQUIRE(display.at("name").get<std::string>() == "display");
-    REQUIRE(display.at("format").get<std::string>() == "FRAME_TARGET_V1");
+    REQUIRE(display.at("format").get<std::string>() == "B8G8R8A8_SRGB");
     REQUIRE(display.at("usage").get<std::vector<std::string>>() ==
-            std::vector<std::string>{"COLOR_ATTACHMENT", "TRANSFER_SRC"});
+            std::vector<std::string>{"COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"});
     REQUIRE(new_plan.nodes.back().kind == FramePlanNodeKind::output_transform);
     REQUIRE(new_plan.nodes.back().name == "output_transform");
 }

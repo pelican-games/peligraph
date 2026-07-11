@@ -29,12 +29,13 @@ std::optional<vk::Extent2D> parseFixedExtent(const nlohmann::json &rt_json,
 
 } // namespace
 
-nlohmann::json resolveRenderTargetFormatClassesV1(const nlohmann::json &data,
+nlohmann::json resolveRenderTargetFormatClassesV2(const nlohmann::json &data,
                                                    vk::Format frame_target_format,
-                                                   vk::Extent2D frame_target_extent) {
+                                                   vk::Extent2D frame_target_extent,
+                                                   bool hdr_enabled) {
     if (!data.contains("resolver_version") || !data.at("resolver_version").is_number_integer() ||
-        data.at("resolver_version").get<int>() != 1) {
-        throw std::runtime_error("Rendering config requires resolver_version: 1");
+        data.at("resolver_version").get<int>() != 2) {
+        throw std::runtime_error("Rendering config requires resolver_version: 2");
     }
     auto resolved = data;
     if (!resolved.contains("render_targets")) {
@@ -54,11 +55,13 @@ nlohmann::json resolveRenderTargetFormatClassesV1(const nlohmann::json &data,
             throw std::runtime_error("Unknown render target format_class: " + format_class);
         }
         if (format_class == "display") {
-            target["format"] = formatToString(frame_target_format);
+            target["format"] = "B8G8R8A8_SRGB";
             target["width"] = frame_target_extent.width;
             target["height"] = frame_target_extent.height;
+        } else if (format_class == "scene") {
+            target["format"] = hdr_enabled ? "R16G16B16A16_SFLOAT" : "B8G8R8A8_SRGB";
         } else {
-            // Resolver v1 deliberately preserves the authored legacy format and channel order.
+            // Data and explicit resources retain their authored representation.
             (void)parseStringField(target, "format", "render target: " + name);
         }
     }
@@ -96,6 +99,11 @@ std::vector<RenderTargetDefinition> parseRenderTargetDefinitionsFromJson(const n
         const std::string format_str = parseStringField(rt_json, "format", "render target: " + name);
         const std::string format_class = rt_json.value(
             "format_class", "explicit(" + format_str + ")");
+        const std::string role = rt_json.value(
+            "role", (format_class == "scene" || format_class == "display") ? "color" : "data");
+        if (role != "color" && role != "data") {
+            throw std::runtime_error("Render target role must be color or data: " + name);
+        }
         const std::vector<std::string> usage_strs = parseStringArrayField(rt_json, "usage", "render target: " + name);
 
         if (extent_scale <= 0.0f) {
@@ -105,6 +113,7 @@ std::vector<RenderTargetDefinition> parseRenderTargetDefinitionsFromJson(const n
         definitions.push_back(RenderTargetDefinition{
             name,
             format_class,
+            role,
             extent_scale,
             fixed_extent,
             stringToFormat(format_str),
