@@ -1,0 +1,245 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pelican://schemas/pelican.ui_semantic_fixture/1",
+  "title": "pelican.ui_semantic_fixture v1",
+  "description": "Normative closed schema for UI semantic fixtures (design_ui_2d_foundation.md v5 §7). Comparison semantics: parse-level semantic equality; writers must emit integers as integers (no -0, no exponent, no trailing .0); the only float-valued field is viewport.ui_scale.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "version", "viewport", "document", "widgets", "draw_runs", "input_trace", "lifecycle"],
+  "properties": {
+    "schema": { "const": "pelican.ui_semantic_fixture" },
+    "version": { "const": 1 },
+    "viewport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["framebuffer_px", "ui_scale", "content_rect_px"],
+      "properties": {
+        "framebuffer_px": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1, "maximum": 16384 },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "ui_scale": { "type": "number", "exclusiveMinimum": 0, "maximum": 16 },
+        "content_rect_px": { "$ref": "#/$defs/rect_i32" }
+      }
+    },
+    "document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "revision"],
+      "properties": {
+        "key": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "revision": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    },
+    "widgets": {
+      "type": "array",
+      "maxItems": 65536,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "type", "rect_ui", "clip_ui", "layer", "decl_seq"],
+        "properties": {
+          "id": { "$ref": "#/$defs/widget_path" },
+          "type": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$", "maxLength": 64 },
+          "rect_ui": { "$ref": "#/$defs/rect_i32" },
+          "clip_ui": { "$ref": "#/$defs/rect_i32" },
+          "layer": { "$ref": "#/$defs/i32" },
+          "decl_seq": { "type": "integer", "minimum": 0, "maximum": 2147483647 }
+        }
+      }
+    },
+    "draw_runs": {
+      "type": "array",
+      "maxItems": 16384,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["pipeline", "sampler", "texture", "scissor_px", "first_index", "index_count"],
+        "properties": {
+          "pipeline": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$", "maxLength": 64 },
+          "sampler": { "enum": ["nearest", "linear"] },
+          "texture": { "type": "string", "pattern": "^(atlas:[A-Za-z0-9_/.-]+/page:[0-9]+|white)$" },
+          "scissor_px": { "$ref": "#/$defs/rect_i32" },
+          "first_index": { "type": "integer", "minimum": 0, "maximum": 2147483647 },
+          "index_count": { "type": "integer", "minimum": 0, "maximum": 2147483647 }
+        }
+      }
+    },
+    "input_trace": {
+      "type": "array",
+      "maxItems": 65536,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["event_seq", "kind", "pointer_id", "button", "position_ui"],
+            "properties": {
+              "event_seq": { "$ref": "#/$defs/event_seq" },
+              "kind": { "enum": ["pointer_down", "pointer_up"] },
+              "pointer_id": { "$ref": "#/$defs/pointer_id" },
+              "button": { "$ref": "#/$defs/button" },
+              "position_ui": { "$ref": "#/$defs/point_i32" },
+              "target": { "$ref": "#/$defs/widget_path" },
+              "consumed": { "$ref": "#/$defs/consumed_list" },
+              "effects": { "$ref": "#/$defs/effect_list" }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["event_seq", "kind", "pointer_id", "position_ui"],
+            "properties": {
+              "event_seq": { "$ref": "#/$defs/event_seq" },
+              "kind": { "const": "pointer_move" },
+              "pointer_id": { "$ref": "#/$defs/pointer_id" },
+              "position_ui": { "$ref": "#/$defs/point_i32" },
+              "target": { "$ref": "#/$defs/widget_path" },
+              "consumed": { "$ref": "#/$defs/consumed_list" },
+              "effects": { "$ref": "#/$defs/effect_list" }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["event_seq", "kind", "pointer_id"],
+            "properties": {
+              "event_seq": { "$ref": "#/$defs/event_seq" },
+              "kind": { "const": "pointer_cancel" },
+              "pointer_id": { "$ref": "#/$defs/pointer_id" },
+              "consumed": { "$ref": "#/$defs/consumed_list" },
+              "effects": { "$ref": "#/$defs/effect_list" }
+            }
+          }
+        ]
+      }
+    },
+    "lifecycle": {
+      "type": "array",
+      "maxItems": 65536,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "controller", "widget"],
+            "properties": {
+              "kind": { "enum": ["controller_init", "controller_deinit"] },
+              "controller": { "type": "string", "minLength": 1, "maxLength": 128 },
+              "widget": { "$ref": "#/$defs/widget_path" }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "widget", "reason"],
+            "properties": {
+              "kind": { "const": "capture_cancel" },
+              "widget": { "$ref": "#/$defs/widget_path" },
+              "reason": { "enum": ["hide", "disable", "remove", "reload", "scene_unload", "focus_loss", "capture_steal"] }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "from_revision", "to_revision", "dropped_commands"],
+            "properties": {
+              "kind": { "const": "document_swap" },
+              "from_revision": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+              "to_revision": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+              "dropped_commands": { "type": "integer", "minimum": 0, "maximum": 2147483647 }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "count", "reason"],
+            "properties": {
+              "kind": { "const": "command_dropped" },
+              "count": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+              "reason": { "enum": ["reload_swap", "target_removed", "limit_exceeded"] }
+            }
+          }
+        ]
+      }
+    },
+    "errors": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["phase", "code", "path"],
+        "properties": {
+          "phase": { "enum": ["parse", "layout", "route", "commit"] },
+          "code": { "$ref": "#/$defs/error_code" },
+          "path": { "$ref": "#/$defs/json_pointer" },
+          "message": { "type": "string", "maxLength": 1024 }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "i32": { "type": "integer", "minimum": -2147483648, "maximum": 2147483647 },
+    "event_seq": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "pointer_id": { "type": "integer", "minimum": 0, "maximum": 255 },
+    "button": { "enum": ["left", "right", "middle"] },
+    "point_i32": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/i32" },
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "rect_i32": {
+      "description": "[left, top, right, bottom], right/bottom exclusive",
+      "type": "array",
+      "items": { "$ref": "#/$defs/i32" },
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "widget_path": {
+      "description": "Stable-id path from root, '/'-separated",
+      "type": "string",
+      "pattern": "^[a-z0-9_]+(/[a-z0-9_]+)*$",
+      "maxLength": 512
+    },
+    "json_pointer": {
+      "description": "RFC 6901 JSON Pointer into the input document",
+      "type": "string",
+      "pattern": "^(/([^/~]|~[01])*)*$",
+      "maxLength": 1024
+    },
+    "effect_list": {
+      "type": "array",
+      "maxItems": 8,
+      "items": { "enum": ["capture", "release_capture", "click", "drag_start", "drag", "cancel", "hover_enter", "hover_exit"] }
+    },
+    "consumed_list": {
+      "type": "array",
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/consumed_control" }
+    },
+    "consumed_control": {
+      "description": "Closed control vocabulary. The key:/pad: alternations below are generated from $defs.ui_key / $defs.ui_pad_control (keep in sync when editing). v1 implements mouse only; key/touch/pad are reserved vocabulary.",
+      "oneOf": [
+        { "type": "string", "pattern": "^mouse:(left|right|middle|move|wheel)$" },
+        { "type": "string", "pattern": "^key:(a|b|c|d|e|f|g|h|i|j|k|l|m|n|o|p|q|r|s|t|u|v|w|x|y|z|0|1|2|3|4|5|6|7|8|9|f1|f2|f3|f4|f5|f6|f7|f8|f9|f10|f11|f12|escape|tab|enter|space|backspace|delete|insert|home|end|page_up|page_down|up|down|left|right|shift|ctrl|alt|super)$" },
+        { "type": "string", "pattern": "^touch:(0|[1-9][0-9]?)$" },
+        { "type": "string", "pattern": "^pad:(a|b|x|y|lb|rb|lt|rt|start|select|ls|rs|dpad_up|dpad_down|dpad_left|dpad_right|ls_x|ls_y|rs_x|rs_y)$" }
+      ]
+    },
+    "ui_key": {
+      "description": "Normative key-name table (source for the key: pattern above)",
+      "enum": ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12", "escape", "tab", "enter", "space", "backspace", "delete", "insert", "home", "end", "page_up", "page_down", "up", "down", "left", "right", "shift", "ctrl", "alt", "super"]
+    },
+    "ui_pad_control": {
+      "description": "Normative gamepad control table (source for the pad: pattern above)",
+      "enum": ["a", "b", "x", "y", "lb", "rb", "lt", "rt", "start", "select", "ls", "rs", "dpad_up", "dpad_down", "dpad_left", "dpad_right", "ls_x", "ls_y", "rs_x", "rs_y"]
+    },
+    "error_code": {
+      "enum": ["unknown_event", "unknown_source", "unknown_widget_value_path", "type_mismatch", "range_violation", "required_missing", "unknown_field", "no_payload_event", "unknown_widget_type", "axis_conflict", "layout_cycle", "duplicate_stable_id", "limit_exceeded", "unsupported_control"]
+    }
+  }
+}

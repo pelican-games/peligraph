@@ -1,96 +1,291 @@
-# 色パイプライン(v1)
+# 色パイプライン(v2)
 
 対象読者: エンジン担当・シェーダ/UI を書く人。
-ステータス: v1 ドラフト(2026-07-11。**ユーザー決定: SRGB swapchain +
-linear 統一の「しっかり版」— golden の一斉再基準化 1 回を許容**。
-codex 敵対レビュー前)。
-前提: HDR/tonemap feature(WP30)、`design_ui_2d_foundation.md` v4 B1、
+ステータス: v2 ドラフト(2026-07-11。v1 は codex 敵対レビューで **Reject**
+(`docs/design_reviews/2026-07-11_color_ui_v4_review_codex.md` C1〜C7)。
+本版はその 8 再審査条件をすべて織り込む)。
+前提: HDR/tonemap feature(WP30)、`design_ui_2d_foundation.md` v5 B1、
 `docs/shader_contract.md`、UI v2 レビュー R6(baseline 更新の例外手続き)。
 
-## 0. 原則(現代エンジンの標準形に合わせる)
+## 0. 原則と作業空間
 
-1. **シェーダから出る色は常に linear**。sRGB エンコード(OETF)は表示直前の
-   1 箇所だけ — 可能ならハードウェア(`*_SRGB` attachment)に任せる
-2. 作業空間 = linear。シーン内部は HDR(既存の R16G16B16A16_SFLOAT)
-3. エンコードの適用回数は**常にちょうど 1 回**(二重適用・欠落を検出する
-   テストを常設する — §3)
+1. **作業空間 = linear-sRGB(Rec.709 primaries、D65 白色点)**。
+   「linear」は transfer(伝達関数)の話であり、gamut(primaries)とは別概念。
+   v1 世代のエンジンは gamut 変換を行わない(全入出力を Rec.709 とみなす)。
+   wide gamut / working space 切替は将来トラック(§6)
+2. **シェーダの入出力は常に linear**。sRGB decode/encode はハードウェア
+   (`*_SRGB` view)か、専用の terminal パス(§2-2)だけが行う。
+   OETF/EOTF をシーン・エフェクト・UI のシェーダに書くことは禁止
+3. **transfer が適用されるのは RGB のみ**。alpha は常に linear の
+   straight alpha(UI ABI と同一。`design_ui_2d_foundation.md` §1-1)。
+   coverage/mask 値も同様に linear
+4. tone curve(HDR→LDR)と OETF(linear→sRGB バイト)は別物として数える。
+   **各表示経路で tone curve はちょうど 1 回、display encode はちょうど 1 回**。
+   これを pass 列レベルで検査する(§4)
 
-## 1. 現状(実測 — UI v3 レビュー B1 の指摘)
+## 1. 現状(実測 v2 — レビュー C1 の指摘を含む)
 
-- swapchain 選択は `R8G8B8A8_UNORM` / `B8G8R8A8_UNORM` を優先、
-  headless も `R8G8B8A8_UNORM` 固定 — **UNORM view はエンコードしない**
-- 既存シェーダは事実上 display-referred(sRGB 空間の値)をそのまま書いて
-  つじつまが合っている状態(= linear ワークフローになっていない)
-- テクスチャの sRGB view 適用状況は未監査(→ §5 C0)
+- swapchain 選択は `R8G8B8A8_UNORM`/`B8G8R8A8_UNORM` を優先し view も同一
+  (`src/core/vkcore/swapchainframetarget.cpp:52-84`)。headless は
+  `R8G8B8A8_UNORM` 固定(`src/core/vkcore/offscreenframetarget.cpp:91-105`)。
+  attachment はエンコードしない
+- **tone curve と OETF の所有点が分裂している**:
+  - 通常 lighting shader は ACES 近似カーブの後に `pow(1/2.2)` まで行う
+    (`src/core/resources/fullscreen.frag:230-234`)
+  - `hdr` feature の `tonemap.frag` は Reinhard のみで OETF なし
+    (`src/core/resources/tonemap.frag:12-19`)
+  - `fullscreen.frag` は `PELICAN_FEATURE_HDR` で分岐**しない**。従って hdr on は
+    現在「ACES 近似+pow → RGBA16F → Reinhard」の**二重 tone mapping +
+    tone curve 前エンコード**になっている(実測 2026-07-11)
+  - さらに `hdr_tonemap` は `before:present` に挿入され `lit_color` だけを
+    swapchain に上書きするため(`src/core/resources/features/hdr.json:10-28`)、
+    先に swapchain へ書かれた bloom 合成と UI は**消える**
+    (`projects/example/passes/main_rendering_config.json:297-316`)
+- frame graph の format enum に `*_SRGB` が存在しない
+  (`src/core/renderingpass/renderingpassjsonhelpers.cpp:9-23`)
+- material texture は一律 `R8G8B8A8_UNORM` 登録
+  (`src/core/material/materialcontainer.cpp:123-139`)。glTF loader は
+  image/texture 1 個 = GPU texture 1 個で全 slot 共有
+  (`src/core/model/gltf.cpp:509-523`)。UI atlas・debug font atlas も UNORM
+  (`src/core/renderer/uicontainer.cpp:54-74`, `src/core/renderer/debugtext.cpp:54-63`)
+- glTF `COLOR_0` / `baseColorFactor` は float のまま linear multiplier として
+  流れる(`src/core/model/gltf.cpp:460-476`)— **これは glTF 仕様どおり正しく、
+  移行で壊してはならない**
+- golden tolerance は全 case 0 ではない: `stem_fullscreen`(avg 1 / max 4)、
+  `vat_playback`(avg 2 / max 32)
+- capture/CLI/RPC は image バイトをそのまま PNG 化し色メタデータを付けない
+  (`src/core/vkcore/rendertarget.cpp:38-60`)。既存 rpc テストは絶対色を
+  一度も検証していない(非空・差分有無・byte 再現性のみ)
 
-## 2. 目標状態
+## 2. 目標アーキテクチャ
 
-### 2-1. attachment / swapchain(列挙表)
+### 2-1. 論理 terminal resource `display` と output_transform(graph rewrite)
 
-| 対象 | フォーマット | 備考 |
-|------|-------------|------|
-| swapchain(SDR) | **`B8G8R8A8_SRGB` / `R8G8B8A8_SRGB` を優先選択** + `VK_COLOR_SPACE_SRGB_NONLINEAR_KHR` 明示 | シェーダは linear を書き、ハードウェアがエンコード |
-| swapchain フォールバック | `*_UNORM`(SRGB 非対応デバイスのみ)| **present 直前に encode 専用 fullscreen パスを 1 個挿す**(§2-3)。選択結果はログ + get_status に出す |
-| headless/offscreen | `R8G8B8A8_SRGB` | readback バイト = エンコード済み = **PNG/golden はそのまま sRGB**(意味論が明確になる) |
-| scene color(HDR 中間) | `R16G16B16A16_SFLOAT`(linear)— 現行どおり | |
-| LDR 中間(tonemap 後) | `R8G8B8A8_SRGB` view | |
+「swapchain に各パスが直接書く」構造をやめる。
 
-### 2-2. テクスチャと authored 色
+- frame graph に論理リソース **`display`** を導入する。
+  意味論 = **表示用 linear LDR**(格納は `R8G8B8A8_SRGB` view — バイトは
+  エンコード済みだが、シェーダ I/O・blend はハードウェアにより linear)
+- 既存の pass 設定・feature(`bloom composite` / `ui` / `debug_draw` /
+  `debug_text` / 将来の imgui)で `"swapchain"` を出力にしているものは
+  すべて **`display` へ retarget** する。プロジェクト JSON 内の `"swapchain"`
+  という文字列はエンジンが `display` の別名として読み替える(後方互換)。
+  scene pass が実 swapchain image に触ることは以後できない
+- エンジンは feature 合成後の**絶対最後**に、purge 不可の
+  **`output_transform`** パスを必ず 1 個追加する:
+  `display`(sampled、SRGB view 経由で linear 復号)→ 実ターゲット
+  - swapchain が `*_SRGB` の場合: シェーダは linear を書き、HW がエンコード
+    (シェーダ内変換なし)
+  - swapchain が `*_UNORM` の場合(フォールバック): シェーダ内で IEC
+    61966-2-1 OETF を適用して書く。**変換式はこの 1 箇所にしか存在しない**
+  - 両経路で `display` までの pass 列・blend・pipeline format は**同一**
+    (差は output_transform の specialization だけ)。v1 実装では SRGB 経路でも
+    output_transform を省略しない(パリティ検査可能性 > 1 パス分のコスト。
+    省略最適化は等価性テスト常設後の将来案件)
+- `output_transform` は将来の HDR 出力(PQ / scRGB)・カラーグレーディングの
+  差し込み点を兼ねる(§5)
+- 名前付きスクリーンスナップショット・capture は `display`(= linear LDR の
+  encoded バイト)を読む。readback の意味論は §2-7
 
-- **color テクスチャ**(baseColor/emissive)= sRGB view でサンプル(自動で
-  linear に復号)。**data テクスチャ**(normal/metallicRoughness/AO)= UNORM。
-  glTF の規約どおり。loader の format 選択規則として明文化
-- **authored 色**(scene のライト色・UI スキン・pelican.material の factor):
-  JSON 上は sRGB 表記 → **パース時に 1 回だけ linear へ変換**。
-  変換式は IEC 61966-2-1 の区分関数(c ≤ 0.04045 → c/12.92、
-  それ以外 → ((c+0.055)/1.055)^2.4)、clamp [0,1]、u8 への量子化は
-  round-half-even。ライトの強度(intensity)は元々 linear のスカラー —
-  変換しない
+swapchain / headless の format 選択:
 
-### 2-3. シェーダ側の規約
+| 対象 | 選択規則 |
+|------|---------|
+| swapchain | `B8G8R8A8_SRGB` / `R8G8B8A8_SRGB` + `VK_COLOR_SPACE_SRGB_NONLINEAR_KHR` を最優先、なければ `*_UNORM`(フォールバック経路)。選択結果と経路名はログ + `get_status` に出す |
+| headless/offscreen | `R8G8B8A8_SRGB` を format feature(`COLOR_ATTACHMENT`+`TRANSFER_SRC`)照会の上で選択。非対応なら UNORM + output_transform 内エンコード。**どちらでも readback バイト = エンコード済み sRGB** |
+| `display` 中間 | `R8G8B8A8_SRGB`(同照会。8bit sRGB の attachment 対応は実質全デバイスだが照会は行う) |
 
-- 全シェーダの出力 = **linear のみ**。OETF をシェーダに書くことは禁止
-  (フォールバック時も encode は専用最終パスが担う — 個々のシェーダは
-  swapchain 形式を知らない)
-- blend は linear 空間で行われることになる(SRGB attachment 上の blend は
-  ハードウェアが decode→blend→encode)— **半透明の見えは現行(sRGB 空間
-  blend)から変わる**。これは修正であってバグではない(§3 の再基準化に含む)
-- tonemap(既存 hdr feature)の出力段は「linear LDR を書く」に改める
-  (現行がカーブ内でエンコードを済ませている場合はそこを外す — C0 監査対象)
+### 2-2. 規範 pass 列(4 経路)— tone curve / OETF の所有点表
 
-## 3. 移行(golden 一斉再基準化 — 1 回きり)
+記法: `[L]` = scene-linear HDR、`[dL]` = display-linear LDR(SRGB view 格納)。
 
-R6 レビューが認めた唯一の例外手続きをここで使う:
+| # | 経路 | pass 列 | tone curve 所有(回数) | display encode 所有(回数) |
+|---|------|--------|----------------------|--------------------------|
+| 1 | hdr off + SRGB swapchain | scene passes → `lit_color[dL]`(lighting shader 内 ACES 近似カーブ、**`pow(1/2.2)` は削除**)→ bloom(dL 域)→ composite → `display[dL]` → overlays(UI/debug)→ output_transform → swapchain(HW encode) | lighting shader(1) | swapchain SRGB view(1) |
+| 2 | hdr on + SRGB swapchain | scene passes → `lit_color[L]`(RGBA16F。lighting shader は `PELICAN_FEATURE_HDR` で**カーブを skip し scene-linear を出力**)→ bloom(HDR 域)→ composite → `scene_ldr_in[L]` … `hdr_tonemap`(Reinhard)→ `display[dL]` → overlays → output_transform → swapchain | tonemap pass(1) | swapchain SRGB view(1) |
+| 3 | headless(SRGB offscreen) | 経路 1/2 と同一の `display` まで → output_transform → offscreen SRGB → readback | 経路に同じ(1) | offscreen SRGB view(1) |
+| 4 | UNORM フォールバック | 経路 1/2 と同一の `display` まで → output_transform(**シェーダ内 OETF**)→ UNORM target | 経路に同じ(1) | output_transform シェーダ(1) |
 
-1. **C0 監査**: 全シェーダ・全 RT の色空間実態の棚卸し(何が display-referred
-   か・テクスチャ view の現状)→ 変更対象リスト
-2. **C1 実装(単独ゲート)**: §2 への移行を一括で行い、
-   **golden 全ケースを理由記録付きで再生成**(この設計書と PR が理由の記録。
-   更新後は再び tolerance 0 / exact)
-3. **encode 正当性テストの常設**:
-   - known-value: linear 0.5 を書いた readback が 188(±0)であること
-   - グラデーション ramp の golden(二重エンコード/欠落は ramp の形で即発覚)
-   - SRGB / UNORM フォールバック両経路で同一 readback(フォールバックの
-     encode パスの等価性)
-4. 以後の golden は「**エンコード済み sRGB バイト**」という明確な意味論を持つ
+規範ポイント(現状バグの修正を含む):
 
-## 4. HDR ディスプレイ出力(将来トラック — 席だけ予約)
+- `fullscreen.frag` は `PELICAN_FEATURE_HDR` 分岐を持つ: off = カーブあり
+  (OETF なし)、on = scene-linear のまま出力。二重 tone mapping を排除
+- `hdr_tonemap` の挿入位置は `before:present` をやめ、**bloom 合成後・
+  overlay 前**の明示位置にする(overlay 消失バグの構造的解消)。tonemap の
+  出力は `display`
+- overlays(UI / debug_draw / debug_text / imgui)は常に `display[dL]` 上で
+  linear blend。経路 1〜4 で overlay の順・blend・format は同一
+- 8bit 中間(`lit_color` hdr off・bloom RT 群)を SRGB view にするのは
+  暗部精度のため(linear 格納の 8bit UNORM は暗部で banding する。
+  sRGB 格納は知覚均等に近く、従来の display-referred 格納と同等の精度を保つ)
+
+### 2-3. RT / texture 棚卸しと決定(C0 監査の対象表)
+
+| 対象 | 現在 | 決定 |
+|------|------|------|
+| lighting(hdr off)| curve+pow 内蔵、UNORM `lit_color` | curve のみ内蔵(pow 削除)、`lit_color` = `R8G8B8A8_SRGB` view |
+| lighting(hdr on)| 分岐なし=二重 tone map | `PELICAN_FEATURE_HDR` で curve skip、RGBA16F linear |
+| `hdr_tonemap` | `before:present`、overlay 上書き | bloom 後・overlay 前へ移設、出力 `display` |
+| G-buffer albedo/emissive | 8bit UNORM(display-referred 値が事実上入る) | `R8G8B8A8_SRGB` view(格納バイト従来同等・シェーダ I/O linear)。normal/MR/AO/depth 系は UNORM/SFLOAT のまま(data) |
+| bloom 全 RT | 8bit UNORM | 経路の `lit_color` に追従: hdr off = `R8G8B8A8_SRGB` view / hdr on = `R16G16B16A16_SFLOAT`。threshold の意味は §2-6 |
+| UI atlas(color page)| UNORM | `R8G8B8A8_SRGB` view(UI 画像は sRGB authored)。白テクセルページも同様(1.0 は不変) |
+| font atlas / debug font | UNORM | **data**(coverage)— `R8_UNORM` 系のまま。transfer 適用禁止 |
+| debug_draw / debug_text の API 色引数 | raw float をそのまま shader へ | **API は sRGB 表記で受け、エンジンが submission 時に 1 回 decode**(呼び出し側は「見た目の色」で指定できる) |
+| glTF baseColor/emissive texture | UNORM view | SRGB view(§2-5 の view 戦略) |
+| glTF normal/metallicRoughness/occlusion texture | UNORM | UNORM(data)— 変更なし |
+| glTF `COLOR_0` / `baseColorFactor` / `emissiveFactor` | raw linear multiplier | **変更なし(decode しない)**。保護 fixture を置く(§4) |
+| `KHR_materials_emissive_strength` 等の強度 | — | radiometric(§2-4)。clamp しない |
+| VAT texture | RGBA16F data | 対象外(data)。移行 manifest に「不変」と明記 |
+| frame graph format enum | `*_SRGB` なし | `R8G8B8A8_SRGB` / `B8G8R8A8_SRGB` を追加。あわせて resource 宣言に `role: color|data` メタデータ(省略時 data)を追加し、lint が「color role なのに UNORM 8bit」を警告 |
+| capture/CLI/RPC | raw byte → PNG | §2-7 の versioned contract |
+| clear color(pass JSON)| raw float | **linear 値として解釈**(display 色で書きたい場合は authored 色として §2-4 の decode を通す。既存 0/1 のみの clear は不変) |
+
+### 2-4. authored 色の field schema(encoding × role)
+
+JSON 上の色・数値 field は次の 2 属性で分類する。**「一括 sRGB 扱い」はしない**。
+
+- `encoding: srgb | linear` — 数値の表記空間
+- `role: color | data | radiometric` — 意味。transfer を適用してよいのは
+  `color` の RGB 成分だけ
+
+| field | encoding | role | 変換 |
+|-------|----------|------|------|
+| scene のライト色(`color`)| srgb | color | パース時に RGB のみ decode → linear、clamp [0,1] |
+| ライト `intensity` | linear | radiometric | 変換・clamp なし |
+| UI スキン色 / widget 色 | srgb | color | RGB decode → linear。**alpha は素通し**。u8 化は round-half-even(暗部の量子化損失は UI ABI(linear u8)の既知コスト — banding が問題化したら vertex color の幅を広げる別案件) |
+| pelican.material `type: color` の factor | srgb(既定)| color | RGB decode。params 宣言に `"encoding": "linear"` override 可 |
+| pelican.material `type: float/vecN` | linear | data/radiometric | 変換なし |
+| glTF `baseColorFactor` / `emissiveFactor` / `COLOR_0` | linear | (linear multiplier) | **変換なし** — glTF 仕様準拠。pelican 側 schema の既定(color=srgb)は glTF 由来 field には適用しない(出所ごとの個別表が正) |
+| glTF texture(baseColor/emissive)| srgb | color | SRGB view による HW decode |
+| glTF texture(normal/MR/AO)/ VAT | linear | data | 変換なし |
+| debug_draw/text の色引数 | srgb | color | submission 時 decode(§2-3) |
+| clear_color | linear | — | 変換なし(§2-3) |
+
+decode 式は IEC 61966-2-1 区分関数(c ≤ 0.04045 → c/12.92、それ以外 →
+((c+0.055)/1.055)^2.4)。**RGB のみ**。radiometric は clamp 禁止
+(HDR 輝度を失わない)。
+
+### 2-5. texture view 戦略(同一 image の color/data 二用途)
+
+「image 1 個 = GPU texture 1 個 = view 1 個」をやめる:
+
+- loader は texture を **(image, encoding-class)** で管理する。
+  image は `VK_IMAGE_CREATE_MUTABLE_FORMAT` + `VkImageFormatListCreateInfo`
+  (`R8G8B8A8_UNORM` + `R8G8B8A8_SRGB`)で作成し、slot の用途に応じて
+  SRGB view / UNORM view を払い出す(1 image に最大 2 view、VkImage 共有)
+- 同一 glTF image が baseColor(color)と metallicRoughness(data)の両方から
+  参照されるケースはこれで両立する。format list 非対応デバイス
+  (Vulkan 1.2 core なので実質ないが)では data 用途を優先し、color 用途は
+  シェーダ内 decode ではなく**アセット警告 + UNORM view のまま**
+  (見た目は従来どおり = 劣化はするが黙って壊れない)
+- material default texture(white 等)も color/data 2 view を持つ
+  (white 1.0 はどちらの view でも 1.0)
+
+### 2-6. blend・bloom・additive の意味論
+
+- **blend は linear で行われる**(SRGB view 上の blend は HW が
+  decode→blend→encode)。半透明・UI の重なりの見えは現行(sRGB 空間 blend)
+  から変わる。これは修正であり、§3 の再基準化対象
+- **bloom**: threshold(現行 const 0.4)・knee・intensity は
+  「その経路の `lit_color` の **linear 値**」に対して評価される、と再定義する
+  - hdr off: linear LDR(tone curve 後)に対する threshold —
+    従来は display-referred 値に対する 0.4 だったので抽出範囲が変わる
+    (linear 0.4 ≈ sRGB 0.665)。**見えの変化は再基準化に含める**。
+    定数は当面据え置き、pass param 化は M2b-2 系列(§6 未決 3)
+  - hdr on: scene-linear HDR に対する threshold(>1 の輝度が素直に抽出される
+    — 物理的に正しい bloom)。composite は tonemap **前**(§2-2 経路 2)
+  - bloom RT の加算 composite は各経路の format 上で行う(hdr off の
+    SRGB view 格納でも blend/加算演算自体は linear)
+- **additive パーティクル / 加算合成**(将来の 2D ゲーム層を含む):
+  texture RGB = sRGB decode(color)、tint = authored color(§2-4)、
+  alpha/強度 = linear。additive の「白飛びの気持ちよさ」が従来の
+  sRGB 空間加算に依存していた場合、linear 加算では飽和が遅くなる —
+  intensity は radiometric として調整する(互換モードは設けない。
+  現リポジトリに additive パーティクルの実アセットはまだ無い)
+
+### 2-7. capture / CLI / RPC contract(versioned)
+
+readback・PNG の意味論変更は公開 API の観測可能な変更なので、契約として固定する:
+
+- `readbackLastFrameRGBA8` / CLI `--render-out` / RPC `capture` の返す
+  バイト列・PNG = **エンコード済み sRGB(IEC 61966-2-1)、straight alpha
+  (alpha は linear のまま)、RGBA order**
+- PNG は stb_image_write 出力のため色メタデータ chunk を持たない。
+  **「メタデータ無しでも sRGB と解釈する」を API 契約に明記**する
+  (DCC/外部ツール利用者向け)。sRGB chunk 付与は将来の writer 差し替え時
+- `get_status` に `color` オブジェクトを追加:
+  `{"swapchain_format": "...", "path": "srgb" | "unorm_fallback",
+  "readback_encoding": "srgb"}`。`capture` のレスポンスにも
+  `"encoding": "srgb"` を追加(既存 path フィールドは維持)
+- RPC 経路の**絶対色テスト**を新設: 既知 emissive(linear 0.5)の板を
+  capture し、中心 pixel が 188±0 であること(§4 known-value の RPC 版)
+
+## 3. 移行手順(golden 一斉再基準化 — 1 回きり・安全化版)
+
+R6 レビューが認めた例外手続きを、v1 レビュー C7 の 5 条件で強化して使う:
+
+1. **C0 監査 = machine-readable manifest**(コード変更なし):
+   `docs/color_migration_manifest.json` に §2-3 表の全項目を
+   `{path/field, old_encoding, new_encoding, expected_change:
+   "bit_exact" | "analytic" | "visual_review", reason}` で列挙する。
+   レビュー可能な唯一の変更対象リストであり、C1 の diff 承認の照合先
+2. **三者比較**: C1 実装前 binary(基準 commit)と実装後 binary を
+   **同一 device / driver / scene / input** で実行し、golden 全 case について
+   old / new / analytic reference(手計算できる case のみ)を保存する。
+   **case ごとに** diff 画像と manifest 上の理由を突き合わせてレビューし、
+   説明の付かない差分が 1 case でもあれば baseline を更新しない。
+   承認記録(case → 理由)は PR に表で残す
+3. **tolerance の正直化**: 既存の非ゼロ tolerance
+   (`stem_fullscreen` avg1/max4、`vat_playback` avg2/max32)は色移行と
+   無関係の実装差/非決定性由来であり、**C1 では触らない**(維持 + 理由存置)。
+   「全 case exact」とは主張しない。新規追加の色系 fixture は tolerance 0
+4. **encode 正当性テストの常設**(§4)を C1 と同一 PR で導入
+5. **frame-plan trace の比較**: pass 列(名前・順序・format・
+   output_transform の位置と個数)を text golden として保存し、pixel が偶然
+   近くても構造が違えば失敗させる
+6. 以後の golden は「**エンコード済み sRGB バイト**」という意味論を持つ
+
+C1 は WP70(set 0 再編)と衝突するため **WP70 の後**。C0 は read-only なので
+先行してよい(レビュー承認済みの進め方)。
+
+## 4. 常設テスト(analytic fixtures)
+
+| fixture | 検査内容 |
+|---------|---------|
+| known-value | linear 0.5 を書いた readback が 188(±0)。SRGB 経路 / UNORM fallback の両方 |
+| gradient ramp | 二重エンコード・欠落は ramp 形状で即発覚 |
+| fallback parity | SRGB / UNORM 両経路で readback バイト一致(±0) |
+| srgb texture decode | 既知バイト(188)の color texture をサンプル → linear 0.5 として振る舞う |
+| data texture passthrough | 同バイトの data texture → 188/255 のまま |
+| dual-use image | 同一 image を color/data 両 slot から参照して両方正しい |
+| alpha straightness | 半透明重ね合わせで alpha に transfer がかかっていない |
+| glTF COLOR_0 / factor 保護 | raw linear multiplier のまま(decode されたら fail) |
+| transparent overlap / UI overlap | linear blend の合成結果(解析値と比較) |
+| additive | 加算合成の飽和挙動 |
+| bloom threshold | linear luminance 閾値の抽出範囲(解析可能な単色板) |
+| hdr off / hdr on | 経路 1/2 の golden(tone curve 1 回・overlay 消失なし) |
+| RPC capture 絶対色 | §2-7 の RPC known-value |
+| frame-plan trace | §3-5 の pass 列 text golden(全経路) |
+
+## 5. HDR ディスプレイ出力(将来トラック — 席だけ予約)
 
 - HDR10: `A2B10G10R10_UNORM` + `VK_COLOR_SPACE_HDR10_ST2084`(PQ)
 - scRGB(Windows): `R16G16B16A16_SFLOAT` + extended sRGB linear
-- tonemap 出力段に「output transform の差し込み点」を予約(SDR sRGB /
-  HDR10 PQ / scRGB の切替点)。**本設計はエンコードの正しさのみを扱い、
-  トーンカーブ(ACES/AgX 等)の選択は別トラック**(現行カーブ維持)
+- 差し込み点は §2-1 の `output_transform`(SDR sRGB / HDR10 PQ / scRGB の
+  切替点)。**本設計はエンコードの正しさのみを扱い、トーンカーブ
+  (ACES/AgX 等)の選択は別トラック**(現行カーブ = hdr off: ACES 近似 /
+  hdr on: Reinhard を維持)
 
-## 5. 実装順(WP 候補)
+## 6. 実装順(WP 候補)と未決事項
 
 | 段階 | 内容 | 依存 |
 |------|------|------|
-| C0 | 色空間監査(棚卸しレポート — コード変更なし) | なし |
-| C1 | §2 一括移行 + golden 再基準化 + encode テスト常設(単独ゲート) | C0, **WP70(set 0 再編と衝突するため後)** |
+| C0 | 色空間監査 → `color_migration_manifest.json`(コード変更なし) | なし(先行可) |
+| C1 | §2 一括移行(graph rewrite + SRGB 化 + shader 分岐 + view 戦略 + contract)+ §3 手続きの再基準化 + §4 テスト常設(単独ゲート) | C0、**WP70 後** |
 
-## 6. 未決事項
+未決:
 
 1. exposure 制御(カメラ/シーン単位)— tonemap トラックと同時
-2. トーンカーブの選択肢(ACES / AgX)— 別トラック
-3. OCIO 統合 — 遠い将来(グレーディング需要が出たら)
+2. トーンカーブの選択肢(ACES / AgX)・グレーディング/OCIO — 別トラック
+3. bloom threshold/intensity の pass param 化(M2b-2 の render_state 系列)
+4. wide gamut / working space 切替(Rec.2020 等)— 需要が出たら

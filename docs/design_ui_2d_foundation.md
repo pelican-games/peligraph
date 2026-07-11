@@ -1,10 +1,12 @@
-# 2D 描画基盤と UI システム(v2)
+# 2D 描画基盤と UI システム(v5)
 
 対象読者: エンジン担当・UI/2D を作る人。
-ステータス: v4 ドラフト(2026-07-11。v1/v2/v3 Reject →
-`docs/design_reviews/2026-07-11_ui_2d_v3_review_codex.md` の **B1〜B4 を受理して
-改稿**。B1 は `design_color_pipeline.md`(新設 — ユーザー決定「しっかり版」)に
-分離して参照。再審査待ち)。
+ステータス: v5 ドラフト(2026-07-11。v4 は codex 再レビューで **Reject**
+(`docs/design_reviews/2026-07-11_color_ui_v4_review_codex.md` U-B2〜U-B4)。
+本版は ①anchor の数値規範と overflow algorithm の一本化 ②payload 照合先を
+新設 `design_event_payload_schema.md` に変更(v4 の「registry が schema を
+持つ」は事実誤認)③semantic fixture の機械可読 closed schema + normative
+fixture の実コミット、を反映。色正本は `design_color_pipeline.md` v2)。
 前提: 2026-07-07 決定「UI と 2D ゲームは描画基盤共有・上物分離」、
 2026-07-10 決定「エンジン標準スキン = ツール調 / エンジン UI = ImGui /
 ゲーム UI = pelican.ui」、ECS v2.1(世代付き ID・生ポインタ禁止)、
@@ -193,23 +195,38 @@ struct FrameInput {
   次フレーム(semantic)— 見た目の即応と決定性が両立
 - 連続 drag をゲームが同 tick で要る場合は、イベントでなく **frame-scoped
   `UiActionFrame` query**(Actions と同型)を将来オプションとして予約
-- **payload スキーマ(B3 で完全化)**: field 定義は次の全属性を持つ:
+- **payload スキーマ(U-B3 v2 — 照合先の訂正)**: v4 の「by-name emit が既に
+  payload 構築スキーマを持つ」は**事実誤認**だった(現行
+  `EventTypeRegistration` は name / type_index / load 関数ポインタのみで、
+  field の事前列挙はできない —
+  `src/core/userpublic/details/event/registerer.hpp:34-38`)。照合先は新設の
+  **EventPayloadSchema**(`docs/design_event_payload_schema.md` 正本)であり、
+  その導入 WP が **U0 の前提**になる(§9)
+- field 定義(JSON 形まで確定。型・required・range は UI 側では宣言しない —
+  正は EventPayloadSchema 側):
 
   ```json
   "emit": { "on_click": { "event": "MenuOpened",
     "fields": [
-      { "name": "source", "from": "stable_id", "type": "string", "required": true },
-      { "name": "amount", "from": "static", "value": 1, "type": "int" },
-      { "name": "delta",  "from": "drag_delta_ui", "type": "vec2",
-        "required": false, "default": [0, 0] } ] } }
+      { "name": "source", "from": "stable_id" },
+      { "name": "amount", "from": "static", "value": 1 },
+      { "name": "delta",  "from": "drag_delta_ui" },
+      { "name": "volume", "from": "widget_value(value)" } ] } }
   ```
 
-  - `from` の enum: `static | stable_id | drag_delta_ui | widget_value(<プロパティパス>)`
-  - **型の照合先 = `PELICAN_REGISTER_EVENT` が登録するイベント型の
-    payload 構築スキーマ**(イベント層の by-name emit が既に持つ「JSON から
-    payload を構築する」機構の要求 field 名・型と、UI ロード時に突き合わせる)
-  - ロード時エラー(名前入り)を invalid fixture で固定: ①未知イベント名
-    ②未知 `from` ③型不一致 ④範囲外(min/max 宣言時)⑤required 欠落
+  - `from` の enum: `static | stable_id | drag_delta_ui | widget_value(<path>)`。
+    `<path>` は widget プロパティ名(v1 は 1 段のみ: `value` / `checked` /
+    `text`。型は widget 型表が定義。ネストパスは予約)
+  - UI ロード時の照合: `name` → schema field を引き、`from` ソースの型
+    (static = JSON 値の型、stable_id = string、drag_delta_ui = vec2、
+    widget_value = widget 型表)と schema field の型を突き合わせる。
+    schema の required field が emit 定義に無い / emit 定義に schema に無い
+    field がある(unknown-field 拒否)/ schema を持たないイベントへの
+    fields 指定 — いずれもロードエラー
+  - ロード時エラー(名前入り)を invalid fixture で固定(§7 の error code
+    enum と対応): ①未知イベント名 ②未知 `from`・未知 widget_value path
+    ③型不一致 ④range 逸脱(schema が range を宣言する field)
+    ⑤required 欠落 ⑥schema 外 field ⑦payload 無しイベントへの fields 指定
   - **widget の同一性は `(document_key, stable_id)` を値でコピー**して載せる
     (semantic は次フレーム配送なので runtime WidgetId は reload/remove で
     stale になり得る — runtime handle は UI 内部限定)
@@ -234,13 +251,23 @@ v1 の「アンカーのみ」を撤回し、以下を v1 に含める(これ未
 5. アンカー形式(R3 で確定): `anchor_min` / `anchor_max` は親矩形に対する
    `[0,1]²` の割合、`offsets = [left, top, right, bottom]`(ui_units 整数、
    アンカー点からの符号付き距離)
-   - **端数の整数化(B4 v3→B2 で確定)**: 各 edge を
+   - **端数の整数化(U-B2 で数値規範まで確定)**: 各 edge を
      `edge = round_half_up(parent_edge + parent_size × anchor) + offset` で
      計算する — anchor 由来の乗算だけ実数で行い、**round を 1 回だけ**通して
      整数 ui_units の世界に入る(以降の制約解法・fill 配分・min/max は全て
-     整数演算)。fill の余りは ui_units の整数として宣言順に 1 ずつ配分。
-     min/max clamp 後に残りが負の場合も **min は破らない**(超過は
-     overflow 規則に従う)
+     整数演算)
+     - 演算精度: IEEE 754 binary64。anchor は JSON number を binary64 として
+       読む。演算順は `parent_size × anchor` の積 → `parent_edge` との和
+       (FMA 不使用 — 乗算・加算で binary64 丸め各 1 回)。parent_edge /
+       parent_size / offset は整数なので binary64 で正確に表現される
+     - `round_half_up(x) = floor(x + 0.5)` — **全実数でこの一式**(負値も
+       同じ。絶対値 half-up + 符号復元では**ない**)。test vector(規範):
+       `-1.5 → -1`、`-0.5 → 0`、`0.5 → 1`、`1.5 → 2`、
+       `parent_size 101 × anchor 0.5 = 50.5 → 51`
+     - §2-2 の px 変換丸め(`round(edge × ui_scale)` half-up、同じ floor 式)
+       は「canonical 整数 ui_units → framebuffer px」の**別段の量子化**であり
+       二重丸めではない。direct float→px と同値になることは仕様として
+       期待しない(例: 幅 101・anchor 0.5 は常にまず 51 ui_units になる)
 6. `overflow: visible | clip`、`visible / hidden(空間残す)/ collapsed(残さない)`
 7. **制約解法(R3 — 規範)**:
 
@@ -248,11 +275,16 @@ v1 の「アンカーのみ」を撤回し、以下を v1 に含める(これ未
    pass 1(bottom-up): 全ノードの intrinsic を計算(content 用)
    pass 2(top-down):
      stack 軸: fixed → content(=intrinsic)を確定し、
-       残り = 親サイズ − 確定分 − gap/padding
-       残りを fill/weight に比例配分(floor、余り px は宣言順に 1px ずつ)
+       残り = 親サイズ − 確定分 − gap/padding(全て整数 ui_units)
+       残りを fill/weight に比例配分(floor、余りは ui_units の整数として
+       宣言順に 1 ずつ)
        min/max clamp → clamp されたノードを池から除いて再配分
        (反復は子数回で必ず停止)
-       残りが負: fill 子は 0、超過は overflow 規則に従う
+       残りが負(fixed/content/min の合計 > 親サイズ)の一本化規則:
+         fill 子 = 各自の min_size(min 未宣言は 0)。**min が fill=0 に勝つ**
+         全子を min を保ったまま宣言順に詰めて配置し、親の終端 edge を
+         超えた分はそのまま親外にはみ出す(rect は縮めない)。
+         可視性は親の overflow(visible = 見える / clip = 親 rect で scissor)
      非 stack: anchor_min/max + offsets で直接確定
    循環はロード時エラー: content 親の中の fill 子 /
      content 親に対する stretch anchor(anchor_min ≠ anchor_max)子
@@ -354,29 +386,70 @@ UiModule
   "lifecycle": [] }
 ```
 
-規約(B4 で closed schema 化): rect は ui_units 整数の edge 表現
-(`[l,t,r,b]`、右下排他)/ widget の同一性は `document_key + stable id パス`
-(runtime WidgetId は arena 単体テストに分離)/ pipeline・texture は**安定名**
-(実行時数値 ID 禁止)/ 配列は決定順(widgets = 走査順、runs = 発行順、
-trace = event_seq 順)/ optional は省略(null 不使用)。
+規約: rect は ui_units 整数の edge 表現(`[l,t,r,b]`、右下排他)/ widget の
+同一性は `document_key + stable id パス`(runtime WidgetId は arena
+単体テストに分離)/ pipeline・texture は**安定名**(実行時数値 ID 禁止)/
+配列は決定順(widgets = 走査順、runs = 発行順、trace = event_seq 順)/
+optional は省略(null 不使用)。
 
-**enum 表(schema v1 の一部として固定)**:
+**正本 = 機械可読スキーマ(U-B4 v2)**: 本節の散文・例は説明であり、正は
+**`docs/schemas/pelican.ui_semantic_fixture.schema.json`**(JSON Schema
+draft 2020-12。本版と同時にコミット済み)。閉じ方の要点:
 
-| フィールド | 値 |
-|-----------|-----|
-| input_trace.kind | `pointer_down` / `pointer_move` / `pointer_up` / `pointer_cancel` |
-| input_trace.button | `left` / `right` / `middle` |
-| input_trace.consumed | control 名の配列(`"mouse:left"`, `"mouse:move"` の形式) |
-| input_trace.effects | `capture` / `release_capture` / `click` / `drag_start` / `drag` / `cancel` / `hover_enter` / `hover_exit` |
-| lifecycle.kind | `controller_init` / `controller_deinit` / `capture_cancel` / `document_swap` / `command_dropped` |
-
-- **event_seq の JSON 表現 = number**(2^53−1 以下を writer が保証 —
-  超過は fixture 生成エラー。実運用で到達しない値だが規則として閉じる)
-- **error trace の形式**: `{ "phase": "parse|layout|route|commit",
-  "code": "<安定コード>", "path": "<document 内パス>", "message": "<人間向け>" }`
-- **normative fixture 一式**(valid / invalid / expected の各最低 1 組)を
-  スキーマと同時にコミットし、U0 のゲートはそれとの一致で機械判定する。
-  比較は canonical 化(キー順固定・空白正規化)した JSON の一致
+- 全 object が `additionalProperties: false`。全 property の型・
+  required/optional・数値範囲(座標系 int32、`event_seq` 0〜2^53−1、
+  count 系 ≥0)を宣言
+- `input_trace` は `kind` を discriminator とする **`oneOf`**:
+  - `pointer_down` / `pointer_up`: `pointer_id`・`button`・`position_ui`
+    必須。`target` は optional(ヒットなし = 省略)
+  - `pointer_move`: `pointer_id`・`position_ui` 必須。**`button` 禁止**
+  - `pointer_cancel`: `pointer_id` のみ必須。**`position_ui`・`target`・
+    `button` 禁止**(発生源に座標が無いケースがあるため)
+- `lifecycle` も kind ごとの variant:
+  `controller_init` / `controller_deinit` = `controller`(型名)+
+  `widget` 必須 / `capture_cancel` = `widget` + `reason` 必須 /
+  `document_swap` = `from_revision` + `to_revision` + `dropped_commands`
+  (int ≥0)必須 / `command_dropped` = `count` + `reason` 必須
+- **`consumed` の語彙を閉じる**: `mouse:left|right|middle|move|wheel`、
+  `key:<key名>`、`touch:<slot番号>`、`pad:<control名>`。key/pad の名前表は
+  schema の `$defs.ui_key` / `$defs.ui_pad_control` が正(v1 の実装対象は
+  mouse のみ — 他は語彙として予約し、fixture に現れたら schema 違反ではなく
+  「未実装機能の使用」としてロードエラー)
+- **errors**(fixture 直下の配列、省略可): `{ phase, code, path, message }`
+  - `phase` = `parse | layout | route | commit`
+  - `code` は closed enum(`$defs.error_code`): `unknown_event` /
+    `unknown_source` / `unknown_widget_value_path` / `type_mismatch` /
+    `range_violation` / `required_missing` / `unknown_field` /
+    `no_payload_event` / `unknown_widget_type` / `axis_conflict` /
+    `layout_cycle` / `duplicate_stable_id` / `limit_exceeded` /
+    `unsupported_control`
+  - `path` は **RFC 6901 JSON Pointer**(入力 document JSON 内の位置)
+  - 複数 error は検出順(parse = 文書順、layout = 解法順)。invalid case の
+    期待値はこの errors 配列で、**照合は phase/code/path のみ**
+    (message は人間向け — 比較対象外)
+- **数値・比較の canonical 規則**: 比較は「**parse 後の semantic
+  equality**」が正(JSON テキストの byte 比較はしない — RFC 8785 等の
+  canonicalization には依存しない)。writer 側規則として integer field は
+  integer 表記(`-0`・指数表記・`1.0` 禁止)、float が許されるのは
+  `ui_scale` のみ(shortest round-trip 表記)
+- **event_seq** = number、2^53−1 以下を writer が保証(超過は fixture 生成
+  エラー)。event_seq は FrameInput 正本(WP69)の u64 単調列で、リセットは
+  **プロセス起動時のみ**。replay/golden は 1 プロセス内で完結させ、
+  境界をまたぐ event_seq 比較はしない
+- **normative fixture 一式(本版と同時にコミット済み)**:
+  `test/fixtures/ui_semantic/normative/`
+  - `valid/` — schema に適合すべき実物: `minimal.json`(空 document)、
+    `input_trace_variants.json`(kind 4 種 + effects 全種 + consumed)、
+    `lifecycle_variants.json`(kind 5 種)、`errors_variants.json`
+    (error code 全種を含む invalid-document 用期待値の形)
+  - `invalid/` — schema 検証で**落ちるべき**実物(1 違反 1 ファイル):
+    未知 property / 未知 enum 値 / variant 必須欠落(pointer_move に
+    button)/ 範囲外 event_seq / 型違い / 未知 error code
+  - U0 ゲートは 2 段: ①これら fixture の schema 検証結果が期待どおり
+    (validator は CI に組込み)②実装出力 ↔ expected fixture の semantic
+    equality。UI ロードエラー系の入力 document fixture は document JSON
+    文法の確定(U0 実装の最初の成果物)と同時に追加し、期待値側は
+    `errors_variants.json` の形式に従う
 
 ## 8. ImGui(エンジン UI)の隔離規約(C10)
 
@@ -396,11 +469,11 @@ trace = event_seq 順)/ optional は省略(null 不使用)。
 - multi-viewport / docking は v1 OFF 固定。clipboard/IME/OS cursor・
   **device loss 時のバックエンド資源再生成**の対応可否を導入 WP で明示(R6 補)
 
-## 9. 実装順(v4 — U0 起点)
+## 9. 実装順(v5 — U0 起点)
 
 | 段階 | 内容 | ゲート |
 |------|------|--------|
-| **U0** | **純 CPU**: スキーマ・レイアウト・WidgetId arena・ordered 入力ルーティング・capture・draw command 生成 | semantic fixture 全通過(GPU なし) |
+| **U0** | **純 CPU**: スキーマ・レイアウト・WidgetId arena・ordered 入力ルーティング・capture・draw command 生成(**依存: FrameInput WP69(済)+ EventPayloadSchema WP — `design_event_payload_schema.md`**) | semantic fixture 全通過(GPU なし)+ §7 normative fixture の schema 検証 |
 | U1 | K3 アトラス接続・quad buffer・stable run・clip・ui feature 化・panel/image(**依存: 色パイプライン C1 の後**) | 2 アトラス交互重なり・nested clip・旧 UI 移行・golden |
 | U2 | bitmap label/button・UI-local 状態・E1 emit・rpc の ordered click/drag/replay | **debug_text の旧経路/共通経路を同一 fixture に描いて byte-exact 比較する互換ゲート**(R6 — tolerance 0 を緩めない。意図的な色意味論変更時のみ理由記録付きの versioned baseline 更新 → 以後再び 0) |
 | U3 | Controller factory/lifecycle・hot reload トランザクション・gauge/stack/トークン | remove/hide/reload 中の capture cancel・init/deinit 列 |
