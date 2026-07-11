@@ -20,7 +20,7 @@ struct ReflectedBinding {
 
 struct ShaderReflection {
     std::vector<ReflectedBinding> bindings;
-    std::optional<vk::PushConstantRange> push_constant;
+    std::vector<vk::PushConstantRange> push_constants;
     std::vector<vk::VertexInputAttributeDescription> vertex_inputs;
     glm::uvec3 local_size{0, 0, 0};
 };
@@ -33,6 +33,7 @@ std::vector<vk::DescriptorSetLayoutBinding> makeDescriptorSetLayoutBindings(cons
 vk::DescriptorSetLayoutCreateInfo
 makeDescriptorSetLayoutCreateInfo(std::span<const vk::DescriptorSetLayoutBinding> bindings);
 std::vector<vk::PushConstantRange> makePushConstantRanges(const ShaderReflection &reflection);
+void validatePushConstantContract(const ShaderReflection &reflection);
 vk::PipelineLayoutCreateInfo makePipelineLayoutCreateInfo(std::span<const vk::DescriptorSetLayout> layouts,
                                                           std::span<const vk::PushConstantRange> push_constants);
 

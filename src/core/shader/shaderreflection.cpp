@@ -1,6 +1,8 @@
 #include "shaderreflection.hpp"
+#include "pelican_sets.hpp"
 #include <algorithm>
 #include <map>
+#include <limits>
 #include <spirv_reflect.h>
 #include <stdexcept>
 
@@ -95,16 +97,11 @@ ShaderReflection reflect(std::span<const uint32_t> spirv) {
 
     for (const auto *block : push_constants) {
         const uint32_t offset = block->offset;
-        const uint32_t end = block->offset + block->size;
-        if (!reflection.push_constant) {
-            reflection.push_constant = vk::PushConstantRange{stageFlags(module->shader_stage), offset, block->size};
-        } else {
-            const uint32_t merged_offset = std::min(reflection.push_constant->offset, offset);
-            const uint32_t merged_end = std::max(reflection.push_constant->offset + reflection.push_constant->size, end);
-            reflection.push_constant->offset = merged_offset;
-            reflection.push_constant->size = merged_end - merged_offset;
-            reflection.push_constant->stageFlags |= stageFlags(module->shader_stage);
+        if (block->size < offset) {
+            throw std::runtime_error("Invalid reflected push constant block size");
         }
+        reflection.push_constants.push_back(
+            vk::PushConstantRange{stageFlags(module->shader_stage), offset, block->size - offset});
     }
 
     uint32_t input_count = 0;
@@ -166,16 +163,8 @@ ShaderReflection merge(std::span<const ShaderReflection> stages) {
             }
         }
 
-        if (stage.push_constant) {
-            if (!merged.push_constant) {
-                merged.push_constant = stage.push_constant;
-            } else if (merged.push_constant->offset == stage.push_constant->offset &&
-                       merged.push_constant->size == stage.push_constant->size) {
-                merged.push_constant->stageFlags |= stage.push_constant->stageFlags;
-            } else {
-                throw std::runtime_error("Shader push constant range mismatch");
-            }
-        }
+        merged.push_constants.insert(merged.push_constants.end(), stage.push_constants.begin(),
+                                     stage.push_constants.end());
 
         merged.vertex_inputs.insert(merged.vertex_inputs.end(), stage.vertex_inputs.begin(), stage.vertex_inputs.end());
 
@@ -216,10 +205,52 @@ makeDescriptorSetLayoutCreateInfo(std::span<const vk::DescriptorSetLayoutBinding
 }
 
 std::vector<vk::PushConstantRange> makePushConstantRanges(const ShaderReflection &reflection) {
-    if (!reflection.push_constant) {
+    if (reflection.push_constants.empty()) {
         return {};
     }
-    return {*reflection.push_constant};
+
+    for (const auto &range : reflection.push_constants) {
+        if (range.size == 0 || range.offset % 4 != 0 || range.size % 4 != 0) {
+            throw std::runtime_error("Shader push constant range must be non-empty and 4-byte aligned");
+        }
+        if (range.offset > PELICAN_PUSH_TOTAL_BYTES ||
+            range.size > PELICAN_PUSH_TOTAL_BYTES - range.offset) {
+            throw std::runtime_error("Shader push constant range exceeds the 128-byte Pelican contract");
+        }
+        const auto end = range.offset + range.size;
+        if (range.offset < PELICAN_PUSH_ENGINE_BYTES &&
+            (range.offset != 0 || end < PELICAN_PUSH_ENGINE_BYTES)) {
+            throw std::runtime_error(
+                "Shader push constant engine region must be exactly the leading 64-byte MVP");
+        }
+    }
+
+    std::map<std::pair<uint32_t, uint32_t>, vk::ShaderStageFlags> grouped_ranges;
+    for (uint32_t stage_bit = 1; stage_bit != 0; stage_bit <<= 1) {
+        const vk::ShaderStageFlags stage{static_cast<vk::ShaderStageFlagBits>(stage_bit)};
+        uint32_t begin = std::numeric_limits<uint32_t>::max();
+        uint32_t end = 0;
+        for (const auto &range : reflection.push_constants) {
+            if (range.stageFlags & stage) {
+                begin = std::min(begin, range.offset);
+                end = std::max(end, range.offset + range.size);
+            }
+        }
+        if (begin != std::numeric_limits<uint32_t>::max()) {
+            grouped_ranges[{begin, end}] |= stage;
+        }
+    }
+
+    std::vector<vk::PushConstantRange> result;
+    result.reserve(grouped_ranges.size());
+    for (const auto &[extent, stages] : grouped_ranges) {
+        result.push_back(vk::PushConstantRange{stages, extent.first, extent.second - extent.first});
+    }
+    return result;
+}
+
+void validatePushConstantContract(const ShaderReflection &reflection) {
+    (void)makePushConstantRanges(reflection);
 }
 
 vk::PipelineLayoutCreateInfo makePipelineLayoutCreateInfo(std::span<const vk::DescriptorSetLayout> layouts,

@@ -1,4 +1,7 @@
 #version 450
+#extension GL_GOOGLE_include_directive : enable
+
+#include "pelican_frame.glsl"
 
 #ifndef PELICAN_FEATURE_HDR
 #error PELICAN_FEATURE_HDR must be defined for the HDR tonemap shader

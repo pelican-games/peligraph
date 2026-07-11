@@ -11,8 +11,6 @@
 namespace Pelican {
 
 
-constexpr uint32_t modelMatDescriptorSetNumber = PELICAN_SET_FRAME;
-constexpr uint32_t modelMatDescriptorBinding = 0;
 constexpr uint32_t imageDescriptorSetNumber = PELICAN_SET_MATERIAL;
 constexpr uint32_t baseColorBinding = 0;
 constexpr uint32_t metallicRoughnessBinding = 1;
@@ -20,8 +18,10 @@ constexpr uint32_t normalBinding = 2;
 constexpr uint32_t emissiveBinding = 3;
 constexpr uint32_t vatPositionBinding = 4;
 constexpr uint32_t vatNormalBinding = 5;
+constexpr uint32_t materialBufferBinding = PELICAN_MATERIAL_BUFFER_BINDING;
 constexpr uint32_t baseMaterialTextureBindingCount = 4;
 constexpr uint32_t vatMaterialTextureBindingCount = 6;
+constexpr size_t maxMaterials = 1024;
 
 static uint64_t makePipelineKey(ShaderBundleId vert_shader, ShaderBundleId frag_shader) {
     return (static_cast<uint64_t>(static_cast<uint32_t>(vert_shader.value)) << 32) |
@@ -41,6 +41,22 @@ static GraphicsPipelineDesc makeMaterialPipelineDesc(const MaterialInfo &info) {
     desc.cull_mode = vk::CullModeFlagBits::eBack;
     desc.front_face = vk::FrontFace::eClockwise;
     return desc;
+}
+
+MaterialGpuData makeMaterialGpuData(const MaterialInfo &info) {
+    MaterialGpuData data;
+    data.base_color_factor = info.base_color_factor;
+    data.emissive_factor = glm::vec4{info.emissive_factor, 1.0f};
+    data.surface_factors =
+        glm::vec4{info.metallic_factor, info.roughness_factor, info.normal_scale, info.occlusion_strength};
+    if (info.vat) {
+        const auto &vat = *info.vat;
+        data.vat_bounds_min_frame_count =
+            glm::vec4{vat.bounds_min, static_cast<float>(vat.frame_count)};
+        data.vat_bounds_extent_fps = glm::vec4{vat.bounds_max - vat.bounds_min, vat.fps};
+        data.vat_flags = glm::ivec4{vat.base_vertex, vat.loop ? 1 : 0, vat.has_normal ? 1 : 0, 0};
+    }
+    return data;
 }
 
 static vk::UniqueDescriptorPool createDescriptorPool(vk::Device device) {
@@ -95,35 +111,13 @@ static vk::UniqueImageView createImageView(vk::Device device, const ImageWrapper
     return device.createImageViewUnique(create_info);
 }
 
-static vk::UniqueDescriptorSet createModelMatDescriptorSet(vk::Device device, vk::DescriptorPool desc_pool,
-                                                           vk::DescriptorSetLayout layout, vk::Buffer buffer) {
-    vk::DescriptorSetAllocateInfo desc_alloc_info;
-    desc_alloc_info.descriptorPool = desc_pool;
-    desc_alloc_info.setSetLayouts({layout});
-
-    auto descsets = device.allocateDescriptorSetsUnique(desc_alloc_info);
-    auto &descset = descsets[0];
-
-    vk::DescriptorBufferInfo buf_info;
-    buf_info.buffer = buffer;
-    buf_info.offset = 0;
-    buf_info.range = vk::WholeSize;
-
-    vk::WriteDescriptorSet write_descset;
-    write_descset.dstSet = descset.get();
-    write_descset.dstBinding = modelMatDescriptorBinding;
-    write_descset.dstArrayElement = 0;
-    write_descset.setBufferInfo({buf_info});
-    write_descset.descriptorType = vk::DescriptorType::eStorageBuffer;
-    device.updateDescriptorSets({write_descset}, {});
-
-    return std::move(descset);
-}
-
 MaterialContainer::MaterialContainer()
     : device{GET_MODULE(VulkanManageCore).getDevice()},
       nearest_sampler{createSampler(device, vk::Filter::eNearest)},
-      linear_sampler{createSampler(device, vk::Filter::eLinear)}, desc_pool{createDescriptorPool(device)} {}
+      linear_sampler{createSampler(device, vk::Filter::eLinear)}, desc_pool{createDescriptorPool(device)},
+      material_buffer{GET_MODULE(VulkanManageCore).allocBuf(
+          sizeof(MaterialGpuData) * maxMaterials, vk::BufferUsageFlagBits::eStorageBuffer,
+          vma::MemoryUsage::eAuto, vma::AllocationCreateFlagBits::eHostAccessSequentialWrite)} {}
 MaterialContainer::~MaterialContainer() {}
 
 GlobalTextureId MaterialContainer::registerTexture(vk::Extent3D extent, const void *data) {
@@ -163,12 +157,6 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         pipeline_it = pipelines.emplace(pipeline_key, pipeline_handle).first;
         if (!default_pipeline) {
             default_pipeline = pipeline_handle;
-            if (model_mat_buffer) {
-                const auto model_set_layout =
-                    GET_MODULE(PipelineFactory).descriptorSetLayout(*default_pipeline, modelMatDescriptorSetNumber);
-                model_mat_buf_descset =
-                    createModelMatDescriptorSet(device, desc_pool.get(), model_set_layout, model_mat_buffer);
-            }
         }
     }
     const auto pipeline = pipeline_it->second;
@@ -202,7 +190,7 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     }
 
     std::vector<vk::WriteDescriptorSet> writes;
-    writes.reserve(texture_binding_count);
+    writes.reserve(texture_binding_count + 1);
     const auto addImageWrite = [&](uint32_t binding) {
         vk::WriteDescriptorSet write;
         write.dstSet = descset.get();
@@ -223,9 +211,18 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         addImageWrite(vatNormalBinding);
     }
 
+    vk::DescriptorBufferInfo material_buffer_info{material_buffer.buffer.get(), 0, vk::WholeSize};
+    vk::WriteDescriptorSet material_write;
+    material_write.dstSet = descset.get();
+    material_write.dstBinding = materialBufferBinding;
+    material_write.descriptorType = vk::DescriptorType::eStorageBuffer;
+    material_write.setBufferInfo(material_buffer_info);
+    writes.push_back(material_write);
+
     device.updateDescriptorSets(writes, {});
 
-    return materials.reg(InternalMaterialInfo{
+    const auto gpu_data = makeMaterialGpuData(info);
+    const auto material_id = materials.reg(InternalMaterialInfo{
         .pipeline = pipeline,
         .base_color_texture = info.base_color_texture,
         .metallic_roughness_texture = info.metallic_roughness_texture,
@@ -234,17 +231,12 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         .vat = info.vat,
         .descset = std::move(descset),
     });
-}
-
-void MaterialContainer::setModelMatBuf(const BufferWrapper &buf) {
-    model_mat_buffer = buf.buffer.get();
-    if (!default_pipeline) {
-        return;
+    if (material_id.value < 0 || static_cast<size_t>(material_id.value) >= maxMaterials) {
+        throw std::runtime_error("Material capacity exceeded");
     }
-
-    const auto model_set_layout =
-        GET_MODULE(PipelineFactory).descriptorSetLayout(*default_pipeline, modelMatDescriptorSetNumber);
-    model_mat_buf_descset = createModelMatDescriptorSet(device, desc_pool.get(), model_set_layout, model_mat_buffer);
+    GET_MODULE(VulkanManageCore)
+        .writeBuf(material_buffer, &gpu_data, sizeof(MaterialGpuData) * material_id.value, sizeof(gpu_data));
+    return material_id;
 }
 
 bool MaterialContainer::isRenderRequired(PassId pass_id, GlobalMaterialId material) const {
@@ -259,12 +251,7 @@ void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pass_id, 
     const auto pipeline_layout = pipeline_factory.layout(material.pipeline);
 
     if (!isValidMaterialId(prev_material_id)) {
-        if (!model_mat_buf_descset) {
-            throw std::runtime_error("MaterialContainer has no model matrix descriptor set");
-        }
         cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline_factory.pipeline(material.pipeline));
-        cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout, modelMatDescriptorSetNumber,
-                                   {model_mat_buf_descset.get()}, {});
         cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout, imageDescriptorSetNumber,
                                    {material.descset.get()}, {});
     } else {
@@ -277,16 +264,6 @@ void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pass_id, 
     }
 }
 
-void MaterialContainer::bindModelMatrixResource(vk::CommandBuffer cmd_buf,
-                                                vk::PipelineLayout pipeline_layout,
-                                                uint32_t set_number) const {
-    if (!model_mat_buf_descset) {
-        throw std::runtime_error("MaterialContainer has no model matrix descriptor set");
-    }
-    cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout, set_number,
-                               {model_mat_buf_descset.get()}, {});
-}
-
 vk::PipelineLayout MaterialContainer::getPipelineLayout() const {
     if (!default_pipeline) {
         throw std::runtime_error("MaterialContainer has no material pipeline");
@@ -297,34 +274,6 @@ vk::PipelineLayout MaterialContainer::getPipelineLayout() const {
 vk::PipelineLayout MaterialContainer::pipelineLayout(GlobalMaterialId material_id) const {
     const auto &material = materials.get(material_id);
     return GET_MODULE(PipelineFactory).layout(material.pipeline);
-}
-
-MaterialPushConstantStruct MaterialContainer::makePushConstants(
-    GlobalMaterialId material_id,
-    glm::mat4 vp_matrix,
-    double time_seconds) const {
-    const auto &material = materials.get(material_id);
-
-    MaterialPushConstantStruct push_constant{};
-    push_constant.mvp = vp_matrix;
-
-    if (material.vat) {
-        const auto &vat = *material.vat;
-        const auto bounds_extent = vat.bounds_max - vat.bounds_min;
-        push_constant.vat_bounds_min_time = glm::vec4{vat.bounds_min, static_cast<float>(time_seconds)};
-        push_constant.vat_bounds_extent_frame =
-            glm::vec4{bounds_extent, static_cast<float>(vat.frame_count)};
-        push_constant.vat_playback_flags =
-            glm::vec4{vat.fps, vat.loop ? 1.0f : 0.0f, static_cast<float>(vat.base_vertex),
-                      vat.has_normal ? 1.0f : 0.0f};
-    }
-
-    return push_constant;
-}
-
-uint32_t MaterialContainer::pushConstantBytes(GlobalMaterialId material_id) const {
-    const auto &material = materials.get(material_id);
-    return material.vat ? sizeof(MaterialPushConstantStruct) : sizeof(PushConstantStruct);
 }
 
 } // namespace Pelican

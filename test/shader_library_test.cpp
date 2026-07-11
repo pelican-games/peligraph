@@ -1,4 +1,5 @@
 #include "../src/core/shader/shaderlibrary.hpp"
+#include "../src/core/shader/pelican_sets.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
@@ -89,7 +90,9 @@ TEST_CASE("shader library loads SPIR-V files and reports dirty reloads", "[shade
     const auto &bundle = library.get(id);
     REQUIRE(bundle.version == 1);
     REQUIRE(bundle.source_path == shader_path);
-    REQUIRE(bundle.reflection.bindings.empty());
+    REQUIRE(bundle.reflection.bindings.size() == 3);
+    REQUIRE(bundle.reflection.bindings[0].set == PELICAN_SET_FRAME);
+    REQUIRE(bundle.reflection.bindings[0].binding == PELICAN_FRAME_UBO_BINDING);
     REQUIRE(library.takeDirtyBundles().empty());
 
     REQUIRE(library.reload(id));

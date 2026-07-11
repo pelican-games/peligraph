@@ -3,18 +3,8 @@
 #extension GL_GOOGLE_include_directive : enable
 
 #include "pelican_sets.glsl"
-
-struct ObjectData{
-    mat4 model;
-};
-
-layout(set = PELICAN_SET_FRAME, binding = 0) readonly buffer ObjectBuffer{
-    ObjectData objects[];
-} object_buffer;
-
-layout(push_constant) uniform SceneData {
-    mat4 vpMatrix;
-} drawInfo;
+#include "pelican_frame.glsl"
+#include "pelican_material.glsl"
 
 layout(location = 0) in vec3 inPos;
 layout(location = 1) in vec3 inNormal;
@@ -30,12 +20,12 @@ layout(location = 4) out vec3 outTangent;
 layout(location = 5) out vec3 outBitangent;
 
 void main() {
-    mat4 model_matrix = object_buffer.objects[gl_BaseInstance].model;
+    mat4 model_matrix = pelicanObjects.objects[gl_BaseInstance].model;
     vec4 world_pos = model_matrix * vec4(inPos, 1.0);
     
-    gl_Position = drawInfo.vpMatrix * world_pos;
+    gl_Position = pelicanPush.engineMvp * world_pos;
     outTexUV = inTexUV;
-    outColor = inColor;
+    outColor = inColor * pelicanMaterials.materials[pelicanPush.materialIndex].baseColorFactor;
     
     // TBN matrix components to world space
     vec3 N = normalize(mat3(model_matrix) * inNormal);

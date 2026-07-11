@@ -9,17 +9,11 @@
 namespace Pelican {
 
 class FullscreenPassContainer;
-class LightContainer;
-
-struct FullscreenPassCameraData {
-    glm::vec3 position{0.0f};
-    glm::mat4 projection{1.0f};
-    glm::mat4 view{1.0f};
-};
+class FrameResources;
 
 struct FullscreenPassRendererDependencies {
     FullscreenPassContainer &fullscreen_pass_container;
-    const LightContainer &light_container;
+    const FrameResources &frame_resources;
 };
 
 DECLARE_MODULE(FullscreenPassRenderer) {
@@ -28,7 +22,6 @@ DECLARE_MODULE(FullscreenPassRenderer) {
     ~FullscreenPassRenderer();
 
     void render(vk::CommandBuffer cmd_buf, PassId pass_id, const PassDefinition &pass_def,
-                const FullscreenPassCameraData &camera_data,
                 const FullscreenPassRendererDependencies &dependencies) const;
 };
 

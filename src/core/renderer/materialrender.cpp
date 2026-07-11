@@ -1,4 +1,5 @@
 #include "materialrender.hpp"
+#include "frameresources.hpp"
 #include "../light/lightcontainer.hpp"
 #include "../material/materialcontainer.hpp"
 #include "../model/vertbufcontainer.hpp"
@@ -16,8 +17,6 @@ struct MaterialRange {
     uint32_t start;
     uint32_t count;
 };
-
-constexpr uint32_t shadowModelDescriptorSetNumber = PELICAN_SET_FRAME;
 
 bool isOutsideMaterialRange(uint32_t material_index, const MaterialRange &range) {
     return material_index < range.start || material_index - range.start >= range.count;
@@ -52,11 +51,16 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
         }
 
         material_container.bindResource(cmd_buf, pass_id, draw_call.material, current_material_id);
-        const auto push_constant = material_container.makePushConstants(
-            draw_call.material, dependencies.camera.getVPMatrix(), dependencies.time_seconds);
-        cmd_buf.pushConstants(material_container.pipelineLayout(draw_call.material),
-                              vk::ShaderStageFlagBits::eVertex, 0,
-                              material_container.pushConstantBytes(draw_call.material), &push_constant);
+        const auto pipeline_layout = material_container.pipelineLayout(draw_call.material);
+        dependencies.frame_resources.bindGraphics(cmd_buf, pipeline_layout);
+        const PushConstantStruct engine_push{dependencies.camera.getVPMatrix()};
+        cmd_buf.pushConstants(pipeline_layout,
+                              vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0,
+                              sizeof(engine_push), &engine_push);
+        const MaterialIndexPushConstant material_push{static_cast<uint32_t>(draw_call.material.value)};
+        cmd_buf.pushConstants(pipeline_layout,
+                              vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
+                              PELICAN_PUSH_ENGINE_BYTES, sizeof(material_push), &material_push);
         current_material_id = draw_call.material;
         cmd_buf.drawIndexedIndirect(indirect_buf.buffer.get(), draw_call.offset, draw_call.draw_count,
                                     draw_call.stride);
@@ -69,7 +73,6 @@ void renderShadowDepthDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
                             const MaterialRendererDependencies &dependencies) {
     auto &instance_container = dependencies.instance_container;
     const auto &vert_buf_container = dependencies.vert_buf_container;
-    const auto &material_container = dependencies.material_container;
 
     vert_buf_container.bindVertexBuffer(cmd_buf);
 
@@ -81,7 +84,7 @@ void renderShadowDepthDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
 
     const auto pipeline_layout = shadow_depth_pass_container.pipelineLayout(pass_id);
     shadow_depth_pass_container.bind(cmd_buf, pass_id);
-    material_container.bindModelMatrixResource(cmd_buf, pipeline_layout, shadowModelDescriptorSetNumber);
+    dependencies.frame_resources.bindGraphics(cmd_buf, pipeline_layout);
 
     PushConstantStruct push_constant{};
     push_constant.mvp = dependencies.light_container.shadowViewProjection();
@@ -96,12 +99,7 @@ void renderShadowDepthDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
 }
 }
 
-MaterialRenderer::MaterialRenderer() {
-    const auto &instance_container = GET_MODULE(PolygonInstanceContainer);
-    auto &material_container = GET_MODULE(MaterialContainer);
-
-    material_container.setModelMatBuf(instance_container.getObjectBuf());
-}
+MaterialRenderer::MaterialRenderer() = default;
 
 void MaterialRenderer::render(vk::CommandBuffer cmd_buf, PassId pass_id,
                               const MaterialRendererDependencies &dependencies) const {

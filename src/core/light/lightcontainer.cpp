@@ -10,18 +10,6 @@ namespace Pelican
 {
 	namespace
 	{
-		static vk::UniqueDescriptorPool createDescriptorPool(vk::Device device) {
-			vk::DescriptorPoolSize pool_size[1];
-			pool_size[0].type = vk::DescriptorType::eUniformBuffer;
-			pool_size[0].descriptorCount = 1;
-
-			vk::DescriptorPoolCreateInfo create_info;
-			create_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
-			create_info.maxSets = 1;
-			create_info.setPoolSizes(pool_size);
-			return device.createDescriptorPoolUnique(create_info);
-		}
-
 		glm::vec3 readVec3(const nlohmann::json& json, const std::string& field, const std::string& light_name)
 		{
 			if (!json.contains(field) || !json.at(field).is_array() || json.at(field).size() != 3)
@@ -78,11 +66,6 @@ namespace Pelican
 	{
 	}
 
-	void LightContainer::bindResource(vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout, uint32_t set_number) const
-	{
-		cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout, set_number, {m_DescriptorSet.get()}, {});
-	}
-
 	glm::mat4 LightContainer::shadowViewProjection() const
 	{
 		const auto direction = safeLightDirection(m_DirectionalLights);
@@ -100,7 +83,6 @@ namespace Pelican
 	LightContainer::LightContainer()
 	{
 		auto& vkcore = GET_MODULE(VulkanManageCore);
-		auto device = vkcore.getDevice();
 
 		// Create UBO
 		m_LightUBO = vkcore.allocBuf(
@@ -109,41 +91,6 @@ namespace Pelican
 			vma::MemoryUsage::eAuto,
 			vma::AllocationCreateFlagBits::eHostAccessSequentialWrite
 		);
-
-		// Create Descriptor Set Layout
-		vk::DescriptorSetLayoutBinding uboLayoutBinding{};
-		uboLayoutBinding.binding = 0;
-		uboLayoutBinding.descriptorType = vk::DescriptorType::eUniformBuffer;
-		uboLayoutBinding.descriptorCount = 1;
-		uboLayoutBinding.stageFlags = vk::ShaderStageFlagBits::eFragment;
-
-		vk::DescriptorSetLayoutCreateInfo layoutInfo{};
-		layoutInfo.setBindings(uboLayoutBinding);
-
-		m_DescriptorSetLayout = device.createDescriptorSetLayoutUnique(layoutInfo);
-
-		// Create Descriptor Set
-		m_DescriptorPool = createDescriptorPool(device);
-		vk::DescriptorSetAllocateInfo allocInfo{};
-		allocInfo.descriptorPool = m_DescriptorPool.get();
-		allocInfo.setSetLayouts(m_DescriptorSetLayout.get());
-
-		m_DescriptorSet = std::move(device.allocateDescriptorSetsUnique(allocInfo)[0]);
-
-		// Update Descriptor Set
-		vk::DescriptorBufferInfo bufferInfo{};
-		bufferInfo.buffer = m_LightUBO.buffer.get();
-		bufferInfo.offset = 0;
-		bufferInfo.range = sizeof(LightUBO);
-
-		vk::WriteDescriptorSet descriptorWrite{};
-		descriptorWrite.dstSet = m_DescriptorSet.get();
-		descriptorWrite.dstBinding = 0;
-		descriptorWrite.dstArrayElement = 0;
-		descriptorWrite.descriptorType = vk::DescriptorType::eUniformBuffer;
-		descriptorWrite.setBufferInfo(bufferInfo);
-
-		device.updateDescriptorSets(descriptorWrite, nullptr);
 	}
 
 	void LightContainer::load(const std::vector<LightLoadEntry>& lights)

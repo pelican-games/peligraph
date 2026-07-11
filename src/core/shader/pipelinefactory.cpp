@@ -1,4 +1,5 @@
 #include "pipelinefactory.hpp"
+#include "pelican_sets.hpp"
 #include "../log.hpp"
 #include "../model/vertbufcontainer.hpp"
 #include "../vkcore/core.hpp"
@@ -100,10 +101,43 @@ uint32_t maxDescriptorSet(const ShaderReflection &reflection) {
     return max_set;
 }
 
+std::vector<vk::DescriptorSetLayoutBinding> frameDescriptorSetLayoutBindings() {
+    const auto all_stages = vk::ShaderStageFlagBits::eAll;
+    return {
+        vk::DescriptorSetLayoutBinding{PELICAN_FRAME_UBO_BINDING, vk::DescriptorType::eUniformBuffer, 1,
+                                       all_stages},
+        vk::DescriptorSetLayoutBinding{PELICAN_OBJECT_BUFFER_BINDING, vk::DescriptorType::eStorageBuffer, 1,
+                                       all_stages},
+        vk::DescriptorSetLayoutBinding{PELICAN_LIGHT_UBO_BINDING, vk::DescriptorType::eUniformBuffer, 1,
+                                       all_stages},
+    };
+}
+
+void validateFrameBindings(const ShaderReflection &reflection) {
+    for (const auto &binding : reflection.bindings) {
+        if (binding.set != PELICAN_SET_FRAME) {
+            continue;
+        }
+        const auto valid =
+            (binding.binding == PELICAN_FRAME_UBO_BINDING &&
+             binding.type == vk::DescriptorType::eUniformBuffer) ||
+            (binding.binding == PELICAN_OBJECT_BUFFER_BINDING &&
+             binding.type == vk::DescriptorType::eStorageBuffer) ||
+            (binding.binding == PELICAN_LIGHT_UBO_BINDING &&
+             binding.type == vk::DescriptorType::eUniformBuffer);
+        if (!valid || binding.count != 1) {
+            throw std::runtime_error(
+                "Shader set 0 must use FrameUBO binding 0, ObjectBuffer binding 1, or LightUBO binding 2");
+        }
+    }
+}
+
 void validateGraphicsReflection(const GraphicsPipelineDesc &desc, const ShaderReflection &reflection) {
     if (!desc.use_engine_vertex_layout && !reflection.vertex_inputs.empty()) {
         throw std::runtime_error("GraphicsPipelineDesc requires use_engine_vertex_layout for vertex input shaders");
     }
+    validateFrameBindings(reflection);
+    validatePushConstantContract(reflection);
 }
 
 std::vector<vk::PipelineColorBlendAttachmentState> makeBlendAttachments(const GraphicsPipelineDesc &desc,
@@ -183,12 +217,9 @@ PipelineFactory::~PipelineFactory() { savePipelineCache(); }
 
 std::vector<PipelineFactory::DescriptorSetLayoutKey>
 PipelineFactory::descriptorSetLayoutKeysFor(const ShaderReflection &reflection) const {
-    if (reflection.bindings.empty()) {
-        return {};
-    }
-
     std::vector<DescriptorSetLayoutKey> keys(maxDescriptorSet(reflection) + 1);
-    for (uint32_t set = 0; set < keys.size(); ++set) {
+    keys[PELICAN_SET_FRAME].bindings = frameDescriptorSetLayoutBindings();
+    for (uint32_t set = 1; set < keys.size(); ++set) {
         keys[set].bindings = makeDescriptorSetLayoutBindings(reflection, set);
     }
     return keys;
@@ -348,6 +379,8 @@ PipelineFactory::PipelineRecord PipelineFactory::buildGraphicsPipeline(const Gra
 
 PipelineFactory::PipelineRecord PipelineFactory::buildComputePipeline(const ComputePipelineDesc &desc) {
     auto reflection = shader_library.get(desc.shader).reflection;
+    validateFrameBindings(reflection);
+    validatePushConstantContract(reflection);
     auto set_layouts = descriptorSetLayoutsFor(reflection);
     auto pipeline_layout = createPipelineLayout(reflection, set_layouts);
     auto pipeline_object = createComputePipeline(desc, pipeline_layout.get());
@@ -415,6 +448,16 @@ vk::DescriptorSetLayout PipelineFactory::descriptorSetLayout(PipelineHandle hand
         throw std::runtime_error("Pipeline descriptor set layout not found");
     }
     return layouts[set];
+}
+
+vk::DescriptorSetLayout PipelineFactory::frameDescriptorSetLayout() {
+    const DescriptorSetLayoutKey key{frameDescriptorSetLayoutBindings()};
+    auto found = descriptor_set_layout_cache.find(key);
+    if (found == descriptor_set_layout_cache.end()) {
+        const auto create_info = makeDescriptorSetLayoutCreateInfo(key.bindings);
+        found = descriptor_set_layout_cache.emplace(key, device.createDescriptorSetLayoutUnique(create_info)).first;
+    }
+    return found->second.get();
 }
 
 const ShaderReflection &PipelineFactory::reflection(PipelineHandle handle) const {

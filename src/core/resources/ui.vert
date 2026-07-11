@@ -2,9 +2,10 @@
 #extension GL_GOOGLE_include_directive : enable
 
 #include "pelican_sets.glsl"
+#include "pelican_frame.glsl"
 
 layout(push_constant) uniform UiPush {
-    vec3 pos;   // normalized position (0-1, top-left origin), z for depth
+    layout(offset = PELICAN_PUSH_ENGINE_BYTES) vec3 pos;
     float _pad1;
     vec2 size;  // normalized size relative to framebuffer
     float _pad2;

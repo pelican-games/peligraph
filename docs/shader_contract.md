@@ -1,4 +1,4 @@
-# シェーダ契約(v1 / 現行実装)
+# シェーダ契約(v1 / WP70 実装)
 
 対象: プロジェクト/feature/マテリアル用シェーダを書く人。ここでは
 `src/core/shader/pelican_sets.hpp`、`src/core/resources/shaders/include/pelican_sets.glsl`、
@@ -8,32 +8,33 @@
 
 | set | 名前 | 現行の使い方 |
 |-----|------|--------------|
-| 0 | `PELICAN_SET_FRAME` | エンジン管理のフレーム/パス単位データ。標準 material/shadow では binding 0 が `ObjectBuffer` SSBO、lighting fullscreen では binding 0 が `LightUBO`。同じ set/binding でも pipeline ごとに型が違う現状がある。 |
+| 0 | `PELICAN_SET_FRAME` | 全 pipeline 共通の固定 layout。binding 0 `FrameUBO`、1 `ObjectBuffer` SSBO、2 `LightUBO`。エンジン管理・読み取り専用。 |
 | 1 | `PELICAN_SET_PASS_INPUT` | fullscreen / UI / compute の入力。fullscreen は pass input の texture/buffer を binding 0 から順に割り当てる。UI texture もこの set を使う。 |
-| 2 | `PELICAN_SET_MATERIAL` | 標準 material texture。binding 0 `baseColorSampler`、1 `metallicRoughnessSampler`、2 `normalSampler`、3 `emissiveSampler`。VAT 有効時は 4 `vatPositionSampler`、5 `vatNormalSampler`。material params UBO は設計上ここへ追加予定だが現行コードにはまだない。 |
+| 2 | `PELICAN_SET_MATERIAL` | 標準 material texture。binding 0 `baseColorSampler`、1 `metallicRoughnessSampler`、2 `normalSampler`、3 `emissiveSampler`。VAT 有効時は 4 `vatPositionSampler`、5 `vatNormalSampler`。binding 6 は全マテリアルを並べた `MaterialBuffer` SSBO。 |
 | 3 | `PELICAN_SET_FREE` | debug/user/future 用の自由枠。現行 debug draw/text は binding 0 の SSBO、debug text fragment は binding 1 の atlas texture を使う。 |
 
-Descriptor set layout は `ShaderReflection` の SPIR-V reflection から
-`PipelineFactory` が pipeline ごとに生成する。ある shader が高い set 番号だけを使う場合でも、
-0 から最大 set までの layout vector が作られ、使わない set は空 layout になる。
+set 0 layout は reflection の有無にかかわらず `PipelineFactory` が全 pipeline に挿入する。
+reflection が set 0 を宣言する場合は上記 3 binding の型・個数と一致しなければ pipeline 作成を拒否する。
+set 1 以降は従来どおり reflection から生成し、高い set だけを使う場合も途中に空 layout を置く。
+
+`FrameUBO` (`pelican_frame.glsl`) は `time` / `dt` / 64-bit `frame_index`
+(low/high 32-bit) / `resolution` とその逆数 / `camera_position` / `view` / `projection`
+を持つ。VAT を含む時間依存 shader は push constant でなくこの値を読む。
 
 ## Push constants
 
 `PELICAN_PUSH_ENGINE_BYTES = 64`、`PELICAN_PUSH_SHADER_BYTES = 64`、
 `PELICAN_PUSH_TOTAL_BYTES = 128` が C++ と GLSL include に定義されている。
 
-現行実装の注意:
-
-- `ShaderReflection` は shader の push constant block を 1 つの連続 range として扱う。
-  engine 64B と shader 64B の 2 range 分割はまだ enforcement されていない。
-- 標準 material/shadow の先頭 64B は `mat4 vpMatrix` として使われる。
-- VAT material は同じ offset 0 から最大 128B まで使う。
-- fullscreen の `camera_position` は fragment push constant 16B、
-  `projection_view` は fragment push constant 128B を offset 0 に push する。
-- UI は vertex push constant として 32B を offset 0 に push する。
-
-マテリアル用カスタムシェーダは、M2 で別契約が追加されるまで offset 0 の engine 領域を
-独自用途に使わないこと。現在はコード側で分割保護されていないため、衝突は shader 作者側で避ける。
+- offset 0..63 は engine 領域で、宣言する場合は 64B の `mat4` MVP 全体だけを宣言する。
+- offset 64..127 は shader 領域。material index と UI draw data はここに置く。
+- reflection は stage ごとの block を論理的に 64B 境界で検査し、4B alignment、128B 上限、
+  engine 領域の部分使用を pipeline 作成前に拒否する。Vulkan の同一 stage range 重複禁止に従い、
+  pipeline layout では stage ごとに宣言範囲の envelope を 1 つだけ作る。同じ envelope の stage は
+  1 range にまとめる。
+- fullscreen の camera/time/resolution と lighting data は set 0 へ移動済み。
+  既存 pass JSON の `push_constants: camera_position|projection_view` と `uses_light_data` は
+  形式互換のため受理するが、GPU 供給元は常に FrameUBO/LightUBO である。
 
 ## Vertex input
 
@@ -66,10 +67,9 @@ material defines は WP58/M1 時点では parser の結果に保持されるだ�
 M2 以降で合流する場合は、feature 由来 defines の後ろに material 由来 defines を追加するのが
 `design_material_shading.md` の契約である。
 
-## 現状として記録する差分
+## WP70 で解消済みの差分
 
-- set 0 の意味は設計文書では frame 共通データだが、現行実装では pipeline ごとに
-  `ObjectBuffer` と `LightUBO` が binding 0 を共有している。
-- material params UBO は設計上 set 2 に入るが、現行 binding は texture 0-5 だけである。
-- push constant の engine 64B / shader 64B 分割は定数としてはあるが、pipeline layout は
-  reflection 由来の単一 range である。
+- set 0 は全 pipeline で固定 layout となり、`ObjectBuffer` と `LightUBO` の binding 衝突を解消した。
+- material data は個別 UBO でなく set 2 binding 6 の SSBO 配列になった。glTF PBR factor と
+  VAT の静的 bounds/playback 値も同じ配列から material index で参照する。
+- push constant は engine 64B / shader 64B に reflection 段階で分割・検証される。

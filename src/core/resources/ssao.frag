@@ -2,6 +2,7 @@
 #extension GL_GOOGLE_include_directive : enable
 
 #include "pelican_sets.glsl"
+#include "pelican_frame.glsl"
 
 layout(location = 0) in vec2 inUV;
 layout(location = 0) out vec4 outColor;
@@ -9,12 +10,6 @@ layout(location = 0) out vec4 outColor;
 // G-Buffer inputs
 layout(set = PELICAN_SET_PASS_INPUT, binding = 0) uniform sampler2D worldPosSampler;
 layout(set = PELICAN_SET_PASS_INPUT, binding = 1) uniform sampler2D normalSampler;
-
-// Push constants with camera matrices
-layout(push_constant) uniform PushConstants {
-    mat4 proj;
-    mat4 view;
-} pc;
 
 // Parameters
 const int KERNEL_SIZE = 32;
@@ -52,8 +47,8 @@ vec3 random(vec2 co) {
 
 void main() {
     // Get G-Buffer data
-    vec3 fragPos = (pc.view * vec4(texture(worldPosSampler, inUV).xyz, 1.0)).xyz;
-    vec3 normal = normalize((pc.view * vec4(texture(normalSampler, inUV).xyz * 2.0 - 1.0, 0.0)).xyz);
+    vec3 fragPos = (pelicanFrame.view * vec4(texture(worldPosSampler, inUV).xyz, 1.0)).xyz;
+    vec3 normal = normalize((pelicanFrame.view * vec4(texture(normalSampler, inUV).xyz * 2.0 - 1.0, 0.0)).xyz);
     
     // Random rotation for sampling kernel
     vec3 randomVec = normalize(random(inUV * 1000.0));
@@ -69,12 +64,12 @@ void main() {
 
         // Project sample position to screen space
         vec4 offset = vec4(samplePos, 1.0);
-        offset = pc.proj * offset; // from view to clip-space
+        offset = pelicanFrame.projection * offset; // from view to clip-space
         offset.xyz /= offset.w; // perspective divide
         offset.xyz = offset.xyz * 0.5 + 0.5; // transform to [0,1] range
 
         // Get sample depth from G-Buffer
-        vec3 occluderPos = (pc.view * vec4(texture(worldPosSampler, offset.xy).xyz, 1.0)).xyz;
+        vec3 occluderPos = (pelicanFrame.view * vec4(texture(worldPosSampler, offset.xy).xyz, 1.0)).xyz;
 
         // Check if sample is within range and occluded
         float occluderDepth = occluderPos.z;
