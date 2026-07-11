@@ -3,10 +3,29 @@
     "final_layouts": [
       {
         "layout": "transfer_src_optimal",
+        "resource": "display"
+      },
+      {
+        "layout": "transfer_src_optimal",
         "resource": "swapchain"
       }
     ],
     "nodes": [
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_main",
+        "order": 0
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_tonemap",
+        "order": 1
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 2
+      },
       {
         "attachments": [
           {
@@ -18,32 +37,103 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
             "load": "clear",
-            "resource": "swapchain",
+            "resource": "display",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": false,
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
         "name": "present",
-        "order": 0
+        "order": 3
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_pelican_ui",
+        "order": 4
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_draw",
+        "order": 5
       },
       {
         "attachments": [
           {
             "aspect": "color",
             "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
             "load": "load",
-            "resource": "swapchain",
+            "resource": "display",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": true,
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
         "name": "debug_draw",
-        "order": 1
+        "order": 6
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_text",
+        "order": 7
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 8
+      },
+      {
+        "destination": "swapchain",
+        "extent": [
+          16,
+          16
+        ],
+        "format": "R8G8B8A8_UNORM",
+        "kind": "output_transform",
+        "mode": "transfer_copy_same_format",
+        "name": "output_transform",
+        "order": 9,
+        "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
+        "samples": 1,
+        "source": "display",
+        "texel_block_bytes": 4,
+        "transitions": [
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "display",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_write",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_dst_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "swapchain",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "transfer_dst_optimal",
+            "resource": "swapchain",
+            "src_access": "transfer_write",
+            "src_stage": "transfer"
+          }
+        ]
       }
     ]
   },
@@ -51,14 +141,33 @@
     "final_layouts": [
       {
         "layout": "transfer_src_optimal",
+        "resource": "display"
+      },
+      {
+        "layout": "transfer_src_optimal",
         "resource": "swapchain"
       }
     ],
     "nodes": [
       {
+        "kind": "anchor",
+        "name": "__anchor_post_main",
+        "order": 0
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_tonemap",
+        "order": 1
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 2
+      },
+      {
         "kind": "compute",
         "name": "write_color",
-        "order": 0,
+        "order": 3,
         "reads": [],
         "writes": [
           {
@@ -78,18 +187,86 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
             "load": "clear",
-            "resource": "swapchain",
+            "resource": "display",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": false,
         "input_buffers": [
           "compute_color"
         ],
         "inputs": [],
         "kind": "render",
         "name": "present",
-        "order": 1
+        "order": 4
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_pelican_ui",
+        "order": 5
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_draw",
+        "order": 6
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_text",
+        "order": 7
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 8
+      },
+      {
+        "destination": "swapchain",
+        "extent": [
+          16,
+          16
+        ],
+        "format": "R8G8B8A8_UNORM",
+        "kind": "output_transform",
+        "mode": "transfer_copy_same_format",
+        "name": "output_transform",
+        "order": 9,
+        "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
+        "samples": 1,
+        "source": "display",
+        "texel_block_bytes": 4,
+        "transitions": [
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "display",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_write",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_dst_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "swapchain",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "transfer_dst_optimal",
+            "resource": "swapchain",
+            "src_access": "transfer_write",
+            "src_stage": "transfer"
+          }
+        ]
       }
     ]
   },
@@ -97,10 +274,29 @@
     "final_layouts": [
       {
         "layout": "transfer_src_optimal",
+        "resource": "display"
+      },
+      {
+        "layout": "transfer_src_optimal",
         "resource": "swapchain"
       }
     ],
     "nodes": [
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_main",
+        "order": 0
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_tonemap",
+        "order": 1
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 2
+      },
       {
         "attachments": [
           {
@@ -112,32 +308,103 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
             "load": "clear",
-            "resource": "swapchain",
+            "resource": "display",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": false,
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
         "name": "present",
-        "order": 0
+        "order": 3
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_pelican_ui",
+        "order": 4
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_draw",
+        "order": 5
       },
       {
         "attachments": [
           {
             "aspect": "color",
             "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
             "load": "load",
-            "resource": "swapchain",
+            "resource": "display",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": true,
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
         "name": "debug_draw",
-        "order": 1
+        "order": 6
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_text",
+        "order": 7
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 8
+      },
+      {
+        "destination": "swapchain",
+        "extent": [
+          16,
+          16
+        ],
+        "format": "R8G8B8A8_UNORM",
+        "kind": "output_transform",
+        "mode": "transfer_copy_same_format",
+        "name": "output_transform",
+        "order": 9,
+        "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
+        "samples": 1,
+        "source": "display",
+        "texel_block_bytes": 4,
+        "transitions": [
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "display",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_write",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_dst_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "swapchain",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "transfer_dst_optimal",
+            "resource": "swapchain",
+            "src_access": "transfer_write",
+            "src_stage": "transfer"
+          }
+        ]
       }
     ]
   },
@@ -145,10 +412,29 @@
     "final_layouts": [
       {
         "layout": "transfer_src_optimal",
+        "resource": "display"
+      },
+      {
+        "layout": "transfer_src_optimal",
         "resource": "swapchain"
       }
     ],
     "nodes": [
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_main",
+        "order": 0
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_tonemap",
+        "order": 1
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 2
+      },
       {
         "attachments": [
           {
@@ -160,32 +446,103 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
             "load": "clear",
-            "resource": "swapchain",
+            "resource": "display",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": false,
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
         "name": "present",
-        "order": 0
+        "order": 3
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_pelican_ui",
+        "order": 4
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_draw",
+        "order": 5
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_text",
+        "order": 6
       },
       {
         "attachments": [
           {
             "aspect": "color",
             "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
             "load": "load",
-            "resource": "swapchain",
+            "resource": "display",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": true,
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
         "name": "debug_text",
-        "order": 1
+        "order": 7
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 8
+      },
+      {
+        "destination": "swapchain",
+        "extent": [
+          16,
+          16
+        ],
+        "format": "R8G8B8A8_UNORM",
+        "kind": "output_transform",
+        "mode": "transfer_copy_same_format",
+        "name": "output_transform",
+        "order": 9,
+        "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
+        "samples": 1,
+        "source": "display",
+        "texel_block_bytes": 4,
+        "transitions": [
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "display",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_write",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_dst_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "swapchain",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "transfer_dst_optimal",
+            "resource": "swapchain",
+            "src_access": "transfer_write",
+            "src_stage": "transfer"
+          }
+        ]
       }
     ]
   },
@@ -193,31 +550,28 @@
     "final_layouts": [
       {
         "layout": "transfer_src_optimal",
+        "resource": "display"
+      },
+      {
+        "layout": "transfer_src_optimal",
         "resource": "swapchain"
       }
     ],
     "nodes": [
       {
-        "attachments": [
-          {
-            "aspect": "color",
-            "clear": [
-              0.0,
-              0.0,
-              0.0,
-              1.0
-            ],
-            "final_layout": "color_attachment_optimal",
-            "load": "clear",
-            "resource": "swapchain",
-            "store": "store"
-          }
-        ],
-        "input_buffers": [],
-        "inputs": [],
-        "kind": "render",
-        "name": "blue_first",
+        "kind": "anchor",
+        "name": "__anchor_post_main",
         "order": 0
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_tonemap",
+        "order": 1
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 2
       },
       {
         "attachments": [
@@ -230,16 +584,109 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
             "load": "clear",
-            "resource": "swapchain",
+            "resource": "display",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "blue_first",
+        "order": 3
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
+            "load": "clear",
+            "resource": "display",
+            "samples": 1,
+            "store": "store"
+          }
+        ],
+        "blend": false,
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
         "name": "red_after_blue",
-        "order": 1
+        "order": 4
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_pelican_ui",
+        "order": 5
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_draw",
+        "order": 6
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_text",
+        "order": 7
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 8
+      },
+      {
+        "destination": "swapchain",
+        "extent": [
+          16,
+          16
+        ],
+        "format": "R8G8B8A8_UNORM",
+        "kind": "output_transform",
+        "mode": "transfer_copy_same_format",
+        "name": "output_transform",
+        "order": 9,
+        "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
+        "samples": 1,
+        "source": "display",
+        "texel_block_bytes": 4,
+        "transitions": [
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "display",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_write",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_dst_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "swapchain",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "transfer_dst_optimal",
+            "resource": "swapchain",
+            "src_access": "transfer_write",
+            "src_stage": "transfer"
+          }
+        ]
       }
     ]
   },
@@ -247,31 +694,28 @@
     "final_layouts": [
       {
         "layout": "transfer_src_optimal",
+        "resource": "display"
+      },
+      {
+        "layout": "transfer_src_optimal",
         "resource": "swapchain"
       }
     ],
     "nodes": [
       {
-        "attachments": [
-          {
-            "aspect": "color",
-            "clear": [
-              0.0,
-              0.0,
-              0.0,
-              1.0
-            ],
-            "final_layout": "color_attachment_optimal",
-            "load": "clear",
-            "resource": "swapchain",
-            "store": "store"
-          }
-        ],
-        "input_buffers": [],
-        "inputs": [],
-        "kind": "render",
-        "name": "present",
+        "kind": "anchor",
+        "name": "__anchor_post_main",
         "order": 0
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_tonemap",
+        "order": 1
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 2
       },
       {
         "attachments": [
@@ -284,22 +728,119 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
             "load": "clear",
-            "resource": "swapchain",
+            "resource": "display",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "present",
+        "order": 3
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
+            "load": "clear",
+            "resource": "display",
+            "samples": 1,
+            "store": "store"
+          }
+        ],
+        "blend": false,
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
         "name": "feature_present",
-        "order": 1
+        "order": 4
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_pelican_ui",
+        "order": 5
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_draw",
+        "order": 6
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_text",
+        "order": 7
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 8
+      },
+      {
+        "destination": "swapchain",
+        "extent": [
+          16,
+          16
+        ],
+        "format": "R8G8B8A8_UNORM",
+        "kind": "output_transform",
+        "mode": "transfer_copy_same_format",
+        "name": "output_transform",
+        "order": 9,
+        "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
+        "samples": 1,
+        "source": "display",
+        "texel_block_bytes": 4,
+        "transitions": [
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "display",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_write",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_dst_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "swapchain",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "transfer_dst_optimal",
+            "resource": "swapchain",
+            "src_access": "transfer_write",
+            "src_stage": "transfer"
+          }
+        ]
       }
     ]
   },
   "hdr_off": {
     "final_layouts": [
       {
+        "layout": "transfer_src_optimal",
+        "resource": "display"
+      },
+      {
         "layout": "shader_read_only_optimal",
         "resource": "lit_color"
       },
@@ -320,16 +861,34 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_UNORM",
             "load": "clear",
             "resource": "lit_color",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": false,
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
         "name": "hdr_source",
         "order": 0
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_main",
+        "order": 1
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_tonemap",
+        "order": 2
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 3
       },
       {
         "attachments": [
@@ -342,11 +901,14 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
             "load": "clear",
-            "resource": "swapchain",
+            "resource": "display",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": false,
         "input_buffers": [],
         "inputs": [
           {
@@ -356,29 +918,101 @@
         ],
         "kind": "render",
         "name": "copy_to_swapchain",
-        "order": 1
+        "order": 4
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_pelican_ui",
+        "order": 5
       },
       {
         "attachments": [
           {
             "aspect": "color",
             "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
             "load": "load",
-            "resource": "swapchain",
+            "resource": "display",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": true,
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
         "name": "present",
-        "order": 2
+        "order": 6
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_draw",
+        "order": 7
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_text",
+        "order": 8
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 9
+      },
+      {
+        "destination": "swapchain",
+        "extent": [
+          16,
+          16
+        ],
+        "format": "R8G8B8A8_UNORM",
+        "kind": "output_transform",
+        "mode": "transfer_copy_same_format",
+        "name": "output_transform",
+        "order": 10,
+        "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
+        "samples": 1,
+        "source": "display",
+        "texel_block_bytes": 4,
+        "transitions": [
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "display",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_write",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_dst_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "swapchain",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "transfer_dst_optimal",
+            "resource": "swapchain",
+            "src_access": "transfer_write",
+            "src_stage": "transfer"
+          }
+        ]
       }
     ]
   },
   "hdr_on": {
     "final_layouts": [
       {
+        "layout": "transfer_src_optimal",
+        "resource": "display"
+      },
+      {
         "layout": "shader_read_only_optimal",
         "resource": "lit_color"
       },
@@ -399,16 +1033,24 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "R16G16B16A16_SFLOAT",
             "load": "clear",
             "resource": "lit_color",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": false,
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
         "name": "hdr_source",
         "order": 0
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_main",
+        "order": 1
       },
       {
         "attachments": [
@@ -421,11 +1063,14 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
             "load": "clear",
-            "resource": "swapchain",
+            "resource": "display",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": false,
         "input_buffers": [],
         "inputs": [
           {
@@ -435,18 +1080,26 @@
         ],
         "kind": "render",
         "name": "copy_to_swapchain",
-        "order": 1
+        "order": 2
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_tonemap",
+        "order": 3
       },
       {
         "attachments": [
           {
             "aspect": "color",
             "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
             "load": "load",
-            "resource": "swapchain",
+            "resource": "display",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": false,
         "input_buffers": [],
         "inputs": [
           {
@@ -456,23 +1109,96 @@
         ],
         "kind": "render",
         "name": "hdr_tonemap",
-        "order": 2
+        "order": 4
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 5
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_pelican_ui",
+        "order": 6
       },
       {
         "attachments": [
           {
             "aspect": "color",
             "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
             "load": "load",
-            "resource": "swapchain",
+            "resource": "display",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": true,
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
         "name": "present",
-        "order": 3
+        "order": 7
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_draw",
+        "order": 8
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_text",
+        "order": 9
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 10
+      },
+      {
+        "destination": "swapchain",
+        "extent": [
+          16,
+          16
+        ],
+        "format": "R8G8B8A8_UNORM",
+        "kind": "output_transform",
+        "mode": "transfer_copy_same_format",
+        "name": "output_transform",
+        "order": 11,
+        "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
+        "samples": 1,
+        "source": "display",
+        "texel_block_bytes": 4,
+        "transitions": [
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "display",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_write",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_dst_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "swapchain",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "transfer_dst_optimal",
+            "resource": "swapchain",
+            "src_access": "transfer_write",
+            "src_stage": "transfer"
+          }
+        ]
       }
     ]
   },
@@ -480,36 +1206,8 @@
     "final_layouts": [
       {
         "layout": "transfer_src_optimal",
-        "resource": "swapchain"
-      }
-    ],
-    "nodes": [
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "clear": [
-              0.0,
-              0.0,
-              0.0,
-              1.0
-            ],
-            "final_layout": "color_attachment_optimal",
-            "load": "clear",
-            "resource": "swapchain",
-            "store": "store"
-          }
-        ],
-        "input_buffers": [],
-        "inputs": [],
-        "kind": "render",
-        "name": "orbit_camera",
-        "order": 0
-      }
-    ]
-  },
-  "orthographic_camera": {
-    "final_layouts": [
+        "resource": "display"
+      },
       {
         "layout": "transfer_src_optimal",
         "resource": "swapchain"
@@ -517,6 +1215,21 @@
     ],
     "nodes": [
       {
+        "kind": "anchor",
+        "name": "__anchor_post_main",
+        "order": 0
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_tonemap",
+        "order": 1
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 2
+      },
+      {
         "attachments": [
           {
             "aspect": "color",
@@ -527,21 +1240,212 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
             "load": "clear",
-            "resource": "swapchain",
+            "resource": "display",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "orbit_camera",
+        "order": 3
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_pelican_ui",
+        "order": 4
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_draw",
+        "order": 5
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_text",
+        "order": 6
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 7
+      },
+      {
+        "destination": "swapchain",
+        "extent": [
+          16,
+          16
+        ],
+        "format": "R8G8B8A8_UNORM",
+        "kind": "output_transform",
+        "mode": "transfer_copy_same_format",
+        "name": "output_transform",
+        "order": 8,
+        "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
+        "samples": 1,
+        "source": "display",
+        "texel_block_bytes": 4,
+        "transitions": [
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "display",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_write",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_dst_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "swapchain",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "transfer_dst_optimal",
+            "resource": "swapchain",
+            "src_access": "transfer_write",
+            "src_stage": "transfer"
+          }
+        ]
+      }
+    ]
+  },
+  "orthographic_camera": {
+    "final_layouts": [
+      {
+        "layout": "transfer_src_optimal",
+        "resource": "display"
+      },
+      {
+        "layout": "transfer_src_optimal",
+        "resource": "swapchain"
+      }
+    ],
+    "nodes": [
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_main",
+        "order": 0
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_tonemap",
+        "order": 1
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 2
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
+            "load": "clear",
+            "resource": "display",
+            "samples": 1,
+            "store": "store"
+          }
+        ],
+        "blend": false,
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
         "name": "ortho_camera",
-        "order": 0
+        "order": 3
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_pelican_ui",
+        "order": 4
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_draw",
+        "order": 5
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_text",
+        "order": 6
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 7
+      },
+      {
+        "destination": "swapchain",
+        "extent": [
+          16,
+          16
+        ],
+        "format": "R8G8B8A8_UNORM",
+        "kind": "output_transform",
+        "mode": "transfer_copy_same_format",
+        "name": "output_transform",
+        "order": 8,
+        "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
+        "samples": 1,
+        "source": "display",
+        "texel_block_bytes": 4,
+        "transitions": [
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "display",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_write",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_dst_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "swapchain",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "transfer_dst_optimal",
+            "resource": "swapchain",
+            "src_access": "transfer_write",
+            "src_stage": "transfer"
+          }
+        ]
       }
     ]
   },
   "shadow_off": {
     "final_layouts": [
+      {
+        "layout": "transfer_src_optimal",
+        "resource": "display"
+      },
       {
         "layout": "shader_read_only_optimal",
         "resource": "g_emissive"
@@ -587,8 +1491,10 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_UNORM",
             "load": "clear",
             "resource": "gbuffer_albedo",
+            "samples": 1,
             "store": "store"
           },
           {
@@ -600,8 +1506,10 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "R16G16B16A16_SFLOAT",
             "load": "clear",
             "resource": "gbuffer_normal",
+            "samples": 1,
             "store": "store"
           },
           {
@@ -613,8 +1521,10 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
             "load": "clear",
             "resource": "gbuffer_material",
+            "samples": 1,
             "store": "store"
           },
           {
@@ -626,8 +1536,10 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "R16G16B16A16_SFLOAT",
             "load": "clear",
             "resource": "gbuffer_worldpos",
+            "samples": 1,
             "store": "store"
           },
           {
@@ -639,8 +1551,10 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
             "load": "clear",
             "resource": "g_emissive",
+            "samples": 1,
             "store": "store"
           },
           {
@@ -652,6 +1566,7 @@
             "store": "dont_care"
           }
         ],
+        "blend": false,
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
@@ -669,11 +1584,14 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "R8_UNORM",
             "load": "clear",
             "resource": "ssao_blur",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": false,
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
@@ -691,11 +1609,14 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
             "load": "clear",
-            "resource": "swapchain",
+            "resource": "display",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": false,
         "input_buffers": [],
         "inputs": [
           {
@@ -726,11 +1647,95 @@
         "kind": "render",
         "name": "lighting_pass",
         "order": 2
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_main",
+        "order": 3
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_tonemap",
+        "order": 4
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 5
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_pelican_ui",
+        "order": 6
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_draw",
+        "order": 7
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_text",
+        "order": 8
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 9
+      },
+      {
+        "destination": "swapchain",
+        "extent": [
+          16,
+          16
+        ],
+        "format": "R8G8B8A8_UNORM",
+        "kind": "output_transform",
+        "mode": "transfer_copy_same_format",
+        "name": "output_transform",
+        "order": 10,
+        "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
+        "samples": 1,
+        "source": "display",
+        "texel_block_bytes": 4,
+        "transitions": [
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "display",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_write",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_dst_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "swapchain",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "transfer_dst_optimal",
+            "resource": "swapchain",
+            "src_access": "transfer_write",
+            "src_stage": "transfer"
+          }
+        ]
       }
     ]
   },
   "shadow_on": {
     "final_layouts": [
+      {
+        "layout": "transfer_src_optimal",
+        "resource": "display"
+      },
       {
         "layout": "shader_read_only_optimal",
         "resource": "g_emissive"
@@ -780,8 +1785,10 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_UNORM",
             "load": "clear",
             "resource": "gbuffer_albedo",
+            "samples": 1,
             "store": "store"
           },
           {
@@ -793,8 +1800,10 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "R16G16B16A16_SFLOAT",
             "load": "clear",
             "resource": "gbuffer_normal",
+            "samples": 1,
             "store": "store"
           },
           {
@@ -806,8 +1815,10 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
             "load": "clear",
             "resource": "gbuffer_material",
+            "samples": 1,
             "store": "store"
           },
           {
@@ -819,8 +1830,10 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "R16G16B16A16_SFLOAT",
             "load": "clear",
             "resource": "gbuffer_worldpos",
+            "samples": 1,
             "store": "store"
           },
           {
@@ -832,8 +1845,10 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
             "load": "clear",
             "resource": "g_emissive",
+            "samples": 1,
             "store": "store"
           },
           {
@@ -845,6 +1860,7 @@
             "store": "dont_care"
           }
         ],
+        "blend": false,
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
@@ -862,11 +1878,14 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "R8_UNORM",
             "load": "clear",
             "resource": "ssao_blur",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": false,
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
@@ -884,6 +1903,7 @@
             "store": "store"
           }
         ],
+        "blend": false,
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
@@ -901,11 +1921,14 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
             "load": "clear",
-            "resource": "swapchain",
+            "resource": "display",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": false,
         "input_buffers": [],
         "inputs": [
           {
@@ -940,6 +1963,86 @@
         "kind": "render",
         "name": "lighting_pass",
         "order": 3
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_main",
+        "order": 4
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_tonemap",
+        "order": 5
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 6
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_pelican_ui",
+        "order": 7
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_draw",
+        "order": 8
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_text",
+        "order": 9
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 10
+      },
+      {
+        "destination": "swapchain",
+        "extent": [
+          16,
+          16
+        ],
+        "format": "R8G8B8A8_UNORM",
+        "kind": "output_transform",
+        "mode": "transfer_copy_same_format",
+        "name": "output_transform",
+        "order": 11,
+        "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
+        "samples": 1,
+        "source": "display",
+        "texel_block_bytes": 4,
+        "transitions": [
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "display",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_write",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_dst_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "swapchain",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "transfer_dst_optimal",
+            "resource": "swapchain",
+            "src_access": "transfer_write",
+            "src_stage": "transfer"
+          }
+        ]
       }
     ]
   },
@@ -947,10 +2050,29 @@
     "final_layouts": [
       {
         "layout": "transfer_src_optimal",
+        "resource": "display"
+      },
+      {
+        "layout": "transfer_src_optimal",
         "resource": "swapchain"
       }
     ],
     "nodes": [
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_main",
+        "order": 0
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_tonemap",
+        "order": 1
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 2
+      },
       {
         "attachments": [
           {
@@ -962,16 +2084,84 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
             "load": "clear",
-            "resource": "swapchain",
+            "resource": "display",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": false,
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
         "name": "solid",
-        "order": 0
+        "order": 3
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_pelican_ui",
+        "order": 4
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_draw",
+        "order": 5
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_text",
+        "order": 6
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 7
+      },
+      {
+        "destination": "swapchain",
+        "extent": [
+          16,
+          16
+        ],
+        "format": "R8G8B8A8_UNORM",
+        "kind": "output_transform",
+        "mode": "transfer_copy_same_format",
+        "name": "output_transform",
+        "order": 8,
+        "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
+        "samples": 1,
+        "source": "display",
+        "texel_block_bytes": 4,
+        "transitions": [
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "display",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_write",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_dst_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "swapchain",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "transfer_dst_optimal",
+            "resource": "swapchain",
+            "src_access": "transfer_write",
+            "src_stage": "transfer"
+          }
+        ]
       }
     ]
   },
@@ -1012,6 +2202,10 @@
       {
         "layout": "shader_read_only_optimal",
         "resource": "Bloom_Upsample_V_3_RT"
+      },
+      {
+        "layout": "transfer_src_optimal",
+        "resource": "display"
       },
       {
         "layout": "shader_read_only_optimal",
@@ -1066,8 +2260,10 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_UNORM",
             "load": "clear",
             "resource": "gbuffer_albedo",
+            "samples": 1,
             "store": "store"
           },
           {
@@ -1079,8 +2275,10 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "R16G16B16A16_SFLOAT",
             "load": "clear",
             "resource": "gbuffer_normal",
+            "samples": 1,
             "store": "store"
           },
           {
@@ -1092,8 +2290,10 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
             "load": "clear",
             "resource": "gbuffer_material",
+            "samples": 1,
             "store": "store"
           },
           {
@@ -1105,8 +2305,10 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "R16G16B16A16_SFLOAT",
             "load": "clear",
             "resource": "gbuffer_worldpos",
+            "samples": 1,
             "store": "store"
           },
           {
@@ -1118,8 +2320,10 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
             "load": "clear",
             "resource": "g_emissive",
+            "samples": 1,
             "store": "store"
           },
           {
@@ -1131,6 +2335,7 @@
             "store": "dont_care"
           }
         ],
+        "blend": false,
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
@@ -1148,11 +2353,14 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "R8_UNORM",
             "load": "clear",
             "resource": "ssao_output",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": false,
         "input_buffers": [],
         "inputs": [
           {
@@ -1179,11 +2387,14 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "R8_UNORM",
             "load": "clear",
             "resource": "ssao_blur",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": false,
         "input_buffers": [],
         "inputs": [
           {
@@ -1206,11 +2417,14 @@
               1.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_UNORM",
             "load": "clear",
             "resource": "lit_color",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": false,
         "input_buffers": [],
         "inputs": [
           {
@@ -1243,84 +2457,18 @@
         "order": 3
       },
       {
-        "attachments": [
-          {
-            "aspect": "color",
-            "clear": [
-              0.0,
-              0.0,
-              0.0,
-              0.0
-            ],
-            "final_layout": "color_attachment_optimal",
-            "load": "clear",
-            "resource": "Bloom_Threshold_RT",
-            "store": "store"
-          }
-        ],
-        "input_buffers": [],
-        "inputs": [
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "lit_color"
-          }
-        ],
-        "kind": "render",
-        "name": "HighLuminanceExtraction",
+        "kind": "anchor",
+        "name": "__anchor_post_main",
         "order": 4
       },
       {
-        "attachments": [
-          {
-            "aspect": "color",
-            "clear": [
-              0.0,
-              0.0,
-              0.0,
-              0.0
-            ],
-            "final_layout": "color_attachment_optimal",
-            "load": "clear",
-            "resource": "Bloom_Downsample_H_0_RT",
-            "store": "store"
-          }
-        ],
-        "input_buffers": [],
-        "inputs": [
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Threshold_RT"
-          }
-        ],
-        "kind": "render",
-        "name": "HorizontalBlur_0",
+        "kind": "anchor",
+        "name": "__anchor_tonemap",
         "order": 5
       },
       {
-        "attachments": [
-          {
-            "aspect": "color",
-            "clear": [
-              0.0,
-              0.0,
-              0.0,
-              0.0
-            ],
-            "final_layout": "color_attachment_optimal",
-            "load": "clear",
-            "resource": "Bloom_Upsample_V_0_RT",
-            "store": "store"
-          }
-        ],
-        "input_buffers": [],
-        "inputs": [
-          {
-            "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Downsample_H_0_RT"
-          }
-        ],
-        "kind": "render",
-        "name": "VerticalBlur_0",
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
         "order": 6
       },
       {
@@ -1334,20 +2482,23 @@
               0.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_UNORM",
             "load": "clear",
-            "resource": "Bloom_Downsample_H_1_RT",
+            "resource": "Bloom_Threshold_RT",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": false,
         "input_buffers": [],
         "inputs": [
           {
             "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Upsample_V_0_RT"
+            "resource": "lit_color"
           }
         ],
         "kind": "render",
-        "name": "HorizontalBlur_1",
+        "name": "HighLuminanceExtraction",
         "order": 7
       },
       {
@@ -1361,20 +2512,23 @@
               0.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_UNORM",
             "load": "clear",
-            "resource": "Bloom_Upsample_V_1_RT",
+            "resource": "Bloom_Downsample_H_0_RT",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": false,
         "input_buffers": [],
         "inputs": [
           {
             "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Downsample_H_1_RT"
+            "resource": "Bloom_Threshold_RT"
           }
         ],
         "kind": "render",
-        "name": "VerticalBlur_1",
+        "name": "HorizontalBlur_0",
         "order": 8
       },
       {
@@ -1388,20 +2542,23 @@
               0.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_UNORM",
             "load": "clear",
-            "resource": "Bloom_Downsample_H_2_RT",
+            "resource": "Bloom_Upsample_V_0_RT",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": false,
         "input_buffers": [],
         "inputs": [
           {
             "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Upsample_V_1_RT"
+            "resource": "Bloom_Downsample_H_0_RT"
           }
         ],
         "kind": "render",
-        "name": "HorizontalBlur_2",
+        "name": "VerticalBlur_0",
         "order": 9
       },
       {
@@ -1415,20 +2572,23 @@
               0.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_UNORM",
             "load": "clear",
-            "resource": "Bloom_Upsample_V_2_RT",
+            "resource": "Bloom_Downsample_H_1_RT",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": false,
         "input_buffers": [],
         "inputs": [
           {
             "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Downsample_H_2_RT"
+            "resource": "Bloom_Upsample_V_0_RT"
           }
         ],
         "kind": "render",
-        "name": "VerticalBlur_2",
+        "name": "HorizontalBlur_1",
         "order": 10
       },
       {
@@ -1442,20 +2602,23 @@
               0.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_UNORM",
             "load": "clear",
-            "resource": "Bloom_Downsample_H_3_RT",
+            "resource": "Bloom_Upsample_V_1_RT",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": false,
         "input_buffers": [],
         "inputs": [
           {
             "final_layout": "shader_read_only_optimal",
-            "resource": "Bloom_Upsample_V_2_RT"
+            "resource": "Bloom_Downsample_H_1_RT"
           }
         ],
         "kind": "render",
-        "name": "HorizontalBlur_3",
+        "name": "VerticalBlur_1",
         "order": 11
       },
       {
@@ -1469,11 +2632,104 @@
               0.0
             ],
             "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_UNORM",
             "load": "clear",
-            "resource": "Bloom_Upsample_V_3_RT",
+            "resource": "Bloom_Downsample_H_2_RT",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "Bloom_Upsample_V_1_RT"
+          }
+        ],
+        "kind": "render",
+        "name": "HorizontalBlur_2",
+        "order": 12
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_UNORM",
+            "load": "clear",
+            "resource": "Bloom_Upsample_V_2_RT",
+            "samples": 1,
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "Bloom_Downsample_H_2_RT"
+          }
+        ],
+        "kind": "render",
+        "name": "VerticalBlur_2",
+        "order": 13
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_UNORM",
+            "load": "clear",
+            "resource": "Bloom_Downsample_H_3_RT",
+            "samples": 1,
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "Bloom_Upsample_V_2_RT"
+          }
+        ],
+        "kind": "render",
+        "name": "HorizontalBlur_3",
+        "order": 14
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_UNORM",
+            "load": "clear",
+            "resource": "Bloom_Upsample_V_3_RT",
+            "samples": 1,
+            "store": "store"
+          }
+        ],
+        "blend": false,
         "input_buffers": [],
         "inputs": [
           {
@@ -1483,18 +2739,21 @@
         ],
         "kind": "render",
         "name": "VerticalBlur_3",
-        "order": 12
+        "order": 15
       },
       {
         "attachments": [
           {
             "aspect": "color",
             "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_UNORM",
             "load": "load",
             "resource": "Bloom_Downsample_H_2_RT",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": false,
         "input_buffers": [],
         "inputs": [
           {
@@ -1508,18 +2767,21 @@
         ],
         "kind": "render",
         "name": "UpsampleBlend_3",
-        "order": 13
+        "order": 16
       },
       {
         "attachments": [
           {
             "aspect": "color",
             "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_UNORM",
             "load": "load",
             "resource": "Bloom_Downsample_H_1_RT",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": false,
         "input_buffers": [],
         "inputs": [
           {
@@ -1533,18 +2795,21 @@
         ],
         "kind": "render",
         "name": "UpsampleBlend_2",
-        "order": 14
+        "order": 17
       },
       {
         "attachments": [
           {
             "aspect": "color",
             "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_UNORM",
             "load": "load",
             "resource": "Bloom_Downsample_H_0_RT",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": false,
         "input_buffers": [],
         "inputs": [
           {
@@ -1558,18 +2823,21 @@
         ],
         "kind": "render",
         "name": "UpsampleBlend_1",
-        "order": 15
+        "order": 18
       },
       {
         "attachments": [
           {
             "aspect": "color",
             "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
             "load": "load",
-            "resource": "swapchain",
+            "resource": "display",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": false,
         "input_buffers": [],
         "inputs": [
           {
@@ -1583,23 +2851,91 @@
         ],
         "kind": "render",
         "name": "FinalBloomComposite",
-        "order": 16
+        "order": 19
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_pelican_ui",
+        "order": 20
       },
       {
         "attachments": [
           {
             "aspect": "color",
             "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
             "load": "load",
-            "resource": "swapchain",
+            "resource": "display",
+            "samples": 1,
             "store": "store"
           }
         ],
+        "blend": true,
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
         "name": "ui_pass",
-        "order": 17
+        "order": 21
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_draw",
+        "order": 22
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_text",
+        "order": 23
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 24
+      },
+      {
+        "destination": "swapchain",
+        "extent": [
+          16,
+          16
+        ],
+        "format": "R8G8B8A8_UNORM",
+        "kind": "output_transform",
+        "mode": "transfer_copy_same_format",
+        "name": "output_transform",
+        "order": 25,
+        "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
+        "samples": 1,
+        "source": "display",
+        "texel_block_bytes": 4,
+        "transitions": [
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "display",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_write",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_dst_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "swapchain",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "transfer_dst_optimal",
+            "resource": "swapchain",
+            "src_access": "transfer_write",
+            "src_stage": "transfer"
+          }
+        ]
       }
     ]
   }

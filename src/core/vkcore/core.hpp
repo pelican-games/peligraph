@@ -42,6 +42,7 @@ DECLARE_MODULE(VulkanManageCore) {
     vk::SurfaceKHR getSurface() const;
     vk::Queue getPresentationQueue() const { return presen_queue; }
     uint32_t getGraphicsQueueFamilyIndex() const { return queue_set.graphic_queue; }
+    uint32_t getPresentationQueueFamilyIndex() const { return queue_set.presentation_queue; }
 
     void waitIdle() const;
 

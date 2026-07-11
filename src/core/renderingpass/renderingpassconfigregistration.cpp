@@ -14,6 +14,7 @@
 #include "rendertargetnameresolver.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../renderer/shadowdepthpasscontainer.hpp"
+#include "../vkcore/rendertarget.hpp"
 #include <string_view>
 #include <unordered_map>
 #include <utility>
@@ -93,7 +94,9 @@ void registerRenderingPassConfigData(const nlohmann::json &rendering_pass_data, 
                                      RenderingPassConfigRegistrationDependencies dependencies) {
     const auto composed =
         composeRenderFeaturesForRegistration(rendering_pass_data, dependencies.runtime);
-    const auto &composed_rendering_pass_data = composed.config;
+    const auto composed_rendering_pass_data = resolveRenderTargetFormatClassesV1(
+        composed.config, dependencies.runtime.render_target.getSwapchainFormat(),
+        dependencies.runtime.render_target.getExtent());
     const auto render_target_definitions = parseRenderTargetDefinitionsFromJson(composed_rendering_pass_data);
     registerRenderTargetDefinitions(render_target_definitions, base_extent,
                                     dependencies.render_targets.render_target_container);

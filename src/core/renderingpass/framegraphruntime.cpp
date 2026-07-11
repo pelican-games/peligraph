@@ -51,6 +51,9 @@ void FrameGraphRuntimeContainer::registerExecutionPlan(RenderingPassId rendering
                 throw std::runtime_error("Frame plan compute node is not compiled: " + node.name);
             }
             execution.nodes.push_back(FrameGraphExecutionNode{node.kind, node.name, found->second, {}});
+        } else if (node.kind == FramePlanNodeKind::anchor ||
+                   node.kind == FramePlanNodeKind::output_transform) {
+            execution.nodes.push_back(FrameGraphExecutionNode{node.kind, node.name, 0, {}});
         } else {
             throw std::runtime_error("Unsupported frame plan node kind: " + node.name);
         }

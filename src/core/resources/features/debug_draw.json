@@ -4,7 +4,7 @@
   "name": "debug_draw",
   "passes": [
     {
-      "insert": "end",
+      "insert": "after:debug_draw",
       "pass": {
         "name": "debug_draw",
         "type": "debug_draw",

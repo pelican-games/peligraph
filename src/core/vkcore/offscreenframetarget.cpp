@@ -56,6 +56,9 @@ VulkanUtils::ChangeImageLayoutInfo transitionInfo(vk::ImageLayout old_layout, vk
     } else if (old_layout == vk::ImageLayout::eTransferSrcOptimal) {
         info.src_stage = vk::PipelineStageFlagBits::eTransfer;
         info.src_access = vk::AccessFlagBits::eTransferRead;
+    } else if (old_layout == vk::ImageLayout::eTransferDstOptimal) {
+        info.src_stage = vk::PipelineStageFlagBits::eTransfer;
+        info.src_access = vk::AccessFlagBits::eTransferWrite;
     }
 
     if (new_layout == vk::ImageLayout::eColorAttachmentOptimal) {
@@ -65,6 +68,9 @@ VulkanUtils::ChangeImageLayoutInfo transitionInfo(vk::ImageLayout old_layout, vk
     } else if (new_layout == vk::ImageLayout::eTransferSrcOptimal) {
         info.dst_stage = vk::PipelineStageFlagBits::eTransfer;
         info.dst_access = vk::AccessFlagBits::eTransferRead;
+    } else if (new_layout == vk::ImageLayout::eTransferDstOptimal) {
+        info.dst_stage = vk::PipelineStageFlagBits::eTransfer;
+        info.dst_access = vk::AccessFlagBits::eTransferWrite;
     }
 
     return info;
@@ -96,11 +102,20 @@ OffscreenFrameTarget::OffscreenFrameTarget()
       color_format{vk::Format::eR8G8B8A8Unorm}, color_layout{vk::ImageLayout::eUndefined},
       has_rendered_frame{false} {
     auto &vkcore = GET_MODULE(VulkanManageCore);
+    const auto format_features = vkcore.getPhysDevice().getFormatProperties(color_format).optimalTilingFeatures;
+    const auto required_features = vk::FormatFeatureFlagBits::eColorAttachment |
+                                   vk::FormatFeatureFlagBits::eTransferSrc |
+                                   vk::FormatFeatureFlagBits::eTransferDst;
+    if ((format_features & required_features) != required_features) {
+        throw std::runtime_error(
+            "offscreen frame target format lacks COLOR_ATTACHMENT/TRANSFER_SRC/TRANSFER_DST support");
+    }
     const vk::Extent3D image_extent{extent.width, extent.height, 1};
 
     color_image = vkcore.allocImage(image_extent, color_format,
                                     vk::ImageUsageFlagBits::eColorAttachment |
-                                        vk::ImageUsageFlagBits::eTransferSrc,
+                                        vk::ImageUsageFlagBits::eTransferSrc |
+                                        vk::ImageUsageFlagBits::eTransferDst,
                                     vma::MemoryUsage::eAutoPreferDevice, {});
     color_image_view = createImageView(device, color_image, vk::ImageAspectFlagBits::eColor);
 
@@ -128,6 +143,7 @@ FrameRenderContext OffscreenFrameTarget::render_begin() {
         .changeImageLayoutCmd(*cmd_buf, color_image, color_layout, vk::ImageLayout::eColorAttachmentOptimal,
                               transitionInfo(color_layout, vk::ImageLayout::eColorAttachmentOptimal));
     color_layout = vk::ImageLayout::eColorAttachmentOptimal;
+    output_transform_recorded = false;
     setViewportAndScissor(*cmd_buf, extent);
 
     return FrameRenderContext{
@@ -140,13 +156,47 @@ FrameRenderContext OffscreenFrameTarget::render_begin() {
     };
 }
 
+void OffscreenFrameTarget::recordOutputTransformCopy(vk::CommandBuffer cmd_buf, vk::Image source,
+                                                     vk::Format source_format,
+                                                     vk::Extent2D source_extent) {
+    if (output_transform_recorded) {
+        throw std::runtime_error("output_transform was recorded more than once");
+    }
+    if (source_format != color_format || source_extent.width != extent.width ||
+        source_extent.height != extent.height) {
+        throw std::runtime_error(
+            "output_transform resolver v1 requires identical format, channel order, extent, and sample count");
+    }
+
+    auto &vk_utils = GET_MODULE(VulkanUtils);
+    vk_utils.changeImageLayoutCmd(cmd_buf, color_image, color_layout,
+                                  vk::ImageLayout::eTransferDstOptimal,
+                                  transitionInfo(color_layout, vk::ImageLayout::eTransferDstOptimal));
+    color_layout = vk::ImageLayout::eTransferDstOptimal;
+
+    vk::ImageCopy region;
+    region.srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+    region.dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+    region.extent = vk::Extent3D{extent.width, extent.height, 1};
+    cmd_buf.copyImage(source, vk::ImageLayout::eTransferSrcOptimal, color_image.image.get(),
+                      vk::ImageLayout::eTransferDstOptimal, {region});
+
+    vk_utils.changeImageLayoutCmd(cmd_buf, color_image, color_layout,
+                                  vk::ImageLayout::eTransferSrcOptimal,
+                                  transitionInfo(color_layout, vk::ImageLayout::eTransferSrcOptimal));
+    color_layout = vk::ImageLayout::eTransferSrcOptimal;
+    output_transform_recorded = true;
+}
+
 void OffscreenFrameTarget::render_end() {
     const auto &cmd_buf = render_cmd_bufs[in_flight_frame_index];
 
-    GET_MODULE(VulkanUtils)
-        .changeImageLayoutCmd(*cmd_buf, color_image, color_layout, vk::ImageLayout::eTransferSrcOptimal,
-                              transitionInfo(color_layout, vk::ImageLayout::eTransferSrcOptimal));
-    color_layout = vk::ImageLayout::eTransferSrcOptimal;
+    if (!output_transform_recorded) {
+        GET_MODULE(VulkanUtils)
+            .changeImageLayoutCmd(*cmd_buf, color_image, color_layout, vk::ImageLayout::eTransferSrcOptimal,
+                                  transitionInfo(color_layout, vk::ImageLayout::eTransferSrcOptimal));
+        color_layout = vk::ImageLayout::eTransferSrcOptimal;
+    }
 
     cmd_buf.recordEndSubmit();
     if (auto result = device.waitForFences({cmd_buf.getFence()}, VK_TRUE, UINT64_MAX);

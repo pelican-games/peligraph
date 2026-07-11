@@ -32,7 +32,9 @@ static vk::Extent2D chooseSwapchainExtent(const vk::SurfaceCapabilitiesKHR &surf
 }
 
 static SwapchainWithFmt createSwapchain(vk::Device device, const vk::PhysicalDevice &phys_device,
-                                        vk::SurfaceKHR surface, vk::Extent2D framebuffer_extent) {
+                                        vk::SurfaceKHR surface, vk::Extent2D framebuffer_extent,
+                                        uint32_t graphics_queue_family,
+                                        uint32_t presentation_queue_family) {
     LOG_INFO(logger, "vulkan swapchain creating...");
 
     vk::SwapchainCreateInfoKHR create_info;
@@ -40,6 +42,10 @@ static SwapchainWithFmt createSwapchain(vk::Device device, const vk::PhysicalDev
     create_info.surface = surface;
 
     const auto surface_cap = phys_device.getSurfaceCapabilitiesKHR(surface);
+    if (!(surface_cap.supportedUsageFlags & vk::ImageUsageFlagBits::eTransferDst)) {
+        throw std::runtime_error(
+            "C1a windowed output_transform is unsupported: surface lacks TRANSFER_DST");
+    }
     auto surface_fmts = phys_device.getSurfaceFormatsKHR(surface);
     auto surface_presentmodes = phys_device.getSurfacePresentModesKHR(surface);
     if (surface_fmts.empty()) {
@@ -75,8 +81,21 @@ static SwapchainWithFmt createSwapchain(vk::Device device, const vk::PhysicalDev
     create_info.imageColorSpace = surface_fmts[0].colorSpace;
     create_info.imageExtent = swapchain_extent;
     create_info.imageArrayLayers = 1;
-    create_info.imageUsage = vk::ImageUsageFlagBits::eColorAttachment;
-    create_info.imageSharingMode = vk::SharingMode::eExclusive;
+    const auto selected_format_features =
+        phys_device.getFormatProperties(surface_fmts[0].format).optimalTilingFeatures;
+    if (!(selected_format_features & vk::FormatFeatureFlagBits::eTransferDst)) {
+        throw std::runtime_error(
+            "C1a windowed output_transform is unsupported: swapchain format lacks TRANSFER_DST");
+    }
+    create_info.imageUsage = vk::ImageUsageFlagBits::eColorAttachment |
+                             vk::ImageUsageFlagBits::eTransferDst;
+    const std::array queue_families{graphics_queue_family, presentation_queue_family};
+    if (graphics_queue_family == presentation_queue_family) {
+        create_info.imageSharingMode = vk::SharingMode::eExclusive;
+    } else {
+        create_info.imageSharingMode = vk::SharingMode::eConcurrent;
+        create_info.setQueueFamilyIndices(queue_families);
+    }
     create_info.preTransform = surface_cap.currentTransform;
     create_info.presentMode = surface_presentmodes[0];
     create_info.clipped = VK_TRUE;
@@ -145,8 +164,10 @@ void SwapchainFrameTarget::releaseSurfaceDependants() {
 void SwapchainFrameTarget::surfaceDependantsSetup() {
     const auto framebuffer_extent = GET_MODULE(Window).waitFramebufferExtent();
     releaseSurfaceDependants();
-    swapchain = createSwapchain(GET_MODULE(VulkanManageCore).getDevice(), GET_MODULE(VulkanManageCore).getPhysDevice(),
-                                GET_MODULE(VulkanManageCore).getSurface(), framebuffer_extent);
+    auto &vkcore = GET_MODULE(VulkanManageCore);
+    swapchain = createSwapchain(vkcore.getDevice(), vkcore.getPhysDevice(), vkcore.getSurface(),
+                                framebuffer_extent, vkcore.getGraphicsQueueFamilyIndex(),
+                                vkcore.getPresentationQueueFamilyIndex());
     extent = swapchain.extent;
     GET_MODULE(Camera).setScreenSize(extent.width, extent.height);
     presen_queue = GET_MODULE(VulkanManageCore).getPresentationQueue();
@@ -217,6 +238,7 @@ FrameRenderContext SwapchainFrameTarget::render_begin() {
         current_image_index = image_acquire_result.value;
 
         cmd_buf.recordBegin();
+        output_transform_recorded = false;
 
         {
             vk::Viewport viewport;
@@ -262,22 +284,71 @@ FrameRenderContext SwapchainFrameTarget::render_begin() {
     } while (true);
 }
 
+void SwapchainFrameTarget::recordOutputTransformCopy(vk::CommandBuffer cmd_buf, vk::Image source,
+                                                     vk::Format source_format,
+                                                     vk::Extent2D source_extent) {
+    if (output_transform_recorded) {
+        throw std::runtime_error("output_transform was recorded more than once");
+    }
+    if (source_format != swapchain.format || source_extent.width != extent.width ||
+        source_extent.height != extent.height) {
+        throw std::runtime_error(
+            "output_transform resolver v1 requires identical format, channel order, extent, and sample count");
+    }
+
+    vk::ImageMemoryBarrier to_transfer;
+    to_transfer.srcAccessMask = vk::AccessFlagBits::eColorAttachmentRead |
+                                vk::AccessFlagBits::eColorAttachmentWrite;
+    to_transfer.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
+    to_transfer.oldLayout = vk::ImageLayout::eColorAttachmentOptimal;
+    to_transfer.newLayout = vk::ImageLayout::eTransferDstOptimal;
+    to_transfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_transfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_transfer.image = swapchain_images[current_image_index];
+    to_transfer.subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+    cmd_buf.pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput,
+                            vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, {to_transfer});
+
+    vk::ImageCopy region;
+    region.srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+    region.dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+    region.extent = vk::Extent3D{extent.width, extent.height, 1};
+    cmd_buf.copyImage(source, vk::ImageLayout::eTransferSrcOptimal,
+                      swapchain_images[current_image_index], vk::ImageLayout::eTransferDstOptimal,
+                      {region});
+
+    vk::ImageMemoryBarrier to_present;
+    to_present.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+    to_present.dstAccessMask = {};
+    to_present.oldLayout = vk::ImageLayout::eTransferDstOptimal;
+    to_present.newLayout = vk::ImageLayout::ePresentSrcKHR;
+    to_present.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_present.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_present.image = swapchain_images[current_image_index];
+    to_present.subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+    cmd_buf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                            vk::PipelineStageFlagBits::eBottomOfPipe, {}, {}, {}, {to_present});
+    output_transform_recorded = true;
+}
+
 void SwapchainFrameTarget::render_end() {
     const auto &cmd_buf = render_cmd_bufs[in_flight_frame_index];
 
-    vk::ImageMemoryBarrier barrier;
-    barrier.srcAccessMask = vk::AccessFlagBits::eColorAttachmentRead |
-                            vk::AccessFlagBits::eColorAttachmentWrite;
-    barrier.oldLayout = vk::ImageLayout::eColorAttachmentOptimal;
-    barrier.newLayout = vk::ImageLayout::ePresentSrcKHR;
-    barrier.image = swapchain_images[current_image_index];
-    barrier.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
-    barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
-    barrier.subresourceRange.baseMipLevel = 0;
-    barrier.subresourceRange.levelCount = 1;
-    cmd_buf->pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput,
-                             vk::PipelineStageFlagBits::eBottomOfPipe, {}, {}, {}, {barrier});
+    if (!output_transform_recorded) {
+        vk::ImageMemoryBarrier barrier;
+        barrier.srcAccessMask = vk::AccessFlagBits::eColorAttachmentRead |
+                                vk::AccessFlagBits::eColorAttachmentWrite;
+        barrier.oldLayout = vk::ImageLayout::eColorAttachmentOptimal;
+        barrier.newLayout = vk::ImageLayout::ePresentSrcKHR;
+        barrier.image = swapchain_images[current_image_index];
+        barrier.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        cmd_buf->pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput,
+                                 vk::PipelineStageFlagBits::eBottomOfPipe, {}, {}, {}, {barrier});
+    }
 
     cmd_buf.recordEndSubmit({rendered_semaphores[in_flight_frame_index].get()},
                             {image_acquire_semaphores[in_flight_frame_index].get()},

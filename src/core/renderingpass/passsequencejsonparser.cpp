@@ -32,6 +32,11 @@ std::vector<PassDefinition> parsePassSequenceFromJson(const nlohmann::json &pass
             throw std::runtime_error("Duplicate pass name: " + pass_name);
         }
 
+        const auto type = pass_json.value("type", std::string{});
+        if (type == "canonical_anchor" || type == "output_transform") {
+            continue;
+        }
+
         auto parsed_pass = parsePassDefinitionFromJson(pass_json, rt_resolver, rt_metadata, buffer_names);
         validatePassInputsProduced(parsed_pass, produced_targets, rt_metadata);
         recordPassOutputs(parsed_pass, produced_targets);

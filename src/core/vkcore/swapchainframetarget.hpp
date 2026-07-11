@@ -32,6 +32,7 @@ class SwapchainFrameTarget : public IFrameTarget {
     ImageWrapper depth_image;
     vk::UniqueImageView depth_image_view;
     bool extent_changed = false;
+    bool output_transform_recorded = false;
 
     void releaseSurfaceDependants();
     void surfaceDependantsSetup();
@@ -42,6 +43,8 @@ class SwapchainFrameTarget : public IFrameTarget {
     ~SwapchainFrameTarget() override;
 
     FrameRenderContext render_begin() override;
+    void recordOutputTransformCopy(vk::CommandBuffer cmd_buf, vk::Image source,
+                                   vk::Format source_format, vk::Extent2D source_extent) override;
     void render_end() override;
     FrameTargetCaps caps() const override;
     bool consumeExtentChanged() override;

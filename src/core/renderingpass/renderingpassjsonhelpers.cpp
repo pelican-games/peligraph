@@ -23,6 +23,27 @@ vk::Format stringToFormat(const std::string &format_str) {
     throw std::runtime_error("Unknown format: " + format_str);
 }
 
+std::string formatToString(vk::Format format) {
+    switch (format) {
+    case vk::Format::eB8G8R8A8Unorm:
+        return "B8G8R8A8_UNORM";
+    case vk::Format::eR8G8B8A8Unorm:
+        return "R8G8B8A8_UNORM";
+    case vk::Format::eR8Unorm:
+        return "R8_UNORM";
+    case vk::Format::eR16G16B16A16Sfloat:
+        return "R16G16B16A16_SFLOAT";
+    case vk::Format::eD32Sfloat:
+        return "D32_SFLOAT";
+    case vk::Format::eD24UnormS8Uint:
+        return "D24_UNORM_S8_UINT";
+    case vk::Format::eD16Unorm:
+        return "D16_UNORM";
+    default:
+        throw std::runtime_error("Unsupported resolver v1 format: " + vk::to_string(format));
+    }
+}
+
 vk::ImageUsageFlags stringToUsageFlags(const std::vector<std::string> &usage_strs) {
     if (usage_strs.empty()) {
         throw std::runtime_error("Image usage flags must not be empty");

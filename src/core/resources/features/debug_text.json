@@ -4,7 +4,7 @@
   "name": "debug_text",
   "passes": [
     {
-      "insert": "end",
+      "insert": "after:debug_text",
       "pass": {
         "name": "debug_text",
         "type": "debug_text",

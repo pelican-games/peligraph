@@ -23,12 +23,15 @@ class OffscreenFrameTarget : public IFrameTarget {
     vk::UniqueImageView depth_image_view;
     vk::ImageLayout color_layout;
     bool has_rendered_frame;
+    bool output_transform_recorded = false;
 
   public:
     OffscreenFrameTarget();
     ~OffscreenFrameTarget() override;
 
     FrameRenderContext render_begin() override;
+    void recordOutputTransformCopy(vk::CommandBuffer cmd_buf, vk::Image source,
+                                   vk::Format source_format, vk::Extent2D source_extent) override;
     void render_end() override;
     FrameTargetCaps caps() const override;
     bool consumeExtentChanged() override;

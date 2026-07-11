@@ -17,6 +17,7 @@
 #include "../renderingpass/computetask.hpp"
 #include "../renderingpass/framegraphruntime.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
+#include "../renderingpass/renderingpassjsonhelpers.hpp"
 #include "../renderingpass/rendertargetimageviewresolver.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
 #include "../shader/pipelinefactory.hpp"
@@ -174,6 +175,8 @@ std::string layoutName(vk::ImageLayout layout) {
         return "shader_read_only_optimal";
     case vk::ImageLayout::eTransferSrcOptimal:
         return "transfer_src_optimal";
+    case vk::ImageLayout::eTransferDstOptimal:
+        return "transfer_dst_optimal";
     case vk::ImageLayout::ePresentSrcKHR:
         return "present_src";
     default:
@@ -207,6 +210,9 @@ nlohmann::json renderNodeTrace(const CompiledPass &pass, size_t order,
     const auto &definition = pass.definition;
     nlohmann::json attachments = nlohmann::json::array();
     for (const auto target : definition.output_color) {
+        const auto format = isConcreteRenderTarget(target)
+                                ? rt_container.getMetadata(target).format
+                                : vk::Format::eUndefined;
         nlohmann::json attachment{
             {"resource", renderTargetName(target, rt_container)},
             {"aspect", "color"},
@@ -214,6 +220,8 @@ nlohmann::json renderNodeTrace(const CompiledPass &pass, size_t order,
             {"store", storeOpName(definition.color_store_op)},
             {"final_layout", trackedLayoutName(target, vk::ImageLayout::eColorAttachmentOptimal,
                                                  layout_tracker)},
+            {"format", isConcreteRenderTarget(target) ? formatToString(format) : "frame_target"},
+            {"samples", 1},
         };
         if (definition.color_load_op == vk::AttachmentLoadOp::eClear) {
             attachment["clear"] = clearColorJson(definition.clear_color);
@@ -252,6 +260,57 @@ nlohmann::json renderNodeTrace(const CompiledPass &pass, size_t order,
         {"inputs", std::move(inputs)},
         {"input_buffers", definition.input_buffers},
         {"attachments", std::move(attachments)},
+        {"blend", definition.isUi() || definition.isDebugDraw() || definition.isDebugText()},
+    };
+}
+
+nlohmann::json anchorNodeTrace(const std::string &name, size_t order) {
+    return nlohmann::json{{"name", name}, {"kind", "anchor"}, {"order", order}};
+}
+
+nlohmann::json outputTransformTrace(size_t order, vk::ImageLayout source_old_layout,
+                                    vk::ImageLayout destination_final_layout,
+                                    const RenderTargetMetadata &display) {
+    return nlohmann::json{
+        {"name", "output_transform"},
+        {"kind", "output_transform"},
+        {"order", order},
+        {"mode", "transfer_copy_same_format"},
+        {"source", "display"},
+        {"destination", "swapchain"},
+        {"format", formatToString(display.format)},
+        {"extent", {display.extent.width, display.extent.height}},
+        {"samples", 1},
+        {"texel_block_bytes", 4},
+        {"queue_ownership", "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED"},
+        {"transitions",
+         nlohmann::json::array({
+             {{"resource", "display"},
+              {"old_layout", layoutName(source_old_layout)},
+              {"new_layout", "transfer_src_optimal"},
+              {"src_stage", "color_attachment_output"},
+              {"src_access", "color_attachment_read|color_attachment_write"},
+              {"dst_stage", "transfer"},
+              {"dst_access", "transfer_read"}},
+             {{"resource", "swapchain"},
+              {"old_layout", "color_attachment_optimal"},
+              {"new_layout", "transfer_dst_optimal"},
+              {"src_stage", "color_attachment_output"},
+              {"src_access", "color_attachment_read|color_attachment_write"},
+              {"dst_stage", "transfer"},
+              {"dst_access", "transfer_write"}},
+             {{"resource", "swapchain"},
+              {"old_layout", "transfer_dst_optimal"},
+              {"new_layout", layoutName(destination_final_layout)},
+              {"src_stage", "transfer"},
+              {"src_access", "transfer_write"},
+              {"dst_stage", destination_final_layout == vk::ImageLayout::ePresentSrcKHR
+                                    ? "bottom_of_pipe"
+                                    : "transfer"},
+              {"dst_access", destination_final_layout == vk::ImageLayout::ePresentSrcKHR
+                                     ? "none"
+                                     : "transfer_read"}},
+         })},
     };
 }
 
@@ -311,6 +370,11 @@ nlohmann::json finalLayoutsTrace(const CompiledRenderingPass &rendering_pass,
             add_target(rt_container.getRenderTargetIdByName(resource));
         }
     }
+    const auto display = rt_container.getRenderTargetIdByName("display");
+    if (isConcreteRenderTarget(display)) {
+        add_target(display);
+    }
+    layouts["swapchain"] = layoutName(frame_target_layout);
 
     nlohmann::json result = nlohmann::json::array();
     for (const auto &[resource, layout] : layouts) {
@@ -367,7 +431,7 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                 node_trace->push_back(renderNodeTrace(pass, node_index, modules.render_target_container,
                                                       layout_tracker));
             }
-        } else {
+        } else if (execution_node.kind == FramePlanNodeKind::compute) {
             const auto &task = rendering_pass.compute_tasks.at(execution_node.index);
             modules.compute_task_container.transitionResourcesForDispatch(
                 render_ctx.cmd_buf, task.task_id, modules.render_target_container, modules.vk_utils,
@@ -377,6 +441,28 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                 node_trace->push_back(computeNodeTrace(task, node_index, modules.render_target_container,
                                                        layout_tracker));
             }
+        } else if (execution_node.kind == FramePlanNodeKind::anchor) {
+            if (node_trace != nullptr) {
+                node_trace->push_back(anchorNodeTrace(execution_node.name, node_index));
+            }
+        } else if (execution_node.kind == FramePlanNodeKind::output_transform) {
+            const auto display_id = modules.render_target_container.getRenderTargetIdByName("display");
+            if (!isConcreteRenderTarget(display_id)) {
+                throw std::runtime_error("output_transform requires the canonical display target");
+            }
+            const auto display = modules.render_target_container.getMetadata(display_id);
+            const auto source_old_layout = layout_tracker.currentLayout(display_id);
+            layout_tracker.transition(render_ctx.cmd_buf, modules.render_target_container, modules.vk_utils,
+                                      display_id, vk::ImageLayout::eTransferSrcOptimal);
+            modules.render_target.recordOutputTransformCopy(
+                render_ctx.cmd_buf, modules.render_target_container.getImage(display_id).image.get(),
+                display.format, display.extent);
+            if (node_trace != nullptr) {
+                node_trace->push_back(outputTransformTrace(node_index, source_old_layout,
+                                                           render_ctx.required_layout, display));
+            }
+        } else {
+            throw std::runtime_error("Unsupported frame graph execution node: " + execution_node.name);
         }
 
         if (modules.render_timing != nullptr) {

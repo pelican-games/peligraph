@@ -29,6 +29,42 @@ std::optional<vk::Extent2D> parseFixedExtent(const nlohmann::json &rt_json,
 
 } // namespace
 
+nlohmann::json resolveRenderTargetFormatClassesV1(const nlohmann::json &data,
+                                                   vk::Format frame_target_format,
+                                                   vk::Extent2D frame_target_extent) {
+    if (!data.contains("resolver_version") || !data.at("resolver_version").is_number_integer() ||
+        data.at("resolver_version").get<int>() != 1) {
+        throw std::runtime_error("Rendering config requires resolver_version: 1");
+    }
+    auto resolved = data;
+    if (!resolved.contains("render_targets")) {
+        return resolved;
+    }
+    auto &targets = resolved.at("render_targets");
+    if (!targets.is_array()) {
+        throw std::runtime_error("render_targets must be an array");
+    }
+    for (auto &target : targets) {
+        const auto name = parseStringField(target, "name", "render target");
+        const auto format_class = parseStringField(target, "format_class", "render target: " + name);
+        const bool explicit_class = format_class.rfind("explicit(", 0) == 0 &&
+                                    format_class.size() > 10 && format_class.back() == ')';
+        if (format_class != "scene" && format_class != "display" && format_class != "data" &&
+            !explicit_class) {
+            throw std::runtime_error("Unknown render target format_class: " + format_class);
+        }
+        if (format_class == "display") {
+            target["format"] = formatToString(frame_target_format);
+            target["width"] = frame_target_extent.width;
+            target["height"] = frame_target_extent.height;
+        } else {
+            // Resolver v1 deliberately preserves the authored legacy format and channel order.
+            (void)parseStringField(target, "format", "render target: " + name);
+        }
+    }
+    return resolved;
+}
+
 std::vector<RenderTargetDefinition> parseRenderTargetDefinitionsFromJson(const nlohmann::json &data) {
     std::vector<RenderTargetDefinition> definitions;
     if (!data.contains("render_targets")) {
@@ -58,6 +94,8 @@ std::vector<RenderTargetDefinition> parseRenderTargetDefinitionsFromJson(const n
         const float extent_scale = parseFloatField(rt_json, "extent_scale", "render target: " + name);
         const auto fixed_extent = parseFixedExtent(rt_json, name);
         const std::string format_str = parseStringField(rt_json, "format", "render target: " + name);
+        const std::string format_class = rt_json.value(
+            "format_class", "explicit(" + format_str + ")");
         const std::vector<std::string> usage_strs = parseStringArrayField(rt_json, "usage", "render target: " + name);
 
         if (extent_scale <= 0.0f) {
@@ -66,6 +104,7 @@ std::vector<RenderTargetDefinition> parseRenderTargetDefinitionsFromJson(const n
 
         definitions.push_back(RenderTargetDefinition{
             name,
+            format_class,
             extent_scale,
             fixed_extent,
             stringToFormat(format_str),

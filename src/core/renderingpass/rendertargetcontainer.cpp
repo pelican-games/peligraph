@@ -74,6 +74,7 @@ RenderTargetContainer::~RenderTargetContainer() {}
 
 GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::string &name,
                                                                  vk::Extent2D base_extent,
+                                                                 const std::string &format_class,
                                                                  float extent_scale,
                                                                  std::optional<vk::Extent2D> fixed_extent,
                                                                  vk::Format format,
@@ -90,6 +91,7 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
 
     GlobalRenderTargetId id = render_targets.reg(InternalRenderTarget{
         .name = name,
+        .format_class = format_class,
         .extent_scale = extent_scale,
         .fixed_extent = fixed_extent,
         .format = format,

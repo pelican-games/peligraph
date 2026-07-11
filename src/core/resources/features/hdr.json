@@ -9,7 +9,7 @@
   },
   "passes": [
     {
-      "insert": "before:present",
+      "insert": "after:tonemap",
       "pass": {
         "name": "hdr_tonemap",
         "type": "fullscreen",

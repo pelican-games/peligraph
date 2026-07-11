@@ -126,19 +126,23 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
     if (!pass_json.is_object()) {
         throw std::runtime_error("Frame graph pass entries must be objects");
     }
-    if (!pass_json.contains("output") || !pass_json.at("output").is_object()) {
-        throw std::runtime_error("Frame graph pass requires output object");
-    }
-
     FrameGraphNodeDefinition node;
     node.name = requireString(pass_json, "name", "pass");
-    node.kind = FramePlanNodeKind::render;
     node.declaration_index = declaration_index;
-    node.reads = parseOptionalStringList(pass_json, "input", "pass");
     node.after = parseOptionalStringList(pass_json, "after", "pass");
     node.before = parseOptionalStringList(pass_json, "before", "pass");
 
     const auto type = pass_json.value("type", std::string{});
+    if (type == "canonical_anchor") {
+        node.kind = FramePlanNodeKind::anchor;
+        return node;
+    }
+    if (!pass_json.contains("output") || !pass_json.at("output").is_object()) {
+        throw std::runtime_error("Frame graph pass requires output object");
+    }
+    node.reads = parseOptionalStringList(pass_json, "input", "pass");
+    node.kind = type == "output_transform" ? FramePlanNodeKind::output_transform
+                                            : FramePlanNodeKind::render;
     const bool ui_pass = type == "ui";
     const auto &output = pass_json.at("output");
     const auto color_outputs = parseOutputColors(output);
@@ -525,6 +529,10 @@ std::string framePlanNodeKindName(FramePlanNodeKind kind) {
         return "render";
     case FramePlanNodeKind::compute:
         return "compute";
+    case FramePlanNodeKind::anchor:
+        return "anchor";
+    case FramePlanNodeKind::output_transform:
+        return "output_transform";
     }
     throw std::runtime_error("unknown frame plan node kind");
 }

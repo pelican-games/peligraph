@@ -1,6 +1,7 @@
 #include "featurecompose.hpp"
 
 #include <algorithm>
+#include <array>
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
@@ -11,8 +12,15 @@ namespace {
 
 constexpr std::string_view feature_schema = "pelican.render_feature";
 constexpr int supported_feature_version = 1;
+constexpr int color_format_resolver_version = 1;
 constexpr std::string_view runtime_compiler_required_message =
     "render feature には実行時コンパイラが必要です (runtime shader compiler is required)";
+constexpr std::array<std::string_view, 7> canonical_anchors = {
+    "post_main", "tonemap", "post_ldr", "pelican_ui", "debug_draw", "debug_text", "imgui"};
+
+std::string canonicalAnchorNodeName(std::string_view anchor) {
+    return "__anchor_" + std::string{anchor};
+}
 
 std::string requireStringField(const nlohmann::json &json, std::string_view field_name,
                                std::string_view context) {
@@ -114,6 +122,277 @@ nlohmann::json &ensureArray(nlohmann::json &config, std::string_view field_name)
         throw std::runtime_error("rendering config " + field + " must be an array");
     }
     return config.at(field);
+}
+
+bool stringListContains(const nlohmann::json &value, std::string_view needle) {
+    if (value.is_string()) {
+        return value.get<std::string>() == needle;
+    }
+    if (!value.is_array()) {
+        return false;
+    }
+    return std::any_of(value.begin(), value.end(), [needle](const auto &entry) {
+        return entry.is_string() && entry.get<std::string>() == needle;
+    });
+}
+
+bool passWritesSwapchain(const nlohmann::json &pass) {
+    return pass.contains("output") && pass.at("output").is_object() &&
+           pass.at("output").contains("color") &&
+           stringListContains(pass.at("output").at("color"), "swapchain");
+}
+
+void replaceSwapchainAlias(nlohmann::json &value) {
+    if (value.is_string()) {
+        if (value.get<std::string>() == "swapchain") {
+            value = "display";
+        }
+        return;
+    }
+    if (!value.is_array()) {
+        return;
+    }
+    for (auto &entry : value) {
+        replaceSwapchainAlias(entry);
+    }
+}
+
+std::string inferFormatClass(const nlohmann::json &target) {
+    const auto name = target.value("name", std::string{});
+    const auto format = target.value("format", std::string{});
+    if (name == "display") {
+        return "display";
+    }
+    if (format.rfind("D", 0) == 0 || format == "R8_UNORM" ||
+        name.find("normal") != std::string::npos || name.find("material") != std::string::npos ||
+        name.find("worldpos") != std::string::npos || name.find("ssao") != std::string::npos ||
+        name.find("depth") != std::string::npos || name.find("shadow") != std::string::npos) {
+        return "data";
+    }
+    if (name == "gbuffer_albedo" || name == "g_emissive" || name == "lit_color" ||
+        name.rfind("Bloom_", 0) == 0) {
+        return "scene";
+    }
+    return "explicit(" + format + ")";
+}
+
+void addFormatClassesAndDisplay(nlohmann::json &config) {
+    auto &targets = ensureArray(config, "render_targets");
+    bool has_display = false;
+    for (auto &target : targets) {
+        if (!target.is_object()) {
+            throw std::runtime_error("render_targets entries must be objects");
+        }
+        if (target.value("name", std::string{}) == "display") {
+            has_display = true;
+        }
+        if (!target.contains("format_class")) {
+            target["format_class"] = inferFormatClass(target);
+        }
+    }
+    if (has_display) {
+        throw std::runtime_error("Render target name is reserved by the canonical color pipeline: display");
+    }
+    targets.push_back({
+        {"name", "display"},
+        {"extent_scale", 1.0},
+        {"format", "FRAME_TARGET_V1"},
+        {"format_class", "display"},
+        {"usage", nlohmann::json::array({"COLOR_ATTACHMENT", "TRANSFER_SRC"})},
+    });
+}
+
+size_t canonicalBucket(const nlohmann::json &pass, bool hdr_enabled) {
+    const auto type = pass.value("type", std::string{});
+    if (type == "ui") {
+        return 3;
+    }
+    if (type == "debug_draw") {
+        return 4;
+    }
+    if (type == "debug_text") {
+        return 5;
+    }
+    if (pass.contains("canonical_anchor") && pass.at("canonical_anchor").is_string()) {
+        const auto requested = pass.at("canonical_anchor").get<std::string>();
+        const auto found = std::find(canonical_anchors.begin(), canonical_anchors.end(), requested);
+        if (found == canonical_anchors.end()) {
+            throw std::runtime_error("Unknown canonical pass anchor: " + requested);
+        }
+        return static_cast<size_t>(std::distance(canonical_anchors.begin(), found));
+    }
+    const auto name = pass.value("name", std::string{});
+    if (name == "lighting_pass") {
+        return canonical_anchors.size();
+    }
+    const bool bloom = name == "HighLuminanceExtraction" || name == "FinalBloomComposite" ||
+                       name.rfind("HorizontalBlur_", 0) == 0 || name.rfind("VerticalBlur_", 0) == 0 ||
+                       name.rfind("UpsampleBlend_", 0) == 0;
+    if (bloom || passWritesSwapchain(pass)) {
+        return hdr_enabled ? 0 : 2;
+    }
+    return canonical_anchors.size(); // scene passes, before post_main
+}
+
+nlohmann::json makeAnchor(std::string_view anchor) {
+    return {
+        {"name", canonicalAnchorNodeName(anchor)},
+        {"type", "canonical_anchor"},
+        {"anchor", anchor},
+    };
+}
+
+nlohmann::json makeOutputTransform() {
+    return {
+        {"name", "output_transform"},
+        {"type", "output_transform"},
+        {"input", nlohmann::json::array({"display"})},
+        {"output", {{"color", "swapchain"}, {"depth", nullptr}}},
+    };
+}
+
+void appendAfter(nlohmann::json &node, const std::string &dependency) {
+    if (!node.contains("after")) {
+        node["after"] = nlohmann::json::array();
+    } else if (node.at("after").is_string()) {
+        node["after"] = nlohmann::json::array({node.at("after")});
+    }
+    if (!node.at("after").is_array()) {
+        throw std::runtime_error("canonical frame pass after must be a string or array");
+    }
+    auto &after = node.at("after");
+    if (std::find(after.begin(), after.end(), dependency) == after.end()) {
+        after.push_back(dependency);
+    }
+}
+
+bool hasExplicitRelation(const nlohmann::json &lhs, const std::string &rhs_name) {
+    return (lhs.contains("after") && stringListContains(lhs.at("after"), rhs_name)) ||
+           (lhs.contains("before") && stringListContains(lhs.at("before"), rhs_name));
+}
+
+void enforceCanonicalOrder(nlohmann::json &passes) {
+    std::string active_anchor;
+    std::vector<std::string> active_passes;
+    nlohmann::json *last_active_pass = nullptr;
+    for (auto &pass : passes) {
+        const auto type = pass.value("type", std::string{});
+        const auto name = requireStringField(pass, "name", "canonical frame node");
+        if (type == "canonical_anchor") {
+            if (!active_anchor.empty()) {
+                appendAfter(pass, active_anchor);
+            }
+            for (const auto &active_pass : active_passes) {
+                appendAfter(pass, active_pass);
+            }
+            active_anchor = name;
+            active_passes.clear();
+            last_active_pass = nullptr;
+        } else if (type == "output_transform") {
+            if (!active_anchor.empty()) {
+                appendAfter(pass, active_anchor);
+            }
+            for (const auto &active_pass : active_passes) {
+                appendAfter(pass, active_pass);
+            }
+        } else {
+            if (!active_anchor.empty()) {
+                appendAfter(pass, active_anchor);
+            }
+            if (last_active_pass != nullptr) {
+                const auto previous_name = last_active_pass->at("name").get<std::string>();
+                if (!hasExplicitRelation(pass, previous_name) &&
+                    !hasExplicitRelation(*last_active_pass, name)) {
+                    appendAfter(pass, previous_name);
+                }
+            }
+            active_passes.push_back(name);
+            last_active_pass = &pass;
+        }
+    }
+}
+
+void canonicalizePasses(nlohmann::json &config, bool hdr_enabled) {
+    auto &rendering_passes = ensureArray(config, "rendering_passes");
+    for (auto &pass_set : rendering_passes) {
+        auto &passes = pass_set.at("passes");
+        if (!passes.is_array()) {
+            throw std::runtime_error("rendering pass requires passes array");
+        }
+        std::array<nlohmann::json, 7> buckets;
+        for (auto &bucket : buckets) {
+            bucket = nlohmann::json::array();
+        }
+        nlohmann::json scene_passes = nlohmann::json::array();
+        std::unordered_set<std::string> names;
+        for (auto &pass : passes) {
+            const auto name = requireStringField(pass, "name", "pass");
+            if (!names.insert(name).second || name == "output_transform" ||
+                name.rfind("__anchor_", 0) == 0) {
+                throw std::runtime_error("Pass name collides with canonical frame node: " + name);
+            }
+            const auto bucket = canonicalBucket(pass, hdr_enabled);
+            if (bucket == canonical_anchors.size()) {
+                scene_passes.push_back(pass);
+            } else {
+                buckets[bucket].push_back(pass);
+            }
+        }
+
+        nlohmann::json canonical = std::move(scene_passes);
+        for (size_t i = 0; i < canonical_anchors.size(); ++i) {
+            canonical.push_back(makeAnchor(canonical_anchors[i]));
+            for (auto &pass : buckets[i]) {
+                canonical.push_back(std::move(pass));
+            }
+        }
+        canonical.push_back(makeOutputTransform());
+        passes = std::move(canonical);
+    }
+}
+
+void retargetSwapchainAliases(nlohmann::json &config) {
+    for (auto &pass_set : ensureArray(config, "rendering_passes")) {
+        for (auto &pass : pass_set.at("passes")) {
+            if (pass.value("type", std::string{}) == "output_transform") {
+                continue;
+            }
+            if (pass.contains("output") && pass.at("output").is_object() &&
+                pass.at("output").contains("color")) {
+                replaceSwapchainAlias(pass.at("output").at("color"));
+            }
+        }
+    }
+}
+
+void enforceTerminalAfterComputeTasks(nlohmann::json &config) {
+    std::vector<std::string> compute_tasks;
+    if (config.contains("compute_tasks")) {
+        for (const auto &task : ensureArray(config, "compute_tasks")) {
+            compute_tasks.push_back(requireStringField(task, "name", "compute task"));
+        }
+    }
+    for (auto &pass_set : ensureArray(config, "rendering_passes")) {
+        for (auto &pass : pass_set.at("passes")) {
+            if (pass.value("type", std::string{}) != "output_transform") {
+                continue;
+            }
+            for (const auto &task : compute_tasks) {
+                appendAfter(pass, task);
+            }
+        }
+    }
+}
+
+void initializeCanonicalColorPipeline(nlohmann::json &config, bool hdr_enabled) {
+    if (config.contains("resolver_version") &&
+        (!config.at("resolver_version").is_number_integer() ||
+         config.at("resolver_version").get<int>() != color_format_resolver_version)) {
+        throw std::runtime_error("Only rendering resolver_version 1 is supported");
+    }
+    config["resolver_version"] = color_format_resolver_version;
+    addFormatClassesAndDisplay(config);
+    canonicalizePasses(config, hdr_enabled);
 }
 
 std::unordered_set<std::string> collectRenderTargetNames(const nlohmann::json &config) {
@@ -333,6 +612,20 @@ std::vector<AnchorMatch> findAnchorMatches(nlohmann::json &config, const std::st
     for (auto &pass_set : rendering_passes) {
         auto &passes = pass_set.at("passes");
         for (size_t i = 0; i < passes.size(); ++i) {
+            if (passes.at(i).is_object() &&
+                passes.at(i).value("type", std::string{}) == "canonical_anchor" &&
+                passes.at(i).value("anchor", std::string{}) == anchor_name) {
+                matches.push_back(AnchorMatch{&passes, i});
+            }
+        }
+    }
+    if (!matches.empty()) {
+        return matches;
+    }
+    // Non-canonical names remain valid only for migration/negative fixtures.
+    for (auto &pass_set : rendering_passes) {
+        auto &passes = pass_set.at("passes");
+        for (size_t i = 0; i < passes.size(); ++i) {
             if (passes.at(i).is_object() && passes.at(i).value("name", std::string{}) == anchor_name) {
                 matches.push_back(AnchorMatch{&passes, i});
             }
@@ -396,8 +689,19 @@ void insertPassByAnchor(nlohmann::json &config, const std::string &insert, const
 
     auto &passes = *matches.front().passes;
     auto index = matches.front().index + (after ? 1 : 0);
+    const bool canonical_anchor = passes.at(matches.front().index).value("type", std::string{}) ==
+                                  "canonical_anchor";
+    if (after && canonical_anchor) {
+        while (index < passes.size() &&
+               passes.at(index).value("type", std::string{}) != "canonical_anchor" &&
+               passes.at(index).value("type", std::string{}) != "output_transform") {
+            ++index;
+        }
+    }
     auto anchored_pass = pass;
-    appendStringListValue(anchored_pass, after ? "after" : "before", anchor);
+    const auto dependency_name =
+        passes.at(matches.front().index).value("name", std::string{});
+    appendStringListValue(anchored_pass, after ? "after" : "before", dependency_name);
     passes.insert(passes.begin() + static_cast<nlohmann::json::difference_type>(index), anchored_pass);
 }
 
@@ -520,25 +824,32 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     const auto feature_refs = parseFeatureRefs(config);
     std::vector<std::string> shader_defines;
     appendShaderDefines(shader_defines, config, "rendering config");
-    if (feature_refs.empty()) {
-        return RenderFeatureComposeResult{config, std::move(shader_defines), {}, false};
-    }
-    if (!dependencies.runtime_shader_compiler_enabled) {
+    if (!feature_refs.empty() && !dependencies.runtime_shader_compiler_enabled) {
         throw std::runtime_error(std::string{runtime_compiler_required_message});
+    }
+
+    std::vector<std::pair<std::string, nlohmann::json>> loaded_features;
+    std::vector<std::string> feature_names;
+    bool hdr_enabled = false;
+    loaded_features.reserve(feature_refs.size());
+    for (const auto &feature_ref : feature_refs) {
+        auto feature = loadFeatureJson(feature_ref, dependencies);
+        const auto feature_name = validateFeatureEnvelope(feature, feature_ref);
+        appendUnique(feature_names, feature_name);
+        hdr_enabled = hdr_enabled || feature_name == "hdr";
+        loaded_features.emplace_back(feature_ref, std::move(feature));
     }
 
     auto composed = config;
     composed.erase("features");
+    initializeCanonicalColorPipeline(composed, hdr_enabled);
 
     auto target_names = collectRenderTargetNames(composed);
     auto pass_names = collectPassNames(composed);
     auto buffer_names = collectBufferNames(composed);
     auto task_names = collectComputeTaskNames(composed);
-    std::vector<std::string> feature_names;
-
-    for (const auto &feature_ref : feature_refs) {
-        auto feature = loadFeatureJson(feature_ref, dependencies);
-        appendUnique(feature_names, validateFeatureEnvelope(feature, feature_ref));
+    for (const auto &[feature_ref, feature] : loaded_features) {
+        (void)feature_ref;
         addRenderTargets(composed, feature, target_names);
         addBuffers(composed, feature, buffer_names);
         applyRenderTargetOverrides(composed, feature);
@@ -551,8 +862,18 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     if (!shader_defines.empty()) {
         composed["shader_defines"] = shader_defines;
     }
+    for (auto &target : ensureArray(composed, "render_targets")) {
+        if (!target.contains("format_class")) {
+            target["format_class"] = inferFormatClass(target);
+        }
+    }
+    retargetSwapchainAliases(composed);
+    for (auto &pass_set : ensureArray(composed, "rendering_passes")) {
+        enforceCanonicalOrder(pass_set.at("passes"));
+    }
+    enforceTerminalAfterComputeTasks(composed);
     return RenderFeatureComposeResult{std::move(composed), std::move(shader_defines),
-                                      std::move(feature_names), true};
+                                      std::move(feature_names), !feature_refs.empty()};
 }
 
 } // namespace Pelican
