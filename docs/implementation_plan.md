@@ -1419,6 +1419,58 @@ INFO / 構造逸脱 = WARNING / strict・dist = ERROR)。依存: WP55, 57。見�
    (c) shader_contract.md との整合(矛盾を見つけたら報告 — 修正は M2b)
    (d) §0 共通規則
 
+### WP69: FrameInput — 入力層の順序付きイベント化とフレーム位相
+
+参照: **`design_ui_2d_foundation.md` v3 §2-1(位相契約・受け入れ (a)〜(g))+
+v3 レビュー `docs/design_reviews/2026-07-11_ui_2d_v3_review_codex.md` §3
+(開始ブロッカーなしと判定・追加条件)が仕様の正**。依存: WP37, 39, 56。見積: 中〜大。
+
+1. `FrameInput { span<const InputEvent> ordered_events; InputSnapshot snapshot; }`
+   を公開。event_seq = u64、**採番 = キュー投入時、プロセス起動から単調増加**
+   (リプレイ時は記録値を使用する前提の設計 — 記録自体は I3)。
+   span はフレーム内 immutable・フレーム跨ぎ保持禁止(debug assert で検査)
+2. **5 段フレーム位相**を通常 loop と rpc loop の両方に実装:
+   ①E1 pending → deliver_now swap(swap と配送を分離)②input freeze
+   ③Actions フレームを**一度だけ**確定(現行の query 毎評価を廃止 —
+   挙動は不変であること)+ **外部消費マスク API**(frame 粗粒度。UI 実装前は
+   呼び手なしだが API とテストを整備)④deliver_now 配送(以後の emit は
+   pending_next)⑤ECS/game 更新
+3. GLFW / rpc / (将来 replay) が同一 InputEvent 列を通ることの確認と、
+   **通常 loop と rpc loop の位相同一性テスト**
+4. `pelican.input_seq` の記録単位改訂は設計反映済み(I3 未実装のため
+   コード作業なし — 形式定義のずれがないかだけ確認)
+5. テスト: (a) event_seq の型・採番・単調性 (b) span の寿命(跨ぎ保持の検出)
+   (c) マスク単体(マスクした control が Actions から見えない)
+   (d) Actions 一回評価の等価性(既存 inject_input シナリオ・WASD 挙動不変)
+   (e) 位相同一性 (f) **既存テスト・golden・rpc スイート全維持**
+
+受け入れ基準: a〜f + §0 共通規則。UI 本体には触れない。
+
+### WP70: マテリアル M2b-1 — FrameUBO と契約差分の解消(最重量)
+
+参照: **`design_material_shading.md` v1.2 §3-5・§4・§6 M2b 行 +
+`docs/shader_contract.md` の「現状として記録する差分」3 件が作業リストの正**。
+依存: WP62, 64, 68。見積: **特大**(全シェーダに触る)。
+
+1. **FrameUBO 新設(set 0 binding 0・全パイプライン共通の唯一の意味)**:
+   time / dt / frame_index / resolution / camera 位置 / view / proj。
+   ObjectBuffer SSBO は set 0 binding 1 へ、LightUBO は set 0 binding 2 へ移動
+   (「同じ set/binding で pipeline ごとに型が違う」の解消)
+2. **time の引越し**: VAT push constant への同乗をやめ FrameUBO から供給
+   (**非 VAT マテリアルにも time が届くようになる** — 本 WP の目玉)。
+   VAT の静的パラメータ(bounds 等)は 3 の material SSBO へ
+3. **push constant の 64B/64B 分割 enforcement**: reflection 検証で
+   shader 宣言の範囲を検査(engine 領域 = mvp のみに縮小)
+4. **マテリアルデータの SSBO 化**: 全マテリアル struct 配列 + インデックス
+   (個別 UBO 禁止 — bindless 前工事の設計要件)。glb の PBR factor も SSBO へ
+5. 全標準シェーダ(material/shadow/fullscreen/UI/debug 系)を新契約へ更新。
+   `docs/shader_contract.md` を実装に合わせて改訂(差分 3 件を「解消済み」へ)
+6. **受け入れの砦 = golden 全維持(全 17 ケース・SKIP ゼロ)+ 全テスト +
+   player**。時間の供給元変更は値が同じなら絵が変わらないことの証明を兼ねる
+
+スコープ外(M2b-2 へ): .surface values のバインダ・textures 辞書 binding・
+ダミーテクスチャ・resources manifest・render state 拡張・dump-lowered-material。
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **最小コマンド層**: (1) ファイル連携済み → (2) WP27 実装済み → (3) `load_gltf` / `update_transforms` は **2026-07-07 に実装 GO 決定**。前提はすべて充足(宛先 = scene v1 の objects[].name / アセット意味論 = WP21)。設計時要件: **複数インスタンス運用**(エージェントが複数エンジンを並行駆動する使い方) — stdio rpc は 1 プロセス 1 クライアントの現行構造を維持しつつ、`get_status`(instance id・project・フレーム番号)を追加してインスタンス識別可能に。プロジェクトは読み取り専有なので並行起動は安全(書き込み系操作を入れる際に排他を設計)。複数クライアント同時接続は TCP/WebSocket 展開時の課題として分離
