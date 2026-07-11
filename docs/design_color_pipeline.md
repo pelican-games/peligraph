@@ -1,7 +1,11 @@
 # 色パイプライン(v4)
 
 対象読者: エンジン担当・シェーダ/UI を書く人。
-ステータス: v4 ドラフト(2026-07-11。v3 は round 3 レビューで **Reject**
+ステータス: v4 — **条件付き Accept**(2026-07-11 round 4、
+`docs/design_reviews/2026-07-11_color_ui_v7_rereview_codex.md` §1。
+条件 C-C1(C1a の transfer copy に必要な usage/layout 契約)は **WP73** に
+添付、C-C2(最終 metric の単位表記)は本文反映済み — §2-6)。
+v3 は round 3 レビューで Reject
 (`docs/design_reviews/2026-07-11_color_ui_v6_rereview_codex.md` §1)。
 v4 の主変更: ①誤差 budget の単位分離(storage edge = 8bit code 値 /
 最終出力 = linear、hop 加算則の撤回)②anchor 列を一意の全順序に固定 +
@@ -275,9 +279,10 @@ decode 式は IEC 61966-2-1 区分関数(c ≤ 0.04045 → c/12.92、それ以�
     量子化(round-half-even を reference とし、HW の丸め差は ±1 code に
     収める)」を再現する。**各 edge の実装出力 vs reference は ±1 code**。
     これは device 非依存の gate
-  - **最終出力検査(単位 = linear / 実質 golden)**: 経路合計の一律
-    解析 bound は置かない。canonical graph の**最終 RGBA8 golden**
+  - **最終出力検査(単位 = encoded 8-bit RGBA code / golden)**: 経路合計の
+    一律解析 bound は置かない。canonical graph の**最終 RGBA8 golden**
     (supported device set で取得・三者比較手続き §3)が最終値の正
+    (linear 域の比較は行わない — C-C2 で単位を一意化)
   - **hop 数の固定**: trace が経路ごとの paired round-trip 数を記録し、
     canonical graph の hop 数を fixture に固定(増えたら fail — 黙って
     pass が増えない)

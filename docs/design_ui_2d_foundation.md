@@ -1,18 +1,18 @@
-# 2D 描画基盤と UI システム(v7)
+# 2D 描画基盤と UI システム(v8)
 
 対象読者: エンジン担当・UI/2D を作る人。
-ステータス: v7 ドラフト(2026-07-11。v6 は round 3 レビューで **Reject**
-(`docs/design_reviews/2026-07-11_color_ui_v6_rereview_codex.md` §2)。
-v7 の主変更: ①decimal parse と FP environment の実装契約(正本 parser・
-/fp:strict 相当・FE_TONEAREST 検査)+ px 変換後 overflow 規則
-②semantic invariant の再定義(clip の計算可能化 = widget record に
-overflow を追加・run 0 と総量の拘束・scissor containment・入力/capture
-状態機械・参照整合)+ **schema-valid/semantic-invalid fixture** の追加
-③coverage manifest の主張を実データと一致させる(小 enum = 全値 /
-key・pad = 語彙 branch 代表 + enum 同期テスト)。
-色正本は `design_color_pipeline.md` v4(パス列も v4 §2-2 の一意全順序)。
-payload 正本 = `design_event_payload_schema.md` v2(**条件付き Accept 済み**
-— E-C1〜E-C6 は WP71 に添付)。
+ステータス: v8 ドラフト(2026-07-11。v7 は round 4 レビューで **Reject**
+(`docs/design_reviews/2026-07-11_color_ui_v7_rereview_codex.md` §2)。
+v8 の主変更: ①fixture の rect の座標系・単位を明文化
+(root-content 原点 absolute ui_units)+ viewport に `content_rect_ui` を
+追加(I3 が px と ui を直接交差していた不整合の解消)②fixture に
+`total_index_count` を追加(I6 の「最終 end = 総 index 数」を fixture
+単体で検査可能に)③I11 を kind×state×effects の遷移表として閉じる
+④coverage manifest を機械可読 schema + 完全一致 gate + 実行可能
+チェッカーに(宣言でなく実体)。
+色正本は `design_color_pipeline.md` v4(**条件付き Accept 済み** —
+C-C1 は WP73 に添付)。payload 正本 = `design_event_payload_schema.md` v2
+(条件付き Accept 済み — E-C1〜E-C6 は WP71 に添付)。
 前提: 2026-07-07 決定「UI と 2D ゲームは描画基盤共有・上物分離」、
 2026-07-10 決定「エンジン標準スキン = ツール調 / エンジン UI = ImGui /
 ゲーム UI = pelican.ui」、ECS v2.1(世代付き ID・生ポインタ禁止)、
@@ -427,11 +427,17 @@ UiModule
   "lifecycle": [] }
 ```
 
-規約: rect は ui_units 整数の edge 表現(`[l,t,r,b]`、右下排他)/ widget の
-同一性は `document_key + stable id パス`(runtime WidgetId は arena
-単体テストに分離)/ pipeline・texture は**安定名**(実行時数値 ID 禁止)/
-配列は決定順(widgets = 走査順、runs = 発行順、trace = event_seq 順)/
-optional は省略(null 不使用)。
+規約: rect は ui_units 整数の edge 表現(`[l,t,r,b]`、右下排他)。
+**`rect_ui` / `clip_ui` / `position_ui` の座標系 = root-content 原点の
+absolute ui_units**(親相対ではない — stack 子も解法後の absolute 値を
+記録する。viewport には px の `content_rect_px` と併せて
+**`content_rect_ui`**(ui_units、I3 の初期 clip)を必須で持つ —
+px と ui を同一式で交差しない)。fixture は draw 出力の総量として
+**`total_index_count`**(生成 index buffer の要素数)を必須で持つ /
+widget の同一性は `document_key + stable id パス`(runtime WidgetId は
+arena 単体テストに分離)/ pipeline・texture は**安定名**(実行時数値 ID
+禁止)/ 配列は決定順(widgets = 走査順、runs = 発行順、trace =
+event_seq 順)/ optional は省略(null 不使用)。
 
 **正本 = 機械可読スキーマ(U-B4 v2)**: 本節の散文・例は説明であり、正は
 **`docs/schemas/pelican.ui_semantic_fixture.schema.json`**(JSON Schema
@@ -492,38 +498,61 @@ draft 2020-12。本版と同時にコミット済み)。閉じ方の要点:
   |---|-----------|------|
   | I1 | rect 順序 | 全 rect_ui/clip_ui/scissor_px/content_rect_px で `left ≤ right` かつ `top ≤ bottom` |
   | I2 | 祖先存在 | 非 root widget のパス接頭辞(親・祖先)は全て widgets[] に存在する |
-  | I3 | clip 一致 | widget の `clip_ui` = 「`overflow: clip` な祖先の rect_ui と viewport content rect の交差」に等しい(I2 により計算可能) |
+  | I3 | clip 一致 | widget の `clip_ui` = 「`overflow: clip` な祖先の rect_ui(absolute ui_units)と viewport の **content_rect_ui** の交差」に等しい(I2 により祖先は存在し、全 rect が同一座標系・同一単位なので fixture 単体で計算可能) |
   | I4 | id 一意性 | widgets[].id は fixture 内で一意 |
-  | I5 | decl_seq / event_seq | widgets の decl_seq・input_trace の event_seq は狭義単調増加 |
-  | I6 | draw run index | run 0 の `first_index` = 0。以降は前 run の `first_index + index_count` に一致(連続)。最終 end = 総 index 数。総 quad 数(Σ index_count / 6)≤ 16384 |
-  | I7 | effects / consumed | 配列内重複なし(schema の uniqueItems と二重化) |
+  | I5 | decl_seq / event_seq | (a) widgets の decl_seq、(b) input_trace の event_seq — それぞれ狭義単調増加 |
+  | I6 | draw run index | (a) run 0 の `first_index` = 0 (b) 以降は前 run の `first_index + index_count` に一致(連続)(c) 最終 end = **`total_index_count`**(fixture が独立に持つ生成 buffer 総数 — Σ との恒等でなく突き合わせ)(d) `total_index_count / 6` ≤ 16384(schema の上限と二重化) |
+  | I7 | effects / consumed | 配列内重複なし(**schema の uniqueItems が一次強制 — semantic 検査は二重線**) |
   | I8 | scissor containment | `0 ≤ left ≤ right ≤ framebuffer_px.x` かつ `0 ≤ top ≤ bottom ≤ framebuffer_px.y`(§4 の「scissor_px はクリップ後」規則の帰結) |
-  | I9 | texture 名 | パス走査不可(`..` 禁止 — schema pattern と二重化) |
-  | I10 | 参照整合 | input_trace の `target`・lifecycle の `widget` は widgets[] に存在する。例外: `capture_cancel` の reason が `remove | reload | scene_unload` の場合のみ不在を許す(消滅が原因のキャンセル) |
-  | I11 | capture 状態機械 | pointer_id(+button)ごとに状態を追跡: `capture` effect は `target` 必須かつ非 capture 状態でのみ / `release_capture`・`click`・`drag*` は同 pointer の先行 `pointer_down`(capture 成立)が必要 / `cancel` は capture 中のみ / `click` と `cancel` は同一イベントに同居しない / `hover_enter`・`hover_exit` は交互 |
-  | I12 | viewport | content_rect_px ⊆ [0,0,framebuffer_px] |
+  | I9 | texture 名 | パス走査不可(**schema pattern が一次強制 — semantic 検査は二重線**) |
+  | I10 | 参照整合 | (a) input_trace の `target`・lifecycle の `widget` は widgets[] に存在する (b) 例外: `capture_cancel` の reason が `remove | reload | scene_unload` の場合のみ不在を**許す**(不在を強制はしない) |
+  | I11 | capture 状態機械 | 下の遷移表が正(pointer_id ごとに状態 {idle, captured{button, drag_started}} を追跡。**active button は pointer あたり最大 1** — move/cancel が button を持たない schema と整合させるための規範) |
+  | I12 | viewport | content_rect_px ⊆ [0,0,framebuffer_px]、content_rect_ui の縦横比・スケールが ui_scale と整合(`content_rect_px の幅高 = round(content_rect_ui の幅高 × ui_scale)`) |
 
-  **effects は網羅的な semantic 出力である**(I11 が検査する — 「実装が
-  出したものを写すだけ」ではない)。invariant を足すときは
-  schema-valid/semantic-invalid fixture を同時に足す(下記 coverage)。
+  **I11 遷移表(kind × 状態 × effects)** — 行になければ違反:
 
-- **fixture coverage manifest**:
-  `test/fixtures/ui_semantic/normative/coverage.json` に
-  「schema の enum 値 / oneOf branch / invalid class / **semantic
-  invariant(I1〜I12)** → それを行使する fixture ファイル」の対応表を置く。
-  被覆の主張は正確に(round 3 指摘の受理):
-  - **小 enum(kind / button / effects / reason / phase / code / sampler)=
-    全値を列挙**
-  - **`ui_key` / `ui_pad_control` = 語彙 branch 代表 1 件ずつ**(全値
-    fixture は置かない)。代わりに **enum 同期テスト**を置く: schema の
-    `$defs` から enum を機械抽出し、`consumed_control` の pattern
-    alternation と一致することを CI で検査(enum 追加の検出は fixture
-    でなくこのテストが担う)
-  - semantic invariant は **I ごとに「その 1 項だけ違反する
-    schema-valid/semantic-invalid fixture」**を `semantic_invalid/` に置く
-  - CI は manifest 自体の schema 検証 + 全行の実在検査 + 「schema から
-    機械抽出した enum/branch/invariant 集合 ⊆ manifest key 集合」を検査
-    (未被覆 = fail)
+  | kind | 状態 | 許可される effects | 必須の effects |
+  |------|------|------------------|---------------|
+  | pointer_down | idle・`target` あり | `capture`(高々 1 回) | —(capture しない down も適法) |
+  | pointer_down | idle・`target` なし | (capture 系なし) | — |
+  | pointer_down | captured(同 pointer) | (capture 系なし — active button は 1 個) | — |
+  | pointer_move | 任意 | `hover_enter` / `hover_exit`(交互)。captured 時のみ追加で `drag_start`(capture ごとに 1 回)・`drag`(`drag_start` 後のみ) | — |
+  | pointer_up | captured | `click`(**この capture 中に `drag_start` が無い場合のみ**) | `release_capture` |
+  | pointer_up | idle | (capture/click 系なし) | — |
+  | pointer_cancel | captured | — | `cancel` **かつ** `release_capture` |
+  | pointer_cancel | idle | (effects なし) | — |
+
+  `capture`/`release_capture`/`click`/`drag_start`/`drag`/`cancel` が
+  表の「許可」に現れない組で出現したら違反。**effects は網羅的な semantic
+  出力である**(写しではなく上表の必須列も検査される)。invariant・遷移表の
+  行を足すときは schema-valid/semantic-invalid fixture を同時に足す
+  (下記 coverage — clause 単位)。
+
+- **fixture coverage manifest(v8 で実体化)**:
+  `test/fixtures/ui_semantic/normative/coverage.json`。
+  - **manifest 自体の正本 schema** =
+    `docs/schemas/pelican.ui_semantic_coverage.schema.json`(コミット済み)。
+    各エントリは `{ "fixture": <path>, "gate": "schema" | "semantic",
+    "clause": <任意の補足> }` の構造(path に説明文を混ぜない)
+  - 被覆の主張: **小 enum(kind / button / effects / reason / phase /
+    code / sampler)= 全値** / **`ui_key`・`ui_pad_control` = 語彙 branch
+    代表 1 件ずつ + enum 同期検査**(schema `$defs` の enum と
+    `consumed_control` pattern alternation の機械照合)
+  - **multi-clause invariant(I5 / I6 / I10 / I11)は clause ごとに行**
+    (I11 は遷移表の違反クラスごと)。schema が一次強制する I7/I9 は
+    `gate: "schema"` で schema-invalid fixture を指す(semantic_invalid
+    には置かない — 主張と実体を一致させる)
+  - **完全一致 gate(⊆ ではない)**: fixture schema から機械抽出した
+    enum/branch 集合 + 本節の invariant/clause 集合 と manifest の
+    key 集合が**完全一致**(過不足どちらも fail — stale key を拒否)
+  - **実行可能チェッカー(コミット済み)**:
+    `test/fixtures/ui_semantic/normative/check_coverage.mjs`
+    (依存ゼロの node スクリプト — manifest schema 相当の構造検査・
+    全 path 実在・enum 抽出と完全一致・consumed pattern 同期)。
+    node がある環境では ctest `ui_semantic_coverage_gate` として実行
+    (CMake が node を find できない環境ではスキップ)。JSON Schema
+    分類と semantic invariant の実行は U0 の C++ validator が担い、
+    ajv はそれまでの開発時クロスチェック
 - **normative fixture 一式(本版と同時にコミット済み)**:
   `test/fixtures/ui_semantic/normative/`
   - `valid/` — schema に適合すべき実物: `minimal.json`、

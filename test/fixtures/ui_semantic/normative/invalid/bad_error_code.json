@@ -2,9 +2,23 @@
   "schema": "pelican.ui_semantic_fixture",
   "version": 1,
   "viewport": {
-    "framebuffer_px": [1280, 720],
+    "framebuffer_px": [
+      1280,
+      720
+    ],
     "ui_scale": 1,
-    "content_rect_px": [0, 0, 1280, 720]
+    "content_rect_px": [
+      0,
+      0,
+      1280,
+      720
+    ],
+    "content_rect_ui": [
+      0,
+      0,
+      1280,
+      720
+    ]
   },
   "document": {
     "key": "broken",
@@ -12,6 +26,7 @@
   },
   "widgets": [],
   "draw_runs": [],
+  "total_index_count": 0,
   "input_trace": [],
   "lifecycle": [],
   "errors": [

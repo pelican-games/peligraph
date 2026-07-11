@@ -1,0 +1,25 @@
+{
+  "schema": "pelican.ui_semantic_fixture",
+  "version": 1,
+  "viewport": {
+    "framebuffer_px": [1280, 720],
+    "ui_scale": 1,
+    "content_rect_px": [0, 0, 1280, 720],
+    "content_rect_ui": [0, 0, 1280, 720]
+  },
+  "document": {
+    "key": "hud",
+    "revision": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "widgets": [],
+  "draw_runs": [],
+  "total_index_count": 0,
+  "input_trace": [],
+  "lifecycle": [
+    {
+      "kind": "capture_cancel",
+      "widget": "root/gone",
+      "reason": "hide"
+    }
+  ]
+}

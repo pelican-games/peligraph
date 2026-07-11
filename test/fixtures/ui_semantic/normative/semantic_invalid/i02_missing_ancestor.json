@@ -2,9 +2,23 @@
   "schema": "pelican.ui_semantic_fixture",
   "version": 1,
   "viewport": {
-    "framebuffer_px": [1280, 720],
+    "framebuffer_px": [
+      1280,
+      720
+    ],
     "ui_scale": 1,
-    "content_rect_px": [0, 0, 1280, 720]
+    "content_rect_px": [
+      0,
+      0,
+      1280,
+      720
+    ],
+    "content_rect_ui": [
+      0,
+      0,
+      1280,
+      720
+    ]
   },
   "document": {
     "key": "hud",
@@ -14,21 +28,42 @@
     {
       "id": "root",
       "type": "panel",
-      "rect_ui": [0, 0, 1280, 720],
-      "clip_ui": [0, 0, 1280, 720],
+      "rect_ui": [
+        0,
+        0,
+        1280,
+        720
+      ],
+      "clip_ui": [
+        0,
+        0,
+        1280,
+        720
+      ],
       "layer": 0,
       "decl_seq": 0
     },
     {
       "id": "root/menu/play",
       "type": "button",
-      "rect_ui": [40, 24, 160, 56],
-      "clip_ui": [0, 0, 1280, 720],
+      "rect_ui": [
+        40,
+        24,
+        160,
+        56
+      ],
+      "clip_ui": [
+        0,
+        0,
+        1280,
+        720
+      ],
       "layer": 0,
       "decl_seq": 1
     }
   ],
   "draw_runs": [],
+  "total_index_count": 0,
   "input_trace": [],
   "lifecycle": []
 }

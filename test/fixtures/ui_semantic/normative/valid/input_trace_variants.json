@@ -2,9 +2,23 @@
   "schema": "pelican.ui_semantic_fixture",
   "version": 1,
   "viewport": {
-    "framebuffer_px": [1920, 1080],
+    "framebuffer_px": [
+      1920,
+      1080
+    ],
     "ui_scale": 1.5,
-    "content_rect_px": [0, 0, 1280, 720]
+    "content_rect_px": [
+      0,
+      0,
+      1920,
+      1080
+    ],
+    "content_rect_ui": [
+      0,
+      0,
+      1280,
+      720
+    ]
   },
   "document": {
     "key": "hud",
@@ -14,8 +28,18 @@
     {
       "id": "root",
       "type": "panel",
-      "rect_ui": [0, 0, 1280, 720],
-      "clip_ui": [0, 0, 1280, 720],
+      "rect_ui": [
+        0,
+        0,
+        1280,
+        720
+      ],
+      "clip_ui": [
+        0,
+        0,
+        1280,
+        720
+      ],
       "layer": 0,
       "decl_seq": 0,
       "overflow": "visible"
@@ -23,8 +47,18 @@
     {
       "id": "root/play",
       "type": "button",
-      "rect_ui": [40, 24, 160, 56],
-      "clip_ui": [0, 0, 1280, 720],
+      "rect_ui": [
+        40,
+        24,
+        160,
+        56
+      ],
+      "clip_ui": [
+        0,
+        0,
+        1280,
+        720
+      ],
       "layer": 0,
       "decl_seq": 3
     }
@@ -34,7 +68,12 @@
       "pipeline": "rgba_straight",
       "sampler": "nearest",
       "texture": "atlas:ui/page:0",
-      "scissor_px": [0, 0, 1920, 1080],
+      "scissor_px": [
+        0,
+        0,
+        1920,
+        1080
+      ],
       "first_index": 0,
       "index_count": 6
     },
@@ -42,92 +81,160 @@
       "pipeline": "rgba_straight",
       "sampler": "linear",
       "texture": "white",
-      "scissor_px": [60, 36, 240, 84],
+      "scissor_px": [
+        60,
+        36,
+        240,
+        84
+      ],
       "first_index": 6,
       "index_count": 6
     }
   ],
+  "total_index_count": 12,
   "input_trace": [
     {
       "event_seq": 10,
       "kind": "pointer_move",
       "pointer_id": 0,
-      "position_ui": [50, 30],
+      "position_ui": [
+        50,
+        30
+      ],
       "target": "root/play",
-      "consumed": ["mouse:move"],
-      "effects": ["hover_enter"]
+      "consumed": [
+        "mouse:move"
+      ],
+      "effects": [
+        "hover_enter"
+      ]
     },
     {
       "event_seq": 11,
       "kind": "pointer_down",
       "pointer_id": 0,
       "button": "left",
-      "position_ui": [50, 30],
+      "position_ui": [
+        50,
+        30
+      ],
       "target": "root/play",
-      "consumed": ["mouse:left"],
-      "effects": ["capture"]
+      "consumed": [
+        "mouse:left"
+      ],
+      "effects": [
+        "capture"
+      ]
     },
     {
       "event_seq": 12,
       "kind": "pointer_move",
       "pointer_id": 0,
-      "position_ui": [70, 32],
+      "position_ui": [
+        70,
+        32
+      ],
       "target": "root/play",
-      "consumed": ["mouse:move"],
-      "effects": ["drag_start", "drag"]
+      "consumed": [
+        "mouse:move"
+      ],
+      "effects": [
+        "drag_start",
+        "drag"
+      ]
     },
     {
       "event_seq": 13,
       "kind": "pointer_up",
       "pointer_id": 0,
       "button": "left",
-      "position_ui": [70, 32],
+      "position_ui": [
+        70,
+        32
+      ],
       "target": "root/play",
-      "consumed": ["mouse:left"],
-      "effects": ["release_capture", "click"]
+      "consumed": [
+        "mouse:left"
+      ],
+      "effects": [
+        "release_capture"
+      ]
     },
     {
       "event_seq": 14,
       "kind": "pointer_down",
       "pointer_id": 1,
       "button": "right",
-      "position_ui": [400, 300],
+      "position_ui": [
+        400,
+        300
+      ],
       "target": "root",
-      "consumed": ["mouse:right", "key:space", "touch:0", "pad:dpad_up"],
-      "effects": ["capture"]
+      "consumed": [
+        "mouse:right",
+        "key:space",
+        "touch:0",
+        "pad:dpad_up"
+      ],
+      "effects": [
+        "capture"
+      ]
     },
     {
       "event_seq": 15,
       "kind": "pointer_cancel",
       "pointer_id": 1,
-      "effects": ["cancel", "release_capture"]
+      "effects": [
+        "cancel",
+        "release_capture"
+      ]
     },
     {
       "event_seq": 16,
       "kind": "pointer_move",
       "pointer_id": 0,
-      "position_ui": [-20, 900],
-      "effects": ["hover_exit"]
+      "position_ui": [
+        -20,
+        900
+      ],
+      "effects": [
+        "hover_exit"
+      ]
     },
     {
       "event_seq": 17,
       "kind": "pointer_down",
       "pointer_id": 0,
       "button": "middle",
-      "position_ui": [50, 30],
+      "position_ui": [
+        50,
+        30
+      ],
       "target": "root/play",
-      "consumed": ["mouse:middle"],
-      "effects": ["capture"]
+      "consumed": [
+        "mouse:middle"
+      ],
+      "effects": [
+        "capture"
+      ]
     },
     {
       "event_seq": 18,
       "kind": "pointer_up",
       "pointer_id": 0,
       "button": "middle",
-      "position_ui": [50, 30],
+      "position_ui": [
+        50,
+        30
+      ],
       "target": "root/play",
-      "consumed": ["mouse:middle"],
-      "effects": ["release_capture", "click"]
+      "consumed": [
+        "mouse:middle"
+      ],
+      "effects": [
+        "release_capture",
+        "click"
+      ]
     }
   ],
   "lifecycle": []

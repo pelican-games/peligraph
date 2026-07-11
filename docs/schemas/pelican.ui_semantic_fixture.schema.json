@@ -2,17 +2,17 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "pelican://schemas/pelican.ui_semantic_fixture/1",
   "title": "pelican.ui_semantic_fixture v1",
-  "description": "Normative STRUCTURAL schema for UI semantic fixtures (design_ui_2d_foundation.md v6 §7). Cross-field/order invariants (rect ordering, id uniqueness, event_seq monotonicity, draw-run index continuity, clip containment) are owned by the normative semantic validator defined in the design doc §7 — schema validity alone does not imply semantic validity. Comparison semantics: parse-level semantic equality; writers must emit integers as integers (no -0, no exponent, no trailing .0); the only float-valued field is viewport.ui_scale.",
+  "description": "Normative STRUCTURAL schema for UI semantic fixtures (design_ui_2d_foundation.md v8 §7). Coordinate convention: rect_ui/clip_ui/position_ui are absolute ui_units with root-content origin; viewport carries both content_rect_px (pixels) and content_rect_ui (ui_units). Cross-field/order invariants (I1-I12: rect ordering, id uniqueness, seq monotonicity, run continuity vs total_index_count, clip equality, capture state machine) are owned by the normative semantic validator in the design doc §7 — schema validity alone does not imply semantic validity. Comparison semantics: parse-level semantic equality; writers must emit integers as integers (no -0, no exponent, no trailing .0); the only float-valued field is viewport.ui_scale.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "version", "viewport", "document", "widgets", "draw_runs", "input_trace", "lifecycle"],
+  "required": ["schema", "version", "viewport", "document", "widgets", "draw_runs", "total_index_count", "input_trace", "lifecycle"],
   "properties": {
     "schema": { "const": "pelican.ui_semantic_fixture" },
     "version": { "const": 1 },
     "viewport": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["framebuffer_px", "ui_scale", "content_rect_px"],
+      "required": ["framebuffer_px", "ui_scale", "content_rect_px", "content_rect_ui"],
       "properties": {
         "framebuffer_px": {
           "type": "array",
@@ -21,7 +21,8 @@
           "maxItems": 2
         },
         "ui_scale": { "type": "number", "exclusiveMinimum": 0, "maximum": 16 },
-        "content_rect_px": { "$ref": "#/$defs/rect_i32" }
+        "content_rect_px": { "$ref": "#/$defs/rect_i32" },
+        "content_rect_ui": { "$ref": "#/$defs/rect_i32" }
       }
     },
     "document": {
@@ -67,6 +68,13 @@
           "index_count": { "type": "integer", "minimum": 0, "maximum": 98304, "multipleOf": 6 }
         }
       }
+    },
+    "total_index_count": {
+      "description": "Total element count of the generated index buffer. I6 checks the last run end against this independent value.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 98304,
+      "multipleOf": 6
     },
     "input_trace": {
       "type": "array",

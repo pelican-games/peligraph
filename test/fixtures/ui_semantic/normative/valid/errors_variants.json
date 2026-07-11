@@ -2,9 +2,23 @@
   "schema": "pelican.ui_semantic_fixture",
   "version": 1,
   "viewport": {
-    "framebuffer_px": [1280, 720],
+    "framebuffer_px": [
+      1280,
+      720
+    ],
     "ui_scale": 1,
-    "content_rect_px": [0, 0, 1280, 720]
+    "content_rect_px": [
+      0,
+      0,
+      1280,
+      720
+    ],
+    "content_rect_ui": [
+      0,
+      0,
+      1280,
+      720
+    ]
   },
   "document": {
     "key": "broken",
@@ -12,22 +26,93 @@
   },
   "widgets": [],
   "draw_runs": [],
+  "total_index_count": 0,
   "input_trace": [],
   "lifecycle": [],
   "errors": [
-    { "phase": "parse", "code": "unknown_event", "path": "/widgets/0/emit/on_click/event", "message": "unknown event 'MenuOpend'" },
-    { "phase": "parse", "code": "unknown_source", "path": "/widgets/0/emit/on_click/fields/0/from", "message": "unknown from 'drag_delta_px'" },
-    { "phase": "parse", "code": "unknown_widget_value_path", "path": "/widgets/0/emit/on_click/fields/1/from", "message": "widget_value path 'valeu' not defined for type 'slider'" },
-    { "phase": "parse", "code": "type_mismatch", "path": "/widgets/0/emit/on_click/fields/2", "message": "field 'amount' expects int, source is vec2" },
-    { "phase": "parse", "code": "range_violation", "path": "/widgets/0/emit/on_click/fields/3/value", "message": "value 120 exceeds max 99" },
-    { "phase": "parse", "code": "required_missing", "path": "/widgets/0/emit/on_click/fields", "message": "required field 'source' not mapped" },
-    { "phase": "parse", "code": "unknown_field", "path": "/widgets/0/emit/on_click/fields/4/name", "message": "'amont' is not a field of 'MenuOpened'" },
-    { "phase": "parse", "code": "no_payload_event", "path": "/widgets/1/emit/on_click/fields", "message": "event 'Ping' has no payload fields" },
-    { "phase": "parse", "code": "unknown_widget_type", "path": "/widgets/2/type", "message": "unknown widget type 'buton'" },
-    { "phase": "parse", "code": "axis_conflict", "path": "/widgets/3/anchor_min", "message": "anchor on stack-controlled axis" },
-    { "phase": "layout", "code": "layout_cycle", "path": "/widgets/4", "message": "fill child inside content-sized parent" },
-    { "phase": "parse", "code": "duplicate_stable_id", "path": "/widgets/5/id", "message": "stable id 'play' duplicated under 'root'" },
-    { "phase": "commit", "code": "limit_exceeded", "path": "/widgets", "message": "quad limit 16384 exceeded" },
-    { "phase": "route", "code": "unsupported_control", "path": "/widgets/6/focus", "message": "control 'pad:a' is reserved vocabulary, not implemented in v1" }
+    {
+      "phase": "parse",
+      "code": "unknown_event",
+      "path": "/widgets/0/emit/on_click/event",
+      "message": "unknown event 'MenuOpend'"
+    },
+    {
+      "phase": "parse",
+      "code": "unknown_source",
+      "path": "/widgets/0/emit/on_click/fields/0/from",
+      "message": "unknown from 'drag_delta_px'"
+    },
+    {
+      "phase": "parse",
+      "code": "unknown_widget_value_path",
+      "path": "/widgets/0/emit/on_click/fields/1/from",
+      "message": "widget_value path 'valeu' not defined for type 'slider'"
+    },
+    {
+      "phase": "parse",
+      "code": "type_mismatch",
+      "path": "/widgets/0/emit/on_click/fields/2",
+      "message": "field 'amount' expects int, source is vec2"
+    },
+    {
+      "phase": "parse",
+      "code": "range_violation",
+      "path": "/widgets/0/emit/on_click/fields/3/value",
+      "message": "value 120 exceeds max 99"
+    },
+    {
+      "phase": "parse",
+      "code": "required_missing",
+      "path": "/widgets/0/emit/on_click/fields",
+      "message": "required field 'source' not mapped"
+    },
+    {
+      "phase": "parse",
+      "code": "unknown_field",
+      "path": "/widgets/0/emit/on_click/fields/4/name",
+      "message": "'amont' is not a field of 'MenuOpened'"
+    },
+    {
+      "phase": "parse",
+      "code": "no_payload_event",
+      "path": "/widgets/1/emit/on_click/fields",
+      "message": "event 'Ping' has no payload fields"
+    },
+    {
+      "phase": "parse",
+      "code": "unknown_widget_type",
+      "path": "/widgets/2/type",
+      "message": "unknown widget type 'buton'"
+    },
+    {
+      "phase": "parse",
+      "code": "axis_conflict",
+      "path": "/widgets/3/anchor_min",
+      "message": "anchor on stack-controlled axis"
+    },
+    {
+      "phase": "layout",
+      "code": "layout_cycle",
+      "path": "/widgets/4",
+      "message": "fill child inside content-sized parent"
+    },
+    {
+      "phase": "parse",
+      "code": "duplicate_stable_id",
+      "path": "/widgets/5/id",
+      "message": "stable id 'play' duplicated under 'root'"
+    },
+    {
+      "phase": "commit",
+      "code": "limit_exceeded",
+      "path": "/widgets",
+      "message": "quad limit 16384 exceeded"
+    },
+    {
+      "phase": "route",
+      "code": "unsupported_control",
+      "path": "/widgets/6/focus",
+      "message": "control 'pad:a' is reserved vocabulary, not implemented in v1"
+    }
   ]
 }

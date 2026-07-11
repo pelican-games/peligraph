@@ -1484,27 +1484,94 @@ static init での構築ゼロ・構築前 JSON 検証・debug init phase 一致
 4 状態 lookup)。**レビュー添付条件 E-C1〜E-C6 を受け入れ基準に含める**
 (レビュー文書 §3.4 が正 — 要約):
 
+(round 4 レビュー §3.3 で転記精度を修正済み — 以下が正)
+
 - **E-C1**: descriptor は event 型の static storage が所有(一時 array への
-  span 禁止)。空名/重複名/不正 range は constant evaluation で失敗。
-  MSVC compile-pass 1 件 + 各 compile-fail fixture を CI に
+  span 禁止)。**空名 / 重複名 / range 種別の型不適合 / min>max /
+  NaN・Inf / F32 field への binary64 で表現した bound の F32 表現可能性** —
+  すべて constant evaluation で失敗させる。MSVC compile-pass 1 件 +
+  **上記 6 分類それぞれの compile-fail fixture** を CI に
 - **E-C2**: `pelican_payload` を持つ型は `default_initializable` +
   `ISerializable<T, JsonArchiveLoader>` を registration 時に強制
   (satisfy しなければ compile error)。`nothrow_default_constructible` も
   static_assert。副作用なしは counting-constructor テストで担保
-- **E-C3**: prevalidator は Vec2/3/4・Quat の配列長/要素型/有限性/範囲、
-  integer token 規則(`1.0` 不受理)、2^53 境界まで規範化。全 invalid case で
+- **E-C3**: prevalidator は**全 JSON shape を規範化**: scalar 各型
+  (幅・符号・有限性)、String、Vec2/3/4・Quat の配列長/要素型/有限性/範囲、
+  integer token 規則(`1.0` 不受理)、2^53 境界。全 invalid case で
   loader 呼出 0 回・constructor 0 回・pending event 0 を検査
 - **E-C4**: 全 registered Typed イベントの descriptor↔ref 一致検査を
   **CI 必須テスト**に(debug 手動起動に依存しない)。追加忘れ/rename/
-  reorder/duplicate/条件分岐の既知限界を個別 fixture に
+  reorder/duplicate/条件分岐の既知限界を個別 fixture に。
+  **plugin/遅延 registration は本 WP では禁止**(全イベント registration は
+  起動時 static init で完結する、を静的検査 — 将来 DLL ホットリロード
+  (G2)で緩める場合は module registration 完了時の catalog 再検査を条件に)
 - **E-C5**: **Opaque の by-name emit は廃止**(typed C++ emit のみ —
   レビュー推奨案 1 を採用)。UI は Opaque を fields の有無に関係なく
   binding 自体で拒否(`no_payload_event`)
-- **E-C6**: state × UI × RPC × payload shape の行列を実装(レビュー §3.4
-  の表が正)。Payloadless/Typed(empty) は「payload 省略 or 厳密 `{}`」を
-  固定し、余分 key は黙って捨てない
+- **E-C6**: state ごとの行列(round 3 §3.4 の表と同値 — 転記):
 
-受け入れ = 設計 v2 §6 の 8 テスト + E-C1〜E-C6 の各 fixture + 既存全テスト。
+  | state | UI | RPC/by-name |
+  |---|---|---|
+  | Unknown | `unknown_event` | unknown event エラー |
+  | Opaque | `no_payload_event`(binding 自体不可) | 不可(E-C5 で廃止) |
+  | Payloadless | fields 指定 = `no_payload_event`、無指定 emit 可 | **payload は「省略 or `{}`」の両方を受理**(本 WP で確定)。extra key 拒否 |
+  | Typed(empty) | schema 照合後、無指定/空 fields emit 可 | **厳密 `{}` のみ**(省略不可 — Payloadless と規則を分ける)。extra key 拒否 |
+  | Typed(non-empty) | required/type/range/unknown-field 検証 | 同一 validator・同一 error 分類 |
+
+受け入れ = 設計 v2 §6 の 8 テスト + **E-C1 の 6 compile-fail / E-C3 の
+全 shape 別 runtime invalid / E-C4 の catalog drift 5 分類 / E-C6 の行列
+全セル(5 state × UI・RPC × 省略・`{}`・extra key)を行使するテスト群** +
+既存全テスト。
+
+### WP72: 色 C0 — 色空間監査(コード変更なし)
+
+参照: **`docs/design_color_pipeline.md` v4(条件付き Accept)§2-3・§3-1 が正**。
+依存: なし(先行可)。見積: 小(read-only)。排他: なし(docs のみ)。
+
+成果物 = `docs/color_migration_manifest.json`:
+§2-3 の全項目(shader / RT / texture slot / clear color / vertex color /
+capture consumer)について `{path/field, old_encoding, new_encoding,
+expected_change: "bit_exact"|"analytic"|"visual_review", reason}` を列挙。
+§2-1 capability 表の実デバイス照会結果(windowed surface の
+TRANSFER_SRC/DST を含む)、§2-2 anchor への旧 pass 写像案、§2-7 の
+既存 consumer(rpc テスト・DCC スクリプト)一覧を含める。
+
+### WP73: 色 C1a — canonical anchor / format_class / output_transform(構造のみ・golden 不変)
+
+参照: **色 v4 §2-2・§6 C1a の 4 条件が正**。依存: WP72、WP70 merge 後。
+見積: 大(frame graph 横断)。排他: `src/core/renderingpass/` /
+`src/project/featurecompose.cpp` / pass JSON。
+
+**受け入れ = 色 v4 §6 C1a の 4 条件**(完全写像表 + frame-plan diff /
+`resolver_version: 1` = 旧 UNORM 同一解決 / bit-preserving copy /
+旧新 binary の最終 RGBA8 hash 完全一致 — 1 byte の差も不合格)+
+**レビュー条件 C-C1**(round 4 §1.2 の 4 項をそのまま添付):
+
+1. `display` = `TRANSFER_SRC`、実 target(windowed swapchain・headless)=
+   `TRANSFER_DST` で作成。windowed は swapchain 作成前に
+   `supportedUsageFlags & TRANSFER_DST` を照会し対応時のみ imageUsage に
+   追加。format feature の transfer src/dst bit も role 表で照会
+2. copy 前後の layout 遷移を規範化(display: color write →
+   `TRANSFER_SRC_OPTIMAL` / target: → `TRANSFER_DST_OPTIMAL` → copy 後
+   `PRESENT_SRC_KHR` or readback layout)。stage/access mask・queue
+   ownership・初回旧 layout を frame-plan trace に含める
+3. source/destination の extent・sample count・texel block size・
+   channel order 一致を検証(暗黙変換禁止 — resolver v1 規則を実 target
+   との組にも適用)
+4. `TRANSFER_DST` 非対応 surface では (a) 全 256 code × RGBA 往復
+   byte-exact を実証済みの shader copy を使う、又は (b) C1a windowed path
+   を明示 unsupported とする(capture の `unavailable_windowed`
+   = TRANSFER_SRC 不足とは区別して申告)
+
+### WP74: 色 C1b — 色意味論の一括移行 + golden 再基準化(単独ゲート)
+
+参照: **色 v4 §2 全体・§3(manifest / 三者比較 / per-case 承認 /
+tolerance 正直化)・§4 テスト表が正**。依存: WP73。見積: 特大。
+排他: シェーダ全域 / loader / swapchain / capture / golden。
+`resolver_version: 2`(SRGB/16F 規則)への切替、authored 色 decode、
+view/複製戦略、contract 2、§4 の全 analytic fixture 常設、
+storage edge ±1 code + final golden の誤差検査を含む。
+**再基準化は §3 の 6 手順以外の方法で行ってはならない。**
 
 ## 3. 保留中のトラック(WP 化待ち)
 

@@ -337,3 +337,15 @@ target_compile_definitions(pelican_test_surfaceformat_test PRIVATE
 )
 
 pelican_define_test(framephase_test pelican_core)
+
+# UI semantic fixture coverage gate (design_ui_2d_foundation.md v8 §7).
+# Dependency-free node script; skipped when node is unavailable.
+find_program(PELICAN_NODE_EXECUTABLE node)
+if(PELICAN_NODE_EXECUTABLE)
+    add_test(
+        NAME ui_semantic_coverage_gate
+        COMMAND ${PELICAN_NODE_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/ui_semantic/normative/check_coverage.mjs
+            ${CMAKE_SOURCE_DIR}
+    )
+endif()

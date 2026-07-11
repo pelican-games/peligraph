@@ -1,112 +1,119 @@
 {
   "schema": "pelican.ui_semantic_fixture.coverage",
-  "version": 1,
-  "description": "Maps schema enum values / oneOf branches / invalid classes / semantic invariants (I1-I12, design_ui_2d_foundation.md v7 §7) to the normative fixture exercising each. Coverage claims: small enums are covered exhaustively; ui_key/ui_pad_control are covered by one representative per vocabulary branch (full-enum sync between $defs and the consumed_control patterns is enforced by a separate CI test, not by fixtures). CI validates this manifest against its own schema, checks every referenced fixture exists and exercises the value, and checks that the machine-extracted set of schema enums/branches/invariants is a subset of the manifest keys.",
+  "version": 2,
+  "description": "Structured coverage manifest (schema: docs/schemas/pelican.ui_semantic_coverage.schema.json). Small enums are covered exhaustively; ui_key/ui_pad_control are covered by one representative per vocabulary branch, with full enum<->pattern sync enforced by check_coverage.mjs. Semantic invariants are covered per clause; I7/I9 are schema-enforced (gate: schema) and point at schema-invalid fixtures. check_coverage.mjs enforces exact set equality between machine-extracted schema enums and this manifest, and existence of every referenced fixture.",
   "enum_coverage": {
     "input_trace.kind": {
-      "pointer_down": "valid/input_trace_variants.json",
-      "pointer_move": "valid/input_trace_variants.json",
-      "pointer_up": "valid/input_trace_variants.json",
-      "pointer_cancel": "valid/input_trace_variants.json"
+      "pointer_down": { "fixture": "valid/input_trace_variants.json", "gate": "schema" },
+      "pointer_move": { "fixture": "valid/input_trace_variants.json", "gate": "schema" },
+      "pointer_up": { "fixture": "valid/input_trace_variants.json", "gate": "schema" },
+      "pointer_cancel": { "fixture": "valid/input_trace_variants.json", "gate": "schema" }
     },
     "input_trace.button": {
-      "left": "valid/input_trace_variants.json",
-      "right": "valid/input_trace_variants.json",
-      "middle": "valid/input_trace_variants.json"
+      "left": { "fixture": "valid/input_trace_variants.json", "gate": "schema" },
+      "right": { "fixture": "valid/input_trace_variants.json", "gate": "schema" },
+      "middle": { "fixture": "valid/input_trace_variants.json", "gate": "schema" }
     },
     "effects": {
-      "capture": "valid/input_trace_variants.json",
-      "release_capture": "valid/input_trace_variants.json",
-      "click": "valid/input_trace_variants.json",
-      "drag_start": "valid/input_trace_variants.json",
-      "drag": "valid/input_trace_variants.json",
-      "cancel": "valid/input_trace_variants.json",
-      "hover_enter": "valid/input_trace_variants.json",
-      "hover_exit": "valid/input_trace_variants.json"
+      "capture": { "fixture": "valid/input_trace_variants.json", "gate": "schema" },
+      "release_capture": { "fixture": "valid/input_trace_variants.json", "gate": "schema" },
+      "click": { "fixture": "valid/input_trace_variants.json", "gate": "schema" },
+      "drag_start": { "fixture": "valid/input_trace_variants.json", "gate": "schema" },
+      "drag": { "fixture": "valid/input_trace_variants.json", "gate": "schema" },
+      "cancel": { "fixture": "valid/input_trace_variants.json", "gate": "schema" },
+      "hover_enter": { "fixture": "valid/input_trace_variants.json", "gate": "schema" },
+      "hover_exit": { "fixture": "valid/input_trace_variants.json", "gate": "schema" }
     },
     "consumed_vocabulary_class": {
-      "mouse": "valid/input_trace_variants.json",
-      "key": "valid/input_trace_variants.json",
-      "touch": "valid/input_trace_variants.json",
-      "pad": "valid/input_trace_variants.json"
+      "mouse": { "fixture": "valid/input_trace_variants.json", "gate": "schema" },
+      "key": { "fixture": "valid/input_trace_variants.json", "gate": "schema", "clause": "representative key:space; full enum sync via check_coverage.mjs" },
+      "touch": { "fixture": "valid/input_trace_variants.json", "gate": "schema" },
+      "pad": { "fixture": "valid/input_trace_variants.json", "gate": "schema", "clause": "representative pad:dpad_up; full enum sync via check_coverage.mjs" }
     },
     "lifecycle.kind": {
-      "controller_init": "valid/lifecycle_variants.json",
-      "controller_deinit": "valid/lifecycle_variants.json",
-      "capture_cancel": "valid/lifecycle_variants.json",
-      "document_swap": "valid/lifecycle_variants.json",
-      "command_dropped": "valid/lifecycle_variants.json"
+      "controller_init": { "fixture": "valid/lifecycle_variants.json", "gate": "schema" },
+      "controller_deinit": { "fixture": "valid/lifecycle_variants.json", "gate": "schema" },
+      "capture_cancel": { "fixture": "valid/lifecycle_variants.json", "gate": "schema" },
+      "document_swap": { "fixture": "valid/lifecycle_variants.json", "gate": "schema" },
+      "command_dropped": { "fixture": "valid/lifecycle_variants.json", "gate": "schema" }
     },
     "capture_cancel.reason": {
-      "hide": "valid/lifecycle_variants.json",
-      "disable": "valid/lifecycle_variants.json",
-      "remove": "valid/lifecycle_variants.json",
-      "reload": "valid/lifecycle_variants.json",
-      "scene_unload": "valid/lifecycle_variants.json",
-      "focus_loss": "valid/lifecycle_variants.json",
-      "capture_steal": "valid/lifecycle_variants.json"
+      "hide": { "fixture": "valid/lifecycle_variants.json", "gate": "schema" },
+      "disable": { "fixture": "valid/lifecycle_variants.json", "gate": "schema" },
+      "remove": { "fixture": "valid/lifecycle_variants.json", "gate": "schema" },
+      "reload": { "fixture": "valid/lifecycle_variants.json", "gate": "schema" },
+      "scene_unload": { "fixture": "valid/lifecycle_variants.json", "gate": "schema" },
+      "focus_loss": { "fixture": "valid/lifecycle_variants.json", "gate": "schema" },
+      "capture_steal": { "fixture": "valid/lifecycle_variants.json", "gate": "schema" }
     },
     "command_dropped.reason": {
-      "reload_swap": "valid/lifecycle_variants.json",
-      "target_removed": "valid/lifecycle_variants.json",
-      "limit_exceeded": "valid/lifecycle_variants.json"
+      "reload_swap": { "fixture": "valid/lifecycle_variants.json", "gate": "schema" },
+      "target_removed": { "fixture": "valid/lifecycle_variants.json", "gate": "schema" },
+      "limit_exceeded": { "fixture": "valid/lifecycle_variants.json", "gate": "schema" }
     },
     "errors.phase": {
-      "parse": "valid/errors_variants.json",
-      "layout": "valid/errors_variants.json",
-      "route": "valid/errors_variants.json",
-      "commit": "valid/errors_variants.json"
+      "parse": { "fixture": "valid/errors_variants.json", "gate": "schema" },
+      "layout": { "fixture": "valid/errors_variants.json", "gate": "schema" },
+      "route": { "fixture": "valid/errors_variants.json", "gate": "schema" },
+      "commit": { "fixture": "valid/errors_variants.json", "gate": "schema" }
     },
     "errors.code": {
-      "unknown_event": "valid/errors_variants.json",
-      "unknown_source": "valid/errors_variants.json",
-      "unknown_widget_value_path": "valid/errors_variants.json",
-      "type_mismatch": "valid/errors_variants.json",
-      "range_violation": "valid/errors_variants.json",
-      "required_missing": "valid/errors_variants.json",
-      "unknown_field": "valid/errors_variants.json",
-      "no_payload_event": "valid/errors_variants.json",
-      "unknown_widget_type": "valid/errors_variants.json",
-      "axis_conflict": "valid/errors_variants.json",
-      "layout_cycle": "valid/errors_variants.json",
-      "duplicate_stable_id": "valid/errors_variants.json",
-      "limit_exceeded": "valid/errors_variants.json",
-      "unsupported_control": "valid/errors_variants.json"
+      "unknown_event": { "fixture": "valid/errors_variants.json", "gate": "schema" },
+      "unknown_source": { "fixture": "valid/errors_variants.json", "gate": "schema" },
+      "unknown_widget_value_path": { "fixture": "valid/errors_variants.json", "gate": "schema" },
+      "type_mismatch": { "fixture": "valid/errors_variants.json", "gate": "schema" },
+      "range_violation": { "fixture": "valid/errors_variants.json", "gate": "schema" },
+      "required_missing": { "fixture": "valid/errors_variants.json", "gate": "schema" },
+      "unknown_field": { "fixture": "valid/errors_variants.json", "gate": "schema" },
+      "no_payload_event": { "fixture": "valid/errors_variants.json", "gate": "schema" },
+      "unknown_widget_type": { "fixture": "valid/errors_variants.json", "gate": "schema" },
+      "axis_conflict": { "fixture": "valid/errors_variants.json", "gate": "schema" },
+      "layout_cycle": { "fixture": "valid/errors_variants.json", "gate": "schema" },
+      "duplicate_stable_id": { "fixture": "valid/errors_variants.json", "gate": "schema" },
+      "limit_exceeded": { "fixture": "valid/errors_variants.json", "gate": "schema" },
+      "unsupported_control": { "fixture": "valid/errors_variants.json", "gate": "schema" }
     },
     "sampler": {
-      "nearest": "valid/input_trace_variants.json",
-      "linear": "valid/input_trace_variants.json"
+      "nearest": { "fixture": "valid/input_trace_variants.json", "gate": "schema" },
+      "linear": { "fixture": "valid/input_trace_variants.json", "gate": "schema" }
     }
   },
   "invalid_class_coverage": {
-    "unknown_root_property": "invalid/unknown_property.json",
-    "unknown_enum_value": "invalid/bad_kind.json",
-    "variant_required_missing": "invalid/move_with_button.json",
-    "variant_forbidden_field": "invalid/cancel_with_position.json",
-    "numeric_range": "invalid/event_seq_out_of_range.json",
-    "wrong_type": "invalid/wrong_type_rect.json",
-    "unknown_error_code": "invalid/bad_error_code.json",
-    "required_root_missing": "invalid/missing_root_field.json",
-    "string_pattern": "invalid/bad_revision.json",
-    "null_value": "invalid/null_value.json",
-    "non_integer": "invalid/noninteger_coord.json",
-    "closed_vocabulary": "invalid/bad_consumed.json",
-    "path_traversal": "invalid/traversal_texture.json",
-    "unique_items": "invalid/duplicate_effects.json",
-    "multiple_of_6": "invalid/index_count_not_quad.json"
+    "unknown_root_property": { "fixture": "invalid/unknown_property.json", "gate": "schema" },
+    "unknown_enum_value": { "fixture": "invalid/bad_kind.json", "gate": "schema" },
+    "variant_required_missing": { "fixture": "invalid/move_with_button.json", "gate": "schema" },
+    "variant_forbidden_field": { "fixture": "invalid/cancel_with_position.json", "gate": "schema" },
+    "numeric_range": { "fixture": "invalid/event_seq_out_of_range.json", "gate": "schema" },
+    "wrong_type": { "fixture": "invalid/wrong_type_rect.json", "gate": "schema" },
+    "unknown_error_code": { "fixture": "invalid/bad_error_code.json", "gate": "schema" },
+    "required_root_missing": { "fixture": "invalid/missing_root_field.json", "gate": "schema" },
+    "string_pattern": { "fixture": "invalid/bad_revision.json", "gate": "schema" },
+    "null_value": { "fixture": "invalid/null_value.json", "gate": "schema" },
+    "non_integer": { "fixture": "invalid/noninteger_coord.json", "gate": "schema" },
+    "closed_vocabulary": { "fixture": "invalid/bad_consumed.json", "gate": "schema" },
+    "path_traversal": { "fixture": "invalid/traversal_texture.json", "gate": "schema" },
+    "unique_items": { "fixture": "invalid/duplicate_effects.json", "gate": "schema" },
+    "multiple_of_6": { "fixture": "invalid/index_count_not_quad.json", "gate": "schema" }
   },
   "semantic_invariant_coverage": {
-    "I1_rect_order": "semantic_invalid/i01_rect_inverted.json",
-    "I2_ancestor_exists": "semantic_invalid/i02_missing_ancestor.json",
-    "I3_clip_equality": "semantic_invalid/i03_clip_mismatch.json",
-    "I4_id_unique": "semantic_invalid/i04_duplicate_id.json",
-    "I5_seq_monotonic": "semantic_invalid/i05_nonmonotonic_event_seq.json",
-    "I6_run_index": "semantic_invalid/i06_run_index_gap.json",
-    "I7_unique_effects_consumed": "invalid/duplicate_effects.json (schema-enforced; semantic check is a redundant second line)",
-    "I8_scissor_containment": "semantic_invalid/i08_scissor_outside.json",
-    "I9_texture_traversal": "invalid/traversal_texture.json (schema-enforced; semantic check is a redundant second line)",
-    "I10_reference_integrity": "semantic_invalid/i10_dangling_target.json",
-    "I11_capture_state_machine": "semantic_invalid/i11_capture_without_target.json",
-    "I12_viewport_containment": "semantic_invalid/i12_content_rect_outside.json"
+    "I1_rect_order": { "fixture": "semantic_invalid/i01_rect_inverted.json", "gate": "semantic" },
+    "I2_ancestor_exists": { "fixture": "semantic_invalid/i02_missing_ancestor.json", "gate": "semantic" },
+    "I3_clip_equality": { "fixture": "semantic_invalid/i03_clip_mismatch.json", "gate": "semantic" },
+    "I4_id_unique": { "fixture": "semantic_invalid/i04_duplicate_id.json", "gate": "semantic" },
+    "I5a_decl_seq_monotonic": { "fixture": "semantic_invalid/i05b_nonmonotonic_decl_seq.json", "gate": "semantic" },
+    "I5b_event_seq_monotonic": { "fixture": "semantic_invalid/i05_nonmonotonic_event_seq.json", "gate": "semantic" },
+    "I6a_run0_zero": { "fixture": "semantic_invalid/i06_run_index_gap.json", "gate": "semantic" },
+    "I6b_total_match": { "fixture": "semantic_invalid/i06b_total_mismatch.json", "gate": "semantic" },
+    "I7_unique_effects_consumed": { "fixture": "invalid/duplicate_effects.json", "gate": "schema", "clause": "schema uniqueItems is the primary enforcement" },
+    "I8_scissor_containment": { "fixture": "semantic_invalid/i08_scissor_outside.json", "gate": "semantic" },
+    "I9_texture_traversal": { "fixture": "invalid/traversal_texture.json", "gate": "schema", "clause": "schema pattern is the primary enforcement" },
+    "I10a_dangling_forbidden": { "fixture": "semantic_invalid/i10_dangling_target.json", "gate": "semantic" },
+    "I10b_missing_not_allowed_reason": { "fixture": "semantic_invalid/i10b_missing_widget_hide.json", "gate": "semantic" },
+    "I10c_missing_allowed_reasons": { "fixture": "valid/lifecycle_missing_widget.json", "gate": "semantic", "clause": "positive case - must pass the semantic validator" },
+    "I11a_capture_requires_target_down": { "fixture": "semantic_invalid/i11_capture_without_target.json", "gate": "semantic" },
+    "I11b_capture_only_on_down": { "fixture": "semantic_invalid/i11b_capture_on_move.json", "gate": "semantic" },
+    "I11c_up_requires_release": { "fixture": "semantic_invalid/i11c_up_without_release.json", "gate": "semantic" },
+    "I11d_click_xor_drag": { "fixture": "semantic_invalid/i11d_click_after_drag.json", "gate": "semantic" },
+    "I12_viewport_containment": { "fixture": "semantic_invalid/i12_content_rect_outside.json", "gate": "semantic" }
   }
 }
