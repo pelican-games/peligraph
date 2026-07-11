@@ -11,6 +11,84 @@ TEST_CASE("InputSnapshot is a serializable value shape", "[inputstate]") {
     STATIC_REQUIRE(std::is_standard_layout_v<InputSnapshot>);
 }
 
+TEST_CASE("Input events receive a process-lifetime monotonic sequence when queued", "[inputstate][frame-input]") {
+    STATIC_REQUIRE(std::is_same_v<decltype(InputEvent::event_seq), std::uint64_t>);
+
+    InputStateCore input;
+    input.queueButtonEvent(KeyCode::A, true);
+    input.queueCursorMove(10.0f, 20.0f);
+    input.beginFrame();
+
+    {
+        const auto frame = input.currentFrameInput();
+        REQUIRE(frame.ordered_events.size() == 2);
+        REQUIRE(frame.ordered_events[0].type == InputEvent::Type::button);
+        REQUIRE(frame.ordered_events[0].event_seq == 0);
+        REQUIRE(frame.ordered_events[1].type == InputEvent::Type::cursor_move);
+        REQUIRE(frame.ordered_events[1].event_seq == 1);
+    }
+
+    input.clear();
+    input.queueAxisEvent(1.0f, -1.0f);
+    input.beginFrame();
+    const auto frame = input.currentFrameInput();
+    REQUIRE(frame.ordered_events.size() == 1);
+    REQUIRE(frame.ordered_events[0].event_seq == 2);
+}
+
+TEST_CASE("Recorded input sequences use the canonical queue without renumbering", "[inputstate][frame-input]") {
+    InputStateCore input;
+    auto recorded = InputEvent::button(KeyCode::A, true);
+    recorded.event_seq = 40;
+    input.queueEvent(recorded);
+    input.queueCursorMove(1.0f, 2.0f);
+    input.beginFrame();
+
+    const auto frame = input.currentFrameInput();
+    REQUIRE(frame.ordered_events[0].event_seq == 40);
+    REQUIRE(frame.ordered_events[1].event_seq == 41);
+}
+
+TEST_CASE("FrameInput borrow is scoped to one frame generation", "[inputstate][frame-input]") {
+    InputStateCore input;
+    input.queueButtonEvent(KeyCode::A, true);
+    input.beginFrame();
+
+    {
+        auto frame = input.currentFrameInput();
+        REQUIRE(frame.isValid());
+        REQUIRE(frame.generation() == input.frameGeneration());
+        REQUIRE(input.frameInputBorrowCount() == 1);
+
+        const auto copied_frame = frame;
+        REQUIRE(copied_frame.isValid());
+        REQUIRE(input.frameInputBorrowCount() == 2);
+    }
+
+    REQUIRE(input.frameInputBorrowCount() == 0);
+    input.beginFrame();
+    REQUIRE(input.currentFrameInput().ordered_events.empty());
+}
+
+TEST_CASE("Actions consumption mask does not mutate the public snapshot", "[inputstate][frame-input]") {
+    InputStateCore input;
+    input.queueButtonEvent(KeyCode::MouseLeft, true);
+    input.queueAxisEvent(3.0f, -2.0f);
+    input.beginFrame();
+
+    input.consumePointerForActions();
+    const auto actions_snapshot = input.freezeActionsSnapshot();
+    REQUIRE_FALSE(actions_snapshot.getKey(KeyCode::MouseLeft));
+    REQUIRE_FALSE(actions_snapshot.isKeyPushed(KeyCode::MouseLeft));
+    REQUIRE(actions_snapshot.mouse_delta_x == 0.0f);
+    REQUIRE(actions_snapshot.mouse_delta_y == 0.0f);
+
+    REQUIRE(input.currentSnapshot().getKey(KeyCode::MouseLeft));
+    REQUIRE(input.currentSnapshot().isKeyPushed(KeyCode::MouseLeft));
+    REQUIRE(input.currentSnapshot().mouse_delta_x == 3.0f);
+    REQUIRE(input.currentSnapshot().mouse_delta_y == -2.0f);
+}
+
 TEST_CASE("InputStateCore reports pushed and released edges once per frame", "[inputstate]") {
     InputStateCore input;
 

@@ -335,3 +335,5 @@ pelican_define_test(surfaceformat_test pelican_project)
 target_compile_definitions(pelican_test_surfaceformat_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
+
+pelican_define_test(framephase_test pelican_core)

@@ -3,6 +3,7 @@
 #include "../system/registerer.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <utility>
 
 namespace Pelican {
@@ -85,14 +86,20 @@ const EventTypeRegistration *UserEventRegistererTemplatePublic::findByName(std::
     return it == event_types.end() ? nullptr : &*it;
 }
 
-std::vector<QueuedEvent> UserEventRegistererTemplatePublic::drainPendingEvents() {
+void UserEventRegistererTemplatePublic::freezePendingEventsForFrame() {
+    assert(deliver_now_events.empty() && "frozen events must be dispatched before the next frame");
+    deliver_now_events.swap(pending_events);
+}
+
+std::vector<QueuedEvent> UserEventRegistererTemplatePublic::drainFrozenEvents() {
     std::vector<QueuedEvent> events;
-    events.swap(pending_events);
+    events.swap(deliver_now_events);
     return events;
 }
 
 void UserEventRegistererTemplatePublic::clearPendingEvents() {
     pending_events.clear();
+    deliver_now_events.clear();
 }
 
 UserEventRegistererTemplatePublic &getEventRegisterer() {
@@ -100,8 +107,12 @@ UserEventRegistererTemplatePublic &getEventRegisterer() {
     return registerer;
 }
 
-void dispatchPendingEvents(GameContext &ctx) {
-    auto events = getEventRegisterer().drainPendingEvents();
+void freezePendingEventsForFrame() {
+    getEventRegisterer().freezePendingEventsForFrame();
+}
+
+void dispatchFrozenEvents(GameContext &ctx) {
+    auto events = getEventRegisterer().drainFrozenEvents();
     for (const auto &event : events) {
         dispatchEventToRegisteredGameSystems(event, ctx);
     }

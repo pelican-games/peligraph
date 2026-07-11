@@ -1,5 +1,7 @@
 #include "rpcserver.hpp"
 
+#include "../appflow/framephase.hpp"
+
 #include "../appflow/enginetime.hpp"
 #include "../ecs/core.hpp"
 #include "../loader/pathresolver.hpp"
@@ -414,16 +416,6 @@ nlohmann::json frameResult() {
     };
 }
 
-void updateFrameState(EngineTime &engine_time) {
-    GET_MODULE(InputState).beginFrame();
-    GameContext game_context;
-    internal::dispatchPendingEvents(game_context);
-    GET_MODULE(ECSCore).update();
-    internal::updateRegisteredGameSystems(game_context);
-    GET_MODULE(SeqPlayer).update(engine_time.now());
-    GET_MODULE(SceneLoader).applyPendingLoad();
-}
-
 std::string projectRootString() {
     const auto resolved = GET_MODULE(PathResolver).resolveProjectRef(".");
     if (const auto path = std::get_if<std::filesystem::path>(&resolved)) {
@@ -624,7 +616,7 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
         flushPendingTransforms(pending_transforms);
         auto &engine_time = GET_MODULE(EngineTime);
         engine_time.advance();
-        updateFrameState(engine_time);
+        updateFrameState();
         GET_MODULE(Renderer).render();
         return frameResult();
     });

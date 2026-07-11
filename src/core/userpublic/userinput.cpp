@@ -3,6 +3,7 @@
 #include "../os/actionmap.hpp"
 #include "../os/inputstate.hpp"
 
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <utility>
@@ -14,6 +15,9 @@ namespace {
 class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
     std::optional<InputActionMap> action_map;
     std::vector<std::string> action_set_stack;
+    InputActionFrame current_frame;
+    std::uint64_t frozen_generation = std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t evaluation_count = 0;
 
     const InputActionDefinition *requireAction(std::string_view action_name) const {
         if (!action_map) {
@@ -45,11 +49,18 @@ class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
         return action;
     }
 
-    InputActionFrame frame() const {
-        if (!action_map) {
-            return {};
+    void ensureFrame() {
+        auto &input_state = GET_MODULE(InputState);
+        const auto generation = input_state.frameGeneration();
+        if (frozen_generation == generation) {
+            return;
         }
-        return evaluateInputActions(*action_map, GET_MODULE(InputState).currentSnapshot(), action_set_stack);
+
+        const auto action_snapshot = input_state.freezeActionsSnapshot();
+        current_frame = action_map ? evaluateInputActions(*action_map, action_snapshot, action_set_stack)
+                                   : InputActionFrame{};
+        frozen_generation = generation;
+        ++evaluation_count;
     }
 
     void validateActionSetStack(const std::vector<std::string> &stack) const {
@@ -80,32 +91,44 @@ class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
         return action_map.has_value();
     }
 
-    InputActionState state(std::string_view action_name) const {
+    void freezeFrame() {
+        ensureFrame();
+    }
+
+    std::uint64_t evaluationCount() const noexcept {
+        return evaluation_count;
+    }
+
+    InputActionState state(std::string_view action_name) {
         if (requireNonPoseAction(action_name) == nullptr) {
             return {};
         }
-        return frame().get(action_name);
+        ensureFrame();
+        return current_frame.get(action_name);
     }
 
-    float axis1(std::string_view action_name) const {
+    float axis1(std::string_view action_name) {
         if (requireTypedAction(action_name, InputActionType::axis1, "axis1") == nullptr) {
             return 0.0f;
         }
-        return frame().get(action_name).axis1;
+        ensureFrame();
+        return current_frame.get(action_name).axis1;
     }
 
-    ActionAxis2 axis2(std::string_view action_name) const {
+    ActionAxis2 axis2(std::string_view action_name) {
         if (requireTypedAction(action_name, InputActionType::axis2, "axis2") == nullptr) {
             return {};
         }
-        return frame().get(action_name).axis2;
+        ensureFrame();
+        return current_frame.get(action_name).axis2;
     }
 
-    ActionPose pose(std::string_view action_name) const {
+    ActionPose pose(std::string_view action_name) {
         if (requireTypedAction(action_name, InputActionType::pose, "pose") == nullptr) {
             return {};
         }
-        return frame().pose(action_name);
+        ensureFrame();
+        return current_frame.pose(action_name);
     }
 
     void setStack(const std::vector<std::string> &stack) {
@@ -198,5 +221,17 @@ void Actions::clearActionSetStack() {
 std::vector<std::string> Actions::actionSetStack() {
     return GET_MODULE(InputActionsRuntime).stack();
 }
+
+namespace internal {
+
+void freezeInputActionsFrame() {
+    GET_MODULE(InputActionsRuntime).freezeFrame();
+}
+
+std::uint64_t inputActionsEvaluationCount() {
+    return GET_MODULE(InputActionsRuntime).evaluationCount();
+}
+
+} // namespace internal
 
 } // namespace Pelican
