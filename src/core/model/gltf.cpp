@@ -153,6 +153,7 @@ struct InternalGltfLoader {
     tinygltf::Model &model;
     std::string source_path;
     std::optional<AssetFragmentRef> fragment;
+    bool scene_node_instance = false;
     std::vector<std::optional<GlobalMaterialId>> material_map;
     std::vector<MaterialInfo> material_infos;
     std::vector<std::optional<GlobalTextureId>> texture_map;
@@ -179,6 +180,7 @@ struct InternalGltfLoader {
         int mesh_index = -1;
         glm::mat4 parent_transform{1.0f};
         bool subtree = true;
+        bool apply_node_transform = true;
     };
 
     struct LoadSelection {
@@ -653,7 +655,7 @@ struct InternalGltfLoader {
             selection.whole_model = true;
             const auto &scene = model.scenes[model.defaultScene < 0 ? 0 : model.defaultScene];
             for (const auto node : scene.nodes) {
-                selection.roots.push_back(RootSelection{node, -1, glm::mat4{1.0f}, true});
+                selection.roots.push_back(RootSelection{node, -1, glm::mat4{1.0f}, true, true});
             }
             return selection;
         }
@@ -661,12 +663,14 @@ struct InternalGltfLoader {
         const auto selected = resolveFragmentCandidate(*fragment);
         LoadSelection selection;
         if (fragment->kind == "node") {
-            selection.roots.push_back(
-                RootSelection{selected.node_index, -1, selected.parent_transform, true});
+            selection.roots.push_back(scene_node_instance
+                                          ? RootSelection{selected.node_index, -1, glm::mat4{1.0f}, false, false}
+                                          : RootSelection{selected.node_index, -1, selected.parent_transform, true,
+                                                          true});
         } else if (fragment->kind == "mesh") {
             selection.roots.push_back(
                 RootSelection{selected.node_index, selected.object_index,
-                              selected.parent_transform, false});
+                              selected.parent_transform, false, true});
         } else if (fragment->kind == "material") {
             selection.material_only = selected.object_index;
         }
@@ -856,9 +860,10 @@ struct InternalGltfLoader {
         }
     }
 
-    void loadNode(int node_index, const glm::mat4 &parent_transform, bool subtree = true) {
+    void loadNode(int node_index, const glm::mat4 &parent_transform, bool subtree = true,
+                  bool apply_node_transform = true) {
         const auto &node = model.nodes.at(node_index);
-        const auto world_transform = parent_transform * nodeTransform(node);
+        const auto world_transform = apply_node_transform ? parent_transform * nodeTransform(node) : parent_transform;
         if (subtree) {
             for (const auto child_index : node.children) {
                 loadNode(child_index, world_transform);
@@ -904,7 +909,7 @@ struct InternalGltfLoader {
 
         for (const auto &root : selection.roots) {
             if (root.node_index >= 0) {
-                loadNode(root.node_index, root.parent_transform, root.subtree);
+                loadNode(root.node_index, root.parent_transform, root.subtree, root.apply_node_transform);
             } else if (root.mesh_index >= 0) {
                 loadMesh(root.mesh_index, glm::mat4{1.0f});
             }
@@ -963,6 +968,35 @@ ModelTemplate GltfLoader::loadGltfBinary(std::string path,
         model,
         path,
         std::move(fragment),
+        false,
+    };
+    return tmp_loader.load();
+}
+
+ModelTemplate GltfLoader::loadGltfBinarySceneNode(std::string path, AssetFragmentRef fragment) {
+    if (fragment.kind != "node") {
+        throw std::runtime_error("scene node model reference requires #node fragment: " + path + "#" +
+                                 fragment.kind + "/" + fragment.path);
+    }
+    tinygltf::TinyGLTF loader;
+    tinygltf::Model model;
+    std::string err, warn;
+    const auto ret = loader.LoadBinaryFromFile(&model, &err, &warn, path);
+    if (!warn.empty())
+        LOG_WARNING(logger, "loading gltf file \"{}\" : {}", path, warn);
+    if (!err.empty())
+        LOG_ERROR(logger, "loading gltf file \"{}\" : {}", path, err);
+    if (!ret)
+        throw std::runtime_error("failed to load gltf file : " + path);
+
+    InternalGltfLoader tmp_loader{
+        GET_MODULE(MaterialContainer),
+        GET_MODULE(StandardMaterialResource),
+        GET_MODULE(VertBufContainer),
+        model,
+        path,
+        std::move(fragment),
+        true,
     };
     return tmp_loader.load();
 }
@@ -999,6 +1033,7 @@ ModelTemplate GltfLoader::loadGltf(std::string path,
         model,
         path,
         std::move(fragment),
+        false,
     };
     return tmp_loader.load();
 }

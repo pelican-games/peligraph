@@ -1,10 +1,13 @@
 #include "model.hpp"
 #include "../loader/basicconfig.hpp"
+#include "../loader/pathresolver.hpp"
 #include "../model/gltf.hpp"
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
 #include <nlohmann/json.hpp>
+#include <stdexcept>
+#include <variant>
 
 namespace Pelican {
 
@@ -30,6 +33,29 @@ ModelAssetContainer::ModelAssetContainer() {
     }
 }
 
-ModelTemplate &ModelAssetContainer::getModelTemplateByName(const std::string &name) { return model_templates.at(name); }
+ModelTemplate &ModelAssetContainer::getModelTemplateByName(const std::string &name) {
+    if (const auto found = model_templates.find(name); found != model_templates.end()) {
+        return found->second;
+    }
+
+    const auto parsed = parsePathReference(name);
+    if (!parsed.fragment) {
+        return model_templates.at(name);
+    }
+    const auto resolved = GET_MODULE(PathResolver).resolveExistingFileReference(name);
+    const auto *fragment = std::get_if<ResolvedPathFragment>(&resolved);
+    if (fragment == nullptr) {
+        throw std::runtime_error("model fragment reference did not resolve as a fragment: " + name);
+    }
+    auto extension = fragment->path.extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    auto &loader = GET_MODULE(GltfLoader);
+    auto loaded = extension == ".gltf"
+                      ? loader.loadGltf(fragment->path.string(), fragment->fragment)
+                      : loader.loadGltfBinarySceneNode(fragment->path.string(), fragment->fragment);
+    return model_templates.emplace(name, std::move(loaded)).first->second;
+}
 
 } // namespace Pelican

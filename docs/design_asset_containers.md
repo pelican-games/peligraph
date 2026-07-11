@@ -51,7 +51,7 @@ imports/ui_atlas.png#sprite/coin
 `pelican_cli import gltf --extract-scene <glb>` :
 
 - ノード階層 → pelican.scene の objects(名前・transform・**親子**)。
-  ※親子は scene v1 の小改訂(objects[].parent、未決 1)
+  親子は scene v1 の小改訂(`objects[].parent` = 親 object の name、WP79 で確定)
 - KHR_lights_punctual → light コンポーネント / カメラノード → camera
   コンポーネント(C1 で glTF 1:1 なので損失なし)/ extras → コンポーネント
   params(R6 既存規約)

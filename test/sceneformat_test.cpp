@@ -82,6 +82,19 @@ void requireErrorKind(std::string_view message, std::string_view error_kind) {
         REQUIRE(contains(message, "'light'"));
     } else if (error_kind == "duplicate_name") {
         REQUIRE(contains(message, "duplicate object name"));
+    } else if (error_kind == "unknown_parent") {
+        REQUIRE(contains(message, "unknown parent"));
+        REQUIRE(contains(message, "MissingParent"));
+        REQUIRE(contains(message, "Child"));
+    } else if (error_kind == "ambiguous_parent") {
+        REQUIRE(contains(message, "ambiguous parent"));
+        REQUIRE(contains(message, "Parent"));
+        REQUIRE(contains(message, "Child"));
+    } else if (error_kind == "parent_cycle") {
+        REQUIRE(contains(message, "parent cycle"));
+        REQUIRE(contains(message, "NodeA"));
+        REQUIRE(contains(message, "NodeB"));
+        REQUIRE(contains(message, "NodeC"));
     } else {
         FAIL("unknown scene format error_kind: " << error_kind);
     }

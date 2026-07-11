@@ -1,5 +1,7 @@
 #include "importcommand.hpp"
 
+#include "gltfsceneextract.hpp"
+
 #include "../project/importmanifest.hpp"
 
 #include <argparse/argparse.hpp>
@@ -356,6 +358,9 @@ ImportCommandResult importDelivery(const std::filesystem::path &delivery_dir,
 }
 
 int runImportCommand(int argc, char *argv[]) {
+    if (argc > 1 && std::string_view{argv[1]} == "gltf") {
+        return runGltfImportCommand(argc - 1, argv + 1);
+    }
     argparse::ArgumentParser program("Pelican Cli import");
     program.add_argument("delivery_dir").help("delivery directory containing manifest.json");
     program.add_argument("--project").required().metavar("dir|project.json").help("project directory or project.json");

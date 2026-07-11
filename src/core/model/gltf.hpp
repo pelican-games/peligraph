@@ -13,6 +13,7 @@ DECLARE_MODULE(GltfLoader) {
     GltfLoader();
     ModelTemplate loadGltfBinary(std::string path,
                                  std::optional<AssetFragmentRef> fragment = std::nullopt);
+    ModelTemplate loadGltfBinarySceneNode(std::string path, AssetFragmentRef fragment);
     ModelTemplate loadGltf(std::string path,
                            std::optional<AssetFragmentRef> fragment = std::nullopt);
 };

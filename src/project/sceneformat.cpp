@@ -2,9 +2,13 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace Pelican {
 
@@ -76,7 +80,11 @@ nlohmann::json normalizeScene(const nlohmann::json &scene, const std::string &sc
                                  "component" + sceneContext(scene_id));
     }
 
-    std::unordered_set<std::string> object_names;
+    std::unordered_map<std::string, size_t> object_name_counts;
+    std::vector<std::string> object_names;
+    std::vector<std::string> parent_names;
+    object_names.reserve(normalized.at("objects").size());
+    parent_names.reserve(normalized.at("objects").size());
     for (const auto &object : normalized.at("objects")) {
         if (!object.is_object()) {
             throw std::runtime_error("scene objects entries must be objects" + sceneContext(scene_id));
@@ -89,10 +97,19 @@ nlohmann::json normalizeScene(const nlohmann::json &scene, const std::string &sc
             }
             object_name = name->get<std::string>();
             requireIdentifier(object_name, "object name", sceneContext(scene_id));
-            if (!object_names.insert(object_name).second) {
-                throw std::runtime_error("duplicate object name '" + object_name + "'" + sceneContext(scene_id));
-            }
+            ++object_name_counts[object_name];
         }
+
+        std::string parent_name;
+        if (const auto parent = object.find("parent"); parent != object.end()) {
+            if (!parent->is_string()) {
+                throw std::runtime_error("object parent must be a string" + objectContext(scene_id, object_name));
+            }
+            parent_name = parent->get<std::string>();
+            requireIdentifier(parent_name, "object parent", objectContext(scene_id, object_name));
+        }
+        object_names.push_back(object_name);
+        parent_names.push_back(parent_name);
 
         if (!object.contains("components") || !object.at("components").is_array()) {
             throw std::runtime_error("object requires components array" + objectContext(scene_id, object_name));
@@ -107,6 +124,72 @@ nlohmann::json normalizeScene(const nlohmann::json &scene, const std::string &sc
             }
             const auto component_name = component.at("name").get<std::string>();
             requireIdentifier(component_name, "component name", objectContext(scene_id, object_name));
+        }
+    }
+
+    // A referenced duplicate is more actionable than the generic duplicate-name
+    // diagnostic: the parent reference cannot select one of the candidates.
+    for (size_t i = 0; i < parent_names.size(); ++i) {
+        const auto &parent_name = parent_names[i];
+        if (parent_name.empty()) {
+            continue;
+        }
+        const auto found = object_name_counts.find(parent_name);
+        if (found == object_name_counts.end()) {
+            throw std::runtime_error("unknown parent '" + parent_name + "'" +
+                                     objectContext(scene_id, object_names[i]));
+        }
+        if (found->second != 1) {
+            throw std::runtime_error("ambiguous parent '" + parent_name + "' refers to " +
+                                     std::to_string(found->second) + " objects" +
+                                     objectContext(scene_id, object_names[i]));
+        }
+    }
+
+    for (const auto &[name, count] : object_name_counts) {
+        if (count > 1) {
+            throw std::runtime_error("duplicate object name '" + name + "'" + sceneContext(scene_id));
+        }
+    }
+
+    std::unordered_map<std::string, size_t> object_index_by_name;
+    for (size_t i = 0; i < object_names.size(); ++i) {
+        if (!object_names[i].empty()) {
+            object_index_by_name.emplace(object_names[i], i);
+        }
+    }
+
+    // Edges point from child to parent. A three-state DFS reports the exact
+    // participating names instead of only saying that some cycle exists.
+    std::vector<uint8_t> state(object_names.size(), 0);
+    std::vector<size_t> stack;
+    const auto visit = [&](auto &&self, size_t object_index) -> void {
+        state[object_index] = 1;
+        stack.push_back(object_index);
+        const auto &parent_name = parent_names[object_index];
+        if (!parent_name.empty()) {
+            const auto parent_index = object_index_by_name.at(parent_name);
+            if (state[parent_index] == 0) {
+                self(self, parent_index);
+            } else if (state[parent_index] == 1) {
+                const auto cycle_begin = std::find(stack.begin(), stack.end(), parent_index);
+                std::string cycle;
+                for (auto it = cycle_begin; it != stack.end(); ++it) {
+                    if (!cycle.empty()) {
+                        cycle += " -> ";
+                    }
+                    cycle += object_names[*it];
+                }
+                cycle += " -> " + object_names[parent_index];
+                throw std::runtime_error("parent cycle in scene '" + scene_id + "': " + cycle);
+            }
+        }
+        stack.pop_back();
+        state[object_index] = 2;
+    };
+    for (size_t i = 0; i < object_names.size(); ++i) {
+        if (state[i] == 0) {
+            visit(visit, i);
         }
     }
 

@@ -1,0 +1,16 @@
+{
+  "mode": "scene_format",
+  "document": {
+    "schema": "pelican.scene",
+    "version": 1,
+    "scenes": {
+      "default_scene": {
+        "objects": [
+          {"name": "NodeA", "parent": "NodeB", "components": [{"name": "transform"}]},
+          {"name": "NodeB", "parent": "NodeC", "components": [{"name": "transform"}]},
+          {"name": "NodeC", "parent": "NodeA", "components": [{"name": "transform"}]}
+        ]
+      }
+    }
+  }
+}

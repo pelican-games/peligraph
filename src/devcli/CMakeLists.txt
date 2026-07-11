@@ -6,10 +6,11 @@ unset(CMAKE_RUNTIME_OUTPUT_DIRECTORY)
 target_sources(pelican_cli PRIVATE
   assetscommand.cpp
   distconfig.cpp
+  gltfsceneextract.cpp
   importcommand.cpp
   materialcommand.cpp
   projectinit.cpp
   ../core/model/vatformat.cpp
 )
 
-target_link_libraries(pelican_cli PRIVATE argparse nlohmann_json picosha2 glm pelican_project)
+target_link_libraries(pelican_cli PRIVATE argparse nlohmann_json picosha2 glm pelican_project tinygltf)

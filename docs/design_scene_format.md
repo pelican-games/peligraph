@@ -56,7 +56,7 @@
 }
 ```
 
-現行からの差分は **4 つ**:
+現行からの差分は **5 つ**:
 
 1. **エンベロープ**: `schema` / `version` 必須 + シーン群を `scenes` キーに包む。
    ゲートは project.json と同じ意味論(schema 不一致・version 超過は hard error)
@@ -77,6 +77,13 @@
    **形式はこのまま変わらない** — これが解釈レイヤ分離の直接の配当。
    position/direction を transform コンポーネントに統合するのは
    RenderWorld 期の version 改訂に持ち越す(v1 ではライト内にインラインで持つ)
+5. **`objects[].parent`(2026-07-11 WP79 で確定)**: 親 object の `name` を文字列で
+   指定する省略可能 field。省略時はルートで、従来の object 作成経路をそのまま使う。
+   parent 使用時の transform はローカル TRS で、world は
+   `parent_world × child_local`。親には `name` が必要で、未知親・循環(参加 node 名を
+   列挙)・同名候補による曖昧参照は hard error。ランタイム表現は既存 ECS の
+   `LocalTransformComponent::parent` (`EntityId`)のみで、scene 専用階層は作らない。
+   additive な v1 小改訂なので `version` は 1 のまま
 
 ### 互換規則
 

@@ -23,17 +23,17 @@ void ECSPredefinedRegistration::reg() {
     internal::getComponentRegisterer().registerComponent<SimpleModelViewComponent>("simplemodelview");
     internal::getComponentRegisterer().registerComponent<CameraComponent>("camera");
 
-    GET_MODULE(ECSCore)
-        .registerSystemForce<SimpleModelViewTransformSystem, TransformComponent, SimpleModelViewComponent>(
-            GET_MODULE(SimpleModelViewTransformSystem), {});
-    GET_MODULE(ECSCore).registerSystemForce<CameraSystem, TransformComponent, CameraComponent>(GET_MODULE(CameraSystem),
-                                                                                               {});
-    GET_MODULE(ECSCore)
-        .registerSystemForce<LocalTransformSystem, EntityId, TransformComponent, LocalTransformComponent>(
+    auto &ecs = GET_MODULE(ECSCore);
+    const auto local_transform_system =
+        ecs.registerSystemForce<LocalTransformSystem, EntityId, TransformComponent, LocalTransformComponent>(
             GET_MODULE(LocalTransformSystem), {});
-
-    GET_MODULE(ECSCore).registerSystemForce<SimpleModelViewUpdateSystem, SimpleModelViewComponent>(
-        GET_MODULE(SimpleModelViewUpdateSystem), {});
+    const auto model_update_system =
+        ecs.registerSystemForce<SimpleModelViewUpdateSystem, SimpleModelViewComponent>(
+            GET_MODULE(SimpleModelViewUpdateSystem), {});
+    ecs.registerSystemForce<SimpleModelViewTransformSystem, TransformComponent, SimpleModelViewComponent>(
+        GET_MODULE(SimpleModelViewTransformSystem), {local_transform_system, model_update_system});
+    ecs.registerSystemForce<CameraSystem, TransformComponent, CameraComponent>(
+        GET_MODULE(CameraSystem), {local_transform_system});
 }
 
 } // namespace Pelican
