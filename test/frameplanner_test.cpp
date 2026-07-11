@@ -5,6 +5,7 @@
 #include "../src/core/renderingpass/rendertargetmetadataresolver.hpp"
 #include "../src/core/renderingpass/rendertargetnameresolver.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -47,6 +48,16 @@ bool contains(std::string_view haystack, std::string_view needle) {
     return haystack.find(needle) != std::string_view::npos;
 }
 
+void requirePlanFixture(const nlohmann::json &actual, const std::filesystem::path &path) {
+    const char *update = std::getenv("PELICAN_UPDATE_FRAMEPLAN_FIXTURES");
+    if (update != nullptr && std::string{update} == "1") {
+        std::ofstream file{path, std::ios_base::binary};
+        file << actual.dump(2) << '\n';
+        return;
+    }
+    REQUIRE(actual == readJson(path));
+}
+
 std::vector<std::string> passNames(const RenderingPassDefinition &definition) {
     std::vector<std::string> names;
     names.reserve(definition.passes.size());
@@ -63,6 +74,50 @@ std::vector<std::string> graphNodeNames(const FrameGraphDefinition &definition) 
         names.push_back(node.name);
     }
     return names;
+}
+
+void normalizeDisplayAlias(nlohmann::json &value) {
+    if (value.is_string()) {
+        if (value.get<std::string>() == "display") {
+            value = "swapchain";
+        }
+        return;
+    }
+    if (value.is_array() || value.is_object()) {
+        for (auto &entry : value) {
+            normalizeDisplayAlias(entry);
+        }
+    }
+}
+
+nlohmann::json legacyPassProjection(const nlohmann::json &config) {
+    auto projected = nlohmann::json::array();
+    for (const auto &pass : config.at("rendering_passes").at(0).at("passes")) {
+        const auto type = pass.value("type", std::string{});
+        if (type == "canonical_anchor" || type == "output_transform") {
+            continue;
+        }
+        auto legacy = pass;
+        legacy.erase("after");
+        legacy.erase("before");
+        legacy.erase("canonical_anchor");
+        normalizeDisplayAlias(legacy);
+        projected.push_back(std::move(legacy));
+    }
+    return projected;
+}
+
+nlohmann::json legacyTargetProjection(const nlohmann::json &config) {
+    auto projected = nlohmann::json::array();
+    for (const auto &target : config.at("render_targets")) {
+        if (target.value("name", std::string{}) == "display") {
+            continue;
+        }
+        auto legacy = target;
+        legacy.erase("format_class");
+        projected.push_back(std::move(legacy));
+    }
+    return projected;
 }
 
 nlohmann::json stemGoldenRenderingConfig() {
@@ -294,7 +349,40 @@ TEST_CASE("frame planner example plan JSON matches fixture", "[frameplanner]") {
     REQUIRE(graphs.size() == 1);
 
     const auto plan_json = framePlanToJson(planFrameGraph(graphs.front()));
-    REQUIRE(plan_json == readJson(fixtureRoot() / "plans" / "example_main_render.json"));
+    requirePlanFixture(plan_json, fixtureRoot() / "plans" / "example_main_render.json");
+}
+
+TEST_CASE("canonical C1a frame-plan diff preserves every legacy pass and target field",
+          "[frameplanner][color-c1a]") {
+    const auto legacy = readJson(sourceRoot() / "projects" / "example" / "passes" /
+                                 "main_rendering_config.json");
+    const auto old_graphs = parseFrameGraphDefinitionsFromConfigJson(legacy);
+    REQUIRE(old_graphs.size() == 1);
+    const auto old_plan = planFrameGraph(old_graphs.front());
+
+    const auto composed = composeRenderFeatureConfig(legacy);
+    REQUIRE(composed.config.at("resolver_version").get<int>() == 1);
+    const auto new_graphs = parseFrameGraphDefinitionsFromConfigJson(composed.config);
+    REQUIRE(new_graphs.size() == 1);
+    const auto new_plan = planFrameGraph(new_graphs.front());
+
+    std::vector<std::string> new_legacy_order;
+    for (const auto &node : new_plan.nodes) {
+        if (node.kind == FramePlanNodeKind::render || node.kind == FramePlanNodeKind::compute) {
+            new_legacy_order.push_back(node.name);
+        }
+    }
+    REQUIRE(new_legacy_order == framePlanOrder(old_plan));
+    REQUIRE(legacyPassProjection(composed.config) == legacyPassProjection(legacy));
+    REQUIRE(legacyTargetProjection(composed.config) == legacyTargetProjection(legacy));
+
+    const auto &display = composed.config.at("render_targets").back();
+    REQUIRE(display.at("name").get<std::string>() == "display");
+    REQUIRE(display.at("format").get<std::string>() == "FRAME_TARGET_V1");
+    REQUIRE(display.at("usage").get<std::vector<std::string>>() ==
+            std::vector<std::string>{"COLOR_ATTACHMENT", "TRANSFER_SRC"});
+    REQUIRE(new_plan.nodes.back().kind == FramePlanNodeKind::output_transform);
+    REQUIRE(new_plan.nodes.back().name == "output_transform");
 }
 
 TEST_CASE("frame planner explicit after and before edges change levels", "[frameplanner]") {
@@ -350,8 +438,8 @@ TEST_CASE("frame planner explicit after and before edges change levels", "[frame
     const auto base_plan_json = framePlanToJson(planFrameGraph(base_graph));
     const auto edged_plan_json = framePlanToJson(planFrameGraph(edged_graph));
 
-    REQUIRE(base_plan_json == readJson(fixtureRoot() / "plans" / "explicit_edges_base.json"));
-    REQUIRE(edged_plan_json == readJson(fixtureRoot() / "plans" / "explicit_edges_after_before.json"));
+    requirePlanFixture(base_plan_json, fixtureRoot() / "plans" / "explicit_edges_base.json");
+    requirePlanFixture(edged_plan_json, fixtureRoot() / "plans" / "explicit_edges_after_before.json");
     REQUIRE(base_plan_json.at("levels") != edged_plan_json.at("levels"));
 }
 
@@ -389,7 +477,7 @@ TEST_CASE("frame planner feature-composed config plan matches fixture", "[framep
     REQUIRE(graphs.size() == 1);
 
     const auto plan_json = framePlanToJson(planFrameGraph(graphs.front()));
-    REQUIRE(plan_json == readJson(fixtureRoot() / "plans" / "debug_draw_feature_main.json"));
+    requirePlanFixture(plan_json, fixtureRoot() / "plans" / "debug_draw_feature_main.json");
 }
 
 TEST_CASE("frame planner debug text feature plan matches fixture", "[frameplanner]") {
@@ -426,7 +514,7 @@ TEST_CASE("frame planner debug text feature plan matches fixture", "[frameplanne
     REQUIRE(graphs.size() == 1);
 
     const auto plan_json = framePlanToJson(planFrameGraph(graphs.front()));
-    REQUIRE(plan_json == readJson(fixtureRoot() / "plans" / "debug_text_feature_main.json"));
+    requirePlanFixture(plan_json, fixtureRoot() / "plans" / "debug_text_feature_main.json");
 }
 
 TEST_CASE("frame planner shadow feature plan matches fixture", "[frameplanner]") {
@@ -482,7 +570,7 @@ TEST_CASE("frame planner shadow feature plan matches fixture", "[frameplanner]")
     REQUIRE(graphs.size() == 1);
 
     const auto plan_json = framePlanToJson(planFrameGraph(graphs.front()));
-    REQUIRE(plan_json == readJson(fixtureRoot() / "plans" / "shadow_directional_feature_main.json"));
+    requirePlanFixture(plan_json, fixtureRoot() / "plans" / "shadow_directional_feature_main.json");
 }
 
 } // namespace Pelican

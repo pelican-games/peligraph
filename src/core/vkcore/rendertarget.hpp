@@ -29,6 +29,8 @@ DECLARE_MODULE(RenderTarget) {
     ~RenderTarget();
 
     FrameRenderContext render_begin();
+    void recordOutputTransformCopy(vk::CommandBuffer cmd_buf, vk::Image source,
+                                   vk::Format source_format, vk::Extent2D source_extent);
     void render_end();
 
     vk::Format getSwapchainFormat() const;

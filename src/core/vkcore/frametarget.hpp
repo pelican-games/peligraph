@@ -18,6 +18,8 @@ class IFrameTarget {
   public:
     virtual ~IFrameTarget() = default;
     virtual FrameRenderContext render_begin() = 0;
+    virtual void recordOutputTransformCopy(vk::CommandBuffer cmd_buf, vk::Image source,
+                                           vk::Format source_format, vk::Extent2D source_extent) = 0;
     virtual void render_end() = 0;
     virtual FrameTargetCaps caps() const = 0;
     virtual bool consumeExtentChanged() = 0;

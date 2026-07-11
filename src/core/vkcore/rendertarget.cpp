@@ -27,6 +27,11 @@ RenderTarget::~RenderTarget() {}
 
 FrameRenderContext RenderTarget::render_begin() { return impl->render_begin(); }
 
+void RenderTarget::recordOutputTransformCopy(vk::CommandBuffer cmd_buf, vk::Image source,
+                                             vk::Format source_format, vk::Extent2D source_extent) {
+    impl->recordOutputTransformCopy(cmd_buf, source, source_format, source_extent);
+}
+
 void RenderTarget::render_end() { impl->render_end(); }
 
 vk::Format RenderTarget::getSwapchainFormat() const { return impl->caps().color_format; }

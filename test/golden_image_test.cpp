@@ -35,6 +35,7 @@
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <picosha2.h>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -679,7 +680,7 @@ void main() {
   "name": "dummy_feature",
   "passes": [
     {
-      "insert": "after:present",
+      "insert": "after:post_ldr",
       "pass": {
         "name": "feature_present",
         "type": "fullscreen",
@@ -1504,8 +1505,21 @@ std::filesystem::path rendererTraceFixturePath() {
     return sourceRoot() / "test" / "fixtures" / "renderer_execution_traces.json";
 }
 
+std::filesystem::path rgba8HashFixturePath() {
+    return sourceRoot() / "test" / "fixtures" / "wp73_rgba8_hashes.json";
+}
+
+std::filesystem::path canonicalFramePlanTraceFixturePath() {
+    return sourceRoot() / "test" / "fixtures" / "canonical_frame_plan_trace.txt";
+}
+
 bool updateRendererTraceFixturesRequested() {
     const char *value = std::getenv("PELICAN_UPDATE_RENDERER_TRACE_FIXTURES");
+    return value != nullptr && std::string{value} == "1";
+}
+
+bool updateRgba8HashFixturesRequested() {
+    const char *value = std::getenv("PELICAN_UPDATE_RGBA8_HASH_FIXTURES");
     return value != nullptr && std::string{value} == "1";
 }
 
@@ -1559,13 +1573,51 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     }
 }
 
+std::string loadTextFile(const std::filesystem::path &path) {
+    std::ifstream file{path, std::ios::binary};
+    if (!file) {
+        throw std::runtime_error("failed to open text fixture: " + path.string());
+    }
+    return std::string{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
+}
+
+TEST_CASE("golden final RGBA8 bytes match the WP73 baseline hashes",
+          "[golden][headless][byte-exact]") {
+    setupLogger();
+    requireGoldenVulkanDevice();
+    const bool update_fixtures = updateRgba8HashFixturesRequested();
+    const auto fixture_path = rgba8HashFixturePath();
+    const auto expected = update_fixtures ? nlohmann::json::object() : loadJsonFile(fixture_path);
+    nlohmann::json captured = nlohmann::json::object();
+
+    for (const auto &golden_case : discoverGoldenCases()) {
+        CAPTURE(golden_case.name);
+        const auto rendered = renderCase(golden_case);
+        const auto hash = picosha2::hash256_hex_string(rendered.image.pixels.begin(),
+                                                       rendered.image.pixels.end());
+        captured[golden_case.name] = hash;
+        if (!update_fixtures) {
+            REQUIRE(hash == expected.at(golden_case.name).get<std::string>());
+        }
+    }
+
+    if (update_fixtures) {
+        writeTextFile(fixture_path, captured.dump(2) + "\n");
+    } else {
+        REQUIRE(captured.size() == expected.size());
+    }
+}
+
 TEST_CASE("Renderer execution matches plan order and captured traces", "[golden][headless][framegraph]") {
     setupLogger();
     requireGoldenVulkanDevice();
     const bool update_fixtures = updateRendererTraceFixturesRequested();
     const auto fixture_path = rendererTraceFixturePath();
     const auto expected = update_fixtures ? nlohmann::json::object() : loadJsonFile(fixture_path);
+    const auto plan_trace_path = canonicalFramePlanTraceFixturePath();
+    const auto expected_plan_trace = update_fixtures ? std::string{} : loadTextFile(plan_trace_path);
     nlohmann::json captured = nlohmann::json::object();
+    std::string captured_plan_trace;
 
     for (const auto &golden_case : discoverGoldenCases()) {
         if (!usesRenderer(golden_case)) {
@@ -1574,9 +1626,16 @@ TEST_CASE("Renderer execution matches plan order and captured traces", "[golden]
         CAPTURE(golden_case.name);
         const auto rendered = renderCase(golden_case);
         std::vector<std::string> executed_order;
+        std::string plan_line;
         for (const auto &node : rendered.execution_trace.at("nodes")) {
             executed_order.push_back(node.at("name").get<std::string>());
+            if (!plan_line.empty()) {
+                plan_line += " -> ";
+            }
+            plan_line += node.at("name").get<std::string>() + "[" +
+                         node.at("kind").get<std::string>() + "]";
         }
+        captured_plan_trace += golden_case.name + ": " + plan_line + "\n";
 
         REQUIRE(executed_order == rendered.plan_order);
         if (golden_case.mode == "explicit_order") {
@@ -1592,8 +1651,10 @@ TEST_CASE("Renderer execution matches plan order and captured traces", "[golden]
 
     if (update_fixtures) {
         writeTextFile(fixture_path, captured.dump(2) + "\n");
+        writeTextFile(plan_trace_path, captured_plan_trace);
     } else {
         REQUIRE(captured.size() == expected.size());
+        REQUIRE(captured_plan_trace == expected_plan_trace);
     }
 }
 
@@ -1646,7 +1707,7 @@ TEST_CASE("fullscreen inputs rebind after shader reload and render-target recrea
     auto &render_targets = GET_MODULE(RenderTargetContainer);
     const auto lit_color = render_targets.getRenderTargetIdByName("lit_color");
     const auto old_view = render_targets.getImageView(lit_color);
-    renderer.recreateRenderTargetsAndRebindForTesting(vk::Extent2D{32, 32});
+    renderer.recreateRenderTargetsAndRebindForTesting(vk::Extent2D{goldenWidth, goldenHeight});
     const auto new_view = render_targets.getImageView(lit_color);
 
     REQUIRE(new_view != old_view);

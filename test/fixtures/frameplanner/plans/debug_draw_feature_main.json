@@ -1,30 +1,151 @@
 {
   "barriers": [
-    {"from": "present", "kind": "read_after_write", "resource": "swapchain", "to": "debug_draw"}
+    {
+      "from": "present",
+      "kind": "read_after_write",
+      "resource": "display",
+      "to": "debug_draw"
+    },
+    {
+      "from": "debug_draw",
+      "kind": "read_after_write",
+      "resource": "display",
+      "to": "output_transform"
+    }
   ],
   "graph": "main",
   "levels": [
-    ["present"],
-    ["debug_draw"]
+    [
+      "__anchor_post_main"
+    ],
+    [
+      "__anchor_tonemap"
+    ],
+    [
+      "__anchor_post_ldr"
+    ],
+    [
+      "present"
+    ],
+    [
+      "__anchor_pelican_ui"
+    ],
+    [
+      "__anchor_debug_draw"
+    ],
+    [
+      "debug_draw"
+    ],
+    [
+      "__anchor_debug_text"
+    ],
+    [
+      "__anchor_imgui"
+    ],
+    [
+      "output_transform"
+    ]
   ],
   "nodes": [
     {
       "declaration_index": 0,
-      "kind": "render",
+      "kind": "anchor",
       "level": 0,
-      "name": "present",
+      "name": "__anchor_post_main",
       "order": 0,
       "reads": [],
-      "writes": ["swapchain"]
+      "writes": []
     },
     {
       "declaration_index": 1,
-      "kind": "render",
+      "kind": "anchor",
       "level": 1,
-      "name": "debug_draw",
+      "name": "__anchor_tonemap",
       "order": 1,
-      "reads": ["swapchain"],
-      "writes": ["swapchain"]
+      "reads": [],
+      "writes": []
+    },
+    {
+      "declaration_index": 2,
+      "kind": "anchor",
+      "level": 2,
+      "name": "__anchor_post_ldr",
+      "order": 2,
+      "reads": [],
+      "writes": []
+    },
+    {
+      "declaration_index": 3,
+      "kind": "render",
+      "level": 3,
+      "name": "present",
+      "order": 3,
+      "reads": [],
+      "writes": [
+        "display"
+      ]
+    },
+    {
+      "declaration_index": 4,
+      "kind": "anchor",
+      "level": 4,
+      "name": "__anchor_pelican_ui",
+      "order": 4,
+      "reads": [],
+      "writes": []
+    },
+    {
+      "declaration_index": 5,
+      "kind": "anchor",
+      "level": 5,
+      "name": "__anchor_debug_draw",
+      "order": 5,
+      "reads": [],
+      "writes": []
+    },
+    {
+      "declaration_index": 6,
+      "kind": "render",
+      "level": 6,
+      "name": "debug_draw",
+      "order": 6,
+      "reads": [
+        "display"
+      ],
+      "writes": [
+        "display"
+      ]
+    },
+    {
+      "declaration_index": 7,
+      "kind": "anchor",
+      "level": 7,
+      "name": "__anchor_debug_text",
+      "order": 7,
+      "reads": [],
+      "writes": []
+    },
+    {
+      "declaration_index": 8,
+      "kind": "anchor",
+      "level": 8,
+      "name": "__anchor_imgui",
+      "order": 8,
+      "reads": [],
+      "writes": []
+    },
+    {
+      "declaration_index": 9,
+      "kind": "output_transform",
+      "level": 9,
+      "name": "output_transform",
+      "order": 9,
+      "reads": [
+        "display"
+      ],
+      "writes": [
+        "swapchain"
+      ]
     }
   ],
   "schema": "pelican.frame_plan",

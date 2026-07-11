@@ -17,6 +17,7 @@ DECLARE_MODULE(RenderTargetContainer) {
 
     struct InternalRenderTarget {
         std::string name;
+        std::string format_class;
         float extent_scale;
         std::optional<vk::Extent2D> fixed_extent;
         vk::Format format;
@@ -34,6 +35,7 @@ DECLARE_MODULE(RenderTargetContainer) {
     ~RenderTargetContainer();
 
     GlobalRenderTargetId registerRenderTarget(const std::string &name, vk::Extent2D base_extent,
+                                              const std::string &format_class,
                                               float extent_scale, std::optional<vk::Extent2D> fixed_extent,
                                               vk::Format format, vk::ImageUsageFlags usage,
                                               vma::MemoryUsage memUsage);

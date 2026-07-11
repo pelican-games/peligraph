@@ -95,9 +95,22 @@ std::string loadEngineFeature(std::string_view ref) {
 std::vector<std::string> passNames(const nlohmann::json &config) {
     std::vector<std::string> names;
     for (const auto &pass : config.at("rendering_passes").at(0).at("passes")) {
+        const auto type = pass.value("type", std::string{});
+        if (type == "canonical_anchor" || type == "output_transform") {
+            continue;
+        }
         names.push_back(pass.at("name").get<std::string>());
     }
     return names;
+}
+
+const nlohmann::json &passByName(const nlohmann::json &config, std::string_view name) {
+    for (const auto &pass : config.at("rendering_passes").at(0).at("passes")) {
+        if (pass.value("name", std::string{}) == name) {
+            return pass;
+        }
+    }
+    throw std::runtime_error("pass not found: " + std::string{name});
 }
 
 void requireErrorKind(std::string_view message, std::string_view error_kind) {
@@ -116,7 +129,7 @@ void requireErrorKind(std::string_view message, std::string_view error_kind) {
 
 } // namespace
 
-TEST_CASE("render feature composition is a no-op without features", "[render-feature]") {
+TEST_CASE("canonical color pipeline is composed even without features", "[render-feature]") {
     const auto config = nlohmann::json::parse(R"json({
   "shader_defines": ["PELICAN_BASE_DEFINE"],
   "render_targets": [],
@@ -137,7 +150,25 @@ TEST_CASE("render feature composition is a no-op without features", "[render-fea
     REQUIRE_FALSE(loader_called);
     REQUIRE(result.shader_defines == std::vector<std::string>{"PELICAN_BASE_DEFINE"});
     REQUIRE(result.feature_names.empty());
-    REQUIRE(result.config == config);
+    REQUIRE(result.config.at("resolver_version").get<int>() == 1);
+    REQUIRE(result.config.at("render_targets").size() == 1);
+    REQUIRE(result.config.at("render_targets").at(0).at("name").get<std::string>() == "display");
+    REQUIRE(result.config.at("render_targets").at(0).at("format_class").get<std::string>() == "display");
+}
+
+TEST_CASE("canonical color pipeline rejects unsupported resolver versions", "[render-feature]") {
+    const auto config = nlohmann::json{
+        {"resolver_version", 2},
+        {"render_targets", nlohmann::json::array()},
+        {"rendering_passes", nlohmann::json::array()},
+    };
+    std::string message;
+    try {
+        (void)composeRenderFeatureConfig(config);
+    } catch (const std::exception &ex) {
+        message = ex.what();
+    }
+    REQUIRE(message == "Only rendering resolver_version 1 is supported");
 }
 
 TEST_CASE("render feature fixtures compose and reject expected cases", "[render-feature]") {
@@ -161,13 +192,13 @@ TEST_CASE("render feature fixtures compose and reject expected cases", "[render-
                 REQUIRE(result.feature_names == std::vector<std::string>{"dummy_feature"});
                 REQUIRE(passNames(result.config) ==
                         entry.at("expected_pass_order").get<std::vector<std::string>>());
-                const auto &feature_pass = result.config.at("rendering_passes").at(0).at("passes").at(2);
+                const auto &feature_pass = passByName(result.config, "feature_present");
                 REQUIRE(feature_pass.at("name").get<std::string>() == "feature_present");
                 REQUIRE(feature_pass.at("after").get<std::vector<std::string>>() ==
-                        std::vector<std::string>{"present"});
+                        std::vector<std::string>{"__anchor_post_ldr", "present"});
                 REQUIRE(result.shader_defines ==
                         entry.at("expected_shader_defines").get<std::vector<std::string>>());
-                REQUIRE(result.config.at("render_targets").size() == 2);
+                REQUIRE(result.config.at("render_targets").size() == 3);
                 REQUIRE(result.config.at("render_targets").at(0).at("usage").get<std::vector<std::string>>() ==
                         std::vector<std::string>{"COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"});
             } else {
@@ -215,7 +246,7 @@ TEST_CASE("passless render feature records its feature name", "[render-feature]"
     REQUIRE(result.used_features);
     REQUIRE(result.feature_names == std::vector<std::string>{"gpu_timing"});
     REQUIRE_FALSE(result.config.contains("features"));
-    REQUIRE(result.config.at("rendering_passes").at(0).at("passes").empty());
+    REQUIRE(passNames(result.config).empty());
 }
 
 TEST_CASE("render features append buffers and compute tasks", "[render-feature]") {
@@ -258,7 +289,7 @@ TEST_CASE("render features append buffers and compute tasks", "[render-feature]"
     REQUIRE(result.config.at("compute_tasks").at(0).at("name").get<std::string>() == "write_color");
 }
 
-TEST_CASE("HDR render feature overrides lit target and inserts tonemap before present", "[render-feature]") {
+TEST_CASE("HDR render feature overrides lit target and uses the canonical tonemap anchor", "[render-feature]") {
     const auto result = composeRenderFeatureConfig(
         baseConfigWithFeature("engine://features/hdr.json"),
         RenderFeatureComposeDependencies{
@@ -269,7 +300,7 @@ TEST_CASE("HDR render feature overrides lit target and inserts tonemap before pr
     REQUIRE(result.used_features);
     REQUIRE_FALSE(result.config.contains("features"));
     REQUIRE(passNames(result.config) ==
-            std::vector<std::string>{"prepare", "hdr_tonemap", "present"});
+            std::vector<std::string>{"prepare", "present", "hdr_tonemap"});
     REQUIRE(result.shader_defines == std::vector<std::string>{"PELICAN_FEATURE_HDR"});
 
     const auto &lit_color = result.config.at("render_targets").at(0);
@@ -278,10 +309,10 @@ TEST_CASE("HDR render feature overrides lit target and inserts tonemap before pr
     REQUIRE(lit_color.at("usage").get<std::vector<std::string>>() ==
             std::vector<std::string>{"COLOR_ATTACHMENT", "SAMPLED"});
 
-    const auto &tonemap = result.config.at("rendering_passes").at(0).at("passes").at(1);
+    const auto &tonemap = passByName(result.config, "hdr_tonemap");
     REQUIRE(tonemap.at("name").get<std::string>() == "hdr_tonemap");
-    REQUIRE(tonemap.at("before").get<std::vector<std::string>>() ==
-            std::vector<std::string>{"present"});
+    REQUIRE(tonemap.at("after").get<std::vector<std::string>>() ==
+            std::vector<std::string>{"__anchor_tonemap"});
     REQUIRE(tonemap.at("input").get<std::vector<std::string>>() ==
             std::vector<std::string>{"lit_color"});
     REQUIRE(tonemap.at("shader").at("vertex").get<std::string>() == "engine://tonemap");
@@ -343,13 +374,13 @@ TEST_CASE("shadow directional feature inserts depth pass and lighting dependency
     REQUIRE(shadow_map.at("width").get<int>() == 2048);
     REQUIRE(shadow_map.at("height").get<int>() == 2048);
 
-    const auto &shadow_pass = result.config.at("rendering_passes").at(0).at("passes").at(1);
+    const auto &shadow_pass = passByName(result.config, "shadow_depth");
     REQUIRE(shadow_pass.at("before").get<std::vector<std::string>>() ==
             std::vector<std::string>{"lighting_pass"});
     REQUIRE(shadow_pass.at("output").at("depth").get<std::string>() == "shadow_map");
     REQUIRE(shadow_pass.at("depth_store_op").get<std::string>() == "store");
 
-    const auto &lighting_pass = result.config.at("rendering_passes").at(0).at("passes").at(2);
+    const auto &lighting_pass = passByName(result.config, "lighting_pass");
     REQUIRE(lighting_pass.at("input").get<std::vector<std::string>>() ==
             std::vector<std::string>{"gbuffer_albedo", "shadow_map"});
 }

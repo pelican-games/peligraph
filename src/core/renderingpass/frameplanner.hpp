@@ -11,6 +11,8 @@ namespace Pelican {
 enum class FramePlanNodeKind {
     render,
     compute,
+    anchor,
+    output_transform,
 };
 
 struct FrameGraphNodeDefinition {

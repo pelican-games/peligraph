@@ -9,6 +9,7 @@
       "width": 2048,
       "height": 2048,
       "format": "D32_SFLOAT",
+      "format_class": "data",
       "usage": ["DEPTH_STENCIL_ATTACHMENT", "SAMPLED"]
     }
   ],

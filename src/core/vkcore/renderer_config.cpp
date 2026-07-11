@@ -21,15 +21,10 @@ namespace Pelican {
 
 namespace {
 
-bool outputsToSwapchain(const CompiledRenderingPass &rendering_pass) {
-    for (const auto &pass : rendering_pass.passes) {
-        for (const auto &rt_id : pass.definition.output_color) {
-            if (isSwapchainRenderTarget(rt_id)) {
-                return true;
-            }
-        }
-    }
-    return false;
+bool hasOutputTransform(RenderingPassId rendering_pass_id) {
+    const auto *frame_graph = GET_MODULE(FrameGraphRuntimeContainer).find(rendering_pass_id);
+    return frame_graph != nullptr && !frame_graph->nodes.empty() &&
+           frame_graph->nodes.back().kind == FramePlanNodeKind::output_transform;
 }
 
 vk::Extent2D baseExtentFromConfig(const ProjectBasicConfig &config) {
@@ -97,9 +92,9 @@ RenderingPassId loadDefaultRenderingPassFromConfig() {
         throw std::runtime_error("Rendering pass not found: " + default_pass_name);
     }
 
-    const auto &default_rendering_pass = pass_container.getCompiledRenderingPass(rendering_pass_id);
-    if (!outputsToSwapchain(default_rendering_pass)) {
-        throw std::runtime_error("Default rendering pass does not output to swapchain: " + default_pass_name);
+    if (!hasOutputTransform(rendering_pass_id)) {
+        throw std::runtime_error("Default rendering pass has no terminal output_transform: " +
+                                 default_pass_name);
     }
 
     return rendering_pass_id;

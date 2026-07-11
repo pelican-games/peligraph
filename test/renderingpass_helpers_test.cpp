@@ -109,6 +109,36 @@ TEST_CASE("render target JSON parser accepts fixed extents", "[renderingpass]") 
     REQUIRE(definitions[0].fixed_extent->height == 2048);
 }
 
+TEST_CASE("resolver v1 preserves legacy formats and B8 channel order", "[renderingpass][color-c1a]") {
+    const auto config = nlohmann::json{
+        {"resolver_version", 1},
+        {"render_targets",
+         nlohmann::json::array({
+             {{"name", "lit_color"},
+              {"extent_scale", 1.0},
+              {"format", "B8G8R8A8_UNORM"},
+              {"format_class", "scene"},
+              {"usage", nlohmann::json::array({"COLOR_ATTACHMENT", "SAMPLED"})}},
+             {{"name", "display"},
+              {"extent_scale", 1.0},
+              {"format", "FRAME_TARGET_V1"},
+              {"format_class", "display"},
+              {"usage", nlohmann::json::array({"COLOR_ATTACHMENT", "TRANSFER_SRC"})}},
+         })},
+    };
+
+    const auto resolved = resolveRenderTargetFormatClassesV1(
+        config, vk::Format::eR8G8B8A8Unorm, vk::Extent2D{64, 32});
+    REQUIRE(resolved.at("render_targets").at(0).at("format").get<std::string>() ==
+            "B8G8R8A8_UNORM");
+    REQUIRE(resolved.at("render_targets").at(1).at("format").get<std::string>() ==
+            "R8G8B8A8_UNORM");
+    REQUIRE(resolved.at("render_targets").at(1).at("width").get<uint32_t>() == 64);
+    REQUIRE(resolved.at("render_targets").at(1).at("height").get<uint32_t>() == 32);
+    REQUIRE(parseRenderTargetDefinitionsFromJson(resolved).at(0).format ==
+            vk::Format::eB8G8R8A8Unorm);
+}
+
 TEST_CASE("fullscreen pass JSON parser reads explicit fullscreen options", "[renderingpass]") {
     const nlohmann::json pass_json{
         {"push_constants", "camera_position"},

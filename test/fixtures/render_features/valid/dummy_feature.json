@@ -7,6 +7,7 @@
       "name": "feature_scratch",
       "extent_scale": 1.0,
       "format": "R8G8B8A8_UNORM",
+      "format_class": "explicit(R8G8B8A8_UNORM)",
       "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
     }
   ],
@@ -17,7 +18,7 @@
   },
   "passes": [
     {
-      "insert": "after:present",
+      "insert": "after:post_ldr",
       "pass": {
         "name": "feature_present",
         "type": "fullscreen",
