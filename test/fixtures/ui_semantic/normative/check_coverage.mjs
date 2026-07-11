@@ -20,6 +20,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = process.argv[2] ?? path.resolve(here, "../../../..");
 const fixtureSchema = JSON.parse(fs.readFileSync(path.join(repo, "docs/schemas/pelican.ui_semantic_fixture.schema.json"), "utf8"));
 const coverageSchema = JSON.parse(fs.readFileSync(path.join(repo, "docs/schemas/pelican.ui_semantic_coverage.schema.json"), "utf8"));
+const clauseRegistry = JSON.parse(fs.readFileSync(path.join(repo, "docs/schemas/pelican.ui_semantic_clauses.json"), "utf8"));
 const manifest = JSON.parse(fs.readFileSync(path.join(here, "coverage.json"), "utf8"));
 
 let failures = 0;
@@ -39,23 +40,30 @@ const checkEntry = (where, entry) => {
   for (const k of keys) if (!["fixture", "gate", "clause"].includes(k)) fail(`${where}: unknown entry key '${k}'`);
   if (!/^(valid|invalid|semantic_invalid)\/[a-z0-9_]+\.json$/.test(entry.fixture ?? "")) fail(`${where}: bad fixture path '${entry.fixture}'`);
   if (!["schema", "semantic"].includes(entry.gate)) fail(`${where}: bad gate '${entry.gate}'`);
+  if (entry.clause !== undefined && (typeof entry.clause !== "string" || entry.clause.length > 200)) fail(`${where}: clause must be a string of at most 200 characters`);
+  if (entry.gate === "semantic" && entry.fixture?.startsWith("invalid/")) fail(`${where}: semantic gate cannot reference schema-invalid directory`);
+  if (entry.gate === "schema" && entry.fixture?.startsWith("semantic_invalid/")) fail(`${where}: schema gate cannot reference semantic-invalid directory`);
 };
 const checkClosedGroup = (name, group, requiredKeys) => {
   if (typeof group !== "object" || group === null) return fail(`${name}: missing`);
   setEq(`${name} (closed group)`, Object.keys(group), requiredKeys);
   for (const [k, v] of Object.entries(group)) checkEntry(`${name}.${k}`, v);
 };
-if (manifest.schema !== "pelican.ui_semantic_fixture.coverage" || manifest.version !== 2) fail("manifest header mismatch");
+if (manifest.schema !== "pelican.ui_semantic_fixture.coverage" || manifest.version !== 3) fail("manifest header mismatch");
+if (typeof manifest.description !== "string" || manifest.description.length > 2000) fail("manifest description must be a string of at most 2000 characters");
 for (const k of Object.keys(manifest)) {
   if (!["schema", "version", "description", "enum_coverage", "invalid_class_coverage", "semantic_invariant_coverage"].includes(k)) fail(`manifest: unknown top-level key '${k}'`);
 }
 checkClosedGroup("invalid_class_coverage", manifest.invalid_class_coverage,
   coverageSchema.properties.invalid_class_coverage.required);
-checkClosedGroup("semantic_invariant_coverage", manifest.semantic_invariant_coverage,
-  coverageSchema.properties.semantic_invariant_coverage.required);
+if (clauseRegistry.schema !== "pelican.ui_semantic_clauses" || clauseRegistry.version !== 1 || !Array.isArray(clauseRegistry.clauses)) fail("clause registry header mismatch");
+const registryIds = clauseRegistry.clauses.map(c => c.id);
+if (new Set(registryIds).size !== registryIds.length || registryIds.some(id => typeof id !== "string")) fail("clause registry contains invalid or duplicate ids");
+checkClosedGroup("semantic_invariant_coverage", manifest.semantic_invariant_coverage, registryIds);
 setEq("enum_coverage groups", Object.keys(manifest.enum_coverage ?? {}),
   coverageSchema.properties.enum_coverage.required);
 for (const [g, m] of Object.entries(manifest.enum_coverage ?? {})) {
+  if (typeof m !== "object" || m === null || Object.keys(m).length < 1) fail(`enum_coverage.${g}: entry map must not be empty`);
   for (const [k, v] of Object.entries(m)) checkEntry(`enum_coverage.${g}.${k}`, v);
 }
 
@@ -66,6 +74,38 @@ allEntries.push(...Object.values(manifest.invalid_class_coverage ?? {}));
 allEntries.push(...Object.values(manifest.semantic_invariant_coverage ?? {}));
 for (const e of allEntries) {
   if (e.fixture && !fs.existsSync(path.join(here, e.fixture))) fail(`referenced fixture does not exist: ${e.fixture}`);
+}
+
+// Referenced enum entries are executable witnesses: the named value must occur
+// in the corresponding field (vocabulary classes match their prefix).
+const fixtureCache = new Map();
+const loadFixture = rel => {
+  if (!fixtureCache.has(rel)) fixtureCache.set(rel, JSON.parse(fs.readFileSync(path.join(here, rel), "utf8")));
+  return fixtureCache.get(rel);
+};
+const arrayHas = (fixture, arrayName, field, value) => (fixture[arrayName] ?? []).some(item => {
+  if (field === "effects") return (item.effects ?? []).includes(value);
+  if (field === "consumed") return (item.consumed ?? []).some(v => v.startsWith(`${value}:`));
+  return item[field] === value;
+});
+const witnessHas = (group, value, fixture) => {
+  if (group === "input_trace.kind") return arrayHas(fixture, "input_trace", "kind", value);
+  if (group === "input_trace.button") return arrayHas(fixture, "input_trace", "button", value);
+  if (group === "effects") return arrayHas(fixture, "input_trace", "effects", value);
+  if (group === "consumed_vocabulary_class") return arrayHas(fixture, "input_trace", "consumed", value);
+  if (group === "lifecycle.kind") return arrayHas(fixture, "lifecycle", "kind", value);
+  if (group === "capture_cancel.reason") return (fixture.lifecycle ?? []).some(v => v.kind === "capture_cancel" && v.reason === value);
+  if (group === "command_dropped.reason") return (fixture.lifecycle ?? []).some(v => v.kind === "command_dropped" && v.reason === value);
+  if (group === "errors.phase") return arrayHas(fixture, "errors", "phase", value);
+  if (group === "errors.code") return arrayHas(fixture, "errors", "code", value);
+  if (group === "sampler") return arrayHas(fixture, "draw_runs", "sampler", value);
+  return false;
+};
+for (const [group, entries] of Object.entries(manifest.enum_coverage ?? {})) {
+  for (const [value, entry] of Object.entries(entries)) {
+    if (entry.fixture && fs.existsSync(path.join(here, entry.fixture)) && !witnessHas(group, value, loadFixture(entry.fixture)))
+      fail(`enum_coverage.${group}.${value}: referenced fixture does not contain the value`);
+  }
 }
 
 // --- 3. enum extraction from fixture schema, exact equality ---
