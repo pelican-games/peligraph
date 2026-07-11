@@ -114,10 +114,12 @@ std::string lowerExtension(const std::filesystem::path &path) {
     return extension;
 }
 
-ModelTemplate loadGltfTemplate(const std::filesystem::path &path) {
+ModelTemplate loadGltfTemplate(const std::filesystem::path &path,
+                               std::optional<AssetFragmentRef> fragment = std::nullopt) {
     auto &loader = GET_MODULE(GltfLoader);
     const auto path_string = path.string();
-    return lowerExtension(path) == ".gltf" ? loader.loadGltf(path_string) : loader.loadGltfBinary(path_string);
+    return lowerExtension(path) == ".gltf" ? loader.loadGltf(path_string, std::move(fragment))
+                                           : loader.loadGltfBinary(path_string, std::move(fragment));
 }
 
 SceneObjectTransform identityObjectTransform() {
@@ -302,8 +304,12 @@ void SceneLoader::applyObjectTransform(std::string_view name, const SceneObjectT
 }
 
 std::filesystem::path SceneLoader::loadTransientGltf(std::string_view path_ref, const std::optional<std::string> &name) {
-    const auto path = GET_MODULE(PathResolver).resolveExistingFile(path_ref);
-    auto model_template = loadGltfTemplate(path);
+    const auto resolved = GET_MODULE(PathResolver).resolveExistingFileReference(path_ref);
+    const auto *fragment = std::get_if<ResolvedPathFragment>(&resolved);
+    const auto path = fragment != nullptr ? fragment->path : std::get<std::filesystem::path>(resolved);
+    auto model_template = loadGltfTemplate(path, fragment != nullptr
+                                                     ? std::optional<AssetFragmentRef>{fragment->fragment}
+                                                     : std::nullopt);
     const auto model_instance_id = GET_MODULE(PolygonInstanceContainer).placeModelInstance(model_template);
 
     auto &component_info_manager = GET_MODULE(ComponentInfoManager);

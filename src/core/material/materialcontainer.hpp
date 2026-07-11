@@ -66,6 +66,8 @@ DECLARE_MODULE(MaterialContainer) {
                                     vk::DeviceSize bytes_num);
     GlobalMaterialId registerMaterial(MaterialInfo info);
     std::pair<vk::ImageView, vk::ImageView> textureViewsForTesting(GlobalTextureId texture) const;
+    size_t textureCountForTesting() const { return textures.size(); }
+    size_t materialCountForTesting() const { return materials.size(); }
 
     bool isRenderRequired(PassId pass_id, GlobalMaterialId material) const;
     void bindResource(vk::CommandBuffer cmd_buf, PassId pass_id, GlobalMaterialId material,

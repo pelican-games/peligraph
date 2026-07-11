@@ -273,6 +273,15 @@ std::string resolveExistingFileString(PathResolver &resolver, const std::string 
     return resolver.resolveExistingFile(ref).string();
 }
 
+std::string resolveExistingModelReferenceString(PathResolver &resolver, const std::string &ref) {
+    const auto resolved = resolver.resolveExistingFileReference(ref);
+    if (const auto *fragment = std::get_if<ResolvedPathFragment>(&resolved)) {
+        return fragment->path.string() + "#" + fragment->fragment.kind + "/" +
+               fragment->fragment.path;
+    }
+    return std::get<std::filesystem::path>(resolved).string();
+}
+
 std::string rewriteAssetPaths(std::string data) {
     auto json = nlohmann::json::parse(data);
     if (!json.contains("models") || !json.at("models").is_array()) {
@@ -282,7 +291,8 @@ std::string rewriteAssetPaths(std::string data) {
     auto &resolver = GET_MODULE(PathResolver);
     for (auto &model : json.at("models")) {
         if (model.is_object() && model.contains("path") && model.at("path").is_string()) {
-            model["path"] = resolveExistingFileString(resolver, model.at("path").get<std::string>());
+            model["path"] =
+                resolveExistingModelReferenceString(resolver, model.at("path").get<std::string>());
         }
     }
     return json.dump();

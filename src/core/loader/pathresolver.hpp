@@ -86,6 +86,7 @@ DECLARE_MODULE(PathResolver) {
 
     ResolvedRef resolveProjectRef(std::string_view ref) const;
     ResolvedRef resolveCliRef(std::string_view ref) const;
+    ResolvedRef resolveExistingFileReference(std::string_view ref) const;
     std::filesystem::path resolveExistingFile(std::string_view ref) const;
     std::string loadText(std::string_view ref) const;
     std::vector<std::byte> loadBytes(std::string_view ref) const;

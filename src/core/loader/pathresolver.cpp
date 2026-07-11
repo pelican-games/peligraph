@@ -629,24 +629,32 @@ ResolvedRef PathResolver::resolveRef(std::string_view ref, bool cli_origin) cons
 }
 
 std::filesystem::path PathResolver::resolveExistingFile(std::string_view ref) const {
+    const auto resolved = resolveExistingFileReference(ref);
+    if (const auto fragment = std::get_if<ResolvedPathFragment>(&resolved)) {
+        throw std::runtime_error(unsupportedFragmentMessage(fragment->fragment));
+    }
+
+    return std::get<std::filesystem::path>(resolved);
+}
+
+ResolvedRef PathResolver::resolveExistingFileReference(std::string_view ref) const {
     const auto resolved = resolveProjectRef(ref);
     if (const auto engine_id = std::get_if<EngineResourceId>(&resolved)) {
         throw std::runtime_error("resolveExistingFile does not accept engine resources: engine://" +
                                  engine_id->id);
     }
-    if (const auto fragment = std::get_if<ResolvedPathFragment>(&resolved)) {
-        throw std::runtime_error(unsupportedFragmentMessage(fragment->fragment));
-    }
     if (const auto fragment = std::get_if<ResolvedEngineFragment>(&resolved)) {
         throw std::runtime_error(unsupportedFragmentMessage(fragment->fragment));
     }
 
-    const auto path = std::get<std::filesystem::path>(resolved);
+    const auto &path = std::holds_alternative<ResolvedPathFragment>(resolved)
+                           ? std::get<ResolvedPathFragment>(resolved).path
+                           : std::get<std::filesystem::path>(resolved);
     std::error_code ec;
     if (!std::filesystem::is_regular_file(path, ec) || ec) {
         throw std::runtime_error("File not found: " + pathString(path));
     }
-    return path;
+    return resolved;
 }
 
 std::string PathResolver::loadText(std::string_view ref) const {

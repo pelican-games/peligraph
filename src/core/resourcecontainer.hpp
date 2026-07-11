@@ -20,6 +20,7 @@ template <typename THandle, typename TResource> class ResourceContainer {
     void unreg(THandle handle) { kv.erase(handle); }
     auto &get(THandle handle) { return kv.at(handle); }
     const auto &get(THandle handle) const { return kv.at(handle); }
+    size_t size() const { return kv.size(); }
 };
 
 } // namespace Pelican
