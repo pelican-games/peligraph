@@ -1,6 +1,7 @@
 #pragma once
 
 #include "shadercompiler.hpp"
+#include "spvlink.hpp"
 #include "../../project/surfaceformat.hpp"
 
 #include <string>
@@ -26,6 +27,11 @@ struct SurfaceShaderComposition {
 struct SurfaceCompileResult {
     ShaderCompileResult vertex;
     ShaderCompileResult fragment;
+    std::vector<SpvLinkBinding> vertex_bindings;
+    std::vector<SpvLinkBinding> fragment_bindings;
+    std::string vertex_cache_key;
+    std::string fragment_cache_key;
+    bool experimental_spv_link = false;
 };
 
 SurfaceShaderComposition composeSurfaceShaders(const SurfaceFormatDocument &surface,
@@ -40,5 +46,9 @@ SurfaceCompileResult compileSurfaceShaders(ShaderCompiler &compiler,
                                            std::vector<std::string> defines = {});
 
 std::string_view surfacePassName(SurfacePass pass);
+
+// Selection is deliberately process-explicit and defaults to false.  Merely
+// linking SPIRV-Tools into the engine never changes the WP78 source path.
+bool surfaceSpvLinkExperimentalEnabled();
 
 } // namespace Pelican

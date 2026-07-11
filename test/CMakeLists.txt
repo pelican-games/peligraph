@@ -166,6 +166,68 @@ if(PELICAN_RUNTIME_SHADER_COMPILER)
         pelican_copy_shaderc_runtime(pelican_test_surfacecompiler_test)
     endif()
 endif()
+pelican_define_test(spvlink_test pelican_core spirv-reflect-static glm)
+target_compile_definitions(pelican_test_spvlink_test PRIVATE
+    PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+if(PELICAN_RUNTIME_SHADER_COMPILER)
+    target_link_libraries(pelican_test_spvlink_test PRIVATE pelican_shaderc)
+    if(COMMAND pelican_copy_shaderc_runtime)
+        pelican_copy_shaderc_runtime(pelican_test_spvlink_test)
+    endif()
+endif()
+find_program(PELICAN_SLANGC_EXECUTABLE slangc HINTS $ENV{VULKAN_SDK}/Bin)
+if(PELICAN_SLANGC_EXECUTABLE)
+    set(PELICAN_SLANG_COOL_FIXTURE ${CMAKE_CURRENT_BINARY_DIR}/fixtures/spvlink/surface_slang_cool.spv)
+    set(PELICAN_SLANG_WARM_FIXTURE ${CMAKE_CURRENT_BINARY_DIR}/fixtures/spvlink/surface_slang_warm.spv)
+    add_custom_command(
+        OUTPUT ${PELICAN_SLANG_COOL_FIXTURE} ${PELICAN_SLANG_WARM_FIXTURE}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/fixtures/spvlink
+        COMMAND ${PELICAN_SLANGC_EXECUTABLE}
+            -target spirv
+            -profile ps_6_0+spirv_1_5
+            -entry main
+            -stage fragment
+            -O0
+            -emit-spirv-directly
+            -fvk-use-entrypoint-name
+            ${CMAKE_SOURCE_DIR}/experiments/spvlink/shaders/surface.slang
+            -o ${PELICAN_SLANG_COOL_FIXTURE}
+        COMMAND ${PELICAN_SLANGC_EXECUTABLE}
+            -target spirv
+            -profile ps_6_0+spirv_1_5
+            -entry main
+            -stage fragment
+            -O0
+            -emit-spirv-directly
+            -fvk-use-entrypoint-name
+            -DPELICAN_VARIANT_WARM
+            ${CMAKE_SOURCE_DIR}/experiments/spvlink/shaders/surface.slang
+            -o ${PELICAN_SLANG_WARM_FIXTURE}
+        DEPENDS ${CMAKE_SOURCE_DIR}/experiments/spvlink/shaders/surface.slang
+        VERBATIM
+    )
+    add_custom_target(pelican_spvlink_slang_fixture
+        DEPENDS ${PELICAN_SLANG_COOL_FIXTURE} ${PELICAN_SLANG_WARM_FIXTURE})
+    add_dependencies(pelican_test_spvlink_test pelican_spvlink_slang_fixture)
+    target_compile_definitions(pelican_test_spvlink_test PRIVATE
+        PELICAN_TEST_SLANG_COOL_FIXTURE="${PELICAN_SLANG_COOL_FIXTURE}"
+        PELICAN_TEST_SLANG_WARM_FIXTURE="${PELICAN_SLANG_WARM_FIXTURE}"
+    )
+endif()
+if(Vulkan_GLSLANG_VALIDATOR_EXECUTABLE)
+    add_test(
+        NAME spvlink_cli_linked_golden
+        COMMAND ${CMAKE_COMMAND}
+            -DGLSLANG=${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}
+            -DSPIRV_VAL=$ENV{VULKAN_SDK}/Bin/spirv-val.exe
+            -DLINKER=$<TARGET_FILE:pelican-spv-link>
+            -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
+            -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/spvlink_cli_golden
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_spvlink_golden.cmake
+    )
+endif()
 pelican_define_test(shader_library_test pelican_core spirv-reflect-static glm)
 target_compile_definitions(pelican_test_shader_library_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>

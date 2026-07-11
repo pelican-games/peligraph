@@ -1,0 +1,5 @@
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PELICAN_INSTALL_DIR})
+add_executable(pelican-spv-link main.cpp)
+set_target_properties(pelican-spv-link PROPERTIES CXX_STANDARD 20)
+unset(CMAKE_RUNTIME_OUTPUT_DIRECTORY)
+target_link_libraries(pelican-spv-link PRIVATE pelican_core nlohmann_json)

@@ -309,10 +309,16 @@ SurfaceShaderBundleIds ShaderLibrary::loadFromSurface(const SurfaceFormatDocumen
                              std::string{surfacePassName(pass)} + ".vert";
     const auto fragment_name = std::string{source_name} + "#" +
                                std::string{surfacePassName(pass)} + ".frag";
-    const auto vertex = bundles.reg(buildFromSpirv(result.vertex.spirv, {}, 1, vertex_name,
-                                                   composition.defines));
-    const auto fragment = bundles.reg(buildFromSpirv(result.fragment.spirv, {}, 1, fragment_name,
-                                                      composition.defines));
+    auto vertex_bundle = buildFromSpirv(result.vertex.spirv, {}, 1, vertex_name,
+                                        composition.defines);
+    vertex_bundle.binding_table = result.vertex_bindings;
+    vertex_bundle.cache_key = result.vertex_cache_key;
+    auto fragment_bundle = buildFromSpirv(result.fragment.spirv, {}, 1, fragment_name,
+                                          composition.defines);
+    fragment_bundle.binding_table = result.fragment_bindings;
+    fragment_bundle.cache_key = result.fragment_cache_key;
+    const auto vertex = bundles.reg(std::move(vertex_bundle));
+    const auto fragment = bundles.reg(std::move(fragment_bundle));
     bundle_ids.push_back(vertex);
     bundle_ids.push_back(fragment);
     return {vertex, fragment};

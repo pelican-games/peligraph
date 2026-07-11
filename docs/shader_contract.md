@@ -77,10 +77,11 @@ M2 以降で合流する場合は、feature 由来 defines の後ろに material
 
 ## B 層 source ABI (M3a)
 
-B 層 `.surface` は GLSL ソース専用で、エンジン所有の
+B 層の**既定経路**は GLSL ソース専用で、エンジン所有の
 `engine://shaders/material/surface_v1.vert` / `surface_v1.frag` へ仮想 include として
 逆 include される。ユーザー文書自体は変更せず、`#line` が code 本体の元のファイル名・行番号を
-コンパイラへ渡す。HLSL/Slang と `.spv` link は M3b 以降であり、この経路では受理しない。
+コンパイラへ渡す。この source include fallback は M3b 導入後も production baseline として
+常設し、`PELICAN_SPV_LINK` 未指定時の挙動である。
 
 版付き v1 hook とシグネチャは次のとおり。`PelicanVertexV1`、`PelicanSurfaceInputV1`、
 `PelicanSurfaceV1`、`PelicanLightV1` の field・型・意味を含めて凍結する。field 追加も行わず、
@@ -113,6 +114,28 @@ surface 名を含むロードエラーになる。
 同じ vertex 合成物を main / `PELICAN_PASS_DEPTH` / `PELICAN_PASS_VELOCITY` で再コンパイルし、
 vertex displacement と custom0/custom1 の経路を全 pass で維持する。B の lowering はこの
 3 variant、公開 template/library、set 2 resource、render state を C-material 記述として出力する。
+
+## B 層 experimental SPIR-V link ABI (M3b / WP80)
+
+`PELICAN_SPV_LINK=experimental` を明示したプロセスだけが同じ `.surface` API の
+SPIR-V link backend を選ぶ。その他の値・未指定は上記 source 経路であり、既定の
+shader source、define、golden、binding は変えない。
+
+linker は固定 revision の SPIRV-Headers / SPIRV-Tools / SPIRV-Reflect を使い、binary parser、
+linker、optimizer、validator、reflection/remap API だけで処理する。SPIR-V text assembly の
+生成・置換・再 assemble は行わない。hook と公開 library 関数の ABI は scalar、vec2〜4、
+単純 struct（および Function storage のそれらへの pointer）だけを許可する。matrix、array、
+resource handle、Block/BufferBlock 型は hook 名を含むエラーで拒否する。
+
+experimental 経路の custom texture は split sampler を標準形とする。宣言順 `i` に対して
+sampled image は set 2 binding `7 + 2*i`、sampler は `8 + 2*i` であり、CPU binding 表は
+logical name、descriptor type、remap 前後の set/binding を持つ。既定 source 経路の combined
+image sampler (`7 + i`) は fallback の互換契約として不変である。
+
+キャッシュキーには固定3依存の revision/実行版、target env、template/user compiler generator、
+両入力 SHA-256、export/import symbol、material set/binding 規約、全 define/pass/stage/ABI salt を含める。
+GLSL library corpus は uncalled hook を保持する `--keep-uncalled`、Slang corpus は hook の
+`[noinline]` と `-O0` を規約とする。
 
 ## WP70 で解消済みの差分
 

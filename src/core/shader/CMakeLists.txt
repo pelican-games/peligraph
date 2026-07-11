@@ -5,12 +5,19 @@ target_sources(pelican_core PRIVATE
     shaderlibrary.cpp
     shaderreference.cpp
     shaderreflection.cpp
+    spvlink.cpp
     surfacecompiler.cpp
 )
 target_compile_definitions(pelican_core PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
 )
-target_link_libraries(pelican_core PRIVATE spirv-reflect-static)
+target_link_libraries(pelican_core PRIVATE
+    spirv-reflect-static
+    SPIRV-Tools
+    SPIRV-Tools-link
+    SPIRV-Tools-opt
+    picosha2
+)
 if(PELICAN_RUNTIME_SHADER_COMPILER)
     target_link_libraries(pelican_core PRIVATE pelican_shaderc)
 endif()
