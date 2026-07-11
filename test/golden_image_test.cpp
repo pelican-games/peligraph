@@ -1729,9 +1729,9 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     requireGoldenVulkanDevice();
     const auto cases = discoverGoldenCases();
 #if PELICAN_WITH_VAT
-    REQUIRE(cases.size() == 18);
+    REQUIRE(cases.size() == 19);
 #else
-    REQUIRE(cases.size() == 17);
+    REQUIRE(cases.size() == 18);
 #endif
 
     for (const auto &golden_case : cases) {
