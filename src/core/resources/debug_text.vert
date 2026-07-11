@@ -2,6 +2,7 @@
 #extension GL_GOOGLE_include_directive : enable
 
 #include "pelican_sets.glsl"
+#include "pelican_frame.glsl"
 
 struct DebugTextVertex {
     vec4 position;

@@ -11,6 +11,8 @@
 
 namespace Pelican {
 
+class FrameResources;
+
 struct DebugDrawVertex {
     glm::vec4 position;
     glm::vec4 color;
@@ -45,7 +47,7 @@ DECLARE_MODULE(DebugDraw) {
     void line(glm::vec3 from_ndc, glm::vec3 to_ndc, glm::vec4 color);
     void line(glm::vec3 from_ndc, glm::vec3 to_ndc, glm::vec4 from_color, glm::vec4 to_color);
     void clear();
-    void render(vk::CommandBuffer cmd_buf, PassId pass_id);
+    void render(vk::CommandBuffer cmd_buf, PassId pass_id, const FrameResources &frame_resources);
 
     bool isEnabledForTesting() const { return enabled; }
     size_t queuedVertexCountForTesting() const { return vertices.size(); }

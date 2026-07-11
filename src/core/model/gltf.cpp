@@ -158,6 +158,10 @@ struct InternalGltfLoader {
         return static_cast<uint8_t>(std::lround(std::clamp(value, 0.0, 1.0) * 255.0));
     }
 
+    float toUnormFloat(double value) {
+        return static_cast<float>(toUnorm8(value)) / 255.0f;
+    }
+
     double vectorValueOr(const std::vector<double> &values, size_t index, double fallback) {
         return index < values.size() ? values[index] : fallback;
     }
@@ -180,9 +184,7 @@ struct InternalGltfLoader {
         }
 
         return registerSolidTexture(
-            toUnorm8(material.occlusionTexture.strength),
-            toUnorm8(material.pbrMetallicRoughness.roughnessFactor),
-            toUnorm8(material.pbrMetallicRoughness.metallicFactor));
+            255, 255, 255);
     }
 
     GlobalTextureId emissiveTextureForMaterial(const tinygltf::Material &material) {
@@ -191,10 +193,7 @@ struct InternalGltfLoader {
             return texture_map[texture_index];
         }
 
-        return registerSolidTexture(
-            toUnorm8(vectorValueOr(material.emissiveFactor, 0, 0.0)),
-            toUnorm8(vectorValueOr(material.emissiveFactor, 1, 0.0)),
-            toUnorm8(vectorValueOr(material.emissiveFactor, 2, 0.0)));
+        return std_mat.whiteTexture();
     }
 
 #if PELICAN_WITH_VAT
@@ -462,18 +461,6 @@ struct InternalGltfLoader {
                 dat.color.resize(tmp_color.size());
                 std::transform(tmp_color.begin(), tmp_color.end(), dat.color.begin(),
                                [](glm::vec3 v3) { return glm::vec4{v3, 1.0f}; });
-            } else if (primitive.material >= 0 &&
-                       model.materials[primitive.material].pbrMetallicRoughness.baseColorTexture.index < 0 &&
-                       !model.materials[primitive.material].pbrMetallicRoughness.baseColorFactor.empty()) {
-                const auto &base_color = model.materials[primitive.material].pbrMetallicRoughness.baseColorFactor;
-                const glm::vec4 base_color_vec4{
-                    base_color[0],
-                    base_color[1],
-                    base_color[2],
-                    base_color[3],
-                };
-                dat.color.resize(dat.pos.size());
-                std::fill(dat.color.begin(), dat.color.end(), base_color_vec4);
             }
             if (auto it = primitive.attributes.find("JOINTS_0"); it != primitive.attributes.end())
                 dat.joint = getDataFromAccessor<TINYGLTF_TYPE_VEC4, glm::i16vec4>(it->second);
@@ -532,6 +519,17 @@ struct InternalGltfLoader {
             const auto normal_texture =
                 normal_texture_index >= 0 ? texture_map[normal_texture_index] : std_mat.normalDefaultTexture();
             const auto emissive_texture = emissiveTextureForMaterial(material);
+            const auto &base_factor = material.pbrMetallicRoughness.baseColorFactor;
+            const bool has_metallic_roughness_texture =
+                material.pbrMetallicRoughness.metallicRoughnessTexture.index >= 0;
+            const bool has_emissive_texture = material.emissiveTexture.index >= 0;
+            const auto materialFactor = [&](double value) {
+                return has_metallic_roughness_texture ? static_cast<float>(value) : toUnormFloat(value);
+            };
+            const auto emissiveFactor = [&](size_t component) {
+                const auto value = vectorValueOr(material.emissiveFactor, component, 0.0);
+                return has_emissive_texture ? static_cast<float>(value) : toUnormFloat(value);
+            };
 
             material_infos[i] = Pelican::MaterialInfo{
                 .vert_shader = std_mat.standardVertShader(),
@@ -539,7 +537,20 @@ struct InternalGltfLoader {
                 .base_color_texture = base_color_texture,
                 .metallic_roughness_texture = metallic_roughness_texture,
                 .normal_texture = normal_texture,
-                .emissive_texture = emissive_texture
+                .emissive_texture = emissive_texture,
+                .base_color_factor = glm::vec4{
+                    static_cast<float>(vectorValueOr(base_factor, 0, 1.0)),
+                    static_cast<float>(vectorValueOr(base_factor, 1, 1.0)),
+                    static_cast<float>(vectorValueOr(base_factor, 2, 1.0)),
+                    static_cast<float>(vectorValueOr(base_factor, 3, 1.0)),
+                },
+                .emissive_factor = glm::vec3{
+                    emissiveFactor(0), emissiveFactor(1), emissiveFactor(2),
+                },
+                .metallic_factor = materialFactor(material.pbrMetallicRoughness.metallicFactor),
+                .roughness_factor = materialFactor(material.pbrMetallicRoughness.roughnessFactor),
+                .normal_scale = static_cast<float>(material.normalTexture.scale),
+                .occlusion_strength = static_cast<float>(material.occlusionTexture.strength),
             };
             material_map[i] = mat_container.registerMaterial(material_infos[i]);
             resolved_materials[i] = material_map[i];

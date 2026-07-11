@@ -1,6 +1,8 @@
 #version 460
 #extension GL_GOOGLE_include_directive : enable
 
+#include "pelican_frame.glsl"
+
 layout(location = 0) in vec2 inTexCoord;
 layout(location = 0) out vec4 outColor;
 

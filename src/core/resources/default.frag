@@ -3,6 +3,8 @@
 #extension GL_GOOGLE_include_directive : enable
 
 #include "pelican_sets.glsl"
+#include "pelican_frame.glsl"
+#include "pelican_material.glsl"
 
 layout(set = PELICAN_SET_MATERIAL, binding = 0) uniform sampler2D baseColorSampler;
 layout(set = PELICAN_SET_MATERIAL, binding = 1) uniform sampler2D metallicRoughnessSampler;
@@ -24,6 +26,7 @@ layout(location = 3) out vec4 outWorldPos;    // RGB: WorldPos, A: reserved
 layout(location = 4) out vec4 outEmissive;    // RGB: Emissive, A: reserved
 
 void main() {
+    PelicanMaterialData material = pelicanMaterials.materials[pelicanPush.materialIndex];
     vec4 baseColor = texture(baseColorSampler, texUV) * inColor;
     outAlbedo = baseColor;
 
@@ -38,6 +41,8 @@ void main() {
         // Normal Mapping
         mat3 TBN = mat3(normalize(inTangent), normalize(inBitangent), normalize(inNormal));
         vec3 tangentNormal = texture(normalSampler, texUV).xyz * 2.0 - 1.0;
+        tangentNormal.xy *= material.surfaceFactors.z;
+        tangentNormal = normalize(tangentNormal);
         worldNormal = normalize(TBN * tangentNormal);
     }
     outNormal = vec4(worldNormal * 0.5 + 0.5, 1.0);
@@ -46,11 +51,13 @@ void main() {
     vec3 mr = texture(metallicRoughnessSampler, texUV).rgb;
     // G-bufferへの出力: R=roughness, G=metallic, B=AO（glTF標準に合わせる）
     // glTF ORM texture: R=Occlusion, G=Roughness, B=Metallic
-    outMaterial = vec4(mr.g, mr.b, mr.r, 1.0);  // R=roughness(green), G=metallic(blue), B=AO(red)
+    outMaterial = vec4(mr.g * material.surfaceFactors.y,
+                       mr.b * material.surfaceFactors.x,
+                       mix(1.0, mr.r, material.surfaceFactors.w), 1.0);
 
     // World Position
     outWorldPos = vec4(inWorldPos, 1.0);
 
     // Emissive
-    outEmissive = texture(emissiveSampler, texUV);
+    outEmissive = texture(emissiveSampler, texUV) * material.emissiveFactor;
 }

@@ -28,10 +28,8 @@ namespace Pelican
 		void update();
 		void updateAnimation(float time);
 
-		void bindResource(vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout, uint32_t set_number) const;
 		glm::mat4 shadowViewProjection() const;
-
-		vk::DescriptorSetLayout getDescriptorSetLayout() const { return m_DescriptorSetLayout.get(); }
+		const BufferWrapper& lightBuffer() const { return m_LightUBO; }
 
 	private:
 		DirectionalLight* getLight(const std::string& name);
@@ -51,8 +49,5 @@ namespace Pelican
 		std::unordered_map<std::string, uint32_t> m_SpotLightNameMap;
 
 		BufferWrapper m_LightUBO;
-		vk::UniqueDescriptorPool m_DescriptorPool;
-		vk::UniqueDescriptorSetLayout m_DescriptorSetLayout;
-		vk::UniqueDescriptorSet m_DescriptorSet;
 	};
 }

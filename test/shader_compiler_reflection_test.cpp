@@ -2,6 +2,7 @@
 #include "../src/core/shader/pelican_sets.hpp"
 #include "../src/core/shader/shaderreflection.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 #include <algorithm>
 #include <array>
 #include <filesystem>
@@ -89,7 +90,11 @@ TEST_CASE("shader reflection reports descriptors, push constants, and vertex inp
     const auto frag_reflection = reflect(frag.spirv);
     const auto merged = merge(std::array{vert_reflection, frag_reflection});
 
-    const auto *object_buffer = findBinding(merged, PELICAN_SET_FRAME, 0);
+    const auto *frame_ubo = findBinding(merged, PELICAN_SET_FRAME, PELICAN_FRAME_UBO_BINDING);
+    REQUIRE(frame_ubo != nullptr);
+    REQUIRE(frame_ubo->type == vk::DescriptorType::eUniformBuffer);
+
+    const auto *object_buffer = findBinding(merged, PELICAN_SET_FRAME, PELICAN_OBJECT_BUFFER_BINDING);
     REQUIRE(object_buffer != nullptr);
     REQUIRE(object_buffer->type == vk::DescriptorType::eStorageBuffer);
     REQUIRE(object_buffer->count == 1);
@@ -100,10 +105,7 @@ TEST_CASE("shader reflection reports descriptors, push constants, and vertex inp
     REQUIRE(base_color->type == vk::DescriptorType::eCombinedImageSampler);
     REQUIRE(static_cast<bool>(base_color->stages & vk::ShaderStageFlagBits::eFragment));
 
-    REQUIRE(merged.push_constant.has_value());
-    REQUIRE(merged.push_constant->offset == 0);
-    REQUIRE(merged.push_constant->size == 64);
-    REQUIRE(static_cast<bool>(merged.push_constant->stageFlags & vk::ShaderStageFlagBits::eVertex));
+    REQUIRE(merged.push_constants.size() == 2);
 
     REQUIRE(merged.vertex_inputs.size() == 5);
     REQUIRE(merged.vertex_inputs[0].location == 0);
@@ -112,18 +114,53 @@ TEST_CASE("shader reflection reports descriptors, push constants, and vertex inp
     REQUIRE(merged.vertex_inputs[2].format == vk::Format::eR32G32Sfloat);
 
     const auto set0_bindings = makeDescriptorSetLayoutBindings(merged, PELICAN_SET_FRAME);
-    REQUIRE(set0_bindings.size() == 1);
+    REQUIRE(set0_bindings.size() == 3);
     REQUIRE(set0_bindings[0].binding == 0);
-    REQUIRE(set0_bindings[0].descriptorType == vk::DescriptorType::eStorageBuffer);
+    REQUIRE(set0_bindings[0].descriptorType == vk::DescriptorType::eUniformBuffer);
+    REQUIRE(set0_bindings[1].binding == 1);
+    REQUIRE(set0_bindings[1].descriptorType == vk::DescriptorType::eStorageBuffer);
 
     const auto set2_bindings = makeDescriptorSetLayoutBindings(merged, PELICAN_SET_MATERIAL);
-    REQUIRE(set2_bindings.size() == 4);
-    REQUIRE(set2_bindings[3].binding == 3);
-    REQUIRE(set2_bindings[3].descriptorType == vk::DescriptorType::eCombinedImageSampler);
+    REQUIRE(set2_bindings.size() == 5);
+    REQUIRE(set2_bindings.back().binding == PELICAN_MATERIAL_BUFFER_BINDING);
+    REQUIRE(set2_bindings.back().descriptorType == vk::DescriptorType::eStorageBuffer);
 
     const auto push_ranges = makePushConstantRanges(merged);
     REQUIRE(push_ranges.size() == 1);
-    REQUIRE(push_ranges[0].size == 64);
+    REQUIRE(push_ranges[0].offset == 0);
+    REQUIRE(push_ranges[0].size == PELICAN_PUSH_ENGINE_BYTES + sizeof(uint32_t));
+#endif
+}
+
+TEST_CASE("push constant reflection enforces engine and shader regions", "[shader]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    ShaderCompiler compiler;
+    const auto invalid_engine = compiler.compileSource(R"glsl(
+#version 450
+layout(push_constant) uniform InvalidEngine { vec4 value; } pc;
+void main() { gl_Position = pc.value; }
+)glsl", vk::ShaderStageFlagBits::eVertex, "invalid_engine.vert");
+    REQUIRE(invalid_engine.ok);
+    REQUIRE_THROWS_WITH(validatePushConstantContract(reflect(invalid_engine.spirv)),
+                        Catch::Matchers::ContainsSubstring("leading 64-byte MVP"));
+
+    const auto valid_shader = compiler.compileSource(R"glsl(
+#version 450
+layout(push_constant) uniform ShaderData { layout(offset = 64) vec4 value; } pc;
+layout(location = 0) out vec4 outColor;
+void main() { outColor = pc.value; }
+)glsl", vk::ShaderStageFlagBits::eFragment, "valid_shader.frag");
+    REQUIRE(valid_shader.ok);
+    REQUIRE_NOTHROW(validatePushConstantContract(reflect(valid_shader.spirv)));
+
+    ShaderReflection asymmetric;
+    asymmetric.push_constants = {
+        vk::PushConstantRange{vk::ShaderStageFlagBits::eVertex, 0, 80},
+        vk::PushConstantRange{vk::ShaderStageFlagBits::eFragment, 64, 16},
+    };
+    const auto asymmetric_ranges = makePushConstantRanges(asymmetric);
+    REQUIRE(asymmetric_ranges.size() == 2);
+    REQUIRE_FALSE(asymmetric_ranges[0].stageFlags & asymmetric_ranges[1].stageFlags);
 #endif
 }
 

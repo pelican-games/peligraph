@@ -7,6 +7,7 @@
 namespace Pelican {
 
 class Camera;
+class FrameResources;
 class LightContainer;
 class MaterialContainer;
 class PolygonInstanceContainer;
@@ -17,9 +18,9 @@ struct MaterialRendererDependencies {
     PolygonInstanceContainer &instance_container;
     const VertBufContainer &vert_buf_container;
     const MaterialContainer &material_container;
+    const FrameResources &frame_resources;
     LightContainer &light_container;
     const Camera &camera;
-    double time_seconds = 0.0;
 };
 
 DECLARE_MODULE(MaterialRenderer) {

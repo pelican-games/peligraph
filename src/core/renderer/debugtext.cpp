@@ -1,4 +1,5 @@
 #include "debugtext.hpp"
+#include "frameresources.hpp"
 
 #include "../loader/engineresources.hpp"
 #include "../loader/imageloader.hpp"
@@ -397,7 +398,8 @@ void DebugText::clear() {
     vertices.clear();
 }
 
-void DebugText::render(vk::CommandBuffer cmd_buf, PassId pass_id, vk::Extent2D target_extent) {
+void DebugText::render(vk::CommandBuffer cmd_buf, PassId pass_id, vk::Extent2D target_extent,
+                       const FrameResources &frame_resources) {
     if (!enabled || queued_glyphs.empty()) {
         return;
     }
@@ -423,6 +425,7 @@ void DebugText::render(vk::CommandBuffer cmd_buf, PassId pass_id, vk::Extent2D t
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
     cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics,
                          pipeline_factory.pipeline(found->second.pipeline));
+    frame_resources.bindGraphics(cmd_buf, pipeline_factory.layout(found->second.pipeline));
     cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
                                pipeline_factory.layout(found->second.pipeline),
                                PELICAN_SET_FREE, found->second.descriptor_set.get(), {});

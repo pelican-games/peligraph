@@ -22,14 +22,11 @@ struct PushConstantStruct {
 
 static_assert(sizeof(PushConstantStruct) == PELICAN_PUSH_ENGINE_BYTES);
 
-struct MaterialPushConstantStruct {
-    glm::mat4 mvp;
-    glm::vec4 vat_bounds_min_time;
-    glm::vec4 vat_bounds_extent_frame;
-    glm::vec4 vat_playback_flags;
+struct MaterialIndexPushConstant {
+    uint32_t material_index = 0;
 };
 
-static_assert(sizeof(MaterialPushConstantStruct) <= PELICAN_PUSH_TOTAL_BYTES);
+static_assert(sizeof(MaterialIndexPushConstant) <= PELICAN_PUSH_SHADER_BYTES);
 
 DECLARE_MODULE(MaterialContainer) {
 
@@ -56,9 +53,7 @@ DECLARE_MODULE(MaterialContainer) {
     std::unordered_map<uint64_t, PipelineHandle> pipelines;
     std::optional<PipelineHandle> default_pipeline;
     ResourceContainer<GlobalMaterialId, InternalMaterialInfo> materials;
-
-    vk::Buffer model_mat_buffer;
-    vk::UniqueDescriptorSet model_mat_buf_descset;
+    BufferWrapper material_buffer;
 
   public:
     MaterialContainer();
@@ -69,18 +64,11 @@ DECLARE_MODULE(MaterialContainer) {
                                     vk::DeviceSize bytes_num);
     GlobalMaterialId registerMaterial(MaterialInfo info);
 
-    void setModelMatBuf(const BufferWrapper &buf);
-
     bool isRenderRequired(PassId pass_id, GlobalMaterialId material) const;
     void bindResource(vk::CommandBuffer cmd_buf, PassId pass_id, GlobalMaterialId material,
                       GlobalMaterialId prev_material_id) const;
-    void bindModelMatrixResource(vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout,
-                                 uint32_t set_number) const;
     vk::PipelineLayout getPipelineLayout() const;
     vk::PipelineLayout pipelineLayout(GlobalMaterialId material) const;
-    MaterialPushConstantStruct makePushConstants(GlobalMaterialId material, glm::mat4 vp_matrix,
-                                                double time_seconds) const;
-    uint32_t pushConstantBytes(GlobalMaterialId material) const;
 };
 
 } // namespace Pelican

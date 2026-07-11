@@ -14,6 +14,8 @@
 
 namespace Pelican {
 
+class FrameResources;
+
 struct DebugTextVertex {
     glm::vec4 position;
     glm::vec4 color;
@@ -80,7 +82,8 @@ DECLARE_MODULE(DebugText) {
     void text(int x, int y, std::string_view value,
               glm::vec4 color = glm::vec4{1.0f}, int scale = 1);
     void clear();
-    void render(vk::CommandBuffer cmd_buf, PassId pass_id, vk::Extent2D target_extent);
+    void render(vk::CommandBuffer cmd_buf, PassId pass_id, vk::Extent2D target_extent,
+                const FrameResources &frame_resources);
 
     bool isEnabledForTesting() const { return enabled; }
     size_t queuedGlyphCountForTesting() const { return queued_glyphs.size(); }

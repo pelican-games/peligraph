@@ -2,6 +2,7 @@
 #extension GL_GOOGLE_include_directive : enable
 
 #include "pelican_sets.glsl"
+#include "pelican_frame.glsl"
 
 layout(set = PELICAN_SET_PASS_INPUT, binding = 0) uniform sampler2D albedoSampler;
 layout(set = PELICAN_SET_PASS_INPUT, binding = 1) uniform sampler2D normalSampler;
@@ -11,10 +12,6 @@ layout(set = PELICAN_SET_PASS_INPUT, binding = 4) uniform sampler2D emissiveSamp
 
 layout(location = 0) in vec2 inTexCoord;
 layout(location = 0) out vec4 outColor;
-
-layout(push_constant) uniform PushConstants {
-    vec4 cameraPos;
-} pushConsts;
 
 vec3 fresnelSchlick(float cosTheta, vec3 f0) {
     return f0 + (1.0 - f0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
@@ -32,7 +29,7 @@ void main() {
     float metallic = clamp(material.g, 0.0, 1.0);
     float occlusion = clamp(material.b, 0.0, 1.0);
     vec3 N = normal;
-    vec3 V = normalize(pushConsts.cameraPos.xyz - world);
+    vec3 V = normalize(pelicanFrame.camera_position.xyz - world);
     vec3 L = normalize(vec3(-0.45, 0.72, 0.55));
     vec3 H = normalize(V + L);
     float NdotL = max(dot(N, L), 0.0);

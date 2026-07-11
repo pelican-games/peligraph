@@ -4,6 +4,7 @@
 #include "../handle.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include <glm/vec3.hpp>
+#include <glm/vec4.hpp>
 #include <optional>
 #include <span>
 #include <vulkan/vulkan.hpp>
@@ -29,6 +30,12 @@ struct MaterialInfo {
     GlobalTextureId metallic_roughness_texture;
     GlobalTextureId normal_texture;
     GlobalTextureId emissive_texture;
+    glm::vec4 base_color_factor{1.0f};
+    glm::vec3 emissive_factor{1.0f};
+    float metallic_factor = 1.0f;
+    float roughness_factor = 1.0f;
+    float normal_scale = 1.0f;
+    float occlusion_strength = 1.0f;
     struct VatPlaybackInfo {
         GlobalTextureId position_texture;
         GlobalTextureId normal_texture;
@@ -42,5 +49,16 @@ struct MaterialInfo {
     };
     std::optional<VatPlaybackInfo> vat;
 };
+
+struct alignas(16) MaterialGpuData {
+    alignas(16) glm::vec4 base_color_factor{1.0f};
+    alignas(16) glm::vec4 emissive_factor{1.0f};
+    alignas(16) glm::vec4 surface_factors{1.0f};
+    alignas(16) glm::vec4 vat_bounds_min_frame_count{0.0f};
+    alignas(16) glm::vec4 vat_bounds_extent_fps{0.0f};
+    alignas(16) glm::ivec4 vat_flags{0};
+};
+
+static_assert(sizeof(MaterialGpuData) == 96);
 
 } // namespace Pelican

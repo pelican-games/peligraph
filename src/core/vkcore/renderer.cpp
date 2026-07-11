@@ -1,6 +1,7 @@
 #include "renderer.hpp"
 #include "../renderer/camera.hpp"
 #include "../renderer/fullscreenpassrenderer.hpp"
+#include "../renderer/frameresources.hpp"
 #include "../renderer/materialrender.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
 #include "../renderer/shadowdepthpasscontainer.hpp"
@@ -48,6 +49,7 @@ struct RenderFrameModules {
     PolygonInstanceContainer &instance_container;
     const VertBufContainer &vert_buf_container;
     const MaterialContainer &material_container;
+    FrameResources &frame_resources;
     FullscreenPassRenderer &fullscreen_pass_renderer;
     FullscreenPassContainer &fullscreen_pass_container;
     UiRenderer &ui_renderer;
@@ -82,6 +84,7 @@ RenderFrameModules resolveRenderFrameModules() {
         GET_MODULE(PolygonInstanceContainer),
         GET_MODULE(VertBufContainer),
         GET_MODULE(MaterialContainer),
+        GET_MODULE(FrameResources),
         GET_MODULE(FullscreenPassRenderer),
         GET_MODULE(FullscreenPassContainer),
         GET_MODULE(UiRenderer),
@@ -97,6 +100,28 @@ RenderFrameModules resolveRenderFrameModules() {
 void updateFrameAnimation(LightContainer &light_container, double time) {
     light_container.updateAnimation(static_cast<float>(time));
     light_container.update();
+}
+
+void updateFrameResources(RenderFrameModules &modules, vk::Extent2D extent) {
+    auto &engine_time = GET_MODULE(EngineTime);
+    const auto frame_index = engine_time.frameIndex();
+    const auto inverse_width = extent.width == 0 ? 0.0f : 1.0f / static_cast<float>(extent.width);
+    const auto inverse_height = extent.height == 0 ? 0.0f : 1.0f / static_cast<float>(extent.height);
+
+    FrameUniformData data;
+    data.time_delta = glm::vec4{static_cast<float>(engine_time.now()),
+                                static_cast<float>(engine_time.dt()), 0.0f, 0.0f};
+    data.frame_index = glm::uvec4{static_cast<uint32_t>(frame_index),
+                                  static_cast<uint32_t>(frame_index >> 32), 0u, 0u};
+    data.resolution = glm::vec4{static_cast<float>(extent.width), static_cast<float>(extent.height),
+                                inverse_width, inverse_height};
+    data.camera_position = glm::vec4{modules.camera.getPos(), 1.0f};
+    data.view = modules.camera.getViewMatrix();
+    data.projection = modules.camera.getProjectionMatrix();
+
+    modules.frame_resources.setSceneBuffers(modules.instance_container.getObjectBuf(),
+                                            modules.light_container.lightBuffer());
+    modules.frame_resources.update(data);
 }
 
 void beginTiming(RenderTiming *render_timing, vk::CommandBuffer cmd_buf, const std::vector<std::string> &node_names) {
@@ -371,12 +396,12 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
     const MaterialRendererDependencies material_renderer_dependencies{modules.instance_container,
                                                                       modules.vert_buf_container,
                                                                       modules.material_container,
+                                                                      modules.frame_resources,
                                                                       modules.light_container,
-                                                                      modules.camera,
-                                                                      GET_MODULE(EngineTime).now()};
+                                                                      modules.camera};
     const FullscreenPassRendererDependencies fullscreen_pass_renderer_dependencies{modules.fullscreen_pass_container,
-                                                                                  modules.light_container};
-    const UiRendererDependencies ui_renderer_dependencies{modules.ui_container};
+                                                                                  modules.frame_resources};
+    const UiRendererDependencies ui_renderer_dependencies{modules.ui_container, modules.frame_resources};
     const RenderPassDispatchDependencies pass_dispatch_dependencies{
         modules.material_renderer,
         material_renderer_dependencies,
@@ -387,6 +412,7 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
         ui_renderer_dependencies,
         modules.debug_draw,
         modules.debug_text,
+        modules.frame_resources,
         modules.camera,
         modules.render_target.getSwapchainFormat()};
     const RenderPassExecutorDependencies pass_executor_dependencies{modules.render_target_container, modules.vk_utils,
@@ -478,6 +504,7 @@ void Renderer::render() {
 
     const auto render_ctx = modules.render_target.render_begin();
     handleFrameTargetResize(modules, render_target_layout_tracker);
+    updateFrameResources(modules, render_ctx.extent);
 
     const auto &rendering_pass =
         modules.rendering_pass_container.getCompiledRenderingPass(current_rendering_pass_id);

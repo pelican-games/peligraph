@@ -1,4 +1,5 @@
 #include "debugdraw.hpp"
+#include "frameresources.hpp"
 
 #include "../shader/pelican_sets.hpp"
 #include "../vkcore/core.hpp"
@@ -138,7 +139,7 @@ void DebugDraw::clear() {
     vertices.clear();
 }
 
-void DebugDraw::render(vk::CommandBuffer cmd_buf, PassId pass_id) {
+void DebugDraw::render(vk::CommandBuffer cmd_buf, PassId pass_id, const FrameResources &frame_resources) {
     if (!enabled || vertices.empty()) {
         return;
     }
@@ -157,6 +158,7 @@ void DebugDraw::render(vk::CommandBuffer cmd_buf, PassId pass_id) {
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
     cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics,
                          pipeline_factory.pipeline(found->second.pipeline));
+    frame_resources.bindGraphics(cmd_buf, pipeline_factory.layout(found->second.pipeline));
     cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
                                pipeline_factory.layout(found->second.pipeline),
                                PELICAN_SET_FREE, found->second.descriptor_set.get(), {});

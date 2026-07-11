@@ -94,6 +94,7 @@ DECLARE_MODULE(PipelineFactory) {
     vk::Pipeline pipeline(PipelineHandle handle) const;
     vk::PipelineLayout layout(PipelineHandle handle) const;
     vk::DescriptorSetLayout descriptorSetLayout(PipelineHandle handle, uint32_t set) const;
+    vk::DescriptorSetLayout frameDescriptorSetLayout();
     const ShaderReflection &reflection(PipelineHandle handle) const;
 
     void rebuildDirty();

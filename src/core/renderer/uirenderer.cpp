@@ -1,4 +1,5 @@
 #include "uirenderer.hpp"
+#include "frameresources.hpp"
 #include "uicontainer.hpp"
 
 #include "../log.hpp"
@@ -20,7 +21,7 @@ struct UiPushConstant {
     float _pad2, _pad3;
 };
 
-static_assert(sizeof(UiPushConstant) <= PELICAN_PUSH_ENGINE_BYTES);
+static_assert(sizeof(UiPushConstant) <= PELICAN_PUSH_SHADER_BYTES);
 
 GraphicsPipelineDesc makeUiPipelineDesc(ShaderBundleId vert_shader, ShaderBundleId frag_shader,
                                         vk::Format color_format) {
@@ -91,6 +92,7 @@ void UiRenderer::render(vk::CommandBuffer cmd_buf, const UiDrawRequest &request,
     const auto pipeline = getPipeline(request.target_format);
     const auto pipeline_layout = pipeline_factory.layout(pipeline);
     cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline_factory.pipeline(pipeline));
+    dependencies.frame_resources.bindGraphics(cmd_buf, pipeline_layout);
 
     for (const auto &entry : ui_textures) {
         const auto &tex = entry.second;
@@ -117,7 +119,8 @@ void UiRenderer::render(vk::CommandBuffer cmd_buf, const UiDrawRequest &request,
 
         cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout, PELICAN_SET_PASS_INPUT,
                                    {tex.descset.get()}, {});
-        cmd_buf.pushConstants(pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(UiPushConstant), &pc);
+        cmd_buf.pushConstants(pipeline_layout, vk::ShaderStageFlagBits::eVertex,
+                              PELICAN_PUSH_ENGINE_BYTES, sizeof(UiPushConstant), &pc);
         cmd_buf.draw(6, 1, 0, 0);
     }
 

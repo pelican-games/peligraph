@@ -2,6 +2,7 @@
 #extension GL_GOOGLE_include_directive : enable
 
 #include "pelican_sets.glsl"
+#include "pelican_frame.glsl"
 
 layout(set = PELICAN_SET_FREE, binding = 1) uniform sampler2D debugTextAtlas;
 

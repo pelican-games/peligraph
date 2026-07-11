@@ -30,6 +30,8 @@
     "fullscreen.vert",
     "fullscreen.vert.spv",
     "shaders/include/pelican_features.glsl",
+    "shaders/include/pelican_frame.glsl",
+    "shaders/include/pelican_material.glsl",
     "shaders/include/pelican_sets.glsl",
     "shadow_depth.vert",
     "shadow_depth.vert.spv",

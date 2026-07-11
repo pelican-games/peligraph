@@ -8,6 +8,7 @@
 namespace Pelican {
 
 class UIContainer;
+class FrameResources;
 
 struct UiDrawRequest {
     vk::ImageView target_view;
@@ -20,6 +21,7 @@ struct UiDrawRequest {
 
 struct UiRendererDependencies {
     const UIContainer &ui_container;
+    const FrameResources &frame_resources;
 };
 
 DECLARE_MODULE(UiRenderer) {

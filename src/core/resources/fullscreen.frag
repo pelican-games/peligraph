@@ -2,6 +2,7 @@
 #extension GL_GOOGLE_include_directive : enable
 
 #include "pelican_sets.glsl"
+#include "pelican_frame.glsl"
 #include "pelican_features.glsl"
 
 layout(location = 0) in vec2 inUV;
@@ -16,44 +17,6 @@ layout(set = PELICAN_SET_PASS_INPUT, binding = 5) uniform sampler2D ssaoSampler;
 #ifdef PELICAN_FEATURE_SHADOW
 layout(set = PELICAN_SET_PASS_INPUT, binding = 6) uniform sampler2D shadowMapSampler;
 #endif
-
-struct DirectionalLight {
-    vec3 direction;
-    float intensity;
-    vec3 color;
-    float padding; // for alignment
-};
-
-struct PointLight {
-    vec3 position;
-    float intensity;
-    vec3 color;
-    float padding; // for alignment
-};
-
-struct SpotLight {
-	vec3 position;
-    float innerConeAngle; // cos(angle)
-    vec3 direction;
-    float outerConeAngle; // cos(angle)
-    vec3 color;
-    float intensity;
-};
-
-layout(set = PELICAN_SET_FRAME, binding = 0) uniform LightUBO {
-    uint directionalLightCount;
-    uint pointLightCount;
-    uint spotLightCount;
-    float padding;
-    DirectionalLight directionalLights[8];
-    PointLight pointLights[16];
-    SpotLight spotLights[8];
-    mat4 shadowViewProjection;
-} lightUBO;
-
-layout(push_constant) uniform PushConstants {
-    vec4 cameraPos;
-} pushConsts;
 
 const float PI = 3.14159265359;
 
@@ -90,7 +53,7 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0) {
 
 #ifdef PELICAN_FEATURE_SHADOW
 float directionalShadowVisibility(vec3 worldPos, vec3 normal, vec3 lightDir) {
-    vec4 shadowClip = lightUBO.shadowViewProjection * vec4(worldPos, 1.0);
+    vec4 shadowClip = pelicanLights.shadowViewProjection * vec4(worldPos, 1.0);
     if (shadowClip.w <= 0.0) {
         return 1.0;
     }
@@ -128,7 +91,7 @@ void main() {
     // A higher power will make the shadows darker.
     float ao = min(materialAO, pow(ssao, 3.0));
     
-    vec3 cameraPos = pushConsts.cameraPos.xyz;
+    vec3 cameraPos = pelicanFrame.camera_position.xyz;
     
     vec3 V = normalize(cameraPos - worldPos);
     
@@ -139,10 +102,10 @@ void main() {
     // 反射率方程式
     vec3 Lo = vec3(0.0);
 
-    for(int i = 0; i < lightUBO.directionalLightCount; ++i) {
-        vec3 L = normalize(-lightUBO.directionalLights[i].direction);
+    for(int i = 0; i < pelicanLights.directionalLightCount; ++i) {
+        vec3 L = normalize(-pelicanLights.directionalLights[i].direction);
         vec3 H = normalize(V + L);
-        vec3 radiance = lightUBO.directionalLights[i].color * lightUBO.directionalLights[i].intensity;
+        vec3 radiance = pelicanLights.directionalLights[i].color * pelicanLights.directionalLights[i].intensity;
 #ifdef PELICAN_FEATURE_SHADOW
         if (i == 0) {
             radiance *= directionalShadowVisibility(worldPos, normal, L);
@@ -166,12 +129,12 @@ void main() {
         Lo += (kD * albedo / PI * ao + specular) * radiance * NdotL;
     }
 
-    for(int i = 0; i < lightUBO.pointLightCount; ++i) {
-        vec3 L = normalize(lightUBO.pointLights[i].position - worldPos);
+    for(int i = 0; i < pelicanLights.pointLightCount; ++i) {
+        vec3 L = normalize(pelicanLights.pointLights[i].position - worldPos);
         vec3 H = normalize(V + L);
-        float distance = length(lightUBO.pointLights[i].position - worldPos);
+        float distance = length(pelicanLights.pointLights[i].position - worldPos);
         float attenuation = 1.0 / (distance * distance + 0.01);
-        vec3 radiance = lightUBO.pointLights[i].color * lightUBO.pointLights[i].intensity * attenuation;
+        vec3 radiance = pelicanLights.pointLights[i].color * pelicanLights.pointLights[i].intensity * attenuation;
         
         // Cook-Torrance BRDF
         float NDF = DistributionGGX(normal, H, roughness);
@@ -190,18 +153,18 @@ void main() {
         Lo += (kD * albedo / PI * ao + specular) * radiance * NdotL;
     }
 
-    for(int i = 0; i < lightUBO.spotLightCount; ++i) {
-        vec3 L = normalize(lightUBO.spotLights[i].position - worldPos);
+    for(int i = 0; i < pelicanLights.spotLightCount; ++i) {
+        vec3 L = normalize(pelicanLights.spotLights[i].position - worldPos);
         vec3 H = normalize(V + L);
 
         // Spotlight intensity calculation
-        float spotDirDotL = dot(normalize(-L), normalize(lightUBO.spotLights[i].direction));
-        float spotFactor = smoothstep(lightUBO.spotLights[i].outerConeAngle, lightUBO.spotLights[i].innerConeAngle, spotDirDotL);
+        float spotDirDotL = dot(normalize(-L), normalize(pelicanLights.spotLights[i].direction));
+        float spotFactor = smoothstep(pelicanLights.spotLights[i].outerConeAngle, pelicanLights.spotLights[i].innerConeAngle, spotDirDotL);
         
         // Attenuation and radiance
-        float distance = length(lightUBO.spotLights[i].position - worldPos);
+        float distance = length(pelicanLights.spotLights[i].position - worldPos);
         float attenuation = 1.0 / (distance * distance + 0.01);
-        vec3 radiance = lightUBO.spotLights[i].color * lightUBO.spotLights[i].intensity * attenuation * spotFactor;
+        vec3 radiance = pelicanLights.spotLights[i].color * pelicanLights.spotLights[i].intensity * attenuation * spotFactor;
 
         if (spotFactor > 0.0)
         {

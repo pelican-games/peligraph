@@ -396,7 +396,7 @@ dogfooding(標準スニペットを公開ライブラリで書く)は必要条�
 |------|------|
 | set 0 (FRAME) | カメラ行列・時間・ライト UBO(エンジン管理、読み取りのみ) |
 | set 1 (PASS_INPUT) | パス入力(前段 RT — feature が宣言) |
-| set 2 (MATERIAL) | PBR テクスチャ固定スロット + **params UBO(新設)** |
+| set 2 (MATERIAL) | PBR テクスチャ固定スロット + **全 material data の SSBO 配列** |
 | set 3 (FREE) | 予約(ユーザー/将来機能) |
 | push constant | engine 64B(触るな)+ shader 64B(自由) |
 | 頂点入力 | position/normal/uv/(tangent)の location 固定表 |
@@ -409,7 +409,7 @@ dogfooding(標準スニペットを公開ライブラリで書く)は必要条�
 
 - キャッシュキー = (shader stem, ソート済み defines 集合, パス種)。
   WP28 の実行時コンパイル機構をそのまま使う(新設なし)
-- **爆発抑制の規律**: defines は bool のみ・数値は params UBO へ。
+- **爆発抑制の規律**: defines は bool のみ・数値は material SSBO へ。
   feature defines は config 全体で一様(マテリアル毎に変えない)。
   よって variant 数 = マテリアル defines の実使用組合せ × feature 組合せ
   (プロジェクト実測で管理 — `--dump-frame-plan` の流儀で
@@ -433,7 +433,8 @@ dogfooding(標準スニペットを公開ライブラリで書く)は必要条�
 
 1. vert/frag 個別差し替え(`shader_vert`/`shader_frag`)を v1 に入れるか
    (推奨: 入れる — VAT が vert 差し替えの現実例)
-2. params UBO のレイアウト: 宣言順 std140 か、明示 offset か
+2. surface params の SSBO レイアウト生成規則(宣言順 std430 と型ごとの padding を
+   M3a の生成シムで固定する)
    (推奨: 宣言順。シンプル優先、ツールが offset を計算)
 3. variant 列挙ダンプ(`dump-shader-variants`)を M1 に含めるか
 4. alphaMode blend の描画順(半透明ソート)は本設計のスコープ外 —

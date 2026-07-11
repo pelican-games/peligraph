@@ -25,27 +25,9 @@ void renderMaterialPass(vk::CommandBuffer cmd_buf, PassId pass_id, const PassDef
     }
 }
 
-FullscreenPassCameraData createFullscreenPassCameraData(FullscreenPushConstantData push_constants,
-                                                        const Camera &camera) {
-    FullscreenPassCameraData camera_data;
-    if (push_constants == FullscreenPushConstantData::eNone) {
-        return camera_data;
-    }
-
-    if (push_constants == FullscreenPushConstantData::eCameraPosition) {
-        camera_data.position = camera.getPos();
-    } else if (push_constants == FullscreenPushConstantData::eProjectionView) {
-        camera_data.projection = camera.getProjectionMatrix();
-        camera_data.view = camera.getViewMatrix();
-    }
-    return camera_data;
-}
-
 void renderFullscreenPass(vk::CommandBuffer cmd_buf, PassId pass_id, const PassDefinition &pass_def,
                           const RenderPassDispatchDependencies &dependencies) {
-    const auto &fullscreenInfo = pass_def.fullscreenInfo();
-    const auto camera_data = createFullscreenPassCameraData(fullscreenInfo.push_constants, dependencies.camera);
-    dependencies.fullscreen_pass_renderer.render(cmd_buf, pass_id, pass_def, camera_data,
+    dependencies.fullscreen_pass_renderer.render(cmd_buf, pass_id, pass_def,
                                                  dependencies.fullscreen_pass_renderer_dependencies);
 }
 
@@ -55,7 +37,7 @@ void renderDebugDrawPass(vk::CommandBuffer cmd_buf, PassId pass_id,
         throw std::runtime_error("DebugDraw pass requires DebugDraw dependency");
     }
     GET_MODULE(PhysWorld).enqueueDebugDraw(*dependencies.debug_draw, dependencies.camera);
-    dependencies.debug_draw->render(cmd_buf, pass_id);
+    dependencies.debug_draw->render(cmd_buf, pass_id, dependencies.frame_resources);
 }
 
 void renderDebugTextPass(vk::CommandBuffer cmd_buf, PassId pass_id, vk::Extent2D target_extent,
@@ -63,7 +45,7 @@ void renderDebugTextPass(vk::CommandBuffer cmd_buf, PassId pass_id, vk::Extent2D
     if (dependencies.debug_text == nullptr) {
         throw std::runtime_error("DebugText pass requires DebugText dependency");
     }
-    dependencies.debug_text->render(cmd_buf, pass_id, target_extent);
+    dependencies.debug_text->render(cmd_buf, pass_id, target_extent, dependencies.frame_resources);
 }
 
 void renderShadowDepthPass(vk::CommandBuffer cmd_buf, PassId pass_id,

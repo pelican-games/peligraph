@@ -448,13 +448,11 @@ void main() {
 const char *orthographicCameraFragmentShader() {
     return R"glsl(
 #version 450
-layout(push_constant) uniform CameraMatrices {
-    mat4 proj;
-    mat4 view;
-} camera;
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_frame.glsl"
 layout(location = 0) out vec4 outColor;
 void main() {
-    outColor = vec4(camera.proj[0][0], camera.proj[1][1], 0.25, 1.0);
+    outColor = vec4(pelicanFrame.projection[0][0], pelicanFrame.projection[1][1], 0.25, 1.0);
 }
 )glsl";
 }
@@ -462,16 +460,14 @@ void main() {
 const char *orbitCameraControllerFragmentShader() {
     return R"glsl(
 #version 450
-layout(push_constant) uniform CameraMatrices {
-    mat4 proj;
-    mat4 view;
-} camera;
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_frame.glsl"
 layout(location = 0) out vec4 outColor;
 void main() {
     outColor = vec4(
-        clamp(-camera.view[3][2] / 8.0, 0.0, 1.0),
-        clamp(camera.view[0][2] * 0.5 + 0.5, 0.0, 1.0),
-        clamp(camera.view[2][0] * 0.5 + 0.5, 0.0, 1.0),
+        clamp(-pelicanFrame.view[3][2] / 8.0, 0.0, 1.0),
+        clamp(pelicanFrame.view[0][2] * 0.5 + 0.5, 0.0, 1.0),
+        clamp(pelicanFrame.view[2][0] * 0.5 + 0.5, 0.0, 1.0),
         1.0
     );
 }

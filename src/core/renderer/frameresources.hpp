@@ -1,0 +1,45 @@
+#pragma once
+
+#include "../container.hpp"
+#include "../vkcore/buf.hpp"
+#include <cstddef>
+#include <glm/glm.hpp>
+#include <vulkan/vulkan.hpp>
+
+namespace Pelican {
+
+struct alignas(16) FrameUniformData {
+    alignas(16) glm::vec4 time_delta{0.0f};
+    alignas(16) glm::uvec4 frame_index{0u};
+    alignas(16) glm::vec4 resolution{0.0f};
+    alignas(16) glm::vec4 camera_position{0.0f};
+    alignas(16) glm::mat4 view{1.0f};
+    alignas(16) glm::mat4 projection{1.0f};
+};
+
+static_assert(offsetof(FrameUniformData, time_delta) == 0);
+static_assert(offsetof(FrameUniformData, frame_index) == 16);
+static_assert(offsetof(FrameUniformData, resolution) == 32);
+static_assert(offsetof(FrameUniformData, camera_position) == 48);
+static_assert(offsetof(FrameUniformData, view) == 64);
+static_assert(offsetof(FrameUniformData, projection) == 128);
+static_assert(sizeof(FrameUniformData) == 192);
+
+DECLARE_MODULE(FrameResources) {
+    vk::Device device;
+    BufferWrapper frame_buffer;
+    vk::UniqueDescriptorPool descriptor_pool;
+    vk::UniqueDescriptorSet descriptor_set;
+    vk::Buffer object_buffer;
+    vk::Buffer light_buffer;
+
+  public:
+    FrameResources();
+    ~FrameResources();
+
+    void setSceneBuffers(const BufferWrapper &objects, const BufferWrapper &lights);
+    void update(const FrameUniformData &data) const;
+    void bindGraphics(vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout) const;
+};
+
+} // namespace Pelican
