@@ -278,6 +278,19 @@ target_compile_definitions(pelican_test_materialformat_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 
+pelican_define_test(materiallowering_test pelican_project)
+target_compile_definitions(pelican_test_materiallowering_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
+add_test(
+    NAME devcli_dump_lowered_material
+    COMMAND ${CMAKE_COMMAND}
+        -DCLI=$<TARGET_FILE:pelican_cli>
+        -DSURFACE=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/surface_format/valid/wp76.surface
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_dump_lowered_material.cmake
+)
+
 add_test(
     NAME devcli_import_command
     COMMAND ${CMAKE_COMMAND}

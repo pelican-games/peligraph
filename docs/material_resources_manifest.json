@@ -1,0 +1,50 @@
+{
+  "schema": "pelican.material-resources",
+  "version": 1,
+  "sets": [
+    {
+      "set": 0,
+      "name": "PELICAN_SET_FRAME",
+      "owner": "engine",
+      "resources": [
+        {"binding": 0, "name": "FrameUBO", "type": "uniform_buffer", "access": "read"},
+        {"binding": 1, "name": "ObjectBuffer", "type": "storage_buffer", "access": "read"},
+        {"binding": 2, "name": "LightUBO", "type": "uniform_buffer", "access": "read"}
+      ]
+    },
+    {
+      "set": 2,
+      "name": "PELICAN_SET_MATERIAL",
+      "owner": "material",
+      "resources": [
+        {"binding": 0, "name": "baseColorSampler", "type": "combined_image_sampler", "role": "color", "view": "SRGB"},
+        {"binding": 1, "name": "metallicRoughnessSampler", "type": "combined_image_sampler", "role": "data", "view": "UNORM"},
+        {"binding": 2, "name": "normalSampler", "type": "combined_image_sampler", "role": "data", "view": "UNORM"},
+        {"binding": 3, "name": "emissiveSampler", "type": "combined_image_sampler", "role": "color", "view": "SRGB"},
+        {"binding": 4, "name": "vatPositionSampler", "type": "combined_image_sampler", "role": "data", "view": "UNORM", "optional": true},
+        {"binding": 5, "name": "vatNormalSampler", "type": "combined_image_sampler", "role": "data", "view": "UNORM", "optional": true},
+        {"binding": 6, "name": "MaterialBuffer", "type": "storage_buffer", "access": "read", "layout": "std430 array; custom value payload uses std140 member offsets"},
+        {"binding_range": [7, 31], "name": "surface textures", "type": "combined_image_sampler", "allocation": "declaration order", "view": "role color=SRGB, role data=UNORM"}
+      ]
+    },
+    {
+      "set": 3,
+      "name": "PELICAN_SET_FREE",
+      "owner": "raw-shader-user",
+      "resources": [],
+      "note": "Resources are declared by the C-layer shader and reflected into the pipeline layout."
+    }
+  ],
+  "material_buffer": {
+    "binding": {"set": 2, "binding": 6},
+    "standard_bytes": 96,
+    "custom_value_capacity_bytes": 256,
+    "custom_value_layout": "std140 declaration order",
+    "material_index_source": "shader push constant offset 64"
+  },
+  "dummy_textures": {
+    "white": {"rgba8": [255, 255, 255, 255], "views": ["SRGB", "UNORM"]},
+    "flat_normal": {"rgba8": [128, 128, 255, 255], "views": ["SRGB", "UNORM"]},
+    "black": {"rgba8": [0, 0, 0, 255], "views": ["SRGB", "UNORM"]}
+  }
+}

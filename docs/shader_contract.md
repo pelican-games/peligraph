@@ -13,6 +13,14 @@
 | 2 | `PELICAN_SET_MATERIAL` | 標準 material texture。binding 0 `baseColorSampler`、1 `metallicRoughnessSampler`、2 `normalSampler`、3 `emissiveSampler`。VAT 有効時は 4 `vatPositionSampler`、5 `vatNormalSampler`。binding 6 は全マテリアルを並べた `MaterialBuffer` SSBO。 |
 | 3 | `PELICAN_SET_FREE` | debug/user/future 用の自由枠。現行 debug draw/text は binding 0 の SSBO、debug text fragment は binding 1 の atlas texture を使う。 |
 
+機械可読な正本は [`material_resources_manifest.json`](material_resources_manifest.json) に置く。
+`.surface` の custom texture は宣言順に set 2 binding 7 から割り当て、`role: color`
+(または `color_space: srgb`) は SRGB view、`role: data` は UNORM view を使う。
+未指定 resource は white / flat-normal / black の semantic dummy に解決され、いずれも
+SRGB/UNORM の両 view を持つ。binding 6 の `MaterialBuffer` は既存 96 byte の標準 field に
+続けて 256 byte の custom value payload を持つ。payload 内の member offset は `.surface`
+params の宣言順で計算した std140 layout が正であり、JSON object の列挙順には依存しない。
+
 set 0 layout は reflection の有無にかかわらず `PipelineFactory` が全 pipeline に挿入する。
 reflection が set 0 を宣言する場合は上記 3 binding の型・個数と一致しなければ pipeline 作成を拒否する。
 set 1 以降は従来どおり reflection から生成し、高い set だけを使う場合も途中に空 layout を置く。

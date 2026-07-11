@@ -22,12 +22,14 @@ enum class SurfaceParamType {
     vec3,
     vec4,
     integer,
+    color,
 };
 
 struct SurfaceParamValue {
     SurfaceParamType type = SurfaceParamType::floating;
     std::array<double, 4> values{};
     std::int64_t integer_value = 0;
+    std::uint8_t component_count = 1;
 };
 
 struct SurfaceParamDefinition {
@@ -37,12 +39,52 @@ struct SurfaceParamDefinition {
     std::optional<double> min;
     std::optional<double> max;
     std::optional<std::string> hint;
+    // Authored color factors are sRGB unless the declaration explicitly opts
+    // into linear encoding. Non-color params always use linear numeric data.
+    std::string encoding = "linear";
+};
+
+enum class SurfaceTextureRole {
+    color,
+    data,
 };
 
 struct SurfaceTextureDefinition {
     std::string name;
     std::string default_reference;
     std::string color_space;
+    SurfaceTextureRole role = SurfaceTextureRole::data;
+};
+
+enum class SurfaceBlendMode {
+    opaque,
+    blend,
+    additive,
+};
+
+enum class SurfaceCullMode {
+    none,
+    front,
+    back,
+};
+
+enum class SurfaceDepthCompare {
+    never,
+    less,
+    equal,
+    less_equal,
+    greater,
+    not_equal,
+    greater_equal,
+    always,
+};
+
+struct SurfaceRenderState {
+    SurfaceBlendMode blend = SurfaceBlendMode::opaque;
+    SurfaceCullMode cull = SurfaceCullMode::back;
+    bool depth_test = true;
+    bool depth_write = true;
+    SurfaceDepthCompare depth_compare = SurfaceDepthCompare::less;
 };
 
 struct SurfaceFormatDocument {
@@ -50,6 +92,7 @@ struct SurfaceFormatDocument {
     std::vector<SurfaceParamDefinition> params;
     std::vector<SurfaceTextureDefinition> textures;
     std::vector<std::string> screen_inputs;
+    SurfaceRenderState render_state;
     std::size_t code_offset = 0;
     std::string code;
     std::vector<std::string> warnings;

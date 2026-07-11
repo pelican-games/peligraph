@@ -5,7 +5,10 @@
 #include "../shader/pipelinefactory.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/util.hpp"
+#include "standardmaterialresource.hpp"
 #include <array>
+#include <cstring>
+#include <sstream>
 #include <stdexcept>
 #include <vector>
 
@@ -24,9 +27,37 @@ constexpr uint32_t baseMaterialTextureBindingCount = 4;
 constexpr uint32_t vatMaterialTextureBindingCount = 6;
 constexpr size_t maxMaterials = 1024;
 
-static uint64_t makePipelineKey(ShaderBundleId vert_shader, ShaderBundleId frag_shader) {
-    return (static_cast<uint64_t>(static_cast<uint32_t>(vert_shader.value)) << 32) |
-           static_cast<uint32_t>(frag_shader.value);
+static std::string makePipelineKey(const MaterialInfo &info) {
+    std::ostringstream key;
+    key << info.vert_shader.value << ':' << info.frag_shader.value << ':'
+        << static_cast<int>(info.render_state.blend) << ':'
+        << static_cast<int>(info.render_state.cull) << ':'
+        << info.render_state.depth_test << ':' << info.render_state.depth_write << ':'
+        << static_cast<int>(info.render_state.depth_compare);
+    return key.str();
+}
+
+static vk::CompareOp toVkCompare(SurfaceDepthCompare compare) {
+    switch (compare) {
+    case SurfaceDepthCompare::never: return vk::CompareOp::eNever;
+    case SurfaceDepthCompare::less: return vk::CompareOp::eLess;
+    case SurfaceDepthCompare::equal: return vk::CompareOp::eEqual;
+    case SurfaceDepthCompare::less_equal: return vk::CompareOp::eLessOrEqual;
+    case SurfaceDepthCompare::greater: return vk::CompareOp::eGreater;
+    case SurfaceDepthCompare::not_equal: return vk::CompareOp::eNotEqual;
+    case SurfaceDepthCompare::greater_equal: return vk::CompareOp::eGreaterOrEqual;
+    case SurfaceDepthCompare::always: return vk::CompareOp::eAlways;
+    }
+    throw std::runtime_error("unknown material depth compare state");
+}
+
+static vk::CullModeFlags toVkCull(SurfaceCullMode cull) {
+    switch (cull) {
+    case SurfaceCullMode::none: return vk::CullModeFlagBits::eNone;
+    case SurfaceCullMode::front: return vk::CullModeFlagBits::eFront;
+    case SurfaceCullMode::back: return vk::CullModeFlagBits::eBack;
+    }
+    throw std::runtime_error("unknown material cull state");
 }
 
 static GraphicsPipelineDesc makeMaterialPipelineDesc(const MaterialInfo &info) {
@@ -38,12 +69,62 @@ static GraphicsPipelineDesc makeMaterialPipelineDesc(const MaterialInfo &info) {
     desc.color_formats.assign(formats.begin(), formats.end());
     desc.depth_format = materialPassDepthAttachmentFormat;
     desc.use_engine_vertex_layout = true;
-    desc.depth_test = true;
-    desc.depth_write = true;
-    desc.depth_compare = vk::CompareOp::eLess;
-    desc.cull_mode = vk::CullModeFlagBits::eBack;
+    desc.depth_test = info.render_state.depth_test;
+    desc.depth_write = info.render_state.depth_write;
+    desc.depth_compare = toVkCompare(info.render_state.depth_compare);
+    desc.cull_mode = toVkCull(info.render_state.cull);
     desc.front_face = vk::FrontFace::eClockwise;
+    if (info.render_state.blend == SurfaceBlendMode::blend) {
+        desc.blend = true;
+        desc.src_color_blend_factor = vk::BlendFactor::eSrcAlpha;
+        desc.dst_color_blend_factor = vk::BlendFactor::eOneMinusSrcAlpha;
+        desc.src_alpha_blend_factor = vk::BlendFactor::eOne;
+        desc.dst_alpha_blend_factor = vk::BlendFactor::eOneMinusSrcAlpha;
+    } else if (info.render_state.blend == SurfaceBlendMode::additive) {
+        desc.blend = true;
+        desc.src_color_blend_factor = vk::BlendFactor::eSrcAlpha;
+        desc.dst_color_blend_factor = vk::BlendFactor::eOne;
+        desc.src_alpha_blend_factor = vk::BlendFactor::eOne;
+        desc.dst_alpha_blend_factor = vk::BlendFactor::eOne;
+    }
     return desc;
+}
+
+static void validateMaterialCapabilities(const MaterialInfo &info) {
+    const auto physical_device = GET_MODULE(VulkanManageCore).getPhysDevice();
+    const auto limits = physical_device.getProperties().limits;
+    const auto reserved = info.vat ? vatMaterialTextureBindingCount : baseMaterialTextureBindingCount;
+    const auto sampler_count = static_cast<std::uint32_t>(reserved + info.custom_textures.size());
+    if (sampler_count > limits.maxPerStageDescriptorSamplers ||
+        sampler_count > limits.maxDescriptorSetSamplers) {
+        throw std::runtime_error("material custom textures require " +
+                                 std::to_string(sampler_count) +
+                                 " samplers but device descriptor limit is " +
+                                 std::to_string(std::min(limits.maxPerStageDescriptorSamplers,
+                                                         limits.maxDescriptorSetSamplers)));
+    }
+    if (!info.render_state.depth_test && info.render_state.depth_write) {
+        throw std::runtime_error(
+            "material render_state requests depth_write while depth_test is disabled");
+    }
+    const auto &formats = materialPassColorAttachmentFormats(
+        GET_MODULE(RenderingPassContainer).isFeatureEnabled("hdr"));
+    if (info.render_state.blend != SurfaceBlendMode::opaque) {
+        for (const auto format : formats) {
+            const auto features = physical_device.getFormatProperties(format).optimalTilingFeatures;
+            if (!(features & vk::FormatFeatureFlagBits::eColorAttachmentBlend)) {
+                throw std::runtime_error("material render_state blend lacks device capability for color format " +
+                                         vk::to_string(format));
+            }
+        }
+    }
+    const auto depth_features = physical_device.getFormatProperties(materialPassDepthAttachmentFormat)
+                                    .optimalTilingFeatures;
+    if ((info.render_state.depth_test || info.render_state.depth_write) &&
+        !(depth_features & vk::FormatFeatureFlagBits::eDepthStencilAttachment)) {
+        throw std::runtime_error("material render_state depth lacks device capability for format " +
+                                 vk::to_string(materialPassDepthAttachmentFormat));
+    }
 }
 
 MaterialGpuData makeMaterialGpuData(const MaterialInfo &info) {
@@ -59,6 +140,15 @@ MaterialGpuData makeMaterialGpuData(const MaterialInfo &info) {
         data.vat_bounds_extent_fps = glm::vec4{vat.bounds_max - vat.bounds_min, vat.fps};
         data.vat_flags = glm::ivec4{vat.base_vertex, vat.loop ? 1 : 0, vat.has_normal ? 1 : 0, 0};
     }
+    if (info.custom_values.size() > materialCustomValueCapacity) {
+        throw std::runtime_error("material custom values size " +
+                                 std::to_string(info.custom_values.size()) +
+                                 " exceeds MaterialBuffer capacity " +
+                                 std::to_string(materialCustomValueCapacity));
+    }
+    if (!info.custom_values.empty()) {
+        std::memcpy(data.custom_values.data(), info.custom_values.data(), info.custom_values.size());
+    }
     return data;
 }
 
@@ -67,7 +157,7 @@ static vk::UniqueDescriptorPool createDescriptorPool(vk::Device device) {
     pool_size[0].type = vk::DescriptorType::eStorageBuffer;
     pool_size[0].descriptorCount = 1024;
     pool_size[1].type = vk::DescriptorType::eCombinedImageSampler;
-    pool_size[1].descriptorCount = 2048;
+    pool_size[1].descriptorCount = 32768;
 
     vk::DescriptorPoolCreateInfo create_info;
     create_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
@@ -170,7 +260,8 @@ GlobalTextureId MaterialContainer::registerTexture(vk::Extent3D extent, const vo
     });
 }
 GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
-    const auto pipeline_key = makePipelineKey(info.vert_shader, info.frag_shader);
+    validateMaterialCapabilities(info);
+    const auto pipeline_key = makePipelineKey(info);
     auto pipeline_it = pipelines.find(pipeline_key);
     if (pipeline_it == pipelines.end()) {
         const auto pipeline_handle = GET_MODULE(PipelineFactory).create(makeMaterialPipelineDesc(info));
@@ -191,7 +282,8 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
 
     const auto texture_binding_count =
         info.vat ? vatMaterialTextureBindingCount : baseMaterialTextureBindingCount;
-    std::array<vk::DescriptorImageInfo, vatMaterialTextureBindingCount> image_infos{};
+    std::vector<vk::DescriptorImageInfo> image_infos(
+        materialCustomTextureFirstBinding + info.custom_textures.size());
 
     const auto setImageInfo = [&](uint32_t binding, GlobalTextureId texture, vk::Sampler sampler,
                                   bool srgb) {
@@ -212,9 +304,20 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         setImageInfo(vatPositionBinding, info.vat->position_texture, nearest_sampler.get(), false);
         setImageInfo(vatNormalBinding, info.vat->normal_texture, nearest_sampler.get(), false);
     }
+    for (std::size_t i = 0; i < info.custom_textures.size(); ++i) {
+        const auto &custom = info.custom_textures[i];
+        const auto texture = custom.texture.value_or(
+            GET_MODULE(StandardMaterialResource).defaultTexture(custom.missing_default));
+        try {
+            setImageInfo(materialCustomTextureFirstBinding + static_cast<std::uint32_t>(i),
+                         texture, linear_sampler.get(), custom.role == SurfaceTextureRole::color);
+        } catch (const std::exception &error) {
+            throw std::runtime_error("material texture '" + custom.name + "': " + error.what());
+        }
+    }
 
     std::vector<vk::WriteDescriptorSet> writes;
-    writes.reserve(texture_binding_count + 1);
+    writes.reserve(texture_binding_count + info.custom_textures.size() + 1);
     const auto addImageWrite = [&](uint32_t binding) {
         vk::WriteDescriptorSet write;
         write.dstSet = descset.get();
@@ -233,6 +336,9 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     if (info.vat) {
         addImageWrite(vatPositionBinding);
         addImageWrite(vatNormalBinding);
+    }
+    for (std::size_t i = 0; i < info.custom_textures.size(); ++i) {
+        addImageWrite(materialCustomTextureFirstBinding + static_cast<std::uint32_t>(i));
     }
 
     vk::DescriptorBufferInfo material_buffer_info{material_buffer.buffer.get(), 0, vk::WholeSize};

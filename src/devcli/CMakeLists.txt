@@ -7,6 +7,7 @@ target_sources(pelican_cli PRIVATE
   assetscommand.cpp
   distconfig.cpp
   importcommand.cpp
+  materialcommand.cpp
   projectinit.cpp
   ../core/model/vatformat.cpp
 )

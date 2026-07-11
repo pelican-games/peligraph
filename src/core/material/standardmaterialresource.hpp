@@ -30,6 +30,7 @@ DECLARE_MODULE(StandardMaterialResource) {
     GlobalTextureId metallicRoughnessDefaultTexture() const { return tex_metallic_roughness_default; };
     GlobalTextureId normalDefaultTexture() const { return tex_normal_default; };
     GlobalTextureId emissiveDefaultTexture() const { return tex_emissive_default; };
+    GlobalTextureId defaultTexture(MaterialDummyTexture fallback) const;
     GlobalMaterialId standardTransparentMaterial() const { return mat_transparent; };
 };
 
