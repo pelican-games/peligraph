@@ -1672,6 +1672,80 @@ acceptance criteria に含める。要点**:
 5. エラー系 fixture: 未知種別 / 未知名 / 曖昧名 / glb 以外への #mesh
 6. 受け入れ = 新 fixture 群 + 既存全テスト + golden 全維持 + player
 
+### WP78: マテリアル M3a — B 層 production baseline(ソース経路)
+
+参照: **`design_material_shading.md` v1.2 §3-1(A/B/C 梯子)・§3-2
+(SPIR-V ABI、B はソース専用)・§3-3(パス variant)・§3-6〜3-7
+(フック深さ梯子・エンジンシェーダライブラリ ABI・dogfooding)・
+§4 M3a 行が正**。依存: WP76(済 — dump-lowered-material の器・values/
+textures 機構を使う)。見積: 特大。
+排他: `src/core/shader/` の合成系 / `src/core/resources/`(テンプレート・
+ライブラリ追加)/ `src/project/materiallowering.*` / `src/project/surfaceformat.*`。
+
+1. **テンプレート合成(shaderc includer)**: .surface の code スニペットを
+   エンジン所有テンプレートへ逆 include。ユーザーは
+   `pelican_surface_v1` 系関数を書くだけ。**WP68 の identity 契約
+   (source.substr(code_offset) == document.code)は維持**
+2. **フック検出 = 関数名の反射**(深さ指定キー不要): 定義された
+   `pelican_*_v1` 関数名から displace / surface / brdf / lighting を判定。
+   **事故防止 3 規則**: ①未知の `pelican_` 名 = 名前入りエラー
+   ②brdf と lighting の併存 = エラー(ターミナルフック排他)
+   ③空スニペット = エラー
+3. **版付きシンボル**: `pelican_surface_v1` 等の v1 シグネチャを凍結
+   (shader_contract.md に契約節を追加)
+4. **エンジンシェーダライブラリ(ソース形)**: `pelican_light` /
+   `pelican_shadow` / `pelican_env_ambient` を engine:// の GLSL include と
+   して公開(lib.spv / spv-link は M3b — 本 WP はソース経路のみ)
+5. **dogfooding**: 同梱 standard / toon ライティングスニペットを
+   **公開ライブラリ関数のみで**実装(エンジン特権 API 不使用の証明 =
+   テンプレートと同一経路でコンパイルが通ること)
+6. **B→C lowering 同値 CI**: `dump-lowered-material` の出力(WP76)を
+   B マテリアルにも適用し、「B は C の糖衣」を fixture で固定
+   (lowering 結果のテキスト golden)
+7. **エラー翻訳**: 合成後シェーダのコンパイルエラー行番号を
+   ユーザースニペット行番号へ写像(#line ディレクティブ)。fixture で
+   「スニペット N 行目」表示を検証
+8. example に B マテリアル 1 個(toon の見本)+ golden 1 ケース追加。
+   **パス variant(PELICAN_PASS_DEPTH / VELOCITY)は shadow との組で
+   最低 1 fixture**(影の剥離防止 — §3-3)
+9. 受け入れ = 上記 fixture 群 + **既存 golden 全維持(SKIP 0)** +
+   全テスト + player。既定 PBR(A 層)の挙動不変
+
+### WP79: コンテナ K2 — glTF シーン抽出 + scene v1 親子
+
+参照: **`design_asset_containers.md` §2 + `design_scene_format.md`
+(v1.1)が正**。依存: WP77(済 — メッシュはフラグメント参照で元 glb を
+指す)。見積: 中。排他: `src/devcli/` / `src/core/loader/scene.cpp` /
+`src/project/sceneformat.*`。
+
+**scene v1 親子の設計判断(本 WP で確定 — 設計者決定済み)**:
+
+- `objects[].parent` = 親オブジェクトの `name`(文字列・省略可)。
+  **省略 = ルート(現行と完全同一経路)** — additive な v1 小改訂であり
+  version は 1 のまま(lights コンポーネント化と同格)
+- parent を使う場合: 親側に `name` 必須 / 未知親 = 名前入りロードエラー /
+  **循環 = 参加ノード列挙付きロードエラー**(ロード時検出必須)/
+  同名 object が複数あるシーンで parent 参照 = 曖昧エラー
+- transform 合成 = `child_world = parent_world × child_local`
+  (TRS はローカル値)。**ランタイム実体は WP62 の ECS 親子(EntityId)
+  への配線のみ** — 新規機構を作らない
+- 抽出ツール(devcli)はエンジンランタイムに一切入らない(配布ビルド
+  対象外 — パージ整理は 2026-07-11 ユーザー確認済み)
+
+1. **scene v1 親子**: sceneformat パーサ + SceneLoader の ECS 親子配線 +
+   negative fixture(未知親・循環・曖昧)+ 親子 transform の
+   golden 1 ケース(回転親の子が正しく公転する解析可能な配置)
+2. **`pelican_cli import gltf --extract-scene <glb>`**: ノード階層 →
+   pelican.scene(name・TRS・parent)。KHR_lights_punctual → light
+   コンポーネント / カメラノード → camera コンポーネント(C1 で 1:1)/
+   extras → コンポーネント params
+3. メッシュノード → `simplemodelview` + **`#node/<フルパス>` フラグメント
+   参照で元 glb を指す**(glb は分解しない — K1 の実ロードに乗る)
+4. 出力の決定性(同一 glb → byte 同一の scene JSON)+ round-trip
+   fixture(抽出 → ロード → 全ノードの world transform が glTF 直ロードと
+   一致)
+5. 受け入れ = 新 fixture 群 + 既存全テスト + golden 全維持 + player
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **最小コマンド層**: (1) ファイル連携済み → (2) WP27 実装済み → (3) `load_gltf` / `update_transforms` は **2026-07-07 に実装 GO 決定**。前提はすべて充足(宛先 = scene v1 の objects[].name / アセット意味論 = WP21)。設計時要件: **複数インスタンス運用**(エージェントが複数エンジンを並行駆動する使い方) — stdio rpc は 1 プロセス 1 クライアントの現行構造を維持しつつ、`get_status`(instance id・project・フレーム番号)を追加してインスタンス識別可能に。プロジェクトは読み取り専有なので並行起動は安全(書き込み系操作を入れる際に排他を設計)。複数クライアント同時接続は TCP/WebSocket 展開時の課題として分離
