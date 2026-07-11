@@ -1,0 +1,23 @@
+//! pelican.surface v1
+//! language: glsl
+//! params:
+//!   - { name: tint, type: color, default: [1.0, 0.32, 0.08, 1.0] }
+
+void pelican_surface_v1(in PelicanSurfaceInputV1 surface_input, inout PelicanSurfaceV1 surface) {
+    surface.base_color = pelican_param_tint() * surface_input.vertex_color;
+    surface.roughness = 0.9;
+    surface.metallic = 0.0;
+}
+
+vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface,
+                         in PelicanSurfaceInputV1 surface_input) {
+    vec3 color = surface.emissive + surface.base_color.rgb * pelican_env_ambient(surface.normal);
+    for (uint i = 0u; i < pelican_light_count(); ++i) {
+        PelicanLightV1 light = pelican_light(i, surface_input.world_position);
+        float ndotl = max(dot(surface.normal, light.direction), 0.0);
+        float band = ndotl > 0.65 ? 1.0 : (ndotl > 0.2 ? 0.45 : 0.08);
+        color += surface.base_color.rgb * light.radiance * band * light.attenuation *
+                 pelican_shadow(i, surface_input.world_position);
+    }
+    return color;
+}

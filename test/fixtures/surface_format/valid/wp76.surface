@@ -13,4 +13,4 @@
 //!   - { name: emissive_mask, default: "engine://textures/black", color_space: linear, role: data }
 //! render_state: { blend: additive, cull: none, depth: read_only, depth_compare: greater_equal }
 
-void pelican_surface(in PelicanSurfaceInput i, inout PelicanSurface s) {}
+void pelican_surface_v1(in PelicanSurfaceInputV1 i, inout PelicanSurfaceV1 s) {}

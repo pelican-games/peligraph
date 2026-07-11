@@ -5,6 +5,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 #include <vulkan/vulkan.hpp>
 
@@ -20,6 +21,10 @@ struct ShaderCompileOptions {
     std::optional<vk::ShaderStageFlagBits> stage;
     std::string entry_point = "main";
     std::vector<std::string> defines;
+    // In-memory sources participate in the normal shaderc include path. This
+    // is used by B-layer surface compilation so authored code is reverse
+    // included by an engine-owned template without rewriting the document.
+    std::vector<std::pair<std::string, std::string>> virtual_includes;
 };
 
 std::optional<vk::ShaderStageFlagBits> inferShaderStageFromPath(const std::filesystem::path &path);

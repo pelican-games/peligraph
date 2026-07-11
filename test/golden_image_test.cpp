@@ -17,6 +17,7 @@
 #include "../src/core/shader/pipelinefactory.hpp"
 #include "../src/core/shader/shadercompiler.hpp"
 #include "../src/core/shader/shaderlibrary.hpp"
+#include "../src/core/shader/surfacecompiler.hpp"
 #include "../src/core/userpublic/details/system/registerer.hpp"
 #include "../src/core/userpublic/gamecontext.hpp"
 #include "../src/core/vkcore/core.hpp"
@@ -518,12 +519,10 @@ ShaderBundleId compileShaderToBundle(ShaderLibrary &library, const std::string &
 #endif
 }
 
-void renderFullscreenFrame(RenderTarget &render_target, const std::string &fragment_shader_source) {
+void renderFullscreenFrameWithFragment(RenderTarget &render_target, ShaderBundleId frag) {
     auto &library = GET_MODULE(ShaderLibrary);
     const auto vert = compileShaderToBundle(library, fullscreenVertexShader(), vk::ShaderStageFlagBits::eVertex,
                                             "golden_fullscreen.vert");
-    const auto frag = compileShaderToBundle(library, fragment_shader_source, vk::ShaderStageFlagBits::eFragment,
-                                            "golden_fullscreen.frag");
 
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
     const auto pipeline = pipeline_factory.create(GraphicsPipelineDesc{
@@ -552,6 +551,82 @@ void renderFullscreenFrame(RenderTarget &render_target, const std::string &fragm
     frame.cmd_buf.endRendering();
 
     render_target.render_end();
+}
+
+void renderFullscreenFrame(RenderTarget &render_target, const std::string &fragment_shader_source) {
+    auto &library = GET_MODULE(ShaderLibrary);
+    const auto frag = compileShaderToBundle(library, fragment_shader_source,
+                                            vk::ShaderStageFlagBits::eFragment,
+                                            "golden_fullscreen.frag");
+    renderFullscreenFrameWithFragment(render_target, frag);
+}
+
+const char *surfaceGoldenFragmentTemplate() {
+    return R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_GOOGLE_cpp_style_line_directive : enable
+#include "pelican_surface_v1.glsl"
+
+vec4 pelican_param_tint() { return vec4(1.0, 0.32, 0.08, 1.0); }
+uint pelican_light_count() { return 1u; }
+PelicanLightV1 pelican_light(uint index, vec3 world_position) {
+    PelicanLightV1 light;
+    light.direction = normalize(vec3(0.3, 0.2, 1.0));
+    light.radiance = vec3(0.9, 0.8, 0.7);
+    light.attenuation = 1.0;
+    return light;
+}
+float pelican_shadow(uint light_index, vec3 world_position) { return 1.0; }
+vec3 pelican_env_ambient(vec3 normal) { return vec3(0.04, 0.05, 0.08); }
+
+#include "__pelican_user_surface.glsl"
+
+layout(location = 0) out vec4 outColor;
+void main() {
+    PelicanSurfaceInputV1 surface_input;
+    surface_input.uv = gl_FragCoord.xy / vec2(16.0);
+    surface_input.vertex_color = vec4(1.0);
+    surface_input.world_position = vec3(0.0);
+    surface_input.normal = vec3(0.0, 0.0, 1.0);
+    surface_input.view_direction = vec3(0.0, 0.0, 1.0);
+    surface_input.custom0 = vec4(0.0);
+    surface_input.custom1 = vec4(0.0);
+    PelicanSurfaceV1 surface;
+    surface.base_color = vec4(1.0);
+    surface.normal = surface_input.normal;
+    surface.metallic = 0.0;
+    surface.roughness = 1.0;
+    surface.occlusion = 1.0;
+    surface.emissive = vec3(0.0);
+    pelican_surface_v1(surface_input, surface);
+    outColor = vec4(pelican_lighting_v1(surface, surface_input), surface.base_color.a);
+}
+)glsl";
+}
+
+void renderSurfaceToonFrame(RenderTarget &render_target) {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    const auto path = sourceRoot() / "projects" / "example" / "shaders" / "toon.surface";
+    std::ifstream file{path, std::ios::binary};
+    if (!file) throw std::runtime_error("failed to open B-layer golden surface: " + path.string());
+    const std::string source{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
+    const auto surface = parseSurfaceFormat(source, path.generic_string());
+    const auto composition = composeSurfaceShaders(surface, path.generic_string());
+    ShaderCompiler compiler;
+    ShaderCompileOptions options;
+    options.virtual_includes = composition.virtual_includes;
+    const auto result = compiler.compileSource(surfaceGoldenFragmentTemplate(),
+                                               vk::ShaderStageFlagBits::eFragment,
+                                               "engine://golden/surface_toon.frag", options);
+    if (!result.ok) throw std::runtime_error("surface toon golden compile failed: " + result.log);
+    auto &library = GET_MODULE(ShaderLibrary);
+    renderFullscreenFrameWithFragment(render_target,
+                                      library.loadFromSpirv(result.spirv, "surface_toon.frag"));
+#else
+    (void)render_target;
+    throw std::runtime_error("runtime shader compiler disabled");
+#endif
 }
 
 void writeStemProject(const std::filesystem::path &root) {
@@ -1396,7 +1471,8 @@ void requireGoldenVulkanDevice() {
 }
 
 bool usesRenderer(const GoldenCase &golden_case) {
-    return golden_case.mode != "clear" && golden_case.mode != "fullscreen" && golden_case.mode != "triangle";
+    return golden_case.mode != "clear" && golden_case.mode != "fullscreen" &&
+           golden_case.mode != "triangle" && golden_case.mode != "surface_toon";
 }
 
 RenderedCase renderCase(const GoldenCase &golden_case) {
@@ -1478,6 +1554,8 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         renderStemFullscreenFrame(render_target);
     } else if (golden_case.mode == "triangle") {
         renderFullscreenFrame(render_target, triangleMaskFragmentShader());
+    } else if (golden_case.mode == "surface_toon") {
+        renderSurfaceToonFrame(render_target);
     } else if (golden_case.mode == "explicit_order") {
         renderFeatureFrame(render_target);
     } else if (golden_case.mode == "vat_playback") {
@@ -1598,9 +1676,9 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     requireGoldenVulkanDevice();
     const auto cases = discoverGoldenCases();
 #if PELICAN_WITH_VAT
-    REQUIRE(cases.size() == 17);
+    REQUIRE(cases.size() == 18);
 #else
-    REQUIRE(cases.size() == 16);
+    REQUIRE(cases.size() == 17);
 #endif
 
     for (const auto &golden_case : cases) {

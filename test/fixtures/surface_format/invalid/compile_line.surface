@@ -1,0 +1,7 @@
+//! pelican.surface v1
+//! language: glsl
+
+void pelican_surface_v1(in PelicanSurfaceInputV1 surface_input, inout PelicanSurfaceV1 surface) {
+    surface.roughness = 0.5;
+    surface.base_color = vec4(not_a_declared_symbol);
+}

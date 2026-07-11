@@ -229,6 +229,7 @@ LoweredMaterial lowerMaterial(const MaterialDefinition &material,
     lowered.values_layout = makeSurfaceStd140Layout(surface);
     lowered.values = bindSurfaceValues(surface, material.values, material.name);
     lowered.render_state = surface.render_state;
+    lowered.hooks = surface.hooks;
     lowered.textures.reserve(surface.textures.size());
     for (std::size_t i = 0; i < surface.textures.size(); ++i) {
         const auto &texture = surface.textures[i];
@@ -258,6 +259,24 @@ std::string dumpLoweredMaterial(const LoweredMaterial &material) {
     std::ostringstream out;
     out << "material: " << material.name << '\n';
     out << "surface: " << material.surface << '\n';
+    out << "layer: C-material (lowered from B surface source)\n";
+    out << "hooks:";
+    const auto hooks = surfaceHookNames(material.hooks);
+    if (hooks.empty()) out << " []\n";
+    else {
+        out << '\n';
+        for (const auto hook : hooks) out << "  - " << hook << '\n';
+    }
+    out << "shader_source:\n";
+    out << "  vertex: engine://shaders/material/surface_v1.vert\n";
+    out << "  fragment: engine://shaders/material/surface_v1.frag\n";
+    out << "variants:\n";
+    out << "  main: []\n";
+    out << "  depth: [PELICAN_PASS_DEPTH]\n";
+    out << "  velocity: [PELICAN_PASS_VELOCITY]\n";
+    out << "public_libraries:\n";
+    out << "  - engine://shaders/include/pelican_surface_v1.glsl\n";
+    out << "  - engine://shaders/include/pelican_lighting_v1.glsl\n";
     out << "defines:";
     if (material.defines.empty()) out << " []\n";
     else {

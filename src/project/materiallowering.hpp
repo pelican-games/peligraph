@@ -62,6 +62,7 @@ struct LoweredMaterial {
     std::vector<std::byte> values;
     std::vector<LoweredTextureBinding> textures;
     SurfaceRenderState render_state;
+    SurfaceHookSet hooks;
 };
 
 Std140Layout makeSurfaceStd140Layout(const SurfaceFormatDocument &surface);

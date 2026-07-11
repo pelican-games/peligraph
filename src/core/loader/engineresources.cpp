@@ -11,9 +11,9 @@ namespace Pelican {
 namespace {
 
 #if PELICAN_WITH_VAT
-constexpr size_t registeredResourceCount = 54;
+constexpr size_t registeredResourceCount = 60;
 #else
-constexpr size_t registeredResourceCount = 53;
+constexpr size_t registeredResourceCount = 59;
 #endif
 
 constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
@@ -52,6 +52,12 @@ constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
     "shaders/include/pelican_frame.glsl",
     "shaders/include/pelican_material.glsl",
     "shaders/include/pelican_sets.glsl",
+    "shaders/include/pelican_surface_v1.glsl",
+    "shaders/include/pelican_lighting_v1.glsl",
+    "shaders/material/standard_lighting.glsl",
+    "shaders/material/toon_lighting.glsl",
+    "shaders/material/surface_v1.vert",
+    "shaders/material/surface_v1.frag",
     "shadow_depth.vert",
     "shadow_depth.vert.spv",
     "shader_lab_base_lit.frag.spv",
@@ -135,6 +141,12 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("shaders/include/pelican_frame.glsl")
     PELICAN_ENGINE_RESOURCE("shaders/include/pelican_material.glsl")
     PELICAN_ENGINE_RESOURCE("shaders/include/pelican_sets.glsl")
+    PELICAN_ENGINE_RESOURCE("shaders/include/pelican_surface_v1.glsl")
+    PELICAN_ENGINE_RESOURCE("shaders/include/pelican_lighting_v1.glsl")
+    PELICAN_ENGINE_RESOURCE("shaders/material/standard_lighting.glsl")
+    PELICAN_ENGINE_RESOURCE("shaders/material/toon_lighting.glsl")
+    PELICAN_ENGINE_RESOURCE("shaders/material/surface_v1.vert")
+    PELICAN_ENGINE_RESOURCE("shaders/material/surface_v1.frag")
     PELICAN_ENGINE_RESOURCE("shadow_depth.vert")
     PELICAN_ENGINE_RESOURCE("shadow_depth.vert.spv")
     PELICAN_ENGINE_RESOURCE("shader_lab_base_lit.frag.spv")

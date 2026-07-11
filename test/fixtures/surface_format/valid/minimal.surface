@@ -1,4 +1,4 @@
 //! pelican.surface v1
 //! language: glsl
 
-void pelican_surface(in PelicanSurfaceInput i, inout PelicanSurface s) {}
+void pelican_surface_v1(in PelicanSurfaceInputV1 i, inout PelicanSurfaceV1 s) {}

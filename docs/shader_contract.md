@@ -75,6 +75,45 @@ material defines は WP58/M1 時点では parser の結果に保持されるだ�
 M2 以降で合流する場合は、feature 由来 defines の後ろに material 由来 defines を追加するのが
 `design_material_shading.md` の契約である。
 
+## B 層 source ABI (M3a)
+
+B 層 `.surface` は GLSL ソース専用で、エンジン所有の
+`engine://shaders/material/surface_v1.vert` / `surface_v1.frag` へ仮想 include として
+逆 include される。ユーザー文書自体は変更せず、`#line` が code 本体の元のファイル名・行番号を
+コンパイラへ渡す。HLSL/Slang と `.spv` link は M3b 以降であり、この経路では受理しない。
+
+版付き v1 hook とシグネチャは次のとおり。`PelicanVertexV1`、`PelicanSurfaceInputV1`、
+`PelicanSurfaceV1`、`PelicanLightV1` の field・型・意味を含めて凍結する。field 追加も行わず、
+拡張時は v2 型・v2 symbol と v1 adapter を新設する。
+
+```glsl
+void pelican_vertex_displace_v1(inout PelicanVertexV1 vertex);
+void pelican_surface_v1(in PelicanSurfaceInputV1 surface_input,
+                        inout PelicanSurfaceV1 surface);
+vec3 pelican_brdf_v1(in PelicanSurfaceV1 surface, in vec3 light_dir,
+                     in vec3 view_dir, in vec3 radiance);
+vec3 pelican_ambient_v1(in PelicanSurfaceV1 surface, in vec3 view_dir,
+                        in vec3 radiance);
+vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface,
+                         in PelicanSurfaceInputV1 surface_input);
+```
+
+`pelican_vertex_displace_v1` と `pelican_surface_v1` は直交して共存できる。
+`pelican_brdf_v1` と `pelican_lighting_v1` は terminal hook なので排他である。
+未知の `pelican_` 定義、terminal hook 併存、空または既知 hook ゼロの snippet は、
+surface 名を含むロードエラーになる。
+
+公開 source library は `engine://shaders/include/pelican_surface_v1.glsl` と
+`engine://shaders/include/pelican_lighting_v1.glsl` である。後者は
+`pelican_light_count()`、`pelican_light(i, world_position)`、
+`pelican_shadow(i, world_position)`、`pelican_env_ambient(normal)` を公開する。
+同梱 standard/toon lighting はこの関数群だけを使う。params は
+`pelican_param_<name>()`、texture は `pelican_sample_<name>(uv)` という生成 accessor で読む。
+
+同じ vertex 合成物を main / `PELICAN_PASS_DEPTH` / `PELICAN_PASS_VELOCITY` で再コンパイルし、
+vertex displacement と custom0/custom1 の経路を全 pass で維持する。B の lowering はこの
+3 variant、公開 template/library、set 2 resource、render state を C-material 記述として出力する。
+
 ## WP70 で解消済みの差分
 
 - set 0 は全 pipeline で固定 layout となり、`ObjectBuffer` と `LightUBO` の binding 衝突を解消した。

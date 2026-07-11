@@ -3,6 +3,7 @@
 #include "shader.hpp"
 #include "shaderreference.hpp"
 #include "shaderreflection.hpp"
+#include "surfacecompiler.hpp"
 #include "../container.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../resourcecontainer.hpp"
@@ -26,6 +27,11 @@ struct ShaderBundle {
     std::vector<std::string> defines;
     uint64_t version = 1;
     std::string log;
+};
+
+struct SurfaceShaderBundleIds {
+    ShaderBundleId vertex;
+    ShaderBundleId fragment;
 };
 
 enum class ShaderLibraryModuleMode {
@@ -64,6 +70,10 @@ DECLARE_MODULE(ShaderLibrary) {
                                      bool project_context, std::vector<std::string> defines = {});
     ShaderBundleId loadFromBytes(size_t len, const char *data, std::string_view name);
     ShaderBundleId loadFromSpirv(std::span<const uint32_t> spirv, std::string_view name);
+    SurfaceShaderBundleIds loadFromSurface(const SurfaceFormatDocument &surface,
+                                           std::string_view source_name,
+                                           SurfacePass pass = SurfacePass::main,
+                                           std::vector<std::string> defines = {});
     const ShaderBundle &get(ShaderBundleId id) const;
 
     bool reload(ShaderBundleId id);

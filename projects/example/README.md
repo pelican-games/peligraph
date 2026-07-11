@@ -2,6 +2,10 @@
 
 This project is the default local example for `pelican_player --project`.
 
+`shaders/toon.surface` and `materials/toon.material.json` are the B-layer
+source-material example. The surface declares its interface and versioned
+hooks; the material only references it and overrides authored values.
+
 Binary assets are intentionally not tracked in git. Their expected project-relative inventory is recorded in
 `assets.manifest.json`. After cloning, use the manifest-aware commands to see where the asset store resolves and
 which files still need to be supplied:

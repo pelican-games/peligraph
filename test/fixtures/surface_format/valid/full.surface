@@ -11,6 +11,6 @@
 //! screen_inputs: [opaque_color, "opaque_depth"]
 //! capabilities: []
 
-void pelican_surface(in PelicanSurfaceInput i, inout PelicanSurface s) {
+void pelican_surface_v1(in PelicanSurfaceInputV1 i, inout PelicanSurfaceV1 s) {
     s.base_color *= tint;
 }
