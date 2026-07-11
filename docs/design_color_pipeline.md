@@ -85,6 +85,30 @@ bit-preserving copy・hash 比較 gate)を明文化)。
   (`src/core/vkcore/rendertarget.cpp:38-60`)。既存 rpc テストは絶対色を
   一度も検証していない(非空・差分有無・byte 再現性のみ)
 
+**C0 監査(WP72、2026-07-11)による追補 — §2-3 の前提を修正する実測 6 件**
+(詳細と行参照は `docs/design_reviews/2026-07-11_wp72_c0_report.md` と
+`docs/color_migration_manifest.json` が正):
+
+1. 現行の `gbuffer_albedo` / `lit_color` / bloom RT は **`B8G8R8A8_UNORM`**
+   であり、material pass の pipeline ABI も B8 固定。§2-3 の
+   「R8G8B8A8_SRGB view で格納バイト従来同等」は **channel order の変更を
+   含む** — C1a resolver v1 は B8 order を維持し、C1b は `B8G8R8A8_SRGB`
+   を使うか order 変更を理由記録付きで行う
+2. glTF `emissiveFactor` は現状 raw float で流れて**いない**
+   (`toUnorm8` で clamp+量子化され solid UNORM texture 化 —
+   radiometric 損失が既に存在)。C1b は emissive texture(SRGB color)と
+   factor/strength(linear radiometric)の分離実装を含む
+3. shader_lab 系 3 shader に `pow(0.92)` 等の末尾変換がある(配布
+   resource)。creative look として所有を明示するか削除して
+   output_transform に一本化 — C1b 前に決定
+4. §2-3 の「UI atlas(color page)」は**未実装**(現行は image ごとの
+   UNORM view・vertex color なし)。C1b は現実装の SRGB 化のみを対象とし、
+   atlas 化(K3/U1)と混同しない
+5. debug font は R8 でなく **RGBA8**(shader は alpha のみ読む)。
+   R8 化するなら coverage 値の analytic equality 検査つき
+6. capture consumer のうち名前付き中間 RT snapshot と DCC スクリプトは
+   **未実装/repo 外**(§2-7 の対象は実装済み 4 群)
+
 ## 2. 目標アーキテクチャ
 
 ### 2-1. 論理 terminal resource `display` と output_transform(graph rewrite)

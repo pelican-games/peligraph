@@ -1538,7 +1538,11 @@ TRANSFER_SRC/DST を含む)、§2-2 anchor への旧 pass 写像案、§2-7 の
 
 ### WP73: 色 C1a — canonical anchor / format_class / output_transform(構造のみ・golden 不変)
 
-参照: **色 v4 §2-2・§6 C1a の 4 条件が正**。依存: WP72、WP70 merge 後。
+参照: **色 v4 §2-2・§6 C1a の 4 条件が正** +
+**WP72 C0 レポートの「C1 への引き渡し条件」1〜2
+(`docs/design_reviews/2026-07-11_wp72_c0_report.md` — 特に
+resolver v1 は現行の B8G8R8A8 channel order を維持すること)**。
+依存: WP72(済)、WP70 merge(済)。
 見積: 大(frame graph 横断)。排他: `src/core/renderingpass/` /
 `src/project/featurecompose.cpp` / pass JSON。
 
@@ -1568,7 +1572,11 @@ TRANSFER_SRC/DST を含む)、§2-2 anchor への旧 pass 写像案、§2-7 の
 ### WP74: 色 C1b — 色意味論の一括移行 + golden 再基準化(単独ゲート)
 
 参照: **色 v4 §2 全体・§3(manifest / 三者比較 / per-case 承認 /
-tolerance 正直化)・§4 テスト表が正**。依存: WP73。見積: 特大。
+tolerance 正直化)・§4 テスト表・§1 の C0 追補 6 件 +
+WP72 C0 レポートの「C1 への引き渡し条件」3〜5(shader_lab pow(0.92) の
+所有決定・emissive factor の radiometric 分離・UI atlas 混同禁止・
+visual_review 項目の三者比較転記・capture contract 2 の consumer 同時更新)
+が正**。依存: WP73。見積: 特大。
 排他: シェーダ全域 / loader / swapchain / capture / golden。
 `resolver_version: 2`(SRGB/16F 規則)への切替、authored 色 decode、
 view/複製戦略、contract 2、§4 の全 analytic fixture 常設、
