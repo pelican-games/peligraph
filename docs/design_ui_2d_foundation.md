@@ -1,9 +1,10 @@
 # 2D 描画基盤と UI システム(v2)
 
 対象読者: エンジン担当・UI/2D を作る人。
-ステータス: v3 ドラフト(2026-07-11。v1 Reject(C1〜C12)→ v2 Reject
-(`docs/design_reviews/2026-07-10_ui_2d_v2_review_codex.md` の R1〜R6)→
-**R1〜R6 を全面受理して改稿。再レビュー待ち**)。
+ステータス: v4 ドラフト(2026-07-11。v1/v2/v3 Reject →
+`docs/design_reviews/2026-07-11_ui_2d_v3_review_codex.md` の **B1〜B4 を受理して
+改稿**。B1 は `design_color_pipeline.md`(新設 — ユーザー決定「しっかり版」)に
+分離して参照。再審査待ち)。
 前提: 2026-07-07 決定「UI と 2D ゲームは描画基盤共有・上物分離」、
 2026-07-10 決定「エンジン標準スキン = ツール調 / エンジン UI = ImGui /
 ゲーム UI = pelican.ui」、ECS v2.1(世代付き ID・生ポインタ禁止)、
@@ -53,12 +54,14 @@ DrawRun:
 ```
 
 - **blend(値まで固定)**: color = `(SRC_ALPHA, ONE_MINUS_SRC_ALPHA, ADD)`、
-  alpha = `(ONE, ONE_MINUS_SRC_ALPHA, ADD)` — **debug_text の現行値を採用**
-  (exact golden 維持のため。旧 UI の `(ZERO, ONE)` は置換対象の側)
-- **色の transfer**: JSON/スキンの色は sRGB 表記 → **document パース時に一度だけ
-  linear へ変換**して u8 linear を頂点に積む。テクスチャは sRGB view で
-  サンプリング。出力 attachment はパスの既存 sRGB format(シェーダは linear を
-  書き、エンコードはハードウェア)
+  alpha = `(ONE, ONE_MINUS_SRC_ALPHA, ADD)`
+- **色の ABI は `design_color_pipeline.md` が正(B1 — v4 で分離)**:
+  UI シェーダは **linear のみを出力**(OETF を書かない)。attachment
+  フォーマット・swapchain 選択(`*_SRGB` 優先 + UNORM フォールバックの
+  encode 専用最終パス)・authored sRGB → linear の変換式と丸め・blend が
+  linear 空間で行われることは全て色パイプライン設計に従う。
+  **U1 は色パイプライン C1(移行 + golden 再基準化)の後**(§9)。
+  R6 の byte-exact 互換ゲートは C1 後の新 baseline 上で運用する
 - 上限: 1 フレームのクアッド数(既定 16384)と**正規化後の一意クリップ数**
   (既定 256 — push 回数ではない)。超過エラーには document key・
   widget stable id・実数・上限を含める(R1)
@@ -69,7 +72,8 @@ DrawRun:
 - ソートは `(layer, decl_seq)` の **stable な全順序**。生成自体を document
   走査順で行い、**map 走査順に依存しない**(現行 UI の unordered_map 描画順は
   移行時に廃止)
-- **併合は「隣接し、かつ texture_page・sampler_key・clip が同じ run」のみ**。
+- **併合は「隣接し、かつ pipeline_key・texture_page・sampler_key・clip が
+  全て同じ run」のみ**(§1-1 の完全キーと同一 — 再掲)。
   A(tex0) B(tex1) C(tex0) を A+C にまとめることは決してしない
   (ペインターズ順の保存が正しさ — draw call 数はその次)
 - v1 のテクスチャ戦略 = **1 run 1 ページ**。descriptor array / bindless は
@@ -189,20 +193,26 @@ struct FrameInput {
   次フレーム(semantic)— 見た目の即応と決定性が両立
 - 連続 drag をゲームが同 tick で要る場合は、イベントでなく **frame-scoped
   `UiActionFrame` query**(Actions と同型)を将来オプションとして予約
-- **payload スキーマ(R4 — 具体形式)**: UI ロード時に検証(未知イベント名・
-  型不一致はロード時の名前入りエラー)。
+- **payload スキーマ(B3 で完全化)**: field 定義は次の全属性を持つ:
 
   ```json
   "emit": { "on_click": { "event": "MenuOpened",
     "fields": [
-      { "name": "source", "from": "stable_id" },
-      { "name": "amount", "from": "static", "value": 1 },
-      { "name": "delta",  "from": "drag_delta_ui" } ] } }
+      { "name": "source", "from": "stable_id", "type": "string", "required": true },
+      { "name": "amount", "from": "static", "value": 1, "type": "int" },
+      { "name": "delta",  "from": "drag_delta_ui", "type": "vec2",
+        "required": false, "default": [0, 0] } ] } }
   ```
 
-  **widget の同一性は `(document_key, stable_id)` を値でコピー**して載せる
-  (semantic は次フレーム配送なので runtime WidgetId は reload/remove で
-  stale になり得る — runtime handle は UI 内部限定)
+  - `from` の enum: `static | stable_id | drag_delta_ui | widget_value(<プロパティパス>)`
+  - **型の照合先 = `PELICAN_REGISTER_EVENT` が登録するイベント型の
+    payload 構築スキーマ**(イベント層の by-name emit が既に持つ「JSON から
+    payload を構築する」機構の要求 field 名・型と、UI ロード時に突き合わせる)
+  - ロード時エラー(名前入り)を invalid fixture で固定: ①未知イベント名
+    ②未知 `from` ③型不一致 ④範囲外(min/max 宣言時)⑤required 欠落
+  - **widget の同一性は `(document_key, stable_id)` を値でコピー**して載せる
+    (semantic は次フレーム配送なので runtime WidgetId は reload/remove で
+    stale になり得る — runtime handle は UI 内部限定)
 - hot reload の swap 時、旧 document 向けの未 commit command は**破棄**し、
   破棄件数を reload status として返す(cancel コールバックが積んだ command も
   同様 — R4)
@@ -222,8 +232,15 @@ v1 の「アンカーのみ」を撤回し、以下を v1 に含める(これ未
 4. stack: `direction / gap / padding / align / justify`。**同じ軸を anchor と
    stack の両方が支配しない**(親が stack なら子の anchor は無効 — エラー)
 5. アンカー形式(R3 で確定): `anchor_min` / `anchor_max` は親矩形に対する
-   `[0,1]²` の割合、`offsets = [left, top, right, bottom]`(ui_units、
+   `[0,1]²` の割合、`offsets = [left, top, right, bottom]`(ui_units 整数、
    アンカー点からの符号付き距離)
+   - **端数の整数化(B4 v3→B2 で確定)**: 各 edge を
+     `edge = round_half_up(parent_edge + parent_size × anchor) + offset` で
+     計算する — anchor 由来の乗算だけ実数で行い、**round を 1 回だけ**通して
+     整数 ui_units の世界に入る(以降の制約解法・fill 配分・min/max は全て
+     整数演算)。fill の余りは ui_units の整数として宣言順に 1 ずつ配分。
+     min/max clamp 後に残りが負の場合も **min は破らない**(超過は
+     overflow 規則に従う)
 6. `overflow: visible | clip`、`visible / hidden(空間残す)/ collapsed(残さない)`
 7. **制約解法(R3 — 規範)**:
 
@@ -337,12 +354,29 @@ UiModule
   "lifecycle": [] }
 ```
 
-規約: rect は ui_units 整数の edge 表現(`[l,t,r,b]`、右下排他)/
-widget の同一性は `document_key + stable id パス`(runtime WidgetId は
-arena 単体テストに分離)/ pipeline・texture は**安定名**(実行時数値 ID 禁止)/
-配列は決定順(widgets = 走査順、runs = 発行順、trace = event_seq 順)/
-optional は省略(null 不使用)/ kind・effects は enum を schema に列挙。
-valid / invalid / expected の fixture 一式を U0 のゲートにする。
+規約(B4 で closed schema 化): rect は ui_units 整数の edge 表現
+(`[l,t,r,b]`、右下排他)/ widget の同一性は `document_key + stable id パス`
+(runtime WidgetId は arena 単体テストに分離)/ pipeline・texture は**安定名**
+(実行時数値 ID 禁止)/ 配列は決定順(widgets = 走査順、runs = 発行順、
+trace = event_seq 順)/ optional は省略(null 不使用)。
+
+**enum 表(schema v1 の一部として固定)**:
+
+| フィールド | 値 |
+|-----------|-----|
+| input_trace.kind | `pointer_down` / `pointer_move` / `pointer_up` / `pointer_cancel` |
+| input_trace.button | `left` / `right` / `middle` |
+| input_trace.consumed | control 名の配列(`"mouse:left"`, `"mouse:move"` の形式) |
+| input_trace.effects | `capture` / `release_capture` / `click` / `drag_start` / `drag` / `cancel` / `hover_enter` / `hover_exit` |
+| lifecycle.kind | `controller_init` / `controller_deinit` / `capture_cancel` / `document_swap` / `command_dropped` |
+
+- **event_seq の JSON 表現 = number**(2^53−1 以下を writer が保証 —
+  超過は fixture 生成エラー。実運用で到達しない値だが規則として閉じる)
+- **error trace の形式**: `{ "phase": "parse|layout|route|commit",
+  "code": "<安定コード>", "path": "<document 内パス>", "message": "<人間向け>" }`
+- **normative fixture 一式**(valid / invalid / expected の各最低 1 組)を
+  スキーマと同時にコミットし、U0 のゲートはそれとの一致で機械判定する。
+  比較は canonical 化(キー順固定・空白正規化)した JSON の一致
 
 ## 8. ImGui(エンジン UI)の隔離規約(C10)
 
@@ -362,12 +396,12 @@ valid / invalid / expected の fixture 一式を U0 のゲートにする。
 - multi-viewport / docking は v1 OFF 固定。clipboard/IME/OS cursor・
   **device loss 時のバックエンド資源再生成**の対応可否を導入 WP で明示(R6 補)
 
-## 9. 実装順(v2 — U0 起点。レビュー §10 を採用)
+## 9. 実装順(v4 — U0 起点)
 
 | 段階 | 内容 | ゲート |
 |------|------|--------|
 | **U0** | **純 CPU**: スキーマ・レイアウト・WidgetId arena・ordered 入力ルーティング・capture・draw command 生成 | semantic fixture 全通過(GPU なし) |
-| U1 | K3 アトラス接続・quad buffer・stable run・clip・ui feature 化・panel/image | 2 アトラス交互重なり・nested clip・旧 UI 移行・golden |
+| U1 | K3 アトラス接続・quad buffer・stable run・clip・ui feature 化・panel/image(**依存: 色パイプライン C1 の後**) | 2 アトラス交互重なり・nested clip・旧 UI 移行・golden |
 | U2 | bitmap label/button・UI-local 状態・E1 emit・rpc の ordered click/drag/replay | **debug_text の旧経路/共通経路を同一 fixture に描いて byte-exact 比較する互換ゲート**(R6 — tolerance 0 を緩めない。意図的な色意味論変更時のみ理由記録付きの versioned baseline 更新 → 以後再び 0) |
 | U3 | Controller factory/lifecycle・hot reload トランザクション・gauge/stack/トークン | remove/hide/reload 中の capture cancel・init/deinit 列 |
 | U4 | ImGui ユニット(§8) | OFF/headless/golden/replay の完全不在・入力優先順位 |
@@ -376,7 +410,7 @@ valid / invalid / expected の fixture 一式を U0 のゲートにする。
 前提工事(U0 より前 or 同時): **FrameInput(InputState 改訂)**と
 input_seq v1 の改訂 — 入力設計(I 系)側の WP として切り出す。
 
-## 10. 未決事項(v2 で残る最小)
+## 10. 未決事項(v4 で残る最小)
 
 1. SDF/日本語テキスト(text_hud v2 と同時 — 本書 v1 は ASCII bitmap 固定)
 2. scroll / grid / wrap / RTL / safe area(v2)
