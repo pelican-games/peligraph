@@ -1746,6 +1746,94 @@ textures 機構を使う)。見積: 特大。
    一致)
 5. 受け入れ = 新 fixture 群 + 既存全テスト + golden 全維持 + player
 
+### WP80: マテリアル M3b — pelican-spv-link(experimental バックエンド)
+
+参照: **`design_material_shading.md` §3-6(spv-link・WP59 スパイク要件
+1〜5・昇格ゲート 7 項目)・§4 M3b 行が正**。一次資料 =
+`experiments/spvlink/REPORT.md`。依存: WP78(済 — 同じ B API の裏)。
+見積: 大。排他: `src/core/shader/` のリンカ系(新設)/
+`src/project/materiallowering.*` は読み取りのみ。
+
+1. **同じ B API の裏の experimental バックエンド**: opt-in フラグ
+   (config or PELICAN_SPV_LINK=experimental)でのみ有効。既定は
+   WP78 のソース経路 — **既定経路の挙動・golden は完全不変**
+2. スパイク要件の本実装(§3-6 の 1〜5 をそのまま受け入れ基準に):
+   ①テキストアセンブリ書換禁止 — **SPIRV-Tools / SPIRV-Reflect の API**
+   ②ABI 表面 = scalar/vecN/単純 struct 限定を検証で強制(行列・配列・
+   リソースハンドル・レイアウト依存型は名前入り拒否)
+   ③**CPU バインド表に descriptor type を追加**(combined vs split
+   sampler — split を標準形に統一)
+   ④Slang `[noinline]` / glslang `--keep-uncalled` の規約化
+   ⑤GLSL include fallback(= WP78 経路)の CI 常設維持
+3. SPIRV-Headers/Tools/Reflect は **pin/vendor**(SDK 追従禁止)
+4. ローカルで実行可能な昇格ゲートの前倒し: コーパス(GLSL 産 +
+   Slang 産の各数本 — struct/制御フロー/discard/複数フック)+
+   spirv-val ゲート + リンク済み golden + **toolchain 版数・入力 hash 込みの
+   再現可能キャッシュキー**(ゲート⑦)
+5. スコープ外(昇格判断に残す): 多ベンダ実機マトリクス・fuzzer・
+   RenderDoc debug プロファイル・naga web bake — 実行できないゲートを
+   「通過した」と主張しない(レポートに未実施として明記)
+6. 受け入れ = 上記 fixture 群 + 既定経路の golden 全維持(SKIP 0)+
+   全テスト + player
+
+### WP38: スケルタルアニメーション再生(クリップ v1)
+
+参照: 本節が仕様の正(設計判断確定済み)。依存: WP77(#animation 名前
+解決)・WP78(スキニングはテンプレート所有 — §3-1 の契約)。見積: 特大。
+排他: `src/core/model/gltf.*`(スキン読取)/ `src/core/renderer/` の
+スキニング系(新設)/ アニメコンポーネント(新設)。
+
+**設計判断(確定)**:
+
+- glTF skins(joints・inverseBindMatrices)+ animations を読む。
+  sampler 補間は **LINEAR / STEP のみ**(CUBICSPLINE は v1 では
+  名前入りエラー — 黙って LINEAR に落とさない)。morph target は対象外
+- スキニングは **matrix palette SSBO + 頂点シェーダ**(JOINTS_0 /
+  WEIGHTS_0)。**テンプレートが所有** — B マテリアルのスニペットは
+  1 文字も変わらない(§3-1 の約束の実証)。depth/velocity variant にも
+  同じ変位が乗る(影の剥離防止 — WP78 の variant 機構に乗る)
+- コンポーネント形式(**グラフ拡張可能な器** — アニメグラフは後続):
+  `{"name": "animation", "clip": "<glb>#animation/<名前>",
+  "speed": 1.0, "loop": true, "start_time": 0.0}`。
+  `"graph"` キーは**予約**(v1 では存在 = エラー)
+- 時間は EngineTime 駆動(決定的)。rpc set_time でポーズが決まる —
+  golden は固定時刻のポーズで撮る
+
+1. glTF skin/animation の読取(K1 の #animation 解決を実表現に接続)
+2. matrix palette 計算(ジョイント階層は WP62 ECS 親子でなく glTF skin
+   内部の階層をそのまま評価 — シーングラフに骨を撒かない)
+3. テンプレートへのスキニング合流(PELICAN_SKINNED variant)+
+   depth/velocity variant
+4. fixture: 解析可能な 2 骨の回転クリップ(固定時刻のジョイント行列を
+   手計算と一致)+ LINEAR/STEP 補間 + ループ境界 + CUBICSPLINE エラー +
+   固定時刻ポーズの golden 1 ケース(件数 REQUIRE 更新を忘れない)
+5. example: character.glb か AliciaSolid.vrm にクリップがあれば
+   デモ配線(なければ fixture のみで可 — 無理に例を作らない)
+6. 受け入れ = 上記 fixture + 既存 golden 全維持 + 全テスト + player
+
+### WP81: コンテナ K3 — pelican-import-tools 創設(PSD 展開 + アトラスパック)
+
+参照: **`design_asset_containers.md` §3(PSD レーン)+ §4 imports 規約が
+正**。**新リポジトリ `pelican-import-tools`**(2026-07-12 ユーザー承認 —
+ローカル作成、リモートは後日)。エンジン非リンク(外部ツール契約)。
+依存: なし(#sprite の消費側 = U1 は後続)。見積: 中。
+
+1. リポジトリ骨格: Python + uv(houdini-adapter の流儀)、pytest、
+   README(データ契約 = 入力 → imports/ 出力 + pelican.import manifest)
+2. **psd_extract**: PSD → レイヤーごとのトリミング済み PNG + オフセット、
+   レイヤーツリー JSON(名前・位置・サイズ・不透明度・表示・グループ)、
+   pelican.import manifest(sha256)。**psd-tools に乗る(自前パーサ禁止)**
+3. **atlas_pack**: PNG 群 → アトラスページ PNG + `pelican.atlas` v1 JSON
+   (`{schema, version, pages: [{image, size}], sprites: {名前: {page,
+   rect[l,t,r,b] 右下排他}}}` — `#sprite/<名前>` の解決先)。
+   **bleed padding**(UI 文書の import 規約)+ **決定的パッキング**
+   (同一入力 → byte 同一出力。名前→サイズの安定順)
+4. manifest / atlas JSON の形式は pelican2 の `design_asset_containers.md`
+   §3 と往復整合(形式の追加はエンジン先行のサブセット原則 —
+   `#sprite/` 語彙は [PF] v6.3 で定義済み)
+5. 受け入れ = pytest green(最小 PSD fixture + 合成 PNG fixture・
+   決定性 = 2 回実行 byte 一致・トリム/オフセット/透明の解析検証)
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **最小コマンド層**: (1) ファイル連携済み → (2) WP27 実装済み → (3) `load_gltf` / `update_transforms` は **2026-07-07 に実装 GO 決定**。前提はすべて充足(宛先 = scene v1 の objects[].name / アセット意味論 = WP21)。設計時要件: **複数インスタンス運用**(エージェントが複数エンジンを並行駆動する使い方) — stdio rpc は 1 プロセス 1 クライアントの現行構造を維持しつつ、`get_status`(instance id・project・フレーム番号)を追加してインスタンス識別可能に。プロジェクトは読み取り専有なので並行起動は安全(書き込み系操作を入れる際に排他を設計)。複数クライアント同時接続は TCP/WebSocket 展開時の課題として分離
