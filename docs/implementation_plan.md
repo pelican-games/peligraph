@@ -1622,6 +1622,56 @@ acceptance criteria に含める。要点**:
 受け入れ = §9 U0 の 3 段ゲート + U-C1〜U-C4 の fixture/CTest 実行結果 +
 既存全テスト。
 
+### WP76: マテリアル M2b-2 — values バインダと C 基盤の完成
+
+参照: **`design_material_shading.md` v1.2 §3-4(属性/欠損既定/render_state)・
+§3-8(.surface 自己記述コンテナ)・§4 M2b 行の残り + WP70 の
+「スコープ外(M2b-2 へ)」列挙が作業リストの正**。依存: WP70(済)。
+見積: 大。排他: `src/core/material/` / `src/core/renderer/materialrender.*` /
+`src/project/surfaceformat.*`。
+
+1. **.surface values バインダ**: WP68 パーサの ordered params 宣言から
+   std140 レイアウトを確定し、material SSBO(WP70 の set2 b6)へ値を
+   詰める。宣言順・明示型・default 必須は WP68 契約どおり。
+   **type color の factor は sRGB→linear decode(色 v4 §2-4 の
+   encoding×role 表が正 — `"encoding": "linear"` override 対応)**
+2. **textures 辞書 binding**: .surface の textures 宣言 → set2 の
+   カスタムスロット割付(既存 0-5 の後ろ)。**color/data の role 宣言 →
+   SRGB/UNORM view 選択(WP74 の view 機構に乗る)**
+3. **ダミーテクスチャ**: 未指定スロットの white/normal/black 既定
+   (color/data 両 view — WP74 の white 前例に従う)
+4. **公開 resources manifest**: エンジンが .surface シェーダに供給する
+   buffer/image/sampler の機械可読一覧(C 層ユーザーの参照文書を
+   生成できる形)。shader_contract.md へ節追加
+5. **render_state 拡張**: .surface ヘッダの render_state(blend/cull/
+   depth)を pipeline へ反映。capability 検証付き(不正組合せは
+   名前入りロードエラー)
+6. **dump-lowered-material の器**: `pelican_cli dump-lowered-material
+   <surface>` が lowering 結果(defines・binding 表・render_state)を
+   テキスト出力(B→C 同値 CI の土台 — B 実装前は器のみ)
+7. 既定 PBR は現行挙動維持 — **golden 全 17 維持(SKIP 0)+ 全テスト +
+   player が受け入れの砦**。新規 fixture: values binder の std140
+   オフセット検証・textures 辞書・render_state 反映・dump 出力
+
+### WP77: コンテナ K1 — #フラグメント参照の実ロード
+
+参照: **`design_asset_containers.md` §1 + [PF] v6.3(§3-A 凍結済み)が正**。
+構文解析・正準形解決は WP55 で実装済み — 本 WP は**ローダの部分ロード**。
+依存: WP55(済)。見積: 中。排他: `src/core/loader/` /
+`src/core/model/gltf.*`(view 機構は WP74 の現状を壊さない)。
+
+1. glb の `#mesh/<名前|連結パス>` / `#material/...` / `#node/...` /
+   `#animation/...` の**部分ロード**(丸ごとロードして捨てるのではなく、
+   対象と依存(メッシュ→マテリアル→テクスチャ)だけを GPU 化)
+2. 短い一意名 = 糖衣(フルパスへ解決・曖昧は**複数一致を列挙する
+   名前入りエラー**)。同一フルパス重複もロードエラー
+3. フラグメントなし = 従来経路そのまま(**既存 golden/テスト無変化**)
+4. asset_data.json の models[].path と scene の simplemodelview から
+   フラグメント付き参照を受理(例: sotai の 1 メッシュだけ参照する
+   fixture を projects/example ではなく test fixture に追加)
+5. エラー系 fixture: 未知種別 / 未知名 / 曖昧名 / glb 以外への #mesh
+6. 受け入れ = 新 fixture 群 + 既存全テスト + golden 全維持 + player
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **最小コマンド層**: (1) ファイル連携済み → (2) WP27 実装済み → (3) `load_gltf` / `update_transforms` は **2026-07-07 に実装 GO 決定**。前提はすべて充足(宛先 = scene v1 の objects[].name / アセット意味論 = WP21)。設計時要件: **複数インスタンス運用**(エージェントが複数エンジンを並行駆動する使い方) — stdio rpc は 1 プロセス 1 クライアントの現行構造を維持しつつ、`get_status`(instance id・project・フレーム番号)を追加してインスタンス識別可能に。プロジェクトは読み取り専有なので並行起動は安全(書き込み系操作を入れる際に排他を設計)。複数クライアント同時接続は TCP/WebSocket 展開時の課題として分離
