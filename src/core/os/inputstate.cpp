@@ -1,6 +1,8 @@
 #include "inputstate.hpp"
 
 #include <algorithm>
+#include <cassert>
+#include <stdexcept>
 #include <type_traits>
 
 namespace Pelican {
@@ -70,6 +72,123 @@ InputEvent InputEvent::axis(float x, float y) noexcept {
     };
 }
 
+void InputConsumptionMask::consumeControl(KeyCode code) noexcept {
+    if (isValidKeyCode(code)) {
+        controls[keyCodeIndex(code)] = 1;
+    }
+}
+
+void InputConsumptionMask::consumePointerMotion() noexcept {
+    pointer_motion = true;
+}
+
+void InputConsumptionMask::consumePointer() noexcept {
+    for (auto code = static_cast<std::underlying_type_t<KeyCode>>(KeyCode::MouseLeft);
+         code <= static_cast<std::underlying_type_t<KeyCode>>(KeyCode::MouseButton8); ++code) {
+        consumeControl(static_cast<KeyCode>(code));
+    }
+    consumePointerMotion();
+}
+
+bool InputConsumptionMask::consumesControl(KeyCode code) const noexcept {
+    return isValidKeyCode(code) && controls[keyCodeIndex(code)] != 0;
+}
+
+InputSnapshot InputConsumptionMask::apply(const InputSnapshot &source) const noexcept {
+    auto result = source;
+    for (std::size_t index = 0; index < controls.size(); ++index) {
+        if (controls[index] == 0) {
+            continue;
+        }
+        result.down[index] = 0;
+        result.pushed[index] = 0;
+        result.released[index] = 0;
+    }
+    if (pointer_motion) {
+        result.mouse_delta_x = 0.0f;
+        result.mouse_delta_y = 0.0f;
+    }
+    return result;
+}
+
+FrameInput::FrameInput(std::span<const InputEvent> events, const InputSnapshot &frame_snapshot,
+                       std::shared_ptr<internal::FrameInputBorrowState> state) noexcept
+    : ordered_events(events), snapshot(frame_snapshot), borrow_state(std::move(state)),
+      borrowed_generation(borrow_state ? borrow_state->generation : 0) {
+    acquire();
+}
+
+FrameInput::FrameInput(const FrameInput &other) noexcept
+    : ordered_events(other.ordered_events), snapshot(other.snapshot), borrow_state(other.borrow_state),
+      borrowed_generation(other.borrowed_generation) {
+    acquire();
+}
+
+FrameInput::FrameInput(FrameInput &&other) noexcept
+    : ordered_events(other.ordered_events), snapshot(other.snapshot), borrow_state(std::move(other.borrow_state)),
+      borrowed_generation(other.borrowed_generation) {
+    other.ordered_events = {};
+    other.borrowed_generation = 0;
+}
+
+FrameInput &FrameInput::operator=(const FrameInput &other) noexcept {
+    if (this == &other) {
+        return *this;
+    }
+    release();
+    ordered_events = other.ordered_events;
+    snapshot = other.snapshot;
+    borrow_state = other.borrow_state;
+    borrowed_generation = other.borrowed_generation;
+    acquire();
+    return *this;
+}
+
+FrameInput &FrameInput::operator=(FrameInput &&other) noexcept {
+    if (this == &other) {
+        return *this;
+    }
+    release();
+    ordered_events = other.ordered_events;
+    snapshot = other.snapshot;
+    borrow_state = std::move(other.borrow_state);
+    borrowed_generation = other.borrowed_generation;
+    other.ordered_events = {};
+    other.borrowed_generation = 0;
+    return *this;
+}
+
+FrameInput::~FrameInput() {
+    release();
+}
+
+bool FrameInput::isValid() const noexcept {
+    return borrow_state != nullptr && borrow_state->active && borrow_state->generation == borrowed_generation;
+}
+
+std::uint64_t FrameInput::generation() const noexcept {
+    return borrowed_generation;
+}
+
+void FrameInput::acquire() noexcept {
+    if (borrow_state != nullptr) {
+        ++borrow_state->borrowers;
+    }
+}
+
+void FrameInput::release() noexcept {
+    if (borrow_state != nullptr) {
+        assert(borrow_state->borrowers > 0);
+        --borrow_state->borrowers;
+        borrow_state.reset();
+    }
+}
+
+InputStateCore::~InputStateCore() {
+    borrow_state->active = false;
+    assert(borrow_state->borrowers == 0 && "FrameInput must not outlive its InputState owner");
+}
+
 void InputStateCore::queueButtonEvent(KeyCode code, bool pressed) {
     queueEvent(InputEvent::button(code, pressed));
 }
@@ -83,14 +202,42 @@ void InputStateCore::queueAxisEvent(float x, float y) {
 }
 
 void InputStateCore::queueEvent(InputEvent event) {
+    if (event.event_seq == InputEvent::unassigned_sequence) {
+        if (next_event_seq == InputEvent::unassigned_sequence) {
+            throw std::overflow_error("input event sequence exhausted");
+        }
+        event.event_seq = next_event_seq++;
+    } else {
+        if (event.event_seq < next_event_seq) {
+            throw std::runtime_error("recorded input event sequence is not monotonic");
+        }
+        if (event.event_seq == InputEvent::unassigned_sequence - 1) {
+            next_event_seq = InputEvent::unassigned_sequence;
+        } else {
+            next_event_seq = event.event_seq + 1;
+        }
+    }
     pending_events.push_back(event);
 }
 
 void InputStateCore::queueEvents(const std::vector<InputEvent> &events) {
-    pending_events.insert(pending_events.end(), events.begin(), events.end());
+    for (const auto &event : events) {
+        queueEvent(event);
+    }
 }
 
 void InputStateCore::beginFrame() {
+    borrow_state->active = false;
+    assert(borrow_state->borrowers == 0 && "FrameInput must not be retained across frames");
+    ++frame_generation;
+    borrow_state->generation = frame_generation;
+    borrow_state->active = true;
+    frame_active = true;
+    actions_frozen = false;
+    consumption_mask = {};
+    frame_events.clear();
+    frame_events.swap(pending_events);
+
     InputSnapshot next_snapshot{};
     const bool had_mouse_position = mouse_position_known;
     const float previous_mouse_x = mouse_x;
@@ -99,7 +246,7 @@ void InputStateCore::beginFrame() {
     float axis_delta_x = 0.0f;
     float axis_delta_y = 0.0f;
 
-    for (const auto &event : pending_events) {
+    for (const auto &event : frame_events) {
         switch (event.type) {
         case InputEvent::Type::button: {
             if (!isValidKeyCode(event.code)) {
@@ -140,21 +287,65 @@ void InputStateCore::beginFrame() {
         next_snapshot.mouse_delta_y += mouse_y - previous_mouse_y;
     }
 
-    pending_events.clear();
     snapshot = next_snapshot;
 }
 
 void InputStateCore::clear() {
+    borrow_state->active = false;
+    assert(borrow_state->borrowers == 0 && "FrameInput must not be retained while input state is cleared");
+    ++frame_generation;
+    borrow_state->generation = frame_generation;
     snapshot = {};
     current_down = {};
     pending_events.clear();
+    frame_events.clear();
+    consumption_mask = {};
     mouse_x = 0.0f;
     mouse_y = 0.0f;
     mouse_position_known = false;
+    frame_active = false;
+    actions_frozen = false;
 }
 
 const InputSnapshot &InputStateCore::currentSnapshot() const noexcept {
     return snapshot;
+}
+
+FrameInput InputStateCore::currentFrameInput() const noexcept {
+    assert(frame_active && "FrameInput is only available after beginFrame");
+    return FrameInput{frame_events, snapshot, borrow_state};
+}
+
+void InputStateCore::consumeControlForActions(KeyCode code) noexcept {
+    assert(frame_active && !actions_frozen && "input controls must be consumed before Actions are frozen");
+    consumption_mask.consumeControl(code);
+}
+
+void InputStateCore::consumePointerMotionForActions() noexcept {
+    assert(frame_active && !actions_frozen && "pointer motion must be consumed before Actions are frozen");
+    consumption_mask.consumePointerMotion();
+}
+
+void InputStateCore::consumePointerForActions() noexcept {
+    assert(frame_active && !actions_frozen && "pointer input must be consumed before Actions are frozen");
+    consumption_mask.consumePointer();
+}
+
+const InputConsumptionMask &InputStateCore::consumptionMask() const noexcept {
+    return consumption_mask;
+}
+
+InputSnapshot InputStateCore::freezeActionsSnapshot() noexcept {
+    actions_frozen = true;
+    return consumption_mask.apply(snapshot);
+}
+
+std::uint64_t InputStateCore::frameGeneration() const noexcept {
+    return frame_generation;
+}
+
+std::size_t InputStateCore::frameInputBorrowCount() const noexcept {
+    return borrow_state->borrowers;
 }
 
 std::size_t InputStateCore::pendingEventCount() const noexcept {
@@ -179,6 +370,34 @@ void InputState::clear() {
 
 const InputSnapshot &InputState::currentSnapshot() const noexcept {
     return core.currentSnapshot();
+}
+
+FrameInput InputState::currentFrameInput() const noexcept {
+    return core.currentFrameInput();
+}
+
+void InputState::consumeControlForActions(KeyCode code) noexcept {
+    core.consumeControlForActions(code);
+}
+
+void InputState::consumePointerMotionForActions() noexcept {
+    core.consumePointerMotionForActions();
+}
+
+void InputState::consumePointerForActions() noexcept {
+    core.consumePointerForActions();
+}
+
+const InputConsumptionMask &InputState::consumptionMask() const noexcept {
+    return core.consumptionMask();
+}
+
+InputSnapshot InputState::freezeActionsSnapshot() noexcept {
+    return core.freezeActionsSnapshot();
+}
+
+std::uint64_t InputState::frameGeneration() const noexcept {
+    return core.frameGeneration();
 }
 
 } // namespace Pelican

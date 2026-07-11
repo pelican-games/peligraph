@@ -55,11 +55,31 @@ TEST_CASE("Event bus dispatches at frame boundary in emit order", "[event-layer]
 
     REQUIRE(event_records.empty());
 
-    Pelican::internal::dispatchPendingEvents(ctx);
+    Pelican::internal::freezePendingEventsForFrame();
+    Pelican::internal::dispatchFrozenEvents(ctx);
     REQUIRE(event_records == std::vector<std::string>{"probe:1", "probe:2"});
 
-    Pelican::internal::dispatchPendingEvents(ctx);
+    Pelican::internal::freezePendingEventsForFrame();
+    Pelican::internal::dispatchFrozenEvents(ctx);
     REQUIRE(event_records == std::vector<std::string>{"probe:1", "probe:2", "reentrant:20"});
+
+    Pelican::internal::clearPendingEvents();
+}
+
+TEST_CASE("Event bus freeze is separate from delivery", "[event-layer][frame-phase]") {
+    Pelican::internal::clearPendingEvents();
+    event_records.clear();
+
+    Pelican::GameContext ctx;
+    ctx.emit(Wp56ProbeEvent{1});
+    Pelican::internal::freezePendingEventsForFrame();
+    ctx.emit(Wp56ProbeEvent{3});
+    Pelican::internal::dispatchFrozenEvents(ctx);
+    REQUIRE(event_records == std::vector<std::string>{"probe:1"});
+
+    Pelican::internal::freezePendingEventsForFrame();
+    Pelican::internal::dispatchFrozenEvents(ctx);
+    REQUIRE(event_records == std::vector<std::string>{"probe:1", "probe:3"});
 
     Pelican::internal::clearPendingEvents();
 }

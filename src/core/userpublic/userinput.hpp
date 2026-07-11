@@ -123,4 +123,13 @@ class Actions {
     static std::vector<std::string> actionSetStack();
 };
 
+namespace internal {
+
+// Phase 3 of the frame contract. Later Actions queries read this frozen frame
+// instead of re-evaluating the bindings.
+void freezeInputActionsFrame();
+std::uint64_t inputActionsEvaluationCount();
+
+} // namespace internal
+
 } // namespace Pelican

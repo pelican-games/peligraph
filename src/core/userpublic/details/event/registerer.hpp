@@ -40,6 +40,7 @@ struct EventTypeRegistration {
 class UserEventRegistererTemplatePublic {
     std::vector<EventTypeRegistration> event_types;
     std::vector<QueuedEvent> pending_events;
+    std::vector<QueuedEvent> deliver_now_events;
 
     void __registerEvent(EventTypeRegistration registration);
     void __emit(QueuedEvent event);
@@ -95,12 +96,14 @@ class UserEventRegistererTemplatePublic {
     std::size_t emitByName(std::string_view name, const void *payload_json);
     const EventTypeRegistration *findByType(std::type_index type) const;
     const EventTypeRegistration *findByName(std::string_view name) const;
-    std::vector<QueuedEvent> drainPendingEvents();
+    void freezePendingEventsForFrame();
+    std::vector<QueuedEvent> drainFrozenEvents();
     void clearPendingEvents();
 };
 
 UserEventRegistererTemplatePublic &getEventRegisterer();
-void dispatchPendingEvents(GameContext &ctx);
+void freezePendingEventsForFrame();
+void dispatchFrozenEvents(GameContext &ctx);
 void clearPendingEvents();
 std::size_t emitEventByName(std::string_view name, const void *payload_json);
 

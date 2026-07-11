@@ -225,8 +225,11 @@ TEST_CASE("Actions API loads optional input_actions_json through ProjectBasicCon
     auto &input = GET_MODULE(InputState);
     input.queueEvent(InputEvent::button(KeyCode::D, true));
     input.beginFrame();
+    const auto evaluations_before_queries = internal::inputActionsEvaluationCount();
     REQUIRE(Actions::axis2("move").x == 1.0f);
     REQUIRE(Actions::axis2("move").y == 0.0f);
+    REQUIRE(Actions::isHeld("move"));
+    REQUIRE(internal::inputActionsEvaluationCount() == evaluations_before_queries + 1);
 
     Actions::pushActionSet("menu");
     input.queueEvent(InputEvent::button(KeyCode::Space, true));
@@ -234,6 +237,14 @@ TEST_CASE("Actions API loads optional input_actions_json through ProjectBasicCon
     REQUIRE(Actions::isPressed("confirm"));
     REQUIRE(Actions::isHeld("confirm"));
     REQUIRE_FALSE(Actions::isHeld("jump"));
+    REQUIRE(internal::inputActionsEvaluationCount() == evaluations_before_queries + 2);
+
+    input.beginFrame();
+    input.consumeControlForActions(KeyCode::D);
+    REQUIRE(Actions::axis2("move").x == 0.0f);
+    REQUIRE_FALSE(Actions::isHeld("move"));
+    REQUIRE(input.currentSnapshot().getKey(KeyCode::D));
+    REQUIRE(internal::inputActionsEvaluationCount() == evaluations_before_queries + 3);
 }
 
 } // namespace Pelican

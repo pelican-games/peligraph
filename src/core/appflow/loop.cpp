@@ -1,17 +1,12 @@
 #include "loop.hpp"
 
-#include "../ecs/core.hpp"
 #include "../launchconfig.hpp"
 #include "../log.hpp"
 #include "../communication/rpcserver.hpp"
-#include "../loader/scene.hpp"
 #include "../os/inputstate.hpp"
 #include "../os/window.hpp"
-#include "../playback/seqplayer.hpp"
 #include "../playback/vatplayer.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
-#include "../userpublic/details/system/registerer.hpp"
-#include "../userpublic/gamecontext.hpp"
 #include "../userpublic/userinput.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/deletionqueue.hpp"
@@ -19,6 +14,7 @@
 #include "../vkcore/rendertarget.hpp"
 #include "../vkcore/rendertiming.hpp"
 #include "enginetime.hpp"
+#include "framephase.hpp"
 #include "framerate.hpp"
 
 #include <filesystem>
@@ -126,12 +122,9 @@ void Loop::run() {
 
     const auto &launch_config = GET_MODULE(EngineLaunchConfig);
     auto &renderer = GET_MODULE(Renderer);
-    auto &ecs = GET_MODULE(ECSCore);
     auto &engine_time = GET_MODULE(EngineTime);
-    auto &seq_player = GET_MODULE(SeqPlayer);
     auto &vat_player = GET_MODULE(VatPlayer);
     auto &input_state = GET_MODULE(InputState);
-    GameContext game_context;
     (void)vat_player;
     RenderTiming *render_timing =
         GET_MODULE(RenderingPassContainer).isFeatureEnabled("gpu_timing") ? &GET_MODULE(RenderTiming) : nullptr;
@@ -158,11 +151,7 @@ void Loop::run() {
             input_state.clear();
             const auto update_start = Clock::now();
             engine_time.advance();
-            internal::dispatchPendingEvents(game_context);
-            ecs.update();
-            internal::updateRegisteredGameSystems(game_context);
-            seq_player.update(engine_time.now());
-            GET_MODULE(SceneLoader).applyPendingLoad();
+            updateFrameState();
             const auto update_end = Clock::now();
 
             const auto render_start = Clock::now();
@@ -199,15 +188,10 @@ void Loop::run() {
         if (!window.process())
             break;
         input_state.queueEvents(window.drainInputEvents());
-        input_state.beginFrame();
-        logInputSnapshotIfRequested(input_state.currentSnapshot());
         const auto update_start = Clock::now();
         engine_time.advance();
-        internal::dispatchPendingEvents(game_context);
-        ecs.update();
-        internal::updateRegisteredGameSystems(game_context);
-        seq_player.update(engine_time.now());
-        GET_MODULE(SceneLoader).applyPendingLoad();
+        updateFrameState();
+        logInputSnapshotIfRequested(input_state.currentSnapshot());
         const auto update_end = Clock::now();
 
         const auto render_start = Clock::now();
