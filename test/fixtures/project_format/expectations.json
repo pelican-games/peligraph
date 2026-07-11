@@ -116,5 +116,20 @@
     "file": "invalid/scene_duplicate_name.json",
     "expect": "error",
     "error_kind": "duplicate_name"
+  },
+  {
+    "file": "invalid/scene_unknown_parent.json",
+    "expect": "error",
+    "error_kind": "unknown_parent"
+  },
+  {
+    "file": "invalid/scene_ambiguous_parent.json",
+    "expect": "error",
+    "error_kind": "ambiguous_parent"
+  },
+  {
+    "file": "invalid/scene_parent_cycle.json",
+    "expect": "error",
+    "error_kind": "parent_cycle"
   }
 ]

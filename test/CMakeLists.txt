@@ -24,6 +24,10 @@ add_executable(pelican_test_vat_fixture_writer vat_fixture_writer.cpp)
 set_target_properties(pelican_test_vat_fixture_writer PROPERTIES CXX_STANDARD 20)
 target_link_libraries(pelican_test_vat_fixture_writer PRIVATE nlohmann_json)
 
+add_executable(pelican_test_gltf_scene_fixture_writer gltf_scene_fixture_writer.cpp)
+set_target_properties(pelican_test_gltf_scene_fixture_writer PROPERTIES CXX_STANDARD 20)
+target_link_libraries(pelican_test_gltf_scene_fixture_writer PRIVATE nlohmann_json)
+
 # register tests
 pelican_define_test(deletionqueue_test pelican_core)
 pelican_define_test(deterministicrng_test pelican_core)
@@ -76,6 +80,10 @@ if(PELICAN_RUNTIME_SHADER_COMPILER)
     endif()
 endif()
 pelican_define_test(gltf_fragment_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+pelican_define_test(gltf_scene_extract_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp argparse tinygltf glm)
+target_sources(pelican_test_gltf_scene_extract_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/devcli/gltfsceneextract.cpp
+)
 pelican_define_test(headless_render_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_headless_render_test PRIVATE
     VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic
@@ -299,6 +307,15 @@ add_test(
         -DFIXTURE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/import_manifest
         -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/devcli_import
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_import.cmake
+)
+
+add_test(
+    NAME devcli_gltf_scene_extract
+    COMMAND ${CMAKE_COMMAND}
+        -DCLI=$<TARGET_FILE:pelican_cli>
+        -DWRITER=$<TARGET_FILE:pelican_test_gltf_scene_fixture_writer>
+        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/devcli_gltf_extract
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_gltf_extract.cmake
 )
 
 pelican_define_test(frameplanner_test pelican_core)

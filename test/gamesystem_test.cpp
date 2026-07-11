@@ -1,6 +1,8 @@
 #include "../src/core/appflow/enginetime.hpp"
 #include "../src/core/container.hpp"
+#include "../src/core/ecs/core.hpp"
 #include "../src/core/ecs/predefined.hpp"
+#include "../src/core/ecs/predefined/transform.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/log.hpp"
@@ -185,6 +187,34 @@ TEST_CASE("GameContext creates and updates local transforms without exposing mod
     REQUIRE(ctx.removeObject(object));
     REQUIRE_FALSE(ctx.removeObject(object));
     REQUIRE_FALSE(ctx.setLocalTransform(object, updated));
+}
+
+TEST_CASE("Existing ECS parent transform composes child world as parent times local", "[gamesystem][parent]") {
+    ensureLogger();
+    FastModuleContainer modules;
+    GET_MODULE(ECSPredefinedRegistration).reg();
+
+    GameContext ctx;
+    auto parent_transform = makeTransform(0.0f, 0.0f, 0.0f);
+    parent_transform.scale = vec3{1.0f, 1.0f, 1.0f};
+    parent_transform.pos = vec3{10.0f, 0.0f, 0.0f};
+    constexpr float sin_cos_45 = 0.7071067811865476f;
+    parent_transform.rotation = quat{0.0f, 0.0f, sin_cos_45, sin_cos_45};
+    const auto parent = ctx.createObject(parent_transform);
+
+    auto child_transform = makeTransform(0.0f, 0.0f, 0.0f);
+    child_transform.scale = vec3{1.0f, 1.0f, 1.0f};
+    child_transform.pos = vec3{2.0f, 0.0f, 0.0f};
+    child_transform.parent = parent;
+    const auto child = ctx.createObject(child_transform);
+
+    GET_MODULE(ECSCore).update();
+    const auto &world = GET_MODULE(ECSCore).getTemplatePublicModule().component<TransformComponent>(child);
+    REQUIRE(world.pos.x == Catch::Approx(10.0f).margin(1.0e-5f));
+    REQUIRE(world.pos.y == Catch::Approx(2.0f).margin(1.0e-5f));
+    REQUIRE(world.pos.z == Catch::Approx(0.0f).margin(1.0e-5f));
+    REQUIRE(world.rotation.z == Catch::Approx(sin_cos_45).margin(1.0e-5f));
+    REQUIRE(world.rotation.w == Catch::Approx(sin_cos_45).margin(1.0e-5f));
 }
 
 } // namespace Pelican

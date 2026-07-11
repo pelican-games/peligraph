@@ -27,6 +27,7 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -53,6 +54,8 @@ ComponentId getComponentIdForObject(ComponentInfoManager &component_info_manager
 
 struct EcsObjectLoad {
     std::string name;
+    std::string parent;
+    bool hierarchy_participant = false;
     std::vector<nlohmann::json> components_json;
     std::vector<ComponentId> components_id;
     std::vector<ColliderComponent> colliders;
@@ -74,14 +77,41 @@ std::vector<EcsObjectLoad> prepareSceneBindings(const nlohmann::json &objects, C
     std::vector<EcsObjectLoad> ecs_objects;
     ecs_objects.reserve(objects.size());
 
+    std::unordered_set<std::string> parent_names;
+    for (const auto &object : objects) {
+        if (const auto parent = object.find("parent"); parent != object.end()) {
+            parent_names.insert(parent->get<std::string>());
+        }
+    }
+    const bool scene_uses_parents = !parent_names.empty();
+    const auto local_transform_id = scene_uses_parents
+                                        ? std::optional<ComponentId>{
+                                              component_info_manager.getComponentIdByName("localtransform")}
+                                        : std::nullopt;
+
     for (const auto &object : objects) {
         const auto object_name = object.value("name", std::string{});
+        const auto parent_name = object.value("parent", std::string{});
         const auto &components_json = object.at("components");
 
         EcsObjectLoad ecs_object;
         ecs_object.name = object_name;
+        ecs_object.parent = parent_name;
+        ecs_object.hierarchy_participant = !parent_name.empty() || parent_names.contains(object_name);
         ecs_object.components_json.reserve(components_json.size());
         ecs_object.components_id.reserve(components_json.size());
+
+        bool has_transform = false;
+        bool has_local_transform = false;
+        for (const auto &component : components_json) {
+            const auto component_name = component.at("name").get<std::string>();
+            has_transform = has_transform || component_name == "transform";
+            has_local_transform = has_local_transform || component_name == "localtransform";
+        }
+        if (ecs_object.hierarchy_participant && !has_transform) {
+            throw std::runtime_error("parent hierarchy object '" + displayObjectName(object_name) +
+                                     "' requires a transform component");
+        }
 
         for (const auto &component : components_json) {
             const std::string component_name = component.at("name");
@@ -97,6 +127,12 @@ std::vector<EcsObjectLoad> prepareSceneBindings(const nlohmann::json &objects, C
             ecs_object.components_json.push_back(component);
             ecs_object.components_id.push_back(
                 getComponentIdForObject(component_info_manager, component_name, object_name));
+            if (ecs_object.hierarchy_participant && component_name == "transform" && !has_local_transform) {
+                auto local_component = component;
+                local_component["name"] = "localtransform";
+                ecs_object.components_json.push_back(std::move(local_component));
+                ecs_object.components_id.push_back(*local_transform_id);
+            }
         }
 
         if (!ecs_object.components_json.empty() || !ecs_object.colliders.empty()) {
@@ -173,26 +209,95 @@ void SceneLoader::load(SceneId scene_id) {
     GET_MODULE(Camera).loadSceneCameras(scene_id);
 
     auto &phys_world = GET_MODULE(PhysWorld);
-    for (const auto &object : ecs_objects) {
-        GameObjectId object_id = invalidGameObjectId;
-        if (!object.components_id.empty()) {
-            object_id = GameObjects::createWithComponents(object.components_id, [&](std::span<void *> ptrs) {
-                for (size_t i = 0; i < object.components_json.size(); ++i) {
-                    component_info_manager.loadByJson(ptrs[i], object.components_json[i]);
+    const bool scene_uses_parents = std::any_of(ecs_objects.begin(), ecs_objects.end(), [](const auto &object) {
+        return object.hierarchy_participant;
+    });
+    if (scene_uses_parents) {
+        std::vector<GameObjectId> object_ids(ecs_objects.size(), invalidGameObjectId);
+        std::unordered_map<std::string, GameObjectId> object_ids_by_name;
+
+        for (size_t object_index = 0; object_index < ecs_objects.size(); ++object_index) {
+            const auto &object = ecs_objects[object_index];
+            if (!object.components_id.empty()) {
+                object_ids[object_index] = GameObjects::createWithComponents(
+                    object.components_id, [&](std::span<void *> ptrs) {
+                        for (size_t i = 0; i < object.components_json.size(); ++i) {
+                            component_info_manager.loadByJson(ptrs[i], object.components_json[i]);
+                        }
+                    });
+            }
+            if (!object.name.empty() && object_ids[object_index] != invalidGameObjectId) {
+                object_ids_by_name.emplace(object.name, object_ids[object_index]);
+            }
+            const bool has_transform =
+                object_ids[object_index] != invalidGameObjectId &&
+                std::find(object.components_id.begin(), object.components_id.end(), transform_id) !=
+                    object.components_id.end();
+            if (!object.name.empty() && has_transform) {
+                bindObjectTransform(object.name, object_ids[object_index]);
+            }
+        }
+
+        auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
+        for (size_t object_index = 0; object_index < ecs_objects.size(); ++object_index) {
+            const auto &object = ecs_objects[object_index];
+            if (!object.hierarchy_participant) {
+                continue;
+            }
+            auto *local = ecs.tryComponent<LocalTransformComponent>(object_ids[object_index]);
+            if (local == nullptr) {
+                throw std::runtime_error("parent hierarchy object '" + displayObjectName(object.name) +
+                                         "' has no localtransform ECS component");
+            }
+            if (!object.parent.empty()) {
+                const auto parent = object_ids_by_name.find(object.parent);
+                if (parent == object_ids_by_name.end() ||
+                    ecs.tryComponent<TransformComponent>(parent->second) == nullptr) {
+                    throw std::runtime_error("parent '" + object.parent + "' for object '" +
+                                             displayObjectName(object.name) + "' has no ECS transform");
                 }
-            });
+                local->parent = parent->second;
+                (void)ecs.markComponentChanged(object_ids[object_index],
+                                               ComponentIdByType<LocalTransformComponent>::value);
+            }
         }
-        const bool has_transform = object_id != invalidGameObjectId &&
-                                   std::find(object.components_id.begin(), object.components_id.end(), transform_id) !=
-                                       object.components_id.end();
-        if (!object.name.empty() && has_transform) {
-            bindObjectTransform(object.name, object_id);
+
+        for (size_t object_index = 0; object_index < ecs_objects.size(); ++object_index) {
+            const auto &object = ecs_objects[object_index];
+            const auto object_id = object_ids[object_index];
+            const bool has_transform = object_id != invalidGameObjectId &&
+                                       ecs.tryComponent<TransformComponent>(object_id) != nullptr;
+            for (const auto &collider : object.colliders) {
+                if (has_transform) {
+                    phys_world.bindCollider(object.name, collider, object_id);
+                } else {
+                    phys_world.bindCollider(object.name, collider, identityPhysWorldTransform());
+                }
+            }
         }
-        for (const auto &collider : object.colliders) {
-            if (has_transform) {
-                phys_world.bindCollider(object.name, collider, object_id);
-            } else {
-                phys_world.bindCollider(object.name, collider, identityPhysWorldTransform());
+    } else {
+        for (const auto &object : ecs_objects) {
+            GameObjectId object_id = invalidGameObjectId;
+            if (!object.components_id.empty()) {
+                object_id = GameObjects::createWithComponents(object.components_id, [&](std::span<void *> ptrs) {
+                    for (size_t i = 0; i < object.components_json.size(); ++i) {
+                        component_info_manager.loadByJson(ptrs[i], object.components_json[i]);
+                    }
+                });
+            }
+            const bool has_transform =
+                object_id != invalidGameObjectId &&
+                std::find(object.components_id.begin(), object.components_id.end(), transform_id) !=
+                    object.components_id.end();
+            if (!object.name.empty() && has_transform) {
+                bindObjectTransform(object.name, object_id);
+            }
+            for (const auto &collider : object.colliders) {
+                if (has_transform) {
+                    phys_world.bindCollider(object.name, collider, object_id);
+                } else {
+                    phys_world.bindCollider(object.name, collider, identityPhysWorldTransform());
+                }
             }
         }
     }

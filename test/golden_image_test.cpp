@@ -764,6 +764,33 @@ void main() {
 })json");
 }
 
+void writeParentTransformProject(const std::filesystem::path &root) {
+    writeDebugDrawProject(root);
+    writeTextFile(root / "scene.json", R"json({
+  "schema": "pelican.scene",
+  "version": 1,
+  "scenes": {
+    "default_scene": {
+      "objects": [
+        {
+          "name": "RotatingParent",
+          "components": [
+            {"name":"transform", "pos":[0,0,0], "rotation":[0,0,0.7071067811865476,0.7071067811865476], "scale":[1,1,1]}
+          ]
+        },
+        {
+          "name": "OrbitingChild",
+          "parent": "RotatingParent",
+          "components": [
+            {"name":"transform", "pos":[0.5,0,0], "rotation":[0,0,0,1], "scale":[1,1,1]}
+          ]
+        }
+      ]
+    }
+  }
+})json");
+}
+
 void writeDebugTextProject(const std::filesystem::path &root) {
     writeTextFile(root / "project.json", makeFeatureProjectJson().dump(2));
     writeTextFile(root / "scene.json", R"json({
@@ -1349,6 +1376,26 @@ void renderDebugDrawFrame(RenderTarget &render_target) {
     (void)render_target;
 }
 
+void renderParentTransformFrame(RenderTarget &render_target) {
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &scene = GET_MODULE(SceneLoader);
+    scene.load("default_scene");
+    GET_MODULE(ECSCore).update();
+    const auto child = scene.objectTransform("OrbitingChild");
+
+    auto &debug_draw = GET_MODULE(DebugDraw);
+    debug_draw.line({0.0f, 0.0f, 0.0f}, child.pos, {0.15f, 0.55f, 1.0f, 1.0f});
+    debug_draw.line(child.pos + glm::vec3{-0.12f, 0.0f, 0.0f},
+                    child.pos + glm::vec3{0.12f, 0.0f, 0.0f},
+                    {1.0f, 0.15f, 0.05f, 1.0f});
+    debug_draw.line(child.pos + glm::vec3{0.0f, -0.12f, 0.0f},
+                    child.pos + glm::vec3{0.0f, 0.12f, 0.0f},
+                    {1.0f, 0.15f, 0.05f, 1.0f});
+    GET_MODULE(Renderer).render();
+    GET_MODULE(VulkanManageCore).waitIdle();
+    (void)render_target;
+}
+
 void renderDebugTextFrame(RenderTarget &render_target) {
     auto &renderer = GET_MODULE(Renderer);
     auto &debug_text = GET_MODULE(DebugText);
@@ -1422,6 +1469,10 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         writeDebugDrawProject(temp_dir);
         GET_MODULE(PathResolver).setup(temp_dir, false);
         GET_MODULE(ProjectSource).setProjectData(makeFeatureProjectJson().dump());
+    } else if (golden_case.mode == "parent_transform") {
+        writeParentTransformProject(temp_dir);
+        GET_MODULE(PathResolver).setup(temp_dir, false);
+        GET_MODULE(ProjectSource).setProjectData(makeFeatureProjectJson().dump());
     } else if (golden_case.mode == "debug_text_feature") {
         writeDebugTextProject(temp_dir);
         GET_MODULE(PathResolver).setup(temp_dir, false);
@@ -1486,6 +1537,8 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         renderFeatureFrame(render_target);
     } else if (golden_case.mode == "debug_draw_feature") {
         renderDebugDrawFrame(render_target);
+    } else if (golden_case.mode == "parent_transform") {
+        renderParentTransformFrame(render_target);
     } else if (golden_case.mode == "debug_text_feature") {
         renderDebugTextFrame(render_target);
     } else if (golden_case.mode == "collider_debug_draw") {
@@ -1598,9 +1651,9 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     requireGoldenVulkanDevice();
     const auto cases = discoverGoldenCases();
 #if PELICAN_WITH_VAT
-    REQUIRE(cases.size() == 17);
+    REQUIRE(cases.size() == 18);
 #else
-    REQUIRE(cases.size() == 16);
+    REQUIRE(cases.size() == 17);
 #endif
 
     for (const auto &golden_case : cases) {

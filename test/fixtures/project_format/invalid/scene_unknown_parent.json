@@ -1,0 +1,20 @@
+{
+  "mode": "scene_format",
+  "document": {
+    "schema": "pelican.scene",
+    "version": 1,
+    "scenes": {
+      "default_scene": {
+        "objects": [
+          {
+            "name": "Child",
+            "parent": "MissingParent",
+            "components": [
+              {"name": "transform"}
+            ]
+          }
+        ]
+      }
+    }
+  }
+}
