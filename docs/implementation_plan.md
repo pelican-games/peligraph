@@ -1872,13 +1872,13 @@ ModelAssetContainer 初期化(モデルロード)**4.9s** が支配的。
 参照: **`design_material_shading.md` v1.2 §3-7-3(名前付きスナップショット —
 Godot SCREEN_TEXTURE の教訓・v1 は opaque 後 1 点のみ・逐次屈折非対応明記・
 コピーコストの可視化)+ §3-9(screen_inputs → forward 自動振り分け)が正**。
-**追加要件(2026-07-12 ユーザー決定・同日訂正)**: 定義ファイルは分割の
-まま、**パスをノードとして見られる可視化ツールで一か所にまとめて見たい**
-(= ツール側の要件。「単一の合流 JSON ファイル」をエンジンに課す解釈は
-**誤りとして撤回**)。エンジン側は get_frame_plan にスナップショット
-ノードと screen_inputs 消費が自然に現れれば十分 — 集約はビューア
-(my_webpage WW8: ノードグラフ形式のパスビューア)が既存の
-get_frame_plan / dump-lowered-material を束ねて行う。
+**追加要件(2026-07-12 ユーザー決定・同日 2 回訂正)**: 定義ファイルは
+分割のまま、**パスをノードとして見られる可視化ツールで一か所にまとめて
+見たい**。①「単一の合流 JSON をエンジンに課す」解釈は撤回 ②「web ツール
+(my_webpage WW8)」も撤回 — **ビューアはエンジン内ツール(ImGui)**
+(2026-07-12 ユーザー決定。web 版の実装着手分は my_webpage から全撤去
+済み)。エンジン側 dump への追加はスナップショットノードと
+screen_inputs 消費が自然に現れる最小 2 点のみ。ビューア本体 = WP86。
 依存: WP78(B 層)・WP73(canonical anchor)。見積: 大。
 排他: `src/core/renderingpass/` / `src/project/materiallowering.*` /
 `src/core/communication/rpcserver.cpp`(get_frame_plan)。
@@ -1932,6 +1932,62 @@ WP81(psd_layers / atlas_pack レシピ = pelican-import-tools)。見積: 中。
 5. fixture: ルール評価(match/defaults/組み込み既定の優先順)・
    外部ツール不在エラー・冪等性・`extract_scene` の end-to-end 1 本
 6. 受け入れ = 新 fixture + 既存全テスト + golden 全維持 + player
+
+### WP85: ImGui 導入(エンジン開発者 UI の基盤)
+
+参照: **`design_ui_2d_foundation.md` v8 §8(隔離規約)が仕様の正**
+(2026-07-10 に方向承認済み・本日 WP 化)。依存: なし。見積: 大。
+排他: `src/core/` の ImGui ユニット(新設)/ `src/core/window/`(入力
+配線)/ CMake ユニット定義。
+
+1. **PELICAN_WITH_IMGUI ビルドユニット**(既定 ON・dist-config は OFF を
+   導出)。OFF 時はソース・シンボル・フォント資産を一切含めない
+   (WP40 の OFF スモークの流儀で fixture)
+2. **backend**: GLFW + Vulkan(公式 backend を vendor)。
+   **Window が GLFW callback の唯一の owner** — ordered event を
+   ImGui adapter と InputState へ一度ずつ渡す(backend の callback
+   install 禁止 = 二重配信根絶)
+3. **入力優先順** `raw → ImGui(WantCapture)→ pelican.ui → gameplay` を
+   実装 + テスト
+4. **非実行の隔離**: golden / replay / headless / rpc 駆動では ImGui
+   コールバック自体を実行しない。「frame plan に imgui pass が無い・
+   入力消費が不変・公開 API 呼出 0 回」をテストで固定(§8)
+5. imgui pass は canonical anchor 列の `imgui` 位置(色 v4 §2-2)に入る。
+   multi-viewport / docking は v1 OFF 固定。device loss 時のバックエンド
+   資源再生成の対応可否を明示(レポートに記録)
+6. 最初の中身はデモウィンドウ + FPS/フレーム統計 1 枚(ツール本体は
+   WP86 以降)。F1 等でトグル(キーは actions 経由 — 生 GLFW 読み禁止)
+7. 受け入れ = OFF スモーク + 隔離テスト + 既存 golden 全維持(SKIP 0)+
+   全テスト + player(ImGui 表示ありのスクリーンショットをレポートに)
+
+### WP86: Plan viewer — パスのノードグラフ可視化(ImGui ツール)
+
+参照: **本節が仕様の正(2026-07-12 ユーザー要望: 分割された描画定義
+(rendering config / feature / .surface)を「パスをノードとして見られる
+ツール」で一か所にまとめて見たい — エンジン内ツールとして)**。
+依存: WP85(ImGui)・WP83(スナップショットが plan に出る)。見積: 大。
+排他: ImGui ツール層(新設 — engine core への変更は原則なし)。
+
+1. データ源は**実行中エンジンの frame plan そのもの**(get_frame_plan と
+   同一の公開意味論 — D0。エンジン内部構造への裏口アクセス禁止)+
+   material lowering 情報(dump-lowered-material と同一意味論)
+2. **ノードグラフ表示**(ImDrawList 自前描画 — 外部ノードグラフ
+   ライブラリは v1 では入れない):
+   - パス = ノード(種別色分け: raster / compute / feature 由来 /
+     エンジン常設(output_transform 等)/ スナップショットコピー)
+   - RT/リソース = エッジ(read/write の向き。RMW 連鎖が視覚的に追える)
+   - レイアウトは実行順の左→右層状(topological)で**決定的**
+   - ズーム / パン / ノード選択
+3. 選択パネル: パスの I/O・format(format_class 解決結果)・
+   load/store・由来 feature・anchor 位置。リソース選択で読み書きパスを
+   ハイライト。スナップショット選択でコピー点とバイト数
+4. **マテリアル重ね表示**: マテリアル一覧(surface stem・screen_inputs・
+   振り分け先パス・render_state)からパスへの対応をハイライト
+5. 隔離: WP85 の規約に完全準拠(golden/replay/headless で非実行・
+   PELICAN_WITH_IMGUI=OFF で消える)
+6. 受け入れ = example プロジェクト(hdr on/off・shadow・bloom・
+   スナップショット入り)での表示スクリーンショットをレポートに +
+   既存 golden 全維持 + 全テスト + player
 
 ## 3. 保留中のトラック(WP 化待ち)
 
