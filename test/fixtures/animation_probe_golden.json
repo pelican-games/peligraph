@@ -1,0 +1,8 @@
+{
+  "quaternion": [0.0, 0.56209665, 0.0, 0.82707155],
+  "forward_sources": [1, 2, 1, 2, 1, 2],
+  "forward_loops": [1, 1, 2, 2, 3, 3],
+  "reverse_sources": [1, 2, 1, 2, 1, 2],
+  "reverse_loops": [0, 0, -1, -1, -2, -2],
+  "child_model_translation": [1.0, 2.0, 0.0]
+}
