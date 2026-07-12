@@ -1,6 +1,7 @@
 #include "imguisystem.hpp"
 
 #include "imguiruntime.hpp"
+#include "planviewer.hpp"
 #include "../appflow/enginetime.hpp"
 #include "../os/actionmap.hpp"
 #include "../os/inputstate.hpp"
@@ -129,7 +130,10 @@ struct ImGuiSystem::Impl {
     bool renderer_initialized = false;
     bool frame_started = false;
     bool visible = true;
-    bool show_demo = true;
+    bool show_demo = false;
+    bool show_stats = true;
+    bool show_plan_viewer = true;
+    PlanViewer plan_viewer;
     std::uint64_t public_api_calls = 0;
 
     Impl()
@@ -231,17 +235,32 @@ void ImGuiSystem::routeInputAndBeginFrame(InputState &input) {
     impl->frame_started = true;
 
     if (impl->visible) {
-        ImGui::ShowDemoWindow(&impl->show_demo);
-        ImGui::SetNextWindowPos(ImVec2{12.0f, 12.0f}, ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowBgAlpha(0.90f);
-        ImGui::Begin("Pelican Engine Stats", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
-        ImGui::Text("F1: toggle developer UI");
-        ImGui::Separator();
-        ImGui::Text("FPS %.1f", io.Framerate);
-        ImGui::Text("Frame %llu", static_cast<unsigned long long>(GET_MODULE(EngineTime).frameIndex()));
-        ImGui::Text("Frame time %.3f ms", io.DeltaTime * 1000.0f);
-        ImGui::End();
-        impl->public_api_calls += 8;
+        if (ImGui::BeginMainMenuBar()) {
+            if (ImGui::BeginMenu("Pelican")) {
+                ImGui::MenuItem("Frame Plan Viewer", nullptr, &impl->show_plan_viewer);
+                ImGui::MenuItem("Frame Stats", nullptr, &impl->show_stats);
+                ImGui::MenuItem("Dear ImGui Demo", nullptr, &impl->show_demo);
+                ImGui::Separator();
+                ImGui::TextDisabled("F1 hides developer UI");
+                ImGui::EndMenu();
+            }
+            ImGui::EndMainMenuBar();
+        }
+        if (impl->show_demo) ImGui::ShowDemoWindow(&impl->show_demo);
+        if (impl->show_stats) {
+            ImGui::SetNextWindowPos(ImVec2{12.0f, 36.0f}, ImGuiCond_FirstUseEver);
+            ImGui::SetNextWindowBgAlpha(0.90f);
+            ImGui::Begin("Pelican Engine Stats", &impl->show_stats,
+                         ImGuiWindowFlags_AlwaysAutoResize);
+            ImGui::Text("F1: toggle developer UI");
+            ImGui::Separator();
+            ImGui::Text("FPS %.1f", io.Framerate);
+            ImGui::Text("Frame %llu", static_cast<unsigned long long>(GET_MODULE(EngineTime).frameIndex()));
+            ImGui::Text("Frame time %.3f ms", io.DeltaTime * 1000.0f);
+            ImGui::End();
+        }
+        if (impl->show_plan_viewer) impl->plan_viewer.draw(&impl->show_plan_viewer);
+        impl->public_api_calls += 12;
     }
 
     applyImGuiCaptureForActions(input, io.WantCaptureKeyboard, io.WantCaptureMouse);
