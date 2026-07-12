@@ -2143,6 +2143,27 @@ InputEvent 列 + フレーム境界マーカー、`pelican.input_seq`)+
 
 ## 3. 保留中のトラック(WP 化待ち)
 
+- **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの
+  一般化 — ユーザー決定): テンポラル系のように**手法が発展し続ける領域は
+  purgeable feature 層で吸収**し、ユーザーが「まぁまぁいじる」前提で
+  境界を固定する。
+  1. **三層の速度分離**: エンジン = 機構語彙(anchor / history /
+     projection_jitter 枠 / snapshot / format_class 等 — **版付きで
+     ゆっくり additive にだけ増える**)/ feature(JSON + シェーダ)=
+     ユーザー空間(速い・自由)/ project config = 1 行有効化
+  2. **同梱 feature(hdr / shadow / bloom / debug 系)= 特権なしの標準
+     ライブラリ**(standard/toon lighting の dogfooding と同格)。
+     `engine://features/*.json` をプロジェクトへコピーして改造したら
+     自分のもの、が公式ワークフロー(ロードは ref ベースで既に
+     プロジェクト相対を通せる — 保証テストを次の feature 系 WP に同梱)
+  3. `pelican.render_feature` schema は実質の公開 API — [PF] と同じ
+     凍結規律(additive・版付き)で扱う
+  4. **いじらせない境界**(検証が名前入りエラーで防衛): canonical
+     anchor の全順序(挿すのは自由・エンジン terminal の並べ替え不可)、
+     output_transform 等の常設ノード、色 invariant、決定性ゲート
+  5. 新手法対応の型: エンジンは機構語彙を 1 個足すだけ(例: 将来の
+     アップスケーラ向けフェーズ数属性)→ ユーザー feature が組み合わせる
+
 - **最小コマンド層**: (1) ファイル連携済み → (2) WP27 実装済み → (3) `load_gltf` / `update_transforms` は **2026-07-07 に実装 GO 決定**。前提はすべて充足(宛先 = scene v1 の objects[].name / アセット意味論 = WP21)。設計時要件: **複数インスタンス運用**(エージェントが複数エンジンを並行駆動する使い方) — stdio rpc は 1 プロセス 1 クライアントの現行構造を維持しつつ、`get_status`(instance id・project・フレーム番号)を追加してインスタンス識別可能に。プロジェクトは読み取り専有なので並行起動は安全(書き込み系操作を入れる際に排他を設計)。複数クライアント同時接続は TCP/WebSocket 展開時の課題として分離
 - **ゲームロジック(ネイティブ C++)**: `design_game_logic_native.md`(2026-07-07 方針決定 — スクリプト不採用、C++ 複数ファイル。G1a システム登録 API → G1b PELICAN_PROJECT ビルド取り込み → G2 DLL ホットリロード)
 - **devstudio(Qt)**: 2026-07-07 決定 — `design_devstudio_direction.md`。D1(埋め込みビューポート + アウトライナ)→ D2(ピッキング/ギズモ/編集)→ D3(保存 round-trip/undo)。前提 = 解釈レイヤのターゲット分離(WP44 済)。**D0 追加(2026-07-08 ユーザー決定): エディタ特権の禁止 — 標準 UI もツール。編集系 rpc を D2 の前提として先に定義。WebSocket 展開の優先度引き上げ。`pelican_rpc.py`(薄い rpc クライアント)を小 WP 候補に**
