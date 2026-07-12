@@ -24,6 +24,7 @@ namespace Pelican {
 
 struct LoadedImage;
 class TextureReloadHandler;
+class MaterialValuesReloadHandler;
 namespace watch {
 struct AssetKey;
 struct ReloadRequest;
@@ -45,6 +46,7 @@ static_assert(sizeof(MaterialIndexPushConstant) <= PELICAN_PUSH_SHADER_BYTES);
 DECLARE_MODULE(MaterialContainer) {
 
     friend class TextureReloadHandler;
+    friend class MaterialValuesReloadHandler;
 
     vk::Device device;
     bool split_custom_samplers = false;
@@ -83,6 +85,8 @@ DECLARE_MODULE(MaterialContainer) {
         GlobalTextureId emissive_texture;
         std::optional<MaterialInfo::VatPlaybackInfo> vat;
         std::vector<TextureBinding> texture_bindings;
+        Std140Layout custom_values_layout;
+        std::vector<std::byte> custom_values;
         mutable std::uint64_t descriptor_revision = 0;
         vk::UniqueDescriptorSet descset;
     };
@@ -95,6 +99,7 @@ DECLARE_MODULE(MaterialContainer) {
         texture_materials;
     BufferWrapper material_buffer;
     std::unique_ptr<TextureReloadHandler> texture_reload_handler;
+    std::unique_ptr<MaterialValuesReloadHandler> material_values_reload_handler;
 
     InternalTextureResource createTextureResource(const LoadedImage &image,
                                                   std::string_view name) const;
@@ -107,6 +112,8 @@ DECLARE_MODULE(MaterialContainer) {
     RetiredTextureResources
     commitTextureRebind(GlobalTextureId texture, InternalTextureResource replacement,
                         std::vector<StagedMaterialDescriptor> descriptors);
+    bool materialValuesLayoutMatches(GlobalMaterialId material,
+                                     const Std140Layout &layout) const;
 
   public:
     MaterialContainer();
@@ -122,6 +129,22 @@ DECLARE_MODULE(MaterialContainer) {
     GlobalTextureId registerReloadableTextureFile(const watch::AssetKey &key,
                                                   const std::filesystem::path &path);
     GlobalMaterialId registerMaterial(MaterialInfo info);
+    struct ReloadableMaterialValuesBinding {
+        std::string name;
+        GlobalMaterialId material;
+    };
+    // Explicit opt-in preserves registerMaterial(). One document may bind
+    // several named materials; each receives its own logical values resource.
+    void registerReloadableMaterialValuesFile(
+        const watch::AssetKey &key, const std::filesystem::path &path,
+        MaterialSurfaceCatalog surfaces,
+        std::span<const ReloadableMaterialValuesBinding> bindings);
+    // Same-layout SSBO update surface used by HR1-M. It never changes the
+    // logical material id, descriptor set, or pipeline.
+    void updateMaterialValues(GlobalMaterialId material, const Std140Layout &layout,
+                              std::span<const std::byte> values);
+    void updateMaterialValues(GlobalMaterialId material,
+                              std::span<const std::byte> values);
     std::pair<vk::ImageView, vk::ImageView> textureViewsForTesting(GlobalTextureId texture) const;
     std::vector<uint8_t> texturePixelsForTesting(GlobalTextureId texture) const;
     uint32_t textureMipLevelsForTesting(GlobalTextureId texture) const { return textures.get(texture).image.mip_levels; }
@@ -131,10 +154,18 @@ DECLARE_MODULE(MaterialContainer) {
     std::uint64_t materialDescriptorRevisionForTesting(GlobalMaterialId material) const {
         return materials.get(material).descriptor_revision;
     }
+    std::vector<std::byte> materialValuesForTesting(GlobalMaterialId material) const {
+        return materials.get(material).custom_values;
+    }
+    std::vector<std::byte> materialGpuValuesForTesting(GlobalMaterialId material) const;
     bool enqueueTextureReload(const watch::ReloadRequest &request,
                               watch::ReloadCoordinator &coordinator);
     bool retireTextureReloadPayload(std::shared_ptr<const void> payload,
                                     watch::ReloadCoordinator &coordinator) noexcept;
+    bool enqueueMaterialValuesReload(const watch::ReloadRequest &request,
+                                     watch::ReloadCoordinator &coordinator);
+    bool retireMaterialValuesReloadPayload(std::shared_ptr<const void> payload,
+                                           watch::ReloadCoordinator &coordinator) noexcept;
 
     bool isRenderRequired(PassId pass_id, GlobalMaterialId material) const;
     void bindResource(vk::CommandBuffer cmd_buf, PassId pass_id, GlobalMaterialId material,
