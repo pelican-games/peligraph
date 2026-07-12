@@ -2277,6 +2277,36 @@ fake のみ — HR1 以降が実差し替え)。見積: 大。
    (SKIP 0)+ player。CI 不安定を理由に実 FS テストを削らない
    (タイムアウト余裕と リトライは可・削除は不可)
 
+### WP97: アニメ A1 — 機構 jobs(凍結 ABI の実体化)
+
+参照: **`design_animation_graph.md` v2.1 §1(全部)・§7 A1 行が正**。
+ABI の正本 = WP94 で凍結した `src/core/userpublic/animation/abi_v1.hpp` +
+`docs/animation_abi_v1.md`(**ABI の変更は additive のみ・既存
+struct/挙動の変更禁止** — 変更が必要と判断した場合は実装せず質問)。
+依存: WP94(済)・WP95(済 — previous palette の描画側)。見積: 特大。
+排他: `src/core/animation/` + `src/core/ecs/predefined/animationsystem.*` +
+`src/core/renderer/polygoninstancecontainer.*`(palette 接続のみ)。
+
+1. **実装 jobs**(CA0-Probe の probe 実装を本実装へ昇格):
+   Rig/PoseLayout/SkinBinding の実 asset 由来構築(WP38
+   `SkeletalModelData` から。node 名保存の追加を含む — 設計 §1-1 注記)、
+   `samplePoseAt`(caller-owned PoseView)、`advanceCursor`(regex 禁止の
+   ABI 規範どおり)、normal blend(per-joint weights 含む N-way 規範 =
+   probe の reference algorithm と golden を共有)、local-to-model、
+   instance animation-frame commit
+2. **commit → renderer 接続**: `publishAnimationFrame` が
+   PolygonInstanceContainer の current palette を publish(WP95 の
+   previous palette / `advanceTemporalHistoryAfterRender` 位置と §1-5
+   契約どおりに接続 — commit は previous を上書きしない)
+3. **既存 clip component 互換**: 現行 AnimationSystem(WP38 経路)を
+   新 jobs の上に移行し、**既存 skeletal golden・fixture を全維持**
+   (byte 一致 — 数学実装を変えた場合は §6 の versioned 再基準化手続き +
+   理由記録。安易な再基準化は不可)
+4. A1.5 の敵対 fixture の先取りは任意(non-joint 祖先・同骨数別 rig は
+   A1.5 の WP で正式化)
+5. 受け入れ = 新 fixture + 既存全テスト + golden 全維持(SKIP 0)+
+   player(AliciaSolid の joint 上限 WARN 挙動も不変)
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの
