@@ -43,9 +43,9 @@ suggested bindings)。今アクション層を入れておくと、OpenXR 対応
     {
       "name": "gameplay",
       "actions": [
-        {"name": "move",  "type": "axis2",  "bindings": ["kbd:wasd", "pad:left_stick"]},
-        {"name": "jump",  "type": "button", "bindings": ["kbd:space", "pad:a"]},
-        {"name": "aim",   "type": "pose",   "bindings": ["xr:right_hand"]}
+        {"name": "move",  "type": "axis2"},
+        {"name": "jump",  "type": "button"},
+        {"name": "aim",   "type": "pose"}
       ]
     },
     {"name": "menu", "actions": [ ... ]}
@@ -53,16 +53,38 @@ suggested bindings)。今アクション層を入れておくと、OpenXR 対応
 }
 ```
 
+WP91 以降、アクション定義はバインディングを持たない。バインディングは交換可能な
+`pelican.input_profile` v1(`input/profiles/*.json`)へ分離する。
+
+```json
+{
+  "schema": "pelican.input_profile",
+  "version": 1,
+  "name": "gamepad",
+  "bindings": [
+    {"action": "move", "binding": "pad:left_stick", "deadzone": 0.2, "invert_y": true},
+    {"action": "jump", "binding": "pad:a"}
+  ]
+}
+```
+
+`basic_config.input_profiles` は名前から profile 参照への辞書、
+`basic_config.input_profile` は project 既定値。`--input-profile <name>` が起動時に
+上書きし、RPC `set_input_profile {name}` が実行中に切り替える。筐体固有レイアウトは
+コード変更ではなく profile の追加で表す。未知の pad button/axis は profile 名・
+control 名を含むエラーとし、deadzone / `invert_x` / `invert_y` は pad axis binding の
+属性とする。
+
 - **action type**: `button` / `axis1` / `axis2` / `pose`(pose は OpenXR 用に
   v1 から型だけ予約 — 6DoF 位置姿勢。native 実装は OpenXR トラックで)
 - **action set** = コンテキスト(gameplay / menu / vehicle)。スタックで
   優先順位を持ち、上のセットが消費した入力は下に流れない
-- **binding 記法** `device:control` は v1 で kbd/mouse/pad を定義、`xr:` は予約
+- **binding 記法** `device:control` は profile v1 で kbd/mouse/pad を定義、`xr:` は予約
 - processing(デッドゾーン・応答カーブ・tap/hold/連打/チョード)は
   binding 側の修飾として v2 で拡張(器だけ設計)
-- **ユーザーリバインドはプロジェクトの外**: actions.json は「アクション定義 +
-  既定バインド」。ユーザー上書きはユーザー設定ファイル(プロジェクト配布物を
-  汚さない — 形式は同じ、置き場所が違うだけ)
+- **ユーザーリバインドはプロジェクトの外**: actions.json はアクション定義、
+  profile は配布既定。ユーザー上書きも同じ profile 形式を user 設定へ置く
+  (プロジェクト配布物を汚さない)
 - ゲームロジック API は `actions.get("jump").pressed` 系のみ。
   **ロジック実行方式の設計(別文書)はこの API を前提にする**
 

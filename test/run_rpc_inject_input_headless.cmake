@@ -23,6 +23,10 @@ get_filename_component(source_root "${PROJECT_DIR}/../.." ABSOLUTE)
 file(COPY "${source_root}/test/fixtures/ground.glb" DESTINATION "${OUT_DIR}/project/assets/models")
 file(RENAME "${OUT_DIR}/project/assets/models/ground.glb" "${OUT_DIR}/project/assets/models/character.glb")
 configure_file("${PROJECT_DIR}/input/actions.json" "${OUT_DIR}/project/input/actions.json" COPYONLY)
+file(MAKE_DIRECTORY "${OUT_DIR}/project/input/profiles")
+configure_file("${PROJECT_DIR}/input/profiles/keyboard.json" "${OUT_DIR}/project/input/profiles/keyboard.json" COPYONLY)
+configure_file("${PROJECT_DIR}/input/profiles/gamepad.json" "${OUT_DIR}/project/input/profiles/gamepad.json" COPYONLY)
+configure_file("${PROJECT_DIR}/input/profiles/arcade.json" "${OUT_DIR}/project/input/profiles/arcade.json" COPYONLY)
 configure_file("${PROJECT_DIR}/passes/main_rendering_config.json" "${OUT_DIR}/project/passes/main_rendering_config.json" COPYONLY)
 
 file(WRITE "${OUT_DIR}/project/project.json" [=[
@@ -43,7 +47,9 @@ file(WRITE "${OUT_DIR}/project/project.json" [=[
     "rendering_config_json": "passes/main_rendering_config.json",
     "default_rendering_pass": "main_render",
     "ui_config_json": "ui/ui_overlay.json",
-    "input_actions_json": "input/actions.json"
+    "input_actions_json": "input/actions.json",
+    "input_profiles": {"keyboard": "input/profiles/keyboard.json", "gamepad": "input/profiles/gamepad.json", "arcade": "input/profiles/arcade.json"},
+    "input_profile": "keyboard"
   }
 }
 ]=])
@@ -219,4 +225,70 @@ if(NOT first_start_hex STREQUAL second_start_hex)
 endif()
 if(NOT first_moved_hex STREQUAL second_moved_hex)
     message(FATAL_ERROR "rpc inject_input moved capture is not deterministic")
+endif()
+
+# WP91 profile fixture: the project selects keyboard, CLI selects gamepad, and
+# RPC switches to arcade. gamepad:a and arcade:b drive the same `jump` action
+# and therefore must produce byte-identical captures.
+function(run_pad_profile label cli_profile rpc_profile button capture_path capture_hex_var)
+    set(profile_script "${OUT_DIR}/${label}_profile.ndjson")
+    file(WRITE "${profile_script}"
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"get_status\",\"params\":{}}\n")
+    set(next_id 2)
+    if(NOT rpc_profile STREQUAL "")
+        file(APPEND "${profile_script}"
+            "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"set_input_profile\",\"params\":{\"name\":\"${rpc_profile}\"}}\n")
+        set(next_id 3)
+    endif()
+    file(APPEND "${profile_script}"
+        "{\"jsonrpc\":\"2.0\",\"id\":${next_id},\"method\":\"inject_input\",\"params\":{\"events\":[{\"type\":\"pad_button_down\",\"button\":\"${button}\"}]}}\n")
+    math(EXPR first_step "${next_id} + 1")
+    math(EXPR last_step "${first_step} + 11")
+    foreach(id RANGE ${first_step} ${last_step})
+        file(APPEND "${profile_script}" "{\"jsonrpc\":\"2.0\",\"id\":${id},\"method\":\"step_frame\",\"params\":{}}\n")
+    endforeach()
+    math(EXPR capture_id "${last_step} + 1")
+    file(APPEND "${profile_script}"
+        "{\"jsonrpc\":\"2.0\",\"id\":${capture_id},\"method\":\"capture\",\"params\":{\"path\":\"${capture_path}\"}}\n")
+
+    set(command_args --rpc --headless --project "${OUT_DIR}/project" --size 160x90 --fps 30)
+    if(NOT cli_profile STREQUAL "")
+        list(APPEND command_args --input-profile "${cli_profile}")
+    endif()
+    execute_process(
+        COMMAND "${PLAYER}" ${command_args}
+        WORKING_DIRECTORY "${PLAYER_DIR}"
+        INPUT_FILE "${profile_script}"
+        RESULT_VARIABLE profile_result
+        OUTPUT_VARIABLE profile_stdout
+        ERROR_VARIABLE profile_stderr
+    )
+    if(NOT profile_result EQUAL 0)
+        message(FATAL_ERROR "${label}: profile run failed: ${profile_result}\n${profile_stdout}\n${profile_stderr}")
+    endif()
+    if(cli_profile STREQUAL "gamepad" AND
+       (NOT profile_stdout MATCHES [=["profile":"gamepad"]=] OR
+        NOT profile_stdout MATCHES [=["gamepad_polling":true]=]))
+        message(FATAL_ERROR "${label}: CLI profile did not activate gamepad polling:\n${profile_stdout}")
+    endif()
+    if(rpc_profile STREQUAL "arcade")
+        if(NOT profile_stdout MATCHES [=["profile":"keyboard"]=] OR
+           NOT profile_stdout MATCHES [=["gamepad_polling":false]=])
+            message(FATAL_ERROR "${label}: project keyboard profile was not selected before RPC switch:\n${profile_stdout}")
+        endif()
+        if(NOT profile_stdout MATCHES [=["gamepad_polling":true.*"name":"arcade"]=])
+            message(FATAL_ERROR "${label}: RPC arcade profile switch failed:\n${profile_stdout}")
+        endif()
+    endif()
+    if(NOT EXISTS "${capture_path}")
+        message(FATAL_ERROR "${label}: profile capture missing")
+    endif()
+    file(READ "${capture_path}" capture_hex HEX)
+    set(${capture_hex_var} "${capture_hex}" PARENT_SCOPE)
+endfunction()
+
+run_pad_profile("cli_gamepad" "gamepad" "" "a" "${OUT_DIR}/cli_gamepad.png" cli_gamepad_hex)
+run_pad_profile("rpc_arcade" "" "arcade" "b" "${OUT_DIR}/rpc_arcade.png" rpc_arcade_hex)
+if(NOT cli_gamepad_hex STREQUAL rpc_arcade_hex)
+    message(FATAL_ERROR "gamepad:a and arcade:b did not drive the same jump action deterministically")
 endif()

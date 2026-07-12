@@ -79,7 +79,9 @@ void requireErrorKind(std::string_view message, std::string_view error_kind) {
 }
 
 InputActionMap loadGameplayMenuMap() {
-    return parseInputActionsJson(readJson(fixtureRoot() / "valid" / "gameplay_menu.json"));
+    auto actions = parseInputActionsJson(readJson(fixtureRoot() / "valid" / "gameplay_menu.json"));
+    return applyInputProfile(actions,
+                             parseInputProfileJson(readJson(fixtureRoot() / "valid" / "keyboard.json"), actions));
 }
 
 struct Sandbox {
@@ -205,13 +207,17 @@ TEST_CASE("Actions API loads optional input_actions_json through ProjectBasicCon
     Sandbox sandbox;
     writeText(sandbox.root / "input" / "actions.json",
               readText(fixtureRoot() / "valid" / "gameplay_menu.json"));
+    writeText(sandbox.root / "input" / "profiles" / "keyboard.json",
+              readText(fixtureRoot() / "valid" / "keyboard.json"));
 
     const auto project = nlohmann::json{
         {"schema", "pelican.project"},
         {"version", 1},
         {"name", "input-actions"},
         {"engine_min_version", "0.1.0"},
-        {"basic_config", {{"input_actions_json", "input/actions.json"}}},
+        {"basic_config", {{"input_actions_json", "input/actions.json"},
+                          {"input_profiles", {{"keyboard", "input/profiles/keyboard.json"}}},
+                          {"input_profile", "keyboard"}}},
     };
 
     FastModuleContainer modules;
@@ -245,6 +251,54 @@ TEST_CASE("Actions API loads optional input_actions_json through ProjectBasicCon
     REQUIRE_FALSE(Actions::isHeld("move"));
     REQUIRE(input.currentSnapshot().getKey(KeyCode::D));
     REQUIRE(internal::inputActionsEvaluationCount() == evaluations_before_queries + 3);
+}
+
+TEST_CASE("Input profiles switch gamepad buttons and process axes", "[input-actions][gamepad]") {
+    const auto actions = parseInputActionsJson(readJson(fixtureRoot() / "valid" / "gameplay_menu.json"));
+    const auto gamepad = parseInputProfileJson(readJson(fixtureRoot() / "valid" / "gamepad.json"), actions);
+    const auto arcade = parseInputProfileJson(readJson(fixtureRoot() / "valid" / "arcade.json"), actions);
+    REQUIRE(gamepad.uses_gamepad);
+
+    InputStateCore input;
+    input.queueEvent(InputEvent::gamepadButton(0, GamepadButton::A, true));
+    input.queueEvent(InputEvent::gamepadAxis(0, GamepadAxis::LeftX, 0.1f));
+    input.queueEvent(InputEvent::gamepadAxis(0, GamepadAxis::LeftY, 0.1f));
+    input.beginFrame();
+
+    auto frame = evaluateInputActions(applyInputProfile(actions, gamepad), input.currentSnapshot(), {"gameplay"});
+    REQUIRE(frame.get("jump").held);
+    REQUIRE(frame.get("move").axis2.x == 0.0f);
+    REQUIRE(frame.get("move").axis2.y == 0.0f);
+
+    input.queueEvent(InputEvent::gamepadAxis(0, GamepadAxis::LeftY, 0.6f));
+    input.beginFrame();
+    frame = evaluateInputActions(applyInputProfile(actions, gamepad), input.currentSnapshot(), {"gameplay"});
+    REQUIRE(frame.get("move").axis2.y < -0.45f);
+
+    frame = evaluateInputActions(applyInputProfile(actions, arcade), input.currentSnapshot(), {"gameplay"});
+    REQUIRE_FALSE(frame.get("jump").held);
+    input.queueEvent(InputEvent::gamepadButton(0, GamepadButton::B, true));
+    input.beginFrame();
+    frame = evaluateInputActions(applyInputProfile(actions, arcade), input.currentSnapshot(), {"gameplay"});
+    REQUIRE(frame.get("jump").held);
+
+    std::string message;
+    try {
+        (void)parseInputProfileJson(readJson(fixtureRoot() / "invalid" / "unknown_pad_button.json"), actions);
+    } catch (const std::exception &error) {
+        message = error.what();
+    }
+    REQUIRE(contains(message, "turbo"));
+    REQUIRE(contains(message, "gamepad button"));
+
+    message.clear();
+    try {
+        (void)parseInputProfileJson(readJson(fixtureRoot() / "invalid" / "unknown_pad_axis.json"), actions);
+    } catch (const std::exception &error) {
+        message = error.what();
+    }
+    REQUIRE(contains(message, "warp_stick"));
+    REQUIRE(contains(message, "gamepad axis2"));
 }
 
 } // namespace Pelican

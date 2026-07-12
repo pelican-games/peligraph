@@ -27,8 +27,15 @@ constexpr std::string_view toggleActionDocument = R"json({
   "version": 1,
   "action_sets": [{
     "name": "engine_ui",
-    "actions": [{"name": "toggle_engine_ui", "type": "button", "bindings": ["kbd:f1"]}]
+    "actions": [{"name": "toggle_engine_ui", "type": "button"}]
   }]
+})json";
+
+constexpr std::string_view toggleProfileDocument = R"json({
+  "schema": "pelican.input_profile",
+  "version": 1,
+  "name": "engine_ui",
+  "bindings": [{"action": "toggle_engine_ui", "binding": "kbd:f1"}]
 })json";
 
 ImGuiKey toImGuiKey(KeyCode code) {
@@ -103,6 +110,8 @@ void feedOrderedInput(const FrameInput &frame_input) {
             io.AddInputCharacter(event.codepoint);
             break;
         case InputEvent::Type::axis:
+        case InputEvent::Type::gamepad_button:
+        case InputEvent::Type::gamepad_axis:
             break;
         }
     }
@@ -138,7 +147,10 @@ struct ImGuiSystem::Impl {
 
     Impl()
         : window(GET_MODULE(Window)),
-          toggle_actions(parseInputActionsString(toggleActionDocument)),
+          toggle_actions([] {
+              auto actions = parseInputActionsString(toggleActionDocument);
+              return applyInputProfile(actions, parseInputProfileString(toggleProfileDocument, actions));
+          }()),
           color_format(GET_MODULE(RenderTargetContainer)
                            .getMetadata(GET_MODULE(RenderTargetContainer)
                                             .getRenderTargetIdByName("display"))

@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -20,6 +21,9 @@ enum class BindingKind {
     key,
     mouse_axis1,
     composite_axis2,
+    gamepad_button,
+    gamepad_axis1,
+    gamepad_axis2,
     unresolved,
 };
 
@@ -39,12 +43,20 @@ struct ResolvedBinding {
     KeyCode key = KeyCode::Count;
     MouseAxis mouse_axis = MouseAxis::delta_x;
     CompositeKind composite = CompositeKind::wasd;
+    GamepadButton gamepad_button = GamepadButton::Count;
+    GamepadAxis gamepad_axis_x = GamepadAxis::Count;
+    GamepadAxis gamepad_axis_y = GamepadAxis::Count;
+    float deadzone = 0.0f;
+    bool invert_x = false;
+    bool invert_y = false;
 };
 
 struct ConsumedControls {
     std::array<std::uint8_t, key_code_count> keys{};
     bool mouse_delta_x = false;
     bool mouse_delta_y = false;
+    std::array<std::uint8_t, gamepad_button_count> gamepad_buttons{};
+    std::array<std::uint8_t, gamepad_axis_count> gamepad_axes{};
 
     bool contains(KeyCode code) const noexcept {
         return isValidKeyCode(code) && keys[static_cast<std::size_t>(code)] != 0;
@@ -74,6 +86,12 @@ struct ConsumedControls {
         }
         mouse_delta_x = mouse_delta_x || other.mouse_delta_x;
         mouse_delta_y = mouse_delta_y || other.mouse_delta_y;
+        for (std::size_t i = 0; i < gamepad_buttons.size(); ++i) {
+            gamepad_buttons[i] = static_cast<std::uint8_t>(gamepad_buttons[i] || other.gamepad_buttons[i]);
+        }
+        for (std::size_t i = 0; i < gamepad_axes.size(); ++i) {
+            gamepad_axes[i] = static_cast<std::uint8_t>(gamepad_axes[i] || other.gamepad_axes[i]);
+        }
     }
 };
 
@@ -267,9 +285,47 @@ ResolvedBinding parseBinding(std::string_view binding_text, InputActionType acti
     ResolvedBinding binding;
     binding.text = std::string{binding_text};
 
-    if (device == "pad" || device == "xr") {
+    if (device == "xr") {
         binding.kind = BindingKind::unresolved;
         return binding;
+    }
+
+    if (device == "pad") {
+        requireNotPoseBinding(action_type, binding_text);
+        if (action_type == InputActionType::button) {
+            const auto button = gamepadButtonFromName(control);
+            if (!button) {
+                throw std::runtime_error("unknown gamepad button '" + std::string{control} + "'" +
+                                         actionContext(action_name));
+            }
+            binding.kind = BindingKind::gamepad_button;
+            binding.gamepad_button = *button;
+            return binding;
+        }
+        if (action_type == InputActionType::axis1) {
+            const auto axis = gamepadAxisFromName(control);
+            if (!axis) {
+                throw std::runtime_error("unknown gamepad axis '" + std::string{control} + "'" +
+                                         actionContext(action_name));
+            }
+            binding.kind = BindingKind::gamepad_axis1;
+            binding.gamepad_axis_x = *axis;
+            return binding;
+        }
+        if (action_type == InputActionType::axis2) {
+            if (control == "left_stick") {
+                binding.gamepad_axis_x = GamepadAxis::LeftX;
+                binding.gamepad_axis_y = GamepadAxis::LeftY;
+            } else if (control == "right_stick") {
+                binding.gamepad_axis_x = GamepadAxis::RightX;
+                binding.gamepad_axis_y = GamepadAxis::RightY;
+            } else {
+                throw std::runtime_error("unknown gamepad axis2 control '" + std::string{control} + "'" +
+                                         actionContext(action_name));
+            }
+            binding.kind = BindingKind::gamepad_axis2;
+            return binding;
+        }
     }
 
     if (device == "kbd") {
@@ -418,6 +474,89 @@ BindingSample readMouseAxisBinding(MouseAxis axis, const InputSnapshot &snapshot
     return sample;
 }
 
+float applyDeadzone(float value, float deadzone) noexcept {
+    const auto magnitude = std::abs(value);
+    if (magnitude <= deadzone) {
+        return 0.0f;
+    }
+    return std::copysign((magnitude - deadzone) / (1.0f - deadzone), value);
+}
+
+BindingSample readGamepadButtonBinding(const ResolvedBinding &binding, const InputSnapshot &snapshot,
+                                       const ConsumedControls &already_consumed) {
+    BindingSample sample;
+    const auto index = static_cast<std::size_t>(binding.gamepad_button);
+    if (index >= gamepad_button_count || already_consumed.gamepad_buttons[index] != 0) {
+        return sample;
+    }
+    for (std::size_t pad = 0; pad < gamepad_slot_count; ++pad) {
+        sample.state.pressed = sample.state.pressed || snapshot.isGamepadButtonPushed(pad, binding.gamepad_button);
+        sample.state.held = sample.state.held || snapshot.getGamepadButton(pad, binding.gamepad_button);
+        sample.any_release = sample.any_release || snapshot.isGamepadButtonReleased(pad, binding.gamepad_button);
+    }
+    if (sample.state.pressed || sample.state.held || sample.any_release) {
+        sample.consumed.gamepad_buttons[index] = 1;
+    }
+    return sample;
+}
+
+float strongestGamepadAxis(const InputSnapshot &snapshot, GamepadAxis axis) noexcept {
+    float result = 0.0f;
+    for (std::size_t pad = 0; pad < gamepad_slot_count; ++pad) {
+        const auto candidate = snapshot.getGamepadAxis(pad, axis);
+        if (std::abs(candidate) > std::abs(result)) {
+            result = candidate;
+        }
+    }
+    return result;
+}
+
+BindingSample readGamepadAxisBinding(const ResolvedBinding &binding, const InputSnapshot &snapshot,
+                                     const ConsumedControls &already_consumed, bool axis2) {
+    BindingSample sample;
+    const auto x_index = static_cast<std::size_t>(binding.gamepad_axis_x);
+    const auto y_index = static_cast<std::size_t>(binding.gamepad_axis_y);
+    if (x_index >= gamepad_axis_count || already_consumed.gamepad_axes[x_index] != 0 ||
+        (axis2 && (y_index >= gamepad_axis_count || already_consumed.gamepad_axes[y_index] != 0))) {
+        return sample;
+    }
+    float x = strongestGamepadAxis(snapshot, binding.gamepad_axis_x);
+    float y = axis2 ? strongestGamepadAxis(snapshot, binding.gamepad_axis_y) : 0.0f;
+    if (axis2) {
+        const float magnitude = std::sqrt(x * x + y * y);
+        if (magnitude <= binding.deadzone) {
+            x = 0.0f;
+            y = 0.0f;
+        } else if (magnitude > 0.0f) {
+            const float scaled = std::min(1.0f, (magnitude - binding.deadzone) / (1.0f - binding.deadzone));
+            x = x / magnitude * scaled;
+            y = y / magnitude * scaled;
+        }
+    } else {
+        x = applyDeadzone(x, binding.deadzone);
+    }
+    if (binding.invert_x) {
+        x = -x;
+    }
+    if (binding.invert_y) {
+        y = -y;
+    }
+    if (x != 0.0f || y != 0.0f) {
+        sample.consumed.gamepad_axes[x_index] = 1;
+        if (axis2) {
+            sample.consumed.gamepad_axes[y_index] = 1;
+        }
+        sample.state.pressed = true;
+        sample.state.held = true;
+    }
+    if (axis2) {
+        sample.state.axis2 = {x, y};
+    } else {
+        sample.state.axis1 = x;
+    }
+    return sample;
+}
+
 BindingSample readBinding(const ResolvedBinding &binding, const InputSnapshot &snapshot,
                           const ConsumedControls &already_consumed, InputActionType action_type) {
     switch (binding.kind) {
@@ -427,6 +566,12 @@ BindingSample readBinding(const ResolvedBinding &binding, const InputSnapshot &s
         return readMouseAxisBinding(binding.mouse_axis, snapshot, already_consumed);
     case BindingKind::composite_axis2:
         return readCompositeBinding(binding.composite, snapshot, already_consumed);
+    case BindingKind::gamepad_button:
+        return readGamepadButtonBinding(binding, snapshot, already_consumed);
+    case BindingKind::gamepad_axis1:
+        return readGamepadAxisBinding(binding, snapshot, already_consumed, false);
+    case BindingKind::gamepad_axis2:
+        return readGamepadAxisBinding(binding, snapshot, already_consumed, true);
     case BindingKind::unresolved:
         return {};
     }
@@ -490,6 +635,19 @@ const InputActionDefinition *InputActionMap::findAction(std::string_view name) c
 
 bool InputActionMap::hasActionSet(std::string_view name) const {
     return set_lookup.find(std::string{name}) != set_lookup.end();
+}
+
+bool InputActionMap::usesGamepad() const noexcept {
+    for (const auto &set : action_sets) {
+        for (const auto &action : set.actions) {
+            for (const auto &binding : action.bindings) {
+                if (binding.text.starts_with("pad:")) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
 }
 
 std::size_t InputActionMap::actionCount() const noexcept {
@@ -561,16 +719,9 @@ InputActionMap parseInputActionsJson(const nlohmann::json &document) {
             action.type = parseActionType(requiredString(action_json, "type", actionContext(action.name)),
                                           action.name);
 
-            if (!action_json.contains("bindings") || !action_json.at("bindings").is_array()) {
-                throw std::runtime_error("input action '" + action.name + "' requires bindings array");
-            }
-            for (const auto &binding_json : action_json.at("bindings")) {
-                if (!binding_json.is_string()) {
-                    throw std::runtime_error("input action binding must be a string" + actionContext(action.name));
-                }
-                const auto binding_text = binding_json.get<std::string>();
-                (void)parseBinding(binding_text, action.type, action.name);
-                action.bindings.push_back(InputActionBinding{binding_text});
+            if (action_json.contains("bindings")) {
+                throw std::runtime_error("input action '" + action.name +
+                                         "' must define bindings in a pelican.input_profile");
             }
             set.actions.push_back(std::move(action));
         }
@@ -583,6 +734,93 @@ InputActionMap parseInputActionsJson(const nlohmann::json &document) {
 
 InputActionMap parseInputActionsString(std::string_view document) {
     return parseInputActionsJson(nlohmann::json::parse(document));
+}
+
+InputBindingProfile parseInputProfileJson(const nlohmann::json &document, const InputActionMap &actions) {
+    if (!document.is_object() || document.value("schema", std::string{}) != "pelican.input_profile") {
+        throw std::runtime_error("input profile schema is not supported");
+    }
+    if (document.value("version", 0) != 1) {
+        throw std::runtime_error("input profile version is not supported");
+    }
+    InputBindingProfile profile;
+    profile.name = requiredString(document, "name", " for input profile");
+    requireIdentifier(profile.name, "input profile name");
+    if (!document.contains("bindings") || !document.at("bindings").is_array()) {
+        throw std::runtime_error("input profile '" + profile.name + "' requires bindings array");
+    }
+    for (const auto &entry : document.at("bindings")) {
+        if (!entry.is_object()) {
+            throw std::runtime_error("input profile '" + profile.name + "' binding entries must be objects");
+        }
+        InputProfileBinding parsed;
+        parsed.action = requiredString(entry, "action", " in input profile '" + profile.name + "'");
+        const auto *action = actions.findAction(parsed.action);
+        if (action == nullptr) {
+            throw std::runtime_error("input profile '" + profile.name + "' references unknown action '" +
+                                     parsed.action + "'");
+        }
+        parsed.binding.text = requiredString(entry, "binding", " for action '" + parsed.action + "'");
+        auto resolved = parseBinding(parsed.binding.text, action->type, parsed.action);
+        if (entry.contains("deadzone")) {
+            if (!entry.at("deadzone").is_number()) {
+                throw std::runtime_error("input profile deadzone must be numeric for action '" + parsed.action + "'");
+            }
+            parsed.binding.deadzone = entry.at("deadzone").get<float>();
+            if (!std::isfinite(parsed.binding.deadzone) || parsed.binding.deadzone < 0.0f ||
+                parsed.binding.deadzone >= 1.0f) {
+                throw std::runtime_error("input profile deadzone must be in [0,1) for action '" + parsed.action + "'");
+            }
+        }
+        const auto read_invert = [&](const char *field) {
+            if (!entry.contains(field)) {
+                return false;
+            }
+            if (!entry.at(field).is_boolean()) {
+                throw std::runtime_error("input profile " + std::string{field} +
+                                         " must be boolean for action '" + parsed.action + "'");
+            }
+            return entry.at(field).get<bool>();
+        };
+        parsed.binding.invert_x = read_invert("invert_x");
+        parsed.binding.invert_y = read_invert("invert_y");
+        const bool is_pad_axis = resolved.kind == BindingKind::gamepad_axis1 ||
+                                 resolved.kind == BindingKind::gamepad_axis2;
+        if ((parsed.binding.deadzone != 0.0f || parsed.binding.invert_x || parsed.binding.invert_y) &&
+            !is_pad_axis) {
+            throw std::runtime_error("input profile deadzone/invert attributes require a gamepad axis binding for action '" +
+                                     parsed.action + "'");
+        }
+        if (parsed.binding.invert_y && resolved.kind != BindingKind::gamepad_axis2) {
+            throw std::runtime_error("input profile invert_y requires a gamepad axis2 binding for action '" +
+                                     parsed.action + "'");
+        }
+        profile.uses_gamepad = profile.uses_gamepad || parsed.binding.text.starts_with("pad:");
+        profile.bindings.push_back(std::move(parsed));
+    }
+    return profile;
+}
+
+InputBindingProfile parseInputProfileString(std::string_view document, const InputActionMap &actions) {
+    return parseInputProfileJson(nlohmann::json::parse(document), actions);
+}
+
+InputActionMap applyInputProfile(InputActionMap map, const InputBindingProfile &profile) {
+    for (auto &set : map.action_sets) {
+        for (auto &action : set.actions) {
+            action.bindings.clear();
+        }
+    }
+    for (const auto &entry : profile.bindings) {
+        const auto location = map.action_lookup.find(entry.action);
+        if (location == map.action_lookup.end()) {
+            throw std::runtime_error("input profile '" + profile.name + "' references unknown action '" +
+                                     entry.action + "'");
+        }
+        const auto where = location->second;
+        map.action_sets[where.set_index].actions[where.action_index].bindings.push_back(entry.binding);
+    }
+    return map;
 }
 
 InputActionFrame evaluateInputActions(const InputActionMap &map, const InputSnapshot &snapshot,
@@ -612,7 +850,10 @@ InputActionFrame evaluateInputActions(const InputActionMap &map, const InputSnap
             bool any_release = false;
             ConsumedControls consumed_by_action;
             for (const auto &binding : action.bindings) {
-                const auto resolved = parseBinding(binding.text, action.type, action.name);
+                auto resolved = parseBinding(binding.text, action.type, action.name);
+                resolved.deadzone = binding.deadzone;
+                resolved.invert_x = binding.invert_x;
+                resolved.invert_y = binding.invert_y;
                 const auto sample = readBinding(resolved, snapshot, consumed, action.type);
                 mergeSample(action_state, any_release, sample);
                 consumed_by_action.merge(sample.consumed);

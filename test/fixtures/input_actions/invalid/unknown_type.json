@@ -5,7 +5,7 @@
     {
       "name": "gameplay",
       "actions": [
-        {"name": "move", "type": "vector2", "bindings": ["kbd:wasd"]}
+        {"name": "move", "type": "vector2"}
       ]
     }
   ]

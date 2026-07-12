@@ -1,0 +1,9 @@
+{
+  "schema": "pelican.input_profile",
+  "version": 1,
+  "name": "arcade",
+  "bindings": [
+    {"action": "jump", "binding": "pad:b"},
+    {"action": "confirm", "binding": "pad:a"}
+  ]
+}

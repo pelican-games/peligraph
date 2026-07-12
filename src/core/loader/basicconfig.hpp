@@ -5,6 +5,7 @@
 #include <glm/glm.hpp>
 #include <optional>
 #include <string>
+#include <unordered_map>
 
 namespace Pelican {
 
@@ -33,6 +34,8 @@ DECLARE_MODULE(ProjectBasicConfig) {
     std::string default_rendering_pass;
     std::string ui_config_json_ref;
     std::optional<std::string> input_actions_json_ref;
+    std::unordered_map<std::string, std::string> input_profile_json_refs;
+    std::optional<std::string> default_input_profile;
     bool project_source = false;
 
     mutable std::optional<std::string> scene_data_json;
@@ -40,6 +43,7 @@ DECLARE_MODULE(ProjectBasicConfig) {
     mutable std::optional<std::string> rendering_config_json;
     mutable std::optional<std::string> ui_config_json;
     mutable std::optional<std::string> input_actions_json;
+    mutable std::unordered_map<std::string, std::string> input_profile_jsons;
 
   public:
     ProjectBasicConfig();
@@ -59,6 +63,8 @@ DECLARE_MODULE(ProjectBasicConfig) {
     std::string defaultRenderingPass() const;
     std::string uiConfigJson() const;
     std::optional<std::string> inputActionsJson() const;
+    std::unordered_map<std::string, std::string> inputProfileJsons() const;
+    std::optional<std::string> defaultInputProfile() const;
     bool usesProjectSource() const { return project_source; }
 };
 

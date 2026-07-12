@@ -1,0 +1,10 @@
+{
+  "schema": "pelican.input_profile",
+  "version": 1,
+  "name": "gamepad",
+  "bindings": [
+    {"action": "move", "binding": "pad:left_stick", "deadzone": 0.2, "invert_y": true},
+    {"action": "jump", "binding": "pad:a"},
+    {"action": "confirm", "binding": "pad:b"}
+  ]
+}

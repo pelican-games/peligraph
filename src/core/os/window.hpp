@@ -15,6 +15,7 @@ namespace Pelican {
 DECLARE_MODULE(Window) {
     GLFWwindow *window;
     std::vector<InputEvent> input_events;
+    GamepadEventPoller gamepad_poller;
 
   public:
     Window();

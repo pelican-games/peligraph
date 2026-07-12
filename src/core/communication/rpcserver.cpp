@@ -13,6 +13,7 @@
 #include "../playback/seqplayer.hpp"
 #include "../renderingpass/renderingpassjsonhelpers.hpp"
 #include "../userpublic/gamecontext.hpp"
+#include "../userpublic/userinput.hpp"
 #include "../userpublic/details/system/registerer.hpp"
 #include "../vkcore/renderer.hpp"
 #include "../vkcore/rendertarget.hpp"
@@ -407,6 +408,38 @@ std::vector<InputEvent> bindInjectedInputEvents(const std::vector<RpcInputInject
         case RpcInputInjectionEventType::axis:
             events.push_back(injectedAxisEvent(rpc_event.name, rpc_event.value));
             break;
+        case RpcInputInjectionEventType::gamepadButtonDown:
+        case RpcInputInjectionEventType::gamepadButtonUp: {
+            const auto name = lowerAscii(rpc_event.name);
+            const auto button = gamepadButtonFromName(name);
+            if (!button) {
+                throw JsonRpcHandlerError(JsonRpcErrorCodes::invalidParams,
+                                          "inject_input unknown gamepad button: " + rpc_event.name);
+            }
+            if (rpc_event.gamepad >= gamepad_slot_count) {
+                throw JsonRpcHandlerError(JsonRpcErrorCodes::invalidParams,
+                                          "inject_input gamepad slot is out of range");
+            }
+            events.push_back(InputEvent::gamepadButton(
+                static_cast<std::uint8_t>(rpc_event.gamepad), *button,
+                rpc_event.type == RpcInputInjectionEventType::gamepadButtonDown));
+            break;
+        }
+        case RpcInputInjectionEventType::gamepadAxis: {
+            const auto name = lowerAscii(rpc_event.name);
+            const auto axis = gamepadAxisFromName(name);
+            if (!axis) {
+                throw JsonRpcHandlerError(JsonRpcErrorCodes::invalidParams,
+                                          "inject_input unknown gamepad axis: " + rpc_event.name);
+            }
+            if (rpc_event.gamepad >= gamepad_slot_count) {
+                throw JsonRpcHandlerError(JsonRpcErrorCodes::invalidParams,
+                                          "inject_input gamepad slot is out of range");
+            }
+            events.push_back(InputEvent::gamepadAxis(static_cast<std::uint8_t>(rpc_event.gamepad), *axis,
+                                                      static_cast<float>(rpc_event.value)));
+            break;
+        }
         }
     }
     return events;
@@ -542,7 +575,12 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
             {"input", {{"recording", GET_MODULE(InputSequenceRuntime).isRecording()},
                        {"replaying", GET_MODULE(InputSequenceRuntime).isReplaying()},
                        {"replay_frame", GET_MODULE(InputSequenceRuntime).replayFrameIndex()},
-                       {"hot_reload", GET_MODULE(EngineLaunchConfig).shader_hot_reload}}},
+                       {"hot_reload", GET_MODULE(EngineLaunchConfig).shader_hot_reload},
+                       {"profile", internal::activeInputProfile()
+                                       ? nlohmann::json(*internal::activeInputProfile())
+                                       : nlohmann::json(nullptr)},
+                       {"profiles", internal::availableInputProfiles()},
+                       {"gamepad_polling", internal::gamepadPollingEnabled()}}},
             {"stores", assetStoresStatus()},
             {"startup", {{"config_ms", startup.config_ms},
                          {"vulkan_ms", startup.vulkan_ms},
@@ -567,6 +605,17 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
         return nlohmann::json{
             {"seed", seed},
         };
+    });
+
+    server.setHandler("set_input_profile", [](const nlohmann::json &params) {
+        const auto name = requireStringParam(params, "name", "set_input_profile");
+        try {
+            internal::selectInputProfile(name);
+        } catch (const std::exception &error) {
+            throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError,
+                                      "set_input_profile " + std::string{error.what()});
+        }
+        return nlohmann::json{{"name", name}, {"gamepad_polling", internal::gamepadPollingEnabled()}};
     });
 
     server.setHandler("inject_input", [](const nlohmann::json &params) {

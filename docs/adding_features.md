@@ -80,7 +80,8 @@ DLL境界は作らない。
 4. ビルドは `cmake -S <engine> -B <build> -DPELICAN_PROJECT=<project>`。
    未指定時はプロジェクトコードを一切includeせず、従来挙動を維持する。
 5. 入力アクションを使う場合は project.json の
-   `basic_config.input_actions_json` に `pelican.input_actions` JSON を参照させる。
+   `basic_config.input_actions_json` に `pelican.input_actions` JSON を参照させ、
+   `input_profiles` と `input_profile` で `pelican.input_profile` を選ぶ。
 
 ---
 

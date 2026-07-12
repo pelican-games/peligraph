@@ -40,7 +40,8 @@ class ExamplePlayerControl {
         }
 
         const auto move = ctx.actionAxis2("move");
-        if (move.x == 0.0f && move.y == 0.0f) {
+        const bool jump = ctx.actionHeld("jump");
+        if (move.x == 0.0f && move.y == 0.0f && !jump) {
             return;
         }
 
@@ -49,6 +50,9 @@ class ExamplePlayerControl {
         constexpr float speed = 2.5f;
         transform.pos.x += move.x * speed * dt;
         transform.pos.z += move.y * speed * dt;
+        if (jump) {
+            transform.pos.y += speed * dt;
+        }
         (void)ctx.setLocalTransform(object, transform);
     }
 };

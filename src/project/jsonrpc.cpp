@@ -1,6 +1,7 @@
 #include "jsonrpc.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <utility>
 
 namespace Pelican {
@@ -61,6 +62,16 @@ double requireNumberField(const nlohmann::json &object, const char *name, const 
     return object.at(name).get<double>();
 }
 
+std::size_t optionalGamepadField(const nlohmann::json &object, const std::string &context) {
+    if (!object.contains("pad")) {
+        return 0;
+    }
+    if (!object.at("pad").is_number_integer() || object.at("pad").get<std::int64_t>() < 0) {
+        throw JsonRpcInvalidParamsError(context + " field 'pad' must be an unsigned integer");
+    }
+    return object.at("pad").get<std::size_t>();
+}
+
 RpcInputInjectionEvent parseInjectInputEvent(const nlohmann::json &event_json, std::size_t index) {
     const auto context = eventContext(index);
     if (!event_json.is_object()) {
@@ -93,6 +104,22 @@ RpcInputInjectionEvent parseInjectInputEvent(const nlohmann::json &event_json, s
             .type = RpcInputInjectionEventType::axis,
             .name = requireStringField(event_json, "axis", context + " type 'axis'"),
             .value = requireNumberField(event_json, "value", context + " type 'axis'"),
+        };
+    }
+    if (type == "pad_button_down" || type == "pad_button_up") {
+        return RpcInputInjectionEvent{
+            .type = type == "pad_button_down" ? RpcInputInjectionEventType::gamepadButtonDown
+                                               : RpcInputInjectionEventType::gamepadButtonUp,
+            .name = requireStringField(event_json, "button", context + " type '" + type + "'"),
+            .gamepad = optionalGamepadField(event_json, context + " type '" + type + "'"),
+        };
+    }
+    if (type == "pad_axis") {
+        return RpcInputInjectionEvent{
+            .type = RpcInputInjectionEventType::gamepadAxis,
+            .name = requireStringField(event_json, "axis", context + " type 'pad_axis'"),
+            .value = requireNumberField(event_json, "value", context + " type 'pad_axis'"),
+            .gamepad = optionalGamepadField(event_json, context + " type 'pad_axis'"),
         };
     }
 

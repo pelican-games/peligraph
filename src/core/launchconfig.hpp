@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <string>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
@@ -36,6 +37,7 @@ DECLARE_MODULE(EngineLaunchConfig) {
     bool force_unorm_color_path_for_testing = false;
     std::optional<std::filesystem::path> input_record;
     std::optional<std::filesystem::path> input_replay_path;
+    std::optional<std::string> input_profile;
     std::optional<std::filesystem::path> camera_bake_output;
     std::optional<std::filesystem::path> play_seq;
     std::optional<std::filesystem::path> play_vat;

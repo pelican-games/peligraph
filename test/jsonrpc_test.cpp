@@ -99,10 +99,12 @@ TEST_CASE("inject_input params parser accepts key, mouse, and axis events", "[js
              {{"type", "mouse_down"}, {"button", "left"}},
              {{"type", "mouse_up"}, {"button", "left"}},
              {{"type", "axis"}, {"axis", "mouse_delta_x"}, {"value", -4.0}},
+             {{"type", "pad_button_down"}, {"button", "a"}, {"pad", 1}},
+             {{"type", "pad_axis"}, {"axis", "left_x"}, {"value", 0.75}},
          })},
     });
 
-    REQUIRE(events.size() == 6);
+    REQUIRE(events.size() == 8);
     REQUIRE(events.at(0).type == RpcInputInjectionEventType::keyDown);
     REQUIRE(events.at(0).name == "W");
     REQUIRE(events.at(1).type == RpcInputInjectionEventType::keyUp);
@@ -114,6 +116,9 @@ TEST_CASE("inject_input params parser accepts key, mouse, and axis events", "[js
     REQUIRE(events.at(5).type == RpcInputInjectionEventType::axis);
     REQUIRE(events.at(5).name == "mouse_delta_x");
     REQUIRE(events.at(5).value == -4.0);
+    REQUIRE(events.at(6).type == RpcInputInjectionEventType::gamepadButtonDown);
+    REQUIRE(events.at(6).gamepad == 1);
+    REQUIRE(events.at(7).type == RpcInputInjectionEventType::gamepadAxis);
 }
 
 TEST_CASE("inject_input params parser reports named invalid params", "[jsonrpc]") {

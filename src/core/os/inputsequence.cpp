@@ -83,6 +83,23 @@ KeyCode parseKeyCode(const nlohmann::json &json, std::size_t line) {
                              std::string{name});
 }
 
+std::uint8_t parseGamepadSlot(const nlohmann::json &json, std::size_t line) {
+    const auto slot = requireUnsigned(json, "pad", line);
+    if (slot >= gamepad_slot_count) {
+        throw std::runtime_error("input_seq line " + std::to_string(line) + " gamepad slot is out of range");
+    }
+    return static_cast<std::uint8_t>(slot);
+}
+
+std::string requireControlName(const nlohmann::json &json, std::size_t line, std::string_view kind) {
+    const auto it = json.find("code");
+    if (it == json.end() || !it->is_string()) {
+        throw std::runtime_error("input_seq line " + std::to_string(line) + " " + std::string{kind} +
+                                 " event requires string field 'code'");
+    }
+    return it->get<std::string>();
+}
+
 InputEvent parseEvent(const nlohmann::json &json, std::size_t line) {
     if (!json.is_object()) {
         throw std::runtime_error("input_seq line " + std::to_string(line) + " must be an object");
@@ -115,6 +132,28 @@ InputEvent parseEvent(const nlohmann::json &json, std::size_t line) {
                                      " character codepoint is out of range");
         }
         event = InputEvent::character(static_cast<std::uint32_t>(codepoint));
+    } else if (type == "pad_button") {
+        const auto pressed = json.find("pressed");
+        if (pressed == json.end() || !pressed->is_boolean()) {
+            throw std::runtime_error("input_seq line " + std::to_string(line) +
+                                     " pad_button event requires boolean field 'pressed'");
+        }
+        const auto name = requireControlName(json, line, "pad_button");
+        const auto button = gamepadButtonFromName(name);
+        if (!button) {
+            throw std::runtime_error("input_seq line " + std::to_string(line) +
+                                     " unknown gamepad button: " + name);
+        }
+        event = InputEvent::gamepadButton(parseGamepadSlot(json, line), *button, pressed->get<bool>());
+    } else if (type == "pad_axis") {
+        const auto name = requireControlName(json, line, "pad_axis");
+        const auto axis = gamepadAxisFromName(name);
+        if (!axis) {
+            throw std::runtime_error("input_seq line " + std::to_string(line) +
+                                     " unknown gamepad axis: " + name);
+        }
+        event = InputEvent::gamepadAxis(parseGamepadSlot(json, line), *axis,
+                                        requireFloat(json, "value", line));
     } else {
         throw std::runtime_error("input_seq line " + std::to_string(line) + " unknown event type: " + type);
     }
@@ -152,6 +191,28 @@ nlohmann::json serializeEvent(const InputEvent &event) {
         json["type"] = "character";
         json["codepoint"] = event.codepoint;
         break;
+    case InputEvent::Type::gamepad_button: {
+        const auto name = gamepadButtonName(event.pad_button);
+        if (event.gamepad >= gamepad_slot_count || name.empty()) {
+            throw std::runtime_error("cannot record input event with invalid gamepad button");
+        }
+        json["type"] = "pad_button";
+        json["pad"] = event.gamepad;
+        json["code"] = name;
+        json["pressed"] = event.pressed != 0;
+        break;
+    }
+    case InputEvent::Type::gamepad_axis: {
+        const auto name = gamepadAxisName(event.pad_axis);
+        if (event.gamepad >= gamepad_slot_count || name.empty() || !std::isfinite(event.pad_value)) {
+            throw std::runtime_error("cannot record input event with invalid gamepad axis");
+        }
+        json["type"] = "pad_axis";
+        json["pad"] = event.gamepad;
+        json["code"] = name;
+        json["value"] = event.pad_value;
+        break;
+    }
     }
     return json;
 }

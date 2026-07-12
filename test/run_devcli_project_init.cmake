@@ -28,6 +28,7 @@ foreach(path IN ITEMS
     assets/asset_data.json
     assets/.gitkeep
     input/actions.json
+    input/profiles/keyboard.json
     passes/main_rendering_config.json
     ui/ui_overlay.json
     code/CMakeLists.txt

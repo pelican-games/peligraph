@@ -1,13 +1,23 @@
 #include "inputstate.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
+#include <cmath>
 #include <stdexcept>
 #include <type_traits>
 
 namespace Pelican {
 
 namespace {
+
+constexpr std::array<std::string_view, gamepad_button_count> gamepad_button_names{
+    "a", "b", "x", "y", "left_bumper", "right_bumper", "back", "start", "guide",
+    "left_thumb", "right_thumb", "dpad_up", "dpad_right", "dpad_down", "dpad_left",
+};
+constexpr std::array<std::string_view, gamepad_axis_count> gamepad_axis_names{
+    "left_x", "left_y", "right_x", "right_y", "left_trigger", "right_trigger",
+};
 
 std::size_t keyCodeIndex(KeyCode code) noexcept {
     return static_cast<std::size_t>(code);
@@ -18,6 +28,30 @@ std::size_t countActive(const std::array<std::uint8_t, key_code_count> &values) 
 }
 
 } // namespace
+
+std::string_view gamepadButtonName(GamepadButton button) noexcept {
+    const auto index = static_cast<std::size_t>(button);
+    return index < gamepad_button_names.size() ? gamepad_button_names[index] : std::string_view{};
+}
+
+std::string_view gamepadAxisName(GamepadAxis axis) noexcept {
+    const auto index = static_cast<std::size_t>(axis);
+    return index < gamepad_axis_names.size() ? gamepad_axis_names[index] : std::string_view{};
+}
+
+std::optional<GamepadButton> gamepadButtonFromName(std::string_view name) noexcept {
+    const auto it = std::find(gamepad_button_names.begin(), gamepad_button_names.end(), name);
+    return it == gamepad_button_names.end()
+               ? std::nullopt
+               : std::optional<GamepadButton>{static_cast<GamepadButton>(it - gamepad_button_names.begin())};
+}
+
+std::optional<GamepadAxis> gamepadAxisFromName(std::string_view name) noexcept {
+    const auto it = std::find(gamepad_axis_names.begin(), gamepad_axis_names.end(), name);
+    return it == gamepad_axis_names.end()
+               ? std::nullopt
+               : std::optional<GamepadAxis>{static_cast<GamepadAxis>(it - gamepad_axis_names.begin())};
+}
 
 bool isValidKeyCode(KeyCode code) noexcept {
     using KeyCodeValue = std::underlying_type_t<KeyCode>;
@@ -46,6 +80,26 @@ std::size_t InputSnapshot::pushedCount() const noexcept {
 
 std::size_t InputSnapshot::releasedCount() const noexcept {
     return countActive(released);
+}
+
+bool InputSnapshot::getGamepadButton(std::size_t pad, GamepadButton button) const noexcept {
+    const auto index = static_cast<std::size_t>(button);
+    return pad < gamepad_slot_count && index < gamepad_button_count && gamepad_down[pad][index] != 0;
+}
+
+bool InputSnapshot::isGamepadButtonPushed(std::size_t pad, GamepadButton button) const noexcept {
+    const auto index = static_cast<std::size_t>(button);
+    return pad < gamepad_slot_count && index < gamepad_button_count && gamepad_pushed[pad][index] != 0;
+}
+
+bool InputSnapshot::isGamepadButtonReleased(std::size_t pad, GamepadButton button) const noexcept {
+    const auto index = static_cast<std::size_t>(button);
+    return pad < gamepad_slot_count && index < gamepad_button_count && gamepad_released[pad][index] != 0;
+}
+
+float InputSnapshot::getGamepadAxis(std::size_t pad, GamepadAxis axis) const noexcept {
+    const auto index = static_cast<std::size_t>(axis);
+    return pad < gamepad_slot_count && index < gamepad_axis_count ? gamepad_axes[pad][index] : 0.0f;
 }
 
 InputEvent InputEvent::button(KeyCode code, bool pressed) noexcept {
@@ -85,6 +139,60 @@ InputEvent InputEvent::character(std::uint32_t codepoint) noexcept {
         .type = Type::character,
         .codepoint = codepoint,
     };
+}
+
+InputEvent InputEvent::gamepadButton(std::uint8_t pad, GamepadButton button, bool pressed) noexcept {
+    return InputEvent{
+        .type = Type::gamepad_button,
+        .pressed = static_cast<std::uint8_t>(pressed ? 1 : 0),
+        .gamepad = pad,
+        .pad_button = button,
+    };
+}
+
+InputEvent InputEvent::gamepadAxis(std::uint8_t pad, GamepadAxis axis, float value) noexcept {
+    return InputEvent{
+        .type = Type::gamepad_axis,
+        .gamepad = pad,
+        .pad_axis = axis,
+        .pad_value = value,
+    };
+}
+
+std::vector<InputEvent> GamepadEventPoller::poll(GamepadStateSource &source, bool enabled) {
+    std::vector<InputEvent> events;
+    if (!enabled) {
+        return events;
+    }
+    for (std::size_t slot = 0; slot < gamepad_slot_count; ++slot) {
+        GamepadState current{};
+        const bool present = source.read(slot, current);
+        if (!present) {
+            current = {};
+        }
+        if (!present && connected[slot] == 0) {
+            continue;
+        }
+        for (std::size_t button = 0; button < gamepad_button_count; ++button) {
+            const bool was_down = previous[slot].buttons[button] != 0;
+            const bool is_down = current.buttons[button] != 0;
+            if (was_down != is_down) {
+                events.push_back(InputEvent::gamepadButton(static_cast<std::uint8_t>(slot),
+                                                           static_cast<GamepadButton>(button), is_down));
+            }
+        }
+        for (std::size_t axis = 0; axis < gamepad_axis_count; ++axis) {
+            const float value = std::clamp(current.axes[axis], -1.0f, 1.0f);
+            if (value != previous[slot].axes[axis]) {
+                events.push_back(InputEvent::gamepadAxis(static_cast<std::uint8_t>(slot),
+                                                         static_cast<GamepadAxis>(axis), value));
+                current.axes[axis] = value;
+            }
+        }
+        connected[slot] = static_cast<std::uint8_t>(present ? 1 : 0);
+        previous[slot] = current;
+    }
+    return events;
 }
 
 void InputConsumptionMask::consumeControl(KeyCode code) noexcept {
@@ -292,10 +400,36 @@ void InputStateCore::beginFrame() {
         case InputEvent::Type::scroll:
         case InputEvent::Type::character:
             break;
+        case InputEvent::Type::gamepad_button: {
+            const auto pad = static_cast<std::size_t>(event.gamepad);
+            const auto button = static_cast<std::size_t>(event.pad_button);
+            if (pad >= gamepad_slot_count || button >= gamepad_button_count) {
+                break;
+            }
+            const bool was_down = current_gamepad_down[pad][button] != 0;
+            const bool is_down = event.pressed != 0;
+            if (is_down && !was_down) {
+                next_snapshot.gamepad_pushed[pad][button] = 1;
+            } else if (!is_down && was_down) {
+                next_snapshot.gamepad_released[pad][button] = 1;
+            }
+            current_gamepad_down[pad][button] = static_cast<std::uint8_t>(is_down ? 1 : 0);
+            break;
+        }
+        case InputEvent::Type::gamepad_axis: {
+            const auto pad = static_cast<std::size_t>(event.gamepad);
+            const auto axis = static_cast<std::size_t>(event.pad_axis);
+            if (pad < gamepad_slot_count && axis < gamepad_axis_count && std::isfinite(event.pad_value)) {
+                current_gamepad_axes[pad][axis] = std::clamp(event.pad_value, -1.0f, 1.0f);
+            }
+            break;
+        }
         }
     }
 
     next_snapshot.down = current_down;
+    next_snapshot.gamepad_down = current_gamepad_down;
+    next_snapshot.gamepad_axes = current_gamepad_axes;
     next_snapshot.mouse_x = mouse_x;
     next_snapshot.mouse_y = mouse_y;
     next_snapshot.mouse_delta_x = axis_delta_x;
@@ -315,6 +449,8 @@ void InputStateCore::clear() {
     borrow_state->generation = frame_generation;
     snapshot = {};
     current_down = {};
+    current_gamepad_down = {};
+    current_gamepad_axes = {};
     pending_events.clear();
     frame_events.clear();
     consumption_mask = {};

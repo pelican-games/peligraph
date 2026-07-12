@@ -7,8 +7,11 @@
       "actions": [
         {
           "name": "move",
-          "type": "axis2",
-          "bindings": ["kbd:wasd"]
+          "type": "axis2"
+        },
+        {
+          "name": "jump",
+          "type": "button"
         }
       ]
     }
