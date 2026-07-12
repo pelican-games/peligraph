@@ -35,6 +35,7 @@ void updateRegisteredGameSystems(GameContext &ctx) {
     auto systems = sortGameSystemRegistrations(getGameSystemRegisterer().registeredSystems());
     for (const auto &system : systems) {
         if (system.update != nullptr) {
+            ScopedRegistrationOwner owner_scope{system.owner};
             system.update(ctx);
         }
     }
@@ -45,6 +46,7 @@ void dispatchEventToRegisteredGameSystems(const QueuedEvent &event, GameContext 
     for (const auto &system : systems) {
         for (const auto &handler : system.event_handlers) {
             if (handler.event_type == event.type && handler.dispatch != nullptr) {
+                ScopedRegistrationOwner owner_scope{system.owner};
                 handler.dispatch(event.payload.get(), ctx);
             }
         }

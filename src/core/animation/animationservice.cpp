@@ -2,6 +2,13 @@
 
 #include "animationjobs.hpp"
 #include "animationprobe.hpp"
+#include "../asset/model.hpp"
+#include "../container.hpp"
+#include "../ecs/core.hpp"
+#include "../ecs/predefined/modelview.hpp"
+#include "../loader/scene.hpp"
+#include "../renderer/polygoninstancecontainer.hpp"
+#include "../userpublic/components/predefined.hpp"
 #include "../userpublic/details/reload/registrationowner.hpp"
 
 #include <algorithm>
@@ -9,11 +16,16 @@
 #include <cstring>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+namespace Pelican::AnimationGraph::Internal {
+void linkAnchor() noexcept;
+}
 
 namespace Pelican::Animation {
 namespace {
@@ -47,6 +59,7 @@ struct AnimationServiceRuntime::Impl {
         std::string name;
         const SkeletalModelData *model{};
         const AnimationAsset *asset{};
+        std::optional<ModelInstanceId> renderer_instance;
     };
     struct SinkRecord {
         AnimationSinkHandle handle{};
@@ -181,20 +194,43 @@ struct AnimationServiceRuntime::Impl {
         return ProbeRuntime::validatePoseHandle(pose);
     }
 
-    void registerObject(std::string name, const SkeletalModelData &model) {
-        std::scoped_lock lock{mutex};
+    void registerObjectLocked(std::string name, const SkeletalModelData &model,
+                              std::optional<ModelInstanceId> renderer_instance = std::nullopt) {
         if (name.empty()) throw std::runtime_error("animation object name must not be empty");
         if (objects.contains(name)) throw std::runtime_error("animation object name is already registered");
         auto object = std::make_unique<ObjectRecord>();
         object->name = std::move(name);
         object->model = &model;
         object->asset = &assets.getOrCreate(model);
+        object->renderer_instance = renderer_instance;
         auto *record = object.get();
         rigs.emplace(record->asset->rig.handle.identity, record);
         for (const auto &clip : record->asset->clips) clips.emplace(clip.handle.identity, std::pair{record, &clip});
         for (const auto &binding : record->asset->skin_bindings)
             bindings.emplace(binding.handle.identity, std::pair{record, &binding});
         objects.emplace(record->name, std::move(object));
+    }
+
+    void registerObject(std::string name, const SkeletalModelData &model) {
+        std::scoped_lock lock{mutex};
+        registerObjectLocked(std::move(name), model);
+    }
+
+    bool registerSceneObject(std::string_view name) {
+        if (!FastModuleContainer::isInitialized<SceneLoader>() ||
+            !FastModuleContainer::isInitialized<ECSCore>() ||
+            !FastModuleContainer::isInitialized<ModelAssetContainer>() ||
+            !FastModuleContainer::isInitialized<PolygonInstanceContainer>())
+            return false;
+        const auto object_id = GET_MODULE(SceneLoader).objectId(name);
+        if (!object_id) return false;
+        auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
+        const auto *model_view = ecs.tryComponent<SimpleModelViewComponent>(*object_id);
+        if (!model_view || !model_view->model_instance_id || model_view->model_name.empty()) return false;
+        auto &model_template = GET_MODULE(ModelAssetContainer).getModelTemplateByName(model_view->model_name);
+        if (!model_template.skeletal) return false;
+        registerObjectLocked(std::string{name}, *model_template.skeletal, *model_view->model_instance_id);
+        return true;
     }
 
     void reset() {
@@ -294,6 +330,27 @@ struct AnimationServiceRuntime::Impl {
         }
     }
 
+    Status runAllPhases(std::uint64_t revision) noexcept {
+        try {
+            std::vector<AnimationSinkHandle> active_sinks;
+            {
+                std::scoped_lock lock{mutex};
+                active_sinks.reserve(sinks.size());
+                for (const auto &[_, sink] : sinks) active_sinks.push_back(sink.handle);
+            }
+            std::sort(active_sinks.begin(), active_sinks.end(), [](const auto &left, const auto &right) {
+                return left.identity < right.identity;
+            });
+            for (const auto sink : active_sinks) {
+                const auto status = runPhases(sink, revision);
+                if (status != Status::ok) return status;
+            }
+            return Status::ok;
+        } catch (...) {
+            return Status::out_of_memory;
+        }
+    }
+
     static Impl *self(void *context) { return static_cast<Impl *>(context); }
 
     static Status apiAdvance(void *context, const AdvanceDescV1 *desc, IntervalResultV1 *result) {
@@ -326,7 +383,10 @@ struct AnimationServiceRuntime::Impl {
             return Status::invalid_argument;
         auto *runtime = self(context);
         std::scoped_lock lock{runtime->mutex};
-        const auto object = runtime->objects.find(std::string{checkedString(desc->object_name, desc->object_name_size)});
+        const auto object_name = std::string{checkedString(desc->object_name, desc->object_name_size)};
+        auto object = runtime->objects.find(object_name);
+        if (object == runtime->objects.end() && runtime->registerSceneObject(object_name))
+            object = runtime->objects.find(object_name);
         if (object == runtime->objects.end()) return Status::not_found;
         for (const auto &[_, sink] : runtime->sinks) {
             if (sink.object == object->second.get() && sink.kind == desc->sink_kind) {
@@ -338,7 +398,9 @@ struct AnimationServiceRuntime::Impl {
         sink.handle = {runtime->next_identity++, 1, 0};
         sink.object = object->second.get();
         sink.kind = desc->sink_kind;
-        sink.instance = {runtime->next_identity++, 1, 0};
+        sink.instance = object->second->renderer_instance
+                            ? GET_MODULE(PolygonInstanceContainer).animationInstance(*object->second->renderer_instance)
+                            : InstanceHandle{runtime->next_identity++, 1, 0};
         runtime->instances.emplace(sink.instance.identity, sink.handle.identity);
         desc->sink = sink.handle;
         runtime->sinks.emplace(sink.handle.identity, sink);
@@ -753,7 +815,11 @@ struct AnimationServiceRuntime::Impl {
         }
         auto frame = desc->frame;
         if (sink->reset_history) frame.flags |= commit_reset_history;
-        const auto status = runtime->legacy_runtime.publishAnimationFrame(frame);
+        const auto status = sink->object->renderer_instance &&
+                                    FastModuleContainer::isInitialized<PolygonInstanceContainer>()
+                                ? GET_MODULE(PolygonInstanceContainer)
+                                      .publishAnimationFrame(*sink->object->renderer_instance, frame)
+                                : runtime->legacy_runtime.publishAnimationFrame(frame);
         if (status == Status::ok) sink->reset_history = false;
         return status;
     }
@@ -798,7 +864,9 @@ struct AnimationServiceRuntime::Impl {
     }
 };
 
-AnimationServiceRuntime::AnimationServiceRuntime() : impl_(std::make_unique<Impl>()) {}
+AnimationServiceRuntime::AnimationServiceRuntime() : impl_(std::make_unique<Impl>()) {
+    AnimationGraph::Internal::linkAnchor();
+}
 AnimationServiceRuntime::~AnimationServiceRuntime() = default;
 
 void AnimationServiceRuntime::registerObject(std::string name, const SkeletalModelData &model) {
@@ -811,6 +879,10 @@ void AnimationServiceRuntime::releaseOwner(internal::RegistrationOwner owner) no
 
 Status AnimationServiceRuntime::runPhases(AnimationSinkHandle sink, std::uint64_t frame_revision) noexcept {
     return impl_->runPhases(sink, frame_revision);
+}
+
+Status AnimationServiceRuntime::runAllPhases(std::uint64_t frame_revision) noexcept {
+    return impl_->runAllPhases(frame_revision);
 }
 
 AnimationServiceRuntime &animationServiceRuntime() {

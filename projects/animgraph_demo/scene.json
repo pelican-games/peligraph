@@ -1,0 +1,17 @@
+{
+  "schema":"pelican.scene",
+  "version":1,
+  "scenes":{"default_scene":{"objects":[
+    {"name":"Camera","components":[
+      {"name":"transform","pos":[0.0,1.0,5.0],"rotation":[0.0,0.0,0.0,1.0],"scale":[1.0,1.0,1.0]},
+      {"name":"camera"}
+    ]},
+    {"name":"AnimGraphHero","components":[
+      {"name":"transform","pos":[0.0,-1.0,0.0],"rotation":[0.0,0.0,0.0,1.0],"scale":[1.0,1.0,1.0]},
+      {"name":"simplemodelview","model":"animgraph_demo"}
+    ]},
+    {"name":"Key","components":[
+      {"name":"light","type":"directional","direction":[0.2,-0.5,-1.0],"intensity":3.0,"color":[1.0,0.9,0.8]}
+    ]}
+  ]}}
+}
