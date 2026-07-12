@@ -2548,6 +2548,31 @@ sprite_view の ECS 反映 system。UI 経路の挙動変更禁止。
 6. 受け入れ = 新 golden + 既存全テスト + 既存 golden 全維持(SKIP 0)+
    player 8 秒(スプライトが表示される自己完結 demo project 付き)
 
+### WP105: アセット HR1-M — material values 差し替え
+
+参照: **`design_asset_hot_reload.md` v2.1 §3-2 values 行・§7 HR1-M 行が
+正**。受入条件 = 再レビュー同 §HR-C4-3: **単体 gate は same-layout
+update + fake dependency actor まで。実 `.surface + .material.json` の
+cross-file atomic fixture は HR2-S の exit gate(本 WP に含めない)**。
+基盤 = WP98 group API + WP100 texture handler(実装参考)。
+依存: WP96/98/100(済)。見積: 中。
+排他: values handler 新設 + MaterialContainer の SSBO update 面
+(現行は登録時一回書き — update API を新設、既存 register 挙動不変)。
+
+1. `.material.json` の AssetKey → watcher 接続 → 再 parse/lower
+   (WP76 バインダ再実行)
+2. **同 layout なら SSBO 値の update のみ**(descriptor/pipeline 不変・
+   GlobalMaterialId 不変)。surface layout が変わる場合は本 WP では
+   **旧 values 継続 + 名前入り WARN**(transaction group 化は HR2-S)
+3. 失敗系: 壊れた JSON・型不一致・範囲外 = candidate 破棄・旧値継続・
+   last_reload_error
+4. fixture: WP76 layout fixture 再利用・実 FS end-to-end 1 本
+   (values 書き換え → capture 差分)・二体/material 単位更新
+   (1 material の変更が他 material に波及しない)・1000 reload leak
+   なし・リプレイ中不発火
+5. 受け入れ = 上記全 green + 既存全テスト + golden 全維持
+   (SKIP 0・件数 29/28)+ player 8 秒
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの
