@@ -61,6 +61,7 @@ struct MaterialInfo {
         MaterialDummyTexture missing_default = MaterialDummyTexture::white;
     };
     std::vector<CustomTextureBinding> custom_textures;
+    Std140Layout custom_values_layout;
     std::vector<std::byte> custom_values;
     SurfaceRenderState render_state;
 };

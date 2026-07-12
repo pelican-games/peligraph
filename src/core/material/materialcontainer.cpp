@@ -9,6 +9,7 @@
 #include "../vkcore/util.hpp"
 #include "../watch/reloadservice.hpp"
 #include "standardmaterialresource.hpp"
+#include "materialvaluesreloadhandler.hpp"
 #include "texturereloadhandler.hpp"
 #include <array>
 #include <cstring>
@@ -504,6 +505,8 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         .emissive_texture = info.emissive_texture,
         .vat = info.vat,
         .texture_bindings = std::move(texture_bindings),
+        .custom_values_layout = info.custom_values_layout,
+        .custom_values = info.custom_values,
         .descriptor_revision = 0,
         .descset = std::move(descset),
     });
@@ -517,6 +520,71 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     }
     if (texture_reload_handler) texture_reload_handler->materialRegistered(material_id);
     return material_id;
+}
+
+namespace {
+
+bool sameValuesLayout(const Std140Layout &left, const Std140Layout &right) {
+    if (left.size != right.size || left.alignment != right.alignment ||
+        left.members.size() != right.members.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < left.members.size(); ++i) {
+        const auto &a = left.members[i];
+        const auto &b = right.members[i];
+        if (a.name != b.name || a.type != b.type || a.offset != b.offset ||
+            a.size != b.size || a.alignment != b.alignment) {
+            return false;
+        }
+    }
+    return true;
+}
+
+} // namespace
+
+bool MaterialContainer::materialValuesLayoutMatches(GlobalMaterialId material,
+                                                     const Std140Layout &layout) const {
+    return sameValuesLayout(materials.get(material).custom_values_layout, layout);
+}
+
+void MaterialContainer::updateMaterialValues(GlobalMaterialId material,
+                                             const Std140Layout &layout,
+                                             std::span<const std::byte> values) {
+    auto &info = materials.get(material);
+    if (!sameValuesLayout(info.custom_values_layout, layout)) {
+        throw std::runtime_error("material values update requires an identical std140 layout");
+    }
+    if (values.size() != layout.size || values.size() > materialCustomValueCapacity) {
+        throw std::runtime_error("material values update byte count does not match its layout");
+    }
+
+    std::array<std::uint32_t, materialCustomValueCapacity / 4> packed{};
+    if (!values.empty()) std::memcpy(packed.data(), values.data(), values.size());
+    // MaterialBuffer is shared by in-flight frames. The frame-boundary caller
+    // owns publication, while this wait protects readers of the live SSBO.
+    GET_MODULE(VulkanManageCore).waitIdle();
+    const auto offset = sizeof(MaterialGpuData) * material.value +
+                        offsetof(MaterialGpuData, custom_values);
+    GET_MODULE(VulkanManageCore).writeBuf(material_buffer, packed.data(), offset,
+                                          sizeof(packed));
+    info.custom_values.assign(values.begin(), values.end());
+}
+
+void MaterialContainer::updateMaterialValues(GlobalMaterialId material,
+                                             std::span<const std::byte> values) {
+    updateMaterialValues(material, materials.get(material).custom_values_layout, values);
+}
+
+void MaterialContainer::registerReloadableMaterialValuesFile(
+    const watch::AssetKey &key, const std::filesystem::path &path,
+    MaterialSurfaceCatalog surfaces,
+    std::span<const ReloadableMaterialValuesBinding> bindings) {
+    auto &coordinator = GET_MODULE(watch::ReloadService).transactions();
+    if (!material_values_reload_handler) {
+        material_values_reload_handler =
+            std::make_unique<MaterialValuesReloadHandler>(*this, coordinator);
+    }
+    material_values_reload_handler->track(key, path, std::move(surfaces), bindings);
 }
 
 bool MaterialContainer::textureShapeMatches(GlobalTextureId texture,
@@ -675,6 +743,18 @@ bool MaterialContainer::retireTextureReloadPayload(
            texture_reload_handler->retire(std::move(payload), coordinator);
 }
 
+bool MaterialContainer::enqueueMaterialValuesReload(
+    const watch::ReloadRequest &request, watch::ReloadCoordinator &coordinator) {
+    return material_values_reload_handler &&
+           material_values_reload_handler->enqueue(request, coordinator);
+}
+
+bool MaterialContainer::retireMaterialValuesReloadPayload(
+    std::shared_ptr<const void> payload, watch::ReloadCoordinator &coordinator) noexcept {
+    return material_values_reload_handler &&
+           material_values_reload_handler->retire(std::move(payload), coordinator);
+}
+
 std::pair<vk::ImageView, vk::ImageView>
 MaterialContainer::textureViewsForTesting(GlobalTextureId texture) const {
     const auto &resource = textures.get(texture);
@@ -721,6 +801,20 @@ std::vector<uint8_t> MaterialContainer::texturePixelsForTesting(GlobalTextureId 
         },
         true);
     return vkcore.readBuf(staging, bytes);
+}
+
+std::vector<std::byte>
+MaterialContainer::materialGpuValuesForTesting(GlobalMaterialId material) const {
+    const auto &info = materials.get(material);
+    const auto offset = sizeof(MaterialGpuData) * material.value +
+                        offsetof(MaterialGpuData, custom_values);
+    const auto bytes = GET_MODULE(VulkanManageCore).readBuf(
+        material_buffer, offset + materialCustomValueCapacity);
+    std::vector<std::byte> values(info.custom_values_layout.size);
+    if (!values.empty()) {
+        std::memcpy(values.data(), bytes.data() + offset, values.size());
+    }
+    return values;
 }
 
 bool MaterialContainer::isRenderRequired(PassId pass_id, GlobalMaterialId material) const {

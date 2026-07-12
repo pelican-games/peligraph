@@ -37,6 +37,11 @@ ReloadCoordinator::RetireSink ReloadService::retireSink() {
             GET_MODULE(MaterialContainer).retireTextureReloadPayload(payload, transactions_)) {
             return;
         }
+        if (FastModuleContainer::isInitialized<MaterialContainer>() &&
+            GET_MODULE(MaterialContainer).retireMaterialValuesReloadPayload(payload,
+                                                                             transactions_)) {
+            return;
+        }
         // CPU-only registry payloads need no delayed destruction. Future GPU
         // handlers identify their own payload here and forward ownership to
         // DeletionQueue through the same RetireSink.
@@ -44,10 +49,13 @@ ReloadCoordinator::RetireSink ReloadService::retireSink() {
 }
 
 bool ReloadService::applyRequest(const ReloadRequest &request) {
-    if (!FastModuleContainer::isInitialized<MaterialContainer>() ||
-        !GET_MODULE(MaterialContainer).enqueueTextureReload(request, transactions_)) {
+    if (!FastModuleContainer::isInitialized<MaterialContainer>()) {
         return true;
     }
+    auto &materials = GET_MODULE(MaterialContainer);
+    const bool handled = materials.enqueueTextureReload(request, transactions_) ||
+                         materials.enqueueMaterialValuesReload(request, transactions_);
+    if (!handled) return true;
     const auto before = transactions_.status();
     transactions_.applyFrame(retireSink());
     const auto after = transactions_.status();

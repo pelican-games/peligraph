@@ -68,7 +68,15 @@ void writeValue(std::vector<std::byte> &bytes, const Std140MemberLayout &member,
                                  definition.name + "' does not match declared type " +
                                  std::string{surfaceParamTypeName(definition.type)});
     }
+    const auto checkRange = [&](double value) {
+        if ((definition.min && value < *definition.min) ||
+            (definition.max && value > *definition.max)) {
+            throw std::runtime_error("material '" + std::string{material_name} + "' value '" +
+                                     definition.name + "' is outside its declared range");
+        }
+    };
     if (definition.type == SurfaceParamType::integer) {
+        checkRange(static_cast<double>(authored.integer_value));
         if (authored.integer_value < std::numeric_limits<std::int32_t>::min() ||
             authored.integer_value > std::numeric_limits<std::int32_t>::max()) {
             throw std::runtime_error("material '" + std::string{material_name} + "' value '" +
@@ -82,6 +90,7 @@ void writeValue(std::vector<std::byte> &bytes, const Std140MemberLayout &member,
     const auto count = componentCount(definition.type);
     for (std::size_t i = 0; i < count; ++i) {
         auto value = authored.values[i];
+        checkRange(value);
         if (definition.type == SurfaceParamType::color && definition.encoding == "srgb" && i < 3) {
             value = srgbToLinear(value);
         }
