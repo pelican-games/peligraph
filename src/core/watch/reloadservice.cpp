@@ -1,6 +1,7 @@
 #include "reloadservice.hpp"
 
 #include "../loader/pathresolver.hpp"
+#include "../material/materialcontainer.hpp"
 #include "reloadgate.hpp"
 
 #include <nlohmann/json.hpp>
@@ -23,11 +24,38 @@ void ReloadService::setup(const PathResolver &resolver) {
 
 void ReloadService::applyFrame() {
     if (watcher_) {
-        // Real handlers are attached by HR1-T/M and HR2. Until then the HR0
-        // watcher actor only advances its digest baseline.
-        watcher_->applyFrame([](const ReloadRequest &) { return true; });
+        watcher_->applyFrame([this](const ReloadRequest &request) {
+            return applyRequest(request);
+        });
     }
-    transactions_.applyFrame();
+    transactions_.applyFrame(retireSink());
+}
+
+ReloadCoordinator::RetireSink ReloadService::retireSink() {
+    return [this](std::shared_ptr<const void> payload) noexcept {
+        if (FastModuleContainer::isInitialized<MaterialContainer>() &&
+            GET_MODULE(MaterialContainer).retireTextureReloadPayload(payload, transactions_)) {
+            return;
+        }
+        // CPU-only registry payloads need no delayed destruction. Future GPU
+        // handlers identify their own payload here and forward ownership to
+        // DeletionQueue through the same RetireSink.
+    };
+}
+
+bool ReloadService::applyRequest(const ReloadRequest &request) {
+    if (!FastModuleContainer::isInitialized<MaterialContainer>() ||
+        !GET_MODULE(MaterialContainer).enqueueTextureReload(request, transactions_)) {
+        return true;
+    }
+    const auto before = transactions_.status();
+    transactions_.applyFrame(retireSink());
+    const auto after = transactions_.status();
+    return after.failed == before.failed && after.applied > before.applied;
+}
+
+bool ReloadService::applyRequestForTesting(const ReloadRequest &request) {
+    return applyRequest(request);
 }
 
 nlohmann::json ReloadService::statusJson() const {

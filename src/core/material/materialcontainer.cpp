@@ -7,7 +7,9 @@
 #include "../shader/surfacecompiler.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/util.hpp"
+#include "../watch/reloadservice.hpp"
 #include "standardmaterialresource.hpp"
+#include "texturereloadhandler.hpp"
 #include <array>
 #include <cstring>
 #include <sstream>
@@ -233,7 +235,8 @@ GlobalTextureId MaterialContainer::registerTexture(vk::Extent3D extent, const vo
     const bool rgba8 = format == vk::Format::eR8G8B8A8Unorm;
     const std::array mutable_formats{vk::Format::eR8G8B8A8Unorm, vk::Format::eR8G8B8A8Srgb};
     auto image = vkcore.allocImage(extent, format,
-                                   vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
+                                   vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst |
+                                       vk::ImageUsageFlagBits::eTransferSrc,
                                    vma::MemoryUsage::eAutoPreferDevice, {}, VulkanProcessType::graphics,
                                    rgba8 ? std::span<const vk::Format>{mutable_formats}
                                          : std::span<const vk::Format>{});
@@ -300,7 +303,8 @@ void requireCompressedTextureFeatures(vk::PhysicalDevice physical_device, vk::Fo
 
 } // namespace
 
-GlobalTextureId MaterialContainer::registerTexture(const LoadedImage &loaded, std::string_view name) {
+MaterialContainer::InternalTextureResource
+MaterialContainer::createTextureResource(const LoadedImage &loaded, std::string_view name) const {
     if (loaded.pixels.empty() || loaded.levels.empty())
         throw std::runtime_error("Texture '" + std::string{name} + "' has no image levels");
     const auto &vkcore = GET_MODULE(VulkanManageCore);
@@ -317,7 +321,8 @@ GlobalTextureId MaterialContainer::registerTexture(const LoadedImage &loaded, st
                                   : bc7 ? std::span<const vk::Format>{bc7_formats}
                                         : std::span<const vk::Format>{};
     auto image = vkcore.allocImage({loaded.width, loaded.height, 1}, format,
-                                   vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
+                                   vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst |
+                                       vk::ImageUsageFlagBits::eTransferSrc,
                                    vma::MemoryUsage::eAutoPreferDevice, {}, VulkanProcessType::graphics,
                                    compatible, loaded.mipLevels());
     std::vector<vk::BufferImageCopy> regions;
@@ -353,12 +358,28 @@ GlobalTextureId MaterialContainer::registerTexture(const LoadedImage &loaded, st
                                      vk::to_string(srgb_format) + " lacks sampled/linear-filter GPU support");
         srgb_view = createImageView(device, image, srgb_format);
     }
-    return textures.reg({std::move(image), std::move(linear_view), std::move(srgb_view)});
+    return {std::move(image), std::move(linear_view), std::move(srgb_view)};
+}
+
+GlobalTextureId MaterialContainer::registerTexture(const LoadedImage &loaded, std::string_view name) {
+    return textures.reg(createTextureResource(loaded, name));
 }
 
 GlobalTextureId MaterialContainer::registerTextureFile(const std::filesystem::path &path) {
     return registerTexture(loadImageFile(path), path.string());
 }
+
+GlobalTextureId MaterialContainer::registerReloadableTextureFile(
+    const watch::AssetKey &key, const std::filesystem::path &path) {
+    const auto texture = registerTextureFile(path);
+    auto &coordinator = GET_MODULE(watch::ReloadService).transactions();
+    if (!texture_reload_handler) {
+        texture_reload_handler = std::make_unique<TextureReloadHandler>(*this, coordinator);
+    }
+    texture_reload_handler->track(key, path, texture);
+    return texture;
+}
+
 GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     validateMaterialCapabilities(info);
     const auto pipeline_key = makePipelineKey(info);
@@ -385,6 +406,9 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     const auto image_info_count = materialCustomTextureFirstBinding +
         info.custom_textures.size() * (split_custom_samplers ? 2 : 1);
     std::vector<vk::DescriptorImageInfo> image_infos(image_info_count);
+    std::vector<InternalMaterialInfo::TextureBinding> texture_bindings;
+    texture_bindings.reserve(texture_binding_count +
+                             info.custom_textures.size() * (split_custom_samplers ? 2 : 1));
 
     const auto setImageInfo = [&](uint32_t binding, GlobalTextureId texture, vk::Sampler sampler,
                                   bool srgb) {
@@ -395,6 +419,8 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         image_infos[binding].imageView = srgb ? tex.srgb_view.get() : tex.linear_view.get();
         image_infos[binding].imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
         image_infos[binding].sampler = sampler;
+        texture_bindings.push_back({texture, binding,
+                                    vk::DescriptorType::eCombinedImageSampler, sampler, srgb});
     };
 
     setImageInfo(baseColorBinding, info.base_color_texture, linear_sampler.get(), true);
@@ -414,7 +440,14 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
                 i * (split_custom_samplers ? 2 : 1));
             setImageInfo(binding, texture, linear_sampler.get(),
                          custom.role == SurfaceTextureRole::color);
-            if (split_custom_samplers) image_infos[binding + 1] = image_infos[binding];
+            if (split_custom_samplers) {
+                texture_bindings.back().descriptor_type = vk::DescriptorType::eSampledImage;
+                image_infos[binding + 1] = image_infos[binding];
+                texture_bindings.push_back({texture, binding + 1,
+                                            vk::DescriptorType::eSampler,
+                                            linear_sampler.get(),
+                                            custom.role == SurfaceTextureRole::color});
+            }
         } catch (const std::exception &error) {
             throw std::runtime_error("material texture '" + custom.name + "': " + error.what());
         }
@@ -470,6 +503,8 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         .normal_texture = info.normal_texture,
         .emissive_texture = info.emissive_texture,
         .vat = info.vat,
+        .texture_bindings = std::move(texture_bindings),
+        .descriptor_revision = 0,
         .descset = std::move(descset),
     });
     if (material_id.value < 0 || static_cast<size_t>(material_id.value) >= maxMaterials) {
@@ -477,13 +512,215 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     }
     GET_MODULE(VulkanManageCore)
         .writeBuf(material_buffer, &gpu_data, sizeof(MaterialGpuData) * material_id.value, sizeof(gpu_data));
+    for (const auto &binding : materials.get(material_id).texture_bindings) {
+        texture_materials[binding.texture].insert(material_id);
+    }
+    if (texture_reload_handler) texture_reload_handler->materialRegistered(material_id);
     return material_id;
+}
+
+bool MaterialContainer::textureShapeMatches(GlobalTextureId texture,
+                                            const LoadedImage &image) const {
+    const auto &live = textures.get(texture).image;
+    return live.extent == vk::Extent3D{image.width, image.height, 1} &&
+           live.format == vkFormatForLoaded(image.format) &&
+           live.mip_levels == image.mipLevels();
+}
+
+void MaterialContainer::validateTextureReload(GlobalTextureId texture,
+                                              const LoadedImage &image) const {
+    const bool has_srgb_view = image.format == ImagePixelFormat::Rgba8Unorm ||
+                               image.format == ImagePixelFormat::Rgba8Srgb ||
+                               image.format == ImagePixelFormat::Bc7Unorm ||
+                               image.format == ImagePixelFormat::Bc7Srgb;
+    const auto reverse = texture_materials.find(texture);
+    if (reverse == texture_materials.end()) return;
+    for (const auto material_id : reverse->second) {
+        const auto &material = materials.get(material_id);
+        if (!has_srgb_view && std::any_of(material.texture_bindings.begin(),
+                                         material.texture_bindings.end(),
+                                         [texture](const auto &binding) {
+                                             return binding.texture == texture && binding.srgb;
+                                         })) {
+            throw std::runtime_error(
+                "reloaded color texture format does not provide an SRGB view");
+        }
+    }
+}
+
+void MaterialContainer::uploadTextureInPlace(GlobalTextureId texture,
+                                             const LoadedImage &image) const {
+    if (!textureShapeMatches(texture, image)) {
+        throw std::runtime_error("in-place texture upload requires identical extent/format/mips");
+    }
+    // The logical image handle must stay unchanged, so there is no old image
+    // to defer. Drain prior readers before writing the live allocation.
+    GET_MODULE(VulkanManageCore).waitIdle();
+    std::vector<vk::BufferImageCopy> regions;
+    regions.reserve(image.levels.size());
+    for (std::uint32_t mip = 0; mip < image.levels.size(); ++mip) {
+        const auto &level = image.levels[mip];
+        vk::BufferImageCopy copy;
+        copy.bufferOffset = level.offset;
+        copy.imageSubresource = {vk::ImageAspectFlagBits::eColor, mip, 0, 1};
+        copy.imageExtent = vk::Extent3D{level.width, level.height, 1};
+        regions.push_back(copy);
+    }
+    GET_MODULE(VulkanUtils).safeTransferMemoryToImageLevels(
+        textures.get(texture).image, image.pixels.data(), image.pixels.size(), regions,
+        VulkanUtils::ImageTransferInfo{
+            .old_layout = vk::ImageLayout::eShaderReadOnlyOptimal,
+            .new_layout = vk::ImageLayout::eShaderReadOnlyOptimal,
+            .dst_stage = vk::PipelineStageFlagBits::eVertexShader |
+                         vk::PipelineStageFlagBits::eFragmentShader,
+            .dst_access = vk::AccessFlagBits::eShaderRead});
+}
+
+std::vector<MaterialContainer::StagedMaterialDescriptor>
+MaterialContainer::stageTextureRebind(
+    GlobalTextureId texture, const InternalTextureResource &replacement) const {
+    std::vector<StagedMaterialDescriptor> staged;
+    const auto reverse = texture_materials.find(texture);
+    if (reverse == texture_materials.end()) return staged;
+    staged.reserve(reverse->second.size());
+    for (const auto material_id : reverse->second) {
+        const auto &material = materials.get(material_id);
+        vk::DescriptorSetAllocateInfo allocation;
+        allocation.descriptorPool = desc_pool.get();
+        const auto layout = GET_MODULE(PipelineFactory).descriptorSetLayout(
+            material.pipeline, imageDescriptorSetNumber);
+        allocation.setSetLayouts({layout});
+        auto descriptor = std::move(device.allocateDescriptorSetsUnique(allocation).front());
+
+        std::vector<vk::DescriptorImageInfo> infos;
+        std::vector<vk::WriteDescriptorSet> writes;
+        infos.reserve(material.texture_bindings.size());
+        writes.reserve(material.texture_bindings.size() + 1);
+        for (const auto &binding : material.texture_bindings) {
+            const auto &resource = binding.texture == texture
+                                       ? replacement
+                                       : textures.get(binding.texture);
+            if (binding.srgb && !resource.srgb_view) {
+                throw std::runtime_error("reloaded color texture does not provide an SRGB view");
+            }
+            infos.push_back(vk::DescriptorImageInfo{
+                binding.sampler,
+                binding.srgb ? resource.srgb_view.get() : resource.linear_view.get(),
+                vk::ImageLayout::eShaderReadOnlyOptimal});
+            vk::WriteDescriptorSet write;
+            write.dstSet = descriptor.get();
+            write.dstBinding = binding.binding;
+            write.descriptorCount = 1;
+            write.descriptorType = binding.descriptor_type;
+            write.pImageInfo = &infos.back();
+            writes.push_back(write);
+        }
+
+        vk::DescriptorBufferInfo buffer_info{material_buffer.buffer.get(), 0, vk::WholeSize};
+        vk::WriteDescriptorSet buffer_write;
+        buffer_write.dstSet = descriptor.get();
+        buffer_write.dstBinding = materialBufferBinding;
+        buffer_write.descriptorType = vk::DescriptorType::eStorageBuffer;
+        buffer_write.setBufferInfo(buffer_info);
+        writes.push_back(buffer_write);
+        device.updateDescriptorSets(writes, {});
+        staged.push_back({material_id, std::move(descriptor)});
+    }
+    return staged;
+}
+
+MaterialContainer::RetiredTextureResources MaterialContainer::commitTextureRebind(
+    GlobalTextureId texture, InternalTextureResource replacement,
+    std::vector<StagedMaterialDescriptor> descriptors) {
+    const auto reverse = texture_materials.find(texture);
+    const auto expected = reverse == texture_materials.end() ? 0 : reverse->second.size();
+    if (descriptors.size() != expected) {
+        throw std::runtime_error("staged texture descriptor set is incomplete");
+    }
+    std::unordered_set<GlobalMaterialId, GlobalMaterialId::Hash> unique;
+    for (const auto &descriptor : descriptors) {
+        if (!descriptor.descriptor || !unique.insert(descriptor.material).second ||
+            reverse == texture_materials.end() ||
+            !reverse->second.contains(descriptor.material)) {
+            throw std::runtime_error("staged texture descriptor set is invalid");
+        }
+        (void)materials.get(descriptor.material);
+    }
+    auto &slot = textures.get(texture);
+    RetiredTextureResources retired{std::move(slot), {}};
+    retired.descriptors.reserve(descriptors.size());
+    slot = std::move(replacement);
+    for (auto &descriptor : descriptors) {
+        auto &material = materials.get(descriptor.material);
+        retired.descriptors.push_back(std::move(material.descset));
+        material.descset = std::move(descriptor.descriptor);
+        ++material.descriptor_revision;
+    }
+    return retired;
+}
+
+size_t MaterialContainer::referencingMaterialCountForTesting(GlobalTextureId texture) const {
+    const auto found = texture_materials.find(texture);
+    return found == texture_materials.end() ? 0 : found->second.size();
+}
+
+bool MaterialContainer::enqueueTextureReload(const watch::ReloadRequest &request,
+                                             watch::ReloadCoordinator &coordinator) {
+    return texture_reload_handler && texture_reload_handler->enqueue(request, coordinator);
+}
+
+bool MaterialContainer::retireTextureReloadPayload(
+    std::shared_ptr<const void> payload, watch::ReloadCoordinator &coordinator) noexcept {
+    return texture_reload_handler &&
+           texture_reload_handler->retire(std::move(payload), coordinator);
 }
 
 std::pair<vk::ImageView, vk::ImageView>
 MaterialContainer::textureViewsForTesting(GlobalTextureId texture) const {
     const auto &resource = textures.get(texture);
     return {resource.linear_view.get(), resource.srgb_view.get()};
+}
+
+std::vector<uint8_t> MaterialContainer::texturePixelsForTesting(GlobalTextureId texture) const {
+    const auto &resource = textures.get(texture);
+    if (resource.image.format != vk::Format::eR8G8B8A8Unorm &&
+        resource.image.format != vk::Format::eR8G8B8A8Srgb) {
+        throw std::runtime_error("texture test readback only supports RGBA8");
+    }
+    const auto bytes = static_cast<vk::DeviceSize>(resource.image.extent.width) *
+                       resource.image.extent.height * 4;
+    auto &vkcore = GET_MODULE(VulkanManageCore);
+    auto staging = vkcore.allocBuf(bytes, vk::BufferUsageFlagBits::eTransferDst,
+                                   vma::MemoryUsage::eAutoPreferHost,
+                                   vma::AllocationCreateFlagBits::eHostAccessRandom);
+    auto &utils = GET_MODULE(VulkanUtils);
+    utils.executeOneTimeCmd(
+        [&](vk::CommandBuffer command) {
+            utils.changeImageLayoutCmd(
+                command, resource.image, vk::ImageLayout::eShaderReadOnlyOptimal,
+                vk::ImageLayout::eTransferSrcOptimal,
+                {.src_stage = vk::PipelineStageFlagBits::eVertexShader |
+                              vk::PipelineStageFlagBits::eFragmentShader,
+                 .dst_stage = vk::PipelineStageFlagBits::eTransfer,
+                 .src_access = vk::AccessFlagBits::eShaderRead,
+                 .dst_access = vk::AccessFlagBits::eTransferRead});
+            vk::BufferImageCopy copy;
+            copy.imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+            copy.imageExtent = resource.image.extent;
+            command.copyImageToBuffer(resource.image.image.get(),
+                                      vk::ImageLayout::eTransferSrcOptimal,
+                                      staging.buffer.get(), copy);
+            utils.changeImageLayoutCmd(
+                command, resource.image, vk::ImageLayout::eTransferSrcOptimal,
+                vk::ImageLayout::eShaderReadOnlyOptimal,
+                {.src_stage = vk::PipelineStageFlagBits::eTransfer,
+                 .dst_stage = vk::PipelineStageFlagBits::eVertexShader |
+                              vk::PipelineStageFlagBits::eFragmentShader,
+                 .src_access = vk::AccessFlagBits::eTransferRead,
+                 .dst_access = vk::AccessFlagBits::eShaderRead});
+        },
+        true);
+    return vkcore.readBuf(staging, bytes);
 }
 
 bool MaterialContainer::isRenderRequired(PassId pass_id, GlobalMaterialId material) const {
