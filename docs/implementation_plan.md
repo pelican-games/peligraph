@@ -2240,6 +2240,43 @@ normative semantics 文書が存在し、その header を二世代 fixture が�
 6. 受け入れ = 新 fixture + 既存全テスト + golden 全維持(SKIP 0・
    velocity golden が意味的に変わる場合は理由記録付き再基準化)+ player
 
+### WP96: アセット HR0 — FileWatcher/Reconcile 基盤(GPU なし)
+
+参照: **`design_asset_hot_reload.md` v2.1 §0〜2・§6・§7 が正**。受入条件 =
+再レビュー `docs/design_reviews/2026-07-12_hr_v2_2d_v1_review_codex.md` の
+**HR-C1(digest 三状態)・HR-C3(polling reconcile)・HR-C4-1/2(status
+所有と gate adapter)を逐語で満たすこと**。依存: なし(resource handler は
+fake のみ — HR1 以降が実差し替え)。見積: 大。
+排他: `src/core/watch/`(新設)+ `ContentDigest` utility 新設。
+既存 `ShaderLibrary::reloadModifiedSources` の**動作は変更しない**
+(gate adapter 化のみ — 時刻 poll の削除は HR2-S)。
+
+1. **Win32 watcher state machine**(設計 §1): FILE_FLAG_OVERLAPPED・
+   64KiB 以下 buffer・即 re-arm・overflow(0 bytes /
+   ERROR_NOTIFY_ENUM_DIR)→ subtree inventory rescan・rename OLD/NEW
+   非 pairing・停止手順(CancelIoEx → completion 回収 → 解放 → close →
+   join)・store 重複 dedupe・reparse escape 拒否
+2. **ContentDigest utility**(§2-1): streaming SHA-256(picosha2)・
+   canonical AssetKey・安定 read(size/mtime/identity 前後比較 + retry)。
+   **§2-1a の三状態(observed/live/pending + self-write token)を
+   HR-C1 逐語で**
+3. **gate epoch + reconcile**(§2-3): 中央 gate(リプレイ/strict/rpc)
+   購読・disable/resume の arm 先行 barrier・
+   `disabled|reconciling|watching|polling|degraded` 状態。
+   **polling fallback も HR-C3 逐語の同状態機械**(fake clock fixture)
+4. **ReloadQueue**: AssetKey 分類・同一リソース合流・fake handler での
+   frame 境界 apply(実 handler なし)
+5. **get_status.reload の watcher 部分**(state/epoch/watcher error)を
+   HR0 が所有(HR-C4-1)。`EngineLaunchConfig::shader_hot_reload` を
+   中央 gate の adapter 化(HR-C4-2 前半 — 二重適用なしを fixture で)
+6. **§6 の非 GPU integration suite 全部**: 実 FS(modify/create/delete/
+   atomic-save rename/Unicode/長パス)・synthetic overflow 注入→rescan・
+   停止中 CancelIoEx(UAF なし)・resume race(最終 hash が一度だけ)・
+   polling 降格/復帰・dedupe/escape・self-write 4 ケース(HR-C1-4)
+7. 受け入れ = 上記 suite 全 green + 既存全テスト + golden 全維持
+   (SKIP 0)+ player。CI 不安定を理由に実 FS テストを削らない
+   (タイムアウト余裕と リトライは可・削除は不可)
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの
