@@ -3,6 +3,7 @@ target_sources(pelican_core PRIVATE
     engineresources.cpp
     fileio.cpp
     imageloader.cpp
+    ktx2.cpp
     pathresolver.cpp
     projectsrc.cpp
     basicconfig.cpp

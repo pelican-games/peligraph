@@ -10,12 +10,15 @@
 #include "material.hpp"
 #include <glm/glm.hpp>
 #include <map>
+#include <filesystem>
 #include <optional>
 #include <span>
 #include <utility>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
+
+struct LoadedImage;
 
 struct PushConstantStruct {
     glm::mat4 mvp;
@@ -65,8 +68,11 @@ DECLARE_MODULE(MaterialContainer) {
     GlobalTextureId registerTexture(vk::Extent3D extent, const void *data);
     GlobalTextureId registerTexture(vk::Extent3D extent, const void *data, vk::Format format,
                                     vk::DeviceSize bytes_num);
+    GlobalTextureId registerTexture(const LoadedImage &image, std::string_view name);
+    GlobalTextureId registerTextureFile(const std::filesystem::path &path);
     GlobalMaterialId registerMaterial(MaterialInfo info);
     std::pair<vk::ImageView, vk::ImageView> textureViewsForTesting(GlobalTextureId texture) const;
+    uint32_t textureMipLevelsForTesting(GlobalTextureId texture) const { return textures.get(texture).image.mip_levels; }
     size_t textureCountForTesting() const { return textures.size(); }
     size_t materialCountForTesting() const { return materials.size(); }
 

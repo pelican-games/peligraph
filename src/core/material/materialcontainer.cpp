@@ -1,4 +1,5 @@
 #include "materialcontainer.hpp"
+#include "../loader/imageloader.hpp"
 #include "../renderingpass/materialpassattachments.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../shader/pelican_sets.hpp"
@@ -186,7 +187,7 @@ static vk::UniqueSampler createSampler(vk::Device device, vk::Filter filter) {
     create_info.compareEnable = false;
     create_info.compareOp = vk::CompareOp::eAlways;
     create_info.minLod = 0.0f;
-    create_info.maxLod = 0.0f;
+    create_info.maxLod = VK_LOD_CLAMP_NONE;
     create_info.borderColor = vk::BorderColor::eIntOpaqueBlack;
     create_info.unnormalizedCoordinates = false;
     return device.createSamplerUnique(create_info);
@@ -203,7 +204,7 @@ static vk::UniqueImageView createImageView(vk::Device device, const ImageWrapper
     create_info.components.a = vk::ComponentSwizzle::eA;
     create_info.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
     create_info.subresourceRange.baseMipLevel = 0;
-    create_info.subresourceRange.levelCount = 1;
+    create_info.subresourceRange.levelCount = image.mip_levels;
     create_info.subresourceRange.baseArrayLayer = 0;
     create_info.subresourceRange.layerCount = 1;
 
@@ -266,6 +267,97 @@ GlobalTextureId MaterialContainer::registerTexture(vk::Extent3D extent, const vo
         .linear_view = std::move(linear_view),
         .srgb_view = std::move(srgb_view),
     });
+}
+
+namespace {
+
+vk::Format vkFormatForLoaded(ImagePixelFormat format) {
+    switch (format) {
+    case ImagePixelFormat::Rgba8Unorm: return vk::Format::eR8G8B8A8Unorm;
+    case ImagePixelFormat::Rgba8Srgb: return vk::Format::eR8G8B8A8Srgb;
+    case ImagePixelFormat::Rgba16Sfloat: return vk::Format::eR16G16B16A16Sfloat;
+    case ImagePixelFormat::Rgba32Sfloat: return vk::Format::eR32G32B32A32Sfloat;
+    case ImagePixelFormat::Bc5Unorm: return vk::Format::eBc5UnormBlock;
+    case ImagePixelFormat::Bc7Unorm: return vk::Format::eBc7UnormBlock;
+    case ImagePixelFormat::Bc7Srgb: return vk::Format::eBc7SrgbBlock;
+    }
+    throw std::runtime_error("Unknown loaded image format");
+}
+
+void requireCompressedTextureFeatures(vk::PhysicalDevice physical_device, vk::Format format,
+                                      std::string_view name) {
+    if (format != vk::Format::eBc5UnormBlock && format != vk::Format::eBc7UnormBlock &&
+        format != vk::Format::eBc7SrgbBlock) return;
+    const auto features = physical_device.getFormatProperties(format).optimalTilingFeatures;
+    const auto required = vk::FormatFeatureFlagBits::eSampledImage |
+                          vk::FormatFeatureFlagBits::eSampledImageFilterLinear |
+                          vk::FormatFeatureFlagBits::eTransferDst;
+    if ((features & required) != required)
+        throw std::runtime_error("KTX2 texture '" + std::string{name} + "' format " +
+                                 vk::to_string(format) +
+                                 " lacks sampled/linear-filter/transfer-dst GPU support");
+}
+
+} // namespace
+
+GlobalTextureId MaterialContainer::registerTexture(const LoadedImage &loaded, std::string_view name) {
+    if (loaded.pixels.empty() || loaded.levels.empty())
+        throw std::runtime_error("Texture '" + std::string{name} + "' has no image levels");
+    const auto &vkcore = GET_MODULE(VulkanManageCore);
+    const auto format = vkFormatForLoaded(loaded.format);
+    requireCompressedTextureFeatures(vkcore.getPhysDevice(), format, name);
+
+    const bool rgba8 = loaded.format == ImagePixelFormat::Rgba8Unorm ||
+                       loaded.format == ImagePixelFormat::Rgba8Srgb;
+    const bool bc7 = loaded.format == ImagePixelFormat::Bc7Unorm ||
+                     loaded.format == ImagePixelFormat::Bc7Srgb;
+    const std::array rgba_formats{vk::Format::eR8G8B8A8Unorm, vk::Format::eR8G8B8A8Srgb};
+    const std::array bc7_formats{vk::Format::eBc7UnormBlock, vk::Format::eBc7SrgbBlock};
+    const auto compatible = rgba8 ? std::span<const vk::Format>{rgba_formats}
+                                  : bc7 ? std::span<const vk::Format>{bc7_formats}
+                                        : std::span<const vk::Format>{};
+    auto image = vkcore.allocImage({loaded.width, loaded.height, 1}, format,
+                                   vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
+                                   vma::MemoryUsage::eAutoPreferDevice, {}, VulkanProcessType::graphics,
+                                   compatible, loaded.mipLevels());
+    std::vector<vk::BufferImageCopy> regions;
+    regions.reserve(loaded.levels.size());
+    for (std::uint32_t mip = 0; mip < loaded.levels.size(); ++mip) {
+        const auto &level = loaded.levels[mip];
+        vk::BufferImageCopy copy;
+        copy.bufferOffset = level.offset;
+        copy.imageSubresource = {vk::ImageAspectFlagBits::eColor, mip, 0, 1};
+        copy.imageExtent = vk::Extent3D{level.width, level.height, 1};
+        regions.push_back(copy);
+    }
+    GET_MODULE(VulkanUtils).safeTransferMemoryToImageLevels(
+        image, loaded.pixels.data(), loaded.pixels.size(), regions,
+        VulkanUtils::ImageTransferInfo{.old_layout = vk::ImageLayout::eUndefined,
+                                       .new_layout = vk::ImageLayout::eShaderReadOnlyOptimal,
+                                       .dst_stage = vk::PipelineStageFlagBits::eVertexShader |
+                                                    vk::PipelineStageFlagBits::eFragmentShader,
+                                       .dst_access = vk::AccessFlagBits::eShaderRead});
+
+    const auto linear_format = rgba8 ? vk::Format::eR8G8B8A8Unorm
+                                     : bc7 ? vk::Format::eBc7UnormBlock : format;
+    requireCompressedTextureFeatures(vkcore.getPhysDevice(), linear_format, name);
+    auto linear_view = createImageView(device, image, linear_format);
+    vk::UniqueImageView srgb_view;
+    if (rgba8 || bc7) {
+        const auto srgb_format = rgba8 ? vk::Format::eR8G8B8A8Srgb : vk::Format::eBc7SrgbBlock;
+        const auto features = vkcore.getPhysDevice().getFormatProperties(srgb_format).optimalTilingFeatures;
+        const auto required = vk::FormatFeatureFlagBits::eSampledImage |
+                              vk::FormatFeatureFlagBits::eSampledImageFilterLinear;
+        if ((features & required) != required)
+            throw std::runtime_error("KTX2 texture '" + std::string{name} + "' SRGB view " +
+                                     vk::to_string(srgb_format) + " lacks sampled/linear-filter GPU support");
+        srgb_view = createImageView(device, image, srgb_format);
+    }
+    return textures.reg({std::move(image), std::move(linear_view), std::move(srgb_view)});
+}
+
+GlobalTextureId MaterialContainer::registerTextureFile(const std::filesystem::path &path) {
+    return registerTexture(loadImageFile(path), path.string());
 }
 GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     validateMaterialCapabilities(info);

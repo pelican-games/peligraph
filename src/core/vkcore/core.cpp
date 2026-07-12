@@ -351,12 +351,13 @@ std::vector<uint8_t> VulkanManageCore::readBuf(const BufferWrapper &src, vk::Dev
 ImageWrapper VulkanManageCore::allocImage(vk::Extent3D extent, vk::Format format, vk::ImageUsageFlags usage,
                                           vma::MemoryUsage mem_usage, vma::AllocationCreateFlags alloc_flags,
                                           VulkanProcessType type,
-                                          std::span<const vk::Format> compatible_view_formats) const {
+                                          std::span<const vk::Format> compatible_view_formats,
+                                          uint32_t mip_levels) const {
     vk::ImageCreateInfo create_info;
     create_info.imageType = vk::ImageType::e2D;
     create_info.format = format;
     create_info.extent = extent;
-    create_info.mipLevels = 1;
+    create_info.mipLevels = mip_levels;
     create_info.arrayLayers = 1;
     create_info.samples = vk::SampleCountFlagBits::e1;
     create_info.tiling = vk::ImageTiling::eOptimal;
@@ -389,6 +390,7 @@ ImageWrapper VulkanManageCore::allocImage(vk::Extent3D extent, vk::Format format
     return ImageWrapper{
         .extent = extent,
         .format = format,
+        .mip_levels = mip_levels,
         .image = std::move(image),
         .allocation = std::move(allocation),
     };

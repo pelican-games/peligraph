@@ -61,7 +61,8 @@ DECLARE_MODULE(VulkanManageCore) {
     ImageWrapper allocImage(vk::Extent3D extent, vk::Format format, vk::ImageUsageFlags usage,
                             vma::MemoryUsage mem_usage, vma::AllocationCreateFlags alloc_flags,
                             VulkanProcessType type = VulkanProcessType::graphics,
-                            std::span<const vk::Format> compatible_view_formats = {}) const;
+                            std::span<const vk::Format> compatible_view_formats = {},
+                            uint32_t mip_levels = 1) const;
     void writeImage(const ImageWrapper &dst, const void *src, vk::DeviceSize bytes_num) const;
 };
 

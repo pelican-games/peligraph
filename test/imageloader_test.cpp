@@ -5,10 +5,12 @@
 #include <tinyexr.h>
 
 #include <array>
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
@@ -125,6 +127,79 @@ T readComponent(const LoadedImage &image, size_t component_index) {
     return value;
 }
 
+template <class T> void appendLe(std::vector<std::byte> &bytes, T value) {
+    const auto old_size = bytes.size();
+    bytes.resize(old_size + sizeof(T));
+    std::memcpy(bytes.data() + old_size, &value, sizeof(T));
+}
+
+void writeLe32(std::vector<std::byte> &bytes, size_t offset, std::uint32_t value) {
+    std::memcpy(bytes.data() + offset, &value, sizeof(value));
+}
+
+void writeLe64(std::vector<std::byte> &bytes, size_t offset, std::uint64_t value) {
+    std::memcpy(bytes.data() + offset, &value, sizeof(value));
+}
+
+std::vector<std::byte> makeRgba8Ktx2(std::uint32_t vk_format = 43, std::uint32_t level_count = 2,
+                                     std::uint32_t supercompression = 0) {
+    static constexpr std::array<std::uint8_t, 12> id{
+        0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A,
+    };
+    std::vector<std::byte> bytes;
+    for (auto value : id) bytes.push_back(static_cast<std::byte>(value));
+    appendLe(bytes, vk_format);
+    appendLe(bytes, std::uint32_t{1}); // typeSize
+    appendLe(bytes, std::uint32_t{2});
+    appendLe(bytes, std::uint32_t{2});
+    appendLe(bytes, std::uint32_t{0}); // depth
+    appendLe(bytes, std::uint32_t{0}); // layers
+    appendLe(bytes, std::uint32_t{1}); // faces
+    appendLe(bytes, level_count);
+    appendLe(bytes, supercompression);
+    const auto dfd_offset = std::uint32_t{80 + level_count * 24};
+    appendLe(bytes, dfd_offset);
+    appendLe(bytes, std::uint32_t{92});
+    appendLe(bytes, std::uint32_t{0}); // KVD
+    appendLe(bytes, std::uint32_t{0});
+    appendLe(bytes, std::uint64_t{0}); // SGD
+    appendLe(bytes, std::uint64_t{0});
+    bytes.resize(dfd_offset);
+    const auto data_offset = std::uint64_t{dfd_offset + 92};
+    if (level_count >= 1) {
+        writeLe64(bytes, 80, data_offset + (level_count >= 2 ? 4 : 0));
+        writeLe64(bytes, 88, 16);
+        writeLe64(bytes, 96, 16);
+    }
+    if (level_count >= 2) {
+        writeLe64(bytes, 104, data_offset);
+        writeLe64(bytes, 112, 4);
+        writeLe64(bytes, 120, 4);
+    }
+    appendLe(bytes, std::uint32_t{92}); // DFD totalSize
+    appendLe(bytes, std::uint32_t{0});  // Khronos vendor/basic descriptor
+    appendLe(bytes, std::uint16_t{2});  // descriptor version
+    appendLe(bytes, std::uint16_t{88});
+    bytes.push_back(std::byte{1}); // RGBSDA model
+    bytes.push_back(std::byte{1}); // BT.709 primaries
+    bytes.push_back(vk_format == 43 ? std::byte{2} : std::byte{1});
+    bytes.push_back(std::byte{0});
+    bytes.insert(bytes.end(), {std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}});
+    appendLe(bytes, std::uint32_t{4}); // bytesPlane[0..3]
+    appendLe(bytes, std::uint32_t{0}); // bytesPlane[4..7]
+    for (std::uint16_t channel = 0; channel < 4; ++channel) {
+        appendLe(bytes, static_cast<std::uint16_t>(channel * 8));
+        bytes.push_back(std::byte{7});
+        bytes.push_back(static_cast<std::byte>(channel == 3 ? 15 : channel));
+        appendLe(bytes, std::uint32_t{0});
+        appendLe(bytes, std::uint32_t{0});
+        appendLe(bytes, std::uint32_t{255});
+    }
+    if (level_count >= 2) bytes.insert(bytes.end(), 4, std::byte{188});
+    bytes.insert(bytes.end(), 16, std::byte{188});
+    return bytes;
+}
+
 } // namespace
 
 TEST_CASE("image loader keeps PNG path on RGBA8 stb decode", "[imageloader]") {
@@ -201,6 +276,54 @@ TEST_CASE("image loader rejects unsupported EXR pixel type with useful error", "
         REQUIRE(contains(error.what(), "unsupported EXR pixel type"));
         REQUIRE(contains(error.what(), "half/float"));
     }
+}
+
+TEST_CASE("KTX2 test writer round-trips complete RGBA8 mip levels and sRGB known value", "[imageloader][ktx2]") {
+    const auto bytes = makeRgba8Ktx2();
+    const auto again = makeRgba8Ktx2();
+    REQUIRE(std::equal(bytes.begin(), bytes.end(), again.begin(), again.end()));
+
+    const auto image = loadImageMemory(bytes, "known-188.ktx2");
+    REQUIRE(image.width == 2);
+    REQUIRE(image.height == 2);
+    REQUIRE(image.format == ImagePixelFormat::Rgba8Srgb);
+    REQUIRE(image.mipLevels() == 2);
+    REQUIRE(image.levels[0].size == 16);
+    REQUIRE(image.levels[1].size == 4);
+    REQUIRE(static_cast<unsigned>(image.pixels[0]) == 188);
+    const auto encoded = 188.0 / 255.0;
+    const auto linear = std::pow((encoded + 0.055) / 1.055, 2.4);
+    REQUIRE(linear == Catch::Approx(0.502886).margin(0.00001));
+}
+
+TEST_CASE("KTX2 parser rejects subset violations with the texture name", "[imageloader][ktx2]") {
+    const auto expect_error = [](const std::vector<std::byte> &bytes, std::string_view detail) {
+        try {
+            (void)loadImageMemory(bytes, "bad_named.ktx2");
+            FAIL("invalid KTX2 should be rejected");
+        } catch (const std::runtime_error &error) {
+            REQUIRE(contains(error.what(), "bad_named.ktx2"));
+            REQUIRE(contains(error.what(), detail));
+        }
+    };
+    expect_error(makeRgba8Ktx2(43, 2, 2), "supercompression");
+    expect_error(makeRgba8Ktx2(43, 1), "incomplete mip chain");
+    expect_error(makeRgba8Ktx2(147, 2), "outside the WP92");
+}
+
+TEST_CASE("committed BC7 and BC5 KTX2 fixtures retain compressed blocks", "[imageloader][ktx2]") {
+    const auto root = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" / "fixtures" / "ktx2";
+    const auto bc7 = loadImageFile(root / "bc7_srgb_1x1.ktx2");
+    REQUIRE(bc7.format == ImagePixelFormat::Bc7Srgb);
+    REQUIRE(bc7.isBlockCompressed());
+    REQUIRE(bc7.mipLevels() == 1);
+    REQUIRE(bc7.pixels.size() == 16);
+
+    const auto bc5 = loadImageFile(root / "bc5_unorm_1x1.ktx2");
+    REQUIRE(bc5.format == ImagePixelFormat::Bc5Unorm);
+    REQUIRE(bc5.isBlockCompressed());
+    REQUIRE(bc5.mipLevels() == 1);
+    REQUIRE(bc5.pixels.size() == 16);
 }
 
 } // namespace Pelican

@@ -156,6 +156,9 @@ if(PELICAN_RUNTIME_SHADER_COMPILER)
 endif()
 if(PELICAN_WITH_EXR)
 pelican_define_test(imageloader_test pelican_core tinyexr)
+target_compile_definitions(pelican_test_imageloader_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
 endif()
 pelican_define_test(inputstate_test pelican_core)
 pelican_define_test(inputsequence_test pelican_core)

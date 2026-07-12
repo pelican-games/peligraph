@@ -1,4 +1,5 @@
 #include "imageloader.hpp"
+#include "ktx2.hpp"
 
 #include "../build_features.hpp"
 
@@ -7,6 +8,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <fstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -41,6 +43,45 @@ std::string lowerExtension(const std::filesystem::path &path) {
 
 bool isExrPath(const std::filesystem::path &path) {
     return lowerExtension(path) == ".exr";
+}
+
+bool isKtx2Path(const std::filesystem::path &path) {
+    return lowerExtension(path) == ".ktx2";
+}
+
+ImagePixelFormat imageFormat(Ktx2Format format) {
+    switch (format) {
+    case Ktx2Format::Rgba8Unorm: return ImagePixelFormat::Rgba8Unorm;
+    case Ktx2Format::Rgba8Srgb: return ImagePixelFormat::Rgba8Srgb;
+    case Ktx2Format::Bc5Unorm: return ImagePixelFormat::Bc5Unorm;
+    case Ktx2Format::Bc7Unorm: return ImagePixelFormat::Bc7Unorm;
+    case Ktx2Format::Bc7Srgb: return ImagePixelFormat::Bc7Srgb;
+    }
+    throw std::runtime_error("Unknown KTX2 pixel format");
+}
+
+LoadedImage loadedKtx2(Ktx2Image parsed) {
+    LoadedImage loaded;
+    loaded.width = parsed.width;
+    loaded.height = parsed.height;
+    loaded.format = imageFormat(parsed.format);
+    loaded.pixels = std::move(parsed.payload);
+    loaded.levels.reserve(parsed.levels.size());
+    for (const auto &level : parsed.levels)
+        loaded.levels.push_back({level.offset, level.size, level.width, level.height});
+    return loaded;
+}
+
+LoadedImage loadKtx2File(const std::filesystem::path &path) {
+    std::ifstream file{path, std::ios::binary | std::ios::ate};
+    if (!file) throw std::runtime_error("Failed to open KTX2 texture '" + path.string() + "'");
+    const auto end = file.tellg();
+    if (end < 0) throw std::runtime_error("Failed to size KTX2 texture '" + path.string() + "'");
+    std::vector<std::byte> bytes(static_cast<size_t>(end));
+    file.seekg(0);
+    if (!bytes.empty() && !file.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size())))
+        throw std::runtime_error("Failed to read KTX2 texture '" + path.string() + "'");
+    return loadedKtx2(parseKtx2(bytes, path.string()));
 }
 
 size_t checkedPixelCount(int width, int height, const std::filesystem::path &path) {
@@ -211,6 +252,7 @@ LoadedImage packHalfExr(const EXRHeader &header, const EXRImage &image, const st
         }
     }
 
+    loaded.levels.push_back({0, loaded.pixels.size(), loaded.width, loaded.height});
     return loaded;
 }
 
@@ -246,6 +288,7 @@ LoadedImage packFloatExr(const EXRHeader &header, const EXRImage &image, const s
         }
     }
 
+    loaded.levels.push_back({0, loaded.pixels.size(), loaded.width, loaded.height});
     return loaded;
 }
 
@@ -306,6 +349,7 @@ LoadedImage packStbPixels(std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> p
     loaded.format = ImagePixelFormat::Rgba8Unorm;
     loaded.pixels.resize(pixel_count * bytes_per_pixel);
     std::memcpy(loaded.pixels.data(), pixels.get(), loaded.pixels.size());
+    loaded.levels.push_back({0, loaded.pixels.size(), loaded.width, loaded.height});
     return loaded;
 }
 
@@ -326,16 +370,27 @@ LoadedImage loadStbImageFile(const std::filesystem::path &path) {
 size_t LoadedImage::bytesPerPixel() const {
     switch (format) {
     case ImagePixelFormat::Rgba8Unorm:
+    case ImagePixelFormat::Rgba8Srgb:
         return 4;
     case ImagePixelFormat::Rgba16Sfloat:
         return 8;
     case ImagePixelFormat::Rgba32Sfloat:
         return 16;
+    case ImagePixelFormat::Bc5Unorm:
+    case ImagePixelFormat::Bc7Unorm:
+    case ImagePixelFormat::Bc7Srgb:
+        throw std::runtime_error("Block-compressed images do not have a fixed bytes-per-pixel value");
     }
     throw std::runtime_error("Unknown image pixel format");
 }
 
+bool LoadedImage::isBlockCompressed() const noexcept {
+    return format == ImagePixelFormat::Bc5Unorm || format == ImagePixelFormat::Bc7Unorm ||
+           format == ImagePixelFormat::Bc7Srgb;
+}
+
 LoadedImage loadImageFile(const std::filesystem::path &path) {
+    if (isKtx2Path(path)) return loadKtx2File(path);
     if (isExrPath(path)) {
 #if PELICAN_WITH_EXR
         return loadExrFile(path);
@@ -353,6 +408,9 @@ LoadedImage loadImageMemory(std::span<const std::byte> data, std::string_view na
     if (data.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
         throw std::runtime_error("Image memory is too large: " + std::string{name});
     }
+
+    const auto name_path = std::filesystem::path{std::string{name}};
+    if (isKtx2Path(name_path)) return loadedKtx2(parseKtx2(data, name));
 
     int width = 0;
     int height = 0;
