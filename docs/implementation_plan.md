@@ -2166,6 +2166,80 @@ InputEvent 列 + フレーム境界マーカー、`pelican.input_seq`)+
    全維持(SKIP 0・新規は件数 REQUIRE 更新)+ 全テスト + player
    (ボタンを rpc click して反応するデモのスクリーンショット)
 
+### WP94: アニメ A0 — 公開契約の凍結(CA0-Spec + CA0-Probe)
+
+参照: **`design_animation_graph.md` v2.1 §1・§7 が正**。受入条件 =
+敵対レビュー `docs/design_reviews/2026-07-12_anim_v2_hotreload_review_codex.md`
+**§4.1(CA0-ABI)・§4.2(CA0-Interval)を逐語で満たすこと**。
+依存: WP38(済)・WP90(G2 ABI version gate — DLL 境界の先行例)。
+見積: 特大。排他: `src/core/animation/`(新設)+ public header
+(`src/core/userpublic/animation/` 等の新設)。既存 WP38 経路の
+挙動変更禁止(A1 の仕事)。
+
+A0 の性格 = 「fixture で契約を決める」のではなく「**公開契約を fixture で
+検証する**」。完了条件は fixture green だけでなく、**凍結 public header +
+normative semantics 文書が存在し、その header を二世代 fixture が検査する**
+こと(レビュー §4.1 末尾)。
+
+1. **CA0-Spec(実装なしで凍結可能な成果物)**:
+   - public header: 固定幅 opaque handle(invalid 値・generation 込み)、
+     `struct_size` / `version` / reserved-zero 先頭固定の in/out 構造体、
+     status/error enum
+   - Rig/PoseLayout/SkinBinding/Clip/Cursor の identity と exact
+     compatibility・stale・destroy/unload 規則の normative 文書
+     (SkinBinding 自身の identity/generation と mesh/skin identity を
+     含む — Pose generation 検査での代用禁止。レビュー §1 #2)
+   - frame lifetime・read/write alias・thread ownership・failure
+     atomicity・phase 登録/tie-break・commit revision の規範
+   - **Pose バッファの実装形(scratch arena vs opaque handle)をここで
+     決定**(§8 未決 1 の解消)
+   - **commit と temporal history の契約 = 設計書 §1-5 の 6 項を
+     normative に含める**(N/N-1 palette・publishAnimationFrame /
+     advanceTemporalHistoryAfterRender の分離・reset 規則)
+   - blend 記述に additive space(local vs model/mesh)区別と
+     event/marker 抑制 policy を含める(レビュー §1 #6)
+   - Clip metadata の列挙(source rig・time range・wrap mode・channel
+     inventory・annotation identity・sampling context/cursor generation)
+   - old client/new engine・new client/old engine の descriptor
+     negotiation 規則
+2. **CA0-Probe(最小実装 + fixture)**:
+   - arena/opaque buffer: acquire → writable view → frame reset、
+     64-byte alignment、二体 parallel、DLL reload/stale generation
+   - N-way quaternion reference algorithm(入力順・sign 正準化・
+     正規化・zero weight・許容誤差)を実装し golden 化
+   - wrap/reverse/multi-loop interval advance(§4.2 の cursor 原子性・
+     `capacity/count` 二段式・`dt` vs seek 区別・同時刻 `(source,
+     ordinal)` 順を含む)、local-to-model、commit 一往復
+   - **外部 game DLL を旧/新 header でビルドし、`sizeof/offsetof/
+     struct_size` と unknown tail 無視を検査する二世代 fixture**
+3. 受け入れ = CA0-Spec 文書 + 凍結 header + CA0-Probe fixture 全 green +
+   既存全テスト + golden 全維持(SKIP 0)+ player
+
+### WP95: skinned velocity の previous palette(WP88 欠陥修正)
+
+参照: 敵対レビュー同上 **§5 が正**(v2 レビューで発見された現行欠陥 —
+アニメ基盤と独立に修正可能)。依存: WP88(済)。見積: 小〜中。
+排他: `src/core/renderer/polygoninstancecontainer.*` /
+`src/core/resources/velocity_skinned.vert` / renderer の velocity 配線。
+
+現象: `velocity_skinned.vert` が current skin matrix で作った同一
+`local_position` を current/previous 両方に使うため、**actor/camera 静止で
+骨だけが動く場合 deformation velocity = 0**。
+
+1. `PolygonInstanceContainer` に previous skin palette バッファを追加
+   (current と同 layout・同 instance identity)
+2. velocity pass の skinned 経路は current palette / previous palette で
+   それぞれ `local_position` を計算(`pelican_skin_matrix` の previous
+   variant)
+3. history 前進は render 終端の既存 advance 位置で一度だけ(commit 側は
+   current を publish するだけ — 設計書 §1-5 の 2・3)
+4. reset 規則: 初回・resize・`set_time`・instance place/remove 時は
+   previous=current(zero velocity)
+5. fixture: 骨のみ運動(モデル行列不変)で velocity が非ゼロ、
+   `set_time` 直後は zero velocity。既存 velocity golden 維持
+6. 受け入れ = 新 fixture + 既存全テスト + golden 全維持(SKIP 0・
+   velocity golden が意味的に変わる場合は理由記録付き再基準化)+ player
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの
@@ -2194,12 +2268,12 @@ InputEvent 列 + フレーム境界マーカー、`pelican.input_seq`)+
 - **devstudio(Qt)**: 2026-07-07 決定 — `design_devstudio_direction.md`。D1(埋め込みビューポート + アウトライナ)→ D2(ピッキング/ギズモ/編集)→ D3(保存 round-trip/undo)。前提 = 解釈レイヤのターゲット分離(WP44 済)。**D0 追加(2026-07-08 ユーザー決定): エディタ特権の禁止 — 標準 UI もツール。編集系 rpc を D2 の前提として先に定義。WebSocket 展開の優先度引き上げ。`pelican_rpc.py`(薄い rpc クライアント)を小 WP 候補に**
 - **カメラシステム**: 2026-07-07 方向決定 — **glTF カメラと同等以上**。glTF の perspective/orthographic を損失なく読み書き(拡張は extras に載せ round-trip 可能に)し、その上にコントローラ(orbit/follow/fly)・カットとブレンド・transform_seq v2 カメラトラックとの統合を積む。設計文書はコントローラ API(GameContext との接続)込みで起草する
 - **2D ゲーム機能 + 2D⇔3D 相互変換**: 2026-07-07 方向決定 — 2D ゲーム向け機能(スプライト・直交投影・2D 物理の要否)は必要。UI システムとは**描画基盤(2D パス)を共有し上物を分離**する方針を提案(UI = レイアウト/イベント、2D ゲーム = スプライト/カメラ/物理で要件が異なるため)。**2D⇔3D 相互変換**(2D シーンの 3D 空間配置・3D シーンの 2D 投影編集)は設計文書のスコープ課題として最初に定義すること
-- **アニメーショングラフ**: 2026-07-07 方向決定 — WP38(クリップ再生)の後続。ブレンド・ステートマシンを schema+version 付きアセットとして。WP38 設計時に v1 の器(クリップ参照形式)だけグラフ拡張可能な形にしておく
+- **アニメーショングラフ**: `design_animation_graph.md` **v2.1**(2026-07-12 — ultra リサーチ + 敵対レビューで条件付き承認)。実装順 A0(=WP94 登録済み)→ A1 → A1.5 → A2(受入条件 = レビュー §4.3/§4.4 逐語)→ VRM 5 WP(VRM-S0/S1・VRMA-C0/R0/I0)。A2 以降は A0 の着地を見てから WP 化
 - **物理クエリ**: 2026-07-07 **必須決定** — raycast / overlap を GameContext(G1a)とエディタピッキング(D2)の両方に供給する。休眠中の phys モジュール・collision ブランチの再評価から着手。コリジョン形状は glb 内規約(フォーマット方針 §4 予約)と同時に設計
 - **OpenXR トラック**: **2026-07-07 に推進決定**。入力(アクション層・pose 型)は準備済み。残り = ①ランタイム統合(xrWaitFrame とループ主導権・EngineTime 統合)②描画(フレームグラフに view 次元 = multiview、XrFrameTarget を IFrameTarget の第 3 実装として追加)③PELICAN_WITH_OPENXR ユニット必須・ヘッドセットなし環境のテスト戦略。設計文書を書いてから WP 化
 - **bindless バックエンド**: 2026-07-08 方向決定 — classic(set 2)と併用(`design_material_shading.md` §3-5)。生成アクセサが差を吸収、M2 のデータ形(SSBO + 参照)が前提工事。実装は M2 の後・GPU 駆動系(WP36 パーティクル・大規模シーン)の需要と同時に WP 化。**web/モバイルの床に PC を縛らせない**(web は将来やるとしてもシンプルな 3D/2D — ユーザー確認)
 - **web ビルド(WASM)**: 将来の可能性としてのみ保持(2026-07-08)。守るべき不変条件は全部現行規律(純ロジック規律・データ契約が抽象・classic 床・dist-bake/WGSL レーン)— 特別な保全作業なし。進めるときは案 B(WASM ゲームコア + TS レンダラ接合)→ 案 A(C++ WebGPU 実行系、データ契約の兄弟執行器)。**RHI の後付けは禁止**(本体の C++ インターフェースへの制約源にしない)
-- **アセットホットリロード**: 2026-07-08 ユーザー要望で昇格(「置換は開発の日常」文化の帰結)。ファイル監視 → テクスチャ/モデル/シーン JSON の再読込。**シェーダホットリロード(開発体験候補)と同じ監視基盤に乗せる**。エディタのパラメータ編集との関係 = **ファイルが唯一の真実**(エディタは書き込み → ホットリロードが拾う。devstudio D3 ラウンドトリップの実行基盤を兼ねる)。設計は監視基盤 + 差し替え可否のリソース種別ごとの整理から。**確定済みの規約 2 件(2026-07-08)**: ①リプレイ/strict/rpc 駆動中はホットリロード無効(決定性保護)②エディタの自己書き込みはハッシュ比較で無視(書き込みループ防止)
+- **アセットホットリロード**: v1 は敵対レビュー(2026-07-12 `docs/design_reviews/2026-07-12_anim_v2_hotreload_review_codex.md` §6-9)で **Reject** — Watcher の overflow/復帰プロトコル欠落・WP82 hash 流用は不成立・WP62 EntityId の取り違え・GPU resource に replace/rollback 面なし。**v2 へ再起草中**(レビュー §9 の HR0(watch/reconcile)→ HR1(identity/transaction)→ HR1-T/M → HR2-S/G/I 分割が骨格。シェーダは新規でなく既存 `ShaderLibrary::reloadModifiedSources` poll の移行)。確定規約 2 件(リプレイ中無効・自己書き込みハッシュ無視)は維持だが自己書き込みは `(AssetKey, hash, epoch)` トークン式に強化
 - **イベント層**: `design_event_layer.md` v1 ドラフト(2026-07-08)。**API 意味論(emit/購読の書き味・フレーム境界配送)のユーザーレビューを経てから E1 を WP 化**。E2(物理トリガー)は E1 後
 - **永続化(user:// + 設定/セーブ)**: `design_persistence.md` v1 ドラフト(2026-07-08)。**user:// スキーム追加 = [PF] v6.3 の凍結改訂が必要 — ユーザー承認待ち**。承認後 P1 を WP 化
 - **[PF] v6.3 改訂案(一括)**: ①user://(persistence)②asset store マウント + .pelican/local.json(`design_project_vcs.md`)③#フラグメント参照(`design_asset_containers.md`)。**3 点まとめてユーザー承認を取り、1 回の版数改訂で凍結文書へ反映**。承認後の WP: P1 / V1〜V3 / K1〜K4
