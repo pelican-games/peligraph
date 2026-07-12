@@ -1,0 +1,1 @@
+pelican_game_sources(animgraphdemo.cpp)

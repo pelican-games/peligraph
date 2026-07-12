@@ -1,0 +1,331 @@
+{
+  "features": ["engine://features/ui.json"],
+  "render_targets": [
+    {
+      "name": "gbuffer_albedo",
+      "extent_scale": 1.0,
+      "format": "B8G8R8A8_UNORM",
+      "format_class": "scene",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "gbuffer_normal",
+      "extent_scale": 1.0,
+      "format": "R16G16B16A16_SFLOAT",
+      "format_class": "data",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "gbuffer_material",
+      "extent_scale": 1.0,
+      "format": "R8G8B8A8_UNORM",
+      "format_class": "data",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "g_emissive",
+      "extent_scale": 1.0,
+      "format": "R8G8B8A8_UNORM",
+      "format_class": "scene",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "gbuffer_worldpos",
+      "extent_scale": 1.0,
+      "format": "R16G16B16A16_SFLOAT",
+      "format_class": "data",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "offscreen_depth",
+      "extent_scale": 1.0,
+      "format": "D32_SFLOAT",
+      "format_class": "data",
+      "usage": ["DEPTH_STENCIL_ATTACHMENT"]
+    },
+    {
+      "name": "lit_color",
+      "extent_scale": 1.0,
+      "format": "B8G8R8A8_UNORM",
+      "format_class": "scene",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "ssao_output",
+      "extent_scale": 1.0,
+      "format": "R8_UNORM",
+      "format_class": "data",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "ssao_blur",
+      "extent_scale": 1.0,
+      "format": "R8_UNORM",
+      "format_class": "data",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "Bloom_Threshold_RT",
+      "extent_scale": 1.0,
+      "format": "B8G8R8A8_UNORM",
+      "format_class": "scene",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "Bloom_Downsample_H_0_RT",
+      "extent_scale": 0.5,
+      "format": "B8G8R8A8_UNORM",
+      "format_class": "scene",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "Bloom_Upsample_V_0_RT",
+      "extent_scale": 0.5,
+      "format": "B8G8R8A8_UNORM",
+      "format_class": "scene",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "Bloom_Downsample_H_1_RT",
+      "extent_scale": 0.25,
+      "format": "B8G8R8A8_UNORM",
+      "format_class": "scene",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "Bloom_Upsample_V_1_RT",
+      "extent_scale": 0.25,
+      "format": "B8G8R8A8_UNORM",
+      "format_class": "scene",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "Bloom_Downsample_H_2_RT",
+      "extent_scale": 0.125,
+      "format": "B8G8R8A8_UNORM",
+      "format_class": "scene",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "Bloom_Upsample_V_2_RT",
+      "extent_scale": 0.125,
+      "format": "B8G8R8A8_UNORM",
+      "format_class": "scene",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "Bloom_Downsample_H_3_RT",
+      "extent_scale": 0.0625,
+      "format": "B8G8R8A8_UNORM",
+      "format_class": "scene",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "Bloom_Upsample_V_3_RT",
+      "extent_scale": 0.0625,
+      "format": "B8G8R8A8_UNORM",
+      "format_class": "scene",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    }
+  ],
+  "rendering_passes": [
+    {
+      "name": "main_render",
+      "passes": [
+        {
+          "name": "gbuffer_pass",
+          "type": "material",
+          "output": {
+            "color": ["gbuffer_albedo", "gbuffer_normal", "gbuffer_material", "gbuffer_worldpos", "g_emissive"],
+            "depth": "offscreen_depth"
+          }
+        },
+        {
+          "name": "ssao_pass",
+          "type": "fullscreen",
+          "output": { "color": ["ssao_output"], "depth": null },
+          "input": ["gbuffer_worldpos", "gbuffer_normal"],
+          "push_constants": "projection_view",
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://ssao"
+          },
+          "clear_color": [1.0, 1.0, 1.0, 1.0]
+        },
+        {
+          "name": "ssao_blur_pass",
+          "type": "fullscreen",
+          "output": { "color": ["ssao_blur"], "depth": null },
+          "input": ["ssao_output"],
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://ssao_blur"
+          },
+          "clear_color": [1.0, 1.0, 1.0, 1.0]
+        },
+        {
+          "name": "lighting_pass",
+          "type": "fullscreen",
+          "output": {
+            "color": ["lit_color"],
+            "depth": null
+          },
+          "input": ["gbuffer_albedo", "gbuffer_normal", "gbuffer_material", "gbuffer_worldpos", "g_emissive", "ssao_blur"],
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://fullscreen"
+          },
+          "push_constants": "camera_position",
+          "uses_light_data": true
+        },
+        {
+          "name": "HighLuminanceExtraction",
+          "type": "fullscreen",
+          "output": { "color": ["Bloom_Threshold_RT"], "depth": null },
+          "input": ["lit_color"],
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://bloom_highpass"
+          },
+          "clear_color": [0.0, 0.0, 0.0, 0.0]
+        },
+        {
+          "name": "HorizontalBlur_0",
+          "type": "fullscreen",
+          "output": { "color": ["Bloom_Downsample_H_0_RT"], "depth": null },
+          "input": ["Bloom_Threshold_RT"],
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://bloom_blur_h"
+          },
+          "clear_color": [0.0, 0.0, 0.0, 0.0]
+        },
+        {
+          "name": "VerticalBlur_0",
+          "type": "fullscreen",
+          "output": { "color": ["Bloom_Upsample_V_0_RT"], "depth": null },
+          "input": ["Bloom_Downsample_H_0_RT"],
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://bloom_blur_v"
+          },
+          "clear_color": [0.0, 0.0, 0.0, 0.0]
+        },
+        {
+          "name": "HorizontalBlur_1",
+          "type": "fullscreen",
+          "output": { "color": ["Bloom_Downsample_H_1_RT"], "depth": null },
+          "input": ["Bloom_Upsample_V_0_RT"],
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://bloom_blur_h"
+          },
+          "clear_color": [0.0, 0.0, 0.0, 0.0]
+        },
+        {
+          "name": "VerticalBlur_1",
+          "type": "fullscreen",
+          "output": { "color": ["Bloom_Upsample_V_1_RT"], "depth": null },
+          "input": ["Bloom_Downsample_H_1_RT"],
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://bloom_blur_v"
+          },
+          "clear_color": [0.0, 0.0, 0.0, 0.0]
+        },
+        {
+          "name": "HorizontalBlur_2",
+          "type": "fullscreen",
+          "output": { "color": ["Bloom_Downsample_H_2_RT"], "depth": null },
+          "input": ["Bloom_Upsample_V_1_RT"],
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://bloom_blur_h"
+          },
+          "clear_color": [0.0, 0.0, 0.0, 0.0]
+        },
+        {
+          "name": "VerticalBlur_2",
+          "type": "fullscreen",
+          "output": { "color": ["Bloom_Upsample_V_2_RT"], "depth": null },
+          "input": ["Bloom_Downsample_H_2_RT"],
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://bloom_blur_v"
+          },
+          "clear_color": [0.0, 0.0, 0.0, 0.0]
+        },
+        {
+          "name": "HorizontalBlur_3",
+          "type": "fullscreen",
+          "output": { "color": ["Bloom_Downsample_H_3_RT"], "depth": null },
+          "input": ["Bloom_Upsample_V_2_RT"],
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://bloom_blur_h"
+          },
+          "clear_color": [0.0, 0.0, 0.0, 0.0]
+        },
+        {
+          "name": "VerticalBlur_3",
+          "type": "fullscreen",
+          "output": { "color": ["Bloom_Upsample_V_3_RT"], "depth": null },
+          "input": ["Bloom_Downsample_H_3_RT"],
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://bloom_blur_v"
+          },
+          "clear_color": [0.0, 0.0, 0.0, 0.0]
+        },
+        {
+          "name": "UpsampleBlend_3",
+          "type": "fullscreen",
+          "output": { "color": ["Bloom_Downsample_H_2_RT"], "depth": null },
+          "input": ["Bloom_Upsample_V_3_RT", "Bloom_Upsample_V_2_RT"],
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://bloom_composite"
+          },
+          "clear_color": [0.0, 0.0, 0.0, 0.0],
+          "color_load_op": "Load"
+        },
+        {
+          "name": "UpsampleBlend_2",
+          "type": "fullscreen",
+          "output": { "color": ["Bloom_Downsample_H_1_RT"], "depth": null },
+          "input": ["Bloom_Downsample_H_2_RT", "Bloom_Upsample_V_1_RT"],
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://bloom_composite"
+          },
+          "clear_color": [0.0, 0.0, 0.0, 0.0],
+          "color_load_op": "Load"
+        },
+        {
+          "name": "UpsampleBlend_1",
+          "type": "fullscreen",
+          "output": { "color": ["Bloom_Downsample_H_0_RT"], "depth": null },
+          "input": ["Bloom_Downsample_H_1_RT", "Bloom_Upsample_V_0_RT"],
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://bloom_composite"
+          },
+          "clear_color": [0.0, 0.0, 0.0, 0.0],
+          "color_load_op": "Load"
+        },
+        {
+          "name": "FinalBloomComposite",
+          "type": "fullscreen",
+          "output": { "color": ["swapchain"], "depth": null },
+          "input": ["lit_color", "Bloom_Downsample_H_0_RT"],
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://bloom_composite"
+          },
+          "clear_color": [0.0, 0.0, 0.0, 1.0],
+          "color_load_op": "Load"
+        }
+      ]
+    }
+  ]
+}

@@ -14,6 +14,7 @@
 #include "../userpublic/userinput.hpp"
 #include "enginetime.hpp"
 #include "../watch/reloadservice.hpp"
+#include "../animation/animationservice.hpp"
 #if PELICAN_WITH_IMGUI
 #include "../imgui/imguiruntime.hpp"
 #include "../imgui/imguisystem.hpp"
@@ -66,6 +67,11 @@ void updateFrameState() {
         case FramePhase::update_game:
             GET_MODULE(ECSCore).update();
             internal::updateRegisteredGameSystems(game_context);
+            if (const auto status = Animation::animationServiceRuntime().runAllPhases(
+                    GET_MODULE(EngineTime).frameIndex());
+                status != Animation::Status::ok) {
+                throw std::runtime_error("animation phase evaluation failed");
+            }
             GET_MODULE(SeqPlayer).update(GET_MODULE(EngineTime).now());
             GET_MODULE(SceneLoader).applyPendingLoad();
             break;

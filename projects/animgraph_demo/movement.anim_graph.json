@@ -1,0 +1,17 @@
+{
+  "schema":"pelican.anim_graph",
+  "version":1,
+  "parameters":{"speed":0.0,"jump":0.0},
+  "initial_state":"Move",
+  "states":[
+    {"name":"Move","type":"blend1d","parameter":"speed","clips":[
+      {"threshold":0.0,"clip":"Walk","speed":1.0,"start_offset":0.0,"loop":true},
+      {"threshold":1.0,"clip":"Run","speed":1.6,"start_offset":0.0,"loop":true}
+    ]},
+    {"name":"Jump","type":"clip","clip":"Jump","speed":1.0,"start_offset":0.0,"loop":false}
+  ],
+  "transitions":[
+    {"from":"Move","to":"Jump","priority":100,"interrupt":"always","duration":0.12,"conditions":[{"parameter":"jump","op":">","value":0.0}]},
+    {"from":"Jump","to":"Move","priority":100,"interrupt":"always","duration":0.18,"conditions":[{"parameter":"jump","op":"<=","value":0.0}]}
+  ]
+}
