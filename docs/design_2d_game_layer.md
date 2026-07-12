@@ -1,14 +1,17 @@
-# 2D ゲーム層と 2D⇔3D 相互変換(v2)
+# 2D ゲーム層と 2D⇔3D 相互変換(v2.1)
 
 対象読者: エンジン担当・2D ゲームを作る人・2D/3D 混在演出を作る人。
-ステータス: v2 ドラフト(2026-07-12)。v1 は敵対レビュー
+ステータス: **v2.1 — 条件付き受理(2026-07-12)**。v1 は敵対レビュー
 `docs/design_reviews/2026-07-12_hr_v2_2d_v1_review_codex.md` §4-8(以下
 「レビュー」)で **Reject** — 中核方向(単一ワールド)は妥当だが、
 ①「機構を増やさない」への過剰一般化 ②SpriteView 例が scene v1 の
 `name` dispatch と不一致 ③U1 の framebuffer-px quad ABI は world quad に
 流用不能 ④camera snap だけでは pixel perfect にならない ⑤現 physquery
 だけでは platformer が書けない ⑥S2D-0 の粒度過大、が理由。
-v2 = 再受理条件 2D-R1〜R6 の全反映。
+v2 = 再受理条件 2D-R1〜R6 の全反映 → 再レビュー
+`docs/design_reviews/2026-07-12_2d_v2_rereview_codex.md`(以下
+「再レビュー」)で**条件付き受理** — C1〜C3 = S2D-0a、C4 = S2D-1、
+C5 = S2D-P の exit gate に添付。v2.1 = その 5 条件の正本反映。
 前提: `design_ui_2d_foundation.md` v8、`design_camera_system.md`
 (orthographic = WP48 済)、`design_physics_queries.md`(P1/P2 済)、
 scene v1、「feature 層 = ユーザー空間」方針、サブセット原則。
@@ -84,6 +87,15 @@ declaration ID + フラグメント**で指す:
 - public struct・`ref`/validation・未知 field・既定値・範囲
   (size/pivot/layer)・finite transform/color・atlas fragment の
   rename/missing を S2D-0a で閉じる(validation fixture 付き)
+- **sampler の正本 = asset 宣言側**(再レビュー C1 の確定):
+  atlas / 単独画像の宣言メタが `nearest | linear` を持つ(既定 =
+  linear)。**sprite_view に per-sprite override は置かない(v1)**。
+  `SpriteCommand`(が参照する immutable page/material key)に sampler を
+  保持し **run/batch key の一部**とする。schema fixture: 不正値・
+  未知 field・既定値。strict pixel-perfect(§2)は nearest を要求し、
+  非 nearest アセットを strict カメラで描く場合は**名前入り WARN +
+  当該スプライトのみ非 strict 降格**(status で観測可能 — silent
+  degradation 禁止)
 - スプライト = object transform で置かれる world-space quad(XY 平面・
   +Z 法線)。回転・スケール・親子は Transform がそのまま効く
 - flipbook はエンジン機構にしない(frame 差し替えはユーザー空間
@@ -124,9 +136,25 @@ error / letterbox / 非 strict 降格 のいずれかに固定する。fractiona
 動くスプライトの量子化と smooth camera 補間の両立は renderer policy として
 明文化する(個別 sprite snap は持たない)。
 
+**strict の成立式と対象集合(再レビュー C4 — S2D-1 の exit gate)**:
+
+1. 各軸で `zoom_axis = (1 / ppu) / world_units_per_framebuffer_pixel_axis`
+   (logical target 方式では target→framebuffer の整数倍率を含む同値式)を
+   規範化する。x 軸の world 幅 = `2*xmag`、y = `2*ymag` なので、
+   **どの extent を content viewport として式へ入れるか**(letterbox の
+   content rect・odd viewport の丸め・pixel center 原点・整数 zoom の
+   判定許容差)を S2D-1 で確定する
+2. **strict 対象集合を表で固定**: size 省略・単位 scale の sprite /
+   明示 size / 整数 scale / fractional・non-uniform scale / rotation /
+   billboard のどこまでを対象とするか。対象外は silent degradation で
+   なく status/error で観測可能に
+3. camera snap と render-only quantization の**適用順を一つに固定**し
+   二重丸めを禁止。物理 Transform 不変の契約は維持
+
 golden: odd/even テクスチャ・odd/even viewport・zoom 1/2/3・fractional
 camera・fractional sprite・回転/非一様スケール(strict 対象外なら明示)・
-atlas edge。
+atlas edge。**+ 成立式を一項だけ破る xmag/ymag・viewport・ppu の
+negative fixture(C4-4)**。
 
 ## 3. ソート(2D-R5 — 全順序を閉じる)
 
@@ -138,7 +166,13 @@ atlas edge。
      (sprite 登録時に発行。ECS index は free-list 再利用されるため
      生成順の代用にならない — scene 宣言順・replay・recreate 時の
      再発行規則を S2D-0a で固定)
-3. **タイブレーク**: 完全 `(EntityId.index, EntityId.generation)`
+3. **タイブレーク**: 完全 `(EntityId.index, EntityId.generation)` +
+   **source-local stable ordinal**(再レビュー C2): §5 の render source は
+   1 entity から複数 command を出すため、EntityId の後ろに source 内で
+   安定な primitive/command ordinal を置いて全順序を閉じる。発行規則・
+   cache 再利用・削除再追加・replay 時の不変性を S2D-0a で定義し、
+   「source の内部格納順を変えても規範 ordinal が同じなら同一 bytes」を
+   fixture 化する
 
 比較の規範: transform/sort 入力は **finite 必須**(NaN/Inf は
 コンポーネント validation で拒否)。float の z/y は canonical な
@@ -174,7 +208,11 @@ CPU sort + 単一 16384 quad buffer」に固定した場合。escape hatch を�
    revision が変わるまで command cache を再利用
 3. fixture: **50,000 論理 sprite(可視 ~2,000)の純 CPU fixture** を
    S2D-0a に置く — 出力順/hash・chunk 上限・非可視除外・同一入力
-   再実行一致。性能は WP29 の計測形式で記録
+   再実行一致。性能は WP29 の計測形式で記録。
+   **加えて chunk 境界を実際に跨ぐケース(再レビュー C3)**: 可視数
+   16384・16385・2 chunk 超の各ケースで、chunk ごとの vertex/index 型
+   上限・連結 command 順/hash・境界前後の欠落/重複なしを検査
+   (U1 の maxQuads=16384 を frame 上限として誤流用する回帰の検出)
 4. tilemap 形式は将来だが、S2D の ABI が「1 command = 1 entity」
    「1 フレーム最大 16384」に凍結されないことを S2D-0 で保証する
 
@@ -187,7 +225,12 @@ CPU sort + 単一 16384 quad buffer」に固定した場合。escape hatch を�
   pixel snap は含まない)+ ゲームロジックの移動拘束(ユーザー空間)。
   devstudio の 2D 投影編集は D2 の仕事で本書からの追加要求なし
 - **3D の 2D 素材化**: M3.5 named snapshot を texture 源に許す
-  (`snapshot:` スキーム予約)— v1 対象外
+  (`snapshot:` スキーム予約)— v1 対象外。**注意(再レビュー §3.2)**:
+  現 PathResolver は `://` 構文のみ scheme と認識し未知 scheme を reject
+  する — この予約は「現 resolver が解決できる」という意味ではない。
+  将来 WP で asset/path 参照とは別の **typed runtime resource ref** と
+  して正式設計する。S2D-0a〜2 では parser にも `sprite_view.texture` にも
+  受理させない(予約語のまま)
 
 ## 7. 2D 物理(2D-R6 — 「既存 query で足りる」を撤回)
 
@@ -210,6 +253,20 @@ CPU sort + 単一 16384 quad buffer」に固定した場合。escape hatch を�
 5. fixture(純 CPU・fixed-step): 落下接地・斜面上り/下り・壁 slide・
    corner・薄床高速移動・one-way の下から通過/上から接地・
    initial overlap・同時 hit tie
+6. **public contract の固定(再レビュー C5 — S2D-P の exit gate。
+   header と fixture を同じ WP に)**:
+   - 入力 = moving `Shape`(寸法・初期 pose)+ `delta` + filter。
+     zero delta / non-finite / initial overlap の扱いを定義
+   - hit = TOI・position・normal・**安定 collider identity + ECS entity
+     がある場合は full identity**(名前だけ・再利用 index だけに退化
+     させない)
+   - all-hit の規範順 = `(canonical TOI, stable collider identity,
+     shape/subshape ordinal)` の total key。同 TOI・MTD 非一意軸の
+     tie-break を定義。closest と filter 継続は**この同一 ordered
+     result から導出**
+   - layer/mask・self/ignore・trigger・one-way metadata の格納先と
+     既定値を collider/public query schema に追加。未知 bit・stale
+     identity・ignore 後の次 hit を positive/negative fixture 化
 
 ## 8. 決定性と検証
 
@@ -222,10 +279,10 @@ CPU sort + 単一 16384 quad buffer」に固定した場合。escape hatch を�
 
 | WP | 内容 | exit gate | 依存 |
 |----|------|-----------|------|
-| **S2D-0a Contract/CPU** | sprite_view schema(scene v1 準拠)+ public component、consumer-neutral AtlasAsset 抽出、SpriteCommand/world ABI、sort total key + declaration_seq、visibility/caching/chunking | schema fixture・ID 再利用/float sort fixture・50k/2k chunk fixture(GPU 不要) | K3・U1(コード流用でなく抽出元) |
+| **S2D-0a Contract/CPU** | sprite_view schema(scene v1 準拠)+ public component、consumer-neutral AtlasAsset 抽出、SpriteCommand/world ABI、sort total key + declaration_seq、visibility/caching/chunking | schema fixture・ID 再利用/float sort fixture・50k/2k chunk fixture(GPU 不要)**+ 再レビュー C1(sampler key)・C2(source ordinal)・C3(chunk 境界 16384/16385/2+)** | K3・U1(コード流用でなく抽出元) |
 | **S2D-0b GPU world quad** | world-space 頂点/インスタンス buffer・camera VP・pivot/flip・シーンパス・straight alpha・depth test ON/write OFF・atlas page bind | 2D/3D 遮蔽・layer/z・複数 atlas・回転/親子・UI 無し/有りの resource ownership・golden | S2D-0a・WP48 |
-| **S2D-1 Pixel/Policy** | strict pixel-perfect(方式選定込み)・ppu/zoom・y_down/declaration・billboard・flipbook dogfood(ユーザー空間) | §2/§3 fixture + pixel golden 全通過 | S2D-0b |
-| **S2D-P Query minimum** | sweep/shapeCast・filter/all-hit・MTD・安定 collider identity | §7 の純 CPU fixture | P1/P2 |
+| **S2D-1 Pixel/Policy** | strict pixel-perfect(方式選定込み)・ppu/zoom・y_down/declaration・billboard・flipbook dogfood(ユーザー空間) | §2/§3 fixture + pixel golden 全通過 **+ 再レビュー C4(成立式・対象集合表・適用順・negative fixture)** | S2D-0b |
+| **S2D-P Query minimum** | sweep/shapeCast・filter/all-hit・MTD・安定 collider identity | §7 の純 CPU fixture **+ 再レビュー C5(public contract と同順位規則)** | P1/P2 |
 | **S2D-2 Vertical slice** | **side-scroller 1 面を固定選択**(top-down に逃げて platformer 条件を未検証にしない): 入力/event/fixed-step/接地/斜面/one-way の実証 | replay 2 回一致・接地/斜面/one-way/tunneling シナリオ | S2D-1・S2D-P |
 | 将来 | TileMap 形式/chunk・9-slice・snapshot texture・3D 半透明統合 | 各別設計 | — |
 
