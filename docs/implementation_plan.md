@@ -2519,6 +2519,35 @@ golden byte 不変が絶対条件)。GPU パスは実装しない(S2D-0b)。
 6. 受け入れ = C1/C2/C3 逐語 + 上記 fixture 全 green(全部 CPU —
    GPU 不要)+ 既存全テスト + golden 全維持(SKIP 0)+ player
 
+### WP104: 2D S2D-0b — GPU world quad パス
+
+参照: **`design_2d_game_layer.md` v2.1 §1-2・§4・§9 S2D-0b 行が正**。
+基盤 = WP103(S2D-0a — レポート
+`docs/design_reviews/2026-07-13_wp103_report.md`: SpriteCommand ABI・
+sort/chunk・AtlasAssetResource が実装済み。**その出力をそのまま
+GPU に流すこと** — CPU 側の再設計禁止)。依存: WP103(済)・
+WP48 ortho(済)。見積: 大。
+排他: sprite パス/シェーダ新設 + renderer への配線 +
+sprite_view の ECS 反映 system。UI 経路の挙動変更禁止。
+
+1. **world-space 頂点/インスタンス buffer**: SpriteCommand(world
+   transform・pivot・UV・color・flip)→ GPU。camera VP は FrameUBO。
+   billboard("y_axis"/"full")は view 依存のため描画側で展開
+2. **sprite パス**: 3D 不透明の後・post_main の前の固定位置。
+   depth test ON / depth write OFF。blend は UI と同じ straight alpha
+   値。色 ABI = linear 出力(色パイプライン v4 準拠)
+3. **atlas page bind**: WP103 の AtlasAssetResource の shared page を
+   sprite consumer から参照(UI 無効でも sprite 単独で初期化できる —
+   purge 双方向を fixture 化)
+4. **sprite_view → 描画の ECS 接続**: Transform/parent 追従・
+   place/remove・visibility(§5 の cull は CPU 済み)
+5. golden: ①ortho + atlas スプライト複数(layer 跨ぎ・flip・tint)
+   ②3D ジオメトリとの遮蔽(depth test)③複数 atlas page ④回転/親子
+   ⑤UI あり/なしの resource ownership。**件数 REQUIRE 24/23 を
+   追加分だけ更新**
+6. 受け入れ = 新 golden + 既存全テスト + 既存 golden 全維持(SKIP 0)+
+   player 8 秒(スプライトが表示される自己完結 demo project 付き)
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの
