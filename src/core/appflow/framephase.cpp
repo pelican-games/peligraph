@@ -3,6 +3,8 @@
 #include "../ecs/core.hpp"
 #include "../loader/scene.hpp"
 #include "../os/inputstate.hpp"
+#include "../os/inputsequence.hpp"
+#include "../playback/camerabake.hpp"
 #include "../playback/seqplayer.hpp"
 #include "../userpublic/details/event/registerer.hpp"
 #include "../userpublic/details/system/registerer.hpp"
@@ -27,7 +29,9 @@ void updateFrameState() {
             internal::freezePendingEventsForFrame();
             break;
         case FramePhase::freeze_input:
+            GET_MODULE(InputSequenceRuntime).prepareFrame(GET_MODULE(InputState));
             GET_MODULE(InputState).beginFrame();
+            GET_MODULE(InputSequenceRuntime).recordFrame(GET_MODULE(InputState).currentFrameInput());
             break;
         case FramePhase::freeze_actions:
 #if PELICAN_WITH_IMGUI
@@ -51,6 +55,9 @@ void updateFrameState() {
             break;
         }
     });
+    if (FastModuleContainer::isInitialized<CameraBakeRecorder>()) {
+        GET_MODULE(CameraBakeRecorder).recordFrame();
+    }
 }
 
 } // namespace Pelican

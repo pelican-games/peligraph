@@ -26,6 +26,7 @@ DECLARE_MODULE(EngineLaunchConfig) {
     bool golden_mode = false;
     vk::Extent2D headless_extent{1280, 720};
     uint32_t headless_frames = 3;
+    bool headless_frames_explicit = false;
     std::optional<std::filesystem::path> render_out;
     double fps = 60.0;
     bool shader_hot_reload = true;
@@ -33,6 +34,9 @@ DECLARE_MODULE(EngineLaunchConfig) {
     bool strict_assets = false;
     bool dump_frame_plan = false;
     bool force_unorm_color_path_for_testing = false;
+    std::optional<std::filesystem::path> input_record;
+    std::optional<std::filesystem::path> input_replay_path;
+    std::optional<std::filesystem::path> camera_bake_output;
     std::optional<std::filesystem::path> play_seq;
     std::optional<std::filesystem::path> play_vat;
     std::filesystem::path seq_mesh{"builtin:sphere"};

@@ -5,6 +5,7 @@ unset(CMAKE_RUNTIME_OUTPUT_DIRECTORY)
 
 target_sources(pelican_cli PRIVATE
   assetscommand.cpp
+  bakecameracommand.cpp
   distconfig.cpp
   gltfsceneextract.cpp
   importcommand.cpp

@@ -4,7 +4,9 @@
 #include "../log.hpp"
 #include "../communication/rpcserver.hpp"
 #include "../os/inputstate.hpp"
+#include "../os/inputsequence.hpp"
 #include "../os/window.hpp"
+#include "../playback/camerabake.hpp"
 #include "../playback/vatplayer.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../startup.hpp"
@@ -126,13 +128,24 @@ void Loop::run() {
     auto &engine_time = GET_MODULE(EngineTime);
     auto &vat_player = GET_MODULE(VatPlayer);
     auto &input_state = GET_MODULE(InputState);
+    auto &input_sequence = GET_MODULE(InputSequenceRuntime);
     (void)vat_player;
     RenderTiming *render_timing =
         GET_MODULE(RenderingPassContainer).isFeatureEnabled("gpu_timing") ? &GET_MODULE(RenderTiming) : nullptr;
 
-    const auto time_mode =
-        launch_config.headless ? EngineTime::Mode::fixed_step : EngineTime::Mode::realtime;
-    engine_time.setup(time_mode, 1.0 / launch_config.fps);
+    if (launch_config.input_replay_path) {
+        input_sequence.startReplay(*launch_config.input_replay_path);
+    } else if (launch_config.input_record) {
+        input_sequence.startRecording(*launch_config.input_record, launch_config.fps);
+    }
+    const auto time_mode = launch_config.headless || input_sequence.isReplaying()
+                               ? EngineTime::Mode::fixed_step
+                               : EngineTime::Mode::realtime;
+    const auto timeline_fps = input_sequence.isReplaying() ? input_sequence.replayFps() : launch_config.fps;
+    engine_time.setup(time_mode, 1.0 / timeline_fps);
+    if (launch_config.camera_bake_output) {
+        GET_MODULE(CameraBakeRecorder).start(*launch_config.camera_bake_output, input_sequence.replayFps());
+    }
     dumpFramePlanIfRequested(launch_config, renderer);
     GET_MODULE(StartupMetrics).finishAndLog();
 
@@ -143,14 +156,27 @@ void Loop::run() {
             runEngineRpcServer(std::cin, std::cout);
             GET_MODULE(VulkanManageCore).waitIdle();
             GET_MODULE(DeletionQueue).flushAll();
+            if (input_sequence.isRecording()) {
+                input_sequence.stopRecording();
+            }
+            if (FastModuleContainer::isInitialized<CameraBakeRecorder>() &&
+                GET_MODULE(CameraBakeRecorder).isActive()) {
+                GET_MODULE(CameraBakeRecorder).finish();
+            }
             return;
         }
 
         const auto render_out_pattern =
             launch_config.render_out ? parseRenderOutPattern(*launch_config.render_out) : RenderOutPattern{};
-        for (uint32_t frame = 0; launch_config.headless_frames == 0 || frame < launch_config.headless_frames;
+        const auto replay_frames = input_sequence.isReplaying() ? input_sequence.replayFrameCount() : 0;
+        const auto frame_limit = input_sequence.isReplaying() && !launch_config.headless_frames_explicit
+                                     ? static_cast<uint32_t>(replay_frames)
+                                     : launch_config.headless_frames;
+        for (uint32_t frame = 0; frame_limit == 0 || frame < frame_limit;
              ++frame) {
-            input_state.clear();
+            if (!input_sequence.isReplaying()) {
+                input_state.clear();
+            }
             const auto update_start = Clock::now();
             engine_time.advance();
             updateFrameState();
@@ -180,6 +206,13 @@ void Loop::run() {
             render_timing->flush();
         }
         GET_MODULE(DeletionQueue).flushAll();
+        if (input_sequence.isRecording()) {
+            input_sequence.stopRecording();
+        }
+        if (FastModuleContainer::isInitialized<CameraBakeRecorder>() &&
+            GET_MODULE(CameraBakeRecorder).isActive()) {
+            GET_MODULE(CameraBakeRecorder).finish();
+        }
         return;
     }
 
@@ -189,7 +222,10 @@ void Loop::run() {
     while (true) {
         if (!window.process())
             break;
-        input_state.queueEvents(window.drainInputEvents());
+        auto window_events = window.drainInputEvents();
+        if (!input_sequence.isReplaying()) {
+            input_state.queueEvents(window_events);
+        }
         const auto update_start = Clock::now();
         engine_time.advance();
         updateFrameState();
@@ -217,6 +253,12 @@ void Loop::run() {
         render_timing->flush();
     }
     GET_MODULE(DeletionQueue).flushAll();
+    if (input_sequence.isRecording()) {
+        input_sequence.stopRecording();
+    }
+    if (FastModuleContainer::isInitialized<CameraBakeRecorder>() && GET_MODULE(CameraBakeRecorder).isActive()) {
+        GET_MODULE(CameraBakeRecorder).finish();
+    }
 }
 
 } // namespace Pelican
