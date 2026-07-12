@@ -74,4 +74,23 @@ TEST_CASE("import manifest fixtures parse and reject expected cases", "[import-m
     }
 }
 
+TEST_CASE("import manifest accepts deterministic K3 deliveries", "[import-manifest]") {
+    const auto manifest = parseImportManifestJson({
+        {"schema", "pelican.import"},
+        {"version", 1},
+        {"tool", {{"name", "pelican-import-tools"}, {"version", "0.1.0"}}},
+        {"source", {{"files", {"sprites/a.png", "sprites/b.png"}}}},
+        {"outputs", {{{"file", "atlas.json"},
+                      {"schema", "pelican.atlas"},
+                      {"version", 1},
+                      {"sha256", std::string(64, 'a')}},
+                     {{"file", "atlas_0.png"},
+                      {"schema", "png"},
+                      {"sha256", std::string(64, 'b')}}}},
+    });
+    CHECK(manifest.created.empty());
+    CHECK(manifest.source.file.empty());
+    CHECK(manifest.outputs.size() == 2);
+}
+
 } // namespace Pelican

@@ -4,6 +4,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace Pelican {
 
@@ -131,12 +132,16 @@ void validateOutputFileReference(std::string_view file) {
 }
 
 void validateOutputSchema(const std::string &schema, const std::optional<int> &version) {
-    if (schema == "gltf") {
+    if (schema == "gltf" || schema == "png") {
+        if (version) {
+            throw std::runtime_error("import manifest output " + schema + " must not declare a version");
+        }
         return;
     }
-    if (schema == "pelican.transform_seq") {
+    if (schema == "pelican.transform_seq" || schema == "pelican.scene" ||
+        schema == "pelican.layout" || schema == "pelican.atlas") {
         if (version && *version != 1) {
-            throw std::runtime_error("import manifest output pelican.transform_seq version is not supported");
+            throw std::runtime_error("import manifest output " + schema + " version is not supported");
         }
         return;
     }
@@ -158,8 +163,37 @@ ImportManifestSource parseSource(const nlohmann::json &source) {
     if (!source.is_object()) {
         throw std::runtime_error("import manifest source must be an object");
     }
+    std::string file;
+    if (const auto found = source.find("file"); found != source.end()) {
+        if (!found->is_string()) {
+            throw std::runtime_error("import manifest source file must be a string");
+        }
+        file = found->get<std::string>();
+    }
+    bool has_directory = false;
+    if (const auto found = source.find("directory"); found != source.end()) {
+        if (!found->is_string() || found->get_ref<const std::string &>().empty()) {
+            throw std::runtime_error("import manifest source directory must be a non-empty string");
+        }
+        has_directory = true;
+    }
+    bool has_files = false;
+    if (const auto found = source.find("files"); found != source.end()) {
+        if (!found->is_array() || found->empty()) {
+            throw std::runtime_error("import manifest source files must be a non-empty string array");
+        }
+        for (const auto &entry : *found) {
+            if (!entry.is_string() || entry.get_ref<const std::string &>().empty()) {
+                throw std::runtime_error("import manifest source files must be a non-empty string array");
+            }
+        }
+        has_files = true;
+    }
+    if (file.empty() && !has_directory && !has_files) {
+        throw std::runtime_error("import manifest source requires file, directory, or non-empty files");
+    }
     return ImportManifestSource{
-        requireStringMember(source, "file", "import manifest source"),
+        std::move(file),
         source,
     };
 }
@@ -199,7 +233,7 @@ ImportManifest parseImportManifestJson(const nlohmann::json &manifest) {
     ImportManifest parsed{
         parseTool(requireObjectMember(manifest, "tool", "import manifest")),
         parseSource(requireObjectMember(manifest, "source", "import manifest")),
-        requireStringMember(manifest, "created", "import manifest"),
+        optionalStringMember(manifest, "created", "import manifest").value_or(std::string{}),
         {},
     };
     parsed.outputs.reserve(outputs_json.size());

@@ -1,0 +1,39 @@
+[
+  {
+    "name": "unknown root key",
+    "error": "unknown key 'local'",
+    "document": {
+      "schema": "pelican.import_rules",
+      "version": 1,
+      "rules": [],
+      "local": {}
+    }
+  },
+  {
+    "name": "backslash glob",
+    "error": "must use forward slashes",
+    "document": {
+      "schema": "pelican.import_rules",
+      "version": 1,
+      "rules": [{"match": "ui\\**\\*.psd", "recipe": "psd_layers"}]
+    }
+  },
+  {
+    "name": "partial globstar",
+    "error": "only as a complete path segment",
+    "document": {
+      "schema": "pelican.import_rules",
+      "version": 1,
+      "rules": [{"match": "levels/**.glb", "recipe": "extract_scene"}]
+    }
+  },
+  {
+    "name": "unknown recipe option",
+    "error": "unknown key 'quality'",
+    "document": {
+      "schema": "pelican.import_rules",
+      "version": 1,
+      "rules": [{"match": "sprites/*.png", "recipe": "atlas_pack", "options": {"quality": 9}}]
+    }
+  }
+]

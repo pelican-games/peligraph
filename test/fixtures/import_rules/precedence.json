@@ -1,0 +1,15 @@
+{
+  "schema": "pelican.import_rules",
+  "version": 1,
+  "rules": [
+    {
+      "match": "ui/**/*.psd",
+      "recipe": "atlas_pack",
+      "options": {"padding": 0}
+    }
+  ],
+  "defaults": {
+    ".psd": "psd_layers",
+    ".png": null
+  }
+}

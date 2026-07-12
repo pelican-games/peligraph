@@ -2,6 +2,7 @@ add_library(pelican_project
     assetsmanifest.cpp
     featurecompose.cpp
     importmanifest.cpp
+    importrules.cpp
     jsonrpc.cpp
     materiallowering.cpp
     materialformat.cpp
