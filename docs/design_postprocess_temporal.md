@@ -96,9 +96,23 @@ frame-plan anchor である**(2026-07-11 改訂 — 本節が旧規定してい�
 
 1. `set_time` 時の履歴リセットの粒度(全 history か、feature が opt-out
    できるか)。推奨: v1 は全リセット(決定性最優先)
-2. TAA のカメラジッタ: projection 行列への sub-pixel offset は
-   camera 経路への介入 — カメラ設計(C3)側に「ジッタ注入点」を予約して
-   もらうのが筋。本設計からは要求だけ出す
+2. TAA のカメラジッタ — **方向確定(2026-07-12 ユーザー相談)**:
+   「カメラ設計側に注入点を予約」を**撤回**し、**ジッタはカメラ API から
+   完全分離したレンダー側の projection modifier 枠**とする。根拠:
+   ①消費者はテンポラル一族のみ(TAA / DLSS・FSR2・XeSS 系アップスケーラ
+   (ジッタ + velocity + depth を要求する)/ チェッカーボード / 静止時
+   アキュムレーション)②カリング・レイキャスト・UI 投影・ゲームプレイは
+   **非ジッタ行列を使わねばならない**(見せてはいけない)。骨子:
+   - feature が `projection_jitter` を宣言(pattern: halton23 等・
+     phases)。**同時に 1 提供者**(併存は名前入りエラー — ターミナル
+     フック排他と同じ流儀)
+   - 系列は **frame_index の純関数**(決定的 — golden/replay と整合)
+   - 適用は scene ラスタパスの投影のみ。FrameUBO に「適用済み proj +
+     今/前フレームのジッタオフセット」を追加(velocity のジッタ差引と
+     TAA resolve 用)。カリングは非ジッタ
+   - アップスケーラ対応の将来要件(フェーズ数が解像度比に依存・
+     mip bias)はこの枠の属性として拡張 — ユーザーの TAA 設計着手時に
+     API 詳細を確定して WP 化
 3. history の面数: 2 固定か N 指定可か。推奨: v1 は 2 固定
    (N が要るのは高度な temporal 系のみ、需要が出てから)
 4. buffer(非 image)の history 昇格(GPU パーティクルの状態バッファは
