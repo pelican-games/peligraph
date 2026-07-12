@@ -889,12 +889,14 @@ std::string renderDistConfigPreset(const DistConfigResult &result) {
         << oneLine(result.rpc_reason) << "\n";
     out << "# PELICAN_WITH_SEQPLAYER: " << boolString(result.with_seqplayer) << " - "
         << oneLine(result.seqplayer_reason) << "\n\n";
+    out << "# PELICAN_WITH_IMGUI: OFF - distribution builds exclude engine developer UI\n\n";
 
     out << "set(PELICAN_WITH_VAT " << boolString(result.with_vat) << " CACHE BOOL \"\" FORCE)\n";
     out << "set(PELICAN_WITH_EXR " << boolString(result.with_exr) << " CACHE BOOL \"\" FORCE)\n";
     out << "set(PELICAN_WITH_RPC " << boolString(result.with_rpc) << " CACHE BOOL \"\" FORCE)\n";
     out << "set(PELICAN_WITH_SEQPLAYER " << boolString(result.with_seqplayer)
         << " CACHE BOOL \"\" FORCE)\n";
+    out << "set(PELICAN_WITH_IMGUI OFF CACHE BOOL \"\" FORCE)\n";
     return out.str();
 }
 

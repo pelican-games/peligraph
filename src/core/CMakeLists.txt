@@ -9,6 +9,7 @@ target_compile_definitions(pelican_core PUBLIC
   PELICAN_WITH_EXR=$<BOOL:${PELICAN_WITH_EXR}>
   PELICAN_WITH_RPC=$<BOOL:${PELICAN_WITH_RPC}>
   PELICAN_WITH_SEQPLAYER=$<BOOL:${PELICAN_WITH_SEQPLAYER}>
+  PELICAN_WITH_IMGUI=$<BOOL:${PELICAN_WITH_IMGUI}>
 )
 
 # modules
@@ -17,6 +18,9 @@ add_subdirectory(appflow)
 add_subdirectory(audio)
 add_subdirectory(communication)
 add_subdirectory(os)
+if(PELICAN_WITH_IMGUI)
+add_subdirectory(imgui)
+endif()
 add_subdirectory(ecs)
 add_subdirectory(asset)
 add_subdirectory(loader)

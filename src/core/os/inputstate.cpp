@@ -72,6 +72,21 @@ InputEvent InputEvent::axis(float x, float y) noexcept {
     };
 }
 
+InputEvent InputEvent::scroll(float x, float y) noexcept {
+    return InputEvent{
+        .type = Type::scroll,
+        .axis_x = x,
+        .axis_y = y,
+    };
+}
+
+InputEvent InputEvent::character(std::uint32_t codepoint) noexcept {
+    return InputEvent{
+        .type = Type::character,
+        .codepoint = codepoint,
+    };
+}
+
 void InputConsumptionMask::consumeControl(KeyCode code) noexcept {
     if (isValidKeyCode(code)) {
         controls[keyCodeIndex(code)] = 1;
@@ -273,6 +288,9 @@ void InputStateCore::beginFrame() {
         case InputEvent::Type::axis:
             axis_delta_x += event.axis_x;
             axis_delta_y += event.axis_y;
+            break;
+        case InputEvent::Type::scroll:
+        case InputEvent::Type::character:
             break;
         }
     }

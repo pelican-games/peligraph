@@ -9,6 +9,11 @@
 #include "../userpublic/gamecontext.hpp"
 #include "../userpublic/userinput.hpp"
 #include "enginetime.hpp"
+#if PELICAN_WITH_IMGUI
+#include "../imgui/imguiruntime.hpp"
+#include "../imgui/imguisystem.hpp"
+#include "../launchconfig.hpp"
+#endif
 
 #include <cassert>
 
@@ -25,6 +30,11 @@ void updateFrameState() {
             GET_MODULE(InputState).beginFrame();
             break;
         case FramePhase::freeze_actions:
+#if PELICAN_WITH_IMGUI
+            invokeImGuiRuntimeCallback(GET_MODULE(EngineLaunchConfig), [&] {
+                GET_MODULE(ImGuiSystem).routeInputAndBeginFrame(GET_MODULE(InputState));
+            });
+#endif
             internal::freezeInputActionsFrame();
             break;
         case FramePhase::deliver_events:

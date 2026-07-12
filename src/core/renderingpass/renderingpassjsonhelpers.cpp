@@ -97,6 +97,11 @@ PassInfo makePassInfo(const std::string &type_str) {
     if (type_str == "ui") {
         return UiPassInfo{};
     }
+#if PELICAN_WITH_IMGUI
+    if (type_str == "imgui") {
+        return ImGuiPassInfo{};
+    }
+#endif
     throw std::runtime_error("Unknown pass type: " + type_str);
 }
 

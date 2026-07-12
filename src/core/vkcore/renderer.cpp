@@ -30,6 +30,10 @@
 #include "rendertarget.hpp"
 #include "rendertiming.hpp"
 #include "util.hpp"
+#if PELICAN_WITH_IMGUI
+#include "../imgui/imguiruntime.hpp"
+#include "../imgui/imguisystem.hpp"
+#endif
 #include <algorithm>
 #include <map>
 
@@ -58,6 +62,9 @@ struct RenderFrameModules {
     const UIContainer &ui_container;
     DebugDraw *debug_draw;
     DebugText *debug_text;
+#if PELICAN_WITH_IMGUI
+    ImGuiSystem *imgui_system;
+#endif
     RenderTiming *render_timing;
     const Camera &camera;
     LightContainer &light_container;
@@ -71,6 +78,12 @@ RenderFrameModules resolveRenderFrameModules() {
         rendering_pass_container.isFeatureEnabled("debug_text") ? &GET_MODULE(DebugText) : nullptr;
     RenderTiming *render_timing =
         rendering_pass_container.isFeatureEnabled("gpu_timing") ? &GET_MODULE(RenderTiming) : nullptr;
+#if PELICAN_WITH_IMGUI
+    ImGuiSystem *imgui_system = nullptr;
+    invokeImGuiRuntimeCallback(GET_MODULE(EngineLaunchConfig), [&] {
+        imgui_system = &GET_MODULE(ImGuiSystem);
+    });
+#endif
 
     return RenderFrameModules{
         GET_MODULE(RenderTarget),
@@ -93,6 +106,9 @@ RenderFrameModules resolveRenderFrameModules() {
         GET_MODULE(UIContainer),
         debug_draw,
         debug_text,
+#if PELICAN_WITH_IMGUI
+        imgui_system,
+#endif
         render_timing,
         GET_MODULE(Camera),
         GET_MODULE(LightContainer),
@@ -261,7 +277,11 @@ nlohmann::json renderNodeTrace(const CompiledPass &pass, size_t order,
         {"inputs", std::move(inputs)},
         {"input_buffers", definition.input_buffers},
         {"attachments", std::move(attachments)},
-        {"blend", definition.isUi() || definition.isDebugDraw() || definition.isDebugText()},
+        {"blend", definition.isUi() || definition.isDebugDraw() || definition.isDebugText()
+#if PELICAN_WITH_IMGUI
+                      || definition.isImGui()
+#endif
+        },
     };
 }
 
@@ -624,6 +644,9 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
         ui_renderer_dependencies,
         modules.debug_draw,
         modules.debug_text,
+#if PELICAN_WITH_IMGUI
+        modules.imgui_system,
+#endif
         modules.frame_resources,
         modules.camera,
         modules.render_target.getSwapchainFormat()};

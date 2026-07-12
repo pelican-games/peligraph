@@ -85,7 +85,16 @@ struct ShadowDepthPassInfo {
 
 struct UiPassInfo {};
 
-using PassInfo = std::variant<MaterialPassInfo, FullscreenPassInfo, DebugDrawPassInfo, DebugTextPassInfo, ShadowDepthPassInfo, UiPassInfo>;
+#if PELICAN_WITH_IMGUI
+struct ImGuiPassInfo {};
+#endif
+
+using PassInfo = std::variant<MaterialPassInfo, FullscreenPassInfo, DebugDrawPassInfo, DebugTextPassInfo,
+                              ShadowDepthPassInfo, UiPassInfo
+#if PELICAN_WITH_IMGUI
+                              , ImGuiPassInfo
+#endif
+                              >;
 
 struct PassDefinition {
     PassDefinition() : output_depth{noRenderTargetId()} {}
@@ -111,6 +120,9 @@ struct PassDefinition {
     bool isDebugText() const { return std::holds_alternative<DebugTextPassInfo>(pass_info); }
     bool isShadowDepth() const { return std::holds_alternative<ShadowDepthPassInfo>(pass_info); }
     bool isUi() const { return std::holds_alternative<UiPassInfo>(pass_info); }
+#if PELICAN_WITH_IMGUI
+    bool isImGui() const { return std::holds_alternative<ImGuiPassInfo>(pass_info); }
+#endif
 
     MaterialPassInfo &materialInfo() { return std::get<MaterialPassInfo>(pass_info); }
     const MaterialPassInfo &materialInfo() const { return std::get<MaterialPassInfo>(pass_info); }

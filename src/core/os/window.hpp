@@ -21,6 +21,9 @@ DECLARE_MODULE(Window) {
     ~Window();
 
     vk::Extent2D waitFramebufferExtent() const;
+    vk::Extent2D framebufferExtent() const;
+    vk::Extent2D logicalExtent() const;
+    GLFWwindow *nativeHandle() const noexcept { return window; }
     vk::UniqueSurfaceKHR getVulkanSurface(vk::Instance instance);
     std::vector<const char *> getRequiredVulkanInstanceExts();
 

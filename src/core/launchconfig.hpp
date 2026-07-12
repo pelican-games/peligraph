@@ -20,6 +20,10 @@ DECLARE_MODULE(EngineLaunchConfig) {
   public:
     bool headless = false;
     bool rpc = false;
+    // Deterministic drivers never run developer-tool callbacks. Replay and
+    // golden harnesses set these when they are not already using headless.
+    bool input_replay = false;
+    bool golden_mode = false;
     vk::Extent2D headless_extent{1280, 720};
     uint32_t headless_frames = 3;
     std::optional<std::filesystem::path> render_out;
