@@ -81,6 +81,7 @@ pelican_define_test(deterministicrng_test pelican_core)
 pelican_define_test(enginetime_test pelican_core)
 pelican_define_test(skeletalanimation_test pelican_core glm)
 pelican_define_test(animation_probe_test pelican_core glm)
+pelican_define_test(animation_jobs_test pelican_core glm)
 target_compile_definitions(pelican_test_animation_probe_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )

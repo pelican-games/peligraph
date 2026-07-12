@@ -813,7 +813,7 @@ void Renderer::render() {
         };
     }
     modules.render_target_container.advanceHistoryFrame();
-    modules.instance_container.commitFrameHistory();
+    modules.instance_container.advanceTemporalHistoryAfterRender();
     previous_view = current_view;
     previous_projection = current_projection;
     camera_history_valid = true;

@@ -221,12 +221,13 @@ Status ProbeRuntime::advanceCursor(const AdvanceDescV1 &desc, IntervalResultV1 &
     const double start = cursor.time;
     const double end_unwrapped = seek ? desc.absolute_seconds : start + desc.delta_seconds;
     const double end = wrapTime(end_unwrapped, cursor.duration, cursor.wrap);
+    const double traversal_end = cursor.wrap == WrapMode::clamp ? end : end_unwrapped;
     std::vector<CrossingV1> crossings;
     std::int64_t loop_count = 0;
 
     if (!seek && desc.delta_seconds != 0.0) {
-        const double low = std::min(start, end_unwrapped);
-        const double high = std::max(start, end_unwrapped);
+        const double low = std::min(start, traversal_end);
+        const double high = std::max(start, traversal_end);
         const auto first_loop = static_cast<std::int64_t>(std::floor(low / cursor.duration)) - 1;
         const auto last_loop = static_cast<std::int64_t>(std::ceil(high / cursor.duration)) + 1;
         const auto actual_first_loop = cursor.wrap == WrapMode::repeat ? first_loop : std::int64_t{0};
@@ -234,8 +235,8 @@ Status ProbeRuntime::advanceCursor(const AdvanceDescV1 &desc, IntervalResultV1 &
         for (std::int64_t loop = actual_first_loop; loop <= actual_last_loop; ++loop) {
             for (const auto &annotation : cursor.annotations) {
                 const double occurrence = annotation.time_seconds + static_cast<double>(loop) * cursor.duration;
-                const bool crossed = desc.delta_seconds > 0.0 ? (occurrence > start && occurrence <= end_unwrapped)
-                                                                  : (occurrence >= end_unwrapped && occurrence < start);
+                const bool crossed = desc.delta_seconds > 0.0 ? (occurrence > start && occurrence <= traversal_end)
+                                                                  : (occurrence >= traversal_end && occurrence < start);
                 if (!crossed) continue;
                 crossings.push_back({sizeof(CrossingV1), descriptorVersionV1, annotation.kind, annotation.source,
                                      annotation.ordinal, 0, annotation.time_seconds, loop, annotation.identity});

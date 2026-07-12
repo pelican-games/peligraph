@@ -3,6 +3,7 @@
 #include "../vkcore/core.hpp"
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <glm/ext/matrix_transform.hpp>
 #include <limits>
 #include <stdexcept>
@@ -125,6 +126,9 @@ ModelInstanceId PolygonInstanceContainer::placeModelInstance(ModelTemplate &mode
     model_history_valid.push_back(false);
     skin_palettes.emplace_back();
     previous_skin_palettes.emplace_back();
+    animation_revisions.push_back(0);
+    previous_animation_revisions.push_back(0);
+    animation_generations.push_back(1);
 
     for (const auto &material : model.material_primitives) {
         for (const auto &primitive : material.primitives) {
@@ -162,6 +166,9 @@ void PolygonInstanceContainer::removeModelInstance(ModelInstanceId id) {
     model_history_valid[id.value] = false;
     skin_palettes[id.value].clear();
     previous_skin_palettes[id.value].clear();
+    animation_revisions[id.value] = 0;
+    previous_animation_revisions[id.value] = 0;
+    if (++animation_generations[id.value] == 0) ++animation_generations[id.value];
 }
 
 void PolygonInstanceContainer::clear() {
@@ -172,6 +179,9 @@ void PolygonInstanceContainer::clear() {
     model_history_valid.clear();
     skin_palettes.clear();
     previous_skin_palettes.clear();
+    animation_revisions.clear();
+    previous_animation_revisions.clear();
+    animation_generations.clear();
 }
 
 void PolygonInstanceContainer::triggerUpdate() {
@@ -232,14 +242,20 @@ void PolygonInstanceContainer::triggerUpdate() {
 }
 
 void PolygonInstanceContainer::commitFrameHistory() {
+    advanceTemporalHistoryAfterRender();
+}
+
+void PolygonInstanceContainer::advanceTemporalHistoryAfterRender() {
     previous_model_instances_data = model_instances_data;
     previous_skin_palettes = skin_palettes;
+    previous_animation_revisions = animation_revisions;
     std::fill(model_history_valid.begin(), model_history_valid.end(), true);
 }
 
 void PolygonInstanceContainer::resetTemporalHistory() {
     previous_model_instances_data = model_instances_data;
     previous_skin_palettes = skin_palettes;
+    previous_animation_revisions = animation_revisions;
     std::fill(model_history_valid.begin(), model_history_valid.end(), false);
 }
 
@@ -251,6 +267,48 @@ void PolygonInstanceContainer::setSkinningPalette(ModelInstanceId id,
     GET_MODULE(VulkanManageCore).writeBuf(skin_palette_buffer, palette.data(),
                                          sizeof(glm::mat4) * maxSkinJoints * id.value,
                                          sizeof(glm::mat4) * palette.size());
+}
+
+Animation::InstanceHandle PolygonInstanceContainer::animationInstance(ModelInstanceId id) const {
+    if (id.value >= animation_generations.size()) return Animation::invalidHandle<Animation::InstanceHandle>();
+    return {static_cast<std::uint64_t>(id.value) + 1, animation_generations[id.value], 0};
+}
+
+Animation::Status PolygonInstanceContainer::publishAnimationFrame(
+    ModelInstanceId id, const Animation::PublishAnimationFrameDescV1 &frame) {
+    constexpr auto minimum = offsetof(Animation::PublishAnimationFrameDescV1, root_delta) +
+                             sizeof(Animation::RootDeltaV1);
+    if (frame.struct_size < minimum) return Animation::Status::invalid_argument;
+    if (frame.version != Animation::descriptorVersionV1) return Animation::Status::unsupported_version;
+    if (frame.reserved0 != 0 || frame.reserved1 != 0) return Animation::Status::reserved_not_zero;
+    if (id.value >= skin_palettes.size()) return Animation::Status::invalid_handle;
+    const auto expected = animationInstance(id);
+    if (!Animation::isValid(frame.instance) || frame.instance.identity != expected.identity)
+        return Animation::Status::invalid_handle;
+    if (frame.instance.generation != expected.generation) return Animation::Status::stale_generation;
+    if (!Animation::isValid(frame.local_pose) || !Animation::isValid(frame.model_pose) ||
+        frame.frame_revision == 0 || (frame.palette_count != 0 && frame.palette == nullptr) ||
+        frame.palette_count > maxSkinJoints ||
+        (frame.flags & ~(Animation::commit_reset_history | Animation::commit_discontinuity)) != 0)
+        return Animation::Status::invalid_argument;
+    if (animation_revisions[id.value] != 0 && frame.frame_revision <= animation_revisions[id.value])
+        return Animation::Status::duplicate_revision;
+
+    std::vector<glm::mat4> palette(frame.palette_count);
+    if (!palette.empty()) std::memcpy(palette.data(), frame.palette, palette.size() * sizeof(glm::mat4));
+    if (!palette.empty()) {
+        GET_MODULE(VulkanManageCore).writeBuf(skin_palette_buffer, palette.data(),
+                                             sizeof(glm::mat4) * maxSkinJoints * id.value,
+                                             sizeof(glm::mat4) * palette.size());
+    }
+    skin_palettes[id.value] = std::move(palette);
+    animation_revisions[id.value] = frame.frame_revision;
+    if (previous_animation_revisions[id.value] == 0 ||
+        (frame.flags & (Animation::commit_reset_history | Animation::commit_discontinuity)) != 0) {
+        previous_skin_palettes[id.value] = skin_palettes[id.value];
+        previous_animation_revisions[id.value] = frame.frame_revision;
+    }
+    return Animation::Status::ok;
 }
 
 void PolygonInstanceContainer::bindSkinning(vk::CommandBuffer cmd_buf,

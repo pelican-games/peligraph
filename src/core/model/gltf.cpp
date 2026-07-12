@@ -606,6 +606,7 @@ struct InternalGltfLoader {
 
     SkeletonNodeRestPose nodeRestPose(const tinygltf::Node &node) {
         SkeletonNodeRestPose pose;
+        pose.name = node.name;
         if (node.matrix.size() == 16) {
             const auto matrix = nodeTransform(node);
             pose.translation = glm::vec3{matrix[3]};
@@ -744,6 +745,7 @@ struct InternalGltfLoader {
         skeletal_data->joint_nodes.insert(skeletal_data->joint_nodes.end(), skin.joints.begin(), skin.joints.end());
         skeletal_data->inverse_bind_matrices.insert(skeletal_data->inverse_bind_matrices.end(),
                                                     inverse_bind_matrices.begin(), inverse_bind_matrices.end());
+        skeletal_data->skin_bindings.push_back({skin.name, offset, static_cast<std::uint32_t>(skin.joints.size())});
         skin_joint_offsets.emplace(skin_index, offset);
         return offset;
     }
