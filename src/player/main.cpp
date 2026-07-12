@@ -248,6 +248,10 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         .default_value(std::string{})
         .metavar("path.jsonl")
         .help("replay a pelican.input_seq v1 file");
+    program.add_argument("--input-profile")
+        .default_value(std::string{})
+        .metavar("name")
+        .help("override the project's active input binding profile");
     program.add_argument("--bake-camera-output")
         .default_value(std::string{})
         .metavar("path.jsonl")
@@ -343,6 +347,10 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
             config.input_replay_path = resolveExistingCliFile(replay, "--replay");
             config.input_replay = true;
             config.shader_hot_reload = false;
+        }
+        const auto input_profile = program.get<std::string>("--input-profile");
+        if (!input_profile.empty()) {
+            config.input_profile = input_profile;
         }
         const auto camera_bake_output = program.get<std::string>("--bake-camera-output");
         if (!camera_bake_output.empty()) {

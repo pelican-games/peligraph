@@ -5,10 +5,10 @@ set(record_capture "${OUT_DIR}/record_capture.png")
 set(record_script "${OUT_DIR}/record.ndjson")
 file(WRITE "${record_script}"
 "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"start_input_record\",\"params\":{\"path\":\"${recording_path}\"}}\n"
-"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"inject_input\",\"params\":{\"events\":[{\"type\":\"key_down\",\"key\":\"W\"}]}}\n"
+"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"inject_input\",\"params\":{\"events\":[{\"type\":\"key_down\",\"key\":\"W\"},{\"type\":\"pad_button_down\",\"button\":\"a\"},{\"type\":\"pad_axis\",\"axis\":\"left_x\",\"value\":0.75}]}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"step_frame\",\"params\":{}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"step_frame\",\"params\":{}}\n"
-"{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"inject_input\",\"params\":{\"events\":[{\"type\":\"key_up\",\"key\":\"W\"}]}}\n"
+"{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"inject_input\",\"params\":{\"events\":[{\"type\":\"key_up\",\"key\":\"W\"},{\"type\":\"pad_button_up\",\"button\":\"a\"},{\"type\":\"pad_axis\",\"axis\":\"left_x\",\"value\":0.0}]}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"step_frame\",\"params\":{}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"stop_input_record\",\"params\":{}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"capture\",\"params\":{\"path\":\"${record_capture}\"}}\n"
@@ -39,8 +39,11 @@ list(LENGTH markers marker_count)
 if(NOT marker_count EQUAL 3)
     message(FATAL_ERROR "input_seq expected 3 frame boundary markers, got ${marker_count}:\n${recording}")
 endif()
-if(NOT record_stdout MATCHES [=["id":7.*"events":2.*"frames":3]=])
-    message(FATAL_ERROR "stop_input_record response did not report 3 frames/2 events:\n${record_stdout}")
+if(NOT recording MATCHES [=["type":"pad_button"]=] OR NOT recording MATCHES [=["type":"pad_axis"]=])
+    message(FATAL_ERROR "input_seq did not preserve gamepad events:\n${recording}")
+endif()
+if(NOT record_stdout MATCHES [=["id":7.*"events":6.*"frames":3]=])
+    message(FATAL_ERROR "stop_input_record response did not report 3 frames/6 events:\n${record_stdout}")
 endif()
 
 function(run_replay label capture_path capture_hex_var)

@@ -175,4 +175,40 @@ TEST_CASE("InputStateCore clear returns the snapshot to empty headless state", "
     REQUIRE(input.pendingEventCount() == 0);
 }
 
+TEST_CASE("Gamepad poller is inactive without a bound profile and emits ordered changes", "[inputstate][gamepad]") {
+    class FakeSource final : public GamepadStateSource {
+      public:
+        std::size_t reads = 0;
+        bool connected = true;
+        GamepadState state{};
+
+        bool read(std::size_t slot, GamepadState &output) override {
+            ++reads;
+            if (slot != 0 || !connected) {
+                return false;
+            }
+            output = state;
+            return true;
+        }
+    } source;
+
+    GamepadEventPoller poller;
+    REQUIRE(poller.poll(source, false).empty());
+    REQUIRE(source.reads == 0);
+
+    source.state.buttons[static_cast<std::size_t>(GamepadButton::A)] = 1;
+    source.state.axes[static_cast<std::size_t>(GamepadAxis::LeftX)] = 0.5f;
+    const auto events = poller.poll(source, true);
+    REQUIRE(source.reads == gamepad_slot_count);
+    REQUIRE(events.size() == 2);
+    REQUIRE(events[0].type == InputEvent::Type::gamepad_button);
+    REQUIRE(events[1].type == InputEvent::Type::gamepad_axis);
+
+    source.connected = false;
+    const auto released = poller.poll(source, true);
+    REQUIRE(released.size() == 2);
+    REQUIRE(released[0].pressed == 0);
+    REQUIRE(released[1].pad_value == 0.0f);
+}
+
 } // namespace Pelican

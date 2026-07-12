@@ -16,6 +16,29 @@ struct WindowCreateInfo {
     GLFWmonitor *monitor = nullptr;
 };
 
+class GlfwGamepadStateSource final : public GamepadStateSource {
+  public:
+    bool read(std::size_t slot, GamepadState &state) override {
+        const int joystick = GLFW_JOYSTICK_1 + static_cast<int>(slot);
+        if (glfwJoystickIsGamepad(joystick) != GLFW_TRUE) {
+            return false;
+        }
+        GLFWgamepadstate glfw_state{};
+        if (glfwGetGamepadState(joystick, &glfw_state) != GLFW_TRUE) {
+            return false;
+        }
+        static_assert(GLFW_GAMEPAD_BUTTON_LAST + 1 == gamepad_button_count);
+        static_assert(GLFW_GAMEPAD_AXIS_LAST + 1 == gamepad_axis_count);
+        for (std::size_t i = 0; i < gamepad_button_count; ++i) {
+            state.buttons[i] = static_cast<std::uint8_t>(glfw_state.buttons[i] == GLFW_PRESS ? 1 : 0);
+        }
+        for (std::size_t i = 0; i < gamepad_axis_count; ++i) {
+            state.axes[i] = glfw_state.axes[i];
+        }
+        return true;
+    }
+};
+
 WindowCreateInfo makeWindowCreateInfo(ProjectBasicConfig::window_size window_size, bool fullscreen) {
     if (!fullscreen) {
         if (window_size.width <= 0 || window_size.height <= 0) {
@@ -255,6 +278,9 @@ vk::Extent2D Window::logicalExtent() const {
 
 bool Window::process() {
     glfwPollEvents();
+    GlfwGamepadStateSource source;
+    auto gamepad_events = gamepad_poller.poll(source, internal::gamepadPollingEnabled());
+    input_events.insert(input_events.end(), gamepad_events.begin(), gamepad_events.end());
 
     return !glfwWindowShouldClose(window);
 }

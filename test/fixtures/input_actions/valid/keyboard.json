@@ -1,0 +1,13 @@
+{
+  "schema": "pelican.input_profile",
+  "version": 1,
+  "name": "keyboard",
+  "bindings": [
+    {"action": "move", "binding": "kbd:wasd"},
+    {"action": "jump", "binding": "kbd:space"},
+    {"action": "look_x", "binding": "mouse:delta_x"},
+    {"action": "fire", "binding": "mouse:left"},
+    {"action": "confirm", "binding": "kbd:space"},
+    {"action": "navigate", "binding": "kbd:arrows"}
+  ]
+}

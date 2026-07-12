@@ -32,6 +32,20 @@ struct InputActionState {
 
 struct InputActionBinding {
     std::string text;
+    float deadzone = 0.0f;
+    bool invert_x = false;
+    bool invert_y = false;
+};
+
+struct InputProfileBinding {
+    std::string action;
+    InputActionBinding binding;
+};
+
+struct InputBindingProfile {
+    std::string name;
+    std::vector<InputProfileBinding> bindings;
+    bool uses_gamepad = false;
 };
 
 struct InputActionDefinition {
@@ -64,8 +78,10 @@ class InputActionMap {
     const InputActionDefinition *findAction(std::string_view name) const;
     bool hasActionSet(std::string_view name) const;
     std::size_t actionCount() const noexcept;
+    bool usesGamepad() const noexcept;
 
     friend InputActionMap parseInputActionsJson(const nlohmann::json &document);
+    friend InputActionMap applyInputProfile(InputActionMap map, const InputBindingProfile &profile);
 };
 
 struct InputActionFrame {
@@ -79,6 +95,9 @@ struct InputActionFrame {
 
 InputActionMap parseInputActionsJson(const nlohmann::json &document);
 InputActionMap parseInputActionsString(std::string_view document);
+InputBindingProfile parseInputProfileJson(const nlohmann::json &document, const InputActionMap &actions);
+InputBindingProfile parseInputProfileString(std::string_view document, const InputActionMap &actions);
+InputActionMap applyInputProfile(InputActionMap map, const InputBindingProfile &profile);
 InputActionFrame evaluateInputActions(const InputActionMap &map, const InputSnapshot &snapshot,
                                       const std::vector<std::string> &action_set_stack);
 

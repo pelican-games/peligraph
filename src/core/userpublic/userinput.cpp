@@ -1,19 +1,25 @@
 #include "userinput.hpp"
 #include "../loader/basicconfig.hpp"
+#include "../launchconfig.hpp"
 #include "../os/actionmap.hpp"
 #include "../os/inputstate.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <optional>
 #include <stdexcept>
 #include <utility>
+#include <unordered_map>
 
 namespace Pelican {
 
 namespace {
 
 class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
+    std::optional<InputActionMap> action_definitions;
     std::optional<InputActionMap> action_map;
+    std::unordered_map<std::string, InputBindingProfile> profiles;
+    std::optional<std::string> active_profile;
     std::vector<std::string> action_set_stack;
     InputActionFrame current_frame;
     std::uint64_t frozen_generation = std::numeric_limits<std::uint64_t>::max();
@@ -81,7 +87,22 @@ class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
             return;
         }
 
-        action_map = parseInputActionsString(*input_actions_json);
+        action_definitions = parseInputActionsString(*input_actions_json);
+        action_map = action_definitions;
+        for (const auto &[name, profile_json] : GET_MODULE(ProjectBasicConfig).inputProfileJsons()) {
+            auto profile = parseInputProfileString(profile_json, *action_definitions);
+            if (profile.name != name) {
+                throw std::runtime_error("input profile key '" + name + "' does not match document name '" +
+                                         profile.name + "'");
+            }
+            profiles.emplace(name, std::move(profile));
+        }
+        const auto &launch = GET_MODULE(EngineLaunchConfig);
+        const auto selected = launch.input_profile ? launch.input_profile
+                                                   : GET_MODULE(ProjectBasicConfig).defaultInputProfile();
+        if (selected) {
+            selectProfile(*selected);
+        }
         if (!action_map->actionSets().empty()) {
             action_set_stack.push_back(action_map->actionSets().front().name);
         }
@@ -89,6 +110,35 @@ class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
 
     bool isConfigured() const noexcept {
         return action_map.has_value();
+    }
+
+    void selectProfile(std::string_view name) {
+        const auto it = profiles.find(std::string{name});
+        if (it == profiles.end()) {
+            throw std::runtime_error("unknown input profile: " + std::string{name});
+        }
+        action_map = applyInputProfile(*action_definitions, it->second);
+        active_profile = it->first;
+        frozen_generation = std::numeric_limits<std::uint64_t>::max();
+    }
+
+    bool pollsGamepad() const noexcept {
+        return action_map && action_map->usesGamepad();
+    }
+
+    std::optional<std::string> activeProfile() const {
+        return active_profile;
+    }
+
+    std::vector<std::string> availableProfiles() const {
+        std::vector<std::string> result;
+        result.reserve(profiles.size());
+        for (const auto &[name, profile] : profiles) {
+            (void)profile;
+            result.push_back(name);
+        }
+        std::sort(result.begin(), result.end());
+        return result;
     }
 
     void freezeFrame() {
@@ -230,6 +280,22 @@ void freezeInputActionsFrame() {
 
 std::uint64_t inputActionsEvaluationCount() {
     return GET_MODULE(InputActionsRuntime).evaluationCount();
+}
+
+bool gamepadPollingEnabled() {
+    return GET_MODULE(InputActionsRuntime).pollsGamepad();
+}
+
+std::optional<std::string> activeInputProfile() {
+    return GET_MODULE(InputActionsRuntime).activeProfile();
+}
+
+std::vector<std::string> availableInputProfiles() {
+    return GET_MODULE(InputActionsRuntime).availableProfiles();
+}
+
+void selectInputProfile(std::string_view profile_name) {
+    GET_MODULE(InputActionsRuntime).selectProfile(profile_name);
 }
 
 } // namespace internal

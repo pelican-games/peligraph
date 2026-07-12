@@ -5,7 +5,7 @@
     {
       "name": "xr",
       "actions": [
-        {"name": "aim", "type": "pose", "bindings": ["xr:right_hand"]}
+        {"name": "aim", "type": "pose"}
       ]
     }
   ]

@@ -5,8 +5,8 @@
     {
       "name": "gameplay",
       "actions": [
-        {"name": "jump", "type": "button", "bindings": ["kbd:space"]},
-        {"name": "jump", "type": "button", "bindings": ["kbd:enter"]}
+        {"name": "jump", "type": "button"},
+        {"name": "jump", "type": "button"}
       ]
     }
   ]

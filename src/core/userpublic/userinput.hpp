@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <optional>
 #include <vector>
 
 namespace Pelican {
@@ -129,6 +130,10 @@ namespace internal {
 // instead of re-evaluating the bindings.
 void freezeInputActionsFrame();
 std::uint64_t inputActionsEvaluationCount();
+bool gamepadPollingEnabled();
+std::optional<std::string> activeInputProfile();
+std::vector<std::string> availableInputProfiles();
+void selectInputProfile(std::string_view profile_name);
 
 } // namespace internal
 

@@ -140,13 +140,17 @@ TEST_CASE("Registered game system can read Actions and EngineTime through GameCo
     Sandbox sandbox;
     writeText(sandbox.root / "input" / "actions.json",
               readText(fixtureRoot() / "valid" / "gameplay_menu.json"));
+    writeText(sandbox.root / "input" / "profiles" / "keyboard.json",
+              readText(fixtureRoot() / "valid" / "keyboard.json"));
 
     const auto project = nlohmann::json{
         {"schema", "pelican.project"},
         {"version", 1},
         {"name", "game-system-actions"},
         {"engine_min_version", "0.1.0"},
-        {"basic_config", {{"input_actions_json", "input/actions.json"}}},
+        {"basic_config", {{"input_actions_json", "input/actions.json"},
+                          {"input_profiles", {{"keyboard", "input/profiles/keyboard.json"}}},
+                          {"input_profile", "keyboard"}}},
     };
 
     FastModuleContainer modules;

@@ -89,6 +89,8 @@ file(MAKE_DIRECTORY
 file(COPY "${SOURCE_DIR}/test/fixtures/ground.glb" DESTINATION "${ARTIFACT_ROOT}/project/assets/models")
 file(RENAME "${ARTIFACT_ROOT}/project/assets/models/ground.glb" "${ARTIFACT_ROOT}/project/assets/models/character.glb")
 configure_file("${SOURCE_DIR}/projects/example/input/actions.json" "${ARTIFACT_ROOT}/project/input/actions.json" COPYONLY)
+file(MAKE_DIRECTORY "${ARTIFACT_ROOT}/project/input/profiles")
+configure_file("${SOURCE_DIR}/projects/example/input/profiles/keyboard.json" "${ARTIFACT_ROOT}/project/input/profiles/keyboard.json" COPYONLY)
 configure_file("${SOURCE_DIR}/projects/example/passes/main_rendering_config.json" "${ARTIFACT_ROOT}/project/passes/main_rendering_config.json" COPYONLY)
 
 file(WRITE "${ARTIFACT_ROOT}/project/project.json" [=[
@@ -109,7 +111,9 @@ file(WRITE "${ARTIFACT_ROOT}/project/project.json" [=[
     "rendering_config_json": "passes/main_rendering_config.json",
     "default_rendering_pass": "main_render",
     "ui_config_json": "ui/ui_overlay.json",
-    "input_actions_json": "input/actions.json"
+    "input_actions_json": "input/actions.json",
+    "input_profiles": {"keyboard": "input/profiles/keyboard.json"},
+    "input_profile": "keyboard"
   }
 }
 ]=])

@@ -30,6 +30,12 @@
     "rendering_config_json": "passes/main_rendering_config.json",
     "default_rendering_pass": "main_render",
     "ui_config_json": "ui/ui_overlay.json",
-    "input_actions_json": "input/actions.json"
+    "input_actions_json": "input/actions.json",
+    "input_profiles": {
+      "keyboard": "input/profiles/keyboard.json",
+      "gamepad": "input/profiles/gamepad.json",
+      "arcade": "input/profiles/arcade.json"
+    },
+    "input_profile": "keyboard"
   }
 }

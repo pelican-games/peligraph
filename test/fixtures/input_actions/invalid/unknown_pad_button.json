@@ -1,0 +1,8 @@
+{
+  "schema": "pelican.input_profile",
+  "version": 1,
+  "name": "broken_cabinet",
+  "bindings": [
+    {"action": "jump", "binding": "pad:turbo"}
+  ]
+}

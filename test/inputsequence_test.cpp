@@ -14,6 +14,8 @@ TEST_CASE("pelican.input_seq v1 round trips every WP89 input event kind determin
     input.queueAxisEvent(1.0f, -2.0f);
     input.queueEvent(InputEvent::scroll(0.5f, 4.0f));
     input.queueEvent(InputEvent::character(0x3042));
+    input.queueEvent(InputEvent::gamepadButton(0, GamepadButton::A, true));
+    input.queueEvent(InputEvent::gamepadAxis(0, GamepadAxis::LeftX, 0.75f));
     input.beginFrame();
 
     InputSequence sequence{30.0};
@@ -26,10 +28,12 @@ TEST_CASE("pelican.input_seq v1 round trips every WP89 input event kind determin
     REQUIRE(second == first);
     REQUIRE(parsed.fps() == 30.0);
     REQUIRE(parsed.frames().size() == 2);
-    REQUIRE(parsed.frames()[0].events.size() == 5);
+    REQUIRE(parsed.frames()[0].events.size() == 7);
     REQUIRE(parsed.frames()[0].events[0].event_seq == 0);
     REQUIRE(parsed.frames()[0].events[0].code == KeyCode::W);
     REQUIRE(parsed.frames()[0].events[4].codepoint == 0x3042);
+    REQUIRE(parsed.frames()[0].events[5].pad_button == GamepadButton::A);
+    REQUIRE(parsed.frames()[0].events[6].pad_axis == GamepadAxis::LeftX);
     REQUIRE(parsed.frames()[1].events.empty());
 }
 

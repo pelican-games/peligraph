@@ -1,0 +1,8 @@
+{
+  "schema": "pelican.input_profile",
+  "version": 1,
+  "name": "broken_stick",
+  "bindings": [
+    {"action": "move", "binding": "pad:warp_stick"}
+  ]
+}

@@ -330,6 +330,23 @@ ProjectBasicConfig::ProjectBasicConfig() {
         }
         input_actions_json_ref = input_actions_ref->get<std::string>();
     }
+    if (const auto profiles = loader.getOptionalVal("basic_config/input_profiles")) {
+        if (!profiles->is_object()) {
+            throw std::runtime_error("basic_config.input_profiles must be an object");
+        }
+        for (const auto &[name, value] : profiles->items()) {
+            if (name.empty() || !value.is_string() || value.get<std::string>().empty()) {
+                throw std::runtime_error("basic_config.input_profiles entries must have named string references");
+            }
+            input_profile_json_refs.emplace(name, value.get<std::string>());
+        }
+    }
+    if (const auto profile = loader.getOptionalVal("basic_config/input_profile")) {
+        if (!profile->is_string() || profile->get<std::string>().empty()) {
+            throw std::runtime_error("basic_config.input_profile must be a non-empty string");
+        }
+        default_input_profile = profile->get<std::string>();
+    }
 
     LOG_INFO(logger, "project basic config loaded");
 }
@@ -382,6 +399,19 @@ std::optional<std::string> ProjectBasicConfig::inputActionsJson() const {
         input_actions_json = GET_MODULE(PathResolver).loadText(*input_actions_json_ref);
     }
     return input_actions_json;
+}
+
+std::unordered_map<std::string, std::string> ProjectBasicConfig::inputProfileJsons() const {
+    for (const auto &[name, reference] : input_profile_json_refs) {
+        if (!input_profile_jsons.contains(name)) {
+            input_profile_jsons.emplace(name, GET_MODULE(PathResolver).loadText(reference));
+        }
+    }
+    return input_profile_jsons;
+}
+
+std::optional<std::string> ProjectBasicConfig::defaultInputProfile() const {
+    return default_input_profile;
 }
 
 } // namespace Pelican

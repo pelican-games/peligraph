@@ -111,7 +111,9 @@ constexpr std::string_view project_json = R"json({
     "rendering_config_json": "passes/main_rendering_config.json",
     "default_rendering_pass": "main_render",
     "ui_config_json": "ui/ui_overlay.json",
-    "input_actions_json": "input/actions.json"
+    "input_actions_json": "input/actions.json",
+    "input_profiles": {"keyboard": "input/profiles/keyboard.json"},
+    "input_profile": "keyboard"
   }
 }
 )json";
@@ -168,11 +170,20 @@ constexpr std::string_view input_actions_json = R"json({
       "actions": [
         {
           "name": "move",
-          "type": "axis2",
-          "bindings": ["kbd:wasd"]
+          "type": "axis2"
         }
       ]
     }
+  ]
+}
+)json";
+
+constexpr std::string_view input_keyboard_profile_json = R"json({
+  "schema": "pelican.input_profile",
+  "version": 1,
+  "name": "keyboard",
+  "bindings": [
+    {"action": "move", "binding": "kbd:wasd"}
   ]
 }
 )json";
@@ -366,6 +377,7 @@ const std::vector<TemplateFile> &templateFiles() {
         {"assets/textures/.gitkeep", gitkeep},
         {"assets/audio/.gitkeep", gitkeep},
         {"input/actions.json", input_actions_json},
+        {"input/profiles/keyboard.json", input_keyboard_profile_json},
         {"passes/main_rendering_config.json", rendering_config_json},
         {"ui/ui_overlay.json", ui_overlay_json},
         {"code/CMakeLists.txt", code_cmake},

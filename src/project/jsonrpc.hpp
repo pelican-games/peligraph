@@ -48,6 +48,9 @@ enum class RpcInputInjectionEventType {
     mouseDown,
     mouseUp,
     axis,
+    gamepadButtonDown,
+    gamepadButtonUp,
+    gamepadAxis,
 };
 
 struct RpcInputInjectionEvent {
@@ -56,6 +59,7 @@ struct RpcInputInjectionEvent {
     double x = 0.0;
     double y = 0.0;
     double value = 0.0;
+    std::size_t gamepad = 0;
 };
 
 struct RpcEventInjection {
