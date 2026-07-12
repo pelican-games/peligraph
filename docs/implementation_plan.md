@@ -1986,6 +1986,60 @@ WP81(psd_layers / atlas_pack レシピ = pelican-import-tools)。見積: 中。
    スナップショット入り)での表示スクリーンショットをレポートに +
    既存 golden 全維持 + 全テスト + player
 
+### WP87: UI U1 — GPU 描画(quad buffer / アトラス / clip / feature 化)
+
+参照: **`design_ui_2d_foundation.md` v8 §1(quad ABI)・§2-2(Viewport
+Transform)・§6(purgeable feature 化・canonical anchor)・§9 U1 行が正**。
+依存: WP75(U0 済)・WP74(C1b 済 — U1 は C1b 後の規定)・WP81
+(K3 済 — pelican.atlas v1)。見積: 特大。
+排他: `src/core/ui/` / `src/core/renderer/uicontainer.*` /
+`src/core/resources/features/`(ui feature 新設)。
+
+1. **quad buffer**: U0 の draw command 列 → QuadVertex(20B stride:
+   pos float2@0 / uv float2@8 / color u8x4 RGBA8_UNORM linear@16)+
+   uint16 index。上限 16384 quad / 256 unique clip(超過 =
+   `limit_exceeded`)
+2. **DrawRun**: merge key (pipeline_key, texture_page, sampler_key,
+   clip_id) の隣接マージのみ。white テクセル page 0
+3. **アトラス接続**: `pelican.atlas` v1 JSON(WP81 の出力)を読み、
+   `#sprite/<名前>` 参照を page/rect に解決。**アトラス画像は color role =
+   SRGB view**(WP74 機構)。bleed padding 前提の UV
+4. **clip**: nested clip の交差 → scissor(§4 の px 変換規則)
+5. **ui feature 化**: `engine://features/ui.json` の purgeable feature に
+   移行(現行の特殊 pass 型を置換)。**不参照時に UiModule・GPU 資源・
+   パーサが立ち上がらない**ことをテスト保証。canonical anchor
+   `pelican_ui` に入る。旧 ui_overlay.json は atomic 移行(strict v1 流儀)
+6. panel(9patch)/ image widget の実描画
+7. golden: 2 アトラス交互重なり・nested clip・旧 UI 移行(explosion/
+   ui_test の見た目維持)— 件数 REQUIRE 更新を忘れない(現在 21)
+8. 受け入れ = §9 U1 ゲート + 既存 golden 全維持(SKIP 0)+ 全テスト +
+   player(example の UI が従来どおり出るスクリーンショット)
+
+### WP88: temporal T1+T2 — RT history 機構 + velocity(機構のみ)
+
+参照: **`design_postprocess_temporal.md` §1〜2・§4 T1/T2 行が正**。
+**スコープ確定(2026-07-12 ユーザー決定): エンジンは機構(T1 history +
+T2 velocity)まで。TAA・アキュムレーション等の効果シェーダは
+ユーザーが書く領分** — 機構の実証は最小 accumulation feature(前フレーム
+50% ブレンド)の golden 1 個に留める。依存: WP73(canonical anchor)。
+見積: 大。排他: `src/core/renderingpass/`(history)/
+`src/core/renderer/`(前フレーム行列)。
+
+1. **T1 history**: RT 宣言 `"history": true` で 2 面自動管理。
+   `@history` 付き read は**フレーム内依存を作らない**(前フレーム面を
+   読む)。プランナ/ランタイム/plan スキーマ追記 + fixture。
+   初回フレームの history 面は clear 済み(未定義読み禁止)
+2. **T2 velocity**: model matrix バッファの 2 面化(前フレーム行列)+
+   screen-space velocity(RG16F)を出す velocity feature。
+   カメラジッタ(TAA 用 projection 介入)は**スコープ外**(設計未決 2 —
+   ユーザーの TAA 設計と同時に決める)
+3. 実証 = accumulation feature(50% ブレンド)の golden(step_frame ×N で
+   決定的)+ velocity の解析 fixture(等速移動物体の velocity 値)
+4. **ユーザーが TAA を書くための出口を確認**: feature JSON +
+   .surface/生シェーダから `@history` と velocity を読めること
+   (ドキュメント: adding_features.md にレシピ追記)
+5. 受け入れ = fixture 群 + 既存 golden 全維持(SKIP 0)+ 全テスト + player
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **最小コマンド層**: (1) ファイル連携済み → (2) WP27 実装済み → (3) `load_gltf` / `update_transforms` は **2026-07-07 に実装 GO 決定**。前提はすべて充足(宛先 = scene v1 の objects[].name / アセット意味論 = WP21)。設計時要件: **複数インスタンス運用**(エージェントが複数エンジンを並行駆動する使い方) — stdio rpc は 1 プロセス 1 クライアントの現行構造を維持しつつ、`get_status`(instance id・project・フレーム番号)を追加してインスタンス識別可能に。プロジェクトは読み取り専有なので並行起動は安全(書き込み系操作を入れる際に排他を設計)。複数クライアント同時接続は TCP/WebSocket 展開時の課題として分離
