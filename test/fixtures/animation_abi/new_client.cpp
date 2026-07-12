@@ -28,3 +28,11 @@ ANIM_FIXTURE_EXPORT std::uint32_t pelican_animation_fixture_accept_api(const voi
     const auto *api = static_cast<const ApiV1 *>(data);
     return api->version == 1 && api->struct_size >= 16 ? 1u : 0u;
 }
+
+ANIM_FIXTURE_EXPORT std::uint32_t pelican_animation_fixture_service_available(const void *data,
+                                                                                std::uint32_t available) {
+    constexpr auto required = offsetof(ApiV1, get_animation_service) + sizeof(GetAnimationServiceV1Fn);
+    if (available < required) return 0;
+    const auto *api = static_cast<const ApiV1 *>(data);
+    return api->struct_size >= required && api->get_animation_service != nullptr ? 1u : 0u;
+}

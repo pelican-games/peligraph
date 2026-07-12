@@ -425,44 +425,4 @@ std::uint64_t ProbeRuntime::previousRevision(InstanceHandle instance) const {
     return it != impl_->commits.end() && it->second.generation == instance.generation ? it->second.previous : 0;
 }
 
-namespace {
-ProbeRuntime &apiRuntime() { static ProbeRuntime runtime; return runtime; }
-Status apiAdvance(void *context, const AdvanceDescV1 *desc, IntervalResultV1 *result) {
-    if (!context || !desc || !result) return Status::invalid_argument;
-    return static_cast<ProbeRuntime *>(context)->advanceCursor(*desc, *result);
-}
-Status apiPublish(void *context, const PublishAnimationFrameDescV1 *desc) {
-    if (!context || !desc) return Status::invalid_argument;
-    return static_cast<ProbeRuntime *>(context)->publishAnimationFrame(*desc);
-}
-Status apiAdvanceHistory(void *context, const AdvanceTemporalHistoryDescV1 *desc) {
-    if (!context || !desc) return Status::invalid_argument;
-    return static_cast<ProbeRuntime *>(context)->advanceTemporalHistoryAfterRender(*desc);
-}
-} // namespace
-
-Status getApiV1(std::uint32_t client_abi_version, ApiV1 *out_api) noexcept {
-    if (!out_api || out_api->struct_size < headerSize) return Status::invalid_argument;
-    if (out_api->version != descriptorVersionV1) return Status::unsupported_version;
-    if (out_api->reserved0 != 0 || out_api->reserved1 != 0) return Status::reserved_not_zero;
-    if (client_abi_version < 1 || client_abi_version > abiVersionV1) return Status::unsupported_version;
-    const auto caller_size = out_api->struct_size;
-    ApiV1 produced{};
-    produced.struct_size = sizeof(ApiV1);
-    produced.version = descriptorVersionV1;
-    produced.engine_abi_version = abiVersionV1;
-    produced.minimum_client_abi_version = 1;
-    produced.capability_bits = 0;
-    try {
-        produced.context = &apiRuntime();
-    } catch (...) {
-        return Status::out_of_memory;
-    }
-    produced.advance_cursor = apiAdvance;
-    produced.publish_animation_frame = apiPublish;
-    produced.advance_temporal_history_after_render = apiAdvanceHistory;
-    std::memcpy(out_api, &produced, std::min<std::size_t>(caller_size, sizeof(produced)));
-    return Status::ok;
-}
-
 } // namespace Pelican::Animation

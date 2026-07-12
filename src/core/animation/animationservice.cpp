@@ -1,0 +1,850 @@
+#include "animationservice.hpp"
+
+#include "animationjobs.hpp"
+#include "animationprobe.hpp"
+#include "../userpublic/details/reload/registrationowner.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <limits>
+#include <mutex>
+#include <string_view>
+#include <thread>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+namespace Pelican::Animation {
+namespace {
+
+constexpr std::size_t descriptorHeaderSize = sizeof(DescriptorHeaderV1);
+
+template <class T> Status validateDescriptor(const T &value, std::size_t minimum = sizeof(T)) {
+    if (value.struct_size < minimum) return Status::invalid_argument;
+    if (value.version != descriptorVersionV1) return Status::unsupported_version;
+    if (value.reserved0 != 0 || value.reserved1 != 0) return Status::reserved_not_zero;
+    return Status::ok;
+}
+
+template <class Handle> bool sameHandle(Handle left, Handle right) {
+    return left.identity == right.identity && left.generation == right.generation &&
+           left.reserved == 0 && right.reserved == 0;
+}
+
+AnimationOwnerHandle publicOwner(internal::RegistrationOwner owner, std::uint32_t generation) {
+    return {owner + 1, generation, 0};
+}
+
+std::string_view checkedString(const char *data, std::uint32_t size) {
+    return data == nullptr ? std::string_view{} : std::string_view{data, size};
+}
+
+} // namespace
+
+struct AnimationServiceRuntime::Impl {
+    struct ObjectRecord {
+        std::string name;
+        const SkeletalModelData *model{};
+        const AnimationAsset *asset{};
+    };
+    struct SinkRecord {
+        AnimationSinkHandle handle{};
+        ObjectRecord *object{};
+        AnimationSinkKind kind{AnimationSinkKind::skeletal_pose};
+        InstanceHandle instance{};
+        AnimationSourceHandle active_source{};
+        bool reset_history{};
+        std::uint64_t last_notification_revision{};
+    };
+    struct OwnerRecord {
+        std::uint32_t generation{1};
+        bool active{true};
+    };
+    struct ArenaRecord {
+        PoseArenaHandle handle{};
+        AnimationOwnerHandle owner{};
+        std::thread::id thread;
+        std::unique_ptr<ProbeRuntime> runtime;
+        PoseArenaHandle internal_arena{};
+        std::vector<std::uint64_t> poses;
+    };
+    struct PoseRecord {
+        PoseViewV1 view{};
+        std::uint64_t arena_identity{};
+    };
+    struct CursorRecord {
+        CursorHandle handle{};
+        AnimationOwnerHandle owner{};
+        ClipHandle clip{};
+        bool active{true};
+    };
+    struct SourceRecord {
+        AnimationSourceHandle handle{};
+        AnimationOwnerHandle owner{};
+        AnimationSinkHandle sink{};
+        std::uint32_t ordinal{};
+        bool active{true};
+    };
+    struct PhaseRecord {
+        PhaseRegistrationHandle handle{};
+        AnimationOwnerHandle owner{};
+        PhaseRegistrationV1 registration{};
+        AnimationPhaseCallbackV1 callback{};
+        void *user_context{};
+        bool active{true};
+    };
+    struct BlockedCommit {
+        std::uint64_t instance_identity{};
+        std::uint32_t instance_generation{};
+        std::uint64_t revision{};
+    };
+
+    std::recursive_mutex mutex;
+    AnimationAssetRegistry assets;
+    ProbeRuntime legacy_runtime;
+    std::unordered_map<std::string, std::unique_ptr<ObjectRecord>> objects;
+    std::unordered_map<std::uint64_t, ObjectRecord *> rigs;
+    std::unordered_map<std::uint64_t, std::pair<ObjectRecord *, const AnimationClipResource *>> clips;
+    std::unordered_map<std::uint64_t, std::pair<ObjectRecord *, const AnimationSkinBinding *>> bindings;
+    std::unordered_map<std::uint64_t, SinkRecord> sinks;
+    std::unordered_map<std::uint64_t, std::uint64_t> instances;
+    std::unordered_map<std::uint64_t, OwnerRecord> owners;
+    std::unordered_map<std::uint64_t, ArenaRecord> arenas;
+    std::unordered_map<std::uint64_t, PoseRecord> poses;
+    std::unordered_map<std::uint64_t, CursorRecord> cursors;
+    std::unordered_map<std::uint64_t, SourceRecord> sources;
+    std::unordered_map<std::uint64_t, PhaseRecord> phases;
+    std::vector<BlockedCommit> blocked_commits;
+    std::uint64_t next_identity{1};
+
+    AnimationOwnerHandle ensureOwner(internal::RegistrationOwner internal_owner) {
+        const auto identity = internal_owner + 1;
+        auto &owner = owners[identity];
+        if (!owner.active) return {identity, owner.generation, 0};
+        return {identity, owner.generation, 0};
+    }
+
+    Status validateOwner(AnimationOwnerHandle owner) const {
+        if (!isValid(owner)) return Status::invalid_handle;
+        const auto found = owners.find(owner.identity);
+        if (found == owners.end()) return Status::invalid_handle;
+        if (!found->second.active || found->second.generation != owner.generation)
+            return Status::stale_generation;
+        return Status::ok;
+    }
+
+    ObjectRecord *findRig(RigHandle rig) {
+        if (!isValid(rig)) return nullptr;
+        const auto found = rigs.find(rig.identity);
+        if (found == rigs.end()) return nullptr;
+        const auto &current = found->second->asset->rig;
+        return sameHandle(current.handle, rig) && current.generation_state->current.load() == rig.generation
+                   ? found->second
+                   : nullptr;
+    }
+
+    std::pair<ObjectRecord *, const AnimationClipResource *> *findClip(ClipHandle clip) {
+        if (!isValid(clip)) return nullptr;
+        const auto found = clips.find(clip.identity);
+        if (found == clips.end()) return nullptr;
+        const auto *resource = found->second.second;
+        if (!sameHandle(resource->handle, clip) ||
+            resource->generation_state->current.load() != clip.generation)
+            return nullptr;
+        return &found->second;
+    }
+
+    SinkRecord *findSink(AnimationSinkHandle sink) {
+        if (!isValid(sink)) return nullptr;
+        const auto found = sinks.find(sink.identity);
+        return found != sinks.end() && sameHandle(found->second.handle, sink) ? &found->second : nullptr;
+    }
+
+    SourceRecord *findSource(AnimationSourceHandle source) {
+        if (!isValid(source)) return nullptr;
+        const auto found = sources.find(source.identity);
+        if (found == sources.end()) return nullptr;
+        return found->second.active && sameHandle(found->second.handle, source) ? &found->second : nullptr;
+    }
+
+    PoseRecord *findPose(PoseHandle pose) {
+        if (!isValid(pose)) return nullptr;
+        const auto found = poses.find(pose.identity);
+        if (found == poses.end() || !sameHandle(found->second.view.pose, pose)) return nullptr;
+        return &found->second;
+    }
+
+    Status resolvePose(PoseHandle pose, PoseRecord *&out) {
+        out = findPose(pose);
+        if (out) return Status::ok;
+        return ProbeRuntime::validatePoseHandle(pose);
+    }
+
+    void registerObject(std::string name, const SkeletalModelData &model) {
+        std::scoped_lock lock{mutex};
+        if (name.empty()) throw std::runtime_error("animation object name must not be empty");
+        if (objects.contains(name)) throw std::runtime_error("animation object name is already registered");
+        auto object = std::make_unique<ObjectRecord>();
+        object->name = std::move(name);
+        object->model = &model;
+        object->asset = &assets.getOrCreate(model);
+        auto *record = object.get();
+        rigs.emplace(record->asset->rig.handle.identity, record);
+        for (const auto &clip : record->asset->clips) clips.emplace(clip.handle.identity, std::pair{record, &clip});
+        for (const auto &binding : record->asset->skin_bindings)
+            bindings.emplace(binding.handle.identity, std::pair{record, &binding});
+        objects.emplace(record->name, std::move(object));
+    }
+
+    void reset() {
+        std::scoped_lock lock{mutex};
+        for (auto &[_, cursor] : cursors)
+            if (cursor.active) legacy_runtime.destroyCursor(cursor.handle);
+        cursors.clear();
+        sources.clear();
+        phases.clear();
+        blocked_commits.clear();
+        poses.clear();
+        arenas.clear();
+        sinks.clear();
+        instances.clear();
+        bindings.clear();
+        clips.clear();
+        rigs.clear();
+        objects.clear();
+        assets.clear();
+        owners.clear();
+        ++next_identity;
+    }
+
+    void releaseOwner(internal::RegistrationOwner internal_owner) noexcept {
+        try {
+            std::scoped_lock lock{mutex};
+            const auto identity = internal_owner + 1;
+            const auto found = owners.find(identity);
+            if (found == owners.end() || !found->second.active) return;
+            for (auto &[_, phase] : phases)
+                if (phase.active && phase.owner.identity == identity) phase.active = false;
+            for (auto &[_, source] : sources) {
+                if (!source.active || source.owner.identity != identity) continue;
+                if (auto *sink = findSink(source.sink); sink && sameHandle(sink->active_source, source.handle))
+                    sink->active_source = invalidHandle<AnimationSourceHandle>();
+                source.active = false;
+                if (++source.handle.generation == 0) ++source.handle.generation;
+            }
+            for (auto &[_, cursor] : cursors) {
+                if (!cursor.active || cursor.owner.identity != identity) continue;
+                legacy_runtime.destroyCursor(cursor.handle);
+                cursor.active = false;
+            }
+            std::vector<std::uint64_t> dead_arenas;
+            for (const auto &[arena_identity, arena] : arenas)
+                if (arena.owner.identity == identity) dead_arenas.push_back(arena_identity);
+            for (const auto arena_identity : dead_arenas) {
+                for (const auto pose_identity : arenas[arena_identity].poses) poses.erase(pose_identity);
+                arenas.erase(arena_identity);
+            }
+            found->second.active = false;
+            if (++found->second.generation == 0) ++found->second.generation;
+        } catch (...) {
+        }
+    }
+
+    Status runPhases(AnimationSinkHandle sink_handle, std::uint64_t revision) noexcept {
+        try {
+            std::scoped_lock lock{mutex};
+            auto *sink = findSink(sink_handle);
+            if (!sink || revision == 0) return Status::invalid_handle;
+            std::vector<PhaseRecord *> ordered;
+            for (auto &[_, phase] : phases)
+                if (phase.active) ordered.push_back(&phase);
+            std::sort(ordered.begin(), ordered.end(), [](const PhaseRecord *left, const PhaseRecord *right) {
+                if (left->registration.phase != right->registration.phase)
+                    return left->registration.phase < right->registration.phase;
+                if (left->registration.priority != right->registration.priority)
+                    return left->registration.priority < right->registration.priority;
+                if (left->registration.registration_identity != right->registration.registration_identity)
+                    return left->registration.registration_identity < right->registration.registration_identity;
+                return left->registration.source_ordinal < right->registration.source_ordinal;
+            });
+            for (const auto *phase : ordered) {
+                AnimationPhaseContextV1 context{};
+                context.struct_size = sizeof(context);
+                context.version = descriptorVersionV1;
+                context.phase = phase->registration.phase;
+                context.sink = sink->handle;
+                context.instance = sink->instance;
+                context.frame_revision = revision;
+                Status status = Status::callback_failed;
+                try {
+                    internal::ScopedRegistrationOwner owner_scope{phase->owner.identity - 1};
+                    status = phase->callback(phase->user_context, &context);
+                } catch (...) {
+                    status = Status::callback_failed;
+                }
+                if (status != Status::ok) {
+                    blocked_commits.push_back({sink->instance.identity, sink->instance.generation, revision});
+                    return status == Status::ok ? Status::callback_failed : status;
+                }
+            }
+            return Status::ok;
+        } catch (...) {
+            return Status::out_of_memory;
+        }
+    }
+
+    static Impl *self(void *context) { return static_cast<Impl *>(context); }
+
+    static Status apiAdvance(void *context, const AdvanceDescV1 *desc, IntervalResultV1 *result) {
+        if (!context || !desc || !result) return Status::invalid_argument;
+        return self(context)->legacy_runtime.advanceCursor(*desc, *result);
+    }
+    static Status apiPublish(void *context, const PublishAnimationFrameDescV1 *desc) {
+        if (!context || !desc) return Status::invalid_argument;
+        return self(context)->legacy_runtime.publishAnimationFrame(*desc);
+    }
+    static Status apiAdvanceHistory(void *context, const AdvanceTemporalHistoryDescV1 *desc) {
+        if (!context || !desc) return Status::invalid_argument;
+        return self(context)->legacy_runtime.advanceTemporalHistoryAfterRender(*desc);
+    }
+
+    static Status getCurrentOwner(void *context, CurrentAnimationOwnerDescV1 *desc) {
+        if (!context || !desc) return Status::invalid_argument;
+        if (const auto status = validateDescriptor(*desc); status != Status::ok) return status;
+        auto *runtime = self(context);
+        std::scoped_lock lock{runtime->mutex};
+        desc->owner = runtime->ensureOwner(internal::currentRegistrationOwner());
+        return Status::ok;
+    }
+
+    static Status resolveSink(void *context, ResolveAnimationSinkDescV1 *desc) {
+        if (!context || !desc) return Status::invalid_argument;
+        if (const auto status = validateDescriptor(*desc); status != Status::ok) return status;
+        if ((desc->object_name == nullptr && desc->object_name_size != 0) ||
+            desc->sink_kind > AnimationSinkKind::expression_curve)
+            return Status::invalid_argument;
+        auto *runtime = self(context);
+        std::scoped_lock lock{runtime->mutex};
+        const auto object = runtime->objects.find(std::string{checkedString(desc->object_name, desc->object_name_size)});
+        if (object == runtime->objects.end()) return Status::not_found;
+        for (const auto &[_, sink] : runtime->sinks) {
+            if (sink.object == object->second.get() && sink.kind == desc->sink_kind) {
+                desc->sink = sink.handle;
+                return Status::ok;
+            }
+        }
+        SinkRecord sink;
+        sink.handle = {runtime->next_identity++, 1, 0};
+        sink.object = object->second.get();
+        sink.kind = desc->sink_kind;
+        sink.instance = {runtime->next_identity++, 1, 0};
+        runtime->instances.emplace(sink.instance.identity, sink.handle.identity);
+        desc->sink = sink.handle;
+        runtime->sinks.emplace(sink.handle.identity, sink);
+        return Status::ok;
+    }
+
+    static Status resolveInstance(void *context, ResolveAnimationInstanceDescV1 *desc) {
+        if (!context || !desc) return Status::invalid_argument;
+        if (const auto status = validateDescriptor(*desc); status != Status::ok) return status;
+        auto *runtime = self(context);
+        std::scoped_lock lock{runtime->mutex};
+        auto *sink = runtime->findSink(desc->sink);
+        if (!sink) return Status::invalid_handle;
+        desc->instance = sink->instance;
+        return Status::ok;
+    }
+
+    static Status resolveRig(void *context, ResolveAnimationRigDescV1 *desc) {
+        if (!context || !desc) return Status::invalid_argument;
+        if (const auto status = validateDescriptor(*desc); status != Status::ok) return status;
+        auto *runtime = self(context);
+        std::scoped_lock lock{runtime->mutex};
+        if (!isValid(desc->instance)) return Status::invalid_handle;
+        const auto found = runtime->instances.find(desc->instance.identity);
+        if (found == runtime->instances.end()) return Status::invalid_handle;
+        auto *sink = runtime->findSink(runtime->sinks.at(found->second).handle);
+        if (!sink || !sameHandle(sink->instance, desc->instance)) return Status::stale_generation;
+        desc->rig = sink->object->asset->rig.handle;
+        return Status::ok;
+    }
+
+    static Status resolveLayout(void *context, ResolvePoseLayoutDescV1 *desc) {
+        if (!context || !desc) return Status::invalid_argument;
+        if (const auto status = validateDescriptor(*desc); status != Status::ok) return status;
+        auto *runtime = self(context);
+        std::scoped_lock lock{runtime->mutex};
+        auto *object = runtime->findRig(desc->rig);
+        if (!object) return Status::invalid_handle;
+        desc->layout = object->asset->rig.layout;
+        desc->joint_count = static_cast<std::uint32_t>(object->asset->rig.rest_pose.size());
+        desc->palette_count = static_cast<std::uint32_t>(object->model->joint_nodes.size());
+        desc->skin_binding = object->asset->skin_bindings.empty()
+                                 ? invalidHandle<SkinBindingHandle>()
+                                 : object->asset->skin_bindings.front().handle;
+        return Status::ok;
+    }
+
+    static Status resolveClip(void *context, ResolveAnimationClipDescV1 *desc) {
+        if (!context || !desc) return Status::invalid_argument;
+        if (const auto status = validateDescriptor(*desc); status != Status::ok) return status;
+        if (desc->reserved2 != 0 || (desc->clip_name == nullptr && desc->clip_name_size != 0))
+            return Status::reserved_not_zero;
+        auto *runtime = self(context);
+        std::scoped_lock lock{runtime->mutex};
+        auto *object = runtime->findRig(desc->rig);
+        if (!object) return Status::invalid_handle;
+        const auto name = checkedString(desc->clip_name, desc->clip_name_size);
+        for (const auto &clip : object->asset->clips) {
+            if (clip.source && clip.source->name == name) {
+                desc->clip = clip.handle;
+                return Status::ok;
+            }
+        }
+        return Status::not_found;
+    }
+
+    static Status beginPoseFrame(void *context, BeginPoseArenaFrameDescV1 *desc) {
+        if (!context || !desc) return Status::invalid_argument;
+        if (const auto status = validateDescriptor(*desc); status != Status::ok) return status;
+        if (desc->frame_revision == 0) return Status::invalid_argument;
+        auto *runtime = self(context);
+        std::scoped_lock lock{runtime->mutex};
+        if (const auto status = runtime->validateOwner(desc->owner); status != Status::ok) return status;
+        ArenaRecord *arena = nullptr;
+        for (auto &[_, candidate] : runtime->arenas) {
+            if (sameHandle(candidate.owner, desc->owner) && candidate.thread == std::this_thread::get_id()) {
+                arena = &candidate;
+                break;
+            }
+        }
+        if (!arena) {
+            ArenaRecord created;
+            created.handle = {runtime->next_identity++, 1, 0};
+            created.owner = desc->owner;
+            created.thread = std::this_thread::get_id();
+            created.runtime = std::make_unique<ProbeRuntime>();
+            arena = &runtime->arenas.emplace(created.handle.identity, std::move(created)).first->second;
+        } else {
+            for (const auto pose_identity : arena->poses) runtime->poses.erase(pose_identity);
+            arena->poses.clear();
+            if (++arena->handle.generation == 0) ++arena->handle.generation;
+        }
+        arena->internal_arena = arena->runtime->beginFrame(desc->frame_revision);
+        if (!isValid(arena->internal_arena)) return Status::wrong_thread;
+        desc->arena = arena->handle;
+        return Status::ok;
+    }
+
+    static Status acquirePose(void *context, AcquirePoseDescV1 *desc) {
+        if (!context || !desc || !desc->out_view) return Status::invalid_argument;
+        if (const auto status = validateDescriptor(*desc); status != Status::ok) return status;
+        if (desc->reserved2 != 0) return Status::reserved_not_zero;
+        auto *runtime = self(context);
+        std::scoped_lock lock{runtime->mutex};
+        const auto found = runtime->arenas.find(desc->arena.identity);
+        if (found == runtime->arenas.end() || !isValid(desc->arena)) return Status::invalid_handle;
+        auto &arena = found->second;
+        if (desc->arena.generation != arena.handle.generation) return Status::stale_generation;
+        if (arena.thread != std::this_thread::get_id()) return Status::wrong_thread;
+        auto produced = *desc->out_view;
+        const auto status = arena.runtime->acquirePose(arena.internal_arena, desc->layout, desc->joint_count, produced);
+        if (status != Status::ok) return status;
+        *desc->out_view = produced;
+        arena.poses.push_back(produced.pose.identity);
+        runtime->poses.emplace(produced.pose.identity, PoseRecord{produced, arena.handle.identity});
+        return Status::ok;
+    }
+
+    static Status getClipMetadata(void *context, ClipMetadataV1 *metadata) {
+        if (!context || !metadata) return Status::invalid_argument;
+        if (const auto status = validateDescriptor(*metadata); status != Status::ok) return status;
+        auto *runtime = self(context);
+        std::scoped_lock lock{runtime->mutex};
+        auto *found = runtime->findClip(metadata->clip);
+        if (!found) return Status::invalid_handle;
+        const auto *clip = found->second;
+        const auto caller_size = metadata->struct_size;
+        ClipMetadataV1 produced{};
+        produced.struct_size = sizeof(produced);
+        produced.version = descriptorVersionV1;
+        produced.clip = clip->handle;
+        produced.source_rig = clip->source_rig;
+        produced.start_seconds = clip->source->start;
+        produced.end_seconds = clip->source->end;
+        produced.wrap_mode = WrapMode::repeat;
+        for (const auto &channel : clip->source->channels)
+            produced.channel_kind_mask |= 1u << static_cast<std::uint32_t>(channel.path);
+        produced.annotation_identity = clip->handle.identity;
+        produced.annotation_generation = clip->handle.generation;
+        produced.sampling_context_generation = clip->handle.generation;
+        produced.cursor_generation = clip->handle.generation;
+        std::memcpy(metadata, &produced, std::min<std::size_t>(caller_size, sizeof(produced)));
+        return Status::ok;
+    }
+
+    static Status createCursor(void *context, CreateClipCursorDescV1 *desc) {
+        if (!context || !desc) return Status::invalid_argument;
+        if (const auto status = validateDescriptor(*desc); status != Status::ok) return status;
+        auto *runtime = self(context);
+        std::scoped_lock lock{runtime->mutex};
+        if (const auto status = runtime->validateOwner(desc->owner); status != Status::ok) return status;
+        auto *found = runtime->findClip(desc->clip);
+        if (!found) return Status::invalid_handle;
+        const double duration = found->second->source->end - found->second->source->start;
+        const auto cursor = runtime->legacy_runtime.createCursor(duration, WrapMode::repeat);
+        if (!isValid(cursor)) return Status::invalid_argument;
+        runtime->cursors.emplace(cursor.identity, CursorRecord{cursor, desc->owner, desc->clip, true});
+        desc->cursor = cursor;
+        return Status::ok;
+    }
+
+    static Status destroyCursor(void *context, const DestroyClipCursorDescV1 *desc) {
+        if (!context || !desc) return Status::invalid_argument;
+        if (const auto status = validateDescriptor(*desc); status != Status::ok) return status;
+        auto *runtime = self(context);
+        std::scoped_lock lock{runtime->mutex};
+        if (const auto status = runtime->validateOwner(desc->owner); status != Status::ok) return status;
+        const auto found = runtime->cursors.find(desc->cursor.identity);
+        if (found == runtime->cursors.end() || !sameHandle(found->second.handle, desc->cursor))
+            return Status::invalid_handle;
+        if (!found->second.active || !sameHandle(found->second.owner, desc->owner))
+            return Status::stale_generation;
+        const auto status = runtime->legacy_runtime.destroyCursor(desc->cursor);
+        if (status == Status::ok) found->second.active = false;
+        return status;
+    }
+
+    static Status samplePose(void *context, const SamplePoseAtDescV1 *desc) {
+        if (!context || !desc) return Status::invalid_argument;
+        if (const auto status = validateDescriptor(*desc); status != Status::ok) return status;
+        if (!std::isfinite(desc->time_seconds)) return Status::invalid_argument;
+        auto *runtime = self(context);
+        std::scoped_lock lock{runtime->mutex};
+        auto *clip = runtime->findClip(desc->clip);
+        if (!clip) return Status::invalid_handle;
+        PoseRecord *pose{};
+        if (const auto status = runtime->resolvePose(desc->output_pose, pose); status != Status::ok)
+            return status;
+        return samplePoseAt(*clip->first->asset, clip->second, desc->time_seconds, 1.0, true, 0.0, pose->view);
+    }
+
+    static Status blendPoses(void *context, const BlendNormalDescV1 *desc) {
+        if (!context || !desc) return Status::invalid_argument;
+        if (const auto status = validateDescriptor(*desc); status != Status::ok) return status;
+        if (desc->reserved2 != 0 || (desc->layer_count != 0 && desc->layers == nullptr))
+            return Status::invalid_argument;
+        auto *runtime = self(context);
+        std::scoped_lock lock{runtime->mutex};
+        auto *object = runtime->findRig(desc->rig);
+        if (!object) return Status::invalid_handle;
+        PoseRecord *output{};
+        if (const auto status = runtime->resolvePose(desc->output_pose, output); status != Status::ok)
+            return status;
+        std::vector<NormalBlendInput> inputs;
+        inputs.reserve(desc->layer_count);
+        for (std::uint32_t i = 0; i < desc->layer_count; ++i) {
+            const auto &layer = desc->layers[i];
+            if (const auto status = validateDescriptor(layer); status != Status::ok) return status;
+            if (layer.mode != BlendMode::normal || layer.additive_space != AdditiveSpace::local)
+                return Status::invalid_argument;
+            PoseRecord *pose{};
+            if (const auto status = runtime->resolvePose(layer.pose, pose); status != Status::ok)
+                return status;
+            if (layer.joint_weight_count != 0 && layer.joint_weights == nullptr) return Status::invalid_argument;
+            inputs.push_back({&pose->view, layer.weight,
+                              {layer.joint_weights, layer.joint_weight_count}});
+        }
+        return blendNormal(object->asset->rig, inputs, output->view);
+    }
+
+    static Status localToModelJob(void *context, LocalToModelDescV1 *desc) {
+        if (!context || !desc) return Status::invalid_argument;
+        if (const auto status = validateDescriptor(*desc); status != Status::ok) return status;
+        auto *runtime = self(context);
+        std::scoped_lock lock{runtime->mutex};
+        auto *object = runtime->findRig(desc->rig);
+        if (!object) return Status::invalid_handle;
+        PoseRecord *local{};
+        if (const auto status = runtime->resolvePose(desc->local_pose, local); status != Status::ok)
+            return status;
+        const auto required = static_cast<std::uint32_t>(object->asset->rig.rest_pose.size());
+        desc->model_matrix_count = required;
+        if (desc->model_matrix_capacity < required || !desc->model_matrices) return Status::buffer_too_small;
+        PoseViewV1 *model_view = nullptr;
+        if (isValid(desc->model_pose)) {
+            PoseRecord *model{};
+            if (const auto status = runtime->resolvePose(desc->model_pose, model); status != Status::ok)
+                return status;
+            model_view = &model->view;
+        }
+        return localToModel(object->asset->rig, local->view,
+                            {desc->model_matrices, desc->model_matrix_capacity}, model_view);
+    }
+
+    static Status buildPalette(void *context, BuildSkinPaletteDescV1 *desc) {
+        if (!context || !desc) return Status::invalid_argument;
+        if (const auto status = validateDescriptor(*desc); status != Status::ok) return status;
+        if (desc->reserved2 != 0) return Status::reserved_not_zero;
+        auto *runtime = self(context);
+        std::scoped_lock lock{runtime->mutex};
+        if (!isValid(desc->skin_binding)) return Status::invalid_handle;
+        const auto found = runtime->bindings.find(desc->skin_binding.identity);
+        if (found == runtime->bindings.end() || !sameHandle(found->second.second->handle, desc->skin_binding))
+            return Status::invalid_handle;
+        const auto required = static_cast<std::uint32_t>(found->second.first->model->joint_nodes.size());
+        desc->palette_count = required;
+        if (desc->model_matrix_count < found->second.first->asset->rig.rest_pose.size() || !desc->model_matrices)
+            return Status::invalid_argument;
+        if (desc->palette_capacity < required || !desc->palette) return Status::buffer_too_small;
+        return buildSkinPalette(*found->second.first->asset,
+                                {desc->model_matrices, desc->model_matrix_count},
+                                {desc->palette, desc->palette_capacity});
+    }
+
+    static Status registerPhase(void *context, RegisterAnimationPhaseDescV1 *desc) {
+        if (!context || !desc) return Status::invalid_argument;
+        if (const auto status = validateDescriptor(*desc); status != Status::ok) return status;
+        if (const auto status = validateDescriptor(desc->registration); status != Status::ok) return status;
+        if (!desc->callback || desc->registration.phase > Phase::commit ||
+            desc->registration.registration_identity == 0 || desc->registration.registration_generation == 0)
+            return Status::invalid_argument;
+        auto *runtime = self(context);
+        std::scoped_lock lock{runtime->mutex};
+        if (const auto status = runtime->validateOwner(desc->owner); status != Status::ok) return status;
+        for (const auto &[_, existing] : runtime->phases) {
+            if (!existing.active) continue;
+            if (existing.registration.phase == desc->registration.phase &&
+                existing.registration.priority == desc->registration.priority &&
+                existing.registration.registration_identity == desc->registration.registration_identity &&
+                existing.registration.source_ordinal == desc->registration.source_ordinal)
+                return Status::phase_order_error;
+        }
+        PhaseRecord phase;
+        phase.handle = {runtime->next_identity++, desc->owner.generation, 0};
+        phase.owner = desc->owner;
+        phase.registration = desc->registration;
+        phase.callback = desc->callback;
+        phase.user_context = desc->user_context;
+        desc->registration_handle = phase.handle;
+        runtime->phases.emplace(phase.handle.identity, phase);
+        return Status::ok;
+    }
+
+    static Status unregisterPhase(void *context, const UnregisterAnimationPhaseDescV1 *desc) {
+        if (!context || !desc) return Status::invalid_argument;
+        if (const auto status = validateDescriptor(*desc); status != Status::ok) return status;
+        auto *runtime = self(context);
+        std::scoped_lock lock{runtime->mutex};
+        if (const auto status = runtime->validateOwner(desc->owner); status != Status::ok) return status;
+        const auto found = runtime->phases.find(desc->registration.identity);
+        if (found == runtime->phases.end()) return Status::invalid_handle;
+        auto &phase = found->second;
+        if (!phase.active || !sameHandle(phase.handle, desc->registration) ||
+            !sameHandle(phase.owner, desc->owner))
+            return Status::stale_generation;
+        phase.active = false;
+        if (++phase.handle.generation == 0) ++phase.handle.generation;
+        return Status::ok;
+    }
+
+    static Status claimSource(void *context, ClaimAnimationSourceDescV1 *desc) {
+        if (!context || !desc) return Status::invalid_argument;
+        if (const auto status = validateDescriptor(*desc); status != Status::ok) return status;
+        if (desc->reserved2 != 0) return Status::reserved_not_zero;
+        auto *runtime = self(context);
+        std::scoped_lock lock{runtime->mutex};
+        if (const auto status = runtime->validateOwner(desc->owner); status != Status::ok) return status;
+        auto *sink = runtime->findSink(desc->sink);
+        if (!sink) return Status::invalid_handle;
+        if (runtime->findSource(sink->active_source)) return Status::authority_conflict;
+        SourceRecord source;
+        source.handle = {runtime->next_identity++, desc->owner.generation, 0};
+        source.owner = desc->owner;
+        source.sink = desc->sink;
+        source.ordinal = desc->source_ordinal;
+        sink->active_source = source.handle;
+        desc->source = source.handle;
+        runtime->sources.emplace(source.handle.identity, source);
+        return Status::ok;
+    }
+
+    static Status releaseSource(void *context, const ReleaseAnimationSourceDescV1 *desc) {
+        if (!context || !desc) return Status::invalid_argument;
+        if (const auto status = validateDescriptor(*desc); status != Status::ok) return status;
+        auto *runtime = self(context);
+        std::scoped_lock lock{runtime->mutex};
+        if (const auto status = runtime->validateOwner(desc->owner); status != Status::ok) return status;
+        auto *source = runtime->findSource(desc->source);
+        if (!source) return Status::stale_generation;
+        if (!sameHandle(source->owner, desc->owner)) return Status::authority_conflict;
+        auto *sink = runtime->findSink(source->sink);
+        if (!sink || !sameHandle(sink->active_source, source->handle)) return Status::authority_conflict;
+        sink->active_source = invalidHandle<AnimationSourceHandle>();
+        source->active = false;
+        if (++source->handle.generation == 0) ++source->handle.generation;
+        return Status::ok;
+    }
+
+    static Status handoffSource(void *context, HandoffAnimationSourceDescV1 *desc) {
+        if (!context || !desc) return Status::invalid_argument;
+        if (const auto status = validateDescriptor(*desc); status != Status::ok) return status;
+        if (desc->reserved2 != 0) return Status::reserved_not_zero;
+        auto *runtime = self(context);
+        std::scoped_lock lock{runtime->mutex};
+        auto *source = runtime->findSource(desc->current_source);
+        if (!source) return Status::stale_generation;
+        if (const auto status = runtime->validateOwner(desc->next_owner); status != Status::ok) return status;
+        auto *sink = runtime->findSink(source->sink);
+        if (!sink || !sameHandle(sink->active_source, source->handle)) return Status::authority_conflict;
+        SourceRecord next;
+        next.handle = {runtime->next_identity++, desc->next_owner.generation, 0};
+        next.owner = desc->next_owner;
+        next.sink = source->sink;
+        next.ordinal = desc->next_source_ordinal;
+        source->active = false;
+        if (++source->handle.generation == 0) ++source->handle.generation;
+        sink->active_source = next.handle;
+        desc->next_source = next.handle;
+        runtime->sources.emplace(next.handle.identity, next);
+        return Status::ok;
+    }
+
+    static Status notify(void *context, const AnimationNotificationDescV1 *desc) {
+        if (!context || !desc) return Status::invalid_argument;
+        if (const auto status = validateDescriptor(*desc); status != Status::ok) return status;
+        if (desc->reserved2 != 0 || desc->kind > AnimationNotificationKind::layout_generation_mismatch ||
+            !std::isfinite(desc->time_seconds) || desc->notification_revision == 0)
+            return Status::invalid_argument;
+        auto *runtime = self(context);
+        std::scoped_lock lock{runtime->mutex};
+        auto *source = runtime->findSource(desc->source);
+        auto *sink = runtime->findSink(desc->sink);
+        if (!source || !sink || !sameHandle(source->sink, sink->handle) ||
+            !sameHandle(sink->active_source, source->handle))
+            return Status::authority_conflict;
+        if (desc->notification_revision <= sink->last_notification_revision)
+            return Status::duplicate_revision;
+        if (desc->kind == AnimationNotificationKind::layout_generation_mismatch &&
+            sameHandle(desc->observed_layout, sink->object->asset->rig.layout))
+            return Status::invalid_argument;
+        sink->last_notification_revision = desc->notification_revision;
+        sink->reset_history = true;
+        return Status::ok;
+    }
+
+    static Status publishFromSource(void *context, const PublishAnimationFrameFromSourceDescV1 *desc) {
+        if (!context || !desc) return Status::invalid_argument;
+        if (const auto status = validateDescriptor(*desc); status != Status::ok) return status;
+        if (const auto status = validateDescriptor(desc->frame); status != Status::ok) return status;
+        auto *runtime = self(context);
+        std::scoped_lock lock{runtime->mutex};
+        auto *source = runtime->findSource(desc->source);
+        if (!source) return Status::stale_generation;
+        auto *sink = runtime->findSink(source->sink);
+        if (!sink || !sameHandle(sink->active_source, source->handle)) return Status::authority_conflict;
+        if (!sameHandle(sink->instance, desc->frame.instance)) return Status::authority_conflict;
+        for (const auto &blocked : runtime->blocked_commits) {
+            if (blocked.instance_identity == desc->frame.instance.identity &&
+                blocked.instance_generation == desc->frame.instance.generation &&
+                blocked.revision == desc->frame.frame_revision)
+                return Status::callback_failed;
+        }
+        auto frame = desc->frame;
+        if (sink->reset_history) frame.flags |= commit_reset_history;
+        const auto status = runtime->legacy_runtime.publishAnimationFrame(frame);
+        if (status == Status::ok) sink->reset_history = false;
+        return status;
+    }
+
+    static Status getService(void *context, std::uint32_t client_version, AnimationServiceV1 *out) {
+        if (!context || !out || out->struct_size < descriptorHeaderSize) return Status::invalid_argument;
+        if (out->version != descriptorVersionV1) return Status::unsupported_version;
+        if (out->reserved0 != 0 || out->reserved1 != 0) return Status::reserved_not_zero;
+        if (client_version != animationServiceVersionV1) return Status::unsupported_version;
+        const auto caller_size = out->struct_size;
+        AnimationServiceV1 produced{};
+        produced.struct_size = sizeof(produced);
+        produced.version = descriptorVersionV1;
+        produced.service_version = animationServiceVersionV1;
+        produced.minimum_client_service_version = 1;
+        produced.capability_bits = animationServiceCapabilitiesV1;
+        produced.context = context;
+        produced.get_current_owner = getCurrentOwner;
+        produced.resolve_sink = resolveSink;
+        produced.resolve_instance = resolveInstance;
+        produced.resolve_rig = resolveRig;
+        produced.resolve_layout = resolveLayout;
+        produced.resolve_clip = resolveClip;
+        produced.begin_pose_frame = beginPoseFrame;
+        produced.acquire_pose = acquirePose;
+        produced.get_clip_metadata = getClipMetadata;
+        produced.create_cursor = createCursor;
+        produced.destroy_cursor = destroyCursor;
+        produced.sample_pose_at = samplePose;
+        produced.blend_normal = blendPoses;
+        produced.local_to_model = localToModelJob;
+        produced.build_skin_palette = buildPalette;
+        produced.register_phase = registerPhase;
+        produced.unregister_phase = unregisterPhase;
+        produced.claim_source = claimSource;
+        produced.release_source = releaseSource;
+        produced.handoff_source = handoffSource;
+        produced.notify = notify;
+        produced.publish_animation_frame_from_source = publishFromSource;
+        std::memcpy(out, &produced, std::min<std::size_t>(caller_size, sizeof(produced)));
+        return Status::ok;
+    }
+};
+
+AnimationServiceRuntime::AnimationServiceRuntime() : impl_(std::make_unique<Impl>()) {}
+AnimationServiceRuntime::~AnimationServiceRuntime() = default;
+
+void AnimationServiceRuntime::registerObject(std::string name, const SkeletalModelData &model) {
+    impl_->registerObject(std::move(name), model);
+}
+
+void AnimationServiceRuntime::reset() { impl_->reset(); }
+
+void AnimationServiceRuntime::releaseOwner(internal::RegistrationOwner owner) noexcept { impl_->releaseOwner(owner); }
+
+Status AnimationServiceRuntime::runPhases(AnimationSinkHandle sink, std::uint64_t frame_revision) noexcept {
+    return impl_->runPhases(sink, frame_revision);
+}
+
+AnimationServiceRuntime &animationServiceRuntime() {
+    static auto *runtime = new AnimationServiceRuntime();
+    return *runtime;
+}
+
+void releaseAnimationOwner(internal::RegistrationOwner owner) noexcept {
+    animationServiceRuntime().releaseOwner(owner);
+}
+
+Status getApiV1(std::uint32_t client_abi_version, ApiV1 *out_api) noexcept {
+    if (!out_api || out_api->struct_size < descriptorHeaderSize) return Status::invalid_argument;
+    if (out_api->version != descriptorVersionV1) return Status::unsupported_version;
+    if (out_api->reserved0 != 0 || out_api->reserved1 != 0) return Status::reserved_not_zero;
+    if (client_abi_version < 1 || client_abi_version > abiVersionV1) return Status::unsupported_version;
+    const auto caller_size = out_api->struct_size;
+    ApiV1 produced{};
+    produced.struct_size = sizeof(ApiV1);
+    produced.version = descriptorVersionV1;
+    produced.engine_abi_version = abiVersionV1;
+    produced.minimum_client_abi_version = 1;
+    produced.capability_bits = animationServiceCapabilitiesV1;
+    try {
+        produced.context = animationServiceRuntime().impl_.get();
+    } catch (...) {
+        return Status::out_of_memory;
+    }
+    produced.advance_cursor = AnimationServiceRuntime::Impl::apiAdvance;
+    produced.publish_animation_frame = AnimationServiceRuntime::Impl::apiPublish;
+    produced.advance_temporal_history_after_render = AnimationServiceRuntime::Impl::apiAdvanceHistory;
+    produced.get_animation_service = AnimationServiceRuntime::Impl::getService;
+    std::memcpy(out_api, &produced, std::min<std::size_t>(caller_size, sizeof(produced)));
+    return Status::ok;
+}
+
+} // namespace Pelican::Animation

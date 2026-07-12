@@ -1,5 +1,7 @@
 #include "gamelogicreload.hpp"
 
+#include "../animation/animationservice.hpp"
+
 #include "../appflow/teardown.hpp"
 #include "../launchconfig.hpp"
 #include "../loader/scene.hpp"
@@ -128,6 +130,7 @@ GameLogicReloader::loadCopy(const std::filesystem::path &path, internal::Registr
 }
 
 void GameLogicReloader::unload(LoadedLibrary &library) noexcept {
+    Animation::releaseAnimationOwner(library.owner);
     internal::unregisterGameSystems(library.owner);
     internal::unregisterEvents(library.owner);
     if (library.handle != nullptr) {

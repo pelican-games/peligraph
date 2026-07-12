@@ -89,7 +89,9 @@ target_compile_definitions(pelican_test_animation_probe_test PRIVATE
 if(WIN32)
   add_library(pelican_animation_abi_old SHARED fixtures/animation_abi/old_client.cpp)
   add_library(pelican_animation_abi_new SHARED fixtures/animation_abi/new_client.cpp)
-  foreach(animation_abi_fixture IN ITEMS pelican_animation_abi_old pelican_animation_abi_new)
+  add_library(pelican_animation_public_evaluator SHARED fixtures/animation_abi/public_evaluator.cpp)
+  foreach(animation_abi_fixture IN ITEMS pelican_animation_abi_old pelican_animation_abi_new
+                                         pelican_animation_public_evaluator)
     set_target_properties(${animation_abi_fixture} PROPERTIES
       CXX_STANDARD 20
       MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
@@ -101,9 +103,11 @@ if(WIN32)
   endforeach()
   pelican_define_test(animation_abi_dll_test pelican_core)
   add_dependencies(pelican_test_animation_abi_dll_test pelican_animation_abi_old pelican_animation_abi_new)
+  add_dependencies(pelican_test_animation_abi_dll_test pelican_animation_public_evaluator)
   target_compile_definitions(pelican_test_animation_abi_dll_test PRIVATE
     PELICAN_ANIM_OLD_DLL="$<TARGET_FILE:pelican_animation_abi_old>"
     PELICAN_ANIM_NEW_DLL="$<TARGET_FILE:pelican_animation_abi_new>"
+    PELICAN_ANIM_EVALUATOR_DLL="$<TARGET_FILE:pelican_animation_public_evaluator>"
   )
 endif()
 pelican_define_test(ecs_lifecycle_test pelican_core)
