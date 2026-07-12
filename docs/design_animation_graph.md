@@ -236,7 +236,8 @@ graph/timeline が消費。
 | **A0 / CA0-Probe** | 最小実装がないと凍結不可な契約の検証: arena/opaque buffer の acquire→writable view→frame reset・64-byte alignment・二体 parallel・DLL reload/stale generation。N-way quaternion reference algorithm・wrap/reverse/multi-loop interval・local-to-model・commit 一往復の golden 化。外部 game DLL を旧/新 header でビルドし `sizeof/offsetof/struct_size` と unknown tail 無視を検査 | CA0-Spec |
 | **A1** | 機構 jobs: WP38 sampler の caller-owned Pose 分離・normal blend・local-to-model/commit(**§1-5 の N/N-1 palette 契約を含む**)・既存 clip component 互換 | A0 |
 | **A1.5** | 敵対 fixture: non-joint 祖先・同骨数別 rig・loop 跨ぎ event/root・N-way 順序・hot reload stale handle・2 体並列 | A1 |
-| **A2** | 最小コントローラ: clip state + blend1d + state machine(共有 phase・priority・interrupt/force・get_status)。**受入条件 = v2 レビュー §4.3/§4.4 逐語** | A1.5 |
+| **A1.1** | **公開 service surface**(2026-07-12 WP101 停止で判明した A1 語彙の不足 — `docs/design_reviews/2026-07-12_wp101_report.md` が正): ApiV1 の additive tail(または versioned service table)として asset/pose/job/phase/source-slot API を公開。①additive 成長は凍結 ABI の negotiation 規律どおり ②AnimationSource/sink authority = engine-owned registry・ユーザー評価器は versioned handle で claim/release ③phase callback は DLL unload 時に owner generation とともに自動失効(WP90 契約と同型)。gate = **第三者 game DLL から公開面だけで評価器を駆動する敵対 fixture** + 二世代 DLL fixture 拡張 | A1.5 |
+| **A2** | 最小コントローラ: clip state + blend1d + state machine(共有 phase・priority・interrupt/force・get_status)。**受入条件 = v2 レビュー §4.3/§4.4 逐語**。標準評価器は A1.1 の公開面のみで実装(特権なし) | A1.1 |
 | 後続 | clip annotation/events → mask/additive → **VRM-S0 → VRM-S1 → VRMA-C0 → VRMA-R0 → VRMA-I0**(§4 の 5 WP)→ timeline/live source。motion matching・ragdoll は基礎 API の別評価器として遠くへ | — |
 
 ## 8. 未決事項

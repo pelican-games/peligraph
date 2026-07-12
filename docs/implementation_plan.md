@@ -2449,6 +2449,42 @@ barrier/status を個別再実装しない)。依存: WP96・WP98(済)。見積:
 7. 受け入れ = §2-5 逐語条件 + 新 fixture 全 green + 既存全テスト +
    golden 全維持(SKIP 0)+ player(デモの手動確認手順をレポートに)
 
+**【2026-07-12 追記】WP101 は実装前停止(正しい停止)** —
+`docs/design_reviews/2026-07-12_wp101_report.md` のとおり、凍結 ApiV1 の
+関数表 3 個ではユーザー空間評価器が成立しない(pose acquire・sample・
+blend・phase 登録・sink handoff の公開入口なし)。**WP102(A1.1)を先行**
+させ、WP101 は WP102 着地後に再派遣する(依存: WP102)。
+
+### WP102: アニメ A1.1 — 公開 service surface(WP101 の前提)
+
+参照: **`docs/design_reviews/2026-07-12_wp101_report.md`「不足している
+公開入口」の列挙が要件の正**。設計判断 3 件は確定済み
+(`design_animation_graph.md` v2.1 §7 A1.1 行):
+①ApiV1 の **additive tail / versioned service table**(凍結 prefix
+無変更・negotiation 規律どおり)②AnimationSource/sink authority =
+**engine-owned registry**・ユーザー評価器は versioned handle で
+claim/release(sink 単位 single-writer + handoff — 設計 §3)
+③phase callback は **DLL unload 時に owner generation とともに自動失効**
+(WP90 の owner 契約と同型)。
+依存: WP94/97/99(済)。見積: 大。
+排他: `src/core/userpublic/animation/` + `src/core/animation/` +
+二世代 DLL fixture 拡張。**凍結済み prefix・既存 3 関数の挙動変更禁止**。
+
+1. 公開関数(WP101 レポートの列挙を全部): sink/instance/rig/layout/
+   clip 解決、pose arena frame 開始 + PoseViewV1 acquire、clip metadata
+   取得・cursor 生成/破棄・point sample、normal N-way blend、
+   local-to-model、skin palette 構築、phase callback 登録/解除
+   (owner generation 付き)、source slot の claim/release/handoff、
+   set_time/seek/reload/layout mismatch の通知面
+2. ABI 規律: 全部 additive(struct_size/version/capability bits)。
+   old client/new engine・new client/old engine の negotiation を
+   二世代 DLL fixture に**拡張**(既存 fixture は不変で PASS のまま)
+3. **gate = 第三者 game DLL から公開面だけで最小評価器
+   (単一 clip 再生 + 2 clip blend + commit)を駆動する敵対 fixture**
+   (内部 header include なしをビルドレベルで保証)
+4. 受け入れ = 新 fixture 全 green + 既存全テスト(WP99 敵対 fixture
+   含む)+ golden 全維持(SKIP 0)+ player
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの
