@@ -20,6 +20,7 @@ endif()
 add_library(pelican_imgui OBJECT
   imguiruntime.cpp
   imguisystem.cpp
+  planviewer.cpp
   ${imgui_vendor_SOURCE_DIR}/imgui.cpp
   ${imgui_vendor_SOURCE_DIR}/imgui_demo.cpp
   ${imgui_vendor_SOURCE_DIR}/imgui_draw.cpp
