@@ -129,6 +129,11 @@
       "file": "textures/test.png",
       "size": 19736,
       "sha256": "4e69d8f97843a94cd15e81f79581a70067c1902481d6b0dc56c8b426150d84d8"
+    },
+    {
+      "file": "textures/ui.atlas.json",
+      "size": 318,
+      "sha256": "fd07be1526a890f683d9c287d653f83d9becdb6dceff029859d34c1de5948661"
     }
   ]
 }
