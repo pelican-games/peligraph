@@ -2485,6 +2485,40 @@ claim/release(sink 単位 single-writer + handoff — 設計 §3)
 4. 受け入れ = 新 fixture 全 green + 既存全テスト(WP99 敵対 fixture
    含む)+ golden 全維持(SKIP 0)+ player
 
+### WP103: 2D S2D-0a — スプライト契約と CPU 基盤(GPU なし)
+
+参照: **`design_2d_game_layer.md` v2.1 §0-2・§1-1・§3・§5・§9 S2D-0a 行が
+正**。受入条件 = 再レビュー
+`docs/design_reviews/2026-07-12_2d_v2_rereview_codex.md` の
+**C1(sampler)・C2(source ordinal)・C3(chunk 境界)を逐語で**。
+確定判断: スプライト平面 = **XY + Z 法線固定**(2026-07-12 ユーザー
+決定・§10-1)、sampler 正本 = asset 宣言側(§1-1)。
+依存: K3 atlas(済)・U1(済 — 抽出元)。見積: 大。
+排他: 2D 契約/CPU の新設ユニット + **AtlasAsset の consumer-neutral
+抽出**(UiModule/UIContainer からのリファクタ — U1/U2 の全 fixture・
+golden byte 不変が絶対条件)。GPU パスは実装しない(S2D-0b)。
+
+1. **sprite_view コンポーネント**(§1-1): scene v1 `name` dispatch 準拠・
+   asset 宣言 ID + `#sprite/` 参照・public struct + ref/validation・
+   未知 field/範囲/finite/fragment missing の fixture。sampler は
+   asset 宣言側(nearest|linear、既定 linear)— C1 のとおり
+   per-sprite override なし・batch key に含む
+2. **AtlasAsset 抽出**: atlas parser・GPU page upload・page lifetime を
+   UiModule/UIContainer から consumer-neutral resource へ。UI と
+   sprite の一方だけ有効でも他方を初期化しない(purge 規約)。
+   **U1/U2 の既存 fixture・golden が byte 不変であること**
+3. **SpriteCommand / world ABI**(§0-2): world transform・pivot・UV・
+   color・page・sampler・layer・sort key・billboard。UI の
+   QuadCommand とは別型(共有は index topology/chunk helper のみ)
+4. **sort total key**(§3): layer → policy(z/y_down/declaration_seq)→
+   EntityId full → **source-local stable ordinal(C2)**。finite 必須・
+   canonical float key・`-0/+0`・EntityId 再利用 fixture
+5. **visibility/caching/chunking**(§5): cull → sort → 16384 以下
+   chunk 分割・static chunk cache。**C3 の境界 fixture(可視 16384/
+   16385/2 chunk 超)** + 50k 論理/2k 可視 fixture(WP29 計測形式)
+6. 受け入れ = C1/C2/C3 逐語 + 上記 fixture 全 green(全部 CPU —
+   GPU 不要)+ 既存全テスト + golden 全維持(SKIP 0)+ player
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの
