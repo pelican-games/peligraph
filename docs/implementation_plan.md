@@ -2040,6 +2040,107 @@ T2 velocity)まで。TAA・アキュムレーション等の効果シェーダ�
    (ドキュメント: adding_features.md にレシピ追記)
 5. 受け入れ = fixture 群 + 既存 golden 全維持(SKIP 0)+ 全テスト + player
 
+### WP89: 入力 I3 — 収録とリプレイ(+ カメラ収録の焼き出し)
+
+参照: **`design_input_actions.md` §4(改訂済み: 収録単位 = ordered
+InputEvent 列 + フレーム境界マーカー、`pelican.input_seq`)+
+`design_ui_2d_foundation.md` v8 §2-1(FrameInput/event_seq — WP69 実装済み)
+が正**。依存: WP69(済)。見積: 大。
+排他: `src/core/input/` / `src/core/communication/`(record/replay rpc)。
+
+1. **収録**: ordered InputEvent 列(event_seq + フレーム境界)を
+   `pelican.input_seq` v1(JSONL)へ記録。開始/停止は rpc
+   (`start_input_record` / `stop_input_record`)と CLI フラグ
+2. **リプレイ**: `--replay <file>`(または rpc)で同列を注入 —
+   スナップショットは再生時に再構成(WP69 の同一位相経路)。
+   リプレイ中はホットリロード無効(確定規約)・実入力は遮断
+3. **決定性の証明**: 収録 → リプレイ 2 回で rpc capture が byte 一致する
+   fixture(WASD シナリオ — WP49 の inject_input 資産を流用)
+4. **カメラ収録 → transform_seq 焼き出し**: リプレイ実行中のカメラ
+   world transform を transform_seq v1 として `imports/` +
+   pelican.import manifest に出力(`pelican_cli bake-camera --replay ...`
+   — devcli 側。DCC 往復の入口)
+5. 受け入れ = 上記 fixture + 既存全テスト + golden 全維持 + player
+
+### WP90: G2 — ゲームロジック DLL ホットリロード
+
+参照: **`design_game_logic_native.md` G2 節が正**。依存: G1a/G1b(済)。
+見積: 特大。排他: `src/core/userpublic/` のロード機構 / PELICAN_PROJECT
+ビルド系。
+
+1. プロジェクトゲームコードを DLL としてビルド(PELICAN_PROJECT の
+   出力形態追加)し、実行中に再ロード
+2. **状態の扱いは v1 = 全リセット方式**(シーン再ロード同等)から:
+   リロード検知 → teardown(WP62 の例外安全 teardown に乗る)→
+   新 DLL ロード → シーン再構築。オブジェクト単位の状態移送は v2
+   (欲張らない — まず「保存 → 数秒で反映」の体験を成立させる)
+3. 安全策: リロード中の rpc/replay は拒否(名前入り)・DLL の
+   ABI 版数チェック(エンジン版と不一致は拒否)・ロード失敗時は
+   旧 DLL 継続 + エラー表示(クラッシュさせない)
+4. Windows の DLL ロック回避(コピーしてロードする pdb 対応込みの定石)
+5. fixture: example の playercontrol を書き換え → リロード → 挙動変化を
+   rpc で検証。失敗 DLL(リンクエラー相当)で旧動作継続
+6. 受け入れ = fixture + 既存全テスト + golden 全維持 + player で
+   実際に F5 相当の再ロードを 1 回行うスクリーンショット/ログ
+
+### WP91: 入力 I4 — ゲームパッド + バインディングプロファイル
+
+参照: **`design_input_actions.md`(アクション層)+ 本節の設計判断が正**。
+依存: WP89(収録形式に pad イベントが乗るため後)。見積: 中。
+排他: `src/core/input/`。
+
+**設計判断(確定)**:
+
+- GLFW の gamepad API(SDL_GameControllerDB 互換マッピング内蔵)を使う。
+  新規依存なし。**ビルドユニットは作らない** — パージ境界はアクション層の
+  データ(pad をバインドしなければポーリング含め完全不活性)
+- **バインディングプロファイル**: `pelican.input_actions` を
+  「アクション定義」と「バインディング(プロファイル)」に分離。
+  プロファイルは複数持て(`profiles/gamepad.json` / `profiles/arcade.json`
+  等)、起動引数 or project 設定 or rpc で切替。**ゲーム筐体などの独自
+  レイアウトはプロファイル追加だけで対応**(2026-07-12 ユーザー要望)
+- 未知ボタン/軸はプロファイル側の named エラー(黙って無視しない)。
+  デッドゾーン・軸反転はプロファイルの属性
+
+1. GLFW joystick/gamepad の InputEvent 化(event_seq に乗る =
+   I3 の収録/リプレイが自動で pad 対応)
+2. プロファイル分離 + 切替 + example に gamepad プロファイル 1 個
+3. fixture: プロファイル切替・デッドゾーン・収録リプレイ(pad 入力の
+   決定性)・未知ボタンエラー
+4. 受け入れ = fixture + 既存全テスト + golden 全維持 + player
+
+### WP92: KTX2 テクスチャレーン(エンジン読取 + import レシピ)
+
+参照: **本節が仕様の正(2026-07-12 ユーザー承認)**。狙い = デコード消滅
+(起動)+ VRAM 削減(BCn は GPU 上も圧縮のまま)+ ミップ焼き込み。
+依存: WP74(SRGB/UNORM view)・WP84(ルール表)。見積: 大。
+排他: `src/core/loader/` の画像読取 / import-tools(レシピ追加のみ —
+**別リポジトリへの書込は import-tools のレシピ 1 件に限定**)。
+
+**サブセット(エンジン先行の原則)**:
+
+- エンジンは **KTX2 の制限サブセットを自前パース**(新規ライブラリ
+  リンクなし): supercompression なし / 形式 = `R8G8B8A8_{UNORM,SRGB}` +
+  `BC7_{UNORM,SRGB}` + `BC5_UNORM`(normal 用)/ 2D・全ミップ必須。
+  範囲外は「何が非対応か」を含む名前入りエラー(Basis/zstd は将来拡張)
+- color/data role → SRGB/UNORM は WP74 の view 機構どおり(BC7 にも
+  SRGB variant がある)。ミップは KTX2 の levels をそのまま
+  vkCmdCopyBufferToImage(ランタイム生成なし)
+- 適用先 = **スタンドアロンテクスチャ**(material textures 辞書・
+  UI atlas 画像)。glb 内蔵(KHR_texture_basisu)は対象外と明記
+
+1. エンジン: KTX2 サブセットパーサ + ローダ配線 + capability 照会
+   (BC7/BC5 の format feature — 非対応 GPU は名前入りエラー)
+2. fixture: RGBA8 KTX2 はテスト内ライタで生成(決定的)。BC7/BC5 は
+   コミット済み小 fixture(生成手順を README 記録)。known-value
+   (SRGB decode 188 系)を KTX2 経由でも検証
+3. import-tools: `ktx2` レシピ = **toktx(KTX-Software)を外部ツール
+   契約で起動**(不在は導入手順つきエラー — psd-tools と同じ流儀)。
+   ルール表の組み込み既定に `.png → ktx2` は**入れない**(opt-in)
+4. 効果測定: sponza のテクスチャを KTX2 化した場合の起動 models 時間
+   before/after をレポートに記録(可能なら)
+5. 受け入れ = fixture + 既存全テスト + golden 全維持 + player
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **最小コマンド層**: (1) ファイル連携済み → (2) WP27 実装済み → (3) `load_gltf` / `update_transforms` は **2026-07-07 に実装 GO 決定**。前提はすべて充足(宛先 = scene v1 の objects[].name / アセット意味論 = WP21)。設計時要件: **複数インスタンス運用**(エージェントが複数エンジンを並行駆動する使い方) — stdio rpc は 1 プロセス 1 クライアントの現行構造を維持しつつ、`get_status`(instance id・project・フレーム番号)を追加してインスタンス識別可能に。プロジェクトは読み取り専有なので並行起動は安全(書き込み系操作を入れる際に排他を設計)。複数クライアント同時接続は TCP/WebSocket 展開時の課題として分離
