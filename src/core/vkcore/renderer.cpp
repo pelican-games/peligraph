@@ -5,6 +5,7 @@
 #include "../renderer/materialrender.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
 #include "../renderer/shadowdepthpasscontainer.hpp"
+#include "../renderer/velocitypasscontainer.hpp"
 #include "../renderer/uicontainer.hpp"
 #include "../renderer/uirenderer.hpp"
 #include "../ui/module.hpp"
@@ -53,6 +54,7 @@ struct RenderFrameModules {
     VulkanUtils &vk_utils;
     MaterialRenderer &material_renderer;
     ShadowDepthPassContainer &shadow_depth_pass_container;
+    VelocityPassContainer &velocity_pass_container;
     PolygonInstanceContainer &instance_container;
     const VertBufContainer &vert_buf_container;
     const MaterialContainer &material_container;
@@ -99,6 +101,7 @@ RenderFrameModules resolveRenderFrameModules() {
         GET_MODULE(VulkanUtils),
         GET_MODULE(MaterialRenderer),
         GET_MODULE(ShadowDepthPassContainer),
+        GET_MODULE(VelocityPassContainer),
         GET_MODULE(PolygonInstanceContainer),
         GET_MODULE(VertBufContainer),
         GET_MODULE(MaterialContainer),
@@ -124,7 +127,9 @@ void updateFrameAnimation(LightContainer &light_container, double time) {
     light_container.update();
 }
 
-void updateFrameResources(RenderFrameModules &modules, vk::Extent2D extent) {
+FrameUniformData updateFrameResources(RenderFrameModules &modules, vk::Extent2D extent,
+                                      const glm::mat4 &previous_view,
+                                      const glm::mat4 &previous_projection) {
     auto &engine_time = GET_MODULE(EngineTime);
     const auto frame_index = engine_time.frameIndex();
     const auto inverse_width = extent.width == 0 ? 0.0f : 1.0f / static_cast<float>(extent.width);
@@ -140,10 +145,14 @@ void updateFrameResources(RenderFrameModules &modules, vk::Extent2D extent) {
     data.camera_position = glm::vec4{modules.camera.getPos(), 1.0f};
     data.view = modules.camera.getViewMatrix();
     data.projection = modules.camera.getProjectionMatrix();
+    data.previous_view = previous_view;
+    data.previous_projection = previous_projection;
 
     modules.frame_resources.setSceneBuffers(modules.instance_container.getObjectBuf(),
+                                            modules.instance_container.getPreviousObjectBuf(),
                                             modules.light_container.lightBuffer());
     modules.frame_resources.update(data);
+    return data;
 }
 
 void beginTiming(RenderTiming *render_timing, vk::CommandBuffer cmd_buf, const std::vector<std::string> &node_names) {
@@ -216,8 +225,12 @@ std::string renderTargetName(GlobalRenderTargetId rt_id, const RenderTargetConta
 }
 
 std::string trackedLayoutName(GlobalRenderTargetId rt_id, vk::ImageLayout special_layout,
-                              const RenderTargetLayoutTracker &layout_tracker) {
-    return layoutName(isConcreteRenderTarget(rt_id) ? layout_tracker.currentLayout(rt_id) : special_layout);
+                              const RenderTargetLayoutTracker &layout_tracker,
+                              const RenderTargetContainer &rt_container,
+                              bool history_read = false) {
+    return layoutName(isConcreteRenderTarget(rt_id)
+                          ? layout_tracker.currentLayout(rt_id, history_read, &rt_container)
+                          : special_layout);
 }
 
 nlohmann::json clearColorJson(const vk::ClearColorValue &clear_color) {
@@ -240,7 +253,7 @@ nlohmann::json renderNodeTrace(const CompiledPass &pass, size_t order,
             {"load", loadOpName(definition.color_load_op)},
             {"store", storeOpName(definition.color_store_op)},
             {"final_layout", trackedLayoutName(target, vk::ImageLayout::eColorAttachmentOptimal,
-                                                 layout_tracker)},
+                                                 layout_tracker, rt_container)},
             {"format", isConcreteRenderTarget(target) ? formatToString(format) : "frame_target"},
             {"samples", 1},
         };
@@ -257,7 +270,7 @@ nlohmann::json renderNodeTrace(const CompiledPass &pass, size_t order,
             {"store", storeOpName(definition.depth_store_op)},
             {"final_layout", trackedLayoutName(definition.output_depth,
                                                  vk::ImageLayout::eDepthAttachmentOptimal,
-                                                 layout_tracker)},
+                                                 layout_tracker, rt_container)},
         };
         if (definition.depth_load_op == vk::AttachmentLoadOp::eClear) {
             attachment["clear"] = 1.0;
@@ -266,11 +279,13 @@ nlohmann::json renderNodeTrace(const CompiledPass &pass, size_t order,
     }
 
     nlohmann::json inputs = nlohmann::json::array();
-    for (const auto target : definition.input_targets) {
+    for (size_t i = 0; i < definition.input_targets.size(); ++i) {
+        const auto target = definition.input_targets[i];
+        const bool history_read = definition.input_target_history.at(i);
         inputs.push_back({
-            {"resource", renderTargetName(target, rt_container)},
+            {"resource", renderTargetName(target, rt_container) + (history_read ? "@history" : "")},
             {"final_layout", trackedLayoutName(target, vk::ImageLayout::eShaderReadOnlyOptimal,
-                                                 layout_tracker)},
+                                                 layout_tracker, rt_container, history_read)},
         });
     }
 
@@ -300,6 +315,7 @@ std::size_t formatTexelBytes(vk::Format format) {
     case vk::Format::eR8G8B8A8Srgb:
     case vk::Format::eB8G8R8A8Unorm:
     case vk::Format::eB8G8R8A8Srgb: return 4;
+    case vk::Format::eR16G16Sfloat: return 4;
     case vk::Format::eR16G16B16A16Sfloat: return 8;
     default: return 0;
     }
@@ -394,7 +410,7 @@ nlohmann::json computeNodeTrace(const CompiledComputeTask &task, size_t order,
             nlohmann::json entry{{"resource", resource}};
             const auto target = rt_container.getRenderTargetIdByName(resource);
             if (isConcreteRenderTarget(target)) {
-                entry["final_layout"] = layoutName(layout_tracker.currentLayout(target));
+                entry["final_layout"] = layoutName(layout_tracker.currentLayout(target, false, &rt_container));
             } else {
                 entry["kind"] = "buffer";
             }
@@ -421,7 +437,8 @@ nlohmann::json finalLayoutsTrace(const CompiledRenderingPass &rendering_pass,
         if (isSwapchainRenderTarget(target)) {
             layouts["swapchain"] = layoutName(frame_target_layout);
         } else if (isConcreteRenderTarget(target)) {
-            layouts[renderTargetName(target, rt_container)] = layoutName(layout_tracker.currentLayout(target));
+            layouts[renderTargetName(target, rt_container)] =
+                layoutName(layout_tracker.currentLayout(target, false, &rt_container));
         }
     };
     for (const auto &pass : rendering_pass.passes) {
@@ -596,7 +613,8 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                 throw std::runtime_error("output_transform requires the canonical display target");
             }
             const auto display = modules.render_target_container.getMetadata(display_id);
-            const auto source_old_layout = layout_tracker.currentLayout(display_id);
+            const auto source_old_layout = layout_tracker.currentLayout(display_id, false,
+                                                                         &modules.render_target_container);
             const auto output_pass = std::find_if(
                 rendering_pass.passes.begin(), rendering_pass.passes.end(),
                 [](const CompiledPass &pass) { return pass.definition.name == "output_transform"; });
@@ -646,6 +664,7 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
         modules.fullscreen_pass_renderer,
         fullscreen_pass_renderer_dependencies,
         modules.shadow_depth_pass_container,
+        modules.velocity_pass_container,
         modules.ui_renderer,
         ui_renderer_dependencies ? &*ui_renderer_dependencies : nullptr,
         modules.debug_draw,
@@ -675,6 +694,7 @@ void rebindFullscreenInputs(RenderFrameModules &modules) {
             if (pass.definition.isFullscreen() &&
                 (!pass.definition.input_targets.empty() || !pass.definition.input_buffers.empty())) {
                 modules.fullscreen_pass_container.setInputResources(pass.pass_id, pass.definition.input_targets,
+                                                                    pass.definition.input_target_history,
                                                                     pass.definition.input_buffers, rt_views,
                                                                     modules.frame_graph_resources);
             }
@@ -736,6 +756,14 @@ void Renderer::recreateRenderTargetsAndRebindForTesting(vk::Extent2D extent) {
     render_target_layout_tracker.reset();
 }
 
+void Renderer::resetTemporalHistory() {
+    auto modules = resolveRenderFrameModules();
+    modules.render_target_container.resetHistory();
+    modules.instance_container.resetTemporalHistory();
+    camera_history_valid = false;
+    render_target_layout_tracker.reset();
+}
+
 void Renderer::render() {
     GET_MODULE(DeletionQueue).beginFrame();
 
@@ -745,7 +773,13 @@ void Renderer::render() {
 
     const auto render_ctx = modules.render_target.render_begin();
     handleFrameTargetResize(modules, render_target_layout_tracker);
-    updateFrameResources(modules, render_ctx.extent);
+    const auto current_view = modules.camera.getViewMatrix();
+    const auto current_projection = modules.camera.getProjectionMatrix();
+    if (!camera_history_valid) {
+        previous_view = current_view;
+        previous_projection = current_projection;
+    }
+    updateFrameResources(modules, render_ctx.extent, previous_view, previous_projection);
 
     const auto &rendering_pass =
         modules.rendering_pass_container.getCompiledRenderingPass(current_rendering_pass_id);
@@ -766,6 +800,11 @@ void Renderer::render() {
                                                  render_target_layout_tracker, render_ctx.required_layout)},
         };
     }
+    modules.render_target_container.advanceHistoryFrame();
+    modules.instance_container.commitFrameHistory();
+    previous_view = current_view;
+    previous_projection = current_projection;
+    camera_history_valid = true;
 }
 
 } // namespace Pelican

@@ -28,8 +28,10 @@ void transitionPassOutputsToAttachmentLayouts(vk::CommandBuffer cmd_buf, const P
 void transitionPassInputsToShaderRead(vk::CommandBuffer cmd_buf, const PassDefinition &pass_def,
                                       RenderTargetContainer &rt_container, VulkanUtils &vk_utils,
                                       RenderTargetLayoutTracker &layout_tracker) {
-    for (const auto &rt_id : pass_def.input_targets) {
-        layout_tracker.transition(cmd_buf, rt_container, vk_utils, rt_id, vk::ImageLayout::eShaderReadOnlyOptimal);
+    for (size_t i = 0; i < pass_def.input_targets.size(); ++i) {
+        layout_tracker.transition(cmd_buf, rt_container, vk_utils, pass_def.input_targets[i],
+                                  vk::ImageLayout::eShaderReadOnlyOptimal,
+                                  pass_def.input_target_history.at(i));
     }
 }
 

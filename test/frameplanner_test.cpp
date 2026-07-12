@@ -222,6 +222,7 @@ struct ParsedRenderTargetResolvers {
                 definitions[i].usage,
                 definitions[i].format,
                 extent,
+                definitions[i].history,
             });
         }
     }
@@ -299,6 +300,34 @@ TEST_CASE("frame planner accepts compute tasks and serializes node kinds", "[fra
     REQUIRE(plan_json.at("nodes").at(0).at("kind") == "render");
     REQUIRE(plan_json.at("nodes").at(1).at("kind") == "compute");
     REQUIRE(plan_json.at("nodes").at(2).at("kind") == "compute");
+}
+
+TEST_CASE("history reads are serialized without an intra-frame dependency",
+          "[frameplanner][temporal]") {
+    const auto graph = parseFrameGraphDefinitionFromJson(nlohmann::json::parse(R"json({
+      "name":"history_accumulation",
+      "render_targets":[
+        {"name":"current_color"},
+        {"name":"temporal_accum","history":true}
+      ],
+      "passes":[
+        {"name":"produce_current","type":"fullscreen",
+         "output":{"color":"current_color","depth":null}},
+        {"name":"accumulate","type":"fullscreen",
+         "input":["current_color","temporal_accum@history"],
+         "output":{"color":"temporal_accum","depth":null}}
+      ]
+    })json"));
+    const auto plan = planFrameGraph(graph);
+    REQUIRE(framePlanOrder(plan) == std::vector<std::string>{"produce_current", "accumulate"});
+    REQUIRE(plan.nodes.back().reads == std::vector<std::string>{"current_color"});
+    REQUIRE(plan.nodes.back().reads_history == std::vector<std::string>{"temporal_accum"});
+    REQUIRE(plan.barriers.size() == 1);
+    REQUIRE(plan.barriers.front().resource == "current_color");
+    REQUIRE(std::none_of(plan.barriers.begin(), plan.barriers.end(), [](const auto &barrier) {
+        return barrier.resource == "temporal_accum";
+    }));
+    requirePlanFixture(framePlanToJson(plan), fixtureRoot() / "plans" / "history_read.json");
 }
 
 TEST_CASE("frame planner emits barriers for explicit compute to render resource edges", "[frameplanner]") {

@@ -10,6 +10,8 @@ layout(set = PELICAN_SET_FRAME, binding = PELICAN_FRAME_UBO_BINDING, std140) uni
     vec4 camera_position;
     mat4 view;
     mat4 projection;
+    mat4 previous_view;
+    mat4 previous_projection;
 } pelicanFrame;
 
 struct PelicanObjectData {
@@ -19,6 +21,10 @@ struct PelicanObjectData {
 layout(set = PELICAN_SET_FRAME, binding = PELICAN_OBJECT_BUFFER_BINDING, std430) readonly buffer PelicanObjectBuffer {
     PelicanObjectData objects[];
 } pelicanObjects;
+
+layout(set = PELICAN_SET_FRAME, binding = PELICAN_PREVIOUS_OBJECT_BUFFER_BINDING, std430) readonly buffer PelicanPreviousObjectBuffer {
+    PelicanObjectData objects[];
+} pelicanPreviousObjects;
 
 struct PelicanDirectionalLight {
     vec3 direction;

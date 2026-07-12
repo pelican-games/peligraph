@@ -106,6 +106,49 @@ DLL境界は作らない。
   OFF は明確エラー)。音声・ロジック VM・OpenXR は必須
 - **決定性**: 同じ入力 → 同じ出力を壊さない(EngineTime / スナップショット /
   rpc 応答列一致の資産を守る)
+
+## Recipe 6: temporal history and velocity (WP88)
+
+Temporal effects remain user-space render features. A target with `"history": true`
+owns two images. Read the previous image by writing `<target>@history` in a fullscreen
+pass `input`; write the current image with the unqualified target in `output.color`.
+The authored `clear_color` initializes both images on startup, resize, and `set_time`
+reset (default: transparent black).
+
+Add `"engine://features/velocity.json"` to `features` to produce the purgeable
+`velocity` target. It is `format_class: data`, `R16G16_SFLOAT`, and stores
+`(currentNdc.xy - previousNdc.xy) * 0.5`. It includes object and camera motion and
+does not add projection jitter.
+
+```json
+{
+  "render_targets": [{
+    "name": "accum", "extent_scale": 1.0,
+    "format": "R16G16B16A16_SFLOAT",
+    "format_class": "explicit(R16G16B16A16_SFLOAT)", "role": "color",
+    "usage": ["COLOR_ATTACHMENT", "SAMPLED"],
+    "history": true, "clear_color": [0.0, 0.0, 0.0, 1.0]
+  }],
+  "passes": [{"insert": "after:post_main", "pass": {
+    "name": "accumulate", "type": "fullscreen",
+    "input": ["current_color", "accum@history", "velocity"],
+    "output": {"color": "accum", "depth": null},
+    "shader": {"vertex": "shaders/fullscreen", "fragment": "shaders/accumulate"}
+  }}]
+}
+```
+
+Inputs become set 1 bindings in declaration order, so a raw fragment shader declares
+bindings 0/1/2 for current color, history, and velocity. `.surface` keeps using its
+generated `pelican_screen_<name>(uv)` accessors; temporal post-process passes normally
+use a raw fullscreen shader because `.surface` describes geometry materials. Copy a
+bundled feature JSON into the project before modifying it; bundled features are not
+privileged.
+
+`@history` appears as `reads_history` in `pelican.frame_plan` and creates no same-frame
+edge or barrier. A normal `velocity` read is an ordinary dependency. TAA, camera jitter,
+and accumulation policy are outside WP88.
+
 - Determinism rule: wall clock / std::rand / random_device must not drive deterministic decisions.
 - ログは quill(stdout は rpc プロトコル専用)
 - 常駐プロセスをテストで起動したら必ず停止する(エージェント向け)

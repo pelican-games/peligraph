@@ -74,6 +74,8 @@ PolygonInstanceContainer::PolygonInstanceContainer()
       },
       model_data_buffer{
           createModelInstanceDataBuf(GET_MODULE(VulkanManageCore), maxModelInstances),
+      }, previous_model_data_buffer{
+          createModelInstanceDataBuf(GET_MODULE(VulkanManageCore), maxModelInstances),
       }, device{GET_MODULE(VulkanManageCore).getDevice()},
       skin_palette_buffer{createSkinPaletteBuf(GET_MODULE(VulkanManageCore), maxModelInstances)},
       skin_descriptor_layout{createSkinLayout(device)}, skin_descriptor_pool{createSkinPool(device)} {
@@ -104,6 +106,8 @@ ModelInstanceId PolygonInstanceContainer::placeModelInstance(ModelTemplate &mode
 
     ModelInstanceId id{static_cast<uint32_t>(model_instances_data.size())};
     model_instances_data.push_back(glm::identity<glm::mat4>());
+    previous_model_instances_data.push_back(glm::identity<glm::mat4>());
+    model_history_valid.push_back(false);
 
     for (const auto &material : model.material_primitives) {
         for (const auto &primitive : material.primitives) {
@@ -137,12 +141,16 @@ void PolygonInstanceContainer::removeModelInstance(ModelInstanceId id) {
         return command.command.firstInstance == first_instance;
     });
     model_instances_data[id.value] = glm::identity<glm::mat4>();
+    previous_model_instances_data[id.value] = glm::identity<glm::mat4>();
+    model_history_valid[id.value] = false;
 }
 
 void PolygonInstanceContainer::clear() {
     render_commands.clear();
     draw_calls.clear();
     model_instances_data.clear();
+    previous_model_instances_data.clear();
+    model_history_valid.clear();
 }
 
 void PolygonInstanceContainer::triggerUpdate() {
@@ -151,6 +159,12 @@ void PolygonInstanceContainer::triggerUpdate() {
 
     if (render_commands.empty())
         return;
+
+    for (size_t i = 0; i < model_instances_data.size(); ++i) {
+        if (!model_history_valid[i]) {
+            previous_model_instances_data[i] = model_instances_data[i];
+        }
+    }
 
     // prepare indirect buffer
     std::sort(render_commands.begin(), render_commands.end(), [](const RenderCommand &p, const RenderCommand &q) {
@@ -184,6 +198,19 @@ void PolygonInstanceContainer::triggerUpdate() {
 
     GET_MODULE(VulkanManageCore)
         .writeBuf(model_data_buffer, model_instances_data.data(), 0, sizeof(glm::mat4) * model_instances_data.size());
+    GET_MODULE(VulkanManageCore)
+        .writeBuf(previous_model_data_buffer, previous_model_instances_data.data(), 0,
+                  sizeof(glm::mat4) * previous_model_instances_data.size());
+}
+
+void PolygonInstanceContainer::commitFrameHistory() {
+    previous_model_instances_data = model_instances_data;
+    std::fill(model_history_valid.begin(), model_history_valid.end(), true);
+}
+
+void PolygonInstanceContainer::resetTemporalHistory() {
+    previous_model_instances_data = model_instances_data;
+    std::fill(model_history_valid.begin(), model_history_valid.end(), false);
 }
 
 void PolygonInstanceContainer::setSkinningPalette(ModelInstanceId id,
@@ -212,6 +239,7 @@ void PolygonInstanceContainer::setTrs(ModelInstanceId id, glm::vec3 pos, glm::qu
 
 const BufferWrapper &PolygonInstanceContainer::getIndirectBuf() const { return indirect_buf; }
 const BufferWrapper &PolygonInstanceContainer::getObjectBuf() const { return model_data_buffer; }
+const BufferWrapper &PolygonInstanceContainer::getPreviousObjectBuf() const { return previous_model_data_buffer; }
 const std::vector<DrawIndirectInfo> &PolygonInstanceContainer::getDrawCalls() const { return draw_calls; }
 
 } // namespace Pelican

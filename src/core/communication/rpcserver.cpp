@@ -729,6 +729,7 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
     server.setHandler("set_time", [](const nlohmann::json &params) {
         const auto t = requireNumberParam(params, "t", "set_time");
         GET_MODULE(EngineTime).setTime(t);
+        GET_MODULE(Renderer).resetTemporalHistory();
         return frameResult();
     });
 

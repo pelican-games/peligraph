@@ -9,6 +9,7 @@
 #include "../renderer/debugdraw.hpp"
 #include "../renderer/debugtext.hpp"
 #include "../renderer/shadowdepthpasscontainer.hpp"
+#include "../renderer/velocitypasscontainer.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include "../vkcore/rendertarget.hpp"
 #include <limits>
@@ -54,6 +55,15 @@ struct ShadowDepthRuntimeDependencies {
     const RenderTargetMetadataResolver &render_target_metadata;
     ShaderLibrary &shader_library;
     ShadowDepthPassContainer &shadow_depth_pass_container;
+    const PathResolver &path_resolver;
+    std::vector<std::string> shader_defines;
+    bool warn_backend_specific_shader_refs = false;
+};
+
+struct VelocityRuntimeDependencies {
+    const RenderTargetMetadataResolver &render_target_metadata;
+    ShaderLibrary &shader_library;
+    VelocityPassContainer &velocity_pass_container;
     const PathResolver &path_resolver;
     std::vector<std::string> shader_defines;
     bool warn_backend_specific_shader_refs = false;
@@ -180,6 +190,19 @@ ShadowDepthRuntimeDependencies requireShadowDepthDependencies(
     };
 }
 
+VelocityRuntimeDependencies requireVelocityDependencies(
+    const PassDefinition &pass_def,
+    const RenderingPassRuntimeDependencies &dependencies) {
+    if (dependencies.render_target_metadata == nullptr || dependencies.shader_library == nullptr ||
+        dependencies.velocity_pass_container == nullptr || dependencies.path_resolver == nullptr) {
+        throw std::runtime_error("Velocity pass runtime compile dependencies are unavailable: " +
+                                 pass_def.name);
+    }
+    return {*dependencies.render_target_metadata, *dependencies.shader_library,
+            *dependencies.velocity_pass_container, *dependencies.path_resolver,
+            dependencies.shader_defines, dependencies.warn_backend_specific_shader_refs};
+}
+
 void warnBackendSpecificShaderReference(const ShaderReference &reference, bool enabled) {
     if (!enabled || !reference.backend_specific) {
         return;
@@ -227,7 +250,8 @@ PassId compileFullscreenPass(const PassDefinition &pass_def, FullscreenRuntimeDe
 
     if (!pass_def.input_targets.empty() || !pass_def.input_buffers.empty()) {
         dependencies.fullscreen_pass_container.setInputResources(
-            pass_id, pass_def.input_targets, pass_def.input_buffers, dependencies.render_target_views,
+            pass_id, pass_def.input_targets, pass_def.input_target_history, pass_def.input_buffers,
+            dependencies.render_target_views,
             dependencies.frame_graph_resources);
     }
 
@@ -276,6 +300,31 @@ PassId compileShadowDepthPass(const PassDefinition &pass_def, ShadowDepthRuntime
                                                                            dependencies.shader_defines);
 }
 
+PassId compileVelocityPass(const PassDefinition &pass_def,
+                           VelocityRuntimeDependencies dependencies) {
+    const auto color = dependencies.render_target_metadata.get(pass_def.output_color.front());
+    const auto depth = dependencies.render_target_metadata.get(pass_def.output_depth);
+    if (color.format != vk::Format::eR16G16Sfloat) {
+        throw std::runtime_error("Velocity pass color output must be R16G16_SFLOAT: " + color.name);
+    }
+    if (depth.format != vk::Format::eD32Sfloat) {
+        throw std::runtime_error("Velocity pass depth output must be D32_SFLOAT: " + depth.name);
+    }
+    const auto &info = pass_def.velocityInfo();
+    const auto regular_vert = registerShaderReference(
+        dependencies.shader_library, dependencies.path_resolver, info.vert_shader,
+        dependencies.warn_backend_specific_shader_refs, dependencies.shader_defines);
+    const auto skinned_vert = registerShaderReference(
+        dependencies.shader_library, dependencies.path_resolver, info.skinned_vert_shader,
+        dependencies.warn_backend_specific_shader_refs, dependencies.shader_defines);
+    const auto frag = registerShaderReference(
+        dependencies.shader_library, dependencies.path_resolver, info.frag_shader,
+        dependencies.warn_backend_specific_shader_refs, dependencies.shader_defines);
+    return dependencies.velocity_pass_container.registerVelocityPass(
+        color.format, depth.format, regular_vert, skinned_vert, frag,
+        dependencies.shader_defines);
+}
+
 } // namespace
 
 CompiledRenderingPass compileRenderingPassRuntime(const RenderingPassDefinition &definition,
@@ -304,6 +353,10 @@ CompiledRenderingPass compileRenderingPassRuntime(const RenderingPassDefinition 
             const auto shadow_depth_dependencies = requireShadowDepthDependencies(pass_def, dependencies);
             compiled_pass.passes.push_back(
                 CompiledPass{pass_def, compileShadowDepthPass(pass_def, shadow_depth_dependencies)});
+        } else if (pass_def.isVelocity()) {
+            const auto velocity_dependencies = requireVelocityDependencies(pass_def, dependencies);
+            compiled_pass.passes.push_back(
+                CompiledPass{pass_def, compileVelocityPass(pass_def, velocity_dependencies)});
         } else {
             compiled_pass.passes.push_back(CompiledPass{pass_def, passIndexToPassId(i)});
         }

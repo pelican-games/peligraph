@@ -1,6 +1,8 @@
 #include "rendertargetcontainer.hpp"
 #include "../vkcore/deletionqueue.hpp"
 #include "../vkcore/core.hpp"
+#include "../vkcore/util.hpp"
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <stdexcept>
@@ -11,8 +13,8 @@ namespace Pelican {
 namespace {
 
 struct RetiredRenderTargetResources {
-    ImageWrapper image;
-    vk::UniqueImageView image_view;
+    std::array<ImageWrapper, 2> images;
+    std::array<vk::UniqueImageView, 2> image_views;
 };
 
 vk::Extent2D resolveRenderTargetExtent(const std::string &name, vk::Extent2D base_extent, float extent_scale,
@@ -82,6 +84,37 @@ ImageWrapper createRenderTargetImage(const std::string &name, vk::Extent2D base_
                              memory_usage, {});
 }
 
+void clearHistoryImages(const std::array<ImageWrapper, 2> &images,
+                        const vk::ClearColorValue &clear_color) {
+    GET_MODULE(VulkanUtils).executeOneTimeCmd(
+        [&](vk::CommandBuffer cmd_buf) {
+            for (const auto &image : images) {
+                VulkanUtils::ChangeImageLayoutInfo to_clear{
+                    .src_stage = vk::PipelineStageFlagBits::eTopOfPipe,
+                    .dst_stage = vk::PipelineStageFlagBits::eTransfer,
+                    .src_access = {},
+                    .dst_access = vk::AccessFlagBits::eTransferWrite,
+                };
+                GET_MODULE(VulkanUtils).changeImageLayoutCmd(
+                    cmd_buf, image, vk::ImageLayout::eUndefined,
+                    vk::ImageLayout::eTransferDstOptimal, to_clear);
+                const vk::ImageSubresourceRange range{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+                cmd_buf.clearColorImage(image.image.get(), vk::ImageLayout::eTransferDstOptimal,
+                                        clear_color, range);
+                VulkanUtils::ChangeImageLayoutInfo to_read{
+                    .src_stage = vk::PipelineStageFlagBits::eTransfer,
+                    .dst_stage = vk::PipelineStageFlagBits::eFragmentShader,
+                    .src_access = vk::AccessFlagBits::eTransferWrite,
+                    .dst_access = vk::AccessFlagBits::eShaderRead,
+                };
+                GET_MODULE(VulkanUtils).changeImageLayoutCmd(
+                    cmd_buf, image, vk::ImageLayout::eTransferDstOptimal,
+                    vk::ImageLayout::eShaderReadOnlyOptimal, to_read);
+            }
+        },
+        true);
+}
+
 } // namespace
 
 RenderTargetContainer::RenderTargetContainer() : device{GET_MODULE(VulkanManageCore).getDevice()} {}
@@ -96,15 +129,30 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
                                                                  std::optional<vk::Extent2D> fixed_extent,
                                                                  vk::Format format,
                                                                  vk::ImageUsageFlags usage,
-                                                                 vma::MemoryUsage memUsage) {
+                                                                 vma::MemoryUsage memUsage,
+                                                                 bool history,
+                                                                 vk::ClearColorValue history_clear_color) {
     // Reuse an existing target when config registration is called more than once.
     if (auto it = name_to_id.find(name); it != name_to_id.end()) {
         return it->second;
     }
 
-    ImageWrapper image =
-        createRenderTargetImage(name, base_extent, extent_scale, fixed_extent, format, usage, memUsage);
-    auto image_view = createImageView(device, image);
+    if (history && !(usage & vk::ImageUsageFlagBits::eSampled)) {
+        throw std::runtime_error("History render target requires SAMPLED usage: " + name);
+    }
+    if (history && !(usage & vk::ImageUsageFlagBits::eColorAttachment)) {
+        throw std::runtime_error("History render target requires COLOR_ATTACHMENT usage: " + name);
+    }
+    if (history) usage |= vk::ImageUsageFlagBits::eTransferDst;
+    std::array<ImageWrapper, 2> images;
+    std::array<vk::UniqueImageView, 2> image_views;
+    const uint32_t surface_count = history ? 2u : 1u;
+    for (uint32_t i = 0; i < surface_count; ++i) {
+        images[i] = createRenderTargetImage(name, base_extent, extent_scale, fixed_extent,
+                                            format, usage, memUsage);
+        image_views[i] = createImageView(device, images[i]);
+    }
+    if (history) clearHistoryImages(images, history_clear_color);
 
     GlobalRenderTargetId id = render_targets.reg(InternalRenderTarget{
         .name = name,
@@ -115,8 +163,10 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
         .format = format,
         .usage = usage,
         .memory_usage = memUsage,
-        .image = std::move(image),
-        .image_view = std::move(image_view),
+        .history = history,
+        .history_clear_color = history_clear_color,
+        .images = std::move(images),
+        .image_views = std::move(image_views),
     });
 
     name_to_id.emplace(name, id);
@@ -126,19 +176,47 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
 void RenderTargetContainer::recreateForExtent(vk::Extent2D base_extent) {
     for (const auto &[name, id] : name_to_id) {
         auto &rt = render_targets.get(id);
-        auto next_image = createRenderTargetImage(rt.name, base_extent, rt.extent_scale,
-                                                  rt.fixed_extent, rt.format, rt.usage, rt.memory_usage);
-        auto next_view = createImageView(device, next_image);
+        std::array<ImageWrapper, 2> next_images;
+        std::array<vk::UniqueImageView, 2> next_views;
+        const uint32_t surface_count = rt.history ? 2u : 1u;
+        for (uint32_t i = 0; i < surface_count; ++i) {
+            next_images[i] = createRenderTargetImage(rt.name, base_extent, rt.extent_scale,
+                                                     rt.fixed_extent, rt.format, rt.usage,
+                                                     rt.memory_usage);
+            next_views[i] = createImageView(device, next_images[i]);
+        }
+        if (rt.history) clearHistoryImages(next_images, rt.history_clear_color);
 
         GET_MODULE(DeletionQueue)
             .defer(RetiredRenderTargetResources{
-                .image = std::move(rt.image),
-                .image_view = std::move(rt.image_view),
+                .images = std::move(rt.images),
+                .image_views = std::move(rt.image_views),
             });
 
-        rt.image = std::move(next_image);
-        rt.image_view = std::move(next_view);
+        rt.images = std::move(next_images);
+        rt.image_views = std::move(next_views);
     }
+    history_frame_index = 0;
+}
+
+void RenderTargetContainer::resetHistory() {
+    GET_MODULE(VulkanManageCore).waitIdle();
+    for (const auto &[name, id] : name_to_id) {
+        (void)name;
+        auto &rt = render_targets.get(id);
+        if (rt.history) clearHistoryImages(rt.images, rt.history_clear_color);
+    }
+    history_frame_index = 0;
+}
+
+void RenderTargetContainer::advanceHistoryFrame() {
+    history_frame_index ^= 1u;
+}
+
+uint32_t RenderTargetContainer::surfaceIndex(GlobalRenderTargetId id, bool history_read) const {
+    const auto &rt = render_targets.get(id);
+    if (!rt.history) return 0;
+    return history_read ? (history_frame_index ^ 1u) : history_frame_index;
 }
 
 GlobalRenderTargetId RenderTargetContainer::getRenderTargetIdByName(const std::string &name) const {
@@ -153,17 +231,37 @@ RenderTargetMetadata RenderTargetContainer::getMetadata(GlobalRenderTargetId id)
     return RenderTargetMetadata{
         rt.name,
         rt.usage,
-        rt.image.format,
-        vk::Extent2D{rt.image.extent.width, rt.image.extent.height},
+        rt.format,
+        vk::Extent2D{rt.images[0].extent.width, rt.images[0].extent.height},
+        rt.history,
     };
 }
 
-const ImageWrapper &RenderTargetContainer::getImage(GlobalRenderTargetId id) const {
-    return render_targets.get(id).image;
+const ImageWrapper &RenderTargetContainer::getImage(GlobalRenderTargetId id, bool history_read) const {
+    return render_targets.get(id).images[surfaceIndex(id, history_read)];
 }
 
-vk::ImageView RenderTargetContainer::getImageView(GlobalRenderTargetId id) const {
-    return render_targets.get(id).image_view.get();
+const ImageWrapper &RenderTargetContainer::getImageForFrame(GlobalRenderTargetId id, bool history_read,
+                                                            uint32_t frame_index) const {
+    const auto &rt = render_targets.get(id);
+    const uint32_t index = rt.history ? ((frame_index & 1u) ^ (history_read ? 1u : 0u)) : 0u;
+    return rt.images[index];
+}
+
+vk::ImageView RenderTargetContainer::getImageView(GlobalRenderTargetId id, bool history_read) const {
+    return render_targets.get(id).image_views[surfaceIndex(id, history_read)].get();
+}
+
+vk::ImageView RenderTargetContainer::getImageViewForFrame(GlobalRenderTargetId id, bool history_read,
+                                                          uint32_t frame_index) const {
+    const auto &rt = render_targets.get(id);
+    const uint32_t index = rt.history ? ((frame_index & 1u) ^ (history_read ? 1u : 0u)) : 0u;
+    return rt.image_views[index].get();
+}
+
+vk::ImageLayout RenderTargetContainer::initialLayout(GlobalRenderTargetId id) const {
+    return render_targets.get(id).history ? vk::ImageLayout::eShaderReadOnlyOptimal
+                                          : vk::ImageLayout::eUndefined;
 }
 
 } // namespace Pelican

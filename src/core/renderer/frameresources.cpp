@@ -12,7 +12,7 @@ namespace {
 vk::UniqueDescriptorPool createDescriptorPool(vk::Device device) {
     const std::array pool_sizes{
         vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, 2},
-        vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, 1},
+        vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, 2},
     };
     vk::DescriptorPoolCreateInfo create_info;
     create_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
@@ -46,18 +46,24 @@ FrameResources::FrameResources()
 
 FrameResources::~FrameResources() = default;
 
-void FrameResources::setSceneBuffers(const BufferWrapper &objects, const BufferWrapper &lights) {
-    if (object_buffer == objects.buffer.get() && light_buffer == lights.buffer.get()) {
+void FrameResources::setSceneBuffers(const BufferWrapper &objects,
+                                     const BufferWrapper &previous_objects,
+                                     const BufferWrapper &lights) {
+    if (object_buffer == objects.buffer.get() &&
+        previous_object_buffer == previous_objects.buffer.get() &&
+        light_buffer == lights.buffer.get()) {
         return;
     }
     object_buffer = objects.buffer.get();
+    previous_object_buffer = previous_objects.buffer.get();
     light_buffer = lights.buffer.get();
 
     const std::array buffer_infos{
         vk::DescriptorBufferInfo{object_buffer, 0, vk::WholeSize},
         vk::DescriptorBufferInfo{light_buffer, 0, vk::WholeSize},
+        vk::DescriptorBufferInfo{previous_object_buffer, 0, vk::WholeSize},
     };
-    std::array<vk::WriteDescriptorSet, 2> writes{};
+    std::array<vk::WriteDescriptorSet, 3> writes{};
     writes[0].dstSet = descriptor_set.get();
     writes[0].dstBinding = PELICAN_OBJECT_BUFFER_BINDING;
     writes[0].descriptorType = vk::DescriptorType::eStorageBuffer;
@@ -66,6 +72,10 @@ void FrameResources::setSceneBuffers(const BufferWrapper &objects, const BufferW
     writes[1].dstBinding = PELICAN_LIGHT_UBO_BINDING;
     writes[1].descriptorType = vk::DescriptorType::eUniformBuffer;
     writes[1].setBufferInfo(buffer_infos[1]);
+    writes[2].dstSet = descriptor_set.get();
+    writes[2].dstBinding = PELICAN_PREVIOUS_OBJECT_BUFFER_BINDING;
+    writes[2].descriptorType = vk::DescriptorType::eStorageBuffer;
+    writes[2].setBufferInfo(buffer_infos[2]);
     device.updateDescriptorSets(writes, {});
 }
 

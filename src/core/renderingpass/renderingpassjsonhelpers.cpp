@@ -13,6 +13,7 @@ vk::Format stringToFormat(const std::string &format_str) {
         {"R8G8B8A8_UNORM", vk::Format::eR8G8B8A8Unorm},
         {"R8G8B8A8_SRGB", vk::Format::eR8G8B8A8Srgb},
         {"R8_UNORM", vk::Format::eR8Unorm},
+        {"R16G16_SFLOAT", vk::Format::eR16G16Sfloat},
         {"R16G16B16A16_SFLOAT", vk::Format::eR16G16B16A16Sfloat},
         {"D32_SFLOAT", vk::Format::eD32Sfloat},
         {"D24_UNORM_S8_UINT", vk::Format::eD24UnormS8Uint},
@@ -37,6 +38,8 @@ std::string formatToString(vk::Format format) {
         return "R8G8B8A8_SRGB";
     case vk::Format::eR8Unorm:
         return "R8_UNORM";
+    case vk::Format::eR16G16Sfloat:
+        return "R16G16_SFLOAT";
     case vk::Format::eR16G16B16A16Sfloat:
         return "R16G16B16A16_SFLOAT";
     case vk::Format::eD32Sfloat:
@@ -93,6 +96,9 @@ PassInfo makePassInfo(const std::string &type_str) {
     }
     if (type_str == "shadow_depth") {
         return ShadowDepthPassInfo{};
+    }
+    if (type_str == "velocity") {
+        return VelocityPassInfo{};
     }
     if (type_str == "ui") {
         return UiPassInfo{};

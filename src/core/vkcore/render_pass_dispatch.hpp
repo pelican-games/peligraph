@@ -16,6 +16,7 @@ class FullscreenPassRenderer;
 struct MaterialRendererDependencies;
 class MaterialRenderer;
 class ShadowDepthPassContainer;
+class VelocityPassContainer;
 struct UiRendererDependencies;
 class UiRenderer;
 #if PELICAN_WITH_IMGUI
@@ -28,6 +29,7 @@ struct RenderPassDispatchDependencies {
     FullscreenPassRenderer &fullscreen_pass_renderer;
     const FullscreenPassRendererDependencies &fullscreen_pass_renderer_dependencies;
     ShadowDepthPassContainer &shadow_depth_pass_container;
+    VelocityPassContainer &velocity_pass_container;
     UiRenderer *ui_renderer = nullptr;
     const UiRendererDependencies *ui_renderer_dependencies = nullptr;
     DebugDraw *debug_draw = nullptr;

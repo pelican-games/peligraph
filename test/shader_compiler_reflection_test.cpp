@@ -101,6 +101,12 @@ TEST_CASE("shader reflection reports descriptors, push constants, and vertex inp
     REQUIRE(object_buffer->count == 1);
     REQUIRE(static_cast<bool>(object_buffer->stages & vk::ShaderStageFlagBits::eVertex));
 
+    const auto *previous_object_buffer =
+        findBinding(merged, PELICAN_SET_FRAME, PELICAN_PREVIOUS_OBJECT_BUFFER_BINDING);
+    REQUIRE(previous_object_buffer != nullptr);
+    REQUIRE(previous_object_buffer->type == vk::DescriptorType::eStorageBuffer);
+    REQUIRE(static_cast<bool>(previous_object_buffer->stages & vk::ShaderStageFlagBits::eVertex));
+
     const auto *base_color = findBinding(merged, PELICAN_SET_MATERIAL, 0);
     REQUIRE(base_color != nullptr);
     REQUIRE(base_color->type == vk::DescriptorType::eCombinedImageSampler);
@@ -115,11 +121,13 @@ TEST_CASE("shader reflection reports descriptors, push constants, and vertex inp
     REQUIRE(merged.vertex_inputs[2].format == vk::Format::eR32G32Sfloat);
 
     const auto set0_bindings = makeDescriptorSetLayoutBindings(merged, PELICAN_SET_FRAME);
-    REQUIRE(set0_bindings.size() == 3);
+    REQUIRE(set0_bindings.size() == 4);
     REQUIRE(set0_bindings[0].binding == 0);
     REQUIRE(set0_bindings[0].descriptorType == vk::DescriptorType::eUniformBuffer);
     REQUIRE(set0_bindings[1].binding == 1);
     REQUIRE(set0_bindings[1].descriptorType == vk::DescriptorType::eStorageBuffer);
+    REQUIRE(set0_bindings[3].binding == PELICAN_PREVIOUS_OBJECT_BUFFER_BINDING);
+    REQUIRE(set0_bindings[3].descriptorType == vk::DescriptorType::eStorageBuffer);
 
     const auto set2_bindings = makeDescriptorSetLayoutBindings(merged, PELICAN_SET_MATERIAL);
     REQUIRE(set2_bindings.size() == 5);

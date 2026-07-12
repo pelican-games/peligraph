@@ -3528,6 +3528,207 @@
       }
     ]
   },
+  "temporal_accumulation": {
+    "final_layouts": [
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "current_color"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "display"
+      },
+      {
+        "layout": "transfer_src_optimal",
+        "resource": "swapchain"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "temporal_accum"
+      }
+    ],
+    "nodes": [
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R16G16B16A16_SFLOAT",
+            "load": "clear",
+            "resource": "current_color",
+            "samples": 1,
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "current_frame",
+        "order": 0
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_main",
+        "order": 1
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R16G16B16A16_SFLOAT",
+            "load": "clear",
+            "resource": "temporal_accum",
+            "samples": 1,
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "current_color"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "temporal_accum@history"
+          }
+        ],
+        "kind": "render",
+        "name": "temporal_accumulate",
+        "order": 2
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_tonemap",
+        "order": 3
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 4
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "clear",
+            "resource": "display",
+            "samples": 1,
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "temporal_accum"
+          }
+        ],
+        "kind": "render",
+        "name": "temporal_present",
+        "order": 5
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_pelican_ui",
+        "order": 6
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_draw",
+        "order": 7
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_text",
+        "order": 8
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 9
+      },
+      {
+        "color_counters": {
+          "paired_storage_round_trip": 1,
+          "shader_oetf": 0,
+          "terminal_display_encode": 1,
+          "tone_curve": 1
+        },
+        "destination": "swapchain",
+        "destination_format": "R8G8B8A8_SRGB",
+        "extent": [
+          16,
+          16
+        ],
+        "kind": "output_transform",
+        "mode": "hardware_srgb_encode",
+        "name": "output_transform",
+        "order": 10,
+        "paired_storage_edges": [
+          "temporal_present:display->output_transform"
+        ],
+        "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
+        "samples": 1,
+        "source": "display",
+        "source_format": "B8G8R8A8_SRGB",
+        "texel_block_bytes": 4,
+        "transitions": [
+          {
+            "dst_access": "shader_read",
+            "dst_stage": "fragment_shader",
+            "new_layout": "shader_read_only_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "display",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "color_attachment_write",
+            "dst_stage": "color_attachment_output",
+            "new_layout": "color_attachment_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "swapchain",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "swapchain",
+            "src_access": "color_attachment_write",
+            "src_stage": "color_attachment_output"
+          }
+        ]
+      }
+    ]
+  },
   "ui_u1": {
     "final_layouts": [
       {

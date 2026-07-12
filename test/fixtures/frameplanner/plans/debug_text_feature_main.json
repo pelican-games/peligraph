@@ -54,6 +54,7 @@
       "name": "__anchor_post_main",
       "order": 0,
       "reads": [],
+      "reads_history": [],
       "writes": []
     },
     {
@@ -63,6 +64,7 @@
       "name": "__anchor_tonemap",
       "order": 1,
       "reads": [],
+      "reads_history": [],
       "writes": []
     },
     {
@@ -72,6 +74,7 @@
       "name": "__anchor_post_ldr",
       "order": 2,
       "reads": [],
+      "reads_history": [],
       "writes": []
     },
     {
@@ -81,6 +84,7 @@
       "name": "present",
       "order": 3,
       "reads": [],
+      "reads_history": [],
       "writes": [
         "display"
       ]
@@ -92,6 +96,7 @@
       "name": "__anchor_pelican_ui",
       "order": 4,
       "reads": [],
+      "reads_history": [],
       "writes": []
     },
     {
@@ -101,6 +106,7 @@
       "name": "__anchor_debug_draw",
       "order": 5,
       "reads": [],
+      "reads_history": [],
       "writes": []
     },
     {
@@ -110,6 +116,7 @@
       "name": "__anchor_debug_text",
       "order": 6,
       "reads": [],
+      "reads_history": [],
       "writes": []
     },
     {
@@ -121,6 +128,7 @@
       "reads": [
         "display"
       ],
+      "reads_history": [],
       "writes": [
         "display"
       ]
@@ -132,6 +140,7 @@
       "name": "__anchor_imgui",
       "order": 8,
       "reads": [],
+      "reads_history": [],
       "writes": []
     },
     {
@@ -143,6 +152,7 @@
       "reads": [
         "display"
       ],
+      "reads_history": [],
       "writes": [
         "swapchain"
       ]

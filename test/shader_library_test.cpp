@@ -90,7 +90,7 @@ TEST_CASE("shader library loads SPIR-V files and reports dirty reloads", "[shade
     const auto &bundle = library.get(id);
     REQUIRE(bundle.version == 1);
     REQUIRE(bundle.source_path == shader_path);
-    REQUIRE(bundle.reflection.bindings.size() == 3);
+    REQUIRE(bundle.reflection.bindings.size() == 4);
     REQUIRE(bundle.reflection.bindings[0].set == PELICAN_SET_FRAME);
     REQUIRE(bundle.reflection.bindings[0].binding == PELICAN_FRAME_UBO_BINDING);
     REQUIRE(library.takeDirtyBundles().empty());

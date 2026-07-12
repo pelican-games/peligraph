@@ -14,6 +14,7 @@
 #include "rendertargetnameresolver.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../renderer/shadowdepthpasscontainer.hpp"
+#include "../renderer/velocitypasscontainer.hpp"
 #include "../vkcore/rendertarget.hpp"
 #if PELICAN_WITH_IMGUI
 #include "../imgui/imguiruntime.hpp"
@@ -40,6 +41,7 @@ RenderingPassRuntimeDependencies toRuntimeDependencies(
         &dependencies.shader_library,
         &dependencies.fullscreen_pass_container,
         &GET_MODULE(ShadowDepthPassContainer),
+        &GET_MODULE(VelocityPassContainer),
         &frame_graph_resources,
         &dependencies.path_resolver,
         dependencies.shader_defines,
