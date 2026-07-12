@@ -2141,6 +2141,31 @@ InputEvent 列 + フレーム境界マーカー、`pelican.input_seq`)+
    before/after をレポートに記録(可能なら)
 5. 受け入れ = fixture + 既存全テスト + golden 全維持 + player
 
+### WP93: UI U2 — 対話ウィジェットと E1 emit・rpc 再生
+
+参照: **`design_ui_2d_foundation.md` v8 §3(2 レーン・emit 文法)・
+§9 U2 行(ゲート)が正**。依存: WP87(U1 済)・WP71
+(EventPayloadSchema 済 — emit の照合先)。見積: 特大。
+排他: `src/core/ui/` / `src/core/renderer/debugtext.*`(互換ゲートのみ)。
+
+1. **bitmap label / button**: 同梱グリフ表(整数 advance — §7 の決定性
+   規約)によるテキスト描画。button は U0 の capture 状態機械に接続
+   (hover/pressed の見た目 = UI-local 同フレーム)
+2. **UI-local 状態と commit 境界**: §3 のフレーム一括 commit
+   (UiCommandBuffer)を実描画に接続
+3. **E1 emit**: emit 文法(§3 — fields/from)を EventPayloadSchema
+   (WP71)と照合して**次フレーム配送**。invalid ①〜⑦の実 fixture
+   (U0 の error code 表と 1:1)
+4. **rpc の ordered click/drag/replay**: inject_input のポインタ事象で
+   button click → イベント発火までが決定的に再現(2 回実行 byte 一致)。
+   WP89 の収録/リプレイにも自然に乗ることを fixture で確認
+5. **debug_text 互換ゲート(R6 — tolerance 0)**: 旧 debug_text 経路と
+   UI 共通経路で同一 fixture を描き **byte-exact 比較**(意図的な色
+   意味論変更時のみ理由記録付き versioned 更新 → 以後再び 0)
+6. 受け入れ = §9 U2 ゲート + semantic fixture 全維持 + 既存 golden
+   全維持(SKIP 0・新規は件数 REQUIRE 更新)+ 全テスト + player
+   (ボタンを rpc click して反応するデモのスクリーンショット)
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの
