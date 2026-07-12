@@ -4,6 +4,8 @@
 #include "../loader/scene.hpp"
 #include "../os/inputstate.hpp"
 #include "../os/inputsequence.hpp"
+#include "../ui/module.hpp"
+#include "../vkcore/rendertarget.hpp"
 #include "../playback/camerabake.hpp"
 #include "../playback/seqplayer.hpp"
 #include "../userpublic/details/event/registerer.hpp"
@@ -39,6 +41,17 @@ void updateFrameState() {
                 GET_MODULE(ImGuiSystem).routeInputAndBeginFrame(GET_MODULE(InputState));
             });
 #endif
+            if (FastModuleContainer::isInitialized<ui::UiModule>() &&
+                FastModuleContainer::isInitialized<RenderTarget>()) {
+                auto &input = GET_MODULE(InputState);
+                const auto &mask = input.consumptionMask();
+                const bool tool_owns_pointer = mask.pointer_motion ||
+                    mask.consumesControl(KeyCode::MouseLeft) ||
+                    mask.consumesControl(KeyCode::MouseRight) ||
+                    mask.consumesControl(KeyCode::MouseMiddle);
+                if (!tool_owns_pointer)
+                    GET_MODULE(ui::UiModule).routeFrameInput(input, GET_MODULE(RenderTarget).getExtent());
+            }
             internal::freezeInputActionsFrame();
             break;
         case FramePhase::deliver_events:

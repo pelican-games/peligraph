@@ -1,6 +1,7 @@
 #include "uicontainer.hpp"
 
 #include "../loader/imageloader.hpp"
+#include "../loader/engineresources.hpp"
 #include "../ui/module.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/util.hpp"
@@ -116,16 +117,25 @@ UIContainer::UIContainer() : device{GET_MODULE(VulkanManageCore).getDevice()} {
     const std::array<std::uint8_t, 4> white{255, 255, 255, 255};
     pages.push_back(makePage(0, "white", uploadRgba8Srgb({1, 1, 1}, white.data(), white.size())));
     for (const auto &source : source_pages) {
-        const auto loaded = loadImageFile(source.image_path);
+        const auto loaded = [&] {
+            if (source.embedded_resource.empty()) return loadImageFile(source.image_path);
+            const auto bytes = engineResourceOrThrow(source.embedded_resource);
+            return loadImageMemory(std::as_bytes(std::span{bytes.data(), bytes.size()}),
+                                   "engine://" + source.embedded_resource);
+        }();
         const bool supported_color = loaded.format == ImagePixelFormat::Rgba8Unorm ||
                                      loaded.format == ImagePixelFormat::Rgba8Srgb ||
                                      loaded.format == ImagePixelFormat::Bc7Unorm ||
                                      loaded.format == ImagePixelFormat::Bc7Srgb;
         if (!supported_color || loaded.width != static_cast<std::uint32_t>(source.size.x) ||
             loaded.height != static_cast<std::uint32_t>(source.size.y))
-            throw std::runtime_error("pelican.atlas v1 page image does not match declared RGBA8/BC7 size: " + source.image_path.string());
+            throw std::runtime_error("pelican.ui page image does not match declared RGBA8/BC7 size: " +
+                                     (source.embedded_resource.empty() ? source.image_path.string()
+                                                                       : "engine://" + source.embedded_resource));
         pages.push_back(makePage(source.id, source.stable_name,
-                                 uploadUiImage(loaded, source.image_path.string())));
+                                 uploadUiImage(loaded, source.embedded_resource.empty()
+                                                          ? source.image_path.string()
+                                                          : "engine://" + source.embedded_resource)));
     }
 }
 

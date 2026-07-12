@@ -26,6 +26,7 @@
     },
     "vec2_number": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
     "rect_i32": { "type": "array", "items": { "$ref": "#/$defs/i32" }, "minItems": 4, "maxItems": 4 },
+    "rgba8": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 255 }, "minItems": 4, "maxItems": 4 },
     "layout": {
       "type": "object", "additionalProperties": false,
       "properties": {
@@ -64,6 +65,16 @@
         "overflow": { "enum": ["visible", "clip"] },
         "enabled": { "type": "boolean" }, "hit_testable": { "type": "boolean" },
         "layer": { "$ref": "#/$defs/i32" }, "emit": { "$ref": "#/$defs/emit" },
+        "sprite": { "type": "string", "minLength": 1 },
+        "sampler": { "enum": ["nearest", "linear"] },
+        "color": { "$ref": "#/$defs/rgba8" },
+        "hover_color": { "$ref": "#/$defs/rgba8" },
+        "pressed_color": { "$ref": "#/$defs/rgba8" },
+        "text_color": { "$ref": "#/$defs/rgba8" },
+        "text": { "type": "string" },
+        "value": { "type": "number" },
+        "checked": { "type": "boolean" },
+        "nine_patch": { "$ref": "#/$defs/rect_i32" },
         "children": { "type": "array", "maxItems": 65536, "items": { "$ref": "#/$defs/widget" } }
       }
     }

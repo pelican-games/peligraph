@@ -55,6 +55,7 @@ struct EmitField {
 struct EmitBinding {
     std::string trigger;
     std::string event;
+    bool payload_object = false;
     std::vector<EmitField> fields;
 };
 
@@ -71,8 +72,14 @@ struct DocumentNode {
     std::int32_t layer = 0;
     std::int32_t decl_seq = 0;
     std::string sprite;
+    std::string text;
+    double value = 0.0;
+    bool checked = false;
     Sampler sampler = Sampler::Linear;
     std::array<std::uint8_t, 4> color{255, 255, 255, 0};
+    std::array<std::uint8_t, 4> hover_color{80, 92, 108, 255};
+    std::array<std::uint8_t, 4> pressed_color{44, 52, 64, 255};
+    std::array<std::uint8_t, 4> text_color{255, 255, 255, 255};
     std::optional<RectI> nine_patch;
     std::vector<EmitBinding> emits;
     std::vector<DocumentNode> children;

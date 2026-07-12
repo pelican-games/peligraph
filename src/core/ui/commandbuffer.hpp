@@ -12,8 +12,10 @@ namespace Pelican::ui {
 struct SetVisibility { WidgetId target; bool visible; };
 struct SetEnabled { WidgetId target; bool enabled; };
 struct SetRect { WidgetId target; RectI rect; };
+struct SetHovered { WidgetId target; bool hovered; };
+struct SetPressed { WidgetId target; bool pressed; };
 struct RemoveWidget { WidgetId target; };
-using UiCommand = std::variant<SetVisibility, SetEnabled, SetRect, RemoveWidget>;
+using UiCommand = std::variant<SetVisibility, SetEnabled, SetRect, SetHovered, SetPressed, RemoveWidget>;
 
 struct CommitStatus {
     std::size_t applied = 0;

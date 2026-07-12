@@ -22,6 +22,8 @@ CommitStatus UiCommandBuffer::commit(WidgetArena &arena) {
             if constexpr (std::is_same_v<T, SetVisibility>) widget->visible = typed.visible;
             if constexpr (std::is_same_v<T, SetEnabled>) widget->enabled = typed.enabled;
             if constexpr (std::is_same_v<T, SetRect>) widget->rect_ui = typed.rect;
+            if constexpr (std::is_same_v<T, SetHovered>) widget->hovered = typed.hovered;
+            if constexpr (std::is_same_v<T, SetPressed>) widget->pressed = typed.pressed;
             return true;
         }, command);
         applied ? ++status.applied : ++status.stale;

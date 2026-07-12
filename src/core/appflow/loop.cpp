@@ -11,6 +11,7 @@
 #include "../playback/vatplayer.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../startup.hpp"
+#include "../ui/module.hpp"
 #include "../userpublic/userinput.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/deletionqueue.hpp"
@@ -126,6 +127,12 @@ void Loop::run() {
 
     const auto &launch_config = GET_MODULE(EngineLaunchConfig);
     auto &renderer = GET_MODULE(Renderer);
+    // UI input routing precedes rendering, so create the purgeable CPU runtime
+    // during loop setup when (and only when) the UI feature is enabled.  Lazy
+    // creation from the first render would drop first-frame pointer events.
+    if (GET_MODULE(RenderingPassContainer).isFeatureEnabled("ui")) {
+        (void)GET_MODULE(ui::UiModule);
+    }
     auto &engine_time = GET_MODULE(EngineTime);
     auto &vat_player = GET_MODULE(VatPlayer);
     auto &input_state = GET_MODULE(InputState);

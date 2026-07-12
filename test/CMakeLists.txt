@@ -443,6 +443,26 @@ if(PELICAN_WITH_RPC)
             -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/rpc_inject_event_headless
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_rpc_inject_event_headless.cmake
     )
+    add_executable(
+        pelican_test_ui_u2_player
+        ${CMAKE_SOURCE_DIR}/src/player/main.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/ui_u2_probe.cpp
+    )
+    set_target_properties(pelican_test_ui_u2_player PROPERTIES CXX_STANDARD 20)
+    target_link_libraries(pelican_test_ui_u2_player PRIVATE pelican_core argparse)
+    target_include_directories(pelican_test_ui_u2_player PRIVATE
+        ${Vulkan_INCLUDE_DIRS}
+        ${CMAKE_SOURCE_DIR}/projects/example
+    )
+    add_test(
+        NAME ui_u2_rpc_replay_player
+        COMMAND ${CMAKE_COMMAND}
+            -DPLAYER=$<TARGET_FILE:pelican_test_ui_u2_player>
+            -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_test_ui_u2_player>
+            -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/example
+            -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/ui_u2_rpc_replay
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_ui_u2_rpc_replay.cmake
+    )
 endif()
 
 add_test(
