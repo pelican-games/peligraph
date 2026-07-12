@@ -662,6 +662,8 @@ target_compile_definitions(pelican_test_ui_foundation_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 
+pelican_define_test(sprite_foundation_test pelican_core)
+
 # UI semantic fixture coverage gate (design_ui_2d_foundation.md v8 §7).
 # Dependency-free node script; skipped when node is unavailable.
 find_program(PELICAN_NODE_EXECUTABLE node)

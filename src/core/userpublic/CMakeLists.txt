@@ -5,6 +5,7 @@ target_sources(pelican_core PRIVATE
     gamecontext.cpp
     gameobjects.cpp
     userinput.cpp
+    sprite/spriteworld.cpp
     animation/animgraph.cpp
     details/reload/registrationowner.cpp
 )
