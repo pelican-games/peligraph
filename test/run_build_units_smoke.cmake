@@ -223,7 +223,7 @@ function(write_empty_project root)
   "scenes": {"default_scene": {"objects": []}}
 }
 ]=])
-    file(WRITE "${root}/ui/ui.json" "{\"images\":[]}\n")
+    file(WRITE "${root}/ui/ui.json" "{\"schema\":\"pelican.ui\",\"version\":1,\"key\":\"empty\",\"root\":{\"id\":\"root\",\"type\":\"panel\"}}\n")
 endfunction()
 
 function(write_exr_project root)
@@ -271,7 +271,7 @@ function(write_vat_project root)
   }
 }
 ]=])
-    file(WRITE "${root}/ui/ui.json" "{\"images\":[]}\n")
+    file(WRITE "${root}/ui/ui.json" "{\"schema\":\"pelican.ui\",\"version\":1,\"key\":\"empty\",\"root\":{\"id\":\"root\",\"type\":\"panel\"}}\n")
 endfunction()
 
 if(PELICAN_BUILD_UNIT_SMOKE_PARSE_ONLY)

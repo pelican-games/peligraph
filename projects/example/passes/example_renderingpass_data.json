@@ -1,4 +1,5 @@
 {
+    "features": ["engine://features/ui.json"],
     "render_targets": [
     {
       "name": "gbuffer_albedo",
@@ -76,14 +77,6 @@
           },
           "push_constants": "camera_position",
           "uses_light_data": true
-        },
-        {
-          "name": "ui_pass",
-          "type": "ui",
-          "output": {
-            "color": "swapchain",
-            "depth": null
-          }
         }
       ]
     }

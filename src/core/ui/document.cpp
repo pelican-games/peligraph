@@ -224,7 +224,8 @@ DocumentNode parseNode(const Json &j, std::string parent, std::int32_t &decl, st
                        const std::string &json_path, const EventLookup &lookup, std::vector<UiError> &errors) {
     DocumentNode node;
     if (!closed(j, {"id", "type", "layout", "intrinsic_size", "visibility", "overflow", "enabled",
-                    "hit_testable", "layer", "emit", "children"}, json_path, errors)) return node;
+                    "hit_testable", "layer", "emit", "children", "sprite", "sampler", "color",
+                    "nine_patch"}, json_path, errors)) return node;
     if (!j.contains("id") || !j.at("id").is_string()) error(errors, UiErrorCode::RequiredMissing, json_path + "/id", "id required");
     else node.stable_id = j.at("id").get<std::string>();
     node.path = parent.empty() ? node.stable_id : parent + "/" + node.stable_id;
@@ -233,6 +234,40 @@ DocumentNode parseNode(const Json &j, std::string parent, std::int32_t &decl, st
     else node.type = j.at("type").get<std::string>();
     static const std::set<std::string> types{"panel", "image", "label", "button", "gauge", "stack"};
     if (!types.contains(node.type)) error(errors, UiErrorCode::UnknownWidgetType, json_path + "/type", "unknown widget type");
+    if (node.type == "image" && !j.contains("color")) node.color = {255, 255, 255, 255};
+    if (j.contains("sprite")) {
+        if (!j.at("sprite").is_string() || j.at("sprite").get_ref<const std::string &>().empty())
+            error(errors, UiErrorCode::TypeMismatch, json_path + "/sprite", "sprite must be a non-empty #sprite reference");
+        else {
+            node.sprite = j.at("sprite").get<std::string>();
+            if (node.sprite.find("#sprite/") == std::string::npos)
+                error(errors, UiErrorCode::TypeMismatch, json_path + "/sprite", "expected an atlas #sprite/name reference");
+        }
+    }
+    const auto sampler = j.value("sampler", "linear");
+    if (sampler == "nearest") node.sampler = Sampler::Nearest;
+    else if (sampler == "linear") node.sampler = Sampler::Linear;
+    else error(errors, UiErrorCode::TypeMismatch, json_path + "/sampler", "sampler must be nearest or linear");
+    if (j.contains("color")) {
+        const auto &color = j.at("color");
+        if (!color.is_array() || color.size() != 4) {
+            error(errors, UiErrorCode::TypeMismatch, json_path + "/color", "color must be four linear RGBA8 integers");
+        } else {
+            for (std::size_t i = 0; i < 4; ++i) {
+                const auto value = i32(color[i]);
+                if (!value || *value < 0 || *value > 255)
+                    error(errors, UiErrorCode::RangeViolation, json_path + "/color/" + std::to_string(i), "RGBA8 component outside [0,255]");
+                else node.color[i] = static_cast<std::uint8_t>(*value);
+            }
+        }
+    }
+    if (j.contains("nine_patch")) node.nine_patch = rect(j.at("nine_patch"), json_path + "/nine_patch", errors);
+    if (!node.sprite.empty() && node.type != "image" && node.type != "panel")
+        error(errors, UiErrorCode::TypeMismatch, json_path + "/sprite", "only image and panel widgets draw sprites in v1");
+    if (node.type == "image" && node.sprite.empty())
+        error(errors, UiErrorCode::RequiredMissing, json_path + "/sprite", "image widget requires a sprite");
+    if (node.nine_patch && node.type != "panel")
+        error(errors, UiErrorCode::TypeMismatch, json_path + "/nine_patch", "nine_patch is only valid on panel widgets");
     node.decl_seq = decl++;
     if (j.contains("layer")) { if (auto v = i32(j.at("layer"))) node.layer = *v; else error(errors, UiErrorCode::TypeMismatch, json_path + "/layer", "expected int32"); }
     node.enabled = j.value("enabled", true);

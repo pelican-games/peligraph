@@ -270,10 +270,6 @@ std::string projectBasicConfigSource(const ProjectSource &source) {
     return nlohmann::json{{"basic_config", project.value("basic_config", nlohmann::json::object())}}.dump();
 }
 
-std::string resolveExistingFileString(PathResolver &resolver, const std::string &ref) {
-    return resolver.resolveExistingFile(ref).string();
-}
-
 std::string resolveExistingModelReferenceString(PathResolver &resolver, const std::string &ref) {
     const auto resolved = resolver.resolveExistingFileReference(ref);
     if (const auto *fragment = std::get_if<ResolvedPathFragment>(&resolved)) {
@@ -294,21 +290,6 @@ std::string rewriteAssetPaths(std::string data) {
         if (model.is_object() && model.contains("path") && model.at("path").is_string()) {
             model["path"] =
                 resolveExistingModelReferenceString(resolver, model.at("path").get<std::string>());
-        }
-    }
-    return json.dump();
-}
-
-std::string rewriteUiPaths(std::string data) {
-    auto json = nlohmann::json::parse(data);
-    if (!json.contains("images") || !json.at("images").is_array()) {
-        return data;
-    }
-
-    auto &resolver = GET_MODULE(PathResolver);
-    for (auto &image : json.at("images")) {
-        if (image.is_object() && image.contains("file") && image.at("file").is_string()) {
-            image["file"] = resolveExistingFileString(resolver, image.at("file").get<std::string>());
         }
     }
     return json.dump();
@@ -388,7 +369,7 @@ std::string ProjectBasicConfig::defaultRenderingPass() const { return default_re
 
 std::string ProjectBasicConfig::uiConfigJson() const {
     if (!ui_config_json) {
-        ui_config_json = rewriteUiPaths(GET_MODULE(PathResolver).loadText(ui_config_json_ref));
+        ui_config_json = GET_MODULE(PathResolver).loadText(ui_config_json_ref);
     }
     return *ui_config_json;
 }

@@ -1,4 +1,5 @@
 {
+  "features": ["engine://features/ui.json"],
   "render_targets": [
     {
       "name": "gbuffer_albedo",
@@ -323,14 +324,6 @@
           },
           "clear_color": [0.0, 0.0, 0.0, 1.0],
           "color_load_op": "Load"
-        },
-        {
-          "name": "ui_pass",
-          "type": "ui",
-          "output": {
-            "color": "swapchain",
-            "depth": null
-          }
         }
       ]
     }

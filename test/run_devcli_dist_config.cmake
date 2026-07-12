@@ -88,7 +88,7 @@ make_project(PLAIN_ROOT plain [=[
   "models": []
 }
 ]=] [=[
-{"images":[]}
+{"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}}
 ]=])
 
 make_project(VAT_ROOT vat_asset [=[
@@ -98,7 +98,7 @@ make_project(VAT_ROOT vat_asset [=[
   ]
 }
 ]=] [=[
-{"images":[]}
+{"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}}
 ]=])
 execute_process(
     COMMAND "${VAT_WRITER}" "${VAT_ROOT}/assets/tiny_vat.glb"
@@ -123,7 +123,7 @@ make_project(EXR_ROOT exr_ui [=[
 make_project(MANIFEST_ROOT vat_manifest [=[
 {"models":[]}
 ]=] [=[
-{"images":[]}
+{"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}}
 ]=])
 file(MAKE_DIRECTORY "${MANIFEST_ROOT}/imports/houdini/delivery")
 execute_process(

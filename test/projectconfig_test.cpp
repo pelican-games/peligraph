@@ -94,9 +94,10 @@ struct ProjectSandbox {
   ]
 })json");
         writeText(root / "ui" / "ui.json", R"json({
-  "images": [
-    {"name": "image", "file": "assets/image.png"}
-  ]
+  "schema":"pelican.ui","version":1,"key":"fixture",
+  "root":{"id":"root","type":"panel","children":[
+    {"id":"image","type":"image","sprite":"assets/ui.atlas.json#sprite/image"}
+  ]}
 })json");
     }
 
@@ -144,8 +145,8 @@ void requireProjectConfigOk(const nlohmann::json &project, const ProjectSandbox 
     REQUIRE(shader.at("fragment").get<std::string>() == "shaders/fullscreen");
 
     const auto ui = nlohmann::json::parse(config.uiConfigJson());
-    REQUIRE(ui.at("images").at(0).at("file").get<std::string>() ==
-            weaklyCanonical(sandbox.root / "assets" / "image.png").string());
+    REQUIRE(ui.at("root").at("children").at(0).at("sprite").get<std::string>() ==
+            "assets/ui.atlas.json#sprite/image");
 }
 
 void requireErrorKind(std::string_view message, std::string_view error_kind) {

@@ -22,6 +22,8 @@ class FastModuleContainer {
     static inline std::vector<std::pair<std::type_index, CleanerFunctionType *>> cleaners;
 
   public:
+    template <class T> static bool isInitialized() noexcept { return T::__get().has_value(); }
+
     template <class T> static T &get() {
         std::optional<T> &obj_ref = T::__get();
         if (!obj_ref.has_value()) {

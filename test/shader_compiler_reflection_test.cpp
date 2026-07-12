@@ -1,6 +1,7 @@
 #include "../src/core/shader/shadercompiler.hpp"
 #include "../src/core/shader/pelican_sets.hpp"
 #include "../src/core/shader/shaderreflection.hpp"
+#include "../src/core/ui/gpuabi.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <algorithm>
@@ -129,6 +130,32 @@ TEST_CASE("shader reflection reports descriptors, push constants, and vertex inp
     REQUIRE(push_ranges.size() == 1);
     REQUIRE(push_ranges[0].offset == 0);
     REQUIRE(push_ranges[0].size == PELICAN_PUSH_ENGINE_BYTES + sizeof(uint32_t));
+#endif
+}
+
+TEST_CASE("UI shader reflection and QuadVertex pipeline layout preserve the 20-byte ABI", "[shader][ui][u1]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    ShaderCompiler compiler;
+    compiler.addIncludeDir(sourceRoot() / "src/core/resources/shaders/include");
+    const auto compiled = compiler.compileFile(sourceRoot() / "src/core/resources/ui.vert");
+    REQUIRE(compiled.ok);
+    const auto reflection = reflect(compiled.spirv);
+    REQUIRE(reflection.vertex_inputs.size() == 3);
+    REQUIRE(reflection.vertex_inputs[0].location == 0);
+    REQUIRE(reflection.vertex_inputs[0].format == vk::Format::eR32G32Sfloat);
+    REQUIRE(reflection.vertex_inputs[1].location == 1);
+    REQUIRE(reflection.vertex_inputs[1].format == vk::Format::eR32G32Sfloat);
+    REQUIRE(reflection.vertex_inputs[2].location == 2);
+    REQUIRE(reflection.vertex_inputs[2].format == vk::Format::eR32G32B32A32Sfloat);
+
+    const auto layout = ui::quadVertexLayout();
+    REQUIRE(layout.binding.stride == 20);
+    REQUIRE(layout.attributes[0].offset == 0);
+    REQUIRE(layout.attributes[0].format == vk::Format::eR32G32Sfloat);
+    REQUIRE(layout.attributes[1].offset == 8);
+    REQUIRE(layout.attributes[1].format == vk::Format::eR32G32Sfloat);
+    REQUIRE(layout.attributes[2].offset == 16);
+    REQUIRE(layout.attributes[2].format == vk::Format::eR8G8B8A8Unorm);
 #endif
 }
 

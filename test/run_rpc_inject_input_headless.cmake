@@ -87,7 +87,7 @@ file(WRITE "${OUT_DIR}/project/scenes/main.scene.json" [=[
   }
 }
 ]=])
-file(WRITE "${OUT_DIR}/project/ui/ui_overlay.json" "{\"images\":[]}\n")
+file(WRITE "${OUT_DIR}/project/ui/ui_overlay.json" "{\"schema\":\"pelican.ui\",\"version\":1,\"key\":\"empty\",\"root\":{\"id\":\"root\",\"type\":\"panel\"}}\n")
 
 set(script_path "${OUT_DIR}/rpc_inject_input.ndjson")
 set(start_path "${OUT_DIR}/start.png")

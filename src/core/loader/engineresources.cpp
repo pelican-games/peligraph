@@ -11,9 +11,9 @@ namespace Pelican {
 namespace {
 
 #if PELICAN_WITH_VAT
-constexpr size_t registeredResourceCount = 63;
+constexpr size_t registeredResourceCount = 64;
 #else
-constexpr size_t registeredResourceCount = 62;
+constexpr size_t registeredResourceCount = 63;
 #endif
 
 constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
@@ -39,6 +39,7 @@ constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
     "debug_text_font.png",
     "features/debug_draw.json",
     "features/debug_text.json",
+    "features/ui.json",
     "features/gpu_timing.json",
     "features/hdr.json",
     "features/shadow_directional.json",
@@ -126,6 +127,10 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     }
     if (id == "features/debug_text.json") {
         static const std::string feature = b::embed<"features/debug_text.json">().str();
+        return std::string_view{feature};
+    }
+    if (id == "features/ui.json") {
+        static const std::string feature = b::embed<"features/ui.json">().str();
         return std::string_view{feature};
     }
     if (id == "features/gpu_timing.json") {

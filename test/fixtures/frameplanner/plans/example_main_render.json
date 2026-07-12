@@ -173,12 +173,6 @@
       "kind": "read_after_write",
       "resource": "Bloom_Downsample_H_0_RT",
       "to": "FinalBloomComposite"
-    },
-    {
-      "from": "FinalBloomComposite",
-      "kind": "read_after_write",
-      "resource": "swapchain",
-      "to": "ui_pass"
     }
   ],
   "graph": "main_render",
@@ -233,9 +227,6 @@
     ],
     [
       "FinalBloomComposite"
-    ],
-    [
-      "ui_pass"
     ]
   ],
   "nodes": [
@@ -471,19 +462,6 @@
       "reads": [
         "lit_color",
         "Bloom_Downsample_H_0_RT",
-        "swapchain"
-      ],
-      "writes": [
-        "swapchain"
-      ]
-    },
-    {
-      "declaration_index": 17,
-      "kind": "render",
-      "level": 17,
-      "name": "ui_pass",
-      "order": 17,
-      "reads": [
         "swapchain"
       ],
       "writes": [

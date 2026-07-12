@@ -1,4 +1,5 @@
 #include "ui/commandbuffer.hpp"
+#include "ui/atlas.hpp"
 #include "ui/document.hpp"
 #include "ui/drawcommands.hpp"
 #include "ui/inputrouter.hpp"
@@ -6,8 +7,12 @@
 #include "ui/semanticfixture.hpp"
 #include "ui/types.hpp"
 #include "ui/widgetarena.hpp"
+#include "ui/module.hpp"
+#include "renderer/uicontainer.hpp"
+#include "renderer/uirenderer.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 #include <algorithm>
 #include <cfenv>
 #include <filesystem>
@@ -75,6 +80,86 @@ TEST_CASE("Draw commands are stably sorted and only adjacent equal keys merge", 
     REQUIRE(batch.runs[0].index_count == 12);
     REQUIRE(batch.runs[1].first_index == 12);
     REQUIRE(batch.runs[1].index_count == 12);
+}
+
+TEST_CASE("U1 QuadVertex ABI, indexed expansion, alternating pages, clips, and limits are normative",
+          "[ui][u1][draw]") {
+    STATIC_REQUIRE(sizeof(QuadVertex) == 20);
+    STATIC_REQUIRE(alignof(QuadVertex) == 4);
+    STATIC_REQUIRE(offsetof(QuadVertex, position) == 0);
+    STATIC_REQUIRE(offsetof(QuadVertex, uv) == 8);
+    STATIC_REQUIRE(offsetof(QuadVertex, color) == 16);
+
+    DrawKey a{"rgba_straight", Sampler::Nearest, "atlas:a/page:0", {1, 2, 30, 40}, 1, 4};
+    DrawKey b{"rgba_straight", Sampler::Linear, "atlas:b/page:0", {1, 2, 30, 40}, 2, 4};
+    QuadCommand first{a, {10, 20, 30, 40}, 0, 0, {0.1f, 0.2f, 0.3f, 0.4f}, {1, 2, 3, 4}, "root/a"};
+    const auto batch = buildDrawBatch({first, {b, {30, 20, 50, 40}, 0, 1},
+                                       {a, {50, 20, 70, 40}, 0, 2}}, "u1");
+    REQUIRE(batch.runs.size() == 3); // A/B/A never merges across painter order.
+    REQUIRE(batch.vertices.size() == 12);
+    REQUIRE(batch.indices == std::vector<std::uint16_t>{0,1,2,0,2,3,4,5,6,4,6,7,8,9,10,8,10,11});
+    REQUIRE(batch.vertices[0].position == std::array<float, 2>{10.0f, 20.0f});
+    REQUIRE(batch.vertices[0].uv == std::array<float, 2>{0.1f, 0.2f});
+    REQUIRE(batch.vertices[0].color == std::array<std::uint8_t, 4>{1, 2, 3, 4});
+
+    std::vector<QuadCommand> too_many_clips;
+    for (std::uint16_t i = 0; i <= maxUniqueClips; ++i) {
+        DrawKey key{"rgba_straight", Sampler::Nearest, "white", {0, 0, 100, 100}, 0, i};
+        too_many_clips.push_back({std::move(key), {0, 0, 1, 1}, 0, i});
+    }
+    REQUIRE_THROWS_WITH(buildDrawBatch(std::move(too_many_clips), "limits"),
+                        Catch::Matchers::ContainsSubstring("limit_exceeded") &&
+                        Catch::Matchers::ContainsSubstring("257 unique clips"));
+}
+
+TEST_CASE("pelican.atlas v1 resolves right-exclusive sprites and rejects invalid bounds", "[ui][u1][atlas]") {
+    const auto source = root / "test/fixtures/ui_atlas/atlas.json";
+    const auto json = Json::parse(R"json({
+      "schema":"pelican.atlas","version":1,
+      "pages":[{"image":"page.png","size":[16,8]}],
+      "sprites":{"button":{"page":0,"rect":[2,1,14,7]}}
+    })json");
+    const auto atlas = parseAtlasV1(json, source);
+    REQUIRE(atlas.pages[0].image_path == source.parent_path() / "page.png");
+    REQUIRE(findAtlasSprite(atlas, "button").rect == RectI{2, 1, 14, 7});
+    auto invalid = json;
+    invalid["sprites"]["button"]["rect"] = {2, 1, 17, 7};
+    REQUIRE_THROWS_WITH(parseAtlasV1(invalid, source), Catch::Matchers::ContainsSubstring("outside its page"));
+}
+
+TEST_CASE("U1 nested overflow clips become integer scissor ids", "[ui][u1][clip]") {
+    const auto json = Json::parse(R"json({
+      "schema":"pelican.ui","version":1,"key":"clip_u1",
+      "root":{"id":"root","type":"panel","children":[
+        {"id":"outer","type":"panel","color":[255,0,0,255],"overflow":"clip",
+         "layout":{"x":{"mode":"fixed","value":80},"y":{"mode":"fixed","value":80},"offsets":[10,10,0,0]},"children":[
+          {"id":"inner","type":"panel","color":[0,255,0,255],
+           "layout":{"x":{"mode":"fixed","value":105},"y":{"mode":"fixed","value":105},"offsets":[-5,-5,0,0]}}
+        ]}
+      ]}
+    })json");
+    UiModule module{json};
+    const auto batch = module.buildFrame({100, 100});
+    REQUIRE(batch.quads.size() == 2);
+    REQUIRE(batch.quads[0].key.scissor_px == RectI{0, 0, 100, 100});
+    REQUIRE(batch.quads[1].key.scissor_px == RectI{10, 10, 90, 90});
+    REQUIRE(batch.quads[0].key.clip_id != batch.quads[1].key.clip_id);
+}
+
+TEST_CASE("UI runtime and GPU modules remain wholly absent unless requested", "[ui][u1][purge]") {
+    REQUIRE_FALSE(FastModuleContainer::isInitialized<UiModule>());
+    REQUIRE_FALSE(FastModuleContainer::isInitialized<UIContainer>());
+    REQUIRE_FALSE(FastModuleContainer::isInitialized<UiRenderer>());
+}
+
+TEST_CASE("U1 migration rejects the legacy images overlay instead of accepting two formats", "[ui][u1][document]") {
+    const auto legacy = parseUiDocument(Json::parse(R"json({
+      "images":[{"name":"ui_test","file":"assets/textures/Frame84.png"}]
+    })json"));
+    REQUIRE_FALSE(legacy);
+    REQUIRE(std::any_of(legacy.errors.begin(), legacy.errors.end(), [](const UiError &error) {
+        return error.path == "/schema" || error.path == "/images";
+    }));
 }
 
 TEST_CASE("Document parser validates emit descriptors and stack layout distributes integer remainder", "[ui][document]") {

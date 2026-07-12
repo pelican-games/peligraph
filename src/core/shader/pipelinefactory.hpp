@@ -22,6 +22,8 @@ struct GraphicsPipelineDesc {
     std::vector<std::string> shader_defines;
     bool use_engine_vertex_layout = false;
     bool use_skinned_vertex_layout = false;
+    std::vector<vk::VertexInputBindingDescription> vertex_bindings;
+    std::vector<vk::VertexInputAttributeDescription> vertex_attributes;
     bool depth_test = false;
     bool depth_write = false;
     vk::CompareOp depth_compare = vk::CompareOp::eLess;

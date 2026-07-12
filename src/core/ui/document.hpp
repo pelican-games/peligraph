@@ -1,10 +1,12 @@
 #pragma once
 
+#include "drawcommands.hpp"
 #include "types.hpp"
 
 #include "../userpublic/details/event/payloadschema.hpp"
 
 #include <functional>
+#include <array>
 #include <nlohmann/json_fwd.hpp>
 #include <optional>
 #include <string>
@@ -68,6 +70,10 @@ struct DocumentNode {
     bool hit_testable = true;
     std::int32_t layer = 0;
     std::int32_t decl_seq = 0;
+    std::string sprite;
+    Sampler sampler = Sampler::Linear;
+    std::array<std::uint8_t, 4> color{255, 255, 255, 0};
+    std::optional<RectI> nine_patch;
     std::vector<EmitBinding> emits;
     std::vector<DocumentNode> children;
 };

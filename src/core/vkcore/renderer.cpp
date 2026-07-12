@@ -7,6 +7,7 @@
 #include "../renderer/shadowdepthpasscontainer.hpp"
 #include "../renderer/uicontainer.hpp"
 #include "../renderer/uirenderer.hpp"
+#include "../ui/module.hpp"
 #include "../launchconfig.hpp"
 #include "../light/lightcontainer.hpp"
 #include "../fullscreenpass/fullscreenpasscontainer.hpp"
@@ -58,8 +59,9 @@ struct RenderFrameModules {
     FrameResources &frame_resources;
     FullscreenPassRenderer &fullscreen_pass_renderer;
     FullscreenPassContainer &fullscreen_pass_container;
-    UiRenderer &ui_renderer;
-    const UIContainer &ui_container;
+    UiRenderer *ui_renderer;
+    const UIContainer *ui_container;
+    const ui::UiModule *ui_module;
     DebugDraw *debug_draw;
     DebugText *debug_text;
 #if PELICAN_WITH_IMGUI
@@ -84,6 +86,7 @@ RenderFrameModules resolveRenderFrameModules() {
         imgui_system = &GET_MODULE(ImGuiSystem);
     });
 #endif
+    const bool ui_enabled = rendering_pass_container.isFeatureEnabled("ui");
 
     return RenderFrameModules{
         GET_MODULE(RenderTarget),
@@ -102,8 +105,9 @@ RenderFrameModules resolveRenderFrameModules() {
         GET_MODULE(FrameResources),
         GET_MODULE(FullscreenPassRenderer),
         GET_MODULE(FullscreenPassContainer),
-        GET_MODULE(UiRenderer),
-        GET_MODULE(UIContainer),
+        ui_enabled ? &GET_MODULE(UiRenderer) : nullptr,
+        ui_enabled ? &GET_MODULE(UIContainer) : nullptr,
+        ui_enabled ? &GET_MODULE(ui::UiModule) : nullptr,
         debug_draw,
         debug_text,
 #if PELICAN_WITH_IMGUI
@@ -633,7 +637,9 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
                                                                       modules.camera};
     const FullscreenPassRendererDependencies fullscreen_pass_renderer_dependencies{modules.fullscreen_pass_container,
                                                                                   modules.frame_resources};
-    const UiRendererDependencies ui_renderer_dependencies{modules.ui_container, modules.frame_resources};
+    std::optional<UiRendererDependencies> ui_renderer_dependencies;
+    if (modules.ui_renderer != nullptr && modules.ui_container != nullptr && modules.ui_module != nullptr)
+        ui_renderer_dependencies.emplace(*modules.ui_container, *modules.ui_module, modules.frame_resources);
     const RenderPassDispatchDependencies pass_dispatch_dependencies{
         modules.material_renderer,
         material_renderer_dependencies,
@@ -641,7 +647,7 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
         fullscreen_pass_renderer_dependencies,
         modules.shadow_depth_pass_container,
         modules.ui_renderer,
-        ui_renderer_dependencies,
+        ui_renderer_dependencies ? &*ui_renderer_dependencies : nullptr,
         modules.debug_draw,
         modules.debug_text,
 #if PELICAN_WITH_IMGUI
