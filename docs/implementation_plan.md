@@ -1867,6 +1867,68 @@ ModelAssetContainer 初期化(モデルロード)**4.9s** が支配的。
    起動でシェーダ 2.9s → 0.1s 未満、モデル 4.9s → 2.5s 未満(sponza
    単体が支配的なら実測根拠つきで目標を修正してよい)
 
+### WP83: マテリアル M3.5 — 名前付きスクリーンスナップショット + 合流ビュー dump
+
+参照: **`design_material_shading.md` v1.2 §3-7-3(名前付きスナップショット —
+Godot SCREEN_TEXTURE の教訓・v1 は opaque 後 1 点のみ・逐次屈折非対応明記・
+コピーコストの可視化)+ §3-9(screen_inputs → forward 自動振り分け)が正**。
+**追加要件(2026-07-12 ユーザー決定)**: 定義ファイルは分割のまま、
+**全定義を合流させた可視化用データ**を plan dump が持つこと(ビュー本体は
+my_webpage WW8 が消費 — 本 WP はデータ契約まで)。
+依存: WP78(B 層)・WP73(canonical anchor)。見積: 大。
+排他: `src/core/renderingpass/` / `src/project/materiallowering.*` /
+`src/core/communication/rpcserver.cpp`(get_frame_plan)。
+
+1. **スナップショット定義**: rendering config に
+   `"snapshots": [{"name": "opaque_color", "after": "<anchor|pass>"}]`。
+   v1 は **opaque 後の 1 点のみ許可**(2 点目以降・透明後は名前入り
+   起動時エラー — 制限は明示)。コピーは frame graph の実ノード
+   (プラン比較テストに現れる)
+2. **.surface の `//! screen_inputs: ["opaque_color"]`**: WP68/76 ヘッダの
+   拡張。宣言したマテリアルは自動で forward 透明系パスへ振り分け
+   (§3-9)。未定義スナップショット名 = 名前入りエラー。シェーダには
+   生成 accessor(`pelican_screen_<name>(uv)`)で届く(binding は
+   resources manifest に追記)
+3. **透明同士の逐次屈折は非対応と明記**: 同一スナップショットを読む透明
+   マテリアル同士は互いの結果を見ない(スナップショットは 1 回コピーの
+   固定内容)。この意味論を文書 + fixture で固定
+4. **合流ビュー dump(可視化データ契約)**: `get_frame_plan` /
+   `--dump-frame-plan` の JSON を拡張し、1 ファイルで次を含める:
+   ①パス列(canonical anchor 対応付き)②RT/リソースと format_class
+   ③スナップショット(名前・コピー点・バイト数)④**マテリアル消費表**
+   (マテリアル名 → surface stem・screen_inputs・振り分け先パス・
+   render_state・使用 binding)。スキーマ名 `pelican.frame_plan` の
+   version を上げ、既存 plan fixture は決定的に更新(理由記録)
+5. fixture: 屈折デモ 1 個(example に .surface + golden 1 ケース —
+   件数 REQUIRE 更新)・スナップショット未定義/2 点目/透明後の
+   エラー 3 本・プラン fixture にスナップショットノード・dump JSON の
+   マテリアル消費表 golden
+6. 受け入れ = 上記 fixture + 既存 golden 全維持(SKIP 0)+ 全テスト +
+   player
+
+### WP84: コンテナ K4 — imports.rules.json(import ルール表)
+
+参照: **`design_asset_containers.md` §4 が正**(glob → レシピ中央表・
+per-file .meta 不採用・ルール外ファイルは何もしない・設定 3 層すべて git・
+ローカル層に import 意味論を置かない)。依存: WP79(extract_scene レシピ)・
+WP81(psd_layers / atlas_pack レシピ = pelican-import-tools)。見積: 中。
+排他: `src/devcli/` / `src/project/`(ルール表パーサ)。
+
+1. `imports.rules.json` パーサ(schema/version/rules/defaults 3 層、
+   未知キー・不正 glob は名前入りエラー)。glob は `**` 対応・
+   `\` 区切り拒否([PFW] §2-6 既存規則)
+2. `pelican_cli import --rules`(または引数なし規定動作)がルール表を
+   評価し、マッチしたファイルへレシピを起動:
+   `extract_scene` = devcli 内蔵(WP79)/ `psd_layers`・`atlas_pack` =
+   **pelican-import-tools を外部ツール契約で起動**(パスは設定 or PATH、
+   見つからなければ導入手順つきエラー — エンジンに Python をリンクしない)
+3. 出力は imports/ + pelican.import manifest(既存規約)。再実行は冪等
+   (入力不変なら生成物 byte 不変)。生成物上書きは --force 規約(§5)
+4. ルールにないファイルは無反応(fixture で確認 — ゼロ手数の維持)
+5. fixture: ルール評価(match/defaults/組み込み既定の優先順)・
+   外部ツール不在エラー・冪等性・`extract_scene` の end-to-end 1 本
+6. 受け入れ = 新 fixture + 既存全テスト + golden 全維持 + player
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **最小コマンド層**: (1) ファイル連携済み → (2) WP27 実装済み → (3) `load_gltf` / `update_transforms` は **2026-07-07 に実装 GO 決定**。前提はすべて充足(宛先 = scene v1 の objects[].name / アセット意味論 = WP21)。設計時要件: **複数インスタンス運用**(エージェントが複数エンジンを並行駆動する使い方) — stdio rpc は 1 プロセス 1 クライアントの現行構造を維持しつつ、`get_status`(instance id・project・フレーム番号)を追加してインスタンス識別可能に。プロジェクトは読み取り専有なので並行起動は安全(書き込み系操作を入れる際に排他を設計)。複数クライアント同時接続は TCP/WebSocket 展開時の課題として分離
