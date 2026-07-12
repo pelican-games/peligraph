@@ -16,14 +16,6 @@
 namespace Pelican::watch {
 namespace {
 
-std::string canonicalRelative(std::filesystem::path path) {
-    path = path.lexically_normal();
-    auto result = path.generic_u8string();
-    std::string narrow{reinterpret_cast<const char *>(result.data()), result.size()};
-    while (narrow.starts_with("./")) narrow.erase(0, 2);
-    return narrow;
-}
-
 #ifdef _WIN32
 std::wstring extendedPath(const std::filesystem::path &input) {
     auto path = std::filesystem::absolute(input).native();
@@ -51,12 +43,6 @@ std::optional<FileIdentity> identityFromHandle(HANDLE handle, std::string &error
 #endif
 
 } // namespace
-
-AssetKey makeAssetKey(std::string store, const std::filesystem::path &relative_path) {
-    return {std::move(store), canonicalRelative(relative_path)};
-}
-
-std::string assetKeyString(const AssetKey &key) { return key.store + ":/" + key.path; }
 
 ContentDigestResult readStableContentDigest(const std::filesystem::path &path, const CancelCheck &cancel) {
     if (cancel && cancel()) return {.status = DigestReadStatus::cancelled};

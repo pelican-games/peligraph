@@ -30,6 +30,7 @@ struct WatcherStatus {
 struct WatchStore {
     std::string name;
     std::filesystem::path root;
+    std::string logical_mount;
 };
 
 struct FileWatcherOptions {

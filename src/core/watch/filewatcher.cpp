@@ -240,7 +240,11 @@ struct FileWatcher::Impl {
     Impl(std::vector<WatchStore> input, GateProvider provider, FileWatcherOptions opts)
         : stores(std::move(input)), gate(std::move(provider)), options(std::move(opts)) {
         std::sort(stores.begin(), stores.end(), [](const auto &a, const auto &b) {
-            return std::tie(a.name, a.root) < std::tie(b.name, b.root);
+            // A declared mount shadows bytes at the same logical location in
+            // the project tree. This also makes local override roots identity-
+            // neutral: only the selected physical source feeds one AssetKey.
+            return std::tuple{a.logical_mount.empty(), a.name, a.root} <
+                   std::tuple{b.logical_mount.empty(), b.name, b.root};
         });
         const auto initial = gate();
         status = {WatcherState::disabled, initial.epoch, initial.reason};
@@ -303,6 +307,7 @@ struct FileWatcher::Impl {
         if (hook) hook();
         std::map<std::string, InventoryEntry> result;
         std::set<std::string> seen_identities;
+        std::set<AssetKey> seen_logical_keys;
         for (const auto &store : stores) {
             std::error_code ec;
             std::filesystem::recursive_directory_iterator it{
@@ -318,6 +323,8 @@ struct FileWatcher::Impl {
                 const auto physical = physicalKey(path);
                 const auto relative = std::filesystem::relative(path, store.root, ec);
                 if (ec || relative.empty() || relative.native().starts_with(L"..")) { ec.clear(); continue; }
+                const auto key = makeAssetKey(store.logical_mount, relative);
+                if (!seen_logical_keys.insert(key).second) continue;
                 ContentDigestResult digest;
                 for (unsigned retry = 0; retry < 20; ++retry) {
                     digest = readStableContentDigest(path, [this, epoch] {
@@ -335,7 +342,7 @@ struct FileWatcher::Impl {
                                        std::to_string(digest.identity->file);
                     }
                     if (!seen_identities.insert(identity_key).second) continue;
-                    result.emplace(physical, InventoryEntry{makeAssetKey(store.name, relative), path,
+                    result.emplace(physical, InventoryEntry{key, path,
                                                             std::move(digest.sha256)});
                 }
             }
