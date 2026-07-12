@@ -2341,6 +2341,37 @@ struct/挙動の変更禁止** — 変更が必要と判断した場合は実装
 8. 受け入れ = 上記 fixture 全 green + 既存全テスト + golden 全維持
    (SKIP 0)+ player
 
+### WP99: アニメ A1.5 — 敵対 fixture
+
+参照: **`design_animation_graph.md` v2.1 §7 A1.5 行が正**。対象 = WP97 の
+jobs 実装(`src/core/animation/animationjobs.*`)と凍結 ABI v1。
+**実装コードの挙動変更は原則禁止 — fixture が実バグを見つけた場合のみ
+最小修正 + レポートに根拠を記録**(仕様変更と思われる場合は実装せず質問)。
+依存: WP97(済)。見積: 中〜大。排他: test/ 配下 + 発見バグの最小修正。
+
+fixture リスト(§7 A1.5 + レビュー由来の追補。各項は「期待値が仕様の
+どの行から来るか」をコメントで引用すること):
+
+1. **non-joint 祖先**: skin joint でない中間 node(回転持ち)を挟んだ
+   rig で palette が正しい(joint-only 縮約では再現不能な形)
+2. **同骨数別 rig の誤ブレンド検出**: 骨数が同じ・名前が違う 2 rig 間で
+   PoseLayout identity 不一致が正しくエラーになる(exact compatibility)
+3. **loop 跨ぎ event/root**: multi-loop advance(dt が 2 周以上)で
+   crossing の (source, ordinal) 順・loop index・root delta の合算が規範
+   どおり。逆再生・seek 直後も
+4. **N-way 順序不変**: 3+ clip の blend で入力順を入れ替えても
+   規範順(sign 正準化・zero weight)で byte 一致
+5. **hot reload stale handle**: registry 世代を進めた後の旧
+   Rig/Clip/Cursor/Pose handle が全 API で stale エラー(部分成功なし)
+6. **2 体並列**: 同一 rig の 2 instance を別 thread で評価し、arena
+   非干渉・commit revision の instance 独立・palette 非混線
+7. **クランプ端の再 emit 禁止**(WP97 が規範化した clamp 挙動の固定)
+8. **capacity 境界**: crossing_capacity ちょうど / 1 少ない / 0 の三点で
+   query→fill と cursor 原子性
+
+受け入れ = 新 fixture 全 green + 既存全テスト + golden 全維持(SKIP 0)+
+player(自己完結 project 可)。
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの
