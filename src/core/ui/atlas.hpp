@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../asset/atlasasset.hpp"
 #include "types.hpp"
 
 #include <cstdint>

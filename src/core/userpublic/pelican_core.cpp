@@ -16,6 +16,7 @@
 #include "../loader/pathresolver.hpp"
 #include "../watch/reloadgate.hpp"
 #include "../watch/reloadservice.hpp"
+#include <components/spriteview.hpp>
 #if PELICAN_WITH_AUDIO
 #include "../audio/audio.hpp"
 #endif
@@ -53,6 +54,7 @@ bool PelicanCore::run() {
         }
 
         GET_MODULE(ECSPredefinedRegistration).reg();
+        registerSpriteViewComponent();
         (void)initializeConfiguredGameLogic();
         GET_MODULE(SceneLoader).load(GET_MODULE(ProjectBasicConfig).defaultSceneId());
         // Model CPU preparation is parallel, but its Vulkan/resource commit is

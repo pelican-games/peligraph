@@ -1,4 +1,5 @@
 target_sources(pelican_core PRIVATE
+    atlasassetresource.cpp
     debugdraw.cpp
     debugtext.cpp
     polygoninstancecontainer.cpp
