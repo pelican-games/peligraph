@@ -7,6 +7,8 @@
 #include "../ecs/core.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../loader/scene.hpp"
+#include "../launchconfig.hpp"
+#include "../os/inputsequence.hpp"
 #include "../os/inputstate.hpp"
 #include "../playback/seqplayer.hpp"
 #include "../renderingpass/renderingpassjsonhelpers.hpp"
@@ -537,6 +539,10 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
             {"frame", engine_time.frameIndex()},
             {"time", engine_time.now()},
             {"seed", GameContext{}.seed()},
+            {"input", {{"recording", GET_MODULE(InputSequenceRuntime).isRecording()},
+                       {"replaying", GET_MODULE(InputSequenceRuntime).isReplaying()},
+                       {"replay_frame", GET_MODULE(InputSequenceRuntime).replayFrameIndex()},
+                       {"hot_reload", GET_MODULE(EngineLaunchConfig).shader_hot_reload}}},
             {"stores", assetStoresStatus()},
             {"startup", {{"config_ms", startup.config_ms},
                          {"vulkan_ms", startup.vulkan_ms},
@@ -564,12 +570,72 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
     });
 
     server.setHandler("inject_input", [](const nlohmann::json &params) {
+        if (GET_MODULE(InputSequenceRuntime).isReplaying()) {
+            throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError,
+                                      "inject_input cannot be combined with start_input_replay");
+        }
         const auto rpc_events = parseInjectInputParams(params);
         const auto input_events = bindInjectedInputEvents(rpc_events);
         GET_MODULE(InputState).queueEvents(input_events);
         return nlohmann::json{
             {"queued", input_events.size()},
         };
+    });
+
+    server.setHandler("start_input_record", [](const nlohmann::json &params) {
+        const auto path = absoluteCapturePath(requireStringParam(params, "path", "start_input_record"));
+        try {
+            GET_MODULE(InputSequenceRuntime).startRecording(path, GET_MODULE(EngineLaunchConfig).fps);
+        } catch (const std::exception &error) {
+            throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError, error.what());
+        }
+        return nlohmann::json{{"path", weaklyCanonicalOrAbsolute(path).generic_string()}};
+    });
+
+    server.setHandler("stop_input_record", [](const nlohmann::json &params) {
+        requireObjectParams(params, "stop_input_record");
+        try {
+            const auto result = GET_MODULE(InputSequenceRuntime).stopRecording();
+            return nlohmann::json{{"path", weaklyCanonicalOrAbsolute(result.path).generic_string()},
+                                  {"frames", result.frames},
+                                  {"events", result.events}};
+        } catch (const std::exception &error) {
+            throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError, error.what());
+        }
+    });
+
+    server.setHandler("start_input_replay", [](const nlohmann::json &params) {
+        const auto path = absoluteCapturePath(requireStringParam(params, "path", "start_input_replay"));
+        try {
+            if (GET_MODULE(InputState).pendingEventCount() != 0) {
+                throw std::runtime_error(
+                    "start_input_replay cannot begin while inject_input events are pending");
+            }
+            GET_MODULE(InputState).clear();
+            GET_MODULE(InputSequenceRuntime).startReplay(path);
+            auto &config = GET_MODULE(EngineLaunchConfig);
+            config.input_replay = true;
+            config.shader_hot_reload = false;
+            config.fps = GET_MODULE(InputSequenceRuntime).replayFps();
+            GET_MODULE(EngineTime).setup(EngineTime::Mode::fixed_step, 1.0 / config.fps);
+        } catch (const std::exception &error) {
+            throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError, error.what());
+        }
+        return nlohmann::json{{"path", weaklyCanonicalOrAbsolute(path).generic_string()},
+                              {"frames", GET_MODULE(InputSequenceRuntime).replayFrameCount()},
+                              {"hot_reload", false}};
+    });
+
+    server.setHandler("stop_input_replay", [](const nlohmann::json &params) {
+        requireObjectParams(params, "stop_input_replay");
+        try {
+            GET_MODULE(InputSequenceRuntime).stopReplay();
+            GET_MODULE(InputState).clear();
+            GET_MODULE(EngineLaunchConfig).input_replay = false;
+        } catch (const std::exception &error) {
+            throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError, error.what());
+        }
+        return nlohmann::json{{"stopped", true}};
     });
 
     server.setHandler("inject_event", [](const nlohmann::json &params) {

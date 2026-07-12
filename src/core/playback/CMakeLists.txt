@@ -1,3 +1,7 @@
+target_sources(pelican_core PRIVATE
+    camerabake.cpp
+)
+
 if(PELICAN_WITH_SEQPLAYER)
 target_sources(pelican_core PRIVATE
     seqplayer.cpp

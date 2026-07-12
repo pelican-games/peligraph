@@ -236,6 +236,18 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         .flag()
         .help("warn instead of failing when project engine_min_version is newer");
     program.add_argument("--fps").default_value(60.0).scan<'g', double>().help("headless fixed-step frame rate");
+    program.add_argument("--record-input")
+        .default_value(std::string{})
+        .metavar("path.jsonl")
+        .help("record ordered input events as pelican.input_seq v1");
+    program.add_argument("--replay")
+        .default_value(std::string{})
+        .metavar("path.jsonl")
+        .help("replay a pelican.input_seq v1 file");
+    program.add_argument("--bake-camera-output")
+        .default_value(std::string{})
+        .metavar("path.jsonl")
+        .help("write replayed camera world transforms as pelican.transform_seq v1");
     program.add_argument("--play-seq")
         .default_value(std::string{})
         .metavar("path.jsonl")
@@ -294,6 +306,13 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
             throw std::runtime_error("--frames must be zero or greater");
         }
         config.headless_frames = static_cast<uint32_t>(frames);
+        for (int index = 1; index < argc; ++index) {
+            const std::string_view argument{argv[index]};
+            if (argument == "--frames" || argument.starts_with("--frames=")) {
+                config.headless_frames_explicit = true;
+                break;
+            }
+        }
 
         config.headless_extent = parseExtent(program.get<std::string>("--size"));
 
@@ -306,6 +325,27 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         config.fps = program.get<double>("--fps");
         if (config.fps <= 0.0) {
             throw std::runtime_error("--fps must be positive");
+        }
+
+        const auto record_input = program.get<std::string>("--record-input");
+        const auto replay = program.get<std::string>("--replay");
+        if (!record_input.empty() && !replay.empty()) {
+            throw std::runtime_error("--record-input cannot be combined with --replay");
+        }
+        if (!record_input.empty()) {
+            config.input_record = std::filesystem::path{record_input};
+        }
+        if (!replay.empty()) {
+            config.input_replay_path = resolveExistingCliFile(replay, "--replay");
+            config.input_replay = true;
+            config.shader_hot_reload = false;
+        }
+        const auto camera_bake_output = program.get<std::string>("--bake-camera-output");
+        if (!camera_bake_output.empty()) {
+            if (!config.headless || !config.input_replay_path) {
+                throw std::runtime_error("--bake-camera-output requires --headless and --replay");
+            }
+            config.camera_bake_output = std::filesystem::path{camera_bake_output};
         }
 
         const auto play_seq = program.get<std::string>("--play-seq");

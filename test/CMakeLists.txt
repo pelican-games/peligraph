@@ -116,6 +116,7 @@ if(PELICAN_WITH_EXR)
 pelican_define_test(imageloader_test pelican_core tinyexr)
 endif()
 pelican_define_test(inputstate_test pelican_core)
+pelican_define_test(inputsequence_test pelican_core)
 if(PELICAN_WITH_IMGUI)
 pelican_define_test(imgui_isolation_test pelican_core)
 pelican_define_test(planviewer_test pelican_core)
@@ -332,6 +333,18 @@ if(PELICAN_WITH_RPC)
         ${CMAKE_SOURCE_DIR}/projects/example
         ${CMAKE_SOURCE_DIR}/projects/example/code
     )
+    add_executable(
+        pelican_test_camera_replay_player
+        ${CMAKE_SOURCE_DIR}/src/player/main.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/camera_replay_probe.cpp
+    )
+    set_target_properties(pelican_test_camera_replay_player PROPERTIES CXX_STANDARD 20)
+    target_link_libraries(pelican_test_camera_replay_player PRIVATE pelican_core argparse)
+    target_include_directories(pelican_test_camera_replay_player PRIVATE
+        ${Vulkan_INCLUDE_DIRS}
+        ${CMAKE_SOURCE_DIR}/projects/example
+        ${CMAKE_SOURCE_DIR}/projects/example/code
+    )
     add_test(
         NAME rpc_inject_input_headless_player
         COMMAND ${CMAKE_COMMAND}
@@ -340,6 +353,26 @@ if(PELICAN_WITH_RPC)
             -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/example
             -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/rpc_inject_input_headless
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_rpc_inject_input_headless.cmake
+    )
+    add_test(
+        NAME input_record_replay_headless_player
+        COMMAND ${CMAKE_COMMAND}
+            -DPLAYER=$<TARGET_FILE:pelican_test_rpc_inject_input_player>
+            -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_test_rpc_inject_input_player>
+            -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/example
+            -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/input_record_replay_headless
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_input_record_replay_headless.cmake
+    )
+    add_test(
+        NAME devcli_bake_camera_replay
+        COMMAND ${CMAKE_COMMAND}
+            -DCLI=$<TARGET_FILE:pelican_cli>
+            -DPLAYER=$<TARGET_FILE:pelican_test_camera_replay_player>
+            -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_test_camera_replay_player>
+            -DSETUP_PLAYER=$<TARGET_FILE:pelican_test_rpc_inject_input_player>
+            -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/example
+            -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/devcli_bake_camera
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_bake_camera.cmake
     )
     add_executable(
         pelican_test_rpc_inject_event_player

@@ -160,6 +160,7 @@ class InputStateCore {
     std::uint64_t frameGeneration() const noexcept;
     std::size_t frameInputBorrowCount() const noexcept;
     std::size_t pendingEventCount() const noexcept;
+    std::uint64_t nextEventSequence() const noexcept;
 };
 
 DECLARE_MODULE(InputState) {
@@ -178,6 +179,8 @@ DECLARE_MODULE(InputState) {
     const InputConsumptionMask &consumptionMask() const noexcept;
     InputSnapshot freezeActionsSnapshot() noexcept;
     std::uint64_t frameGeneration() const noexcept;
+    std::uint64_t nextEventSequence() const noexcept;
+    std::size_t pendingEventCount() const noexcept;
 };
 
 } // namespace Pelican

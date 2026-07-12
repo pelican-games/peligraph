@@ -370,6 +370,10 @@ std::size_t InputStateCore::pendingEventCount() const noexcept {
     return pending_events.size();
 }
 
+std::uint64_t InputStateCore::nextEventSequence() const noexcept {
+    return next_event_seq;
+}
+
 void InputState::queueEvent(InputEvent event) {
     core.queueEvent(event);
 }
@@ -416,6 +420,14 @@ InputSnapshot InputState::freezeActionsSnapshot() noexcept {
 
 std::uint64_t InputState::frameGeneration() const noexcept {
     return core.frameGeneration();
+}
+
+std::uint64_t InputState::nextEventSequence() const noexcept {
+    return core.nextEventSequence();
+}
+
+std::size_t InputState::pendingEventCount() const noexcept {
+    return core.pendingEventCount();
 }
 
 } // namespace Pelican
