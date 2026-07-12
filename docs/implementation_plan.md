@@ -2404,6 +2404,51 @@ barrier/status を個別再実装しない)。依存: WP96・WP98(済)。見積:
    player 8 秒(自己完結 project 可・可能なら実プロジェクトで F5 相当の
    手動確認手順もレポートに記載)
 
+### WP101: アニメ A2 — `pelican.anim_graph` v1 + 標準評価器
+
+参照: **`design_animation_graph.md` v2.1 §2(全部 — 特に §2-5 の A2 条件
+逐語)・§3・§7 A2 行が正**。受入条件 = 敵対レビュー
+`docs/design_reviews/2026-07-12_anim_v2_hotreload_review_codex.md` の
+**§4.3(CA2-Interrupt)・§4.4(CA2-Clock)を逐語で満たすこと**。
+依存: WP97(A1 — 済)・WP99(A1.5 — 済)。見積: 特大。
+排他: anim_graph loader/schema(新設)+ 標準評価器
+(`src/core/userpublic/` 側のユーザー空間システムとして — **エンジン
+特権 API を使わないこと自体が受け入れ条件**。D0 と同じ dogfooding)。
+
+1. **`pelican.anim_graph` v1 形式**: envelope schema/version・clip state・
+   blend1d・crossfade・transition(priority / interrupt: "never|
+   higher_priority|always" / duration 0 の緊急カット)・parameter
+   (NaN/Inf 拒否・**単一 flat namespace と明記**)・v2 予約キー
+   (`layers`/`events`/`graphs`/`sync`/`trigger` — 存在 = エラー)
+2. **意味論 = §2 の確定事項 + §4.3/§4.4 逐語**:
+   - 一 tick の transition decision 最大一回。
+     `forceState(sequence) → priority → 宣言順` の一意順
+   - interrupt snapshot: 旧 transition の当該 tick pose を一度評価し
+     PoseLayout generation + frame revision 付きで snapshot 化。
+     新 transition の alpha=0 出力は snapshot と byte 一致。
+     snapshot は pose のみ(root delta/event 再 emit なし)。
+     再 interrupt は chain せず一枚に materialize
+   - `set_time`/replay seek/graph・model reload/layout mismatch の
+     reset/reconstruct/error を明記・fixture 化
+   - clock: shared normalized phase・length sync・clip speed(負含む)・
+     start offset・loop endpoint・zero-duration clip・blend1d leader
+     選択と同値 weight tie-break・同 tick exit→enter の re-enter reset
+   - deterministic trace: state・cursor・transition progress・snapshot
+     revision/layout・semantic pose hash(pointer/offset を含めない)を
+     get_status 系で観測可能に
+3. **標準評価器 = ユーザー空間**: A1 の公開機構語彙(凍結 ABI +
+   phase 登録)だけで実装。`forceState(object, state)` をユーザー
+   システム向けに公開
+4. **AnimationSource/slot 調停(§3)**: 既存 clip component と graph の
+   共存 — sink 単位の単一 writer + handoff。既存 clip component の
+   挙動は不変(graph 未使用プロジェクトに影響ゼロ)
+5. fixture: 遷移順序(priority/宣言順/force)・interrupt snapshot の
+   byte 一致・0 秒カット・re-enter reset・NaN 拒否・v2 予約キー
+   エラー・replay 2 回 byte 一致(WP89 経路)・2 体で別 graph 独立
+6. example: 歩き↔走り blend1d + ジャンプ割込みの動くデモ(WASD 接続)
+7. 受け入れ = §2-5 逐語条件 + 新 fixture 全 green + 既存全テスト +
+   golden 全維持(SKIP 0)+ player(デモの手動確認手順をレポートに)
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの
