@@ -57,7 +57,7 @@ file(WRITE "${OUT_DIR}/project/scenes/main.scene.json" [=[
 }
 ]=])
 file(WRITE "${OUT_DIR}/project/assets/asset_data.json" "{\"models\":[]}\n")
-file(WRITE "${OUT_DIR}/project/ui/ui_overlay.json" "{\"images\":[]}\n")
+file(WRITE "${OUT_DIR}/project/ui/ui_overlay.json" "{\"schema\":\"pelican.ui\",\"version\":1,\"key\":\"empty\",\"root\":{\"id\":\"root\",\"type\":\"panel\"}}\n")
 configure_file("${PROJECT_DIR}/passes/main_rendering_config.json" "${OUT_DIR}/project/passes/main_rendering_config.json" COPYONLY)
 
 execute_process(

@@ -146,7 +146,7 @@ file(WRITE "${ARTIFACT_ROOT}/project/scenes/main.scene.json" [=[
 }
 ]=])
 
-file(WRITE "${ARTIFACT_ROOT}/project/ui/ui_overlay.json" "{\"images\":[]}\n")
+file(WRITE "${ARTIFACT_ROOT}/project/ui/ui_overlay.json" "{\"schema\":\"pelican.ui\",\"version\":1,\"key\":\"empty\",\"root\":{\"id\":\"root\",\"type\":\"panel\"}}\n")
 
 execute_process(
     COMMAND "${player}"

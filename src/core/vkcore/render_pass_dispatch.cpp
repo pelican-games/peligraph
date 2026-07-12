@@ -63,6 +63,8 @@ void renderUiPass(vk::CommandBuffer cmd_buf, const FrameRenderContext &frame, co
     if (pass_def.output_color.empty()) {
         throw std::runtime_error("UI pass has no color output: " + pass_def.name);
     }
+    if (dependencies.ui_renderer == nullptr || dependencies.ui_renderer_dependencies == nullptr)
+        throw std::runtime_error("UI pass requires the ui feature runtime: " + pass_def.name);
 
     const auto rt_id = pass_def.output_color.front();
     const bool targets_swapchain = isSwapchainRenderTarget(rt_id);
@@ -70,10 +72,10 @@ void renderUiPass(vk::CommandBuffer cmd_buf, const FrameRenderContext &frame, co
                                                         : rt_container.getImageView(rt_id);
     const vk::Format target_format = targets_swapchain ? dependencies.swapchain_color_format
                                                        : rt_container.getMetadata(rt_id).format;
-    dependencies.ui_renderer.render(cmd_buf, UiDrawRequest{target_view, target_extent, target_format,
+    dependencies.ui_renderer->render(cmd_buf, UiDrawRequest{target_view, target_extent, target_format,
                                                            pass_def.color_load_op, pass_def.color_store_op,
                                                            pass_def.clear_color},
-                                    dependencies.ui_renderer_dependencies);
+                                    *dependencies.ui_renderer_dependencies);
 }
 
 void renderDynamicPassDrawCalls(vk::CommandBuffer cmd_buf, PassId pass_id, const PassDefinition &pass_def,

@@ -7,6 +7,8 @@ target_sources(pelican_core PRIVATE
   layout.cpp
   inputrouter.cpp
   semanticfixture.cpp
+  atlas.cpp
+  module.cpp
 )
 
 # The layout contract is IEEE-754 binary64 with RN-even and no contraction.

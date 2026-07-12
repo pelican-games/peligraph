@@ -49,7 +49,7 @@ file(WRITE "${OUT_DIR}/scene.json" [=[
 }
 ]=])
 file(WRITE "${OUT_DIR}/assets.json" "{\"models\":[]}\n")
-file(WRITE "${OUT_DIR}/ui/ui.json" "{\"images\":[]}\n")
+file(WRITE "${OUT_DIR}/ui/ui.json" "{\"schema\":\"pelican.ui\",\"version\":1,\"key\":\"empty\",\"root\":{\"id\":\"root\",\"type\":\"panel\"}}\n")
 
 file(WRITE "${OUT_DIR}/shaders/fullscreen.vert" [=[
 #version 450

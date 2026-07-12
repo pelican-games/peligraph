@@ -51,7 +51,7 @@ file(WRITE "${OUT_DIR}/project/scenes/main.scene.json" [=[
 }
 ]=])
 file(WRITE "${OUT_DIR}/project/assets/asset_data.json" "{\"models\":[]}\n")
-file(WRITE "${OUT_DIR}/project/ui/ui.json" "{\"images\":[]}\n")
+file(WRITE "${OUT_DIR}/project/ui/ui.json" "{\"schema\":\"pelican.ui\",\"version\":1,\"key\":\"empty\",\"root\":{\"id\":\"root\",\"type\":\"panel\"}}\n")
 file(WRITE "${OUT_DIR}/project/shaders/present.frag" [=[
 #version 450
 layout(location = 0) out vec4 outColor;

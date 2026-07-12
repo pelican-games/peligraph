@@ -25,8 +25,8 @@ struct RenderPassDispatchDependencies {
     FullscreenPassRenderer &fullscreen_pass_renderer;
     const FullscreenPassRendererDependencies &fullscreen_pass_renderer_dependencies;
     ShadowDepthPassContainer &shadow_depth_pass_container;
-    UiRenderer &ui_renderer;
-    const UiRendererDependencies &ui_renderer_dependencies;
+    UiRenderer *ui_renderer = nullptr;
+    const UiRendererDependencies *ui_renderer_dependencies = nullptr;
     DebugDraw *debug_draw = nullptr;
     DebugText *debug_text = nullptr;
     const FrameResources &frame_resources;

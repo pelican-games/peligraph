@@ -133,11 +133,24 @@ void validateFrameBindings(const ShaderReflection &reflection) {
 }
 
 void validateGraphicsReflection(const GraphicsPipelineDesc &desc, const ShaderReflection &reflection) {
-    if (!desc.use_engine_vertex_layout && !desc.use_skinned_vertex_layout && !reflection.vertex_inputs.empty()) {
+    const bool custom_vertex_layout = !desc.vertex_bindings.empty() || !desc.vertex_attributes.empty();
+    if (!desc.use_engine_vertex_layout && !desc.use_skinned_vertex_layout && !custom_vertex_layout && !reflection.vertex_inputs.empty()) {
         throw std::runtime_error("GraphicsPipelineDesc requires use_engine_vertex_layout for vertex input shaders");
     }
     if (desc.use_engine_vertex_layout && desc.use_skinned_vertex_layout) {
         throw std::runtime_error("GraphicsPipelineDesc cannot select both engine vertex layouts");
+    }
+    if (custom_vertex_layout && (desc.use_engine_vertex_layout || desc.use_skinned_vertex_layout))
+        throw std::runtime_error("GraphicsPipelineDesc custom and engine vertex layouts are mutually exclusive");
+    if (custom_vertex_layout) {
+        if (desc.vertex_bindings.empty() || desc.vertex_attributes.size() != reflection.vertex_inputs.size())
+            throw std::runtime_error("GraphicsPipelineDesc custom vertex layout does not match shader reflection");
+        for (const auto &input : reflection.vertex_inputs) {
+            const auto found = std::find_if(desc.vertex_attributes.begin(), desc.vertex_attributes.end(),
+                                            [&](const auto &attribute) { return attribute.location == input.location; });
+            if (found == desc.vertex_attributes.end())
+                throw std::runtime_error("GraphicsPipelineDesc custom vertex attribute location does not match shader reflection");
+        }
     }
     validateFrameBindings(reflection);
     validatePushConstantContract(reflection);
@@ -266,6 +279,9 @@ vk::UniquePipeline PipelineFactory::createGraphicsPipeline(const GraphicsPipelin
                                                              : VertBufContainer::getDescription();
         vertex_input_info.setVertexAttributeDescriptions(engine_vertex_input.attr_descs);
         vertex_input_info.setVertexBindingDescriptions(engine_vertex_input.binding_descs);
+    } else if (!desc.vertex_bindings.empty() || !desc.vertex_attributes.empty()) {
+        vertex_input_info.setVertexAttributeDescriptions(desc.vertex_attributes);
+        vertex_input_info.setVertexBindingDescriptions(desc.vertex_bindings);
     }
 
     vk::PipelineInputAssemblyStateCreateInfo input_assembly;

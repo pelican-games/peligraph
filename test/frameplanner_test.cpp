@@ -205,7 +205,9 @@ struct ParsedRenderTargetResolvers {
     std::vector<RenderTargetMetadata> metadata;
 
     explicit ParsedRenderTargetResolvers(const nlohmann::json &config) {
-        const auto composed = composeRenderFeatureConfig(config);
+        auto base = config;
+        base.erase("features"); // base-definition helper; feature composition has dedicated gates
+        const auto composed = composeRenderFeatureConfig(base);
         const auto resolved = resolveRenderTargetFormatClassesV2(
             composed.config, vk::Format::eB8G8R8A8Srgb, vk::Extent2D{100, 100}, false);
         const auto definitions = parseRenderTargetDefinitionsFromJson(resolved);
@@ -410,8 +412,10 @@ TEST_CASE("snapshot plan node reports copy bytes and screen input read dependenc
 
 TEST_CASE("canonical C1b frame-plan diff preserves every legacy pass and target field",
           "[frameplanner][color-c1b]") {
-    const auto legacy = readJson(sourceRoot() / "projects" / "example" / "passes" /
-                                 "main_rendering_config.json");
+    auto legacy = readJson(sourceRoot() / "projects" / "example" / "passes" /
+                           "main_rendering_config.json");
+    // This C1b fixture isolates the color rewrite; feature insertion has its own gates.
+    legacy.erase("features");
     const auto old_graphs = parseFrameGraphDefinitionsFromConfigJson(legacy);
     REQUIRE(old_graphs.size() == 1);
     const auto old_plan = planFrameGraph(old_graphs.front());
@@ -571,6 +575,36 @@ TEST_CASE("frame planner debug text feature plan matches fixture", "[frameplanne
 
     const auto plan_json = framePlanToJson(planFrameGraph(graphs.front()));
     requirePlanFixture(plan_json, fixtureRoot() / "plans" / "debug_text_feature_main.json");
+}
+
+TEST_CASE("UI feature occupies the canonical pelican_ui anchor and has no base-pass fallback",
+          "[frameplanner][ui][u1]") {
+    const auto config = nlohmann::json::parse(R"json({
+      "features":["engine://features/ui.json"],"render_targets":[],
+      "rendering_passes":[{"name":"main","passes":[{
+        "name":"present","type":"fullscreen","output":{"color":"swapchain","depth":null}
+      }]}]
+    })json");
+    const auto composed = composeRenderFeatureConfig(
+        config,
+        RenderFeatureComposeDependencies{
+            .load_feature_json = [](std::string_view ref) {
+                if (ref != "engine://features/ui.json")
+                    throw std::runtime_error("unexpected feature ref: " + std::string{ref});
+                std::ifstream file{sourceRoot() / "src/core/resources/features/ui.json"};
+                return std::string{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
+            },
+            .runtime_shader_compiler_enabled = true,
+        });
+    REQUIRE(composed.feature_names == std::vector<std::string>{"ui"});
+    const auto graphs = parseFrameGraphDefinitionsFromConfigJson(composed.config);
+    const auto order = framePlanOrder(planFrameGraph(graphs.front()));
+    const auto anchor = std::find(order.begin(), order.end(), "__anchor_pelican_ui");
+    const auto pass = std::find(order.begin(), order.end(), "pelican_ui");
+    const auto next_anchor = std::find(order.begin(), order.end(), "__anchor_debug_draw");
+    REQUIRE(anchor != order.end());
+    REQUIRE(pass == anchor + 1);
+    REQUIRE(next_anchor == pass + 1);
 }
 
 TEST_CASE("frame planner shadow feature plan matches fixture", "[frameplanner]") {

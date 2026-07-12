@@ -43,7 +43,7 @@ TEST_CASE("RPC capture reports contract 2 and absolute encoded-sRGB color", "[rp
   "scenes":{"default_scene":{"objects":[]}}
 })json");
     writeFile(root / "assets.json", R"json({"models":[]})json");
-    writeFile(root / "ui/ui.json", R"json({"images":[]})json");
+    writeFile(root / "ui/ui.json", R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
     writeFile(root / "shaders/fullscreen.vert", R"glsl(
 #version 450
 layout(location=0) out vec2 uv;

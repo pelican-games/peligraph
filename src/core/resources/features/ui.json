@@ -1,0 +1,16 @@
+{
+  "schema": "pelican.render_feature",
+  "version": 1,
+  "name": "ui",
+  "passes": [
+    {
+      "insert": "after:pelican_ui",
+      "pass": {
+        "name": "pelican_ui",
+        "type": "ui",
+        "output": {"color": "swapchain", "depth": null},
+        "color_load_op": "load"
+      }
+    }
+  ]
+}
