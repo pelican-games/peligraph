@@ -12,6 +12,10 @@
 #include "../gamelogic/gamelogicreload.hpp"
 #include "../persistence/persistence.hpp"
 #include "../startup.hpp"
+#include "../launchconfig.hpp"
+#include "../loader/pathresolver.hpp"
+#include "../watch/reloadgate.hpp"
+#include "../watch/reloadservice.hpp"
 #if PELICAN_WITH_AUDIO
 #include "../audio/audio.hpp"
 #endif
@@ -39,6 +43,7 @@ bool PelicanCore::run() {
     try {
         GET_MODULE(StartupMetrics).begin();
         GET_MODULE(ProjectSource).setSourceByData(settings_str);
+        GET_MODULE(watch::ReloadGate).configureFromLaunch(GET_MODULE(EngineLaunchConfig));
 
         auto &persistence = GET_MODULE(Persistence);
         if (persistence.loadSettings()) {
@@ -54,6 +59,10 @@ bool PelicanCore::run() {
         // deliberately forced onto the startup thread before ECS systems run.
         // This also makes the permanent startup metric cover the whole phase.
         (void)GET_MODULE(ModelAssetContainer);
+
+        // Runtime resources now represent the initial disk contents, so this
+        // is the point at which the watcher may seed its live inventory.
+        GET_MODULE(watch::ReloadService).setup(GET_MODULE(PathResolver));
 
         auto &loop = GET_MODULE(Loop);
         loop.run();

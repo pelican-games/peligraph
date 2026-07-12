@@ -9,6 +9,7 @@
 #include "../renderer/uicontainer.hpp"
 #include "../renderer/uirenderer.hpp"
 #include "../ui/module.hpp"
+#include "../watch/reloadgate.hpp"
 #include "../launchconfig.hpp"
 #include "../light/lightcontainer.hpp"
 #include "../fullscreenpass/fullscreenpasscontainer.hpp"
@@ -703,7 +704,12 @@ void rebindFullscreenInputs(RenderFrameModules &modules) {
 }
 
 void handleShaderHotReload(RenderFrameModules &modules) {
-    if (!GET_MODULE(EngineLaunchConfig).shader_hot_reload) {
+    auto &gate = GET_MODULE(watch::ReloadGate);
+    // EngineLaunchConfig remains a compatibility adapter. Syncing here keeps
+    // direct renderer fixtures and legacy embedders on the centralized gate,
+    // without changing ShaderLibrary's polling implementation.
+    gate.configureFromLaunch(GET_MODULE(EngineLaunchConfig));
+    if (!gate.shaderPollEnabled()) {
         return;
     }
 
