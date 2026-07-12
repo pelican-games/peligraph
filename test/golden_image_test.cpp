@@ -15,6 +15,7 @@
 #include "../src/core/renderer/debugdraw.hpp"
 #include "../src/core/renderer/debugtext.hpp"
 #include "../src/core/renderer/camera.hpp"
+#include "../src/core/renderer/polygoninstancecontainer.hpp"
 #include "../src/core/renderer/uicontainer.hpp"
 #include "../src/core/renderer/uirenderer.hpp"
 #include "../src/core/renderingpass/renderingpasscontainer.hpp"
@@ -951,6 +952,52 @@ void writeVelocitySmokeProject(const std::filesystem::path &root) {
         "shader":{"vertex":"shaders/fullscreen","fragment":"shaders/present"}
       }]}]
     })json");
+}
+
+void writeSkinnedVelocityProject(const std::filesystem::path &root) {
+    auto project = makeFeatureProjectJson();
+    project["name"] = "skinned velocity history";
+    writeTextFile(root / "project.json", project.dump(2));
+    TestSkeletalFixture::writeGlb(root / "character.glb");
+    writeTextFile(root / "assets.json",
+                  R"json({"models":[{"name":"character","path":"character.glb"}]})json");
+    writeTextFile(root / "scene.json", R"json({
+      "schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[{
+        "name":"Character","components":[
+          {"name":"transform","pos":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
+          {"name":"simplemodelview","model":"character"},
+          {"name":"animation","clip":"character.glb#animation/Turn","speed":1.0,"loop":false,"start_time":0.0}
+        ]
+      }]}}})json");
+    writeTextFile(root / "ui" / "ui.json",
+                  R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
+    writeTextFile(root / "shaders" / "fullscreen.vert", stemFullscreenVertexShader());
+    writeTextFile(root / "shaders" / "present.frag", R"glsl(
+#version 450
+layout(set = 1, binding = 0) uniform sampler2D velocityTexture;
+layout(location = 0) in vec2 uv;
+layout(location = 0) out vec4 outColor;
+void main() {
+    vec2 velocity = abs(texture(velocityTexture, uv).xy);
+    outColor = vec4(velocity * 20.0, 0.0, 1.0);
+}
+)glsl");
+    writeTextFile(root / "passes" / "main.json", R"json({
+      "features":["engine://features/velocity.json"],"render_targets":[],
+      "rendering_passes":[{"name":"main","passes":[{
+        "name":"present","type":"fullscreen","input":["velocity"],
+        "output":{"color":"swapchain","depth":null},
+        "shader":{"vertex":"shaders/fullscreen","fragment":"shaders/present"}
+      }]}]
+    })json");
+}
+
+uint8_t maximumVelocitySignal(const std::vector<uint8_t> &rgba) {
+    uint8_t maximum = 0;
+    for (size_t i = 0; i + 3 < rgba.size(); i += 4) {
+        maximum = std::max({maximum, rgba[i], rgba[i + 1]});
+    }
+    return maximum;
 }
 
 void writeUiU1Project(const std::filesystem::path &root) {
@@ -2143,6 +2190,65 @@ TEST_CASE("velocity feature compiles its standard pass and renders headless",
     GET_MODULE(Renderer).render();
     GET_MODULE(VulkanManageCore).waitIdle();
     REQUIRE(GET_MODULE(RenderingPassContainer).isFeatureEnabled("velocity"));
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE("skinned velocity uses previous palette and set_time resets history",
+          "[temporal][velocity][skeletal][headless]") {
+    setupLogger();
+    requireGoldenVulkanDevice();
+    FastModuleContainer modules;
+    const auto root = makeTempProjectDir("skinned_velocity_history");
+    writeSkinnedVelocityProject(root);
+    GET_MODULE(PathResolver).setup(root, false);
+    auto project = makeFeatureProjectJson();
+    project["name"] = "skinned velocity history";
+    GET_MODULE(ProjectSource).setProjectData(project.dump());
+
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.shader_hot_reload = false;
+    launch.headless_extent = vk::Extent2D{goldenWidth, goldenHeight};
+
+    auto &time = GET_MODULE(EngineTime);
+    time.setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
+    time.setTime(0.0);
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    GET_MODULE(SceneLoader).load("default_scene");
+    GET_MODULE(ECSCore).update();
+
+    auto &camera = GET_MODULE(Camera);
+    const glm::vec3 position{0.0f, 1.0f, 4.0f};
+    camera.setPos(position);
+    camera.setDir(glm::normalize(glm::vec3{0.0f, 1.0f, 0.0f} - position));
+    camera.setUp({0.0f, 1.0f, 0.0f});
+
+    auto &renderer = GET_MODULE(Renderer);
+    auto &render_target = GET_MODULE(RenderTarget);
+    renderer.render();
+    const auto initial_signal = maximumVelocitySignal(render_target.readbackLastFrameRGBA8());
+
+    const auto model_before = GET_MODULE(PolygonInstanceContainer).currentModelMatrixForTesting(ModelInstanceId{0});
+    time.setTime(0.5);
+    GET_MODULE(ECSCore).update();
+    renderer.render();
+    const auto moving_signal = maximumVelocitySignal(render_target.readbackLastFrameRGBA8());
+    const auto model_after = GET_MODULE(PolygonInstanceContainer).currentModelMatrixForTesting(ModelInstanceId{0});
+
+    time.setTime(1.0);
+    renderer.resetTemporalHistory();
+    GET_MODULE(ECSCore).update();
+    renderer.render();
+    const auto reset_signal = maximumVelocitySignal(render_target.readbackLastFrameRGBA8());
+    GET_MODULE(VulkanManageCore).waitIdle();
+
+    INFO("velocity signal (RGBA8, shader scale 20): initial=" << static_cast<int>(initial_signal)
+         << " moving=" << static_cast<int>(moving_signal)
+         << " reset=" << static_cast<int>(reset_signal));
+    REQUIRE(model_before == model_after);
+    REQUIRE(initial_signal <= 1);
+    REQUIRE(moving_signal > 1);
+    REQUIRE(reset_signal <= 1);
     std::filesystem::remove_all(root);
 }
 

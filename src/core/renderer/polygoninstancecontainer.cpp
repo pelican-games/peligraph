@@ -2,6 +2,7 @@
 #include "../shader/pelican_sets.hpp"
 #include "../vkcore/core.hpp"
 #include <algorithm>
+#include <array>
 #include <glm/ext/matrix_transform.hpp>
 #include <limits>
 #include <stdexcept>
@@ -51,16 +52,21 @@ static BufferWrapper createSkinPaletteBuf(VulkanManageCore &vkcore, size_t insta
 }
 
 static vk::UniqueDescriptorSetLayout createSkinLayout(vk::Device device) {
-    vk::DescriptorSetLayoutBinding binding{PELICAN_SKIN_PALETTE_BINDING,
-                                           vk::DescriptorType::eStorageBuffer, 1,
-                                           vk::ShaderStageFlagBits::eVertex};
+    const std::array bindings{
+        vk::DescriptorSetLayoutBinding{PELICAN_SKIN_PALETTE_BINDING,
+                                       vk::DescriptorType::eStorageBuffer, 1,
+                                       vk::ShaderStageFlagBits::eVertex},
+        vk::DescriptorSetLayoutBinding{PELICAN_PREVIOUS_SKIN_PALETTE_BINDING,
+                                       vk::DescriptorType::eStorageBuffer, 1,
+                                       vk::ShaderStageFlagBits::eVertex},
+    };
     vk::DescriptorSetLayoutCreateInfo info;
-    info.setBindings(binding);
+    info.setBindings(bindings);
     return device.createDescriptorSetLayoutUnique(info);
 }
 
 static vk::UniqueDescriptorPool createSkinPool(vk::Device device) {
-    vk::DescriptorPoolSize size{vk::DescriptorType::eStorageBuffer, 1};
+    vk::DescriptorPoolSize size{vk::DescriptorType::eStorageBuffer, 2};
     vk::DescriptorPoolCreateInfo info;
     info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
     info.maxSets = 1;
@@ -78,16 +84,25 @@ PolygonInstanceContainer::PolygonInstanceContainer()
           createModelInstanceDataBuf(GET_MODULE(VulkanManageCore), maxModelInstances),
       }, device{GET_MODULE(VulkanManageCore).getDevice()},
       skin_palette_buffer{createSkinPaletteBuf(GET_MODULE(VulkanManageCore), maxModelInstances)},
+      previous_skin_palette_buffer{createSkinPaletteBuf(GET_MODULE(VulkanManageCore), maxModelInstances)},
       skin_descriptor_layout{createSkinLayout(device)}, skin_descriptor_pool{createSkinPool(device)} {
     vk::DescriptorSetAllocateInfo allocate;
     allocate.descriptorPool = skin_descriptor_pool.get();
     allocate.setSetLayouts(skin_descriptor_layout.get());
     skin_descriptor_set = std::move(device.allocateDescriptorSetsUnique(allocate).front());
-    vk::DescriptorBufferInfo buffer_info{skin_palette_buffer.buffer.get(), 0, vk::WholeSize};
-    vk::WriteDescriptorSet write{skin_descriptor_set.get(), PELICAN_SKIN_PALETTE_BINDING, 0, 1,
-                                 vk::DescriptorType::eStorageBuffer};
-    write.setBufferInfo(buffer_info);
-    device.updateDescriptorSets(write, {});
+    const std::array buffer_infos{
+        vk::DescriptorBufferInfo{skin_palette_buffer.buffer.get(), 0, vk::WholeSize},
+        vk::DescriptorBufferInfo{previous_skin_palette_buffer.buffer.get(), 0, vk::WholeSize},
+    };
+    std::array writes{
+        vk::WriteDescriptorSet{skin_descriptor_set.get(), PELICAN_SKIN_PALETTE_BINDING, 0, 1,
+                               vk::DescriptorType::eStorageBuffer},
+        vk::WriteDescriptorSet{skin_descriptor_set.get(), PELICAN_PREVIOUS_SKIN_PALETTE_BINDING, 0, 1,
+                               vk::DescriptorType::eStorageBuffer},
+    };
+    writes[0].setBufferInfo(buffer_infos[0]);
+    writes[1].setBufferInfo(buffer_infos[1]);
+    device.updateDescriptorSets(writes, {});
 }
 
 ModelInstanceId PolygonInstanceContainer::placeModelInstance(ModelTemplate &model) {
@@ -108,6 +123,8 @@ ModelInstanceId PolygonInstanceContainer::placeModelInstance(ModelTemplate &mode
     model_instances_data.push_back(glm::identity<glm::mat4>());
     previous_model_instances_data.push_back(glm::identity<glm::mat4>());
     model_history_valid.push_back(false);
+    skin_palettes.emplace_back();
+    previous_skin_palettes.emplace_back();
 
     for (const auto &material : model.material_primitives) {
         for (const auto &primitive : material.primitives) {
@@ -143,6 +160,8 @@ void PolygonInstanceContainer::removeModelInstance(ModelInstanceId id) {
     model_instances_data[id.value] = glm::identity<glm::mat4>();
     previous_model_instances_data[id.value] = glm::identity<glm::mat4>();
     model_history_valid[id.value] = false;
+    skin_palettes[id.value].clear();
+    previous_skin_palettes[id.value].clear();
 }
 
 void PolygonInstanceContainer::clear() {
@@ -151,6 +170,8 @@ void PolygonInstanceContainer::clear() {
     model_instances_data.clear();
     previous_model_instances_data.clear();
     model_history_valid.clear();
+    skin_palettes.clear();
+    previous_skin_palettes.clear();
 }
 
 void PolygonInstanceContainer::triggerUpdate() {
@@ -163,6 +184,13 @@ void PolygonInstanceContainer::triggerUpdate() {
     for (size_t i = 0; i < model_instances_data.size(); ++i) {
         if (!model_history_valid[i]) {
             previous_model_instances_data[i] = model_instances_data[i];
+            previous_skin_palettes[i] = skin_palettes[i];
+        }
+        if (!previous_skin_palettes[i].empty()) {
+            GET_MODULE(VulkanManageCore)
+                .writeBuf(previous_skin_palette_buffer, previous_skin_palettes[i].data(),
+                          sizeof(glm::mat4) * maxSkinJoints * i,
+                          sizeof(glm::mat4) * previous_skin_palettes[i].size());
         }
     }
 
@@ -205,11 +233,13 @@ void PolygonInstanceContainer::triggerUpdate() {
 
 void PolygonInstanceContainer::commitFrameHistory() {
     previous_model_instances_data = model_instances_data;
+    previous_skin_palettes = skin_palettes;
     std::fill(model_history_valid.begin(), model_history_valid.end(), true);
 }
 
 void PolygonInstanceContainer::resetTemporalHistory() {
     previous_model_instances_data = model_instances_data;
+    previous_skin_palettes = skin_palettes;
     std::fill(model_history_valid.begin(), model_history_valid.end(), false);
 }
 
@@ -217,6 +247,7 @@ void PolygonInstanceContainer::setSkinningPalette(ModelInstanceId id,
                                                   std::span<const glm::mat4> palette) {
     if (id.value >= model_instances_data.size()) throw std::runtime_error("Model instance not found");
     if (palette.size() > maxSkinJoints) throw std::runtime_error("Skin palette exceeds 128 joints");
+    skin_palettes[id.value].assign(palette.begin(), palette.end());
     GET_MODULE(VulkanManageCore).writeBuf(skin_palette_buffer, palette.data(),
                                          sizeof(glm::mat4) * maxSkinJoints * id.value,
                                          sizeof(glm::mat4) * palette.size());
