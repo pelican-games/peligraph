@@ -1,14 +1,18 @@
-# アセットホットリロード(v2)
+# アセットホットリロード(v2.1)
 
 対象読者: エンジン担当・開発体験を気にする人。
-ステータス: v2 ドラフト(2026-07-12)。v1 は敵対レビュー
+ステータス: **v2.1 — 条件付き受理(2026-07-12)**。v1 は敵対レビュー
 `docs/design_reviews/2026-07-12_anim_v2_hotreload_review_codex.md`(以下
 「レビュー」)§6-9 で **Reject** — Watcher の overflow/復帰プロトコル欠落、
 WP82 hash「流用」の不成立、WP62 EntityId の取り違え、GPU resource
 container に replace/rollback 面がない、の 4 点が主因。v2 = レビュー §9 の
 再受理条件 5 点(Win32 state machine / 種別ごとの identity・transaction /
 dependency transaction group / platform fixture / HR0-HR2 再分割)を反映した
-全面改稿。
+全面改稿。v2 は再レビュー
+`docs/design_reviews/2026-07-12_hr_v2_2d_v1_review_codex.md`(以下
+「再レビュー」)で条件付き受理 — **HR0/HR1 着手は HR-C1〜C4 を各 WP の
+受入条件に添付することが条件**。v2.1 = その 4 条件の正本反映(§2-1a・
+§3-1a・§2-4・§7 の gate 追記)。
 前提: 確定規約 2 件(2026-07-08 ユーザー決定 — ①リプレイ/strict/rpc 駆動中は
 ホットリロード無効 ②エディタの自己書き込みは無視)、「ファイルが唯一の
 真実」(devstudio D3 の実行基盤を兼ねる)、WP82(シェーダキャッシュ)、
@@ -99,11 +103,31 @@ API は存在しない。よって:
 - **デバウンス 200ms は既定値であって correctness 境界ではない** — 正本は
   「静穏後の安定 read + retry」
 
+### 2-1a. digest の三状態分離(再レビュー HR-C1 — HR0 受入条件)
+
+baseline・self-write consume・reconcile 比較を**一個の hash で実装しては
+ならない**(consume 済み editor write が reconcile で外部変更として再出現
+するか、runtime 未適用の disk 内容を適用済みと誤認する)。source ごとに:
+
+- `observed_digest`(安定 read 済み disk)/ `live_digest`(runtime へ
+  commit 成功済み)/ `pending_digest` / self-write token を**別状態**で持つ
+- self-write を抑制できるのは、同じ editor transaction が **runtime への
+  適用も成功させ `live_digest` を atomic に更新した場合だけ**。単なる
+  file write の通知は抑制せず通常 reload する
+- token consume は `observed_digest` を更新するが、runtime apply 成功
+  なしに `live_digest` を進めない。disable/resume 後も disk/live の
+  不一致を失わない
+- fixture: (a) editor apply+write→resume で再 queue なし
+  (b) write 成功/runtime apply 失敗→通常 reload
+  (c) token 後に異なる外部 hash→reload
+  (d) epoch 変更で旧 token 不一致
+
 ### 2-2. エディタ自己書き込みトークン
 
 path TTL ではなく **`(AssetKey, expected hash, watcher epoch)`** で登録し、
 一致した通知を一回だけ consume する。異なる hash(外部変更が割り込んだ)は
-抑制しない。登録 API の置き場は D2 の編集系 rpc 設計と同時に決める(§8)。
+抑制しない。§2-1a の三状態と接続する(consume ≠ live 前進)。
+登録 API の置き場は D2 の編集系 rpc 設計と同時に決める(§8)。
 
 ### 2-3. gate と reconcile(レビュー HR-B8 — arm/scan race の解消)
 
@@ -128,6 +152,22 @@ gate の発火源(リプレイ開始/終了・strict・rpc 駆動)は**中央 1 
 hot reload flag を折る処理は、この centralized gate へ統合する(各 handler
 の独自判定で race を作らない)。
 
+### 2-4. polling fallback にも同じ reconcile 状態機械(再レビュー HR-C3 — HR0 受入条件)
+
+fallback は「2s poll」ではなく watcher と同等の状態契約を持つ:
+
+1. poll tick は前回完了後にだけ開始し、同一 store の scan/hash を
+   重ねない。各 scan は開始 epoch を持ち、完了時に epoch/gate が
+   違えば結果を破棄する
+2. polling の resume は「新 epoch の poll inventory 開始」を barrier と
+   し、初回 full scan 完了までは `polling` でなく `reconciling`
+3. watch 再試行 backoff。polling→watching の移行は **watch arm →
+   inventory reconcile → poll 停止**の順とし、移行窓の変更を再 hash する
+4. stop/cancel・stable-read retry・canonical delta・self-write・status は
+   watcher と同じ ContentDigest/ReloadQueue 経路を通す(別実装禁止)
+5. fixture: fake clock + watch 開始失敗で modify/delete/rename、scan 中
+   gate、recovery 中変更、連続失敗→degraded を決定的に検査
+
 ## 3. リソース identity と種別表(レビュー HR-B3/B5)
 
 ### 3-1. 前提となる identity 基盤(HR1)
@@ -137,12 +177,30 @@ v1 の表が「低難度」とした行の多くは、現行コードに差し�
 generation なし / removeModelInstance は slot を回収せず place は末尾
 append — リロード反復で 1024 上限に到達)。よって種別ハンドラの前に:
 
-- **canonical `AssetKey`**: 正規化 container path + fragment。逆引きの
-  主キー
+- **canonical `AssetKey`**: **project logical reference + fragment を
+  正本**とする(local override の物理絶対パスではない — 物理 file
+  identity は watcher dedupe のみに使う。複数 store と local override は
+  場所だけを変え意味を変えない — 再レビュー HR-C2-5)
 - **logical resource generation**: `ModelAssetId {index, generation}` 等、
   差し替えても参照側が生きる世代付き ID。`ModelInstanceId` は
   generation/free-list 化するか、同じ instance record/render-command
   span を in-place rebuild する API を設ける
+
+### 3-1a. identity の三概念分離(再レビュー HR-C2 — HR1 受入条件)
+
+「世代」を一語で使わない。ECS の generation(slot 再利用の stale 検出)と
+リロードの revision は意味が違う:
+
+1. **`LogicalAssetId`** = asset の宣言寿命中 stable /
+   **slot `generation`** = unbind/destroy 後の slot 再利用時のみ増加 /
+   **`content_revision`** = commit 成功ごとに単調増加 — の三つを別定義
+2. animation rig/layout のような**互換性破断を検出する revision** は
+   logical handle の generation とは別 field
+3. reverse dependency index の旧 edge 除去・新 edge 公開は logical
+   handle table swap と**同じ commit barrier** で可視化
+4. fixture: 同一 asset 1000 reload で logical ID 不変 + content_revision
+   単調増加 / 削除→再宣言で旧 handle stale / group rollback で
+   ID・revision・edge 全不変
 - **reverse dependency index**: `AssetKey → 参照中の live resources`
   (model_name/fragment → template → instances、texture → material
   descriptor sets、root/include/virtual source → ShaderBundle/Pipeline/
@@ -264,6 +322,20 @@ resource handler suite(HR1 以降・GPU あり)は別に:
 | **HR2-I Input** | input_actions/profile の candidate + フレーム境界 swap | held input/consume policy・invalid candidate rollback・gate epoch | HR0 |
 
 UI(U3)は HR0 の AssetKey/epoch/reconcile 契約だけを共有して独立に進む。
+
+**WP 境界を跨ぐ gate(再レビュー HR-C4)**:
+
+1. `get_status.reload` の **watcher state/epoch/error 部分は HR0 が所有**。
+   HR1 は resource counters/errors を additive に拡張する
+2. HR0 完了時に現 `EngineLaunchConfig::shader_hot_reload` を centralized
+   gate の adapter 化。HR2-S 完了時に `reloadModifiedSources` の時刻 poll
+   を削除 — **二経路が同じ shader を同時 apply できる中間状態を作らない**
+3. HR1-M 単体 gate は same-layout update + fake dependency actor まで。
+   実 `.surface + .material.json` の cross-file atomic fixture は
+   **HR2-S の exit gate** に置く
+4. HR1 framework は複数 logical table の commit を一つの frame-boundary
+   barrier で公開し、observer が group の半端な revision を読めないことを
+   fixture 化する
 
 ## 8. 未決事項
 

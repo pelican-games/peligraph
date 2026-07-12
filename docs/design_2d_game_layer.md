@@ -1,194 +1,239 @@
-# 2D ゲーム層と 2D⇔3D 相互変換(v1)
+# 2D ゲーム層と 2D⇔3D 相互変換(v2)
 
 対象読者: エンジン担当・2D ゲームを作る人・2D/3D 混在演出を作る人。
-ステータス: v1 ドラフト(2026-07-12。ユーザーレビュー・codex 敵対レビュー前)。
-前提: 2026-07-07 決定「UI と 2D ゲームは描画基盤共有・上物分離」、
-`design_ui_2d_foundation.md` v8(quad ABI・K3 atlas)、
-`design_camera_system.md`(orthographic は C1/WP48 で実装済み)、
-scene v1(コンポーネント additive)、「feature 層 = ユーザー空間」方針、
-サブセット原則(web で開ける ⊆ pelican で開ける)。
+ステータス: v2 ドラフト(2026-07-12)。v1 は敵対レビュー
+`docs/design_reviews/2026-07-12_hr_v2_2d_v1_review_codex.md` §4-8(以下
+「レビュー」)で **Reject** — 中核方向(単一ワールド)は妥当だが、
+①「機構を増やさない」への過剰一般化 ②SpriteView 例が scene v1 の
+`name` dispatch と不一致 ③U1 の framebuffer-px quad ABI は world quad に
+流用不能 ④camera snap だけでは pixel perfect にならない ⑤現 physquery
+だけでは platformer が書けない ⑥S2D-0 の粒度過大、が理由。
+v2 = 再受理条件 2D-R1〜R6 の全反映。
+前提: `design_ui_2d_foundation.md` v8、`design_camera_system.md`
+(orthographic = WP48 済)、`design_physics_queries.md`(P1/P2 済)、
+scene v1、「feature 層 = ユーザー空間」方針、サブセット原則。
 
 ## 0. スコープ定義 — 「2D⇔3D 相互変換」とは何か
 
-最初に相互変換の意味を確定する。要求は 2 方向:
-
-- **2D → 3D(2D シーンの 3D 空間配置)**: スプライトで作った 2D コンテンツ
-  (キャラ・背景・エフェクト)を 3D 空間の任意の位置・向きに置ける
-  (ペーパーマリオ型・3D 空間内の看板/画面)
+- **2D → 3D(2D シーンの 3D 空間配置)**: スプライトのコンテンツを 3D
+  空間の任意の位置・向きに置ける(ペーパーマリオ型・3D 内の看板/画面)
 - **3D → 2D(3D シーンの 2D 投影編集)**: 3D コンテンツを直交投影で
-  2D ゲームとして見せる/編集する(3D モデルのサイドスクローラー・
-  devstudio の 2D ビュー編集)
+  2D ゲームとして見せる/編集する
 
-### 0-1. 中核決定: ワールドは 1 つ(2D 専用シーングラフを作らない)
+### 0-1. 中核決定(2D-R1 で限定を修正)
 
-**2D ゲーム = 直交カメラ + スプライトコンポーネントの 3D シーン**とする
-(Unity/Unreal 型)。Godot 型の 2D/3D 分離ワールドは不採用。理由:
+**単一 ECS ワールド・単一 EntityId・Transform 階層の共用。第二の scene
+ownership は作らない。** 2D→3D = transform、3D→2D = projection に還元する。
 
-1. 相互変換が要件である以上、ワールドを分けると「変換」が独立機構
-   (同期・座標写像・別 ID 空間)になり、両方向とも壊れやすい。
-   同一ワールドなら **2D→3D = ただの transform、3D→2D = ただのカメラ**で、
-   変換機構そのものが消える
-2. 既存資産が全部そのまま効く: ECS/scene v1/物理クエリ/イベント/
-   golden/収録リプレイ/devstudio 計画に「2D 版」を複製しなくてよい
-3. サブセット原則と整合: 2D プロジェクトは 3D プロジェクトの
-  (スプライトと直交カメラしか使わない)部分集合になる
+v1 の「エンジン機構も増やさない」は**過剰一般化として撤回**する。
+禁止するのは**所有権と identity の二重化**(別ワールド・別 ID・同期
+ブリッジ)であって、同じワールドの**派生 index / consumer** は許可する:
+2D render extraction・visibility culling・tile chunk・pixel-perfect
+compositor・query helper はここに属す。Godot 分離型の実利は別 ID では
+なく 2D 専用最適化にあり、その実利はこの形で取り込む(レビュー §4.2)。
 
-代償(ピクセルパーフェクト・ソート・物理の平面拘束)は §2〜4 で
-個別に払う。「2D の使い勝手」は上物(コンポーネント・既定値・
-ユーザー空間システム)で作り、エンジン機構は増やさない。
+### 0-2. UI 層との共有境界(2D-R3 で縮小)
 
-### 0-2. UI 層との関係(描画基盤共有・上物分離の具体化)
+v1 の「QuadCommand 相当の POD と quad 展開コードを共有」は撤回。現 U1 の
+`QuadVertex` は framebuffer px 直書き(`src/core/ui/drawcommands.hpp`)、
+ui.vert は px→clip 変換で depth 固定 0 — world transform・camera VP・
+回転・pivot・per-vertex depth を表せない。
 
-| | UI 層(pelican.ui) | 2D ゲーム層 |
-|--|--|--|
-| 座標 | framebuffer px(screen-space) | **world 単位(world-space)** |
-| カメラ | なし(ViewportTransform のみ) | シーンカメラ(主に orthographic) |
-| ソート | (layer, decl_seq) 全順序 | §3 のソートポリシー |
-| 消費者 | レイアウト・イベント・Controller | ECS コンポーネント・ゲームロジック |
+**共有するもの(資産・規約・一部 helper に限定)**:
 
-**共有するもの**: K3 atlas(`pelican.atlas` + `#sprite/` 参照)・テクスチャ
-ページ・sampler key(nearest/linear)・straight alpha と blend 値・
-色 ABI(linear 出力 — `design_color_pipeline.md` が正)・quad 展開の
-CPU コード(QuadCommand 相当の POD とインデックス展開)。
-**共有しないもの**: 描画パス(UI は canonical anchor `pelican_ui`、
-スプライトは post_main より前のシーン内)・ソートキー・座標変換。
-= 「バッチャのコードとアセット形式を共有し、パスと順序規則は別」。
+- `AtlasDocument / AtlasAsset`: atlas parser・GPU page upload・page
+  lifetime を **UiModule/UIContainer から consumer-neutral な resource へ
+  抽出**する。UI とスプライトの一方だけ有効でも他方を初期化しない
+  (U1 の purge gate 維持)。両方有効時は同じ image/page allocation を参照
+- texture page identity・sampler key(nearest/linear)・
+  straight alpha/blend 値・色 ABI(linear 出力)
+- quad index topology / chunk 分割 helper(純 CPU)
 
-## 1. スプライト描画(機構)
+**共有しないもの**: 頂点/コマンド ABI・pipeline・パス・depth・ソート・
+座標変換。UI = `UiQuadCommand/QuadVertexPx`(現行)、スプライト =
+**`SpriteCommand`**(world transform・pivot・UV・color・page・layer・
+sort key・billboard)+ world-space 頂点/インスタンス ABI を別に持つ。
 
-### 1-1. SpriteView コンポーネント(scene v1 に additive)
+U1 の 16384 quad 上限は**一 document の上限**であり、スプライトへ転用
+しない。スプライトは visibility cull 後に複数 uint16 chunk(または
+uint32/instancing)へ分割する(§5)。
+
+## 1. スプライト(機構)
+
+### 1-1. sprite_view コンポーネント(2D-R2 — scene v1 準拠に修正)
+
+scene v1 の component dispatch は `name` キー
+(`src/core/loader/scene.cpp` の `component.at("name")`)。また component
+params の直接ファイル参照は scene 正本で禁止 — texture は **asset
+declaration ID + フラグメント**で指す:
 
 ```jsonc
-{ "type": "sprite_view",
-  "texture": "assets/atlas.json#sprite/hero_idle_0",  // atlas 参照 or 画像直
-  "size": [1.0, 1.5],          // world 単位。省略時 = px / ppu(§2)
+{ "name": "sprite_view",
+  "texture": "ui_atlas#sprite/hero_idle_0",  // asset宣言ID + #sprite/
+  "size": [1.0, 1.5],          // world 単位。省略時 = source px / ppu
   "pivot": [0.5, 0.0],         // 0..1、既定 [0.5, 0.5]
-  "color": [1,1,1,1],          // 乗算 tint(linear で乗算)
+  "color": [1,1,1,1],          // 乗算 tint(linear)
   "flip": [false, false],
-  "layer": 0,                  // §3 のソート層(int16)
-  "billboard": "none"          // "none" | "y_axis" | "full"(§4-1)
+  "layer": 0,                  // int16
+  "billboard": "none"          // "none" | "y_axis" | "full"
 }
 ```
 
-- スプライト = **object transform で置かれる world-space quad**
-  (XY 平面・+Z 法線)。回転・スケール・親子は Transform がそのまま効く
-- 実装は専用の sprite パス 1 本(シーン深度と合成 — §3-3)。
-  マテリアル梯子とは独立の固定シェーダから始める(B 層フックは
-  スプライトには当てない — 必要になったら surface 化を別途設計)
-- flipbook(コマ送り)は**エンジン機構にしない**: frame index の差し替えは
-  ユーザー空間システム(SpriteView.texture の更新)で書ける。同梱の
-  flipbook システム = 特権なし標準ライブラリ(カメラコントローラと同格)
+- 単独画像(png/KTX2)も asset 宣言 ID で指す(内部で 1 sprite の暗黙
+  atlas resource 扱い)
+- public struct・`ref`/validation・未知 field・既定値・範囲
+  (size/pivot/layer)・finite transform/color・atlas fragment の
+  rename/missing を S2D-0a で閉じる(validation fixture 付き)
+- スプライト = object transform で置かれる world-space quad(XY 平面・
+  +Z 法線)。回転・スケール・親子は Transform がそのまま効く
+- flipbook はエンジン機構にしない(frame 差し替えはユーザー空間
+  システム。同梱 flipbook = 特権なし標準ライブラリ)
 
-### 1-2. アトラスとアセット
+### 1-2. 描画パス
 
-- atlas は K3 の `pelican.atlas` をそのまま使う(UI と同一形式・同一
-  ローダ)。`#sprite/Name` フラグメント参照も同一
-- 単独画像(png/KTX2)も texture 指定可(内部で 1 sprite の暗黙 atlas 扱い)
-- 9-slice・タイルマップは v1 対象外(§6 の将来枠。タイルマップは
-  形式から設計する価値があるため別途)
+専用 sprite パス 1 本(3D 不透明の後・post_main の前の固定位置)。
+depth test ON / depth write OFF(§4)。マテリアル梯子と独立の固定
+シェーダから始める(B 層フックは需要が出たら別途設計)。
 
-## 2. ピクセルと単位
+## 2. ピクセル契約(2D-R4 — camera snap 単独案を撤回)
 
-- **ppu(pixels per unit)**: プロジェクト設定(rendering config)に 1 個。
-  `size` 省略時のスプライト寸法 = テクスチャ px / ppu。
-  「1 world 単位 = 1m」の 3D 慣習と接続する係数はこれ 1 つだけにする
-- **pixel snap はカメラ側のオプション**(orthographic カメラの
-  extras): 描画前にカメラ位置を ppu 格子へ丸める。スプライト個別の
-  snap は持たない(ソート順や物理と絵がずれる事故のもと)
-- ドット絵は sampler nearest(atlas/texture 側の宣言)+ pixel snap の
-  組み合わせで成立。フィルタリングは UI と同じ sampler key の語彙
+v1 の「camera を 1/ppu 格子へ丸める」は不成立: 現 orthographic は
+`[-xmag,+xmag]×[-ymag,+ymag]` を framebuffer 全体へ写す
+(`src/core/renderer/camera.cpp`)ため、1 framebuffer pixel の world 幅は
+`2*xmag/width` であって一般に `1/ppu` ではない。契約を三概念に分離する:
 
-## 3. ソートと透明合成(2D の本丸)
+1. **`ppu`**(プロジェクト設定): アセット寸法の変換係数のみ
+   (size 省略時 = source px / ppu)
+2. **`world_units_per_framebuffer_pixel`**: projection(xmag/ymag)と
+   viewport から導出される値。ppu とは独立
+3. **`zoom` = framebuffer_pixels_per_source_pixel**: strict モードの
+   許可値を定義(整数、または明示 opt-in の非整数)
 
-### 3-1. ソートポリシー
+**strict pixel-perfect mode**(カメラ単位の opt-in)は次のどちらかで実装
+(S2D-1 で選定・どちらでも物理 Transform は変更しない):
 
-alpha blend 前提のスプライトはペインターズ順が正しさそのもの。順序は:
+- (a) **logical-resolution render target 方式**: 1 source texel =
+  1 target pixel で描き、整数倍 nearest upscale で合成
+- (b) **render-only quantization 方式**: world→view 変換後に頂点/pivot を
+  target pixel 格子へ量子化(描画のみ・シミュレーションに不可視)
 
-1. **layer(int16)**: 大分類。layer が異なれば必ず layer 順
-2. **layer 内 = ソートポリシー**(カメラ or プロジェクト設定で宣言):
-   - `"z"`(既定): view 空間 depth の遠→近。3D 混在で自然
-   - `"y_down"`: world Y が大きい方が奥(見下ろし 2D の定番)
-   - `"declaration"`: 生成順(UI と同じ全順序 — 演出制御用)
-3. **決定的タイブレーク**: 同値は entity 生成順(EntityId index)。
-   map 走査順・浮動小数の同値に順序を依存させない(UI §1-2 と同じ規律)
+camera snap は `1/ppu` でなく **選んだ projection の
+world-units-per-target-pixel と pixel-center/half-texel 規則**で行う。
+x/y の pixel density 不一致・非整数 upscale・letterbox は
+error / letterbox / 非 strict 降格 のいずれかに固定する。fractional に
+動くスプライトの量子化と smooth camera 補間の両立は renderer policy として
+明文化する(個別 sprite snap は持たない)。
 
-### 3-2. バッチとの関係
+golden: odd/even テクスチャ・odd/even viewport・zoom 1/2/3・fractional
+camera・fractional sprite・回転/非一様スケール(strict 対象外なら明示)・
+atlas edge。
 
-ソート順を壊す併合はしない(UI §1-2 と同じ「隣接 + 完全キー一致のみ」)。
-atlas に寄せてあれば実用上まとまる、で良しとする。
+## 3. ソート(2D-R5 — 全順序を閉じる)
 
-### 3-3. 3D シーンとの合成
+1. **layer(int16)**: 異なれば必ず layer 順
+2. **layer 内ポリシー**(所有はカメラ側・宣言はカメラ定義):
+   - `"z"`(既定): **view-space の pivot depth** 遠→近
+   - `"y_down"`: **world-space の pivot Y** が大きい方が奥
+   - `"declaration"`: **monotonic な `declaration_seq:uint64`**
+     (sprite 登録時に発行。ECS index は free-list 再利用されるため
+     生成順の代用にならない — scene 宣言順・replay・recreate 時の
+     再発行規則を S2D-0a で固定)
+3. **タイブレーク**: 完全 `(EntityId.index, EntityId.generation)`
 
-- スプライトパスはシーンの depth buffer に対して **depth test ON /
-  depth write OFF** で合成(3D ジオメトリには正しく遮蔽され、
-  スプライト同士は §3-1 の順序で塗る)
-- 完全 2D プロジェクトでは 3D ジオメトリが無いだけで、同じパスが走る
-  (2D 専用モードを作らない)
-- 半透明 3D との相互ソートは v1 で解かない(既知の一般問題。
-  スプライトは「3D 不透明の後・post_main の前」の固定位置)
+比較の規範: transform/sort 入力は **finite 必須**(NaN/Inf は
+コンポーネント validation で拒否)。float の z/y は canonical な
+total key(必要なら量子化)へ変換してから比較し、`-0/+0`・epsilon 同値で
+comparator の strict weak order が壊れないことを fixture 化する。
+複数カメラはカメラごとに command list を生成する。
 
-## 4. 2D⇔3D 相互変換の各論
+fixture: EntityId 再利用・同 z/y・`-0/+0`・非 finite 拒否・複数 layer・
+カメラ移動・billboard・opaque 3D の前後 — 2 回実行で command bytes と
+最終絵の一致。
 
-### 4-1. 2D → 3D(配置)
+## 4. 3D との合成
 
-- スプライトは最初から world オブジェクトなので、3D 空間配置は
-  親 Transform を与えるだけ(追加機構なし)
-- **billboard オプション**(§1-1)だけ機構で持つ: "y_axis"(ビルボード
-  ツリー型)と "full"(パーティクル型)。view 依存のため描画側でしか
-  できない — これが 2D→3D で唯一エンジンに足すもの
-- 「2D シーンまるごと配置」= scene v1 のサブツリー(スプライト群)を
-  親ノード下に置く、という運用(K2 のシーン抽出・フラグメント参照と
-  同じ語彙で足りる)
+- sprite パス = depth test ON / depth write OFF。3D 不透明には正しく
+  遮蔽され、スプライト同士は §3 の painter 順
+- **明記する限界(仕様)**: スプライトは後続 draw の occluder に
+  ならない。layer は幾何 depth を上書きする。opaque cutout・3D 半透明
+  との相互ソート・交差する大きな回転 quad は v1 の対象外。
+  sprite depth prepass / alpha-cutout は将来拡張点として予約
+- 完全 2D プロジェクトでも同じパスが走る(2D 専用モードなし)
 
-### 4-2. 3D → 2D(投影)
+## 5. スケールの逃げ道(レビュー §6 — 単一ワールドの破綻条件を塞ぐ)
 
-- 直交カメラは実装済み(WP48)。「3D シーンを 2D として遊ぶ/見せる」は
-  カメラ定義 + ゲームロジックの移動拘束(ユーザー空間)で成立 —
-  エンジン追加なし
-- **devstudio の 2D 投影編集**は editor の仕事(D2 の ortho ビュー +
-  ピッキング)。エンジン側の前提(ortho カメラ・ID バッファピッキング
-  計画・rpc 編集)は既に計画済みで、本書からの追加要求はなし
-- **3D を 2D 素材化(render-to-texture スプライト)**: 「3D モデルを
-  スプライトとして使う」(奥行きのある看板・ミニビュー)は M3.5 の
-  named snapshot(スナップショット RT を screen_inputs で参照)を
-  スプライトの texture 源に許すことで成立させる — v1 対象外だが
-  形式上の穴だけ確保(texture に `snapshot:` スキームを予約)
+単一ワールドが破綻するのは「1 sprite = 必ず 1 entity + 毎フレーム全件
+CPU sort + 単一 16384 quad buffer」に固定した場合。escape hatch を機構に
+含める:
 
-### 4-3. 2D 物理
+1. 通常の sprite_view は ECS entity でよいが、**TileMap/particle/
+   foliage は 1 entity が chunk/instance 列を供給できる render source**
+   とする(tile 1 枚ごとの EntityId を要求しない)
+2. camera frustum/canvas bounds で **visibility cull → sort → 16384
+   以下の draw chunk 分割**。static chunk は transform/atlas/sort
+   revision が変わるまで command cache を再利用
+3. fixture: **50,000 論理 sprite(可視 ~2,000)の純 CPU fixture** を
+   S2D-0a に置く — 出力順/hash・chunk 上限・非可視除外・同一入力
+   再実行一致。性能は WP29 の計測形式で記録
+4. tilemap 形式は将来だが、S2D の ABI が「1 command = 1 entity」
+   「1 フレーム最大 16384」に凍結されないことを S2D-0 で保証する
 
-新しい 2D 物理エンジンは作らない。既存 physquery(P1/P2)の上に:
+## 6. 2D⇔3D 相互変換の各論
 
-- **平面拘束はユーザー空間**: 2D ゲームの移動・接地はゲームロジックが
-  XY(または XZ)平面で書く。collider は既存 box/capsule をそのまま
-  使う(厚みのある 3D collider を平面運用)
-- raycast/overlap は既存 API で 2D 用途に足りる(平面内レイも 3D レイ)
-- 本格 2D 物理(Box2D 級の接触解決)は需要が出たら別トラック
-  (シミュレーション自体が未導入 — Jolt 判断と同時に再評価)
+- **2D→3D**: スプライトは最初から world オブジェクト。配置 = 親
+  Transform のみ。機構で足すのは billboard("y_axis"/"full" — view
+  依存のため描画側)だけ
+- **3D→2D**: 直交カメラ(WP48 — ただし実装済みは projection のみで
+  pixel snap は含まない)+ ゲームロジックの移動拘束(ユーザー空間)。
+  devstudio の 2D 投影編集は D2 の仕事で本書からの追加要求なし
+- **3D の 2D 素材化**: M3.5 named snapshot を texture 源に許す
+  (`snapshot:` スキーム予約)— v1 対象外
 
-## 5. 決定性と検証
+## 7. 2D 物理(2D-R6 — 「既存 query で足りる」を撤回)
 
-- スプライトソートの決定性: §3-1 のタイブレークを fixture 化
-  (同 layer・同 z の複数スプライトが 2 回実行で byte 一致)
-- golden: ①ortho カメラ + atlas スプライト数枚(layer 跨ぎ・flip・tint)
-  ②3D ジオメトリとの遮蔽(depth test)③billboard ④pixel snap on/off
-- ppu・ソートポリシーは get_frame_plan / get_status で観測可能に
+現 physquery は ray×3 形状 + boolean overlap + closest ray のみ。これで
+書けるのは足元 ray の hand-authored ゲームまでで、platformer 一般の成立
+根拠にはならない(tunneling・斜面・one-way が書けない)。ただし解は
+物理シミュレーション導入ではなく **query の拡張**(S2D-P):
 
-## 6. 実装順
+1. **`shapeCast/sweep(start, delta, filter)`**(capsule/box): TOI・
+   position・normal・安定 collider/entity ID を返す決定的 sweep
+   (薄い床/壁の tunneling 防止)
+2. **layer/mask・self/ignore set・trigger・one-way metadata を query
+   filter で**。one-way は前位置/接近方向のユーザー空間 policy でも
+   よいが、「無視した後の次 hit」を取れる **all-hit / filter 継続**が必要
+3. **initial overlap の signed distance / MTD**(または決定的
+   depenetration query)
+4. `moveAndSlide`・slope limit・step-up・coyote time・moving platform は
+   **標準ユーザー空間ライブラリ**。エンジンは sweep/contact data と
+   安定 identity だけ保証
+5. fixture(純 CPU・fixed-step): 落下接地・斜面上り/下り・壁 slide・
+   corner・薄床高速移動・one-way の下から通過/上から接地・
+   initial overlap・同時 hit tie
 
-| 段階 | 内容 | 依存 |
-|------|------|------|
-| S2D-0 | sprite_view コンポーネント + world quad パス + atlas 接続 + z ソート + golden | K3(済)・WP48 ortho(済)・U1 quad 基盤(済) |
-| S2D-1 | ソートポリシー(y_down/declaration)+ ppu/pixel snap + billboard + 同梱 flipbook システム(ユーザー空間 dogfood) | S2D-0 |
-| S2D-2 | 2D ゲーム example(見下ろし or サイドスクローラー 1 面 — 入力/物理クエリ/イベントの実証) | S2D-1 |
-| 将来 | タイルマップ(形式設計から)・9-slice・snapshot テクスチャ・半透明相互ソート | — |
+## 8. 決定性と検証
 
-## 7. 未決事項
+- §3 の全順序 fixture・§5 の 50k sprite fixture・§2 の pixel golden・
+  §7 の platformer シナリオ(replay 2 回 byte 一致)
+- ppu・zoom・ソートポリシー・chunk 数は get_frame_plan / get_status で
+  観測可能に
 
-1. スプライトの世界平面の既定(XY+Z 法線 vs XZ+Y 法線)— 見下ろし 2D を
-   XZ で作るか「XY + カメラを上から」で作るか。**v1 は XY 固定 +
+## 9. 実装順(レビュー §7 の再分割を採用)
+
+| WP | 内容 | exit gate | 依存 |
+|----|------|-----------|------|
+| **S2D-0a Contract/CPU** | sprite_view schema(scene v1 準拠)+ public component、consumer-neutral AtlasAsset 抽出、SpriteCommand/world ABI、sort total key + declaration_seq、visibility/caching/chunking | schema fixture・ID 再利用/float sort fixture・50k/2k chunk fixture(GPU 不要) | K3・U1(コード流用でなく抽出元) |
+| **S2D-0b GPU world quad** | world-space 頂点/インスタンス buffer・camera VP・pivot/flip・シーンパス・straight alpha・depth test ON/write OFF・atlas page bind | 2D/3D 遮蔽・layer/z・複数 atlas・回転/親子・UI 無し/有りの resource ownership・golden | S2D-0a・WP48 |
+| **S2D-1 Pixel/Policy** | strict pixel-perfect(方式選定込み)・ppu/zoom・y_down/declaration・billboard・flipbook dogfood(ユーザー空間) | §2/§3 fixture + pixel golden 全通過 | S2D-0b |
+| **S2D-P Query minimum** | sweep/shapeCast・filter/all-hit・MTD・安定 collider identity | §7 の純 CPU fixture | P1/P2 |
+| **S2D-2 Vertical slice** | **side-scroller 1 面を固定選択**(top-down に逃げて platformer 条件を未検証にしない): 入力/event/fixed-step/接地/斜面/one-way の実証 | replay 2 回一致・接地/斜面/one-way/tunneling シナリオ | S2D-1・S2D-P |
+| 将来 | TileMap 形式/chunk・9-slice・snapshot texture・3D 半透明統合 | 各別設計 | — |
+
+## 10. 未決事項
+
+1. スプライト平面の既定(XY+Z 法線 vs XZ+Y 法線)— **v2 も XY 固定 +
    カメラで解く**を仮置き(要ユーザー確認)
-2. layer と 3D レンダリングパス(マテリアル pass キー)の関係 —
-   スプライトは単一パス内ソートで完結させる仮置き
+2. strict pixel-perfect の方式選定(logical-resolution target vs
+   render quantization)— S2D-1 で両案の実測比較
 3. タイルマップ形式(チャンク・衝突・オートタイル)— 別文書
-4. スプライトへのライティング(normal 付きスプライト)— 需要が出たら
-   surface 化(B 層)を検討
+4. スプライトへのライティング — 需要が出たら surface 化(B 層)を検討
