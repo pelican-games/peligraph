@@ -2307,6 +2307,40 @@ struct/挙動の変更禁止** — 変更が必要と判断した場合は実装
 5. 受け入れ = 新 fixture + 既存全テスト + golden 全維持(SKIP 0)+
    player(AliciaSolid の joint 上限 WARN 挙動も不変)
 
+### WP98: アセット HR1 — identity / transaction 基盤
+
+参照: **`design_asset_hot_reload.md` v2.1 §3-1・§3-1a・§4・§5・§7 が正**。
+受入条件 = 再レビュー
+`docs/design_reviews/2026-07-12_hr_v2_2d_v1_review_codex.md` の
+**HR-C2(identity 三概念分離)を逐語 + HR-C4-1(status の additive
+拡張)+ HR-C4-4(frame-boundary barrier fixture)**。
+依存: WP96(HR0 — 済)。見積: 大。
+排他: `src/core/watch/`(HR0 への追記)+ identity/transaction の新設
+ユニット。**実リソース(texture/shader/model)の差し替えは実装しない**
+(HR1-T/M・HR2 の仕事 — 本 WP は fake resource で framework を検証)。
+
+1. **canonical AssetKey の実装**(§3-1): project logical reference +
+   fragment 正本。物理 file identity は watcher dedupe 限定
+2. **identity 三概念**(§3-1a = HR-C2 逐語): `LogicalAssetId`(宣言
+   寿命中 stable)/ slot `generation`(unbind/destroy 後の再利用時のみ
+   増加)/ `content_revision`(commit 成功ごと単調増加)。互換性破断
+   検出 revision は別 field
+3. **reverse dependency index**: AssetKey → 参照 resource の辞書 +
+   edge の除去/公開を handle table swap と同一 commit barrier で可視化
+4. **CPU candidate / staged commit framework**(§4): parse all →
+   validate all → stage all → topological commit。途中失敗 = candidate
+   のみ破棄・global 状態不変。DeletionQueue 接続点の定義
+5. **frame-boundary barrier**(HR-C4-4): 複数 logical table の commit を
+   一つの barrier で公開し、observer が group の半端な revision を
+   読めないことを fixture 化
+6. **status**(HR-C4-1): `get_status.reload` に resource
+   counters/errors を additive 拡張(HR0 所有の watcher 部分は不変)
+7. fixture(fake resource): 同一 asset 1000 reload で LogicalAssetId
+   不変 + content_revision 単調増加 / 削除→再宣言で旧 handle stale /
+   group rollback で ID・revision・edge・counts 全不変(HR-C2-4)
+8. 受け入れ = 上記 fixture 全 green + 既存全テスト + golden 全維持
+   (SKIP 0)+ player
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの
