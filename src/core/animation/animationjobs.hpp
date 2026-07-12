@@ -3,7 +3,9 @@
 #include "../model/skeletalanimation.hpp"
 #include "../userpublic/animation/abi_v1.hpp"
 
+#include <atomic>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <span>
 #include <string>
@@ -12,9 +14,14 @@
 
 namespace Pelican::Animation {
 
+struct AnimationResourceGeneration {
+    std::atomic_uint32_t current{1};
+};
+
 struct AnimationRig {
     RigHandle handle{};
     PoseLayoutHandle layout{};
+    std::shared_ptr<AnimationResourceGeneration> generation_state;
     std::vector<std::int32_t> parents;
     std::vector<TransformV1> rest_pose;
     std::vector<std::string> node_names;
@@ -26,6 +33,7 @@ struct AnimationSkinBinding {
     SkinBindingHandle handle{};
     RigHandle source_rig{};
     PoseLayoutHandle layout{};
+    std::shared_ptr<AnimationResourceGeneration> generation_state;
     std::uint32_t palette_offset{};
     std::vector<std::uint32_t> joint_layout_nodes;
     std::vector<glm::mat4> inverse_bind_matrices;
@@ -34,6 +42,7 @@ struct AnimationSkinBinding {
 struct AnimationClipResource {
     ClipHandle handle{};
     RigHandle source_rig{};
+    std::shared_ptr<AnimationResourceGeneration> generation_state;
     const SkeletalAnimationClip *source{};
 };
 

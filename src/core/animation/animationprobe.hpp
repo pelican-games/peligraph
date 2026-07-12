@@ -31,6 +31,7 @@ class ProbeRuntime {
     Status acquirePose(PoseArenaHandle arena, PoseLayoutHandle layout, std::uint32_t joint_count,
                        PoseViewV1 &out_view);
     Status validatePose(PoseHandle pose) const;
+    static Status validatePoseHandle(PoseHandle pose);
 
     CursorHandle createCursor(double duration_seconds, WrapMode wrap_mode,
                               std::span<const ProbeAnnotation> annotations = {});
