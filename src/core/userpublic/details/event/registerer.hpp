@@ -1,6 +1,7 @@
 #pragma once
 
 #include "payloadschema.hpp"
+#include "../reload/registrationowner.hpp"
 #include "../../serialize/jsonarchive.hpp"
 #include "../../serialize/serialize.hpp"
 
@@ -40,6 +41,7 @@ struct EventTypeRegistration {
     EventPayloadSchema schema{};
     JsonPayloadLoadFn load_json_payload = nullptr;
     RefFieldListFn list_ref_fields = nullptr;
+    RegistrationOwner owner = engineRegistrationOwner;
 };
 
 class UserEventRegistererTemplatePublic {
@@ -49,9 +51,12 @@ class UserEventRegistererTemplatePublic {
     std::size_t payload_load_calls = 0;
     bool catalog_frozen = false;
 
-    void __registerEvent(EventTypeRegistration registration);
+    PELICAN_API void __registerEvent(EventTypeRegistration registration);
     void __emit(QueuedEvent event);
     const EventTypeRegistration &validateByName(std::string_view name, const void *payload_json) const;
+
+    friend void unregisterEvents(RegistrationOwner owner) noexcept;
+    friend std::size_t eventRegistrationCount(RegistrationOwner owner) noexcept;
 
   public:
     template <class Event> void registerEvent(std::string name) {
@@ -161,7 +166,7 @@ class UserEventRegistererTemplatePublic {
     void clearPendingEvents();
 };
 
-UserEventRegistererTemplatePublic &getEventRegisterer();
+PELICAN_API UserEventRegistererTemplatePublic &getEventRegisterer();
 void freezePendingEventsForFrame();
 void dispatchFrozenEvents(GameContext &ctx);
 void clearPendingEvents();
@@ -169,6 +174,8 @@ std::size_t emitEventByName(std::string_view name, const void *payload_json);
 void validateEventPayload(std::string_view name, const void *payload_json);
 EventSchemaLookup findEventSchema(std::string_view name);
 void validateEventCatalog();
+void unregisterEvents(RegistrationOwner owner) noexcept;
+std::size_t eventRegistrationCount(RegistrationOwner owner) noexcept;
 
 } // namespace internal
 

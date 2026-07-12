@@ -7,6 +7,7 @@ namespace Pelican {
 namespace internal {
 
 void UserGameSystemRegistererTemplatePublic::__registerSystem(GameSystemRegistration registration) {
+    registration.owner = currentRegistrationOwner();
     systems.push_back(std::move(registration));
 }
 
@@ -48,6 +49,20 @@ void dispatchEventToRegisteredGameSystems(const QueuedEvent &event, GameContext 
             }
         }
     }
+}
+
+void unregisterGameSystems(RegistrationOwner owner) noexcept {
+    auto &systems = getGameSystemRegisterer().systems;
+    std::erase_if(systems, [owner](const GameSystemRegistration &system) {
+        return system.owner == owner;
+    });
+}
+
+std::size_t gameSystemRegistrationCount(RegistrationOwner owner) noexcept {
+    return static_cast<std::size_t>(std::count_if(
+        getGameSystemRegisterer().registeredSystems().begin(),
+        getGameSystemRegisterer().registeredSystems().end(),
+        [owner](const GameSystemRegistration &system) { return system.owner == owner; }));
 }
 
 } // namespace internal

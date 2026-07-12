@@ -233,9 +233,7 @@ void validateObject(std::string_view event_name, const EventPayloadSchema &schem
 namespace internal {
 
 void UserEventRegistererTemplatePublic::__registerEvent(EventTypeRegistration registration) {
-    if (catalog_frozen) {
-        throw std::runtime_error("event registration after catalog validation is forbidden");
-    }
+    registration.owner = currentRegistrationOwner();
     registration.name = eventDisplayName(std::move(registration.name));
 
     const auto same_name =
@@ -246,7 +244,9 @@ void UserEventRegistererTemplatePublic::__registerEvent(EventTypeRegistration re
         if (same_name->type == registration.type) {
             return;
         }
-        throw std::runtime_error("duplicate event name: " + registration.name);
+        if (same_name->owner == engineRegistrationOwner || registration.owner == engineRegistrationOwner) {
+            throw std::runtime_error("duplicate event name: " + registration.name);
+        }
     }
 
     const auto same_type =
@@ -257,8 +257,14 @@ void UserEventRegistererTemplatePublic::__registerEvent(EventTypeRegistration re
         if (same_type->name == registration.name) {
             return;
         }
-        throw std::runtime_error("duplicate event type registered as '" + same_type->name + "' and '" +
-                                 registration.name + "'");
+        if (same_type->owner == engineRegistrationOwner || registration.owner == engineRegistrationOwner) {
+            throw std::runtime_error("duplicate event type registered as '" + same_type->name + "' and '" +
+                                     registration.name + "'");
+        }
+    }
+
+    if (catalog_frozen && registration.owner == engineRegistrationOwner) {
+        throw std::runtime_error("event registration after catalog validation is forbidden");
     }
 
     event_types.push_back(std::move(registration));
@@ -429,6 +435,28 @@ EventSchemaLookup findEventSchema(std::string_view name) {
 
 void validateEventCatalog() {
     getEventRegisterer().validateCatalogAndFreeze();
+}
+
+void unregisterEvents(RegistrationOwner owner) noexcept {
+    auto &registerer = getEventRegisterer();
+    std::vector<std::type_index> removed_types;
+    for (const auto &registration : registerer.event_types) {
+        if (registration.owner == owner) removed_types.push_back(registration.type);
+    }
+    const auto removed = [&removed_types](const QueuedEvent &event) {
+        return std::find(removed_types.begin(), removed_types.end(), event.type) != removed_types.end();
+    };
+    std::erase_if(registerer.pending_events, removed);
+    std::erase_if(registerer.deliver_now_events, removed);
+    std::erase_if(registerer.event_types, [owner](const EventTypeRegistration &registration) {
+        return registration.owner == owner;
+    });
+}
+
+std::size_t eventRegistrationCount(RegistrationOwner owner) noexcept {
+    const auto &events = getEventRegisterer().event_types;
+    return static_cast<std::size_t>(std::count_if(events.begin(), events.end(),
+        [owner](const EventTypeRegistration &event) { return event.owner == owner; }));
 }
 
 } // namespace internal

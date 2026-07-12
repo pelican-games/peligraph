@@ -2,6 +2,7 @@
 
 #include <details/ecs/componentdeclare.hpp>
 #include <components/localtransform.hpp>
+#include "export.hpp"
 
 #include <cstdint>
 #include <functional>
@@ -16,7 +17,7 @@ namespace Pelican {
 
 using ComponentId = uint64_t;
 
-class GameObjects {
+class PELICAN_API GameObjects {
   private:
     template <ComponentId... id> struct ComponentIdHolder {
         template <class T> using Append = ComponentIdHolder<id..., ComponentIdByType<T>::value>;

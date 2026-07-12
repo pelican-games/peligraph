@@ -38,6 +38,7 @@ DECLARE_MODULE(EngineLaunchConfig) {
     std::filesystem::path seq_mesh{"builtin:sphere"};
     bool seq_loop = false;
     std::optional<EngineLaunchCameraOverride> camera_override;
+    std::optional<std::filesystem::path> game_logic_dll;
 };
 
 } // namespace Pelican
