@@ -1,6 +1,8 @@
 #include "util.hpp"
 #include "core.hpp"
 
+#include <stdexcept>
+
 namespace Pelican {
 
 template <class T, size_t N> static std::array<T, N> vectorToArray(std::vector<T> v) {
@@ -40,7 +42,7 @@ static void changeImageLayoutCommand(vk::CommandBuffer cmd_buf, const ImageWrapp
     barrior.image = image.image.get();
     barrior.subresourceRange.aspectMask = aspectMaskForFormat(image.format);
     barrior.subresourceRange.baseMipLevel = 0;
-    barrior.subresourceRange.levelCount = 1;
+    barrior.subresourceRange.levelCount = image.mip_levels;
     barrior.subresourceRange.baseArrayLayer = 0;
     barrior.subresourceRange.layerCount = 1;
     barrior.srcAccessMask = info.src_access;
@@ -61,13 +63,6 @@ void VulkanUtils::changeImageLayout(const ImageWrapper &image, vk::ImageLayout o
 
 void VulkanUtils::safeTransferMemoryToImage(const ImageWrapper &image, const void *src, vk::DeviceSize bytes_num,
                                             const ImageTransferInfo &info) {
-    const auto &vkcore = GET_MODULE(VulkanManageCore);
-
-    const auto &staging_buf =
-        vkcore.allocBuf(bytes_num, vk::BufferUsageFlagBits::eTransferSrc, vma::MemoryUsage::eAutoPreferHost,
-                        vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
-    vkcore.writeBuf(staging_buf, src, 0, bytes_num);
-
     vk::BufferImageCopy image_copy;
     image_copy.bufferOffset = 0;
     image_copy.imageSubresource.aspectMask = vk::ImageAspectFlagBits::eColor;
@@ -76,6 +71,20 @@ void VulkanUtils::safeTransferMemoryToImage(const ImageWrapper &image, const voi
     image_copy.imageSubresource.layerCount = 1;
     image_copy.imageOffset = vk::Offset3D{0, 0, 0};
     image_copy.imageExtent = image.extent;
+    safeTransferMemoryToImageLevels(image, src, bytes_num, std::span<const vk::BufferImageCopy>{&image_copy, 1}, info);
+}
+
+void VulkanUtils::safeTransferMemoryToImageLevels(const ImageWrapper &image, const void *src,
+                                                  vk::DeviceSize bytes_num,
+                                                  std::span<const vk::BufferImageCopy> regions,
+                                                  const ImageTransferInfo &info) {
+    if (regions.empty()) throw std::runtime_error("Image transfer requires at least one mip region");
+    const auto &vkcore = GET_MODULE(VulkanManageCore);
+
+    const auto &staging_buf =
+        vkcore.allocBuf(bytes_num, vk::BufferUsageFlagBits::eTransferSrc, vma::MemoryUsage::eAutoPreferHost,
+                        vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
+    vkcore.writeBuf(staging_buf, src, 0, bytes_num);
 
     executeOneTimeCmd(
         [&](vk::CommandBuffer cmd_buf) {
@@ -87,7 +96,7 @@ void VulkanUtils::safeTransferMemoryToImage(const ImageWrapper &image, const voi
                                          .dst_access = vk::AccessFlagBits::eTransferWrite,
                                      });
             cmd_buf.copyBufferToImage(staging_buf.buffer.get(), image.image.get(), vk::ImageLayout::eTransferDstOptimal,
-                                      {image_copy});
+                                      regions);
             changeImageLayoutCommand(cmd_buf, image, vk::ImageLayout::eTransferDstOptimal, info.new_layout,
                                      ChangeImageLayoutInfo{
                                          .src_stage = vk::PipelineStageFlagBits::eTransfer,

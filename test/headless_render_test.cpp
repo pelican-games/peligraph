@@ -2,6 +2,7 @@
 #include "../src/core/container.hpp"
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/loader/projectsrc.hpp"
+#include "../src/core/loader/imageloader.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/material/materialcontainer.hpp"
 #include "../src/core/vkcore/core.hpp"
@@ -14,6 +15,7 @@
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
+#include "ktx2_test_writer.hpp"
 
 namespace Pelican {
 
@@ -96,6 +98,17 @@ TEST_CASE("headless render target renders and reads back RGBA8 frames", "[headle
         REQUIRE(data_view);
         REQUIRE(color_view);
         REQUIRE(data_view != color_view);
+        const auto ktx_bytes = TestKtx2::makeRgba8Srgb188();
+        const auto ktx_loaded = loadImageMemory(ktx_bytes, "headless-known-188.ktx2");
+        REQUIRE(static_cast<unsigned>(ktx_loaded.pixels.front()) == 188);
+        const auto ktx_texture = GET_MODULE(MaterialContainer).registerTexture(
+            ktx_loaded, "headless-known-188.ktx2");
+        const auto [ktx_data_view, ktx_color_view] =
+            GET_MODULE(MaterialContainer).textureViewsForTesting(ktx_texture);
+        REQUIRE(ktx_data_view);
+        REQUIRE(ktx_color_view);
+        REQUIRE(ktx_data_view != ktx_color_view);
+        REQUIRE(GET_MODULE(MaterialContainer).textureMipLevelsForTesting(ktx_texture) == 2);
         const std::array clears{
             vk::ClearColorValue{std::array{1.0f, 0.0f, 0.0f, 1.0f}},
             vk::ClearColorValue{std::array{0.0f, 0.0f, 1.0f, 1.0f}},
