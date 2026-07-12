@@ -10,6 +10,7 @@ target_sources(pelican_cli PRIVATE
   importcommand.cpp
   materialcommand.cpp
   projectinit.cpp
+  rulesimport.cpp
   ../core/model/vatformat.cpp
 )
 

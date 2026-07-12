@@ -364,6 +364,8 @@ add_test(
 )
 
 pelican_define_test(importmanifest_test pelican_project)
+pelican_define_test(importrules_test pelican_project)
+target_compile_definitions(pelican_test_importrules_test PRIVATE PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_compile_definitions(pelican_test_importmanifest_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
@@ -402,6 +404,15 @@ add_test(
         -DWRITER=$<TARGET_FILE:pelican_test_gltf_scene_fixture_writer>
         -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/devcli_gltf_extract
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_gltf_extract.cmake
+)
+
+add_test(
+    NAME devcli_import_rules
+    COMMAND ${CMAKE_COMMAND}
+        -DCLI=$<TARGET_FILE:pelican_cli>
+        -DWRITER=$<TARGET_FILE:pelican_test_gltf_scene_fixture_writer>
+        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/devcli_import_rules
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_rules_import.cmake
 )
 
 pelican_define_test(frameplanner_test pelican_core)

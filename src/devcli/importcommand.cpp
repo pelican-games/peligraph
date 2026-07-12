@@ -1,6 +1,7 @@
 #include "importcommand.hpp"
 
 #include "gltfsceneextract.hpp"
+#include "rulesimport.hpp"
 
 #include "../project/importmanifest.hpp"
 
@@ -358,6 +359,9 @@ ImportCommandResult importDelivery(const std::filesystem::path &delivery_dir,
 }
 
 int runImportCommand(int argc, char *argv[]) {
+    if (argc > 1 && std::string_view{argv[1]} == "--rules") {
+        return runRulesImportCommand(argc, argv);
+    }
     if (argc > 1 && std::string_view{argv[1]} == "gltf") {
         return runGltfImportCommand(argc - 1, argv + 1);
     }
