@@ -20,8 +20,11 @@ DECLARE_MODULE(ReloadService) {
     nlohmann::json statusJson() const;
     FileWatcher *watcherForTesting() noexcept { return watcher_.get(); }
     ReloadCoordinator &transactions() noexcept { return transactions_; }
+    bool applyRequestForTesting(const ReloadRequest &request);
 
   private:
+    ReloadCoordinator::RetireSink retireSink();
+    bool applyRequest(const ReloadRequest &request);
     std::unique_ptr<FileWatcher> watcher_;
     ReloadCoordinator transactions_;
 };

@@ -70,6 +70,7 @@ DECLARE_MODULE(DeletionQueue) {
     template <class T> void defer(T &&resource) { core.defer(std::forward<T>(resource)); }
     void beginFrame();
     void flushAll();
+    size_t pendingCountForTesting() const { return core.pendingCount(); }
 };
 
 } // namespace Pelican
