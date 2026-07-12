@@ -18,6 +18,8 @@
 #include "../userpublic/details/system/registerer.hpp"
 #include "../vkcore/renderer.hpp"
 #include "../vkcore/rendertarget.hpp"
+#include "../watch/reloadgate.hpp"
+#include "../watch/reloadservice.hpp"
 
 #include <array>
 #include <cstdint>
@@ -600,13 +602,18 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
             {"input", {{"recording", GET_MODULE(InputSequenceRuntime).isRecording()},
                        {"replaying", GET_MODULE(InputSequenceRuntime).isReplaying()},
                        {"replay_frame", GET_MODULE(InputSequenceRuntime).replayFrameIndex()},
-                       {"hot_reload", GET_MODULE(EngineLaunchConfig).shader_hot_reload},
+                       {"hot_reload", GET_MODULE(watch::ReloadGate).enabled()},
                        {"profile", internal::activeInputProfile()
                                        ? nlohmann::json(*internal::activeInputProfile())
                                        : nlohmann::json(nullptr)},
                        {"profiles", internal::availableInputProfiles()},
                        {"gamepad_polling", internal::gamepadPollingEnabled()}}},
             {"stores", assetStoresStatus()},
+            {"reload", FastModuleContainer::isInitialized<watch::ReloadService>()
+                           ? GET_MODULE(watch::ReloadService).statusJson()
+                           : nlohmann::json{{"state", "disabled"},
+                                            {"epoch", GET_MODULE(watch::ReloadGate).snapshot().epoch},
+                                            {"error", nullptr}}},
             {"startup", {{"config_ms", startup.config_ms},
                          {"vulkan_ms", startup.vulkan_ms},
                          {"shaders_ms", startup.shaders_ms},
@@ -689,7 +696,7 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
             GET_MODULE(InputSequenceRuntime).startReplay(path);
             auto &config = GET_MODULE(EngineLaunchConfig);
             config.input_replay = true;
-            config.shader_hot_reload = false;
+            GET_MODULE(watch::ReloadGate).setReason(watch::ReloadGateReason::replay, true);
             config.fps = GET_MODULE(InputSequenceRuntime).replayFps();
             GET_MODULE(EngineTime).setup(EngineTime::Mode::fixed_step, 1.0 / config.fps);
         } catch (const std::exception &error) {
@@ -706,6 +713,7 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
             GET_MODULE(InputSequenceRuntime).stopReplay();
             GET_MODULE(InputState).clear();
             GET_MODULE(EngineLaunchConfig).input_replay = false;
+            GET_MODULE(watch::ReloadGate).setReason(watch::ReloadGateReason::replay, false);
         } catch (const std::exception &error) {
             throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError, error.what());
         }

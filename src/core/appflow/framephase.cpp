@@ -13,6 +13,7 @@
 #include "../userpublic/gamecontext.hpp"
 #include "../userpublic/userinput.hpp"
 #include "enginetime.hpp"
+#include "../watch/reloadservice.hpp"
 #if PELICAN_WITH_IMGUI
 #include "../imgui/imguiruntime.hpp"
 #include "../imgui/imguisystem.hpp"
@@ -24,6 +25,11 @@
 namespace Pelican {
 
 void updateFrameState() {
+    // Reload publication is a frame-boundary operation and happens before any
+    // phase can observe game/runtime state.
+    if (FastModuleContainer::isInitialized<watch::ReloadService>()) {
+        GET_MODULE(watch::ReloadService).applyFrame();
+    }
     GameContext game_context;
     forEachFramePhase([&](FramePhase phase) {
         switch (phase) {
