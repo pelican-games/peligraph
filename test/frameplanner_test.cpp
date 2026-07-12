@@ -356,6 +356,58 @@ TEST_CASE("frame planner example plan JSON matches fixture", "[frameplanner]") {
     requirePlanFixture(plan_json, fixtureRoot() / "plans" / "example_main_render.json");
 }
 
+TEST_CASE("snapshot plan node reports copy bytes and screen input read dependency",
+          "[frameplanner][snapshot]") {
+    const auto config = nlohmann::json::parse(R"json({
+  "snapshots": [{"name": "opaque_color", "after": "opaque"}],
+  "render_targets": [],
+  "rendering_passes": [{
+    "name": "snapshot_demo",
+    "passes": [
+      {
+        "name": "opaque",
+        "type": "fullscreen",
+        "output": {"color": "swapchain", "depth": null}
+      },
+      {
+        "name": "refract",
+        "type": "fullscreen",
+        "canonical_anchor": "post_ldr",
+        "input": ["opaque_color"],
+        "output": {"color": "swapchain", "depth": null}
+      }
+    ]
+  }]
+})json");
+    const auto composed = composeRenderFeatureConfig(config);
+    const auto resolved = resolveRenderTargetFormatClassesV2(
+        composed.config, vk::Format::eB8G8R8A8Srgb, vk::Extent2D{64, 32}, false);
+    const auto graphs = parseFrameGraphDefinitionsFromConfigJson(resolved);
+    REQUIRE(graphs.size() == 1);
+    const auto plan = planFrameGraph(graphs.front());
+    const auto copy = std::find_if(plan.nodes.begin(), plan.nodes.end(), [](const auto &node) {
+        return node.kind == FramePlanNodeKind::snapshot_copy;
+    });
+    REQUIRE(copy != plan.nodes.end());
+    REQUIRE(copy->byte_size == 64 * 32 * 4);
+    const auto refract = std::find_if(plan.nodes.begin(), plan.nodes.end(), [](const auto &node) {
+        return node.name == "refract";
+    });
+    REQUIRE(refract != plan.nodes.end());
+    REQUIRE(refract->reads == std::vector<std::string>{"opaque_color"});
+    REQUIRE(std::any_of(plan.barriers.begin(), plan.barriers.end(), [](const auto &barrier) {
+        return barrier.from == "__snapshot_opaque_color" && barrier.to == "refract" &&
+               barrier.resource == "opaque_color";
+    }));
+    const auto plan_json = framePlanToJson(plan);
+    REQUIRE(plan_json.at("version") == 1);
+    REQUIRE_FALSE(plan_json.contains("materials"));
+    REQUIRE_FALSE(plan_json.contains("resources"));
+    REQUIRE_FALSE(plan_json.contains("snapshots"));
+    REQUIRE_FALSE(plan_json.contains("anchors"));
+    requirePlanFixture(plan_json, fixtureRoot() / "plans" / "snapshot_screen_input.json");
+}
+
 TEST_CASE("canonical C1b frame-plan diff preserves every legacy pass and target field",
           "[frameplanner][color-c1b]") {
     const auto legacy = readJson(sourceRoot() / "projects" / "example" / "passes" /

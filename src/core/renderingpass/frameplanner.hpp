@@ -12,6 +12,7 @@ enum class FramePlanNodeKind {
     render,
     compute,
     anchor,
+    snapshot_copy,
     output_transform,
 };
 
@@ -23,6 +24,8 @@ struct FrameGraphNodeDefinition {
     std::vector<std::string> writes;
     std::vector<std::string> after;
     std::vector<std::string> before;
+    std::string snapshot_after;
+    std::size_t byte_size = 0;
 };
 
 struct FrameGraphDefinition {
@@ -39,6 +42,8 @@ struct FramePlanNode {
     size_t level = 0;
     std::vector<std::string> reads;
     std::vector<std::string> writes;
+    std::string snapshot_after;
+    std::size_t byte_size = 0;
 };
 
 struct FramePlanBarrier {

@@ -671,6 +671,65 @@ void writeStemProject(const std::filesystem::path &root) {
 })json");
 }
 
+void writeSnapshotRefractionProject(const std::filesystem::path &root) {
+    auto project = makeStemProjectJson();
+    project["name"] = "snapshot refraction golden";
+    writeTextFile(root / "project.json", project.dump(2));
+    writeTextFile(root / "scene.json", R"json({
+  "schema": "pelican.scene",
+  "version": 1,
+  "scenes": {"default_scene": {"objects": []}}
+})json");
+    writeTextFile(root / "assets.json", R"json({"models":[]})json");
+    writeTextFile(root / "ui" / "ui.json", R"json({"images":[]})json");
+    writeTextFile(root / "shaders" / "fullscreen.vert", stemFullscreenVertexShader());
+    writeTextFile(root / "shaders" / "opaque.frag", R"glsl(
+#version 450
+layout(location = 0) in vec2 uv;
+layout(location = 0) out vec4 outColor;
+void main() {
+    outColor = vec4(0.08 + uv.x * 0.72, 0.10 + uv.y * 0.55, 0.24, 1.0);
+}
+)glsl");
+    writeTextFile(root / "shaders" / "refract.frag", R"glsl(
+#version 450
+layout(set = 1, binding = 0) uniform sampler2D pelican_screen_opaque_color_texture;
+vec4 pelican_screen_opaque_color(vec2 uv) {
+    return texture(pelican_screen_opaque_color_texture, uv);
+}
+layout(location = 0) in vec2 uv;
+layout(location = 0) out vec4 outColor;
+void main() {
+    vec2 bent_uv = uv + vec2(0.125 * (uv.y - 0.5), 0.0);
+    vec3 behind = pelican_screen_opaque_color(bent_uv).rgb;
+    outColor = vec4(mix(behind, vec3(0.05, 0.35, 0.42), 0.22), 1.0);
+}
+)glsl");
+    writeTextFile(root / "passes" / "main.json", R"json({
+  "snapshots": [{"name": "opaque_color", "after": "opaque"}],
+  "render_targets": [],
+  "rendering_passes": [{
+    "name": "main",
+    "passes": [
+      {
+        "name": "opaque",
+        "type": "fullscreen",
+        "output": {"color": "swapchain", "depth": null},
+        "shader": {"vertex": "shaders/fullscreen", "fragment": "shaders/opaque"}
+      },
+      {
+        "name": "refract",
+        "type": "fullscreen",
+        "canonical_anchor": "post_ldr",
+        "input": ["opaque_color"],
+        "output": {"color": "swapchain", "depth": null},
+        "shader": {"vertex": "shaders/fullscreen", "fragment": "shaders/refract"}
+      }
+    ]
+  }]
+})json");
+}
+
 void writeExplicitOrderProject(const std::filesystem::path &root) {
     writeTextFile(root / "project.json", makeFeatureProjectJson().dump(2));
     writeTextFile(root / "scene.json", R"json({
@@ -1616,6 +1675,12 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         writeStemProject(temp_dir);
         GET_MODULE(PathResolver).setup(temp_dir, false);
         GET_MODULE(ProjectSource).setProjectData(makeStemProjectJson().dump());
+    } else if (golden_case.mode == "snapshot_refraction") {
+        writeSnapshotRefractionProject(temp_dir);
+        GET_MODULE(PathResolver).setup(temp_dir, false);
+        auto project = makeStemProjectJson();
+        project["name"] = "snapshot refraction golden";
+        GET_MODULE(ProjectSource).setProjectData(project.dump());
     } else if (golden_case.mode == "explicit_order") {
         writeExplicitOrderProject(temp_dir);
         GET_MODULE(PathResolver).setup(temp_dir, false);
@@ -1700,6 +1765,8 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         renderFullscreenFrame(render_target, solidFullscreenFragmentShader());
     } else if (golden_case.mode == "stem_fullscreen") {
         renderStemFullscreenFrame(render_target);
+    } else if (golden_case.mode == "snapshot_refraction") {
+        renderFeatureFrame(render_target);
     } else if (golden_case.mode == "triangle") {
         renderFullscreenFrame(render_target, triangleMaskFragmentShader());
     } else if (golden_case.mode == "surface_toon") {
@@ -1828,9 +1895,9 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     requireGoldenVulkanDevice();
     const auto cases = discoverGoldenCases();
 #if PELICAN_WITH_VAT
-    REQUIRE(cases.size() == 20);
+    REQUIRE(cases.size() == 21);
 #else
-    REQUIRE(cases.size() == 19);
+    REQUIRE(cases.size() == 20);
 #endif
 
     for (const auto &golden_case : cases) {

@@ -25,6 +25,20 @@ set 0 layout は reflection の有無にかかわらず `PipelineFactory` が全
 reflection が set 0 を宣言する場合は上記 3 binding の型・個数と一致しなければ pipeline 作成を拒否する。
 set 1 以降は従来どおり reflection から生成し、高い set だけを使う場合も途中に空 layout を置く。
 
+### 名前付きスクリーンスナップショット(M3.5 / WP83)
+
+`.surface` の `screen_inputs` は rendering config の `snapshots` で先に定義した名前だけを
+参照する。宣言順 `i` の入力は set 1 binding `i` の combined image sampler となり、
+生成 accessor `vec4 pelican_screen_<name>(vec2 uv)` で読む。入力名は shader identifier
+でなければならず、未定義名は material 名・snapshot 名を含む起動時エラーになる。
+
+v1 の snapshot は `display` を opaque 後の指定 copy point で一度だけ同 format・同 extent の
+sampled image へコピーする固定内容である。許可する copy point は canonical `post_ldr` 領域の
+1点だけで、2点目、`pelican_ui` 以後、透明描画後の snapshot はエラーとする。同じ snapshot を
+読む透明 material 同士は互いの結果を見ず、逐次屈折は非対応である。frame plan は
+`snapshot_copy` ノードの `byte_size` と、消費 pass の通常の read/barrier だけを公開する。
+マテリアル横断の集約 dump は公開契約に含めない。
+
 `FrameUBO` (`pelican_frame.glsl`) は `time` / `dt` / 64-bit `frame_index`
 (low/high 32-bit) / `resolution` とその逆数 / `camera_position` / `view` / `projection`
 を持つ。VAT を含む時間依存 shader は push constant でなくこの値を読む。

@@ -137,6 +137,13 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
         node.kind = FramePlanNodeKind::anchor;
         return node;
     }
+    if (type == "snapshot_copy") {
+        node.kind = FramePlanNodeKind::snapshot_copy;
+        node.reads = {requireString(pass_json, "source", "snapshot copy")};
+        node.writes = {requireString(pass_json, "destination", "snapshot copy")};
+        node.snapshot_after = requireString(pass_json, "snapshot_after", "snapshot copy");
+        return node;
+    }
     if (!pass_json.contains("output") || !pass_json.at("output").is_object()) {
         throw std::runtime_error("Frame graph pass requires output object");
     }
@@ -215,6 +222,45 @@ std::vector<std::string> parseDeclaredBuffers(const nlohmann::json &json) {
         throw std::runtime_error("Frame graph buffers entries must be strings or objects");
     }
     return resources;
+}
+
+std::size_t formatBlockBytes(std::string_view format) {
+    if (format == "R8_UNORM") return 1;
+    if (format == "R16_SFLOAT" || format == "D16_UNORM") return 2;
+    if (format == "R8G8B8A8_UNORM" || format == "R8G8B8A8_SRGB" ||
+        format == "B8G8R8A8_UNORM" || format == "B8G8R8A8_SRGB" ||
+        format == "D32_SFLOAT" || format == "R32_SFLOAT") return 4;
+    if (format == "R16G16B16A16_SFLOAT") return 8;
+    if (format == "R32G32B32A32_SFLOAT") return 16;
+    return 0;
+}
+
+std::unordered_map<std::string, std::size_t> parseRenderTargetByteSizes(const nlohmann::json &json) {
+    std::unordered_map<std::string, std::size_t> sizes;
+    if (!json.contains("render_targets") || !json.at("render_targets").is_array()) return sizes;
+    for (const auto &target : json.at("render_targets")) {
+        if (!target.is_object() || !target.contains("width") || !target.contains("height")) continue;
+        const auto name = requireString(target, "name", "render target");
+        const auto format = requireString(target, "format", "render target '" + name + "'");
+        const auto bytes = formatBlockBytes(format);
+        if (bytes == 0) continue;
+        sizes.emplace(name, target.at("width").get<std::size_t>() *
+                                target.at("height").get<std::size_t>() * bytes);
+    }
+    return sizes;
+}
+
+void assignSnapshotByteSizes(std::vector<FrameGraphNodeDefinition> &nodes,
+                             const std::unordered_map<std::string, std::size_t> &sizes) {
+    for (auto &node : nodes) {
+        if (node.kind != FramePlanNodeKind::snapshot_copy) continue;
+        const auto found = sizes.find(node.writes.front());
+        if (found == sizes.end() || found->second == 0) {
+            throw std::runtime_error("snapshot copy byte size is unavailable for '" +
+                                     node.writes.front() + "'");
+        }
+        node.byte_size = found->second;
+    }
 }
 
 std::vector<FrameGraphNodeDefinition> parseRenderNodes(const nlohmann::json &graph_json,
@@ -531,6 +577,8 @@ std::string framePlanNodeKindName(FramePlanNodeKind kind) {
         return "compute";
     case FramePlanNodeKind::anchor:
         return "anchor";
+    case FramePlanNodeKind::snapshot_copy:
+        return "snapshot_copy";
     case FramePlanNodeKind::output_transform:
         return "output_transform";
     }
@@ -556,10 +604,11 @@ FrameGraphDefinition parseFrameGraphDefinitionFromJson(const nlohmann::json &gra
     graph.name = graph_json.value("name", std::string{"frame_graph"});
     appendUnique(graph.declared_resources, parseDeclaredRenderTargets(graph_json));
     appendUnique(graph.declared_resources, parseDeclaredBuffers(graph_json));
-
     size_t declaration_index = 0;
     appendNodes(graph.nodes, parseRenderNodes(graph_json, declaration_index));
     appendNodes(graph.nodes, parseComputeNodes(graph_json, declaration_index));
+    const auto local_sizes = parseRenderTargetByteSizes(graph_json);
+    if (!local_sizes.empty()) assignSnapshotByteSizes(graph.nodes, local_sizes);
     return graph;
 }
 
@@ -583,13 +632,14 @@ std::vector<FrameGraphDefinition> parseFrameGraphDefinitionsFromConfigJson(const
 
     const auto declared_targets = parseDeclaredRenderTargets(config_json);
     const auto declared_buffers = parseDeclaredBuffers(config_json);
+    const auto render_target_sizes = parseRenderTargetByteSizes(config_json);
     for (const auto &pass_set_json : rendering_passes) {
         auto graph = parseFrameGraphDefinitionFromJson(pass_set_json);
         appendUnique(graph.declared_resources, declared_targets);
         appendUnique(graph.declared_resources, declared_buffers);
-
         size_t declaration_index = graph.nodes.size();
         appendNodes(graph.nodes, parseComputeNodes(config_json, declaration_index));
+        assignSnapshotByteSizes(graph.nodes, render_target_sizes);
         graphs.push_back(std::move(graph));
     }
 
@@ -634,6 +684,8 @@ FramePlan planFrameGraph(const FrameGraphDefinition &definition) {
             level,
             node_def.reads,
             node_def.writes,
+            node_def.snapshot_after,
+            node_def.byte_size,
         });
     }
 
@@ -656,7 +708,7 @@ std::vector<std::string> framePlanOrder(const FramePlan &plan) {
 nlohmann::json framePlanToJson(const FramePlan &plan) {
     auto nodes_json = nlohmann::json::array();
     for (const auto &node : plan.nodes) {
-        nodes_json.push_back(nlohmann::json{
+        auto node_json = nlohmann::json{
             {"declaration_index", node.declaration_index},
             {"kind", framePlanNodeKindName(node.kind)},
             {"level", node.level},
@@ -664,7 +716,14 @@ nlohmann::json framePlanToJson(const FramePlan &plan) {
             {"order", node.order},
             {"reads", node.reads},
             {"writes", node.writes},
-        });
+        };
+        if (node.kind == FramePlanNodeKind::snapshot_copy) {
+            node_json["byte_size"] = node.byte_size;
+            node_json["snapshot_after"] = node.snapshot_after;
+            node_json["semantics"] = "fixed_once_before_transparency";
+            node_json["sequential_refraction"] = false;
+        }
+        nodes_json.push_back(std::move(node_json));
     }
 
     auto barriers_json = nlohmann::json::array();

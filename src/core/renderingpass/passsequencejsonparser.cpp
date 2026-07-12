@@ -2,6 +2,8 @@
 #include "passdefinitionjsonparser.hpp"
 #include "renderingpassjsonhelpers.hpp"
 #include "renderingpassvalidation.hpp"
+#include "rendertargetmetadataresolver.hpp"
+#include "rendertargetnameresolver.hpp"
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
@@ -34,6 +36,33 @@ std::vector<PassDefinition> parsePassSequenceFromJson(const nlohmann::json &pass
 
         const auto type = pass_json.value("type", std::string{});
         if (type == "canonical_anchor") {
+            continue;
+        }
+        if (type == "snapshot_copy") {
+            const auto source_name = parseStringField(pass_json, "source", "snapshot copy: " + pass_name);
+            const auto destination_name = parseStringField(pass_json, "destination",
+                                                           "snapshot copy: " + pass_name);
+            const auto source = rt_resolver.resolve(source_name);
+            const auto destination = rt_resolver.resolve(destination_name);
+            if (!isConcreteRenderTarget(source) || !isConcreteRenderTarget(destination)) {
+                throw std::runtime_error("Snapshot copy references an unknown render target: " + pass_name);
+            }
+            if (!produced_targets.contains(source)) {
+                throw std::runtime_error("Snapshot source is not produced before copy: " + source_name +
+                                         " in snapshot: " + pass_name);
+            }
+            const auto source_meta = rt_metadata.get(source);
+            const auto destination_meta = rt_metadata.get(destination);
+            if (!(source_meta.usage & vk::ImageUsageFlagBits::eTransferSrc) ||
+                !(destination_meta.usage & vk::ImageUsageFlagBits::eTransferDst) ||
+                !(destination_meta.usage & vk::ImageUsageFlagBits::eSampled)) {
+                throw std::runtime_error("Snapshot copy usage mismatch: " + pass_name);
+            }
+            if (source_meta.format != destination_meta.format ||
+                source_meta.extent != destination_meta.extent) {
+                throw std::runtime_error("Snapshot copy source/destination mismatch: " + pass_name);
+            }
+            produced_targets.insert(destination);
             continue;
         }
 

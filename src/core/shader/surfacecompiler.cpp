@@ -83,6 +83,14 @@ std::string makeParamsInclude(const SurfaceFormatDocument &surface, bool split_s
                    << "(vec2 uv) { return texture(pelican_texture_" << texture.name << ", uv); }\n";
         }
     }
+    for (std::size_t i = 0; i < surface.screen_inputs.size(); ++i) {
+        const auto &input = surface.screen_inputs[i];
+        source << "layout(set = PELICAN_SET_PASS_INPUT, binding = " << i
+               << ") uniform sampler2D pelican_screen_" << input << "_texture;\n";
+        source << "vec4 pelican_screen_" << input
+               << "(vec2 uv) { return texture(pelican_screen_" << input
+               << "_texture, uv); }\n";
+    }
     return source.str();
 }
 
@@ -125,6 +133,9 @@ std::string makeTemplateHookStubs(const SurfaceFormatDocument &surface, vk::Shad
         keep_alive << "pelican_sample_" << texture.name << "(vec2(0.0));";
     }
     if (stage == vk::ShaderStageFlagBits::eFragment) {
+        for (const auto &input : surface.screen_inputs) {
+            keep_alive << "pelican_screen_" << input << "(vec2(0.0));";
+        }
         keep_alive << "pelican_light_count();pelican_light(0u, vec3(0.0));"
                       "pelican_shadow(0u, vec3(0.0));pelican_env_ambient(vec3(0.0));";
     }
@@ -186,6 +197,7 @@ std::vector<std::string> generatedAccessorNames(const SurfaceFormatDocument &sur
     std::vector<std::string> names;
     for (const auto &param : surface.params) names.push_back("pelican_param_" + param.name);
     for (const auto &texture : surface.textures) names.push_back("pelican_sample_" + texture.name);
+    for (const auto &input : surface.screen_inputs) names.push_back("pelican_screen_" + input);
     return names;
 }
 
@@ -202,6 +214,10 @@ std::string makeUserLibrarySource(const SurfaceFormatDocument &surface, std::str
     }
     for (const auto &texture : surface.textures) {
         source << "vec4 pelican_sample_" << texture.name
+               << "(vec2 uv) { return vec4(0.0); }\n";
+    }
+    for (const auto &input : surface.screen_inputs) {
+        source << "vec4 pelican_screen_" << input
                << "(vec2 uv) { return vec4(0.0); }\n";
     }
     if (stage == vk::ShaderStageFlagBits::eFragment) {
@@ -233,6 +249,9 @@ std::string makeUserLibrarySource(const SurfaceFormatDocument &surface, std::str
     for (const auto &param : surface.params) source << "pelican_param_" << param.name << "();\n";
     for (const auto &texture : surface.textures) {
         source << "pelican_sample_" << texture.name << "(vec2(0.0));\n";
+    }
+    for (const auto &input : surface.screen_inputs) {
+        source << "pelican_screen_" << input << "(vec2(0.0));\n";
     }
     if (stage == vk::ShaderStageFlagBits::eFragment) {
         source << "pelican_light_count(); pelican_light(0u, vec3(0.0)); "

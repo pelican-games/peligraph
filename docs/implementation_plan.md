@@ -1867,7 +1867,7 @@ ModelAssetContainer 初期化(モデルロード)**4.9s** が支配的。
    起動でシェーダ 2.9s → 0.1s 未満、モデル 4.9s → 2.5s 未満(sponza
    単体が支配的なら実測根拠つきで目標を修正してよい)
 
-### WP83: マテリアル M3.5 — 名前付きスクリーンスナップショット + 合流ビュー dump
+### WP83: マテリアル M3.5 — 名前付きスクリーンスナップショット(訂正版 v2)
 
 参照: **`design_material_shading.md` v1.2 §3-7-3(名前付きスナップショット —
 Godot SCREEN_TEXTURE の教訓・v1 は opaque 後 1 点のみ・逐次屈折非対応明記・
@@ -1896,17 +1896,14 @@ screen_inputs 消費が自然に現れる最小 2 点のみ。ビューア本体
 3. **透明同士の逐次屈折は非対応と明記**: 同一スナップショットを読む透明
    マテリアル同士は互いの結果を見ない(スナップショットは 1 回コピーの
    固定内容)。この意味論を文書 + fixture で固定
-4. **plan dump の自然な拡張(最小)**: `get_frame_plan` /
-   `--dump-frame-plan` に、スナップショットが frame graph の実ノード
-   として現れること(名前・コピー点・バイト数)と、透明系パスの
-   ノードに screen_inputs の read 依存が現れることだけを足す。
-   **それ以上の集約(マテリアル横断の一覧化)はビューア(WW8)の仕事**
-   であり、エンジンの dump 契約にしない。既存 plan fixture の更新は
-   決定的に(理由記録)
+4. **plan dump は最小拡張**: `get_frame_plan` / `--dump-frame-plan` の
+   `pelican.frame_plan` version 1 を維持し、追加はコピー量を持つ
+   `snapshot_copy` 実ノードと、`screen_inputs` 消費側ノードの通常の
+   `reads` / barrier 依存だけとする。RT 一覧・anchor 対応表・マテリアル横断
+   消費表などの合流ビューは作らない(可視化はエンジン内ツール WP86 の責務)
 5. fixture: 屈折デモ 1 個(example に .surface + golden 1 ケース —
    件数 REQUIRE 更新)・スナップショット未定義/2 点目/透明後の
-   エラー 3 本・プラン fixture にスナップショットノード・dump JSON の
-   マテリアル消費表 golden
+   エラー 3 本・プラン fixture にスナップショットノードと read 依存
 6. 受け入れ = 上記 fixture + 既存 golden 全維持(SKIP 0)+ 全テスト +
    player
 
