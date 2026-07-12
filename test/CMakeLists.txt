@@ -25,6 +25,48 @@ else()
 endif()
 endfunction()
 
+if(WIN32 AND COMMAND pelican_configure_game_logic_target)
+  foreach(wp90_version IN ITEMS 1 2)
+    set(wp90_target pelican_wp90_fixture_v${wp90_version})
+    add_library(${wp90_target} SHARED
+      ${CMAKE_SOURCE_DIR}/projects/example/code/playercontrol.cpp
+      ${CMAKE_SOURCE_DIR}/src/player/gamelogic_entry.cpp
+    )
+    set_target_properties(${wp90_target} PROPERTIES OUTPUT_NAME "pelican_wp90_fixture_v${wp90_version}")
+    target_compile_definitions(${wp90_target} PRIVATE
+      WP90_BEHAVIOR_VERSION=${wp90_version}
+      WP90_HOT_RELOAD_FIXTURE=1
+    )
+    pelican_configure_game_logic_target(${wp90_target})
+  endforeach()
+
+  add_library(pelican_wp90_fixture_bad_abi SHARED
+    ${CMAKE_SOURCE_DIR}/projects/example/code/playercontrol.cpp
+    ${CMAKE_SOURCE_DIR}/src/player/gamelogic_entry.cpp
+  )
+  set_target_properties(pelican_wp90_fixture_bad_abi PROPERTIES OUTPUT_NAME "pelican_wp90_fixture_bad_abi")
+  target_compile_definitions(pelican_wp90_fixture_bad_abi PRIVATE
+    WP90_BEHAVIOR_VERSION=2
+    WP90_HOT_RELOAD_FIXTURE=1
+    PELICAN_GAME_LOGIC_ABI_VERSION=999
+  )
+  pelican_configure_game_logic_target(pelican_wp90_fixture_bad_abi)
+
+  add_test(
+    NAME game_logic_dll_reload
+    COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+      -File ${CMAKE_CURRENT_SOURCE_DIR}/run_game_logic_reload.ps1
+      -Player $<TARGET_FILE:pelican_player>
+      -FixtureV1 $<TARGET_FILE:pelican_wp90_fixture_v1>
+      -FixtureV2 $<TARGET_FILE:pelican_wp90_fixture_v2>
+      -FixtureBadAbi $<TARGET_FILE:pelican_wp90_fixture_bad_abi>
+      -ProjectPass ${CMAKE_SOURCE_DIR}/projects/example/passes/main_rendering_config.json
+      -FixtureModel ${CMAKE_SOURCE_DIR}/test/fixtures/ground.glb
+      -OutDir ${CMAKE_BINARY_DIR}/test_artifacts/game_logic_reload
+  )
+  set_tests_properties(game_logic_dll_reload PROPERTIES TIMEOUT 120 RESOURCE_LOCK pelican_gpu)
+endif()
+
 add_executable(pelican_test_vat_fixture_writer vat_fixture_writer.cpp)
 set_target_properties(pelican_test_vat_fixture_writer PROPERTIES CXX_STANDARD 20)
 target_link_libraries(pelican_test_vat_fixture_writer PRIVATE nlohmann_json)

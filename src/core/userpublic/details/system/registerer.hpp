@@ -2,6 +2,7 @@
 
 #include "../../gamecontext.hpp"
 #include "../event/registerer.hpp"
+#include "../reload/registrationowner.hpp"
 
 #include <concepts>
 #include <stdexcept>
@@ -27,6 +28,7 @@ struct GameSystemRegistration {
     int order = 0;
     GameSystemUpdateFn update = nullptr;
     std::vector<GameSystemEventHandlerRegistration> event_handlers;
+    RegistrationOwner owner = engineRegistrationOwner;
 };
 
 template <class System>
@@ -81,7 +83,9 @@ std::vector<GameSystemEventHandlerRegistration> collectGameSystemEventHandlers(s
 class UserGameSystemRegistererTemplatePublic {
     std::vector<GameSystemRegistration> systems;
 
-    void __registerSystem(GameSystemRegistration registration);
+    PELICAN_API void __registerSystem(GameSystemRegistration registration);
+
+    friend void unregisterGameSystems(RegistrationOwner owner) noexcept;
 
   public:
     template <class System>
@@ -110,10 +114,12 @@ class UserGameSystemRegistererTemplatePublic {
     const std::vector<GameSystemRegistration> &registeredSystems() const noexcept;
 };
 
-UserGameSystemRegistererTemplatePublic &getGameSystemRegisterer();
+PELICAN_API UserGameSystemRegistererTemplatePublic &getGameSystemRegisterer();
 std::vector<GameSystemRegistration> sortGameSystemRegistrations(std::vector<GameSystemRegistration> systems);
 void updateRegisteredGameSystems(GameContext &ctx);
 void dispatchEventToRegisteredGameSystems(const QueuedEvent &event, GameContext &ctx);
+void unregisterGameSystems(RegistrationOwner owner) noexcept;
+std::size_t gameSystemRegistrationCount(RegistrationOwner owner) noexcept;
 
 } // namespace internal
 

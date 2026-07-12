@@ -222,6 +222,10 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         .default_value(std::string{})
         .metavar("dir|project.json")
         .help("load a Pelican project directory or project.json");
+    program.add_argument("--game-logic")
+        .default_value(std::string{})
+        .metavar("path.dll")
+        .help("override the configured game logic DLL (developer hot reload)");
     program.add_argument("--allow-absolute-paths")
         .flag()
         .help("allow absolute paths in CLI-provided project content references");
@@ -378,6 +382,16 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         const auto camera = program.get<std::string>("--camera");
         if (!camera.empty()) {
             config.camera_override = parseCameraOverride(camera);
+        }
+
+#ifdef PELICAN_GAME_LOGIC_DLL_NAME
+        config.game_logic_dll = executableDirectory(argv[0]) / PELICAN_GAME_LOGIC_DLL_NAME;
+#endif
+        const auto game_logic = program.get<std::string>("--game-logic");
+        if (!game_logic.empty()) {
+            auto game_logic_path = std::filesystem::path{game_logic};
+            if (game_logic_path.is_relative()) game_logic_path = std::filesystem::current_path() / game_logic_path;
+            config.game_logic_dll = weaklyCanonicalPath(game_logic_path, "--game-logic");
         }
 
         return parsed;

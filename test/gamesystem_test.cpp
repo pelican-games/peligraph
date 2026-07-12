@@ -5,12 +5,15 @@
 #include "../src/core/ecs/predefined/transform.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
+#include "../src/core/gamelogic/gamelogicreload.hpp"
+#include "../src/core/launchconfig.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/os/inputstate.hpp"
 #include "../src/core/userpublic/details/system/registerer.hpp"
 #include "../src/core/userpublic/gamecontext.hpp"
 
 #include <catch2/catch_approx.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
@@ -122,6 +125,14 @@ TEST_CASE("Game system ordering is deterministic by order then registered name",
     REQUIRE(sorted[1].name == "Bravo");
     REQUIRE(sorted[2].name == "Echo");
     REQUIRE(sorted[3].name == "Zulu");
+}
+
+TEST_CASE("Game logic reload is rejected for deterministic replay drivers", "[gamesystem][reload]") {
+    ensureLogger();
+    FastModuleContainer modules;
+    GET_MODULE(EngineLaunchConfig).input_replay = true;
+    REQUIRE_THROWS_WITH(reloadConfiguredGameLogic(),
+                        "game logic DLL reload rejected while replay/golden driver is active");
 }
 
 TEST_CASE("Registered game system can read Actions and EngineTime through GameContext", "[gamesystem]") {

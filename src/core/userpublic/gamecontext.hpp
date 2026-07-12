@@ -1,6 +1,7 @@
 #pragma once
 
 #include "components/localtransform.hpp"
+#include "export.hpp"
 #include "events.hpp"
 #include "gameobjects.hpp"
 #include "userinput.hpp"
@@ -17,7 +18,7 @@
 
 namespace Pelican {
 
-class GameContext {
+class PELICAN_API GameContext {
   public:
     bool actionsConfigured() const;
     bool actionPressed(std::string_view action_name) const;

@@ -3,6 +3,10 @@
 #include <gameobjects.hpp>
 #include <gamesystem.hpp>
 
+#ifndef WP90_BEHAVIOR_VERSION
+#define WP90_BEHAVIOR_VERSION 1
+#endif
+
 namespace {
 
 class ExamplePlayerControl {
@@ -30,6 +34,13 @@ class ExamplePlayerControl {
 
   public:
     void update(Pelican::GameContext &ctx) {
+#ifdef WP90_HOT_RELOAD_FIXTURE
+#if WP90_BEHAVIOR_VERSION == 1
+        ctx.logInfo("WP90 playercontrol behavior=v1 speed=2.5");
+#else
+        ctx.logInfo("WP90 playercontrol behavior=v2 speed=5.0");
+#endif
+#endif
         if (!object_created) {
             object = createControlledObject(ctx);
             object_created = true;
@@ -46,7 +57,11 @@ class ExamplePlayerControl {
 
         auto transform = ctx.localTransform(object);
         const auto dt = static_cast<float>(ctx.deltaTime() > 0.0 ? ctx.deltaTime() : 1.0 / 60.0);
+#if WP90_BEHAVIOR_VERSION == 1
         constexpr float speed = 2.5f;
+#else
+        constexpr float speed = 5.0f;
+#endif
         transform.pos.x += move.x * speed * dt;
         transform.pos.z += move.y * speed * dt;
         (void)ctx.setLocalTransform(object, transform);

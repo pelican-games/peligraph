@@ -7,6 +7,7 @@
 #include "../ecs/core.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../loader/scene.hpp"
+#include "../gamelogic/gamelogicreload.hpp"
 #include "../launchconfig.hpp"
 #include "../os/inputsequence.hpp"
 #include "../os/inputstate.hpp"
@@ -492,6 +493,11 @@ std::string RpcServer::handleLine(std::string_view line) const {
     }
 
     const auto &request = *parsed.request;
+    if (isGameLogicReloadInProgress()) {
+        return serializeJsonRpcError(makeJsonRpcError(
+            request.id, JsonRpcErrorCodes::applicationError,
+            "RPC method '" + request.method + "' rejected while game logic DLL reload is in progress"));
+    }
     const auto handler = handlers.find(request.method);
     if (handler == handlers.end()) {
         return serializeJsonRpcError(makeJsonRpcError(request.id, JsonRpcErrorCodes::methodNotFound,
@@ -526,6 +532,25 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
     RpcServer server{input, output};
     const auto instance_id = generateUuidV4();
     std::vector<PendingTransformUpdate> pending_transforms;
+
+    server.setHandler("reload_game_logic", [&pending_transforms](const nlohmann::json &params) {
+        requireObjectParams(params, "reload_game_logic");
+        const auto before = configuredGameLogicStatus();
+        if (!before.configured) {
+            throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError,
+                                      "reload_game_logic: no game logic DLL is configured");
+        }
+        const bool reloaded = reloadConfiguredGameLogic(true);
+        pending_transforms.clear();
+        const auto status = configuredGameLogicStatus();
+        if (!reloaded) {
+            throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError,
+                                      "reload_game_logic: " + status.last_error);
+        }
+        return nlohmann::json{{"generation", status.generation},
+                              {"systems", status.system_count},
+                              {"source", status.source.generic_string()}};
+    });
 
     server.setHandler("get_status", [instance_id](const nlohmann::json &params) {
         requireObjectParams(params, "get_status");

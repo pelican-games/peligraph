@@ -9,6 +9,7 @@
 #include "../loader/basicconfig.hpp"
 #include "../loader/projectsrc.hpp"
 #include "../loader/scene.hpp"
+#include "../gamelogic/gamelogicreload.hpp"
 #include "../persistence/persistence.hpp"
 #include "../startup.hpp"
 #if PELICAN_WITH_AUDIO
@@ -47,6 +48,7 @@ bool PelicanCore::run() {
         }
 
         GET_MODULE(ECSPredefinedRegistration).reg();
+        (void)initializeConfiguredGameLogic();
         GET_MODULE(SceneLoader).load(GET_MODULE(ProjectBasicConfig).defaultSceneId());
         // Model CPU preparation is parallel, but its Vulkan/resource commit is
         // deliberately forced onto the startup thread before ECS systems run.
@@ -67,6 +69,7 @@ bool PelicanCore::run() {
         succeeded = false;
     }
     teardown.run();
+    shutdownConfiguredGameLogic();
     return succeeded;
 }
 

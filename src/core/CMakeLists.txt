@@ -1,7 +1,7 @@
 add_library(pelican_core log.cpp profiler.cpp job_system.cpp startup.cpp) # [BENCHMARK_ONLY] Added profiler.cpp
 
 # settings
-set_target_properties(pelican_core PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+set_target_properties(pelican_core PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 set_target_properties(pelican_core PROPERTIES CXX_STANDARD 20)
 target_compile_definitions(pelican_core PUBLIC
   PELICAN_WITH_AUDIO=$<BOOL:${PELICAN_WITH_AUDIO}>
@@ -11,6 +11,7 @@ target_compile_definitions(pelican_core PUBLIC
   PELICAN_WITH_SEQPLAYER=$<BOOL:${PELICAN_WITH_SEQPLAYER}>
   PELICAN_WITH_IMGUI=$<BOOL:${PELICAN_WITH_IMGUI}>
 )
+target_compile_definitions(pelican_core PRIVATE PELICAN_ENGINE_BUILD=1)
 
 # modules
 add_subdirectory(resources)
@@ -36,6 +37,7 @@ add_subdirectory(fullscreenpass)
 add_subdirectory(light)
 add_subdirectory(phys)
 add_subdirectory(ui)
+add_subdirectory(gamelogic)
 
 add_subdirectory(userpublic)
 target_include_directories(pelican_core PUBLIC ./userpublic ${CMAKE_CURRENT_SOURCE_DIR})

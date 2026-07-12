@@ -3,6 +3,7 @@
 #include "../launchconfig.hpp"
 #include "../log.hpp"
 #include "../communication/rpcserver.hpp"
+#include "../gamelogic/gamelogicreload.hpp"
 #include "../os/inputstate.hpp"
 #include "../os/inputsequence.hpp"
 #include "../os/window.hpp"
@@ -229,6 +230,7 @@ void Loop::run() {
         const auto update_start = Clock::now();
         engine_time.advance();
         updateFrameState();
+        pollConfiguredGameLogic(UserInput::isKeyPushed(KeyCode::F5));
         logInputSnapshotIfRequested(input_state.currentSnapshot());
         const auto update_end = Clock::now();
 
