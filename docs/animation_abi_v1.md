@@ -144,3 +144,56 @@ temporal renderer との契約は以下の 6 項である。
 6. 評価側操作名は `publishAnimationFrame`、render 終端操作名は `advanceTemporalHistoryAfterRender` とし、一つの `commit` に統合しない。
 
 destroy/unload、capacity不足、revision逆行、velocity 未消費、二重 temporal advance の失敗では current/previous の双方を変更しない。
+
+## 10. A1.1 additive animation service surface
+
+WP102 は凍結済み `ApiV1` prefix と既存 3 関数を変更せず、末尾に
+`get_animation_service` だけを追加する。取得先の `AnimationServiceV1` は独立した
+`struct_size` / `version` / `service_version` / `minimum_client_service_version` /
+`capability_bits` を持つ versioned service table である。
+
+- old client / new engine は旧 `ApiV1::struct_size` までしか受け取らず、旧 tail の直後を
+  engine が書き換えてはならない。
+- new client / old engine は `get_animation_service` field が旧 engine の返した
+  `ApiV1::struct_size` に含まれないことを確認し、A1.1 を unavailable とする。field を
+  読んではならない。
+- new client / new engine は `get_animation_service(context, 1, table)` を呼び、必要な
+  capability bit と function pointer の両方を検査する。service version の暗黙 downcast は
+  禁止し、未知 version は `unsupported_version` とする。
+- service table の書き込み上限も `min(caller.struct_size, sizeof(AnimationServiceV1))` とし、
+  caller tail を保存する。
+
+### 10.1 公開操作
+
+`AnimationServiceV1` は次を公開する。
+
+1. object 名 + sink kind から sink を解決し、sink から instance、rig、layout / skin binding、
+   clip 名を順に解決する。
+2. owner thread ごとの pose arena を `begin_pose_frame` し、layout と joint count を指定して
+   engine-owned `PoseViewV1` を acquire する。
+3. clip metadata、owner 付き cursor の生成・破棄、point sample、normal N-way blend、
+   local-to-model、skin palette 構築を行う。取得した pointer は arena frame lifetime を越えて
+   保持してはならない。
+4. owner generation 付き phase callback を登録・解除する。engine は §8 の順序で callback を
+   呼び、失敗した instance / revision の source commit を拒否する。
+5. engine-owned source registry で sink 単位の writer を claim / release / atomic handoff する。
+   `publish_animation_frame_from_source` は現在の source authority と instance の一致を検査して
+   から既存 `publishAnimationFrame` 契約へ委譲する。
+6. `set_time`、replay seek、graph reload、model reload、layout generation mismatch を
+   `AnimationNotificationKind` で通知する。成功した通知は次の commit を history reset とする。
+   notification revision は sink ごとに非 zero・単調増加でなければならない。
+
+### 10.2 owner generation と unload
+
+`get_current_owner` は game DLL load 中の registration owner を generation 付き
+`AnimationOwnerHandle` として返す。arena、cursor、phase registration、source claim は owner に
+帰属する。game DLL unload は DLL を閉じる**前**に次を一括して行わなければならない。
+
+1. owner generation を失効する。
+2. callback を phase ordering table から除去する。
+3. source authority を release し、cursor と arena / Pose を stale にする。
+4. その後にだけ DLL を閉じる。
+
+同じ callback address、registration identity、source ordinal が後の DLL generation で再利用
+されても旧 handle は復活しない。明示 unregister / release / destroy の最初の成功後も同じ
+stale-generation 規則に従う。
