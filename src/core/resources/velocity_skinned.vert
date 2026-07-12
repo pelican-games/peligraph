@@ -11,11 +11,12 @@ layout(location = 0) out vec4 currentClip;
 layout(location = 1) out vec4 previousClip;
 
 void main() {
-    vec4 local_position = pelican_skin_matrix(inJoints, inWeights) * vec4(inPos, 1.0);
+    vec4 current_local_position = pelican_skin_matrix(inJoints, inWeights) * vec4(inPos, 1.0);
+    vec4 previous_local_position = pelican_previous_skin_matrix(inJoints, inWeights) * vec4(inPos, 1.0);
     mat4 current_model = pelicanObjects.objects[gl_BaseInstance].model;
     mat4 previous_model = pelicanPreviousObjects.objects[gl_BaseInstance].model;
-    currentClip = pelicanFrame.projection * pelicanFrame.view * current_model * local_position;
+    currentClip = pelicanFrame.projection * pelicanFrame.view * current_model * current_local_position;
     previousClip = pelicanFrame.previous_projection * pelicanFrame.previous_view *
-                   previous_model * local_position;
+                   previous_model * previous_local_position;
     gl_Position = currentClip;
 }

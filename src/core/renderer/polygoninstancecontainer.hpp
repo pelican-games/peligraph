@@ -36,7 +36,10 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     BufferWrapper model_data_buffer;
     BufferWrapper previous_model_data_buffer;
     vk::Device device;
+    std::vector<std::vector<glm::mat4>> skin_palettes;
+    std::vector<std::vector<glm::mat4>> previous_skin_palettes;
     BufferWrapper skin_palette_buffer;
+    BufferWrapper previous_skin_palette_buffer;
     vk::UniqueDescriptorSetLayout skin_descriptor_layout;
     vk::UniqueDescriptorPool skin_descriptor_pool;
     vk::UniqueDescriptorSet skin_descriptor_set;

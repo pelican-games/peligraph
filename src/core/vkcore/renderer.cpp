@@ -715,14 +715,15 @@ void handleShaderHotReload(RenderFrameModules &modules) {
     rebindFullscreenInputs(modules);
 }
 
-void handleFrameTargetResize(RenderFrameModules &modules, RenderTargetLayoutTracker &layout_tracker) {
+bool handleFrameTargetResize(RenderFrameModules &modules, RenderTargetLayoutTracker &layout_tracker) {
     if (!modules.render_target.consumeExtentChanged()) {
-        return;
+        return false;
     }
 
     modules.render_target_container.recreateForExtent(modules.render_target.getExtent());
     rebindFullscreenInputs(modules);
     layout_tracker.reset();
+    return true;
 }
 
 } // namespace
@@ -753,6 +754,8 @@ void Renderer::recreateRenderTargetsAndRebindForTesting(vk::Extent2D extent) {
     auto modules = resolveRenderFrameModules();
     modules.render_target_container.recreateForExtent(extent);
     rebindFullscreenInputs(modules);
+    modules.instance_container.resetTemporalHistory();
+    camera_history_valid = false;
     render_target_layout_tracker.reset();
 }
 
@@ -772,7 +775,10 @@ void Renderer::render() {
     updateFrameAnimation(modules.light_container, GET_MODULE(EngineTime).now());
 
     const auto render_ctx = modules.render_target.render_begin();
-    handleFrameTargetResize(modules, render_target_layout_tracker);
+    if (handleFrameTargetResize(modules, render_target_layout_tracker)) {
+        modules.instance_container.resetTemporalHistory();
+        camera_history_valid = false;
+    }
     const auto current_view = modules.camera.getViewMatrix();
     const auto current_projection = modules.camera.getProjectionMatrix();
     if (!camera_history_valid) {
