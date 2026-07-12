@@ -1,0 +1,51 @@
+{
+  "barriers": [
+    {
+      "from": "produce_current",
+      "kind": "read_after_write",
+      "resource": "current_color",
+      "to": "accumulate"
+    }
+  ],
+  "graph": "history_accumulation",
+  "levels": [
+    [
+      "produce_current"
+    ],
+    [
+      "accumulate"
+    ]
+  ],
+  "nodes": [
+    {
+      "declaration_index": 0,
+      "kind": "render",
+      "level": 0,
+      "name": "produce_current",
+      "order": 0,
+      "reads": [],
+      "reads_history": [],
+      "writes": [
+        "current_color"
+      ]
+    },
+    {
+      "declaration_index": 1,
+      "kind": "render",
+      "level": 1,
+      "name": "accumulate",
+      "order": 1,
+      "reads": [
+        "current_color"
+      ],
+      "reads_history": [
+        "temporal_accum"
+      ],
+      "writes": [
+        "temporal_accum"
+      ]
+    }
+  ],
+  "schema": "pelican.frame_plan",
+  "version": 1
+}

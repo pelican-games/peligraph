@@ -5,6 +5,7 @@
 #include "../renderer/fullscreenpassrenderer.hpp"
 #include "../renderer/materialrender.hpp"
 #include "../renderer/shadowdepthpasscontainer.hpp"
+#include "../renderer/velocitypasscontainer.hpp"
 #include "../renderer/uirenderer.hpp"
 #include "../phys/physworld.hpp"
 #if PELICAN_WITH_IMGUI
@@ -56,6 +57,13 @@ void renderShadowDepthPass(vk::CommandBuffer cmd_buf, PassId pass_id,
     dependencies.material_renderer.renderShadowDepth(cmd_buf, pass_id,
                                                      dependencies.shadow_depth_pass_container,
                                                      dependencies.material_renderer_dependencies);
+}
+
+void renderVelocityPass(vk::CommandBuffer cmd_buf, PassId pass_id,
+                        const RenderPassDispatchDependencies &dependencies) {
+    dependencies.material_renderer.renderVelocity(
+        cmd_buf, pass_id, dependencies.velocity_pass_container,
+        dependencies.material_renderer_dependencies);
 }
 
 } // namespace
@@ -111,6 +119,8 @@ void renderDynamicPassDrawCalls(vk::CommandBuffer cmd_buf, PassId pass_id, const
         renderFullscreenPass(cmd_buf, pass_id, pass_def, dependencies);
     } else if (pass_def.isShadowDepth()) {
         renderShadowDepthPass(cmd_buf, pass_id, dependencies);
+    } else if (pass_def.isVelocity()) {
+        renderVelocityPass(cmd_buf, pass_id, dependencies);
     } else if (pass_def.isDebugDraw()) {
         renderDebugDrawPass(cmd_buf, pass_id, dependencies);
     } else if (pass_def.isDebugText()) {

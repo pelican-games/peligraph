@@ -4,6 +4,7 @@
 #include <string>
 #include <unordered_set>
 #include <vector>
+#include <array>
 
 namespace Pelican {
 
@@ -25,6 +26,25 @@ std::optional<vk::Extent2D> parseFixedExtent(const nlohmann::json &rt_json,
         throw std::runtime_error("Render target fixed extent must be positive: " + name);
     }
     return vk::Extent2D{width, height};
+}
+
+vk::ClearColorValue parseHistoryClearColor(const nlohmann::json &rt_json,
+                                           const std::string &name) {
+    if (!rt_json.contains("clear_color")) {
+        return vk::ClearColorValue{std::array{0.0f, 0.0f, 0.0f, 0.0f}};
+    }
+    const auto &value = rt_json.at("clear_color");
+    if (!value.is_array() || value.size() != 4) {
+        throw std::runtime_error("Render target clear_color must contain four numbers: " + name);
+    }
+    std::array<float, 4> color{};
+    for (size_t i = 0; i < color.size(); ++i) {
+        if (!value.at(i).is_number()) {
+            throw std::runtime_error("Render target clear_color must contain four numbers: " + name);
+        }
+        color[i] = value.at(i).get<float>();
+    }
+    return vk::ClearColorValue{color};
 }
 
 } // namespace
@@ -105,6 +125,11 @@ std::vector<RenderTargetDefinition> parseRenderTargetDefinitionsFromJson(const n
             throw std::runtime_error("Render target role must be color or data: " + name);
         }
         const std::vector<std::string> usage_strs = parseStringArrayField(rt_json, "usage", "render target: " + name);
+        if (rt_json.contains("history") && !rt_json.at("history").is_boolean()) {
+            throw std::runtime_error("Render target history must be a boolean: " + name);
+        }
+        const bool history = rt_json.value("history", false);
+        const auto history_clear_color = parseHistoryClearColor(rt_json, name);
 
         if (extent_scale <= 0.0f) {
             throw std::runtime_error("Render target extent_scale must be positive: " + name);
@@ -118,6 +143,8 @@ std::vector<RenderTargetDefinition> parseRenderTargetDefinitionsFromJson(const n
             fixed_extent,
             stringToFormat(format_str),
             stringToUsageFlags(usage_strs),
+            history,
+            history_clear_color,
         });
     }
 

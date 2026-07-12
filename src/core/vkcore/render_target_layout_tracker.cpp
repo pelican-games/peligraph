@@ -64,28 +64,34 @@ VulkanUtils::ChangeImageLayoutInfo makeTransitionInfo(vk::ImageLayout old_layout
 
 void RenderTargetLayoutTracker::transition(vk::CommandBuffer cmd_buf, RenderTargetContainer &rt_container,
                                            VulkanUtils &vk_utils, GlobalRenderTargetId rt_id,
-                                           vk::ImageLayout new_layout) {
+                                           vk::ImageLayout new_layout, bool history_read) {
     if (isSpecialRenderTarget(rt_id)) {
         return;
     }
 
-    auto [it, inserted] = layouts.try_emplace(rt_id, vk::ImageLayout::eUndefined);
+    const auto surface = rt_container.surfaceIndex(rt_id, history_read);
+    const auto key = (static_cast<std::uint64_t>(static_cast<std::uint32_t>(rt_id.value)) << 1u) | surface;
+    auto [it, inserted] = layouts.try_emplace(key, rt_container.initialLayout(rt_id));
     const auto old_layout = it->second;
     if (old_layout == new_layout) {
         return;
     }
 
-    const auto &image = rt_container.getImage(rt_id);
+    const auto &image = rt_container.getImage(rt_id, history_read);
     vk_utils.changeImageLayoutCmd(cmd_buf, image, old_layout, new_layout,
                                   makeTransitionInfo(old_layout, new_layout));
     it->second = new_layout;
 }
 
-vk::ImageLayout RenderTargetLayoutTracker::currentLayout(GlobalRenderTargetId rt_id) const {
-    if (auto it = layouts.find(rt_id); it != layouts.end()) {
+vk::ImageLayout RenderTargetLayoutTracker::currentLayout(
+    GlobalRenderTargetId rt_id, bool history_read,
+    const RenderTargetContainer *rt_container) const {
+    const auto surface = rt_container != nullptr ? rt_container->surfaceIndex(rt_id, history_read) : 0u;
+    const auto key = (static_cast<std::uint64_t>(static_cast<std::uint32_t>(rt_id.value)) << 1u) | surface;
+    if (auto it = layouts.find(key); it != layouts.end()) {
         return it->second;
     }
-    return vk::ImageLayout::eUndefined;
+    return rt_container != nullptr ? rt_container->initialLayout(rt_id) : vk::ImageLayout::eUndefined;
 }
 
 void RenderTargetLayoutTracker::reset() { layouts.clear(); }

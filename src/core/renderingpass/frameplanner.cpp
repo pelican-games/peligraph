@@ -88,6 +88,26 @@ std::vector<std::string> parseOptionalStringList(const nlohmann::json &json, std
     return parseStringList(json.at(field), std::string{context} + "." + std::string{field});
 }
 
+void splitHistoryReads(const std::vector<std::string> &authored,
+                       std::vector<std::string> &reads,
+                       std::vector<std::string> &reads_history) {
+    constexpr std::string_view suffix = "@history";
+    for (const auto &resource : authored) {
+        if (resource.ends_with(suffix)) {
+            const auto name = resource.substr(0, resource.size() - suffix.size());
+            if (name.empty() || name.find('@') != std::string::npos) {
+                throw std::runtime_error("Invalid frame graph history resource: " + resource);
+            }
+            appendUnique(reads_history, name);
+        } else {
+            if (resource.find('@') != std::string::npos) {
+                throw std::runtime_error("Unknown frame graph resource qualifier: " + resource);
+            }
+            appendUnique(reads, resource);
+        }
+    }
+}
+
 bool loadOpReadsExistingColor(const nlohmann::json &pass_json, bool ui_pass) {
     if (!pass_json.contains("color_load_op")) {
         return ui_pass;
@@ -147,7 +167,8 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
     if (!pass_json.contains("output") || !pass_json.at("output").is_object()) {
         throw std::runtime_error("Frame graph pass requires output object");
     }
-    node.reads = parseOptionalStringList(pass_json, "input", "pass");
+    splitHistoryReads(parseOptionalStringList(pass_json, "input", "pass"),
+                      node.reads, node.reads_history);
     node.kind = type == "output_transform" ? FramePlanNodeKind::output_transform
                                             : FramePlanNodeKind::render;
     const bool ui_pass = type == "ui";
@@ -176,7 +197,8 @@ FrameGraphNodeDefinition parseComputeNodeFromJson(const nlohmann::json &task_jso
     node.name = requireString(task_json, "name", "compute task");
     node.kind = FramePlanNodeKind::compute;
     node.declaration_index = declaration_index;
-    node.reads = parseOptionalStringList(task_json, "reads", "compute task");
+    splitHistoryReads(parseOptionalStringList(task_json, "reads", "compute task"),
+                      node.reads, node.reads_history);
     node.writes = parseOptionalStringList(task_json, "writes", "compute task");
     node.after = parseOptionalStringList(task_json, "after", "compute task");
     node.before = parseOptionalStringList(task_json, "before", "compute task");
@@ -197,6 +219,23 @@ std::vector<std::string> parseDeclaredRenderTargets(const nlohmann::json &json) 
             throw std::runtime_error("Frame graph render_targets entries must be objects");
         }
         appendUnique(resources, requireString(target, "name", "render target"));
+    }
+    return resources;
+}
+
+std::vector<std::string> parseHistoryRenderTargets(const nlohmann::json &json) {
+    std::vector<std::string> resources;
+    if (!json.contains("render_targets")) return resources;
+    const auto &targets = json.at("render_targets");
+    if (!targets.is_array()) throw std::runtime_error("Frame graph render_targets must be an array");
+    for (const auto &target : targets) {
+        if (!target.is_object()) throw std::runtime_error("Frame graph render_targets entries must be objects");
+        if (target.contains("history") && !target.at("history").is_boolean()) {
+            throw std::runtime_error("Frame graph render target history must be a boolean");
+        }
+        if (target.value("history", false)) {
+            appendUnique(resources, requireString(target, "name", "render target"));
+        }
     }
     return resources;
 }
@@ -229,7 +268,8 @@ std::size_t formatBlockBytes(std::string_view format) {
     if (format == "R16_SFLOAT" || format == "D16_UNORM") return 2;
     if (format == "R8G8B8A8_UNORM" || format == "R8G8B8A8_SRGB" ||
         format == "B8G8R8A8_UNORM" || format == "B8G8R8A8_SRGB" ||
-        format == "D32_SFLOAT" || format == "R32_SFLOAT") return 4;
+        format == "D32_SFLOAT" || format == "R32_SFLOAT" ||
+        format == "R16G16_SFLOAT") return 4;
     if (format == "R16G16B16A16_SFLOAT") return 8;
     if (format == "R32G32B32A32_SFLOAT") return 16;
     return 0;
@@ -316,8 +356,12 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
     node.name = pass.name;
     node.kind = passKind(pass);
     node.declaration_index = declaration_index;
-    for (const auto target : pass.input_targets) {
-        appendUnique(node.reads, renderTargetResourceName(target));
+    for (size_t i = 0; i < pass.input_targets.size(); ++i) {
+        if (pass.input_target_history.at(i)) {
+            appendUnique(node.reads_history, renderTargetResourceName(pass.input_targets[i]));
+        } else {
+            appendUnique(node.reads, renderTargetResourceName(pass.input_targets[i]));
+        }
     }
     appendUnique(node.reads, pass.input_buffers);
     for (const auto target : pass.output_color) {
@@ -384,6 +428,13 @@ void validateKnownResources(const FrameGraphDefinition &definition) {
             if (resources.find(resource) == resources.end()) {
                 throw std::runtime_error("Unknown resource reference in frame graph node " + node.name + ": " +
                                          resource);
+            }
+        }
+        for (const auto &resource : node.reads_history) {
+            if (std::find(definition.history_resources.begin(), definition.history_resources.end(),
+                          resource) == definition.history_resources.end()) {
+                throw std::runtime_error("Unknown or non-history resource reference in frame graph node " +
+                                         node.name + ": " + resource + "@history");
             }
         }
     }
@@ -590,7 +641,9 @@ FrameGraphDefinition makeFrameGraphDefinition(const RenderingPassDefinition &def
     graph.name = definition.name;
     graph.nodes.reserve(definition.passes.size());
     for (size_t i = 0; i < definition.passes.size(); ++i) {
-        graph.nodes.push_back(makeRenderNodeDefinition(definition.passes[i], i));
+        auto node = makeRenderNodeDefinition(definition.passes[i], i);
+        appendUnique(graph.history_resources, node.reads_history);
+        graph.nodes.push_back(std::move(node));
     }
     return graph;
 }
@@ -603,6 +656,7 @@ FrameGraphDefinition parseFrameGraphDefinitionFromJson(const nlohmann::json &gra
     FrameGraphDefinition graph;
     graph.name = graph_json.value("name", std::string{"frame_graph"});
     appendUnique(graph.declared_resources, parseDeclaredRenderTargets(graph_json));
+    appendUnique(graph.history_resources, parseHistoryRenderTargets(graph_json));
     appendUnique(graph.declared_resources, parseDeclaredBuffers(graph_json));
     size_t declaration_index = 0;
     appendNodes(graph.nodes, parseRenderNodes(graph_json, declaration_index));
@@ -631,11 +685,13 @@ std::vector<FrameGraphDefinition> parseFrameGraphDefinitionsFromConfigJson(const
     }
 
     const auto declared_targets = parseDeclaredRenderTargets(config_json);
+    const auto history_targets = parseHistoryRenderTargets(config_json);
     const auto declared_buffers = parseDeclaredBuffers(config_json);
     const auto render_target_sizes = parseRenderTargetByteSizes(config_json);
     for (const auto &pass_set_json : rendering_passes) {
         auto graph = parseFrameGraphDefinitionFromJson(pass_set_json);
         appendUnique(graph.declared_resources, declared_targets);
+        appendUnique(graph.history_resources, history_targets);
         appendUnique(graph.declared_resources, declared_buffers);
         size_t declaration_index = graph.nodes.size();
         appendNodes(graph.nodes, parseComputeNodes(config_json, declaration_index));
@@ -647,6 +703,7 @@ std::vector<FrameGraphDefinition> parseFrameGraphDefinitionsFromConfigJson(const
         FrameGraphDefinition graph;
         graph.name = "frame_graph";
         appendUnique(graph.declared_resources, declared_targets);
+        appendUnique(graph.history_resources, history_targets);
         appendUnique(graph.declared_resources, declared_buffers);
         size_t declaration_index = 0;
         appendNodes(graph.nodes, parseComputeNodes(config_json, declaration_index));
@@ -683,6 +740,7 @@ FramePlan planFrameGraph(const FrameGraphDefinition &definition) {
             order_index,
             level,
             node_def.reads,
+            node_def.reads_history,
             node_def.writes,
             node_def.snapshot_after,
             node_def.byte_size,
@@ -715,6 +773,7 @@ nlohmann::json framePlanToJson(const FramePlan &plan) {
             {"name", node.name},
             {"order", node.order},
             {"reads", node.reads},
+            {"reads_history", node.reads_history},
             {"writes", node.writes},
         };
         if (node.kind == FramePlanNodeKind::snapshot_copy) {

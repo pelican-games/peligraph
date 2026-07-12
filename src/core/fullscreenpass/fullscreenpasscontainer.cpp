@@ -1,6 +1,7 @@
 #include "fullscreenpasscontainer.hpp"
 #include "../renderingpass/computetask.hpp"
 #include "../renderingpass/rendertargetimageviewresolver.hpp"
+#include "../renderingpass/rendertargetcontainer.hpp"
 #include "../shader/pelican_sets.hpp"
 #include "../shader/pipelinefactory.hpp"
 #include "../vkcore/core.hpp"
@@ -67,7 +68,7 @@ void requireInputBindings(const ShaderReflection &reflection, size_t texture_cou
     }
 }
 
-vk::UniqueDescriptorPool createDescPool(vk::Device device, uint32_t maxSets = 64) {
+vk::UniqueDescriptorPool createDescPool(vk::Device device, uint32_t maxSets = 128) {
     std::array<vk::DescriptorPoolSize, 2> pool_sizes{
         vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler,
                                maxSets * fullscreenInputBindingCount},
@@ -138,24 +139,30 @@ void FullscreenPassContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pas
 
     auto it = input_textures.find(pass_id.value);
     if (it != input_textures.end()) {
+        const auto parity = GET_MODULE(RenderTargetContainer).historyFrameIndex();
         cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_factory.layout(pipeline_handle),
-                                   PELICAN_SET_PASS_INPUT, it->second.descset.get(), {});
+                                   PELICAN_SET_PASS_INPUT, it->second.descsets[parity].get(), {});
     }
 }
 
 void FullscreenPassContainer::setInputTextures(PassId pass_id, const std::vector<GlobalRenderTargetId> &input_rts,
                                                const RenderTargetImageViewResolver &rt_views) {
-    setInputResources(pass_id, input_rts, {}, rt_views, GET_MODULE(FrameGraphResourceContainer));
+    setInputResources(pass_id, input_rts, std::vector<bool>(input_rts.size(), false), {}, rt_views,
+                      GET_MODULE(FrameGraphResourceContainer));
 }
 
 void FullscreenPassContainer::setInputResources(PassId pass_id,
                                                 const std::vector<GlobalRenderTargetId> &input_rts,
+                                                const std::vector<bool> &input_rt_history,
                                                 const std::vector<std::string> &input_buffers,
                                                 const RenderTargetImageViewResolver &rt_views,
                                                 const FrameGraphResourceContainer &frame_graph_resources) {
     const auto pipeline_handle = requirePipelineHandle(pass_id, pipelines);
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
     requireInputBindings(pipeline_factory.reflection(pipeline_handle), input_rts.size(), input_buffers.size());
+    if (input_rt_history.size() != input_rts.size()) {
+        throw std::runtime_error("Fullscreen pass input history metadata is inconsistent");
+    }
 
     const auto input_count = input_rts.size() + input_buffers.size();
     if (input_count > fullscreenInputBindingCount) {
@@ -168,67 +175,49 @@ void FullscreenPassContainer::setInputResources(PassId pass_id,
 
     vk::DescriptorSetLayout layout = pipeline_factory.descriptorSetLayout(pipeline_handle, PELICAN_SET_PASS_INPUT);
 
-    vk::DescriptorSetAllocateInfo alloc_info;
-    alloc_info.descriptorPool = desc_pool.get();
-    alloc_info.descriptorSetCount = 1;
-    alloc_info.pSetLayouts = &layout;
+    InputTextureInfo info;
+    info.input_rt_ids = input_rts;
+    info.input_rt_history = input_rt_history;
+    info.input_buffer_names = input_buffers;
+    info.binding_revision = next_binding_revision++;
+    for (uint32_t parity = 0; parity < 2; ++parity) {
+        vk::DescriptorSetAllocateInfo alloc_info;
+        alloc_info.descriptorPool = desc_pool.get();
+        alloc_info.descriptorSetCount = 1;
+        alloc_info.pSetLayouts = &layout;
+        info.descsets[parity] = std::move(device.allocateDescriptorSetsUnique(alloc_info).front());
 
-    auto descsets = device.allocateDescriptorSetsUnique(alloc_info);
-    auto descset = std::move(descsets[0]);
-
-    std::vector<vk::WriteDescriptorSet> writes;
-    std::vector<vk::DescriptorImageInfo> image_infos;
-    std::vector<vk::DescriptorBufferInfo> buffer_infos;
-    std::vector<vk::ImageView> bound_image_views;
-    image_infos.reserve(input_rts.size());
-    buffer_infos.reserve(input_buffers.size());
-    bound_image_views.reserve(input_rts.size());
-
-    for (uint32_t i = 0; i < input_rts.size(); ++i) {
-        const auto &rt_id = input_rts[i];
-        if (!isConcreteRenderTarget(rt_id)) {
-            throw std::runtime_error("Fullscreen pass input texture must be a render target");
+        std::vector<vk::WriteDescriptorSet> writes;
+        std::vector<vk::DescriptorImageInfo> image_infos;
+        std::vector<vk::DescriptorBufferInfo> buffer_infos;
+        image_infos.reserve(input_rts.size());
+        buffer_infos.reserve(input_buffers.size());
+        info.bound_image_views[parity].reserve(input_rts.size());
+        for (uint32_t i = 0; i < input_rts.size(); ++i) {
+            if (!isConcreteRenderTarget(input_rts[i])) {
+                throw std::runtime_error("Fullscreen pass input texture must be a render target");
+            }
+            image_infos.push_back(vk::DescriptorImageInfo{
+                linear_sampler.get(),
+                rt_views.getImageViewForFrame(input_rts[i], input_rt_history[i], parity),
+                vk::ImageLayout::eShaderReadOnlyOptimal});
+            info.bound_image_views[parity].push_back(image_infos.back().imageView);
+            vk::WriteDescriptorSet write{info.descsets[parity].get(), i, 0, 1,
+                                         vk::DescriptorType::eCombinedImageSampler};
+            write.pImageInfo = &image_infos.back();
+            writes.push_back(write);
         }
-
-        vk::DescriptorImageInfo image_info;
-        image_info.sampler = linear_sampler.get();
-        image_info.imageView = rt_views.getImageView(rt_id);
-        image_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-        image_infos.push_back(image_info);
-        bound_image_views.push_back(image_info.imageView);
-
-        vk::WriteDescriptorSet write;
-        write.dstSet = descset.get();
-        write.dstBinding = i;
-        write.dstArrayElement = 0;
-        write.descriptorCount = 1;
-        write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
-        write.pImageInfo = &image_infos.back();
-        writes.push_back(write);
+        for (uint32_t i = 0; i < input_buffers.size(); ++i) {
+            const auto binding = static_cast<uint32_t>(input_rts.size()) + i;
+            buffer_infos.push_back(frame_graph_resources.descriptorInfo(input_buffers[i]));
+            vk::WriteDescriptorSet write{info.descsets[parity].get(), binding, 0, 1,
+                                         vk::DescriptorType::eStorageBuffer};
+            write.pBufferInfo = &buffer_infos.back();
+            writes.push_back(write);
+        }
+        device.updateDescriptorSets(writes, {});
     }
-    for (uint32_t i = 0; i < input_buffers.size(); ++i) {
-        const auto binding = static_cast<uint32_t>(input_rts.size()) + i;
-        buffer_infos.push_back(frame_graph_resources.descriptorInfo(input_buffers[i]));
-
-        vk::WriteDescriptorSet write;
-        write.dstSet = descset.get();
-        write.dstBinding = binding;
-        write.dstArrayElement = 0;
-        write.descriptorCount = 1;
-        write.descriptorType = vk::DescriptorType::eStorageBuffer;
-        write.pBufferInfo = &buffer_infos.back();
-        writes.push_back(write);
-    }
-
-    device.updateDescriptorSets(writes, {});
-
-    input_textures.insert_or_assign(pass_id.value, InputTextureInfo{
-                                                       std::move(descset),
-                                                       input_rts,
-                                                       input_buffers,
-                                                       std::move(bound_image_views),
-                                                       next_binding_revision++,
-                                                   });
+    input_textures.insert_or_assign(pass_id.value, std::move(info));
 }
 
 std::vector<vk::ImageView> FullscreenPassContainer::boundInputImageViewsForTesting(PassId pass_id) const {
@@ -236,7 +225,7 @@ std::vector<vk::ImageView> FullscreenPassContainer::boundInputImageViewsForTesti
     if (found == input_textures.end()) {
         return {};
     }
-    return found->second.bound_image_views;
+    return found->second.bound_image_views[GET_MODULE(RenderTargetContainer).historyFrameIndex()];
 }
 
 uint64_t FullscreenPassContainer::inputBindingRevisionForTesting(PassId pass_id) const {

@@ -11,6 +11,7 @@
 #include "../src/core/renderingpass/rendertargetnameresolver.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_approx.hpp>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <variant>
@@ -107,6 +108,22 @@ TEST_CASE("render target JSON parser accepts fixed extents", "[renderingpass]") 
     REQUIRE(definitions[0].fixed_extent.has_value());
     REQUIRE(definitions[0].fixed_extent->width == 2048);
     REQUIRE(definitions[0].fixed_extent->height == 2048);
+}
+
+TEST_CASE("render target JSON parser accepts history and its declarative clear",
+          "[renderingpass][temporal]") {
+    const auto definitions = parseRenderTargetDefinitionsFromJson(nlohmann::json{
+        {"render_targets", nlohmann::json::array({{
+            {"name", "temporal_accum"}, {"extent_scale", 1.0},
+            {"format", "R16G16B16A16_SFLOAT"},
+            {"usage", nlohmann::json::array({"COLOR_ATTACHMENT", "SAMPLED"})},
+            {"history", true}, {"clear_color", {0.1f, 0.2f, 0.3f, 1.0f}}
+        }})}
+    });
+    REQUIRE(definitions.size() == 1);
+    REQUIRE(definitions.front().history);
+    REQUIRE(definitions.front().history_clear_color.float32[0] == Catch::Approx(0.1f));
+    REQUIRE(definitions.front().history_clear_color.float32[3] == Catch::Approx(1.0f));
 }
 
 TEST_CASE("resolver v2 selects B8 SRGB scene/display and float HDR", "[renderingpass][color-c1b]") {

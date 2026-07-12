@@ -28,6 +28,7 @@
     "features/gpu_timing.json",
     "features/hdr.json",
     "features/shadow_directional.json",
+    "features/velocity.json",
     "fullscreen.frag",
     "fullscreen.frag.spv",
     "fullscreen.vert",
@@ -65,6 +66,9 @@
     "tonemap.vert",
     "ui.frag.spv",
     "ui.vert.spv",
+    "velocity.frag",
+    "velocity.vert",
+    "velocity_skinned.vert",
     "vat.vert.spv"
   ]
 }

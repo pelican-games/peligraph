@@ -31,7 +31,10 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     std::vector<DrawIndirectInfo> draw_calls;
 
     std::vector<glm::mat4> model_instances_data;
+    std::vector<glm::mat4> previous_model_instances_data;
+    std::vector<bool> model_history_valid;
     BufferWrapper model_data_buffer;
+    BufferWrapper previous_model_data_buffer;
     vk::Device device;
     BufferWrapper skin_palette_buffer;
     vk::UniqueDescriptorSetLayout skin_descriptor_layout;
@@ -44,6 +47,8 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     void removeModelInstance(ModelInstanceId id);
     void clear();
     void triggerUpdate();
+    void commitFrameHistory();
+    void resetTemporalHistory();
 
     void setTrs(ModelInstanceId id, glm::vec3 pos, glm::quat rotation, glm::vec3 scale);
     void setSkinningPalette(ModelInstanceId id, std::span<const glm::mat4> palette);
@@ -51,8 +56,11 @@ DECLARE_MODULE(PolygonInstanceContainer) {
 
     const BufferWrapper &getIndirectBuf() const;
     const BufferWrapper &getObjectBuf() const;
+    const BufferWrapper &getPreviousObjectBuf() const;
     const std::vector<DrawIndirectInfo> &getDrawCalls() const;
     size_t instanceCountForTesting() const { return model_instances_data.size(); }
+    glm::mat4 currentModelMatrixForTesting(ModelInstanceId id) const { return model_instances_data.at(id.value); }
+    glm::mat4 previousModelMatrixForTesting(ModelInstanceId id) const { return previous_model_instances_data.at(id.value); }
 };
 
 } // namespace Pelican

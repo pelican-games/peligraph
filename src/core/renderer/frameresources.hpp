@@ -15,6 +15,8 @@ struct alignas(16) FrameUniformData {
     alignas(16) glm::vec4 camera_position{0.0f};
     alignas(16) glm::mat4 view{1.0f};
     alignas(16) glm::mat4 projection{1.0f};
+    alignas(16) glm::mat4 previous_view{1.0f};
+    alignas(16) glm::mat4 previous_projection{1.0f};
 };
 
 static_assert(offsetof(FrameUniformData, time_delta) == 0);
@@ -23,7 +25,9 @@ static_assert(offsetof(FrameUniformData, resolution) == 32);
 static_assert(offsetof(FrameUniformData, camera_position) == 48);
 static_assert(offsetof(FrameUniformData, view) == 64);
 static_assert(offsetof(FrameUniformData, projection) == 128);
-static_assert(sizeof(FrameUniformData) == 192);
+static_assert(offsetof(FrameUniformData, previous_view) == 192);
+static_assert(offsetof(FrameUniformData, previous_projection) == 256);
+static_assert(sizeof(FrameUniformData) == 320);
 
 DECLARE_MODULE(FrameResources) {
     vk::Device device;
@@ -31,13 +35,15 @@ DECLARE_MODULE(FrameResources) {
     vk::UniqueDescriptorPool descriptor_pool;
     vk::UniqueDescriptorSet descriptor_set;
     vk::Buffer object_buffer;
+    vk::Buffer previous_object_buffer;
     vk::Buffer light_buffer;
 
   public:
     FrameResources();
     ~FrameResources();
 
-    void setSceneBuffers(const BufferWrapper &objects, const BufferWrapper &lights);
+    void setSceneBuffers(const BufferWrapper &objects, const BufferWrapper &previous_objects,
+                         const BufferWrapper &lights);
     void update(const FrameUniformData &data) const;
     void bindGraphics(vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout) const;
 };

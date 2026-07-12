@@ -12,7 +12,9 @@ class RenderTargetImageViewResolver {
 
   public:
     explicit RenderTargetImageViewResolver(const RenderTargetContainer &rt_container);
-    vk::ImageView getImageView(GlobalRenderTargetId id) const;
+    vk::ImageView getImageView(GlobalRenderTargetId id, bool history_read = false) const;
+    vk::ImageView getImageViewForFrame(GlobalRenderTargetId id, bool history_read,
+                                       uint32_t frame_index) const;
 };
 
 } // namespace Pelican

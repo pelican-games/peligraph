@@ -142,6 +142,10 @@ target_compile_definitions(pelican_test_gamesystem_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 pelican_define_test(camera_test pelican_core glm)
+pelican_define_test(temporal_test pelican_core glm)
+target_compile_definitions(pelican_test_temporal_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
 pelican_define_test(color_pipeline_test pelican_core glm)
 pelican_define_test(rpc_color_contract_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp spirv-reflect-static stb glm)
 target_include_directories(pelican_test_rpc_color_contract_test PRIVATE ${stb_SOURCE_DIR})

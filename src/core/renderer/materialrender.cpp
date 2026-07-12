@@ -5,6 +5,7 @@
 #include "../model/vertbufcontainer.hpp"
 #include "../shader/pelican_sets.hpp"
 #include "shadowdepthpasscontainer.hpp"
+#include "velocitypasscontainer.hpp"
 #include "../vkcore/core.hpp"
 #include "camera.hpp"
 #include "polygoninstancecontainer.hpp"
@@ -95,6 +96,25 @@ void renderShadowDepthDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
                                     draw_call.stride);
     }
 }
+
+void renderVelocityDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
+                         const VelocityPassContainer &velocity_pass_container,
+                         const MaterialRendererDependencies &dependencies) {
+    auto &instances = dependencies.instance_container;
+    instances.triggerUpdate();
+    const auto &draw_calls = instances.getDrawCalls();
+    if (draw_calls.empty()) return;
+    const auto &indirect = instances.getIndirectBuf();
+    for (const auto &draw_call : draw_calls) {
+        const auto layout = velocity_pass_container.pipelineLayout(pass_id, draw_call.skinned);
+        velocity_pass_container.bind(cmd_buf, pass_id, draw_call.skinned);
+        dependencies.vert_buf_container.bindVertexBuffer(cmd_buf, draw_call.skinned);
+        dependencies.frame_resources.bindGraphics(cmd_buf, layout);
+        if (draw_call.skinned) instances.bindSkinning(cmd_buf, layout);
+        cmd_buf.drawIndexedIndirect(indirect.buffer.get(), draw_call.offset,
+                                    draw_call.draw_count, draw_call.stride);
+    }
+}
 }
 
 MaterialRenderer::MaterialRenderer() = default;
@@ -119,6 +139,13 @@ void MaterialRenderer::renderShadowDepth(vk::CommandBuffer cmd_buf, PassId pass_
                                          const ShadowDepthPassContainer &shadow_depth_pass_container,
                                          const MaterialRendererDependencies &dependencies) const {
     renderShadowDepthDraws(cmd_buf, pass_id, shadow_depth_pass_container, dependencies);
+}
+
+void MaterialRenderer::renderVelocity(
+    vk::CommandBuffer cmd_buf, PassId pass_id,
+    const VelocityPassContainer &velocity_pass_container,
+    const MaterialRendererDependencies &dependencies) const {
+    renderVelocityDraws(cmd_buf, pass_id, velocity_pass_container, dependencies);
 }
 
 } // namespace Pelican

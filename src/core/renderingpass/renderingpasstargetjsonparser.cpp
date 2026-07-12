@@ -9,6 +9,26 @@ namespace Pelican {
 
 namespace {
 
+struct InputReference {
+    std::string name;
+    bool history = false;
+};
+
+InputReference parseInputReference(const std::string &authored) {
+    constexpr std::string_view suffix = "@history";
+    if (authored.size() >= suffix.size() && authored.ends_with(suffix)) {
+        const auto name = authored.substr(0, authored.size() - suffix.size());
+        if (name.empty() || name.find('@') != std::string::npos) {
+            throw std::runtime_error("Invalid history input target: " + authored);
+        }
+        return {name, true};
+    }
+    if (authored.find('@') != std::string::npos) {
+        throw std::runtime_error("Unknown input target qualifier: " + authored);
+    }
+    return {authored, false};
+}
+
 GlobalRenderTargetId resolveRenderTarget(const RenderTargetNameResolver &rt_resolver, const std::string &name,
                                          const std::string &role) {
     const auto rt_id = rt_resolver.resolve(name);
@@ -104,12 +124,12 @@ std::vector<GlobalRenderTargetId> parseInputTargetsFromJson(const RenderTargetNa
         if (!input_name_json.is_string()) {
             throw std::runtime_error("Input target must be a render target name");
         }
-        const std::string input_name = input_name_json.get<std::string>();
-        validateName(input_name, "Input target");
-        if (input_name == "swapchain") {
+        const auto input = parseInputReference(input_name_json.get<std::string>());
+        validateName(input.name, "Input target");
+        if (input.name == "swapchain") {
             throw std::runtime_error("Input target cannot be swapchain");
         }
-        input_targets.push_back(resolveRenderTarget(rt_resolver, input_name, "Input"));
+        input_targets.push_back(resolveRenderTarget(rt_resolver, input.name, "Input"));
     }
     return input_targets;
 }
@@ -128,16 +148,20 @@ void parseInputResourcesFromJson(PassDefinition &pass_def, const RenderTargetNam
         if (!input_name_json.is_string()) {
             throw std::runtime_error("Input target must be a render target or buffer name");
         }
-        const std::string input_name = input_name_json.get<std::string>();
-        validateName(input_name, "Input target");
-        if (input_name == "swapchain") {
+        const auto input = parseInputReference(input_name_json.get<std::string>());
+        validateName(input.name, "Input target");
+        if (input.name == "swapchain") {
             throw std::runtime_error("Input target cannot be swapchain");
         }
-        if (buffer_names.find(input_name) != buffer_names.end()) {
-            pass_def.input_buffers.push_back(input_name);
+        if (buffer_names.find(input.name) != buffer_names.end()) {
+            if (input.history) {
+                throw std::runtime_error("@history is supported only for render targets: " + input.name);
+            }
+            pass_def.input_buffers.push_back(input.name);
             continue;
         }
-        pass_def.input_targets.push_back(resolveRenderTarget(rt_resolver, input_name, "Input"));
+        pass_def.input_targets.push_back(resolveRenderTarget(rt_resolver, input.name, "Input"));
+        pass_def.input_target_history.push_back(input.history);
     }
 }
 

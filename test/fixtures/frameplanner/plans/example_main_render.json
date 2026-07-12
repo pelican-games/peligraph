@@ -237,6 +237,7 @@
       "name": "gbuffer_pass",
       "order": 0,
       "reads": [],
+      "reads_history": [],
       "writes": [
         "gbuffer_albedo",
         "gbuffer_normal",
@@ -256,6 +257,7 @@
         "gbuffer_worldpos",
         "gbuffer_normal"
       ],
+      "reads_history": [],
       "writes": [
         "ssao_output"
       ]
@@ -269,6 +271,7 @@
       "reads": [
         "ssao_output"
       ],
+      "reads_history": [],
       "writes": [
         "ssao_blur"
       ]
@@ -287,6 +290,7 @@
         "g_emissive",
         "ssao_blur"
       ],
+      "reads_history": [],
       "writes": [
         "lit_color"
       ]
@@ -300,6 +304,7 @@
       "reads": [
         "lit_color"
       ],
+      "reads_history": [],
       "writes": [
         "Bloom_Threshold_RT"
       ]
@@ -313,6 +318,7 @@
       "reads": [
         "Bloom_Threshold_RT"
       ],
+      "reads_history": [],
       "writes": [
         "Bloom_Downsample_H_0_RT"
       ]
@@ -326,6 +332,7 @@
       "reads": [
         "Bloom_Downsample_H_0_RT"
       ],
+      "reads_history": [],
       "writes": [
         "Bloom_Upsample_V_0_RT"
       ]
@@ -339,6 +346,7 @@
       "reads": [
         "Bloom_Upsample_V_0_RT"
       ],
+      "reads_history": [],
       "writes": [
         "Bloom_Downsample_H_1_RT"
       ]
@@ -352,6 +360,7 @@
       "reads": [
         "Bloom_Downsample_H_1_RT"
       ],
+      "reads_history": [],
       "writes": [
         "Bloom_Upsample_V_1_RT"
       ]
@@ -365,6 +374,7 @@
       "reads": [
         "Bloom_Upsample_V_1_RT"
       ],
+      "reads_history": [],
       "writes": [
         "Bloom_Downsample_H_2_RT"
       ]
@@ -378,6 +388,7 @@
       "reads": [
         "Bloom_Downsample_H_2_RT"
       ],
+      "reads_history": [],
       "writes": [
         "Bloom_Upsample_V_2_RT"
       ]
@@ -391,6 +402,7 @@
       "reads": [
         "Bloom_Upsample_V_2_RT"
       ],
+      "reads_history": [],
       "writes": [
         "Bloom_Downsample_H_3_RT"
       ]
@@ -404,6 +416,7 @@
       "reads": [
         "Bloom_Downsample_H_3_RT"
       ],
+      "reads_history": [],
       "writes": [
         "Bloom_Upsample_V_3_RT"
       ]
@@ -419,6 +432,7 @@
         "Bloom_Upsample_V_2_RT",
         "Bloom_Downsample_H_2_RT"
       ],
+      "reads_history": [],
       "writes": [
         "Bloom_Downsample_H_2_RT"
       ]
@@ -434,6 +448,7 @@
         "Bloom_Upsample_V_1_RT",
         "Bloom_Downsample_H_1_RT"
       ],
+      "reads_history": [],
       "writes": [
         "Bloom_Downsample_H_1_RT"
       ]
@@ -449,6 +464,7 @@
         "Bloom_Upsample_V_0_RT",
         "Bloom_Downsample_H_0_RT"
       ],
+      "reads_history": [],
       "writes": [
         "Bloom_Downsample_H_0_RT"
       ]
@@ -464,6 +480,7 @@
         "Bloom_Downsample_H_0_RT",
         "swapchain"
       ],
+      "reads_history": [],
       "writes": [
         "swapchain"
       ]

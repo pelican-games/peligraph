@@ -12,6 +12,7 @@ class LightContainer;
 class MaterialContainer;
 class PolygonInstanceContainer;
 class ShadowDepthPassContainer;
+class VelocityPassContainer;
 class VertBufContainer;
 
 struct MaterialRendererDependencies {
@@ -35,6 +36,9 @@ DECLARE_MODULE(MaterialRenderer) {
     void renderShadowDepth(vk::CommandBuffer cmd_buf, PassId pass_id,
                            const ShadowDepthPassContainer &shadow_depth_pass_container,
                            const MaterialRendererDependencies &dependencies) const;
+    void renderVelocity(vk::CommandBuffer cmd_buf, PassId pass_id,
+                        const VelocityPassContainer &velocity_pass_container,
+                        const MaterialRendererDependencies &dependencies) const;
 };
 
 } // namespace Pelican

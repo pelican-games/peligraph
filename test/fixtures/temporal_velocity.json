@@ -1,0 +1,6 @@
+{
+  "point": [0.0, 0.0, 0.0, 1.0],
+  "previous_translation": [0.0, 0.0, 0.0],
+  "current_translation": [0.2, 0.0, 0.0],
+  "expected_velocity": [0.1, 0.0]
+}

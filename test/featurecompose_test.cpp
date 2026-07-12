@@ -322,6 +322,39 @@ TEST_CASE("HDR render feature marks scene targets and uses the canonical tonemap
     REQUIRE(tonemap.at("color_load_op").get<std::string>() == "load");
 }
 
+TEST_CASE("velocity feature is purgeable and occupies the scene-to-post boundary",
+          "[render-feature][temporal]") {
+    const auto result = composeRenderFeatureConfig(
+        baseConfigWithFeature("engine://features/velocity.json"),
+        RenderFeatureComposeDependencies{
+            [](std::string_view ref) {
+                REQUIRE(std::string{ref} == "engine://features/velocity.json");
+                std::ifstream file{std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
+                                   "src/core/resources/features/velocity.json"};
+                return std::string{std::istreambuf_iterator<char>{file},
+                                   std::istreambuf_iterator<char>{}};
+            },
+            true,
+        });
+    REQUIRE(result.feature_names == std::vector<std::string>{"velocity"});
+    const auto &targets = result.config.at("render_targets");
+    const auto velocity = std::find_if(targets.begin(), targets.end(), [](const auto &target) {
+        return target.value("name", std::string{}) == "velocity";
+    });
+    REQUIRE(velocity != targets.end());
+    REQUIRE(velocity->at("format_class") == "data");
+    const auto &passes = result.config.at("rendering_passes").at(0).at("passes");
+    const auto pass = std::find_if(passes.begin(), passes.end(), [](const auto &entry) {
+        return entry.value("name", std::string{}) == "velocity_pass";
+    });
+    const auto post_main = std::find_if(passes.begin(), passes.end(), [](const auto &entry) {
+        return entry.value("name", std::string{}) == "__anchor_post_main";
+    });
+    REQUIRE(pass != passes.end());
+    REQUIRE(post_main != passes.end());
+    REQUIRE(pass < post_main);
+}
+
 TEST_CASE("shadow directional feature inserts depth pass and lighting dependency", "[render-feature]") {
     auto config = nlohmann::json::parse(R"json({
   "render_targets": [

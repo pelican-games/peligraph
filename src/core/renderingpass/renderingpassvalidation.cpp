@@ -12,7 +12,12 @@ void validatePassInputs(const PassDefinition &pass_def) {
         throw std::runtime_error("Only fullscreen passes support input targets: " + pass_def.name);
     }
 
-    for (const auto &input_rt : pass_def.input_targets) {
+    if (pass_def.input_target_history.size() != pass_def.input_targets.size()) {
+        throw std::runtime_error("Pass input history metadata is inconsistent: " + pass_def.name);
+    }
+    for (size_t input_index = 0; input_index < pass_def.input_targets.size(); ++input_index) {
+        const auto input_rt = pass_def.input_targets[input_index];
+        if (pass_def.input_target_history[input_index]) continue;
         for (const auto &output_rt : pass_def.output_color) {
             if (input_rt == output_rt) {
                 throw std::runtime_error("Pass cannot read and write the same color target: " + pass_def.name);
@@ -46,11 +51,16 @@ void validatePassTargetUsage(const PassDefinition &pass_def, const RenderTargetM
         }
     }
 
-    for (const auto &rt_id : pass_def.input_targets) {
+    for (size_t i = 0; i < pass_def.input_targets.size(); ++i) {
+        const auto rt_id = pass_def.input_targets[i];
         const auto rt = rt_metadata.get(rt_id);
         if (!(rt.usage & vk::ImageUsageFlagBits::eSampled)) {
             throw std::runtime_error("Input target missing SAMPLED usage: " + rt.name + " in pass: " +
                                      pass_def.name);
+        }
+        if (pass_def.input_target_history.at(i) && !rt.history) {
+            throw std::runtime_error("@history input requires a history render target: " + rt.name +
+                                     " in pass: " + pass_def.name);
         }
     }
 }
@@ -161,6 +171,13 @@ void validatePassOutputs(const PassDefinition &pass_def) {
         }
     }
 
+    if (pass_def.isVelocity()) {
+        if (pass_def.output_color.size() != 1 || !isConcreteRenderTarget(pass_def.output_depth)) {
+            throw std::runtime_error("Velocity pass requires one color and one depth output: " +
+                                     pass_def.name);
+        }
+    }
+
     if (pass_def.isDebugDraw() || pass_def.isDebugText() || pass_def.isUi()
 #if PELICAN_WITH_IMGUI
         || pass_def.isImGui()
@@ -187,7 +204,7 @@ void validatePassSpecificFields(const PassDefinition &pass_def, const nlohmann::
     }
 
     if (!pass_def.isFullscreen() && !pass_def.isDebugDraw() && !pass_def.isDebugText() &&
-        !pass_def.isShadowDepth() &&
+        !pass_def.isShadowDepth() && !pass_def.isVelocity() &&
         pass_json.contains("shader")) {
         throw std::runtime_error("Only fullscreen, debug_draw, debug_text, and shadow_depth passes support shader: " +
                                  pass_def.name);
@@ -211,7 +228,9 @@ void validatePassSpecificFields(const PassDefinition &pass_def, const nlohmann::
 void validatePassInputsProduced(const PassDefinition &pass_def,
                                 const ProducedRenderTargetSet &produced_targets,
                                 const RenderTargetMetadataResolver &rt_metadata) {
-    for (const auto &rt_id : pass_def.input_targets) {
+    for (size_t i = 0; i < pass_def.input_targets.size(); ++i) {
+        const auto rt_id = pass_def.input_targets[i];
+        if (pass_def.input_target_history.at(i)) continue;
         if (produced_targets.find(rt_id) == produced_targets.end()) {
             const auto rt = rt_metadata.get(rt_id);
             throw std::runtime_error("Pass input target is not produced as an earlier output: " + rt.name +

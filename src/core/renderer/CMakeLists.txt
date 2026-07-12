@@ -9,4 +9,6 @@ target_sources(pelican_core PRIVATE
     frameresources.cpp
     shadowdepthpasscontainer.cpp
     camera.cpp
+    temporal.cpp
+    velocitypasscontainer.cpp
 )

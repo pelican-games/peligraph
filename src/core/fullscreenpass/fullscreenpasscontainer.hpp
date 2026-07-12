@@ -4,6 +4,7 @@
 #include "../renderingpass/renderingpass.hpp"
 #include "../shader/pipelinefactory.hpp"
 #include <cstdint>
+#include <array>
 #include <unordered_map>
 #include <vector>
 #include <vulkan/vulkan.hpp>
@@ -26,10 +27,11 @@ DECLARE_MODULE(FullscreenPassContainer) {
     std::unordered_map<PipelineId, PipelineHandle, PipelineId::Hash> pipelines;
 
     struct InputTextureInfo {
-        vk::UniqueDescriptorSet descset;
+        std::array<vk::UniqueDescriptorSet, 2> descsets;
         std::vector<GlobalRenderTargetId> input_rt_ids;
+        std::vector<bool> input_rt_history;
         std::vector<std::string> input_buffer_names;
-        std::vector<vk::ImageView> bound_image_views;
+        std::array<std::vector<vk::ImageView>, 2> bound_image_views;
         uint64_t binding_revision = 0;
     };
     std::unordered_map<int, InputTextureInfo> input_textures;
@@ -45,6 +47,7 @@ DECLARE_MODULE(FullscreenPassContainer) {
     void setInputTextures(PassId pass_id, const std::vector<GlobalRenderTargetId> &input_rts,
                           const RenderTargetImageViewResolver &rt_views);
     void setInputResources(PassId pass_id, const std::vector<GlobalRenderTargetId> &input_rts,
+                           const std::vector<bool> &input_rt_history,
                            const std::vector<std::string> &input_buffers,
                            const RenderTargetImageViewResolver &rt_views,
                            const FrameGraphResourceContainer &frame_graph_resources);

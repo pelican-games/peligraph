@@ -21,6 +21,7 @@ struct FrameGraphNodeDefinition {
     FramePlanNodeKind kind = FramePlanNodeKind::render;
     size_t declaration_index = 0;
     std::vector<std::string> reads;
+    std::vector<std::string> reads_history;
     std::vector<std::string> writes;
     std::vector<std::string> after;
     std::vector<std::string> before;
@@ -31,6 +32,7 @@ struct FrameGraphNodeDefinition {
 struct FrameGraphDefinition {
     std::string name;
     std::vector<std::string> declared_resources;
+    std::vector<std::string> history_resources;
     std::vector<FrameGraphNodeDefinition> nodes;
 };
 
@@ -41,6 +43,7 @@ struct FramePlanNode {
     size_t order = 0;
     size_t level = 0;
     std::vector<std::string> reads;
+    std::vector<std::string> reads_history;
     std::vector<std::string> writes;
     std::string snapshot_after;
     std::size_t byte_size = 0;

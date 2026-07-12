@@ -83,6 +83,12 @@ struct ShadowDepthPassInfo {
     ShaderReference vert_shader = ShaderReference{"", ShaderStage::vertex, ShaderReferenceKind::explicit_file, false};
 };
 
+struct VelocityPassInfo {
+    ShaderReference vert_shader = ShaderReference{"", ShaderStage::vertex, ShaderReferenceKind::explicit_file, false};
+    ShaderReference skinned_vert_shader = ShaderReference{"", ShaderStage::vertex, ShaderReferenceKind::explicit_file, false};
+    ShaderReference frag_shader = ShaderReference{"", ShaderStage::fragment, ShaderReferenceKind::explicit_file, false};
+};
+
 struct UiPassInfo {};
 
 #if PELICAN_WITH_IMGUI
@@ -90,7 +96,7 @@ struct ImGuiPassInfo {};
 #endif
 
 using PassInfo = std::variant<MaterialPassInfo, FullscreenPassInfo, DebugDrawPassInfo, DebugTextPassInfo,
-                              ShadowDepthPassInfo, UiPassInfo
+                              ShadowDepthPassInfo, VelocityPassInfo, UiPassInfo
 #if PELICAN_WITH_IMGUI
                               , ImGuiPassInfo
 #endif
@@ -104,6 +110,7 @@ struct PassDefinition {
     std::vector<GlobalRenderTargetId> output_color;
     GlobalRenderTargetId output_depth;
     std::vector<GlobalRenderTargetId> input_targets;
+    std::vector<bool> input_target_history;
     std::vector<std::string> input_buffers;
 
     PassInfo pass_info = MaterialPassInfo{};
@@ -119,6 +126,7 @@ struct PassDefinition {
     bool isDebugDraw() const { return std::holds_alternative<DebugDrawPassInfo>(pass_info); }
     bool isDebugText() const { return std::holds_alternative<DebugTextPassInfo>(pass_info); }
     bool isShadowDepth() const { return std::holds_alternative<ShadowDepthPassInfo>(pass_info); }
+    bool isVelocity() const { return std::holds_alternative<VelocityPassInfo>(pass_info); }
     bool isUi() const { return std::holds_alternative<UiPassInfo>(pass_info); }
 #if PELICAN_WITH_IMGUI
     bool isImGui() const { return std::holds_alternative<ImGuiPassInfo>(pass_info); }
@@ -134,6 +142,8 @@ struct PassDefinition {
     const DebugTextPassInfo &debugTextInfo() const { return std::get<DebugTextPassInfo>(pass_info); }
     ShadowDepthPassInfo &shadowDepthInfo() { return std::get<ShadowDepthPassInfo>(pass_info); }
     const ShadowDepthPassInfo &shadowDepthInfo() const { return std::get<ShadowDepthPassInfo>(pass_info); }
+    VelocityPassInfo &velocityInfo() { return std::get<VelocityPassInfo>(pass_info); }
+    const VelocityPassInfo &velocityInfo() const { return std::get<VelocityPassInfo>(pass_info); }
 };
 
 struct ComputeDispatchDefinition {

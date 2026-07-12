@@ -43,6 +43,17 @@ sampled image へコピーする固定内容である。許可する copy point 
 (low/high 32-bit) / `resolution` とその逆数 / `camera_position` / `view` / `projection`
 を持つ。VAT を含む時間依存 shader は push constant でなくこの値を読む。
 
+## WP88 temporal additions
+
+Set 0 adds binding 3, `PreviousObjectBuffer` (readonly SSBO), alongside binding 1
+`ObjectBuffer`. Both use the same object index. `FrameUBO` appends `previous_view` and
+`previous_projection`, preserving all previous offsets. New objects start with previous
+model equal to current, so their first velocity is zero.
+
+The standard `velocity` feature writes `R16G16_SFLOAT` UV-space velocity. Fullscreen
+pass inputs use set 1 in JSON declaration order; an `@history` target binds the previous
+physical image while an unqualified target binds the current image.
+
 ## Push constants
 
 `PELICAN_PUSH_ENGINE_BYTES = 64`、`PELICAN_PUSH_SHADER_BYTES = 64`、

@@ -868,6 +868,91 @@ void main() {
 })json");
 }
 
+void writeTemporalAccumulationProject(const std::filesystem::path &root) {
+    auto project = makeFeatureProjectJson();
+    project["name"] = "temporal accumulation golden";
+    writeTextFile(root / "project.json", project.dump(2));
+    writeTextFile(root / "scene.json", R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+    writeTextFile(root / "assets.json", R"json({"models":[]})json");
+    writeTextFile(root / "ui" / "ui.json", R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
+    writeTextFile(root / "shaders" / "fullscreen.vert", stemFullscreenVertexShader());
+    writeTextFile(root / "shaders" / "current.frag", R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_frame.glsl"
+layout(location = 0) out vec4 outColor;
+void main() {
+    float frame = float(pelicanFrame.frame_index.x);
+    outColor = vec4(frame * 0.25, 0.20, 0.05, 1.0);
+}
+
+)glsl");
+    writeTextFile(root / "shaders" / "accumulate.frag", R"glsl(
+#version 450
+layout(set = 1, binding = 0) uniform sampler2D currentTexture;
+layout(set = 1, binding = 1) uniform sampler2D historyTexture;
+layout(location = 0) in vec2 uv;
+layout(location = 0) out vec4 outColor;
+void main() { outColor = mix(texture(currentTexture, uv), texture(historyTexture, uv), 0.5); }
+)glsl");
+    writeTextFile(root / "shaders" / "present.frag", R"glsl(
+#version 450
+layout(set = 1, binding = 0) uniform sampler2D accumulatedTexture;
+layout(location = 0) in vec2 uv;
+layout(location = 0) out vec4 outColor;
+void main() { outColor = texture(accumulatedTexture, uv); }
+)glsl");
+    writeTextFile(root / "features" / "accumulation.json", R"json({
+  "schema":"pelican.render_feature","version":1,"name":"accumulation_fixture",
+  "render_targets":[{
+    "name":"temporal_accum","extent_scale":1.0,"format":"R16G16B16A16_SFLOAT",
+    "format_class":"explicit(R16G16B16A16_SFLOAT)","role":"color",
+    "usage":["COLOR_ATTACHMENT","SAMPLED"],"history":true,
+    "clear_color":[0.0,0.0,0.0,1.0]
+  }],
+  "passes":[{"insert":"after:post_main","pass":{
+    "name":"temporal_accumulate","type":"fullscreen",
+    "input":["current_color","temporal_accum@history"],
+    "output":{"color":"temporal_accum","depth":null},
+    "shader":{"vertex":"shaders/fullscreen","fragment":"shaders/accumulate"}
+  }}]
+})json");
+    writeTextFile(root / "passes" / "main.json", R"json({
+  "features":["features/accumulation.json"],
+  "render_targets":[{
+    "name":"current_color","extent_scale":1.0,"format":"R16G16B16A16_SFLOAT",
+    "format_class":"explicit(R16G16B16A16_SFLOAT)","role":"color",
+    "usage":["COLOR_ATTACHMENT","SAMPLED"]
+  }],
+  "rendering_passes":[{"name":"main","passes":[
+    {"name":"current_frame","type":"fullscreen",
+     "output":{"color":"current_color","depth":null},
+     "shader":{"vertex":"shaders/fullscreen","fragment":"shaders/current"}},
+    {"name":"temporal_present","type":"fullscreen","canonical_anchor":"post_ldr",
+     "input":["temporal_accum"],"output":{"color":"swapchain","depth":null},
+     "shader":{"vertex":"shaders/fullscreen","fragment":"shaders/present"}}
+  ]}]
+})json");
+}
+
+void writeVelocitySmokeProject(const std::filesystem::path &root) {
+    auto project = makeFeatureProjectJson();
+    project["name"] = "velocity smoke";
+    writeTextFile(root / "project.json", project.dump(2));
+    writeTextFile(root / "scene.json", R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+    writeTextFile(root / "assets.json", R"json({"models":[]})json");
+    writeTextFile(root / "ui" / "ui.json", R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
+    writeTextFile(root / "shaders" / "fullscreen.vert", stemFullscreenVertexShader());
+    writeTextFile(root / "shaders" / "present.frag", solidFullscreenFragmentShader());
+    writeTextFile(root / "passes" / "main.json", R"json({
+      "features":["engine://features/velocity.json"],"render_targets":[],
+      "rendering_passes":[{"name":"main","passes":[{
+        "name":"present","type":"fullscreen","output":{"color":"swapchain","depth":null},
+        "shader":{"vertex":"shaders/fullscreen","fragment":"shaders/present"}
+      }]}]
+    })json");
+}
+
 void writeUiU1Project(const std::filesystem::path &root) {
     auto project = makeFeatureProjectJson();
     project["name"] = "ui u1 golden";
@@ -1681,6 +1766,17 @@ void renderColliderDebugDrawFrame(RenderTarget &render_target) {
     (void)render_target;
 }
 
+void renderTemporalAccumulationFrames(RenderTarget &render_target) {
+    auto &time = GET_MODULE(EngineTime);
+    time.setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
+    for (int i = 0; i < 3; ++i) {
+        time.advance();
+        GET_MODULE(Renderer).render();
+    }
+    GET_MODULE(VulkanManageCore).waitIdle();
+    (void)render_target;
+}
+
 bool isHdrGoldenMode(const std::string &mode) {
     return mode == "hdr_off" || mode == "hdr_on";
 }
@@ -1746,6 +1842,12 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         writeFeatureProject(temp_dir);
         GET_MODULE(PathResolver).setup(temp_dir, false);
         GET_MODULE(ProjectSource).setProjectData(makeFeatureProjectJson().dump());
+    } else if (golden_case.mode == "temporal_accumulation") {
+        writeTemporalAccumulationProject(temp_dir);
+        GET_MODULE(PathResolver).setup(temp_dir, false);
+        auto project = makeFeatureProjectJson();
+        project["name"] = "temporal accumulation golden";
+        GET_MODULE(ProjectSource).setProjectData(project.dump());
     } else if (golden_case.mode == "ui_u1") {
         writeUiU1Project(temp_dir);
         GET_MODULE(PathResolver).setup(temp_dir, false);
@@ -1828,6 +1930,8 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         renderSkeletalToonFrame(render_target);
     } else if (golden_case.mode == "feature_compose") {
         renderFeatureFrame(render_target);
+    } else if (golden_case.mode == "temporal_accumulation") {
+        renderTemporalAccumulationFrames(render_target);
     } else if (golden_case.mode == "ui_u1") {
         renderFeatureFrame(render_target);
     } else if (golden_case.mode == "debug_draw_feature") {
@@ -1949,9 +2053,9 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     requireGoldenVulkanDevice();
     const auto cases = discoverGoldenCases();
 #if PELICAN_WITH_VAT
-    REQUIRE(cases.size() == 22);
+    REQUIRE(cases.size() == 23);
 #else
-    REQUIRE(cases.size() == 21);
+    REQUIRE(cases.size() == 22);
 #endif
 
     for (const auto &golden_case : cases) {
@@ -1998,6 +2102,27 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
             REQUIRE(comparison.max <= tolerance.max);
         }
     }
+}
+
+TEST_CASE("velocity feature compiles its standard pass and renders headless",
+          "[temporal][velocity][headless]") {
+    setupLogger();
+    requireGoldenVulkanDevice();
+    FastModuleContainer modules;
+    const auto root = makeTempProjectDir("velocity_smoke");
+    writeVelocitySmokeProject(root);
+    GET_MODULE(PathResolver).setup(root, false);
+    auto project = makeFeatureProjectJson();
+    project["name"] = "velocity smoke";
+    GET_MODULE(ProjectSource).setProjectData(project.dump());
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.shader_hot_reload = false;
+    launch.headless_extent = vk::Extent2D{goldenWidth, goldenHeight};
+    GET_MODULE(Renderer).render();
+    GET_MODULE(VulkanManageCore).waitIdle();
+    REQUIRE(GET_MODULE(RenderingPassContainer).isFeatureEnabled("velocity"));
+    std::filesystem::remove_all(root);
 }
 
 std::string loadTextFile(const std::filesystem::path &path) {

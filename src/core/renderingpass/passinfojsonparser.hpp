@@ -10,5 +10,6 @@ void parseFullscreenPassInfoIntoDefinition(PassDefinition &pass_def, const nlohm
 void parseDebugDrawPassInfoIntoDefinition(PassDefinition &pass_def, const nlohmann::json &pass_json);
 void parseDebugTextPassInfoIntoDefinition(PassDefinition &pass_def, const nlohmann::json &pass_json);
 void parseShadowDepthPassInfoIntoDefinition(PassDefinition &pass_def, const nlohmann::json &pass_json);
+void parseVelocityPassInfoIntoDefinition(PassDefinition &pass_def, const nlohmann::json &pass_json);
 
 } // namespace Pelican

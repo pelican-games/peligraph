@@ -1,0 +1,41 @@
+{
+  "schema": "pelican.render_feature",
+  "version": 1,
+  "name": "velocity",
+  "render_targets": [
+    {
+      "name": "velocity",
+      "extent_scale": 1.0,
+      "format": "R16G16_SFLOAT",
+      "format_class": "data",
+      "role": "data",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "velocity_depth",
+      "extent_scale": 1.0,
+      "format": "D32_SFLOAT",
+      "format_class": "data",
+      "role": "data",
+      "usage": ["DEPTH_STENCIL_ATTACHMENT"]
+    }
+  ],
+  "passes": [
+    {
+      "insert": "before:post_main",
+      "pass": {
+        "name": "velocity_pass",
+        "type": "velocity",
+        "output": {"color": "velocity", "depth": "velocity_depth"},
+        "shader": {
+          "vertex": "engine://velocity",
+          "skinned_vertex": "engine://velocity_skinned",
+          "fragment": "engine://velocity"
+        },
+        "clear_color": [0.0, 0.0, 0.0, 0.0],
+        "color_store_op": "store",
+        "depth_store_op": "dont_care"
+      }
+    }
+  ]
+}
