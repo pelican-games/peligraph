@@ -288,8 +288,9 @@ CPU sort + 単一 16384 quad buffer」に固定した場合。escape hatch を�
 
 ## 10. 未決事項
 
-1. スプライト平面の既定(XY+Z 法線 vs XZ+Y 法線)— **v2 も XY 固定 +
-   カメラで解く**を仮置き(要ユーザー確認)
+1. ~~スプライト平面の既定~~ → **確定(2026-07-12 ユーザー決定): XY 平面 +
+   Z 法線に固定**。plane 切替コンポーネント指定は持たない。床置き等は
+   Transform の回転で表現(見下ろしはカメラと y_down ソートで解く)
 2. strict pixel-perfect の方式選定(logical-resolution target vs
    render quantization)— S2D-1 で両案の実測比較
 3. タイルマップ形式(チャンク・衝突・オートタイル)— 別文書
