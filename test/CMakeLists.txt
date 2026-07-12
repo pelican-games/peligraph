@@ -649,6 +649,8 @@ pelican_define_test(framephase_test pelican_core)
 pelican_define_test(filewatcher_test pelican_core)
 target_link_libraries(pelican_test_filewatcher_test PRIVATE picosha2)
 
+pelican_define_test(reloadtransaction_test pelican_core)
+
 pelican_define_test(ui_foundation_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_ui_foundation_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"

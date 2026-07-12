@@ -3,19 +3,23 @@
 #include <compare>
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 namespace Pelican::watch {
 
-// Asset identity at the HR0 boundary.  HR1 may add logical resource identity,
-// but watcher events are always keyed by a canonical store-relative path.
+// Canonical project identity. Physical paths and store roots deliberately do
+// not participate: local overrides may move bytes without changing meaning.
 struct AssetKey {
-    std::string store;
     std::string path;
+    std::string fragment;
 
     auto operator<=>(const AssetKey &) const = default;
 };
 
-AssetKey makeAssetKey(std::string store, const std::filesystem::path &relative_path);
+AssetKey makeAssetKey(std::string_view project_reference);
+AssetKey makeAssetKey(std::string_view logical_mount,
+                      const std::filesystem::path &relative_path,
+                      std::string_view fragment = {});
 std::string assetKeyString(const AssetKey &key);
 
 } // namespace Pelican::watch

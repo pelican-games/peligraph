@@ -107,7 +107,7 @@ TEST_CASE("ContentDigest streams bytes and separates observed live pending and s
     REQUIRE(digest.byte_count == 180000);
     REQUIRE(digest.sha256.size() == 64);
 
-    const AssetKey key{"project", "large.bin"};
+    const AssetKey key{"large.bin", {}};
     ContentDigestState state;
     state.seedLive(key, "old");
 
@@ -137,14 +137,44 @@ TEST_CASE("ContentDigest streams bytes and separates observed live pending and s
 
 TEST_CASE("ReloadQueue merges an asset and publishes only at a matching frame epoch", "[wp96][queue]") {
     ReloadQueue queue;
-    queue.push({{"project", "a.txt"}, ReloadKind::modified, "one", 3});
-    queue.push({{"project", "a.txt"}, ReloadKind::modified, "two", 3});
-    queue.push({{"project", "b.txt"}, ReloadKind::removed, std::nullopt, 2});
+    queue.push({{"a.txt", {}}, ReloadKind::modified, "one", 3});
+    queue.push({{"a.txt", {}}, ReloadKind::modified, "two", 3});
+    queue.push({{"b.txt", {}}, ReloadKind::removed, std::nullopt, 2});
     REQUIRE(queue.size() == 2);
     const auto frame = queue.takeForFrame(3);
     REQUIRE(frame.size() == 1);
     REQUIRE(frame.front().digest == "two");
     REQUIRE(queue.size() == 0);
+}
+
+TEST_CASE("FileWatcher local override changes location without changing AssetKey",
+          "[wp98][assetkey][override]") {
+    Sandbox box;
+    const auto project = box.root / "project";
+    const auto override_root = box.root / "override";
+    writeText(project / "assets" / "same.txt", "project bytes");
+    writeText(override_root / "same.txt", "override bytes");
+
+    GateFixture gate;
+    FileWatcherOptions options;
+    options.manual_clock = true;
+    options.poll_interval = 20ms;
+    options.watch_arm_override = [](const WatchStore &, unsigned) { return false; };
+    FileWatcher watcher({{"project", project, {}}, {"art", override_root, "assets"}},
+                        [&] { return gate.snapshot(); }, options);
+    const auto t0 = FileWatcher::Clock::now();
+    watcher.runControlCycleForTesting(t0);
+
+    writeText(project / "assets" / "same.txt", "shadowed project edit");
+    watcher.runControlCycleForTesting(t0 + 25ms);
+    REQUIRE(applyAll(watcher).empty());
+
+    writeText(override_root / "same.txt", "selected override edit");
+    watcher.runControlCycleForTesting(t0 + 50ms);
+    const auto requests = applyAll(watcher);
+    REQUIRE(requests.size() == 1);
+    REQUIRE(requests.front().key == makeAssetKey("project://assets/same.txt"));
+    watcher.stop();
 }
 
 TEST_CASE("polling fallback uses fake-clock reconcile, gate cancellation, recovery and degraded state",
