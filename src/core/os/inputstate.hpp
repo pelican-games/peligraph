@@ -38,6 +38,8 @@ struct InputEvent {
         button,
         cursor_move,
         axis,
+        scroll,
+        character,
     };
 
     static constexpr std::uint64_t unassigned_sequence = std::numeric_limits<std::uint64_t>::max();
@@ -50,10 +52,13 @@ struct InputEvent {
     float mouse_y = 0.0f;
     float axis_x = 0.0f;
     float axis_y = 0.0f;
+    std::uint32_t codepoint = 0;
 
     static InputEvent button(KeyCode code, bool pressed) noexcept;
     static InputEvent cursorMove(float x, float y) noexcept;
     static InputEvent axis(float x, float y) noexcept;
+    static InputEvent scroll(float x, float y) noexcept;
+    static InputEvent character(std::uint32_t codepoint) noexcept;
 };
 
 struct InputConsumptionMask {

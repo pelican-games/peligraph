@@ -10,7 +10,11 @@ namespace Pelican {
 void parsePassTypeFromJson(PassDefinition &pass_def, const nlohmann::json &pass_json) {
     pass_def.pass_info = makePassInfo(parseStringField(pass_json, "type", "pass: " + pass_def.name));
 
-    if (pass_def.isUi()) {
+    if (pass_def.isUi()
+#if PELICAN_WITH_IMGUI
+        || pass_def.isImGui()
+#endif
+    ) {
         pass_def.color_load_op = vk::AttachmentLoadOp::eLoad;
     }
 }

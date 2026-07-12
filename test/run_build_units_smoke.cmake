@@ -13,6 +13,9 @@ endif()
 
 get_filename_component(SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 set(ARTIFACT_ROOT "${SOURCE_DIR}/build-unit-smoke-artifacts")
+if(WIN32 AND NOT DEFINED Python3_EXECUTABLE)
+    set(Python3_EXECUTABLE "%APPDATA%/uv/python/cpython-3.12.13-windows-x86_64-none/python.exe")
+endif()
 
 if(WIN32)
     set(EXE_SUFFIX ".exe")
@@ -56,6 +59,7 @@ function(configure_and_build label option_name out_build_dir)
             -DSKIP_DEVSTUDIO=ON
             "-D${option_name}=OFF"
             "-DCMAKE_BUILD_TYPE=${PELICAN_BUILD_UNIT_SMOKE_CONFIG}"
+            "-DPython3_EXECUTABLE=${Python3_EXECUTABLE}"
     )
 
     run_process(
@@ -67,6 +71,62 @@ function(configure_and_build label option_name out_build_dir)
     )
 
     set("${out_build_dir}" "${build_dir}" PARENT_SCOPE)
+endfunction()
+
+function(verify_imgui_absent build_dir)
+    file(GLOB_RECURSE build_metadata LIST_DIRECTORIES false
+        "${build_dir}/build.ninja"
+        "${build_dir}/*.vcxproj"
+        "${build_dir}/*DependInfo.cmake"
+        "${build_dir}/compile_commands.json"
+    )
+    foreach(metadata IN LISTS build_metadata)
+        file(READ "${metadata}" contents)
+        if(contents MATCHES "src[/\\\\]core[/\\\\]imgui" OR
+           contents MATCHES "imgui_vendor-src.*(imgui|backends)[/\\\\].*\\.cpp")
+            message(FATAL_ERROR "PELICAN_WITH_IMGUI=OFF still compiles an ImGui source: ${metadata}")
+        endif()
+    endforeach()
+
+    file(GLOB_RECURSE artifacts LIST_DIRECTORIES false "${build_dir}/*")
+    foreach(artifact IN LISTS artifacts)
+        get_filename_component(name "${artifact}" NAME)
+        string(TOLOWER "${name}" lower_name)
+        if(lower_name MATCHES "imgui.*\\.(obj|o|lib|a|ttf|otf)$")
+            message(FATAL_ERROR "PELICAN_WITH_IMGUI=OFF emitted ImGui object/library/font asset: ${artifact}")
+        endif()
+    endforeach()
+
+    if(WIN32)
+        find_program(DUMPBIN_EXECUTABLE dumpbin)
+        if(NOT DUMPBIN_EXECUTABLE)
+            file(GLOB dumpbin_candidates
+                "C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC/*/bin/Hostx64/x64/dumpbin.exe"
+                "C:/Program Files/Microsoft Visual Studio/2022/*/VC/Tools/MSVC/*/bin/Hostx64/x64/dumpbin.exe"
+            )
+            if(dumpbin_candidates)
+                list(SORT dumpbin_candidates ORDER DESCENDING)
+                list(GET dumpbin_candidates 0 DUMPBIN_EXECUTABLE)
+            endif()
+        endif()
+        if(DUMPBIN_EXECUTABLE)
+            file(GLOB_RECURSE core_libraries LIST_DIRECTORIES false "${build_dir}/*pelican_core.lib")
+            foreach(core_library IN LISTS core_libraries)
+                execute_process(
+                    COMMAND "${DUMPBIN_EXECUTABLE}" /symbols "${core_library}"
+                    RESULT_VARIABLE dumpbin_result
+                    OUTPUT_VARIABLE symbols
+                    ERROR_VARIABLE dumpbin_error
+                )
+                if(NOT dumpbin_result EQUAL 0)
+                    message(FATAL_ERROR "dumpbin failed for ${core_library}: ${dumpbin_error}")
+                endif()
+                if(symbols MATCHES "ImGui(::|_)" OR symbols MATCHES "imgui_impl")
+                    message(FATAL_ERROR "PELICAN_WITH_IMGUI=OFF retained ImGui symbols in ${core_library}")
+                endif()
+            endforeach()
+        endif()
+    endif()
 endfunction()
 
 function(find_built_executable build_dir target_name out_path)
@@ -214,6 +274,11 @@ function(write_vat_project root)
     file(WRITE "${root}/ui/ui.json" "{\"images\":[]}\n")
 endfunction()
 
+if(PELICAN_BUILD_UNIT_SMOKE_PARSE_ONLY)
+    message(STATUS "build-unit OFF smoke fixture parsed successfully")
+    return()
+endif()
+
 file(REMOVE_RECURSE "${ARTIFACT_ROOT}")
 file(MAKE_DIRECTORY "${ARTIFACT_ROOT}")
 
@@ -275,4 +340,7 @@ expect_disabled_error(
     "${seq_player}" --headless --project "${seq_project}" --frames 0 --play-seq "${seq_file}"
 )
 
-message(STATUS "build-unit OFF smoke passed for AUDIO, VAT, EXR, RPC, and SEQPLAYER")
+configure_and_build("imgui" "PELICAN_WITH_IMGUI" imgui_build_dir)
+verify_imgui_absent("${imgui_build_dir}")
+
+message(STATUS "build-unit OFF smoke passed for AUDIO, VAT, EXR, RPC, SEQPLAYER, and IMGUI")

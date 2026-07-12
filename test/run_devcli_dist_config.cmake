@@ -67,6 +67,7 @@ function(run_dist_config name project_dir expected_vat expected_exr expected_rpc
     expect_contains("${contents}" "set(PELICAN_WITH_EXR ${expected_exr} CACHE BOOL \"\" FORCE)" "${name} EXR flag")
     expect_contains("${contents}" "set(PELICAN_WITH_RPC ${expected_rpc} CACHE BOOL \"\" FORCE)" "${name} RPC flag")
     expect_contains("${contents}" "set(PELICAN_WITH_SEQPLAYER ${expected_seq} CACHE BOOL \"\" FORCE)" "${name} SeqPlayer flag")
+    expect_contains("${contents}" "set(PELICAN_WITH_IMGUI OFF CACHE BOOL \"\" FORCE)" "${name} ImGui flag")
 
     if(expected_vat STREQUAL "ON")
         expect_contains("${contents}" "pelican.vat extras" "${name} VAT evidence")

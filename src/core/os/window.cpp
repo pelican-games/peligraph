@@ -203,6 +203,15 @@ Window::Window() : window{nullptr} {
 
         thiz->input_events.push_back(InputEvent::cursorMove(static_cast<float>(xpos), static_cast<float>(ypos)));
     });
+    glfwSetScrollCallback(window, [](GLFWwindow *window, double xoffset, double yoffset) {
+        const auto thiz = static_cast<Window *>(glfwGetWindowUserPointer(window));
+        thiz->input_events.push_back(InputEvent::scroll(static_cast<float>(xoffset),
+                                                       static_cast<float>(yoffset)));
+    });
+    glfwSetCharCallback(window, [](GLFWwindow *window, unsigned int codepoint) {
+        const auto thiz = static_cast<Window *>(glfwGetWindowUserPointer(window));
+        thiz->input_events.push_back(InputEvent::character(codepoint));
+    });
 }
 
 Window::~Window() {
@@ -226,6 +235,22 @@ vk::Extent2D Window::waitFramebufferExtent() const {
         }
         glfwWaitEvents();
     }
+}
+
+vk::Extent2D Window::framebufferExtent() const {
+    int width = 0;
+    int height = 0;
+    glfwGetFramebufferSize(window, &width, &height);
+    return vk::Extent2D{static_cast<uint32_t>(std::max(width, 0)),
+                        static_cast<uint32_t>(std::max(height, 0))};
+}
+
+vk::Extent2D Window::logicalExtent() const {
+    int width = 0;
+    int height = 0;
+    glfwGetWindowSize(window, &width, &height);
+    return vk::Extent2D{static_cast<uint32_t>(std::max(width, 0)),
+                        static_cast<uint32_t>(std::max(height, 0))};
 }
 
 bool Window::process() {

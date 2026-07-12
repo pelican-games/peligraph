@@ -18,6 +18,9 @@ class MaterialRenderer;
 class ShadowDepthPassContainer;
 struct UiRendererDependencies;
 class UiRenderer;
+#if PELICAN_WITH_IMGUI
+class ImGuiSystem;
+#endif
 
 struct RenderPassDispatchDependencies {
     MaterialRenderer &material_renderer;
@@ -29,6 +32,9 @@ struct RenderPassDispatchDependencies {
     const UiRendererDependencies &ui_renderer_dependencies;
     DebugDraw *debug_draw = nullptr;
     DebugText *debug_text = nullptr;
+#if PELICAN_WITH_IMGUI
+    ImGuiSystem *imgui_system = nullptr;
+#endif
     const FrameResources &frame_resources;
     const Camera &camera;
     vk::Format swapchain_color_format;
@@ -37,6 +43,12 @@ struct RenderPassDispatchDependencies {
 void renderUiPass(vk::CommandBuffer cmd_buf, const FrameRenderContext &frame, const PassDefinition &pass_def,
                   vk::Extent2D target_extent, RenderTargetContainer &rt_container,
                   const RenderPassDispatchDependencies &dependencies);
+#if PELICAN_WITH_IMGUI
+void renderImGuiPass(vk::CommandBuffer cmd_buf, const FrameRenderContext &frame,
+                     const PassDefinition &pass_def, vk::Extent2D target_extent,
+                     RenderTargetContainer &rt_container,
+                     const RenderPassDispatchDependencies &dependencies);
+#endif
 void renderDynamicPassDrawCalls(vk::CommandBuffer cmd_buf, PassId pass_id, const PassDefinition &pass_def,
                                 vk::Extent2D target_extent,
                                 const RenderPassDispatchDependencies &dependencies);

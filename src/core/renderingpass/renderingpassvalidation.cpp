@@ -161,7 +161,11 @@ void validatePassOutputs(const PassDefinition &pass_def) {
         }
     }
 
-    if (pass_def.isDebugDraw() || pass_def.isDebugText() || pass_def.isUi()) {
+    if (pass_def.isDebugDraw() || pass_def.isDebugText() || pass_def.isUi()
+#if PELICAN_WITH_IMGUI
+        || pass_def.isImGui()
+#endif
+    ) {
         if (pass_def.output_color.size() != 1) {
             throw std::runtime_error("Single-color pass requires exactly one color output: " + pass_def.name);
         }

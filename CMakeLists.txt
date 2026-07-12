@@ -24,6 +24,7 @@ option(PELICAN_WITH_VAT "Enable pelican.vat GLB playback support" ON)
 option(PELICAN_WITH_EXR "Enable EXR texture loading with tinyexr" ON)
 option(PELICAN_WITH_RPC "Enable stdio JSON-RPC control server" ON)
 option(PELICAN_WITH_SEQPLAYER "Enable transform sequence playback" ON)
+option(PELICAN_WITH_IMGUI "Enable the interactive engine developer UI" ON)
 option(PELICAN_ENABLE_ASAN "Build targets with AddressSanitizer (intended for test builds)" OFF)
 set(PELICAN_PROJECT "" CACHE PATH "Project directory whose code/ sources are linked into pelican_player")
 

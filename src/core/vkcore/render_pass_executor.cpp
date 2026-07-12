@@ -21,6 +21,12 @@ void RenderPassExecutor::execute(const FrameRenderContext &frame, const Compiled
         renderUiPass(cmd_buf, frame, pass_def, target_extent, rt_container, dependencies.dispatch);
         return;
     }
+#if PELICAN_WITH_IMGUI
+    if (pass_def.isImGui()) {
+        renderImGuiPass(cmd_buf, frame, pass_def, target_extent, rt_container, dependencies.dispatch);
+        return;
+    }
+#endif
 
     auto color_attachments = createColorAttachments(frame, pass_def, rt_container);
 

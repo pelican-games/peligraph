@@ -15,6 +15,10 @@
 #include "../loader/pathresolver.hpp"
 #include "../renderer/shadowdepthpasscontainer.hpp"
 #include "../vkcore/rendertarget.hpp"
+#if PELICAN_WITH_IMGUI
+#include "../imgui/imguiruntime.hpp"
+#include "../launchconfig.hpp"
+#endif
 #include <algorithm>
 #include <string_view>
 #include <unordered_map>
@@ -97,9 +101,14 @@ void registerRenderingPassConfigData(const nlohmann::json &rendering_pass_data, 
         composeRenderFeaturesForRegistration(rendering_pass_data, dependencies.runtime);
     const bool hdr_enabled = std::find(composed.feature_names.begin(), composed.feature_names.end(), "hdr") !=
                              composed.feature_names.end();
-    const auto composed_rendering_pass_data = resolveRenderTargetFormatClassesV2(
+    auto composed_rendering_pass_data = resolveRenderTargetFormatClassesV2(
         composed.config, dependencies.runtime.render_target.getSwapchainFormat(),
         dependencies.runtime.render_target.getExtent(), hdr_enabled);
+#if PELICAN_WITH_IMGUI
+    invokeImGuiRuntimeCallback(GET_MODULE(EngineLaunchConfig), [&] {
+        appendImGuiPassToCanonicalGraphs(composed_rendering_pass_data);
+    });
+#endif
     const auto render_target_definitions = parseRenderTargetDefinitionsFromJson(composed_rendering_pass_data);
     registerRenderTargetDefinitions(render_target_definitions, base_extent,
                                     dependencies.render_targets.render_target_container);

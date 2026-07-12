@@ -7,6 +7,9 @@
 #include "../renderer/shadowdepthpasscontainer.hpp"
 #include "../renderer/uirenderer.hpp"
 #include "../phys/physworld.hpp"
+#if PELICAN_WITH_IMGUI
+#include "../imgui/imguisystem.hpp"
+#endif
 #include <stdexcept>
 
 namespace Pelican {
@@ -75,6 +78,27 @@ void renderUiPass(vk::CommandBuffer cmd_buf, const FrameRenderContext &frame, co
                                                            pass_def.clear_color},
                                     dependencies.ui_renderer_dependencies);
 }
+
+#if PELICAN_WITH_IMGUI
+void renderImGuiPass(vk::CommandBuffer cmd_buf, const FrameRenderContext &frame,
+                     const PassDefinition &pass_def, vk::Extent2D target_extent,
+                     RenderTargetContainer &rt_container,
+                     const RenderPassDispatchDependencies &dependencies) {
+    if (dependencies.imgui_system == nullptr) {
+        throw std::runtime_error("ImGui pass requires an interactive ImGuiSystem");
+    }
+    if (pass_def.output_color.size() != 1) {
+        throw std::runtime_error("ImGui pass requires one color output");
+    }
+    const auto target = pass_def.output_color.front();
+    const bool swapchain = isSwapchainRenderTarget(target);
+    dependencies.imgui_system->render(
+        cmd_buf,
+        swapchain ? frame.color_attachment : rt_container.getImageView(target),
+        target_extent,
+        swapchain ? dependencies.swapchain_color_format : rt_container.getMetadata(target).format);
+}
+#endif
 
 void renderDynamicPassDrawCalls(vk::CommandBuffer cmd_buf, PassId pass_id, const PassDefinition &pass_def,
                                 vk::Extent2D target_extent,
