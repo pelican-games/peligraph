@@ -63,6 +63,9 @@ TEST_CASE("glTF skin and clips connect to animation component without ECS bones"
     const auto loaded = loader.loadGltfBinary((root / "character.glb").string());
     REQUIRE(loaded.skeletal);
     REQUIRE(loaded.skeletal->joint_nodes.size() == 2);
+    REQUIRE(loaded.skeletal->nodes[1].name == "RootJoint");
+    REQUIRE(loaded.skeletal->nodes[2].name == "TipJoint");
+    REQUIRE(loaded.skeletal->skin_bindings.size() == 1);
     REQUIRE(loaded.skeletal->clips.size() == 2);
     REQUIRE(loaded.material_primitives.size() == 1);
     REQUIRE(loaded.material_primitives.front().primitives.front().skinned);
@@ -81,6 +84,15 @@ TEST_CASE("glTF skin and clips connect to animation component without ECS bones"
     GET_MODULE(SceneLoader).load("default_scene");
     GET_MODULE(ECSCore).update();
     auto &instances = GET_MODULE(PolygonInstanceContainer);
+    const ModelInstanceId instance{0};
+    const auto first_revision = instances.currentAnimationRevisionForTesting(instance);
+    REQUIRE(first_revision != 0);
+    REQUIRE(instances.previousAnimationRevisionForTesting(instance) == first_revision);
+    instances.advanceTemporalHistoryAfterRender();
+    time.setTime(0.75);
+    GET_MODULE(ECSCore).update();
+    REQUIRE(instances.currentAnimationRevisionForTesting(instance) > first_revision);
+    REQUIRE(instances.previousAnimationRevisionForTesting(instance) == first_revision);
     instances.triggerUpdate();
     REQUIRE(instances.getDrawCalls().size() == 1);
     REQUIRE(instances.getDrawCalls().front().skinned);

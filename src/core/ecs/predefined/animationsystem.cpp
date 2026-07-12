@@ -1,21 +1,39 @@
 #include "animationsystem.hpp"
 
+#include "../../animation/animationjobs.hpp"
+#include "../../animation/animationprobe.hpp"
 #include "../../appflow/enginetime.hpp"
 #include "../../asset/model.hpp"
 #include "../../loader/pathresolver.hpp"
 #include "../../model/skeletalanimation.hpp"
 #include "../../renderer/polygoninstancecontainer.hpp"
 
+#include <atomic>
 #include <filesystem>
 #include <stdexcept>
 #include <variant>
+#include <vector>
 
 namespace Pelican {
+
+struct AnimationSystemState {
+    Animation::AnimationAssetRegistry assets;
+    std::atomic_uint64_t next_frame_revision{1};
+};
+
+AnimationSystem::AnimationSystem() : state{std::make_unique<AnimationSystemState>()} {}
+AnimationSystem::~AnimationSystem() = default;
 
 void AnimationSystem::process(QueryComponents components, size_t count) {
     auto animations = std::get<AnimationComponent *>(components);
     auto models = std::get<SimpleModelViewComponent *>(components);
-    const auto time = GET_MODULE(EngineTime).now();
+    const auto &engine_time = GET_MODULE(EngineTime);
+    const auto time = engine_time.now();
+    const auto frame_revision = state->next_frame_revision.fetch_add(1, std::memory_order_relaxed);
+    thread_local Animation::ProbeRuntime pose_runtime;
+    const auto arena = pose_runtime.beginFrame(frame_revision);
+    if (!Animation::isValid(arena)) throw std::runtime_error("animation pose arena is unavailable on this thread");
+    auto &instances = GET_MODULE(PolygonInstanceContainer);
     for (size_t i = 0; i < count; ++i) {
         if (!models[i].model_instance_id) continue;
         auto &model = GET_MODULE(ModelAssetContainer).getModelTemplateByName(models[i].model_name);
@@ -37,9 +55,45 @@ void AnimationSystem::process(QueryComponents components, size_t count) {
                                      animations[i].clip);
         }
         const auto &clip = findAnimationClip(*model.skeletal, reference->fragment.path);
-        const auto palette = evaluateSkinPalette(*model.skeletal, &clip, time, animations[i].speed,
-                                                 animations[i].loop != 0, animations[i].start_time);
-        GET_MODULE(PolygonInstanceContainer).setSkinningPalette(*models[i].model_instance_id, palette);
+        const auto &asset = state->assets.getOrCreate(*model.skeletal);
+        const auto &clip_resource = Animation::findClip(asset, clip);
+
+        auto local_pose = Animation::PoseViewV1{};
+        local_pose.struct_size = sizeof(local_pose);
+        local_pose.version = Animation::descriptorVersionV1;
+        auto status = pose_runtime.acquirePose(arena, asset.rig.layout,
+                                               static_cast<std::uint32_t>(asset.rig.rest_pose.size()), local_pose);
+        if (status != Animation::Status::ok) throw std::runtime_error("failed to acquire local animation pose");
+        status = Animation::samplePoseAt(asset, &clip_resource, time, animations[i].speed,
+                                         animations[i].loop != 0, animations[i].start_time, local_pose);
+        if (status != Animation::Status::ok) throw std::runtime_error("failed to sample animation pose");
+
+        auto model_pose = Animation::PoseViewV1{};
+        model_pose.struct_size = sizeof(model_pose);
+        model_pose.version = Animation::descriptorVersionV1;
+        status = pose_runtime.acquirePose(arena, asset.rig.layout,
+                                          static_cast<std::uint32_t>(asset.rig.rest_pose.size()), model_pose);
+        if (status != Animation::Status::ok) throw std::runtime_error("failed to acquire model animation pose");
+        std::vector<Animation::Matrix4fV1> model_matrices(asset.rig.rest_pose.size());
+        status = Animation::localToModel(asset.rig, local_pose, model_matrices, &model_pose);
+        if (status != Animation::Status::ok) throw std::runtime_error("failed to convert animation pose to model space");
+
+        std::vector<Animation::Matrix4fV1> palette(model.skeletal->joint_nodes.size());
+        status = Animation::buildSkinPalette(asset, model_matrices, palette);
+        if (status != Animation::Status::ok) throw std::runtime_error("failed to build animation skin palette");
+
+        Animation::PublishAnimationFrameDescV1 publish{};
+        publish.struct_size = sizeof(publish);
+        publish.version = Animation::descriptorVersionV1;
+        publish.instance = instances.animationInstance(*models[i].model_instance_id);
+        publish.local_pose = local_pose.pose;
+        publish.model_pose = model_pose.pose;
+        publish.palette = palette.data();
+        publish.palette_count = static_cast<std::uint32_t>(palette.size());
+        publish.frame_revision = frame_revision;
+        publish.root_delta.rotation.w = 1.0f;
+        status = instances.publishAnimationFrame(*models[i].model_instance_id, publish);
+        if (status != Animation::Status::ok) throw std::runtime_error("failed to publish animation frame");
     }
 }
 

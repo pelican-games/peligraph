@@ -1,1 +1,1 @@
-target_sources(pelican_core PRIVATE animationprobe.cpp)
+target_sources(pelican_core PRIVATE animationjobs.cpp animationprobe.cpp)

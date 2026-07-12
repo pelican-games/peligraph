@@ -3,6 +3,7 @@
 #include "../container.hpp"
 #include "../material/material.hpp"
 #include "../model/modeltemplate.hpp"
+#include "../userpublic/animation/abi_v1.hpp"
 #include "../vkcore/buf.hpp"
 #include "modelinstance.hpp"
 #include <glm/ext/quaternion_float.hpp>
@@ -38,6 +39,9 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     vk::Device device;
     std::vector<std::vector<glm::mat4>> skin_palettes;
     std::vector<std::vector<glm::mat4>> previous_skin_palettes;
+    std::vector<std::uint64_t> animation_revisions;
+    std::vector<std::uint64_t> previous_animation_revisions;
+    std::vector<std::uint32_t> animation_generations;
     BufferWrapper skin_palette_buffer;
     BufferWrapper previous_skin_palette_buffer;
     vk::UniqueDescriptorSetLayout skin_descriptor_layout;
@@ -51,10 +55,14 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     void clear();
     void triggerUpdate();
     void commitFrameHistory();
+    void advanceTemporalHistoryAfterRender();
     void resetTemporalHistory();
 
     void setTrs(ModelInstanceId id, glm::vec3 pos, glm::quat rotation, glm::vec3 scale);
     void setSkinningPalette(ModelInstanceId id, std::span<const glm::mat4> palette);
+    Animation::InstanceHandle animationInstance(ModelInstanceId id) const;
+    Animation::Status publishAnimationFrame(ModelInstanceId id,
+                                             const Animation::PublishAnimationFrameDescV1 &frame);
     void bindSkinning(vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout) const;
 
     const BufferWrapper &getIndirectBuf() const;
@@ -64,6 +72,12 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     size_t instanceCountForTesting() const { return model_instances_data.size(); }
     glm::mat4 currentModelMatrixForTesting(ModelInstanceId id) const { return model_instances_data.at(id.value); }
     glm::mat4 previousModelMatrixForTesting(ModelInstanceId id) const { return previous_model_instances_data.at(id.value); }
+    std::uint64_t currentAnimationRevisionForTesting(ModelInstanceId id) const {
+        return animation_revisions.at(id.value);
+    }
+    std::uint64_t previousAnimationRevisionForTesting(ModelInstanceId id) const {
+        return previous_animation_revisions.at(id.value);
+    }
 };
 
 } // namespace Pelican

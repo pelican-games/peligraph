@@ -18,6 +18,13 @@ struct SkeletonNodeRestPose {
     glm::vec3 translation{0.0f};
     glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
     glm::vec3 scale{1.0f};
+    std::string name;
+};
+
+struct SkeletalSkinBindingData {
+    std::string name;
+    std::uint32_t palette_offset = 0;
+    std::uint32_t joint_count = 0;
 };
 
 struct SkeletalAnimationChannel {
@@ -41,6 +48,9 @@ struct SkeletalModelData {
     std::vector<SkeletonNodeRestPose> nodes;
     std::vector<int> joint_nodes;
     std::vector<glm::mat4> inverse_bind_matrices;
+    // Keeps the original glTF skin boundaries while the two arrays above retain
+    // the WP38 combined-palette layout used by the renderer.
+    std::vector<SkeletalSkinBindingData> skin_bindings;
     std::vector<SkeletalAnimationClip> clips;
 };
 
