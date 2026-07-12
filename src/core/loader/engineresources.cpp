@@ -11,9 +11,9 @@ namespace Pelican {
 namespace {
 
 #if PELICAN_WITH_VAT
-constexpr size_t registeredResourceCount = 68;
+constexpr size_t registeredResourceCount = 71;
 #else
-constexpr size_t registeredResourceCount = 67;
+constexpr size_t registeredResourceCount = 70;
 #endif
 
 constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
@@ -40,6 +40,7 @@ constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
     "features/debug_draw.json",
     "features/debug_text.json",
     "features/ui.json",
+    "features/sprite.json",
     "features/gpu_timing.json",
     "features/hdr.json",
     "features/shadow_directional.json",
@@ -77,6 +78,8 @@ constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
     "ssao.frag.spv",
     "ssao_blur.frag",
     "ssao_blur.frag.spv",
+    "sprite.frag.spv",
+    "sprite.vert.spv",
     "tonemap.frag",
     "tonemap.vert",
     "ui.frag.spv",
@@ -137,6 +140,10 @@ std::optional<std::string_view> engineResource(std::string_view id) {
         static const std::string feature = b::embed<"features/ui.json">().str();
         return std::string_view{feature};
     }
+    if (id == "features/sprite.json") {
+        static const std::string feature = b::embed<"features/sprite.json">().str();
+        return std::string_view{feature};
+    }
     if (id == "features/gpu_timing.json") {
         static const std::string feature = b::embed<"features/gpu_timing.json">().str();
         return std::string_view{feature};
@@ -177,6 +184,8 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("ssao.frag.spv")
     PELICAN_ENGINE_RESOURCE("ssao_blur.frag")
     PELICAN_ENGINE_RESOURCE("ssao_blur.frag.spv")
+    PELICAN_ENGINE_RESOURCE("sprite.frag.spv")
+    PELICAN_ENGINE_RESOURCE("sprite.vert.spv")
     PELICAN_ENGINE_RESOURCE("tonemap.frag")
     PELICAN_ENGINE_RESOURCE("tonemap.vert")
     PELICAN_ENGINE_RESOURCE("ui.frag.spv")

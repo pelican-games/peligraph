@@ -1,0 +1,31 @@
+{
+  "schema": "pelican.scene",
+  "version": 1,
+  "scenes": {
+    "default_scene": {
+      "objects": [
+        {
+          "name": "SpriteLeft",
+          "components": [
+            {"name": "transform", "pos": [-0.8, 0.0, 0.0], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]},
+            {"name": "sprite_view", "texture": "demo_atlas#sprite/full", "size": [1.5, 1.5], "pivot": [0.5, 0.5], "layer": 0, "flip": [false, false], "color": [1, 1, 1, 1]}
+          ]
+        },
+        {
+          "name": "SpriteRight",
+          "components": [
+            {"name": "transform", "pos": [0.8, 0.0, 0.1], "rotation": [0, 0, -0.19509032, 0.98078528], "scale": [1, 1, 1]},
+            {"name": "sprite_view", "texture": "demo_atlas#sprite/full", "size": [1.5, 1.5], "pivot": [0.5, 0.5], "layer": 1, "flip": [true, false], "color": [0.8, 1.0, 0.9, 0.9]}
+          ]
+        },
+        {
+          "name": "SpriteTop",
+          "components": [
+            {"name": "transform", "pos": [0.0, 0.8, 0.2], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]},
+            {"name": "sprite_view", "texture": "demo_atlas#sprite/right", "size": [0.9, 0.9], "pivot": [0.5, 0.5], "layer": 2, "flip": [false, true], "color": [1.0, 0.55, 0.75, 0.85]}
+          ]
+        }
+      ]
+    }
+  }
+}

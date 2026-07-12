@@ -5,6 +5,9 @@
 #include "../renderer/materialrender.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
 #include "../renderer/shadowdepthpasscontainer.hpp"
+#include "../renderer/spriterenderer.hpp"
+#include "../renderer/spritescene.hpp"
+#include "../renderer/atlasassetresource.hpp"
 #include "../renderer/velocitypasscontainer.hpp"
 #include "../renderer/uicontainer.hpp"
 #include "../renderer/uirenderer.hpp"
@@ -29,6 +32,7 @@
 #include "deletionqueue.hpp"
 #include "render_pass_dispatch.hpp"
 #include "render_pass_executor.hpp"
+#include "render_pass_frame_setup.hpp"
 #include "renderer_config.hpp"
 #include "rendertarget.hpp"
 #include "rendertiming.hpp"
@@ -567,6 +571,58 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
         } else if (execution_node.kind == FramePlanNodeKind::anchor) {
             if (node_trace != nullptr) {
                 node_trace->push_back(anchorNodeTrace(execution_node.name, node_index));
+            }
+            if (execution_node.name == "__anchor_sprite" &&
+                modules.rendering_pass_container.isFeatureEnabled("sprite") &&
+                FastModuleContainer::isInitialized<SpriteScene>() &&
+                GET_MODULE(SpriteScene).commandCountForTesting() != 0) {
+                GlobalRenderTargetId color_id = noRenderTargetId();
+                GlobalRenderTargetId depth_id = noRenderTargetId();
+                for (std::size_t previous = node_index; previous-- > 0;) {
+                    const auto &candidate = frame_graph.nodes[previous];
+                    if (candidate.kind != FramePlanNodeKind::render) continue;
+                    const auto &definition = rendering_pass.passes.at(candidate.index).definition;
+                    if (!isConcreteRenderTarget(color_id) && !isSwapchainRenderTarget(color_id) &&
+                        !definition.output_color.empty()) color_id = definition.output_color.front();
+                    if (!isConcreteRenderTarget(depth_id) && isConcreteRenderTarget(definition.output_depth))
+                        depth_id = definition.output_depth;
+                    if ((isConcreteRenderTarget(color_id) || isSwapchainRenderTarget(color_id)) &&
+                        isConcreteRenderTarget(depth_id)) break;
+                }
+                if ((!isConcreteRenderTarget(color_id) && !isSwapchainRenderTarget(color_id)) ||
+                    !isConcreteRenderTarget(depth_id))
+                    throw std::runtime_error("sprite feature requires a scene color and depth attachment before sprite anchor");
+                PassDefinition sprite_attachments;
+                sprite_attachments.output_color = {color_id};
+                sprite_attachments.output_depth = depth_id;
+                transitionPassOutputsToAttachmentLayouts(render_ctx.cmd_buf, sprite_attachments,
+                                                          modules.render_target_container, modules.vk_utils,
+                                                          layout_tracker);
+                const auto color_view = isSwapchainRenderTarget(color_id)
+                                            ? render_ctx.color_attachment
+                                            : modules.render_target_container.getImageView(color_id);
+                const auto &depth_meta = modules.render_target_container.getMetadata(depth_id);
+                const auto color_format = isSwapchainRenderTarget(color_id)
+                                              ? modules.render_target.getSwapchainFormat()
+                                              : modules.render_target_container.getMetadata(color_id).format;
+                const auto extent = isSwapchainRenderTarget(color_id)
+                                        ? render_ctx.extent
+                                        : modules.render_target_container.getMetadata(color_id).extent;
+                if (depth_meta.extent != extent)
+                    throw std::runtime_error("sprite color and depth attachments must have matching extents");
+                GET_MODULE(SpriteRenderer).render(
+                    render_ctx.cmd_buf,
+                    SpriteDrawRequest{color_view, modules.render_target_container.getImageView(depth_id), extent,
+                                      color_format, depth_meta.format},
+                    SpriteRendererDependencies{GET_MODULE(SpriteScene), GET_MODULE(AtlasAssetResource),
+                                               modules.frame_resources});
+                if (node_trace != nullptr && isConcreteRenderTarget(color_id)) {
+                    node_trace->back()["sprite_draw"] = {
+                        {"color", modules.render_target_container.getMetadata(color_id).name},
+                        {"depth", depth_meta.name}, {"depth_test", true}, {"depth_write", false},
+                        {"blend", "straight_alpha"},
+                    };
+                }
             }
         } else if (execution_node.kind == FramePlanNodeKind::snapshot_copy) {
             const auto &planned_node = frame_graph.plan.nodes.at(node_index);

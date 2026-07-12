@@ -54,7 +54,6 @@ bool PelicanCore::run() {
         }
 
         GET_MODULE(ECSPredefinedRegistration).reg();
-        registerSpriteViewComponent();
         (void)initializeConfiguredGameLogic();
         GET_MODULE(SceneLoader).load(GET_MODULE(ProjectBasicConfig).defaultSceneId());
         // Model CPU preparation is parallel, but its Vulkan/resource commit is

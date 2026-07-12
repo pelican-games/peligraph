@@ -1,0 +1,17 @@
+{
+  "features": ["engine://features/sprite.json"],
+  "render_targets": [
+    {"name":"gbuffer_albedo","extent_scale":1.0,"format":"B8G8R8A8_UNORM","usage":["COLOR_ATTACHMENT","SAMPLED"]},
+    {"name":"gbuffer_normal","extent_scale":1.0,"format":"R16G16B16A16_SFLOAT","usage":["COLOR_ATTACHMENT","SAMPLED"]},
+    {"name":"gbuffer_material","extent_scale":1.0,"format":"R8G8B8A8_UNORM","usage":["COLOR_ATTACHMENT","SAMPLED"]},
+    {"name":"gbuffer_worldpos","extent_scale":1.0,"format":"R16G16B16A16_SFLOAT","usage":["COLOR_ATTACHMENT","SAMPLED"]},
+    {"name":"g_emissive","extent_scale":1.0,"format":"R8G8B8A8_UNORM","usage":["COLOR_ATTACHMENT","SAMPLED"]},
+    {"name":"offscreen_depth","extent_scale":1.0,"format":"D32_SFLOAT","usage":["DEPTH_STENCIL_ATTACHMENT"]},
+    {"name":"ssao_blur","extent_scale":1.0,"format":"R8_UNORM","usage":["COLOR_ATTACHMENT","SAMPLED"]}
+  ],
+  "rendering_passes": [{"name":"main","passes":[
+    {"name":"gbuffer_pass","type":"material","output":{"color":["gbuffer_albedo","gbuffer_normal","gbuffer_material","gbuffer_worldpos","g_emissive"],"depth":"offscreen_depth"}},
+    {"name":"ssao_clear","type":"fullscreen","output":{"color":"ssao_blur","depth":null},"shader":{"vertex":"shaders/fullscreen","fragment":"shaders/white"},"clear_color":[1,1,1,1]},
+    {"name":"lighting_pass","type":"fullscreen","output":{"color":"swapchain","depth":null},"input":["gbuffer_albedo","gbuffer_normal","gbuffer_material","gbuffer_worldpos","g_emissive","ssao_blur"],"shader":{"vertex":"engine://fullscreen","fragment":"engine://fullscreen"},"push_constants":"camera_position","uses_light_data":true}
+  ]}]
+}

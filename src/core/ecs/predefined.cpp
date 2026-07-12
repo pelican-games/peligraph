@@ -11,6 +11,7 @@
 #include "predefined/localtransformsystem.hpp"
 #include "predefined/modelviewtransoformsystem.hpp"
 #include "predefined/modelviewupdatesystem.hpp"
+#include "predefined/spriteviewsystem.hpp"
 
 #include <details/component/registerer.hpp>
 
@@ -24,6 +25,7 @@ void ECSPredefinedRegistration::reg() {
     internal::getComponentRegisterer().registerComponent<SimpleModelViewComponent>("simplemodelview");
     internal::getComponentRegisterer().registerComponent<CameraComponent>("camera");
     internal::getComponentRegisterer().registerComponent<AnimationComponent>("animation");
+    registerSpriteViewComponent();
 
     auto &ecs = GET_MODULE(ECSCore);
     const auto local_transform_system =
@@ -38,6 +40,8 @@ void ECSPredefinedRegistration::reg() {
         GET_MODULE(SimpleModelViewTransformSystem), {local_transform_system, model_update_system});
     ecs.registerSystemForce<CameraSystem, TransformComponent, CameraComponent>(
         GET_MODULE(CameraSystem), {local_transform_system});
+    ecs.registerSystemForce<SpriteViewRenderSystem, EntityId, TransformComponent, SpriteViewComponent>(
+        GET_MODULE(SpriteViewRenderSystem), {local_transform_system});
 }
 
 } // namespace Pelican
