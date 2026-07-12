@@ -1,0 +1,6 @@
+{
+  "models": [],
+  "textures": [
+    {"name": "demo_atlas", "path": "assets/demo.atlas.json", "sampler": "nearest"}
+  ]
+}

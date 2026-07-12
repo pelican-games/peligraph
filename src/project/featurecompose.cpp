@@ -16,8 +16,8 @@ constexpr int supported_feature_version = 1;
 constexpr int color_format_resolver_version = 2;
 constexpr std::string_view runtime_compiler_required_message =
     "render feature には実行時コンパイラが必要です (runtime shader compiler is required)";
-constexpr std::array<std::string_view, 7> canonical_anchors = {
-    "post_main", "tonemap", "post_ldr", "pelican_ui", "debug_draw", "debug_text", "imgui"};
+constexpr std::array<std::string_view, 8> canonical_anchors = {
+    "sprite", "post_main", "tonemap", "post_ldr", "pelican_ui", "debug_draw", "debug_text", "imgui"};
 
 std::unordered_set<std::string> collectRenderTargetNames(const nlohmann::json &config);
 
@@ -223,13 +223,13 @@ void addFormatClassesAndDisplay(nlohmann::json &config) {
 size_t canonicalBucket(const nlohmann::json &pass, bool hdr_enabled) {
     const auto type = pass.value("type", std::string{});
     if (type == "ui") {
-        return 3;
-    }
-    if (type == "debug_draw") {
         return 4;
     }
-    if (type == "debug_text") {
+    if (type == "debug_draw") {
         return 5;
+    }
+    if (type == "debug_text") {
+        return 6;
     }
     if (pass.contains("canonical_anchor") && pass.at("canonical_anchor").is_string()) {
         const auto requested = pass.at("canonical_anchor").get<std::string>();
@@ -247,7 +247,7 @@ size_t canonicalBucket(const nlohmann::json &pass, bool hdr_enabled) {
                        name.rfind("HorizontalBlur_", 0) == 0 || name.rfind("VerticalBlur_", 0) == 0 ||
                        name.rfind("UpsampleBlend_", 0) == 0;
     if (bloom || passWritesSwapchain(pass)) {
-        return hdr_enabled ? 0 : 2;
+        return hdr_enabled ? 1 : 3;
     }
     return canonical_anchors.size(); // scene passes, before post_main
 }
@@ -377,7 +377,7 @@ void canonicalizePasses(nlohmann::json &config, bool hdr_enabled) {
         if (!passes.is_array()) {
             throw std::runtime_error("rendering pass requires passes array");
         }
-        std::array<nlohmann::json, 7> buckets;
+        std::array<nlohmann::json, canonical_anchors.size()> buckets;
         for (auto &bucket : buckets) {
             bucket = nlohmann::json::array();
         }

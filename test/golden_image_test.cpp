@@ -15,6 +15,9 @@
 #include "../src/core/renderer/debugdraw.hpp"
 #include "../src/core/renderer/debugtext.hpp"
 #include "../src/core/renderer/camera.hpp"
+#include "../src/core/renderer/atlasassetresource.hpp"
+#include "../src/core/renderer/spriterenderer.hpp"
+#include "../src/core/renderer/spritescene.hpp"
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
 #include "../src/core/renderer/uicontainer.hpp"
 #include "../src/core/renderer/uirenderer.hpp"
@@ -88,6 +91,10 @@ struct RenderedCase {
     bool ui_module_created = false;
     bool ui_gpu_created = false;
     std::size_t ui_parser_invocations = 0;
+    bool atlas_created = false;
+    bool sprite_scene_created = false;
+    bool sprite_gpu_created = false;
+    std::size_t atlas_page_count = 0;
 };
 
 struct Tolerance {
@@ -1474,6 +1481,107 @@ void main() {
                                std::filesystem::copy_options::overwrite_existing);
 }
 
+bool isSpriteGoldenMode(std::string_view mode) {
+    return mode == "sprite_ortho_atlas" || mode == "sprite_depth" ||
+           mode == "sprite_multi_atlas" || mode == "sprite_parent" ||
+           mode == "sprite_ownership";
+}
+
+void writeSpriteProject(const std::filesystem::path &root, std::string_view mode) {
+    auto project = makeFeatureProjectJson();
+    project["name"] = std::string{mode};
+    writeTextFile(root / "project.json", project.dump(2));
+
+    RgbaImage page0{32, 32, std::vector<std::uint8_t>(32 * 32 * 4)};
+    RgbaImage page1{32, 32, std::vector<std::uint8_t>(32 * 32 * 4)};
+    for (std::uint32_t y = 0; y < 32; ++y) {
+        for (std::uint32_t x = 0; x < 32; ++x) {
+            const auto i = static_cast<std::size_t>((y * 32 + x) * 4);
+            const std::array<std::uint8_t, 4> a = x < 16
+                ? std::array<std::uint8_t, 4>{245, 60, 35, static_cast<std::uint8_t>(y < 16 ? 255 : 190)}
+                : std::array<std::uint8_t, 4>{30, 225, 85, static_cast<std::uint8_t>(y < 16 ? 255 : 190)};
+            const std::array<std::uint8_t, 4> b = y < 16
+                ? std::array<std::uint8_t, 4>{40, 100, 245, 255}
+                : std::array<std::uint8_t, 4>{245, 210, 35, 255};
+            std::copy(a.begin(), a.end(), page0.pixels.begin() + static_cast<std::ptrdiff_t>(i));
+            std::copy(b.begin(), b.end(), page1.pixels.begin() + static_cast<std::ptrdiff_t>(i));
+        }
+    }
+    writePng(root / "assets/page0.png", page0);
+    writePng(root / "assets/page1.png", page1);
+    writeTextFile(root / "assets/atlas.json", R"json({
+      "schema":"pelican.atlas","version":1,
+      "pages":[{"image":"page0.png","size":[32,32]},{"image":"page1.png","size":[32,32]}],
+      "sprites":{
+        "page0":{"page":0,"rect":[0,0,32,32]},
+        "red":{"page":0,"rect":[0,0,16,32]},
+        "green":{"page":0,"rect":[16,0,32,32]},
+        "page1":{"page":1,"rect":[0,0,32,32]}
+      }
+    })json");
+
+    nlohmann::json assets{{"models", nlohmann::json::array()},
+                          {"textures", nlohmann::json::array({
+                              {{"name", "atlas"}, {"path", "assets/atlas.json"}, {"sampler", "nearest"}}
+                          })}};
+    if (mode == "sprite_depth") {
+        assets["models"].push_back({{"name", "ground"}, {"path", "assets/ground.glb"}});
+        std::filesystem::copy_file(sourceRoot() / "test/fixtures/ground.glb", root / "assets/ground.glb",
+                                   std::filesystem::copy_options::overwrite_existing);
+    }
+    writeTextFile(root / "assets.json", assets.dump(2));
+
+    auto transform = [](std::array<float, 3> pos, std::array<float, 4> rotation = {0, 0, 0, 1},
+                        std::array<float, 3> scale = {1, 1, 1}) {
+        return nlohmann::json{{"name", "transform"}, {"pos", pos}, {"rotation", rotation}, {"scale", scale}};
+    };
+    auto sprite = [](std::string texture, std::array<float, 2> size, int layer = 0,
+                     std::array<bool, 2> flip = {false, false},
+                     std::array<float, 4> color = {1, 1, 1, 1}) {
+        return nlohmann::json{{"name", "sprite_view"}, {"texture", std::move(texture)}, {"size", size},
+                              {"pivot", {0.5, 0.5}}, {"flip", flip}, {"layer", layer}, {"color", color}};
+    };
+    nlohmann::json objects = nlohmann::json::array();
+    if (mode == "sprite_ortho_atlas") {
+        objects.push_back({{"name", "ortho"}, {"components", {
+            nlohmann::json{{"name", "camera"}, {"type", "orthographic"}, {"xmag", 2.0},
+                           {"ymag", 2.0}, {"znear", 0.1}, {"zfar", 20.0}}
+        }}});
+        objects.push_back({{"name", "base"}, {"components", {transform({-0.55f, 0, 0}), sprite("atlas#sprite/page0", {1.4f, 1.4f}, -1)}}});
+        objects.push_back({{"name", "flip"}, {"components", {transform({0.55f, 0, 0}), sprite("atlas#sprite/page0", {1.4f, 1.4f}, 1, {true, false}, {0.7f, 0.8f, 1.0f, 0.8f})}}});
+        objects.push_back({{"name", "tint"}, {"components", {transform({0, 0.55f, 0.1f}), sprite("atlas#sprite/green", {0.8f, 0.8f}, 2, {false, true}, {1.0f, 0.45f, 0.65f, 0.75f})}}});
+    } else if (mode == "sprite_multi_atlas") {
+        objects.push_back({{"name", "page0"}, {"components", {transform({-0.55f, 0, 0}), sprite("atlas#sprite/page0", {1.1f, 1.4f})}}});
+        objects.push_back({{"name", "page1"}, {"components", {transform({0.55f, 0, 0}), sprite("atlas#sprite/page1", {1.1f, 1.4f})}}});
+    } else if (mode == "sprite_parent") {
+        objects.push_back({{"name", "parent"}, {"components", {transform({0, 0, 0}, {0, 0, 0.38268343f, 0.92387953f})}}});
+        objects.push_back({{"name", "child"}, {"parent", "parent"},
+                           {"components", {transform({0.55f, 0, 0}), sprite("atlas#sprite/page1", {1.0f, 0.65f})}}});
+    } else if (mode == "sprite_depth") {
+        objects.push_back({{"name", "occluder"}, {"components", {transform({0, 0, 0.7f}, {0, 0, 0, 1}, {0.65f, 0.65f, 0.65f}),
+                                                                            nlohmann::json{{"name", "simplemodelview"}, {"model", "ground"}}}}});
+        objects.push_back({{"name", "behind"}, {"components", {transform({0, 0, 0}), sprite("atlas#sprite/page0", {1.8f, 1.8f})}}});
+        objects.push_back({{"name", "front"}, {"components", {transform({0.75f, -0.55f, 1.2f}), sprite("atlas#sprite/page1", {0.6f, 0.6f}, 2)}}});
+    } else {
+        objects.push_back({{"name", "owned"}, {"components", {transform({0, 0, 0}), sprite("atlas#sprite/page1", {1.35f, 1.35f})}}});
+    }
+    writeTextFile(root / "scene.json", nlohmann::json{{"schema", "pelican.scene"}, {"version", 1},
+        {"scenes", {{"default_scene", {{"objects", objects}}}}}}.dump(2));
+
+    const bool with_ui = mode == "sprite_ownership";
+    writeTextFile(root / "ui/ui.json", with_ui
+        ? R"json({"schema":"pelican.ui","version":1,"key":"sprite_ui","root":{"id":"root","type":"panel","children":[{"id":"tag","type":"image","sprite":"assets/atlas.json#sprite/page1","sampler":"nearest","color":[255,255,255,210],"layout":{"x":{"mode":"fixed","value":4},"y":{"mode":"fixed","value":4},"offsets":[0,0,8,8]}}]}})json"
+        : R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
+    writeTextFile(root / "shaders/fullscreen.vert", stemFullscreenVertexShader());
+    writeTextFile(root / "shaders/white.frag", R"glsl(#version 450
+layout(location=0) out vec4 outColor;
+void main(){outColor=vec4(1.0);})glsl");
+    auto rendering = makeShadowRenderingConfig(false);
+    rendering["features"] = nlohmann::json::array({"engine://features/sprite.json"});
+    if (with_ui) rendering["features"].push_back("engine://features/ui.json");
+    writeTextFile(root / "passes/main.json", rendering.dump(2));
+}
+
 void writeComputeProject(const std::filesystem::path &root) {
     writeTextFile(root / "project.json", makeComputeProjectJson().dump(2));
     writeTextFile(root / "scene.json", R"json({
@@ -1748,6 +1856,21 @@ void renderShadowFrame(RenderTarget &render_target) {
     (void)render_target;
 }
 
+void renderSpriteFrame(RenderTarget &render_target) {
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    GET_MODULE(SceneLoader).load("default_scene");
+    GET_MODULE(ECSCore).update();
+    GET_MODULE(ECSCore).update();
+    auto &camera = GET_MODULE(Camera);
+    camera.setPos({0.0f, 0.0f, 4.0f});
+    camera.setDir({0.0f, 0.0f, -1.0f});
+    camera.setUp({0.0f, 1.0f, 0.0f});
+    GET_MODULE(ECSCore).update();
+    GET_MODULE(Renderer).render();
+    GET_MODULE(VulkanManageCore).waitIdle();
+    (void)render_target;
+}
+
 void renderComputeFrame(RenderTarget &render_target) {
     GET_MODULE(Renderer).render();
     GET_MODULE(VulkanManageCore).waitIdle();
@@ -1922,6 +2045,12 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         auto project = makeFeatureProjectJson();
         project["name"] = "ui u2 golden";
         GET_MODULE(ProjectSource).setProjectData(project.dump());
+    } else if (isSpriteGoldenMode(golden_case.mode)) {
+        writeSpriteProject(temp_dir, golden_case.mode);
+        GET_MODULE(PathResolver).setup(temp_dir, false);
+        auto project = makeFeatureProjectJson();
+        project["name"] = golden_case.mode;
+        GET_MODULE(ProjectSource).setProjectData(project.dump());
     } else if (golden_case.mode == "debug_draw_feature") {
         writeDebugDrawProject(temp_dir);
         GET_MODULE(PathResolver).setup(temp_dir, false);
@@ -2002,6 +2131,8 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         renderTemporalAccumulationFrames(render_target);
     } else if (golden_case.mode == "ui_u1" || golden_case.mode == "ui_u2") {
         renderFeatureFrame(render_target);
+    } else if (isSpriteGoldenMode(golden_case.mode)) {
+        renderSpriteFrame(render_target);
     } else if (golden_case.mode == "debug_draw_feature") {
         renderDebugDrawFrame(render_target);
     } else if (golden_case.mode == "parent_transform") {
@@ -2044,6 +2175,10 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         FastModuleContainer::isInitialized<ui::UiModule>(),
         FastModuleContainer::isInitialized<UIContainer>() && FastModuleContainer::isInitialized<UiRenderer>(),
         FastModuleContainer::isInitialized<ui::UiModule>() ? GET_MODULE(ui::UiModule).parserInvocationsForTesting() : 0,
+        FastModuleContainer::isInitialized<AtlasAssetResource>(),
+        FastModuleContainer::isInitialized<SpriteScene>(),
+        FastModuleContainer::isInitialized<SpriteRenderer>() && GET_MODULE(SpriteRenderer).hasGpuBuffersForTesting(),
+        FastModuleContainer::isInitialized<AtlasAssetResource>() ? GET_MODULE(AtlasAssetResource).pageCountForTesting() : 0,
     };
 }
 
@@ -2121,9 +2256,9 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     requireGoldenVulkanDevice();
     const auto cases = discoverGoldenCases();
 #if PELICAN_WITH_VAT
-    REQUIRE(cases.size() == 24);
+    REQUIRE(cases.size() == 29);
 #else
-    REQUIRE(cases.size() == 23);
+    REQUIRE(cases.size() == 28);
 #endif
 
     for (const auto &golden_case : cases) {
@@ -2138,6 +2273,20 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
                 REQUIRE_FALSE(rendered.ui_module_created);
                 REQUIRE_FALSE(rendered.ui_gpu_created);
                 REQUIRE(rendered.ui_parser_invocations == 0);
+            }
+            if (isSpriteGoldenMode(golden_case.mode)) {
+                REQUIRE(rendered.atlas_created);
+                REQUIRE(rendered.sprite_scene_created);
+                REQUIRE(rendered.sprite_gpu_created);
+                REQUIRE(rendered.ui_module_created == (golden_case.mode == "sprite_ownership"));
+                REQUIRE(rendered.ui_gpu_created == (golden_case.mode == "sprite_ownership"));
+                if (golden_case.mode == "sprite_ownership") REQUIRE(rendered.atlas_page_count == 2);
+            }
+            if (golden_case.mode == "ui_u1") {
+                REQUIRE(rendered.atlas_created);
+                REQUIRE_FALSE(rendered.sprite_scene_created);
+                REQUIRE_FALSE(rendered.sprite_gpu_created);
+                REQUIRE(rendered.atlas_page_count == 3);
             }
 
             const auto expected_path = golden_case.root / "expected.png";

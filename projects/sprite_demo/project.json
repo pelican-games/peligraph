@@ -1,0 +1,19 @@
+{
+  "schema": "pelican.project",
+  "version": 1,
+  "name": "WP104 Sprite Demo",
+  "engine_min_version": "0.1.0",
+  "basic_config": {
+    "window_title": "Pelican WP104 Sprite Demo",
+    "window_size": {"width": 960, "height": 540},
+    "fullscreen": false,
+    "framerate": 60,
+    "camera": {"yfov": 0.7853981633974483, "znear": 0.1, "zfar": 100.0, "up": [0, 1, 0]},
+    "default_scene_id": "default_scene",
+    "scene_data_json": "scene.json",
+    "asset_data_json": "assets.json",
+    "rendering_config_json": "passes/main.json",
+    "ui_config_json": "ui/ui.json",
+    "default_rendering_pass": "main"
+  }
+}

@@ -5,4 +5,5 @@ target_sources(pelican_core PRIVATE
     camerasystem.cpp
     modelviewupdatesystem.cpp
     animationsystem.cpp
+    spriteviewsystem.cpp
 )

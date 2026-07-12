@@ -13,18 +13,23 @@
     "nodes": [
       {
         "kind": "anchor",
-        "name": "__anchor_post_main",
+        "name": "__anchor_sprite",
         "order": 0
       },
       {
         "kind": "anchor",
-        "name": "__anchor_tonemap",
+        "name": "__anchor_post_main",
         "order": 1
       },
       {
         "kind": "anchor",
-        "name": "__anchor_post_ldr",
+        "name": "__anchor_tonemap",
         "order": 2
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 3
       },
       {
         "attachments": [
@@ -49,17 +54,17 @@
         "inputs": [],
         "kind": "render",
         "name": "present",
-        "order": 3
-      },
-      {
-        "kind": "anchor",
-        "name": "__anchor_pelican_ui",
         "order": 4
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_draw",
+        "name": "__anchor_pelican_ui",
         "order": 5
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_draw",
+        "order": 6
       },
       {
         "attachments": [
@@ -78,17 +83,17 @@
         "inputs": [],
         "kind": "render",
         "name": "debug_draw",
-        "order": 6
-      },
-      {
-        "kind": "anchor",
-        "name": "__anchor_debug_text",
         "order": 7
       },
       {
         "kind": "anchor",
-        "name": "__anchor_imgui",
+        "name": "__anchor_debug_text",
         "order": 8
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 9
       },
       {
         "color_counters": {
@@ -106,7 +111,7 @@
         "kind": "output_transform",
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 9,
+        "order": 10,
         "paired_storage_edges": [
           "debug_draw:display->output_transform"
         ],
@@ -161,23 +166,28 @@
     "nodes": [
       {
         "kind": "anchor",
-        "name": "__anchor_post_main",
+        "name": "__anchor_sprite",
         "order": 0
       },
       {
         "kind": "anchor",
-        "name": "__anchor_tonemap",
+        "name": "__anchor_post_main",
         "order": 1
       },
       {
         "kind": "anchor",
-        "name": "__anchor_post_ldr",
+        "name": "__anchor_tonemap",
         "order": 2
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 3
       },
       {
         "kind": "compute",
         "name": "write_color",
-        "order": 3,
+        "order": 4,
         "reads": [],
         "writes": [
           {
@@ -211,27 +221,27 @@
         "inputs": [],
         "kind": "render",
         "name": "present",
-        "order": 4
-      },
-      {
-        "kind": "anchor",
-        "name": "__anchor_pelican_ui",
         "order": 5
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_draw",
+        "name": "__anchor_pelican_ui",
         "order": 6
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_text",
+        "name": "__anchor_debug_draw",
         "order": 7
       },
       {
         "kind": "anchor",
-        "name": "__anchor_imgui",
+        "name": "__anchor_debug_text",
         "order": 8
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 9
       },
       {
         "color_counters": {
@@ -249,7 +259,7 @@
         "kind": "output_transform",
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 9,
+        "order": 10,
         "paired_storage_edges": [
           "present:display->output_transform"
         ],
@@ -304,18 +314,23 @@
     "nodes": [
       {
         "kind": "anchor",
-        "name": "__anchor_post_main",
+        "name": "__anchor_sprite",
         "order": 0
       },
       {
         "kind": "anchor",
-        "name": "__anchor_tonemap",
+        "name": "__anchor_post_main",
         "order": 1
       },
       {
         "kind": "anchor",
-        "name": "__anchor_post_ldr",
+        "name": "__anchor_tonemap",
         "order": 2
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 3
       },
       {
         "attachments": [
@@ -340,17 +355,17 @@
         "inputs": [],
         "kind": "render",
         "name": "present",
-        "order": 3
-      },
-      {
-        "kind": "anchor",
-        "name": "__anchor_pelican_ui",
         "order": 4
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_draw",
+        "name": "__anchor_pelican_ui",
         "order": 5
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_draw",
+        "order": 6
       },
       {
         "attachments": [
@@ -369,17 +384,17 @@
         "inputs": [],
         "kind": "render",
         "name": "debug_draw",
-        "order": 6
-      },
-      {
-        "kind": "anchor",
-        "name": "__anchor_debug_text",
         "order": 7
       },
       {
         "kind": "anchor",
-        "name": "__anchor_imgui",
+        "name": "__anchor_debug_text",
         "order": 8
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 9
       },
       {
         "color_counters": {
@@ -397,7 +412,7 @@
         "kind": "output_transform",
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 9,
+        "order": 10,
         "paired_storage_edges": [
           "debug_draw:display->output_transform"
         ],
@@ -452,18 +467,23 @@
     "nodes": [
       {
         "kind": "anchor",
-        "name": "__anchor_post_main",
+        "name": "__anchor_sprite",
         "order": 0
       },
       {
         "kind": "anchor",
-        "name": "__anchor_tonemap",
+        "name": "__anchor_post_main",
         "order": 1
       },
       {
         "kind": "anchor",
-        "name": "__anchor_post_ldr",
+        "name": "__anchor_tonemap",
         "order": 2
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 3
       },
       {
         "attachments": [
@@ -488,22 +508,22 @@
         "inputs": [],
         "kind": "render",
         "name": "present",
-        "order": 3
-      },
-      {
-        "kind": "anchor",
-        "name": "__anchor_pelican_ui",
         "order": 4
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_draw",
+        "name": "__anchor_pelican_ui",
         "order": 5
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_text",
+        "name": "__anchor_debug_draw",
         "order": 6
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_text",
+        "order": 7
       },
       {
         "attachments": [
@@ -522,12 +542,12 @@
         "inputs": [],
         "kind": "render",
         "name": "debug_text",
-        "order": 7
+        "order": 8
       },
       {
         "kind": "anchor",
         "name": "__anchor_imgui",
-        "order": 8
+        "order": 9
       },
       {
         "color_counters": {
@@ -545,7 +565,7 @@
         "kind": "output_transform",
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 9,
+        "order": 10,
         "paired_storage_edges": [
           "debug_text:display->output_transform"
         ],
@@ -600,42 +620,22 @@
     "nodes": [
       {
         "kind": "anchor",
-        "name": "__anchor_post_main",
+        "name": "__anchor_sprite",
         "order": 0
       },
       {
         "kind": "anchor",
-        "name": "__anchor_tonemap",
+        "name": "__anchor_post_main",
         "order": 1
       },
       {
         "kind": "anchor",
-        "name": "__anchor_post_ldr",
+        "name": "__anchor_tonemap",
         "order": 2
       },
       {
-        "attachments": [
-          {
-            "aspect": "color",
-            "clear": [
-              0.0,
-              0.0,
-              0.0,
-              1.0
-            ],
-            "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_SRGB",
-            "load": "clear",
-            "resource": "display",
-            "samples": 1,
-            "store": "store"
-          }
-        ],
-        "blend": false,
-        "input_buffers": [],
-        "inputs": [],
-        "kind": "render",
-        "name": "blue_first",
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
         "order": 3
       },
       {
@@ -660,28 +660,53 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
-        "name": "red_after_blue",
+        "name": "blue_first",
         "order": 4
       },
       {
-        "kind": "anchor",
-        "name": "__anchor_pelican_ui",
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "clear",
+            "resource": "display",
+            "samples": 1,
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "red_after_blue",
         "order": 5
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_draw",
+        "name": "__anchor_pelican_ui",
         "order": 6
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_text",
+        "name": "__anchor_debug_draw",
         "order": 7
       },
       {
         "kind": "anchor",
-        "name": "__anchor_imgui",
+        "name": "__anchor_debug_text",
         "order": 8
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 9
       },
       {
         "color_counters": {
@@ -699,7 +724,7 @@
         "kind": "output_transform",
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 9,
+        "order": 10,
         "paired_storage_edges": [
           "blue_first:display->output_transform"
         ],
@@ -754,42 +779,22 @@
     "nodes": [
       {
         "kind": "anchor",
-        "name": "__anchor_post_main",
+        "name": "__anchor_sprite",
         "order": 0
       },
       {
         "kind": "anchor",
-        "name": "__anchor_tonemap",
+        "name": "__anchor_post_main",
         "order": 1
       },
       {
         "kind": "anchor",
-        "name": "__anchor_post_ldr",
+        "name": "__anchor_tonemap",
         "order": 2
       },
       {
-        "attachments": [
-          {
-            "aspect": "color",
-            "clear": [
-              0.0,
-              0.0,
-              0.0,
-              1.0
-            ],
-            "final_layout": "color_attachment_optimal",
-            "format": "B8G8R8A8_SRGB",
-            "load": "clear",
-            "resource": "display",
-            "samples": 1,
-            "store": "store"
-          }
-        ],
-        "blend": false,
-        "input_buffers": [],
-        "inputs": [],
-        "kind": "render",
-        "name": "present",
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
         "order": 3
       },
       {
@@ -814,28 +819,53 @@
         "input_buffers": [],
         "inputs": [],
         "kind": "render",
-        "name": "feature_present",
+        "name": "present",
         "order": 4
       },
       {
-        "kind": "anchor",
-        "name": "__anchor_pelican_ui",
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "clear",
+            "resource": "display",
+            "samples": 1,
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "feature_present",
         "order": 5
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_draw",
+        "name": "__anchor_pelican_ui",
         "order": 6
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_text",
+        "name": "__anchor_debug_draw",
         "order": 7
       },
       {
         "kind": "anchor",
-        "name": "__anchor_imgui",
+        "name": "__anchor_debug_text",
         "order": 8
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 9
       },
       {
         "color_counters": {
@@ -853,7 +883,7 @@
         "kind": "output_transform",
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 9,
+        "order": 10,
         "paired_storage_edges": [
           "feature_present:display->output_transform"
         ],
@@ -941,18 +971,23 @@
       },
       {
         "kind": "anchor",
-        "name": "__anchor_post_main",
+        "name": "__anchor_sprite",
         "order": 1
       },
       {
         "kind": "anchor",
-        "name": "__anchor_tonemap",
+        "name": "__anchor_post_main",
         "order": 2
       },
       {
         "kind": "anchor",
-        "name": "__anchor_post_ldr",
+        "name": "__anchor_tonemap",
         "order": 3
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 4
       },
       {
         "attachments": [
@@ -982,7 +1017,7 @@
         ],
         "kind": "render",
         "name": "HighLuminanceExtraction",
-        "order": 4
+        "order": 5
       },
       {
         "attachments": [
@@ -1016,22 +1051,22 @@
         ],
         "kind": "render",
         "name": "FinalBloomComposite",
-        "order": 5
-      },
-      {
-        "kind": "anchor",
-        "name": "__anchor_pelican_ui",
         "order": 6
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_draw",
+        "name": "__anchor_pelican_ui",
         "order": 7
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_text",
+        "name": "__anchor_debug_draw",
         "order": 8
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_text",
+        "order": 9
       },
       {
         "attachments": [
@@ -1050,12 +1085,12 @@
         "inputs": [],
         "kind": "render",
         "name": "debug_text",
-        "order": 9
+        "order": 10
       },
       {
         "kind": "anchor",
         "name": "__anchor_imgui",
-        "order": 10
+        "order": 11
       },
       {
         "color_counters": {
@@ -1073,7 +1108,7 @@
         "kind": "output_transform",
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 11,
+        "order": 12,
         "paired_storage_edges": [
           "hdr_source:lit_color->HighLuminanceExtraction",
           "hdr_source:lit_color->FinalBloomComposite",
@@ -1168,8 +1203,13 @@
       },
       {
         "kind": "anchor",
-        "name": "__anchor_post_main",
+        "name": "__anchor_sprite",
         "order": 1
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_main",
+        "order": 2
       },
       {
         "attachments": [
@@ -1199,7 +1239,7 @@
         ],
         "kind": "render",
         "name": "HighLuminanceExtraction",
-        "order": 2
+        "order": 3
       },
       {
         "attachments": [
@@ -1233,12 +1273,12 @@
         ],
         "kind": "render",
         "name": "FinalBloomComposite",
-        "order": 3
+        "order": 4
       },
       {
         "kind": "anchor",
         "name": "__anchor_tonemap",
-        "order": 4
+        "order": 5
       },
       {
         "attachments": [
@@ -1262,27 +1302,27 @@
         ],
         "kind": "render",
         "name": "hdr_tonemap",
-        "order": 5
-      },
-      {
-        "kind": "anchor",
-        "name": "__anchor_post_ldr",
         "order": 6
       },
       {
         "kind": "anchor",
-        "name": "__anchor_pelican_ui",
+        "name": "__anchor_post_ldr",
         "order": 7
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_draw",
+        "name": "__anchor_pelican_ui",
         "order": 8
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_text",
+        "name": "__anchor_debug_draw",
         "order": 9
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_text",
+        "order": 10
       },
       {
         "attachments": [
@@ -1301,12 +1341,12 @@
         "inputs": [],
         "kind": "render",
         "name": "debug_text",
-        "order": 10
+        "order": 11
       },
       {
         "kind": "anchor",
         "name": "__anchor_imgui",
-        "order": 11
+        "order": 12
       },
       {
         "color_counters": {
@@ -1324,7 +1364,7 @@
         "kind": "output_transform",
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 12,
+        "order": 13,
         "paired_storage_edges": [
           "debug_text:display->output_transform"
         ],
@@ -1379,18 +1419,23 @@
     "nodes": [
       {
         "kind": "anchor",
-        "name": "__anchor_post_main",
+        "name": "__anchor_sprite",
         "order": 0
       },
       {
         "kind": "anchor",
-        "name": "__anchor_tonemap",
+        "name": "__anchor_post_main",
         "order": 1
       },
       {
         "kind": "anchor",
-        "name": "__anchor_post_ldr",
+        "name": "__anchor_tonemap",
         "order": 2
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 3
       },
       {
         "attachments": [
@@ -1415,27 +1460,27 @@
         "inputs": [],
         "kind": "render",
         "name": "orbit_camera",
-        "order": 3
-      },
-      {
-        "kind": "anchor",
-        "name": "__anchor_pelican_ui",
         "order": 4
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_draw",
+        "name": "__anchor_pelican_ui",
         "order": 5
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_text",
+        "name": "__anchor_debug_draw",
         "order": 6
       },
       {
         "kind": "anchor",
-        "name": "__anchor_imgui",
+        "name": "__anchor_debug_text",
         "order": 7
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 8
       },
       {
         "color_counters": {
@@ -1453,7 +1498,7 @@
         "kind": "output_transform",
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 8,
+        "order": 9,
         "paired_storage_edges": [
           "orbit_camera:display->output_transform"
         ],
@@ -1508,18 +1553,23 @@
     "nodes": [
       {
         "kind": "anchor",
-        "name": "__anchor_post_main",
+        "name": "__anchor_sprite",
         "order": 0
       },
       {
         "kind": "anchor",
-        "name": "__anchor_tonemap",
+        "name": "__anchor_post_main",
         "order": 1
       },
       {
         "kind": "anchor",
-        "name": "__anchor_post_ldr",
+        "name": "__anchor_tonemap",
         "order": 2
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 3
       },
       {
         "attachments": [
@@ -1544,27 +1594,27 @@
         "inputs": [],
         "kind": "render",
         "name": "ortho_camera",
-        "order": 3
-      },
-      {
-        "kind": "anchor",
-        "name": "__anchor_pelican_ui",
         "order": 4
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_draw",
+        "name": "__anchor_pelican_ui",
         "order": 5
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_text",
+        "name": "__anchor_debug_draw",
         "order": 6
       },
       {
         "kind": "anchor",
-        "name": "__anchor_imgui",
+        "name": "__anchor_debug_text",
         "order": 7
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 8
       },
       {
         "color_counters": {
@@ -1582,7 +1632,7 @@
         "kind": "output_transform",
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 8,
+        "order": 9,
         "paired_storage_edges": [
           "ortho_camera:display->output_transform"
         ],
@@ -1637,18 +1687,23 @@
     "nodes": [
       {
         "kind": "anchor",
-        "name": "__anchor_post_main",
+        "name": "__anchor_sprite",
         "order": 0
       },
       {
         "kind": "anchor",
-        "name": "__anchor_tonemap",
+        "name": "__anchor_post_main",
         "order": 1
       },
       {
         "kind": "anchor",
-        "name": "__anchor_post_ldr",
+        "name": "__anchor_tonemap",
         "order": 2
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 3
       },
       {
         "attachments": [
@@ -1673,17 +1728,17 @@
         "inputs": [],
         "kind": "render",
         "name": "present",
-        "order": 3
-      },
-      {
-        "kind": "anchor",
-        "name": "__anchor_pelican_ui",
         "order": 4
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_draw",
+        "name": "__anchor_pelican_ui",
         "order": 5
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_draw",
+        "order": 6
       },
       {
         "attachments": [
@@ -1702,17 +1757,17 @@
         "inputs": [],
         "kind": "render",
         "name": "debug_draw",
-        "order": 6
-      },
-      {
-        "kind": "anchor",
-        "name": "__anchor_debug_text",
         "order": 7
       },
       {
         "kind": "anchor",
-        "name": "__anchor_imgui",
+        "name": "__anchor_debug_text",
         "order": 8
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 9
       },
       {
         "color_counters": {
@@ -1730,7 +1785,7 @@
         "kind": "output_transform",
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 9,
+        "order": 10,
         "paired_storage_edges": [
           "debug_draw:display->output_transform"
         ],
@@ -1981,38 +2036,43 @@
       },
       {
         "kind": "anchor",
-        "name": "__anchor_post_main",
+        "name": "__anchor_sprite",
         "order": 3
       },
       {
         "kind": "anchor",
-        "name": "__anchor_tonemap",
+        "name": "__anchor_post_main",
         "order": 4
       },
       {
         "kind": "anchor",
-        "name": "__anchor_post_ldr",
+        "name": "__anchor_tonemap",
         "order": 5
       },
       {
         "kind": "anchor",
-        "name": "__anchor_pelican_ui",
+        "name": "__anchor_post_ldr",
         "order": 6
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_draw",
+        "name": "__anchor_pelican_ui",
         "order": 7
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_text",
+        "name": "__anchor_debug_draw",
         "order": 8
       },
       {
         "kind": "anchor",
-        "name": "__anchor_imgui",
+        "name": "__anchor_debug_text",
         "order": 9
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 10
       },
       {
         "color_counters": {
@@ -2030,7 +2090,7 @@
         "kind": "output_transform",
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 10,
+        "order": 11,
         "paired_storage_edges": [
           "gbuffer_pass:gbuffer_albedo->lighting_pass",
           "gbuffer_pass:g_emissive->lighting_pass",
@@ -2309,38 +2369,43 @@
       },
       {
         "kind": "anchor",
-        "name": "__anchor_post_main",
+        "name": "__anchor_sprite",
         "order": 4
       },
       {
         "kind": "anchor",
-        "name": "__anchor_tonemap",
+        "name": "__anchor_post_main",
         "order": 5
       },
       {
         "kind": "anchor",
-        "name": "__anchor_post_ldr",
+        "name": "__anchor_tonemap",
         "order": 6
       },
       {
         "kind": "anchor",
-        "name": "__anchor_pelican_ui",
+        "name": "__anchor_post_ldr",
         "order": 7
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_draw",
+        "name": "__anchor_pelican_ui",
         "order": 8
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_text",
+        "name": "__anchor_debug_draw",
         "order": 9
       },
       {
         "kind": "anchor",
-        "name": "__anchor_imgui",
+        "name": "__anchor_debug_text",
         "order": 10
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 11
       },
       {
         "color_counters": {
@@ -2358,7 +2423,7 @@
         "kind": "output_transform",
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 11,
+        "order": 12,
         "paired_storage_edges": [
           "gbuffer_pass:gbuffer_albedo->lighting_pass",
           "gbuffer_pass:g_emissive->lighting_pass",
@@ -2694,18 +2759,23 @@
       },
       {
         "kind": "anchor",
-        "name": "__anchor_post_main",
+        "name": "__anchor_sprite",
         "order": 4
       },
       {
         "kind": "anchor",
-        "name": "__anchor_tonemap",
+        "name": "__anchor_post_main",
         "order": 5
       },
       {
         "kind": "anchor",
-        "name": "__anchor_post_ldr",
+        "name": "__anchor_tonemap",
         "order": 6
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 7
       },
       {
         "attachments": [
@@ -2735,7 +2805,7 @@
         ],
         "kind": "render",
         "name": "HighLuminanceExtraction",
-        "order": 7
+        "order": 8
       },
       {
         "attachments": [
@@ -2765,7 +2835,7 @@
         ],
         "kind": "render",
         "name": "HorizontalBlur_0",
-        "order": 8
+        "order": 9
       },
       {
         "attachments": [
@@ -2795,7 +2865,7 @@
         ],
         "kind": "render",
         "name": "VerticalBlur_0",
-        "order": 9
+        "order": 10
       },
       {
         "attachments": [
@@ -2825,7 +2895,7 @@
         ],
         "kind": "render",
         "name": "HorizontalBlur_1",
-        "order": 10
+        "order": 11
       },
       {
         "attachments": [
@@ -2855,7 +2925,7 @@
         ],
         "kind": "render",
         "name": "VerticalBlur_1",
-        "order": 11
+        "order": 12
       },
       {
         "attachments": [
@@ -2885,7 +2955,7 @@
         ],
         "kind": "render",
         "name": "HorizontalBlur_2",
-        "order": 12
+        "order": 13
       },
       {
         "attachments": [
@@ -2915,7 +2985,7 @@
         ],
         "kind": "render",
         "name": "VerticalBlur_2",
-        "order": 13
+        "order": 14
       },
       {
         "attachments": [
@@ -2945,7 +3015,7 @@
         ],
         "kind": "render",
         "name": "HorizontalBlur_3",
-        "order": 14
+        "order": 15
       },
       {
         "attachments": [
@@ -2975,7 +3045,7 @@
         ],
         "kind": "render",
         "name": "VerticalBlur_3",
-        "order": 15
+        "order": 16
       },
       {
         "attachments": [
@@ -3003,7 +3073,7 @@
         ],
         "kind": "render",
         "name": "UpsampleBlend_3",
-        "order": 16
+        "order": 17
       },
       {
         "attachments": [
@@ -3031,7 +3101,7 @@
         ],
         "kind": "render",
         "name": "UpsampleBlend_2",
-        "order": 17
+        "order": 18
       },
       {
         "attachments": [
@@ -3059,7 +3129,7 @@
         ],
         "kind": "render",
         "name": "UpsampleBlend_1",
-        "order": 18
+        "order": 19
       },
       {
         "attachments": [
@@ -3087,12 +3157,12 @@
         ],
         "kind": "render",
         "name": "FinalBloomComposite",
-        "order": 19
+        "order": 20
       },
       {
         "kind": "anchor",
         "name": "__anchor_pelican_ui",
-        "order": 20
+        "order": 21
       },
       {
         "attachments": [
@@ -3111,22 +3181,22 @@
         "inputs": [],
         "kind": "render",
         "name": "pelican_ui",
-        "order": 21
-      },
-      {
-        "kind": "anchor",
-        "name": "__anchor_debug_draw",
         "order": 22
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_text",
+        "name": "__anchor_debug_draw",
         "order": 23
       },
       {
         "kind": "anchor",
-        "name": "__anchor_imgui",
+        "name": "__anchor_debug_text",
         "order": 24
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 25
       },
       {
         "color_counters": {
@@ -3144,7 +3214,7 @@
         "kind": "output_transform",
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 25,
+        "order": 26,
         "paired_storage_edges": [
           "gbuffer_pass:gbuffer_albedo->lighting_pass",
           "gbuffer_pass:g_emissive->lighting_pass",
@@ -3222,18 +3292,23 @@
     "nodes": [
       {
         "kind": "anchor",
-        "name": "__anchor_post_main",
+        "name": "__anchor_sprite",
         "order": 0
       },
       {
         "kind": "anchor",
-        "name": "__anchor_tonemap",
+        "name": "__anchor_post_main",
         "order": 1
       },
       {
         "kind": "anchor",
-        "name": "__anchor_post_ldr",
+        "name": "__anchor_tonemap",
         "order": 2
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 3
       },
       {
         "attachments": [
@@ -3258,7 +3333,7 @@
         "inputs": [],
         "kind": "render",
         "name": "opaque",
-        "order": 3
+        "order": 4
       },
       {
         "byte_size": 1024,
@@ -3270,7 +3345,7 @@
         "format": "B8G8R8A8_SRGB",
         "kind": "snapshot_copy",
         "name": "__snapshot_opaque_color",
-        "order": 4,
+        "order": 5,
         "semantics": "fixed_once_before_transparency",
         "sequential_refraction": false,
         "snapshot_after": "opaque",
@@ -3319,27 +3394,27 @@
         ],
         "kind": "render",
         "name": "refract",
-        "order": 5
-      },
-      {
-        "kind": "anchor",
-        "name": "__anchor_pelican_ui",
         "order": 6
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_draw",
+        "name": "__anchor_pelican_ui",
         "order": 7
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_text",
+        "name": "__anchor_debug_draw",
         "order": 8
       },
       {
         "kind": "anchor",
-        "name": "__anchor_imgui",
+        "name": "__anchor_debug_text",
         "order": 9
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 10
       },
       {
         "color_counters": {
@@ -3357,10 +3432,1599 @@
         "kind": "output_transform",
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 10,
+        "order": 11,
         "paired_storage_edges": [
           "__snapshot_opaque_color:opaque_color->refract",
           "refract:display->output_transform"
+        ],
+        "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
+        "samples": 1,
+        "source": "display",
+        "source_format": "B8G8R8A8_SRGB",
+        "texel_block_bytes": 4,
+        "transitions": [
+          {
+            "dst_access": "shader_read",
+            "dst_stage": "fragment_shader",
+            "new_layout": "shader_read_only_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "display",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "color_attachment_write",
+            "dst_stage": "color_attachment_output",
+            "new_layout": "color_attachment_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "swapchain",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "swapchain",
+            "src_access": "color_attachment_write",
+            "src_stage": "color_attachment_output"
+          }
+        ]
+      }
+    ]
+  },
+  "sprite_depth": {
+    "final_layouts": [
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "display"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "g_emissive"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_albedo"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_material"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_normal"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_worldpos"
+      },
+      {
+        "layout": "depth_attachment_optimal",
+        "resource": "offscreen_depth"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "ssao_blur"
+      },
+      {
+        "layout": "transfer_src_optimal",
+        "resource": "swapchain"
+      }
+    ],
+    "nodes": [
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "clear",
+            "resource": "gbuffer_albedo",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R16G16B16A16_SFLOAT",
+            "load": "clear",
+            "resource": "gbuffer_normal",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
+            "load": "clear",
+            "resource": "gbuffer_material",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R16G16B16A16_SFLOAT",
+            "load": "clear",
+            "resource": "gbuffer_worldpos",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "clear",
+            "resource": "g_emissive",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "depth",
+            "clear": 1.0,
+            "final_layout": "depth_attachment_optimal",
+            "load": "clear",
+            "resource": "offscreen_depth",
+            "store": "dont_care"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "gbuffer_pass",
+        "order": 0
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R8_UNORM",
+            "load": "clear",
+            "resource": "ssao_blur",
+            "samples": 1,
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "ssao_clear",
+        "order": 1
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "clear",
+            "resource": "display",
+            "samples": 1,
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_albedo"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_normal"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_material"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_worldpos"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "g_emissive"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "ssao_blur"
+          }
+        ],
+        "kind": "render",
+        "name": "lighting_pass",
+        "order": 2
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_sprite",
+        "order": 3,
+        "sprite_draw": {
+          "blend": "straight_alpha",
+          "color": "display",
+          "depth": "offscreen_depth",
+          "depth_test": true,
+          "depth_write": false
+        }
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_main",
+        "order": 4
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_tonemap",
+        "order": 5
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 6
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_pelican_ui",
+        "order": 7
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_draw",
+        "order": 8
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_text",
+        "order": 9
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 10
+      },
+      {
+        "color_counters": {
+          "paired_storage_round_trip": 3,
+          "shader_oetf": 0,
+          "terminal_display_encode": 1,
+          "tone_curve": 1
+        },
+        "destination": "swapchain",
+        "destination_format": "R8G8B8A8_SRGB",
+        "extent": [
+          16,
+          16
+        ],
+        "kind": "output_transform",
+        "mode": "hardware_srgb_encode",
+        "name": "output_transform",
+        "order": 11,
+        "paired_storage_edges": [
+          "gbuffer_pass:gbuffer_albedo->lighting_pass",
+          "gbuffer_pass:g_emissive->lighting_pass",
+          "lighting_pass:display->output_transform"
+        ],
+        "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
+        "samples": 1,
+        "source": "display",
+        "source_format": "B8G8R8A8_SRGB",
+        "texel_block_bytes": 4,
+        "transitions": [
+          {
+            "dst_access": "shader_read",
+            "dst_stage": "fragment_shader",
+            "new_layout": "shader_read_only_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "display",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "color_attachment_write",
+            "dst_stage": "color_attachment_output",
+            "new_layout": "color_attachment_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "swapchain",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "swapchain",
+            "src_access": "color_attachment_write",
+            "src_stage": "color_attachment_output"
+          }
+        ]
+      }
+    ]
+  },
+  "sprite_multi_atlas": {
+    "final_layouts": [
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "display"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "g_emissive"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_albedo"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_material"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_normal"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_worldpos"
+      },
+      {
+        "layout": "depth_attachment_optimal",
+        "resource": "offscreen_depth"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "ssao_blur"
+      },
+      {
+        "layout": "transfer_src_optimal",
+        "resource": "swapchain"
+      }
+    ],
+    "nodes": [
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "clear",
+            "resource": "gbuffer_albedo",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R16G16B16A16_SFLOAT",
+            "load": "clear",
+            "resource": "gbuffer_normal",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
+            "load": "clear",
+            "resource": "gbuffer_material",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R16G16B16A16_SFLOAT",
+            "load": "clear",
+            "resource": "gbuffer_worldpos",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "clear",
+            "resource": "g_emissive",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "depth",
+            "clear": 1.0,
+            "final_layout": "depth_attachment_optimal",
+            "load": "clear",
+            "resource": "offscreen_depth",
+            "store": "dont_care"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "gbuffer_pass",
+        "order": 0
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R8_UNORM",
+            "load": "clear",
+            "resource": "ssao_blur",
+            "samples": 1,
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "ssao_clear",
+        "order": 1
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "clear",
+            "resource": "display",
+            "samples": 1,
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_albedo"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_normal"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_material"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_worldpos"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "g_emissive"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "ssao_blur"
+          }
+        ],
+        "kind": "render",
+        "name": "lighting_pass",
+        "order": 2
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_sprite",
+        "order": 3,
+        "sprite_draw": {
+          "blend": "straight_alpha",
+          "color": "display",
+          "depth": "offscreen_depth",
+          "depth_test": true,
+          "depth_write": false
+        }
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_main",
+        "order": 4
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_tonemap",
+        "order": 5
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 6
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_pelican_ui",
+        "order": 7
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_draw",
+        "order": 8
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_text",
+        "order": 9
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 10
+      },
+      {
+        "color_counters": {
+          "paired_storage_round_trip": 3,
+          "shader_oetf": 0,
+          "terminal_display_encode": 1,
+          "tone_curve": 1
+        },
+        "destination": "swapchain",
+        "destination_format": "R8G8B8A8_SRGB",
+        "extent": [
+          16,
+          16
+        ],
+        "kind": "output_transform",
+        "mode": "hardware_srgb_encode",
+        "name": "output_transform",
+        "order": 11,
+        "paired_storage_edges": [
+          "gbuffer_pass:gbuffer_albedo->lighting_pass",
+          "gbuffer_pass:g_emissive->lighting_pass",
+          "lighting_pass:display->output_transform"
+        ],
+        "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
+        "samples": 1,
+        "source": "display",
+        "source_format": "B8G8R8A8_SRGB",
+        "texel_block_bytes": 4,
+        "transitions": [
+          {
+            "dst_access": "shader_read",
+            "dst_stage": "fragment_shader",
+            "new_layout": "shader_read_only_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "display",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "color_attachment_write",
+            "dst_stage": "color_attachment_output",
+            "new_layout": "color_attachment_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "swapchain",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "swapchain",
+            "src_access": "color_attachment_write",
+            "src_stage": "color_attachment_output"
+          }
+        ]
+      }
+    ]
+  },
+  "sprite_ortho_atlas": {
+    "final_layouts": [
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "display"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "g_emissive"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_albedo"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_material"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_normal"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_worldpos"
+      },
+      {
+        "layout": "depth_attachment_optimal",
+        "resource": "offscreen_depth"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "ssao_blur"
+      },
+      {
+        "layout": "transfer_src_optimal",
+        "resource": "swapchain"
+      }
+    ],
+    "nodes": [
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "clear",
+            "resource": "gbuffer_albedo",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R16G16B16A16_SFLOAT",
+            "load": "clear",
+            "resource": "gbuffer_normal",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
+            "load": "clear",
+            "resource": "gbuffer_material",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R16G16B16A16_SFLOAT",
+            "load": "clear",
+            "resource": "gbuffer_worldpos",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "clear",
+            "resource": "g_emissive",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "depth",
+            "clear": 1.0,
+            "final_layout": "depth_attachment_optimal",
+            "load": "clear",
+            "resource": "offscreen_depth",
+            "store": "dont_care"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "gbuffer_pass",
+        "order": 0
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R8_UNORM",
+            "load": "clear",
+            "resource": "ssao_blur",
+            "samples": 1,
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "ssao_clear",
+        "order": 1
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "clear",
+            "resource": "display",
+            "samples": 1,
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_albedo"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_normal"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_material"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_worldpos"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "g_emissive"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "ssao_blur"
+          }
+        ],
+        "kind": "render",
+        "name": "lighting_pass",
+        "order": 2
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_sprite",
+        "order": 3,
+        "sprite_draw": {
+          "blend": "straight_alpha",
+          "color": "display",
+          "depth": "offscreen_depth",
+          "depth_test": true,
+          "depth_write": false
+        }
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_main",
+        "order": 4
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_tonemap",
+        "order": 5
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 6
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_pelican_ui",
+        "order": 7
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_draw",
+        "order": 8
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_text",
+        "order": 9
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 10
+      },
+      {
+        "color_counters": {
+          "paired_storage_round_trip": 3,
+          "shader_oetf": 0,
+          "terminal_display_encode": 1,
+          "tone_curve": 1
+        },
+        "destination": "swapchain",
+        "destination_format": "R8G8B8A8_SRGB",
+        "extent": [
+          16,
+          16
+        ],
+        "kind": "output_transform",
+        "mode": "hardware_srgb_encode",
+        "name": "output_transform",
+        "order": 11,
+        "paired_storage_edges": [
+          "gbuffer_pass:gbuffer_albedo->lighting_pass",
+          "gbuffer_pass:g_emissive->lighting_pass",
+          "lighting_pass:display->output_transform"
+        ],
+        "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
+        "samples": 1,
+        "source": "display",
+        "source_format": "B8G8R8A8_SRGB",
+        "texel_block_bytes": 4,
+        "transitions": [
+          {
+            "dst_access": "shader_read",
+            "dst_stage": "fragment_shader",
+            "new_layout": "shader_read_only_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "display",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "color_attachment_write",
+            "dst_stage": "color_attachment_output",
+            "new_layout": "color_attachment_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "swapchain",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "swapchain",
+            "src_access": "color_attachment_write",
+            "src_stage": "color_attachment_output"
+          }
+        ]
+      }
+    ]
+  },
+  "sprite_ownership": {
+    "final_layouts": [
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "display"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "g_emissive"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_albedo"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_material"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_normal"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_worldpos"
+      },
+      {
+        "layout": "depth_attachment_optimal",
+        "resource": "offscreen_depth"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "ssao_blur"
+      },
+      {
+        "layout": "transfer_src_optimal",
+        "resource": "swapchain"
+      }
+    ],
+    "nodes": [
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "clear",
+            "resource": "gbuffer_albedo",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R16G16B16A16_SFLOAT",
+            "load": "clear",
+            "resource": "gbuffer_normal",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
+            "load": "clear",
+            "resource": "gbuffer_material",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R16G16B16A16_SFLOAT",
+            "load": "clear",
+            "resource": "gbuffer_worldpos",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "clear",
+            "resource": "g_emissive",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "depth",
+            "clear": 1.0,
+            "final_layout": "depth_attachment_optimal",
+            "load": "clear",
+            "resource": "offscreen_depth",
+            "store": "dont_care"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "gbuffer_pass",
+        "order": 0
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R8_UNORM",
+            "load": "clear",
+            "resource": "ssao_blur",
+            "samples": 1,
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "ssao_clear",
+        "order": 1
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "clear",
+            "resource": "display",
+            "samples": 1,
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_albedo"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_normal"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_material"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_worldpos"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "g_emissive"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "ssao_blur"
+          }
+        ],
+        "kind": "render",
+        "name": "lighting_pass",
+        "order": 2
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_sprite",
+        "order": 3,
+        "sprite_draw": {
+          "blend": "straight_alpha",
+          "color": "display",
+          "depth": "offscreen_depth",
+          "depth_test": true,
+          "depth_write": false
+        }
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_main",
+        "order": 4
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_tonemap",
+        "order": 5
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 6
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_pelican_ui",
+        "order": 7
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "load",
+            "resource": "display",
+            "samples": 1,
+            "store": "store"
+          }
+        ],
+        "blend": true,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "pelican_ui",
+        "order": 8
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_draw",
+        "order": 9
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_text",
+        "order": 10
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 11
+      },
+      {
+        "color_counters": {
+          "paired_storage_round_trip": 3,
+          "shader_oetf": 0,
+          "terminal_display_encode": 1,
+          "tone_curve": 1
+        },
+        "destination": "swapchain",
+        "destination_format": "R8G8B8A8_SRGB",
+        "extent": [
+          16,
+          16
+        ],
+        "kind": "output_transform",
+        "mode": "hardware_srgb_encode",
+        "name": "output_transform",
+        "order": 12,
+        "paired_storage_edges": [
+          "gbuffer_pass:gbuffer_albedo->lighting_pass",
+          "gbuffer_pass:g_emissive->lighting_pass",
+          "pelican_ui:display->output_transform"
+        ],
+        "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
+        "samples": 1,
+        "source": "display",
+        "source_format": "B8G8R8A8_SRGB",
+        "texel_block_bytes": 4,
+        "transitions": [
+          {
+            "dst_access": "shader_read",
+            "dst_stage": "fragment_shader",
+            "new_layout": "shader_read_only_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "display",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "color_attachment_write",
+            "dst_stage": "color_attachment_output",
+            "new_layout": "color_attachment_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "swapchain",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "swapchain",
+            "src_access": "color_attachment_write",
+            "src_stage": "color_attachment_output"
+          }
+        ]
+      }
+    ]
+  },
+  "sprite_parent": {
+    "final_layouts": [
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "display"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "g_emissive"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_albedo"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_material"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_normal"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_worldpos"
+      },
+      {
+        "layout": "depth_attachment_optimal",
+        "resource": "offscreen_depth"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "ssao_blur"
+      },
+      {
+        "layout": "transfer_src_optimal",
+        "resource": "swapchain"
+      }
+    ],
+    "nodes": [
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "clear",
+            "resource": "gbuffer_albedo",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R16G16B16A16_SFLOAT",
+            "load": "clear",
+            "resource": "gbuffer_normal",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
+            "load": "clear",
+            "resource": "gbuffer_material",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R16G16B16A16_SFLOAT",
+            "load": "clear",
+            "resource": "gbuffer_worldpos",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "clear",
+            "resource": "g_emissive",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "depth",
+            "clear": 1.0,
+            "final_layout": "depth_attachment_optimal",
+            "load": "clear",
+            "resource": "offscreen_depth",
+            "store": "dont_care"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "gbuffer_pass",
+        "order": 0
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R8_UNORM",
+            "load": "clear",
+            "resource": "ssao_blur",
+            "samples": 1,
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "ssao_clear",
+        "order": 1
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "clear",
+            "resource": "display",
+            "samples": 1,
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_albedo"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_normal"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_material"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_worldpos"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "g_emissive"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "ssao_blur"
+          }
+        ],
+        "kind": "render",
+        "name": "lighting_pass",
+        "order": 2
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_sprite",
+        "order": 3,
+        "sprite_draw": {
+          "blend": "straight_alpha",
+          "color": "display",
+          "depth": "offscreen_depth",
+          "depth_test": true,
+          "depth_write": false
+        }
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_main",
+        "order": 4
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_tonemap",
+        "order": 5
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 6
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_pelican_ui",
+        "order": 7
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_draw",
+        "order": 8
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_text",
+        "order": 9
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 10
+      },
+      {
+        "color_counters": {
+          "paired_storage_round_trip": 3,
+          "shader_oetf": 0,
+          "terminal_display_encode": 1,
+          "tone_curve": 1
+        },
+        "destination": "swapchain",
+        "destination_format": "R8G8B8A8_SRGB",
+        "extent": [
+          16,
+          16
+        ],
+        "kind": "output_transform",
+        "mode": "hardware_srgb_encode",
+        "name": "output_transform",
+        "order": 11,
+        "paired_storage_edges": [
+          "gbuffer_pass:gbuffer_albedo->lighting_pass",
+          "gbuffer_pass:g_emissive->lighting_pass",
+          "lighting_pass:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
@@ -3413,18 +5077,23 @@
     "nodes": [
       {
         "kind": "anchor",
-        "name": "__anchor_post_main",
+        "name": "__anchor_sprite",
         "order": 0
       },
       {
         "kind": "anchor",
-        "name": "__anchor_tonemap",
+        "name": "__anchor_post_main",
         "order": 1
       },
       {
         "kind": "anchor",
-        "name": "__anchor_post_ldr",
+        "name": "__anchor_tonemap",
         "order": 2
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 3
       },
       {
         "attachments": [
@@ -3449,27 +5118,27 @@
         "inputs": [],
         "kind": "render",
         "name": "solid",
-        "order": 3
-      },
-      {
-        "kind": "anchor",
-        "name": "__anchor_pelican_ui",
         "order": 4
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_draw",
+        "name": "__anchor_pelican_ui",
         "order": 5
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_text",
+        "name": "__anchor_debug_draw",
         "order": 6
       },
       {
         "kind": "anchor",
-        "name": "__anchor_imgui",
+        "name": "__anchor_debug_text",
         "order": 7
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 8
       },
       {
         "color_counters": {
@@ -3487,7 +5156,7 @@
         "kind": "output_transform",
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 8,
+        "order": 9,
         "paired_storage_edges": [
           "solid:display->output_transform"
         ],
@@ -3575,8 +5244,13 @@
       },
       {
         "kind": "anchor",
-        "name": "__anchor_post_main",
+        "name": "__anchor_sprite",
         "order": 1
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_main",
+        "order": 2
       },
       {
         "attachments": [
@@ -3610,17 +5284,17 @@
         ],
         "kind": "render",
         "name": "temporal_accumulate",
-        "order": 2
-      },
-      {
-        "kind": "anchor",
-        "name": "__anchor_tonemap",
         "order": 3
       },
       {
         "kind": "anchor",
-        "name": "__anchor_post_ldr",
+        "name": "__anchor_tonemap",
         "order": 4
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 5
       },
       {
         "attachments": [
@@ -3650,27 +5324,27 @@
         ],
         "kind": "render",
         "name": "temporal_present",
-        "order": 5
-      },
-      {
-        "kind": "anchor",
-        "name": "__anchor_pelican_ui",
         "order": 6
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_draw",
+        "name": "__anchor_pelican_ui",
         "order": 7
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_text",
+        "name": "__anchor_debug_draw",
         "order": 8
       },
       {
         "kind": "anchor",
-        "name": "__anchor_imgui",
+        "name": "__anchor_debug_text",
         "order": 9
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 10
       },
       {
         "color_counters": {
@@ -3688,7 +5362,7 @@
         "kind": "output_transform",
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 10,
+        "order": 11,
         "paired_storage_edges": [
           "temporal_present:display->output_transform"
         ],
@@ -3743,18 +5417,23 @@
     "nodes": [
       {
         "kind": "anchor",
-        "name": "__anchor_post_main",
+        "name": "__anchor_sprite",
         "order": 0
       },
       {
         "kind": "anchor",
-        "name": "__anchor_tonemap",
+        "name": "__anchor_post_main",
         "order": 1
       },
       {
         "kind": "anchor",
-        "name": "__anchor_post_ldr",
+        "name": "__anchor_tonemap",
         "order": 2
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 3
       },
       {
         "attachments": [
@@ -3779,12 +5458,12 @@
         "inputs": [],
         "kind": "render",
         "name": "present",
-        "order": 3
+        "order": 4
       },
       {
         "kind": "anchor",
         "name": "__anchor_pelican_ui",
-        "order": 4
+        "order": 5
       },
       {
         "attachments": [
@@ -3803,22 +5482,22 @@
         "inputs": [],
         "kind": "render",
         "name": "pelican_ui",
-        "order": 5
-      },
-      {
-        "kind": "anchor",
-        "name": "__anchor_debug_draw",
         "order": 6
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_text",
+        "name": "__anchor_debug_draw",
         "order": 7
       },
       {
         "kind": "anchor",
-        "name": "__anchor_imgui",
+        "name": "__anchor_debug_text",
         "order": 8
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 9
       },
       {
         "color_counters": {
@@ -3836,7 +5515,7 @@
         "kind": "output_transform",
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 9,
+        "order": 10,
         "paired_storage_edges": [
           "pelican_ui:display->output_transform"
         ],
@@ -3891,18 +5570,23 @@
     "nodes": [
       {
         "kind": "anchor",
-        "name": "__anchor_post_main",
+        "name": "__anchor_sprite",
         "order": 0
       },
       {
         "kind": "anchor",
-        "name": "__anchor_tonemap",
+        "name": "__anchor_post_main",
         "order": 1
       },
       {
         "kind": "anchor",
-        "name": "__anchor_post_ldr",
+        "name": "__anchor_tonemap",
         "order": 2
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 3
       },
       {
         "attachments": [
@@ -3927,12 +5611,12 @@
         "inputs": [],
         "kind": "render",
         "name": "present",
-        "order": 3
+        "order": 4
       },
       {
         "kind": "anchor",
         "name": "__anchor_pelican_ui",
-        "order": 4
+        "order": 5
       },
       {
         "attachments": [
@@ -3951,22 +5635,22 @@
         "inputs": [],
         "kind": "render",
         "name": "pelican_ui",
-        "order": 5
-      },
-      {
-        "kind": "anchor",
-        "name": "__anchor_debug_draw",
         "order": 6
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_text",
+        "name": "__anchor_debug_draw",
         "order": 7
       },
       {
         "kind": "anchor",
-        "name": "__anchor_imgui",
+        "name": "__anchor_debug_text",
         "order": 8
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 9
       },
       {
         "color_counters": {
@@ -3984,7 +5668,7 @@
         "kind": "output_transform",
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 9,
+        "order": 10,
         "paired_storage_edges": [
           "pelican_ui:display->output_transform"
         ],
@@ -4318,18 +6002,23 @@
       },
       {
         "kind": "anchor",
-        "name": "__anchor_post_main",
+        "name": "__anchor_sprite",
         "order": 4
       },
       {
         "kind": "anchor",
-        "name": "__anchor_tonemap",
+        "name": "__anchor_post_main",
         "order": 5
       },
       {
         "kind": "anchor",
-        "name": "__anchor_post_ldr",
+        "name": "__anchor_tonemap",
         "order": 6
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 7
       },
       {
         "attachments": [
@@ -4359,7 +6048,7 @@
         ],
         "kind": "render",
         "name": "HighLuminanceExtraction",
-        "order": 7
+        "order": 8
       },
       {
         "attachments": [
@@ -4389,7 +6078,7 @@
         ],
         "kind": "render",
         "name": "HorizontalBlur_0",
-        "order": 8
+        "order": 9
       },
       {
         "attachments": [
@@ -4419,7 +6108,7 @@
         ],
         "kind": "render",
         "name": "VerticalBlur_0",
-        "order": 9
+        "order": 10
       },
       {
         "attachments": [
@@ -4449,7 +6138,7 @@
         ],
         "kind": "render",
         "name": "HorizontalBlur_1",
-        "order": 10
+        "order": 11
       },
       {
         "attachments": [
@@ -4479,7 +6168,7 @@
         ],
         "kind": "render",
         "name": "VerticalBlur_1",
-        "order": 11
+        "order": 12
       },
       {
         "attachments": [
@@ -4509,7 +6198,7 @@
         ],
         "kind": "render",
         "name": "HorizontalBlur_2",
-        "order": 12
+        "order": 13
       },
       {
         "attachments": [
@@ -4539,7 +6228,7 @@
         ],
         "kind": "render",
         "name": "VerticalBlur_2",
-        "order": 13
+        "order": 14
       },
       {
         "attachments": [
@@ -4569,7 +6258,7 @@
         ],
         "kind": "render",
         "name": "HorizontalBlur_3",
-        "order": 14
+        "order": 15
       },
       {
         "attachments": [
@@ -4599,7 +6288,7 @@
         ],
         "kind": "render",
         "name": "VerticalBlur_3",
-        "order": 15
+        "order": 16
       },
       {
         "attachments": [
@@ -4627,7 +6316,7 @@
         ],
         "kind": "render",
         "name": "UpsampleBlend_3",
-        "order": 16
+        "order": 17
       },
       {
         "attachments": [
@@ -4655,7 +6344,7 @@
         ],
         "kind": "render",
         "name": "UpsampleBlend_2",
-        "order": 17
+        "order": 18
       },
       {
         "attachments": [
@@ -4683,7 +6372,7 @@
         ],
         "kind": "render",
         "name": "UpsampleBlend_1",
-        "order": 18
+        "order": 19
       },
       {
         "attachments": [
@@ -4711,12 +6400,12 @@
         ],
         "kind": "render",
         "name": "FinalBloomComposite",
-        "order": 19
+        "order": 20
       },
       {
         "kind": "anchor",
         "name": "__anchor_pelican_ui",
-        "order": 20
+        "order": 21
       },
       {
         "attachments": [
@@ -4735,22 +6424,22 @@
         "inputs": [],
         "kind": "render",
         "name": "pelican_ui",
-        "order": 21
-      },
-      {
-        "kind": "anchor",
-        "name": "__anchor_debug_draw",
         "order": 22
       },
       {
         "kind": "anchor",
-        "name": "__anchor_debug_text",
+        "name": "__anchor_debug_draw",
         "order": 23
       },
       {
         "kind": "anchor",
-        "name": "__anchor_imgui",
+        "name": "__anchor_debug_text",
         "order": 24
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 25
       },
       {
         "color_counters": {
@@ -4768,7 +6457,7 @@
         "kind": "output_transform",
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 25,
+        "order": 26,
         "paired_storage_edges": [
           "gbuffer_pass:gbuffer_albedo->lighting_pass",
           "gbuffer_pass:g_emissive->lighting_pass",
