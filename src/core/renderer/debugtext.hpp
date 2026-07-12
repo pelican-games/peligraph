@@ -5,8 +5,9 @@
 #include "../shader/pipelinefactory.hpp"
 #include "../vkcore/buf.hpp"
 #include "../vkcore/image.hpp"
-#include <array>
+#include "../ui/bitmapfont.hpp"
 #include <glm/glm.hpp>
+#include <optional>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
@@ -24,14 +25,6 @@ struct DebugTextVertex {
 };
 
 DECLARE_MODULE(DebugText) {
-    struct Glyph {
-        int x = 0;
-        int y = 0;
-        int w = 0;
-        int h = 0;
-        int advance = 0;
-    };
-
     struct QueuedGlyph {
         uint32_t code = 0;
         int x = 0;
@@ -48,11 +41,7 @@ DECLARE_MODULE(DebugText) {
     vk::Device device;
     bool enabled = false;
     bool font_loaded = false;
-    uint32_t atlas_width = 0;
-    uint32_t atlas_height = 0;
-    uint32_t cell_width = 8;
-    uint32_t cell_height = 16;
-    std::array<Glyph, 95> glyphs{};
+    std::optional<ui::BitmapFont> font;
 
     vk::UniqueDescriptorPool descriptor_pool;
     vk::UniqueSampler atlas_sampler;

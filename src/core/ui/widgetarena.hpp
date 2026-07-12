@@ -28,6 +28,11 @@ struct WidgetState {
     bool enabled = true;
     bool hit_testable = true;
     bool overflow_clip = false;
+    bool hovered = false;
+    bool pressed = false;
+    std::string text;
+    double value = 0.0;
+    bool checked = false;
 };
 
 class WidgetArena {

@@ -54,6 +54,7 @@ RouteFrameResult InputRouter::route(std::span<const UiPointerEvent> events, cons
         auto &state = pointers_[event.pointer_id];
         RoutedPointerEvent routed{.input = event, .position_ui = viewport.windowToUi(event.position_px.x, event.position_px.y)};
         auto physical_target = event.kind == PointerKind::Cancel ? std::optional<WidgetId>{} : hitTest(event.position_px, arena, traversal, viewport);
+        routed.hover_target = physical_target;
         if (state.capture && arena.resolve(state.capture->owner) == nullptr) state.capture.reset();
         if (state.hover && arena.resolve(*state.hover) == nullptr) state.hover.reset();
 

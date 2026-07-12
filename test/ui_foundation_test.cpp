@@ -1,5 +1,6 @@
 #include "ui/commandbuffer.hpp"
 #include "ui/atlas.hpp"
+#include "ui/bitmapfont.hpp"
 #include "ui/document.hpp"
 #include "ui/drawcommands.hpp"
 #include "ui/inputrouter.hpp"
@@ -10,6 +11,11 @@
 #include "ui/module.hpp"
 #include "renderer/uicontainer.hpp"
 #include "renderer/uirenderer.hpp"
+#include "loader/engineresources.hpp"
+#include "loader/imageloader.hpp"
+#include "os/inputstate.hpp"
+#include "userpublic/details/event/registerer.hpp"
+#include "userpublic/geom/vec.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -23,6 +29,25 @@
 using namespace Pelican;
 using namespace Pelican::ui;
 using Json = nlohmann::json;
+
+struct Wp93UiClick {
+    std::string source;
+    std::int32_t amount = 0;
+    static constexpr auto pelican_payload = Pelican::payloadFields(
+        Pelican::field<&Wp93UiClick::source>("source"),
+        Pelican::field<&Wp93UiClick::amount>("amount", Pelican::irange(0, 9)));
+    template <class T> void ref(T &ar) { ar.prop("source", source); ar.prop("amount", amount); }
+};
+
+struct Wp93UiDrag {
+    Pelican::vec2 delta{};
+    static constexpr auto pelican_payload = Pelican::payloadFields(
+        Pelican::field<&Wp93UiDrag::delta>("delta"));
+    template <class T> void ref(T &ar) { ar.prop("delta", delta); }
+};
+
+PELICAN_REGISTER_EVENT(Wp93UiClick);
+PELICAN_REGISTER_EVENT(Wp93UiDrag);
 
 namespace {
 Json readJson(const std::filesystem::path &path) {
@@ -237,6 +262,106 @@ TEST_CASE("Ordered router keeps per-pointer captures independent", "[ui][input]"
     REQUIRE(routed.events[2].effects == std::vector{PointerEffect::Cancel, PointerEffect::ReleaseCapture});
     REQUIRE(routed.events[3].effects == std::vector{PointerEffect::ReleaseCapture, PointerEffect::Click});
     REQUIRE(routed.events[3].target == a);
+}
+
+TEST_CASE("U2 bitmap label and button commit local state then queue typed E1 semantics", "[ui][u2]") {
+    internal::getEventRegisterer().clearPendingEvents();
+    const auto json = Json::parse(R"json({
+      "schema":"pelican.ui","version":1,"key":"u2","revision":"wp93",
+      "root":{"id":"root","type":"panel","children":[
+        {"id":"play","type":"button","text":"GO","color":[64,72,84,255],
+         "pressed_color":[12,24,36,255],
+         "layout":{"x":{"mode":"fixed","value":48},"y":{"mode":"fixed","value":28},
+                   "offsets":[8,8,0,0]},
+         "emit":{"on_click":{"event":"Wp93UiClick","fields":[
+           {"name":"source","from":"stable_id"},{"name":"amount","from":"static","value":7}
+         ]},"on_drag":{"event":"Wp93UiDrag","fields":[
+           {"name":"delta","from":"drag_delta_ui"}
+         ]}}}
+      ]}
+    })json");
+    UiModule module{json};
+    InputState input;
+
+    input.queueEvents({InputEvent::cursorMove(20.0f, 20.0f), InputEvent::button(KeyCode::MouseLeft, true)});
+    input.beginFrame();
+    const auto down = module.routeFrameInput(input, {80, 48});
+    REQUIRE(down.consumed_pointer);
+    REQUIRE(input.consumptionMask().consumesControl(KeyCode::MouseLeft));
+    REQUIRE(module.lastCommitForTesting().applied == 2); // hover + pressed, committed once after routing.
+    const auto *button = module.arenaForTesting().resolve(module.traversalForTesting()[1]);
+    REQUIRE(button != nullptr);
+    REQUIRE(button->pressed);
+    REQUIRE(internal::getEventRegisterer().pendingEventCount() == 0);
+
+    const auto pressed_batch = module.buildFrame({80, 48});
+    REQUIRE(pressed_batch.quads.size() == 3); // solid button + two bundled-font glyphs.
+    REQUIRE(pressed_batch.quads[0].color == std::array<std::uint8_t, 4>{12, 24, 36, 255});
+    REQUIRE(pressed_batch.quads[1].key.sampler == Sampler::Nearest);
+    REQUIRE(pressed_batch.quads[1].key.texture == "engine:debug_text_font");
+
+    input.queueEvent(InputEvent::button(KeyCode::MouseLeft, false));
+    input.beginFrame();
+    const auto up = module.routeFrameInput(input, {80, 48});
+    REQUIRE(up.events.back().effects == std::vector{PointerEffect::ReleaseCapture, PointerEffect::Click});
+    REQUIRE_FALSE(module.arenaForTesting().resolve(module.traversalForTesting()[1])->pressed);
+    REQUIRE(internal::getEventRegisterer().pendingEventCount() == 1);
+
+    // The semantic event is pending until the following frame boundary.
+    internal::getEventRegisterer().freezePendingEventsForFrame();
+    const auto delivered = internal::getEventRegisterer().drainFrozenEvents();
+    REQUIRE(delivered.size() == 1);
+    REQUIRE(delivered[0].name == "Wp93UiClick");
+    const auto &payload = *static_cast<const Wp93UiClick *>(delivered[0].payload.get());
+    REQUIRE(payload.source == "root/play");
+    REQUIRE(payload.amount == 7);
+}
+
+TEST_CASE("U2 debug_text legacy layout and common bitmap path rasterize byte-exact", "[ui][u2][debug-text]") {
+    const auto table = Json::parse(engineResourceOrThrow("debug_text_font.json"));
+    const auto font = BitmapFont::bundledDebugFont();
+    const auto png = engineResourceOrThrow("debug_text_font.png");
+    const auto atlas = loadImageMemory(std::as_bytes(std::span{png.data(), png.size()}),
+                                       "engine://debug_text_font.png");
+    REQUIRE(atlas.format == ImagePixelFormat::Rgba8Unorm);
+
+    auto legacy = std::vector<PositionedGlyph>{};
+    int cursor_x = 3;
+    int cursor_y = 2;
+    for (const unsigned char ch : std::string{"WP93\nUI"}) {
+        if (ch == '\n') { cursor_x = 3; cursor_y += table["cell_height"].get<int>(); continue; }
+        const auto code = ch < 32 || ch > 126 ? static_cast<unsigned char>('?') : ch;
+        const auto &entry = table["glyphs"][static_cast<std::size_t>(code - 32)];
+        const auto w = entry["w"].get<int>();
+        const auto h = entry["h"].get<int>();
+        if (code != ' ') legacy.push_back({code, {cursor_x, cursor_y, cursor_x + w, cursor_y + h},
+            {entry["x"].get<int>(), entry["y"].get<int>(), entry["x"].get<int>() + w, entry["y"].get<int>() + h}});
+        cursor_x += entry["advance"].get<int>();
+    }
+    const auto common = font.layout(3, 2, "WP93\nUI");
+    REQUIRE(common == legacy);
+
+    const auto rasterize = [&](const std::vector<PositionedGlyph> &glyphs) {
+        constexpr int width = 40;
+        constexpr int height = 32;
+        std::vector<std::byte> pixels(width * height * 4);
+        for (const auto &glyph : glyphs) {
+            for (int y = 0; y < glyph.destination.height(); ++y) for (int x = 0; x < glyph.destination.width(); ++x) {
+                const auto dx = glyph.destination.left + x;
+                const auto dy = glyph.destination.top + y;
+                if (dx < 0 || dy < 0 || dx >= width || dy >= height) continue;
+                const auto sx = glyph.source.left + x;
+                const auto sy = glyph.source.top + y;
+                const auto source = (static_cast<std::size_t>(sy) * atlas.width + sx) * 4;
+                const auto destination = (static_cast<std::size_t>(dy) * width + dx) * 4;
+                std::copy_n(atlas.pixels.begin() + source, 4, pixels.begin() + destination);
+            }
+        }
+        return pixels;
+    };
+    const auto legacy_bytes = rasterize(legacy);
+    const auto common_bytes = rasterize(common);
+    REQUIRE(std::ranges::equal(legacy_bytes, common_bytes)); // R6: tolerance 0, byte-exact.
 }
 
 TEST_CASE("Semantic fixture three-stage gate executes every coverage witness", "[ui][semantic]") {

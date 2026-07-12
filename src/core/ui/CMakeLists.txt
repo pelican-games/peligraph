@@ -8,6 +8,7 @@ target_sources(pelican_core PRIVATE
   inputrouter.cpp
   semanticfixture.cpp
   atlas.cpp
+  bitmapfont.cpp
   module.cpp
 )
 

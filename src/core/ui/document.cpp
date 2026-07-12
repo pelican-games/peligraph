@@ -1,4 +1,5 @@
 #include "document.hpp"
+#include "bitmapfont.hpp"
 
 #include "../userpublic/details/event/registerer.hpp"
 
@@ -150,13 +151,14 @@ void parseEmit(const Json &emit, DocumentNode &node, const std::string &path, co
         }
         EmitBinding binding{.trigger = trigger_it.key(), .event = binding_json.at("event").get<std::string>()};
         const auto schema = lookup(binding.event);
+        binding.payload_object = schema.state == EventSchemaLookup::State::Typed;
         if (schema.state == EventSchemaLookup::State::UnknownEvent) {
             error(errors, UiErrorCode::UnknownEvent, trigger_path + "/event", "unknown event '" + binding.event + "'");
             continue;
         }
         const bool has_fields = binding_json.contains("fields");
-        if ((schema.state == EventSchemaLookup::State::Opaque || schema.state == EventSchemaLookup::State::Payloadless) &&
-            has_fields && !binding_json.at("fields").empty()) {
+        if (schema.state == EventSchemaLookup::State::Opaque ||
+            (schema.state == EventSchemaLookup::State::Payloadless && has_fields)) {
             error(errors, UiErrorCode::NoPayloadEvent, trigger_path + "/fields", "event has no bindable payload");
             continue;
         }
@@ -225,6 +227,7 @@ DocumentNode parseNode(const Json &j, std::string parent, std::int32_t &decl, st
     DocumentNode node;
     if (!closed(j, {"id", "type", "layout", "intrinsic_size", "visibility", "overflow", "enabled",
                     "hit_testable", "layer", "emit", "children", "sprite", "sampler", "color",
+                    "hover_color", "pressed_color", "text_color", "text", "value", "checked",
                     "nine_patch"}, json_path, errors)) return node;
     if (!j.contains("id") || !j.at("id").is_string()) error(errors, UiErrorCode::RequiredMissing, json_path + "/id", "id required");
     else node.stable_id = j.at("id").get<std::string>();
@@ -235,6 +238,7 @@ DocumentNode parseNode(const Json &j, std::string parent, std::int32_t &decl, st
     static const std::set<std::string> types{"panel", "image", "label", "button", "gauge", "stack"};
     if (!types.contains(node.type)) error(errors, UiErrorCode::UnknownWidgetType, json_path + "/type", "unknown widget type");
     if (node.type == "image" && !j.contains("color")) node.color = {255, 255, 255, 255};
+    if (node.type == "button" && !j.contains("color")) node.color = {64, 72, 84, 255};
     if (j.contains("sprite")) {
         if (!j.at("sprite").is_string() || j.at("sprite").get_ref<const std::string &>().empty())
             error(errors, UiErrorCode::TypeMismatch, json_path + "/sprite", "sprite must be a non-empty #sprite reference");
@@ -248,19 +252,39 @@ DocumentNode parseNode(const Json &j, std::string parent, std::int32_t &decl, st
     if (sampler == "nearest") node.sampler = Sampler::Nearest;
     else if (sampler == "linear") node.sampler = Sampler::Linear;
     else error(errors, UiErrorCode::TypeMismatch, json_path + "/sampler", "sampler must be nearest or linear");
-    if (j.contains("color")) {
-        const auto &color = j.at("color");
+    const auto parse_color = [&](const char *name, std::array<std::uint8_t, 4> &out) {
+        if (!j.contains(name)) return;
+        const auto &color = j.at(name);
         if (!color.is_array() || color.size() != 4) {
-            error(errors, UiErrorCode::TypeMismatch, json_path + "/color", "color must be four linear RGBA8 integers");
+            error(errors, UiErrorCode::TypeMismatch, json_path + "/" + name, "color must be four linear RGBA8 integers");
         } else {
             for (std::size_t i = 0; i < 4; ++i) {
                 const auto value = i32(color[i]);
                 if (!value || *value < 0 || *value > 255)
-                    error(errors, UiErrorCode::RangeViolation, json_path + "/color/" + std::to_string(i), "RGBA8 component outside [0,255]");
-                else node.color[i] = static_cast<std::uint8_t>(*value);
+                    error(errors, UiErrorCode::RangeViolation, json_path + "/" + name + "/" + std::to_string(i), "RGBA8 component outside [0,255]");
+                else out[i] = static_cast<std::uint8_t>(*value);
             }
         }
+    };
+    parse_color("color", node.color);
+    parse_color("hover_color", node.hover_color);
+    parse_color("pressed_color", node.pressed_color);
+    parse_color("text_color", node.text_color);
+    if (j.contains("text")) {
+        if (!j.at("text").is_string()) error(errors, UiErrorCode::TypeMismatch, json_path + "/text", "text must be a string");
+        else node.text = j.at("text").get<std::string>();
     }
+    if (j.contains("value")) {
+        if (!j.at("value").is_number() || !std::isfinite(j.at("value").get<double>()))
+            error(errors, UiErrorCode::TypeMismatch, json_path + "/value", "value must be finite");
+        else node.value = j.at("value").get<double>();
+    }
+    if (j.contains("checked")) {
+        if (!j.at("checked").is_boolean()) error(errors, UiErrorCode::TypeMismatch, json_path + "/checked", "checked must be boolean");
+        else node.checked = j.at("checked").get<bool>();
+    }
+    if (node.type != "label" && node.type != "button" && j.contains("text"))
+        error(errors, UiErrorCode::TypeMismatch, json_path + "/text", "text is only valid on label and button widgets");
     if (j.contains("nine_patch")) node.nine_patch = rect(j.at("nine_patch"), json_path + "/nine_patch", errors);
     if (!node.sprite.empty() && node.type != "image" && node.type != "panel")
         error(errors, UiErrorCode::TypeMismatch, json_path + "/sprite", "only image and panel widgets draw sprites in v1");
@@ -281,6 +305,13 @@ DocumentNode parseNode(const Json &j, std::string parent, std::int32_t &decl, st
         const auto &v = j.at("intrinsic_size");
         if (!v.is_array() || v.size() != 2 || !i32(v[0]) || !i32(v[1])) error(errors, UiErrorCode::TypeMismatch, json_path + "/intrinsic_size", "expected two int32");
         else node.intrinsic_size = {*i32(v[0]), *i32(v[1])};
+    } else if (node.type == "label" || node.type == "button") {
+        static const auto font = BitmapFont::bundledDebugFont();
+        node.intrinsic_size = font.measure(node.text);
+        if (node.type == "button") {
+            node.intrinsic_size.x += 16;
+            node.intrinsic_size.y += 8;
+        }
     }
     if (j.contains("layout")) {
         const auto &l = j.at("layout");

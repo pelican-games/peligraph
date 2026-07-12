@@ -11,7 +11,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <nlohmann/json.hpp>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -21,9 +20,6 @@ namespace Pelican {
 
 namespace {
 
-constexpr uint32_t firstPrintableCode = 32;
-constexpr uint32_t lastPrintableCode = 126;
-constexpr uint32_t fallbackCode = static_cast<uint32_t>('?');
 constexpr uint32_t maxDebugTextScale = 64;
 
 vk::UniqueDescriptorPool createDescriptorPool(vk::Device device) {
@@ -103,38 +99,6 @@ vk::DeviceSize nextCapacity(vk::DeviceSize required) {
     return capacity;
 }
 
-uint32_t normalizedCode(unsigned char ch) {
-    const auto code = static_cast<uint32_t>(ch);
-    if (code < firstPrintableCode || code > lastPrintableCode) {
-        return fallbackCode;
-    }
-    return code;
-}
-
-size_t glyphIndex(uint32_t code) {
-    if (code < firstPrintableCode || code > lastPrintableCode) {
-        code = fallbackCode;
-    }
-    return static_cast<size_t>(code - firstPrintableCode);
-}
-
-int requireIntField(const nlohmann::json &json, const std::string &field_name,
-                    const std::string &context) {
-    if (!json.contains(field_name) || !json.at(field_name).is_number_integer()) {
-        throw std::runtime_error(context + " requires integer field: " + field_name);
-    }
-    return json.at(field_name).get<int>();
-}
-
-uint32_t requireUintField(const nlohmann::json &json, const std::string &field_name,
-                          const std::string &context) {
-    const auto value = requireIntField(json, field_name, context);
-    if (value < 0) {
-        throw std::runtime_error(context + " requires non-negative field: " + field_name);
-    }
-    return static_cast<uint32_t>(value);
-}
-
 std::span<const std::byte> bytesOf(const std::string &data) {
     return std::span<const std::byte>{reinterpret_cast<const std::byte *>(data.data()), data.size()};
 }
@@ -173,42 +137,11 @@ void DebugText::ensureFontResources() {
         return;
     }
 
-    const auto table = nlohmann::json::parse(engineResourceOrThrow("debug_text_font.json"));
-    if (table.value("schema", std::string{}) != "pelican.debug_text_font" ||
-        table.value("version", 0) != 1) {
-        throw std::runtime_error("DebugText font table schema is not supported");
-    }
-
-    atlas_width = requireUintField(table, "atlas_width", "DebugText font table");
-    atlas_height = requireUintField(table, "atlas_height", "DebugText font table");
-    cell_width = requireUintField(table, "cell_width", "DebugText font table");
-    cell_height = requireUintField(table, "cell_height", "DebugText font table");
-
-    const auto first_code = requireUintField(table, "first_code", "DebugText font table");
-    const auto last_code = requireUintField(table, "last_code", "DebugText font table");
-    if (first_code != firstPrintableCode || last_code != lastPrintableCode) {
-        throw std::runtime_error("DebugText font table must contain ASCII 32..126");
-    }
-    if (!table.contains("glyphs") || !table.at("glyphs").is_array()) {
-        throw std::runtime_error("DebugText font table requires glyphs array");
-    }
-    for (const auto &glyph_json : table.at("glyphs")) {
-        const auto code = requireUintField(glyph_json, "code", "DebugText glyph");
-        if (code < firstPrintableCode || code > lastPrintableCode) {
-            throw std::runtime_error("DebugText glyph code is outside ASCII 32..126");
-        }
-        glyphs[glyphIndex(code)] = Glyph{
-            requireIntField(glyph_json, "x", "DebugText glyph"),
-            requireIntField(glyph_json, "y", "DebugText glyph"),
-            requireIntField(glyph_json, "w", "DebugText glyph"),
-            requireIntField(glyph_json, "h", "DebugText glyph"),
-            requireIntField(glyph_json, "advance", "DebugText glyph"),
-        };
-    }
+    font = ui::BitmapFont::bundledDebugFont();
 
     const auto png_data = engineResourceOrThrow("debug_text_font.png");
     const auto loaded = loadImageMemory(bytesOf(png_data), "engine://debug_text_font.png");
-    if (loaded.width != atlas_width || loaded.height != atlas_height) {
+    if (loaded.width != font->atlasWidth() || loaded.height != font->atlasHeight()) {
         throw std::runtime_error("DebugText font atlas dimensions do not match coordinate table");
     }
 
@@ -297,12 +230,12 @@ void DebugText::buildVertices(vk::Extent2D target_extent) {
     }
 
     for (const auto &queued : queued_glyphs) {
-        const auto &glyph = glyphs[glyphIndex(queued.code)];
+        const auto &glyph = font->glyph(queued.code);
         const auto scale = static_cast<int64_t>(std::max<uint32_t>(queued.scale, 1));
         const int64_t x0 = queued.x;
         const int64_t y0 = queued.y;
-        const int64_t x1 = x0 + static_cast<int64_t>(glyph.w) * scale;
-        const int64_t y1 = y0 + static_cast<int64_t>(glyph.h) * scale;
+        const int64_t x1 = x0 + static_cast<int64_t>(glyph.width) * scale;
+        const int64_t y1 = y0 + static_cast<int64_t>(glyph.height) * scale;
 
         const int64_t vx0 = std::clamp<int64_t>(x0, 0, target_extent.width);
         const int64_t vy0 = std::clamp<int64_t>(y0, 0, target_extent.height);
@@ -317,10 +250,10 @@ void DebugText::buildVertices(vk::Extent2D target_extent) {
         const double src_x1 = glyph.x + static_cast<double>(vx1 - x0) / static_cast<double>(scale);
         const double src_y1 = glyph.y + static_cast<double>(vy1 - y0) / static_cast<double>(scale);
 
-        const float u0 = static_cast<float>(src_x0 / static_cast<double>(atlas_width));
-        const float v0 = static_cast<float>(src_y0 / static_cast<double>(atlas_height));
-        const float u1 = static_cast<float>(src_x1 / static_cast<double>(atlas_width));
-        const float v1 = static_cast<float>(src_y1 / static_cast<double>(atlas_height));
+        const float u0 = static_cast<float>(src_x0 / static_cast<double>(font->atlasWidth()));
+        const float v0 = static_cast<float>(src_y0 / static_cast<double>(font->atlasHeight()));
+        const float u1 = static_cast<float>(src_x1 / static_cast<double>(font->atlasWidth()));
+        const float v1 = static_cast<float>(src_y1 / static_cast<double>(font->atlasHeight()));
         const float cx0 = clipX(static_cast<double>(vx0), target_extent.width);
         const float cy0 = clipY(static_cast<double>(vy0), target_extent.height);
         const float cx1 = clipX(static_cast<double>(vx1), target_extent.width);
@@ -367,7 +300,7 @@ void DebugText::text(int x, int y, std::string_view value, glm::vec4 color, int 
         std::clamp<uint32_t>(scale < 1 ? 1u : static_cast<uint32_t>(scale), 1u, maxDebugTextScale);
     int cursor_x = x;
     int cursor_y = y;
-    const int line_height = static_cast<int>(cell_height * safe_scale);
+    const int line_height = static_cast<int>(font->cellHeight() * safe_scale);
 
     for (const auto raw_ch : value) {
         const auto ch = static_cast<unsigned char>(raw_ch);
@@ -380,12 +313,14 @@ void DebugText::text(int x, int y, std::string_view value, glm::vec4 color, int 
             continue;
         }
         if (ch == '\t') {
-            cursor_x += static_cast<int>(cell_width * safe_scale * 4);
+            cursor_x += static_cast<int>(font->cellWidth() * safe_scale * 4);
             continue;
         }
 
-        const auto code = normalizedCode(ch);
-        const auto &glyph = glyphs[glyphIndex(code)];
+        auto code = static_cast<std::uint32_t>(ch);
+        if (code < ui::BitmapFont::firstCode || code > ui::BitmapFont::lastCode)
+            code = ui::BitmapFont::fallbackCode;
+        const auto &glyph = font->glyph(code);
         if (code != static_cast<uint32_t>(' ')) {
             queued_glyphs.push_back(QueuedGlyph{code, cursor_x, cursor_y, safe_scale, color});
         }

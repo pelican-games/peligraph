@@ -30,6 +30,7 @@ struct UiPointerEvent {
 struct RoutedPointerEvent {
     UiPointerEvent input;
     std::optional<WidgetId> target;
+    std::optional<WidgetId> hover_target;
     PointI position_ui{};
     PointI drag_delta_ui{};
     std::vector<PointerEffect> effects;

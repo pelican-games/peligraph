@@ -909,6 +909,21 @@ void main() { outColor = vec4(0.015, 0.02, 0.03, 1.0); }
     })json");
 }
 
+void writeUiU2Project(const std::filesystem::path &root) {
+    writeUiU1Project(root);
+    auto project = makeFeatureProjectJson();
+    project["name"] = "ui u2 golden";
+    writeTextFile(root / "project.json", project.dump(2));
+    writeTextFile(root / "ui" / "ui.json", R"json({
+      "schema":"pelican.ui","version":1,"key":"ui_u2_golden","revision":"wp93",
+      "root":{"id":"root","type":"panel","children":[
+        {"id":"button","type":"button","text":"U","color":[28,48,68,255],
+         "text_color":[255,255,255,255],
+         "layout":{"x":{"mode":"fixed","value":16},"y":{"mode":"fixed","value":16},"offsets":[0,0,0,0]}}
+      ]}
+    })json");
+}
+
 void writeSkeletalProject(const std::filesystem::path &root) {
     auto project = makeVatProjectJson();
     project["name"] = "skeletal toon golden";
@@ -1752,6 +1767,12 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         auto project = makeFeatureProjectJson();
         project["name"] = "ui u1 golden";
         GET_MODULE(ProjectSource).setProjectData(project.dump());
+    } else if (golden_case.mode == "ui_u2") {
+        writeUiU2Project(temp_dir);
+        GET_MODULE(PathResolver).setup(temp_dir, false);
+        auto project = makeFeatureProjectJson();
+        project["name"] = "ui u2 golden";
+        GET_MODULE(ProjectSource).setProjectData(project.dump());
     } else if (golden_case.mode == "debug_draw_feature") {
         writeDebugDrawProject(temp_dir);
         GET_MODULE(PathResolver).setup(temp_dir, false);
@@ -1828,7 +1849,7 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         renderSkeletalToonFrame(render_target);
     } else if (golden_case.mode == "feature_compose") {
         renderFeatureFrame(render_target);
-    } else if (golden_case.mode == "ui_u1") {
+    } else if (golden_case.mode == "ui_u1" || golden_case.mode == "ui_u2") {
         renderFeatureFrame(render_target);
     } else if (golden_case.mode == "debug_draw_feature") {
         renderDebugDrawFrame(render_target);
@@ -1949,15 +1970,15 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     requireGoldenVulkanDevice();
     const auto cases = discoverGoldenCases();
 #if PELICAN_WITH_VAT
-    REQUIRE(cases.size() == 22);
+    REQUIRE(cases.size() == 23);
 #else
-    REQUIRE(cases.size() == 21);
+    REQUIRE(cases.size() == 22);
 #endif
 
     for (const auto &golden_case : cases) {
         DYNAMIC_SECTION(golden_case.name) {
             const auto rendered = renderCase(golden_case);
-            if (golden_case.mode == "ui_u1") {
+            if (golden_case.mode == "ui_u1" || golden_case.mode == "ui_u2") {
                 REQUIRE(rendered.ui_module_created);
                 REQUIRE(rendered.ui_gpu_created);
                 REQUIRE(rendered.ui_parser_invocations == 1);
