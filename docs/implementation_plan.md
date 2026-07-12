@@ -1872,9 +1872,13 @@ ModelAssetContainer 初期化(モデルロード)**4.9s** が支配的。
 参照: **`design_material_shading.md` v1.2 §3-7-3(名前付きスナップショット —
 Godot SCREEN_TEXTURE の教訓・v1 は opaque 後 1 点のみ・逐次屈折非対応明記・
 コピーコストの可視化)+ §3-9(screen_inputs → forward 自動振り分け)が正**。
-**追加要件(2026-07-12 ユーザー決定)**: 定義ファイルは分割のまま、
-**全定義を合流させた可視化用データ**を plan dump が持つこと(ビュー本体は
-my_webpage WW8 が消費 — 本 WP はデータ契約まで)。
+**追加要件(2026-07-12 ユーザー決定・同日訂正)**: 定義ファイルは分割の
+まま、**パスをノードとして見られる可視化ツールで一か所にまとめて見たい**
+(= ツール側の要件。「単一の合流 JSON ファイル」をエンジンに課す解釈は
+**誤りとして撤回**)。エンジン側は get_frame_plan にスナップショット
+ノードと screen_inputs 消費が自然に現れれば十分 — 集約はビューア
+(my_webpage WW8: ノードグラフ形式のパスビューア)が既存の
+get_frame_plan / dump-lowered-material を束ねて行う。
 依存: WP78(B 層)・WP73(canonical anchor)。見積: 大。
 排他: `src/core/renderingpass/` / `src/project/materiallowering.*` /
 `src/core/communication/rpcserver.cpp`(get_frame_plan)。
@@ -1892,13 +1896,13 @@ my_webpage WW8 が消費 — 本 WP はデータ契約まで)。
 3. **透明同士の逐次屈折は非対応と明記**: 同一スナップショットを読む透明
    マテリアル同士は互いの結果を見ない(スナップショットは 1 回コピーの
    固定内容)。この意味論を文書 + fixture で固定
-4. **合流ビュー dump(可視化データ契約)**: `get_frame_plan` /
-   `--dump-frame-plan` の JSON を拡張し、1 ファイルで次を含める:
-   ①パス列(canonical anchor 対応付き)②RT/リソースと format_class
-   ③スナップショット(名前・コピー点・バイト数)④**マテリアル消費表**
-   (マテリアル名 → surface stem・screen_inputs・振り分け先パス・
-   render_state・使用 binding)。スキーマ名 `pelican.frame_plan` の
-   version を上げ、既存 plan fixture は決定的に更新(理由記録)
+4. **plan dump の自然な拡張(最小)**: `get_frame_plan` /
+   `--dump-frame-plan` に、スナップショットが frame graph の実ノード
+   として現れること(名前・コピー点・バイト数)と、透明系パスの
+   ノードに screen_inputs の read 依存が現れることだけを足す。
+   **それ以上の集約(マテリアル横断の一覧化)はビューア(WW8)の仕事**
+   であり、エンジンの dump 契約にしない。既存 plan fixture の更新は
+   決定的に(理由記録)
 5. fixture: 屈折デモ 1 個(example に .surface + golden 1 ケース —
    件数 REQUIRE 更新)・スナップショット未定義/2 点目/透明後の
    エラー 3 本・プラン fixture にスナップショットノード・dump JSON の
