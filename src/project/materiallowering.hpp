@@ -61,6 +61,8 @@ struct LoweredMaterial {
     Std140Layout values_layout;
     std::vector<std::byte> values;
     std::vector<LoweredTextureBinding> textures;
+    std::vector<std::string> screen_inputs;
+    std::string target_pass;
     SurfaceRenderState render_state;
     SurfaceHookSet hooks;
 };
@@ -78,6 +80,12 @@ void validateSurfaceCapabilities(const SurfaceFormatDocument &surface,
 LoweredMaterial lowerMaterial(const MaterialDefinition &material,
                               const SurfaceFormatDocument &surface,
                               const MaterialLoweringCapabilities &capabilities = {});
+
+LoweredMaterial lowerMaterialWithSnapshots(
+    const MaterialDefinition &material,
+    const SurfaceFormatDocument &surface,
+    std::span<const std::string> available_snapshots,
+    const MaterialLoweringCapabilities &capabilities = {});
 
 LoweredMaterial lowerSurfaceDefaults(const SurfaceFormatDocument &surface,
                                      std::string_view surface_name,

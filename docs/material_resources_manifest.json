@@ -13,6 +13,15 @@
       ]
     },
     {
+      "set": 1,
+      "name": "PELICAN_SET_PASS_INPUT",
+      "owner": "pass",
+      "resources": [
+        {"binding": 0, "name": "surface screen snapshot", "type": "combined_image_sampler", "access": "read", "allocation": "screen_inputs declaration order (v1 has one snapshot maximum)", "optional": true}
+      ],
+      "note": "WP83 surface screen inputs reference rendering-config snapshots. Each generated pelican_screen_<name>(uv) accessor reads the corresponding declaration-order binding."
+    },
+    {
       "set": 2,
       "name": "PELICAN_SET_MATERIAL",
       "owner": "material",

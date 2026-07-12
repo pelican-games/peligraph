@@ -30,6 +30,9 @@ VulkanUtils::ChangeImageLayoutInfo makeTransitionInfo(vk::ImageLayout old_layout
     } else if (old_layout == vk::ImageLayout::eTransferSrcOptimal) {
         info.src_stage = vk::PipelineStageFlagBits::eTransfer;
         info.src_access = vk::AccessFlagBits::eTransferRead;
+    } else if (old_layout == vk::ImageLayout::eTransferDstOptimal) {
+        info.src_stage = vk::PipelineStageFlagBits::eTransfer;
+        info.src_access = vk::AccessFlagBits::eTransferWrite;
     }
 
     if (new_layout == vk::ImageLayout::eShaderReadOnlyOptimal) {
@@ -49,6 +52,9 @@ VulkanUtils::ChangeImageLayoutInfo makeTransitionInfo(vk::ImageLayout old_layout
     } else if (new_layout == vk::ImageLayout::eTransferSrcOptimal) {
         info.dst_stage = vk::PipelineStageFlagBits::eTransfer;
         info.dst_access = vk::AccessFlagBits::eTransferRead;
+    } else if (new_layout == vk::ImageLayout::eTransferDstOptimal) {
+        info.dst_stage = vk::PipelineStageFlagBits::eTransfer;
+        info.dst_access = vk::AccessFlagBits::eTransferWrite;
     }
 
     return info;

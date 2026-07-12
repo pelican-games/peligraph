@@ -222,6 +222,35 @@ TEST_CASE("example material is a one-line B surface reference that lowers and co
 #endif
 }
 
+TEST_CASE("example refraction surface exposes its named screen snapshot accessor",
+          "[surface-compiler][snapshot][example]") {
+    const auto path = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects" / "example" /
+                      "shaders" / "refract.surface";
+    const auto surface = parseSurfaceFormat(readText(path), "project://shaders/refract.surface");
+    REQUIRE(surface.screen_inputs == std::vector<std::string>{"opaque_color"});
+    const auto composition = composeSurfaceShaders(surface, "project://shaders/refract.surface");
+    const auto params = std::find_if(composition.virtual_includes.begin(),
+                                     composition.virtual_includes.end(), [](const auto &include) {
+        return include.first == "__pelican_surface_params.glsl";
+    });
+    REQUIRE(params != composition.virtual_includes.end());
+    REQUIRE(params->second.find("layout(set = PELICAN_SET_PASS_INPUT, binding = 0)") !=
+            std::string::npos);
+    REQUIRE(params->second.find("pelican_screen_opaque_color") != std::string::npos);
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    ShaderCompiler compiler;
+    requireCompiled(compileSurfaceShaders(compiler, surface,
+                                          "project://shaders/refract.surface"));
+    ShaderLibrary library{ShaderLibraryModuleMode::reflection_only};
+    const auto bundles = library.loadFromSurface(surface, "project://shaders/refract.surface");
+    const auto &bindings = library.get(bundles.fragment).reflection.bindings;
+    REQUIRE(std::any_of(bindings.begin(), bindings.end(), [](const auto &binding) {
+        return binding.set == 1 && binding.binding == 0 &&
+               binding.type == vk::DescriptorType::eCombinedImageSampler;
+    }));
+#endif
+}
+
 TEST_CASE("unchanged example toon surface compiles all skinned template variants",
           "[surface-compiler][skeletal]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER

@@ -3,6 +3,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <array>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -144,6 +145,33 @@ TEST_CASE("B surface lowering has a byte-stable public C description golden",
     const auto expected = readText(root / "test" / "fixtures" / "material_lowering" /
                                    "wp78_dump.txt");
     REQUIRE(actual == expected);
+}
+
+TEST_CASE("screen input materials route forward and reject undefined snapshots by name",
+          "[material-lowering][snapshot]") {
+    const std::string source =
+        "//! pelican.surface v1\n"
+        "//! language: glsl\n"
+        "//! screen_inputs: [opaque_color]\n"
+        "\nvoid pelican_surface_v1(in PelicanSurfaceInputV1 i, inout PelicanSurfaceV1 s) {}\n";
+    const auto surface = parseSurfaceFormat(source, "refract.surface");
+    MaterialDefinition material;
+    material.name = "glass";
+    material.surface = "project://shaders/refract.surface";
+
+    REQUIRE_THROWS_WITH(lowerMaterialWithSnapshots(material, surface, {}),
+                        Catch::Matchers::ContainsSubstring("glass") &&
+                            Catch::Matchers::ContainsSubstring("opaque_color") &&
+                            Catch::Matchers::ContainsSubstring("undefined screen snapshot"));
+
+    const std::array snapshots{std::string{"opaque_color"}};
+    const auto lowered = lowerMaterialWithSnapshots(material, surface, snapshots);
+    REQUIRE(lowered.screen_inputs == std::vector<std::string>{"opaque_color"});
+    REQUIRE(lowered.target_pass == "forward_transparent");
+    const auto dump = dumpLoweredMaterial(lowered);
+    REQUIRE(dump.find("set=1 binding=0 type=combined_image_sampler name=opaque_color") !=
+            std::string::npos);
+    REQUIRE(dump.find("target_pass: forward_transparent") != std::string::npos);
 }
 
 } // namespace Pelican

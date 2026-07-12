@@ -2,6 +2,7 @@
 #include "../src/core/loader/engineresources.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -401,6 +402,62 @@ TEST_CASE("render features require the runtime shader compiler", "[render-featur
     REQUIRE(contains(message, "feature"));
     REQUIRE(contains(message, "実行時コンパイラ"));
     REQUIRE(contains(message, "runtime shader compiler"));
+}
+
+TEST_CASE("one opaque snapshot becomes a real copy node and sampled render target",
+          "[render-feature][snapshot]") {
+    const auto config = nlohmann::json::parse(R"json({
+  "snapshots": [{"name": "opaque_color", "after": "opaque"}],
+  "render_targets": [],
+  "rendering_passes": [{"name": "main", "passes": [{
+    "name": "opaque",
+    "type": "fullscreen",
+    "output": {"color": "swapchain", "depth": null}
+  }]}]
+})json");
+    const auto result = composeRenderFeatureConfig(config);
+    const auto &passes = result.config.at("rendering_passes").at(0).at("passes");
+    const auto copy = std::find_if(passes.begin(), passes.end(), [](const auto &pass) {
+        return pass.value("name", std::string{}) == "__snapshot_opaque_color";
+    });
+    REQUIRE(copy != passes.end());
+    REQUIRE(copy->at("type") == "snapshot_copy");
+    REQUIRE(copy->at("source") == "display");
+    REQUIRE(copy->at("destination") == "opaque_color");
+    REQUIRE(copy->at("snapshot_after") == "opaque");
+
+    const auto &target = result.config.at("render_targets").back();
+    REQUIRE(target.at("name") == "opaque_color");
+    REQUIRE(target.at("format_class") == "display");
+    REQUIRE(target.at("usage") == nlohmann::json::array({"TRANSFER_DST", "SAMPLED"}));
+}
+
+TEST_CASE("snapshot v1 rejects a second copy point by name", "[render-feature][snapshot]") {
+    const auto config = nlohmann::json::parse(R"json({
+  "snapshots": [
+    {"name": "opaque_color", "after": "post_ldr"},
+    {"name": "transparent_color", "after": "pelican_ui"}
+  ],
+  "render_targets": [],
+  "rendering_passes": [{"name": "main", "passes": []}]
+})json");
+    REQUIRE_THROWS_WITH(composeRenderFeatureConfig(config),
+                        Catch::Matchers::ContainsSubstring("transparent_color") &&
+                            Catch::Matchers::ContainsSubstring("exactly one opaque snapshot") &&
+                            Catch::Matchers::ContainsSubstring("sequential refraction"));
+}
+
+TEST_CASE("snapshot v1 rejects transparent-after copy points by name",
+          "[render-feature][snapshot]") {
+    const auto config = nlohmann::json::parse(R"json({
+  "snapshots": [{"name": "late_color", "after": "pelican_ui"}],
+  "render_targets": [],
+  "rendering_passes": [{"name": "main", "passes": []}]
+})json");
+    REQUIRE_THROWS_WITH(composeRenderFeatureConfig(config),
+                        Catch::Matchers::ContainsSubstring("late_color") &&
+                            Catch::Matchers::ContainsSubstring("transparent-after") &&
+                            Catch::Matchers::ContainsSubstring("unsupported in v1"));
 }
 
 } // namespace Pelican

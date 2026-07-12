@@ -250,7 +250,10 @@ user.spv(pelican_surface を Export。GLSL/HLSL/Slang 何産でもよい)
    マテリアルは `"screen_inputs": ["opaque_color"]` で**参照するだけ**。
    v1 は「opaque 後スナップショット 1 点」のみ・透明同士の逐次屈折は
    **非対応と明記**・コピーのバイト数はプラン dump に表示・マテリアル起点の
-   暗黙グラフ変更は禁止。屈折・水・深度フェードは v1 の範囲で成立する
+   暗黙グラフ変更は禁止。入力は宣言順の set 1 binding と生成 accessor
+   `pelican_screen_<name>(uv)` へ lower され、未定義名は名前入りエラーになる。
+   plan dump はコピー実ノードと消費 pass の read 依存だけを追加し、RT/マテリアルを
+   横断する集約ビューは持たない。屈折・水・深度フェードは v1 の範囲で成立する
 4. **web は B まで対応を目標に格上げ**(ユーザー決定): 経路は
    naga(リンク済み SPIR-V → WGSL)一択 — スニペットの言語を問わない。
    web サブセット版テンプレートでリンク → naga → .wgsl を **dist-bake の

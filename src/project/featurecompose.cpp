@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
@@ -18,8 +19,20 @@ constexpr std::string_view runtime_compiler_required_message =
 constexpr std::array<std::string_view, 7> canonical_anchors = {
     "post_main", "tonemap", "post_ldr", "pelican_ui", "debug_draw", "debug_text", "imgui"};
 
+std::unordered_set<std::string> collectRenderTargetNames(const nlohmann::json &config);
+
 std::string canonicalAnchorNodeName(std::string_view anchor) {
     return "__anchor_" + std::string{anchor};
+}
+
+bool isIdentifier(std::string_view value) {
+    if (value.empty() || (std::isalpha(static_cast<unsigned char>(value.front())) == 0 &&
+                          value.front() != '_')) {
+        return false;
+    }
+    return std::all_of(value.begin() + 1, value.end(), [](char ch) {
+        return std::isalnum(static_cast<unsigned char>(ch)) != 0 || ch == '_';
+    });
 }
 
 std::string requireStringField(const nlohmann::json &json, std::string_view field_name,
@@ -427,6 +440,96 @@ void enforceTerminalAfterComputeTasks(nlohmann::json &config) {
             }
         }
     }
+}
+
+void materializeSnapshots(nlohmann::json &config) {
+    if (!config.contains("snapshots")) {
+        return;
+    }
+    auto &snapshots = config.at("snapshots");
+    if (!snapshots.is_array()) {
+        throw std::runtime_error("rendering config snapshots must be an array");
+    }
+    if (snapshots.size() > 1) {
+        const auto second_name = snapshots.at(1).is_object()
+                                     ? snapshots.at(1).value("name", std::string{"<unnamed>"})
+                                     : std::string{"<invalid>"};
+        throw std::runtime_error("snapshot '" + second_name +
+                                 "' is unsupported: v1 permits exactly one opaque snapshot; "
+                                 "sequential refraction is not supported");
+    }
+    if (snapshots.empty()) {
+        return;
+    }
+
+    auto &snapshot = snapshots.front();
+    if (!snapshot.is_object()) {
+        throw std::runtime_error("rendering config snapshots entries must be objects");
+    }
+    const auto name = requireStringField(snapshot, "name", "snapshot");
+    const auto authored_after = requireStringField(snapshot, "after", "snapshot '" + name + "'");
+    if (!isIdentifier(name)) {
+        throw std::runtime_error("snapshot '" + name + "' must be a shader identifier");
+    }
+
+    auto target_names = collectRenderTargetNames(config);
+    if (target_names.contains(name)) {
+        throw std::runtime_error("snapshot '" + name + "' collides with render target name");
+    }
+
+    const auto anchor_it = std::find(canonical_anchors.begin(), canonical_anchors.end(), authored_after);
+    const auto after = anchor_it == canonical_anchors.end()
+                           ? authored_after
+                           : canonicalAnchorNodeName(authored_after);
+    const auto post_ldr = canonicalAnchorNodeName("post_ldr");
+    const auto transparent_begin = canonicalAnchorNodeName("pelican_ui");
+    const auto node = "__snapshot_" + name;
+
+    for (auto &pass_set : ensureArray(config, "rendering_passes")) {
+        auto &passes = pass_set.at("passes");
+        if (std::any_of(passes.begin(), passes.end(), [&](const auto &pass) {
+                return pass.value("name", std::string{}) == node;
+            })) {
+            throw std::runtime_error("snapshot '" + name + "' node collides with pass name: " + node);
+        }
+        auto found = std::find_if(passes.begin(), passes.end(), [&](const auto &pass) {
+            return pass.value("name", std::string{}) == after;
+        });
+        if (found == passes.end()) {
+            throw std::runtime_error("snapshot '" + name + "' copy point was not found: " +
+                                     authored_after);
+        }
+        const auto post_ldr_it = std::find_if(passes.begin(), passes.end(), [&](const auto &pass) {
+            return pass.value("name", std::string{}) == post_ldr;
+        });
+        const auto transparent_it = std::find_if(passes.begin(), passes.end(), [&](const auto &pass) {
+            return pass.value("name", std::string{}) == transparent_begin;
+        });
+        if (found < post_ldr_it || found >= transparent_it) {
+            throw std::runtime_error("snapshot '" + name + "' after '" + authored_after +
+                                     "' is not the opaque post_ldr region; transparent-after "
+                                     "snapshots and sequential refraction are unsupported in v1");
+        }
+
+        nlohmann::json copy{
+            {"name", node},
+            {"type", "snapshot_copy"},
+            {"source", "display"},
+            {"destination", name},
+            {"snapshot", name},
+            {"snapshot_after", authored_after},
+        };
+        passes.insert(found + 1, std::move(copy));
+    }
+
+    ensureArray(config, "render_targets").push_back({
+        {"name", name},
+        {"extent_scale", 1.0},
+        {"format", "B8G8R8A8_SRGB"},
+        {"format_class", "display"},
+        {"role", "color"},
+        {"usage", nlohmann::json::array({"TRANSFER_DST", "SAMPLED"})},
+    });
 }
 
 void initializeCanonicalColorPipeline(nlohmann::json &config, bool hdr_enabled) {
@@ -920,6 +1023,7 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         }
     }
     retargetSwapchainAliases(composed);
+    materializeSnapshots(composed);
     for (auto &pass_set : ensureArray(composed, "rendering_passes")) {
         enforceCanonicalOrder(pass_set.at("passes"));
     }

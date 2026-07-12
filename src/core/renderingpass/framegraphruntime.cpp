@@ -52,6 +52,7 @@ void FrameGraphRuntimeContainer::registerExecutionPlan(RenderingPassId rendering
             }
             execution.nodes.push_back(FrameGraphExecutionNode{node.kind, node.name, found->second, {}});
         } else if (node.kind == FramePlanNodeKind::anchor ||
+                   node.kind == FramePlanNodeKind::snapshot_copy ||
                    node.kind == FramePlanNodeKind::output_transform) {
             execution.nodes.push_back(FrameGraphExecutionNode{node.kind, node.name, 0, {}});
         } else {

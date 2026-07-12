@@ -269,6 +269,42 @@ nlohmann::json anchorNodeTrace(const std::string &name, size_t order) {
     return nlohmann::json{{"name", name}, {"kind", "anchor"}, {"order", order}};
 }
 
+std::size_t formatTexelBytes(vk::Format format) {
+    switch (format) {
+    case vk::Format::eR8Unorm: return 1;
+    case vk::Format::eR8G8B8A8Unorm:
+    case vk::Format::eR8G8B8A8Srgb:
+    case vk::Format::eB8G8R8A8Unorm:
+    case vk::Format::eB8G8R8A8Srgb: return 4;
+    case vk::Format::eR16G16B16A16Sfloat: return 8;
+    default: return 0;
+    }
+}
+
+nlohmann::json snapshotCopyTrace(const FramePlanNode &node, const RenderTargetMetadata &source,
+                                 const RenderTargetMetadata &destination) {
+    return nlohmann::json{
+        {"name", node.name},
+        {"kind", "snapshot_copy"},
+        {"order", node.order},
+        {"snapshot_after", node.snapshot_after},
+        {"source", source.name},
+        {"destination", destination.name},
+        {"format", formatToString(destination.format)},
+        {"extent", {destination.extent.width, destination.extent.height}},
+        {"texel_block_bytes", formatTexelBytes(destination.format)},
+        {"byte_size", static_cast<std::size_t>(destination.extent.width) * destination.extent.height *
+                          formatTexelBytes(destination.format)},
+        {"semantics", "fixed_once_before_transparency"},
+        {"sequential_refraction", false},
+        {"transitions", nlohmann::json::array({
+            {{"resource", source.name}, {"new_layout", "transfer_src_optimal"}},
+            {{"resource", destination.name}, {"new_layout", "transfer_dst_optimal"}},
+            {{"resource", destination.name}, {"new_layout", "shader_read_only_optimal"}},
+        })},
+    };
+}
+
 nlohmann::json outputTransformTrace(size_t order, vk::ImageLayout source_old_layout,
                                     vk::ImageLayout destination_final_layout,
                                     const RenderTargetMetadata &display,
@@ -489,6 +525,46 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
         } else if (execution_node.kind == FramePlanNodeKind::anchor) {
             if (node_trace != nullptr) {
                 node_trace->push_back(anchorNodeTrace(execution_node.name, node_index));
+            }
+        } else if (execution_node.kind == FramePlanNodeKind::snapshot_copy) {
+            const auto &planned_node = frame_graph.plan.nodes.at(node_index);
+            if (planned_node.reads.size() != 1 || planned_node.writes.size() != 1) {
+                throw std::runtime_error("snapshot copy node requires exactly one source and destination: " +
+                                         execution_node.name);
+            }
+            const auto source_id = modules.render_target_container.getRenderTargetIdByName(
+                planned_node.reads.front());
+            const auto destination_id = modules.render_target_container.getRenderTargetIdByName(
+                planned_node.writes.front());
+            if (!isConcreteRenderTarget(source_id) || !isConcreteRenderTarget(destination_id)) {
+                throw std::runtime_error("snapshot copy node references an unknown render target: " +
+                                         execution_node.name);
+            }
+            const auto source = modules.render_target_container.getMetadata(source_id);
+            const auto destination = modules.render_target_container.getMetadata(destination_id);
+            if (source.format != destination.format || source.extent != destination.extent) {
+                throw std::runtime_error("snapshot copy source/destination mismatch: " +
+                                         execution_node.name);
+            }
+            layout_tracker.transition(render_ctx.cmd_buf, modules.render_target_container,
+                                      modules.vk_utils, source_id,
+                                      vk::ImageLayout::eTransferSrcOptimal);
+            layout_tracker.transition(render_ctx.cmd_buf, modules.render_target_container,
+                                      modules.vk_utils, destination_id,
+                                      vk::ImageLayout::eTransferDstOptimal);
+            vk::ImageCopy copy;
+            copy.srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+            copy.dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+            copy.extent = vk::Extent3D{source.extent.width, source.extent.height, 1};
+            render_ctx.cmd_buf.copyImage(modules.render_target_container.getImage(source_id).image.get(),
+                                         vk::ImageLayout::eTransferSrcOptimal,
+                                         modules.render_target_container.getImage(destination_id).image.get(),
+                                         vk::ImageLayout::eTransferDstOptimal, copy);
+            layout_tracker.transition(render_ctx.cmd_buf, modules.render_target_container,
+                                      modules.vk_utils, destination_id,
+                                      vk::ImageLayout::eShaderReadOnlyOptimal);
+            if (node_trace != nullptr) {
+                node_trace->push_back(snapshotCopyTrace(planned_node, source, destination));
             }
         } else if (execution_node.kind == FramePlanNodeKind::output_transform) {
             const auto display_id = modules.render_target_container.getRenderTargetIdByName("display");

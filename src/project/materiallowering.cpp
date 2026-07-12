@@ -137,6 +137,16 @@ std::string_view depthCompareName(SurfaceDepthCompare compare) {
     return "unknown";
 }
 
+std::string routeMaterial(const SurfaceFormatDocument &surface) {
+    if (!surface.screen_inputs.empty() || surface.render_state.blend != SurfaceBlendMode::opaque) {
+        return "forward_transparent";
+    }
+    if (surface.hooks.brdf_v1 || surface.hooks.lighting_v1) {
+        return "forward_opaque";
+    }
+    return "deferred_geometry";
+}
+
 } // namespace
 
 Std140Layout makeSurfaceStd140Layout(const SurfaceFormatDocument &surface) {
@@ -230,6 +240,8 @@ LoweredMaterial lowerMaterial(const MaterialDefinition &material,
     lowered.values = bindSurfaceValues(surface, material.values, material.name);
     lowered.render_state = surface.render_state;
     lowered.hooks = surface.hooks;
+    lowered.screen_inputs = surface.screen_inputs;
+    lowered.target_pass = routeMaterial(surface);
     lowered.textures.reserve(surface.textures.size());
     for (std::size_t i = 0; i < surface.textures.size(); ++i) {
         const auto &texture = surface.textures[i];
@@ -244,6 +256,22 @@ LoweredMaterial lowerMaterial(const MaterialDefinition &material,
         });
     }
     return lowered;
+}
+
+LoweredMaterial lowerMaterialWithSnapshots(
+    const MaterialDefinition &material,
+    const SurfaceFormatDocument &surface,
+    std::span<const std::string> available_snapshots,
+    const MaterialLoweringCapabilities &capabilities) {
+    for (const auto &input : surface.screen_inputs) {
+        if (std::find(available_snapshots.begin(), available_snapshots.end(), input) ==
+            available_snapshots.end()) {
+            throw std::runtime_error("material '" + material.name + "' surface '" +
+                                     material.surface.value_or("<surface>") +
+                                     "' references undefined screen snapshot '" + input + "'");
+        }
+    }
+    return lowerMaterial(material, surface, capabilities);
 }
 
 LoweredMaterial lowerSurfaceDefaults(const SurfaceFormatDocument &surface,
@@ -296,6 +324,18 @@ std::string dumpLoweredMaterial(const LoweredMaterial &material) {
             << (texture.view == LoweredTextureView::srgb ? "SRGB" : "UNORM")
             << " default=" << texture.reference << '\n';
     }
+    for (std::size_t i = 0; i < material.screen_inputs.size(); ++i) {
+        out << "  set=1 binding=" << i << " type=combined_image_sampler name="
+            << material.screen_inputs[i] << " accessor=pelican_screen_"
+            << material.screen_inputs[i] << "\n";
+    }
+    out << "screen_inputs:";
+    if (material.screen_inputs.empty()) out << " []\n";
+    else {
+        out << '\n';
+        for (const auto &input : material.screen_inputs) out << "  - " << input << '\n';
+    }
+    out << "target_pass: " << material.target_pass << '\n';
     out << "render_state: blend=" << blendName(material.render_state.blend)
         << " cull=" << cullName(material.render_state.cull)
         << " depth_test=" << (material.render_state.depth_test ? "true" : "false")

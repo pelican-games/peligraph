@@ -1,0 +1,179 @@
+{
+  "barriers": [
+    {
+      "from": "opaque",
+      "kind": "read_after_write",
+      "resource": "display",
+      "to": "__snapshot_opaque_color"
+    },
+    {
+      "from": "__snapshot_opaque_color",
+      "kind": "read_after_write",
+      "resource": "opaque_color",
+      "to": "refract"
+    },
+    {
+      "from": "refract",
+      "kind": "read_after_write",
+      "resource": "display",
+      "to": "output_transform"
+    }
+  ],
+  "graph": "snapshot_demo",
+  "levels": [
+    [
+      "__anchor_post_main"
+    ],
+    [
+      "__anchor_tonemap"
+    ],
+    [
+      "__anchor_post_ldr"
+    ],
+    [
+      "opaque"
+    ],
+    [
+      "__snapshot_opaque_color"
+    ],
+    [
+      "refract"
+    ],
+    [
+      "__anchor_pelican_ui"
+    ],
+    [
+      "__anchor_debug_draw"
+    ],
+    [
+      "__anchor_debug_text"
+    ],
+    [
+      "__anchor_imgui"
+    ],
+    [
+      "output_transform"
+    ]
+  ],
+  "nodes": [
+    {
+      "declaration_index": 0,
+      "kind": "anchor",
+      "level": 0,
+      "name": "__anchor_post_main",
+      "order": 0,
+      "reads": [],
+      "writes": []
+    },
+    {
+      "declaration_index": 1,
+      "kind": "anchor",
+      "level": 1,
+      "name": "__anchor_tonemap",
+      "order": 1,
+      "reads": [],
+      "writes": []
+    },
+    {
+      "declaration_index": 2,
+      "kind": "anchor",
+      "level": 2,
+      "name": "__anchor_post_ldr",
+      "order": 2,
+      "reads": [],
+      "writes": []
+    },
+    {
+      "declaration_index": 3,
+      "kind": "render",
+      "level": 3,
+      "name": "opaque",
+      "order": 3,
+      "reads": [],
+      "writes": [
+        "display"
+      ]
+    },
+    {
+      "byte_size": 8192,
+      "declaration_index": 4,
+      "kind": "snapshot_copy",
+      "level": 4,
+      "name": "__snapshot_opaque_color",
+      "order": 4,
+      "reads": [
+        "display"
+      ],
+      "semantics": "fixed_once_before_transparency",
+      "sequential_refraction": false,
+      "snapshot_after": "opaque",
+      "writes": [
+        "opaque_color"
+      ]
+    },
+    {
+      "declaration_index": 5,
+      "kind": "render",
+      "level": 5,
+      "name": "refract",
+      "order": 5,
+      "reads": [
+        "opaque_color"
+      ],
+      "writes": [
+        "display"
+      ]
+    },
+    {
+      "declaration_index": 6,
+      "kind": "anchor",
+      "level": 6,
+      "name": "__anchor_pelican_ui",
+      "order": 6,
+      "reads": [],
+      "writes": []
+    },
+    {
+      "declaration_index": 7,
+      "kind": "anchor",
+      "level": 7,
+      "name": "__anchor_debug_draw",
+      "order": 7,
+      "reads": [],
+      "writes": []
+    },
+    {
+      "declaration_index": 8,
+      "kind": "anchor",
+      "level": 8,
+      "name": "__anchor_debug_text",
+      "order": 8,
+      "reads": [],
+      "writes": []
+    },
+    {
+      "declaration_index": 9,
+      "kind": "anchor",
+      "level": 9,
+      "name": "__anchor_imgui",
+      "order": 9,
+      "reads": [],
+      "writes": []
+    },
+    {
+      "declaration_index": 10,
+      "kind": "output_transform",
+      "level": 10,
+      "name": "output_transform",
+      "order": 10,
+      "reads": [
+        "display"
+      ],
+      "writes": [
+        "swapchain"
+      ]
+    }
+  ],
+  "schema": "pelican.frame_plan",
+  "version": 1
+}
