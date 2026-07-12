@@ -2372,6 +2372,38 @@ fixture リスト(§7 A1.5 + レビュー由来の追補。各項は「期待値
 受け入れ = 新 fixture 全 green + 既存全テスト + golden 全維持(SKIP 0)+
 player(自己完結 project 可)。
 
+### WP100: アセット HR1-T — テクスチャ差し替え(初の実 handler)
+
+参照: **`design_asset_hot_reload.md` v2.1 §3-2 テクスチャ行・§7 HR1-T 行が
+正**。基盤 = WP96(HR0 watcher)+ WP98(HR1 transaction — レポート
+`docs/design_reviews/2026-07-12_wp98_report.md` §「HR1-T / HR1-M / HR2 の
+接続点」の group API に**そのまま乗ること**。identity allocator/rollback/
+barrier/status を個別再実装しない)。依存: WP96・WP98(済)。見積: 大。
+排他: texture handler 新設 + `MaterialContainer` の replace 面追加
+(`registerTexture` 系の既存挙動不変)。
+
+1. **texture asset の watcher 接続**: 独立画像(png/EXR/KTX2)の
+   AssetKey → ReloadRequest → transaction group(WP98 の reverse
+   dependency で参照 material を巻き込む)
+2. **同 shape 差し替え**: extent/format/mip 同一なら in-place
+   re-upload(logical `GlobalTextureId` 不変・descriptor 無変更)
+3. **shape/format/mip 変化**: image 再生成 + **reverse index で参照中の
+   全 material descriptor set を再バインド**(descriptor は登録時
+   一回書きのため逆引き必須 — MaterialContainer に rebind 面を新設)。
+   旧 image は DeletionQueue(WP98 RetireSink 経由)
+4. **失敗系**: 壊れた画像・未対応 format は candidate 破棄 + 旧絵継続 +
+   `last_reload_error`。WP98 の rollback 不変条件(counts/IDs/bytes)を
+   実 GPU resource でも fixture 化
+5. **決定性 gate**: リプレイ/strict/rpc 中は HR0 gate で発火しない
+   (書き換えても capture 不変の fixture)
+6. fixture: 実 FS end-to-end(png 書き換え → capture 差分)1 本 +
+   **1000 reload で texture/descriptor/GPU bytes が単調 leak しない** +
+   KTX2 の mip/format 変化(WP92 fixture 流用)+ 同 GlobalTextureId
+   維持 + in-flight フレーム跨ぎで crash なし
+7. 受け入れ = 上記全 green + 既存全テスト + golden 全維持(SKIP 0)+
+   player 8 秒(自己完結 project 可・可能なら実プロジェクトで F5 相当の
+   手動確認手順もレポートに記載)
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの
