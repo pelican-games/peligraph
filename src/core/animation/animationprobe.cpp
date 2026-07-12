@@ -1,6 +1,7 @@
 #include "animationprobe.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -17,6 +18,21 @@ namespace Pelican::Animation {
 namespace {
 
 constexpr std::size_t headerSize = sizeof(DescriptorHeaderV1);
+
+struct PoseRegistryRecord {
+    std::uint32_t generation{};
+    bool active{};
+};
+
+std::atomic_uint64_t nextPoseIdentity{1};
+std::mutex poseRegistryMutex;
+std::unordered_map<std::uint64_t, PoseRegistryRecord> poseRegistry;
+
+void invalidateRegisteredPoses(const std::unordered_set<std::uint64_t> &identities) {
+    std::scoped_lock lock{poseRegistryMutex};
+    for (const auto identity : identities)
+        if (const auto found = poseRegistry.find(identity); found != poseRegistry.end()) found->second.active = false;
+}
 
 template <class T> Status validateDescriptor(const T &value, std::size_t minimum_size = headerSize) {
     if (value.struct_size < minimum_size) return Status::invalid_argument;
@@ -79,7 +95,8 @@ struct ProbeRuntime::Impl {
     std::size_t used{};
     std::uint32_t arena_generation{};
     std::uint64_t frame_revision{};
-    std::uint64_t next_pose_identity{1};
+    std::vector<std::uint64_t> pose_slot_identities;
+    std::size_t pose_slot_cursor{};
     std::uint64_t next_cursor_identity{1};
     std::thread::id owner;
     mutable std::mutex mutex;
@@ -97,15 +114,24 @@ struct ProbeRuntime::Impl {
 };
 
 ProbeRuntime::ProbeRuntime(std::size_t arena_capacity) : impl_(std::make_unique<Impl>(arena_capacity)) {}
-ProbeRuntime::~ProbeRuntime() = default;
+ProbeRuntime::~ProbeRuntime() {
+    if (impl_) invalidateRegisteredPoses(impl_->pose_identities);
+}
 ProbeRuntime::ProbeRuntime(ProbeRuntime &&) noexcept = default;
-ProbeRuntime &ProbeRuntime::operator=(ProbeRuntime &&) noexcept = default;
+ProbeRuntime &ProbeRuntime::operator=(ProbeRuntime &&other) noexcept {
+    if (this == &other) return *this;
+    if (impl_) invalidateRegisteredPoses(impl_->pose_identities);
+    impl_ = std::move(other.impl_);
+    return *this;
+}
 
 PoseArenaHandle ProbeRuntime::beginFrame(std::uint64_t frame_revision) {
     std::scoped_lock lock{impl_->mutex};
     if (std::this_thread::get_id() != impl_->owner) return invalidHandle<PoseArenaHandle>();
     impl_->used = 0;
+    invalidateRegisteredPoses(impl_->pose_identities);
     impl_->pose_identities.clear();
+    impl_->pose_slot_cursor = 0;
     impl_->frame_revision = frame_revision;
     if (++impl_->arena_generation == 0) ++impl_->arena_generation;
     return PoseArenaHandle{1, impl_->arena_generation, 0};
@@ -145,8 +171,14 @@ Status ProbeRuntime::acquirePose(PoseArenaHandle arena, PoseLayoutHandle layout,
     PoseViewV1 produced{};
     produced.struct_size = sizeof(PoseViewV1);
     produced.version = descriptorVersionV1;
-    produced.pose = PoseHandle{impl_->next_pose_identity++, impl_->arena_generation, 0};
+    if (impl_->pose_slot_cursor == impl_->pose_slot_identities.size())
+        impl_->pose_slot_identities.push_back(nextPoseIdentity.fetch_add(1, std::memory_order_relaxed));
+    produced.pose = PoseHandle{impl_->pose_slot_identities[impl_->pose_slot_cursor++], impl_->arena_generation, 0};
     impl_->pose_identities.insert(produced.pose.identity);
+    {
+        std::scoped_lock registry_lock{poseRegistryMutex};
+        poseRegistry[produced.pose.identity] = {produced.pose.generation, true};
+    }
     produced.layout = layout;
     produced.joint_count = joint_count;
     produced.element_stride = sizeof(Vec4fV1);
@@ -159,9 +191,18 @@ Status ProbeRuntime::acquirePose(PoseArenaHandle arena, PoseLayoutHandle layout,
 
 Status ProbeRuntime::validatePose(PoseHandle pose) const {
     std::scoped_lock lock{impl_->mutex};
-    if (!isValid(pose)) return Status::invalid_handle;
-    if (pose.generation != impl_->arena_generation) return Status::stale_generation;
+    if (const auto status = validatePoseHandle(pose); status != Status::ok) return status;
     return impl_->pose_identities.contains(pose.identity) ? Status::ok : Status::invalid_handle;
+}
+
+Status ProbeRuntime::validatePoseHandle(PoseHandle pose) {
+    if (!isValid(pose)) return Status::invalid_handle;
+    std::scoped_lock lock{poseRegistryMutex};
+    const auto found = poseRegistry.find(pose.identity);
+    if (found == poseRegistry.end()) return Status::invalid_handle;
+    if (!found->second.active || found->second.generation != pose.generation)
+        return Status::stale_generation;
+    return Status::ok;
 }
 
 CursorHandle ProbeRuntime::createCursor(double duration_seconds, WrapMode wrap_mode,
@@ -313,6 +354,13 @@ QuatfV1 ProbeRuntime::blendQuaternions(std::span<const QuatfV1> values, std::spa
     if (w < 0.0 || (w == 0.0 && (z < 0.0 || (z == 0.0 && (y < 0.0 || (y == 0.0 && x < 0.0)))))) {
         x = -x; y = -y; z = -z; w = -w;
     }
+    // Signed zero is numerically equal but not byte-identical. Canonicalize it
+    // after the frozen hemisphere/sign algorithm so source permutation cannot
+    // leak a reference-dependent -0.0 into the published quaternion.
+    if (x == 0.0) x = 0.0;
+    if (y == 0.0) y = 0.0;
+    if (z == 0.0) z = 0.0;
+    if (w == 0.0) w = 0.0;
     return {static_cast<float>(x), static_cast<float>(y), static_cast<float>(z), static_cast<float>(w)};
 }
 

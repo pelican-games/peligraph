@@ -16,6 +16,13 @@ namespace {
 
 constexpr std::uint32_t invalidNode = std::numeric_limits<std::uint32_t>::max();
 
+template <class Handle>
+Status validateGeneration(Handle handle, const std::shared_ptr<AnimationResourceGeneration> &state) {
+    if (state && state->current.load(std::memory_order_acquire) != handle.generation)
+        return Status::stale_generation;
+    return Status::ok;
+}
+
 TransformV1 toPublic(const SkeletonNodeRestPose &pose) {
     return {{pose.translation.x, pose.translation.y, pose.translation.z, 0.0f},
             {pose.rotation.x, pose.rotation.y, pose.rotation.z, pose.rotation.w},
@@ -48,6 +55,8 @@ Status validateView(const PoseViewV1 &view, PoseLayoutHandle layout, std::size_t
         return Status::invalid_argument;
     if (view.reserved0 != 0 || view.reserved1 != 0) return Status::reserved_not_zero;
     if (!isValid(view.pose) || !isValid(view.layout)) return Status::invalid_handle;
+    if (const auto status = ProbeRuntime::validatePoseHandle(view.pose); status != Status::ok)
+        return status;
     if (view.layout.identity != layout.identity || view.layout.generation != layout.generation)
         return Status::incompatible_layout;
     if (view.joint_count != joint_count || view.element_stride != sizeof(Vec4fV1) ||
@@ -125,8 +134,10 @@ const AnimationAsset &AnimationAssetRegistry::getOrCreate(const SkeletalModelDat
 
     AnimationAsset asset;
     asset.source = &model;
+    auto generation_state = std::make_shared<AnimationResourceGeneration>();
     asset.rig.handle = {next_identity_++, 1, 0};
     asset.rig.layout = {next_identity_++, 1, 0};
+    asset.rig.generation_state = generation_state;
     asset.rig.original_to_layout.assign(model.nodes.size(), invalidNode);
     std::vector<std::uint8_t> state(model.nodes.size());
     for (std::uint32_t node = 0; node < model.nodes.size(); ++node) appendNode(model, node, state, asset.rig);
@@ -138,6 +149,7 @@ const AnimationAsset &AnimationAssetRegistry::getOrCreate(const SkeletalModelDat
         binding.handle = {next_identity_++, 1, 0};
         binding.source_rig = asset.rig.handle;
         binding.layout = asset.rig.layout;
+        binding.generation_state = generation_state;
         binding.palette_offset = offset;
         binding.joint_layout_nodes.reserve(count);
         binding.inverse_bind_matrices.reserve(count);
@@ -164,12 +176,16 @@ const AnimationAsset &AnimationAssetRegistry::getOrCreate(const SkeletalModelDat
             throw std::runtime_error("glTF skin bindings do not exactly cover the combined palette");
     }
     for (const auto &clip : model.clips)
-        asset.clips.push_back({{next_identity_++, 1, 0}, asset.rig.handle, &clip});
+        asset.clips.push_back({{next_identity_++, 1, 0}, asset.rig.handle, generation_state, &clip});
     return assets_.emplace(&model, std::move(asset)).first->second;
 }
 
 void AnimationAssetRegistry::clear() {
     std::scoped_lock lock{mutex_};
+    for (auto &[_, asset] : assets_) {
+        auto &generation = asset.rig.generation_state->current;
+        if (++generation == 0) ++generation;
+    }
     assets_.clear();
     ++next_identity_;
 }
@@ -185,6 +201,13 @@ Status samplePoseAt(const AnimationAsset &asset, const AnimationClipResource *cl
                     PoseViewV1 &out_pose) {
     if (!std::isfinite(engine_time) || !std::isfinite(speed) || !std::isfinite(start_time))
         return Status::invalid_argument;
+    if (const auto status = validateGeneration(asset.rig.handle, asset.rig.generation_state);
+        status != Status::ok)
+        return status;
+    if (clip != nullptr) {
+        if (const auto status = validateGeneration(clip->handle, clip->generation_state); status != Status::ok)
+            return status;
+    }
     if (const auto status = validateView(out_pose, asset.rig.layout, asset.rig.rest_pose.size());
         status != Status::ok)
         return status;
@@ -224,6 +247,8 @@ Status samplePoseAt(const AnimationAsset &asset, const AnimationClipResource *cl
 }
 
 Status blendNormal(const AnimationRig &rig, std::span<const NormalBlendInput> inputs, PoseViewV1 &out_pose) {
+    if (const auto status = validateGeneration(rig.handle, rig.generation_state); status != Status::ok)
+        return status;
     if (const auto status = validateView(out_pose, rig.layout, rig.rest_pose.size()); status != Status::ok)
         return status;
     for (const auto &input : inputs) {
@@ -270,6 +295,8 @@ Status blendNormal(const AnimationRig &rig, std::span<const NormalBlendInput> in
 
 Status localToModel(const AnimationRig &rig, const PoseViewV1 &local_pose,
                     std::span<Matrix4fV1> model_matrices, PoseViewV1 *model_pose) {
+    if (const auto status = validateGeneration(rig.handle, rig.generation_state); status != Status::ok)
+        return status;
     if (const auto status = validateView(local_pose, rig.layout, rig.rest_pose.size()); status != Status::ok)
         return status;
     if (model_matrices.size() < rig.rest_pose.size()) return Status::buffer_too_small;
@@ -311,11 +338,17 @@ Status localToModel(const AnimationRig &rig, const PoseViewV1 &local_pose,
 
 Status buildSkinPalette(const AnimationAsset &asset, std::span<const Matrix4fV1> model_matrices,
                         std::span<Matrix4fV1> palette) {
+    if (const auto status = validateGeneration(asset.rig.handle, asset.rig.generation_state);
+        status != Status::ok)
+        return status;
     if (model_matrices.size() < asset.rig.rest_pose.size()) return Status::invalid_argument;
     const auto required = asset.source->joint_nodes.size();
     if (palette.size() < required) return Status::buffer_too_small;
     std::vector<Matrix4fV1> produced(required);
     for (const auto &binding : asset.skin_bindings) {
+        if (const auto status = validateGeneration(binding.handle, binding.generation_state);
+            status != Status::ok)
+            return status;
         if (binding.joint_layout_nodes.size() != binding.inverse_bind_matrices.size())
             return Status::invalid_argument;
         if (binding.palette_offset > produced.size() ||
