@@ -78,6 +78,7 @@ bool PelicanCore::run() {
         LOG_ERROR(logger, "Pelican fatal error: non-standard exception");
         succeeded = false;
     }
+    FastModuleContainer::beginShutdown();
     teardown.run();
     shutdownConfiguredGameLogic();
     return succeeded;

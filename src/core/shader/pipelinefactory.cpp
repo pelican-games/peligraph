@@ -489,10 +489,11 @@ const ShaderReflection &PipelineFactory::reflection(PipelineHandle handle) const
     return pipelines.get(handle).reflection;
 }
 
-void PipelineFactory::rebuildDirty() {
+PipelineRebuildResult PipelineFactory::rebuildDirty() {
     const auto dirty_shaders = shader_library.takeDirtyBundles();
+    PipelineRebuildResult result{.dirty_shaders = dirty_shaders.size()};
     if (dirty_shaders.empty()) {
-        return;
+        return result;
     }
 
     for (const auto handle : pipeline_handles) {
@@ -501,6 +502,7 @@ void PipelineFactory::rebuildDirty() {
             continue;
         }
 
+        ++result.attempted_pipelines;
         try {
             auto replacement = std::visit(
                 [this](const auto &pipeline_desc) {
@@ -513,10 +515,14 @@ void PipelineFactory::rebuildDirty() {
                 },
                 record.desc);
             replacePipeline(handle, std::move(replacement));
+            ++result.rebuilt_pipelines;
         } catch (const std::exception &ex) {
+            ++result.failed_pipelines;
+            result.last_error = ex.what();
             LOG_WARNING(logger, "Pipeline hot reload failed; keeping previous pipeline: {}", ex.what());
         }
     }
+    return result;
 }
 
 } // namespace Pelican

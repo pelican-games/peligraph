@@ -23,6 +23,7 @@ class MaterialValuesReloadHandler {
         const watch::AssetKey &key, std::filesystem::path path,
         MaterialSurfaceCatalog surfaces,
         std::span<const MaterialContainer::ReloadableMaterialValuesBinding> bindings);
+    bool handles(const watch::AssetKey &key) const;
     bool enqueue(const watch::ReloadRequest &request,
                  watch::ReloadCoordinator &coordinator);
     bool retire(std::shared_ptr<const void> payload,

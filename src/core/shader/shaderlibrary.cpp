@@ -359,13 +359,14 @@ bool ShaderLibrary::reload(ShaderBundleId id) {
     }
 }
 
-size_t ShaderLibrary::reloadModifiedSources(std::chrono::steady_clock::time_point now) {
+ShaderSourceReloadResult ShaderLibrary::pollModifiedSources(
+    std::chrono::steady_clock::time_point now) {
     if (now < next_source_poll_time) {
-        return 0;
+        return {};
     }
     next_source_poll_time = now + std::chrono::seconds{1};
 
-    size_t reloaded_count = 0;
+    ShaderSourceReloadResult result;
     for (const auto id : bundle_ids) {
         const auto &bundle = bundles.get(id);
         if (bundle.source_path.empty()) {
@@ -386,11 +387,19 @@ size_t ShaderLibrary::reloadModifiedSources(std::chrono::steady_clock::time_poin
             continue;
         }
 
+        ++result.modified_bundles;
         if (reload(id)) {
-            ++reloaded_count;
+            ++result.reloaded_bundles;
+        } else {
+            ++result.failed_bundles;
+            result.last_error = bundles.get(id).log;
         }
     }
-    return reloaded_count;
+    return result;
+}
+
+size_t ShaderLibrary::reloadModifiedSources(std::chrono::steady_clock::time_point now) {
+    return pollModifiedSources(now).reloaded_bundles;
 }
 
 std::vector<ShaderBundleId> ShaderLibrary::takeDirtyBundles() {

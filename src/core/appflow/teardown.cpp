@@ -27,18 +27,14 @@ void cleanupStep(const char *name, Function &&function) noexcept {
 } // namespace
 
 void teardownRuntimeNoThrow() noexcept {
-    if (VulkanManageCore::__get().has_value()) {
-        cleanupStep("wait-idle", [] { VulkanManageCore::__get()->waitIdle(); });
-    }
-    if (PhysWorld::__get().has_value()) {
-        cleanupStep("physics", [] { PhysWorld::__get()->clear(); });
-    }
-    if (ECSCore::__get().has_value()) {
-        cleanupStep("ecs", [] { ECSCore::__get()->clearEntities(); });
-    }
-    if (PolygonInstanceContainer::__get().has_value()) {
-        cleanupStep("model-instances", [] { PolygonInstanceContainer::__get()->clear(); });
-    }
+    if (auto *vulkan = FastModuleContainer::tryGet<VulkanManageCore>())
+        cleanupStep("wait-idle", [vulkan] { vulkan->waitIdle(); });
+    if (auto *physics = FastModuleContainer::tryGet<PhysWorld>())
+        cleanupStep("physics", [physics] { physics->clear(); });
+    if (auto *ecs = FastModuleContainer::tryGet<ECSCore>())
+        cleanupStep("ecs", [ecs] { ecs->clearEntities(); });
+    if (auto *instances = FastModuleContainer::tryGet<PolygonInstanceContainer>())
+        cleanupStep("model-instances", [instances] { instances->clear(); });
 }
 
 RuntimeTeardownGuard::~RuntimeTeardownGuard() {

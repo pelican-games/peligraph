@@ -76,6 +76,10 @@ set_target_properties(pelican_test_gltf_scene_fixture_writer PROPERTIES CXX_STAN
 target_link_libraries(pelican_test_gltf_scene_fixture_writer PRIVATE nlohmann_json)
 
 # register tests
+pelican_define_test(module_container_test pelican_core)
+target_compile_definitions(pelican_test_module_container_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
 pelican_define_test(deletionqueue_test pelican_core)
 pelican_define_test(deterministicrng_test pelican_core)
 pelican_define_test(enginetime_test pelican_core)

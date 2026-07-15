@@ -28,6 +28,9 @@ DECLARE_MODULE(Renderer) {
     const nlohmann::json &lastExecutionTraceForTesting() const { return last_execution_trace; }
     void recreateRenderTargetsAndRebindForTesting(vk::Extent2D extent);
     void resetTemporalHistory();
+    // Resolves every renderer-owned runtime dependency while module creation is
+    // still legal. Subsequent render calls only read the frozen module graph.
+    void prepareRuntimeModules();
     void render();
 };
 

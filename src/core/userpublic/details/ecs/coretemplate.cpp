@@ -420,6 +420,13 @@ void ECSCoreTemplatePublic::update() {
     TimeProfilerStart("ECS_Update_Execution");
     for (const auto &level : execution_levels) {
         for (const auto system_id : level) {
+            auto &system = systems.at(system_id);
+            if (system.prepare_func) {
+                system.prepare_func(*this, system.system_ref, system.matching_chunk_indices,
+                                    system.component_indices);
+            }
+        }
+        for (const auto system_id : level) {
             JobSystem::Get().schedule([this, system_id] {
                 auto &system = systems.at(system_id);
                 system.p_func(*this, system.system_ref, system.matching_chunk_indices, system.component_indices);

@@ -29,6 +29,8 @@ template <class Operation> void forEachFramePhase(Operation &&operation) {
 }
 
 // Shared by the windowed, fixed-step headless, and RPC step_frame loops.
+// Called once by the composition root before freezing module creation.
+void prepareFrameStateModules();
 void updateFrameState();
 
 } // namespace Pelican

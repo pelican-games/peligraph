@@ -25,12 +25,63 @@
 
 namespace Pelican {
 
+namespace {
+
+struct FrameStateModules {
+    watch::ReloadService *reload_service;
+    InputSequenceRuntime &input_sequence;
+    InputState &input_state;
+    ui::UiModule *ui_module;
+    RenderTarget *render_target;
+#if PELICAN_WITH_IMGUI
+    ImGuiSystem *imgui_system;
+#endif
+    ECSCore &ecs;
+    EngineTime &engine_time;
+    SeqPlayer &seq_player;
+    SceneLoader &scene_loader;
+};
+
+FrameStateModules resolveFrameStateModules() {
+    auto *ui_module = FastModuleContainer::tryGet<ui::UiModule>();
+    auto *render_target = FastModuleContainer::tryGet<RenderTarget>();
+    if (ui_module == nullptr || render_target == nullptr) {
+        ui_module = nullptr;
+        render_target = nullptr;
+    }
+#if PELICAN_WITH_IMGUI
+    ImGuiSystem *imgui_system = nullptr;
+    invokeImGuiRuntimeCallback(GET_MODULE(EngineLaunchConfig), [&] {
+        imgui_system = &GET_MODULE(ImGuiSystem);
+    });
+#endif
+    return {
+        FastModuleContainer::tryGet<watch::ReloadService>(),
+        GET_MODULE(InputSequenceRuntime),
+        GET_MODULE(InputState),
+        ui_module,
+        render_target,
+#if PELICAN_WITH_IMGUI
+        imgui_system,
+#endif
+        GET_MODULE(ECSCore),
+        GET_MODULE(EngineTime),
+        GET_MODULE(SeqPlayer),
+        GET_MODULE(SceneLoader),
+    };
+}
+
+} // namespace
+
+void prepareFrameStateModules() {
+    (void)resolveFrameStateModules();
+}
+
 void updateFrameState() {
+    auto modules = resolveFrameStateModules();
     // Reload publication is a frame-boundary operation and happens before any
     // phase can observe game/runtime state.
-    if (FastModuleContainer::isInitialized<watch::ReloadService>()) {
-        GET_MODULE(watch::ReloadService).applyFrame();
-    }
+    if (modules.reload_service != nullptr) modules.reload_service->applyFrame();
     GameContext game_context;
     forEachFramePhase([&](FramePhase phase) {
         switch (phase) {
@@ -38,26 +89,24 @@ void updateFrameState() {
             internal::freezePendingEventsForFrame();
             break;
         case FramePhase::freeze_input:
-            GET_MODULE(InputSequenceRuntime).prepareFrame(GET_MODULE(InputState));
-            GET_MODULE(InputState).beginFrame();
-            GET_MODULE(InputSequenceRuntime).recordFrame(GET_MODULE(InputState).currentFrameInput());
+            modules.input_sequence.prepareFrame(modules.input_state);
+            modules.input_state.beginFrame();
+            modules.input_sequence.recordFrame(modules.input_state.currentFrameInput());
             break;
         case FramePhase::freeze_actions:
 #if PELICAN_WITH_IMGUI
-            invokeImGuiRuntimeCallback(GET_MODULE(EngineLaunchConfig), [&] {
-                GET_MODULE(ImGuiSystem).routeInputAndBeginFrame(GET_MODULE(InputState));
-            });
+            if (modules.imgui_system != nullptr)
+                modules.imgui_system->routeInputAndBeginFrame(modules.input_state);
 #endif
-            if (FastModuleContainer::isInitialized<ui::UiModule>() &&
-                FastModuleContainer::isInitialized<RenderTarget>()) {
-                auto &input = GET_MODULE(InputState);
-                const auto &mask = input.consumptionMask();
+            if (modules.ui_module != nullptr) {
+                const auto &mask = modules.input_state.consumptionMask();
                 const bool tool_owns_pointer = mask.pointer_motion ||
                     mask.consumesControl(KeyCode::MouseLeft) ||
                     mask.consumesControl(KeyCode::MouseRight) ||
                     mask.consumesControl(KeyCode::MouseMiddle);
                 if (!tool_owns_pointer)
-                    GET_MODULE(ui::UiModule).routeFrameInput(input, GET_MODULE(RenderTarget).getExtent());
+                    modules.ui_module->routeFrameInput(modules.input_state,
+                                                       modules.render_target->getExtent());
             }
             internal::freezeInputActionsFrame();
             break;
@@ -65,24 +114,23 @@ void updateFrameState() {
             internal::dispatchFrozenEvents(game_context);
             break;
         case FramePhase::update_game:
-            GET_MODULE(ECSCore).update();
+            modules.ecs.update();
             internal::updateRegisteredGameSystems(game_context);
             if (const auto status = Animation::animationServiceRuntime().runAllPhases(
-                    GET_MODULE(EngineTime).frameIndex());
+                    modules.engine_time.frameIndex());
                 status != Animation::Status::ok) {
                 throw std::runtime_error("animation phase evaluation failed");
             }
-            GET_MODULE(SeqPlayer).update(GET_MODULE(EngineTime).now());
-            GET_MODULE(SceneLoader).applyPendingLoad();
+            modules.seq_player.update(modules.engine_time.now());
+            modules.scene_loader.applyPendingLoad();
             break;
         default:
             assert(false && "unknown frame phase");
             break;
         }
     });
-    if (FastModuleContainer::isInitialized<CameraBakeRecorder>()) {
-        GET_MODULE(CameraBakeRecorder).recordFrame();
-    }
+    if (auto *camera_bake = FastModuleContainer::tryGet<CameraBakeRecorder>())
+        camera_bake->recordFrame();
 }
 
 } // namespace Pelican

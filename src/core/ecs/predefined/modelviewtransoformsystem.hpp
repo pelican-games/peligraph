@@ -9,9 +9,14 @@
 
 namespace Pelican {
 
+class PolygonInstanceContainer;
+
 DECLARE_MODULE(SimpleModelViewTransformSystem) {
+    PolygonInstanceContainer *instances = nullptr;
+
   public:
     using QueryComponents = std::tuple<TransformComponent *, SimpleModelViewComponent *>;
+    void prepareEcsWorkerDependencies(bool has_matching_chunks);
     void process(QueryComponents components, size_t count);
 };
 

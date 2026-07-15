@@ -13,6 +13,7 @@
 #include "../os/inputstate.hpp"
 #include "../playback/seqplayer.hpp"
 #include "../renderingpass/renderingpassjsonhelpers.hpp"
+#include "../renderer/spritescene.hpp"
 #include "../userpublic/gamecontext.hpp"
 #include "../userpublic/userinput.hpp"
 #include "../userpublic/details/system/registerer.hpp"
@@ -192,7 +193,42 @@ struct PendingTransformUpdate {
     SceneObjectTransform transform;
 };
 
-std::vector<PendingTransformUpdate> parseTransformUpdates(const nlohmann::json &params) {
+struct EngineRpcModules {
+    EngineTime &engine_time;
+    PathResolver &path_resolver;
+    SceneLoader &scene_loader;
+    RenderTarget &render_target;
+    StartupMetrics &startup_metrics;
+    InputSequenceRuntime &input_sequence;
+    InputState &input_state;
+    EngineLaunchConfig &launch_config;
+    watch::ReloadGate &reload_gate;
+    watch::ReloadService *reload_service;
+    SpriteScene *sprite_scene;
+    Renderer &renderer;
+    SeqPlayer &seq_player;
+};
+
+EngineRpcModules resolveEngineRpcModules() {
+    return {
+        GET_MODULE(EngineTime),
+        GET_MODULE(PathResolver),
+        GET_MODULE(SceneLoader),
+        GET_MODULE(RenderTarget),
+        GET_MODULE(StartupMetrics),
+        GET_MODULE(InputSequenceRuntime),
+        GET_MODULE(InputState),
+        GET_MODULE(EngineLaunchConfig),
+        GET_MODULE(watch::ReloadGate),
+        FastModuleContainer::tryGet<watch::ReloadService>(),
+        FastModuleContainer::tryGet<SpriteScene>(),
+        GET_MODULE(Renderer),
+        GET_MODULE(SeqPlayer),
+    };
+}
+
+std::vector<PendingTransformUpdate> parseTransformUpdates(const nlohmann::json &params,
+                                                          SceneLoader &scene_loader) {
     constexpr auto method = "update_transforms";
     const auto &object = requireObjectParams(params, method);
     const auto &objects = requireArrayField(object, "objects", method);
@@ -204,7 +240,6 @@ std::vector<PendingTransformUpdate> parseTransformUpdates(const nlohmann::json &
 
     std::vector<PendingTransformUpdate> updates;
     updates.reserve(objects.size());
-    auto &scene_loader = GET_MODULE(SceneLoader);
     for (size_t i = 0; i < objects.size(); ++i) {
         if (!objects.at(i).is_string()) {
             throw JsonRpcHandlerError(JsonRpcErrorCodes::invalidParams,
@@ -224,8 +259,7 @@ std::vector<PendingTransformUpdate> parseTransformUpdates(const nlohmann::json &
     return updates;
 }
 
-void flushPendingTransforms(std::vector<PendingTransformUpdate> &pending) {
-    auto &scene_loader = GET_MODULE(SceneLoader);
+void flushPendingTransforms(std::vector<PendingTransformUpdate> &pending, SceneLoader &scene_loader) {
     for (const auto &update : pending) {
         const auto current_id = scene_loader.objectId(update.object);
         if (!current_id.has_value() || *current_id != update.object_id) {
@@ -448,28 +482,39 @@ std::vector<InputEvent> bindInjectedInputEvents(const std::vector<RpcInputInject
     return events;
 }
 
-nlohmann::json frameResult() {
-    const auto &engine_time = GET_MODULE(EngineTime);
+nlohmann::json frameResult(const EngineTime &engine_time) {
     return nlohmann::json{
         {"t", engine_time.now()},
         {"frame", engine_time.frameIndex()},
     };
 }
 
-std::string projectRootString() {
-    const auto resolved = GET_MODULE(PathResolver).resolveProjectRef(".");
+std::string projectRootString(const PathResolver &path_resolver) {
+    const auto resolved = path_resolver.resolveProjectRef(".");
     if (const auto path = std::get_if<std::filesystem::path>(&resolved)) {
         return path->generic_string();
     }
     throw std::runtime_error("project root did not resolve to a filesystem path");
 }
 
-nlohmann::json assetStoresStatus() {
+nlohmann::json assetStoresStatus(const PathResolver &path_resolver) {
     nlohmann::json stores = nlohmann::json::object();
-    for (const auto &store : GET_MODULE(PathResolver).stores()) {
+    for (const auto &store : path_resolver.stores()) {
         stores[store.name] = store.root.generic_string();
     }
     return stores;
+}
+
+std::string_view moduleRuntimePhaseName(ModuleRuntimePhase phase) {
+    switch (phase) {
+    case ModuleRuntimePhase::booting:
+        return "booting";
+    case ModuleRuntimePhase::running:
+        return "running";
+    case ModuleRuntimePhase::shutting_down:
+        return "shutting_down";
+    }
+    return "unknown";
 }
 
 std::string generateUuidV4() {
@@ -564,55 +609,63 @@ void RpcServer::run() {
 }
 
 void runEngineRpcServer(std::istream &input, std::ostream &output) {
+    auto modules = resolveEngineRpcModules();
     RpcServer server{input, output};
     const auto instance_id = generateUuidV4();
     std::vector<PendingTransformUpdate> pending_transforms;
 
-    server.setHandler("reload_game_logic", [&pending_transforms](const nlohmann::json &params) {
+    server.setHandler("reload_game_logic", [&pending_transforms, &modules](const nlohmann::json &params) {
         requireObjectParams(params, "reload_game_logic");
         const auto before = configuredGameLogicStatus();
         if (!before.configured) {
             throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError,
                                       "reload_game_logic: no game logic DLL is configured");
         }
-        const bool reloaded = reloadConfiguredGameLogic(true);
+        if (modules.reload_service == nullptr) {
+            throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError,
+                                      "reload_game_logic: reload service is unavailable");
+        }
+        const auto result = modules.reload_service->applyRuntimeNow(
+            watch::gameLogicReloadParticipantName);
         pending_transforms.clear();
         const auto status = configuredGameLogicStatus();
-        if (!reloaded) {
+        if (!result.committed) {
             throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError,
-                                      "reload_game_logic: " + status.last_error);
+                                      "reload_game_logic: " +
+                                          (result.error.empty() ? status.last_error : result.error));
         }
         return nlohmann::json{{"generation", status.generation},
                               {"systems", status.system_count},
-                              {"source", status.source.generic_string()}};
+                              {"source", status.source.generic_string()},
+                              {"participant", watch::gameLogicReloadParticipantName}};
     });
 
-    server.setHandler("get_status", [instance_id](const nlohmann::json &params) {
+    server.setHandler("get_status", [instance_id, &modules](const nlohmann::json &params) {
         requireObjectParams(params, "get_status");
-        const auto &engine_time = GET_MODULE(EngineTime);
-        const auto color_caps = GET_MODULE(RenderTarget).caps();
-        const auto startup = GET_MODULE(StartupMetrics).snapshot();
+        const auto color_caps = modules.render_target.caps();
+        const auto startup = modules.startup_metrics.snapshot();
+        const auto module_graph = FastModuleContainer::graphSnapshot();
         return nlohmann::json{
             {"instance_id", instance_id},
-            {"project_root", projectRootString()},
-            {"scene", GET_MODULE(SceneLoader).currentScene()},
-            {"frame", engine_time.frameIndex()},
-            {"time", engine_time.now()},
+            {"project_root", projectRootString(modules.path_resolver)},
+            {"scene", modules.scene_loader.currentScene()},
+            {"frame", modules.engine_time.frameIndex()},
+            {"time", modules.engine_time.now()},
             {"seed", GameContext{}.seed()},
-            {"input", {{"recording", GET_MODULE(InputSequenceRuntime).isRecording()},
-                       {"replaying", GET_MODULE(InputSequenceRuntime).isReplaying()},
-                       {"replay_frame", GET_MODULE(InputSequenceRuntime).replayFrameIndex()},
-                       {"hot_reload", GET_MODULE(watch::ReloadGate).enabled()},
+            {"input", {{"recording", modules.input_sequence.isRecording()},
+                       {"replaying", modules.input_sequence.isReplaying()},
+                       {"replay_frame", modules.input_sequence.replayFrameIndex()},
+                       {"hot_reload", modules.reload_gate.enabled()},
                        {"profile", internal::activeInputProfile()
                                        ? nlohmann::json(*internal::activeInputProfile())
                                        : nlohmann::json(nullptr)},
                        {"profiles", internal::availableInputProfiles()},
                        {"gamepad_polling", internal::gamepadPollingEnabled()}}},
-            {"stores", assetStoresStatus()},
-            {"reload", FastModuleContainer::isInitialized<watch::ReloadService>()
-                           ? GET_MODULE(watch::ReloadService).statusJson()
+            {"stores", assetStoresStatus(modules.path_resolver)},
+            {"reload", modules.reload_service != nullptr
+                           ? modules.reload_service->statusJson()
                            : nlohmann::json{{"state", "disabled"},
-                                            {"epoch", GET_MODULE(watch::ReloadGate).snapshot().epoch},
+                                            {"epoch", modules.reload_gate.snapshot().epoch},
                                             {"error", nullptr}}},
             {"startup", {{"config_ms", startup.config_ms},
                          {"vulkan_ms", startup.vulkan_ms},
@@ -622,6 +675,12 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
                          {"models_ms", startup.models_ms},
                          {"total_ms", startup.total_ms},
                          {"complete", startup.complete}}},
+            {"modules", {{"phase", moduleRuntimePhaseName(module_graph.phase)},
+                         {"creation_frozen", module_graph.creation_frozen},
+                         {"initialized", module_graph.initialized_modules.size()},
+                         {"dependencies", module_graph.dependencies.size()},
+                         {"initialized_after_runtime_start",
+                          module_graph.initialized_after_runtime_start}}},
             {"color", {{"contract", 2},
                        {"swapchain_format", formatToString(color_caps.color_format)},
                        {"path", color_caps.color_path},
@@ -650,33 +709,33 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
         return nlohmann::json{{"name", name}, {"gamepad_polling", internal::gamepadPollingEnabled()}};
     });
 
-    server.setHandler("inject_input", [](const nlohmann::json &params) {
-        if (GET_MODULE(InputSequenceRuntime).isReplaying()) {
+    server.setHandler("inject_input", [&modules](const nlohmann::json &params) {
+        if (modules.input_sequence.isReplaying()) {
             throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError,
                                       "inject_input cannot be combined with start_input_replay");
         }
         const auto rpc_events = parseInjectInputParams(params);
         const auto input_events = bindInjectedInputEvents(rpc_events);
-        GET_MODULE(InputState).queueEvents(input_events);
+        modules.input_state.queueEvents(input_events);
         return nlohmann::json{
             {"queued", input_events.size()},
         };
     });
 
-    server.setHandler("start_input_record", [](const nlohmann::json &params) {
+    server.setHandler("start_input_record", [&modules](const nlohmann::json &params) {
         const auto path = absoluteCapturePath(requireStringParam(params, "path", "start_input_record"));
         try {
-            GET_MODULE(InputSequenceRuntime).startRecording(path, GET_MODULE(EngineLaunchConfig).fps);
+            modules.input_sequence.startRecording(path, modules.launch_config.fps);
         } catch (const std::exception &error) {
             throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError, error.what());
         }
         return nlohmann::json{{"path", weaklyCanonicalOrAbsolute(path).generic_string()}};
     });
 
-    server.setHandler("stop_input_record", [](const nlohmann::json &params) {
+    server.setHandler("stop_input_record", [&modules](const nlohmann::json &params) {
         requireObjectParams(params, "stop_input_record");
         try {
-            const auto result = GET_MODULE(InputSequenceRuntime).stopRecording();
+            const auto result = modules.input_sequence.stopRecording();
             return nlohmann::json{{"path", weaklyCanonicalOrAbsolute(result.path).generic_string()},
                                   {"frames", result.frames},
                                   {"events", result.events}};
@@ -685,35 +744,35 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
         }
     });
 
-    server.setHandler("start_input_replay", [](const nlohmann::json &params) {
+    server.setHandler("start_input_replay", [&modules](const nlohmann::json &params) {
         const auto path = absoluteCapturePath(requireStringParam(params, "path", "start_input_replay"));
         try {
-            if (GET_MODULE(InputState).pendingEventCount() != 0) {
+            if (modules.input_state.pendingEventCount() != 0) {
                 throw std::runtime_error(
                     "start_input_replay cannot begin while inject_input events are pending");
             }
-            GET_MODULE(InputState).clear();
-            GET_MODULE(InputSequenceRuntime).startReplay(path);
-            auto &config = GET_MODULE(EngineLaunchConfig);
+            modules.input_state.clear();
+            modules.input_sequence.startReplay(path);
+            auto &config = modules.launch_config;
             config.input_replay = true;
-            GET_MODULE(watch::ReloadGate).setReason(watch::ReloadGateReason::replay, true);
-            config.fps = GET_MODULE(InputSequenceRuntime).replayFps();
-            GET_MODULE(EngineTime).setup(EngineTime::Mode::fixed_step, 1.0 / config.fps);
+            modules.reload_gate.setReason(watch::ReloadGateReason::replay, true);
+            config.fps = modules.input_sequence.replayFps();
+            modules.engine_time.setup(EngineTime::Mode::fixed_step, 1.0 / config.fps);
         } catch (const std::exception &error) {
             throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError, error.what());
         }
         return nlohmann::json{{"path", weaklyCanonicalOrAbsolute(path).generic_string()},
-                              {"frames", GET_MODULE(InputSequenceRuntime).replayFrameCount()},
+                              {"frames", modules.input_sequence.replayFrameCount()},
                               {"hot_reload", false}};
     });
 
-    server.setHandler("stop_input_replay", [](const nlohmann::json &params) {
+    server.setHandler("stop_input_replay", [&modules](const nlohmann::json &params) {
         requireObjectParams(params, "stop_input_replay");
         try {
-            GET_MODULE(InputSequenceRuntime).stopReplay();
-            GET_MODULE(InputState).clear();
-            GET_MODULE(EngineLaunchConfig).input_replay = false;
-            GET_MODULE(watch::ReloadGate).setReason(watch::ReloadGateReason::replay, false);
+            modules.input_sequence.stopReplay();
+            modules.input_state.clear();
+            modules.launch_config.input_replay = false;
+            modules.reload_gate.setReason(watch::ReloadGateReason::replay, false);
         } catch (const std::exception &error) {
             throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError, error.what());
         }
@@ -734,15 +793,15 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
         };
     });
 
-    server.setHandler("set_time", [](const nlohmann::json &params) {
+    server.setHandler("set_time", [&modules](const nlohmann::json &params) {
         const auto t = requireNumberParam(params, "t", "set_time");
-        GET_MODULE(EngineTime).setTime(t);
-        GET_MODULE(Renderer).resetTemporalHistory();
-        return frameResult();
+        modules.engine_time.setTime(t);
+        modules.renderer.resetTemporalHistory();
+        return frameResult(modules.engine_time);
     });
 
-    server.setHandler("update_transforms", [&pending_transforms](const nlohmann::json &params) {
-        auto updates = parseTransformUpdates(params);
+    server.setHandler("update_transforms", [&pending_transforms, &modules](const nlohmann::json &params) {
+        auto updates = parseTransformUpdates(params, modules.scene_loader);
         pending_transforms.insert(pending_transforms.end(), std::make_move_iterator(updates.begin()),
                                   std::make_move_iterator(updates.end()));
         return nlohmann::json{
@@ -750,23 +809,23 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
         };
     });
 
-    server.setHandler("load_gltf", [](const nlohmann::json &params) {
+    server.setHandler("load_gltf", [&modules](const nlohmann::json &params) {
         const auto path_ref = requireStringParam(params, "path", "load_gltf");
         auto name = optionalStringParam(params, "name", "load_gltf");
         requireOptionalObjectName(name, "load_gltf");
-        const auto path = GET_MODULE(SceneLoader).loadTransientGltf(path_ref, name);
+        const auto path = modules.scene_loader.loadTransientGltf(path_ref, name);
         nlohmann::json result;
         result["path"] = path.generic_string();
         result["name"] = name ? nlohmann::json(*name) : nlohmann::json(nullptr);
         return result;
     });
 
-    server.setHandler("load_scene", [&pending_transforms](const nlohmann::json &params) {
+    server.setHandler("load_scene", [&pending_transforms, &modules](const nlohmann::json &params) {
         const auto name = requireStringParam(params, "name", "load_scene");
-        GET_MODULE(SceneLoader).load(name);
+        modules.scene_loader.load(name);
         pending_transforms.clear();
         return nlohmann::json{
-            {"name", GET_MODULE(SceneLoader).currentScene()},
+            {"name", modules.scene_loader.currentScene()},
         };
     });
 
@@ -778,32 +837,31 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
         };
     });
 
-    server.setHandler("step_frame", [&pending_transforms](const nlohmann::json &params) {
+    server.setHandler("step_frame", [&pending_transforms, &modules](const nlohmann::json &params) {
         requireObjectParams(params, "step_frame");
-        flushPendingTransforms(pending_transforms);
-        auto &engine_time = GET_MODULE(EngineTime);
-        engine_time.advance();
+        flushPendingTransforms(pending_transforms, modules.scene_loader);
+        modules.engine_time.advance();
         updateFrameState();
-        GET_MODULE(Renderer).render();
-        return frameResult();
+        modules.renderer.render();
+        return frameResult(modules.engine_time);
     });
 
-    server.setHandler("render_frame", [&pending_transforms](const nlohmann::json &params) {
+    server.setHandler("render_frame", [&pending_transforms, &modules](const nlohmann::json &params) {
         requireObjectParams(params, "render_frame");
-        flushPendingTransforms(pending_transforms);
-        GET_MODULE(SeqPlayer).update(GET_MODULE(EngineTime).now());
-        GET_MODULE(Renderer).render();
-        return frameResult();
+        flushPendingTransforms(pending_transforms, modules.scene_loader);
+        modules.seq_player.update(modules.engine_time.now());
+        modules.renderer.render();
+        return frameResult(modules.engine_time);
     });
 
-    server.setHandler("get_frame_plan", [](const nlohmann::json &params) {
+    server.setHandler("get_frame_plan", [&modules](const nlohmann::json &params) {
         requireObjectParams(params, "get_frame_plan");
-        return GET_MODULE(Renderer).currentFramePlanJson();
+        return modules.renderer.currentFramePlanJson();
     });
 
-    server.setHandler("capture", [](const nlohmann::json &params) {
+    server.setHandler("capture", [&modules](const nlohmann::json &params) {
         const auto path = absoluteCapturePath(requireStringParam(params, "path", "capture"));
-        GET_MODULE(RenderTarget).captureLastFrameToPng(path);
+        modules.render_target.captureLastFrameToPng(path);
         return nlohmann::json{
             {"path", weaklyCanonicalOrAbsolute(path).generic_string()},
             {"encoding", "srgb"},

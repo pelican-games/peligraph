@@ -126,6 +126,10 @@ class Actions {
 
 namespace internal {
 
+// Composition-root hook: constructs the action runtime before module creation
+// is frozen. Public Actions calls remain lightweight service lookups afterward.
+void prepareInputActionsRuntime();
+
 // Phase 3 of the frame contract. Later Actions queries read this frozen frame
 // instead of re-evaluating the bindings.
 void freezeInputActionsFrame();

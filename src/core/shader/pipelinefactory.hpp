@@ -46,6 +46,14 @@ struct ComputePipelineDesc {
 
 PELICAN_DEFINE_HANDLE(PipelineHandle, int);
 
+struct PipelineRebuildResult {
+    size_t dirty_shaders = 0;
+    size_t attempted_pipelines = 0;
+    size_t rebuilt_pipelines = 0;
+    size_t failed_pipelines = 0;
+    std::string last_error;
+};
+
 DECLARE_MODULE(PipelineFactory) {
     struct DescriptorSetLayoutKey {
         std::vector<vk::DescriptorSetLayoutBinding> bindings;
@@ -100,7 +108,7 @@ DECLARE_MODULE(PipelineFactory) {
     vk::DescriptorSetLayout frameDescriptorSetLayout();
     const ShaderReflection &reflection(PipelineHandle handle) const;
 
-    void rebuildDirty();
+    PipelineRebuildResult rebuildDirty();
 };
 
 } // namespace Pelican

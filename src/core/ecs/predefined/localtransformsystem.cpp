@@ -45,8 +45,14 @@ void updateTransformRecursively(EntityId entity_id, TransformComponent &world,
 
 } // namespace
 
+void LocalTransformSystem::prepareEcsWorkerDependencies(bool has_matching_chunks) {
+    if (has_matching_chunks) ecs = &GET_MODULE(ECSCore).getTemplatePublicModule();
+}
+
 void LocalTransformSystem::process(Query chunks) {
-    auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
+    if (chunks.empty()) return;
+    if (ecs == nullptr)
+        throw std::logic_error("LocalTransformSystem dependencies were not prepared on the ECS owner thread");
     std::unordered_map<EntityId, uint8_t> state;
     for (auto &chunk : chunks) {
         auto entity_ids = std::get<EntityId *>(chunk.components);
@@ -54,7 +60,7 @@ void LocalTransformSystem::process(Query chunks) {
         auto localtransforms = std::get<LocalTransformComponent *>(chunk.components);
 
         for (size_t i = 0; i < chunk.count; ++i) {
-            updateTransformRecursively(entity_ids[i], transforms[i], localtransforms[i], ecs, state);
+            updateTransformRecursively(entity_ids[i], transforms[i], localtransforms[i], *ecs, state);
         }
     }
 }

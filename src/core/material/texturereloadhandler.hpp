@@ -23,6 +23,7 @@ class TextureReloadHandler {
     void track(const watch::AssetKey &key, std::filesystem::path path,
                GlobalTextureId texture);
     void materialRegistered(GlobalMaterialId material);
+    bool handles(const watch::AssetKey &key) const;
     bool enqueue(const watch::ReloadRequest &request,
                  watch::ReloadCoordinator &coordinator);
     bool retire(std::shared_ptr<const void> payload,

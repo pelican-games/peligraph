@@ -13,10 +13,12 @@
 #include "../renderer/uirenderer.hpp"
 #include "../ui/module.hpp"
 #include "../watch/reloadgate.hpp"
+#include "../watch/reloadservice.hpp"
 #include "../launchconfig.hpp"
 #include "../light/lightcontainer.hpp"
 #include "../fullscreenpass/fullscreenpasscontainer.hpp"
 #include "../material/materialcontainer.hpp"
+#include "../material/standardmaterialresource.hpp"
 #include "../renderer/debugdraw.hpp"
 #include "../renderer/debugtext.hpp"
 #include "../model/vertbufcontainer.hpp"
@@ -48,6 +50,17 @@ namespace Pelican {
 
 namespace {
 
+struct SpriteRenderModules {
+    SpriteScene *scene = nullptr;
+    SpriteRenderer *renderer = nullptr;
+    AtlasAssetResource *atlas = nullptr;
+};
+
+struct ShaderHotReloadModules {
+    watch::ReloadGate &gate;
+    watch::ReloadService *reload_service = nullptr;
+};
+
 struct RenderFrameModules {
     RenderTarget &render_target;
     RenderTargetContainer &render_target_container;
@@ -77,7 +90,40 @@ struct RenderFrameModules {
     RenderTiming *render_timing;
     const Camera &camera;
     LightContainer &light_container;
+    SpriteRenderModules sprite;
 };
+
+SpriteRenderModules resolveSpriteRenderModules(const RenderingPassContainer &rendering_pass_container) {
+    if (!rendering_pass_container.isFeatureEnabled("sprite")) return {};
+
+    auto *scene = FastModuleContainer::tryGet<SpriteScene>();
+    if (scene == nullptr || scene->commandCountForTesting() == 0) return {};
+
+    return {scene, &GET_MODULE(SpriteRenderer), &GET_MODULE(AtlasAssetResource)};
+}
+
+ShaderHotReloadModules resolveShaderHotReloadModules() {
+    auto &gate = GET_MODULE(watch::ReloadGate);
+    // EngineLaunchConfig remains a compatibility adapter. Syncing here keeps
+    // direct renderer fixtures and legacy embedders on the centralized gate,
+    // without changing ShaderLibrary's polling implementation.
+    gate.configureFromLaunch(GET_MODULE(EngineLaunchConfig));
+    if (!gate.shaderPollEnabled()) return {gate, nullptr};
+
+    // The composition root creates the domain modules. ReloadService then
+    // invokes them through the shared runtime-participant boundary.
+    (void)GET_MODULE(ShaderLibrary);
+    (void)GET_MODULE(PipelineFactory);
+    return {gate, &GET_MODULE(watch::ReloadService)};
+}
+
+DeletionQueue &resolveFrameDeletionQueue() {
+    return GET_MODULE(DeletionQueue);
+}
+
+EngineTime &resolveFrameEngineTime() {
+    return GET_MODULE(EngineTime);
+}
 
 RenderFrameModules resolveRenderFrameModules() {
     auto &rendering_pass_container = GET_MODULE(RenderingPassContainer);
@@ -124,6 +170,7 @@ RenderFrameModules resolveRenderFrameModules() {
         render_timing,
         GET_MODULE(Camera),
         GET_MODULE(LightContainer),
+        resolveSpriteRenderModules(rendering_pass_container),
     };
 }
 
@@ -132,10 +179,10 @@ void updateFrameAnimation(LightContainer &light_container, double time) {
     light_container.update();
 }
 
-FrameUniformData updateFrameResources(RenderFrameModules &modules, vk::Extent2D extent,
+FrameUniformData updateFrameResources(RenderFrameModules &modules, EngineTime &engine_time,
+                                      vk::Extent2D extent,
                                       const glm::mat4 &previous_view,
                                       const glm::mat4 &previous_projection) {
-    auto &engine_time = GET_MODULE(EngineTime);
     const auto frame_index = engine_time.frameIndex();
     const auto inverse_width = extent.width == 0 ? 0.0f : 1.0f / static_cast<float>(extent.width);
     const auto inverse_height = extent.height == 0 ? 0.0f : 1.0f / static_cast<float>(extent.height);
@@ -572,10 +619,7 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
             if (node_trace != nullptr) {
                 node_trace->push_back(anchorNodeTrace(execution_node.name, node_index));
             }
-            if (execution_node.name == "__anchor_sprite" &&
-                modules.rendering_pass_container.isFeatureEnabled("sprite") &&
-                FastModuleContainer::isInitialized<SpriteScene>() &&
-                GET_MODULE(SpriteScene).commandCountForTesting() != 0) {
+            if (execution_node.name == "__anchor_sprite" && modules.sprite.scene != nullptr) {
                 GlobalRenderTargetId color_id = noRenderTargetId();
                 GlobalRenderTargetId depth_id = noRenderTargetId();
                 for (std::size_t previous = node_index; previous-- > 0;) {
@@ -610,11 +654,11 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                                         : modules.render_target_container.getMetadata(color_id).extent;
                 if (depth_meta.extent != extent)
                     throw std::runtime_error("sprite color and depth attachments must have matching extents");
-                GET_MODULE(SpriteRenderer).render(
+                modules.sprite.renderer->render(
                     render_ctx.cmd_buf,
                     SpriteDrawRequest{color_view, modules.render_target_container.getImageView(depth_id), extent,
                                       color_format, depth_meta.format},
-                    SpriteRendererDependencies{GET_MODULE(SpriteScene), GET_MODULE(AtlasAssetResource),
+                    SpriteRendererDependencies{*modules.sprite.scene, *modules.sprite.atlas,
                                                modules.frame_resources});
                 if (node_trace != nullptr && isConcreteRenderTarget(color_id)) {
                     node_trace->back()["sprite_draw"] = {
@@ -759,22 +803,11 @@ void rebindFullscreenInputs(RenderFrameModules &modules) {
     }
 }
 
-void handleShaderHotReload(RenderFrameModules &modules) {
-    auto &gate = GET_MODULE(watch::ReloadGate);
-    // EngineLaunchConfig remains a compatibility adapter. Syncing here keeps
-    // direct renderer fixtures and legacy embedders on the centralized gate,
-    // without changing ShaderLibrary's polling implementation.
-    gate.configureFromLaunch(GET_MODULE(EngineLaunchConfig));
-    if (!gate.shaderPollEnabled()) {
-        return;
-    }
-
-    if (GET_MODULE(ShaderLibrary).reloadModifiedSources() == 0) {
-        return;
-    }
-
-    GET_MODULE(PipelineFactory).rebuildDirty();
-    rebindFullscreenInputs(modules);
+bool reloadModifiedShaderSources(ShaderHotReloadModules &modules) {
+    return modules.gate.shaderPollEnabled() && modules.reload_service != nullptr &&
+           modules.reload_service
+                   ->applyRuntimeBoundary(watch::RuntimeReloadBoundary::render_start)
+                   .committed != 0;
 }
 
 bool handleFrameTargetResize(RenderFrameModules &modules, RenderTargetLayoutTracker &layout_tracker) {
@@ -797,7 +830,10 @@ Renderer::Renderer() {
 Renderer::~Renderer() = default;
 
 nlohmann::json Renderer::currentFramePlanJson() const {
-    const auto *frame_graph = GET_MODULE(FrameGraphRuntimeContainer).find(current_rendering_pass_id);
+    const auto *frame_graph_runtime = FastModuleContainer::tryGet<FrameGraphRuntimeContainer>();
+    const auto *frame_graph = frame_graph_runtime == nullptr
+                                  ? nullptr
+                                  : frame_graph_runtime->find(current_rendering_pass_id);
     if (frame_graph == nullptr) {
         throw std::runtime_error("Current frame plan is not registered");
     }
@@ -805,7 +841,10 @@ nlohmann::json Renderer::currentFramePlanJson() const {
 }
 
 std::vector<std::string> Renderer::currentFramePlanOrderForTesting() const {
-    const auto *frame_graph = GET_MODULE(FrameGraphRuntimeContainer).find(current_rendering_pass_id);
+    const auto *frame_graph_runtime = FastModuleContainer::tryGet<FrameGraphRuntimeContainer>();
+    const auto *frame_graph = frame_graph_runtime == nullptr
+                                  ? nullptr
+                                  : frame_graph_runtime->find(current_rendering_pass_id);
     if (frame_graph == nullptr) {
         throw std::runtime_error("Current frame plan is not registered");
     }
@@ -829,12 +868,35 @@ void Renderer::resetTemporalHistory() {
     render_target_layout_tracker.reset();
 }
 
+void Renderer::prepareRuntimeModules() {
+    auto &rendering_passes = GET_MODULE(RenderingPassContainer);
+    if (rendering_passes.isFeatureEnabled("sprite")) {
+        (void)GET_MODULE(SpriteScene);
+        (void)GET_MODULE(SpriteRenderer);
+        (void)GET_MODULE(AtlasAssetResource);
+    }
+
+    (void)resolveFrameDeletionQueue();
+    (void)resolveRenderFrameModules();
+    (void)resolveShaderHotReloadModules();
+    (void)resolveFrameEngineTime();
+    (void)GET_MODULE(PipelineFactory);
+    // Runtime RPC scene loading may introduce its first standard material after
+    // startup, so keep that data lazy within boot but not beyond the freeze.
+    (void)GET_MODULE(StandardMaterialResource);
+}
+
 void Renderer::render() {
-    GET_MODULE(DeletionQueue).beginFrame();
+    auto &deletion_queue = resolveFrameDeletionQueue();
+    deletion_queue.beginFrame();
 
     auto modules = resolveRenderFrameModules();
-    handleShaderHotReload(modules);
-    updateFrameAnimation(modules.light_container, GET_MODULE(EngineTime).now());
+    auto shader_hot_reload = resolveShaderHotReloadModules();
+    if (reloadModifiedShaderSources(shader_hot_reload)) {
+        rebindFullscreenInputs(modules);
+    }
+    auto &engine_time = resolveFrameEngineTime();
+    updateFrameAnimation(modules.light_container, engine_time.now());
 
     const auto render_ctx = modules.render_target.render_begin();
     if (handleFrameTargetResize(modules, render_target_layout_tracker)) {
@@ -847,7 +909,8 @@ void Renderer::render() {
         previous_view = current_view;
         previous_projection = current_projection;
     }
-    updateFrameResources(modules, render_ctx.extent, previous_view, previous_projection);
+    updateFrameResources(modules, engine_time, render_ctx.extent, previous_view,
+                         previous_projection);
 
     const auto &rendering_pass =
         modules.rendering_pass_container.getCompiledRenderingPass(current_rendering_pass_id);

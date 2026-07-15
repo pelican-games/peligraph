@@ -37,6 +37,17 @@ concept HasPerChunkProcess = requires(TSystem &system, std::tuple<TComponents *.
     system.process(components, count);
 };
 
+template <class TSystem>
+concept HasEcsWorkerDependencyPrepare = requires(TSystem &system, bool has_matching_chunks) {
+    system.prepareEcsWorkerDependencies(has_matching_chunks);
+};
+
+template <class TSystem, class... TComponents>
+concept HasEcsWorkerQueryDependencyPrepare =
+    requires(TSystem &system, std::span<ChunkView<TComponents...>> views) {
+        system.prepareEcsWorkerDependencies(views);
+    };
+
 class ECSCoreTemplatePublic {
     // Component Management
   private:
@@ -129,6 +140,11 @@ class ECSCoreTemplatePublic {
         ComponentMask matching_mask = 0;
         // p_func receives dense indices
         std::function<void(ECSCoreTemplatePublic &, void*, const std::vector<ChunkIndex> &, const std::vector<size_t>&)> p_func;
+        // Runs on the ECS owner thread before this system is scheduled. It is
+        // the boundary for resolving services that worker code may only read.
+        std::function<void(ECSCoreTemplatePublic &, void *, const std::vector<ChunkIndex> &,
+                           const std::vector<size_t> &)>
+            prepare_func;
         
         void *system_ref; // Pointer to actual system instance
         std::vector<SystemId> depends_list;
@@ -185,6 +201,32 @@ class ECSCoreTemplatePublic {
         wrapper.write_indices = write_indices;
         wrapper.matching_mask = matching_mask;
         wrapper.force_update = force_update;
+        if constexpr (HasEcsWorkerQueryDependencyPrepare<TSystem, TComponents...>) {
+            wrapper.prepare_func = [](ECSCoreTemplatePublic &core, void *sys_ptr,
+                                      const std::vector<ChunkIndex> &chunks,
+                                      const std::vector<size_t> &indices) {
+                std::vector<ChunkView<TComponents...>> views;
+                views.reserve(chunks.size());
+                for (const auto chunk_idx : chunks) {
+                    auto &chunk = core.chunks_storage[chunk_idx];
+                    auto tuple = [&]<size_t... Is>(std::index_sequence<Is...>)
+                        -> std::tuple<TComponents *...> {
+                        using ComponentTypes = std::tuple<TComponents...>;
+                        return {static_cast<std::tuple_element_t<Is, ComponentTypes> *>(
+                            chunk.getRef(indices[Is]).ptr)...};
+                    }(std::index_sequence_for<TComponents...>{});
+                    views.push_back({tuple, chunk.size()});
+                }
+                static_cast<TSystem *>(sys_ptr)->prepareEcsWorkerDependencies(
+                    std::span<ChunkView<TComponents...>>{views});
+            };
+        } else if constexpr (HasEcsWorkerDependencyPrepare<TSystem>) {
+            wrapper.prepare_func = [](ECSCoreTemplatePublic &, void *sys_ptr,
+                                      const std::vector<ChunkIndex> &chunks,
+                                      const std::vector<size_t> &) {
+                static_cast<TSystem *>(sys_ptr)->prepareEcsWorkerDependencies(!chunks.empty());
+            };
+        }
         
         // Setup dependency graph
         for (auto dep : wrapper.depends_list) {

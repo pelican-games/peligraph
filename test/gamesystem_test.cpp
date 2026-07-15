@@ -11,6 +11,7 @@
 #include "../src/core/os/inputstate.hpp"
 #include "../src/core/userpublic/details/system/registerer.hpp"
 #include "../src/core/userpublic/gamecontext.hpp"
+#include "../src/core/watch/reloadservice.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -133,6 +134,37 @@ TEST_CASE("Game logic reload is rejected for deterministic replay drivers", "[ga
     GET_MODULE(EngineLaunchConfig).input_replay = true;
     REQUIRE_THROWS_WITH(reloadConfiguredGameLogic(),
                         "game logic DLL reload rejected while replay/golden driver is active");
+}
+
+TEST_CASE("ReloadService keeps queued game logic reloads behind the replay gate",
+          "[gamesystem][reload][participant]") {
+    ensureLogger();
+    FastModuleContainer modules;
+    GET_MODULE(EngineLaunchConfig).input_replay = true;
+    const auto missing = std::filesystem::temp_directory_path() /
+                         "pelican_missing_game_logic_replay_gate.dll";
+    std::error_code ec;
+    std::filesystem::remove(missing, ec);
+    auto &reloader = GET_MODULE(GameLogicReloader);
+    REQUIRE_FALSE(reloader.initialize(missing));
+    REQUIRE(reloader.status().configured);
+
+    watch::ReloadService reload;
+    const auto manual = reload.applyRuntimeNow(watch::gameLogicReloadParticipantName);
+    REQUIRE(manual.attempted);
+    REQUIRE_FALSE(manual.committed);
+    REQUIRE_THAT(manual.error,
+                 Catch::Matchers::ContainsSubstring("replay/golden driver is active"));
+
+    REQUIRE(reload.requestRuntimeReload(watch::gameLogicReloadParticipantName));
+    const auto queued = reload.applyRuntimeBoundary(watch::RuntimeReloadBoundary::frame_start);
+    REQUIRE(queued.attempted == 0);
+    REQUIRE_FALSE(reload.statusJson()
+                      .at("runtime")
+                      .at(std::string{watch::gameLogicReloadParticipantName})
+                      .at("requested")
+                      .get<bool>());
+    reloader.shutdown();
 }
 
 TEST_CASE("Registered game system can read Actions and EngineTime through GameContext", "[gamesystem]") {

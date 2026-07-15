@@ -158,10 +158,12 @@ DECLARE_MODULE(MaterialContainer) {
         return materials.get(material).custom_values;
     }
     std::vector<std::byte> materialGpuValuesForTesting(GlobalMaterialId material) const;
+    bool handlesTextureReload(const watch::AssetKey &key) const;
     bool enqueueTextureReload(const watch::ReloadRequest &request,
                               watch::ReloadCoordinator &coordinator);
     bool retireTextureReloadPayload(std::shared_ptr<const void> payload,
                                     watch::ReloadCoordinator &coordinator) noexcept;
+    bool handlesMaterialValuesReload(const watch::AssetKey &key) const;
     bool enqueueMaterialValuesReload(const watch::ReloadRequest &request,
                                      watch::ReloadCoordinator &coordinator);
     bool retireMaterialValuesReloadPayload(std::shared_ptr<const void> payload,

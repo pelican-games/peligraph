@@ -106,6 +106,9 @@ void main(){ outColor=vec4(0.5,0.5,0.5,0.25); }
     const auto color_status = nlohmann::json::parse(third_line).at("result").at("color");
     REQUIRE(color_status.at("contract") == 2);
     REQUIRE(color_status.at("path") == (fallback ? "unorm_fallback" : "srgb"));
+    const auto module_status = nlohmann::json::parse(third_line).at("result").at("modules");
+    REQUIRE(module_status.at("phase") == "booting");
+    REQUIRE_FALSE(module_status.at("creation_frozen").get<bool>());
 
     int width = 0;
     int height = 0;

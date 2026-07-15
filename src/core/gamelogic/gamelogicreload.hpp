@@ -22,6 +22,12 @@ struct GameLogicReloadStatus {
     std::string last_error;
 };
 
+struct GameLogicReloadAttempt {
+    bool attempted = false;
+    bool committed = false;
+    std::string error;
+};
+
 DECLARE_MODULE(GameLogicReloader) {
     using ResetFn = std::function<void()>;
 
@@ -51,6 +57,9 @@ DECLARE_MODULE(GameLogicReloader) {
     ~GameLogicReloader();
 
     bool initialize(const std::filesystem::path &source);
+    GameLogicReloadAttempt reloadNowAttempt(const ResetFn &teardown, const ResetFn &rebuild);
+    GameLogicReloadAttempt pollAttempt(const ResetFn &teardown, const ResetFn &rebuild,
+                                       bool force = false);
     bool reloadNow(const ResetFn &teardown, const ResetFn &rebuild);
     bool poll(const ResetFn &teardown, const ResetFn &rebuild, bool force = false);
     void shutdown() noexcept;
@@ -59,6 +68,8 @@ DECLARE_MODULE(GameLogicReloader) {
 
 bool isGameLogicReloadInProgress() noexcept;
 bool initializeConfiguredGameLogic();
+GameLogicReloadAttempt reloadConfiguredGameLogicAttempt(bool force = true);
+GameLogicReloadAttempt pollConfiguredGameLogicAttempt(bool force = false);
 bool reloadConfiguredGameLogic(bool force = true);
 void pollConfiguredGameLogic(bool force = false);
 void shutdownConfiguredGameLogic() noexcept;

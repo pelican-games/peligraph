@@ -209,6 +209,10 @@ void MaterialValuesReloadHandler::track(
     files_.emplace(key, std::move(tracked));
 }
 
+bool MaterialValuesReloadHandler::handles(const watch::AssetKey &key) const {
+    return files_.contains(key);
+}
+
 bool MaterialValuesReloadHandler::enqueue(const watch::ReloadRequest &request,
                                           watch::ReloadCoordinator &coordinator) {
     if (&coordinator != &coordinator_) {

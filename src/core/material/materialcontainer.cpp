@@ -732,6 +732,10 @@ size_t MaterialContainer::referencingMaterialCountForTesting(GlobalTextureId tex
     return found == texture_materials.end() ? 0 : found->second.size();
 }
 
+bool MaterialContainer::handlesTextureReload(const watch::AssetKey &key) const {
+    return texture_reload_handler && texture_reload_handler->handles(key);
+}
+
 bool MaterialContainer::enqueueTextureReload(const watch::ReloadRequest &request,
                                              watch::ReloadCoordinator &coordinator) {
     return texture_reload_handler && texture_reload_handler->enqueue(request, coordinator);
@@ -741,6 +745,10 @@ bool MaterialContainer::retireTextureReloadPayload(
     std::shared_ptr<const void> payload, watch::ReloadCoordinator &coordinator) noexcept {
     return texture_reload_handler &&
            texture_reload_handler->retire(std::move(payload), coordinator);
+}
+
+bool MaterialContainer::handlesMaterialValuesReload(const watch::AssetKey &key) const {
+    return material_values_reload_handler && material_values_reload_handler->handles(key);
 }
 
 bool MaterialContainer::enqueueMaterialValuesReload(

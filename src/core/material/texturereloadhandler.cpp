@@ -127,6 +127,10 @@ void TextureReloadHandler::materialRegistered(GlobalMaterialId material) {
     refreshMaterial(material);
 }
 
+bool TextureReloadHandler::handles(const watch::AssetKey &key) const {
+    return textures_.contains(key);
+}
+
 bool TextureReloadHandler::enqueue(const watch::ReloadRequest &request,
                                    watch::ReloadCoordinator &coordinator) {
     if (&coordinator != &coordinator_) {

@@ -14,6 +14,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -23,6 +24,35 @@ namespace {
 
 struct TrivialValueComponent {
     int value;
+};
+
+struct PrepareProbeComponent {
+    int value = 0;
+};
+
+DECLARE_MODULE(PrepareProbeDependency) {
+  public:
+    int value = 42;
+};
+
+struct PrepareProbeSystem {
+    PrepareProbeDependency *dependency = nullptr;
+    std::thread::id prepare_thread;
+    std::thread::id process_thread;
+    bool saw_matching_chunks = false;
+    bool process_saw_dependency = false;
+
+    void prepareEcsWorkerDependencies(bool has_matching_chunks) {
+        prepare_thread = std::this_thread::get_id();
+        saw_matching_chunks = has_matching_chunks;
+        dependency = &GET_MODULE(PrepareProbeDependency);
+    }
+
+    void process(std::tuple<PrepareProbeComponent *> components, size_t count) {
+        process_thread = std::this_thread::get_id();
+        process_saw_dependency = dependency != nullptr && dependency->value == 42;
+        if (count != 0) std::get<0>(components)[0].value = dependency->value;
+    }
 };
 
 struct alignas(64) LifecycleCanary {
@@ -130,6 +160,7 @@ DECLARE_COMPONENT(ReentrantComponent, 44);
 DECLARE_COMPONENT(MoveOnlyComponent, 45);
 DECLARE_COMPONENT(TeardownComponent, 46);
 DECLARE_COMPONENT(ModelViewGpuInstanceCanary, 47);
+DECLARE_COMPONENT(PrepareProbeComponent, 48);
 
 DECLARE_MODULE(TeardownMarker) {
   public:
@@ -447,6 +478,26 @@ TEST_CASE("Move-only components relocate without copy fallback", "[ecs][lifecycl
         });
     REQUIRE(core.remove(ids[0]));
     REQUIRE(core.component<MoveOnlyComponent>(ids[1]).value == 20);
+    core.clearEntities();
+}
+
+TEST_CASE("ECS prepares worker dependencies on the owner thread before scheduling",
+          "[ecs][module-boundary]") {
+    FastModuleContainer modules;
+    registerComponents<PrepareProbeComponent>();
+    ECSCoreTemplatePublic core;
+    PrepareProbeSystem system;
+    core.registerSystem<PrepareProbeSystem, PrepareProbeComponent>(system, {}, true);
+    const auto entity = core.createEntity(componentIds<PrepareProbeComponent>());
+    const auto owner_thread = std::this_thread::get_id();
+
+    core.update();
+
+    REQUIRE(system.prepare_thread == owner_thread);
+    REQUIRE(system.process_thread != std::thread::id{});
+    REQUIRE(system.saw_matching_chunks);
+    REQUIRE(system.process_saw_dependency);
+    REQUIRE(core.component<PrepareProbeComponent>(entity).value == 42);
     core.clearEntities();
 }
 

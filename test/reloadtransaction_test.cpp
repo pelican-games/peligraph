@@ -243,4 +243,113 @@ TEST_CASE("ReloadService status preserves HR0 fields and adds resource counters 
     REQUIRE(json.at("last_reload_error").at("message") == "invalid fake candidate");
 }
 
+TEST_CASE("ReloadService routes requests through one named participant",
+          "[r7][reload-participant]") {
+    if (!logger) setupLogger();
+    ReloadService service;
+    const auto key = makeAssetKey("fake/participant.bin");
+    const auto resource = service.transactions().registry().declareResource(
+        "fake", key, number(1), {}, 0, sizeof(int));
+    int retired = 0;
+
+    service.registerParticipant(ReloadParticipant{
+        .name = "fake",
+        .claims = [key](const ReloadRequest &request) { return request.key == key; },
+        .enqueue = [resource](const ReloadRequest &, ReloadCoordinator &coordinator) {
+            ReloadTransactionGroup group{"fake-participant"};
+            group.add(replace(resource, 2));
+            coordinator.enqueue(std::move(group));
+            return true;
+        },
+        .retire = [&retired](std::shared_ptr<const void> payload,
+                             ReloadCoordinator &) noexcept {
+            retired = *std::static_pointer_cast<const int>(std::move(payload));
+            return true;
+        },
+    });
+
+    REQUIRE(service.participantNames() == std::vector<std::string>{"fake"});
+    REQUIRE(service.applyRequestForTesting({key, ReloadKind::modified, {}, 1}));
+    REQUIRE(*service.transactions().registry().snapshot().find(resource)->payloadAs<int>() == 2);
+    REQUIRE(retired == 1);
+    REQUIRE(service.applyRequestForTesting(
+        {makeAssetKey("fake/unclaimed.bin"), ReloadKind::modified, {}, 1}));
+    REQUIRE(service.unregisterParticipant("fake"));
+    REQUIRE_FALSE(service.unregisterParticipant("fake"));
+}
+
+TEST_CASE("ReloadService rejects ambiguous participant claims before enqueue",
+          "[r7][reload-participant]") {
+    if (!logger) setupLogger();
+    ReloadService service;
+    const auto key = makeAssetKey("fake/ambiguous.bin");
+    int enqueued = 0;
+    for (const auto *name : {"left", "right"}) {
+        service.registerParticipant(ReloadParticipant{
+            .name = name,
+            .claims = [key](const ReloadRequest &request) { return request.key == key; },
+            .enqueue = [&enqueued](const ReloadRequest &, ReloadCoordinator &) {
+                ++enqueued;
+                return true;
+            },
+        });
+    }
+
+    REQUIRE_FALSE(service.applyRequestForTesting({key, ReloadKind::modified, {}, 1}));
+    REQUIRE(enqueued == 0);
+    REQUIRE_THROWS(service.registerParticipant(ReloadParticipant{
+        .name = "left",
+        .claims = [](const ReloadRequest &) { return false; },
+        .enqueue = [](const ReloadRequest &, ReloadCoordinator &) { return false; },
+    }));
+}
+
+TEST_CASE("ReloadService schedules runtime participants at their declared boundary",
+          "[r8][runtime-reload-participant]") {
+    if (!logger) setupLogger();
+    ReloadService service;
+    std::vector<RuntimeReloadTrigger> triggers;
+    service.registerParticipant(ReloadParticipant{
+        .name = "fake.runtime",
+        .runtime = RuntimeReloadParticipant{
+            .boundary = RuntimeReloadBoundary::frame_start,
+            .apply = [&triggers](RuntimeReloadTrigger trigger) {
+                triggers.push_back(trigger);
+                if (trigger == RuntimeReloadTrigger::poll) return RuntimeReloadResult{};
+                if (trigger == RuntimeReloadTrigger::requested) {
+                    return RuntimeReloadResult{.attempted = true, .committed = true};
+                }
+                return RuntimeReloadResult{.attempted = true, .error = "manual failure"};
+            },
+            .describe = [](nlohmann::json &status) { status = {{"kind", "fake"}}; },
+        },
+    });
+
+    REQUIRE(service.applyRuntimeBoundary(RuntimeReloadBoundary::render_start).attempted == 0);
+    REQUIRE(service.applyRuntimeBoundary(RuntimeReloadBoundary::frame_start).attempted == 0);
+    REQUIRE(service.requestRuntimeReload("fake.runtime"));
+    const auto requested = service.applyRuntimeBoundary(RuntimeReloadBoundary::frame_start);
+    REQUIRE(requested.attempted == 1);
+    REQUIRE(requested.committed == 1);
+    REQUIRE(requested.failed == 0);
+
+    const auto manual = service.applyRuntimeNow("fake.runtime");
+    REQUIRE(manual.attempted);
+    REQUIRE_FALSE(manual.committed);
+    REQUIRE(manual.error == "manual failure");
+    REQUIRE_FALSE(service.requestRuntimeReload("missing.runtime"));
+    REQUIRE(triggers == std::vector<RuntimeReloadTrigger>{RuntimeReloadTrigger::poll,
+                                                          RuntimeReloadTrigger::requested,
+                                                          RuntimeReloadTrigger::manual});
+
+    const auto status = service.statusJson().at("runtime").at("fake.runtime");
+    REQUIRE(status.at("boundary") == "frame_start");
+    REQUIRE(status.at("requested") == false);
+    REQUIRE(status.at("attempted") == 2);
+    REQUIRE(status.at("applied") == 1);
+    REQUIRE(status.at("failed") == 1);
+    REQUIRE(status.at("last_error") == "manual failure");
+    REQUIRE(status.at("details").at("kind") == "fake");
+}
+
 } // namespace Pelican::watch

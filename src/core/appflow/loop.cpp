@@ -3,21 +3,29 @@
 #include "../launchconfig.hpp"
 #include "../log.hpp"
 #include "../communication/rpcserver.hpp"
-#include "../gamelogic/gamelogicreload.hpp"
+#include "../build_features.hpp"
+#if PELICAN_WITH_AUDIO
+#include "../audio/audio.hpp"
+#endif
 #include "../os/inputstate.hpp"
 #include "../os/inputsequence.hpp"
 #include "../os/window.hpp"
 #include "../playback/camerabake.hpp"
 #include "../playback/vatplayer.hpp"
+#include "../persistence/persistence.hpp"
+#include "../phys/physworld.hpp"
+#include "../renderer/debugtext.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../startup.hpp"
 #include "../ui/module.hpp"
 #include "../userpublic/userinput.hpp"
+#include "../userpublic/deterministicrng.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/deletionqueue.hpp"
 #include "../vkcore/renderer.hpp"
 #include "../vkcore/rendertarget.hpp"
 #include "../vkcore/rendertiming.hpp"
+#include "../watch/reloadservice.hpp"
 #include "enginetime.hpp"
 #include "framephase.hpp"
 #include "framerate.hpp"
@@ -116,6 +124,111 @@ void dumpFramePlanIfRequested(const EngineLaunchConfig &launch_config, const Ren
     std::cerr << renderer.currentFramePlanJson().dump(2) << std::endl;
 }
 
+struct LoopModules {
+    const EngineLaunchConfig &launch_config;
+    Renderer &renderer;
+    EngineTime &engine_time;
+    VatPlayer &vat_player;
+    InputState &input_state;
+    InputSequenceRuntime &input_sequence;
+    watch::ReloadService &reload_service;
+    RenderTiming *render_timing;
+    CameraBakeRecorder *camera_bake;
+    StartupMetrics &startup_metrics;
+};
+
+LoopModules resolveLoopModules() {
+    const auto &launch_config = GET_MODULE(EngineLaunchConfig);
+    auto &renderer = GET_MODULE(Renderer);
+    auto &rendering_passes = GET_MODULE(RenderingPassContainer);
+    // UI input routing precedes rendering, so create the purgeable CPU runtime
+    // during loop setup when (and only when) the UI feature is enabled. Lazy
+    // creation from the first render would drop first-frame pointer events.
+    if (rendering_passes.isFeatureEnabled("ui")) (void)GET_MODULE(ui::UiModule);
+
+    auto &engine_time = GET_MODULE(EngineTime);
+    auto &vat_player = GET_MODULE(VatPlayer);
+    auto &input_state = GET_MODULE(InputState);
+    auto &input_sequence = GET_MODULE(InputSequenceRuntime);
+    auto *render_timing = rendering_passes.isFeatureEnabled("gpu_timing")
+                              ? &GET_MODULE(RenderTiming)
+                              : nullptr;
+    auto *camera_bake = FastModuleContainer::tryGet<CameraBakeRecorder>();
+    if (launch_config.camera_bake_output && camera_bake == nullptr)
+        camera_bake = &GET_MODULE(CameraBakeRecorder);
+
+    return {
+        launch_config,
+        renderer,
+        engine_time,
+        vat_player,
+        input_state,
+        input_sequence,
+        GET_MODULE(watch::ReloadService),
+        render_timing,
+        camera_bake,
+        GET_MODULE(StartupMetrics),
+    };
+}
+
+struct InteractiveLoopModules {
+    Window &window;
+    FramerateAdjust &framerate_adjuster;
+};
+
+InteractiveLoopModules resolveInteractiveLoopModules() {
+    return {GET_MODULE(Window), GET_MODULE(FramerateAdjust)};
+}
+
+struct GpuDrainModules {
+    VulkanManageCore &vulkan;
+    DeletionQueue &deletion_queue;
+};
+
+GpuDrainModules resolveGpuDrainModules() {
+    return {GET_MODULE(VulkanManageCore), GET_MODULE(DeletionQueue)};
+}
+
+RenderTarget &resolveOutputRenderTarget() {
+    return GET_MODULE(RenderTarget);
+}
+
+void prepareRuntimeModuleGraph(LoopModules &modules) {
+    // The composition root owns all first construction. Runtime-facing
+    // facades may keep using GET_MODULE, but only as reads after this point.
+    prepareFrameStateModules();
+    internal::prepareInputActionsRuntime();
+    modules.renderer.prepareRuntimeModules();
+
+    // Public GameContext services are legal at any point in game code, so
+    // their modules must exist before the graph is frozen even when the
+    // initial scene does not happen to exercise them.
+    (void)GET_MODULE(PhysWorld);
+    (void)GET_MODULE(DeterministicRng);
+    (void)GET_MODULE(DebugText);
+    (void)GET_MODULE(Persistence);
+#if PELICAN_WITH_AUDIO
+    (void)GET_MODULE(Audio);
+#endif
+
+    if (!modules.launch_config.headless) (void)resolveInteractiveLoopModules();
+    (void)resolveGpuDrainModules();
+}
+
+void finishLoopResources(InputSequenceRuntime &input_sequence,
+                         CameraBakeRecorder *camera_bake,
+                         RenderTiming *render_timing,
+                         bool flush_timing) {
+    auto gpu = resolveGpuDrainModules();
+    gpu.vulkan.waitIdle();
+    if (flush_timing && render_timing != nullptr) render_timing->flush();
+    gpu.deletion_queue.flushAll();
+    if (input_sequence.isRecording()) input_sequence.stopRecording();
+    if (camera_bake == nullptr)
+        camera_bake = FastModuleContainer::tryGet<CameraBakeRecorder>();
+    if (camera_bake != nullptr && camera_bake->isActive()) camera_bake->finish();
+}
+
 } // namespace
 
 Loop::Loop() {}
@@ -125,21 +238,14 @@ void Loop::run() {
     SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
 #endif
 
-    const auto &launch_config = GET_MODULE(EngineLaunchConfig);
-    auto &renderer = GET_MODULE(Renderer);
-    // UI input routing precedes rendering, so create the purgeable CPU runtime
-    // during loop setup when (and only when) the UI feature is enabled.  Lazy
-    // creation from the first render would drop first-frame pointer events.
-    if (GET_MODULE(RenderingPassContainer).isFeatureEnabled("ui")) {
-        (void)GET_MODULE(ui::UiModule);
-    }
-    auto &engine_time = GET_MODULE(EngineTime);
-    auto &vat_player = GET_MODULE(VatPlayer);
-    auto &input_state = GET_MODULE(InputState);
-    auto &input_sequence = GET_MODULE(InputSequenceRuntime);
-    (void)vat_player;
-    RenderTiming *render_timing =
-        GET_MODULE(RenderingPassContainer).isFeatureEnabled("gpu_timing") ? &GET_MODULE(RenderTiming) : nullptr;
+    auto modules = resolveLoopModules();
+    const auto &launch_config = modules.launch_config;
+    auto &renderer = modules.renderer;
+    auto &engine_time = modules.engine_time;
+    auto &input_state = modules.input_state;
+    auto &input_sequence = modules.input_sequence;
+    auto *render_timing = modules.render_timing;
+    (void)modules.vat_player;
 
     if (launch_config.input_replay_path) {
         input_sequence.startReplay(*launch_config.input_replay_path);
@@ -152,25 +258,22 @@ void Loop::run() {
     const auto timeline_fps = input_sequence.isReplaying() ? input_sequence.replayFps() : launch_config.fps;
     engine_time.setup(time_mode, 1.0 / timeline_fps);
     if (launch_config.camera_bake_output) {
-        GET_MODULE(CameraBakeRecorder).start(*launch_config.camera_bake_output, input_sequence.replayFps());
+        modules.camera_bake->start(*launch_config.camera_bake_output, input_sequence.replayFps());
     }
+    prepareRuntimeModuleGraph(modules);
     dumpFramePlanIfRequested(launch_config, renderer);
-    GET_MODULE(StartupMetrics).finishAndLog();
+    modules.startup_metrics.finishAndLog();
+    FastModuleContainer::freezeCreation();
+    const auto module_graph = FastModuleContainer::graphSnapshot();
+    LOG_INFO(logger, "runtime module graph frozen: modules={} dependencies={}",
+             module_graph.initialized_modules.size(), module_graph.dependencies.size());
 
     LOG_INFO(logger, "starting main loop");
 
     if (launch_config.headless) {
         if (launch_config.rpc) {
             runEngineRpcServer(std::cin, std::cout);
-            GET_MODULE(VulkanManageCore).waitIdle();
-            GET_MODULE(DeletionQueue).flushAll();
-            if (input_sequence.isRecording()) {
-                input_sequence.stopRecording();
-            }
-            if (FastModuleContainer::isInitialized<CameraBakeRecorder>() &&
-                GET_MODULE(CameraBakeRecorder).isActive()) {
-                GET_MODULE(CameraBakeRecorder).finish();
-            }
+            finishLoopResources(input_sequence, modules.camera_bake, render_timing, false);
             return;
         }
 
@@ -201,31 +304,21 @@ void Loop::run() {
                 });
             }
             if (launch_config.render_out && render_out_pattern.has_frame_token) {
-                GET_MODULE(RenderTarget)
+                resolveOutputRenderTarget()
                     .captureLastFrameToPng(formatRenderOutPath(*launch_config.render_out, render_out_pattern,
                                                                frame + 1));
             }
         }
         if (launch_config.render_out && !render_out_pattern.has_frame_token && launch_config.headless_frames > 0) {
-            GET_MODULE(RenderTarget).captureLastFrameToPng(*launch_config.render_out);
+            resolveOutputRenderTarget().captureLastFrameToPng(*launch_config.render_out);
         }
-        GET_MODULE(VulkanManageCore).waitIdle();
-        if (render_timing != nullptr) {
-            render_timing->flush();
-        }
-        GET_MODULE(DeletionQueue).flushAll();
-        if (input_sequence.isRecording()) {
-            input_sequence.stopRecording();
-        }
-        if (FastModuleContainer::isInitialized<CameraBakeRecorder>() &&
-            GET_MODULE(CameraBakeRecorder).isActive()) {
-            GET_MODULE(CameraBakeRecorder).finish();
-        }
+        finishLoopResources(input_sequence, modules.camera_bake, render_timing, true);
         return;
     }
 
-    auto &window = GET_MODULE(Window);
-    auto &framerate_adjuster = GET_MODULE(FramerateAdjust);
+    auto interactive = resolveInteractiveLoopModules();
+    auto &window = interactive.window;
+    auto &framerate_adjuster = interactive.framerate_adjuster;
 
     while (true) {
         if (!window.process())
@@ -237,7 +330,10 @@ void Loop::run() {
         const auto update_start = Clock::now();
         engine_time.advance();
         updateFrameState();
-        pollConfiguredGameLogic(UserInput::isKeyPushed(KeyCode::F5));
+        if (UserInput::isKeyPushed(KeyCode::F5)) {
+            (void)modules.reload_service.requestRuntimeReload(
+                watch::gameLogicReloadParticipantName);
+        }
         logInputSnapshotIfRequested(input_state.currentSnapshot());
         const auto update_end = Clock::now();
 
@@ -257,17 +353,7 @@ void Loop::run() {
         }
     }
 
-    GET_MODULE(VulkanManageCore).waitIdle();
-    if (render_timing != nullptr) {
-        render_timing->flush();
-    }
-    GET_MODULE(DeletionQueue).flushAll();
-    if (input_sequence.isRecording()) {
-        input_sequence.stopRecording();
-    }
-    if (FastModuleContainer::isInitialized<CameraBakeRecorder>() && GET_MODULE(CameraBakeRecorder).isActive()) {
-        GET_MODULE(CameraBakeRecorder).finish();
-    }
+    finishLoopResources(input_sequence, modules.camera_bake, render_timing, true);
 }
 
 } // namespace Pelican

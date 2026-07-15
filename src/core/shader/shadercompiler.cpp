@@ -469,7 +469,7 @@ ShaderCompileResult compileGlsl(std::string_view source, vk::ShaderStageFlagBits
                 auto output = found->second;
                 output.cache_hit = true;
                 output.log = "shader in-memory cache hit";
-                if (auto &metrics = StartupMetrics::__get(); metrics) {
+                if (auto *metrics = FastModuleContainer::tryGet<StartupMetrics>()) {
                     metrics->addShader(std::chrono::duration<double, std::milli>{
                                            std::chrono::steady_clock::now() - start}.count(), true);
                 }
@@ -483,7 +483,7 @@ ShaderCompileResult compileGlsl(std::string_view source, vk::ShaderStageFlagBits
                                            .cache_hit = true,
                                            .cache_key = key};
                 memory_cache.emplace(key, output);
-                if (auto &metrics = StartupMetrics::__get(); metrics) {
+                if (auto *metrics = FastModuleContainer::tryGet<StartupMetrics>()) {
                     metrics->addShader(std::chrono::duration<double, std::milli>{
                                            std::chrono::steady_clock::now() - start}.count(), true);
                 }
@@ -506,7 +506,7 @@ ShaderCompileResult compileGlsl(std::string_view source, vk::ShaderStageFlagBits
         }
         memory_cache.insert_or_assign(key, output);
     }
-    if (auto &metrics = StartupMetrics::__get(); metrics) {
+    if (auto *metrics = FastModuleContainer::tryGet<StartupMetrics>()) {
         metrics->addShader(std::chrono::duration<double, std::milli>{
                                std::chrono::steady_clock::now() - start}.count(), false);
     }
@@ -517,7 +517,8 @@ ShaderCompileResult compileGlsl(std::string_view source, vk::ShaderStageFlagBits
 } // namespace
 
 ShaderCompiler::ShaderCompiler() {
-    if (auto &resolver = PathResolver::__get(); resolver && resolver->isSetup()) {
+    if (const auto *resolver = FastModuleContainer::tryGet<PathResolver>();
+        resolver != nullptr && resolver->isSetup()) {
         cache_directory = resolver->projectRoot() / ".pelican" / "shader_cache";
     }
 }

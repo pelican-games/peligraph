@@ -274,6 +274,10 @@ std::vector<std::string> Actions::actionSetStack() {
 
 namespace internal {
 
+void prepareInputActionsRuntime() {
+    (void)GET_MODULE(InputActionsRuntime);
+}
+
 void freezeInputActionsFrame() {
     GET_MODULE(InputActionsRuntime).freezeFrame();
 }

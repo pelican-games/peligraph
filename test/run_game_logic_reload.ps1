@@ -86,6 +86,13 @@ try {
     Copy-Item -LiteralPath $FixtureV1 -Destination $sourceDll -Force
     $reload2 = Invoke-Rpc 8 'reload_game_logic'
     if ($reload2.result.generation -ne 3 -or $reload2.result.systems -ne 1) { throw 'system registration leaked across reloads' }
+    $status = Invoke-Rpc 9 'get_status'
+    $runtime = $status.result.reload.runtime.'pelican.game_logic'
+    if ($null -eq $runtime) { throw 'game logic runtime participant status is missing' }
+    if ($runtime.attempted -ne 4 -or $runtime.applied -ne 2 -or $runtime.failed -ne 2) {
+        throw "unexpected game logic participant counters: $($runtime | ConvertTo-Json -Compress)"
+    }
+    if ($null -ne $runtime.last_error) { throw 'successful reload did not clear participant error' }
 } finally {
     $process.StandardInput.Close()
     if (-not $process.WaitForExit(30000)) { $process.Kill($true); throw 'player did not stop' }

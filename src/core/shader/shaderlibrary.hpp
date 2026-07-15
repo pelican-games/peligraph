@@ -37,6 +37,13 @@ struct SurfaceShaderBundleIds {
     ShaderBundleId fragment;
 };
 
+struct ShaderSourceReloadResult {
+    size_t modified_bundles = 0;
+    size_t reloaded_bundles = 0;
+    size_t failed_bundles = 0;
+    std::string last_error;
+};
+
 enum class ShaderLibraryModuleMode {
     create_modules,
     reflection_only,
@@ -81,6 +88,8 @@ DECLARE_MODULE(ShaderLibrary) {
     const ShaderBundle &get(ShaderBundleId id) const;
 
     bool reload(ShaderBundleId id);
+    ShaderSourceReloadResult pollModifiedSources(
+        std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
     size_t reloadModifiedSources(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
     std::vector<ShaderBundleId> takeDirtyBundles();
 };

@@ -252,25 +252,51 @@ bool GameLogicReloader::reloadTransaction(const ResetFn &teardown, const ResetFn
     }
 }
 
-bool GameLogicReloader::reloadNow(const ResetFn &teardown, const ResetFn &rebuild) {
+GameLogicReloadAttempt GameLogicReloader::reloadNowAttempt(const ResetFn &teardown,
+                                                           const ResetFn &rebuild) {
     if (source_path.empty()) {
         last_error = "game logic DLL reload requested, but no DLL is configured";
-        return false;
+        return {.attempted = true, .error = last_error};
     }
-    return reloadTransaction(teardown, rebuild);
+    // A forced/manual reload acknowledges the current source version too. This
+    // prevents the next automatic poll from applying the same DLL a second time.
+    std::error_code ec;
+    const auto write_time = std::filesystem::last_write_time(source_path, ec);
+    if (!ec) observed_write_time = write_time;
+
+    const bool committed = reloadTransaction(teardown, rebuild);
+    return {
+        .attempted = true,
+        .committed = committed,
+        .error = committed ? std::string{} : last_error,
+    };
 }
 
-bool GameLogicReloader::poll(const ResetFn &teardown, const ResetFn &rebuild, bool force) {
-    if (source_path.empty()) return false;
+GameLogicReloadAttempt GameLogicReloader::pollAttempt(const ResetFn &teardown,
+                                                      const ResetFn &rebuild, bool force) {
+    if (source_path.empty()) return {};
     std::error_code ec;
     const auto write_time = std::filesystem::last_write_time(source_path, ec);
     if (ec) {
         last_error = "game logic DLL '" + source_path.string() + "' stat failed: " + ec.message();
-        return false;
+        return {.attempted = true, .error = last_error};
     }
-    if (!force && write_time == observed_write_time) return false;
+    if (!force && write_time == observed_write_time) return {};
     observed_write_time = write_time;
-    return reloadNow(teardown, rebuild);
+    const bool committed = reloadTransaction(teardown, rebuild);
+    return {
+        .attempted = true,
+        .committed = committed,
+        .error = committed ? std::string{} : last_error,
+    };
+}
+
+bool GameLogicReloader::reloadNow(const ResetFn &teardown, const ResetFn &rebuild) {
+    return reloadNowAttempt(teardown, rebuild).committed;
+}
+
+bool GameLogicReloader::poll(const ResetFn &teardown, const ResetFn &rebuild, bool force) {
+    return pollAttempt(teardown, rebuild, force).committed;
 }
 
 void GameLogicReloader::shutdown() noexcept {
@@ -316,9 +342,8 @@ void rebuildCurrentScene() {
 }
 
 bool deterministicDriverActive() {
-    if (!EngineLaunchConfig::__get().has_value()) return false;
-    const auto &config = *EngineLaunchConfig::__get();
-    return config.input_replay || config.golden_mode;
+    const auto *config = FastModuleContainer::tryGet<EngineLaunchConfig>();
+    return config != nullptr && (config->input_replay || config->golden_mode);
 }
 } // namespace
 
@@ -328,28 +353,37 @@ bool initializeConfiguredGameLogic() {
     return GET_MODULE(GameLogicReloader).initialize(*config.game_logic_dll);
 }
 
-bool reloadConfiguredGameLogic(bool force) {
+GameLogicReloadAttempt reloadConfiguredGameLogicAttempt(bool force) {
     if (deterministicDriverActive()) {
         throw std::runtime_error("game logic DLL reload rejected while replay/golden driver is active");
     }
     auto &reloader = GET_MODULE(GameLogicReloader);
-    if (force) return reloader.reloadNow(runtimeTeardown, rebuildCurrentScene);
-    return reloader.poll(runtimeTeardown, rebuildCurrentScene, false);
+    if (force) return reloader.reloadNowAttempt(runtimeTeardown, rebuildCurrentScene);
+    return reloader.pollAttempt(runtimeTeardown, rebuildCurrentScene, false);
+}
+
+GameLogicReloadAttempt pollConfiguredGameLogicAttempt(bool force) {
+    if (deterministicDriverActive()) return {};
+    auto *reloader = FastModuleContainer::tryGet<GameLogicReloader>();
+    if (reloader == nullptr) return {};
+    return reloader->pollAttempt(runtimeTeardown, rebuildCurrentScene, force);
+}
+
+bool reloadConfiguredGameLogic(bool force) {
+    return reloadConfiguredGameLogicAttempt(force).committed;
 }
 
 void pollConfiguredGameLogic(bool force) {
-    if (deterministicDriverActive()) return;
-    auto &reloader = GET_MODULE(GameLogicReloader);
-    (void)reloader.poll(runtimeTeardown, rebuildCurrentScene, force);
+    (void)pollConfiguredGameLogicAttempt(force);
 }
 
 void shutdownConfiguredGameLogic() noexcept {
-    if (GameLogicReloader::__get().has_value()) GameLogicReloader::__get()->shutdown();
+    if (auto *reloader = FastModuleContainer::tryGet<GameLogicReloader>()) reloader->shutdown();
 }
 
 GameLogicReloadStatus configuredGameLogicStatus() {
-    if (!GameLogicReloader::__get().has_value()) return {};
-    return GameLogicReloader::__get()->status();
+    const auto *reloader = FastModuleContainer::tryGet<GameLogicReloader>();
+    return reloader == nullptr ? GameLogicReloadStatus{} : reloader->status();
 }
 
 } // namespace Pelican

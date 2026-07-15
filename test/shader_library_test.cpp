@@ -247,11 +247,27 @@ TEST_CASE("shader library polls modified source files on a fixed interval", "[sh
     REQUIRE(library.reloadModifiedSources(start + std::chrono::milliseconds{500}) == 0);
     REQUIRE(library.get(id).version == 1);
 
-    REQUIRE(library.reloadModifiedSources(start + std::chrono::seconds{2}) == 1);
+    const auto successful = library.pollModifiedSources(start + std::chrono::seconds{2});
+    REQUIRE(successful.modified_bundles == 1);
+    REQUIRE(successful.reloaded_bundles == 1);
+    REQUIRE(successful.failed_bundles == 0);
     REQUIRE(library.get(id).version == 2);
     const auto dirty = library.takeDirtyBundles();
     REQUIRE(dirty.size() == 1);
     REQUIRE(dirty[0] == id);
+
+    const auto successful_write_time = std::filesystem::last_write_time(shader_path);
+    writeText(shader_path, "not valid SPIR-V");
+    std::filesystem::last_write_time(shader_path,
+                                     successful_write_time + std::chrono::seconds{2});
+    const auto failed = library.pollModifiedSources(start + std::chrono::seconds{4});
+    REQUIRE(failed.modified_bundles == 1);
+    REQUIRE(failed.reloaded_bundles == 0);
+    REQUIRE(failed.failed_bundles == 1);
+    REQUIRE_FALSE(failed.last_error.empty());
+    REQUIRE(library.get(id).version == 2);
+    REQUIRE(library.takeDirtyBundles().empty());
+    std::filesystem::remove_all(work_dir);
 }
 
 } // namespace Pelican
