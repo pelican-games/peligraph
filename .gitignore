@@ -2,6 +2,8 @@ build*/
 dist/
 dist_debug/
 **/.pelican/
+/pelican.log
+/scratch/
 
 # Large example assets live next to the JSON scene configs but stay out of git
 # (hand-copied between machines; project JSON stays tracked)
