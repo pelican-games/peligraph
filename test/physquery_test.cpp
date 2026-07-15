@@ -261,4 +261,142 @@ TEST_CASE("overlapAll returns deterministic sorted ids", "[physquery]") {
     REQUIRE(detailed_ids == std::vector<std::string>{"a", "z"});
 }
 
+TEST_CASE("shapeCast prevents thin-collider tunneling for every standard shape pair",
+          "[physquery][shape-cast]") {
+    const std::array<Shape, 3> moving_shapes{
+        Sphere{{0.0f, 0.0f, 0.0f}, 0.5f},
+        Box{{0.0f, 0.0f, 0.0f}, rotationZ(kPi * 0.125f),
+            {0.5f, 0.4f, 0.3f}},
+        Capsule{{0.0f, 0.0f, 0.0f}, rotationZ(kPi * 0.125f), 0.6f, 0.3f},
+    };
+    const std::array<Shape, 3> collider_shapes{
+        Sphere{{5.0f, 0.0f, 0.0f}, 0.5f},
+        Box{{5.0f, 0.0f, 0.0f}, rotationZ(-kPi * 0.1f),
+            {0.05f, 1.0f, 1.0f}},
+        Capsule{{5.0f, 0.0f, 0.0f}, rotationZ(-kPi * 0.15f), 0.8f, 0.35f},
+    };
+
+    for (const auto &moving : moving_shapes) {
+        for (const auto &collider : collider_shapes) {
+            const auto hit = shapeCast(moving, {10.0f, 0.0f, 0.0f}, collider);
+            INFO("moving=" << moving.index() << " collider=" << collider.index());
+            REQUIRE(hit);
+            REQUIRE_FALSE(hit->initial_overlap);
+            REQUIRE(hit->penetration_depth == Catch::Approx(0.0f));
+            REQUIRE(hit->time_of_impact >= 0.0f);
+            REQUIRE(hit->time_of_impact <= 1.0f);
+            REQUIRE(hit->normal.x < -0.5f);
+        }
+    }
+
+    const auto exact = shapeCast(
+        Shape{Sphere{{0.0f, 0.0f, 0.0f}, 0.5f}}, {10.0f, 0.0f, 0.0f},
+        Shape{Sphere{{5.0f, 0.0f, 0.0f}, 0.5f}});
+    REQUIRE(exact);
+    REQUIRE(exact->time_of_impact == Catch::Approx(0.4f).margin(2.0e-4f));
+    requireVec(exact->normal, {-1.0f, 0.0f, 0.0f});
+    requireVec(exact->position, {4.5f, 0.0f, 0.0f}, 2.0e-4f);
+}
+
+TEST_CASE("shapeCast reports deterministic initial-overlap minimum translation",
+          "[physquery][shape-cast]") {
+    const Shape moving = Sphere{{0.5f, 0.0f, 0.0f}, 1.0f};
+    const Shape collider = Sphere{{0.0f, 0.0f, 0.0f}, 1.0f};
+
+    const auto hit = shapeCast(moving, {0.0f, 0.0f, 0.0f}, collider);
+    REQUIRE(hit);
+    REQUIRE(hit->initial_overlap);
+    REQUIRE(hit->time_of_impact == Catch::Approx(0.0f));
+    REQUIRE(hit->penetration_depth == Catch::Approx(1.5f).margin(2.0e-3f));
+    requireVec(hit->normal, {1.0f, 0.0f, 0.0f}, 2.0e-3f);
+
+    const Shape touching = Sphere{{2.0f, 0.0f, 0.0f}, 1.0f};
+    REQUIRE_FALSE(shapeCast(touching, {1.0f, 0.0f, 0.0f}, collider));
+    const auto approaching = shapeCast(touching, {-1.0f, 0.0f, 0.0f}, collider);
+    REQUIRE(approaching);
+    REQUIRE_FALSE(approaching->initial_overlap);
+    REQUIRE(approaching->time_of_impact == Catch::Approx(0.0f));
+
+    const std::array<Shape, 2> symmetric_shapes{
+        Shape{Sphere{{0.0f, 0.0f, 0.0f}, 1.0f}},
+        Shape{Box{{0.0f, 0.0f, 0.0f}, {}, {1.0f, 1.0f, 1.0f}}},
+    };
+    for (const auto &symmetric : symmetric_shapes) {
+        const auto symmetric_hit = shapeCast(symmetric, {}, symmetric);
+        INFO("shape=" << symmetric.index());
+        REQUIRE(symmetric_hit);
+        REQUIRE(symmetric_hit->initial_overlap);
+        REQUIRE(symmetric_hit->penetration_depth ==
+                Catch::Approx(2.0f).margin(2.0e-3f));
+        requireVec(symmetric_hit->normal, {1.0f, 0.0f, 0.0f}, 2.0e-3f);
+    }
+
+    const auto movement_tie = shapeCast(symmetric_shapes[1], {0.0f, 1.0f, 0.0f},
+                                        symmetric_shapes[1]);
+    REQUIRE(movement_tie);
+    requireVec(movement_tie->normal, {0.0f, -1.0f, 0.0f}, 2.0e-3f);
+}
+
+TEST_CASE("shapeCast rejects non-finite and invalid shape input",
+          "[physquery][shape-cast]") {
+    const Shape valid = Sphere{{0.0f, 0.0f, 0.0f}, 1.0f};
+    REQUIRE_FALSE(shapeCast(
+        valid, {std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f}, valid));
+    REQUIRE_FALSE(shapeCast(
+        Box{{0.0f, 0.0f, 0.0f}, {},
+             {std::numeric_limits<float>::infinity(), 1.0f, 1.0f}},
+        {}, valid));
+    REQUIRE_FALSE(shapeCast(Sphere{{}, -1.0f}, {}, valid));
+}
+
+TEST_CASE("shapeCastAll shares filters and canonical TOI identity ordering",
+          "[physquery][shape-cast]") {
+    const ColliderQueryMetadata accepted{
+        .layer = 0b0010U,
+        .mask = 0b0100U,
+    };
+    const std::vector<Collider> colliders{
+        identifiedCollider("later-id", Sphere{{5.0f, 0.0f, 0.0f}, 0.5f}, 20,
+                           accepted),
+        identifiedCollider("first-id", Sphere{{5.00005f, 0.0f, 0.0f}, 0.5f}, 10,
+                           accepted),
+        identifiedCollider("trigger", Sphere{{3.0f, 0.0f, 0.0f}, 0.5f}, 1,
+                           ColliderQueryMetadata{.layer = 0b0010U,
+                                                 .mask = 0b0100U,
+                                                 .trigger = true}),
+        identifiedCollider("one-way", Sphere{{3.0f, 0.0f, 0.0f}, 0.5f}, 2,
+                           ColliderQueryMetadata{.layer = 0b0010U,
+                                                 .mask = 0b0100U,
+                                                 .one_way = true}),
+    };
+    const QueryFilter filter{
+        .layer = 0b0100U,
+        .mask = 0b0010U,
+        .include_triggers = false,
+        .include_one_way = false,
+    };
+
+    const Shape moving = Sphere{{0.0f, 0.0f, 0.0f}, 0.5f};
+    const auto hits = shapeCastAll(moving, {10.0f, 0.0f, 0.0f}, colliders, filter);
+    REQUIRE(hits.size() == 2);
+    REQUIRE(hits[0].identity.collider_id == ColliderId{10});
+    REQUIRE(hits[1].identity.collider_id == ColliderId{20});
+    REQUIRE(hits[0].time_of_impact ==
+            Catch::Approx(hits[1].time_of_impact).margin(shapeCastTieEpsilon));
+    REQUIRE(hits[0].time_of_impact > hits[1].time_of_impact);
+
+    const auto closest = shapeCastClosest(
+        moving, {10.0f, 0.0f, 0.0f}, colliders, filter);
+    REQUIRE(closest);
+    REQUIRE(closest->identity == hits.front().identity);
+
+    const std::array ignored{ColliderId{10}};
+    auto continued_filter = filter;
+    continued_filter.ignored = ignored;
+    const auto continued = shapeCastClosest(
+        moving, {10.0f, 0.0f, 0.0f}, colliders, continued_filter);
+    REQUIRE(continued);
+    REQUIRE(continued->identity.collider_id == ColliderId{20});
+}
+
 } // namespace Pelican::phys

@@ -13,6 +13,9 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <array>
+#include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -74,6 +77,85 @@ TEST_CASE("Collider component parses sphere box and capsule scene syntax", "[phy
     REQUIRE(capsule.shape == "capsule");
     REQUIRE(capsule.radius == Catch::Approx(0.5f));
     REQUIRE(capsule.half_height == Catch::Approx(2.0f));
+}
+
+TEST_CASE("Collider component parses query metadata with stable defaults",
+          "[physworld]") {
+    const auto defaults = parseCollider(nlohmann::json{
+        {"name", "collider"},
+        {"shape", "sphere"},
+        {"radius", 1.0f},
+    });
+    REQUIRE(defaults.layer == 1U);
+    REQUIRE(defaults.mask == ~std::uint32_t{0});
+    REQUIRE_FALSE(defaults.trigger);
+    REQUIRE_FALSE(defaults.one_way);
+
+    const auto configured = parseCollider(nlohmann::json{
+        {"name", "collider"},
+        {"shape", "sphere"},
+        {"radius", 1.0f},
+        {"layer", 0b0010U},
+        {"mask", 0b0100U},
+        {"trigger", true},
+        {"one_way", true},
+    });
+    REQUIRE(configured.layer == 0b0010U);
+    REQUIRE(configured.mask == 0b0100U);
+    REQUIRE(configured.trigger);
+    REQUIRE(configured.one_way);
+
+    const auto colliders = buildPhysColliders(std::array{
+        PhysWorldColliderInput{
+            .name = "metadata-target",
+            .collider = configured,
+            .transform = PhysWorldTransform{.pos = {3.0f, 0.0f, 0.0f}},
+        },
+    });
+    REQUIRE(colliders.size() == 1);
+    REQUIRE(colliders[0].metadata.layer == configured.layer);
+    REQUIRE(colliders[0].metadata.mask == configured.mask);
+    REQUIRE(colliders[0].metadata.trigger);
+    REQUIRE(colliders[0].metadata.one_way);
+
+    const phys::QueryFilter excluded{
+        .layer = 0b0100U,
+        .mask = 0b0010U,
+        .include_triggers = false,
+    };
+    REQUIRE(phys::raycastAll(
+                phys::Ray{{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}},
+                colliders, excluded)
+                .empty());
+}
+
+TEST_CASE("Collider component rejects malformed query metadata and non-finite dimensions",
+          "[physworld]") {
+    REQUIRE_THROWS(parseCollider(nlohmann::json{
+        {"name", "collider"},
+        {"shape", "sphere"},
+        {"radius", 1.0f},
+        {"layer", -1},
+    }));
+    REQUIRE_THROWS(parseCollider(nlohmann::json{
+        {"name", "collider"},
+        {"shape", "sphere"},
+        {"radius", 1.0f},
+        {"trigger", 1},
+    }));
+    auto invalid = ColliderComponent{};
+    invalid.radius = std::numeric_limits<float>::quiet_NaN();
+    REQUIRE_THROWS(invalid.validate());
+
+    REQUIRE_THROWS(buildPhysColliders(std::array{
+        PhysWorldColliderInput{
+            .name = "non-finite-transform",
+            .collider = ColliderComponent{},
+            .transform = PhysWorldTransform{
+                .pos = {std::numeric_limits<float>::infinity(), 0.0f, 0.0f},
+            },
+        },
+    }));
 }
 
 TEST_CASE("Collider component rejects size aliases with v1 replacement names", "[physworld]") {
@@ -231,6 +313,13 @@ TEST_CASE("PhysWorld module follows bound transforms and GameContext exposes que
 
     const auto overlaps = ctx.overlapAll(phys::Sphere{{3.0f, 0.0f, 0.0f}, 0.25f});
     REQUIRE(overlaps == std::vector<std::string>{"MovingSphere"});
+
+    const auto cast_hit = ctx.shapeCastClosest(
+        phys::Sphere{{0.0f, 0.0f, 0.0f}, 0.5f},
+        {5.0f, 0.0f, 0.0f});
+    REQUIRE(cast_hit);
+    REQUIRE(cast_hit->id == "MovingSphere");
+    REQUIRE(cast_hit->time_of_impact == Catch::Approx(0.3f).margin(2.0e-4f));
 
     REQUIRE(GameObjects::remove(object));
     REQUIRE_FALSE(ctx.raycastClosest(phys::Ray{{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, 5.0f}));

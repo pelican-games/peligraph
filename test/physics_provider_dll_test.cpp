@@ -4,7 +4,7 @@
 #include "../src/core/log.hpp"
 #include "../src/core/phys/physicsruntime.hpp"
 #include "../src/core/phys/physworld.hpp"
-#include "../src/core/userpublic/physics/abi_v1.hpp"
+#include "../src/core/userpublic/physics/abi_v2.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
+#include <optional>
 #include <semaphore>
 #include <stdexcept>
 #include <string>
@@ -154,6 +155,20 @@ void requireFixtureHit(const std::vector<phys::RaycastQueryHit> &hits,
     REQUIRE(hits[0].normal.x == Catch::Approx(-1.0F));
 }
 
+std::optional<phys::ShapeCastQueryHit> queryShapeCast(PhysWorld &world) {
+    return world.shapeCastClosest(
+        phys::Sphere{{0.0F, 0.0F, 0.0F}, 0.5F},
+        {10.0F, 0.0F, 0.0F});
+}
+
+void requireFixtureShapeCast(const std::optional<phys::ShapeCastQueryHit> &hit) {
+    REQUIRE(hit);
+    REQUIRE(hit->id == "target");
+    REQUIRE(hit->time_of_impact == Catch::Approx(0.375F));
+    REQUIRE(hit->position.x == Catch::Approx(3.75F));
+    REQUIRE(hit->normal.x == Catch::Approx(-1.0F));
+}
+
 constexpr const char *configuredProviderName() {
 #if PELICAN_WITH_JOLT_PHYSICS
     return "pelican.jolt";
@@ -200,6 +215,16 @@ TEST_CASE("public game DLL physics provider survives reload rollback and in-flig
     REQUIRE(fallback_overlap == std::vector<std::string>{"target"});
 #else
     REQUIRE(fallback_overlap.empty());
+#endif
+
+    // A V1 DLL cannot claim the additive V2 operation. Capability routing
+    // therefore falls through to the configured backend when present.
+    const auto v1_shape_cast = queryShapeCast(world);
+#if PELICAN_WITH_JOLT_PHYSICS || PELICAN_WITH_BUILTIN_PHYSICS
+    REQUIRE(v1_shape_cast);
+    REQUIRE(v1_shape_cast->time_of_impact == Catch::Approx(0.15F).margin(2.0e-4F));
+#else
+    REQUIRE_FALSE(v1_shape_cast);
 #endif
 
     // The source DLL can be overwritten because the loader owns a shadow copy.
@@ -253,6 +278,7 @@ TEST_CASE("public game DLL physics provider survives reload rollback and in-flig
     REQUIRE(reloader.status().generation == 2);
     REQUIRE(physics_internal::activeProviderName() == "fixture.physics.v2");
     requireFixtureHit(queryRay(world), 1.375F);
+    requireFixtureShapeCast(queryShapeCast(world));
 
     // Candidate validation must not disturb the live V2 provider.
     replaceFixture(fixture_bad_abi, live_dll);
@@ -260,6 +286,7 @@ TEST_CASE("public game DLL physics provider survives reload rollback and in-flig
     REQUIRE(reloader.status().generation == 2);
     REQUIRE(physics_internal::activeProviderName() == "fixture.physics.v2");
     requireFixtureHit(queryRay(world), 1.375F);
+    requireFixtureShapeCast(queryShapeCast(world));
 
     // A failure after candidate activation reloads the previous shadow under a
     // fresh owner. The failed V1 callback table must not survive rollback.
@@ -274,9 +301,18 @@ TEST_CASE("public game DLL physics provider survives reload rollback and in-flig
     REQUIRE(reloader.status().generation == 2);
     REQUIRE(physics_internal::activeProviderName() == "fixture.physics.v2");
     requireFixtureHit(queryRay(world), 1.375F);
+    requireFixtureShapeCast(queryShapeCast(world));
 
     reloader.shutdown();
     REQUIRE(physics_internal::activeProviderName() == configuredProviderName());
+    const auto shutdown_shape_cast = queryShapeCast(world);
+#if PELICAN_WITH_JOLT_PHYSICS || PELICAN_WITH_BUILTIN_PHYSICS
+    REQUIRE(shutdown_shape_cast);
+    REQUIRE(shutdown_shape_cast->time_of_impact ==
+            Catch::Approx(0.15F).margin(2.0e-4F));
+#else
+    REQUIRE_FALSE(shutdown_shape_cast);
+#endif
 }
 
 } // namespace Pelican

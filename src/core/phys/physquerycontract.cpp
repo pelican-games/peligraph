@@ -121,5 +121,31 @@ void orderOverlapHits(std::vector<OverlapHit> &hits) {
     });
 }
 
+void orderShapeCastHits(std::vector<ShapeCastQueryHit> &hits) {
+    std::sort(hits.begin(), hits.end(), [](const ShapeCastQueryHit &lhs,
+                                           const ShapeCastQueryHit &rhs) {
+        if (lhs.time_of_impact != rhs.time_of_impact) {
+            return lhs.time_of_impact < rhs.time_of_impact;
+        }
+        return colliderIdentityLess(lhs.identity, rhs.identity);
+    });
+
+    std::size_t cluster_begin = 0;
+    while (cluster_begin < hits.size()) {
+        const float anchor = hits[cluster_begin].time_of_impact;
+        std::size_t cluster_end = cluster_begin + 1;
+        while (cluster_end < hits.size() &&
+               hits[cluster_end].time_of_impact <= anchor + queryTieEpsilon) {
+            ++cluster_end;
+        }
+        std::sort(hits.begin() + static_cast<std::ptrdiff_t>(cluster_begin),
+                  hits.begin() + static_cast<std::ptrdiff_t>(cluster_end),
+                  [](const ShapeCastQueryHit &lhs, const ShapeCastQueryHit &rhs) {
+                      return colliderIdentityLess(lhs.identity, rhs.identity);
+                  });
+        cluster_begin = cluster_end;
+    }
+}
+
 } // namespace internal
 } // namespace Pelican::phys

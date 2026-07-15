@@ -2,6 +2,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cmath>
+#include <limits>
 #include <stdexcept>
 
 namespace Pelican {
@@ -53,8 +55,54 @@ float readRequiredFloat(const nlohmann::json &json, const char *name) {
     return json.at(name).get<float>();
 }
 
+std::uint32_t readUint32Or(const nlohmann::json &json, const char *name,
+                           std::uint32_t fallback) {
+    const auto found = json.find(name);
+    if (found == json.end()) return fallback;
+    if (!found->is_number_integer() && !found->is_number_unsigned()) {
+        throw std::runtime_error(std::string{"Collider field must be uint32: "} + name);
+    }
+    if (found->is_number_unsigned()) {
+        const auto value = found->get<std::uint64_t>();
+        if (value > std::numeric_limits<std::uint32_t>::max()) {
+            throw std::runtime_error(std::string{"Collider field is outside uint32 range: "} +
+                                     name);
+        }
+        return static_cast<std::uint32_t>(value);
+    }
+    const auto value = found->get<std::int64_t>();
+    if (value < 0 ||
+        static_cast<std::uint64_t>(value) >
+            std::numeric_limits<std::uint32_t>::max()) {
+        throw std::runtime_error(std::string{"Collider field is outside uint32 range: "} +
+                                 name);
+    }
+    return static_cast<std::uint32_t>(value);
+}
+
+bool readBoolOr(const nlohmann::json &json, const char *name, bool fallback) {
+    const auto found = json.find(name);
+    if (found == json.end()) return fallback;
+    if (!found->is_boolean()) {
+        throw std::runtime_error(std::string{"Collider field must be boolean: "} + name);
+    }
+    return found->get<bool>();
+}
+
 bool allPositive(vec3 value) {
-    return value.x > 0.0f && value.y > 0.0f && value.z > 0.0f;
+    return std::isfinite(value.x) && std::isfinite(value.y) &&
+           std::isfinite(value.z) && value.x > 0.0f && value.y > 0.0f &&
+           value.z > 0.0f;
+}
+
+bool finite(vec3 value) {
+    return std::isfinite(value.x) && std::isfinite(value.y) &&
+           std::isfinite(value.z);
+}
+
+bool finite(quat value) {
+    return std::isfinite(value.x) && std::isfinite(value.y) &&
+           std::isfinite(value.z) && std::isfinite(value.w);
 }
 
 } // namespace
@@ -64,6 +112,10 @@ void ColliderComponent::loadFromJsonArchive(const JsonArchiveLoader &archive) {
     shape = json.at("shape").get<std::string>();
     pos = readVec3Or(json, "pos", {0.0f, 0.0f, 0.0f});
     rotation = readQuatOr(json, "rotation", {0.0f, 0.0f, 0.0f, 1.0f});
+    layer = readUint32Or(json, "layer", 1U);
+    mask = readUint32Or(json, "mask", ~std::uint32_t{0});
+    trigger = readBoolOr(json, "trigger", false);
+    one_way = readBoolOr(json, "one_way", false);
 
     if (shape == "sphere") {
         radius = readRequiredFloat(json, "radius");
@@ -88,8 +140,11 @@ void ColliderComponent::loadFromJsonArchive(const JsonArchiveLoader &archive) {
 }
 
 void ColliderComponent::validate() const {
+    if (!finite(pos) || !finite(rotation)) {
+        throw std::runtime_error("Collider pose must contain finite values");
+    }
     if (shape == "sphere") {
-        if (radius <= 0.0f) {
+        if (!std::isfinite(radius) || radius <= 0.0f) {
             throw std::runtime_error("Sphere collider radius must be positive");
         }
     } else if (shape == "box") {
@@ -97,10 +152,10 @@ void ColliderComponent::validate() const {
             throw std::runtime_error("Box collider half_extents must be positive");
         }
     } else if (shape == "capsule") {
-        if (radius <= 0.0f) {
+        if (!std::isfinite(radius) || radius <= 0.0f) {
             throw std::runtime_error("Capsule collider radius must be positive");
         }
-        if (half_height < 0.0f) {
+        if (!std::isfinite(half_height) || half_height < 0.0f) {
             throw std::runtime_error("Capsule collider half_height must be non-negative");
         }
     } else {

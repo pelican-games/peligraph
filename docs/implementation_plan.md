@@ -2611,6 +2611,34 @@ quantization・公開 flipbook helper。物理 Transform と UI quad ABI は変�
 8. 受け入れ = C4 fixture + 新規 golden/status assertions + 公開 project code
    build + 既存全テスト + golden SKIP 0 + player 8 秒
 
+### WP107: 2D S2D-P — shapeCast query minimum + Provider ABI V2
+
+参照: **`design_2d_game_layer.md` v2.3 §7・§9 S2D-P 行が正**。
+受入条件 = 再レビュー C5 の **public 入出力・initial overlap/zero delta・
+all-hit 全順序・MTD 非一意軸・collider/filter schema** を同じ WP で閉じる。
+基盤 = P1/P2 と PhysQuery foundation refactor(済)。物理シミュレーション、
+`moveAndSlide`、方向付き one-way policy は S2D-2 へ残す。
+
+1. **pure shapeCast**: 固定姿勢の平行 sweep。sphere/box/capsule 全 9 組、
+   thin collider、TOI/position/normal、zero-delta MTD、touching/non-finite を
+   CPU fixture 化
+2. **決定性**: TOI `1e-5` bucket + stable collider/full entity/shape ordinal。
+   MTD tie は移動逆向き優先後に world x/y/z で全順序化し、closest と filter
+   継続は ordered all-hit の先頭から導出
+3. **schema**: collider に uint32 `layer/mask`、bool `trigger/one_way` と
+   安定既定値を追加。self/ignore、stale full identity、未知 bit、ignore 後の
+   次 hit を positive/negative fixture 化
+4. **ABI V2**: V1 ABI を不変のまま `ApiV2/ServiceV2/ProviderV2` と
+   `query_shape_cast_all` を additive 追加。descriptor/result の境界検証、
+   malformed provider containment、V1 provider の capability 単位 fallback
+5. **backend/purge**: Builtin と Jolt を同じ Provider V2 へ実装。
+   `PELICAN_WITH_PHYSICS=OFF`、provider-only、Jolt の 3 構成と公開 header だけを
+   include する V1/V2 provider DLL の load/rollback/unload を通す
+6. **公開接続**: PhysWorld/GameContext に all/closest を追加し、physics-off は
+   空結果。game DLL link fixture で新旧 API を同時参照
+7. 受け入れ = pure/PhysWorld/service fixture + 3 構成 build/CTest + provider DLL
+   E2E + public API link + `git diff --check`
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの

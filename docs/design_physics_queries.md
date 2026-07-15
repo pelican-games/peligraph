@@ -1,12 +1,12 @@
-# 物理クエリ: raycast / overlap(v1)
+# 物理クエリ: raycast / overlap / shapeCast(v2)
 
 対象読者: エンジン担当。
-ステータス: v1 ドラフト(2026-07-07。必須決定済み・詳細レビュー前)。
+ステータス: **v2 実装済み(P1/P2 + WP107、2026-07-15)**。
 前提: `design_game_logic_native.md`(GameContext = 消費者)、
 `design_devstudio_direction.md` D2(エディタピッキング = 消費者)、
 `design_asset_format_policy.md` §4(コリジョン形状の glb 内規約・予約)。
 
-## 0. スコープ(v1 = クエリ先行。シミュレーションは将来トラック)
+## 0. スコープ(クエリ先行。シミュレーションは将来トラック)
 
 (2026-07-07 ユーザー訂正を反映)**ランタイム物理シミュレーションは
 「やらない」のではなく「後」**。使い分け:
@@ -15,64 +15,81 @@
 - **ゲームプレイの動的物理(剛体・キャラクター操作)= 将来のエンジン
   ランタイムシミュレーション**(§6 に展望)
 
-v1 をクエリ先行にするのは順序の判断(エディタ D2 ピッキングと
-ゲームロジックの必須要件が先に来る)。v1 の形状定義・コライダーコンポーネント・
+クエリ先行にするのは順序の判断(エディタ D2 ピッキングと
+ゲームロジックの必須要件が先に来る)。形状定義・コライダーコンポーネント・
 クエリワールドは**将来のシミュレーションの土台**として設計する
-(broadphase・形状表現をシミュ導入時に捨てない)。v1 が提供するのは問い合わせ:
+(broadphase・形状表現をシミュ導入時に捨てない)。現在提供するのは問い合わせ:
 
 - `raycast(origin, dir, max_dist)` → 最初のヒット(object 名・距離・位置・法線)
 - `overlap(shape, transform)` → 重なっている object 名の列
-- (v2 予約)sweep、全ヒット列挙、レイヤ/マスク
+- `shapeCast(shape, delta, filter)` → ordered all-hit / closest、TOI、
+  collider 上 position、押し出し normal、initial-overlap MTD
+- 共通 filter = reciprocal layer/mask、self/ignore、trigger/one-way inclusion。
+  結果 identity = stable ColliderId + full EntityId + shape ordinal
 
 ## 1. コリジョン形状の宣言
 
 1. **形状はコンポーネント**(scene v1 の文法どおり):
    `{"name": "collider", "shape": "box|sphere|capsule", ...寸法}` — 既存の
-   `components/collider.{hpp,cpp}` の骨を再評価して土台にする
+   `components/collider.{hpp,cpp}` を正本とする。query metadata の既定は
+   `layer=1`、`mask=0xffffffff`、`trigger=false`、`one_way=false`
 2. **メッシュコライダは glb 内規約**(フォーマット方針 §4 の予約を確定):
    ノード extras `pelican.collision`(`{"shape": "mesh"|"convex"}`)。
    v1 は AABB / 球 / カプセル + 静的メッシュ(BVH)まで
 3. 休眠中の `collision` ブランチは**部品取り**として再評価(そのままマージしない。
    現行本線との乖離が大きいため、使える純ロジックだけ移植)
 
+shapeCast の contact epsilon と TOI/MTD tie epsilon はともに `1e-5`。
+同深度 MTD は移動逆向きを優先し、その後 world x/y/z で固定する。
+all-hit は TOI bucket 後に ColliderId/full EntityId/shape ordinal/name の全順序。
+方向付き one-way の通過/接地判断は、この metadata と ordered all-hit を使う
+S2D-2 のユーザー空間 policy であり、provider 内へ固定しない。
+
 ## 2. 実装構造(既存の型に従う)
 
 - **純ロジック**: `src/project/…` ではなく `core/phys/` に
   `physquery.{hpp,cpp}`(形状・レイ・BVH — モジュール/GPU 非依存、
-  GPU 不要テスト。決定性: 同一シーン + 同一レイ → 同一ヒット。
-  浮動小数の比較順を固定し、同距離タイは object 名の辞書順)
+  GPU 不要テスト。決定性: 同一シーン + 同一 query → 同一 ordered result)
 - **バインダ**: シーンロード時に collider コンポーネント → クエリワールドへ登録。
   transform 変更(ゲームコード / update_transforms)に追従
-- **消費者 API**: GameContext に `raycast` / `overlap`(ゲームコード)、
+- **消費者 API**: GameContext に `raycast` / `overlap` / `shapeCast`
+  (ゲームコード)、
   rpc に `raycast` メソッド(エディタ D2 / エージェント用 — stage 3 の続き)
-- **パージ**: collider を持つシーンがなければクエリワールドは空のまま
-  (素通り原則)。規模が育ったら `PELICAN_WITH_PHYSICS` ユニット化
+- **provider 境界**: 公開 C ABI は V1 を維持し、V2 で shapeCast capability
+  だけを additive 追加。Builtin/Jolt/game DLL provider は同じ service へ
+  capability 単位で合成され、Jolt 型を engine/game header へ漏らさない
+- **パージ**: `PELICAN_WITH_PHYSICS=OFF` では service stub だけ、provider-only
+  では Builtin/Jolt narrow phase をリンクしない。collider のない scene では
+  query world も空のまま(素通り原則)
 
 ## 3. 検証
 
-- 純ロジック: 形状×レイの解析解 fixture(GPU 不要)
+- 純ロジック: 形状×レイ、shapeCast 全 9 shape pair、thin collider、MTD、
+  同時 hit/filter 継続 fixture(GPU 不要)
 - 結合: rpc raycast をシナリオテストに(load_gltf → raycast → 期待ヒット)
 - デバッグ描画: collider の可視化を debug_draw feature に追加(安い・効果大)
 
 ## 4. 実装順(WP 候補)
 
-P1: 純ロジック(box/sphere/capsule + レイ、決定性テスト)→
-P2: collider バインダ + GameContext API + debug 可視化 →
+P1: 純ロジック(box/sphere/capsule + レイ、決定性テスト、済) →
+P2: collider バインダ + GameContext API + debug 可視化(済) →
+S2D-P/WP107: shapeCast/MTD/filter + Provider ABI V2(済) →
 P3: rpc raycast + メッシュ(BVH)+ glb extras 規約。
 
 ## 5. 未決事項
 
-1. レイヤ/マスクの表現(v1 は全対象。タグはコンポーネント params 予約)
-2. 動的 BVH 更新の頻度(v1 は毎フレーム再構築で開始し、計測(WP29)で判断)
-3. collision ブランチからの移植範囲(P1 着手時に棚卸し)
-4. **ランタイムシミュレーションの実装方針: 自前 vs 物理ライブラリ採用** —
+1. 動的 BVH 更新の頻度(v2 は毎フレーム再収集で開始し、計測で判断)
+2. rpc query・メッシュ/BVH・glb extras の P3
+3. **ランタイムシミュレーションの実装方針: 自前 vs 物理ライブラリ採用** —
    シミュ着手時の最初の意思決定。**推奨 = Jolt(2026-07-07 比較検討済み)**:
    決定性モードを機能として持つ(本エンジンのリプレイ/rpc 決定性と整合)・
    現役保守・モダン C++・並列前提設計・キャラクターコントローラ同梱。
    Bullet は不採用方針(実質保守停止・決定性非保証・唯一の優位である
    ランタイムソフトボディは Houdini ベイク/VAT レーンが担当済み)。
    2D 物理は Box2D を別枠予約(2D 設計文書のスコープ判断)。
-   ライブラリ採用の場合も v1 のコライダーコンポーネント / glb extras 規約 /
+   Jolt query provider は WP107 で実装済みだが、剛体 world/step/constraint を
+   持つシミュレーションは未実装。採用の場合もコライダーコンポーネント /
+   glb extras 規約 /
    クエリ API は形式として維持し、バックエンド差し替えで受ける
    (PELICAN_WITH_PHYSICS ユニット必須 — 誕生時要件)
 

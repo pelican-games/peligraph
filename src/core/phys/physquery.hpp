@@ -61,6 +61,8 @@ struct ColliderIdentity {
 using CollisionLayerMask = std::uint32_t;
 inline constexpr CollisionLayerMask default_collision_layer = 1U;
 inline constexpr CollisionLayerMask all_collision_layers = ~CollisionLayerMask{0};
+inline constexpr float shapeCastContactEpsilon = 1.0e-5F;
+inline constexpr float shapeCastTieEpsilon = 1.0e-5F;
 
 struct ColliderQueryMetadata {
     CollisionLayerMask layer = default_collision_layer;
@@ -119,6 +121,39 @@ struct OverlapHit {
     ColliderQueryMetadata metadata{};
 };
 
+// A translational cast keeps the shape orientation fixed while moving its
+// center by delta. time_of_impact is in [0, 1], position is on the stationary
+// collider, and normal points in the direction that moves the cast shape out.
+// For an initial penetration deeper than shapeCastContactEpsilon, TOI is zero,
+// initial_overlap is true, and normal * penetration_depth is its MTD. Touching
+// within that epsilon is a TOI-zero hit only while approaching; stationary or
+// separating contact is omitted. A zero delta is therefore a depenetration
+// query. Non-finite or negative shape input produces no pure-query result.
+//
+// MTD candidates whose depths differ by at most shapeCastTieEpsilon use the
+// lexicographically greatest key (dot(normal, preferred), normal.x, normal.y,
+// normal.z), where preferred is normalized(-delta), or +X for zero delta.
+// shapeCastAll clusters TOIs from the lowest raw value with the same epsilon,
+// then orders that cluster by complete collider identity and shape ordinal.
+struct ShapeCastHit {
+    float time_of_impact = 0.0f;
+    float penetration_depth = 0.0f;
+    vec3 position{0.0f, 0.0f, 0.0f};
+    vec3 normal{0.0f, 1.0f, 0.0f};
+    bool initial_overlap = false;
+};
+
+struct ShapeCastQueryHit {
+    std::string id;
+    float time_of_impact = 0.0f;
+    float penetration_depth = 0.0f;
+    vec3 position{0.0f, 0.0f, 0.0f};
+    vec3 normal{0.0f, 1.0f, 0.0f};
+    bool initial_overlap = false;
+    ColliderIdentity identity{};
+    ColliderQueryMetadata metadata{};
+};
+
 std::optional<RaycastHit> raycast(const Ray &ray, const Sphere &sphere);
 std::optional<RaycastHit> raycast(const Ray &ray, const Box &box);
 std::optional<RaycastHit> raycast(const Ray &ray, const Capsule &capsule);
@@ -134,6 +169,9 @@ bool overlaps(const Capsule &lhs, const Capsule &rhs);
 bool overlaps(const Box &lhs, const Capsule &rhs);
 bool overlaps(const Capsule &lhs, const Box &rhs);
 bool overlaps(const Shape &lhs, const Shape &rhs);
+
+std::optional<ShapeCastHit> shapeCast(const Shape &moving_shape, vec3 delta,
+                                      const Shape &collider_shape);
 
 // Legacy name-only colliders receive a deterministic compatibility identity.
 // PhysWorld supplies persistent ids and a full entity generation instead.
@@ -151,6 +189,12 @@ std::optional<RaycastQueryHit> raycastClosest(const Ray &ray,
                                               const QueryFilter &filter);
 std::vector<OverlapHit> overlapAllHits(const Shape &shape, std::span<const Collider> colliders,
                                        const QueryFilter &filter = {});
+std::vector<ShapeCastQueryHit> shapeCastAll(
+    const Shape &moving_shape, vec3 delta, std::span<const Collider> colliders,
+    const QueryFilter &filter = {});
+std::optional<ShapeCastQueryHit> shapeCastClosest(
+    const Shape &moving_shape, vec3 delta, std::span<const Collider> colliders,
+    const QueryFilter &filter = {});
 
 // Compatibility adapter for the original name-only overlap API.
 std::vector<std::string> overlapAll(const Shape &shape,

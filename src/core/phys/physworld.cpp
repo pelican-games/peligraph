@@ -56,8 +56,36 @@ PhysWorldTransform transformFromComponent(const TransformComponent &transform) {
     };
 }
 
+bool finite(vec3 value) {
+    return std::isfinite(value.x) && std::isfinite(value.y) &&
+           std::isfinite(value.z);
+}
+
+bool finite(quat value) {
+    return std::isfinite(value.x) && std::isfinite(value.y) &&
+           std::isfinite(value.z) && std::isfinite(value.w);
+}
+
+void validateWorldTransform(const PhysWorldTransform &transform) {
+    if (!finite(transform.pos) || !finite(transform.rotation) ||
+        !finite(transform.scale)) {
+        throw std::runtime_error("Collider world transform must contain finite values");
+    }
+}
+
+phys::ColliderQueryMetadata metadataFromComponent(
+    const ColliderComponent &collider) {
+    return phys::ColliderQueryMetadata{
+        .layer = collider.layer,
+        .mask = collider.mask,
+        .trigger = collider.trigger,
+        .one_way = collider.one_way,
+    };
+}
+
 phys::Shape makeWorldShape(const ColliderComponent &collider, const PhysWorldTransform &transform) {
     collider.validate();
+    validateWorldTransform(transform);
 
     const glm::vec3 world_pos = toGlmVec(transform.pos);
     const glm::quat world_rotation = normalized(to_glm(transform.rotation));
@@ -204,7 +232,7 @@ std::vector<phys::Collider> buildPhysColliders(std::span<const PhysWorldCollider
             input.name,
             makeWorldShape(input.collider, input.transform),
             input.identity,
-            input.metadata,
+            input.metadata.value_or(metadataFromComponent(input.collider)),
         });
         colliders.back().identity = phys::effectiveColliderIdentity(colliders.back());
     }
@@ -228,7 +256,7 @@ void PhysWorld::clear() {
 
 void PhysWorld::bindCollider(std::string name, const ColliderComponent &collider,
                              GameObjectId object_id,
-                             phys::ColliderQueryMetadata metadata) {
+                             std::optional<phys::ColliderQueryMetadata> metadata) {
     if (name.empty()) {
         throw std::runtime_error("Collider object requires a name");
     }
@@ -255,7 +283,7 @@ void PhysWorld::bindCollider(std::string name, const ColliderComponent &collider
             .name = std::move(name),
             .entity = object_id,
         },
-        .metadata = metadata,
+        .metadata = metadata.value_or(metadataFromComponent(collider)),
         .collider = collider,
         .transform_source = object_id,
     });
@@ -263,7 +291,7 @@ void PhysWorld::bindCollider(std::string name, const ColliderComponent &collider
 
 void PhysWorld::bindCollider(std::string name, const ColliderComponent &collider,
                              PhysWorldTransform static_transform,
-                             phys::ColliderQueryMetadata metadata) {
+                             std::optional<phys::ColliderQueryMetadata> metadata) {
     if (name.empty()) {
         throw std::runtime_error("Collider object requires a name");
     }
@@ -273,12 +301,13 @@ void PhysWorld::bindCollider(std::string name, const ColliderComponent &collider
         throw std::runtime_error("Duplicate collider object name: " + name);
     }
     collider.validate();
+    validateWorldTransform(static_transform);
     bindings.push_back(Binding{
         .identity = phys::ColliderIdentity{
             .collider_id = allocateColliderId(),
             .name = std::move(name),
         },
-        .metadata = metadata,
+        .metadata = metadata.value_or(metadataFromComponent(collider)),
         .collider = collider,
         .transform_source = static_transform,
     });
@@ -366,6 +395,29 @@ std::vector<phys::OverlapHit> PhysWorld::overlapAllHits(
                                  std::to_string(static_cast<std::uint32_t>(status)));
     }
     return hits;
+}
+
+std::vector<phys::ShapeCastQueryHit> PhysWorld::shapeCastAll(
+    const phys::Shape &moving_shape, vec3 delta,
+    const phys::QueryFilter &filter) const {
+    const auto colliders = collectColliders();
+    std::vector<phys::ShapeCastQueryHit> hits;
+    const auto status = physics_internal::shapeCastAll(
+        moving_shape, delta, colliders, &filter, hits);
+    if (status == Physics::Status::unavailable) return {};
+    if (status != Physics::Status::ok) {
+        throw std::runtime_error("Physics query provider shape cast failed with status " +
+                                 std::to_string(static_cast<std::uint32_t>(status)));
+    }
+    return hits;
+}
+
+std::optional<phys::ShapeCastQueryHit> PhysWorld::shapeCastClosest(
+    const phys::Shape &moving_shape, vec3 delta,
+    const phys::QueryFilter &filter) const {
+    auto hits = shapeCastAll(moving_shape, delta, filter);
+    if (hits.empty()) return std::nullopt;
+    return std::move(hits.front());
 }
 
 std::vector<std::string> PhysWorld::overlapAll(

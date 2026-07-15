@@ -28,7 +28,7 @@ struct PhysWorldColliderInput {
     ColliderComponent collider;
     PhysWorldTransform transform;
     phys::ColliderIdentity identity{};
-    phys::ColliderQueryMetadata metadata{};
+    std::optional<phys::ColliderQueryMetadata> metadata;
 };
 
 std::vector<phys::Collider> buildPhysColliders(std::span<const PhysWorldColliderInput> inputs);
@@ -49,10 +49,10 @@ DECLARE_MODULE(PhysWorld) {
   public:
     void clear();
     void bindCollider(std::string name, const ColliderComponent &collider, GameObjectId object_id,
-                      phys::ColliderQueryMetadata metadata = {});
+                      std::optional<phys::ColliderQueryMetadata> metadata = std::nullopt);
     void bindCollider(std::string name, const ColliderComponent &collider,
                       PhysWorldTransform static_transform = {},
-                      phys::ColliderQueryMetadata metadata = {});
+                      std::optional<phys::ColliderQueryMetadata> metadata = std::nullopt);
 
     std::vector<phys::Collider> collectColliders() const;
     std::vector<phys::RaycastQueryHit> raycastAll(
@@ -62,6 +62,12 @@ DECLARE_MODULE(PhysWorld) {
         const phys::Ray &ray, const phys::QueryFilter &filter) const;
     std::vector<phys::OverlapHit> overlapAllHits(
         const phys::Shape &shape, const phys::QueryFilter &filter = {}) const;
+    std::vector<phys::ShapeCastQueryHit> shapeCastAll(
+        const phys::Shape &moving_shape, vec3 delta,
+        const phys::QueryFilter &filter = {}) const;
+    std::optional<phys::ShapeCastQueryHit> shapeCastClosest(
+        const phys::Shape &moving_shape, vec3 delta,
+        const phys::QueryFilter &filter = {}) const;
     std::vector<std::string> overlapAll(const phys::Shape &shape) const;
     std::vector<std::string> overlapAll(const phys::Shape &shape,
                                         const phys::QueryFilter &filter) const;

@@ -4,7 +4,7 @@
 #include "../src/core/phys/physicsruntime.hpp"
 #include "../src/core/phys/physworld.hpp"
 #include "../src/core/userpublic/details/reload/registrationowner.hpp"
-#include "../src/core/userpublic/physics/abi_v1.hpp"
+#include "../src/core/userpublic/physics/abi_v2.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -12,6 +12,7 @@
 #include <array>
 #include <chrono>
 #include <exception>
+#include <limits>
 #include <semaphore>
 #include <thread>
 #include <vector>
@@ -43,6 +44,19 @@ Physics::ApiV1 physicsApi() {
 Physics::ServiceV1 physicsService(const Physics::ApiV1 &api) {
     auto service = Physics::descriptor<Physics::ServiceV1>();
     REQUIRE(api.get_service(api.context, Physics::serviceVersionV1, &service) ==
+            Physics::Status::ok);
+    return service;
+}
+
+Physics::ApiV2 physicsApiV2() {
+    auto api = Physics::descriptor<Physics::ApiV2>();
+    REQUIRE(Physics::getApiV2(Physics::abiVersionV2, &api) == Physics::Status::ok);
+    return api;
+}
+
+Physics::ServiceV2 physicsServiceV2(const Physics::ApiV2 &api) {
+    auto service = Physics::descriptor<Physics::ServiceV2>();
+    REQUIRE(api.get_service(api.context, Physics::serviceVersionV2, &service) ==
             Physics::Status::ok);
     return service;
 }
@@ -122,6 +136,113 @@ Physics::ProviderV1 fakeProvider(FakeProviderState &state) {
     provider.name_size = 9;
     provider.context = &state;
     provider.raycast_all = fakeRaycastAll;
+    return provider;
+}
+
+struct FakeShapeProviderState {
+    enum class Behavior {
+        valid,
+        duplicate_index,
+        out_of_range_index,
+        zero_normal,
+        invalid_toi,
+        initial_without_depth,
+        initial_at_contact_depth,
+        sweep_with_depth,
+        unknown_flags,
+        non_finite_position,
+        unknown_status,
+        oversized_count,
+        unexpected_buffer_too_small,
+    };
+
+    std::uint32_t last_collider_count = 0;
+    Physics::Vec3V1 last_delta{};
+    Behavior behavior = Behavior::valid;
+};
+
+Physics::Status fakeShapeCastAll(
+    void *context, const Physics::ProviderShapeCastQueryV2 *query,
+    Physics::ProviderShapeCastHitV2 *hits, std::uint32_t capacity,
+    std::uint32_t *out_count) noexcept {
+    if (context == nullptr || query == nullptr || out_count == nullptr ||
+        (capacity != 0 && hits == nullptr)) {
+        return Physics::Status::invalid_argument;
+    }
+    auto &state = *static_cast<FakeShapeProviderState *>(context);
+    state.last_collider_count = query->collider_count;
+    state.last_delta = query->delta;
+
+    if (state.behavior == FakeShapeProviderState::Behavior::unknown_status) {
+        *out_count = 0;
+        return static_cast<Physics::Status>(~std::uint32_t{0});
+    }
+    if (state.behavior == FakeShapeProviderState::Behavior::oversized_count) {
+        *out_count = query->collider_count + 1;
+        return Physics::Status::ok;
+    }
+    if (state.behavior ==
+        FakeShapeProviderState::Behavior::unexpected_buffer_too_small) {
+        *out_count = query->collider_count;
+        return Physics::Status::buffer_too_small;
+    }
+
+    *out_count = query->collider_count;
+    if (capacity < query->collider_count) return Physics::Status::buffer_too_small;
+    for (std::uint32_t output = 0; output < query->collider_count; ++output) {
+        hits[output] = Physics::ProviderShapeCastHitV2{
+            .collider_index = query->collider_count - output - 1,
+            .time_of_impact = 0.25F,
+            .position = {2.5F, 0.0F, 0.0F},
+            .normal = {-2.0F, 0.0F, 0.0F},
+        };
+    }
+    if (query->collider_count == 0) return Physics::Status::ok;
+
+    switch (state.behavior) {
+    case FakeShapeProviderState::Behavior::duplicate_index:
+        if (query->collider_count > 1) hits[1].collider_index = hits[0].collider_index;
+        break;
+    case FakeShapeProviderState::Behavior::out_of_range_index:
+        hits[0].collider_index = query->collider_count;
+        break;
+    case FakeShapeProviderState::Behavior::zero_normal:
+        hits[0].normal = {};
+        break;
+    case FakeShapeProviderState::Behavior::invalid_toi:
+        hits[0].time_of_impact = 1.5F;
+        break;
+    case FakeShapeProviderState::Behavior::initial_without_depth:
+        hits[0].flags = Physics::shape_cast_initial_overlap;
+        hits[0].time_of_impact = 0.0F;
+        break;
+    case FakeShapeProviderState::Behavior::initial_at_contact_depth:
+        hits[0].flags = Physics::shape_cast_initial_overlap;
+        hits[0].time_of_impact = 0.0F;
+        hits[0].penetration_depth = Physics::shapeCastContactEpsilonV2;
+        break;
+    case FakeShapeProviderState::Behavior::sweep_with_depth:
+        hits[0].penetration_depth = 1.0F;
+        break;
+    case FakeShapeProviderState::Behavior::unknown_flags:
+        hits[0].flags = 1U << 31U;
+        break;
+    case FakeShapeProviderState::Behavior::non_finite_position:
+        hits[0].position.x = std::numeric_limits<float>::infinity();
+        break;
+    default:
+        break;
+    }
+    return Physics::Status::ok;
+}
+
+Physics::ProviderV2 fakeShapeProvider(FakeShapeProviderState &state) {
+    auto provider = Physics::descriptor<Physics::ProviderV2>();
+    provider.capability_bits = Physics::query_shape_cast_all;
+    provider.name_utf8 = "test.shape-v2";
+    provider.name_size = 13;
+    provider.context = &state;
+    provider.shape_cast_all = fakeShapeCastAll;
     return provider;
 }
 
@@ -231,6 +352,59 @@ TEST_CASE("PhysicsServiceV1 negotiates and exposes the configured provider",
             Physics::Status::buffer_too_small);
     REQUIRE(hit_count == 1);
 }
+
+TEST_CASE("configured provider shape-casts every standard convex pair",
+          "[physics-service][shape-cast]") {
+    ensureLogger();
+    FastModuleContainer modules;
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &world = GET_MODULE(PhysWorld);
+
+    const std::array<phys::Shape, 3> moving_shapes{
+        phys::Sphere{{0.0F, 0.0F, 0.0F}, 0.5F},
+        phys::Box{{0.0F, 0.0F, 0.0F}, {}, {0.4F, 0.6F, 0.5F}},
+        phys::Capsule{{0.0F, 0.0F, 0.0F}, {}, 0.6F, 0.35F},
+    };
+
+    for (int target_kind = 0; target_kind < 3; ++target_kind) {
+        world.clear();
+        ColliderComponent target;
+        if (target_kind == 0) {
+            target.shape = "sphere";
+            target.radius = 0.5F;
+        } else if (target_kind == 1) {
+            target.shape = "box";
+            target.half_extents = {0.05F, 1.0F, 1.0F};
+        } else {
+            target.shape = "capsule";
+            target.half_height = 0.8F;
+            target.radius = 0.35F;
+        }
+        world.bindCollider("target", target,
+                           PhysWorldTransform{.pos = {5.0F, 0.0F, 0.0F}});
+
+        for (const auto &moving : moving_shapes) {
+            const auto hit = world.shapeCastClosest(
+                moving, {10.0F, 0.0F, 0.0F});
+            INFO("moving=" << moving.index() << " target=" << target_kind);
+            REQUIRE(hit);
+            REQUIRE_FALSE(hit->initial_overlap);
+            REQUIRE(hit->time_of_impact >= 0.0F);
+            REQUIRE(hit->time_of_impact <= 1.0F);
+            REQUIRE(hit->normal.x < -0.5F);
+        }
+    }
+
+    world.clear();
+    auto sphere = sphereCollider(0.5F);
+    world.bindCollider("target", sphere,
+                       PhysWorldTransform{.pos = {5.0F, 0.0F, 0.0F}});
+    const auto exact = world.shapeCastClosest(
+        phys::Sphere{{0.0F, 0.0F, 0.0F}, 0.5F},
+        {10.0F, 0.0F, 0.0F});
+    REQUIRE(exact);
+    REQUIRE(exact->time_of_impact == Catch::Approx(0.4F).margin(2.0e-4F));
+}
 #endif
 
 #if PELICAN_WITH_JOLT_PHYSICS
@@ -272,6 +446,51 @@ TEST_CASE("Jolt provider handles box and capsule queries without exposing Jolt t
         phys::Sphere{{6.0F, 1.25F, 0.0F}, 0.3F});
     REQUIRE(overlaps.size() == 1);
     REQUIRE(overlaps[0] == "capsule");
+
+    world.clear();
+    world.bindCollider("sphere", sphereCollider(), PhysWorldTransform{});
+    const auto penetration = world.shapeCastClosest(
+        phys::Sphere{{0.5F, 0.0F, 0.0F}, 1.0F}, {});
+    REQUIRE(penetration);
+    REQUIRE(penetration->initial_overlap);
+    REQUIRE(penetration->penetration_depth ==
+            Catch::Approx(1.5F).margin(2.0e-3F));
+    REQUIRE(penetration->normal.x == Catch::Approx(1.0F).margin(2.0e-3F));
+
+    const auto symmetric_penetration = world.shapeCastClosest(
+        phys::Sphere{{0.0F, 0.0F, 0.0F}, 1.0F}, {});
+    REQUIRE(symmetric_penetration);
+    REQUIRE(symmetric_penetration->initial_overlap);
+    REQUIRE(symmetric_penetration->penetration_depth ==
+            Catch::Approx(2.0F).margin(2.0e-3F));
+    REQUIRE(symmetric_penetration->normal.x ==
+            Catch::Approx(1.0F).margin(2.0e-3F));
+
+    REQUIRE_FALSE(world.shapeCastClosest(
+        phys::Sphere{{2.0F, 0.0F, 0.0F}, 1.0F},
+        {1.0F, 0.0F, 0.0F}));
+    const auto touching_approach = world.shapeCastClosest(
+        phys::Sphere{{2.0F, 0.0F, 0.0F}, 1.0F},
+        {-1.0F, 0.0F, 0.0F});
+    REQUIRE(touching_approach);
+    REQUIRE_FALSE(touching_approach->initial_overlap);
+    REQUIRE(touching_approach->time_of_impact == Catch::Approx(0.0F));
+
+    world.clear();
+    world.bindCollider("box", box, PhysWorldTransform{});
+    const auto symmetric_box = world.shapeCastClosest(
+        phys::Box{{0.0F, 0.0F, 0.0F}, {}, {0.5F, 0.5F, 0.5F}}, {});
+    REQUIRE(symmetric_box);
+    REQUIRE(symmetric_box->initial_overlap);
+    REQUIRE(symmetric_box->penetration_depth ==
+            Catch::Approx(1.0F).margin(2.0e-3F));
+    REQUIRE(symmetric_box->normal.x == Catch::Approx(1.0F).margin(2.0e-3F));
+
+    const auto moving_box_tie = world.shapeCastClosest(
+        phys::Box{{0.0F, 0.0F, 0.0F}, {}, {0.5F, 0.5F, 0.5F}},
+        {0.0F, 1.0F, 0.0F});
+    REQUIRE(moving_box_tie);
+    REQUIRE(moving_box_tie->normal.y == Catch::Approx(-1.0F).margin(2.0e-3F));
 }
 #endif
 
@@ -330,6 +549,16 @@ TEST_CASE("game-owned physics provider activates explicitly and is released by o
     REQUIRE(fallback_overlap.empty());
 #endif
 
+    const auto fallback_shape_cast = world.shapeCastClosest(
+        phys::Sphere{{0.0F, 0.0F, 0.0F}, 0.5F},
+        {10.0F, 0.0F, 0.0F});
+#if PELICAN_WITH_JOLT_PHYSICS || PELICAN_WITH_BUILTIN_PHYSICS
+    REQUIRE(fallback_shape_cast);
+    REQUIRE(fallback_shape_cast->id == "first");
+#else
+    REQUIRE_FALSE(fallback_shape_cast);
+#endif
+
     const phys::QueryFilter ignore_first{.self = hits[0].identity.collider_id};
     const auto filtered = world.raycastAll(
         phys::Ray{{0.0F, 0.0F, 0.0F}, {1.0F, 0.0F, 0.0F}, 10.0F}, ignore_first);
@@ -349,6 +578,85 @@ TEST_CASE("game-owned physics provider activates explicitly and is released by o
     REQUIRE_FALSE(world.raycastClosest(
         phys::Ray{{0.0F, 0.0F, 0.0F}, {1.0F, 0.0F, 0.0F}, 10.0F}).has_value());
 #endif
+}
+
+
+TEST_CASE("PhysicsServiceV2 routes shape casts and contains malformed V2 results",
+          "[physics-service][shape-cast]") {
+    ensureLogger();
+    FastModuleContainer modules;
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &world = GET_MODULE(PhysWorld);
+    world.bindCollider("first", sphereCollider(),
+                       PhysWorldTransform{.pos = {3.0F, 0.0F, 0.0F}});
+    world.bindCollider("second", sphereCollider(),
+                       PhysWorldTransform{.pos = {5.0F, 0.0F, 0.0F}});
+
+    const auto api = physicsApiV2();
+    const auto service = physicsServiceV2(api);
+    REQUIRE((service.capability_bits & Physics::builtinQueryCapabilitiesV2) ==
+            Physics::builtinQueryCapabilitiesV2);
+    REQUIRE(service.shape_cast_all != nullptr);
+
+    FakeShapeProviderState state;
+    auto provider = fakeShapeProvider(state);
+    const auto owner = internal::allocateRegistrationOwner();
+    Physics::ProviderHandleV2 handle{};
+    {
+        internal::ScopedRegistrationOwner owner_scope{owner};
+        REQUIRE(api.register_provider(api.context, &provider, &handle) ==
+                Physics::Status::ok);
+    }
+    physics_internal::activateProviderOwner(owner);
+    REQUIRE(physics_internal::activeProviderName() == "test.shape-v2");
+
+    const auto routed = world.shapeCastAll(
+        phys::Sphere{{0.0F, 0.0F, 0.0F}, 0.5F},
+        {10.0F, 0.0F, 0.0F});
+    REQUIRE(state.last_collider_count == 2);
+    REQUIRE(state.last_delta.x == Catch::Approx(10.0F));
+    REQUIRE(routed.size() == 2);
+    REQUIRE(routed[0].id == "first");
+    REQUIRE(routed[1].id == "second");
+    REQUIRE(routed[0].time_of_impact == Catch::Approx(0.25F));
+    REQUIRE(routed[0].normal.x == Catch::Approx(-1.0F));
+
+    auto query = Physics::descriptor<Physics::ShapeCastQueryV2>();
+    query.shape.kind = Physics::ShapeKindV1::sphere;
+    query.shape.radius = 0.5F;
+    query.delta = {10.0F, 0.0F, 0.0F};
+    std::array<Physics::ShapeCastHitV2, 2> hits{};
+    std::uint32_t hit_count = 0;
+    REQUIRE(service.shape_cast_all(
+                service.context, &query, hits.data(),
+                static_cast<std::uint32_t>(hits.size()), &hit_count) ==
+            Physics::Status::ok);
+    REQUIRE(hit_count == 2);
+    REQUIRE(hits[0].identity.collider_id != 0);
+
+    constexpr std::array malformed_behaviors{
+        FakeShapeProviderState::Behavior::duplicate_index,
+        FakeShapeProviderState::Behavior::out_of_range_index,
+        FakeShapeProviderState::Behavior::zero_normal,
+        FakeShapeProviderState::Behavior::invalid_toi,
+        FakeShapeProviderState::Behavior::initial_without_depth,
+        FakeShapeProviderState::Behavior::initial_at_contact_depth,
+        FakeShapeProviderState::Behavior::sweep_with_depth,
+        FakeShapeProviderState::Behavior::unknown_flags,
+        FakeShapeProviderState::Behavior::non_finite_position,
+        FakeShapeProviderState::Behavior::unknown_status,
+        FakeShapeProviderState::Behavior::oversized_count,
+        FakeShapeProviderState::Behavior::unexpected_buffer_too_small,
+    };
+    for (const auto behavior : malformed_behaviors) {
+        state.behavior = behavior;
+        REQUIRE(service.shape_cast_all(
+                    service.context, &query, hits.data(),
+                    static_cast<std::uint32_t>(hits.size()), &hit_count) ==
+                Physics::Status::provider_error);
+    }
+
+    physics_internal::releaseProviderOwner(owner);
 }
 
 TEST_CASE("provider owner release waits for in-flight callbacks",
@@ -481,6 +789,46 @@ TEST_CASE("PhysicsServiceV1 rejects malformed descriptors and unknown provider b
 
     provider.capability_bits |= 1ULL << 63U;
     const auto owner = internal::allocateRegistrationOwner();
+    {
+        internal::ScopedRegistrationOwner owner_scope{owner};
+        REQUIRE(api.register_provider(api.context, &provider, &handle) ==
+                Physics::Status::invalid_argument);
+    }
+}
+
+TEST_CASE("PhysicsServiceV2 rejects malformed descriptors and unknown bits",
+          "[physics-service]") {
+    auto api = Physics::descriptor<Physics::ApiV2>();
+    api.reserved1 = 1;
+    REQUIRE(Physics::getApiV2(Physics::abiVersionV2, &api) ==
+            Physics::Status::reserved_not_zero);
+
+    api = Physics::descriptor<Physics::ApiV2>();
+    REQUIRE(Physics::getApiV2(Physics::abiVersionV2 + 1, &api) ==
+            Physics::Status::unsupported_version);
+
+    api = physicsApiV2();
+    const auto service = physicsServiceV2(api);
+    auto query = Physics::descriptor<Physics::ShapeCastQueryV2>();
+    query.filter.flags |= 1U << 31U;
+    std::uint32_t hit_count = 0;
+    REQUIRE(service.shape_cast_all(service.context, &query, nullptr, 0,
+                                   &hit_count) ==
+            Physics::Status::invalid_argument);
+
+    FakeShapeProviderState state;
+    auto provider = fakeShapeProvider(state);
+    provider.capability_bits |= 1ULL << 63U;
+    Physics::ProviderHandleV2 handle{};
+    const auto owner = internal::allocateRegistrationOwner();
+    {
+        internal::ScopedRegistrationOwner owner_scope{owner};
+        REQUIRE(api.register_provider(api.context, &provider, &handle) ==
+                Physics::Status::invalid_argument);
+    }
+
+    provider = fakeShapeProvider(state);
+    provider.struct_size = sizeof(Physics::ProviderV1);
     {
         internal::ScopedRegistrationOwner owner_scope{owner};
         REQUIRE(api.register_provider(api.context, &provider, &handle) ==

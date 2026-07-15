@@ -1,4 +1,4 @@
-#include <physics/abi_v1.hpp>
+#include <physics/abi_v2.hpp>
 
 #include <atomic>
 #include <cstdint>
@@ -68,8 +68,36 @@ Physics::Status raycastAll(void *, const Physics::ProviderRaycastQueryV1 *query,
     return Physics::Status::ok;
 }
 
+#if PELICAN_PHYSICS_FIXTURE_VERSION == 2
+Physics::Status shapeCastAll(void *, const Physics::ProviderShapeCastQueryV2 *query,
+                             Physics::ProviderShapeCastHitV2 *hits,
+                             std::uint32_t capacity,
+                             std::uint32_t *out_count) noexcept {
+    if (query == nullptr || out_count == nullptr || query->reserved0 != 0 ||
+        query->reserved1 != 0 ||
+        (query->collider_count != 0 && query->colliders == nullptr) ||
+        (capacity != 0 && hits == nullptr)) {
+        return Physics::Status::invalid_argument;
+    }
+    if (query->collider_count == 0) {
+        *out_count = 0;
+        return Physics::Status::ok;
+    }
+    *out_count = 1;
+    if (capacity < 1) return Physics::Status::buffer_too_small;
+    hits[0] = Physics::ProviderShapeCastHitV2{
+        .collider_index = 0,
+        .time_of_impact = 0.375F,
+        .position = {3.75F, 0.0F, 0.0F},
+        .normal = {-2.0F, 0.0F, 0.0F},
+    };
+    return Physics::Status::ok;
+}
+#endif
+
 struct Registration {
     Registration() noexcept {
+#if PELICAN_PHYSICS_FIXTURE_VERSION == 1
         auto api = Physics::descriptor<Physics::ApiV1>();
         auto status = Physics::getApiV1(Physics::abiVersionV1, &api);
         if (status == Physics::Status::ok) {
@@ -81,6 +109,21 @@ struct Registration {
             Physics::ProviderHandleV1 handle{};
             status = api.register_provider(api.context, &provider, &handle);
         }
+#else
+        auto api = Physics::descriptor<Physics::ApiV2>();
+        auto status = Physics::getApiV2(Physics::abiVersionV2, &api);
+        if (status == Physics::Status::ok) {
+            auto provider = Physics::descriptor<Physics::ProviderV2>();
+            provider.capability_bits =
+                Physics::query_raycast_all | Physics::query_shape_cast_all;
+            provider.name_utf8 = provider_name;
+            provider.name_size = static_cast<std::uint32_t>(sizeof(provider_name) - 1);
+            provider.raycast_all = raycastAll;
+            provider.shape_cast_all = shapeCastAll;
+            Physics::ProviderHandleV2 handle{};
+            status = api.register_provider(api.context, &provider, &handle);
+        }
+#endif
         registration_status.store(static_cast<std::uint32_t>(status),
                                   std::memory_order_release);
     }

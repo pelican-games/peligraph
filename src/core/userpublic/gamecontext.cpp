@@ -171,6 +171,32 @@ std::vector<phys::OverlapHit> GameContext::overlapAllHits(
 #endif
 }
 
+std::vector<phys::ShapeCastQueryHit> GameContext::shapeCastAll(
+    const phys::Shape &moving_shape, vec3 delta,
+    const phys::QueryFilter &filter) const {
+#if PELICAN_WITH_PHYSICS
+    return GET_MODULE(PhysWorld).shapeCastAll(moving_shape, delta, filter);
+#else
+    (void)moving_shape;
+    (void)delta;
+    (void)filter;
+    return {};
+#endif
+}
+
+std::optional<phys::ShapeCastQueryHit> GameContext::shapeCastClosest(
+    const phys::Shape &moving_shape, vec3 delta,
+    const phys::QueryFilter &filter) const {
+#if PELICAN_WITH_PHYSICS
+    return GET_MODULE(PhysWorld).shapeCastClosest(moving_shape, delta, filter);
+#else
+    (void)moving_shape;
+    (void)delta;
+    (void)filter;
+    return std::nullopt;
+#endif
+}
+
 std::vector<std::string> GameContext::overlapAll(
     const phys::Shape &shape) const {
 #if PELICAN_WITH_PHYSICS

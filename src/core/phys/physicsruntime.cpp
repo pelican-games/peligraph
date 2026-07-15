@@ -21,10 +21,18 @@
 namespace Pelican::physics_internal {
 namespace {
 
+struct ProviderDispatch {
+    std::uint64_t capability_bits = 0;
+    void *context = nullptr;
+    Physics::ProviderRaycastAllV1Fn raycast_all = nullptr;
+    Physics::ProviderOverlapAllV1Fn overlap_all = nullptr;
+    Physics::ProviderShapeCastAllV2Fn shape_cast_all = nullptr;
+};
+
 struct RegisteredProvider {
     Physics::ProviderHandleV1 handle{};
     internal::RegistrationOwner owner = internal::engineRegistrationOwner;
-    Physics::ProviderV1 table{};
+    ProviderDispatch dispatch{};
     std::string name;
 };
 
@@ -70,30 +78,52 @@ const RegisteredProvider *activeGameProviderLocked(const Registry &value) {
     return nullptr;
 }
 
-const Physics::ProviderV1 *configuredProviderLocked(const Registry &value,
-                                                    std::string_view *name = nullptr) {
+ProviderDispatch dispatchFor(const Physics::ProviderV1 &provider) {
+    return ProviderDispatch{
+        provider.capability_bits,
+        provider.context,
+        provider.raycast_all,
+        provider.overlap_all,
+        nullptr,
+    };
+}
+
+ProviderDispatch dispatchFor(const Physics::ProviderV2 &provider) {
+    return ProviderDispatch{
+        provider.capability_bits,
+        provider.context,
+        provider.raycast_all,
+        provider.overlap_all,
+        provider.shape_cast_all,
+    };
+}
+
+const ProviderDispatch *configuredProviderLocked(const Registry &value,
+                                                  std::string_view *name = nullptr) {
     if (const auto *provider = findByOwner(value, internal::engineRegistrationOwner)) {
         if (name != nullptr) *name = provider->name;
-        return &provider->table;
+        return &provider->dispatch;
     }
 #if PELICAN_WITH_JOLT_PHYSICS
+    static const auto dispatch = dispatchFor(joltProviderV2());
     if (name != nullptr) *name = "pelican.jolt";
-    return &joltProviderV1();
+    return &dispatch;
 #elif PELICAN_WITH_BUILTIN_PHYSICS
+    static const auto dispatch = dispatchFor(builtinProviderV2());
     if (name != nullptr) *name = "pelican.builtin";
-    return &builtinProviderV1();
+    return &dispatch;
 #else
     if (name != nullptr) *name = {};
     return nullptr;
 #endif
 }
 
-const Physics::ProviderV1 *providerForCapabilityLocked(const Registry &value,
-                                                       std::uint64_t capability) {
+const ProviderDispatch *providerForCapabilityLocked(const Registry &value,
+                                                     std::uint64_t capability) {
     if (const auto *game_provider = activeGameProviderLocked(value);
         game_provider != nullptr &&
-        (game_provider->table.capability_bits & capability) != 0) {
-        return &game_provider->table;
+        (game_provider->dispatch.capability_bits & capability) != 0) {
+        return &game_provider->dispatch;
     }
     const auto *configured = configuredProviderLocked(value);
     if (configured == nullptr || (configured->capability_bits & capability) == 0) {
@@ -210,7 +240,7 @@ std::vector<SelectedCollider> selectColliders(std::span<const phys::Collider> co
 }
 
 template <class RawHit, class Query, class Callback>
-Physics::Status invokeProvider(const Physics::ProviderV1 &provider,
+Physics::Status invokeProvider(const ProviderDispatch &provider,
                                std::uint64_t required_capability,
                                Callback callback,
                                const Query &query,
@@ -273,6 +303,57 @@ bool validProvider(const Physics::ProviderV1 &provider) {
     return true;
 }
 
+bool validProvider(const Physics::ProviderV2 &provider) {
+    constexpr auto known_capabilities = Physics::builtinQueryCapabilitiesV2;
+    if (provider.struct_size < sizeof(Physics::ProviderV2) ||
+        provider.version != Physics::descriptorVersionV1 ||
+        provider.reserved0 != 0 || provider.reserved1 != 0 || provider.reserved2 != 0 ||
+        provider.provider_version != Physics::providerVersionV2 ||
+        provider.minimum_engine_provider_version > Physics::providerVersionV2 ||
+        (provider.capability_bits & ~known_capabilities) != 0 ||
+        provider.capability_bits == 0 || provider.name_utf8 == nullptr ||
+        provider.name_size == 0 ||
+        provider.name_size > Physics::maximumProviderNameBytesV1) {
+        return false;
+    }
+    if ((provider.capability_bits & Physics::query_raycast_all) != 0 &&
+        provider.raycast_all == nullptr) {
+        return false;
+    }
+    if ((provider.capability_bits & Physics::query_overlap_all) != 0 &&
+        provider.overlap_all == nullptr) {
+        return false;
+    }
+    if ((provider.capability_bits & Physics::query_shape_cast_all) != 0 &&
+        provider.shape_cast_all == nullptr) {
+        return false;
+    }
+    return true;
+}
+
+Physics::Status registerProviderDispatch(ProviderDispatch dispatch,
+                                         const char *name_utf8,
+                                         std::uint32_t name_size,
+                                         internal::RegistrationOwner owner,
+                                         Physics::ProviderHandleV1 &out_handle) {
+    auto &value = registry();
+    std::unique_lock lock{value.mutex};
+    if (findByOwner(value, owner) != nullptr) {
+        return Physics::Status::duplicate_provider;
+    }
+    if (value.next_identity == 0) {
+        return Physics::Status::out_of_memory;
+    }
+    RegisteredProvider registered;
+    registered.handle = Physics::ProviderHandleV1{value.next_identity++, 1, 0};
+    registered.owner = owner;
+    registered.dispatch = dispatch;
+    registered.name.assign(name_utf8, name_size);
+    value.providers.push_back(std::move(registered));
+    out_handle = value.providers.back().handle;
+    return Physics::Status::ok;
+}
+
 } // namespace
 
 Physics::Status registerProvider(const Physics::ProviderV1 &provider,
@@ -283,24 +364,25 @@ Physics::Status registerProvider(const Physics::ProviderV1 &provider,
         return Physics::Status::invalid_argument;
     }
     try {
-        auto &value = registry();
-        std::unique_lock lock{value.mutex};
-        if (findByOwner(value, owner) != nullptr) {
-            return Physics::Status::duplicate_provider;
-        }
-        if (value.next_identity == 0) {
-            return Physics::Status::out_of_memory;
-        }
-        RegisteredProvider registered;
-        registered.handle = Physics::ProviderHandleV1{value.next_identity++, 1, 0};
-        registered.owner = owner;
-        registered.table = provider;
-        registered.name.assign(provider.name_utf8, provider.name_size);
-        registered.table.name_utf8 = nullptr;
-        registered.table.name_size = 0;
-        value.providers.push_back(std::move(registered));
-        out_handle = value.providers.back().handle;
-        return Physics::Status::ok;
+        return registerProviderDispatch(dispatchFor(provider), provider.name_utf8,
+                                        provider.name_size, owner, out_handle);
+    } catch (const std::bad_alloc &) {
+        return Physics::Status::out_of_memory;
+    } catch (...) {
+        return Physics::Status::provider_error;
+    }
+}
+
+Physics::Status registerProvider(const Physics::ProviderV2 &provider,
+                                 internal::RegistrationOwner owner,
+                                 Physics::ProviderHandleV2 &out_handle) noexcept {
+    out_handle = {};
+    if (!validProvider(provider)) {
+        return Physics::Status::invalid_argument;
+    }
+    try {
+        return registerProviderDispatch(dispatchFor(provider), provider.name_utf8,
+                                        provider.name_size, owner, out_handle);
     } catch (const std::bad_alloc &) {
         return Physics::Status::out_of_memory;
     } catch (...) {
@@ -497,6 +579,97 @@ Physics::Status overlapAll(const phys::Shape &shape,
             });
         }
         phys::internal::orderOverlapHits(out_hits);
+        return Physics::Status::ok;
+    } catch (const std::invalid_argument &) {
+        out_hits.clear();
+        return Physics::Status::invalid_argument;
+    } catch (const std::bad_alloc &) {
+        out_hits.clear();
+        return Physics::Status::out_of_memory;
+    } catch (...) {
+        out_hits.clear();
+        return Physics::Status::provider_error;
+    }
+}
+
+Physics::Status shapeCastAll(const phys::Shape &moving_shape, vec3 delta,
+                             std::span<const phys::Collider> colliders,
+                             const phys::QueryFilter *filter,
+                             std::vector<phys::ShapeCastQueryHit> &out_hits) noexcept {
+    out_hits.clear();
+    try {
+        const auto abi_delta = toAbi(delta);
+        if (!finite(abi_delta)) {
+            return Physics::Status::invalid_argument;
+        }
+        if (colliders.size() > std::numeric_limits<std::uint32_t>::max()) {
+            return Physics::Status::out_of_memory;
+        }
+
+        std::vector<Physics::ShapeV1> shapes;
+        const auto selected = selectColliders(colliders, filter, shapes);
+        const Physics::ProviderShapeCastQueryV2 query{
+            .shape = toAbi(moving_shape),
+            .delta = abi_delta,
+            .colliders = shapes.empty() ? nullptr : shapes.data(),
+            .collider_count = static_cast<std::uint32_t>(shapes.size()),
+        };
+
+        std::vector<Physics::ProviderShapeCastHitV2> raw_hits;
+        auto &value = registry();
+        {
+            std::shared_lock lock{value.mutex};
+            const auto *provider = providerForCapabilityLocked(
+                value, Physics::query_shape_cast_all);
+            if (provider == nullptr) return Physics::Status::unavailable;
+            const auto status = invokeProvider(
+                *provider, Physics::query_shape_cast_all, provider->shape_cast_all,
+                query, selected.size(), raw_hits);
+            if (status != Physics::Status::ok) return status;
+        }
+
+        constexpr std::uint32_t known_flags =
+            Physics::shape_cast_initial_overlap;
+        constexpr float result_epsilon =
+            Physics::shapeCastContactEpsilonV2;
+        std::vector<bool> seen(selected.size(), false);
+        out_hits.reserve(raw_hits.size());
+        for (const auto &raw : raw_hits) {
+            Physics::Vec3V1 unit_normal{};
+            const bool initial_overlap =
+                (raw.flags & Physics::shape_cast_initial_overlap) != 0;
+            const bool invalid_initial =
+                initial_overlap &&
+                (raw.time_of_impact > result_epsilon ||
+                 raw.penetration_depth <= result_epsilon);
+            const bool invalid_sweep =
+                !initial_overlap && raw.penetration_depth > result_epsilon;
+            if (raw.reserved != 0 || (raw.flags & ~known_flags) != 0 ||
+                raw.collider_index >= selected.size() || seen[raw.collider_index] ||
+                !std::isfinite(raw.time_of_impact) ||
+                raw.time_of_impact < 0.0F ||
+                raw.time_of_impact > 1.0F + result_epsilon ||
+                !std::isfinite(raw.penetration_depth) ||
+                raw.penetration_depth < 0.0F || invalid_initial || invalid_sweep ||
+                !finite(raw.position) || !normalized(raw.normal, unit_normal)) {
+                out_hits.clear();
+                return Physics::Status::provider_error;
+            }
+
+            seen[raw.collider_index] = true;
+            const auto &selected_collider = selected[raw.collider_index];
+            out_hits.push_back(phys::ShapeCastQueryHit{
+                selected_collider.identity.name,
+                std::clamp(raw.time_of_impact, 0.0F, 1.0F),
+                initial_overlap ? raw.penetration_depth : 0.0F,
+                fromAbi(raw.position),
+                fromAbi(unit_normal),
+                initial_overlap,
+                selected_collider.identity,
+                selected_collider.collider->metadata,
+            });
+        }
+        phys::internal::orderShapeCastHits(out_hits);
         return Physics::Status::ok;
     } catch (const std::invalid_argument &) {
         out_hits.clear();

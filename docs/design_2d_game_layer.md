@@ -1,7 +1,7 @@
-# 2D ゲーム層と 2D⇔3D 相互変換(v2.2)
+# 2D ゲーム層と 2D⇔3D 相互変換(v2.3)
 
 対象読者: エンジン担当・2D ゲームを作る人・2D/3D 混在演出を作る人。
-ステータス: **v2.2 — C4/S2D-1 確定(2026-07-15)**。v1 は敵対レビュー
+ステータス: **v2.3 — C4/S2D-1・C5/S2D-P 確定(2026-07-15)**。v1 は敵対レビュー
 `docs/design_reviews/2026-07-12_hr_v2_2d_v1_review_codex.md` §4-8(以下
 「レビュー」)で **Reject** — 中核方向(単一ワールド)は妥当だが、
 ①「機構を増やさない」への過剰一般化 ②SpriteView 例が scene v1 の
@@ -11,7 +11,8 @@
 v2 = 再受理条件 2D-R1〜R6 の全反映 → 再レビュー
 `docs/design_reviews/2026-07-12_2d_v2_rereview_codex.md`(以下
 「再レビュー」)で**条件付き受理** — C1〜C3 = S2D-0a、C4 = S2D-1、
-C5 = S2D-P の exit gate に添付。v2.1 = その 5 条件の正本反映。
+C5 = S2D-P の exit gate に添付。v2.1 = その 5 条件の正本反映、v2.2 =
+C4 の実装確定、v2.3 = C5 の実装確定。
 前提: `design_ui_2d_foundation.md` v8、`design_camera_system.md`
 (orthographic = WP48 済)、`design_physics_queries.md`(P1/P2 済)、
 scene v1、「feature 層 = ユーザー空間」方針、サブセット原則。
@@ -301,6 +302,28 @@ CPU sort + 単一 16384 quad buffer」に固定した場合。escape hatch を�
      既定値を collider/public query schema に追加。未知 bit・stale
      identity・ignore 後の次 hit を positive/negative fixture 化
 
+### 7-1. S2D-P で確定した query 契約(WP107)
+
+- `Shape` の初期 pose を固定姿勢のまま `delta` だけ平行移動する。
+  sphere / box / capsule の全 9 組を対象とし、TOI は `[0,1]`、position は
+  静止 collider 上、normal は moving shape を押し出す向き
+- penetration が `1e-5` より深ければ `initial_overlap=true`、TOI 0、
+  `normal * penetration_depth = MTD`。同 epsilon 内の接触は接近中だけ
+  TOI 0 hit とし、静止/離反は返さない。zero delta は MTD query、非 finite・
+  負寸法は pure API では no hit、service ABI では `invalid_argument`
+- MTD 深度差 `1e-5` 以下の tie は
+  `(dot(normal, preferred), normal.x, normal.y, normal.z)` の辞書順最大。
+  `preferred = normalize(-delta)`、zero delta では world +X
+- all-hit は最小 raw TOI を anchor に `1e-5` bucket を作り、bucket 内を
+  `(ColliderId, full EntityId, shape_ordinal, name)` で全順序化する。
+  closest と ignore/one-way policy 後の次 hit はこの列から導出
+- collider schema の既定は `layer=1`、`mask=0xffffffff`、
+  `trigger=false`、`one_way=false`。方向付き one-way 判定自体は metadata と
+  all-hit を使うユーザー空間 policy であり、S2D-2 の標準ライブラリが担う
+- Physics Provider ABI V2 は V1 を壊さず shape-cast capability を追加する。
+  Builtin/Jolt/provider DLL は同じ service 契約の下で差し替えられ、
+  physics-off / provider-only 構成では不要な実装をリンクしない
+
 ## 8. 決定性と検証
 
 - §3 の全順序 fixture・§5 の 50k sprite fixture・§2 の pixel golden・
@@ -315,7 +338,7 @@ CPU sort + 単一 16384 quad buffer」に固定した場合。escape hatch を�
 | **S2D-0a Contract/CPU** | sprite_view schema(scene v1 準拠)+ public component、consumer-neutral AtlasAsset 抽出、SpriteCommand/world ABI、sort total key + declaration_seq、visibility/caching/chunking | schema fixture・ID 再利用/float sort fixture・50k/2k chunk fixture(GPU 不要)**+ 再レビュー C1(sampler key)・C2(source ordinal)・C3(chunk 境界 16384/16385/2+)** | K3・U1(コード流用でなく抽出元) |
 | **S2D-0b GPU world quad** | world-space 頂点/インスタンス buffer・camera VP・pivot/flip・シーンパス・straight alpha・depth test ON/write OFF・atlas page bind | 2D/3D 遮蔽・layer/z・複数 atlas・回転/親子・UI 無し/有りの resource ownership・golden | S2D-0a・WP48 |
 | **S2D-1 Pixel/Policy (WP106 済)** | strict pixel-perfect(render-only quantization)・ppu/zoom・y_down/declaration・billboard・flipbook dogfood(ユーザー空間) | §2/§3 fixture + pixel golden 全通過 **+ 再レビュー C4(成立式・対象集合表・適用順・negative fixture)** | S2D-0b |
-| **S2D-P Query minimum** | sweep/shapeCast・filter/all-hit・MTD・安定 collider identity | §7 の純 CPU fixture **+ 再レビュー C5(public contract と同順位規則)** | P1/P2 |
+| **S2D-P Query minimum (WP107 済)** | sweep/shapeCast・filter/all-hit・MTD・安定 collider identity | §7 の純 CPU fixture **+ 再レビュー C5(public contract と同順位規則)** | P1/P2 |
 | **S2D-2 Vertical slice** | **side-scroller 1 面を固定選択**(top-down に逃げて platformer 条件を未検証にしない): 入力/event/fixed-step/接地/斜面/one-way の実証 | replay 2 回一致・接地/斜面/one-way/tunneling シナリオ | S2D-1・S2D-P |
 | 将来 | TileMap 形式/chunk・9-slice・snapshot texture・3D 半透明統合 | 各別設計 | — |
 

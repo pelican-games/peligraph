@@ -123,7 +123,7 @@ rpc の `step_frame` も**同一順序**を再現します。「rpc 駆動のテ
 | 時刻 | `time()` / `deltaTime()` / `frameIndex()` | |
 | ログ | `logInfo/Warning/Error(msg)` | rpc モードでは stdout が使えないため、ログは必ずこれで |
 | オブジェクト | `createObject(LocalTransformComponent)` / `removeObject(id)`→bool / `localTransform(id)` / `setLocalTransform(id, t)`→bool | `setLocalTransform` は描画側へも即時伝播 |
-| 物理 | `raycastClosest(phys::Ray)` / `overlapAll(phys::Shape)` | §8.7 |
+| 物理 | `raycastClosest` / `overlapAll` / `shapeCastAll` / `shapeCastClosest` | §8.7。詳細 overload は stable identity/filter を返す |
 | カメラ | `setCamera(name)` | §8.8 |
 | 乱数 | `random()` / `randomInt(min,max)` / `randomFloat(min,max)` / `setSeed(u64)` / `seed()` | §8.9 |
 | 音 | `playSound(path)`→SoundHandle / `stopSound(h)` / `setBusVolume(bus,v)` / `isPlaying(h)` | §8.10 |
@@ -173,9 +173,9 @@ ctx.loadScene("scene_flow_second");   // 予約(名前はその場で検証。�
 
 システムのインスタンスは static シングルトンなので、メンバに保持した `GameObjectId` は切替後「死んだ ID」になります(`setLocalTransform` / `removeObject` は false を返し、`localTransform` は例外になり得ます)。**`SceneLoaded` の `onEvent` で状態をリセットする**のが正道です。「シーンをまたいで残るオブジェクト」(persistent)の仕組みは v1 にはありません。
 
-## 8.7 物理クエリ(✅P1/P2 = WP46/47)
+## 8.7 物理クエリ(✅P1/P2/WP107)
 
-> **設計決定:** ランタイム物理シミュレーションは「やらない」ではなく「**後**」(2026-07-07 決定)。v1 はクエリ(raycast / overlap)先行。将来シミュレーションを入れる場合の採用方針は **Jolt**(決定性モードと現役保守が理由)— ただしこれは方針決定のみで実装はゼロ 📐。映像用の破壊・布は Houdini ベイク(transform_seq / VAT)レーンが担当([第5章](05_assets.md))。
+> **設計決定:** ランタイム物理シミュレーションは「やらない」ではなく「**後**」(2026-07-07 決定)。現在は raycast / overlap / shapeCast の query world。Jolt は query provider として実装済みですが、剛体 step/constraint を持つシミュレーションは未実装です。映像用の破壊・布は Houdini ベイク(transform_seq / VAT)レーンが担当([第5章](05_assets.md))。
 
 - collider はシーン JSON のコンポーネントとして定義します([第4章](04_scene_ecs.md) §4.2)。**collider を持つオブジェクトには `name` が必須**です。
 - ゲームコードから:
@@ -189,12 +189,25 @@ if (auto hit = ctx.raycastClosest(ray)) {
 
 // 形状オーバーラップ(該当オブジェクト名の一覧、名前昇順)
 auto names = ctx.overlapAll(Pelican::phys::Shape{ Pelican::phys::Sphere{ {0,1,0}, 0.5f } });
+
+// capsule を delta だけ平行移動し、最初の衝突を取得
+Pelican::phys::Shape player = Pelican::phys::Capsule{
+    {0, 2, 0}, {}, 0.5f, 0.25f
+};
+if (auto hit = ctx.shapeCastClosest(player, {0, -4, 0})) {
+    // hit->time_of_impact は 0..1。normal は player を押し出す向き。
+    // initial_overlap 時は normal * penetration_depth が MTD。
+}
 ```
 
-- **決定性の規約**: 同距離のタイ(ε=1e-5)は名前の辞書順で勝者を決め、`overlapAll` の結果も辞書順ソート済み。「同一シーン+同一レイ → 同一ヒット」が保証されます。
-- transform 追従は毎フレーム再収集(v1。BVH 等の加速構造なし — 計測してから見直す方針)。capsule の軸はローカル Y、box は OBB(回転対応)です。
+- collider metadata は scene component に `layer`(既定 1)、`mask`(既定 `0xffffffff`)、`trigger`、`one_way`(既定 false)で指定します。詳細 query overload の `QueryFilter` で reciprocal layer/mask、self/ignore、trigger/one-way inclusion を制御できます。
+- **決定性の規約**: shapeCast の TOI tie は ε=`1e-5` bucket 後に stable `ColliderId`、full entity generation、shape ordinal の順です。MTD tie は移動の逆向きを優先し、その後 world x/y/z で固定します。closest は同じ ordered all-hit の先頭です。方向付き one-way policy は `shapeCastAll` を順に評価するため、無視した後の「次の床」を再 query せず続行できます。
+- 初期 penetration が ε より深ければ TOI 0 + MTD。接触だけなら接近中に限り TOI 0、静止/離反では hit になりません。zero delta は depenetration query です。
+- `one_way` は metadata です。前位置や接近方向から「通す/乗る」を決める policy と `moveAndSlide` は S2D-2 の標準ユーザー空間ライブラリが担当します。`trigger=true` も query filter には使えますが、enter/exit イベントは E2 未実装です。
+- Provider ABI V2 により Builtin/Jolt/game DLL provider を capability 単位で差し替えます。Jolt header は engine/game の公開型へ出ません。physics-off と provider-only build では不要な backend をリンクしません。
+- transform 追従は現行では毎フレーム再収集(BVH 等の加速構造なし — 計測してから見直す方針)。capsule の軸はローカル Y、box は OBB(回転対応)です。
 - `debug_draw` feature を rendering config で参照していると collider のワイヤフレームが描画されます([第6章](06_rendering.md))。
-- 📐未実装(P3): rpc の `raycast` メソッド、メッシュコライダ、レイヤ/マスク、sweep、トリガーイベント。
+- 📐未実装: rpc の query メソッド、メッシュコライダ/BVH、物理トリガーイベント、剛体シミュレーション。
 
 ## 8.8 カメラ(✅C1/C2 = WP48/50)
 

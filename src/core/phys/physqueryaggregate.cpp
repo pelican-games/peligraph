@@ -85,6 +85,48 @@ std::vector<OverlapHit> overlapAllHits(const Shape &shape,
     return hits;
 }
 
+std::vector<ShapeCastQueryHit> shapeCastAll(
+    const Shape &moving_shape, vec3 delta, std::span<const Collider> colliders,
+    const QueryFilter &filter) {
+    std::vector<ShapeCastQueryHit> hits;
+    hits.reserve(colliders.size());
+
+    for (const Collider &collider : colliders) {
+        const ColliderIdentity identity = effectiveColliderIdentity(collider);
+        if (!internal::passesQueryFilter(collider, identity, filter)) {
+            continue;
+        }
+
+        const auto hit = shapeCast(moving_shape, delta, collider.shape);
+        if (!hit) {
+            continue;
+        }
+        hits.push_back(ShapeCastQueryHit{
+            identity.name,
+            hit->time_of_impact,
+            hit->penetration_depth,
+            hit->position,
+            hit->normal,
+            hit->initial_overlap,
+            identity,
+            collider.metadata,
+        });
+    }
+
+    internal::orderShapeCastHits(hits);
+    return hits;
+}
+
+std::optional<ShapeCastQueryHit> shapeCastClosest(
+    const Shape &moving_shape, vec3 delta, std::span<const Collider> colliders,
+    const QueryFilter &filter) {
+    auto hits = shapeCastAll(moving_shape, delta, colliders, filter);
+    if (hits.empty()) {
+        return std::nullopt;
+    }
+    return std::move(hits.front());
+}
+
 std::vector<std::string> overlapAll(const Shape &shape,
                                     std::span<const Collider> colliders) {
     std::vector<std::string> ids;

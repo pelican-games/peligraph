@@ -139,7 +139,7 @@ CameraComponent 自体はマーカーで、投影・コントローラのパラ�
 - シャドウは先頭の directional light の向きから作られます([第6章](06_rendering.md))。
 - ⚠️ 既知の挙動: `KeyLight` / `FillLight` / `PointLight1` / `SpotLight1` という名前のライトには、デモ用の**名前決め打ちアニメーション**がまだ残っています(`lightcontainer.cpp`)。この名前を使うと勝手に動きます。
 
-### collider(✅・WP46/47)— ECS を経由しない(PhysWorld へ)
+### collider(✅・WP46/47/107)— ECS を経由しない(PhysWorld へ)
 
 | フィールド | 規則 |
 |---|---|
@@ -148,8 +148,10 @@ CameraComponent 自体はマーカーで、投影・コントローラのパラ�
 | `radius` | sphere/capsule 必須(> 0) |
 | `half_extents` | box 必須([x,y,z] 全成分 > 0) |
 | `half_height` | capsule 必須(>= 0) |
+| `layer` / `mask` | 任意 uint32(既定 `1` / `0xffffffff`)。query と reciprocal に一致した collider だけ対象 |
+| `trigger` / `one_way` | 任意 bool(既定 false)。query metadata。イベント/方向 policy 自体は別層 |
 
-旧名 `size` / `height` は半分値の新名を案内する hard error です。オブジェクトに `transform` があれば移動に追従します。クエリ(raycast / overlap)は [第8章](08_gameplay.md) を参照してください。
+旧名 `size` / `height` は半分値の新名を案内する hard error です。オブジェクトに `transform` があれば移動に追従します。クエリ(raycast / overlap / shapeCast)は [第8章](08_gameplay.md) を参照してください。
 
 ## 4.3 シーンロードの流れ
 

@@ -1,5 +1,5 @@
 #include <gamecontext.hpp>
-#include <physics/abi_v1.hpp>
+#include <physics/abi_v2.hpp>
 #include <sprite/flipbook.hpp>
 
 #include <cstddef>
@@ -18,8 +18,11 @@ extern "C" __declspec(dllexport) bool pelican_flipbook_public_api_link_probe(
 
 extern "C" __declspec(dllexport) std::uint32_t pelican_physics_service_public_api_link_probe() {
     auto api = Pelican::Physics::descriptor<Pelican::Physics::ApiV1>();
-    return static_cast<std::uint32_t>(
-        Pelican::Physics::getApiV1(Pelican::Physics::abiVersionV1, &api));
+    auto api_v2 = Pelican::Physics::descriptor<Pelican::Physics::ApiV2>();
+    const auto v1 = Pelican::Physics::getApiV1(Pelican::Physics::abiVersionV1, &api);
+    const auto v2 = Pelican::Physics::getApiV2(Pelican::Physics::abiVersionV2, &api_v2);
+    return static_cast<std::uint32_t>(v1) |
+           (static_cast<std::uint32_t>(v2) << 16U);
 }
 
 extern "C" __declspec(dllexport) std::size_t pelican_physquery_public_api_link_probe(
@@ -35,6 +38,11 @@ extern "C" __declspec(dllexport) std::size_t pelican_physquery_public_api_link_p
     const auto all_hits = context->raycastAll(ray, filter);
     const auto legacy_overlaps = context->overlapAll(Pelican::phys::Sphere{});
     const auto detailed_overlaps = context->overlapAllHits(Pelican::phys::Sphere{}, filter);
+    const auto cast_hits = context->shapeCastAll(
+        Pelican::phys::Sphere{}, Pelican::vec3{1.0F, 0.0F, 0.0F}, filter);
+    const auto cast_closest = context->shapeCastClosest(
+        Pelican::phys::Sphere{}, Pelican::vec3{1.0F, 0.0F, 0.0F}, filter);
     return legacy_closest.has_value() + detailed_closest.has_value() + all_hits.size() +
-           legacy_overlaps.size() + detailed_overlaps.size();
+           legacy_overlaps.size() + detailed_overlaps.size() + cast_hits.size() +
+           cast_closest.has_value();
 }

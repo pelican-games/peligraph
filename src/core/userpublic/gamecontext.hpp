@@ -54,6 +54,12 @@ class PELICAN_API GameContext {
         const phys::Ray &ray, const phys::QueryFilter &filter) const;
     std::vector<phys::OverlapHit> overlapAllHits(
         const phys::Shape &shape, const phys::QueryFilter &filter = {}) const;
+    std::vector<phys::ShapeCastQueryHit> shapeCastAll(
+        const phys::Shape &moving_shape, vec3 delta,
+        const phys::QueryFilter &filter = {}) const;
+    std::optional<phys::ShapeCastQueryHit> shapeCastClosest(
+        const phys::Shape &moving_shape, vec3 delta,
+        const phys::QueryFilter &filter = {}) const;
     std::vector<std::string> overlapAll(const phys::Shape &shape) const;
     std::vector<std::string> overlapAll(
         const phys::Shape &shape, const phys::QueryFilter &filter) const;

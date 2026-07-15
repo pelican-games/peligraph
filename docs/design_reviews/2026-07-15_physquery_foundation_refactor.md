@@ -65,3 +65,11 @@ this refactor does not require a game-logic ABI version increment.
 S2D-P still owns shape sweep/shapeCast, all shape-pair TOI implementation, initial-overlap MTD,
 directional one-way continuation, collider scene schema fields, and the platformer CPU fixture set.
 This refactor only makes those additions local and deterministic.
+
+## Closure update (WP107, 2026-07-15)
+
+WP107 now closes the shapeCast/sweep, all-pair TOI, initial-overlap MTD,
+collider schema, Provider ABI V2 and ordered filter-continuation items above.
+Directional one-way movement policy and the `moveAndSlide`/platformer scenario
+library deliberately remain in S2D-2; WP107 provides the metadata and ordered
+all-hit mechanism they consume.

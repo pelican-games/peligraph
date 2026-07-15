@@ -8,6 +8,7 @@ if(PELICAN_WITH_PHYSICS)
   if(PELICAN_WITH_BUILTIN_PHYSICS)
     target_sources(pelican_core PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/physquery.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/physquerysweep.cpp
       ${CMAKE_CURRENT_SOURCE_DIR}/physqueryaggregate.cpp
       ${CMAKE_CURRENT_SOURCE_DIR}/builtinphysicsprovider.cpp
     )
