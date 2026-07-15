@@ -201,7 +201,10 @@ std::vector<phys::Collider> buildPhysColliders(std::span<const PhysWorldCollider
         colliders.push_back(phys::Collider{
             input.name,
             makeWorldShape(input.collider, input.transform),
+            input.identity,
+            input.metadata,
         });
+        colliders.back().identity = phys::effectiveColliderIdentity(colliders.back());
     }
 
     std::sort(colliders.begin(), colliders.end(), [](const phys::Collider &lhs, const phys::Collider &rhs) {
@@ -210,18 +213,27 @@ std::vector<phys::Collider> buildPhysColliders(std::span<const PhysWorldCollider
     return colliders;
 }
 
+phys::ColliderId PhysWorld::allocateColliderId() {
+    if (next_collider_id_value == phys::invalid_collider_id.value) {
+        throw std::overflow_error("PhysWorld collider id space exhausted");
+    }
+    return phys::ColliderId{next_collider_id_value++};
+}
+
 void PhysWorld::clear() {
     bindings.clear();
 }
 
-void PhysWorld::bindCollider(std::string name, const ColliderComponent &collider, GameObjectId object_id) {
+void PhysWorld::bindCollider(std::string name, const ColliderComponent &collider,
+                             GameObjectId object_id,
+                             phys::ColliderQueryMetadata metadata) {
     if (name.empty()) {
         throw std::runtime_error("Collider object requires a name");
     }
     auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
     bindings.erase(std::remove_if(bindings.begin(), bindings.end(), [&](const Binding &binding) {
         const auto *bound_id = std::get_if<GameObjectId>(&binding.transform_source);
-        return binding.name == name && bound_id != nullptr &&
+        return binding.identity.name == name && bound_id != nullptr &&
                ecs.tryComponent<TransformComponent>(*bound_id) == nullptr;
     }), bindings.end());
     if (ecs.tryComponent<TransformComponent>(object_id) == nullptr) {
@@ -229,32 +241,42 @@ void PhysWorld::bindCollider(std::string name, const ColliderComponent &collider
                                  toString(object_id) + ")");
     }
     if (std::any_of(bindings.begin(), bindings.end(), [&](const Binding &binding) {
-            return binding.name == name;
+            return binding.identity.name == name;
         })) {
         throw std::runtime_error("Duplicate collider object name: " + name);
     }
 
     collider.validate();
     bindings.push_back(Binding{
-        .name = std::move(name),
+        .identity = phys::ColliderIdentity{
+            .collider_id = allocateColliderId(),
+            .name = std::move(name),
+            .entity = object_id,
+        },
+        .metadata = metadata,
         .collider = collider,
         .transform_source = object_id,
     });
 }
 
 void PhysWorld::bindCollider(std::string name, const ColliderComponent &collider,
-                             PhysWorldTransform static_transform) {
+                             PhysWorldTransform static_transform,
+                             phys::ColliderQueryMetadata metadata) {
     if (name.empty()) {
         throw std::runtime_error("Collider object requires a name");
     }
     if (std::any_of(bindings.begin(), bindings.end(), [&](const Binding &binding) {
-            return binding.name == name;
+            return binding.identity.name == name;
         })) {
         throw std::runtime_error("Duplicate collider object name: " + name);
     }
     collider.validate();
     bindings.push_back(Binding{
-        .name = std::move(name),
+        .identity = phys::ColliderIdentity{
+            .collider_id = allocateColliderId(),
+            .name = std::move(name),
+        },
+        .metadata = metadata,
         .collider = collider,
         .transform_source = static_transform,
     });
@@ -276,22 +298,50 @@ std::vector<phys::Collider> PhysWorld::collectColliders() const {
             transform = std::get<PhysWorldTransform>(binding.transform_source);
         }
         inputs.push_back(PhysWorldColliderInput{
-            .name = binding.name,
+            .name = binding.identity.name,
             .collider = binding.collider,
             .transform = transform,
+            .identity = binding.identity,
+            .metadata = binding.metadata,
         });
     }
     return buildPhysColliders(inputs);
 }
 
-std::optional<phys::ObjectRaycastHit> PhysWorld::raycastClosest(const phys::Ray &ray) const {
+std::vector<phys::RaycastQueryHit> PhysWorld::raycastAll(
+    const phys::Ray &ray, const phys::QueryFilter &filter) const {
+    const auto colliders = collectColliders();
+    return phys::raycastAll(ray, colliders, filter);
+}
+
+std::optional<phys::ObjectRaycastHit> PhysWorld::raycastClosest(
+    const phys::Ray &ray) const {
     const auto colliders = collectColliders();
     return phys::raycastClosest(ray, colliders);
 }
 
-std::vector<std::string> PhysWorld::overlapAll(const phys::Shape &shape) const {
+std::optional<phys::RaycastQueryHit> PhysWorld::raycastClosest(
+    const phys::Ray &ray, const phys::QueryFilter &filter) const {
+    const auto colliders = collectColliders();
+    return phys::raycastClosest(ray, colliders, filter);
+}
+
+std::vector<phys::OverlapHit> PhysWorld::overlapAllHits(
+    const phys::Shape &shape, const phys::QueryFilter &filter) const {
+    const auto colliders = collectColliders();
+    return phys::overlapAllHits(shape, colliders, filter);
+}
+
+std::vector<std::string> PhysWorld::overlapAll(
+    const phys::Shape &shape) const {
     const auto colliders = collectColliders();
     return phys::overlapAll(shape, colliders);
+}
+
+std::vector<std::string> PhysWorld::overlapAll(
+    const phys::Shape &shape, const phys::QueryFilter &filter) const {
+    const auto colliders = collectColliders();
+    return phys::overlapAll(shape, colliders, filter);
 }
 
 void PhysWorld::enqueueDebugDraw(DebugDraw &debug_draw, const Camera &camera) const {

@@ -126,12 +126,34 @@ bool GameContext::setSpriteTexture(GameObjectId id, std::string_view texture) co
     return ecs.setComponent<SpriteViewComponent>(id, replacement);
 }
 
-std::optional<phys::ObjectRaycastHit> GameContext::raycastClosest(const phys::Ray &ray) const {
+std::vector<phys::RaycastQueryHit> GameContext::raycastAll(
+    const phys::Ray &ray, const phys::QueryFilter &filter) const {
+    return GET_MODULE(PhysWorld).raycastAll(ray, filter);
+}
+
+std::optional<phys::ObjectRaycastHit> GameContext::raycastClosest(
+    const phys::Ray &ray) const {
     return GET_MODULE(PhysWorld).raycastClosest(ray);
 }
 
-std::vector<std::string> GameContext::overlapAll(const phys::Shape &shape) const {
+std::optional<phys::RaycastQueryHit> GameContext::raycastClosest(
+    const phys::Ray &ray, const phys::QueryFilter &filter) const {
+    return GET_MODULE(PhysWorld).raycastClosest(ray, filter);
+}
+
+std::vector<phys::OverlapHit> GameContext::overlapAllHits(
+    const phys::Shape &shape, const phys::QueryFilter &filter) const {
+    return GET_MODULE(PhysWorld).overlapAllHits(shape, filter);
+}
+
+std::vector<std::string> GameContext::overlapAll(
+    const phys::Shape &shape) const {
     return GET_MODULE(PhysWorld).overlapAll(shape);
+}
+
+std::vector<std::string> GameContext::overlapAll(
+    const phys::Shape &shape, const phys::QueryFilter &filter) const {
+    return GET_MODULE(PhysWorld).overlapAll(shape, filter);
 }
 
 void GameContext::setCamera(std::string_view name) const {

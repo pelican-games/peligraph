@@ -12,6 +12,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -163,11 +164,25 @@ TEST_CASE("PhysWorld pure build feeds deterministic raycast and overlap queries"
     REQUIRE(colliders.size() == 2);
     REQUIRE(colliders[0].id == "BoxTarget");
     REQUIRE(colliders[1].id == "SphereTarget");
+    REQUIRE(colliders[0].identity.collider_id.valid());
+    REQUIRE(colliders[1].identity.collider_id.valid());
+    REQUIRE(colliders[0].identity.collider_id != colliders[1].identity.collider_id);
+
+    auto reordered_inputs = inputs;
+    std::reverse(reordered_inputs.begin(), reordered_inputs.end());
+    const auto reordered_colliders = buildPhysColliders(reordered_inputs);
+    REQUIRE(reordered_colliders[0].identity == colliders[0].identity);
+    REQUIRE(reordered_colliders[1].identity == colliders[1].identity);
 
     const auto hit = phys::raycastClosest(phys::Ray{{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}}, colliders);
     REQUIRE(hit);
     REQUIRE(hit->id == "SphereTarget");
     REQUIRE(hit->distance == Catch::Approx(2.0f));
+    const auto detailed_hit = phys::raycastClosest(
+        phys::Ray{{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}}, colliders,
+        phys::QueryFilter{});
+    REQUIRE(detailed_hit);
+    REQUIRE(detailed_hit->identity == colliders[1].identity);
 
     const auto overlaps = phys::overlapAll(phys::Sphere{{3.0f, 0.0f, 0.0f}, 1.1f}, colliders);
     REQUIRE(overlaps == std::vector<std::string>{"SphereTarget"});
@@ -201,6 +216,18 @@ TEST_CASE("PhysWorld module follows bound transforms and GameContext exposes que
     REQUIRE(hit);
     REQUIRE(hit->id == "MovingSphere");
     REQUIRE(hit->distance == Catch::Approx(2.0f));
+    const auto detailed_hit = ctx.raycastClosest(
+        phys::Ray{{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, 5.0f},
+        phys::QueryFilter{});
+    REQUIRE(detailed_hit);
+    REQUIRE(detailed_hit->identity.collider_id.valid());
+    REQUIRE(detailed_hit->identity.entity == object);
+    const auto original_collider_id = detailed_hit->identity.collider_id;
+
+    const phys::QueryFilter ignore_original{.self = original_collider_id};
+    REQUIRE_FALSE(ctx.raycastClosest(
+        phys::Ray{{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, 5.0f},
+        ignore_original));
 
     const auto overlaps = ctx.overlapAll(phys::Sphere{{3.0f, 0.0f, 0.0f}, 0.25f});
     REQUIRE(overlaps == std::vector<std::string>{"MovingSphere"});
@@ -212,7 +239,15 @@ TEST_CASE("PhysWorld module follows bound transforms and GameContext exposes que
     const auto replacement = GameObjects::add().addComponent<TransformComponent>(transform).finish();
     REQUIRE_NOTHROW(world.bindCollider("MovingSphere", collider, replacement));
     REQUIRE(world.colliderCountForTesting() == 1);
-    REQUIRE(ctx.raycastClosest(phys::Ray{{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, 5.0f}));
+    const auto replacement_hit = ctx.raycastClosest(
+        phys::Ray{{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, 5.0f},
+        phys::QueryFilter{});
+    REQUIRE(replacement_hit);
+    REQUIRE(replacement_hit->identity.collider_id != original_collider_id);
+    REQUIRE(replacement_hit->identity.entity == replacement);
+    REQUIRE(ctx.raycastClosest(
+        phys::Ray{{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, 5.0f},
+        ignore_original));
 }
 
 } // namespace Pelican

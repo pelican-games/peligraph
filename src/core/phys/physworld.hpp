@@ -5,6 +5,7 @@
 #include "../userpublic/components/collider.hpp"
 #include <details/ecs/entity.hpp>
 
+#include <cstdint>
 #include <optional>
 #include <span>
 #include <string>
@@ -26,28 +27,44 @@ struct PhysWorldColliderInput {
     std::string name;
     ColliderComponent collider;
     PhysWorldTransform transform;
+    phys::ColliderIdentity identity{};
+    phys::ColliderQueryMetadata metadata{};
 };
 
 std::vector<phys::Collider> buildPhysColliders(std::span<const PhysWorldColliderInput> inputs);
 
 DECLARE_MODULE(PhysWorld) {
     struct Binding {
-        std::string name;
+        phys::ColliderIdentity identity;
+        phys::ColliderQueryMetadata metadata;
         ColliderComponent collider;
         std::variant<GameObjectId, PhysWorldTransform> transform_source;
     };
 
     std::vector<Binding> bindings;
+    std::uint64_t next_collider_id_value = 1;
+
+    phys::ColliderId allocateColliderId();
 
   public:
     void clear();
-    void bindCollider(std::string name, const ColliderComponent &collider, GameObjectId object_id);
+    void bindCollider(std::string name, const ColliderComponent &collider, GameObjectId object_id,
+                      phys::ColliderQueryMetadata metadata = {});
     void bindCollider(std::string name, const ColliderComponent &collider,
-                      PhysWorldTransform static_transform = {});
+                      PhysWorldTransform static_transform = {},
+                      phys::ColliderQueryMetadata metadata = {});
 
     std::vector<phys::Collider> collectColliders() const;
+    std::vector<phys::RaycastQueryHit> raycastAll(
+        const phys::Ray &ray, const phys::QueryFilter &filter = {}) const;
     std::optional<phys::ObjectRaycastHit> raycastClosest(const phys::Ray &ray) const;
+    std::optional<phys::RaycastQueryHit> raycastClosest(
+        const phys::Ray &ray, const phys::QueryFilter &filter) const;
+    std::vector<phys::OverlapHit> overlapAllHits(
+        const phys::Shape &shape, const phys::QueryFilter &filter = {}) const;
     std::vector<std::string> overlapAll(const phys::Shape &shape) const;
+    std::vector<std::string> overlapAll(const phys::Shape &shape,
+                                        const phys::QueryFilter &filter) const;
     void enqueueDebugDraw(DebugDraw &debug_draw, const Camera &camera) const;
 
     size_t colliderCountForTesting() const { return bindings.size(); }

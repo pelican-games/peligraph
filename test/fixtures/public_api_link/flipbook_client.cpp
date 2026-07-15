@@ -14,3 +14,20 @@ extern "C" __declspec(dllexport) bool pelican_flipbook_public_api_link_probe(
     }
     return clip.apply(*context, object, local_time_seconds);
 }
+
+extern "C" __declspec(dllexport) std::size_t pelican_physquery_public_api_link_probe(
+    Pelican::GameContext *context) {
+    if (context == nullptr) {
+        return sizeof(Pelican::phys::ObjectRaycastHit) + sizeof(Pelican::phys::RaycastQueryHit);
+    }
+
+    const Pelican::phys::Ray ray{};
+    const Pelican::phys::QueryFilter filter{};
+    const auto legacy_closest = context->raycastClosest(ray);
+    const auto detailed_closest = context->raycastClosest(ray, filter);
+    const auto all_hits = context->raycastAll(ray, filter);
+    const auto legacy_overlaps = context->overlapAll(Pelican::phys::Sphere{});
+    const auto detailed_overlaps = context->overlapAllHits(Pelican::phys::Sphere{}, filter);
+    return legacy_closest.has_value() + detailed_closest.has_value() + all_hits.size() +
+           legacy_overlaps.size() + detailed_overlaps.size();
+}

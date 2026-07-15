@@ -611,35 +611,4 @@ bool overlaps(const Shape &lhs, const Shape &rhs) {
     return std::visit([](const auto &typed_lhs, const auto &typed_rhs) { return overlaps(typed_lhs, typed_rhs); }, lhs, rhs);
 }
 
-std::optional<ObjectRaycastHit> raycastClosest(const Ray &ray, std::span<const Collider> colliders) {
-    std::optional<ObjectRaycastHit> best;
-
-    for (const Collider &collider : colliders) {
-        const std::optional<RaycastHit> hit = raycast(ray, collider.shape);
-        if (!hit) {
-            continue;
-        }
-
-        const bool is_better_distance = !best || hit->distance < best->distance - kTieEpsilon;
-        const bool is_tie_better_id = best && std::abs(hit->distance - best->distance) <= kTieEpsilon && collider.id < best->id;
-        if (is_better_distance || is_tie_better_id) {
-            best = ObjectRaycastHit{collider.id, hit->distance, hit->position, hit->normal};
-        }
-    }
-
-    return best;
-}
-
-std::vector<std::string> overlapAll(const Shape &shape, std::span<const Collider> colliders) {
-    std::vector<std::string> ids;
-    for (const Collider &collider : colliders) {
-        if (overlaps(shape, collider.shape)) {
-            ids.push_back(collider.id);
-        }
-    }
-
-    std::sort(ids.begin(), ids.end());
-    return ids;
-}
-
 } // namespace Pelican::phys
