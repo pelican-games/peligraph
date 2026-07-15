@@ -7,7 +7,9 @@
 #include "../renderer/shadowdepthpasscontainer.hpp"
 #include "../renderer/velocitypasscontainer.hpp"
 #include "../renderer/uirenderer.hpp"
+#if PELICAN_WITH_PHYSICS
 #include "../phys/physworld.hpp"
+#endif
 #if PELICAN_WITH_IMGUI
 #include "../imgui/imguisystem.hpp"
 #endif
@@ -40,7 +42,9 @@ void renderDebugDrawPass(vk::CommandBuffer cmd_buf, PassId pass_id,
     if (dependencies.debug_draw == nullptr) {
         throw std::runtime_error("DebugDraw pass requires DebugDraw dependency");
     }
+#if PELICAN_WITH_PHYSICS
     GET_MODULE(PhysWorld).enqueueDebugDraw(*dependencies.debug_draw, dependencies.camera);
+#endif
     dependencies.debug_draw->render(cmd_buf, pass_id, dependencies.frame_resources);
 }
 

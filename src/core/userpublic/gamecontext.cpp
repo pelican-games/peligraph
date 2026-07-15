@@ -12,7 +12,9 @@
 #include "../loader/scene.hpp"
 #include "../log.hpp"
 #include "../persistence/persistence.hpp"
+#if PELICAN_WITH_PHYSICS
 #include "../phys/physworld.hpp"
+#endif
 #include "../renderer/camera.hpp"
 #include "../renderer/debugtext.hpp"
 
@@ -128,32 +130,66 @@ bool GameContext::setSpriteTexture(GameObjectId id, std::string_view texture) co
 
 std::vector<phys::RaycastQueryHit> GameContext::raycastAll(
     const phys::Ray &ray, const phys::QueryFilter &filter) const {
+#if PELICAN_WITH_PHYSICS
     return GET_MODULE(PhysWorld).raycastAll(ray, filter);
+#else
+    (void)ray;
+    (void)filter;
+    return {};
+#endif
 }
 
 std::optional<phys::ObjectRaycastHit> GameContext::raycastClosest(
     const phys::Ray &ray) const {
+#if PELICAN_WITH_PHYSICS
     return GET_MODULE(PhysWorld).raycastClosest(ray);
+#else
+    (void)ray;
+    return std::nullopt;
+#endif
 }
 
 std::optional<phys::RaycastQueryHit> GameContext::raycastClosest(
     const phys::Ray &ray, const phys::QueryFilter &filter) const {
+#if PELICAN_WITH_PHYSICS
     return GET_MODULE(PhysWorld).raycastClosest(ray, filter);
+#else
+    (void)ray;
+    (void)filter;
+    return std::nullopt;
+#endif
 }
 
 std::vector<phys::OverlapHit> GameContext::overlapAllHits(
     const phys::Shape &shape, const phys::QueryFilter &filter) const {
+#if PELICAN_WITH_PHYSICS
     return GET_MODULE(PhysWorld).overlapAllHits(shape, filter);
+#else
+    (void)shape;
+    (void)filter;
+    return {};
+#endif
 }
 
 std::vector<std::string> GameContext::overlapAll(
     const phys::Shape &shape) const {
+#if PELICAN_WITH_PHYSICS
     return GET_MODULE(PhysWorld).overlapAll(shape);
+#else
+    (void)shape;
+    return {};
+#endif
 }
 
 std::vector<std::string> GameContext::overlapAll(
     const phys::Shape &shape, const phys::QueryFilter &filter) const {
+#if PELICAN_WITH_PHYSICS
     return GET_MODULE(PhysWorld).overlapAll(shape, filter);
+#else
+    (void)shape;
+    (void)filter;
+    return {};
+#endif
 }
 
 void GameContext::setCamera(std::string_view name) const {

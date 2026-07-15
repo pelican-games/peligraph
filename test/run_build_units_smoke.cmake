@@ -4,7 +4,7 @@
 #   cmake -DPELICAN_BUILD_UNIT_SMOKE_CONFIG=Debug -P test/run_build_units_smoke.cmake
 #
 # This script intentionally is not registered with ctest. It configures and
-# builds four separate single-OFF build directories, then verifies that the
+# builds separate single-OFF build directories, then verifies that the
 # corresponding input fails with "This binary was built with PELICAN_WITH_X=OFF".
 
 if(NOT DEFINED PELICAN_BUILD_UNIT_SMOKE_CONFIG)
@@ -60,6 +60,7 @@ function(configure_and_build label option_name out_build_dir)
             "-D${option_name}=OFF"
             "-DCMAKE_BUILD_TYPE=${PELICAN_BUILD_UNIT_SMOKE_CONFIG}"
             "-DPython3_EXECUTABLE=${Python3_EXECUTABLE}"
+            ${ARGN}
     )
 
     run_process(
@@ -71,6 +72,79 @@ function(configure_and_build label option_name out_build_dir)
     )
 
     set("${out_build_dir}" "${build_dir}" PARENT_SCOPE)
+endfunction()
+
+function(verify_physics_sources_absent build_dir label)
+    set(forbidden_sources ${ARGN})
+    file(GLOB_RECURSE build_metadata LIST_DIRECTORIES false
+        "${build_dir}/build.ninja"
+        "${build_dir}/*.vcxproj"
+        "${build_dir}/*DependInfo.cmake"
+        "${build_dir}/compile_commands.json"
+    )
+    foreach(metadata IN LISTS build_metadata)
+        file(READ "${metadata}" contents)
+        foreach(source IN LISTS forbidden_sources)
+            string(FIND "${contents}" "${source}" source_index)
+            if(NOT source_index EQUAL -1)
+                message(FATAL_ERROR "${label} still compiles ${source}: ${metadata}")
+            endif()
+        endforeach()
+    endforeach()
+
+    file(GLOB_RECURSE artifacts LIST_DIRECTORIES false "${build_dir}/*")
+    foreach(artifact IN LISTS artifacts)
+        get_filename_component(name "${artifact}" NAME)
+        string(TOLOWER "${name}" lower_name)
+        foreach(source IN LISTS forbidden_sources)
+            get_filename_component(stem "${source}" NAME_WE)
+            string(TOLOWER "${stem}" lower_stem)
+            if(lower_name MATCHES "^${lower_stem}[.](obj|o)$")
+                message(FATAL_ERROR "${label} emitted forbidden physics object: ${artifact}")
+            endif()
+        endforeach()
+    endforeach()
+endfunction()
+
+function(verify_builtin_physics_absent build_dir)
+    verify_physics_sources_absent(
+        "${build_dir}"
+        "PELICAN_WITH_BUILTIN_PHYSICS=OFF"
+        physquery.cpp
+        physqueryaggregate.cpp
+        builtinphysicsprovider.cpp
+    )
+endfunction()
+
+function(verify_jolt_physics_absent build_dir label)
+    foreach(path IN ITEMS
+            "${build_dir}/_deps/joltphysics-src"
+            "${build_dir}/_deps/joltphysics-build"
+            "${build_dir}/_deps/joltphysics-subbuild")
+        if(EXISTS "${path}")
+            message(FATAL_ERROR "${label} unexpectedly fetched or configured Jolt: ${path}")
+        endif()
+    endforeach()
+    verify_physics_sources_absent(
+        "${build_dir}"
+        "${label}"
+        joltphysicsprovider.cpp
+    )
+endfunction()
+
+function(verify_physics_absent build_dir)
+    verify_physics_sources_absent(
+        "${build_dir}"
+        "PELICAN_WITH_PHYSICS=OFF"
+        physquery.cpp
+        physqueryaggregate.cpp
+        physquerycontract.cpp
+        builtinphysicsprovider.cpp
+        joltphysicsprovider.cpp
+        physicsruntime.cpp
+        physicsservice.cpp
+        physworld.cpp
+    )
 endfunction()
 
 function(verify_imgui_absent build_dir)
@@ -274,6 +348,36 @@ function(write_vat_project root)
     file(WRITE "${root}/ui/ui.json" "{\"schema\":\"pelican.ui\",\"version\":1,\"key\":\"empty\",\"root\":{\"id\":\"root\",\"type\":\"panel\"}}\n")
 endfunction()
 
+function(write_physics_project root)
+    write_common_project("${root}")
+    file(WRITE "${root}/assets/asset_data.json" "{\"models\":[]}\n")
+    file(WRITE "${root}/scenes/main.scene.json" [=[
+{
+  "schema": "pelican.scene",
+  "version": 1,
+  "scenes": {
+    "default_scene": {
+      "objects": [
+        {
+          "name": "PhysicsSmoke",
+          "components": [
+            {
+              "name": "transform",
+              "pos": [0.0, 0.0, 0.0],
+              "rotation": [0.0, 0.0, 0.0, 1.0],
+              "scale": [1.0, 1.0, 1.0]
+            },
+            {"name": "collider", "shape": "sphere", "radius": 1.0}
+          ]
+        }
+      ]
+    }
+  }
+}
+]=])
+    file(WRITE "${root}/ui/ui.json" "{\"schema\":\"pelican.ui\",\"version\":1,\"key\":\"empty\",\"root\":{\"id\":\"root\",\"type\":\"panel\"}}\n")
+endfunction()
+
 if(PELICAN_BUILD_UNIT_SMOKE_PARSE_ONLY)
     message(STATUS "build-unit OFF smoke fixture parsed successfully")
     return()
@@ -343,4 +447,35 @@ expect_disabled_error(
 configure_and_build("imgui" "PELICAN_WITH_IMGUI" imgui_build_dir)
 verify_imgui_absent("${imgui_build_dir}")
 
-message(STATUS "build-unit OFF smoke passed for AUDIO, VAT, EXR, RPC, SEQPLAYER, and IMGUI")
+configure_and_build("physics_provider_only" "PELICAN_WITH_BUILTIN_PHYSICS" physics_provider_build_dir
+    "-DPELICAN_WITH_PHYSICS=ON"
+    "-DPELICAN_WITH_JOLT_PHYSICS=OFF")
+verify_builtin_physics_absent("${physics_provider_build_dir}")
+verify_jolt_physics_absent("${physics_provider_build_dir}" "provider-only physics")
+find_built_executable("${physics_provider_build_dir}" "pelican_test_physicsservice_test" physics_provider_test)
+run_process("physics_provider_only_service" TRUE "${physics_provider_test}")
+
+configure_and_build("physics" "PELICAN_WITH_PHYSICS" physics_build_dir)
+verify_physics_absent("${physics_build_dir}")
+verify_jolt_physics_absent("${physics_build_dir}" "PELICAN_WITH_PHYSICS=OFF")
+find_built_executable("${physics_build_dir}" "pelican_test_physics_feature_probe" physics_probe)
+run_process("physics_api_stub" TRUE "${physics_probe}")
+find_built_executable("${physics_build_dir}" "pelican_player" physics_player)
+set(physics_project "${ARTIFACT_ROOT}/physics_project")
+write_physics_project("${physics_project}")
+expect_disabled_error(
+    "physics_scene_collider"
+    "PELICAN_WITH_PHYSICS"
+    "${physics_player}" --headless --project "${physics_project}" --frames 1 --size 64x64
+)
+
+configure_and_build("physics_jolt" "PELICAN_WITH_BUILTIN_PHYSICS" physics_jolt_build_dir
+    "-DPELICAN_WITH_PHYSICS=ON"
+    "-DPELICAN_WITH_JOLT_PHYSICS=ON")
+verify_builtin_physics_absent("${physics_jolt_build_dir}")
+find_built_executable("${physics_jolt_build_dir}" "pelican_test_physicsservice_test" physics_jolt_test)
+run_process("physics_jolt_service" TRUE "${physics_jolt_test}")
+find_built_executable("${physics_jolt_build_dir}" "pelican_test_physics_feature_probe" physics_jolt_probe)
+run_process("physics_jolt_api" TRUE "${physics_jolt_probe}")
+
+message(STATUS "build-unit OFF smoke passed for AUDIO, VAT, EXR, RPC, SEQPLAYER, IMGUI, and PHYSICS; provider-only and Jolt physics also passed")

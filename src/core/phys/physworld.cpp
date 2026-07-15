@@ -1,4 +1,6 @@
 #include "physworld.hpp"
+#include "physicsruntime.hpp"
+#include "physqueryinternal.hpp"
 
 #include "../ecs/predefined/transform.hpp"
 #include "../ecs/core.hpp"
@@ -311,37 +313,85 @@ std::vector<phys::Collider> PhysWorld::collectColliders() const {
 std::vector<phys::RaycastQueryHit> PhysWorld::raycastAll(
     const phys::Ray &ray, const phys::QueryFilter &filter) const {
     const auto colliders = collectColliders();
-    return phys::raycastAll(ray, colliders, filter);
+    std::vector<phys::RaycastQueryHit> hits;
+    const auto status = physics_internal::raycastAll(ray, colliders, &filter, hits);
+    if (status == Physics::Status::unavailable) return {};
+    if (status != Physics::Status::ok) {
+        throw std::runtime_error("Physics query provider raycast failed with status " +
+                                 std::to_string(static_cast<std::uint32_t>(status)));
+    }
+    return hits;
 }
 
 std::optional<phys::ObjectRaycastHit> PhysWorld::raycastClosest(
     const phys::Ray &ray) const {
     const auto colliders = collectColliders();
-    return phys::raycastClosest(ray, colliders);
+    std::vector<phys::RaycastQueryHit> hits;
+    const auto status = physics_internal::raycastAll(ray, colliders, nullptr, hits);
+    if (status == Physics::Status::unavailable) return std::nullopt;
+    if (status != Physics::Status::ok) {
+        throw std::runtime_error("Physics query provider raycast failed with status " +
+                                 std::to_string(static_cast<std::uint32_t>(status)));
+    }
+
+    std::optional<phys::ObjectRaycastHit> best;
+    for (const auto &hit : hits) {
+        const bool better_distance =
+            !best || hit.distance < best->distance - phys::internal::queryTieEpsilon;
+        const bool better_legacy_tie =
+            best && std::abs(hit.distance - best->distance) <= phys::internal::queryTieEpsilon &&
+            hit.id < best->id;
+        if (better_distance || better_legacy_tie) {
+            best = phys::ObjectRaycastHit{hit.id, hit.distance, hit.position, hit.normal};
+        }
+    }
+    return best;
 }
 
 std::optional<phys::RaycastQueryHit> PhysWorld::raycastClosest(
     const phys::Ray &ray, const phys::QueryFilter &filter) const {
-    const auto colliders = collectColliders();
-    return phys::raycastClosest(ray, colliders, filter);
+    auto hits = raycastAll(ray, filter);
+    if (hits.empty()) return std::nullopt;
+    return std::move(hits.front());
 }
 
 std::vector<phys::OverlapHit> PhysWorld::overlapAllHits(
     const phys::Shape &shape, const phys::QueryFilter &filter) const {
     const auto colliders = collectColliders();
-    return phys::overlapAllHits(shape, colliders, filter);
+    std::vector<phys::OverlapHit> hits;
+    const auto status = physics_internal::overlapAll(shape, colliders, &filter, hits);
+    if (status == Physics::Status::unavailable) return {};
+    if (status != Physics::Status::ok) {
+        throw std::runtime_error("Physics query provider overlap failed with status " +
+                                 std::to_string(static_cast<std::uint32_t>(status)));
+    }
+    return hits;
 }
 
 std::vector<std::string> PhysWorld::overlapAll(
     const phys::Shape &shape) const {
     const auto colliders = collectColliders();
-    return phys::overlapAll(shape, colliders);
+    std::vector<phys::OverlapHit> hits;
+    const auto status = physics_internal::overlapAll(shape, colliders, nullptr, hits);
+    if (status == Physics::Status::unavailable) return {};
+    if (status != Physics::Status::ok) {
+        throw std::runtime_error("Physics query provider overlap failed with status " +
+                                 std::to_string(static_cast<std::uint32_t>(status)));
+    }
+    std::vector<std::string> ids;
+    ids.reserve(hits.size());
+    for (const auto &hit : hits) ids.push_back(hit.id);
+    std::sort(ids.begin(), ids.end());
+    return ids;
 }
 
 std::vector<std::string> PhysWorld::overlapAll(
     const phys::Shape &shape, const phys::QueryFilter &filter) const {
-    const auto colliders = collectColliders();
-    return phys::overlapAll(shape, colliders, filter);
+    const auto hits = overlapAllHits(shape, filter);
+    std::vector<std::string> ids;
+    ids.reserve(hits.size());
+    for (const auto &hit : hits) ids.push_back(hit.id);
+    return ids;
 }
 
 void PhysWorld::enqueueDebugDraw(DebugDraw &debug_draw, const Camera &camera) const {

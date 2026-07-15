@@ -1,4 +1,5 @@
 #include <gamecontext.hpp>
+#include <physics/abi_v1.hpp>
 #include <sprite/flipbook.hpp>
 
 #include <cstddef>
@@ -13,6 +14,12 @@ extern "C" __declspec(dllexport) bool pelican_flipbook_public_api_link_probe(
         return clip.frameCount() == 2 && clip.frameIndex(local_time_seconds) < 2;
     }
     return clip.apply(*context, object, local_time_seconds);
+}
+
+extern "C" __declspec(dllexport) std::uint32_t pelican_physics_service_public_api_link_probe() {
+    auto api = Pelican::Physics::descriptor<Pelican::Physics::ApiV1>();
+    return static_cast<std::uint32_t>(
+        Pelican::Physics::getApiV1(Pelican::Physics::abiVersionV1, &api));
 }
 
 extern "C" __declspec(dllexport) std::size_t pelican_physquery_public_api_link_probe(

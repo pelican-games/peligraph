@@ -1,6 +1,9 @@
 #include "gamelogicreload.hpp"
 
 #include "../animation/animationservice.hpp"
+#if PELICAN_WITH_PHYSICS
+#include "../phys/physicsruntime.hpp"
+#endif
 
 #include "../appflow/teardown.hpp"
 #include "../launchconfig.hpp"
@@ -97,6 +100,9 @@ GameLogicReloader::loadCopy(const std::filesystem::path &path, internal::Registr
     const auto handle = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
 #endif
     if (handle == nullptr) {
+#if PELICAN_WITH_PHYSICS
+        physics_internal::releaseProviderOwner(owner);
+#endif
         internal::unregisterGameSystems(owner);
         internal::unregisterEvents(owner);
         error = "game logic DLL '" + source_path.string() + "' load failed: " + platformLoadError();
@@ -117,6 +123,9 @@ GameLogicReloader::loadCopy(const std::filesystem::path &path, internal::Registr
                 std::to_string(gameLogicAbiVersion);
     }
     if (!error.empty()) {
+#if PELICAN_WITH_PHYSICS
+        physics_internal::releaseProviderOwner(owner);
+#endif
         internal::unregisterGameSystems(owner);
         internal::unregisterEvents(owner);
 #ifdef _WIN32
@@ -131,6 +140,9 @@ GameLogicReloader::loadCopy(const std::filesystem::path &path, internal::Registr
 
 void GameLogicReloader::unload(LoadedLibrary &library) noexcept {
     Animation::releaseAnimationOwner(library.owner);
+#if PELICAN_WITH_PHYSICS
+    physics_internal::releaseProviderOwner(library.owner);
+#endif
     internal::unregisterGameSystems(library.owner);
     internal::unregisterEvents(library.owner);
     if (library.handle != nullptr) {
@@ -174,6 +186,9 @@ bool GameLogicReloader::initialize(const std::filesystem::path &source) {
             LOG_ERROR(logger, "{}", last_error);
             return false;
         }
+#if PELICAN_WITH_PHYSICS
+        physics_internal::activateProviderOwner(owner);
+#endif
         generation = 1;
         last_error.clear();
         LOG_INFO(logger, "game logic DLL loaded: source='{}' copy='{}' ABI={} systems={}",
@@ -216,6 +231,9 @@ bool GameLogicReloader::reloadTransaction(const ResetFn &teardown, const ResetFn
         const auto owner = internal::allocateRegistrationOwner();
         active = loadCopy(candidate_path, owner, load_error);
         if (!active) throw std::runtime_error(load_error);
+#if PELICAN_WITH_PHYSICS
+        physics_internal::activateProviderOwner(owner);
+#endif
         rebuild();
 
         ++generation;
@@ -238,6 +256,9 @@ bool GameLogicReloader::reloadTransaction(const ResetFn &teardown, const ResetFn
             const auto rollback_owner = internal::allocateRegistrationOwner();
             active = loadCopy(previous->path, rollback_owner, rollback_error);
             if (active) {
+#if PELICAN_WITH_PHYSICS
+                physics_internal::activateProviderOwner(rollback_owner);
+#endif
                 try {
                     rebuild();
                 } catch (const std::exception &rebuild_error) {

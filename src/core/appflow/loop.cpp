@@ -13,7 +13,9 @@
 #include "../playback/camerabake.hpp"
 #include "../playback/vatplayer.hpp"
 #include "../persistence/persistence.hpp"
+#if PELICAN_WITH_PHYSICS
 #include "../phys/physworld.hpp"
+#endif
 #include "../renderer/debugtext.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../startup.hpp"
@@ -203,7 +205,9 @@ void prepareRuntimeModuleGraph(LoopModules &modules) {
     // Public GameContext services are legal at any point in game code, so
     // their modules must exist before the graph is frozen even when the
     // initial scene does not happen to exercise them.
+#if PELICAN_WITH_PHYSICS
     (void)GET_MODULE(PhysWorld);
+#endif
     (void)GET_MODULE(DeterministicRng);
     (void)GET_MODULE(DebugText);
     (void)GET_MODULE(Persistence);

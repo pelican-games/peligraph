@@ -10,8 +10,13 @@ target_compile_definitions(pelican_core PUBLIC
   PELICAN_WITH_RPC=$<BOOL:${PELICAN_WITH_RPC}>
   PELICAN_WITH_SEQPLAYER=$<BOOL:${PELICAN_WITH_SEQPLAYER}>
   PELICAN_WITH_IMGUI=$<BOOL:${PELICAN_WITH_IMGUI}>
+  PELICAN_WITH_PHYSICS=$<BOOL:${PELICAN_WITH_PHYSICS}>
 )
-target_compile_definitions(pelican_core PRIVATE PELICAN_ENGINE_BUILD=1)
+target_compile_definitions(pelican_core PRIVATE
+  PELICAN_WITH_BUILTIN_PHYSICS=$<BOOL:${PELICAN_WITH_BUILTIN_PHYSICS}>
+  PELICAN_WITH_JOLT_PHYSICS=$<BOOL:${PELICAN_WITH_JOLT_PHYSICS}>
+  PELICAN_ENGINE_BUILD=1
+)
 
 # modules
 add_subdirectory(resources)
@@ -79,6 +84,9 @@ target_link_libraries(pelican_core PRIVATE tinyexr)
 endif()
 if(PELICAN_WITH_AUDIO)
 target_link_libraries(pelican_core PRIVATE miniaudio)
+endif()
+if(PELICAN_WITH_JOLT_PHYSICS)
+target_link_libraries(pelican_core PRIVATE Jolt)
 endif()
 
 target_link_libraries(pelican_core PUBLIC nlohmann_json)

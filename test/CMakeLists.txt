@@ -221,8 +221,22 @@ target_compile_definitions(pelican_test_pathresolver_test PRIVATE
     PELICAN_WITH_VAT=$<BOOL:${PELICAN_WITH_VAT}>
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
+if(PELICAN_WITH_PHYSICS AND PELICAN_WITH_BUILTIN_PHYSICS)
 pelican_define_test(physquery_test pelican_core)
 pelican_define_test(physworld_test pelican_core glm)
+endif()
+if(PELICAN_WITH_PHYSICS)
+pelican_define_test(physicsservice_test pelican_core glm)
+target_compile_definitions(pelican_test_physicsservice_test PRIVATE
+    PELICAN_WITH_BUILTIN_PHYSICS=$<BOOL:${PELICAN_WITH_BUILTIN_PHYSICS}>
+    PELICAN_WITH_JOLT_PHYSICS=$<BOOL:${PELICAN_WITH_JOLT_PHYSICS}>
+)
+endif()
+
+add_executable(pelican_test_physics_feature_probe physics_feature_probe.cpp)
+set_target_properties(pelican_test_physics_feature_probe PROPERTIES CXX_STANDARD 20)
+target_link_libraries(pelican_test_physics_feature_probe PRIVATE pelican_core)
+add_test(NAME physics_feature_probe COMMAND pelican_test_physics_feature_probe)
 pelican_define_test(projectconfig_test pelican_core glm)
 target_compile_definitions(pelican_test_projectconfig_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"

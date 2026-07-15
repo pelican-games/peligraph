@@ -10,7 +10,10 @@
 #include "basicconfig.hpp"
 #include "../light/lightcontainer.hpp"
 #include "../log.hpp"
+#include "../build_features.hpp"
+#if PELICAN_WITH_PHYSICS
 #include "../phys/physworld.hpp"
+#endif
 #include "../renderer/polygoninstancecontainer.hpp"
 #include "../userpublic/events.hpp"
 #include "../userpublic/gameobjects.hpp"
@@ -191,6 +194,7 @@ SceneObjectTransform identityObjectTransform() {
     };
 }
 
+#if PELICAN_WITH_PHYSICS
 PhysWorldTransform identityPhysWorldTransform() {
     return PhysWorldTransform{
         .pos = vec3{0.0f, 0.0f, 0.0f},
@@ -198,6 +202,7 @@ PhysWorldTransform identityPhysWorldTransform() {
         .scale = vec3{1.0f, 1.0f, 1.0f},
     };
 }
+#endif
 
 void assignTransform(TransformComponent &dst, const SceneObjectTransform &src) {
     dst.pos = src.pos;
@@ -233,7 +238,16 @@ void SceneLoader::load(SceneId scene_id) {
     GET_MODULE(LightContainer).load(light_entries);
     GET_MODULE(Camera).loadSceneCameras(scene_id);
 
+#if PELICAN_WITH_PHYSICS
     auto &phys_world = GET_MODULE(PhysWorld);
+#else
+    if (std::any_of(ecs_objects.begin(), ecs_objects.end(), [](const auto &object) {
+            return !object.colliders.empty();
+        })) {
+        throwBuildFeatureDisabled("PELICAN_WITH_PHYSICS",
+                                  "scene contains collider components");
+    }
+#endif
     const bool scene_uses_parents = std::any_of(ecs_objects.begin(), ecs_objects.end(), [](const auto &object) {
         return object.hierarchy_participant;
     });
@@ -292,6 +306,7 @@ void SceneLoader::load(SceneId scene_id) {
             const auto object_id = object_ids[object_index];
             const bool has_transform = object_id != invalidGameObjectId &&
                                        ecs.tryComponent<TransformComponent>(object_id) != nullptr;
+#if PELICAN_WITH_PHYSICS
             for (const auto &collider : object.colliders) {
                 if (has_transform) {
                     phys_world.bindCollider(object.name, collider, object_id);
@@ -299,6 +314,7 @@ void SceneLoader::load(SceneId scene_id) {
                     phys_world.bindCollider(object.name, collider, identityPhysWorldTransform());
                 }
             }
+#endif
         }
     } else {
         for (const auto &object : ecs_objects) {
@@ -317,6 +333,7 @@ void SceneLoader::load(SceneId scene_id) {
             if (!object.name.empty() && has_transform) {
                 bindObjectTransform(object.name, object_id);
             }
+#if PELICAN_WITH_PHYSICS
             for (const auto &collider : object.colliders) {
                 if (has_transform) {
                     phys_world.bindCollider(object.name, collider, object_id);
@@ -324,6 +341,7 @@ void SceneLoader::load(SceneId scene_id) {
                     phys_world.bindCollider(object.name, collider, identityPhysWorldTransform());
                 }
             }
+#endif
         }
     }
     current_scene_id = std::move(scene_id);
@@ -355,7 +373,9 @@ const SceneId &SceneLoader::currentScene() const {
 
 void SceneLoader::clearRuntimeScene() {
     object_bindings.clear();
+#if PELICAN_WITH_PHYSICS
     GET_MODULE(PhysWorld).clear();
+#endif
     GameObjects::removeAll();
     GET_MODULE(PolygonInstanceContainer).clear();
 }

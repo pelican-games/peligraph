@@ -51,6 +51,7 @@ function(pelican_configure_game_logic_target target_name)
         PELICAN_WITH_RPC=$<BOOL:${PELICAN_WITH_RPC}>
         PELICAN_WITH_SEQPLAYER=$<BOOL:${PELICAN_WITH_SEQPLAYER}>
         PELICAN_WITH_IMGUI=$<BOOL:${PELICAN_WITH_IMGUI}>
+        PELICAN_WITH_PHYSICS=$<BOOL:${PELICAN_WITH_PHYSICS}>
     )
 endfunction()
 

@@ -1,7 +1,9 @@
 #include "core.hpp"
 #include "componentinfo.hpp"
 #include "predefined/transform.hpp"
+#if PELICAN_WITH_PHYSICS
 #include "../phys/physworld.hpp"
+#endif
 #include "../profiler.hpp"
 
 #include <components/predefined.hpp>
@@ -175,6 +177,7 @@ double resolvePod(bool hit) {
     });
 }
 
+#if PELICAN_WITH_PHYSICS
 double physWorldQuery() {
     auto &ecs = GET_MODULE(ECSCore);
     auto &world = GET_MODULE(PhysWorld);
@@ -210,6 +213,7 @@ double physWorldQuery() {
     ecs.clearEntities();
     return elapsed;
 }
+#endif
 
 } // namespace
 
@@ -240,6 +244,8 @@ int main() {
     reportCase("create_freelist_mixed_2048", freeListMixed);
     reportCase("resolve_hit_pod_1m", [] { return resolvePod(true); });
     reportCase("resolve_miss_pod_1m", [] { return resolvePod(false); });
+#if PELICAN_WITH_PHYSICS
     reportCase("physworld_query_512x200", physWorldQuery);
+#endif
     return benchmark_sink == std::numeric_limits<std::uint64_t>::max() ? 1 : 0;
 }

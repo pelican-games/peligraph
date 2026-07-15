@@ -13,6 +13,7 @@ add_compile_options("/FS")
 endif()
 
 include(FetchContent)
+include(CMakeDependentOption)
 
 # variable definition
 set(PELICAN_INSTALL_DIR ${CMAKE_SOURCE_DIR}/dist$<$<CONFIG:Debug>:_debug>)
@@ -25,6 +26,26 @@ option(PELICAN_WITH_EXR "Enable EXR texture loading with tinyexr" ON)
 option(PELICAN_WITH_RPC "Enable stdio JSON-RPC control server" ON)
 option(PELICAN_WITH_SEQPLAYER "Enable transform sequence playback" ON)
 option(PELICAN_WITH_IMGUI "Enable the interactive engine developer UI" ON)
+option(PELICAN_WITH_PHYSICS "Enable the physics query service and collider world" ON)
+cmake_dependent_option(
+  PELICAN_WITH_JOLT_PHYSICS
+  "Enable the optional Jolt query provider"
+  OFF
+  "PELICAN_WITH_PHYSICS"
+  OFF
+)
+cmake_dependent_option(
+  PELICAN_WITH_BUILTIN_PHYSICS
+  "Enable Pelican's built-in sphere/box/capsule query provider"
+  ON
+  "PELICAN_WITH_PHYSICS"
+  OFF
+)
+if(PELICAN_WITH_JOLT_PHYSICS AND PELICAN_WITH_BUILTIN_PHYSICS)
+  message(STATUS "Jolt physics selected; disabling Pelican's built-in query provider")
+  set(PELICAN_WITH_BUILTIN_PHYSICS OFF CACHE BOOL
+      "Enable Pelican's built-in sphere/box/capsule query provider" FORCE)
+endif()
 option(PELICAN_ENABLE_ASAN "Build targets with AddressSanitizer (intended for test builds)" OFF)
 set(PELICAN_PROJECT "" CACHE PATH "Project directory whose code/ sources are built as a hot-reloadable game DLL")
 
@@ -338,6 +359,52 @@ if(PELICAN_RUNTIME_SHADER_COMPILER)
       )
     endif()
   endfunction()
+endif()
+
+if(PELICAN_WITH_JOLT_PHYSICS)
+  if(CMAKE_VERSION VERSION_LESS 3.20)
+    message(FATAL_ERROR "PELICAN_WITH_JOLT_PHYSICS requires CMake 3.20 or newer")
+  endif()
+
+  # Keep Jolt's generic option names in function scope so they cannot alter
+  # Pelican or another dependency configured later in this file.
+  function(pelican_add_jolt_physics)
+    set(BUILD_SHARED_LIBS OFF)
+    set(USE_STATIC_MSVC_RUNTIME_LIBRARY OFF)
+    set(OVERRIDE_CXX_FLAGS OFF)
+    set(CROSS_PLATFORM_DETERMINISTIC ON)
+    set(INTERPROCEDURAL_OPTIMIZATION OFF)
+    set(FLOATING_POINT_EXCEPTIONS_ENABLED OFF)
+    set(ENABLE_ALL_WARNINGS OFF)
+    set(DEBUG_RENDERER_IN_DEBUG_AND_RELEASE OFF)
+    set(DEBUG_RENDERER_IN_DISTRIBUTION OFF)
+    set(PROFILER_IN_DEBUG_AND_RELEASE OFF)
+    set(PROFILER_IN_DISTRIBUTION OFF)
+    set(ENABLE_OBJECT_STREAM OFF)
+    set(ENABLE_INSTALL OFF)
+    set(DISABLE_CUSTOM_ALLOCATOR ON)
+
+    FetchContent_Declare(
+      joltphysics
+      GIT_REPOSITORY https://github.com/jrouwe/JoltPhysics.git
+      GIT_TAG        v5.5.0
+      GIT_SHALLOW    TRUE
+    )
+    FetchContent_GetProperties(joltphysics)
+    if(NOT joltphysics_POPULATED)
+      if(POLICY CMP0169)
+        cmake_policy(PUSH)
+        cmake_policy(SET CMP0169 OLD)
+      endif()
+      FetchContent_Populate(joltphysics)
+      if(POLICY CMP0169)
+        cmake_policy(POP)
+      endif()
+    endif()
+    add_subdirectory("${joltphysics_SOURCE_DIR}/Build" "${joltphysics_BINARY_DIR}" EXCLUDE_FROM_ALL)
+  endfunction()
+
+  pelican_add_jolt_physics()
 endif()
 
 # main
