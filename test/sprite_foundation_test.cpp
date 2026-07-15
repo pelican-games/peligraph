@@ -1,8 +1,15 @@
 #include "asset/atlasasset.hpp"
 #include "components/spriteview.hpp"
 #include "sprite/spriteworld.hpp"
+#include "sprite/flipbook.hpp"
+#include "sprite/pixelpolicy.hpp"
 #include "ui/atlas.hpp"
+#include "../src/core/container.hpp"
+#include "../src/core/ecs/predefined.hpp"
+#include "../src/core/log.hpp"
+#include "../src/core/userpublic/gamecontext.hpp"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <algorithm>
@@ -12,7 +19,9 @@
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <numeric>
+#include <stdexcept>
 #include <type_traits>
+#include <utility>
 
 using namespace Pelican;
 using namespace Pelican::sprite;
@@ -358,4 +367,143 @@ TEST_CASE("50k logical sprites cull to 2k and static revisions control cache reu
                                         &cache, changed_revisions);
     REQUIRE_FALSE(invalidated.cache_hit);
     REQUIRE(commandOrderHash(invalidated) != commandOrderHash(miss));
+}
+
+TEST_CASE("strict pixel contract fixes full viewport math for odd and even zoom 1 2 3",
+          "[sprite][pixel][c4]") {
+    constexpr double ppu = 4.0;
+    struct ValidCase {
+        std::uint32_t width;
+        std::uint32_t height;
+        std::uint32_t zoom;
+    };
+    for (const auto test : {ValidCase{16, 16, 1}, ValidCase{15, 17, 2},
+                            ValidCase{17, 15, 3}}) {
+        const auto xmag = static_cast<double>(test.width) / (2.0 * ppu * test.zoom);
+        const auto ymag = static_cast<double>(test.height) / (2.0 * ppu * test.zoom);
+        const auto contract = evaluatePixelContract(true, true, xmag, ymag, ppu,
+                                                    test.width, test.height);
+        REQUIRE(contract.requested);
+        REQUIRE(contract.active);
+        REQUIRE(contract.failure == PixelContractFailure::none);
+        REQUIRE(contract.integer_zoom == test.zoom);
+        REQUIRE(contract.zoom_x == Catch::Approx(static_cast<double>(test.zoom)));
+        REQUIRE(contract.zoom_y == Catch::Approx(static_cast<double>(test.zoom)));
+        REQUIRE(contract.world_units_per_pixel_x == Catch::Approx(1.0 / (ppu * test.zoom)));
+        REQUIRE(contract.world_units_per_pixel_y == Catch::Approx(1.0 / (ppu * test.zoom)));
+    }
+
+    const auto disabled = evaluatePixelContract(false, false, 0.0, 0.0, ppu, 16, 16);
+    REQUIRE_FALSE(disabled.active);
+    REQUIRE(disabled.failure == PixelContractFailure::disabled);
+    REQUIRE(evaluatePixelContract(true, false, 1.0, 1.0, ppu, 16, 16).failure ==
+            PixelContractFailure::perspective_camera);
+
+    // C4-4: start with zoom=2 and break exactly one term of the normative
+    // equation at a time (xmag, ymag, viewport, then ppu).
+    REQUIRE(evaluatePixelContract(true, true, 1.01, 1.0, ppu, 16, 16).failure ==
+            PixelContractFailure::non_integer_zoom_x);
+    REQUIRE(evaluatePixelContract(true, true, 1.0, 1.01, ppu, 16, 16).failure ==
+            PixelContractFailure::non_integer_zoom_y);
+    REQUIRE(evaluatePixelContract(true, true, 1.0, 1.0, ppu, 17, 16).failure ==
+            PixelContractFailure::non_integer_zoom_x);
+    REQUIRE(evaluatePixelContract(true, true, 1.0, 1.0, 4.1, 16, 16).failure ==
+            PixelContractFailure::non_integer_zoom_x);
+    REQUIRE(evaluatePixelContract(true, true, 1.0, 2.0, ppu, 16, 16).failure ==
+            PixelContractFailure::anisotropic_zoom);
+
+    REQUIRE(quantizePixelBoundary(3.49) == Catch::Approx(3.0));
+    REQUIRE(quantizePixelBoundary(3.50) == Catch::Approx(4.0));
+}
+
+TEST_CASE("strict sprite target table is explicit and never silently degrades",
+          "[sprite][pixel][c4]") {
+    const auto contract = evaluatePixelContract(true, true, 1.0, 1.0, 4.0, 16, 16);
+    REQUIRE(contract.active);
+    StrictSpriteInput input{
+        .sampler = SamplerKey::nearest,
+        .billboard = SpriteBillboard::none,
+        .view_basis_x = {0.75, 0.0, 0.0}, // 3 texels / ppu, zoom 2
+        .view_basis_y = {0.0, 1.25, 0.0}, // 5 texels / ppu, zoom 2
+        .source_width = 3,
+        .source_height = 5,
+    };
+    REQUIRE(classifyStrictSprite(contract, input) == PixelSnapReason::eligible);
+
+    // Explicit size is supported when its effective scale remains integral.
+    // Non-uniform integer scaling is also supported (4x by 6x here).
+    input.view_basis_x[0] = 1.5;
+    input.view_basis_y[1] = 3.75;
+    REQUIRE(classifyStrictSprite(contract, input) == PixelSnapReason::eligible);
+
+    auto fractional = input;
+    fractional.view_basis_x[0] = 0.9375; // 2.5 framebuffer pixels/source texel
+    REQUIRE(classifyStrictSprite(contract, fractional) ==
+            PixelSnapReason::non_integer_texel_scale);
+    auto rotated = input;
+    rotated.view_basis_x = {0.5, 0.5, 0.0};
+    REQUIRE(classifyStrictSprite(contract, rotated) == PixelSnapReason::rotated_or_tilted);
+    auto billboard = input;
+    billboard.billboard = SpriteBillboard::full;
+    REQUIRE(classifyStrictSprite(contract, billboard) == PixelSnapReason::billboard);
+    auto linear = input;
+    linear.sampler = SamplerKey::linear;
+    REQUIRE(classifyStrictSprite(contract, linear) == PixelSnapReason::linear_sampler);
+    auto missing = input;
+    missing.source_width = 0;
+    REQUIRE(classifyStrictSprite(contract, missing) == PixelSnapReason::invalid_source_extent);
+
+    auto bad_camera = contract;
+    bad_camera.active = false;
+    bad_camera.failure = PixelContractFailure::anisotropic_zoom;
+    REQUIRE(classifyStrictSprite(bad_camera, input) ==
+            PixelSnapReason::camera_contract_invalid);
+}
+
+TEST_CASE("public flipbook deterministically replaces SpriteView texture without engine privilege",
+          "[sprite][flipbook]") {
+    setupLogger();
+    FastModuleContainer modules;
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    GameContext context;
+    const LocalTransformComponent transform{
+        .scale = {1.0f, 1.0f, 1.0f},
+        .rotation = {0.0f, 0.0f, 0.0f, 1.0f},
+        .pos = {0.0f, 0.0f, 0.0f},
+        .parent = invalidGameObjectId,
+    };
+    SpriteViewComponent sprite;
+    sprite.texture = "hero#sprite/a";
+    const auto object = context.createSpriteObject(transform, sprite);
+
+    const FlipbookClip loop{{{"hero#sprite/a", 0.1},
+                             {"hero#sprite/b", 0.2},
+                             {"hero#sprite/c", 0.3}},
+                            FlipbookPlayback::loop};
+    REQUIRE(loop.frameCount() == 3);
+    REQUIRE(loop.duration() == Catch::Approx(0.6));
+    REQUIRE(loop.frameIndex(-1.0) == 0);
+    REQUIRE(loop.frameIndex(0.099) == 0);
+    REQUIRE(loop.frameIndex(0.1) == 1);
+    REQUIRE(loop.frameIndex(0.299) == 1);
+    REQUIRE(loop.frameIndex(0.3) == 2);
+    REQUIRE(loop.frameIndex(0.599) == 2);
+    REQUIRE(loop.frameIndex(0.6) == 0);
+    REQUIRE(loop.apply(context, object, 0.1));
+    REQUIRE(context.spriteView(object)->texture == "hero#sprite/b");
+
+    const FlipbookClip once{{{"hero#sprite/a", 0.1}, {"hero#sprite/b", 0.2}},
+                            FlipbookPlayback::once};
+    REQUIRE(once.frameIndex(100.0) == 1);
+    FlipbookClip move_source{{{"hero#sprite/a", 0.1}, {"hero#sprite/b", 0.2}}};
+    FlipbookClip move_target{std::move(move_source)};
+    REQUIRE(move_source.frameCount() == 0);
+    REQUIRE_THROWS_AS(move_source.frameIndex(0.0), std::logic_error);
+    REQUIRE_THROWS_AS(move_source.texture(0.0), std::logic_error);
+    REQUIRE(move_target.frameIndex(0.1) == 1);
+    REQUIRE_THROWS(FlipbookClip({}));
+    REQUIRE_THROWS(FlipbookClip({{"hero#sprite/a", 0.0}}));
+    REQUIRE_THROWS(loop.frameIndex(std::numeric_limits<double>::infinity()));
+    REQUIRE(context.removeObject(object));
+    REQUIRE_FALSE(loop.apply(context, object, 0.0));
 }

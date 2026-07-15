@@ -26,6 +26,14 @@ endif()
 endfunction()
 
 if(WIN32 AND COMMAND pelican_configure_game_logic_target)
+  add_library(pelican_public_api_link_fixture SHARED
+    fixtures/public_api_link/flipbook_client.cpp
+  )
+  set_target_properties(pelican_public_api_link_fixture PROPERTIES
+    OUTPUT_NAME "pelican_public_api_link_fixture"
+  )
+  pelican_configure_game_logic_target(pelican_public_api_link_fixture)
+
   foreach(wp90_version IN ITEMS 1 2)
     set(wp90_target pelican_wp90_fixture_v${wp90_version})
     add_library(${wp90_target} SHARED

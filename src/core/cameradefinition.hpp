@@ -9,6 +9,24 @@ enum class CameraProjectionKind {
     Orthographic,
 };
 
+enum class CameraPixelPerfectMode {
+    off,
+    strict,
+};
+
+enum class CameraSpriteSortPolicy {
+    z,
+    y_down,
+    declaration,
+};
+
+// Sprite policy belongs to a camera because sorting and pixel quantization are
+// view-dependent. pixels-per-unit remains a project setting (ProjectBasicConfig).
+struct CameraSpritePolicySpec {
+    CameraPixelPerfectMode pixel_perfect = CameraPixelPerfectMode::off;
+    CameraSpriteSortPolicy sort = CameraSpriteSortPolicy::z;
+};
+
 struct CameraProjectionSpec {
     CameraProjectionKind kind = CameraProjectionKind::Perspective;
     float yfov = 0.78539816339f;

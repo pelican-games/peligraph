@@ -665,6 +665,7 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                         {"color", modules.render_target_container.getMetadata(color_id).name},
                         {"depth", depth_meta.name}, {"depth_test", true}, {"depth_write", false},
                         {"blend", "straight_alpha"},
+                        {"policy", modules.sprite.scene->statusJson()},
                     };
                 }
             }
@@ -837,7 +838,11 @@ nlohmann::json Renderer::currentFramePlanJson() const {
     if (frame_graph == nullptr) {
         throw std::runtime_error("Current frame plan is not registered");
     }
-    return framePlanToJson(frame_graph->plan);
+    auto result = framePlanToJson(frame_graph->plan);
+    const auto *sprite_scene = FastModuleContainer::tryGet<SpriteScene>();
+    result["sprite"] = sprite_scene != nullptr ? sprite_scene->statusJson()
+                                                 : nlohmann::json{{"enabled", false}};
+    return result;
 }
 
 std::vector<std::string> Renderer::currentFramePlanOrderForTesting() const {

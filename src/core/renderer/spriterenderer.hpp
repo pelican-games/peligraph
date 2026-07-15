@@ -22,7 +22,7 @@ struct SpriteDrawRequest {
 };
 
 struct SpriteRendererDependencies {
-    const SpriteScene &scene;
+    SpriteScene &scene;
     const AtlasAssetResource &atlas;
     const FrameResources &frame_resources;
 };

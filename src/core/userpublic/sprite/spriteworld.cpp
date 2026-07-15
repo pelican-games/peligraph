@@ -90,6 +90,8 @@ void validateCommand(const SpriteCommand &command) {
         if (!std::isfinite(value)) throw std::invalid_argument("sprite UV must be finite");
     for (const auto value : command.color)
         if (!std::isfinite(value)) throw std::invalid_argument("sprite color must be finite");
+    if (command.source_texel_extent[0] == 0 || command.source_texel_extent[1] == 0)
+        throw std::invalid_argument("sprite source texel extent must be non-zero");
     (void)canonicalFloatKey(command.view_depth);
     (void)canonicalFloatKey(command.pivot_world_y);
     if (!finite(command.canvas_bounds) || command.canvas_bounds.min_x > command.canvas_bounds.max_x ||
@@ -174,6 +176,9 @@ std::uint64_t commandOrderHash(const SpriteFrame &frame) {
             hashValue(hash, command.batch.texture_page);
             hashValue(hash, static_cast<std::uint8_t>(command.batch.sampler));
             hashValue(hash, static_cast<std::uint8_t>(command.billboard));
+            hashValue(hash, command.source_texel_extent[0]);
+            hashValue(hash, command.source_texel_extent[1]);
+            hashValue(hash, static_cast<std::uint8_t>(command.pixel_snap));
             hashValue(hash, canonicalFloatKey(command.canvas_bounds.min_x));
             hashValue(hash, canonicalFloatKey(command.canvas_bounds.min_y));
             hashValue(hash, canonicalFloatKey(command.canvas_bounds.max_x));

@@ -35,6 +35,7 @@ DECLARE_MODULE(Camera) {
     struct SceneCamera {
         std::string name;
         CameraProjectionSpec projection;
+        CameraSpritePolicySpec sprite;
         glm::vec3 pos{0.0f, 0.0f, 0.0f};
         glm::vec3 dir{0.0f, 0.0f, 1.0f};
         glm::vec3 up{0.0f, 1.0f, 0.0f};
@@ -46,7 +47,10 @@ DECLARE_MODULE(Camera) {
     glm::vec3 dir;
     glm::vec3 up;
     float viewport_aspect = 1.0f;
+    uint32_t viewport_width = 1;
+    uint32_t viewport_height = 1;
     CameraProjectionSpec projection;
+    CameraSpritePolicySpec sprite_policy;
     glm::mat4 projection_matrix;
     std::unordered_map<std::string, SceneCamera> scene_cameras;
     std::vector<std::string> controlled_scene_camera_order;
@@ -77,6 +81,9 @@ DECLARE_MODULE(Camera) {
     bool acceptsControllerPose(std::string_view name) const;
     void applyControllerPose(std::string_view name, glm::vec3 new_pos, glm::vec3 new_dir, glm::vec3 new_up);
     CameraProjectionSpec getProjectionSpec() const { return projection; }
+    CameraSpritePolicySpec getSpritePolicy() const { return sprite_policy; }
+    uint32_t viewportWidth() const { return viewport_width; }
+    uint32_t viewportHeight() const { return viewport_height; }
     glm::mat4 getVPMatrix() const;
     glm::mat4 getProjectionMatrix() const { return projection_matrix; }
     glm::mat4 getViewMatrix() const { return glm::lookAt(pos, pos + dir, up); }

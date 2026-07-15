@@ -98,7 +98,8 @@ const char *cameraSceneJson() {
         {
           "name": "OrthoCam",
           "components": [
-            {"name": "camera", "type": "orthographic", "xmag": 2.0, "ymag": 3.0, "znear": 0.5, "zfar": 50.0}
+            {"name": "camera", "type": "orthographic", "xmag": 2.0, "ymag": 3.0, "znear": 0.5, "zfar": 50.0,
+             "sprite": {"pixel_perfect": "strict", "sort": "y_down"}}
           ]
         }
       ]
@@ -213,6 +214,13 @@ TEST_CASE("Camera parses v1 perspective and orthographic projection parameters",
     REQUIRE(spec.yfov == Catch::Approx(pi / 3.0f));
     REQUIRE(spec.znear == Catch::Approx(0.2f));
     REQUIRE(spec.zfar == Catch::Approx(20.0f));
+    const auto perspective_projection = camera.getProjectionMatrix();
+    const auto perspective_near =
+        perspective_projection * glm::vec4{0.0f, 0.0f, -spec.znear, 1.0f};
+    const auto perspective_far =
+        perspective_projection * glm::vec4{0.0f, 0.0f, -spec.zfar, 1.0f};
+    REQUIRE(perspective_near.z / perspective_near.w == Catch::Approx(0.0f).margin(1.0e-6f));
+    REQUIRE(perspective_far.z / perspective_far.w == Catch::Approx(1.0f).margin(1.0e-6f));
 
     camera.setActiveCamera("GltfCam");
     spec = camera.getProjectionSpec();
@@ -239,9 +247,91 @@ TEST_CASE("Camera parses v1 perspective and orthographic projection parameters",
     REQUIRE(spec.zfar == Catch::Approx(50.0f));
     REQUIRE(camera.getProjectionMatrix()[0][0] == Catch::Approx(0.5f));
     REQUIRE(camera.getProjectionMatrix()[1][1] == Catch::Approx(1.0f / 3.0f));
+    const auto ortho_projection = camera.getProjectionMatrix();
+    const auto ortho_near = ortho_projection * glm::vec4{0.0f, 0.0f, -spec.znear, 1.0f};
+    const auto ortho_far = ortho_projection * glm::vec4{0.0f, 0.0f, -spec.zfar, 1.0f};
+    REQUIRE(ortho_near.z / ortho_near.w == Catch::Approx(0.0f).margin(1.0e-6f));
+    REQUIRE(ortho_far.z / ortho_far.w == Catch::Approx(1.0f).margin(1.0e-6f));
+    REQUIRE(camera.getSpritePolicy().pixel_perfect == CameraPixelPerfectMode::strict);
+    REQUIRE(camera.getSpritePolicy().sort == CameraSpriteSortPolicy::y_down);
 
     REQUIRE_THROWS_WITH(camera.setActiveCamera("MissingCam"),
                         Catch::Matchers::ContainsSubstring("MissingCam"));
+}
+
+TEST_CASE("Project sprite ppu and default camera policy are validated", "[camera][sprite][pixel]") {
+    ensureLogger();
+    Sandbox sandbox;
+    writeText(sandbox.root / "scene.json", R"json({
+      "schema":"pelican.scene","version":1,
+      "scenes":{"default_scene":{"objects":[]}}
+    })json");
+    auto project = projectJson();
+    project["basic_config"]["sprite"] = {{"pixels_per_unit", 8.0}};
+    project["basic_config"]["camera"]["sprite"] = {
+        {"pixel_perfect", "strict"}, {"sort", "declaration"}};
+
+    {
+        FastModuleContainer modules;
+        GET_MODULE(PathResolver).setup(sandbox.root, false);
+        GET_MODULE(ProjectSource).setProjectData(project.dump());
+        REQUIRE(GET_MODULE(ProjectBasicConfig).spritePixelsPerUnit() == Catch::Approx(8.0f));
+        const auto policy = GET_MODULE(Camera).getSpritePolicy();
+        REQUIRE(policy.pixel_perfect == CameraPixelPerfectMode::strict);
+        REQUIRE(policy.sort == CameraSpriteSortPolicy::declaration);
+    }
+
+    project["basic_config"]["sprite"]["pixels_per_unit"] = 0.0;
+    FastModuleContainer modules;
+    GET_MODULE(PathResolver).setup(sandbox.root, false);
+    GET_MODULE(ProjectSource).setProjectData(project.dump());
+    REQUIRE_THROWS_WITH(GET_MODULE(ProjectBasicConfig),
+                        Catch::Matchers::ContainsSubstring("pixels_per_unit"));
+}
+
+TEST_CASE("Scene camera sprite policy is closed and names invalid values", "[camera][sprite]") {
+    ensureLogger();
+    Sandbox sandbox;
+    auto scene = nlohmann::json::parse(cameraSceneJson());
+    auto &sprite = scene["scenes"]["default_scene"]["objects"][0]["components"][0]["sprite"];
+    sprite = {{"pixel_perfect", "strict"}, {"sort", "z"}, {"snap_each_sprite", true}};
+    writeText(sandbox.root / "scene.json", scene.dump());
+
+    FastModuleContainer modules;
+    GET_MODULE(PathResolver).setup(sandbox.root, false);
+    GET_MODULE(ProjectSource).setProjectData(projectJson().dump());
+    REQUIRE_THROWS_WITH(GET_MODULE(Camera),
+                        Catch::Matchers::ContainsSubstring("snap_each_sprite"));
+}
+
+TEST_CASE("Project sprite policy objects are closed", "[camera][sprite][pixel]") {
+    ensureLogger();
+    Sandbox sandbox;
+    writeText(sandbox.root / "scene.json", R"json({
+      "schema":"pelican.scene","version":1,
+      "scenes":{"default_scene":{"objects":[]}}
+    })json");
+    auto project = projectJson();
+
+    SECTION("project sprite settings") {
+        project["basic_config"]["sprite"] = {
+            {"pixels_per_unit", 8.0}, {"logical_resolution", true}};
+        FastModuleContainer modules;
+        GET_MODULE(PathResolver).setup(sandbox.root, false);
+        GET_MODULE(ProjectSource).setProjectData(project.dump());
+        REQUIRE_THROWS_WITH(GET_MODULE(ProjectBasicConfig),
+                            Catch::Matchers::ContainsSubstring("logical_resolution"));
+    }
+
+    SECTION("camera sprite settings") {
+        project["basic_config"]["camera"]["sprite"] = {
+            {"pixel_perfect", "strict"}, {"sort", "z"}, {"camera_snap", true}};
+        FastModuleContainer modules;
+        GET_MODULE(PathResolver).setup(sandbox.root, false);
+        GET_MODULE(ProjectSource).setProjectData(project.dump());
+        REQUIRE_THROWS_WITH(GET_MODULE(ProjectBasicConfig),
+                            Catch::Matchers::ContainsSubstring("camera_snap"));
+    }
 }
 
 TEST_CASE("Project camera aliases are rejected with v1 replacement names", "[camera]") {

@@ -2,6 +2,7 @@
 
 #include "../appflow/enginetime.hpp"
 #include "../build_features.hpp"
+#include "../ecs/core.hpp"
 #include "components/predefined.hpp"
 #include "deterministicrng.hpp"
 #if PELICAN_WITH_AUDIO
@@ -80,6 +81,18 @@ GameObjectId GameContext::createObject(const LocalTransformComponent &transform)
     return id;
 }
 
+GameObjectId GameContext::createSpriteObject(const LocalTransformComponent &transform,
+                                             const SpriteViewComponent &sprite) const {
+    sprite.validate();
+    const auto id = GameObjects::add()
+                        .addComponent<TransformComponent>()
+                        .addComponent<LocalTransformComponent>(transform)
+                        .addComponent<SpriteViewComponent>(sprite)
+                        .finish();
+    (void)GameObjects::setLocalTransform(id, transform);
+    return id;
+}
+
 bool GameContext::removeObject(GameObjectId id) const {
     return GameObjects::remove(id);
 }
@@ -90,6 +103,27 @@ LocalTransformComponent GameContext::localTransform(GameObjectId id) const {
 
 bool GameContext::setLocalTransform(GameObjectId id, const LocalTransformComponent &transform) const {
     return GameObjects::setLocalTransform(id, transform);
+}
+
+std::optional<SpriteViewComponent> GameContext::spriteView(GameObjectId id) const {
+    const auto *sprite = GET_MODULE(ECSCore).getTemplatePublicModule().tryComponent<SpriteViewComponent>(id);
+    if (sprite == nullptr) return std::nullopt;
+    return *sprite;
+}
+
+bool GameContext::setSpriteView(GameObjectId id, const SpriteViewComponent &sprite) const {
+    sprite.validate();
+    return GET_MODULE(ECSCore).getTemplatePublicModule().setComponent<SpriteViewComponent>(id, sprite);
+}
+
+bool GameContext::setSpriteTexture(GameObjectId id, std::string_view texture) const {
+    auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
+    const auto *current = ecs.tryComponent<SpriteViewComponent>(id);
+    if (current == nullptr) return false;
+    auto replacement = *current;
+    replacement.texture = std::string{texture};
+    replacement.validate();
+    return ecs.setComponent<SpriteViewComponent>(id, replacement);
 }
 
 std::optional<phys::ObjectRaycastHit> GameContext::raycastClosest(const phys::Ray &ray) const {

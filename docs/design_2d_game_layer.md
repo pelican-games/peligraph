@@ -1,7 +1,7 @@
-# 2D ゲーム層と 2D⇔3D 相互変換(v2.1)
+# 2D ゲーム層と 2D⇔3D 相互変換(v2.2)
 
 対象読者: エンジン担当・2D ゲームを作る人・2D/3D 混在演出を作る人。
-ステータス: **v2.1 — 条件付き受理(2026-07-12)**。v1 は敵対レビュー
+ステータス: **v2.2 — C4/S2D-1 確定(2026-07-15)**。v1 は敵対レビュー
 `docs/design_reviews/2026-07-12_hr_v2_2d_v1_review_codex.md` §4-8(以下
 「レビュー」)で **Reject** — 中核方向(単一ワールド)は妥当だが、
 ①「機構を増やさない」への過剰一般化 ②SpriteView 例が scene v1 の
@@ -156,6 +156,39 @@ camera・fractional sprite・回転/非一様スケール(strict 対象外なら
 atlas edge。**+ 成立式を一項だけ破る xmag/ymag・viewport・ppu の
 negative fixture(C4-4)**。
 
+### 2-1. S2D-1 で確定した strict 契約(WP106)
+
+方式は **render-only quantization** に固定する。logical-resolution target、
+letterbox、camera snap は v1 に持たない。content viewport は framebuffer 全域、
+pixel center は `(n+0.5, m+0.5)`、境界は整数である。各軸の規範式は:
+
+```text
+wupp_x = 2*xmag / framebuffer_width
+wupp_y = 2*ymag / framebuffer_height
+zoom_x = (1/ppu) / wupp_x
+zoom_y = (1/ppu) / wupp_y
+```
+
+`zoom_x` と `zoom_y` が相対許容差 `1e-4` 以内で同じ整数かつ 1 以上のとき
+だけ camera contract を active にする。不成立時は letterbox 等へ暗黙 fallback
+せず、理由を `get_status.sprite.pixel_perfect.failure` と名前入り WARN に出す。
+
+| sprite 条件 | strict | status reason |
+|---|---|---|
+| size 省略 + nearest + 単位 scale + view 軸平行 | 対象 | `eligible` |
+| 明示 size | 最終 framebuffer px/source texel が各軸整数なら対象 | `eligible` または `non_integer_texel_scale` |
+| 整数 scale | 対象 | `eligible` |
+| 非一様 scale | x/y を独立判定し、両方整数なら対象 | `eligible` または `non_integer_texel_scale` |
+| fractional size/scale | 結果が整数 texel scale の場合だけ対象 | `non_integer_texel_scale` |
+| view 軸に対する回転/傾き(90°を含む) | 対象外 | `rotated_or_tilted` |
+| `y_axis` / `full` billboard | 対象外 | `billboard` |
+| linear sampler | 対象外・asset 名入り WARN | `linear_sampler` |
+| perspective / zoom 不成立 camera | 全 sprite 対象外・camera 名入り WARN | `camera_contract_invalid` |
+
+適用順は **物理 Transform 不変 → 通常の world/view/projection → projected local
+atlas corner を framebuffer 整数境界へ1回だけ丸める → その NDC delta を quad
+全頂点へ同一に加える**。camera と sprite の二重丸めは禁止する。
+
 ## 3. ソート(2D-R5 — 全順序を閉じる)
 
 1. **layer(int16)**: 異なれば必ず layer 順
@@ -281,7 +314,7 @@ CPU sort + 単一 16384 quad buffer」に固定した場合。escape hatch を�
 |----|------|-----------|------|
 | **S2D-0a Contract/CPU** | sprite_view schema(scene v1 準拠)+ public component、consumer-neutral AtlasAsset 抽出、SpriteCommand/world ABI、sort total key + declaration_seq、visibility/caching/chunking | schema fixture・ID 再利用/float sort fixture・50k/2k chunk fixture(GPU 不要)**+ 再レビュー C1(sampler key)・C2(source ordinal)・C3(chunk 境界 16384/16385/2+)** | K3・U1(コード流用でなく抽出元) |
 | **S2D-0b GPU world quad** | world-space 頂点/インスタンス buffer・camera VP・pivot/flip・シーンパス・straight alpha・depth test ON/write OFF・atlas page bind | 2D/3D 遮蔽・layer/z・複数 atlas・回転/親子・UI 無し/有りの resource ownership・golden | S2D-0a・WP48 |
-| **S2D-1 Pixel/Policy** | strict pixel-perfect(方式選定込み)・ppu/zoom・y_down/declaration・billboard・flipbook dogfood(ユーザー空間) | §2/§3 fixture + pixel golden 全通過 **+ 再レビュー C4(成立式・対象集合表・適用順・negative fixture)** | S2D-0b |
+| **S2D-1 Pixel/Policy (WP106 済)** | strict pixel-perfect(render-only quantization)・ppu/zoom・y_down/declaration・billboard・flipbook dogfood(ユーザー空間) | §2/§3 fixture + pixel golden 全通過 **+ 再レビュー C4(成立式・対象集合表・適用順・negative fixture)** | S2D-0b |
 | **S2D-P Query minimum** | sweep/shapeCast・filter/all-hit・MTD・安定 collider identity | §7 の純 CPU fixture **+ 再レビュー C5(public contract と同順位規則)** | P1/P2 |
 | **S2D-2 Vertical slice** | **side-scroller 1 面を固定選択**(top-down に逃げて platformer 条件を未検証にしない): 入力/event/fixed-step/接地/斜面/one-way の実証 | replay 2 回一致・接地/斜面/one-way/tunneling シナリオ | S2D-1・S2D-P |
 | 将来 | TileMap 形式/chunk・9-slice・snapshot texture・3D 半透明統合 | 各別設計 | — |
@@ -291,7 +324,7 @@ CPU sort + 単一 16384 quad buffer」に固定した場合。escape hatch を�
 1. ~~スプライト平面の既定~~ → **確定(2026-07-12 ユーザー決定): XY 平面 +
    Z 法線に固定**。plane 切替コンポーネント指定は持たない。床置き等は
    Transform の回転で表現(見下ろしはカメラと y_down ソートで解く)
-2. strict pixel-perfect の方式選定(logical-resolution target vs
-   render quantization)— S2D-1 で両案の実測比較
+2. ~~strict pixel-perfect の方式選定~~ → **確定(WP106): render-only
+   quantization**。full framebuffer・整数 zoom・対象集合は §2-1 が正
 3. タイルマップ形式(チャンク・衝突・オートタイル)— 別文書
 4. スプライトへのライティング — 需要が出たら surface 化(B 層)を検討

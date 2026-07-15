@@ -4,7 +4,27 @@ set_target_properties(pelican_player PROPERTIES
     ENABLE_EXPORTS TRUE
 )
 
-target_link_libraries(pelican_player pelican_core argparse)
+# The hot-reload game DLL imports the public SDK from the player executable.
+# Keep every pelican_core object in that export host even when the player does
+# not call a particular public helper itself (for example FlipbookClip).
+if(MSVC)
+    target_link_options(pelican_player PRIVATE
+        "/WHOLEARCHIVE:$<TARGET_LINKER_FILE:pelican_core>"
+    )
+    target_link_libraries(pelican_player pelican_core argparse)
+elseif(APPLE)
+    target_link_libraries(pelican_player
+        "-Wl,-force_load,$<TARGET_FILE:pelican_core>"
+        argparse
+    )
+else()
+    target_link_libraries(pelican_player
+        "-Wl,--whole-archive"
+        pelican_core
+        "-Wl,--no-whole-archive"
+        argparse
+    )
+endif()
 target_include_directories(pelican_player PRIVATE ${Vulkan_INCLUDE_DIRS})
 
 function(pelican_configure_game_logic_target target_name)

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "components/localtransform.hpp"
+#include "components/spriteview.hpp"
 #include "export.hpp"
 #include "events.hpp"
 #include "gameobjects.hpp"
@@ -37,9 +38,14 @@ class PELICAN_API GameContext {
     void logError(std::string_view message) const;
 
     GameObjectId createObject(const LocalTransformComponent &transform) const;
+    GameObjectId createSpriteObject(const LocalTransformComponent &transform,
+                                    const SpriteViewComponent &sprite) const;
     [[nodiscard]] bool removeObject(GameObjectId id) const;
     LocalTransformComponent localTransform(GameObjectId id) const;
     [[nodiscard]] bool setLocalTransform(GameObjectId id, const LocalTransformComponent &transform) const;
+    std::optional<SpriteViewComponent> spriteView(GameObjectId id) const;
+    [[nodiscard]] bool setSpriteView(GameObjectId id, const SpriteViewComponent &sprite) const;
+    [[nodiscard]] bool setSpriteTexture(GameObjectId id, std::string_view texture) const;
 
     std::optional<phys::ObjectRaycastHit> raycastClosest(const phys::Ray &ray) const;
     std::vector<std::string> overlapAll(const phys::Shape &shape) const;

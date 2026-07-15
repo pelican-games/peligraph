@@ -278,6 +278,51 @@ CameraProjectionSpec parseSceneCameraProjection(const nlohmann::json &camera_com
     return projection;
 }
 
+CameraSpritePolicySpec parseSceneCameraSpritePolicy(const nlohmann::json &camera_component,
+                                                    CameraSpritePolicySpec fallback,
+                                                    const std::string &object_name) {
+    const auto found = camera_component.find("sprite");
+    if (found == camera_component.end()) return fallback;
+    const auto camera_name = cameraDisplayName(object_name);
+    if (!found->is_object()) {
+        throw std::runtime_error("camera '" + camera_name + "' field 'sprite' must be an object");
+    }
+    for (const auto &[field, value] : found->items()) {
+        (void)value;
+        if (field != "pixel_perfect" && field != "sort") {
+            throw std::runtime_error("camera '" + camera_name +
+                                     "' sprite policy has unknown field '" + field + "'");
+        }
+    }
+    if (const auto value = found->find("pixel_perfect"); value != found->end()) {
+        if (!value->is_string()) {
+            throw std::runtime_error("camera '" + camera_name +
+                                     "' sprite.pixel_perfect must be a string");
+        }
+        const auto name = value->get<std::string>();
+        if (name == "off") fallback.pixel_perfect = CameraPixelPerfectMode::off;
+        else if (name == "strict") fallback.pixel_perfect = CameraPixelPerfectMode::strict;
+        else {
+            throw std::runtime_error("camera '" + camera_name +
+                                     "' sprite.pixel_perfect must be 'off' or 'strict'");
+        }
+    }
+    if (const auto value = found->find("sort"); value != found->end()) {
+        if (!value->is_string()) {
+            throw std::runtime_error("camera '" + camera_name + "' sprite.sort must be a string");
+        }
+        const auto name = value->get<std::string>();
+        if (name == "z") fallback.sort = CameraSpriteSortPolicy::z;
+        else if (name == "y_down") fallback.sort = CameraSpriteSortPolicy::y_down;
+        else if (name == "declaration") fallback.sort = CameraSpriteSortPolicy::declaration;
+        else {
+            throw std::runtime_error("camera '" + camera_name +
+                                     "' sprite.sort must be 'z', 'y_down', or 'declaration'");
+        }
+    }
+    return fallback;
+}
+
 const nlohmann::json *findControllerObject(const nlohmann::json &camera_component,
                                            const std::string &camera_name) {
     const nlohmann::json *controller = nullptr;
@@ -393,10 +438,12 @@ glm::quat readQuat(const nlohmann::json &array, const std::string &field, const 
 
 Camera::SceneCamera parseSceneCamera(const nlohmann::json &object, const nlohmann::json &camera_component,
                                      const CameraProjectionSpec &fallback_projection,
+                                     CameraSpritePolicySpec fallback_sprite,
                                      glm::vec3 fallback_up) {
     Camera::SceneCamera camera;
     camera.name = object.value("name", std::string{});
     camera.projection = parseSceneCameraProjection(camera_component, fallback_projection, camera.name);
+    camera.sprite = parseSceneCameraSpritePolicy(camera_component, fallback_sprite, camera.name);
     camera.controller = parseOptionalSceneCameraController(camera_component, camera.name);
     camera.up = fallback_up;
 
@@ -424,13 +471,15 @@ Camera::Camera() {
 void Camera::rebuildProjectionMatrix() {
     if (projection.kind == CameraProjectionKind::Orthographic) {
         projection_matrix =
-            glm::ortho(-projection.xmag, projection.xmag, -projection.ymag, projection.ymag,
-                       projection.znear, projection.zfar);
+            glm::orthoRH_ZO(-projection.xmag, projection.xmag,
+                            -projection.ymag, projection.ymag,
+                            projection.znear, projection.zfar);
         return;
     }
 
     const auto aspect = projection.aspect.value_or(viewport_aspect);
-    projection_matrix = glm::perspective(projection.yfov, aspect, projection.znear, projection.zfar);
+    projection_matrix =
+        glm::perspectiveRH_ZO(projection.yfov, aspect, projection.znear, projection.zfar);
 }
 
 void Camera::resetToConfigDefaults() {
@@ -442,7 +491,10 @@ void Camera::resetToConfigDefaults() {
     const auto screen = config.initialWindowSize();
     up = props.up;
     viewport_aspect = static_cast<float>(screen.width) / screen.height;
+    viewport_width = static_cast<uint32_t>(screen.width);
+    viewport_height = static_cast<uint32_t>(screen.height);
     projection = props.projection;
+    sprite_policy = props.sprite;
     scene_cameras.clear();
     controlled_scene_camera_order.clear();
     active_camera_name.clear();
@@ -470,9 +522,10 @@ void Camera::loadSceneCameras(std::string_view scene_id) {
             continue;
         }
 
-        auto scene_camera = parseSceneCamera(object, *camera_component, projection, up);
+        auto scene_camera = parseSceneCamera(object, *camera_component, projection, sprite_policy, up);
         if (first_camera) {
             projection = scene_camera.projection;
+            sprite_policy = scene_camera.sprite;
             rebuildProjectionMatrix();
             active_scene_camera_locked = false;
             first_camera = false;
@@ -491,6 +544,7 @@ void Camera::applySceneCamera(const SceneCamera &camera) {
     dir = camera.dir;
     up = camera.up;
     projection = camera.projection;
+    sprite_policy = camera.sprite;
     rebuildProjectionMatrix();
 }
 
@@ -511,6 +565,9 @@ void Camera::setDir(glm::vec3 new_dir) {
 glm::mat4 Camera::getVPMatrix() const { return projection_matrix * glm::lookAt(pos, pos + dir, up); }
 
 void Camera::setScreenSize(uint32_t width, uint32_t height) {
+    if (width == 0 || height == 0) throw std::runtime_error("camera viewport must be non-zero");
+    viewport_width = width;
+    viewport_height = height;
     viewport_aspect = static_cast<float>(width) / height;
     rebuildProjectionMatrix();
 }

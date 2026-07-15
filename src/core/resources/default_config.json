@@ -8,11 +8,18 @@
     "fullscreen": false,
     "framerate": 60,
     "seed": 0,
+    "sprite": {
+      "pixels_per_unit": 100.0
+    },
     "camera": {
       "yfov": 0.7853981633974483,
       "znear": 0.1,
       "zfar": 1000,
-      "up": [0.0, -1.0, 0.0]
+      "up": [0.0, -1.0, 0.0],
+      "sprite": {
+        "pixel_perfect": "off",
+        "sort": "z"
+      }
     },
     "default_scene_id": "default_scene",
     "scene_data_json": "scenes/main.scene.json",

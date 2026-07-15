@@ -5,6 +5,14 @@
     "default_scene": {
       "objects": [
         {
+          "name": "PixelCamera",
+          "components": [
+            {"name": "transform", "pos": [0.0, 0.0, -4.0], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]},
+            {"name": "camera", "type": "orthographic", "xmag": 3.0, "ymag": 1.6875, "znear": 0.1, "zfar": 100.0,
+             "sprite": {"pixel_perfect": "strict", "sort": "declaration"}}
+          ]
+        },
+        {
           "name": "SpriteLeft",
           "components": [
             {"name": "transform", "pos": [-0.8, 0.0, 0.0], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]},

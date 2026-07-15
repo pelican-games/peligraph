@@ -78,6 +78,8 @@ struct GoldenCase {
     std::string name;
     std::string mode;
     std::filesystem::path root;
+    std::uint32_t width = goldenWidth;
+    std::uint32_t height = goldenHeight;
 };
 
 struct RenderedCase {
@@ -95,6 +97,7 @@ struct RenderedCase {
     bool sprite_scene_created = false;
     bool sprite_gpu_created = false;
     std::size_t atlas_page_count = 0;
+    nlohmann::json sprite_status;
 };
 
 struct Tolerance {
@@ -125,6 +128,12 @@ std::vector<GoldenCase> discoverGoldenCases() {
         std::ifstream file{config_path};
         const auto config = nlohmann::json::parse(file);
         const auto mode = config.at("mode").get<std::string>();
+        const auto width = config.value("width", goldenWidth);
+        const auto height = config.value("height", goldenHeight);
+        if (width == 0 || height == 0) {
+            throw std::runtime_error("golden case extent must be non-zero: " +
+                                     entry.path().string());
+        }
 #if !PELICAN_WITH_VAT
         if (mode == "vat_playback") {
             continue;
@@ -134,6 +143,8 @@ std::vector<GoldenCase> discoverGoldenCases() {
             entry.path().filename().string(),
             mode,
             entry.path(),
+            width,
+            height,
         });
     }
     std::sort(cases.begin(), cases.end(), [](const GoldenCase &lhs, const GoldenCase &rhs) {
@@ -1481,19 +1492,32 @@ void main() {
                                std::filesystem::copy_options::overwrite_existing);
 }
 
+bool isStrictSpriteGoldenMode(std::string_view mode) {
+    return mode == "sprite_pixel_zoom1" || mode == "sprite_pixel_zoom2_odd" ||
+           mode == "sprite_pixel_zoom3_policy" || mode == "sprite_billboard";
+}
+
 bool isSpriteGoldenMode(std::string_view mode) {
     return mode == "sprite_ortho_atlas" || mode == "sprite_depth" ||
            mode == "sprite_multi_atlas" || mode == "sprite_parent" ||
-           mode == "sprite_ownership";
+           mode == "sprite_ownership" || isStrictSpriteGoldenMode(mode);
 }
 
-void writeSpriteProject(const std::filesystem::path &root, std::string_view mode) {
+nlohmann::json writeSpriteProject(const std::filesystem::path &root,
+                                  const GoldenCase &golden_case) {
+    const auto mode = std::string_view{golden_case.mode};
     auto project = makeFeatureProjectJson();
     project["name"] = std::string{mode};
+    project["basic_config"]["window_size"] = {
+        {"width", golden_case.width}, {"height", golden_case.height}};
+    if (isStrictSpriteGoldenMode(mode)) {
+        project["basic_config"]["sprite"] = {{"pixels_per_unit", 4.0}};
+    }
     writeTextFile(root / "project.json", project.dump(2));
 
     RgbaImage page0{32, 32, std::vector<std::uint8_t>(32 * 32 * 4)};
     RgbaImage page1{32, 32, std::vector<std::uint8_t>(32 * 32 * 4)};
+    RgbaImage page2{8, 8, std::vector<std::uint8_t>(8 * 8 * 4)};
     for (std::uint32_t y = 0; y < 32; ++y) {
         for (std::uint32_t x = 0; x < 32; ++x) {
             const auto i = static_cast<std::size_t>((y * 32 + x) * 4);
@@ -1507,16 +1531,34 @@ void writeSpriteProject(const std::filesystem::path &root, std::string_view mode
             std::copy(b.begin(), b.end(), page1.pixels.begin() + static_cast<std::ptrdiff_t>(i));
         }
     }
+    for (std::uint32_t y = 0; y < 8; ++y) {
+        for (std::uint32_t x = 0; x < 8; ++x) {
+            const auto i = static_cast<std::size_t>((y * 8 + x) * 4);
+            const std::array<std::uint8_t, 4> texel{
+                static_cast<std::uint8_t>(28 + x * 27),
+                static_cast<std::uint8_t>(36 + y * 25),
+                static_cast<std::uint8_t>(45 + ((x * 3 + y * 5) % 8) * 25),
+                255};
+            std::copy(texel.begin(), texel.end(),
+                      page2.pixels.begin() + static_cast<std::ptrdiff_t>(i));
+        }
+    }
     writePng(root / "assets/page0.png", page0);
     writePng(root / "assets/page1.png", page1);
+    writePng(root / "assets/page2.png", page2);
     writeTextFile(root / "assets/atlas.json", R"json({
       "schema":"pelican.atlas","version":1,
-      "pages":[{"image":"page0.png","size":[32,32]},{"image":"page1.png","size":[32,32]}],
+      "pages":[{"image":"page0.png","size":[32,32]},{"image":"page1.png","size":[32,32]},
+               {"image":"page2.png","size":[8,8]}],
       "sprites":{
         "page0":{"page":0,"rect":[0,0,32,32]},
         "red":{"page":0,"rect":[0,0,16,32]},
         "green":{"page":0,"rect":[16,0,32,32]},
-        "page1":{"page":1,"rect":[0,0,32,32]}
+        "page1":{"page":1,"rect":[0,0,32,32]},
+        "pixel_even":{"page":2,"rect":[0,0,4,6]},
+        "pixel_odd_edge":{"page":2,"rect":[5,3,8,8]},
+        "pixel_tiny":{"page":2,"rect":[3,0,5,3]},
+        "pixel_dot":{"page":2,"rect":[7,0,8,2]}
       }
     })json");
 
@@ -1541,6 +1583,23 @@ void writeSpriteProject(const std::filesystem::path &root, std::string_view mode
         return nlohmann::json{{"name", "sprite_view"}, {"texture", std::move(texture)}, {"size", size},
                               {"pivot", {0.5, 0.5}}, {"flip", flip}, {"layer", layer}, {"color", color}};
     };
+    auto default_sprite = [](std::string texture, int layer = 0,
+                             std::string billboard = "none") {
+        return nlohmann::json{{"name", "sprite_view"}, {"texture", std::move(texture)},
+                              {"pivot", {0.5, 0.5}}, {"flip", {false, false}},
+                              {"layer", layer}, {"color", {1, 1, 1, 1}},
+                              {"billboard", std::move(billboard)}};
+    };
+    const auto strict_camera = [&](std::uint32_t zoom, std::string sort = "z") {
+        const auto xmag = static_cast<double>(golden_case.width) / (8.0 * zoom);
+        const auto ymag = static_cast<double>(golden_case.height) / (8.0 * zoom);
+        return nlohmann::json{{"name", "pixel_camera"}, {"components", {
+            nlohmann::json{{"name", "camera"}, {"type", "orthographic"},
+                           {"xmag", xmag}, {"ymag", ymag},
+                           {"znear", 0.1}, {"zfar", 20.0},
+                           {"sprite", {{"pixel_perfect", "strict"}, {"sort", std::move(sort)}}}}
+        }}};
+    };
     nlohmann::json objects = nlohmann::json::array();
     if (mode == "sprite_ortho_atlas") {
         objects.push_back({{"name", "ortho"}, {"components", {
@@ -1562,6 +1621,33 @@ void writeSpriteProject(const std::filesystem::path &root, std::string_view mode
                                                                             nlohmann::json{{"name", "simplemodelview"}, {"model", "ground"}}}}});
         objects.push_back({{"name", "behind"}, {"components", {transform({0, 0, 0}), sprite("atlas#sprite/page0", {1.8f, 1.8f})}}});
         objects.push_back({{"name", "front"}, {"components", {transform({0.75f, -0.55f, 1.2f}), sprite("atlas#sprite/page1", {0.6f, 0.6f}, 2)}}});
+    } else if (mode == "sprite_pixel_zoom1") {
+        objects.push_back(strict_camera(1, "declaration"));
+        objects.push_back({{"name", "fractional_default"}, {"components", {
+            transform({0.17f, -0.21f, 0.0f}), default_sprite("atlas#sprite/pixel_even")}}});
+        objects.push_back({{"name", "explicit_size"}, {"components", {
+            transform({-0.73f, 0.48f, 0.1f}),
+            sprite("atlas#sprite/pixel_tiny", {0.5f, 0.75f}, 1)}}});
+    } else if (mode == "sprite_pixel_zoom2_odd") {
+        objects.push_back(strict_camera(2, "y_down"));
+        objects.push_back({{"name", "odd_atlas_edge"}, {"components", {
+            transform({0.12f, -0.04f, 0.0f}),
+            sprite("atlas#sprite/pixel_odd_edge", {0.75f, 1.25f})}}});
+    } else if (mode == "sprite_pixel_zoom3_policy") {
+        objects.push_back(strict_camera(3));
+        objects.push_back({{"name", "integer_non_uniform"}, {"components", {
+            transform({-0.34f, 0.18f, 0.0f}, {0, 0, 0, 1}, {2.0f, 1.0f, 1.0f}),
+            default_sprite("atlas#sprite/pixel_dot")}}});
+        objects.push_back({{"name", "fractional_scale"}, {"components", {
+            transform({0.32f, -0.28f, 0.1f}, {0, 0, 0, 1}, {1.5f, 1.0f, 1.0f}),
+            default_sprite("atlas#sprite/pixel_dot", 1)}}});
+        objects.push_back({{"name", "rotated"}, {"components", {
+            transform({0.28f, 0.28f, 0.2f}, {0, 0, 0.25881905f, 0.96592583f}),
+            default_sprite("atlas#sprite/pixel_tiny", 2)}}});
+    } else if (mode == "sprite_billboard") {
+        objects.push_back(strict_camera(1));
+        objects.push_back({{"name", "full_billboard"}, {"components", {
+            transform({0, 0, 0}), default_sprite("atlas#sprite/pixel_even", 0, "full")}}});
     } else {
         objects.push_back({{"name", "owned"}, {"components", {transform({0, 0, 0}), sprite("atlas#sprite/page1", {1.35f, 1.35f})}}});
     }
@@ -1580,6 +1666,7 @@ void main(){outColor=vec4(1.0);})glsl");
     rendering["features"] = nlohmann::json::array({"engine://features/sprite.json"});
     if (with_ui) rendering["features"].push_back("engine://features/ui.json");
     writeTextFile(root / "passes/main.json", rendering.dump(2));
+    return project;
 }
 
 void writeComputeProject(const std::filesystem::path &root) {
@@ -1856,14 +1943,22 @@ void renderShadowFrame(RenderTarget &render_target) {
     (void)render_target;
 }
 
-void renderSpriteFrame(RenderTarget &render_target) {
+void renderSpriteFrame(RenderTarget &render_target, std::string_view mode) {
     GET_MODULE(ECSPredefinedRegistration).reg();
     GET_MODULE(SceneLoader).load("default_scene");
     GET_MODULE(ECSCore).update();
     GET_MODULE(ECSCore).update();
     auto &camera = GET_MODULE(Camera);
-    camera.setPos({0.0f, 0.0f, 4.0f});
-    camera.setDir({0.0f, 0.0f, -1.0f});
+    if (mode == "sprite_billboard") {
+        camera.setPos({2.0f, 1.0f, 4.0f});
+        camera.setDir(glm::normalize(glm::vec3{-2.0f, -1.0f, -4.0f}));
+    } else if (mode == "sprite_pixel_zoom2_odd") {
+        camera.setPos({0.03125f, -0.0625f, 4.0f});
+        camera.setDir({0.0f, 0.0f, -1.0f});
+    } else {
+        camera.setPos({0.0f, 0.0f, 4.0f});
+        camera.setDir({0.0f, 0.0f, -1.0f});
+    }
     camera.setUp({0.0f, 1.0f, 0.0f});
     GET_MODULE(ECSCore).update();
     GET_MODULE(Renderer).render();
@@ -2046,10 +2141,8 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         project["name"] = "ui u2 golden";
         GET_MODULE(ProjectSource).setProjectData(project.dump());
     } else if (isSpriteGoldenMode(golden_case.mode)) {
-        writeSpriteProject(temp_dir, golden_case.mode);
+        const auto project = writeSpriteProject(temp_dir, golden_case);
         GET_MODULE(PathResolver).setup(temp_dir, false);
-        auto project = makeFeatureProjectJson();
-        project["name"] = golden_case.mode;
         GET_MODULE(ProjectSource).setProjectData(project.dump());
     } else if (golden_case.mode == "debug_draw_feature") {
         writeDebugDrawProject(temp_dir);
@@ -2098,7 +2191,7 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
     auto &launch_config = GET_MODULE(EngineLaunchConfig);
     launch_config.headless = true;
     launch_config.shader_hot_reload = false;
-    launch_config.headless_extent = vk::Extent2D{goldenWidth, goldenHeight};
+    launch_config.headless_extent = vk::Extent2D{golden_case.width, golden_case.height};
     launch_config.headless_frames = 1;
 
     auto &render_target = GET_MODULE(RenderTarget);
@@ -2132,7 +2225,7 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
     } else if (golden_case.mode == "ui_u1" || golden_case.mode == "ui_u2") {
         renderFeatureFrame(render_target);
     } else if (isSpriteGoldenMode(golden_case.mode)) {
-        renderSpriteFrame(render_target);
+        renderSpriteFrame(render_target, golden_case.mode);
     } else if (golden_case.mode == "debug_draw_feature") {
         renderDebugDrawFrame(render_target);
     } else if (golden_case.mode == "parent_transform") {
@@ -2160,11 +2253,14 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
     }
     const auto pixels = render_target.readbackLastFrameRGBA8();
     const auto device_properties = GET_MODULE(VulkanManageCore).getPhysDevice().getProperties();
+    const auto sprite_status = FastModuleContainer::isInitialized<SpriteScene>()
+                                   ? GET_MODULE(SpriteScene).statusJson()
+                                   : nlohmann::json{};
     GET_MODULE(VulkanManageCore).waitIdle();
     std::filesystem::remove_all(temp_dir);
 
     return RenderedCase{
-        RgbaImage{goldenWidth, goldenHeight, pixels},
+        RgbaImage{golden_case.width, golden_case.height, pixels},
         std::string{device_properties.deviceName.data()},
         renderer != nullptr ? renderer->lastExecutionTraceForTesting() : nlohmann::json{},
         renderer != nullptr ? renderer->currentFramePlanOrderForTesting() : std::vector<std::string>{},
@@ -2179,6 +2275,7 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         FastModuleContainer::isInitialized<SpriteScene>(),
         FastModuleContainer::isInitialized<SpriteRenderer>() && GET_MODULE(SpriteRenderer).hasGpuBuffersForTesting(),
         FastModuleContainer::isInitialized<AtlasAssetResource>() ? GET_MODULE(AtlasAssetResource).pageCountForTesting() : 0,
+        sprite_status,
     };
 }
 
@@ -2256,9 +2353,9 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     requireGoldenVulkanDevice();
     const auto cases = discoverGoldenCases();
 #if PELICAN_WITH_VAT
-    REQUIRE(cases.size() == 29);
+    REQUIRE(cases.size() == 33);
 #else
-    REQUIRE(cases.size() == 28);
+    REQUIRE(cases.size() == 32);
 #endif
 
     for (const auto &golden_case : cases) {
@@ -2281,6 +2378,37 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
                 REQUIRE(rendered.ui_module_created == (golden_case.mode == "sprite_ownership"));
                 REQUIRE(rendered.ui_gpu_created == (golden_case.mode == "sprite_ownership"));
                 if (golden_case.mode == "sprite_ownership") REQUIRE(rendered.atlas_page_count == 2);
+                if (isStrictSpriteGoldenMode(golden_case.mode)) {
+                    const auto &pixel = rendered.sprite_status.at("pixel_perfect");
+                    REQUIRE(pixel.at("requested") == true);
+                    REQUIRE(pixel.at("active") == true);
+                    REQUIRE(pixel.at("method") == "render_only_quantization");
+                    REQUIRE(pixel.at("content_viewport").at("width") == golden_case.width);
+                    REQUIRE(pixel.at("content_viewport").at("height") == golden_case.height);
+
+                    if (golden_case.mode == "sprite_pixel_zoom1") {
+                        REQUIRE(rendered.sprite_status.at("sort") == "declaration");
+                        REQUIRE(pixel.at("integer_zoom") == 1);
+                        REQUIRE(pixel.at("eligible") == 2);
+                        REQUIRE(pixel.at("downgraded") == 0);
+                    } else if (golden_case.mode == "sprite_pixel_zoom2_odd") {
+                        REQUIRE(rendered.sprite_status.at("sort") == "y_down");
+                        REQUIRE(pixel.at("integer_zoom") == 2);
+                        REQUIRE(pixel.at("eligible") == 1);
+                        REQUIRE(pixel.at("downgraded") == 0);
+                    } else if (golden_case.mode == "sprite_pixel_zoom3_policy") {
+                        REQUIRE(pixel.at("integer_zoom") == 3);
+                        REQUIRE(pixel.at("eligible") == 1);
+                        REQUIRE(pixel.at("downgraded") == 2);
+                        REQUIRE(pixel.at("downgrades").at("non_integer_texel_scale") == 1);
+                        REQUIRE(pixel.at("downgrades").at("rotated_or_tilted") == 1);
+                    } else if (golden_case.mode == "sprite_billboard") {
+                        REQUIRE(pixel.at("integer_zoom") == 1);
+                        REQUIRE(pixel.at("eligible") == 0);
+                        REQUIRE(pixel.at("downgraded") == 1);
+                        REQUIRE(pixel.at("downgrades").at("billboard") == 1);
+                    }
+                }
             }
             if (golden_case.mode == "ui_u1") {
                 REQUIRE(rendered.atlas_created);

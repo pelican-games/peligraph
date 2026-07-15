@@ -4,7 +4,9 @@
 #include "pathresolver.hpp"
 #include "projectsrc.hpp"
 #include <algorithm>
+#include <cmath>
 #include <functional>
+#include <initializer_list>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <sstream>
@@ -76,6 +78,26 @@ struct JsonLoader {
         return std::nullopt;
     }
 };
+
+void rejectUnknownObjectFields(const JsonLoader &loader, std::string_view path,
+                               std::string_view display_name,
+                               std::initializer_list<std::string_view> allowed) {
+    const JsonHelper *sources[] = {&loader.cli_json, &loader.project_json, &loader.default_json};
+    for (const auto *source : sources) {
+        const auto object = source->getVal(path);
+        if (!object) continue;
+        if (!object->is_object()) {
+            throw std::runtime_error(std::string{display_name} + " must be an object");
+        }
+        for (const auto &[field, value] : object->items()) {
+            (void)value;
+            if (std::find(allowed.begin(), allowed.end(), field) == allowed.end()) {
+                throw std::runtime_error(std::string{display_name} +
+                                         " has unknown field '" + field + "'");
+            }
+        }
+    }
+}
 
 std::string cameraPath(std::string_view field) {
     return "basic_config/camera/" + std::string{field};
@@ -161,6 +183,36 @@ std::optional<std::string> optionalCameraType(const JsonLoader &loader) {
         throw std::runtime_error("basic_config.camera field 'type' must be a string");
     }
     return param->get<std::string>();
+}
+
+std::string requireCameraString(const JsonLoader &loader, std::string_view field) {
+    const auto param = getCameraParam(loader, field);
+    if (!param || !param->is_string()) {
+        throw std::runtime_error("basic_config.camera field '" + std::string{field} +
+                                 "' must be a string");
+    }
+    return param->get<std::string>();
+}
+
+CameraSpritePolicySpec parseBasicCameraSpritePolicy(const JsonLoader &loader) {
+    CameraSpritePolicySpec result;
+    const auto pixel_perfect = requireCameraString(loader, "sprite/pixel_perfect");
+    if (pixel_perfect == "off") result.pixel_perfect = CameraPixelPerfectMode::off;
+    else if (pixel_perfect == "strict") result.pixel_perfect = CameraPixelPerfectMode::strict;
+    else {
+        throw std::runtime_error(
+            "basic_config.camera field 'sprite/pixel_perfect' must be 'off' or 'strict'");
+    }
+
+    const auto sort = requireCameraString(loader, "sprite/sort");
+    if (sort == "z") result.sort = CameraSpriteSortPolicy::z;
+    else if (sort == "y_down") result.sort = CameraSpriteSortPolicy::y_down;
+    else if (sort == "declaration") result.sort = CameraSpriteSortPolicy::declaration;
+    else {
+        throw std::runtime_error(
+            "basic_config.camera field 'sprite/sort' must be 'z', 'y_down', or 'declaration'");
+    }
+    return result;
 }
 
 CameraProjectionSpec parseBasicCameraProjection(const JsonLoader &loader) {
@@ -306,6 +358,10 @@ ProjectBasicConfig::ProjectBasicConfig() {
         projectBasicConfigSource(source),
         GET_MODULE(PathResolver).loadText("engine://default_config.json"),
     };
+    rejectUnknownObjectFields(loader, "basic_config/sprite", "basic_config.sprite",
+                              {"pixels_per_unit"});
+    rejectUnknownObjectFields(loader, "basic_config/camera/sprite", "basic_config.camera.sprite",
+                              {"pixel_perfect", "sort"});
 
     window_title = loader.getVal("basic_config/window_title");
     initial_window_size.width = loader.getVal("basic_config/window_size/width");
@@ -314,7 +370,17 @@ ProjectBasicConfig::ProjectBasicConfig() {
     framerate_target = loader.getVal("basic_config/framerate");
     deterministic_seed = seedFromJson(loader.getVal("basic_config/seed"));
 
+    const auto ppu = loader.getVal("basic_config/sprite/pixels_per_unit");
+    if (!ppu.is_number()) {
+        throw std::runtime_error("basic_config.sprite.pixels_per_unit must be numeric");
+    }
+    sprite_pixels_per_unit = ppu.get<float>();
+    if (!std::isfinite(sprite_pixels_per_unit) || sprite_pixels_per_unit <= 0.0f) {
+        throw std::runtime_error("basic_config.sprite.pixels_per_unit must be finite and positive");
+    }
+
     camera_prop.projection = parseBasicCameraProjection(loader);
+    camera_prop.sprite = parseBasicCameraSpritePolicy(loader);
     const auto camera_up = loader.getVal("basic_config/camera/up");
     camera_prop.up = {camera_up[0], camera_up[1], camera_up[2]};
 
@@ -357,6 +423,7 @@ bool ProjectBasicConfig::initialFullScreenState() const { return initial_fullscr
 
 float ProjectBasicConfig::framerateTarget() const { return framerate_target; }
 std::uint64_t ProjectBasicConfig::seed() const { return deterministic_seed; }
+float ProjectBasicConfig::spritePixelsPerUnit() const { return sprite_pixels_per_unit; }
 
 ProjectBasicConfig::InitialCameraProperty ProjectBasicConfig::initailCameraProperty() const { return camera_prop; }
 

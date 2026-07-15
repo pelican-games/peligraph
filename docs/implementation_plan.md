@@ -2573,6 +2573,44 @@ cross-file atomic fixture は HR2-S の exit gate(本 WP に含めない)**。
 5. 受け入れ = 上記全 green + 既存全テスト + golden 全維持
    (SKIP 0・件数 29/28)+ player 8 秒
 
+### WP106: 2D S2D-1 — strict pixel policy + flipbook dogfood
+
+参照: **`design_2d_game_layer.md` §1-1・§2・§3・§8・§9 S2D-1 行が正**。
+受入条件 = 再レビュー C4 の **成立式・strict 対象集合表・適用順・一項
+negative fixture** をすべて閉じること。基盤 = WP103/104(済)。見積: 大。
+排他: camera sprite policy・SpriteScene/SpriteRenderer の render-only
+quantization・公開 flipbook helper。物理 Transform と UI quad ABI は変更禁止。
+
+1. **方式選定**: `render_only_quantization` に固定。project の
+   `basic_config.sprite.pixels_per_unit` と camera 単位の
+   `sprite.pixel_perfect = off|strict` / `sprite.sort = z|y_down|declaration`
+   を closed schema で追加する
+2. **C4 成立式**: content viewport = letterbox を持たない framebuffer 全域。
+   `wupp=(2*xmag/width,2*ymag/height)`、
+   `zoom=(1/ppu)/wupp`。x/y が同じ 1 以上の整数(相対許容差 `1e-4`)のとき
+   だけ strict active。pixel center = `n+0.5`、境界 = 整数。xmag / ymag /
+   viewport / ppu を一項だけ壊す CPU negative fixture を置く
+3. **strict 対象集合**: nearest + orthographic + view 軸に平行 + source texel
+   ごとの最終 framebuffer scale が各軸で整数、を必要十分条件とする。
+   size 省略/明示、整数・非一様整数 scale は対象。fractional effective
+   scale、回転/傾き、billboard、linear sampler は理由付き downgrade。
+   camera 契約不成立も silent fallback せず名前入り WARN + status
+4. **適用順**: Transform は不変のまま world→view→projection 後、local atlas
+   corner 1 点だけを framebuffer 整数境界へ丸め、同じ clip-space delta を
+   quad 全頂点へ一度だけ加える。camera snap と二重丸めは行わない
+5. **観測と policy**: ppu / zoom / viewport / sort / chunk / eligible / downgrade
+   理由を `get_status.sprite`、`get_frame_plan.sprite`、sprite draw trace へ additive
+   公開。y_down/declaration と billboard の GPU/CPU fixture を閉じる
+6. **Flipbook dogfood**: 特権のない公開 `FlipbookClip` を追加。明示 local time
+   から deterministic に frame を選び、公開 `GameContext` の sprite 作成・
+   texture 差し替えだけで動く project code demo を付ける
+7. **golden**: zoom 1/2/3、odd/even viewport/texture、fractional camera/sprite、
+   atlas edge、非一様整数/fractional scale、rotation、billboard を4件で覆う。
+   件数 REQUIRE は VAT 有効 33 / 無効 32。既存 `sprite_ortho_atlas` が露呈した
+   Vulkan depth 変換も RH/ZO に修正し、near=0 / far=1 を CPU fixture 化
+8. 受け入れ = C4 fixture + 新規 golden/status assertions + 公開 project code
+   build + 既存全テスト + golden SKIP 0 + player 8 秒
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの

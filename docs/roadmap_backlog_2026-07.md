@@ -12,7 +12,7 @@
 
 ## Tier 1 — 走っているトラックの完成(そのまま派遣可能)
 
-1. **S2D-1: strict pixel-perfect + flipbook dogfood** [設計済・条件 C4] —
+1. **S2D-1: strict pixel-perfect + flipbook dogfood** [完了: WP106・条件 C4] —
    ドット絵の見た目品質。方式選定(logical target vs quantization)込み
 2. **S2D-P: sweep/shapeCast/MTD/filter クエリ** [設計済・条件 C5] —
    platformer の物理下地。physquery の拡張(シミュ導入ではない)
@@ -113,14 +113,14 @@
 
 | 順 | WP | 理由 |
 |---|---|---|
-| 1 | S2D-1 | 2D の momentum 維持。C4 条件が新鮮なうちに |
-| 2 | S2D-P | S2D-2 の前提。純 CPU で軽い |
-| 3 | HR2-S | 開発体験の残り最大穴(include/.surface)。HR1-M の WARN も解消 |
-| 4 | S2D-2 | 2D トラック完成(vertical slice) |
-| 5 | VRM-S0 | アニメ後続の入口。以降 S1→C0→R0→I0 |
-| 6 | HR2-G | モデル差し替え(大物なので単独で) |
-| 7 | TAA 設計(私)→ feature 実装 | temporal の回収。ジッタ API 確定 |
-| 8 | ライティング/IBL 設計(私)→ WP 化 | 保留トラック 3 の再開 |
+| 済 | S2D-1 / WP106 | C4 を閉じ、strict pixel policy と flipbook dogfood 完了 |
+| 1 | S2D-P | S2D-2 の前提。純 CPU で軽い |
+| 2 | HR2-S | 開発体験の残り最大穴(include/.surface)。HR1-M の WARN も解消 |
+| 3 | S2D-2 | 2D トラック完成(vertical slice) |
+| 4 | VRM-S0 | アニメ後続の入口。以降 S1→C0→R0→I0 |
+| 5 | HR2-G | モデル差し替え(大物なので単独で) |
+| 6 | TAA 設計(私)→ feature 実装 | temporal の回収。ジッタ API 確定 |
+| 7 | ライティング/IBL 設計(私)→ WP 化 | 保留トラック 3 の再開 |
 
 設計(私の作業)が必要なものは敵対レビュー往復(codex)を挟むこと。
 条件付き Accept の条件は必ず WP に逐語添付する(確立済みの運用)。

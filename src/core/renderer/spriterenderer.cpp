@@ -92,6 +92,7 @@ void SpriteRenderer::ensureBuffers(vk::DeviceSize vertex_bytes, vk::DeviceSize i
 
 void SpriteRenderer::render(vk::CommandBuffer cmd_buf, const SpriteDrawRequest &request,
                             const SpriteRendererDependencies &dependencies) {
+    dependencies.scene.updatePixelPolicy(request.extent.width, request.extent.height);
     const auto &frame = dependencies.scene.frame();
     if (frame.visible_count == 0) return;
 
@@ -123,6 +124,8 @@ void SpriteRenderer::render(vk::CommandBuffer cmd_buf, const SpriteDrawRequest &
                 gpu.world = command.world_transform;
                 gpu.color = command.color;
                 gpu.billboard = static_cast<std::uint32_t>(command.billboard);
+                gpu.snap_anchor = {-command.pivot[0], -command.pivot[1]};
+                gpu.pixel_snap = command.pixel_snap == sprite::PixelSnapReason::eligible ? 1u : 0u;
                 vertices.push_back(gpu);
             }
         }

@@ -3,6 +3,7 @@
 #include "../details/ecs/entity.hpp"
 #include "../components/spriteview.hpp"
 #include "sampler.hpp"
+#include "pixelpolicy.hpp"
 
 #include <array>
 #include <cstddef>
@@ -49,6 +50,8 @@ struct SpriteCommand {
     EntityId source_entity{};
     std::uint64_t source_ordinal = 0;
     SpriteBillboard billboard = SpriteBillboard::none;
+    std::array<std::uint32_t, 2> source_texel_extent{1, 1};
+    PixelSnapReason pixel_snap = PixelSnapReason::not_requested;
     Bounds2 canvas_bounds{};
     bool operator==(const SpriteCommand &) const = default;
 };

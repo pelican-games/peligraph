@@ -17,6 +17,7 @@ DECLARE_MODULE(ProjectBasicConfig) {
     struct InitialCameraProperty {
         glm::vec3 up;
         CameraProjectionSpec projection;
+        CameraSpritePolicySpec sprite;
     };
 
   private:
@@ -25,6 +26,7 @@ DECLARE_MODULE(ProjectBasicConfig) {
     bool initial_fullscr_state;
     float framerate_target;
     std::uint64_t deterministic_seed = 0;
+    float sprite_pixels_per_unit = 100.0f;
     InitialCameraProperty camera_prop;
 
     std::string default_scene_id;
@@ -53,6 +55,7 @@ DECLARE_MODULE(ProjectBasicConfig) {
     bool initialFullScreenState() const;
     float framerateTarget() const;
     std::uint64_t seed() const;
+    float spritePixelsPerUnit() const;
 
     InitialCameraProperty initailCameraProperty() const;
 

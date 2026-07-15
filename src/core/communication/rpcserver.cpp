@@ -667,6 +667,9 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
                            : nlohmann::json{{"state", "disabled"},
                                             {"epoch", modules.reload_gate.snapshot().epoch},
                                             {"error", nullptr}}},
+            {"sprite", modules.sprite_scene != nullptr
+                           ? modules.sprite_scene->statusJson()
+                           : nlohmann::json{{"enabled", false}}},
             {"startup", {{"config_ms", startup.config_ms},
                          {"vulkan_ms", startup.vulkan_ms},
                          {"shaders_ms", startup.shaders_ms},

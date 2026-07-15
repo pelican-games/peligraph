@@ -7,3 +7,7 @@ must interpret RGB as sRGB. The renderer and RPC capture paths use the same RGBA
 Golden updates are allowed only through the six-step procedure in
 `docs/design_color_pipeline.md` section 3. `stem_fullscreen` and `vat_playback` retain their
 pre-existing non-zero tolerances; all other cases use exact post-baseline comparison.
+
+Each case may set integer `width` and `height` fields in `case.json`; omitted dimensions default
+to 16x16. The WP106 sprite cases use this to cover odd/even viewports and strict integer zooms
+1, 2, and 3 without relaxing exact RGBA8 comparison.
