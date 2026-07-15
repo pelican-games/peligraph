@@ -775,8 +775,15 @@ pelican_define_test(reloadtransaction_test pelican_core)
 pelican_define_test(texturereload_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 pelican_define_test(materialvaluesreload_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_materialvaluesreload_test PRIVATE
+    PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
+if(PELICAN_RUNTIME_SHADER_COMPILER)
+    target_link_libraries(pelican_test_materialvaluesreload_test PRIVATE pelican_shaderc)
+    if(COMMAND pelican_copy_shaderc_runtime)
+        pelican_copy_shaderc_runtime(pelican_test_materialvaluesreload_test)
+    endif()
+endif()
 
 pelican_define_test(ui_foundation_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_ui_foundation_test PRIVATE

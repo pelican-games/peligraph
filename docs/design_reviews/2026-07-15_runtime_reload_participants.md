@@ -4,6 +4,11 @@ Date: 2026-07-15
 
 Status: implemented and regression-tested
 
+Update: HR2-S was completed by WP108 later on 2026-07-15. The shader participant is now
+file-backed by `FileWatcher`/`ContentDigest`; its render-start callback only consumes a committed
+publication for renderer rebinding or performs an explicit forced reload. See
+`2026-07-15_wp108_report.md` for the superseding shader transaction details.
+
 ## Outcome
 
 `ReloadService` is now the single orchestration boundary for file-backed resource reload,
@@ -42,9 +47,9 @@ F5 now queues a forced reload for the next frame boundary instead of mutating ru
 the game-update phase. A successful or failed forced DLL attempt acknowledges the observed source
 timestamp so the following poll cannot apply the same file twice.
 
-Shader polling remains at render start because pipeline rebuilding and fullscreen descriptor
-rebinding must happen together before command recording. The renderer no longer invokes
-`ShaderLibrary::reloadModifiedSources` directly.
+Shader publication is prepared and committed at frame start from the watcher batch. Its
+render-start callback consumes the publication before command recording so fullscreen descriptor
+rebinding remains at the correct boundary. `ShaderLibrary` has no independent timestamp poll.
 
 ## RPC and status
 
@@ -76,10 +81,8 @@ last error, while idle polls preserve it for diagnosis.
 - `git diff --check` reported no whitespace errors (only the repository's existing LF/CRLF
   conversion notices on Windows).
 
-## Deliberate remaining boundary
+## Superseded remaining boundary
 
-This refactor unifies orchestration and reporting; it does not claim the future HR2-S all-variant
-shader transaction. Current shader and pipeline replacement is atomic per candidate, so a batch
-may contain successful and failed independent candidates. Building every affected shader variant,
-reflection, dependent pipeline, and material layout before one group-wide swap remains the scoped
-HR2-S dependency-transaction work described in `docs/design_asset_hot_reload.md`.
+The all-variant shader dependency transaction deliberately left by this refactor was closed by
+WP108. Every affected shader variant, reflection, dependent pipeline, and participating material
+layout is now prepared before one group-wide publication.

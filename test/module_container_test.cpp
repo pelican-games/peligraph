@@ -249,7 +249,8 @@ TEST_CASE("runtime reload entry points stay behind ReloadService participants",
     REQUIRE(rpc.find("reloadConfiguredGameLogic(") == std::string::npos);
     REQUIRE(renderer.find("reloadModifiedSources(") == std::string::npos);
     REQUIRE(renderer.find("rebuildDirty(") == std::string::npos);
-    REQUIRE(countOccurrences(service, "pollModifiedSources(") == 1);
+    REQUIRE(service.find("pollModifiedSources(") == std::string::npos);
+    REQUIRE(service.find("prepareReload(") != std::string::npos);
     REQUIRE(countOccurrences(service, "reloadConfiguredGameLogicAttempt(") == 1);
 }
 

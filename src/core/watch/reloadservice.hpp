@@ -9,6 +9,7 @@
 #include <memory>
 #include <nlohmann/json_fwd.hpp>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -82,6 +83,7 @@ DECLARE_MODULE(ReloadService) {
     FileWatcher *watcherForTesting() noexcept { return watcher_.get(); }
     ReloadCoordinator &transactions() noexcept { return transactions_; }
     bool applyRequestForTesting(const ReloadRequest &request);
+    std::vector<bool> applyRequestsForTesting(std::span<const ReloadRequest> requests);
     void registerParticipant(ReloadParticipant participant);
     bool unregisterParticipant(std::string_view name) noexcept;
     std::vector<std::string> participantNames() const;
@@ -97,6 +99,13 @@ DECLARE_MODULE(ReloadService) {
     void ensureBuiltInParticipants();
     ReloadCoordinator::RetireSink retireSink();
     bool applyRequest(const ReloadRequest &request);
+    std::vector<bool> applyRequests(std::span<const ReloadRequest> requests);
+    bool applyClaimedRequest(ReloadParticipant &claimant,
+                             const ReloadRequest &request);
+    bool applyShaderReloadBatch(std::span<const ReloadRequest> shader_requests,
+                                std::span<const AssetKey> material_documents);
+    RuntimeReloadResult forceShaderReload();
+    void mergeShaderRuntimeResult(RuntimeReloadResult result);
     RuntimeReloadResult invokeRuntimeParticipant(ReloadParticipant &participant,
                                                  RuntimeReloadTrigger trigger);
     nlohmann::json runtimeStatusJson() const;
@@ -105,6 +114,9 @@ DECLARE_MODULE(ReloadService) {
     std::vector<ReloadParticipant> participants_;
     std::unordered_map<std::string, RuntimeParticipantStatus> runtime_status_;
     std::unordered_set<std::string> requested_runtime_reloads_;
+    std::optional<RuntimeReloadResult> pending_shader_runtime_result_;
+    std::uint64_t shader_cache_hits_ = 0;
+    std::uint64_t shader_cache_misses_ = 0;
     MaterialContainer *material_participant_source_ = nullptr;
 };
 

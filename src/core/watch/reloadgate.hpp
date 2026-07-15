@@ -27,7 +27,7 @@ DECLARE_MODULE(ReloadGate) {
     void setReason(ReloadGateReason reason, bool active);
     ReloadGateSnapshot snapshot() const;
     bool enabled() const;
-    bool shaderPollEnabled() const;
+    bool shaderReloadEnabled() const;
 
   private:
     void updateLocked();

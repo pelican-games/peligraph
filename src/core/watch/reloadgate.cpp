@@ -40,6 +40,6 @@ ReloadGateSnapshot ReloadGate::snapshot() const {
 }
 
 bool ReloadGate::enabled() const { return snapshot().enabled; }
-bool ReloadGate::shaderPollEnabled() const { return enabled(); }
+bool ReloadGate::shaderReloadEnabled() const { return enabled(); }
 
 } // namespace Pelican::watch

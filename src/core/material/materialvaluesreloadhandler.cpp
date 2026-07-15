@@ -1,8 +1,11 @@
 #include "materialvaluesreloadhandler.hpp"
 
 #include "../log.hpp"
+#include "../vkcore/core.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cstring>
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <set>
@@ -78,6 +81,38 @@ std::string nonValuesSignature(const MaterialDefinition &material) {
     return signature.dump();
 }
 
+bool sameLayout(const Std140Layout &left, const Std140Layout &right) {
+    if (left.size != right.size || left.alignment != right.alignment ||
+        left.members.size() != right.members.size()) return false;
+    for (std::size_t index = 0; index < left.members.size(); ++index) {
+        const auto &a = left.members[index];
+        const auto &b = right.members[index];
+        if (a.name != b.name || a.type != b.type || a.offset != b.offset ||
+            a.size != b.size || a.alignment != b.alignment) return false;
+    }
+    return true;
+}
+
+bool sameTextureContract(const SurfaceTextureDefinition &left,
+                         const SurfaceTextureDefinition &right) {
+    return left.name == right.name &&
+           left.default_reference == right.default_reference &&
+           left.color_space == right.color_space && left.role == right.role;
+}
+
+bool materialBindingContractMatches(const SurfaceFormatDocument &left,
+                                    const SurfaceFormatDocument &right) {
+    if (left.language != right.language || left.screen_inputs != right.screen_inputs ||
+        left.textures.size() != right.textures.size()) return false;
+    for (std::size_t index = 0; index < left.textures.size(); ++index) {
+        if (!sameTextureContract(left.textures[index], right.textures[index])) return false;
+    }
+    const auto &a = left.render_state;
+    const auto &b = right.render_state;
+    return a.blend == b.blend && a.cull == b.cull && a.depth_test == b.depth_test &&
+           a.depth_write == b.depth_write && a.depth_compare == b.depth_compare;
+}
+
 } // namespace
 
 struct MaterialValuesReloadHandler::DocumentPayload {
@@ -108,6 +143,7 @@ struct MaterialValuesReloadHandler::TrackedSurface {
     watch::AssetKey dependency;
     watch::LogicalResourceRef resource;
     std::shared_ptr<const void> live_payload;
+    SurfaceFormatDocument document;
 };
 
 struct MaterialValuesReloadHandler::TrackedMaterial {
@@ -187,7 +223,8 @@ void MaterialValuesReloadHandler::track(
             auto resource = coordinator_.registry().declareResource(
                 std::string{surfaceFakeTable}, dependency, payload, {dependency}, 0, 0);
             fake = surfaces_.emplace(dependency,
-                                     TrackedSurface{dependency, std::move(resource), payload})
+                                     TrackedSurface{dependency, std::move(resource), payload,
+                                                    surface->second})
                        .first;
         }
 
@@ -317,6 +354,172 @@ bool MaterialValuesReloadHandler::enqueue(const watch::ReloadRequest &request,
 
     coordinator_.enqueue(std::move(group));
     return true;
+}
+
+std::function<void()> MaterialValuesReloadHandler::prepareSurfaceReload(
+    const std::map<watch::AssetKey, SurfaceFormatDocument> &surface_documents,
+    std::span<const watch::AssetKey> material_documents) {
+    struct SurfaceUpdate {
+        TrackedSurface *tracked = nullptr;
+        SurfaceFormatDocument document;
+        std::shared_ptr<SurfacePayload> payload;
+    };
+    struct FileUpdate {
+        TrackedFile *tracked = nullptr;
+        MaterialSurfaceCatalog surfaces;
+        std::shared_ptr<DocumentPayload> document_payload;
+    };
+    struct MaterialUpdate {
+        TrackedMaterial *tracked = nullptr;
+        std::shared_ptr<ValuesPayload> payload;
+        std::array<std::uint32_t, materialCustomValueCapacity / 4> packed{};
+    };
+    struct Candidate {
+        bool committed = false;
+        std::vector<watch::StagedResource> staged;
+        std::vector<SurfaceUpdate> surface_updates;
+        std::vector<FileUpdate> file_updates;
+        std::vector<MaterialUpdate> material_updates;
+    };
+
+    std::set<watch::AssetKey> requested_documents{material_documents.begin(),
+                                                   material_documents.end()};
+    for (const auto &key : requested_documents) {
+        if (!files_.contains(key)) {
+            throw std::runtime_error("material reload document is not tracked: " +
+                                     watch::assetKeyString(key));
+        }
+    }
+
+    auto candidate = std::make_shared<Candidate>();
+    const auto snapshot = coordinator_.registry().snapshot();
+    for (const auto &[key, document] : surface_documents) {
+        const auto found = surfaces_.find(key);
+        if (found == surfaces_.end()) continue;
+        if (!materialBindingContractMatches(found->second.document, document)) {
+            throw std::runtime_error(
+                "surface '" + watch::assetKeyString(key) +
+                "' changed texture, screen-input, or render-state bindings; "
+                "live descriptor migration is required");
+        }
+        const auto current = snapshot.find(found->second.resource);
+        if (!current) throw std::runtime_error("surface dependency resource is stale");
+        const auto previous = current->payloadAs<SurfacePayload>();
+        const auto layout = makeSurfaceStd140Layout(document);
+        auto payload = std::make_shared<SurfacePayload>(
+            SurfacePayload{previous->reference, layout});
+        const auto compatibility = current->compatibility_revision +
+            (sameLayout(previous->layout, layout) ? 0u : 1u);
+        candidate->staged.push_back(watch::StagedResource{
+            found->second.resource, payload, {key}, compatibility, 0});
+        candidate->surface_updates.push_back(
+            SurfaceUpdate{&found->second, document, std::move(payload)});
+    }
+
+    for (auto &[file_key, tracked] : files_) {
+        bool affected = requested_documents.contains(file_key);
+        if (!affected) {
+            affected = std::ranges::any_of(tracked.materials, [&](const auto &material) {
+                return surface_documents.contains(material.surface_dependency);
+            });
+        }
+        if (!affected) continue;
+
+        auto next_surfaces = tracked.surfaces;
+        for (auto &[reference, document] : next_surfaces) {
+            const auto replacement = surface_documents.find(surfaceDependency(reference));
+            if (replacement != surface_documents.end()) document = replacement->second;
+        }
+
+        const auto parsed = parseMaterialFormatJson(readJsonFile(tracked.path), next_surfaces);
+        const auto bytes = static_cast<std::size_t>(std::filesystem::file_size(tracked.path));
+        auto document_payload = std::make_shared<DocumentPayload>(DocumentPayload{file_key, bytes});
+        const auto current_document = snapshot.find(tracked.document_resource);
+        if (!current_document) throw std::runtime_error("material document resource is stale");
+        candidate->staged.push_back(watch::StagedResource{
+            tracked.document_resource, document_payload, {file_key},
+            current_document->compatibility_revision, bytes});
+        candidate->file_updates.push_back(
+            FileUpdate{&tracked, next_surfaces, std::move(document_payload)});
+
+        for (auto &material : tracked.materials) {
+            const auto &definition = findMaterial(parsed, material.name);
+            if (!definition.surface || *definition.surface != material.surface_reference) {
+                throw std::runtime_error("material '" + material.name +
+                                         "' changed its surface reference");
+            }
+            if (nonValuesSignature(definition) != material.non_values_signature) {
+                throw std::runtime_error("material '" + material.name +
+                                         "' changed fields outside values");
+            }
+            const auto found_surface = next_surfaces.find(*definition.surface);
+            if (found_surface == next_surfaces.end()) {
+                throw std::runtime_error("material '" + material.name +
+                                         "' surface is unavailable");
+            }
+            auto lowered = lowerMaterial(definition, found_surface->second);
+            if (lowered.values.size() != lowered.values_layout.size ||
+                lowered.values.size() > materialCustomValueCapacity) {
+                throw std::runtime_error("material '" + material.name +
+                                         "' values exceed the live material buffer contract");
+            }
+            const auto current = snapshot.find(material.resource);
+            if (!current) throw std::runtime_error("material values resource is stale");
+            const auto previous = current->payloadAs<ValuesPayload>();
+            const bool layout_changed = !sameLayout(previous->layout, lowered.values_layout);
+            const bool changed = layout_changed || previous->values != lowered.values;
+            auto payload = std::make_shared<ValuesPayload>(ValuesPayload{
+                material.name, material.material, lowered.values_layout,
+                lowered.values, changed});
+            candidate->staged.push_back(watch::StagedResource{
+                material.resource, payload, {file_key, material.surface_dependency},
+                current->compatibility_revision + (layout_changed ? 1u : 0u),
+                payload->values.size()});
+            MaterialUpdate update{&material, payload, {}};
+            if (!payload->values.empty()) {
+                std::memcpy(update.packed.data(), payload->values.data(),
+                            payload->values.size());
+            }
+            candidate->material_updates.push_back(std::move(update));
+        }
+    }
+
+    if (candidate->staged.empty()) return {};
+    return [this, candidate] {
+        if (candidate->committed) {
+            throw std::runtime_error("surface/material reload candidate was already committed");
+        }
+
+        const bool writes_gpu = std::ranges::any_of(
+            candidate->material_updates,
+            [](const auto &update) { return update.payload->changed; });
+        if (writes_gpu) GET_MODULE(VulkanManageCore).waitIdle();
+        for (const auto &update : candidate->material_updates) {
+            if (!update.payload->changed) continue;
+            const auto offset = sizeof(MaterialGpuData) * update.payload->material.value +
+                                offsetof(MaterialGpuData, custom_values);
+            GET_MODULE(VulkanManageCore).writeBuf(
+                materials_.material_buffer, update.packed.data(), offset,
+                sizeof(update.packed));
+        }
+
+        (void)coordinator_.registry().publish(candidate->staged);
+        for (auto &update : candidate->surface_updates) {
+            update.tracked->document = std::move(update.document);
+            update.tracked->live_payload = update.payload;
+        }
+        for (auto &update : candidate->file_updates) {
+            update.tracked->surfaces = std::move(update.surfaces);
+            update.tracked->document_payload = update.document_payload;
+        }
+        for (auto &update : candidate->material_updates) {
+            auto &live = materials_.materials.get(update.payload->material);
+            live.custom_values_layout = update.payload->layout;
+            live.custom_values = update.payload->values;
+            update.tracked->live_payload = update.payload;
+        }
+        candidate->committed = true;
+    };
 }
 
 bool MaterialValuesReloadHandler::retire(std::shared_ptr<const void> payload,

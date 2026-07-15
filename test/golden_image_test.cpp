@@ -30,7 +30,9 @@
 #include "../src/core/userpublic/details/system/registerer.hpp"
 #include "../src/core/userpublic/gamecontext.hpp"
 #include "../src/core/ui/module.hpp"
+#include "../src/core/watch/reloadservice.hpp"
 #include "../src/core/vkcore/core.hpp"
+#include "../src/core/vkcore/deletionqueue.hpp"
 #include "../src/core/vkcore/renderer.hpp"
 #include "../src/core/vkcore/rendertarget.hpp"
 #include "../src/core/vkcore/rendertiming.hpp"
@@ -2651,14 +2653,27 @@ TEST_CASE("fullscreen inputs rebind after shader reload and render-target recrea
     REQUIRE(initial_revision > 0);
 
     const auto shader_path = temp_dir / "shaders" / "copy_input.frag";
-    const auto previous_write_time = std::filesystem::last_write_time(shader_path);
     writeTextFile(shader_path, std::string{copyInputFragmentShader()} + "\n// hot reload rebind probe\n");
-    std::filesystem::last_write_time(shader_path, previous_write_time + std::chrono::seconds{2});
+    const auto shader_key = watch::makeAssetKey("shaders/copy_input.frag");
+    REQUIRE(GET_MODULE(watch::ReloadService).applyRequestForTesting(
+        {shader_key, watch::ReloadKind::modified, {}, 1}));
+    REQUIRE(GET_MODULE(DeletionQueue).pendingCountForTesting() > 0);
 
     renderer.render();
     GET_MODULE(VulkanManageCore).waitIdle();
     const auto hot_reload_revision = fullscreen_passes.inputBindingRevisionForTesting(*input_pass);
     REQUIRE(hot_reload_revision > initial_revision);
+    REQUIRE(fullscreen_passes.boundInputImageViewsForTesting(*input_pass) == initial_views);
+
+    writeTextFile(shader_path,
+                  "#version 450\nlayout(location = 0) out vec4 outColor;\n"
+                  "void main() { this_is_not_valid; }\n");
+    REQUIRE_FALSE(GET_MODULE(watch::ReloadService).applyRequestForTesting(
+        {shader_key, watch::ReloadKind::modified, {}, 1}));
+    renderer.render();
+    GET_MODULE(VulkanManageCore).waitIdle();
+    REQUIRE(fullscreen_passes.inputBindingRevisionForTesting(*input_pass) ==
+            hot_reload_revision);
     REQUIRE(fullscreen_passes.boundInputImageViewsForTesting(*input_pass) == initial_views);
 
     auto &render_targets = GET_MODULE(RenderTargetContainer);

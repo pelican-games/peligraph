@@ -5,6 +5,7 @@
 #include "../container.hpp"
 #include "../resourcecontainer.hpp"
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -51,6 +52,7 @@ struct PipelineRebuildResult {
     size_t attempted_pipelines = 0;
     size_t rebuilt_pipelines = 0;
     size_t failed_pipelines = 0;
+    bool committed = false;
     std::string last_error;
 };
 
@@ -108,6 +110,12 @@ DECLARE_MODULE(PipelineFactory) {
     vk::DescriptorSetLayout frameDescriptorSetLayout();
     const ShaderReflection &reflection(PipelineHandle handle) const;
 
+    // Builds every dependent pipeline while prepared shader bundles are only
+    // temporarily visible. Publication happens once, after all candidates and
+    // the optional cross-domain callback have succeeded.
+    PipelineRebuildResult rebuildPrepared(
+        PreparedShaderReload prepared,
+        const std::function<void()> &before_publish = {});
     PipelineRebuildResult rebuildDirty();
 };
 

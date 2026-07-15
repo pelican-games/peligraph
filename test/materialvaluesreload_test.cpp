@@ -1,5 +1,6 @@
 #include "../src/core/container.hpp"
 #include "../src/core/launchconfig.hpp"
+#include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/material/materialcontainer.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
@@ -141,7 +142,142 @@ GlobalMaterialId registerValuesMaterial(MaterialContainer &materials,
     return materials.registerMaterial(std::move(info));
 }
 
+std::string liveSurface(bool expanded, bool broken = false) {
+    std::string source =
+        "//! pelican.surface v1\n"
+        "//! language: glsl\n"
+        "//! params:\n"
+        "//!   - { name: scalar_first, type: float, default: 1.0 }\n";
+    if (expanded) {
+        source += "//!   - { name: tint, type: vec4, default: [1.0, 1.0, 1.0, 1.0] }\n";
+    }
+    source += "\nvoid pelican_surface_v1(in PelicanSurfaceInputV1 i, "
+              "inout PelicanSurfaceV1 s) {";
+    source += broken ? " not_valid_surface_code " : " s.roughness = pelican_param_scalar_first(); ";
+    source += "}\n";
+    return source;
+}
+
+void writeLiveMaterial(const std::filesystem::path &path, double scalar,
+                       bool expanded, bool invalid = false) {
+    nlohmann::json values{{"scalar_first", invalid ? nlohmann::json("wrong")
+                                                   : nlohmann::json(scalar)}};
+    if (expanded) values["tint"] = {0.25, 0.5, 0.75, 1.0};
+    writeText(path, nlohmann::json{
+        {"schema", "pelican.material"},
+        {"version", 1},
+        {"materials", nlohmann::json::array({
+            {{"name", "live"},
+             {"surface", "project://shaders/live.surface"},
+             {"values", std::move(values)}}
+        })}}
+        .dump(2));
+}
+
+GlobalMaterialId registerSurfaceValuesMaterial(
+    MaterialContainer &materials, const LoweredMaterial &lowered,
+    SurfaceShaderBundleIds shaders) {
+    const auto &standard = GET_MODULE(StandardMaterialResource);
+    MaterialInfo info{
+        .vert_shader = shaders.vertex,
+        .frag_shader = shaders.fragment,
+        .base_color_texture = standard.whiteTexture(),
+        .metallic_roughness_texture = standard.metallicRoughnessDefaultTexture(),
+        .normal_texture = standard.normalDefaultTexture(),
+        .emissive_texture = standard.emissiveDefaultTexture(),
+    };
+    applyLoweredMaterial(info, lowered);
+    return materials.registerMaterial(std::move(info));
+}
+
 } // namespace
+
+TEST_CASE("HR2-S commits surface shader variants and material layout as one transaction",
+          "[material-values-reload][shader-hot-reload][hr2-s][gpu]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    Sandbox box;
+    try {
+        FastModuleContainer modules;
+        configureGpu(box);
+        GET_MODULE(PathResolver).setup(box.root, false);
+        // Keep Vulkan alive until every shader bundle is destroyed.
+        (void)GET_MODULE(VulkanManageCore);
+        const auto surface_path = box.root / "shaders" / "live.surface";
+        const auto material_path = box.root / "live.material.json";
+        std::filesystem::create_directories(surface_path.parent_path());
+        writeText(surface_path, liveSurface(false));
+        writeLiveMaterial(material_path, 2.0, false);
+
+        auto surface = parseSurfaceFormat(readText(surface_path),
+                                          "project://shaders/live.surface");
+        const auto shader_bundles = GET_MODULE(ShaderLibrary).loadFromSurface(
+            surface, "project://shaders/live.surface");
+        MaterialSurfaceCatalog catalog{{"project://shaders/live.surface", surface}};
+        auto lowered = loadLowered(material_path, catalog);
+        auto &materials = GET_MODULE(MaterialContainer);
+        const auto material = registerSurfaceValuesMaterial(
+            materials, lowered, shader_bundles);
+        const auto material_key = watch::makeAssetKey("live.material.json");
+        const auto surface_key = watch::makeAssetKey("shaders/live.surface");
+        const std::array bindings{
+            MaterialContainer::ReloadableMaterialValuesBinding{"live", material}};
+        materials.registerReloadableMaterialValuesFile(
+            material_key, material_path, catalog, bindings);
+        auto &reload = GET_MODULE(watch::ReloadService);
+        const auto before_surface = reload.transactions().registry().snapshot().find(
+            "material-surface-fake", surface_key);
+        REQUIRE(before_surface);
+
+        writeText(surface_path, liveSurface(true));
+        writeLiveMaterial(material_path, 7.0, true);
+        const std::array requests{
+            watch::ReloadRequest{surface_key, watch::ReloadKind::modified, {}, 1},
+            watch::ReloadRequest{material_key, watch::ReloadKind::modified, {}, 1},
+        };
+        const auto applied = reload.applyRequestsForTesting(requests);
+        REQUIRE(applied == std::vector<bool>{true, true});
+        REQUIRE(GET_MODULE(ShaderLibrary).get(shader_bundles.vertex).version == 2);
+        REQUIRE(GET_MODULE(ShaderLibrary).get(shader_bundles.fragment).version == 2);
+        const auto values_after = materials.materialValuesForTesting(material);
+        REQUIRE(values_after.size() == 32);
+        REQUIRE(readAt<float>(values_after, 0) == Catch::Approx(7.0f));
+        REQUIRE(readAt<float>(values_after, 16) == Catch::Approx(0.25f));
+        const auto after_surface = reload.transactions().registry().snapshot().find(
+            "material-surface-fake", surface_key);
+        REQUIRE(after_surface);
+        REQUIRE(after_surface->ref == before_surface->ref);
+        REQUIRE(after_surface->compatibility_revision ==
+                before_surface->compatibility_revision + 1);
+
+        const auto stable_values = values_after;
+        writeText(surface_path, liveSurface(true) + "\n// valid candidate, invalid peer\n");
+        writeLiveMaterial(material_path, 9.0, true, true);
+        const auto rejected_material = reload.applyRequestsForTesting(requests);
+        REQUIRE(rejected_material == std::vector<bool>{false, false});
+        REQUIRE(GET_MODULE(ShaderLibrary).get(shader_bundles.vertex).version == 2);
+        REQUIRE(GET_MODULE(ShaderLibrary).get(shader_bundles.fragment).version == 2);
+        const auto after_material_failure = materials.materialValuesForTesting(material);
+        REQUIRE(after_material_failure.size() == stable_values.size());
+        REQUIRE(std::equal(after_material_failure.begin(), after_material_failure.end(),
+                           stable_values.begin()));
+
+        writeText(surface_path, liveSurface(true, true));
+        writeLiveMaterial(material_path, 11.0, true);
+        const auto rejected_shader = reload.applyRequestsForTesting(requests);
+        REQUIRE(rejected_shader == std::vector<bool>{false, false});
+        REQUIRE(GET_MODULE(ShaderLibrary).get(shader_bundles.vertex).version == 2);
+        REQUIRE(GET_MODULE(ShaderLibrary).get(shader_bundles.fragment).version == 2);
+        const auto after_shader_failure = materials.materialValuesForTesting(material);
+        REQUIRE(after_shader_failure.size() == stable_values.size());
+        REQUIRE(std::equal(after_shader_failure.begin(), after_shader_failure.end(),
+                           stable_values.begin()));
+        GET_MODULE(VulkanManageCore).waitIdle();
+    } catch (const std::exception &error) {
+        SKIP(std::string{"Vulkan HR2-S cross-file reload unavailable: "} + error.what());
+    }
+#endif
+}
 
 TEST_CASE("HR1-M updates one same-layout material and rolls back invalid candidates",
           "[wp105][material-values-reload][gpu]") {

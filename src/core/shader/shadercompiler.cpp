@@ -203,7 +203,11 @@ const std::string &engineShaderUniverseSha256() {
 std::string sourceGraphSha256(std::string_view source, std::string_view name,
                               const std::vector<std::filesystem::path> &include_dirs,
                               const std::vector<std::pair<std::string, std::string>> &virtual_sources,
-                              std::unordered_map<std::string, std::string> &source_graph_memory) {
+                              std::unordered_map<std::string, std::string> &source_graph_memory,
+                              std::vector<std::filesystem::path> *dependencies) {
+    // With no physical include roots the graph cannot acquire file-backed
+    // dependencies, so the prior digest-only fast path remains valid. Graphs
+    // that may touch files are always rediscovered for hot-reload reverse edges.
     std::string stable_input;
     if (include_dirs.empty()) {
         appendKeyPart(stable_input, "root-name", name);
@@ -253,6 +257,9 @@ std::string sourceGraphSha256(std::string_view source, std::string_view name,
                 if (!included->first.starts_with("engine://") &&
                     !virtual_includes.contains(included->first)) {
                     has_file_dependency = true;
+                    if (dependencies != nullptr) {
+                        dependencies->push_back(normalizedPath(included->first));
+                    }
                 }
                 self(self, included->first, included->second);
             }
@@ -293,8 +300,14 @@ std::string sourceGraphSha256(std::string_view source, std::string_view name,
     for (const auto &path : potential_files) {
         appendKeyPart(graph, "potential-file-name", path.string());
         appendKeyPart(graph, "potential-file-source", readTextFile(path));
+        if (dependencies != nullptr) dependencies->push_back(path);
     }
     appendKeyPart(graph, "potential-engine-universe-sha256", engineShaderUniverseSha256());
+    if (dependencies != nullptr) {
+        std::sort(dependencies->begin(), dependencies->end());
+        dependencies->erase(std::unique(dependencies->begin(), dependencies->end()),
+                            dependencies->end());
+    }
     auto result = picosha2::hash256_hex_string(graph);
     if (!stable_input.empty() && !has_file_dependency) {
         source_graph_memory.emplace(std::move(stable_input), result);
@@ -307,14 +320,16 @@ std::string shaderCacheKey(std::string_view source, vk::ShaderStageFlagBits stag
                            const std::vector<std::filesystem::path> &include_dirs,
                            const std::vector<std::string> &defines,
                            const std::vector<std::pair<std::string, std::string>> &virtual_includes,
-                           std::unordered_map<std::string, std::string> &source_graph_memory) {
+                           std::unordered_map<std::string, std::string> &source_graph_memory,
+                           std::vector<std::filesystem::path> *dependencies) {
     unsigned int spirv_version = 0;
     unsigned int spirv_revision = 0;
     shaderc_get_spv_version(&spirv_version, &spirv_revision);
 
     std::string raw;
     appendKeyPart(raw, "source-sha256",
-                  sourceGraphSha256(source, name, include_dirs, virtual_includes, source_graph_memory));
+                  sourceGraphSha256(source, name, include_dirs, virtual_includes,
+                                    source_graph_memory, dependencies));
     for (const auto &define : defines) {
         appendKeyPart(raw, "define", define);
     }
@@ -460,15 +475,17 @@ ShaderCompileResult compileGlsl(std::string_view source, vk::ShaderStageFlagBits
     bool warned = false;
     std::string key;
     std::filesystem::path cache_path;
+    std::vector<std::filesystem::path> dependencies;
     if (cache_directory) {
         try {
             key = shaderCacheKey(source, stage, name, entry_point, include_dirs, defines, virtual_includes,
-                                 source_graph_memory);
+                                 source_graph_memory, &dependencies);
             cache_path = *cache_directory / (key + ".spv-cache");
             if (const auto found = memory_cache.find(key); found != memory_cache.end()) {
                 auto output = found->second;
                 output.cache_hit = true;
                 output.log = "shader in-memory cache hit";
+                output.dependencies = dependencies;
                 if (auto *metrics = FastModuleContainer::tryGet<StartupMetrics>()) {
                     metrics->addShader(std::chrono::duration<double, std::milli>{
                                            std::chrono::steady_clock::now() - start}.count(), true);
@@ -481,7 +498,8 @@ ShaderCompileResult compileGlsl(std::string_view source, vk::ShaderStageFlagBits
                                            .log = "shader disk cache hit",
                                            .ok = true,
                                            .cache_hit = true,
-                                           .cache_key = key};
+                                           .cache_key = key,
+                                           .dependencies = dependencies};
                 memory_cache.emplace(key, output);
                 if (auto *metrics = FastModuleContainer::tryGet<StartupMetrics>()) {
                     metrics->addShader(std::chrono::duration<double, std::milli>{
@@ -496,10 +514,14 @@ ShaderCompileResult compileGlsl(std::string_view source, vk::ShaderStageFlagBits
             warnCacheOnce(warned, *cache_directory, ex.what());
             key.clear();
         }
+    } else {
+        (void)sourceGraphSha256(source, name, include_dirs, virtual_includes,
+                               source_graph_memory, &dependencies);
     }
 
     auto output = compileGlslUncached(source, stage, name, entry_point, include_dirs, defines, virtual_includes);
     output.cache_key = key;
+    output.dependencies = std::move(dependencies);
     if (output.ok && cache_directory && !key.empty()) {
         if (const auto error = writeCache(*cache_directory, cache_path, key, output.spirv)) {
             warnCacheOnce(warned, cache_path, *error);
@@ -561,9 +583,14 @@ ShaderCompileResult ShaderCompiler::compileFile(const std::filesystem::path &pat
         compile_include_dirs.insert(compile_include_dirs.begin(), source_dir / "shaders" / "include");
         compile_include_dirs.insert(compile_include_dirs.begin(), source_dir);
     }
-    return compileGlsl(readTextFile(path), stage, normalizedPath(path).string(), opts.entry_point,
-                        compile_include_dirs, opts.defines, opts.virtual_includes, cache_directory,
-                        memory_cache, source_graph_memory);
+    auto result = compileGlsl(readTextFile(path), stage, normalizedPath(path).string(), opts.entry_point,
+                              compile_include_dirs, opts.defines, opts.virtual_includes, cache_directory,
+                              memory_cache, source_graph_memory);
+    result.dependencies.push_back(normalizedPath(path));
+    std::sort(result.dependencies.begin(), result.dependencies.end());
+    result.dependencies.erase(std::unique(result.dependencies.begin(), result.dependencies.end()),
+                              result.dependencies.end());
+    return result;
 #else
     (void)path;
     return {{}, "Runtime shader compiler is disabled", false};

@@ -152,6 +152,98 @@ bool ReloadService::requestRuntimeReload(std::string_view name) {
     return true;
 }
 
+void ReloadService::mergeShaderRuntimeResult(RuntimeReloadResult result) {
+    if (!result.attempted && !result.committed && result.error.empty()) return;
+    if (!pending_shader_runtime_result_) {
+        pending_shader_runtime_result_ = std::move(result);
+        return;
+    }
+    auto &pending = *pending_shader_runtime_result_;
+    pending.attempted = pending.attempted || result.attempted;
+    pending.committed = pending.committed || result.committed;
+    appendReloadError(pending.error, std::move(result.error));
+}
+
+bool ReloadService::applyShaderReloadBatch(
+    std::span<const ReloadRequest> shader_requests,
+    std::span<const AssetKey> material_documents) {
+    auto *library = FastModuleContainer::tryGet<ShaderLibrary>();
+    auto *pipelines = FastModuleContainer::tryGet<PipelineFactory>();
+    if (library == nullptr || pipelines == nullptr || shader_requests.empty()) return false;
+
+    std::vector<AssetKey> changed_keys;
+    changed_keys.reserve(shader_requests.size());
+    for (const auto &request : shader_requests) changed_keys.push_back(request.key);
+
+    RuntimeReloadResult runtime{.attempted = true};
+    try {
+        auto prepared = library->prepareReload(changed_keys);
+        if (prepared.empty()) {
+            runtime.error = "shader change no longer has a tracked dependency";
+        } else {
+            shader_cache_hits_ += prepared.cache_hits;
+            shader_cache_misses_ += prepared.cache_misses;
+            std::function<void()> material_commit;
+            if (auto *materials = FastModuleContainer::tryGet<MaterialContainer>()) {
+                material_commit = materials->prepareSurfaceMaterialReload(
+                    prepared.surface_documents, material_documents);
+            }
+            const auto rebuilt = pipelines->rebuildPrepared(
+                std::move(prepared), material_commit);
+            runtime.committed = rebuilt.committed;
+            if (!rebuilt.committed) {
+                runtime.error = rebuilt.last_error.empty()
+                                    ? "shader/pipeline candidate transaction failed"
+                                    : rebuilt.last_error;
+            }
+        }
+    } catch (const std::exception &error) {
+        runtime.error = error.what();
+    } catch (...) {
+        runtime.error = "unknown shader reload transaction failure";
+    }
+    if (!runtime.committed) library->recordReloadFailure(changed_keys, runtime.error);
+    mergeShaderRuntimeResult(runtime);
+    return runtime.committed;
+}
+
+RuntimeReloadResult ReloadService::forceShaderReload() {
+    auto *library = FastModuleContainer::tryGet<ShaderLibrary>();
+    auto *pipelines = FastModuleContainer::tryGet<PipelineFactory>();
+    if (library == nullptr || pipelines == nullptr) return {};
+
+    RuntimeReloadResult runtime{.attempted = true};
+    std::vector<AssetKey> changed_keys;
+    try {
+        auto prepared = library->prepareReloadAll();
+        changed_keys = prepared.changed_keys;
+        if (prepared.empty()) {
+            runtime.attempted = false;
+            return runtime;
+        }
+        shader_cache_hits_ += prepared.cache_hits;
+        shader_cache_misses_ += prepared.cache_misses;
+        std::function<void()> material_commit;
+        if (auto *materials = FastModuleContainer::tryGet<MaterialContainer>()) {
+            material_commit = materials->prepareSurfaceMaterialReload(
+                prepared.surface_documents, {});
+        }
+        const auto rebuilt = pipelines->rebuildPrepared(std::move(prepared), material_commit);
+        runtime.committed = rebuilt.committed;
+        if (!rebuilt.committed) {
+            runtime.error = rebuilt.last_error.empty()
+                                ? "forced shader/pipeline transaction failed"
+                                : rebuilt.last_error;
+        }
+    } catch (const std::exception &error) {
+        runtime.error = error.what();
+    } catch (...) {
+        runtime.error = "unknown forced shader reload failure";
+    }
+    if (!runtime.committed) library->recordReloadFailure(changed_keys, runtime.error);
+    return runtime;
+}
+
 void ReloadService::ensureBuiltInParticipants() {
     const auto has_participant = [this](std::string_view name) {
         return std::ranges::any_of(participants_, [&](const auto &participant) {
@@ -162,48 +254,43 @@ void ReloadService::ensureBuiltInParticipants() {
     if (!has_participant(shaderReloadParticipantName)) {
         registerParticipant(ReloadParticipant{
             .name = std::string{shaderReloadParticipantName},
+            .claims = [](const ReloadRequest &request) {
+                const auto *library = FastModuleContainer::tryGet<ShaderLibrary>();
+                return library != nullptr && library->handlesReload(request.key);
+            },
+            .enqueue = [this](const ReloadRequest &request, ReloadCoordinator &) {
+                return applyShaderReloadBatch(std::span{&request, std::size_t{1}}, {});
+            },
             .runtime = RuntimeReloadParticipant{
                 .boundary = RuntimeReloadBoundary::render_start,
-                .apply = [](RuntimeReloadTrigger) {
+                .apply = [this](RuntimeReloadTrigger trigger) {
+                    if (pending_shader_runtime_result_) {
+                        auto result = std::move(*pending_shader_runtime_result_);
+                        pending_shader_runtime_result_.reset();
+                        return result;
+                    }
                     auto *gate = FastModuleContainer::tryGet<ReloadGate>();
-                    if (gate == nullptr || !gate->shaderPollEnabled()) return RuntimeReloadResult{};
-
-                    auto *library = FastModuleContainer::tryGet<ShaderLibrary>();
-                    auto *pipelines = FastModuleContainer::tryGet<PipelineFactory>();
-                    if (library == nullptr || pipelines == nullptr) return RuntimeReloadResult{};
-
-                    const auto shaders = library->pollModifiedSources();
-                    if (shaders.modified_bundles == 0) return RuntimeReloadResult{};
-
-                    RuntimeReloadResult result{
-                        .attempted = true,
-                        .committed = shaders.reloaded_bundles != 0,
-                    };
-                    if (shaders.failed_bundles != 0) {
-                        appendReloadError(
-                            result.error,
-                            "shader reload failed for " + std::to_string(shaders.failed_bundles) +
-                                " bundle(s): " + shaders.last_error);
-                    }
-                    if (shaders.reloaded_bundles != 0) {
-                        const auto rebuilt = pipelines->rebuildDirty();
-                        if (rebuilt.failed_pipelines != 0) {
-                            appendReloadError(
-                                result.error,
-                                "pipeline rebuild failed for " +
-                                    std::to_string(rebuilt.failed_pipelines) + " pipeline(s): " +
-                                    rebuilt.last_error);
-                        }
-                    }
-                    return result;
+                    if (gate == nullptr || !gate->shaderReloadEnabled()) return RuntimeReloadResult{};
+                    if (trigger == RuntimeReloadTrigger::poll) return RuntimeReloadResult{};
+                    return forceShaderReload();
                 },
-                .describe = [](nlohmann::json &output) {
+                .describe = [this](nlohmann::json &output) {
                     const auto *gate = FastModuleContainer::tryGet<ReloadGate>();
                     const auto gate_status = gate != nullptr ? gate->snapshot() : ReloadGateSnapshot{};
+                    const auto *library = FastModuleContainer::tryGet<ShaderLibrary>();
+                    const auto tracking = library != nullptr
+                                              ? library->reloadTrackingStatus()
+                                              : ShaderReloadTrackingStatus{};
                     output = {
+                        {"source", "file_watcher"},
                         {"enabled", gate != nullptr && gate_status.enabled},
-                        {"available", FastModuleContainer::tryGet<ShaderLibrary>() != nullptr &&
+                        {"available", library != nullptr &&
                                           FastModuleContainer::tryGet<PipelineFactory>() != nullptr},
+                        {"tracked_units", tracking.units},
+                        {"tracked_bundles", tracking.bundles},
+                        {"tracked_dependencies", tracking.dependencies},
+                        {"cache_hits", shader_cache_hits_},
+                        {"cache_misses", shader_cache_misses_},
                         {"gate_reason", gate_status.reason.empty()
                                             ? nlohmann::json(nullptr)
                                             : nlohmann::json(gate_status.reason)},
@@ -305,8 +392,8 @@ void ReloadService::applyFrame() {
     // frame phase can observe it. Render-boundary participants run separately.
     (void)applyRuntimeBoundary(RuntimeReloadBoundary::frame_start);
     if (watcher_) {
-        watcher_->applyFrame([this](const ReloadRequest &request) {
-            return applyRequest(request);
+        watcher_->applyFrameBatch([this](std::span<const ReloadRequest> requests) {
+            return applyRequests(requests);
         });
     }
     transactions_.applyFrame(retireSink());
@@ -337,40 +424,14 @@ ReloadCoordinator::RetireSink ReloadService::retireSink() {
 }
 
 bool ReloadService::applyRequest(const ReloadRequest &request) {
-    ensureBuiltInParticipants();
+    const auto results = applyRequests(std::span{&request, std::size_t{1}});
+    return !results.empty() && results.front();
+}
 
-    ReloadParticipant *claimant = nullptr;
-    for (auto &participant : participants_) {
-        if (!participant.claims) continue;
-        bool claimed = false;
-        try {
-            claimed = participant.claims(request);
-        } catch (const std::exception &error) {
-            if (logger) {
-                LOG_ERROR(logger, "reload participant '{}' claim failed for '{}': {}",
-                          participant.name, assetKeyString(request.key), error.what());
-            }
-            return false;
-        } catch (...) {
-            if (logger) {
-                LOG_ERROR(logger, "reload participant '{}' claim failed for '{}' with an unknown error",
-                          participant.name, assetKeyString(request.key));
-            }
-            return false;
-        }
-        if (!claimed) continue;
-        if (claimant != nullptr) {
-            if (logger) {
-                LOG_ERROR(logger, "reload request '{}' is claimed by both '{}' and '{}'",
-                          assetKeyString(request.key), claimant->name, participant.name);
-            }
-            return false;
-        }
-        claimant = &participant;
-    }
-    if (claimant == nullptr) return true;
-    const auto claimant_name = claimant->name;
-    const auto enqueue = claimant->enqueue;
+bool ReloadService::applyClaimedRequest(ReloadParticipant &claimant,
+                                        const ReloadRequest &request) {
+    const auto claimant_name = claimant.name;
+    const auto enqueue = claimant.enqueue;
     if (!enqueue(request, transactions_)) {
         if (logger) {
             LOG_ERROR(logger, "reload participant '{}' claimed '{}' but did not enqueue it",
@@ -384,8 +445,95 @@ bool ReloadService::applyRequest(const ReloadRequest &request) {
     return after.failed == before.failed && after.applied > before.applied;
 }
 
+std::vector<bool> ReloadService::applyRequests(
+    std::span<const ReloadRequest> requests) {
+    ensureBuiltInParticipants();
+    std::vector<bool> results(requests.size(), true);
+    std::vector<ReloadParticipant *> claimants(requests.size(), nullptr);
+    for (std::size_t index = 0; index < requests.size(); ++index) {
+        const auto &request = requests[index];
+        for (auto &participant : participants_) {
+            if (!participant.claims) continue;
+            bool claimed = false;
+            try {
+                claimed = participant.claims(request);
+            } catch (const std::exception &error) {
+                if (logger) {
+                    LOG_ERROR(logger, "reload participant '{}' claim failed for '{}': {}",
+                              participant.name, assetKeyString(request.key), error.what());
+                }
+                results[index] = false;
+                break;
+            } catch (...) {
+                if (logger) {
+                    LOG_ERROR(logger,
+                              "reload participant '{}' claim failed for '{}' with an unknown error",
+                              participant.name, assetKeyString(request.key));
+                }
+                results[index] = false;
+                break;
+            }
+            if (!claimed) continue;
+            if (claimants[index] != nullptr) {
+                if (logger) {
+                    LOG_ERROR(logger, "reload request '{}' is claimed by both '{}' and '{}'",
+                              assetKeyString(request.key), claimants[index]->name,
+                              participant.name);
+                }
+                results[index] = false;
+                break;
+            }
+            claimants[index] = &participant;
+        }
+    }
+
+    std::vector<std::size_t> shader_indices;
+    std::vector<std::size_t> material_value_indices;
+    auto *materials = FastModuleContainer::tryGet<MaterialContainer>();
+    for (std::size_t index = 0; index < requests.size(); ++index) {
+        if (!results[index] || claimants[index] == nullptr) continue;
+        if (claimants[index]->name == shaderReloadParticipantName) {
+            shader_indices.push_back(index);
+        } else if (materials != nullptr &&
+                   claimants[index]->name == materialReloadParticipantName &&
+                   materials->handlesMaterialValuesReload(requests[index].key)) {
+            material_value_indices.push_back(index);
+        }
+    }
+
+    std::vector<bool> consumed(requests.size(), false);
+    if (!shader_indices.empty()) {
+        std::vector<ReloadRequest> shader_requests;
+        std::vector<AssetKey> material_documents;
+        shader_requests.reserve(shader_indices.size());
+        material_documents.reserve(material_value_indices.size());
+        for (const auto index : shader_indices) {
+            shader_requests.push_back(requests[index]);
+            consumed[index] = true;
+        }
+        for (const auto index : material_value_indices) {
+            material_documents.push_back(requests[index].key);
+            consumed[index] = true;
+        }
+        const bool applied = applyShaderReloadBatch(shader_requests, material_documents);
+        for (const auto index : shader_indices) results[index] = applied;
+        for (const auto index : material_value_indices) results[index] = applied;
+    }
+
+    for (std::size_t index = 0; index < requests.size(); ++index) {
+        if (!results[index] || consumed[index] || claimants[index] == nullptr) continue;
+        results[index] = applyClaimedRequest(*claimants[index], requests[index]);
+    }
+    return results;
+}
+
 bool ReloadService::applyRequestForTesting(const ReloadRequest &request) {
     return applyRequest(request);
+}
+
+std::vector<bool> ReloadService::applyRequestsForTesting(
+    std::span<const ReloadRequest> requests) {
+    return applyRequests(requests);
 }
 
 nlohmann::json ReloadService::runtimeStatusJson() const {

@@ -5,14 +5,15 @@
 #include "materialcontainer.hpp"
 
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <span>
 
 namespace Pelican {
 
-// HR1-M adapter. Surface resources are represented by compatibility-only fake
-// actors until HR2-S owns real .surface parsing and cross-file transactions.
+// Material values keep their logical IDs while HR2-S may replace the real
+// surface layout and every dependent value payload in one shader transaction.
 class MaterialValuesReloadHandler {
   public:
     MaterialValuesReloadHandler(MaterialContainer &materials,
@@ -28,6 +29,9 @@ class MaterialValuesReloadHandler {
                  watch::ReloadCoordinator &coordinator);
     bool retire(std::shared_ptr<const void> payload,
                 watch::ReloadCoordinator &coordinator) noexcept;
+    std::function<void()> prepareSurfaceReload(
+        const std::map<watch::AssetKey, SurfaceFormatDocument> &surface_documents,
+        std::span<const watch::AssetKey> material_documents);
 
   private:
     struct DocumentPayload;

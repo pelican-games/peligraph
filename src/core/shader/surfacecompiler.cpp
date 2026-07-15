@@ -341,6 +341,15 @@ ShaderCompileResult compileExperimentalStage(ShaderCompiler &compiler,
         result.spirv = std::move(linked.spirv);
         result.log = template_result.log + user_result.log;
         result.ok = true;
+        result.cache_hit = template_result.cache_hit && user_result.cache_hit;
+        result.dependencies = std::move(template_result.dependencies);
+        result.dependencies.insert(result.dependencies.end(),
+                                   user_result.dependencies.begin(),
+                                   user_result.dependencies.end());
+        std::sort(result.dependencies.begin(), result.dependencies.end());
+        result.dependencies.erase(std::unique(result.dependencies.begin(),
+                                              result.dependencies.end()),
+                                  result.dependencies.end());
         return result;
     } catch (const std::exception &error) {
         return {{}, error.what(), false};

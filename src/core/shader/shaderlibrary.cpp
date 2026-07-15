@@ -6,12 +6,14 @@
 #include "../vkcore/core.hpp"
 #include <algorithm>
 #include <cctype>
-#include <chrono>
 #include <cstring>
+#include <map>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <system_error>
+#include <tuple>
 #include <utility>
 #include <variant>
 
@@ -36,15 +38,6 @@ std::vector<uint32_t> bytesToSpirv(const std::string &data, const std::filesyste
     std::vector<uint32_t> spirv(data.size() / sizeof(uint32_t));
     std::memcpy(spirv.data(), data.data(), data.size());
     return spirv;
-}
-
-std::optional<std::filesystem::file_time_type> lastWriteTime(const std::filesystem::path &path) {
-    std::error_code ec;
-    const auto timestamp = std::filesystem::last_write_time(path, ec);
-    if (ec) {
-        return std::nullopt;
-    }
-    return timestamp;
 }
 
 [[noreturn]] void throwUnsupportedFragment(const AssetFragmentRef &fragment) {
@@ -87,9 +80,151 @@ std::string joinTriedCandidates(const std::vector<std::string> &tried) {
     return stream.str();
 }
 
+bool relativeWithin(const std::filesystem::path &root,
+                    const std::filesystem::path &candidate,
+                    std::filesystem::path &relative) {
+    std::error_code error;
+    const auto canonical_root = std::filesystem::weakly_canonical(root, error);
+    if (error) return false;
+    const auto canonical_candidate = std::filesystem::weakly_canonical(candidate, error);
+    if (error) return false;
+    relative = std::filesystem::relative(canonical_candidate, canonical_root, error);
+    if (error || relative.empty() || relative.is_absolute()) return false;
+    for (const auto &component : relative) {
+        if (component == "..") return false;
+    }
+    return true;
+}
+
+void appendPathUnique(std::vector<std::filesystem::path> &paths,
+                      const std::filesystem::path &path) {
+    if (path.empty()) return;
+    std::error_code error;
+    auto normalized = std::filesystem::weakly_canonical(path, error);
+    if (error) normalized = std::filesystem::absolute(path, error).lexically_normal();
+    if (std::find(paths.begin(), paths.end(), normalized) == paths.end()) {
+        paths.push_back(std::move(normalized));
+    }
+}
+
 } // namespace
 
+std::vector<ShaderBundleId> PreparedShaderReload::affectedBundleIds() const {
+    std::vector<ShaderBundleId> result;
+    result.reserve(candidates.size());
+    for (const auto &candidate : candidates) result.push_back(candidate.id);
+    return result;
+}
+
 ShaderLibrary::ShaderLibrary(ShaderLibraryModuleMode mode) : module_mode{mode} {}
+
+std::optional<watch::AssetKey>
+ShaderLibrary::logicalKeyForPath(const std::filesystem::path &path) const {
+    const auto *resolver = FastModuleContainer::tryGet<PathResolver>();
+    if (resolver == nullptr || !resolver->isSetup() || path.empty()) return std::nullopt;
+
+    auto stores = resolver->stores();
+    std::ranges::sort(stores, [](const auto &left, const auto &right) {
+        return std::tuple{left.mount.empty(), left.name, left.root} <
+               std::tuple{right.mount.empty(), right.name, right.root};
+    });
+    std::filesystem::path relative;
+    for (const auto &store : stores) {
+        if (relativeWithin(store.root, path, relative)) {
+            return watch::makeAssetKey(store.mount, relative);
+        }
+    }
+    if (relativeWithin(resolver->projectRoot(), path, relative)) {
+        return watch::makeAssetKey({}, relative);
+    }
+    return std::nullopt;
+}
+
+std::optional<std::pair<std::filesystem::path, watch::AssetKey>>
+ShaderLibrary::resolveReloadableSurface(std::string_view source_name) const {
+    if (source_name.starts_with("engine://")) return std::nullopt;
+    const auto *resolver = FastModuleContainer::tryGet<PathResolver>();
+    if (resolver == nullptr || !resolver->isSetup()) return std::nullopt;
+    try {
+        const auto resolved = resolver->resolveProjectRef(source_name);
+        const auto *path = std::get_if<std::filesystem::path>(&resolved);
+        if (path == nullptr) return std::nullopt;
+        const auto key = logicalKeyForPath(*path);
+        if (!key) return std::nullopt;
+        return std::pair{*path, *key};
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+std::vector<watch::AssetKey>
+ShaderLibrary::logicalDependencies(const ShaderBundle &bundle,
+                                   std::optional<watch::AssetKey> primary) const {
+    std::vector<watch::AssetKey> result;
+    if (primary) result.push_back(std::move(*primary));
+    for (const auto &path : bundle.dependency_paths) {
+        if (const auto key = logicalKeyForPath(path)) result.push_back(*key);
+    }
+    if (const auto key = logicalKeyForPath(bundle.source_path)) result.push_back(*key);
+    std::ranges::sort(result);
+    result.erase(std::unique(result.begin(), result.end()), result.end());
+    return result;
+}
+
+void ShaderLibrary::registerFileReloadUnit(ShaderBundleId id,
+                                           const ShaderBundle &bundle,
+                                           std::vector<std::string> defines) {
+    const auto source = logicalKeyForPath(bundle.source_path);
+    if (!source) return;
+    ReloadUnit unit{
+        FileReloadRecipe{bundle.source_path, std::move(defines)},
+        {id},
+        *source,
+        logicalDependencies(bundle, source),
+    };
+    const auto index = reload_units.size();
+    reload_units.push_back(std::move(unit));
+    unit_by_bundle.emplace(id, index);
+    rebuildReverseDependencies();
+}
+
+void ShaderLibrary::registerSurfaceReloadUnit(
+    SurfaceShaderBundleIds ids, const ShaderBundle &vertex_bundle,
+    const ShaderBundle &fragment_bundle, std::filesystem::path path,
+    watch::AssetKey source, std::string source_name, SurfacePass pass,
+    std::vector<std::string> defines) {
+    auto dependencies = logicalDependencies(vertex_bundle, source);
+    auto fragment_dependencies = logicalDependencies(fragment_bundle, source);
+    dependencies.insert(dependencies.end(), fragment_dependencies.begin(),
+                        fragment_dependencies.end());
+    std::ranges::sort(dependencies);
+    dependencies.erase(std::unique(dependencies.begin(), dependencies.end()),
+                       dependencies.end());
+    ReloadUnit unit{
+        SurfaceReloadRecipe{std::move(path), source, std::move(source_name), pass,
+                            std::move(defines)},
+        {ids.vertex, ids.fragment},
+        source,
+        std::move(dependencies),
+    };
+    const auto index = reload_units.size();
+    reload_units.push_back(std::move(unit));
+    unit_by_bundle.emplace(ids.vertex, index);
+    unit_by_bundle.emplace(ids.fragment, index);
+    rebuildReverseDependencies();
+}
+
+void ShaderLibrary::rebuildReverseDependencies() {
+    units_by_dependency.clear();
+    for (std::size_t index = 0; index < reload_units.size(); ++index) {
+        for (const auto &dependency : reload_units[index].dependencies) {
+            auto &units = units_by_dependency[dependency];
+            if (std::find(units.begin(), units.end(), index) == units.end()) {
+                units.push_back(index);
+            }
+        }
+    }
+}
 
 ShaderBundle ShaderLibrary::buildFromFile(const std::filesystem::path &path, uint64_t version,
                                           std::vector<std::string> defines) const {
@@ -109,6 +244,8 @@ ShaderBundle ShaderLibrary::buildFromFile(const std::filesystem::path &path, uin
     }
     auto bundle = buildFromSpirv(result.spirv, path, version, result.log, std::move(defines));
     bundle.cache_key = result.cache_key;
+    bundle.cache_hit = result.cache_hit;
+    bundle.dependency_paths = result.dependencies;
     return bundle;
 #else
     (void)defines;
@@ -127,6 +264,7 @@ ShaderBundle ShaderLibrary::buildFromSpirv(std::span<const uint32_t> spirv, std:
     bundle.defines = std::move(defines);
     bundle.version = version;
     bundle.log = std::move(log);
+    appendPathUnique(bundle.dependency_paths, bundle.source_path);
     return bundle;
 }
 
@@ -142,6 +280,8 @@ ShaderBundle ShaderLibrary::buildFromEngineSource(std::string_view source, Shade
     }
     auto bundle = buildFromSpirv(result.spirv, {}, version, result.log, std::move(defines));
     bundle.cache_key = result.cache_key;
+    bundle.cache_hit = result.cache_hit;
+    bundle.dependency_paths = result.dependencies;
     return bundle;
 #else
     (void)source;
@@ -175,11 +315,10 @@ void ShaderLibrary::markDirty(ShaderBundleId id) {
 }
 
 ShaderBundleId ShaderLibrary::loadFromFile(const std::filesystem::path &path, std::vector<std::string> defines) {
-    const auto id = bundles.reg(buildFromFile(path, 1, std::move(defines)));
+    auto bundle = buildFromFile(path, 1, defines);
+    const auto id = bundles.reg(std::move(bundle));
     bundle_ids.push_back(id);
-    if (const auto timestamp = lastWriteTime(path)) {
-        source_write_times[id] = *timestamp;
-    }
+    registerFileReloadUnit(id, bundles.get(id), std::move(defines));
     return id;
 }
 
@@ -295,6 +434,9 @@ SurfaceShaderBundleIds ShaderLibrary::loadFromSurface(const SurfaceFormatDocumen
                                                       SurfacePass pass,
                                                       std::vector<std::string> defines) {
 #if PELICAN_RUNTIME_SHADER_COMPILER
+    const auto requested_defines = defines;
+    const auto reloadable = resolveReloadableSurface(source_name);
+    const auto source_path = reloadable ? reloadable->first : std::filesystem::path{};
     const auto composition = composeSurfaceShaders(surface, source_name, pass, defines);
     const auto result = compileSurfaceShaders(compiler, surface, source_name, pass, defines);
     if (!result.vertex.ok || !result.fragment.ok) {
@@ -310,19 +452,33 @@ SurfaceShaderBundleIds ShaderLibrary::loadFromSurface(const SurfaceFormatDocumen
                              std::string{surfacePassName(pass)} + ".vert";
     const auto fragment_name = std::string{source_name} + "#" +
                                std::string{surfacePassName(pass)} + ".frag";
-    auto vertex_bundle = buildFromSpirv(result.vertex.spirv, {}, 1, vertex_name,
+    auto vertex_bundle = buildFromSpirv(result.vertex.spirv, source_path, 1, vertex_name,
                                         composition.defines);
     vertex_bundle.binding_table = result.vertex_bindings;
-    vertex_bundle.cache_key = result.vertex_cache_key;
-    auto fragment_bundle = buildFromSpirv(result.fragment.spirv, {}, 1, fragment_name,
+    vertex_bundle.cache_key = result.vertex_cache_key.empty()
+                                  ? result.vertex.cache_key : result.vertex_cache_key;
+    vertex_bundle.cache_hit = result.vertex.cache_hit;
+    vertex_bundle.dependency_paths = result.vertex.dependencies;
+    appendPathUnique(vertex_bundle.dependency_paths, source_path);
+    auto fragment_bundle = buildFromSpirv(result.fragment.spirv, source_path, 1, fragment_name,
                                           composition.defines);
     fragment_bundle.binding_table = result.fragment_bindings;
-    fragment_bundle.cache_key = result.fragment_cache_key;
+    fragment_bundle.cache_key = result.fragment_cache_key.empty()
+                                    ? result.fragment.cache_key : result.fragment_cache_key;
+    fragment_bundle.cache_hit = result.fragment.cache_hit;
+    fragment_bundle.dependency_paths = result.fragment.dependencies;
+    appendPathUnique(fragment_bundle.dependency_paths, source_path);
     const auto vertex = bundles.reg(std::move(vertex_bundle));
     const auto fragment = bundles.reg(std::move(fragment_bundle));
     bundle_ids.push_back(vertex);
     bundle_ids.push_back(fragment);
-    return {vertex, fragment};
+    const SurfaceShaderBundleIds ids{vertex, fragment};
+    if (reloadable) {
+        registerSurfaceReloadUnit(ids, bundles.get(vertex), bundles.get(fragment),
+                                  reloadable->first, reloadable->second,
+                                  std::string{source_name}, pass, requested_defines);
+    }
+    return ids;
 #else
     (void)surface;
     (void)pass;
@@ -334,6 +490,178 @@ SurfaceShaderBundleIds ShaderLibrary::loadFromSurface(const SurfaceFormatDocumen
 
 const ShaderBundle &ShaderLibrary::get(ShaderBundleId id) const { return bundles.get(id); }
 
+PreparedShaderReload
+ShaderLibrary::prepareUnits(const std::set<std::size_t> &units,
+                            std::vector<watch::AssetKey> changed_keys) const {
+    PreparedShaderReload prepared;
+    prepared.changed_keys = std::move(changed_keys);
+    std::ranges::sort(prepared.changed_keys);
+    prepared.changed_keys.erase(
+        std::unique(prepared.changed_keys.begin(), prepared.changed_keys.end()),
+        prepared.changed_keys.end());
+
+    const auto add_candidate = [&](ShaderBundleId id, std::size_t unit_index,
+                                   ShaderBundle replacement) {
+        if (replacement.cache_hit) ++prepared.cache_hits;
+        else ++prepared.cache_misses;
+        prepared.candidates.push_back(
+            PreparedShaderBundle{id, std::move(replacement), unit_index});
+    };
+
+    for (const auto unit_index : units) {
+        if (unit_index >= reload_units.size()) {
+            throw std::runtime_error("shader reload unit is stale");
+        }
+        const auto &unit = reload_units[unit_index];
+        if (const auto *file = std::get_if<FileReloadRecipe>(&unit.recipe)) {
+            if (unit.bundle_ids.size() != 1) {
+                throw std::runtime_error("file shader reload unit is malformed");
+            }
+            const auto id = unit.bundle_ids.front();
+            add_candidate(id, unit_index,
+                          buildFromFile(file->path, bundles.get(id).version + 1,
+                                        file->defines));
+            continue;
+        }
+
+        const auto &surface_recipe = std::get<SurfaceReloadRecipe>(unit.recipe);
+        if (unit.bundle_ids.size() != 2) {
+            throw std::runtime_error("surface shader reload unit is malformed");
+        }
+        auto surface = prepared.surface_documents.find(surface_recipe.source);
+        if (surface == prepared.surface_documents.end()) {
+            const auto source = readBinaryFile(surface_recipe.path.string());
+            surface = prepared.surface_documents
+                          .emplace(surface_recipe.source,
+                                   parseSurfaceFormat(source, surface_recipe.source_name))
+                          .first;
+        }
+        const auto composition = composeSurfaceShaders(
+            surface->second, surface_recipe.source_name, surface_recipe.pass,
+            surface_recipe.defines);
+        const auto compiled = compileSurfaceShaders(
+            compiler, surface->second, surface_recipe.source_name,
+            surface_recipe.pass, surface_recipe.defines);
+        if (!compiled.vertex.ok || !compiled.fragment.ok) {
+            std::ostringstream message;
+            message << "Surface shader compile failed: " << surface_recipe.source_name
+                    << " (" << surfacePassName(surface_recipe.pass) << ")";
+            if (!compiled.vertex.ok) message << "\nvertex:\n" << compiled.vertex.log;
+            if (!compiled.fragment.ok) message << "\nfragment:\n" << compiled.fragment.log;
+            throw std::runtime_error(message.str());
+        }
+
+        const auto vertex_id = unit.bundle_ids[0];
+        const auto fragment_id = unit.bundle_ids[1];
+        auto vertex = buildFromSpirv(
+            compiled.vertex.spirv, surface_recipe.path,
+            bundles.get(vertex_id).version + 1,
+            surface_recipe.source_name + "#" +
+                std::string{surfacePassName(surface_recipe.pass)} + ".vert",
+            composition.defines);
+        vertex.binding_table = compiled.vertex_bindings;
+        vertex.cache_key = compiled.vertex_cache_key.empty()
+                               ? compiled.vertex.cache_key : compiled.vertex_cache_key;
+        vertex.cache_hit = compiled.vertex.cache_hit;
+        vertex.dependency_paths = compiled.vertex.dependencies;
+        appendPathUnique(vertex.dependency_paths, surface_recipe.path);
+
+        auto fragment = buildFromSpirv(
+            compiled.fragment.spirv, surface_recipe.path,
+            bundles.get(fragment_id).version + 1,
+            surface_recipe.source_name + "#" +
+                std::string{surfacePassName(surface_recipe.pass)} + ".frag",
+            composition.defines);
+        fragment.binding_table = compiled.fragment_bindings;
+        fragment.cache_key = compiled.fragment_cache_key.empty()
+                                 ? compiled.fragment.cache_key : compiled.fragment_cache_key;
+        fragment.cache_hit = compiled.fragment.cache_hit;
+        fragment.dependency_paths = compiled.fragment.dependencies;
+        appendPathUnique(fragment.dependency_paths, surface_recipe.path);
+
+        add_candidate(vertex_id, unit_index, std::move(vertex));
+        add_candidate(fragment_id, unit_index, std::move(fragment));
+    }
+    return prepared;
+}
+
+bool ShaderLibrary::handlesReload(const watch::AssetKey &key) const {
+    return units_by_dependency.contains(key);
+}
+
+PreparedShaderReload
+ShaderLibrary::prepareReload(std::span<const watch::AssetKey> changed_keys) const {
+    std::set<std::size_t> units;
+    for (const auto &key : changed_keys) {
+        const auto found = units_by_dependency.find(key);
+        if (found == units_by_dependency.end()) continue;
+        units.insert(found->second.begin(), found->second.end());
+    }
+    return prepareUnits(units, {changed_keys.begin(), changed_keys.end()});
+}
+
+PreparedShaderReload ShaderLibrary::prepareReloadAll() const {
+    std::set<std::size_t> units;
+    std::vector<watch::AssetKey> changed;
+    for (std::size_t index = 0; index < reload_units.size(); ++index) {
+        units.insert(index);
+        changed.push_back(reload_units[index].primary_source);
+    }
+    return prepareUnits(units, std::move(changed));
+}
+
+void ShaderLibrary::activatePrepared(PreparedShaderReload &prepared) {
+    for (auto &candidate : prepared.candidates) {
+        using std::swap;
+        swap(bundles.get(candidate.id), candidate.replacement);
+    }
+}
+
+void ShaderLibrary::finalizePrepared(const PreparedShaderReload &prepared) {
+    std::set<std::size_t> affected_units;
+    for (const auto &candidate : prepared.candidates) {
+        affected_units.insert(candidate.reload_unit);
+    }
+    for (const auto unit_index : affected_units) {
+        auto &unit = reload_units.at(unit_index);
+        std::vector<watch::AssetKey> dependencies{unit.primary_source};
+        for (const auto id : unit.bundle_ids) {
+            auto bundle_dependencies = logicalDependencies(bundles.get(id));
+            dependencies.insert(dependencies.end(), bundle_dependencies.begin(),
+                                bundle_dependencies.end());
+        }
+        std::ranges::sort(dependencies);
+        dependencies.erase(std::unique(dependencies.begin(), dependencies.end()),
+                           dependencies.end());
+        unit.dependencies = std::move(dependencies);
+    }
+    rebuildReverseDependencies();
+}
+
+void ShaderLibrary::recordReloadFailure(
+    std::span<const watch::AssetKey> changed_keys, std::string_view error) {
+    std::set<std::size_t> units;
+    if (changed_keys.empty()) {
+        for (std::size_t index = 0; index < reload_units.size(); ++index) units.insert(index);
+    } else {
+        for (const auto &key : changed_keys) {
+            const auto found = units_by_dependency.find(key);
+            if (found != units_by_dependency.end()) {
+                units.insert(found->second.begin(), found->second.end());
+            }
+        }
+    }
+    for (const auto unit_index : units) {
+        for (const auto id : reload_units[unit_index].bundle_ids) {
+            bundles.get(id).log = std::string{error};
+        }
+    }
+}
+
+ShaderReloadTrackingStatus ShaderLibrary::reloadTrackingStatus() const noexcept {
+    return {reload_units.size(), unit_by_bundle.size(), units_by_dependency.size()};
+}
+
 bool ShaderLibrary::reload(ShaderBundleId id) {
     auto &current = bundles.get(id);
     if (current.source_path.empty()) {
@@ -342,64 +670,29 @@ bool ShaderLibrary::reload(ShaderBundleId id) {
     }
 
     try {
-        auto replacement = buildFromFile(current.source_path, current.version + 1, current.defines);
-        current.module = std::move(replacement.module);
-        current.reflection = std::move(replacement.reflection);
-        current.source_path = std::move(replacement.source_path);
-        current.version = replacement.version;
-        current.log = std::move(replacement.log);
-        if (const auto timestamp = lastWriteTime(current.source_path)) {
-            source_write_times[id] = *timestamp;
+        if (const auto found = unit_by_bundle.find(id); found != unit_by_bundle.end()) {
+            const auto source = reload_units[found->second].primary_source;
+            auto prepared = prepareReload(std::span{&source, std::size_t{1}});
+            const auto affected = prepared.affectedBundleIds();
+            activatePrepared(prepared);
+            finalizePrepared(prepared);
+            for (const auto affected_id : affected) markDirty(affected_id);
+        } else {
+            auto replacement = buildFromFile(current.source_path, current.version + 1,
+                                             current.defines);
+            current = std::move(replacement);
+            markDirty(id);
         }
-        markDirty(id);
         return true;
     } catch (const std::exception &ex) {
-        current.log = ex.what();
+        if (const auto found = unit_by_bundle.find(id); found != unit_by_bundle.end()) {
+            const auto source = reload_units[found->second].primary_source;
+            recordReloadFailure(std::span{&source, std::size_t{1}}, ex.what());
+        } else {
+            current.log = ex.what();
+        }
         return false;
     }
-}
-
-ShaderSourceReloadResult ShaderLibrary::pollModifiedSources(
-    std::chrono::steady_clock::time_point now) {
-    if (now < next_source_poll_time) {
-        return {};
-    }
-    next_source_poll_time = now + std::chrono::seconds{1};
-
-    ShaderSourceReloadResult result;
-    for (const auto id : bundle_ids) {
-        const auto &bundle = bundles.get(id);
-        if (bundle.source_path.empty()) {
-            continue;
-        }
-
-        const auto timestamp = lastWriteTime(bundle.source_path);
-        if (!timestamp) {
-            continue;
-        }
-
-        auto found = source_write_times.find(id);
-        if (found == source_write_times.end()) {
-            source_write_times[id] = *timestamp;
-            continue;
-        }
-        if (found->second == *timestamp) {
-            continue;
-        }
-
-        ++result.modified_bundles;
-        if (reload(id)) {
-            ++result.reloaded_bundles;
-        } else {
-            ++result.failed_bundles;
-            result.last_error = bundles.get(id).log;
-        }
-    }
-    return result;
-}
-
-size_t ShaderLibrary::reloadModifiedSources(std::chrono::steady_clock::time_point now) {
-    return pollModifiedSources(now).reloaded_bundles;
 }
 
 std::vector<ShaderBundleId> ShaderLibrary::takeDirtyBundles() {

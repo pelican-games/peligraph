@@ -2639,6 +2639,32 @@ all-hit 全順序・MTD 非一意軸・collider/filter schema** を同じ WP で
 7. 受け入れ = pure/PhysWorld/service fixture + 3 構成 build/CTest + provider DLL
    E2E + public API link + `git diff --check`
 
+### WP108: アセット HR2-S — shader/surface dependency transaction
+
+参照: **`design_asset_hot_reload.md` v2.1 §3-2・§4・§7 HR2-S 行が正**。
+受入条件 = 再レビュー HR-C4-2/3 の **ShaderLibrary 時刻 poll 撤去・単一
+FileWatcher 経路・実 `.surface + .material.json` cross-file atomic fixture**。
+基盤 = WP82/96/98/105(済)。状態: **完了(2026-07-15)**。
+
+1. `ShaderCompileResult` に source graph の物理 dependency を保持し、
+   `ShaderLibrary` で project/mounted-store の `AssetKey` へ変換する。
+   root/include/.surface から reload unit と全 define/pass variant を逆引きする
+2. 1 秒 mtime poll を撤去し、`ReloadService` の `pelican.shaders` を file-backed
+   participant 化。同一 watcher frame の shader/material request を一つの batch
+   result にまとめ、成功した digest だけを commit する
+3. 全 affected bundle を prepare した後、`PipelineFactory` が依存 pipeline を
+   全 candidate 構築する。途中失敗は candidate のみ破棄し、旧 bundle/pipeline
+   を維持。成功時の旧 pipeline/layout は `DeletionQueue` へ送る
+4. `.surface` parameter layout 変更時は依存 `.material.json` を再 parse/lowerし、
+   shader/pipeline/material values と registry compatibility revision を同じ
+   publication で更新する。peer のどれかが不正なら全体を rollbackする
+5. status に watcher source、追跡 unit/bundle/dependency、cache hit/miss を公開。
+   renderer は render-start で commit 通知だけを consumeして fullscreen descriptor
+   を rebindする
+6. fixture: root/include/.surface 全 variant、cache hit/miss、compile/material failure
+   rollback、cross-file layout update、in-flight old pipeline、batch digest retry、
+   runtime architecture。詳細は `docs/design_reviews/2026-07-15_wp108_report.md`
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの
@@ -2672,7 +2698,7 @@ all-hit 全順序・MTD 非一意軸・collider/filter schema** を同じ WP で
 - **OpenXR トラック**: **2026-07-07 に推進決定**。入力(アクション層・pose 型)は準備済み。残り = ①ランタイム統合(xrWaitFrame とループ主導権・EngineTime 統合)②描画(フレームグラフに view 次元 = multiview、XrFrameTarget を IFrameTarget の第 3 実装として追加)③PELICAN_WITH_OPENXR ユニット必須・ヘッドセットなし環境のテスト戦略。設計文書を書いてから WP 化
 - **bindless バックエンド**: 2026-07-08 方向決定 — classic(set 2)と併用(`design_material_shading.md` §3-5)。生成アクセサが差を吸収、M2 のデータ形(SSBO + 参照)が前提工事。実装は M2 の後・GPU 駆動系(WP36 パーティクル・大規模シーン)の需要と同時に WP 化。**web/モバイルの床に PC を縛らせない**(web は将来やるとしてもシンプルな 3D/2D — ユーザー確認)
 - **web ビルド(WASM)**: 将来の可能性としてのみ保持(2026-07-08)。守るべき不変条件は全部現行規律(純ロジック規律・データ契約が抽象・classic 床・dist-bake/WGSL レーン)— 特別な保全作業なし。進めるときは案 B(WASM ゲームコア + TS レンダラ接合)→ 案 A(C++ WebGPU 実行系、データ契約の兄弟執行器)。**RHI の後付けは禁止**(本体の C++ インターフェースへの制約源にしない)
-- **アセットホットリロード**: v1 は敵対レビュー(2026-07-12 `docs/design_reviews/2026-07-12_anim_v2_hotreload_review_codex.md` §6-9)で **Reject** — Watcher の overflow/復帰プロトコル欠落・WP82 hash 流用は不成立・WP62 EntityId の取り違え・GPU resource に replace/rollback 面なし。**v2 へ再起草中**(レビュー §9 の HR0(watch/reconcile)→ HR1(identity/transaction)→ HR1-T/M → HR2-S/G/I 分割が骨格。シェーダは新規でなく既存 `ShaderLibrary::reloadModifiedSources` poll の移行)。確定規約 2 件(リプレイ中無効・自己書き込みハッシュ無視)は維持だが自己書き込みは `(AssetKey, hash, epoch)` トークン式に強化
+- **アセットホットリロード**: v2 の HR0/HR1/HR1-T/HR1-M/HR2-S(WP108)まで完了。確定規約(リプレイ/strict/rpc 中無効・自己書き込み `(AssetKey, hash, epoch)` token)と単一 FileWatcher 経路を維持する。残りは HR2-G(model/fragment)と HR2-I(input/profile)
 - **イベント層**: `design_event_layer.md` v1 ドラフト(2026-07-08)。**API 意味論(emit/購読の書き味・フレーム境界配送)のユーザーレビューを経てから E1 を WP 化**。E2(物理トリガー)は E1 後
 - **永続化(user:// + 設定/セーブ)**: `design_persistence.md` v1 ドラフト(2026-07-08)。**user:// スキーム追加 = [PF] v6.3 の凍結改訂が必要 — ユーザー承認待ち**。承認後 P1 を WP 化
 - **[PF] v6.3 改訂案(一括)**: ①user://(persistence)②asset store マウント + .pelican/local.json(`design_project_vcs.md`)③#フラグメント参照(`design_asset_containers.md`)。**3 点まとめてユーザー承認を取り、1 回の版数改訂で凍結文書へ反映**。承認後の WP: P1 / V1〜V3 / K1〜K4

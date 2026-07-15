@@ -520,11 +520,26 @@ void FileWatcher::registerSelfWrite(const AssetKey &key, std::string expected_di
 }
 
 std::size_t FileWatcher::applyFrame(const ReloadHandler &fake_handler) {
+    return applyFrameBatch([&](std::span<const ReloadRequest> requests) {
+        std::vector<bool> results;
+        results.reserve(requests.size());
+        for (const auto &request : requests) results.push_back(fake_handler(request));
+        return results;
+    });
+}
+
+std::size_t FileWatcher::applyFrameBatch(const BatchReloadHandler &handler) {
     const auto gate = impl_->gate();
     if (!gate.enabled) { impl_->queue.discardAll(); return 0; }
     auto requests = impl_->queue.takeForFrame(gate.epoch);
-    for (const auto &request : requests) {
-        if (fake_handler(request)) impl_->digests.commitSucceeded(request.key, request.digest);
+    if (requests.empty()) return 0;
+    auto results = handler(requests);
+    if (results.size() != requests.size()) {
+        results.assign(requests.size(), false);
+    }
+    for (std::size_t index = 0; index < requests.size(); ++index) {
+        const auto &request = requests[index];
+        if (results[index]) impl_->digests.commitSucceeded(request.key, request.digest);
         else impl_->digests.commitFailed(request.key);
     }
     return requests.size();

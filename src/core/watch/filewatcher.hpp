@@ -11,6 +11,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <thread>
 #include <vector>
@@ -49,6 +50,8 @@ class FileWatcher {
     using Clock = std::chrono::steady_clock;
     using GateProvider = std::function<ReloadGateSnapshot()>;
     using BeforeScanHook = std::function<void()>;
+    using BatchReloadHandler =
+        std::function<std::vector<bool>(std::span<const ReloadRequest>)>;
 
     FileWatcher(std::vector<WatchStore> stores, GateProvider gate,
                 FileWatcherOptions options = {});
@@ -64,6 +67,7 @@ class FileWatcher {
     void registerSelfWrite(const AssetKey &key, std::string expected_digest,
                            std::uint64_t epoch, bool runtime_apply_succeeded);
     std::size_t applyFrame(const ReloadHandler &fake_handler);
+    std::size_t applyFrameBatch(const BatchReloadHandler &handler);
 
     // Deterministic and integration-test controls. Both synthetic overflow
     // forms share the same full-inventory recovery path.

@@ -2,6 +2,7 @@
 #include "../src/core/shader/pelican_sets.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <array>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -23,6 +24,12 @@ void writeText(const std::filesystem::path &path, std::string_view text) {
     std::filesystem::create_directories(path.parent_path());
     std::ofstream file{path, std::ios_base::binary};
     file << text;
+}
+
+std::string readText(const std::filesystem::path &path) {
+    std::ifstream file{path, std::ios_base::binary};
+    if (!file.is_open()) throw std::runtime_error("failed to open fixture: " + path.string());
+    return {std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
 }
 
 nlohmann::json readJson(const std::filesystem::path &path) {
@@ -227,47 +234,90 @@ TEST_CASE("shader library accepts GLSL source files when runtime compiler is ena
 #endif
 }
 
-TEST_CASE("shader library polls modified source files on a fixed interval", "[shader]") {
-    const auto work_dir = sourceRoot() / "build/test_artifacts/pelican_shader_library_poll_test";
-    std::filesystem::remove_all(work_dir);
-    REQUIRE(std::filesystem::create_directories(work_dir));
-    const auto shader_path = work_dir / "poll.vert.spv";
-    std::filesystem::copy_file(sourceRoot() / "src/core/resources/fullscreen.vert.spv", shader_path);
+TEST_CASE("shader library tracks watcher keys and reloads every include and surface variant atomically",
+          "[shader][hot-reload][hr2-s]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    FastModuleContainer modules;
+    ShaderSandbox sandbox;
+    GET_MODULE(PathResolver).setup(sandbox.root, false);
+
+    const auto include_path = sandbox.root / "shaders" / "include" / "reload_common.glsl";
+    const auto shader_path = sandbox.root / "shaders" / "reload.vert";
+    writeText(include_path, "vec4 reload_offset() { return vec4(0.0); }\n");
+    writeText(shader_path,
+              "#version 450\n"
+              "#extension GL_GOOGLE_include_directive : enable\n"
+              "#include \"include/reload_common.glsl\"\n"
+              "layout(location = 0) in vec3 inPosition;\n"
+              "void main() { gl_Position = vec4(inPosition, 1.0) + reload_offset(); }\n");
 
     ShaderLibrary library{ShaderLibraryModuleMode::reflection_only};
-    const auto id = library.loadFromFile(shader_path);
-    const auto start = std::chrono::steady_clock::now();
+    const auto variant_a = library.loadFromFile(shader_path, {"RELOAD_VARIANT_A"});
+    const auto variant_b = library.loadFromFile(shader_path, {"RELOAD_VARIANT_B"});
+    const auto root_key = watch::makeAssetKey("shaders/reload.vert");
+    const auto include_key = watch::makeAssetKey("shaders/include/reload_common.glsl");
+    REQUIRE(library.handlesReload(root_key));
+    REQUIRE(library.handlesReload(include_key));
+    REQUIRE(library.reloadTrackingStatus().units == 2);
 
-    REQUIRE(library.reloadModifiedSources(start) == 0);
-    REQUIRE(library.get(id).version == 1);
+    writeText(include_path, "vec4 reload_offset() { return vec4(0.25, 0.0, 0.0, 0.0); }\n");
+    const std::array include_change{include_key};
+    const auto first_prepare = library.prepareReload(include_change);
+    REQUIRE(first_prepare.candidates.size() == 2);
+    REQUIRE(first_prepare.cache_misses == 2);
+    REQUIRE(library.get(variant_a).version == 1);
+    REQUIRE(library.get(variant_b).version == 1);
+    const auto cached_prepare = library.prepareReload(include_change);
+    REQUIRE(cached_prepare.cache_hits == 2);
 
-    const auto previous_write_time = std::filesystem::last_write_time(shader_path);
-    std::filesystem::last_write_time(shader_path, previous_write_time + std::chrono::seconds{2});
-
-    REQUIRE(library.reloadModifiedSources(start + std::chrono::milliseconds{500}) == 0);
-    REQUIRE(library.get(id).version == 1);
-
-    const auto successful = library.pollModifiedSources(start + std::chrono::seconds{2});
-    REQUIRE(successful.modified_bundles == 1);
-    REQUIRE(successful.reloaded_bundles == 1);
-    REQUIRE(successful.failed_bundles == 0);
-    REQUIRE(library.get(id).version == 2);
-    const auto dirty = library.takeDirtyBundles();
-    REQUIRE(dirty.size() == 1);
-    REQUIRE(dirty[0] == id);
-
-    const auto successful_write_time = std::filesystem::last_write_time(shader_path);
-    writeText(shader_path, "not valid SPIR-V");
-    std::filesystem::last_write_time(shader_path,
-                                     successful_write_time + std::chrono::seconds{2});
-    const auto failed = library.pollModifiedSources(start + std::chrono::seconds{4});
-    REQUIRE(failed.modified_bundles == 1);
-    REQUIRE(failed.reloaded_bundles == 0);
-    REQUIRE(failed.failed_bundles == 1);
-    REQUIRE_FALSE(failed.last_error.empty());
-    REQUIRE(library.get(id).version == 2);
+    REQUIRE(library.reload(variant_a));
+    REQUIRE(library.get(variant_a).version == 2);
+    REQUIRE(library.get(variant_b).version == 2);
+    REQUIRE(library.takeDirtyBundles().size() == 2);
+    writeText(include_path, "this is not valid GLSL\n");
+    REQUIRE_FALSE(library.reload(variant_a));
+    REQUIRE(library.get(variant_a).version == 2);
+    REQUIRE(library.get(variant_b).version == 2);
     REQUIRE(library.takeDirtyBundles().empty());
-    std::filesystem::remove_all(work_dir);
+
+    const auto surface_path = sandbox.root / "shaders" / "reload.surface";
+    const std::string initial_surface =
+        "//! pelican.surface v1\n"
+        "//! language: glsl\n"
+        "//! params:\n"
+        "//!   - { name: scalar, type: float, default: 1.0 }\n\n"
+        "void pelican_surface_v1(in PelicanSurfaceInputV1 i, inout PelicanSurfaceV1 s) {}\n";
+    writeText(surface_path, initial_surface);
+    const auto surface = parseSurfaceFormat(readText(surface_path),
+                                            "project://shaders/reload.surface");
+    const auto surface_a = library.loadFromSurface(
+        surface, "project://shaders/reload.surface", SurfacePass::main,
+        {"RELOAD_SURFACE_A"});
+    const auto surface_b = library.loadFromSurface(
+        surface, "project://shaders/reload.surface", SurfacePass::main,
+        {"RELOAD_SURFACE_B"});
+    const auto surface_key = watch::makeAssetKey("shaders/reload.surface");
+    REQUIRE(library.handlesReload(surface_key));
+    REQUIRE(library.get(surface_a.vertex).source_path == surface_path);
+    REQUIRE(library.get(surface_a.fragment).source_path == surface_path);
+
+    writeText(surface_path, initial_surface + "\n// surface generation two\n");
+    REQUIRE(library.reload(surface_a.vertex));
+    for (const auto id : {surface_a.vertex, surface_a.fragment,
+                          surface_b.vertex, surface_b.fragment}) {
+        REQUIRE(library.get(id).version == 2);
+    }
+    REQUIRE(library.takeDirtyBundles().size() == 4);
+
+    writeText(surface_path,
+              "//! pelican.surface v1\n//! language: glsl\n\n"
+              "void pelican_surface_v1(in PelicanSurfaceInputV1 i, inout PelicanSurfaceV1 s) { broken }\n");
+    REQUIRE_FALSE(library.reload(surface_a.fragment));
+    for (const auto id : {surface_a.vertex, surface_a.fragment,
+                          surface_b.vertex, surface_b.fragment}) {
+        REQUIRE(library.get(id).version == 2);
+    }
+#endif
 }
 
 } // namespace Pelican

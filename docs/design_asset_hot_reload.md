@@ -13,6 +13,10 @@ dependency transaction group / platform fixture / HR0-HR2 再分割)を反映し
 「再レビュー」)で条件付き受理 — **HR0/HR1 着手は HR-C1〜C4 を各 WP の
 受入条件に添付することが条件**。v2.1 = その 4 条件の正本反映(§2-1a・
 §3-1a・§2-4・§7 の gate 追記)。
+実装状況: **HR2-S は WP108(2026-07-15)で完了**。以下の規範どおり、
+shader の独自 mtime poll は撤去され、FileWatcher/ContentDigest の単一路、
+source/include/.surface reverse dependency、全 variant/pipeline/material layout の
+group-wide transaction が実装された。
 前提: 確定規約 2 件(2026-07-08 ユーザー決定 — ①リプレイ/strict/rpc 駆動中は
 ホットリロード無効 ②エディタの自己書き込みは無視)、「ファイルが唯一の
 真実」(devstudio D3 の実行基盤を兼ねる)、WP82(シェーダキャッシュ)、
@@ -213,7 +217,7 @@ append — リロード反復で 1024 上限に到達)。よって種別ハン�
 |------|---------|------|----|
 | テクスチャ(独立画像 / KTX2) | 同 shape は in-place 再アップロード(logical `GlobalTextureId` 不変)。shape/format/mip 変化は image 再生成 + **参照中の全 material descriptor set を reverse index で再バインド** | HR1(descriptor は material 登録時に書かれるため逆引き必須) | HR1-T |
 | material values(.material.json) | 再 parse/lower → 同 layout なら SSBO update API(新設 — 現行は登録時一回書きのみ)。surface layout が変わる場合は transaction group(§4)へ昇格 | HR1 | HR1-M |
-| .surface / シェーダ | **新規実装ではない** — `ReloadService` の `pelican.shaders` runtime participant が render 境界で `ShaderLibrary` の 1s mtime poll・candidate build → bundle swap・失敗時旧継続と `PipelineFactory` の candidate replace/旧 pipeline 継続を統一 status 経由で駆動する。HR2-S ではこれを FileWatcher/ContentDigest へ**移行**し二重監視を除去。`.surface` 由来 bundle が source path 空で poll 対象外な穴・include のみの変更が発火しない穴を reverse dependency で塞ぐ。全 variant compile/reflect・pipeline candidate 完了後に一括 swap | HR1 | HR2-S |
+| .surface / シェーダ | `FileWatcher`/`ContentDigest` が source/include/.surface の `AssetKey` を一括供給し、`ShaderLibrary` の reverse dependency から全 variant を prepare。`PipelineFactory` が依存 pipeline を全て構築し、必要なら material values/layout も同じ candidate に加え、全成功後だけ一括 publish。失敗時は旧 bundle/pipeline/material を継続し、旧 GPU pipeline/layout は `DeletionQueue` へ送る。独自 mtime poll は持たない | HR1 | HR2-S(WP108 済) |
 | モデル(glb / フラグメント) | CPU candidate(PreparedGltf)→ GPU staged commit(§4)→ 参照中 instance の in-place rebuild。ECS EntityId・Transform・physics は不変のまま render commands / skinning binding を差し替え。**rig layout 変化時は animation cursor/snapshot を generation error → reset、WP88 temporal history も reset**(previous=current で zero velocity — anim 設計書 §1-5 と同じ規則)。container 1 個の変更でそれを参照する全 fragment template を再評価 | HR1 | HR2-G |
 | input_actions / プロファイル | 再パース candidate → フレーム境界 swap。held input / consume の扱いを fixture 化 | HR0 | HR2-I |
 | pelican.ui | U3 の hot reload トランザクションに委譲 — ただし **HR0 の AssetKey/epoch/reconcile 契約は共有**(UI 独自 watcher を作らない) | HR0 | U3 合流 |
@@ -317,7 +321,7 @@ resource handler suite(HR1 以降・GPU あり)は別に:
 | **HR1 Identity/Transaction** | canonical AssetKey・logical resource generation・reverse dependency index(§3-1)・CPU candidate/GPU staged commit(§4)・DeletionQueue 接続・status schema(§5) | candidate 失敗で global counts/IDs/live bytes 不変。old/new generation と dependency group の fixture | HR0 |
 | **HR1-T Texture** | texture replace(同 shape upload / shape・format・mip 変化の再生成)+ 全 descriptor rebind | 同 GlobalTextureId 維持・1000 reload leak なし・KTX2 mip/format fixture | HR1 |
 | **HR1-M Values** | .material.json 再 parse/lower・同 layout SSBO update・surface layout 変化は transaction group | WP76 layout fixture 再利用・旧 values 継続・二体/material 単位更新 | HR1 |
-| **HR2-S Surface/Shader** | 既存 ShaderLibrary poll の移行・include/source reverse dependency(WP82 source graph と同じ入力集合)・全 variant/pipeline transaction | root/include/.surface edit・compile 失敗で旧絵・cache hit/miss・in-flight 旧 pipeline | HR1 |
+| **HR2-S Surface/Shader** | FileWatcher への移行・include/source reverse dependency(WP82 source graph と同じ入力集合)・全 variant/pipeline/material-layout transaction | root/include/.surface edit・compile 失敗で旧絵・cache hit/miss・in-flight 旧 pipeline・cross-file rollback | HR1・**WP108 完了** |
 | **HR2-G Model/Fragment** | ModelAsset/Instance generation・fragment reverse index・staged GLTF GPU commit・live instance in-place rebuild・animation/temporal reset | WP77 fragment 全種・複数 instance・rig 変化・1000 reload・failure rollback | HR1 |
 | **HR2-I Input** | input_actions/profile の candidate + フレーム境界 swap | held input/consume policy・invalid candidate rollback・gate epoch | HR0 |
 
@@ -328,8 +332,8 @@ UI(U3)は HR0 の AssetKey/epoch/reconcile 契約だけを共有して独立に�
 1. `get_status.reload` の **watcher state/epoch/error 部分は HR0 が所有**。
    HR1 は resource counters/errors を additive に拡張する
 2. HR0 完了時に現 `EngineLaunchConfig::shader_hot_reload` を centralized
-   gate の adapter 化。HR2-S 完了時に `reloadModifiedSources` の時刻 poll
-   を削除 — **二経路が同じ shader を同時 apply できる中間状態を作らない**
+   gate の adapter 化。HR2-S(WP108)で ShaderLibrary の時刻 poll を削除済み。
+   **FileWatcher 以外の経路から同じ shader を自動 apply しない**
 3. HR1-M 単体 gate は same-layout update + fake dependency actor まで。
    実 `.surface + .material.json` の cross-file atomic fixture は
    **HR2-S の exit gate** に置く

@@ -18,6 +18,10 @@ struct ShaderCompileResult {
     bool ok = false;
     bool cache_hit = false;
     std::string cache_key;
+    // Canonical physical files that participated in the source graph. The
+    // root file is included by compileFile(); embedded and virtual sources
+    // deliberately stay out of this list.
+    std::vector<std::filesystem::path> dependencies;
 };
 
 struct ShaderCompileOptions {

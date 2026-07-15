@@ -337,20 +337,23 @@ graphics pipeline 作成は次の順です。
 hot reload の流れは次です。
 
 ```text
-Renderer::render()
-  -> ShaderLibrary::reloadModifiedSources()  // 最大1秒に1回poll
-      -> 新bundleを一時構築
-      -> 成功したときだけ現bundleを置換しdirty化
-      -> 失敗なら旧bundleを維持しlogを保存
-  -> PipelineFactory::rebuildDirty()
-      -> dirty shaderを参照するpipelineだけ再構築
-      -> 成功時だけhandleの中身を置換
-      -> fullscreen input descriptorをrebind
+FileWatcher / ContentDigest (frame start)
+  -> ReloadService::applyRequests()          // 同フレームの変更をbatch化
+  -> ShaderLibrary::prepareReload()
+      -> root/include/.surface reverse dependencyを解決
+      -> 影響する全variantをcompile/reflectするがlive bundleは未変更
+  -> PipelineFactory::rebuildPrepared()
+      -> 依存pipelineを全てcandidate構築
+      -> 必要なら.surface + .material.jsonのlayout/valuesもprepare
+      -> 全成功時だけbundle/pipeline/materialを一括publish
+      -> 失敗時はcandidateだけ破棄し旧世代を維持
+Renderer::render() (render start)
+  -> publish通知をconsumeしfullscreen input descriptorをrebind
 ```
 
-shader の transactional な置換は [`ShaderLibrary::reload()`](../../src/core/shader/shaderlibrary.cpp#L293)、pipeline の transactional な再構築は [`PipelineFactory::rebuildDirty()`](../../src/core/shader/pipelinefactory.cpp#L424) です。compile error で画面を即座に壊さず、最後に成功した object を残す設計です。
+shader candidate は [`ShaderLibrary::prepareReload()`](../../src/core/shader/shaderlibrary.cpp)、group-wide な pipeline publish は [`PipelineFactory::rebuildPrepared()`](../../src/core/shader/pipelinefactory.cpp) が担当します。compile error、pipeline 作成失敗、material peer の検証失敗のいずれでも、最後に成功した世代を残します。cache hit/miss と追跡中の unit/bundle/dependency 数は `get_status.reload.runtime.pelican.shaders.details` から確認できます。
 
-埋め込み source/SPIR-V は `source_path` が空なので file timestamp を追えず、hot reload 対象外です。
+`engine://` の埋め込み source/SPIR-V は物理 `AssetKey` を持たないため自動 reload 対象外です。project/mounted-store 上の GLSL、SPIR-V、`.surface` は FileWatcher の対象です。
 
 ## 6.11 GPU resource の遅延破棄
 

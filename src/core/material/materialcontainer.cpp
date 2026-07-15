@@ -587,6 +587,14 @@ void MaterialContainer::registerReloadableMaterialValuesFile(
     material_values_reload_handler->track(key, path, std::move(surfaces), bindings);
 }
 
+std::function<void()> MaterialContainer::prepareSurfaceMaterialReload(
+    const std::map<watch::AssetKey, SurfaceFormatDocument> &surface_documents,
+    std::span<const watch::AssetKey> material_documents) {
+    if (!material_values_reload_handler) return {};
+    return material_values_reload_handler->prepareSurfaceReload(
+        surface_documents, material_documents);
+}
+
 bool MaterialContainer::textureShapeMatches(GlobalTextureId texture,
                                             const LoadedImage &image) const {
     const auto &live = textures.get(texture).image;

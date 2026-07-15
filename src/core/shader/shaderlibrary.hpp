@@ -8,12 +8,16 @@
 #include "../container.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../resourcecontainer.hpp"
-#include <chrono>
+#include "../watch/assetkey.hpp"
 #include <filesystem>
+#include <map>
+#include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <variant>
 #include <vector>
 #include <vulkan/vulkan.hpp>
 
@@ -30,6 +34,8 @@ struct ShaderBundle {
     std::string log;
     std::vector<SpvLinkBinding> binding_table;
     std::string cache_key;
+    bool cache_hit = false;
+    std::vector<std::filesystem::path> dependency_paths;
 };
 
 struct SurfaceShaderBundleIds {
@@ -37,11 +43,27 @@ struct SurfaceShaderBundleIds {
     ShaderBundleId fragment;
 };
 
-struct ShaderSourceReloadResult {
-    size_t modified_bundles = 0;
-    size_t reloaded_bundles = 0;
-    size_t failed_bundles = 0;
-    std::string last_error;
+struct PreparedShaderBundle {
+    ShaderBundleId id;
+    ShaderBundle replacement;
+    std::size_t reload_unit = 0;
+};
+
+struct PreparedShaderReload {
+    std::vector<PreparedShaderBundle> candidates;
+    std::map<watch::AssetKey, SurfaceFormatDocument> surface_documents;
+    std::vector<watch::AssetKey> changed_keys;
+    std::size_t cache_hits = 0;
+    std::size_t cache_misses = 0;
+
+    bool empty() const noexcept { return candidates.empty(); }
+    std::vector<ShaderBundleId> affectedBundleIds() const;
+};
+
+struct ShaderReloadTrackingStatus {
+    std::size_t units = 0;
+    std::size_t bundles = 0;
+    std::size_t dependencies = 0;
 };
 
 enum class ShaderLibraryModuleMode {
@@ -50,11 +72,32 @@ enum class ShaderLibraryModuleMode {
 };
 
 DECLARE_MODULE(ShaderLibrary) {
+    friend class PipelineFactory;
+
+    struct FileReloadRecipe {
+        std::filesystem::path path;
+        std::vector<std::string> defines;
+    };
+    struct SurfaceReloadRecipe {
+        std::filesystem::path path;
+        watch::AssetKey source;
+        std::string source_name;
+        SurfacePass pass = SurfacePass::main;
+        std::vector<std::string> defines;
+    };
+    struct ReloadUnit {
+        std::variant<FileReloadRecipe, SurfaceReloadRecipe> recipe;
+        std::vector<ShaderBundleId> bundle_ids;
+        watch::AssetKey primary_source;
+        std::vector<watch::AssetKey> dependencies;
+    };
+
     ResourceContainer<ShaderBundleId, ShaderBundle> bundles;
     std::vector<ShaderBundleId> bundle_ids;
     std::vector<ShaderBundleId> dirty_bundles;
-    std::unordered_map<ShaderBundleId, std::filesystem::file_time_type, ShaderBundleId::Hash> source_write_times;
-    std::chrono::steady_clock::time_point next_source_poll_time{};
+    std::vector<ReloadUnit> reload_units;
+    std::unordered_map<ShaderBundleId, std::size_t, ShaderBundleId::Hash> unit_by_bundle;
+    std::map<watch::AssetKey, std::vector<std::size_t>> units_by_dependency;
     ShaderLibraryModuleMode module_mode = ShaderLibraryModuleMode::create_modules;
     mutable ShaderCompiler compiler;
 
@@ -71,6 +114,27 @@ DECLARE_MODULE(ShaderLibrary) {
                                          const std::vector<std::string> &defines);
     ShaderBundleId loadFromStemReference(const ShaderReference &reference, const PathResolver &resolver,
                                          const std::vector<std::string> &defines = {});
+    std::optional<watch::AssetKey> logicalKeyForPath(const std::filesystem::path &path) const;
+    std::optional<std::pair<std::filesystem::path, watch::AssetKey>>
+    resolveReloadableSurface(std::string_view source_name) const;
+    std::vector<watch::AssetKey>
+    logicalDependencies(const ShaderBundle &bundle,
+                        std::optional<watch::AssetKey> primary = std::nullopt) const;
+    void registerFileReloadUnit(ShaderBundleId id, const ShaderBundle &bundle,
+                                std::vector<std::string> defines);
+    void registerSurfaceReloadUnit(SurfaceShaderBundleIds ids,
+                                   const ShaderBundle &vertex_bundle,
+                                   const ShaderBundle &fragment_bundle,
+                                   std::filesystem::path path,
+                                   watch::AssetKey source,
+                                   std::string source_name,
+                                   SurfacePass pass,
+                                   std::vector<std::string> defines);
+    void rebuildReverseDependencies();
+    PreparedShaderReload prepareUnits(const std::set<std::size_t> &units,
+                                      std::vector<watch::AssetKey> changed_keys) const;
+    void activatePrepared(PreparedShaderReload &prepared);
+    void finalizePrepared(const PreparedShaderReload &prepared);
     void markDirty(ShaderBundleId id);
 
   public:
@@ -88,9 +152,12 @@ DECLARE_MODULE(ShaderLibrary) {
     const ShaderBundle &get(ShaderBundleId id) const;
 
     bool reload(ShaderBundleId id);
-    ShaderSourceReloadResult pollModifiedSources(
-        std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
-    size_t reloadModifiedSources(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
+    bool handlesReload(const watch::AssetKey &key) const;
+    PreparedShaderReload prepareReload(std::span<const watch::AssetKey> changed_keys) const;
+    PreparedShaderReload prepareReloadAll() const;
+    void recordReloadFailure(std::span<const watch::AssetKey> changed_keys,
+                             std::string_view error);
+    ShaderReloadTrackingStatus reloadTrackingStatus() const noexcept;
     std::vector<ShaderBundleId> takeDirtyBundles();
 };
 

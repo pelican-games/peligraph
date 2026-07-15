@@ -57,7 +57,6 @@ struct SpriteRenderModules {
 };
 
 struct ShaderHotReloadModules {
-    watch::ReloadGate &gate;
     watch::ReloadService *reload_service = nullptr;
 };
 
@@ -105,16 +104,19 @@ SpriteRenderModules resolveSpriteRenderModules(const RenderingPassContainer &ren
 ShaderHotReloadModules resolveShaderHotReloadModules() {
     auto &gate = GET_MODULE(watch::ReloadGate);
     // EngineLaunchConfig remains a compatibility adapter. Syncing here keeps
-    // direct renderer fixtures and legacy embedders on the centralized gate,
-    // without changing ShaderLibrary's polling implementation.
+    // direct renderer fixtures and legacy embedders on the centralized gate.
     gate.configureFromLaunch(GET_MODULE(EngineLaunchConfig));
-    if (!gate.shaderPollEnabled()) return {gate, nullptr};
+    if (!gate.shaderReloadEnabled()) {
+        // A publication committed at frame start still has to be consumed if
+        // a dynamic determinism gate closes before render start.
+        return {FastModuleContainer::tryGet<watch::ReloadService>()};
+    }
 
     // The composition root creates the domain modules. ReloadService then
     // invokes them through the shared runtime-participant boundary.
     (void)GET_MODULE(ShaderLibrary);
     (void)GET_MODULE(PipelineFactory);
-    return {gate, &GET_MODULE(watch::ReloadService)};
+    return {&GET_MODULE(watch::ReloadService)};
 }
 
 DeletionQueue &resolveFrameDeletionQueue() {
@@ -804,8 +806,8 @@ void rebindFullscreenInputs(RenderFrameModules &modules) {
     }
 }
 
-bool reloadModifiedShaderSources(ShaderHotReloadModules &modules) {
-    return modules.gate.shaderPollEnabled() && modules.reload_service != nullptr &&
+bool consumeShaderReloadPublication(ShaderHotReloadModules &modules) {
+    return modules.reload_service != nullptr &&
            modules.reload_service
                    ->applyRuntimeBoundary(watch::RuntimeReloadBoundary::render_start)
                    .committed != 0;
@@ -897,7 +899,7 @@ void Renderer::render() {
 
     auto modules = resolveRenderFrameModules();
     auto shader_hot_reload = resolveShaderHotReloadModules();
-    if (reloadModifiedShaderSources(shader_hot_reload)) {
+    if (consumeShaderReloadPublication(shader_hot_reload)) {
         rebindFullscreenInputs(modules);
     }
     auto &engine_time = resolveFrameEngineTime();

@@ -489,6 +489,103 @@ const ShaderReflection &PipelineFactory::reflection(PipelineHandle handle) const
     return pipelines.get(handle).reflection;
 }
 
+PipelineRebuildResult PipelineFactory::rebuildPrepared(
+    PreparedShaderReload prepared, const std::function<void()> &before_publish) {
+    const auto affected_shaders = prepared.affectedBundleIds();
+    PipelineRebuildResult result{.dirty_shaders = affected_shaders.size()};
+    if (affected_shaders.empty()) return result;
+
+    struct PreparedPipeline {
+        PipelineHandle handle;
+        PipelineRecord replacement;
+    };
+    std::vector<DescriptorSetLayoutKey> original_layout_keys;
+    original_layout_keys.reserve(descriptor_set_layout_cache.size());
+    for (const auto &[key, layout] : descriptor_set_layout_cache) {
+        (void)layout;
+        original_layout_keys.push_back(key);
+    }
+    const auto discard_new_layouts = [&] {
+        for (auto it = descriptor_set_layout_cache.begin();
+             it != descriptor_set_layout_cache.end();) {
+            if (std::find(original_layout_keys.begin(), original_layout_keys.end(), it->first) ==
+                original_layout_keys.end()) {
+                it = descriptor_set_layout_cache.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    };
+
+    std::vector<PreparedPipeline> replacements;
+    shader_library.activatePrepared(prepared);
+    try {
+        for (const auto handle : pipeline_handles) {
+            const auto &record = pipelines.get(handle);
+            if (!pipelineUsesShader(record.desc, affected_shaders)) continue;
+            ++result.attempted_pipelines;
+            auto replacement = std::visit(
+                [this](const auto &pipeline_desc) {
+                    using Desc = std::decay_t<decltype(pipeline_desc)>;
+                    if constexpr (std::is_same_v<Desc, GraphicsPipelineDesc>) {
+                        return buildGraphicsPipeline(pipeline_desc);
+                    } else {
+                        return buildComputePipeline(pipeline_desc);
+                    }
+                },
+                record.desc);
+            replacements.push_back({handle, std::move(replacement)});
+        }
+    } catch (const std::exception &error) {
+        replacements.clear();
+        shader_library.activatePrepared(prepared);
+        discard_new_layouts();
+        result.failed_pipelines = std::max<std::size_t>(1, result.attempted_pipelines);
+        result.last_error = error.what();
+        LOG_WARNING(logger,
+                    "Shader/pipeline transaction failed; keeping the previous generation: {}",
+                    error.what());
+        return result;
+    } catch (...) {
+        replacements.clear();
+        shader_library.activatePrepared(prepared);
+        discard_new_layouts();
+        result.failed_pipelines = std::max<std::size_t>(1, result.attempted_pipelines);
+        result.last_error = "unknown pipeline candidate failure";
+        LOG_WARNING(logger,
+                    "Shader/pipeline transaction failed; keeping the previous generation");
+        return result;
+    }
+    // Candidate pipeline creation is complete. Restore the live shader table
+    // while the cross-domain material candidate commits.
+    shader_library.activatePrepared(prepared);
+
+    try {
+        if (before_publish) before_publish();
+    } catch (const std::exception &error) {
+        replacements.clear();
+        discard_new_layouts();
+        result.failed_pipelines = 1;
+        result.last_error = error.what();
+        return result;
+    } catch (...) {
+        replacements.clear();
+        discard_new_layouts();
+        result.failed_pipelines = 1;
+        result.last_error = "unknown cross-domain shader reload failure";
+        return result;
+    }
+
+    shader_library.activatePrepared(prepared);
+    shader_library.finalizePrepared(prepared);
+    for (auto &replacement : replacements) {
+        replacePipeline(replacement.handle, std::move(replacement.replacement));
+        ++result.rebuilt_pipelines;
+    }
+    result.committed = true;
+    return result;
+}
+
 PipelineRebuildResult PipelineFactory::rebuildDirty() {
     const auto dirty_shaders = shader_library.takeDirtyBundles();
     PipelineRebuildResult result{.dirty_shaders = dirty_shaders.size()};
@@ -522,6 +619,7 @@ PipelineRebuildResult PipelineFactory::rebuildDirty() {
             LOG_WARNING(logger, "Pipeline hot reload failed; keeping previous pipeline: {}", ex.what());
         }
     }
+    result.committed = result.failed_pipelines == 0;
     return result;
 }
 

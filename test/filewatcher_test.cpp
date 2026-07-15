@@ -147,6 +147,42 @@ TEST_CASE("ReloadQueue merges an asset and publishes only at a matching frame ep
     REQUIRE(queue.size() == 0);
 }
 
+TEST_CASE("FileWatcher batch commits each digest only with its transaction result",
+          "[hr2-s][watcher][batch]") {
+    Sandbox box;
+    writeText(box.root / "accepted.txt", "v1");
+    writeText(box.root / "rejected.txt", "v1");
+    GateFixture gate;
+    FileWatcherOptions options;
+    options.manual_clock = true;
+    options.poll_interval = 20ms;
+    options.watch_arm_override = [](const WatchStore &, unsigned) { return false; };
+    FileWatcher watcher({{"project", box.root}}, [&] { return gate.snapshot(); }, options);
+    const auto t0 = FileWatcher::Clock::now();
+    watcher.runControlCycleForTesting(t0);
+
+    writeText(box.root / "accepted.txt", "v2");
+    writeText(box.root / "rejected.txt", "v2");
+    watcher.runControlCycleForTesting(t0 + 25ms);
+
+    std::vector<AssetKey> batch;
+    REQUIRE(watcher.applyFrameBatch([&](std::span<const ReloadRequest> requests) {
+                std::vector<bool> results;
+                for (const auto &request : requests) {
+                    batch.push_back(request.key);
+                    results.push_back(request.key.path == "accepted.txt");
+                }
+                return results;
+            }) == 2);
+    REQUIRE(batch.size() == 2);
+
+    watcher.runControlCycleForTesting(t0 + 50ms);
+    const auto retry = applyAll(watcher);
+    REQUIRE(retry.size() == 1);
+    REQUIRE(retry.front().key.path == "rejected.txt");
+    watcher.stop();
+}
+
 TEST_CASE("FileWatcher local override changes location without changing AssetKey",
           "[wp98][assetkey][override]") {
     Sandbox box;
@@ -368,7 +404,7 @@ TEST_CASE("central gate adapts legacy shader flag without a second apply path", 
     ReloadGate gate;
     gate.configureFromLaunch(config);
     REQUIRE(gate.enabled());
-    REQUIRE(gate.shaderPollEnabled());
+    REQUIRE(gate.shaderReloadEnabled());
     const auto enabled_epoch = gate.snapshot().epoch;
     gate.setReason(ReloadGateReason::replay, true);
     REQUIRE_FALSE(gate.enabled());
@@ -377,7 +413,7 @@ TEST_CASE("central gate adapts legacy shader flag without a second apply path", 
     REQUIRE(gate.enabled());
     config.strict_assets = true;
     gate.configureFromLaunch(config);
-    REQUIRE_FALSE(gate.shaderPollEnabled());
+    REQUIRE_FALSE(gate.shaderReloadEnabled());
 }
 
 } // namespace Pelican::watch

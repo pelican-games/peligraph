@@ -5,12 +5,14 @@
 #include "../resourcecontainer.hpp"
 #include "../shader/pelican_sets.hpp"
 #include "../shader/pipelinefactory.hpp"
+#include "../watch/assetkey.hpp"
 #include "../vkcore/buf.hpp"
 #include "../vkcore/image.hpp"
 #include "material.hpp"
 #include <glm/glm.hpp>
 #include <map>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -168,6 +170,11 @@ DECLARE_MODULE(MaterialContainer) {
                                      watch::ReloadCoordinator &coordinator);
     bool retireMaterialValuesReloadPayload(std::shared_ptr<const void> payload,
                                            watch::ReloadCoordinator &coordinator) noexcept;
+    // Prepared together with surface shader/pipeline candidates. The returned
+    // callback publishes only prevalidated material/layout payloads.
+    std::function<void()> prepareSurfaceMaterialReload(
+        const std::map<watch::AssetKey, SurfaceFormatDocument> &surface_documents,
+        std::span<const watch::AssetKey> material_documents);
 
     bool isRenderRequired(PassId pass_id, GlobalMaterialId material) const;
     void bindResource(vk::CommandBuffer cmd_buf, PassId pass_id, GlobalMaterialId material,
