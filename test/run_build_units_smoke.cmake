@@ -22,6 +22,10 @@ if(WIN32)
 else()
     set(EXE_SUFFIX "")
 endif()
+if(NOT CMAKE_CTEST_COMMAND)
+    get_filename_component(cmake_bin_dir "${CMAKE_COMMAND}" DIRECTORY)
+    set(CMAKE_CTEST_COMMAND "${cmake_bin_dir}/ctest${EXE_SUFFIX}")
+endif()
 
 function(run_process label expected_success)
     execute_process(
@@ -454,6 +458,15 @@ verify_builtin_physics_absent("${physics_provider_build_dir}")
 verify_jolt_physics_absent("${physics_provider_build_dir}" "provider-only physics")
 find_built_executable("${physics_provider_build_dir}" "pelican_test_physicsservice_test" physics_provider_test)
 run_process("physics_provider_only_service" TRUE "${physics_provider_test}")
+run_process(
+    "physics_provider_only_game_dll"
+    TRUE
+    "${CMAKE_CTEST_COMMAND}"
+        --test-dir "${physics_provider_build_dir}"
+        --build-config "${PELICAN_BUILD_UNIT_SMOKE_CONFIG}"
+        --output-on-failure
+        -R "^physics_provider_game_dll_e2e$"
+)
 
 configure_and_build("physics" "PELICAN_WITH_PHYSICS" physics_build_dir)
 verify_physics_absent("${physics_build_dir}")
@@ -477,5 +490,14 @@ find_built_executable("${physics_jolt_build_dir}" "pelican_test_physicsservice_t
 run_process("physics_jolt_service" TRUE "${physics_jolt_test}")
 find_built_executable("${physics_jolt_build_dir}" "pelican_test_physics_feature_probe" physics_jolt_probe)
 run_process("physics_jolt_api" TRUE "${physics_jolt_probe}")
+run_process(
+    "physics_jolt_game_dll"
+    TRUE
+    "${CMAKE_CTEST_COMMAND}"
+        --test-dir "${physics_jolt_build_dir}"
+        --build-config "${PELICAN_BUILD_UNIT_SMOKE_CONFIG}"
+        --output-on-failure
+        -R "^physics_provider_game_dll_e2e$"
+)
 
 message(STATUS "build-unit OFF smoke passed for AUDIO, VAT, EXR, RPC, SEQPLAYER, IMGUI, and PHYSICS; provider-only and Jolt physics also passed")

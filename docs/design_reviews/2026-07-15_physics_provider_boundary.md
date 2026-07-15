@@ -130,3 +130,7 @@ Jolt or Vulkan through the stable query API.
   capability-level owner override/fallback, and owner-release cases pass without any Jolt type in
   test-facing APIs.
 - Public API link fixture covers physics ABI negotiation from a game DLL.
+- A public-header-only game DLL registers a raycast-only provider against a real executable
+  export host. The E2E fixture verifies capability fallback, V1-to-V2 shadow-copy reload,
+  in-flight callback completion before unload, bad-ABI candidate isolation, and rollback to the
+  previous provider after scene-rebuild failure in built-in, provider-only, and Jolt builds.

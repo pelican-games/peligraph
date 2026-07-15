@@ -73,6 +73,97 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
       -OutDir ${CMAKE_BINARY_DIR}/test_artifacts/game_logic_reload
   )
   set_tests_properties(game_logic_dll_reload PROPERTIES TIMEOUT 120 RESOURCE_LOCK pelican_gpu)
+
+  if(PELICAN_WITH_PHYSICS)
+    # This executable is the real SDK export host for the fixture DLLs. The
+    # fixtures link only its import library and see only userpublic headers.
+    add_executable(pelican_test_physics_provider_dll_test
+      physics_provider_dll_test.cpp
+    )
+    set_target_properties(pelican_test_physics_provider_dll_test PROPERTIES
+      CXX_STANDARD 20
+      ENABLE_EXPORTS TRUE
+    )
+    target_include_directories(pelican_test_physics_provider_dll_test PRIVATE
+      ${Vulkan_INCLUDE_DIRS}
+    )
+    target_compile_definitions(pelican_test_physics_provider_dll_test PRIVATE
+      "VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic"
+      PELICAN_WITH_BUILTIN_PHYSICS=$<BOOL:${PELICAN_WITH_BUILTIN_PHYSICS}>
+      PELICAN_WITH_JOLT_PHYSICS=$<BOOL:${PELICAN_WITH_JOLT_PHYSICS}>
+    )
+    if(MSVC)
+      target_link_options(pelican_test_physics_provider_dll_test PRIVATE
+        "/WHOLEARCHIVE:$<TARGET_LINKER_FILE:pelican_core>"
+      )
+    endif()
+    target_link_libraries(pelican_test_physics_provider_dll_test PRIVATE
+      Catch2::Catch2WithMain
+      nlohmann_json
+      pelican_core
+      glm
+    )
+
+    foreach(physics_fixture_version IN ITEMS 1 2)
+      set(physics_fixture_target
+          pelican_physics_provider_fixture_v${physics_fixture_version})
+      add_library(${physics_fixture_target} SHARED
+        fixtures/physics_provider_dll/provider.cpp
+        ${CMAKE_SOURCE_DIR}/src/player/gamelogic_entry.cpp
+      )
+      set_target_properties(${physics_fixture_target} PROPERTIES
+        CXX_STANDARD 20
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+        OUTPUT_NAME "pelican_physics_provider_fixture_v${physics_fixture_version}"
+      )
+      add_dependencies(${physics_fixture_target}
+        pelican_test_physics_provider_dll_test)
+      target_link_libraries(${physics_fixture_target} PRIVATE
+        "$<TARGET_LINKER_FILE:pelican_test_physics_provider_dll_test>"
+      )
+      target_include_directories(${physics_fixture_target} PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/core/userpublic
+      )
+      target_compile_definitions(${physics_fixture_target} PRIVATE
+        PELICAN_GAME_DLL=1
+        PELICAN_PHYSICS_FIXTURE_VERSION=${physics_fixture_version}
+      )
+    endforeach()
+
+    add_library(pelican_physics_provider_fixture_bad_abi SHARED
+      fixtures/physics_provider_dll/provider.cpp
+      ${CMAKE_SOURCE_DIR}/src/player/gamelogic_entry.cpp
+    )
+    set_target_properties(pelican_physics_provider_fixture_bad_abi PROPERTIES
+      CXX_STANDARD 20
+      MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+      OUTPUT_NAME "pelican_physics_provider_fixture_bad_abi"
+    )
+    add_dependencies(pelican_physics_provider_fixture_bad_abi
+      pelican_test_physics_provider_dll_test)
+    target_link_libraries(pelican_physics_provider_fixture_bad_abi PRIVATE
+      "$<TARGET_LINKER_FILE:pelican_test_physics_provider_dll_test>"
+    )
+    target_include_directories(pelican_physics_provider_fixture_bad_abi PRIVATE
+      ${CMAKE_SOURCE_DIR}/src/core/userpublic
+    )
+    target_compile_definitions(pelican_physics_provider_fixture_bad_abi PRIVATE
+      PELICAN_GAME_DLL=1
+      PELICAN_PHYSICS_FIXTURE_VERSION=2
+      PELICAN_GAME_LOGIC_ABI_VERSION=999
+    )
+
+    add_test(
+      NAME physics_provider_game_dll_e2e
+      COMMAND ${CMAKE_COMMAND} -E env
+        "PELICAN_PHYSICS_FIXTURE_V1=$<TARGET_FILE:pelican_physics_provider_fixture_v1>"
+        "PELICAN_PHYSICS_FIXTURE_V2=$<TARGET_FILE:pelican_physics_provider_fixture_v2>"
+        "PELICAN_PHYSICS_FIXTURE_BAD_ABI=$<TARGET_FILE:pelican_physics_provider_fixture_bad_abi>"
+        $<TARGET_FILE:pelican_test_physics_provider_dll_test>
+        "[physics-provider-dll]"
+    )
+    set_tests_properties(physics_provider_game_dll_e2e PROPERTIES TIMEOUT 30)
+  endif()
 endif()
 
 add_executable(pelican_test_vat_fixture_writer vat_fixture_writer.cpp)
