@@ -149,6 +149,47 @@ privileged.
 edge or barrier. A normal `velocity` read is an ordinary dependency. TAA, camera jitter,
 and accumulation policy are outside WP88.
 
+## Recipe 7: 標準 TAA をコピーして改造する
+
+標準 TAA は `engine://features/taa.json` として提供されるが、エンジン特権は
+使っていない。通常の `pelican.render_feature` v1、named render-target binding、
+scalar parameter → shader define、history RT、FrameUBO の公開フィールドだけで動く。
+まず velocity と TAA をこの順で有効にする。
+
+```json
+{
+  "features": [
+    "engine://features/velocity.json",
+    {
+      "ref": "engine://features/taa.json",
+      "parameters": {
+        "scene_color": "lit_color",
+        "velocity": "velocity",
+        "depth": "offscreen_depth",
+        "downstream_color": "lit_color",
+        "alpha": 0.1,
+        "disocclusion_tau": 0.1,
+        "depth_epsilon": 0.00001
+      }
+    }
+  ]
+}
+```
+
+- `scene_color` / `downstream_color` は同じ scene RT にできる。resolve と composite
+  は別 pass なので、同一 pass の read/write 禁止には触れない。
+- `depth` は D32 等の depth attachment を bind する。TAA feature が既存 usage
+  override で `SAMPLED` を追加するため、project 側で重複指定する必要はない。
+- `alpha` は新フレーム寄与率、`disocclusion_tau` は相対深度差の棄却閾値、
+  `depth_epsilon` は分母の下限。いずれも compose 時の scalar parameter であり、
+  変更時は shader define と cache key が変わって再コンパイルされる。
+- TAA feature 自身が Halton(2,3) 8 phase の `projection_jitter` provider になる。
+  同時に別の jitter provider を有効にすると feature 名入りで reject される。
+- 改造時は `src/core/resources/features/taa.json`、`taa_resolve.frag`、
+  `taa_composite.frag` を project の `features/` / `shaders/` へコピーし、JSON の
+  shader ref を project 側の stem へ変更する。履歴参照は `taa_accum@history`、
+  reset 判定は `temporal_reset_epoch != previous_temporal_reset_epoch` を維持する。
+
 - Determinism rule: wall clock / std::rand / random_device must not drive deterministic decisions.
 - ログは quill(stdout は rpc プロトコル専用)
 - 常駐プロセスをテストで起動したら必ず停止する(エージェント向け)
