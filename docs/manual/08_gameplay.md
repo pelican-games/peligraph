@@ -203,11 +203,36 @@ if (auto hit = ctx.shapeCastClosest(player, {0, -4, 0})) {
 - collider metadata は scene component に `layer`(既定 1)、`mask`(既定 `0xffffffff`)、`trigger`、`one_way`(既定 false)で指定します。詳細 query overload の `QueryFilter` で reciprocal layer/mask、self/ignore、trigger/one-way inclusion を制御できます。
 - **決定性の規約**: shapeCast の TOI tie は ε=`1e-5` bucket 後に stable `ColliderId`、full entity generation、shape ordinal の順です。MTD tie は移動の逆向きを優先し、その後 world x/y/z で固定します。closest は同じ ordered all-hit の先頭です。方向付き one-way policy は `shapeCastAll` を順に評価するため、無視した後の「次の床」を再 query せず続行できます。
 - 初期 penetration が ε より深ければ TOI 0 + MTD。接触だけなら接近中に限り TOI 0、静止/離反では hit になりません。zero delta は depenetration query です。
-- `one_way` は metadata です。前位置や接近方向から「通す/乗る」を決める policy と `moveAndSlide` は S2D-2 の標準ユーザー空間ライブラリが担当します。`trigger=true` も query filter には使えますが、enter/exit イベントは E2 未実装です。
+- `one_way` は metadata です。前位置や接近方向から「通す/乗る」を決める policy は、WP109 の標準ユーザー空間ライブラリ `platformer::moveAndSlide` が担当します。`trigger=true` も query filter には使えますが、enter/exit イベントは E2 未実装です。
 - Provider ABI V2 により Builtin/Jolt/game DLL provider を capability 単位で差し替えます。Jolt header は engine/game の公開型へ出ません。physics-off と provider-only build では不要な backend をリンクしません。
 - transform 追従は現行では毎フレーム再収集(BVH 等の加速構造なし — 計測してから見直す方針)。capsule の軸はローカル Y、box は OBB(回転対応)です。
 - `debug_draw` feature を rendering config で参照していると collider のワイヤフレームが描画されます([第6章](06_rendering.md))。
 - 📐未実装: rpc の query メソッド、メッシュコライダ/BVH、物理トリガーイベント、剛体シミュレーション。
+
+### 8.7.1 side-scroller controller(WP109)
+
+```cpp
+#include <platformer/charactercontroller2d.hpp>
+
+Pelican::platformer::MoveAndSlide2DSettings settings;
+settings.max_slope_degrees = 50.0f;
+settings.collide_with_one_way = !drop_through;
+
+const auto moved = Pelican::platformer::moveAndSlide(
+    ctx, player_capsule,
+    {velocity.x * fixed_dt, velocity.y * fixed_dt, 0.0f}, {}, settings);
+player_capsule = moved.shape;
+if (moved.grounded && velocity.y < 0.0f) velocity.y = 0.0f;
+if (moved.hit_ceiling && velocity.y > 0.0f) velocity.y = 0.0f;
+```
+
+この helper は XY side-scroller 用で、連続 sweep による tunneling 防止、初期
+overlap 回復、接地/壁 slide/天井、最大斜面角、上からだけ乗る one-way を扱います。
+剛体 simulation や Jolt 固有 API ではなく、公開 `shapeCastAll` の結果だけを使う
+非特権ライブラリです。callback overload へ独自 ordered-all-hit query を渡せるため、
+Builtin/Jolt/game DLL provider の交換、ゲーム独自 controller への置換、機能の完全な
+不使用が可能です。step-up、coyote time、moving platform はゲーム固有 policy として
+この最小 helper の外に残しています。実例は `projects/sprite_demo` を参照してください。
 
 ## 8.8 カメラ(✅C1/C2 = WP48/50)
 

@@ -13,24 +13,35 @@
           ]
         },
         {
-          "name": "SpriteLeft",
+          "name": "Floor",
           "components": [
-            {"name": "transform", "pos": [-0.8, 0.0, 0.0], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]},
-            {"name": "sprite_view", "texture": "demo_atlas#sprite/full", "size": [1.5, 1.5], "pivot": [0.5, 0.5], "layer": 0, "flip": [false, false], "color": [1, 1, 1, 1]}
+            {"name": "transform", "pos": [0.0, -0.1, 0.0], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]},
+            {"name": "sprite_view", "texture": "demo_atlas#sprite/full", "size": [6.0, 0.2], "pivot": [0.5, 0.5], "layer": 0, "color": [0.25, 0.55, 0.32, 1.0]},
+            {"name": "collider", "shape": "box", "half_extents": [3.0, 0.1, 0.5]}
           ]
         },
         {
-          "name": "SpriteRight",
+          "name": "OneWayPlatform",
           "components": [
-            {"name": "transform", "pos": [0.8, 0.0, 0.1], "rotation": [0, 0, -0.19509032, 0.98078528], "scale": [1, 1, 1]},
-            {"name": "sprite_view", "texture": "demo_atlas#sprite/full", "size": [1.5, 1.5], "pivot": [0.5, 0.5], "layer": 1, "flip": [true, false], "color": [0.8, 1.0, 0.9, 0.9]}
+            {"name": "transform", "pos": [-0.6, 1.2, 0.05], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]},
+            {"name": "sprite_view", "texture": "demo_atlas#sprite/full", "size": [1.8, 0.12], "pivot": [0.5, 0.5], "layer": 1, "color": [0.95, 0.75, 0.25, 1.0]},
+            {"name": "collider", "shape": "box", "half_extents": [0.9, 0.06, 0.5], "one_way": true}
           ]
         },
         {
-          "name": "SpriteTop",
+          "name": "Slope",
           "components": [
-            {"name": "transform", "pos": [0.0, 0.8, 0.2], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]},
-            {"name": "sprite_view", "texture": "demo_atlas#sprite/right", "size": [0.9, 0.9], "pivot": [0.5, 0.5], "layer": 2, "flip": [false, true], "color": [1.0, 0.55, 0.75, 0.85]}
+            {"name": "transform", "pos": [1.15, 0.35, 0.0], "rotation": [0, 0, 0.13052619, 0.99144486], "scale": [1, 1, 1]},
+            {"name": "sprite_view", "texture": "demo_atlas#sprite/full", "size": [2.0, 0.2], "pivot": [0.5, 0.5], "layer": 2, "color": [0.35, 0.65, 0.95, 1.0]},
+            {"name": "collider", "shape": "box", "half_extents": [1.0, 0.1, 0.5]}
+          ]
+        },
+        {
+          "name": "Wall",
+          "components": [
+            {"name": "transform", "pos": [2.75, 1.0, 0.0], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]},
+            {"name": "sprite_view", "texture": "demo_atlas#sprite/full", "size": [0.2, 2.0], "pivot": [0.5, 0.5], "layer": 3, "color": [0.8, 0.3, 0.35, 1.0]},
+            {"name": "collider", "shape": "box", "half_extents": [0.1, 1.0, 0.5]}
           ]
         }
       ]

@@ -1,7 +1,7 @@
-# 2D ゲーム層と 2D⇔3D 相互変換(v2.3)
+# 2D ゲーム層と 2D⇔3D 相互変換(v2.4)
 
 対象読者: エンジン担当・2D ゲームを作る人・2D/3D 混在演出を作る人。
-ステータス: **v2.3 — C4/S2D-1・C5/S2D-P 確定(2026-07-15)**。v1 は敵対レビュー
+ステータス: **v2.4 — S2D-2/WP109 まで確定(2026-07-16)**。v1 は敵対レビュー
 `docs/design_reviews/2026-07-12_hr_v2_2d_v1_review_codex.md` §4-8(以下
 「レビュー」)で **Reject** — 中核方向(単一ワールド)は妥当だが、
 ①「機構を増やさない」への過剰一般化 ②SpriteView 例が scene v1 の
@@ -12,7 +12,8 @@ v2 = 再受理条件 2D-R1〜R6 の全反映 → 再レビュー
 `docs/design_reviews/2026-07-12_2d_v2_rereview_codex.md`(以下
 「再レビュー」)で**条件付き受理** — C1〜C3 = S2D-0a、C4 = S2D-1、
 C5 = S2D-P の exit gate に添付。v2.1 = その 5 条件の正本反映、v2.2 =
-C4 の実装確定、v2.3 = C5 の実装確定。
+C4 の実装確定、v2.3 = C5 の実装確定、v2.4 = S2D-2 の公開
+`moveAndSlide` 契約と縦切りの実装確定。
 前提: `design_ui_2d_foundation.md` v8、`design_camera_system.md`
 (orthographic = WP48 済)、`design_physics_queries.md`(P1/P2 済)、
 scene v1、「feature 層 = ユーザー空間」方針、サブセット原則。
@@ -324,6 +325,31 @@ CPU sort + 単一 16384 quad buffer」に固定した場合。escape hatch を�
   Builtin/Jolt/provider DLL は同じ service 契約の下で差し替えられ、
   physics-off / provider-only 構成では不要な実装をリンクしない
 
+### 7-2. S2D-2 で確定した controller 契約(WP109)
+
+- `platformer::moveAndSlide` は **標準ユーザー空間ライブラリ**であり、物理
+  backend の一部ではない。公開 `Shape`、`ShapeCastQueryHit`、`QueryFilter` を
+  入出力とする ordered all-hit callback が本体で、`GameContext` overload は
+  薄い adapter に限る。ゲームは helper をリンクしない・コピーして改造する・
+  独自 callback/provider を注入する、のいずれも選べる
+- 固定姿勢の shape を XY 平面で平行移動し、連続 sweep、初期 overlap 回復、
+  wall slide、ceiling、接地、最大斜面角を処理する。急斜面は wall として扱い、
+  tangent projection から上向き速度を作らない。orientation/shape dimensions は
+  変更しない
+- one-way は provider が返す metadata を、開始 support point、接近方向、
+  walkable normal から判定する。下から/離反中は通過し、上から下降時だけ接地。
+  `collide_with_one_way=false` は drop-through の明示スイッチ。trigger は既定で
+  controller の blocking contact にしない
+- 結果は移動後 shape、要求/適用/残差 delta、全 contact、ground/wall/ceiling、
+  iteration-limit flag。適用 delta は初期 overlap の MTD 回復を含むため、要求
+  delta より大きくなり得る
+- helper は query の canonical all-hit 順を変更せず、固定上限 8 iteration と
+  明示 epsilon で処理する。WP109 fixture は同一 240 fixed-step 入力の player
+  pose(float bit 列)と landing event 列が 2 replay で完全一致することを保証する
+- 剛体 dynamics、step-up、coyote time、moving platform、trigger enter/exit、
+  TileMap は契約外。GPGPU/Jolt 等の simulation を将来追加しても、この query +
+  user-space policy 境界とは別 capability とする
+
 ## 8. 決定性と検証
 
 - §3 の全順序 fixture・§5 の 50k sprite fixture・§2 の pixel golden・
@@ -339,7 +365,7 @@ CPU sort + 単一 16384 quad buffer」に固定した場合。escape hatch を�
 | **S2D-0b GPU world quad** | world-space 頂点/インスタンス buffer・camera VP・pivot/flip・シーンパス・straight alpha・depth test ON/write OFF・atlas page bind | 2D/3D 遮蔽・layer/z・複数 atlas・回転/親子・UI 無し/有りの resource ownership・golden | S2D-0a・WP48 |
 | **S2D-1 Pixel/Policy (WP106 済)** | strict pixel-perfect(render-only quantization)・ppu/zoom・y_down/declaration・billboard・flipbook dogfood(ユーザー空間) | §2/§3 fixture + pixel golden 全通過 **+ 再レビュー C4(成立式・対象集合表・適用順・negative fixture)** | S2D-0b |
 | **S2D-P Query minimum (WP107 済)** | sweep/shapeCast・filter/all-hit・MTD・安定 collider identity | §7 の純 CPU fixture **+ 再レビュー C5(public contract と同順位規則)** | P1/P2 |
-| **S2D-2 Vertical slice** | **side-scroller 1 面を固定選択**(top-down に逃げて platformer 条件を未検証にしない): 入力/event/fixed-step/接地/斜面/one-way の実証 | replay 2 回一致・接地/斜面/one-way/tunneling シナリオ | S2D-1・S2D-P |
+| **S2D-2 Vertical slice (WP109 済)** | **side-scroller 1 面を固定選択**(top-down に逃げて platformer 条件を未検証にしない): 入力/event/fixed-step/接地/斜面/one-way の実証 | replay 2 回一致・接地/斜面/one-way/tunneling シナリオ | S2D-1・S2D-P |
 | 将来 | TileMap 形式/chunk・9-slice・snapshot texture・3D 半透明統合 | 各別設計 | — |
 
 ## 10. 未決事項

@@ -8,6 +8,7 @@ target_sources(pelican_core PRIVATE
     sprite/flipbook.cpp
     sprite/pixelpolicy.cpp
     sprite/spriteworld.cpp
+    platformer/charactercontroller2d.cpp
     animation/animgraph.cpp
     details/reload/registrationowner.cpp
 )

@@ -2665,6 +2665,34 @@ FileWatcher 経路・実 `.surface + .material.json` cross-file atomic fixture**
    rollback、cross-file layout update、in-flight old pipeline、batch digest retry、
    runtime architecture。詳細は `docs/design_reviews/2026-07-15_wp108_report.md`
 
+### WP109: 2D S2D-2 — side-scroller vertical slice
+
+参照: **`design_2d_game_layer.md` v2.4 §7-2・§9 S2D-2 行が正**。
+受入条件 = **入力/event/fixed-step/接地/斜面/one-way を同じ side-scroller
+1 面で接続し、replay 2 回一致・tunneling を fixture で閉じる**。
+基盤 = WP106(S2D-1) / WP107(S2D-P)。状態: **完了(2026-07-16)**。
+
+1. **非特権 helper**: `src/core/userpublic/platformer/` に
+   `moveAndSlide` を追加。公開 `Shape` / `ShapeCastQueryHit` / `QueryFilter`
+   だけを入出力とし、`GameContext` adapter と ordered all-hit callback 注入の
+   2 経路を持つ。Builtin/Jolt/game DLL provider や独自 query source を交換しても
+   slope/one-way policy は同じで、ゲームから helper 自体を不使用・差分実装できる
+2. **controller policy**: XY 平面、連続 sweep、初期 overlap の決定的回復、
+   wall slide、ceiling、最大斜面角、急斜面の壁扱い、trigger 除外を実装。
+   one-way は metadata + 接近方向 + 開始 support point で上からだけ接地し、
+   `collide_with_one_way=false` で drop-through する
+3. **決定性**: helper は provider の canonical all-hit 順を保ち、固定 iteration・
+   固定 epsilon で処理。240 fixed-step の同一入力を 2 回再生し、player pose の
+   float bit trace と着地 event 列が完全一致することを fixture 化
+4. **縦切り**: `projects/sprite_demo` を player capsule、床、斜面、one-way、壁、
+   A/D・Space・S 入力、flipbook、`PlayerLanded` event を備えた実行可能デモへ更新。
+   player dynamics は project code に置き、剛体シミュレーションへ依存しない
+5. **公開 DLL gate**: game DLL から custom event を `emit` できるよう event
+   registerer の必要 symbol を exportし、public API link fixture で回帰を防ぐ
+6. 将来へ残すもの = step-up/coyote time/moving platform/TileMap/物理 trigger event/
+   剛体・GPU simulation。これらを controller 最小契約へ先取りしない
+7. 詳細と検証記録は `docs/design_reviews/2026-07-16_wp109_report.md`
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの

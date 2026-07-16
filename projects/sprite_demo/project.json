@@ -1,10 +1,10 @@
 {
   "schema": "pelican.project",
   "version": 1,
-  "name": "WP106 Sprite Pixel-Policy Demo",
+  "name": "WP109 Side-Scroller Vertical Slice",
   "engine_min_version": "0.1.0",
   "basic_config": {
-    "window_title": "Pelican WP106 Sprite Pixel-Policy Demo",
+    "window_title": "Pelican WP109 Side-Scroller Vertical Slice",
     "window_size": {"width": 960, "height": 540},
     "fullscreen": false,
     "framerate": 60,
@@ -23,6 +23,9 @@
     "asset_data_json": "assets.json",
     "rendering_config_json": "passes/main.json",
     "ui_config_json": "ui/ui.json",
-    "default_rendering_pass": "main"
+    "default_rendering_pass": "main",
+    "input_actions_json": "input/actions.json",
+    "input_profiles": {"keyboard": "input/keyboard.json"},
+    "input_profile": "keyboard"
   }
 }

@@ -52,7 +52,7 @@ class UserEventRegistererTemplatePublic {
     bool catalog_frozen = false;
 
     PELICAN_API void __registerEvent(EventTypeRegistration registration);
-    void __emit(QueuedEvent event);
+    PELICAN_API void __emit(QueuedEvent event);
     const EventTypeRegistration &validateByName(std::string_view name, const void *payload_json) const;
 
     friend void unregisterEvents(RegistrationOwner owner) noexcept;
@@ -155,7 +155,7 @@ class UserEventRegistererTemplatePublic {
     std::size_t emitByName(std::string_view name, const void *payload_json);
     void validateEventPayload(std::string_view name, const void *payload_json) const;
     EventSchemaLookup findEventSchema(std::string_view name) const;
-    const EventTypeRegistration *findByType(std::type_index type) const;
+    PELICAN_API const EventTypeRegistration *findByType(std::type_index type) const;
     const EventTypeRegistration *findByName(std::string_view name) const;
     void validateCatalogAndFreeze();
     void freezeCatalog() noexcept;

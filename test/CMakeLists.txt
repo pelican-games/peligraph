@@ -315,6 +315,7 @@ target_compile_definitions(pelican_test_pathresolver_test PRIVATE
 if(PELICAN_WITH_PHYSICS AND PELICAN_WITH_BUILTIN_PHYSICS)
 pelican_define_test(physquery_test pelican_core)
 pelican_define_test(physworld_test pelican_core glm)
+pelican_define_test(platformer_controller_test pelican_core)
 endif()
 if(PELICAN_WITH_PHYSICS)
 pelican_define_test(physicsservice_test pelican_core glm)
