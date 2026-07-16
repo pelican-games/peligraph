@@ -1,22 +1,25 @@
 # 第10章 ツールリファレンス
 
-対象: pelican2(2026-07-10 時点)/ このマニュアルはコードを正とする
+対象: pelican2(2026-07-16 時点)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
-- `pelican_player` の全 CLI 引数
-- JSON-RPC(stdio)による外部制御 — 全 13 メソッドと実セッション例
-- `pelican_cli` の 3 サブコマンド(`project init` / `import` / `dist-config`)
-- 配布ビルド(ビルドユニットと dist-config)
-- Pelican Studio の現状と設計方向、テスト基盤
+- `pelican_player` の全 CLI 引数(22 個)
+- JSON-RPC(stdio)による外部制御 — 全 19 メソッドと実セッション例
+- `pelican_cli` の 6 サブコマンド系統(`project init` / `import` / `dist-config` / `assets` / `bake-camera` / `dump-lowered-material`)
+- ホットリロード(シェーダ・テクスチャ・マテリアル・モデル・ゲーム DLL)と起動高速化
+- ImGui 開発者 UI(F1)と Frame Plan Viewer
+- 配布ビルド、Pelican Studio の現状、テスト基盤
 
 ## 10.1 実行物の一覧
 
 | ターゲット | 種類 | 出力先 | 役割 |
 |---|---|---|---|
 | `pelican_player` | exe | build ツリー内(`build/src/player/<Config>/`) | ゲームランタイム。ウィンドウ / ヘッドレス / RPC の 3 モード |
+| `pelican_game_logic` | **DLL**(`PELICAN_PROJECT` 指定時) | player と同ディレクトリ | プロジェクトの `code/` のビルド産物(✅WP90 で静的リンクから移行) |
 | `pelican_cli` | exe | `dist/`(Debug は `dist_debug/`) | 開発 CLI。**エンジン(pelican_core)にリンクしない** |
-| `pelican_studio` | exe(Qt6) | `dist/`(同上) | エディタ。現状はダミー画面のみ(§10.6) |
+| `pelican_studio` | exe(Qt6) | `dist/`(同上) | エディタ。現状はダミー画面のみ(§10.8) |
+| `pelican-spv-link` | exe | build 内 | experimental SPIR-V リンカ CLI([第6章](06_rendering.md) §6.7) |
 | `pelican_project` | 静的 lib | build 内 | 解釈レイヤ(JSON パース/検証の純ロジック) |
 | `pelican_core` | 静的 lib | build 内+`dist/lib` | エンジン本体。公開ヘッダは `dist/lib/include` へコピー |
 
@@ -28,70 +31,75 @@
 |---|---|---|
 | `--project <dir\|project.json>` | (暗黙探索) | プロジェクトを開く。省略時は exe ディレクトリ → 祖先の `projects/example` を探索し、WARN を出す |
 | `--headless` | off | ウィンドウなし実行(時刻は固定ステップになる) |
-| `--rpc` | off | stdio JSON-RPC モード。**v1 では `--headless` 必須**。`PELICAN_WITH_RPC=OFF` ビルドではエラー |
+| `--rpc` | off | stdio JSON-RPC モード。**v1 では `--headless` 必須** |
 | `--frames <n>` | 3 | ヘッドレスのフレーム数。**0 = 無制限** |
 | `--size WxH` | 1280x720 | ヘッドレスの描画サイズ |
-| `--render-out <path>` | なし | PNG 出力先。パスに `%d` / `%04d` を含むと**毎フレーム連番**、含まなければ最終フレームのみ |
+| `--render-out <path>` | なし | PNG 出力先(sRGB エンコード)。`%04d` 等で毎フレーム連番 |
 | `--fps <f>` | 60.0 | ヘッドレス固定ステップのレート(dt = 1/fps) |
 | `--dump-frame-plan` | off | 解決済みフレームプラン JSON を **stderr** へ出力([第6章](06_rendering.md)) |
-| `--allow-absolute-paths` | off | CLI 由来のコンテンツ参照に限り絶対パスを許可(使用のたび WARN)。JSON 内の絶対パスは常に拒否 |
-| `--user-dir <dir>` | なし | `user://` ルートの差し替え。project.json に `name` が無いとエラー |
+| `--allow-absolute-paths` | off | CLI 由来のコンテンツ参照に限り絶対パスを許可。JSON 内の絶対パスは常に拒否 |
+| `--user-dir <dir>` | なし | `user://` ルートの差し替え |
 | `--ignore-engine-version` | off | `engine_min_version` 不適合を hard error → WARN に降格 |
 | `--play-seq <path.jsonl>` | なし | `pelican.transform_seq` の再生(SEQPLAYER ユニット必須) |
 | `--seq-mesh <builtin:sphere\|path.glb>` | builtin:sphere | transform_seq 全オブジェクトに使うメッシュ |
 | `--seq-loop` | off | クリップをループ再生 |
-| `--play-vat <path.glb>` | なし | `pelican.vat` 入り GLB の再生(VAT ユニット必須)。プロジェクト相対で解決 |
+| `--play-vat <path.glb>` | なし | `pelican.vat` 入り GLB の再生(VAT ユニット必須) |
 | `--camera "px,py,pz,tx,ty,tz,fov_deg"` | なし | カメラの位置・注視点・垂直 FOV(度)の上書き |
+| `--game-logic <path.dll>` | (exe 同階層) | ゲームロジック DLL の明示指定(✅WP90) |
+| `--strict-assets` | off | assets manifest の差分を起動エラーに昇格(✅WP66。ホットリロードも無効化) |
+| `--record-input <path.jsonl>` | なし | 順序付き入力を `pelican.input_seq` v1 で収録(✅WP89) |
+| `--replay <path.jsonl>` | なし | input_seq のリプレイ。`--record-input` と排他、ホットリロード自動無効(✅WP89) |
+| `--input-profile <name>` | project.json の既定 | アクティブ入力プロファイルの上書き(✅WP91) |
+| `--bake-camera-output <path.jsonl>` | なし | リプレイ中のカメラ軌跡を transform_seq v1 で出力。`--headless` + `--replay` 必須(✅WP89) |
 
 よく使う組み合わせ:
 
 ```sh
-# 通常起動
-pelican_player --project projects/example
-
-# ヘッドレスで 3 フレーム描いて PNG を保存(golden テストの型)
-pelican_player --headless --project projects/example --frames 3 --render-out out.png
-
-# 毎フレーム連番
-pelican_player --headless --project mygame --frames 60 --render-out out/%04d.png
-
-# 外部制御(エージェント・DCC ブリッジ・エディタの型)
-pelican_player --rpc --headless --project mygame --size 1280x720
+pelican_player --project projects/example                                    # 通常起動
+pelican_player --headless --project mygame --frames 3 --render-out out.png  # ヘッドレス→PNG
+pelican_player --rpc --headless --project mygame                            # 外部制御
+pelican_player --project mygame --record-input s.jsonl                      # プレイ収録
+pelican_player --headless --project mygame --replay s.jsonl \
+  --bake-camera-output cam.jsonl                                            # カメラ焼き出し
 ```
 
-※ `--play-seq` / `--seq-mesh` の相対パスは現状 cwd 基準で解決されます(設計はプロジェクトルート基準 — 既知の食い違い。[第11章](11_status.md))。
+※ `--play-seq` / `--seq-mesh` の相対パスは現状 cwd 基準で解決されます(既知の食い違い。[第11章](11_status.md))。
 
 ## 10.3 JSON-RPC(stdio)— 外部制御プロトコル(✅実装済み)
 
 実装: [rpcserver.cpp](../../src/core/communication/rpcserver.cpp)。プロトコルの正本は [../external_tools_requirements.md](../external_tools_requirements.md) R8。
 
-### 枠組み
+### 枠組み(不変)
 
-- トランスポート: **stdin/stdout の NDJSON**(1 行 = 1 つの JSON-RPC 2.0 リクエスト)。
-- **stdout はプロトコル専用**。ログはファイル(cwd の `pelican.log`)へ行きます。「応答以外の行が stdout に混ざらない」ことはテストで機械検証されています。
-- batch 配列・notification(id なし)は非対応(-32600)。エラーコードは標準(-32700/-32600/-32601/-32602)+アプリケーションエラー -32000。
-- ハンドラ内の例外は -32000 応答に変換され、**プロセスは落ちません**。stdin の EOF で正常終了します。
-- 1 プロセス 1 クライアント。起動ごとに UUID の `instance_id` が発行されます。
+- stdin/stdout の NDJSON(1 行 = 1 つの JSON-RPC 2.0 リクエスト)。**stdout はプロトコル専用**(ログは `pelican.log`)。
+- batch・notification 非対応。エラーコードは標準 + アプリケーションエラー -32000。ハンドラ内例外は応答に変換されプロセスは落ちません。EOF で正常終了。
+- 1 プロセス 1 クライアント。**ゲーム DLL リロード中は全メソッドがアプリケーションエラーで拒否**されます。
 
-> **設計決定(決定性):** 同一の RPC スクリプトを 2 回実行したとき、応答列は(instance_id を除き)完全一致しなければならない。これは CI で検証されており、エージェント駆動・DCC 連携・エディタの基盤になっている。
+> **設計決定(決定性):** 同一の RPC スクリプトを 2 回実行したとき、応答列は(instance_id を除き)完全一致しなければならない。CI で検証済み。
 
-### メソッド一覧(13 個)
+### メソッド一覧(19 個)
 
 | メソッド | params | 動作 |
 |---|---|---|
-| `get_status` | `{}` | `{instance_id, project_root, scene, frame, time, seed, stores}` を返す |
+| `get_status` | `{}` | `{instance_id, project_root, scene, frame, time, seed, stores, input:{profile, profiles, gamepad_polling}, reload:{...}, sprite:{...}, color:{...}, startup:{...}}` |
 | `set_seed` | `{seed}` | 決定的乱数のシード設定 |
 | `set_time` | `{t}` | 仮想時刻の直接設定(dt=0) |
-| `step_frame` | `{}` | 1 フレーム進める(pending transform 適用 → 入力 → イベント → ECS → ゲームシステム → 描画) |
-| `render_frame` | `{}` | **時刻を進めず**描画のみ |
-| `capture` | `{path}` | 直近フレームを PNG 保存(path は出力先 locator なので cwd 相対可) |
-| `get_frame_plan` | `{}` | フレームプラン JSON(`--dump-frame-plan` と同内容) |
-| `load_gltf` | `{path, name?}` | glb の一時ロード(scene.json には書き戻さない)。path はプロジェクト相対のみ |
-| `load_scene` | `{name}` | シーン切替([第8章](08_gameplay.md)) |
-| `set_camera` | `{name}` | シーン内カメラオブジェクトへ切替 |
-| `update_transforms` | `{objects:[名前...], transforms:[{pos,rotation,scale}...]}` | 名前付きオブジェクトの変換を**次のフレーム境界で**適用。`rot` キーは名指しで拒否(`rotation` を使う) |
-| `inject_input` | `{events:[...]}` | 入力注入。`key_down/key_up/mouse_move/mouse_down/mouse_up/axis`([第7章](07_input_ui.md)) |
-| `inject_event` | `{type, payload}` | `PELICAN_REGISTER_EVENT` で登録済みのゲームイベントを emit([第8章](08_gameplay.md)) |
+| `step_frame` | `{}` | 1 フレーム進める |
+| `render_frame` | `{}` | 時刻を進めず描画のみ |
+| `capture` | `{path}` | 直近フレームを PNG 保存(sRGB。応答に `encoding:"srgb"`) |
+| `get_frame_plan` | `{}` | フレームプラン JSON |
+| `load_gltf` | `{path, name?}` | glb の一時ロード(プロジェクト相対のみ) |
+| `load_scene` | `{name}` | シーン切替 |
+| `set_camera` | `{name}` | シーン内カメラへ切替 |
+| `update_transforms` | `{objects, transforms}` | 次フレーム境界で適用。`rot` は名指し拒否(`rotation`) |
+| `inject_input` | `{events:[...]}` | 入力注入。`key_*` / `mouse_*` / `axis` + **`gamepadButtonDown` / `gamepadUp` / `gamepadAxis`**(リプレイ中は拒否) |
+| `inject_event` | `{type, payload}` | 登録済みゲームイベントの emit。payload は EventPayloadSchema で事前検証(✅WP71) |
+| `reload_game_logic` | `{}` | ゲームロジック DLL を即時リロード(✅WP90) |
+| `set_input_profile` | `{name}` | 入力プロファイル切替(✅WP91) |
+| `start_input_record` | `{path}` | input_seq 収録開始(✅WP89) |
+| `stop_input_record` | `{}` | 収録停止。`{path, frames, events}` |
+| `start_input_replay` | `{path}` | リプレイ開始(fixed-step 化・リロードゲート閉鎖) |
+| `stop_input_replay` | `{}` | リプレイ停止 |
 
 ### 実セッション例
 
@@ -106,62 +114,59 @@ pelican_player --rpc --headless --project mygame --size 1280x720
 {"jsonrpc":"2.0","id":6,"method":"capture","params":{"path":"out/rpc_capture_left.png"}}
 ```
 
-名前(オブジェクト名・`load_gltf` の name)は `[a-zA-Z0-9_]` のみ(識別子規約 R7)です。
+名前(オブジェクト名・`load_gltf` の name)は `[a-zA-Z0-9_]` のみ(R7)です。
 
-📐設計のみ: WebSocket 展開(複数クライアント同時接続)、薄い Python クライアント `pelican_rpc.py`。
+📐設計のみ: WebSocket 展開(複数クライアント)、薄い Python クライアント `pelican_rpc.py`。
 
 ## 10.4 pelican_cli リファレンス
 
 ```
-pelican_cli <import|dist-config|project> ...
+pelican_cli <assets|bake-camera|import|dist-config|project|dump-lowered-material> ...
 ```
 
 エラーは stderr+終了コード -1、成功は 1 行サマリ+終了コード 0。
 
 ### `pelican_cli project init <dir>`(✅WP57)
 
-空(または未存在)ディレクトリに 15 ファイルの雛形を生成します。生成直後に `pelican_player --project <dir>` でそのまま起動できます。詳細は [第2章](02_getting_started.md) §2.4。
+空(または未存在)ディレクトリに雛形一式を生成します。生成直後に `pelican_player --project <dir>` でそのまま起動できます。詳細は [第2章](02_getting_started.md)。
 
-### `pelican_cli import <delivery_dir> --project <dir|project.json>`(✅WP21)
+### `pelican_cli import ...`(✅WP21/79/84)
 
-DCC(Houdini 等)からの納品ディレクトリをプロジェクトに登録します。
+DCC 納品物の取り込み。3 つの形があります:
 
-1. `<delivery_dir>/manifest.json`(`pelican.import` v1)を読む。delivery_dir は**プロジェクトルート内**必須。
-2. 全 outputs の **sha256 を実ファイルと照合**(不一致は即エラー)。
-3. `schema: "gltf"` かつ `.glb` の出力を `asset_data.json` の `models` に `{name: <ファイル名 stem>, path: <プロジェクト相対>}` で追記。既登録の name / path はスキップ(**冪等** — 2 回実行しても重複しない)。
-4. 出力: `verified N outputs, registered M models, skipped K models`
+- `import <delivery_dir> --project <dir>` — `pelican.import` manifest の sha256 照合 → asset_data.json へ glb 登録(冪等)
+- `import gltf --extract-scene <glb> ...` — glTF のノード階層を scene v1(`parent` 付き)として抽出(✅WP79。[第5章](05_assets.md))
+- `import --rules ...` — `imports.rules.json`(glob → レシピ表)に従った一括取り込み(✅WP84)
 
-manifest の実物例(テストフィクスチャより):
+manifest の形式・実例は [第5章](05_assets.md) を参照してください。
 
-```json
-{
-  "schema": "pelican.import",
-  "version": 1,
-  "tool": { "name": "houdini-adapter", "version": "0.3.0", "dcc": "houdini 21.0.512" },
-  "source": { "file": "C:/show/shots/destruction_a.hip", "node": "/out/pelican_rbd", "seed": 42 },
-  "created": "2026-07-02T12:00:00Z",
-  "outputs": [
-    { "file": "debris.glb", "schema": "gltf",
-      "sha256": "50247eeaca40ca0bb1a5fb171799f32aba3cae2c8e33030bb4ba21f8d2c146c6" },
-    { "file": "debris_sim.jsonl", "schema": "pelican.transform_seq", "version": 1,
-      "sha256": "71167e92620243049421920148cb99b9a6088987be63e7118807e51eca237dd6" }
-  ]
-}
+### `pelican_cli assets manifest|verify|status --project <dir>`(✅WP66)
+
+asset store の sha256 台帳(assets manifest)を生成・照合します。
+
+```sh
+pelican_cli assets manifest --project mygame            # 生成(store 走査 → manifest 書き出し)
+pelican_cli assets verify --project mygame [--full]     # 照合(差分は severity 付き列挙、あれば exit 1)
+pelican_cli assets status --project mygame              # OK / MISSING / MISMATCH の一覧
 ```
 
-スキーマの詳細(outputs の file はスラッシュ相対・`..` 禁止、schema は `gltf` / `pelican.transform_seq` のみ等)は [第5章](05_assets.md) を参照してください。
+> **設計決定(検証はロードを止めない):** 起動時検証の深刻度は「内容の変化 = INFO、構造の逸脱(欠落・参照不能)= WARNING」で、エラーに昇格するのは `--strict-assets`(または配布 strict)のときだけ。
+
+### `pelican_cli bake-camera --replay <path.jsonl> --project <dir>`(✅WP89)
+
+リプレイを headless 実行し、カメラ軌跡を `imports/pelican-camera/<name>/` に `camera.transform_seq.jsonl` + `pelican.import` manifest として着地させます(DCC への逆輸出)。
+
+### `pelican_cli dump-lowered-material <surface>`(✅WP76)
+
+`.surface` の lowering 結果(std140 レイアウト・生成 GLSL)を stdout に出力します。「B は C の糖衣」の検証・デバッグ用です。
 
 ### `pelican_cli dist-config <project> [--with rpc,seqplayer] [--out <file>]`(✅WP41)
 
-> **設計決定(配布は宣言から導出):** 配布ビルドの機能フラグを手で並べさせない。プロジェクトの**内容**を走査して必要な `PELICAN_WITH_*` を導出し、根拠コメント付きの CMake キャッシュプリセットとして書き出す。
+> **設計決定(配布は宣言から導出):** 配布ビルドの機能フラグを手で並べさせない。プロジェクトの内容を走査して必要な `PELICAN_WITH_*` を導出し、根拠コメント付きの CMake キャッシュプリセットとして書き出す。
 
-判定規則:
-
-- `PELICAN_WITH_VAT` — プロジェクト内の GLB(asset_data + import manifest の gltf 出力)に `pelican.vat` extras が実在すれば ON
-- `PELICAN_WITH_EXR` — asset_data / ui config に `.exr` 参照があれば ON
-- `PELICAN_WITH_RPC` / `PELICAN_WITH_SEQPLAYER` — **既定 OFF**(配布ゲームに不要)。`--with rpc,seqplayer` で明示 ON
-
-配布ビルドの全 3 コマンド:
+- `PELICAN_WITH_VAT` — GLB に `pelican.vat` extras が実在すれば ON / `PELICAN_WITH_EXR` — `.exr` 参照があれば ON
+- `PELICAN_WITH_RPC` / `PELICAN_WITH_SEQPLAYER` — 既定 OFF。`--with rpc,seqplayer` で明示 ON
+- **`PELICAN_WITH_IMGUI` — 常に OFF を書き出す**(配布ビルドに開発 UI を含めない)
 
 ```sh
 pelican_cli dist-config projects/mygame --out build-dist/preset.cmake
@@ -169,36 +174,68 @@ cmake . -B build-dist -C build-dist/preset.cmake -DCMAKE_BUILD_TYPE=Release
 cmake --build build-dist --config Release
 ```
 
-※ `PELICAN_WITH_AUDIO` は dist-config の導出対象外で、配布でも常に ON のままです(v1 仕様)。embed サブセットの絞り込み(B3)・shaderc OFF の焼き込み配布(B4)は 📐設計のみです。
+※ AUDIO / PHYSICS 系は導出対象外(常に既定 ON)。B3(embed サブセット)・B4(shaderc OFF 焼き込み配布)は 📐設計のみ。
 
-## 10.5 ホットリロードと開発ワークフロー
+## 10.5 ホットリロード(✅WP90/96〜110)
 
-- **シェーダホットリロード** ✅ — ウィンドウモードで実行中、シェーダソースを保存すると約 1 秒のポーリングで自動再コンパイルされます(ヘッドレスでは無効)。
-- **フレームプランの確認** ✅ — `--dump-frame-plan` または rpc `get_frame_plan`([第6章](06_rendering.md))。
-- シェーダ以外のアセットホットリロードは 📐設計のみです。
+保存すれば動いたまま反映される、が現在の開発体験です。基盤は [src/core/watch/](../../src/core/watch)(FileWatcher + ReloadService。デバウンス 200ms、適用は**次フレーム先頭で一括**、mid-frame 差し替えなし)。
 
-## 10.6 Pelican Studio(devstudio)
+| 対象 | 状態 | 挙動 |
+|---|---|---|
+| シェーダ / `.surface`(+ `.material.json` の cross-file) | ✅WP108 | 影響する全バリアント・パイプラインを準備してから atomic に公開。失敗時は旧世代維持 + WARNING |
+| テクスチャ(PNG / EXR / KTX2) | ✅WP100 | 同 shape は in-place、shape 変化は再バインド(実測 ~1ms) |
+| マテリアル値(`.material.json`) | ✅WP105 | **同レイアウトのみ** SSBO 値更新(レイアウト変化は WARN + 旧値継続 🚧) |
+| モデルコンテナ(.glb / .gltf / .vrm) | ✅WP110 | 同一コンテナの全 fragment + 配置済み全インスタンスを 1 トランザクションで再構築(ID・Transform・物理は不変) |
+| ゲームロジック DLL | ✅WP90 | 下記 |
+| input actions / profile(HR2-I)、pelican.ui(U3) | 📐 | backlog Tier 1 |
+| scene JSON / rendering config / project.json | 対象外 | 設計上の決定(再起動) |
 
-**現状 🚧: Qt + QML の骨組みのみ**(テキストフィールド 2 個のダミー画面)。プロジェクト読み込み・ビューポート・編集機能は未実装です。起動は `cmake --build ./build --target run_studio`。
+- **有効条件**: ウィンドウモードのみ(既定 ON・専用フラグなし)。リプレイ / `--strict-assets` / rpc 駆動中は中央ゲートで無効。headless では自動監視しません。
+- **fail-soft**: 壊れたファイルを保存しても旧リソースで動き続け、名前入り WARNING と `get_status.reload.last_reload_error` に出ます。修正して保存し直せば回復します。
 
-> **設計決定(D0: エディタ特権の禁止・2026-07-08 ユーザー決定):** devstudio は公開契約(rpc / pelican_project / データ形式)の上に建つ 1 クライアントであり、エンジン内部への裏口 API を持たない。編集操作はまず rpc メソッドとして定義し、devstudio はそれを呼ぶだけ。効果: エージェント(自動化ツール)が人間と同一の操作面を持ち、エディタのテストが rpc 結合テストに還元される。
+### ゲームロジック DLL のホットリロード(✅WP90 = G2)
 
-計画されている段階(すべて 📐未着手): D1(プロジェクトを開く+埋め込みビューポート+読み取り専用アウトライナ)→ D2(ピッキング+ギズモ+プロパティ編集)→ D3(シーン保存 round-trip + undo/redo)。※現行コードは `pelican_core` を直接リンクしており、D0 規約とはまだ不整合です(D1 着手時に整理予定)。
+`-DPELICAN_PROJECT=<dir>` でプロジェクトの `code/` は **`pelican_game_logic.dll`** としてビルドされます(静的リンクからの移行 — [第8章](08_gameplay.md))。リロードのトリガーは 3 通り:
 
-ツール自作の入口は 3 つ: **データツール**(形式+`pelican_project` ライブラリ)/ **ライブツール**(JSON-RPC)/ **組み込みビュー**(埋め込みビューポート+rpc、将来)。
+1. ウィンドウモードでの自動検出(DLL の更新を監視)
+2. **F5** で強制リロード
+3. rpc `reload_game_logic`
 
-## 10.7 テスト基盤
+v1 は **full-reset 方式**: システムの状態と ECS を全破棄し、現在のシーンを再構築します(ホットステートの維持はしません)。ABI バージョン検証付きで、ロード失敗時は旧 DLL のまま続行します。
 
-- 単体テスト: Catch2 v3。`test/CMakeLists.txt` の `pelican_define_test(<name> [libs...])` で登録します。
-- **GPU 必須テストは Vulkan デバイス列挙失敗時に `SKIP()`** が規約です。
-- 結合テスト: `test/run_*.cmake` が player / cli を子プロセス起動し、stdout・生成物・PNG を検証します(rpc 決定性、devcli 3 コマンド、seq/vat 再生、フレームプランダンプ等)。
-- ゴールデンイメージテスト(✅WP16): ヘッドレス描画の出力 PNG を基準画像と比較します。流儀は [../rendering_phase1_review.md](../rendering_phase1_review.md)(Validation Run)を参照。
-- ctest 非登録のスモーク: `test/run_build_units_smoke.cmake`(4 ユニットを単独 OFF にしてビルド+エラー文言検証)、`test/run_project_code_smoke.cmake`(`PELICAN_PROJECT` ビルド)。
+### 起動高速化(✅WP82)
+
+- **シェーダディスクキャッシュ**: `<project>/.pelican/shader_cache/`(SHA-256 キー)。2 回目以降のシェーダコンパイルはほぼゼロに。破損しても WARN 1 行で通常コンパイルに戻ります。
+- **並列モデルロード**: CPU 側 prepare を並列化(GPU commit は宣言順直列 = 決定性維持)。起動時に 1 行レポート(`startup: ...`)が出て、`get_status.startup` でも見えます。
+
+## 10.6 ImGui 開発者 UI(✅WP85/86)
+
+`PELICAN_WITH_IMGUI`(既定 ON・配布は dist-config が常時 OFF)でビルドすると、**通常ウィンドウ起動時のみ** ImGui のデバッグ UI が使えます(headless / rpc / リプレイ / golden では無効)。
+
+- **F1** で表示トグル(専用 CLI フラグはありません)。メニューバー「Pelican」→ Frame Plan Viewer / Frame Stats(FPS・frame index・CPU 時間)/ ImGui Demo。
+- **Frame Plan Viewer**: フレームプランのノードグラフ可視化(パス = ノード、RT = エッジ。ホイールでズーム、中/右ドラッグでパン、左クリックで選択詳細)。データ源は `get_frame_plan` と同一の公開 JSON のみ — **D0(エディタ特権の禁止)準拠の第 1 実例**です。
+- すべて読み取り専用の可視化で、編集系のミューテーション経路はありません。
+
+## 10.7 Pelican Studio(devstudio)
+
+**現状 🚧: Qt + QML の骨組みのみ**(ダミー画面)。起動は `cmake --build ./build --target run_studio`。
+
+> **設計決定(D0: エディタ特権の禁止・2026-07-08):** devstudio は公開契約(rpc / pelican_project / データ形式)の上に建つ 1 クライアントであり、エンジン内部への裏口 API を持たない。編集操作はまず rpc メソッドとして定義し、devstudio はそれを呼ぶだけ。
+
+計画段階(すべて 📐未着手): D1(プロジェクトを開く+埋め込みビューポート)→ D2(ピッキング+ギズモ+編集)→ D3(保存 round-trip + undo/redo)。ツール自作の入口は 3 つ: データツール(`pelican_project`)/ ライブツール(JSON-RPC)/ 組み込みビュー(将来)。ImGui オーバーレイ(§10.6)が D0 準拠ツールの先行実例です。
+
+## 10.8 テスト基盤
+
+- 単体テスト: Catch2 v3(`pelican_define_test`)。**GPU 必須テストは Vulkan デバイス列挙失敗時に `SKIP()`**。
+- 結合テスト: `test/run_*.cmake` が player / cli を子プロセス起動して検証。2026-07-10 以降の追加: `run_devcli_assets`(WP66)/ `run_event_schema_compile`(WP71)/ `run_dump_lowered_material`(WP76)/ `run_devcli_gltf_extract`(WP79)/ `run_spvlink_golden`(WP80)/ `run_devcli_rules_import`(WP84)/ `run_devcli_bake_camera` + `run_input_record_replay_headless`(WP89)/ `run_ui_u2_rpc_replay`(WP93)など。
+- ゴールデンイメージテスト: **33 ケース**(ディレクトリ自動発見。[第6章](06_rendering.md) §6.10)。
+- ctest 非登録のスモーク: `run_build_units_smoke.cmake`(IMGUI / PHYSICS 系を含む単独 OFF ビルド検証)、`run_project_code_smoke.cmake`。
 
 ## 関連文書
 
 - [../external_tools_requirements.md](../external_tools_requirements.md) — 外部ツール契約(R1〜R10。JSON-RPC は R8)
+- [../design_asset_hot_reload.md](../design_asset_hot_reload.md) — アセットホットリロード(v2.1・HR0〜HR2-G 実装済み)
+- [../design_game_logic_native.md](../design_game_logic_native.md) — ゲームロジック(G2 DLL リロード実装済み)
 - [../design_devstudio_direction.md](../design_devstudio_direction.md) — エディタの方向性(D0〜D3)
 - [../design_build_tiers.md](../design_build_tiers.md) — ビルドユニット・配布
-- [../design_headless_rendering.md](../design_headless_rendering.md) — ヘッドレス描画
-- [第2章 ビルドと起動](02_getting_started.md) / [第6章 レンダリング](06_rendering.md) / [第8章 ゲームロジック](08_gameplay.md)
+- [第2章 ビルドと起動](02_getting_started.md) / [第6章 レンダリング](06_rendering.md) / [第7章 入力と UI](07_input_ui.md) / [第8章 ゲームロジック](08_gameplay.md)

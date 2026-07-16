@@ -1,6 +1,6 @@
 # 第4章 シーンと ECS
 
-対象: pelican2(2026-07-10 時点)/ このマニュアルはコードを正とする
+対象: pelican2(2026-07-16 時点)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
@@ -72,11 +72,22 @@
 - schema なしのレガシー形式、トップレベル `lights` セクションは **v1 では受理されません**(名指しのエラーで移行先を案内)。※設計文書には「WARN+自動解釈」と書かれていますが、WP63(strict v1 化)で意図的に廃止されており、実装が正です。
 - 起動時にロードされるのは `project.json` の `basic_config.default_scene_id` のシーンです。
 
-### オブジェクトと名前
+### オブジェクトと名前・親子
 
 - 各オブジェクトは `components` 配列が**必須**です。
 - `name` は**任意**。付ける場合は `[a-zA-Z0-9_]` のみ(識別子規約 R7)で、**シーン内一意**(重複は hard error)。
-- 名前の用途: rpc `update_transforms` の宛先、カメラコントローラの `target`、ライト名、collider 名、エラーメッセージ。名前がなくても動きます(example のモデルはほぼ無名)。
+- 名前の用途: rpc `update_transforms` の宛先、カメラコントローラの `target`、**`parent` 参照**、ライト名、collider 名、エラーメッセージ。
+- `parent`(✅WP79): オブジェクト直下の任意キーで、**親オブジェクトの `name`** を文字列で指定します(省略 = ルート)。未知の親・同名複数(曖昧)・循環(経路列挙付き)はすべて hard error。親子に参加するオブジェクトは `transform` 必須で、`localtransform` を書かなければローダーが transform から自動注入します。ワールド変換は `parent_world × local` で毎フレーム合成されます(scale は成分積)。
+
+```json
+{ "name": "Wheel", "parent": "CarBody",
+  "components": [
+    { "name": "transform", "pos": [0.8, -0.3, 0], "rotation": [0,0,0,1], "scale": [1,1,1] },
+    { "name": "simplemodelview", "model": "wheel" }
+  ] }
+```
+
+(例 — 実物のネガティブ検証は `test/fixtures/project_format/invalid/scene_{unknown_parent,ambiguous_parent,parent_cycle}.json`)
 
 > **設計決定(コンポーネント名 = 登録名):** シーン形式が定義するのは「`name` + 任意パラメータのレコード列」まで。コンポーネントの語彙は ECS の登録名(+バインダの特別扱い)で決まり、新コンポーネント追加にシーン形式仕様の改訂は不要。未知の名前は `Unknown component 'X' on object 'Y'` で fail-fast。
 
@@ -100,11 +111,11 @@
 { "name": "simplemodelview", "model": "sotai" }
 ```
 
-`model` は `asset_data.json` の `models[].name` を指します。実装上は `simplemodelview`(描画インスタンスのハンドル)と `simplemodelviewupdate`(モデル名+dirty フラグ)の 2 コンポーネントに分かれており、上の短縮形を書くとローダーが**暗黙に `simplemodelviewupdate` を合成**します(互換の絆創膏 — 統合は将来の作業)。実行時に `model_name` を書き換えて dirty を立てればモデル差し替えもできます。
+`model` は `asset_data.json` の `models[].name` を指します(`foo.glb#mesh/名前` のフラグメント登録も可 — [第5章](05_assets.md))。✅WP67 で**単一コンポーネントに統合**されました: `SimpleModelViewComponent` が `model_name` + `dirty` + インスタンスハンドルを 1 つで持ちます(旧 `simplemodelviewupdate` は消滅。JSON の書き味は不変)。実行時に `model_name` を書き換えれば(`init` が dirty を立てるため)モデル差し替えもできます。
 
-### localtransform(✅・ただし親子階層は未実装)
+### localtransform(✅)
 
-`pos` / `rotation` / `scale`(すべて必須)。毎フレーム値が `transform` へコピーされます。構造体には `parent` フィールドがありますが、**JSON からは指定できず、読むコードも存在しません**(親子の transform 合成は 📐未実装。prefab/ネストは RenderWorld 期まで持ち込まない方針)。
+`pos` / `rotation` / `scale`(すべて必須)。毎フレーム値が `transform` へ反映されます。親子階層はオブジェクト直下の `parent` キー(§4.1)で宣言します — localtransform コンポーネント自体に親を書くフィールドはありません。
 
 ### camera(✅)
 
@@ -118,6 +129,7 @@ CameraComponent 自体はマーカーで、投影・コントローラのパラ�
 | `aspect` | 任意(省略時はビューポートから計算) |
 | `xmag` / `ymag` | orthographic 用 |
 | `controller` | カメラコントローラ([第8章](08_gameplay.md)) |
+| `sprite` | `{"pixel_perfect":"off"\|"strict", "sort":"z"\|"declaration"}`(✅WP106。スプライトの pixel policy — [第6章](06_rendering.md) §6.9) |
 
 - 旧キー `fov_y` / `near` / `far` は移行先を案内する hard error です(WP63)。
 - パラメータを何も書かなければ `basic_config.camera` の既定投影を使います(example の 1 個目のカメラがこの形)。
@@ -151,7 +163,52 @@ CameraComponent 自体はマーカーで、投影・コントローラのパラ�
 | `layer` / `mask` | 任意 uint32(既定 `1` / `0xffffffff`)。query と reciprocal に一致した collider だけ対象 |
 | `trigger` / `one_way` | 任意 bool(既定 false)。query metadata。イベント/方向 policy 自体は別層 |
 
-旧名 `size` / `height` は半分値の新名を案内する hard error です。オブジェクトに `transform` があれば移動に追従します。クエリ(raycast / overlap / shapeCast)は [第8章](08_gameplay.md) を参照してください。
+旧名 `size` / `height` は半分値の新名を案内する hard error です。オブジェクトに `transform` があれば移動に追従します。クエリ(raycast / overlap / shapeCast)は [第8章](08_gameplay.md) を参照してください。なお `PELICAN_WITH_PHYSICS=OFF` ビルドでは collider を含むシーンは名指しエラーになります(パージ可能境界)。
+
+### animation(✅WP38)— スケルタルクリップ再生
+
+skinned glTF モデルと組み合わせて、クリップを宣言的に再生します(ゲームコード不要):
+
+```json
+{ "name": "simplemodelview", "model": "character" },
+{ "name": "animation", "clip": "character.glb#animation/Turn", "speed": 1.0, "loop": true, "start_time": 0.0 }
+```
+
+| フィールド | 必須? | 既定 | 規則 |
+|---|---|---|---|
+| `clip` | **必須** | — | **`<glb>#animation/<クリップ名>` フラグメント参照**。モデルと**同一 glb** でないと実行時エラー |
+| `speed` | 任意 | 1.0 | 再生速度 |
+| `loop` | 任意 | true | 非 bool は名指しエラー |
+| `start_time` | 任意 | 0.0 | 開始オフセット秒 |
+| `graph` | 禁止 | — | v1 予約キー(存在するだけでエラー)。グラフ再生は C++ API — [第8章](08_gameplay.md) |
+
+制限: 補間は LINEAR / STEP のみ(CUBICSPLINE はロードエラー)、モーフターゲットは非対応(VRM-S1 送り)、joint 上限 128。時刻源は `EngineTime`(rpc `set_time` と同一経路 = 決定的)。
+
+### sprite_view(✅WP103/104/106)— 2D スプライト
+
+```json
+{ "name": "OneWayPlatform",
+  "components": [
+    { "name": "transform", "pos": [-0.6, 1.2, 0.05], "rotation": [0,0,0,1], "scale": [1,1,1] },
+    { "name": "sprite_view", "texture": "demo_atlas#sprite/full", "size": [1.8, 0.12],
+      "pivot": [0.5, 0.5], "layer": 1, "color": [0.95, 0.75, 0.25, 1.0] },
+    { "name": "collider", "shape": "box", "half_extents": [0.9, 0.06, 0.5], "one_way": true }
+  ] }
+```
+
+(実物: [../../projects/sprite_demo/scene.json](../../projects/sprite_demo/scene.json))
+
+| フィールド | 必須? | 既定 | 規則 |
+|---|---|---|---|
+| `texture` | **必須** | — | asset_data の `textures[].name`、または `<名前>#sprite/<スプライト名>`(atlas 参照) |
+| `size` | 任意 | ソース px ÷ pixels_per_unit | `[w, h]`(有限・正) |
+| `pivot` | 任意 | [0.5,0.5] | 0..1 |
+| `color` | 任意 | [1,1,1,1] | 乗算 tint(リニア) |
+| `flip` | 任意 | [false,false] | [flip_x, flip_y] |
+| `layer` | 任意 | 0 | int16 のソートキー |
+| `billboard` | 任意 | "none" | `"none"` / `"y_axis"` / `"full"` |
+
+**closed schema**(未知キーはエラー)。スプライトは常に **XY 平面 + Z 法線**(2026-07-12 決定 — 床置きは Transform 回転で)。描画には rendering config の `sprite` feature 参照が必要です([第6章](06_rendering.md) §6.9)。
 
 ## 4.3 シーンロードの流れ
 
@@ -214,7 +271,7 @@ ECS の実装(WP62・R5-core ✅)は archetype/chunk 方式ですが、ゲーム
 
 - `CameraSystem` は現状、camera コンポーネントを持つ**先頭 1 entity のみ**を処理します。複数カメラを置いた場合の意味論は未規定です(アクティブ投影は「シーン中最初の camera」)。
 - example の `basic_config.camera.up` は `[0,-1,0]`(Y 下向き up)です。自作プロジェクトで座標系に迷ったらここを確認してください。
-- スケルタルアニメーション(glTF スキン再生)は 📐未実装です(WP38 予約)。頂点アニメーションは VAT([第5章](05_assets.md))で行えます。
+- スケルタルアニメーション(glTF スキン再生)は ✅WP38 で実装済みです(§4.2 の `animation` コンポーネント)。頂点キャッシュ系のアニメーションは従来どおり VAT([第5章](05_assets.md))が担当します。
 
 ## 関連文書
 

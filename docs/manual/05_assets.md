@@ -1,6 +1,6 @@
 # 第5章 アセットパイプライン
 
-対象: pelican2(2026-07-10 時点)/ このマニュアルはコードを正とする
+対象: pelican2(2026-07-16 時点)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
@@ -43,17 +43,40 @@
 
 仕様上の注意:
 
-- `models` 配列は必須、各要素は `name` と `path`(プロジェクトルート基準)の両方が必須です。※この JSON には `schema`/`version` エンベロープがありません(R10 規約の現行例外)。
-- **起動時に全件即時ロード**されます(遅延ロードなし)。ファイルが無ければ解決後の絶対パス入りで fail-fast。
-- glTF のロードでは、ノード階層の変換が**頂点に焼き込まれて平坦化**されます(モデル内シーングラフは保持されません)。マテリアルは pbrMetallicRoughness の 4 テクスチャ(baseColor / metallicRoughness / normal / emissive)として登録されます。
-- ⚠️ **スケルタルアニメーション・モーフの再生は 📐未実装**です(JOINTS/WEIGHTS 属性は読み込むだけ)。これはエンジン最大の未設計領域として認識されています(E2)。動きが必要な場合は次節の transform_seq / VAT を使います。
+- `models` 配列は必須、各要素は `name` と `path`(プロジェクトルート基準)の両方が必須です。※この JSON には `schema`/`version` エンベロープがありません(R10 規約の現行例外)。`path` には `#` フラグメント(§5.6)も書けます: `{"name":"selected","path":"assets/models/city.glb#mesh/LampPost"}`。
+- **起動時に全件ロード**されます(✅WP82 で CPU 側は並列化・GPU 登録は宣言順直列 = 決定的)。ファイルが無ければ解決後の絶対パス入りで fail-fast。
+- 静的メッシュはノード階層の変換が**頂点に焼き込まれて平坦化**されます。マテリアルは pbrMetallicRoughness の 4 テクスチャ(baseColor / metallicRoughness / normal / emissive)として登録されます(色テクスチャは SRGB view — [第6章](06_rendering.md) §6.3)。
+- **スケルタルアニメーションは ✅WP38 で実装済み**: glTF の `skins` + `animations` を読み、シーンの `animation` コンポーネント([第4章](04_scene_ecs.md))で再生します。skinned プリミティブはスケルトンを保持します(焼き込まない)。制限: 補間は LINEAR / STEP のみ(CUBICSPLINE はロードエラー)、**モーフターゲットはロードエラー**(VRM-S1 送り)、joint 上限 128、クリップはモデルと同一 glb のみ。
+- モデルファイル(.glb/.gltf/.vrm)は実行中のホットリロード対象です(✅WP110 — [第10章](10_tools.md) §10.5)。
 
-### テクスチャ・画像
+### テクスチャ・画像と atlas(`textures` セクション ✅WP103)
 
-- glTF 内のテクスチャは自動ロードされます。
-- 単体画像の現在の用途は UI オーバーレイ(`ui/ui_overlay.json` — [第7章](07_input_ui.md))です。PNG/JPG は stb_image、`.exr` は tinyexr(✅WP26・`PELICAN_WITH_EXR`)。
-- EXR は**限定スコープ**: single-part・scanline・half/float のみ。multi-part / deep / tiled は名指しで拒否されます。
-- KTX2 / Basis は 📐WP23 候補予約(未実装)。
+`asset_data.json` には任意の `textures` 配列も書けます(スプライト・UI 用のテクスチャ/アトラス宣言):
+
+```json
+{
+  "models": [],
+  "textures": [
+    { "name": "demo_atlas", "path": "assets/demo.atlas.json", "sampler": "nearest" }
+  ]
+}
+```
+
+- `name` / `path` 必須、`sampler` は `"nearest"` / `"linear"`(既定 linear)。**sampler はアセット宣言側が正本**(sprite/UI 側での上書きなし)。
+- `path` は単体画像(PNG 等)か **`pelican.atlas` v1** の JSON。atlas の実物([../../projects/sprite_demo/assets/demo.atlas.json](../../projects/sprite_demo/assets/demo.atlas.json)):
+
+```json
+{ "schema": "pelican.atlas", "version": 1,
+  "pages": [ { "image": "demo.png", "size": [16, 16] } ],
+  "sprites": { "full":  { "page": 0, "rect": [0, 0, 16, 16] },
+               "left":  { "page": 0, "rect": [0, 0, 8, 16] },
+               "right": { "page": 0, "rect": [8, 0, 16, 16] } } }
+```
+
+`rect` は [left, top, right, bottom] px。個々のスプライトは `"demo_atlas#sprite/left"` の形で `sprite_view` / UI から参照します(この `#sprite/` は atlas 側の解釈で、glb フラグメントとは別系統)。
+
+- 画像デコーダ: PNG/JPG = stb_image、`.exr` = tinyexr(✅WP26。single-part・scanline・half/float 限定)、**`.ktx2` = 自前パーサ(✅WP92)**。
+- KTX2 の対応範囲(制限サブセット): **RGBA8 UNORM/SRGB・BC7・BC5** の 2D テクスチャ、全ミップ必須。supercompression(Basis/zstd)・cubemap/array は名指しで拒否。glb 内蔵の `KHR_texture_basisu` は対象外です。専用ビルドフラグはなく常時有効。
 
 ## 5.3 焼き込みアニメーション(1) — pelican.transform_seq(✅WP17)
 
@@ -113,26 +136,54 @@ pelican_player --headless --project <dir> --frames 3 --size 160x90 --fps 30 \
 
 > **設計決定(プロデューサ検証):** エンジンは JSON Schema validator を持たない。書き出したツール自身が書き出し直後に検証する。エンジン側は fail-fast(必須欠落・型不一致は throw)+ tolerant reader(未知フィールドは無視)。
 
-⚠️ 現状の注意: Blender ブリッジ(`dcc/blender_pelican2_bridge/`)や Houdini アダプタ、変換ツール集 `pelican-import-tools` は**設計のみで、リポジトリに存在しません** 📐。エンジン側の受け口(headless 描画・SeqPlayer・VAT・import)はすべて完成しています。FBX→glb の標準変換レーンは「Blender headless(`blender --background --python`)」と決定済みです。
+現状の注意: 変換ツール集 **pelican-import-tools は独立リポジトリとして実装済み**(✅WP81 = K3。Python 製 `psd_extract` + `atlas_pack`、出力は `pelican.atlas` + import manifest)ですが、本リポジトリには含まれません。Houdini アダプタも別リポジトリです。Blender ブリッジは依然 📐(FBX→glb の標準変換レーンは「Blender headless」と決定済み)。エンジン側の受け口(headless 描画・SeqPlayer・VAT・import・rules)はすべて完成しています。
 
-## 5.6 フラグメント参照とアセットコンテナ(🚧構文のみ実装・WP55)
+## 5.6 フラグメント参照とアセットコンテナ(✅実ロード対応・WP55/77/79/84)
 
-1 ファイル(コンテナ)内のサブアセットを指す構文が [PF] v6.3 で凍結されています:
+1 ファイル(コンテナ)内のサブアセットを指す構文が [PF] v6.3 で凍結され、✅WP77(K1)で**実際の部分ロード**が入りました:
 
 ```
-assets/models/city.glb#mesh/LampPost     … 短い一意名(糖衣)
+assets/models/city.glb#mesh/LampPost      … 短い一意名(糖衣)
 assets/models/city.glb#node/Root/Arm/Cube … フルパス(正準形)
 ```
 
-- 構文とバリデーション(`#` は 1 個・種別は英数字・**全数字の index 参照は構文レベルで拒否** — DCC の並び替えで壊れるため)は実装済みです。
-- ⚠️ **実際の部分ロード(K1)は未実装**: フラグメント付き参照がローダーに到達すると「Unsupported asset fragment kind」で明確に失敗します。現時点でシーン等に書いても動きません。
-- glTF シーン抽出(`--extract-scene`)、PSD レーン(psd-tools)、アトラスパック、import ルール表(`imports.rules.json`)はすべて 📐設計のみです([../design_asset_containers.md](../design_asset_containers.md))。
+- 構文規則: `#` は 1 個・種別は英数字・**全数字の index 参照は構文レベルで拒否**(DCC の並び替えで壊れるため)。短い一意名が曖昧な場合は候補全列挙のエラー。
+- 対応種別は **`mesh` / `node` / `material` / `animation` の 4 種**(.glb/.gltf のみ)。未対応 kind は対応一覧付きの名指しエラー。依存するリソースだけを GPU 化する真の部分ロードです。
+  - `#mesh/...` / `#node/...` → asset_data.json の `models[].path` に書いてモデル参照
+  - `#animation/<クリップ名>` → シーンの `animation` コンポーネントの `clip`([第4章](04_scene_ecs.md))
+  - ※ atlas の `#sprite/<名>` は別系統(§5.2)です
+- フラグメント参照のホットリロードも ✅WP110 で対応済み。
+
+### glTF シーン抽出(✅WP79 = K2)
+
+```sh
+pelican_cli import gltf --extract-scene assets/models/city.glb
+```
+
+glTF のノード階層を pelican.scene v1 として抽出します: メッシュノード → `simplemodelview` + `#node/<フルパス>` 参照、`KHR_lights_punctual` → `light`、カメラノード → `camera`、**ノード親子 → オブジェクトの `parent`**。ノード名は R7 識別子必須で、重複・循環は抽出時に検出されます。
+
+### import ルール表(✅WP84 = K4)
+
+```sh
+pelican_cli import --rules imports.rules.json
+```
+
+glob → レシピの中央表(`pelican.import_rules` v1)で一括取り込みを宣言します:
+
+```json
+{ "schema": "pelican.import_rules", "version": 1,
+  "rules": [ { "match": "ui/**/*.psd", "recipe": "atlas_pack", "options": { "padding": 0 } } ],
+  "defaults": { ".psd": "psd_layers", ".png": null } }
+```
+
+- レシピは 3 種: `extract_scene`(devcli 内蔵)/ `psd_layers` / `atlas_pack`(外部 pelican-import-tools を起動)。優先は rules > defaults > builtin 既定(`.glb → extract_scene` 等)。`null` で既定を無効化。
+- 未知キー・未知レシピ・`\` を含む glob はすべて名指しエラー。出力は `imports/` + `pelican.import` manifest に着地します。
 
 > **設計決定(参照 = 存在):** コンテナを丸ごと参照すればパック、フラグメントで参照すれば分解。有効/無効フラグは持たない。per-file サイドカー(.meta)は不採用で、import の意味論は中央のルール表に置く(works-on-my-machine の構造的封じ込め)。
 
 ## 5.7 バイナリアセットの管理
 
-- エンジンリポジトリでは example のバイナリは git 管理外で、[projects/example/README.md](../../projects/example/README.md) の sha256 表が第一防衛線です(assets manifest = WP66 で置換予定 📐)。
+- バイナリの sha256 台帳は **assets manifest(✅WP66)** です: `pelican_cli assets manifest / verify / status` で生成・照合し、起動時にも検証されます([第3章](03_project_format.md) §3.4)。example の README にあった手書き表はこれに置き換わりました。
 - 置き場所を外部化したい場合は asset store([第3章](03_project_format.md) §3.4)を使います。
 - `pelican_cli project init` が生成する `.gitattributes` は `*.glb -text` 等の改行変換防止(CRLF 事故防止)+ LFS 行のコメントアウトを含みます。
 
@@ -140,18 +191,25 @@ assets/models/city.glb#node/Root/Arm/Cube … フルパス(正準形)
 
 | 形式 | 用途 | 状態 |
 |---|---|---|
-| glb / glTF / VRM | モデル(静的メッシュ+PBR) | ✅(スケルタル再生は 📐) |
+| glb / glTF / VRM | モデル(メッシュ+PBR+スキン) | ✅(スケルタル再生 ✅WP38。VRM 拡張のセマンティクスは ✅WP111 で保持・検証・dump まで — レンダラ適用は 📐VRM-S1 以降) |
 | PNG / JPG | テクスチャ・UI 画像 | ✅ |
 | EXR(限定スコープ) | HDR テクスチャ | ✅ WP26(`PELICAN_WITH_EXR`) |
+| KTX2(制限サブセット) | 圧縮テクスチャ(RGBA8/BC7/BC5) | ✅ WP92 |
 | WAV | SE([第8章](08_gameplay.md)) | ✅ WP51(`PELICAN_WITH_AUDIO`) |
+| pelican.atlas | スプライト/UI のアトラス | ✅ WP103 |
 | pelican.transform_seq(JSONL) | TRS 焼き込みアニメ | ✅ WP17(`PELICAN_WITH_SEQPLAYER`) |
 | pelican.vat(glb extras) | 頂点アニメ | ✅ WP20(`PELICAN_WITH_VAT`) |
+| pelican.anim_graph | アニメーショングラフ([第8章](08_gameplay.md)) | ✅ WP101 |
 | pelican.import(manifest) | 納品の検証・登録 | ✅ WP21 |
+| pelican.import_rules | 一括取り込みのルール表 | ✅ WP84 |
+| pelican.assets(manifest) | バイナリの sha256 台帳 | ✅ WP66 |
+| pelican.input_seq(JSONL) | 入力収録([第7章](07_input_ui.md)) | ✅ WP89 |
+| pelican.settings / セーブ JSON | user:// 永続化([第8章](08_gameplay.md)) | ✅ WP65 |
+| `.surface` / pelican.material | マテリアル([第6章](06_rendering.md)) | ✅ WP68〜78 |
 | GLSL / SPIR-V | シェーダ([第6章](06_rendering.md)) | ✅ |
-| KTX2 / Basis | 圧縮テクスチャ | 📐 WP23 予約 |
 | pelican.pointcache | パーティクル点群 | 📐 方向決定のみ |
-| PSD(外部展開) | UI ソース | 📐 K3 設計のみ |
-| FBX / USD / .hip | ソース層(エンジンは読まない) | — 外部変換のみ |
+| PSD(外部展開) | UI ソース | ✅ K3(外部 pelican-import-tools が展開。エンジンは読まない) |
+| FBX / USD / .hip | ソース層(エンジンは読まない) | — 外部変換のみ(USD レーンは 📐 [../design_usd_openpbr.md](../design_usd_openpbr.md)) |
 
 ## 関連文書
 

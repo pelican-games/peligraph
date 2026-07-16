@@ -1,6 +1,6 @@
 # 第9章 Web プロファイル
 
-対象: pelican2(2026-07-10 時点)+ my_webpage リポジトリ / このマニュアルはコードを正とする
+対象: pelican2(2026-07-16 時点。web 側の調査は 2026-07-10)+ my_webpage リポジトリ / このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
@@ -100,7 +100,7 @@ npm run shaders:spirv -- <project-dir>
 | WW5 | naga による WGSL→SPIR-V 変換 CLI | ✅ |
 | WW6 | GUI primitives v1(tokens → primitives → surfaces の三層)+ スタイルガイド | ✅ |
 | WW7 | Shader Dock の primitives 移行 | 🚧 進行中 |
-| WW8 | Plan viewer(rpc `get_frame_plan` の可視化) | 📐 設計のみ |
+| WW8 | Plan viewer(web 版) | ❌ **撤回**(2026-07-12 ユーザー決定: プランビューアは**エンジン内 ImGui ツール**として実装 — ✅WP86、[第10章](10_tools.md) §10.6。web 側の着手分は撤去済み) |
 | — | 可搬性 lint / scene・asset JSON 対応 / WebSocket クライアント | 📐 設計のみ |
 
 ## 9.7 既知の問題(2026-07-10 調査)

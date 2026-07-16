@@ -1,6 +1,6 @@
 # 第2章 ビルドと起動
 
-対象: pelican2(2026-07-10 時点)/ このマニュアルはコードを正とする
+対象: pelican2(2026-07-16 時点)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
@@ -60,6 +60,8 @@ cmake . -B build -DSKIP_DEVSTUDIO=ON
 | `PELICAN_WITH_VAT` | `pelican.vat`(GLB)再生 |
 | `PELICAN_WITH_EXR` | EXR 読み込み |
 | `PELICAN_WITH_AUDIO` | WAV SE 再生 |
+| `PELICAN_WITH_IMGUI` | ImGui 開発者 UI(F1 トグル・Plan Viewer)。配布では dist-config が常時 OFF([第10章](10_tools.md)) |
+| `PELICAN_WITH_PHYSICS` | 物理クエリ層。配下に `PELICAN_WITH_BUILTIN_PHYSICS`(既定 ON)/ `PELICAN_WITH_JOLT_PHYSICS`(既定 OFF)のプロバイダ選択 |
 | `PELICAN_RUNTIME_SHADER_COMPILER` | 実行時 GLSL コンパイル(shaderc) |
 
 OFF でビルドした機能を使おうとすると、黙って無視されるのではなく `This binary was built with PELICAN_WITH_X=OFF: ...` という**名指しのエラー**で止まります(fail-fast 方針。[第1章](01_overview.md) 参照)。
@@ -76,6 +78,11 @@ build/src/player/Debug/pelican_player.exe --project projects/example
 
 > **注意(重要):** example の **3D モデルやテクスチャなどのバイナリアセットは git 管理されていません**。[projects/example/README.md](../../projects/example/README.md) に「ファイルパス / 入手元 / sha256 / サイズ」の一覧表があるので、記載どおりのファイルを配置してからフルシーンを起動してください。手元にバイナリが無い状態で試したい場合は、次節の `project init` から始めるのが確実です。
 
+example のほかに、機能別のデモプロジェクトが 2 つあります(どちらも同様に `--project` で起動):
+
+- [projects/sprite_demo](../../projects/sprite_demo) — 2D 横スクロールの vertical slice(スプライト・pixel perfect・`moveAndSlide`・ゲームパッド)
+- [projects/animgraph_demo](../../projects/animgraph_demo) — アニメーショングラフ(歩き↔走りブレンド + ジャンプ割込み)
+
 ### 暗黙プロジェクト(`--project` 省略時)
 
 `--project` を省略すると、player は次の順でプロジェクトを探します:
@@ -87,7 +94,7 @@ build/src/player/Debug/pelican_player.exe --project projects/example
 
 ## 2.4 最初の自分のプロジェクトを作る
 
-`pelican_cli project init` が 15 ファイルの雛形を生成します(✅実装済み・WP57)。生成されるプロジェクトは**バイナリアセット不要で、生成直後にそのまま起動できます**(カメラ+ディレクショナルライトのみのシーン)。
+`pelican_cli project init` が雛形一式を生成します(✅実装済み・WP57)。生成されるプロジェクトは**バイナリアセット不要で、生成直後にそのまま起動できます**(カメラ+ディレクショナルライトのみのシーン)。
 
 ```sh
 # 1. 雛形生成(dist_debug は Debug ビルドの場合)
@@ -106,6 +113,7 @@ mygame/
 ├── assets/asset_data.json            # モデル登録(空)
 ├── assets/{models,textures,audio}/   # 置き場(.gitkeep 入り)
 ├── input/actions.json                # 入力アクション定義
+├── input/profiles/keyboard.json      # バインディングプロファイル(第7章)
 ├── passes/main_rendering_config.json # レンダリングパイプライン定義(deferred 構成)
 ├── ui/ui_overlay.json                # 2D オーバーレイ(空)
 ├── code/CMakeLists.txt               # pelican_game_sources(game.cpp)
@@ -134,7 +142,9 @@ mygame/
     "rendering_config_json": "passes/main_rendering_config.json",
     "default_rendering_pass": "main_render",
     "ui_config_json": "ui/ui_overlay.json",
-    "input_actions_json": "input/actions.json"
+    "input_actions_json": "input/actions.json",
+    "input_profiles": { "keyboard": "input/profiles/keyboard.json" },
+    "input_profile": "keyboard"
   }
 }
 ```
@@ -169,7 +179,7 @@ mygame/
 
 ### ゲームコード(C++)を組み込む
 
-ゲームロジックは C++ で書き、**player に静的リンク**します。configure 時に `-DPELICAN_PROJECT` でプロジェクトを指定すると、`code/CMakeLists.txt` が取り込まれます:
+ゲームロジックは C++ で書きます。configure 時に `-DPELICAN_PROJECT` でプロジェクトを指定すると、`code/CMakeLists.txt` が取り込まれ、**`pelican_game_logic.dll` としてビルド**されます(✅WP90 で静的リンクから移行 — 実行中に **F5 でホットリロード**できます。[第10章](10_tools.md) §10.5):
 
 ```sh
 cmake . -B build -DSKIP_DEVSTUDIO=ON -DPELICAN_PROJECT=mygame

@@ -1,6 +1,8 @@
 # Pelican2 マニュアル
 
-対象: pelican2(2026-07-10 時点、branch `codex/rendering-phase1-refactor`)
+対象: pelican2(2026-07-16 時点、branch `codex/rendering-phase1-refactor`)/ 初版 2026-07-10、WP64〜111 反映の全域更新 2026-07-16
+
+より深いクラス単位のコード解説は姉妹文書 [../source-code-guide/](../source-code-guide/README.md) にあります(本マニュアル = 使い方と現状、source-code-guide = 内部構造の深掘り)。
 
 Pelican2 の**使い方と設計を人間向けに解説する公式マニュアル**です。docs/ 直下の設計文書(design_*.md)が「これから作るもの・作ったものの意図」を書くのに対し、本マニュアルは「**いま何がどう動くか**」を書きます。原則は 2 つ:
 

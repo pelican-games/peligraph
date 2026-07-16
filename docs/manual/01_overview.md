@@ -1,6 +1,6 @@
 # 第1章 エンジン全体像
 
-対象: pelican2(2026-07-10 時点)/ このマニュアルはコードを正とする
+対象: pelican2(2026-07-16 時点)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
@@ -23,7 +23,7 @@ Pelican2 は **C++20 / Vulkan(vulkan.hpp)/ Windows(MSVC)** のゲームエンジ
 | `pelican_studio` | Qt6 製エディタ(現状は骨組みのみ 🚧) |
 | web ビューア | 別リポジトリ `my_webpage` の WebGPU「Shader Dock」。**同じプロジェクトファイルをブラウザで開く**([第9章](09_web.md)) |
 
-特徴を一言でいうと: **「データ(JSON)で宣言し、C++ で振る舞いを書き、すべてを決定的・検証可能にする」** エンジンです。レンダリングパイプラインは JSON だけで定義でき([第6章](06_rendering.md))、ゲームロジックはネイティブ C++ 静的リンク([第8章](08_gameplay.md))、実行はヘッドレス+JSON-RPC で完全に自動化できます。
+特徴を一言でいうと: **「データ(JSON)で宣言し、C++ で振る舞いを書き、すべてを決定的・検証可能にする」** エンジンです。レンダリングパイプラインは JSON だけで定義でき([第6章](06_rendering.md))、ゲームロジックはネイティブ C++(ホットリロード可能な DLL — [第8章](08_gameplay.md))、実行はヘッドレス+JSON-RPC で完全に自動化できます。
 
 ## 1.2 データフロー(起動から画面まで)
 
@@ -62,9 +62,15 @@ pelican2/
 │   │   ├── model/        #   glTF ロード、VAT
 │   │   ├── asset/        #   asset_data.json → モデル登録
 │   │   ├── os/           #   ウィンドウ(GLFW)、入力スナップショット、アクション層
-│   │   ├── phys/         #   物理クエリ(raycast/overlap)
-│   │   ├── playback/     #   SeqPlayer(transform_seq)、VatPlayer
+│   │   ├── phys/         #   物理クエリ(raycast/overlap/shapeCast、provider 境界)
+│   │   ├── playback/     #   SeqPlayer(transform_seq)、VatPlayer、カメラ焼き出し
 │   │   ├── audio/        #   WAV SE 再生(miniaudio)
+│   │   ├── animation/    #   スケルタル/グラフ評価の機構(ABI v1 jobs)
+│   │   ├── ui/           #   pelican.ui ランタイム(レイアウト・atlas)
+│   │   ├── imgui/        #   ImGui 開発 UI + Plan Viewer
+│   │   ├── watch/        #   アセットホットリロード基盤(FileWatcher/ReloadService)
+│   │   ├── gamelogic/    #   ゲーム DLL のロード・ホットリロード
+│   │   ├── persistence/  #   user:// 設定・セーブ(pelican.settings)
 │   │   ├── communication/#   JSON-RPC サーバ
 │   │   ├── appflow/      #   メインループ、EngineTime、teardown
 │   │   ├── userpublic/   #   ★ゲームコードに公開する API の境界(GameContext 等)
@@ -73,10 +79,11 @@ pelican2/
 │   ├── project/          # ★解釈レイヤ(静的 lib pelican_project。エンジン非依存の純ロジック)
 │   ├── player/           # pelican_player(main.cpp)
 │   ├── devcli/           # pelican_cli
-│   └── devstudio/        # Pelican Studio(Qt)
-├── projects/example/     # 実プロジェクト例(このマニュアルの JSON 例の出典)
-├── docs/                 # 設計文書(索引: docs/README.md)+ 本マニュアル(docs/manual/)
-└── test/                 # Catch2 単体 + fixture + golden + CMake スクリプト結合テスト
+│   ├── devstudio/        # Pelican Studio(Qt)
+│   └── spvlink/          # pelican-spv-link CLI(experimental)
+├── projects/             # example / sprite_demo / animgraph_demo(JSON 例の出典)
+├── docs/                 # 設計文書(索引: docs/README.md)+ 本マニュアル(manual/)+ コード解説(source-code-guide/)
+└── test/                 # Catch2 単体 + fixture + golden(33)+ CMake スクリプト結合テスト
 ```
 
 ## 1.4 レイヤ構造とレイヤ規則
@@ -117,14 +124,16 @@ vkcore(Vulkan 低層)
 
 > **設計決定 9(API ではなくデータ契約):** 外部ツール(DCC・DAM・エディタ)との統合はプラグイン API ではなくファイル契約(glTF ハブ、pelican.import、asset store)と JSON-RPC で行う。エディタ(devstudio)にも特権はない(D0: 編集操作はまず rpc メソッドとして定義される)。
 
-> **設計決定 10(ゲームロジック = ネイティブ C++・2026-07-07 決定):** スクリプト言語は不採用。DLL 境界も作らない(ABI 問題回避)。エンジンは「ソース同居の SDK」。
+> **設計決定 10(ゲームロジック = ネイティブ C++・2026-07-07 決定):** スクリプト言語は不採用。エンジンは「ソース同居の SDK」。※ビルド形態は WP90(2026-07-12)で userpublic 境界の DLL に移行した(ホットリロードのため。境界面は従来どおり userpublic のみ — [第8章](08_gameplay.md))。
+
+> **設計決定 11(feature 層 = ユーザー空間・2026-07-12 決定):** エンジンが持つのは版付きの**機構語彙**(anchor / history / snapshot / format_class など)だけ。feature・カメラコントローラ・flipbook・moveAndSlide 等の「機能」はユーザー空間で、**同梱のものも特権なしの標準ライブラリ**にすぎない(コピーして改造したら自分のもの)。エンジンが名前入りエラーで守るのは invariant(anchor の全順序・色契約・決定性ゲート)だけ([第11章](11_status.md) §11.2)。
 
 ## 1.6 開発体制と文書の読み方
 
 このリポジトリは**マルチエージェント開発**で作られています([../agent_operations.md](../agent_operations.md)):
 
 - **ユーザー(enjoyoriori)** = 意思決定。**Claude** = 設計文書・WP(Work Package)指示書・レビュー・マージ。**codex** = 実装・監査・敵対レビュー。
-- 作業単位は WP。**1 WP = 1 ブランチ(`agent/wpNN-slug`)= 1 マージ**で、受け入れ基準 = マージ基準。現在 WP66 まで登録、20 ウェーブ超を消化([第11章](11_status.md) に全台帳)。
+- 作業単位は WP。**1 WP = 1 ブランチ(`agent/wpNN-slug`)= 1 マージ**で、受け入れ基準 = マージ基準。現在 WP111 まで実装完了([第11章](11_status.md) に全台帳。今後の候補は [../roadmap_backlog_2026-07.md](../roadmap_backlog_2026-07.md))。
 - 統合ブランチは `codex/rendering-phase1-refactor`(事実上の開発本線)。
 
 文書の優先順位(矛盾したときの規則):
@@ -151,6 +160,7 @@ vkcore(Vulkan 低層)
 - **ブラウザで動かす** → [第9章 Web プロファイル](09_web.md)
 - **CLI・自動化・配布** → [第10章 ツールリファレンス](10_tools.md)
 - **何が実装済みで何が設計だけか** → [第11章 実装状況と文書マップ](11_status.md)
+- **エンジンのソースを読む** → [第12章 コード読解ガイド](12_codemap.md)(さらに深くは [../source-code-guide/](../source-code-guide/README.md))
 
 ## 関連文書
 

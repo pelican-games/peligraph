@@ -1,6 +1,6 @@
 # 第3章 プロジェクト形式
 
-対象: pelican2(2026-07-10 時点)/ このマニュアルはコードを正とする
+対象: pelican2(2026-07-16 時点)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
@@ -26,7 +26,8 @@
 | `assets/models/`, `assets/textures/`, `assets/audio/` | バイナリアセット置き場(規約) | asset_data.json 等から相対参照 |
 | `passes/*.json` | レンダリングパイプライン定義 | `basic_config.rendering_config_json` |
 | `input/actions.json` | 入力アクション定義 | `basic_config.input_actions_json` |
-| `ui/ui_overlay.json` | 2D オーバーレイ | `basic_config.ui_config_json` |
+| `input/profiles/*.json` | バインディングプロファイル | `basic_config.input_profiles` |
+| `ui/*.json` | UI ドキュメント(pelican.ui v1) | `basic_config.ui_config_json` |
 | `code/` | C++ ゲームコード | CMake `-DPELICAN_PROJECT` |
 | `imports/`(規約) | 外部ツールの納品物+manifest | `pelican_cli import` の入力 |
 | `.pelican/local.json` | マシン固有のパス上書き(**git 非追跡**) | asset store の実パス差し替え |
@@ -92,8 +93,12 @@
 | `asset_data_json` | 参照 | `"assets/asset_data.json"` | アセット登録 JSON への参照 |
 | `rendering_config_json` | 参照 | `"passes/main_rendering_config.json"` | レンダリング構成への参照 |
 | `default_rendering_pass` | string | `"main_render"` | rendering config 内で使う `rendering_passes[].name` |
-| `ui_config_json` | 参照 | `"ui/ui_overlay.json"` | UI オーバーレイへの参照 |
+| `ui_config_json` | 参照 | `"ui/ui_overlay.json"` | UI ドキュメント(pelican.ui)への参照 |
 | `input_actions_json` | 参照 | **既定なし(任意)** | 入力アクション定義。未指定ならアクション層は未構成 |
+| `input_profiles` | object | — | バインディングプロファイルの辞書(名前 → ファイル参照。✅WP91 — [第7章](07_input_ui.md)) |
+| `input_profile` | string | — | 既定プロファイル名 |
+| `sprite` | object | `{"pixels_per_unit": 100.0}` | 2D スプライトの寸法変換係数(✅WP106 — [第6章](06_rendering.md) §6.9) |
+| `camera.sprite` | object | `{"pixel_perfect":"off","sort":"z"}` | スプライトの pixel perfect / ソートポリシー(camera 内。シーン側 camera コンポーネントにも書ける) |
 
 `camera` は glTF のカメラ定義と同形です。`type` は `"perspective"`(既定)か `"orthographic"` のみ。perspective は `yfov`(**ラジアン**)/`znear`/`zfar` 必須・`aspect` 任意、orthographic は `xmag`/`ymag`/`znear`/`zfar` 必須です。
 
@@ -110,9 +115,9 @@
 | `assets/a.glb`(素の相対) | プロジェクトルート基準 | ✅実装済み |
 | `project://assets/a.glb` | 素の相対と**完全に等価**(接頭辞を剥がすだけ) | ✅実装済み |
 | `engine://<id>` | エンジン埋め込みリソース(後述) | ✅実装済み |
-| `user://<rel>` | `%APPDATA%/pelican/<name>/<rel>`(Windows) | ✅実装済み(解決のみ。読み書き API は 🚧WP65) |
+| `user://<rel>` | `%APPDATA%/pelican/<name>/<rel>`(Windows) | ✅実装済み(読み書き API も ✅WP65 — [第8章](08_gameplay.md)) |
 | 絶対パス / UNC | JSON 内では**常に拒否**。CLI 由来のみ `--allow-absolute-paths` で許可+WARN | ✅実装済み |
-| `assets/a.glb#mesh/Cube`(フラグメント) | コンテナ内サブアセット | 🚧構文解析のみ実装。実ロードは未対応(到達すると明確なエラー) |
+| `assets/a.glb#mesh/Cube`(フラグメント) | コンテナ内サブアセット | ✅実ロード対応(WP77。`mesh` / `node` / `material` / `animation` の 4 種 — [第5章](05_assets.md)) |
 
 共通規則: 空文字列・バックスラッシュ(`\`)・未知スキーム(`foo://`)はすべて拒否。パス区切りはスラッシュのみです。
 
@@ -140,7 +145,7 @@
 - 解決先は `%APPDATA%/pelican/<project.json の name>/`(Windows)。非 Windows では `$XDG_DATA_HOME` → `~/.local/share` にフォールバックします(※設計文書には Windows のみ記載)。
 - `--user-dir <dir>` でルートを差し替えられます(テスト・複数インスタンス分離用)。
 - `name` が無い project.json では `user://` は使えません(名指しのエラー)。
-- **現状はパス解決までが実装済み**です。設定(`pelican.settings`)・セーブデータの読み書き API と atomic 書き込みは 📐設計のみ(WP65 登録済み・[../design_persistence.md](../design_persistence.md))。
+- ✅WP65 で**読み書き API まで実装済み**です: 設定は `user://settings.json`(`pelican.settings` v1)、セーブは `user://saves/<slot>.json`。書き込みは tmp ファイル + rename の atomic 方式(Windows は `MoveFileExW`)。API と使い方は [第8章](08_gameplay.md) を参照してください。
 
 ## 3.4 asset store — 置き場所の間接化(✅実装済み・WP55)
 
@@ -169,9 +174,36 @@
 
 解決結果は起動時に `asset stores resolved: main=<実パス>` と INFO ログに出て、rpc の `get_status.stores` でも確認できます。
 
-### assets manifest(📐設計のみ・WP66)
+### assets manifest(✅実装済み・WP66)
 
-バイナリアセットの sha256 台帳 `assets.manifest.json` の生成・照合(`pelican_cli assets manifest / verify / status`)は WP66 として登録済み・未実装です。当面の第一防衛線は [projects/example/README.md](../../projects/example/README.md) の手書き sha256 一覧表です。なお `asset_stores` 宣言に `"manifest"` キーを書いても現行パーサは読みません(V2 用の予約)。
+バイナリアセットの sha256 台帳です。store 宣言に `manifest` キーで紐付けます(example の実物):
+
+```json
+"asset_stores": {
+  "main": { "mount": "assets/", "manifest": "assets.manifest.json" }
+}
+```
+
+manifest 本体(`pelican.assets` v1)は `pelican_cli assets manifest` が生成します:
+
+```json
+{
+  "schema": "pelican.assets",
+  "version": 1,
+  "tool": { "name": "pelican_cli assets manifest" },
+  "files": [
+    { "file": "models/sponza.glb", "size": 52608696, "sha256": "8eade0d6..." }
+  ]
+}
+```
+
+- `files[]` は store 相対パスの**一意ソート必須**(生成は冪等 — 2 回実行で byte 一致)。差分ハッシュのキャッシュは `.pelican/assets-hash-cache.json`(git 非追跡)。
+- CLI: `pelican_cli assets manifest / verify / status --project <dir>`([第10章](10_tools.md))。
+- **起動時検証**: manifest 宣言のある store は player 起動時に照合されます。深刻度は「内容の変化 = INFO、欠落・参照不能・大文字小文字違い = WARNING」で、**ロードは止めません**。`--strict-assets` 指定時のみ全 issue が ERROR に昇格して起動中止になります。
+
+> **設計決定(検証はロードを止めない):** アセットの正当性検査は開発の補助であり、既定では警告に留める。厳格化は明示フラグ(開発 CI・配布検証)でのみ行う。
+
+example の README にあった手書き sha256 表の役目は、この manifest([../../projects/example/assets.manifest.json](../../projects/example/assets.manifest.json)・26 エントリ)に置き換わりました。
 
 ## 3.5 解釈レイヤ — pelican_project とバインダの分離
 
@@ -184,13 +216,13 @@
 > ```
 > 形式に機能を足すときは「解釈レイヤにパーサ+バインダに変換」を対で追加し、エンジン内部へ波及させない。パーサ登録は静的な表で行い、プラグイン機構は作らない(過剰抽象化の防止)。
 
-[src/project/](../../src/project) が解釈レイヤの実体で(CMake ターゲット `pelican_project`、WP44 で分離完了 ✅)、現在の住人は `sceneformat`(pelican.scene)/ `importmanifest`(pelican.import)/ `materialformat`(pelican.material)/ `featurecompose`(feature 合成)/ `jsonrpc`(JSON-RPC エンベロープ)です。vulkan・quill・モジュール機構・リソース埋め込みへの依存は禁止されています。この分離により、`pelican_cli` や将来のエディタは**エンジンをリンクせずに**プロジェクトを読めます。
+[src/project/](../../src/project) が解釈レイヤの実体で(CMake ターゲット `pelican_project`、WP44 で分離完了 ✅)、現在の住人は `sceneformat`(pelican.scene)/ `importmanifest`(pelican.import)/ `materialformat` + `surfaceformat` + `materiallowering`(マテリアル)/ `featurecompose`(feature 合成)/ `jsonrpc`(JSON-RPC エンベロープ)/ `assetsmanifest`(pelican.assets)/ `importrules`(pelican.import_rules)などです。vulkan・quill・モジュール機構・リソース埋め込みへの依存は禁止されています。この分離により、`pelican_cli` や将来のエディタは**エンジンをリンクせずに**プロジェクトを読めます。
 
 ## 3.6 バージョン管理(VCS)の方針
 
 - エンジンリポジトリは example の JSON と README のみコミットし、バイナリは `.gitignore` で除外(クローンを重くしない)。ユーザープロジェクトでの LFS 利用は自由です。
 - store 運用の 3 段構え: 小規模 = リポジトリ内+LFS / 中規模 = 外部 store+人間運用 / 大規模 = DAM(デジタルアセット管理)。共有 store にブランチという概念は持ち込みません(バージョン管理は本業ツールに委譲)。
-- 大規模統合は「API ではなくデータ契約」: エンジンが信じるのは ① store の実体、② assets manifest(将来)、③ `imports/` + pelican.import manifest の 3 つだけです。DAM や Perforce は、契約どおりにファイルを書けば `pelican_cli` を置き換えられます。
+- 大規模統合は「API ではなくデータ契約」: エンジンが信じるのは ① store の実体、② assets manifest(✅WP66)、③ `imports/` + pelican.import manifest の 3 つだけです。DAM や Perforce は、契約どおりにファイルを書けば `pelican_cli` を置き換えられます。
 
 ## 3.7 サブセット原則(web との関係)
 

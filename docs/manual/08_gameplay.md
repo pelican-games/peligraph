@@ -1,18 +1,20 @@
 # 第8章 ゲームロジック
 
-対象: pelican2(2026-07-10 時点)/ このマニュアルはコードを正とする
+対象: pelican2(2026-07-16 時点)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
-- ゲームコード(C++)の書き方 — システム登録・`GameContext`・オブジェクト操作
+- ゲームコード(C++)の書き方 — システム登録・`GameContext`・オブジェクト操作・DLL ホットリロード
 - イベント層(emit と購読、フレーム境界配送)
-- シーン遷移・カメラ(コントローラ含む)・物理クエリの使い方
+- シーン遷移・カメラ(コントローラ含む)・物理クエリ(shapeCast / moveAndSlide)の使い方
 - 決定性(固定ループ順序・決定的乱数・シード)— 「なぜ毎回同じ結果になるのか」
-- オーディオと永続化の現状
+- オーディオ・永続化(設定/セーブ)・アニメーション・2D スプライトの操作
 
 ## 8.1 ゲームコードの位置づけ
 
-> **設計決定(ネイティブ一本・2026-07-07 ユーザー決定):** ゲームロジックは C++ で書き、エンジンごとビルドして 1 実行体に静的リンクする。スクリプト言語は不採用。エンジンは「ソース同居の SDK」であり、DLL 境界を作らない(ABI 問題の回避)。DLL ホットリロード(G2)は将来課題 📐。
+> **設計決定(ネイティブ一本・2026-07-07 ユーザー決定):** ゲームロジックは C++ で書く。スクリプト言語は不採用。エンジンは「ソース同居の SDK」。
+
+✅WP90(G2)で、ゲームコードのビルド形態は静的リンクから **`pelican_game_logic.dll`** に移行しました。公開面(userpublic)だけを import する DLL で、実行中のホットリロード(F5 / 自動検出 / rpc)に対応します。リロードは v1 では **full-reset 方式**(システム状態と ECS を破棄して現シーンを再構築)です。詳細は [第10章](10_tools.md) §10.5。
 
 > **設計決定(レイヤ規則):** ゲームコードが include してよいのは `src/core/userpublic/` のヘッダのみ。エンジン内部のモジュール取得(`GET_MODULE`)をゲームコードから直接呼ぶことは禁止で、入力・時刻・オブジェクト・物理・音・シーン・乱数はすべて **`GameContext`** ファサードを通す。
 
@@ -41,15 +43,13 @@ class ExamplePlayerControl {
             .pos = Pelican::vec3{0.0f, -1.2f, 1.0f},
             .parent = Pelican::invalidGameObjectId,
         };
-        Pelican::SimpleModelViewUpdateComponent model_update;
-        model_update.model_name = "character";
-        model_update.dirty = true;
+        Pelican::SimpleModelViewComponent model_view;
+        model_view.model_name = "character";
 
         const auto id = Pelican::GameObjects::add()
                             .addComponent<Pelican::TransformComponent>()
                             .addComponent<Pelican::LocalTransformComponent>(transform)
-                            .addComponent<Pelican::SimpleModelViewComponent>()
-                            .addComponent<Pelican::SimpleModelViewUpdateComponent>(model_update)
+                            .addComponent<Pelican::SimpleModelViewComponent>(model_view)
                             .finish();
         (void)ctx.setLocalTransform(id, transform);
         return id;
@@ -123,13 +123,17 @@ rpc の `step_frame` も**同一順序**を再現します。「rpc 駆動のテ
 | 時刻 | `time()` / `deltaTime()` / `frameIndex()` | |
 | ログ | `logInfo/Warning/Error(msg)` | rpc モードでは stdout が使えないため、ログは必ずこれで |
 | オブジェクト | `createObject(LocalTransformComponent)` / `removeObject(id)`→bool / `localTransform(id)` / `setLocalTransform(id, t)`→bool | `setLocalTransform` は描画側へも即時伝播 |
-| 物理 | `raycastClosest` / `overlapAll` / `shapeCastAll` / `shapeCastClosest` | §8.7。詳細 overload は stable identity/filter を返す |
+| スプライト | `createSpriteObject(transform, sprite)` / `spriteView(id)`→optional / `setSpriteView(id, s)`→bool / `setSpriteTexture(id, tex)`→bool | §8.13(✅WP103) |
+| 物理 | `raycastClosest(ray)` / `raycastClosest(ray, filter)` / `raycastAll(ray, filter)` / `overlapAll(shape)` / `overlapAllHits(shape, filter)` / `shapeCastAll` / `shapeCastClosest` | §8.7。filter 付き overload は stable identity 付きヒットを返す |
 | カメラ | `setCamera(name)` | §8.8 |
 | 乱数 | `random()` / `randomInt(min,max)` / `randomFloat(min,max)` / `setSeed(u64)` / `seed()` | §8.9 |
 | 音 | `playSound(path)`→SoundHandle / `stopSound(h)` / `setBusVolume(bus,v)` / `isPlaying(h)` | §8.10 |
 | シーン | `loadScene(name)` / `currentScene()` | §8.6 |
+| 永続化 | `gameSettings()` / `setGameSettings(json)` / `saveSettings()` / `saveData(slot, json)` / `loadData(slot)`→optional / `listSaves()` | §8.11(✅WP65) |
 | HUD | `debugText(x, y, text)` | debug_text feature 未参照時は no-op([第7章](07_input_ui.md)) |
 | イベント | `emit(const Event&)` | §8.5 |
+
+アニメーション操作の API は GameContext に**ありません** — クリップは宣言的コンポーネント([第4章](04_scene_ecs.md))、グラフは独立した公開評価器(§8.12)です。
 
 未知の名前(アクション・シーン・カメラ・オブジェクト・イベント)は**すべて名前入りの例外**になります。「静かに無視」はこのエンジンには存在しません(fail-fast の一貫した文化)。
 
@@ -205,6 +209,7 @@ if (auto hit = ctx.shapeCastClosest(player, {0, -4, 0})) {
 - 初期 penetration が ε より深ければ TOI 0 + MTD。接触だけなら接近中に限り TOI 0、静止/離反では hit になりません。zero delta は depenetration query です。
 - `one_way` は metadata です。前位置や接近方向から「通す/乗る」を決める policy は、WP109 の標準ユーザー空間ライブラリ `platformer::moveAndSlide` が担当します。`trigger=true` も query filter には使えますが、enter/exit イベントは E2 未実装です。
 - Provider ABI V2 により Builtin/Jolt/game DLL provider を capability 単位で差し替えます。Jolt header は engine/game の公開型へ出ません。physics-off と provider-only build では不要な backend をリンクしません。
+- **プロバイダの選択はビルド時**です: `PELICAN_WITH_BUILTIN_PHYSICS`(既定 ON)/ `PELICAN_WITH_JOLT_PHYSICS`(既定 OFF。両方 ON なら Jolt が勝つ)。project.json や実行時の切替はありません。クエリ契約(順序・タイブレーク)はプロバイダによらずエンジン側が所有するため、通常は意識不要です。ゲーム DLL から capability 単位で provider をオーバーレイする上級拡張点(`physics/abi_v1.hpp` / `abi_v2.hpp` — raycast だけ独自実装し残りはフォールバック、等)もあります。
 - transform 追従は現行では毎フレーム再収集(BVH 等の加速構造なし — 計測してから見直す方針)。capsule の軸はローカル Y、box は OBB(回転対応)です。
 - `debug_draw` feature を rendering config で参照していると collider のワイヤフレームが描画されます([第6章](06_rendering.md))。
 - 📐未実装: rpc の query メソッド、メッシュコライダ/BVH、物理トリガーイベント、剛体シミュレーション。
@@ -253,12 +258,12 @@ Builtin/Jolt/game DLL provider の交換、ゲーム独自 controller への置�
 2. 入力はフレーム頭のスナップショットで凍結(WP37)
 3. システム実行順 = order → 名前の辞書順
 4. イベント配送 = 次フレーム頭・emit 順
-5. 物理のタイブレーク = 名前の辞書順
+5. 物理のタイブレーク = stable `ColliderId` → entity 世代 → shape ordinal(名前は最終手段。※レガシー API `raycastClosest(ray)` 単引数と `overlapAll` 名前列のみ旧来の名前辞書順)
 6. 乱数 = PCG32 + 固定シード(`basic_config.seed` / `ctx.setSeed` / rpc `set_seed`)
 7. シーン切替 = フレーム境界適用
 8. ヘッドレス実行 = 固定ステップ時刻(dt = 1/fps)
 
-リプレイの三点セット「固定ステップ+入力記録+シード」のうち、**入力記録(`pelican.input_seq`、I3)だけが 📐未実装**です。現状の代替は rpc シナリオ(`inject_input` + `step_frame` の NDJSON スクリプト)で、CI では「同一スクリプト 2 回実行 → 応答列一致」を検証しています。
+リプレイの三点セット「固定ステップ+入力記録+シード」は ✅**完成**しています(入力記録 = `pelican.input_seq`、WP89 — [第7章](07_input_ui.md) §7.3)。同一ビルド + プロジェクト + シードで PNG byte 一致まで CI 検証されています。rpc シナリオ(`inject_input` + `step_frame`)も従来どおり使えます。
 
 ウィンドウモードの時刻は実測 dt(上限 0.1 秒でクランプ)なので、厳密なリプレイ互換が必要な検証はヘッドレスで行ってください。
 
@@ -276,9 +281,121 @@ ctx.stopSound(h);
 - `PELICAN_WITH_AUDIO=OFF` ビルドで音 API を呼ぶと、どのフラグで無効化されたかを言うエラーになります。
 - ⚠️ 現状の制限: `playMusic`(ループ BGM)は未実装で、**すべての再生は se バス固定**です。`setBusVolume("bgm")` は受理されますが、bgm バスに音を載せる手段がまだありません。Ogg/ストリーミング/3D 音響も 📐未実装です。
 
-## 8.11 永続化(user://)の現状
+## 8.11 永続化(✅WP65)
 
-セーブデータ・設定の保存先として `user://` スキーム([第3章](03_project_format.md) §3.3)が用意されていますが、**現状はパス解決までが実装済み**で、設定(`pelican.settings`)・セーブ(`saveData` / `loadData` / `listSaves`)・atomic 書き込みの API は 🚧WP65(登録済み・未実装)です。それまでゲーム側で永続化 API を待つ必要があります。プロジェクトディレクトリへの書き込みは設計上禁止です(読み取り専有原則)。
+保存先は `user://`([第3章](03_project_format.md) §3.3。Windows 実体は `%APPDATA%/pelican/<プロジェクト name>/`)。プロジェクトディレクトリへの書き込みは設計上禁止です(読み取り専有原則)。
+
+### 設定(pelican.settings v1)
+
+```cpp
+auto game = ctx.gameSettings();          // "game" 区画(任意 JSON)を取得
+game["volume_preset"] = "quiet";
+ctx.setGameSettings(game);
+ctx.saveSettings();                      // user://settings.json へ atomic 書き込み
+```
+
+ファイル形式(`user://settings.json`):
+
+```json
+{ "schema": "pelican.settings", "version": 1,
+  "engine": { "audio": { "bus_volumes": { "master": 1.0, "bgm": 1.0, "se": 1.0 } } },
+  "game": { "volume_preset": "quiet" } }
+```
+
+- `engine` 区画はエンジン所有(`saveSettings()` が現在のバス音量を自動キャプチャ)、`game` 区画がゲームの自由領域です。トップレベルは 4 キー固定・未知キー拒否。
+- 起動時に自動ロードされます。ファイル破損時はクラッシュせず WARN + 既定値で続行します。
+
+### セーブデータ
+
+```cpp
+ctx.saveData("slot-a", nlohmann::json{{"level", 3}});   // user://saves/slot-a.json
+auto loaded = ctx.loadData("slot-a");                    // optional<Json>(欠落/破損は nullopt)
+auto slots  = ctx.listSaves();                           // {slot, timestamp} の昇順一覧
+```
+
+- スロット名はポータブルなファイル名検証付き(`.`/`..`・末尾ドット/空白・`/ \ # : " < > | ? *`・制御文字は例外)。中身はエンベロープなしの任意 JSON です。
+- **例外挙動の非対称に注意**: 書き込み系(`saveSettings` / `saveData`)は失敗で例外、読み込み系(`loadData`)は throw せず `nullopt` を返します(起動フローを壊さないため)。
+- 書き込みはすべて atomic(tmp + rename)。削除 API(`deleteSave`)や rpc 経由の永続化メソッドはまだありません。
+
+## 8.12 アニメーション再生(✅WP38/94/97/101/102)
+
+3 つのレベルがあります。
+
+1. **宣言的クリップ再生(WP38)** — シーン JSON の `animation` コンポーネント([第4章](04_scene_ecs.md) §4.2)。ゲームコード不要。時刻源は EngineTime(決定的)。
+2. **アニメーショングラフ(WP101/102)** — `pelican.anim_graph` v1 のデータアセット + **非特権の公開評価器**。エンジン特権なしで `#include <animation/animgraph.hpp>` だけで動きます。
+
+グラフ JSON(実物: [../../projects/animgraph_demo/movement.anim_graph.json](../../projects/animgraph_demo/movement.anim_graph.json) 全文):
+
+```json
+{
+  "schema": "pelican.anim_graph",
+  "version": 1,
+  "parameters": { "speed": 0.0, "jump": 0.0 },
+  "initial_state": "Move",
+  "states": [
+    { "name": "Move", "type": "blend1d", "parameter": "speed", "clips": [
+      { "threshold": 0.0, "clip": "Walk", "speed": 1.0, "start_offset": 0.0, "loop": true },
+      { "threshold": 1.0, "clip": "Run",  "speed": 1.6, "start_offset": 0.0, "loop": true }
+    ] },
+    { "name": "Jump", "type": "clip", "clip": "Jump", "speed": 1.0, "start_offset": 0.0, "loop": false }
+  ],
+  "transitions": [
+    { "from": "Move", "to": "Jump", "priority": 100, "interrupt": "always", "duration": 0.12,
+      "conditions": [ { "parameter": "jump", "op": ">",  "value": 0.0 } ] },
+    { "from": "Jump", "to": "Move", "priority": 100, "interrupt": "always", "duration": 0.18,
+      "conditions": [ { "parameter": "jump", "op": "<=", "value": 0.0 } ] }
+  ]
+}
+```
+
+(`clip` はモデル glb 内のクリップ名。`parameters` は名前 → 初期値、遷移は `priority` / `interrupt`("never" / "higher_priority" / "always")/ `duration`(クロスフェード秒)/ `conditions` を持ちます)
+
+使い方(実物: [../../projects/animgraph_demo/code/animgraphdemo.cpp](../../projects/animgraph_demo/code/animgraphdemo.cpp)):
+
+```cpp
+#include <animation/animgraph.hpp>
+
+auto doc = Pelican::AnimationGraph::parseDocumentV1(json_text);
+Pelican::AnimationGraph::EvaluatorV1 evaluator{doc, "Player"};  // シーンの named object
+
+void update(Pelican::GameContext &ctx) {
+    if (!evaluator.bound()) { (void)evaluator.bind(); return; }  // モデル未生成時はリトライ
+    (void)evaluator.setParameter("speed", speed);
+    (void)evaluator.setParameter("jump", jumping ? 1.0 : 0.0);
+    (void)evaluator.prepareTick(ctx.time(), ctx.deltaTime(), ctx.frameIndex());
+}
+```
+
+グラフを使うオブジェクトには `animation` コンポーネントを**付けません**(評価器が pose sink を claim します)。`forceState` / `getStatus()`(現在ステート・遷移・semantic pose hash)も公開されています。v1 の語彙は clip + blend1d + crossfade + interrupt("never" / "higher_priority" / "always")のみで、layer・2D blend は v2 予約(キーを書くとエラー)。
+
+3. **自作評価器(上級・WP94/102)** — 凍結 C-ABI([../animation_abi_v1.md](../animation_abi_v1.md) が正)+ versioned service table。ゲーム DLL が公開ヘッダのみで pose sampling / blend / commit を駆動できます(標準評価器自体がこの面の dogfood)。
+
+制限: joint 128 / 補間 LINEAR・STEP のみ / モーフ・IK・root motion 適用なし。決定性は「同一ビルドで byte 一致」です。
+
+## 8.13 2D スプライトの操作(✅WP103/106)
+
+シーン JSON の `sprite_view`([第4章](04_scene_ecs.md) §4.2)に加えて、C++ から生成・操作できます(実物: [../../projects/sprite_demo/code/flipbook_demo.cpp](../../projects/sprite_demo/code/flipbook_demo.cpp)):
+
+```cpp
+auto id = ctx.createSpriteObject(transform, sprite);   // SpriteViewComponent を直接渡す
+
+auto view = ctx.spriteView(id);                        // 読み → 書き戻しで反転
+if (view) { view->flip_x = !view->flip_x; (void)ctx.setSpriteView(id, *view); }
+```
+
+パラパラアニメは**エンジン機構ではなく非特権の標準ライブラリ** `FlipbookClip` で行います(呼び手が決定的な local time を渡す — ECS もクロックも持たない):
+
+```cpp
+#include <sprite/flipbook.hpp>
+
+const Pelican::sprite::FlipbookClip walk{
+    {{"demo_atlas#sprite/left", 0.20}, {"demo_atlas#sprite/right", 0.20}},
+    Pelican::sprite::FlipbookPlayback::loop};
+
+walk.apply(ctx, id, local_time);   // local_time はゲームが管理(例: 接地中のみ加算)
+```
+
+2D の移動・接地は §8.7.1 の `platformer::moveAndSlide`、pixel perfect は [第6章](06_rendering.md) §6.9 を参照してください。`projects/sprite_demo` が「入力 → moveAndSlide → transform 反映 → flip/flipbook → 着地イベント emit」を 1 ファイルで通した完成例です。
 
 ## 関連文書
 

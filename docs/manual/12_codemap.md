@@ -1,8 +1,8 @@
 # 第12章 コード読解ガイド(技術解説書)
 
-対象: pelican2(2026-07-10 時点)/ このマニュアルはコードを正とする
+対象: pelican2(2026-07-16 時点)/ このマニュアルはコードを正とする
 
-この章は他章と目的が違います。第1〜11章が「エンジンを**使う**ための説明書」なのに対し、この章は「エンジンの**中身を読む**ための地図」です。すべての節にソースへの相対リンクを張ってあるので、エディタ(VS Code 等)や GitHub 上でクリックしながら読み進められます。
+この章は他章と目的が違います。第1〜11章が「エンジンを**使う**ための説明書」なのに対し、この章は「エンジンの**中身を読む**ための地図」です。より深いクラス単位の解説(ライフサイクル・インターフェース索引・落とし穴集)は [../source-code-guide/](../source-code-guide/README.md) にあります — 本章は入口・概観、詳細はそちらへ。すべての節にソースへの相対リンクを張ってあるので、エディタ(VS Code 等)や GitHub 上でクリックしながら読み進められます。
 
 > **リンクの約束:** ファイルリンクはリファクタに強いのでそちらを基本とし、特に重要な箇所のみ行アンカー(`#L212` — GitHub で有効)を付けています。行番号は 2026-07-10 時点のものです。ずれていたら近くの関数名で探してください。
 
@@ -24,7 +24,11 @@ pelican2/
     player/      … pelican_player.exe(main 1 ファイル)
     devcli/      … pelican_cli.exe(project init / import / dist-config)
     devstudio/   … pelican_studio.exe(Qt。現状は休眠骨組み)
-  projects/example/ … 実例プロジェクト(全 JSON 形式の生きた見本)
+    spvlink/     … pelican-spv-link 単体 CLI(experimental)
+  projects/
+    example/       … 実例プロジェクト(全 JSON 形式の生きた見本)
+    sprite_demo/   … 2D 横スクロールの vertical slice(sprite / pixel policy / platformer)
+    animgraph_demo/ … アニメーショングラフのデモ(歩き↔走り + ジャンプ割込み)
   test/          … Catch2 単体 + golden + fixtures + run_*.cmake 結合テスト
   docs/          … 設計文書(design_*.md)・指示書・本マニュアル
   experiments/   … スパイク(spvlink 等。本体にリンクされない)
@@ -48,6 +52,12 @@ pelican2/
 | [light/](../../src/core/light) / [material/](../../src/core/material) / [model/](../../src/core/model) / [asset/](../../src/core/asset) | ライト・マテリアル・glTF/VAT・モデル資産の各コンテナ | [gltf.cpp](../../src/core/model/gltf.cpp), [vatformat.hpp](../../src/core/model/vatformat.hpp) |
 | [playback/](../../src/core/playback) | transform_seq / VAT の再生 | [seqplayer.cpp](../../src/core/playback/seqplayer.cpp) |
 | [audio/](../../src/core/audio) | WAV 再生(miniaudio / null バックエンド) | [audio.cpp](../../src/core/audio/audio.cpp) |
+| [animation/](../../src/core/animation) | アニメーション機構(ABI v1 jobs・グラフ評価の実体) | — |
+| [ui/](../../src/core/ui) | UI ランタイム(pelican.ui レイアウト・atlas) | — |
+| [imgui/](../../src/core/imgui) | ImGui 開発 UI + Plan Viewer(PELICAN_WITH_IMGUI) | — |
+| [watch/](../../src/core/watch) | アセットホットリロード基盤(FileWatcher / ReloadService) | — |
+| [gamelogic/](../../src/core/gamelogic) | ゲームロジック DLL のロード・ホットリロード(G2) | — |
+| [persistence/](../../src/core/persistence) | user:// 設定・セーブ(pelican.settings v1) | — |
 | [communication/](../../src/core/communication) | stdio JSON-RPC サーバ | [rpcserver.cpp](../../src/core/communication/rpcserver.cpp) |
 | [resources/](../../src/core/resources) | `engine://` 埋め込みリソースの実体(シェーダ・feature JSON・既定設定) | [features/](../../src/core/resources/features) |
 | 直下 | モジュール機構・ハンドル・ログ・起動設定 | [container.hpp](../../src/core/container.hpp), [handle.hpp](../../src/core/handle.hpp), [launchconfig.hpp](../../src/core/launchconfig.hpp) |
@@ -68,7 +78,7 @@ pelican2/
 2. **コア生成** — [main.cpp#L348](../../src/player/main.cpp#L348) `main` → `Pelican::PelicanCore pl{...}`([pelican_core.cpp](../../src/core/userpublic/pelican_core.cpp))。モジュールコンテナに LaunchConfig を書き込み、[PathResolver](../../src/core/loader/pathresolver.hpp)`.setup()` と [ProjectSource](../../src/core/loader/projectsrc.hpp) にプロジェクト JSON を渡す
 3. **設定合成** — [basicconfig.cpp#L228](../../src/core/loader/basicconfig.cpp#L228) `validateProjectJson`(schema/version の hard error ゲート)→ CLI > project.json > [default_config.json](../../src/core/resources/default_config.json) の 3 段合成
 4. **ループ開始** — `pl.run()` → [loop.cpp#L122](../../src/core/appflow/loop.cpp#L122) `Loop::run`。ここがフレーム編成の唯一の場所で、通常 / headless / rpc の 3 経路に分岐する
-5. **描画** — [renderer.cpp#L260](../../src/core/vkcore/renderer.cpp#L260) — ⚠現状は `has_compute` の場合のみフレームグラフのプラン実行で、compute を含まない config はレガシー経路 `executeLegacyRenderingPasses` を通る(統一が WP64、📐登録済み・未実装)
+5. **描画** — [renderer.cpp](../../src/core/vkcore/renderer.cpp) `executeRenderingPasses` → `executePlannedFrameGraph`。✅WP64 で一本化済み: 全構成が FramePlan 順で実行される。ノード種別(`render` / `compute` / `anchor` / `snapshot_copy` / `output_transform`)の dispatch も同ファイル
 6. **終了処理** — [teardown.cpp](../../src/core/appflow/teardown.cpp) `RuntimeTeardownGuard` が例外経路でも waitIdle → 物理 → ECS → モデルの順に noexcept で掃除
 
 ## 12.4 1 フレームの流れ([loop.cpp#L198](../../src/core/appflow/loop.cpp#L198)。headless も同順)
@@ -105,7 +115,8 @@ pelican2/
 | camera コンポーネント / controller | [第8章](08_gameplay.md) | [renderer/camera.cpp#L218](../../src/core/renderer/camera.cpp#L218) / [#L284](../../src/core/renderer/camera.cpp#L284) |
 | pelican.transform_seq(JSONL) | [第5章](05_assets.md) | [playback/seqplayer.cpp#L233](../../src/core/playback/seqplayer.cpp#L233) |
 | pelican.vat(GLB extras) | [第5章](05_assets.md) | 純ロジック: [model/vatformat.cpp](../../src/core/model/vatformat.cpp) / 再生: [playback/vatplayer.cpp](../../src/core/playback/vatplayer.cpp) |
-| pelican.material(M1・レンダラ未接続) | [第6章](06_rendering.md) | [project/materialformat.cpp](../../src/project/materialformat.cpp) |
+| pelican.material / `.surface` | [第6章](06_rendering.md) | 純ロジック: [project/materialformat.cpp](../../src/project/materialformat.cpp)・[project/surfaceformat.cpp](../../src/project/surfaceformat.cpp)・[project/materiallowering.cpp](../../src/project/materiallowering.cpp) / 接続: [shader/surfacecompiler.cpp](../../src/core/shader/surfacecompiler.cpp)・[material/](../../src/core/material) |
+| rendering config の `snapshots` / canonical anchor | [第6章](06_rendering.md) | [project/featurecompose.cpp](../../src/project/featurecompose.cpp) |
 | pelican.import(納品 manifest) | [第5章](05_assets.md) | [project/importmanifest.cpp#L86](../../src/project/importmanifest.cpp#L86)(利用者: [devcli/importcommand.cpp](../../src/devcli/importcommand.cpp)) |
 | JSON-RPC エンベロープ | [第10章](10_tools.md) | 純ロジック: [project/jsonrpc.cpp](../../src/project/jsonrpc.cpp) / メソッド実装: [communication/rpcserver.cpp#L534](../../src/core/communication/rpcserver.cpp#L534) |
 | pelican.frame_plan(出力専用) | [第6章](06_rendering.md) | 生成: [renderingpass/frameplanner.cpp](../../src/core/renderingpass/frameplanner.cpp) |
@@ -122,7 +133,9 @@ pelican2/
 
 ### シェーダ基盤(パイプラインが JSON から生えるまで)
 
-読み順: [shadercompiler.cpp](../../src/core/shader/shadercompiler.cpp)(shaderc で GLSL→SPIR-V。**エラーを throw せず result 返却する唯一の例外**)→ [shaderreflection.cpp](../../src/core/shader/shaderreflection.cpp)(spirv-reflect で descriptor layout を自動生成)→ [shaderlibrary.cpp](../../src/core/shader/shaderlibrary.cpp)(stem 解決・ホットリロードのトランザクション = 失敗時旧版維持)→ [pipelinefactory.cpp](../../src/core/shader/pipelinefactory.cpp)(レイアウトハッシュ共有・`pipeline_cache.bin` 永続化)。
+読み順: [shadercompiler.cpp](../../src/core/shader/shadercompiler.cpp)(shaderc で GLSL→SPIR-V。**エラーを throw せず result 返却する唯一の例外**)→ [shaderreflection.cpp](../../src/core/shader/shaderreflection.cpp)(spirv-reflect で descriptor layout を自動生成)→ [shaderlibrary.cpp](../../src/core/shader/shaderlibrary.cpp)(stem 解決・リロードの世代 swap)→ [pipelinefactory.cpp](../../src/core/shader/pipelinefactory.cpp)(レイアウトハッシュ共有・`pipeline_cache.bin` 永続化)。マテリアル系は [surfacecompiler.cpp](../../src/core/shader/surfacecompiler.cpp)(`.surface` → テンプレート逆 include 合成)と [spvlink.cpp](../../src/core/shader/spvlink.cpp)(experimental SPIR-V リンカ)。SPIR-V ディスクキャッシュ(WP82)は `<project>/.pelican/shader_cache/`。
+
+ホットリロードのトランザクション(WP96/108 以降)は shaderlibrary 単独ではなく [src/core/watch/](../../src/core/watch)(FileWatcher / ContentDigest / ReloadService / ReloadGate)経由の単一経路です — シェーダに限らずテクスチャ・マテリアル値・モデルコンテナも同じ基盤で、失敗時は全体破棄・旧世代維持。
 
 - set 規約(set 0 = frame / 1 = pass input / 2 = material / 3 = 自由枠)の正は [shader_contract.md](../shader_contract.md) と [pelican_sets.hpp](../../src/core/shader/pelican_sets.hpp) + [resources/shaders/include/pelican_sets.glsl](../../src/core/resources/shaders/include/pelican_sets.glsl)
 - 旧パイプラインの破棄は即時ではなく [deletionqueue.cpp](../../src/core/vkcore/deletionqueue.cpp)(遅延破棄。in-flight フレームを守る)
@@ -133,7 +146,7 @@ pelican2/
 
 > **設計決定(三層):** ①ユーザーは依存(reads/writes)だけ宣言する ②順序・バリアは機械導出 ③どうしても必要な箇所だけ `after`/`before` で手詰め。順序を手書きさせないことでパス追加が局所変更になる([design_compute_task_graph.md](../design_compute_task_graph.md))。
 
-⚠読むときの注意: [renderer.cpp#L260](../../src/core/vkcore/renderer.cpp#L260) の分岐により、プラン実行系に入るのは compute を含む config のみです(WP64 で一本化予定)。pure-render 構成の実挙動を追うときはレガシー経路を読んでください。
+補足: canonical anchor ノード(`__anchor_sprite` など 8 個)・`snapshot_copy`・終端 `output_transform` は [featurecompose.cpp](../../src/project/featurecompose.cpp) の合成段階で実体化されます。実行系は WP64 で全構成プラン駆動に一本化済みです(レガシー経路は撤去)。
 
 ### 入力(4 層のうち実装は 2 層 + 注入)
 
@@ -185,7 +198,7 @@ pelican2/
 ## 12.9 テストから読む(テストは実行可能な仕様)
 
 - **形式の仕様を知りたい** → [test/fixtures/](../../test/fixtures) の valid/invalid ペア + `expectations.json`(error_kind 付き)。パーサが何を受理し何を拒むかの正確な一覧です
-- **描画の正解を知りたい** → [test/golden/](../../test/golden)(16 ケース。case.json + expected.png + tolerance.json)。`clear` が最小、`feature_compose` や `vat_playback` が応用
+- **描画の正解を知りたい** → [test/golden/](../../test/golden)(33 ケース。case.json + expected.png + tolerance.json。ディレクトリを置くだけで自動発見)。`clear` が最小、`surface_toon` / `temporal_accumulation` / sprite 系 9 種が応用。expected.png は encoded-sRGB 契約(`test/golden/README.md`)
 - **ツールの使い方の実例** → [test/](../../test) の `run_*.cmake`(player / pelican_cli を実際に子プロセス起動する結合テスト)。特に `run_rpc_headless.cmake` は RPC セッションの生きたサンプル
 - テスト登録は `pelican_define_test(<name> [libs...])`([test/CMakeLists.txt](../../test/CMakeLists.txt))。GPU 必須テストはデバイス列挙失敗時 SKIP
 
