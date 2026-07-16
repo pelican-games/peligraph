@@ -4,6 +4,7 @@
 #include "../container.hpp"
 #include "../userpublic/components/collider.hpp"
 #include <details/ecs/entity.hpp>
+#include <glm/glm.hpp>
 
 #include <cstdint>
 #include <optional>
@@ -14,7 +15,6 @@
 
 namespace Pelican {
 
-class Camera;
 class DebugDraw;
 
 struct PhysWorldTransform {
@@ -71,7 +71,7 @@ DECLARE_MODULE(PhysWorld) {
     std::vector<std::string> overlapAll(const phys::Shape &shape) const;
     std::vector<std::string> overlapAll(const phys::Shape &shape,
                                         const phys::QueryFilter &filter) const;
-    void enqueueDebugDraw(DebugDraw &debug_draw, const Camera &camera) const;
+    void enqueueDebugDraw(DebugDraw &debug_draw, const glm::mat4 &view_projection) const;
 
     size_t colliderCountForTesting() const { return bindings.size(); }
 };

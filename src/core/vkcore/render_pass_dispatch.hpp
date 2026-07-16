@@ -3,6 +3,7 @@
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
 #include "rendertarget.hpp"
+#include <glm/glm.hpp>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
@@ -39,6 +40,7 @@ struct RenderPassDispatchDependencies {
 #endif
     const FrameResources &frame_resources;
     const Camera &camera;
+    glm::mat4 view_projection{1.0f};
     vk::Format swapchain_color_format;
 };
 

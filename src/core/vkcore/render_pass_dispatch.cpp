@@ -43,7 +43,7 @@ void renderDebugDrawPass(vk::CommandBuffer cmd_buf, PassId pass_id,
         throw std::runtime_error("DebugDraw pass requires DebugDraw dependency");
     }
 #if PELICAN_WITH_PHYSICS
-    GET_MODULE(PhysWorld).enqueueDebugDraw(*dependencies.debug_draw, dependencies.camera);
+    GET_MODULE(PhysWorld).enqueueDebugDraw(*dependencies.debug_draw, dependencies.view_projection);
 #endif
     dependencies.debug_draw->render(cmd_buf, pass_id, dependencies.frame_resources);
 }

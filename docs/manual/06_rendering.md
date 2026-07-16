@@ -139,7 +139,7 @@ GLSL からは `#include "pelican_sets.glsl"` / `#include "pelican_frame.glsl"` 
 | 2 | `PELICAN_SET_MATERIAL` | binding 0-3 標準 PBR テクスチャ、4-5 VAT、**6 = 全マテリアル配列の `MaterialBuffer` SSBO**(標準 96B + custom values 256B / 要素)、7 以降 = `.surface` の custom texture(宣言順) |
 | 3 | `PELICAN_SET_FREE` | 自由枠(debug_draw / debug_text が使用) |
 
-`FrameUBO`(全シェーダから読める・320B): `time` / `dt` / 64bit `frame_index` / `resolution` + 逆数 / `camera_position` / `view` / `projection` / `previous_view` / `previous_projection`。**jitter フィールドはまだありません**(TAA 📐 — §6.8)。
+`FrameUBO`(全シェーダから読める・352B): `time` / `dt` / 64bit `frame_index` / `resolution` + 逆数 / `camera_position` / `view` / `projection` / `previous_view` / `previous_projection` / `jitter_ndc` / `previous_jitter_ndc` / `temporal_reset_epoch` / `previous_temporal_reset_epoch`。projection jitter が無効な既定構成では jitter は `(0, 0)` です。
 
 push constant は 128B(エンジン 64B + シェーダ 64B)で、✅**リフレクション段階で enforcement 済み**です(4B align・128B 上限・エンジン領域の部分使用をパイプライン作成前に拒否)。エンジン頂点レイアウトは location 0=`inPos`, 1=`inNormal`, 2=`inTexUV`, 3=`inColor`, 4=`inTangent`。
 
@@ -277,7 +277,7 @@ RT 宣言に `"history": true` を付けると物理 2 面持ちになり、パ�
 
 `"features": ["engine://features/velocity.json"]` の 1 行で、UV 空間モーションベクタ RT(`R16G16_SFLOAT`)と `velocity` パスが `before:post_main` に入ります。スキンドメッシュも正しい変形速度が出ます(前フレームの skin palette 保持 — ✅WP95)。set 0 の `PreviousObjectBuffer` と FrameUBO の `previous_view/projection` が対応する機構です。
 
-📐 **TAA 自体は未実装**です。history / velocity という**機構**は ✅ですが、TAA という**ポリシー**はユーザー空間 feature として実装される設計([../design_taa_jitter.md](../design_taa_jitter.md) v1 ドラフト — projection jitter 枠も含めレビュー前)。FrameUBO に jitter フィールドはまだありません。
+📐 **TAA resolve/composite 自体は未実装**です。history / velocity と projection jitter は機構として ✅ですが、TAA という**ポリシー**はユーザー空間 feature として実装される設計です([../design_taa_jitter.md](../design_taa_jitter.md) v2.1)。jitter は feature の `projection_jitter: { "pattern": "halton23", "phases": 8 }` で宣言し、同時に有効化できる provider は 1 個です。既定は off です。
 
 ### 名前付きスクリーンスナップショット(屈折・歪みの入口)
 
@@ -352,7 +352,7 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 - [../design_headless_rendering.md](../design_headless_rendering.md) — ヘッドレス描画 [HL]。実装済み
 - [../design_material_shading.md](../design_material_shading.md) — マテリアル設計(v1.2。M2a〜M3.5 実装済み、現行契約の正は shader_contract.md)
 - [../design_postprocess_temporal.md](../design_postprocess_temporal.md) — history/velocity(実装済み)+ ポストスタック(一部 📐)
-- [../design_taa_jitter.md](../design_taa_jitter.md) — TAA + projection jitter(📐 v1 ドラフト)
+- [../design_taa_jitter.md](../design_taa_jitter.md) — TAA + projection jitter(v2.1、projection jitter 機構は ✅)
 - [../design_2d_game_layer.md](../design_2d_game_layer.md) — 2D ゲーム層(v2.4・S2D 実装済み)
 - [../design_asset_hot_reload.md](../design_asset_hot_reload.md) — アセットホットリロード(v2.1・HR0〜HR2-G 実装済み)
 - [第5章 アセット](05_assets.md) / [第9章 Web プロファイル](09_web.md) / [第10章 ツールリファレンス](10_tools.md)

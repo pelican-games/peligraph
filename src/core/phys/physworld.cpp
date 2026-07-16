@@ -5,7 +5,6 @@
 #include "../ecs/predefined/transform.hpp"
 #include "../ecs/core.hpp"
 #include "../geomhelper/geomhelper.hpp"
-#include "../renderer/camera.hpp"
 #include "../renderer/debugdraw.hpp"
 #include <components/predefined.hpp>
 
@@ -446,9 +445,9 @@ std::vector<std::string> PhysWorld::overlapAll(
     return ids;
 }
 
-void PhysWorld::enqueueDebugDraw(DebugDraw &debug_draw, const Camera &camera) const {
+void PhysWorld::enqueueDebugDraw(DebugDraw &debug_draw,
+                                 const glm::mat4 &view_projection) const {
     const auto colliders = collectColliders();
-    const glm::mat4 view_projection = camera.getVPMatrix();
     for (const auto &collider : colliders) {
         drawCollider(debug_draw, view_projection, collider);
     }

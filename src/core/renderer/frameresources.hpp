@@ -3,6 +3,7 @@
 #include "../container.hpp"
 #include "../vkcore/buf.hpp"
 #include <cstddef>
+#include <cstdint>
 #include <glm/glm.hpp>
 #include <vulkan/vulkan.hpp>
 
@@ -17,6 +18,11 @@ struct alignas(16) FrameUniformData {
     alignas(16) glm::mat4 projection{1.0f};
     alignas(16) glm::mat4 previous_view{1.0f};
     alignas(16) glm::mat4 previous_projection{1.0f};
+    alignas(8) glm::vec2 jitter_ndc{0.0f};
+    alignas(8) glm::vec2 previous_jitter_ndc{0.0f};
+    std::uint32_t temporal_reset_epoch = 0;
+    std::uint32_t previous_temporal_reset_epoch = 0;
+    glm::uvec2 temporal_padding{0u};
 };
 
 static_assert(offsetof(FrameUniformData, time_delta) == 0);
@@ -27,7 +33,11 @@ static_assert(offsetof(FrameUniformData, view) == 64);
 static_assert(offsetof(FrameUniformData, projection) == 128);
 static_assert(offsetof(FrameUniformData, previous_view) == 192);
 static_assert(offsetof(FrameUniformData, previous_projection) == 256);
-static_assert(sizeof(FrameUniformData) == 320);
+static_assert(offsetof(FrameUniformData, jitter_ndc) == 320);
+static_assert(offsetof(FrameUniformData, previous_jitter_ndc) == 328);
+static_assert(offsetof(FrameUniformData, temporal_reset_epoch) == 336);
+static_assert(offsetof(FrameUniformData, previous_temporal_reset_epoch) == 340);
+static_assert(sizeof(FrameUniformData) == 352);
 
 DECLARE_MODULE(FrameResources) {
     vk::Device device;

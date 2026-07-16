@@ -1,5 +1,6 @@
 #include "framegraphruntime.hpp"
 #include <stdexcept>
+#include <utility>
 
 namespace Pelican {
 
@@ -29,8 +30,10 @@ FrameGraphRuntimeContainer::~FrameGraphRuntimeContainer() = default;
 
 void FrameGraphRuntimeContainer::registerExecutionPlan(RenderingPassId rendering_pass_id,
                                                        const CompiledRenderingPass &compiled_pass,
-                                                       const FrameGraphDefinition &definition) {
+                                                       const FrameGraphDefinition &definition,
+                                                       nlohmann::json composition_metadata) {
     auto plan = planFrameGraph(definition);
+    plan.composition_metadata = std::move(composition_metadata);
     auto pass_indices = renderPassIndices(compiled_pass);
     auto task_indices = computeTaskIndices(compiled_pass);
 

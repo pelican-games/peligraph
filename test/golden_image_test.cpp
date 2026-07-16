@@ -36,6 +36,7 @@
 #include "../src/core/vkcore/renderer.hpp"
 #include "../src/core/vkcore/rendertarget.hpp"
 #include "../src/core/vkcore/rendertiming.hpp"
+#include "../src/core/vkcore/util.hpp"
 #include "../src/project/materialformat.hpp"
 #include "../src/project/materiallowering.hpp"
 #include "skeletal_fixture.hpp"
@@ -43,6 +44,7 @@
 
 #include <algorithm>
 #include <array>
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
 #include <cmath>
@@ -2348,7 +2350,210 @@ nlohmann::json loadJsonFile(const std::filesystem::path &path) {
     return nlohmann::json::parse(file);
 }
 
+void writeJitterCaptureProject(const std::filesystem::path &root) {
+    writeTextFile(root / "project.json", makeFeatureProjectJson().dump(2));
+    writeTextFile(root / "scene.json", R"json({
+      "schema":"pelican.scene","version":1,
+      "scenes":{"default_scene":{"objects":[]}}
+    })json");
+    writeTextFile(root / "assets.json", R"json({})json");
+    writeTextFile(root / "ui" / "ui.json",
+                  R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
+    writeTextFile(root / "features" / "jitter.json", R"json({
+      "schema":"pelican.render_feature",
+      "version":1,
+      "name":"jitter_capture",
+      "projection_jitter":{"pattern":"halton23","phases":8}
+    })json");
+    writeTextFile(root / "shaders" / "fullscreen.vert", stemFullscreenVertexShader());
+    writeTextFile(root / "shaders" / "jitter_capture.frag", R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_frame.glsl"
+layout(location = 0) out vec4 outColor;
+void main() {
+    vec2 offset_px = pelicanFrame.jitter_ndc * pelicanFrame.resolution.xy * 0.5;
+    outColor = vec4(offset_px + vec2(0.5), float(pelicanFrame.frame_index.x) / 8.0, 1.0);
+}
+)glsl");
+    writeTextFile(root / "passes" / "main.json", R"json({
+      "features":["features/jitter.json"],
+      "render_targets":[],
+      "rendering_passes":[{"name":"main","passes":[{
+        "name":"jitter_capture","type":"fullscreen",
+        "output":{"color":"swapchain","depth":null},
+        "shader":{"vertex":"shaders/fullscreen","fragment":"shaders/jitter_capture"}
+      }]}]
+    })json");
+}
+
+struct JitterCapture {
+    std::vector<std::vector<std::uint8_t>> frames;
+    nlohmann::json frame_plan;
+};
+
+JitterCapture captureJitterFrames(std::string_view run_name) {
+    FastModuleContainer modules;
+    const auto root = makeTempProjectDir("jitter_capture_" + std::string{run_name});
+    writeJitterCaptureProject(root);
+    GET_MODULE(PathResolver).setup(root, false);
+    GET_MODULE(ProjectSource).setProjectData(makeFeatureProjectJson().dump());
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.shader_hot_reload = false;
+    launch.headless_extent = vk::Extent2D{goldenWidth, goldenHeight};
+
+    auto &time = GET_MODULE(EngineTime);
+    time.setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
+    auto &renderer = GET_MODULE(Renderer);
+    auto &target = GET_MODULE(RenderTarget);
+    JitterCapture capture;
+    capture.frame_plan = renderer.currentFramePlanJson();
+    for (std::uint32_t frame = 1; frame <= 8; ++frame) {
+        time.advance();
+        renderer.render();
+        GET_MODULE(VulkanManageCore).waitIdle();
+        capture.frames.push_back(target.readbackLastFrameRGBA8());
+    }
+    std::filesystem::remove_all(root);
+    return capture;
+}
+
+std::vector<std::uint8_t> readDepthTargetBytes(GlobalRenderTargetId target_id) {
+    auto &targets = GET_MODULE(RenderTargetContainer);
+    const auto metadata = targets.getMetadata(target_id);
+    if (metadata.format != vk::Format::eD32Sfloat ||
+        !(metadata.usage & vk::ImageUsageFlagBits::eTransferSrc)) {
+        throw std::runtime_error("shadow probe requires a transfer-src D32 target");
+    }
+    const auto &image = targets.getImage(target_id);
+    const auto byte_count = static_cast<vk::DeviceSize>(metadata.extent.width) *
+                            metadata.extent.height * sizeof(float);
+    auto &vkcore = GET_MODULE(VulkanManageCore);
+    auto staging = vkcore.allocBuf(byte_count, vk::BufferUsageFlagBits::eTransferDst,
+                                   vma::MemoryUsage::eAutoPreferHost,
+                                   vma::AllocationCreateFlagBits::eHostAccessRandom);
+    auto &utils = GET_MODULE(VulkanUtils);
+    utils.executeOneTimeCmd(
+        [&](vk::CommandBuffer command) {
+            utils.changeImageLayoutCmd(
+                command, image, vk::ImageLayout::eShaderReadOnlyOptimal,
+                vk::ImageLayout::eTransferSrcOptimal,
+                {.src_stage = vk::PipelineStageFlagBits::eFragmentShader,
+                 .dst_stage = vk::PipelineStageFlagBits::eTransfer,
+                 .src_access = vk::AccessFlagBits::eShaderRead,
+                 .dst_access = vk::AccessFlagBits::eTransferRead});
+            vk::BufferImageCopy copy;
+            copy.imageSubresource = {vk::ImageAspectFlagBits::eDepth, 0, 0, 1};
+            copy.imageExtent = image.extent;
+            command.copyImageToBuffer(image.image.get(), vk::ImageLayout::eTransferSrcOptimal,
+                                      staging.buffer.get(), copy);
+            utils.changeImageLayoutCmd(
+                command, image, vk::ImageLayout::eTransferSrcOptimal,
+                vk::ImageLayout::eShaderReadOnlyOptimal,
+                {.src_stage = vk::PipelineStageFlagBits::eTransfer,
+                 .dst_stage = vk::PipelineStageFlagBits::eFragmentShader,
+                 .src_access = vk::AccessFlagBits::eTransferRead,
+                 .dst_access = vk::AccessFlagBits::eShaderRead});
+        },
+        true);
+    return vkcore.readBuf(staging, byte_count);
+}
+
+struct ShadowProbeCapture {
+    std::vector<std::uint8_t> shadow_bytes;
+    std::uint64_t draw_count = 0;
+};
+
+ShadowProbeCapture captureShadowProbe(bool jitter_enabled) {
+    FastModuleContainer modules;
+    const auto root = makeTempProjectDir(jitter_enabled ? "shadow_jitter_on" : "shadow_jitter_off");
+    writeShadowProject(root, true);
+    writeTextFile(root / "features" / "shadow_probe.json",
+                  std::string{R"json({
+      "schema":"pelican.render_feature","version":1,"name":"shadow_probe",
+      "render_target_overrides":{"shadow_map":{"usage":["TRANSFER_SRC"]}})json"} +
+                      (jitter_enabled
+                           ? R"json(,"projection_jitter":{"pattern":"halton23","phases":8})json"
+                           : std::string{}) +
+                      "}");
+    auto rendering = makeShadowRenderingConfig(true);
+    rendering["features"].push_back("features/shadow_probe.json");
+    writeTextFile(root / "passes" / "main.json", rendering.dump(2));
+    GET_MODULE(PathResolver).setup(root, false);
+    GET_MODULE(ProjectSource).setProjectData(makeShadowProjectJson().dump());
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.shader_hot_reload = false;
+    launch.headless_extent = vk::Extent2D{goldenWidth, goldenHeight};
+    auto &time = GET_MODULE(EngineTime);
+    time.setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
+    time.advance();
+    renderShadowFrame(GET_MODULE(RenderTarget));
+
+    ShadowProbeCapture capture;
+    for (const auto &draw : GET_MODULE(PolygonInstanceContainer).getDrawCalls()) {
+        capture.draw_count += draw.draw_count;
+    }
+    const auto shadow = GET_MODULE(RenderTargetContainer).getRenderTargetIdByName("shadow_map");
+    capture.shadow_bytes = readDepthTargetBytes(shadow);
+    std::filesystem::remove_all(root);
+    return capture;
+}
+
+float srgbToLinear(std::uint8_t encoded) {
+    const auto value = static_cast<float>(encoded) / 255.0f;
+    return value <= 0.04045f ? value / 12.92f
+                             : std::pow((value + 0.055f) / 1.055f, 2.4f);
+}
+
 } // namespace
+
+TEST_CASE("jitter-only Halton captures match the normative table and repeat byte-exactly",
+          "[golden][headless][projection-jitter]") {
+    setupLogger();
+    requireGoldenVulkanDevice();
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    const auto first = captureJitterFrames("first");
+    const auto second = captureJitterFrames("second");
+    REQUIRE(first.frames == second.frames);
+    REQUIRE(first.frame_plan.at("projection_jitter") == nlohmann::json{
+        {"provider", "jitter_capture"}, {"pattern", "halton23"}, {"phases", 8}});
+
+    const std::vector<glm::vec2> expected{
+        {0.0f, -1.0f / 6.0f}, {-1.0f / 4.0f, 1.0f / 6.0f},
+        {1.0f / 4.0f, -7.0f / 18.0f}, {-3.0f / 8.0f, -1.0f / 18.0f},
+        {1.0f / 8.0f, 5.0f / 18.0f}, {-1.0f / 8.0f, -5.0f / 18.0f},
+        {3.0f / 8.0f, 1.0f / 18.0f}, {-7.0f / 16.0f, 7.0f / 18.0f},
+    };
+    REQUIRE(first.frames.size() == expected.size());
+    for (std::size_t frame = 0; frame < expected.size(); ++frame) {
+        CAPTURE(frame);
+        REQUIRE(first.frames[frame].size() == goldenWidth * goldenHeight * 4);
+        REQUIRE(srgbToLinear(first.frames[frame][0]) ==
+                Catch::Approx(expected[frame].x + 0.5f).margin(0.015f));
+        REQUIRE(srgbToLinear(first.frames[frame][1]) ==
+                Catch::Approx(expected[frame].y + 0.5f).margin(0.015f));
+    }
+#else
+    SKIP("projection jitter capture requires the runtime shader compiler");
+#endif
+}
+
+TEST_CASE("jitter preserves culling draw count and shadow-map bytes",
+          "[golden][headless][projection-jitter][shadow]") {
+    setupLogger();
+    requireGoldenVulkanDevice();
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    const auto off = captureShadowProbe(false);
+    const auto on = captureShadowProbe(true);
+    REQUIRE(off.draw_count > 0);
+    REQUIRE(on.draw_count == off.draw_count);
+    REQUIRE(on.shadow_bytes == off.shadow_bytes);
+#else
+    SKIP("projection jitter shadow probe requires the runtime shader compiler");
+#endif
+}
 
 TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     setupLogger();
@@ -2472,7 +2677,7 @@ TEST_CASE("velocity feature compiles its standard pass and renders headless",
     std::filesystem::remove_all(root);
 }
 
-TEST_CASE("skinned velocity uses previous palette and set_time resets history",
+TEST_CASE("set_time automatically resets skinned velocity history",
           "[temporal][velocity][skeletal][headless]") {
     setupLogger();
     requireGoldenVulkanDevice();
@@ -2511,23 +2716,22 @@ TEST_CASE("skinned velocity uses previous palette and set_time resets history",
     time.setTime(0.5);
     GET_MODULE(ECSCore).update();
     renderer.render();
-    const auto moving_signal = maximumVelocitySignal(render_target.readbackLastFrameRGBA8());
+    const auto first_seek_signal = maximumVelocitySignal(render_target.readbackLastFrameRGBA8());
     const auto model_after = GET_MODULE(PolygonInstanceContainer).currentModelMatrixForTesting(ModelInstanceId{0});
 
     time.setTime(1.0);
-    renderer.resetTemporalHistory();
     GET_MODULE(ECSCore).update();
     renderer.render();
-    const auto reset_signal = maximumVelocitySignal(render_target.readbackLastFrameRGBA8());
+    const auto second_seek_signal = maximumVelocitySignal(render_target.readbackLastFrameRGBA8());
     GET_MODULE(VulkanManageCore).waitIdle();
 
     INFO("velocity signal (RGBA8, shader scale 20): initial=" << static_cast<int>(initial_signal)
-         << " moving=" << static_cast<int>(moving_signal)
-         << " reset=" << static_cast<int>(reset_signal));
+         << " first seek=" << static_cast<int>(first_seek_signal)
+         << " second seek=" << static_cast<int>(second_seek_signal));
     REQUIRE(model_before == model_after);
     REQUIRE(initial_signal <= 1);
-    REQUIRE(moving_signal > 1);
-    REQUIRE(reset_signal <= 1);
+    REQUIRE(first_seek_signal <= 1);
+    REQUIRE(second_seek_signal <= 1);
     std::filesystem::remove_all(root);
 }
 

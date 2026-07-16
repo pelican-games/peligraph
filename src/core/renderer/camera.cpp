@@ -503,6 +503,7 @@ void Camera::resetToConfigDefaults() {
 }
 
 void Camera::loadSceneCameras(std::string_view scene_id) {
+    ++discontinuity_revision;
     resetToConfigDefaults();
     if (!GET_MODULE(PathResolver).isSetup()) {
         return;
@@ -614,6 +615,7 @@ void Camera::setActiveCamera(std::string_view name) {
     applySceneCamera(camera_it->second);
     active_camera_name = camera_it->first;
     active_scene_camera_locked = true;
+    ++discontinuity_revision;
 }
 
 } // namespace Pelican

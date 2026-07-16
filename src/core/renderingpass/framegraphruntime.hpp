@@ -38,7 +38,8 @@ DECLARE_MODULE(FrameGraphRuntimeContainer) {
 
     void registerExecutionPlan(RenderingPassId rendering_pass_id,
                                const CompiledRenderingPass &compiled_pass,
-                               const FrameGraphDefinition &definition);
+                               const FrameGraphDefinition &definition,
+                               nlohmann::json composition_metadata = nlohmann::json::object());
     const CompiledFrameGraphExecution *find(RenderingPassId rendering_pass_id) const;
 };
 
