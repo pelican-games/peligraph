@@ -2790,6 +2790,35 @@ renderer の snapshot/epoch 配線・debug enqueue 引数。
    jitter-only = 数表 golden + 2 回一致 / TAA on は T-TAA へ)+
    既存全テスト + golden 全維持(SKIP 0・件数 33/32)+ player 8 秒
 
+### WP113: T-TAA — 標準 TAA feature(ユーザー空間 stdlib)
+
+参照: **`design_taa_jitter.md` v2.1 §2(全部 — 二パス構成・
+TAA-RESOLVE-EQUATIONS の全式)・§2-1・§3 が正**。
+基盤 = WP112(J1 — レポート
+`docs/design_reviews/2026-07-16_wp112_report.md`: jitter 機構・epoch
+ペア・named binding が実装済み。**この公開機構だけで書くこと** —
+エンジン本体への変更は原則禁止・不足があれば実装せず質問 = A2 と
+同じ dogfooding の掟)。依存: WP112(済)。見積: 中〜大。
+排他: `engine://features/taa.json` + resolve/composite シェーダ +
+golden + adding_features.md レシピ。
+
+1. **二パス構成**(§2): taa_resolve(4 入力 → taa_accum 1 出力)+
+   taa_composite(taa_accum → downstream 1 出力)。named binding で
+   RT 名を解決(プロジェクト固有名の直書き禁止)
+2. **resolve の全式 = §2 の TAA-RESOLVE-EQUATIONS 逐語**(履歴参照・
+   深度線形化・disocclusion・clamp・blend・invalid 素通し)。
+   α と τ・ε は feature params 公開
+3. depth は feature override で SAMPLED usage 追加(既存機構)
+4. **golden(§2-1 — 各別 gate)**: 既定 off 全維持 / jitter-only(J1
+   済)/ 静止 N フレーム収束 / camera motion / object motion /
+   disocclusion / resize 後 1 フレーム / set_time 後 1 フレーム /
+   orthographic / 2 回実行 byte 一致
+5. example config への compose/validate が通る完全な taa.json fixture +
+   adding_features.md に「コピーして改造する」ユーザーレシピ
+6. 受け入れ = 上記全部 + 既存全テスト + golden 全維持(SKIP 0・
+   件数 33/32 は新規追加分だけ更新)+ player 8 秒(TAA on の example
+   相当プロジェクトの見た目確認手順をレポートに)
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの
