@@ -109,17 +109,26 @@ TEST_CASE("import manifest accepts khronos.ktx2 outputs from the ktx2 recipe",
     });
     CHECK(manifest.outputs.size() == 1);
 
-    CHECK_THROWS_WITH(parseImportManifestJson({
-                          {"schema", "pelican.import"},
-                          {"version", 1},
-                          {"tool", {{"name", "pelican-import-tools"}, {"version", "0.1.0"}}},
-                          {"source", {{"files", {"textures/albedo.png"}}}},
-                          {"outputs", {{{"file", "albedo.ktx2"},
-                                        {"schema", "khronos.ktx2"},
-                                        {"version", 3},
-                                        {"sha256", std::string(64, 'c')}}}},
-                      }),
-                      Catch::Matchers::ContainsSubstring("version is not supported"));
+    const auto ktx2Manifest = [](nlohmann::json output) {
+        output["file"] = "albedo.ktx2";
+        output["schema"] = "khronos.ktx2";
+        output["sha256"] = std::string(64, 'c');
+        return nlohmann::json{
+            {"schema", "pelican.import"},
+            {"version", 1},
+            {"tool", {{"name", "pelican-import-tools"}, {"version", "0.1.0"}}},
+            {"source", {{"files", {"textures/albedo.png"}}}},
+            {"outputs", {std::move(output)}},
+        };
+    };
+    // version 欠落 / 1 / 3 は reject、2 のみ accept(MANIFEST-KTX2-VERSION)。
+    CHECK_THROWS_WITH(parseImportManifestJson(ktx2Manifest({})),
+                      Catch::Matchers::ContainsSubstring("requires version 2"));
+    CHECK_THROWS_WITH(parseImportManifestJson(ktx2Manifest({{"version", 1}})),
+                      Catch::Matchers::ContainsSubstring("expected=2, actual=1"));
+    CHECK_THROWS_WITH(parseImportManifestJson(ktx2Manifest({{"version", 3}})),
+                      Catch::Matchers::ContainsSubstring("expected=2, actual=3"));
+    CHECK(parseImportManifestJson(ktx2Manifest({{"version", 2}})).outputs.size() == 1);
 }
 
 } // namespace Pelican

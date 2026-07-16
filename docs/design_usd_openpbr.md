@@ -1,4 +1,4 @@
-# USD 変換レーンと OpenPBR マテリアル対応(v2)
+# USD 変換レーンと OpenPBR マテリアル対応(v2.1 — 条件付き受理)
 
 対象読者: エンジン担当・DCC 連携を使う人・マテリアルを書く人。
 ステータス: v2 ドラフト(2026-07-16)。v1 は敵対レビュー
@@ -42,10 +42,16 @@ v1 の「別スニペットだから既存無変更」は不成立(レビュー 
    default_reference 1 個のみ。material 側から surface 宣言 texture を
    差し替える形式(`pelican.material` の additive key)+ lowering +
    binder を新設
-4. **alpha/render state**: OPAQUE/MASK/BLEND は surface 固定 state の
-   現行制約に対し、**surface variant 三種(openpbr_opaque/mask/blend)
-   を v1 の解**とする(material-level pipeline state 化はより大きい
-   改訂 — 予約)。alpha cutoff は MASK variant の param
+4. **alpha/render state + doubleSided(再レビュー USD-C1 /
+   M-PBR0a-STATE)**: OPAQUE/MASK/BLEND × single/double-sided は
+   surface 固定 state の現行制約に対し、
+   **`{opaque, mask, blend} × {single_sided(cull=back),
+   double_sided(cull=none)}` の最大六 surface variant へ決定的に
+   route** する(material-level cull override は入れない — 予約)。
+   MASK = opaque blend/depth-write + alpha cutoff discard、BLEND =
+   blend/depth-read-only。gate: 各組合せの pipeline state dump・
+   front/back view・cutoff 境界・primitive binding golden。
+   `doubleSided` は input 置き場表と binding ABI に含める
 5. **material → GLB primitive binding ABI**(レビュー USD-2):
    `USD prim/subset path → GLB mesh/primitive index → pelican material
    名`の安定 mapping を import が出力し、**scene loader / model
@@ -60,7 +66,15 @@ v1 の「別スニペットだから既存無変更」は不成立(レビュー 
 M-PBR0a の ABI 上に実装:
 
 - `openpbr` surface スニペット(forward・公開 lighting ライブラリのみ =
-  特権なし)。variant 三種
+  特権なし)。**variant の artifact 形(再レビュー USD-C2 /
+  M-PBR0b-VARIANTS)**: 現行 `.surface` は variant/inheritance を
+  持たないため、**(B) 薄い `.surface` wrapper ×6(三 alpha × 二 cull)
+  + lighting 実装は単一の登録済み engine GLSL include に集約**を採る
+  ((A) build 時生成は生成器の新設が要るため不採用)。全 wrapper の
+  params/textures の名前・順序・型・default・colorspace が同一で、
+  差分が render_state/cutoff/cull だけであることを **parser fixture で
+  比較**。variant 名と import routing は決定的・六 variant の
+  shader/pipeline cache 列挙を gate に
 - **OpenPBR は 1.1.1 に exact pin**(仕様 tag/commit hash を manifest と
   マテリアルに記録。patch 更新も自動 additive とみなさない —
   レビュー USD-6)
@@ -122,6 +136,14 @@ M-PBR0 に依存しない** — 並行可能):
 - **localization**: flatten は composition を単一 layer に焼くだけで
   外部参照の移送は別問題 — dependency closure の resolved URI + hash を
   記録し、texture 等は import 出力側へ localize
+- **静的 geometry 抽出規範(再レビュー USD-C3 / U-USD0b-GEOMETRY —
+  比較 spike だけでなく本 WP の gate)**: UsdGeomMesh の points/
+  faceVertexCounts/faceVertexIndices・orientation・holes・subdivision
+  policy、UsdGeomSubset の family/type、primvar の constant/uniform/
+  varying/vertex/faceVarying + indexed values を規範化。triangulation・
+  normal/tangent の生成/保持・UV set・negative determinant 反転後の
+  順序を固定し、**USD prim/subset path → GLB mesh/primitive index の
+  mapping が決定的 sort 後にも一致する fixture** を gate に置く
 - **USDZ の安全展開(SAFETY)**: 一般 unzip 禁止。package/resolver API
   経由か、root layer 選択・path traversal・絶対パス・symlink・重複/
   大文字小文字衝突・archive bomb 上限を検査する安全展開器 + fixture
