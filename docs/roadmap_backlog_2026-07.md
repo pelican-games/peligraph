@@ -119,8 +119,11 @@
 | 済 | HR2-S / WP108 | include/.surface と material layout の一括差し替え完了 |
 | 済 | S2D-2 / WP109 | 非特権 controller と side-scroller vertical slice 完了 |
 | 済 | HR2-G / WP110 | モデル/全 fragment の原子的差し替えと live instance 再構築完了 |
-| 1 | VRM-S0 | アニメ後続の入口。以降 S1→C0→R0→I0 |
-| 2 | TAA 設計(私)→ feature 実装 | temporal の回収。ジッタ API 確定 |
+| 済(実装中) | VRM-S0 / WP111 | アニメ後続の入口。以降 S1→C0→R0→I0 |
+| 済(設計 v1) | TAA + jitter 設計 | `design_taa_jitter.md` v1 — 敵対レビュー待ち → J1/T-TAA |
+| 済(設計 v1) | USD + OpenPBR 設計 | `design_usd_openpbr.md` v1(2026-07-16 ユーザー要望)— 敵対レビュー待ち → M-PBR0 → U-USD0..2 |
+| 1 | TAA/USD 設計の敵対レビュー(codex 枠が空き次第) | 2 本まとめて 1 依頼 |
+| 2 | J1 → T-TAA / M-PBR0 → U-USD0 | レビュー通過後、VRM 5 連と交互に |
 | 3 | ライティング/IBL 設計(私)→ WP 化 | 保留トラック 3 の再開 |
 
 設計(私の作業)が必要なものは敵対レビュー往復(codex)を挟むこと。
