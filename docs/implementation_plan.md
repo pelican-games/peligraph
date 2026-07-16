@@ -2870,6 +2870,39 @@ WP28、cache キー = WP82 に自然に乗る。UBO/ABI 変更なし)。
    (SKIP 0・33/32 — T-TAA が先に着地していた場合はその件数)+
    player 8 秒
 
+### WP116: M-PBR0a — OpenPBR 表現/routing ABI
+
+参照: **`design_usd_openpbr.md` v2.1 §1-1 が正**(再レビュー条件
+USD-C1 = M-PBR0a-STATE 反映済み)。openpbr surface 本体・写像表は
+M-PBR0b(次 WP)— 本 WP は **ABI の新設のみ**。
+依存: M3a(済)・WP105(済)。見積: 特大。
+排他: materialformat/surfaceformat/materiallowering(additive)・
+scene loader / model template の binding 消費経路・dump-lowered。
+
+1. **OpenPBR 対応 input の置き場表**(§1-1-1): 各 input →
+   surface param / custom texture / render state / lighting の 1 表
+   (`doubleSided` を含む — USD-C1)
+2. **shading 経路 = lighting hook + forward**(§1-1-2 確定済み。
+   PelicanSurfaceV1 は不変・deferred は将来の PelicanSurfaceV2 で)
+3. **per-material custom texture override**(§1-1-3): pelican.material
+   の additive key(現行 parser は top-level textures を reject —
+   これを宣言済み surface texture の差し替えに限り解禁)+ lowering +
+   binder。未宣言 texture 名・型不一致は名前入りエラー
+4. **alpha/doubleSided routing**(§1-1-4 = M-PBR0a-STATE 逐語):
+   `{opaque, mask, blend} × {single_sided, double_sided}` の最大六
+   surface variant へ決定的 route。MASK = opaque 系 + cutoff discard・
+   BLEND = blend/depth-read-only。gate: 各組合せの pipeline state
+   dump・front/back view・cutoff 境界・binding golden
+5. **material → GLB primitive binding ABI**(§1-1-5): import が出す
+   `USD prim/subset path → GLB mesh/primitive index → material 名`
+   mapping を scene loader / model template が消費し primitive 単位で
+   material を差し替え。collision/missing/duplicate/fragment は
+   名前入り hard error
+6. 受け入れ = dump-lowered-material に新 ABI 追加 + schema error
+   fixture + **既存 material の golden 全 byte 維持**(新 ABI は
+   additive)+ 既存全テスト + golden SKIP 0(件数 40/39)+
+   player 8 秒
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの
