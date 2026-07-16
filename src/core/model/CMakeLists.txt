@@ -2,6 +2,7 @@ target_sources(pelican_core PRIVATE
     vertbufcontainer.cpp
     gltf.cpp
     skeletalanimation.cpp
+    vrmsemantic.cpp
 )
 if(PELICAN_WITH_VAT)
 target_sources(pelican_core PRIVATE

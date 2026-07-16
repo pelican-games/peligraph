@@ -174,6 +174,10 @@ add_executable(pelican_test_gltf_scene_fixture_writer gltf_scene_fixture_writer.
 set_target_properties(pelican_test_gltf_scene_fixture_writer PROPERTIES CXX_STANDARD 20)
 target_link_libraries(pelican_test_gltf_scene_fixture_writer PRIVATE nlohmann_json)
 
+add_executable(pelican_test_vrm_fixture_writer vrm_fixture_writer.cpp)
+set_target_properties(pelican_test_vrm_fixture_writer PROPERTIES CXX_STANDARD 20)
+target_link_libraries(pelican_test_vrm_fixture_writer PRIVATE nlohmann_json)
+
 # register tests
 pelican_define_test(module_container_test pelican_core)
 target_compile_definitions(pelican_test_module_container_test PRIVATE
@@ -183,6 +187,10 @@ pelican_define_test(deletionqueue_test pelican_core)
 pelican_define_test(deterministicrng_test pelican_core)
 pelican_define_test(enginetime_test pelican_core)
 pelican_define_test(skeletalanimation_test pelican_core glm)
+pelican_define_test(vrmsemantic_test pelican_core tinygltf)
+target_compile_definitions(pelican_test_vrmsemantic_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
 pelican_define_test(animation_probe_test pelican_core glm)
 pelican_define_test(animation_jobs_test pelican_core glm)
 pelican_define_test(animgraph_test pelican_core glm)
@@ -665,6 +673,17 @@ add_test(
         -DWRITER=$<TARGET_FILE:pelican_test_gltf_scene_fixture_writer>
         -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/devcli_gltf_extract
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_gltf_extract.cmake
+)
+
+add_test(
+    NAME devcli_vrm_dump
+    COMMAND ${CMAKE_COMMAND}
+        -DCLI=$<TARGET_FILE:pelican_cli>
+        -DWRITER=$<TARGET_FILE:pelican_test_vrm_fixture_writer>
+        -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/vrm_semantic/canonical.json
+        -DALICIA=${CMAKE_SOURCE_DIR}/projects/example/assets/models/AliciaSolid.vrm
+        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/devcli_vrm_dump
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_vrm_dump.cmake
 )
 
 add_test(
