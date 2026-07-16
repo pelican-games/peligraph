@@ -2756,6 +2756,40 @@ INFO 1 行のみ。0.x の互換受理コードを足すことは §0 違反と�
    golden 全維持(SKIP 0・件数 29/28)+ player 8 秒(example —
    AliciaSolid の挙動不変)
 
+### WP112: J1 — projection jitter 機構 + feature named binding
+
+参照: **`design_taa_jitter.md` v2.1 §1 全部が正**(再レビュー条件
+TAA-C1〜C4 反映済み — 各節の「逐語添付条件」ブロックが受入条件)。
+TAA feature 本体(§2)は対象外(T-TAA = 次 WP)。
+依存: WP88/95(済)。見積: 大。
+排他: featurecompose(jitter schema + J1-BINDING)・FrameUBO(ABI
+gate 更新込み)・materialrender(engineMvp 1 行)・velocity.frag・
+renderer の snapshot/epoch 配線・debug enqueue 引数。
+
+1. **系列**(§1-2): `sample_index = ((frame_index-1) % phases) + 1`・
+   frame 0 は名前入り error・phases=8 の規範数表 fixture・
+   width/height=0 error
+2. **投影式**(§1-3): 一般式(全列 row0/1 += jitter·row3)。
+   perspective/ortho の複数 z で NDC delta 一定の CPU 単体テスト・
+   jy 正方向 = framebuffer 下向きの三者同符号 fixture
+3. **配送**(§1-4 consumer 表どおり): 主 material = jittered VP push・
+   velocity/sprite/SSAO = FrameUBO(jittered)・world debug = snapshot
+   の jittered VP を enqueue 引数で・shadow/culling/rpc = 不変。
+   consumer 列挙 manifest + provider on で SSAO/sprite/debug の輪郭が
+   主 material と同 offset の fixture
+4. **FrameUBO ABI**(§1-5): jitter_ndc ペア + epoch ペアを additive
+   追加・CPU/GLSL std140 同時更新・offsetof/sizeof gate。
+   velocity.frag で NDC 減算 → *0.5(数値 fixture 6 種)
+5. **reset**(§1-6): epoch ペア・統一 invalidation 経路・truth table
+   fixture(初回/resize/set_time/camera cut/feature enable)
+6. **J1-BINDING**(§2 の独立 sub-gate): feature instance
+   `{ref, parameters}` 構文 + parameter 宣言 + 検証(feature 名・
+   parameter 名・target 名入り reject)+ 二重 bind fixture +
+   compose result / frame_plan への追加
+7. 受け入れ = §1-7 の三分割 gate(off = 既存 golden byte 一致 /
+   jitter-only = 数表 golden + 2 回一致 / TAA on は T-TAA へ)+
+   既存全テスト + golden 全維持(SKIP 0・件数 33/32)+ player 8 秒
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの
