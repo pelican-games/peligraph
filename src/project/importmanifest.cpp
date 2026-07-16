@@ -145,6 +145,17 @@ void validateOutputSchema(const std::string &schema, const std::optional<int> &v
         }
         return;
     }
+    if (schema == "pelican.material") {
+        if (!version) {
+            throw std::runtime_error("import manifest output pelican.material requires version 1");
+        }
+        if (*version != 1) {
+            throw std::runtime_error("import manifest output pelican.material version is not supported"
+                                     " (expected=1, actual=" +
+                                     std::to_string(*version) + ")");
+        }
+        return;
+    }
     // pelican-import-tools の ktx2 レシピが出力する schema(KTX2 container
     // version 2)。エンジン側の読取サブセットは WP92 のとおり。
     if (schema == "khronos.ktx2") {

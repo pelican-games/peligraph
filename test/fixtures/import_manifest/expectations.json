@@ -30,5 +30,16 @@
     "file": "invalid/bad_schema/manifest.json",
     "expect": "error",
     "error_kind": "schema"
+  },
+  {
+    "file": "valid/material_v1/manifest.json",
+    "expect": "ok",
+    "output_count": 1,
+    "source_file": "coat.usda"
+  },
+  {
+    "file": "invalid/material_v2/manifest.json",
+    "expect": "error",
+    "error_kind": "material_version"
   }
 ]

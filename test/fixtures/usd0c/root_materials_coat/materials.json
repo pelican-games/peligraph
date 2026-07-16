@@ -1,0 +1,62 @@
+{
+  "materials": [
+    {
+      "defines": [
+        "OPENPBR_PIN_V1_1_1",
+        "OPENPBR_PIN_F8D6D947DFAE4C9B599965A86C22826EA7A8DBFB"
+      ],
+      "name": "World_Coat_opaque_double",
+      "routing": {
+        "alpha_mode": "opaque",
+        "double_sided": true
+      },
+      "surface": "engine://surfaces/openpbr/opaque_double.surface",
+      "textures": {
+        "base_diffuse_roughness_map": "project://textures/bcfd899348e6d036_checker_1001.png"
+      },
+      "values": {
+        "alpha_cutoff": 0.5,
+        "base_color": [
+          0.11999999731779099,
+          0.3199999928474426,
+          0.7200000286102295,
+          1.0
+        ],
+        "base_diffuse_roughness": 0.18000000715255737,
+        "base_metalness": 0.07999999821186066,
+        "base_weight": 1.0,
+        "coat_color": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "coat_darkening": 0.8999999761581421,
+        "coat_ior": 1.600000023841858,
+        "coat_roughness": 0.07999999821186066,
+        "coat_weight": 0.8999999761581421,
+        "emission_color": [
+          0.11999999731779099,
+          0.20000000298023224,
+          0.5,
+          1.0
+        ],
+        "emission_luminance": 0.014999999664723873,
+        "geometry_coat_normal_scale": 1.0,
+        "geometry_normal_scale": 1.0,
+        "geometry_opacity": 1.0,
+        "specular_color": [
+          1.0,
+          0.9599999785423279,
+          0.8999999761581421,
+          1.0
+        ],
+        "specular_ior": 1.5,
+        "specular_roughness": 0.25999999046325684,
+        "specular_weight": 1.0
+      }
+    }
+  ],
+  "schema": "pelican.material",
+  "version": 1
+}

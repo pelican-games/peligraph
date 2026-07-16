@@ -1,0 +1,14 @@
+{
+  "schema": "pelican.import",
+  "version": 1,
+  "tool": {"name": "pelican-import-tools", "version": "0.1.0"},
+  "source": {"file": "coat.usda"},
+  "outputs": [
+    {
+      "file": "materials.json",
+      "schema": "pelican.material",
+      "version": 2,
+      "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    }
+  ]
+}

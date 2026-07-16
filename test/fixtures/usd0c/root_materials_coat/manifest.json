@@ -1,0 +1,311 @@
+{
+  "outputs": [
+    {
+      "file": "materials.json",
+      "schema": "pelican.material",
+      "sha256": "9734724b326e35416187aaa20a3193770da87ac79a5a887d33748a642377bd35",
+      "version": 1
+    },
+    {
+      "file": "model.glb",
+      "schema": "gltf",
+      "sha256": "4c225bec7494d7d4c1f975235d1b149ee2c83c3854b708766f37bdd257fca34b"
+    },
+    {
+      "file": "scene.json",
+      "schema": "pelican.scene",
+      "sha256": "b21f4f0d72b2f7ccd7456e38ce71f1b1894ad14b227ada536203e47a6ebe59f8",
+      "version": 1
+    },
+    {
+      "file": "textures/bcfd899348e6d036_checker_1001.png",
+      "schema": "png",
+      "sha256": "bcfd899348e6d036a6b2906f51a097ed049a483139731c83ee23b5aac16bbf7e"
+    }
+  ],
+  "schema": "pelican.import",
+  "source": {
+    "composition": {
+      "default_prim_path": "/World",
+      "effective_population_mask": [
+        "/World"
+      ],
+      "requested_variant_overrides": [],
+      "variant_selections": []
+    },
+    "dependency_closure": [
+      {
+        "kind": "asset",
+        "resolved_uri": "file:///C:/pelican-import-tools/spike/usd/corpus/openpbr.mtlx",
+        "sha256": "acce382868fb77e02376df1bb30f352646c4f2ddabea14fb513ee126194486b5",
+        "size": 369
+      },
+      {
+        "kind": "layer",
+        "resolved_uri": "file:///C:/pelican-import-tools/spike/usd/corpus/root_materials_coat.usda",
+        "sha256": "da22655426c3d1a437191eae723cfd71de487674c5c04640b01fcfb18392ec59",
+        "size": 2799
+      },
+      {
+        "kind": "asset",
+        "resolved_uri": "file:///C:/pelican-import-tools/spike/usd/corpus/textures/checker.1001.png",
+        "sha256": "bcfd899348e6d036a6b2906f51a097ed049a483139731c83ee23b5aac16bbf7e",
+        "size": 76
+      }
+    ],
+    "determinism": {
+      "first": {
+        "gltf": "4c225bec7494d7d4c1f975235d1b149ee2c83c3854b708766f37bdd257fca34b",
+        "pelican.material": "9734724b326e35416187aaa20a3193770da87ac79a5a887d33748a642377bd35",
+        "pelican.material_bindings": "450f4182844c1d4bea3a7dba741960363ba5c768a0cee75df67cc4e7921f27f1",
+        "pelican.scene": "b21f4f0d72b2f7ccd7456e38ce71f1b1894ad14b227ada536203e47a6ebe59f8",
+        "png:textures/bcfd899348e6d036_checker_1001.png": "bcfd899348e6d036a6b2906f51a097ed049a483139731c83ee23b5aac16bbf7e"
+      },
+      "second": {
+        "gltf": "4c225bec7494d7d4c1f975235d1b149ee2c83c3854b708766f37bdd257fca34b",
+        "pelican.material": "9734724b326e35416187aaa20a3193770da87ac79a5a887d33748a642377bd35",
+        "pelican.material_bindings": "450f4182844c1d4bea3a7dba741960363ba5c768a0cee75df67cc4e7921f27f1",
+        "pelican.scene": "b21f4f0d72b2f7ccd7456e38ce71f1b1894ad14b227ada536203e47a6ebe59f8",
+        "png:textures/bcfd899348e6d036_checker_1001.png": "bcfd899348e6d036a6b2906f51a097ed049a483139731c83ee23b5aac16bbf7e"
+      },
+      "verified": true
+    },
+    "diagnostics": [
+      {
+        "asset": "openpbr.mtlx",
+        "code": "USD_MTLX_PLUGIN_UNAVAILABLE",
+        "fallback": "authored USD values only",
+        "prim_path": "/World/Coat",
+        "severity": "warning"
+      },
+      {
+        "code": "OPENPBR_UNSUPPORTED_INPUT",
+        "fallback": "0.0",
+        "input": "fuzz_weight",
+        "prim_path": "/World/Coat"
+      }
+    ],
+    "file": "C:/pelican-import-tools/spike/usd/corpus/root_materials_coat.usda",
+    "geometry_mapping": [
+      {
+        "geometry": {
+          "face_count": 1,
+          "hole_face_indices": [],
+          "normal_interpolation": "generated_flat",
+          "normal_matrix_basis": [
+            [
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "orientation": "rightHanded",
+          "point_count": 3,
+          "prim_path": "/World/CoatTriangle",
+          "primvars": [
+            {
+              "glb_attribute": "TEXCOORD_0",
+              "indexed": false,
+              "interpolation": "faceVarying",
+              "name": "st",
+              "type": "texCoord2f[]"
+            }
+          ],
+          "source_determinant": 1.0,
+          "source_local_to_world_matrix": [
+            [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "subdivision_policy": "polygon_cage",
+          "subdivision_scheme": "none",
+          "subsets": [],
+          "winding_reversed": false
+        },
+        "glb_mesh_index": 0,
+        "glb_mesh_name": "World_CoatTriangle",
+        "prim_path": "/World/CoatTriangle",
+        "primitive_mapping": [
+          {
+            "glb_mesh_index": 0,
+            "glb_primitive_index": 0,
+            "prim_path": "/World/CoatTriangle",
+            "source_material_path": "/World/Coat",
+            "subset_path": null
+          }
+        ]
+      }
+    ],
+    "material_binding": {
+      "file": "material_bindings.json",
+      "schema": "pelican.material_bindings",
+      "sha256": "450f4182844c1d4bea3a7dba741960363ba5c768a0cee75df67cc4e7921f27f1",
+      "version": 1
+    },
+    "material_mapping": [
+      {
+        "material": "World_Coat_opaque_double",
+        "routing": {
+          "alpha_mode": "opaque",
+          "double_sided": true
+        },
+        "source_kind": "MaterialX open_pbr_surface",
+        "source_material_path": "/World/Coat"
+      }
+    ],
+    "material_policy": "openpbr_1_1_1",
+    "normalization": {
+      "authored_meters_per_unit": true,
+      "authored_up_axis": true,
+      "basis_scale_matrix": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "matrix_layout": "row-major",
+      "negative_determinant_policy": "reverse triangle winding and tangent handedness; inverse-transpose normals",
+      "normal_transform": "inverse-transpose source local-to-world, then source-up to Y-up basis, normalize",
+      "precision": "IEEE-754 binary32",
+      "rounding": "round-to-nearest-ties-to-even via little-endian struct f32",
+      "source_meters_per_unit": 1.0,
+      "source_up_axis": "Y",
+      "target_meters_per_unit": 1.0,
+      "target_up_axis": "Y",
+      "triangulation": "deterministic projected ear-clipping v1",
+      "xform_policy": "vertex_bake"
+    },
+    "openpbr": {
+      "commit": "f8d6d947dfae4c9b599965a86c22826ea7a8dbfb",
+      "interpreted": true,
+      "tag": "v1.1.1",
+      "version": "1.1.1"
+    },
+    "recipe": "usd",
+    "recipe_arguments": {
+      "default_prim_policy": "use",
+      "localization": "copy",
+      "payload_policy": "all",
+      "population_mask": [],
+      "resolver_search_paths": [],
+      "usdz_limits": {
+        "max_compression_ratio": 1000.0,
+        "max_entries": 10000,
+        "max_entry_bytes": 268435456,
+        "max_total_bytes": 1073741824
+      },
+      "variants": []
+    },
+    "resolver_environment": {
+      "PXR_AR_DEFAULT_SEARCH_PATH": null,
+      "PXR_MTLX_PLUGIN_SEARCH_PATHS": null,
+      "PXR_MTLX_STDLIB_SEARCH_PATHS": null,
+      "PXR_PLUGINPATH_NAME": null
+    },
+    "sha256": "da22655426c3d1a437191eae723cfd71de487674c5c04640b01fcfb18392ec59",
+    "texture_assets": [
+      {
+        "channel": "r",
+        "input": "base_diffuse_roughness",
+        "material": "World_Coat_opaque_double",
+        "output_file": "textures/bcfd899348e6d036_checker_1001.png",
+        "sha256": "bcfd899348e6d036a6b2906f51a097ed049a483139731c83ee23b5aac16bbf7e",
+        "source_asset": "textures/checker.1001.png",
+        "source_color_space": "raw",
+        "target": "base_diffuse_roughness_map",
+        "target_color_space": "linear",
+        "texcoord": "st",
+        "transform": {
+          "rotation_degrees": 15.0,
+          "scale": [
+            0.75,
+            0.5
+          ],
+          "translation": [
+            0.125,
+            0.25
+          ]
+        }
+      }
+    ],
+    "toolchain": [
+      {
+        "artifact": "production source tree (src/pelican_import_tools/*.py)",
+        "name": "pelican-import-tools",
+        "sha256": "4a47a3248de025e1dba36eaff8b9649e2d9e167f91e27c2e4a281057d95a8625",
+        "version": "0.1.0"
+      },
+      {
+        "artifact": "C:/pelican-import-tools/.venv/Scripts/python.exe",
+        "name": "CPython",
+        "sha256": "2e5b2d85a4a78b887cbf613bea5ec53de2e8e4093888c69ee406eff4f0623851",
+        "version": "3.13.13"
+      },
+      {
+        "artifact": "usd_core-26.5-cp313-none-win_amd64.whl",
+        "license": "LicenseRef-TOST-1.0 plus bundled third-party notices",
+        "name": "usd-core",
+        "sha256": "b077ea37dfeb15ca6b24ca33b65c2fe9b1656138e1fda74e4eae9793a149a7d5",
+        "version": "26.5"
+      }
+    ],
+    "usdz_entries": [],
+    "usdz_root_layer": null
+  },
+  "tool": {
+    "name": "pelican-import-tools",
+    "version": "0.1.0"
+  },
+  "version": 1
+}

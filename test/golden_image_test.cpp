@@ -12,6 +12,7 @@
 #include "../src/core/log.hpp"
 #include "../src/core/material/materialcontainer.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
+#include "../src/core/model/gltf.hpp"
 #include "../src/core/playback/vatplayer.hpp"
 #include "../src/core/renderer/debugdraw.hpp"
 #include "../src/core/renderer/debugtext.hpp"
@@ -40,6 +41,8 @@
 #include "../src/core/vkcore/util.hpp"
 #include "../src/project/materialformat.hpp"
 #include "../src/project/materiallowering.hpp"
+#include "../src/project/importmanifest.hpp"
+#include "../src/project/sceneformat.hpp"
 #include "skeletal_fixture.hpp"
 #include "morph_fixture.hpp"
 #include "vat_fixture.hpp"
@@ -789,6 +792,95 @@ void renderOpenPbrCoatSphereFrame(RenderTarget &render_target) {
 #endif
 }
 
+void renderUsdOpenPbrMaterialFrame(RenderTarget &render_target,
+                                   const std::filesystem::path &delivery) {
+    const auto readJson = [](const std::filesystem::path &path) {
+        std::ifstream input{path, std::ios::binary};
+        if (!input.is_open()) throw std::runtime_error("failed to open WP124 fixture: " + path.string());
+        return nlohmann::json::parse(input);
+    };
+    const auto manifest = parseImportManifestJson(readJson(delivery / "manifest.json"));
+    if (manifest.outputs.size() != 4)
+        throw std::runtime_error("WP124 manifest must contain material, GLB, PNG, and scene outputs");
+    const auto material_json = readJson(delivery / "materials.json");
+    const auto reference = std::string{"engine://surfaces/openpbr/opaque_double.surface"};
+    const auto surface = parseSurfaceFormat(
+        engineResourceOrThrow("surfaces/openpbr/opaque_double.surface"), reference);
+    MaterialSurfaceCatalog catalog;
+    catalog.emplace(reference, surface);
+    const auto material = parseMaterialFormatJson(material_json, catalog);
+    if (material.materials.size() != 1)
+        throw std::runtime_error("WP124 coat fixture must contain one material");
+    const auto lowered = lowerMaterial(material.materials.front(), surface);
+    if (lowered.target_pass != "forward_opaque" || !lowered.routing ||
+        !lowered.routing->double_sided || lowered.textures.size() != 18)
+        throw std::runtime_error("WP124 generated material did not lower through OpenPBR opaque-double");
+    const auto &values = material_json.at("materials").at(0).at("values");
+    if (std::abs(values.at("coat_weight").get<double>() - 0.9) > 1.0e-5 ||
+        std::abs(values.at("coat_ior").get<double>() - 1.6) > 1.0e-5)
+        throw std::runtime_error("WP124 generated coat values do not match the golden contract");
+    const auto texture_reference = material_json.at("materials").at(0).at("textures")
+                                       .at("base_diffuse_roughness_map").get<std::string>();
+    constexpr std::string_view project_prefix = "project://";
+    if (!texture_reference.starts_with(project_prefix) ||
+        !std::filesystem::is_regular_file(delivery / texture_reference.substr(project_prefix.size())))
+        throw std::runtime_error("WP124 localized texture output is missing");
+
+    const auto binding =
+        parsePrimitiveMaterialBindingJson(readJson(delivery / "material_bindings.json"));
+    if (binding.bindings.size() != 1 || binding.bindings.front().material != lowered.name)
+        throw std::runtime_error("WP124 generated binding does not select the lowered material");
+    const auto scene = normalizeSceneDataJson(readJson(delivery / "scene.json"));
+    if (scene.scenes.at("default_scene").at("objects").size() != 2)
+        throw std::runtime_error("WP124 generated scene plus golden key light did not load");
+
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    const auto bundles = GET_MODULE(ShaderLibrary).loadFromSurface(
+        surface, reference, SurfacePass::main, lowered.defines);
+    auto &standard = GET_MODULE(StandardMaterialResource);
+    MaterialInfo info{
+        .vert_shader = bundles.vertex,
+        .frag_shader = bundles.fragment,
+        .base_color_texture = standard.whiteTexture(),
+        .metallic_roughness_texture = standard.metallicRoughnessDefaultTexture(),
+        .normal_texture = standard.normalDefaultTexture(),
+        .emissive_texture = standard.emissiveDefaultTexture(),
+    };
+    applyLoweredMaterial(info, lowered);
+    auto &materials = GET_MODULE(MaterialContainer);
+    for (std::size_t index = 0; index < lowered.textures.size(); ++index) {
+        const auto &texture = lowered.textures[index];
+        if (!texture.reference.starts_with(project_prefix)) continue;
+        const auto path = delivery / texture.reference.substr(project_prefix.size());
+        if (!std::filesystem::is_regular_file(path))
+            throw std::runtime_error("WP124 lowered texture is missing: " + path.string());
+        info.custom_textures[index].texture = materials.registerTextureFile(path);
+    }
+    const auto material_id = materials.registerMaterial(std::move(info));
+
+    auto &model = GET_MODULE(ModelAssetContainer).getModelTemplateByName("coat");
+    if (model.material_primitives.size() != 1 ||
+        model.material_primitives.front().primitives.size() != 1)
+        throw std::runtime_error("WP124 generated GLB/binding did not resolve one primitive");
+    for (auto &group : model.material_primitives) group.material = material_id;
+
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    GET_MODULE(SceneLoader).load("default_scene");
+    GET_MODULE(ECSCore).update();
+    GET_MODULE(ECSCore).update();
+    auto &camera = GET_MODULE(Camera);
+    camera.setPos({0.0f, 0.0f, 2.4f});
+    camera.setDir({0.0f, 0.0f, -1.0f});
+    camera.setUp({0.0f, 1.0f, 0.0f});
+    GET_MODULE(Renderer).render();
+    GET_MODULE(VulkanManageCore).waitIdle();
+    (void)render_target;
+#else
+    (void)render_target;
+    throw std::runtime_error("runtime shader compiler disabled");
+#endif
+}
+
 void writeStemProject(const std::filesystem::path &root) {
     writeTextFile(root / "project.json", makeStemProjectJson().dump(2));
     writeTextFile(root / "scene.json", R"json({
@@ -1300,6 +1392,52 @@ void writeUsdStaticGeometryProject(const std::filesystem::path &root) {
                                std::filesystem::copy_options::overwrite_existing);
     std::filesystem::copy_file(delivery / "model.glb", root / "model.glb",
                                std::filesystem::copy_options::overwrite_existing);
+}
+
+void writeUsdOpenPbrMaterialProject(const std::filesystem::path &root) {
+    auto project = makeVatProjectJson();
+    project["name"] = "U-USD0c generated OpenPBR material golden";
+    project["basic_config"]["scene_data_json"] = "scene.json";
+    project["basic_config"]["asset_data_json"] = "assets.json";
+    project["basic_config"]["ui_config_json"] = "ui/ui.json";
+    project["basic_config"]["rendering_config_json"] = "passes/main.json";
+    project["basic_config"]["default_rendering_pass"] = "main_render";
+    writeTextFile(root / "project.json", project.dump(2));
+
+    const auto delivery = sourceRoot() / "test/fixtures/usd0c/root_materials_coat";
+    std::ifstream scene_file{delivery / "scene.json", std::ios::binary};
+    if (!scene_file) throw std::runtime_error("failed to open U-USD0c scene fixture");
+    auto scene = nlohmann::json::parse(scene_file);
+    scene["scenes"]["default_scene"]["objects"].at(0)["components"].at(1)["model"] =
+        "coat";
+    scene["scenes"]["default_scene"]["objects"].push_back({
+        {"name", "UsdCoatKeyLight"},
+        {"components",
+         nlohmann::json::array({nlohmann::json{
+             {"name", "light"},
+             {"type", "directional"},
+             {"direction", {0.25, -0.35, 1.0}},
+             {"intensity", 3.0},
+             {"color", {1.0, 0.95, 0.88}},
+         }})},
+    });
+    writeTextFile(root / "scene.json", scene.dump(2));
+    writeTextFile(root / "assets.json", R"json({"models":[{
+      "name":"coat","path":"model.glb","material_bindings":"material_bindings.json"
+    }]})json");
+    writeTextFile(root / "ui" / "ui.json", R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
+    std::filesystem::create_directories(root / "passes");
+    std::filesystem::copy_file(sourceRoot() / "projects/example/passes/main_rendering_config.json",
+                               root / "passes/main.json",
+                               std::filesystem::copy_options::overwrite_existing);
+    for (const auto &name : {"manifest.json", "materials.json", "material_bindings.json",
+                             "model.glb"}) {
+        std::filesystem::copy_file(delivery / name, root / name,
+                                   std::filesystem::copy_options::overwrite_existing);
+    }
+    std::filesystem::copy(delivery / "textures", root / "textures",
+                          std::filesystem::copy_options::recursive |
+                              std::filesystem::copy_options::overwrite_existing);
 }
 
 void writeDebugDrawProject(const std::filesystem::path &root) {
@@ -2519,6 +2657,18 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         writeMorphSkinnedShadowProject(temp_dir);
         GET_MODULE(PathResolver).setup(temp_dir, false);
         GET_MODULE(ProjectSource).setProjectData(makeShadowProjectJson().dump());
+    } else if (golden_case.mode == "usd0c_openpbr_material") {
+        writeUsdOpenPbrMaterialProject(temp_dir);
+        GET_MODULE(PathResolver).setup(temp_dir, false);
+        auto project = makeVatProjectJson();
+        project["name"] = "U-USD0c generated OpenPBR material golden";
+        project["basic_config"]["scene_data_json"] = "scene.json";
+        project["basic_config"]["asset_data_json"] = "assets.json";
+        project["basic_config"]["ui_config_json"] = "ui/ui.json";
+        project["basic_config"]["rendering_config_json"] = "passes/main.json";
+        project["basic_config"]["default_rendering_pass"] = "main_render";
+        GET_MODULE(ProjectSource).setProjectData(project.dump());
+
     } else if (golden_case.mode == "feature_compose") {
         writeFeatureProject(temp_dir);
         GET_MODULE(PathResolver).setup(temp_dir, false);
@@ -2621,6 +2771,8 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         renderSurfaceToonFrame(render_target);
     } else if (golden_case.mode == "openpbr_coat_sphere") {
         renderOpenPbrCoatSphereFrame(render_target);
+    } else if (golden_case.mode == "usd0c_openpbr_material") {
+        renderUsdOpenPbrMaterialFrame(render_target, temp_dir);
     } else if (golden_case.mode == "explicit_order") {
         renderFeatureFrame(render_target);
     } else if (golden_case.mode == "vat_playback") {
@@ -3004,9 +3156,9 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     requireGoldenVulkanDevice();
     const auto cases = discoverGoldenCases();
 #if PELICAN_WITH_VAT
-    REQUIRE(cases.size() == 43);
+    REQUIRE(cases.size() == 44);
 #else
-    REQUIRE(cases.size() == 42);
+    REQUIRE(cases.size() == 43);
 #endif
 
     for (const auto &golden_case : cases) {
