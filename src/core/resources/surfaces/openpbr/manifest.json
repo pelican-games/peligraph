@@ -1,0 +1,18 @@
+{
+  "schema": "pelican.openpbr_surface",
+  "version": 1,
+  "openpbr": {
+    "version": "1.1.1",
+    "tag": "v1.1.1",
+    "commit": "f8d6d947dfae4c9b599965a86c22826ea7a8dbfb"
+  },
+  "lighting": "engine://shaders/material/openpbr_lighting.glsl",
+  "variants": [
+    {"name": "opaque_single_sided", "surface": "engine://surfaces/openpbr/opaque_single.surface", "alpha_mode": "opaque", "double_sided": false},
+    {"name": "opaque_double_sided", "surface": "engine://surfaces/openpbr/opaque_double.surface", "alpha_mode": "opaque", "double_sided": true},
+    {"name": "mask_single_sided", "surface": "engine://surfaces/openpbr/mask_single.surface", "alpha_mode": "mask", "double_sided": false},
+    {"name": "mask_double_sided", "surface": "engine://surfaces/openpbr/mask_double.surface", "alpha_mode": "mask", "double_sided": true},
+    {"name": "blend_single_sided", "surface": "engine://surfaces/openpbr/blend_single.surface", "alpha_mode": "blend", "double_sided": false},
+    {"name": "blend_double_sided", "surface": "engine://surfaces/openpbr/blend_double.surface", "alpha_mode": "blend", "double_sided": true}
+  ]
+}

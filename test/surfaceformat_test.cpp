@@ -3,6 +3,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -32,6 +33,38 @@ std::string readText(const std::filesystem::path &path) {
 
 bool contains(std::string_view haystack, std::string_view needle) {
     return haystack.find(needle) != std::string_view::npos;
+}
+
+std::filesystem::path openPbrSurfaceRoot() {
+    return std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "src" / "core" / "resources" /
+           "surfaces" / "openpbr";
+}
+
+void requireSameOpenPbrDeclarations(const SurfaceFormatDocument &expected,
+                                    const SurfaceFormatDocument &actual) {
+    REQUIRE(actual.params.size() == expected.params.size());
+    for (std::size_t index = 0; index < expected.params.size(); ++index) {
+        const auto &left = expected.params[index];
+        const auto &right = actual.params[index];
+        REQUIRE(right.name == left.name);
+        REQUIRE(right.type == left.type);
+        REQUIRE(right.default_value.type == left.default_value.type);
+        REQUIRE(right.default_value.values == left.default_value.values);
+        REQUIRE(right.default_value.integer_value == left.default_value.integer_value);
+        REQUIRE(right.default_value.component_count == left.default_value.component_count);
+        REQUIRE(right.min == left.min);
+        REQUIRE(right.max == left.max);
+        REQUIRE(right.encoding == left.encoding);
+    }
+    REQUIRE(actual.textures.size() == expected.textures.size());
+    for (std::size_t index = 0; index < expected.textures.size(); ++index) {
+        const auto &left = expected.textures[index];
+        const auto &right = actual.textures[index];
+        REQUIRE(right.name == left.name);
+        REQUIRE(right.default_reference == left.default_reference);
+        REQUIRE(right.color_space == left.color_space);
+        REQUIRE(right.role == left.role);
+    }
 }
 
 } // namespace
@@ -140,6 +173,63 @@ TEST_CASE("surface format reflects versioned hooks without changing code identit
     REQUIRE(hooks.size() == 2);
     REQUIRE(static_cast<bool>(hooks[0] == "pelican_vertex_displace_v1"));
     REQUIRE(static_cast<bool>(hooks[1] == "pelican_surface_v1"));
+}
+
+TEST_CASE("OpenPBR wrapper-B variants preserve one declaration ABI",
+          "[surface-format][openpbr][variants]") {
+    struct VariantExpectation {
+        const char *file;
+        SurfaceBlendMode blend;
+        SurfaceCullMode cull;
+        bool depth_write;
+        int alpha_mode;
+        int double_sided;
+    };
+    constexpr std::array variants{
+        VariantExpectation{"opaque_single.surface", SurfaceBlendMode::opaque,
+                           SurfaceCullMode::back, true, 0, 0},
+        VariantExpectation{"opaque_double.surface", SurfaceBlendMode::opaque,
+                           SurfaceCullMode::none, true, 0, 1},
+        VariantExpectation{"mask_single.surface", SurfaceBlendMode::opaque,
+                           SurfaceCullMode::back, true, 1, 0},
+        VariantExpectation{"mask_double.surface", SurfaceBlendMode::opaque,
+                           SurfaceCullMode::none, true, 1, 1},
+        VariantExpectation{"blend_single.surface", SurfaceBlendMode::blend,
+                           SurfaceCullMode::back, false, 2, 0},
+        VariantExpectation{"blend_double.surface", SurfaceBlendMode::blend,
+                           SurfaceCullMode::none, false, 2, 1},
+    };
+
+    const auto baseline_source = readText(openPbrSurfaceRoot() / variants.front().file);
+    const auto baseline = parseSurfaceFormat(baseline_source, variants.front().file);
+    REQUIRE(baseline.params.size() == 19);
+    REQUIRE(baseline.textures.size() == 18);
+    REQUIRE(baseline.params.front().name == "base_weight");
+    REQUIRE(baseline.params.at(7).name == "specular_ior");
+    REQUIRE(baseline.params.at(8).name == "coat_weight");
+    REQUIRE(baseline.params.at(13).name == "emission_luminance");
+    REQUIRE(baseline.params.at(15).name == "geometry_opacity");
+    REQUIRE(baseline.params.back().name == "alpha_cutoff");
+
+    for (const auto &variant : variants) {
+        DYNAMIC_SECTION(variant.file) {
+            const auto source = readText(openPbrSurfaceRoot() / variant.file);
+            const auto document = parseSurfaceFormat(source, variant.file);
+            requireSameOpenPbrDeclarations(baseline, document);
+            REQUIRE(document.hooks.surface_v1);
+            REQUIRE(document.hooks.lighting_v1);
+            REQUIRE(document.render_state.blend == variant.blend);
+            REQUIRE(document.render_state.cull == variant.cull);
+            REQUIRE(document.render_state.depth_test);
+            REQUIRE(document.render_state.depth_write == variant.depth_write);
+            REQUIRE(document.code.find("#include \"shaders/material/openpbr_lighting.glsl\"") !=
+                    std::string::npos);
+            REQUIRE(document.code.find("#define PELICAN_OPENPBR_ALPHA_MODE " +
+                                       std::to_string(variant.alpha_mode)) != std::string::npos);
+            REQUIRE(document.code.find("#define PELICAN_OPENPBR_DOUBLE_SIDED " +
+                                       std::to_string(variant.double_sided)) != std::string::npos);
+        }
+    }
 }
 
 } // namespace Pelican
