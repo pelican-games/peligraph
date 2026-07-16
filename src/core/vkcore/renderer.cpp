@@ -195,7 +195,7 @@ FrameUniformData updateFrameResources(RenderFrameModules &modules, EngineTime &e
                                   static_cast<uint32_t>(frame_index >> 32), 0u, 0u};
     data.resolution = glm::vec4{static_cast<float>(extent.width), static_cast<float>(extent.height),
                                 inverse_width, inverse_height};
-    data.camera_position = glm::vec4{modules.camera.getPos(), 1.0f};
+    data.camera_position = glm::vec4{snapshot.camera_position, 1.0f};
     data.view = snapshot.view;
     data.projection = snapshot.projection_jittered;
     data.previous_view = snapshot.previous_view;
@@ -573,6 +573,7 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                               const CompiledRenderingPass &rendering_pass,
                               const CompiledFrameGraphExecution &frame_graph,
                               RenderFrameModules &modules,
+                              vk::Format frame_target_format,
                               RenderTargetLayoutTracker &layout_tracker,
                               const RenderPassExecutorDependencies &pass_executor_dependencies,
                               nlohmann::json *node_trace) {
@@ -652,7 +653,7 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                                             : modules.render_target_container.getImageView(color_id);
                 const auto &depth_meta = modules.render_target_container.getMetadata(depth_id);
                 const auto color_format = isSwapchainRenderTarget(color_id)
-                                              ? modules.render_target.getSwapchainFormat()
+                                              ? frame_target_format
                                               : modules.render_target_container.getMetadata(color_id).format;
                 const auto extent = isSwapchainRenderTarget(color_id)
                                         ? render_ctx.extent
@@ -733,7 +734,7 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
             if (node_trace != nullptr) {
                 node_trace->push_back(outputTransformTrace(node_index, source_old_layout,
                                                            render_ctx.required_layout, display,
-                                                           modules.render_target.getSwapchainFormat(),
+                                                            frame_target_format,
                                                            paired_storage_edges));
             }
         } else {
@@ -753,6 +754,7 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
                             const CompiledRenderingPass &rendering_pass,
                             RenderFrameModules &modules,
                             const RenderFrameSnapshot &snapshot,
+                            vk::Format frame_target_format,
                             RenderTargetLayoutTracker &layout_tracker,
                             nlohmann::json *node_trace) {
     const MaterialRendererDependencies material_renderer_dependencies{modules.instance_container,
@@ -784,7 +786,7 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
         modules.frame_resources,
         modules.camera,
         snapshot.view_projection_jittered,
-        modules.render_target.getSwapchainFormat()};
+        frame_target_format};
     const RenderPassExecutorDependencies pass_executor_dependencies{modules.render_target_container, modules.vk_utils,
                                                                     pass_dispatch_dependencies};
 
@@ -792,7 +794,8 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
     if (frame_graph == nullptr) {
         throw std::runtime_error("Frame graph execution is not registered");
     }
-    executePlannedFrameGraph(render_ctx, rendering_pass, *frame_graph, modules, layout_tracker,
+    executePlannedFrameGraph(render_ctx, rendering_pass, *frame_graph, modules,
+                             frame_target_format, layout_tracker,
                              pass_executor_dependencies, node_trace);
 }
 
@@ -819,12 +822,13 @@ bool consumeShaderReloadPublication(ShaderHotReloadModules &modules) {
                    .committed != 0;
 }
 
-bool handleFrameTargetResize(RenderFrameModules &modules, RenderTargetLayoutTracker &layout_tracker) {
-    if (!modules.render_target.consumeExtentChanged()) {
+bool handleFrameTargetResize(RenderFrameModules &modules, RenderTargetLayoutTracker &layout_tracker,
+                             ILogicalFrameTarget &target, vk::Extent2D extent) {
+    if (!target.consumeExtentChanged()) {
         return false;
     }
 
-    modules.render_target_container.recreateForExtent(modules.render_target.getExtent());
+    modules.render_target_container.recreateForExtent(extent);
     rebindFullscreenInputs(modules);
     layout_tracker.reset();
     return true;
@@ -853,12 +857,59 @@ std::optional<ProjectionJitterSettings> projectionJitterSettingsFor(
     return settings;
 }
 
+class FlatLogicalFrameTarget final : public ILogicalFrameTarget {
+    RenderTarget &target;
+    bool view_begun = false;
+
+  public:
+    explicit FlatLogicalFrameTarget(RenderTarget &target) : target{target} {}
+
+    void beginLogicalFrame(std::uint32_t view_count) override {
+        if (view_count != 1) {
+            throw std::runtime_error("flat IFrameTarget requires exactly one logical-frame view");
+        }
+        view_begun = false;
+    }
+
+    FrameRenderContext beginView(std::uint32_t view_index) override {
+        if (view_index != 0 || view_begun) {
+            throw std::runtime_error("flat IFrameTarget view was begun out of order");
+        }
+        view_begun = true;
+        return target.render_begin();
+    }
+
+    void endView(std::uint32_t view_index) override {
+        if (view_index != 0 || !view_begun) {
+            throw std::runtime_error("flat IFrameTarget view was ended out of order");
+        }
+    }
+
+    void endLogicalFrame() override {
+        if (!view_begun) {
+            throw std::runtime_error("flat IFrameTarget logical frame ended without a view");
+        }
+        target.render_end();
+        view_begun = false;
+    }
+
+    vk::Format colorFormat(std::uint32_t view_index) const override {
+        if (view_index != 0) {
+            throw std::runtime_error("flat IFrameTarget color format view is out of range");
+        }
+        return target.getSwapchainFormat();
+    }
+
+    bool consumeExtentChanged() override { return target.consumeExtentChanged(); }
+};
+
 } // namespace
 
 Renderer::Renderer() {
     current_rendering_pass_id = loadDefaultRenderingPassFromConfig();
     projection_jitter = projectionJitterSettingsFor(GET_MODULE(FrameGraphRuntimeContainer),
                                                      current_rendering_pass_id);
+    temporal_histories.resize(1);
 }
 
 Renderer::~Renderer() = default;
@@ -924,11 +975,28 @@ void Renderer::prepareRuntimeModules() {
     (void)GET_MODULE(StandardMaterialResource);
 }
 
-void Renderer::render() {
+void Renderer::renderLogicalFrame(ILogicalFrameTarget &target, std::uint32_t view_count,
+                                  const RenderViewProvider &view_provider) {
+    if (view_count == 0) {
+        throw std::runtime_error("Renderer logical frame requires at least one view");
+    }
+    if (!view_provider) {
+        throw std::runtime_error("Renderer logical frame requires a view provider");
+    }
+
     auto &deletion_queue = resolveFrameDeletionQueue();
     deletion_queue.beginFrame();
 
     auto modules = resolveRenderFrameModules();
+    if (temporal_histories.size() != view_count) {
+        modules.render_target_container.resetHistory();
+        modules.instance_container.resetTemporalHistory();
+        render_target_layout_tracker.reset();
+        temporal_histories.assign(view_count, TemporalFrameHistory{});
+        temporal_reset_requested = true;
+    }
+    modules.frame_resources.beginLogicalFrame(view_count);
+
     auto shader_hot_reload = resolveShaderHotReloadModules();
     if (consumeShaderReloadPublication(shader_hot_reload)) {
         rebindFullscreenInputs(modules);
@@ -936,7 +1004,10 @@ void Renderer::render() {
     auto &engine_time = resolveFrameEngineTime();
     const auto time_set_revision = engine_time.timeSetRevision();
     const auto camera_discontinuity_revision = modules.camera.discontinuityRevision();
-    if (temporal_history.valid &&
+    const bool has_temporal_history =
+        std::any_of(temporal_histories.begin(), temporal_histories.end(),
+                    [](const TemporalFrameHistory &history) { return history.valid; });
+    if (has_temporal_history &&
         (time_set_revision != observed_time_set_revision ||
          camera_discontinuity_revision != observed_camera_discontinuity_revision)) {
         modules.render_target_container.resetHistory();
@@ -948,47 +1019,115 @@ void Renderer::render() {
     observed_camera_discontinuity_revision = camera_discontinuity_revision;
     updateFrameAnimation(modules.light_container, engine_time.now());
 
-    const auto render_ctx = modules.render_target.render_begin();
-    if (handleFrameTargetResize(modules, render_target_layout_tracker)) {
-        modules.instance_container.resetTemporalHistory();
-        temporal_reset_requested = true;
-    }
-    const auto current_view = modules.camera.getViewMatrix();
-    const auto current_projection = modules.camera.getProjectionMatrix();
-    glm::vec2 jitter_ndc{0.0f};
-    if (projection_jitter) {
-        jitter_ndc = projectionJitterSample(*projection_jitter, engine_time.frameIndex(),
-                                            render_ctx.extent.width, render_ctx.extent.height)
-                         .jitter_ndc;
-    }
-    const auto snapshot = buildRenderFrameSnapshot(temporal_history, current_projection,
-                                                   current_view, jitter_ndc,
-                                                   temporal_reset_requested);
-    updateFrameResources(modules, engine_time, render_ctx.extent, snapshot);
-
     const auto &rendering_pass =
         modules.rendering_pass_container.getCompiledRenderingPass(current_rendering_pass_id);
-    nlohmann::json node_trace;
-    nlohmann::json *node_trace_ptr = nullptr;
-    if (execution_tracing_for_testing) {
-        node_trace = nlohmann::json::array();
-        node_trace_ptr = &node_trace;
-    }
-    executeRenderingPasses(render_ctx, current_rendering_pass_id, rendering_pass, modules, snapshot,
-                           render_target_layout_tracker, node_trace_ptr);
+    std::vector<RenderFrameSnapshot> snapshots;
+    snapshots.reserve(view_count);
+    nlohmann::json view_traces = nlohmann::json::array();
+    std::optional<std::uint32_t> logical_in_flight_frame;
+    std::optional<vk::Extent2D> logical_extent;
 
-    modules.render_target.render_end();
-    if (execution_tracing_for_testing) {
-        last_execution_trace = nlohmann::json{
-            {"nodes", std::move(node_trace)},
-            {"final_layouts", finalLayoutsTrace(rendering_pass, modules.render_target_container,
-                                                 render_target_layout_tracker, render_ctx.required_layout)},
-        };
+    target.beginLogicalFrame(view_count);
+    for (std::uint32_t view_index = 0; view_index < view_count; ++view_index) {
+        const auto render_ctx = target.beginView(view_index);
+        if (view_index == 0) {
+            logical_in_flight_frame = render_ctx.in_flight_frame_index;
+            logical_extent = render_ctx.extent;
+            if (handleFrameTargetResize(modules, render_target_layout_tracker, target,
+                                        render_ctx.extent)) {
+                modules.instance_container.resetTemporalHistory();
+                temporal_reset_requested = true;
+            }
+            // Object, skin, morph, and material-override GPU state is frozen
+            // after target acquisition and before the first view records.
+            modules.instance_container.triggerUpdate();
+        } else {
+            if (render_ctx.in_flight_frame_index != *logical_in_flight_frame) {
+                throw std::runtime_error(
+                    "Renderer logical-frame views must share one in-flight frame index");
+            }
+            if (render_ctx.extent != *logical_extent) {
+                throw std::runtime_error(
+                    "Renderer logical-frame v1 requires equal per-view extents");
+            }
+        }
+
+        const auto frame_target_format = target.colorFormat(view_index);
+        if (frame_target_format != modules.render_target.getSwapchainFormat()) {
+            throw std::runtime_error(
+                "Renderer logical-frame target format does not match the compiled flat graph");
+        }
+
+        const auto view = view_provider(view_index, render_ctx);
+        glm::vec2 jitter_ndc{0.0f};
+        if (projection_jitter) {
+            jitter_ndc = projectionJitterSample(*projection_jitter, engine_time.frameIndex(),
+                                                render_ctx.extent.width, render_ctx.extent.height)
+                             .jitter_ndc;
+        }
+        snapshots.push_back(buildRenderFrameSnapshot(
+            temporal_histories.at(view_index), view.projection, view.view,
+            view.camera_position, jitter_ndc, temporal_reset_requested));
+        const auto &snapshot = snapshots.back();
+
+        modules.frame_resources.selectView(render_ctx.in_flight_frame_index, view_index);
+        updateFrameResources(modules, engine_time, render_ctx.extent, snapshot);
+
+        nlohmann::json node_trace;
+        nlohmann::json *node_trace_ptr = nullptr;
+        if (execution_tracing_for_testing) {
+            node_trace = nlohmann::json::array();
+            node_trace_ptr = &node_trace;
+        }
+        executeRenderingPasses(render_ctx, current_rendering_pass_id, rendering_pass, modules,
+                               snapshot, frame_target_format, render_target_layout_tracker,
+                               node_trace_ptr);
+        target.endView(view_index);
+
+        if (execution_tracing_for_testing) {
+            view_traces.push_back({
+                {"view_index", view_index},
+                {"nodes", std::move(node_trace)},
+                {"final_layouts",
+                 finalLayoutsTrace(rendering_pass, modules.render_target_container,
+                                   render_target_layout_tracker, render_ctx.required_layout)},
+            });
+        }
     }
+
+    target.endLogicalFrame();
+    if (execution_tracing_for_testing) {
+        if (view_count == 1) {
+            last_execution_trace = nlohmann::json{
+                {"nodes", std::move(view_traces.at(0).at("nodes"))},
+                {"final_layouts", std::move(view_traces.at(0).at("final_layouts"))},
+            };
+        } else {
+            last_execution_trace = nlohmann::json{{"views", std::move(view_traces)}};
+        }
+    }
+
     modules.render_target_container.advanceHistoryFrame();
     modules.instance_container.advanceTemporalHistoryAfterRender();
-    commitRenderFrameSnapshot(temporal_history, snapshot);
+    for (std::uint32_t view_index = 0; view_index < view_count; ++view_index) {
+        commitRenderFrameSnapshot(temporal_histories.at(view_index), snapshots.at(view_index));
+    }
+    last_view_snapshots = std::move(snapshots);
     temporal_reset_requested = false;
+}
+
+void Renderer::render() {
+    FlatLogicalFrameTarget target{GET_MODULE(RenderTarget)};
+    renderLogicalFrame(
+        target, 1,
+        [](std::uint32_t, const FrameRenderContext &) {
+            const auto &camera = GET_MODULE(Camera);
+            return RenderViewParameters{
+                .view = camera.getViewMatrix(),
+                .projection = camera.getProjectionMatrix(),
+                .camera_position = camera.getPos(),
+            };
+        });
 }
 
 } // namespace Pelican

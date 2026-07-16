@@ -136,7 +136,9 @@ TEST_CASE("render-frame snapshot supplies one jitter offset to material FrameUBO
     const auto view = glm::lookAt(glm::vec3{1.0f, 2.0f, 3.0f}, glm::vec3{0.0f},
                                   glm::vec3{0.0f, 1.0f, 0.0f});
     const glm::vec2 jitter{0.02f, 0.03f};
-    const auto snapshot = buildRenderFrameSnapshot(history, projection, view, jitter, true);
+    const glm::vec3 camera_position{1.0f, 2.0f, 3.0f};
+    const auto snapshot = buildRenderFrameSnapshot(history, projection, view, camera_position,
+                                                   jitter, true);
     const glm::vec4 world{0.2f, -0.1f, 0.0f, 1.0f};
 
     const auto main_delta = ndc(snapshot.view_projection_jittered, world) -
@@ -148,7 +150,11 @@ TEST_CASE("render-frame snapshot supplies one jitter offset to material FrameUBO
     requireVec2(frame_ubo_delta, jitter);
     requireVec2(debug_delta, jitter);
 
-    const auto off = buildRenderFrameSnapshot(history, projection, view, glm::vec2{0.0f}, true);
+    REQUIRE(snapshot.camera_position == camera_position);
+    REQUIRE(snapshot.previous_camera_position == camera_position);
+
+    const auto off = buildRenderFrameSnapshot(history, projection, view, camera_position,
+                                              glm::vec2{0.0f}, true);
     REQUIRE(off.projection_jittered == off.projection_non_jittered);
     REQUIRE(off.view_projection_jittered == off.view_projection_non_jittered);
 }
@@ -158,20 +164,24 @@ TEST_CASE("temporal reset epoch truth table is invalid for one frame for every r
     TemporalFrameHistory history;
     const glm::mat4 projection{1.0f};
     const glm::mat4 view{1.0f};
+    const glm::vec3 camera_position{1.0f, 2.0f, 3.0f};
     const glm::vec2 jitter{0.01f, -0.02f};
 
     const std::vector<std::string> reset_causes{
         "initial", "resize", "set_time", "camera_cut", "feature_enable"};
     for (const auto &cause : reset_causes) {
         INFO(cause);
-        const auto reset = buildRenderFrameSnapshot(history, projection, view, jitter, true);
+        const auto reset = buildRenderFrameSnapshot(history, projection, view, camera_position,
+                                                    jitter, true);
         REQUIRE_FALSE(reset.historyValid());
         REQUIRE(reset.previous_projection_jittered == reset.projection_jittered);
         REQUIRE(reset.previous_view == reset.view);
+        REQUIRE(reset.previous_camera_position == reset.camera_position);
         REQUIRE(reset.previous_jitter_ndc == reset.jitter_ndc);
         commitRenderFrameSnapshot(history, reset);
 
-        const auto next = buildRenderFrameSnapshot(history, projection, view, jitter, false);
+        const auto next = buildRenderFrameSnapshot(history, projection, view, camera_position,
+                                                   jitter, false);
         REQUIRE(next.historyValid());
         REQUIRE(next.temporal_reset_epoch == reset.temporal_reset_epoch);
         commitRenderFrameSnapshot(history, next);

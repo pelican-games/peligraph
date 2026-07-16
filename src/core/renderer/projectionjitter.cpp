@@ -84,6 +84,7 @@ glm::mat4 applyProjectionJitter(const glm::mat4 &projection, glm::vec2 jitter_nd
 RenderFrameSnapshot buildRenderFrameSnapshot(const TemporalFrameHistory &history,
                                              const glm::mat4 &projection_non_jittered,
                                              const glm::mat4 &view,
+                                             glm::vec3 camera_position,
                                              glm::vec2 jitter_ndc,
                                              bool reset_requested) {
     RenderFrameSnapshot snapshot;
@@ -92,6 +93,7 @@ RenderFrameSnapshot buildRenderFrameSnapshot(const TemporalFrameHistory &history
     snapshot.projection_jittered = applyProjectionJitter(projection_non_jittered, jitter_ndc);
     snapshot.view_projection_jittered = snapshot.projection_jittered * view;
     snapshot.view = view;
+    snapshot.camera_position = camera_position;
     snapshot.jitter_ndc = jitter_ndc;
 
     const bool reset = reset_requested || !history.valid;
@@ -101,6 +103,7 @@ RenderFrameSnapshot buildRenderFrameSnapshot(const TemporalFrameHistory &history
         snapshot.previous_projection_jittered = snapshot.projection_jittered;
         snapshot.previous_view_projection_jittered = snapshot.view_projection_jittered;
         snapshot.previous_view = snapshot.view;
+        snapshot.previous_camera_position = snapshot.camera_position;
         snapshot.previous_jitter_ndc = snapshot.jitter_ndc;
         snapshot.previous_temporal_reset_epoch = history.temporal_reset_epoch;
         snapshot.temporal_reset_epoch = nextEpoch(history.temporal_reset_epoch);
@@ -110,6 +113,7 @@ RenderFrameSnapshot buildRenderFrameSnapshot(const TemporalFrameHistory &history
         snapshot.previous_projection_jittered = history.projection_jittered;
         snapshot.previous_view_projection_jittered = history.view_projection_jittered;
         snapshot.previous_view = history.view;
+        snapshot.previous_camera_position = history.camera_position;
         snapshot.previous_jitter_ndc = history.jitter_ndc;
         snapshot.temporal_reset_epoch = history.temporal_reset_epoch;
         snapshot.previous_temporal_reset_epoch = history.temporal_reset_epoch;
@@ -125,6 +129,7 @@ void commitRenderFrameSnapshot(TemporalFrameHistory &history,
     history.projection_jittered = snapshot.projection_jittered;
     history.view_projection_jittered = snapshot.view_projection_jittered;
     history.view = snapshot.view;
+    history.camera_position = snapshot.camera_position;
     history.jitter_ndc = snapshot.jitter_ndc;
     history.temporal_reset_epoch = snapshot.temporal_reset_epoch;
 }

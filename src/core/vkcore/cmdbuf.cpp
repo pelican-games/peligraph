@@ -13,12 +13,14 @@ void CommandBufWrapper::recordBegin() const {
     begin_info.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit;
     cmd_buf->begin(begin_info);
 }
+void CommandBufWrapper::recordEnd() const { cmd_buf->end(); }
+
 void CommandBufWrapper::recordEndSubmit(std::initializer_list<vk::Semaphore> signal_semaphores,
                                         std::initializer_list<vk::Semaphore> wait_semaphores,
                                         std::initializer_list<vk::PipelineStageFlags> wait_stages) const {
     assert(wait_semaphores.size() == wait_stages.size());
 
-    cmd_buf->end();
+    recordEnd();
     vk::SubmitInfo submit_info;
     submit_info.setCommandBuffers(cmd_buf.get());
     submit_info.setSignalSemaphores(signal_semaphores);

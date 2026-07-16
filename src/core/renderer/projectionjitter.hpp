@@ -37,6 +37,8 @@ struct RenderFrameSnapshot {
     glm::mat4 previous_view_projection_jittered{1.0f};
     glm::mat4 view{1.0f};
     glm::mat4 previous_view{1.0f};
+    glm::vec3 camera_position{0.0f};
+    glm::vec3 previous_camera_position{0.0f};
     glm::vec2 jitter_ndc{0.0f};
     glm::vec2 previous_jitter_ndc{0.0f};
     std::uint32_t temporal_reset_epoch = 0;
@@ -54,6 +56,7 @@ struct TemporalFrameHistory {
     glm::mat4 projection_jittered{1.0f};
     glm::mat4 view_projection_jittered{1.0f};
     glm::mat4 view{1.0f};
+    glm::vec3 camera_position{0.0f};
     glm::vec2 jitter_ndc{0.0f};
     std::uint32_t temporal_reset_epoch = 0;
 };
@@ -61,6 +64,7 @@ struct TemporalFrameHistory {
 RenderFrameSnapshot buildRenderFrameSnapshot(const TemporalFrameHistory &history,
                                              const glm::mat4 &projection_non_jittered,
                                              const glm::mat4 &view,
+                                             glm::vec3 camera_position,
                                              glm::vec2 jitter_ndc,
                                              bool reset_requested);
 void commitRenderFrameSnapshot(TemporalFrameHistory &history,

@@ -282,6 +282,7 @@ FrameRenderContext SwapchainFrameTarget::render_begin() {
             .extent = extent,
             .image_prepared_semaphore = image_prepared_semaphore,
             .required_layout = vk::ImageLayout::ePresentSrcKHR,
+            .in_flight_frame_index = in_flight_frame_index,
         };
     } while (true);
 }
