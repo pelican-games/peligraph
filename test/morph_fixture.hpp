@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -7,12 +8,15 @@
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace Pelican::TestMorphFixture {
 
 struct Options {
     bool skinned = false;
+    bool vrm_expression = false;
     double mesh_weight = 0.0;
     std::optional<double> node_weight;
     std::uint32_t target_count = 1;
@@ -127,7 +131,7 @@ inline std::vector<std::uint8_t> makeGlb(const Options &options = {}) {
     const std::vector<double> mesh_weights(options.target_count,
                                            options.mesh_weight);
 
-    const nlohmann::json json{
+    nlohmann::json json{
         {"asset", {{"version", "2.0"}, {"generator", "pelican WP121 fixture"}}},
         {"scene", 0}, {"scenes", {{{"nodes", {0}}}}}, {"nodes", nodes},
         {"skins", skins},
@@ -141,6 +145,79 @@ inline std::vector<std::uint8_t> makeGlb(const Options &options = {}) {
         {"bufferViews", views}, {"accessors", accessors},
         {"buffers", {{{"byteLength", bin.size()}}}},
     };
+
+    if (options.vrm_expression) {
+        if (!options.skinned)
+            throw std::runtime_error("VRM expression fixture must be skinned");
+        static constexpr std::array required_bones{
+            "hips",          "spine",         "head",          "leftUpperLeg",
+            "leftLowerLeg",  "leftFoot",      "rightUpperLeg", "rightLowerLeg",
+            "rightFoot",     "leftUpperArm",  "leftLowerArm",  "leftHand",
+            "rightUpperArm", "rightLowerArm", "rightHand",
+        };
+        nlohmann::json human_bones = nlohmann::json::object();
+        json["nodes"][1]["name"] = "hipsNode";
+        human_bones["hips"] = {{"node", 1}};
+        for (std::size_t index = 1; index < required_bones.size(); ++index) {
+            const auto node = json["nodes"].size();
+            json["nodes"].push_back(
+                {{"name", std::string{required_bones[index]} + "Node"}});
+            human_bones[required_bones[index]] = {{"node", node}};
+        }
+        json["materials"][0]["emissiveFactor"] = {0.02, 0.03, 0.04};
+        nlohmann::json preset = nlohmann::json::object();
+        preset["happy"] = {
+            {"morphTargetBinds",
+             nlohmann::json::array(
+                 {{{"node", 0}, {"index", 0}, {"weight", 1.0}}})},
+            {"materialColorBinds",
+             nlohmann::json::array(
+                 {{{"material", 0},
+                   {"type", "color"},
+                   {"targetValue", {1.0, 0.08, 0.12, 1.0}}},
+                  {{"material", 0},
+                   {"type", "emissionColor"},
+                   {"targetValue", {0.4, 0.02, 0.01, 1.0}}},
+                  {{"material", 0},
+                   {"type", "shadeColor"},
+                   {"targetValue", {0.0, 0.0, 0.0, 1.0}}},
+                  {{"material", 0},
+                   {"type", "matcapColor"},
+                   {"targetValue", {0.0, 0.0, 0.0, 1.0}}},
+                  {{"material", 0},
+                   {"type", "rimColor"},
+                   {"targetValue", {0.0, 0.0, 0.0, 1.0}}},
+                  {{"material", 0},
+                   {"type", "outlineColor"},
+                   {"targetValue", {0.0, 0.0, 0.0, 1.0}}}})},
+            {"textureTransformBinds",
+             nlohmann::json::array(
+                 {{{"material", 0},
+                   {"scale", {1.5, 0.75}},
+                   {"offset", {0.2, -0.1}}}})},
+        };
+        preset["blink"] = {{"isBinary", true}};
+        for (const auto *name : {"lookLeft", "lookRight", "lookUp", "lookDown"})
+            preset[name] = nlohmann::json::object();
+        nlohmann::json vrm = {
+            {"specVersion", "1.0"},
+            {"meta", nlohmann::json::object()},
+            {"humanoid", {{"humanBones", std::move(human_bones)}}},
+            {"expressions",
+             {{"preset", std::move(preset)},
+              {"custom", nlohmann::json::object()}}},
+            {"lookAt",
+             {{"type", "expression"},
+              {"rangeMapHorizontalOuter",
+               {{"inputMaxValue", 45.0}, {"outputScale", 1.0}}},
+              {"rangeMapVerticalDown",
+               {{"inputMaxValue", 30.0}, {"outputScale", 0.8}}},
+              {"rangeMapVerticalUp",
+               {{"inputMaxValue", 30.0}, {"outputScale", 0.6}}}}},
+        };
+        json["extensionsUsed"] = {"VRMC_vrm"};
+        json["extensions"]["VRMC_vrm"] = std::move(vrm);
+    }
 
     auto json_bytes = json.dump();
     while (json_bytes.size() % 4) json_bytes.push_back(' ');

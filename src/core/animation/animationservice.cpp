@@ -130,6 +130,7 @@ struct AnimationServiceRuntime::Impl {
     std::unordered_map<std::uint64_t, PhaseRecord> phases;
     std::vector<BlockedCommit> blocked_commits;
     std::uint64_t next_identity{1};
+    std::uint64_t registration_generation{1};
 
     AnimationOwnerHandle ensureOwner(internal::RegistrationOwner internal_owner) {
         const auto identity = internal_owner + 1;
@@ -252,6 +253,7 @@ struct AnimationServiceRuntime::Impl {
         assets.clear();
         owners.clear();
         ++next_identity;
+        if (++registration_generation == 0) ++registration_generation;
     }
 
     void releaseOwner(internal::RegistrationOwner internal_owner) noexcept {
@@ -883,6 +885,11 @@ Status AnimationServiceRuntime::runPhases(AnimationSinkHandle sink, std::uint64_
 
 Status AnimationServiceRuntime::runAllPhases(std::uint64_t frame_revision) noexcept {
     return impl_->runAllPhases(frame_revision);
+}
+
+std::uint64_t AnimationServiceRuntime::registrationGeneration() const noexcept {
+    std::scoped_lock lock{impl_->mutex};
+    return impl_->registration_generation;
 }
 
 AnimationServiceRuntime &animationServiceRuntime() {

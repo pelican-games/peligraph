@@ -26,6 +26,7 @@ class AnimationServiceRuntime {
     void releaseOwner(internal::RegistrationOwner owner) noexcept;
     Status runPhases(AnimationSinkHandle sink, std::uint64_t frame_revision) noexcept;
     Status runAllPhases(std::uint64_t frame_revision) noexcept;
+    std::uint64_t registrationGeneration() const noexcept;
 
   private:
     struct Impl;

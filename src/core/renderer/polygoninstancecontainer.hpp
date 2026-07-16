@@ -9,6 +9,7 @@
 #include <glm/ext/quaternion_float.hpp>
 #include <glm/glm.hpp>
 #include <functional>
+#include <optional>
 #include <span>
 #include <unordered_map>
 #include <vulkan/vulkan.hpp>
@@ -114,6 +115,22 @@ struct PublishMaterialInstanceAbsoluteOverrideDescV2 {
     std::uint32_t reserved1 = 0;
 };
 
+struct PublishVrmApplicationTransactionDescV1 {
+    bool publish_morph = false;
+    PublishMorphWeightFrameDescV1 morph{};
+    std::span<const PublishMaterialInstanceAbsoluteOverrideDescV2>
+        material_overrides{};
+};
+
+struct VrmApplicationModelView {
+    ModelInstanceId model_instance{};
+    Animation::InstanceHandle instance{};
+    std::shared_ptr<const VrmSemanticData> semantic;
+    std::shared_ptr<const MorphTargetLayout> morph_layout;
+    std::shared_ptr<const SourceMaterialInitialValueTable>
+        material_initial_values;
+};
+
 struct MaterialInstanceAbsoluteOverrideKey {
     std::uint64_t instance_identity = 0;
     std::uint32_t source_material_index = noSourceMaterialIndex;
@@ -197,6 +214,7 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     std::vector<ModelAssetId> model_asset_ids;
     std::vector<std::shared_ptr<const SourceMaterialInitialValueTable>>
         material_initial_value_tables;
+    std::vector<std::shared_ptr<const VrmSemanticData>> vrm_semantics;
     std::vector<std::shared_ptr<const MorphTargetLayout>> morph_layouts;
     std::vector<MorphWeightFrame> morph_weight_frames;
     std::vector<bool> morph_history_valid;
@@ -253,6 +271,11 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     Animation::Status publishMaterialInstanceAbsoluteOverride(
         ModelInstanceId id,
         const PublishMaterialInstanceAbsoluteOverrideDescV2 &frame);
+    Animation::Status publishVrmApplicationTransaction(
+        ModelInstanceId id,
+        const PublishVrmApplicationTransactionDescV1 &transaction);
+    std::optional<VrmApplicationModelView> vrmApplicationModel(
+        Animation::InstanceHandle instance) const;
     void bindDeformation(vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout,
                          bool skinned) const;
     void bindMaterialInstanceResources(vk::CommandBuffer cmd_buf,

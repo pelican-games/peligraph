@@ -1,5 +1,7 @@
 #include "../src/core/container.hpp"
 #include "../src/core/appflow/enginetime.hpp"
+#include "../src/core/animation/animationservice.hpp"
+#include "../src/core/animation/vrmapplication.hpp"
 #include "../src/core/asset/model.hpp"
 #include "../src/core/ecs/core.hpp"
 #include "../src/core/ecs/predefined.hpp"
@@ -1926,6 +1928,29 @@ void writeMaterialInstanceOverrideProject(const std::filesystem::path &root) {
       ]}}})json");
 }
 
+void writeVrmExpressionProject(const std::filesystem::path &root) {
+    writeShadowProject(root, false);
+    TestMorphFixture::writeGlb(root / "assets" / "expression.vrm",
+                               {.skinned = true, .vrm_expression = true});
+    writeTextFile(root / "assets.json", R"json({
+      "models":[{"name":"expression","path":"assets/expression.vrm"}]
+    })json");
+    writeTextFile(root / "scene.json", R"json({
+      "schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[
+        {"name":"ExpressionLeft","components":[
+          {"name":"transform","pos":[-0.72,0,0],"rotation":[0,0,0,1],"scale":[0.9,0.9,0.9]},
+          {"name":"simplemodelview","model":"expression"}
+        ]},
+        {"name":"ExpressionRight","components":[
+          {"name":"transform","pos":[0.72,0,0],"rotation":[0,0,0,1],"scale":[0.9,0.9,0.9]},
+          {"name":"simplemodelview","model":"expression"}
+        ]},
+        {"name":"ExpressionSun","components":[
+          {"name":"light","type":"directional","direction":[0.1,-0.2,-1.0],"intensity":4.0,"color":[1.0,0.95,0.9]}
+        ]}
+      ]}}})json");
+}
+
 void writeMaterialAbsoluteOverrideProject(const std::filesystem::path &root) {
     writeShadowProject(root, false);
     TestMaterialAbsoluteOverrideFixture::writeGlb(
@@ -2520,6 +2545,118 @@ void renderMaterialAbsoluteOverrideFrame(RenderTarget &render_target) {
     (void)render_target;
 }
 
+Animation::InstanceHandle resolveExpressionInstance(
+    Animation::AnimationServiceV1 &service, std::string_view object_name) {
+    Animation::ResolveAnimationSinkDescV1 sink{};
+    sink.struct_size = sizeof(sink);
+    sink.version = Animation::descriptorVersionV1;
+    sink.object_name = object_name.data();
+    sink.object_name_size = static_cast<std::uint32_t>(object_name.size());
+    sink.sink_kind = Animation::AnimationSinkKind::skeletal_pose;
+    REQUIRE(service.resolve_sink(service.context, &sink) ==
+            Animation::Status::ok);
+    Animation::ResolveAnimationInstanceDescV1 instance{};
+    instance.struct_size = sizeof(instance);
+    instance.version = Animation::descriptorVersionV1;
+    instance.sink = sink.sink;
+    REQUIRE(service.resolve_instance(service.context, &instance) ==
+            Animation::Status::ok);
+    return instance.instance;
+}
+
+void setGoldenExpressionInput(Vrm::ApplicationServiceV1 &service,
+                              Animation::InstanceHandle instance,
+                              float happy, float yaw) {
+    Vrm::ExpressionWeightV1 weight{};
+    constexpr char name[] = "happy";
+    weight.name = name;
+    weight.name_size = sizeof(name) - 1;
+    weight.value = happy;
+    Vrm::SetExpressionInputDescV1 input{};
+    input.struct_size = sizeof(input);
+    input.version = Vrm::applicationDescriptorVersionV1;
+    input.instance = instance;
+    input.weights = &weight;
+    input.weight_count = 1;
+    input.input_revision = 1;
+    input.look_at_yaw_degrees = yaw;
+    input.flags = Vrm::expression_input_look_at;
+    REQUIRE(service.set_expression_inputs(service.context, &input) ==
+            Animation::Status::ok);
+}
+
+void renderVrmExpressionFrame(RenderTarget &render_target, bool enabled) {
+    Vrm::applicationServiceRuntime().reset();
+    Animation::animationServiceRuntime().reset();
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    GET_MODULE(SceneLoader).load("default_scene");
+    GET_MODULE(ECSCore).update();
+    GET_MODULE(ECSCore).update();
+
+    Vrm::ApplicationServiceV1 application{};
+    application.struct_size = sizeof(application);
+    application.version = Vrm::applicationDescriptorVersionV1;
+    REQUIRE(Vrm::getApplicationServiceV1(Vrm::applicationServiceVersionV1,
+                                         &application) ==
+            Animation::Status::ok);
+    Animation::ApiV1 api{};
+    api.struct_size = sizeof(api);
+    api.version = Animation::descriptorVersionV1;
+    REQUIRE(Animation::getApiV1(Animation::abiVersionV1, &api) ==
+            Animation::Status::ok);
+    Animation::AnimationServiceV1 animation{};
+    animation.struct_size = sizeof(animation);
+    animation.version = Animation::descriptorVersionV1;
+    REQUIRE(api.get_animation_service(api.context,
+                                      Animation::animationServiceVersionV1,
+                                      &animation) == Animation::Status::ok);
+    const auto left = resolveExpressionInstance(animation, "ExpressionLeft");
+    const auto right = resolveExpressionInstance(animation, "ExpressionRight");
+    setGoldenExpressionInput(application, left, enabled ? 0.25f : 0.0f,
+                             enabled ? -22.5f : 0.0f);
+    setGoldenExpressionInput(application, right, enabled ? 1.0f : 0.0f,
+                             enabled ? 22.5f : 0.0f);
+
+    constexpr std::uint64_t revision = 123;
+    REQUIRE(Animation::animationServiceRuntime().runAllPhases(revision) ==
+            Animation::Status::ok);
+    auto &instances = GET_MODULE(PolygonInstanceContainer);
+    const ModelInstanceId left_model{
+        static_cast<std::uint32_t>(left.identity - 1)};
+    const ModelInstanceId right_model{
+        static_cast<std::uint32_t>(right.identity - 1)};
+    const auto &left_morph =
+        instances.morphWeightFrameForTesting(left_model);
+    const auto &right_morph =
+        instances.morphWeightFrameForTesting(right_model);
+    REQUIRE(left_morph.current_revision == revision);
+    REQUIRE(right_morph.current_revision == revision);
+    REQUIRE(left_morph.current.size() == 1);
+    REQUIRE(right_morph.current.size() == 1);
+    if (enabled) REQUIRE(left_morph.current != right_morph.current);
+    const auto *left_material = instances.materialAbsoluteOverrideFrameForTesting(
+        left_model, 0);
+    const auto *right_material = instances.materialAbsoluteOverrideFrameForTesting(
+        right_model, 0);
+    REQUIRE(left_material != nullptr);
+    REQUIRE(right_material != nullptr);
+    REQUIRE(left_material->current_revision == revision);
+    REQUIRE(right_material->current_revision == revision);
+    if (enabled)
+        REQUIRE(left_material->current.base_color_factor !=
+                right_material->current.base_color_factor);
+
+    auto &camera = GET_MODULE(Camera);
+    camera.setPos({0.0f, 0.0f, 3.2f});
+    camera.setDir({0.0f, 0.0f, -1.0f});
+    camera.setUp({0.0f, 1.0f, 0.0f});
+    GET_MODULE(Renderer).render();
+    GET_MODULE(VulkanManageCore).waitIdle();
+    Vrm::applicationServiceRuntime().reset();
+    Animation::animationServiceRuntime().reset();
+    (void)render_target;
+}
+
 void renderSpriteFrame(RenderTarget &render_target, std::string_view mode) {
     GET_MODULE(ECSPredefinedRegistration).reg();
     GET_MODULE(SceneLoader).load("default_scene");
@@ -2797,6 +2934,11 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         writeMaterialInstanceOverrideProject(temp_dir);
         GET_MODULE(PathResolver).setup(temp_dir, false);
         GET_MODULE(ProjectSource).setProjectData(makeShadowProjectJson().dump());
+    } else if (golden_case.mode == "vrm_expression_off" ||
+               golden_case.mode == "vrm_expression_on") {
+        writeVrmExpressionProject(temp_dir);
+        GET_MODULE(PathResolver).setup(temp_dir, false);
+        GET_MODULE(ProjectSource).setProjectData(makeShadowProjectJson().dump());
     } else if (golden_case.mode == "material_absolute_override") {
         writeMaterialAbsoluteOverrideProject(temp_dir);
         GET_MODULE(PathResolver).setup(temp_dir, false);
@@ -2917,6 +3059,10 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         renderShadowFrame(render_target);
     } else if (golden_case.mode == "material_instance_override") {
         renderMaterialInstanceOverrideFrame(render_target);
+    } else if (golden_case.mode == "vrm_expression_off" ||
+               golden_case.mode == "vrm_expression_on") {
+        renderVrmExpressionFrame(render_target,
+                                 golden_case.mode == "vrm_expression_on");
     } else if (golden_case.mode == "material_absolute_override") {
         renderMaterialAbsoluteOverrideFrame(render_target);
     } else if (golden_case.mode == "feature_compose") {
@@ -3292,9 +3438,9 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     requireGoldenVulkanDevice();
     const auto cases = discoverGoldenCases();
 #if PELICAN_WITH_VAT
-    REQUIRE(cases.size() == 46);
+    REQUIRE(cases.size() == 48);
 #else
-    REQUIRE(cases.size() == 45);
+    REQUIRE(cases.size() == 47);
 #endif
 
     for (const auto &golden_case : cases) {
