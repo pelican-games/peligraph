@@ -3155,6 +3155,40 @@ phase 登録 + fixture/golden。
    N/N-1 + reload/reset + 既存全テスト + golden SKIP 0(45/44 から
    追加分更新)+ player 8 秒(VRM 1.0 fixture の表情確認手順)
 
+**【2026-07-17 追記】WP123 は事前監査停止(4 回目の正しい停止)** —
+WP122 override が material index と絶対 target を表現できない
+(`docs/design_reviews/2026-07-17_wp123_report.md`)。停止質問の確定:
+①**WP122b 先行承認**(下記)②MToon 系 color type は v1 対象外 =
+名前入り WARN + bind 単位 skip ③firstPerson(auto split 含む)は
+S1c へ分離(近似不採用)④bone lookAt(pose staging)も S1c へ —
+**WP123 v1 = morph + material/UV + expression lookAt に再スコープ**。
+
+### WP122b: M-INST1 — material 別 absolute override
+
+参照: **WP123 停止レポートの blocking 監査 1・2 と停止質問 1 が仕様の
+正**。依存: WP122(済)。見積: 中〜大。
+排他: polygoninstancecontainer / pelican_material_instance.glsl /
+ModelTemplate の初期値 metadata。
+
+1. `(instance identity, source glTF material index)` ごとの **版付き
+   absolute override storage**(WP122 の instance 1 レコード
+   multiplier は互換経路として不変)
+2. `ModelTemplate` に **source material index → 初期 color/UV 値**の
+   immutable metadata を保持(`Base + Σ((Target-Base)×w)` の Base —
+   初期値 0 でも絶対値を表現できる根拠)
+3. shader accessor は draw 中の material identity で照合(material
+   index なし record は従来どおり全 material 適用)
+4. fixture: 同 instance で material 0 のみ着色(他 material 不変)・
+   絶対 target(初期値 0 含む)・二体独立・N/N-1・reload reset・
+   1000 回 leak なし・override golden。**既存 golden byte 不変**
+5. 受け入れ = 上記 + 既存全テスト + golden SKIP 0(45/44 + 追加分・
+   **dir 実数照合**)+ player 8 秒
+
+### WP-S1c(予約): bone lookAt + firstPerson
+
+pose staging(公開 application service の版付き transaction)と
+firstPerson auto triangle split(import-time)。WP123 着地後に詳細登録。
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの
