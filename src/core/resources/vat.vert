@@ -22,6 +22,7 @@ layout(location = 2) out vec3 outNormal;
 layout(location = 3) out vec3 outWorldPos;
 layout(location = 4) out vec3 outTangent;
 layout(location = 5) out vec3 outBitangent;
+layout(location = 6) flat out uint outMaterialInstanceIndex;
 
 float playbackFrame() {
     PelicanMaterialData material = pelicanMaterials.materials[pelicanPush.materialIndex];
@@ -97,4 +98,5 @@ void main() {
 
     outNormal = N;
     outWorldPos = world_pos.xyz;
+    outMaterialInstanceIndex = gl_BaseInstance;
 }

@@ -33,6 +33,7 @@ layout(location = 4) out vec3 outTangent;
 layout(location = 5) out vec3 outBitangent;
 layout(location = 6) out vec4 outCustom0;
 layout(location = 7) out vec4 outCustom1;
+layout(location = 8) flat out uint outMaterialInstanceIndex;
 
 void main() {
     PelicanVertexV1 vertex;
@@ -62,6 +63,7 @@ void main() {
     outWorldPos = world_pos.xyz;
     outCustom0 = vertex.custom0;
     outCustom1 = vertex.custom1;
+    outMaterialInstanceIndex = gl_BaseInstance;
     if (inTangent.w != 0.0) {
         vec3 tangent_local = morphed.tangent;
 #ifdef PELICAN_SKINNED

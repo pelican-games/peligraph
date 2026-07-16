@@ -5,6 +5,8 @@
 #include "pelican_sets.glsl"
 #include "pelican_frame.glsl"
 #include "pelican_material.glsl"
+#define PELICAN_MATERIAL_INSTANCE_LOCATION 6
+#include "pelican_material_instance.glsl"
 
 layout(set = PELICAN_SET_MATERIAL, binding = 0) uniform sampler2D baseColorSampler;
 layout(set = PELICAN_SET_MATERIAL, binding = 1) uniform sampler2D metallicRoughnessSampler;
@@ -27,7 +29,9 @@ layout(location = 4) out vec4 outEmissive;    // RGB: Emissive, A: reserved
 
 void main() {
     PelicanMaterialData material = pelicanMaterials.materials[pelicanPush.materialIndex];
-    vec4 baseColor = texture(baseColorSampler, texUV) * inColor;
+    vec2 materialUV = pelican_material_instance_uv(texUV);
+    vec4 baseColor = pelican_material_instance_apply_base_color(
+        texture(baseColorSampler, materialUV) * inColor);
     outAlbedo = baseColor;
 
     vec3 worldNormal;
@@ -40,7 +44,7 @@ void main() {
     {
         // Normal Mapping
         mat3 TBN = mat3(normalize(inTangent), normalize(inBitangent), normalize(inNormal));
-        vec3 tangentNormal = texture(normalSampler, texUV).xyz * 2.0 - 1.0;
+        vec3 tangentNormal = texture(normalSampler, materialUV).xyz * 2.0 - 1.0;
         tangentNormal.xy *= material.surfaceFactors.z;
         tangentNormal = normalize(tangentNormal);
         worldNormal = normalize(TBN * tangentNormal);
@@ -48,7 +52,7 @@ void main() {
     outNormal = vec4(worldNormal * 0.5 + 0.5, 1.0);
 
     // Metallic-Roughness（glTF形式: G=roughness, B=metallic）
-    vec3 mr = texture(metallicRoughnessSampler, texUV).rgb;
+    vec3 mr = texture(metallicRoughnessSampler, materialUV).rgb;
     // G-bufferへの出力: R=roughness, G=metallic, B=AO（glTF標準に合わせる）
     // glTF ORM texture: R=Occlusion, G=Roughness, B=Metallic
     outMaterial = vec4(mr.g * material.surfaceFactors.y,
@@ -59,5 +63,6 @@ void main() {
     outWorldPos = vec4(inWorldPos, 1.0);
 
     // Emissive
-    outEmissive = texture(emissiveSampler, texUV) * material.emissiveFactor;
+    outEmissive = pelican_material_instance_apply_emissive(
+        texture(emissiveSampler, materialUV) * material.emissiveFactor);
 }

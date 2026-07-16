@@ -9,6 +9,7 @@
   "fullscreen": "e3a9531deb22ca1b47fd39a528b41ae714bd2bd5984a749000376396b18300a1",
   "hdr_off": "6f81c60027cdc75dce91e9dcc141ea62c851a8d080fec64f36d3064b4031b660",
   "hdr_on": "c38578de04e68914321b2452d74b9853e14f9f2cbb77300e8776e1da8a0edd27",
+  "material_instance_override": "2015a61d5aadb1cd5d978d5896b430c5d5cb12f014dbf60effad24b22c7009e0",
   "morph_skinned_shadow": "4d7463050a454694cce5b9ae25ccfec5f4eb726a19efa8fa52dc9a08aa8879ca",
   "openpbr_coat_sphere": "d5661259797eab3b18ccd33ed625a5fc8496c369aa70197066cf9ad83c4b7fcb",
   "orbit_camera_controller": "3fb5701c6e0bed57fa2f6dae58d0a486aa1889245c022dc6917814179c8088c4",

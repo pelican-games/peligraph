@@ -21,6 +21,7 @@ inline constexpr uint32_t PELICAN_MORPH_WEIGHT_BINDING = 5;
 inline constexpr uint32_t PELICAN_PREVIOUS_MORPH_WEIGHT_BINDING = 6;
 inline constexpr uint32_t PELICAN_MORPH_METADATA_BINDING = 7;
 inline constexpr uint32_t PELICAN_MORPH_DELTA_BINDING = 8;
+inline constexpr uint32_t PELICAN_MATERIAL_INSTANCE_OVERRIDE_BINDING = 9;
 
 inline constexpr uint32_t PELICAN_PUSH_ENGINE_BYTES = 64;
 inline constexpr uint32_t PELICAN_PUSH_SHADER_BYTES = 64;

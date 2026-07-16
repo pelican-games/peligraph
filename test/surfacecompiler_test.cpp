@@ -181,6 +181,14 @@ TEST_CASE("OpenPBR registers and compiles all six forward cache variants",
     REQUIRE(manifest.at("variants").size() == 6);
 
     const auto lighting = engineResourceOrThrow("shaders/material/openpbr_lighting.glsl");
+    REQUIRE(lighting.find("weighted_base_color = surface.base_color.rgb") !=
+            std::string_view::npos);
+    const auto surface_template =
+        engineResourceOrThrow("shaders/material/surface_v1.frag");
+    REQUIRE(surface_template.find("pelican_material_instance_uv") !=
+            std::string_view::npos);
+    REQUIRE(surface_template.find("pelican_material_instance_apply_base_color") !=
+            std::string_view::npos);
     for (const auto public_call : {"pelican_light_count()", "pelican_light(",
                                    "pelican_shadow(", "pelican_env_ambient("}) {
         REQUIRE(lighting.find(public_call) != std::string_view::npos);

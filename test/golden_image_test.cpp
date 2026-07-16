@@ -1903,6 +1903,28 @@ void writeMorphSkinnedShadowProject(const std::filesystem::path &root) {
       ]}}})json");
 }
 
+void writeMaterialInstanceOverrideProject(const std::filesystem::path &root) {
+    writeShadowProject(root, false);
+    TestMorphFixture::writeGlb(root / "assets" / "tint.glb");
+    writeTextFile(root / "assets.json", R"json({
+      "models":[{"name":"tint","path":"assets/tint.glb"}]
+    })json");
+    writeTextFile(root / "scene.json", R"json({
+      "schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[
+        {"name":"TintLeft","components":[
+          {"name":"transform","pos":[-0.72,0,0],"rotation":[0,0,0,1],"scale":[0.9,0.9,0.9]},
+          {"name":"simplemodelview","model":"tint"}
+        ]},
+        {"name":"TintRight","components":[
+          {"name":"transform","pos":[0.72,0,0],"rotation":[0,0,0,1],"scale":[0.9,0.9,0.9]},
+          {"name":"simplemodelview","model":"tint"}
+        ]},
+        {"name":"TintSun","components":[
+          {"name":"light","type":"directional","direction":[0.1,-0.2,-1.0],"intensity":4.0,"color":[1.0,0.95,0.9]}
+        ]}
+      ]}}})json");
+}
+
 void writeTaaProject(const std::filesystem::path &root, bool orthographic) {
     writeShadowProject(root, false);
     writeTextFile(root / "shaders" / "copy_input.frag", copyInputFragmentShader());
@@ -2395,6 +2417,45 @@ void renderShadowFrame(RenderTarget &render_target) {
     (void)render_target;
 }
 
+void renderMaterialInstanceOverrideFrame(RenderTarget &render_target) {
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    GET_MODULE(SceneLoader).load("default_scene");
+    GET_MODULE(ECSCore).update();
+    GET_MODULE(ECSCore).update();
+
+    auto &instances = GET_MODULE(PolygonInstanceContainer);
+    PublishMaterialInstanceOverrideDescV1 left;
+    left.instance = instances.animationInstance(ModelInstanceId{0});
+    left.frame_revision = 1;
+    left.values.mask = materialOverrideBaseColor | materialOverrideEmissive |
+                       materialOverrideUvTransform;
+    left.values.base_color_factor = {4.0f, 0.15f, 0.1f, 1.0f};
+    left.values.emissive_factor = {1.0f, 0.2f, 0.2f, 1.0f};
+    left.values.uv_offset = {0.25f, 0.0f};
+    left.values.uv_scale = {0.75f, 1.0f};
+    left.values.uv_rotation = 0.2f;
+    REQUIRE(instances.publishMaterialInstanceOverride(ModelInstanceId{0}, left) ==
+            Animation::Status::ok);
+
+    auto right = left;
+    right.instance = instances.animationInstance(ModelInstanceId{1});
+    right.values.base_color_factor = {0.1f, 1.4f, 0.15f, 1.0f};
+    right.values.emissive_factor = {0.2f, 1.0f, 0.2f, 1.0f};
+    right.values.uv_offset = {-0.125f, 0.125f};
+    right.values.uv_scale = {1.5f, 0.5f};
+    right.values.uv_rotation = -0.35f;
+    REQUIRE(instances.publishMaterialInstanceOverride(ModelInstanceId{1}, right) ==
+            Animation::Status::ok);
+
+    auto &camera = GET_MODULE(Camera);
+    camera.setPos({0.0f, 0.0f, 3.2f});
+    camera.setDir({0.0f, 0.0f, -1.0f});
+    camera.setUp({0.0f, 1.0f, 0.0f});
+    GET_MODULE(Renderer).render();
+    GET_MODULE(VulkanManageCore).waitIdle();
+    (void)render_target;
+}
+
 void renderSpriteFrame(RenderTarget &render_target, std::string_view mode) {
     GET_MODULE(ECSPredefinedRegistration).reg();
     GET_MODULE(SceneLoader).load("default_scene");
@@ -2668,7 +2729,10 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         project["basic_config"]["rendering_config_json"] = "passes/main.json";
         project["basic_config"]["default_rendering_pass"] = "main_render";
         GET_MODULE(ProjectSource).setProjectData(project.dump());
-
+    } else if (golden_case.mode == "material_instance_override") {
+        writeMaterialInstanceOverrideProject(temp_dir);
+        GET_MODULE(PathResolver).setup(temp_dir, false);
+        GET_MODULE(ProjectSource).setProjectData(makeShadowProjectJson().dump());
     } else if (golden_case.mode == "feature_compose") {
         writeFeatureProject(temp_dir);
         GET_MODULE(PathResolver).setup(temp_dir, false);
@@ -2783,6 +2847,8 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         renderUsdStaticGeometryFrame(render_target);
     } else if (golden_case.mode == "morph_skinned_shadow") {
         renderShadowFrame(render_target);
+    } else if (golden_case.mode == "material_instance_override") {
+        renderMaterialInstanceOverrideFrame(render_target);
     } else if (golden_case.mode == "feature_compose") {
         renderFeatureFrame(render_target);
     } else if (golden_case.mode == "temporal_accumulation") {
@@ -3156,9 +3222,9 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     requireGoldenVulkanDevice();
     const auto cases = discoverGoldenCases();
 #if PELICAN_WITH_VAT
-    REQUIRE(cases.size() == 44);
+    REQUIRE(cases.size() == 45);
 #else
-    REQUIRE(cases.size() == 43);
+    REQUIRE(cases.size() == 44);
 #endif
 
     for (const auto &golden_case : cases) {

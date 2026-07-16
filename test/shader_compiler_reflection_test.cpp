@@ -112,6 +112,12 @@ TEST_CASE("shader reflection reports descriptors, push constants, and vertex inp
     REQUIRE(base_color->type == vk::DescriptorType::eCombinedImageSampler);
     REQUIRE(static_cast<bool>(base_color->stages & vk::ShaderStageFlagBits::eFragment));
 
+    const auto *material_instance = findBinding(
+        merged, PELICAN_SET_FREE, PELICAN_MATERIAL_INSTANCE_OVERRIDE_BINDING);
+    REQUIRE(material_instance != nullptr);
+    REQUIRE(material_instance->type == vk::DescriptorType::eStorageBuffer);
+    REQUIRE(material_instance->stages == vk::ShaderStageFlagBits::eFragment);
+
     REQUIRE(merged.push_constants.size() == 2);
 
     REQUIRE(merged.vertex_inputs.size() == 5);

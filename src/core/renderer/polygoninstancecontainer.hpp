@@ -9,6 +9,7 @@
 #include <glm/ext/quaternion_float.hpp>
 #include <glm/glm.hpp>
 #include <span>
+#include <unordered_map>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
@@ -47,6 +48,54 @@ struct alignas(16) MorphInstanceGpuData {
 };
 
 static_assert(sizeof(MorphInstanceGpuData) == 16);
+
+inline constexpr std::uint32_t materialInstanceOverrideDescriptorVersionV1 = 1;
+inline constexpr std::uint32_t materialOverrideBaseColor = 1u << 0u;
+inline constexpr std::uint32_t materialOverrideEmissive = 1u << 1u;
+inline constexpr std::uint32_t materialOverrideUvTransform = 1u << 2u;
+inline constexpr std::uint32_t materialOverrideAll =
+    materialOverrideBaseColor | materialOverrideEmissive | materialOverrideUvTransform;
+inline constexpr std::uint32_t materialOverrideCommitResetHistory = 1u << 0u;
+inline constexpr std::uint32_t materialOverrideCommitDiscontinuity = 1u << 1u;
+
+struct MaterialInstanceOverrideValues {
+    std::uint32_t mask = 0;
+    glm::vec4 base_color_factor{1.0f};
+    glm::vec4 emissive_factor{1.0f};
+    glm::vec2 uv_offset{0.0f};
+    glm::vec2 uv_scale{1.0f};
+    float uv_rotation = 0.0f;
+};
+
+struct PublishMaterialInstanceOverrideDescV1 {
+    std::uint32_t struct_size = sizeof(PublishMaterialInstanceOverrideDescV1);
+    std::uint32_t version = materialInstanceOverrideDescriptorVersionV1;
+    Animation::InstanceHandle instance{};
+    std::uint64_t frame_revision = 0;
+    MaterialInstanceOverrideValues values{};
+    std::uint32_t flags = 0;
+    std::uint32_t reserved0 = 0;
+    std::uint32_t reserved1 = 0;
+};
+
+struct MaterialInstanceOverrideFrame {
+    std::uint64_t instance_identity = 0;
+    std::uint32_t instance_generation = 0;
+    std::uint64_t current_revision = 0;
+    std::uint64_t previous_revision = 0;
+    MaterialInstanceOverrideValues current{};
+    MaterialInstanceOverrideValues previous{};
+};
+
+struct alignas(16) MaterialInstanceOverrideGpuData {
+    glm::vec4 base_color_factor{0.0f};
+    glm::vec4 emissive_factor{0.0f};
+    glm::vec4 uv_offset_scale{0.0f};
+    glm::vec4 uv_rotation_reserved{0.0f};
+    glm::uvec4 metadata{0u};
+};
+
+static_assert(sizeof(MaterialInstanceOverrideGpuData) == 80);
 
 struct RenderCommand {
     vk::DrawIndexedIndirectCommand command;
@@ -91,11 +140,18 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     BufferWrapper morph_instance_buffer;
     BufferWrapper morph_weight_buffer;
     BufferWrapper previous_morph_weight_buffer;
+    std::unordered_map<std::uint32_t, MaterialInstanceOverrideFrame>
+        material_override_frames;
+    BufferWrapper material_override_buffer;
     vk::UniqueDescriptorSetLayout static_deformation_descriptor_layout;
     vk::UniqueDescriptorSetLayout skinned_deformation_descriptor_layout;
+    vk::UniqueDescriptorSetLayout static_material_descriptor_layout;
+    vk::UniqueDescriptorSetLayout skinned_material_descriptor_layout;
     vk::UniqueDescriptorPool deformation_descriptor_pool;
     vk::UniqueDescriptorSet static_deformation_descriptor_set;
     vk::UniqueDescriptorSet skinned_deformation_descriptor_set;
+    vk::UniqueDescriptorSet static_material_descriptor_set;
+    vk::UniqueDescriptorSet skinned_material_descriptor_set;
 
   public:
     PolygonInstanceContainer();
@@ -105,6 +161,7 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     void triggerUpdate();
     void commitFrameHistory();
     void advanceMorphHistoryAfterRender();
+    void advanceMaterialOverrideHistoryAfterRender();
     void advanceTemporalHistoryAfterRender();
     void resetTemporalHistory();
     bool canRebuildModelInstances(std::span<const ModelInstanceRebuild> replacements) const;
@@ -118,8 +175,13 @@ DECLARE_MODULE(PolygonInstanceContainer) {
                                              const Animation::PublishAnimationFrameDescV1 &frame);
     Animation::Status publishMorphWeightFrame(
         ModelInstanceId id, const PublishMorphWeightFrameDescV1 &frame);
+    Animation::Status publishMaterialInstanceOverride(
+        ModelInstanceId id, const PublishMaterialInstanceOverrideDescV1 &frame);
     void bindDeformation(vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout,
                          bool skinned) const;
+    void bindMaterialInstanceResources(vk::CommandBuffer cmd_buf,
+                                       vk::PipelineLayout pipeline_layout,
+                                       bool skinned) const;
     void bindSkinning(vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout) const;
 
     const BufferWrapper &getIndirectBuf() const;
@@ -144,6 +206,14 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     std::uint64_t morphLayoutGenerationForTesting(ModelInstanceId id) const {
         const auto &layout = morph_layouts.at(id.value);
         return layout ? layout->generation : 0;
+    }
+    const MaterialInstanceOverrideFrame *materialOverrideFrameForTesting(
+        ModelInstanceId id) const {
+        const auto found = material_override_frames.find(id.value);
+        return found == material_override_frames.end() ? nullptr : &found->second;
+    }
+    size_t materialOverrideStorageEntryCountForTesting() const {
+        return material_override_frames.size();
     }
     size_t instanceCountForAssetForTesting(ModelAssetId asset_id) const;
 };

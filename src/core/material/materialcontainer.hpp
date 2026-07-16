@@ -172,6 +172,7 @@ DECLARE_MODULE(MaterialContainer) {
         return materials.get(material).custom_values;
     }
     std::vector<std::byte> materialGpuValuesForTesting(GlobalMaterialId material) const;
+    std::vector<std::byte> materialGpuRecordForTesting(GlobalMaterialId material) const;
     bool handlesTextureReload(const watch::AssetKey &key) const;
     bool enqueueTextureReload(const watch::ReloadRequest &request,
                               watch::ReloadCoordinator &coordinator);
