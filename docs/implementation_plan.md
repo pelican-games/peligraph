@@ -2819,6 +2819,32 @@ golden + adding_features.md レシピ。
    件数 33/32 は新規追加分だけ更新)+ player 8 秒(TAA on の example
    相当プロジェクトの見た目確認手順をレポートに)
 
+**【2026-07-16 追記】WP113 は実装前停止(正しい停止)** — J1 の
+parameter は RT 名のみでスカラー(α/τ/ε)を配送できない
+(`docs/design_reviews/2026-07-16_wp113_report.md`)。**WP114(J1b)を
+先行**させ、WP113 は WP114 着地後に再派遣(依存: WP114)。
+
+### WP114: J1b — feature スカラー parameter → shader defines
+
+参照: **`design_taa_jitter.md` v2.1 §2 の J1b ブロックが正**。
+設計判断確定: instance `parameters` の数値(float/int/bool)を
+**per-feature shader defines へ lower**(既存 defines 合成レーン =
+WP28、cache キー = WP82 に自然に乗る。UBO/ABI 変更なし)。
+依存: WP112(済)。見積: 小〜中。
+排他: featurecompose(parameter 宣言 + lowering)+ fixture。
+
+1. feature 側 parameter 宣言に `type`(float/int/bool)・`range`・
+   `default` を追加(RT parameter と同じ宣言表に同居)
+2. instance `parameters` の数値を検証(型・range・未知名 — feature 名・
+   parameter 名入り reject)し、その feature のシェーダ compile への
+   defines として lower(命名規範: `PELICAN_FEATURE_<NAME>_<PARAM>`)
+3. compose result / get_frame_plan に解決済み値を出す(観測点)
+4. fixture: 宣言/検証/lower の正負・同 feature 二重 bind で別値・
+   defines が cache キーに効く(値変更で再コンパイル)・既存 feature
+   無変更(golden 全維持)
+5. 受け入れ = fixture 全 green + 既存全テスト + golden 全維持
+   (SKIP 0・33/32)+ player 8 秒
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの

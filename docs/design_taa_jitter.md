@@ -191,6 +191,16 @@ pass taa_composite:
   target 名入り**で reject。**二つの異なる project RT 名へ bind した
   同一 TAA feature の compose result + frame plan fixture** を J1 gate に
   含める。実装が大きい場合は J1b に分離してよい(意味論は本節が正)
+- **スカラー parameter の配送(J1b — 2026-07-16 WP113 停止で判明した
+  不足、`docs/design_reviews/2026-07-16_wp113_report.md` が正)**:
+  feature instance の `parameters` に数値(float/int/bool)を許し、
+  **per-feature の shader defines へ lower する**(例:
+  `PELICAN_FEATURE_TAA_ALPHA 0.1`)。既存 defines レーン(WP28 合成・
+  WP82 cache キーに defines 込み)に乗るため UBO/ABI 変更なし・
+  決定的。feature 側は parameter 宣言に型・range・default を持ち、
+  範囲外・型不一致は feature 名・parameter 名入りで reject。
+  実行時可変(ImGui スライダ等)は将来の別機構(v1 は再 compose =
+  シェーダ再コンパイルで足りる — 開発時は hot reload が拾う)
 - depth は feature override で `SAMPLED` usage を追加(既存機構 —
   `featurecompose.cpp` の override で可能なことを確認済み)。
   depth の線形化式(ZO・perspective/ortho 両対応)を feature シェーダ
