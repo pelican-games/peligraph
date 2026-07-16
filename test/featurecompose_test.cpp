@@ -702,4 +702,125 @@ TEST_CASE("named render-target binding errors identify feature parameter and tar
                            "usage is incompatible");
 }
 
+TEST_CASE("scalar feature parameters resolve defaults and lower to deterministic defines",
+          "[render-feature][binding][scalar-parameter]") {
+    const auto feature = nlohmann::json::parse(R"json({
+      "schema":"pelican.render_feature",
+      "version":1,
+      "name":"taa",
+      "parameters":{
+        "schema":"pelican.render_feature_parameters",
+        "version":1,
+        "render_targets":[
+          {"name":"source","required":false,"default":"lit_color"}
+        ],
+        "scalars":[
+          {"name":"alpha","type":"float","range":[0.0,1.0],"default":0.1},
+          {"name":"iterations","type":"int","range":[1,16],"default":4},
+          {"name":"enabled","type":"bool","default":true}
+        ]
+      },
+      "shader_defines":["PELICAN_FEATURE_TAA"]
+    })json");
+    const auto composeFor = [&](nlohmann::json parameters) {
+        auto config = baseConfigWithFeature("taa.json");
+        config["features"] = nlohmann::json::array({nlohmann::json{
+            {"ref", "taa.json"}, {"parameters", std::move(parameters)}}});
+        return composeRenderFeatureConfig(
+            config, RenderFeatureComposeDependencies{
+                        [text = feature.dump()](std::string_view) { return text; }, true});
+    };
+
+    const auto first = composeFor({{"alpha", 0.1}, {"iterations", 7}, {"enabled", false}});
+    REQUIRE(first.shader_defines == std::vector<std::string>{
+        "PELICAN_FEATURE_TAA",
+        "PELICAN_FEATURE_TAA_ALPHA=0.100000001",
+        "PELICAN_FEATURE_TAA_ITERATIONS=7",
+        "PELICAN_FEATURE_TAA_ENABLED=0",
+    });
+    REQUIRE(first.config.at("shader_defines") == first.shader_defines);
+    REQUIRE(first.feature_instances.at(0).at("parameters") == nlohmann::json{
+        {"alpha", 0.1}, {"enabled", false}, {"iterations", 7}, {"source", "lit_color"}});
+
+    const auto graphs = parseFrameGraphDefinitionsFromConfigJson(first.config);
+    REQUIRE(graphs.size() == 1);
+    auto plan = planFrameGraph(graphs.front());
+    plan.composition_metadata["feature_instances"] = first.feature_instances;
+    const auto plan_json = framePlanToJson(plan);
+    REQUIRE(plan_json.at("feature_instances").at(0).at("parameters").at("alpha") == 0.1);
+    REQUIRE(plan_json.at("feature_instances").at(0).at("parameters").at("enabled") == false);
+
+    const auto second = composeFor({{"alpha", 0.2}});
+    REQUIRE(second.shader_defines == std::vector<std::string>{
+        "PELICAN_FEATURE_TAA",
+        "PELICAN_FEATURE_TAA_ALPHA=0.200000003",
+        "PELICAN_FEATURE_TAA_ITERATIONS=4",
+        "PELICAN_FEATURE_TAA_ENABLED=1",
+    });
+    REQUIRE(second.feature_instances.at(0).at("parameters").at("alpha") == 0.2);
+    REQUIRE(second.feature_instances.at(0).at("parameters").at("iterations") == 4);
+    REQUIRE(second.feature_instances.at(0).at("parameters").at("enabled") == true);
+    REQUIRE(first.shader_defines != second.shader_defines);
+}
+
+TEST_CASE("scalar feature parameter declaration and instance errors name feature and parameter",
+          "[render-feature][binding][scalar-parameter]") {
+    const auto compose = [&](nlohmann::json scalars, nlohmann::json values) {
+        auto feature = nlohmann::json{
+            {"schema", "pelican.render_feature"},
+            {"version", 1},
+            {"name", "scalar_errors"},
+            {"parameters", {
+                {"schema", "pelican.render_feature_parameters"},
+                {"version", 1},
+                {"scalars", std::move(scalars)},
+            }},
+        };
+        auto config = baseConfigWithFeature("scalar_errors.json");
+        config["features"] = nlohmann::json::array({nlohmann::json{
+            {"ref", "scalar_errors.json"}, {"parameters", std::move(values)}}});
+        return composeRenderFeatureConfig(
+            config, RenderFeatureComposeDependencies{
+                        [text = feature.dump()](std::string_view) { return text; }, true});
+    };
+    const auto valid_declarations = nlohmann::json::array({
+        {{"name", "alpha"}, {"type", "float"}, {"range", {0.0, 1.0}}, {"default", 0.1}},
+        {{"name", "iterations"}, {"type", "int"}, {"range", {1, 16}}, {"default", 4}},
+        {{"name", "enabled"}, {"type", "bool"}, {"default", true}},
+    });
+    const auto requireError = [&](nlohmann::json declarations, nlohmann::json values,
+                                  std::string_view parameter, std::string_view detail) {
+        try {
+            (void)compose(std::move(declarations), std::move(values));
+            FAIL("expected scalar parameter rejection");
+        } catch (const std::exception &error) {
+            const std::string message = error.what();
+            REQUIRE(contains(message, "scalar_errors"));
+            REQUIRE(contains(message, parameter));
+            REQUIRE(contains(message, detail));
+        }
+    };
+
+    requireError(valid_declarations, {{"unknown", 1}}, "unknown", "unknown parameter");
+    requireError(valid_declarations, {{"alpha", "wrong"}}, "alpha", "type float");
+    requireError(valid_declarations, {{"iterations", 2.0}}, "iterations", "type int");
+    requireError(valid_declarations, {{"enabled", 1}}, "enabled", "type bool");
+    requireError(valid_declarations, {{"alpha", 1.5}}, "alpha", "outside declared range");
+    requireError(nlohmann::json::array({
+                     {{"name", "bad"}, {"type", "vec2"}, {"default", 0.0}}}),
+                 nlohmann::json::object(), "bad", "unknown scalar type");
+    requireError(nlohmann::json::array({
+                     {{"name", "bad"}, {"type", "float"}, {"range", {2.0, 1.0}},
+                      {"default", 1.0}}}),
+                 nlohmann::json::object(), "bad", "minimum exceeds maximum");
+    requireError(nlohmann::json::array({
+                     {{"name", "bad"}, {"type", "int"}, {"range", {0, 2}},
+                      {"default", 3}}}),
+                 nlohmann::json::object(), "bad", "outside declared range");
+    requireError(nlohmann::json::array({
+                     {{"name", "bad"}, {"type", "bool"}, {"range", {false, true}},
+                      {"default", true}}}),
+                 nlohmann::json::object(), "bad", "must not have range");
+}
+
 } // namespace Pelican

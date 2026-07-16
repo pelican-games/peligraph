@@ -2,10 +2,14 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -713,6 +717,24 @@ struct RenderTargetParameterDeclaration {
     nlohmann::json constraints;
 };
 
+enum class ScalarParameterType {
+    floating,
+    integer,
+    boolean,
+};
+
+struct ScalarParameterDeclaration {
+    std::string name;
+    ScalarParameterType type = ScalarParameterType::floating;
+    nlohmann::json default_value;
+    std::optional<std::pair<nlohmann::json, nlohmann::json>> range;
+};
+
+struct FeatureParameterDeclarations {
+    std::vector<RenderTargetParameterDeclaration> render_targets;
+    std::vector<ScalarParameterDeclaration> scalars;
+};
+
 [[noreturn]] void throwBindingError(const std::string &feature_name,
                                     const std::string &parameter_name,
                                     const std::string &target_name,
@@ -721,7 +743,113 @@ struct RenderTargetParameterDeclaration {
                              parameter_name + "' target '" + target_name + "': " + detail);
 }
 
-std::vector<RenderTargetParameterDeclaration> parseRenderTargetParameters(
+[[noreturn]] void throwParameterError(const std::string &feature_name,
+                                      const std::string &parameter_name,
+                                      const std::string &detail) {
+    throw std::runtime_error("render feature '" + feature_name + "' parameter '" +
+                             parameter_name + "': " + detail);
+}
+
+std::int64_t scalarIntegerValue(const nlohmann::json &value,
+                                const std::string &feature_name,
+                                const std::string &parameter_name,
+                                std::string_view field) {
+    std::int64_t result;
+    if (value.is_number_unsigned()) {
+        const auto unsigned_value = value.get<std::uint64_t>();
+        if (unsigned_value > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+            throwParameterError(feature_name, parameter_name,
+                                std::string{field} + " is outside the int range");
+        }
+        result = static_cast<std::int64_t>(unsigned_value);
+    } else if (value.is_number_integer()) {
+        result = value.get<std::int64_t>();
+    } else {
+        throwParameterError(feature_name, parameter_name,
+                            std::string{field} + " must have type int");
+    }
+    if (result < std::numeric_limits<std::int32_t>::min() ||
+        result > std::numeric_limits<std::int32_t>::max()) {
+        throwParameterError(feature_name, parameter_name,
+                            std::string{field} + " is outside the shader int range");
+    }
+    return result;
+}
+
+double scalarFloatValue(const nlohmann::json &value,
+                        const std::string &feature_name,
+                        const std::string &parameter_name,
+                        std::string_view field) {
+    if (!value.is_number()) {
+        throwParameterError(feature_name, parameter_name,
+                            std::string{field} + " must have type float");
+    }
+    const auto result = value.get<double>();
+    if (!std::isfinite(result) ||
+        std::abs(result) > static_cast<double>(std::numeric_limits<float>::max())) {
+        throwParameterError(feature_name, parameter_name,
+                            std::string{field} + " is outside the finite float range");
+    }
+    return result;
+}
+
+void validateScalarValue(const nlohmann::json &value,
+                         const ScalarParameterDeclaration &declaration,
+                         const std::string &feature_name,
+                         std::string_view field) {
+    switch (declaration.type) {
+    case ScalarParameterType::floating: {
+        const auto numeric = scalarFloatValue(value, feature_name, declaration.name, field);
+        if (declaration.range) {
+            const auto minimum = declaration.range->first.get<double>();
+            const auto maximum = declaration.range->second.get<double>();
+            if (numeric < minimum || numeric > maximum) {
+                throwParameterError(feature_name, declaration.name,
+                                    std::string{field} + " is outside declared range [" +
+                                        declaration.range->first.dump() + ", " +
+                                        declaration.range->second.dump() + "]");
+            }
+        }
+        return;
+    }
+    case ScalarParameterType::integer: {
+        const auto numeric = scalarIntegerValue(value, feature_name, declaration.name, field);
+        if (declaration.range) {
+            const auto minimum = scalarIntegerValue(declaration.range->first, feature_name,
+                                                    declaration.name, "range minimum");
+            const auto maximum = scalarIntegerValue(declaration.range->second, feature_name,
+                                                    declaration.name, "range maximum");
+            if (numeric < minimum || numeric > maximum) {
+                throwParameterError(feature_name, declaration.name,
+                                    std::string{field} + " is outside declared range [" +
+                                        declaration.range->first.dump() + ", " +
+                                        declaration.range->second.dump() + "]");
+            }
+        }
+        return;
+    }
+    case ScalarParameterType::boolean:
+        if (!value.is_boolean()) {
+            throwParameterError(feature_name, declaration.name,
+                                std::string{field} + " must have type bool");
+        }
+        return;
+    }
+}
+
+std::string upperIdentifier(std::string_view value, const std::string &feature_name) {
+    if (!isIdentifier(value)) {
+        throw std::runtime_error("render feature '" + feature_name +
+                                 "' name must be an identifier when scalar parameters are declared");
+    }
+    std::string result{value};
+    std::transform(result.begin(), result.end(), result.begin(), [](char ch) {
+        return static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+    });
+    return result;
+}
+
+FeatureParameterDeclarations parseFeatureParameters(
     const nlohmann::json &feature, const std::string &feature_name) {
     if (!feature.contains("parameters")) {
         return {};
@@ -733,7 +861,7 @@ std::vector<RenderTargetParameterDeclaration> parseRenderTargetParameters(
     }
     for (auto field = parameters.begin(); field != parameters.end(); ++field) {
         if (field.key() != "schema" && field.key() != "version" &&
-            field.key() != "render_targets") {
+            field.key() != "render_targets" && field.key() != "scalars") {
             throw std::runtime_error("render feature '" + feature_name +
                                      "' parameters declaration has unknown field: " + field.key());
         }
@@ -747,11 +875,16 @@ std::vector<RenderTargetParameterDeclaration> parseRenderTargetParameters(
         throw std::runtime_error("render feature '" + feature_name +
                                  "' parameter version is not supported");
     }
-    const auto &targets = requireArrayField(parameters, "render_targets",
-                                             "render feature parameters: " + feature_name);
-    std::vector<RenderTargetParameterDeclaration> declarations;
+    FeatureParameterDeclarations declarations;
     std::unordered_set<std::string> names;
-    declarations.reserve(targets.size());
+    const auto targets = parameters.contains("render_targets")
+                             ? parameters.at("render_targets")
+                             : nlohmann::json::array();
+    if (!targets.is_array()) {
+        throw std::runtime_error("render feature parameters: " + feature_name +
+                                 " requires array field: render_targets");
+    }
+    declarations.render_targets.reserve(targets.size());
     for (const auto &target : targets) {
         if (!target.is_object()) {
             throw std::runtime_error("render feature '" + feature_name +
@@ -784,10 +917,119 @@ std::vector<RenderTargetParameterDeclaration> parseRenderTargetParameters(
             }
             default_target = target.at("default").get<std::string>();
         }
-        declarations.push_back(RenderTargetParameterDeclaration{
+        declarations.render_targets.push_back(RenderTargetParameterDeclaration{
             name, target.value("required", true), std::move(default_target), target});
     }
+
+    const auto scalars = parameters.contains("scalars")
+                             ? parameters.at("scalars")
+                             : nlohmann::json::array();
+    if (!scalars.is_array()) {
+        throw std::runtime_error("render feature parameters: " + feature_name +
+                                 " requires array field: scalars");
+    }
+    declarations.scalars.reserve(scalars.size());
+    std::unordered_set<std::string> define_components;
+    for (const auto &scalar : scalars) {
+        if (!scalar.is_object()) {
+            throw std::runtime_error("render feature '" + feature_name +
+                                     "' scalar parameters must be objects");
+        }
+        for (auto field = scalar.begin(); field != scalar.end(); ++field) {
+            if (field.key() != "name" && field.key() != "type" &&
+                field.key() != "range" && field.key() != "default") {
+                throw std::runtime_error("render feature '" + feature_name +
+                                         "' scalar parameter has unknown field: " + field.key());
+            }
+        }
+        const auto name = requireStringField(scalar, "name", "scalar parameter");
+        if (!isIdentifier(name) || !names.insert(name).second) {
+            throw std::runtime_error("render feature '" + feature_name +
+                                     "' has invalid or duplicate parameter: " + name);
+        }
+        if (!define_components.insert(upperIdentifier(name, feature_name)).second) {
+            throwParameterError(feature_name, name,
+                                "name collides after shader define uppercasing");
+        }
+        const auto type_name = requireStringField(scalar, "type", "scalar parameter: " + name);
+        ScalarParameterType type;
+        if (type_name == "float") {
+            type = ScalarParameterType::floating;
+        } else if (type_name == "int") {
+            type = ScalarParameterType::integer;
+        } else if (type_name == "bool") {
+            type = ScalarParameterType::boolean;
+        } else {
+            throwParameterError(feature_name, name, "unknown scalar type: " + type_name);
+        }
+        if (!scalar.contains("default")) {
+            throwParameterError(feature_name, name, "declaration requires default");
+        }
+
+        std::optional<std::pair<nlohmann::json, nlohmann::json>> range;
+        if (type == ScalarParameterType::boolean) {
+            if (scalar.contains("range")) {
+                throwParameterError(feature_name, name, "bool declaration must not have range");
+            }
+        } else {
+            if (!scalar.contains("range") || !scalar.at("range").is_array() ||
+                scalar.at("range").size() != 2) {
+                throwParameterError(feature_name, name,
+                                    "numeric declaration requires two-element range");
+            }
+            const auto &minimum = scalar.at("range").at(0);
+            const auto &maximum = scalar.at("range").at(1);
+            if (type == ScalarParameterType::floating) {
+                const auto min_value = scalarFloatValue(minimum, feature_name, name,
+                                                        "range minimum");
+                const auto max_value = scalarFloatValue(maximum, feature_name, name,
+                                                        "range maximum");
+                if (min_value > max_value) {
+                    throwParameterError(feature_name, name, "range minimum exceeds maximum");
+                }
+                range = std::pair{nlohmann::json(min_value), nlohmann::json(max_value)};
+            } else {
+                const auto min_value = scalarIntegerValue(minimum, feature_name, name,
+                                                          "range minimum");
+                const auto max_value = scalarIntegerValue(maximum, feature_name, name,
+                                                          "range maximum");
+                if (min_value > max_value) {
+                    throwParameterError(feature_name, name, "range minimum exceeds maximum");
+                }
+                range = std::pair{nlohmann::json(min_value), nlohmann::json(max_value)};
+            }
+        }
+
+        ScalarParameterDeclaration declaration{name, type, scalar.at("default"), std::move(range)};
+        validateScalarValue(declaration.default_value, declaration, feature_name, "default");
+        declarations.scalars.push_back(std::move(declaration));
+    }
     return declarations;
+}
+
+std::string scalarDefineValue(const nlohmann::json &value,
+                              const ScalarParameterDeclaration &declaration,
+                              const std::string &feature_name) {
+    switch (declaration.type) {
+    case ScalarParameterType::floating: {
+        const auto numeric = static_cast<float>(
+            scalarFloatValue(value, feature_name, declaration.name, "value"));
+        std::array<char, 32> buffer{};
+        const auto [end, error] = std::to_chars(buffer.data(), buffer.data() + buffer.size(), numeric,
+                                                std::chars_format::general,
+                                                std::numeric_limits<float>::max_digits10);
+        if (error != std::errc{}) {
+            throwParameterError(feature_name, declaration.name,
+                                "could not format float define value");
+        }
+        return std::string{buffer.data(), end};
+    }
+    case ScalarParameterType::integer:
+        return std::to_string(scalarIntegerValue(value, feature_name, declaration.name, "value"));
+    case ScalarParameterType::boolean:
+        return value.get<bool>() ? "1" : "0";
+    }
+    throwParameterError(feature_name, declaration.name, "unknown scalar type");
 }
 
 void validateTargetBinding(const nlohmann::json &config,
@@ -865,32 +1107,38 @@ void replaceBoundTargetValue(nlohmann::json &value,
     }
 }
 
-nlohmann::json bindFeatureRenderTargets(const nlohmann::json &authored_feature,
-                                        const nlohmann::json &instance_parameters,
-                                        const nlohmann::json &config,
-                                        const std::string &feature_name,
-                                        nlohmann::json &resolved_parameters) {
-    const auto declarations = parseRenderTargetParameters(authored_feature, feature_name);
+nlohmann::json bindFeatureParameters(const nlohmann::json &authored_feature,
+                                     const nlohmann::json &instance_parameters,
+                                     const nlohmann::json &config,
+                                     const std::string &feature_name,
+                                     nlohmann::json &resolved_parameters,
+                                     std::vector<std::string> &scalar_defines) {
+    const auto declarations = parseFeatureParameters(authored_feature, feature_name);
     std::unordered_map<std::string, const RenderTargetParameterDeclaration *> by_name;
-    for (const auto &declaration : declarations) {
+    for (const auto &declaration : declarations.render_targets) {
         by_name.emplace(declaration.name, &declaration);
     }
+    std::unordered_map<std::string, const ScalarParameterDeclaration *> scalars_by_name;
+    for (const auto &declaration : declarations.scalars) {
+        scalars_by_name.emplace(declaration.name, &declaration);
+    }
     for (auto parameter = instance_parameters.begin(); parameter != instance_parameters.end(); ++parameter) {
-        const auto target_name = parameter.value().is_string()
-                                     ? parameter.value().get<std::string>()
-                                     : std::string{"<non-string>"};
-        if (!by_name.contains(parameter.key())) {
-            throwBindingError(feature_name, parameter.key(), target_name, "unknown parameter");
+        if (!by_name.contains(parameter.key()) && !scalars_by_name.contains(parameter.key())) {
+            if (parameter.value().is_string()) {
+                throwBindingError(feature_name, parameter.key(),
+                                  parameter.value().get<std::string>(), "unknown parameter");
+            }
+            throwParameterError(feature_name, parameter.key(), "unknown parameter");
         }
-        if (!parameter.value().is_string()) {
-            throwBindingError(feature_name, parameter.key(), target_name,
-                              "binding must name a render target");
+        if (by_name.contains(parameter.key()) && !parameter.value().is_string()) {
+            throwBindingError(feature_name, parameter.key(), "<non-string>",
+                               "binding must name a render target");
         }
     }
 
     std::unordered_map<std::string, std::string> bindings;
     resolved_parameters = nlohmann::json::object();
-    for (const auto &declaration : declarations) {
+    for (const auto &declaration : declarations.render_targets) {
         std::optional<std::string> target_name;
         if (const auto bound = instance_parameters.find(declaration.name);
             bound != instance_parameters.end()) {
@@ -910,12 +1158,21 @@ nlohmann::json bindFeatureRenderTargets(const nlohmann::json &authored_feature,
         resolved_parameters[declaration.name] = *target_name;
     }
 
-    if (declarations.empty() && !instance_parameters.empty()) {
-        const auto first = instance_parameters.begin();
-        const auto target_name = first.value().is_string()
-                                     ? first.value().get<std::string>()
-                                     : std::string{"<non-string>"};
-        throwBindingError(feature_name, first.key(), target_name, "unknown parameter");
+    const auto feature_define_prefix = declarations.scalars.empty()
+                                           ? std::string{}
+                                           : "PELICAN_FEATURE_" +
+                                                 upperIdentifier(feature_name, feature_name) + "_";
+    for (const auto &declaration : declarations.scalars) {
+        const auto supplied = instance_parameters.find(declaration.name);
+        const auto &value = supplied != instance_parameters.end()
+                                ? supplied.value()
+                                : declaration.default_value;
+        validateScalarValue(value, declaration, feature_name,
+                            supplied != instance_parameters.end() ? "value" : "default");
+        resolved_parameters[declaration.name] = value;
+        scalar_defines.push_back(feature_define_prefix +
+                                 upperIdentifier(declaration.name, feature_name) + "=" +
+                                 scalarDefineValue(value, declaration, feature_name));
     }
 
     auto feature = authored_feature;
@@ -1338,8 +1595,10 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     nlohmann::json resolved_instances = nlohmann::json::array();
     for (const auto &loaded : loaded_features) {
         nlohmann::json resolved_parameters;
-        const auto feature = bindFeatureRenderTargets(loaded.feature, loaded.instance.parameters,
-                                                      composed, loaded.name, resolved_parameters);
+        std::vector<std::string> scalar_defines;
+        const auto feature = bindFeatureParameters(loaded.feature, loaded.instance.parameters,
+                                                   composed, loaded.name, resolved_parameters,
+                                                   scalar_defines);
         addRenderTargets(composed, feature, target_names);
         addBuffers(composed, feature, buffer_names);
         applyRenderTargetOverrides(composed, feature);
@@ -1347,6 +1606,7 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         applyPassOverrides(composed, feature);
         addFeatureComputeTasks(composed, feature, task_names);
         appendShaderDefines(shader_defines, feature, "render feature");
+        appendUnique(shader_defines, scalar_defines);
         resolved_instances.push_back({
             {"feature", loaded.name},
             {"parameters", std::move(resolved_parameters)},

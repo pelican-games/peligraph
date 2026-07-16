@@ -445,7 +445,12 @@ ShaderCompileResult compileGlslUncached(std::string_view source, vk::ShaderStage
     options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_2);
     options.SetIncluder(std::make_unique<FileIncluder>(include_dirs, virtual_includes));
     for (const auto &define : defines) {
-        options.AddMacroDefinition(define);
+        const auto separator = define.find('=');
+        if (separator == std::string::npos) {
+            options.AddMacroDefinition(define);
+        } else {
+            options.AddMacroDefinition(define.substr(0, separator), define.substr(separator + 1));
+        }
     }
 
     const std::string source_text{source};
