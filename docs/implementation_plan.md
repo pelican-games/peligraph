@@ -2862,7 +2862,11 @@ WP28、cache キー = WP82 に自然に乗る。UBO/ABI 変更なし)。
    (名前付きパターン = 特権なしの証明)
 4. sample_index 式・frame 0 エラー・wrap は WP112 の規範をそのまま
    共有(重複実装禁止 — 系列取得だけ差し替え)
-5. 受け入れ = fixture 全 green + 既存全テスト + golden 全維持
+5. **adding_features.md に「temporal 系のユーザー管理枠」節を追加**
+   (`design_taa_jitter.md` §0-1 の境界表をユーザー向けの言葉で転載 —
+   何をコピーして改造してよいか・エンジン語彙 6 項に当たったら
+   語彙追加を依頼する、の手順込み)
+6. 受け入れ = fixture 全 green + 既存全テスト + golden 全維持
    (SKIP 0・33/32 — T-TAA が先に着地していた場合はその件数)+
    player 8 秒
 

@@ -119,12 +119,15 @@
 | 済 | HR2-S / WP108 | include/.surface と material layout の一括差し替え完了 |
 | 済 | S2D-2 / WP109 | 非特権 controller と side-scroller vertical slice 完了 |
 | 済 | HR2-G / WP110 | モデル/全 fragment の原子的差し替えと live instance 再構築完了 |
-| 済(実装中) | VRM-S0 / WP111 | アニメ後続の入口。以降 S1→C0→R0→I0 |
-| 済(設計 v1) | TAA + jitter 設計 | `design_taa_jitter.md` v1 — 敵対レビュー待ち → J1/T-TAA |
-| 済(設計 v1) | USD + OpenPBR 設計 | `design_usd_openpbr.md` v1(2026-07-16 ユーザー要望)— 敵対レビュー待ち → M-PBR0 → U-USD0..2 |
-| 1 | TAA/USD 設計の敵対レビュー(codex 枠が空き次第) | 2 本まとめて 1 依頼 |
-| 2 | J1 → T-TAA / M-PBR0 → U-USD0 | レビュー通過後、VRM 5 連と交互に |
-| 3 | ライティング/IBL 設計(私)→ WP 化 | 保留トラック 3 の再開 |
+| 済 | VRM-S0 / WP111 | VRM 1.0 semantic decoder 着地 |
+| 済 | TAA/USD 設計二往復 | v1 Reject → v2 → 条件付き受理(v2.1 反映済み) |
+| 済 | J1 / WP112・J1b / WP114 | jitter 機構 + スカラー parameter 配送着地 |
+| 実装中 | T-TAA / WP113(再派遣) | TAA feature 本体(scalar blocker は WP114 で解消) |
+| 1 | **J1c / WP115**(T-TAA 着地後) | ジッタ系列のユーザー定義(pattern:table)+ **adding_features.md へ temporal ユーザー管理枠の境界表を転載**(正本 = design_taa_jitter.md §0-1・2026-07-16 ユーザー指示) |
+| 2 | M-PBR0a → M-PBR0b | OpenPBR 表現 ABI → openpbr surface(条件 USD-C1/C2 添付) |
+| 3 | U-USD0a spike | USD ツール選定(alt 復帰 7/18 後は並走可) |
+| 4 | VRM-S1(大物) | per-instance application sink |
+| 5 | ライティング/IBL 設計(私)→ WP 化 | 保留トラック 3 の再開 |
 
 設計(私の作業)が必要なものは敵対レビュー往復(codex)を挟むこと。
 条件付き Accept の条件は必ず WP に逐語添付する(確立済みの運用)。
