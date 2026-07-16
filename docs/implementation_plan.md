@@ -3257,6 +3257,62 @@ protocol fake の discovery 部分。**session は作らない**(XR1b)。
 5. 受け入れ = fixture 全 green + 既存全テスト + golden SKIP 0
    (46/45・xr=off で byte 不変)+ player 8 秒 + OFF smoke 維持
 
+### WP127: XR1b — session 状態機械 + ループ/display timing
+
+参照: **`design_openxr.md` v2.1 §3 が正**。受け入れ条件 = 初回レビュー
+§12 の **XR1B-SESSION-LOOP 逐語**: 「session_running は beginSession
+成功から endSession 呼出しまでとし、state の数値比較で代用しない。
+running 中は毎回 wait/begin/end を一組実行し、shouldRender=false は
+update 一回・zero layer、FOCUSED は input eligibility のみに使う。
+predictedDisplayTime は immutable display timing として simulation
+EngineTime から分離し、FramerateAdjust は running 中だけ bypass する。
+READY/STOPPING/LOSS_PENDING/EXITING と wait/begin/end error の
+call trace fixture を gate にする。」+ **XR1C-TEST-SEAM 逐語**(protocol
+fake は fake VkImage を Vulkan へ渡さない — WP126 の注入表を拡張)。
+依存: WP126(済)。見積: 大。
+排他: openxr session 実装 + loop.cpp の XR 分岐 + XrDisplayTiming +
+protocol fake 拡張。**swapchain・描画は作らない**(XR2a.1)。
+
+1. session 生成/破棄・xrPollEvent・状態機械(READY で begin・
+   STOPPING で end・LOSS_PENDING/EXITING terminal)
+2. running 中のループ分岐(設計 §3 の擬似コードどおり):
+   xrWaitFrame → EngineTime.advance 一回 → xrBeginFrame →
+   (shouldRender なら locate views — 値は保持のみ・描画なし)→
+   xrEndFrame(zero layer)→ FramerateAdjust bypass
+3. `XrDisplayTiming`(frame-local immutable)— EngineTime.setTime に
+   書かない(毎フレーム temporal reset の罠の封じ込め fixture)
+4. headless/rpc/golden/replay は running に入らない(WP125 行列)
+5. fixture: 全状態遷移 call trace・shouldRender=false・wait/begin/end
+   error・zero-layer・「session 中も既存 flat golden 経路不変」
+6. 受け入れ = fixture 全 green + 既存全テスト + golden SKIP 0
+   (48/47)+ player 8 秒 + OFF smoke 維持。**実機(Link)で
+   session_running 到達の記録があればレポートに**(HMD なければ
+   system unavailable 降格の再確認でよい)
+
+### WP128: XR2a.0 — renderer 論理フレーム/view 分離(OpenXR 非依存)
+
+参照: **`design_openxr.md` v2.1 §4 が正**。受け入れ条件 = 初回レビュー
+§12 の **XR2A0-LOGICAL-FRAME 逐語**: 「`Renderer::render()` を logical
+frame と per-view execution に分離する。update/reload/deletion/
+animation、target acquire/submit、history flip、object/morph advance、
+snapshot commit は logical frame ごとに一回だけ行う。Frame UBO は
+in-flight×view の上書き不能 slot とする。real offscreen 二眼 fixture で
+異なる view/projection/camera_position が各出力へ届き、frame_index/
+history/epoch/object previous が一回だけ進むことを validation layer
+付きで検査する。view_count=1 の既存 golden は byte 一致させる。」
+依存: WP112(snapshot)・WP95/121(history 流儀)。**OpenXR 非依存**。
+見積: 特大。排他: renderer.cpp の分離・frameresources(UBO slot 化)・
+snapshot の view 次元 + camera_position(初回レビュー §5 —
+view/proj だけでなく position も view 別)。
+
+1. renderLogicalFrame(設計 §4 の擬似コードどおり)への分割
+2. FrameUBO = in-flight × view の不変 slot(dynamic offset / 複数 set)
+3. snapshot に camera_position を追加し view 別化
+4. **Vulkan-backed synthetic stereo target**(実 offscreen 二眼 —
+   XR1C-TEST-SEAM の第 2 層)で検証
+5. 受け入れ = 逐語条件 + **view_count=1 で既存 golden 全 byte 一致**
+   (最重要)+ 既存全テスト + golden SKIP 0(48/47)+ player 8 秒
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの
