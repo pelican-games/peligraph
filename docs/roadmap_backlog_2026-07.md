@@ -124,10 +124,14 @@
 | 済 | J1 / WP112・J1b / WP114 | jitter 機構 + スカラー parameter 配送着地 |
 | 実装中 | T-TAA / WP113(再派遣) | TAA feature 本体(scalar blocker は WP114 で解消) |
 | 1 | **J1c / WP115**(T-TAA 着地後) | ジッタ系列のユーザー定義(pattern:table)+ **adding_features.md へ temporal ユーザー管理枠の境界表を転載**(正本 = design_taa_jitter.md §0-1・2026-07-16 ユーザー指示) |
-| 2 | M-PBR0a → M-PBR0b | OpenPBR 表現 ABI → openpbr surface(条件 USD-C1/C2 添付) |
-| 3 | U-USD0a spike | USD ツール選定(alt 復帰 7/18 後は並走可) |
-| 4 | VRM-S1(大物) | per-instance application sink |
-| 5 | ライティング/IBL 設計(私)→ WP 化 | 保留トラック 3 の再開 |
+| 済 | M-PBR0a/WP116 → M-PBR0b/WP117 | OpenPBR エンジン側完成(3 stdlib surface 体制) |
+| 済 | U-USD0a/WP118 → U-USD0b/WP119 | usd-core 26.5 採用・USD→描画の一本道開通 |
+| 実装中 | WP121(VRM-S1a morph 描画)・WP124(U-USD0c マテリアル) | morph は WP120 監査停止からの分割 1 段目 |
+| 1 | WP122(M-INST0)→ WP123(VRM-S1b) | instance override ABI → VRM 表情 sink |
+| 2 | **OpenXR 設計レビュー → XR1 → XR2a → XR3 → XR4**(2026-07-17 ユーザー要望: Quest 3 で VRM キャラ) | `design_openxr.md` v1 起草済み。**MVP = PCVR(Link)**・sequential stereo 先行・multiview は XR2b。XR4 = VRM キャラデモが受け入れ実体 |
+| 3 | ライティング/IBL 設計(私)→ WP 化 | 保留トラック 3 の再開(VR ステージの見栄えにも効く) |
+| 4 | U-USD1a/1b・2a/2b(UsdSkel/camera/anim/instancer) | USD の残り |
+| 遠景 | Quest standalone(Android/ARM64 移植) | PCVR の XR 層はそのまま再利用可 |
 
 設計(私の作業)が必要なものは敵対レビュー往復(codex)を挟むこと。
 条件付き Accept の条件は必ず WP に逐語添付する(確立済みの運用)。
