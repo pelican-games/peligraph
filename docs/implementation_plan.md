@@ -3123,10 +3123,37 @@ instance override 面 + シェーダの override 読み + fixture/golden。
 6. 受け入れ = 上記全 green + 既存全テスト + golden SKIP 0
    (件数 43/42 から追加分更新)+ player 8 秒
 
-### WP123: VRM-S1b — per-instance expression sink(予約)
+### WP123: VRM-S1b — per-instance expression/application sink
 
-WP120 レポートの「VRM-S1b」節 + phase 写像案が下敷き。公開
-application service(additive)を含む。WP121/122 着地後に詳細登録。
+参照: **`docs/design_reviews/2026-07-17_wp120_report.md` の
+「VRM-S1b」節(6 項)+「§1-4 phase 写像案」+ 残りの機構語彙
+(ExpressionInputSnapshot / ResolvedExpressionFrame /
+FirstPersonVisibilityState / VrmApplicationFrame)が仕様の正**。
+確定判断(WP120 停止質問②): morph/material/UV/gaze の公開出力は
+**versioned application service を additive に追加**(凍結 abi_v1.hpp
+無変更・AnimationServiceV1 の成長規律 — engine 内部特権例外は不採用)。
+依存: WP111(semantic)・WP121(morph)・WP122(override)— 全て済。
+見積: 特大。排他: VRM application 層新設 + application service 公開 +
+phase 登録 + fixture/golden。
+
+1. expression 入力の frame snapshot → VRM 合成規則(binary/override/
+   bind weight)→ instance ごとの ResolvedExpressionFrame
+2. morphTargetBinds → **WP121 の weight frame へ publish**(layout
+   解決済み application state — clip/VRMA source と責務分離)
+3. materialColorBinds / textureTransformBinds → **WP122 の
+   MaterialInstanceOverrideBlock へ**(template 不変)
+4. lookAt(bone/expression 両 type)+ firstPerson mesh annotation の
+   view 依存 visibility
+5. phase 写像 = WP120 レポートの表(parameter_snapshot →
+   world_post_process priority 100/200/300 → commit)。**公開
+   register_phase のみ使用**(priority 定数と collision policy を
+   公開契約に固定)
+6. **公開 application service**(additive): resolve/publish 面を
+   第三者 DLL fixture で検証(A1.1 の二世代 fixture 流儀)
+7. gate = §4.5 逐語(二体別 expression・同 frame revision・
+   expression on/off golden)+ bone/expression lookAt + firstPerson +
+   N/N-1 + reload/reset + 既存全テスト + golden SKIP 0(45/44 から
+   追加分更新)+ player 8 秒(VRM 1.0 fixture の表情確認手順)
 
 ## 3. 保留中のトラック(WP 化待ち)
 
