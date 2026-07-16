@@ -143,5 +143,9 @@ crash/validation error なし → フラット復帰。結果はレポートに�
    v1 は同一視で開始、酔い/カクつきの実機所見で判断
 2. 深度 submit(runtime reprojection 品質向上)— XR2b と同時に検討
 3. world-space UI パネル — UI トラックとの合流点として将来
-4. standalone(Android 移植)— 別トラック(Tier 6)
+4. standalone(Android 移植)— **2026-07-17 ユーザー方向表明で
+   段階計画化**: `roadmap_backlog_2026-07.md` の SA トラック
+   (SA0 toolchain spike → SA1 platform 層 → SA2 standalone session →
+   SA3 性能)が正。XR1〜3 の成果はそのまま再利用。door-keeper
+   (clang smoke・B3/B4 前提・タイルベース配慮)も同節に記録
 5. コントローラの触覚(haptics)— XR3 の余力次第(action 型は予約)

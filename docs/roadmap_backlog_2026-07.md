@@ -131,7 +131,33 @@
 | 2 | **OpenXR 設計レビュー → XR1 → XR2a → XR3 → XR4**(2026-07-17 ユーザー要望: Quest 3 で VRM キャラ) | `design_openxr.md` v1 起草済み。**MVP = PCVR(Link)**・sequential stereo 先行・multiview は XR2b。XR4 = VRM キャラデモが受け入れ実体 |
 | 3 | ライティング/IBL 設計(私)→ WP 化 | 保留トラック 3 の再開(VR ステージの見栄えにも効く) |
 | 4 | U-USD1a/1b・2a/2b(UsdSkel/camera/anim/instancer) | USD の残り |
-| 遠景 | Quest standalone(Android/ARM64 移植) | PCVR の XR 層はそのまま再利用可 |
+| 遠景 | **Quest standalone(Android/ARM64 移植)— 2026-07-17 ユーザー方向表明** | 段階計画は下記 SA 節 |
+
+## Quest standalone(SA トラック — 遠景・段階計画)
+
+**方針(2026-07-17)**: PC 以外の standalone もやりたい(ユーザー)。
+PCVR で作る XR 層(session/ループ/入力/stereo)は standalone と同一
+API なので先行投資は全部生きる。移植の本体は「ツールチェーン +
+プラットフォーム層 + 配送」。
+
+| 段階 | 内容 | 備考 |
+|------|------|------|
+| SA0 | **NDK/clang ツールチェーン spike**: 純ロジック部(pelican_project・physquery・animation jobs 等)を ARM64 でビルド + ctest | ここで MSVC 依存を洗い出す |
+| SA1 | プラットフォーム層: android_native_app_glue(**GLFW 不要** — standalone XR は窓なし)・logging・アセット = APK/OBB パッケージング | 入力は OpenXR 直(XR3 再利用) |
+| SA2 | OpenXR standalone session(XR1〜3 をそのまま)+ Adreno 実機検証 | Vulkan validation・タイルベース特性 |
+| SA3 | 性能: **multiview(XR2b)必須級**・dist-bake シェーダ(B4)必須・FFR(foveated)を jitter と同じ「版付き語彙 + ユーザー feature」で | 72/90Hz 維持が gate |
+
+**door-keeper(いまから守る安い規律)**:
+
+1. **clang コンパイル smoke を CI 候補に**(Tier 4 #34 の CI 常設に
+   含める — MSVC 拡張への依存を増やさない)
+2. Windows 専用コード(Win32 watcher・DLL reload・GLFW)は既に
+   ユニット/モジュール境界の内側 — 新規コードもこの規律を維持
+   (ホットリロード系は dev 専用なので Android では OFF でよい)
+3. B3(embed)/B4(dist-bake)は SA の前提 — 優先度をモバイル文脈で
+   再評価
+4. レンダラの新機能は「タイルベース GPU で成立するか」を設計時に
+   一言書く(RMW 多段ポストの乱造をしない)
 
 設計(私の作業)が必要なものは敵対レビュー往復(codex)を挟むこと。
 条件付き Accept の条件は必ず WP に逐語添付する(確立済みの運用)。
