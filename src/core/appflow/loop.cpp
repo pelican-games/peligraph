@@ -10,6 +10,9 @@
 #include "../os/inputstate.hpp"
 #include "../os/inputsequence.hpp"
 #include "../os/window.hpp"
+#if PELICAN_WITH_OPENXR
+#include "../openxr/openxrsession.hpp"
+#endif
 #include "../playback/camerabake.hpp"
 #include "../playback/vatplayer.hpp"
 #include "../persistence/persistence.hpp"
@@ -195,6 +198,23 @@ RenderTarget &resolveOutputRenderTarget() {
     return GET_MODULE(RenderTarget);
 }
 
+#if PELICAN_WITH_OPENXR
+OpenXr::XrSessionDependencies resolveXrSessionDependencies() {
+    auto &discovery = GET_MODULE(OpenXr::DiscoveryRuntime);
+    auto &vulkan = GET_MODULE(VulkanManageCore);
+    return {
+        .get_instance_proc_addr = discovery.getInstanceProcAddr(),
+        .instance = discovery.getInstance(),
+        .system_id = discovery.getSystemId(),
+        .vulkan_instance = static_cast<VkInstance>(vulkan.getInstance()),
+        .vulkan_physical_device = static_cast<VkPhysicalDevice>(vulkan.getPhysDevice()),
+        .vulkan_device = static_cast<VkDevice>(vulkan.getDevice()),
+        .graphics_queue_family_index = vulkan.getGraphicsQueueFamilyIndex(),
+        .graphics_queue_index = 0,
+    };
+}
+#endif
+
 void prepareRuntimeModuleGraph(LoopModules &modules) {
     // The composition root owns all first construction. Runtime-facing
     // facades may keep using GET_MODULE, but only as reads after this point.
@@ -216,6 +236,12 @@ void prepareRuntimeModuleGraph(LoopModules &modules) {
 #endif
 
     if (!modules.launch_config.headless) (void)resolveInteractiveLoopModules();
+#if PELICAN_WITH_OPENXR
+    if (modules.launch_config.xr_active) {
+        OpenXr::setSessionDependencyProvider(&resolveXrSessionDependencies);
+        (void)GET_MODULE(OpenXr::SessionRuntime);
+    }
+#endif
     (void)resolveGpuDrainModules();
 }
 
@@ -323,6 +349,20 @@ void Loop::run() {
     auto interactive = resolveInteractiveLoopModules();
     auto &window = interactive.window;
     auto &framerate_adjuster = interactive.framerate_adjuster;
+#if PELICAN_WITH_OPENXR
+    auto *xr_session = launch_config.xr_active
+                           ? FastModuleContainer::tryGet<OpenXr::SessionRuntime>()
+                           : nullptr;
+#endif
+
+    const auto update_interactive_state = [&] {
+        updateFrameState();
+        if (UserInput::isKeyPushed(KeyCode::F5)) {
+            (void)modules.reload_service.requestRuntimeReload(
+                watch::gameLogicReloadParticipantName);
+        }
+        logInputSnapshotIfRequested(input_state.currentSnapshot());
+    };
 
     while (true) {
         if (!window.process())
@@ -331,14 +371,23 @@ void Loop::run() {
         if (!input_sequence.isReplaying()) {
             input_state.queueEvents(window_events);
         }
+#if PELICAN_WITH_OPENXR
+        if (xr_session != nullptr) {
+            xr_session->pollEvents();
+            if (xr_session->hasTerminalPath()) break;
+            if (xr_session->isSessionRunning()) {
+                const auto xr_frame = OpenXr::runSessionFrame(
+                    *xr_session, engine_time, update_interactive_state);
+                // XR1b retains frame-local timing/view values only.  XR2a will
+                // consume them while adding composition targets and rendering.
+                (void)xr_frame;
+                continue;
+            }
+        }
+#endif
         const auto update_start = Clock::now();
         engine_time.advance();
-        updateFrameState();
-        if (UserInput::isKeyPushed(KeyCode::F5)) {
-            (void)modules.reload_service.requestRuntimeReload(
-                watch::gameLogicReloadParticipantName);
-        }
-        logInputSnapshotIfRequested(input_state.currentSnapshot());
+        update_interactive_state();
         const auto update_end = Clock::now();
 
         const auto render_start = Clock::now();
