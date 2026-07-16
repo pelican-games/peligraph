@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -65,6 +66,7 @@ struct LoweredMaterial {
     std::string target_pass;
     SurfaceRenderState render_state;
     SurfaceHookSet hooks;
+    std::optional<MaterialVariantRouting> routing;
 };
 
 Std140Layout makeSurfaceStd140Layout(const SurfaceFormatDocument &surface);

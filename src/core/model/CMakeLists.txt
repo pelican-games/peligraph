@@ -1,6 +1,7 @@
 target_sources(pelican_core PRIVATE
     vertbufcontainer.cpp
     gltf.cpp
+    modeltemplate.cpp
     skeletalanimation.cpp
     vrmsemantic.cpp
 )

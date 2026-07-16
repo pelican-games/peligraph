@@ -1,0 +1,9 @@
+schema: pelican.material_bindings v1
+model: project://imports/openpbr.glb
+bindings:
+  /World/Looks/OpaqueSingle -> mesh=0 primitive=0 material=opaque_single variant=opaque_single_sided alpha=opaque cull=back front=true back=false blend=opaque depth_test=true depth_write=true
+  /World/Looks/OpaqueDouble -> mesh=0 primitive=1 material=opaque_double variant=opaque_double_sided alpha=opaque cull=none front=true back=true blend=opaque depth_test=true depth_write=true
+  /World/Looks/MaskSingle -> mesh=0 primitive=2 material=mask_single variant=mask_single_sided alpha=mask cull=back front=true back=false blend=opaque depth_test=true depth_write=true discard=alpha<alpha_cutoff
+  /World/Looks/MaskDouble -> mesh=0 primitive=3 material=mask_double variant=mask_double_sided alpha=mask cull=none front=true back=true blend=opaque depth_test=true depth_write=true discard=alpha<alpha_cutoff
+  /World/Looks/BlendSingle -> mesh=0 primitive=4 material=blend_single variant=blend_single_sided alpha=blend cull=back front=true back=false blend=blend depth_test=true depth_write=false
+  /World/Looks/BlendDouble -> mesh=0 primitive=5 material=blend_double variant=blend_double_sided alpha=blend cull=none front=true back=true blend=blend depth_test=true depth_write=false

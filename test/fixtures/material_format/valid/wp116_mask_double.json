@@ -1,0 +1,13 @@
+{
+  "schema": "pelican.material",
+  "version": 1,
+  "materials": [
+    {
+      "name": "imported_mask",
+      "surface": "project://openpbr/mask_double.surface",
+      "values": {"alpha_cutoff": 0.5},
+      "textures": {"opacity_map": "project://textures/leaf_opacity.png"},
+      "routing": {"alpha_mode": "mask", "double_sided": true}
+    }
+  ]
+}

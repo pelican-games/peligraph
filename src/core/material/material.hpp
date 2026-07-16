@@ -6,6 +6,7 @@
 #include "../../project/materiallowering.hpp"
 #include <array>
 #include <cstddef>
+#include <functional>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 #include <optional>
@@ -85,5 +86,14 @@ static_assert(sizeof(MaterialGpuData) == 96 + materialCustomValueCapacity);
 // request. Texture slots initially use their semantic dummy and may be
 // replaced by the loader before registerMaterial().
 void applyLoweredMaterial(MaterialInfo &destination, const LoweredMaterial &lowered);
+
+using LoweredMaterialTextureResolver =
+    std::function<GlobalTextureId(std::string_view reference, SurfaceTextureRole role)>;
+
+// Resolves every declared/default or per-material overridden reference and
+// installs the resulting texture handles. The original overload intentionally
+// retains the established semantic-dummy behavior.
+void applyLoweredMaterial(MaterialInfo &destination, const LoweredMaterial &lowered,
+                          const LoweredMaterialTextureResolver &resolve_texture);
 
 } // namespace Pelican

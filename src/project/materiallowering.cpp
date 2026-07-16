@@ -156,6 +156,39 @@ std::string routeMaterial(const SurfaceFormatDocument &surface) {
     return "deferred_geometry";
 }
 
+void validateVariantSurface(const MaterialDefinition &material,
+                            const SurfaceFormatDocument &surface) {
+    if (!material.routing) return;
+    const auto expected = materialVariantRenderState(*material.routing);
+    const auto &actual = surface.render_state;
+    const auto mismatch = actual.blend != expected.blend || actual.cull != expected.cull ||
+                          actual.depth_test != expected.depth_test ||
+                          actual.depth_write != expected.depth_write ||
+                          actual.depth_compare != expected.depth_compare;
+    if (mismatch) {
+        throw std::runtime_error("material '" + material.name + "' routing variant '" +
+                                 std::string{materialVariantName(*material.routing)} +
+                                 "' does not match surface pipeline state");
+    }
+    if (!surface.hooks.lighting_v1) {
+        throw std::runtime_error("material '" + material.name + "' routing variant '" +
+                                 std::string{materialVariantName(*material.routing)} +
+                                 "' requires pelican_lighting_v1 and forward shading");
+    }
+    if (material.routing->alpha_mode == MaterialAlphaMode::mask) {
+        const auto cutoff = std::find_if(surface.params.begin(), surface.params.end(),
+                                         [](const SurfaceParamDefinition &param) {
+                                             return param.name == "alpha_cutoff";
+                                         });
+        if (cutoff == surface.params.end() ||
+            cutoff->type != SurfaceParamType::floating) {
+            throw std::runtime_error("material '" + material.name + "' routing variant '" +
+                                     std::string{materialVariantName(*material.routing)} +
+                                     "' requires float surface param 'alpha_cutoff'");
+        }
+    }
+}
+
 } // namespace
 
 Std140Layout makeSurfaceStd140Layout(const SurfaceFormatDocument &surface) {
@@ -241,6 +274,7 @@ LoweredMaterial lowerMaterial(const MaterialDefinition &material,
                               const SurfaceFormatDocument &surface,
                               const MaterialLoweringCapabilities &capabilities) {
     validateSurfaceCapabilities(surface, capabilities, material.name);
+    validateVariantSurface(material, surface);
     LoweredMaterial lowered;
     lowered.name = material.name;
     lowered.surface = material.surface.value_or("<surface>");
@@ -249,20 +283,43 @@ LoweredMaterial lowerMaterial(const MaterialDefinition &material,
     lowered.values = bindSurfaceValues(surface, material.values, material.name);
     lowered.render_state = surface.render_state;
     lowered.hooks = surface.hooks;
+    lowered.routing = material.routing;
     lowered.screen_inputs = surface.screen_inputs;
     lowered.target_pass = routeMaterial(surface);
+    std::unordered_map<std::string_view, std::string_view> texture_overrides;
+    texture_overrides.reserve(material.texture_overrides.size());
+    for (const auto &override_value : material.texture_overrides) {
+        if (!texture_overrides.emplace(override_value.name, override_value.reference).second) {
+            throw std::runtime_error("material '" + material.name +
+                                     "' has duplicate texture override '" +
+                                     override_value.name + "'");
+        }
+    }
+
     lowered.textures.reserve(surface.textures.size());
     for (std::size_t i = 0; i < surface.textures.size(); ++i) {
         const auto &texture = surface.textures[i];
+        const auto override_value = texture_overrides.find(texture.name);
+        const auto reference = override_value == texture_overrides.end()
+                                   ? std::string_view{texture.default_reference}
+                                   : override_value->second;
         lowered.textures.push_back(LoweredTextureBinding{
             texture.name,
             materialCustomTextureFirstBinding + static_cast<std::uint32_t>(i),
-            texture.default_reference,
+            std::string{reference},
             texture.role,
             texture.role == SurfaceTextureRole::color ? LoweredTextureView::srgb
                                                        : LoweredTextureView::unorm,
             inferDummy(texture.name),
         });
+        if (override_value != texture_overrides.end()) {
+            texture_overrides.erase(override_value);
+        }
+    }
+    if (!texture_overrides.empty()) {
+        throw std::runtime_error("material '" + material.name + "' texture override '" +
+                                 std::string{texture_overrides.begin()->first} +
+                                 "' is not declared by its surface");
     }
     return lowered;
 }
@@ -350,6 +407,15 @@ std::string dumpLoweredMaterial(const LoweredMaterial &material) {
         << " depth_test=" << (material.render_state.depth_test ? "true" : "false")
         << " depth_write=" << (material.render_state.depth_write ? "true" : "false")
         << " depth_compare=" << depthCompareName(material.render_state.depth_compare) << '\n';
+    if (material.routing) {
+        out << "routing: alpha_mode=" << materialAlphaModeName(material.routing->alpha_mode)
+            << " double_sided=" << (material.routing->double_sided ? "true" : "false")
+            << " variant=" << materialVariantName(*material.routing);
+        if (material.routing->alpha_mode == MaterialAlphaMode::mask) {
+            out << " discard=alpha<alpha_cutoff";
+        }
+        out << '\n';
+    }
     return out.str();
 }
 

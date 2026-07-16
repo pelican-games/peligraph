@@ -1,0 +1,49 @@
+{
+  "schema": "pelican.material_bindings",
+  "version": 1,
+  "model": "project://imports/openpbr.glb",
+  "bindings": [
+    {
+      "usd_path": "/World/Looks/OpaqueSingle",
+      "mesh": 0,
+      "primitive": 0,
+      "material": "opaque_single",
+      "routing": {"alpha_mode": "opaque", "double_sided": false}
+    },
+    {
+      "usd_path": "/World/Looks/OpaqueDouble",
+      "mesh": 0,
+      "primitive": 1,
+      "material": "opaque_double",
+      "routing": {"alpha_mode": "opaque", "double_sided": true}
+    },
+    {
+      "usd_path": "/World/Looks/MaskSingle",
+      "mesh": 0,
+      "primitive": 2,
+      "material": "mask_single",
+      "routing": {"alpha_mode": "mask", "double_sided": false}
+    },
+    {
+      "usd_path": "/World/Looks/MaskDouble",
+      "mesh": 0,
+      "primitive": 3,
+      "material": "mask_double",
+      "routing": {"alpha_mode": "mask", "double_sided": true}
+    },
+    {
+      "usd_path": "/World/Looks/BlendSingle",
+      "mesh": 0,
+      "primitive": 4,
+      "material": "blend_single",
+      "routing": {"alpha_mode": "blend", "double_sided": false}
+    },
+    {
+      "usd_path": "/World/Looks/BlendDouble",
+      "mesh": 0,
+      "primitive": 5,
+      "material": "blend_double",
+      "routing": {"alpha_mode": "blend", "double_sided": true}
+    }
+  ]
+}

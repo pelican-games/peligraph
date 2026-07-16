@@ -34,7 +34,7 @@
   {
     "file": "invalid/textures_declaration.json",
     "expect": "error",
-    "error_kind": "legacy_declaration"
+    "error_kind": "textures"
   },
   {
     "file": "invalid/value_type_mismatch.json",

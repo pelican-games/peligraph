@@ -10,10 +10,12 @@
 #include "../watch/assetkey.hpp"
 #include "../watch/reloadqueue.hpp"
 #include "../watch/reloadtransaction.hpp"
+#include "../../project/materialformat.hpp"
 
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <nlohmann/json.hpp>
 #include <set>
@@ -37,6 +39,7 @@ struct ModelDeclaration {
     watch::AssetKey container_key;
     bool ascii = false;
     bool scene_node_instance = false;
+    std::optional<PrimitiveMaterialBindingDocument> material_bindings;
 };
 
 std::string lowerExtension(const std::filesystem::path &path) {
@@ -97,8 +100,59 @@ PreparedGltf prepareDeclaration(const ModelDeclaration &declaration) {
     return loader.prepareGltfBinary(declaration.path.string(), declaration.fragment);
 }
 
+PrimitiveMaterialBindingDocument loadMaterialBindings(std::string_view reference,
+                                                       std::string_view model_name,
+                                                       const std::filesystem::path &model_path) {
+    auto &resolver = GET_MODULE(PathResolver);
+    const auto resolved = resolver.resolveExistingFileReference(reference);
+    const auto *path = std::get_if<std::filesystem::path>(&resolved);
+    if (path == nullptr) {
+        if (const auto *fragment = std::get_if<ResolvedPathFragment>(&resolved)) {
+            throw std::runtime_error("model '" + std::string{model_name} +
+                                     "' material bindings '" + std::string{reference} +
+                                     "' must not contain fragment #" +
+                                     fragment->fragment.kind + "/" +
+                                     fragment->fragment.path);
+        }
+        throw std::runtime_error("model '" + std::string{model_name} +
+                                 "' material bindings '" + std::string{reference} +
+                                 "' must resolve to a project file");
+    }
+    std::ifstream input{*path, std::ios::binary};
+    if (!input.is_open()) {
+        throw std::runtime_error("model '" + std::string{model_name} +
+                                 "' material bindings file is missing: " + path->string());
+    }
+    try {
+        auto document = parsePrimitiveMaterialBindingJson(nlohmann::json::parse(input));
+        const auto declared_model = resolver.resolveExistingFile(document.model);
+        std::error_code equivalent_error;
+        if (!std::filesystem::equivalent(declared_model, model_path,
+                                         equivalent_error) || equivalent_error) {
+            throw std::runtime_error("declares model '" + document.model +
+                                     "' but asset resolves to '" + model_path.string() + "'");
+        }
+        return document;
+    } catch (const std::exception &error) {
+        throw std::runtime_error("model '" + std::string{model_name} +
+                                 "' material bindings '" + std::string{reference} +
+                                 "': " + error.what());
+    }
+}
+
+void applyDeclarationBindings(ModelTemplate &model,
+                              const ModelDeclaration &declaration) {
+    if (!declaration.material_bindings) return;
+    const auto fragment = fragmentText(declaration.fragment);
+    applyPrimitiveMaterialBindings(
+        model, *declaration.material_bindings, declaration.name,
+        fragment.empty() ? std::nullopt
+                         : std::optional<std::string_view>{fragment});
+}
+
 ModelDeclaration resolveDeclaration(std::string name, std::string reference,
-                                    bool scene_node_instance) {
+                                    bool scene_node_instance,
+                                    std::optional<std::string> material_bindings = std::nullopt) {
     const auto parsed = parsePathReference(reference);
     auto &resolver = GET_MODULE(PathResolver);
     std::filesystem::path physical;
@@ -157,7 +211,7 @@ ModelDeclaration resolveDeclaration(std::string name, std::string reference,
     // binary loader path (projects/example の AliciaSolid.vrm が現行利用者).
     if (extension != ".glb" && extension != ".gltf" && extension != ".vrm")
         throw std::runtime_error("model reference requires a .glb/.gltf/.vrm file: " + reference);
-    return ModelDeclaration{
+    auto declaration = ModelDeclaration{
         .name = std::move(name),
         .reference = std::move(reference),
         .path = std::move(physical),
@@ -166,6 +220,11 @@ ModelDeclaration resolveDeclaration(std::string name, std::string reference,
         .ascii = extension == ".gltf",
         .scene_node_instance = scene_node_instance,
     };
+    if (material_bindings) {
+        declaration.material_bindings =
+            loadMaterialBindings(*material_bindings, declaration.name, declaration.path);
+    }
+    return declaration;
 }
 
 } // namespace
@@ -297,15 +356,28 @@ ModelAssetContainer::ModelAssetContainer() : impl_{std::make_unique<Impl>()} {
     std::vector<ModelDeclaration> declarations;
     declarations.reserve(assets.size());
     for (const auto &asset : assets) {
+        std::optional<std::string> material_bindings;
+        if (const auto found = asset.find("material_bindings"); found != asset.end()) {
+            if (!found->is_string()) {
+                throw std::runtime_error("model '" +
+                                         asset.value("name", std::string{"<unnamed>"}) +
+                                         "' material_bindings must be a string reference");
+            }
+            material_bindings = found->get<std::string>();
+        }
         declarations.push_back(resolveDeclaration(asset.at("name").get<std::string>(),
-                                                  asset.at("path").get<std::string>(), false));
+                                                  asset.at("path").get<std::string>(), false,
+                                                  std::move(material_bindings)));
     }
     const auto prepared = parallelPrepareOrdered<PreparedGltf>(
         declarations.size(),
         [&](std::size_t index) { return prepareDeclaration(declarations[index]); }, 4);
     auto &loader = GET_MODULE(GltfLoader);
-    for (std::size_t index = 0; index < declarations.size(); ++index)
-        impl_->add(std::move(declarations[index]), loader.commit(prepared[index]));
+    for (std::size_t index = 0; index < declarations.size(); ++index) {
+        auto model = loader.commit(prepared[index]);
+        applyDeclarationBindings(model, declarations[index]);
+        impl_->add(std::move(declarations[index]), std::move(model));
+    }
 }
 
 ModelAssetContainer::~ModelAssetContainer() {
@@ -364,6 +436,8 @@ bool ModelAssetContainer::enqueueReload(const watch::ReloadRequest &request,
             .validate = [this, pending, name] {
                 auto &item = pending->at(name);
                 item.preview = GET_MODULE(GltfLoader).inspect(item.prepared);
+                applyDeclarationBindings(item.preview,
+                                         impl_->records.at(name).declaration);
                 const auto &live = impl_->records.at(name).model;
                 item.rig_changed = !sameRigLayout(live.skeletal, item.preview.skeletal);
             },
@@ -385,6 +459,7 @@ bool ModelAssetContainer::enqueueReload(const watch::ReloadRequest &request,
                 auto &record = impl_->records.at(name);
                 auto &item = pending->at(name);
                 auto model = GET_MODULE(GltfLoader).commit(item.prepared);
+                applyDeclarationBindings(model, record.declaration);
                 model.asset_id = record.model.asset_id;
                 model.content_revision = current->content_revision + 1;
                 model.compatibility_revision = current->compatibility_revision +

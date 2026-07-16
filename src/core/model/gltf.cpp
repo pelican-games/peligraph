@@ -1266,7 +1266,9 @@ struct InternalGltfLoader {
             skinned = false;
         }
         const auto joint_offset = skinned ? selectSkin(skin_index) : 0u;
-        for (const auto &primitive : mesh.primitives) {
+        for (std::size_t primitive_index = 0; primitive_index < mesh.primitives.size();
+             ++primitive_index) {
+            const auto &primitive = mesh.primitives[primitive_index];
             CommonPolygonVertData dat;
 
             if (primitive.indices >= 0)
@@ -1320,6 +1322,8 @@ struct InternalGltfLoader {
             }
             if (!skinned) transformVertexData(dat, world_transform);
             auto primitive_info = resources.addPrimitive(std::move(dat), skinned);
+            primitive_info.mesh_index = static_cast<std::uint32_t>(mesh_index);
+            primitive_info.primitive_index = static_cast<std::uint32_t>(primitive_index);
 #if PELICAN_WITH_VAT
             if (skinned && vat_info) {
                 throw std::runtime_error("glTF skeletal skinning and pelican.vat cannot share one primitive");
@@ -1412,6 +1416,14 @@ struct InternalGltfLoader {
             m.material_primitives.emplace_back(ModelTemplate::MaterialPrimitives{
                 .material = found != resolved_materials.end() ? found->second : std_mat.standardTransparentMaterial(),
                 .primitives = std::move(primitive),
+            });
+        }
+        for (std::size_t material_index = 0; material_index < material_map.size();
+             ++material_index) {
+            if (!material_map[material_index]) continue;
+            m.named_materials.push_back(ModelTemplate::NamedMaterial{
+                .name = model.materials[material_index].name,
+                .material = *material_map[material_index],
             });
         }
         if (selection.material_only) {
