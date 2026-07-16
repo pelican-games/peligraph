@@ -155,10 +155,10 @@ vec3 pelican_openpbr_direct_lighting(in PelicanSurfaceV1 surface,
         return vec3(0.0);
     }
 
-    float base_weight = pelican_openpbr_saturate(
-        pelican_openpbr_scalar(pelican_param_base_weight(), pelican_sample_base_weight_map(uv)));
-    vec3 base_color = pelican_openpbr_color(pelican_param_base_color(),
-                                            pelican_sample_base_color_map(uv));
+    // The surface template applies surface-independent instance overrides before
+    // lighting. Consume that canonical value here instead of resampling the
+    // authored base color and bypassing the override.
+    vec3 weighted_base_color = surface.base_color.rgb;
     float diffuse_roughness = pelican_openpbr_saturate(
         pelican_openpbr_scalar(pelican_param_base_diffuse_roughness(),
                                pelican_sample_base_diffuse_roughness_map(uv)));
@@ -177,7 +177,7 @@ vec3 pelican_openpbr_direct_lighting(in PelicanSurfaceV1 surface,
 
     vec3 dielectric_f0 = vec3(pelican_openpbr_ior_f0(specular_ior)) *
                          specular_color * specular_weight;
-    vec3 f0 = mix(dielectric_f0, base_color * base_weight, metalness);
+    vec3 f0 = mix(dielectric_f0, weighted_base_color, metalness);
     vec3 fresnel = pelican_openpbr_fresnel_schlick(vdoth, f0);
     float distribution = pelican_openpbr_ggx_distribution(ndoth, specular_roughness);
     float visibility = pelican_openpbr_smith_visibility(ndotl, ndotv, specular_roughness);
@@ -185,7 +185,7 @@ vec3 pelican_openpbr_direct_lighting(in PelicanSurfaceV1 surface,
                     max(4.0 * ndotl * ndotv, 0.000001);
 
     float oren_nayar_preview = 1.0 - 0.5 * diffuse_roughness;
-    vec3 diffuse = base_color * base_weight * (1.0 - metalness) *
+    vec3 diffuse = weighted_base_color * (1.0 - metalness) *
                    (vec3(1.0) - fresnel) *
                    (oren_nayar_preview / PELICAN_OPENPBR_PI);
 

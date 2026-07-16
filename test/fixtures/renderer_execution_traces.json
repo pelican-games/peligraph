@@ -1405,6 +1405,313 @@
       }
     ]
   },
+  "material_instance_override": {
+    "final_layouts": [
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "display"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "g_emissive"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_albedo"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_material"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_normal"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "gbuffer_worldpos"
+      },
+      {
+        "layout": "depth_attachment_optimal",
+        "resource": "offscreen_depth"
+      },
+      {
+        "layout": "shader_read_only_optimal",
+        "resource": "ssao_blur"
+      },
+      {
+        "layout": "transfer_src_optimal",
+        "resource": "swapchain"
+      }
+    ],
+    "nodes": [
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "clear",
+            "resource": "gbuffer_albedo",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R16G16B16A16_SFLOAT",
+            "load": "clear",
+            "resource": "gbuffer_normal",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R8G8B8A8_UNORM",
+            "load": "clear",
+            "resource": "gbuffer_material",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R16G16B16A16_SFLOAT",
+            "load": "clear",
+            "resource": "gbuffer_worldpos",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "clear",
+            "resource": "g_emissive",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "depth",
+            "clear": 1.0,
+            "final_layout": "depth_attachment_optimal",
+            "load": "clear",
+            "resource": "offscreen_depth",
+            "store": "dont_care"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "gbuffer_pass",
+        "order": 0
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R8_UNORM",
+            "load": "clear",
+            "resource": "ssao_blur",
+            "samples": 1,
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "name": "ssao_clear",
+        "order": 1
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "clear",
+            "resource": "display",
+            "samples": 1,
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_albedo"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_normal"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_material"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "gbuffer_worldpos"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "g_emissive"
+          },
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "ssao_blur"
+          }
+        ],
+        "kind": "render",
+        "name": "lighting_pass",
+        "order": 2
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_sprite",
+        "order": 3
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_main",
+        "order": 4
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_tonemap",
+        "order": 5
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_post_ldr",
+        "order": 6
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_pelican_ui",
+        "order": 7
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_draw",
+        "order": 8
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_debug_text",
+        "order": 9
+      },
+      {
+        "kind": "anchor",
+        "name": "__anchor_imgui",
+        "order": 10
+      },
+      {
+        "color_counters": {
+          "paired_storage_round_trip": 3,
+          "shader_oetf": 0,
+          "terminal_display_encode": 1,
+          "tone_curve": 1
+        },
+        "destination": "swapchain",
+        "destination_format": "R8G8B8A8_SRGB",
+        "extent": [
+          16,
+          16
+        ],
+        "kind": "output_transform",
+        "mode": "hardware_srgb_encode",
+        "name": "output_transform",
+        "order": 11,
+        "paired_storage_edges": [
+          "gbuffer_pass:gbuffer_albedo->lighting_pass",
+          "gbuffer_pass:g_emissive->lighting_pass",
+          "lighting_pass:display->output_transform"
+        ],
+        "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
+        "samples": 1,
+        "source": "display",
+        "source_format": "B8G8R8A8_SRGB",
+        "texel_block_bytes": 4,
+        "transitions": [
+          {
+            "dst_access": "shader_read",
+            "dst_stage": "fragment_shader",
+            "new_layout": "shader_read_only_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "display",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "color_attachment_write",
+            "dst_stage": "color_attachment_output",
+            "new_layout": "color_attachment_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "swapchain",
+            "src_access": "color_attachment_read|color_attachment_write",
+            "src_stage": "color_attachment_output"
+          },
+          {
+            "dst_access": "transfer_read",
+            "dst_stage": "transfer",
+            "new_layout": "transfer_src_optimal",
+            "old_layout": "color_attachment_optimal",
+            "resource": "swapchain",
+            "src_access": "color_attachment_write",
+            "src_stage": "color_attachment_output"
+          }
+        ]
+      }
+    ]
+  },
   "morph_skinned_shadow": {
     "final_layouts": [
       {

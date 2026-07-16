@@ -11,6 +11,7 @@ function(embed_shader file_name)
         DEPENDS ${file_name} shaders/include/pelican_sets.glsl
                 shaders/include/pelican_frame.glsl
                 shaders/include/pelican_material.glsl
+                shaders/include/pelican_material_instance.glsl
                 shaders/include/pelican_features.glsl
                 shaders/include/pelican_skinning.glsl
                 shaders/include/pelican_morph.glsl
@@ -70,6 +71,7 @@ b_embed(pelican_resources features/taa.json)
 b_embed(pelican_resources shaders/include/pelican_sets.glsl)
 b_embed(pelican_resources shaders/include/pelican_frame.glsl)
 b_embed(pelican_resources shaders/include/pelican_material.glsl)
+b_embed(pelican_resources shaders/include/pelican_material_instance.glsl)
 b_embed(pelican_resources shaders/include/pelican_features.glsl)
 b_embed(pelican_resources shaders/include/pelican_surface_v1.glsl)
 b_embed(pelican_resources shaders/include/pelican_lighting_v1.glsl)

@@ -938,6 +938,17 @@ MaterialContainer::materialGpuValuesForTesting(GlobalMaterialId material) const 
     return values;
 }
 
+std::vector<std::byte>
+MaterialContainer::materialGpuRecordForTesting(GlobalMaterialId material) const {
+    (void)materials.get(material);
+    const auto offset = sizeof(MaterialGpuData) * material.value;
+    const auto bytes = GET_MODULE(VulkanManageCore).readBuf(
+        material_buffer, offset + sizeof(MaterialGpuData));
+    std::vector<std::byte> record(sizeof(MaterialGpuData));
+    std::memcpy(record.data(), bytes.data() + offset, record.size());
+    return record;
+}
+
 bool MaterialContainer::isRenderRequired(PassId pass_id, GlobalMaterialId material) const {
     // Pass-specific material filtering is not defined yet.
     return true;

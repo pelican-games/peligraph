@@ -3,6 +3,8 @@
 #extension GL_GOOGLE_cpp_style_line_directive : enable
 
 #include "pelican_material.glsl"
+#define PELICAN_MATERIAL_INSTANCE_LOCATION 8
+#include "pelican_material_instance.glsl"
 #include "pelican_lighting_v1.glsl"
 #include "__pelican_surface_params.glsl"
 
@@ -36,8 +38,9 @@ void main() {
     return;
 #else
     PelicanMaterialData material = pelicanMaterials.materials[pelicanPush.materialIndex];
+    vec2 materialUV = pelican_material_instance_uv(texUV);
     PelicanSurfaceInputV1 input_data;
-    input_data.uv = texUV;
+    input_data.uv = materialUV;
     input_data.vertex_color = inColor;
     input_data.world_position = inWorldPos;
     input_data.normal = normalize(inNormal);
@@ -46,22 +49,24 @@ void main() {
     input_data.custom1 = inCustom1;
 
     PelicanSurfaceV1 surface;
-    surface.base_color = texture(baseColorSampler, texUV) * inColor;
+    surface.base_color = texture(baseColorSampler, materialUV) * inColor;
     surface.normal = input_data.normal;
     if (length(inTangent) != 0.0) {
         mat3 tbn = mat3(normalize(inTangent), normalize(inBitangent), input_data.normal);
-        vec3 tangent_normal = texture(normalSampler, texUV).xyz * 2.0 - 1.0;
+        vec3 tangent_normal = texture(normalSampler, materialUV).xyz * 2.0 - 1.0;
         tangent_normal.xy *= material.surfaceFactors.z;
         surface.normal = normalize(tbn * normalize(tangent_normal));
     }
-    vec3 mr = texture(metallicRoughnessSampler, texUV).rgb;
+    vec3 mr = texture(metallicRoughnessSampler, materialUV).rgb;
     surface.roughness = mr.g * material.surfaceFactors.y;
     surface.metallic = mr.b * material.surfaceFactors.x;
     surface.occlusion = mix(1.0, mr.r, material.surfaceFactors.w);
-    surface.emissive = texture(emissiveSampler, texUV).rgb * material.emissiveFactor.rgb;
+    surface.emissive = texture(emissiveSampler, materialUV).rgb * material.emissiveFactor.rgb;
 #ifdef PELICAN_HAS_SURFACE_V1
     pelican_surface_v1(input_data, surface);
 #endif
+    surface.base_color = pelican_material_instance_apply_base_color(surface.base_color);
+    surface.emissive = pelican_material_instance_apply_emissive(surface.emissive);
 
     vec3 lit;
 #ifdef PELICAN_HAS_LIGHTING_V1

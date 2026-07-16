@@ -21,6 +21,7 @@ layout(location = 2) out vec3 outNormal;
 layout(location = 3) out vec3 outWorldPos;
 layout(location = 4) out vec3 outTangent;
 layout(location = 5) out vec3 outBitangent;
+layout(location = 6) flat out uint outMaterialInstanceIndex;
 
 void main() {
     PelicanMorphedVertex morphed =
@@ -35,6 +36,7 @@ void main() {
     vec3 normal = normalize(normal_matrix * morphed.normal);
     outNormal = normal;
     outWorldPos = world_pos.xyz;
+    outMaterialInstanceIndex = gl_BaseInstance;
     if (inTangent.w != 0.0) {
         vec3 tangent = normalize(normal_matrix * morphed.tangent);
         tangent = normalize(tangent - dot(tangent, normal) * normal);

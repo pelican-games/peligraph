@@ -73,10 +73,26 @@ static BufferWrapper createMorphWeightBuf(VulkanManageCore &vkcore, size_t insta
                            vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
 }
 
+static BufferWrapper createMaterialOverrideBuf(VulkanManageCore &vkcore,
+                                               size_t instances) {
+    auto buffer = vkcore.allocBuf(
+        sizeof(MaterialInstanceOverrideGpuData) * instances,
+        vk::BufferUsageFlagBits::eStorageBuffer |
+            vk::BufferUsageFlagBits::eTransferSrc |
+            vk::BufferUsageFlagBits::eTransferDst,
+        vma::MemoryUsage::eAutoPreferDevice,
+        vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
+    const std::vector<MaterialInstanceOverrideGpuData> empty(instances);
+    vkcore.writeBuf(buffer, empty.data(), 0,
+                    sizeof(MaterialInstanceOverrideGpuData) * empty.size());
+    return buffer;
+}
+
 static vk::UniqueDescriptorSetLayout createDeformationLayout(vk::Device device,
-                                                              bool skinned) {
+                                                              bool skinned,
+                                                              bool material) {
     std::vector<vk::DescriptorSetLayoutBinding> bindings;
-    bindings.reserve(skinned ? 7 : 5);
+    bindings.reserve((skinned ? 7 : 5) + (material ? 1 : 0));
     if (skinned) {
         bindings.push_back({PELICAN_SKIN_PALETTE_BINDING,
                             vk::DescriptorType::eStorageBuffer, 1,
@@ -95,16 +111,21 @@ static vk::UniqueDescriptorSetLayout createDeformationLayout(vk::Device device,
         bindings.push_back({binding, vk::DescriptorType::eStorageBuffer, 1,
                             vk::ShaderStageFlagBits::eVertex});
     }
+    if (material) {
+        bindings.push_back({PELICAN_MATERIAL_INSTANCE_OVERRIDE_BINDING,
+                            vk::DescriptorType::eStorageBuffer, 1,
+                            vk::ShaderStageFlagBits::eFragment});
+    }
     vk::DescriptorSetLayoutCreateInfo info;
     info.setBindings(bindings);
     return device.createDescriptorSetLayoutUnique(info);
 }
 
 static vk::UniqueDescriptorPool createDeformationPool(vk::Device device) {
-    vk::DescriptorPoolSize size{vk::DescriptorType::eStorageBuffer, 12};
+    vk::DescriptorPoolSize size{vk::DescriptorType::eStorageBuffer, 26};
     vk::DescriptorPoolCreateInfo info;
     info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
-    info.maxSets = 2;
+    info.maxSets = 4;
     info.setPoolSizes(size);
     return device.createDescriptorPoolUnique(info);
 }
@@ -123,24 +144,32 @@ PolygonInstanceContainer::PolygonInstanceContainer()
       morph_instance_buffer{createMorphInstanceBuf(GET_MODULE(VulkanManageCore), maxModelInstances)},
       morph_weight_buffer{createMorphWeightBuf(GET_MODULE(VulkanManageCore), maxModelInstances)},
       previous_morph_weight_buffer{createMorphWeightBuf(GET_MODULE(VulkanManageCore), maxModelInstances)},
-      static_deformation_descriptor_layout{createDeformationLayout(device, false)},
-      skinned_deformation_descriptor_layout{createDeformationLayout(device, true)},
+      material_override_buffer{createMaterialOverrideBuf(GET_MODULE(VulkanManageCore),
+                                                         maxModelInstances)},
+      static_deformation_descriptor_layout{createDeformationLayout(device, false, false)},
+      skinned_deformation_descriptor_layout{createDeformationLayout(device, true, false)},
+      static_material_descriptor_layout{createDeformationLayout(device, false, true)},
+      skinned_material_descriptor_layout{createDeformationLayout(device, true, true)},
       deformation_descriptor_pool{createDeformationPool(device)} {
     vk::DescriptorSetAllocateInfo allocate;
     allocate.descriptorPool = deformation_descriptor_pool.get();
     const std::array layouts{static_deformation_descriptor_layout.get(),
-                             skinned_deformation_descriptor_layout.get()};
+                             skinned_deformation_descriptor_layout.get(),
+                             static_material_descriptor_layout.get(),
+                             skinned_material_descriptor_layout.get()};
     allocate.setSetLayouts(layouts);
     auto sets = device.allocateDescriptorSetsUnique(allocate);
     static_deformation_descriptor_set = std::move(sets[0]);
     skinned_deformation_descriptor_set = std::move(sets[1]);
+    static_material_descriptor_set = std::move(sets[2]);
+    skinned_material_descriptor_set = std::move(sets[3]);
 
     auto &geometry = GET_MODULE(VertBufContainer);
-    const auto update = [&](vk::DescriptorSet set, bool skinned) {
+    const auto update = [&](vk::DescriptorSet set, bool skinned, bool material) {
         std::vector<vk::DescriptorBufferInfo> infos;
         std::vector<vk::WriteDescriptorSet> writes;
-        infos.reserve(skinned ? 7 : 5);
-        writes.reserve(skinned ? 7 : 5);
+        infos.reserve((skinned ? 7 : 5) + (material ? 1 : 0));
+        writes.reserve((skinned ? 7 : 5) + (material ? 1 : 0));
         const auto append = [&](uint32_t binding, const BufferWrapper &buffer) {
             infos.push_back({buffer.buffer.get(), 0, vk::WholeSize});
             writes.push_back({set, binding, 0, 1,
@@ -159,10 +188,16 @@ PolygonInstanceContainer::PolygonInstanceContainer()
         append(PELICAN_MORPH_METADATA_BINDING,
                geometry.morphMetadataBuffer(skinned));
         append(PELICAN_MORPH_DELTA_BINDING, geometry.morphDeltaBuffer());
+        if (material) {
+            append(PELICAN_MATERIAL_INSTANCE_OVERRIDE_BINDING,
+                   material_override_buffer);
+        }
         device.updateDescriptorSets(writes, {});
     };
-    update(static_deformation_descriptor_set.get(), false);
-    update(skinned_deformation_descriptor_set.get(), true);
+    update(static_deformation_descriptor_set.get(), false, false);
+    update(skinned_deformation_descriptor_set.get(), true, false);
+    update(static_material_descriptor_set.get(), false, true);
+    update(skinned_material_descriptor_set.get(), true, true);
 }
 
 namespace {
@@ -258,6 +293,11 @@ void PolygonInstanceContainer::removeModelInstance(ModelInstanceId id) {
         .instance_generation = animation_generations[id.value],
     };
     morph_history_valid[id.value] = false;
+    material_override_frames.erase(id.value);
+    const MaterialInstanceOverrideGpuData empty{};
+    GET_MODULE(VulkanManageCore).writeBuf(
+        material_override_buffer, &empty,
+        sizeof(MaterialInstanceOverrideGpuData) * id.value, sizeof(empty));
 }
 
 void PolygonInstanceContainer::clear() {
@@ -275,6 +315,11 @@ void PolygonInstanceContainer::clear() {
     morph_layouts.clear();
     morph_weight_frames.clear();
     morph_history_valid.clear();
+    material_override_frames.clear();
+    const std::vector<MaterialInstanceOverrideGpuData> empty(maxModelInstances);
+    GET_MODULE(VulkanManageCore).writeBuf(material_override_buffer, empty.data(), 0,
+                                          sizeof(MaterialInstanceOverrideGpuData) *
+                                              empty.size());
 }
 
 void PolygonInstanceContainer::triggerUpdate() {
@@ -378,11 +423,20 @@ void PolygonInstanceContainer::advanceMorphHistoryAfterRender() {
     std::fill(morph_history_valid.begin(), morph_history_valid.end(), true);
 }
 
+void PolygonInstanceContainer::advanceMaterialOverrideHistoryAfterRender() {
+    for (auto &[instance, frame] : material_override_frames) {
+        (void)instance;
+        frame.previous = frame.current;
+        frame.previous_revision = frame.current_revision;
+    }
+}
+
 void PolygonInstanceContainer::advanceTemporalHistoryAfterRender() {
     previous_model_instances_data = model_instances_data;
     previous_skin_palettes = skin_palettes;
     previous_animation_revisions = animation_revisions;
     advanceMorphHistoryAfterRender();
+    advanceMaterialOverrideHistoryAfterRender();
     std::fill(model_history_valid.begin(), model_history_valid.end(), true);
 }
 
@@ -391,6 +445,11 @@ void PolygonInstanceContainer::resetTemporalHistory() {
     previous_skin_palettes = skin_palettes;
     previous_animation_revisions = animation_revisions;
     for (auto &frame : morph_weight_frames) {
+        frame.previous = frame.current;
+        frame.previous_revision = frame.current_revision;
+    }
+    for (auto &[instance, frame] : material_override_frames) {
+        (void)instance;
         frame.previous = frame.current;
         frame.previous_revision = frame.current_revision;
     }
@@ -460,6 +519,7 @@ void PolygonInstanceContainer::rebuildModelInstances(
     auto next_morph_layouts = morph_layouts;
     auto next_morph_weight_frames = morph_weight_frames;
     auto next_morph_history_valid = morph_history_valid;
+    auto next_material_override_frames = material_override_frames;
     auto next_previous_models = previous_model_instances_data;
     auto next_history_valid = model_history_valid;
     for (uint32_t instance = 0; instance < model_asset_ids.size(); ++instance) {
@@ -507,6 +567,11 @@ void PolygonInstanceContainer::rebuildModelInstances(
             .previous = defaults,
         };
         next_morph_history_valid[instance] = false;
+        next_material_override_frames.erase(instance);
+        const MaterialInstanceOverrideGpuData empty{};
+        GET_MODULE(VulkanManageCore).writeBuf(
+            material_override_buffer, &empty,
+            sizeof(MaterialInstanceOverrideGpuData) * instance, sizeof(empty));
         next_previous_models[instance] = model_instances_data[instance];
         next_history_valid[instance] = false;
     }
@@ -519,6 +584,7 @@ void PolygonInstanceContainer::rebuildModelInstances(
     morph_layouts = std::move(next_morph_layouts);
     morph_weight_frames = std::move(next_morph_weight_frames);
     morph_history_valid = std::move(next_morph_history_valid);
+    material_override_frames = std::move(next_material_override_frames);
     previous_model_instances_data = std::move(next_previous_models);
     model_history_valid = std::move(next_history_valid);
 }
@@ -626,6 +692,83 @@ Animation::Status PolygonInstanceContainer::publishMorphWeightFrame(
     return Animation::Status::ok;
 }
 
+Animation::Status PolygonInstanceContainer::publishMaterialInstanceOverride(
+    ModelInstanceId id, const PublishMaterialInstanceOverrideDescV1 &frame) {
+    constexpr auto minimum =
+        offsetof(PublishMaterialInstanceOverrideDescV1, reserved1) +
+        sizeof(std::uint32_t);
+    if (frame.struct_size < minimum) return Animation::Status::invalid_argument;
+    if (frame.version != materialInstanceOverrideDescriptorVersionV1)
+        return Animation::Status::unsupported_version;
+    if (frame.reserved0 != 0 || frame.reserved1 != 0)
+        return Animation::Status::reserved_not_zero;
+    if (id.value >= model_instances_data.size())
+        return Animation::Status::invalid_handle;
+
+    const auto expected = animationInstance(id);
+    if (!Animation::isValid(frame.instance) ||
+        frame.instance.identity != expected.identity)
+        return Animation::Status::invalid_handle;
+    if (frame.instance.generation != expected.generation)
+        return Animation::Status::stale_generation;
+    if (frame.frame_revision == 0 ||
+        (frame.values.mask & ~materialOverrideAll) != 0 ||
+        (frame.flags & ~(materialOverrideCommitResetHistory |
+                         materialOverrideCommitDiscontinuity)) != 0)
+        return Animation::Status::invalid_argument;
+
+    const auto finite = [](const auto &value) {
+        for (glm::length_t i = 0; i < value.length(); ++i) {
+            if (!std::isfinite(value[i])) return false;
+        }
+        return true;
+    };
+    if (!finite(frame.values.base_color_factor) ||
+        !finite(frame.values.emissive_factor) ||
+        !finite(frame.values.uv_offset) || !finite(frame.values.uv_scale) ||
+        !std::isfinite(frame.values.uv_rotation))
+        return Animation::Status::invalid_argument;
+
+    const auto found = material_override_frames.find(id.value);
+    if (found != material_override_frames.end() &&
+        frame.frame_revision <= found->second.current_revision)
+        return Animation::Status::duplicate_revision;
+
+    MaterialInstanceOverrideFrame next =
+        found == material_override_frames.end()
+            ? MaterialInstanceOverrideFrame{
+                  .instance_identity = expected.identity,
+                  .instance_generation = expected.generation,
+              }
+            : found->second;
+    next.current = frame.values;
+    next.current_revision = frame.frame_revision;
+    if (next.previous_revision == 0 ||
+        (frame.flags & (materialOverrideCommitResetHistory |
+                        materialOverrideCommitDiscontinuity)) != 0) {
+        next.previous = next.current;
+        next.previous_revision = next.current_revision;
+    }
+
+    const MaterialInstanceOverrideGpuData gpu{
+        .base_color_factor = next.current.base_color_factor,
+        .emissive_factor = next.current.emissive_factor,
+        .uv_offset_scale = glm::vec4{next.current.uv_offset,
+                                     next.current.uv_scale},
+        .uv_rotation_reserved = glm::vec4{next.current.uv_rotation, 0.0f,
+                                          0.0f, 0.0f},
+        .metadata = glm::uvec4{
+            next.current.mask, next.instance_generation,
+            static_cast<std::uint32_t>(next.current_revision),
+            static_cast<std::uint32_t>(next.current_revision >> 32u)},
+    };
+    GET_MODULE(VulkanManageCore).writeBuf(
+        material_override_buffer, &gpu,
+        sizeof(MaterialInstanceOverrideGpuData) * id.value, sizeof(gpu));
+    material_override_frames.insert_or_assign(id.value, std::move(next));
+    return Animation::Status::ok;
+}
+
 void PolygonInstanceContainer::bindDeformation(
     vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout,
     bool skinned) const {
@@ -633,6 +776,16 @@ void PolygonInstanceContainer::bindDeformation(
         vk::PipelineBindPoint::eGraphics, pipeline_layout, PELICAN_SET_FREE,
         skinned ? skinned_deformation_descriptor_set.get()
                 : static_deformation_descriptor_set.get(),
+        {});
+}
+
+void PolygonInstanceContainer::bindMaterialInstanceResources(
+    vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout,
+    bool skinned) const {
+    cmd_buf.bindDescriptorSets(
+        vk::PipelineBindPoint::eGraphics, pipeline_layout, PELICAN_SET_FREE,
+        skinned ? skinned_material_descriptor_set.get()
+                : static_material_descriptor_set.get(),
         {});
 }
 
