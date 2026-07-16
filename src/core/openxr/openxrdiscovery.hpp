@@ -71,6 +71,9 @@ DECLARE_MODULE(DiscoveryRuntime) {
 
     XrInstance getInstance() const noexcept { return instance; }
     XrSystemId getSystemId() const noexcept { return system_id; }
+    PFN_xrGetInstanceProcAddr getInstanceProcAddr() const noexcept {
+        return api.get_instance_proc_addr;
+    }
 };
 
 XrDiscoveryResult queryDiscovery(void *context);

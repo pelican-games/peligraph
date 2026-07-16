@@ -1,5 +1,6 @@
 add_library(pelican_openxr STATIC
     openxrdiscovery.cpp
+    openxrsession.cpp
 )
 set_target_properties(pelican_openxr PROPERTIES CXX_STANDARD 20)
 target_include_directories(pelican_openxr PRIVATE
