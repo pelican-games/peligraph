@@ -12,14 +12,21 @@
 #include "../src/core/model/gltf.hpp"
 #include "../src/core/asset/model.hpp"
 #include "../src/core/vkcore/core.hpp"
+#include "../src/project/importmanifest.hpp"
+#include "../src/project/sceneformat.hpp"
 #include "gltf_fragment_fixture.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
+#include <array>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
+
+#ifndef PELICAN_TEST_SOURCE_DIR
+#define PELICAN_TEST_SOURCE_DIR "."
+#endif
 
 namespace Pelican {
 
@@ -41,6 +48,16 @@ size_t primitiveCount(const ModelTemplate &model) {
         count += group.primitives.size();
     }
     return count;
+}
+
+std::filesystem::path usdFixtureRoot() {
+    return std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" / "fixtures" / "usd0b";
+}
+
+nlohmann::json readJson(const std::filesystem::path &path) {
+    std::ifstream file{path, std::ios::binary};
+    if (!file.is_open()) throw std::runtime_error("failed to open fixture: " + path.string());
+    return nlohmann::json::parse(file);
 }
 
 void writeText(const std::filesystem::path &path, std::string_view text) {
@@ -154,6 +171,90 @@ TEST_CASE("glTF fragments load only the selected object and dependencies", "[glt
                                               fragment("mesh", "Cube")),
                         Catch::Matchers::ContainsSubstring("requires a .glb file"));
 
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+TEST_CASE("U-USD0b corpus deliveries parse, load, and instantiate their scene fragment",
+          "[gltf][fragment][usd0b]") {
+    setupLogger();
+    const auto fixture_root = usdFixtureRoot();
+    const std::array fixture_names{
+        "root_yup_m_usda",
+        "root_zup_cm_usda",
+        "root_zup_cm_usdz",
+    };
+    for (const auto *name : fixture_names) {
+        CAPTURE(name);
+        const auto delivery = fixture_root / name;
+        const auto manifest = parseImportManifestJson(readJson(delivery / "manifest.json"));
+        REQUIRE(manifest.outputs.size() == 2);
+        REQUIRE(manifest.outputs[0].schema == "gltf");
+        REQUIRE(manifest.outputs[1].schema == "pelican.scene");
+        const auto normalized_scene = normalizeSceneDataJson(readJson(delivery / "scene.json"));
+        REQUIRE(normalized_scene.scenes.at("default_scene").at("objects").is_array());
+        REQUIRE_FALSE(normalized_scene.scenes.at("default_scene").at("objects").empty());
+    }
+
+    const auto zup_manifest = readJson(fixture_root / "root_zup_cm_usda" / "manifest.json");
+    const auto &mapping = zup_manifest.at("source").at("geometry_mapping");
+    REQUIRE(mapping.size() == 3);
+    REQUIRE(mapping.at(0).at("prim_path") == "/World/Hierarchy/FeatureMesh");
+    REQUIRE(mapping.at(0).at("primitive_mapping").size() == 2);
+    REQUIRE(mapping.at(0).at("primitive_mapping").at(0).at("subset_path") ==
+            "/World/Hierarchy/FeatureMesh/RedFaces");
+    REQUIRE(mapping.at(0).at("primitive_mapping").at(0).at("glb_primitive_index") == 0);
+    REQUIRE(mapping.at(0).at("primitive_mapping").at(1).at("subset_path") ==
+            "/World/Hierarchy/FeatureMesh/TexturedFaces");
+    REQUIRE(mapping.at(0).at("primitive_mapping").at(1).at("glb_primitive_index") == 1);
+
+    const auto temp_dir = std::filesystem::temp_directory_path() /
+                          ("pelican_wp119_" + std::to_string(
+                               std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(temp_dir);
+    const TempDirGuard temp_guard{temp_dir};
+    const auto yup = fixture_root / "root_yup_m_usda";
+    std::filesystem::copy_file(yup / "model.glb", temp_dir / "model.glb");
+    std::filesystem::copy_file(yup / "scene.json", temp_dir / "scene.json");
+    writeText(temp_dir / "assets.json", R"json({"models":[]})json");
+
+    FastModuleContainer modules;
+    GET_MODULE(PathResolver).setup(temp_dir, false);
+    GET_MODULE(ProjectSource).setSourceByData(nlohmann::json{
+        {"basic_config",
+         {
+             {"scene_data_json", "scene.json"},
+             {"asset_data_json", "assets.json"},
+             {"default_scene_id", "default_scene"},
+         }},
+    }.dump());
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.headless_extent = vk::Extent2D{16, 16};
+
+    try {
+        (void)GET_MODULE(StandardMaterialResource);
+    } catch (const std::exception &ex) {
+        SKIP(std::string{"Vulkan headless rendering unavailable: "} + ex.what());
+    }
+
+    auto &loader = GET_MODULE(GltfLoader);
+    REQUIRE(primitiveCount(loader.loadGltfBinary((yup / "model.glb").string())) == 1);
+    REQUIRE(primitiveCount(loader.loadGltfBinary(
+                (fixture_root / "root_zup_cm_usda" / "model.glb").string())) == 4);
+    REQUIRE(primitiveCount(loader.loadGltfBinary(
+                (fixture_root / "root_zup_cm_usdz" / "model.glb").string())) == 4);
+
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &scene = GET_MODULE(SceneLoader);
+    scene.load("default_scene");
+    GET_MODULE(ECSCore).update();
+    const auto object = scene.objectId("YWorld_YUpMeterMesh");
+    REQUIRE(object);
+    const auto *model = GET_MODULE(ECSCore)
+                            .getTemplatePublicModule()
+                            .tryComponent<SimpleModelViewComponent>(*object);
+    REQUIRE(model != nullptr);
+    REQUIRE(model->model_instance_id);
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 

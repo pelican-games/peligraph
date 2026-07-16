@@ -269,7 +269,10 @@ if(PELICAN_RUNTIME_SHADER_COMPILER)
         pelican_copy_shaderc_runtime(pelican_test_golden_image_test)
     endif()
 endif()
-pelican_define_test(gltf_fragment_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+pelican_define_test(gltf_fragment_test pelican_core pelican_project VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+target_compile_definitions(pelican_test_gltf_fragment_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
 pelican_define_test(modelhotreload_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
 pelican_define_test(skeletal_gltf_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
 pelican_define_test(gltf_scene_extract_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp argparse tinygltf glm)

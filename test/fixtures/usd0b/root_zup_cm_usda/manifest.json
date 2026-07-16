@@ -1,0 +1,468 @@
+{
+  "outputs": [
+    {
+      "file": "model.glb",
+      "schema": "gltf",
+      "sha256": "09f0c01baa65056d3d3b00e3197f0aa1d359cfd04a2d74ab92c5ef60e2108a46"
+    },
+    {
+      "file": "scene.json",
+      "schema": "pelican.scene",
+      "sha256": "1ed8e7cefc7f51456b3e989249e006cf5472048ba406575bc9286e6af48d3360",
+      "version": 1
+    }
+  ],
+  "schema": "pelican.import",
+  "source": {
+    "composition": {
+      "default_prim_path": "/World",
+      "effective_population_mask": [
+        "/World"
+      ],
+      "requested_variant_overrides": [],
+      "variant_selections": [
+        {
+          "prim_path": "/World/Hierarchy/FeatureMesh",
+          "selection": "high",
+          "set": "detail"
+        }
+      ]
+    },
+    "dependency_closure": [
+      {
+        "kind": "layer",
+        "resolved_uri": "file:///C:/pelican-import-tools/spike/usd/corpus/base_layer.usda",
+        "sha256": "81532dad620c427df088704005981c008964a47c624a21d0ec1de9b0843d35c1",
+        "size": 307
+      },
+      {
+        "kind": "layer",
+        "resolved_uri": "file:///C:/pelican-import-tools/spike/usd/corpus/payload.usda",
+        "sha256": "baf707fe88283b7537ee761b9e757087323606c219b8c45073e27fe9dc4b497a",
+        "size": 577
+      },
+      {
+        "kind": "layer",
+        "resolved_uri": "file:///C:/pelican-import-tools/spike/usd/corpus/root_zup_cm.usda",
+        "sha256": "1963ec87db822d31decaa700512e3cda63443088d83a646060c805652e1e0274",
+        "size": 6484
+      },
+      {
+        "kind": "asset",
+        "resolved_uri": "file:///C:/pelican-import-tools/spike/usd/corpus/textures/checker.1001.png",
+        "sha256": "bcfd899348e6d036a6b2906f51a097ed049a483139731c83ee23b5aac16bbf7e",
+        "size": 76
+      },
+      {
+        "kind": "asset",
+        "resolved_uri": "file:///C:/pelican-import-tools/spike/usd/corpus/textures/checker.1002.png",
+        "sha256": "c92b8ec66856ca429b441e13008d934d5a430f1a62e50840e5486c8965d7b117",
+        "size": 79
+      }
+    ],
+    "determinism": {
+      "first": {
+        "gltf": "09f0c01baa65056d3d3b00e3197f0aa1d359cfd04a2d74ab92c5ef60e2108a46",
+        "pelican.scene": "1ed8e7cefc7f51456b3e989249e006cf5472048ba406575bc9286e6af48d3360"
+      },
+      "second": {
+        "gltf": "09f0c01baa65056d3d3b00e3197f0aa1d359cfd04a2d74ab92c5ef60e2108a46",
+        "pelican.scene": "1ed8e7cefc7f51456b3e989249e006cf5472048ba406575bc9286e6af48d3360"
+      },
+      "verified": true
+    },
+    "diagnostics": [
+      {
+        "code": "USD_SUBDIVISION_CAGE_USED",
+        "fallback": "polygon_cage",
+        "prim_path": "/World/Hierarchy/FeatureMesh",
+        "severity": "warning",
+        "source_value": "catmullClark"
+      }
+    ],
+    "file": "C:/pelican-import-tools/spike/usd/corpus/root_zup_cm.usda",
+    "geometry_mapping": [
+      {
+        "geometry": {
+          "face_count": 2,
+          "hole_face_indices": [],
+          "normal_interpolation": "faceVarying",
+          "normal_matrix_basis": [
+            [
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              -1.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ]
+          ],
+          "orientation": "rightHanded",
+          "point_count": 7,
+          "prim_path": "/World/Hierarchy/FeatureMesh",
+          "primvars": [
+            {
+              "glb_attribute": "_USD_CONSTANTSCALAR",
+              "indexed": false,
+              "interpolation": "constant",
+              "name": "constantScalar",
+              "type": "float[]"
+            },
+            {
+              "glb_attribute": "TEXCOORD_0",
+              "indexed": true,
+              "interpolation": "faceVarying",
+              "name": "st",
+              "type": "texCoord2f[]"
+            },
+            {
+              "glb_attribute": "TANGENT",
+              "indexed": false,
+              "interpolation": "faceVarying",
+              "name": "tangents",
+              "type": "float4[]"
+            },
+            {
+              "glb_attribute": "_USD_UNIFORMSCALAR",
+              "indexed": false,
+              "interpolation": "uniform",
+              "name": "uniformScalar",
+              "type": "float[]"
+            },
+            {
+              "glb_attribute": "_USD_VARYINGSCALAR",
+              "indexed": false,
+              "interpolation": "varying",
+              "name": "varyingScalar",
+              "type": "float[]"
+            },
+            {
+              "glb_attribute": "_USD_VERTEXSCALAR",
+              "indexed": false,
+              "interpolation": "vertex",
+              "name": "vertexScalar",
+              "type": "float[]"
+            }
+          ],
+          "source_determinant": 1.0,
+          "source_local_to_world_matrix": [
+            [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              1.0,
+              2.0,
+              3.0,
+              1.0
+            ]
+          ],
+          "subdivision_policy": "polygon_cage",
+          "subdivision_scheme": "catmullClark",
+          "subsets": [
+            {
+              "element_type": "face",
+              "face_indices": [
+                1
+              ],
+              "family_name": "materialBind",
+              "family_type": "partition",
+              "path": "/World/Hierarchy/FeatureMesh/RedFaces",
+              "source_material_path": "/World/Looks/SubsetPreview"
+            },
+            {
+              "element_type": "face",
+              "face_indices": [
+                0
+              ],
+              "family_name": "materialBind",
+              "family_type": "partition",
+              "path": "/World/Hierarchy/FeatureMesh/TexturedFaces",
+              "source_material_path": "/World/Looks/TexturedPreview"
+            }
+          ],
+          "winding_reversed": false
+        },
+        "glb_mesh_index": 0,
+        "glb_mesh_name": "World_Hierarchy_FeatureMesh",
+        "prim_path": "/World/Hierarchy/FeatureMesh",
+        "primitive_mapping": [
+          {
+            "glb_mesh_index": 0,
+            "glb_primitive_index": 0,
+            "prim_path": "/World/Hierarchy/FeatureMesh",
+            "source_material_path": "/World/Looks/SubsetPreview",
+            "subset_path": "/World/Hierarchy/FeatureMesh/RedFaces"
+          },
+          {
+            "glb_mesh_index": 0,
+            "glb_primitive_index": 1,
+            "prim_path": "/World/Hierarchy/FeatureMesh",
+            "source_material_path": "/World/Looks/TexturedPreview",
+            "subset_path": "/World/Hierarchy/FeatureMesh/TexturedFaces"
+          }
+        ]
+      },
+      {
+        "geometry": {
+          "face_count": 1,
+          "hole_face_indices": [],
+          "normal_interpolation": "generated_flat",
+          "normal_matrix_basis": [
+            [
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              -1.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ]
+          ],
+          "orientation": "rightHanded",
+          "point_count": 3,
+          "prim_path": "/World/OpenPBRMesh",
+          "primvars": [],
+          "source_determinant": 1.0,
+          "source_local_to_world_matrix": [
+            [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "subdivision_policy": "polygon_cage",
+          "subdivision_scheme": "none",
+          "subsets": [],
+          "winding_reversed": false
+        },
+        "glb_mesh_index": 1,
+        "glb_mesh_name": "World_OpenPBRMesh",
+        "prim_path": "/World/OpenPBRMesh",
+        "primitive_mapping": [
+          {
+            "glb_mesh_index": 1,
+            "glb_primitive_index": 0,
+            "prim_path": "/World/OpenPBRMesh",
+            "source_material_path": "/World/Looks/OpenPBRMaterial",
+            "subset_path": null
+          }
+        ]
+      },
+      {
+        "geometry": {
+          "face_count": 1,
+          "hole_face_indices": [],
+          "normal_interpolation": "generated_flat",
+          "normal_matrix_basis": [
+            [
+              -1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              -1.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ]
+          ],
+          "orientation": "rightHanded",
+          "point_count": 3,
+          "prim_path": "/World/PayloadInstance/NegativeDeterminant/PayloadMesh",
+          "primvars": [],
+          "source_determinant": -1.0,
+          "source_local_to_world_matrix": [
+            [
+              -1.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "subdivision_policy": "polygon_cage",
+          "subdivision_scheme": "none",
+          "subsets": [],
+          "winding_reversed": true
+        },
+        "glb_mesh_index": 2,
+        "glb_mesh_name": "World_PayloadInstance_NegativeDeterminant_PayloadMesh",
+        "prim_path": "/World/PayloadInstance/NegativeDeterminant/PayloadMesh",
+        "primitive_mapping": [
+          {
+            "glb_mesh_index": 2,
+            "glb_primitive_index": 0,
+            "prim_path": "/World/PayloadInstance/NegativeDeterminant/PayloadMesh",
+            "source_material_path": null,
+            "subset_path": null
+          }
+        ]
+      }
+    ],
+    "material_policy": "default_standard",
+    "normalization": {
+      "authored_meters_per_unit": true,
+      "authored_up_axis": true,
+      "basis_scale_matrix": [
+        [
+          0.009999999776482582,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.009999999776482582,
+          0.0
+        ],
+        [
+          0.0,
+          -0.009999999776482582,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "matrix_layout": "row-major",
+      "negative_determinant_policy": "reverse triangle winding and tangent handedness; inverse-transpose normals",
+      "normal_transform": "inverse-transpose source local-to-world, then source-up to Y-up basis, normalize",
+      "precision": "IEEE-754 binary32",
+      "rounding": "round-to-nearest-ties-to-even via little-endian struct f32",
+      "source_meters_per_unit": 0.01,
+      "source_up_axis": "Z",
+      "target_meters_per_unit": 1.0,
+      "target_up_axis": "Y",
+      "triangulation": "deterministic projected ear-clipping v1",
+      "xform_policy": "vertex_bake"
+    },
+    "openpbr": {
+      "interpreted": false,
+      "reason": "U-USD0c boundary",
+      "version": null
+    },
+    "recipe": "usd",
+    "recipe_arguments": {
+      "default_prim_policy": "use",
+      "localization": "record",
+      "payload_policy": "all",
+      "population_mask": [],
+      "resolver_search_paths": [],
+      "usdz_limits": {
+        "max_compression_ratio": 1000.0,
+        "max_entries": 10000,
+        "max_entry_bytes": 268435456,
+        "max_total_bytes": 1073741824
+      },
+      "variants": []
+    },
+    "resolver_environment": {
+      "PXR_AR_DEFAULT_SEARCH_PATH": null,
+      "PXR_MTLX_PLUGIN_SEARCH_PATHS": null,
+      "PXR_MTLX_STDLIB_SEARCH_PATHS": null,
+      "PXR_PLUGINPATH_NAME": null
+    },
+    "sha256": "1963ec87db822d31decaa700512e3cda63443088d83a646060c805652e1e0274",
+    "toolchain": [
+      {
+        "artifact": "production source tree (src/pelican_import_tools/*.py)",
+        "name": "pelican-import-tools",
+        "sha256": "abda05f1eb4ed8171de7e9e1cad3110d430ee7eb89203e571f25847168fcc8a9",
+        "version": "0.1.0"
+      },
+      {
+        "artifact": "C:/pelican-import-tools/.venv/Scripts/python.exe",
+        "name": "CPython",
+        "sha256": "2e5b2d85a4a78b887cbf613bea5ec53de2e8e4093888c69ee406eff4f0623851",
+        "version": "3.13.13"
+      },
+      {
+        "artifact": "usd_core-26.5-cp313-none-win_amd64.whl",
+        "license": "LicenseRef-TOST-1.0 plus bundled third-party notices",
+        "name": "usd-core",
+        "sha256": "b077ea37dfeb15ca6b24ca33b65c2fe9b1656138e1fda74e4eae9793a149a7d5",
+        "version": "26.5"
+      }
+    ],
+    "usdz_entries": [],
+    "usdz_root_layer": null
+  },
+  "tool": {
+    "name": "pelican-import-tools",
+    "version": "0.1.0"
+  },
+  "version": 1
+}

@@ -1,0 +1,94 @@
+{
+  "scenes": {
+    "default_scene": {
+      "objects": [
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "rotation": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ],
+              "scale": [
+                1.0,
+                1.0,
+                1.0
+              ]
+            },
+            {
+              "model": "model.glb#node/World_Hierarchy_FeatureMesh",
+              "name": "simplemodelview"
+            }
+          ],
+          "name": "World_Hierarchy_FeatureMesh"
+        },
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "rotation": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ],
+              "scale": [
+                1.0,
+                1.0,
+                1.0
+              ]
+            },
+            {
+              "model": "model.glb#node/World_OpenPBRMesh",
+              "name": "simplemodelview"
+            }
+          ],
+          "name": "World_OpenPBRMesh"
+        },
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "rotation": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ],
+              "scale": [
+                1.0,
+                1.0,
+                1.0
+              ]
+            },
+            {
+              "model": "model.glb#node/World_PayloadInstance_NegativeDeterminant_PayloadMesh",
+              "name": "simplemodelview"
+            }
+          ],
+          "name": "World_PayloadInstance_NegativeDeterminant_PayloadMesh"
+        }
+      ]
+    }
+  },
+  "schema": "pelican.scene",
+  "version": 1
+}
