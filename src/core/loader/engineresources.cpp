@@ -11,9 +11,9 @@ namespace Pelican {
 namespace {
 
 #if PELICAN_WITH_VAT
-constexpr size_t registeredResourceCount = 71;
+constexpr size_t registeredResourceCount = 74;
 #else
-constexpr size_t registeredResourceCount = 70;
+constexpr size_t registeredResourceCount = 73;
 #endif
 
 constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
@@ -44,6 +44,7 @@ constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
     "features/gpu_timing.json",
     "features/hdr.json",
     "features/shadow_directional.json",
+    "features/taa.json",
     "features/velocity.json",
     "fullscreen.frag",
     "fullscreen.frag.spv",
@@ -78,6 +79,8 @@ constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
     "ssao.frag.spv",
     "ssao_blur.frag",
     "ssao_blur.frag.spv",
+    "taa_composite.frag",
+    "taa_resolve.frag",
     "sprite.frag.spv",
     "sprite.vert.spv",
     "tonemap.frag",
@@ -150,6 +153,7 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     }
     PELICAN_ENGINE_RESOURCE("features/hdr.json")
     PELICAN_ENGINE_RESOURCE("features/shadow_directional.json")
+    PELICAN_ENGINE_RESOURCE("features/taa.json")
     PELICAN_ENGINE_RESOURCE("features/velocity.json")
     PELICAN_ENGINE_RESOURCE("fullscreen.frag")
     PELICAN_ENGINE_RESOURCE("fullscreen.frag.spv")
@@ -184,6 +188,8 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("ssao.frag.spv")
     PELICAN_ENGINE_RESOURCE("ssao_blur.frag")
     PELICAN_ENGINE_RESOURCE("ssao_blur.frag.spv")
+    PELICAN_ENGINE_RESOURCE("taa_composite.frag")
+    PELICAN_ENGINE_RESOURCE("taa_resolve.frag")
     PELICAN_ENGINE_RESOURCE("sprite.frag.spv")
     PELICAN_ENGINE_RESOURCE("sprite.vert.spv")
     PELICAN_ENGINE_RESOURCE("tonemap.frag")

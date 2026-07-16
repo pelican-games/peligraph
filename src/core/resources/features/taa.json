@@ -1,0 +1,122 @@
+{
+  "schema": "pelican.render_feature",
+  "version": 1,
+  "name": "taa",
+  "parameters": {
+    "schema": "pelican.render_feature_parameters",
+    "version": 1,
+    "render_targets": [
+      {
+        "name": "scene_color",
+        "required": false,
+        "default": "lit_color",
+        "role": "color",
+        "format_class": "scene",
+        "extent_scale": 1.0,
+        "sample_count": 1,
+        "usage": ["SAMPLED"]
+      },
+      {
+        "name": "velocity",
+        "required": false,
+        "default": "velocity",
+        "role": "data",
+        "format_class": "data",
+        "extent_scale": 1.0,
+        "sample_count": 1,
+        "usage": ["SAMPLED"]
+      },
+      {
+        "name": "depth",
+        "required": false,
+        "default": "offscreen_depth",
+        "role": "data",
+        "format_class": "data",
+        "extent_scale": 1.0,
+        "sample_count": 1,
+        "usage": ["DEPTH_STENCIL_ATTACHMENT"]
+      },
+      {
+        "name": "downstream_color",
+        "required": false,
+        "default": "lit_color",
+        "role": "color",
+        "format_class": "scene",
+        "extent_scale": 1.0,
+        "sample_count": 1,
+        "usage": ["COLOR_ATTACHMENT"]
+      }
+    ],
+    "scalars": [
+      {
+        "name": "alpha",
+        "type": "float",
+        "range": [0.0, 1.0],
+        "default": 0.1
+      },
+      {
+        "name": "disocclusion_tau",
+        "type": "float",
+        "range": [0.0, 1.0],
+        "default": 0.1
+      },
+      {
+        "name": "depth_epsilon",
+        "type": "float",
+        "range": [0.00000001, 1.0],
+        "default": 0.00001
+      }
+    ]
+  },
+  "projection_jitter": {
+    "pattern": "halton23",
+    "phases": 8
+  },
+  "render_targets": [
+    {
+      "name": "taa_accum",
+      "extent_scale": 1.0,
+      "format": "R16G16B16A16_SFLOAT",
+      "format_class": "explicit(R16G16B16A16_SFLOAT)",
+      "role": "color",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"],
+      "history": true,
+      "clear_color": [0.0, 0.0, 0.0, 0.0]
+    }
+  ],
+  "passes": [
+    {
+      "insert": "after:post_main",
+      "pass": {
+        "name": "taa_resolve",
+        "type": "fullscreen",
+        "input": ["$scene_color", "$velocity", "$depth", "taa_accum@history"],
+        "output": {"color": "taa_accum", "depth": null},
+        "shader": {
+          "vertex": "engine://fullscreen",
+          "fragment": "engine://taa_resolve"
+        },
+        "clear_color": [0.0, 0.0, 0.0, 0.0]
+      }
+    },
+    {
+      "insert": "after:taa_resolve",
+      "pass": {
+        "name": "taa_composite",
+        "type": "fullscreen",
+        "input": ["taa_accum"],
+        "output": {"color": "$downstream_color", "depth": null},
+        "shader": {
+          "vertex": "engine://fullscreen",
+          "fragment": "engine://taa_composite"
+        }
+      }
+    }
+  ],
+  "render_target_overrides": {
+    "$depth": {
+      "usage": ["SAMPLED"]
+    }
+  },
+  "shader_defines": ["PELICAN_FEATURE_TAA"]
+}

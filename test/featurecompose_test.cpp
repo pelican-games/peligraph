@@ -356,6 +356,81 @@ TEST_CASE("velocity feature is purgeable and occupies the scene-to-post boundary
     REQUIRE(pass < post_main);
 }
 
+TEST_CASE("bundled TAA composes into the example pipeline as a two-pass history graph",
+          "[render-feature][temporal][taa]") {
+    auto config = readJson(std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
+                           "projects/example/passes/main_rendering_config.json");
+    config["features"].push_back("engine://features/velocity.json");
+    config["features"].push_back(nlohmann::json{
+        {"ref", "engine://features/taa.json"},
+        {"parameters", {
+            {"scene_color", "lit_color"},
+            {"velocity", "velocity"},
+            {"depth", "offscreen_depth"},
+            {"downstream_color", "lit_color"},
+            {"alpha", 0.1},
+            {"disocclusion_tau", 0.1},
+            {"depth_epsilon", 0.00001},
+        }},
+    });
+
+    const auto result = composeRenderFeatureConfig(
+        config, RenderFeatureComposeDependencies{loadEngineFeature, true});
+    REQUIRE(result.feature_names ==
+            std::vector<std::string>{"ui", "velocity", "taa"});
+    REQUIRE(result.projection_jitter == nlohmann::json{
+        {"provider", "taa"}, {"pattern", "halton23"}, {"phases", 8}});
+
+    const auto &resolve = passByName(result.config, "taa_resolve");
+    REQUIRE(resolve.at("input") == nlohmann::json::array(
+        {"lit_color", "velocity", "offscreen_depth", "taa_accum@history"}));
+    REQUIRE(resolve.at("output").at("color") == "taa_accum");
+    const auto &composite = passByName(result.config, "taa_composite");
+    REQUIRE(composite.at("input") == nlohmann::json::array({"taa_accum"}));
+    REQUIRE(composite.at("output").at("color") == "lit_color");
+
+    const auto &targets = result.config.at("render_targets");
+    const auto depth = std::find_if(targets.begin(), targets.end(), [](const auto &target) {
+        return target.value("name", std::string{}) == "offscreen_depth";
+    });
+    REQUIRE(depth != targets.end());
+    REQUIRE(depth->at("usage") ==
+            nlohmann::json::array({"DEPTH_STENCIL_ATTACHMENT", "SAMPLED"}));
+    const auto accum = std::find_if(targets.begin(), targets.end(), [](const auto &target) {
+        return target.value("name", std::string{}) == "taa_accum";
+    });
+    REQUIRE(accum != targets.end());
+    REQUIRE(accum->at("history") == true);
+
+    REQUIRE(result.shader_defines == std::vector<std::string>{
+        "PELICAN_FEATURE_TAA",
+        "PELICAN_FEATURE_TAA_ALPHA=0.100000001",
+        "PELICAN_FEATURE_TAA_DISOCCLUSION_TAU=0.100000001",
+        "PELICAN_FEATURE_TAA_DEPTH_EPSILON=9.99999975e-06",
+    });
+
+    const auto graphs = parseFrameGraphDefinitionsFromConfigJson(result.config);
+    REQUIRE(graphs.size() == 1);
+    auto plan = planFrameGraph(graphs.front());
+    plan.composition_metadata["projection_jitter"] = result.projection_jitter;
+    plan.composition_metadata["feature_instances"] = result.feature_instances;
+    const auto frame_plan = framePlanToJson(plan);
+    const auto findNode = [&](std::string_view name) -> const nlohmann::json & {
+        const auto &nodes = frame_plan.at("nodes");
+        const auto found = std::find_if(nodes.begin(), nodes.end(), [&](const auto &node) {
+            return node.value("name", std::string{}) == name;
+        });
+        REQUIRE(found != nodes.end());
+        return *found;
+    };
+    REQUIRE(findNode("taa_resolve").at("reads_history") ==
+            nlohmann::json::array({"taa_accum"}));
+    REQUIRE(findNode("taa_resolve").at("writes") ==
+            nlohmann::json::array({"taa_accum"}));
+    REQUIRE(findNode("taa_composite").at("writes") ==
+            nlohmann::json::array({"lit_color"}));
+}
+
 TEST_CASE("shadow directional feature inserts depth pass and lighting dependency", "[render-feature]") {
     auto config = nlohmann::json::parse(R"json({
   "render_targets": [

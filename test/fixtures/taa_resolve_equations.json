@@ -1,0 +1,85 @@
+{
+  "reprojection": [
+    {
+      "name": "velocity sign and UV origin",
+      "current_uv": [0.5, 0.5],
+      "velocity_uv": [0.1, -0.2],
+      "expected_history_uv": [0.4, 0.7],
+      "valid": true
+    },
+    {
+      "name": "left OOB",
+      "current_uv": [0.02, 0.5],
+      "velocity_uv": [0.03, 0.0],
+      "expected_history_uv": [-0.01, 0.5],
+      "valid": false
+    },
+    {
+      "name": "right OOB",
+      "current_uv": [0.98, 0.5],
+      "velocity_uv": [-0.03, 0.0],
+      "expected_history_uv": [1.01, 0.5],
+      "valid": false
+    },
+    {
+      "name": "top OOB",
+      "current_uv": [0.5, 0.02],
+      "velocity_uv": [0.0, 0.03],
+      "expected_history_uv": [0.5, -0.01],
+      "valid": false
+    },
+    {
+      "name": "bottom OOB",
+      "current_uv": [0.5, 0.98],
+      "velocity_uv": [0.0, -0.03],
+      "expected_history_uv": [0.5, 1.01],
+      "valid": false
+    },
+    {
+      "name": "corner OOB",
+      "current_uv": [0.01, 0.99],
+      "velocity_uv": [0.02, -0.02],
+      "expected_history_uv": [-0.01, 1.01],
+      "valid": false
+    }
+  ],
+  "disocclusion": [
+    {
+      "name": "threshold exactly is accepted",
+      "current_depth": 10.0,
+      "history_depth": 11.0,
+      "epsilon": 0.00001,
+      "tau": 0.1,
+      "reject": false
+    },
+    {
+      "name": "above threshold is rejected",
+      "current_depth": 10.0,
+      "history_depth": 11.001,
+      "epsilon": 0.00001,
+      "tau": 0.1,
+      "reject": true
+    }
+  ],
+  "edge_neighborhood": {
+    "extent": [4, 3],
+    "pixel": [0, 0],
+    "expected": [
+      [0, 0], [0, 0], [1, 0],
+      [0, 0], [0, 0], [1, 0],
+      [0, 1], [0, 1], [1, 1]
+    ]
+  },
+  "clamp_blend": {
+    "history": [1.0, -1.0, 0.5],
+    "minimum": [0.1, 0.3, 0.4],
+    "maximum": [0.3, 0.5, 0.7],
+    "current": [0.2, 0.4, 0.6],
+    "alpha": 0.1,
+    "expected": [0.29, 0.31, 0.51]
+  },
+  "epoch": [
+    {"current": 7, "previous": 7, "valid": true},
+    {"current": 8, "previous": 7, "valid": false}
+  ]
+}

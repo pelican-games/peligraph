@@ -1442,6 +1442,51 @@ nlohmann::json makeShadowRenderingConfig(bool shadow_enabled) {
     return config;
 }
 
+nlohmann::json makeTaaRenderingConfig() {
+    auto config = makeShadowRenderingConfig(false);
+    config["render_targets"].push_back({
+        {"name", "lit_color"},
+        {"extent_scale", 1.0},
+        {"format", "B8G8R8A8_UNORM"},
+        {"format_class", "scene"},
+        {"role", "color"},
+        {"usage", nlohmann::json::array({"COLOR_ATTACHMENT", "SAMPLED"})},
+    });
+    auto &passes = config["rendering_passes"].at(0).at("passes");
+    auto lighting = std::find_if(passes.begin(), passes.end(), [](const auto &pass) {
+        return pass.value("name", std::string{}) == "lighting_pass";
+    });
+    if (lighting == passes.end()) {
+        throw std::runtime_error("TAA golden fixture requires lighting_pass");
+    }
+    (*lighting)["output"]["color"] = "lit_color";
+    passes.push_back({
+        {"name", "taa_present"},
+        {"type", "fullscreen"},
+        {"canonical_anchor", "post_ldr"},
+        {"input", nlohmann::json::array({"lit_color"})},
+        {"output", {{"color", "swapchain"}, {"depth", nullptr}}},
+        {"shader", {{"vertex", "shaders/fullscreen"},
+                    {"fragment", "shaders/copy_input"}}},
+    });
+    config["features"] = nlohmann::json::array({
+        "engine://features/velocity.json",
+        nlohmann::json{
+            {"ref", "engine://features/taa.json"},
+            {"parameters", {
+                {"scene_color", "lit_color"},
+                {"velocity", "velocity"},
+                {"depth", "offscreen_depth"},
+                {"downstream_color", "lit_color"},
+                {"alpha", 0.1},
+                {"disocclusion_tau", 0.1},
+                {"depth_epsilon", 0.00001},
+            }},
+        },
+    });
+    return config;
+}
+
 void writeShadowProject(const std::filesystem::path &root, bool shadow_enabled) {
     writeTextFile(root / "project.json", makeShadowProjectJson().dump(2));
     writeTextFile(root / "scene.json", R"json({
@@ -1494,6 +1539,30 @@ void main() {
     std::filesystem::copy_file(sourceRoot() / "test" / "fixtures" / "ground.glb",
                                root / "assets" / "ground.glb",
                                std::filesystem::copy_options::overwrite_existing);
+}
+
+void writeTaaProject(const std::filesystem::path &root, bool orthographic) {
+    writeShadowProject(root, false);
+    writeTextFile(root / "shaders" / "copy_input.frag", copyInputFragmentShader());
+    writeTextFile(root / "passes" / "main.json", makeTaaRenderingConfig().dump(2));
+    if (!orthographic) {
+        return;
+    }
+
+    std::ifstream scene_file{root / "scene.json", std::ios::binary};
+    auto scene = nlohmann::json::parse(scene_file);
+    scene["scenes"]["default_scene"]["objects"].push_back({
+        {"name", "TaaOrthoCamera"},
+        {"components", nlohmann::json::array({nlohmann::json{
+            {"name", "camera"},
+            {"type", "orthographic"},
+            {"xmag", 5.0},
+            {"ymag", 3.0},
+            {"znear", 0.1},
+            {"zfar", 20.0},
+        }})},
+    });
+    writeTextFile(root / "scene.json", scene.dump(2));
 }
 
 bool isStrictSpriteGoldenMode(std::string_view mode) {
@@ -2069,6 +2138,77 @@ bool isShadowGoldenMode(const std::string &mode) {
     return mode == "shadow_off" || mode == "shadow_on";
 }
 
+bool isTaaGoldenMode(const std::string &mode) {
+    return mode == "taa_static" || mode == "taa_camera_motion" ||
+           mode == "taa_object_motion" || mode == "taa_disocclusion" ||
+           mode == "taa_resize" || mode == "taa_set_time" || mode == "taa_ortho";
+}
+
+void renderTaaGoldenFrames(RenderTarget &render_target, const std::string &mode) {
+    auto &time = GET_MODULE(EngineTime);
+    time.setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
+    time.setTime(0.0);
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &scene = GET_MODULE(SceneLoader);
+    scene.load("default_scene");
+    GET_MODULE(ECSCore).update();
+    GET_MODULE(ECSCore).update();
+
+    auto &camera = GET_MODULE(Camera);
+    const glm::vec3 initial_position{0.0f, 2.0f, -4.5f};
+    const glm::vec3 initial_target{0.0f, 0.25f, 0.0f};
+    camera.setPos(initial_position);
+    camera.setDir(glm::normalize(initial_target - initial_position));
+    camera.setUp({0.0f, 1.0f, 0.0f});
+
+    auto &renderer = GET_MODULE(Renderer);
+    const auto renderFrame = [&] {
+        time.advance();
+        GET_MODULE(ECSCore).update();
+        renderer.render();
+    };
+    const auto renderFrames = [&](int count) {
+        for (int i = 0; i < count; ++i) {
+            renderFrame();
+        }
+    };
+
+    if (mode == "taa_camera_motion") {
+        renderFrames(4);
+        const glm::vec3 moved_position{0.35f, 2.0f, -4.5f};
+        camera.setPos(moved_position);
+        camera.setDir(glm::normalize(initial_target - moved_position));
+        renderFrames(4);
+    } else if (mode == "taa_object_motion") {
+        renderFrames(4);
+        auto transform = scene.objectTransform("Caster");
+        transform.pos.x += 0.65f;
+        scene.applyObjectTransform("Caster", transform);
+        renderFrames(4);
+    } else if (mode == "taa_disocclusion") {
+        renderFrames(4);
+        auto transform = scene.objectTransform("Caster");
+        transform.pos.x = 3.0f;
+        scene.applyObjectTransform("Caster", transform);
+        renderFrames(1);
+    } else if (mode == "taa_resize") {
+        renderFrames(4);
+        GET_MODULE(VulkanManageCore).waitIdle();
+        renderer.recreateRenderTargetsAndRebindForTesting(
+            {goldenWidth / 2, goldenHeight / 2});
+        renderer.recreateRenderTargetsAndRebindForTesting({goldenWidth, goldenHeight});
+        renderFrames(1);
+    } else if (mode == "taa_set_time") {
+        renderFrames(4);
+        time.setTime(3.0);
+        renderFrames(1);
+    } else {
+        renderFrames(8);
+    }
+    GET_MODULE(VulkanManageCore).waitIdle();
+    (void)render_target;
+}
+
 void requireGoldenVulkanDevice() {
     FastModuleContainer modules;
     auto &launch_config = GET_MODULE(EngineLaunchConfig);
@@ -2172,6 +2312,12 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         writeShadowProject(temp_dir, golden_case.mode == "shadow_on");
         GET_MODULE(PathResolver).setup(temp_dir, false);
         GET_MODULE(ProjectSource).setProjectData(makeShadowProjectJson().dump());
+    } else if (isTaaGoldenMode(golden_case.mode)) {
+        writeTaaProject(temp_dir, golden_case.mode == "taa_ortho");
+        GET_MODULE(PathResolver).setup(temp_dir, false);
+        auto project = makeShadowProjectJson();
+        project["name"] = "TAA golden";
+        GET_MODULE(ProjectSource).setProjectData(project.dump());
     } else if (golden_case.mode == "compute_buffer") {
         writeComputeProject(temp_dir);
         GET_MODULE(PathResolver).setup(temp_dir, false);
@@ -2242,6 +2388,8 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         renderDebugTextFrame(render_target);
     } else if (isShadowGoldenMode(golden_case.mode)) {
         renderShadowFrame(render_target);
+    } else if (isTaaGoldenMode(golden_case.mode)) {
+        renderTaaGoldenFrames(render_target, golden_case.mode);
     } else if (golden_case.mode == "compute_buffer") {
         renderComputeFrame(render_target);
     } else if (golden_case.mode == "orthographic_camera") {
@@ -2555,14 +2703,33 @@ TEST_CASE("jitter preserves culling draw count and shadow-map bytes",
 #endif
 }
 
+TEST_CASE("TAA static accumulation is byte-exact across two independent runs",
+          "[golden][headless][taa][determinism]") {
+    setupLogger();
+    requireGoldenVulkanDevice();
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    const auto golden_root = sourceRoot() / "test/golden/taa_static";
+    const auto first = renderCase(GoldenCase{
+        "taa_repeat_first", "taa_static", golden_root, goldenWidth, goldenHeight});
+    const auto second = renderCase(GoldenCase{
+        "taa_repeat_second", "taa_static", golden_root, goldenWidth, goldenHeight});
+    REQUIRE(first.image.width == second.image.width);
+    REQUIRE(first.image.height == second.image.height);
+    REQUIRE(first.image.pixels == second.image.pixels);
+    REQUIRE(first.plan_order == second.plan_order);
+#else
+    SKIP("TAA deterministic capture requires the runtime shader compiler");
+#endif
+}
+
 TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     setupLogger();
     requireGoldenVulkanDevice();
     const auto cases = discoverGoldenCases();
 #if PELICAN_WITH_VAT
-    REQUIRE(cases.size() == 33);
+    REQUIRE(cases.size() == 40);
 #else
-    REQUIRE(cases.size() == 32);
+    REQUIRE(cases.size() == 39);
 #endif
 
     for (const auto &golden_case : cases) {
