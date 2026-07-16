@@ -1,6 +1,7 @@
 #include "../src/project/importmanifest.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
@@ -91,6 +92,34 @@ TEST_CASE("import manifest accepts deterministic K3 deliveries", "[import-manife
     CHECK(manifest.created.empty());
     CHECK(manifest.source.file.empty());
     CHECK(manifest.outputs.size() == 2);
+}
+
+TEST_CASE("import manifest accepts khronos.ktx2 outputs from the ktx2 recipe",
+          "[import-manifest]") {
+    // pelican-import-tools の ktx2 レシピは ("khronos.ktx2", 2) を出力する。
+    const auto manifest = parseImportManifestJson({
+        {"schema", "pelican.import"},
+        {"version", 1},
+        {"tool", {{"name", "pelican-import-tools"}, {"version", "0.1.0"}}},
+        {"source", {{"files", {"textures/albedo.png"}}}},
+        {"outputs", {{{"file", "albedo.ktx2"},
+                      {"schema", "khronos.ktx2"},
+                      {"version", 2},
+                      {"sha256", std::string(64, 'c')}}}},
+    });
+    CHECK(manifest.outputs.size() == 1);
+
+    CHECK_THROWS_WITH(parseImportManifestJson({
+                          {"schema", "pelican.import"},
+                          {"version", 1},
+                          {"tool", {{"name", "pelican-import-tools"}, {"version", "0.1.0"}}},
+                          {"source", {{"files", {"textures/albedo.png"}}}},
+                          {"outputs", {{{"file", "albedo.ktx2"},
+                                        {"schema", "khronos.ktx2"},
+                                        {"version", 3},
+                                        {"sha256", std::string(64, 'c')}}}},
+                      }),
+                      Catch::Matchers::ContainsSubstring("version is not supported"));
 }
 
 } // namespace Pelican
