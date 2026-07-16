@@ -6,6 +6,7 @@ add_library(pelican_project
     jsonrpc.cpp
     materiallowering.cpp
     materialformat.cpp
+    openpbrmapping.cpp
     sceneformat.cpp
     surfaceformat.cpp
 )

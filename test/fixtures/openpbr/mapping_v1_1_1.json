@@ -1,0 +1,114 @@
+{
+  "schema": "pelican.openpbr_mapping",
+  "version": 1,
+  "openpbr": {
+    "version": "1.1.1",
+    "tag": "v1.1.1",
+    "commit": "f8d6d947dfae4c9b599965a86c22826ea7a8dbfb",
+    "reference": "reference/open_pbr_surface.mtlx"
+  },
+  "parameters": [
+    {"name":"base_weight","type":"float","unit":"unitless","range":[0.0,1.0],"default":1.0,"value_color_space":"linear","texture_color_space":"linear","channel":"r"},
+    {"name":"base_color","type":"color","unit":"reflectance","range":[0.0,1.0],"default":[0.8,0.8,0.8,1.0],"value_color_space":"scene_linear","texture_color_space":"srgb","channel":"rgb"},
+    {"name":"base_diffuse_roughness","type":"float","unit":"unitless","range":[0.0,1.0],"default":0.0,"value_color_space":"linear","texture_color_space":"linear","channel":"r"},
+    {"name":"base_metalness","type":"float","unit":"unitless","range":[0.0,1.0],"default":0.0,"value_color_space":"linear","texture_color_space":"linear","channel":"r"},
+    {"name":"specular_weight","type":"float","unit":"unitless","range":{"min":0.0,"max":"unbounded","ui_soft_max":1.0},"default":1.0,"value_color_space":"linear","texture_color_space":"linear","channel":"r"},
+    {"name":"specular_color","type":"color","unit":"reflectance_tint","range":[0.0,1.0],"default":[1.0,1.0,1.0,1.0],"value_color_space":"scene_linear","texture_color_space":"srgb","channel":"rgb"},
+    {"name":"specular_roughness","type":"float","unit":"unitless","range":[0.0,1.0],"default":0.3,"value_color_space":"linear","texture_color_space":"linear","channel":"r"},
+    {"name":"specular_ior","type":"float","unit":"ratio","range":{"min":0.0,"max":"unbounded","ui_soft_min":1.0,"ui_soft_max":3.0},"default":1.5,"value_color_space":"linear","texture_color_space":"linear","channel":"r"},
+    {"name":"coat_weight","type":"float","unit":"unitless","range":[0.0,1.0],"default":0.0,"value_color_space":"linear","texture_color_space":"linear","channel":"r"},
+    {"name":"coat_color","type":"color","unit":"reflectance_tint","range":[0.0,1.0],"default":[1.0,1.0,1.0,1.0],"value_color_space":"scene_linear","texture_color_space":"srgb","channel":"rgb"},
+    {"name":"coat_roughness","type":"float","unit":"unitless","range":[0.0,1.0],"default":0.0,"value_color_space":"linear","texture_color_space":"linear","channel":"r"},
+    {"name":"coat_ior","type":"float","unit":"ratio","range":{"min":0.0,"max":"unbounded","ui_soft_min":1.0,"ui_soft_max":3.0},"default":1.6,"value_color_space":"linear","texture_color_space":"linear","channel":"r"},
+    {"name":"coat_darkening","type":"float","unit":"unitless","range":[0.0,1.0],"default":1.0,"value_color_space":"linear","texture_color_space":"linear","channel":"r"},
+    {"name":"emission_luminance","type":"float","unit":"cd_per_m2","range":{"min":0.0,"max":"unbounded","ui_soft_max":1000.0},"default":0.0,"value_color_space":"linear","texture_color_space":"linear","channel":"r"},
+    {"name":"emission_color","type":"color","unit":"chromaticity_scale","range":[0.0,1.0],"default":[1.0,1.0,1.0,1.0],"value_color_space":"scene_linear","texture_color_space":"srgb","channel":"rgb"},
+    {"name":"geometry_opacity","type":"float","unit":"coverage","range":[0.0,1.0],"default":1.0,"value_color_space":"linear","texture_color_space":"linear","channel":"r"},
+    {"name":"geometry_normal","type":"normal","unit":"unit_vector","range":"normalized","default":"geometry_normal","value_color_space":"linear","texture_color_space":"linear","channel":"rgb_tangent_normal","target_texture":"geometry_normal_map","target_scale_param":"geometry_normal_scale"},
+    {"name":"geometry_coat_normal","type":"normal","unit":"unit_vector","range":"normalized","default":"geometry_normal","value_color_space":"linear","texture_color_space":"linear","channel":"rgb_tangent_normal","target_texture":"geometry_coat_normal_map","target_scale_param":"geometry_coat_normal_scale"},
+    {"name":"alpha_cutoff","type":"float","unit":"coverage","range":[0.0,1.0],"default":0.5,"value_color_space":"linear","texture_color_space":"none","channel":"none","pelican_import_metadata":true}
+  ],
+  "mappings": {
+    "usd_preview_surface": [
+      {"source":"diffuseColor","target":"base_color","rule":"copy_rgb"},
+      {"source":"diffuseColor","target":"base_weight","rule":"set_1"},
+      {"source":"metallic","target":"base_metalness","rule":"copy"},
+      {"source":"roughness","target":"specular_roughness","rule":"copy"},
+      {"source":"ior","target":"specular_ior","rule":"copy_or_1_5"},
+      {"source":"emissiveColor","target":"emission_color","rule":"normalize_rgb_by_max"},
+      {"source":"emissiveColor","target":"emission_luminance","rule":"max_rgb_cd_per_m2"},
+      {"source":"opacity","target":"geometry_opacity","rule":"copy"},
+      {"source":"normal","target":"geometry_normal_map","rule":"tangent_space_rgb"},
+      {"source":"useSpecularWorkflow/specularColor","target":"specular_color","rule":"copy_rgb_when_authored"}
+    ],
+    "materialx_openpbr": [
+      {"source":"base_weight","target":"base_weight","allow":"constant_or_image_r"},
+      {"source":"base_color","target":"base_color","allow":"constant_or_image_rgb"},
+      {"source":"base_diffuse_roughness","target":"base_diffuse_roughness","allow":"constant_or_image_r"},
+      {"source":"base_metalness","target":"base_metalness","allow":"constant_or_image_r"},
+      {"source":"specular_weight","target":"specular_weight","allow":"constant_or_image_r"},
+      {"source":"specular_color","target":"specular_color","allow":"constant_or_image_rgb"},
+      {"source":"specular_roughness","target":"specular_roughness","allow":"constant_or_image_r"},
+      {"source":"specular_ior","target":"specular_ior","allow":"constant_or_image_r"},
+      {"source":"coat_weight","target":"coat_weight","allow":"constant_or_image_r"},
+      {"source":"coat_color","target":"coat_color","allow":"constant_or_image_rgb"},
+      {"source":"coat_roughness","target":"coat_roughness","allow":"constant_or_image_r"},
+      {"source":"coat_ior","target":"coat_ior","allow":"constant_or_image_r"},
+      {"source":"coat_darkening","target":"coat_darkening","allow":"constant_or_image_r"},
+      {"source":"emission_luminance","target":"emission_luminance","allow":"constant_or_image_r"},
+      {"source":"emission_color","target":"emission_color","allow":"constant_or_image_rgb"},
+      {"source":"geometry_opacity","target":"geometry_opacity","allow":"constant_or_image_r"},
+      {"source":"geometry_normal","target":"geometry_normal_map","allow":"normalmap_image_rgb"},
+      {"source":"geometry_coat_normal","target":"geometry_coat_normal_map","allow":"normalmap_image_rgb"}
+    ],
+    "gltf": [
+      {"source":"pbrMetallicRoughness.baseColorFactor.rgb","target":"base_color","rule":"copy_rgb"},
+      {"source":"pbrMetallicRoughness.baseColorFactor.a","target":"geometry_opacity","rule":"copy"},
+      {"source":"pbrMetallicRoughness.metallicFactor","target":"base_metalness","rule":"copy"},
+      {"source":"pbrMetallicRoughness.roughnessFactor","target":"specular_roughness","rule":"copy"},
+      {"source":"KHR_materials_specular.specularFactor","target":"specular_weight","rule":"copy"},
+      {"source":"KHR_materials_specular.specularColorFactor","target":"specular_color","rule":"copy_rgb"},
+      {"source":"KHR_materials_ior.ior","target":"specular_ior","rule":"copy"},
+      {"source":"KHR_materials_clearcoat.clearcoatFactor","target":"coat_weight","rule":"copy"},
+      {"source":"KHR_materials_clearcoat.clearcoatRoughnessFactor","target":"coat_roughness","rule":"copy"},
+      {"source":"KHR_materials_clearcoat.clearcoatNormalTexture","target":"geometry_coat_normal_map","rule":"tangent_space_rgb"},
+      {"source":"emissiveFactor*KHR_materials_emissive_strength.emissiveStrength","target":"emission_color","rule":"normalize_rgb_by_max"},
+      {"source":"emissiveFactor*KHR_materials_emissive_strength.emissiveStrength","target":"emission_luminance","rule":"max_rgb_cd_per_m2"},
+      {"source":"normalTexture","target":"geometry_normal_map","rule":"tangent_space_rgb"},
+      {"source":"alphaMode","target":"routing.alpha_mode","rule":"OPAQUE_MASK_BLEND"},
+      {"source":"alphaCutoff","target":"alpha_cutoff","rule":"copy_default_0_5"},
+      {"source":"doubleSided","target":"routing.double_sided","rule":"copy_default_false"}
+    ]
+  },
+  "materialx_allowlist": {
+    "surface_node":"open_pbr_surface",
+    "value_nodes":["constant","image"],
+    "channel_extract":["r","rgb"],
+    "utility_nodes":["normalmap","texcoord","transform2d"],
+    "colorspaces":["srgb_texture","scene_linear","raw"],
+    "reject":["arbitrary_nodegraph","unsupported_lobe"]
+  },
+  "unsupported": [
+    {"input":"specular_roughness_anisotropy","default":"0.0","fallback":"0.0"},
+    {"input":"coat_roughness_anisotropy","default":"0.0","fallback":"0.0"},
+    {"input":"transmission_weight","default":"0.0","fallback":"0.0"},
+    {"input":"subsurface_weight","default":"0.0","fallback":"0.0"},
+    {"input":"fuzz_weight","default":"0.0","fallback":"0.0"},
+    {"input":"thin_film_weight","default":"0.0","fallback":"0.0"},
+    {"input":"geometry_thin_walled","default":"false","fallback":"false"}
+  ],
+  "warning": {
+    "code":"OPENPBR_UNSUPPORTED_INPUT",
+    "emit_when":"(authored && non_default) || (connected && contributes)",
+    "fields":["code","prim_path","input","fallback"]
+  },
+  "numeric_cases": {
+    "base_color_times_weight":{"color":[0.2,0.4,0.8],"weight":0.5,"expected":[0.1,0.2,0.4]},
+    "ior_1_5_f0":0.04,
+    "coat_ior_1_6_f0":0.0532544378698225,
+    "emission":{"color":[0.25,0.5,1.0],"luminance":4.0,"expected":[1.0,2.0,4.0]},
+    "normal_decode":{"encoded":[0.5,0.5,1.0],"decoded":[0.0,0.0,1.0]},
+    "mask_boundary":{"alpha":0.5,"cutoff":0.5,"keep_at_cutoff":true,"discard_below_cutoff":true},
+    "blend_alpha":{"geometry_opacity":0.35,"expected_output_alpha":0.35}
+  }
+}

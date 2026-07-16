@@ -11,9 +11,9 @@ namespace Pelican {
 namespace {
 
 #if PELICAN_WITH_VAT
-constexpr size_t registeredResourceCount = 74;
+constexpr size_t registeredResourceCount = 82;
 #else
-constexpr size_t registeredResourceCount = 73;
+constexpr size_t registeredResourceCount = 81;
 #endif
 
 constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
@@ -61,8 +61,16 @@ constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
     "shaders/include/pelican_skinning.glsl",
     "shaders/material/standard_lighting.glsl",
     "shaders/material/toon_lighting.glsl",
+    "shaders/material/openpbr_lighting.glsl",
     "shaders/material/surface_v1.vert",
     "shaders/material/surface_v1.frag",
+    "surfaces/openpbr/manifest.json",
+    "surfaces/openpbr/opaque_single.surface",
+    "surfaces/openpbr/opaque_double.surface",
+    "surfaces/openpbr/mask_single.surface",
+    "surfaces/openpbr/mask_double.surface",
+    "surfaces/openpbr/blend_single.surface",
+    "surfaces/openpbr/blend_double.surface",
     "shadow_depth.vert",
     "shadow_depth.vert.spv",
     "skinned.vert.spv",
@@ -170,8 +178,16 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("shaders/include/pelican_skinning.glsl")
     PELICAN_ENGINE_RESOURCE("shaders/material/standard_lighting.glsl")
     PELICAN_ENGINE_RESOURCE("shaders/material/toon_lighting.glsl")
+    PELICAN_ENGINE_RESOURCE("shaders/material/openpbr_lighting.glsl")
     PELICAN_ENGINE_RESOURCE("shaders/material/surface_v1.vert")
     PELICAN_ENGINE_RESOURCE("shaders/material/surface_v1.frag")
+    PELICAN_ENGINE_RESOURCE("surfaces/openpbr/manifest.json")
+    PELICAN_ENGINE_RESOURCE("surfaces/openpbr/opaque_single.surface")
+    PELICAN_ENGINE_RESOURCE("surfaces/openpbr/opaque_double.surface")
+    PELICAN_ENGINE_RESOURCE("surfaces/openpbr/mask_single.surface")
+    PELICAN_ENGINE_RESOURCE("surfaces/openpbr/mask_double.surface")
+    PELICAN_ENGINE_RESOURCE("surfaces/openpbr/blend_single.surface")
+    PELICAN_ENGINE_RESOURCE("surfaces/openpbr/blend_double.surface")
     PELICAN_ENGINE_RESOURCE("shadow_depth.vert")
     PELICAN_ENGINE_RESOURCE("shadow_depth.vert.spv")
     PELICAN_ENGINE_RESOURCE("skinned.vert.spv")

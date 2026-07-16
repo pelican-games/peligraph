@@ -1,0 +1,36 @@
+{
+  "schema": "pelican.material",
+  "version": 1,
+  "materials": [
+    {
+      "name": "openpbr_1_1_1_coat_sphere",
+      "surface": "engine://surfaces/openpbr/opaque_double.surface",
+      "defines": [
+        "OPENPBR_PIN_V1_1_1",
+        "OPENPBR_PIN_F8D6D947DFAE4C9B599965A86C22826EA7A8DBFB"
+      ],
+      "values": {
+        "base_weight": 1.0,
+        "base_color": [0.12, 0.32, 0.72, 1.0],
+        "base_diffuse_roughness": 0.18,
+        "base_metalness": 0.08,
+        "specular_weight": 1.0,
+        "specular_color": [1.0, 0.96, 0.9, 1.0],
+        "specular_roughness": 0.26,
+        "specular_ior": 1.5,
+        "coat_weight": 0.9,
+        "coat_color": [1.0, 1.0, 1.0, 1.0],
+        "coat_roughness": 0.08,
+        "coat_ior": 1.6,
+        "coat_darkening": 0.9,
+        "emission_luminance": 0.015,
+        "emission_color": [0.12, 0.2, 0.5, 1.0],
+        "geometry_opacity": 1.0,
+        "geometry_normal_scale": 1.0,
+        "geometry_coat_normal_scale": 1.0,
+        "alpha_cutoff": 0.5
+      },
+      "routing": {"alpha_mode": "opaque", "double_sided": true}
+    }
+  ]
+}

@@ -1,0 +1,55 @@
+//! pelican.surface v1
+//! language: glsl
+//! params:
+//!   - { name: base_weight, type: float, default: 1.0, min: 0.0, max: 1.0 }
+//!   - { name: base_color, type: color, default: [0.8, 0.8, 0.8, 1.0], min: 0.0, max: 1.0, encoding: linear }
+//!   - { name: base_diffuse_roughness, type: float, default: 0.0, min: 0.0, max: 1.0 }
+//!   - { name: base_metalness, type: float, default: 0.0, min: 0.0, max: 1.0 }
+//!   - { name: specular_weight, type: float, default: 1.0, min: 0.0 }
+//!   - { name: specular_color, type: color, default: [1.0, 1.0, 1.0, 1.0], min: 0.0, max: 1.0, encoding: linear }
+//!   - { name: specular_roughness, type: float, default: 0.3, min: 0.0, max: 1.0 }
+//!   - { name: specular_ior, type: float, default: 1.5, min: 0.0 }
+//!   - { name: coat_weight, type: float, default: 0.0, min: 0.0, max: 1.0 }
+//!   - { name: coat_color, type: color, default: [1.0, 1.0, 1.0, 1.0], min: 0.0, max: 1.0, encoding: linear }
+//!   - { name: coat_roughness, type: float, default: 0.0, min: 0.0, max: 1.0 }
+//!   - { name: coat_ior, type: float, default: 1.6, min: 0.0 }
+//!   - { name: coat_darkening, type: float, default: 1.0, min: 0.0, max: 1.0 }
+//!   - { name: emission_luminance, type: float, default: 0.0, min: 0.0 }
+//!   - { name: emission_color, type: color, default: [1.0, 1.0, 1.0, 1.0], min: 0.0, max: 1.0, encoding: linear }
+//!   - { name: geometry_opacity, type: float, default: 1.0, min: 0.0, max: 1.0 }
+//!   - { name: geometry_normal_scale, type: float, default: 1.0, min: 0.0 }
+//!   - { name: geometry_coat_normal_scale, type: float, default: 1.0, min: 0.0 }
+//!   - { name: alpha_cutoff, type: float, default: 0.5, min: 0.0, max: 1.0 }
+//! textures:
+//!   - { name: base_weight_map, default: "engine://textures/white", color_space: linear, role: data }
+//!   - { name: base_color_map, default: "engine://textures/white", color_space: srgb, role: color }
+//!   - { name: base_diffuse_roughness_map, default: "engine://textures/white", color_space: linear, role: data }
+//!   - { name: base_metalness_map, default: "engine://textures/white", color_space: linear, role: data }
+//!   - { name: specular_weight_map, default: "engine://textures/white", color_space: linear, role: data }
+//!   - { name: specular_color_map, default: "engine://textures/white", color_space: srgb, role: color }
+//!   - { name: specular_roughness_map, default: "engine://textures/white", color_space: linear, role: data }
+//!   - { name: specular_ior_map, default: "engine://textures/white", color_space: linear, role: data }
+//!   - { name: coat_weight_map, default: "engine://textures/white", color_space: linear, role: data }
+//!   - { name: coat_color_map, default: "engine://textures/white", color_space: srgb, role: color }
+//!   - { name: coat_roughness_map, default: "engine://textures/white", color_space: linear, role: data }
+//!   - { name: coat_ior_map, default: "engine://textures/white", color_space: linear, role: data }
+//!   - { name: coat_darkening_map, default: "engine://textures/white", color_space: linear, role: data }
+//!   - { name: emission_luminance_map, default: "engine://textures/white", color_space: linear, role: data }
+//!   - { name: emission_color_map, default: "engine://textures/white", color_space: srgb, role: color }
+//!   - { name: geometry_opacity_map, default: "engine://textures/white", color_space: linear, role: data }
+//!   - { name: geometry_normal_map, default: "engine://textures/flat_normal", color_space: linear, role: data }
+//!   - { name: geometry_coat_normal_map, default: "engine://textures/flat_normal", color_space: linear, role: data }
+//! render_state: { blend: blend, cull: back, depth: read_only }
+
+#define PELICAN_OPENPBR_ALPHA_MODE 2
+#define PELICAN_OPENPBR_DOUBLE_SIDED 0
+#include "shaders/material/openpbr_lighting.glsl"
+
+void pelican_surface_v1(in PelicanSurfaceInputV1 input_data, inout PelicanSurfaceV1 surface) {
+    pelican_openpbr_surface_v1(input_data, surface);
+}
+
+vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface,
+                         in PelicanSurfaceInputV1 input_data) {
+    return pelican_openpbr_lighting_v1(surface, input_data);
+}

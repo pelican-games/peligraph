@@ -12,6 +12,7 @@
 #include <fstream>
 #include <iterator>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 
@@ -166,6 +167,90 @@ TEST_CASE("standard and toon lighting dogfood only the public surface library",
                                               std::string{"engine://"} + resource));
     }
 #endif
+}
+
+TEST_CASE("OpenPBR registers and compiles all six forward cache variants",
+          "[surface-compiler][openpbr][variants]") {
+    const auto manifest = nlohmann::json::parse(
+        engineResourceOrThrow("surfaces/openpbr/manifest.json"));
+    REQUIRE(manifest.at("openpbr").at("version") == "1.1.1");
+    REQUIRE(manifest.at("openpbr").at("commit") ==
+            "f8d6d947dfae4c9b599965a86c22826ea7a8dbfb");
+    REQUIRE(manifest.at("lighting") ==
+            "engine://shaders/material/openpbr_lighting.glsl");
+    REQUIRE(manifest.at("variants").size() == 6);
+
+    const auto lighting = engineResourceOrThrow("shaders/material/openpbr_lighting.glsl");
+    for (const auto public_call : {"pelican_light_count()", "pelican_light(",
+                                   "pelican_shadow(", "pelican_env_ambient("}) {
+        REQUIRE(lighting.find(public_call) != std::string_view::npos);
+    }
+    for (const auto private_symbol : {"pelicanLights", "pelicanFrame", "PELICAN_SET_",
+                                      "layout(set", "pelican_sets.glsl",
+                                      "pelican_frame.glsl"}) {
+        REQUIRE(lighting.find(private_symbol) == std::string_view::npos);
+    }
+
+    std::vector<std::string> names;
+    std::vector<std::string> resources;
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    ShaderCompiler compiler;
+#endif
+    for (const auto &entry : manifest.at("variants")) {
+        const auto name = entry.at("name").get<std::string>();
+        const auto reference = entry.at("surface").get<std::string>();
+        const auto resource = reference.substr(std::string{"engine://"}.size());
+        names.push_back(name);
+        resources.push_back(reference);
+        const auto surface = parseSurfaceFormat(engineResourceOrThrow(resource), reference);
+        REQUIRE(surface.hooks.surface_v1);
+        REQUIRE(surface.hooks.lighting_v1);
+        MaterialDefinition material;
+        material.name = name;
+        material.surface = reference;
+        material.routing = MaterialVariantRouting{
+            entry.at("alpha_mode") == "opaque" ? MaterialAlphaMode::opaque
+                : entry.at("alpha_mode") == "mask" ? MaterialAlphaMode::mask
+                                                    : MaterialAlphaMode::blend,
+            entry.at("double_sided").get<bool>(),
+        };
+        const auto lowered = lowerMaterial(material, surface);
+        REQUIRE(lowered.target_pass ==
+                (material.routing->alpha_mode == MaterialAlphaMode::blend
+                     ? "forward_transparent"
+                     : "forward_opaque"));
+#if PELICAN_RUNTIME_SHADER_COMPILER
+        requireCompiled(compileSurfaceShaders(compiler, surface, reference));
+#endif
+    }
+    REQUIRE(names == std::vector<std::string>{
+                         "opaque_single_sided", "opaque_double_sided",
+                         "mask_single_sided", "mask_double_sided",
+                         "blend_single_sided", "blend_double_sided"});
+    REQUIRE(std::set<std::string>{resources.begin(), resources.end()}.size() == 6);
+
+    const auto example_root = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
+                              "projects" / "example";
+    const auto example_reference =
+        std::string{"engine://surfaces/openpbr/opaque_double.surface"};
+    const auto example_surface = parseSurfaceFormat(
+        engineResourceOrThrow("surfaces/openpbr/opaque_double.surface"), example_reference);
+    MaterialSurfaceCatalog catalog;
+    catalog.emplace(example_reference, example_surface);
+    const auto material_document = parseMaterialFormatJson(
+        nlohmann::json::parse(readText(example_root / "materials" /
+                                      "openpbr_coat.material.json")),
+        catalog);
+    REQUIRE(material_document.warnings.empty());
+    REQUIRE(material_document.materials.size() == 1);
+    const auto example_lowered = lowerMaterial(material_document.materials.front(),
+                                               example_surface);
+    REQUIRE(example_lowered.routing->alpha_mode == MaterialAlphaMode::opaque);
+    REQUIRE(example_lowered.routing->double_sided);
+    REQUIRE(example_lowered.target_pass == "forward_opaque");
+    REQUIRE(example_lowered.defines == std::vector<std::string>{
+                                           "OPENPBR_PIN_V1_1_1",
+                                           "OPENPBR_PIN_F8D6D947DFAE4C9B599965A86C22826EA7A8DBFB"});
 }
 
 TEST_CASE("surface compile diagnostics report the authored snippet line",

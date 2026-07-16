@@ -6,6 +6,7 @@
 #include "../src/core/fullscreenpass/fullscreenpasscontainer.hpp"
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/loader/pathresolver.hpp"
+#include "../src/core/loader/engineresources.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/loader/scene.hpp"
 #include "../src/core/log.hpp"
@@ -658,6 +659,129 @@ void renderSurfaceToonFrame(RenderTarget &render_target) {
     auto &library = GET_MODULE(ShaderLibrary);
     renderFullscreenFrameWithFragment(render_target,
                                       library.loadFromSpirv(result.spirv, "surface_toon.frag"));
+#else
+    (void)render_target;
+    throw std::runtime_error("runtime shader compiler disabled");
+#endif
+}
+
+const char *openPbrGoldenFragmentTemplate() {
+    return R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_GOOGLE_cpp_style_line_directive : enable
+#include "pelican_surface_v1.glsl"
+
+float pelican_param_base_weight() { return 1.0; }
+vec4 pelican_param_base_color() { return vec4(0.12, 0.32, 0.72, 1.0); }
+float pelican_param_base_diffuse_roughness() { return 0.18; }
+float pelican_param_base_metalness() { return 0.08; }
+float pelican_param_specular_weight() { return 1.0; }
+vec4 pelican_param_specular_color() { return vec4(1.0, 0.96, 0.9, 1.0); }
+float pelican_param_specular_roughness() { return 0.26; }
+float pelican_param_specular_ior() { return 1.5; }
+float pelican_param_coat_weight() { return 0.9; }
+vec4 pelican_param_coat_color() { return vec4(1.0); }
+float pelican_param_coat_roughness() { return 0.08; }
+float pelican_param_coat_ior() { return 1.6; }
+float pelican_param_coat_darkening() { return 0.9; }
+float pelican_param_emission_luminance() { return 0.015; }
+vec4 pelican_param_emission_color() { return vec4(0.12, 0.2, 0.5, 1.0); }
+float pelican_param_geometry_opacity() { return 1.0; }
+float pelican_param_geometry_normal_scale() { return 1.0; }
+float pelican_param_geometry_coat_normal_scale() { return 1.0; }
+float pelican_param_alpha_cutoff() { return 0.5; }
+
+vec4 pelican_sample_base_weight_map(vec2 uv) { return vec4(1.0); }
+vec4 pelican_sample_base_color_map(vec2 uv) { return vec4(1.0); }
+vec4 pelican_sample_base_diffuse_roughness_map(vec2 uv) { return vec4(1.0); }
+vec4 pelican_sample_base_metalness_map(vec2 uv) { return vec4(1.0); }
+vec4 pelican_sample_specular_weight_map(vec2 uv) { return vec4(1.0); }
+vec4 pelican_sample_specular_color_map(vec2 uv) { return vec4(1.0); }
+vec4 pelican_sample_specular_roughness_map(vec2 uv) { return vec4(1.0); }
+vec4 pelican_sample_specular_ior_map(vec2 uv) { return vec4(1.0); }
+vec4 pelican_sample_coat_weight_map(vec2 uv) { return vec4(1.0); }
+vec4 pelican_sample_coat_color_map(vec2 uv) { return vec4(1.0); }
+vec4 pelican_sample_coat_roughness_map(vec2 uv) { return vec4(1.0); }
+vec4 pelican_sample_coat_ior_map(vec2 uv) { return vec4(1.0); }
+vec4 pelican_sample_coat_darkening_map(vec2 uv) { return vec4(1.0); }
+vec4 pelican_sample_emission_luminance_map(vec2 uv) { return vec4(1.0); }
+vec4 pelican_sample_emission_color_map(vec2 uv) { return vec4(1.0); }
+vec4 pelican_sample_geometry_opacity_map(vec2 uv) { return vec4(1.0); }
+vec4 pelican_sample_geometry_normal_map(vec2 uv) { return vec4(0.5, 0.5, 1.0, 1.0); }
+vec4 pelican_sample_geometry_coat_normal_map(vec2 uv) { return vec4(0.5, 0.5, 1.0, 1.0); }
+
+uint pelican_light_count() { return 2u; }
+PelicanLightV1 pelican_light(uint index, vec3 world_position) {
+    PelicanLightV1 light;
+    if (index == 0u) {
+        light.direction = normalize(vec3(-0.45, 0.62, 1.0));
+        light.radiance = vec3(6.0, 5.4, 4.8);
+    } else {
+        light.direction = normalize(vec3(0.75, -0.2, 0.55));
+        light.radiance = vec3(0.8, 1.1, 1.8);
+    }
+    light.attenuation = 1.0;
+    return light;
+}
+float pelican_shadow(uint light_index, vec3 world_position) { return 1.0; }
+vec3 pelican_env_ambient(vec3 normal) {
+    float sky = clamp(normal.y * 0.5 + 0.5, 0.0, 1.0);
+    return mix(vec3(0.012, 0.016, 0.028), vec3(0.09, 0.12, 0.2), sky);
+}
+
+#include "__pelican_user_surface.glsl"
+
+layout(location = 0) out vec4 outColor;
+void main() {
+    vec2 pixel = (gl_FragCoord.xy / vec2(64.0)) * 2.0 - 1.0;
+    pixel.x *= 1.08;
+    float radius2 = dot(pixel, pixel);
+    if (radius2 > 0.82) {
+        outColor = vec4(0.008, 0.011, 0.02, 1.0);
+        return;
+    }
+    vec3 sphere_normal = normalize(vec3(pixel, sqrt(max(0.82 - radius2, 0.0))));
+    PelicanSurfaceInputV1 input_data;
+    input_data.uv = pixel * 0.5 + 0.5;
+    input_data.vertex_color = vec4(1.0);
+    input_data.world_position = sphere_normal;
+    input_data.normal = sphere_normal;
+    input_data.view_direction = normalize(vec3(0.0, 0.0, 3.2) - sphere_normal);
+    input_data.custom0 = vec4(0.0);
+    input_data.custom1 = vec4(0.0);
+    PelicanSurfaceV1 surface;
+    surface.base_color = vec4(1.0);
+    surface.normal = sphere_normal;
+    surface.metallic = 0.0;
+    surface.roughness = 1.0;
+    surface.occlusion = 1.0;
+    surface.emissive = vec3(0.0);
+    pelican_surface_v1(input_data, surface);
+    vec3 lit = pelican_lighting_v1(surface, input_data);
+    vec3 display_linear = lit / (lit + vec3(1.0));
+    outColor = vec4(display_linear, surface.base_color.a);
+}
+)glsl";
+}
+
+void renderOpenPbrCoatSphereFrame(RenderTarget &render_target) {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    const auto reference = std::string{"engine://surfaces/openpbr/opaque_double.surface"};
+    const auto surface = parseSurfaceFormat(
+        engineResourceOrThrow("surfaces/openpbr/opaque_double.surface"), reference);
+    const auto composition = composeSurfaceShaders(surface, reference);
+    ShaderCompiler compiler;
+    ShaderCompileOptions options;
+    options.virtual_includes = composition.virtual_includes;
+    const auto result = compiler.compileSource(openPbrGoldenFragmentTemplate(),
+                                               vk::ShaderStageFlagBits::eFragment,
+                                               "engine://golden/openpbr_coat_sphere.frag",
+                                               options);
+    if (!result.ok) throw std::runtime_error("OpenPBR coat golden compile failed: " + result.log);
+    auto &library = GET_MODULE(ShaderLibrary);
+    renderFullscreenFrameWithFragment(
+        render_target, library.loadFromSpirv(result.spirv, "openpbr_coat_sphere.frag"));
 #else
     (void)render_target;
     throw std::runtime_error("runtime shader compiler disabled");
@@ -2228,7 +2352,8 @@ void requireGoldenVulkanDevice() {
 
 bool usesRenderer(const GoldenCase &golden_case) {
     return golden_case.mode != "clear" && golden_case.mode != "fullscreen" &&
-           golden_case.mode != "triangle" && golden_case.mode != "surface_toon";
+           golden_case.mode != "triangle" && golden_case.mode != "surface_toon" &&
+           golden_case.mode != "openpbr_coat_sphere";
 }
 
 RenderedCase renderCase(const GoldenCase &golden_case) {
@@ -2362,6 +2487,8 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         renderFullscreenFrame(render_target, triangleMaskFragmentShader());
     } else if (golden_case.mode == "surface_toon") {
         renderSurfaceToonFrame(render_target);
+    } else if (golden_case.mode == "openpbr_coat_sphere") {
+        renderOpenPbrCoatSphereFrame(render_target);
     } else if (golden_case.mode == "explicit_order") {
         renderFeatureFrame(render_target);
     } else if (golden_case.mode == "vat_playback") {
@@ -2741,9 +2868,9 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     requireGoldenVulkanDevice();
     const auto cases = discoverGoldenCases();
 #if PELICAN_WITH_VAT
-    REQUIRE(cases.size() == 40);
+    REQUIRE(cases.size() == 41);
 #else
-    REQUIRE(cases.size() == 39);
+    REQUIRE(cases.size() == 40);
 #endif
 
     for (const auto &golden_case : cases) {
