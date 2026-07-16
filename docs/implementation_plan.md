@@ -3189,6 +3189,43 @@ ModelTemplate の初期値 metadata。
 pose staging(公開 application service の版付き transaction)と
 firstPerson auto triangle split(import-time)。WP123 着地後に詳細登録。
 
+### WP125: XR0 — OpenXR build unit / activation
+
+参照: **`design_openxr.md` v2.1 §1 が正**。受け入れ条件 = 初回レビュー
+`docs/design_reviews/2026-07-17_openxr_review_codex.md` §12 の
+**XR0-BUILD-ACTIVATION** と再レビュー
+`docs/design_reviews/2026-07-17_openxr_v2_rereview_codex.md` の
+**XR0-ACTIVATION-EDGE** の**逐語全文**(タグ参照でなく両ブロックを
+そのまま受け入れ条件とする — 逐語添付の規律)。
+依存: なし。見積: 中。
+排他: ルート/CMake(FetchContent + unit)・launchconfig(--xr 三値)・
+dist-config(--with openxr)・OFF smoke・表駆動 fixture。
+
+**XR0-BUILD-ACTIVATION(初回レビュー §12 逐語)**: 「`PELICAN_WITH_
+OPENXR` は default ON の private unit とし、OFF では OpenXR source/
+object/library/symbol を binary から除去する。runtime activation は
+off/auto/on の三値で、explicit on の unavailable は hard error、auto の
+unavailable は名前入り INFO + flat とする。headless/RPC/golden/replay は
+XR off を強制する。OpenXR-SDK は exact commit 固定・不要 target OFF と
+し、single-OFF smoke と full-build flat golden byte 一致を gate にする。」
+
+**XR0-ACTIVATION-EDGE(再レビュー逐語)**: 「通常 window 起動では
+`--xr off` は probe なしの flat、`--xr auto` は runtime/system/
+graphics-binding 不在時に名前入り INFO を一回出して flat、`--xr on` は
+同じ不在・不適合を名前入り hard error とする。headless、RPC、golden、
+replay では `off` は flat、`auto` は OpenXR discovery を行わず off に
+正規化、explicit `on` は `--xr on is incompatible with <mode>` の
+名前入り hard error とする。`PELICAN_WITH_OPENXR=OFF` binary では
+`on` の error に同 build flag 名を含め、`auto` は INFO + flat とする。
+配布 v1 は `pelican_cli dist-config <project> --with openxr` だけが
+`PELICAN_WITH_OPENXR=ON` を preset へ入れる明示入力で、省略時は配布
+preset で OFF とする。これは runtime 既定 `xr=off` を変更しない。
+compile ON/OFF × mode off/auto/on × window/強制-off driver の表駆動
+fixture を XR0 gate にする。」
+
+XR0 では session/instance を**作らない**(discovery 実施は XR1a)。
+本 WP の activation 判定は「flag/mode の解決と error/INFO の文言」まで。
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの
