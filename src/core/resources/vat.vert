@@ -5,6 +5,7 @@
 #include "pelican_sets.glsl"
 #include "pelican_frame.glsl"
 #include "pelican_material.glsl"
+#include "pelican_morph.glsl"
 
 layout(set = PELICAN_SET_MATERIAL, binding = 4) uniform sampler2D vatPositionSampler;
 layout(set = PELICAN_SET_MATERIAL, binding = 5) uniform sampler2D vatNormalSampler;
@@ -66,6 +67,10 @@ void main() {
                                      sampleVatNormal(vertex_index, int(frame1)),
                                      frame_blend));
     }
+    PelicanMorphedVertex morphed = pelican_morph_vertex(
+        local_pos, local_normal, inTangent.xyz, gl_VertexIndex, false);
+    local_pos = morphed.position;
+    local_normal = morphed.normal;
 
     mat4 model_matrix = pelicanObjects.objects[gl_BaseInstance].model;
     vec4 world_pos = model_matrix * vec4(local_pos, 1.0);
@@ -78,7 +83,7 @@ void main() {
 
     if (inTangent.w != 0.0)
     {
-        vec3 T = normalize(mat3(model_matrix) * inTangent.xyz);
+        vec3 T = normalize(mat3(model_matrix) * morphed.tangent);
         T = normalize(T - dot(T, N) * N);
         vec3 B = cross(N, T) * inTangent.w;
         outTangent = T;

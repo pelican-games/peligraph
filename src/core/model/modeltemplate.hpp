@@ -2,6 +2,7 @@
 
 #include "../handle.hpp"
 #include "../material/material.hpp"
+#include "morphtarget.hpp"
 #include "skeletalanimation.hpp"
 #include "vrmsemantic.hpp"
 #include <cstdint>
@@ -37,6 +38,8 @@ struct ModelPrimitiveRefInfo {
 struct ModelGeometryAllocation {
     ModelPrimitiveRefInfo primitive;
     uint32_t vertex_count = 0;
+    uint32_t morph_delta_offset = 0;
+    uint32_t morph_delta_count = 0;
 };
 
 struct ModelGpuResources {
@@ -62,6 +65,7 @@ struct ModelTemplate {
     std::vector<MaterialPrimitives> material_primitives;
     std::vector<NamedMaterial> named_materials;
     std::shared_ptr<SkeletalModelData> skeletal;
+    std::shared_ptr<const MorphTargetLayout> morph_targets;
     std::shared_ptr<const VrmSemanticData> vrm_semantic;
     std::shared_ptr<ModelGpuResources> gpu_resources;
     ModelAssetId asset_id{};

@@ -13,6 +13,41 @@
 
 namespace Pelican {
 
+inline constexpr std::uint32_t morphWeightDescriptorVersionV1 = 1;
+inline constexpr std::uint32_t morphCommitResetHistory = 1u << 0u;
+inline constexpr std::uint32_t morphCommitDiscontinuity = 1u << 1u;
+
+struct PublishMorphWeightFrameDescV1 {
+    std::uint32_t struct_size = sizeof(PublishMorphWeightFrameDescV1);
+    std::uint32_t version = morphWeightDescriptorVersionV1;
+    std::uint64_t layout_generation = 0;
+    std::uint64_t frame_revision = 0;
+    const float *weights = nullptr;
+    std::uint32_t weight_count = 0;
+    std::uint32_t flags = 0;
+    std::uint32_t reserved0 = 0;
+    std::uint32_t reserved1 = 0;
+};
+
+struct MorphWeightFrame {
+    std::uint64_t instance_identity = 0;
+    std::uint32_t instance_generation = 0;
+    std::uint64_t layout_generation = 0;
+    std::uint64_t current_revision = 0;
+    std::uint64_t previous_revision = 0;
+    std::vector<float> current;
+    std::vector<float> previous;
+};
+
+struct alignas(16) MorphInstanceGpuData {
+    std::uint32_t weight_count = 0;
+    std::uint32_t layout_generation_low = 0;
+    std::uint32_t layout_generation_high = 0;
+    std::uint32_t reserved = 0;
+};
+
+static_assert(sizeof(MorphInstanceGpuData) == 16);
+
 struct RenderCommand {
     vk::DrawIndexedIndirectCommand command;
     GlobalMaterialId material;
@@ -48,11 +83,19 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     std::vector<std::uint64_t> previous_animation_revisions;
     std::vector<std::uint32_t> animation_generations;
     std::vector<ModelAssetId> model_asset_ids;
+    std::vector<std::shared_ptr<const MorphTargetLayout>> morph_layouts;
+    std::vector<MorphWeightFrame> morph_weight_frames;
+    std::vector<bool> morph_history_valid;
     BufferWrapper skin_palette_buffer;
     BufferWrapper previous_skin_palette_buffer;
-    vk::UniqueDescriptorSetLayout skin_descriptor_layout;
-    vk::UniqueDescriptorPool skin_descriptor_pool;
-    vk::UniqueDescriptorSet skin_descriptor_set;
+    BufferWrapper morph_instance_buffer;
+    BufferWrapper morph_weight_buffer;
+    BufferWrapper previous_morph_weight_buffer;
+    vk::UniqueDescriptorSetLayout static_deformation_descriptor_layout;
+    vk::UniqueDescriptorSetLayout skinned_deformation_descriptor_layout;
+    vk::UniqueDescriptorPool deformation_descriptor_pool;
+    vk::UniqueDescriptorSet static_deformation_descriptor_set;
+    vk::UniqueDescriptorSet skinned_deformation_descriptor_set;
 
   public:
     PolygonInstanceContainer();
@@ -61,6 +104,7 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     void clear();
     void triggerUpdate();
     void commitFrameHistory();
+    void advanceMorphHistoryAfterRender();
     void advanceTemporalHistoryAfterRender();
     void resetTemporalHistory();
     bool canRebuildModelInstances(std::span<const ModelInstanceRebuild> replacements) const;
@@ -72,6 +116,10 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     Animation::InstanceHandle animationInstance(ModelInstanceId id) const;
     Animation::Status publishAnimationFrame(ModelInstanceId id,
                                              const Animation::PublishAnimationFrameDescV1 &frame);
+    Animation::Status publishMorphWeightFrame(
+        ModelInstanceId id, const PublishMorphWeightFrameDescV1 &frame);
+    void bindDeformation(vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout,
+                         bool skinned) const;
     void bindSkinning(vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout) const;
 
     const BufferWrapper &getIndirectBuf() const;
@@ -89,6 +137,13 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     }
     std::uint32_t animationGenerationForTesting(ModelInstanceId id) const {
         return animation_generations.at(id.value);
+    }
+    const MorphWeightFrame &morphWeightFrameForTesting(ModelInstanceId id) const {
+        return morph_weight_frames.at(id.value);
+    }
+    std::uint64_t morphLayoutGenerationForTesting(ModelInstanceId id) const {
+        const auto &layout = morph_layouts.at(id.value);
+        return layout ? layout->generation : 0;
     }
     size_t instanceCountForAssetForTesting(ModelAssetId asset_id) const;
 };

@@ -41,6 +41,7 @@
 #include "../src/project/materialformat.hpp"
 #include "../src/project/materiallowering.hpp"
 #include "skeletal_fixture.hpp"
+#include "morph_fixture.hpp"
 #include "vat_fixture.hpp"
 
 #include <algorithm>
@@ -1138,6 +1139,43 @@ void main() {
     })json");
 }
 
+void writeMorphVelocityProject(const std::filesystem::path &root) {
+    auto project = makeFeatureProjectJson();
+    project["name"] = "morph velocity history";
+    writeTextFile(root / "project.json", project.dump(2));
+    TestMorphFixture::writeGlb(root / "morph.glb");
+    writeTextFile(root / "assets.json",
+                  R"json({"models":[{"name":"morph","path":"morph.glb"}]})json");
+    writeTextFile(root / "scene.json", R"json({
+      "schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[{
+        "name":"Morph","components":[
+          {"name":"transform","pos":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
+          {"name":"simplemodelview","model":"morph"}
+        ]
+      }]}}})json");
+    writeTextFile(root / "ui" / "ui.json",
+                  R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
+    writeTextFile(root / "shaders" / "fullscreen.vert", stemFullscreenVertexShader());
+    writeTextFile(root / "shaders" / "present.frag", R"glsl(
+#version 450
+layout(set = 1, binding = 0) uniform sampler2D velocityTexture;
+layout(location = 0) in vec2 uv;
+layout(location = 0) out vec4 outColor;
+void main() {
+    vec2 velocity = texture(velocityTexture, uv).rg;
+    outColor = vec4(abs(velocity) * 20.0, 0.0, 1.0);
+}
+)glsl");
+    writeTextFile(root / "passes" / "main.json", R"json({
+      "features":["engine://features/velocity.json"],"render_targets":[],
+      "rendering_passes":[{"name":"main","passes":[{
+        "name":"present","type":"fullscreen","input":["velocity"],
+        "output":{"color":"swapchain","depth":null},
+        "shader":{"vertex":"shaders/fullscreen","fragment":"shaders/present"}
+      }]}]
+    })json");
+}
+
 uint8_t maximumVelocitySignal(const std::vector<uint8_t> &rgba) {
     uint8_t maximum = 0;
     for (size_t i = 0; i + 3 < rgba.size(); i += 4) {
@@ -1699,6 +1737,32 @@ void main() {
     std::filesystem::copy_file(sourceRoot() / "test" / "fixtures" / "ground.glb",
                                root / "assets" / "ground.glb",
                                std::filesystem::copy_options::overwrite_existing);
+}
+
+void writeMorphSkinnedShadowProject(const std::filesystem::path &root) {
+    writeShadowProject(root, true);
+    TestMorphFixture::writeGlb(root / "assets" / "morph.glb",
+                               {.skinned = true, .mesh_weight = 1.0});
+    writeTextFile(root / "assets.json", R"json({
+      "models":[
+        {"name":"ground","path":"assets/ground.glb"},
+        {"name":"morph","path":"assets/morph.glb"}
+      ]
+    })json");
+    writeTextFile(root / "scene.json", R"json({
+      "schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[
+        {"name":"Ground","components":[
+          {"name":"transform","pos":[0,-0.72,0],"rotation":[0,0,0,1],"scale":[3,0.05,3]},
+          {"name":"simplemodelview","model":"ground"}
+        ]},
+        {"name":"MorphedCaster","components":[
+          {"name":"transform","pos":[-0.3,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
+          {"name":"simplemodelview","model":"morph"}
+        ]},
+        {"name":"Sun","components":[
+          {"name":"light","type":"directional","direction":[0.35,-1.0,-0.25],"intensity":3.0,"color":[1.0,0.94,0.82]}
+        ]}
+      ]}}})json");
 }
 
 void writeTaaProject(const std::filesystem::path &root, bool orthographic) {
@@ -2451,6 +2515,10 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         project["basic_config"]["rendering_config_json"] = "passes/main.json";
         project["basic_config"]["default_rendering_pass"] = "main_render";
         GET_MODULE(ProjectSource).setProjectData(project.dump());
+    } else if (golden_case.mode == "morph_skinned_shadow") {
+        writeMorphSkinnedShadowProject(temp_dir);
+        GET_MODULE(PathResolver).setup(temp_dir, false);
+        GET_MODULE(ProjectSource).setProjectData(makeShadowProjectJson().dump());
     } else if (golden_case.mode == "feature_compose") {
         writeFeatureProject(temp_dir);
         GET_MODULE(PathResolver).setup(temp_dir, false);
@@ -2561,6 +2629,8 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         renderSkeletalToonFrame(render_target);
     } else if (golden_case.mode == "usd0b_static_geometry") {
         renderUsdStaticGeometryFrame(render_target);
+    } else if (golden_case.mode == "morph_skinned_shadow") {
+        renderShadowFrame(render_target);
     } else if (golden_case.mode == "feature_compose") {
         renderFeatureFrame(render_target);
     } else if (golden_case.mode == "temporal_accumulation") {
@@ -2934,9 +3004,9 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     requireGoldenVulkanDevice();
     const auto cases = discoverGoldenCases();
 #if PELICAN_WITH_VAT
-    REQUIRE(cases.size() == 42);
+    REQUIRE(cases.size() == 43);
 #else
-    REQUIRE(cases.size() == 41);
+    REQUIRE(cases.size() == 42);
 #endif
 
     for (const auto &golden_case : cases) {
@@ -3106,6 +3176,64 @@ TEST_CASE("set_time automatically resets skinned velocity history",
     REQUIRE(initial_signal <= 1);
     REQUIRE(first_seek_signal <= 1);
     REQUIRE(second_seek_signal <= 1);
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE("morph-only deformation produces velocity and reset zeros it",
+          "[wp121][temporal][velocity][morph][headless]") {
+    setupLogger();
+    requireGoldenVulkanDevice();
+    FastModuleContainer modules;
+    const auto root = makeTempProjectDir("morph_velocity_history");
+    writeMorphVelocityProject(root);
+    GET_MODULE(PathResolver).setup(root, false);
+    auto project = makeFeatureProjectJson();
+    project["name"] = "morph velocity history";
+    GET_MODULE(ProjectSource).setProjectData(project.dump());
+
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.shader_hot_reload = false;
+    launch.headless_extent = vk::Extent2D{goldenWidth, goldenHeight};
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    GET_MODULE(SceneLoader).load("default_scene");
+    GET_MODULE(ECSCore).update();
+
+    auto &camera = GET_MODULE(Camera);
+    camera.setPos({0.0f, 0.0f, 4.0f});
+    camera.setDir({0.0f, 0.0f, -1.0f});
+    camera.setUp({0.0f, 1.0f, 0.0f});
+    auto &renderer = GET_MODULE(Renderer);
+    auto &render_target = GET_MODULE(RenderTarget);
+    renderer.render();
+    const auto initial = maximumVelocitySignal(render_target.readbackLastFrameRGBA8());
+
+    auto &models = GET_MODULE(ModelAssetContainer);
+    const auto &model = models.getModelTemplateByName("morph");
+    auto &instances = GET_MODULE(PolygonInstanceContainer);
+    const float on = 1.0f;
+    PublishMorphWeightFrameDescV1 frame{
+        .layout_generation = model.morph_targets->generation,
+        .frame_revision = 1,
+        .weights = &on,
+        .weight_count = 1,
+    };
+    REQUIRE(instances.publishMorphWeightFrame(ModelInstanceId{0}, frame) ==
+            Animation::Status::ok);
+    renderer.render();
+    const auto moved = maximumVelocitySignal(render_target.readbackLastFrameRGBA8());
+
+    instances.resetTemporalHistory();
+    renderer.render();
+    const auto reset = maximumVelocitySignal(render_target.readbackLastFrameRGBA8());
+    GET_MODULE(VulkanManageCore).waitIdle();
+
+    INFO("morph velocity signal (RGBA8, shader scale 20): initial="
+         << static_cast<int>(initial) << " moved=" << static_cast<int>(moved)
+         << " reset=" << static_cast<int>(reset));
+    REQUIRE(initial <= 1);
+    REQUIRE(moved >= 16);
+    REQUIRE(reset <= 1);
     std::filesystem::remove_all(root);
 }
 

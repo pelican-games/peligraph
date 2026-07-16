@@ -15,6 +15,7 @@
 #include "vrmsemantic.hpp"
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <glm/gtc/matrix_transform.hpp>
@@ -31,6 +32,16 @@
 namespace Pelican {
 
 namespace {
+
+std::atomic<std::uint64_t> next_morph_layout_generation{1};
+
+std::uint64_t allocateMorphLayoutGeneration() {
+    const auto generation =
+        next_morph_layout_generation.fetch_add(1, std::memory_order_relaxed);
+    if (generation == 0 || generation == std::numeric_limits<std::uint64_t>::max())
+        throw std::runtime_error("glTF morph target layout generation exhausted");
+    return generation;
+}
 
 const tinygltf::Value *objectMember(const tinygltf::Value::Object &object, const char *name) {
     const auto found = object.find(name);
@@ -293,13 +304,17 @@ namespace {
 
 class GltfResourceSink {
   public:
+    struct AddedPrimitive {
+        ModelTemplate::PrimitiveRefInfo primitive;
+        std::vector<MorphTargetDeltaRange> morph_ranges;
+    };
+
     virtual ~GltfResourceSink() = default;
     virtual GlobalTextureId registerTexture(vk::Extent3D extent, const void *data,
                                             vk::Format format,
                                             vk::DeviceSize bytes) = 0;
     virtual GlobalMaterialId registerMaterial(MaterialInfo info) = 0;
-    virtual ModelTemplate::PrimitiveRefInfo addPrimitive(CommonPolygonVertData data,
-                                                          bool skinned) = 0;
+    virtual AddedPrimitive addPrimitive(CommonPolygonVertData data, bool skinned) = 0;
     virtual std::shared_ptr<ModelGpuResources> finish() = 0;
 };
 
@@ -316,6 +331,20 @@ void validateCandidatePrimitive(const CommonPolygonVertData &data, bool skinned)
     if (skinned && (data.joint.size() != count || data.weight.size() != count))
         throw std::runtime_error(
             "invalid skinned primitive: POSITION, JOINTS_0, and WEIGHTS_0 counts must match");
+    if (data.morph_targets.size() > maxMorphTargetsPerPrimitive)
+        throw std::runtime_error("glTF morph target count exceeds renderer limit of " +
+                                 std::to_string(maxMorphTargetsPerPrimitive));
+    if (data.morph_weight_offset > maxMorphWeightsPerInstance ||
+        data.morph_targets.size() >
+            maxMorphWeightsPerInstance - data.morph_weight_offset)
+        throw std::runtime_error("glTF morph layout exceeds per-instance weight capacity of " +
+                                 std::to_string(maxMorphWeightsPerInstance));
+    for (const auto &target : data.morph_targets) {
+        if (!matches(target.position.size()) || !matches(target.normal.size()) ||
+            !matches(target.tangent.size()))
+            throw std::runtime_error(
+                "invalid glTF morph target: delta accessor count does not match POSITION");
+    }
     for (const auto index : data.indices) {
         if (index >= count) throw std::runtime_error("glTF primitive index exceeds POSITION count");
     }
@@ -327,6 +356,7 @@ class ValidationGltfResourceSink final : public GltfResourceSink {
     uint32_t next_index_ = 0;
     uint32_t next_vertex_ = 0;
     uint32_t next_skin_vertex_ = 0;
+    uint32_t next_morph_delta_ = 0;
 
   public:
     GlobalTextureId registerTexture(vk::Extent3D extent, const void *data,
@@ -341,8 +371,7 @@ class ValidationGltfResourceSink final : public GltfResourceSink {
         return GlobalMaterialId{next_material_--};
     }
 
-    ModelTemplate::PrimitiveRefInfo addPrimitive(CommonPolygonVertData data,
-                                                  bool skinned) override {
+    AddedPrimitive addPrimitive(CommonPolygonVertData data, bool skinned) override {
         validateCandidatePrimitive(data, skinned);
         const auto vertex_count = static_cast<uint32_t>(data.pos.size());
         const auto index_count = data.indices.empty()
@@ -353,11 +382,31 @@ class ValidationGltfResourceSink final : public GltfResourceSink {
             vertex_count > std::numeric_limits<uint32_t>::max() - vertex_offset ||
             vertex_offset > static_cast<uint32_t>(std::numeric_limits<int32_t>::max()))
             throw std::runtime_error("glTF candidate geometry exceeds draw address space");
-        ModelTemplate::PrimitiveRefInfo result{index_count, next_index_,
-                                               static_cast<int32_t>(vertex_offset), skinned};
+        ModelTemplate::PrimitiveRefInfo primitive{index_count, next_index_,
+                                                  static_cast<int32_t>(vertex_offset), skinned};
+        std::vector<MorphTargetDeltaRange> ranges;
+        if (!data.morph_targets.empty()) {
+            if (vertex_offset > maxMorphVerticesPerPool ||
+                vertex_count > maxMorphVerticesPerPool - vertex_offset)
+                throw std::runtime_error("glTF morph vertex metadata exceeds renderer capacity");
+            const auto count64 = static_cast<std::uint64_t>(vertex_count) *
+                                 data.morph_targets.size();
+            if (count64 > maxMorphDeltaRecords ||
+                next_morph_delta_ > maxMorphDeltaRecords - count64)
+                throw std::runtime_error("shared glTF morph delta buffer capacity exceeded");
+            ranges.reserve(data.morph_targets.size());
+            for (uint32_t target = 0;
+                 target < static_cast<uint32_t>(data.morph_targets.size()); ++target) {
+                ranges.push_back({target,
+                                  next_morph_delta_ + target * vertex_count,
+                                  vertex_count,
+                                  data.morph_targets[target].presence_mask});
+            }
+            next_morph_delta_ += static_cast<uint32_t>(count64);
+        }
         next_index_ += index_count;
         vertex_offset += vertex_count;
-        return result;
+        return {primitive, std::move(ranges)};
     }
 
     std::shared_ptr<ModelGpuResources> finish() override { return {}; }
@@ -397,15 +446,25 @@ class LiveGltfResourceSink final : public GltfResourceSink {
         return id;
     }
 
-    ModelTemplate::PrimitiveRefInfo addPrimitive(CommonPolygonVertData data,
-                                                  bool skinned) override {
+    AddedPrimitive addPrimitive(CommonPolygonVertData data, bool skinned) override {
         owned_->geometry.reserve(owned_->geometry.size() + 1);
+        std::vector<MorphTargetDeltaRange> ranges;
+        ranges.reserve(data.morph_targets.size());
         auto allocation = skinned
                               ? geometry_.addSkinnedPrimitiveAllocation(std::move(data))
                               : geometry_.addPrimitiveAllocation(std::move(data));
         const auto primitive = allocation.primitive;
+        if (allocation.morph_delta_count != 0) {
+            const auto target_count = allocation.morph_delta_count / allocation.vertex_count;
+            for (uint32_t target = 0; target < target_count; ++target) {
+                ranges.push_back({target,
+                                  allocation.morph_delta_offset + target * allocation.vertex_count,
+                                  allocation.vertex_count,
+                                  0});
+            }
+        }
         owned_->geometry.push_back(std::move(allocation));
-        return primitive;
+        return {primitive, std::move(ranges)};
     }
 
     std::shared_ptr<ModelGpuResources> finish() override {
@@ -435,6 +494,8 @@ struct InternalGltfLoader {
     ModelLocalMaterialId next_generated_material = -2;
     std::unordered_map<int, std::uint32_t> skin_joint_offsets;
     std::shared_ptr<SkeletalModelData> skeletal_data;
+    std::shared_ptr<MorphTargetLayout> morph_target_layout =
+        std::make_shared<MorphTargetLayout>();
 
     struct NodeOccurrence {
         int node_index = -1;
@@ -692,6 +753,108 @@ struct InternalGltfLoader {
         LOG_ERROR(logger, "gltf loading error : unsupported accessor, type={},componentType={}", accessor.type,
                   accessor.componentType);
         return {};
+    }
+
+    std::vector<glm::vec3> readMorphDeltaAccessor(
+        int accessor_index, std::size_t expected_count,
+        const std::string &context) {
+        if (accessor_index < 0 ||
+            accessor_index >= static_cast<int>(model.accessors.size()))
+            throw std::runtime_error(context + " references an invalid accessor index");
+        const auto &accessor = model.accessors[accessor_index];
+        if (accessor.type != TINYGLTF_TYPE_VEC3 ||
+            accessor.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT ||
+            accessor.normalized)
+            throw std::runtime_error(
+                context + " accessor must be non-normalized FLOAT VEC3");
+        if (accessor.count != expected_count)
+            throw std::runtime_error(
+                context + " accessor count does not match primitive POSITION count");
+        if (accessor.sparse.isSparse)
+            throw std::runtime_error(
+                context + " uses a sparse accessor, unsupported by morph target v1");
+        if (accessor.bufferView < 0 ||
+            accessor.bufferView >= static_cast<int>(model.bufferViews.size()))
+            throw std::runtime_error(context + " accessor has no valid bufferView");
+        const auto &view = model.bufferViews[accessor.bufferView];
+        if (view.buffer < 0 || view.buffer >= static_cast<int>(model.buffers.size()))
+            throw std::runtime_error(context + " accessor bufferView has an invalid buffer");
+        const auto values =
+            getDataFromAccessor<TINYGLTF_TYPE_VEC3, glm::vec3>(accessor_index);
+        for (const auto &value : values) {
+            if (!std::isfinite(value.x) || !std::isfinite(value.y) ||
+                !std::isfinite(value.z))
+                throw std::runtime_error(context + " accessor contains a non-finite delta");
+        }
+        return values;
+    }
+
+    std::size_t meshMorphTargetCount(int mesh_index) const {
+        const auto &mesh = model.meshes.at(mesh_index);
+        std::optional<std::size_t> count;
+        for (std::size_t primitive_index = 0;
+             primitive_index < mesh.primitives.size(); ++primitive_index) {
+            const auto current = mesh.primitives[primitive_index].targets.size();
+            if (!count) count = current;
+            if (*count != current)
+                throw std::runtime_error(
+                    "glTF mesh '" +
+                    (mesh.name.empty() ? std::to_string(mesh_index) : mesh.name) +
+                    "' has inconsistent morph target counts across primitives");
+        }
+        const auto result = count.value_or(0);
+        if (result > maxMorphTargetsPerPrimitive)
+            throw std::runtime_error(
+                "glTF mesh '" +
+                (mesh.name.empty() ? std::to_string(mesh_index) : mesh.name) +
+                "' morph target count exceeds renderer limit of " +
+                std::to_string(maxMorphTargetsPerPrimitive));
+        if (!mesh.weights.empty() && mesh.weights.size() != result)
+            throw std::runtime_error(
+                "glTF mesh '" +
+                (mesh.name.empty() ? std::to_string(mesh_index) : mesh.name) +
+                "' weights count does not match morph target count");
+        return result;
+    }
+
+    std::uint32_t appendMorphDefaults(int mesh_index, int node_index,
+                                      std::size_t target_count) {
+        if (target_count == 0) return 0;
+        if (morph_target_layout->default_weights.size() >
+                maxMorphWeightsPerInstance ||
+            target_count > maxMorphWeightsPerInstance -
+                               morph_target_layout->default_weights.size())
+            throw std::runtime_error(
+                "glTF model morph layout exceeds per-instance weight capacity of " +
+                std::to_string(maxMorphWeightsPerInstance));
+        const auto &mesh = model.meshes.at(mesh_index);
+        const std::vector<double> *source = &mesh.weights;
+        if (node_index >= 0 && !model.nodes.at(node_index).weights.empty()) {
+            source = &model.nodes.at(node_index).weights;
+            if (source->size() != target_count)
+                throw std::runtime_error(
+                    "glTF node '" +
+                    (model.nodes.at(node_index).name.empty()
+                         ? std::to_string(node_index)
+                         : model.nodes.at(node_index).name) +
+                    "' weights count does not match mesh morph target count");
+        }
+        const auto offset =
+            static_cast<std::uint32_t>(morph_target_layout->default_weights.size());
+        for (std::size_t target = 0; target < target_count; ++target) {
+            const auto value = source->empty() ? 0.0 : source->at(target);
+            if (!std::isfinite(value))
+                throw std::runtime_error("glTF morph default weight is non-finite at mesh " +
+                                         std::to_string(mesh_index) + " target " +
+                                         std::to_string(target));
+            const auto converted = static_cast<float>(value);
+            if (!std::isfinite(converted))
+                throw std::runtime_error("glTF morph default weight exceeds FLOAT range at mesh " +
+                                         std::to_string(mesh_index) + " target " +
+                                         std::to_string(target));
+            morph_target_layout->default_weights.push_back(converted);
+        }
+        return offset;
     }
     glm::mat4 nodeTransform(const tinygltf::Node &node) {
         if (node.matrix.size() == 16) {
@@ -1115,11 +1278,24 @@ struct InternalGltfLoader {
 
         const auto normal_transform = glm::transpose(glm::inverse(glm::mat3{transform}));
         for (auto &normal : data.normal) {
-            normal = glm::normalize(normal_transform * normal);
+            normal = data.morph_targets.empty()
+                         ? glm::normalize(normal_transform * normal)
+                         : normal_transform * normal;
         }
         for (auto &tangent : data.tangent) {
-            const auto transformed = glm::normalize(normal_transform * glm::vec3{tangent});
+            const auto transformed = data.morph_targets.empty()
+                                         ? glm::normalize(normal_transform * glm::vec3{tangent})
+                                         : normal_transform * glm::vec3{tangent};
             tangent = glm::vec4{transformed, tangent.w};
+        }
+        const auto position_transform = glm::mat3{transform};
+        for (auto &target : data.morph_targets) {
+            for (auto &position : target.position)
+                position = position_transform * position;
+            for (auto &normal : target.normal)
+                normal = normal_transform * normal;
+            for (auto &tangent : target.tangent)
+                tangent = normal_transform * tangent;
         }
     }
 
@@ -1254,6 +1430,9 @@ struct InternalGltfLoader {
 
     void loadMesh(int mesh_index, const glm::mat4 &world_transform, int node_index = -1) {
         const auto &mesh = model.meshes.at(mesh_index);
+        const auto morph_target_count = meshMorphTargetCount(mesh_index);
+        const auto morph_weight_offset =
+            appendMorphDefaults(mesh_index, node_index, morph_target_count);
         bool skinned = node_index >= 0 && model.nodes.at(node_index).skin >= 0;
         const auto skin_index = skinned ? model.nodes.at(node_index).skin : -1;
         if (skinned && !skinFitsPalette(skin_index)) {
@@ -1292,6 +1471,44 @@ struct InternalGltfLoader {
             if (auto it = primitive.attributes.find("WEIGHTS_0"); it != primitive.attributes.end())
                 dat.weight = getDataFromAccessor<TINYGLTF_TYPE_VEC4, glm::vec4>(it->second);
 
+            dat.morph_weight_offset = morph_weight_offset;
+            dat.morph_targets.reserve(morph_target_count);
+            for (std::size_t target_index = 0;
+                 target_index < morph_target_count; ++target_index) {
+                const auto &target = primitive.targets[target_index];
+                MorphTargetVertexData decoded;
+                const auto context =
+                    "glTF mesh '" +
+                    (mesh.name.empty() ? std::to_string(mesh_index) : mesh.name) +
+                    "' primitive " + std::to_string(primitive_index) + " target " +
+                    std::to_string(target_index);
+                for (const auto &[semantic, accessor] : target) {
+                    if (semantic == "POSITION") {
+                        decoded.position =
+                            readMorphDeltaAccessor(accessor, dat.pos.size(),
+                                                   context + " POSITION");
+                        decoded.presence_mask |= morphPositionPresent;
+                    } else if (semantic == "NORMAL") {
+                        decoded.normal =
+                            readMorphDeltaAccessor(accessor, dat.pos.size(),
+                                                   context + " NORMAL");
+                        decoded.presence_mask |= morphNormalPresent;
+                    } else if (semantic == "TANGENT") {
+                        decoded.tangent =
+                            readMorphDeltaAccessor(accessor, dat.pos.size(),
+                                                   context + " TANGENT");
+                        decoded.presence_mask |= morphTangentPresent;
+                    } else {
+                        throw std::runtime_error(context +
+                                                 " has unsupported attribute '" +
+                                                 semantic + "'");
+                    }
+                }
+                if (decoded.presence_mask == 0)
+                    throw std::runtime_error(context + " contains no supported delta attribute");
+                dat.morph_targets.push_back(std::move(decoded));
+            }
+
             const auto vat_meta = tinyGltfValueToVatMeta(primitive.extras);
 #if PELICAN_WITH_VAT
             const auto vat_info = parseVatPrimitiveExtras(
@@ -1299,6 +1516,9 @@ struct InternalGltfLoader {
             const auto primitive_mode = primitive.mode < 0 ? TINYGLTF_MODE_TRIANGLES : primitive.mode;
             if (vat_info && primitive_mode != TINYGLTF_MODE_TRIANGLES) {
                 throw std::runtime_error("pelican.vat only supports TRIANGLES topology");
+            }
+            if (vat_info && !dat.morph_targets.empty()) {
+                throw std::runtime_error("glTF morph targets and pelican.vat cannot share one primitive");
             }
 #else
             if (vat_meta.present) {
@@ -1321,9 +1541,28 @@ struct InternalGltfLoader {
                 }
             }
             if (!skinned) transformVertexData(dat, world_transform);
-            auto primitive_info = resources.addPrimitive(std::move(dat), skinned);
+            std::vector<std::uint32_t> morph_presence;
+            morph_presence.reserve(dat.morph_targets.size());
+            for (const auto &target : dat.morph_targets)
+                morph_presence.push_back(target.presence_mask);
+            auto added = resources.addPrimitive(std::move(dat), skinned);
+            auto primitive_info = added.primitive;
             primitive_info.mesh_index = static_cast<std::uint32_t>(mesh_index);
             primitive_info.primitive_index = static_cast<std::uint32_t>(primitive_index);
+            if (!added.morph_ranges.empty()) {
+                for (std::size_t target = 0; target < added.morph_ranges.size(); ++target)
+                    added.morph_ranges[target].presence_mask = morph_presence[target];
+                morph_target_layout->primitives.push_back(MorphPrimitiveLayout{
+                    .node_index = node_index < 0 ? noMorphNode
+                                                 : static_cast<std::uint32_t>(node_index),
+                    .mesh_index = static_cast<std::uint32_t>(mesh_index),
+                    .primitive_index = static_cast<std::uint32_t>(primitive_index),
+                    .weight_offset = morph_weight_offset,
+                    .vertex_offset = static_cast<std::uint32_t>(primitive_info.vert_offset),
+                    .skinned = skinned,
+                    .delta_ranges = std::move(added.morph_ranges),
+                });
+            }
 #if PELICAN_WITH_VAT
             if (skinned && vat_info) {
                 throw std::runtime_error("glTF skeletal skinning and pelican.vat cannot share one primitive");
@@ -1433,6 +1672,10 @@ struct InternalGltfLoader {
             });
         }
         m.skeletal = skeletal_data;
+        if (!morph_target_layout->default_weights.empty()) {
+            morph_target_layout->generation = allocateMorphLayoutGeneration();
+            m.morph_targets = std::move(morph_target_layout);
+        }
         m.vrm_semantic = vrm_semantic;
         m.gpu_resources = resources.finish();
 
