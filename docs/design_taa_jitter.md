@@ -25,6 +25,25 @@ WP88/95、「feature 層 = ユーザー空間」方針。
 "projection_jitter": { "pattern": "halton23", "phases": 8 }
 ```
 
+**系列のユーザー定義(J1c — 2026-07-16 ユーザー指摘で追加。
+「手法が発展する領域はユーザーがいじる」方針(2026-07-12 発祥)の
+本丸は系列側であり、名前付きパターンだけでは方針違反)**:
+
+```jsonc
+"projection_jitter": {
+  "pattern": "table",
+  "offsets_px": [[0.0, -0.1667], [-0.25, 0.1667], [0.25, -0.3889]]
+  // phases = 配列長(明示 phases との併記は一致必須・不一致エラー)
+}
+```
+
+- `"table"` は宣言 JSON に**オフセット数表を直接持つ**。数表参照も
+  frame_index の純関数なので決定性・golden/replay は無傷
+- 検証: 各値が [-0.5, 0.5) 内・配列長 1..64・数値以外/NaN は
+  feature 名入りエラー
+- 名前付きパターン(halton23)は**エンジン提供の便利枠**として残る
+  (同梱 stdlib と同じ「特権なし」の関係 — table で同じ値を書けば
+  byte 一致することを fixture で証明)
 - 同時 1 提供者(2 つ目は **feature 名入り**で reject)。未知 pattern・
   型・range(phases 1..64)・未知 key は compose 時に検証(J1-SCHEMA)
 - compose result(現行は config/defines/feature_names のみ —

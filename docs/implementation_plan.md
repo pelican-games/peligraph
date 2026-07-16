@@ -2845,6 +2845,27 @@ WP28、cache キー = WP82 に自然に乗る。UBO/ABI 変更なし)。
 5. 受け入れ = fixture 全 green + 既存全テスト + golden 全維持
    (SKIP 0・33/32)+ player 8 秒
 
+### WP115: J1c — ジッタ系列のユーザー定義(pattern: "table")
+
+参照: **`design_taa_jitter.md` v2.1 §1-1 の J1c ブロックが正**
+(2026-07-16 ユーザー指摘 — 系列こそ発展する側でありユーザー空間に
+開く。「feature 層 = ユーザー空間」方針の適用)。
+依存: WP112(済)。見積: 小。
+排他: featurecompose の projection_jitter 検証 + 系列評価 + fixture。
+
+1. `pattern: "table"` + `offsets_px` 配列(宣言 JSON 直書き)。
+   phases = 配列長(明示併記は一致必須)
+2. 検証: 各値 [-0.5,0.5)・長さ 1..64・非数値/NaN は feature 名入り
+   エラー。frame_plan / compose result への出力は既存形式に table 分を
+   additive 追加
+3. **halton23 と同値の table を書いた場合の byte 一致 fixture**
+   (名前付きパターン = 特権なしの証明)
+4. sample_index 式・frame 0 エラー・wrap は WP112 の規範をそのまま
+   共有(重複実装禁止 — 系列取得だけ差し替え)
+5. 受け入れ = fixture 全 green + 既存全テスト + golden 全維持
+   (SKIP 0・33/32 — T-TAA が先に着地していた場合はその件数)+
+   player 8 秒
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの
