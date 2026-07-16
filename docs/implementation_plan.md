@@ -2903,6 +2903,42 @@ scene loader / model template の binding 消費経路・dump-lowered。
    additive)+ 既存全テスト + golden SKIP 0(件数 40/39)+
    player 8 秒
 
+### WP117: M-PBR0b — openpbr surface + 写像表
+
+参照: **`design_usd_openpbr.md` v2.1 §1-2 が正**(再レビュー条件
+USD-C2 = M-PBR0b-VARIANTS の wrapper-B 形式を含む)。
+基盤 = WP116(M-PBR0a — レポート
+`docs/design_reviews/2026-07-17_wp116_report.md` の ABI にそのまま
+乗ること。ABI の変更・再実装は禁止 — 不足があれば実装せず質問)。
+依存: WP116(済)。見積: 大。
+排他: openpbr surface wrapper 群 + engine GLSL include + 写像表
+文書/fixture + example マテリアル + golden。
+
+1. **openpbr surface(wrapper-B 形式 — USD-C2 逐語)**: 薄い
+   `.surface` wrapper ×6(`{opaque,mask,blend} × {single,double}`)+
+   lighting 実装は**単一の登録済み engine GLSL include** に集約。
+   全 wrapper の params/textures の名前・順序・型・default・
+   colorspace が同一で差分が render_state/cutoff/cull だけであることを
+   **parser fixture で比較**。六 variant の shader/pipeline cache 列挙
+2. **公開 lighting ライブラリのみで実装**(standard/toon と同じ制約 =
+   特権なし)。forward 経路(WP116 の routing どおり)
+3. **v1 サブセットの数表規範**: base(weight/color/metalness/
+   diffuse_roughness)・specular(weight/color/roughness/IOR)・
+   emission・coat(1 層)・opacity/normal/alpha の unit・range・
+   default・colorspace・channel を表で固定。**OpenPBR 1.1.1 exact pin**
+   (仕様 tag/hash を文書に記録)
+4. **写像表**: UsdPreviewSurface / MaterialX OpenPBR(allowlist)/
+   glTF KHR_materials_* → 上記パラメータの対応表(文書 + 数値
+   fixture — import-tools 側の実装は U-USD0c)
+5. **未対応 WARN 規範**: authored 非 default または寄与する connection
+   のみ WARN(code・prim path・input 名・fallback 値を machine-testable
+   に)— 本 WP では表と runtime 側の WARN 面だけ(USD 入力は 0c)
+6. **dogfooding**: example に OpenPBR サンプル球(coat の効きが golden
+   で見える)
+7. 受け入れ = base/specular/IOR/coat/emission/normal/alpha の数値・
+   画像 golden + **既存 material golden 全 byte 維持** + 既存全テスト +
+   golden SKIP 0(件数 40/39 から追加分更新)+ player 8 秒
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの
