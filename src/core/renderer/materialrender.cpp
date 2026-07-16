@@ -59,7 +59,9 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
         cmd_buf.pushConstants(pipeline_layout,
                               vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0,
                               sizeof(engine_push), &engine_push);
-        const MaterialIndexPushConstant material_push{static_cast<uint32_t>(draw_call.material.value)};
+        const MaterialIndexPushConstant material_push{
+            static_cast<uint32_t>(draw_call.material.value),
+            draw_call.source_material_index};
         cmd_buf.pushConstants(pipeline_layout,
                               vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
                               PELICAN_PUSH_ENGINE_BYTES, sizeof(material_push), &material_push);

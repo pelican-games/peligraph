@@ -95,17 +95,21 @@ void applyPrimitiveMaterialBindings(
     }
 
     std::vector<ModelTemplate::MaterialPrimitives> regrouped;
-    std::unordered_map<int, std::size_t> group_by_material;
+    std::unordered_map<std::uint64_t, std::size_t> group_by_material;
     for (const auto &source_group : model.material_primitives) {
         for (const auto &primitive : source_group.primitives) {
             const auto target =
                 resolved.at(primitiveKey(primitive.mesh_index, primitive.primitive_index));
+            const auto group_key =
+                (static_cast<std::uint64_t>(static_cast<std::uint32_t>(target.value)) << 32u) |
+                source_group.source_material_index;
             const auto [found, inserted] =
-                group_by_material.emplace(target.value, regrouped.size());
+                group_by_material.emplace(group_key, regrouped.size());
             if (inserted) {
                 regrouped.push_back(ModelTemplate::MaterialPrimitives{
                     .material = target,
                     .primitives = {},
+                    .source_material_index = source_group.source_material_index,
                 });
             }
             regrouped.at(found->second).primitives.push_back(primitive);

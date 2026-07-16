@@ -64,5 +64,7 @@ void main() {
 
     // Emissive
     outEmissive = pelican_material_instance_apply_emissive(
-        texture(emissiveSampler, materialUV) * material.emissiveFactor);
+        texture(emissiveSampler, materialUV) *
+        pelican_material_instance_emissive_source_factor(
+            material.emissiveFactor));
 }

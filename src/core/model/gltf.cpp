@@ -102,6 +102,26 @@ std::optional<std::array<double, 3>> valueVec3(const tinygltf::Value *value) {
     return result;
 }
 
+std::optional<std::array<double, 2>> valueVec2(const tinygltf::Value *value) {
+    if (value == nullptr || !value->IsArray()) {
+        return std::nullopt;
+    }
+    const auto &array = value->Get<tinygltf::Value::Array>();
+    if (array.size() != 2) {
+        return std::nullopt;
+    }
+
+    std::array<double, 2> result{};
+    for (size_t i = 0; i < result.size(); ++i) {
+        const auto component = valueNumber(&array[i]);
+        if (!component) {
+            return std::nullopt;
+        }
+        result[i] = *component;
+    }
+    return result;
+}
+
 VatPrimitiveMeta tinyGltfValueToVatMeta(const tinygltf::Value &extras) {
     VatPrimitiveMeta meta;
     if (!extras.IsObject()) {
@@ -489,6 +509,7 @@ struct InternalGltfLoader {
     std::vector<MaterialInfo> material_infos;
     std::vector<std::optional<GlobalTextureId>> texture_map;
     std::unordered_map<ModelLocalMaterialId, GlobalMaterialId> resolved_materials;
+    std::unordered_map<ModelLocalMaterialId, std::uint32_t> generated_material_sources;
     std::unordered_map<ModelLocalMaterialId, ModelLocalMaterialId> skinned_material_variants;
     std::unordered_map<ModelLocalMaterialId, std::vector<ModelTemplate::PrimitiveRefInfo>> tmp_material_primitives;
     ModelLocalMaterialId next_generated_material = -2;
@@ -644,6 +665,9 @@ struct InternalGltfLoader {
 
         const auto generated_material = next_generated_material--;
         resolved_materials[generated_material] = resources.registerMaterial(material_info);
+        generated_material_sources[generated_material] =
+            local_material_id >= 0 ? static_cast<std::uint32_t>(local_material_id)
+                                   : noSourceMaterialIndex;
         return generated_material;
     }
 #endif
@@ -1395,6 +1419,73 @@ struct InternalGltfLoader {
         resolved_materials[material_index] = material_map.at(material_index).value();
     }
 
+    std::shared_ptr<const SourceMaterialInitialValueTable>
+    sourceMaterialInitialValues() {
+        auto table = std::make_shared<SourceMaterialInitialValueTable>();
+        table->values.reserve(model.materials.size());
+        for (std::size_t material_index = 0; material_index < model.materials.size();
+             ++material_index) {
+            const auto &material = model.materials[material_index];
+            const auto &base = material.pbrMetallicRoughness.baseColorFactor;
+            glm::vec2 uv_offset{0.0f};
+            glm::vec2 uv_scale{1.0f};
+            float uv_rotation = 0.0f;
+            const auto &base_texture =
+                material.pbrMetallicRoughness.baseColorTexture;
+            if (const auto extension =
+                    base_texture.extensions.find("KHR_texture_transform");
+                extension != base_texture.extensions.end() &&
+                extension->second.IsObject()) {
+                const auto &object =
+                    extension->second.Get<tinygltf::Value::Object>();
+                if (const auto offset = valueVec2(objectMember(object, "offset"))) {
+                    uv_offset = {static_cast<float>((*offset)[0]),
+                                 static_cast<float>((*offset)[1])};
+                }
+                if (const auto scale = valueVec2(objectMember(object, "scale"))) {
+                    uv_scale = {static_cast<float>((*scale)[0]),
+                                static_cast<float>((*scale)[1])};
+                }
+                if (const auto rotation =
+                        valueNumber(objectMember(object, "rotation"))) {
+                    uv_rotation = static_cast<float>(*rotation);
+                }
+            }
+            float emissive_strength = 1.0f;
+            if (const auto extension =
+                    material.extensions.find("KHR_materials_emissive_strength");
+                extension != material.extensions.end() && extension->second.IsObject()) {
+                const auto &object = extension->second.Get<tinygltf::Value::Object>();
+                if (const auto strength =
+                        valueNumber(objectMember(object, "emissiveStrength"))) {
+                    emissive_strength = static_cast<float>(*strength);
+                }
+            }
+            table->values.push_back(SourceMaterialInitialValues{
+                .source_material_index = static_cast<std::uint32_t>(material_index),
+                .base_color_factor = glm::vec4{
+                    static_cast<float>(vectorValueOr(base, 0, 1.0)),
+                    static_cast<float>(vectorValueOr(base, 1, 1.0)),
+                    static_cast<float>(vectorValueOr(base, 2, 1.0)),
+                    static_cast<float>(vectorValueOr(base, 3, 1.0)),
+                },
+                .emissive_factor = glm::vec4{
+                    static_cast<float>(vectorValueOr(material.emissiveFactor, 0, 0.0)) *
+                        emissive_strength,
+                    static_cast<float>(vectorValueOr(material.emissiveFactor, 1, 0.0)) *
+                        emissive_strength,
+                    static_cast<float>(vectorValueOr(material.emissiveFactor, 2, 0.0)) *
+                        emissive_strength,
+                    1.0f,
+                },
+                .uv_offset = uv_offset,
+                .uv_scale = uv_scale,
+                .uv_rotation = uv_rotation,
+            });
+        }
+        return table;
+    }
+
     ModelLocalMaterialId skinnedMaterial(int local_material_id) {
         if (const auto found = skinned_material_variants.find(local_material_id);
             found != skinned_material_variants.end()) return found->second;
@@ -1407,6 +1498,9 @@ struct InternalGltfLoader {
         info.skinned = true;
         const auto generated = next_generated_material--;
         resolved_materials[generated] = resources.registerMaterial(std::move(info));
+        generated_material_sources[generated] =
+            local_material_id >= 0 ? static_cast<std::uint32_t>(local_material_id)
+                                   : noSourceMaterialIndex;
         skinned_material_variants[local_material_id] = generated;
         return generated;
     }
@@ -1652,9 +1746,17 @@ struct InternalGltfLoader {
         ModelTemplate m;
         for (const auto &[local_material_id, primitive] : tmp_material_primitives) {
             const auto found = resolved_materials.find(local_material_id);
+            const auto generated_source =
+                generated_material_sources.find(local_material_id);
             m.material_primitives.emplace_back(ModelTemplate::MaterialPrimitives{
                 .material = found != resolved_materials.end() ? found->second : std_mat.standardTransparentMaterial(),
                 .primitives = std::move(primitive),
+                .source_material_index =
+                    local_material_id >= 0
+                        ? static_cast<std::uint32_t>(local_material_id)
+                        : (generated_source != generated_material_sources.end()
+                               ? generated_source->second
+                               : noSourceMaterialIndex),
             });
         }
         for (std::size_t material_index = 0; material_index < material_map.size();
@@ -1669,6 +1771,8 @@ struct InternalGltfLoader {
             m.material_primitives.emplace_back(ModelTemplate::MaterialPrimitives{
                 .material = resolved_materials.at(*selection.material_only),
                 .primitives = {},
+                .source_material_index =
+                    static_cast<std::uint32_t>(*selection.material_only),
             });
         }
         m.skeletal = skeletal_data;
@@ -1676,6 +1780,7 @@ struct InternalGltfLoader {
             morph_target_layout->generation = allocateMorphLayoutGeneration();
             m.morph_targets = std::move(morph_target_layout);
         }
+        m.material_initial_values = sourceMaterialInitialValues();
         m.vrm_semantic = vrm_semantic;
         m.gpu_resources = resources.finish();
 

@@ -4,6 +4,8 @@
 
 #include "pelican_frame.glsl"
 #include "pelican_material.glsl"
+#define PELICAN_MATERIAL_INSTANCE_VERTEX_STAGE
+#include "pelican_material_instance.glsl"
 #include "pelican_skinning.glsl"
 #include "pelican_morph.glsl"
 
@@ -31,7 +33,8 @@ void main() {
     vec4 world_pos = model_matrix * skin * vec4(morphed.position, 1.0);
     gl_Position = pelicanPush.engineMvp * world_pos;
     outTexUV = inTexUV;
-    outColor = inColor * pelicanMaterials.materials[pelicanPush.materialIndex].baseColorFactor;
+    outColor = inColor * pelican_material_instance_base_color_source_factor(
+        pelicanMaterials.materials[pelicanPush.materialIndex].baseColorFactor);
     mat3 normal_matrix = mat3(model_matrix) * mat3(skin);
     vec3 normal = normalize(normal_matrix * morphed.normal);
     outNormal = normal;

@@ -20,6 +20,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <filesystem>
@@ -131,6 +132,21 @@ TEST_CASE("glTF fragments load only the selected object and dependencies", "[glt
     const auto selected = loader.loadGltfBinary(glb_path.string(), fragment("mesh", "MeshA"));
     REQUIRE(primitiveCount(selected) == 1);
     REQUIRE(selected.material_primitives.size() == 1);
+    REQUIRE(selected.material_primitives.front().source_material_index == 0);
+    REQUIRE(selected.material_initial_values != nullptr);
+    REQUIRE(selected.material_initial_values->values.size() == 2);
+    REQUIRE(selected.material_initial_values->values.at(0).base_color_factor ==
+            glm::vec4{1.0f, 0.0f, 0.0f, 1.0f});
+    REQUIRE(selected.material_initial_values->values.at(0).emissive_factor ==
+            glm::vec4{0.0f, 0.0f, 0.0f, 1.0f});
+    REQUIRE(selected.material_initial_values->values.at(1).base_color_factor ==
+            glm::vec4{0.0f, 1.0f, 0.0f, 1.0f});
+    REQUIRE(selected.material_initial_values->values.at(0).uv_offset ==
+            glm::vec2{0.125f, -0.25f});
+    REQUIRE(selected.material_initial_values->values.at(0).uv_scale ==
+            glm::vec2{2.0f, 0.5f});
+    REQUIRE(selected.material_initial_values->values.at(0).uv_rotation ==
+            0.25f);
     REQUIRE(materials.textureCountForTesting() == texture_count + 2);
     REQUIRE(materials.materialCountForTesting() == material_count + 1);
 
@@ -152,6 +168,14 @@ TEST_CASE("glTF fragments load only the selected object and dependencies", "[glt
 
     const auto whole = loader.loadGltfBinary(glb_path.string());
     REQUIRE(primitiveCount(whole) == 2);
+    REQUIRE(std::any_of(whole.material_primitives.begin(),
+                        whole.material_primitives.end(), [](const auto &group) {
+                            return group.source_material_index == 0;
+                        }));
+    REQUIRE(std::any_of(whole.material_primitives.begin(),
+                        whole.material_primitives.end(), [](const auto &group) {
+                            return group.source_material_index == 1;
+                        }));
 
     REQUIRE(primitiveCount(GET_MODULE(ModelAssetContainer).getModelTemplateByName("selected")) == 1);
     GET_MODULE(ECSPredefinedRegistration).reg();

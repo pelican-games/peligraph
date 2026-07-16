@@ -118,6 +118,24 @@ TEST_CASE("shader reflection reports descriptors, push constants, and vertex inp
     REQUIRE(material_instance->type == vk::DescriptorType::eStorageBuffer);
     REQUIRE(material_instance->stages == vk::ShaderStageFlagBits::eFragment);
 
+    const auto *material_absolute_headers = findBinding(
+        merged, PELICAN_SET_FREE,
+        PELICAN_MATERIAL_INSTANCE_ABSOLUTE_HEADER_BINDING);
+    REQUIRE(material_absolute_headers != nullptr);
+    REQUIRE(material_absolute_headers->type == vk::DescriptorType::eStorageBuffer);
+    REQUIRE(material_absolute_headers->stages ==
+            (vk::ShaderStageFlagBits::eVertex |
+             vk::ShaderStageFlagBits::eFragment));
+
+    const auto *material_absolute_records = findBinding(
+        merged, PELICAN_SET_FREE,
+        PELICAN_MATERIAL_INSTANCE_ABSOLUTE_RECORD_BINDING);
+    REQUIRE(material_absolute_records != nullptr);
+    REQUIRE(material_absolute_records->type == vk::DescriptorType::eStorageBuffer);
+    REQUIRE(material_absolute_records->stages ==
+            (vk::ShaderStageFlagBits::eVertex |
+             vk::ShaderStageFlagBits::eFragment));
+
     REQUIRE(merged.push_constants.size() == 2);
 
     REQUIRE(merged.vertex_inputs.size() == 5);
@@ -143,7 +161,8 @@ TEST_CASE("shader reflection reports descriptors, push constants, and vertex inp
     const auto push_ranges = makePushConstantRanges(merged);
     REQUIRE(push_ranges.size() == 1);
     REQUIRE(push_ranges[0].offset == 0);
-    REQUIRE(push_ranges[0].size == PELICAN_PUSH_ENGINE_BYTES + sizeof(uint32_t));
+    REQUIRE(push_ranges[0].size ==
+            PELICAN_PUSH_ENGINE_BYTES + sizeof(uint32_t) * 2);
 #endif
 }
 

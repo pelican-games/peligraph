@@ -8,6 +8,7 @@
 #include "modelinstance.hpp"
 #include <glm/ext/quaternion_float.hpp>
 #include <glm/glm.hpp>
+#include <functional>
 #include <span>
 #include <unordered_map>
 #include <vulkan/vulkan.hpp>
@@ -97,14 +98,76 @@ struct alignas(16) MaterialInstanceOverrideGpuData {
 
 static_assert(sizeof(MaterialInstanceOverrideGpuData) == 80);
 
+inline constexpr std::uint32_t materialInstanceAbsoluteOverrideDescriptorVersionV2 = 2;
+inline constexpr std::size_t maxMaterialInstanceAbsoluteOverrideRecords = 4096;
+
+struct PublishMaterialInstanceAbsoluteOverrideDescV2 {
+    std::uint32_t struct_size =
+        sizeof(PublishMaterialInstanceAbsoluteOverrideDescV2);
+    std::uint32_t version = materialInstanceAbsoluteOverrideDescriptorVersionV2;
+    Animation::InstanceHandle instance{};
+    std::uint64_t frame_revision = 0;
+    std::uint32_t source_material_index = noSourceMaterialIndex;
+    MaterialInstanceOverrideValues values{};
+    std::uint32_t flags = 0;
+    std::uint32_t reserved0 = 0;
+    std::uint32_t reserved1 = 0;
+};
+
+struct MaterialInstanceAbsoluteOverrideKey {
+    std::uint64_t instance_identity = 0;
+    std::uint32_t source_material_index = noSourceMaterialIndex;
+
+    bool operator==(const MaterialInstanceAbsoluteOverrideKey &) const = default;
+};
+
+struct MaterialInstanceAbsoluteOverrideKeyHash {
+    std::size_t operator()(const MaterialInstanceAbsoluteOverrideKey &key) const noexcept {
+        const auto mixed = key.instance_identity ^
+                           (static_cast<std::uint64_t>(key.source_material_index) << 32u);
+        return std::hash<std::uint64_t>{}(mixed);
+    }
+};
+
+struct MaterialInstanceAbsoluteOverrideFrame {
+    std::uint64_t instance_identity = 0;
+    std::uint32_t instance_generation = 0;
+    std::uint32_t source_material_index = noSourceMaterialIndex;
+    std::uint64_t current_revision = 0;
+    std::uint64_t previous_revision = 0;
+    MaterialInstanceOverrideValues current{};
+    MaterialInstanceOverrideValues previous{};
+};
+
+struct alignas(16) MaterialInstanceAbsoluteOverrideGpuHeader {
+    std::uint32_t record_offset = 0;
+    std::uint32_t record_count = 0;
+    std::uint32_t instance_generation = 0;
+    std::uint32_t reserved = 0;
+};
+
+static_assert(sizeof(MaterialInstanceAbsoluteOverrideGpuHeader) == 16);
+
+struct alignas(16) MaterialInstanceAbsoluteOverrideGpuData {
+    glm::vec4 base_color_factor{0.0f};
+    glm::vec4 emissive_factor{0.0f};
+    glm::vec4 uv_offset_scale{0.0f};
+    glm::vec4 uv_rotation_reserved{0.0f};
+    glm::uvec4 metadata{0u};
+};
+
+static_assert(sizeof(MaterialInstanceAbsoluteOverrideGpuData) == 80);
+
 struct RenderCommand {
     vk::DrawIndexedIndirectCommand command;
     GlobalMaterialId material;
+    std::uint32_t source_material_index = noSourceMaterialIndex;
     bool skinned = false;
 };
 
 struct DrawIndirectInfo {
     GlobalMaterialId material;
+    std::uint32_t source_material_index = noSourceMaterialIndex;
     vk::DeviceSize offset;
     uint32_t draw_count, stride;
     bool skinned = false;
@@ -132,6 +195,8 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     std::vector<std::uint64_t> previous_animation_revisions;
     std::vector<std::uint32_t> animation_generations;
     std::vector<ModelAssetId> model_asset_ids;
+    std::vector<std::shared_ptr<const SourceMaterialInitialValueTable>>
+        material_initial_value_tables;
     std::vector<std::shared_ptr<const MorphTargetLayout>> morph_layouts;
     std::vector<MorphWeightFrame> morph_weight_frames;
     std::vector<bool> morph_history_valid;
@@ -143,6 +208,12 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     std::unordered_map<std::uint32_t, MaterialInstanceOverrideFrame>
         material_override_frames;
     BufferWrapper material_override_buffer;
+    std::unordered_map<MaterialInstanceAbsoluteOverrideKey,
+                       MaterialInstanceAbsoluteOverrideFrame,
+                       MaterialInstanceAbsoluteOverrideKeyHash>
+        material_absolute_override_frames;
+    BufferWrapper material_absolute_override_header_buffer;
+    BufferWrapper material_absolute_override_record_buffer;
     vk::UniqueDescriptorSetLayout static_deformation_descriptor_layout;
     vk::UniqueDescriptorSetLayout skinned_deformation_descriptor_layout;
     vk::UniqueDescriptorSetLayout static_material_descriptor_layout;
@@ -152,6 +223,8 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     vk::UniqueDescriptorSet skinned_deformation_descriptor_set;
     vk::UniqueDescriptorSet static_material_descriptor_set;
     vk::UniqueDescriptorSet skinned_material_descriptor_set;
+
+    void uploadMaterialAbsoluteOverrides();
 
   public:
     PolygonInstanceContainer();
@@ -177,6 +250,9 @@ DECLARE_MODULE(PolygonInstanceContainer) {
         ModelInstanceId id, const PublishMorphWeightFrameDescV1 &frame);
     Animation::Status publishMaterialInstanceOverride(
         ModelInstanceId id, const PublishMaterialInstanceOverrideDescV1 &frame);
+    Animation::Status publishMaterialInstanceAbsoluteOverride(
+        ModelInstanceId id,
+        const PublishMaterialInstanceAbsoluteOverrideDescV2 &frame);
     void bindDeformation(vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout,
                          bool skinned) const;
     void bindMaterialInstanceResources(vk::CommandBuffer cmd_buf,
@@ -214,6 +290,19 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     }
     size_t materialOverrideStorageEntryCountForTesting() const {
         return material_override_frames.size();
+    }
+    const MaterialInstanceAbsoluteOverrideFrame *
+    materialAbsoluteOverrideFrameForTesting(
+        ModelInstanceId id, std::uint32_t source_material_index) const {
+        if (id.value >= model_instances_data.size()) return nullptr;
+        const MaterialInstanceAbsoluteOverrideKey key{
+            static_cast<std::uint64_t>(id.value) + 1, source_material_index};
+        const auto found = material_absolute_override_frames.find(key);
+        return found == material_absolute_override_frames.end() ? nullptr
+                                                                 : &found->second;
+    }
+    size_t materialAbsoluteOverrideStorageEntryCountForTesting() const {
+        return material_absolute_override_frames.size();
     }
     size_t instanceCountForAssetForTesting(ModelAssetId asset_id) const;
 };

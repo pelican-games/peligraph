@@ -5,6 +5,8 @@
 #include "pelican_sets.glsl"
 #include "pelican_frame.glsl"
 #include "pelican_material.glsl"
+#define PELICAN_MATERIAL_INSTANCE_VERTEX_STAGE
+#include "pelican_material_instance.glsl"
 #include "pelican_morph.glsl"
 
 layout(set = PELICAN_SET_MATERIAL, binding = 4) uniform sampler2D vatPositionSampler;
@@ -78,7 +80,9 @@ void main() {
 
     gl_Position = pelicanPush.engineMvp * world_pos;
     outTexUV = inTexUV;
-    outColor = inColor * material.baseColorFactor;
+    outColor = inColor *
+               pelican_material_instance_base_color_source_factor(
+                   material.baseColorFactor);
 
     vec3 N = normalize(mat3(model_matrix) * local_normal);
 

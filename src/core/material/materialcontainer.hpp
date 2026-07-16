@@ -11,6 +11,7 @@
 #include "material.hpp"
 #include <glm/glm.hpp>
 #include <map>
+#include <limits>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -41,6 +42,7 @@ static_assert(sizeof(PushConstantStruct) == PELICAN_PUSH_ENGINE_BYTES);
 
 struct MaterialIndexPushConstant {
     uint32_t material_index = 0;
+    uint32_t source_material_index = std::numeric_limits<uint32_t>::max();
 };
 
 static_assert(sizeof(MaterialIndexPushConstant) <= PELICAN_PUSH_SHADER_BYTES);

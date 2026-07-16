@@ -48,6 +48,7 @@ vec4 pelican_material_vec4(uint materialIndex, uint byteOffset) {
 layout(push_constant) uniform PelicanMaterialPushConstants {
     layout(offset = 0) mat4 engineMvp;
     layout(offset = PELICAN_PUSH_ENGINE_BYTES) uint materialIndex;
+    uint sourceMaterialIndex;
 } pelicanPush;
 
 #endif
