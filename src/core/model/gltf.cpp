@@ -18,6 +18,7 @@
 #include <cmath>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <limits>
 #include <optional>
 #include <memory>
 #include <set>
@@ -285,12 +286,138 @@ std::shared_ptr<PreparedGltf::Impl> prepareGltfImpl(std::string path,
 
 } // namespace
 
+namespace {
+
+class GltfResourceSink {
+  public:
+    virtual ~GltfResourceSink() = default;
+    virtual GlobalTextureId registerTexture(vk::Extent3D extent, const void *data,
+                                            vk::Format format,
+                                            vk::DeviceSize bytes) = 0;
+    virtual GlobalMaterialId registerMaterial(MaterialInfo info) = 0;
+    virtual ModelTemplate::PrimitiveRefInfo addPrimitive(CommonPolygonVertData data,
+                                                          bool skinned) = 0;
+    virtual std::shared_ptr<ModelGpuResources> finish() = 0;
+};
+
+void validateCandidatePrimitive(const CommonPolygonVertData &data, bool skinned) {
+    const auto count = data.pos.size();
+    if (count == 0 || count > std::numeric_limits<uint32_t>::max())
+        throw std::runtime_error("invalid primitive: POSITION stream is empty or too large");
+    const auto matches = [count](std::size_t size) { return size == 0 || size == count; };
+    if (!matches(data.normal.size()) || !matches(data.tangent.size()) ||
+        !matches(data.texcoord.size()) || !matches(data.color.size()))
+        throw std::runtime_error("invalid primitive: vertex attribute counts do not match POSITION");
+    if (data.indices.size() > std::numeric_limits<uint32_t>::max())
+        throw std::runtime_error("model primitive index stream is too large");
+    if (skinned && (data.joint.size() != count || data.weight.size() != count))
+        throw std::runtime_error(
+            "invalid skinned primitive: POSITION, JOINTS_0, and WEIGHTS_0 counts must match");
+    for (const auto index : data.indices) {
+        if (index >= count) throw std::runtime_error("glTF primitive index exceeds POSITION count");
+    }
+}
+
+class ValidationGltfResourceSink final : public GltfResourceSink {
+    int next_texture_ = -1000000;
+    int next_material_ = -1000000;
+    uint32_t next_index_ = 0;
+    uint32_t next_vertex_ = 0;
+    uint32_t next_skin_vertex_ = 0;
+
+  public:
+    GlobalTextureId registerTexture(vk::Extent3D extent, const void *data,
+                                    vk::Format, vk::DeviceSize bytes) override {
+        if (extent.width == 0 || extent.height == 0 || extent.depth == 0 ||
+            data == nullptr || bytes == 0)
+            throw std::runtime_error("glTF texture candidate is empty");
+        return GlobalTextureId{next_texture_--};
+    }
+
+    GlobalMaterialId registerMaterial(MaterialInfo) override {
+        return GlobalMaterialId{next_material_--};
+    }
+
+    ModelTemplate::PrimitiveRefInfo addPrimitive(CommonPolygonVertData data,
+                                                  bool skinned) override {
+        validateCandidatePrimitive(data, skinned);
+        const auto vertex_count = static_cast<uint32_t>(data.pos.size());
+        const auto index_count = data.indices.empty()
+                                     ? vertex_count
+                                     : static_cast<uint32_t>(data.indices.size());
+        auto &vertex_offset = skinned ? next_skin_vertex_ : next_vertex_;
+        if (index_count > std::numeric_limits<uint32_t>::max() - next_index_ ||
+            vertex_count > std::numeric_limits<uint32_t>::max() - vertex_offset ||
+            vertex_offset > static_cast<uint32_t>(std::numeric_limits<int32_t>::max()))
+            throw std::runtime_error("glTF candidate geometry exceeds draw address space");
+        ModelTemplate::PrimitiveRefInfo result{index_count, next_index_,
+                                               static_cast<int32_t>(vertex_offset), skinned};
+        next_index_ += index_count;
+        vertex_offset += vertex_count;
+        return result;
+    }
+
+    std::shared_ptr<ModelGpuResources> finish() override { return {}; }
+};
+
+class LiveGltfResourceSink final : public GltfResourceSink {
+    MaterialContainer &materials_;
+    VertBufContainer &geometry_;
+    std::shared_ptr<ModelGpuResources> owned_ = std::make_shared<ModelGpuResources>();
+    bool committed_ = false;
+
+  public:
+    LiveGltfResourceSink(MaterialContainer &materials, VertBufContainer &geometry)
+        : materials_{materials}, geometry_{geometry} {}
+
+    ~LiveGltfResourceSink() override {
+        if (committed_ || !owned_) return;
+        materials_.releaseModelResources(std::move(owned_->materials),
+                                         std::move(owned_->textures), false);
+        geometry_.releaseModelGeometry(std::move(owned_->geometry), false);
+    }
+
+    GlobalTextureId registerTexture(vk::Extent3D extent, const void *data,
+                                    vk::Format format, vk::DeviceSize bytes) override {
+        // Reserve bookkeeping before creating the Vulkan resource so an
+        // allocation failure cannot leave an untracked candidate behind.
+        owned_->textures.reserve(owned_->textures.size() + 1);
+        const auto id = materials_.registerTexture(extent, data, format, bytes);
+        owned_->textures.push_back(id);
+        return id;
+    }
+
+    GlobalMaterialId registerMaterial(MaterialInfo info) override {
+        owned_->materials.reserve(owned_->materials.size() + 1);
+        const auto id = materials_.registerMaterial(std::move(info));
+        owned_->materials.push_back(id);
+        return id;
+    }
+
+    ModelTemplate::PrimitiveRefInfo addPrimitive(CommonPolygonVertData data,
+                                                  bool skinned) override {
+        owned_->geometry.reserve(owned_->geometry.size() + 1);
+        auto allocation = skinned
+                              ? geometry_.addSkinnedPrimitiveAllocation(std::move(data))
+                              : geometry_.addPrimitiveAllocation(std::move(data));
+        const auto primitive = allocation.primitive;
+        owned_->geometry.push_back(std::move(allocation));
+        return primitive;
+    }
+
+    std::shared_ptr<ModelGpuResources> finish() override {
+        committed_ = true;
+        return std::move(owned_);
+    }
+};
+
+} // namespace
+
 struct InternalGltfLoader {
     using ModelLocalMaterialId = int;
 
-    MaterialContainer &mat_container;
+    GltfResourceSink &resources;
     StandardMaterialResource &std_mat;
-    VertBufContainer &buf_container;
     tinygltf::Model &model;
     std::string source_path;
     std::optional<AssetFragmentRef> fragment;
@@ -354,7 +481,8 @@ struct InternalGltfLoader {
             data[i * 4 + 2] = b;
             data[i * 4 + 3] = a;
         }
-        return mat_container.registerTexture(vk::Extent3D{4, 4, 1}, data.data());
+        return resources.registerTexture(vk::Extent3D{4, 4, 1}, data.data(),
+                                         vk::Format::eR8G8B8A8Unorm, data.size());
     }
 
     GlobalTextureId metallicRoughnessTextureForMaterial(const tinygltf::Material &material) {
@@ -406,8 +534,8 @@ struct InternalGltfLoader {
     GlobalTextureId registerVatTexture(const VatBufferViewSpan &span, uint32_t vertex_count,
                                        uint32_t frame_count, size_t required_bytes) const {
         const auto *data = bufferViewData(span, required_bytes);
-        return mat_container.registerTexture(vk::Extent3D{vertex_count, frame_count, 1}, data,
-                                             vk::Format::eR16G16B16A16Sfloat, required_bytes);
+        return resources.registerTexture(vk::Extent3D{vertex_count, frame_count, 1}, data,
+                                         vk::Format::eR16G16B16A16Sfloat, required_bytes);
     }
 
     MaterialInfo materialInfoForPrimitive(int local_material_id) const {
@@ -450,7 +578,7 @@ struct InternalGltfLoader {
         };
 
         const auto generated_material = next_generated_material--;
-        resolved_materials[generated_material] = mat_container.registerMaterial(material_info);
+        resolved_materials[generated_material] = resources.registerMaterial(material_info);
         return generated_material;
     }
 #endif
@@ -1017,13 +1145,13 @@ struct InternalGltfLoader {
 
     void loadTexture(int texture_index) {
         const auto &image = model.images.at(model.textures.at(texture_index).source);
-        texture_map.at(texture_index) = mat_container.registerTexture(
+        texture_map.at(texture_index) = resources.registerTexture(
             vk::Extent3D{
                 static_cast<uint32_t>(image.width),
                 static_cast<uint32_t>(image.height),
                 1,
             },
-            image.image.data());
+            image.image.data(), vk::Format::eR8G8B8A8Unorm, image.image.size());
     }
 
     void loadMaterial(int material_index) {
@@ -1083,7 +1211,7 @@ struct InternalGltfLoader {
             .occlusion_strength = static_cast<float>(material.occlusionTexture.strength),
         };
         material_map.at(material_index) =
-            mat_container.registerMaterial(material_infos.at(material_index));
+            resources.registerMaterial(material_infos.at(material_index));
         resolved_materials[material_index] = material_map.at(material_index).value();
     }
 
@@ -1098,7 +1226,7 @@ struct InternalGltfLoader {
         info.vert_shader = std_mat.skinnedVertShader();
         info.skinned = true;
         const auto generated = next_generated_material--;
-        resolved_materials[generated] = mat_container.registerMaterial(std::move(info));
+        resolved_materials[generated] = resources.registerMaterial(std::move(info));
         skinned_material_variants[local_material_id] = generated;
         return generated;
     }
@@ -1187,8 +1315,7 @@ struct InternalGltfLoader {
                 }
             }
             if (!skinned) transformVertexData(dat, world_transform);
-            auto primitive_info = skinned ? buf_container.addSkinnedPrimitiveEntry(std::move(dat))
-                                          : buf_container.addPrimitiveEntry(std::move(dat));
+            auto primitive_info = resources.addPrimitive(std::move(dat), skinned);
 #if PELICAN_WITH_VAT
             if (skinned && vat_info) {
                 throw std::runtime_error("glTF skeletal skinning and pelican.vat cannot share one primitive");
@@ -1290,6 +1417,7 @@ struct InternalGltfLoader {
             });
         }
         m.skeletal = skeletal_data;
+        m.gpu_resources = resources.finish();
 
         return m;
     }
@@ -1307,6 +1435,17 @@ PreparedGltf GltfLoader::prepareGltf(std::string path,
     return PreparedGltf{prepareGltfImpl(std::move(path), std::move(fragment), false)};
 }
 
+PreparedGltf GltfLoader::prepareGltfBinarySceneNode(std::string path,
+                                                     AssetFragmentRef fragment) const {
+    if (fragment.kind != "node") {
+        throw std::runtime_error("scene node model reference requires #node fragment: " + path + "#" +
+                                 fragment.kind + "/" + fragment.path);
+    }
+    auto prepared = prepareGltfBinary(std::move(path), std::move(fragment));
+    prepared.impl->scene_node_instance = true;
+    return prepared;
+}
+
 ModelTemplate GltfLoader::commit(PreparedGltf prepared) const {
     if (!prepared.impl) {
         throw std::runtime_error("cannot commit an empty prepared glTF");
@@ -1319,13 +1458,32 @@ ModelTemplate GltfLoader::commit(PreparedGltf prepared) const {
         LOG_ERROR(logger, "loading gltf file \"{}\" : {}", prepared.impl->source_path,
                   prepared.impl->error);
     }
+    // Complete a side-effect-free traversal first. Fragment ambiguity,
+    // accessor/rig errors, and malformed vertex streams therefore fail before
+    // a Vulkan object or mega-buffer range is touched.
+    (void)inspect(prepared);
+    LiveGltfResourceSink resources{GET_MODULE(MaterialContainer),
+                                   GET_MODULE(VertBufContainer)};
     InternalGltfLoader loader{
-        GET_MODULE(MaterialContainer),
+        resources,
         GET_MODULE(StandardMaterialResource),
-        GET_MODULE(VertBufContainer),
         prepared.impl->model,
         prepared.impl->source_path,
-        std::move(prepared.impl->fragment),
+        prepared.impl->fragment,
+        prepared.impl->scene_node_instance,
+    };
+    return loader.load();
+}
+
+ModelTemplate GltfLoader::inspect(const PreparedGltf &prepared) const {
+    if (!prepared.impl) throw std::runtime_error("cannot inspect an empty prepared glTF");
+    ValidationGltfResourceSink resources;
+    InternalGltfLoader loader{
+        resources,
+        GET_MODULE(StandardMaterialResource),
+        prepared.impl->model,
+        prepared.impl->source_path,
+        prepared.impl->fragment,
         prepared.impl->scene_node_instance,
     };
     return loader.load();
@@ -1337,18 +1495,26 @@ ModelTemplate GltfLoader::loadGltfBinary(std::string path,
 }
 
 ModelTemplate GltfLoader::loadGltfBinarySceneNode(std::string path, AssetFragmentRef fragment) {
-    if (fragment.kind != "node") {
-        throw std::runtime_error("scene node model reference requires #node fragment: " + path + "#" +
-                                 fragment.kind + "/" + fragment.path);
-    }
-    auto prepared = prepareGltfBinary(std::move(path), std::move(fragment));
-    prepared.impl->scene_node_instance = true;
+    auto prepared = prepareGltfBinarySceneNode(std::move(path), std::move(fragment));
     return commit(std::move(prepared));
 }
 
 ModelTemplate GltfLoader::loadGltf(std::string path,
                                    std::optional<AssetFragmentRef> fragment) {
     return commit(prepareGltf(std::move(path), std::move(fragment)));
+}
+
+void releaseModelGpuResources(ModelTemplate &model, bool deferred) noexcept {
+    auto resources = std::move(model.gpu_resources);
+    model.gpu_resources.reset();
+    if (!resources || std::exchange(resources->released, true)) return;
+    if (auto *materials = FastModuleContainer::tryGet<MaterialContainer>()) {
+        materials->releaseModelResources(std::move(resources->materials),
+                                         std::move(resources->textures), deferred);
+    }
+    if (auto *geometry = FastModuleContainer::tryGet<VertBufContainer>()) {
+        geometry->releaseModelGeometry(std::move(resources->geometry), deferred);
+    }
 }
 
 } // namespace Pelican

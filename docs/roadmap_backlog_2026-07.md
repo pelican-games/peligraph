@@ -1,9 +1,9 @@
 # 機能追加バックログ(2026-07-16 時点・順序付き)
 
 作成: セッション引き継ぎ用(tip b26d1a3 時点の全体棚卸し)。
-状態の正: `docs/implementation_plan.md`(WP71〜109 登録済み)・
+状態の正: `docs/implementation_plan.md`(WP71〜110 登録済み)・
 `docs/manual/`・各 `docs/design_*.md`。
-既完了の目安: アニメ A0〜A2 完成 / HR = HR0/HR1/HR1-T/HR1-M/HR2-S 完成 /
+既完了の目安: アニメ A0〜A2 完成 / HR = HR0/HR1/HR1-T/HR1-M/HR2-S/HR2-G 完成 /
 2D = S2D-0a/0b/S2D-1/S2D-P/S2D-2 完成 / UI U2 / temporal T1+T2。
 
 凡例: ★ = 高レバレッジ(体験が一段変わる)、[設計済] = 設計文書に
@@ -21,8 +21,9 @@
 4. ★ **HR2-S: shader hot reload の新基盤移行** [完了: WP108] — 1s poll を
    FileWatcher/ContentDigest へ移行。include/.surface reverse dependency、
    全 variant/pipeline、material layout の cross-file transaction を実装
-5. **HR2-G: モデル/フラグメント hot reload** [設計済] — HR 系最大の大物
-   (ModelAsset/Instance generation・in-place rebuild・anim/temporal reset)
+5. **HR2-G: モデル/フラグメント hot reload** [完了: WP110] —
+   ModelAsset/Instance identity・fragment 一括 transaction・in-place rebuild・
+   anim/temporal reset・in-flight 資源解放を実装
 6. **HR2-I: input_actions/プロファイル hot reload** [設計済] — 小
 7. **U3: UI hot reload transaction** [設計済(UI v8 §9)] — HR0 契約に
    乗せる。エディタ往復(D3)の前提
@@ -117,10 +118,10 @@
 | 済 | S2D-P / WP107 | C5 を閉じ、shapeCast/MTD/filter と provider V2 完了 |
 | 済 | HR2-S / WP108 | include/.surface と material layout の一括差し替え完了 |
 | 済 | S2D-2 / WP109 | 非特権 controller と side-scroller vertical slice 完了 |
+| 済 | HR2-G / WP110 | モデル/全 fragment の原子的差し替えと live instance 再構築完了 |
 | 1 | VRM-S0 | アニメ後続の入口。以降 S1→C0→R0→I0 |
-| 2 | HR2-G | モデル差し替え(大物なので単独で) |
-| 3 | TAA 設計(私)→ feature 実装 | temporal の回収。ジッタ API 確定 |
-| 4 | ライティング/IBL 設計(私)→ WP 化 | 保留トラック 3 の再開 |
+| 2 | TAA 設計(私)→ feature 実装 | temporal の回収。ジッタ API 確定 |
+| 3 | ライティング/IBL 設計(私)→ WP 化 | 保留トラック 3 の再開 |
 
 設計(私の作業)が必要なものは敵対レビュー往復(codex)を挟むこと。
 条件付き Accept の条件は必ず WP に逐語添付する(確立済みの運用)。

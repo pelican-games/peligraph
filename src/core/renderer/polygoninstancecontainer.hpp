@@ -26,6 +26,11 @@ struct DrawIndirectInfo {
     bool skinned = false;
 };
 
+struct ModelInstanceRebuild {
+    ModelAssetId asset_id{};
+    const ModelTemplate *replacement = nullptr;
+};
+
 DECLARE_MODULE(PolygonInstanceContainer) {
     std::vector<RenderCommand> render_commands;
     BufferWrapper indirect_buf;
@@ -42,6 +47,7 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     std::vector<std::uint64_t> animation_revisions;
     std::vector<std::uint64_t> previous_animation_revisions;
     std::vector<std::uint32_t> animation_generations;
+    std::vector<ModelAssetId> model_asset_ids;
     BufferWrapper skin_palette_buffer;
     BufferWrapper previous_skin_palette_buffer;
     vk::UniqueDescriptorSetLayout skin_descriptor_layout;
@@ -50,13 +56,16 @@ DECLARE_MODULE(PolygonInstanceContainer) {
 
   public:
     PolygonInstanceContainer();
-    ModelInstanceId placeModelInstance(ModelTemplate & model);
+    ModelInstanceId placeModelInstance(const ModelTemplate &model);
     void removeModelInstance(ModelInstanceId id);
     void clear();
     void triggerUpdate();
     void commitFrameHistory();
     void advanceTemporalHistoryAfterRender();
     void resetTemporalHistory();
+    bool canRebuildModelInstances(std::span<const ModelInstanceRebuild> replacements) const;
+    void rebuildModelInstances(std::span<const ModelInstanceRebuild> replacements);
+    void rebuildModelInstances(ModelAssetId asset_id, const ModelTemplate &replacement);
 
     void setTrs(ModelInstanceId id, glm::vec3 pos, glm::quat rotation, glm::vec3 scale);
     void setSkinningPalette(ModelInstanceId id, std::span<const glm::mat4> palette);
@@ -78,6 +87,10 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     std::uint64_t previousAnimationRevisionForTesting(ModelInstanceId id) const {
         return previous_animation_revisions.at(id.value);
     }
+    std::uint32_t animationGenerationForTesting(ModelInstanceId id) const {
+        return animation_generations.at(id.value);
+    }
+    size_t instanceCountForAssetForTesting(ModelAssetId asset_id) const;
 };
 
 } // namespace Pelican

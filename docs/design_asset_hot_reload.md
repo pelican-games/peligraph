@@ -322,7 +322,7 @@ resource handler suite(HR1 以降・GPU あり)は別に:
 | **HR1-T Texture** | texture replace(同 shape upload / shape・format・mip 変化の再生成)+ 全 descriptor rebind | 同 GlobalTextureId 維持・1000 reload leak なし・KTX2 mip/format fixture | HR1 |
 | **HR1-M Values** | .material.json 再 parse/lower・同 layout SSBO update・surface layout 変化は transaction group | WP76 layout fixture 再利用・旧 values 継続・二体/material 単位更新 | HR1 |
 | **HR2-S Surface/Shader** | FileWatcher への移行・include/source reverse dependency(WP82 source graph と同じ入力集合)・全 variant/pipeline/material-layout transaction | root/include/.surface edit・compile 失敗で旧絵・cache hit/miss・in-flight 旧 pipeline・cross-file rollback | HR1・**WP108 完了** |
-| **HR2-G Model/Fragment** | ModelAsset/Instance generation・fragment reverse index・staged GLTF GPU commit・live instance in-place rebuild・animation/temporal reset | WP77 fragment 全種・複数 instance・rig 変化・1000 reload・failure rollback | HR1 |
+| **HR2-G Model/Fragment** | ModelAsset/Instance generation・fragment reverse index・staged GLTF GPU commit・live instance in-place rebuild・animation/temporal reset | WP77 fragment 全種・複数 instance・rig 変化・1000 reload・failure rollback | HR1・**WP110 完了** |
 | **HR2-I Input** | input_actions/profile の candidate + フレーム境界 swap | held input/consume policy・invalid candidate rollback・gate epoch | HR0 |
 
 UI(U3)は HR0 の AssetKey/epoch/reconcile 契約だけを共有して独立に進む。

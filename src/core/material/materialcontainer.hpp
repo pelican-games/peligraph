@@ -102,6 +102,10 @@ DECLARE_MODULE(MaterialContainer) {
     BufferWrapper material_buffer;
     std::unique_ptr<TextureReloadHandler> texture_reload_handler;
     std::unique_ptr<MaterialValuesReloadHandler> material_values_reload_handler;
+    // Declared last so it expires before resource members during destruction.
+    // Deferred slot-recycle callbacks use it to avoid dereferencing a dead
+    // MaterialContainer when the module teardown order changes.
+    std::shared_ptr<int> lifetime_token = std::make_shared<int>(0);
 
     InternalTextureResource createTextureResource(const LoadedImage &image,
                                                   std::string_view name) const;
@@ -131,6 +135,13 @@ DECLARE_MODULE(MaterialContainer) {
     GlobalTextureId registerReloadableTextureFile(const watch::AssetKey &key,
                                                   const std::filesystem::path &path);
     GlobalMaterialId registerMaterial(MaterialInfo info);
+    // Model generations own all IDs returned by glTF commit. A failed
+    // candidate releases immediately; a published generation moves Vulkan
+    // objects to DeletionQueue and delays material-slot reuse until the
+    // in-flight window has passed.
+    void releaseModelResources(std::vector<GlobalMaterialId> material_ids,
+                               std::vector<GlobalTextureId> texture_ids,
+                               bool deferred) noexcept;
     struct ReloadableMaterialValuesBinding {
         std::string name;
         GlobalMaterialId material;
@@ -152,6 +163,7 @@ DECLARE_MODULE(MaterialContainer) {
     uint32_t textureMipLevelsForTesting(GlobalTextureId texture) const { return textures.get(texture).image.mip_levels; }
     size_t textureCountForTesting() const { return textures.size(); }
     size_t materialCountForTesting() const { return materials.size(); }
+    size_t materialCapacityForTesting() const;
     size_t referencingMaterialCountForTesting(GlobalTextureId texture) const;
     std::uint64_t materialDescriptorRevisionForTesting(GlobalMaterialId material) const {
         return materials.get(material).descriptor_revision;

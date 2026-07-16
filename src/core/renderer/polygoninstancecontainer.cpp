@@ -8,6 +8,7 @@
 #include <limits>
 #include <stdexcept>
 #include <tuple>
+#include <unordered_map>
 
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/quaternion.hpp>
@@ -106,7 +107,15 @@ PolygonInstanceContainer::PolygonInstanceContainer()
     device.updateDescriptorSets(writes, {});
 }
 
-ModelInstanceId PolygonInstanceContainer::placeModelInstance(ModelTemplate &model) {
+namespace {
+size_t primitiveCount(const ModelTemplate &model) {
+    size_t result = 0;
+    for (const auto &material : model.material_primitives) result += material.primitives.size();
+    return result;
+}
+} // namespace
+
+ModelInstanceId PolygonInstanceContainer::placeModelInstance(const ModelTemplate &model) {
     if (model_instances_data.size() >= maxModelInstances) {
         throw std::runtime_error("Model instance capacity exceeded");
     }
@@ -129,6 +138,7 @@ ModelInstanceId PolygonInstanceContainer::placeModelInstance(ModelTemplate &mode
     animation_revisions.push_back(0);
     previous_animation_revisions.push_back(0);
     animation_generations.push_back(1);
+    model_asset_ids.push_back(model.asset_id);
 
     for (const auto &material : model.material_primitives) {
         for (const auto &primitive : material.primitives) {
@@ -168,6 +178,7 @@ void PolygonInstanceContainer::removeModelInstance(ModelInstanceId id) {
     previous_skin_palettes[id.value].clear();
     animation_revisions[id.value] = 0;
     previous_animation_revisions[id.value] = 0;
+    model_asset_ids[id.value] = {};
     if (++animation_generations[id.value] == 0) ++animation_generations[id.value];
 }
 
@@ -182,6 +193,7 @@ void PolygonInstanceContainer::clear() {
     animation_revisions.clear();
     previous_animation_revisions.clear();
     animation_generations.clear();
+    model_asset_ids.clear();
 }
 
 void PolygonInstanceContainer::triggerUpdate() {
@@ -257,6 +269,119 @@ void PolygonInstanceContainer::resetTemporalHistory() {
     previous_skin_palettes = skin_palettes;
     previous_animation_revisions = animation_revisions;
     std::fill(model_history_valid.begin(), model_history_valid.end(), false);
+}
+
+bool PolygonInstanceContainer::canRebuildModelInstances(
+    std::span<const ModelInstanceRebuild> replacements) const {
+    std::unordered_map<std::uint64_t, const ModelTemplate *> by_asset;
+    for (const auto &replacement : replacements) {
+        if (!isValidModelAssetId(replacement.asset_id) || replacement.replacement == nullptr ||
+            !by_asset.emplace(replacement.asset_id.value, replacement.replacement).second)
+            return false;
+    }
+
+    size_t command_count = render_commands.size();
+    for (const auto &command : render_commands) {
+        const auto instance = command.command.firstInstance;
+        if (instance < model_asset_ids.size() &&
+            by_asset.contains(model_asset_ids[instance].value)) {
+            --command_count;
+        }
+    }
+    for (const auto &[asset, replacement] : by_asset) {
+        size_t instances = 0;
+        for (const auto current : model_asset_ids)
+            if (current.value == asset) ++instances;
+        const auto primitives = primitiveCount(*replacement);
+        if (instances != 0 && primitives > (maxRenderCommands - command_count) / instances)
+            return false;
+        command_count += instances * primitives;
+    }
+    return command_count <= maxRenderCommands;
+}
+
+void PolygonInstanceContainer::rebuildModelInstances(
+    std::span<const ModelInstanceRebuild> replacements) {
+    if (!canRebuildModelInstances(replacements))
+        throw std::runtime_error("Render command capacity exceeded by model reload batch");
+    std::unordered_map<std::uint64_t, const ModelTemplate *> by_asset;
+    std::unordered_map<std::uint64_t, std::vector<glm::mat4>> rest_palettes;
+    for (const auto &replacement : replacements) {
+        by_asset.emplace(replacement.asset_id.value, replacement.replacement);
+        auto &palette = rest_palettes[replacement.asset_id.value];
+        if (replacement.replacement->skeletal) {
+            palette = evaluateSkinPalette(*replacement.replacement->skeletal, nullptr,
+                                          0.0, 1.0, false, 0.0);
+        }
+    }
+
+    std::vector<RenderCommand> rebuilt;
+    rebuilt.reserve(maxRenderCommands);
+    for (const auto &command : render_commands) {
+        const auto instance = command.command.firstInstance;
+        if (instance < model_asset_ids.size() &&
+            by_asset.contains(model_asset_ids[instance].value))
+            continue;
+        rebuilt.push_back(command);
+    }
+
+    auto next_skin_palettes = skin_palettes;
+    auto next_previous_skin_palettes = previous_skin_palettes;
+    auto next_animation_revisions = animation_revisions;
+    auto next_previous_animation_revisions = previous_animation_revisions;
+    auto next_animation_generations = animation_generations;
+    auto next_previous_models = previous_model_instances_data;
+    auto next_history_valid = model_history_valid;
+    for (uint32_t instance = 0; instance < model_asset_ids.size(); ++instance) {
+        const auto found = by_asset.find(model_asset_ids[instance].value);
+        if (found == by_asset.end()) continue;
+        const auto &replacement = *found->second;
+        for (const auto &material : replacement.material_primitives) {
+            for (const auto &primitive : material.primitives) {
+                rebuilt.push_back(RenderCommand{
+                    .command = vk::DrawIndexedIndirectCommand{
+                        primitive.index_count, 1, primitive.index_offset,
+                        primitive.vert_offset, instance},
+                    .material = material.material,
+                    .skinned = primitive.skinned,
+                });
+            }
+        }
+
+        const auto &rest_palette = rest_palettes.at(model_asset_ids[instance].value);
+        next_skin_palettes[instance] = rest_palette;
+        next_previous_skin_palettes[instance] = rest_palette;
+        if (!rest_palette.empty()) {
+            GET_MODULE(VulkanManageCore).writeBuf(
+                skin_palette_buffer, rest_palette.data(),
+                sizeof(glm::mat4) * maxSkinJoints * instance,
+                sizeof(glm::mat4) * rest_palette.size());
+        }
+        next_animation_revisions[instance] = 0;
+        next_previous_animation_revisions[instance] = 0;
+        if (++next_animation_generations[instance] == 0)
+            ++next_animation_generations[instance];
+        next_previous_models[instance] = model_instances_data[instance];
+        next_history_valid[instance] = false;
+    }
+    render_commands = std::move(rebuilt);
+    skin_palettes = std::move(next_skin_palettes);
+    previous_skin_palettes = std::move(next_previous_skin_palettes);
+    animation_revisions = std::move(next_animation_revisions);
+    previous_animation_revisions = std::move(next_previous_animation_revisions);
+    animation_generations = std::move(next_animation_generations);
+    previous_model_instances_data = std::move(next_previous_models);
+    model_history_valid = std::move(next_history_valid);
+}
+
+void PolygonInstanceContainer::rebuildModelInstances(
+    ModelAssetId asset_id, const ModelTemplate &replacement) {
+    const ModelInstanceRebuild request{asset_id, &replacement};
+    rebuildModelInstances(std::span{&request, std::size_t{1}});
+}
+
+size_t PolygonInstanceContainer::instanceCountForAssetForTesting(ModelAssetId asset_id) const {
+    return static_cast<size_t>(std::count(model_asset_ids.begin(), model_asset_ids.end(), asset_id));
 }
 
 void PolygonInstanceContainer::setSkinningPalette(ModelInstanceId id,

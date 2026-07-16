@@ -1,7 +1,12 @@
 #include "vertbufcontainer.hpp"
 #include "../vkcore/core.hpp"
+#include "../vkcore/deletionqueue.hpp"
 #include "../vkcore/util.hpp"
+#include <algorithm>
+#include <limits>
 #include <numeric>
+#include <stdexcept>
+#include <utility>
 
 namespace Pelican {
 
@@ -39,138 +44,277 @@ VertBufContainer::VertBufContainer()
       vertices_mem_pool{createVertBuf(GET_MODULE(VulkanManageCore), vertices_cap)},
       skin_vertices_mem_pool{createSkinVertBuf(GET_MODULE(VulkanManageCore), skin_vertices_cap)} {}
 
-ModelTemplate::PrimitiveRefInfo VertBufContainer::addPrimitiveEntry(CommonPolygonVertData &&data) {
-    uint32_t vert_count = static_cast<uint32_t>(data.pos.size());
-    if (vert_count == 0) {
-        LOG_ERROR(logger, "invalid primitive: empty vertices position data");
-        throw std::runtime_error("invalid model data");
+uint32_t VertBufContainer::allocateRange(std::vector<FreeRange> &free_ranges,
+                                         uint32_t &high_water, uint32_t count) {
+    if (count == 0) throw std::runtime_error("cannot allocate an empty model buffer range");
+    for (auto it = free_ranges.begin(); it != free_ranges.end(); ++it) {
+        if (it->size < count) continue;
+        const auto offset = it->offset;
+        it->offset += count;
+        it->size -= count;
+        if (it->size == 0) free_ranges.erase(it);
+        return offset;
     }
+    if (count > std::numeric_limits<uint32_t>::max() - high_water)
+        throw std::runtime_error("model buffer address space exhausted");
+    const auto offset = high_water;
+    high_water += count;
+    return offset;
+}
+
+void VertBufContainer::releaseRange(std::vector<FreeRange> &free_ranges,
+                                    uint32_t offset, uint32_t count) {
+    if (count == 0) return;
+    free_ranges.push_back({offset, count});
+    std::sort(free_ranges.begin(), free_ranges.end(), [](const auto &left, const auto &right) {
+        return left.offset < right.offset;
+    });
+    std::vector<FreeRange> merged;
+    merged.reserve(free_ranges.size());
+    for (const auto range : free_ranges) {
+        if (!merged.empty() && merged.back().offset + merged.back().size >= range.offset) {
+            const auto end = std::max(merged.back().offset + merged.back().size,
+                                      range.offset + range.size);
+            merged.back().size = end - merged.back().offset;
+        } else {
+            merged.push_back(range);
+        }
+    }
+    free_ranges = std::move(merged);
+}
+
+namespace {
+void deferOldBuffer(BufferWrapper buffer) {
+    if (auto *queue = FastModuleContainer::tryGet<DeletionQueue>()) {
+        queue->defer(std::move(buffer));
+    }
+}
+
+void validateVertexStreams(const CommonPolygonVertData &data, bool skinned) {
+    const auto count = data.pos.size();
+    if (count == 0 || count > std::numeric_limits<uint32_t>::max())
+        throw std::runtime_error("invalid primitive: POSITION stream is empty or too large");
+    const auto optionalMatches = [count](std::size_t size) { return size == 0 || size == count; };
+    if (!optionalMatches(data.normal.size()) || !optionalMatches(data.tangent.size()) ||
+        !optionalMatches(data.texcoord.size()) || !optionalMatches(data.color.size())) {
+        throw std::runtime_error("invalid primitive: vertex attribute counts do not match POSITION");
+    }
+    if (skinned && (data.joint.size() != count || data.weight.size() != count)) {
+        throw std::runtime_error(
+            "invalid skinned primitive: POSITION, JOINTS_0, and WEIGHTS_0 counts must match");
+    }
+}
+} // namespace
+
+void VertBufContainer::ensureIndexCapacity(uint32_t required) {
+    if (required <= indices_cap) return;
+    const auto old_cap = indices_cap;
+    auto replacement_cap = indices_cap;
+    while (required > replacement_cap) {
+        if (replacement_cap > std::numeric_limits<uint32_t>::max() / 2)
+            throw std::runtime_error("model index buffer capacity exhausted");
+        replacement_cap <<= 1;
+    }
+    auto replacement = createIndexBuf(GET_MODULE(VulkanManageCore), replacement_cap);
+    GET_MODULE(VulkanUtils).bufferCopy(indices_mem_pool, replacement, 0, 0,
+                                       sizeof(uint32_t) * old_cap);
+    auto old = std::move(indices_mem_pool);
+    indices_mem_pool = std::move(replacement);
+    indices_cap = replacement_cap;
+    deferOldBuffer(std::move(old));
+    LOG_INFO(logger, "VertBufContainer: reallocated index buffer");
+}
+
+void VertBufContainer::ensureVertexCapacity(uint32_t required, bool skinned) {
+    auto &capacity = skinned ? skin_vertices_cap : vertices_cap;
+    if (required <= capacity) return;
+    const auto old_cap = capacity;
+    auto replacement_cap = capacity;
+    while (required > replacement_cap) {
+        if (replacement_cap > std::numeric_limits<uint32_t>::max() / 2)
+            throw std::runtime_error("model vertex buffer capacity exhausted");
+        replacement_cap <<= 1;
+    }
+    if (skinned) {
+        auto replacement = createSkinVertBuf(GET_MODULE(VulkanManageCore), replacement_cap);
+        GET_MODULE(VulkanUtils).bufferCopy(skin_vertices_mem_pool, replacement, 0, 0,
+                                           sizeof(CommonSkinningVertStruct) * old_cap);
+        auto old = std::move(skin_vertices_mem_pool);
+        skin_vertices_mem_pool = std::move(replacement);
+        capacity = replacement_cap;
+        deferOldBuffer(std::move(old));
+    } else {
+        auto replacement = createVertBuf(GET_MODULE(VulkanManageCore), replacement_cap);
+        GET_MODULE(VulkanUtils).bufferCopy(vertices_mem_pool, replacement, 0, 0,
+                                           sizeof(CommonVertStruct) * old_cap);
+        auto old = std::move(vertices_mem_pool);
+        vertices_mem_pool = std::move(replacement);
+        capacity = replacement_cap;
+        deferOldBuffer(std::move(old));
+    }
+    LOG_INFO(logger, "VertBufContainer: reallocated {} vertex buffer",
+             skinned ? "skinned" : "static");
+}
+
+ModelGeometryAllocation VertBufContainer::addPrimitiveAllocation(CommonPolygonVertData &&data) {
+    validateVertexStreams(data, false);
+    const auto vertex_count = static_cast<uint32_t>(data.pos.size());
     if (data.indices.empty()) {
-        data.indices.resize(vert_count);
+        data.indices.resize(vertex_count);
         std::iota(data.indices.begin(), data.indices.end(), 0);
     }
-    ModelTemplate::PrimitiveRefInfo info{
-        .index_count = static_cast<uint32_t>(data.indices.size()),
-        .index_offset = indices_offset,
-        .vert_offset = vertices_offset,
-    };
-    if (const auto req = info.index_offset + info.index_count; req > indices_cap) {
-        const auto old_cap = indices_cap;
-        while (req > indices_cap)
-            indices_cap <<= 1;
-        auto new_indices_mem_pool = createIndexBuf(GET_MODULE(VulkanManageCore), indices_cap);
-        GET_MODULE(VulkanUtils).bufferCopy(indices_mem_pool, new_indices_mem_pool, 0, 0, sizeof(uint32_t) * old_cap);
-        std::swap(indices_mem_pool, new_indices_mem_pool);
-        LOG_INFO(logger, "VertBufContainer: reallocated index buffer");
-    }
-    if (const auto req = info.vert_offset + data.pos.size(); req > vertices_cap) {
-        const auto old_cap = vertices_cap;
-        while (req > vertices_cap)
-            vertices_cap <<= 1;
-        auto new_vertices_mem_pool = createVertBuf(GET_MODULE(VulkanManageCore), vertices_cap);
-        GET_MODULE(VulkanUtils).bufferCopy(vertices_mem_pool, new_vertices_mem_pool, 0, 0,
-                                          sizeof(CommonVertStruct) * old_cap);
-        std::swap(vertices_mem_pool, new_vertices_mem_pool);
-        LOG_INFO(logger, "VertBufContainer: reallocated vertex buffer");
-    }
+    if (data.indices.size() > std::numeric_limits<uint32_t>::max())
+        throw std::runtime_error("model primitive index stream is too large");
+    const auto index_count = static_cast<uint32_t>(data.indices.size());
+    const auto index_offset = allocateRange(free_indices, indices_offset, index_count);
+    uint32_t vertex_offset = 0;
+    bool vertex_allocated = false;
+    try {
+        vertex_offset = allocateRange(free_vertices, vertices_offset, vertex_count);
+        vertex_allocated = true;
+        if (vertex_offset > static_cast<uint32_t>(std::numeric_limits<int32_t>::max()))
+            throw std::runtime_error("model vertex offset exceeds Vulkan draw range");
+        ensureIndexCapacity(index_offset + index_count);
+        ensureVertexCapacity(vertex_offset + vertex_count, false);
 
-    std::vector<CommonVertStruct> tmp_buf(vert_count);
+        std::vector<CommonVertStruct> vertices(vertex_count);
+        for (uint32_t i = 0; i < vertex_count; ++i) {
+            vertices[i].pos = data.pos[i];
+            vertices[i].normal = data.normal.empty() ? glm::vec3{0.0f} : data.normal[i];
+            vertices[i].tangent = data.tangent.empty() ? glm::vec4{0.0f} : data.tangent[i];
+            vertices[i].texcoord = data.texcoord.empty() ? glm::vec2{0.0f} : data.texcoord[i];
+            vertices[i].color = data.color.empty() ? glm::vec4{1.0f} : data.color[i];
+        }
+        GET_MODULE(VulkanManageCore).writeBuf(indices_mem_pool, data.indices.data(),
+                                              sizeof(uint32_t) * index_offset,
+                                              sizeof(uint32_t) * index_count);
+        GET_MODULE(VulkanManageCore).writeBuf(vertices_mem_pool, vertices.data(),
+                                              sizeof(CommonVertStruct) * vertex_offset,
+                                              sizeof(CommonVertStruct) * vertex_count);
+    } catch (...) {
+        releaseRange(free_indices, index_offset, index_count);
+        if (vertex_allocated) releaseRange(free_vertices, vertex_offset, vertex_count);
+        throw;
+    }
+    return {{index_count, index_offset, static_cast<int32_t>(vertex_offset), false},
+            vertex_count};
+}
 
-    for (uint32_t i = 0; i < vert_count; i++)
-        tmp_buf[i].pos = data.pos[i];
+ModelGeometryAllocation VertBufContainer::addSkinnedPrimitiveAllocation(CommonPolygonVertData &&data) {
+    validateVertexStreams(data, true);
+    const auto vertex_count = static_cast<uint32_t>(data.pos.size());
+    if (data.indices.empty()) {
+        data.indices.resize(vertex_count);
+        std::iota(data.indices.begin(), data.indices.end(), 0);
+    }
+    if (data.indices.size() > std::numeric_limits<uint32_t>::max())
+        throw std::runtime_error("model primitive index stream is too large");
+    const auto index_count = static_cast<uint32_t>(data.indices.size());
+    const auto index_offset = allocateRange(free_indices, indices_offset, index_count);
+    uint32_t vertex_offset = 0;
+    bool vertex_allocated = false;
+    try {
+        vertex_offset = allocateRange(free_skin_vertices, skin_vertices_offset, vertex_count);
+        vertex_allocated = true;
+        if (vertex_offset > static_cast<uint32_t>(std::numeric_limits<int32_t>::max()))
+            throw std::runtime_error("skinned model vertex offset exceeds Vulkan draw range");
+        ensureIndexCapacity(index_offset + index_count);
+        ensureVertexCapacity(vertex_offset + vertex_count, true);
 
-    if (!data.normal.empty()) {
-        for (uint32_t i = 0; i < vert_count; i++)
-            tmp_buf[i].normal = data.normal[i];
-    } else {
-        for (uint32_t i = 0; i < vert_count; i++)
-            tmp_buf[i].normal = glm::vec3(0.0, 0.0, 0.0);
+        std::vector<CommonSkinningVertStruct> vertices(vertex_count);
+        for (uint32_t i = 0; i < vertex_count; ++i) {
+            auto &vertex = vertices[i];
+            vertex.pos = data.pos[i];
+            vertex.normal = data.normal.empty() ? glm::vec3{0.0f} : data.normal[i];
+            vertex.tangent = data.tangent.empty() ? glm::vec4{0.0f} : data.tangent[i];
+            vertex.texcoord = data.texcoord.empty() ? glm::vec2{0.0f} : data.texcoord[i];
+            vertex.color = data.color.empty() ? glm::vec4{1.0f} : data.color[i];
+            vertex.joint = data.joint[i];
+            vertex.weight = data.weight[i];
+            const float sum = vertex.weight.x + vertex.weight.y + vertex.weight.z + vertex.weight.w;
+            if (sum > 0.0f) vertex.weight /= sum;
+        }
+        GET_MODULE(VulkanManageCore).writeBuf(indices_mem_pool, data.indices.data(),
+                                              sizeof(uint32_t) * index_offset,
+                                              sizeof(uint32_t) * index_count);
+        GET_MODULE(VulkanManageCore).writeBuf(skin_vertices_mem_pool, vertices.data(),
+                                              sizeof(CommonSkinningVertStruct) * vertex_offset,
+                                              sizeof(CommonSkinningVertStruct) * vertex_count);
+    } catch (...) {
+        releaseRange(free_indices, index_offset, index_count);
+        if (vertex_allocated)
+            releaseRange(free_skin_vertices, vertex_offset, vertex_count);
+        throw;
     }
-    if (!data.tangent.empty()) {
-        for (uint32_t i = 0; i < vert_count; i++)
-            tmp_buf[i].tangent = data.tangent[i];
-    } else {
-        for (uint32_t i = 0; i < vert_count; i++)
-            tmp_buf[i].tangent = glm::vec4(0.0, 0.0, 0.0, 0.0);
-    }
-    if (!data.texcoord.empty()) {
-        for (uint32_t i = 0; i < vert_count; i++)
-            tmp_buf[i].texcoord = data.texcoord[i];
-    } else {
-        for (uint32_t i = 0; i < vert_count; i++)
-            tmp_buf[i].texcoord = glm::vec2(0.0, 0.0);
-    }
-    if (!data.color.empty()) {
-        for (uint32_t i = 0; i < vert_count; i++)
-            tmp_buf[i].color = data.color[i];
-    } else {
-        for (uint32_t i = 0; i < vert_count; i++)
-            tmp_buf[i].color = glm::vec4(1.0, 1.0, 1.0, 1.0);
-    }
+    return {{index_count, index_offset, static_cast<int32_t>(vertex_offset), true},
+            vertex_count};
+}
 
-    GET_MODULE(VulkanManageCore).writeBuf(indices_mem_pool, data.indices.data(), sizeof(uint32_t) * indices_offset,
-                                         sizeof(uint32_t) * data.indices.size());
-    GET_MODULE(VulkanManageCore).writeBuf(vertices_mem_pool, tmp_buf.data(), sizeof(CommonVertStruct) * vertices_offset,
-                                         sizeof(CommonVertStruct) * vert_count);
-    indices_offset += info.index_count;
-    vertices_offset += vert_count;
-    return info;
+ModelTemplate::PrimitiveRefInfo VertBufContainer::addPrimitiveEntry(CommonPolygonVertData &&data) {
+    return addPrimitiveAllocation(std::move(data)).primitive;
 }
 
 ModelTemplate::PrimitiveRefInfo VertBufContainer::addSkinnedPrimitiveEntry(CommonPolygonVertData &&data) {
-    const auto vert_count = static_cast<uint32_t>(data.pos.size());
-    if (vert_count == 0 || data.joint.size() != vert_count || data.weight.size() != vert_count) {
-        throw std::runtime_error("invalid skinned primitive: POSITION, JOINTS_0, and WEIGHTS_0 counts must match");
-    }
-    if (data.indices.empty()) {
-        data.indices.resize(vert_count);
-        std::iota(data.indices.begin(), data.indices.end(), 0);
-    }
-    ModelTemplate::PrimitiveRefInfo info{
-        .index_count = static_cast<uint32_t>(data.indices.size()),
-        .index_offset = indices_offset,
-        .vert_offset = skin_vertices_offset,
-        .skinned = true,
-    };
-    if (const auto req = info.index_offset + info.index_count; req > indices_cap) {
-        const auto old_cap = indices_cap;
-        while (req > indices_cap) indices_cap <<= 1;
-        auto replacement = createIndexBuf(GET_MODULE(VulkanManageCore), indices_cap);
-        GET_MODULE(VulkanUtils).bufferCopy(indices_mem_pool, replacement, 0, 0,
-                                           sizeof(uint32_t) * old_cap);
-        std::swap(indices_mem_pool, replacement);
-    }
-    if (const auto req = static_cast<uint32_t>(info.vert_offset) + vert_count; req > skin_vertices_cap) {
-        const auto old_cap = skin_vertices_cap;
-        while (req > skin_vertices_cap) skin_vertices_cap <<= 1;
-        auto replacement = createSkinVertBuf(GET_MODULE(VulkanManageCore), skin_vertices_cap);
-        GET_MODULE(VulkanUtils).bufferCopy(skin_vertices_mem_pool, replacement, 0, 0,
-                                           sizeof(CommonSkinningVertStruct) * old_cap);
-        std::swap(skin_vertices_mem_pool, replacement);
-    }
+    return addSkinnedPrimitiveAllocation(std::move(data)).primitive;
+}
 
-    std::vector<CommonSkinningVertStruct> vertices(vert_count);
-    for (uint32_t i = 0; i < vert_count; ++i) {
-        auto &vertex = vertices[i];
-        vertex.pos = data.pos[i];
-        vertex.normal = data.normal.empty() ? glm::vec3{0.0f} : data.normal[i];
-        vertex.tangent = data.tangent.empty() ? glm::vec4{0.0f} : data.tangent[i];
-        vertex.texcoord = data.texcoord.empty() ? glm::vec2{0.0f} : data.texcoord[i];
-        vertex.color = data.color.empty() ? glm::vec4{1.0f} : data.color[i];
-        vertex.joint = data.joint[i];
-        vertex.weight = data.weight[i];
-        const float sum = vertex.weight.x + vertex.weight.y + vertex.weight.z + vertex.weight.w;
-        if (sum > 0.0f) vertex.weight /= sum;
+void VertBufContainer::releaseGeometryNow(
+    std::span<const ModelGeometryAllocation> allocations) noexcept {
+    try {
+        for (const auto &allocation : allocations) {
+            releaseRange(free_indices, allocation.primitive.index_offset,
+                         allocation.primitive.index_count);
+            releaseRange(allocation.primitive.skinned ? free_skin_vertices : free_vertices,
+                         static_cast<uint32_t>(allocation.primitive.vert_offset),
+                         allocation.vertex_count);
+        }
+    } catch (...) {
+        if (logger) LOG_ERROR(logger, "failed to return retired model geometry ranges");
     }
-    GET_MODULE(VulkanManageCore).writeBuf(indices_mem_pool, data.indices.data(),
-                                         sizeof(uint32_t) * indices_offset,
-                                         sizeof(uint32_t) * data.indices.size());
-    GET_MODULE(VulkanManageCore).writeBuf(skin_vertices_mem_pool, vertices.data(),
-                                         sizeof(CommonSkinningVertStruct) * skin_vertices_offset,
-                                         sizeof(CommonSkinningVertStruct) * vert_count);
-    indices_offset += info.index_count;
-    skin_vertices_offset += static_cast<int32_t>(vert_count);
-    return info;
+}
+
+void VertBufContainer::releaseModelGeometry(
+    std::vector<ModelGeometryAllocation> allocations, bool deferred) noexcept {
+    if (allocations.empty()) return;
+    if (deferred) {
+        struct DeferredRelease {
+            VertBufContainer *owner{};
+            std::weak_ptr<int> lifetime;
+            std::vector<ModelGeometryAllocation> allocations;
+            DeferredRelease(VertBufContainer *value,
+                            std::weak_ptr<int> guard,
+                            std::vector<ModelGeometryAllocation> ranges)
+                : owner{value}, lifetime{std::move(guard)}, allocations{std::move(ranges)} {}
+            DeferredRelease(DeferredRelease &&other) noexcept
+                : owner{std::exchange(other.owner, nullptr)},
+                  lifetime{std::move(other.lifetime)},
+                  allocations{std::move(other.allocations)} {}
+            DeferredRelease &operator=(DeferredRelease &&) = delete;
+            DeferredRelease(const DeferredRelease &) = delete;
+            ~DeferredRelease() {
+                if (owner && !lifetime.expired())
+                    owner->releaseModelGeometry(std::move(allocations), false);
+            }
+        };
+        if (auto *queue = FastModuleContainer::tryGet<DeletionQueue>()) {
+            queue->defer(DeferredRelease{this, lifetime_token, std::move(allocations)});
+            return;
+        }
+    }
+    releaseGeometryNow(allocations);
+}
+
+size_t VertBufContainer::allocatedIndexCountForTesting() const {
+    size_t free = 0;
+    for (const auto range : free_indices) free += range.size;
+    return indices_offset - free;
+}
+
+size_t VertBufContainer::allocatedVertexCountForTesting(bool skinned) const {
+    const auto &ranges = skinned ? free_skin_vertices : free_vertices;
+    size_t free = 0;
+    for (const auto range : ranges) free += range.size;
+    return (skinned ? skin_vertices_offset : vertices_offset) - free;
 }
 
 void VertBufContainer::bindVertexBuffer(vk::CommandBuffer cmd_buf, bool skinned) const {

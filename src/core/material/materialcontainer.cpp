@@ -6,6 +6,7 @@
 #include "../shader/pipelinefactory.hpp"
 #include "../shader/surfacecompiler.hpp"
 #include "../vkcore/core.hpp"
+#include "../vkcore/deletionqueue.hpp"
 #include "../vkcore/util.hpp"
 #include "../watch/reloadservice.hpp"
 #include "standardmaterialresource.hpp"
@@ -382,6 +383,9 @@ GlobalTextureId MaterialContainer::registerReloadableTextureFile(
 }
 
 GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
+    if (materials.size() >= maxMaterials) {
+        throw std::runtime_error("Material capacity exceeded");
+    }
     validateMaterialCapabilities(info);
     const auto pipeline_key = makePipelineKey(info);
     auto pipeline_it = pipelines.find(pipeline_key);
@@ -509,17 +513,116 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         .custom_values = info.custom_values,
         .descriptor_revision = 0,
         .descset = std::move(descset),
-    });
-    if (material_id.value < 0 || static_cast<size_t>(material_id.value) >= maxMaterials) {
-        throw std::runtime_error("Material capacity exceeded");
+    }, static_cast<GlobalMaterialId::BaseType>(maxMaterials));
+    try {
+        if (material_id.value < 0 || static_cast<size_t>(material_id.value) >= maxMaterials) {
+            throw std::runtime_error("Material capacity exceeded");
+        }
+        GET_MODULE(VulkanManageCore)
+            .writeBuf(material_buffer, &gpu_data, sizeof(MaterialGpuData) * material_id.value,
+                      sizeof(gpu_data));
+        for (const auto &binding : materials.get(material_id).texture_bindings) {
+            texture_materials[binding.texture].insert(material_id);
+        }
+        if (texture_reload_handler) texture_reload_handler->materialRegistered(material_id);
+    } catch (...) {
+        for (auto it = texture_materials.begin(); it != texture_materials.end();) {
+            it->second.erase(material_id);
+            if (it->second.empty()) it = texture_materials.erase(it);
+            else ++it;
+        }
+        (void)materials.extract(material_id);
+        throw;
     }
-    GET_MODULE(VulkanManageCore)
-        .writeBuf(material_buffer, &gpu_data, sizeof(MaterialGpuData) * material_id.value, sizeof(gpu_data));
-    for (const auto &binding : materials.get(material_id).texture_bindings) {
-        texture_materials[binding.texture].insert(material_id);
-    }
-    if (texture_reload_handler) texture_reload_handler->materialRegistered(material_id);
     return material_id;
+}
+
+void MaterialContainer::releaseModelResources(
+    std::vector<GlobalMaterialId> material_ids,
+    std::vector<GlobalTextureId> texture_ids, bool deferred) noexcept {
+    try {
+        struct RetiredResources {
+            std::vector<GlobalMaterialId> material_ids;
+            std::vector<InternalMaterialInfo> materials;
+            std::vector<InternalTextureResource> textures;
+            std::function<void()> recycle_material_ids;
+
+            RetiredResources() = default;
+            RetiredResources(const RetiredResources &) = delete;
+            RetiredResources &operator=(const RetiredResources &) = delete;
+            RetiredResources(RetiredResources &&other) noexcept
+                : material_ids{std::move(other.material_ids)},
+                  materials{std::move(other.materials)},
+                  textures{std::move(other.textures)},
+                  recycle_material_ids{std::exchange(other.recycle_material_ids, {})} {}
+            RetiredResources &operator=(RetiredResources &&) = delete;
+            ~RetiredResources() noexcept {
+                if (!recycle_material_ids) return;
+                try {
+                    recycle_material_ids();
+                } catch (const std::exception &error) {
+                    if (logger)
+                        LOG_ERROR(logger, "failed to recycle retired model material slots: {}",
+                                  error.what());
+                } catch (...) {
+                    if (logger)
+                        LOG_ERROR(logger, "failed to recycle retired model material slots");
+                }
+            }
+        } retired;
+        retired.material_ids.reserve(material_ids.size());
+        retired.materials.reserve(material_ids.size());
+        retired.textures.reserve(texture_ids.size());
+
+        for (const auto material : material_ids) {
+            if (!materials.contains(material)) continue;
+            const auto bindings = materials.get(material).texture_bindings;
+            for (const auto &binding : bindings) {
+                const auto found = texture_materials.find(binding.texture);
+                if (found == texture_materials.end()) continue;
+                found->second.erase(material);
+                if (found->second.empty()) texture_materials.erase(found);
+            }
+            auto value = materials.extract(material, !deferred);
+            if (value) {
+                if (deferred) retired.material_ids.push_back(material);
+                retired.materials.push_back(std::move(*value));
+            }
+        }
+
+        for (const auto texture : texture_ids) {
+            const auto reverse = texture_materials.find(texture);
+            if (reverse != texture_materials.end() && !reverse->second.empty()) {
+                if (logger) {
+                    LOG_ERROR(logger,
+                              "model texture {} still has {} material references during retirement",
+                              texture.value, reverse->second.size());
+                }
+                continue;
+            }
+            texture_materials.erase(texture);
+            auto value = textures.extract(texture);
+            if (value) retired.textures.push_back(std::move(*value));
+        }
+
+        if (!retired.material_ids.empty()) {
+            retired.recycle_material_ids =
+                [this, lifetime = std::weak_ptr<int>{lifetime_token},
+                 ids = retired.material_ids] {
+                    if (lifetime.expired()) return;
+                    for (const auto id : ids) materials.recycle(id);
+                };
+        }
+        if (deferred && (!retired.materials.empty() || !retired.textures.empty())) {
+            if (auto *queue = FastModuleContainer::tryGet<DeletionQueue>()) {
+                queue->defer(std::move(retired));
+            }
+        }
+    } catch (const std::exception &error) {
+        if (logger) LOG_ERROR(logger, "failed to release model material resources: {}", error.what());
+    } catch (...) {
+        if (logger) LOG_ERROR(logger, "failed to release model material resources");
+    }
 }
 
 namespace {
@@ -739,6 +842,8 @@ size_t MaterialContainer::referencingMaterialCountForTesting(GlobalTextureId tex
     const auto found = texture_materials.find(texture);
     return found == texture_materials.end() ? 0 : found->second.size();
 }
+
+size_t MaterialContainer::materialCapacityForTesting() const { return maxMaterials; }
 
 bool MaterialContainer::handlesTextureReload(const watch::AssetKey &key) const {
     return texture_reload_handler && texture_reload_handler->handles(key);

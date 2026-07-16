@@ -33,7 +33,8 @@ inline void writeBytes(const std::filesystem::path &path, const std::vector<uint
 
 } // namespace detail
 
-inline std::vector<uint8_t> makeGlb(bool duplicate_root_names = false) {
+inline std::vector<uint8_t> makeGlb(bool duplicate_root_names = false,
+                                    bool geometry_only = false) {
     std::vector<uint8_t> bin;
     for (const float value : {
              -0.5f, -0.5f, 0.0f,
@@ -48,7 +49,7 @@ inline std::vector<uint8_t> makeGlb(bool duplicate_root_names = false) {
         "data:image/png;base64,"
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFgAI/"
         "ScLx2QAAAABJRU5ErkJggg==";
-    const nlohmann::json json{
+    nlohmann::json json{
         {"asset", {{"version", "2.0"}, {"generator", "pelican WP77 fixture"}}},
         {"scene", 0},
         {"scenes", {{{"nodes", {0, 2}}}}},
@@ -91,6 +92,14 @@ inline std::vector<uint8_t> makeGlb(bool duplicate_root_names = false) {
            {"min", {-0.5, -0.5, 0.0}},
            {"max", {0.5, 0.5, 0.0}}}}},
     };
+    if (geometry_only) {
+        json.erase("materials");
+        json.erase("images");
+        json.erase("textures");
+        for (auto &mesh : json["meshes"]) {
+            for (auto &primitive : mesh["primitives"]) primitive.erase("material");
+        }
+    }
 
     auto json_bytes = json.dump();
     while (json_bytes.size() % 4 != 0) {
@@ -114,8 +123,9 @@ inline std::vector<uint8_t> makeGlb(bool duplicate_root_names = false) {
     return glb;
 }
 
-inline void writeGlb(const std::filesystem::path &path, bool duplicate_root_names = false) {
-    detail::writeBytes(path, makeGlb(duplicate_root_names));
+inline void writeGlb(const std::filesystem::path &path, bool duplicate_root_names = false,
+                     bool geometry_only = false) {
+    detail::writeBytes(path, makeGlb(duplicate_root_names, geometry_only));
 }
 
 } // namespace Pelican::TestGltfFragmentFixture

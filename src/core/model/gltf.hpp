@@ -28,8 +28,16 @@ DECLARE_MODULE(GltfLoader) {
     GltfLoader();
     PreparedGltf prepareGltfBinary(std::string path,
                                    std::optional<AssetFragmentRef> fragment = std::nullopt) const;
+    PreparedGltf prepareGltfBinarySceneNode(std::string path,
+                                            AssetFragmentRef fragment) const;
     PreparedGltf prepareGltf(std::string path,
                              std::optional<AssetFragmentRef> fragment = std::nullopt) const;
+    // Runs fragment selection, accessor extraction, rig construction, and
+    // primitive/material validation without allocating or uploading GPU
+    // resources. The returned template contains candidate topology/rig data
+    // with synthetic draw handles and is suitable for reload compatibility
+    // checks only.
+    ModelTemplate inspect(const PreparedGltf &prepared) const;
     ModelTemplate commit(PreparedGltf prepared) const;
     ModelTemplate loadGltfBinary(std::string path,
                                  std::optional<AssetFragmentRef> fragment = std::nullopt);
@@ -37,5 +45,10 @@ DECLARE_MODULE(GltfLoader) {
     ModelTemplate loadGltf(std::string path,
                            std::optional<AssetFragmentRef> fragment = std::nullopt);
 };
+
+// Returns a failed candidate immediately. When deferred is true, material
+// slots, Vulkan objects, and geometry ranges remain unavailable/alive for the
+// configured in-flight window as required by their command-buffer lifetime.
+void releaseModelGpuResources(ModelTemplate &model, bool deferred) noexcept;
 
 } // namespace Pelican

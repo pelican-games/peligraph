@@ -1,5 +1,6 @@
 #include "reloadservice.hpp"
 
+#include "../asset/model.hpp"
 #include "../gamelogic/gamelogicreload.hpp"
 #include "../launchconfig.hpp"
 #include "../loader/pathresolver.hpp"
@@ -346,6 +347,31 @@ void ReloadService::ensureBuiltInParticipants() {
                 },
             },
         });
+    }
+
+    auto *models = FastModuleContainer::tryGet<ModelAssetContainer>();
+    const bool model_participant_registered = has_participant(modelReloadParticipantName);
+    if (models != model_participant_source_ ||
+        (models != nullptr && !model_participant_registered)) {
+        if (model_participant_registered) unregisterParticipant(modelReloadParticipantName);
+        model_participant_source_ = models;
+        if (models != nullptr) {
+            models->attachReloadCoordinator(transactions_);
+            registerParticipant(ReloadParticipant{
+                .name = std::string{modelReloadParticipantName},
+                .claims = [models](const ReloadRequest &request) {
+                    return models->handlesReload(request.key);
+                },
+                .enqueue = [models](const ReloadRequest &request,
+                                    ReloadCoordinator &coordinator) {
+                    return models->enqueueReload(request, coordinator);
+                },
+                .retire = [models](std::shared_ptr<const void> payload,
+                                   ReloadCoordinator &coordinator) noexcept {
+                    return models->retireReloadPayload(std::move(payload), coordinator);
+                },
+            });
+        }
     }
 
     auto *materials = FastModuleContainer::tryGet<MaterialContainer>();

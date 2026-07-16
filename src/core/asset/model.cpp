@@ -1,89 +1,445 @@
 #include "model.hpp"
+
+#include "../animation/animationservice.hpp"
 #include "../loader/basicconfig.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../model/gltf.hpp"
 #include "../parallel_prepare.hpp"
+#include "../renderer/polygoninstancecontainer.hpp"
 #include "../startup.hpp"
+#include "../watch/assetkey.hpp"
+#include "../watch/reloadqueue.hpp"
+#include "../watch/reloadtransaction.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
+#include <map>
 #include <nlohmann/json.hpp>
+#include <set>
 #include <stdexcept>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
 #include <variant>
+#include <vector>
 
 namespace Pelican {
-
 namespace {
+
+constexpr std::string_view modelTemplateTable = "model-template";
+
 struct ModelDeclaration {
     std::string name;
-    std::string path;
+    std::string reference;
+    std::filesystem::path path;
     std::optional<AssetFragmentRef> fragment;
+    watch::AssetKey container_key;
     bool ascii = false;
+    bool scene_node_instance = false;
 };
+
+std::string lowerExtension(const std::filesystem::path &path) {
+    auto result = path.extension().string();
+    std::transform(result.begin(), result.end(), result.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return result;
+}
+
+std::string fragmentText(const std::optional<AssetFragmentRef> &fragment) {
+    return fragment ? fragment->kind + "/" + fragment->path : std::string{};
+}
+
+watch::AssetKey logicalModelSource(std::string_view name) {
+    return {"@runtime/model/" + std::string{name}, {}};
+}
+
+std::size_t fileBytes(const std::filesystem::path &path) {
+    std::error_code error;
+    const auto value = std::filesystem::file_size(path, error);
+    return error ? 0 : static_cast<std::size_t>(value);
+}
+
+bool sameRigLayout(const std::shared_ptr<SkeletalModelData> &left,
+                   const std::shared_ptr<SkeletalModelData> &right) {
+    if (static_cast<bool>(left) != static_cast<bool>(right)) return false;
+    if (!left) return true;
+    if (left->nodes.size() != right->nodes.size() ||
+        left->joint_nodes != right->joint_nodes ||
+        left->skin_bindings.size() != right->skin_bindings.size())
+        return false;
+    for (std::size_t index = 0; index < left->nodes.size(); ++index) {
+        if (left->nodes[index].parent != right->nodes[index].parent ||
+            left->nodes[index].name != right->nodes[index].name)
+            return false;
+    }
+    for (std::size_t index = 0; index < left->skin_bindings.size(); ++index) {
+        const auto &a = left->skin_bindings[index];
+        const auto &b = right->skin_bindings[index];
+        if (a.palette_offset != b.palette_offset || a.joint_count != b.joint_count)
+            return false;
+    }
+    return true;
+}
+
+PreparedGltf prepareDeclaration(const ModelDeclaration &declaration) {
+    // Preparation is used by startup worker threads as well as the frame
+    // owner. GltfLoader is stateless; constructing it locally avoids asking
+    // the module graph for a first initialization while ModelAssetContainer's
+    // constructor is waiting for those workers.
+    GltfLoader loader;
+    if (declaration.ascii)
+        return loader.prepareGltf(declaration.path.string(), declaration.fragment);
+    if (declaration.scene_node_instance && declaration.fragment)
+        return loader.prepareGltfBinarySceneNode(declaration.path.string(),
+                                                 *declaration.fragment);
+    return loader.prepareGltfBinary(declaration.path.string(), declaration.fragment);
+}
+
+ModelDeclaration resolveDeclaration(std::string name, std::string reference,
+                                    bool scene_node_instance) {
+    const auto parsed = parsePathReference(reference);
+    auto &resolver = GET_MODULE(PathResolver);
+    std::filesystem::path physical;
+    std::optional<AssetFragmentRef> fragment = parsed.fragment;
+    watch::AssetKey container_key;
+    const std::filesystem::path parsed_path{parsed.path};
+    // ProjectBasicConfig resolves model references to physical paths before
+    // exposing assetDataJson. On Windows, preserve the root-name check as
+    // well as is_absolute() so a canonical drive path never falls back into
+    // the project-reference parser (which correctly rejects backslashes).
+    if (parsed_path.is_absolute() || parsed_path.has_root_name()) {
+        if (parsed_path.has_root_name() && !parsed_path.has_root_directory())
+            throw std::runtime_error("drive-relative model paths are not supported: " +
+                                     parsed.path);
+        std::error_code canonical_error;
+        physical = std::filesystem::weakly_canonical(parsed_path, canonical_error);
+        if (canonical_error)
+            throw std::runtime_error("failed to normalize model path: " + parsed.path);
+
+        const auto keyUnder = [&](const std::filesystem::path &root,
+                                  std::string_view mount) -> std::optional<watch::AssetKey> {
+            std::error_code relative_error;
+            const auto relative = std::filesystem::relative(physical, root, relative_error);
+            if (relative_error || relative.empty() || relative.is_absolute()) return std::nullopt;
+            for (const auto &component : relative)
+                if (component == "..") return std::nullopt;
+            return watch::makeAssetKey(mount, relative);
+        };
+        for (const auto &store : resolver.stores()) {
+            if (const auto key = keyUnder(store.root, store.mount)) {
+                container_key = *key;
+                break;
+            }
+        }
+        if (container_key.path.empty()) {
+            const auto key = keyUnder(resolver.projectRoot(), {});
+            if (!key)
+                throw std::runtime_error("model path is outside watched project stores: " +
+                                         physical.string());
+            container_key = *key;
+        }
+    } else {
+        const auto resolved = resolver.resolveExistingFileReference(reference);
+        if (const auto *path = std::get_if<std::filesystem::path>(&resolved)) {
+            physical = *path;
+        } else if (const auto *with_fragment = std::get_if<ResolvedPathFragment>(&resolved)) {
+            physical = with_fragment->path;
+            fragment = with_fragment->fragment;
+        } else {
+            throw std::runtime_error("model reference does not resolve to a file: " + reference);
+        }
+        container_key = watch::makeAssetKey(parsed.path);
+    }
+    const auto extension = lowerExtension(physical);
+    // .vrm is a binary glTF container and has always been accepted by the
+    // binary loader path (projects/example の AliciaSolid.vrm が現行利用者).
+    if (extension != ".glb" && extension != ".gltf" && extension != ".vrm")
+        throw std::runtime_error("model reference requires a .glb/.gltf/.vrm file: " + reference);
+    return ModelDeclaration{
+        .name = std::move(name),
+        .reference = std::move(reference),
+        .path = std::move(physical),
+        .fragment = std::move(fragment),
+        .container_key = std::move(container_key),
+        .ascii = extension == ".gltf",
+        .scene_node_instance = scene_node_instance,
+    };
+}
+
 } // namespace
 
-ModelAssetContainer::ModelAssetContainer() {
+struct ModelAssetContainer::Impl {
+    struct PayloadTracker {
+        std::unordered_set<const void *> values;
+    };
+    struct CommitBatch {
+        std::vector<std::string> names;
+        bool instance_capacity_checked = false;
+        bool installed = false;
+    };
+    struct ModelPayload {
+        std::string name;
+        ModelTemplate candidate;
+        std::shared_ptr<CommitBatch> batch;
+        std::shared_ptr<PayloadTracker> tracker;
+        bool owns_candidate = false;
+
+        ~ModelPayload() {
+            if (tracker) tracker->values.erase(this);
+            if (owns_candidate) releaseModelGpuResources(candidate, false);
+        }
+    };
+    struct Record {
+        ModelDeclaration declaration;
+        ModelTemplate model;
+        watch::LogicalResourceRef logical;
+        std::shared_ptr<const void> live_payload;
+        bool declared = false;
+    };
+    struct PendingCandidate {
+        PreparedGltf prepared;
+        ModelTemplate preview;
+        bool rig_changed = false;
+    };
+
+    std::unordered_map<std::string, Record> records;
+    std::map<watch::AssetKey, std::set<std::string>> by_container;
+    watch::ReloadCoordinator *coordinator = nullptr;
+    std::shared_ptr<PayloadTracker> tracker = std::make_shared<PayloadTracker>();
+    std::uint64_t next_asset_identity = 1;
+
+    std::shared_ptr<ModelPayload> makePayload(std::string name) {
+        auto payload = std::make_shared<ModelPayload>();
+        payload->name = std::move(name);
+        payload->tracker = tracker;
+        tracker->values.insert(payload.get());
+        return payload;
+    }
+
+    void declare(Record &record) {
+        if (record.declared || coordinator == nullptr) return;
+        auto payload = makePayload(record.declaration.name);
+        record.logical = coordinator->registry().declareResource(
+            std::string{modelTemplateTable}, logicalModelSource(record.declaration.name), payload,
+            {record.declaration.container_key}, record.model.compatibility_revision,
+            fileBytes(record.declaration.path));
+        record.live_payload = std::move(payload);
+        record.declared = true;
+    }
+
+    void add(ModelDeclaration declaration, ModelTemplate model) {
+        if (records.contains(declaration.name))
+            throw std::runtime_error("duplicate model asset name: " + declaration.name);
+        model.asset_id = ModelAssetId{next_asset_identity++};
+        model.content_revision = 1;
+        model.compatibility_revision = 0;
+        const auto name = declaration.name;
+        const auto key = declaration.container_key;
+        auto [found, inserted] = records.emplace(
+            name, Record{std::move(declaration), std::move(model), {}, {}, false});
+        if (!inserted) throw std::runtime_error("failed to register model asset: " + name);
+        by_container[key].insert(name);
+        declare(found->second);
+    }
+
+    void installBatch(const std::shared_ptr<CommitBatch> &batch) {
+        if (!batch || batch->installed) return;
+        struct Installation {
+            Record *record{};
+            std::shared_ptr<ModelPayload> payload;
+            std::shared_ptr<const void> registry_payload;
+        };
+        std::vector<Installation> installs;
+        installs.reserve(batch->names.size());
+        const auto snapshot = coordinator->registry().snapshot();
+        std::vector<ModelInstanceRebuild> rebuilds;
+        for (const auto &name : batch->names) {
+            auto &record = records.at(name);
+            const auto current = snapshot.find(record.logical);
+            if (!current || !tracker->values.contains(current->payload.get()))
+                throw std::runtime_error("published model reload payload is missing");
+            auto payload = std::static_pointer_cast<const ModelPayload>(current->payload);
+            auto mutable_payload = std::const_pointer_cast<ModelPayload>(payload);
+            if (mutable_payload->batch.get() != batch.get() || !mutable_payload->owns_candidate)
+                throw std::runtime_error("published model reload batch is incomplete");
+            rebuilds.push_back({record.model.asset_id, &mutable_payload->candidate});
+            installs.push_back({&record, std::move(mutable_payload), current->payload});
+        }
+
+        if (auto *instances = FastModuleContainer::tryGet<PolygonInstanceContainer>()) {
+            if (!instances->canRebuildModelInstances(rebuilds))
+                throw std::runtime_error("Render command capacity exceeded by model reload batch");
+            instances->rebuildModelInstances(rebuilds);
+        }
+
+        bool animation_changed = false;
+        std::vector<ModelTemplate> retired;
+        retired.reserve(installs.size());
+        for (auto &install : installs) {
+            animation_changed = animation_changed || install.record->model.skeletal ||
+                                install.payload->candidate.skeletal;
+            retired.push_back(std::move(install.record->model));
+            install.record->model = std::move(install.payload->candidate);
+            install.payload->owns_candidate = false;
+            install.record->live_payload = std::move(install.registry_payload);
+        }
+        batch->installed = true;
+        if (animation_changed) Animation::animationServiceRuntime().reset();
+        for (auto &model : retired) releaseModelGpuResources(model, true);
+    }
+};
+
+ModelAssetContainer::ModelAssetContainer() : impl_{std::make_unique<Impl>()} {
     StartupPhaseTimer startup_timer{&StartupMetrics::addModels};
-
-    const auto model_assets = nlohmann::json::parse(GET_MODULE(ProjectBasicConfig).assetDataJson()).at("models");
+    const auto assets = nlohmann::json::parse(GET_MODULE(ProjectBasicConfig).assetDataJson()).at("models");
     std::vector<ModelDeclaration> declarations;
-    declarations.reserve(model_assets.size());
-    for (const auto &model_asset : model_assets) {
-        const auto model_reference = model_asset.at("path").get<std::string>();
-        const auto parsed_reference = parsePathReference(model_reference);
-        const auto model_path = std::filesystem::path{parsed_reference.path};
-        auto extension = model_path.extension().string();
-        std::transform(extension.begin(), extension.end(), extension.begin(),
-                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-        declarations.push_back(ModelDeclaration{
-            .name = model_asset.at("name").get<std::string>(),
-            .path = model_path.string(),
-            .fragment = parsed_reference.fragment,
-            .ascii = extension == ".gltf",
-        });
+    declarations.reserve(assets.size());
+    for (const auto &asset : assets) {
+        declarations.push_back(resolveDeclaration(asset.at("name").get<std::string>(),
+                                                  asset.at("path").get<std::string>(), false));
     }
-
-    // Parsing, buffer extraction, and stb image decode happen on workers. The
-    // commit loop stays on the main thread and in JSON declaration order;
-    // Vulkan uploads and resource/ECS-visible IDs therefore remain serial and
-    // deterministic even when a later model finishes preparing first.
-    const auto prepared = parallelPrepareOrdered<PreparedGltf>(declarations.size(), [&](std::size_t index) {
-        GltfLoader loader;
-        const auto &declaration = declarations[index];
-        return declaration.ascii
-                   ? loader.prepareGltf(declaration.path, declaration.fragment)
-                   : loader.prepareGltfBinary(declaration.path, declaration.fragment);
-    }, 4);
-
+    const auto prepared = parallelPrepareOrdered<PreparedGltf>(
+        declarations.size(),
+        [&](std::size_t index) { return prepareDeclaration(declarations[index]); }, 4);
     auto &loader = GET_MODULE(GltfLoader);
-    for (std::size_t index = 0; index < declarations.size(); ++index) {
-        model_templates.emplace(declarations[index].name, loader.commit(prepared[index]));
-    }
+    for (std::size_t index = 0; index < declarations.size(); ++index)
+        impl_->add(std::move(declarations[index]), loader.commit(prepared[index]));
+}
+
+ModelAssetContainer::~ModelAssetContainer() {
+    if (!impl_) return;
+    for (auto &[_, record] : impl_->records) releaseModelGpuResources(record.model, false);
 }
 
 ModelTemplate &ModelAssetContainer::getModelTemplateByName(const std::string &name) {
-    if (const auto found = model_templates.find(name); found != model_templates.end()) {
-        return found->second;
-    }
+    if (const auto found = impl_->records.find(name); found != impl_->records.end())
+        return found->second.model;
 
     const auto parsed = parsePathReference(name);
-    if (!parsed.fragment) {
-        return model_templates.at(name);
+    if (!parsed.fragment) throw std::out_of_range("unknown model asset: " + name);
+    auto declaration = resolveDeclaration(name, name, true);
+    auto prepared = prepareDeclaration(declaration);
+    auto model = GET_MODULE(GltfLoader).commit(std::move(prepared));
+    impl_->add(std::move(declaration), std::move(model));
+    return impl_->records.at(name).model;
+}
+
+void ModelAssetContainer::attachReloadCoordinator(watch::ReloadCoordinator &coordinator) {
+    if (impl_->coordinator != nullptr && impl_->coordinator != &coordinator)
+        throw std::runtime_error("ModelAssetContainer cannot change reload coordinator");
+    impl_->coordinator = &coordinator;
+    for (auto &[_, record] : impl_->records) impl_->declare(record);
+}
+
+bool ModelAssetContainer::handlesReload(const watch::AssetKey &key) const {
+    return impl_->by_container.contains(key);
+}
+
+bool ModelAssetContainer::enqueueReload(const watch::ReloadRequest &request,
+                                        watch::ReloadCoordinator &coordinator) {
+    if (&coordinator != impl_->coordinator) throw std::runtime_error("model reload coordinator mismatch");
+    const auto affected = impl_->by_container.find(request.key);
+    if (affected == impl_->by_container.end()) return false;
+
+    auto batch = std::make_shared<Impl::CommitBatch>();
+    batch->names.assign(affected->second.begin(), affected->second.end());
+    auto pending = std::make_shared<std::map<std::string, Impl::PendingCandidate>>();
+    const auto snapshot = coordinator.registry().snapshot();
+    watch::ReloadTransactionGroup group{"model " + watch::assetKeyString(request.key)};
+    for (const auto &name : batch->names) {
+        auto &record = impl_->records.at(name);
+        const auto current = snapshot.find(record.logical);
+        if (!current) throw std::runtime_error("model logical resource is stale: " + name);
+        auto &candidate = (*pending)[name];
+        group.add(watch::ReloadActor{
+            .name = "model template " + name,
+            .target = record.logical,
+            .parse = [request, declaration = record.declaration, pending, name] {
+                if (request.kind == watch::ReloadKind::removed)
+                    throw std::runtime_error("model file is missing: " + declaration.path.string());
+                pending->at(name).prepared = prepareDeclaration(declaration);
+            },
+            .validate = [this, pending, name] {
+                auto &item = pending->at(name);
+                item.preview = GET_MODULE(GltfLoader).inspect(item.prepared);
+                const auto &live = impl_->records.at(name).model;
+                item.rig_changed = !sameRigLayout(live.skeletal, item.preview.skeletal);
+            },
+            .stage = [this, pending, batch, name, current] {
+                if (!batch->instance_capacity_checked) {
+                    std::vector<ModelInstanceRebuild> replacements;
+                    replacements.reserve(batch->names.size());
+                    for (const auto &candidate_name : batch->names) {
+                        const auto &live = impl_->records.at(candidate_name).model;
+                        replacements.push_back({live.asset_id,
+                                                &pending->at(candidate_name).preview});
+                    }
+                    if (auto *instances = FastModuleContainer::tryGet<PolygonInstanceContainer>();
+                        instances && !instances->canRebuildModelInstances(replacements))
+                        throw std::runtime_error("Render command capacity exceeded by model reload batch");
+                    batch->instance_capacity_checked = true;
+                }
+
+                auto &record = impl_->records.at(name);
+                auto &item = pending->at(name);
+                auto model = GET_MODULE(GltfLoader).commit(item.prepared);
+                model.asset_id = record.model.asset_id;
+                model.content_revision = current->content_revision + 1;
+                model.compatibility_revision = current->compatibility_revision +
+                                               (item.rig_changed ? 1u : 0u);
+                auto payload = impl_->makePayload(name);
+                payload->candidate = std::move(model);
+                payload->batch = batch;
+                payload->owns_candidate = true;
+                return watch::StagedResourceData{
+                    payload, {record.declaration.container_key},
+                    payload->candidate.compatibility_revision,
+                    fileBytes(record.declaration.path)};
+            },
+        });
     }
-    const auto resolved = GET_MODULE(PathResolver).resolveExistingFileReference(name);
-    const auto *fragment = std::get_if<ResolvedPathFragment>(&resolved);
-    if (fragment == nullptr) {
-        throw std::runtime_error("model fragment reference did not resolve as a fragment: " + name);
+    coordinator.enqueue(std::move(group));
+    return true;
+}
+
+bool ModelAssetContainer::retireReloadPayload(
+    std::shared_ptr<const void> payload, watch::ReloadCoordinator &coordinator) noexcept {
+    if (&coordinator != impl_->coordinator || !payload ||
+        !impl_->tracker->values.contains(payload.get()))
+        return false;
+    try {
+        std::shared_ptr<Impl::CommitBatch> batch;
+        for (const auto &[_, record] : impl_->records) {
+            if (record.live_payload.get() != payload.get()) continue;
+            const auto current = coordinator.registry().snapshot().find(record.logical);
+            if (!current || !impl_->tracker->values.contains(current->payload.get()))
+                throw std::runtime_error("model reload publication is missing");
+            batch = std::static_pointer_cast<const Impl::ModelPayload>(current->payload)->batch;
+            break;
+        }
+        if (batch) impl_->installBatch(batch);
+        return true;
+    } catch (const std::exception &error) {
+        if (logger) LOG_ERROR(logger, "model reload retirement failed: {}", error.what());
+        return true;
+    } catch (...) {
+        if (logger) LOG_ERROR(logger, "model reload retirement failed with an unknown error");
+        return true;
     }
-    auto extension = fragment->path.extension().string();
-    std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char ch) {
-        return static_cast<char>(std::tolower(ch));
-    });
-    auto &loader = GET_MODULE(GltfLoader);
-    auto loaded = extension == ".gltf"
-                      ? loader.loadGltf(fragment->path.string(), fragment->fragment)
-                      : loader.loadGltfBinarySceneNode(fragment->path.string(), fragment->fragment);
-    return model_templates.emplace(name, std::move(loaded)).first->second;
+}
+
+ModelAssetId ModelAssetContainer::assetIdForTesting(const std::string &name) const {
+    return impl_->records.at(name).model.asset_id;
+}
+
+std::uint64_t ModelAssetContainer::contentRevisionForTesting(const std::string &name) const {
+    return impl_->records.at(name).model.content_revision;
+}
+
+std::uint64_t ModelAssetContainer::compatibilityRevisionForTesting(const std::string &name) const {
+    return impl_->records.at(name).model.compatibility_revision;
 }
 
 } // namespace Pelican

@@ -2693,6 +2693,32 @@ FileWatcher 経路・実 `.surface + .material.json` cross-file atomic fixture**
    剛体・GPU simulation。これらを controller 最小契約へ先取りしない
 7. 詳細と検証記録は `docs/design_reviews/2026-07-16_wp109_report.md`
 
+### WP110: アセット HR2-G — model/fragment hot reload
+
+参照: **`design_asset_hot_reload.md` v2.1 §3-2・§4・§7 HR2-G 行が正**。
+受入条件 = **同一 container の全 fragment を一括 prepare/stage/publishし、
+複数 live instance の identity/Transform/physics を維持したまま描画と skinning を
+差し替える。失敗時は全世代を維持し、rig 変化時は animation/temporal state を
+reset、1000 回 reload 後も資源量が増加しないこと**。
+基盤 = WP77/98/105(済)。状態: **完了(2026-07-16)**。
+
+1. `ModelAssetId`、content revision、rig compatibility revision を分離し、物理
+   container から全 fragment template への reverse index を `ResourceRegistry` に登録
+2. glTF を CPU prepare + side-effect-free inspect した後、texture/material/geometry を
+   ownership 付き candidate として stage。同一 container の全 template が成功した時だけ
+   一括 publishし、途中の parse/validate/GPU capacity failure は全 candidate を破棄
+3. `PolygonInstanceContainer` は asset identity で全 live instance を bulk rebuild。
+   `ModelInstanceId` と current Transform は維持し、previous=current、history invalid、
+   animation revision reset + generation advance とする。ECS/physics は変更しない
+4. index/static/skinned mega-buffer を free-range suballocator 化し、material/texture ID と
+   旧 Vulkan object を `DeletionQueue` で retire。material SSBO slot と geometry range は
+   in-flight 安全期間後まで再利用しない
+5. `ReloadService` の `pelican.models` participant を単一 FileWatcher 経路へ接続。
+   project/store の canonical container key を依存として公開する
+6. fixture: 同一 GLB の複数 fragment + 3 instance、rig 変更、invalid CPU rollback、
+   2 actor 目の GPU stage failure rollback、in-flight material slot、1000 reload。
+   詳細は `docs/design_reviews/2026-07-16_wp110_report.md`
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの
@@ -2726,7 +2752,7 @@ FileWatcher 経路・実 `.surface + .material.json` cross-file atomic fixture**
 - **OpenXR トラック**: **2026-07-07 に推進決定**。入力(アクション層・pose 型)は準備済み。残り = ①ランタイム統合(xrWaitFrame とループ主導権・EngineTime 統合)②描画(フレームグラフに view 次元 = multiview、XrFrameTarget を IFrameTarget の第 3 実装として追加)③PELICAN_WITH_OPENXR ユニット必須・ヘッドセットなし環境のテスト戦略。設計文書を書いてから WP 化
 - **bindless バックエンド**: 2026-07-08 方向決定 — classic(set 2)と併用(`design_material_shading.md` §3-5)。生成アクセサが差を吸収、M2 のデータ形(SSBO + 参照)が前提工事。実装は M2 の後・GPU 駆動系(WP36 パーティクル・大規模シーン)の需要と同時に WP 化。**web/モバイルの床に PC を縛らせない**(web は将来やるとしてもシンプルな 3D/2D — ユーザー確認)
 - **web ビルド(WASM)**: 将来の可能性としてのみ保持(2026-07-08)。守るべき不変条件は全部現行規律(純ロジック規律・データ契約が抽象・classic 床・dist-bake/WGSL レーン)— 特別な保全作業なし。進めるときは案 B(WASM ゲームコア + TS レンダラ接合)→ 案 A(C++ WebGPU 実行系、データ契約の兄弟執行器)。**RHI の後付けは禁止**(本体の C++ インターフェースへの制約源にしない)
-- **アセットホットリロード**: v2 の HR0/HR1/HR1-T/HR1-M/HR2-S(WP108)まで完了。確定規約(リプレイ/strict/rpc 中無効・自己書き込み `(AssetKey, hash, epoch)` token)と単一 FileWatcher 経路を維持する。残りは HR2-G(model/fragment)と HR2-I(input/profile)
+- **アセットホットリロード**: v2 の HR0/HR1/HR1-T/HR1-M/HR2-S(WP108)/HR2-G(WP110)まで完了。確定規約(リプレイ/strict/rpc 中無効・自己書き込み `(AssetKey, hash, epoch)` token)と単一 FileWatcher 経路を維持する。残りは HR2-I(input/profile)
 - **イベント層**: `design_event_layer.md` v1 ドラフト(2026-07-08)。**API 意味論(emit/購読の書き味・フレーム境界配送)のユーザーレビューを経てから E1 を WP 化**。E2(物理トリガー)は E1 後
 - **永続化(user:// + 設定/セーブ)**: `design_persistence.md` v1 ドラフト(2026-07-08)。**user:// スキーム追加 = [PF] v6.3 の凍結改訂が必要 — ユーザー承認待ち**。承認後 P1 を WP 化
 - **[PF] v6.3 改訂案(一括)**: ①user://(persistence)②asset store マウント + .pelican/local.json(`design_project_vcs.md`)③#フラグメント参照(`design_asset_containers.md`)。**3 点まとめてユーザー承認を取り、1 回の版数改訂で凍結文書へ反映**。承認後の WP: P1 / V1〜V3 / K1〜K4

@@ -18,6 +18,7 @@
 
 namespace Pelican {
 class MaterialContainer;
+class ModelAssetContainer;
 class PathResolver;
 }
 
@@ -26,6 +27,7 @@ namespace Pelican::watch {
 inline constexpr std::string_view materialReloadParticipantName = "pelican.materials";
 inline constexpr std::string_view shaderReloadParticipantName = "pelican.shaders";
 inline constexpr std::string_view gameLogicReloadParticipantName = "pelican.game_logic";
+inline constexpr std::string_view modelReloadParticipantName = "pelican.models";
 
 enum class RuntimeReloadBoundary : std::uint8_t {
     frame_start,
@@ -118,6 +120,7 @@ DECLARE_MODULE(ReloadService) {
     std::uint64_t shader_cache_hits_ = 0;
     std::uint64_t shader_cache_misses_ = 0;
     MaterialContainer *material_participant_source_ = nullptr;
+    ModelAssetContainer *model_participant_source_ = nullptr;
 };
 
 } // namespace Pelican::watch
