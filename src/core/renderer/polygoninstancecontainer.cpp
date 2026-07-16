@@ -516,6 +516,7 @@ void PolygonInstanceContainer::advanceTemporalHistoryAfterRender() {
     advanceMorphHistoryAfterRender();
     advanceMaterialOverrideHistoryAfterRender();
     std::fill(model_history_valid.begin(), model_history_valid.end(), true);
+    ++temporal_history_advance_count;
 }
 
 void PolygonInstanceContainer::resetTemporalHistory() {

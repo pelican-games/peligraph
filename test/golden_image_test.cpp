@@ -19,6 +19,7 @@
 #include "../src/core/renderer/debugdraw.hpp"
 #include "../src/core/renderer/debugtext.hpp"
 #include "../src/core/renderer/camera.hpp"
+#include "../src/core/renderer/frameresources.hpp"
 #include "../src/core/renderer/atlasassetresource.hpp"
 #include "../src/core/renderer/spriterenderer.hpp"
 #include "../src/core/renderer/spritescene.hpp"
@@ -48,6 +49,7 @@
 #include "skeletal_fixture.hpp"
 #include "material_absolute_override_fixture.hpp"
 #include "morph_fixture.hpp"
+#include "synthetic_stereo_target.hpp"
 #include "vat_fixture.hpp"
 
 #include <algorithm>
@@ -1109,6 +1111,64 @@ void main() {
     }
   ]
 })json");
+}
+
+void writeLogicalFrameStereoProject(const std::filesystem::path &root) {
+    auto project = makeFeatureProjectJson();
+    project["name"] = "logical frame stereo fixture";
+    writeTextFile(root / "project.json", project.dump(2));
+    writeTextFile(root / "scene.json", R"json({
+      "schema":"pelican.scene","version":1,
+      "scenes":{"default_scene":{"objects":[{
+        "name":"StereoHistoryObject","components":[
+          {"name":"transform","pos":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
+          {"name":"simplemodelview","model":"ground"}
+        ]
+      }]}}
+    })json");
+    writeTextFile(root / "assets.json",
+                  R"json({"models":[{"name":"ground","path":"assets/ground.glb"}]})json");
+    writeTextFile(root / "ui" / "ui.json",
+                  R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
+    writeTextFile(root / "shaders" / "fullscreen.vert", stemFullscreenVertexShader());
+    writeTextFile(root / "shaders" / "stereo_probe.frag", R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_frame.glsl"
+layout(location = 0) out vec4 outColor;
+
+float encodeSigned(float value) { return clamp(value * 0.2 + 0.5, 0.0, 1.0); }
+
+void main() {
+    int band = int(floor(gl_FragCoord.x));
+    float signal = 0.0;
+    if (band == 0) signal = encodeSigned(pelicanFrame.camera_position.x);
+    else if (band == 1) signal = encodeSigned(pelicanFrame.view[3][0]);
+    else if (band == 2) signal = encodeSigned(pelicanFrame.projection[0][0]);
+    else if (band == 3) signal = encodeSigned(pelicanFrame.previous_view[3][0]);
+    else if (band == 4) signal = float(pelicanFrame.frame_index.x) / 16.0;
+    else if (band == 5) signal = float(pelicanFrame.temporal_reset_epoch) / 16.0;
+    else if (band == 6) {
+        signal = encodeSigned(pelicanObjects.objects[0].model[3].x -
+                              pelicanPreviousObjects.objects[0].model[3].x);
+    } else if (band == 7) {
+        signal = encodeSigned(pelicanFrame.previous_projection[0][0]);
+    }
+    outColor = vec4(signal, signal, signal, 1.0);
+}
+)glsl");
+    writeTextFile(root / "passes" / "main.json", R"json({
+      "render_targets":[],
+      "rendering_passes":[{"name":"main","passes":[{
+        "name":"stereo_probe","type":"fullscreen",
+        "output":{"color":"swapchain","depth":null},
+        "shader":{"vertex":"shaders/fullscreen","fragment":"shaders/stereo_probe"}
+      }]}]
+    })json");
+    std::filesystem::create_directories(root / "assets");
+    std::filesystem::copy_file(sourceRoot() / "test" / "fixtures" / "ground.glb",
+                               root / "assets" / "ground.glb",
+                               std::filesystem::copy_options::overwrite_existing);
 }
 
 void writeTemporalAccumulationProject(const std::filesystem::path &root) {
@@ -3532,6 +3592,178 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
             REQUIRE(comparison.max <= tolerance.max);
         }
     }
+}
+
+TEST_CASE("logical frame renders Vulkan-backed stereo views without advancing shared state twice",
+          "[wp128][headless][stereo][vulkan]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    requireGoldenVulkanDevice();
+    FastModuleContainer modules;
+    const auto root = makeTempProjectDir("logical_frame_stereo");
+    writeLogicalFrameStereoProject(root);
+    GET_MODULE(PathResolver).setup(root, false);
+    auto project = makeFeatureProjectJson();
+    project["name"] = "logical frame stereo fixture";
+    GET_MODULE(ProjectSource).setProjectData(project.dump());
+
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.shader_hot_reload = false;
+    launch.headless_extent = vk::Extent2D{goldenWidth, goldenHeight};
+
+    auto &time = GET_MODULE(EngineTime);
+    time.setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    GET_MODULE(SceneLoader).load("default_scene");
+    GET_MODULE(ECSCore).update();
+
+    auto make_view = [](float view_x, float projection_x, float camera_x) {
+        RenderViewParameters result;
+        result.view[3][0] = view_x;
+        result.projection[0][0] = projection_x;
+        result.camera_position = {camera_x, 0.0f, 0.0f};
+        return result;
+    };
+    const std::array first_views{
+        make_view(-0.75f, 0.75f, -1.0f),
+        make_view(0.75f, 1.25f, 1.0f),
+    };
+    const std::array second_views{
+        make_view(-0.5f, 0.9f, -1.5f),
+        make_view(0.5f, 1.4f, 1.5f),
+    };
+    const auto provider = [](const auto &views) {
+        return [&views](std::uint32_t view_index, const FrameRenderContext &) {
+            return views.at(view_index);
+        };
+    };
+
+    auto &renderer = GET_MODULE(Renderer);
+    auto &flat_target = GET_MODULE(RenderTarget);
+    Test::VulkanSyntheticStereoTarget stereo_target{
+        launch.headless_extent, flat_target.getSwapchainFormat()};
+
+    time.advance();
+    renderer.renderLogicalFrame(stereo_target, 2, provider(first_views));
+    const auto first_snapshots = renderer.lastViewSnapshotsForTesting();
+    const auto first_left = stereo_target.readback(0);
+    const auto first_right = stereo_target.readback(1);
+
+    REQUIRE(stereo_target.logicalBeginCount() == 1);
+    REQUIRE(stereo_target.logicalEndCount() == 1);
+    REQUIRE(stereo_target.submissionCount() == 1);
+    REQUIRE(stereo_target.viewBeginCount() == 2);
+    REQUIRE(stereo_target.viewEndCount() == 2);
+    REQUIRE(GET_MODULE(DeletionQueue).currentFrameForTesting() == 1);
+    REQUIRE(GET_MODULE(RenderTargetContainer).historyFrameIndex() == 1);
+    REQUIRE(GET_MODULE(PolygonInstanceContainer)
+                .temporalHistoryAdvanceCountForTesting() == 1);
+
+    REQUIRE(first_snapshots.size() == 2);
+    for (std::size_t view = 0; view < first_views.size(); ++view) {
+        REQUIRE(first_snapshots[view].view == first_views[view].view);
+        REQUIRE(first_snapshots[view].projection_non_jittered ==
+                first_views[view].projection);
+        REQUIRE(first_snapshots[view].camera_position ==
+                first_views[view].camera_position);
+        REQUIRE(first_snapshots[view].previous_view == first_views[view].view);
+        REQUIRE(first_snapshots[view].previous_camera_position ==
+                first_views[view].camera_position);
+        REQUIRE_FALSE(first_snapshots[view].historyValid());
+    }
+    REQUIRE(first_snapshots[0].temporal_reset_epoch ==
+            first_snapshots[1].temporal_reset_epoch);
+
+    auto &instances = GET_MODULE(PolygonInstanceContainer);
+    REQUIRE(instances.instanceCountForTesting() == 1);
+    instances.setTrs(ModelInstanceId{0}, {1.0f, 0.0f, 0.0f},
+                     glm::quat{1.0f, 0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f});
+
+    time.advance();
+    renderer.renderLogicalFrame(stereo_target, 2, provider(second_views));
+    const auto second_snapshots = renderer.lastViewSnapshotsForTesting();
+    const auto second_left = stereo_target.readback(0);
+    const auto second_right = stereo_target.readback(1);
+
+    REQUIRE(stereo_target.logicalBeginCount() == 2);
+    REQUIRE(stereo_target.logicalEndCount() == 2);
+    REQUIRE(stereo_target.submissionCount() == 2);
+    REQUIRE(stereo_target.viewBeginCount() == 4);
+    REQUIRE(stereo_target.viewEndCount() == 4);
+    REQUIRE(GET_MODULE(DeletionQueue).currentFrameForTesting() == 2);
+    REQUIRE(GET_MODULE(RenderTargetContainer).historyFrameIndex() == 0);
+    REQUIRE(instances.temporalHistoryAdvanceCountForTesting() == 2);
+    REQUIRE(instances.previousModelMatrixForTesting(ModelInstanceId{0}) ==
+            instances.currentModelMatrixForTesting(ModelInstanceId{0}));
+
+    REQUIRE(second_snapshots.size() == 2);
+    for (std::size_t view = 0; view < second_views.size(); ++view) {
+        REQUIRE(second_snapshots[view].view == second_views[view].view);
+        REQUIRE(second_snapshots[view].projection_non_jittered ==
+                second_views[view].projection);
+        REQUIRE(second_snapshots[view].camera_position ==
+                second_views[view].camera_position);
+        REQUIRE(second_snapshots[view].previous_view == first_views[view].view);
+        REQUIRE(second_snapshots[view].previous_projection_non_jittered ==
+                first_views[view].projection);
+        REQUIRE(second_snapshots[view].previous_camera_position ==
+                first_views[view].camera_position);
+        REQUIRE(second_snapshots[view].historyValid());
+        REQUIRE(second_snapshots[view].temporal_reset_epoch ==
+                first_snapshots[view].temporal_reset_epoch);
+    }
+
+    auto &frame_resources = GET_MODULE(FrameResources);
+    REQUIRE(frame_resources.viewCountForTesting() == 2);
+    REQUIRE(frame_resources.slotCountForTesting() == 4);
+    const auto slot_00 = frame_resources.slotBufferForTesting(0, 0);
+    const auto slot_01 = frame_resources.slotBufferForTesting(0, 1);
+    const auto slot_10 = frame_resources.slotBufferForTesting(1, 0);
+    const auto slot_11 = frame_resources.slotBufferForTesting(1, 1);
+    REQUIRE(slot_00 != slot_01);
+    REQUIRE(slot_00 != slot_10);
+    REQUIRE(slot_00 != slot_11);
+    REQUIRE(slot_01 != slot_10);
+    REQUIRE(slot_01 != slot_11);
+    REQUIRE(slot_10 != slot_11);
+    REQUIRE(frame_resources.slotDataForTesting(0, 0).frame_index.x == 1);
+    REQUIRE(frame_resources.slotDataForTesting(0, 1).frame_index.x == 1);
+    REQUIRE(frame_resources.slotDataForTesting(1, 0).frame_index.x == 2);
+    REQUIRE(frame_resources.slotDataForTesting(1, 1).frame_index.x == 2);
+    REQUIRE(frame_resources.slotDataForTesting(1, 0).camera_position.x ==
+            second_views[0].camera_position.x);
+    REQUIRE(frame_resources.slotDataForTesting(1, 1).camera_position.x ==
+            second_views[1].camera_position.x);
+
+    const auto signal = [](const std::vector<std::uint8_t> &pixels,
+                           std::uint32_t band) {
+        return pixels.at(static_cast<std::size_t>(band) * 4);
+    };
+    REQUIRE(signal(first_left, 0) != signal(first_right, 0));
+    REQUIRE(signal(first_left, 1) != signal(first_right, 1));
+    REQUIRE(signal(first_left, 2) != signal(first_right, 2));
+    REQUIRE(signal(second_left, 0) != signal(second_right, 0));
+    REQUIRE(signal(second_left, 1) != signal(second_right, 1));
+    REQUIRE(signal(second_left, 2) != signal(second_right, 2));
+    REQUIRE(signal(second_left, 3) == signal(first_left, 1));
+    REQUIRE(signal(second_right, 3) == signal(first_right, 1));
+    REQUIRE(signal(second_left, 7) == signal(first_left, 2));
+    REQUIRE(signal(second_right, 7) == signal(first_right, 2));
+    REQUIRE(signal(first_left, 4) == signal(first_right, 4));
+    REQUIRE(signal(second_left, 4) == signal(second_right, 4));
+    REQUIRE(signal(first_left, 4) != signal(second_left, 4));
+    REQUIRE(signal(first_left, 5) == signal(first_right, 5));
+    REQUIRE(signal(first_left, 5) == signal(second_left, 5));
+    REQUIRE(signal(second_left, 5) == signal(second_right, 5));
+    REQUIRE(signal(second_left, 6) == signal(second_right, 6));
+    REQUIRE(signal(second_left, 6) > signal(first_left, 6));
+
+    GET_MODULE(VulkanManageCore).waitIdle();
+    std::filesystem::remove_all(root);
+#else
+    SKIP("logical-frame stereo fixture requires the runtime shader compiler");
+#endif
 }
 
 TEST_CASE("velocity feature compiles its standard pass and renders headless",

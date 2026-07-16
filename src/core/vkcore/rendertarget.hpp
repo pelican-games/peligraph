@@ -17,6 +17,7 @@ struct FrameRenderContext {
     vk::Extent2D extent;
     vk::Semaphore image_prepared_semaphore;
     vk::ImageLayout required_layout;
+    uint32_t in_flight_frame_index = 0;
 };
 
 constexpr size_t in_flight_frames_num = 2;

@@ -156,6 +156,7 @@ FrameRenderContext OffscreenFrameTarget::render_begin() {
         .extent = extent,
         .image_prepared_semaphore = nullptr,
         .required_layout = vk::ImageLayout::eTransferSrcOptimal,
+        .in_flight_frame_index = in_flight_frame_index,
     };
 }
 

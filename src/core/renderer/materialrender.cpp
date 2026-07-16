@@ -30,7 +30,6 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
     const auto &vert_buf_container = dependencies.vert_buf_container;
     const auto &material_container = dependencies.material_container;
 
-    instance_container.triggerUpdate();
     const auto &draw_calls = instance_container.getDrawCalls();
     if (draw_calls.empty()) {
         return;
@@ -78,7 +77,6 @@ void renderShadowDepthDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
     auto &instance_container = dependencies.instance_container;
     const auto &vert_buf_container = dependencies.vert_buf_container;
 
-    instance_container.triggerUpdate();
     const auto &draw_calls = instance_container.getDrawCalls();
     if (draw_calls.empty()) {
         return;
@@ -104,7 +102,6 @@ void renderVelocityDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
                          const VelocityPassContainer &velocity_pass_container,
                          const MaterialRendererDependencies &dependencies) {
     auto &instances = dependencies.instance_container;
-    instances.triggerUpdate();
     const auto &draw_calls = instances.getDrawCalls();
     if (draw_calls.empty()) return;
     const auto &indirect = instances.getIndirectBuf();

@@ -218,6 +218,7 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     std::vector<std::shared_ptr<const MorphTargetLayout>> morph_layouts;
     std::vector<MorphWeightFrame> morph_weight_frames;
     std::vector<bool> morph_history_valid;
+    std::uint64_t temporal_history_advance_count = 0;
     BufferWrapper skin_palette_buffer;
     BufferWrapper previous_skin_palette_buffer;
     BufferWrapper morph_instance_buffer;
@@ -288,6 +289,9 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     const BufferWrapper &getPreviousObjectBuf() const;
     const std::vector<DrawIndirectInfo> &getDrawCalls() const;
     size_t instanceCountForTesting() const { return model_instances_data.size(); }
+    std::uint64_t temporalHistoryAdvanceCountForTesting() const {
+        return temporal_history_advance_count;
+    }
     glm::mat4 currentModelMatrixForTesting(ModelInstanceId id) const { return model_instances_data.at(id.value); }
     glm::mat4 previousModelMatrixForTesting(ModelInstanceId id) const { return previous_model_instances_data.at(id.value); }
     std::uint64_t currentAnimationRevisionForTesting(ModelInstanceId id) const {

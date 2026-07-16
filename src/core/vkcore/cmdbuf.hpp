@@ -18,6 +18,7 @@ class CommandBufWrapper {
     const vk::CommandBuffer *operator->() const { return &cmd_buf.get(); }
     const vk::CommandBuffer operator*() const { return cmd_buf.get(); }
     void recordBegin() const;
+    void recordEnd() const;
     void recordEndSubmit(std::initializer_list<vk::Semaphore> signal_semaphores = {},
                          std::initializer_list<vk::Semaphore> wait_semaphores = {},
                          std::initializer_list<vk::PipelineStageFlags> wait_stages = {}) const;

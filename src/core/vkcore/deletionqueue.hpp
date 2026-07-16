@@ -59,6 +59,7 @@ class DeletionQueueCore {
     void beginFrame();
     void flushAll();
     size_t pendingCount() const;
+    uint64_t currentFrame() const { return current_frame; }
 };
 
 DECLARE_MODULE(DeletionQueue) {
@@ -71,6 +72,7 @@ DECLARE_MODULE(DeletionQueue) {
     void beginFrame();
     void flushAll();
     size_t pendingCountForTesting() const { return core.pendingCount(); }
+    uint64_t currentFrameForTesting() const { return core.currentFrame(); }
 };
 
 } // namespace Pelican
