@@ -1,5 +1,6 @@
 #include "../src/project/featurecompose.hpp"
 #include "../src/core/loader/engineresources.hpp"
+#include "../src/core/renderingpass/frameplanner.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -491,6 +492,214 @@ TEST_CASE("snapshot v1 rejects transparent-after copy points by name",
                         Catch::Matchers::ContainsSubstring("late_color") &&
                             Catch::Matchers::ContainsSubstring("transparent-after") &&
                             Catch::Matchers::ContainsSubstring("unsupported in v1"));
+}
+
+TEST_CASE("projection jitter feature declaration is validated and exposed in compose result",
+          "[render-feature][projection-jitter]") {
+    auto config = baseConfigWithFeature("jitter.json");
+    const auto compose = [&](std::string declaration) {
+        return composeRenderFeatureConfig(
+            config,
+            RenderFeatureComposeDependencies{
+                [declaration = std::move(declaration)](std::string_view) {
+                    return std::string{R"json({
+                      "schema":"pelican.render_feature","version":1,"name":"camera_jitter",
+                      "projection_jitter":)json"} + declaration + "}";
+                },
+                true,
+            });
+    };
+
+    const auto valid = compose(R"json({"pattern":"halton23","phases":8})json");
+    REQUIRE(valid.projection_jitter == nlohmann::json{
+        {"provider", "camera_jitter"}, {"pattern", "halton23"}, {"phases", 8}});
+
+    for (const auto &[declaration, needle] : std::vector<std::pair<std::string, std::string>>{
+             {R"json({"pattern":"random","phases":8})json", "unknown pattern"},
+             {R"json({"pattern":"halton23","phases":0})json", "range 1..64"},
+             {R"json({"pattern":"halton23","phases":8,"extra":1})json", "unknown key"},
+             {R"json({"pattern":"halton23","phases":8,"render_scale":1})json", "reserved key"},
+         }) {
+        INFO(declaration);
+        REQUIRE_THROWS_WITH(compose(declaration),
+                            Catch::Matchers::ContainsSubstring("camera_jitter") &&
+                                Catch::Matchers::ContainsSubstring(needle));
+    }
+}
+
+TEST_CASE("projection jitter rejects a second provider by both feature names",
+          "[render-feature][projection-jitter]") {
+    auto config = baseConfigWithFeature("first.json");
+    config["features"] = nlohmann::json::array({"first.json", "second.json"});
+    REQUIRE_THROWS_WITH(
+        composeRenderFeatureConfig(
+            config,
+            RenderFeatureComposeDependencies{
+                [](std::string_view ref) {
+                    const auto name = ref == "first.json" ? "first_jitter" : "second_jitter";
+                    return std::string{R"json({"schema":"pelican.render_feature","version":1,"name":")json"} +
+                           name +
+                           R"json(","projection_jitter":{"pattern":"halton23","phases":8}})json";
+                },
+                true,
+            }),
+        Catch::Matchers::ContainsSubstring("first_jitter") &&
+            Catch::Matchers::ContainsSubstring("second_jitter"));
+}
+
+TEST_CASE("named render-target binding resolves pass IO history and override keys",
+          "[render-feature][binding]") {
+    const std::string feature = R"json({
+      "schema":"pelican.render_feature",
+      "version":1,
+      "name":"bound_temporal",
+      "parameters":{
+        "schema":"pelican.render_feature_parameters",
+        "version":1,
+        "render_targets":[
+          {"name":"source","required":true,"role":"color","format_class":"scene",
+           "extent_scale":1.0,"sample_count":1,"usage":["SAMPLED"]},
+          {"name":"destination","required":false,"default":"bound_output","role":"color",
+           "format_class":"scene","extent_scale":1.0,"sample_count":1,
+           "usage":["COLOR_ATTACHMENT"]}
+        ]
+      },
+      "render_target_overrides":{"$source":{"usage":["TRANSFER_SRC"]}},
+      "passes":[{
+        "insert":"before:present",
+        "pass":{
+          "name":"bound_temporal_pass","type":"fullscreen",
+          "input":["$source@history"],
+          "output":{"color":"$destination","depth":null},
+          "shader":{"vertex":"shaders/fullscreen","fragment":"shaders/bound"}
+        }
+      }]
+    })json";
+
+    const auto composeFor = [&](std::string source) {
+        auto config = baseConfigWithFeature("bound.json");
+        config["features"] = nlohmann::json::array({nlohmann::json{
+            {"ref", "bound.json"}, {"parameters", {{"source", source}}}}});
+        for (const auto &name : {"history_a", "history_b"}) {
+            config["render_targets"].push_back({
+                {"name", name}, {"extent_scale", 1.0},
+                {"format", "B8G8R8A8_UNORM"}, {"format_class", "scene"},
+                {"role", "color"}, {"sample_count", 1}, {"history", true},
+                {"usage", nlohmann::json::array({"COLOR_ATTACHMENT", "SAMPLED"})},
+            });
+        }
+        config["render_targets"].push_back({
+            {"name", "bound_output"}, {"extent_scale", 1.0},
+            {"format", "B8G8R8A8_UNORM"}, {"format_class", "scene"},
+            {"role", "color"}, {"sample_count", 1},
+            {"usage", nlohmann::json::array({"COLOR_ATTACHMENT", "SAMPLED"})},
+        });
+        return composeRenderFeatureConfig(
+            config, RenderFeatureComposeDependencies{
+                        [feature](std::string_view) { return feature; }, true});
+    };
+
+    for (const auto &source : {"history_a", "history_b"}) {
+        const auto result = composeFor(source);
+        INFO(source);
+        REQUIRE(result.feature_instances.size() == 1);
+        REQUIRE(result.feature_instances.at(0).at("parameters") == nlohmann::json{
+            {"destination", "bound_output"}, {"source", source}});
+        const auto &pass = passByName(result.config, "bound_temporal_pass");
+        REQUIRE(pass.at("input").at(0) == source + std::string{"@history"});
+        REQUIRE(pass.at("output").at("color") == "bound_output");
+        const auto target = std::find_if(
+            result.config.at("render_targets").begin(), result.config.at("render_targets").end(),
+            [&](const auto &entry) { return entry.value("name", std::string{}) == source; });
+        REQUIRE(target != result.config.at("render_targets").end());
+        REQUIRE(std::find(target->at("usage").begin(), target->at("usage").end(),
+                          "TRANSFER_SRC") != target->at("usage").end());
+
+        const auto graphs = parseFrameGraphDefinitionsFromConfigJson(result.config);
+        REQUIRE(graphs.size() == 1);
+        auto plan = planFrameGraph(graphs.front());
+        plan.composition_metadata["feature_instances"] = result.feature_instances;
+        const auto plan_json = framePlanToJson(plan);
+        REQUIRE(plan_json.at("feature_instances").at(0).at("parameters").at("source") == source);
+        const auto planned = std::find_if(
+            plan_json.at("nodes").begin(), plan_json.at("nodes").end(),
+            [](const auto &node) { return node.at("name") == "bound_temporal_pass"; });
+        REQUIRE(planned != plan_json.at("nodes").end());
+        REQUIRE(planned->at("reads_history").at(0) == source);
+        REQUIRE(planned->at("writes").at(0) == "bound_output");
+    }
+}
+
+TEST_CASE("named render-target binding errors identify feature parameter and target",
+          "[render-feature][binding]") {
+    const std::string feature = R"json({
+      "schema":"pelican.render_feature","version":1,"name":"binding_errors",
+      "parameters":{
+        "schema":"pelican.render_feature_parameters","version":1,
+        "render_targets":[
+          {"name":"source","required":true,"role":"color","format_class":"scene",
+           "extent_scale":1.0,"sample_count":1,"usage":["SAMPLED"]}
+        ]
+      }
+    })json";
+    const auto composeParameters = [&](nlohmann::json parameters) {
+        auto config = baseConfigWithFeature("errors.json");
+        config["features"] = nlohmann::json::array({nlohmann::json{
+            {"ref", "errors.json"}, {"parameters", std::move(parameters)}}});
+        return composeRenderFeatureConfig(
+            config, RenderFeatureComposeDependencies{
+                        [feature](std::string_view) { return feature; }, true});
+    };
+    const auto requireBindingError = [&](nlohmann::json parameters, std::string parameter,
+                                         std::string target, std::string detail) {
+        try {
+            (void)composeParameters(std::move(parameters));
+            FAIL("expected named binding rejection");
+        } catch (const std::exception &error) {
+            const std::string message = error.what();
+            REQUIRE(contains(message, "binding_errors"));
+            REQUIRE(contains(message, parameter));
+            REQUIRE(contains(message, target));
+            REQUIRE(contains(message, detail));
+        }
+    };
+
+    requireBindingError(nlohmann::json::object(), "source", "<missing>", "required");
+    requireBindingError({{"unknown", "lit_color"}}, "unknown", "lit_color", "unknown parameter");
+    requireBindingError({{"source", 42}}, "source", "<non-string>",
+                        "binding must name a render target");
+    requireBindingError({{"source", "does_not_exist"}}, "source", "does_not_exist", "unknown render target");
+
+    auto compatible = baseConfigWithFeature("errors.json");
+    compatible["features"] = nlohmann::json::array({nlohmann::json{
+        {"ref", "errors.json"}, {"parameters", {{"source", "lit_color"}}}}});
+    compatible["render_targets"].at(0)["role"] = "color";
+    compatible["render_targets"].at(0)["format_class"] = "scene";
+    compatible["render_targets"].at(0)["sample_count"] = 1;
+
+    const auto requireConstraintError = [&](std::string field, nlohmann::json value,
+                                            std::string detail) {
+        auto incompatible = compatible;
+        incompatible["render_targets"].at(0)[field] = std::move(value);
+        try {
+            (void)composeRenderFeatureConfig(
+                incompatible, RenderFeatureComposeDependencies{
+                                  [feature](std::string_view) { return feature; }, true});
+            FAIL("expected target constraint rejection");
+        } catch (const std::exception &error) {
+            const std::string message = error.what();
+            REQUIRE(contains(message, "binding_errors"));
+            REQUIRE(contains(message, "source"));
+            REQUIRE(contains(message, "lit_color"));
+            REQUIRE(contains(message, detail));
+        }
+    };
+    requireConstraintError("role", "data", "role is incompatible");
+    requireConstraintError("format_class", "data", "format_class is incompatible");
+    requireConstraintError("extent_scale", 0.5, "extent_scale is incompatible");
+    requireConstraintError("sample_count", 4, "sample_count is incompatible");
+    requireConstraintError("usage", nlohmann::json::array({"COLOR_ATTACHMENT"}),
+                           "usage is incompatible");
 }
 
 } // namespace Pelican

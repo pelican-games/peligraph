@@ -134,6 +134,19 @@ void registerRenderingPassConfigData(const nlohmann::json &rendering_pass_data, 
                                       toRuntimeDependencies(dependencies.runtime, rt_metadata, rt_views,
                                                             dependencies.frame_graph_resources));
     dependencies.pass_container.setEnabledFeatures(composed.feature_names);
+    nlohmann::json composition_metadata = nlohmann::json::object();
+    if (composed.projection_jitter) {
+        composition_metadata["projection_jitter"] = *composed.projection_jitter;
+    }
+    nlohmann::json bound_instances = nlohmann::json::array();
+    for (const auto &instance : composed.feature_instances) {
+        if (!instance.at("parameters").empty()) {
+            bound_instances.push_back(instance);
+        }
+    }
+    if (!bound_instances.empty()) {
+        composition_metadata["feature_instances"] = std::move(bound_instances);
+    }
     for (auto &compiled_pass : compiled_passes) {
         compiled_pass.compute_tasks = compiled_compute_tasks;
         const auto pass_name = compiled_pass.name;
@@ -145,7 +158,8 @@ void registerRenderingPassConfigData(const nlohmann::json &rendering_pass_data, 
         dependencies.frame_graph_runtime.registerExecutionPlan(
             rendering_pass_id,
             dependencies.pass_container.getCompiledRenderingPass(rendering_pass_id),
-            found_graph->second);
+            found_graph->second,
+            composition_metadata);
     }
 }
 

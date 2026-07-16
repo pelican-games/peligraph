@@ -795,7 +795,7 @@ nlohmann::json framePlanToJson(const FramePlan &plan) {
         });
     }
 
-    return nlohmann::json{
+    auto result = nlohmann::json{
         {"barriers", barriers_json},
         {"graph", plan.name},
         {"levels", plan.levels},
@@ -803,6 +803,13 @@ nlohmann::json framePlanToJson(const FramePlan &plan) {
         {"schema", "pelican.frame_plan"},
         {"version", 1},
     };
+    if (plan.composition_metadata.is_object()) {
+        for (auto field = plan.composition_metadata.begin();
+             field != plan.composition_metadata.end(); ++field) {
+            result[field.key()] = field.value();
+        }
+    }
+    return result;
 }
 
 } // namespace Pelican

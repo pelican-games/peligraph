@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace Pelican {
@@ -14,6 +16,8 @@ namespace {
 constexpr std::string_view feature_schema = "pelican.render_feature";
 constexpr int supported_feature_version = 1;
 constexpr int color_format_resolver_version = 2;
+constexpr std::string_view feature_parameters_schema = "pelican.render_feature_parameters";
+constexpr int supported_feature_parameters_version = 1;
 constexpr std::string_view runtime_compiler_required_message =
     "render feature には実行時コンパイラが必要です (runtime shader compiler is required)";
 constexpr std::array<std::string_view, 8> canonical_anchors = {
@@ -98,6 +102,49 @@ std::string validateFeatureEnvelope(const nlohmann::json &feature, std::string_v
     return requireStringField(feature, "name", "render feature");
 }
 
+std::optional<nlohmann::json> parseProjectionJitterDeclaration(
+    const nlohmann::json &feature, const std::string &feature_name) {
+    if (!feature.contains("projection_jitter")) {
+        return std::nullopt;
+    }
+    const auto &declaration = feature.at("projection_jitter");
+    if (!declaration.is_object()) {
+        throw std::runtime_error("projection_jitter provider '" + feature_name +
+                                 "' declaration must be an object");
+    }
+    for (auto field = declaration.begin(); field != declaration.end(); ++field) {
+        if (field.key() == "phases_from_scale" || field.key() == "mip_bias" ||
+            field.key() == "render_scale") {
+            throw std::runtime_error("projection_jitter provider '" + feature_name +
+                                     "' uses reserved key: " + field.key());
+        }
+        if (field.key() != "pattern" && field.key() != "phases") {
+            throw std::runtime_error("projection_jitter provider '" + feature_name +
+                                     "' has unknown key: " + field.key());
+        }
+    }
+    if (!declaration.contains("pattern") || !declaration.at("pattern").is_string()) {
+        throw std::runtime_error("projection_jitter provider '" + feature_name +
+                                 "' requires string pattern");
+    }
+    const auto pattern = declaration.at("pattern").get<std::string>();
+    if (pattern != "halton23") {
+        throw std::runtime_error("projection_jitter provider '" + feature_name +
+                                 "' has unknown pattern: " + pattern);
+    }
+    if (!declaration.contains("phases") || !declaration.at("phases").is_number_integer()) {
+        throw std::runtime_error("projection_jitter provider '" + feature_name +
+                                 "' requires unsigned integer phases");
+    }
+    const auto phases_value = declaration.at("phases").get<std::int64_t>();
+    if (phases_value < 1 || phases_value > 64) {
+        throw std::runtime_error("projection_jitter provider '" + feature_name +
+                                 "' phases must be in range 1..64");
+    }
+    return nlohmann::json{{"provider", feature_name}, {"pattern", pattern},
+                          {"phases", static_cast<std::uint32_t>(phases_value)}};
+}
+
 nlohmann::json loadFeatureJson(std::string_view ref,
                                const RenderFeatureComposeDependencies &dependencies) {
     if (!dependencies.load_feature_json) {
@@ -106,7 +153,12 @@ nlohmann::json loadFeatureJson(std::string_view ref,
     return nlohmann::json::parse(dependencies.load_feature_json(ref));
 }
 
-std::vector<std::string> parseFeatureRefs(const nlohmann::json &config) {
+struct FeatureInstance {
+    std::string ref;
+    nlohmann::json parameters = nlohmann::json::object();
+};
+
+std::vector<FeatureInstance> parseFeatureInstances(const nlohmann::json &config) {
     if (!config.contains("features")) {
         return {};
     }
@@ -115,15 +167,30 @@ std::vector<std::string> parseFeatureRefs(const nlohmann::json &config) {
         throw std::runtime_error("rendering config features must be an array");
     }
 
-    std::vector<std::string> refs;
-    refs.reserve(features.size());
-    for (const auto &feature_ref : features) {
-        if (!feature_ref.is_string()) {
-            throw std::runtime_error("rendering config features entries must be strings");
+    std::vector<FeatureInstance> instances;
+    instances.reserve(features.size());
+    for (const auto &entry : features) {
+        if (entry.is_string()) {
+            instances.push_back(FeatureInstance{entry.get<std::string>(), nlohmann::json::object()});
+            continue;
         }
-        refs.push_back(feature_ref.get<std::string>());
+        if (!entry.is_object()) {
+            throw std::runtime_error(
+                "rendering config features entries must be strings or {ref, parameters} objects");
+        }
+        for (auto field = entry.begin(); field != entry.end(); ++field) {
+            if (field.key() != "ref" && field.key() != "parameters") {
+                throw std::runtime_error("render feature instance has unknown field: " + field.key());
+            }
+        }
+        const auto ref = requireStringField(entry, "ref", "render feature instance");
+        const auto parameters = entry.value("parameters", nlohmann::json::object());
+        if (!parameters.is_object()) {
+            throw std::runtime_error("render feature instance parameters must be an object: " + ref);
+        }
+        instances.push_back(FeatureInstance{ref, parameters});
     }
-    return refs;
+    return instances;
 }
 
 nlohmann::json &ensureArray(nlohmann::json &config, std::string_view field_name) {
@@ -639,6 +706,261 @@ nlohmann::json *findRenderTarget(nlohmann::json &config, const std::string &name
     return nullptr;
 }
 
+struct RenderTargetParameterDeclaration {
+    std::string name;
+    bool required = true;
+    std::optional<std::string> default_target;
+    nlohmann::json constraints;
+};
+
+[[noreturn]] void throwBindingError(const std::string &feature_name,
+                                    const std::string &parameter_name,
+                                    const std::string &target_name,
+                                    const std::string &detail) {
+    throw std::runtime_error("render feature '" + feature_name + "' parameter '" +
+                             parameter_name + "' target '" + target_name + "': " + detail);
+}
+
+std::vector<RenderTargetParameterDeclaration> parseRenderTargetParameters(
+    const nlohmann::json &feature, const std::string &feature_name) {
+    if (!feature.contains("parameters")) {
+        return {};
+    }
+    const auto &parameters = feature.at("parameters");
+    if (!parameters.is_object()) {
+        throw std::runtime_error("render feature '" + feature_name +
+                                 "' parameters declaration must be an object");
+    }
+    for (auto field = parameters.begin(); field != parameters.end(); ++field) {
+        if (field.key() != "schema" && field.key() != "version" &&
+            field.key() != "render_targets") {
+            throw std::runtime_error("render feature '" + feature_name +
+                                     "' parameters declaration has unknown field: " + field.key());
+        }
+    }
+    if (parameters.value("schema", std::string{}) != feature_parameters_schema) {
+        throw std::runtime_error("render feature '" + feature_name +
+                                 "' parameter schema is not supported");
+    }
+    if (!parameters.contains("version") || !parameters.at("version").is_number_integer() ||
+        parameters.at("version").get<int>() != supported_feature_parameters_version) {
+        throw std::runtime_error("render feature '" + feature_name +
+                                 "' parameter version is not supported");
+    }
+    const auto &targets = requireArrayField(parameters, "render_targets",
+                                             "render feature parameters: " + feature_name);
+    std::vector<RenderTargetParameterDeclaration> declarations;
+    std::unordered_set<std::string> names;
+    declarations.reserve(targets.size());
+    for (const auto &target : targets) {
+        if (!target.is_object()) {
+            throw std::runtime_error("render feature '" + feature_name +
+                                     "' render-target parameters must be objects");
+        }
+        for (auto field = target.begin(); field != target.end(); ++field) {
+            if (field.key() != "name" && field.key() != "required" &&
+                field.key() != "default" && field.key() != "role" &&
+                field.key() != "format_class" && field.key() != "extent_scale" &&
+                field.key() != "width" && field.key() != "height" &&
+                field.key() != "sample_count" && field.key() != "usage") {
+                throw std::runtime_error("render feature '" + feature_name +
+                                         "' render-target parameter has unknown field: " +
+                                         field.key());
+            }
+        }
+        const auto name = requireStringField(target, "name", "render-target parameter");
+        if (!isIdentifier(name) || !names.insert(name).second) {
+            throw std::runtime_error("render feature '" + feature_name +
+                                     "' has invalid or duplicate render-target parameter: " + name);
+        }
+        if (target.contains("required") && !target.at("required").is_boolean()) {
+            throwBindingError(feature_name, name, "<declaration>", "required must be boolean");
+        }
+        std::optional<std::string> default_target;
+        if (target.contains("default")) {
+            if (!target.at("default").is_string()) {
+                throwBindingError(feature_name, name, "<declaration>",
+                                  "default must name a render target");
+            }
+            default_target = target.at("default").get<std::string>();
+        }
+        declarations.push_back(RenderTargetParameterDeclaration{
+            name, target.value("required", true), std::move(default_target), target});
+    }
+    return declarations;
+}
+
+void validateTargetBinding(const nlohmann::json &config,
+                           const RenderTargetParameterDeclaration &declaration,
+                           const std::string &target_name,
+                           const std::string &feature_name) {
+    const nlohmann::json *target = nullptr;
+    for (const auto &candidate : config.at("render_targets")) {
+        if (candidate.value("name", std::string{}) == target_name) {
+            target = &candidate;
+            break;
+        }
+    }
+    if (target == nullptr) {
+        throwBindingError(feature_name, declaration.name, target_name, "unknown render target");
+    }
+
+    const auto &constraints = declaration.constraints;
+    const auto requireEqual = [&](std::string_view field, const nlohmann::json &actual) {
+        if (constraints.contains(field) && constraints.at(field) != actual) {
+            throwBindingError(feature_name, declaration.name, target_name,
+                              std::string{field} + " is incompatible (expected " +
+                                  constraints.at(field).dump() + ", got " + actual.dump() + ")");
+        }
+    };
+    requireEqual("role", target->value("role", std::string{}));
+    requireEqual("format_class", target->value("format_class", std::string{}));
+    requireEqual("extent_scale", target->value("extent_scale", 1.0));
+    requireEqual("width", target->value("width", 0));
+    requireEqual("height", target->value("height", 0));
+    requireEqual("sample_count", target->value("sample_count", 1));
+
+    if (constraints.contains("usage")) {
+        const auto required_usage = parseStringArray(constraints, "usage",
+                                                     "render-target parameter: " + declaration.name);
+        const auto actual_usage = parseStringArray(*target, "usage", "render target: " + target_name);
+        for (const auto &usage : required_usage) {
+            if (std::find(actual_usage.begin(), actual_usage.end(), usage) == actual_usage.end()) {
+                throwBindingError(feature_name, declaration.name, target_name,
+                                  "usage is incompatible; missing " + usage);
+            }
+        }
+    }
+}
+
+std::string replaceBoundTargetReference(
+    const std::string &authored,
+    const std::unordered_map<std::string, std::string> &bindings,
+    const std::string &feature_name) {
+    if (authored.empty() || authored.front() != '$') {
+        return authored;
+    }
+    constexpr std::string_view history_suffix = "@history";
+    const bool history = authored.size() > history_suffix.size() &&
+                         authored.ends_with(history_suffix);
+    const auto end = history ? authored.size() - history_suffix.size() : authored.size();
+    const auto parameter = authored.substr(1, end - 1);
+    const auto found = bindings.find(parameter);
+    if (found == bindings.end()) {
+        throwBindingError(feature_name, parameter, "<unresolved>",
+                          "placeholder has no resolved binding");
+    }
+    return found->second + (history ? std::string{history_suffix} : std::string{});
+}
+
+void replaceBoundTargetValue(nlohmann::json &value,
+                             const std::unordered_map<std::string, std::string> &bindings,
+                             const std::string &feature_name) {
+    if (value.is_string()) {
+        value = replaceBoundTargetReference(value.get<std::string>(), bindings, feature_name);
+    } else if (value.is_array()) {
+        for (auto &entry : value) {
+            replaceBoundTargetValue(entry, bindings, feature_name);
+        }
+    }
+}
+
+nlohmann::json bindFeatureRenderTargets(const nlohmann::json &authored_feature,
+                                        const nlohmann::json &instance_parameters,
+                                        const nlohmann::json &config,
+                                        const std::string &feature_name,
+                                        nlohmann::json &resolved_parameters) {
+    const auto declarations = parseRenderTargetParameters(authored_feature, feature_name);
+    std::unordered_map<std::string, const RenderTargetParameterDeclaration *> by_name;
+    for (const auto &declaration : declarations) {
+        by_name.emplace(declaration.name, &declaration);
+    }
+    for (auto parameter = instance_parameters.begin(); parameter != instance_parameters.end(); ++parameter) {
+        const auto target_name = parameter.value().is_string()
+                                     ? parameter.value().get<std::string>()
+                                     : std::string{"<non-string>"};
+        if (!by_name.contains(parameter.key())) {
+            throwBindingError(feature_name, parameter.key(), target_name, "unknown parameter");
+        }
+        if (!parameter.value().is_string()) {
+            throwBindingError(feature_name, parameter.key(), target_name,
+                              "binding must name a render target");
+        }
+    }
+
+    std::unordered_map<std::string, std::string> bindings;
+    resolved_parameters = nlohmann::json::object();
+    for (const auto &declaration : declarations) {
+        std::optional<std::string> target_name;
+        if (const auto bound = instance_parameters.find(declaration.name);
+            bound != instance_parameters.end()) {
+            target_name = bound->get<std::string>();
+        } else {
+            target_name = declaration.default_target;
+        }
+        if (!target_name) {
+            if (declaration.required) {
+                throwBindingError(feature_name, declaration.name, "<missing>",
+                                  "required parameter is missing");
+            }
+            continue;
+        }
+        validateTargetBinding(config, declaration, *target_name, feature_name);
+        bindings.emplace(declaration.name, *target_name);
+        resolved_parameters[declaration.name] = *target_name;
+    }
+
+    if (declarations.empty() && !instance_parameters.empty()) {
+        const auto first = instance_parameters.begin();
+        const auto target_name = first.value().is_string()
+                                     ? first.value().get<std::string>()
+                                     : std::string{"<non-string>"};
+        throwBindingError(feature_name, first.key(), target_name, "unknown parameter");
+    }
+
+    auto feature = authored_feature;
+    feature.erase("parameters");
+    if (feature.contains("passes")) {
+        for (auto &entry : feature.at("passes")) {
+            auto &pass = entry.at("pass");
+            if (pass.contains("input")) {
+                replaceBoundTargetValue(pass.at("input"), bindings, feature_name);
+            }
+            if (pass.contains("output") && pass.at("output").is_object()) {
+                auto &output = pass.at("output");
+                if (output.contains("color")) {
+                    replaceBoundTargetValue(output.at("color"), bindings, feature_name);
+                }
+                if (output.contains("depth")) {
+                    replaceBoundTargetValue(output.at("depth"), bindings, feature_name);
+                }
+            }
+        }
+    }
+    if (feature.contains("pass_overrides")) {
+        for (auto &override_json : feature.at("pass_overrides")) {
+            if (override_json.contains("input")) {
+                replaceBoundTargetValue(override_json.at("input"), bindings, feature_name);
+            }
+        }
+    }
+    if (feature.contains("render_target_overrides")) {
+        nlohmann::json replaced = nlohmann::json::object();
+        for (auto override_it = feature.at("render_target_overrides").begin();
+             override_it != feature.at("render_target_overrides").end(); ++override_it) {
+            const auto target_name =
+                replaceBoundTargetReference(override_it.key(), bindings, feature_name);
+            if (replaced.contains(target_name)) {
+                throwBindingError(feature_name, override_it.key(), target_name,
+                                  "render_target_overrides binding collides");
+            }
+            replaced[target_name] = override_it.value();
+        }
+        feature["render_target_overrides"] = std::move(replaced);
+    }
+    return feature;
+}
+
 void addRenderTargets(nlohmann::json &config, const nlohmann::json &feature,
                       std::unordered_set<std::string> &target_names) {
     if (!feature.contains("render_targets")) {
@@ -972,23 +1294,37 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         throw std::runtime_error("Rendering config must be an object");
     }
 
-    const auto feature_refs = parseFeatureRefs(config);
+    const auto feature_instances = parseFeatureInstances(config);
     std::vector<std::string> shader_defines;
     appendShaderDefines(shader_defines, config, "rendering config");
-    if (!feature_refs.empty() && !dependencies.runtime_shader_compiler_enabled) {
+    if (!feature_instances.empty() && !dependencies.runtime_shader_compiler_enabled) {
         throw std::runtime_error(std::string{runtime_compiler_required_message});
     }
 
-    std::vector<std::pair<std::string, nlohmann::json>> loaded_features;
+    struct LoadedFeature {
+        FeatureInstance instance;
+        std::string name;
+        nlohmann::json feature;
+    };
+    std::vector<LoadedFeature> loaded_features;
     std::vector<std::string> feature_names;
+    std::optional<nlohmann::json> projection_jitter;
     bool hdr_enabled = false;
-    loaded_features.reserve(feature_refs.size());
-    for (const auto &feature_ref : feature_refs) {
-        auto feature = loadFeatureJson(feature_ref, dependencies);
-        const auto feature_name = validateFeatureEnvelope(feature, feature_ref);
+    loaded_features.reserve(feature_instances.size());
+    for (const auto &instance : feature_instances) {
+        auto feature = loadFeatureJson(instance.ref, dependencies);
+        const auto feature_name = validateFeatureEnvelope(feature, instance.ref);
         appendUnique(feature_names, feature_name);
         hdr_enabled = hdr_enabled || feature_name == "hdr";
-        loaded_features.emplace_back(feature_ref, std::move(feature));
+        if (auto declaration = parseProjectionJitterDeclaration(feature, feature_name)) {
+            if (projection_jitter) {
+                throw std::runtime_error(
+                    "projection_jitter providers '" + projection_jitter->at("provider").get<std::string>() +
+                    "' and '" + feature_name + "' cannot both be enabled");
+            }
+            projection_jitter = std::move(declaration);
+        }
+        loaded_features.push_back(LoadedFeature{instance, feature_name, std::move(feature)});
     }
 
     auto composed = config;
@@ -999,8 +1335,11 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     auto pass_names = collectPassNames(composed);
     auto buffer_names = collectBufferNames(composed);
     auto task_names = collectComputeTaskNames(composed);
-    for (const auto &[feature_ref, feature] : loaded_features) {
-        (void)feature_ref;
+    nlohmann::json resolved_instances = nlohmann::json::array();
+    for (const auto &loaded : loaded_features) {
+        nlohmann::json resolved_parameters;
+        const auto feature = bindFeatureRenderTargets(loaded.feature, loaded.instance.parameters,
+                                                      composed, loaded.name, resolved_parameters);
         addRenderTargets(composed, feature, target_names);
         addBuffers(composed, feature, buffer_names);
         applyRenderTargetOverrides(composed, feature);
@@ -1008,6 +1347,11 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         applyPassOverrides(composed, feature);
         addFeatureComputeTasks(composed, feature, task_names);
         appendShaderDefines(shader_defines, feature, "render feature");
+        resolved_instances.push_back({
+            {"feature", loaded.name},
+            {"parameters", std::move(resolved_parameters)},
+            {"ref", loaded.instance.ref},
+        });
     }
 
     if (!shader_defines.empty()) {
@@ -1028,8 +1372,14 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         enforceCanonicalOrder(pass_set.at("passes"));
     }
     enforceTerminalAfterComputeTasks(composed);
-    return RenderFeatureComposeResult{std::move(composed), std::move(shader_defines),
-                                      std::move(feature_names), !feature_refs.empty()};
+    RenderFeatureComposeResult result;
+    result.config = std::move(composed);
+    result.shader_defines = std::move(shader_defines);
+    result.feature_names = std::move(feature_names);
+    result.projection_jitter = std::move(projection_jitter);
+    result.feature_instances = std::move(resolved_instances);
+    result.used_features = !feature_instances.empty();
+    return result;
 }
 
 } // namespace Pelican

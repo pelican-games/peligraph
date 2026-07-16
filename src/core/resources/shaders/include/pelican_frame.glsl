@@ -12,6 +12,11 @@ layout(set = PELICAN_SET_FRAME, binding = PELICAN_FRAME_UBO_BINDING, std140) uni
     mat4 projection;
     mat4 previous_view;
     mat4 previous_projection;
+    vec2 jitter_ndc;
+    vec2 previous_jitter_ndc;
+    uint temporal_reset_epoch;
+    uint previous_temporal_reset_epoch;
+    uvec2 temporal_padding;
 } pelicanFrame;
 
 struct PelicanObjectData {

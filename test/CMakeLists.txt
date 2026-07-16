@@ -286,6 +286,10 @@ target_compile_definitions(pelican_test_gamesystem_test PRIVATE
 )
 pelican_define_test(camera_test pelican_core glm)
 pelican_define_test(temporal_test pelican_core glm)
+pelican_define_test(projectionjitter_test pelican_core glm)
+target_compile_definitions(pelican_test_projectionjitter_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
 target_compile_definitions(pelican_test_temporal_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )

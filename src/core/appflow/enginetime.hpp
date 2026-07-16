@@ -22,6 +22,7 @@ DECLARE_MODULE(EngineTime) {
     double current_time = 0.0;
     double delta_time = 0.0;
     uint64_t frame_index = 0;
+    uint64_t time_set_revision = 0;
     Clock::time_point last_tick;
 
   public:
@@ -33,6 +34,7 @@ DECLARE_MODULE(EngineTime) {
     double now() const;
     double dt() const;
     uint64_t frameIndex() const;
+    uint64_t timeSetRevision() const;
 };
 
 } // namespace Pelican

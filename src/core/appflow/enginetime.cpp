@@ -23,6 +23,7 @@ void EngineTime::setup(Mode mode, double fixed_dt) {
     current_time = 0.0;
     delta_time = 0.0;
     frame_index = 0;
+    time_set_revision = 0;
     last_tick = Clock::now();
 }
 
@@ -44,6 +45,7 @@ void EngineTime::setTime(double t) {
     current_time = t;
     delta_time = 0.0;
     last_tick = Clock::now();
+    ++time_set_revision;
 }
 
 double EngineTime::now() const { return current_time; }
@@ -51,5 +53,7 @@ double EngineTime::now() const { return current_time; }
 double EngineTime::dt() const { return delta_time; }
 
 uint64_t EngineTime::frameIndex() const { return frame_index; }
+
+uint64_t EngineTime::timeSetRevision() const { return time_set_revision; }
 
 } // namespace Pelican

@@ -5,6 +5,7 @@ target_sources(pelican_core PRIVATE
     debugdraw.cpp
     debugtext.cpp
     polygoninstancecontainer.cpp
+    projectionjitter.cpp
     materialrender.cpp
     uicontainer.cpp
     uirenderer.cpp

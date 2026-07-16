@@ -1,0 +1,50 @@
+[
+  {
+    "name": "static",
+    "current_clip": [0.2, -0.4, 0.5, 1.0],
+    "previous_clip": [0.2, -0.4, 0.5, 1.0],
+    "current_jitter": [0.0, 0.0],
+    "previous_jitter": [0.0, 0.0],
+    "expected": [0.0, 0.0]
+  },
+  {
+    "name": "skinned",
+    "current_clip": [0.2, 0.0, 0.5, 1.0],
+    "previous_clip": [0.0, 0.0, 0.5, 1.0],
+    "current_jitter": [0.0, 0.0],
+    "previous_jitter": [0.0, 0.0],
+    "expected": [0.1, 0.0]
+  },
+  {
+    "name": "camera_motion",
+    "current_clip": [0.4, -0.2, 0.5, 1.0],
+    "previous_clip": [0.2, -0.2, 0.5, 1.0],
+    "current_jitter": [0.0, 0.0],
+    "previous_jitter": [0.0, 0.0],
+    "expected": [0.1, 0.0]
+  },
+  {
+    "name": "object_motion",
+    "current_clip": [0.6, 0.4, 1.0, 2.0],
+    "previous_clip": [0.2, 0.4, 1.0, 2.0],
+    "current_jitter": [0.0, 0.0],
+    "previous_jitter": [0.0, 0.0],
+    "expected": [0.1, 0.0]
+  },
+  {
+    "name": "jitter_only",
+    "current_clip": [0.22, -0.37, 0.5, 1.0],
+    "previous_clip": [0.19, -0.42, 0.5, 1.0],
+    "current_jitter": [0.02, 0.03],
+    "previous_jitter": [-0.01, -0.02],
+    "expected": [0.0, 0.0]
+  },
+  {
+    "name": "jitter_off",
+    "current_clip": [-0.2, 0.3, 0.5, 1.0],
+    "previous_clip": [-0.2, 0.1, 0.5, 1.0],
+    "current_jitter": [0.0, 0.0],
+    "previous_jitter": [0.0, 0.0],
+    "expected": [0.0, 0.1]
+  }
+]

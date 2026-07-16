@@ -61,6 +61,7 @@ struct FramePlan {
     std::vector<FramePlanNode> nodes;
     std::vector<std::vector<std::string>> levels;
     std::vector<FramePlanBarrier> barriers;
+    nlohmann::json composition_metadata = nlohmann::json::object();
 };
 
 std::string framePlanNodeKindName(FramePlanNodeKind kind);

@@ -1,0 +1,65 @@
+[
+  {
+    "consumer": "main_material",
+    "matrix": "jittered_view_projection",
+    "route": "render_frame_snapshot -> MaterialRenderer engineMvp",
+    "source": "src/core/renderer/materialrender.cpp",
+    "needle": "dependencies.view_projection"
+  },
+  {
+    "consumer": "velocity",
+    "matrix": "jittered_current_previous",
+    "route": "FrameUBO; subtract jitter in NDC",
+    "source": "src/core/resources/velocity.frag",
+    "needle": "previous_jitter_ndc"
+  },
+  {
+    "consumer": "sprite",
+    "matrix": "jittered",
+    "route": "FrameUBO projection * view",
+    "source": "src/core/resources/sprite.vert",
+    "needle": "pelicanFrame.projection * pelicanFrame.view"
+  },
+  {
+    "consumer": "ssao",
+    "matrix": "jittered",
+    "route": "FrameUBO projection",
+    "source": "src/core/resources/ssao.frag",
+    "needle": "pelicanFrame.projection"
+  },
+  {
+    "consumer": "world_debug_draw",
+    "matrix": "jittered_view_projection",
+    "route": "render_frame_snapshot -> enqueue argument -> CPU NDC",
+    "source": "src/core/vkcore/render_pass_dispatch.cpp",
+    "needle": "dependencies.view_projection"
+  },
+  {
+    "consumer": "shadow",
+    "matrix": "light_view_projection",
+    "route": "unchanged push constant",
+    "source": "src/core/renderer/materialrender.cpp",
+    "needle": "shadowViewProjection"
+  },
+  {
+    "consumer": "fullscreen",
+    "matrix": "unused",
+    "route": "clip-space fullscreen triangle; projection unused",
+    "source": "src/core/resources/fullscreen.vert",
+    "needle": "gl_Position = vec4(outUV * 2.0 - 1.0"
+  },
+  {
+    "consumer": "ui",
+    "matrix": "independent_px_to_clip",
+    "route": "resolution-based pixel-to-clip conversion",
+    "source": "src/core/resources/ui.vert",
+    "needle": "inPositionPx.x * pelicanFrame.resolution.z"
+  },
+  {
+    "consumer": "culling_rpc_rays",
+    "matrix": "non_jittered",
+    "route": "Camera public API unchanged",
+    "source": "src/core/renderer/camera.cpp",
+    "needle": "Camera::getVPMatrix"
+  }
+]

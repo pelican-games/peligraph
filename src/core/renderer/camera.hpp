@@ -4,6 +4,7 @@
 #include "../container.hpp"
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -56,6 +57,7 @@ DECLARE_MODULE(Camera) {
     std::vector<std::string> controlled_scene_camera_order;
     std::string active_camera_name;
     bool active_scene_camera_locked = false;
+    std::uint64_t discontinuity_revision = 0;
 
     void rebuildProjectionMatrix();
     void resetToConfigDefaults();
@@ -76,6 +78,7 @@ DECLARE_MODULE(Camera) {
     void loadSceneCameras(std::string_view scene_id);
     void setActiveCamera(std::string_view name);
     const std::string &activeCameraName() const { return active_camera_name; }
+    std::uint64_t discontinuityRevision() const { return discontinuity_revision; }
     const std::vector<std::string> &controlledSceneCameraNames() const { return controlled_scene_camera_order; }
     const SceneCameraController *sceneCameraController(std::string_view name) const;
     bool acceptsControllerPose(std::string_view name) const;

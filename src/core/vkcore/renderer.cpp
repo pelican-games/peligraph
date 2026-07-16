@@ -183,8 +183,7 @@ void updateFrameAnimation(LightContainer &light_container, double time) {
 
 FrameUniformData updateFrameResources(RenderFrameModules &modules, EngineTime &engine_time,
                                       vk::Extent2D extent,
-                                      const glm::mat4 &previous_view,
-                                      const glm::mat4 &previous_projection) {
+                                      const RenderFrameSnapshot &snapshot) {
     const auto frame_index = engine_time.frameIndex();
     const auto inverse_width = extent.width == 0 ? 0.0f : 1.0f / static_cast<float>(extent.width);
     const auto inverse_height = extent.height == 0 ? 0.0f : 1.0f / static_cast<float>(extent.height);
@@ -197,10 +196,14 @@ FrameUniformData updateFrameResources(RenderFrameModules &modules, EngineTime &e
     data.resolution = glm::vec4{static_cast<float>(extent.width), static_cast<float>(extent.height),
                                 inverse_width, inverse_height};
     data.camera_position = glm::vec4{modules.camera.getPos(), 1.0f};
-    data.view = modules.camera.getViewMatrix();
-    data.projection = modules.camera.getProjectionMatrix();
-    data.previous_view = previous_view;
-    data.previous_projection = previous_projection;
+    data.view = snapshot.view;
+    data.projection = snapshot.projection_jittered;
+    data.previous_view = snapshot.previous_view;
+    data.previous_projection = snapshot.previous_projection_jittered;
+    data.jitter_ndc = snapshot.jitter_ndc;
+    data.previous_jitter_ndc = snapshot.previous_jitter_ndc;
+    data.temporal_reset_epoch = snapshot.temporal_reset_epoch;
+    data.previous_temporal_reset_epoch = snapshot.previous_temporal_reset_epoch;
 
     modules.frame_resources.setSceneBuffers(modules.instance_container.getObjectBuf(),
                                             modules.instance_container.getPreviousObjectBuf(),
@@ -749,6 +752,7 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
                             RenderingPassId rendering_pass_id,
                             const CompiledRenderingPass &rendering_pass,
                             RenderFrameModules &modules,
+                            const RenderFrameSnapshot &snapshot,
                             RenderTargetLayoutTracker &layout_tracker,
                             nlohmann::json *node_trace) {
     const MaterialRendererDependencies material_renderer_dependencies{modules.instance_container,
@@ -756,7 +760,8 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
                                                                       modules.material_container,
                                                                       modules.frame_resources,
                                                                       modules.light_container,
-                                                                      modules.camera};
+                                                                      modules.camera,
+                                                                      snapshot.view_projection_jittered};
     const FullscreenPassRendererDependencies fullscreen_pass_renderer_dependencies{modules.fullscreen_pass_container,
                                                                                   modules.frame_resources};
     std::optional<UiRendererDependencies> ui_renderer_dependencies;
@@ -778,6 +783,7 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
 #endif
         modules.frame_resources,
         modules.camera,
+        snapshot.view_projection_jittered,
         modules.render_target.getSwapchainFormat()};
     const RenderPassExecutorDependencies pass_executor_dependencies{modules.render_target_container, modules.vk_utils,
                                                                     pass_dispatch_dependencies};
@@ -824,10 +830,27 @@ bool handleFrameTargetResize(RenderFrameModules &modules, RenderTargetLayoutTrac
     return true;
 }
 
+std::optional<ProjectionJitterSettings> projectionJitterSettingsFor(
+    const FrameGraphRuntimeContainer &runtime, RenderingPassId rendering_pass_id) {
+    const auto *frame_graph = runtime.find(rendering_pass_id);
+    if (frame_graph == nullptr ||
+        !frame_graph->plan.composition_metadata.contains("projection_jitter")) {
+        return std::nullopt;
+    }
+    const auto &json = frame_graph->plan.composition_metadata.at("projection_jitter");
+    return ProjectionJitterSettings{
+        json.at("provider").get<std::string>(),
+        json.at("pattern").get<std::string>(),
+        json.at("phases").get<std::uint32_t>(),
+    };
+}
+
 } // namespace
 
 Renderer::Renderer() {
     current_rendering_pass_id = loadDefaultRenderingPassFromConfig();
+    projection_jitter = projectionJitterSettingsFor(GET_MODULE(FrameGraphRuntimeContainer),
+                                                     current_rendering_pass_id);
 }
 
 Renderer::~Renderer() = default;
@@ -863,7 +886,7 @@ void Renderer::recreateRenderTargetsAndRebindForTesting(vk::Extent2D extent) {
     modules.render_target_container.recreateForExtent(extent);
     rebindFullscreenInputs(modules);
     modules.instance_container.resetTemporalHistory();
-    camera_history_valid = false;
+    temporal_reset_requested = true;
     render_target_layout_tracker.reset();
 }
 
@@ -871,7 +894,7 @@ void Renderer::resetTemporalHistory() {
     auto modules = resolveRenderFrameModules();
     modules.render_target_container.resetHistory();
     modules.instance_container.resetTemporalHistory();
-    camera_history_valid = false;
+    temporal_reset_requested = true;
     render_target_layout_tracker.reset();
 }
 
@@ -903,21 +926,37 @@ void Renderer::render() {
         rebindFullscreenInputs(modules);
     }
     auto &engine_time = resolveFrameEngineTime();
+    const auto time_set_revision = engine_time.timeSetRevision();
+    const auto camera_discontinuity_revision = modules.camera.discontinuityRevision();
+    if (temporal_history.valid &&
+        (time_set_revision != observed_time_set_revision ||
+         camera_discontinuity_revision != observed_camera_discontinuity_revision)) {
+        modules.render_target_container.resetHistory();
+        modules.instance_container.resetTemporalHistory();
+        render_target_layout_tracker.reset();
+        temporal_reset_requested = true;
+    }
+    observed_time_set_revision = time_set_revision;
+    observed_camera_discontinuity_revision = camera_discontinuity_revision;
     updateFrameAnimation(modules.light_container, engine_time.now());
 
     const auto render_ctx = modules.render_target.render_begin();
     if (handleFrameTargetResize(modules, render_target_layout_tracker)) {
         modules.instance_container.resetTemporalHistory();
-        camera_history_valid = false;
+        temporal_reset_requested = true;
     }
     const auto current_view = modules.camera.getViewMatrix();
     const auto current_projection = modules.camera.getProjectionMatrix();
-    if (!camera_history_valid) {
-        previous_view = current_view;
-        previous_projection = current_projection;
+    glm::vec2 jitter_ndc{0.0f};
+    if (projection_jitter) {
+        jitter_ndc = projectionJitterSample(*projection_jitter, engine_time.frameIndex(),
+                                            render_ctx.extent.width, render_ctx.extent.height)
+                         .jitter_ndc;
     }
-    updateFrameResources(modules, engine_time, render_ctx.extent, previous_view,
-                         previous_projection);
+    const auto snapshot = buildRenderFrameSnapshot(temporal_history, current_projection,
+                                                   current_view, jitter_ndc,
+                                                   temporal_reset_requested);
+    updateFrameResources(modules, engine_time, render_ctx.extent, snapshot);
 
     const auto &rendering_pass =
         modules.rendering_pass_container.getCompiledRenderingPass(current_rendering_pass_id);
@@ -927,7 +966,7 @@ void Renderer::render() {
         node_trace = nlohmann::json::array();
         node_trace_ptr = &node_trace;
     }
-    executeRenderingPasses(render_ctx, current_rendering_pass_id, rendering_pass, modules,
+    executeRenderingPasses(render_ctx, current_rendering_pass_id, rendering_pass, modules, snapshot,
                            render_target_layout_tracker, node_trace_ptr);
 
     modules.render_target.render_end();
@@ -940,9 +979,8 @@ void Renderer::render() {
     }
     modules.render_target_container.advanceHistoryFrame();
     modules.instance_container.advanceTemporalHistoryAfterRender();
-    previous_view = current_view;
-    previous_projection = current_projection;
-    camera_history_valid = true;
+    commitRenderFrameSnapshot(temporal_history, snapshot);
+    temporal_reset_requested = false;
 }
 
 } // namespace Pelican

@@ -2,6 +2,7 @@
 
 #include "../container.hpp"
 #include "../renderingpass/renderingpass.hpp"
+#include <glm/glm.hpp>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
@@ -22,6 +23,7 @@ struct MaterialRendererDependencies {
     const FrameResources &frame_resources;
     LightContainer &light_container;
     const Camera &camera;
+    glm::mat4 view_projection{1.0f};
 };
 
 DECLARE_MODULE(MaterialRenderer) {

@@ -2,9 +2,12 @@
 
 #include "../container.hpp"
 #include "../renderingpass/renderingpass.hpp"
+#include "../renderer/projectionjitter.hpp"
 #include "render_target_layout_tracker.hpp"
 #include <nlohmann/json.hpp>
 #include <glm/glm.hpp>
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -15,9 +18,11 @@ DECLARE_MODULE(Renderer) {
     RenderTargetLayoutTracker render_target_layout_tracker;
     bool execution_tracing_for_testing = false;
     nlohmann::json last_execution_trace;
-    glm::mat4 previous_view{1.0f};
-    glm::mat4 previous_projection{1.0f};
-    bool camera_history_valid = false;
+    TemporalFrameHistory temporal_history;
+    bool temporal_reset_requested = true;
+    std::uint64_t observed_time_set_revision = 0;
+    std::uint64_t observed_camera_discontinuity_revision = 0;
+    std::optional<ProjectionJitterSettings> projection_jitter;
 
   public:
     Renderer();

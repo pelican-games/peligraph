@@ -54,7 +54,7 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
         vert_buf_container.bindVertexBuffer(cmd_buf, draw_call.skinned);
         dependencies.frame_resources.bindGraphics(cmd_buf, pipeline_layout);
         if (draw_call.skinned) instance_container.bindSkinning(cmd_buf, pipeline_layout);
-        const PushConstantStruct engine_push{dependencies.camera.getVPMatrix()};
+        const PushConstantStruct engine_push{dependencies.view_projection};
         cmd_buf.pushConstants(pipeline_layout,
                               vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0,
                               sizeof(engine_push), &engine_push);
