@@ -1,0 +1,141 @@
+{
+  "specVersion": "1.0",
+  "humanoid": {
+    "humanBones": {
+      "chest": {
+        "node": 15
+      },
+      "head": {
+        "node": 2
+      },
+      "hips": {
+        "node": 0
+      },
+      "leftFoot": {
+        "node": 5
+      },
+      "leftHand": {
+        "node": 11
+      },
+      "leftLowerArm": {
+        "node": 10
+      },
+      "leftLowerLeg": {
+        "node": 4
+      },
+      "leftUpperArm": {
+        "node": 9
+      },
+      "leftUpperLeg": {
+        "node": 3
+      },
+      "rightFoot": {
+        "node": 8
+      },
+      "rightHand": {
+        "node": 14
+      },
+      "rightLowerArm": {
+        "node": 13
+      },
+      "rightLowerLeg": {
+        "node": 7
+      },
+      "rightUpperArm": {
+        "node": 12
+      },
+      "rightUpperLeg": {
+        "node": 6
+      },
+      "spine": {
+        "node": 1
+      }
+    }
+  },
+  "expressions": {
+    "preset": {
+      "happy": {
+        "isBinary": true,
+        "overrideBlink": "blend",
+        "overrideLookAt": "block",
+        "overrideMouth": "none",
+        "morphTargetBinds": [
+          {
+            "node": 2,
+            "index": 1,
+            "weight": 0.75
+          }
+        ],
+        "materialColorBinds": [
+          {
+            "material": 0,
+            "type": "color",
+            "targetValue": [
+              0.1,
+              0.2,
+              0.3,
+              0.4
+            ]
+          }
+        ],
+        "textureTransformBinds": [
+          {
+            "material": 0,
+            "scale": [
+              2.0,
+              3.0
+            ],
+            "offset": [
+              0.25,
+              0.5
+            ]
+          }
+        ]
+      }
+    },
+    "custom": {
+      "smileWide": {
+        "isBinary": false,
+        "overrideBlink": "none",
+        "overrideLookAt": "none",
+        "overrideMouth": "none"
+      }
+    }
+  },
+  "lookAt": {
+    "offsetFromHeadBone": [
+      0.0,
+      0.06,
+      0.0
+    ],
+    "type": "expression",
+    "rangeMapHorizontalOuter": {
+      "inputMaxValue": 90.0,
+      "outputScale": 1.0
+    },
+    "rangeMapVerticalDown": {
+      "inputMaxValue": 45.0,
+      "outputScale": 0.8
+    }
+  },
+  "firstPerson": {
+    "meshAnnotations": [
+      {
+        "node": 2,
+        "type": "thirdPersonOnly"
+      }
+    ]
+  },
+  "nodeConstraints": [
+    {
+      "node": 1,
+      "specVersion": "1.0",
+      "constraint": {
+        "rotation": {
+          "source": 0,
+          "weight": 0.5
+        }
+      }
+    }
+  ]
+}

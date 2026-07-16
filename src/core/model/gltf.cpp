@@ -12,6 +12,7 @@
 #include "../parallel_prepare.hpp"
 #include "vatformat.hpp"
 #include "vertbufcontainer.hpp"
+#include "vrmsemantic.hpp"
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -154,6 +155,7 @@ struct PreparedGltf::Impl {
     std::string warning;
     std::string error;
     bool scene_node_instance = false;
+    VrmSemanticDecodeResult vrm;
 };
 
 namespace {
@@ -278,6 +280,7 @@ std::shared_ptr<PreparedGltf::Impl> prepareGltfImpl(std::string path,
                                  (prepared->error.empty() ? std::string{} : " (" + prepared->error + ")"));
     }
     decodeImagesInParallel(prepared->model, encoded_images);
+    prepared->vrm = decodeVrmSemantic(prepared->model, prepared->source_path);
     if (!prepared->fragment) {
         rejectVatModelIfDisabled(prepared->model);
     }
@@ -422,6 +425,7 @@ struct InternalGltfLoader {
     std::string source_path;
     std::optional<AssetFragmentRef> fragment;
     bool scene_node_instance = false;
+    std::shared_ptr<const VrmSemanticData> vrm_semantic;
     std::vector<std::optional<GlobalMaterialId>> material_map;
     std::vector<MaterialInfo> material_infos;
     std::vector<std::optional<GlobalTextureId>> texture_map;
@@ -1417,6 +1421,7 @@ struct InternalGltfLoader {
             });
         }
         m.skeletal = skeletal_data;
+        m.vrm_semantic = vrm_semantic;
         m.gpu_resources = resources.finish();
 
         return m;
@@ -1458,6 +1463,15 @@ ModelTemplate GltfLoader::commit(PreparedGltf prepared) const {
         LOG_ERROR(logger, "loading gltf file \"{}\" : {}", prepared.impl->source_path,
                   prepared.impl->error);
     }
+    if (logger != nullptr) {
+        for (const auto &diagnostic : prepared.impl->vrm.diagnostics) {
+            if (diagnostic.severity == VrmDiagnosticSeverity::info) {
+                LOG_INFO(logger, "{}", diagnostic.message);
+            } else {
+                LOG_WARNING(logger, "{}", diagnostic.message);
+            }
+        }
+    }
     // Complete a side-effect-free traversal first. Fragment ambiguity,
     // accessor/rig errors, and malformed vertex streams therefore fail before
     // a Vulkan object or mega-buffer range is touched.
@@ -1471,6 +1485,7 @@ ModelTemplate GltfLoader::commit(PreparedGltf prepared) const {
         prepared.impl->source_path,
         prepared.impl->fragment,
         prepared.impl->scene_node_instance,
+        prepared.impl->vrm.semantic,
     };
     return loader.load();
 }
@@ -1485,6 +1500,7 @@ ModelTemplate GltfLoader::inspect(const PreparedGltf &prepared) const {
         prepared.impl->source_path,
         prepared.impl->fragment,
         prepared.impl->scene_node_instance,
+        prepared.impl->vrm.semantic,
     };
     return loader.load();
 }

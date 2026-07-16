@@ -3,6 +3,7 @@
 #include "../handle.hpp"
 #include "../material/material.hpp"
 #include "skeletalanimation.hpp"
+#include "vrmsemantic.hpp"
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -47,6 +48,7 @@ struct ModelTemplate {
 
     std::vector<MaterialPrimitives> material_primitives;
     std::shared_ptr<SkeletalModelData> skeletal;
+    std::shared_ptr<const VrmSemanticData> vrm_semantic;
     std::shared_ptr<ModelGpuResources> gpu_resources;
     ModelAssetId asset_id{};
     std::uint64_t content_revision = 1;

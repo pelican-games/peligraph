@@ -12,7 +12,9 @@ target_sources(pelican_cli PRIVATE
   materialcommand.cpp
   projectinit.cpp
   rulesimport.cpp
+  vrmcommand.cpp
   ../core/model/vatformat.cpp
+  ../core/model/vrmsemantic.cpp
 )
 
 target_link_libraries(pelican_cli PRIVATE argparse nlohmann_json picosha2 glm pelican_project tinygltf)
