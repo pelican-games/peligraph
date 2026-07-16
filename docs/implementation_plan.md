@@ -3028,6 +3028,57 @@ target 描画機構)/ VRM-S1b(expression sink)の分割案を質問として
 6. 受け入れ = 上記 + player 8 秒(VRM 1.0 fixture で expression が
    動く手動確認手順)
 
+**【2026-07-17 追記】WP120 は監査停止(正しい停止)** — morph target
+描画機構が全経路で不在(`docs/design_reviews/2026-07-17_wp120_report.md`
+の監査表が正)。停止質問への確定判断: ①S1a→S1b 分割承認
+②公開面は **versioned application service の additive 追加**(標準
+評価器だけの engine 内部例外は dogfooding 違反 — 不採用。S1a の
+commit 面はレポート案どおり renderer 内部で閉じ、公開は S1b で)
+③**MaterialInstanceOverrideBlock は独立 WP(WP122)に分離**。
+実行順: WP121(S1a)→ WP122(M-INST0)→ WP123(S1b)。
+
+### WP121: VRM-S1a — glTF morph target 描画機構
+
+参照: **`docs/design_reviews/2026-07-17_wp120_report.md` の
+「VRM-S1a」節(6 項)と「必要な機構語彙」の morph 系 5 語彙
+(MorphTargetLayout / DeltaRange / WeightFrame /
+publishMorphWeightFrame / advanceMorphHistoryAfterRender)が仕様の正**。
+VRM semantic は含まない汎用 glTF 機構。
+依存: WP110(モデル reload の identity)・WP95(N/N-1 流儀)。
+見積: 特大。排他: gltf decode(targets/weights)・vertbufcontainer
+(delta storage)・polygoninstancecontainer(weight frame)・
+vertex shader 群(material/shadow/velocity)・fixture/golden。
+
+1. decode: `primitive.targets`(POSITION/NORMAL/TANGENT)+
+   `mesh.weights`/`node.weights` 既定。count/type/有限値/sparse 方針を
+   名前入り error で固定
+2. storage: immutable delta の共有 GPU range + 決定的 layout
+   (model generation 付き — WP110 の reload と整合)
+3. instance weight frame: 二体独立・current N / previous N-1・
+   初回/seek/reload/teleport で previous=current(§1-5 と同型)。
+   commit 面は renderer 内部の versioned descriptor(公開は S1b)
+4. 変形: `base + Σ(weight × delta)` を **skinning より前**に、
+   material/shadow/velocity の全 vertex path で同一に。velocity は
+   weight N と N-1 を読む(骨のみ/morph のみ運動の velocity fixture)
+5. **target なしモデルの vertex ABI・batching・golden を byte/image
+   不変に**。target 数上限・weight buffer capacity・overflow policy を
+   明示
+6. 受け入れ = morph off/on・二 instance 別 weight 同 revision・
+   skinned morph・shadow・deformation velocity・reload/reset の
+   fixture + image golden + 既存全テスト + golden SKIP 0
+   (件数 41/40 から追加分更新)+ player 8 秒
+
+### WP122: M-INST0 — per-instance material override ABI(予約)
+
+WP120 レポートの `MaterialInstanceOverrideBlock`(instance ごとの
+color/UV transform 値 + generation — material template 不変・WP116 の
+per-material ABI と混ぜない)。WP121 着地後に詳細登録。
+
+### WP123: VRM-S1b — per-instance expression sink(予約)
+
+WP120 レポートの「VRM-S1b」節 + phase 写像案が下敷き。公開
+application service(additive)を含む。WP121/122 着地後に詳細登録。
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの
