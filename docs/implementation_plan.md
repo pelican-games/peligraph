@@ -2939,6 +2939,35 @@ USD-C2 = M-PBR0b-VARIANTS の wrapper-B 形式を含む)。
    画像 golden + **既存 material golden 全 byte 維持** + 既存全テスト +
    golden SKIP 0(件数 40/39 から追加分更新)+ player 8 秒
 
+### WP118: U-USD0a — USD ツール選定 spike(production レシピと分離)
+
+参照: **`design_usd_openpbr.md` v2.1 §2-1 が正**(guc は削除済み —
+候補は usd-core 自前 / Blender headless lossy fallback の 2 系)。
+依存: なし(エンジンコード変更なし)。見積: 中。
+排他: **エンジン(pelican2)への変更は docs のレポート 1 本のみ**。
+probe スクリプトと USD corpus は `%USERPROFILE%\Documents\
+pelican-import-tools` の `spike/usd/` 配下(main 直コミット運用)。
+
+1. **固定 USD corpus の作成**(usd-core で決定的に生成・コミット):
+   静的メッシュ+階層 / UsdGeomSubset / primvar 各補間 /
+   UsdPreviewSurface / MaterialX OpenPBR ノード / variant 付き /
+   usdz / Y-up・Z-up・単位違い
+2. **usd-core wheel の probe**(Windows): exact version pin・
+   **UsdMtlx plugin/data が wheel に同梱されるか**・resolver/検索 path・
+   ライセンスと再配布形態
+3. **Blender headless の probe**: USD import の lossy 範囲の実測
+   (PreviewSurface のみ? MaterialX は?)
+4. **比較レポート**(§2-1 の完全比較軸: 方向・保守・license・
+   Windows CI 導入・version/hash・resolver/plugin・variant/payload・
+   subset/binding・MaterialX 忠実度・UDIM・colorspace・texture
+   transform・primvar・triangulation・normals/tangents・negative
+   determinant・決定的直列化・診断・性能)→ **採用案の結論**
+5. 受け入れ = レポート
+   `docs/design_reviews/2026-07-17_wp118_usd_spike.md`(採用
+   tool/version/hash/license/導入手順・corpus の場所と再生成手順)+
+   import-tools 側 spike の pytest(probe が再実行可能)。
+   エンジンのテスト・golden には触れない
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの
