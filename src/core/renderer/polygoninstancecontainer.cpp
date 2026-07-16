@@ -282,6 +282,7 @@ ModelInstanceId PolygonInstanceContainer::placeModelInstance(const ModelTemplate
     animation_generations.push_back(1);
     model_asset_ids.push_back(model.asset_id);
     material_initial_value_tables.push_back(model.material_initial_values);
+    vrm_semantics.push_back(model.vrm_semantic);
     morph_layouts.push_back(model.morph_targets);
     const auto defaults = model.morph_targets
                               ? model.morph_targets->default_weights
@@ -338,6 +339,7 @@ void PolygonInstanceContainer::removeModelInstance(ModelInstanceId id) {
     previous_animation_revisions[id.value] = 0;
     model_asset_ids[id.value] = {};
     material_initial_value_tables[id.value].reset();
+    vrm_semantics[id.value].reset();
     if (++animation_generations[id.value] == 0) ++animation_generations[id.value];
     morph_layouts[id.value].reset();
     morph_weight_frames[id.value] = MorphWeightFrame{
@@ -371,6 +373,7 @@ void PolygonInstanceContainer::clear() {
     animation_generations.clear();
     model_asset_ids.clear();
     material_initial_value_tables.clear();
+    vrm_semantics.clear();
     morph_layouts.clear();
     morph_weight_frames.clear();
     morph_history_valid.clear();
@@ -597,6 +600,7 @@ void PolygonInstanceContainer::rebuildModelInstances(
     auto next_previous_animation_revisions = previous_animation_revisions;
     auto next_animation_generations = animation_generations;
     auto next_material_initial_value_tables = material_initial_value_tables;
+    auto next_vrm_semantics = vrm_semantics;
     auto next_morph_layouts = morph_layouts;
     auto next_morph_weight_frames = morph_weight_frames;
     auto next_morph_history_valid = morph_history_valid;
@@ -637,6 +641,7 @@ void PolygonInstanceContainer::rebuildModelInstances(
             ++next_animation_generations[instance];
         next_material_initial_value_tables[instance] =
             replacement.material_initial_values;
+        next_vrm_semantics[instance] = replacement.vrm_semantic;
         next_morph_layouts[instance] = replacement.morph_targets;
         const auto defaults = replacement.morph_targets
                                   ? replacement.morph_targets->default_weights
@@ -674,6 +679,7 @@ void PolygonInstanceContainer::rebuildModelInstances(
     animation_generations = std::move(next_animation_generations);
     material_initial_value_tables =
         std::move(next_material_initial_value_tables);
+    vrm_semantics = std::move(next_vrm_semantics);
     morph_layouts = std::move(next_morph_layouts);
     morph_weight_frames = std::move(next_morph_weight_frames);
     morph_history_valid = std::move(next_morph_history_valid);
@@ -996,6 +1002,85 @@ PolygonInstanceContainer::publishMaterialInstanceAbsoluteOverride(
     material_absolute_override_frames.insert_or_assign(key, std::move(next));
     uploadMaterialAbsoluteOverrides();
     return Animation::Status::ok;
+}
+
+Animation::Status PolygonInstanceContainer::publishVrmApplicationTransaction(
+    ModelInstanceId id,
+    const PublishVrmApplicationTransactionDescV1 &transaction) {
+    if (id.value >= model_instances_data.size())
+        return Animation::Status::invalid_handle;
+
+    std::vector<std::uint32_t> material_indices;
+    material_indices.reserve(transaction.material_overrides.size());
+    for (const auto &material : transaction.material_overrides) {
+        material_indices.push_back(material.source_material_index);
+    }
+    std::sort(material_indices.begin(), material_indices.end());
+    if (std::adjacent_find(material_indices.begin(), material_indices.end()) !=
+        material_indices.end())
+        return Animation::Status::invalid_argument;
+
+    MorphWeightFrame previous_morph;
+    bool previous_morph_history_valid = false;
+    decltype(material_absolute_override_frames) previous_materials;
+    try {
+        previous_morph = morph_weight_frames.at(id.value);
+        previous_morph_history_valid = morph_history_valid.at(id.value);
+        previous_materials = material_absolute_override_frames;
+    } catch (...) {
+        return Animation::Status::out_of_memory;
+    }
+
+    const auto rollback = [&]() noexcept {
+        try {
+            morph_weight_frames[id.value] = previous_morph;
+            morph_history_valid[id.value] = previous_morph_history_valid;
+            material_absolute_override_frames = previous_materials;
+            uploadMaterialAbsoluteOverrides();
+        } catch (...) {
+        }
+    };
+
+    try {
+        if (transaction.publish_morph) {
+            const auto status = publishMorphWeightFrame(id, transaction.morph);
+            if (status != Animation::Status::ok) {
+                rollback();
+                return status;
+            }
+        }
+        for (const auto &material : transaction.material_overrides) {
+            const auto status =
+                publishMaterialInstanceAbsoluteOverride(id, material);
+            if (status != Animation::Status::ok) {
+                rollback();
+                return status;
+            }
+        }
+    } catch (...) {
+        rollback();
+        return Animation::Status::out_of_memory;
+    }
+    return Animation::Status::ok;
+}
+
+std::optional<VrmApplicationModelView>
+PolygonInstanceContainer::vrmApplicationModel(
+    Animation::InstanceHandle instance) const {
+    if (!Animation::isValid(instance) || instance.identity == 0 ||
+        instance.identity > animation_generations.size())
+        return std::nullopt;
+    const auto index = static_cast<std::uint32_t>(instance.identity - 1);
+    if (animation_generations[index] != instance.generation ||
+        index >= vrm_semantics.size() || !vrm_semantics[index])
+        return std::nullopt;
+    return VrmApplicationModelView{
+        .model_instance = ModelInstanceId{index},
+        .instance = instance,
+        .semantic = vrm_semantics[index],
+        .morph_layout = morph_layouts[index],
+        .material_initial_values = material_initial_value_tables[index],
+    };
 }
 
 void PolygonInstanceContainer::bindDeformation(

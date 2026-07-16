@@ -15,6 +15,7 @@
 #include "enginetime.hpp"
 #include "../watch/reloadservice.hpp"
 #include "../animation/animationservice.hpp"
+#include "../animation/vrmapplication.hpp"
 #if PELICAN_WITH_IMGUI
 #include "../imgui/imguiruntime.hpp"
 #include "../imgui/imguisystem.hpp"
@@ -116,6 +117,13 @@ void updateFrameState() {
         case FramePhase::update_game:
             modules.ecs.update();
             internal::updateRegisteredGameSystems(game_context);
+            if (const auto status =
+                    Vrm::applicationServiceRuntime()
+                        .ensureStandardPhasesRegistered();
+                status != Animation::Status::ok) {
+                throw std::runtime_error(
+                    "VRM application phase registration failed");
+            }
             if (const auto status = Animation::animationServiceRuntime().runAllPhases(
                     modules.engine_time.frameIndex());
                 status != Animation::Status::ok) {

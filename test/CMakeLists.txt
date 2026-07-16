@@ -178,6 +178,16 @@ add_executable(pelican_test_vrm_fixture_writer vrm_fixture_writer.cpp)
 set_target_properties(pelican_test_vrm_fixture_writer PROPERTIES CXX_STANDARD 20)
 target_link_libraries(pelican_test_vrm_fixture_writer PRIVATE nlohmann_json)
 
+add_executable(pelican_test_vrm_expression_preview_writer
+  vrm_expression_preview_writer.cpp)
+set_target_properties(pelican_test_vrm_expression_preview_writer
+  PROPERTIES CXX_STANDARD 20)
+target_link_libraries(pelican_test_vrm_expression_preview_writer PRIVATE
+  nlohmann_json glm)
+target_compile_definitions(pelican_test_vrm_expression_preview_writer PRIVATE
+  PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
 # register tests
 pelican_define_test(module_container_test pelican_core)
 target_compile_definitions(pelican_test_module_container_test PRIVATE
@@ -202,8 +212,11 @@ if(WIN32)
   add_library(pelican_animation_abi_old SHARED fixtures/animation_abi/old_client.cpp)
   add_library(pelican_animation_abi_new SHARED fixtures/animation_abi/new_client.cpp)
   add_library(pelican_animation_public_evaluator SHARED fixtures/animation_abi/public_evaluator.cpp)
+  add_library(pelican_vrm_application_public_evaluator SHARED
+    fixtures/animation_abi/vrm_application_evaluator.cpp)
   foreach(animation_abi_fixture IN ITEMS pelican_animation_abi_old pelican_animation_abi_new
-                                         pelican_animation_public_evaluator)
+                                         pelican_animation_public_evaluator
+                                         pelican_vrm_application_public_evaluator)
     set_target_properties(${animation_abi_fixture} PROPERTIES
       CXX_STANDARD 20
       MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
@@ -220,6 +233,13 @@ if(WIN32)
     PELICAN_ANIM_OLD_DLL="$<TARGET_FILE:pelican_animation_abi_old>"
     PELICAN_ANIM_NEW_DLL="$<TARGET_FILE:pelican_animation_abi_new>"
     PELICAN_ANIM_EVALUATOR_DLL="$<TARGET_FILE:pelican_animation_public_evaluator>"
+  )
+  pelican_define_test(vrmapplication_test pelican_core VulkanMemoryAllocator
+                      VulkanMemoryAllocator-Hpp glm)
+  add_dependencies(pelican_test_vrmapplication_test
+                   pelican_vrm_application_public_evaluator)
+  target_compile_definitions(pelican_test_vrmapplication_test PRIVATE
+    PELICAN_VRM_APPLICATION_EVALUATOR_DLL="$<TARGET_FILE:pelican_vrm_application_public_evaluator>"
   )
 endif()
 pelican_define_test(ecs_lifecycle_test pelican_core)
