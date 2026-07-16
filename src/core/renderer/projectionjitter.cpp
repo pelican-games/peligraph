@@ -1,5 +1,6 @@
 #include "projectionjitter.hpp"
 
+#include <cmath>
 #include <limits>
 #include <stdexcept>
 
@@ -32,13 +33,17 @@ ProjectionJitterSample projectionJitterSample(const ProjectionJitterSettings &se
                                                std::uint32_t width,
                                                std::uint32_t height) {
     const auto provider = settings.provider.empty() ? std::string{"<unnamed>"} : settings.provider;
-    if (settings.pattern != "halton23") {
+    if (settings.pattern != "halton23" && settings.pattern != "table") {
         throw std::runtime_error("projection_jitter provider '" + provider +
                                  "' has unsupported pattern: " + settings.pattern);
     }
     if (settings.phases < 1 || settings.phases > 64) {
         throw std::runtime_error("projection_jitter provider '" + provider +
                                  "' phases must be in range 1..64");
+    }
+    if (settings.pattern == "table" && settings.offsets_px.size() != settings.phases) {
+        throw std::runtime_error("projection_jitter provider '" + provider +
+                                 "' table offsets_px length must match phases");
     }
     if (frame_index == 0) {
         throw std::runtime_error("projection_jitter provider '" + provider +
@@ -51,8 +56,15 @@ ProjectionJitterSample projectionJitterSample(const ProjectionJitterSettings &se
 
     const auto sample_index =
         static_cast<std::uint32_t>(((frame_index - 1) % settings.phases) + 1);
-    const glm::vec2 offset_px{halton(sample_index, 2) - 0.5f,
-                              halton(sample_index, 3) - 0.5f};
+    const glm::vec2 offset_px = settings.pattern == "table"
+                                    ? settings.offsets_px.at(sample_index - 1)
+                                    : glm::vec2{halton(sample_index, 2) - 0.5f,
+                                                halton(sample_index, 3) - 0.5f};
+    if (!std::isfinite(offset_px.x) || !std::isfinite(offset_px.y) || offset_px.x < -0.5f ||
+        offset_px.x >= 0.5f || offset_px.y < -0.5f || offset_px.y >= 0.5f) {
+        throw std::runtime_error("projection_jitter provider '" + provider +
+                                 "' table offset must be finite and in range [-0.5, 0.5)");
+    }
     // A positive NDC y maps towards increasing framebuffer y for Pelican's
     // positive-height Vulkan viewport, so CPU/shader/image signs stay equal.
     const glm::vec2 jitter_ndc{2.0f * offset_px.x / static_cast<float>(width),

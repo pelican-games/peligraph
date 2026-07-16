@@ -8,6 +8,7 @@
 #include <fstream>
 #include <glm/ext/matrix_clip_space.hpp>
 #include <glm/ext/matrix_transform.hpp>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
@@ -80,6 +81,36 @@ TEST_CASE("projection jitter Halton23 series is one-based and wraps at phase eig
                         "projection_jitter provider 'jitter_fixture' requires non-zero framebuffer width and height");
     REQUIRE_THROWS_WITH(projectionJitterSample(settings, 1, 200, 0),
                         "projection_jitter provider 'jitter_fixture' requires non-zero framebuffer width and height");
+}
+
+TEST_CASE("projection jitter table uses the shared one-based sample index and wrap",
+          "[projection-jitter][series][table]") {
+    const auto fixtures =
+        readJson(sourceRoot() / "test/fixtures/render_features/projection_jitter_table.json");
+    const auto &declaration = fixtures.at("halton23_equivalent");
+    ProjectionJitterSettings table{"table_fixture", "table",
+                                   static_cast<std::uint32_t>(declaration.at("offsets_px").size())};
+    for (const auto &offset : declaration.at("offsets_px")) {
+        table.offsets_px.emplace_back(offset.at(0).get<float>(), offset.at(1).get<float>());
+    }
+    const ProjectionJitterSettings halton{"halton_fixture", "halton23", table.phases};
+
+    for (std::uint64_t frame = 1; frame <= table.phases + 1; ++frame) {
+        const auto table_sample = projectionJitterSample(table, frame, 200, 100);
+        const auto halton_sample = projectionJitterSample(halton, frame, 200, 100);
+        REQUIRE(table_sample.sample_index == halton_sample.sample_index);
+        REQUIRE(table_sample.offset_px == halton_sample.offset_px);
+        REQUIRE(table_sample.jitter_ndc == halton_sample.jitter_ndc);
+    }
+    REQUIRE(projectionJitterSample(table, table.phases + 1, 200, 100).sample_index == 1);
+    REQUIRE_THROWS_WITH(projectionJitterSample(table, 0, 200, 100),
+                        "projection_jitter provider 'table_fixture' cannot sample frame_index 0");
+
+    table.offsets_px.front().x = std::numeric_limits<float>::quiet_NaN();
+    REQUIRE_THROWS_WITH(
+        projectionJitterSample(table, 1, 200, 100),
+        Catch::Matchers::ContainsSubstring("table_fixture") &&
+            Catch::Matchers::ContainsSubstring("finite and in range [-0.5, 0.5)"));
 }
 
 TEST_CASE("general projection jitter produces a constant NDC delta for perspective and ortho",

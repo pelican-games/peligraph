@@ -572,34 +572,98 @@ TEST_CASE("snapshot v1 rejects transparent-after copy points by name",
 TEST_CASE("projection jitter feature declaration is validated and exposed in compose result",
           "[render-feature][projection-jitter]") {
     auto config = baseConfigWithFeature("jitter.json");
-    const auto compose = [&](std::string declaration) {
+    const auto compose = [&](nlohmann::json declaration) {
         return composeRenderFeatureConfig(
             config,
             RenderFeatureComposeDependencies{
                 [declaration = std::move(declaration)](std::string_view) {
-                    return std::string{R"json({
-                      "schema":"pelican.render_feature","version":1,"name":"camera_jitter",
-                      "projection_jitter":)json"} + declaration + "}";
+                    return nlohmann::json{
+                        {"schema", "pelican.render_feature"},
+                        {"version", 1},
+                        {"name", "camera_jitter"},
+                        {"projection_jitter", declaration},
+                    }.dump();
                 },
                 true,
             });
     };
 
-    const auto valid = compose(R"json({"pattern":"halton23","phases":8})json");
+    const auto valid = compose(nlohmann::json{{"pattern", "halton23"}, {"phases", 8}});
     REQUIRE(valid.projection_jitter == nlohmann::json{
         {"provider", "camera_jitter"}, {"pattern", "halton23"}, {"phases", 8}});
 
-    for (const auto &[declaration, needle] : std::vector<std::pair<std::string, std::string>>{
-             {R"json({"pattern":"random","phases":8})json", "unknown pattern"},
-             {R"json({"pattern":"halton23","phases":0})json", "range 1..64"},
-             {R"json({"pattern":"halton23","phases":8,"extra":1})json", "unknown key"},
-             {R"json({"pattern":"halton23","phases":8,"render_scale":1})json", "reserved key"},
+    for (const auto &[declaration, needle] :
+         std::vector<std::pair<nlohmann::json, std::string>>{
+             {nlohmann::json{{"pattern", "random"}, {"phases", 8}}, "unknown pattern"},
+             {nlohmann::json{{"pattern", "halton23"}, {"phases", 0}}, "range 1..64"},
+             {nlohmann::json{{"pattern", "halton23"}, {"phases", 8}, {"extra", 1}},
+              "unknown key"},
+             {nlohmann::json{{"pattern", "halton23"}, {"phases", 8}, {"render_scale", 1}},
+              "reserved key"},
          }) {
-        INFO(declaration);
+        INFO(declaration.dump());
         REQUIRE_THROWS_WITH(compose(declaration),
                             Catch::Matchers::ContainsSubstring("camera_jitter") &&
                                 Catch::Matchers::ContainsSubstring(needle));
     }
+}
+
+TEST_CASE("projection jitter table schema derives phases and rejects invalid tables",
+          "[render-feature][projection-jitter][table]") {
+    auto config = baseConfigWithFeature("table_jitter.json");
+    const auto compose = [&](nlohmann::json declaration) {
+        return composeRenderFeatureConfig(
+            config,
+            RenderFeatureComposeDependencies{
+                [declaration = std::move(declaration)](std::string_view) {
+                    return nlohmann::json{
+                        {"schema", "pelican.render_feature"},
+                        {"version", 1},
+                        {"name", "table_jitter"},
+                        {"projection_jitter", declaration},
+                    }.dump();
+                },
+                true,
+            });
+    };
+    const auto fixtures = readJson(fixtureRoot() / "projection_jitter_table.json");
+
+    for (const auto &fixture : fixtures.at("valid")) {
+        DYNAMIC_SECTION(fixture.at("name").get<std::string>()) {
+            const auto result = compose(fixture.at("declaration"));
+            const auto expected = nlohmann::json{
+                {"provider", "table_jitter"},
+                {"pattern", "table"},
+                {"phases", fixture.at("expected_phases")},
+                {"offsets_px", fixture.at("declaration").at("offsets_px")},
+            };
+            REQUIRE(result.projection_jitter == expected);
+
+            const auto graphs = parseFrameGraphDefinitionsFromConfigJson(result.config);
+            REQUIRE(graphs.size() == 1);
+            auto plan = planFrameGraph(graphs.front());
+            plan.composition_metadata["projection_jitter"] = result.projection_jitter;
+            REQUIRE(framePlanToJson(plan).at("projection_jitter") == expected);
+        }
+    }
+
+    for (const auto &fixture : fixtures.at("invalid")) {
+        DYNAMIC_SECTION(fixture.at("name").get<std::string>()) {
+            REQUIRE_THROWS_WITH(
+                compose(fixture.at("declaration")),
+                Catch::Matchers::ContainsSubstring("table_jitter") &&
+                    Catch::Matchers::ContainsSubstring(fixture.at("error").get<std::string>()));
+        }
+    }
+
+    auto too_many = nlohmann::json::array();
+    for (std::size_t index = 0; index < 65; ++index) {
+        too_many.push_back({0.0, 0.0});
+    }
+    REQUIRE_THROWS_WITH(
+        compose(nlohmann::json{{"pattern", "table"}, {"offsets_px", too_many}}),
+        Catch::Matchers::ContainsSubstring("table_jitter") &&
+            Catch::Matchers::ContainsSubstring("length must be in range 1..64"));
 }
 
 TEST_CASE("projection jitter rejects a second provider by both feature names",
