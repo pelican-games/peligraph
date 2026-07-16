@@ -2968,6 +2968,66 @@ pelican-import-tools` の `spike/usd/` 配下(main 直コミット運用)。
    import-tools 側 spike の pytest(probe が再実行可能)。
    エンジンのテスト・golden には触れない
 
+### WP119: U-USD0b — コンポジションと静的ジオメトリ変換
+
+参照: **`design_usd_openpbr.md` v2.1 §2-2(U-USD0b-GEOMETRY 込み)+
+§3 共通 contract(MANIFEST/DETERMINISM/NORMALIZATION/SAFETY)が正**。
+採用レーン = **WP118 の結論(usd-core==26.5・レポート
+`docs/design_reviews/2026-07-17_wp118_usd_spike.md` が toolchain の正 —
+version/hash/警告方針を引き継ぐこと)**。
+material は **default standard へ落とす**(OpenPBR/binding は U-USD0c)。
+依存: WP118(済)・K3。見積: 大。
+排他: import-tools の `usd` レシピ本体(spike とは別の production
+コード)+ pelican2 側は「生成物のロード fixture + 小 fixture 資産」のみ。
+
+1. **レシピ**: USD/USDZ → glb(+`#fragment`)+ scene v1 断片。
+   variant/payload/resolver/localization をレシピ引数 + manifest 記録。
+   USDZ は安全展開(SAFETY 逐語: package API or 安全展開器 +
+   traversal/duplicate/bomb fixture)
+2. **正規化契約(NORMALIZATION 逐語)**: upAxis/metersPerUnit(欠損
+   既定込み)・適用 basis/scale・xform 方針・negative determinant の
+   winding/normal 反転・全 metadata key/型を manifest schema に固定
+3. **ジオメトリ規範(U-USD0b-GEOMETRY 逐語)**: points/faceVertex*・
+   orientation・holes・subdivision policy・UsdGeomSubset family/type・
+   primvar 全補間 + indexed・triangulation・normal/tangent 生成/保持・
+   UV set。**prim/subset path → GLB mesh/primitive index の mapping が
+   決定的 sort 後にも一致する fixture**
+4. **決定性(DETERMINISM 逐語)**: 同一 closure + toolchain で全出力
+   SHA-256 二回一致。`source.toolchain[]` に全 tool/package の
+   name/version/hash・レシピ引数を記録(MANIFEST)
+5. エンジン側 gate: 生成した glb + scene 断片(corpus 数点分を
+   fixture としてコミット)を実ロードして描く fixture + golden 1 枚
+6. 受け入れ = import-tools pytest(レシピ・安全展開・決定性)+
+   pelican2 側ロード fixture + 既存全テスト + golden SKIP 0
+   (件数 41/40 から追加分更新)+ player 8 秒
+
+### WP120: VRM-S1 — per-instance application sink(expression/gaze)
+
+参照: **`design_animation_graph.md` v2.1 §4 + 敵対レビュー
+`docs/design_reviews/2026-07-12_anim_v2_hotreload_review_codex.md`
+§4.5 の VRM-S1 行が正**(gate: 二体で別 expression・同 frame
+revision・golden。renderer/material の per-instance 化を含む大物)。
+基盤 = WP111(VrmSemanticData)・WP102(AnimationServiceV1 phase)・
+WP116(material ABI)。依存: 全て済。見積: 特大。
+排他: renderer の per-instance morph/expression 適用 + phase 接続。
+
+**【重要・最初に確認】現行レンダラに glTF morph target(blend shape)
+の描画機構があるか監査すること。なければ実装せず、VRM-S1a(morph
+target 描画機構)/ VRM-S1b(expression sink)の分割案を質問として
+レポートに書いて停止**(A1.1/J1b と同じ手順)。
+
+1. morph target weights の per-instance 適用(expression の
+   morphTargetBinds 消費)
+2. material color / texture transform binds の per-instance 適用
+   (WP116 の override ABI を per-instance に拡張 — 必要なら停止質問)
+3. lookAt/gaze の bone/expression 両 type・firstPerson mesh annotation
+4. §1-4 phase への写像(humanoid→lookAt→expression→constraint の
+   実行順)— AnimationServiceV1 の公開 phase に登録
+5. gate: 二体で別 expression・同 frame revision(§1-5 の N/N-1 と
+   整合)・golden(expression on/off)・既存全テスト + golden 維持
+6. 受け入れ = 上記 + player 8 秒(VRM 1.0 fixture で expression が
+   動く手動確認手順)
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの
