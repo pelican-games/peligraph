@@ -1,4 +1,4 @@
-# OpenXR 対応(v2)— Quest 3 で VRM キャラを見る
+# OpenXR 対応(v2.1 — 条件付き受理)— Quest 3 で VRM キャラを見る
 
 対象読者: エンジン担当・VR コンテンツを作る人。
 ステータス: v2 ドラフト(2026-07-17)。v1 は敵対レビュー
@@ -23,10 +23,19 @@ MVP = **PCVR(Quest Link / Air Link)**。standalone は SA トラック
 
 - `PELICAN_WITH_OPENXR` = 既定 ON の private unit(OFF で
   source/symbol が成果物から消える。single-OFF smoke)
-- **runtime 既定は `xr=off`**(既存起動を一切変えない)。
-  `--xr auto` = 不在なら名前入り INFO + フラット /
-  `--xr on` = 不在・不適合は名前入り hard error /
-  headless・rpc・golden・replay は **off を強制**(auto も off に正規化)
+- **activation エッジ行列(再レビュー条件 2 / XR0-ACTIVATION-EDGE
+  逐語)**: 通常 window 起動では `--xr off` = probe なし flat /
+  `--xr auto` = runtime/system/graphics-binding 不在時に名前入り INFO を
+  一回出して flat / `--xr on` = 同じ不在・不適合を**名前入り hard
+  error**。headless・RPC・golden・replay では `off` = flat・`auto` =
+  **discovery を行わず off に正規化**・explicit `on` =
+  `--xr on is incompatible with <mode>` の名前入り hard error。
+  `PELICAN_WITH_OPENXR=OFF` binary では `on` の error に build flag 名を
+  含め、`auto` は INFO + flat。**配布 v1 は `pelican_cli dist-config
+  <project> --with openxr` だけが preset へ ON を入れる明示入力**
+  (省略時は配布 preset で OFF — runtime 既定 `xr=off` は不変)。
+  compile ON/OFF × mode off/auto/on × window/強制 off driver の
+  **表駆動 fixture** を XR0 gate に
 - OpenXR-SDK は FetchContent **exact commit 固定**・不要 target OFF・
   private link
 
@@ -87,10 +96,22 @@ renderLogicalFrame(frame_input, views[N]):
 
 ## 5. XR composition target(XR2a.1 — レビュー §3)
 
-- `IFrameTarget` の 1 acquire/1 present 契約は温存(フラット用)し、
-  **XR 用は logical frame lifecycle を持つ別 interface**
-  (`beginLogicalFrame / beginView(i) / endView(i) / endLogicalFrame`
-  への拡張 or `IXrCompositionTarget` 分離 — XR2a.1 で確定)
+- **分離案に確定(再レビュー条件 3 / XR2A1-TARGET-BOUNDARY 逐語)**:
+  既存 `IFrameTarget` の 1 acquire/1 submit/present 契約は **flat 専用
+  として不変**。XR は別の **`IXrCompositionTarget`** が
+  `beginLogicalFrame / beginView(i) / endView(i) / endLogicalFrame`・
+  二個の arraySize=1 swapchain・projection layer・単一 xrEndFrame を
+  所有。renderer は target 非依存の logical-frame core から per-view
+  context を受け取る(XR target を IFrameTarget の一実装として偽装
+  しない)
+- **swapchain 状態機械**: 各 swapchain を独立に
+  `idle → acquired → waited → submitted → released` で追跡。
+  `XR_TIMEOUT_EXPIRED` は同じ acquired image への wait 再試行
+  (wait 成功前に release しない)。片方の失敗時は成功済みの他方を
+  合法順で unwind し、未 submit image を参照する layer を渡さない。
+  session が継続可能なら zero-layer xrEndFrame で閉じ、loss は
+  generation teardown へ。**左右各段の失敗位置を protocol trace の
+  表駆動 gate に**
 - swapchain 規範 = **view ごとに arraySize=1 を二個**(recommended
   extent 差をそのまま扱える)。acquire→wait→submit→release を
   各 swapchain で行い、**両 view を 1 枚の projection layer として
@@ -186,6 +207,13 @@ LOSS_PENDING は同一 device で再作成可能な場合のみ retry・EXITING 
 | **XR3a / XR3b** | action set / pose provider | XR3A-ACTIONS / XR3B-POSE |
 | **XR4** | VRM キャラデモ(XR2a.*・XR3 後) | 実機チェックリスト(§8-3) |
 | XR2b | multiview(XR2a.0 の契約を保ったまま view 次元) | flat byte 一致 + GPU 計測改善。**「2 回 render」を互換契約として残さない** |
+
+**逐語添付の規律(再レビュー条件 1)**: 上表のタグは索引であり、
+**WP 登録時には両レビュー(初回 §12 + 再レビューの
+XR0-ACTIVATION-EDGE / XR2A1-TARGET-BOUNDARY)の該当ブロック全文を
+implementation_plan へコピーする**。タグ参照だけで受け入れ条件を
+満たしたとみなさない。WP を再分割した場合も各条件の所有 WP を本文で
+一意にし、証跡リンクなしに完了扱いしない。
 
 実装順: XR0 → XR1a → XR1b/1c → **XR2a.0(最重量・OpenXR 非依存なので
 早期着手可)** → XR2a.1/2a.2 → XR2a.3 → XR3a/3b → XR4 → XR2b。
