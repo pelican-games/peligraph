@@ -5,6 +5,8 @@
 #include "pelican_sets.glsl"
 #include "pelican_frame.glsl"
 #include "pelican_material.glsl"
+#define PELICAN_MATERIAL_INSTANCE_VERTEX_STAGE
+#include "pelican_material_instance.glsl"
 #include "pelican_morph.glsl"
 
 layout(location = 0) in vec3 inPos;
@@ -29,7 +31,8 @@ void main() {
     
     gl_Position = pelicanPush.engineMvp * world_pos;
     outTexUV = inTexUV;
-    outColor = inColor * pelicanMaterials.materials[pelicanPush.materialIndex].baseColorFactor;
+    outColor = inColor * pelican_material_instance_base_color_source_factor(
+        pelicanMaterials.materials[pelicanPush.materialIndex].baseColorFactor);
     
     // TBN matrix components to world space
     vec3 N = normalize(mat3(model_matrix) * morphed.normal);

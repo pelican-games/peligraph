@@ -61,7 +61,9 @@ void main() {
     surface.roughness = mr.g * material.surfaceFactors.y;
     surface.metallic = mr.b * material.surfaceFactors.x;
     surface.occlusion = mix(1.0, mr.r, material.surfaceFactors.w);
-    surface.emissive = texture(emissiveSampler, materialUV).rgb * material.emissiveFactor.rgb;
+    surface.emissive = texture(emissiveSampler, materialUV).rgb *
+                       pelican_material_instance_emissive_source_factor(
+                           material.emissiveFactor).rgb;
 #ifdef PELICAN_HAS_SURFACE_V1
     pelican_surface_v1(input_data, surface);
 #endif

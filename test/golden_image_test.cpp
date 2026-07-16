@@ -44,6 +44,7 @@
 #include "../src/project/importmanifest.hpp"
 #include "../src/project/sceneformat.hpp"
 #include "skeletal_fixture.hpp"
+#include "material_absolute_override_fixture.hpp"
 #include "morph_fixture.hpp"
 #include "vat_fixture.hpp"
 
@@ -1925,6 +1926,29 @@ void writeMaterialInstanceOverrideProject(const std::filesystem::path &root) {
       ]}}})json");
 }
 
+void writeMaterialAbsoluteOverrideProject(const std::filesystem::path &root) {
+    writeShadowProject(root, false);
+    TestMaterialAbsoluteOverrideFixture::writeGlb(
+        root / "assets" / "absolute.glb");
+    writeTextFile(root / "assets.json", R"json({
+      "models":[{"name":"absolute","path":"assets/absolute.glb"}]
+    })json");
+    writeTextFile(root / "scene.json", R"json({
+      "schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[
+        {"name":"AbsoluteBottom","components":[
+          {"name":"transform","pos":[0,-0.48,0],"rotation":[0,0,0,1],"scale":[0.9,0.9,0.9]},
+          {"name":"simplemodelview","model":"absolute"}
+        ]},
+        {"name":"AbsoluteTop","components":[
+          {"name":"transform","pos":[0,0.48,0],"rotation":[0,0,0,1],"scale":[0.9,0.9,0.9]},
+          {"name":"simplemodelview","model":"absolute"}
+        ]},
+        {"name":"AbsoluteSun","components":[
+          {"name":"light","type":"directional","direction":[0.1,-0.2,-1.0],"intensity":4.0,"color":[1.0,0.95,0.9]}
+        ]}
+      ]}}})json");
+}
+
 void writeTaaProject(const std::filesystem::path &root, bool orthographic) {
     writeShadowProject(root, false);
     writeTextFile(root / "shaders" / "copy_input.frag", copyInputFragmentShader());
@@ -2456,6 +2480,46 @@ void renderMaterialInstanceOverrideFrame(RenderTarget &render_target) {
     (void)render_target;
 }
 
+void renderMaterialAbsoluteOverrideFrame(RenderTarget &render_target) {
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    GET_MODULE(SceneLoader).load("default_scene");
+    GET_MODULE(ECSCore).update();
+    GET_MODULE(ECSCore).update();
+
+    auto &instances = GET_MODULE(PolygonInstanceContainer);
+    PublishMaterialInstanceAbsoluteOverrideDescV2 bottom;
+    bottom.instance = instances.animationInstance(ModelInstanceId{0});
+    bottom.frame_revision = 1;
+    bottom.source_material_index = 0;
+    bottom.values.mask = materialOverrideAll;
+    bottom.values.base_color_factor = {1.0f, 0.03f, 0.02f, 1.0f};
+    bottom.values.emissive_factor = {0.0f, 0.0f, 0.0f, 1.0f};
+    bottom.values.uv_offset = {0.2f, 0.0f};
+    bottom.values.uv_scale = {0.8f, 1.0f};
+    REQUIRE(instances.publishMaterialInstanceAbsoluteOverride(
+                ModelInstanceId{0}, bottom) == Animation::Status::ok);
+
+    auto top = bottom;
+    top.instance = instances.animationInstance(ModelInstanceId{1});
+    top.values.base_color_factor = {0.02f, 0.08f, 1.0f, 1.0f};
+    top.values.uv_offset = {-0.1f, 0.1f};
+    top.values.uv_scale = {1.2f, 0.7f};
+    REQUIRE(instances.publishMaterialInstanceAbsoluteOverride(
+                ModelInstanceId{1}, top) == Animation::Status::ok);
+    REQUIRE(instances.materialAbsoluteOverrideFrameForTesting(
+                ModelInstanceId{0}, 1) == nullptr);
+    REQUIRE(instances.materialAbsoluteOverrideFrameForTesting(
+                ModelInstanceId{1}, 1) == nullptr);
+
+    auto &camera = GET_MODULE(Camera);
+    camera.setPos({0.0f, 0.0f, 3.2f});
+    camera.setDir({0.0f, 0.0f, -1.0f});
+    camera.setUp({0.0f, 1.0f, 0.0f});
+    GET_MODULE(Renderer).render();
+    GET_MODULE(VulkanManageCore).waitIdle();
+    (void)render_target;
+}
+
 void renderSpriteFrame(RenderTarget &render_target, std::string_view mode) {
     GET_MODULE(ECSPredefinedRegistration).reg();
     GET_MODULE(SceneLoader).load("default_scene");
@@ -2733,6 +2797,10 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         writeMaterialInstanceOverrideProject(temp_dir);
         GET_MODULE(PathResolver).setup(temp_dir, false);
         GET_MODULE(ProjectSource).setProjectData(makeShadowProjectJson().dump());
+    } else if (golden_case.mode == "material_absolute_override") {
+        writeMaterialAbsoluteOverrideProject(temp_dir);
+        GET_MODULE(PathResolver).setup(temp_dir, false);
+        GET_MODULE(ProjectSource).setProjectData(makeShadowProjectJson().dump());
     } else if (golden_case.mode == "feature_compose") {
         writeFeatureProject(temp_dir);
         GET_MODULE(PathResolver).setup(temp_dir, false);
@@ -2849,6 +2917,8 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         renderShadowFrame(render_target);
     } else if (golden_case.mode == "material_instance_override") {
         renderMaterialInstanceOverrideFrame(render_target);
+    } else if (golden_case.mode == "material_absolute_override") {
+        renderMaterialAbsoluteOverrideFrame(render_target);
     } else if (golden_case.mode == "feature_compose") {
         renderFeatureFrame(render_target);
     } else if (golden_case.mode == "temporal_accumulation") {
@@ -3222,9 +3292,9 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     requireGoldenVulkanDevice();
     const auto cases = discoverGoldenCases();
 #if PELICAN_WITH_VAT
-    REQUIRE(cases.size() == 45);
+    REQUIRE(cases.size() == 46);
 #else
-    REQUIRE(cases.size() == 44);
+    REQUIRE(cases.size() == 45);
 #endif
 
     for (const auto &golden_case : cases) {

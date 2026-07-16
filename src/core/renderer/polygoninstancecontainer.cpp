@@ -88,11 +88,43 @@ static BufferWrapper createMaterialOverrideBuf(VulkanManageCore &vkcore,
     return buffer;
 }
 
+static BufferWrapper createMaterialAbsoluteOverrideHeaderBuf(
+    VulkanManageCore &vkcore, size_t instances) {
+    auto buffer = vkcore.allocBuf(
+        sizeof(MaterialInstanceAbsoluteOverrideGpuHeader) * instances,
+        vk::BufferUsageFlagBits::eStorageBuffer |
+            vk::BufferUsageFlagBits::eTransferSrc |
+            vk::BufferUsageFlagBits::eTransferDst,
+        vma::MemoryUsage::eAutoPreferDevice,
+        vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
+    const std::vector<MaterialInstanceAbsoluteOverrideGpuHeader> empty(instances);
+    vkcore.writeBuf(buffer, empty.data(), 0,
+                    sizeof(MaterialInstanceAbsoluteOverrideGpuHeader) * empty.size());
+    return buffer;
+}
+
+static BufferWrapper createMaterialAbsoluteOverrideRecordBuf(
+    VulkanManageCore &vkcore) {
+    auto buffer = vkcore.allocBuf(
+        sizeof(MaterialInstanceAbsoluteOverrideGpuData) *
+            maxMaterialInstanceAbsoluteOverrideRecords,
+        vk::BufferUsageFlagBits::eStorageBuffer |
+            vk::BufferUsageFlagBits::eTransferSrc |
+            vk::BufferUsageFlagBits::eTransferDst,
+        vma::MemoryUsage::eAutoPreferDevice,
+        vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
+    const std::vector<MaterialInstanceAbsoluteOverrideGpuData> empty(
+        maxMaterialInstanceAbsoluteOverrideRecords);
+    vkcore.writeBuf(buffer, empty.data(), 0,
+                    sizeof(MaterialInstanceAbsoluteOverrideGpuData) * empty.size());
+    return buffer;
+}
+
 static vk::UniqueDescriptorSetLayout createDeformationLayout(vk::Device device,
                                                               bool skinned,
                                                               bool material) {
     std::vector<vk::DescriptorSetLayoutBinding> bindings;
-    bindings.reserve((skinned ? 7 : 5) + (material ? 1 : 0));
+    bindings.reserve((skinned ? 7 : 5) + (material ? 3 : 0));
     if (skinned) {
         bindings.push_back({PELICAN_SKIN_PALETTE_BINDING,
                             vk::DescriptorType::eStorageBuffer, 1,
@@ -115,6 +147,14 @@ static vk::UniqueDescriptorSetLayout createDeformationLayout(vk::Device device,
         bindings.push_back({PELICAN_MATERIAL_INSTANCE_OVERRIDE_BINDING,
                             vk::DescriptorType::eStorageBuffer, 1,
                             vk::ShaderStageFlagBits::eFragment});
+        bindings.push_back({PELICAN_MATERIAL_INSTANCE_ABSOLUTE_HEADER_BINDING,
+                            vk::DescriptorType::eStorageBuffer, 1,
+                            vk::ShaderStageFlagBits::eVertex |
+                                vk::ShaderStageFlagBits::eFragment});
+        bindings.push_back({PELICAN_MATERIAL_INSTANCE_ABSOLUTE_RECORD_BINDING,
+                            vk::DescriptorType::eStorageBuffer, 1,
+                            vk::ShaderStageFlagBits::eVertex |
+                                vk::ShaderStageFlagBits::eFragment});
     }
     vk::DescriptorSetLayoutCreateInfo info;
     info.setBindings(bindings);
@@ -122,7 +162,7 @@ static vk::UniqueDescriptorSetLayout createDeformationLayout(vk::Device device,
 }
 
 static vk::UniqueDescriptorPool createDeformationPool(vk::Device device) {
-    vk::DescriptorPoolSize size{vk::DescriptorType::eStorageBuffer, 26};
+    vk::DescriptorPoolSize size{vk::DescriptorType::eStorageBuffer, 30};
     vk::DescriptorPoolCreateInfo info;
     info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
     info.maxSets = 4;
@@ -146,6 +186,11 @@ PolygonInstanceContainer::PolygonInstanceContainer()
       previous_morph_weight_buffer{createMorphWeightBuf(GET_MODULE(VulkanManageCore), maxModelInstances)},
       material_override_buffer{createMaterialOverrideBuf(GET_MODULE(VulkanManageCore),
                                                          maxModelInstances)},
+      material_absolute_override_header_buffer{
+          createMaterialAbsoluteOverrideHeaderBuf(GET_MODULE(VulkanManageCore),
+                                                  maxModelInstances)},
+      material_absolute_override_record_buffer{
+          createMaterialAbsoluteOverrideRecordBuf(GET_MODULE(VulkanManageCore))},
       static_deformation_descriptor_layout{createDeformationLayout(device, false, false)},
       skinned_deformation_descriptor_layout{createDeformationLayout(device, true, false)},
       static_material_descriptor_layout{createDeformationLayout(device, false, true)},
@@ -168,8 +213,8 @@ PolygonInstanceContainer::PolygonInstanceContainer()
     const auto update = [&](vk::DescriptorSet set, bool skinned, bool material) {
         std::vector<vk::DescriptorBufferInfo> infos;
         std::vector<vk::WriteDescriptorSet> writes;
-        infos.reserve((skinned ? 7 : 5) + (material ? 1 : 0));
-        writes.reserve((skinned ? 7 : 5) + (material ? 1 : 0));
+        infos.reserve((skinned ? 7 : 5) + (material ? 3 : 0));
+        writes.reserve((skinned ? 7 : 5) + (material ? 3 : 0));
         const auto append = [&](uint32_t binding, const BufferWrapper &buffer) {
             infos.push_back({buffer.buffer.get(), 0, vk::WholeSize});
             writes.push_back({set, binding, 0, 1,
@@ -191,6 +236,10 @@ PolygonInstanceContainer::PolygonInstanceContainer()
         if (material) {
             append(PELICAN_MATERIAL_INSTANCE_OVERRIDE_BINDING,
                    material_override_buffer);
+            append(PELICAN_MATERIAL_INSTANCE_ABSOLUTE_HEADER_BINDING,
+                   material_absolute_override_header_buffer);
+            append(PELICAN_MATERIAL_INSTANCE_ABSOLUTE_RECORD_BINDING,
+                   material_absolute_override_record_buffer);
         }
         device.updateDescriptorSets(writes, {});
     };
@@ -232,6 +281,7 @@ ModelInstanceId PolygonInstanceContainer::placeModelInstance(const ModelTemplate
     previous_animation_revisions.push_back(0);
     animation_generations.push_back(1);
     model_asset_ids.push_back(model.asset_id);
+    material_initial_value_tables.push_back(model.material_initial_values);
     morph_layouts.push_back(model.morph_targets);
     const auto defaults = model.morph_targets
                               ? model.morph_targets->default_weights
@@ -257,8 +307,9 @@ ModelInstanceId PolygonInstanceContainer::placeModelInstance(const ModelTemplate
                         primitive.index_offset,
                         primitive.vert_offset,
                         id.value,
-                    },
+                },
                 .material = material.material,
+                .source_material_index = material.source_material_index,
                 .skinned = primitive.skinned,
             };
             render_commands.push_back(instance);
@@ -286,6 +337,7 @@ void PolygonInstanceContainer::removeModelInstance(ModelInstanceId id) {
     animation_revisions[id.value] = 0;
     previous_animation_revisions[id.value] = 0;
     model_asset_ids[id.value] = {};
+    material_initial_value_tables[id.value].reset();
     if (++animation_generations[id.value] == 0) ++animation_generations[id.value];
     morph_layouts[id.value].reset();
     morph_weight_frames[id.value] = MorphWeightFrame{
@@ -298,6 +350,12 @@ void PolygonInstanceContainer::removeModelInstance(ModelInstanceId id) {
     GET_MODULE(VulkanManageCore).writeBuf(
         material_override_buffer, &empty,
         sizeof(MaterialInstanceOverrideGpuData) * id.value, sizeof(empty));
+    const auto identity = static_cast<std::uint64_t>(id.value) + 1;
+    std::erase_if(material_absolute_override_frames,
+                  [identity](const auto &entry) {
+                      return entry.first.instance_identity == identity;
+                  });
+    uploadMaterialAbsoluteOverrides();
 }
 
 void PolygonInstanceContainer::clear() {
@@ -312,14 +370,17 @@ void PolygonInstanceContainer::clear() {
     previous_animation_revisions.clear();
     animation_generations.clear();
     model_asset_ids.clear();
+    material_initial_value_tables.clear();
     morph_layouts.clear();
     morph_weight_frames.clear();
     morph_history_valid.clear();
     material_override_frames.clear();
+    material_absolute_override_frames.clear();
     const std::vector<MaterialInstanceOverrideGpuData> empty(maxModelInstances);
     GET_MODULE(VulkanManageCore).writeBuf(material_override_buffer, empty.data(), 0,
                                           sizeof(MaterialInstanceOverrideGpuData) *
                                               empty.size());
+    uploadMaterialAbsoluteOverrides();
 }
 
 void PolygonInstanceContainer::triggerUpdate() {
@@ -375,9 +436,13 @@ void PolygonInstanceContainer::triggerUpdate() {
     }
 
     // prepare indirect buffer
-    std::sort(render_commands.begin(), render_commands.end(), [](const RenderCommand &p, const RenderCommand &q) {
-        return std::tie(p.material.value, p.skinned) < std::tie(q.material.value, q.skinned);
-    });
+    std::sort(render_commands.begin(), render_commands.end(),
+              [](const RenderCommand &p, const RenderCommand &q) {
+                  return std::tie(p.material.value, p.source_material_index,
+                                  p.skinned) <
+                         std::tie(q.material.value, q.source_material_index,
+                                  q.skinned);
+              });
     GET_MODULE(VulkanManageCore)
         .writeBuf(indirect_buf, render_commands.data(), 0, sizeof(RenderCommand) * render_commands.size());
 
@@ -387,16 +452,21 @@ void PolygonInstanceContainer::triggerUpdate() {
 
     prev_offset_index = 0;
     draw_call.material = render_commands[0].material;
+    draw_call.source_material_index = render_commands[0].source_material_index;
     draw_call.skinned = render_commands[0].skinned;
     draw_call.offset = prev_offset_index * sizeof(RenderCommand);
     for (size_t i = 1; i < render_commands.size(); i++) {
         if (render_commands[i].material.value != render_commands[i - 1].material.value ||
+            render_commands[i].source_material_index !=
+                render_commands[i - 1].source_material_index ||
             render_commands[i].skinned != render_commands[i - 1].skinned) {
             draw_call.draw_count = checkedDrawCount(i - prev_offset_index);
             draw_calls.push_back(draw_call);
 
             prev_offset_index = i;
             draw_call.material = render_commands[i].material;
+            draw_call.source_material_index =
+                render_commands[i].source_material_index;
             draw_call.skinned = render_commands[i].skinned;
             draw_call.offset = prev_offset_index * sizeof(RenderCommand);
         }
@@ -429,6 +499,11 @@ void PolygonInstanceContainer::advanceMaterialOverrideHistoryAfterRender() {
         frame.previous = frame.current;
         frame.previous_revision = frame.current_revision;
     }
+    for (auto &[key, frame] : material_absolute_override_frames) {
+        (void)key;
+        frame.previous = frame.current;
+        frame.previous_revision = frame.current_revision;
+    }
 }
 
 void PolygonInstanceContainer::advanceTemporalHistoryAfterRender() {
@@ -450,6 +525,11 @@ void PolygonInstanceContainer::resetTemporalHistory() {
     }
     for (auto &[instance, frame] : material_override_frames) {
         (void)instance;
+        frame.previous = frame.current;
+        frame.previous_revision = frame.current_revision;
+    }
+    for (auto &[key, frame] : material_absolute_override_frames) {
+        (void)key;
         frame.previous = frame.current;
         frame.previous_revision = frame.current_revision;
     }
@@ -516,10 +596,13 @@ void PolygonInstanceContainer::rebuildModelInstances(
     auto next_animation_revisions = animation_revisions;
     auto next_previous_animation_revisions = previous_animation_revisions;
     auto next_animation_generations = animation_generations;
+    auto next_material_initial_value_tables = material_initial_value_tables;
     auto next_morph_layouts = morph_layouts;
     auto next_morph_weight_frames = morph_weight_frames;
     auto next_morph_history_valid = morph_history_valid;
     auto next_material_override_frames = material_override_frames;
+    auto next_material_absolute_override_frames =
+        material_absolute_override_frames;
     auto next_previous_models = previous_model_instances_data;
     auto next_history_valid = model_history_valid;
     for (uint32_t instance = 0; instance < model_asset_ids.size(); ++instance) {
@@ -533,6 +616,7 @@ void PolygonInstanceContainer::rebuildModelInstances(
                         primitive.index_count, 1, primitive.index_offset,
                         primitive.vert_offset, instance},
                     .material = material.material,
+                    .source_material_index = material.source_material_index,
                     .skinned = primitive.skinned,
                 });
             }
@@ -551,6 +635,8 @@ void PolygonInstanceContainer::rebuildModelInstances(
         next_previous_animation_revisions[instance] = 0;
         if (++next_animation_generations[instance] == 0)
             ++next_animation_generations[instance];
+        next_material_initial_value_tables[instance] =
+            replacement.material_initial_values;
         next_morph_layouts[instance] = replacement.morph_targets;
         const auto defaults = replacement.morph_targets
                                   ? replacement.morph_targets->default_weights
@@ -568,6 +654,11 @@ void PolygonInstanceContainer::rebuildModelInstances(
         };
         next_morph_history_valid[instance] = false;
         next_material_override_frames.erase(instance);
+        const auto identity = static_cast<std::uint64_t>(instance) + 1;
+        std::erase_if(next_material_absolute_override_frames,
+                      [identity](const auto &entry) {
+                          return entry.first.instance_identity == identity;
+                      });
         const MaterialInstanceOverrideGpuData empty{};
         GET_MODULE(VulkanManageCore).writeBuf(
             material_override_buffer, &empty,
@@ -581,12 +672,17 @@ void PolygonInstanceContainer::rebuildModelInstances(
     animation_revisions = std::move(next_animation_revisions);
     previous_animation_revisions = std::move(next_previous_animation_revisions);
     animation_generations = std::move(next_animation_generations);
+    material_initial_value_tables =
+        std::move(next_material_initial_value_tables);
     morph_layouts = std::move(next_morph_layouts);
     morph_weight_frames = std::move(next_morph_weight_frames);
     morph_history_valid = std::move(next_morph_history_valid);
     material_override_frames = std::move(next_material_override_frames);
+    material_absolute_override_frames =
+        std::move(next_material_absolute_override_frames);
     previous_model_instances_data = std::move(next_previous_models);
     model_history_valid = std::move(next_history_valid);
+    uploadMaterialAbsoluteOverrides();
 }
 
 void PolygonInstanceContainer::rebuildModelInstances(
@@ -766,6 +862,139 @@ Animation::Status PolygonInstanceContainer::publishMaterialInstanceOverride(
         material_override_buffer, &gpu,
         sizeof(MaterialInstanceOverrideGpuData) * id.value, sizeof(gpu));
     material_override_frames.insert_or_assign(id.value, std::move(next));
+    return Animation::Status::ok;
+}
+
+void PolygonInstanceContainer::uploadMaterialAbsoluteOverrides() {
+    std::vector<const MaterialInstanceAbsoluteOverrideFrame *> sorted;
+    sorted.reserve(material_absolute_override_frames.size());
+    for (const auto &[key, frame] : material_absolute_override_frames) {
+        (void)key;
+        sorted.push_back(&frame);
+    }
+    std::sort(sorted.begin(), sorted.end(), [](const auto *left, const auto *right) {
+        return std::tie(left->instance_identity, left->source_material_index) <
+               std::tie(right->instance_identity, right->source_material_index);
+    });
+
+    std::vector<MaterialInstanceAbsoluteOverrideGpuHeader> headers(
+        maxModelInstances);
+    std::vector<MaterialInstanceAbsoluteOverrideGpuData> records;
+    records.reserve(sorted.size());
+    for (const auto *frame : sorted) {
+        if (frame->instance_identity == 0 ||
+            frame->instance_identity > maxModelInstances) {
+            throw std::runtime_error(
+                "Material absolute override instance identity is out of range");
+        }
+        auto &header = headers[frame->instance_identity - 1];
+        if (header.record_count == 0) {
+            header.record_offset = static_cast<std::uint32_t>(records.size());
+            header.instance_generation = frame->instance_generation;
+        }
+        ++header.record_count;
+        records.push_back(MaterialInstanceAbsoluteOverrideGpuData{
+            .base_color_factor = frame->current.base_color_factor,
+            .emissive_factor = frame->current.emissive_factor,
+            .uv_offset_scale =
+                glm::vec4{frame->current.uv_offset, frame->current.uv_scale},
+            .uv_rotation_reserved =
+                glm::vec4{frame->current.uv_rotation, 0.0f, 0.0f, 0.0f},
+            .metadata = glm::uvec4{
+                frame->current.mask, frame->source_material_index,
+                static_cast<std::uint32_t>(frame->current_revision),
+                static_cast<std::uint32_t>(frame->current_revision >> 32u)},
+        });
+    }
+
+    auto &vkcore = GET_MODULE(VulkanManageCore);
+    vkcore.writeBuf(material_absolute_override_header_buffer, headers.data(), 0,
+                    sizeof(MaterialInstanceAbsoluteOverrideGpuHeader) *
+                        headers.size());
+    if (!records.empty()) {
+        vkcore.writeBuf(material_absolute_override_record_buffer, records.data(), 0,
+                        sizeof(MaterialInstanceAbsoluteOverrideGpuData) *
+                            records.size());
+    }
+}
+
+Animation::Status
+PolygonInstanceContainer::publishMaterialInstanceAbsoluteOverride(
+    ModelInstanceId id,
+    const PublishMaterialInstanceAbsoluteOverrideDescV2 &frame) {
+    constexpr auto minimum =
+        offsetof(PublishMaterialInstanceAbsoluteOverrideDescV2, reserved1) +
+        sizeof(std::uint32_t);
+    if (frame.struct_size < minimum) return Animation::Status::invalid_argument;
+    if (frame.version != materialInstanceAbsoluteOverrideDescriptorVersionV2)
+        return Animation::Status::unsupported_version;
+    if (frame.reserved0 != 0 || frame.reserved1 != 0)
+        return Animation::Status::reserved_not_zero;
+    if (id.value >= model_instances_data.size())
+        return Animation::Status::invalid_handle;
+
+    const auto expected = animationInstance(id);
+    if (!Animation::isValid(frame.instance) ||
+        frame.instance.identity != expected.identity)
+        return Animation::Status::invalid_handle;
+    if (frame.instance.generation != expected.generation)
+        return Animation::Status::stale_generation;
+    if (frame.frame_revision == 0 ||
+        frame.source_material_index == noSourceMaterialIndex ||
+        (frame.values.mask & ~materialOverrideAll) != 0 ||
+        (frame.flags & ~(materialOverrideCommitResetHistory |
+                         materialOverrideCommitDiscontinuity)) != 0)
+        return Animation::Status::invalid_argument;
+
+    const auto &initial_values = material_initial_value_tables[id.value];
+    if (!initial_values ||
+        frame.source_material_index >= initial_values->values.size() ||
+        initial_values->values[frame.source_material_index]
+                .source_material_index != frame.source_material_index)
+        return Animation::Status::invalid_argument;
+
+    const auto finite = [](const auto &value) {
+        for (glm::length_t i = 0; i < value.length(); ++i) {
+            if (!std::isfinite(value[i])) return false;
+        }
+        return true;
+    };
+    if (!finite(frame.values.base_color_factor) ||
+        !finite(frame.values.emissive_factor) ||
+        !finite(frame.values.uv_offset) || !finite(frame.values.uv_scale) ||
+        !std::isfinite(frame.values.uv_rotation))
+        return Animation::Status::invalid_argument;
+
+    const MaterialInstanceAbsoluteOverrideKey key{
+        expected.identity, frame.source_material_index};
+    const auto found = material_absolute_override_frames.find(key);
+    if (found != material_absolute_override_frames.end() &&
+        frame.frame_revision <= found->second.current_revision)
+        return Animation::Status::duplicate_revision;
+    if (found == material_absolute_override_frames.end() &&
+        material_absolute_override_frames.size() >=
+            maxMaterialInstanceAbsoluteOverrideRecords)
+        return Animation::Status::out_of_memory;
+
+    MaterialInstanceAbsoluteOverrideFrame next =
+        found == material_absolute_override_frames.end()
+            ? MaterialInstanceAbsoluteOverrideFrame{
+                  .instance_identity = expected.identity,
+                  .instance_generation = expected.generation,
+                  .source_material_index = frame.source_material_index,
+              }
+            : found->second;
+    next.current = frame.values;
+    next.current_revision = frame.frame_revision;
+    if (next.previous_revision == 0 ||
+        (frame.flags & (materialOverrideCommitResetHistory |
+                        materialOverrideCommitDiscontinuity)) != 0) {
+        next.previous = next.current;
+        next.previous_revision = next.current_revision;
+    }
+
+    material_absolute_override_frames.insert_or_assign(key, std::move(next));
+    uploadMaterialAbsoluteOverrides();
     return Animation::Status::ok;
 }
 

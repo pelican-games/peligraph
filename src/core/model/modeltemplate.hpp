@@ -8,10 +8,12 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
+#include <glm/glm.hpp>
 
 namespace Pelican {
 
@@ -20,6 +22,25 @@ using ModelTemplateId = int;
 PELICAN_DEFINE_HANDLE(ModelAssetId, std::uint64_t)
 
 inline constexpr bool isValidModelAssetId(ModelAssetId id) noexcept { return id.value != 0; }
+
+inline constexpr std::uint32_t noSourceMaterialIndex =
+    std::numeric_limits<std::uint32_t>::max();
+
+struct SourceMaterialInitialValues {
+    std::uint32_t source_material_index = noSourceMaterialIndex;
+    glm::vec4 base_color_factor{1.0f};
+    glm::vec4 emissive_factor{0.0f, 0.0f, 0.0f, 1.0f};
+    glm::vec2 uv_offset{0.0f};
+    glm::vec2 uv_scale{1.0f};
+    float uv_rotation = 0.0f;
+};
+
+// Indexed by the source glTF material index. A shared const table keeps the
+// source values tied to one immutable model generation instead of the mutable
+// global material records used by rendering.
+struct SourceMaterialInitialValueTable {
+    std::vector<SourceMaterialInitialValues> values;
+};
 
 struct ModelPrimitiveRefInfo {
     uint32_t index_count = 0;
@@ -55,6 +76,7 @@ struct ModelTemplate {
     struct MaterialPrimitives {
         GlobalMaterialId material;
         std::vector<PrimitiveRefInfo> primitives;
+        std::uint32_t source_material_index = noSourceMaterialIndex;
     };
 
     struct NamedMaterial {
@@ -66,6 +88,7 @@ struct ModelTemplate {
     std::vector<NamedMaterial> named_materials;
     std::shared_ptr<SkeletalModelData> skeletal;
     std::shared_ptr<const MorphTargetLayout> morph_targets;
+    std::shared_ptr<const SourceMaterialInitialValueTable> material_initial_values;
     std::shared_ptr<const VrmSemanticData> vrm_semantic;
     std::shared_ptr<ModelGpuResources> gpu_resources;
     ModelAssetId asset_id{};
