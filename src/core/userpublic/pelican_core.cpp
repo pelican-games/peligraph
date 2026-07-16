@@ -13,12 +13,16 @@
 #include "../persistence/persistence.hpp"
 #include "../startup.hpp"
 #include "../launchconfig.hpp"
+#include "../xractivation.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../watch/reloadgate.hpp"
 #include "../watch/reloadservice.hpp"
 #include <components/spriteview.hpp>
 #if PELICAN_WITH_AUDIO
 #include "../audio/audio.hpp"
+#endif
+#if PELICAN_WITH_OPENXR
+#include "../openxr/openxrdiscovery.hpp"
 #endif
 
 #include <utility>
@@ -43,8 +47,20 @@ bool PelicanCore::run() {
     bool succeeded = true;
     try {
         GET_MODULE(StartupMetrics).begin();
+        auto &launch_config = GET_MODULE(EngineLaunchConfig);
+#if PELICAN_WITH_OPENXR
+        const auto xr_decision = resolveXrActivation(
+            launch_config, true, XrDiscoveryHook{.query = OpenXr::queryDiscovery});
+#else
+        const auto xr_decision = resolveXrActivation(launch_config, false);
+#endif
+        launch_config.xr_mode = xr_decision.resolved_mode;
+        launch_config.xr_active = xr_decision.active;
+        if (!xr_decision.info.empty()) {
+            LOG_INFO(logger, "{}", xr_decision.info);
+        }
         GET_MODULE(ProjectSource).setSourceByData(settings_str);
-        GET_MODULE(watch::ReloadGate).configureFromLaunch(GET_MODULE(EngineLaunchConfig));
+        GET_MODULE(watch::ReloadGate).configureFromLaunch(launch_config);
 
         auto &persistence = GET_MODULE(Persistence);
         if (persistence.loadSettings()) {

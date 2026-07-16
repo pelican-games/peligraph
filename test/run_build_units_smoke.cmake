@@ -73,6 +73,7 @@ function(configure_and_build label option_name out_build_dir)
         "${CMAKE_COMMAND}"
             --build "${build_dir}"
             --config "${PELICAN_BUILD_UNIT_SMOKE_CONFIG}"
+            --parallel
     )
 
     set("${out_build_dir}" "${build_dir}" PARENT_SCOPE)
@@ -204,6 +205,77 @@ function(verify_imgui_absent build_dir)
                 endif()
             endforeach()
         endif()
+    endif()
+endfunction()
+
+function(verify_openxr_absent build_dir)
+    foreach(path IN ITEMS
+            "${build_dir}/_deps/openxr_sdk-src"
+            "${build_dir}/_deps/openxr_sdk-build"
+            "${build_dir}/_deps/openxr_sdk-subbuild")
+        if(EXISTS "${path}")
+            message(FATAL_ERROR "PELICAN_WITH_OPENXR=OFF unexpectedly fetched or configured OpenXR-SDK: ${path}")
+        endif()
+    endforeach()
+
+    file(GLOB_RECURSE build_metadata LIST_DIRECTORIES false
+        "${build_dir}/build.ninja"
+        "${build_dir}/*.vcxproj"
+        "${build_dir}/*DependInfo.cmake"
+        "${build_dir}/compile_commands.json"
+    )
+    foreach(metadata IN LISTS build_metadata)
+        file(READ "${metadata}" contents)
+        if(contents MATCHES "src[/\\\\]core[/\\\\]openxr[/\\\\]" OR
+           contents MATCHES "openxrdiscovery[.]cpp")
+            message(FATAL_ERROR "PELICAN_WITH_OPENXR=OFF still compiles an OpenXR source: ${metadata}")
+        endif()
+    endforeach()
+
+    file(GLOB_RECURSE artifacts LIST_DIRECTORIES false "${build_dir}/*")
+    foreach(artifact IN LISTS artifacts)
+        get_filename_component(name "${artifact}" NAME)
+        string(TOLOWER "${name}" lower_name)
+        if(lower_name MATCHES "(pelican_openxr|openxr_loader|openxrdiscovery).*\\.(obj|o|lib|a|dll|so)$")
+            message(FATAL_ERROR "PELICAN_WITH_OPENXR=OFF emitted an OpenXR object/library: ${artifact}")
+        endif()
+    endforeach()
+
+    if(WIN32)
+        find_program(DUMPBIN_EXECUTABLE dumpbin)
+        if(NOT DUMPBIN_EXECUTABLE)
+            file(GLOB dumpbin_candidates
+                "C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC/*/bin/Hostx64/x64/dumpbin.exe"
+                "C:/Program Files/Microsoft Visual Studio/2022/*/VC/Tools/MSVC/*/bin/Hostx64/x64/dumpbin.exe"
+            )
+            if(dumpbin_candidates)
+                list(SORT dumpbin_candidates ORDER DESCENDING)
+                list(GET dumpbin_candidates 0 DUMPBIN_EXECUTABLE)
+            endif()
+        endif()
+        if(NOT DUMPBIN_EXECUTABLE)
+            message(FATAL_ERROR "dumpbin is required for the OpenXR OFF symbol check")
+        endif()
+
+        file(GLOB_RECURSE symbol_artifacts LIST_DIRECTORIES false
+            "${build_dir}/*pelican_core.lib"
+            "${build_dir}/*pelican_player.exe"
+        )
+        foreach(symbol_artifact IN LISTS symbol_artifacts)
+            execute_process(
+                COMMAND "${DUMPBIN_EXECUTABLE}" /symbols "${symbol_artifact}"
+                RESULT_VARIABLE dumpbin_result
+                OUTPUT_VARIABLE symbols
+                ERROR_VARIABLE dumpbin_error
+            )
+            if(NOT dumpbin_result EQUAL 0)
+                message(FATAL_ERROR "dumpbin failed for ${symbol_artifact}: ${dumpbin_error}")
+            endif()
+            if(symbols MATCHES "queryDiscovery@OpenXr" OR
+               symbols MATCHES "xr(Create|Destroy|Enumerate|Get|Poll|ResultToString)")
+                message(FATAL_ERROR "PELICAN_WITH_OPENXR=OFF retained OpenXR symbols in ${symbol_artifact}")
+            endif()
+        endforeach()
     endif()
 endfunction()
 
@@ -382,6 +454,17 @@ function(write_physics_project root)
     file(WRITE "${root}/ui/ui.json" "{\"schema\":\"pelican.ui\",\"version\":1,\"key\":\"empty\",\"root\":{\"id\":\"root\",\"type\":\"panel\"}}\n")
 endfunction()
 
+function(run_openxr_smoke)
+    configure_and_build("openxr" "PELICAN_WITH_OPENXR" openxr_build_dir)
+    verify_openxr_absent("${openxr_build_dir}")
+    find_built_executable("${openxr_build_dir}" "pelican_player" openxr_player)
+    expect_disabled_error(
+        "openxr_cli"
+        "PELICAN_WITH_OPENXR"
+        "${openxr_player}" --xr on
+    )
+endfunction()
+
 if(PELICAN_BUILD_UNIT_SMOKE_PARSE_ONLY)
     message(STATUS "build-unit OFF smoke fixture parsed successfully")
     return()
@@ -389,6 +472,15 @@ endif()
 
 file(REMOVE_RECURSE "${ARTIFACT_ROOT}")
 file(MAKE_DIRECTORY "${ARTIFACT_ROOT}")
+
+if(DEFINED PELICAN_BUILD_UNIT_SMOKE_ONLY)
+    if(NOT PELICAN_BUILD_UNIT_SMOKE_ONLY STREQUAL "openxr")
+        message(FATAL_ERROR "unsupported PELICAN_BUILD_UNIT_SMOKE_ONLY: ${PELICAN_BUILD_UNIT_SMOKE_ONLY}")
+    endif()
+    run_openxr_smoke()
+    message(STATUS "single-OFF smoke passed for OPENXR")
+    return()
+endif()
 
 configure_and_build("audio" "PELICAN_WITH_AUDIO" audio_build_dir)
 find_built_executable("${audio_build_dir}" "pelican_test_audio_disabled_probe" audio_probe)
@@ -500,4 +592,6 @@ run_process(
         -R "^physics_provider_game_dll_e2e$"
 )
 
-message(STATUS "build-unit OFF smoke passed for AUDIO, VAT, EXR, RPC, SEQPLAYER, IMGUI, and PHYSICS; provider-only and Jolt physics also passed")
+run_openxr_smoke()
+
+message(STATUS "build-unit OFF smoke passed for AUDIO, VAT, EXR, RPC, SEQPLAYER, IMGUI, PHYSICS, and OPENXR; provider-only and Jolt physics also passed")

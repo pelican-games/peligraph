@@ -38,11 +38,11 @@ function(make_project out_var name asset_json ui_json)
     set(${out_var} "${root}" PARENT_SCOPE)
 endfunction()
 
-function(run_dist_config name project_dir expected_vat expected_exr expected_rpc expected_seq)
+function(run_dist_config name project_dir expected_vat expected_exr expected_rpc expected_seq expected_openxr)
     set(preset "${OUT_DIR}/${name}.cmake")
     set(command "${CLI}" dist-config "${project_dir}" --out "${preset}")
-    if(ARGC GREATER 6)
-        list(APPEND command --with "${ARGV6}")
+    if(ARGC GREATER 7)
+        list(APPEND command --with "${ARGV7}")
     endif()
 
     execute_process(
@@ -63,10 +63,12 @@ function(run_dist_config name project_dir expected_vat expected_exr expected_rpc
     expect_contains("${contents}" "# PELICAN_WITH_EXR: ${expected_exr} -" "${name} EXR comment")
     expect_contains("${contents}" "# PELICAN_WITH_RPC: ${expected_rpc} -" "${name} RPC comment")
     expect_contains("${contents}" "# PELICAN_WITH_SEQPLAYER: ${expected_seq} -" "${name} SeqPlayer comment")
+    expect_contains("${contents}" "# PELICAN_WITH_OPENXR: ${expected_openxr} -" "${name} OpenXR comment")
     expect_contains("${contents}" "set(PELICAN_WITH_VAT ${expected_vat} CACHE BOOL \"\" FORCE)" "${name} VAT flag")
     expect_contains("${contents}" "set(PELICAN_WITH_EXR ${expected_exr} CACHE BOOL \"\" FORCE)" "${name} EXR flag")
     expect_contains("${contents}" "set(PELICAN_WITH_RPC ${expected_rpc} CACHE BOOL \"\" FORCE)" "${name} RPC flag")
     expect_contains("${contents}" "set(PELICAN_WITH_SEQPLAYER ${expected_seq} CACHE BOOL \"\" FORCE)" "${name} SeqPlayer flag")
+    expect_contains("${contents}" "set(PELICAN_WITH_OPENXR ${expected_openxr} CACHE BOOL \"\" FORCE)" "${name} OpenXR flag")
     expect_contains("${contents}" "set(PELICAN_WITH_IMGUI OFF CACHE BOOL \"\" FORCE)" "${name} ImGui flag")
 
     if(expected_vat STREQUAL "ON")
@@ -80,6 +82,9 @@ function(run_dist_config name project_dir expected_vat expected_exr expected_rpc
     endif()
     if(expected_seq STREQUAL "ON")
         expect_contains("${contents}" "enabled by --with seqplayer" "${name} SeqPlayer evidence")
+    endif()
+    if(expected_openxr STREQUAL "ON")
+        expect_contains("${contents}" "enabled by --with openxr" "${name} OpenXR evidence")
     endif()
 endfunction()
 
@@ -152,8 +157,8 @@ file(WRITE "${MANIFEST_ROOT}/imports/houdini/delivery/manifest.json" [=[
 }
 ]=])
 
-run_dist_config("plain" "${PLAIN_ROOT}" OFF OFF OFF OFF)
-run_dist_config("vat_asset" "${VAT_ROOT}" ON OFF OFF OFF)
-run_dist_config("exr_ui" "${EXR_ROOT}" OFF ON OFF OFF)
-run_dist_config("vat_manifest" "${MANIFEST_ROOT}" ON OFF OFF OFF)
-run_dist_config("with_overrides" "${PLAIN_ROOT}" OFF OFF ON ON "rpc,seqplayer")
+run_dist_config("plain" "${PLAIN_ROOT}" OFF OFF OFF OFF OFF)
+run_dist_config("vat_asset" "${VAT_ROOT}" ON OFF OFF OFF OFF)
+run_dist_config("exr_ui" "${EXR_ROOT}" OFF ON OFF OFF OFF)
+run_dist_config("vat_manifest" "${MANIFEST_ROOT}" ON OFF OFF OFF OFF)
+run_dist_config("with_overrides" "${PLAIN_ROOT}" OFF OFF ON ON ON "rpc,seqplayer,openxr")

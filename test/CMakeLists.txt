@@ -321,6 +321,7 @@ target_compile_definitions(pelican_test_imageloader_test PRIVATE
 )
 endif()
 pelican_define_test(inputstate_test pelican_core)
+pelican_define_test(xractivation_test quill)
 pelican_define_test(inputsequence_test pelican_core)
 if(PELICAN_WITH_IMGUI)
 pelican_define_test(imgui_isolation_test pelican_core)

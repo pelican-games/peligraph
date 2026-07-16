@@ -831,6 +831,8 @@ DistConfigOptions parseWithList(std::string_view value) {
             options.with_rpc = true;
         } else if (token == "seqplayer") {
             options.with_seqplayer = true;
+        } else if (token == "openxr") {
+            options.with_openxr = true;
         } else {
             throw std::runtime_error("unsupported --with feature: " + std::string{token});
         }
@@ -864,6 +866,7 @@ DistConfigResult deriveDistConfig(const std::filesystem::path &project_arg,
     result.project_file = project.project_file;
     result.with_rpc = options.with_rpc;
     result.with_seqplayer = options.with_seqplayer;
+    result.with_openxr = options.with_openxr;
     result.with_exr = !scan.exr_refs.empty();
     result.exr_reason = result.with_exr
                             ? firstWithCount(scan.exr_refs)
@@ -873,6 +876,8 @@ DistConfigResult deriveDistConfig(const std::filesystem::path &project_arg,
                                         : "distribution default; pass --with rpc to enable";
     result.seqplayer_reason = result.with_seqplayer ? "enabled by --with seqplayer"
                                                     : "distribution default; pass --with seqplayer to enable";
+    result.openxr_reason = result.with_openxr ? "enabled by --with openxr"
+                                              : "distribution default; pass --with openxr to enable";
     return result;
 }
 
@@ -888,7 +893,9 @@ std::string renderDistConfigPreset(const DistConfigResult &result) {
     out << "# PELICAN_WITH_RPC: " << boolString(result.with_rpc) << " - "
         << oneLine(result.rpc_reason) << "\n";
     out << "# PELICAN_WITH_SEQPLAYER: " << boolString(result.with_seqplayer) << " - "
-        << oneLine(result.seqplayer_reason) << "\n\n";
+        << oneLine(result.seqplayer_reason) << "\n";
+    out << "# PELICAN_WITH_OPENXR: " << boolString(result.with_openxr) << " - "
+        << oneLine(result.openxr_reason) << "\n\n";
     out << "# PELICAN_WITH_IMGUI: OFF - distribution builds exclude engine developer UI\n\n";
 
     out << "set(PELICAN_WITH_VAT " << boolString(result.with_vat) << " CACHE BOOL \"\" FORCE)\n";
@@ -896,6 +903,7 @@ std::string renderDistConfigPreset(const DistConfigResult &result) {
     out << "set(PELICAN_WITH_RPC " << boolString(result.with_rpc) << " CACHE BOOL \"\" FORCE)\n";
     out << "set(PELICAN_WITH_SEQPLAYER " << boolString(result.with_seqplayer)
         << " CACHE BOOL \"\" FORCE)\n";
+    out << "set(PELICAN_WITH_OPENXR " << boolString(result.with_openxr) << " CACHE BOOL \"\" FORCE)\n";
     out << "set(PELICAN_WITH_IMGUI OFF CACHE BOOL \"\" FORCE)\n";
     return out.str();
 }
@@ -905,7 +913,7 @@ int runDistConfigCommand(int argc, char *argv[]) {
     program.add_argument("project").help("project directory or project.json");
     program.add_argument("--with")
         .default_value(std::string{})
-        .metavar("rpc,seqplayer")
+        .metavar("rpc,seqplayer,openxr")
         .help("comma-separated distribution features to force on");
     program.add_argument("--out")
         .default_value(std::string{"dist-preset.cmake"})
