@@ -3226,6 +3226,37 @@ fixture を XR0 gate にする。」
 XR0 では session/instance を**作らない**(discovery 実施は XR1a)。
 本 WP の activation 判定は「flag/mode の解決と error/INFO の文言」まで。
 
+### WP126: XR1a — OpenXR discovery + Vulkan bootstrap
+
+参照: **`design_openxr.md` v2.1 §2 が正**。受け入れ条件 = 初回レビュー
+§12 の **XR1A-VULKAN-BOOTSTRAP 逐語**: 「XrInstance/XrSystem discovery を
+GPU resource 作成前に行い、`XR_KHR_vulkan_enable2` の requirements、
+runtime-selected physical device、window/engine 必須 extension を満たす
+VkInstance/VkDevice を作る。runtime 不在時だけ resource 作成前に flat
+bootstrap へ降格する。fake が engine heuristic と異なる GPU を返す
+fixture、required extension merge/missing fixture、multi-GPU 実機記録を
+gate にする。」
+依存: WP125(済 — activation 解決と discovery hook)。見積: 大。
+排他: vkcore/core(bootstrap 分岐)・openxr discovery 実装・
+protocol fake の discovery 部分。**session は作らない**(XR1b)。
+
+1. WP125 の discovery hook の実体化: XrInstance → XrSystem →
+   `xrGetVulkanGraphicsRequirements2KHR`(loader 直呼びでなく
+   `xrGetInstanceProcAddr` 解決の注入表経由 — XR1C-TEST-SEAM の前半)
+2. `xrCreateVulkanInstanceKHR` / `xrCreateVulkanDeviceKHR` 経由の
+   VkInstance/VkDevice 生成(window/engine extension を merge)。
+   physical device = `xrGetVulkanGraphicsDevice2KHR`
+3. 降格は **GPU resource 作成前に一度だけ**(session 後の hot switch
+   なし)。`--xr auto` 不在 = INFO + flat / `--xr on` 不在 = hard error
+   (WP125 の行列がそのまま効く)
+4. fixture(protocol fake): fake が heuristic と異なる GPU を返す /
+   required extension の merge / missing extension で on = error・
+   auto = flat / discovery 各段の失敗点。**実 runtime での multi-GPU
+   記録はレポートに**(手動 — HMD 不要・Link runtime インストール済み
+   環境なら instance/system まで確認可)
+5. 受け入れ = fixture 全 green + 既存全テスト + golden SKIP 0
+   (46/45・xr=off で byte 不変)+ player 8 秒 + OFF smoke 維持
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの
