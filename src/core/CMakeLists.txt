@@ -11,6 +11,7 @@ target_compile_definitions(pelican_core PUBLIC
   PELICAN_WITH_SEQPLAYER=$<BOOL:${PELICAN_WITH_SEQPLAYER}>
   PELICAN_WITH_IMGUI=$<BOOL:${PELICAN_WITH_IMGUI}>
   PELICAN_WITH_PHYSICS=$<BOOL:${PELICAN_WITH_PHYSICS}>
+  PELICAN_WITH_OPENXR=$<BOOL:${PELICAN_WITH_OPENXR}>
 )
 target_compile_definitions(pelican_core PRIVATE
   PELICAN_WITH_BUILTIN_PHYSICS=$<BOOL:${PELICAN_WITH_BUILTIN_PHYSICS}>
@@ -45,6 +46,9 @@ add_subdirectory(light)
 add_subdirectory(phys)
 add_subdirectory(ui)
 add_subdirectory(gamelogic)
+if(PELICAN_WITH_OPENXR)
+add_subdirectory(openxr)
+endif()
 
 add_subdirectory(userpublic)
 target_include_directories(pelican_core PUBLIC ./userpublic ${CMAKE_CURRENT_SOURCE_DIR})

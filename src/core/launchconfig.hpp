@@ -11,6 +11,8 @@
 
 namespace Pelican {
 
+enum class XrMode { off, auto_mode, on };
+
 struct EngineLaunchCameraOverride {
     std::array<float, 3> position{0.0f, 0.0f, 0.0f};
     std::array<float, 3> target{0.0f, 0.0f, 0.0f};
@@ -25,6 +27,8 @@ DECLARE_MODULE(EngineLaunchConfig) {
     // golden harnesses set these when they are not already using headless.
     bool input_replay = false;
     bool golden_mode = false;
+    XrMode xr_mode = XrMode::off;
+    bool xr_active = false;
     vk::Extent2D headless_extent{1280, 720};
     uint32_t headless_frames = 3;
     bool headless_frames_explicit = false;

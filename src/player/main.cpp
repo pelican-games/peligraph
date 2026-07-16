@@ -83,6 +83,19 @@ Pelican::EngineLaunchCameraOverride parseCameraOverride(const std::string &value
     };
 }
 
+Pelican::XrMode parseXrMode(const std::string &value) {
+    if (value == "off") {
+        return Pelican::XrMode::off;
+    }
+    if (value == "auto") {
+        return Pelican::XrMode::auto_mode;
+    }
+    if (value == "on") {
+        return Pelican::XrMode::on;
+    }
+    throw std::runtime_error("--xr must be one of: off, auto, on");
+}
+
 std::filesystem::path resolveExistingCliFile(const std::string &value, const std::string &name) {
     if (value.empty()) {
         throw std::runtime_error(name + " must not be empty");
@@ -214,6 +227,10 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
     argparse::ArgumentParser program("Pelican Player");
     program.add_argument("--headless").flag().help("run without a window");
     program.add_argument("--rpc").flag().help("run stdio JSON-RPC mode; requires --headless");
+    program.add_argument("--xr")
+        .default_value(std::string{"off"})
+        .metavar("off|auto|on")
+        .help("select OpenXR activation (runtime default: off)");
     program.add_argument("--frames").default_value(3).scan<'i', int>().help("headless frame count");
     program.add_argument("--size").default_value(std::string{"1280x720"}).metavar("WxH").help("headless render size");
     program.add_argument("--render-out").default_value(std::string{}).metavar("path").help("render output path");
@@ -281,6 +298,7 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         auto &config = parsed.engine;
         config.headless = program.get<bool>("--headless");
         config.rpc = program.get<bool>("--rpc");
+        config.xr_mode = parseXrMode(program.get<std::string>("--xr"));
         if (config.rpc && !config.headless) {
             throw std::runtime_error("--rpc requires --headless in protocol v1");
         }

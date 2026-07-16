@@ -8,6 +8,7 @@ namespace Pelican::DevCli {
 struct DistConfigOptions {
     bool with_rpc = false;
     bool with_seqplayer = false;
+    bool with_openxr = false;
 };
 
 struct DistConfigResult {
@@ -18,11 +19,13 @@ struct DistConfigResult {
     bool with_exr = false;
     bool with_rpc = false;
     bool with_seqplayer = false;
+    bool with_openxr = false;
 
     std::string vat_reason;
     std::string exr_reason;
     std::string rpc_reason;
     std::string seqplayer_reason;
+    std::string openxr_reason;
 };
 
 DistConfigResult deriveDistConfig(const std::filesystem::path &project_arg,

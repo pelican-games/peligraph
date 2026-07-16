@@ -27,6 +27,7 @@ option(PELICAN_WITH_RPC "Enable stdio JSON-RPC control server" ON)
 option(PELICAN_WITH_SEQPLAYER "Enable transform sequence playback" ON)
 option(PELICAN_WITH_IMGUI "Enable the interactive engine developer UI" ON)
 option(PELICAN_WITH_PHYSICS "Enable the physics query service and collider world" ON)
+option(PELICAN_WITH_OPENXR "Enable the private OpenXR runtime unit" ON)
 cmake_dependent_option(
   PELICAN_WITH_JOLT_PHYSICS
   "Enable the optional Jolt query provider"
@@ -239,6 +240,30 @@ if(PELICAN_WITH_EXR)
       ${tinyexr_SOURCE_DIR}/deps/miniz
     )
   endif()
+endif()
+
+if(PELICAN_WITH_OPENXR)
+  # OpenXR-SDK-Source release-1.1.61. The release tag is annotated, so pin the
+  # peeled commit rather than the movable tag object.
+  set(BUILD_LOADER ON CACHE BOOL "" FORCE)
+  set(BUILD_ALL_EXTENSIONS OFF CACHE BOOL "" FORCE)
+  set(BUILD_API_LAYERS OFF CACHE BOOL "" FORCE)
+  set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(BUILD_CONFORMANCE_TESTS OFF CACHE BOOL "" FORCE)
+  set(BUILD_SDK_TESTS OFF CACHE BOOL "" FORCE)
+  set(BUILD_FORCE_GENERATION OFF CACHE BOOL "" FORCE)
+  set(DYNAMIC_LOADER OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(
+    openxr_sdk
+    GIT_REPOSITORY https://github.com/KhronosGroup/OpenXR-SDK-Source.git
+    GIT_TAG        211e2f4f0b79932300a845f3a8ed75026dbfa4a3
+  )
+  FetchContent_MakeAvailable(openxr_sdk)
+  foreach(PELICAN_UNUSED_OPENXR_TARGET openxr-gfxwrapper openxr-glad-loader)
+    if(TARGET ${PELICAN_UNUSED_OPENXR_TARGET})
+      set_target_properties(${PELICAN_UNUSED_OPENXR_TARGET} PROPERTIES EXCLUDE_FROM_ALL TRUE)
+    endif()
+  endforeach()
 endif()
 
 ## vulkan
