@@ -42,6 +42,9 @@ void requireErrorKind(std::string_view message, std::string_view error_kind) {
         REQUIRE(contains(message, "output schema"));
     } else if (error_kind == "schema") {
         REQUIRE(contains(message, "schema"));
+    } else if (error_kind == "material_version") {
+        REQUIRE(contains(message, "pelican.material"));
+        REQUIRE(contains(message, "version"));
     } else {
         FAIL("unknown import manifest error_kind: " << error_kind);
     }
@@ -129,6 +132,27 @@ TEST_CASE("import manifest accepts khronos.ktx2 outputs from the ktx2 recipe",
     CHECK_THROWS_WITH(parseImportManifestJson(ktx2Manifest({{"version", 3}})),
                       Catch::Matchers::ContainsSubstring("expected=2, actual=3"));
     CHECK(parseImportManifestJson(ktx2Manifest({{"version", 2}})).outputs.size() == 1);
+}
+
+TEST_CASE("import manifest accepts only pelican.material version 1 outputs",
+          "[import-manifest][material][wp124]") {
+    const auto materialManifest = [](nlohmann::json output) {
+        output["file"] = "materials.json";
+        output["schema"] = "pelican.material";
+        output["sha256"] = std::string(64, 'd');
+        return nlohmann::json{
+            {"schema", "pelican.import"},
+            {"version", 1},
+            {"tool", {{"name", "pelican-import-tools"}, {"version", "0.1.0"}}},
+            {"source", {{"file", "coat.usda"}}},
+            {"outputs", {std::move(output)}},
+        };
+    };
+    CHECK(parseImportManifestJson(materialManifest({{"version", 1}})).outputs.size() == 1);
+    CHECK_THROWS_WITH(parseImportManifestJson(materialManifest({})),
+                      Catch::Matchers::ContainsSubstring("requires version 1"));
+    CHECK_THROWS_WITH(parseImportManifestJson(materialManifest({{"version", 2}})),
+                      Catch::Matchers::ContainsSubstring("expected=1, actual=2"));
 }
 
 } // namespace Pelican

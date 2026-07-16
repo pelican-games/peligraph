@@ -1,0 +1,17 @@
+{
+  "bindings": [
+    {
+      "material": "World_Coat_opaque_double",
+      "mesh": 0,
+      "primitive": 0,
+      "routing": {
+        "alpha_mode": "opaque",
+        "double_sided": true
+      },
+      "usd_path": "/World/CoatTriangle"
+    }
+  ],
+  "model": "project://model.glb",
+  "schema": "pelican.material_bindings",
+  "version": 1
+}

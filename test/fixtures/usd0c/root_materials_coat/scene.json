@@ -1,0 +1,38 @@
+{
+  "scenes": {
+    "default_scene": {
+      "objects": [
+        {
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "rotation": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ],
+              "scale": [
+                1.0,
+                1.0,
+                1.0
+              ]
+            },
+            {
+              "model": "model.glb#node/World_CoatTriangle",
+              "name": "simplemodelview"
+            }
+          ],
+          "name": "World_CoatTriangle"
+        }
+      ]
+    }
+  },
+  "schema": "pelican.scene",
+  "version": 1
+}

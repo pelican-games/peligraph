@@ -5,6 +5,7 @@
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/loader/pathresolver.hpp"
+#include "../src/core/loader/engineresources.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/loader/scene.hpp"
 #include "../src/core/material/materialcontainer.hpp"
@@ -13,6 +14,7 @@
 #include "../src/core/asset/model.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "../src/project/importmanifest.hpp"
+#include "../src/project/materialformat.hpp"
 #include "../src/project/sceneformat.hpp"
 #include "gltf_fragment_fixture.hpp"
 
@@ -52,6 +54,11 @@ size_t primitiveCount(const ModelTemplate &model) {
 
 std::filesystem::path usdFixtureRoot() {
     return std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" / "fixtures" / "usd0b";
+}
+
+std::filesystem::path usdMaterialFixtureRoot() {
+    return std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" / "fixtures" / "usd0c" /
+           "root_materials_coat";
 }
 
 nlohmann::json readJson(const std::filesystem::path &path) {
@@ -255,6 +262,86 @@ TEST_CASE("U-USD0b corpus deliveries parse, load, and instantiate their scene fr
                             .tryComponent<SimpleModelViewComponent>(*object);
     REQUIRE(model != nullptr);
     REQUIRE(model->model_instance_id);
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+TEST_CASE("U-USD0c generated delivery parses material and binding then loads the GLB and scene",
+          "[gltf][fragment][usd0c][openpbr]") {
+    setupLogger();
+    const auto delivery = usdMaterialFixtureRoot();
+    const auto manifest = parseImportManifestJson(readJson(delivery / "manifest.json"));
+    REQUIRE(manifest.outputs.size() == 4);
+    REQUIRE(manifest.outputs.at(0).schema == "pelican.material");
+    REQUIRE(manifest.outputs.at(1).schema == "gltf");
+    REQUIRE(manifest.outputs.at(2).schema == "pelican.scene");
+    REQUIRE(manifest.outputs.at(3).schema == "png");
+
+    const auto surface_reference =
+        std::string{"engine://surfaces/openpbr/opaque_double.surface"};
+    MaterialSurfaceCatalog surfaces;
+    surfaces.emplace(
+        surface_reference,
+        parseSurfaceFormat(engineResourceOrThrow("surfaces/openpbr/opaque_double.surface"),
+                           surface_reference));
+    const auto material =
+        parseMaterialFormatJson(readJson(delivery / "materials.json"), surfaces);
+    REQUIRE(material.materials.size() == 1);
+    REQUIRE(material.materials.front().name == "World_Coat_opaque_double");
+    REQUIRE(material.materials.front().routing.has_value());
+    REQUIRE(material.materials.front().routing->double_sided);
+    REQUIRE(material.materials.front().texture_overrides.size() == 1);
+    REQUIRE(material.materials.front().texture_overrides.front().name ==
+            "base_diffuse_roughness_map");
+
+    const auto bindings =
+        parsePrimitiveMaterialBindingJson(readJson(delivery / "material_bindings.json"));
+    REQUIRE(bindings.model == "project://model.glb");
+    REQUIRE(bindings.bindings.size() == 1);
+    REQUIRE(bindings.bindings.front().usd_path == "/World/CoatTriangle");
+    REQUIRE(bindings.bindings.front().material == material.materials.front().name);
+
+    const auto normalized_scene = normalizeSceneDataJson(readJson(delivery / "scene.json"));
+    REQUIRE(normalized_scene.scenes.at("default_scene").at("objects").size() == 1);
+
+    const auto temp_dir = std::filesystem::temp_directory_path() /
+                          ("pelican_wp124_" + std::to_string(
+                               std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(temp_dir);
+    const TempDirGuard temp_guard{temp_dir};
+    std::filesystem::copy(delivery, temp_dir,
+                          std::filesystem::copy_options::recursive |
+                              std::filesystem::copy_options::overwrite_existing);
+    writeText(temp_dir / "assets.json", R"json({"models":[]})json");
+
+    FastModuleContainer modules;
+    GET_MODULE(PathResolver).setup(temp_dir, false);
+    GET_MODULE(ProjectSource).setSourceByData(nlohmann::json{
+        {"basic_config",
+         {
+             {"scene_data_json", "scene.json"},
+             {"asset_data_json", "assets.json"},
+             {"default_scene_id", "default_scene"},
+         }},
+    }.dump());
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.headless_extent = vk::Extent2D{16, 16};
+    try {
+        (void)GET_MODULE(StandardMaterialResource);
+    } catch (const std::exception &ex) {
+        SKIP(std::string{"Vulkan headless rendering unavailable: "} + ex.what());
+    }
+
+    auto model = GET_MODULE(GltfLoader).loadGltfBinary((delivery / "model.glb").string());
+    REQUIRE(primitiveCount(model) == 1);
+    applyPrimitiveMaterialBindings(model, bindings, "wp124_generated_coat");
+    REQUIRE(primitiveCount(model) == 1);
+
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &scene = GET_MODULE(SceneLoader);
+    scene.load("default_scene");
+    GET_MODULE(ECSCore).update();
+    REQUIRE(scene.objectId("World_CoatTriangle"));
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 
