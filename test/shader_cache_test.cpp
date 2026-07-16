@@ -79,11 +79,18 @@ void main() { gl_Position = vec4(kValue, 0.0, 0.0, 1.0); }
     REQUIRE(base.ok);
 
     ShaderCompileOptions defined_options;
-    defined_options.defines = {"UNUSED_VARIANT=1"};
+    defined_options.defines = {"PELICAN_FEATURE_TAA_ALPHA=0.100000001"};
     const auto defined = compiler.compileSource(source, vk::ShaderStageFlagBits::eVertex,
                                                 "include.vert", defined_options);
     REQUIRE(defined.ok);
     REQUIRE(defined.cache_key != base.cache_key);
+
+    ShaderCompileOptions changed_value_options;
+    changed_value_options.defines = {"PELICAN_FEATURE_TAA_ALPHA=0.200000003"};
+    const auto changed_value = compiler.compileSource(source, vk::ShaderStageFlagBits::eVertex,
+                                                      "include.vert", changed_value_options);
+    REQUIRE(changed_value.ok);
+    REQUIRE(changed_value.cache_key != defined.cache_key);
 
     {
         std::ofstream file{include, std::ios::trunc};
