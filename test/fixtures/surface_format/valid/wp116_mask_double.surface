@@ -1,0 +1,12 @@
+//! pelican.surface v1
+//! language: glsl
+//! params:
+//!   - { name: alpha_cutoff, type: float, default: 0.5, min: 0.0, max: 1.0 }
+//! textures:
+//!   - { name: opacity_map, default: "engine://textures/white", color_space: linear, role: data }
+//! render_state: { blend: opaque, cull: none, depth: read_write }
+
+vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface,
+                         in PelicanSurfaceInputV1 surface_input) {
+    return surface.base_color.rgb;
+}

@@ -5,8 +5,10 @@
 #include <nlohmann/json.hpp>
 
 #include <array>
+#include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -15,6 +17,41 @@ namespace Pelican {
 struct MaterialValue {
     std::string name;
     SurfaceParamValue value;
+};
+
+struct MaterialTextureOverride {
+    std::string name;
+    std::string reference;
+};
+
+enum class MaterialAlphaMode {
+    opaque,
+    mask,
+    blend,
+};
+
+// OpenPBR/glTF render-state inputs remain material metadata. v1 deliberately
+// does not turn these into arbitrary material-level pipeline overrides: the
+// pair selects one of six surface wrappers with a fixed state.
+struct MaterialVariantRouting {
+    MaterialAlphaMode alpha_mode = MaterialAlphaMode::opaque;
+    bool double_sided = false;
+
+    friend bool operator==(const MaterialVariantRouting &,
+                           const MaterialVariantRouting &) = default;
+};
+
+struct PrimitiveMaterialBinding {
+    std::string usd_path;
+    std::uint32_t mesh_index = 0;
+    std::uint32_t primitive_index = 0;
+    std::string material;
+    MaterialVariantRouting routing;
+};
+
+struct PrimitiveMaterialBindingDocument {
+    std::string model;
+    std::vector<PrimitiveMaterialBinding> bindings;
 };
 
 struct MaterialBase {
@@ -36,6 +73,8 @@ struct MaterialDefinition {
     std::vector<std::string> defines;
     std::optional<std::string> surface;
     std::vector<MaterialValue> values;
+    std::vector<MaterialTextureOverride> texture_overrides;
+    std::optional<MaterialVariantRouting> routing;
 };
 
 struct MaterialFormatDocument {
@@ -48,5 +87,18 @@ using MaterialSurfaceCatalog = std::unordered_map<std::string, SurfaceFormatDocu
 MaterialFormatDocument parseMaterialFormatJson(const nlohmann::json &document);
 MaterialFormatDocument parseMaterialFormatJson(const nlohmann::json &document,
                                                const MaterialSurfaceCatalog &surfaces);
+
+PrimitiveMaterialBindingDocument
+parsePrimitiveMaterialBindingJson(const nlohmann::json &document);
+
+std::string_view materialAlphaModeName(MaterialAlphaMode mode);
+std::string_view materialVariantName(const MaterialVariantRouting &routing);
+SurfaceRenderState materialVariantRenderState(const MaterialVariantRouting &routing);
+bool materialVariantKeepsFace(const MaterialVariantRouting &routing,
+                              bool front_facing);
+bool materialMaskKeepsFragment(double alpha, double alpha_cutoff);
+
+std::string dumpPrimitiveMaterialBindings(
+    const PrimitiveMaterialBindingDocument &document);
 
 } // namespace Pelican

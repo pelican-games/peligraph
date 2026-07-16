@@ -78,6 +78,21 @@ std::string nonValuesSignature(const MaterialDefinition &material) {
         {"defines", material.defines},
         {"surface", material.surface},
     };
+    signature["texture_overrides"] = nlohmann::json::array();
+    for (const auto &texture : material.texture_overrides) {
+        signature["texture_overrides"].push_back({
+            {"name", texture.name},
+            {"reference", texture.reference},
+        });
+    }
+    if (material.routing) {
+        signature["routing"] = {
+            {"alpha_mode", materialAlphaModeName(material.routing->alpha_mode)},
+            {"double_sided", material.routing->double_sided},
+        };
+    } else {
+        signature["routing"] = nullptr;
+    }
     return signature.dump();
 }
 

@@ -1,0 +1,9 @@
+{
+  "schema": "pelican.material_bindings",
+  "version": 1,
+  "model": "project://imports/openpbr.glb",
+  "bindings": [
+    {"usd_path": "/World/Mesh", "mesh": 0, "primitive": 0, "material": "first", "routing": {"alpha_mode": "opaque", "double_sided": false}},
+    {"usd_path": "/World/Mesh", "mesh": 0, "primitive": 1, "material": "second", "routing": {"alpha_mode": "opaque", "double_sided": false}}
+  ]
+}

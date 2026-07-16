@@ -1,7 +1,10 @@
 #include "materialformat.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <initializer_list>
+#include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -445,6 +448,113 @@ std::vector<MaterialValue> parseValues(const nlohmann::json &material, const std
     return values;
 }
 
+const SurfaceTextureDefinition *findSurfaceTexture(const SurfaceFormatDocument &surface,
+                                                   std::string_view name) {
+    const auto found = std::find_if(surface.textures.begin(), surface.textures.end(),
+                                    [name](const auto &texture) {
+                                        return texture.name == name;
+                                    });
+    return found == surface.textures.end() ? nullptr : &*found;
+}
+
+MaterialAlphaMode parseAlphaMode(std::string_view value, std::string_view context) {
+    if (value == "opaque") return MaterialAlphaMode::opaque;
+    if (value == "mask") return MaterialAlphaMode::mask;
+    if (value == "blend") return MaterialAlphaMode::blend;
+    throw std::runtime_error(std::string{context} +
+                             " alpha_mode must be opaque, mask, or blend: " +
+                             std::string{value});
+}
+
+MaterialVariantRouting parseRoutingObject(const nlohmann::json &routing,
+                                          std::string_view context,
+                                          std::vector<std::string> *warnings = nullptr) {
+    if (!routing.is_object()) {
+        throw std::runtime_error(std::string{context} + " routing must be an object");
+    }
+    if (warnings != nullptr) {
+        appendUnknownKeyWarnings(routing, {"alpha_mode", "double_sided"},
+                                 std::string{context} + " routing", *warnings);
+    } else {
+        for (auto it = routing.begin(); it != routing.end(); ++it) {
+            if (!isKnownKey(it.key(), {"alpha_mode", "double_sided"})) {
+                throw std::runtime_error(std::string{context} +
+                                         " routing has unknown key '" + it.key() + "'");
+            }
+        }
+    }
+
+    const auto &alpha = requireMember(routing, "alpha_mode",
+                                      std::string{context} + " routing");
+    if (!alpha.is_string()) {
+        throw std::runtime_error(std::string{context} +
+                                 " routing alpha_mode must be a string");
+    }
+    const auto &double_sided = requireMember(routing, "double_sided",
+                                             std::string{context} + " routing");
+    if (!double_sided.is_boolean()) {
+        throw std::runtime_error(std::string{context} +
+                                 " routing double_sided must be boolean");
+    }
+    return MaterialVariantRouting{
+        parseAlphaMode(alpha.get<std::string>(), std::string{context} + " routing"),
+        double_sided.get<bool>(),
+    };
+}
+
+std::optional<MaterialVariantRouting>
+parseMaterialRouting(const nlohmann::json &material, const std::string &name,
+                     std::vector<std::string> &warnings) {
+    const auto found = material.find("routing");
+    if (found == material.end()) return std::nullopt;
+    return parseRoutingObject(*found, materialContext(name), &warnings);
+}
+
+std::vector<MaterialTextureOverride>
+parseTextureOverrides(const nlohmann::json &material, const std::string &name,
+                      const std::optional<std::string> &surface_reference,
+                      const MaterialSurfaceCatalog &surfaces) {
+    std::vector<MaterialTextureOverride> overrides;
+    const auto found = material.find("textures");
+    if (found == material.end()) return overrides;
+
+    const auto context = materialContext(name);
+    if (!found->is_object()) {
+        throw std::runtime_error(context +
+                                 " textures must be an object of declared-name to string reference overrides");
+    }
+    if (!surface_reference) {
+        throw std::runtime_error(context +
+                                 " textures overrides require a named .surface reference");
+    }
+    if (found->empty()) return overrides;
+
+    const auto surface = surfaces.find(*surface_reference);
+    if (surface == surfaces.end()) {
+        throw std::runtime_error(context + " cannot validate textures because surface '" +
+                                 *surface_reference + "' was not provided");
+    }
+
+    overrides.reserve(found->size());
+    for (auto value = found->begin(); value != found->end(); ++value) {
+        validateGlslIdentifier(value.key(), context, "texture override");
+        if (!value->is_string()) {
+            throw std::runtime_error(context + " texture override '" + value.key() +
+                                     "' must be a string reference matching its declared texture type");
+        }
+        if (findSurfaceTexture(surface->second, value.key()) == nullptr) {
+            throw std::runtime_error(context + " texture override '" + value.key() +
+                                     "' is not declared by surface '" +
+                                     *surface_reference + "'");
+        }
+        auto reference = value->get<std::string>();
+        validateTextureReference(reference, context + " texture override '" + value.key() + "'",
+                                 "reference");
+        overrides.push_back({value.key(), std::move(reference)});
+    }
+    return overrides;
+}
+
 MaterialDefinition parseMaterial(const nlohmann::json &material, size_t index,
                                  const MaterialSurfaceCatalog &surfaces,
                                  std::vector<std::string> &warnings) {
@@ -460,12 +570,9 @@ MaterialDefinition parseMaterial(const nlohmann::json &material, size_t index,
                                  " field 'params' declarations are not supported in v1; move them to "
                                  ".surface and use 'values' for overrides");
     }
-    if (material.contains("textures")) {
-        throw std::runtime_error(context +
-                                 " field 'textures' declarations are not supported in v1; move them to "
-                                 ".surface");
-    }
-    appendUnknownKeyWarnings(material, {"name", "base", "shader", "defines", "surface", "values"},
+    appendUnknownKeyWarnings(material,
+                             {"name", "base", "shader", "defines", "surface", "values",
+                              "textures", "routing"},
                              context, warnings);
 
     MaterialDefinition parsed;
@@ -480,8 +587,43 @@ MaterialDefinition parseMaterial(const nlohmann::json &material, size_t index,
         validateSurfaceReference(*surface, context);
         parsed.surface = *surface;
     }
+    parsed.routing = parseMaterialRouting(material, name, warnings);
     parsed.values = parseValues(material, name, parsed.surface, surfaces);
+    parsed.texture_overrides =
+        parseTextureOverrides(material, name, parsed.surface, surfaces);
     return parsed;
+}
+
+std::uint32_t requireBindingIndex(const nlohmann::json &binding, std::string_view key,
+                                  std::string_view context) {
+    const auto &value = requireMember(binding, key, context);
+    if (!value.is_number_unsigned() && !value.is_number_integer()) {
+        throw std::runtime_error(std::string{context} + " requires non-negative integer " +
+                                 std::string{key});
+    }
+    try {
+        const auto parsed = value.get<std::int64_t>();
+        if (parsed < 0 || static_cast<std::uint64_t>(parsed) >
+                              std::numeric_limits<std::uint32_t>::max()) {
+            throw std::runtime_error(std::string{context} + " " + std::string{key} +
+                                     " is outside uint32 range");
+        }
+        return static_cast<std::uint32_t>(parsed);
+    } catch (const nlohmann::json::exception &) {
+        throw std::runtime_error(std::string{context} + " " + std::string{key} +
+                                 " is outside uint32 range");
+    }
+}
+
+void requireOnlyKeys(const nlohmann::json &object,
+                     std::initializer_list<std::string_view> known_keys,
+                     std::string_view context) {
+    for (auto it = object.begin(); it != object.end(); ++it) {
+        if (!isKnownKey(it.key(), known_keys)) {
+            throw std::runtime_error(std::string{context} + " has unknown key '" +
+                                     it.key() + "'");
+        }
+    }
 }
 
 } // namespace
@@ -506,6 +648,175 @@ MaterialFormatDocument parseMaterialFormatJson(const nlohmann::json &document_js
         document.materials.push_back(std::move(material));
     }
     return document;
+}
+
+PrimitiveMaterialBindingDocument
+parsePrimitiveMaterialBindingJson(const nlohmann::json &document_json) {
+    constexpr std::string_view schema = "pelican.material_bindings";
+    constexpr int version = 1;
+    if (!document_json.is_object()) {
+        throw std::runtime_error("material binding document must be an object");
+    }
+    requireOnlyKeys(document_json, {"schema", "version", "model", "bindings"},
+                    "material binding document");
+    if (document_json.value("schema", std::string{}) != schema) {
+        throw std::runtime_error("material binding document schema must be '" +
+                                 std::string{schema} + "'");
+    }
+    if (!document_json.contains("version") ||
+        !document_json.at("version").is_number_integer() ||
+        document_json.at("version").get<int>() != version) {
+        throw std::runtime_error("material binding document version must be exactly 1");
+    }
+
+    PrimitiveMaterialBindingDocument document;
+    document.model = requireString(document_json, "model", "material binding document");
+    if (document.model.empty() || containsBackslash(document.model) ||
+        document.model.find('#') != std::string::npos) {
+        throw std::runtime_error("material binding model '" + document.model +
+                                 "' must be a whole GLB/glTF reference without a fragment");
+    }
+    const auto model_path = std::string_view{document.model};
+    if (!endsWith(model_path, ".glb") && !endsWith(model_path, ".gltf") &&
+        !endsWith(model_path, ".vrm")) {
+        throw std::runtime_error("material binding model '" + document.model +
+                                 "' must end in .glb, .gltf, or .vrm");
+    }
+
+    const auto &bindings = requireMember(document_json, "bindings",
+                                         "material binding document");
+    if (!bindings.is_array() || bindings.empty()) {
+        throw std::runtime_error("material binding document requires a non-empty bindings array");
+    }
+
+    std::unordered_set<std::string> usd_paths;
+    std::unordered_map<std::uint64_t, std::string> targets;
+    document.bindings.reserve(bindings.size());
+    for (std::size_t index = 0; index < bindings.size(); ++index) {
+        const auto &binding = bindings.at(index);
+        const auto index_context = "material binding bindings[" + std::to_string(index) + "]";
+        if (!binding.is_object()) {
+            throw std::runtime_error(index_context + " must be an object");
+        }
+        requireOnlyKeys(binding,
+                        {"usd_path", "mesh", "primitive", "material", "routing"},
+                        index_context);
+        auto usd_path = requireString(binding, "usd_path", index_context);
+        const auto context = index_context + " USD path '" + usd_path + "'";
+        if (usd_path.empty() || usd_path.front() != '/' || containsBackslash(usd_path) ||
+            usd_path.find('#') != std::string::npos) {
+            throw std::runtime_error(context +
+                                     " must be an absolute USD prim/subset path without a fragment");
+        }
+        if (!usd_paths.insert(usd_path).second) {
+            throw std::runtime_error("duplicate material binding USD path '" + usd_path + "'");
+        }
+        const auto mesh = requireBindingIndex(binding, "mesh", context);
+        const auto primitive = requireBindingIndex(binding, "primitive", context);
+        const auto target = (static_cast<std::uint64_t>(mesh) << 32u) | primitive;
+        if (const auto existing = targets.find(target); existing != targets.end()) {
+            throw std::runtime_error("material binding collision at GLB mesh " +
+                                     std::to_string(mesh) + " primitive " +
+                                     std::to_string(primitive) + " between USD paths '" +
+                                     existing->second + "' and '" + usd_path + "'");
+        }
+        targets.emplace(target, usd_path);
+
+        auto material = requireString(binding, "material", context);
+        try {
+            validateMaterialName(material);
+        } catch (const std::exception &error) {
+            throw std::runtime_error(context + " material '" + material + "': " +
+                                     error.what());
+        }
+        const auto &routing = requireMember(binding, "routing", context);
+        document.bindings.push_back(PrimitiveMaterialBinding{
+            std::move(usd_path), mesh, primitive, std::move(material),
+            parseRoutingObject(routing, context),
+        });
+    }
+    return document;
+}
+
+std::string_view materialAlphaModeName(MaterialAlphaMode mode) {
+    switch (mode) {
+    case MaterialAlphaMode::opaque: return "opaque";
+    case MaterialAlphaMode::mask: return "mask";
+    case MaterialAlphaMode::blend: return "blend";
+    }
+    return "unknown";
+}
+
+std::string_view materialVariantName(const MaterialVariantRouting &routing) {
+    if (routing.double_sided) {
+        switch (routing.alpha_mode) {
+        case MaterialAlphaMode::opaque: return "opaque_double_sided";
+        case MaterialAlphaMode::mask: return "mask_double_sided";
+        case MaterialAlphaMode::blend: return "blend_double_sided";
+        }
+    } else {
+        switch (routing.alpha_mode) {
+        case MaterialAlphaMode::opaque: return "opaque_single_sided";
+        case MaterialAlphaMode::mask: return "mask_single_sided";
+        case MaterialAlphaMode::blend: return "blend_single_sided";
+        }
+    }
+    return "unknown";
+}
+
+SurfaceRenderState materialVariantRenderState(const MaterialVariantRouting &routing) {
+    SurfaceRenderState state;
+    state.blend = routing.alpha_mode == MaterialAlphaMode::blend
+                      ? SurfaceBlendMode::blend
+                      : SurfaceBlendMode::opaque;
+    state.cull = routing.double_sided ? SurfaceCullMode::none : SurfaceCullMode::back;
+    state.depth_test = true;
+    state.depth_write = routing.alpha_mode != MaterialAlphaMode::blend;
+    state.depth_compare = SurfaceDepthCompare::less;
+    return state;
+}
+
+bool materialVariantKeepsFace(const MaterialVariantRouting &routing,
+                              bool front_facing) {
+    return front_facing || routing.double_sided;
+}
+
+bool materialMaskKeepsFragment(double alpha, double alpha_cutoff) {
+    return std::isfinite(alpha) && std::isfinite(alpha_cutoff) && alpha >= alpha_cutoff;
+}
+
+std::string dumpPrimitiveMaterialBindings(
+    const PrimitiveMaterialBindingDocument &document) {
+    auto bindings = document.bindings;
+    std::sort(bindings.begin(), bindings.end(), [](const auto &left, const auto &right) {
+        if (left.mesh_index != right.mesh_index) return left.mesh_index < right.mesh_index;
+        if (left.primitive_index != right.primitive_index)
+            return left.primitive_index < right.primitive_index;
+        return left.usd_path < right.usd_path;
+    });
+    std::ostringstream out;
+    out << "schema: pelican.material_bindings v1\n";
+    out << "model: " << document.model << '\n';
+    out << "bindings:\n";
+    for (const auto &binding : bindings) {
+        const auto state = materialVariantRenderState(binding.routing);
+        out << "  " << binding.usd_path << " -> mesh=" << binding.mesh_index
+            << " primitive=" << binding.primitive_index
+            << " material=" << binding.material
+            << " variant=" << materialVariantName(binding.routing)
+            << " alpha=" << materialAlphaModeName(binding.routing.alpha_mode)
+            << " cull=" << (state.cull == SurfaceCullMode::back ? "back" : "none")
+            << " front=true back="
+            << (materialVariantKeepsFace(binding.routing, false) ? "true" : "false")
+            << " blend=" << (state.blend == SurfaceBlendMode::blend ? "blend" : "opaque")
+            << " depth_test=true depth_write="
+            << (state.depth_write ? "true" : "false");
+        if (binding.routing.alpha_mode == MaterialAlphaMode::mask) {
+            out << " discard=alpha<alpha_cutoff";
+        }
+        out << '\n';
+    }
+    return out.str();
 }
 
 } // namespace Pelican

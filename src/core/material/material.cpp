@@ -1,5 +1,7 @@
 #include "material.hpp"
 
+#include <stdexcept>
+
 namespace Pelican {
 
 void applyLoweredMaterial(MaterialInfo &destination, const LoweredMaterial &lowered) {
@@ -15,6 +17,25 @@ void applyLoweredMaterial(MaterialInfo &destination, const LoweredMaterial &lowe
             texture.role,
             texture.missing_default,
         });
+    }
+}
+
+void applyLoweredMaterial(MaterialInfo &destination, const LoweredMaterial &lowered,
+                          const LoweredMaterialTextureResolver &resolve_texture) {
+    if (!resolve_texture) {
+        throw std::runtime_error("lowered material texture resolver is empty");
+    }
+    applyLoweredMaterial(destination, lowered);
+    for (std::size_t index = 0; index < lowered.textures.size(); ++index) {
+        const auto &source = lowered.textures[index];
+        try {
+            destination.custom_textures[index].texture =
+                resolve_texture(source.reference, source.role);
+        } catch (const std::exception &error) {
+            throw std::runtime_error("material '" + lowered.name + "' texture '" +
+                                     source.name + "' reference '" + source.reference +
+                                     "': " + error.what());
+        }
     }
 }
 

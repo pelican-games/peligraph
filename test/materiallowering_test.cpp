@@ -76,6 +76,8 @@ TEST_CASE("material overrides bind by name without changing declaration layout",
     scalar.type = SurfaceParamType::floating;
     scalar.values[0] = 42.0;
     material.values.push_back(MaterialValue{"packed_after_vec3", scalar});
+    material.texture_overrides.push_back(
+        MaterialTextureOverride{"normal_detail", "project://textures/custom_normal.png"});
 
     const auto lowered = lowerMaterial(material, surface);
     REQUIRE(readAt<float>(lowered.values, 28) == Catch::Approx(42.0f));
@@ -85,6 +87,8 @@ TEST_CASE("material overrides bind by name without changing declaration layout",
     REQUIRE(lowered.textures[0].view == LoweredTextureView::srgb);
     REQUIRE(lowered.textures[1].binding == 8);
     REQUIRE(lowered.textures[1].view == LoweredTextureView::unorm);
+    REQUIRE(lowered.textures[1].reference ==
+            "project://textures/custom_normal.png");
     REQUIRE(lowered.textures[1].missing_default == MaterialDummyTexture::flat_normal);
     REQUIRE(lowered.textures[2].missing_default == MaterialDummyTexture::black);
     REQUIRE(lowered.render_state.blend == SurfaceBlendMode::additive);
@@ -172,6 +176,77 @@ TEST_CASE("screen input materials route forward and reject undefined snapshots b
     REQUIRE(dump.find("set=1 binding=0 type=combined_image_sampler name=opaque_color") !=
             std::string::npos);
     REQUIRE(dump.find("target_pass: forward_transparent") != std::string::npos);
+}
+
+TEST_CASE("six routing variants lower only through lighting hook and fixed forward states",
+          "[material-lowering][routing]") {
+    const std::array alpha_modes{MaterialAlphaMode::opaque, MaterialAlphaMode::mask,
+                                 MaterialAlphaMode::blend};
+    for (const auto alpha_mode : alpha_modes) {
+        for (const bool double_sided : {false, true}) {
+            const MaterialVariantRouting routing{alpha_mode, double_sided};
+            const auto state = materialVariantRenderState(routing);
+            const auto source =
+                std::string{"//! pelican.surface v1\n"
+                            "//! language: glsl\n"} +
+                (alpha_mode == MaterialAlphaMode::mask
+                     ? "//! params:\n//!   - { name: alpha_cutoff, type: float, default: 0.5 }\n"
+                     : "") +
+                std::string{
+                            "//! render_state: { blend: "} +
+                (state.blend == SurfaceBlendMode::blend ? "blend" : "opaque") +
+                ", cull: " + (state.cull == SurfaceCullMode::none ? "none" : "back") +
+                ", depth: " + (state.depth_write ? "read_write" : "read_only") +
+                " }\n\n"
+                "vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, "
+                "in PelicanSurfaceInputV1 input_data) { return vec3(1.0); }\n";
+            const auto surface = parseSurfaceFormat(source, materialVariantName(routing));
+            MaterialDefinition material;
+            material.name = std::string{materialVariantName(routing)};
+            material.surface = "project://openpbr/" + material.name + ".surface";
+            material.routing = routing;
+
+            const auto lowered = lowerMaterial(material, surface);
+            REQUIRE(lowered.routing == material.routing);
+            REQUIRE(lowered.target_pass ==
+                    (alpha_mode == MaterialAlphaMode::blend ? "forward_transparent"
+                                                            : "forward_opaque"));
+            const auto dump = dumpLoweredMaterial(lowered);
+            REQUIRE(dump.find("variant=" + std::string{materialVariantName(routing)}) !=
+                    std::string::npos);
+            REQUIRE((dump.find("discard=alpha<alpha_cutoff") != std::string::npos) ==
+                    (alpha_mode == MaterialAlphaMode::mask));
+        }
+    }
+
+    const std::string mask_without_cutoff =
+        "//! pelican.surface v1\n"
+        "//! language: glsl\n"
+        "//! render_state: { blend: opaque, cull: back, depth: read_write }\n\n"
+        "vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, "
+        "in PelicanSurfaceInputV1 input_data) { return vec3(1.0); }\n";
+    MaterialDefinition missing_cutoff;
+    missing_cutoff.name = "mask_without_cutoff";
+    missing_cutoff.routing = MaterialVariantRouting{MaterialAlphaMode::mask, false};
+    REQUIRE_THROWS_WITH(
+        lowerMaterial(missing_cutoff,
+                      parseSurfaceFormat(mask_without_cutoff, "mask_without_cutoff.surface")),
+        Catch::Matchers::ContainsSubstring("mask_without_cutoff") &&
+            Catch::Matchers::ContainsSubstring("alpha_cutoff"));
+
+    const std::string wrong_state =
+        "//! pelican.surface v1\n"
+        "//! language: glsl\n"
+        "//! render_state: { blend: opaque, cull: back, depth: read_write }\n\n"
+        "vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, "
+        "in PelicanSurfaceInputV1 input_data) { return vec3(1.0); }\n";
+    MaterialDefinition bad;
+    bad.name = "bad_blend_route";
+    bad.routing = MaterialVariantRouting{MaterialAlphaMode::blend, false};
+    REQUIRE_THROWS_WITH(lowerMaterial(bad, parseSurfaceFormat(wrong_state, "bad.surface")),
+                        Catch::Matchers::ContainsSubstring("bad_blend_route") &&
+                            Catch::Matchers::ContainsSubstring("blend_single_sided") &&
+                            Catch::Matchers::ContainsSubstring("pipeline state"));
 }
 
 } // namespace Pelican

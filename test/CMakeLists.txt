@@ -657,11 +657,22 @@ target_compile_definitions(pelican_test_materiallowering_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 
+pelican_define_test(materialbinding_test pelican_core)
+
 add_test(
     NAME devcli_dump_lowered_material
     COMMAND ${CMAKE_COMMAND}
         -DCLI=$<TARGET_FILE:pelican_cli>
         -DSURFACE=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/surface_format/valid/wp76.surface
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_dump_lowered_material.cmake
+)
+
+add_test(
+    NAME devcli_dump_lowered_material_wp116
+    COMMAND ${CMAKE_COMMAND}
+        -DCLI=$<TARGET_FILE:pelican_cli>
+        -DSURFACE=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/surface_format/valid/wp116_mask_double.surface
+        -DMATERIAL=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/material_format/valid/wp116_mask_double.json
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_dump_lowered_material.cmake
 )
 
