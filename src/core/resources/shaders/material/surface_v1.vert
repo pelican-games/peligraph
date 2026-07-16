@@ -5,6 +5,7 @@
 #include "pelican_frame.glsl"
 #include "pelican_material.glsl"
 #include "pelican_surface_v1.glsl"
+#include "pelican_morph.glsl"
 #include "__pelican_surface_params.glsl"
 #ifdef PELICAN_SKINNED
 #include "pelican_skinning.glsl"
@@ -35,13 +36,15 @@ layout(location = 7) out vec4 outCustom1;
 
 void main() {
     PelicanVertexV1 vertex;
+    PelicanMorphedVertex morphed =
+        pelican_morph_vertex(inPos, inNormal, inTangent.xyz, gl_VertexIndex, false);
 #ifdef PELICAN_SKINNED
     mat4 skin_matrix = pelican_skin_matrix(inJoints, inWeights);
-    vertex.position = (skin_matrix * vec4(inPos, 1.0)).xyz;
-    vertex.normal = normalize(mat3(skin_matrix) * inNormal);
+    vertex.position = (skin_matrix * vec4(morphed.position, 1.0)).xyz;
+    vertex.normal = normalize(mat3(skin_matrix) * morphed.normal);
 #else
-    vertex.position = inPos;
-    vertex.normal = inNormal;
+    vertex.position = morphed.position;
+    vertex.normal = morphed.normal;
 #endif
     vertex.custom0 = vec4(0.0);
     vertex.custom1 = vec4(0.0);
@@ -60,7 +63,7 @@ void main() {
     outCustom0 = vertex.custom0;
     outCustom1 = vertex.custom1;
     if (inTangent.w != 0.0) {
-        vec3 tangent_local = inTangent.xyz;
+        vec3 tangent_local = morphed.tangent;
 #ifdef PELICAN_SKINNED
         tangent_local = mat3(skin_matrix) * tangent_local;
 #endif

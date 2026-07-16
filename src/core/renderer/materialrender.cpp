@@ -53,7 +53,7 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
         const auto pipeline_layout = material_container.pipelineLayout(draw_call.material);
         vert_buf_container.bindVertexBuffer(cmd_buf, draw_call.skinned);
         dependencies.frame_resources.bindGraphics(cmd_buf, pipeline_layout);
-        if (draw_call.skinned) instance_container.bindSkinning(cmd_buf, pipeline_layout);
+        instance_container.bindDeformation(cmd_buf, pipeline_layout, draw_call.skinned);
         const PushConstantStruct engine_push{dependencies.view_projection};
         cmd_buf.pushConstants(pipeline_layout,
                               vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0,
@@ -87,7 +87,7 @@ void renderShadowDepthDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
         shadow_depth_pass_container.bind(cmd_buf, pass_id, draw_call.skinned);
         vert_buf_container.bindVertexBuffer(cmd_buf, draw_call.skinned);
         dependencies.frame_resources.bindGraphics(cmd_buf, pipeline_layout);
-        if (draw_call.skinned) instance_container.bindSkinning(cmd_buf, pipeline_layout);
+        instance_container.bindDeformation(cmd_buf, pipeline_layout, draw_call.skinned);
         PushConstantStruct push_constant{};
         push_constant.mvp = dependencies.light_container.shadowViewProjection();
         cmd_buf.pushConstants(pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0,
@@ -110,7 +110,7 @@ void renderVelocityDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
         velocity_pass_container.bind(cmd_buf, pass_id, draw_call.skinned);
         dependencies.vert_buf_container.bindVertexBuffer(cmd_buf, draw_call.skinned);
         dependencies.frame_resources.bindGraphics(cmd_buf, layout);
-        if (draw_call.skinned) instances.bindSkinning(cmd_buf, layout);
+        instances.bindDeformation(cmd_buf, layout, draw_call.skinned);
         cmd_buf.drawIndexedIndirect(indirect.buffer.get(), draw_call.offset,
                                     draw_call.draw_count, draw_call.stride);
     }

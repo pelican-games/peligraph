@@ -5,6 +5,7 @@
 #include "pelican_frame.glsl"
 #include "pelican_material.glsl"
 #include "pelican_skinning.glsl"
+#include "pelican_morph.glsl"
 
 layout(location = 0) in vec3 inPos;
 layout(location = 1) in vec3 inNormal;
@@ -22,18 +23,20 @@ layout(location = 4) out vec3 outTangent;
 layout(location = 5) out vec3 outBitangent;
 
 void main() {
+    PelicanMorphedVertex morphed =
+        pelican_morph_vertex(inPos, inNormal, inTangent.xyz, gl_VertexIndex, false);
     mat4 skin = pelican_skin_matrix(inJoints, inWeights);
     mat4 model_matrix = pelicanObjects.objects[gl_BaseInstance].model;
-    vec4 world_pos = model_matrix * skin * vec4(inPos, 1.0);
+    vec4 world_pos = model_matrix * skin * vec4(morphed.position, 1.0);
     gl_Position = pelicanPush.engineMvp * world_pos;
     outTexUV = inTexUV;
     outColor = inColor * pelicanMaterials.materials[pelicanPush.materialIndex].baseColorFactor;
     mat3 normal_matrix = mat3(model_matrix) * mat3(skin);
-    vec3 normal = normalize(normal_matrix * inNormal);
+    vec3 normal = normalize(normal_matrix * morphed.normal);
     outNormal = normal;
     outWorldPos = world_pos.xyz;
     if (inTangent.w != 0.0) {
-        vec3 tangent = normalize(normal_matrix * inTangent.xyz);
+        vec3 tangent = normalize(normal_matrix * morphed.tangent);
         tangent = normalize(tangent - dot(tangent, normal) * normal);
         outTangent = tangent;
         outBitangent = cross(normal, tangent) * inTangent.w;

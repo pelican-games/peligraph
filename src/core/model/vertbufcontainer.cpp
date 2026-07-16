@@ -37,12 +37,40 @@ static BufferWrapper createSkinVertBuf(VulkanManageCore &vkcore, size_t num) {
                            vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
 }
 
+static BufferWrapper createMorphMetadataBuf(VulkanManageCore &vkcore) {
+    return vkcore.allocBuf(sizeof(MorphVertexGpuMetadata) * maxMorphVerticesPerPool,
+                           vk::BufferUsageFlagBits::eStorageBuffer |
+                               vk::BufferUsageFlagBits::eTransferSrc |
+                               vk::BufferUsageFlagBits::eTransferDst,
+                           vma::MemoryUsage::eAutoPreferDevice,
+                           vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
+}
+
+static BufferWrapper createMorphDeltaBuf(VulkanManageCore &vkcore) {
+    return vkcore.allocBuf(sizeof(MorphDeltaGpuData) * maxMorphDeltaRecords,
+                           vk::BufferUsageFlagBits::eStorageBuffer |
+                               vk::BufferUsageFlagBits::eTransferSrc |
+                               vk::BufferUsageFlagBits::eTransferDst,
+                           vma::MemoryUsage::eAutoPreferDevice,
+                           vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
+}
+
 VertBufContainer::VertBufContainer()
     : indices_offset{0}, vertices_offset{0}, indices_cap{initial_indices_num},
       vertices_cap{initial_vertices_num}, skin_vertices_offset{0}, skin_vertices_cap{initial_vertices_num},
       indices_mem_pool{createIndexBuf(GET_MODULE(VulkanManageCore), indices_cap)},
       vertices_mem_pool{createVertBuf(GET_MODULE(VulkanManageCore), vertices_cap)},
-      skin_vertices_mem_pool{createSkinVertBuf(GET_MODULE(VulkanManageCore), skin_vertices_cap)} {}
+      skin_vertices_mem_pool{createSkinVertBuf(GET_MODULE(VulkanManageCore), skin_vertices_cap)},
+      morph_static_metadata_buffer{createMorphMetadataBuf(GET_MODULE(VulkanManageCore))},
+      morph_skinned_metadata_buffer{createMorphMetadataBuf(GET_MODULE(VulkanManageCore))},
+      morph_delta_buffer{createMorphDeltaBuf(GET_MODULE(VulkanManageCore))} {
+    const std::vector<MorphVertexGpuMetadata> empty(maxMorphVerticesPerPool);
+    auto &vkcore = GET_MODULE(VulkanManageCore);
+    vkcore.writeBuf(morph_static_metadata_buffer, empty.data(), 0,
+                    empty.size() * sizeof(MorphVertexGpuMetadata));
+    vkcore.writeBuf(morph_skinned_metadata_buffer, empty.data(), 0,
+                    empty.size() * sizeof(MorphVertexGpuMetadata));
+}
 
 uint32_t VertBufContainer::allocateRange(std::vector<FreeRange> &free_ranges,
                                          uint32_t &high_water, uint32_t count) {
@@ -103,8 +131,100 @@ void validateVertexStreams(const CommonPolygonVertData &data, bool skinned) {
         throw std::runtime_error(
             "invalid skinned primitive: POSITION, JOINTS_0, and WEIGHTS_0 counts must match");
     }
+    if (data.morph_targets.size() > maxMorphTargetsPerPrimitive)
+        throw std::runtime_error("glTF morph target count exceeds renderer limit of " +
+                                 std::to_string(maxMorphTargetsPerPrimitive));
+    if (data.morph_weight_offset > maxMorphWeightsPerInstance ||
+        data.morph_targets.size() >
+            maxMorphWeightsPerInstance - data.morph_weight_offset)
+        throw std::runtime_error("glTF morph layout exceeds per-instance weight capacity of " +
+                                 std::to_string(maxMorphWeightsPerInstance));
+    for (const auto &target : data.morph_targets) {
+        if (!optionalMatches(target.position.size()) ||
+            !optionalMatches(target.normal.size()) ||
+            !optionalMatches(target.tangent.size()))
+            throw std::runtime_error(
+                "invalid glTF morph target: delta accessor count does not match POSITION");
+    }
 }
 } // namespace
+
+std::vector<MorphTargetDeltaRange>
+VertBufContainer::uploadMorphData(const CommonPolygonVertData &data,
+                                  uint32_t vertex_offset, bool skinned,
+                                  uint32_t &delta_offset, uint32_t &delta_count) {
+    delta_offset = 0;
+    delta_count = 0;
+    if (data.morph_targets.empty()) return {};
+    const auto vertex_count = static_cast<uint32_t>(data.pos.size());
+    if (vertex_offset > maxMorphVerticesPerPool ||
+        vertex_count > maxMorphVerticesPerPool - vertex_offset)
+        throw std::runtime_error("glTF morph vertex metadata exceeds renderer capacity of " +
+                                 std::to_string(maxMorphVerticesPerPool) +
+                                 (skinned ? " skinned vertices" : " static vertices"));
+    const auto record_count64 = static_cast<std::uint64_t>(vertex_count) *
+                                data.morph_targets.size();
+    if (record_count64 > maxMorphDeltaRecords)
+        throw std::runtime_error("glTF morph delta range exceeds renderer capacity of " +
+                                 std::to_string(maxMorphDeltaRecords) + " records");
+    delta_count = static_cast<uint32_t>(record_count64);
+    delta_offset = allocateRange(free_morph_deltas, morph_delta_offset, delta_count);
+    if (delta_offset > maxMorphDeltaRecords ||
+        delta_count > maxMorphDeltaRecords - delta_offset) {
+        releaseRange(free_morph_deltas, delta_offset, delta_count);
+        delta_offset = 0;
+        delta_count = 0;
+        throw std::runtime_error("shared glTF morph delta buffer capacity exceeded (" +
+                                 std::to_string(maxMorphDeltaRecords) + " records)");
+    }
+
+    try {
+        std::vector<MorphDeltaGpuData> deltas(delta_count);
+        std::vector<MorphTargetDeltaRange> ranges;
+        ranges.reserve(data.morph_targets.size());
+        for (uint32_t target_index = 0;
+             target_index < static_cast<uint32_t>(data.morph_targets.size());
+             ++target_index) {
+            const auto &source = data.morph_targets[target_index];
+            const auto target_offset = delta_offset + target_index * vertex_count;
+            ranges.push_back({target_index, target_offset, vertex_count,
+                              source.presence_mask});
+            for (uint32_t vertex = 0; vertex < vertex_count; ++vertex) {
+                auto &destination = deltas[target_index * vertex_count + vertex];
+                if (!source.position.empty())
+                    destination.position = glm::vec4{source.position[vertex], 0.0f};
+                if (!source.normal.empty())
+                    destination.normal = glm::vec4{source.normal[vertex], 0.0f};
+                if (!source.tangent.empty())
+                    destination.tangent = glm::vec4{source.tangent[vertex], 0.0f};
+            }
+        }
+        std::vector<MorphVertexGpuMetadata> metadata(vertex_count);
+        for (uint32_t vertex = 0; vertex < vertex_count; ++vertex) {
+            metadata[vertex] = {
+                delta_offset + vertex,
+                vertex_count,
+                data.morph_weight_offset,
+                static_cast<uint32_t>(data.morph_targets.size()),
+            };
+        }
+        auto &vkcore = GET_MODULE(VulkanManageCore);
+        vkcore.writeBuf(morph_delta_buffer, deltas.data(),
+                        sizeof(MorphDeltaGpuData) * delta_offset,
+                        sizeof(MorphDeltaGpuData) * deltas.size());
+        auto &metadata_buffer = skinned ? morph_skinned_metadata_buffer
+                                        : morph_static_metadata_buffer;
+        vkcore.writeBuf(metadata_buffer, metadata.data(),
+                        sizeof(MorphVertexGpuMetadata) * vertex_offset,
+                        sizeof(MorphVertexGpuMetadata) * metadata.size());
+        return ranges;
+    } catch (...) {
+        releaseRange(free_morph_deltas, delta_offset, delta_count);
+        delta_offset = 0;
+        delta_count = 0;
+        throw;
+    }
+}
 
 void VertBufContainer::ensureIndexCapacity(uint32_t required) {
     if (required <= indices_cap) return;
@@ -168,6 +288,8 @@ ModelGeometryAllocation VertBufContainer::addPrimitiveAllocation(CommonPolygonVe
     const auto index_count = static_cast<uint32_t>(data.indices.size());
     const auto index_offset = allocateRange(free_indices, indices_offset, index_count);
     uint32_t vertex_offset = 0;
+    uint32_t morph_offset = 0;
+    uint32_t morph_count = 0;
     bool vertex_allocated = false;
     try {
         vertex_offset = allocateRange(free_vertices, vertices_offset, vertex_count);
@@ -191,13 +313,14 @@ ModelGeometryAllocation VertBufContainer::addPrimitiveAllocation(CommonPolygonVe
         GET_MODULE(VulkanManageCore).writeBuf(vertices_mem_pool, vertices.data(),
                                               sizeof(CommonVertStruct) * vertex_offset,
                                               sizeof(CommonVertStruct) * vertex_count);
+        (void)uploadMorphData(data, vertex_offset, false, morph_offset, morph_count);
     } catch (...) {
         releaseRange(free_indices, index_offset, index_count);
         if (vertex_allocated) releaseRange(free_vertices, vertex_offset, vertex_count);
         throw;
     }
     return {{index_count, index_offset, static_cast<int32_t>(vertex_offset), false},
-            vertex_count};
+            vertex_count, morph_offset, morph_count};
 }
 
 ModelGeometryAllocation VertBufContainer::addSkinnedPrimitiveAllocation(CommonPolygonVertData &&data) {
@@ -212,6 +335,8 @@ ModelGeometryAllocation VertBufContainer::addSkinnedPrimitiveAllocation(CommonPo
     const auto index_count = static_cast<uint32_t>(data.indices.size());
     const auto index_offset = allocateRange(free_indices, indices_offset, index_count);
     uint32_t vertex_offset = 0;
+    uint32_t morph_offset = 0;
+    uint32_t morph_count = 0;
     bool vertex_allocated = false;
     try {
         vertex_offset = allocateRange(free_skin_vertices, skin_vertices_offset, vertex_count);
@@ -240,6 +365,7 @@ ModelGeometryAllocation VertBufContainer::addSkinnedPrimitiveAllocation(CommonPo
         GET_MODULE(VulkanManageCore).writeBuf(skin_vertices_mem_pool, vertices.data(),
                                               sizeof(CommonSkinningVertStruct) * vertex_offset,
                                               sizeof(CommonSkinningVertStruct) * vertex_count);
+        (void)uploadMorphData(data, vertex_offset, true, morph_offset, morph_count);
     } catch (...) {
         releaseRange(free_indices, index_offset, index_count);
         if (vertex_allocated)
@@ -247,7 +373,7 @@ ModelGeometryAllocation VertBufContainer::addSkinnedPrimitiveAllocation(CommonPo
         throw;
     }
     return {{index_count, index_offset, static_cast<int32_t>(vertex_offset), true},
-            vertex_count};
+            vertex_count, morph_offset, morph_count};
 }
 
 ModelTemplate::PrimitiveRefInfo VertBufContainer::addPrimitiveEntry(CommonPolygonVertData &&data) {
@@ -267,6 +393,18 @@ void VertBufContainer::releaseGeometryNow(
             releaseRange(allocation.primitive.skinned ? free_skin_vertices : free_vertices,
                          static_cast<uint32_t>(allocation.primitive.vert_offset),
                          allocation.vertex_count);
+            if (allocation.morph_delta_count != 0) {
+                const std::vector<MorphVertexGpuMetadata> empty(allocation.vertex_count);
+                auto &metadata_buffer = allocation.primitive.skinned
+                                            ? morph_skinned_metadata_buffer
+                                            : morph_static_metadata_buffer;
+                GET_MODULE(VulkanManageCore).writeBuf(
+                    metadata_buffer, empty.data(),
+                    sizeof(MorphVertexGpuMetadata) * allocation.primitive.vert_offset,
+                    sizeof(MorphVertexGpuMetadata) * empty.size());
+                releaseRange(free_morph_deltas, allocation.morph_delta_offset,
+                             allocation.morph_delta_count);
+            }
         }
     } catch (...) {
         if (logger) LOG_ERROR(logger, "failed to return retired model geometry ranges");
@@ -315,6 +453,12 @@ size_t VertBufContainer::allocatedVertexCountForTesting(bool skinned) const {
     size_t free = 0;
     for (const auto range : ranges) free += range.size;
     return (skinned ? skin_vertices_offset : vertices_offset) - free;
+}
+
+size_t VertBufContainer::allocatedMorphDeltaCountForTesting() const {
+    size_t free = 0;
+    for (const auto range : free_morph_deltas) free += range.size;
+    return morph_delta_offset - free;
 }
 
 void VertBufContainer::bindVertexBuffer(vk::CommandBuffer cmd_buf, bool skinned) const {

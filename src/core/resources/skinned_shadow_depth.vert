@@ -4,6 +4,7 @@
 
 #include "pelican_frame.glsl"
 #include "pelican_skinning.glsl"
+#include "pelican_morph.glsl"
 
 layout(push_constant) uniform SceneData {
     layout(offset = 0) mat4 vpMatrix;
@@ -14,6 +15,9 @@ layout(location = 5) in ivec4 inJoints;
 layout(location = 6) in vec4 inWeights;
 
 void main() {
+    PelicanMorphedVertex morphed =
+        pelican_morph_vertex(inPos, vec3(0.0), vec3(0.0), gl_VertexIndex, false);
     mat4 model_matrix = pelicanObjects.objects[gl_BaseInstance].model;
-    gl_Position = drawInfo.vpMatrix * model_matrix * pelican_skin_matrix(inJoints, inWeights) * vec4(inPos, 1.0);
+    gl_Position = drawInfo.vpMatrix * model_matrix * pelican_skin_matrix(inJoints, inWeights) *
+                  vec4(morphed.position, 1.0);
 }

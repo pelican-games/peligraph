@@ -20,6 +20,8 @@ struct CommonPolygonVertData {
     std::vector<glm::vec4> color;
     std::vector<glm::i16vec4> joint;
     std::vector<glm::vec4> weight;
+    std::vector<MorphTargetVertexData> morph_targets;
+    std::uint32_t morph_weight_offset = 0;
 };
 
 struct CommonVertStruct {
@@ -55,9 +57,14 @@ DECLARE_MODULE(VertBufContainer) {
     BufferWrapper indices_mem_pool;
     BufferWrapper vertices_mem_pool;
     BufferWrapper skin_vertices_mem_pool;
+    BufferWrapper morph_static_metadata_buffer;
+    BufferWrapper morph_skinned_metadata_buffer;
+    BufferWrapper morph_delta_buffer;
+    uint32_t morph_delta_offset = 0;
     std::vector<FreeRange> free_indices;
     std::vector<FreeRange> free_vertices;
     std::vector<FreeRange> free_skin_vertices;
+    std::vector<FreeRange> free_morph_deltas;
     // Deferred range-return objects hold a weak guard rather than assuming a
     // particular module teardown order.
     std::shared_ptr<int> lifetime_token = std::make_shared<int>(0);
@@ -68,6 +75,9 @@ DECLARE_MODULE(VertBufContainer) {
                              uint32_t offset, uint32_t count);
     void ensureIndexCapacity(uint32_t required);
     void ensureVertexCapacity(uint32_t required, bool skinned);
+    std::vector<MorphTargetDeltaRange>
+    uploadMorphData(const CommonPolygonVertData &data, uint32_t vertex_offset,
+                    bool skinned, uint32_t &delta_offset, uint32_t &delta_count);
     void releaseGeometryNow(std::span<const ModelGeometryAllocation> allocations) noexcept;
 
   public:
@@ -80,6 +90,10 @@ DECLARE_MODULE(VertBufContainer) {
                               bool deferred) noexcept;
 
     void bindVertexBuffer(vk::CommandBuffer cmd_buf, bool skinned = false) const;
+    const BufferWrapper &morphMetadataBuffer(bool skinned) const {
+        return skinned ? morph_skinned_metadata_buffer : morph_static_metadata_buffer;
+    }
+    const BufferWrapper &morphDeltaBuffer() const { return morph_delta_buffer; }
 
     struct CommonVertDataDescription {
         std::vector<vk::VertexInputBindingDescription> binding_descs;
@@ -89,6 +103,7 @@ DECLARE_MODULE(VertBufContainer) {
     static CommonVertDataDescription getSkinnedDescription();
     size_t allocatedIndexCountForTesting() const;
     size_t allocatedVertexCountForTesting(bool skinned = false) const;
+    size_t allocatedMorphDeltaCountForTesting() const;
 };
 
 } // namespace Pelican
