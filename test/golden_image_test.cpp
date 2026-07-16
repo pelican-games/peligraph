@@ -2498,7 +2498,8 @@ nlohmann::json loadJsonFile(const std::filesystem::path &path) {
     return nlohmann::json::parse(file);
 }
 
-void writeJitterCaptureProject(const std::filesystem::path &root) {
+void writeJitterCaptureProject(const std::filesystem::path &root,
+                               const nlohmann::json &projection_jitter) {
     writeTextFile(root / "project.json", makeFeatureProjectJson().dump(2));
     writeTextFile(root / "scene.json", R"json({
       "schema":"pelican.scene","version":1,
@@ -2507,12 +2508,13 @@ void writeJitterCaptureProject(const std::filesystem::path &root) {
     writeTextFile(root / "assets.json", R"json({})json");
     writeTextFile(root / "ui" / "ui.json",
                   R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
-    writeTextFile(root / "features" / "jitter.json", R"json({
-      "schema":"pelican.render_feature",
-      "version":1,
-      "name":"jitter_capture",
-      "projection_jitter":{"pattern":"halton23","phases":8}
-    })json");
+    writeTextFile(root / "features" / "jitter.json",
+                  nlohmann::json{
+                      {"schema", "pelican.render_feature"},
+                      {"version", 1},
+                      {"name", "jitter_capture"},
+                      {"projection_jitter", projection_jitter},
+                  }.dump(2));
     writeTextFile(root / "shaders" / "fullscreen.vert", stemFullscreenVertexShader());
     writeTextFile(root / "shaders" / "jitter_capture.frag", R"glsl(
 #version 450
@@ -2540,10 +2542,11 @@ struct JitterCapture {
     nlohmann::json frame_plan;
 };
 
-JitterCapture captureJitterFrames(std::string_view run_name) {
+JitterCapture captureJitterFrames(std::string_view run_name,
+                                  const nlohmann::json &projection_jitter) {
     FastModuleContainer modules;
     const auto root = makeTempProjectDir("jitter_capture_" + std::string{run_name});
-    writeJitterCaptureProject(root);
+    writeJitterCaptureProject(root, projection_jitter);
     GET_MODULE(PathResolver).setup(root, false);
     GET_MODULE(ProjectSource).setProjectData(makeFeatureProjectJson().dump());
     auto &launch = GET_MODULE(EngineLaunchConfig);
@@ -2657,16 +2660,27 @@ float srgbToLinear(std::uint8_t encoded) {
 
 } // namespace
 
-TEST_CASE("jitter-only Halton captures match the normative table and repeat byte-exactly",
+TEST_CASE("jitter-only Halton and equivalent table captures match byte-exactly",
           "[golden][headless][projection-jitter]") {
     setupLogger();
     requireGoldenVulkanDevice();
 #if PELICAN_RUNTIME_SHADER_COMPILER
-    const auto first = captureJitterFrames("first");
-    const auto second = captureJitterFrames("second");
+    const auto halton_declaration =
+        nlohmann::json{{"pattern", "halton23"}, {"phases", 8}};
+    const auto table_declaration =
+        loadJsonFile(sourceRoot() / "test/fixtures/render_features/projection_jitter_table.json")
+            .at("halton23_equivalent");
+    const auto first = captureJitterFrames("first", halton_declaration);
+    const auto second = captureJitterFrames("second", halton_declaration);
+    const auto table = captureJitterFrames("table", table_declaration);
     REQUIRE(first.frames == second.frames);
+    REQUIRE(table.frames == first.frames);
     REQUIRE(first.frame_plan.at("projection_jitter") == nlohmann::json{
         {"provider", "jitter_capture"}, {"pattern", "halton23"}, {"phases", 8}});
+    auto expected_table_metadata = table_declaration;
+    expected_table_metadata["provider"] = "jitter_capture";
+    expected_table_metadata["phases"] = 8;
+    REQUIRE(table.frame_plan.at("projection_jitter") == expected_table_metadata);
 
     const std::vector<glm::vec2> expected{
         {0.0f, -1.0f / 6.0f}, {-1.0f / 4.0f, 1.0f / 6.0f},

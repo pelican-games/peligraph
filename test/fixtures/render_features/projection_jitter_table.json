@@ -1,0 +1,96 @@
+{
+  "halton23_equivalent": {
+    "pattern": "table",
+    "offsets_px": [
+      [0.0, -0.166666657],
+      [-0.25, 0.166666687],
+      [0.25, -0.388888896],
+      [-0.375, -0.0555555522],
+      [0.125, 0.277777791],
+      [-0.125, -0.277777791],
+      [0.375, 0.055555582],
+      [-0.4375, 0.388888896]
+    ]
+  },
+  "valid": [
+    {
+      "name": "implicit_phases",
+      "declaration": {
+        "pattern": "table",
+        "offsets_px": [[-0.5, 0.0], [0.499999, -0.25]]
+      },
+      "expected_phases": 2
+    },
+    {
+      "name": "explicit_matching_phases",
+      "declaration": {
+        "pattern": "table",
+        "phases": 3,
+        "offsets_px": [[0, 0], [0.25, -0.25], [-0.5, 0.499999]]
+      },
+      "expected_phases": 3
+    }
+  ],
+  "invalid": [
+    {
+      "name": "missing_offsets",
+      "declaration": {"pattern": "table"},
+      "error": "requires offsets_px array"
+    },
+    {
+      "name": "offsets_not_array",
+      "declaration": {"pattern": "table", "offsets_px": {}},
+      "error": "requires offsets_px array"
+    },
+    {
+      "name": "empty",
+      "declaration": {"pattern": "table", "offsets_px": []},
+      "error": "length must be in range 1..64"
+    },
+    {
+      "name": "pair_too_short",
+      "declaration": {"pattern": "table", "offsets_px": [[0.0]]},
+      "error": "must contain exactly two numbers"
+    },
+    {
+      "name": "non_numeric",
+      "declaration": {"pattern": "table", "offsets_px": [["0", 0.0]]},
+      "error": "must be a finite number"
+    },
+    {
+      "name": "null_non_finite",
+      "declaration": {"pattern": "table", "offsets_px": [[null, 0.0]]},
+      "error": "must be a finite number"
+    },
+    {
+      "name": "below_lower_bound",
+      "declaration": {"pattern": "table", "offsets_px": [[-0.500001, 0.0]]},
+      "error": "must be in range [-0.5, 0.5)"
+    },
+    {
+      "name": "at_exclusive_upper_bound",
+      "declaration": {"pattern": "table", "offsets_px": [[0.5, 0.0]]},
+      "error": "must be in range [-0.5, 0.5)"
+    },
+    {
+      "name": "phases_mismatch",
+      "declaration": {"pattern": "table", "phases": 2, "offsets_px": [[0.0, 0.0]]},
+      "error": "phases must match offsets_px length 1"
+    },
+    {
+      "name": "phases_not_integer",
+      "declaration": {"pattern": "table", "phases": 1.0, "offsets_px": [[0.0, 0.0]]},
+      "error": "requires unsigned integer phases"
+    },
+    {
+      "name": "unknown_key",
+      "declaration": {"pattern": "table", "offsets_px": [[0.0, 0.0]], "extra": true},
+      "error": "unknown key"
+    },
+    {
+      "name": "reserved_key",
+      "declaration": {"pattern": "table", "offsets_px": [[0.0, 0.0]], "render_scale": 1.0},
+      "error": "reserved key"
+    }
+  ]
+}

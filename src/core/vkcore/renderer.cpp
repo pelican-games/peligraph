@@ -838,11 +838,19 @@ std::optional<ProjectionJitterSettings> projectionJitterSettingsFor(
         return std::nullopt;
     }
     const auto &json = frame_graph->plan.composition_metadata.at("projection_jitter");
-    return ProjectionJitterSettings{
+    ProjectionJitterSettings settings{
         json.at("provider").get<std::string>(),
         json.at("pattern").get<std::string>(),
         json.at("phases").get<std::uint32_t>(),
     };
+    if (json.contains("offsets_px")) {
+        settings.offsets_px.reserve(json.at("offsets_px").size());
+        for (const auto &offset : json.at("offsets_px")) {
+            settings.offsets_px.emplace_back(offset.at(0).get<float>(),
+                                             offset.at(1).get<float>());
+        }
+    }
+    return settings;
 }
 
 } // namespace

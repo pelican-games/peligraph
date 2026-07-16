@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <glm/glm.hpp>
 #include <string>
+#include <vector>
 
 namespace Pelican {
 
@@ -10,6 +11,7 @@ struct ProjectionJitterSettings {
     std::string provider;
     std::string pattern = "halton23";
     std::uint32_t phases = 8;
+    std::vector<glm::vec2> offsets_px;
 };
 
 struct ProjectionJitterSample {

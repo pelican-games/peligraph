@@ -190,6 +190,47 @@ scalar parameter → shader define、history RT、FrameUBO の公開フィール
   shader ref を project 側の stem へ変更する。履歴参照は `taa_accum@history`、
   reset 判定は `temporal_reset_epoch != previous_temporal_reset_epoch` を維持する。
 
+## Temporal 系のユーザー管理枠
+
+Temporal effect は、品質やアルゴリズムのように今後も発展する部分を project 側で
+管理する。`engine://features/taa.json` と同梱 shader は出発点にすぎない。project の
+`features/` / `shaders/` へコピーした後は、次の部分を自由に改造してよい。
+
+| コピーして管理する部品 | 変更してよいこと |
+|---|---|
+| TAA feature JSON | pass の段数、RT と history 面、anchor、reads / writes |
+| resolve / composite shader | clamp、disocclusion、blend、responsive mask など品質の全部 |
+| scalar parameter | α / τ / ε の値、宣言、任意 parameter の追加 |
+| projection jitter 系列 | `pattern: "table"` の位相数と pixel offset の配置 |
+| feature 全体 | checkerboard、accumulation、upscaler など別方式への差し替え |
+
+ユーザー定義の jitter は feature JSON に数表を直接書く。`phases` は省略時に
+`offsets_px` の要素数から決まり、明記する場合は要素数と一致させる。
+
+```json
+{
+  "projection_jitter": {
+    "pattern": "table",
+    "offsets_px": [[0.0, -0.1667], [-0.25, 0.1667], [0.25, -0.3889]]
+  }
+}
+```
+
+一方、次の 6 項は安全境界を作る版付きのエンジン語彙であり、feature のコピーでは
+変更しない。
+
+1. jitter を scene raster だけへ適用し、culling / RPC / gameplay へ見せない位置
+2. projection jitter provider を同時に一つだけ許す排他
+3. FrameUBO が供給する jitter pair と temporal reset epoch pair の形式
+4. history RT の二面を frame ごとに flip するタイミング
+5. velocity 用の前 frame matrix / palette を保持する機構
+6. resize / `set_time` / camera discontinuity で reset epoch を増やす規則
+
+改造案がこの 6 項のどれかを変えないと実現できない場合は、feature 内の回避策や
+専用の隠し経路を足さない。それは公開語彙が不足している合図なので、必要な入力・
+適用点・安全条件を整理し、既存 schema と互換な additive vocabulary の追加 WP を
+依頼する。承認された語彙が入った後に feature 側の実験を続ける。
+
 - Determinism rule: wall clock / std::rand / random_device must not drive deterministic decisions.
 - ログは quill(stdout は rpc プロトコル専用)
 - 常駐プロセスをテストで起動したら必ず停止する(エージェント向け)
