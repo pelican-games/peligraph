@@ -1,0 +1,217 @@
+{
+  "outputs": [
+    {
+      "file": "model.glb",
+      "schema": "gltf",
+      "sha256": "ade2869ea56d030afcbb93e40e6cb2a97228896bf9ef46d002b32f275c4cb959"
+    },
+    {
+      "file": "scene.json",
+      "schema": "pelican.scene",
+      "sha256": "1b70f58ddcb6f04bd901595b3ea8ab95e372c157bb21a9ad288986d947772f0b",
+      "version": 1
+    }
+  ],
+  "schema": "pelican.import",
+  "source": {
+    "composition": {
+      "default_prim_path": "/YWorld",
+      "effective_population_mask": [
+        "/YWorld"
+      ],
+      "requested_variant_overrides": [],
+      "variant_selections": []
+    },
+    "dependency_closure": [
+      {
+        "kind": "layer",
+        "resolved_uri": "file:///C:/pelican-import-tools/spike/usd/corpus/root_yup_m.usda",
+        "sha256": "9d4efc9f52080e228bd2055c524be500cef74781a0ea6d235b8732352e22584f",
+        "size": 954
+      }
+    ],
+    "determinism": {
+      "first": {
+        "gltf": "ade2869ea56d030afcbb93e40e6cb2a97228896bf9ef46d002b32f275c4cb959",
+        "pelican.scene": "1b70f58ddcb6f04bd901595b3ea8ab95e372c157bb21a9ad288986d947772f0b"
+      },
+      "second": {
+        "gltf": "ade2869ea56d030afcbb93e40e6cb2a97228896bf9ef46d002b32f275c4cb959",
+        "pelican.scene": "1b70f58ddcb6f04bd901595b3ea8ab95e372c157bb21a9ad288986d947772f0b"
+      },
+      "verified": true
+    },
+    "diagnostics": [],
+    "file": "C:/pelican-import-tools/spike/usd/corpus/root_yup_m.usda",
+    "geometry_mapping": [
+      {
+        "geometry": {
+          "face_count": 1,
+          "hole_face_indices": [],
+          "normal_interpolation": "generated_flat",
+          "normal_matrix_basis": [
+            [
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "orientation": "rightHanded",
+          "point_count": 3,
+          "prim_path": "/YWorld/YUpMeterMesh",
+          "primvars": [],
+          "source_determinant": 1.0,
+          "source_local_to_world_matrix": [
+            [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "subdivision_policy": "polygon_cage",
+          "subdivision_scheme": "none",
+          "subsets": [],
+          "winding_reversed": false
+        },
+        "glb_mesh_index": 0,
+        "glb_mesh_name": "YWorld_YUpMeterMesh",
+        "prim_path": "/YWorld/YUpMeterMesh",
+        "primitive_mapping": [
+          {
+            "glb_mesh_index": 0,
+            "glb_primitive_index": 0,
+            "prim_path": "/YWorld/YUpMeterMesh",
+            "source_material_path": "/YWorld/Preview",
+            "subset_path": null
+          }
+        ]
+      }
+    ],
+    "material_policy": "default_standard",
+    "normalization": {
+      "authored_meters_per_unit": true,
+      "authored_up_axis": true,
+      "basis_scale_matrix": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "matrix_layout": "row-major",
+      "negative_determinant_policy": "reverse triangle winding and tangent handedness; inverse-transpose normals",
+      "normal_transform": "inverse-transpose source local-to-world, then source-up to Y-up basis, normalize",
+      "precision": "IEEE-754 binary32",
+      "rounding": "round-to-nearest-ties-to-even via little-endian struct f32",
+      "source_meters_per_unit": 1.0,
+      "source_up_axis": "Y",
+      "target_meters_per_unit": 1.0,
+      "target_up_axis": "Y",
+      "triangulation": "deterministic projected ear-clipping v1",
+      "xform_policy": "vertex_bake"
+    },
+    "openpbr": {
+      "interpreted": false,
+      "reason": "U-USD0c boundary",
+      "version": null
+    },
+    "recipe": "usd",
+    "recipe_arguments": {
+      "default_prim_policy": "use",
+      "localization": "record",
+      "payload_policy": "all",
+      "population_mask": [],
+      "resolver_search_paths": [],
+      "usdz_limits": {
+        "max_compression_ratio": 1000.0,
+        "max_entries": 10000,
+        "max_entry_bytes": 268435456,
+        "max_total_bytes": 1073741824
+      },
+      "variants": []
+    },
+    "resolver_environment": {
+      "PXR_AR_DEFAULT_SEARCH_PATH": null,
+      "PXR_MTLX_PLUGIN_SEARCH_PATHS": null,
+      "PXR_MTLX_STDLIB_SEARCH_PATHS": null,
+      "PXR_PLUGINPATH_NAME": null
+    },
+    "sha256": "9d4efc9f52080e228bd2055c524be500cef74781a0ea6d235b8732352e22584f",
+    "toolchain": [
+      {
+        "artifact": "production source tree (src/pelican_import_tools/*.py)",
+        "name": "pelican-import-tools",
+        "sha256": "abda05f1eb4ed8171de7e9e1cad3110d430ee7eb89203e571f25847168fcc8a9",
+        "version": "0.1.0"
+      },
+      {
+        "artifact": "C:/pelican-import-tools/.venv/Scripts/python.exe",
+        "name": "CPython",
+        "sha256": "2e5b2d85a4a78b887cbf613bea5ec53de2e8e4093888c69ee406eff4f0623851",
+        "version": "3.13.13"
+      },
+      {
+        "artifact": "usd_core-26.5-cp313-none-win_amd64.whl",
+        "license": "LicenseRef-TOST-1.0 plus bundled third-party notices",
+        "name": "usd-core",
+        "sha256": "b077ea37dfeb15ca6b24ca33b65c2fe9b1656138e1fda74e4eae9793a149a7d5",
+        "version": "26.5"
+      }
+    ],
+    "usdz_entries": [],
+    "usdz_root_layer": null
+  },
+  "tool": {
+    "name": "pelican-import-tools",
+    "version": "0.1.0"
+  },
+  "version": 1
+}

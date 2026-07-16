@@ -1228,6 +1228,42 @@ void writeSkeletalProject(const std::filesystem::path &root) {
     TestSkeletalFixture::writeGlb(root / "character.glb");
 }
 
+void writeUsdStaticGeometryProject(const std::filesystem::path &root) {
+    auto project = makeVatProjectJson();
+    project["name"] = "U-USD0b static geometry golden";
+    project["basic_config"]["scene_data_json"] = "scene.json";
+    project["basic_config"]["asset_data_json"] = "assets.json";
+    project["basic_config"]["ui_config_json"] = "ui/ui.json";
+    project["basic_config"]["rendering_config_json"] = "passes/main.json";
+    project["basic_config"]["default_rendering_pass"] = "main_render";
+    writeTextFile(root / "project.json", project.dump(2));
+
+    const auto delivery = sourceRoot() / "test" / "fixtures" / "usd0b" / "root_yup_m_usda";
+    std::ifstream scene_file{delivery / "scene.json", std::ios::binary};
+    if (!scene_file) throw std::runtime_error("failed to open U-USD0b scene fixture");
+    auto scene = nlohmann::json::parse(scene_file);
+    scene["scenes"]["default_scene"]["objects"].push_back({
+        {"name", "UsdKeyLight"},
+        {"components",
+         nlohmann::json::array({nlohmann::json{
+             {"name", "light"},
+             {"type", "directional"},
+             {"direction", {0.0, 0.0, -1.0}},
+             {"intensity", 3.0},
+             {"color", {1.0, 0.95, 0.85}},
+         }})},
+    });
+    writeTextFile(root / "scene.json", scene.dump(2));
+    writeTextFile(root / "assets.json", R"json({"models":[]})json");
+    writeTextFile(root / "ui" / "ui.json", R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
+    std::filesystem::create_directories(root / "passes");
+    std::filesystem::copy_file(sourceRoot() / "projects/example/passes/main_rendering_config.json",
+                               root / "passes/main.json",
+                               std::filesystem::copy_options::overwrite_existing);
+    std::filesystem::copy_file(delivery / "model.glb", root / "model.glb",
+                               std::filesystem::copy_options::overwrite_existing);
+}
+
 void writeDebugDrawProject(const std::filesystem::path &root) {
     writeTextFile(root / "project.json", makeFeatureProjectJson().dump(2));
     writeTextFile(root / "scene.json", R"json({
@@ -2116,6 +2152,23 @@ void renderSkeletalToonFrame(RenderTarget &render_target) {
 #endif
 }
 
+void renderUsdStaticGeometryFrame(RenderTarget &render_target) {
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    GET_MODULE(SceneLoader).load("default_scene");
+    GET_MODULE(ECSCore).update();
+    GET_MODULE(ECSCore).update();
+
+    auto &camera = GET_MODULE(Camera);
+    const glm::vec3 position{0.5f, 0.5f, 2.0f};
+    const glm::vec3 target{0.5f, 0.5f, 0.0f};
+    camera.setPos(position);
+    camera.setDir(glm::normalize(target - position));
+    camera.setUp({0.0f, 1.0f, 0.0f});
+    GET_MODULE(Renderer).render();
+    GET_MODULE(VulkanManageCore).waitIdle();
+    (void)render_target;
+}
+
 void renderFeatureFrame(RenderTarget &render_target) {
     GET_MODULE(Renderer).render();
     GET_MODULE(VulkanManageCore).waitIdle();
@@ -2387,6 +2440,17 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         project["basic_config"]["rendering_config_json"] = "passes/main.json";
         project["basic_config"]["default_rendering_pass"] = "main_render";
         GET_MODULE(ProjectSource).setProjectData(project.dump());
+    } else if (golden_case.mode == "usd0b_static_geometry") {
+        writeUsdStaticGeometryProject(temp_dir);
+        GET_MODULE(PathResolver).setup(temp_dir, false);
+        auto project = makeVatProjectJson();
+        project["name"] = "U-USD0b static geometry golden";
+        project["basic_config"]["scene_data_json"] = "scene.json";
+        project["basic_config"]["asset_data_json"] = "assets.json";
+        project["basic_config"]["ui_config_json"] = "ui/ui.json";
+        project["basic_config"]["rendering_config_json"] = "passes/main.json";
+        project["basic_config"]["default_rendering_pass"] = "main_render";
+        GET_MODULE(ProjectSource).setProjectData(project.dump());
     } else if (golden_case.mode == "feature_compose") {
         writeFeatureProject(temp_dir);
         GET_MODULE(PathResolver).setup(temp_dir, false);
@@ -2495,6 +2559,8 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         renderVatPlaybackFrame(render_target, temp_dir);
     } else if (golden_case.mode == "skeletal_toon") {
         renderSkeletalToonFrame(render_target);
+    } else if (golden_case.mode == "usd0b_static_geometry") {
+        renderUsdStaticGeometryFrame(render_target);
     } else if (golden_case.mode == "feature_compose") {
         renderFeatureFrame(render_target);
     } else if (golden_case.mode == "temporal_accumulation") {
@@ -2868,9 +2934,9 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     requireGoldenVulkanDevice();
     const auto cases = discoverGoldenCases();
 #if PELICAN_WITH_VAT
-    REQUIRE(cases.size() == 41);
+    REQUIRE(cases.size() == 42);
 #else
-    REQUIRE(cases.size() == 40);
+    REQUIRE(cases.size() == 41);
 #endif
 
     for (const auto &golden_case : cases) {
