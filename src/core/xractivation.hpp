@@ -18,6 +18,7 @@ enum class XrDiscoveryAvailability {
 
 struct XrDiscoveryResult {
     XrDiscoveryAvailability availability = XrDiscoveryAvailability::hook_unavailable;
+    std::string detail;
 };
 
 struct XrDiscoveryHook {
@@ -28,6 +29,7 @@ struct XrDiscoveryHook {
 enum class XrForcedOffDriver { none, headless, rpc, golden, replay };
 
 struct XrActivationDecision {
+    XrMode requested_mode = XrMode::off;
     XrMode resolved_mode = XrMode::off;
     bool active = false;
     bool discovery_attempted = false;
@@ -87,6 +89,7 @@ inline std::string xrDiscoveryUnavailableName(XrDiscoveryAvailability availabili
 inline XrActivationDecision resolveXrActivation(const EngineLaunchConfig &config, bool build_has_openxr,
                                                 XrDiscoveryHook discovery = {}) {
     XrActivationDecision decision;
+    decision.requested_mode = config.xr_mode;
     if (config.xr_mode == XrMode::off) {
         return decision;
     }
@@ -122,12 +125,33 @@ inline XrActivationDecision resolveXrActivation(const EngineLaunchConfig &config
         return decision;
     }
 
-    const auto unavailable = xrDiscoveryUnavailableName(discovery_result.availability);
+    auto unavailable = xrDiscoveryUnavailableName(discovery_result.availability);
+    if (!discovery_result.detail.empty()) {
+        unavailable += ": " + discovery_result.detail;
+    }
     if (config.xr_mode == XrMode::on) {
         throw std::runtime_error("--xr on: " + unavailable);
     }
     decision.info = "--xr auto: " + unavailable + "; continuing in flat mode";
     return decision;
+}
+
+inline std::string resolveXrBootstrapFailure(EngineLaunchConfig &config, const std::string &detail) {
+    const auto unavailable = std::string{"OpenXR graphics binding unavailable"} +
+                             (detail.empty() ? std::string{} : ": " + detail);
+    if (!config.xr_active) {
+        throw std::logic_error("OpenXR bootstrap failure was reported while XR was inactive");
+    }
+    if (config.xr_requested_mode == XrMode::on) {
+        throw std::runtime_error("--xr on: " + unavailable);
+    }
+    if (config.xr_requested_mode != XrMode::auto_mode) {
+        throw std::logic_error("OpenXR bootstrap fallback requires an auto request");
+    }
+
+    config.xr_mode = XrMode::off;
+    config.xr_active = false;
+    return "--xr auto: " + unavailable + "; continuing in flat mode";
 }
 
 } // namespace Pelican

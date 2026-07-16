@@ -1,12 +1,19 @@
 #include "core.hpp"
+#include "bootstrap.hpp"
 #include "../startup.hpp"
 #include "../config.hpp"
 #include "../launchconfig.hpp"
 #include "../log.hpp"
 #include "../os/window.hpp"
+#if PELICAN_WITH_OPENXR
+#include "../openxr/openxrdiscovery.hpp"
+#endif
+#include <algorithm>
+#include <array>
 #include <cstring>
 #include <optional>
 #include <set>
+#include <string>
 #include <vector>
 
 namespace Pelican {
@@ -51,6 +58,74 @@ static vk::UniqueInstance vulkanCreateInstance(bool headless) {
 
     return vk::createInstanceUnique(create_info);
 }
+
+#if PELICAN_WITH_OPENXR
+static std::vector<std::string> supportedInstanceExtensions() {
+    std::vector<std::string> result;
+    for (const auto &extension : vk::enumerateInstanceExtensionProperties()) {
+        result.emplace_back(extension.extensionName.data());
+    }
+    return result;
+}
+
+static std::vector<std::string> requiredXrInstanceExtensions(bool headless) {
+    std::vector<std::string> result;
+    if (!headless) {
+        const auto window_extensions = GET_MODULE(Window).getRequiredVulkanInstanceExts();
+        appendUniqueVulkanExtensions(result, window_extensions);
+    }
+#ifdef __APPLE__
+    constexpr std::array portability_extensions{VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME};
+    appendUniqueVulkanExtensions(result, portability_extensions);
+#endif
+    return result;
+}
+
+static vk::UniqueInstance xrCreateVulkanInstance(bool headless) {
+    LOG_INFO(logger, "initializing OpenXR-selected vulkan instance...");
+
+    vk::ApplicationInfo app_info;
+    app_info.pApplicationName = "Pelican App";
+    app_info.applicationVersion = 0;
+    app_info.pEngineName = engineName;
+    app_info.engineVersion = engineVersion;
+    app_info.apiVersion = vulkan_api_version;
+
+    std::vector<const char *> layers;
+#ifdef _DEBUG
+    layers.push_back("VK_LAYER_KHRONOS_validation");
+#endif
+
+    const auto required_extensions = requiredXrInstanceExtensions(headless);
+    const auto supported_extensions = supportedInstanceExtensions();
+    if (const auto missing =
+            firstMissingVulkanExtension(required_extensions, supported_extensions)) {
+        throw OpenXr::VulkanBootstrapError("required Vulkan instance extension missing: " +
+                                           *missing);
+    }
+    const auto extension_names = vulkanExtensionNamePointers(required_extensions);
+
+    vk::InstanceCreateInfo create_info;
+#ifdef _DEBUG
+    const vk::ValidationFeatureEnableEXT synchronization_validation =
+        vk::ValidationFeatureEnableEXT::eSynchronizationValidation;
+    vk::ValidationFeaturesEXT validation_features;
+    validation_features.setEnabledValidationFeatures(synchronization_validation);
+    create_info.pNext = &validation_features;
+#endif
+#ifdef __APPLE__
+    create_info.flags = vk::InstanceCreateFlagBits::eEnumeratePortabilityKHR;
+#endif
+    create_info.pApplicationInfo = &app_info;
+    create_info.setPEnabledExtensionNames(extension_names);
+    create_info.setPEnabledLayerNames(layers);
+
+    const auto raw_instance = OpenXr::createVulkanInstance(
+        vulkan_api_version, &vkGetInstanceProcAddr,
+        *reinterpret_cast<const VkInstanceCreateInfo *>(&create_info));
+    return vk::UniqueInstance{vk::Instance{raw_instance}};
+}
+#endif
 
 static std::optional<QueueSet> pickQueues(const vk::PhysicalDevice &phys_device,
                                           std::vector<vk::QueueFamilyProperties> queue_families,
@@ -174,24 +249,36 @@ static vk::PhysicalDevice pickPhysicalDevice(vk::Instance instance, vk::SurfaceK
     return phys_devices[choice_index];
 }
 
+static std::vector<std::string> supportedDeviceExtensions(vk::PhysicalDevice physical_device) {
+    std::vector<std::string> result;
+    for (const auto &extension : physical_device.enumerateDeviceExtensionProperties()) {
+        result.emplace_back(extension.extensionName.data());
+    }
+    return result;
+}
+
+static std::vector<std::string> requiredDeviceExtensions(bool headless) {
+    std::vector<std::string> result;
+    if (!headless) result.emplace_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    return result;
+}
+
 static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, const QueueSet &queues_info,
-                                            bool headless) {
+                                            bool headless, bool use_openxr = false) {
     LOG_INFO(logger, "initializing vulkan device...");
 
-    std::vector<const char *> exts;
-    if (!headless) {
-        exts.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
-    }
+    const auto required_extensions = requiredDeviceExtensions(headless);
+    const auto exts = vulkanExtensionNamePointers(required_extensions);
 
     vk::DeviceQueueCreateInfo graphics_queue_info, presentation_queue_info, compute_queue_info;
 
     std::vector<vk::DeviceQueueCreateInfo> queues;
+    const float queue_priority = 1.0f;
     {
         std::set<uint32_t> queue_indices = {queues_info.graphic_queue, queues_info.presentation_queue,
                                             queues_info.compute_queue};
         for (const auto index : queue_indices) {
             vk::DeviceQueueCreateInfo queue_create_info;
-            float queue_priority = 1.0f;
             queue_create_info.queueFamilyIndex = index;
             queue_create_info.setQueuePriorities(queue_priority);
             queues.push_back(queue_create_info);
@@ -217,6 +304,23 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
         vk::PhysicalDeviceDynamicRenderingFeatures{VK_TRUE}, // necessary for dynamic rendering
     };
 
+#if PELICAN_WITH_OPENXR
+    if (use_openxr) {
+        const auto supported_extensions = supportedDeviceExtensions(phys_device);
+        if (const auto missing =
+                firstMissingVulkanExtension(required_extensions, supported_extensions)) {
+            throw OpenXr::VulkanBootstrapError("required Vulkan device extension missing: " +
+                                               *missing);
+        }
+        const auto &chained_create_info = create_info_chain.get<vk::DeviceCreateInfo>();
+        const auto raw_device = OpenXr::createVulkanDevice(
+            &vkGetInstanceProcAddr, static_cast<VkPhysicalDevice>(phys_device),
+            *reinterpret_cast<const VkDeviceCreateInfo *>(&chained_create_info));
+        return vk::UniqueDevice{vk::Device{raw_device}};
+    }
+#else
+    (void)use_openxr;
+#endif
     return phys_device.createDeviceUnique(create_info_chain.get<vk::DeviceCreateInfo>());
 }
 
@@ -239,20 +343,84 @@ static vma::UniqueAllocator createAllocator(vk::PhysicalDevice phys_device, vk::
     return vma::createAllocatorUnique(create_info);
 }
 
+struct VulkanBootstrapState {
+    vk::UniqueInstance instance;
+    vk::UniqueSurfaceKHR surface;
+    vk::PhysicalDevice physical_device;
+    QueueSet queues{};
+    vk::UniqueDevice device;
+};
+
+static VulkanBootstrapState bootstrapFlatVulkan(bool headless) {
+    VulkanBootstrapState result;
+    result.instance = vulkanCreateInstance(headless);
+    if (!headless) result.surface = GET_MODULE(Window).getVulkanSurface(result.instance.get());
+    result.physical_device = pickPhysicalDevice(result.instance.get(), result.surface.get(), headless);
+    const auto queues = pickQueues(result.physical_device,
+                                   result.physical_device.getQueueFamilyProperties(),
+                                   result.surface.get(), headless);
+    if (!queues) throw std::runtime_error("No suitable Vulkan queue families found");
+    result.queues = *queues;
+    result.device = createLogicalDevice(result.physical_device, result.queues, headless);
+    return result;
+}
+
+#if PELICAN_WITH_OPENXR
+static VulkanBootstrapState bootstrapXrVulkan(bool headless) {
+    VulkanBootstrapState result;
+    result.instance = xrCreateVulkanInstance(headless);
+    if (!headless) result.surface = GET_MODULE(Window).getVulkanSurface(result.instance.get());
+
+    const auto raw_physical_device =
+        OpenXr::getVulkanGraphicsDevice(static_cast<VkInstance>(result.instance.get()));
+    result.physical_device = vk::PhysicalDevice{raw_physical_device};
+    const auto queues = pickQueues(result.physical_device,
+                                   result.physical_device.getQueueFamilyProperties(),
+                                   result.surface.get(), headless);
+    if (!queues) {
+        throw OpenXr::VulkanBootstrapError(
+            "runtime-selected physical device has no engine-compatible queue families");
+    }
+    if (!result.physical_device.getFeatures().multiDrawIndirect) {
+        throw OpenXr::VulkanBootstrapError(
+            "runtime-selected physical device lacks multiDrawIndirect");
+    }
+    result.queues = *queues;
+
+    const auto properties = result.physical_device.getProperties();
+    LOG_INFO(logger, "OpenXR runtime selected Vulkan physical device: {} (vendor {}, device {})",
+             properties.deviceName.data(), properties.vendorID, properties.deviceID);
+    result.device = createLogicalDevice(result.physical_device, result.queues, headless, true);
+    return result;
+}
+#endif
+
 VulkanManageCore::VulkanManageCore() {
     StartupPhaseTimer startup_timer{&StartupMetrics::addVulkan};
-    const bool headless = GET_MODULE(EngineLaunchConfig).headless;
-    instance = vulkanCreateInstance(headless);
-    if (!headless) {
-        surface = GET_MODULE(Window).getVulkanSurface(instance.get());
+    auto &launch_config = GET_MODULE(EngineLaunchConfig);
+    const bool headless = launch_config.headless;
+    VulkanBootstrapState bootstrap;
+#if PELICAN_WITH_OPENXR
+    if (launch_config.xr_active) {
+        try {
+            bootstrap = bootstrapXrVulkan(headless);
+        } catch (const OpenXr::VulkanBootstrapError &error) {
+            OpenXr::abandonDiscovery();
+            const auto info = resolveXrBootstrapFailure(launch_config, error.what());
+            LOG_INFO(logger, "{}", info);
+            bootstrap = bootstrapFlatVulkan(headless);
+        }
+    } else {
+        bootstrap = bootstrapFlatVulkan(headless);
     }
-    phys_device = pickPhysicalDevice(instance.get(), surface.get(), headless);
-    const auto picked_queues = pickQueues(phys_device, phys_device.getQueueFamilyProperties(), surface.get(), headless);
-    if (!picked_queues) {
-        throw std::runtime_error("No suitable Vulkan queue families found");
-    }
-    queue_set = *picked_queues;
-    device = createLogicalDevice(phys_device, queue_set, headless);
+#else
+    bootstrap = bootstrapFlatVulkan(headless);
+#endif
+    instance = std::move(bootstrap.instance);
+    surface = std::move(bootstrap.surface);
+    phys_device = bootstrap.physical_device;
+    queue_set = bootstrap.queues;
+    device = std::move(bootstrap.device);
     graphic_queue = device->getQueue(queue_set.graphic_queue, 0);
     presen_queue = device->getQueue(queue_set.presentation_queue, 0);
     compute_queue = device->getQueue(queue_set.compute_queue, 0);

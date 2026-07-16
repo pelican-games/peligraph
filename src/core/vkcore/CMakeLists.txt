@@ -1,4 +1,5 @@
 target_sources(pelican_core PRIVATE
+    bootstrap.cpp
     core.cpp
     deletionqueue.cpp
     util.cpp
