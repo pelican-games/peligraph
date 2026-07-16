@@ -3068,6 +3068,34 @@ vertex shader 群(material/shadow/velocity)・fixture/golden。
    fixture + image golden + 既存全テスト + golden SKIP 0
    (件数 41/40 から追加分更新)+ player 8 秒
 
+### WP124: U-USD0c — USD マテリアル/テクスチャ/binding 変換
+
+参照: **`design_usd_openpbr.md` v2.1 §2-3 + §3 共通 contract が正**。
+基盤 = WP117(openpbr surface + 写像表)・WP119(usd レシピ +
+prim→primitive mapping)・WP116(binding ABI)— 全て済。
+**WP118 の縮退確定を引き継ぐ: UsdMtlx 非同梱 → MaterialX は
+authored 値のみ**(external .mtlx graph は reject + WARN)。
+依存: WP117/119(済)。見積: 大。
+排他: import-tools の usd レシピ拡張 + pelican2 は「manifest への
+`pelican.material` schema 受理(additive・fixture 付き)+ ロード
+fixture/golden」のみ。
+
+1. UsdPreviewSurface → WP117 写像表 → `pelican.material`(values +
+   WP116 texture override)。MaterialX OpenPBR は authored 値のみ
+   (allowlist — 未対応 node/connection は WP117 の WARN 規範)
+2. per-primitive/subset binding を WP119 の mapping に接続し、
+   WP116 の binding document として出力
+3. texture: PNG 抽出(KTX2 連鎖は opt-in)・colorspace 記録・
+   texture transform(supported subset)・UDIM は v1 reject + WARN
+4. **engine 側小変更**: importmanifest の output schema 表に
+   `pelican.material`(version 1)を additive 追加 + 正負 fixture
+   (再レビュー §2.6 の予告どおり)
+5. gate: **生成した glb + scene + pelican.material をエンジンが実際に
+   OpenPBR で描く golden**(coat 付きサンプルを corpus に追加)+
+   決定性 SHA-256 二回一致 + WARN の machine-testable fixture
+6. 受け入れ = import-tools pytest + pelican2 全テスト + golden SKIP 0
+   (件数 42/41 から追加分更新)+ player 8 秒
+
 ### WP122: M-INST0 — per-instance material override ABI(予約)
 
 WP120 レポートの `MaterialInstanceOverrideBlock`(instance ごとの
