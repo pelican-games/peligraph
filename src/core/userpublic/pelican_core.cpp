@@ -54,6 +54,7 @@ bool PelicanCore::run() {
 #else
         const auto xr_decision = resolveXrActivation(launch_config, false);
 #endif
+        launch_config.xr_requested_mode = xr_decision.requested_mode;
         launch_config.xr_mode = xr_decision.resolved_mode;
         launch_config.xr_active = xr_decision.active;
         if (!xr_decision.info.empty()) {

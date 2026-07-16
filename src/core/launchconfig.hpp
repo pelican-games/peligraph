@@ -28,6 +28,10 @@ DECLARE_MODULE(EngineLaunchConfig) {
     bool input_replay = false;
     bool golden_mode = false;
     XrMode xr_mode = XrMode::off;
+    // Keep the command-line intent after activation normalizes xr_mode.  XR1a
+    // needs this once, before GPU resources exist, to distinguish auto
+    // fallback from an explicit-on hard error during Vulkan bootstrap.
+    XrMode xr_requested_mode = XrMode::off;
     bool xr_active = false;
     vk::Extent2D headless_extent{1280, 720};
     uint32_t headless_frames = 3;
