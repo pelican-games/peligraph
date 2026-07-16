@@ -2719,6 +2719,43 @@ reset、1000 回 reload 後も資源量が増加しないこと**。
    2 actor 目の GPU stage failure rollback、in-flight material slot、1000 reload。
    詳細は `docs/design_reviews/2026-07-16_wp110_report.md`
 
+### WP111: VRM-S0 — `.vrm` semantic decoder(保持と検証のみ)
+
+参照: **`design_animation_graph.md` v2.1 §4 が正**。受入条件 = 敵対レビュー
+`docs/design_reviews/2026-07-12_anim_v2_hotreload_review_codex.md` **§4.5 の
+VRM-S0 行を逐語で**(gate: optional/unknown/duplicate bone・node index・
+round-trip dump fixture)。依存: WP38(済)。見積: 中〜大。
+排他: VRM semantic の decode/storage 新設(`src/core/model/` 配下)+
+devcli dump コマンド。**renderer・material・per-instance 適用は一切
+実装しない(VRM-S1 の仕事)**。
+
+**確定判断(2026-07-16)**: ランタイムがデコードするのは **VRM 1.0
+(`VRMC_vrm` 拡張)のみ** — 「ランタイムは v1 だけを読む」規則の適用。
+VRM 0.x(example の AliciaSolid.vrm 含む)は従来どおり素の GLB として
+ロードし、「VRM 0.x semantic は未対応(変換は import-tools 予定)」の
+INFO 1 行のみ。0.x の互換受理コードを足すことは §0 違反とする。
+
+1. **decode/storage**: `VRMC_vrm` の specVersion 検証(未対応 version は
+   名前入り WARN + semantic なしで続行 — モデル自体は描ける)、
+   humanoid bone map(必須骨の欠落検出・optional 骨・**未知骨名は保持
+   したまま WARN**・重複 bone→node は エラー)、expressions
+   (preset/custom・morphTargetBinds・materialColorBinds/
+   textureTransformBinds は**参照の保持のみ**)、lookAt(type・
+   rangeMap)、firstPerson・constraint(`VRMC_node_constraint`)は
+   **metadata として保持のみ**
+2. **storage の形**: `SkeletalModelData` と並ぶ `VrmSemanticData`
+   (immutable・shared_ptr)。node index は glTF node 空間で保持し、
+   rig 側(AnimationRig)への写像 API を用意(A1 の node 名保存を活用)
+3. **devcli `vrm dump`**: semantic を canonical JSON へ dump(键順固定・
+   決定的)。round-trip fixture の正本
+4. fixture: 決定的な最小 VRM 1.0 バイナリをテスト内ライタで生成
+   (KTX2 の流儀)— 正常系 / optional 骨欠落 / 未知骨名 / 重複 bone /
+   specVersion 未対応 / VRMC_vrm なし(素の GLB)/ VRM 0.x(AliciaSolid
+   実物 — semantic なし + INFO を確認)
+5. 受け入れ = round-trip dump fixture + 上記全 fixture + 既存全テスト +
+   golden 全維持(SKIP 0・件数 29/28)+ player 8 秒(example —
+   AliciaSolid の挙動不変)
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの
