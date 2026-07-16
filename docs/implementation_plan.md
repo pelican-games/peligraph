@@ -3096,11 +3096,32 @@ fixture/golden」のみ。
 6. 受け入れ = import-tools pytest + pelican2 全テスト + golden SKIP 0
    (件数 42/41 から追加分更新)+ player 8 秒
 
-### WP122: M-INST0 — per-instance material override ABI(予約)
+### WP122: M-INST0 — per-instance material override ABI
 
-WP120 レポートの `MaterialInstanceOverrideBlock`(instance ごとの
-color/UV transform 値 + generation — material template 不変・WP116 の
-per-material ABI と混ぜない)。WP121 着地後に詳細登録。
+参照: **`docs/design_reviews/2026-07-17_wp120_report.md` の
+`MaterialInstanceOverrideBlock` 語彙が仕様の正** + 停止質問③への
+確定判断(独立 WP・material template 不変・WP116 の per-material ABI と
+混ぜない)。VRM 非依存の汎用機構(per-instance tint 等にも使う)。
+依存: WP116(済)・WP121(済 — instance frame の N/N-1 流儀)。
+見積: 大。排他: materialcontainer/polygoninstancecontainer の
+instance override 面 + シェーダの override 読み + fixture/golden。
+
+1. **`MaterialInstanceOverrideBlock`**: instance ごとの
+   color factor / UV transform 値 + generation。material template・
+   共有 SSBO は**不変**(instance 側の別 storage — palette と同じ
+   instance identity 流儀)
+2. 対象パラメータ(v1): base color factor・emissive factor・
+   UV offset/scale/rotation(WP117 openpbr と WP58 standard の両
+   surface が読めるよう、FrameUBO/pelican_sets の規約に沿った
+   instance block として供給 — 実装形はシェーダ側 accessor 経由で
+   surface 非依存に)
+3. **N/N-1**: expression 由来の毎フレーム更新に耐える current/previous
+   (§1-5 と同型 — velocity には関与しないが reload/reset 規則は共有)
+4. override なし instance のコスト = ゼロ(既存 golden byte 不変)
+5. fixture: 二体別 override・material template 共有の不変証明・
+   reload reset・1000 回更新 leak なし・override golden(tint 二体)
+6. 受け入れ = 上記全 green + 既存全テスト + golden SKIP 0
+   (件数 43/42 から追加分更新)+ player 8 秒
 
 ### WP123: VRM-S1b — per-instance expression sink(予約)
 
