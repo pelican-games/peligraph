@@ -66,6 +66,7 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <picosha2.h>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -130,35 +131,50 @@ struct CompareResult {
 std::filesystem::path sourceRoot() { return std::filesystem::path{PELICAN_TEST_SOURCE_DIR}; }
 std::filesystem::path binaryRoot() { return std::filesystem::path{PELICAN_TEST_BINARY_DIR}; }
 
-std::vector<GoldenCase> discoverGoldenCases() {
+std::vector<GoldenCase> loadGoldenInventoryCases() {
     const auto root = sourceRoot() / "test/golden";
+    const auto inventory_path = root / "inventory.json";
+    std::ifstream inventory_file{inventory_path};
+    if (!inventory_file) {
+        throw std::runtime_error("failed to open golden inventory: " +
+                                 inventory_path.string());
+    }
+    const auto inventory = nlohmann::json::parse(inventory_file);
     std::vector<GoldenCase> cases;
-    for (const auto &entry : std::filesystem::directory_iterator(root)) {
-        if (!entry.is_directory()) {
+    for (const auto &inventory_case : inventory.at("cases")) {
+        const auto name = inventory_case.at("name").get<std::string>();
+        const auto vat_condition = inventory_case.at("vat").get<std::string>();
+        if (vat_condition != "on_and_off" && vat_condition != "on_only") {
+            throw std::runtime_error("unknown VAT condition in golden inventory for " + name +
+                                     ": " + vat_condition);
+        }
+#if !PELICAN_WITH_VAT
+        if (vat_condition == "on_only") {
             continue;
         }
-        const auto config_path = entry.path() / "case.json";
-        if (!std::filesystem::exists(config_path)) {
-            continue;
-        }
+#endif
+        const auto case_root = root / name;
+        const auto config_path = case_root / "case.json";
         std::ifstream file{config_path};
+        if (!file) {
+            throw std::runtime_error("failed to open golden case config: " +
+                                     config_path.string());
+        }
         const auto config = nlohmann::json::parse(file);
         const auto mode = config.at("mode").get<std::string>();
+        if (mode != inventory_case.at("mode").get<std::string>()) {
+            throw std::runtime_error("golden case mode does not match inventory: " + name);
+        }
         const auto width = config.value("width", goldenWidth);
         const auto height = config.value("height", goldenHeight);
         if (width == 0 || height == 0) {
             throw std::runtime_error("golden case extent must be non-zero: " +
-                                     entry.path().string());
+                                     case_root.string());
         }
-#if !PELICAN_WITH_VAT
-        if (mode == "vat_playback") {
-            continue;
-        }
-#endif
         cases.push_back(GoldenCase{
-            entry.path().filename().string(),
+            name,
             mode,
-            entry.path(),
+            case_root,
             width,
             height,
         });
@@ -3523,12 +3539,7 @@ TEST_CASE("TAA static accumulation is byte-exact across two independent runs",
 TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     setupLogger();
     requireGoldenVulkanDevice();
-    const auto cases = discoverGoldenCases();
-#if PELICAN_WITH_VAT
-    REQUIRE(cases.size() == 49);
-#else
-    REQUIRE(cases.size() == 48);
-#endif
+    const auto cases = loadGoldenInventoryCases();
 
     for (const auto &golden_case : cases) {
         DYNAMIC_SECTION(golden_case.name) {
@@ -4056,16 +4067,43 @@ std::string loadTextFile(const std::filesystem::path &path) {
     return std::string{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
 }
 
+std::string canonicalTraceLineForCase(const std::string &trace, const std::string &case_name) {
+    const auto prefix = case_name + ": ";
+    std::istringstream stream{trace};
+    std::string line;
+    std::string match;
+    while (std::getline(stream, line)) {
+        if (!line.starts_with(prefix)) {
+            continue;
+        }
+        if (!match.empty()) {
+            throw std::runtime_error("duplicate canonical frame-plan trace for golden case: " +
+                                     case_name);
+        }
+        match = line + "\n";
+    }
+    if (match.empty()) {
+        throw std::runtime_error("missing canonical frame-plan trace for golden case: " +
+                                 case_name);
+    }
+    return match;
+}
+
 TEST_CASE("golden final RGBA8 bytes match the WP74 C1b baseline hashes",
           "[golden][headless][byte-exact]") {
     setupLogger();
     requireGoldenVulkanDevice();
     const bool update_fixtures = updateRgba8HashFixturesRequested();
+#if !PELICAN_WITH_VAT
+    if (update_fixtures) {
+        FAIL("RGBA8 aggregate fixture update requires PELICAN_WITH_VAT=ON");
+    }
+#endif
     const auto fixture_path = rgba8HashFixturePath();
     const auto expected = update_fixtures ? nlohmann::json::object() : loadJsonFile(fixture_path);
     nlohmann::json captured = nlohmann::json::object();
 
-    for (const auto &golden_case : discoverGoldenCases()) {
+    for (const auto &golden_case : loadGoldenInventoryCases()) {
         CAPTURE(golden_case.name);
         const auto labels_off = renderCase(golden_case, false);
         const auto labels_on = renderCase(golden_case, true);
@@ -4083,8 +4121,6 @@ TEST_CASE("golden final RGBA8 bytes match the WP74 C1b baseline hashes",
 
     if (update_fixtures) {
         writeTextFile(fixture_path, captured.dump(2) + "\n");
-    } else {
-        REQUIRE(captured.size() == expected.size());
     }
 }
 
@@ -4092,14 +4128,20 @@ TEST_CASE("Renderer execution matches plan order and captured traces", "[golden]
     setupLogger();
     requireGoldenVulkanDevice();
     const bool update_fixtures = updateRendererTraceFixturesRequested();
+#if !PELICAN_WITH_VAT
+    if (update_fixtures) {
+        FAIL("renderer aggregate fixture update requires PELICAN_WITH_VAT=ON");
+    }
+#endif
     const auto fixture_path = rendererTraceFixturePath();
     const auto expected = update_fixtures ? nlohmann::json::object() : loadJsonFile(fixture_path);
     const auto plan_trace_path = canonicalFramePlanTraceFixturePath();
     const auto expected_plan_trace = update_fixtures ? std::string{} : loadTextFile(plan_trace_path);
     nlohmann::json captured = nlohmann::json::object();
     std::string captured_plan_trace;
+    std::string active_expected_plan_trace;
 
-    for (const auto &golden_case : discoverGoldenCases()) {
+    for (const auto &golden_case : loadGoldenInventoryCases()) {
         if (!usesRenderer(golden_case)) {
             continue;
         }
@@ -4116,6 +4158,10 @@ TEST_CASE("Renderer execution matches plan order and captured traces", "[golden]
                          node.at("kind").get<std::string>() + "]";
         }
         captured_plan_trace += golden_case.name + ": " + plan_line + "\n";
+        if (!update_fixtures) {
+            active_expected_plan_trace +=
+                canonicalTraceLineForCase(expected_plan_trace, golden_case.name);
+        }
 
         REQUIRE(executed_order == rendered.plan_order);
         if (golden_case.mode == "explicit_order") {
@@ -4133,8 +4179,7 @@ TEST_CASE("Renderer execution matches plan order and captured traces", "[golden]
         writeTextFile(fixture_path, captured.dump(2) + "\n");
         writeTextFile(plan_trace_path, captured_plan_trace);
     } else {
-        REQUIRE(captured.size() == expected.size());
-        REQUIRE(captured_plan_trace == expected_plan_trace);
+        REQUIRE(captured_plan_trace == active_expected_plan_trace);
     }
 }
 

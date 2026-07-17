@@ -1,0 +1,838 @@
+{
+  "schema": "pelican.golden_inventory",
+  "version": 1,
+  "root_files": [
+    "README.md",
+    "inventory.json"
+  ],
+  "trace_sources": {
+    "canonical_frame_plan": "test/fixtures/canonical_frame_plan_trace.txt",
+    "renderer_execution": "test/fixtures/renderer_execution_traces.json",
+    "rgba8": "test/fixtures/wp73_rgba8_hashes.json"
+  },
+  "cases": [
+    {
+      "name": "clear",
+      "mode": "clear",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "2d6f3715483b91e4444c11085fd13444ac343803574403008ade21672a299e78",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "rgba8"
+      ]
+    },
+    {
+      "name": "collider_debug_draw",
+      "mode": "collider_debug_draw",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "34d948970ef3550321d176e381531343b5d3b62d7cad5a89fb9f75841064f5ea",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "compute_buffer",
+      "mode": "compute_buffer",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "9b788dd1e96b14bd370bae32602c341ecee540420349e077bb03f4b4d4e11183",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "debug_draw_feature",
+      "mode": "debug_draw_feature",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "61988fc9829b5195463101a16517c1858d5ce99a991625e8c4f3bc67cbca5db6",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "debug_text_feature",
+      "mode": "debug_text_feature",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "858352057e92ea9a18727dff463398c9042e5e8a66973367c6db8889105f0e48",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "explicit_order",
+      "mode": "explicit_order",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "47c12db05220fe9b955b94d12369da32d35f43d29e103c40a1cc505b98e4f188",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "feature_compose",
+      "mode": "feature_compose",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "2f9f0b104a4bc31f5ed3651534058f345028258ecc59dfbf96bfbf1335d9ea72",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "fullscreen",
+      "mode": "fullscreen",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "ece423cfb0c254fe92924addd82f0ad164dad240f6e0d02778a430d5987eb2ee",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "rgba8"
+      ]
+    },
+    {
+      "name": "hdr_off",
+      "mode": "hdr_off",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "b183afc5183fd7dbc555b8c1ae86ce9b9bc4a6caff5420ff2890ae3f0ddf717e",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "hdr_on",
+      "mode": "hdr_on",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "00da30dd63ca11d6c6b15144b4a4e1da2380502cf29c8cfcf7a890fa75a46fdb",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "material_absolute_override",
+      "mode": "material_absolute_override",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "4e2caa11620c45ad822118652e7c25666487e14b9a2d15955cfe8ecdc43615ea",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "material_instance_override",
+      "mode": "material_instance_override",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "b992a1223e232b66510267bbefef76f2cce45b8a533fd5c75dd42d629de47104",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "morph_skinned_shadow",
+      "mode": "morph_skinned_shadow",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "ae845897553ed3c4496f0d61094c1d1c244bb60b1741c9521b1bb43433afaf92",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "openpbr_coat_sphere",
+      "mode": "openpbr_coat_sphere",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "0b9745e557f3d5a5c29f6372b63b420e03ea5b9f049224cc7d8580ad6d957f73",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "rgba8"
+      ]
+    },
+    {
+      "name": "orbit_camera_controller",
+      "mode": "orbit_camera_controller",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "d5e9f59db49c36c686da7761f9d6487f019082e2ac63d131bd908882fc34c713",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "orthographic_camera",
+      "mode": "orthographic_camera",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "505784aa1348dfb4adcea52ab1d6082de488534720532f6122f095cbdea79658",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "parent_transform",
+      "mode": "parent_transform",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "031403764e919b0130397b310e819cf1b37359142254338efa64e4340e53cacd",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "shadow_off",
+      "mode": "shadow_off",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "fc8a601bbd2fc1f6abf6501e8ac7acb2b79caf89ea322ab4bdd3e0837bfdeaa4",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "shadow_on",
+      "mode": "shadow_on",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "4966608cc48cd78f76c7f9cd4f10c8551b6490d51cb1f88b3af4094b2343652e",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "skeletal_toon",
+      "mode": "skeletal_toon",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "d4577fe9fd04ae741fd9e9ec14fbb0e6dfd25b2f39682b89810c312b5e7da9cb",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "snapshot_refraction",
+      "mode": "snapshot_refraction",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "bc39c77e2708010e17a95a458c2f4eec4ad3d76d6af598ed5e36714efad32b88",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "sprite_billboard",
+      "mode": "sprite_billboard",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "9978e9ee622e032fffc508ddb2450df8ed1236a7f7df7d738cee2b359337c0c1",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "sprite_depth",
+      "mode": "sprite_depth",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "2471bbdf995f2842ef4a242cd950d28e4afd1463ae46aa36be2e73c5bd0edfd0",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "sprite_multi_atlas",
+      "mode": "sprite_multi_atlas",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "6481885eb9f6ad3c870d09bfd75ce321834e5dfc6a3c47a6c02d88a755c38c15",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "sprite_ortho_atlas",
+      "mode": "sprite_ortho_atlas",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "054a3f754dbdd5737c0ca284cff96bea2f88e2aef0da5267577031413d658154",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "sprite_ownership",
+      "mode": "sprite_ownership",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "180502441713ed8f7ec5e48ca84d196a7a41c455f9186fec107f0da255506eee",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "sprite_parent",
+      "mode": "sprite_parent",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "1f493ea140b297172865e54733c9e2ff7b5568a4014658de83d5e03059c4b480",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "sprite_pixel_zoom1",
+      "mode": "sprite_pixel_zoom1",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "370ab5c86bfaae0d1870ea48bf197dece9c2e03ede25421eec1c8027d7f0e55b",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "sprite_pixel_zoom2_odd",
+      "mode": "sprite_pixel_zoom2_odd",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "eb148efa90cf24dd53e2517669cf804abe98afcef70fa73a91ccb57e8320ebff",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "sprite_pixel_zoom3_policy",
+      "mode": "sprite_pixel_zoom3_policy",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "c3266e1edb4c074eff4eeaf867851cf52890facd4a746ba1525762d544458f62",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "stem_fullscreen",
+      "mode": "stem_fullscreen",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "ece423cfb0c254fe92924addd82f0ad164dad240f6e0d02778a430d5987eb2ee",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "surface_toon",
+      "mode": "surface_toon",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "eccdf7ce5cf1e754619ddb5b129af2fad65db83731f1722b57f5c737b8fef6eb",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "rgba8"
+      ]
+    },
+    {
+      "name": "taa_camera_motion",
+      "mode": "taa_camera_motion",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "3a5936e8f665ccecf6b6ffead23661198ee59d11471ce38d43bfb1353e51e2ed",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "taa_disocclusion",
+      "mode": "taa_disocclusion",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "af9b22ace2d7ee4f92d0286f266a29aa974ea8b4ca10c4d2a48091249be69b7b",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "taa_object_motion",
+      "mode": "taa_object_motion",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "68f8a8167a2549a52583a787cf80e0b522febbfc453f8b4e7f1e6f778afcad7f",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "taa_ortho",
+      "mode": "taa_ortho",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "ea23af2b51e3e48b11f7f2cfcb7a22c015aa135875d04ea1d5626f36af73cd3e",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "taa_resize",
+      "mode": "taa_resize",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "66f9ad26e24144aaa495bd4e48e54f948b871d9617f69aef4d846d26ee84e9bc",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "taa_set_time",
+      "mode": "taa_set_time",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "66f9ad26e24144aaa495bd4e48e54f948b871d9617f69aef4d846d26ee84e9bc",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "taa_static",
+      "mode": "taa_static",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "05b0410862cab2e6f382c268447cc208de6fbaac425b44068507e0f1c2fd296b",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "temporal_accumulation",
+      "mode": "temporal_accumulation",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "111e75ebb9b6c2ced5ef239b0de75629af0e8fde7bedc57a4eb94e90a2c89996",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "triangle",
+      "mode": "triangle",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "b18c380d5e1ac60576cd18b44ed69ae8d7de8af90cc15774044bcca616a0688e",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "rgba8"
+      ]
+    },
+    {
+      "name": "ui_u1",
+      "mode": "ui_u1",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "ab4965ce3395833df8dc2e7ff1f5006fc953d30a53612f5084fcde70fc33421f",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "ui_u2",
+      "mode": "ui_u2",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "175ff430765ae4e2bb2930c509202b360acf08f890beb0711d2ed21353767ef4",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "usd0b_static_geometry",
+      "mode": "usd0b_static_geometry",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "affc8b637e0ffe1445f3e0a8cecef0d3eee81f51e8c0b59efa4b957a0c3819ee",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "usd0c_openpbr_material",
+      "mode": "usd0c_openpbr_material",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "d467f2e1dca8c2dfcbf1e867e7591a2ab5b4a7121718ba650e15bb7d44a380c4",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "vat_playback",
+      "mode": "vat_playback",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "89f846647724abce03bf8df6d4c70fd562e8d9ef63c69cde214ac224345a449b",
+      "tolerance": true,
+      "vat": "on_only",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "vrm_expression_off",
+      "mode": "vrm_expression_off",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "b01ba279dba77c62e58d6f98754006cf5f9122da3173817b0446da624fd4574a",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "vrm_expression_on",
+      "mode": "vrm_expression_on",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "cd0897eebb68642183d1c243fccf459b4743087d5cb40429d30c7e844d48a458",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    },
+    {
+      "name": "vrm_xr_demo",
+      "mode": "vrm_xr_demo",
+      "files": [
+        "case.json",
+        "expected.png",
+        "tolerance.json"
+      ],
+      "expected_png_sha256": "ba1ea24c4c35fce0be05233d9615249364e452a6e33d9f54994d513582e0b565",
+      "tolerance": true,
+      "vat": "on_and_off",
+      "traces": [
+        "canonical_frame_plan",
+        "renderer_execution",
+        "rgba8"
+      ]
+    }
+  ]
+}

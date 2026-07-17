@@ -940,3 +940,17 @@ if(PELICAN_NODE_EXECUTABLE)
             ${CMAKE_SOURCE_DIR}
     )
 endif()
+
+# Golden inventory integrity is deliberately GPU-free and therefore runs in the CPU gate.
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+add_test(
+    NAME golden_inventory
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/golden_inventory.py
+        --repo-root ${CMAKE_SOURCE_DIR}
+)
+add_test(
+    NAME golden_inventory_negative_fixtures
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/ci/test_golden_inventory.py
+)
