@@ -92,3 +92,12 @@ extern "C" __declspec(dllexport) void pelican_event_emit_public_api_link_probe(
     Pelican::GameContext *context) {
     if (context != nullptr) context->emit(PublicLinkEvent{7});
 }
+
+extern "C" __declspec(dllexport) std::size_t pelican_light_public_api_link_probe(
+    Pelican::GameContext *context) {
+    if (context == nullptr) return 0;
+    return context->setDirectionalLightDirection("Sun", {0.0F, -1.0F, 0.0F}) +
+           context->setDirectionalLightIntensity("Sun", 2.0F) +
+           context->setPointLightPosition("Lamp", {1.0F, 2.0F, 3.0F}) +
+           context->setSpotLightDirection("Cone", {0.0F, -1.0F, 0.0F});
+}
