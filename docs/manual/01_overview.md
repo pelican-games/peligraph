@@ -1,6 +1,6 @@
 # 第1章 エンジン全体像
 
-対象: pelican2(2026-07-16 時点)/ このマニュアルはコードを正とする
+対象: pelican2(2026-07-17 時点)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
@@ -71,6 +71,7 @@ pelican2/
 │   │   ├── watch/        #   アセットホットリロード基盤(FileWatcher/ReloadService)
 │   │   ├── gamelogic/    #   ゲーム DLL のロード・ホットリロード
 │   │   ├── persistence/  #   user:// 設定・セーブ(pelican.settings)
+│   │   ├── openxr/       #   OpenXR(PCVR。session/composition/action/mirror)
 │   │   ├── communication/#   JSON-RPC サーバ
 │   │   ├── appflow/      #   メインループ、EngineTime、teardown
 │   │   ├── userpublic/   #   ★ゲームコードに公開する API の境界(GameContext 等)
@@ -81,7 +82,7 @@ pelican2/
 │   ├── devcli/           # pelican_cli
 │   ├── devstudio/        # Pelican Studio(Qt)
 │   └── spvlink/          # pelican-spv-link CLI(experimental)
-├── projects/             # example / sprite_demo / animgraph_demo(JSON 例の出典)
+├── projects/             # example / sprite_demo / animgraph_demo / vrm_xr_demo(JSON 例の出典)
 ├── docs/                 # 設計文書(索引: docs/README.md)+ 本マニュアル(manual/)+ コード解説(source-code-guide/)
 └── test/                 # Catch2 単体 + fixture + golden(33)+ CMake スクリプト結合テスト
 ```
@@ -133,7 +134,7 @@ vkcore(Vulkan 低層)
 このリポジトリは**マルチエージェント開発**で作られています([../agent_operations.md](../agent_operations.md)):
 
 - **ユーザー(enjoyoriori)** = 意思決定。**Claude** = 設計文書・WP(Work Package)指示書・レビュー・マージ。**codex** = 実装・監査・敵対レビュー。
-- 作業単位は WP。**1 WP = 1 ブランチ(`agent/wpNN-slug`)= 1 マージ**で、受け入れ基準 = マージ基準。現在 WP111 まで実装完了([第11章](11_status.md) に全台帳。今後の候補は [../roadmap_backlog_2026-07.md](../roadmap_backlog_2026-07.md))。
+- 作業単位は WP。**1 WP = 1 ブランチ(`agent/wpNN-slug`)= 1 マージ**で、受け入れ基準 = マージ基準。現在 WP135 まで実装完了([第11章](11_status.md) に全台帳。今後の候補は [../roadmap_backlog_2026-07.md](../roadmap_backlog_2026-07.md))。
 - 統合ブランチは `codex/rendering-phase1-refactor`(事実上の開発本線)。
 
 文書の優先順位(矛盾したときの規則):

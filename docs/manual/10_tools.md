@@ -1,6 +1,6 @@
 # 第10章 ツールリファレンス
 
-対象: pelican2(2026-07-16 時点)/ このマニュアルはコードを正とする
+対象: pelican2(2026-07-17 時点)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
@@ -50,6 +50,7 @@
 | `--record-input <path.jsonl>` | なし | 順序付き入力を `pelican.input_seq` v1 で収録(✅WP89) |
 | `--replay <path.jsonl>` | なし | input_seq のリプレイ。`--record-input` と排他、ホットリロード自動無効(✅WP89) |
 | `--input-profile <name>` | project.json の既定 | アクティブ入力プロファイルの上書き(✅WP91) |
+| `--xr off\|auto\|on` | off | OpenXR(PCVR)起動(✅WP125。`auto` = 不在なら flat 続行 / `on` = 不在・headless・rpc・リプレイでは名指しエラー — [第2章](02_getting_started.md)) |
 | `--bake-camera-output <path.jsonl>` | なし | リプレイ中のカメラ軌跡を transform_seq v1 で出力。`--headless` + `--replay` 必須(✅WP89) |
 
 よく使う組み合わせ:
@@ -81,7 +82,7 @@ pelican_player --headless --project mygame --replay s.jsonl \
 
 | メソッド | params | 動作 |
 |---|---|---|
-| `get_status` | `{}` | `{instance_id, project_root, scene, frame, time, seed, stores, input:{profile, profiles, gamepad_polling}, reload:{...}, sprite:{...}, color:{...}, startup:{...}}` |
+| `get_status` | `{}` | `{instance_id, project_root, scene, frame, time, seed, stores, input:{...}, reload:{...}, sprite:{...}, color:{...}, startup:{...}, xr:{active, reference_space, floor_semantics, ...}}` ※rpc は常に flat 駆動のため `xr.active=true` は rpc からは観測できない |
 | `set_seed` | `{seed}` | 決定的乱数のシード設定 |
 | `set_time` | `{t}` | 仮想時刻の直接設定(dt=0) |
 | `step_frame` | `{}` | 1 フレーム進める |
@@ -165,7 +166,7 @@ pelican_cli assets status --project mygame              # OK / MISSING / MISMATC
 > **設計決定(配布は宣言から導出):** 配布ビルドの機能フラグを手で並べさせない。プロジェクトの内容を走査して必要な `PELICAN_WITH_*` を導出し、根拠コメント付きの CMake キャッシュプリセットとして書き出す。
 
 - `PELICAN_WITH_VAT` — GLB に `pelican.vat` extras が実在すれば ON / `PELICAN_WITH_EXR` — `.exr` 参照があれば ON
-- `PELICAN_WITH_RPC` / `PELICAN_WITH_SEQPLAYER` — 既定 OFF。`--with rpc,seqplayer` で明示 ON
+- `PELICAN_WITH_RPC` / `PELICAN_WITH_SEQPLAYER` / `PELICAN_WITH_OPENXR` — 既定 OFF。`--with rpc,seqplayer,openxr` で明示 ON
 - **`PELICAN_WITH_IMGUI` — 常に OFF を書き出す**(配布ビルドに開発 UI を含めない)
 
 ```sh
@@ -228,8 +229,9 @@ v1 は **full-reset 方式**: システムの状態と ECS を全破棄し、現
 
 - 単体テスト: Catch2 v3(`pelican_define_test`)。**GPU 必須テストは Vulkan デバイス列挙失敗時に `SKIP()`**。
 - 結合テスト: `test/run_*.cmake` が player / cli を子プロセス起動して検証。2026-07-10 以降の追加: `run_devcli_assets`(WP66)/ `run_event_schema_compile`(WP71)/ `run_dump_lowered_material`(WP76)/ `run_devcli_gltf_extract`(WP79)/ `run_spvlink_golden`(WP80)/ `run_devcli_rules_import`(WP84)/ `run_devcli_bake_camera` + `run_input_record_replay_headless`(WP89)/ `run_ui_u2_rpc_replay`(WP93)など。
-- ゴールデンイメージテスト: **33 ケース**(ディレクトリ自動発見。[第6章](06_rendering.md) §6.10)。
+- ゴールデンイメージテスト: **49 ケース**(ディレクトリ自動発見。[第6章](06_rendering.md) §6.10)。
 - ctest 非登録のスモーク: `run_build_units_smoke.cmake`(IMGUI / PHYSICS 系を含む単独 OFF ビルド検証)、`run_project_code_smoke.cmake`。
+- **CI(✅WP137)**: GitHub Actions の Windows **CPU ゲート**が push/PR で回ります(`.github/workflows/`)。GPU 必須テストは `gpu` ラベルで除外し、`SKIP` は完全一致 allowlist のみ許可(想定外の SKIP はゲート失敗)・リトライなし。
 
 ## 関連文書
 

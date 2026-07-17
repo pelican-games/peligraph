@@ -1,6 +1,6 @@
 # 第7章 入力と UI
 
-対象: pelican2(2026-07-16 時点)/ このマニュアルはコードを正とする
+対象: pelican2(2026-07-17 時点)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
@@ -16,7 +16,7 @@
 
 | 層 | 内容 | 状態 |
 |---|---|---|
-| L0 | GLFW(キーボード+マウス+**ゲームパッド 16 スロット**)、rpc 注入、リプレイ注入 | ✅(OpenXR のみ 📐) |
+| L0 | GLFW(キーボード+マウス+**ゲームパッド 16 スロット**)、**OpenXR(Touch コントローラ + pose)**、rpc 注入、リプレイ注入 | ✅(WP130/132 で XR も実装) |
 | L1 | **順序付きイベント + スナップショット**(`FrameInput`、WP37→WP69) | ✅ |
 | L2 | アクション層 = `actions.json` + `input_profile`(WP39/91) | ✅ |
 | L3 | `Actions` / `GameContext` / **収録・リプレイ**(WP43/45/89) | ✅ |
@@ -105,10 +105,10 @@ L1 の要点(✅WP69 で改訂):
 | `pad:a, b, x, y, left_bumper, right_bumper, back, start, guide, left_thumb, right_thumb, dpad_up/right/down/left` | button / axis1 | ✅ ゲームパッドボタン 15 種 |
 | `pad:left_x, left_y, right_x, right_y, left_trigger, right_trigger` | axis1 | ✅ パッド軸 6 種 |
 | `pad:left_stick` / `pad:right_stick` | axis2 専用 | ✅ スティック合成(radial deadzone) |
-| `xr:*` | — | 受理のみ 📐(OpenXR) |
+| `xr:/user/hand/<left\|right>/input/...` | 全 type | ✅WP130。OpenXR 実パス形式(v1 は Touch コントローラのみ)。`xr:/user/hand/` 以外は名指しエラー。flat 起動では未解決として無視されるので、**同じ actions.json / profile が flat でも XR でも通る** |
 
 - アクティブな profile に `pad:` binding が 1 つも無ければゲームパッドは**一切ポーリングされません**(パージ可能原則)。切断時は保持ボタンの release + 軸ゼロが発行されます。マッピングは GLFW 内蔵の SDL_GameControllerDB。
-- `pose` type は型のみ予約(`actionPose` は例外)。カーソルロックは 📐未実装です。
+- `pose` type は ✅WP132 で実動作になりました(XR 起動時のみ供給 — [第8章](08_gameplay.md) の `actionPose`)。**pose を含む actions.json は `--record-input` / リプレイが名指しで拒否されます**(input_seq v1 の仕様)。カーソルロックは 📐未実装です。
 
 ### アクションセットのスタックと消費
 
@@ -238,7 +238,8 @@ emit のソースには static 値のほか `stable_id` / `drag_delta_ui` / `wid
 | rpc inject_input(ゲームパッド含む) | ✅ WP49/91 |
 | 収録・リプレイ(I3、input_seq v1 + bake-camera) | ✅ WP89 |
 | ゲームパッド(I4) | ✅ WP91 |
-| カーソルロック(I4 残件)/ OpenXR | 📐 未実装 |
+| OpenXR 入力(Touch action set + pose) | ✅ WP130/132(v1 は Touch のみ・pose の収録は非対応) |
+| カーソルロック(I4 残件) | 📐 未実装 |
 | pelican.ui v1(U0/U1/U2) | ✅ WP75/87/93(gauge 描画・ゲーム→UI 更新 API・スキン・DPI は 🚧/📐) |
 | ui_overlay.json(旧 images 形式) | ❌ 削除済み(WP87) |
 | イベント payload スキーマ | ✅ WP71 |

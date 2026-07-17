@@ -1,10 +1,10 @@
 # Pelican2 ソースコード読解ガイド
 
-調査時点: 2026-07-11
+調査時点: 2026-07-17
 
 対象ブランチ: `codex/rendering-phase1-refactor`
 
-基準コミット: `e8c6058`（調査時の作業ツリー上のコードも確認）
+基準コミット: `6326cfa`
 
 この文書群は、Pelican2を「利用する方法」ではなく、**ソースコードがどう分割され、起動後に何がどの順で動き、複雑な実装がなぜその形になっているか**を理解するための読解ガイドです。
 
@@ -36,13 +36,13 @@
 
 エンジン全体を最短で追うなら、次のリンクを順に開いてください。
 
-1. [`main()`](../../src/player/main.cpp#L353) — CLIで起動条件を確定する。
-2. [`PelicanCore::run()`](../../src/core/userpublic/pelican_core.cpp#L32) — 設定、ECS、scene、loopを組み立てる。
-3. [`Loop::run()`](../../src/core/appflow/loop.cpp#L118) — 通常/headless/RPCの実行方式を分ける。
-4. [`updateFrameState()`](../../src/core/appflow/framephase.cpp#L17) — 1フレームのゲーム状態更新を5フェーズで実行する。
+1. [`main()`](../../src/player/main.cpp#L433) — CLIで起動条件を確定する。
+2. [`PelicanCore::run()`](../../src/core/userpublic/pelican_core.cpp#L44) — 設定、ECS、scene、loopを組み立てる。
+3. [`Loop::run()`](../../src/core/appflow/loop.cpp#L283) — 通常/XR/headless/RPCの実行方式を分ける。
+4. [`updateFrameState()`](../../src/core/appflow/framephase.cpp#L81) — 1フレームのゲーム状態更新を5フェーズで実行する。
 5. [`ECSCoreTemplatePublic::update()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L386) — 内部ECS Systemを依存順に実行する。
-6. [`Renderer::render()`](../../src/core/vkcore/renderer.cpp#L472) — フレームグラフをGPUコマンドへ変換する。
-7. [`RuntimeTeardownGuard::run()`](../../src/core/appflow/teardown.cpp#L25) — 例外時もGPU/ECS資源を順序付きで解放する。
+6. [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L1082) — フレームグラフをGPUコマンドへ変換する。flat画面は [`render()`](../../src/core/vkcore/renderer.cpp#L1244) がその1-viewラッパ。
+7. [`RuntimeTeardownGuard::run()`](../../src/core/appflow/teardown.cpp#L48) — 例外時もGPU/ECS資源を順序付きで解放する（実体は [`teardownRuntimeNoThrow()`](../../src/core/appflow/teardown.cpp#L31)）。
 
 ## リンクの見方
 
@@ -59,19 +59,22 @@ flowchart LR
     Player["pelican_player\nCLI・起動"]
     Core["pelican_core\n実行時モジュール"]
     Pure["pelican_project\n純粋パース・検証"]
-    Game["project/code\nゲームSystem"]
+    Game["project/code\nゲームSystem\npelican_game_logic (DLL)"]
     ECS["ECS\nEntity・Chunk・System"]
     Render["Rendering\nFrame graph・Shader"]
+    XR["OpenXR\nsession・composition"]
     VK["Vulkan\nDevice・FrameTarget・GPU資源"]
     Tools["pelican_cli / Studio / tests"]
 
     Project --> Player
     Project --> Pure
     Player --> Core
-    Game --> Player
+    Game -->|DLLとしてロード| Player
     Core --> Pure
     Core --> ECS
     Core --> Render
+    Core --> XR
+    XR --> VK
     Render --> VK
     Tools --> Pure
     Tools --> Core

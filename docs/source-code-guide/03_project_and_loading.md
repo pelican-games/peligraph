@@ -18,11 +18,11 @@ Runtime object
 
 | データ | 純粋層 | runtime層 |
 |---|---|---|
-| scene | [`normalizeSceneDataJson()`](../../src/project/sceneformat.cpp#L118) | [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L147) |
-| render feature | [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L513) | [`registerRenderingPassConfigData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L92) |
-| JSON-RPC | [`parseJsonRpcRequest()`](../../src/project/jsonrpc.cpp#L121) | [`RpcServer`](../../src/core/communication/rpcserver.cpp#L454) |
+| scene | [`normalizeSceneDataJson()`](../../src/project/sceneformat.cpp#L201) | [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L215) |
+| render feature | [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L1611) | [`registerRenderingPassConfigData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L133) |
+| JSON-RPC | [`parseJsonRpcRequest()`](../../src/project/jsonrpc.cpp#L148) | [`RpcServer`](../../src/core/communication/rpcserver.cpp#L589) |
 | asset manifest | [`parse/generate/verify`](../../src/project/assetsmanifest.hpp#L60) | [`verifyAssetsAtStartup()`](../../src/core/loader/assetsverification.cpp#L11) |
-| material/surface | [`parseMaterialFormatJson()`](../../src/project/materialformat.cpp#L469)、[`parseSurfaceFormat()`](../../src/project/surfaceformat.cpp#L512) | 現在は主に形式検証。描画materialへの全面接続は未完 |
+| material/surface | [`parseMaterialFormatJson()`](../../src/project/materialformat.cpp#L631)、[`parseSurfaceFormat()`](../../src/project/surfaceformat.cpp#L784) | runtime接続済み（WP116〜117, 122）。`.surface`は [`surfacecompiler`](../../src/core/shader/surfacecompiler.cpp) でGLSL/SPIR-V化されpipelineへ。`.material.json`は [`lowerMaterial()`](../../src/project/materiallowering.hpp#L82) → [`registerReloadableMaterialValuesFile()`](../../src/core/material/materialcontainer.hpp#L153) |
 
 新形式を追加するときは、まず`src/project`へGPU非依存の受理/拒否規則を置き、次に`src/core`で実体化するのが既存パターンです。
 
@@ -116,7 +116,7 @@ sceneは実装を追う価値の高い、純粋層とruntime層の典型です�
 
 ### 1. envelopeと構文を正規化
 
-[`normalizeSceneDataJson()`](../../src/project/sceneformat.cpp#L118) が次を検証します。
+[`normalizeSceneDataJson()`](../../src/project/sceneformat.cpp#L201) が次を検証します。
 
 - `schema == "pelican.scene"`
 - `version == 1`
@@ -124,23 +124,24 @@ sceneは実装を追う価値の高い、純粋層とruntime層の典型です�
 - scene ID、object名、component名が`[a-zA-Z0-9_]`
 - object名がscene内で一意
 - 各objectに`components` arrayが存在
+- `parent`（親子transform）が識別子であること。未知parent・曖昧parent・循環はエラー（[sceneformat.cpp](../../src/project/sceneformat.cpp#L103)、fixture: `scene_unknown_parent` / `scene_parent_cycle` / `scene_ambiguous_parent`）
 - v1で禁止された旧`lights` fieldを拒否
 
 この時点ではECS型やGPUには触れません。
 
 ### 2. runtime用にcomponentを分類
 
-[`prepareSceneBindings()`](../../src/core/loader/scene.cpp#L72) はcomponentを三系統へ分けます。
+[`prepareSceneBindings()`](../../src/core/loader/scene.cpp#L78) はcomponentを三系統へ分けます。
 
 - `light`: ECSへ入れず`LightLoadEntry`へ
-- `collider`: `ColliderComponent`として検証し、後で`PhysWorld`へ
+- `collider`: `ColliderComponent`として検証し、後で`PhysWorld`へ。`PELICAN_WITH_PHYSICS` OFFのビルドでは、colliderを含むsceneは明示エラーです（[scene.cpp](../../src/core/loader/scene.cpp#L244)）
 - その他: `ComponentInfoManager`で文字列名から`ComponentId`へ
 
 このためsceneの見た目はcomponent配列でも、現在のruntime実装ではlight/colliderがECS Chunkに保存されるわけではありません。
 
 ### 3. 旧sceneを破棄して新sceneを構築
 
-[`SceneLoader::load()`](../../src/core/loader/scene.cpp#L147) は正規化と事前準備が成功した後、[`clearRuntimeScene()`](../../src/core/loader/scene.cpp#L224) を呼びます。
+[`SceneLoader::load()`](../../src/core/loader/scene.cpp#L215) は正規化と事前準備が成功した後、[`clearRuntimeScene()`](../../src/core/loader/scene.cpp#L374) を呼びます。
 
 ```text
 object bindingをclear
@@ -149,23 +150,23 @@ object bindingをclear
 → PolygonInstanceContainerをclear
 ```
 
-その後、light、camera、ECS object、colliderを作ります。ECS objectは [`GameObjects::createWithComponents()`](../../src/core/loader/scene.cpp#L177) のpopulate callback内でJSONを各Componentへロードします。
+その後、light、camera、ECS object、colliderを作ります。ECS objectは [`GameObjects::createWithComponents()`](../../src/core/loader/scene.cpp#L261) のpopulate callback内でJSONを各Componentへロードします。
 
 ### 4. 名前binding
 
-名前付きかつ`transform`を持つobjectだけが `object_bindings`へ入ります（[`bindObjectTransform()`](../../src/core/loader/scene.cpp#L231)）。RPC、camera controller、physicsはこの名前から世代付き`GameObjectId`を引き直します。
+名前付きかつ`transform`を持つobjectだけが `object_bindings`へ入ります（[`bindObjectTransform()`](../../src/core/loader/scene.cpp#L383)）。RPC、camera controller、physicsはこの名前から世代付き`GameObjectId`を引き直します。
 
 bindingは生ポインタを保持しません。アクセス時に`tryComponent<TransformComponent>()`でIDのgenerationとComponent存在を再検証します。
 
 ### 5. SceneLoaded event
 
-ロード完了後に [`SceneLoaded`](../../src/core/userpublic/events.hpp#L9) をemitします（[`SceneLoader::load()`末尾](../../src/core/loader/scene.cpp#L197)）。フレーム末尾のpending loadからemitされた場合、eventは次フレーム冒頭に届きます。
+ロード完了後に [`SceneLoaded`](../../src/core/userpublic/events.hpp#L9) をemitします（[`SceneLoader::load()`末尾](../../src/core/loader/scene.cpp#L348)）。フレーム末尾のpending loadからemitされた場合、eventは次フレーム冒頭に届きます。
 
 ## 3.6 即時loadと要求load
 
 - `SceneLoader::load()`はその場で全sceneを置換。
-- [`requestLoad()`](../../src/core/loader/scene.cpp#L201) は存在確認後、scene IDだけをpendingへ保存。
-- [`applyPendingLoad()`](../../src/core/loader/scene.cpp#L210) はフレームのゲーム更新末尾で実際にload。
+- [`requestLoad()`](../../src/core/loader/scene.cpp#L351) は存在確認後、scene IDだけをpendingへ保存。
+- [`applyPendingLoad()`](../../src/core/loader/scene.cpp#L360) はフレームのゲーム更新末尾で実際にload。
 
 `GameContext::loadScene()`はrequest型です。RPCの`load_scene`は即時loadです。この違いは、ゲームSystem update中にECS全削除が起きないようにするためです。
 
@@ -182,7 +183,7 @@ sceneのcomponent名から型への変換は [`ComponentInfoManager`](../../src/
 
 ## 3.8 Asset modelから描画instanceまで
 
-[`ModelAssetContainer`](../../src/core/asset/model.hpp#L9) は`asset_data.json.models`を読み、拡張子に応じて [`GltfLoader::loadGltf()` / `loadGltfBinary()`](../../src/core/model/gltf.cpp#L568) を呼び、名前から`ModelTemplate`へmapします。
+[`ModelAssetContainer`](../../src/core/asset/model.hpp#L9) は`asset_data.json.models`を読み、拡張子に応じて [`GltfLoader::loadGltf()`](../../src/core/model/gltf.cpp#L2003) / [`loadGltfBinary()`](../../src/core/model/gltf.cpp#L1993) を呼び、名前から`ModelTemplate`へmapします。受理拡張子は`.glb`/`.gltf`に加え **`.vrm`** です（[asset/model.cpp](../../src/core/asset/model.cpp#L210)）。glTF scene fragmentの抽出には [`loadGltfBinarySceneNode()`](../../src/core/model/gltf.cpp#L1998) が使われます。
 
 glTFロードの大まかな変換は次です。
 
@@ -195,7 +196,9 @@ tinygltf Model
 → ModelTemplate
 ```
 
-sceneの`SimpleModelViewComponent`は初期化時にdirtyになり、内部 [`SimpleModelViewUpdateSystem`](../../src/core/ecs/predefined/modelviewupdatesystem.cpp#L8) がmodel名からtemplateを引き、`PolygonInstanceContainer`へinstanceを置きます。
+執筆基準時点から要素が増えています。VRM semanticデコード（[`vrmsemantic.hpp`](../../src/core/model/vrmsemantic.hpp) — humanoid bone / expression / lookAt / firstPerson、WP111）、morph target（[`morphtarget.hpp`](../../src/core/model/morphtarget.hpp)、WP121）、skeletal animation（[`skeletalanimation.hpp`](../../src/core/model/skeletalanimation.hpp)）、KTX2テクスチャ（[`loader/ktx2.hpp`](../../src/core/loader/ktx2.hpp)、BC5/BC7 fixtureあり）、atlas asset（[`asset/atlasasset.hpp`](../../src/core/asset/atlasasset.hpp) + [`renderer/atlasassetresource.hpp`](../../src/core/renderer/atlasassetresource.hpp)）です。モデルのhot reload（HR2-G、WP110）に伴い、世代管理は [`MaterialContainer::releaseModelResources()`](../../src/core/material/materialcontainer.hpp#L144) が担います。
+
+sceneの`SimpleModelViewComponent`は初期化時にdirtyになり、内部 [`SimpleModelViewUpdateSystem`](../../src/core/ecs/predefined/modelviewupdatesystem.cpp#L23) がmodel名からtemplateを引き、`PolygonInstanceContainer`へinstanceを置きます。
 
 ## 3.9 その他の純粋形式
 
@@ -205,17 +208,19 @@ sceneの`SimpleModelViewComponent`は初期化時にdirtyになり、内部 [`Si
 
 ### material / surface
 
-[`parseMaterialFormatJson()`](../../src/project/materialformat.cpp#L469) はmaterial v1とoptional surface catalogの整合性を検証します。[`parseSurfaceFormat()`](../../src/project/surfaceformat.cpp#L512) はfront matter風の宣言部とshader codeを分け、parameter/texture/screen inputを構造化します。
+[`parseMaterialFormatJson()`](../../src/project/materialformat.cpp#L631) はmaterial v1とoptional surface catalogの整合性を検証します。[`parseSurfaceFormat()`](../../src/project/surfaceformat.cpp#L784) はfront matter風の宣言部とshader codeを分け、parameter/texture/screen inputを構造化します。
 
-現時点ではこれらの形式パーサが`MaterialContainer`の既存glTF material経路へ全面的に接続されているわけではありません。「形式が実装済み」と「runtime描画で利用済み」を分けて読んでください。
+これらはruntime接続済みです（WP116〜117, 122）。純粋層はparseと [`lowerMaterial()`](../../src/project/materiallowering.hpp#L82)（OpenPBR写像は [`openpbrmapping.hpp`](../../src/project/openpbrmapping.hpp)）まで、core層はsurface compile（[`surfacecompiler.cpp`](../../src/core/shader/surfacecompiler.cpp)）とvalues SSBO登録（[`registerReloadableMaterialValuesFile()`](../../src/core/material/materialcontainer.hpp#L153)）を担います。hot reloadは `MaterialValuesReloadHandler` / `TextureReloadHandler`（[src/core/material/](../../src/core/material)）です。
 
-### import manifest
+material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](../../src/project/materialformat.hpp#L45) の `usd_path`、[`modeltemplate.cpp`](../../src/core/model/modeltemplate.cpp#L61) で重複/未解決を検証）。これはU-USDレーン（WP119/124）の観測境界です。
 
-[`parseImportManifestJson()`](../../src/project/importmanifest.cpp#L191) はDCC納品物のtool/source/outputとSHA-256、対応schemaを検証します。runtime playerではなく、[`pelican_cli import`](../../src/devcli/importcommand.cpp#L358) が主利用者です。
+### import manifest / import rules
+
+[`parseImportManifestJson()`](../../src/project/importmanifest.cpp#L191) はDCC納品物のtool/source/outputとSHA-256、対応schemaを検証します。runtime playerではなく、[`pelican_cli import`](../../src/devcli/importcommand.cpp#L358) が主利用者です。加えて [`importrules.hpp`](../../src/project/importrules.hpp) がmatch/recipe/defaultsの3層優先を持つルールベースimport（`pelican_cli import --rules`、[importcommand.cpp](../../src/devcli/importcommand.cpp#L362)）を提供します。
 
 ### JSON-RPC
 
-[`parseJsonRpcRequest()`](../../src/project/jsonrpc.cpp#L121) はtransportに依存せずJSON-RPC 2.0 envelopeを検証します。batchとnotificationは現状不許可です。実メソッドdispatchだけがcore側にあります。
+[`parseJsonRpcRequest()`](../../src/project/jsonrpc.cpp#L148) はtransportに依存せずJSON-RPC 2.0 envelopeを検証します。batchとnotificationは現状不許可です。実メソッドdispatchだけがcore側にあります。
 
 ## 3.10 データロードを変更するときのチェック
 

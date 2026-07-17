@@ -44,6 +44,8 @@ DECLARE_COMPONENT(型, 数値ID)
 | 2 | `SimpleModelViewComponent` | `simplemodelview` | model名とGPU instance ID |
 | 3 | `CameraComponent` | `camera` | 内部ECS camera marker（現状dummy） |
 | 16 | `LocalTransformComponent` | `localtransform` | 公開API用transform |
+| 17 | `AnimationComponent` | `animation` | アニメーション再生状態 |
+| 18 | `SpriteViewComponent` | `spriteview` | 2D sprite表示（登録は`registerSpriteViewComponent()`経由） |
 
 IDは単なる外部識別子ではありません。[`ComponentInfoManager::getIndexFromComponentId()`](../../src/core/ecs/componentinfo.cpp#L20) は現在IDをそのまま`size_t`へcastします。従って、IDがそのまま次の「dense index」とmask bit位置になります。
 
@@ -225,7 +227,7 @@ GameObjects::add()
 
 ### `finish()`で実行時へ橋渡し
 
-[`finish()`](../../src/core/userpublic/gameobjects.hpp#L78) はcompile時ID packを`span`にし、ECSのpopulate callbackを作ります。callback内のfold expressionが、保存した位置indexを使って`void*`配列を正しい`T*`へcastし、値をcopy assignmentします（[`GameObjects::copy()`](../../src/core/userpublic/gameobjects.hpp#L53)）。
+[`finish()`](../../src/core/userpublic/gameobjects.hpp#L79)（[2オーバーロード](../../src/core/userpublic/gameobjects.hpp#L100)）はcompile時ID packを`span`にし、ECSのpopulate callbackを作ります。callback内のfold expressionが、保存した位置indexを使って`void*`配列を正しい`T*`へcastし、値をcopy assignmentします（[`GameObjects::copy()`](../../src/core/userpublic/gameobjects.hpp#L53)）。
 
 要するに、流暢なbuilder APIの各段階で型が変わり、最後にだけruntimeの`vector<ComponentId> + void*`世界へ落としています。
 
@@ -277,7 +279,7 @@ ChunkはComponent indexごとに`component_versions[index]`を一個持ちます
 
 ## 4.10 内部ECS Systemの登録
 
-template本体は [`registerSystem<TSystem, TComponents...>()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L150) です。
+template本体は [`registerSystem<TSystem, TComponents...>()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L166) です。現在のsignatureは `registerSystem(TSystem &system, std::vector<SystemId> &&depends_list, bool force_update)` で、**Systemのinstance参照を受け取り`SystemId`を返します**。ECSCore側の入口は [`registerSystemForce()`](../../src/core/ecs/core.hpp#L35) です。返る`SystemId`は後続Systemの依存指定に使えます。
 
 ### 対応process形
 
@@ -291,7 +293,7 @@ void process(std::span<ChunkView<TComponents...>> chunks);
 void process(std::tuple<TComponents*...> arrays, size_t count);
 ```
 
-判定は [`HasBatchProcess`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L30) と [`HasPerChunkProcess`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L35) です。
+判定は [`HasBatchProcess`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L30) と [`HasPerChunkProcess`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L35) です。登録時の [`static_assert`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L167) で「少なくともどちらか」のprocess形が必須になりました。
 
 実装は二つの独立した`if constexpr`なので、両方のsignatureを同時に実装すると両方呼ばれます。通常はどちらか一方だけを実装します。
 
@@ -318,7 +320,7 @@ per-chunk型では、required Component列の最大versionが`last_run_tick`未�
 
 batch型では、全matching Chunkのどれかに変更があれば一回だけ全viewを渡します。実行後は全matching Chunkのwrite列を更新します。
 
-`force_update`ならversionに関係なく毎回実行します。現在の組み込みSystemは全て [`registerSystemForce`](../../src/core/ecs/predefined.cpp#L27) で登録されています。
+`force_update`ならversionに関係なく毎回実行します。現在の組み込みSystemは全て [`registerSystemForce`](../../src/core/ecs/predefined.cpp#L32) で登録されています。
 
 ## 4.12 依存グラフと並列実行
 
@@ -332,6 +334,10 @@ Level 2: F        ── workerへschedule      ── wait
 
 同levelのSystemを [`JobSystem`](../../src/core/job_system.cpp#L31) へscheduleし、level末尾で全完了を待ちます。worker例外はmain threadへ再throwされます。
 
+### prepareフェーズ
+
+level実行前に、各Systemの`prepare_func`がowner threadで呼ばれます（[coretemplate.cpp](../../src/core/userpublic/details/ecs/coretemplate.cpp#L424)）。Systemは`prepareEcsWorkerDependencies()`を実装して`GET_MODULE`をowner thread上で済ませ、worker job中のmodule生成（freeze後はエラー）を避けます。例は [`CameraSystem::prepareEcsWorkerDependencies()`](../../src/core/ecs/predefined/camerasystem.cpp#L9) です。
+
 ### 現在の重要な制約
 
 1. **read/writeから依存を自動導出しません。** `const`分類は変更version更新に使われますが、data race回避のedgeは自動追加されません。
@@ -339,20 +345,22 @@ Level 2: F        ── workerへschedule      ── wait
 3. 同levelの順序は`unordered_map`列挙とworker schedulingに依存します。順序が必要ならdependencyが必要です。
 4. 現実装はトポロジカル処理件数が全System数と一致するかを最後に検査していません。循環依存のSystemは実行levelへ入らず、明示的なcycle errorになりません。
 
-現在の組み込みSystem登録はdependency listが全て空で、かつforce updateです。Component集合は重なります。`LocalTransformSystem`と`SimpleModelViewTransformSystem`はどちらも`TransformComponent`を扱うため、今後内部Systemの並列性を強める場合は依存とread/write競合を明示的に監査する必要があります。
+現在の組み込みSystem登録には明示依存が張られています（[predefined.cpp](../../src/core/ecs/predefined.cpp#L32)）: `AnimationSystem` ← model_update、`SimpleModelViewTransformSystem` ← {local_transform, model_update}、`CameraSystem` ← local_transform、`SpriteViewRenderSystem` ← local_transform。全てforce updateです。Component集合は重なるため、内部Systemを追加する場合は依存とread/write競合を明示的に監査する必要があります。
 
 ## 4.13 組み込みSystem
 
-[`ECSPredefinedRegistration::reg()`](../../src/core/ecs/predefined.cpp#L18) が登録します。
+[`ECSPredefinedRegistration::reg()`](../../src/core/ecs/predefined.cpp#L20) が登録します。
 
 | System | Query | 処理 |
 |---|---|---|
 | [`LocalTransformSystem`](../../src/core/ecs/predefined/localtransformsystem.cpp#L7) | `EntityId, Transform, LocalTransform` | 公開transformをGLM内部transformへcopy |
-| [`SimpleModelViewUpdateSystem`](../../src/core/ecs/predefined/modelviewupdatesystem.cpp#L8) | `SimpleModelView` | dirtyなmodel名からGPU instanceを生成 |
+| [`SimpleModelViewUpdateSystem`](../../src/core/ecs/predefined/modelviewupdatesystem.cpp#L23) | `SimpleModelView` | dirtyなmodel名からGPU instanceを生成 |
+| [`AnimationSystem`](../../src/core/ecs/predefined/animationsystem.cpp) | `Animation, SimpleModelView` | アニメーション再生状態をmodel instanceへ反映 |
 | [`SimpleModelViewTransformSystem`](../../src/core/ecs/predefined/modelviewtransformsystem.cpp#L7) | `Transform, SimpleModelView` | GPU instanceへTRS反映 |
-| [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L7) | `Transform, Camera` | 最初のcamera Componentをactive Cameraへ反映 |
+| [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L9) | `Transform, Camera` | 最初のcamera Componentをactive Cameraへ反映 |
+| [`SpriteViewRenderSystem`](../../src/core/ecs/predefined/spriteviewsystem.cpp) | `EntityId, Transform, SpriteView` | sprite表示をSpriteSceneへ反映 |
 
-`CameraSystem`は`count`を受けますが、ループが`i < 1`固定です。matching Chunkが空でない前提で最初の一件だけを使う実装です。scene cameraの主経路は別の [`Camera::loadSceneCameras()`](../../src/core/renderer/camera.cpp#L453) でも管理されており、camera関連には旧内部ECS経路と新scene camera経路が併存しています。
+`CameraSystem`は`count == 0`で早期returnするようになりました（[camerasystem.cpp](../../src/core/ecs/predefined/camerasystem.cpp#L14)）。ただし「先頭1件のみ使用」（`i < 1`固定のループ）は変わりません。scene cameraの主経路は別の [`Camera::loadSceneCameras()`](../../src/core/renderer/camera.cpp#L505) でも管理されており、camera関連には旧内部ECS経路と新scene camera経路が併存しています。
 
 ## 4.14 Colliderは現在ECS Componentとして保存されない
 
@@ -362,7 +370,9 @@ Level 2: F        ── workerへschedule      ── wait
 
 ## 4.15 ユーザー独自Componentの現在地
 
-`DECLARE_COMPONENT`と型付きregistererは実装されていますが、通常のゲームコード向けに安定した自動Component登録マクロはまだ公開されていません。実際の登録箇所は組み込み [`predefined.cpp`](../../src/core/ecs/predefined.cpp#L20)、benchmark、lifecycle testです。
+`DECLARE_COMPONENT`と型付きregistererは実装されていますが、通常のゲームコード向けに安定した自動Component登録マクロはまだ公開されていません（`PELICAN_REGISTER_COMPONENT`はリポジトリ全体に不在）。実際の登録箇所は組み込み [`predefined.cpp`](../../src/core/ecs/predefined.cpp#L20)、benchmark、lifecycle testです。
+
+なお、game System/Eventの登録はDLL化後、[`RegistrationOwner`](../../src/core/userpublic/details/system/registerer.hpp#L31) 単位でreload時に`unregisterGameSystems(owner)`されるようになりましたが、Component登録は依然としてengine側のみです。
 
 そのため、現状の公開`GameObjects` builderで安全に使えるのは、エンジンがID宣言とruntime登録を済ませた型が中心です。独自Component対応を製品機能として追加するなら、次を一体で設計する必要があります。
 

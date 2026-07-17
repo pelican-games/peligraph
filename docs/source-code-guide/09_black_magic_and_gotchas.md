@@ -29,7 +29,7 @@ static std::optional<Foo>& __get() {
 
 ### 破棄順
 
-[`PelicanCore::run()`](../../src/core/userpublic/pelican_core.cpp#L32) の先頭で local `FastModuleContainer` を作ります。その destructor は、初期化と逆順に module の `optional.reset()` を行います。
+[`PelicanCore::run()`](../../src/core/userpublic/pelican_core.cpp#L44) の先頭で local `FastModuleContainer` を作ります。その destructor は、初期化と逆順に module の `optional.reset()` を行います。
 
 ```text
 GET_MODULE(A) -> A constructor内でGET_MODULE(B)
@@ -38,12 +38,13 @@ cleaners: [B, A]
 破棄: A -> B
 ```
 
-依存を constructor 内で取得すれば、通常は dependent が先に壊れます。ただし GPU/ECS は destructor だけへ任せず、[`RuntimeTeardownGuard`](../../src/core/appflow/teardown.cpp#L25) が明示 cleanup を先に行います。
+依存を constructor 内で取得すれば、通常は dependent が先に壊れます。ただし GPU/ECS は destructor だけへ任せず、[`RuntimeTeardownGuard`](../../src/core/appflow/teardown.cpp#L31) が明示 cleanup を先に行います。
 
 ### 注意点
 
 - dependency は constructor 本体の `GET_MODULE` に隠れます。include graph だけでは実行時依存が分かりません。
-- `cleaners` vector と `optional.emplace/reset` に mutex はありません。[`FastModuleContainer`](../../src/core/container.hpp#L20) は concurrent first access や複数 runtime 同時実行を想定していません。
+- `cleaners` と `optional.emplace/reset` は現在 [`std::recursive_mutex state_mutex`](../../src/core/container.hpp#L62) で保護されています(執筆時点の「mutex なし」は失効)。ただし複数 runtime 同時実行を想定しない設計自体は変わりません。
+- **[`FastModuleContainer::freezeCreation()`](../../src/core/container.hpp#L199)**(Loop 開始直前、[loop.cpp#L325](../../src/core/appflow/loop.cpp#L325) で呼ばれる)以降は新規 module 生成が禁止されます。「render 中に初めて `GET_MODULE` する」コードは freeze 後に失敗するため、`Renderer::prepareRuntimeModules()` / `prepareFrameStateModules()` のように起動時に依存を先解決するパターンが必須です。生成しない読み取りには [`tryGet<T>()`](../../src/core/container.hpp#L144) があります。shutdown 側には `beginShutdown()`(#L213)が加わりました。
 - module reference/pointer は `PelicanCore::run()` の外へ保持してはいけません。container destructor 後は無効です。
 - destructor から新しい `GET_MODULE` を呼ぶと、teardown 中に module を再生成し得ます。destructor は既に所有する dependency を使うか、明示 teardown で完結させる方が安全です。
 - `get()` は dependency injection seam ではありません。pure algorithm をテストしたい場合は、frame planner のように module から切り離した free function/value 層を作る設計が合います。
@@ -68,7 +69,7 @@ ECS の `EntityId` だけは別で、index に generation を付けて stale ent
 
 ### event 登録の展開
 
-[`PELICAN_REGISTER_EVENT_IMPL`](../../src/core/userpublic/details/event/registerer.hpp#L121) は概念的に2つを生成します。
+[`PELICAN_REGISTER_EVENT_IMPL`](../../src/core/userpublic/details/event/registerer.hpp#L191) は概念的に2つを生成します(macro 本体は [`PELICAN_REGISTER_EVENT`](../../src/core/userpublic/details/event/registerer.hpp#L205))。
 
 1. `EventCatalogTag<N>` に対する `pelicanEventCatalogEntry(...) -> EventCatalogEntry<MyEvent>` overload。
 2. anonymous namespace の static object。constructor で `registerEvent<MyEvent>("MyEvent")`。
@@ -77,7 +78,7 @@ ECS の `EntityId` だけは別で、index に generation を付けて stale ent
 
 ### system 登録の展開
 
-[`PELICAN_REGISTER_SYSTEM_IMPL`](../../src/core/userpublic/details/system/registerer.hpp#L128) も static object を作ります。その constructor は、system macro より前に見えている event catalog entry を `0..N-1` まで compile-time に探索します。`System` に `onEvent(const Event&, GameContext&)` があれば function pointer table へ追加し、最後に system 本体を登録します。
+[`PELICAN_REGISTER_SYSTEM_IMPL`](../../src/core/userpublic/details/system/registerer.hpp#L134) も static object を作ります(macro 本体は [`PELICAN_REGISTER_SYSTEM`](../../src/core/userpublic/details/system/registerer.hpp#L151))。その constructor は、system macro より前に見えている event catalog entry を `0..N-1` まで compile-time に探索します。`System` に `onEvent(const Event&, GameContext&)` があれば function pointer table へ追加し、最後に system 本体を登録します。
 
 ```cpp
 PELICAN_REGISTER_EVENT(Damage)
@@ -94,13 +95,15 @@ PELICAN_REGISTER_SYSTEM(CombatSystem, 100)
 - object file が最終 executable へ link されなければ static constructor も走りません。
 - `__COUNTER__` は translation unit ごとであり、process-wide event ID ではありません。runtime の同一性は `std::type_index` と名前で判定します。
 
-runtime update 順は static 初期化順ではなく、[`sortGameSystemRegistrations()`](../../src/core/userpublic/details/system/registerer.cpp#L22) が `(order, name)` で決めます。ここは決定論的です。
+runtime update 順は static 初期化順ではなく、[`sortGameSystemRegistrations()`](../../src/core/userpublic/details/system/registerer.cpp#L23) が `(order, name)` で決めます。ここは決定論的です。
+
+registry の各登録には [`RegistrationOwner`](../../src/core/userpublic/details/system/registerer.hpp#L31)(engine / game DLL)が付きます。game DLL reload では [`unregisterGameSystems(owner)`](../../src/core/userpublic/details/system/registerer.hpp#L121) が旧 DLL の static 登録を外し、新 DLL の static 初期化が再登録します。また event 型は [`EventPayloadSchema`](../../src/core/userpublic/details/event/payloadschema.hpp#L53) で宣言的 payload schema を持てるようになり、`fail_*` fixture は compile-time 検証([`run_event_schema_compile.cmake`](../../test/run_event_schema_compile.cmake))になっています。
 
 ### event 名と RPC payload
 
-[`eventDisplayName()`](../../src/core/userpublic/details/event/registerer.cpp#L13) は namespace qualifier を落とします。`foo::Changed` と `bar::Changed` は同じ `Changed` になり、異なる型なら duplicate error です。
+[`eventDisplayName()`](../../src/core/userpublic/details/event/registerer.cpp#L17) は namespace qualifier を落とします。`foo::Changed` と `bar::Changed` は同じ `Changed` になり、異なる型なら duplicate error です。
 
-RPC の `inject_event` 用 JSON loader は [`registerEvent<Event>()`](../../src/core/userpublic/details/event/registerer.hpp#L49) で選ばれます。
+RPC の `inject_event` 用 JSON loader は [`registerEvent<Event>()`](../../src/core/userpublic/details/event/registerer.hpp#L62) で選ばれます。
 
 - default constructible かつ `ref(JsonArchiveLoader&)` がある: payload を field へ load。
 - default constructible だが `ref` がない: default event を作り、渡された payload は使わない。
@@ -110,7 +113,7 @@ C++ の `GameContext::emit(event)` は copy した値をそのまま queue に�
 
 ### system instance の寿命
 
-[`gameSystemInstance<System>()`](../../src/core/userpublic/details/system/registerer.hpp#L42) は function-local static です。module container と違い、`PelicanCore::run()` ごとには再生成されません。同一 process で engine を複数回 run する test/tool では、System の member state が明示 reset されない限り次の run に残ります。
+[`gameSystemInstance<System>()`](../../src/core/userpublic/details/system/registerer.hpp#L44) は function-local static です。module container と違い、`PelicanCore::run()` ごとには再生成されません。同一 process で engine を複数回 run する test/tool では、System の member state が明示 reset されない限り次の run に残ります。ただしこの注意が残るのは **engine 側の System のみ**です。game System は DLL 内 static なので、DLL reload 後は新インスタンスになり、member state は持ち越されません。
 
 ## 9.4 `GameObjects::add()` の typestate builder
 
@@ -207,7 +210,7 @@ create/remove/clear の再入は [`MutationScope`](../../src/core/userpublic/det
 
 ## 9.7 内部 ECS scheduler の並列性
 
-内部 ECS system は template 引数の pointer constness から read/write component index を抽出します。[`registerSystem()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L149) で `const T*` は read、`T*` は write です。
+内部 ECS system は template 引数の pointer constness から read/write component index を抽出します。[`registerSystem()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L166) で `const T*` は read、`T*` は write です。現在の signature は instance 参照を受け取り `SystemId` を返す形で、登録時に [`static_assert`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L167) が「batch か per-chunk のどちらかの process 形」を必須にします。
 
 ただし現在、`write_indices` は実行後の version 更新に使われる一方、`read_indices` は保存されるだけで scheduler から参照されません。change 判定は要求 Component 全体の `component_indices` を見ます。system 間の競合 edge は自動生成せず、並列 level を決めるのは明示 `depends_list` だけです。
 
@@ -220,11 +223,15 @@ level 1: D, E     -> parallel jobs -> wait
 
 注意点は次です。
 
-- 同じ component を書く2 system でも、依存を明示しなければ同 level で race し得ます。
+- 同じ component を書く2 system でも、依存を明示しなければ同 level で race し得ます。なお「組み込み System は全て依存なし」は失効しました。現在は [`predefined.cpp`](../../src/core/ecs/predefined.cpp) が明示依存を張ります(AnimationSystem←model_update、SimpleModelViewTransformSystem←{local_transform, model_update}、CameraSystem←local_transform、SpriteViewRenderSystem←local_transform)。
 - `read_indices` / `write_indices` が conflict graph を自動構築するわけではありません。
 - graph cycle がある場合、cycle 内 system は zero-degree queue に入らず、現実装は「全 system を取り出したか」を検証しません。frame graph planner と違い、cycle error ではなく cycle 部分が実行されない挙動です。
 - dependency のない system の列挙元は `unordered_map` です。同 level の開始順を意味のある順序として使わないでください。
-- system が batch 版 `process(std::vector<ChunkView<...>>)` と per-chunk 版 `process(tuple,count)` の両方を定義すると、[`p_func` の独立した2つの `if constexpr`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L201) により両方が呼ばれます。
+- system が batch 版 `process(std::vector<ChunkView<...>>)` と per-chunk 版 `process(tuple,count)` の両方を定義すると、[独立した2つの `if constexpr`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L244)(per-chunk 側は #L286)により両方が呼ばれます。
+
+### prepare フェーズ: worker job 内の `GET_MODULE` を避ける新しい作法
+
+level 実行前に、scheduler は各 System の [`prepare_func`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L424) を owner thread で呼びます。System は `prepareEcsWorkerDependencies()`(例: [`camerasystem.cpp#L9`](../../src/core/ecs/predefined/camerasystem.cpp#L9))で `GET_MODULE` を owner thread 上で済ませます。9.1 の `freezeCreation()` により worker job 内からの新規 module 生成は失敗するため、この prepare 契約が新しい落とし穴であり作法です。
 
 game system registry はこれとは別機構で、現在は `(order,name)` 順の直列 update です。2種類の「System」を混同しないでください。
 
@@ -236,22 +243,22 @@ non-force system は matching chunk の component version と `last_run_tick` �
 
 ## 9.8 Camera、light、collider はすべて同じ ECS component ではない
 
-scene の `components` 配列に見えても runtime binding は一様ではありません。[`prepareSceneBindings()`](../../src/core/loader/scene.cpp#L72) が分岐します。
+scene の `components` 配列に見えても runtime binding は一様ではありません。[`prepareSceneBindings()`](../../src/core/loader/scene.cpp#L78) が分岐します。
 
 | scene name | runtime 経路 |
 |---|---|
 | `transform`, `simplemodelview`, `camera` | ComponentInfo 経由で ECS chunk へ作成 |
 | `light` | ECS へ入れず `LightLoadEntry` として `LightContainer::load()` |
-| `collider` | ECS へ入れず `ColliderComponent` を parse し `PhysWorld::bindCollider()` |
+| `collider` | ECS へ入れず `ColliderComponent` を parse し `PhysWorld::bindCollider()`。`PELICAN_WITH_PHYSICS` OFF の build では collider を含む scene は明示エラー([`scene.cpp#L245`](../../src/core/loader/scene.cpp#L245)) |
 
 `ColliderComponent` に `init/deinit` があっても、現在の scene loader は special case です。`ECSCoreTemplatePublic::tryComponent<ColliderComponent>()` で取れる通常 ECS component だとは考えないでください。
 
 camera はさらに二重経路です。
 
-- `Camera::loadSceneCameras()` が scene document を再走査し、projection、controller、名前付き camera を module 内に構築。[`camera.cpp`](../../src/core/renderer/camera.cpp#L453)
+- `Camera::loadSceneCameras()` が scene document を再走査し、projection、controller、名前付き camera を module 内に構築。[`camera.cpp`](../../src/core/renderer/camera.cpp#L505)
 - 同じ object の `camera` marker と `transform` は ECS にも入り、forced [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L7) が最初の camera transform を module camera へ反映。
 
-名前付き camera/controller と「最初の ECS camera」の責務が重なるため、camera 変更では両方を追う必要があります。また `CameraSystem::process()` は現在 `count` を使わず先頭1件を読む実装です。camera archetype の空 chunk が残る可能性を含め、empty view を扱う修正ではここを重点的にテストしてください。
+名前付き camera/controller と「最初の ECS camera」の責務が重なるため、camera 変更では両方を追う必要があります。`CameraSystem::process()` は現在 [`count == 0` で早期 return](../../src/core/ecs/predefined/camerasystem.cpp#L14) するようになりましたが、「先頭1件のみ使用」は変わっていません。複数 camera entity を扱う修正ではここを重点的にテストしてください。
 
 ## 9.9 Frame graph が保証するもの、しないもの
 
@@ -260,19 +267,19 @@ camera はさらに二重経路です。
 ### planner
 
 - 自動 edge は宣言順で「直前 writer → reader」の RAW。
-- WAW は明示 edge で全 writer を順序付けないと [`validateWritesAreOrdered()`](../../src/core/renderingpass/frameplanner.cpp#L444) が拒否。
+- WAW は明示 edge で全 writer を順序付けないと [`validateWritesAreOrdered()`](../../src/core/renderingpass/frameplanner.cpp#L545) が拒否。
 - WAR は自動 edge なし。
 - `after` / `before` は control edge。
 - cycle は例外。
-- stable topological order は作るが、[`levels`](../../src/core/renderingpass/frameplanner.cpp#L632) は現在並列実行に使わない。
+- stable topological order は作るが、[`levels`](../../src/core/renderingpass/frameplanner.cpp#L723) は現在並列実行に使わない。
 
 ### barrier
 
 - ordered edge の同 resource write→read を barrier record にする。
 - 実行側 [`bufferReadAfterWriteBarrier()`](../../src/core/renderingpass/computetask.cpp#L501) は storage buffer だけに `vk::BufferMemoryBarrier` を出す。
-- image は layout tracker に依存。
+- image は layout tracker に依存。tracker のキーは `(rt_id, surface_index)` になり、history 付き target の現/旧 surface を別々に追跡します([`render_target_layout_tracker.cpp#L72`](../../src/core/vkcore/render_target_layout_tracker.cpp#L72))。
 - layout が変われば layout transition が memory dependency を含む。
-- storage image が `GENERAL`→`GENERAL` のままなら tracker は早期 return するため、compute→compute の image RAW 専用 barrier は調査時点で出ない。
+- storage image が `GENERAL`→`GENERAL` のままなら tracker は早期 return するため、compute→compute の image RAW 専用 barrier は現在も出ない([同 #L76](../../src/core/vkcore/render_target_layout_tracker.cpp#L76))。
 
 graph の node 順が正しいことと、Vulkan memory visibility が正しいことは別問題です。新 resource type を足すときは planner edge、runtime resource binding、stage/access mask、queue ownership の4点を一緒に設計します。
 
@@ -294,7 +301,7 @@ graph の node 順が正しいことと、Vulkan memory visibility が正しい�
 
 根拠は [`parseDispatch()`](../../src/core/renderingpass/computetask.cpp#L152)、[`registerBuffers()`](../../src/core/renderingpass/computetask.cpp#L287)、[`registerComputeTask()`](../../src/core/renderingpass/computetask.cpp#L407) です。
 
-compute task は dedicated compute queue へ submit せず、graphics frame command buffer に記録します。一方 [`pickQueues()`](../../src/core/vkcore/core.cpp#L54) の fallback は graphics と compute を別 family として受理できます。現 frame graph compute は graphics queue に compute capability があることを実質仮定していますが、fallback path はそれを必須検証していません。async compute を実装する場合は command pool/submit だけでなく queue family ownership transfer も必要です。
+compute task は dedicated compute queue へ submit せず、graphics frame command buffer に記録します。一方 [`pickQueues()`](../../src/core/vkcore/core.cpp#L130) の fallback は graphics と compute を別 family として受理できます。現 frame graph compute は graphics queue に compute capability があることを実質仮定していますが、fallback path はそれを必須検証していません。async compute を実装する場合は command pool/submit だけでなく queue family ownership transfer も必要です。
 
 ## 9.11 Shader reflection と hot reload の境界
 
@@ -307,9 +314,9 @@ reflection は descriptor layout と pipeline layout を source/SPIR-V から自
 
 hot reload は shader compile と pipeline rebuild を transactional にします。しかし descriptor layout を変更する edit は、shader body だけの edit より危険です。
 
-- [`handleShaderHotReload()`](../../src/core/vkcore/renderer.cpp#L418) は pipeline rebuild 後、fullscreen input descriptor を明示 rebind。
+- reload の publish は render 冒頭で [`consumeShaderReloadPublication()`](../../src/core/vkcore/renderer.cpp#L1106) が consume し、[`rebindFullscreenInputs()`](../../src/core/vkcore/renderer.cpp#L807) が fullscreen input descriptor を明示 rebind します(執筆時点の `handleShaderHotReload()` は分割されました)。
 - compute descriptor set は [`registerComputeTask()`](../../src/core/renderingpass/computetask.cpp#L407) 時に一度作り、hot reload path では作り直していません。
-- material/UI/debug の descriptor ownership も各 container に分散します。
+- material は [`prepareSurfaceMaterialReload()`](../../src/core/material/materialcontainer.hpp#L190) により surface/material 連動 reload に対応しました。UI/debug の descriptor ownership は各 container に分散したままです。
 
 したがって hot reload の安全な基本範囲は、既存 set/binding/type と push constant layout を保った shader body の変更です。layout-changing reload を正式対応するなら、pipeline 使用者ごとの descriptor rebuild notification が必要です。
 
@@ -317,7 +324,7 @@ hot reload は shader compile と pipeline rebuild を transactional にしま�
 
 pipeline、image view、buffer などは、CPU では旧 object に見えても GPU が前 frame の command から参照中かもしれません。[`DeletionQueueCore`](../../src/core/vkcore/deletionqueue.hpp#L16) は resource type を virtual base へ型消去し、defer frame を記録します。
 
-2 frames-in-flight 後に [`releaseEligible()`](../../src/core/vkcore/deletionqueue.cpp#L45) が `optional<T>.reset()` して本物の RAII destructor を呼びます。hot reload の [`replacePipeline()`](../../src/core/shader/pipelinefactory.cpp#L392) が代表例です。
+2 frames-in-flight 後に [`releaseEligible()`](../../src/core/vkcore/deletionqueue.cpp#L45) が `optional<T>.reset()` して本物の RAII destructor を呼びます。hot reload の [`replacePipeline()`](../../src/core/shader/pipelinefactory.cpp#L450) が代表例です。
 
 変更時の原則は次です。
 
@@ -335,11 +342,11 @@ pipeline、image view、buffer などは、CPU では旧 object に見えても 
 | `JsonArchiveLoader` | 実装済み。scene component/event JSON load に使用 | [`jsonarchive.cpp`](../../src/core/userpublic/serialize/jsonarchive.cpp#L6) |
 | `JsonArchiveSaver` | `prop` 宣言のみで、この repository 内に定義なし | [`jsonarchive.hpp`](../../src/core/userpublic/serialize/jsonarchive.hpp#L30) |
 | `BinaryArchive` | `prop` 宣言のみで、この repository 内に定義なし | [`binaryarchive.hpp`](../../src/core/userpublic/serialize/binaryarchive.hpp#L10) |
-| pose action | schema/type は parse 可能だが OpenXR binding 解決は明示 error | [`InputActionFrame::pose()`](../../src/core/os/actionmap.cpp#L515) |
-| `.surface` / material format | pure parser と tests は存在。`src/core` runtime material loader への接続は調査時点でなし | [`surfaceformat.hpp`](../../src/project/surfaceformat.hpp#L48) / [`materialformat.hpp`](../../src/project/materialformat.hpp#L41) |
+| pose action | **実装済み**(WP130/132)。pose は `poses` map から返り、未サンプルなら default `ActionPose`。flat 環境では pose サンプルが来ないので default が返る点に注意 | [`actionmap.cpp`](../../src/core/os/actionmap.cpp#L683) |
+| `.surface` / material format | **runtime 接続済み**(WP116/117/122)。`.surface` は surfacecompiler で pipeline に、`.material.json` は lowering を経て `MaterialContainer` へ | [`surfacecompiler.hpp`](../../src/core/shader/surfacecompiler.hpp) / [`materiallowering.hpp`](../../src/project/materiallowering.hpp) |
 | Studio project editor | Qt/QML prototype。load/save、scene editing、engine IPC は未接続 | [`MainWindow`](../../src/devstudio/view/mainwindow.cpp#L10) |
-| swapchain capture | `readbackLastFrameRGBA8()` は例外。capture は headless 用 | [`swapchainframetarget.cpp`](../../src/core/vkcore/swapchainframetarget.cpp#L316) |
-| frame graph levels | 計算/JSON 出力のみ。runtime は直列 node loop | [`executePlannedFrameGraph()`](../../src/core/vkcore/renderer.cpp#L317) |
+| swapchain capture | surface が TRANSFER_SRC を持てば windowed でも readback 実装済み。不可時のみ `capture unavailable_windowed` 例外 | [`swapchainframetarget.cpp`](../../src/core/vkcore/swapchainframetarget.cpp#L435) |
+| frame graph levels | 計算/JSON 出力のみ。runtime は直列 node loop | [`executePlannedFrameGraph()`](../../src/core/vkcore/renderer.cpp#L575) |
 | custom Component public registration | ID macro はあるが安定 public boot hook なし | [`component/registerer.hpp`](../../src/core/userpublic/details/component/registerer.hpp#L19) |
 
 optional build feature には stub 実装もあります。たとえば SeqPlayer/VAT/RPC/audio は build option により実装または disabled behavior が選ばれます。header が同じでも build artifact の能力は [`build_features.hpp`](../../src/core/build_features.hpp#L1) と各 `*_stub.cpp` を確認してください。
@@ -348,14 +355,18 @@ optional build feature には stub 実装もあります。たとえば SeqPlaye
 
 | 症状 | 最初の確認 | 次の確認 |
 |---|---|---|
-| 起動中に module constructor 例外 | module initialization log、[`PelicanCore::run()`](../../src/core/userpublic/pelican_core.cpp#L32) | constructor 内の `GET_MODULE` 依存 chain |
+| 起動中に module constructor 例外 | module initialization log、[`PelicanCore::run()`](../../src/core/userpublic/pelican_core.cpp#L44) | constructor 内の `GET_MODULE` 依存 chain |
+| 起動後の `GET_MODULE` で例外 | `freezeCreation()` 後の新規 module 生成でないか | `prepareRuntimeModules()` / prepare フェーズへの依存先解決の移動 |
 | entity が突然無効 | [`EntityId` generation](../../src/core/userpublic/details/ecs/entity.hpp#L12)、scene transition | remove/clear と stale handle test |
 | component pointer の値が別 entity になる | [`swap-delete`](../../src/core/userpublic/details/ecs/chunk.cpp#L71) | pointer を structural mutation 越しに保持していないか |
 | ECS system が動かない | matching component mask、force/version | explicit dependencies の cycle、empty chunk |
 | ECS system が時々壊れる | 同 level の read/write conflict | `depends_list`、raw mutation、JobSystem race |
 | game system event が来ない | event macro が system macro より前に可視か | `onEvent` の完全な型 signature、event 短縮名 |
 | RPC event payload が空 | event に `ref(JsonArchiveLoader&)` があるか | default-only JSON loader branch |
-| frame graph の順が違う | [`currentFramePlanJson()`](../../src/core/vkcore/renderer.cpp#L449) | reads/writes、after/before、declaration index |
+| frame graph の順が違う | [`currentFramePlanJson()`](../../src/core/vkcore/renderer.cpp#L992) | reads/writes、after/before、declaration index |
+| XR だけ表示が壊れる | `#xr` variant の feature 除外(`xr_excluded_features`) | `graph_variant_transition_trace`、XR feature policy |
+| TAA の ghosting・再投影が乱れる | temporal reset のトリガ(set_time / camera 不連続 / resize / view 数 / variant 切替) | `resetTemporalHistory()`、previous object/skin/morph buffer |
+| game DLL reload 後に状態が消える/残る | `RegistrationOwner` と DLL 内 static の寿命 | engine 側 System の function-local static(こちらは残る) |
 | Vulkan validation の RAW error | buffer/image、stage/access、layout | `GENERAL→GENERAL` image case、queue family |
 | shader reload 後だけ壊れる | compile log、reflection diff | descriptor/push layout を変更していないか |
 | resize 後だけ texture が古い | target recreate と fullscreen rebind | 該当 pass が独自 descriptor を cache していないか |
@@ -382,6 +393,9 @@ optional build feature には stub 実装もあります。たとえば SeqPlaye
 - old GPU object を遅延破棄したか。
 - buffer と image の両方に正しい stage/access barrier があるか。
 - headless と swapchain の両 frame target で成立するか。
+- flat と `#xr` の両 graph variant で成立するか。
+- temporal history(history RT、object/skin/morph/override history)の reset 経路を更新したか。
+- view 数変化時の FrameResources slot 再構成(device idle 待ち)を守ったか。
 - plan fixture、execution trace、golden image を確認したか。
 
 ### public API/RPC を変更する
@@ -390,6 +404,24 @@ optional build feature には stub 実装もあります。たとえば SeqPlaye
 - frame boundary のどこで反映されるかを定義したか。
 - error を invalid params と application error のどちらにするか決めたか。
 - stdout へ protocol 外文字列を出していないか。
+- 公開する関数/型に `PELICAN_API` を付けて DLL export したか。
+- game DLL ABI(`gameLogicAbiVersion`)を壊していないか。
 - pure parser test と actual player subprocess test の両方があるか。
+
+## 9.16 logical frame と XR の不変条件(WP128〜135)
+
+### logical frame の不変条件
+
+`renderLogicalFrame()` は次を破ると例外にします([`renderer.cpp#L1153-L1167`](../../src/core/vkcore/renderer.cpp#L1153)): 全 view が同じ in-flight frame index を共有すること、全 view の extent が等しいこと、target の color format がコンパイル済み graph と一致すること。FrameUBO slot は `in_flight × view_count + view` の式で選ばれます(WP128 レポート: [`docs/design_reviews/2026-07-17_wp128_report.md`](../design_reviews/2026-07-17_wp128_report.md))。
+
+### XR mirror は「drop 可能な optional sink」
+
+[`try_render_begin()`](../../src/core/vkcore/frametarget.hpp#L24) が false を返すのはフレームドロップであり、描画失敗ではありません(WP133)。mirror 経路にエラー処理を足すときに、この false を error に昇格させないでください。
+
+### XR の forced-off は決定的
+
+headless / RPC / golden / replay では XR は決定的に off です([`xrForcedOffDriver()`](../../src/core/xractivation.hpp#L55))。`--xr on` とこれらの組み合わせはエラー方向です([`resolveXrActivation()`](../../src/core/xractivation.hpp#L89))。「headless テストで XR コードが動かない」のはこの activation 規約によるものです。
+
+---
 
 Pelican の複雑さは、ECS と Vulkan そのものよりも「compile-time 型情報を runtime table へ落とす境界」と「CPU 上の寿命を frame/GPU 上の寿命へ写す境界」に集まっています。その2か所では、便利な macro や RAII の表面だけでなく、登録時刻、pointer の有効期間、barrier、破棄順まで追うのが安全です。

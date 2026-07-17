@@ -1,6 +1,6 @@
 # 第4章 シーンと ECS
 
-対象: pelican2(2026-07-16 時点)/ このマニュアルはコードを正とする
+対象: pelican2(2026-07-17 時点)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
@@ -182,7 +182,7 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 | `start_time` | 任意 | 0.0 | 開始オフセット秒 |
 | `graph` | 禁止 | — | v1 予約キー(存在するだけでエラー)。グラフ再生は C++ API — [第8章](08_gameplay.md) |
 
-制限: 補間は LINEAR / STEP のみ(CUBICSPLINE はロードエラー)、モーフターゲットは非対応(VRM-S1 送り)、joint 上限 128。時刻源は `EngineTime`(rpc `set_time` と同一経路 = 決定的)。
+制限: 補間は LINEAR / STEP のみ(CUBICSPLINE はロードエラー)、joint 上限 128。モーフターゲットは描画対応 ✅WP121(初期 weight で表示)ですが、**クリップの `weights` チャネルは v1 非対応**(表情などの weight 駆動は [第8章](08_gameplay.md) §8.12 の VRM service 経由)。時刻源は `EngineTime`(rpc `set_time` と同一経路 = 決定的)。
 
 ### sprite_view(✅WP103/104/106)— 2D スプライト
 

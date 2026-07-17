@@ -1,6 +1,6 @@
 # 第12章 コード読解ガイド(技術解説書)
 
-対象: pelican2(2026-07-16 時点)/ このマニュアルはコードを正とする
+対象: pelican2(2026-07-17 時点)/ このマニュアルはコードを正とする
 
 この章は他章と目的が違います。第1〜11章が「エンジンを**使う**ための説明書」なのに対し、この章は「エンジンの**中身を読む**ための地図」です。より深いクラス単位の解説(ライフサイクル・インターフェース索引・落とし穴集)は [../source-code-guide/](../source-code-guide/README.md) にあります — 本章は入口・概観、詳細はそちらへ。すべての節にソースへの相対リンクを張ってあるので、エディタ(VS Code 等)や GitHub 上でクリックしながら読み進められます。
 
@@ -29,6 +29,7 @@ pelican2/
     example/       … 実例プロジェクト(全 JSON 形式の生きた見本)
     sprite_demo/   … 2D 横スクロールの vertical slice(sprite / pixel policy / platformer)
     animgraph_demo/ … アニメーショングラフのデモ(歩き↔走り + ジャンプ割込み)
+    vrm_xr_demo/   … VRM キャラ + OpenXR デモ(flat-first。表情・視線・一人称)
   test/          … Catch2 単体 + golden + fixtures + run_*.cmake 結合テスト
   docs/          … 設計文書(design_*.md)・指示書・本マニュアル
   experiments/   … スパイク(spvlink 等。本体にリンクされない)
@@ -58,6 +59,7 @@ pelican2/
 | [watch/](../../src/core/watch) | アセットホットリロード基盤(FileWatcher / ReloadService) | — |
 | [gamelogic/](../../src/core/gamelogic) | ゲームロジック DLL のロード・ホットリロード(G2) | — |
 | [persistence/](../../src/core/persistence) | user:// 設定・セーブ(pelican.settings v1) | — |
+| [openxr/](../../src/core/openxr) | OpenXR(discovery / session / composition / viewspace / action / feature policy / mirror) | [openxrsession.hpp](../../src/core/openxr/openxrsession.hpp)。activation 判定は [xractivation.hpp](../../src/core/xractivation.hpp)、XR フレーム順序は [loop.cpp](../../src/core/appflow/loop.cpp) |
 | [communication/](../../src/core/communication) | stdio JSON-RPC サーバ | [rpcserver.cpp](../../src/core/communication/rpcserver.cpp) |
 | [resources/](../../src/core/resources) | `engine://` 埋め込みリソースの実体(シェーダ・feature JSON・既定設定) | [features/](../../src/core/resources/features) |
 | 直下 | モジュール機構・ハンドル・ログ・起動設定 | [container.hpp](../../src/core/container.hpp), [handle.hpp](../../src/core/handle.hpp), [launchconfig.hpp](../../src/core/launchconfig.hpp) |
@@ -198,7 +200,7 @@ pelican2/
 ## 12.9 テストから読む(テストは実行可能な仕様)
 
 - **形式の仕様を知りたい** → [test/fixtures/](../../test/fixtures) の valid/invalid ペア + `expectations.json`(error_kind 付き)。パーサが何を受理し何を拒むかの正確な一覧です
-- **描画の正解を知りたい** → [test/golden/](../../test/golden)(33 ケース。case.json + expected.png + tolerance.json。ディレクトリを置くだけで自動発見)。`clear` が最小、`surface_toon` / `temporal_accumulation` / sprite 系 9 種が応用。expected.png は encoded-sRGB 契約(`test/golden/README.md`)
+- **描画の正解を知りたい** → [test/golden/](../../test/golden)(49 ケース。case.json + expected.png + tolerance.json。ディレクトリを置くだけで自動発見)。`clear` が最小、`surface_toon` / `taa_*` 6 種 / `vrm_expression_*` / sprite 系 9 種が応用。expected.png は encoded-sRGB 契約(`test/golden/README.md`)
 - **ツールの使い方の実例** → [test/](../../test) の `run_*.cmake`(player / pelican_cli を実際に子プロセス起動する結合テスト)。特に `run_rpc_headless.cmake` は RPC セッションの生きたサンプル
 - テスト登録は `pelican_define_test(<name> [libs...])`([test/CMakeLists.txt](../../test/CMakeLists.txt))。GPU 必須テストはデバイス列挙失敗時 SKIP
 

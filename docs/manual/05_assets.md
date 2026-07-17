@@ -1,6 +1,6 @@
 # 第5章 アセットパイプライン
 
-対象: pelican2(2026-07-16 時点)/ このマニュアルはコードを正とする
+対象: pelican2(2026-07-17 時点)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
@@ -43,10 +43,11 @@
 
 仕様上の注意:
 
-- `models` 配列は必須、各要素は `name` と `path`(プロジェクトルート基準)の両方が必須です。※この JSON には `schema`/`version` エンベロープがありません(R10 規約の現行例外)。`path` には `#` フラグメント(§5.6)も書けます: `{"name":"selected","path":"assets/models/city.glb#mesh/LampPost"}`。
+- `models` 配列は必須、各要素は `name` と `path`(プロジェクトルート基準)の両方が必須です。※この JSON には `schema`/`version` エンベロープがありません(R10 規約の現行例外)。`path` には `#` フラグメント(§5.6)も書けます: `{"name":"selected","path":"assets/models/city.glb#mesh/LampPost"}`。任意キー `material_bindings`(`pelican.material_bindings` v1 への参照 — プリミティブ → マテリアルの whole-model 契約。✅WP116、fragment モデルには不可)も書けます。
 - **起動時に全件ロード**されます(✅WP82 で CPU 側は並列化・GPU 登録は宣言順直列 = 決定的)。ファイルが無ければ解決後の絶対パス入りで fail-fast。
 - 静的メッシュはノード階層の変換が**頂点に焼き込まれて平坦化**されます。マテリアルは pbrMetallicRoughness の 4 テクスチャ(baseColor / metallicRoughness / normal / emissive)として登録されます(色テクスチャは SRGB view — [第6章](06_rendering.md) §6.3)。
-- **スケルタルアニメーションは ✅WP38 で実装済み**: glTF の `skins` + `animations` を読み、シーンの `animation` コンポーネント([第4章](04_scene_ecs.md))で再生します。skinned プリミティブはスケルトンを保持します(焼き込まない)。制限: 補間は LINEAR / STEP のみ(CUBICSPLINE はロードエラー)、**モーフターゲットはロードエラー**(VRM-S1 送り)、joint 上限 128、クリップはモデルと同一 glb のみ。
+- **スケルタルアニメーションは ✅WP38 で実装済み**: glTF の `skins` + `animations` を読み、シーンの `animation` コンポーネント([第4章](04_scene_ecs.md))で再生します。skinned プリミティブはスケルトンを保持します(焼き込まない)。制限: 補間は LINEAR / STEP のみ(CUBICSPLINE はロードエラー)、joint 上限 128、クリップはモデルと同一 glb のみ。
+- **モーフターゲットは ✅WP121 で描画対応**: `primitive.targets` の POSITION/NORMAL/TANGENT delta をデコードし、初期 weight(node > mesh > 0)で material / shadow / velocity の全経路に適用します(変形順は morph → skinning → model)。制限: sparse morph accessor 非対応(名指しエラー)、target 64/primitive・weight 256/instance、同一 primitive の **morph + VAT 併用は拒否**。**アニメクリップの `weights` チャネルは今もロードエラー**で、実行時に weight を動かす公開経路は VRM expression service([第8章](08_gameplay.md) §8.12)だけです。
 - モデルファイル(.glb/.gltf/.vrm)は実行中のホットリロード対象です(✅WP110 — [第10章](10_tools.md) §10.5)。
 
 ### テクスチャ・画像と atlas(`textures` セクション ✅WP103)
@@ -138,6 +139,10 @@ pelican_player --headless --project <dir> --frames 3 --size 160x90 --fps 30 \
 
 現状の注意: 変換ツール集 **pelican-import-tools は独立リポジトリとして実装済み**(✅WP81 = K3。Python 製 `psd_extract` + `atlas_pack`、出力は `pelican.atlas` + import manifest)ですが、本リポジトリには含まれません。Houdini アダプタも別リポジトリです。Blender ブリッジは依然 📐(FBX→glb の標準変換レーンは「Blender headless」と決定済み)。エンジン側の受け口(headless 描画・SeqPlayer・VAT・import・rules)はすべて完成しています。
 
+**USD レーン(✅WP118/119/124)**: import-tools に production の `usd` レシピが入りました。USD/USDZ を「`model.glb` + `scene.json`(pelican.scene v1)+ `materials.json`(pelican.material v1 — OpenPBR values + routing)+ `material_bindings.json` + PNG 群 + `manifest.json`」の決定的 delivery に変換します(二回ビルドの hash 一致 gate 付き。toolchain は `usd-core==26.5` に pin)。**エンジンは USD を 1 byte も読みません**(二層モデル不変 — エンジン側にあるのは fixture / golden / manifest 受理のみで、`pelican_cli import --rules` のレシピ表に usd はありません)。UsdMtlx は Windows wheel 非同梱のため外部 .mtlx は評価されず、authored 値のみ解釈されます。
+
+import manifest の受理拡張: outputs の schema に `pelican.material`(v1)が追加され、**`khronos.ktx2` 出力には `version: 2` が必須**になりました(欠落・不一致は expected/actual 付きの名指しエラー)。
+
 ## 5.6 フラグメント参照とアセットコンテナ(✅実ロード対応・WP55/77/79/84)
 
 1 ファイル(コンテナ)内のサブアセットを指す構文が [PF] v6.3 で凍結され、✅WP77(K1)で**実際の部分ロード**が入りました:
@@ -191,7 +196,7 @@ glob → レシピの中央表(`pelican.import_rules` v1)で一括取り込み�
 
 | 形式 | 用途 | 状態 |
 |---|---|---|
-| glb / glTF / VRM | モデル(メッシュ+PBR+スキン) | ✅(スケルタル再生 ✅WP38。VRM 拡張のセマンティクスは ✅WP111 で保持・検証・dump まで — レンダラ適用は 📐VRM-S1 以降) |
+| glb / glTF / VRM | モデル(メッシュ+PBR+スキン+モーフ) | ✅(スケルタル ✅WP38・モーフ ✅WP121。VRM は decode/dump ✅WP111 + **表情/マテリアル色/textureTransform ✅WP123b + bone lookAt/firstPerson ✅WP134** — MToon シェーディング本体・springbone は 📐) |
 | PNG / JPG | テクスチャ・UI 画像 | ✅ |
 | EXR(限定スコープ) | HDR テクスチャ | ✅ WP26(`PELICAN_WITH_EXR`) |
 | KTX2(制限サブセット) | 圧縮テクスチャ(RGBA8/BC7/BC5) | ✅ WP92 |
@@ -209,7 +214,8 @@ glob → レシピの中央表(`pelican.import_rules` v1)で一括取り込み�
 | GLSL / SPIR-V | シェーダ([第6章](06_rendering.md)) | ✅ |
 | pelican.pointcache | パーティクル点群 | 📐 方向決定のみ |
 | PSD(外部展開) | UI ソース | ✅ K3(外部 pelican-import-tools が展開。エンジンは読まない) |
-| FBX / USD / .hip | ソース層(エンジンは読まない) | — 外部変換のみ(USD レーンは 📐 [../design_usd_openpbr.md](../design_usd_openpbr.md)) |
+| USD / USDZ | ソース層(エンジンは読まない) | ✅ 外部 pelican-import-tools の `usd` レシピ(WP118/119/124 — §5.5)。UsdSkel / camera / anim は 📐U-USD1 以降 |
+| FBX / .hip | ソース層(エンジンは読まない) | — 外部変換のみ |
 
 ## 関連文書
 

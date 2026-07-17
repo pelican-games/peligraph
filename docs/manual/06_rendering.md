@@ -1,16 +1,17 @@
 # 第6章 レンダリング
 
-対象: pelican2(2026-07-16 時点)/ このマニュアルはコードを正とする
+対象: pelican2(2026-07-17 時点)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
 - レンダリングパイプラインを **JSON だけ**で定義する方法(rendering config)
 - パス種別(`material` / `fullscreen` / `output_transform` / `ui` / `shadow_depth` / `velocity` / `debug_draw` / `debug_text`)と compute タスク
 - カラーパイプライン(SRGB スワップチェーン + リニアワークフロー)で気をつけること
-- feature(1 行で有効化できるパージ可能な GPU 機能)と canonical anchor
+- feature(1 行で有効化できるパージ可能な GPU 機能)— canonical anchor・パラメータ・named binding
 - フレームグラフ(依存宣言 → 機械最適化 → 手詰め)とプランダンプ
 - シェーダ基盤 — stem 参照・FrameUBO・ホットリロード・descriptor set 規約
-- マテリアル(`.surface` + `pelican.material`)、テンポラル(history/velocity)、2D スプライト
+- マテリアル(`.surface` + `pelican.material` + **OpenPBR**)、テンポラル(history / velocity / **projection jitter / 標準 TAA**)、2D スプライト
+- OpenXR ステレオレンダリング(論理フレーム / feature policy / ミラー)
 
 ## 6.1 全体像
 
@@ -143,7 +144,7 @@ GLSL からは `#include "pelican_sets.glsl"` / `#include "pelican_frame.glsl"` 
 
 push constant は 128B(エンジン 64B + シェーダ 64B)で、✅**リフレクション段階で enforcement 済み**です(4B align・128B 上限・エンジン領域の部分使用をパイプライン作成前に拒否)。エンジン頂点レイアウトは location 0=`inPos`, 1=`inNormal`, 2=`inTexUV`, 3=`inColor`, 4=`inTangent`。
 
-エンジン同梱シェーダ(`engine://`、抜粋): `fullscreen` / `ssao` / `ssao_blur` / `bloom_*` / `tonemap` / **`output_transform`** / `shadow_depth` / `skinned` / `skinned_shadow_depth` / **`velocity` / `velocity_skinned`** / **`sprite`** / `debug_draw` / `debug_text` / `default` / `vat` / `ui`、マテリアルテンプレート `shaders/material/surface_v1.{vert,frag}` + `standard_lighting.glsl` / `toon_lighting.glsl`、公開 include 群 `shaders/include/pelican_*.glsl`。
+エンジン同梱シェーダ(`engine://`、抜粋): `fullscreen` / `ssao` / `ssao_blur` / `bloom_*` / `tonemap` / **`output_transform`** / `shadow_depth` / `skinned` / `skinned_shadow_depth` / **`velocity` / `velocity_skinned`** / **`taa_resolve` / `taa_composite`** / **`sprite`** / `debug_draw` / `debug_text` / `default` / `vat` / `ui`、マテリアルテンプレート `shaders/material/surface_v1.{vert,frag}` + `standard_lighting.glsl` / `toon_lighting.glsl` / **`openpbr_lighting.glsl`**、**OpenPBR wrapper 6 種 `engine://surfaces/openpbr/*.surface`**、公開 include 群 `shaders/include/pelican_*.glsl`。
 
 🚧 HLSL / Slang: `.surface` の `language` フィールドとして形式上は受理されますが、既定バックエンドは GLSL 以外を reject します(他言語は spv-link experimental の視野 — §6.7)。
 
@@ -159,7 +160,7 @@ push constant は 128B(エンジン 64B + シェーダ 64B)で、✅**リフレ�
 { "features": [ "engine://features/shadow_directional.json", "engine://features/velocity.json" ], ... }
 ```
 
-エンジン同梱 feature(8 個・✅すべて実装済み):
+エンジン同梱 feature(9 個・✅すべて実装済み):
 
 | feature | 内容 |
 |---|---|
@@ -167,12 +168,30 @@ push constant は 128B(エンジン 64B + シェーダ 64B)で、✅**リフレ�
 | `shadow_directional.json` | 2048×2048 シャドウマップ + `shadow_depth` パス挿入 + `lighting_pass` へ入力追加 |
 | `ui.json` | UI の GPU quad 描画(✅WP87。[第7章](07_input_ui.md)) |
 | `velocity.json` | モーションベクタ RT(`R16G16_SFLOAT`)+ `velocity` パスを `before:post_main` に挿入(✅WP88) |
+| `taa.json` | **標準 TAA**(resolve + composite の二パス + halton23/8 の jitter provider + スカラーパラメータ。§6.8)✅WP113 |
 | `sprite.json` | **純ゲート**(RT もパスも足さない)。参照すると `__anchor_sprite` でスプライトが描かれる(§6.9) |
 | `debug_draw.json` | ワイヤフレームオーバーレイ(collider 可視化など) |
 | `debug_text.json` | ビットマップ文字 HUD([第7章](07_input_ui.md)) |
 | `gpu_timing.json` | パスなしの計測フラグ。GPU パス単位タイムスタンプをログに出力 |
 
-fragment(`pelican.render_feature` v1)に書けるもの: `render_targets` / `buffers` / `compute_tasks`(追加。名前衝突はエラー。RT には `format_class` / `role` / `history` も書ける)、`render_target_overrides`(既存 RT の format/usage 等を上書き)、`passes`(`insert: "before:<アンカー|パス名>" | "after:<...>" | "end"`)、`pass_overrides`(既存パスへの input 追加)、`shader_defines`。`shadow_directional.json` の全文例は前版と同じです。
+fragment(`pelican.render_feature` v1)に書けるもの: `render_targets` / `buffers` / `compute_tasks`(追加。名前衝突はエラー。RT には `format_class` / `role` / `history` も書ける)、`render_target_overrides`(既存 RT の format/usage 等を上書き)、`passes`(`insert: "before:<アンカー|パス名>" | "after:<...>" | "end"`)、`pass_overrides`(既存パスへの input 追加)、`shader_defines`、**`parameters`(下記)**、**`projection_jitter`(§6.8)**。`shadow_directional.json` の全文例は前版と同じです。
+
+### feature パラメータと named binding(✅WP112/114)
+
+feature は**パラメータ化**できます。`features` 配列は文字列のほかに `{ref, parameters}` のインスタンス形式を受理します:
+
+```json
+"features": [
+  "engine://features/velocity.json",
+  { "ref": "engine://features/taa.json",
+    "parameters": { "scene_color": "lit_color", "alpha": 0.1 } }
+]
+```
+
+- feature 側は `parameters`(`pelican.render_feature_parameters` v1)で宣言します: `render_targets`(name / required / default / role / format_class / usage — **RT の named binding**)と `scalars`(`float` / `int` / `bool`。`default` 必須、float/int は `range: [min,max]` 必須)。
+- feature 本文の中では **`$<パラメータ名>`** プレースホルダで参照します(`$scene_color@history` も可)。未解決・型不適合は feature 名・パラメータ名入りの compose エラー。
+- スカラーは **`PELICAN_FEATURE_<FEATURE名>_<PARAM名>=<値>`** の値付き define に lower されます(float は 9 桁 round-trip 表記。値を変えるとシェーダキャッシュキーも変わる = 正しく再コンパイル)。
+- 解決結果は frame plan の `feature_instances` に出ます(`--dump-frame-plan` / Plan Viewer で確認可能)。
 
 ### canonical anchor(✅WP73)
 
@@ -248,11 +267,28 @@ vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, in PelicanSurfaceInputV1 s
 
 GPU への経路は params 宣言順の std140 レイアウト → set 2 binding 6 の `MaterialBuffer` SSBO です。値の同レイアウト・ホットリロードも効きます(✅WP105)。`pelican_cli dump-lowered-material <surface>` で生成物(lowered GLSL・レイアウト)を確認できます。
 
+### OpenPBR — 第 3 の標準サーフェス(✅WP116/117)
+
+standard / toon に続く**特権なしの standard library surface** として、OpenPBR Surface **1.1.1(exact pin)** のサブセットが同梱されています。使い方は wrapper を surface 参照するだけです(実物: [../../projects/example/materials/openpbr_coat.material.json](../../projects/example/materials/openpbr_coat.material.json)):
+
+```json
+{ "schema": "pelican.material", "version": 1, "materials": [ {
+    "name": "openpbr_1_1_1_coat_sphere",
+    "surface": "engine://surfaces/openpbr/opaque_double.surface",
+    "values": { "base_color": [0.12, 0.32, 0.72, 1.0], "coat_weight": 0.9, "coat_ior": 1.6 },
+    "routing": { "alpha_mode": "opaque", "double_sided": true } } ] }
+```
+
+- wrapper は `{opaque,mask,blend}_{single,double}` の 6 種(BRDF 本体は単一 include `openpbr_lighting.glsl`)。v1 サブセット = base / specular / IOR / coat 1 層 / emission / normal + coat normal / opacity / alpha_cutoff。非対応入力(transmission 等)は authored かつ寄与時のみ名前入り WARN。写像表の正は [../openpbr_1_1_1_mapping.md](../openpbr_1_1_1_mapping.md)。
+- `pelican.material` の additive キー: `textures`(宣言済みスロットの per-material 差し替え)/ `routing`(`alpha_mode` + `double_sided` — opaque/mask は depth write、blend は read-only)/ `defines`。
+- **primitive binding**: `pelican.material_bindings` v1(プリミティブ → マテリアル名の whole-model 契約)を asset_data の `models[].material_bindings` で参照できます(✅WP116。fragment モデルには適用不可)。
+
 ### 現状の重要な限界(バッジの肝)
 
-- レンダラ接続は ✅ — `.surface` → コンパイル → パイプライン → SSBO → 描画まで golden(`surface_toon` / `skeletal_toon`)で実証済みです。
-- **ただし、プロジェクトのモデルへ割り当てる公式経路は 🚧未実装**です。glb ロードは常に標準シェーダを割り当て、scene のマテリアル・コンポーネントや glb extras によるオーバーライドはまだ存在しません。現状 `.surface` を描画確認する公式手段はテストハーネス経由です。
-- **spv-link(M3b/WP80)は experimental**: 環境変数 `PELICAN_SPV_LINK=experimental` を明示したプロセスのみ SPIR-V リンクバックエンドに切り替わります(単体 CLI `pelican-spv-link` あり)。既定は常にソース経路で、production 昇格は保留中です。
+- レンダラ接続は ✅ — `.surface` → コンパイル → パイプライン → SSBO → 描画まで golden(`surface_toon` / `skeletal_toon` / `openpbr_coat_sphere`)で実証済みです。
+- **手書きの `.material.json` をプロジェクト起動時に読み込んでモデルへ割り当てる宣言的レーンは依然 🚧**です。既定のバインディング解決は **GLB 内の named material** にのみ働き(binding ABI ✅WP116)、OpenPBR golden もテストハーネスが登録を行っています。
+- **per-instance マテリアルオーバーライド**(factor / UV の乗算 + material 別の絶対上書き)は ✅WP122/122b で renderer 機構として実装済みです。公開の書き込み面は VRM application service([第8章](08_gameplay.md) §8.12)経由で、GameContext API はありません。
+- **spv-link(M3b/WP80)は experimental**: 環境変数 `PELICAN_SPV_LINK=experimental` を明示したプロセスのみ SPIR-V リンクバックエンドに切り替わります。既定は常にソース経路です。
 - 設計文書 [../design_material_shading.md](../design_material_shading.md) は v1.2 のまま実装が追い越しています。**現行契約の正は [../shader_contract.md](../shader_contract.md)** です。
 
 ## 6.8 テンポラルとスナップショット(✅T1/T2 = WP88/95、M3.5 = WP83)
@@ -277,7 +313,48 @@ RT 宣言に `"history": true` を付けると物理 2 面持ちになり、パ�
 
 `"features": ["engine://features/velocity.json"]` の 1 行で、UV 空間モーションベクタ RT(`R16G16_SFLOAT`)と `velocity` パスが `before:post_main` に入ります。スキンドメッシュも正しい変形速度が出ます(前フレームの skin palette 保持 — ✅WP95)。set 0 の `PreviousObjectBuffer` と FrameUBO の `previous_view/projection` が対応する機構です。
 
-📐 **TAA resolve/composite 自体は未実装**です。history / velocity と projection jitter は機構として ✅ですが、TAA という**ポリシー**はユーザー空間 feature として実装される設計です([../design_taa_jitter.md](../design_taa_jitter.md) v2.1)。jitter は feature の `projection_jitter: { "pattern": "halton23", "phases": 8 }` で宣言し、同時に有効化できる provider は 1 個です。既定は off です。
+### projection jitter(✅WP112/115)
+
+feature JSON のトップレベルで宣言します(同時に有効化できる provider は 1 個。既定 off — 参照しなければ golden byte 不変):
+
+```json
+"projection_jitter": { "pattern": "halton23", "phases": 8 }
+```
+
+- 名前付きパターンは `halton23`。**ユーザー定義数表**も同格です(✅WP115 — 名前付き系列に特権はなく、同じ数表を直書きすると全 byte 一致することが fixture で証明されています):
+
+```json
+"projection_jitter": { "pattern": "table", "offsets_px": [[0.0, -0.1667], [-0.25, 0.1667], [0.25, -0.3889]] }
+```
+
+(`offsets_px` は 1〜64 個・各成分 [-0.5, 0.5))
+
+- **consumer 別配送**: メイン raster / SSAO / sprite は jittered、velocity はジッタ減算済み、**shadow・カリング・rpc・ゲームプレイは非ジッタのまま**(カメラ公開 API 不変)。
+- **reset epoch**: 初回・リサイズ・`set_time`・カメラカット等で FrameUBO の epoch ペアが 1 フレームだけ不一致になり、シェーダは stateless に history 無効を判定できます。
+
+### 標準 TAA(✅WP113)
+
+TAA は**特権なしの標準 feature** です(エンジン本体は §6.8 冒頭の機構語彙だけを提供)。velocity と併せて 2 行で有効化できます:
+
+```json
+"features": [
+  "engine://features/velocity.json",
+  { "ref": "engine://features/taa.json",
+    "parameters": { "scene_color": "lit_color", "velocity": "velocity",
+                    "depth": "offscreen_depth", "downstream_color": "lit_color",
+                    "alpha": 0.1, "disocclusion_tau": 0.1, "depth_epsilon": 0.00001 } }
+]
+```
+
+全パラメータに default があるため `"engine://features/taa.json"` の 1 行でも動きます。`taa_resolve`(history 蓄積 + neighborhood clamp)→ `taa_composite` の二パスで、taa.json 自身が halton23/8 の jitter provider です。history 無効時(epoch 不一致・disocclusion)は current をそのまま出します。golden 7 件(静止・カメラ/オブジェクト移動・disocclusion・resize・set_time・ortho)で回帰保護。
+
+> **設計決定(temporal のユーザー管理境界・2026-07-16):** taa.json・resolve/composite シェーダ・パラメータ・ジッタ系列は**全部ユーザー管理**(プロジェクトへコピーして改造したら自分のもの)。エンジン側に残るのは 6 つの固定語彙(jitter 適用点・単一 provider 排他・FrameUBO 供給 field・history flip・velocity の前フレームデータ・reset epoch)だけで、判定基準は「5 年後に発展しているのはどちら側か」([../design_taa_jitter.md](../design_taa_jitter.md) §0-1、レシピは [../adding_features.md](../adding_features.md))。
+
+※ example の main config は TAA を有効化していません(必要なプロジェクトが 1 行足す方式)。OpenXR 起動時は TAA / jitter 系 feature は XR graph から自動除外されます(§6.12)。
+
+### per-instance マテリアルオーバーライド(✅WP122/122b — 機構)
+
+インスタンス単位の factor / UV 乗算オーバーライドと、`(インスタンス, glTF material index)` 単位の絶対上書きが renderer 機構として入っています(N/N-1 履歴付き — VRM 表情の適用先)。公開の書き込み面は VRM application service([第8章](08_gameplay.md) §8.12)で、rendering config に書くものはありません。
 
 ### 名前付きスクリーンスナップショット(屈折・歪みの入口)
 
@@ -318,7 +395,7 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 ```
 
 - パス JSON の `"swapchain"` 出力は自動的にオフスクリーンイメージへ解決されるので、**config は無変更で動きます**。出力 PNG は encoded-sRGB(§6.3)。
-- ゴールデンイメージテストは **33 ケース**(`test/golden/` — ディレクトリを置くだけで自動発見されます)。プラン比較テストとあわせて回帰保護の柱です。検証の流儀は [../rendering_phase1_review.md](../rendering_phase1_review.md)。
+- ゴールデンイメージテストは **49 ケース**(2026-07-17 時点。`test/golden/` — ディレクトリを置くだけで自動発見されます)。プラン比較テストとあわせて回帰保護の柱です。検証の流儀は [../rendering_phase1_review.md](../rendering_phase1_review.md)。
 
 > **設計決定(レイヤ規則):** `src/core/vkcore`(Vulkan 低層)から `src/core/renderingpass` 以上のレイヤへ include を追加しない。下位層はフラグを上げるだけで、編成は上位層 Renderer が行う。
 
@@ -341,6 +418,20 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 | `Shader defines require GLSL source, not SPIR-V` | .spv しか無い環境で feature(defines)を使った |
 | `Shader descriptor binding mismatch` | vert/frag で同一 binding の型が不一致 |
 | `Shader/pipeline transaction failed; keeping the previous generation: ...` | ホットリロード失敗(旧版継続中。ソースを直せば次の保存で回復) |
+| `placeholder has no resolved binding` / parameter 名入り compose エラー | feature の `$名前` に対応する binding / default が無い(§6.5) |
+| projection jitter provider の重複エラー | `projection_jitter` を宣言する feature を 2 個以上参照した(単一 provider 排他) |
+| `OpenXR activation rejected history feature '<name>'` ほか XR activation 拒否 | XR graph から除外できない temporal / UI 構成(§6.12) |
+
+## 6.12 OpenXR ステレオレンダリング(✅WP125〜135)
+
+`--xr on|auto` で起動すると([第2章](02_getting_started.md))、レンダラは**論理フレーム**単位の二眼描画に切り替わります。
+
+- **論理フレーム / view 分離(WP128)**: `renderLogicalFrame(target, view_count)` が共有更新(アニメ・リロード・共有アップロード・**temporal history の advance**)を論理フレームにつき**一回**だけ行い、view ごとに camera / projection / FrameUBO を切り替えてグラフを実行します。FrameUBO は in-flight × view のスロット制で、眼間の汚染を構造的に防ぎます。flat の `render()` は view_count=1 の互換アダプタです(golden byte 一致で保証)。
+- **コンポジション(WP129)**: XR 用は `IFrameTarget` とは別系統の `IXrCompositionTarget`。view ごとの swapchain 2 個 + per-swapchain 状態機械で、両 view を 1 つの projection layer・**単一の `xrEndFrame`** で提出します。
+- **座標系(WP131)**: `world_from_stage = inverse(フレーム開始時の active camera view)` — flat のカメラ API は不変のまま、XR アダプタ内でのみ変換します。reference space は STAGE → LOCAL_FLOOR → LOCAL の優先選択で、LOCAL への fallback 時は「床は非保証」を `get_status.xr` が明示します。
+- **feature policy(WP133)**: flat / XR の両グラフを起動時にコンパイルし、**XR グラフからは TAA・projection jitter・velocity・history・UI の feature を自動除外**します。除外できない構成(config 直書きの history 読み・UI パス・未知の history feature)は XR 起動を名指しで拒否します — **history を持つ自作 feature は `--xr on` を止める**ことに注意してください(vrm_xr_demo の config が features 空配列なのはこのため)。XR の出入り境界では temporal reset が 1 回入ります。
+- **ミラー(WP133)**: デスクトップウィンドウには左眼の best-effort ミラー(scale + letterbox、UI はミラー側にのみ重畳)。ウィンドウが詰まっても **HMD のフレームループは待たされません**。XR 中の従来 capture は名指しで拒否されます(headless / golden は常に flat 経路)。
+- ⚠ 制限: 実機(Quest 3 Link)での表示確認は未実施(WP136 = XR Simulator smoke が未着手)。multiview(XR2b)・深度 submit・world-space UI は 📐。セッション喪失時の再生成はループ側未配線(現状は終了)。
 
 ## 関連文書
 
@@ -352,7 +443,10 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 - [../design_headless_rendering.md](../design_headless_rendering.md) — ヘッドレス描画 [HL]。実装済み
 - [../design_material_shading.md](../design_material_shading.md) — マテリアル設計(v1.2。M2a〜M3.5 実装済み、現行契約の正は shader_contract.md)
 - [../design_postprocess_temporal.md](../design_postprocess_temporal.md) — history/velocity(実装済み)+ ポストスタック(一部 📐)
-- [../design_taa_jitter.md](../design_taa_jitter.md) — TAA + projection jitter(v2.1、projection jitter 機構は ✅)
+- [../design_taa_jitter.md](../design_taa_jitter.md) — TAA + projection jitter(v2.1・J1/J1b/J1c + 標準 TAA すべて実装済み)
+- [../design_usd_openpbr.md](../design_usd_openpbr.md) — USD レーン + OpenPBR(v2.1・M-PBR0/U-USD0 実装済み)
+- [../openpbr_1_1_1_mapping.md](../openpbr_1_1_1_mapping.md) — OpenPBR 写像表の正
+- [../design_openxr.md](../design_openxr.md) — OpenXR(v2.1・XR0〜XR4 実装済み。XR2b・実機 gate は未)
 - [../design_2d_game_layer.md](../design_2d_game_layer.md) — 2D ゲーム層(v2.4・S2D 実装済み)
 - [../design_asset_hot_reload.md](../design_asset_hot_reload.md) — アセットホットリロード(v2.1・HR0〜HR2-G 実装済み)
 - [第5章 アセット](05_assets.md) / [第9章 Web プロファイル](09_web.md) / [第10章 ツールリファレンス](10_tools.md)

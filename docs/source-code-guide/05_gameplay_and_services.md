@@ -4,22 +4,25 @@
 
 ## 5.1 `GameContext`は公開ファサード
 
-ゲームSystemが直接`GET_MODULE()`へ依存しなくて済むよう、[`GameContext`](../../src/core/userpublic/gamecontext.hpp#L20) が主要サービスを薄く包みます。
+ゲームSystemが直接`GET_MODULE()`へ依存しなくて済むよう、[`GameContext`](../../src/core/userpublic/gamecontext.hpp#L22) が主要サービスを薄く包みます。
 
 | API群 | 委譲先 | 実装へジャンプ |
 |---|---|---|
-| Action入力 | `Actions` / `InputActionsRuntime` | [`gamecontext.cpp#L22`](../../src/core/userpublic/gamecontext.cpp#L22) |
-| 時刻 | `EngineTime` | [`#L50`](../../src/core/userpublic/gamecontext.cpp#L50) |
-| ログ | quill logger | [`#L62`](../../src/core/userpublic/gamecontext.cpp#L62) |
-| object/transform | `GameObjects` | [`#L74`](../../src/core/userpublic/gamecontext.cpp#L74) |
-| physics query | `PhysWorld` | [`#L95`](../../src/core/userpublic/gamecontext.cpp#L95) |
-| camera | `Camera` | [`#L103`](../../src/core/userpublic/gamecontext.cpp#L103) |
-| 乱数 | `DeterministicRng` | [`#L107`](../../src/core/userpublic/gamecontext.cpp#L107) |
-| audio | `Audio`またはfeature disabled error | [`#L127`](../../src/core/userpublic/gamecontext.cpp#L127) |
-| scene遷移 | `SceneLoader::requestLoad` | [`#L163`](../../src/core/userpublic/gamecontext.cpp#L163) |
-| debug text | `DebugText` | [`#L171`](../../src/core/userpublic/gamecontext.cpp#L171) |
-| event | event registry | [`gamecontext.hpp#L61`](../../src/core/userpublic/gamecontext.hpp#L61) |
-| settings/save | `Persistence` | [`gamecontext.cpp#L175`](../../src/core/userpublic/gamecontext.cpp#L175) |
+| Action入力（`actionPose()`含む） | `Actions` / `InputActionsRuntime` | [`gamecontext.cpp#L25`](../../src/core/userpublic/gamecontext.cpp#L25) |
+| 時刻（`frameIndex()`含む） | `EngineTime` | [`#L53`](../../src/core/userpublic/gamecontext.cpp#L53) |
+| ログ | quill logger | [`#L65`](../../src/core/userpublic/gamecontext.cpp#L65) |
+| object/transform | `GameObjects` | [`#L77`](../../src/core/userpublic/gamecontext.cpp#L77) |
+| sprite（`createSpriteObject`/`spriteView`/`setSpriteView`/`setSpriteTexture`） | `GameObjects` / sprite runtime | [`#L86`](../../src/core/userpublic/gamecontext.cpp#L86) |
+| physics query（`raycastAll`/`raycastClosest(filter)`/`overlapAllHits`/`shapeCastAll`/`shapeCastClosest` + [`phys::QueryFilter`](../../src/core/phys/physquery.hpp#L76)） | physics service | [`#L131`](../../src/core/userpublic/gamecontext.cpp#L131) |
+| camera | `Camera` | [`#L221`](../../src/core/userpublic/gamecontext.cpp#L221) |
+| 乱数（`setSeed`/`seed()`） | `DeterministicRng` | [`#L225`](../../src/core/userpublic/gamecontext.cpp#L225) |
+| audio | `Audio`またはfeature disabled error | [`#L245`](../../src/core/userpublic/gamecontext.cpp#L245) |
+| scene遷移 | `SceneLoader::requestLoad` | [`#L281`](../../src/core/userpublic/gamecontext.cpp#L281) |
+| debug text | `DebugText` | [`#L289`](../../src/core/userpublic/gamecontext.cpp#L289) |
+| event | event registry | [`gamecontext.hpp#L84`](../../src/core/userpublic/gamecontext.hpp#L84) |
+| settings/save | `Persistence` | [`gamecontext.cpp#L309`](../../src/core/userpublic/gamecontext.cpp#L309) |
+
+class全体が [`PELICAN_API`](../../src/core/userpublic/export.hpp) でexport修飾されています。game DLL境界を越えて使われるためです。
 
 `GameContext`自体は状態を持ちません。各フレームでstack上に作られ、moduleへ到達する窓口として使われます。そのためSystemが`GameContext*`を保存する意味はありません。
 
@@ -38,13 +41,15 @@ public:
 PELICAN_REGISTER_SYSTEM(PlayerSystem, 100);
 ```
 
-実例は [`projects/example/code/playercontrol.cpp`](../../projects/example/code/playercontrol.cpp#L8) です。継承もvirtual関数も不要で、[`HasGameSystemUpdate`](../../src/core/userpublic/details/system/registerer.hpp#L32) Conceptが`void update(GameContext&)`の存在を検出します。
+実例は [`projects/example/code/playercontrol.cpp`](../../projects/example/code/playercontrol.cpp#L8) です。継承もvirtual関数も不要で、[`HasGameSystemUpdate`](../../src/core/userpublic/details/system/registerer.hpp#L32) Conceptが`void update(GameContext&)`の存在を検出します。`PELICAN_REGISTER_SYSTEM`の定義は [registerer.hpp#L151](../../src/core/userpublic/details/system/registerer.hpp#L151) です。
+
+registryの各登録には [`RegistrationOwner`](../../src/core/userpublic/details/system/registerer.hpp#L31)（engine / game DLL）が付き、game logic reload時にはowner単位で [`unregisterGameSystems()`](../../src/core/userpublic/details/system/registerer.hpp#L121) されます。
 
 ### instanceの寿命
 
-[`gameSystemInstance<System>()`](../../src/core/userpublic/details/system/registerer.hpp#L42) は関数ローカルstaticのSystem instanceを返します。System objectは毎フレーム作り直されず、メンバ状態を保持できます。
+[`gameSystemInstance<System>()`](../../src/core/userpublic/details/system/registerer.hpp#L44) は関数ローカルstaticのSystem instanceを返します。System objectは毎フレーム作り直されず、メンバ状態を保持できます。
 
-これは`FastModuleContainer`管理ではないため、module cleanupでresetされません。通常プロセスでは問題になりませんが、同一プロセス内でruntimeを作り直すテストやtoolではSystemメンバのreset条件を自分で設計する必要があります。組み込みcamera controllerはframe index逆行と設定signature変更を検知してstateをresetします（[`resetIfNeeded()`](../../src/core/userpublic/cameracontrollersystem.cpp#L171)）。
+これは`FastModuleContainer`管理ではないため、module cleanupでresetされません。通常プロセスでは問題になりませんが、同一プロセス内でruntimeを作り直すテストやtoolではSystemメンバのreset条件を自分で設計する必要があります。加えて、DLL reloadでは新DLLのfunction-local staticが新規インスタンスになるため、旧状態は引き継がれません。組み込みcamera controllerはframe index逆行と設定signature変更を検知してstateをresetします（[`resetIfNeeded()`](../../src/core/userpublic/cameracontrollersystem.cpp#L171)）。
 
 ### 実行順
 
@@ -78,13 +83,15 @@ void onEvent(const MyEvent& event, Pelican::GameContext& ctx);
 
 ### event型の契約
 
-登録マクロは [`PELICAN_REGISTER_EVENT`](../../src/core/userpublic/details/event/registerer.hpp#L121) です。型は次を満たす必要があります。
+登録マクロは [`PELICAN_REGISTER_EVENT`](../../src/core/userpublic/details/event/registerer.hpp#L205)（IMPLは [L191](../../src/core/userpublic/details/event/registerer.hpp#L191)）です。型は次を満たす必要があります。
 
 - object型
 - pointerでない
 - copy construct可能
 
 RPCの`inject_event`からpayloadを構築するには、さらにdefault construct可能で、[`ISerializable<Event, JsonArchiveLoader>`](../../src/core/userpublic/serialize/serialize.hpp#L10)、つまり`event.ref(archive)`が必要です。
+
+event型は宣言的な **payload schema**（EventPayloadSchema v1、[`payloadschema.hpp`](../../src/core/userpublic/details/event/payloadschema.hpp)、[registerer.hpp#L41](../../src/core/userpublic/details/event/registerer.hpp#L41)）を持てます。compile-time検証のfixtureは [`test/fixtures/event_payload_schema/`](../../test/fixtures/event_payload_schema) です。
 
 ### runtime表現
 
@@ -108,7 +115,7 @@ payloadを値copyしてshared ownershipへ変換するため、emit元のstack o
 
 ### queue境界
 
-eventは`pending_events`へ入り、フレーム先頭で`deliver_now_events`へswapし、emit順に配送されます（[`freeze/drain`](../../src/core/userpublic/details/event/registerer.cpp#L89)）。System側はorder/name順です。従って配送順は次です。
+eventは`pending_events`へ入り、フレーム先頭で`deliver_now_events`へswapし、emit順に配送されます（[`freeze/drain`](../../src/core/userpublic/details/event/registerer.cpp#L383)）。System側はorder/name順です。従って配送順は次です。
 
 ```text
 event emit順
@@ -133,6 +140,8 @@ flowchart LR
 
 [`Window`](../../src/core/os/window.hpp#L15) がGLFW callbackを`InputEvent`へ変換します。RPCの`inject_input`も同じ`InputState.queueEvents()`へ合流するため、下流は入力源を区別しません。
 
+XRセッション中は **XR action backend** もこの層に入ります。`syncActions()`の結果を`internal::setInputActionBackendFrame()`と`queuePoseSamples()`でInputStateへ流し込みます（[loop.cpp](../../src/core/appflow/loop.cpp#L427)）。また [`InputSequenceRuntime`](../../src/core/os/inputsequence.hpp#L45) によるrecord/replayが、この層のevent queue境界に挿入されます。
+
 ### L2: 順序付きInputEvent
 
 [`InputStateCore::queueEvent()`](../../src/core/os/inputstate.cpp#L194) がプロセス内単調増加`event_seq`を付けます。記録済みsequenceを注入する場合は単調性を検証し、勝手に番号を付け替えません。
@@ -151,11 +160,11 @@ eventはbutton、cursor move、axis deltaの三種です（[`InputEvent`](../../
 
 ### L4: Action map
 
-[`parseInputActionsJson()`](../../src/core/os/actionmap.cpp#L527) が`pelican.input_actions` v1を読みます。現対応bindingはkeyboard key、mouse delta axis、WASD/arrows compositeなどです。
+[`parseInputActionsJson()`](../../src/core/os/actionmap.cpp#L695) が`pelican.input_actions` v1を読みます。現対応bindingはkeyboard key、mouse delta axis、WASD/arrows composite、gamepad（[`gamepad_button` / `gamepad_axis1` / `gamepad_axis2`](../../src/core/os/actionmap.cpp#L24)）などです。プロファイルは `input/profiles/*.json` から選べます（起動オプション`--input-profile`、RPC `set_input_profile`）。
 
-[`evaluateInputActions()`](../../src/core/os/actionmap.cpp#L588) はaction set stackを**末尾から先頭へ**評価します。つまり最後にpushしたsetが高優先です。上位setが使ったcontrolを`ConsumedControls`へ記録し、下位setでは同じkey/axisを無視します。
+[`evaluateInputActions()`](../../src/core/os/actionmap.cpp#L836) はaction set stackを**末尾から先頭へ**評価します。つまり最後にpushしたsetが高優先です。上位setが使ったcontrolを`ConsumedControls`へ記録し、下位setでは同じkey/axisを無視します。
 
-Action結果はbuttonのpressed/released/held、axis1、axis2です。`pose`型はパースできますが、[`InputActionFrame::pose()`](../../src/core/os/actionmap.cpp#L515) は現在「OpenXR pose resolution未実装」をthrowします。
+Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`pose`型は実装済みで（WP130/132）、[`InputActionFrame::pose()`](../../src/core/os/actionmap.cpp#L683) は`poses` mapから返し、未サンプルならdefaultの`ActionPose`を返します。XR pose providerがない環境（flat）ではpose sampleが来ないため常にdefaultです。
 
 ### raw inputとAction消費は別
 
@@ -163,7 +172,7 @@ Action結果はbuttonのpressed/released/held、axis1、axis2です。`pose`型�
 
 ## 5.6 Camera
 
-[`Camera`](../../src/core/renderer/camera.hpp#L15) は次を一つのmoduleで管理します。
+[`Camera`](../../src/core/renderer/camera.hpp#L16) は次を一つのmoduleで管理します。
 
 - 現在のpos/dir/up
 - perspective/orthographic projection
@@ -171,11 +180,13 @@ Action結果はbuttonのpressed/released/held、axis1、axis2です。`pose`型�
 - active camera名
 - optional orbit/follow/fly controller定義
 
+加えて [`discontinuityRevision()`](../../src/core/renderer/camera.hpp#L81) と [`getProjectionSpec()`](../../src/core/renderer/camera.hpp#L86) を公開します。前者はrendererのtemporal reset（[renderer.cpp](../../src/core/vkcore/renderer.cpp#L1111)）、後者はXR eye projectionの入力（[loop.cpp](../../src/core/appflow/loop.cpp#L425)）です。
+
 ### scene cameraロード
 
-[`Camera::loadSceneCameras()`](../../src/core/renderer/camera.cpp#L453) はscene JSONを再正規化し、`camera` componentを持つobjectを抽出します。最初のcameraを初期表示へ使い、名前付きcameraはmapへ保存します。
+[`Camera::loadSceneCameras()`](../../src/core/renderer/camera.cpp#L505) はscene JSONを再正規化し、`camera` componentを持つobjectを抽出します。最初のcameraを初期表示へ使い、名前付きcameraはmapへ保存します。
 
-`GameContext::setCamera(name)`は [`Camera::setActiveCamera()`](../../src/core/renderer/camera.cpp#L551) を呼び、以後そのcameraのpose/projectionをactiveにします。active scene cameraがlockされると、旧内部`CameraSystem`の`setPos/setDir`は無視されます。
+`GameContext::setCamera(name)`は [`Camera::setActiveCamera()`](../../src/core/renderer/camera.cpp#L609) を呼び、以後そのcameraのpose/projectionをactiveにします。active scene cameraがlockされると、旧内部`CameraSystem`の`setPos/setDir`は無視されます。
 
 ### controller
 
@@ -190,11 +201,15 @@ controllerは名前bindingからtarget transformを毎回resolveし、scene遷�
 
 ## 5.7 Physics
 
-physicsは外部物理engineではなく、現時点ではCPU幾何クエリです。
+physicsはビルドフラグ `PELICAN_WITH_PHYSICS` の配下にあります（OFFではstub実装になり、colliderを含むsceneは明示エラー）。クエリ実装は **provider ABI** で差し替え可能です（WP107系列）。
+
+### provider ABI
+
+ABI面は [`userpublic/physics/abi_v1.hpp`](../../src/core/userpublic/physics/abi_v1.hpp) / [`abi_v2.hpp`](../../src/core/userpublic/physics/abi_v2.hpp)（v2でshapeCastとcapability bitsが追加）です。組み込みの [`BuiltinPhysicsProvider`](../../src/core/phys/builtinphysicsprovider.hpp) と、optionalの [`JoltPhysicsProvider`](../../src/core/phys/joltphysicsprovider.hpp)（`PELICAN_WITH_JOLT_PHYSICS`）があります。[`physicsservice.cpp`](../../src/core/phys/physicsservice.cpp) がABI面を、[`physicsruntime`](../../src/core/phys/physicsruntime.hpp) がprovider選択を担います。DLL providerのfixtureは [`test/fixtures/physics_provider_dll/`](../../test/fixtures/physics_provider_dll) です。
 
 ### 純粋クエリ層
 
-[`physquery.hpp`](../../src/core/phys/physquery.hpp#L12) はSphere、oriented Box、Capsuleを`std::variant`で表します。[`physquery.cpp`](../../src/core/phys/physquery.cpp#L1) がraycastと全shape組合せのoverlapを実装します。
+[`physquery.hpp`](../../src/core/phys/physquery.hpp#L12) はSphere、oriented Box、Capsuleを`std::variant`で表します（[`Shape`](../../src/core/phys/physquery.hpp#L41)）。クエリは [`QueryFilter`](../../src/core/phys/physquery.hpp#L76) と [`ShapeCastHit`](../../src/core/phys/physquery.hpp#L138) を持ち、実装はaggregate/contract/sweepに分割されています。
 
 `raycastClosest`は距離最小を選び、距離がepsilon内で同じなら文字列ID昇順をtie-breakerにします。`overlapAll`もIDをsortして返すため、sceneの内部登録順に結果が左右されません。
 
@@ -205,9 +220,9 @@ physicsは外部物理engineではなく、現時点ではCPU幾何クエリで�
 - live `GameObjectId`
 - static `PhysWorldTransform`
 
-queryのたびに [`collectColliders()`](../../src/core/phys/physworld.cpp#L263) がECS transformをresolveし、local collider offset/rotationとworld scaleを合成して純粋`phys::Collider`列を作ります。削除済みentityのbindingはqueryから自然に除外されます。
+queryのたびに [`collectColliders()`](../../src/core/phys/physworld.cpp#L315) がECS transformをresolveし、local collider offset/rotationとworld scaleを合成して純粋`phys::Collider`列を作ります。削除済みentityのbindingはqueryから自然に除外されます。
 
-現実装はbroad phase spatial indexを持たず、queryごとに全bindingを走査します。大量colliderではO(N)が支配的です。
+builtin providerはbroad phase spatial indexを持たず、queryごとに全bindingを走査します。大量colliderではO(N)が支配的です。
 
 ## 5.8 決定的乱数
 
@@ -267,6 +282,10 @@ busはmaster/bgm/seで、実効音量はmaster×個別busです。設定変更�
 - [`gameobjects.hpp`](../../src/core/userpublic/gameobjects.hpp#L1)
 - [`components/`](../../src/core/userpublic/components)
 - [`events.hpp`](../../src/core/userpublic/events.hpp#L1)
-- [`phys/physquery.hpp`](../../src/core/phys/physquery.hpp#L1)
+- [`phys/physquery.hpp`](../../src/core/phys/physquery.hpp#L1)、[`physics/abi_v1.hpp` / `abi_v2.hpp`](../../src/core/userpublic/physics)
+- [`sprite/`](../../src/core/userpublic/sprite)（`SpriteWorld`、`FlipbookClip`、pixel policy）
+- [`platformer/charactercontroller2d.hpp`](../../src/core/userpublic/platformer/charactercontroller2d.hpp)（WP109）
+- [`color.hpp`](../../src/core/userpublic/color.hpp)
+- [`animation/vrm_application_v1.hpp`](../../src/core/userpublic/animation/vrm_application_v1.hpp)（VRM expression/application sink、WP123b）
 
-内部`GET_MODULE()`を使えば機能へ到達できますが、module生成順・Vulkan型・内部Componentへ依存し、配布API境界を越えます。まず`GameContext`へ必要な薄いファサードを足せないか検討するのが既存設計に合います。
+内部`GET_MODULE()`を使えば機能へ到達できますが、module生成順・Vulkan型・内部Componentへ依存し、配布API境界を越えます。配布API境界は [`PELICAN_API`](../../src/core/userpublic/export.hpp)（export.hpp）でexportされたgame DLL向けSDK面と一致します。まず`GameContext`へ必要な薄いファサードを足せないか検討するのが既存設計に合います。

@@ -1,6 +1,6 @@
 # 第2章 ビルドと起動
 
-対象: pelican2(2026-07-16 時点)/ このマニュアルはコードを正とする
+対象: pelican2(2026-07-17 時点)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
@@ -61,6 +61,7 @@ cmake . -B build -DSKIP_DEVSTUDIO=ON
 | `PELICAN_WITH_EXR` | EXR 読み込み |
 | `PELICAN_WITH_AUDIO` | WAV SE 再生 |
 | `PELICAN_WITH_IMGUI` | ImGui 開発者 UI(F1 トグル・Plan Viewer)。配布では dist-config が常時 OFF([第10章](10_tools.md)) |
+| `PELICAN_WITH_OPENXR` | OpenXR(PCVR)ランタイム。開発既定 ON・**配布は `dist-config --with openxr` を指定した時だけ ON** |
 | `PELICAN_WITH_PHYSICS` | 物理クエリ層。配下に `PELICAN_WITH_BUILTIN_PHYSICS`(既定 ON)/ `PELICAN_WITH_JOLT_PHYSICS`(既定 OFF)のプロバイダ選択 |
 | `PELICAN_RUNTIME_SHADER_COMPILER` | 実行時 GLSL コンパイル(shaderc) |
 
@@ -78,10 +79,22 @@ build/src/player/Debug/pelican_player.exe --project projects/example
 
 > **注意(重要):** example の **3D モデルやテクスチャなどのバイナリアセットは git 管理されていません**。[projects/example/README.md](../../projects/example/README.md) に「ファイルパス / 入手元 / sha256 / サイズ」の一覧表があるので、記載どおりのファイルを配置してからフルシーンを起動してください。手元にバイナリが無い状態で試したい場合は、次節の `project init` から始めるのが確実です。
 
-example のほかに、機能別のデモプロジェクトが 2 つあります(どちらも同様に `--project` で起動):
+example のほかに、機能別のデモプロジェクトが 3 つあります(いずれも同様に `--project` で起動):
 
 - [projects/sprite_demo](../../projects/sprite_demo) — 2D 横スクロールの vertical slice(スプライト・pixel perfect・`moveAndSlide`・ゲームパッド)
 - [projects/animgraph_demo](../../projects/animgraph_demo) — アニメーショングラフ(歩き↔走りブレンド + ジャンプ割込み)
+- [projects/vrm_xr_demo](../../projects/vrm_xr_demo) — VRM キャラクター(表情・視線・一人称)+ OpenXR。**flat-first** — XR なしでも WASD で完全動作(下記)
+
+### XR モードで起動する(PCVR / Quest Link)✅WP125〜135
+
+```sh
+pelican_player --xr on --project projects/vrm_xr_demo --input-profile touch
+```
+
+- `--xr off|auto|on`(既定 `off`)。`auto` = XR ランタイム不在なら INFO 1 行で flat 続行 / `on` = 不在なら名指しの hard error。`--headless` / `--rpc` / リプレイとの併用時、`on` はエラー・`auto` は flat に正規化されます。
+- Quest 3 は Meta Quest Link(Air Link)を有効な OpenXR ランタイムにして接続してから実行します。XR 中もウィンドウには左眼のミラーが表示されます。
+- project.json 側に XR のキーはありません(有効化は CLI のみ。入力はいつもの `pelican.input_actions` + Touch 用プロファイル)。
+- ⚠ **実機(HMD)での表示確認はまだ行われていません**(自動テストは fake runtime + synthetic stereo まで。実ランタイム検証は WP136 として登録済み)。詳細は [第6章](06_rendering.md) §6.12。
 
 ### 暗黙プロジェクト(`--project` 省略時)
 

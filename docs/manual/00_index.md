@@ -1,6 +1,6 @@
 # Pelican2 マニュアル
 
-対象: pelican2(2026-07-16 時点、branch `codex/rendering-phase1-refactor`)/ 初版 2026-07-10、WP64〜111 反映の全域更新 2026-07-16
+対象: pelican2(2026-07-17 時点、branch `codex/rendering-phase1-refactor`)/ 初版 2026-07-10、WP64〜111 反映 2026-07-16、WP112〜135(TAA / OpenPBR / USD / VRM 表情 / OpenXR)反映 2026-07-17
 
 より深いクラス単位のコード解説は姉妹文書 [../source-code-guide/](../source-code-guide/README.md) にあります(本マニュアル = 使い方と現状、source-code-guide = 内部構造の深掘り)。
 

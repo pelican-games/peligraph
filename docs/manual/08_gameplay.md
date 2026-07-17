@@ -1,6 +1,6 @@
 # 第8章 ゲームロジック
 
-対象: pelican2(2026-07-16 時点)/ このマニュアルはコードを正とする
+対象: pelican2(2026-07-17 時点)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
@@ -119,7 +119,7 @@ rpc の `step_frame` も**同一順序**を再現します。「rpc 駆動のテ
 
 | カテゴリ | API | 備考 |
 |---|---|---|
-| 入力 | `actionsConfigured()` / `actionPressed/Released/Held(name)` / `actionAxis1(name)` / `actionAxis2(name)` | 未知アクション名は名前入り例外。`actionPose` は OpenXR 未実装のため常に throw 📐 |
+| 入力 | `actionsConfigured()` / `actionPressed/Released/Held(name)` / `actionAxis1(name)` / `actionAxis2(name)` / `actionPose(name)` | 未知アクション名は名前入り例外。`actionPose` は ✅WP132 で実動作(下記) |
 | 時刻 | `time()` / `deltaTime()` / `frameIndex()` | |
 | ログ | `logInfo/Warning/Error(msg)` | rpc モードでは stdout が使えないため、ログは必ずこれで |
 | オブジェクト | `createObject(LocalTransformComponent)` / `removeObject(id)`→bool / `localTransform(id)` / `setLocalTransform(id, t)`→bool | `setLocalTransform` は描画側へも即時伝播 |
@@ -134,6 +134,19 @@ rpc の `step_frame` も**同一順序**を再現します。「rpc 駆動のテ
 | イベント | `emit(const Event&)` | §8.5 |
 
 アニメーション操作の API は GameContext に**ありません** — クリップは宣言的コンポーネント([第4章](04_scene_ecs.md))、グラフは独立した公開評価器(§8.12)です。
+
+### actionPose(✅WP132 — XR 姿勢入力)
+
+```cpp
+const auto head = ctx.actionPose("head");
+if (head.valid && head.source == Pelican::ActionPoseSource::synthetic_head) {
+    // XR 起動中のみ届く。flat 起動では valid = false の既定値が返る(throw しない)
+}
+```
+
+- `ActionPose` は position/orientation に加え **valid/tracked の 4 フラグ**、`source`(`action_space` / `synthetic_head`)、`reference_space`(stage / local_floor / local)、`hand`(left/right)を持ちます。
+- 公開名の規約: `aim_left` / `aim_right` / `grip_left` / `grip_right` はコントローラの action space、**`head` は `xrLocateViews` 由来の synthetic**(binding を書くと名指しエラー)。
+- 実例は [projects/vrm_xr_demo](../../projects/vrm_xr_demo) の視線追従(head pose を優先し、flat では authored camera 基準にフォールバック)。
 
 未知の名前(アクション・シーン・カメラ・オブジェクト・イベント)は**すべて名前入りの例外**になります。「静かに無視」はこのエンジンには存在しません(fail-fast の一貫した文化)。
 
@@ -370,7 +383,24 @@ void update(Pelican::GameContext &ctx) {
 
 3. **自作評価器(上級・WP94/102)** — 凍結 C-ABI([../animation_abi_v1.md](../animation_abi_v1.md) が正)+ versioned service table。ゲーム DLL が公開ヘッダのみで pose sampling / blend / commit を駆動できます(標準評価器自体がこの面の dogfood)。
 
-制限: joint 128 / 補間 LINEAR・STEP のみ / モーフ・IK・root motion 適用なし。決定性は「同一ビルドで byte 一致」です。
+4. **VRM 表情・視線・一人称(✅WP123b/134 = S1b/S1c)** — VRM 1.0 モデルの表情を per-instance で動かす公開サービスです:
+
+```cpp
+#include <animation/vrm_application_v1.hpp>
+
+auto *svc = Pelican::Vrm::getApplicationServiceV1();   // versioned negotiation
+Pelican::Vrm::SetExpressionInputDescV1 input{};
+// instance handle は animation service の resolve 系で取得
+input.expressions = {{ "happy", 1.0 }};                 // 表情名 + weight [0,1]
+input.look_at_yaw_degrees = yaw; input.look_at_pitch_degrees = pitch;
+svc->set_expression_input(input);
+```
+
+- 標準の evaluator が公開 phase(snapshot → lookAt → resolve → commit)で morph weight / マテリアル色 / textureTransform を **atomic に publish** します(解決式は `Base + Σ((Target−Base)×weight)`、binary 表情は ≥0.5 で 1)。MToon 系の色 bind(shadeColor 等)は WARN + skip(公開 diagnostics で照会可)。
+- **bone lookAt / firstPerson(S1c)**: `animation/pose_staging_v1.hpp` の pose staging で eye bone の回転を段階適用。firstPerson `auto` はロード時に頭部メッシュを決定的に分割し、**XR の両眼 = 頭部非表示 / flat・ミラー = 全身**が自動で切り替わります。
+- 完成例は [projects/vrm_xr_demo](../../projects/vrm_xr_demo)(表情サイクル + 視線追従 + XR。エンジン変更ゼロで userpublic ヘッダのみ)。
+
+制限: joint 128 / 補間 LINEAR・STEP のみ / モーフの weight 駆動は VRM expression service 経由のみ(クリップの weights チャネルは非対応)/ IK・root motion 適用なし。決定性は「同一ビルドで byte 一致」です。
 
 ## 8.13 2D スプライトの操作(✅WP103/106)
 
