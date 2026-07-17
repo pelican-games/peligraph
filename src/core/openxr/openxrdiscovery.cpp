@@ -95,15 +95,24 @@ XrDiscoveryResult DiscoveryRuntime::discover() {
         return fail(XrDiscoveryAvailability::runtime_unavailable,
                     xrFailure("xrEnumerateInstanceExtensionProperties", result));
     }
-    const auto has_vulkan_enable2 = std::any_of(extensions.begin(), extensions.end(), [](const auto &extension) {
-        return std::string_view{extension.extensionName} == XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME;
-    });
+    const auto has_extension = [&](std::string_view name) {
+        return std::any_of(extensions.begin(), extensions.end(), [&](const auto &extension) {
+            return std::string_view{extension.extensionName} == name;
+        });
+    };
+    const auto has_vulkan_enable2 = has_extension(XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME);
     if (!has_vulkan_enable2) {
         return fail(XrDiscoveryAvailability::graphics_binding_unavailable,
                     "XR_KHR_vulkan_enable2 is not advertised");
     }
 
-    const std::array enabled_extensions{XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME};
+    std::vector<const char *> enabled_extensions{XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME};
+    // Pelican requests OpenXR 1.0 for compatibility with installed 1.0
+    // runtimes. Enable the promoted local-floor extension when advertised so
+    // XR2a.2 can still select LOCAL_FLOOR on that API version.
+    if (has_extension(XR_EXT_LOCAL_FLOOR_EXTENSION_NAME)) {
+        enabled_extensions.push_back(XR_EXT_LOCAL_FLOOR_EXTENSION_NAME);
+    }
     XrInstanceCreateInfo create_info{XR_TYPE_INSTANCE_CREATE_INFO};
     std::snprintf(create_info.applicationInfo.applicationName,
                   sizeof(create_info.applicationInfo.applicationName), "%s", "Pelican App");

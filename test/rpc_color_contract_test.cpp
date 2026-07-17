@@ -109,6 +109,11 @@ void main(){ outColor=vec4(0.5,0.5,0.5,0.25); }
     const auto module_status = nlohmann::json::parse(third_line).at("result").at("modules");
     REQUIRE(module_status.at("phase") == "booting");
     REQUIRE_FALSE(module_status.at("creation_frozen").get<bool>());
+    const auto xr_status = nlohmann::json::parse(third_line).at("result").at("xr");
+    REQUIRE_FALSE(xr_status.at("active").get<bool>());
+    REQUIRE(xr_status.at("reference_space").is_null());
+    REQUIRE(xr_status.at("floor_semantics") == "not_applicable");
+    REQUIRE(xr_status.at("applied_floor_offset_m").is_null());
 
     int width = 0;
     int height = 0;

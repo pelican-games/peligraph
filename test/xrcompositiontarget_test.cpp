@@ -72,6 +72,13 @@ XrResult XRAPI_CALL fakeCreateSession(XrInstance, const XrSessionCreateInfo *,
     return XR_SUCCESS;
 }
 XrResult XRAPI_CALL fakeDestroySession(XrSession) { return XR_SUCCESS; }
+XrResult XRAPI_CALL fakeEnumerateReferenceSpaces(
+    XrSession, std::uint32_t capacity, std::uint32_t *count,
+    XrReferenceSpaceType *spaces) {
+    *count = 1;
+    if (capacity != 0) spaces[0] = XR_REFERENCE_SPACE_TYPE_LOCAL;
+    return XR_SUCCESS;
+}
 XrResult XRAPI_CALL fakeCreateReferenceSpace(XrSession,
                                              const XrReferenceSpaceCreateInfo *,
                                              XrSpace *space) {
@@ -256,6 +263,8 @@ PFN_xrVoidFunction fakeFunction(const std::string &name) {
         return reinterpret_cast<PFN_xrVoidFunction>(&fakeEndFrame);
     if (name == "xrLocateViews")
         return reinterpret_cast<PFN_xrVoidFunction>(&fakeLocateViews);
+    if (name == "xrEnumerateReferenceSpaces")
+        return reinterpret_cast<PFN_xrVoidFunction>(&fakeEnumerateReferenceSpaces);
     if (name == "xrCreateReferenceSpace")
         return reinterpret_cast<PFN_xrVoidFunction>(&fakeCreateReferenceSpace);
     if (name == "xrDestroySpace")

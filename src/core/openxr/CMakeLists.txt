@@ -3,6 +3,7 @@ add_library(pelican_openxr STATIC
     openxrcompositiontarget.cpp
     openxrdiscovery.cpp
     openxrsession.cpp
+    openxrviewspace.cpp
 )
 set_target_properties(pelican_openxr PROPERTIES CXX_STANDARD 20)
 target_compile_definitions(pelican_openxr PRIVATE

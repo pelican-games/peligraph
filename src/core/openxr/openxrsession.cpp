@@ -57,6 +57,7 @@ SessionRuntime::SessionRuntime(const XrSessionDependencies &dependencies)
             (void)api.destroy_space(tracking_space);
             tracking_space = XR_NULL_HANDLE;
         }
+        tracking_space_type = XR_REFERENCE_SPACE_TYPE_MAX_ENUM;
         if (session != XR_NULL_HANDLE && api.destroy_session != nullptr) {
             (void)api.destroy_session(session);
             session = XR_NULL_HANDLE;
@@ -70,6 +71,7 @@ SessionRuntime::~SessionRuntime() {
         (void)api.destroy_space(tracking_space);
     }
     tracking_space = XR_NULL_HANDLE;
+    tracking_space_type = XR_REFERENCE_SPACE_TYPE_MAX_ENUM;
     if (session != XR_NULL_HANDLE && api.destroy_session != nullptr) {
         (void)api.destroy_session(session);
     }
@@ -93,6 +95,8 @@ void SessionRuntime::resolve(PFN_xrGetInstanceProcAddr get_instance_proc_addr) {
     resolveRequired(get_instance_proc_addr, instance, "xrBeginFrame", api.begin_frame);
     resolveRequired(get_instance_proc_addr, instance, "xrEndFrame", api.end_frame);
     resolveRequired(get_instance_proc_addr, instance, "xrLocateViews", api.locate_views);
+    resolveRequired(get_instance_proc_addr, instance, "xrEnumerateReferenceSpaces",
+                    api.enumerate_reference_spaces);
     resolveRequired(get_instance_proc_addr, instance, "xrCreateReferenceSpace",
                     api.create_reference_space);
     resolveRequired(get_instance_proc_addr, instance, "xrDestroySpace", api.destroy_space);
@@ -124,19 +128,45 @@ void SessionRuntime::create(const XrSessionDependencies &dependencies) {
         throwFailure("xrCreateSession", create_result);
     }
 
-    // XR2a.2 owns the final STAGE/LOCAL_FLOOR/LOCAL selection policy.  XR1b
-    // needs a valid base space solely to retain xrLocateViews results, so use
-    // the core LOCAL space without applying any world/floor interpretation.
+    uint32_t supported_space_count = 0;
+    auto enumerate_result = api.enumerate_reference_spaces(
+        session, 0, &supported_space_count, nullptr);
+    if (XR_FAILED(enumerate_result)) {
+        throwFailure("xrEnumerateReferenceSpaces", enumerate_result);
+    }
+    const auto supported_space_capacity = supported_space_count;
+    std::vector<XrReferenceSpaceType> supported_spaces(supported_space_capacity);
+    enumerate_result = api.enumerate_reference_spaces(
+        session, supported_space_capacity, &supported_space_count,
+        supported_spaces.data());
+    if (XR_FAILED(enumerate_result)) {
+        throwFailure("xrEnumerateReferenceSpaces", enumerate_result);
+    }
+    if (supported_space_count > supported_space_capacity) {
+        throw std::runtime_error(
+            "xrEnumerateReferenceSpaces returned more spaces than its reported capacity");
+    }
+    supported_spaces.resize(supported_space_count);
+    tracking_space_type = selectReferenceSpace(supported_spaces);
+
     XrReferenceSpaceCreateInfo space_info{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
-    space_info.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+    space_info.referenceSpaceType = tracking_space_type;
     space_info.poseInReferenceSpace.orientation.w = 1.0F;
     const auto space_result = api.create_reference_space(session, &space_info, &tracking_space);
     if (XR_FAILED(space_result) || tracking_space == XR_NULL_HANDLE) {
         tracking_space = XR_NULL_HANDLE;
+        tracking_space_type = XR_REFERENCE_SPACE_TYPE_MAX_ENUM;
         (void)api.destroy_session(session);
         session = XR_NULL_HANDLE;
         throwFailure("xrCreateReferenceSpace", space_result);
     }
+}
+
+XrReferenceSpaceStatus SessionRuntime::referenceSpaceStatus() const {
+    if (tracking_space == XR_NULL_HANDLE) {
+        throw std::logic_error("OpenXR reference-space status requires a live tracking space");
+    }
+    return describeReferenceSpace(tracking_space_type);
 }
 
 [[noreturn]] void SessionRuntime::throwFailure(const char *operation, XrResult result) {
