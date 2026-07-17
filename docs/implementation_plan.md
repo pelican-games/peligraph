@@ -3681,6 +3681,51 @@ node identity)— 済。見積: 中〜大。
 5. gate: flat + XR(Simulator)で view 0/1 が別 row になる実測 +
    計測 on/off golden 不変 + 既存全テスト + player 8 秒 + OFF smoke
 
+### WP144: 負債 TRANSIENT0 — load_gltf の強 transaction
+
+参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
+の WP-TRANSIENT0 定義 + A2 節が正**(逐語: 「`load_gltf` name
+preflight/rollback、model swap の stage-commit、失敗時に entity/slot/
+draw command が不変である gate」)。HR2-G(WP110)の staged commit
+基盤を rpc `load_gltf` / 一時ロード経路にも適用する形。
+依存: WP110(済)。見積: 中〜大。
+排他: rpc load_gltf 経路 + scene loader の一時ロード + rollback fixture。
+
+1. **name preflight**: 衝突する宣言名・不正 fragment を GPU 資源確保の
+   **前に**検証(現行の途中失敗を根絶)
+2. **stage-commit**: WP110 の candidate/publish 面に載せ替え。途中失敗
+   (parse/validate/GPU capacity)で entity/slot/draw command/texture/
+   material の**全カウントと ID が不変**である gate(WP110 fixture の
+   rpc 経路版)
+3. 失敗応答は rpc error に原因(名前入り)を返す
+4. 受け入れ = rollback fixture(CPU 失敗/GPU 失敗の両方)+ 既存全
+   テスト + golden SKIP 0 + player 8 秒 + CI green
+
+### WP145: D-P2b — VRAM 計測 + XR timing 変換
+
+参照: **`design_debug_profiling.md` v1.1 §3 + レビュー C4 逐語が正**:
+「memory budget は heap ごとの driver budget と engine logical
+allocation/free-range を分離する。`shouldRender=false` を dropped frame
+と数えず、portable な `XR_FRAME_DISCARDED`、mirror drop、vendor metric を
+別 counter にする。XrTime と QPC の差は
+`XR_KHR_win32_convert_performance_counter_time` が使える場合だけ計算
+する。」依存: WP143(済)。見積: 中。
+排他: VRAM 計測(VK_EXT_memory_budget)+ XR frame counter 群 +
+get_status/ImGui 追記。**WP144 と並走 — gltf/model/rpc load 経路に
+触らない**(VertBuf の論理 allocation は読み取りのみ)。
+
+1. **VRAM**: heap 別の driver budget/usage(VK_EXT_memory_budget —
+   非対応 GPU は named absent)と、engine 論理値(VertBuf free-range・
+   texture/material カウント等の既存 ForTesting 面の集約)を**別枠**で
+   get_status.memory へ
+2. **XR frame counters**: `XR_FRAME_DISCARDED` 系・mirror drop・
+   shouldRender=false 区間を**別 counter** に(dropped と混同しない)。
+   XrTime↔QPC は KHR 拡張がある場合のみ変換(なければ absent)
+3. 表示: ImGui に memory 表(diagnostics — C5 の正規化除外)
+4. 受け入れ = fixture(fake budget/counter)+ Simulator で counter が
+   動く実測 + 計測 on/off golden byte 不変 + 既存全テスト + player
+   8 秒 + OFF smoke
+
 ### WP137: 負債 CI0 — CPU gate の常設(GitHub Actions)
 
 参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
