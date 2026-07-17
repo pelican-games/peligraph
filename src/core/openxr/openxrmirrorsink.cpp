@@ -1,6 +1,8 @@
 #include "openxrmirrorsink.hpp"
 
+#include "openxrcompositiontarget.hpp"
 #include "openxrfeaturepolicy.hpp"
+#include "../appflow/enginetime.hpp"
 #include "../fullscreenpass/fullscreenpasscontainer.hpp"
 #include "../loader/basicconfig.hpp"
 #include "../loader/pathresolver.hpp"
@@ -19,6 +21,8 @@
 #include "../shader/shaderlibrary.hpp"
 #include "../ui/module.hpp"
 #include "../vkcore/rendertarget.hpp"
+#include "../vkcore/core.hpp"
+#include "../vkcore/debugutils.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -155,6 +159,19 @@ void XrMirrorSink::tryPresent() noexcept {
         }
         rebindSourceIfNeeded();
 
+        const auto &debug_utils = GET_MODULE(VulkanManageCore).getDebugUtils();
+        std::string node_debug_name;
+        if (debug_utils.commandLabelsEnabled()) {
+            node_debug_name = makeFrameGraphDebugLabel(FrameGraphDebugLabelIdentity{
+                GET_MODULE(EngineTime).frameIndex(), "xr", xr_stereo_view_count, 0,
+                "mirror", "output_transform"});
+        }
+        ScopedCommandDebugLabel node_label{debug_utils, cmd, node_debug_name.c_str()};
+        {
+            ScopedCommandDebugLabel barrier_label{debug_utils, cmd, "barriers"};
+        }
+        ScopedCommandDebugLabel body_label{debug_utils, cmd, "body"};
+
         vk::RenderingAttachmentInfo attachment;
         attachment.imageView = frame->color_attachment;
         attachment.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
@@ -194,6 +211,8 @@ void XrMirrorSink::tryPresent() noexcept {
                                        GET_MODULE(ui::UiModule),
                                        GET_MODULE(FrameResources)});
         }
+        body_label.end();
+        node_label.end();
         frame_begun = false;
         target.render_end();
         ++stats.presented;

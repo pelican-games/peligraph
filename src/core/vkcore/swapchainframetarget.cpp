@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
+#include <string>
 
 namespace Pelican {
 
@@ -180,6 +181,18 @@ void SwapchainFrameTarget::surfaceDependantsSetup() {
             .allocImage(vk::Extent3D{extent, 1}, vk::Format::eD32Sfloat,
                         vk::ImageUsageFlagBits::eDepthStencilAttachment, vma::MemoryUsage::eAutoPreferDevice, {});
     depth_image_view = createImageViewsForDepth(device, depth_image);
+
+    const auto &debug_utils = vkcore.getDebugUtils();
+    debug_utils.nameSwapchain(swapchain.swapchain.get(), "swapchain");
+    for (std::size_t image_index = 0; image_index < swapchain_images.size();
+         ++image_index) {
+        const auto base = "swapchain/image/" + std::to_string(image_index);
+        debug_utils.nameImage(swapchain_images[image_index], (base + "/image").c_str());
+        debug_utils.nameImageView(swapchain_image_views[image_index].get(),
+                                  (base + "/view").c_str());
+    }
+    debug_utils.nameImage(depth_image.image.get(), "swapchain/depth/image");
+    debug_utils.nameImageView(depth_image_view.get(), "swapchain/depth/view");
 }
 
 void SwapchainFrameTarget::recreateSurfaceDependants() {

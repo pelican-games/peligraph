@@ -42,6 +42,7 @@ DECLARE_MODULE(EngineLaunchConfig) {
     bool allow_absolute_paths = false;
     bool strict_assets = false;
     bool dump_frame_plan = false;
+    bool gpu_labels = false;
     bool force_unorm_color_path_for_testing = false;
     std::optional<std::filesystem::path> input_record;
     std::optional<std::filesystem::path> input_replay_path;

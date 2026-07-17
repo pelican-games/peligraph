@@ -3,6 +3,7 @@
 #include "../container.hpp"
 #include "buf.hpp"
 #include "cmdbuf.hpp"
+#include "debugutils.hpp"
 #include "image.hpp"
 #include <cstdint>
 #include <span>
@@ -33,6 +34,7 @@ DECLARE_MODULE(VulkanManageCore) {
 
     vk::UniqueCommandPool graphic_cmd_pool, compute_cmd_pool;
     vma::UniqueAllocator allocator;
+    DebugUtilsDispatch debug_utils;
 
   public:
     VulkanManageCore();
@@ -46,6 +48,7 @@ DECLARE_MODULE(VulkanManageCore) {
     vk::Queue getPresentationQueue() const { return presen_queue; }
     uint32_t getGraphicsQueueFamilyIndex() const { return queue_set.graphic_queue; }
     uint32_t getPresentationQueueFamilyIndex() const { return queue_set.presentation_queue; }
+    const DebugUtilsDispatch &getDebugUtils() const noexcept { return debug_utils; }
 
     void waitIdle() const;
 

@@ -149,11 +149,18 @@ class VulkanXrCompositionGraphics final : public IXrCompositionGraphics {
                 config.views[view].recommendedImageRectHeight};
             resources.images.reserve(image_count);
             resources.image_views.reserve(image_count);
-            for (const auto &xr_image : xr_images) {
+            for (std::uint32_t image_index = 0; image_index < image_count;
+                 ++image_index) {
+                const auto &xr_image = xr_images[image_index];
                 const vk::Image image{xr_image.image};
                 resources.images.push_back(image);
                 resources.image_views.push_back(createImageView(
                     device, image, color_format, vk::ImageAspectFlagBits::eColor));
+                const auto base = "xr/view/" + std::to_string(view) +
+                                  "/swapchain/image/" + std::to_string(image_index);
+                vulkan.getDebugUtils().nameImage(image, (base + "/image").c_str());
+                vulkan.getDebugUtils().nameImageView(
+                    resources.image_views.back().get(), (base + "/view").c_str());
             }
 
             resources.depth_image = vulkan.allocImage(
@@ -163,6 +170,11 @@ class VulkanXrCompositionGraphics final : public IXrCompositionGraphics {
             resources.depth_view = createImageView(
                 device, resources.depth_image.image.get(), resources.depth_image.format,
                 vk::ImageAspectFlagBits::eDepth);
+            const auto depth_base = "xr/view/" + std::to_string(view) + "/depth";
+            vulkan.getDebugUtils().nameImage(resources.depth_image.image.get(),
+                                             (depth_base + "/image").c_str());
+            vulkan.getDebugUtils().nameImageView(resources.depth_view.get(),
+                                                 (depth_base + "/view").c_str());
         }
     }
 
