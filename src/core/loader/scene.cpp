@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cctype>
 #include <components/localtransform.hpp>
 #include <components/predefined.hpp>
@@ -37,7 +38,7 @@
 namespace Pelican {
 
 SceneLoader::SceneLoader() {}
-SceneLoader::~SceneLoader() {}
+SceneLoader::~SceneLoader() { releaseTransientModels(false); }
 
 namespace {
 
@@ -178,13 +179,22 @@ std::string lowerExtension(const std::filesystem::path &path) {
     return extension;
 }
 
-ModelTemplate loadGltfTemplate(const std::filesystem::path &path,
-                               std::optional<AssetFragmentRef> fragment = std::nullopt) {
+PreparedGltf prepareGltfTemplate(const std::filesystem::path &path,
+                                 std::optional<AssetFragmentRef> fragment = std::nullopt) {
     auto &loader = GET_MODULE(GltfLoader);
     const auto path_string = path.string();
-    return lowerExtension(path) == ".gltf" ? loader.loadGltf(path_string, std::move(fragment))
-                                           : loader.loadGltfBinary(path_string, std::move(fragment));
+    return lowerExtension(path) == ".gltf" ? loader.prepareGltf(path_string, std::move(fragment))
+                                           : loader.prepareGltfBinary(path_string, std::move(fragment));
 }
+
+struct UnpublishedModelCandidate {
+    ModelTemplate model;
+    bool owns_resources = true;
+
+    ~UnpublishedModelCandidate() {
+        if (owns_resources) releaseModelGpuResources(model, false);
+    }
+};
 
 SceneObjectTransform identityObjectTransform() {
     return SceneObjectTransform{
@@ -378,6 +388,14 @@ void SceneLoader::clearRuntimeScene() {
 #endif
     GameObjects::removeAll();
     GET_MODULE(PolygonInstanceContainer).clear();
+    releaseTransientModels(true);
+}
+
+void SceneLoader::releaseTransientModels(bool deferred) noexcept {
+    for (auto &model : transient_models) {
+        releaseModelGpuResources(model, deferred);
+    }
+    transient_models.clear();
 }
 
 void SceneLoader::bindObjectTransform(const std::string &name, GameObjectId object_id) {
@@ -454,35 +472,78 @@ void SceneLoader::applyObjectTransform(std::string_view name, const SceneObjectT
 }
 
 std::filesystem::path SceneLoader::loadTransientGltf(std::string_view path_ref, const std::optional<std::string> &name) {
-    const auto resolved = GET_MODULE(PathResolver).resolveExistingFileReference(path_ref);
-    const auto *fragment = std::get_if<ResolvedPathFragment>(&resolved);
-    const auto path = fragment != nullptr ? fragment->path : std::get<std::filesystem::path>(resolved);
-    auto model_template = loadGltfTemplate(path, fragment != nullptr
-                                                     ? std::optional<AssetFragmentRef>{fragment->fragment}
-                                                     : std::nullopt);
-    const auto model_instance_id = GET_MODULE(PolygonInstanceContainer).placeModelInstance(model_template);
+    using BindingNode = decltype(object_bindings)::node_type;
+    std::optional<BindingNode> staged_binding;
+    if (name && !name->empty()) {
+        if (const auto existing = object_bindings.find(*name);
+            existing != object_bindings.end()) {
+            if (GET_MODULE(ECSCore)
+                    .getTemplatePublicModule()
+                    .tryComponent<TransformComponent>(existing->second.object_id) != nullptr) {
+                throw std::runtime_error("duplicate object name for transform binding: " + *name);
+            }
+            object_bindings.erase(existing);
+        }
+
+        // Allocate the hash node and any bucket growth before parsing or GPU
+        // staging. Publishing the prepared node after entity creation cannot
+        // allocate and therefore cannot split the transaction.
+        object_bindings.reserve(object_bindings.size() + 1);
+        decltype(object_bindings) staging;
+        staging.emplace(*name, ObjectBinding{.object_id = invalidGameObjectId});
+        staged_binding.emplace(staging.extract(*name));
+    }
 
     auto &component_info_manager = GET_MODULE(ComponentInfoManager);
     const std::array<ComponentId, 2> component_ids{
         component_info_manager.getComponentIdByName("transform"),
         component_info_manager.getComponentIdByName("simplemodelview"),
     };
+    transient_models.reserve(transient_models.size() + 1);
+
+    const auto resolved = GET_MODULE(PathResolver).resolveExistingFileReference(path_ref);
+    const auto *fragment = std::get_if<ResolvedPathFragment>(&resolved);
+    const auto path = fragment != nullptr ? fragment->path : std::get<std::filesystem::path>(resolved);
+    auto prepared = prepareGltfTemplate(path, fragment != nullptr
+                                                  ? std::optional<AssetFragmentRef>{fragment->fragment}
+                                                  : std::nullopt);
+    auto &gltf_loader = GET_MODULE(GltfLoader);
+    auto &instances = GET_MODULE(PolygonInstanceContainer);
+
+    // inspect() is the WP110 side-effect-free candidate pass. It resolves and
+    // validates fragments and lets the slot/draw inventory reject capacity
+    // before any model-specific Vulkan resource is allocated.
+    const auto preview = gltf_loader.inspect(prepared);
+    instances.preflightModelInstance(preview);
+
+    UnpublishedModelCandidate candidate{
+        .model = gltf_loader.commit(std::move(prepared)),
+    };
+    auto staged_instance = instances.stageModelInstance(candidate.model);
+    const auto model_instance_id = staged_instance.id();
     const auto initial_transform = identityObjectTransform();
-    GameObjectId object_id = invalidGameObjectId;
+    transient_models.push_back(std::move(candidate.model));
+    candidate.owns_resources = false;
+
+    GameObjectId object_id;
     try {
         object_id = GameObjects::createWithComponents(component_ids, [&](std::span<void *> ptrs) {
             assignTransform(*static_cast<TransformComponent *>(ptrs[0]), initial_transform);
             static_cast<SimpleModelViewComponent *>(ptrs[1])->model_instance_id = model_instance_id;
         });
     } catch (...) {
-        GET_MODULE(PolygonInstanceContainer).removeModelInstance(model_instance_id);
+        releaseModelGpuResources(transient_models.back(), false);
+        transient_models.pop_back();
         throw;
     }
-    GET_MODULE(PolygonInstanceContainer)
-        .setTrs(model_instance_id, initial_transform.pos, initial_transform.rotation, initial_transform.scale);
 
-    if (name && !name->empty()) {
-        bindObjectTransform(*name, object_id);
+    // No operation below allocates: this is the single publication point for
+    // the entity's slot, draw commands, resources, and optional name.
+    instances.publishModelInstance(std::move(staged_instance));
+    if (staged_binding) {
+        staged_binding->mapped().object_id = object_id;
+        const auto inserted = object_bindings.insert(std::move(*staged_binding));
+        assert(inserted.inserted);
     }
     return path;
 }

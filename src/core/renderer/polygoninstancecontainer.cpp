@@ -4,6 +4,7 @@
 #include "../vkcore/core.hpp"
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cstring>
 #include <cmath>
 #include <glm/ext/matrix_transform.hpp>
@@ -257,7 +258,29 @@ size_t primitiveCount(const ModelTemplate &model) {
 }
 } // namespace
 
-ModelInstanceId PolygonInstanceContainer::placeModelInstance(const ModelTemplate &model) {
+struct StagedModelInstance::Impl {
+    ModelInstanceId id{};
+    std::vector<glm::mat4> skin_palette;
+    ModelAssetId asset_id{};
+    std::shared_ptr<const SourceMaterialInitialValueTable> material_initial_values;
+    std::shared_ptr<const VrmSemanticData> vrm_semantic;
+    std::shared_ptr<const MorphTargetLayout> morph_layout;
+    MorphWeightFrame morph_weight_frame;
+    std::vector<RenderCommand> render_commands;
+};
+
+StagedModelInstance::StagedModelInstance() noexcept = default;
+StagedModelInstance::StagedModelInstance(std::unique_ptr<Impl> impl) noexcept
+    : impl_{std::move(impl)} {}
+StagedModelInstance::~StagedModelInstance() = default;
+StagedModelInstance::StagedModelInstance(StagedModelInstance &&) noexcept = default;
+StagedModelInstance &StagedModelInstance::operator=(StagedModelInstance &&) noexcept = default;
+
+ModelInstanceId StagedModelInstance::id() const noexcept {
+    return impl_ ? impl_->id : ModelInstanceId{};
+}
+
+void PolygonInstanceContainer::preflightModelInstance(const ModelTemplate &model) const {
     if (model_instances_data.size() >= maxModelInstances) {
         throw std::runtime_error("Model instance capacity exceeded");
     }
@@ -270,57 +293,121 @@ ModelInstanceId PolygonInstanceContainer::placeModelInstance(const ModelTemplate
         primitive_count > maxRenderCommands - render_commands.size()) {
         throw std::runtime_error("Render command capacity exceeded");
     }
+}
 
-    ModelInstanceId id{static_cast<uint32_t>(model_instances_data.size())};
-    model_instances_data.push_back(glm::identity<glm::mat4>());
-    previous_model_instances_data.push_back(glm::identity<glm::mat4>());
-    model_history_valid.push_back(false);
-    skin_palettes.emplace_back();
-    previous_skin_palettes.emplace_back();
-    animation_revisions.push_back(0);
-    previous_animation_revisions.push_back(0);
-    animation_generations.push_back(1);
-    model_asset_ids.push_back(model.asset_id);
-    material_initial_value_tables.push_back(model.material_initial_values);
-    vrm_semantics.push_back(model.vrm_semantic);
-    morph_layouts.push_back(model.morph_targets);
+StagedModelInstance PolygonInstanceContainer::stageModelInstance(const ModelTemplate &model) {
+    preflightModelInstance(model);
+
+    auto staged = std::make_unique<StagedModelInstance::Impl>();
+    staged->id = ModelInstanceId{static_cast<uint32_t>(model_instances_data.size())};
+    staged->asset_id = model.asset_id;
+    staged->material_initial_values = model.material_initial_values;
+    staged->vrm_semantic = model.vrm_semantic;
+    staged->morph_layout = model.morph_targets;
+
+    if (model.skeletal) {
+        staged->skin_palette =
+            evaluateSkinPalette(*model.skeletal, nullptr, 0.0, 1.0, false, 0.0);
+        if (staged->skin_palette.size() > maxSkinJoints)
+            throw std::runtime_error("Skin palette exceeds 128 joints");
+    }
+
     const auto defaults = model.morph_targets
                               ? model.morph_targets->default_weights
                               : std::vector<float>{};
-    morph_weight_frames.push_back(MorphWeightFrame{
-        .instance_identity = static_cast<std::uint64_t>(id.value) + 1,
-        .instance_generation = animation_generations.back(),
+    staged->morph_weight_frame = MorphWeightFrame{
+        .instance_identity = static_cast<std::uint64_t>(staged->id.value) + 1,
+        .instance_generation = 1,
         .layout_generation = model.morph_targets ? model.morph_targets->generation : 0,
         .current_revision = 0,
         .previous_revision = 0,
         .current = defaults,
         .previous = defaults,
-    });
-    morph_history_valid.push_back(false);
+    };
 
+    staged->render_commands.reserve(primitiveCount(model));
     for (const auto &material : model.material_primitives) {
         for (const auto &primitive : material.primitives) {
-            RenderCommand instance{
+            staged->render_commands.push_back(RenderCommand{
                 .command =
                     vk::DrawIndexedIndirectCommand{
                         primitive.index_count,
                         1,
                         primitive.index_offset,
                         primitive.vert_offset,
-                        id.value,
-                },
+                        staged->id.value,
+                    },
                 .material = material.material,
                 .source_material_index = material.source_material_index,
                 .node_index = primitive.node_index,
                 .skinned = primitive.skinned,
                 .view_visibility = primitive.view_visibility,
-            };
-            render_commands.push_back(instance);
+            });
         }
     }
-    if (model.skeletal) {
-        setSkinningPalette(id, evaluateSkinPalette(*model.skeletal, nullptr, 0.0, 1.0, false, 0.0));
+
+    // Reserve every live container before publication. Once this succeeds,
+    // publishModelInstance() only moves/copies into already allocated storage.
+    const auto instance_capacity = model_instances_data.size() + 1;
+    model_instances_data.reserve(instance_capacity);
+    previous_model_instances_data.reserve(instance_capacity);
+    model_history_valid.reserve(instance_capacity);
+    skin_palettes.reserve(instance_capacity);
+    previous_skin_palettes.reserve(instance_capacity);
+    animation_revisions.reserve(instance_capacity);
+    previous_animation_revisions.reserve(instance_capacity);
+    animation_generations.reserve(instance_capacity);
+    model_asset_ids.reserve(instance_capacity);
+    material_initial_value_tables.reserve(instance_capacity);
+    vrm_semantics.reserve(instance_capacity);
+    morph_layouts.reserve(instance_capacity);
+    morph_weight_frames.reserve(instance_capacity);
+    morph_history_valid.reserve(instance_capacity);
+    render_commands.reserve(render_commands.size() + staged->render_commands.size());
+
+    // The future slot is not addressable until publication, so a failed write
+    // cannot change the live inventory or IDs.
+    if (!staged->skin_palette.empty()) {
+        GET_MODULE(VulkanManageCore)
+            .writeBuf(skin_palette_buffer, staged->skin_palette.data(),
+                      sizeof(glm::mat4) * maxSkinJoints * staged->id.value,
+                      sizeof(glm::mat4) * staged->skin_palette.size());
     }
+
+    return StagedModelInstance{std::move(staged)};
+}
+
+void PolygonInstanceContainer::publishModelInstance(StagedModelInstance staged) noexcept {
+    assert(staged.impl_ != nullptr);
+    assert(staged.impl_->id.value == model_instances_data.size());
+    assert(model_instances_data.size() < model_instances_data.capacity());
+    assert(render_commands.size() + staged.impl_->render_commands.size() <=
+           render_commands.capacity());
+
+    auto &candidate = *staged.impl_;
+    model_instances_data.push_back(glm::identity<glm::mat4>());
+    previous_model_instances_data.push_back(glm::identity<glm::mat4>());
+    model_history_valid.push_back(false);
+    skin_palettes.push_back(std::move(candidate.skin_palette));
+    previous_skin_palettes.emplace_back();
+    animation_revisions.push_back(0);
+    previous_animation_revisions.push_back(0);
+    animation_generations.push_back(1);
+    model_asset_ids.push_back(candidate.asset_id);
+    material_initial_value_tables.push_back(std::move(candidate.material_initial_values));
+    vrm_semantics.push_back(std::move(candidate.vrm_semantic));
+    morph_layouts.push_back(std::move(candidate.morph_layout));
+    morph_weight_frames.push_back(std::move(candidate.morph_weight_frame));
+    morph_history_valid.push_back(false);
+    render_commands.insert(render_commands.end(),
+                           std::make_move_iterator(candidate.render_commands.begin()),
+                           std::make_move_iterator(candidate.render_commands.end()));
+}
+
+ModelInstanceId PolygonInstanceContainer::placeModelInstance(const ModelTemplate &model) {
+    auto staged = stageModelInstance(model);
+    const auto id = staged.id();
+    publishModelInstance(std::move(staged));
     return id;
 }
 void PolygonInstanceContainer::removeModelInstance(ModelInstanceId id) {

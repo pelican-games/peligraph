@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../container.hpp"
+#include "../model/modeltemplate.hpp"
 #include <details/ecs/entity.hpp>
 
 #include <filesystem>
@@ -10,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 namespace Pelican {
 
@@ -27,11 +29,13 @@ DECLARE_MODULE(SceneLoader) {
     };
 
     std::unordered_map<std::string, ObjectBinding> object_bindings;
+    std::vector<ModelTemplate> transient_models;
     SceneId current_scene_id;
     std::optional<SceneId> pending_scene_id;
 
     void bindObjectTransform(const std::string &name, GameObjectId object_id);
     void clearRuntimeScene();
+    void releaseTransientModels(bool deferred) noexcept;
 
   public:
     SceneLoader();
