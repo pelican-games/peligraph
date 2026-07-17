@@ -17,6 +17,7 @@ namespace Pelican::TestMorphFixture {
 struct Options {
     bool skinned = false;
     bool vrm_expression = false;
+    bool vrm_first_person = false;
     double mesh_weight = 0.0;
     std::optional<double> node_weight;
     std::uint32_t target_count = 1;
@@ -109,9 +110,11 @@ inline std::vector<std::uint8_t> makeGlb(const Options &options = {}) {
 
     nlohmann::json skins = nlohmann::json::array();
     if (options.skinned) {
-        const std::vector<glm::u16vec4> joints(4, {0, 0, 0, 0});
+        auto joints = std::vector<glm::u16vec4>(4, {0, 0, 0, 0});
+        if (options.vrm_first_person) joints[0] = {2, 0, 0, 0};
         const std::vector<glm::vec4> weights(4, {1.0f, 0.0f, 0.0f, 0.0f});
-        const std::vector<glm::mat4> inverse_bind{glm::mat4{1.0f}};
+        const std::vector<glm::mat4> inverse_bind(
+            options.vrm_first_person ? 3 : 1, glm::mat4{1.0f});
         attributes["JOINTS_0"] = add(joints, 5123, "VEC4");
         attributes["WEIGHTS_0"] = add(weights, 5126, "VEC4");
         primitive["attributes"] = attributes;
@@ -146,9 +149,9 @@ inline std::vector<std::uint8_t> makeGlb(const Options &options = {}) {
         {"buffers", {{{"byteLength", bin.size()}}}},
     };
 
-    if (options.vrm_expression) {
+    if (options.vrm_expression || options.vrm_first_person) {
         if (!options.skinned)
-            throw std::runtime_error("VRM expression fixture must be skinned");
+            throw std::runtime_error("VRM fixture must be skinned");
         static constexpr std::array required_bones{
             "hips",          "spine",         "head",          "leftUpperLeg",
             "leftLowerLeg",  "leftFoot",      "rightUpperLeg", "rightLowerLeg",
@@ -158,11 +161,14 @@ inline std::vector<std::uint8_t> makeGlb(const Options &options = {}) {
         nlohmann::json human_bones = nlohmann::json::object();
         json["nodes"][1]["name"] = "hipsNode";
         human_bones["hips"] = {{"node", 1}};
+        std::size_t head_node = 0;
         for (std::size_t index = 1; index < required_bones.size(); ++index) {
             const auto node = json["nodes"].size();
             json["nodes"].push_back(
                 {{"name", std::string{required_bones[index]} + "Node"}});
             human_bones[required_bones[index]] = {{"node", node}};
+            if (std::string_view{required_bones[index]} == "head")
+                head_node = node;
         }
         json["materials"][0]["emissiveFactor"] = {0.02, 0.03, 0.04};
         nlohmann::json preset = nlohmann::json::object();
@@ -215,6 +221,14 @@ inline std::vector<std::uint8_t> makeGlb(const Options &options = {}) {
               {"rangeMapVerticalUp",
                {{"inputMaxValue", 30.0}, {"outputScale", 0.6}}}}},
         };
+        if (options.vrm_first_person) {
+            const auto head_child = json["nodes"].size();
+            json["nodes"].push_back({{"name", "HeadChildNode"}});
+            json["nodes"][head_node]["children"] = {head_child};
+            json["skins"][0]["joints"] = {1, head_node, head_child};
+            vrm["firstPerson"]["meshAnnotations"] =
+                nlohmann::json::array({{{"node", 0}, {"type", "auto"}}});
+        }
         json["extensionsUsed"] = {"VRMC_vrm"};
         json["extensions"]["VRMC_vrm"] = std::move(vrm);
     }

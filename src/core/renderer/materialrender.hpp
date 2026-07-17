@@ -24,6 +24,7 @@ struct MaterialRendererDependencies {
     LightContainer &light_container;
     const Camera &camera;
     glm::mat4 view_projection{1.0f};
+    bool first_person_view = false;
 };
 
 DECLARE_MODULE(MaterialRenderer) {

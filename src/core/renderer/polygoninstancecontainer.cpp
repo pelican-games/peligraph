@@ -311,7 +311,9 @@ ModelInstanceId PolygonInstanceContainer::placeModelInstance(const ModelTemplate
                 },
                 .material = material.material,
                 .source_material_index = material.source_material_index,
+                .node_index = primitive.node_index,
                 .skinned = primitive.skinned,
+                .view_visibility = primitive.view_visibility,
             };
             render_commands.push_back(instance);
         }
@@ -362,7 +364,7 @@ void PolygonInstanceContainer::removeModelInstance(ModelInstanceId id) {
 
 void PolygonInstanceContainer::clear() {
     render_commands.clear();
-    draw_calls.clear();
+    for (auto &calls : draw_calls) calls.clear();
     model_instances_data.clear();
     previous_model_instances_data.clear();
     model_history_valid.clear();
@@ -388,7 +390,7 @@ void PolygonInstanceContainer::clear() {
 
 void PolygonInstanceContainer::triggerUpdate() {
     // clear previous frame
-    draw_calls.clear();
+    for (auto &calls : draw_calls) calls.clear();
 
     if (render_commands.empty())
         return;
@@ -442,40 +444,60 @@ void PolygonInstanceContainer::triggerUpdate() {
     std::sort(render_commands.begin(), render_commands.end(),
               [](const RenderCommand &p, const RenderCommand &q) {
                   return std::tie(p.material.value, p.source_material_index,
-                                  p.skinned) <
+                                  p.skinned, p.view_visibility) <
                          std::tie(q.material.value, q.source_material_index,
-                                  q.skinned);
+                                  q.skinned, q.view_visibility);
               });
     GET_MODULE(VulkanManageCore)
         .writeBuf(indirect_buf, render_commands.data(), 0, sizeof(RenderCommand) * render_commands.size());
 
-    // prepare drawindirect information
-    DrawIndirectInfo draw_call{.stride = sizeof(RenderCommand)};
-    size_t prev_offset_index;
-
-    prev_offset_index = 0;
-    draw_call.material = render_commands[0].material;
-    draw_call.source_material_index = render_commands[0].source_material_index;
-    draw_call.skinned = render_commands[0].skinned;
-    draw_call.offset = prev_offset_index * sizeof(RenderCommand);
-    for (size_t i = 1; i < render_commands.size(); i++) {
-        if (render_commands[i].material.value != render_commands[i - 1].material.value ||
-            render_commands[i].source_material_index !=
-                render_commands[i - 1].source_material_index ||
-            render_commands[i].skinned != render_commands[i - 1].skinned) {
-            draw_call.draw_count = checkedDrawCount(i - prev_offset_index);
-            draw_calls.push_back(draw_call);
-
-            prev_offset_index = i;
-            draw_call.material = render_commands[i].material;
-            draw_call.source_material_index =
-                render_commands[i].source_material_index;
-            draw_call.skinned = render_commands[i].skinned;
-            draw_call.offset = prev_offset_index * sizeof(RenderCommand);
+    // Build immutable per-view ranges over the same command buffer. The enum
+    // order third/both/first makes each view's visible commands contiguous
+    // within one material group.
+    const auto build_draw_calls = [&](bool first_person_view) {
+        auto &output = draw_calls[first_person_view ? 1u : 0u];
+        std::optional<std::size_t> first;
+        const auto visible = [&](const RenderCommand &command) {
+            return first_person_view
+                       ? command.view_visibility !=
+                             PrimitiveViewVisibility::third_person_only
+                       : command.view_visibility !=
+                             PrimitiveViewVisibility::first_person_only;
+        };
+        const auto flush = [&](std::size_t end) {
+            if (!first) return;
+            const auto &command = render_commands[*first];
+            output.push_back(DrawIndirectInfo{
+                .material = command.material,
+                .source_material_index = command.source_material_index,
+                .offset = *first * sizeof(RenderCommand),
+                .draw_count = checkedDrawCount(end - *first),
+                .stride = sizeof(RenderCommand),
+                .skinned = command.skinned,
+            });
+            first.reset();
+        };
+        for (std::size_t index = 0; index < render_commands.size(); ++index) {
+            const auto &command = render_commands[index];
+            if (!visible(command)) {
+                flush(index);
+                continue;
+            }
+            if (first) {
+                const auto &begin = render_commands[*first];
+                if (begin.material.value != command.material.value ||
+                    begin.source_material_index !=
+                        command.source_material_index ||
+                    begin.skinned != command.skinned) {
+                    flush(index);
+                }
+            }
+            if (!first) first = index;
         }
-    }
-    draw_call.draw_count = checkedDrawCount(render_commands.size() - prev_offset_index);
-    draw_calls.push_back(draw_call);
+        flush(render_commands.size());
+    };
+    build_draw_calls(false);
+    build_draw_calls(true);
 
     GET_MODULE(VulkanManageCore)
         .writeBuf(model_data_buffer, model_instances_data.data(), 0, sizeof(glm::mat4) * model_instances_data.size());
@@ -622,7 +644,9 @@ void PolygonInstanceContainer::rebuildModelInstances(
                         primitive.vert_offset, instance},
                     .material = material.material,
                     .source_material_index = material.source_material_index,
+                    .node_index = primitive.node_index,
                     .skinned = primitive.skinned,
+                    .view_visibility = primitive.view_visibility,
                 });
             }
         }
@@ -1121,6 +1145,9 @@ void PolygonInstanceContainer::setTrs(ModelInstanceId id, glm::vec3 pos, glm::qu
 const BufferWrapper &PolygonInstanceContainer::getIndirectBuf() const { return indirect_buf; }
 const BufferWrapper &PolygonInstanceContainer::getObjectBuf() const { return model_data_buffer; }
 const BufferWrapper &PolygonInstanceContainer::getPreviousObjectBuf() const { return previous_model_data_buffer; }
-const std::vector<DrawIndirectInfo> &PolygonInstanceContainer::getDrawCalls() const { return draw_calls; }
+const std::vector<DrawIndirectInfo> &
+PolygonInstanceContainer::getDrawCalls(bool first_person_view) const {
+    return draw_calls[first_person_view ? 1u : 0u];
+}
 
 } // namespace Pelican

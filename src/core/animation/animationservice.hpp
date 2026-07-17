@@ -1,6 +1,8 @@
 #pragma once
 
+#include "../renderer/modelinstance.hpp"
 #include "../userpublic/animation/abi_v1.hpp"
+#include "../userpublic/animation/pose_staging_v1.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -22,6 +24,8 @@ class AnimationServiceRuntime {
     AnimationServiceRuntime &operator=(const AnimationServiceRuntime &) = delete;
 
     void registerObject(std::string name, const SkeletalModelData &model);
+    void registerObject(std::string name, const SkeletalModelData &model,
+                        ModelInstanceId renderer_instance);
     void reset();
     void releaseOwner(internal::RegistrationOwner owner) noexcept;
     Status runPhases(AnimationSinkHandle sink, std::uint64_t frame_revision) noexcept;
@@ -34,6 +38,8 @@ class AnimationServiceRuntime {
 
     friend AnimationServiceRuntime &animationServiceRuntime();
     friend Status getApiV1(std::uint32_t, ApiV1 *) noexcept;
+    friend Status getPoseStagingServiceV1(
+        std::uint32_t, PoseStagingServiceV1 *) noexcept;
 };
 
 AnimationServiceRuntime &animationServiceRuntime();

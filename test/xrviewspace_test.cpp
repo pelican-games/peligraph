@@ -47,6 +47,7 @@ TEST_CASE("OpenXR identity pose produces identity world/view and zero camera pos
     CHECK(result.camera_position.x == Approx(0.0F));
     CHECK(result.camera_position.y == Approx(0.0F));
     CHECK(result.camera_position.z == Approx(0.0F));
+    CHECK(result.first_person_view);
 }
 
 TEST_CASE("OpenXR 64mm IPD keeps eye positions and inverse view translations distinct",
@@ -58,12 +59,20 @@ TEST_CASE("OpenXR 64mm IPD keeps eye positions and inverse view translations dis
     const auto result = Pelican::OpenXr::buildRenderViewParameters(
         glm::mat4{1.0F}, views, 0.1F, 100.0F);
     REQUIRE(result.size() == 2);
+    CHECK(result[0].first_person_view);
+    CHECK(result[1].first_person_view);
     CHECK(result[0].camera_position.x == Approx(-0.032F));
     CHECK(result[1].camera_position.x == Approx(0.032F));
     CHECK(result[0].view[3][0] == Approx(0.032F));
     CHECK(result[1].view[3][0] == Approx(-0.032F));
     CHECK(result[1].camera_position.x - result[0].camera_position.x ==
           Approx(0.064F));
+}
+
+TEST_CASE("flat render view defaults to third-person visibility",
+          "[wp134][view-space][firstperson]") {
+    const Pelican::RenderViewParameters flat;
+    CHECK_FALSE(flat.first_person_view);
 }
 
 TEST_CASE("OpenXR positive 90 degree yaw composes after active world-from-stage",
