@@ -672,6 +672,109 @@ struct EvaluatorV1::Impl {
         return Status::ok;
     }
 
+    Status rebind() {
+        if (!is_bound)
+            return fail(Status::invalid_handle, "evaluator is not bound");
+
+        auto next_instance = descriptor<ResolveAnimationInstanceDescV1>();
+        next_instance.sink = sink;
+        if (const auto status = service.resolve_instance(service.context,
+                                                         &next_instance);
+            status != Status::ok)
+            return fail(status, "animation instance rebind failed");
+        auto next_rig = descriptor<ResolveAnimationRigDescV1>();
+        next_rig.instance = next_instance.instance;
+        if (const auto status = service.resolve_rig(service.context, &next_rig);
+            status != Status::ok)
+            return fail(status, "animation rig rebind failed");
+        auto next_layout = descriptor<ResolvePoseLayoutDescV1>();
+        next_layout.rig = next_rig.rig;
+        if (const auto status = service.resolve_layout(service.context,
+                                                       &next_layout);
+            status != Status::ok)
+            return fail(status, "animation layout rebind failed");
+        if (next_layout.layout.identity != layout.identity)
+            return fail(Status::incompatible_layout,
+                        "pose layout identity changed; evaluator reset required");
+
+        auto next_states = states;
+        std::vector<CursorHandle> created_cursors;
+        const auto discard_created = [&]() {
+            for (const auto cursor_handle : created_cursors) {
+                auto destroy = descriptor<DestroyClipCursorDescV1>();
+                destroy.owner = owner;
+                destroy.cursor = cursor_handle;
+                (void)service.destroy_cursor(service.context, &destroy);
+            }
+        };
+        for (auto &state : next_states) {
+            for (auto &clip : state.clips) {
+                auto resolve = descriptor<ResolveAnimationClipDescV1>();
+                resolve.rig = next_rig.rig;
+                resolve.clip_name = clip.node.clip.data();
+                resolve.clip_name_size =
+                    static_cast<std::uint32_t>(clip.node.clip.size());
+                if (const auto status = service.resolve_clip(service.context,
+                                                             &resolve);
+                    status != Status::ok) {
+                    discard_created();
+                    return fail(status, "clip rebind failed: " + clip.node.clip);
+                }
+                auto metadata = descriptor<ClipMetadataV1>();
+                metadata.clip = resolve.clip;
+                if (const auto status = service.get_clip_metadata(service.context,
+                                                                  &metadata);
+                    status != Status::ok) {
+                    discard_created();
+                    return fail(status,
+                                "clip metadata rebind failed: " + clip.node.clip);
+                }
+                if (!(metadata.end_seconds > metadata.start_seconds)) {
+                    discard_created();
+                    return fail(Status::invalid_argument,
+                                "zero-duration clip after rebind: " +
+                                    clip.node.clip);
+                }
+                auto cursor = descriptor<CreateClipCursorDescV1>();
+                cursor.owner = owner;
+                cursor.clip = resolve.clip;
+                if (const auto status = service.create_cursor(service.context,
+                                                               &cursor);
+                    status != Status::ok) {
+                    discard_created();
+                    return fail(status,
+                                "cursor rebind failed: " + clip.node.clip);
+                }
+                created_cursors.push_back(cursor.cursor);
+                clip.handle = resolve.clip;
+                clip.metadata = metadata;
+                clip.cursor = cursor.cursor;
+            }
+        }
+
+        for (auto &state : states) {
+            for (auto &clip : state.clips) {
+                if (!isValid(clip.cursor)) continue;
+                auto destroy = descriptor<DestroyClipCursorDescV1>();
+                destroy.owner = owner;
+                destroy.cursor = clip.cursor;
+                (void)service.destroy_cursor(service.context, &destroy);
+            }
+        }
+        instance = next_instance.instance;
+        rig = next_rig.rig;
+        layout = next_layout.layout;
+        binding = next_layout.skin_binding;
+        joint_count = next_layout.joint_count;
+        palette_count = next_layout.palette_count;
+        states = std::move(next_states);
+        if (last_pose.valid) last_pose.layout = layout;
+        if (transition && transition->snapshot.valid)
+            transition->snapshot.layout = layout;
+        error.clear();
+        return Status::ok;
+    }
+
     Status bind() {
         if (is_bound) return Status::ok;
         api = descriptor<ApiV1>();
@@ -761,6 +864,7 @@ EvaluatorV1::~EvaluatorV1() = default;
 EvaluatorV1::EvaluatorV1(EvaluatorV1 &&) noexcept = default;
 EvaluatorV1 &EvaluatorV1::operator=(EvaluatorV1 &&) noexcept = default;
 Status EvaluatorV1::bind() { return impl_->bind(); }
+Status EvaluatorV1::rebind() { return impl_->rebind(); }
 bool EvaluatorV1::bound() const noexcept { return impl_->is_bound; }
 Status EvaluatorV1::prepareTick(double absolute_time, double delta_seconds, std::uint64_t frame_revision) {
     if (!impl_->is_bound) return impl_->fail(Status::invalid_handle, "evaluator is not bound");

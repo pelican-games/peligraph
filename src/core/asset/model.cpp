@@ -333,19 +333,23 @@ struct ModelAssetContainer::Impl {
             instances->rebuildModelInstances(rebuilds);
         }
 
-        bool animation_changed = false;
         std::vector<ModelTemplate> retired;
         retired.reserve(installs.size());
         for (auto &install : installs) {
-            animation_changed = animation_changed || install.record->model.skeletal ||
-                                install.payload->candidate.skeletal;
             retired.push_back(std::move(install.record->model));
             install.record->model = std::move(install.payload->candidate);
             install.payload->owns_candidate = false;
             install.record->live_payload = std::move(install.registry_payload);
         }
         batch->installed = true;
-        if (animation_changed) Animation::animationServiceRuntime().reset();
+        for (std::size_t index = 0; index < installs.size(); ++index) {
+            const auto *previous = retired[index].skeletal.get();
+            const auto *replacement = installs[index].record->model.skeletal.get();
+            if (previous || replacement) {
+                Animation::animationServiceRuntime().reloadAsset(previous,
+                                                                 replacement);
+            }
+        }
         for (auto &model : retired) releaseModelGpuResources(model, true);
     }
 };

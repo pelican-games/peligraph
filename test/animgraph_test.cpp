@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <string>
 
@@ -71,6 +72,26 @@ void tick(EvaluatorV1 &evaluator, AnimationSinkHandle sink, double dt) {
     const auto revision = nextRevision();
     REQUIRE(evaluator.prepareTick(static_cast<double>(revision) / 60.0, dt, revision) == Status::ok);
     REQUIRE(animationServiceRuntime().runPhases(sink, revision) == Status::ok);
+}
+
+void requireSameSemanticTrace(const StatusTraceV1 &left,
+                              const StatusTraceV1 &right) {
+    REQUIRE(left.current_state == right.current_state);
+    REQUIRE(left.transition_active == right.transition_active);
+    REQUIRE(left.transition_target == right.transition_target);
+    REQUIRE(left.transition_progress == right.transition_progress);
+    REQUIRE(left.snapshot_revision == right.snapshot_revision);
+    REQUIRE(left.snapshot_layout_identity == right.snapshot_layout_identity);
+    REQUIRE(left.snapshot_pose_hash == right.snapshot_pose_hash);
+    REQUIRE(left.semantic_pose_hash == right.semantic_pose_hash);
+    REQUIRE(left.cursors.size() == right.cursors.size());
+    for (std::size_t index = 0; index < left.cursors.size(); ++index) {
+        REQUIRE(left.cursors[index].clip == right.cursors[index].clip);
+        REQUIRE(left.cursors[index].time_seconds ==
+                right.cursors[index].time_seconds);
+        REQUIRE(left.cursors[index].normalized_phase ==
+                right.cursors[index].normalized_phase);
+    }
 }
 
 EvaluatorV1 bind(std::string json, std::string object, internal::RegistrationOwner owner = 101) {
@@ -304,6 +325,144 @@ TEST_CASE("all discontinuity notifications reset graph clocks and require monoto
         REQUIRE(evaluator.getStatus().current_state == "A");
         REQUIRE(evaluator.getStatus().cursors.front().normalized_phase == 0.0);
     }
+}
+
+TEST_CASE("WP147 evaluator rebind preserves graph state and unrelated actor frames",
+          "[animation][animgraph][wp147][rebind]") {
+    constexpr auto graph = R"json({
+      "schema":"pelican.anim_graph","version":1,
+      "parameters":{"go":0},"initial_state":"A",
+      "states":[{"name":"A","type":"clip","clip":"A"},
+                {"name":"B","type":"clip","clip":"B"}],
+      "transitions":[{"from":"A","to":"B","priority":1,
+                      "interrupt":"always","duration":1,
+                      "conditions":[{"parameter":"go","op":">","value":0}]}]
+    })json";
+    auto original = graphAsset();
+    auto replacement = original;
+    auto stable_model = graphAsset();
+    auto &runtime = animationServiceRuntime();
+    runtime.reset();
+    runtime.registerObject("Reloaded", original);
+    runtime.registerObject("Stable", stable_model);
+    auto reloaded = bind(graph, "Reloaded", 147);
+    auto stable = bind(orderedGraph, "Stable", 148);
+    const auto reloaded_sink = resolveSink("Reloaded");
+    const auto stable_sink = resolveSink("Stable");
+
+    REQUIRE(reloaded.setParameter("go", 1.0) == Status::ok);
+    tick(reloaded, reloaded_sink, 0.0);
+    tick(reloaded, reloaded_sink, 0.25);
+    tick(reloaded, reloaded_sink, 0.0);
+    tick(stable, stable_sink, 0.1);
+    const auto before_trace = reloaded.getStatus();
+    const auto before_pose = reloaded.lastPoseBytes();
+    const auto stable_before = stable.getStatus().semantic_pose_hash;
+
+    auto api = descriptor<ApiV1>();
+    REQUIRE(getApiV1(abiVersionV1, &api) == Status::ok);
+    auto service = descriptor<AnimationServiceV1>();
+    REQUIRE(api.get_animation_service(api.context, animationServiceVersionV1,
+                                      &service) == Status::ok);
+    auto old_instance = descriptor<ResolveAnimationInstanceDescV1>();
+    old_instance.sink = reloaded_sink;
+    REQUIRE(service.resolve_instance(service.context, &old_instance) == Status::ok);
+    auto old_rig = descriptor<ResolveAnimationRigDescV1>();
+    old_rig.instance = old_instance.instance;
+    REQUIRE(service.resolve_rig(service.context, &old_rig) == Status::ok);
+    auto old_layout = descriptor<ResolvePoseLayoutDescV1>();
+    old_layout.rig = old_rig.rig;
+    REQUIRE(service.resolve_layout(service.context, &old_layout) == Status::ok);
+    auto old_clip = descriptor<ResolveAnimationClipDescV1>();
+    old_clip.rig = old_rig.rig;
+    old_clip.clip_name = "A";
+    old_clip.clip_name_size = 1;
+    REQUIRE(service.resolve_clip(service.context, &old_clip) == Status::ok);
+    CursorHandle stale_cursor{};
+    PoseArenaHandle fixture_arena{};
+    auto stale_pose = descriptor<PoseViewV1>();
+    {
+        internal::ScopedRegistrationOwner owner_scope{149};
+        auto owner = descriptor<CurrentAnimationOwnerDescV1>();
+        REQUIRE(service.get_current_owner(service.context, &owner) == Status::ok);
+        auto cursor = descriptor<CreateClipCursorDescV1>();
+        cursor.owner = owner.owner;
+        cursor.clip = old_clip.clip;
+        REQUIRE(service.create_cursor(service.context, &cursor) == Status::ok);
+        stale_cursor = cursor.cursor;
+        auto begin = descriptor<BeginPoseArenaFrameDescV1>();
+        begin.owner = owner.owner;
+        begin.frame_revision = nextRevision();
+        REQUIRE(service.begin_pose_frame(service.context, &begin) == Status::ok);
+        fixture_arena = begin.arena;
+        auto acquire = descriptor<AcquirePoseDescV1>();
+        acquire.arena = begin.arena;
+        acquire.layout = old_layout.layout;
+        acquire.joint_count = old_layout.joint_count;
+        acquire.out_view = &stale_pose;
+        REQUIRE(service.acquire_pose(service.context, &acquire) == Status::ok);
+    }
+
+    runtime.reloadAsset(&original, &replacement);
+
+    auto stale_metadata = descriptor<ClipMetadataV1>();
+    stale_metadata.clip = old_clip.clip;
+    REQUIRE(service.get_clip_metadata(service.context, &stale_metadata) ==
+            Status::stale_generation);
+    auto advance = descriptor<AdvanceDescV1>();
+    advance.cursor = stale_cursor;
+    advance.delta_seconds = 0.1;
+    auto interval = descriptor<IntervalResultV1>();
+    REQUIRE(api.advance_cursor(api.context, &advance, &interval) ==
+            Status::stale_generation);
+    auto stale_acquire = descriptor<AcquirePoseDescV1>();
+    stale_acquire.arena = fixture_arena;
+    stale_acquire.layout = old_layout.layout;
+    stale_acquire.joint_count = old_layout.joint_count;
+    auto untouched_pose = descriptor<PoseViewV1>();
+    stale_acquire.out_view = &untouched_pose;
+    REQUIRE(service.acquire_pose(service.context, &stale_acquire) ==
+            Status::stale_generation);
+
+    auto current_instance = descriptor<ResolveAnimationInstanceDescV1>();
+    current_instance.sink = reloaded_sink;
+    REQUIRE(service.resolve_instance(service.context, &current_instance) ==
+            Status::ok);
+    auto current_rig = descriptor<ResolveAnimationRigDescV1>();
+    current_rig.instance = current_instance.instance;
+    REQUIRE(service.resolve_rig(service.context, &current_rig) == Status::ok);
+    auto current_clip = descriptor<ResolveAnimationClipDescV1>();
+    current_clip.rig = current_rig.rig;
+    current_clip.clip_name = "A";
+    current_clip.clip_name_size = 1;
+    REQUIRE(service.resolve_clip(service.context, &current_clip) == Status::ok);
+    auto stale_sample = descriptor<SamplePoseAtDescV1>();
+    stale_sample.clip = current_clip.clip;
+    stale_sample.time_seconds = 0.25;
+    stale_sample.output_pose = stale_pose.pose;
+    REQUIRE(service.sample_pose_at(service.context, &stale_sample) ==
+            Status::stale_generation);
+
+    const auto stale_revision = nextRevision();
+    REQUIRE(reloaded.prepareTick(10.0, 0.0, stale_revision) == Status::ok);
+    REQUIRE(runtime.runPhases(reloaded_sink, stale_revision) ==
+            Status::stale_generation);
+    requireSameSemanticTrace(before_trace, reloaded.getStatus());
+
+    // The second model keeps its sink/source/phase and produces the next frame
+    // while the reloaded evaluator is stale.
+    tick(stable, stable_sink, 0.0);
+    REQUIRE(stable.getStatus().frame_revision != 0);
+    REQUIRE(stable.getStatus().semantic_pose_hash == stable_before);
+
+    REQUIRE(reloaded.rebind() == Status::ok);
+    requireSameSemanticTrace(before_trace, reloaded.getStatus());
+    tick(reloaded, reloaded_sink, 0.0);
+    requireSameSemanticTrace(before_trace, reloaded.getStatus());
+    const auto rebound_pose = reloaded.lastPoseBytes();
+    REQUIRE(rebound_pose.size() == before_pose.size());
+    REQUIRE(std::memcmp(rebound_pose.data(), before_pose.data(),
+                        before_pose.size()) == 0);
 }
 
 TEST_CASE("non-finite parameter is rejected and deterministic replay and two actors stay independent",

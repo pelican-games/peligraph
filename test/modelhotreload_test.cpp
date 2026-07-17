@@ -1,4 +1,5 @@
 #include "../src/core/asset/model.hpp"
+#include "../src/core/animation/animationservice.hpp"
 #include "../src/core/container.hpp"
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/loader/pathresolver.hpp"
@@ -11,6 +12,8 @@
 #include "../src/core/vkcore/deletionqueue.hpp"
 #include "../src/core/watch/assetkey.hpp"
 #include "../src/core/watch/reloadservice.hpp"
+#include "../src/core/userpublic/animation/animgraph.hpp"
+#include "../src/core/userpublic/details/reload/registrationowner.hpp"
 #include "gltf_fragment_fixture.hpp"
 #include "skeletal_fixture.hpp"
 
@@ -71,6 +74,13 @@ std::size_t primitiveCount(const ModelTemplate &model) {
 
 watch::ReloadRequest modified(std::string_view path) {
     return {.key = watch::makeAssetKey(path), .kind = watch::ReloadKind::modified};
+}
+
+template <class T> T animationDescriptor() {
+    T value{};
+    value.struct_size = sizeof(T);
+    value.version = Animation::descriptorVersionV1;
+    return value;
 }
 
 } // namespace
@@ -220,6 +230,114 @@ TEST_CASE("HR2-G rig layout change advances compatibility and resets temporal st
     REQUIRE(instances.animationGenerationForTesting(instance) == generation + 1);
     REQUIRE(instances.currentAnimationRevisionForTesting(instance) == 0);
     REQUIRE(instances.previousAnimationRevisionForTesting(instance) == 0);
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+TEST_CASE("WP147 repeated HR2-G reload keeps another model animation running",
+          "[wp147][model-reload][animation][gpu]") {
+    setupLogger();
+    auto sandbox = makeSandbox("animation_generation");
+    const auto reloaded_path = sandbox.root / "reloaded.glb";
+    const auto stable_path = sandbox.root / "stable.glb";
+    TestSkeletalFixture::writeGlb(reloaded_path);
+    TestSkeletalFixture::writeGlb(stable_path);
+
+    auto &animation_runtime = Animation::animationServiceRuntime();
+    animation_runtime.reset();
+    FastModuleContainer modules;
+    configureProject(sandbox.root, nlohmann::json::array({
+        {{"name", "reloaded"}, {"path", "reloaded.glb"}},
+        {{"name", "stable"}, {"path", "stable.glb"}},
+    }));
+    try {
+        (void)GET_MODULE(StandardMaterialResource);
+    } catch (const std::exception &error) {
+        SKIP(std::string{"Vulkan unavailable: "} + error.what());
+    }
+
+    auto &models = GET_MODULE(ModelAssetContainer);
+    auto &reload = GET_MODULE(watch::ReloadService);
+    animation_runtime.registerObject(
+        "Reloaded", *models.getModelTemplateByName("reloaded").skeletal);
+    animation_runtime.registerObject(
+        "Stable", *models.getModelTemplateByName("stable").skeletal);
+
+    constexpr auto graph = R"json({
+      "schema":"pelican.anim_graph","version":1,"initial_state":"turn",
+      "states":[{"name":"turn","type":"clip","clip":"Turn"}]
+    })json";
+    AnimationGraph::EvaluatorV1 stable_evaluator{
+        AnimationGraph::parseDocumentV1(graph), "Stable", 147};
+    {
+        internal::ScopedRegistrationOwner owner_scope{1470};
+        REQUIRE(stable_evaluator.bind() == Animation::Status::ok);
+    }
+
+    auto api = animationDescriptor<Animation::ApiV1>();
+    REQUIRE(Animation::getApiV1(Animation::abiVersionV1, &api) ==
+            Animation::Status::ok);
+    auto service = animationDescriptor<Animation::AnimationServiceV1>();
+    REQUIRE(api.get_animation_service(
+                api.context, Animation::animationServiceVersionV1, &service) ==
+            Animation::Status::ok);
+    const auto resolve_sink = [&](std::string_view name) {
+        auto request =
+            animationDescriptor<Animation::ResolveAnimationSinkDescV1>();
+        request.object_name = name.data();
+        request.object_name_size = static_cast<std::uint32_t>(name.size());
+        request.sink_kind = Animation::AnimationSinkKind::skeletal_pose;
+        REQUIRE(service.resolve_sink(service.context, &request) ==
+                Animation::Status::ok);
+        return request.sink;
+    };
+    const auto reloaded_sink = resolve_sink("Reloaded");
+    const auto stable_sink = resolve_sink("Stable");
+    auto current_instance =
+        animationDescriptor<Animation::ResolveAnimationInstanceDescV1>();
+    current_instance.sink = reloaded_sink;
+    REQUIRE(service.resolve_instance(service.context, &current_instance) ==
+            Animation::Status::ok);
+    const auto registration_generation =
+        animation_runtime.registrationGeneration();
+
+    for (std::uint64_t reload_index = 0; reload_index < 3; ++reload_index) {
+        auto old_rig = animationDescriptor<Animation::ResolveAnimationRigDescV1>();
+        old_rig.instance = current_instance.instance;
+        REQUIRE(service.resolve_rig(service.context, &old_rig) ==
+                Animation::Status::ok);
+
+        REQUIRE(reload.applyRequestForTesting(modified("reloaded.glb")));
+        REQUIRE(models.contentRevisionForTesting("reloaded") ==
+                reload_index + 2);
+        REQUIRE(animation_runtime.registrationGeneration() ==
+                registration_generation);
+
+        auto stale_rig = animationDescriptor<Animation::ResolveAnimationRigDescV1>();
+        stale_rig.instance = current_instance.instance;
+        REQUIRE(service.resolve_rig(service.context, &stale_rig) ==
+                Animation::Status::stale_generation);
+        auto stale_layout =
+            animationDescriptor<Animation::ResolvePoseLayoutDescV1>();
+        stale_layout.rig = old_rig.rig;
+        REQUIRE(service.resolve_layout(service.context, &stale_layout) ==
+                Animation::Status::stale_generation);
+
+        current_instance =
+            animationDescriptor<Animation::ResolveAnimationInstanceDescV1>();
+        current_instance.sink = reloaded_sink;
+        REQUIRE(service.resolve_instance(service.context, &current_instance) ==
+                Animation::Status::ok);
+
+        const auto revision = 14700 + reload_index;
+        REQUIRE(stable_evaluator.prepareTick(
+                    static_cast<double>(revision) / 60.0, 0.1, revision) ==
+                Animation::Status::ok);
+        REQUIRE(animation_runtime.runPhases(stable_sink, revision) ==
+                Animation::Status::ok);
+        REQUIRE(!stable_evaluator.lastPoseBytes().empty());
+    }
+
+    animation_runtime.reset();
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 

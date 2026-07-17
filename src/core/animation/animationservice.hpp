@@ -26,6 +26,10 @@ class AnimationServiceRuntime {
     void registerObject(std::string name, const SkeletalModelData &model);
     void registerObject(std::string name, const SkeletalModelData &model,
                         ModelInstanceId renderer_instance);
+    // Frame-boundary model replacement. Only objects bound to previous are
+    // advanced to the replacement generation; unrelated objects keep running.
+    void reloadAsset(const SkeletalModelData *previous,
+                     const SkeletalModelData *replacement);
     void reset();
     void releaseOwner(internal::RegistrationOwner owner) noexcept;
     Status runPhases(AnimationSinkHandle sink, std::uint64_t frame_revision) noexcept;

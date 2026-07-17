@@ -395,6 +395,63 @@ TEST_CASE("WP99 fixture 5 invalidates rig clip cursor and pose handles on genera
     REQUIRE(result.normalized_phase == 0.75f);
 }
 
+TEST_CASE("WP147 reload advances only one animation asset generation",
+          "[animation][wp147][asset-generation]") {
+    auto first_model = assetFixture();
+    auto second_model = assetFixture();
+    auto replacement = first_model;
+    replacement.clips.front().channels.front().values.back().x = 8.0f;
+    auto replacement_again = replacement;
+    replacement_again.clips.front().channels.front().values.back().x = 12.0f;
+
+    AnimationAssetRegistry registry;
+    const AnimationAsset stale_first = registry.getOrCreate(first_model);
+    const AnimationAsset stable_second = registry.getOrCreate(second_model);
+    const auto stale_clip = stale_first.clips.front();
+    const auto stable_clip = stable_second.clips.front();
+    REQUIRE(stale_first.rig.handle.identity != stable_second.rig.handle.identity);
+
+    const auto &reloaded = registry.reloadAsset(first_model, replacement);
+    REQUIRE(reloaded.rig.handle.identity == stale_first.rig.handle.identity);
+    REQUIRE(reloaded.rig.handle.generation == stale_first.rig.handle.generation + 1);
+    REQUIRE(reloaded.rig.layout.identity == stale_first.rig.layout.identity);
+    REQUIRE(reloaded.rig.layout.generation == stale_first.rig.layout.generation + 1);
+    REQUIRE(reloaded.clips.front().handle.identity == stale_clip.handle.identity);
+    REQUIRE(reloaded.clips.front().handle.generation == stale_clip.handle.generation + 1);
+    REQUIRE(stale_first.rig.generation_state->current.load() !=
+            stale_first.rig.handle.generation);
+    REQUIRE(stable_second.rig.generation_state->current.load() ==
+            stable_second.rig.handle.generation);
+
+    ProbeRuntime arena{8192};
+    auto stale_output = poseDescriptor();
+    auto stable_output = poseDescriptor();
+    auto current_output = poseDescriptor();
+    const auto frame = arena.beginFrame(147);
+    REQUIRE(arena.acquirePose(frame, stale_first.rig.layout, 2, stale_output) ==
+            Status::ok);
+    REQUIRE(arena.acquirePose(frame, stable_second.rig.layout, 2,
+                              stable_output) == Status::ok);
+    REQUIRE(arena.acquirePose(frame, reloaded.rig.layout, 2, current_output) ==
+            Status::ok);
+    REQUIRE(samplePoseAt(stale_first, &stale_clip, 0.5, 1.0, false, 0.0,
+                         stale_output) == Status::stale_generation);
+    REQUIRE(samplePoseAt(stable_second, &stable_clip, 0.5, 1.0, false, 0.0,
+                         stable_output) == Status::ok);
+    REQUIRE(samplePoseAt(reloaded, &reloaded.clips.front(), 0.5, 1.0, false,
+                         0.0, current_output) == Status::ok);
+
+    const AnimationAsset first_reload = reloaded;
+    const auto &reloaded_again = registry.reloadAsset(replacement,
+                                                      replacement_again);
+    REQUIRE(reloaded_again.rig.handle.generation ==
+            first_reload.rig.handle.generation + 1);
+    REQUIRE(first_reload.rig.generation_state->current.load() !=
+            first_reload.rig.handle.generation);
+    REQUIRE(stable_second.rig.generation_state->current.load() ==
+            stable_second.rig.handle.generation);
+}
+
 TEST_CASE("WP99 fixture 6 evaluates and commits two actors in parallel without cross-talk",
           "[animation][a1.5]") {
     // 仕様引用: animation_abi_v1.md §3 / §9
