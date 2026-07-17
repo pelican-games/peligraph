@@ -3639,6 +3639,48 @@ golden_image_test の count REQUIRE 削除 + CI への組み込み。
 5. 受け入れ = inventory fixture green(CPU)+ 既存 golden 全維持
    (GPU ローカル)+ 既存全テスト + player 8 秒 + CI green
 
+### WP142: 負債 LIGHT0 — magic-name light animation の authoring 境界化
+
+参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
+の WP-LIGHT0 定義 + N1 節が正**(逐語: 「magic-name light animation を
+core から example/component へ移し、light cap 超過を fail/warn。
+shadow fitting は別 acceptance criteria に切り出す」)。
+依存: なし。見積: 小〜中。
+排他: 該当 core コードの撤去 + example の component/ゲームコード化 +
+light cap 検証。
+
+1. core 内の名前依存ライトアニメーション(N1 の指摘箇所)を特定し
+   **core から削除**。同じ見た目を example 側のユーザー空間
+   (component + ゲームコード or transform_seq)で再現
+2. **light cap 超過 = 名前入り WARN**(何個目からが落ちたか)。
+   silent drop を廃止
+3. shadow fitting が絡む場合は挙動を変えず acceptance criteria の
+   分離だけ記録(本 WP で fitting を触らない)
+4. gate: **example の golden byte 不変**(移設が見た目を変えない
+   証明)+ cap 超過 fixture + 既存全テスト + player 8 秒 + CI green
+
+### WP143: D-P2a — stereo-safe GPU timing
+
+参照: **`design_debug_profiling.md` v1.1 §3 + レビュー C3 逐語が正**:
+「pass 名だけをキーにしない。`graph variant + logical frame + view
+index + node ordinal/kind/name + subrange` を identity とし、左右眼を
+混ぜない。barrier、render、compute、anchor、output transform、mirror の
+どこを含むかを宣言し、query pool は in-flight ring で再利用する。」
+依存: WP29(gpu_timing)・WP133(XR graph)・WP139(label と同じ
+node identity)— 済。見積: 中〜大。
+排他: rendertiming の v2 化 + query pool ring + get_status/ImGui 表示。
+**VRAM・XR timing 変換(C4)は D-P2b — 本 WP ではやらない**。
+
+1. 計測 identity を C3 のキーに改訂(WP139 の label 命名と同一規範 —
+   RenderDoc の木と 1:1 で突き合う)
+2. 含む区間の宣言表(render/compute/anchor/output_transform/mirror・
+   barrier の帰属)を規範化し fixture 化
+3. query pool を in-flight ring 化(現行の不参照時不生成は維持)
+4. 表示: get_status.gpu_timing(diagnostics — C5 の決定性除外扱い)+
+   ImGui 表(flat)。**計測 on/off で golden byte 不変**
+5. gate: flat + XR(Simulator)で view 0/1 が別 row になる実測 +
+   計測 on/off golden 不変 + 既存全テスト + player 8 秒 + OFF smoke
+
 ### WP137: 負債 CI0 — CPU gate の常設(GitHub Actions)
 
 参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
