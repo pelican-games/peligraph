@@ -110,6 +110,27 @@
 47. **main への統合ブランチ合流** [運用 — 節目で。merge commit 必須
     (squash/rebase 禁止)]
 
+## 負債ウェーブ(2026-07-17 確定 — codex ultra 議論の合意順)
+
+正本 = `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
+(Claude 棚卸し→敵対議論の全記録。A1=WP64 完了済みの事実誤認訂正・
+N1〜N10 の新規発見を含む)。推奨順:
+
+CI0(CPU gate)→ GOLDEN0(GPU 不要 inventory・完了後 count REQUIRE
+削除)→ **LIGHT0(マジックネームライトの core 撤去 — 即修正)**→
+TRANSIENT0(load_gltf rollback/stage-commit)→ INSTANCE0(SlotMap
+handle + ownership)→ ANIM0(reload generation/evaluator rebind)→
+**ECS0(scheduler hazard 照合 — 最大の構造リスク)**→ ECS1(登録
+lifetime/ID 検証)→ CI1(構成 matrix + clean-clone 既定 project)→
+CI2(GPU gate/D-P5)→ DTXT0(本物の A/B gate)→ LIFETIME0(例外
+teardown drain)→ PORT0(atlas pool/CreateProcessW)→ CONTRACT0
+(openpbr 6 variant cross-repo/consumer inventory)→ TEST0(harness
+分割/R6)。
+
+**WP 化しないと合意**: R4 再監査(完了済み)・行列配送一本化・
+generic history・module topological teardown・汎用 .surface variant
+言語・debug_text 無条件全面統合。
+
 ## デバッグ/プロファイリング/最適化トラック(2026-07-17 起草 — ユーザー要望)
 
 正本 = `design_debug_profiling.md` v1(敵対レビュー待ち)。
