@@ -3313,6 +3313,66 @@ view/proj だけでなく position も view 別)。
 5. 受け入れ = 逐語条件 + **view_count=1 で既存 golden 全 byte 一致**
    (最重要)+ 既存全テスト + golden SKIP 0(48/47)+ player 8 秒
 
+### WP129: XR2a.1 — IXrCompositionTarget / swapchain
+
+参照: **`design_openxr.md` v2.1 §5 が正**。受け入れ条件 = 初回レビュー
+§12 の **XR2A1-SWAPCHAIN 逐語** + 再レビューの **XR2A1-TARGET-BOUNDARY
+逐語**(分離確定・per-swapchain 状態機械・failure unwind — 両ブロックの
+原文は各レビュー参照、登録時に全文転記済みの本節が受け入れ条件)。
+依存: WP127(session)・WP128(logical-frame core)— 済。見積: 大。
+排他: IXrCompositionTarget 新設 + XR swapchain + renderer の target
+接続(IFrameTarget は不変)。
+
+**XR2A1-SWAPCHAIN(逐語)**: 「二個の 2D swapchain 又は一個の 2-layer
+swapchain のどちらかを規範として選ぶ。一 logical frame で各 swapchain を
+acquire→wait→GPU submit→release し、左右両 view を一枚の projection
+layer として一回の xrEndFrame に渡す。release layout/queue ownership、
+format、sample count、per-view rect、shouldRender=false、partial failure
+unwind を call trace と Vulkan fixture で固定する。`IFrameTarget` の
+flat acquire/present 一回契約を無理に偽装しない。」
+(v2.1 で「view ごと arraySize=1 ×2」に確定済み)
+
+**XR2A1-TARGET-BOUNDARY(逐語)**: 「既存 `IFrameTarget` とその
+1 acquire/1 submit/present 契約は flat 専用として変更しない。XR は別の
+`IXrCompositionTarget` が `beginLogicalFrame / beginView(i) /
+endView(i) / endLogicalFrame`、二個の `arraySize=1` color swapchain、
+projection layer、単一 `xrEndFrame` を所有する。renderer は target
+非依存の logical-frame core から per-view context を受け取り、XR target
+を `IFrameTarget` の一実装として偽装しない。各 swapchain の状態を独立に
+`idle → acquired → waited → submitted → released` と追跡する。
+`XR_TIMEOUT_EXPIRED` は同じ acquired image への wait を再試行し、wait
+成功前に release しない。一方の acquire/wait/submit/release が失敗した
+場合は、成功済みの他方を合法な順序で unwind し、未 submit の image を
+参照する projection layer は渡さない。session が frame call を継続可能な
+場合だけ zero-layer `xrEndFrame` で閉じ、session/instance loss は
+generation teardown へ送る。左右それぞれの acquire、wait timeout、GPU
+submit、release 失敗位置を protocol trace の表駆動 gate にする。」
+
+検証 = protocol fake(状態機械/unwind)+ WP128 の synthetic stereo
+(実描画は既検証)。実機表示は XR2a.2(座標)後の統合確認で。
+
+### WP130: XR3a — action set / suggested bindings
+
+参照: **`design_openxr.md` v2.1 §10 が正**。受け入れ条件 = 初回レビュー
+§12 の **XR3A-ACTIONS 逐語**: 「project action/action set を attach 前に
+XrAction へ作成し、active set stack を xrSyncActions へ写す。Touch
+suggested binding、FOCUSED loss、boolean/float/vector2、左右 subaction を
+protocol fake と実機で検査する。」
+依存: WP127(session)・I1(済)。見積: 中〜大。
+排他: openxr action 層 + actionmap の XR backend 接続。
+**pose provider は含まない**(XR3b — L1 改訂が要るため別)。
+
+1. `pelican.input_actions` の button/axis1/axis2 を XrAction 化
+   (attach 前一括生成・active set stack → xrSyncActions 毎フレーム)
+2. Touch controller の suggested bindings 同梱(profile JSON)
+3. aim/grip は **left/right を別公開名**(subaction path)— pose 自体は
+   XR3b だが命名規約はここで確定
+4. 非 FOCUSED = inactive snapshot(error にしない)
+5. fixture: protocol fake で sync/action 状態・FOCUSED loss・型 3 種・
+   subaction。既存 kbd/mouse/pad 経路 byte 不変
+6. 受け入れ = fixture 全 green + 既存全テスト + golden SKIP 0
+   (48/47)+ player 8 秒 + OFF smoke 維持
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの
