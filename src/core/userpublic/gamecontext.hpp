@@ -47,6 +47,11 @@ class PELICAN_API GameContext {
     [[nodiscard]] bool setSpriteView(GameObjectId id, const SpriteViewComponent &sprite) const;
     [[nodiscard]] bool setSpriteTexture(GameObjectId id, std::string_view texture) const;
 
+    [[nodiscard]] bool setDirectionalLightDirection(std::string_view name, vec3 direction) const;
+    [[nodiscard]] bool setDirectionalLightIntensity(std::string_view name, float intensity) const;
+    [[nodiscard]] bool setPointLightPosition(std::string_view name, vec3 position) const;
+    [[nodiscard]] bool setSpotLightDirection(std::string_view name, vec3 direction) const;
+
     std::vector<phys::RaycastQueryHit> raycastAll(
         const phys::Ray &ray, const phys::QueryFilter &filter = {}) const;
     std::optional<phys::ObjectRaycastHit> raycastClosest(const phys::Ray &ray) const;

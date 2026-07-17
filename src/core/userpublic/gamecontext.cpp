@@ -10,6 +10,7 @@
 #endif
 #include "../ecs/predefined/transform.hpp"
 #include "../loader/scene.hpp"
+#include "../light/lightcontainer.hpp"
 #include "../log.hpp"
 #include "../persistence/persistence.hpp"
 #if PELICAN_WITH_PHYSICS
@@ -126,6 +127,25 @@ bool GameContext::setSpriteTexture(GameObjectId id, std::string_view texture) co
     replacement.texture = std::string{texture};
     replacement.validate();
     return ecs.setComponent<SpriteViewComponent>(id, replacement);
+}
+
+bool GameContext::setDirectionalLightDirection(std::string_view name, vec3 direction) const {
+    return GET_MODULE(LightContainer).setDirectionalLightDirection(
+        std::string{name}, glm::vec3{direction.x, direction.y, direction.z});
+}
+
+bool GameContext::setDirectionalLightIntensity(std::string_view name, float intensity) const {
+    return GET_MODULE(LightContainer).setDirectionalLightIntensity(std::string{name}, intensity);
+}
+
+bool GameContext::setPointLightPosition(std::string_view name, vec3 position) const {
+    return GET_MODULE(LightContainer).setPointLightPosition(
+        std::string{name}, glm::vec3{position.x, position.y, position.z});
+}
+
+bool GameContext::setSpotLightDirection(std::string_view name, vec3 direction) const {
+    return GET_MODULE(LightContainer).setSpotLightDirection(
+        std::string{name}, glm::vec3{direction.x, direction.y, direction.z});
 }
 
 std::vector<phys::RaycastQueryHit> GameContext::raycastAll(

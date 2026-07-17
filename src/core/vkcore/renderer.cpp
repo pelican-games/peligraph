@@ -184,8 +184,7 @@ RenderFrameModules resolveRenderFrameModules() {
     };
 }
 
-void updateFrameAnimation(LightContainer &light_container, double time) {
-    light_container.updateAnimation(static_cast<float>(time));
+void updateFrameLights(LightContainer &light_container) {
     light_container.update();
 }
 
@@ -1155,7 +1154,7 @@ void Renderer::renderLogicalFrame(ILogicalFrameTarget &target, std::uint32_t vie
     }
     observed_time_set_revision = time_set_revision;
     observed_camera_discontinuity_revision = camera_discontinuity_revision;
-    updateFrameAnimation(modules.light_container, engine_time.now());
+    updateFrameLights(modules.light_container);
 
     const auto &rendering_pass =
         modules.rendering_pass_container.getCompiledRenderingPass(current_rendering_pass_id);

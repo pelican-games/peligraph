@@ -6,6 +6,7 @@
 #include <gamesystem.hpp>
 
 #include <cmath>
+#include <glm/gtc/matrix_transform.hpp>
 
 #ifndef WP90_BEHAVIOR_VERSION
 #define WP90_BEHAVIOR_VERSION 1
@@ -20,6 +21,27 @@ class ExamplePlayerControl {
     Pelican::Vrm::ApplicationServiceV1 preview_application{};
     Pelican::Animation::InstanceHandle preview_instance{};
     std::uint64_t preview_revision = 0;
+
+    static Pelican::vec3 rotateAroundY(Pelican::vec3 direction, float angle) {
+        const auto rotation = glm::rotate(glm::mat4{1.0f}, angle, glm::vec3{0.0f, 1.0f, 0.0f});
+        const auto rotated = rotation * glm::vec4{direction.x, direction.y, direction.z, 0.0f};
+        return {rotated.x, rotated.y, rotated.z};
+    }
+
+    void updateLightAnimation(Pelican::GameContext &ctx) {
+        const auto time = static_cast<float>(ctx.time());
+        (void)ctx.setDirectionalLightDirection(
+            "KeyLight", rotateAroundY({0.5f, -0.2f, 0.5f}, time));
+        (void)ctx.setDirectionalLightIntensity(
+            "FillLight", 0.05f * (0.5f + 0.5f * sinf(time * 5.0f)));
+        (void)ctx.setPointLightPosition(
+            "PointLight1",
+            {static_cast<float>(cos(time) * 2.0f), 0.2f,
+             static_cast<float>(-2.0f + sin(time) * 2.0f)});
+        (void)ctx.setSpotLightDirection(
+            "SpotLight1",
+            rotateAroundY({0.0f, -0.5f, 1.0f}, sinf(time * 0.5f) * 0.5f));
+    }
 
     void updateVrmExpressionPreview(Pelican::GameContext &ctx) {
         using namespace Pelican;
@@ -121,6 +143,7 @@ class ExamplePlayerControl {
         ctx.logInfo("WP90 playercontrol behavior=v2 speed=5.0");
 #endif
 #endif
+        updateLightAnimation(ctx);
         updateVrmExpressionPreview(ctx);
         if (!object_created) {
             object = createControlledObject(ctx);

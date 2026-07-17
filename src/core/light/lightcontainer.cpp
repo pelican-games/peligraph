@@ -1,4 +1,5 @@
 #include "lightcontainer.hpp"
+#include "../log.hpp"
 #include "../userpublic/color.hpp"
 #include "../vkcore/core.hpp"
 #include <algorithm>
@@ -48,6 +49,13 @@ namespace Pelican
 			name_map.emplace(name, index);
 		}
 
+		std::string capWarning(const std::string& type, const std::string& name, size_t ordinal, size_t cap)
+		{
+			const auto display_name = name.empty() ? std::string{"<unnamed>"} : name;
+			return "Light cap exceeded: " + type + " light #" + std::to_string(ordinal) + " '" +
+				display_name + "' will not be rendered (cap " + std::to_string(cap) + ")";
+		}
+
 		glm::vec3 safeLightDirection(const std::vector<DirectionalLight>& lights)
 		{
 			if (lights.empty() || glm::length(lights.front().direction) < 0.0001f)
@@ -68,6 +76,40 @@ namespace Pelican
 			projection[3][2] = z_near / (z_near - z_far);
 			return projection;
 		}
+	}
+
+	std::vector<std::string> collectLightCapWarnings(const std::vector<LightLoadEntry>& lights)
+	{
+		std::vector<std::string> warnings;
+		size_t directional_count = 0;
+		size_t point_count = 0;
+		size_t spot_count = 0;
+		for (const auto& entry : lights)
+		{
+			const auto type = entry.component.value("type", "");
+			if (type == "directional")
+			{
+				if (++directional_count > MAX_DIRECTIONAL_LIGHTS)
+				{
+					warnings.push_back(capWarning(type, entry.name, directional_count, MAX_DIRECTIONAL_LIGHTS));
+				}
+			}
+			else if (type == "point")
+			{
+				if (++point_count > MAX_POINT_LIGHTS)
+				{
+					warnings.push_back(capWarning(type, entry.name, point_count, MAX_POINT_LIGHTS));
+				}
+			}
+			else if (type == "spot")
+			{
+				if (++spot_count > MAX_SPOT_LIGHTS)
+				{
+					warnings.push_back(capWarning(type, entry.name, spot_count, MAX_SPOT_LIGHTS));
+				}
+			}
+		}
+		return warnings;
 	}
 
 	LightContainer::~LightContainer()
@@ -104,13 +146,10 @@ namespace Pelican
 	void LightContainer::load(const std::vector<LightLoadEntry>& lights)
 	{
 		m_DirectionalLights.clear();
-		m_OriginalDirectionalLights.clear();
 		m_LightNameMap.clear();
 		m_PointLights.clear();
-		m_OriginalPointLights.clear();
 		m_PointLightNameMap.clear();
 		m_SpotLights.clear();
-		m_OriginalSpotLights.clear();
 		m_SpotLightNameMap.clear();
 
 		for (const auto& lightEntry : lights)
@@ -162,9 +201,13 @@ namespace Pelican
 			}
 		}
 
-		m_OriginalDirectionalLights = m_DirectionalLights;
-		m_OriginalPointLights = m_PointLights;
-		m_OriginalSpotLights = m_SpotLights;
+		if (logger != nullptr)
+		{
+			for (const auto& warning : collectLightCapWarnings(lights))
+			{
+				LOG_WARNING(logger, "{}", warning);
+			}
+		}
 	}
 
 	DirectionalLight* LightContainer::getLight(const std::string& name)
@@ -197,54 +240,45 @@ namespace Pelican
 		    		return nullptr;
 		    	}   
 		
-	void LightContainer::updateAnimation(float time)
-		    	{
-		    		// Rotate the key light
-		if (DirectionalLight* keyLight = getLight("KeyLight"))
-		    		{
-		    			auto it = m_LightNameMap.find("KeyLight");
-		    			if (it != m_LightNameMap.end())
-		    			{
-		    				const auto& originalLight = m_OriginalDirectionalLights[it->second];
-		    				glm::mat4 rotation = glm::rotate(glm::mat4(1.0f), time, glm::vec3(0.0f, 1.0f, 0.0f));
-		    				keyLight->direction = glm::vec3(rotation * glm::vec4(originalLight.direction, 0.0f));
-		    			}
-		    		}
-		
-		    		// Make the fill light blink
-		if (DirectionalLight* fillLight = getLight("FillLight"))
-		    		{
-		    			auto it = m_LightNameMap.find("FillLight");
-		    			if (it != m_LightNameMap.end())
-		    			{
-		    				const auto& originalLight = m_OriginalDirectionalLights[it->second];
-		    				fillLight->intensity = originalLight.intensity * (0.5f + 0.5f * sinf(time * 5.0f));
-		    			}
-		    		}
-		
-		    		// Orbit a point light
-		if (PointLight* pointLight = getPointLight("PointLight1"))
-		    		{
-		    			auto it = m_PointLightNameMap.find("PointLight1");
-		    			if (it != m_PointLightNameMap.end())
-		    			{
-		    				const auto& originalLight = m_OriginalPointLights[it->second];
-		    				pointLight->position.x = originalLight.position.x + cos(time) * 2.0f;
-		    				pointLight->position.z = originalLight.position.z + sin(time) * 2.0f;
-		    			}
-		    		}
-		    		// Swing a spotlight
-		if (SpotLight* spotLight = getSpotLight("SpotLight1"))
-		    		{
-		    			auto it = m_SpotLightNameMap.find("SpotLight1");
-		    			if (it != m_SpotLightNameMap.end())
-		    			{
-		    				const auto& originalLight = m_OriginalSpotLights[it->second];
-		    				glm::mat4 rotation = glm::rotate(glm::mat4(1.0f), sinf(time * 0.5f) * 0.5f, glm::vec3(0.0f, 1.0f, 0.0f));
-		    				spotLight->direction = glm::vec3(rotation * glm::vec4(originalLight.direction, 0.0f));
-		    			}
-		    		}
-		    	}
+	bool LightContainer::setDirectionalLightDirection(const std::string& name, glm::vec3 direction)
+	{
+		if (auto* light = getLight(name))
+		{
+			light->direction = direction;
+			return true;
+		}
+		return false;
+	}
+
+	bool LightContainer::setDirectionalLightIntensity(const std::string& name, float intensity)
+	{
+		if (auto* light = getLight(name))
+		{
+			light->intensity = intensity;
+			return true;
+		}
+		return false;
+	}
+
+	bool LightContainer::setPointLightPosition(const std::string& name, glm::vec3 position)
+	{
+		if (auto* light = getPointLight(name))
+		{
+			light->position = position;
+			return true;
+		}
+		return false;
+	}
+
+	bool LightContainer::setSpotLightDirection(const std::string& name, glm::vec3 direction)
+	{
+		if (auto* light = getSpotLight(name))
+		{
+			light->direction = direction;
+			return true;
+		}
+		return false;
+	}
 		
 	void LightContainer::update()
 		    	{
