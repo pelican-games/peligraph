@@ -2,6 +2,7 @@
 
 #include "openxraction.hpp"
 #include "openxrdiscovery.hpp"
+#include "openxrviewspace.hpp"
 
 #include <cstdint>
 #include <functional>
@@ -64,6 +65,7 @@ struct XrSessionApi {
     PFN_xrBeginFrame begin_frame = nullptr;
     PFN_xrEndFrame end_frame = nullptr;
     PFN_xrLocateViews locate_views = nullptr;
+    PFN_xrEnumerateReferenceSpaces enumerate_reference_spaces = nullptr;
     PFN_xrCreateReferenceSpace create_reference_space = nullptr;
     PFN_xrDestroySpace destroy_space = nullptr;
 };
@@ -95,6 +97,7 @@ DECLARE_MODULE(SessionRuntime) {
     XrSystemId system_id = XR_NULL_SYSTEM_ID;
     XrSession session = XR_NULL_HANDLE;
     XrSpace tracking_space = XR_NULL_HANDLE;
+    XrReferenceSpaceType tracking_space_type = XR_REFERENCE_SPACE_TYPE_MAX_ENUM;
     XrSessionState state = XR_SESSION_STATE_UNKNOWN;
     XrTerminalPath terminal_path = XrTerminalPath::none;
     std::unique_ptr<XrActionRuntime> action_runtime;
@@ -140,6 +143,7 @@ DECLARE_MODULE(SessionRuntime) {
     ActionPoseReferenceSpace trackingSpaceIdentity() const noexcept {
         return tracking_space_identity;
     }
+    XrReferenceSpaceStatus referenceSpaceStatus() const;
 };
 
 // Executes the XR1b frame contract.  The callback is the existing simulation

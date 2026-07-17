@@ -348,6 +348,8 @@ pelican_define_test(xrsession_test pelican_core pelican_openxr)
 pelican_define_test(xraction_test pelican_core pelican_openxr)
 pelican_define_test(xrcompositiontarget_test pelican_core pelican_openxr
     VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+pelican_define_test(xrviewspace_test pelican_core pelican_openxr
+    VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 endif()
 pelican_define_test(inputsequence_test pelican_core)
 if(PELICAN_WITH_IMGUI)

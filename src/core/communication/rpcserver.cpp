@@ -11,6 +11,9 @@
 #include "../launchconfig.hpp"
 #include "../os/inputsequence.hpp"
 #include "../os/inputstate.hpp"
+#if PELICAN_WITH_OPENXR
+#include "../openxr/openxrsession.hpp"
+#endif
 #include "../playback/seqplayer.hpp"
 #include "../renderingpass/renderingpassjsonhelpers.hpp"
 #include "../renderer/spritescene.hpp"
@@ -39,6 +42,30 @@
 namespace Pelican {
 
 namespace {
+
+nlohmann::json openXrStatusJson(const EngineLaunchConfig &launch_config) {
+#if PELICAN_WITH_OPENXR
+    if (launch_config.xr_active) {
+        if (const auto *runtime = FastModuleContainer::tryGet<OpenXr::SessionRuntime>()) {
+            const auto status = runtime->referenceSpaceStatus();
+            return {
+                {"active", true},
+                {"reference_space", status.reference_space},
+                {"floor_semantics", status.floor_semantics},
+                {"floor_level_guaranteed", status.floor_level_guaranteed},
+                {"applied_floor_offset_m", status.applied_floor_offset_m},
+            };
+        }
+    }
+#endif
+    return {
+        {"active", false},
+        {"reference_space", nullptr},
+        {"floor_semantics", "not_applicable"},
+        {"floor_level_guaranteed", false},
+        {"applied_floor_offset_m", nullptr},
+    };
+}
 
 const nlohmann::json &requireObjectParams(const nlohmann::json &params, const std::string &method) {
     if (!params.is_object()) {
@@ -652,6 +679,7 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
             {"frame", modules.engine_time.frameIndex()},
             {"time", modules.engine_time.now()},
             {"seed", GameContext{}.seed()},
+            {"xr", openXrStatusJson(modules.launch_config)},
             {"input", {{"recording", modules.input_sequence.isRecording()},
                        {"replaying", modules.input_sequence.isReplaying()},
                        {"replay_frame", modules.input_sequence.replayFrameIndex()},

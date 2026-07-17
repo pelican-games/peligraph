@@ -16,6 +16,7 @@ namespace {
 struct FakeRuntime {
     std::string failure;
     bool advertise_vulkan_enable2 = true;
+    bool advertise_local_floor = false;
     VkPhysicalDevice selected_physical_device = VK_NULL_HANDLE;
     std::vector<std::string> calls;
 };
@@ -103,13 +104,19 @@ XrResult XRAPI_CALL fakeEnumerateExtensions(
     active_fake->calls.emplace_back(capacity == 0 ? "enumerate_extensions_count"
                                                    : "enumerate_extensions_values");
     if (active_fake->failure == "enumerate_extensions") return XR_ERROR_RUNTIME_UNAVAILABLE;
-    *count = 1;
+    *count = active_fake->advertise_local_floor ? 2U : 1U;
     if (capacity != 0) {
         const auto *name = active_fake->advertise_vulkan_enable2
                                ? XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME
                                : "XR_EXT_fixture_only";
         std::snprintf(properties[0].extensionName, sizeof(properties[0].extensionName), "%s", name);
         properties[0].extensionVersion = 1;
+        if (active_fake->advertise_local_floor) {
+            std::snprintf(properties[1].extensionName,
+                          sizeof(properties[1].extensionName), "%s",
+                          XR_EXT_LOCAL_FLOOR_EXTENSION_NAME);
+            properties[1].extensionVersion = 1;
+        }
     }
     return XR_SUCCESS;
 }
@@ -118,8 +125,13 @@ XrResult XRAPI_CALL fakeCreateInstance(const XrInstanceCreateInfo *info, XrInsta
     active_fake->calls.emplace_back("create_instance");
     CHECK(XR_VERSION_MAJOR(info->applicationInfo.apiVersion) == 1);
     CHECK(XR_VERSION_MINOR(info->applicationInfo.apiVersion) == 0);
-    CHECK(info->enabledExtensionCount == 1);
+    CHECK(info->enabledExtensionCount ==
+          (active_fake->advertise_local_floor ? 2U : 1U));
     CHECK(std::string{info->enabledExtensionNames[0]} == XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME);
+    if (active_fake->advertise_local_floor) {
+        CHECK(std::string{info->enabledExtensionNames[1]} ==
+              XR_EXT_LOCAL_FLOOR_EXTENSION_NAME);
+    }
     if (active_fake->failure == "create_instance") return XR_ERROR_RUNTIME_UNAVAILABLE;
     *instance = fakeInstance();
     return XR_SUCCESS;
@@ -230,6 +242,15 @@ TEST_CASE("OpenXR runtime physical-device result overrides the engine heuristic 
     CHECK(selected == runtime_device);
     CHECK(selected != heuristic_device);
     CHECK(fake.calls.back() == "get_vulkan_graphics_device");
+}
+
+TEST_CASE("OpenXR discovery enables the local-floor extension when a 1.0 runtime advertises it",
+          "[openxr][discovery][reference-space]") {
+    FakeRuntime fake{.advertise_local_floor = true};
+    FakeScope scope{fake};
+    Pelican::OpenXr::DiscoveryRuntime runtime{fakeApi()};
+    CHECK(runtime.discover().availability ==
+          Pelican::XrDiscoveryAvailability::available);
 }
 
 TEST_CASE("Vulkan required extensions merge uniquely and report missing names",

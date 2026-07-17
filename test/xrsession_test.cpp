@@ -25,6 +25,9 @@ struct FakeRuntime {
     bool should_render = true;
     bool last_end_was_zero_layer = false;
     uint32_t update_count = 0;
+    std::vector<XrReferenceSpaceType> supported_spaces{
+        XR_REFERENCE_SPACE_TYPE_LOCAL};
+    XrReferenceSpaceType created_space = XR_REFERENCE_SPACE_TYPE_MAX_ENUM;
 };
 
 thread_local FakeRuntime *active_fake = nullptr;
@@ -74,10 +77,28 @@ XrResult XRAPI_CALL fakeCreateReferenceSpace(XrSession session,
                                              XrSpace *space) {
     active_fake->calls.emplace_back("create_reference_space");
     CHECK(session == fakeSession());
-    CHECK(info->referenceSpaceType == XR_REFERENCE_SPACE_TYPE_LOCAL);
+    active_fake->created_space = info->referenceSpaceType;
     CHECK(info->poseInReferenceSpace.orientation.w == 1.0F);
     if (active_fake->failure == "create_reference_space") return XR_ERROR_REFERENCE_SPACE_UNSUPPORTED;
     *space = fakeSpace();
+    return XR_SUCCESS;
+}
+
+XrResult XRAPI_CALL fakeEnumerateReferenceSpaces(
+    XrSession session, uint32_t capacity, uint32_t *count,
+    XrReferenceSpaceType *spaces) {
+    active_fake->calls.emplace_back(capacity == 0 ? "enumerate_spaces_count"
+                                                   : "enumerate_spaces_values");
+    CHECK(session == fakeSession());
+    if (active_fake->failure == "enumerate_reference_spaces") {
+        return XR_ERROR_RUNTIME_FAILURE;
+    }
+    *count = static_cast<uint32_t>(active_fake->supported_spaces.size());
+    if (capacity != 0) {
+        REQUIRE(capacity >= active_fake->supported_spaces.size());
+        std::copy(active_fake->supported_spaces.begin(),
+                  active_fake->supported_spaces.end(), spaces);
+    }
     return XR_SUCCESS;
 }
 
@@ -175,6 +196,8 @@ PFN_xrVoidFunction fakeFunction(const std::string &name) {
     if (name == "xrBeginFrame") return reinterpret_cast<PFN_xrVoidFunction>(&fakeBeginFrame);
     if (name == "xrEndFrame") return reinterpret_cast<PFN_xrVoidFunction>(&fakeEndFrame);
     if (name == "xrLocateViews") return reinterpret_cast<PFN_xrVoidFunction>(&fakeLocateViews);
+    if (name == "xrEnumerateReferenceSpaces")
+        return reinterpret_cast<PFN_xrVoidFunction>(&fakeEnumerateReferenceSpaces);
     if (name == "xrCreateReferenceSpace")
         return reinterpret_cast<PFN_xrVoidFunction>(&fakeCreateReferenceSpace);
     if (name == "xrDestroySpace") return reinterpret_cast<PFN_xrVoidFunction>(&fakeDestroySpace);
@@ -230,11 +253,20 @@ TEST_CASE("OpenXR session dispatch, lifecycle, and explicit state gates have a s
             "resolve:xrPollEvent",           "resolve:xrBeginSession",
             "resolve:xrEndSession",          "resolve:xrWaitFrame",
             "resolve:xrBeginFrame",          "resolve:xrEndFrame",
-            "resolve:xrLocateViews",         "resolve:xrCreateReferenceSpace",
-            "resolve:xrDestroySpace",        "create_session",
+            "resolve:xrLocateViews",         "resolve:xrEnumerateReferenceSpaces",
+            "resolve:xrCreateReferenceSpace", "resolve:xrDestroySpace",
+            "create_session",                "enumerate_spaces_count",
+            "enumerate_spaces_values",
             "create_reference_space",
         };
         CHECK(fake.calls == expected_setup);
+        CHECK(fake.created_space == XR_REFERENCE_SPACE_TYPE_LOCAL);
+        const auto space_status = runtime.referenceSpaceStatus();
+        CHECK(std::string{space_status.reference_space} == "LOCAL");
+        CHECK(std::string{space_status.floor_semantics} ==
+              "floor_not_guaranteed");
+        CHECK_FALSE(space_status.floor_level_guaranteed);
+        CHECK(space_status.applied_floor_offset_m == 0.0F);
 
         // FOCUSED is not a numeric running gate: without a successful READY /
         // xrBeginSession transition the session remains stopped.
@@ -497,6 +529,16 @@ TEST_CASE("OpenXR session dispatch resolution and creation failures do not cross
         CHECK_THROWS_WITH(Pelican::OpenXr::SessionRuntime{fakeDependencies()},
                           Catch::Matchers::ContainsSubstring("xrCreateReferenceSpace"));
         CHECK(fake.calls[fake.calls.size() - 2] == "create_reference_space");
+        CHECK(fake.calls.back() == "destroy_session");
+    }
+
+    SECTION("reference space enumeration unwinds the session") {
+        FakeRuntime fake{.failure = "enumerate_reference_spaces"};
+        FakeScope scope{fake};
+        CHECK_THROWS_WITH(Pelican::OpenXr::SessionRuntime{fakeDependencies()},
+                          Catch::Matchers::ContainsSubstring(
+                              "xrEnumerateReferenceSpaces"));
+        CHECK(fake.calls[fake.calls.size() - 2] == "enumerate_spaces_count");
         CHECK(fake.calls.back() == "destroy_session");
     }
 }
