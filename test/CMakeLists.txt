@@ -298,6 +298,10 @@ pelican_define_test(modelhotreload_test pelican_core VulkanMemoryAllocator Vulka
 pelican_define_test(skeletal_gltf_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
 pelican_define_test(morph_gltf_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
 pelican_define_test(vrmfirstperson_test pelican_core glm)
+pelican_define_test(vrm_xr_demo_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
+target_compile_definitions(pelican_test_vrm_xr_demo_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
 pelican_define_test(materialinstanceoverride_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
 pelican_define_test(gltf_scene_extract_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp argparse tinygltf glm)
 target_sources(pelican_test_gltf_scene_extract_test PRIVATE
@@ -547,6 +551,28 @@ if(PELICAN_WITH_VAT)
 endif()
 
 if(PELICAN_WITH_RPC)
+    add_executable(
+        pelican_test_vrm_xr_demo_player
+        ${CMAKE_SOURCE_DIR}/src/player/main.cpp
+        ${CMAKE_SOURCE_DIR}/projects/vrm_xr_demo/code/vrmxrdemo.cpp
+    )
+    set_target_properties(pelican_test_vrm_xr_demo_player PROPERTIES CXX_STANDARD 20)
+    target_link_libraries(pelican_test_vrm_xr_demo_player PRIVATE pelican_core argparse)
+    target_include_directories(pelican_test_vrm_xr_demo_player PRIVATE
+        ${Vulkan_INCLUDE_DIRS}
+        ${CMAKE_SOURCE_DIR}/projects/vrm_xr_demo
+        ${CMAKE_SOURCE_DIR}/projects/vrm_xr_demo/code
+    )
+    add_test(
+        NAME vrm_xr_demo_rpc_player
+        COMMAND ${CMAKE_COMMAND}
+            -DPLAYER=$<TARGET_FILE:pelican_test_vrm_xr_demo_player>
+            -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/vrm_xr_demo
+            -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/vrm_xr_demo_rpc
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_vrm_xr_demo_rpc.cmake
+    )
+    set_tests_properties(vrm_xr_demo_rpc_player PROPERTIES
+        TIMEOUT 180 RESOURCE_LOCK pelican_gpu)
     add_test(
         NAME rpc_headless_player
         COMMAND ${CMAKE_COMMAND}

@@ -1,0 +1,26 @@
+{
+  "schema": "pelican.project",
+  "version": 1,
+  "name": "WP135 VRM XR Demo",
+  "engine_min_version": "0.1.0",
+  "basic_config": {
+    "window_title": "Pelican WP135 VRM XR Demo",
+    "window_size": {"width": 960, "height": 540},
+    "fullscreen": false,
+    "framerate": 60,
+    "camera": {"yfov": 0.7853981633974483, "znear": 0.1, "zfar": 100.0, "up": [0.0, 1.0, 0.0]},
+    "default_scene_id": "default_scene",
+    "scene_data_json": "scene.json",
+    "asset_data_json": "assets/asset_data.json",
+    "rendering_config_json": "passes/main.json",
+    "default_rendering_pass": "main",
+    "ui_config_json": "ui/empty.json",
+    "input_actions_json": "input/actions.json",
+    "input_profiles": {
+      "keyboard": "input/keyboard.json",
+      "gamepad": "input/gamepad.json",
+      "touch": "input/touch.json"
+    },
+    "input_profile": "keyboard"
+  }
+}

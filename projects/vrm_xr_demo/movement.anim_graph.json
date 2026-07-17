@@ -1,0 +1,20 @@
+{
+  "schema": "pelican.anim_graph",
+  "version": 1,
+  "parameters": {"speed": 0.0, "jump": 0.0},
+  "initial_state": "Locomotion",
+  "states": [
+    {"name": "Locomotion", "type": "blend1d", "parameter": "speed", "clips": [
+      {"threshold": 0.0, "clip": "Idle", "speed": 1.0, "start_offset": 0.0, "loop": true},
+      {"threshold": 0.45, "clip": "Walk", "speed": 1.0, "start_offset": 0.0, "loop": true},
+      {"threshold": 1.0, "clip": "Run", "speed": 1.6, "start_offset": 0.0, "loop": true}
+    ]},
+    {"name": "Jump", "type": "clip", "clip": "Jump", "speed": 1.0, "start_offset": 0.0, "loop": false}
+  ],
+  "transitions": [
+    {"from": "Locomotion", "to": "Jump", "priority": 100, "interrupt": "always", "duration": 0.08,
+     "conditions": [{"parameter": "jump", "op": ">", "value": 0.0}]},
+    {"from": "Jump", "to": "Locomotion", "priority": 100, "interrupt": "always", "duration": 0.16,
+     "conditions": [{"parameter": "jump", "op": "<=", "value": 0.0}]}
+  ]
+}

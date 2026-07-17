@@ -1,0 +1,18 @@
+{
+  "schema": "pelican.input_actions",
+  "version": 1,
+  "action_sets": [{
+    "name": "gameplay",
+    "actions": [
+      {"name": "move", "type": "axis2"},
+      {"name": "jump", "type": "button"},
+      {"name": "expression_next", "type": "button"},
+      {"name": "look", "type": "axis2"},
+      {"name": "head", "type": "pose"},
+      {"name": "aim_left", "type": "pose"},
+      {"name": "aim_right", "type": "pose"},
+      {"name": "grip_left", "type": "pose"},
+      {"name": "grip_right", "type": "pose"}
+    ]
+  }]
+}
