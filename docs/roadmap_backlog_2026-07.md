@@ -110,6 +110,15 @@
 47. **main への統合ブランチ合流** [運用 — 節目で。merge commit 必須
     (squash/rebase 禁止)]
 
+## デバッグ/プロファイリング/最適化トラック(2026-07-17 起草 — ユーザー要望)
+
+正本 = `design_debug_profiling.md` v1(敵対レビュー待ち)。
+D-P0(debug 命名)→ D-P1(RenderDoc capture)→ D-P2(GPU 計測 v2 +
+VRAM + XR timing)→ D-P3(CPU フェーズ)→ D-P5(validation 常設)→
+D-P4(Tracy ユニット・既定 OFF)→ D-P6(crash 診断)→
+OPT-S(起動第 2 弾)/OPT-XR(Release 実機ベースライン)/OPT-MV
+(multiview 評価)。最適化は必ず計測の数字を根拠に(WP82 流儀の標準化)。
+
 ## 推奨の直近ウェーブ(1 系統運用・上から順に)
 
 | 順 | WP | 理由 |
