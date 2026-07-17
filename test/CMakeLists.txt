@@ -9,6 +9,7 @@ include(CTest)
 include(Catch)
 
 function(pelican_define_test source_name)
+cmake_parse_arguments(PELICAN_TEST "GPU" "" "" ${ARGN})
 set(target_name pelican_test_${source_name})
 add_executable(${target_name} ${source_name}.cpp)
 set_target_properties(${target_name} PROPERTIES CXX_STANDARD 20)
@@ -16,10 +17,18 @@ target_include_directories(${target_name} PRIVATE ${Vulkan_INCLUDE_DIRS})
 target_compile_definitions(${target_name} PRIVATE
     "VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic"
 )
-target_link_libraries(${target_name} PRIVATE Catch2::Catch2WithMain nlohmann_json ${ARGN})
+target_link_libraries(${target_name} PRIVATE Catch2::Catch2WithMain nlohmann_json
+    ${PELICAN_TEST_UNPARSED_ARGUMENTS})
+set(discovery_properties)
 if(source_name STREQUAL "golden_image_test")
   # Discovered golden cases reuse deterministic temporary project names.
-  catch_discover_tests(${target_name} PROPERTIES RESOURCE_LOCK pelican_golden_gpu)
+  list(APPEND discovery_properties RESOURCE_LOCK pelican_golden_gpu)
+endif()
+if(PELICAN_TEST_GPU)
+  list(APPEND discovery_properties LABELS gpu)
+endif()
+if(discovery_properties)
+  catch_discover_tests(${target_name} PROPERTIES ${discovery_properties})
 else()
   catch_discover_tests(${target_name})
 endif()
@@ -72,7 +81,8 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
       -FixtureModel ${CMAKE_SOURCE_DIR}/test/fixtures/ground.glb
       -OutDir ${CMAKE_BINARY_DIR}/test_artifacts/game_logic_reload
   )
-  set_tests_properties(game_logic_dll_reload PROPERTIES TIMEOUT 120 RESOURCE_LOCK pelican_gpu)
+  set_tests_properties(game_logic_dll_reload PROPERTIES
+    TIMEOUT 120 RESOURCE_LOCK pelican_gpu LABELS gpu)
 
   if(PELICAN_WITH_PHYSICS)
     # This executable is the real SDK export host for the fixture DLLs. The
@@ -234,7 +244,7 @@ if(WIN32)
     PELICAN_ANIM_NEW_DLL="$<TARGET_FILE:pelican_animation_abi_new>"
     PELICAN_ANIM_EVALUATOR_DLL="$<TARGET_FILE:pelican_animation_public_evaluator>"
   )
-  pelican_define_test(vrmapplication_test pelican_core VulkanMemoryAllocator
+  pelican_define_test(vrmapplication_test GPU pelican_core VulkanMemoryAllocator
                       VulkanMemoryAllocator-Hpp glm)
   add_dependencies(pelican_test_vrmapplication_test
                    pelican_vrm_application_public_evaluator)
@@ -275,7 +285,7 @@ pelican_event_schema_compile_fixture(fail_min_max TRUE)
 pelican_event_schema_compile_fixture(fail_nonfinite TRUE)
 pelican_event_schema_compile_fixture(fail_f32_bound TRUE)
 pelican_event_schema_compile_fixture(fail_unsupported_type TRUE)
-pelican_define_test(golden_image_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp spirv-reflect-static stb glm picosha2)
+pelican_define_test(golden_image_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp spirv-reflect-static stb glm picosha2)
 target_compile_definitions(pelican_test_golden_image_test PRIVATE
     VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
@@ -290,24 +300,24 @@ if(PELICAN_RUNTIME_SHADER_COMPILER)
         pelican_copy_shaderc_runtime(pelican_test_golden_image_test)
     endif()
 endif()
-pelican_define_test(gltf_fragment_test pelican_core pelican_project VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+pelican_define_test(gltf_fragment_test GPU pelican_core pelican_project VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_gltf_fragment_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
-pelican_define_test(modelhotreload_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
-pelican_define_test(skeletal_gltf_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
-pelican_define_test(morph_gltf_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
+pelican_define_test(modelhotreload_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
+pelican_define_test(skeletal_gltf_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
+pelican_define_test(morph_gltf_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
 pelican_define_test(vrmfirstperson_test pelican_core glm)
-pelican_define_test(vrm_xr_demo_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
+pelican_define_test(vrm_xr_demo_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
 target_compile_definitions(pelican_test_vrm_xr_demo_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
-pelican_define_test(materialinstanceoverride_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
+pelican_define_test(materialinstanceoverride_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
 pelican_define_test(gltf_scene_extract_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp argparse tinygltf glm)
 target_sources(pelican_test_gltf_scene_extract_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devcli/gltfsceneextract.cpp
 )
-pelican_define_test(headless_render_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+pelican_define_test(headless_render_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_headless_render_test PRIVATE
     VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic
 )
@@ -329,7 +339,7 @@ target_compile_definitions(pelican_test_temporal_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 pelican_define_test(color_pipeline_test pelican_core glm)
-pelican_define_test(rpc_color_contract_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp spirv-reflect-static stb glm)
+pelican_define_test(rpc_color_contract_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp spirv-reflect-static stb glm)
 target_include_directories(pelican_test_rpc_color_contract_test PRIVATE ${stb_SOURCE_DIR})
 target_compile_definitions(pelican_test_rpc_color_contract_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
@@ -519,7 +529,7 @@ if(PELICAN_RUNTIME_SHADER_COMPILER)
         pelican_copy_shaderc_runtime(pelican_test_shader_library_test)
     endif()
 endif()
-pelican_define_test(vulkan_headless_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+pelican_define_test(vulkan_headless_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_vulkan_headless_test PRIVATE
     VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic
 )
@@ -535,6 +545,7 @@ if(PELICAN_WITH_SEQPLAYER)
             -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/seqplayer_headless
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_seqplayer_headless.cmake
     )
+    set_tests_properties(seqplayer_headless_player PROPERTIES LABELS gpu)
 endif()
 
 if(PELICAN_WITH_VAT)
@@ -548,6 +559,7 @@ if(PELICAN_WITH_VAT)
             -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/vatplayer_headless
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_vatplayer_headless.cmake
     )
+    set_tests_properties(vatplayer_headless_player PROPERTIES LABELS gpu)
 endif()
 
 if(PELICAN_WITH_RPC)
@@ -572,7 +584,7 @@ if(PELICAN_WITH_RPC)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_vrm_xr_demo_rpc.cmake
     )
     set_tests_properties(vrm_xr_demo_rpc_player PROPERTIES
-        TIMEOUT 180 RESOURCE_LOCK pelican_gpu)
+        TIMEOUT 180 RESOURCE_LOCK pelican_gpu LABELS gpu)
     add_test(
         NAME rpc_headless_player
         COMMAND ${CMAKE_COMMAND}
@@ -582,6 +594,7 @@ if(PELICAN_WITH_RPC)
             -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/rpc_headless
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_rpc_headless.cmake
     )
+    set_tests_properties(rpc_headless_player PROPERTIES LABELS gpu)
     add_test(
         NAME rpc_set_camera_headless_player
         COMMAND ${CMAKE_COMMAND}
@@ -591,6 +604,7 @@ if(PELICAN_WITH_RPC)
             -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/rpc_set_camera_headless
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_rpc_set_camera_headless.cmake
     )
+    set_tests_properties(rpc_set_camera_headless_player PROPERTIES LABELS gpu)
     add_test(
         NAME rpc_scene_flow_headless_player
         COMMAND ${CMAKE_COMMAND}
@@ -600,6 +614,7 @@ if(PELICAN_WITH_RPC)
             -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/rpc_scene_flow_headless
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_rpc_scene_flow_headless.cmake
     )
+    set_tests_properties(rpc_scene_flow_headless_player PROPERTIES LABELS gpu)
     add_executable(
         pelican_test_rpc_inject_input_player
         ${CMAKE_SOURCE_DIR}/src/player/main.cpp
@@ -633,6 +648,7 @@ if(PELICAN_WITH_RPC)
             -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/rpc_inject_input_headless
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_rpc_inject_input_headless.cmake
     )
+    set_tests_properties(rpc_inject_input_headless_player PROPERTIES LABELS gpu)
     add_test(
         NAME input_record_replay_headless_player
         COMMAND ${CMAKE_COMMAND}
@@ -642,6 +658,7 @@ if(PELICAN_WITH_RPC)
             -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/input_record_replay_headless
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_input_record_replay_headless.cmake
     )
+    set_tests_properties(input_record_replay_headless_player PROPERTIES LABELS gpu)
     add_test(
         NAME devcli_bake_camera_replay
         COMMAND ${CMAKE_COMMAND}
@@ -653,6 +670,7 @@ if(PELICAN_WITH_RPC)
             -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/devcli_bake_camera
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_bake_camera.cmake
     )
+    set_tests_properties(devcli_bake_camera_replay PROPERTIES LABELS gpu)
     add_executable(
         pelican_test_rpc_inject_event_player
         ${CMAKE_SOURCE_DIR}/src/player/main.cpp
@@ -673,6 +691,7 @@ if(PELICAN_WITH_RPC)
             -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/rpc_inject_event_headless
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_rpc_inject_event_headless.cmake
     )
+    set_tests_properties(rpc_inject_event_headless_player PROPERTIES LABELS gpu)
     add_executable(
         pelican_test_ui_u2_player
         ${CMAKE_SOURCE_DIR}/src/player/main.cpp
@@ -693,6 +712,7 @@ if(PELICAN_WITH_RPC)
             -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/ui_u2_rpc_replay
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_ui_u2_rpc_replay.cmake
     )
+    set_tests_properties(ui_u2_rpc_replay_player PROPERTIES LABELS gpu)
 endif()
 
 add_test(
@@ -703,6 +723,7 @@ add_test(
         -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/compute_buffer_headless
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_compute_headless.cmake
 )
+set_tests_properties(compute_buffer_headless_player PROPERTIES LABELS gpu)
 
 pelican_define_test(importmanifest_test pelican_project)
 pelican_define_test(importrules_test pelican_project)
@@ -810,6 +831,7 @@ add_test(
         -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/gpu_timing_headless
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_gpu_timing_headless.cmake
 )
+set_tests_properties(gpu_timing_headless_player PROPERTIES LABELS gpu)
 
 add_test(
     NAME frame_plan_dump_headless_player
@@ -820,6 +842,7 @@ add_test(
         -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/frame_plan_dump_headless
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_frame_plan_dump_headless.cmake
 )
+set_tests_properties(frame_plan_dump_headless_player PROPERTIES LABELS gpu)
 
 pelican_define_test(inputactions_test pelican_core)
 target_compile_definitions(pelican_test_inputactions_test PRIVATE
@@ -843,6 +866,7 @@ add_test(
         -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/devcli_project_init
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_project_init.cmake
 )
+set_tests_properties(devcli_project_init_command PROPERTIES LABELS gpu)
 
 if(PELICAN_WITH_AUDIO)
 pelican_define_test(audio_test pelican_core)
@@ -864,6 +888,7 @@ add_test(
         -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/devcli_assets
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_assets.cmake
 )
+set_tests_properties(devcli_assets_command PROPERTIES LABELS gpu)
 
 pelican_define_test(surfaceformat_test pelican_project)
 target_compile_definitions(pelican_test_surfaceformat_test PRIVATE
@@ -881,8 +906,8 @@ pelican_define_test(filewatcher_test pelican_core)
 target_link_libraries(pelican_test_filewatcher_test PRIVATE picosha2)
 
 pelican_define_test(reloadtransaction_test pelican_core)
-pelican_define_test(texturereload_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
-pelican_define_test(materialvaluesreload_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+pelican_define_test(texturereload_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+pelican_define_test(materialvaluesreload_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_materialvaluesreload_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
