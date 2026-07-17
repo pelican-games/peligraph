@@ -278,6 +278,13 @@ void ImGuiSystem::routeInputAndBeginFrame(InputState &input) {
     applyImGuiCaptureForActions(input, io.WantCaptureKeyboard, io.WantCaptureMouse);
 }
 
+void ImGuiSystem::endFrameIfStarted() {
+    if (!impl->frame_started) return;
+    ImGui::EndFrame();
+    ++impl->public_api_calls;
+    impl->frame_started = false;
+}
+
 void ImGuiSystem::render(vk::CommandBuffer command_buffer, vk::ImageView target_view,
                          vk::Extent2D target_extent, vk::Format target_format) {
     if (!impl->frame_started) {

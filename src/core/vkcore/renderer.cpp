@@ -859,7 +859,13 @@ void recordXrMirrorIntermediate(const FrameRenderContext &render_ctx,
     const auto destination = modules.render_target_container.getMetadata(destination_id);
     if (source.format != destination.format || source.extent != destination.extent) {
         throw std::runtime_error(
-            "OpenXR mirror intermediate must match the engine-owned display source");
+            "OpenXR mirror intermediate must match the engine-owned display source "
+            "(source=" + vk::to_string(source.format) + " " +
+            std::to_string(source.extent.width) + "x" +
+            std::to_string(source.extent.height) + ", destination=" +
+            vk::to_string(destination.format) + " " +
+            std::to_string(destination.extent.width) + "x" +
+            std::to_string(destination.extent.height) + ")");
     }
     layout_tracker.transition(render_ctx.cmd_buf, modules.render_target_container,
                               modules.vk_utils, source_id,

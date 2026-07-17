@@ -19,6 +19,7 @@ DECLARE_MODULE(ImGuiSystem) {
     ~ImGuiSystem();
 
     void routeInputAndBeginFrame(InputState &input);
+    void endFrameIfStarted();
     void render(vk::CommandBuffer command_buffer, vk::ImageView target_view,
                 vk::Extent2D target_extent, vk::Format target_format);
     std::uint64_t publicApiCallCountForTesting() const noexcept;

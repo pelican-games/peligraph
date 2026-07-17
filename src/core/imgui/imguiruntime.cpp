@@ -7,7 +7,11 @@
 namespace Pelican {
 
 bool isImGuiRuntimeEnabled(const EngineLaunchConfig &config) noexcept {
-    return !config.headless && !config.rpc && !config.input_replay && !config.golden_mode;
+    // XR v1 deliberately has no engine ImGui UI. The XR graph has no ImGui
+    // pass, so beginning an ImGui frame while XR is active would leave that
+    // frame without a matching Render/EndFrame call.
+    return !config.headless && !config.rpc && !config.input_replay && !config.golden_mode &&
+           !config.xr_active;
 }
 
 bool invokeImGuiRuntimeCallback(const EngineLaunchConfig &config,

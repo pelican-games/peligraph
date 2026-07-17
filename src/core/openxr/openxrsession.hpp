@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
+#include <string_view>
 #include <vector>
 
 namespace Pelican {
@@ -41,6 +43,13 @@ struct XrLocatedViews {
 struct XrFrameResult {
     XrDisplayTiming display_timing;
     XrLocatedViews located_views;
+};
+
+struct XrDiagnosticStatus {
+    std::string_view session_state;
+    std::string_view view_configuration;
+    XrReferenceSpaceStatus reference_space;
+    std::optional<bool> should_render;
 };
 
 ActionPose syntheticHeadPose(const XrLocatedViews &located_views,
@@ -106,9 +115,11 @@ DECLARE_MODULE(SessionRuntime) {
     bool session_running = false;
     FramePhase frame_phase = FramePhase::idle;
     XrTime pending_display_time = 0;
+    std::optional<bool> last_should_render;
 
     void resolve(PFN_xrGetInstanceProcAddr get_instance_proc_addr);
     void create(const XrSessionDependencies &dependencies);
+    void logDiagnostic(std::string_view event, std::string_view transition) const;
     [[noreturn]] static void throwFailure(const char *operation, XrResult result);
 
   public:
@@ -144,6 +155,7 @@ DECLARE_MODULE(SessionRuntime) {
         return tracking_space_identity;
     }
     XrReferenceSpaceStatus referenceSpaceStatus() const;
+    XrDiagnosticStatus diagnosticStatus() const;
 };
 
 // Executes the XR1b frame contract.  The callback is the existing simulation

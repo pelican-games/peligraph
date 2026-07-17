@@ -11,6 +11,16 @@
 
 namespace Pelican {
 
+#if PELICAN_WITH_OPENXR
+namespace OpenXr {
+struct XrDiagnosticStatus;
+}
+
+// Pure projection used by the headless OpenXR fake fixture. The production
+// get_status handler obtains the same snapshot from SessionRuntime.
+nlohmann::json openXrStatusJsonForTesting(const OpenXr::XrDiagnosticStatus &status);
+#endif
+
 class JsonRpcHandlerError : public std::runtime_error {
     int error_code;
 
