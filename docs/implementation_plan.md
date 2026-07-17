@@ -3536,6 +3536,34 @@ firstPerson)・WP130/132(Touch/pose)— 全て済。見積: 大。
    実測結果 or 手順書・発見問題の再現手順)。エンジンの
    テスト/golden には触れない
 
+### WP137: 負債 CI0 — CPU gate の常設(GitHub Actions)
+
+参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
+の「WP-CI0」定義が正**(A3 の三分割の第 1 — GPU runner を待たずに
+CPU gate を立てる。**自動 retry は入れない**)。
+依存: なし。見積: 中。
+排他: `.github/workflows/` 新設 + ctest のラベル/除外整備 +
+docs(CI 運用 1 ページ)。**エンジンコードの挙動変更禁止**
+(テストのラベル付与・CMake の option 追加は可)。
+
+1. workflow(windows-latest): configure(Python は runner の
+   setup-python で供給 — ローカル固有パスに依存しない形へ)→
+   Debug build → **GPU 不要テストのみ**の ctest 実行
+2. **GPU 不要サブセットの機械的定義**: golden/player/GPU 依存
+   テストへ ctest LABEL(例 `gpu`)を付与し `-LE gpu` で除外。
+   「どのテストが CI で走るか」が CMake から一意に決まること
+3. **SKIP の exact allowlist**: CI では「予期しない Skipped =
+   失敗」(symlink 権限等の許可済みリストのみ通す — SKIP 偽緑の
+   再発防止を CPU 側から)
+4. 失敗時 artifact(ログ・失敗テスト出力)保存。**retry なし**
+   (flaky は赤のまま可視化 — 議論の C5 処方どおり)
+5. ローカルゲートとの関係を docs に 1 ページ(CI = CPU 回帰の砦・
+   golden/player はローカル(将来 CI2)のまま、の分担)
+6. 受け入れ = workflow 定義がリポジトリに乗り、ローカルで
+   `ctest -LE gpu` 相当が green + SKIP allowlist が機能 + ローカル
+   全 ctest/golden/player 無影響(byte 不変)。GitHub 上の実 run は
+   push 後に私(Claude)が確認
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの
