@@ -2,6 +2,8 @@ add_library(pelican_openxr STATIC
     openxraction.cpp
     openxrcompositiontarget.cpp
     openxrdiscovery.cpp
+    openxrfeaturepolicy.cpp
+    openxrmirrorsink.cpp
     openxrsession.cpp
     openxrviewspace.cpp
 )
@@ -11,6 +13,8 @@ target_compile_definitions(pelican_openxr PRIVATE
 )
 target_include_directories(pelican_openxr PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/..
+    ${CMAKE_CURRENT_SOURCE_DIR}/../..
+    ${CMAKE_CURRENT_SOURCE_DIR}/../userpublic
     ${Vulkan_INCLUDE_DIRS}
 )
 target_link_libraries(pelican_openxr PUBLIC OpenXR::headers)

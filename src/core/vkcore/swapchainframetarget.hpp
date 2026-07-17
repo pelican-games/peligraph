@@ -5,6 +5,7 @@
 #include "rendertarget.hpp"
 
 #include <array>
+#include <optional>
 #include <vector>
 #include <vulkan/vulkan.hpp>
 
@@ -35,7 +36,9 @@ class SwapchainFrameTarget : public IFrameTarget {
     bool extent_changed = false;
     bool output_transform_recorded = false;
     bool has_rendered_frame = false;
+    bool current_frame_nonblocking = false;
 
+    std::optional<FrameRenderContext> beginFrame(bool nonblocking);
     void releaseSurfaceDependants();
     void surfaceDependantsSetup();
     void recreateSurfaceDependants();
@@ -45,6 +48,7 @@ class SwapchainFrameTarget : public IFrameTarget {
     ~SwapchainFrameTarget() override;
 
     FrameRenderContext render_begin() override;
+    bool try_render_begin(FrameRenderContext &context) override;
     void recordOutputTransformCopy(vk::CommandBuffer cmd_buf, vk::Image source,
                                    vk::Format source_format, vk::Extent2D source_extent) override;
     void render_end() override;

@@ -11,7 +11,10 @@
 #include "../os/inputsequence.hpp"
 #include "../os/window.hpp"
 #if PELICAN_WITH_OPENXR
+#include "../openxr/openxrcompositiontarget.hpp"
+#include "../openxr/openxrmirrorsink.hpp"
 #include "../openxr/openxrsession.hpp"
+#include "../openxr/openxrviewspace.hpp"
 #endif
 #include "../playback/camerabake.hpp"
 #include "../playback/vatplayer.hpp"
@@ -20,6 +23,7 @@
 #include "../phys/physworld.hpp"
 #endif
 #include "../renderer/debugtext.hpp"
+#include "../renderer/camera.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../startup.hpp"
 #include "../ui/module.hpp"
@@ -39,6 +43,7 @@
 #include <chrono>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <string>
 
@@ -214,6 +219,17 @@ OpenXr::XrSessionDependencies resolveXrSessionDependencies() {
         .input_actions = internal::inputActionMap(),
     };
 }
+
+OpenXr::XrCompositionDependencies resolveXrCompositionDependencies(
+    OpenXr::SessionRuntime &session) {
+    auto &discovery = GET_MODULE(OpenXr::DiscoveryRuntime);
+    return {
+        .get_instance_proc_addr = discovery.getInstanceProcAddr(),
+        .session_runtime = &session,
+        .vulkan = &GET_MODULE(VulkanManageCore),
+        .renderer_color_format = GET_MODULE(RenderTarget).getSwapchainFormat(),
+    };
+}
 #endif
 
 void prepareRuntimeModuleGraph(LoopModules &modules) {
@@ -294,6 +310,16 @@ void Loop::run() {
         modules.camera_bake->start(*launch_config.camera_bake_output, input_sequence.replayFps());
     }
     prepareRuntimeModuleGraph(modules);
+#if PELICAN_WITH_OPENXR
+    std::unique_ptr<OpenXr::XrCompositionTarget> xr_composition_target;
+    std::unique_ptr<OpenXr::XrMirrorSink> xr_mirror_sink;
+    if (launch_config.xr_active) {
+        auto &session = GET_MODULE(OpenXr::SessionRuntime);
+        xr_composition_target = std::make_unique<OpenXr::XrCompositionTarget>(
+            resolveXrCompositionDependencies(session));
+        xr_mirror_sink = std::make_unique<OpenXr::XrMirrorSink>();
+    }
+#endif
     dumpFramePlanIfRequested(launch_config, renderer);
     modules.startup_metrics.finishAndLog();
     FastModuleContainer::freezeCreation();
@@ -356,6 +382,8 @@ void Loop::run() {
     auto *xr_session = launch_config.xr_active
                            ? FastModuleContainer::tryGet<OpenXr::SessionRuntime>()
                            : nullptr;
+    auto *xr_target = xr_composition_target.get();
+    auto *xr_mirror = xr_mirror_sink.get();
 #endif
 
     const auto update_interactive_state = [&] {
@@ -379,16 +407,53 @@ void Loop::run() {
             xr_session->pollEvents();
             if (xr_session->hasTerminalPath()) break;
             if (xr_session->isSessionRunning()) {
-                const auto xr_frame = OpenXr::runSessionFrame(
-                    *xr_session, engine_time, [&] {
-                        auto xr_input = xr_session->syncActions(Actions::actionSetStack());
-                        internal::setInputActionBackendFrame(std::move(xr_input.actions));
-                        input_state.queuePoseSamples(std::move(xr_input.pose_samples));
-                        update_interactive_state();
+                if (xr_target == nullptr || xr_target->generationTeardownRequired()) {
+                    LOG_ERROR(logger, "OpenXR composition generation requires teardown");
+                    break;
+                }
+                const auto display_timing = xr_session->waitFrame();
+                engine_time.advance();
+                xr_session->beginFrame();
+                OpenXr::XrLocatedViews located_views;
+                if (display_timing.shouldRender()) {
+                    located_views = xr_session->locateViews(display_timing);
+                }
+
+                // WP131's adapter anchors both eye poses to the active camera
+                // captured at this logical frame boundary.
+                const auto active_camera_view = GET_MODULE(Camera).getViewMatrix();
+                const auto camera_projection = GET_MODULE(Camera).getProjectionSpec();
+                const auto update_start = Clock::now();
+                auto xr_input = xr_session->syncActions(Actions::actionSetStack());
+                internal::setInputActionBackendFrame(std::move(xr_input.actions));
+                input_state.queuePoseSamples(std::move(xr_input.pose_samples));
+                update_interactive_state();
+                const auto update_end = Clock::now();
+
+                renderer.selectGraphVariant(RenderGraphVariant::xr);
+                const auto render_start = Clock::now();
+                if (display_timing.shouldRender()) {
+                    xr_target->prepareFrame(display_timing, located_views);
+                    const auto view_parameters = OpenXr::buildRenderViewParameters(
+                        active_camera_view, located_views.views,
+                        camera_projection.znear, camera_projection.zfar);
+                    renderer.renderLogicalFrame(
+                        *xr_target, OpenXr::xr_stereo_view_count,
+                        [&](std::uint32_t view_index, const FrameRenderContext &) {
+                            return view_parameters.at(view_index);
+                        });
+                    if (xr_mirror != nullptr) xr_mirror->tryPresent();
+                } else {
+                    xr_target->endFrameWithoutLayers(display_timing);
+                }
+                const auto render_end = Clock::now();
+                if (render_timing != nullptr) {
+                    render_timing->recordCpuFrame(CpuFrameDurations{
+                        elapsedMs(update_start, update_end),
+                        elapsedMs(render_start, render_end),
+                        0.0,
                     });
-                // XR1b retains frame-local timing/view values only.  XR2a will
-                // consume them while adding composition targets and rendering.
-                (void)xr_frame;
+                }
                 continue;
             }
             auto xr_input = xr_session->syncActions(Actions::actionSetStack());

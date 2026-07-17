@@ -27,6 +27,12 @@ RenderTarget::~RenderTarget() {}
 
 FrameRenderContext RenderTarget::render_begin() { return impl->render_begin(); }
 
+std::optional<FrameRenderContext> RenderTarget::tryRenderBegin() {
+    FrameRenderContext context;
+    if (!impl->try_render_begin(context)) return std::nullopt;
+    return context;
+}
+
 void RenderTarget::recordOutputTransformCopy(vk::CommandBuffer cmd_buf, vk::Image source,
                                              vk::Format source_format, vk::Extent2D source_extent) {
     impl->recordOutputTransformCopy(cmd_buf, source, source_format, source_extent);
@@ -43,6 +49,10 @@ bool RenderTarget::consumeExtentChanged() { return impl->consumeExtentChanged();
 FrameTargetCaps RenderTarget::caps() const { return impl->caps(); }
 
 std::vector<uint8_t> RenderTarget::readbackLastFrameRGBA8() {
+    if (GET_MODULE(EngineLaunchConfig).xr_active) {
+        throw std::runtime_error(
+            "legacy capture is unavailable while OpenXR is active; source=flat is required");
+    }
     auto pixels = impl->readbackLastFrameRGBA8();
     const auto format = impl->caps().color_format;
     if (format == vk::Format::eB8G8R8A8Unorm || format == vk::Format::eB8G8R8A8Srgb) {

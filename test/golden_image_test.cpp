@@ -3766,6 +3766,113 @@ TEST_CASE("logical frame renders Vulkan-backed stereo views without advancing sh
 #endif
 }
 
+TEST_CASE("OpenXR graph transition excludes TAA and restores flat temporal rendering once",
+          "[wp133][openxr][taa][headless][vulkan]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER && PELICAN_WITH_OPENXR
+    setupLogger();
+    requireGoldenVulkanDevice();
+    FastModuleContainer modules;
+    const auto root = makeTempProjectDir("wp133_xr_taa_transition");
+    writeTaaProject(root, false);
+    {
+        std::ifstream config_file{root / "passes" / "main.json",
+                                  std::ios::binary};
+        auto config = nlohmann::json::parse(config_file);
+        config["features"].push_back("engine://features/ui.json");
+        writeTextFile(root / "passes" / "main.json", config.dump(2));
+    }
+    GET_MODULE(PathResolver).setup(root, false);
+    auto project = makeShadowProjectJson();
+    project["name"] = "WP133 XR TAA transition";
+    GET_MODULE(ProjectSource).setProjectData(project.dump());
+
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.shader_hot_reload = false;
+    launch.headless_extent = vk::Extent2D{goldenWidth, goldenHeight};
+    // This gate exercises the renderer's precompiled XR variant against a
+    // synthetic Vulkan stereo target; no runtime/device discovery is involved.
+    (void)GET_MODULE(VulkanManageCore);
+    launch.xr_active = true;
+
+    auto &time = GET_MODULE(EngineTime);
+    time.setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    GET_MODULE(SceneLoader).load("default_scene");
+    GET_MODULE(ECSCore).update();
+
+    auto &renderer = GET_MODULE(Renderer);
+    REQUIRE(renderer.hasXrGraphVariant());
+    REQUIRE(renderer.xrExcludedFeatures() ==
+            std::vector<std::string>{"velocity", "taa", "ui"});
+    renderer.setExecutionTracingForTesting(true);
+    renderer.selectGraphVariant(RenderGraphVariant::xr);
+    const auto xr_plan = renderer.currentFramePlanOrderForTesting();
+    for (const auto forbidden : {"velocity_pass", "taa_resolve", "taa_composite",
+                                 "pelican_ui"}) {
+        REQUIRE(std::find(xr_plan.begin(), xr_plan.end(), forbidden) == xr_plan.end());
+    }
+
+    Test::VulkanSyntheticStereoTarget stereo_target{
+        launch.headless_extent, GET_MODULE(RenderTarget).getSwapchainFormat()};
+    time.advance();
+    renderer.renderLogicalFrame(
+        stereo_target, 2,
+        [](std::uint32_t view_index, const FrameRenderContext &) {
+            RenderViewParameters view;
+            view.view[3][0] = view_index == 0 ? -0.03f : 0.03f;
+            view.camera_position.x = view_index == 0 ? -0.03f : 0.03f;
+            return view;
+        });
+    const auto xr_snapshots = renderer.lastViewSnapshotsForTesting();
+    REQUIRE(xr_snapshots.size() == 2);
+    REQUIRE(xr_snapshots[0].jitter_ndc == glm::vec2{0.0f});
+    REQUIRE(xr_snapshots[1].jitter_ndc == glm::vec2{0.0f});
+    const auto &enter_trace = renderer.graphVariantTransitionTraceForTesting();
+    REQUIRE(enter_trace.size() == 1);
+    REQUIRE(enter_trace.at(0).at("from") == "flat");
+    REQUIRE(enter_trace.at(0).at("to") == "xr");
+    REQUIRE(enter_trace.at(0).at("temporal_reset_requests") == 1);
+    REQUIRE_FALSE(enter_trace.at(0).at("projection_jitter").get<bool>());
+
+    time.advance();
+    renderer.render();
+    const auto flat_plan = renderer.currentFramePlanOrderForTesting();
+    for (const auto restored : {"velocity_pass", "taa_resolve", "taa_composite",
+                                "pelican_ui"}) {
+        REQUIRE(std::find(flat_plan.begin(), flat_plan.end(), restored) != flat_plan.end());
+    }
+    const auto flat_epoch =
+        renderer.lastViewSnapshotsForTesting().at(0).temporal_reset_epoch;
+    const auto &return_trace = renderer.graphVariantTransitionTraceForTesting();
+    REQUIRE(return_trace.size() == 2);
+    REQUIRE(return_trace.at(1).at("from") == "xr");
+    REQUIRE(return_trace.at(1).at("to") == "flat");
+    REQUIRE(return_trace.at(1).at("temporal_reset_requests") == 1);
+    REQUIRE(return_trace.at(1).at("projection_jitter").get<bool>());
+    REQUIRE(return_trace.at(1).at("reset_epochs").size() == 1);
+    REQUIRE(return_trace.at(1).at("reset_epochs").at(0) == flat_epoch);
+
+    time.advance();
+    renderer.render();
+    REQUIRE(renderer.graphVariantTransitionTraceForTesting().size() == 2);
+    REQUIRE(renderer.lastViewSnapshotsForTesting().at(0).temporal_reset_epoch ==
+            flat_epoch);
+    std::string capture_error;
+    try {
+        (void)GET_MODULE(RenderTarget).readbackLastFrameRGBA8();
+    } catch (const std::exception &e) {
+        capture_error = e.what();
+    }
+    REQUIRE(capture_error ==
+            "legacy capture is unavailable while OpenXR is active; source=flat is required");
+    GET_MODULE(VulkanManageCore).waitIdle();
+    std::filesystem::remove_all(root);
+#else
+    SKIP("WP133 XR/TAA transition requires OpenXR and the runtime shader compiler");
+#endif
+}
+
 TEST_CASE("velocity feature compiles its standard pass and renders headless",
           "[temporal][velocity][headless]") {
     setupLogger();

@@ -160,6 +160,11 @@ FrameRenderContext OffscreenFrameTarget::render_begin() {
     };
 }
 
+bool OffscreenFrameTarget::try_render_begin(FrameRenderContext &context) {
+    context = render_begin();
+    return true;
+}
+
 void OffscreenFrameTarget::recordOutputTransformCopy(vk::CommandBuffer cmd_buf, vk::Image source,
                                                      vk::Format source_format,
                                                      vk::Extent2D source_extent) {
