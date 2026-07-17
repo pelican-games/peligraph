@@ -3536,6 +3536,37 @@ firstPerson)・WP130/132(Touch/pose)— 全て済。見積: 大。
    実測結果 or 手順書・発見問題の再現手順)。エンジンの
    テスト/golden には触れない
 
+### WP138: XRSIM 修正 — Simulator で発見した実機 blocker 3 件
+
+参照: **`docs/design_reviews/2026-07-17_wp136_report.md` §5 が現象の正**。
+設計判断(2026-07-17 確定):
+依存: WP133/136(済)。見積: 中。
+排他: imgui gate・vkcore device features・XR 診断ログ。
+
+1. **XRSIM-1(ImGui frame 不整合 — blocker)**: v1 の解 =
+   **XR session active 中は ImGui frame を begin しない**
+   (`imguiruntime` の enable gate に XR を追加 — headless/replay と
+   同列)。framephase 側で begin 済みの frame が XR 遷移を跨ぐ場合は
+   遷移前に必ず閉じる。mirror への ImGui 表示は将来需要が出たら別 WP
+   (「XR 中はエンジン UI なし」を v1 仕様として明記)
+2. **XRSIM-2(timelineSemaphore validation error — high)**:
+   device 作成時に `timelineSemaphore` feature を**対応 GPU なら常時
+   有効化**(VkPhysicalDeviceVulkan12Features chain)。非対応 GPU で
+   `--xr on` の場合は名前入りエラー(Meta runtime の Vulkan layer が
+   要求するため)。flat 挙動は不変(feature 有効化のみ・golden 維持)
+3. **XRSIM-3(観測不能 — medium)**: RPC/windowed 排他は維持
+   (WebSocket トラックで再訪)。代わりに **XR 診断ログ**を規範化:
+   session state 遷移・view configuration(初回)・reference space・
+   `shouldRender` 変化を 1 行ログで出す + `get_status.xr` schema へ
+   同項目を additive 追加(headless fake 経由で fixture 可能)
+4. **gate = Simulator 再検証**(WP136 の手順で MSI admin-image を
+   再展開): FOCUSED 到達 → **連続 1000 frame 描画**(assert なし)→
+   mirror 非白画面のスクリーンショット → focus loss/regain →
+   `shouldRender=false` の zero-layer 経路 → 3 分連続稼働。
+   validation error 0(XRSIM-2 の消滅確認)
+5. 受け入れ = 上記 + 既存全テスト + golden SKIP 0(件数不変)+
+   player 8 秒(flat・ImGui 従来どおり)+ OFF smoke
+
 ### WP137: 負債 CI0 — CPU gate の常設(GitHub Actions)
 
 参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
