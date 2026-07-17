@@ -3486,6 +3486,56 @@ negotiation — 凍結 abi_v1.hpp 無変更)・firstPerson の node identity
    既存全テスト + golden SKIP 0(48/47 + 追加分・dir 実数照合)+
    player 8 秒
 
+### WP135: XR4 — VRM キャラデモ project(flat 先行)
+
+参照: **`design_openxr.md` v2.1 §11 XR4 行 + 本節が仕様の正**。
+狙い = Quest 3 で VRM キャラが動く体験の中身を**実機なしで完成**させる
+(XR は起動フラグのみ — flat で全部検証可能)。
+依存: WP101(anim_graph)・WP121〜123b/134(VRM 表情・lookAt・
+firstPerson)・WP130/132(Touch/pose)— 全て済。見積: 大。
+排他: `projects/vrm_xr_demo/` 新設 + fixture。**エンジンコード変更
+禁止**(不足があれば実装せず質問 — デモはユーザー空間の集大成)。
+
+1. **project**: 決定的な合成 VRM 1.0 キャラ(test の vrm fixture
+   writer を昇格 — humanoid 全必須骨 + 表情 + lookAt + firstPerson
+   込み)+ 地面 + ライト。README に「自分の .vrm(1.0)への
+   差し替え手順」
+2. **アニメ**: anim_graph(Idle/Walk/Run + Jump 割込み — WP101 の
+   デモ流儀)を VRM キャラへ。WASD/pad(flat)と Touch stick(XR)を
+   同じ input_actions で
+3. **VRM 機能の実演**: 視線 = カメラ(flat)/ HMD(XR の synthetic
+   head pose)追従・表情サイクル(ボタンで preset 切替)・
+   firstPerson(XR で頭部非表示 — flat では third person)
+4. **XR 対応の配線**: `--xr on` で動く構成(XR graph 除外に抵触する
+   feature を使わない)。Touch bindings は WP130 の命名
+5. gate: flat での rpc 駆動 fixture(anim 遷移・表情切替・lookAt 角度の
+   決定的検証)+ golden 1〜2 枚 + player 8 秒(flat)+ **XR は
+   起動フラグの activation 検証まで**(実機/Simulator は別枠)
+6. 受け入れ = 上記 + 既存全テスト + golden SKIP 0(件数追加分更新)
+
+### WP136: XR Simulator smoke(実機前の実 runtime 検証)
+
+参照: 本節が仕様の正。狙い = **Meta XR Simulator(または入手可能な
+デスクトップ OpenXR runtime)に対して `--xr on` の実経路を通す**。
+依存: WP133(済)。見積: 中(調査含む)。
+排他: **エンジンコード変更禁止**(発見した問題は再現手順付きで
+レポートへ — 修正は別 WP)。成果物 = レポート + 導入手順。
+
+1. **導入調査**: Meta XR Simulator の入手経路(Meta 開発者
+   ダウンロード・npm/nuget・Unity/Unreal パッケージ同梱)を調査し、
+   ログイン不要で自動導入できるならインストール。不可なら
+   **ユーザー向け導入手順書**を成果物にする(URL・手順・
+   XR_RUNTIME_JSON の設定)
+2. 代替 runtime(Monado Windows 等)も 1 案評価(導入性のみ)
+3. **導入できた場合**: `--xr on` で player を起動し、チェックリスト
+   §8.2(READY→FOCUSED 遷移・shouldRender・focus loss)と §8.4
+   (graph transition・mirror)の自動化可能項目を実測。ログ・
+   get_status.xr・mirror スクリーンショットをレポートに
+4. 受け入れ = レポート
+   `docs/design_reviews/2026-07-17_wp136_report.md`(導入可否・
+   実測結果 or 手順書・発見問題の再現手順)。エンジンの
+   テスト/golden には触れない
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの
