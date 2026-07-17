@@ -245,7 +245,46 @@ void SessionRuntime::endFrame(const XrDisplayTiming &display_timing) {
     const auto result = api.end_frame(session, &end_info);
     frame_phase = FramePhase::idle;
     pending_display_time = 0;
+    if (result == XR_SESSION_LOSS_PENDING || result == XR_ERROR_SESSION_LOST ||
+        result == XR_ERROR_INSTANCE_LOST) {
+        reportCompositionLoss(result);
+        throwFailure("xrEndFrame", result);
+    }
     if (XR_FAILED(result)) throwFailure("xrEndFrame", result);
+}
+
+void SessionRuntime::endFrame(const XrDisplayTiming &display_timing,
+                              const XrCompositionLayerBaseHeader &layer) {
+    if (!session_running || frame_phase != FramePhase::begun ||
+        display_timing.predictedDisplayTime() != pending_display_time) {
+        throw std::logic_error("xrEndFrame requires the current begun frame timing");
+    }
+    const XrCompositionLayerBaseHeader *layers[] = {&layer};
+    XrFrameEndInfo end_info{XR_TYPE_FRAME_END_INFO};
+    end_info.displayTime = display_timing.predictedDisplayTime();
+    end_info.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+    end_info.layerCount = 1;
+    end_info.layers = layers;
+    const auto result = api.end_frame(session, &end_info);
+    frame_phase = FramePhase::idle;
+    pending_display_time = 0;
+    if (result == XR_SESSION_LOSS_PENDING || result == XR_ERROR_SESSION_LOST ||
+        result == XR_ERROR_INSTANCE_LOST) {
+        reportCompositionLoss(result);
+        throwFailure("xrEndFrame", result);
+    }
+    if (XR_FAILED(result)) throwFailure("xrEndFrame", result);
+}
+
+void SessionRuntime::reportCompositionLoss(XrResult result) noexcept {
+    if (result == XR_ERROR_INSTANCE_LOST) {
+        terminal_path = XrTerminalPath::instance_loss_pending;
+    } else {
+        terminal_path = XrTerminalPath::loss_pending;
+    }
+    session_running = false;
+    frame_phase = FramePhase::idle;
+    pending_display_time = 0;
 }
 
 XrFrameResult runSessionFrame(SessionRuntime &runtime, EngineTime &engine_time,
