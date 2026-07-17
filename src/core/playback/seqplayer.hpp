@@ -61,7 +61,12 @@ DECLARE_MODULE(SeqPlayer) {
     SeqPlayer();
 
     void update(double time);
+    void releaseInstancesForSceneLoad();
     bool isEnabled() const { return enabled; }
+    size_t instanceCountForTesting() const { return instances.size(); }
+    ModelInstanceId instanceForTesting(size_t index) const {
+        return instances.at(index);
+    }
 };
 
 } // namespace Pelican

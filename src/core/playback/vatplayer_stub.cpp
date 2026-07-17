@@ -13,4 +13,9 @@ VatPlayer::VatPlayer() {
 
 void VatPlayer::applyCameraOverride() {}
 
+void VatPlayer::releaseInstanceForSceneLoad() {
+    instance.reset();
+    enabled = false;
+}
+
 } // namespace Pelican

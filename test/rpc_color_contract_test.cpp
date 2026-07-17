@@ -84,7 +84,7 @@ struct TransientInventory {
     bool operator==(const TransientInventory &other) const {
         const auto same_instance =
             anchor_instance.has_value() == other.anchor_instance.has_value() &&
-            (!anchor_instance || anchor_instance->value == other.anchor_instance->value);
+            (!anchor_instance || anchor_instance == other.anchor_instance);
         return entities == other.entities && instances == other.instances &&
                textures == other.textures && materials == other.materials &&
                indices == other.indices && vertices == other.vertices &&
@@ -350,6 +350,14 @@ void main(){ outColor=vec4(0.5,0.5,0.5,1.0); }
     REQUIRE(gpu_failure.at("error").at("message").get<std::string>().find("Material capacity exceeded") !=
             std::string::npos);
     REQUIRE(transientInventory("anchor") == before_gpu_failure);
+
+    const auto transient_owned = *published.anchor_instance;
+    GET_MODULE(SceneLoader).load("default_scene");
+    auto &instances = GET_MODULE(PolygonInstanceContainer);
+    REQUIRE_FALSE(instances.isModelInstanceAlive(transient_owned));
+    REQUIRE_FALSE(instances.removeModelInstance(transient_owned));
+    REQUIRE(instances.instanceCountForTesting() == 0);
+    REQUIRE(GameObjects::liveCountForTesting() == 0);
 
     GET_MODULE(VulkanManageCore).waitIdle();
 }

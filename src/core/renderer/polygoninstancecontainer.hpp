@@ -236,6 +236,13 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     std::vector<std::uint64_t> animation_revisions;
     std::vector<std::uint64_t> previous_animation_revisions;
     std::vector<std::uint32_t> animation_generations;
+    // Slot identity is independent from animation generation and model asset
+    // content revision. It advances only when a model-instance slot dies.
+    std::vector<std::uint32_t> instance_generations;
+    std::vector<bool> instance_alive;
+    std::vector<std::uint32_t> free_instance_indices;
+    std::size_t live_instance_count = 0;
+    std::uint64_t scene_epoch = 1;
     std::vector<ModelAssetId> model_asset_ids;
     std::vector<std::shared_ptr<const SourceMaterialInitialValueTable>>
         material_initial_value_tables;
@@ -268,6 +275,9 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     vk::UniqueDescriptorSet static_material_descriptor_set;
     vk::UniqueDescriptorSet skinned_material_descriptor_set;
 
+    bool isLive(ModelInstanceId id) const noexcept;
+    std::uint32_t requireLive(ModelInstanceId id, const char *api_name) const;
+    void resetSlot(std::uint32_t index);
     void uploadMaterialAbsoluteOverrides();
 
   public:
@@ -276,7 +286,7 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     StagedModelInstance stageModelInstance(const ModelTemplate &model);
     void publishModelInstance(StagedModelInstance staged) noexcept;
     ModelInstanceId placeModelInstance(const ModelTemplate &model);
-    void removeModelInstance(ModelInstanceId id);
+    bool removeModelInstance(ModelInstanceId id);
     void clear();
     void triggerUpdate();
     void commitFrameHistory();
@@ -290,6 +300,7 @@ DECLARE_MODULE(PolygonInstanceContainer) {
 
     void setTrs(ModelInstanceId id, glm::vec3 pos, glm::quat rotation, glm::vec3 scale);
     void setSkinningPalette(ModelInstanceId id, std::span<const glm::mat4> palette);
+    bool isModelInstanceAlive(ModelInstanceId id) const noexcept { return isLive(id); }
     Animation::InstanceHandle animationInstance(ModelInstanceId id) const;
     Animation::Status publishAnimationFrame(ModelInstanceId id,
                                              const Animation::PublishAnimationFrameDescV1 &frame);
@@ -317,31 +328,37 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     const BufferWrapper &getPreviousObjectBuf() const;
     const std::vector<DrawIndirectInfo> &
     getDrawCalls(bool first_person_view = false) const;
-    size_t instanceCountForTesting() const { return model_instances_data.size(); }
+    size_t instanceCountForTesting() const { return live_instance_count; }
+    size_t slotCountForTesting() const { return model_instances_data.size(); }
+    ModelInstanceId modelInstanceIdForTesting(std::uint32_t index) const;
+    ModelInstanceId forceGenerationForTesting(ModelInstanceId id,
+                                               std::uint32_t generation);
+    void forceSceneEpochForTesting(std::uint64_t epoch);
     std::uint64_t temporalHistoryAdvanceCountForTesting() const {
         return temporal_history_advance_count;
     }
-    glm::mat4 currentModelMatrixForTesting(ModelInstanceId id) const { return model_instances_data.at(id.value); }
-    glm::mat4 previousModelMatrixForTesting(ModelInstanceId id) const { return previous_model_instances_data.at(id.value); }
+    glm::mat4 currentModelMatrixForTesting(ModelInstanceId id) const;
+    glm::mat4 previousModelMatrixForTesting(ModelInstanceId id) const;
     std::uint64_t currentAnimationRevisionForTesting(ModelInstanceId id) const {
-        return animation_revisions.at(id.value);
+        return animation_revisions.at(requireLive(id, "currentAnimationRevisionForTesting"));
     }
     std::uint64_t previousAnimationRevisionForTesting(ModelInstanceId id) const {
-        return previous_animation_revisions.at(id.value);
+        return previous_animation_revisions.at(requireLive(id, "previousAnimationRevisionForTesting"));
     }
     std::uint32_t animationGenerationForTesting(ModelInstanceId id) const {
-        return animation_generations.at(id.value);
+        return animation_generations.at(requireLive(id, "animationGenerationForTesting"));
     }
     const MorphWeightFrame &morphWeightFrameForTesting(ModelInstanceId id) const {
-        return morph_weight_frames.at(id.value);
+        return morph_weight_frames.at(requireLive(id, "morphWeightFrameForTesting"));
     }
     std::uint64_t morphLayoutGenerationForTesting(ModelInstanceId id) const {
-        const auto &layout = morph_layouts.at(id.value);
+        const auto &layout = morph_layouts.at(requireLive(id, "morphLayoutGenerationForTesting"));
         return layout ? layout->generation : 0;
     }
     const MaterialInstanceOverrideFrame *materialOverrideFrameForTesting(
         ModelInstanceId id) const {
-        const auto found = material_override_frames.find(id.value);
+        const auto index = requireLive(id, "materialOverrideFrameForTesting");
+        const auto found = material_override_frames.find(index);
         return found == material_override_frames.end() ? nullptr : &found->second;
     }
     size_t materialOverrideStorageEntryCountForTesting() const {
@@ -350,9 +367,9 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     const MaterialInstanceAbsoluteOverrideFrame *
     materialAbsoluteOverrideFrameForTesting(
         ModelInstanceId id, std::uint32_t source_material_index) const {
-        if (id.value >= model_instances_data.size()) return nullptr;
+        const auto index = requireLive(id, "materialAbsoluteOverrideFrameForTesting");
         const MaterialInstanceAbsoluteOverrideKey key{
-            static_cast<std::uint64_t>(id.value) + 1, source_material_index};
+            static_cast<std::uint64_t>(index) + 1, source_material_index};
         const auto found = material_absolute_override_frames.find(key);
         return found == material_absolute_override_frames.end() ? nullptr
                                                                  : &found->second;
@@ -366,7 +383,7 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     }
     const std::vector<glm::mat4> &
     currentSkinPaletteForTesting(ModelInstanceId id) const {
-        return skin_palettes.at(id.value);
+        return skin_palettes.at(requireLive(id, "currentSkinPaletteForTesting"));
     }
 };
 

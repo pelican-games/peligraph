@@ -240,7 +240,7 @@ TEST_CASE("Unified modelview survives JSON population and non-trivial relocation
     core.clearEntities();
 
     SimpleModelViewComponent transient_model_view;
-    transient_model_view.model_instance_id = ModelInstanceId{7};
+    transient_model_view.model_instance_id = ModelInstanceId{7, 1, 1};
     transient_model_view.init();
     REQUIRE(transient_model_view.dirty == 0);
 }
