@@ -296,11 +296,26 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
     features.features.multiDrawIndirect = true; // necessary for multi draw indirect
     vk::PhysicalDeviceVulkan11Features vk11features;
     vk11features.shaderDrawParameters = true; // necessary for using gl_BaseIndex in shader
+    const auto supported_feature_chain =
+        phys_device.getFeatures2<vk::PhysicalDeviceFeatures2,
+                                 vk::PhysicalDeviceVulkan12Features>();
+    const bool timeline_semaphore_supported =
+        supported_feature_chain.get<vk::PhysicalDeviceVulkan12Features>()
+            .timelineSemaphore == VK_TRUE;
+#if PELICAN_WITH_OPENXR
+    if (use_openxr && !timeline_semaphore_supported) {
+        throw OpenXr::VulkanBootstrapError(
+            "runtime-selected physical device lacks Vulkan feature timelineSemaphore required by OpenXR");
+    }
+#endif
+    vk::PhysicalDeviceVulkan12Features vk12features;
+    vk12features.timelineSemaphore = timeline_semaphore_supported ? VK_TRUE : VK_FALSE;
 
     vk::StructureChain create_info_chain{
         create_info,
         features,
         vk11features,
+        vk12features,
         vk::PhysicalDeviceDynamicRenderingFeatures{VK_TRUE}, // necessary for dynamic rendering
     };
 

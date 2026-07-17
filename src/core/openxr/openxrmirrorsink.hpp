@@ -26,10 +26,14 @@ class XrMirrorSink {
     GlobalRenderTargetId source_id = noRenderTargetId();
     bool screen_ui = false;
     bool disabled = false;
+    bool first_outcome_reported = false;
+    bool first_present_reported = false;
+    bool thousand_frames_reported = false;
     XrMirrorSinkStats stats;
 
     void initialize();
     void rebindSourceIfNeeded();
+    void reportProgress();
 
   public:
     XrMirrorSink() noexcept;

@@ -126,9 +126,35 @@ void XrMirrorSink::rebindSourceIfNeeded() {
     }
 }
 
+void XrMirrorSink::reportProgress() {
+    const auto attempts = stats.presented + stats.dropped + stats.failures;
+    if (!first_outcome_reported) {
+        first_outcome_reported = true;
+        LOG_INFO(logger,
+                 "OpenXR mirror diagnostic: milestone=first_frame attempts={} "
+                 "presented={} dropped={} failures={}",
+                 attempts, stats.presented, stats.dropped, stats.failures);
+    }
+    if (!first_present_reported && stats.presented != 0) {
+        first_present_reported = true;
+        LOG_INFO(logger,
+                 "OpenXR mirror diagnostic: milestone=first_present attempts={} "
+                 "presented={} dropped={} failures={}",
+                 attempts, stats.presented, stats.dropped, stats.failures);
+    }
+    if (!thousand_frames_reported && attempts >= 1000) {
+        thousand_frames_reported = true;
+        LOG_INFO(logger,
+                 "OpenXR mirror diagnostic: milestone=1000_xr_frames attempts={} "
+                 "presented={} dropped={} failures={}",
+                 attempts, stats.presented, stats.dropped, stats.failures);
+    }
+}
+
 void XrMirrorSink::tryPresent() noexcept {
     if (disabled || !output_transform) {
         ++stats.dropped;
+        reportProgress();
         return;
     }
 
@@ -140,6 +166,7 @@ void XrMirrorSink::tryPresent() noexcept {
         auto frame = target.tryRenderBegin();
         if (!frame) {
             ++stats.dropped;
+            reportProgress();
             return;
         }
         frame_begun = true;
@@ -151,6 +178,7 @@ void XrMirrorSink::tryPresent() noexcept {
             frame_begun = false;
             target.render_end();
             ++stats.dropped;
+            reportProgress();
             return;
         }
         rebindSourceIfNeeded();
@@ -197,10 +225,12 @@ void XrMirrorSink::tryPresent() noexcept {
         frame_begun = false;
         target.render_end();
         ++stats.presented;
+        reportProgress();
     } catch (const std::exception &e) {
         ++stats.failures;
         disabled = true;
         LOG_WARNING(logger, "OpenXR mirror disabled after presentation failure: {}", e.what());
+        reportProgress();
         try {
             if (rendering_begun) cmd.endRendering();
             if (frame_begun) target.render_end();
@@ -210,6 +240,7 @@ void XrMirrorSink::tryPresent() noexcept {
         ++stats.failures;
         disabled = true;
         LOG_WARNING(logger, "OpenXR mirror disabled after unknown presentation failure");
+        reportProgress();
         try {
             if (rendering_begun) cmd.endRendering();
             if (frame_begun) target.render_end();

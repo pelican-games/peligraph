@@ -113,7 +113,7 @@ void registerXrMirrorIntermediate(vk::Extent2D extent) {
     targets.registerRenderTarget(
         std::string{OpenXr::xr_mirror_intermediate_name}, extent,
         "explicit(" + vk::to_string(metadata.format) + ")", "color", 1.0f,
-        std::nullopt, metadata.format,
+        metadata.extent, metadata.format,
         vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
         vma::MemoryUsage::eAutoPreferDevice);
 }

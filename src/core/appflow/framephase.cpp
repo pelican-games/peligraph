@@ -52,7 +52,16 @@ FrameStateModules resolveFrameStateModules() {
     }
 #if PELICAN_WITH_IMGUI
     ImGuiSystem *imgui_system = nullptr;
-    invokeImGuiRuntimeCallback(GET_MODULE(EngineLaunchConfig), [&] {
+    const auto &launch_config = GET_MODULE(EngineLaunchConfig);
+    if (!isImGuiRuntimeEnabled(launch_config)) {
+        // The gate can close at a logical frame boundary (notably when XR
+        // activation wins). Never carry an already-begun ImGui frame across
+        // that transition into a graph which has no ImGui render pass.
+        if (auto *existing = FastModuleContainer::tryGet<ImGuiSystem>()) {
+            existing->endFrameIfStarted();
+        }
+    }
+    invokeImGuiRuntimeCallback(launch_config, [&] {
         imgui_system = &GET_MODULE(ImGuiSystem);
     });
 #endif

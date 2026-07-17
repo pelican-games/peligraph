@@ -45,14 +45,16 @@ std::vector<std::string> planOrder(const nlohmann::json &config) {
 
 TEST_CASE("deterministic drivers execute zero ImGui callbacks and keep input unchanged",
           "[imgui][isolation]") {
-    std::vector<EngineLaunchConfig> isolated(4);
+    std::vector<EngineLaunchConfig> isolated(5);
     isolated[0].headless = true;
     isolated[1].rpc = true;
     isolated[2].input_replay = true;
     isolated[3].golden_mode = true;
+    isolated[4].xr_active = true;
 
     for (const auto &config : isolated) {
-        CAPTURE(config.headless, config.rpc, config.input_replay, config.golden_mode);
+        CAPTURE(config.headless, config.rpc, config.input_replay, config.golden_mode,
+                config.xr_active);
         auto graph = canonicalGraph();
         InputStateCore input;
         input.queueButtonEvent(KeyCode::A, true);

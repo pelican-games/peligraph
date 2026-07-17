@@ -15,6 +15,7 @@
 #include "../src/core/material/materialcontainer.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/model/gltf.hpp"
+#include "../src/core/openxr/openxrfeaturepolicy.hpp"
 #include "../src/core/playback/vatplayer.hpp"
 #include "../src/core/renderer/debugdraw.hpp"
 #include "../src/core/renderer/debugtext.hpp"
@@ -3838,8 +3839,13 @@ TEST_CASE("OpenXR graph transition excludes TAA and restores flat temporal rende
         REQUIRE(std::find(xr_plan.begin(), xr_plan.end(), forbidden) == xr_plan.end());
     }
 
+    // The display-class target is resolved to the flat presentation extent,
+    // while a runtime can recommend a different per-eye extent.  Exercise that
+    // mismatch so the engine-owned mirror intermediate stays copy-compatible
+    // with display across the XR target resize.
     Test::VulkanSyntheticStereoTarget stereo_target{
-        launch.headless_extent, GET_MODULE(RenderTarget).getSwapchainFormat()};
+        vk::Extent2D{goldenWidth / 2, goldenHeight / 2},
+        GET_MODULE(RenderTarget).getSwapchainFormat()};
     time.advance();
     renderer.renderLogicalFrame(
         stereo_target, 2,
@@ -3853,6 +3859,12 @@ TEST_CASE("OpenXR graph transition excludes TAA and restores flat temporal rende
     REQUIRE(xr_snapshots.size() == 2);
     REQUIRE(xr_snapshots[0].jitter_ndc == glm::vec2{0.0f});
     REQUIRE(xr_snapshots[1].jitter_ndc == glm::vec2{0.0f});
+    const auto &targets = GET_MODULE(RenderTargetContainer);
+    const auto display = targets.getRenderTargetIdByName("display");
+    const auto mirror = targets.getRenderTargetIdByName(
+        std::string{OpenXr::xr_mirror_intermediate_name});
+    REQUIRE(targets.getMetadata(mirror).extent ==
+            targets.getMetadata(display).extent);
     const auto &enter_trace = renderer.graphVariantTransitionTraceForTesting();
     REQUIRE(enter_trace.size() == 1);
     REQUIRE(enter_trace.at(0).at("from") == "flat");

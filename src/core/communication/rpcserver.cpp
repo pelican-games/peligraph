@@ -43,28 +43,44 @@ namespace Pelican {
 
 namespace {
 
-nlohmann::json openXrStatusJson(const EngineLaunchConfig &launch_config) {
-#if PELICAN_WITH_OPENXR
-    if (launch_config.xr_active) {
-        if (const auto *runtime = FastModuleContainer::tryGet<OpenXr::SessionRuntime>()) {
-            const auto status = runtime->referenceSpaceStatus();
-            return {
-                {"active", true},
-                {"reference_space", status.reference_space},
-                {"floor_semantics", status.floor_semantics},
-                {"floor_level_guaranteed", status.floor_level_guaranteed},
-                {"applied_floor_offset_m", status.applied_floor_offset_m},
-            };
-        }
-    }
-#endif
+nlohmann::json inactiveOpenXrStatusJson() {
     return {
         {"active", false},
         {"reference_space", nullptr},
         {"floor_semantics", "not_applicable"},
         {"floor_level_guaranteed", false},
         {"applied_floor_offset_m", nullptr},
+        {"session_state", nullptr},
+        {"view_configuration", nullptr},
+        {"should_render", nullptr},
     };
+}
+
+#if PELICAN_WITH_OPENXR
+nlohmann::json openXrStatusJson(const OpenXr::XrDiagnosticStatus &status) {
+    return {
+        {"active", true},
+        {"reference_space", status.reference_space.reference_space},
+        {"floor_semantics", status.reference_space.floor_semantics},
+        {"floor_level_guaranteed", status.reference_space.floor_level_guaranteed},
+        {"applied_floor_offset_m", status.reference_space.applied_floor_offset_m},
+        {"session_state", status.session_state},
+        {"view_configuration", status.view_configuration},
+        {"should_render", status.should_render ? nlohmann::json(*status.should_render)
+                                                : nlohmann::json(nullptr)},
+    };
+}
+#endif
+
+nlohmann::json openXrStatusJson(const EngineLaunchConfig &launch_config) {
+#if PELICAN_WITH_OPENXR
+    if (launch_config.xr_active) {
+        if (const auto *runtime = FastModuleContainer::tryGet<OpenXr::SessionRuntime>()) {
+            return openXrStatusJson(runtime->diagnosticStatus());
+        }
+    }
+#endif
+    return inactiveOpenXrStatusJson();
 }
 
 const nlohmann::json &requireObjectParams(const nlohmann::json &params, const std::string &method) {
@@ -582,6 +598,12 @@ std::filesystem::path weaklyCanonicalOrAbsolute(const std::filesystem::path &pat
 }
 
 } // namespace
+
+#if PELICAN_WITH_OPENXR
+nlohmann::json openXrStatusJsonForTesting(const OpenXr::XrDiagnosticStatus &status) {
+    return openXrStatusJson(status);
+}
+#endif
 
 JsonRpcHandlerError::JsonRpcHandlerError(int code, const std::string &message)
     : std::runtime_error(message), error_code{code} {}

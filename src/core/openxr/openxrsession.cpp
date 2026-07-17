@@ -1,6 +1,7 @@
 #include "openxrsession.hpp"
 
 #include "../appflow/enginetime.hpp"
+#include "../log.hpp"
 
 #include <algorithm>
 #include <array>
@@ -21,6 +22,27 @@ XrSessionDependencies productionDependencies() {
         throw std::runtime_error("OpenXR session dependency provider was not configured");
     }
     return dependency_provider();
+}
+
+std::string_view sessionStateName(XrSessionState state) noexcept {
+    switch (state) {
+    case XR_SESSION_STATE_UNKNOWN: return "UNKNOWN";
+    case XR_SESSION_STATE_IDLE: return "IDLE";
+    case XR_SESSION_STATE_READY: return "READY";
+    case XR_SESSION_STATE_SYNCHRONIZED: return "SYNCHRONIZED";
+    case XR_SESSION_STATE_VISIBLE: return "VISIBLE";
+    case XR_SESSION_STATE_FOCUSED: return "FOCUSED";
+    case XR_SESSION_STATE_STOPPING: return "STOPPING";
+    case XR_SESSION_STATE_LOSS_PENDING: return "LOSS_PENDING";
+    case XR_SESSION_STATE_EXITING: return "EXITING";
+    case XR_SESSION_STATE_MAX_ENUM: return "MAX_ENUM";
+    }
+    return "UNRECOGNIZED";
+}
+
+std::string_view shouldRenderName(const std::optional<bool> value) noexcept {
+    if (!value) return "unknown";
+    return *value ? "true" : "false";
 }
 
 template <class Function>
@@ -53,6 +75,7 @@ SessionRuntime::SessionRuntime(const XrSessionDependencies &dependencies)
                 dependencies.get_instance_proc_addr, instance, session,
                 *dependencies.input_actions);
         }
+        logDiagnostic("configuration", "initial");
     } catch (...) {
         if (tracking_space != XR_NULL_HANDLE && api.destroy_space != nullptr) {
             (void)api.destroy_space(tracking_space);
@@ -203,6 +226,26 @@ XrReferenceSpaceStatus SessionRuntime::referenceSpaceStatus() const {
     return describeReferenceSpace(tracking_space_type);
 }
 
+XrDiagnosticStatus SessionRuntime::diagnosticStatus() const {
+    return {
+        .session_state = sessionStateName(state),
+        .view_configuration = "PRIMARY_STEREO",
+        .reference_space = referenceSpaceStatus(),
+        .should_render = last_should_render,
+    };
+}
+
+void SessionRuntime::logDiagnostic(std::string_view event,
+                                   std::string_view transition) const {
+    if (logger == nullptr || tracking_space == XR_NULL_HANDLE) return;
+    const auto status = diagnosticStatus();
+    LOG_INFO(logger,
+             "OpenXR diagnostic: event={} transition={} session_state={} view_configuration={} reference_space={} shouldRender={}",
+             event, transition, status.session_state, status.view_configuration,
+             status.reference_space.reference_space,
+             shouldRenderName(status.should_render));
+}
+
 [[noreturn]] void SessionRuntime::throwFailure(const char *operation, XrResult result) {
     throw std::runtime_error(std::string{operation} + " failed (XrResult " +
                              std::to_string(result) + ")");
@@ -223,7 +266,11 @@ void SessionRuntime::pollEvents() {
 
         const auto &changed = reinterpret_cast<const XrEventDataSessionStateChanged &>(event);
         if (changed.session != session) continue;
+        const auto previous_state = state;
         state = changed.state;
+        const auto transition = std::string{sessionStateName(previous_state)} + "->" +
+                                std::string{sessionStateName(state)};
+        logDiagnostic("session_state", transition);
 
         switch (state) {
         case XR_SESSION_STATE_READY: {
@@ -272,8 +319,15 @@ XrDisplayTiming SessionRuntime::waitFrame() {
     frame_phase = FramePhase::waited;
     pending_display_time = frame_state.predictedDisplayTime;
     input_located_views = {};
+    const bool should_render = frame_state.shouldRender == XR_TRUE;
+    if (!last_should_render || *last_should_render != should_render) {
+        const auto transition = std::string{shouldRenderName(last_should_render)} + "->" +
+                                std::string{should_render ? "true" : "false"};
+        last_should_render = should_render;
+        logDiagnostic("shouldRender", transition);
+    }
     return {frame_state.predictedDisplayTime, frame_state.predictedDisplayPeriod,
-            frame_state.shouldRender == XR_TRUE};
+            should_render};
 }
 
 void SessionRuntime::beginFrame() {

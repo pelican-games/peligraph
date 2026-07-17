@@ -2,6 +2,7 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include "../src/core/appflow/enginetime.hpp"
+#include "../src/core/communication/rpcserver.hpp"
 #include "../src/core/openxr/openxrsession.hpp"
 
 #include <algorithm>
@@ -295,6 +296,19 @@ TEST_CASE("OpenXR session dispatch, lifecycle, and explicit state gates have a s
             CHECK(fake.calls == std::vector<std::string>{"poll_event", "poll_event"});
         }
 
+        // A runtime focus hand-off keeps the session running but revokes input;
+        // the returning FOCUSED event restores eligibility without recreating
+        // the session.
+        fake.calls.clear();
+        pushState(fake, XR_SESSION_STATE_VISIBLE);
+        runtime.pollEvents();
+        CHECK(runtime.isSessionRunning());
+        CHECK_FALSE(runtime.isInputEligible());
+        pushState(fake, XR_SESSION_STATE_FOCUSED);
+        runtime.pollEvents();
+        CHECK(runtime.isSessionRunning());
+        CHECK(runtime.isInputEligible());
+
         fake.calls.clear();
         pushState(fake, XR_SESSION_STATE_STOPPING);
         runtime.pollEvents();
@@ -394,6 +408,44 @@ TEST_CASE("OpenXR frame timing is immutable simulation-external data and every f
                                                      "locate_views", "end_frame"});
         CHECK(fake.last_end_was_zero_layer);
     }
+}
+
+TEST_CASE("OpenXR diagnostic snapshot drives the additive get_status xr schema",
+          "[openxr][session][diagnostic]") {
+    FakeRuntime fake;
+    FakeScope scope{fake};
+    Pelican::OpenXr::SessionRuntime runtime{fakeDependencies()};
+
+    auto status = runtime.diagnosticStatus();
+    CHECK(std::string{status.session_state} == "UNKNOWN");
+    CHECK(std::string{status.view_configuration} == "PRIMARY_STEREO");
+    CHECK(std::string{status.reference_space.reference_space} == "LOCAL");
+    CHECK_FALSE(status.should_render.has_value());
+
+    pushState(fake, XR_SESSION_STATE_READY);
+    pushState(fake, XR_SESSION_STATE_FOCUSED);
+    runtime.pollEvents();
+    fake.should_render = false;
+    const auto hidden_timing = runtime.waitFrame();
+    runtime.beginFrame();
+    runtime.endFrame(hidden_timing);
+
+    status = runtime.diagnosticStatus();
+    const auto hidden_json = Pelican::openXrStatusJsonForTesting(status);
+    CHECK(hidden_json.at("active") == true);
+    CHECK(hidden_json.at("session_state") == "FOCUSED");
+    CHECK(hidden_json.at("view_configuration") == "PRIMARY_STEREO");
+    CHECK(hidden_json.at("reference_space") == "LOCAL");
+    CHECK(hidden_json.at("floor_semantics") == "floor_not_guaranteed");
+    CHECK(hidden_json.at("floor_level_guaranteed") == false);
+    CHECK(hidden_json.at("applied_floor_offset_m") == 0.0F);
+    CHECK(hidden_json.at("should_render") == false);
+
+    fake.should_render = true;
+    const auto visible_timing = runtime.waitFrame();
+    runtime.beginFrame();
+    runtime.endFrame(visible_timing);
+    CHECK(runtime.diagnosticStatus().should_render == true);
 }
 
 TEST_CASE("OpenXR wait, begin, and end frame failures preserve their call boundary",
