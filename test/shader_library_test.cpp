@@ -61,7 +61,11 @@ struct ShaderSandbox {
     ShaderSandbox() {
         const auto suffix =
             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
-        base = std::filesystem::temp_directory_path() / ("pelican_shader_stem_" + suffix);
+        // CI runner の %TEMP% は 8.3 短縮形(RUNNER~1)のことがあり、
+        // エンジン側は canonical 長形式で保持するため、比較の基準を
+        // 先に長形式へそろえる。
+        base = std::filesystem::weakly_canonical(std::filesystem::temp_directory_path()) /
+               ("pelican_shader_stem_" + suffix);
         root = base / "project";
         std::filesystem::create_directories(root / "shaders");
         std::filesystem::copy_file(sourceRoot() / "src/core/resources/fullscreen.vert.spv",

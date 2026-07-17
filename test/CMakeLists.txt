@@ -313,7 +313,9 @@ target_compile_definitions(pelican_test_vrm_xr_demo_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 pelican_define_test(materialinstanceoverride_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
-pelican_define_test(gltf_scene_extract_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp argparse tinygltf glm)
+# SceneLoader roundtrip case が Vulkan instance を要求するため GPU
+# (validation layer なしの CI runner では ErrorLayerNotPresent)。
+pelican_define_test(gltf_scene_extract_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp argparse tinygltf glm)
 target_sources(pelican_test_gltf_scene_extract_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devcli/gltfsceneextract.cpp
 )
