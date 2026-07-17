@@ -39,6 +39,9 @@
 #include "rendertarget.hpp"
 #include "rendertiming.hpp"
 #include "util.hpp"
+#if PELICAN_WITH_OPENXR
+#include "../openxr/openxrfeaturepolicy.hpp"
+#endif
 #if PELICAN_WITH_IMGUI
 #include "../imgui/imguiruntime.hpp"
 #include "../imgui/imguisystem.hpp"
@@ -824,9 +827,12 @@ bool consumeShaderReloadPublication(ShaderHotReloadModules &modules) {
                    .committed != 0;
 }
 
-bool handleFrameTargetResize(RenderFrameModules &modules, RenderTargetLayoutTracker &layout_tracker,
-                             ILogicalFrameTarget &target, vk::Extent2D extent) {
-    if (!target.consumeExtentChanged()) {
+bool handleFrameTargetResize(RenderFrameModules &modules,
+                             RenderTargetLayoutTracker &layout_tracker,
+                             ILogicalFrameTarget &target, vk::Extent2D extent,
+                             bool logical_target_extent_changed) {
+    const bool target_reported_change = target.consumeExtentChanged();
+    if (!target_reported_change && !logical_target_extent_changed) {
         return false;
     }
 
@@ -835,6 +841,55 @@ bool handleFrameTargetResize(RenderFrameModules &modules, RenderTargetLayoutTrac
     layout_tracker.reset();
     return true;
 }
+
+#if PELICAN_WITH_OPENXR
+void recordXrMirrorIntermediate(const FrameRenderContext &render_ctx,
+                                RenderFrameModules &modules,
+                                RenderTargetLayoutTracker &layout_tracker,
+                                nlohmann::json *node_trace) {
+    const auto source_id =
+        modules.render_target_container.getRenderTargetIdByName("display");
+    const auto destination_id = modules.render_target_container.getRenderTargetIdByName(
+        std::string{OpenXr::xr_mirror_intermediate_name});
+    if (!isConcreteRenderTarget(source_id) || !isConcreteRenderTarget(destination_id)) {
+        throw std::runtime_error(
+            "OpenXR mirror requires engine-owned display and left-eye intermediates");
+    }
+    const auto source = modules.render_target_container.getMetadata(source_id);
+    const auto destination = modules.render_target_container.getMetadata(destination_id);
+    if (source.format != destination.format || source.extent != destination.extent) {
+        throw std::runtime_error(
+            "OpenXR mirror intermediate must match the engine-owned display source");
+    }
+    layout_tracker.transition(render_ctx.cmd_buf, modules.render_target_container,
+                              modules.vk_utils, source_id,
+                              vk::ImageLayout::eTransferSrcOptimal);
+    layout_tracker.transition(render_ctx.cmd_buf, modules.render_target_container,
+                              modules.vk_utils, destination_id,
+                              vk::ImageLayout::eTransferDstOptimal);
+    vk::ImageCopy copy;
+    copy.srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+    copy.dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+    copy.extent = vk::Extent3D{source.extent.width, source.extent.height, 1};
+    render_ctx.cmd_buf.copyImage(
+        modules.render_target_container.getImage(source_id).image.get(),
+        vk::ImageLayout::eTransferSrcOptimal,
+        modules.render_target_container.getImage(destination_id).image.get(),
+        vk::ImageLayout::eTransferDstOptimal, copy);
+    layout_tracker.transition(render_ctx.cmd_buf, modules.render_target_container,
+                              modules.vk_utils, destination_id,
+                              vk::ImageLayout::eShaderReadOnlyOptimal);
+    if (node_trace != nullptr) {
+        node_trace->push_back({
+            {"name", "xr_mirror_left_intermediate"},
+            {"kind", "engine_owned_copy"},
+            {"source", "display"},
+            {"destination", OpenXr::xr_mirror_intermediate_name},
+            {"source_is_xr_image", false},
+        });
+    }
+}
+#endif
 
 std::optional<ProjectionJitterSettings> projectionJitterSettingsFor(
     const FrameGraphRuntimeContainer &runtime, RenderingPassId rendering_pass_id) {
@@ -908,13 +963,31 @@ class FlatLogicalFrameTarget final : public ILogicalFrameTarget {
 } // namespace
 
 Renderer::Renderer() {
-    current_rendering_pass_id = loadDefaultRenderingPassFromConfig();
+    const auto variants = loadRenderGraphVariantsFromConfig();
+    flat_rendering_pass_id = variants.flat;
+    xr_rendering_pass_id = variants.xr;
+    xr_excluded_features = variants.xr_excluded_features;
+    current_rendering_pass_id = flat_rendering_pass_id;
     projection_jitter = projectionJitterSettingsFor(GET_MODULE(FrameGraphRuntimeContainer),
                                                      current_rendering_pass_id);
-    temporal_histories.resize(1);
+    flat_temporal_histories.resize(1);
+    if (xr_rendering_pass_id) xr_temporal_histories.resize(2);
+    internal_render_extent = GET_MODULE(RenderTarget).getExtent();
 }
 
 Renderer::~Renderer() = default;
+
+std::vector<TemporalFrameHistory> &Renderer::activeTemporalHistories() {
+    return active_graph_variant == RenderGraphVariant::flat
+               ? flat_temporal_histories
+               : xr_temporal_histories;
+}
+
+const std::vector<TemporalFrameHistory> &Renderer::activeTemporalHistories() const {
+    return active_graph_variant == RenderGraphVariant::flat
+               ? flat_temporal_histories
+               : xr_temporal_histories;
+}
 
 nlohmann::json Renderer::currentFramePlanJson() const {
     const auto *frame_graph_runtime = FastModuleContainer::tryGet<FrameGraphRuntimeContainer>();
@@ -949,6 +1022,7 @@ void Renderer::recreateRenderTargetsAndRebindForTesting(vk::Extent2D extent) {
     modules.instance_container.resetTemporalHistory();
     temporal_reset_requested = true;
     render_target_layout_tracker.reset();
+    internal_render_extent = extent;
 }
 
 void Renderer::resetTemporalHistory() {
@@ -957,6 +1031,34 @@ void Renderer::resetTemporalHistory() {
     modules.instance_container.resetTemporalHistory();
     temporal_reset_requested = true;
     render_target_layout_tracker.reset();
+}
+
+void Renderer::selectGraphVariant(RenderGraphVariant variant) {
+    if (variant == active_graph_variant) return;
+    if (variant == RenderGraphVariant::xr && !xr_rendering_pass_id) {
+        throw std::runtime_error(
+            "OpenXR render graph was not precompiled at startup");
+    }
+
+    const auto from = active_graph_variant;
+    auto modules = resolveRenderFrameModules();
+    modules.render_target_container.resetHistory();
+    modules.instance_container.resetTemporalHistory();
+    render_target_layout_tracker.reset();
+    temporal_reset_requested = true;
+
+    active_graph_variant = variant;
+    current_rendering_pass_id =
+        variant == RenderGraphVariant::flat ? flat_rendering_pass_id
+                                            : *xr_rendering_pass_id;
+    projection_jitter = projectionJitterSettingsFor(
+        GET_MODULE(FrameGraphRuntimeContainer), current_rendering_pass_id);
+    graph_variant_transition_trace.push_back({
+        {"from", from == RenderGraphVariant::flat ? "flat" : "xr"},
+        {"to", variant == RenderGraphVariant::flat ? "flat" : "xr"},
+        {"temporal_reset_requests", 1},
+    });
+    pending_graph_transition = graph_variant_transition_trace.size() - 1;
 }
 
 void Renderer::prepareRuntimeModules() {
@@ -978,7 +1080,7 @@ void Renderer::prepareRuntimeModules() {
 }
 
 void Renderer::renderLogicalFrame(ILogicalFrameTarget &target, std::uint32_t view_count,
-                                  const RenderViewProvider &view_provider) {
+                                   const RenderViewProvider &view_provider) {
     if (view_count == 0) {
         throw std::runtime_error("Renderer logical frame requires at least one view");
     }
@@ -990,6 +1092,7 @@ void Renderer::renderLogicalFrame(ILogicalFrameTarget &target, std::uint32_t vie
     deletion_queue.beginFrame();
 
     auto modules = resolveRenderFrameModules();
+    auto &temporal_histories = activeTemporalHistories();
     if (temporal_histories.size() != view_count) {
         modules.render_target_container.resetHistory();
         modules.instance_container.resetTemporalHistory();
@@ -1035,10 +1138,13 @@ void Renderer::renderLogicalFrame(ILogicalFrameTarget &target, std::uint32_t vie
         if (view_index == 0) {
             logical_in_flight_frame = render_ctx.in_flight_frame_index;
             logical_extent = render_ctx.extent;
+            const bool extent_changed =
+                !internal_render_extent || *internal_render_extent != render_ctx.extent;
             if (handleFrameTargetResize(modules, render_target_layout_tracker, target,
-                                        render_ctx.extent)) {
+                                        render_ctx.extent, extent_changed)) {
                 modules.instance_container.resetTemporalHistory();
                 temporal_reset_requested = true;
+                internal_render_extent = render_ctx.extent;
             }
             // Object, skin, morph, and material-override GPU state is frozen
             // after target acquisition and before the first view records.
@@ -1085,6 +1191,12 @@ void Renderer::renderLogicalFrame(ILogicalFrameTarget &target, std::uint32_t vie
                                snapshot, view.first_person_view, frame_target_format,
                                render_target_layout_tracker,
                                node_trace_ptr);
+#if PELICAN_WITH_OPENXR
+        if (active_graph_variant == RenderGraphVariant::xr && view_index == 0) {
+            recordXrMirrorIntermediate(render_ctx, modules,
+                                       render_target_layout_tracker, node_trace_ptr);
+        }
+#endif
         target.endView(view_index);
 
         if (execution_tracing_for_testing) {
@@ -1117,9 +1229,20 @@ void Renderer::renderLogicalFrame(ILogicalFrameTarget &target, std::uint32_t vie
     }
     last_view_snapshots = std::move(snapshots);
     temporal_reset_requested = false;
+    if (pending_graph_transition) {
+        auto &transition = graph_variant_transition_trace.at(*pending_graph_transition);
+        transition["reset_epochs"] = nlohmann::json::array();
+        for (const auto &snapshot : last_view_snapshots) {
+            transition["reset_epochs"].push_back(snapshot.temporal_reset_epoch);
+        }
+        transition["projection_jitter"] = projection_jitter.has_value();
+        transition["frame_plan"] = currentFramePlanOrderForTesting();
+        pending_graph_transition.reset();
+    }
 }
 
 void Renderer::render() {
+    selectGraphVariant(RenderGraphVariant::flat);
     FlatLogicalFrameTarget target{GET_MODULE(RenderTarget)};
     renderLogicalFrame(
         target, 1,

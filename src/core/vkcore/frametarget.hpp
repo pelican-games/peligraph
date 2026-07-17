@@ -21,6 +21,9 @@ class IFrameTarget {
   public:
     virtual ~IFrameTarget() = default;
     virtual FrameRenderContext render_begin() = 0;
+    // Optional sinks use a zero-wait begin.  false means the frame is dropped;
+    // it must not be treated as a rendering failure.
+    virtual bool try_render_begin(FrameRenderContext &context) = 0;
     virtual void recordOutputTransformCopy(vk::CommandBuffer cmd_buf, vk::Image source,
                                            vk::Format source_format, vk::Extent2D source_extent) = 0;
     virtual void render_end() = 0;

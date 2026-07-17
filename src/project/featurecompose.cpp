@@ -1629,12 +1629,18 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     };
     std::vector<LoadedFeature> loaded_features;
     std::vector<std::string> feature_names;
+    std::vector<std::string> excluded_feature_names;
     std::optional<nlohmann::json> projection_jitter;
     bool hdr_enabled = false;
     loaded_features.reserve(feature_instances.size());
     for (const auto &instance : feature_instances) {
         auto feature = loadFeatureJson(instance.ref, dependencies);
         const auto feature_name = validateFeatureEnvelope(feature, instance.ref);
+        if (dependencies.include_feature &&
+            !dependencies.include_feature(feature_name, feature)) {
+            appendUnique(excluded_feature_names, feature_name);
+            continue;
+        }
         appendUnique(feature_names, feature_name);
         hdr_enabled = hdr_enabled || feature_name == "hdr";
         if (auto declaration = parseProjectionJitterDeclaration(feature, feature_name)) {
@@ -1700,6 +1706,7 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     result.config = std::move(composed);
     result.shader_defines = std::move(shader_defines);
     result.feature_names = std::move(feature_names);
+    result.excluded_feature_names = std::move(excluded_feature_names);
     result.projection_jitter = std::move(projection_jitter);
     result.feature_instances = std::move(resolved_instances);
     result.used_features = !feature_instances.empty();

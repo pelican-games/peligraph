@@ -215,24 +215,43 @@ SwapchainFrameTarget::SwapchainFrameTarget()
 
 SwapchainFrameTarget::~SwapchainFrameTarget() {}
 
-FrameRenderContext SwapchainFrameTarget::render_begin() {
+std::optional<FrameRenderContext> SwapchainFrameTarget::beginFrame(bool nonblocking) {
     do {
+        if (nonblocking) {
+            const auto framebuffer = GET_MODULE(Window).framebufferExtent();
+            if (framebuffer.width == 0 || framebuffer.height == 0) {
+                return std::nullopt;
+            }
+        }
         const auto image_prepared_semaphore = image_acquire_semaphores[in_flight_frame_index].get();
         const auto &cmd_buf = render_cmd_bufs[in_flight_frame_index];
 
-        if (auto result = device.waitForFences({cmd_buf.getFence()}, VK_TRUE, UINT64_MAX);
-            result != vk::Result::eSuccess) {
-            LOG_WARNING(logger, "vkWaitForFences didn't succeed : {}", vk::to_string(result));
+        const auto fence_result = device.waitForFences(
+            {cmd_buf.getFence()}, VK_TRUE, nonblocking ? 0 : UINT64_MAX);
+        if (nonblocking && fence_result == vk::Result::eTimeout) {
+            return std::nullopt;
+        }
+        if (fence_result != vk::Result::eSuccess) {
+            LOG_WARNING(logger, "vkWaitForFences didn't succeed : {}",
+                        vk::to_string(fence_result));
         }
 
         auto image_acquire_result =
-            device.acquireNextImageKHR(swapchain.swapchain.get(), UINT64_MAX, image_prepared_semaphore);
-        if (image_acquire_result.result == vk::Result::eSuboptimalKHR ||
-            image_acquire_result.result == vk::Result::eErrorOutOfDateKHR) {
+            device.acquireNextImageKHR(swapchain.swapchain.get(),
+                                       nonblocking ? 0 : UINT64_MAX,
+                                       image_prepared_semaphore);
+        if (nonblocking &&
+            (image_acquire_result.result == vk::Result::eTimeout ||
+             image_acquire_result.result == vk::Result::eNotReady)) {
+            return std::nullopt;
+        }
+        if (image_acquire_result.result == vk::Result::eErrorOutOfDateKHR) {
+            if (nonblocking) return std::nullopt;
             recreateSurfaceDependants();
             continue;
         }
-        if (image_acquire_result.result != vk::Result::eSuccess) {
+        if (image_acquire_result.result != vk::Result::eSuccess &&
+            image_acquire_result.result != vk::Result::eSuboptimalKHR) {
             throw std::runtime_error("failed on vkAcquireNextImageKHR : " + vk::to_string(image_acquire_result.result));
         }
 
@@ -241,6 +260,7 @@ FrameRenderContext SwapchainFrameTarget::render_begin() {
 
         cmd_buf.recordBegin();
         output_transform_recorded = false;
+        current_frame_nonblocking = nonblocking;
 
         {
             vk::Viewport viewport;
@@ -285,6 +305,17 @@ FrameRenderContext SwapchainFrameTarget::render_begin() {
             .in_flight_frame_index = in_flight_frame_index,
         };
     } while (true);
+}
+
+FrameRenderContext SwapchainFrameTarget::render_begin() {
+    return *beginFrame(false);
+}
+
+bool SwapchainFrameTarget::try_render_begin(FrameRenderContext &context) {
+    auto begun = beginFrame(true);
+    if (!begun) return false;
+    context = *begun;
+    return true;
 }
 
 void SwapchainFrameTarget::recordOutputTransformCopy(vk::CommandBuffer cmd_buf, vk::Image source,
@@ -364,13 +395,21 @@ void SwapchainFrameTarget::render_end() {
 
     const auto present_result = presen_queue.presentKHR(presen_info);
     if (present_result == vk::Result::eSuboptimalKHR || present_result == vk::Result::eErrorOutOfDateKHR) {
-        recreateSurfaceDependants();
+        if (current_frame_nonblocking) {
+            // The optional mirror must never wait for device idle.  Mark the
+            // desktop target stale and let a later flat frame perform the
+            // normal blocking recreation; XR composition keeps running.
+            extent_changed = true;
+        } else {
+            recreateSurfaceDependants();
+        }
     } else if (present_result != vk::Result::eSuccess) {
         throw std::runtime_error("failed on vkQueuePresentKHR : " + vk::to_string(present_result));
     }
 
     in_flight_frame_index++;
     in_flight_frame_index %= in_flight_frames_num;
+    current_frame_nonblocking = false;
     has_rendered_frame = true;
 }
 

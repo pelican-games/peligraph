@@ -279,6 +279,7 @@ pelican_define_test(golden_image_test pelican_core VulkanMemoryAllocator VulkanM
 target_compile_definitions(pelican_test_golden_image_test PRIVATE
     VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
+    PELICAN_WITH_OPENXR=$<BOOL:${PELICAN_WITH_OPENXR}>
     PELICAN_WITH_VAT=$<BOOL:${PELICAN_WITH_VAT}>
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     PELICAN_TEST_BINARY_DIR="${CMAKE_BINARY_DIR}"
@@ -351,6 +352,7 @@ pelican_define_test(xrcompositiontarget_test pelican_core pelican_openxr
     VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 pelican_define_test(xrviewspace_test pelican_core pelican_openxr
     VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+pelican_define_test(xrfeaturepolicy_test pelican_core pelican_openxr)
 endif()
 pelican_define_test(inputsequence_test pelican_core)
 if(PELICAN_WITH_IMGUI)

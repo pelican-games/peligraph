@@ -1,6 +1,9 @@
 #pragma once
 
+#include "renderingpass.hpp"
+
 #include <functional>
+#include <nlohmann/json_fwd.hpp>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -42,11 +45,25 @@ struct RenderingPassConfigRegistrationDependencies {
     ComputeTaskContainer &compute_task_container;
     FrameGraphRuntimeContainer &frame_graph_runtime;
     RenderingPassContainer &pass_container;
+    struct Options {
+        std::function<bool(std::string_view, const nlohmann::json &)> include_feature;
+        std::function<void(const nlohmann::json &)> validate_composed_config;
+        std::string rendering_pass_name_suffix;
+        bool publish_enabled_features = true;
+    } options;
 };
 
-void registerRenderingPassConfigFromJson(const std::string &json_path, vk::Extent2D base_extent,
-                                         RenderingPassConfigRegistrationDependencies dependencies);
-void registerRenderingPassConfigFromJsonData(std::string_view json_data, vk::Extent2D base_extent,
-                                             RenderingPassConfigRegistrationDependencies dependencies);
+struct RenderingPassConfigRegistrationResult {
+    std::vector<RenderingPassId> rendering_pass_ids;
+    std::vector<std::string> feature_names;
+    std::vector<std::string> excluded_feature_names;
+};
+
+RenderingPassConfigRegistrationResult registerRenderingPassConfigFromJson(
+    const std::string &json_path, vk::Extent2D base_extent,
+    RenderingPassConfigRegistrationDependencies dependencies);
+RenderingPassConfigRegistrationResult registerRenderingPassConfigFromJsonData(
+    std::string_view json_data, vk::Extent2D base_extent,
+    RenderingPassConfigRegistrationDependencies dependencies);
 
 } // namespace Pelican

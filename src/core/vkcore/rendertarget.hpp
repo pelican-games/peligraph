@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
@@ -30,6 +31,7 @@ DECLARE_MODULE(RenderTarget) {
     ~RenderTarget();
 
     FrameRenderContext render_begin();
+    std::optional<FrameRenderContext> tryRenderBegin();
     void recordOutputTransformCopy(vk::CommandBuffer cmd_buf, vk::Image source,
                                    vk::Format source_format, vk::Extent2D source_extent);
     void render_end();

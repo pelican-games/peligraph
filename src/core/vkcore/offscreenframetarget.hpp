@@ -30,6 +30,7 @@ class OffscreenFrameTarget : public IFrameTarget {
     ~OffscreenFrameTarget() override;
 
     FrameRenderContext render_begin() override;
+    bool try_render_begin(FrameRenderContext &context) override;
     void recordOutputTransformCopy(vk::CommandBuffer cmd_buf, vk::Image source,
                                    vk::Format source_format, vk::Extent2D source_extent) override;
     void render_end() override;
