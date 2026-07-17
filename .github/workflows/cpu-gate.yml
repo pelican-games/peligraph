@@ -40,13 +40,17 @@ jobs:
         shell: pwsh
         run: New-Item -ItemType Directory -Force build/ci-artifacts | Out-Null
 
-      - name: Test the SKIP policy checker
+      - name: Test CI policy checkers
         shell: pwsh
         run: |
           python -m unittest discover -s test/ci -p "test_*.py" -v 2>&1 |
             Tee-Object -FilePath build/ci-artifacts/skip-policy-tests.log
           $result = $LASTEXITCODE
           if ($result -ne 0) { exit $result }
+
+      - name: Check golden inventory
+        shell: pwsh
+        run: python test/golden_inventory.py --repo-root .
 
       - name: Configure
         shell: pwsh
