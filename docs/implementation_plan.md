@@ -3423,6 +3423,69 @@ ActionPose の flag 拡張・xrSyncActions/locate の freeze 前実行。
    tracking loss の flag 別挙動)+ 既存全テスト + golden SKIP 0
    (48/47)+ player 8 秒 + OFF smoke 維持
 
+### WP133: XR2a.3 — feature policy + mirror(実機初表示)
+
+参照: **`design_openxr.md` v2.1 §7 が正**。受け入れ条件 = 初回レビュー
+§12 の **XR2A3-FEATURE-MIRROR 逐語**: 「flat graph と history/TAA/
+velocity/UI を除いた XR graph を precompile し、logical frame boundary で
+切り替える。XR entry/flat return で各 history を一回 reset する。mirror
+は engine-owned left-eye intermediate を window extent へ scale/letterbox
+後、screen-space UI を overlay する optional sink とし、window stall で
+HMD を止めない。legacy capture/golden は flat path の意味を変えない。
+TAA-on transition trace、window resize/minimize、XR-off golden byte 一致
+を gate にする。」
+依存: WP128(logical frame)・WP129(composition)・WP131(view/space)
+— 全て済。見積: 特大。
+排他: graph variant 選択・XR graph compose・mirror sink・
+legacy capture の XR 中 reject・loop への XR 描画統合。
+
+1. flat/XR 両 graph の起動時 precompile(XR graph = TAA/jitter/velocity/
+   history/UI 除外。除外不能な未知 history feature は XR activation を
+   名前入り拒否)
+2. logical frame 境界での graph 選択 + XR 出入りの temporal reset
+   (epoch 一回)
+3. **ここで初めて XR 描画を配線**: session running + shouldRender で
+   WP128 core → WP129 target → WP131 の view 行列、の全統合
+4. mirror = left-eye intermediate の scale/letterbox + UI overlay の
+   optional sink(frame drop 可・HMD ループ非依存)
+5. XR 中の legacy capture = 名前入り reject。headless/golden は
+   フラット経路のみ(byte 一致)
+6. gate: TAA-on project の session transition trace(XR frame plan に
+   taa/velocity/history/jitter が無い・flat 復帰で戻る・reset epoch
+   一回)・window resize/minimize で HMD 継続(fake で)・XR-off
+   golden byte 一致 + 既存全テスト + player 8 秒。
+   **実機チェックリスト(§8-3 + 再レビュー §13 の追加項目)は
+   レポートに雛形を添付し、ユーザー実機確認は別途**(HMD 接続が
+   必要なため — エージェントは fake/synthetic までで可)
+
+### WP134: S1c — bone lookAt + firstPerson(詳細)
+
+参照: **WP123 停止レポートの「追加で見つかった application sink の
+不足」節と停止質問 3・4 の確定判断が仕様の正**。
+依存: WP123(済)・WP121(morph)・WP131(XR の camera/view —
+firstPerson の観点)。見積: 特大。
+排他: application service の pose staging(versioned・別 header
+negotiation — 凍結 abi_v1.hpp 無変更)・firstPerson の node identity
+保存 + auto split(import-time)・lookAt bone type。
+
+1. **pose staging**: application service に版付き pose staging /
+   application transaction を追加(phase 100 で leftEye/rightEye の
+   local rotation を変更し、300 の constraint と同じ pose を commit へ
+   渡せる公開面 — WP123 の質問 4 の確定どおり別 entry point で
+   negotiation)
+2. **bone lookAt**: VRM 1.0 lookAt bone type(rangeMap 適用)を
+   staging 経由で実装
+3. **firstPerson**: 明示 annotation の node identity を
+   ModelPrimitiveRefInfo/RenderCommand 系へ保存 + **auto の
+   triangle split は import-time**(head bone weight による分割 —
+   import-tools でなくエンジン load 時の前処理として実装し、
+   分割結果の決定性 fixture)+ view 依存 visibility(XR の
+   first-person view で head 非表示)
+4. gate: bone lookAt の角度 fixture(rangeMap 数値)・staging の
+   phase 間一貫性・auto split の決定性・visibility の per-view 切替 +
+   既存全テスト + golden SKIP 0(48/47 + 追加分・dir 実数照合)+
+   player 8 秒
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの
