@@ -125,28 +125,40 @@ void appendNode(const SkeletalModelData &model, std::uint32_t original, std::vec
 
 } // namespace
 
-const AnimationAsset &AnimationAssetRegistry::getOrCreate(const SkeletalModelData &model) {
-    std::scoped_lock lock{mutex_};
-    if (const auto found = assets_.find(&model); found != assets_.end()) return found->second;
+AnimationAsset AnimationAssetRegistry::buildAsset(
+    const SkeletalModelData &model,
+    std::shared_ptr<AnimationResourceGeneration> generation_state,
+    std::uint32_t generation, const AnimationAsset *previous) {
     if (model.nodes.empty()) throw std::runtime_error("skeletal animation rig has no nodes");
     if (model.joint_nodes.size() != model.inverse_bind_matrices.size())
         throw std::runtime_error("glTF skin joint/inverse bind matrix count mismatch");
 
     AnimationAsset asset;
     asset.source = &model;
-    auto generation_state = std::make_shared<AnimationResourceGeneration>();
-    asset.rig.handle = {next_identity_++, 1, 0};
-    asset.rig.layout = {next_identity_++, 1, 0};
     asset.rig.generation_state = generation_state;
     asset.rig.original_to_layout.assign(model.nodes.size(), invalidNode);
     std::vector<std::uint8_t> state(model.nodes.size());
     for (std::uint32_t node = 0; node < model.nodes.size(); ++node) appendNode(model, node, state, asset.rig);
 
-    auto addBinding = [&](std::uint32_t offset, std::uint32_t count) {
+    asset.rig.handle = {previous ? previous->rig.handle.identity : next_identity_++, generation, 0};
+    const bool same_layout = previous &&
+                             previous->rig.parents == asset.rig.parents &&
+                             previous->rig.node_names == asset.rig.node_names &&
+                             previous->rig.original_to_layout == asset.rig.original_to_layout &&
+                             previous->rig.layout_to_original == asset.rig.layout_to_original;
+    asset.rig.layout = {
+        same_layout ? previous->rig.layout.identity : next_identity_++, generation, 0};
+
+    auto addBinding = [&](std::uint32_t offset, std::uint32_t count,
+                          std::size_t binding_index) {
         if (offset > model.joint_nodes.size() || count > model.joint_nodes.size() - offset)
             throw std::runtime_error("glTF skin binding range exceeds combined palette");
         AnimationSkinBinding binding;
-        binding.handle = {next_identity_++, 1, 0};
+        binding.handle = {
+            previous && binding_index < previous->skin_bindings.size()
+                ? previous->skin_bindings[binding_index].handle.identity
+                : next_identity_++,
+            generation, 0};
         binding.source_rig = asset.rig.handle;
         binding.layout = asset.rig.layout;
         binding.generation_state = generation_state;
@@ -163,21 +175,73 @@ const AnimationAsset &AnimationAssetRegistry::getOrCreate(const SkeletalModelDat
         asset.skin_bindings.push_back(std::move(binding));
     };
     if (model.skin_bindings.empty()) {
-        addBinding(0, static_cast<std::uint32_t>(model.joint_nodes.size()));
+        addBinding(0, static_cast<std::uint32_t>(model.joint_nodes.size()), 0);
     } else {
         std::uint32_t expected_offset = 0;
-        for (const auto &binding : model.skin_bindings) {
+        for (std::size_t binding_index = 0;
+             binding_index < model.skin_bindings.size(); ++binding_index) {
+            const auto &binding = model.skin_bindings[binding_index];
             if (binding.palette_offset != expected_offset)
                 throw std::runtime_error("glTF skin bindings do not exactly cover the combined palette");
-            addBinding(binding.palette_offset, binding.joint_count);
+            addBinding(binding.palette_offset, binding.joint_count, binding_index);
             expected_offset += binding.joint_count;
         }
         if (expected_offset != model.joint_nodes.size())
             throw std::runtime_error("glTF skin bindings do not exactly cover the combined palette");
     }
-    for (const auto &clip : model.clips)
-        asset.clips.push_back({{next_identity_++, 1, 0}, asset.rig.handle, generation_state, &clip});
+    for (const auto &clip : model.clips) {
+        std::uint64_t identity{};
+        if (previous) {
+            const auto found = std::find_if(
+                previous->clips.begin(), previous->clips.end(), [&](const auto &candidate) {
+                    return candidate.source && candidate.source->name == clip.name;
+                });
+            if (found != previous->clips.end()) identity = found->handle.identity;
+        }
+        if (identity == 0) identity = next_identity_++;
+        asset.clips.push_back(
+            {{identity, generation, 0}, asset.rig.handle, generation_state, &clip});
+    }
+    return asset;
+}
+
+const AnimationAsset &AnimationAssetRegistry::getOrCreate(const SkeletalModelData &model) {
+    std::scoped_lock lock{mutex_};
+    if (const auto found = assets_.find(&model); found != assets_.end()) return found->second;
+    auto generation_state = std::make_shared<AnimationResourceGeneration>();
+    auto asset = buildAsset(model, generation_state, 1, nullptr);
     return assets_.emplace(&model, std::move(asset)).first->second;
+}
+
+const AnimationAsset &AnimationAssetRegistry::reloadAsset(
+    const SkeletalModelData &previous, const SkeletalModelData &replacement) {
+    std::scoped_lock lock{mutex_};
+    const auto found = assets_.find(&previous);
+    if (found == assets_.end()) {
+        if (const auto current = assets_.find(&replacement); current != assets_.end())
+            return current->second;
+        auto generation_state = std::make_shared<AnimationResourceGeneration>();
+        auto asset = buildAsset(replacement, generation_state, 1, nullptr);
+        return assets_.emplace(&replacement, std::move(asset)).first->second;
+    }
+
+    auto generation_state = found->second.rig.generation_state;
+    auto generation = generation_state->current.load(std::memory_order_acquire) + 1;
+    if (generation == 0) ++generation;
+    auto replacement_asset =
+        buildAsset(replacement, generation_state, generation, &found->second);
+    generation_state->current.store(generation, std::memory_order_release);
+    assets_.erase(found);
+    return assets_.emplace(&replacement, std::move(replacement_asset)).first->second;
+}
+
+void AnimationAssetRegistry::invalidateAsset(const SkeletalModelData &model) {
+    std::scoped_lock lock{mutex_};
+    const auto found = assets_.find(&model);
+    if (found == assets_.end()) return;
+    auto &generation = found->second.rig.generation_state->current;
+    if (++generation == 0) ++generation;
+    assets_.erase(found);
 }
 
 void AnimationAssetRegistry::clear() {

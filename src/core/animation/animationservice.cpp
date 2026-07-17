@@ -20,6 +20,7 @@
 #include <string_view>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -128,11 +129,15 @@ struct AnimationServiceRuntime::Impl {
     std::unordered_map<std::uint64_t, ObjectRecord *> rigs;
     std::unordered_map<std::uint64_t, std::pair<ObjectRecord *, const AnimationClipResource *>> clips;
     std::unordered_map<std::uint64_t, std::pair<ObjectRecord *, const AnimationSkinBinding *>> bindings;
+    // Includes tombstones so a handle from a replaced/removed asset reports
+    // stale_generation rather than degrading to invalid_handle.
+    std::unordered_map<std::uint64_t, std::uint32_t> resource_generations;
     std::unordered_map<std::uint64_t, SinkRecord> sinks;
     std::unordered_map<std::uint64_t, std::uint64_t> instances;
     std::unordered_map<std::uint64_t, OwnerRecord> owners;
     std::unordered_map<std::uint64_t, ArenaRecord> arenas;
     std::unordered_map<std::uint64_t, PoseRecord> poses;
+    std::unordered_map<std::uint64_t, std::uint32_t> stale_poses;
     std::unordered_map<std::uint64_t, CursorRecord> cursors;
     std::unordered_map<std::uint64_t, SourceRecord> sources;
     std::unordered_map<std::uint64_t, PhaseRecord> phases;
@@ -160,25 +165,45 @@ struct AnimationServiceRuntime::Impl {
         return Status::ok;
     }
 
-    ObjectRecord *findRig(RigHandle rig) {
-        if (!isValid(rig)) return nullptr;
-        const auto found = rigs.find(rig.identity);
-        if (found == rigs.end()) return nullptr;
-        const auto &current = found->second->asset->rig;
-        return sameHandle(current.handle, rig) && current.generation_state->current.load() == rig.generation
-                   ? found->second
-                   : nullptr;
+    Status validateResource(std::uint64_t identity, std::uint32_t generation) const {
+        const auto found = resource_generations.find(identity);
+        if (found == resource_generations.end()) return Status::invalid_handle;
+        return found->second == generation ? Status::ok : Status::stale_generation;
     }
 
-    std::pair<ObjectRecord *, const AnimationClipResource *> *findClip(ClipHandle clip) {
-        if (!isValid(clip)) return nullptr;
+    Status resolveRigResource(RigHandle rig, ObjectRecord *&out) {
+        out = nullptr;
+        if (!isValid(rig)) return Status::invalid_handle;
+        if (const auto status = validateResource(rig.identity, rig.generation);
+            status != Status::ok)
+            return status;
+        const auto found = rigs.find(rig.identity);
+        if (found == rigs.end() || !found->second->asset)
+            return Status::invalid_handle;
+        const auto &current = found->second->asset->rig;
+        if (!sameHandle(current.handle, rig) ||
+            current.generation_state->current.load() != rig.generation)
+            return Status::stale_generation;
+        out = found->second;
+        return Status::ok;
+    }
+
+    Status resolveClipResource(
+        ClipHandle clip,
+        std::pair<ObjectRecord *, const AnimationClipResource *> *&out) {
+        out = nullptr;
+        if (!isValid(clip)) return Status::invalid_handle;
+        if (const auto status = validateResource(clip.identity, clip.generation);
+            status != Status::ok)
+            return status;
         const auto found = clips.find(clip.identity);
-        if (found == clips.end()) return nullptr;
+        if (found == clips.end()) return Status::invalid_handle;
         const auto *resource = found->second.second;
         if (!sameHandle(resource->handle, clip) ||
             resource->generation_state->current.load() != clip.generation)
-            return nullptr;
-        return &found->second;
+            return Status::stale_generation;
+        out = &found->second;
+        return Status::ok;
     }
 
     SinkRecord *findSink(AnimationSinkHandle sink) {
@@ -204,6 +229,9 @@ struct AnimationServiceRuntime::Impl {
     Status resolvePose(PoseHandle pose, PoseRecord *&out) {
         out = findPose(pose);
         if (out) return Status::ok;
+        if (const auto stale = stale_poses.find(pose.identity);
+            stale != stale_poses.end() && stale->second == pose.generation)
+            return Status::stale_generation;
         return ProbeRuntime::validatePoseHandle(pose);
     }
 
@@ -217,16 +245,133 @@ struct AnimationServiceRuntime::Impl {
         object->asset = &assets.getOrCreate(model);
         object->renderer_instance = renderer_instance;
         auto *record = object.get();
+        resource_generations[record->asset->rig.handle.identity] =
+            record->asset->rig.handle.generation;
+        resource_generations[record->asset->rig.layout.identity] =
+            record->asset->rig.layout.generation;
         rigs.emplace(record->asset->rig.handle.identity, record);
-        for (const auto &clip : record->asset->clips) clips.emplace(clip.handle.identity, std::pair{record, &clip});
-        for (const auto &binding : record->asset->skin_bindings)
+        for (const auto &clip : record->asset->clips) {
+            resource_generations[clip.handle.identity] = clip.handle.generation;
+            clips.emplace(clip.handle.identity, std::pair{record, &clip});
+        }
+        for (const auto &binding : record->asset->skin_bindings) {
+            resource_generations[binding.handle.identity] = binding.handle.generation;
             bindings.emplace(binding.handle.identity, std::pair{record, &binding});
+        }
         objects.emplace(record->name, std::move(object));
     }
 
     void registerObject(std::string name, const SkeletalModelData &model) {
         std::scoped_lock lock{mutex};
         registerObjectLocked(std::move(name), model);
+    }
+
+    void reloadAsset(const SkeletalModelData *previous,
+                     const SkeletalModelData *replacement) {
+        if (!previous) return;
+        std::scoped_lock lock{mutex};
+        std::unordered_set<ObjectRecord *> affected;
+        for (auto &[_, object] : objects) {
+            if (object->model == previous) affected.insert(object.get());
+        }
+        if (affected.empty()) return;
+
+        const auto *old_asset = (*affected.begin())->asset;
+        if (!old_asset) return;
+        const auto generation_state = old_asset->rig.generation_state;
+        const auto old_layout_identity = old_asset->rig.layout.identity;
+        std::vector<std::uint64_t> old_resources{
+            old_asset->rig.handle.identity, old_layout_identity};
+        std::unordered_set<std::uint64_t> old_clips;
+        for (const auto &clip : old_asset->clips) {
+            old_resources.push_back(clip.handle.identity);
+            old_clips.insert(clip.handle.identity);
+        }
+        for (const auto &binding : old_asset->skin_bindings)
+            old_resources.push_back(binding.handle.identity);
+
+        const AnimationAsset *next_asset = nullptr;
+        if (replacement) {
+            next_asset = &assets.reloadAsset(*previous, *replacement);
+        } else {
+            assets.invalidateAsset(*previous);
+        }
+        const auto current_generation =
+            generation_state->current.load(std::memory_order_acquire);
+        for (const auto identity : old_resources)
+            resource_generations[identity] = current_generation;
+
+        for (auto &[_, cursor] : cursors) {
+            if (!cursor.active || !old_clips.contains(cursor.clip.identity)) continue;
+            (void)legacy_runtime.destroyCursor(cursor.handle);
+            cursor.active = false;
+        }
+        for (auto iterator = poses.begin(); iterator != poses.end();) {
+            if (iterator->second.view.layout.identity != old_layout_identity) {
+                ++iterator;
+                continue;
+            }
+            stale_poses[iterator->first] = iterator->second.view.pose.generation;
+            iterator = poses.erase(iterator);
+        }
+
+        std::erase_if(rigs, [&](const auto &entry) {
+            return affected.contains(entry.second);
+        });
+        std::erase_if(clips, [&](const auto &entry) {
+            return affected.contains(entry.second.first);
+        });
+        std::erase_if(bindings, [&](const auto &entry) {
+            return affected.contains(entry.second.first);
+        });
+
+        for (auto *object : affected) {
+            object->model = replacement;
+            object->asset = next_asset;
+        }
+        if (next_asset) {
+            resource_generations[next_asset->rig.handle.identity] =
+                next_asset->rig.handle.generation;
+            resource_generations[next_asset->rig.layout.identity] =
+                next_asset->rig.layout.generation;
+            for (auto *object : affected) {
+                rigs.emplace(next_asset->rig.handle.identity, object);
+                for (const auto &clip : next_asset->clips) {
+                    resource_generations[clip.handle.identity] = clip.handle.generation;
+                    clips.emplace(clip.handle.identity, std::pair{object, &clip});
+                }
+                for (const auto &binding : next_asset->skin_bindings) {
+                    resource_generations[binding.handle.identity] =
+                        binding.handle.generation;
+                    bindings.emplace(binding.handle.identity,
+                                     std::pair{object, &binding});
+                }
+            }
+        }
+
+        std::unordered_set<std::uint64_t> affected_instances;
+        for (auto &[_, sink] : sinks) {
+            if (!affected.contains(sink.object)) continue;
+            affected_instances.insert(sink.instance.identity);
+            if (sink.object->renderer_instance) {
+                if (auto *container =
+                        FastModuleContainer::tryGet<PolygonInstanceContainer>()) {
+                    sink.instance = container->animationInstance(
+                        *sink.object->renderer_instance);
+                } else if (++sink.instance.generation == 0) {
+                    ++sink.instance.generation;
+                }
+            } else if (++sink.instance.generation == 0) {
+                ++sink.instance.generation;
+            }
+            instances[sink.instance.identity] = sink.handle.identity;
+            sink.reset_history = true;
+        }
+        std::erase_if(blocked_commits, [&](const auto &blocked) {
+            return affected_instances.contains(blocked.instance_identity);
+        });
+        if (staged_frame && affected.contains(staged_frame->object))
+            staged_frame.reset();
     }
 
     bool registerSceneObject(std::string_view name) {
@@ -248,6 +393,19 @@ struct AnimationServiceRuntime::Impl {
 
     void reset() {
         std::scoped_lock lock{mutex};
+        const auto tombstone = [&](auto handle) {
+            auto generation = handle.generation + 1;
+            if (generation == 0) ++generation;
+            resource_generations[handle.identity] = generation;
+        };
+        for (const auto &[_, object] : objects) {
+            if (!object->asset) continue;
+            tombstone(object->asset->rig.handle);
+            tombstone(object->asset->rig.layout);
+            for (const auto &clip : object->asset->clips) tombstone(clip.handle);
+            for (const auto &binding : object->asset->skin_bindings)
+                tombstone(binding.handle);
+        }
         for (auto &[_, cursor] : cursors)
             if (cursor.active) legacy_runtime.destroyCursor(cursor.handle);
         cursors.clear();
@@ -257,6 +415,8 @@ struct AnimationServiceRuntime::Impl {
         active_phase_sink.reset();
         active_phase_revision = 0;
         staged_frame.reset();
+        for (const auto &[identity, pose] : poses)
+            stale_poses[identity] = pose.view.pose.generation;
         poses.clear();
         arenas.clear();
         sinks.clear();
@@ -566,6 +726,7 @@ struct AnimationServiceRuntime::Impl {
         if (found == runtime->instances.end()) return Status::invalid_handle;
         auto *sink = runtime->findSink(runtime->sinks.at(found->second).handle);
         if (!sink || !sameHandle(sink->instance, desc->instance)) return Status::stale_generation;
+        if (!sink->object || !sink->object->asset) return Status::not_found;
         desc->rig = sink->object->asset->rig.handle;
         return Status::ok;
     }
@@ -575,8 +736,10 @@ struct AnimationServiceRuntime::Impl {
         if (const auto status = validateDescriptor(*desc); status != Status::ok) return status;
         auto *runtime = self(context);
         std::scoped_lock lock{runtime->mutex};
-        auto *object = runtime->findRig(desc->rig);
-        if (!object) return Status::invalid_handle;
+        ObjectRecord *object{};
+        if (const auto status = runtime->resolveRigResource(desc->rig, object);
+            status != Status::ok)
+            return status;
         desc->layout = object->asset->rig.layout;
         desc->joint_count = static_cast<std::uint32_t>(object->asset->rig.rest_pose.size());
         desc->palette_count = static_cast<std::uint32_t>(object->model->joint_nodes.size());
@@ -593,8 +756,10 @@ struct AnimationServiceRuntime::Impl {
             return Status::reserved_not_zero;
         auto *runtime = self(context);
         std::scoped_lock lock{runtime->mutex};
-        auto *object = runtime->findRig(desc->rig);
-        if (!object) return Status::invalid_handle;
+        ObjectRecord *object{};
+        if (const auto status = runtime->resolveRigResource(desc->rig, object);
+            status != Status::ok)
+            return status;
         const auto name = checkedString(desc->clip_name, desc->clip_name_size);
         for (const auto &clip : object->asset->clips) {
             if (clip.source && clip.source->name == name) {
@@ -643,6 +808,10 @@ struct AnimationServiceRuntime::Impl {
         if (desc->reserved2 != 0) return Status::reserved_not_zero;
         auto *runtime = self(context);
         std::scoped_lock lock{runtime->mutex};
+        if (const auto status = runtime->validateResource(
+                desc->layout.identity, desc->layout.generation);
+            status != Status::ok)
+            return status;
         const auto found = runtime->arenas.find(desc->arena.identity);
         if (found == runtime->arenas.end() || !isValid(desc->arena)) return Status::invalid_handle;
         auto &arena = found->second;
@@ -662,8 +831,10 @@ struct AnimationServiceRuntime::Impl {
         if (const auto status = validateDescriptor(*metadata); status != Status::ok) return status;
         auto *runtime = self(context);
         std::scoped_lock lock{runtime->mutex};
-        auto *found = runtime->findClip(metadata->clip);
-        if (!found) return Status::invalid_handle;
+        std::pair<ObjectRecord *, const AnimationClipResource *> *found{};
+        if (const auto status = runtime->resolveClipResource(metadata->clip, found);
+            status != Status::ok)
+            return status;
         const auto *clip = found->second;
         const auto caller_size = metadata->struct_size;
         ClipMetadataV1 produced{};
@@ -690,8 +861,10 @@ struct AnimationServiceRuntime::Impl {
         auto *runtime = self(context);
         std::scoped_lock lock{runtime->mutex};
         if (const auto status = runtime->validateOwner(desc->owner); status != Status::ok) return status;
-        auto *found = runtime->findClip(desc->clip);
-        if (!found) return Status::invalid_handle;
+        std::pair<ObjectRecord *, const AnimationClipResource *> *found{};
+        if (const auto status = runtime->resolveClipResource(desc->clip, found);
+            status != Status::ok)
+            return status;
         const double duration = found->second->source->end - found->second->source->start;
         const auto cursor = runtime->legacy_runtime.createCursor(duration, WrapMode::repeat);
         if (!isValid(cursor)) return Status::invalid_argument;
@@ -722,8 +895,10 @@ struct AnimationServiceRuntime::Impl {
         if (!std::isfinite(desc->time_seconds)) return Status::invalid_argument;
         auto *runtime = self(context);
         std::scoped_lock lock{runtime->mutex};
-        auto *clip = runtime->findClip(desc->clip);
-        if (!clip) return Status::invalid_handle;
+        std::pair<ObjectRecord *, const AnimationClipResource *> *clip{};
+        if (const auto status = runtime->resolveClipResource(desc->clip, clip);
+            status != Status::ok)
+            return status;
         PoseRecord *pose{};
         if (const auto status = runtime->resolvePose(desc->output_pose, pose); status != Status::ok)
             return status;
@@ -737,8 +912,10 @@ struct AnimationServiceRuntime::Impl {
             return Status::invalid_argument;
         auto *runtime = self(context);
         std::scoped_lock lock{runtime->mutex};
-        auto *object = runtime->findRig(desc->rig);
-        if (!object) return Status::invalid_handle;
+        ObjectRecord *object{};
+        if (const auto status = runtime->resolveRigResource(desc->rig, object);
+            status != Status::ok)
+            return status;
         PoseRecord *output{};
         if (const auto status = runtime->resolvePose(desc->output_pose, output); status != Status::ok)
             return status;
@@ -764,8 +941,10 @@ struct AnimationServiceRuntime::Impl {
         if (const auto status = validateDescriptor(*desc); status != Status::ok) return status;
         auto *runtime = self(context);
         std::scoped_lock lock{runtime->mutex};
-        auto *object = runtime->findRig(desc->rig);
-        if (!object) return Status::invalid_handle;
+        ObjectRecord *object{};
+        if (const auto status = runtime->resolveRigResource(desc->rig, object);
+            status != Status::ok)
+            return status;
         PoseRecord *local{};
         if (const auto status = runtime->resolvePose(desc->local_pose, local); status != Status::ok)
             return status;
@@ -790,9 +969,14 @@ struct AnimationServiceRuntime::Impl {
         auto *runtime = self(context);
         std::scoped_lock lock{runtime->mutex};
         if (!isValid(desc->skin_binding)) return Status::invalid_handle;
+        if (const auto status = runtime->validateResource(
+                desc->skin_binding.identity, desc->skin_binding.generation);
+            status != Status::ok)
+            return status;
         const auto found = runtime->bindings.find(desc->skin_binding.identity);
-        if (found == runtime->bindings.end() || !sameHandle(found->second.second->handle, desc->skin_binding))
-            return Status::invalid_handle;
+        if (found == runtime->bindings.end()) return Status::invalid_handle;
+        if (!sameHandle(found->second.second->handle, desc->skin_binding))
+            return Status::stale_generation;
         const auto required = static_cast<std::uint32_t>(found->second.first->model->joint_nodes.size());
         desc->palette_count = required;
         if (desc->model_matrix_count < found->second.first->asset->rig.rest_pose.size() || !desc->model_matrices)
@@ -1031,6 +1215,12 @@ void AnimationServiceRuntime::registerObject(
     ModelInstanceId renderer_instance) {
     std::scoped_lock lock{impl_->mutex};
     impl_->registerObjectLocked(std::move(name), model, renderer_instance);
+}
+
+void AnimationServiceRuntime::reloadAsset(
+    const SkeletalModelData *previous,
+    const SkeletalModelData *replacement) {
+    impl_->reloadAsset(previous, replacement);
 }
 
 void AnimationServiceRuntime::reset() { impl_->reset(); }

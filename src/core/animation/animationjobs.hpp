@@ -56,9 +56,19 @@ struct AnimationAsset {
 class AnimationAssetRegistry {
   public:
     const AnimationAsset &getOrCreate(const SkeletalModelData &model);
+    // Replaces one logical model asset. Handles from the replaced asset become
+    // stale while handles issued for every other asset remain valid.
+    const AnimationAsset &reloadAsset(const SkeletalModelData &previous,
+                                      const SkeletalModelData &replacement);
+    void invalidateAsset(const SkeletalModelData &model);
     void clear();
 
   private:
+    AnimationAsset buildAsset(
+        const SkeletalModelData &model,
+        std::shared_ptr<AnimationResourceGeneration> generation_state,
+        std::uint32_t generation, const AnimationAsset *previous);
+
     std::uint64_t next_identity_{1};
     std::unordered_map<const SkeletalModelData *, AnimationAsset> assets_;
     std::mutex mutex_;
