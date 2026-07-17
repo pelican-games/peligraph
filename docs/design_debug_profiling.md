@@ -1,7 +1,42 @@
-# デバッグ・プロファイリング・最適化トラック(v1)
+# デバッグ・プロファイリング・最適化トラック(v1.1 — 条件付き受理)
 
 対象読者: エンジン担当・パフォーマンスを見る人・絵の不具合を追う人。
-ステータス: v1 ドラフト(2026-07-17。敵対レビュー前)。
+ステータス: **v1.1(2026-07-17)— 敵対レビュー
+`docs/design_reviews/2026-07-17_debug_profiling_review_codex.md` で
+条件付き Accept(v1 文面のままの着手は Reject)。同レビューの
+C1〜C9 が本書の各節に優先する規範であり、各 WP 登録時に該当条件を
+逐語添付すること。**
+
+v1.1 の要点(C1〜C9 の骨子 — 原文が正):
+
+- **実装順は C9 の再分割が正**: `D-P0a(debug-utils 基盤 + command
+  label — pass/RT の既存正本のみ)→ D-P1a(flat/headless capture)→
+  D-P2a(stereo-safe GPU timing)` を第一波。resource 全面命名
+  (D-P0b)・memory/XR timing(D-P2b)・XR capture・CI 分割・
+  crash/device-fault は後続 WP(§9 の旧 順序表は破棄)
+- D-P0 の「名前の正本は既に全部ある」は**誤り**(C1) — pass/RT のみ。
+  buffer/pipeline 等は命名を運ぶ API から(D-P0b の inventory)
+- D-P1 = **注入済み RenderDoc module の受動取得のみ(LoadLibrary
+  禁止)**。RPC capture は render_frame と同型の一回 capture・
+  実際に増えた capture index から .rdc path 取得・F11/RPC/重複要求/
+  失敗 code/flat・headless・XR の境界を状態機械で固定(C2)
+- D-P2 のキー = `graph variant + logical frame + view index + node
+  ordinal/kind/name + subrange`(**左右眼を混ぜない**)。query pool は
+  in-flight ring(C3)。VRAM = driver budget と engine 論理 allocation の
+  分離・`shouldRender=false` は dropped と数えない・XrTime↔QPC は
+  KHR 拡張がある場合のみ(C4)
+- **計測値は diagnostics として決定性比較から正規化除外**。simulation
+  state と final RGBA8 は厳密一致維持。.rdc の byte 一致を gate に
+  しない(C5)
+- Tracy = `PELICAN_ENABLE_TRACY`(build-tier 規約の明示例外)。OFF 時
+  symbol 不在・dist 強制 OFF・ON-disconnected cost・Tracy Vulkan の
+  query pool 追加を gate に(C6)
+- D-P5 は CI0/CI2/toolchain/dist-bake の境界で分割(GPU validation は
+  CI2 依存・dist-bake validation は B4 依存)(C7)
+- D-P6 は user-mode crash と device loss に分割。**crash handler 内で
+  quill/JSON graph を走らせない**(別 process dump helper +
+  pre-serialized breadcrumb)。PDB/build-id・privacy/retention・
+  RenderDoc crash handler との所有関係を契約に(C8)
 前提: gpu_timing feature(WP29)・startup 計測(WP82)・ImGui/Plan
 viewer(WP85/86)・golden/replay 決定性・PELICAN_ENABLE_ASAN(WP62)・
 ecs_benchmark・「feature 層 = ユーザー空間」方針・ビルドユニット規律

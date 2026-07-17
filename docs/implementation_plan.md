@@ -3567,6 +3567,26 @@ firstPerson)・WP130/132(Touch/pose)— 全て済。見積: 大。
 5. 受け入れ = 上記 + 既存全テスト + golden SKIP 0(件数不変)+
    player 8 秒(flat・ImGui 従来どおり)+ OFF smoke
 
+### WP139: D-P0a — debug-utils 基盤 + command label
+
+参照: **`design_debug_profiling.md` v1.1 §1 + レビュー C1(前半)が
+正**(逐語: 「D-P0 を debug-utils 基盤/command label と resource
+coverage の二つに分割する。D-P1 が依存するのは前者だけとする」)。
+依存: なし。見積: 小〜中。
+排他: vkcore の debug-utils 配線 + renderer/executor の label 挿入。
+
+1. `VK_EXT_debug_utils` の有効化(instance/device — 存在しない環境では
+   全 API が no-op・dist では既定 OFF の起動フラグ `--gpu-labels`)
+2. **command label**: 既存正本(pass 名・anchor・compute task 名・
+   graph variant suffix)から `vkCmdBeginDebugUtilsLabelEXT` を
+   pass/compute/mirror 境界に機械挿入。XR は view index を label に含む
+3. object 命名は**既存正本があるものだけ**(RT image/view・swapchain・
+   frame UBO 等)。buffer/pipeline の全面命名は D-P0b(inventory 込み)
+4. gate: label on/off で golden byte 不変・validation error 0・
+   RenderDoc(手動)で pass 木が読めるスクリーンショット 1 枚 +
+   既存全テスト + player 8 秒
+5. 受け入れ = 上記 + OFF smoke(ユニット非依存 — 拡張なし環境 no-op)
+
 ### WP137: 負債 CI0 — CPU gate の常設(GitHub Actions)
 
 参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
