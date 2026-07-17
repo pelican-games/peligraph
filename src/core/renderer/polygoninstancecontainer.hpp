@@ -10,6 +10,7 @@
 #include <glm/glm.hpp>
 #include <array>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <span>
 #include <unordered_map>
@@ -198,6 +199,27 @@ struct ModelInstanceRebuild {
     const ModelTemplate *replacement = nullptr;
 };
 
+// A fully allocated CPU candidate for one model instance. Staging performs all
+// capacity checks and allocations without changing the live instance/command
+// inventories. publishModelInstance() is the single no-fail publication point.
+class StagedModelInstance {
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+
+    explicit StagedModelInstance(std::unique_ptr<Impl> impl) noexcept;
+    friend class PolygonInstanceContainer;
+
+  public:
+    StagedModelInstance() noexcept;
+    ~StagedModelInstance();
+    StagedModelInstance(StagedModelInstance &&) noexcept;
+    StagedModelInstance &operator=(StagedModelInstance &&) noexcept;
+    StagedModelInstance(const StagedModelInstance &) = delete;
+    StagedModelInstance &operator=(const StagedModelInstance &) = delete;
+
+    ModelInstanceId id() const noexcept;
+};
+
 DECLARE_MODULE(PolygonInstanceContainer) {
     std::vector<RenderCommand> render_commands;
     BufferWrapper indirect_buf;
@@ -250,6 +272,9 @@ DECLARE_MODULE(PolygonInstanceContainer) {
 
   public:
     PolygonInstanceContainer();
+    void preflightModelInstance(const ModelTemplate &model) const;
+    StagedModelInstance stageModelInstance(const ModelTemplate &model);
+    void publishModelInstance(StagedModelInstance staged) noexcept;
     ModelInstanceId placeModelInstance(const ModelTemplate &model);
     void removeModelInstance(ModelInstanceId id);
     void clear();
