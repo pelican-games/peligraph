@@ -3726,6 +3726,51 @@ get_status/ImGui 追記。**WP144 と並走 — gltf/model/rpc load 経路に
    動く実測 + 計測 on/off golden byte 不変 + 既存全テスト + player
    8 秒 + OFF smoke
 
+### WP146: 負債 INSTANCE0 — ModelInstanceId の SlotMap 化
+
+参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
+の WP-INSTANCE0 定義が正**(逐語: 「free-list + generation + alive +
+scene epoch、1 万回 churn、stale/double-remove/clear/capacity gate。
+scene/playback/transient ownership も明文化」)。
+依存: WP110/144(済 — rebuild/transaction は既存面を維持)。
+見積: 中〜大。排他: polygoninstancecontainer の instance id 管理 +
+全 caller(scene loader/playback/rpc/transient)の handle 検証。
+
+1. `ModelInstanceId` を **generation 付き SlotMap** に(free-list 再利用 +
+   alive check + scene epoch)。stale handle は全 API で名前入り
+   エラー/false(黙って identity 行列にしない)
+2. remove の slot 回収(現行の「identity 化して放置」を廃止 —
+   1024 枯渇の恒久解消)。WP110 の in-place rebuild は同 slot 維持で
+   不変
+3. **ownership 明文化**: scene loader / SeqPlayer / rpc 一時ロードの
+   どれが remove 責務を持つかを表にして fixture 化
+4. gate: **1 万回 place/remove churn で枯渇なし** + stale/
+   double-remove/clear 後 use/capacity 超過の各 fixture + 既存全テスト +
+   golden SKIP 0 + player 8 秒 + CI green
+
+### WP147: 負債 ANIM0 — animation registry の reload generation
+
+参照: **同議論の WP-ANIM0 定義が正**(逐語: 「legacy registry
+invalidation、Evaluator rebind、asset 単位 generation、複数回 reload
+継続 gate」)。WP99 が入れた全体 reset(保守的境界)を **asset 単位の
+invalidation** に精密化し、WP110 の「skeletal 置換 = ABI registry 全体
+reset」制限を解消する。
+依存: WP97/99/102/110(済)。見積: 中〜大。
+排他: animation 側 registry/service の generation 管理 + 評価器の
+rebind 経路。**WP146 と並走 — polygoninstancecontainer の id 管理に
+触らない**(publish の instance generation 検査は既存面を使う)。
+
+1. `AnimationAssetRegistry` を asset(model)単位 generation に
+   (全体 clear の廃止)。他 asset の Rig/Clip/Cursor は reload 後も
+   有効のまま
+2. **Evaluator rebind**: anim_graph 評価器(WP101)が stale 検出後に
+   同じ graph/parameter 状態で新 generation へ再 bind できる公開経路
+   (状態を失わない — deterministic trace で前後一致 fixture)
+3. model hot reload(HR2-G)・rpc load_gltf(WP144)と接続し、
+   **複数回 reload しても他モデルのアニメが継続**する gate
+4. 受け入れ = 上記 fixture + WP99 敵対 fixture 全維持 + 既存全テスト +
+   golden SKIP 0 + player 8 秒 + CI green
+
 ### WP137: 負債 CI0 — CPU gate の常設(GitHub Actions)
 
 参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
