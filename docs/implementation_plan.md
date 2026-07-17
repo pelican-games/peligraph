@@ -3373,6 +3373,56 @@ protocol fake と実機で検査する。」
 6. 受け入れ = fixture 全 green + 既存全テスト + golden SKIP 0
    (48/47)+ player 8 秒 + OFF smoke 維持
 
+### WP131: XR2a.2 — view snapshot / reference space
+
+参照: **`design_openxr.md` v2.1 §6 が正**。受け入れ条件 = 初回レビュー
+§12 の **XR2A2-VIEW-SPACE 逐語**: 「`world_from_stage * stage_from_eye`
+と inverse view の行列式、RH/+Y/-Z/m/xyzw、asymmetric RH_ZO projection と
+viewport Y、per-view camera_position を規範化する。STAGE/LOCAL_FLOOR/
+LOCAL の選択と LOCAL floor offset を status に出す。identity、既知 IPD、
+90 度 yaw、非対称 FOV、LOCAL fallback の CPU fixture と Quest 実機の
+左右/IPD/head tracking gate を持つ。」(実機 gate は XR2a.3 の統合
+確認へ委譲可 — CPU fixture は本 WP)
+依存: WP127(locateViews)・WP128(view 別 snapshot)・WP129(target)
+— 済。見積: 中〜大。
+排他: XR adapter の行列合成 + reference space 選択(WP127 の仮 LOCAL を
+STAGE→LOCAL_FLOOR→LOCAL 優先順に昇格)+ get_status。
+
+1. 設計 §6 の行列式どおりの合成(active camera = world_from_stage・
+   camera API 不変)。XrFovf → 非対称 RH_ZO・viewport Y 符号
+2. reference space 優先順 + LOCAL fallback の floor 非保証明示
+   (get_status に space/floor semantics)
+3. CPU fixture: identity・既知 IPD・90° yaw・非対称 FOV・LOCAL
+   fallback(数値で固定)
+4. 受け入れ = fixture 全 green + 既存全テスト + golden SKIP 0
+   (48/47)+ player 8 秒 + OFF smoke 維持
+
+### WP132: XR3b — pose provider
+
+参照: **`design_openxr.md` v2.1 §10 が正**。受け入れ条件 = 初回レビュー
+§12 の **XR3B-POSE 逐語**: 「L1 を ordered event + typed pose sample に
+拡張し、aim/grip action space と synthetic head/view source を区別する。
+position/orientation の valid/tracked flag、reference space、左右
+identity、freeze 時点を固定する。pose record/replay v1 非対応は名前入り
+error とする。」
+依存: WP130(action set・aim_left/right 命名)・WP127(session)— 済。
+見積: 大。排他: inputstate の L1 拡張(typed pose sample)・
+actionmap の pose evaluator(現行の明示 skip を実装に置換)・
+ActionPose の flag 拡張・xrSyncActions/locate の freeze 前実行。
+
+1. L1 = ordered event + typed pose sample の frame provider へ改訂
+   (kbd/mouse/pad の既存直列化 byte 不変)
+2. aim/grip = action space(WP130 の命名)・head = synthetic source
+   (xrLocateViews 由来と明記)
+3. `ActionPose` に orientation/position の valid/tracked 4 flag +
+   source/reference-space identity(公開 struct は additive)
+4. pose の record/replay = v1 非対応(query/record 開始時の名前入り
+   error fixture)
+5. `Actions::pose()` の未実装 error を実装に置換(既存 fixture 更新)
+6. 受け入れ = fixture 全 green(protocol fake の pose 供給・
+   tracking loss の flag 別挙動)+ 既存全テスト + golden SKIP 0
+   (48/47)+ player 8 秒 + OFF smoke 維持
+
 ## 3. 保留中のトラック(WP 化待ち)
 
 - **【方針決定 2026-07-12】feature 層 = ユーザー空間**(ジッタ相談からの
