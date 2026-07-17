@@ -66,6 +66,7 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <picosha2.h>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -107,6 +108,8 @@ struct RenderedCase {
     std::vector<std::string> gpu_timing_node_names;
     uint32_t gpu_timing_query_count = 0;
     bool gpu_timing_queries_collected = false;
+    nlohmann::json gpu_timing_status;
+    std::uint64_t gpu_timing_pool_create_count = 0;
     bool ui_module_created = false;
     bool ui_gpu_created = false;
     std::size_t ui_parser_invocations = 0;
@@ -186,8 +189,11 @@ std::vector<GoldenCase> loadGoldenInventoryCases() {
 }
 
 std::filesystem::path makeTempProjectDir(const std::string &case_name) {
-    auto dir = std::filesystem::temp_directory_path() / ("pelican_golden_" + case_name);
-    std::filesystem::remove_all(dir);
+    static std::uint64_t serial = 0;
+    const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+    auto dir = std::filesystem::temp_directory_path() /
+               ("pelican_golden_" + case_name + "_" + std::to_string(nonce) + "_" +
+                std::to_string(++serial));
     std::filesystem::create_directories(dir);
     return dir;
 }
@@ -999,7 +1005,8 @@ void main() {
 })json");
 }
 
-void writeExplicitOrderProject(const std::filesystem::path &root) {
+void writeExplicitOrderProject(const std::filesystem::path &root,
+                               bool gpu_timing = true) {
     writeTextFile(root / "project.json", makeFeatureProjectJson().dump(2));
     writeTextFile(root / "scene.json", R"json({
   "schema": "pelican.scene",
@@ -1035,6 +1042,13 @@ void writeExplicitOrderProject(const std::filesystem::path &root) {
     }
   ]
 })json");
+    if (!gpu_timing) {
+        std::ifstream stream{root / "passes" / "main.json"};
+        auto config = nlohmann::json::parse(stream);
+        stream.close();
+        config.erase("features");
+        writeTextFile(root / "passes" / "main.json", config.dump(2));
+    }
 }
 
 void writeVatProject(const std::filesystem::path &root) {
@@ -2106,7 +2120,8 @@ bool isSpriteGoldenMode(std::string_view mode) {
 }
 
 nlohmann::json writeSpriteProject(const std::filesystem::path &root,
-                                  const GoldenCase &golden_case) {
+                                  const GoldenCase &golden_case,
+                                  bool gpu_timing = false) {
     const auto mode = std::string_view{golden_case.mode};
     auto project = makeFeatureProjectJson();
     project["name"] = std::string{mode};
@@ -2267,11 +2282,13 @@ void main(){outColor=vec4(1.0);})glsl");
     auto rendering = makeShadowRenderingConfig(false);
     rendering["features"] = nlohmann::json::array({"engine://features/sprite.json"});
     if (with_ui) rendering["features"].push_back("engine://features/ui.json");
+    if (gpu_timing) rendering["features"].push_back("engine://features/gpu_timing.json");
     writeTextFile(root / "passes/main.json", rendering.dump(2));
     return project;
 }
 
-void writeComputeProject(const std::filesystem::path &root) {
+void writeComputeProject(const std::filesystem::path &root,
+                         bool gpu_timing = false) {
     writeTextFile(root / "project.json", makeComputeProjectJson().dump(2));
     writeTextFile(root / "scene.json", R"json({
   "schema": "pelican.scene",
@@ -2319,6 +2336,14 @@ void writeComputeProject(const std::filesystem::path &root) {
     }
   ]
 })json");
+    if (gpu_timing) {
+        std::ifstream stream{root / "passes" / "main.json"};
+        auto config = nlohmann::json::parse(stream);
+        stream.close();
+        config["features"] = nlohmann::json::array(
+            {"engine://features/gpu_timing.json"});
+        writeTextFile(root / "passes" / "main.json", config.dump(2));
+    }
 }
 
 void writeOrthographicCameraProject(const std::filesystem::path &root) {
@@ -2969,7 +2994,8 @@ bool usesRenderer(const GoldenCase &golden_case) {
            golden_case.mode != "openpbr_coat_sphere";
 }
 
-RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false) {
+RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
+                        bool gpu_timing = true) {
     FastModuleContainer modules;
     const auto temp_dir = makeTempProjectDir(golden_case.name);
     if (golden_case.mode == "stem_fullscreen") {
@@ -2983,7 +3009,7 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false) 
         project["name"] = "snapshot refraction golden";
         GET_MODULE(ProjectSource).setProjectData(project.dump());
     } else if (golden_case.mode == "explicit_order") {
-        writeExplicitOrderProject(temp_dir);
+        writeExplicitOrderProject(temp_dir, gpu_timing);
         GET_MODULE(PathResolver).setup(temp_dir, false);
         GET_MODULE(ProjectSource).setProjectData(makeFeatureProjectJson().dump());
     } else if (golden_case.mode == "vat_playback") {
@@ -3200,7 +3226,7 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false) 
         throw std::runtime_error("unknown golden case mode: " + golden_case.mode);
     }
 
-    if (golden_case.mode == "explicit_order") {
+    if (golden_case.mode == "explicit_order" && gpu_timing) {
         GET_MODULE(RenderTiming).flush();
     }
     const auto pixels = render_target.readbackLastFrameRGBA8();
@@ -3220,6 +3246,11 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false) 
                                           : std::vector<std::string>{},
         RenderTiming::__get().has_value() ? RenderTiming::__get()->lastFrameQueryCountForTesting() : 0,
         RenderTiming::__get().has_value() && RenderTiming::__get()->allGpuQueriesCollectedForTesting(),
+        RenderTiming::__get().has_value() ? RenderTiming::__get()->statusJson()
+                                          : disabledGpuTimingStatusJson(),
+        RenderTiming::__get().has_value()
+            ? RenderTiming::__get()->queryPoolCreateCountForTesting()
+            : 0,
         FastModuleContainer::isInitialized<ui::UiModule>(),
         FastModuleContainer::isInitialized<UIContainer>() && FastModuleContainer::isInitialized<UiRenderer>(),
         FastModuleContainer::isInitialized<ui::UiModule>() ? GET_MODULE(ui::UiModule).parserInvocationsForTesting() : 0,
@@ -3817,6 +3848,7 @@ TEST_CASE("OpenXR graph transition excludes TAA and restores flat temporal rende
                                   std::ios::binary};
         auto config = nlohmann::json::parse(config_file);
         config["features"].push_back("engine://features/ui.json");
+        config["features"].push_back("engine://features/gpu_timing.json");
         writeTextFile(root / "passes" / "main.json", config.dump(2));
     }
     GET_MODULE(PathResolver).setup(root, false);
@@ -3859,6 +3891,7 @@ TEST_CASE("OpenXR graph transition excludes TAA and restores flat temporal rende
         vk::Extent2D{goldenWidth / 2, goldenHeight / 2},
         GET_MODULE(RenderTarget).getSwapchainFormat()};
     time.advance();
+    const auto xr_logical_frame = time.frameIndex();
     renderer.renderLogicalFrame(
         stereo_target, 2,
         [](std::uint32_t view_index, const FrameRenderContext &) {
@@ -3883,6 +3916,46 @@ TEST_CASE("OpenXR graph transition excludes TAA and restores flat temporal rende
     REQUIRE(enter_trace.at(0).at("to") == "xr");
     REQUIRE(enter_trace.at(0).at("temporal_reset_requests") == 1);
     REQUIRE_FALSE(enter_trace.at(0).at("projection_jitter").get<bool>());
+
+    GET_MODULE(VulkanManageCore).waitIdle();
+    auto &render_timing = GET_MODULE(RenderTiming);
+    render_timing.flush();
+    const auto timing_status = render_timing.statusJson();
+    REQUIRE(timing_status.at("enabled").get<bool>());
+    REQUIRE(timing_status.at("supported").get<bool>());
+    REQUIRE(timing_status.at("history_count") == 1);
+    REQUIRE(timing_status.at("dropped_samples") == 0);
+    REQUIRE(timing_status.at("views").size() == 3);
+    REQUIRE(timing_status.at("views").at(0).at("view_index") == 0);
+    REQUIRE(timing_status.at("views").at(0).at("label") == "left");
+    REQUIRE(timing_status.at("views").at(1).at("view_index") == 1);
+    REQUIRE(timing_status.at("views").at(1).at("label") == "right");
+    REQUIRE(timing_status.at("views").at(2).at("view_index") == 2);
+    REQUIRE(timing_status.at("views").at(2).at("label") == "mirror");
+    REQUIRE(timing_status.at("query_pool").at("create_count") == 1);
+    REQUIRE(timing_status.at("query_pool").at("pending_ranges") == 0);
+
+    std::array<std::size_t, 3> timing_samples_per_view{};
+    std::size_t unsupported_anchor_bodies = 0;
+    std::set<std::string> timing_identities;
+    for (const auto &sample : timing_status.at("nodes")) {
+        REQUIRE(sample.at("logical_frame") == xr_logical_frame);
+        REQUIRE(sample.at("graph_variant") == "xr");
+        const auto view_index = sample.at("view_index").get<std::uint32_t>();
+        REQUIRE(view_index < timing_samples_per_view.size());
+        ++timing_samples_per_view.at(view_index);
+        REQUIRE(timing_identities.insert(sample.at("identity").get<std::string>()).second);
+        if (sample.at("node_kind") == "anchor" && sample.at("subrange") == "body" &&
+            !sample.at("supported").get<bool>()) {
+            REQUIRE(sample.at("reason") == "no_gpu_work");
+            REQUIRE(sample.at("ms") == 0.0);
+            ++unsupported_anchor_bodies;
+        }
+    }
+    REQUIRE(timing_samples_per_view.at(0) == xr_plan.size() * 2);
+    REQUIRE(timing_samples_per_view.at(1) == xr_plan.size() * 2);
+    REQUIRE(timing_samples_per_view.at(2) == 2);
+    REQUIRE(unsupported_anchor_bodies > 0);
 
     time.advance();
     renderer.render();
@@ -4124,6 +4197,199 @@ TEST_CASE("golden final RGBA8 bytes match the WP74 C1b baseline hashes",
     }
 }
 
+TEST_CASE("GPU timing on and off preserve bytes and publish ordered node identity",
+          "[wp143][golden][gpu-timing][byte-exact]") {
+    setupLogger();
+    requireGoldenVulkanDevice();
+    const auto cases = loadGoldenInventoryCases();
+    const auto found = std::find_if(cases.begin(), cases.end(), [](const auto &golden_case) {
+        return golden_case.mode == "explicit_order";
+    });
+    REQUIRE(found != cases.end());
+
+    const auto timing_off_first = renderCase(*found, false, false);
+    const auto timing_off_second = renderCase(*found, false, false);
+    const auto timing_on_first = renderCase(*found, false, true);
+    const auto timing_on_second = renderCase(*found, false, true);
+
+    REQUIRE(timing_off_first.image.pixels == timing_off_second.image.pixels);
+    REQUIRE(timing_on_first.image.pixels == timing_on_second.image.pixels);
+    REQUIRE(timing_off_first.image.pixels == timing_on_first.image.pixels);
+    REQUIRE(timing_off_first.execution_trace == timing_on_first.execution_trace);
+    REQUIRE_FALSE(timing_off_first.gpu_timing_status.at("enabled").get<bool>());
+    REQUIRE(timing_off_first.gpu_timing_pool_create_count == 0);
+
+    const auto &status = timing_on_first.gpu_timing_status;
+    REQUIRE(status.at("schema_version") == 2);
+    REQUIRE(status.at("enabled").get<bool>());
+    REQUIRE(status.at("supported").get<bool>());
+    REQUIRE(status.at("reason") == "enabled");
+    REQUIRE(status.at("history_capacity") == 120);
+    REQUIRE(status.at("history_count") == 1);
+    REQUIRE(status.at("dropped_samples") == 0);
+    REQUIRE(status.at("views").size() == 1);
+    REQUIRE(status.at("views").at(0).at("view_index") == 0);
+    REQUIRE(status.at("views").at(0).at("label") == "flat");
+    REQUIRE(status.at("nodes").size() == timing_on_first.plan_order.size() * 2);
+    REQUIRE(status.at("query_pool").at("create_count") == 1);
+    REQUIRE(status.at("query_pool").at("pending_ranges") == 0);
+    REQUIRE(timing_on_first.gpu_timing_pool_create_count == 1);
+    REQUIRE(timing_on_second.gpu_timing_pool_create_count == 1);
+
+    for (std::size_t ordinal = 0; ordinal < timing_on_first.plan_order.size(); ++ordinal) {
+        const auto &barriers = status.at("nodes").at(ordinal * 2);
+        const auto &body = status.at("nodes").at(ordinal * 2 + 1);
+        REQUIRE(barriers.at("logical_frame") == 0);
+        REQUIRE(barriers.at("graph_variant") == "flat");
+        REQUIRE(barriers.at("view_index") == 0);
+        REQUIRE(barriers.at("node_ordinal") == ordinal);
+        REQUIRE(barriers.at("node_name") == timing_on_first.plan_order.at(ordinal));
+        REQUIRE(barriers.at("subrange") == "barriers");
+        REQUIRE(body.at("subrange") == "body");
+        REQUIRE(barriers.at("identity").get<std::string>().ends_with("/barriers"));
+        REQUIRE(body.at("identity").get<std::string>().ends_with("/body"));
+    }
+}
+
+TEST_CASE("GPU timing reuses one in-flight query ring and caps history at 120 frames",
+          "[wp143][gpu-timing][ring][headless]") {
+    setupLogger();
+    requireGoldenVulkanDevice();
+    FastModuleContainer modules;
+    const auto root = makeTempProjectDir("wp143_gpu_timing_ring");
+    writeExplicitOrderProject(root, true);
+    GET_MODULE(PathResolver).setup(root, false);
+    GET_MODULE(ProjectSource).setProjectData(makeFeatureProjectJson().dump());
+
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.shader_hot_reload = false;
+    launch.headless_extent = vk::Extent2D{goldenWidth, goldenHeight};
+    auto &time = GET_MODULE(EngineTime);
+    time.setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
+    auto &renderer = GET_MODULE(Renderer);
+    auto &target = GET_MODULE(RenderTarget);
+
+    std::vector<std::uint8_t> first_pixels;
+    for (std::uint64_t frame = 1; frame <= 122; ++frame) {
+        time.advance();
+        renderer.render();
+        if (frame == 1) first_pixels = target.readbackLastFrameRGBA8();
+    }
+    const auto final_pixels = target.readbackLastFrameRGBA8();
+    REQUIRE(final_pixels == first_pixels);
+
+    auto &timing = GET_MODULE(RenderTiming);
+    timing.flush();
+    const auto status = timing.statusJson();
+    const auto plan = renderer.currentFramePlanOrderForTesting();
+    REQUIRE(timing.queryPoolCreateCountForTesting() == 1);
+    REQUIRE(timing.allGpuQueriesCollectedForTesting());
+    REQUIRE(status.at("history_capacity") == 120);
+    REQUIRE(status.at("history_count") == 120);
+    REQUIRE(status.at("dropped_samples") == 0);
+    REQUIRE(status.at("nodes").size() == 120 * plan.size() * 2);
+    REQUIRE(status.at("nodes").front().at("logical_frame") == 3);
+    REQUIRE(status.at("nodes").back().at("logical_frame") == 122);
+    REQUIRE(status.at("views").size() == 1);
+    REQUIRE(status.at("views").at(0).at("logical_frame") == 122);
+    REQUIRE(status.at("query_pool").at("frame_slots") == in_flight_frames_num);
+    REQUIRE(status.at("query_pool").at("range_slots") == 1);
+    REQUIRE(status.at("query_pool").at("pending_ranges") == 0);
+
+    GET_MODULE(VulkanManageCore).waitIdle();
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE("GPU timing records compute body separately from incoming barriers",
+          "[wp143][gpu-timing][compute][headless]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    requireGoldenVulkanDevice();
+    FastModuleContainer modules;
+    const auto root = makeTempProjectDir("wp143_gpu_timing_compute");
+    writeComputeProject(root, true);
+    GET_MODULE(PathResolver).setup(root, false);
+    GET_MODULE(ProjectSource).setProjectData(makeComputeProjectJson().dump());
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.shader_hot_reload = false;
+    launch.headless_extent = vk::Extent2D{goldenWidth, goldenHeight};
+
+    auto &target = GET_MODULE(RenderTarget);
+    renderFeatureFrame(target);
+    auto &timing = GET_MODULE(RenderTiming);
+    timing.flush();
+    const auto status = timing.statusJson();
+    bool compute_barriers = false;
+    bool compute_body = false;
+    for (const auto &sample : status.at("nodes")) {
+        if (sample.at("node_kind") != "compute" ||
+            sample.at("node_name") != "write_color") continue;
+        if (sample.at("subrange") == "barriers") compute_barriers = true;
+        if (sample.at("subrange") == "body") {
+            compute_body = true;
+            REQUIRE(sample.at("supported").get<bool>());
+            REQUIRE(sample.at("reason").is_null());
+        }
+    }
+    REQUIRE(compute_barriers);
+    REQUIRE(compute_body);
+    REQUIRE(timing.queryPoolCreateCountForTesting() == 1);
+    REQUIRE(timing.allGpuQueriesCollectedForTesting());
+    std::filesystem::remove_all(root);
+#else
+    SKIP("GPU timing compute fixture requires the runtime shader compiler");
+#endif
+}
+
+TEST_CASE("GPU timing marks sprite anchor body as supported work",
+          "[wp143][gpu-timing][anchor][sprite][headless]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    requireGoldenVulkanDevice();
+    const auto cases = loadGoldenInventoryCases();
+    const auto found = std::find_if(cases.begin(), cases.end(), [](const auto &golden_case) {
+        return golden_case.mode == "sprite_billboard";
+    });
+    REQUIRE(found != cases.end());
+
+    FastModuleContainer modules;
+    const auto root = makeTempProjectDir("wp143_gpu_timing_sprite");
+    const auto project = writeSpriteProject(root, *found, true);
+    GET_MODULE(PathResolver).setup(root, false);
+    GET_MODULE(ProjectSource).setProjectData(project.dump());
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.shader_hot_reload = false;
+    launch.headless_extent = vk::Extent2D{found->width, found->height};
+
+    auto &target = GET_MODULE(RenderTarget);
+    (void)GET_MODULE(Renderer);
+    renderSpriteFrame(target, found->mode);
+    REQUIRE(GET_MODULE(SpriteScene).commandCountForTesting() > 0);
+    auto &timing = GET_MODULE(RenderTiming);
+    timing.flush();
+    const auto status = timing.statusJson();
+    bool sprite_body = false;
+    for (const auto &sample : status.at("nodes")) {
+        if (sample.at("node_kind") == "anchor" &&
+            sample.at("node_name") == "__anchor_sprite" &&
+            sample.at("subrange") == "body") {
+            sprite_body = true;
+            REQUIRE(sample.at("supported").get<bool>());
+            REQUIRE(sample.at("reason").is_null());
+        }
+    }
+    REQUIRE(sprite_body);
+    REQUIRE(timing.queryPoolCreateCountForTesting() == 1);
+    REQUIRE(timing.allGpuQueriesCollectedForTesting());
+    std::filesystem::remove_all(root);
+#else
+    SKIP("GPU timing sprite fixture requires the runtime shader compiler");
+#endif
+}
+
 TEST_CASE("Renderer execution matches plan order and captured traces", "[golden][headless][framegraph]") {
     setupLogger();
     requireGoldenVulkanDevice();
@@ -4166,7 +4432,7 @@ TEST_CASE("Renderer execution matches plan order and captured traces", "[golden]
         REQUIRE(executed_order == rendered.plan_order);
         if (golden_case.mode == "explicit_order") {
             REQUIRE(rendered.gpu_timing_node_names == rendered.plan_order);
-            REQUIRE(rendered.gpu_timing_query_count == rendered.plan_order.size() * 2);
+            REQUIRE(rendered.gpu_timing_query_count == rendered.plan_order.size() * 4);
             REQUIRE(rendered.gpu_timing_queries_collected);
         }
         captured[golden_case.name] = rendered.execution_trace;

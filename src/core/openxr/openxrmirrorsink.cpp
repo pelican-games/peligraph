@@ -23,6 +23,7 @@
 #include "../vkcore/rendertarget.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/debugutils.hpp"
+#include "../vkcore/rendertiming.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -165,6 +166,8 @@ void XrMirrorSink::tryPresent() noexcept {
     auto &target = GET_MODULE(RenderTarget);
     bool frame_begun = false;
     bool rendering_begun = false;
+    bool timing_begun = false;
+    RenderTiming *render_timing = FastModuleContainer::tryGet<RenderTiming>();
     vk::CommandBuffer cmd;
     try {
         auto frame = target.tryRenderBegin();
@@ -194,11 +197,30 @@ void XrMirrorSink::tryPresent() noexcept {
                 GET_MODULE(EngineTime).frameIndex(), "xr", xr_stereo_view_count, 0,
                 "mirror", "output_transform"});
         }
+        if (render_timing != nullptr) {
+            render_timing->beginGpuRange(
+                cmd, frame->in_flight_frame_index, 3,
+                GpuTimingRangeIdentity{GET_MODULE(EngineTime).frameIndex(), "xr",
+                                       xr_stereo_view_count},
+                {GpuTimingNodeDescriptor{0, "mirror", "output_transform", true}});
+            timing_begun = true;
+        }
         ScopedCommandDebugLabel node_label{debug_utils, cmd, node_debug_name.c_str()};
+        if (render_timing != nullptr) {
+            render_timing->writeNodeSubrangeStart(
+                cmd, 0, GpuTimingSubrange::barriers);
+        }
         {
             ScopedCommandDebugLabel barrier_label{debug_utils, cmd, "barriers"};
         }
+        if (render_timing != nullptr) {
+            render_timing->writeNodeSubrangeEnd(
+                cmd, 0, GpuTimingSubrange::barriers);
+        }
         ScopedCommandDebugLabel body_label{debug_utils, cmd, "body"};
+        if (render_timing != nullptr) {
+            render_timing->writeNodeSubrangeStart(cmd, 0, GpuTimingSubrange::body);
+        }
 
         vk::RenderingAttachmentInfo attachment;
         attachment.imageView = frame->color_attachment;
@@ -239,13 +261,21 @@ void XrMirrorSink::tryPresent() noexcept {
                                        GET_MODULE(ui::UiModule),
                                        GET_MODULE(FrameResources)});
         }
+        if (render_timing != nullptr) {
+            render_timing->writeNodeSubrangeEnd(cmd, 0, GpuTimingSubrange::body);
+        }
         body_label.end();
         node_label.end();
         frame_begun = false;
         target.render_end();
+        if (render_timing != nullptr) {
+            render_timing->endGpuRange();
+            timing_begun = false;
+        }
         ++stats.presented;
         reportProgress();
     } catch (const std::exception &e) {
+        if (timing_begun && render_timing != nullptr) render_timing->cancelGpuRange();
         ++stats.failures;
         disabled = true;
         LOG_WARNING(logger, "OpenXR mirror disabled after presentation failure: {}", e.what());
@@ -256,6 +286,7 @@ void XrMirrorSink::tryPresent() noexcept {
         } catch (...) {
         }
     } catch (...) {
+        if (timing_begun && render_timing != nullptr) render_timing->cancelGpuRange();
         ++stats.failures;
         disabled = true;
         LOG_WARNING(logger, "OpenXR mirror disabled after unknown presentation failure");

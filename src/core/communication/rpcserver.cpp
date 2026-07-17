@@ -23,6 +23,7 @@
 #include "../userpublic/details/system/registerer.hpp"
 #include "../vkcore/renderer.hpp"
 #include "../vkcore/rendertarget.hpp"
+#include "../vkcore/rendertiming.hpp"
 #include "../vkcore/core.hpp"
 #include "../watch/reloadgate.hpp"
 #include "../watch/reloadservice.hpp"
@@ -711,6 +712,10 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
         const auto module_graph = FastModuleContainer::graphSnapshot();
         const auto &debug_utils = modules.vulkan.getDebugUtils().getStatus();
         const auto renderdoc = modules.renderdoc_capture.status();
+        const auto *render_timing = FastModuleContainer::tryGet<RenderTiming>();
+        auto gpu_timing = render_timing != nullptr
+                              ? render_timing->statusJson()
+                              : disabledGpuTimingStatusJson();
         const nlohmann::json renderdoc_diagnostics{
             {"status", renderdoc.status},
             {"state", renderDocCaptureStateName(renderdoc.state)},
@@ -739,6 +744,7 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
                              {"capabilities", {{"object_name", debug_utils.object_name},
                                                {"command_label", debug_utils.command_label},
                                                {"queue_label", debug_utils.queue_label}}}}},
+            {"gpu_timing", std::move(gpu_timing)},
             {"input", {{"recording", modules.input_sequence.isRecording()},
                        {"replaying", modules.input_sequence.isReplaying()},
                        {"replay_frame", modules.input_sequence.replayFrameIndex()},
