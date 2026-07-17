@@ -9,6 +9,8 @@
 #include "../loader/scene.hpp"
 #include "../gamelogic/gamelogicreload.hpp"
 #include "../launchconfig.hpp"
+#include "../material/materialcontainer.hpp"
+#include "../model/vertbufcontainer.hpp"
 #include "../os/inputsequence.hpp"
 #include "../os/inputstate.hpp"
 #if PELICAN_WITH_OPENXR
@@ -25,6 +27,7 @@
 #include "../vkcore/rendertarget.hpp"
 #include "../vkcore/rendertiming.hpp"
 #include "../vkcore/core.hpp"
+#include "../vkcore/memorydiagnostics.hpp"
 #include "../watch/reloadgate.hpp"
 #include "../watch/reloadservice.hpp"
 
@@ -56,10 +59,37 @@ nlohmann::json inactiveOpenXrStatusJson() {
         {"session_state", nullptr},
         {"view_configuration", nullptr},
         {"should_render", nullptr},
+        {"timing", {{"wait_frame_count", 0},
+                    {"should_render_false_count", 0},
+                    {"should_render_false_rate", 0.0},
+                    {"begin_frame_discarded_count", 0},
+                    {"session_loss_pending_count", 0},
+                    {"mirror_presented", 0},
+                    {"mirror_dropped", 0},
+                    {"mirror_failures", 0},
+                    {"time_conversion", {{"available", false},
+                                         {"reason", "xr_inactive"},
+                                         {"source", nullptr},
+                                         {"failures", 0},
+                                         {"after_wait_margin_ms", {{"count", 0}, {"min", nullptr}, {"median", nullptr}, {"p95", nullptr}}},
+                                         {"before_submit_margin_ms", {{"count", 0}, {"min", nullptr}, {"median", nullptr}, {"p95", nullptr}}},
+                                         {"after_end_frame_margin_ms", {{"count", 0}, {"min", nullptr}, {"median", nullptr}, {"p95", nullptr}}}}}}},
     };
 }
 
 #if PELICAN_WITH_OPENXR
+nlohmann::json xrMarginJson(const OpenXr::XrTimingMarginStatus &margin) {
+    return {
+        {"count", margin.count},
+        {"min", margin.minimum_ms ? nlohmann::json(*margin.minimum_ms)
+                                    : nlohmann::json(nullptr)},
+        {"median", margin.median_ms ? nlohmann::json(*margin.median_ms)
+                                     : nlohmann::json(nullptr)},
+        {"p95", margin.p95_ms ? nlohmann::json(*margin.p95_ms)
+                               : nlohmann::json(nullptr)},
+    };
+}
+
 nlohmann::json openXrStatusJson(const OpenXr::XrDiagnosticStatus &status) {
     return {
         {"active", true},
@@ -71,6 +101,23 @@ nlohmann::json openXrStatusJson(const OpenXr::XrDiagnosticStatus &status) {
         {"view_configuration", status.view_configuration},
         {"should_render", status.should_render ? nlohmann::json(*status.should_render)
                                                 : nlohmann::json(nullptr)},
+        {"timing", {{"wait_frame_count", status.timing.wait_frame_count},
+                    {"should_render_false_count", status.timing.should_render_false_count},
+                    {"should_render_false_rate", status.timing.should_render_false_rate},
+                    {"begin_frame_discarded_count", status.timing.begin_frame_discarded_count},
+                    {"session_loss_pending_count", status.timing.session_loss_pending_count},
+                    {"mirror_presented", status.timing.mirror_presented},
+                    {"mirror_dropped", status.timing.mirror_dropped},
+                    {"mirror_failures", status.timing.mirror_failures},
+                    {"time_conversion", {{"available", status.timing.time_conversion_available},
+                                         {"reason", status.timing.time_conversion_reason},
+                                         {"source", status.timing.time_conversion_available
+                                                        ? nlohmann::json("XR_KHR_win32_convert_performance_counter_time")
+                                                        : nlohmann::json(nullptr)},
+                                         {"failures", status.timing.time_conversion_failures},
+                                         {"after_wait_margin_ms", xrMarginJson(status.timing.after_wait_margin)},
+                                         {"before_submit_margin_ms", xrMarginJson(status.timing.before_submit_margin)},
+                                         {"after_end_frame_margin_ms", xrMarginJson(status.timing.after_end_frame_margin)}}}}},
     };
 }
 #endif
@@ -716,6 +763,9 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
         auto gpu_timing = render_timing != nullptr
                               ? render_timing->statusJson()
                               : disabledGpuTimingStatusJson();
+        auto memory = memoryStatusJson(collectMemoryStatus(
+            modules.vulkan, FastModuleContainer::tryGet<VertBufContainer>(),
+            FastModuleContainer::tryGet<MaterialContainer>()));
         const nlohmann::json renderdoc_diagnostics{
             {"status", renderdoc.status},
             {"state", renderDocCaptureStateName(renderdoc.state)},
@@ -745,6 +795,7 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
                                                {"command_label", debug_utils.command_label},
                                                {"queue_label", debug_utils.queue_label}}}}},
             {"gpu_timing", std::move(gpu_timing)},
+            {"memory", std::move(memory)},
             {"input", {{"recording", modules.input_sequence.isRecording()},
                        {"replaying", modules.input_sequence.isReplaying()},
                        {"replay_frame", modules.input_sequence.replayFrameIndex()},
@@ -940,6 +991,7 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
         requireObjectParams(params, "step_frame");
         flushPendingTransforms(pending_transforms, modules.scene_loader);
         modules.engine_time.advance();
+        modules.vulkan.setCurrentFrameIndex(modules.engine_time.frameIndex());
         updateFrameState();
         modules.renderer.render();
         return frameResult(modules.engine_time);

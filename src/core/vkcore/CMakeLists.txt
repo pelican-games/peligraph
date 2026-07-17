@@ -2,6 +2,7 @@ target_sources(pelican_core PRIVATE
     bootstrap.cpp
     core.cpp
     debugutils.cpp
+    memorydiagnostics.cpp
     deletionqueue.cpp
     util.cpp
     cmdbuf.cpp

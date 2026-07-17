@@ -148,8 +148,13 @@ function(validate_rpc_stdout stdout label)
     list(GET lines 19 line19)
     list(GET lines 20 line20)
 
-    if(NOT line0 MATCHES [=["id":1]=] OR NOT line0 MATCHES [=["instance_id":"[0-9a-fA-F-]+"]=] OR NOT line0 MATCHES [=["project_root"]=] OR NOT line0 MATCHES [=["scene":"default_scene"]=] OR NOT line0 MATCHES [=["frame":0]=] OR NOT line0 MATCHES [=["time":0\.0]=] OR NOT line0 MATCHES [=["seed":1234]=] OR NOT line0 MATCHES [=["xr":\{"active":false,"applied_floor_offset_m":null,"floor_level_guaranteed":false,"floor_semantics":"not_applicable","reference_space":null,"session_state":null,"should_render":null,"view_configuration":null\}]=] OR NOT line0 MATCHES [=["contract":2]=] OR NOT line0 MATCHES [=["readback_encoding":"srgb"]=] OR NOT line0 MATCHES [=["capture":"available"]=] OR NOT line0 MATCHES [=["gpu_timing":\{"dropped_samples":0,"enabled":false,"history_capacity":120]=])
+    if(NOT line0 MATCHES [=["id":1]=] OR NOT line0 MATCHES [=["instance_id":"[0-9a-fA-F-]+"]=] OR NOT line0 MATCHES [=["project_root"]=] OR NOT line0 MATCHES [=["scene":"default_scene"]=] OR NOT line0 MATCHES [=["frame":0]=] OR NOT line0 MATCHES [=["time":0\.0]=] OR NOT line0 MATCHES [=["seed":1234]=] OR NOT line0 MATCHES [=["xr":\{"active":false.*"timing":\{.*"wait_frame_count":0.*"view_configuration":null\}]=] OR NOT line0 MATCHES [=["contract":2]=] OR NOT line0 MATCHES [=["readback_encoding":"srgb"]=] OR NOT line0 MATCHES [=["capture":"available"]=] OR NOT line0 MATCHES [=["gpu_timing":\{"dropped_samples":0,"enabled":false,"history_capacity":120]=])
         message(FATAL_ERROR "${label}: get_status initial response did not include expected fields:\n${line0}")
+    endif()
+    if(NOT line0 MATCHES [=["memory":\{"driver_available":]=] OR
+       NOT line0 MATCHES [=["engine_categories":\[]=] OR
+       NOT line0 MATCHES [=["schema_version":1]=])
+        message(FATAL_ERROR "${label}: get_status.memory did not expose the additive diagnostics schema:\n${line0}")
     endif()
     if(NOT line0 MATCHES "\"renderdoc\":\"${RENDERDOC_STATUS}\"" OR NOT line0 MATCHES "\"reason\":\"${RENDERDOC_REASON}\"")
         message(FATAL_ERROR "${label}: get_status RenderDoc state was not ${RENDERDOC_STATUS}/${RENDERDOC_REASON}:\n${line0}")
@@ -231,6 +236,7 @@ function(normalize_rpc_stdout stdout output_var)
     # GPU timestamps are diagnostics. Validate their schema above, then mask
     # the complete object for the two-run deterministic transcript gate.
     string(REGEX REPLACE [=["gpu_timing":\{.*\},"input"]=] [=["gpu_timing":"<measured>","input"]=] normalized "${normalized}")
+    string(REGEX REPLACE [=["memory":\{.*\},"modules"]=] [=["memory":"<measured>","modules"]=] normalized "${normalized}")
     set(${output_var} "${normalized}" PARENT_SCOPE)
 endfunction()
 

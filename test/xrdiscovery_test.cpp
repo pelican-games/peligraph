@@ -17,6 +17,7 @@ struct FakeRuntime {
     std::string failure;
     bool advertise_vulkan_enable2 = true;
     bool advertise_local_floor = false;
+    bool advertise_time_conversion = false;
     VkPhysicalDevice selected_physical_device = VK_NULL_HANDLE;
     std::vector<std::string> calls;
 };
@@ -104,7 +105,8 @@ XrResult XRAPI_CALL fakeEnumerateExtensions(
     active_fake->calls.emplace_back(capacity == 0 ? "enumerate_extensions_count"
                                                    : "enumerate_extensions_values");
     if (active_fake->failure == "enumerate_extensions") return XR_ERROR_RUNTIME_UNAVAILABLE;
-    *count = active_fake->advertise_local_floor ? 2U : 1U;
+    *count = 1U + (active_fake->advertise_local_floor ? 1U : 0U) +
+             (active_fake->advertise_time_conversion ? 1U : 0U);
     if (capacity != 0) {
         const auto *name = active_fake->advertise_vulkan_enable2
                                ? XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME
@@ -117,6 +119,13 @@ XrResult XRAPI_CALL fakeEnumerateExtensions(
                           XR_EXT_LOCAL_FLOOR_EXTENSION_NAME);
             properties[1].extensionVersion = 1;
         }
+        if (active_fake->advertise_time_conversion) {
+            const auto index = active_fake->advertise_local_floor ? 2U : 1U;
+            std::snprintf(properties[index].extensionName,
+                          sizeof(properties[index].extensionName), "%s",
+                          XR_KHR_WIN32_CONVERT_PERFORMANCE_COUNTER_TIME_EXTENSION_NAME);
+            properties[index].extensionVersion = 1;
+        }
     }
     return XR_SUCCESS;
 }
@@ -126,11 +135,17 @@ XrResult XRAPI_CALL fakeCreateInstance(const XrInstanceCreateInfo *info, XrInsta
     CHECK(XR_VERSION_MAJOR(info->applicationInfo.apiVersion) == 1);
     CHECK(XR_VERSION_MINOR(info->applicationInfo.apiVersion) == 0);
     CHECK(info->enabledExtensionCount ==
-          (active_fake->advertise_local_floor ? 2U : 1U));
+          1U + (active_fake->advertise_local_floor ? 1U : 0U) +
+              (active_fake->advertise_time_conversion ? 1U : 0U));
     CHECK(std::string{info->enabledExtensionNames[0]} == XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME);
     if (active_fake->advertise_local_floor) {
         CHECK(std::string{info->enabledExtensionNames[1]} ==
               XR_EXT_LOCAL_FLOOR_EXTENSION_NAME);
+    }
+    if (active_fake->advertise_time_conversion) {
+        const auto index = active_fake->advertise_local_floor ? 2U : 1U;
+        CHECK(std::string{info->enabledExtensionNames[index]} ==
+              XR_KHR_WIN32_CONVERT_PERFORMANCE_COUNTER_TIME_EXTENSION_NAME);
     }
     if (active_fake->failure == "create_instance") return XR_ERROR_RUNTIME_UNAVAILABLE;
     *instance = fakeInstance();
@@ -251,6 +266,25 @@ TEST_CASE("OpenXR discovery enables the local-floor extension when a 1.0 runtime
     Pelican::OpenXr::DiscoveryRuntime runtime{fakeApi()};
     CHECK(runtime.discover().availability ==
           Pelican::XrDiscoveryAvailability::available);
+}
+
+TEST_CASE("OpenXR discovery conditionally enables Win32 performance-counter conversion",
+          "[openxr][discovery][timing]") {
+    FakeRuntime absent;
+    {
+        FakeScope scope{absent};
+        Pelican::OpenXr::DiscoveryRuntime runtime{fakeApi()};
+        REQUIRE(runtime.discover().availability ==
+                Pelican::XrDiscoveryAvailability::available);
+        CHECK_FALSE(runtime.win32TimeConversionEnabled());
+    }
+
+    FakeRuntime advertised{.advertise_time_conversion = true};
+    FakeScope scope{advertised};
+    Pelican::OpenXr::DiscoveryRuntime runtime{fakeApi()};
+    REQUIRE(runtime.discover().availability ==
+            Pelican::XrDiscoveryAvailability::available);
+    CHECK(runtime.win32TimeConversionEnabled());
 }
 
 TEST_CASE("Vulkan required extensions merge uniquely and report missing names",

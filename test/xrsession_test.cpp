@@ -6,6 +6,7 @@
 #include "../src/core/openxr/openxrsession.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <deque>
 #include <string>
@@ -24,6 +25,7 @@ struct FakeRuntime {
     std::vector<std::string> calls;
     std::deque<FakeEvent> events;
     bool should_render = true;
+    XrResult begin_frame_result = XR_SUCCESS;
     bool last_end_was_zero_layer = false;
     uint32_t update_count = 0;
     std::vector<XrReferenceSpaceType> supported_spaces{
@@ -158,8 +160,23 @@ XrResult XRAPI_CALL fakeWaitFrame(XrSession session, const XrFrameWaitInfo *,
 XrResult XRAPI_CALL fakeBeginFrame(XrSession session, const XrFrameBeginInfo *) {
     active_fake->calls.emplace_back("begin_frame");
     CHECK(session == fakeSession());
-    return active_fake->failure == "begin_frame" ? XR_ERROR_RUNTIME_FAILURE : XR_SUCCESS;
+    return active_fake->failure == "begin_frame" ? XR_ERROR_RUNTIME_FAILURE
+                                                   : active_fake->begin_frame_result;
 }
+
+#ifdef _WIN32
+XrResult XRAPI_CALL fakeConvertTimeToPerformanceCounter(
+    XrInstance instance, XrTime, LARGE_INTEGER *counter) {
+    active_fake->calls.emplace_back("convert_time_to_qpc");
+    CHECK(instance == fakeInstance());
+    LARGE_INTEGER now{};
+    LARGE_INTEGER frequency{};
+    REQUIRE(QueryPerformanceCounter(&now));
+    REQUIRE(QueryPerformanceFrequency(&frequency));
+    counter->QuadPart = now.QuadPart + frequency.QuadPart / 100;
+    return XR_SUCCESS;
+}
+#endif
 
 XrResult XRAPI_CALL fakeEndFrame(XrSession session, const XrFrameEndInfo *info) {
     active_fake->calls.emplace_back("end_frame");
@@ -202,6 +219,10 @@ PFN_xrVoidFunction fakeFunction(const std::string &name) {
     if (name == "xrCreateReferenceSpace")
         return reinterpret_cast<PFN_xrVoidFunction>(&fakeCreateReferenceSpace);
     if (name == "xrDestroySpace") return reinterpret_cast<PFN_xrVoidFunction>(&fakeDestroySpace);
+#ifdef _WIN32
+    if (name == "xrConvertTimeToWin32PerformanceCounterKHR")
+        return reinterpret_cast<PFN_xrVoidFunction>(&fakeConvertTimeToPerformanceCounter);
+#endif
     return nullptr;
 }
 
@@ -408,6 +429,21 @@ TEST_CASE("OpenXR frame timing is immutable simulation-external data and every f
                                                      "locate_views", "end_frame"});
         CHECK(fake.last_end_was_zero_layer);
     }
+
+    SECTION("XR_FRAME_DISCARDED advances update but skips locate and closes zero-layer") {
+        fake.begin_frame_result = XR_FRAME_DISCARDED;
+        const auto frame = Pelican::OpenXr::runSessionFrame(runtime, engine_time, [&] {
+            ++fake.update_count;
+        });
+        CHECK(frame.begin_result == Pelican::OpenXr::XrBeginFrameResult::discarded);
+        CHECK(frame.located_views.views.empty());
+        CHECK(fake.update_count == 1);
+        CHECK(engine_time.frameIndex() == 1);
+        CHECK(fake.calls ==
+              std::vector<std::string>{"wait_frame", "begin_frame", "end_frame"});
+        CHECK(fake.last_end_was_zero_layer);
+        CHECK(runtime.diagnosticStatus().timing.begin_frame_discarded_count == 1);
+    }
 }
 
 TEST_CASE("OpenXR diagnostic snapshot drives the additive get_status xr schema",
@@ -446,7 +482,59 @@ TEST_CASE("OpenXR diagnostic snapshot drives the additive get_status xr schema",
     runtime.beginFrame();
     runtime.endFrame(visible_timing);
     CHECK(runtime.diagnosticStatus().should_render == true);
+    runtime.recordMirrorStatistics(7, 2, 1);
+    auto timing = runtime.diagnosticStatus().timing;
+    CHECK(timing.wait_frame_count == 2);
+    CHECK(timing.should_render_false_count == 1);
+    CHECK(timing.should_render_false_rate == 0.5);
+    CHECK(timing.begin_frame_discarded_count == 0);
+    CHECK(timing.mirror_presented == 7);
+    CHECK(timing.mirror_dropped == 2);
+    CHECK(timing.mirror_failures == 1);
+
+    fake.begin_frame_result = XR_FRAME_DISCARDED;
+    const auto discarded_timing = runtime.waitFrame();
+    CHECK(runtime.beginFrame() == Pelican::OpenXr::XrBeginFrameResult::discarded);
+    runtime.endFrame(discarded_timing);
+    fake.begin_frame_result = XR_SESSION_LOSS_PENDING;
+    const auto loss_pending_timing = runtime.waitFrame();
+    CHECK(runtime.beginFrame() ==
+          Pelican::OpenXr::XrBeginFrameResult::session_loss_pending);
+    runtime.endFrame(loss_pending_timing);
+
+    timing = runtime.diagnosticStatus().timing;
+    CHECK(timing.begin_frame_discarded_count == 1);
+    CHECK(timing.session_loss_pending_count == 1);
+    const auto counters_json = Pelican::openXrStatusJsonForTesting(
+        runtime.diagnosticStatus()).at("timing");
+    CHECK(counters_json.at("begin_frame_discarded_count") == 1);
+    CHECK(counters_json.at("session_loss_pending_count") == 1);
+    CHECK(counters_json.at("mirror_dropped") == 2);
 }
+
+#ifdef _WIN32
+TEST_CASE("OpenXR QPC margins exist only when the conversion extension is enabled",
+          "[openxr][session][timing][qpc]") {
+    FakeRuntime fake;
+    FakeScope scope{fake};
+    auto dependencies = fakeDependencies();
+    dependencies.win32_time_conversion_enabled = true;
+    Pelican::OpenXr::SessionRuntime runtime{dependencies};
+    makeReady(fake, runtime);
+
+    const auto timing = runtime.waitFrame();
+    runtime.beginFrame();
+    runtime.endFrame(timing);
+    const auto status = runtime.diagnosticStatus().timing;
+    CHECK(status.time_conversion_available);
+    CHECK(status.time_conversion_failures == 0);
+    CHECK(status.after_wait_margin.count == 1);
+    CHECK(status.before_submit_margin.count == 1);
+    CHECK(status.after_end_frame_margin.count == 1);
+    REQUIRE(status.after_wait_margin.median_ms);
+    CHECK(std::isfinite(*status.after_wait_margin.median_ms));
+}
+#endif
 
 TEST_CASE("OpenXR wait, begin, and end frame failures preserve their call boundary",
           "[openxr][session][error]") {

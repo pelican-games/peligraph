@@ -5,6 +5,7 @@
 #include "openxrviewspace.hpp"
 
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -40,9 +41,40 @@ struct XrLocatedViews {
     std::vector<XrView> views;
 };
 
+enum class XrBeginFrameResult {
+    ready,
+    discarded,
+    session_loss_pending,
+};
+
 struct XrFrameResult {
     XrDisplayTiming display_timing;
     XrLocatedViews located_views;
+    XrBeginFrameResult begin_result = XrBeginFrameResult::ready;
+};
+
+struct XrTimingMarginStatus {
+    std::uint64_t count = 0;
+    std::optional<double> minimum_ms;
+    std::optional<double> median_ms;
+    std::optional<double> p95_ms;
+};
+
+struct XrTimingDiagnosticStatus {
+    std::uint64_t wait_frame_count = 0;
+    std::uint64_t should_render_false_count = 0;
+    double should_render_false_rate = 0.0;
+    std::uint64_t begin_frame_discarded_count = 0;
+    std::uint64_t session_loss_pending_count = 0;
+    std::uint64_t mirror_presented = 0;
+    std::uint64_t mirror_dropped = 0;
+    std::uint64_t mirror_failures = 0;
+    bool time_conversion_available = false;
+    std::string_view time_conversion_reason;
+    std::uint64_t time_conversion_failures = 0;
+    XrTimingMarginStatus after_wait_margin;
+    XrTimingMarginStatus before_submit_margin;
+    XrTimingMarginStatus after_end_frame_margin;
 };
 
 struct XrDiagnosticStatus {
@@ -50,6 +82,7 @@ struct XrDiagnosticStatus {
     std::string_view view_configuration;
     XrReferenceSpaceStatus reference_space;
     std::optional<bool> should_render;
+    XrTimingDiagnosticStatus timing;
 };
 
 ActionPose syntheticHeadPose(const XrLocatedViews &located_views,
@@ -77,6 +110,9 @@ struct XrSessionApi {
     PFN_xrEnumerateReferenceSpaces enumerate_reference_spaces = nullptr;
     PFN_xrCreateReferenceSpace create_reference_space = nullptr;
     PFN_xrDestroySpace destroy_space = nullptr;
+#ifdef _WIN32
+    PFN_xrConvertTimeToWin32PerformanceCounterKHR convert_time_to_qpc = nullptr;
+#endif
 };
 
 struct XrSessionDependencies {
@@ -89,6 +125,7 @@ struct XrSessionDependencies {
     uint32_t graphics_queue_family_index = 0;
     uint32_t graphics_queue_index = 0;
     const InputActionMap *input_actions = nullptr;
+    bool win32_time_conversion_enabled = false;
 };
 
 using XrSessionDependencyProvider = XrSessionDependencies (*)();
@@ -116,11 +153,26 @@ DECLARE_MODULE(SessionRuntime) {
     FramePhase frame_phase = FramePhase::idle;
     XrTime pending_display_time = 0;
     std::optional<bool> last_should_render;
+    std::uint64_t wait_frame_count = 0;
+    std::uint64_t should_render_false_count = 0;
+    std::uint64_t begin_frame_discarded_count = 0;
+    std::uint64_t session_loss_pending_count = 0;
+    std::uint64_t mirror_presented = 0;
+    std::uint64_t mirror_dropped = 0;
+    std::uint64_t mirror_failures = 0;
+    bool time_conversion_enabled = false;
+    std::uint64_t time_conversion_failures = 0;
+    std::deque<double> after_wait_margins_ms;
+    std::deque<double> before_submit_margins_ms;
+    std::deque<double> after_end_frame_margins_ms;
 
     void resolve(PFN_xrGetInstanceProcAddr get_instance_proc_addr);
     void create(const XrSessionDependencies &dependencies);
     void logDiagnostic(std::string_view event, std::string_view transition) const;
     [[noreturn]] static void throwFailure(const char *operation, XrResult result);
+    void recordPredictedDisplayMargin(std::deque<double> &samples,
+                                      XrTime predicted_display_time) noexcept;
+    void logTimingProgress() const;
 
   public:
     SessionRuntime();
@@ -132,13 +184,15 @@ DECLARE_MODULE(SessionRuntime) {
 
     void pollEvents();
     XrDisplayTiming waitFrame();
-    void beginFrame();
+    XrBeginFrameResult beginFrame();
     XrLocatedViews locateViews(const XrDisplayTiming &display_timing);
     void endFrame(const XrDisplayTiming &display_timing);
     XrInputFrame syncActions(const std::vector<std::string> &active_action_set_stack);
     void endFrame(const XrDisplayTiming &display_timing,
                   const XrCompositionLayerBaseHeader &layer);
     void reportCompositionLoss(XrResult result) noexcept;
+    void recordMirrorStatistics(std::uint64_t presented, std::uint64_t dropped,
+                                std::uint64_t failures) noexcept;
 
     bool isSessionRunning() const noexcept { return session_running; }
     bool isInputEligible() const noexcept {

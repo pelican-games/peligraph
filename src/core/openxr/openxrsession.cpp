@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -22,6 +23,24 @@ XrSessionDependencies productionDependencies() {
         throw std::runtime_error("OpenXR session dependency provider was not configured");
     }
     return dependency_provider();
+}
+
+constexpr std::size_t marginHistoryCapacity = 120;
+
+XrTimingMarginStatus summarizeMargins(const std::deque<double> &samples) {
+    XrTimingMarginStatus result{.count = samples.size()};
+    if (samples.empty()) return result;
+    std::vector<double> sorted{samples.begin(), samples.end()};
+    std::sort(sorted.begin(), sorted.end());
+    const auto percentile = [&](double p) {
+        const auto index = static_cast<std::size_t>(
+            std::ceil(p * static_cast<double>(sorted.size())) - 1.0);
+        return sorted[std::min(index, sorted.size() - 1)];
+    };
+    result.minimum_ms = sorted.front();
+    result.median_ms = percentile(0.5);
+    result.p95_ms = percentile(0.95);
+    return result;
 }
 
 std::string_view sessionStateName(XrSessionState state) noexcept {
@@ -65,7 +84,8 @@ void setSessionDependencyProvider(XrSessionDependencyProvider provider) noexcept
 SessionRuntime::SessionRuntime() : SessionRuntime(productionDependencies()) {}
 
 SessionRuntime::SessionRuntime(const XrSessionDependencies &dependencies)
-    : instance{dependencies.instance}, system_id{dependencies.system_id} {
+    : instance{dependencies.instance}, system_id{dependencies.system_id},
+      time_conversion_enabled{dependencies.win32_time_conversion_enabled} {
     resolve(dependencies.get_instance_proc_addr);
     try {
         create(dependencies);
@@ -157,6 +177,13 @@ void SessionRuntime::resolve(PFN_xrGetInstanceProcAddr get_instance_proc_addr) {
     resolveRequired(get_instance_proc_addr, instance, "xrCreateReferenceSpace",
                     api.create_reference_space);
     resolveRequired(get_instance_proc_addr, instance, "xrDestroySpace", api.destroy_space);
+#ifdef _WIN32
+    if (time_conversion_enabled) {
+        resolveRequired(get_instance_proc_addr, instance,
+                        "xrConvertTimeToWin32PerformanceCounterKHR",
+                        api.convert_time_to_qpc);
+    }
+#endif
 }
 
 void SessionRuntime::create(const XrSessionDependencies &dependencies) {
@@ -232,6 +259,32 @@ XrDiagnosticStatus SessionRuntime::diagnosticStatus() const {
         .view_configuration = "PRIMARY_STEREO",
         .reference_space = referenceSpaceStatus(),
         .should_render = last_should_render,
+        .timing = {
+            .wait_frame_count = wait_frame_count,
+            .should_render_false_count = should_render_false_count,
+            .should_render_false_rate = wait_frame_count == 0
+                                            ? 0.0
+                                            : static_cast<double>(should_render_false_count) /
+                                                  static_cast<double>(wait_frame_count),
+            .begin_frame_discarded_count = begin_frame_discarded_count,
+            .session_loss_pending_count = session_loss_pending_count,
+            .mirror_presented = mirror_presented,
+            .mirror_dropped = mirror_dropped,
+            .mirror_failures = mirror_failures,
+#ifdef _WIN32
+            .time_conversion_available = time_conversion_enabled,
+            .time_conversion_reason = time_conversion_enabled
+                                          ? "XR_KHR_win32_convert_performance_counter_time_enabled"
+                                          : "XR_KHR_win32_convert_performance_counter_time_not_enabled",
+#else
+            .time_conversion_available = false,
+            .time_conversion_reason = "win32_performance_counter_unavailable_on_platform",
+#endif
+            .time_conversion_failures = time_conversion_failures,
+            .after_wait_margin = summarizeMargins(after_wait_margins_ms),
+            .before_submit_margin = summarizeMargins(before_submit_margins_ms),
+            .after_end_frame_margin = summarizeMargins(after_end_frame_margins_ms),
+        },
     };
 }
 
@@ -244,6 +297,24 @@ void SessionRuntime::logDiagnostic(std::string_view event,
              event, transition, status.session_state, status.view_configuration,
              status.reference_space.reference_space,
              shouldRenderName(status.should_render));
+}
+
+void SessionRuntime::logTimingProgress() const {
+    if (logger == nullptr || wait_frame_count == 0 ||
+        (wait_frame_count != 1 && wait_frame_count % marginHistoryCapacity != 0)) {
+        return;
+    }
+    const auto timing = diagnosticStatus().timing;
+    LOG_INFO(logger,
+             "OpenXR timing diagnostic: wait_frames={} should_render_false={} "
+             "begin_discarded={} session_loss_pending={} mirror_presented={} "
+             "mirror_dropped={} mirror_failures={} qpc_available={} "
+             "after_wait_samples={} after_wait_median_ms={}",
+             timing.wait_frame_count, timing.should_render_false_count,
+             timing.begin_frame_discarded_count, timing.session_loss_pending_count,
+             timing.mirror_presented, timing.mirror_dropped, timing.mirror_failures,
+             timing.time_conversion_available, timing.after_wait_margin.count,
+             timing.after_wait_margin.median_ms.value_or(0.0));
 }
 
 [[noreturn]] void SessionRuntime::throwFailure(const char *operation, XrResult result) {
@@ -316,10 +387,15 @@ XrDisplayTiming SessionRuntime::waitFrame() {
     XrFrameState frame_state{XR_TYPE_FRAME_STATE};
     const auto result = api.wait_frame(session, &wait_info, &frame_state);
     if (XR_FAILED(result)) throwFailure("xrWaitFrame", result);
+    if (result == XR_SESSION_LOSS_PENDING) ++session_loss_pending_count;
     frame_phase = FramePhase::waited;
     pending_display_time = frame_state.predictedDisplayTime;
     input_located_views = {};
     const bool should_render = frame_state.shouldRender == XR_TRUE;
+    ++wait_frame_count;
+    if (!should_render) ++should_render_false_count;
+    recordPredictedDisplayMargin(after_wait_margins_ms,
+                                 frame_state.predictedDisplayTime);
     if (!last_should_render || *last_should_render != should_render) {
         const auto transition = std::string{shouldRenderName(last_should_render)} + "->" +
                                 std::string{should_render ? "true" : "false"};
@@ -330,7 +406,7 @@ XrDisplayTiming SessionRuntime::waitFrame() {
             should_render};
 }
 
-void SessionRuntime::beginFrame() {
+XrBeginFrameResult SessionRuntime::beginFrame() {
     if (!session_running || frame_phase != FramePhase::waited) {
         throw std::logic_error("xrBeginFrame requires a waited running session");
     }
@@ -341,6 +417,15 @@ void SessionRuntime::beginFrame() {
         throwFailure("xrBeginFrame", result);
     }
     frame_phase = FramePhase::begun;
+    if (result == XR_FRAME_DISCARDED) {
+        ++begin_frame_discarded_count;
+        return XrBeginFrameResult::discarded;
+    }
+    if (result == XR_SESSION_LOSS_PENDING) {
+        ++session_loss_pending_count;
+        return XrBeginFrameResult::session_loss_pending;
+    }
+    return XrBeginFrameResult::ready;
 }
 
 XrLocatedViews SessionRuntime::locateViews(const XrDisplayTiming &display_timing) {
@@ -381,15 +466,21 @@ void SessionRuntime::endFrame(const XrDisplayTiming &display_timing) {
     end_info.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
     end_info.layerCount = 0;
     end_info.layers = nullptr;
+    recordPredictedDisplayMargin(before_submit_margins_ms,
+                                 display_timing.predictedDisplayTime());
     const auto result = api.end_frame(session, &end_info);
+    recordPredictedDisplayMargin(after_end_frame_margins_ms,
+                                 display_timing.predictedDisplayTime());
     frame_phase = FramePhase::idle;
     pending_display_time = 0;
     if (result == XR_SESSION_LOSS_PENDING || result == XR_ERROR_SESSION_LOST ||
         result == XR_ERROR_INSTANCE_LOST) {
+        if (result == XR_SESSION_LOSS_PENDING) ++session_loss_pending_count;
         reportCompositionLoss(result);
         throwFailure("xrEndFrame", result);
     }
     if (XR_FAILED(result)) throwFailure("xrEndFrame", result);
+    logTimingProgress();
 }
 
 XrInputFrame SessionRuntime::syncActions(
@@ -419,15 +510,21 @@ void SessionRuntime::endFrame(const XrDisplayTiming &display_timing,
     end_info.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
     end_info.layerCount = 1;
     end_info.layers = layers;
+    recordPredictedDisplayMargin(before_submit_margins_ms,
+                                 display_timing.predictedDisplayTime());
     const auto result = api.end_frame(session, &end_info);
+    recordPredictedDisplayMargin(after_end_frame_margins_ms,
+                                 display_timing.predictedDisplayTime());
     frame_phase = FramePhase::idle;
     pending_display_time = 0;
     if (result == XR_SESSION_LOSS_PENDING || result == XR_ERROR_SESSION_LOST ||
         result == XR_ERROR_INSTANCE_LOST) {
+        if (result == XR_SESSION_LOSS_PENDING) ++session_loss_pending_count;
         reportCompositionLoss(result);
         throwFailure("xrEndFrame", result);
     }
     if (XR_FAILED(result)) throwFailure("xrEndFrame", result);
+    logTimingProgress();
 }
 
 void SessionRuntime::reportCompositionLoss(XrResult result) noexcept {
@@ -441,18 +538,55 @@ void SessionRuntime::reportCompositionLoss(XrResult result) noexcept {
     pending_display_time = 0;
 }
 
+void SessionRuntime::recordMirrorStatistics(std::uint64_t presented,
+                                            std::uint64_t dropped,
+                                            std::uint64_t failures) noexcept {
+    mirror_presented = presented;
+    mirror_dropped = dropped;
+    mirror_failures = failures;
+}
+
+void SessionRuntime::recordPredictedDisplayMargin(
+    std::deque<double> &samples, XrTime predicted_display_time) noexcept {
+#ifdef _WIN32
+    if (!time_conversion_enabled || api.convert_time_to_qpc == nullptr) return;
+    LARGE_INTEGER predicted{};
+    LARGE_INTEGER now{};
+    LARGE_INTEGER frequency{};
+    const auto converted =
+        api.convert_time_to_qpc(instance, predicted_display_time, &predicted);
+    if (XR_FAILED(converted) || !QueryPerformanceCounter(&now) ||
+        !QueryPerformanceFrequency(&frequency) || frequency.QuadPart <= 0) {
+        ++time_conversion_failures;
+        return;
+    }
+    const auto margin_ms =
+        static_cast<double>(predicted.QuadPart - now.QuadPart) * 1000.0 /
+        static_cast<double>(frequency.QuadPart);
+    if (!std::isfinite(margin_ms)) {
+        ++time_conversion_failures;
+        return;
+    }
+    if (samples.size() == marginHistoryCapacity) samples.pop_front();
+    samples.push_back(margin_ms);
+#else
+    (void)samples;
+    (void)predicted_display_time;
+#endif
+}
+
 XrFrameResult runSessionFrame(SessionRuntime &runtime, EngineTime &engine_time,
                               const std::function<void()> &update) {
     const auto display_timing = runtime.waitFrame();
     engine_time.advance();
-    runtime.beginFrame();
+    const auto begin_result = runtime.beginFrame();
     XrLocatedViews located_views;
-    if (display_timing.shouldRender()) {
+    if (begin_result == XrBeginFrameResult::ready && display_timing.shouldRender()) {
         located_views = runtime.locateViews(display_timing);
     }
     update();
     runtime.endFrame(display_timing);
-    return {display_timing, std::move(located_views)};
+    return {display_timing, std::move(located_views), begin_result};
 }
 
 } // namespace Pelican::OpenXr
