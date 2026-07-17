@@ -3587,6 +3587,58 @@ coverage の二つに分割する。D-P1 が依存するのは前者だけとす
    既存全テスト + player 8 秒
 5. 受け入れ = 上記 + OFF smoke(ユニット非依存 — 拡張なし環境 no-op)
 
+### WP140: D-P1a — RenderDoc in-app capture(flat/headless)
+
+参照: **`design_debug_profiling.md` v1.1 §2 + レビュー C2 逐語が正**:
+「RenderDoc は注入済み module の受動取得だけに限定し、capture の状態
+機械と境界を規範化する。`LoadLibrary` しない。RPC は既存 `render_frame`
+と同じ current-time render を一回だけ capture し、実際に増えた capture
+index から `.rdc` path を得る。F11、RPC、overlapping request、失敗
+code、flat/headless/XR の境界を固定する。」
+依存: WP139(済 — label がある前提で capture が読める)。見積: 中。
+排他: renderdoc_app.h 同梱(単一 header・MIT)+ capture 配線 + rpc。
+
+1. `renderdoc_app.h` を third-party として同梱(pin + ライセンス表記)。
+   **GetModuleHandle での受動取得のみ**(RenderDoc 起動でアプリを
+   立ち上げた場合だけ有効 — 未注入時は全 API no-op + get_status で
+   `renderdoc: absent`)
+2. **F11** = 次フレームを 1 枚 capture。**rpc `capture_gpu`** =
+   render_frame と同型の一回 render を capture し、増えた capture
+   index から `.rdc` path を応答に返す
+3. 状態機械: 要求中の再要求は名前入り reject・失敗 code 伝搬・
+   headless では rpc のみ・**XR 中は v1 reject**(XR capture は
+   後続 WP — C2 の境界どおり)
+4. gate: RenderDoc を導入(winget/公式インストーラ — version 記録)し、
+   **注入起動で .rdc が生成され pass label 木が読める**ことを実測
+   (スクリーンショット — WP139 の未実施分もここで回収)。
+   未注入起動で全 no-op・golden byte 不変・既存全テスト + player 8 秒
+5. 受け入れ = 上記 + OFF smoke
+
+### WP141: 負債 GOLDEN0 — golden inventory の GPU 不要 gate 化
+
+参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
+の WP-GOLDEN0 定義が正**(逐語: 「case/file/hash/trace の exact set、
+VAT ON/OFF 条件、update mode membership lock。完了後に count REQUIRE を
+削除」)。狙い = golden の「件数 REQUIRE 手動更新」文化(交差マージ罠が
+二連続した)を、**機械照合の inventory manifest** に置換して CI(CPU
+gate)にも乗せる。
+依存: WP137(済)。見積: 中。排他: golden inventory fixture +
+golden_image_test の count REQUIRE 削除 + CI への組み込み。
+
+1. **inventory manifest**(コミット物): 全 golden case の
+   {name, files, expected.png の sha256, tolerance 有無, VAT 条件} の
+   exact set。生成は決定的スクリプト(更新 mode 付き — 追加/削除が
+   明示的 diff になる)
+2. **GPU 不要の照合テスト**: ディレクトリ実態と manifest の完全一致
+   (過不足・hash 不一致・未知 file を名前入りで列挙)。`gpu` ラベル
+   なし = CI で毎 push 照合
+3. update mode(golden 再基準化)でも membership が manifest 経由で
+   ロックされること(勝手な case 追加が CI で赤になる)
+4. **count REQUIRE(現 49/48)を削除**(inventory が正になるため)。
+   ローカル gate の「golden dir 数照合」手順も docs 更新
+5. 受け入れ = inventory fixture green(CPU)+ 既存 golden 全維持
+   (GPU ローカル)+ 既存全テスト + player 8 秒 + CI green
+
 ### WP137: 負債 CI0 — CPU gate の常設(GitHub Actions)
 
 参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
