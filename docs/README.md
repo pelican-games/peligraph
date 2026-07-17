@@ -56,6 +56,7 @@
 - `agent_operations.md` — **マルチエージェント運用ガイド**(体制・WP/ウェーブ・codex 起動標準・敵対レビューループ・マージゲート・鉄則。新規エージェントはまずこれ)
 - `implementation_plan.md` — WP 詳細・受け入れ基準・ウェーブ運用(v3)
 - `adding_features.md` — 機能追加レシピ集(cookbook)
+- `ci.md` — Windows/MSVC CPU gate、`gpu` ラベル、SKIP exact policy の運用
 - `rendering_phase1_review.md` — Validation Run の流儀
 
 ## 他リポジトリの文書

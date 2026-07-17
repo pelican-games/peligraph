@@ -1,0 +1,3 @@
+# Exact CTest names only. A listed test may pass when the runner can create
+# directory symlinks; every other Skipped/Not Run result fails the CPU gate.
+PathResolver rejects symlink escapes after canonicalization
