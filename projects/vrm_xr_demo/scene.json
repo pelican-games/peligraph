@@ -1,0 +1,21 @@
+{
+  "schema": "pelican.scene",
+  "version": 1,
+  "scenes": {"default_scene": {"objects": [
+    {"name": "Camera", "components": [
+      {"name": "transform", "pos": [0.0, 0.0, -5.0], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [1.0, 1.0, 1.0]},
+      {"name": "camera"}
+    ]},
+    {"name": "VrmXrHero", "components": [
+      {"name": "transform", "pos": [0.0, 1.0, 0.0], "rotation": [0.0, 0.0, 1.0, 0.0], "scale": [1.0, 1.0, 1.0]},
+      {"name": "simplemodelview", "model": "vrm_xr_character"}
+    ]},
+    {"name": "Ground", "components": [
+      {"name": "transform", "pos": [0.0, 1.03, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [1.4, 0.12, 1.4]},
+      {"name": "simplemodelview", "model": "ground"}
+    ]},
+    {"name": "Key", "components": [
+      {"name": "light", "type": "directional", "direction": [0.25, -0.55, 1.0], "intensity": 4.0, "color": [1.0, 0.94, 0.86]}
+    ]}
+  ]}}
+}

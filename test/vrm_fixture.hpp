@@ -1,5 +1,7 @@
 #pragma once
 
+#include "vrm_xr_demo_fixture.hpp"
+
 #include <array>
 #include <cstdint>
 #include <filesystem>
@@ -22,6 +24,7 @@ enum class Kind {
     unsupported_constraint_version,
     plain_glb,
     vrm0,
+    xr_demo,
 };
 
 inline Kind kindFromString(std::string_view value) {
@@ -35,6 +38,7 @@ inline Kind kindFromString(std::string_view value) {
     if (value == "unsupported-constraint") return Kind::unsupported_constraint_version;
     if (value == "plain") return Kind::plain_glb;
     if (value == "vrm0") return Kind::vrm0;
+    if (value == "xr-demo") return Kind::xr_demo;
     throw std::runtime_error("unknown VRM fixture kind");
 }
 
@@ -138,6 +142,7 @@ inline nlohmann::json makeDocument(Kind kind) {
 }
 
 inline std::vector<std::uint8_t> makeGlb(Kind kind) {
+    if (kind == Kind::xr_demo) return TestVrmXrDemoFixture::makeGlb();
     auto json_bytes = makeDocument(kind).dump();
     while (json_bytes.size() % 4 != 0) json_bytes.push_back(' ');
     std::vector<std::uint8_t> glb;

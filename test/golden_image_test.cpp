@@ -51,6 +51,7 @@
 #include "morph_fixture.hpp"
 #include "synthetic_stereo_target.hpp"
 #include "vat_fixture.hpp"
+#include "vrm_xr_demo_fixture.hpp"
 
 #include <algorithm>
 #include <array>
@@ -2011,6 +2012,24 @@ void writeVrmExpressionProject(const std::filesystem::path &root) {
       ]}}})json");
 }
 
+void writeVrmXrDemoGoldenProject(const std::filesystem::path &root) {
+    writeShadowProject(root, false);
+    TestVrmXrDemoFixture::writeGlb(root / "assets" / "vrm_xr_character.vrm");
+    writeTextFile(root / "assets.json", R"json({
+      "models":[{"name":"vrm_xr_character","path":"assets/vrm_xr_character.vrm"}]
+    })json");
+    writeTextFile(root / "scene.json", R"json({
+      "schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[
+        {"name":"VrmXrGolden","components":[
+          {"name":"transform","pos":[0,1.0,0],"rotation":[0,0,1,0],"scale":[0.8,0.8,0.8]},
+          {"name":"simplemodelview","model":"vrm_xr_character"}
+        ]},
+        {"name":"VrmXrSun","components":[
+          {"name":"light","type":"directional","direction":[0.1,-0.2,1.0],"intensity":4.0,"color":[1.0,0.95,0.9]}
+        ]}
+      ]}}})json");
+}
+
 void writeMaterialAbsoluteOverrideProject(const std::filesystem::path &root) {
     writeShadowProject(root, false);
     TestMaterialAbsoluteOverrideFixture::writeGlb(
@@ -2999,6 +3018,10 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         writeVrmExpressionProject(temp_dir);
         GET_MODULE(PathResolver).setup(temp_dir, false);
         GET_MODULE(ProjectSource).setProjectData(makeShadowProjectJson().dump());
+    } else if (golden_case.mode == "vrm_xr_demo") {
+        writeVrmXrDemoGoldenProject(temp_dir);
+        GET_MODULE(PathResolver).setup(temp_dir, false);
+        GET_MODULE(ProjectSource).setProjectData(makeShadowProjectJson().dump());
     } else if (golden_case.mode == "material_absolute_override") {
         writeMaterialAbsoluteOverrideProject(temp_dir);
         GET_MODULE(PathResolver).setup(temp_dir, false);
@@ -3119,6 +3142,8 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
         renderShadowFrame(render_target);
     } else if (golden_case.mode == "material_instance_override") {
         renderMaterialInstanceOverrideFrame(render_target);
+    } else if (golden_case.mode == "vrm_xr_demo") {
+        renderShadowFrame(render_target);
     } else if (golden_case.mode == "vrm_expression_off" ||
                golden_case.mode == "vrm_expression_on") {
         renderVrmExpressionFrame(render_target,
@@ -3498,9 +3523,9 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     requireGoldenVulkanDevice();
     const auto cases = discoverGoldenCases();
 #if PELICAN_WITH_VAT
-    REQUIRE(cases.size() == 48);
+    REQUIRE(cases.size() == 49);
 #else
-    REQUIRE(cases.size() == 47);
+    REQUIRE(cases.size() == 48);
 #endif
 
     for (const auto &golden_case : cases) {

@@ -1,0 +1,15 @@
+{
+  "schema": "pelican.input_profile",
+  "version": 1,
+  "name": "touch",
+  "bindings": [
+    {"action": "move", "binding": "xr:/user/hand/left/input/thumbstick"},
+    {"action": "jump", "binding": "xr:/user/hand/right/input/a/click"},
+    {"action": "expression_next", "binding": "xr:/user/hand/right/input/b/click"},
+    {"action": "look", "binding": "xr:/user/hand/right/input/thumbstick"},
+    {"action": "aim_left", "binding": "xr:/user/hand/left/input/aim/pose"},
+    {"action": "aim_right", "binding": "xr:/user/hand/right/input/aim/pose"},
+    {"action": "grip_left", "binding": "xr:/user/hand/left/input/grip/pose"},
+    {"action": "grip_right", "binding": "xr:/user/hand/right/input/grip/pose"}
+  ]
+}
