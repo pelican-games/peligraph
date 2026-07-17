@@ -117,6 +117,9 @@ DECLARE_MODULE(SessionRuntime) {
     XrLocatedViews locateViews(const XrDisplayTiming &display_timing);
     void endFrame(const XrDisplayTiming &display_timing);
     InputActionFrame syncActions(const std::vector<std::string> &active_action_set_stack);
+    void endFrame(const XrDisplayTiming &display_timing,
+                  const XrCompositionLayerBaseHeader &layer);
+    void reportCompositionLoss(XrResult result) noexcept;
 
     bool isSessionRunning() const noexcept { return session_running; }
     bool isInputEligible() const noexcept {
@@ -125,6 +128,10 @@ DECLARE_MODULE(SessionRuntime) {
     XrSessionState sessionState() const noexcept { return state; }
     XrTerminalPath terminalPath() const noexcept { return terminal_path; }
     bool hasTerminalPath() const noexcept { return terminal_path != XrTerminalPath::none; }
+    XrInstance instanceHandle() const noexcept { return instance; }
+    XrSystemId systemId() const noexcept { return system_id; }
+    XrSession sessionHandle() const noexcept { return session; }
+    XrSpace trackingSpace() const noexcept { return tracking_space; }
 };
 
 // Executes the XR1b frame contract.  The callback is the existing simulation
