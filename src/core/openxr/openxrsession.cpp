@@ -44,7 +44,25 @@ SessionRuntime::SessionRuntime() : SessionRuntime(productionDependencies()) {}
 SessionRuntime::SessionRuntime(const XrSessionDependencies &dependencies)
     : instance{dependencies.instance}, system_id{dependencies.system_id} {
     resolve(dependencies.get_instance_proc_addr);
-    create(dependencies);
+    try {
+        create(dependencies);
+        if (dependencies.input_actions != nullptr &&
+            dependencies.input_actions->actionCount() != 0) {
+            action_runtime = std::make_unique<XrActionRuntime>(
+                dependencies.get_instance_proc_addr, instance, session,
+                *dependencies.input_actions);
+        }
+    } catch (...) {
+        if (tracking_space != XR_NULL_HANDLE && api.destroy_space != nullptr) {
+            (void)api.destroy_space(tracking_space);
+            tracking_space = XR_NULL_HANDLE;
+        }
+        if (session != XR_NULL_HANDLE && api.destroy_session != nullptr) {
+            (void)api.destroy_session(session);
+            session = XR_NULL_HANDLE;
+        }
+        throw;
+    }
 }
 
 SessionRuntime::~SessionRuntime() {
@@ -56,6 +74,7 @@ SessionRuntime::~SessionRuntime() {
         (void)api.destroy_session(session);
     }
     session = XR_NULL_HANDLE;
+    action_runtime.reset();
     session_running = false;
 }
 
@@ -246,6 +265,12 @@ void SessionRuntime::endFrame(const XrDisplayTiming &display_timing) {
     frame_phase = FramePhase::idle;
     pending_display_time = 0;
     if (XR_FAILED(result)) throwFailure("xrEndFrame", result);
+}
+
+InputActionFrame SessionRuntime::syncActions(
+    const std::vector<std::string> &active_action_set_stack) {
+    if (action_runtime == nullptr) return {};
+    return action_runtime->sync(active_action_set_stack, isInputEligible());
 }
 
 XrFrameResult runSessionFrame(SessionRuntime &runtime, EngineTime &engine_time,

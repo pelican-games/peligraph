@@ -869,4 +869,27 @@ InputActionFrame evaluateInputActions(const InputActionMap &map, const InputSnap
     return frame;
 }
 
+void mergeInputActionBackendFrame(InputActionFrame &destination,
+                                  const InputActionFrame &backend_frame) {
+    for (const auto &[action_name, source] : backend_frame.actions) {
+        const auto destination_type = destination.action_types.find(action_name);
+        const auto source_type = backend_frame.action_types.find(action_name);
+        if (destination_type == destination.action_types.end() ||
+            source_type == backend_frame.action_types.end()) {
+            continue;
+        }
+        if (destination_type->second != source_type->second) {
+            throw std::runtime_error("input backend type mismatch for action: " + action_name);
+        }
+        auto &target = destination.actions.at(action_name);
+        const bool any_release = target.released || source.released;
+        target.pressed = target.pressed || source.pressed;
+        target.held = target.held || source.held;
+        target.released = any_release && !target.held;
+        target.axis1 = clampAxis(target.axis1 + source.axis1);
+        target.axis2.x = clampAxis(target.axis2.x + source.axis2.x);
+        target.axis2.y = clampAxis(target.axis2.y + source.axis2.y);
+    }
+}
+
 } // namespace Pelican

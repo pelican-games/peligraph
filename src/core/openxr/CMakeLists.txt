@@ -1,4 +1,5 @@
 add_library(pelican_openxr STATIC
+    openxraction.cpp
     openxrdiscovery.cpp
     openxrsession.cpp
 )
@@ -8,5 +9,5 @@ target_include_directories(pelican_openxr PRIVATE
     ${Vulkan_INCLUDE_DIRS}
 )
 target_link_libraries(pelican_openxr PUBLIC OpenXR::headers)
-target_link_libraries(pelican_openxr PRIVATE OpenXR::openxr_loader quill)
+target_link_libraries(pelican_openxr PRIVATE OpenXR::openxr_loader nlohmann_json quill)
 target_link_libraries(pelican_core PRIVATE pelican_openxr)

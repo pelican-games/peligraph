@@ -100,5 +100,7 @@ InputBindingProfile parseInputProfileString(std::string_view document, const Inp
 InputActionMap applyInputProfile(InputActionMap map, const InputBindingProfile &profile);
 InputActionFrame evaluateInputActions(const InputActionMap &map, const InputSnapshot &snapshot,
                                       const std::vector<std::string> &action_set_stack);
+void mergeInputActionBackendFrame(InputActionFrame &destination,
+                                  const InputActionFrame &backend_frame);
 
 } // namespace Pelican

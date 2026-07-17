@@ -34,7 +34,8 @@
     "input_profiles": {
       "keyboard": "input/profiles/keyboard.json",
       "gamepad": "input/profiles/gamepad.json",
-      "arcade": "input/profiles/arcade.json"
+      "arcade": "input/profiles/arcade.json",
+      "touch": "input/profiles/touch.json"
     },
     "input_profile": "keyboard"
   }
