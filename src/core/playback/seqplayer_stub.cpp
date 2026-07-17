@@ -35,4 +35,9 @@ void SeqPlayer::initializeInstances(const std::filesystem::path &) {}
 
 void SeqPlayer::update(double) {}
 
+void SeqPlayer::releaseInstancesForSceneLoad() {
+    instances.clear();
+    enabled = false;
+}
+
 } // namespace Pelican

@@ -280,8 +280,25 @@ ModelInstanceId StagedModelInstance::id() const noexcept {
     return impl_ ? impl_->id : ModelInstanceId{};
 }
 
+bool PolygonInstanceContainer::isLive(ModelInstanceId id) const noexcept {
+    return id.scene_epoch == scene_epoch && id.index < instance_alive.size() &&
+           instance_alive[id.index] &&
+           instance_generations[id.index] == id.generation;
+}
+
+std::uint32_t PolygonInstanceContainer::requireLive(ModelInstanceId id,
+                                                    const char *api_name) const {
+    if (!isLive(id)) {
+        throw std::runtime_error(std::string{"PolygonInstanceContainer::"} +
+                                 api_name + ": stale ModelInstanceId " +
+                                 toString(id));
+    }
+    return id.index;
+}
+
 void PolygonInstanceContainer::preflightModelInstance(const ModelTemplate &model) const {
-    if (model_instances_data.size() >= maxModelInstances) {
+    if (free_instance_indices.empty() &&
+        model_instances_data.size() >= maxModelInstances) {
         throw std::runtime_error("Model instance capacity exceeded");
     }
 
@@ -299,7 +316,11 @@ StagedModelInstance PolygonInstanceContainer::stageModelInstance(const ModelTemp
     preflightModelInstance(model);
 
     auto staged = std::make_unique<StagedModelInstance::Impl>();
-    staged->id = ModelInstanceId{static_cast<uint32_t>(model_instances_data.size())};
+    const auto reuse = !free_instance_indices.empty();
+    const auto index = reuse ? free_instance_indices.back()
+                             : static_cast<std::uint32_t>(model_instances_data.size());
+    const auto generation = reuse ? instance_generations[index] : 1u;
+    staged->id = ModelInstanceId{index, generation, scene_epoch};
     staged->asset_id = model.asset_id;
     staged->material_initial_values = model.material_initial_values;
     staged->vrm_semantic = model.vrm_semantic;
@@ -316,8 +337,8 @@ StagedModelInstance PolygonInstanceContainer::stageModelInstance(const ModelTemp
                               ? model.morph_targets->default_weights
                               : std::vector<float>{};
     staged->morph_weight_frame = MorphWeightFrame{
-        .instance_identity = static_cast<std::uint64_t>(staged->id.value) + 1,
-        .instance_generation = 1,
+        .instance_identity = static_cast<std::uint64_t>(staged->id.index) + 1,
+        .instance_generation = reuse ? animation_generations[index] : 1u,
         .layout_generation = model.morph_targets ? model.morph_targets->generation : 0,
         .current_revision = 0,
         .previous_revision = 0,
@@ -335,7 +356,7 @@ StagedModelInstance PolygonInstanceContainer::stageModelInstance(const ModelTemp
                         1,
                         primitive.index_offset,
                         primitive.vert_offset,
-                        staged->id.value,
+                        staged->id.index,
                     },
                 .material = material.material,
                 .source_material_index = material.source_material_index,
@@ -348,7 +369,7 @@ StagedModelInstance PolygonInstanceContainer::stageModelInstance(const ModelTemp
 
     // Reserve every live container before publication. Once this succeeds,
     // publishModelInstance() only moves/copies into already allocated storage.
-    const auto instance_capacity = model_instances_data.size() + 1;
+    const auto instance_capacity = model_instances_data.size() + (reuse ? 0u : 1u);
     model_instances_data.reserve(instance_capacity);
     previous_model_instances_data.reserve(instance_capacity);
     model_history_valid.reserve(instance_capacity);
@@ -357,6 +378,9 @@ StagedModelInstance PolygonInstanceContainer::stageModelInstance(const ModelTemp
     animation_revisions.reserve(instance_capacity);
     previous_animation_revisions.reserve(instance_capacity);
     animation_generations.reserve(instance_capacity);
+    instance_generations.reserve(instance_capacity);
+    instance_alive.reserve(instance_capacity);
+    free_instance_indices.reserve(instance_capacity);
     model_asset_ids.reserve(instance_capacity);
     material_initial_value_tables.reserve(instance_capacity);
     vrm_semantics.reserve(instance_capacity);
@@ -370,7 +394,7 @@ StagedModelInstance PolygonInstanceContainer::stageModelInstance(const ModelTemp
     if (!staged->skin_palette.empty()) {
         GET_MODULE(VulkanManageCore)
             .writeBuf(skin_palette_buffer, staged->skin_palette.data(),
-                      sizeof(glm::mat4) * maxSkinJoints * staged->id.value,
+                      sizeof(glm::mat4) * maxSkinJoints * staged->id.index,
                       sizeof(glm::mat4) * staged->skin_palette.size());
     }
 
@@ -379,26 +403,54 @@ StagedModelInstance PolygonInstanceContainer::stageModelInstance(const ModelTemp
 
 void PolygonInstanceContainer::publishModelInstance(StagedModelInstance staged) noexcept {
     assert(staged.impl_ != nullptr);
-    assert(staged.impl_->id.value == model_instances_data.size());
-    assert(model_instances_data.size() < model_instances_data.capacity());
     assert(render_commands.size() + staged.impl_->render_commands.size() <=
            render_commands.capacity());
 
     auto &candidate = *staged.impl_;
-    model_instances_data.push_back(glm::identity<glm::mat4>());
-    previous_model_instances_data.push_back(glm::identity<glm::mat4>());
-    model_history_valid.push_back(false);
-    skin_palettes.push_back(std::move(candidate.skin_palette));
-    previous_skin_palettes.emplace_back();
-    animation_revisions.push_back(0);
-    previous_animation_revisions.push_back(0);
-    animation_generations.push_back(1);
-    model_asset_ids.push_back(candidate.asset_id);
-    material_initial_value_tables.push_back(std::move(candidate.material_initial_values));
-    vrm_semantics.push_back(std::move(candidate.vrm_semantic));
-    morph_layouts.push_back(std::move(candidate.morph_layout));
-    morph_weight_frames.push_back(std::move(candidate.morph_weight_frame));
-    morph_history_valid.push_back(false);
+    const auto index = candidate.id.index;
+    assert(candidate.id.scene_epoch == scene_epoch);
+    if (index == model_instances_data.size()) {
+        assert(model_instances_data.size() < model_instances_data.capacity());
+        model_instances_data.push_back(glm::identity<glm::mat4>());
+        previous_model_instances_data.push_back(glm::identity<glm::mat4>());
+        model_history_valid.push_back(false);
+        skin_palettes.push_back(std::move(candidate.skin_palette));
+        previous_skin_palettes.emplace_back();
+        animation_revisions.push_back(0);
+        previous_animation_revisions.push_back(0);
+        animation_generations.push_back(1);
+        instance_generations.push_back(candidate.id.generation);
+        instance_alive.push_back(true);
+        model_asset_ids.push_back(candidate.asset_id);
+        material_initial_value_tables.push_back(
+            std::move(candidate.material_initial_values));
+        vrm_semantics.push_back(std::move(candidate.vrm_semantic));
+        morph_layouts.push_back(std::move(candidate.morph_layout));
+        morph_weight_frames.push_back(std::move(candidate.morph_weight_frame));
+        morph_history_valid.push_back(false);
+    } else {
+        assert(!free_instance_indices.empty());
+        assert(free_instance_indices.back() == index);
+        assert(index < instance_alive.size() && !instance_alive[index]);
+        assert(instance_generations[index] == candidate.id.generation);
+        free_instance_indices.pop_back();
+        model_instances_data[index] = glm::identity<glm::mat4>();
+        previous_model_instances_data[index] = glm::identity<glm::mat4>();
+        model_history_valid[index] = false;
+        skin_palettes[index] = std::move(candidate.skin_palette);
+        previous_skin_palettes[index].clear();
+        animation_revisions[index] = 0;
+        previous_animation_revisions[index] = 0;
+        model_asset_ids[index] = candidate.asset_id;
+        material_initial_value_tables[index] =
+            std::move(candidate.material_initial_values);
+        vrm_semantics[index] = std::move(candidate.vrm_semantic);
+        morph_layouts[index] = std::move(candidate.morph_layout);
+        morph_weight_frames[index] = std::move(candidate.morph_weight_frame);
+        morph_history_valid[index] = false;
+        instance_alive[index] = true;
+    }
+    ++live_instance_count;
     render_commands.insert(render_commands.end(),
                            std::make_move_iterator(candidate.render_commands.begin()),
                            std::make_move_iterator(candidate.render_commands.end()));
@@ -410,62 +462,80 @@ ModelInstanceId PolygonInstanceContainer::placeModelInstance(const ModelTemplate
     publishModelInstance(std::move(staged));
     return id;
 }
-void PolygonInstanceContainer::removeModelInstance(ModelInstanceId id) {
-    if (id.value >= model_instances_data.size()) {
-        return;
-    }
-
-    const auto first_instance = id.value;
-    std::erase_if(render_commands, [first_instance](const RenderCommand &command) {
-        return command.command.firstInstance == first_instance;
-    });
-    model_instances_data[id.value] = glm::identity<glm::mat4>();
-    previous_model_instances_data[id.value] = glm::identity<glm::mat4>();
-    model_history_valid[id.value] = false;
-    skin_palettes[id.value].clear();
-    previous_skin_palettes[id.value].clear();
-    animation_revisions[id.value] = 0;
-    previous_animation_revisions[id.value] = 0;
-    model_asset_ids[id.value] = {};
-    material_initial_value_tables[id.value].reset();
-    vrm_semantics[id.value].reset();
-    if (++animation_generations[id.value] == 0) ++animation_generations[id.value];
-    morph_layouts[id.value].reset();
-    morph_weight_frames[id.value] = MorphWeightFrame{
-        .instance_identity = static_cast<std::uint64_t>(id.value) + 1,
-        .instance_generation = animation_generations[id.value],
+void PolygonInstanceContainer::resetSlot(std::uint32_t index) {
+    model_instances_data[index] = glm::identity<glm::mat4>();
+    previous_model_instances_data[index] = glm::identity<glm::mat4>();
+    model_history_valid[index] = false;
+    skin_palettes[index].clear();
+    previous_skin_palettes[index].clear();
+    animation_revisions[index] = 0;
+    previous_animation_revisions[index] = 0;
+    model_asset_ids[index] = {};
+    material_initial_value_tables[index].reset();
+    vrm_semantics[index].reset();
+    if (++animation_generations[index] == 0) ++animation_generations[index];
+    morph_layouts[index].reset();
+    morph_weight_frames[index] = MorphWeightFrame{
+        .instance_identity = static_cast<std::uint64_t>(index) + 1,
+        .instance_generation = animation_generations[index],
     };
-    morph_history_valid[id.value] = false;
-    material_override_frames.erase(id.value);
-    const MaterialInstanceOverrideGpuData empty{};
-    GET_MODULE(VulkanManageCore).writeBuf(
-        material_override_buffer, &empty,
-        sizeof(MaterialInstanceOverrideGpuData) * id.value, sizeof(empty));
-    const auto identity = static_cast<std::uint64_t>(id.value) + 1;
+    morph_history_valid[index] = false;
+    material_override_frames.erase(index);
+    const auto identity = static_cast<std::uint64_t>(index) + 1;
     std::erase_if(material_absolute_override_frames,
                   [identity](const auto &entry) {
                       return entry.first.instance_identity == identity;
                   });
+}
+
+bool PolygonInstanceContainer::removeModelInstance(ModelInstanceId id) {
+    if (!isLive(id)) return false;
+
+    const auto index = id.index;
+    std::erase_if(render_commands, [index](const RenderCommand &command) {
+        return command.command.firstInstance == index;
+    });
+    resetSlot(index);
+    instance_alive[index] = false;
+    --live_instance_count;
+    if (instance_generations[index] !=
+        std::numeric_limits<std::uint32_t>::max()) {
+        ++instance_generations[index];
+        free_instance_indices.push_back(index);
+    }
+    const MaterialInstanceOverrideGpuData empty{};
+    GET_MODULE(VulkanManageCore).writeBuf(
+        material_override_buffer, &empty,
+        sizeof(MaterialInstanceOverrideGpuData) * index, sizeof(empty));
     uploadMaterialAbsoluteOverrides();
+    return true;
 }
 
 void PolygonInstanceContainer::clear() {
+    if (scene_epoch == std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error(
+            "PolygonInstanceContainer::clear: ModelInstanceId scene epoch exhausted");
+    }
+    free_instance_indices.clear();
+    free_instance_indices.reserve(model_instances_data.size());
     render_commands.clear();
     for (auto &calls : draw_calls) calls.clear();
-    model_instances_data.clear();
-    previous_model_instances_data.clear();
-    model_history_valid.clear();
-    skin_palettes.clear();
-    previous_skin_palettes.clear();
-    animation_revisions.clear();
-    previous_animation_revisions.clear();
-    animation_generations.clear();
-    model_asset_ids.clear();
-    material_initial_value_tables.clear();
-    vrm_semantics.clear();
-    morph_layouts.clear();
-    morph_weight_frames.clear();
-    morph_history_valid.clear();
+    for (std::uint32_t index = 0; index < instance_alive.size(); ++index) {
+        if (instance_alive[index]) {
+            resetSlot(index);
+            instance_alive[index] = false;
+            if (instance_generations[index] !=
+                std::numeric_limits<std::uint32_t>::max()) {
+                ++instance_generations[index];
+            }
+        }
+        if (instance_generations[index] !=
+            std::numeric_limits<std::uint32_t>::max()) {
+            free_instance_indices.push_back(index);
+        }
+    }
+    live_instance_count = 0;
+    ++scene_epoch;
     material_override_frames.clear();
     material_absolute_override_frames.clear();
     const std::vector<MaterialInstanceOverrideGpuData> empty(maxModelInstances);
@@ -663,14 +733,16 @@ bool PolygonInstanceContainer::canRebuildModelInstances(
     for (const auto &command : render_commands) {
         const auto instance = command.command.firstInstance;
         if (instance < model_asset_ids.size() &&
+            instance_alive[instance] &&
             by_asset.contains(model_asset_ids[instance].value)) {
             --command_count;
         }
     }
     for (const auto &[asset, replacement] : by_asset) {
         size_t instances = 0;
-        for (const auto current : model_asset_ids)
-            if (current.value == asset) ++instances;
+        for (std::size_t index = 0; index < model_asset_ids.size(); ++index)
+            if (instance_alive[index] && model_asset_ids[index].value == asset)
+                ++instances;
         const auto primitives = primitiveCount(*replacement);
         if (instances != 0 && primitives > (maxRenderCommands - command_count) / instances)
             return false;
@@ -699,6 +771,7 @@ void PolygonInstanceContainer::rebuildModelInstances(
     for (const auto &command : render_commands) {
         const auto instance = command.command.firstInstance;
         if (instance < model_asset_ids.size() &&
+            instance_alive[instance] &&
             by_asset.contains(model_asset_ids[instance].value))
             continue;
         rebuilt.push_back(command);
@@ -720,6 +793,7 @@ void PolygonInstanceContainer::rebuildModelInstances(
     auto next_previous_models = previous_model_instances_data;
     auto next_history_valid = model_history_valid;
     for (uint32_t instance = 0; instance < model_asset_ids.size(); ++instance) {
+        if (!instance_alive[instance]) continue;
         const auto found = by_asset.find(model_asset_ids[instance].value);
         if (found == by_asset.end()) continue;
         const auto &replacement = *found->second;
@@ -810,22 +884,27 @@ void PolygonInstanceContainer::rebuildModelInstances(
 }
 
 size_t PolygonInstanceContainer::instanceCountForAssetForTesting(ModelAssetId asset_id) const {
-    return static_cast<size_t>(std::count(model_asset_ids.begin(), model_asset_ids.end(), asset_id));
+    size_t count = 0;
+    for (std::size_t index = 0; index < model_asset_ids.size(); ++index) {
+        if (instance_alive[index] && model_asset_ids[index] == asset_id) ++count;
+    }
+    return count;
 }
 
 void PolygonInstanceContainer::setSkinningPalette(ModelInstanceId id,
-                                                  std::span<const glm::mat4> palette) {
-    if (id.value >= model_instances_data.size()) throw std::runtime_error("Model instance not found");
+                                                   std::span<const glm::mat4> palette) {
+    const auto index = requireLive(id, "setSkinningPalette");
     if (palette.size() > maxSkinJoints) throw std::runtime_error("Skin palette exceeds 128 joints");
-    skin_palettes[id.value].assign(palette.begin(), palette.end());
+    skin_palettes[index].assign(palette.begin(), palette.end());
     GET_MODULE(VulkanManageCore).writeBuf(skin_palette_buffer, palette.data(),
-                                         sizeof(glm::mat4) * maxSkinJoints * id.value,
+                                         sizeof(glm::mat4) * maxSkinJoints * index,
                                          sizeof(glm::mat4) * palette.size());
 }
 
 Animation::InstanceHandle PolygonInstanceContainer::animationInstance(ModelInstanceId id) const {
-    if (id.value >= animation_generations.size()) return Animation::invalidHandle<Animation::InstanceHandle>();
-    return {static_cast<std::uint64_t>(id.value) + 1, animation_generations[id.value], 0};
+    if (!isLive(id)) return Animation::invalidHandle<Animation::InstanceHandle>();
+    return {static_cast<std::uint64_t>(id.index) + 1,
+            animation_generations[id.index], 0};
 }
 
 Animation::Status PolygonInstanceContainer::publishAnimationFrame(
@@ -835,7 +914,8 @@ Animation::Status PolygonInstanceContainer::publishAnimationFrame(
     if (frame.struct_size < minimum) return Animation::Status::invalid_argument;
     if (frame.version != Animation::descriptorVersionV1) return Animation::Status::unsupported_version;
     if (frame.reserved0 != 0 || frame.reserved1 != 0) return Animation::Status::reserved_not_zero;
-    if (id.value >= skin_palettes.size()) return Animation::Status::invalid_handle;
+    if (!isLive(id)) return Animation::Status::invalid_handle;
+    const auto index = id.index;
     const auto expected = animationInstance(id);
     if (!Animation::isValid(frame.instance) || frame.instance.identity != expected.identity)
         return Animation::Status::invalid_handle;
@@ -845,22 +925,23 @@ Animation::Status PolygonInstanceContainer::publishAnimationFrame(
         frame.palette_count > maxSkinJoints ||
         (frame.flags & ~(Animation::commit_reset_history | Animation::commit_discontinuity)) != 0)
         return Animation::Status::invalid_argument;
-    if (animation_revisions[id.value] != 0 && frame.frame_revision <= animation_revisions[id.value])
+    if (animation_revisions[index] != 0 &&
+        frame.frame_revision <= animation_revisions[index])
         return Animation::Status::duplicate_revision;
 
     std::vector<glm::mat4> palette(frame.palette_count);
     if (!palette.empty()) std::memcpy(palette.data(), frame.palette, palette.size() * sizeof(glm::mat4));
     if (!palette.empty()) {
         GET_MODULE(VulkanManageCore).writeBuf(skin_palette_buffer, palette.data(),
-                                             sizeof(glm::mat4) * maxSkinJoints * id.value,
+                                             sizeof(glm::mat4) * maxSkinJoints * index,
                                              sizeof(glm::mat4) * palette.size());
     }
-    skin_palettes[id.value] = std::move(palette);
-    animation_revisions[id.value] = frame.frame_revision;
-    if (previous_animation_revisions[id.value] == 0 ||
+    skin_palettes[index] = std::move(palette);
+    animation_revisions[index] = frame.frame_revision;
+    if (previous_animation_revisions[index] == 0 ||
         (frame.flags & (Animation::commit_reset_history | Animation::commit_discontinuity)) != 0) {
-        previous_skin_palettes[id.value] = skin_palettes[id.value];
-        previous_animation_revisions[id.value] = frame.frame_revision;
+        previous_skin_palettes[index] = skin_palettes[index];
+        previous_animation_revisions[index] = frame.frame_revision;
     }
     return Animation::Status::ok;
 }
@@ -874,8 +955,9 @@ Animation::Status PolygonInstanceContainer::publishMorphWeightFrame(
         return Animation::Status::unsupported_version;
     if (frame.reserved0 != 0 || frame.reserved1 != 0)
         return Animation::Status::reserved_not_zero;
-    if (id.value >= morph_weight_frames.size()) return Animation::Status::invalid_handle;
-    const auto &layout = morph_layouts[id.value];
+    if (!isLive(id)) return Animation::Status::invalid_handle;
+    const auto index = id.index;
+    const auto &layout = morph_layouts[index];
     if (!layout || frame.layout_generation != layout->generation)
         return Animation::Status::stale_generation;
     if (frame.frame_revision == 0 || frame.weight_count != layout->default_weights.size() ||
@@ -883,7 +965,7 @@ Animation::Status PolygonInstanceContainer::publishMorphWeightFrame(
         frame.weight_count > maxMorphWeightsPerInstance ||
         (frame.flags & ~(morphCommitResetHistory | morphCommitDiscontinuity)) != 0)
         return Animation::Status::invalid_argument;
-    const auto &current = morph_weight_frames[id.value];
+    const auto &current = morph_weight_frames[index];
     if (current.current_revision != 0 &&
         frame.frame_revision <= current.current_revision)
         return Animation::Status::duplicate_revision;
@@ -894,14 +976,14 @@ Animation::Status PolygonInstanceContainer::publishMorphWeightFrame(
                     [](float value) { return !std::isfinite(value); }))
         return Animation::Status::invalid_argument;
 
-    auto &destination = morph_weight_frames[id.value];
+    auto &destination = morph_weight_frames[index];
     destination.current = std::move(weights);
     destination.current_revision = frame.frame_revision;
-    if (!morph_history_valid[id.value] ||
+    if (!morph_history_valid[index] ||
         (frame.flags & (morphCommitResetHistory | morphCommitDiscontinuity)) != 0) {
         destination.previous = destination.current;
         destination.previous_revision = destination.current_revision;
-        morph_history_valid[id.value] = false;
+        morph_history_valid[index] = false;
     }
     return Animation::Status::ok;
 }
@@ -916,8 +998,8 @@ Animation::Status PolygonInstanceContainer::publishMaterialInstanceOverride(
         return Animation::Status::unsupported_version;
     if (frame.reserved0 != 0 || frame.reserved1 != 0)
         return Animation::Status::reserved_not_zero;
-    if (id.value >= model_instances_data.size())
-        return Animation::Status::invalid_handle;
+    if (!isLive(id)) return Animation::Status::invalid_handle;
+    const auto index = id.index;
 
     const auto expected = animationInstance(id);
     if (!Animation::isValid(frame.instance) ||
@@ -943,7 +1025,7 @@ Animation::Status PolygonInstanceContainer::publishMaterialInstanceOverride(
         !std::isfinite(frame.values.uv_rotation))
         return Animation::Status::invalid_argument;
 
-    const auto found = material_override_frames.find(id.value);
+    const auto found = material_override_frames.find(index);
     if (found != material_override_frames.end() &&
         frame.frame_revision <= found->second.current_revision)
         return Animation::Status::duplicate_revision;
@@ -978,8 +1060,8 @@ Animation::Status PolygonInstanceContainer::publishMaterialInstanceOverride(
     };
     GET_MODULE(VulkanManageCore).writeBuf(
         material_override_buffer, &gpu,
-        sizeof(MaterialInstanceOverrideGpuData) * id.value, sizeof(gpu));
-    material_override_frames.insert_or_assign(id.value, std::move(next));
+        sizeof(MaterialInstanceOverrideGpuData) * index, sizeof(gpu));
+    material_override_frames.insert_or_assign(index, std::move(next));
     return Animation::Status::ok;
 }
 
@@ -1048,8 +1130,8 @@ PolygonInstanceContainer::publishMaterialInstanceAbsoluteOverride(
         return Animation::Status::unsupported_version;
     if (frame.reserved0 != 0 || frame.reserved1 != 0)
         return Animation::Status::reserved_not_zero;
-    if (id.value >= model_instances_data.size())
-        return Animation::Status::invalid_handle;
+    if (!isLive(id)) return Animation::Status::invalid_handle;
+    const auto index = id.index;
 
     const auto expected = animationInstance(id);
     if (!Animation::isValid(frame.instance) ||
@@ -1064,7 +1146,7 @@ PolygonInstanceContainer::publishMaterialInstanceAbsoluteOverride(
                          materialOverrideCommitDiscontinuity)) != 0)
         return Animation::Status::invalid_argument;
 
-    const auto &initial_values = material_initial_value_tables[id.value];
+    const auto &initial_values = material_initial_value_tables[index];
     if (!initial_values ||
         frame.source_material_index >= initial_values->values.size() ||
         initial_values->values[frame.source_material_index]
@@ -1119,8 +1201,8 @@ PolygonInstanceContainer::publishMaterialInstanceAbsoluteOverride(
 Animation::Status PolygonInstanceContainer::publishVrmApplicationTransaction(
     ModelInstanceId id,
     const PublishVrmApplicationTransactionDescV1 &transaction) {
-    if (id.value >= model_instances_data.size())
-        return Animation::Status::invalid_handle;
+    if (!isLive(id)) return Animation::Status::invalid_handle;
+    const auto index = id.index;
 
     std::vector<std::uint32_t> material_indices;
     material_indices.reserve(transaction.material_overrides.size());
@@ -1136,8 +1218,8 @@ Animation::Status PolygonInstanceContainer::publishVrmApplicationTransaction(
     bool previous_morph_history_valid = false;
     decltype(material_absolute_override_frames) previous_materials;
     try {
-        previous_morph = morph_weight_frames.at(id.value);
-        previous_morph_history_valid = morph_history_valid.at(id.value);
+        previous_morph = morph_weight_frames.at(index);
+        previous_morph_history_valid = morph_history_valid.at(index);
         previous_materials = material_absolute_override_frames;
     } catch (...) {
         return Animation::Status::out_of_memory;
@@ -1145,8 +1227,8 @@ Animation::Status PolygonInstanceContainer::publishVrmApplicationTransaction(
 
     const auto rollback = [&]() noexcept {
         try {
-            morph_weight_frames[id.value] = previous_morph;
-            morph_history_valid[id.value] = previous_morph_history_valid;
+            morph_weight_frames[index] = previous_morph;
+            morph_history_valid[index] = previous_morph_history_valid;
             material_absolute_override_frames = previous_materials;
             uploadMaterialAbsoluteOverrides();
         } catch (...) {
@@ -1184,10 +1266,12 @@ PolygonInstanceContainer::vrmApplicationModel(
         return std::nullopt;
     const auto index = static_cast<std::uint32_t>(instance.identity - 1);
     if (animation_generations[index] != instance.generation ||
-        index >= vrm_semantics.size() || !vrm_semantics[index])
+        index >= vrm_semantics.size() || !instance_alive[index] ||
+        !vrm_semantics[index])
         return std::nullopt;
     return VrmApplicationModelView{
-        .model_instance = ModelInstanceId{index},
+        .model_instance =
+            ModelInstanceId{index, instance_generations[index], scene_epoch},
         .instance = instance,
         .semantic = vrm_semantics[index],
         .morph_layout = morph_layouts[index],
@@ -1221,12 +1305,55 @@ void PolygonInstanceContainer::bindSkinning(vk::CommandBuffer cmd_buf,
 }
 
 void PolygonInstanceContainer::setTrs(ModelInstanceId id, glm::vec3 pos, glm::quat rotation, glm::vec3 scale) {
-    if (id.value >= model_instances_data.size()) {
-        throw std::runtime_error("Model instance not found");
-    }
+    const auto index = requireLive(id, "setTrs");
 
-    model_instances_data[id.value] = glm::translate(glm::identity<glm::mat4>(), pos) * glm::toMat4(rotation) *
-                                     glm::scale(glm::identity<glm::mat4>(), scale);
+    model_instances_data[index] = glm::translate(glm::identity<glm::mat4>(), pos) *
+                                  glm::toMat4(rotation) *
+                                  glm::scale(glm::identity<glm::mat4>(), scale);
+}
+
+ModelInstanceId
+PolygonInstanceContainer::modelInstanceIdForTesting(std::uint32_t index) const {
+    if (index >= instance_alive.size() || !instance_alive[index]) {
+        throw std::runtime_error(
+            "PolygonInstanceContainer::modelInstanceIdForTesting: slot is not live: " +
+            std::to_string(index));
+    }
+    return ModelInstanceId{index, instance_generations[index], scene_epoch};
+}
+
+ModelInstanceId PolygonInstanceContainer::forceGenerationForTesting(
+    ModelInstanceId id, std::uint32_t generation) {
+    const auto index = requireLive(id, "forceGenerationForTesting");
+    if (generation == 0) {
+        throw std::invalid_argument(
+            "PolygonInstanceContainer::forceGenerationForTesting: generation must be non-zero");
+    }
+    instance_generations[index] = generation;
+    return ModelInstanceId{index, generation, scene_epoch};
+}
+
+void PolygonInstanceContainer::forceSceneEpochForTesting(std::uint64_t epoch) {
+    if (live_instance_count != 0) {
+        throw std::runtime_error(
+            "PolygonInstanceContainer::forceSceneEpochForTesting: live instances remain");
+    }
+    if (epoch == 0) {
+        throw std::invalid_argument(
+            "PolygonInstanceContainer::forceSceneEpochForTesting: epoch must be non-zero");
+    }
+    scene_epoch = epoch;
+}
+
+glm::mat4 PolygonInstanceContainer::currentModelMatrixForTesting(
+    ModelInstanceId id) const {
+    return model_instances_data.at(requireLive(id, "currentModelMatrixForTesting"));
+}
+
+glm::mat4 PolygonInstanceContainer::previousModelMatrixForTesting(
+    ModelInstanceId id) const {
+    return previous_model_instances_data.at(
+        requireLive(id, "previousModelMatrixForTesting"));
 }
 
 const BufferWrapper &PolygonInstanceContainer::getIndirectBuf() const { return indirect_buf; }

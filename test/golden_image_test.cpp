@@ -2594,8 +2594,10 @@ void renderMaterialInstanceOverrideFrame(RenderTarget &render_target) {
     GET_MODULE(ECSCore).update();
 
     auto &instances = GET_MODULE(PolygonInstanceContainer);
+    const auto left_model = instances.modelInstanceIdForTesting(0);
+    const auto right_model = instances.modelInstanceIdForTesting(1);
     PublishMaterialInstanceOverrideDescV1 left;
-    left.instance = instances.animationInstance(ModelInstanceId{0});
+    left.instance = instances.animationInstance(left_model);
     left.frame_revision = 1;
     left.values.mask = materialOverrideBaseColor | materialOverrideEmissive |
                        materialOverrideUvTransform;
@@ -2604,17 +2606,17 @@ void renderMaterialInstanceOverrideFrame(RenderTarget &render_target) {
     left.values.uv_offset = {0.25f, 0.0f};
     left.values.uv_scale = {0.75f, 1.0f};
     left.values.uv_rotation = 0.2f;
-    REQUIRE(instances.publishMaterialInstanceOverride(ModelInstanceId{0}, left) ==
+    REQUIRE(instances.publishMaterialInstanceOverride(left_model, left) ==
             Animation::Status::ok);
 
     auto right = left;
-    right.instance = instances.animationInstance(ModelInstanceId{1});
+    right.instance = instances.animationInstance(right_model);
     right.values.base_color_factor = {0.1f, 1.4f, 0.15f, 1.0f};
     right.values.emissive_factor = {0.2f, 1.0f, 0.2f, 1.0f};
     right.values.uv_offset = {-0.125f, 0.125f};
     right.values.uv_scale = {1.5f, 0.5f};
     right.values.uv_rotation = -0.35f;
-    REQUIRE(instances.publishMaterialInstanceOverride(ModelInstanceId{1}, right) ==
+    REQUIRE(instances.publishMaterialInstanceOverride(right_model, right) ==
             Animation::Status::ok);
 
     auto &camera = GET_MODULE(Camera);
@@ -2633,8 +2635,10 @@ void renderMaterialAbsoluteOverrideFrame(RenderTarget &render_target) {
     GET_MODULE(ECSCore).update();
 
     auto &instances = GET_MODULE(PolygonInstanceContainer);
+    const auto bottom_model = instances.modelInstanceIdForTesting(0);
+    const auto top_model = instances.modelInstanceIdForTesting(1);
     PublishMaterialInstanceAbsoluteOverrideDescV2 bottom;
-    bottom.instance = instances.animationInstance(ModelInstanceId{0});
+    bottom.instance = instances.animationInstance(bottom_model);
     bottom.frame_revision = 1;
     bottom.source_material_index = 0;
     bottom.values.mask = materialOverrideAll;
@@ -2643,19 +2647,19 @@ void renderMaterialAbsoluteOverrideFrame(RenderTarget &render_target) {
     bottom.values.uv_offset = {0.2f, 0.0f};
     bottom.values.uv_scale = {0.8f, 1.0f};
     REQUIRE(instances.publishMaterialInstanceAbsoluteOverride(
-                ModelInstanceId{0}, bottom) == Animation::Status::ok);
+                bottom_model, bottom) == Animation::Status::ok);
 
     auto top = bottom;
-    top.instance = instances.animationInstance(ModelInstanceId{1});
+    top.instance = instances.animationInstance(top_model);
     top.values.base_color_factor = {0.02f, 0.08f, 1.0f, 1.0f};
     top.values.uv_offset = {-0.1f, 0.1f};
     top.values.uv_scale = {1.2f, 0.7f};
     REQUIRE(instances.publishMaterialInstanceAbsoluteOverride(
-                ModelInstanceId{1}, top) == Animation::Status::ok);
+                top_model, top) == Animation::Status::ok);
     REQUIRE(instances.materialAbsoluteOverrideFrameForTesting(
-                ModelInstanceId{0}, 1) == nullptr);
+                bottom_model, 1) == nullptr);
     REQUIRE(instances.materialAbsoluteOverrideFrameForTesting(
-                ModelInstanceId{1}, 1) == nullptr);
+                top_model, 1) == nullptr);
 
     auto &camera = GET_MODULE(Camera);
     camera.setPos({0.0f, 0.0f, 3.2f});
@@ -2742,10 +2746,10 @@ void renderVrmExpressionFrame(RenderTarget &render_target, bool enabled) {
     REQUIRE(Animation::animationServiceRuntime().runAllPhases(revision) ==
             Animation::Status::ok);
     auto &instances = GET_MODULE(PolygonInstanceContainer);
-    const ModelInstanceId left_model{
-        static_cast<std::uint32_t>(left.identity - 1)};
-    const ModelInstanceId right_model{
-        static_cast<std::uint32_t>(right.identity - 1)};
+    const auto left_model = instances.modelInstanceIdForTesting(
+        static_cast<std::uint32_t>(left.identity - 1));
+    const auto right_model = instances.modelInstanceIdForTesting(
+        static_cast<std::uint32_t>(right.identity - 1));
     const auto &left_morph =
         instances.morphWeightFrameForTesting(left_model);
     const auto &right_morph =
@@ -3746,7 +3750,8 @@ TEST_CASE("logical frame renders Vulkan-backed stereo views without advancing sh
 
     auto &instances = GET_MODULE(PolygonInstanceContainer);
     REQUIRE(instances.instanceCountForTesting() == 1);
-    instances.setTrs(ModelInstanceId{0}, {1.0f, 0.0f, 0.0f},
+    const auto instance = instances.modelInstanceIdForTesting(0);
+    instances.setTrs(instance, {1.0f, 0.0f, 0.0f},
                      glm::quat{1.0f, 0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f});
 
     time.advance();
@@ -3763,8 +3768,8 @@ TEST_CASE("logical frame renders Vulkan-backed stereo views without advancing sh
     REQUIRE(GET_MODULE(DeletionQueue).currentFrameForTesting() == 2);
     REQUIRE(GET_MODULE(RenderTargetContainer).historyFrameIndex() == 0);
     REQUIRE(instances.temporalHistoryAdvanceCountForTesting() == 2);
-    REQUIRE(instances.previousModelMatrixForTesting(ModelInstanceId{0}) ==
-            instances.currentModelMatrixForTesting(ModelInstanceId{0}));
+    REQUIRE(instances.previousModelMatrixForTesting(instance) ==
+            instances.currentModelMatrixForTesting(instance));
 
     REQUIRE(second_snapshots.size() == 2);
     for (std::size_t view = 0; view < second_views.size(); ++view) {
@@ -4051,12 +4056,14 @@ TEST_CASE("set_time automatically resets skinned velocity history",
     renderer.render();
     const auto initial_signal = maximumVelocitySignal(render_target.readbackLastFrameRGBA8());
 
-    const auto model_before = GET_MODULE(PolygonInstanceContainer).currentModelMatrixForTesting(ModelInstanceId{0});
+    auto &instances = GET_MODULE(PolygonInstanceContainer);
+    const auto instance = instances.modelInstanceIdForTesting(0);
+    const auto model_before = instances.currentModelMatrixForTesting(instance);
     time.setTime(0.5);
     GET_MODULE(ECSCore).update();
     renderer.render();
     const auto first_seek_signal = maximumVelocitySignal(render_target.readbackLastFrameRGBA8());
-    const auto model_after = GET_MODULE(PolygonInstanceContainer).currentModelMatrixForTesting(ModelInstanceId{0});
+    const auto model_after = instances.currentModelMatrixForTesting(instance);
 
     time.setTime(1.0);
     GET_MODULE(ECSCore).update();
@@ -4113,7 +4120,8 @@ TEST_CASE("morph-only deformation produces velocity and reset zeros it",
         .weights = &on,
         .weight_count = 1,
     };
-    REQUIRE(instances.publishMorphWeightFrame(ModelInstanceId{0}, frame) ==
+    const auto instance = instances.modelInstanceIdForTesting(0);
+    REQUIRE(instances.publishMorphWeightFrame(instance, frame) ==
             Animation::Status::ok);
     renderer.render();
     const auto moved = maximumVelocitySignal(render_target.readbackLastFrameRGBA8());

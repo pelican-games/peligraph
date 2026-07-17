@@ -45,4 +45,15 @@ void VatPlayer::applyCameraOverride() {
     camera.setNearFar(override.fov_y, 0.01f, 1000.0f);
 }
 
+void VatPlayer::releaseInstanceForSceneLoad() {
+    if (instance) {
+        if (auto *instance_container =
+                FastModuleContainer::tryGet<PolygonInstanceContainer>()) {
+            (void)instance_container->removeModelInstance(*instance);
+        }
+        instance.reset();
+    }
+    enabled = false;
+}
+
 } // namespace Pelican

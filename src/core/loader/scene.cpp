@@ -4,6 +4,8 @@
 #include "../ecs/predefined/transform.hpp"
 #include "../ecs/core.hpp"
 #include "../model/gltf.hpp"
+#include "../playback/seqplayer.hpp"
+#include "../playback/vatplayer.hpp"
 #include "../renderer/camera.hpp"
 
 #include "../ecs/componentinfo.hpp"
@@ -383,6 +385,12 @@ const SceneId &SceneLoader::currentScene() const {
 
 void SceneLoader::clearRuntimeScene() {
     object_bindings.clear();
+    if (auto *seq_player = FastModuleContainer::tryGet<SeqPlayer>()) {
+        seq_player->releaseInstancesForSceneLoad();
+    }
+    if (auto *vat_player = FastModuleContainer::tryGet<VatPlayer>()) {
+        vat_player->releaseInstanceForSceneLoad();
+    }
 #if PELICAN_WITH_PHYSICS
     GET_MODULE(PhysWorld).clear();
 #endif

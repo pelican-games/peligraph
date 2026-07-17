@@ -84,7 +84,7 @@ TEST_CASE("glTF skin and clips connect to animation component without ECS bones"
     GET_MODULE(SceneLoader).load("default_scene");
     GET_MODULE(ECSCore).update();
     auto &instances = GET_MODULE(PolygonInstanceContainer);
-    const ModelInstanceId instance{0};
+    const auto instance = instances.modelInstanceIdForTesting(0);
     const auto first_revision = instances.currentAnimationRevisionForTesting(instance);
     REQUIRE(first_revision != 0);
     REQUIRE(instances.previousAnimationRevisionForTesting(instance) == first_revision);

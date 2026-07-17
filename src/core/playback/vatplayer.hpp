@@ -18,6 +18,7 @@ DECLARE_MODULE(VatPlayer) {
   public:
     VatPlayer();
 
+    void releaseInstanceForSceneLoad();
     bool isEnabled() const { return enabled; }
 };
 

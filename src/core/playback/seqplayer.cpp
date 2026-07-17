@@ -346,4 +346,15 @@ void SeqPlayer::update(double time) {
     }
 }
 
+void SeqPlayer::releaseInstancesForSceneLoad() {
+    if (auto *instance_container =
+            FastModuleContainer::tryGet<PolygonInstanceContainer>()) {
+        for (const auto instance : instances) {
+            (void)instance_container->removeModelInstance(instance);
+        }
+    }
+    instances.clear();
+    enabled = false;
+}
+
 } // namespace Pelican
