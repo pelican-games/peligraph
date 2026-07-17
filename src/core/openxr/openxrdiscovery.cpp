@@ -59,6 +59,7 @@ void DiscoveryRuntime::abandon() noexcept {
     get_vulkan_graphics_device = nullptr;
     create_vulkan_device = nullptr;
     discovery_succeeded = false;
+    win32_time_conversion_enabled = false;
 }
 
 XrDiscoveryResult DiscoveryRuntime::fail(XrDiscoveryAvailability availability, std::string detail) {
@@ -113,6 +114,14 @@ XrDiscoveryResult DiscoveryRuntime::discover() {
     if (has_extension(XR_EXT_LOCAL_FLOOR_EXTENSION_NAME)) {
         enabled_extensions.push_back(XR_EXT_LOCAL_FLOOR_EXTENSION_NAME);
     }
+#ifdef _WIN32
+    win32_time_conversion_enabled =
+        has_extension(XR_KHR_WIN32_CONVERT_PERFORMANCE_COUNTER_TIME_EXTENSION_NAME);
+    if (win32_time_conversion_enabled) {
+        enabled_extensions.push_back(
+            XR_KHR_WIN32_CONVERT_PERFORMANCE_COUNTER_TIME_EXTENSION_NAME);
+    }
+#endif
     XrInstanceCreateInfo create_info{XR_TYPE_INSTANCE_CREATE_INFO};
     std::snprintf(create_info.applicationInfo.applicationName,
                   sizeof(create_info.applicationInfo.applicationName), "%s", "Pelican App");

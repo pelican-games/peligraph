@@ -832,6 +832,7 @@ pelican_define_test(debugdraw_test pelican_core glm VulkanMemoryAllocator Vulkan
 pelican_define_test(debugtext_test pelican_core glm VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 pelican_define_test(debugutils_test pelican_core)
 pelican_define_test(rendertiming_test pelican_core)
+pelican_define_test(memorydiagnostics_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_rendertiming_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )

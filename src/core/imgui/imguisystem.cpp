@@ -3,11 +3,14 @@
 #include "imguiruntime.hpp"
 #include "planviewer.hpp"
 #include "../appflow/enginetime.hpp"
+#include "../material/materialcontainer.hpp"
+#include "../model/vertbufcontainer.hpp"
 #include "../os/actionmap.hpp"
 #include "../os/inputstate.hpp"
 #include "../os/window.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
 #include "../vkcore/core.hpp"
+#include "../vkcore/memorydiagnostics.hpp"
 #include "../vkcore/rendertarget.hpp"
 #include "../vkcore/rendertiming.hpp"
 
@@ -172,6 +175,65 @@ void drawGpuTimingTable() {
     ImGui::EndTable();
 }
 
+void drawMemoryTables() {
+    const auto status = collectMemoryStatus(
+        GET_MODULE(VulkanManageCore), FastModuleContainer::tryGet<VertBufContainer>(),
+        FastModuleContainer::tryGet<MaterialContainer>());
+    ImGui::SeparatorText("Memory");
+    if (!status.driver.available) {
+        ImGui::TextDisabled("Driver budget unavailable: %s", status.driver.reason.c_str());
+    } else if (ImGui::BeginTable("memory_heaps", 5,
+                                 ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                     ImGuiTableFlags_SizingFixedFit)) {
+        ImGui::TableSetupColumn("Heap");
+        ImGui::TableSetupColumn("Local");
+        ImGui::TableSetupColumn("Size MiB");
+        ImGui::TableSetupColumn("Usage MiB");
+        ImGui::TableSetupColumn("Budget MiB");
+        ImGui::TableHeadersRow();
+        constexpr double mib = 1024.0 * 1024.0;
+        for (const auto &heap : status.driver.heaps) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::Text("%u", heap.heap_index);
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(heap.device_local ? "yes" : "no");
+            ImGui::TableNextColumn();
+            ImGui::Text("%.1f", heap.size / mib);
+            ImGui::TableNextColumn();
+            ImGui::Text("%.1f", heap.usage / mib);
+            ImGui::TableNextColumn();
+            ImGui::Text("%.1f", heap.budget / mib);
+        }
+        ImGui::EndTable();
+    }
+
+    if (status.engine_categories.empty() ||
+        !ImGui::BeginTable("memory_engine_categories", 3,
+                           ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                               ImGuiTableFlags_SizingFixedFit)) {
+        return;
+    }
+    ImGui::TableSetupColumn("Engine category");
+    ImGui::TableSetupColumn("Logical KiB");
+    ImGui::TableSetupColumn("Objects");
+    ImGui::TableHeadersRow();
+    for (const auto &category : status.engine_categories) {
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(category.category.c_str());
+        ImGui::TableNextColumn();
+        if (category.logical_used_bytes) {
+            ImGui::Text("%.1f", *category.logical_used_bytes / 1024.0);
+        } else {
+            ImGui::TextDisabled("absent");
+        }
+        ImGui::TableNextColumn();
+        ImGui::Text("%llu", static_cast<unsigned long long>(category.object_count));
+    }
+    ImGui::EndTable();
+}
+
 } // namespace
 
 struct ImGuiSystem::Impl {
@@ -315,6 +377,7 @@ void ImGuiSystem::routeInputAndBeginFrame(InputState &input) {
             ImGui::Text("Frame %llu", static_cast<unsigned long long>(GET_MODULE(EngineTime).frameIndex()));
             ImGui::Text("Frame time %.3f ms", io.DeltaTime * 1000.0f);
             drawGpuTimingTable();
+            drawMemoryTables();
             ImGui::End();
         }
         if (impl->show_plan_viewer) impl->plan_viewer.draw(&impl->show_plan_viewer);

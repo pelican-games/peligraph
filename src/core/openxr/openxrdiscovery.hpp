@@ -6,6 +6,15 @@
 #ifndef XR_USE_GRAPHICS_API_VULKAN
 #define XR_USE_GRAPHICS_API_VULKAN
 #endif
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#ifndef XR_USE_PLATFORM_WIN32
+#define XR_USE_PLATFORM_WIN32
+#endif
+#endif
 #include <vulkan/vulkan.h>
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
@@ -45,6 +54,7 @@ DECLARE_MODULE(DiscoveryRuntime) {
     PFN_xrGetVulkanGraphicsDevice2KHR get_vulkan_graphics_device = nullptr;
     PFN_xrCreateVulkanDeviceKHR create_vulkan_device = nullptr;
     bool discovery_succeeded = false;
+    bool win32_time_conversion_enabled = false;
 
     XrDiscoveryResult fail(XrDiscoveryAvailability availability, std::string detail);
     bool resolve(const char *name, PFN_xrVoidFunction &function) const;
@@ -73,6 +83,9 @@ DECLARE_MODULE(DiscoveryRuntime) {
     XrSystemId getSystemId() const noexcept { return system_id; }
     PFN_xrGetInstanceProcAddr getInstanceProcAddr() const noexcept {
         return api.get_instance_proc_addr;
+    }
+    bool win32TimeConversionEnabled() const noexcept {
+        return win32_time_conversion_enabled;
     }
 };
 

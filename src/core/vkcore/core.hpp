@@ -5,6 +5,7 @@
 #include "cmdbuf.hpp"
 #include "debugutils.hpp"
 #include "image.hpp"
+#include "memorydiagnostics.hpp"
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -35,6 +36,7 @@ DECLARE_MODULE(VulkanManageCore) {
     vk::UniqueCommandPool graphic_cmd_pool, compute_cmd_pool;
     vma::UniqueAllocator allocator;
     DebugUtilsDispatch debug_utils;
+    bool memory_budget_enabled = false;
 
   public:
     VulkanManageCore();
@@ -49,6 +51,8 @@ DECLARE_MODULE(VulkanManageCore) {
     uint32_t getGraphicsQueueFamilyIndex() const { return queue_set.graphic_queue; }
     uint32_t getPresentationQueueFamilyIndex() const { return queue_set.presentation_queue; }
     const DebugUtilsDispatch &getDebugUtils() const noexcept { return debug_utils; }
+    DriverMemoryStatus driverMemoryStatus() const;
+    void setCurrentFrameIndex(std::uint64_t logical_frame) const noexcept;
 
     void waitIdle() const;
 

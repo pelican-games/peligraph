@@ -275,11 +275,17 @@ static std::vector<std::string> requiredDeviceExtensions(bool headless) {
 }
 
 static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, const QueueSet &queues_info,
-                                            bool headless, bool use_openxr = false) {
+                                            bool headless, bool &memory_budget_enabled,
+                                            bool use_openxr = false) {
     LOG_INFO(logger, "initializing vulkan device...");
 
     const auto required_extensions = requiredDeviceExtensions(headless);
-    const auto exts = vulkanExtensionNamePointers(required_extensions);
+    const auto supported_extensions = supportedDeviceExtensions(phys_device);
+    memory_budget_enabled = std::find(supported_extensions.begin(), supported_extensions.end(),
+                                      VK_EXT_MEMORY_BUDGET_EXTENSION_NAME) != supported_extensions.end();
+    auto enabled_extensions = required_extensions;
+    if (memory_budget_enabled) enabled_extensions.emplace_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+    const auto exts = vulkanExtensionNamePointers(enabled_extensions);
 
     vk::DeviceQueueCreateInfo graphics_queue_info, presentation_queue_info, compute_queue_info;
 
@@ -332,7 +338,6 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
 
 #if PELICAN_WITH_OPENXR
     if (use_openxr) {
-        const auto supported_extensions = supportedDeviceExtensions(phys_device);
         if (const auto missing =
                 firstMissingVulkanExtension(required_extensions, supported_extensions)) {
             throw OpenXr::VulkanBootstrapError("required Vulkan device extension missing: " +
@@ -360,8 +365,12 @@ static vk::UniqueCommandPool createCommandPool(vk::Device device, uint32_t queue
     return device.createCommandPoolUnique(create_info);
 }
 
-static vma::UniqueAllocator createAllocator(vk::PhysicalDevice phys_device, vk::Device device, vk::Instance instance) {
+static vma::UniqueAllocator createAllocator(vk::PhysicalDevice phys_device, vk::Device device,
+                                            vk::Instance instance, bool memory_budget_enabled) {
     vma::AllocatorCreateInfo create_info;
+    if (memory_budget_enabled) {
+        create_info.flags |= vma::AllocatorCreateFlagBits::eExtMemoryBudget;
+    }
     create_info.vulkanApiVersion = vulkan_api_version;
     create_info.physicalDevice = phys_device;
     create_info.device = device;
@@ -375,6 +384,7 @@ struct VulkanBootstrapState {
     vk::PhysicalDevice physical_device;
     QueueSet queues{};
     vk::UniqueDevice device;
+    bool memory_budget_enabled = false;
 };
 
 static VulkanBootstrapState bootstrapFlatVulkan(
@@ -388,7 +398,8 @@ static VulkanBootstrapState bootstrapFlatVulkan(
                                    result.surface.get(), headless);
     if (!queues) throw std::runtime_error("No suitable Vulkan queue families found");
     result.queues = *queues;
-    result.device = createLogicalDevice(result.physical_device, result.queues, headless);
+    result.device = createLogicalDevice(result.physical_device, result.queues, headless,
+                                        result.memory_budget_enabled);
     return result;
 }
 
@@ -418,7 +429,8 @@ static VulkanBootstrapState bootstrapXrVulkan(
     const auto properties = result.physical_device.getProperties();
     LOG_INFO(logger, "OpenXR runtime selected Vulkan physical device: {} (vendor {}, device {})",
              properties.deviceName.data(), properties.vendorID, properties.deviceID);
-    result.device = createLogicalDevice(result.physical_device, result.queues, headless, true);
+    result.device = createLogicalDevice(result.physical_device, result.queues, headless,
+                                        result.memory_budget_enabled, true);
     return result;
 }
 #endif
@@ -451,6 +463,7 @@ VulkanManageCore::VulkanManageCore() {
     phys_device = bootstrap.physical_device;
     queue_set = bootstrap.queues;
     device = std::move(bootstrap.device);
+    memory_budget_enabled = bootstrap.memory_budget_enabled;
     graphic_queue = device->getQueue(queue_set.graphic_queue, 0);
     presen_queue = device->getQueue(queue_set.presentation_queue, 0);
     compute_queue = device->getQueue(queue_set.compute_queue, 0);
@@ -461,10 +474,45 @@ VulkanManageCore::VulkanManageCore() {
              debug_status.available, debug_status.enabled, debug_status.reason);
     graphic_cmd_pool = createCommandPool(device.get(), queue_set.graphic_queue);
     compute_cmd_pool = createCommandPool(device.get(), queue_set.compute_queue);
-    allocator = createAllocator(phys_device, device.get(), instance.get());
+    allocator = createAllocator(phys_device, device.get(), instance.get(), memory_budget_enabled);
+    LOG_INFO(logger, "Vulkan memory budget: available={}, reason={}", memory_budget_enabled,
+             memory_budget_enabled ? "VK_EXT_memory_budget_enabled"
+                                   : "VK_EXT_memory_budget_not_supported");
     LOG_INFO(logger, "vulkan core initialized");
 }
 VulkanManageCore::~VulkanManageCore() {}
+
+DriverMemoryStatus VulkanManageCore::driverMemoryStatus() const {
+    if (!memory_budget_enabled) {
+        return {.available = false,
+                .reason = "VK_EXT_memory_budget_not_supported",
+                .heaps = {}};
+    }
+
+    DriverMemoryStatus result{.available = true,
+                              .reason = "VK_EXT_memory_budget_enabled"};
+    const auto budgets = allocator->getHeapBudgets();
+    const auto properties = phys_device.getMemoryProperties();
+    result.heaps.reserve(properties.memoryHeapCount);
+    for (std::uint32_t heap_index = 0; heap_index < properties.memoryHeapCount;
+         ++heap_index) {
+        const auto &heap = properties.memoryHeaps[heap_index];
+        const auto &budget = budgets[heap_index];
+        result.heaps.push_back({
+            .heap_index = heap_index,
+            .device_local = bool(heap.flags & vk::MemoryHeapFlagBits::eDeviceLocal),
+            .size = static_cast<std::uint64_t>(heap.size),
+            .usage = static_cast<std::uint64_t>(budget.usage),
+            .budget = static_cast<std::uint64_t>(budget.budget),
+            .source = "vk_ext_memory_budget",
+        });
+    }
+    return result;
+}
+
+void VulkanManageCore::setCurrentFrameIndex(std::uint64_t logical_frame) const noexcept {
+    allocator->setCurrentFrameIndex(static_cast<std::uint32_t>(logical_frame));
+}
 
 vk::SurfaceKHR VulkanManageCore::getSurface() const {
     if (!surface) {

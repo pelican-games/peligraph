@@ -225,6 +225,7 @@ OpenXr::XrSessionDependencies resolveXrSessionDependencies() {
         .graphics_queue_family_index = vulkan.getGraphicsQueueFamilyIndex(),
         .graphics_queue_index = 0,
         .input_actions = internal::inputActionMap(),
+        .win32_time_conversion_enabled = discovery.win32TimeConversionEnabled(),
     };
 }
 
@@ -398,6 +399,7 @@ void Loop::run() {
             }
             const auto update_start = Clock::now();
             engine_time.advance();
+            modules.vulkan.setCurrentFrameIndex(engine_time.frameIndex());
             updateFrameState();
             const auto update_end = Clock::now();
 
@@ -464,9 +466,13 @@ void Loop::run() {
                 }
                 const auto display_timing = xr_session->waitFrame();
                 engine_time.advance();
-                xr_session->beginFrame();
+                modules.vulkan.setCurrentFrameIndex(engine_time.frameIndex());
+                const auto begin_result = xr_session->beginFrame();
                 OpenXr::XrLocatedViews located_views;
-                if (display_timing.shouldRender()) {
+                const bool xr_frame_renderable =
+                    begin_result == OpenXr::XrBeginFrameResult::ready &&
+                    display_timing.shouldRender();
+                if (xr_frame_renderable) {
                     located_views = xr_session->locateViews(display_timing);
                 }
 
@@ -483,7 +489,7 @@ void Loop::run() {
 
                 renderer.selectGraphVariant(RenderGraphVariant::xr);
                 const auto render_start = Clock::now();
-                if (display_timing.shouldRender()) {
+                if (xr_frame_renderable) {
                     xr_target->prepareFrame(display_timing, located_views);
                     const auto view_parameters = OpenXr::buildRenderViewParameters(
                         active_camera_view, located_views.views,
@@ -493,7 +499,12 @@ void Loop::run() {
                         [&](std::uint32_t view_index, const FrameRenderContext &) {
                             return view_parameters.at(view_index);
                         });
-                    if (xr_mirror != nullptr) xr_mirror->tryPresent();
+                    if (xr_mirror != nullptr) {
+                        xr_mirror->tryPresent();
+                        const auto &mirror = xr_mirror->statistics();
+                        xr_session->recordMirrorStatistics(
+                            mirror.presented, mirror.dropped, mirror.failures);
+                    }
                 } else {
                     xr_target->endFrameWithoutLayers(display_timing);
                 }
@@ -514,6 +525,7 @@ void Loop::run() {
 #endif
         const auto update_start = Clock::now();
         engine_time.advance();
+        modules.vulkan.setCurrentFrameIndex(engine_time.frameIndex());
         update_interactive_state(false);
         const auto update_end = Clock::now();
 
