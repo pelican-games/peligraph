@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <vector>
@@ -118,6 +119,14 @@ struct InputEvent {
     static InputEvent gamepadAxis(std::uint8_t pad, GamepadAxis axis, float value) noexcept;
 };
 
+// Pose samples are frame-typed L1 data, not ordered InputEvents. pelican.input_seq
+// v1 continues to serialize ordered_events only and rejects a pose-enabled
+// record/replay session explicitly.
+struct InputPoseSample {
+    std::string action_name;
+    ActionPose pose;
+};
+
 struct GamepadState {
     std::array<std::uint8_t, gamepad_button_count> buttons{};
     std::array<float, gamepad_axis_count> axes{};
@@ -163,6 +172,7 @@ struct FrameInputBorrowState {
 // debug build, retaining the FrameInput borrow itself across beginFrame() asserts.
 struct FrameInput {
     std::span<const InputEvent> ordered_events;
+    std::span<const InputPoseSample> pose_samples;
     InputSnapshot snapshot;
 
     FrameInput() = default;
@@ -179,7 +189,8 @@ struct FrameInput {
     std::shared_ptr<internal::FrameInputBorrowState> borrow_state;
     std::uint64_t borrowed_generation = 0;
 
-    FrameInput(std::span<const InputEvent> events, const InputSnapshot &snapshot,
+    FrameInput(std::span<const InputEvent> events, std::span<const InputPoseSample> poses,
+               const InputSnapshot &snapshot,
                std::shared_ptr<internal::FrameInputBorrowState> state) noexcept;
     void acquire() noexcept;
     void release() noexcept;
@@ -199,6 +210,8 @@ class InputStateCore {
     std::array<std::array<float, gamepad_axis_count>, gamepad_slot_count> current_gamepad_axes{};
     std::vector<InputEvent> pending_events;
     std::vector<InputEvent> frame_events;
+    std::vector<InputPoseSample> pending_pose_samples;
+    std::vector<InputPoseSample> frame_pose_samples;
     InputConsumptionMask consumption_mask;
     std::shared_ptr<internal::FrameInputBorrowState> borrow_state =
         std::make_shared<internal::FrameInputBorrowState>();
@@ -225,6 +238,8 @@ class InputStateCore {
     void queueAxisEvent(float x, float y);
     void queueEvent(InputEvent event);
     void queueEvents(const std::vector<InputEvent> &events);
+    void queuePoseSample(InputPoseSample sample);
+    void queuePoseSamples(std::vector<InputPoseSample> samples);
     void beginFrame();
     void clear();
 
@@ -247,6 +262,8 @@ DECLARE_MODULE(InputState) {
   public:
     void queueEvent(InputEvent event);
     void queueEvents(const std::vector<InputEvent> &events);
+    void queuePoseSample(InputPoseSample sample);
+    void queuePoseSamples(std::vector<InputPoseSample> samples);
     void beginFrame();
     void clear();
     const InputSnapshot &currentSnapshot() const noexcept;

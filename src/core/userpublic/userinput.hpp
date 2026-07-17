@@ -103,10 +103,36 @@ struct ActionAxis2 {
     float y = 0.0f;
 };
 
+enum class ActionPoseSource : std::uint8_t {
+    unknown,
+    action_space,
+    synthetic_head,
+};
+
+enum class ActionPoseReferenceSpace : std::uint8_t {
+    unknown,
+    stage,
+    local_floor,
+    local,
+};
+
+enum class ActionPoseHand : std::uint8_t {
+    none,
+    left,
+    right,
+};
+
 struct ActionPose {
     float position[3]{};
     float orientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
     bool valid = false;
+    bool orientation_valid = false;
+    bool position_valid = false;
+    bool orientation_tracked = false;
+    bool position_tracked = false;
+    ActionPoseSource source = ActionPoseSource::unknown;
+    ActionPoseReferenceSpace reference_space = ActionPoseReferenceSpace::unknown;
+    ActionPoseHand hand = ActionPoseHand::none;
 };
 
 class Actions {
@@ -142,6 +168,7 @@ std::optional<std::string> activeInputProfile();
 std::vector<std::string> availableInputProfiles();
 void selectInputProfile(std::string_view profile_name);
 const InputActionMap *inputActionMap();
+std::vector<std::string> poseInputActionNames();
 void setInputActionBackendFrame(InputActionFrame frame);
 
 } // namespace internal

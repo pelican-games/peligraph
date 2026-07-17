@@ -64,7 +64,9 @@ class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
         }
 
         const auto action_snapshot = input_state.freezeActionsSnapshot();
-        current_frame = action_map ? evaluateInputActions(*action_map, action_snapshot, action_set_stack)
+        auto frame_input = input_state.currentFrameInput();
+        frame_input.snapshot = action_snapshot;
+        current_frame = action_map ? evaluateInputActions(*action_map, frame_input, action_set_stack)
                                    : InputActionFrame{};
         if (action_map) mergeInputActionBackendFrame(current_frame, backend_frame);
         frozen_generation = generation;
@@ -315,6 +317,11 @@ void selectInputProfile(std::string_view profile_name) {
 
 const InputActionMap *inputActionMap() {
     return GET_MODULE(InputActionsRuntime).map();
+}
+
+std::vector<std::string> poseInputActionNames() {
+    const auto *map = GET_MODULE(InputActionsRuntime).map();
+    return map == nullptr ? std::vector<std::string>{} : map->poseActionNames();
 }
 
 void setInputActionBackendFrame(InputActionFrame frame) {

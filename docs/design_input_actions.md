@@ -15,16 +15,18 @@ R4(transform_seq)、WP21(import manifest)、`design_compute_task_graph.md`(将�
 
 ```
 L0 デバイスバックエンド   GLFW(kbd/mouse・済)/ ゲームパッド / OpenXR / rpc 注入 / リプレイファイル
-        ↓ すべて同じイベントキューへ
-L1 スナップショット       フレーム同期・直列化可能(WP37 実装済み)
+        ↓ ordered InputEvent + typed pose sample
+L1 frame provider          フレーム同期 snapshot + ordered event + typed pose sample
         ↓
 L2 アクション層           プロジェクトアセット(pelican.input_actions)。本設計の中核
         ↓
 L3 消費者                 ゲームロジック / devstudio / 収録
 ```
 
-要点: **L0 を差し替えても L2 から上は変わらない**。リプレイ・rpc 注入・OpenXR は
-全部「もう一つのバックエンド」であり、テスト容易性と VR 対応が同じ仕組みから出る。
+要点: **L0 を差し替えても L2 から上は変わらない**。kbd/mouse/gamepad/rpc は従来どおり
+ordered event、OpenXR pose は別の typed sample として同じ L1 frame provider で凍結する。
+`pelican.input_seq` v1 は ordered event のみを byte 不変で扱い、pose を含む record/replay は
+pose action 名を含む error で開始時に拒否する。
 
 ## 2. アクション層(L2)— 中核
 

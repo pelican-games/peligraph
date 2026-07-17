@@ -2,6 +2,7 @@
 
 #include "../appflow/enginetime.hpp"
 
+#include <algorithm>
 #include <array>
 #include <stdexcept>
 #include <string>
@@ -66,6 +67,7 @@ SessionRuntime::SessionRuntime(const XrSessionDependencies &dependencies)
 }
 
 SessionRuntime::~SessionRuntime() {
+    action_runtime.reset();
     if (tracking_space != XR_NULL_HANDLE && api.destroy_space != nullptr) {
         (void)api.destroy_space(tracking_space);
     }
@@ -74,8 +76,40 @@ SessionRuntime::~SessionRuntime() {
         (void)api.destroy_session(session);
     }
     session = XR_NULL_HANDLE;
-    action_runtime.reset();
     session_running = false;
+}
+
+ActionPose syntheticHeadPose(const XrLocatedViews &located_views,
+                             ActionPoseReferenceSpace reference_space) noexcept {
+    ActionPose pose;
+    pose.source = ActionPoseSource::synthetic_head;
+    pose.reference_space = reference_space;
+    if (located_views.views.empty()) return pose;
+
+    for (const auto &view : located_views.views) {
+        pose.position[0] += view.pose.position.x;
+        pose.position[1] += view.pose.position.y;
+        pose.position[2] += view.pose.position.z;
+    }
+    const auto divisor = static_cast<float>(located_views.views.size());
+    pose.position[0] /= divisor;
+    pose.position[1] /= divisor;
+    pose.position[2] /= divisor;
+    const auto &orientation = located_views.views.front().pose.orientation;
+    pose.orientation[0] = orientation.x;
+    pose.orientation[1] = orientation.y;
+    pose.orientation[2] = orientation.z;
+    pose.orientation[3] = orientation.w;
+    pose.orientation_valid =
+        (located_views.state_flags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) != 0;
+    pose.position_valid =
+        (located_views.state_flags & XR_VIEW_STATE_POSITION_VALID_BIT) != 0;
+    pose.orientation_tracked =
+        (located_views.state_flags & XR_VIEW_STATE_ORIENTATION_TRACKED_BIT) != 0;
+    pose.position_tracked =
+        (located_views.state_flags & XR_VIEW_STATE_POSITION_TRACKED_BIT) != 0;
+    pose.valid = pose.orientation_valid && pose.position_valid;
+    return pose;
 }
 
 void SessionRuntime::resolve(PFN_xrGetInstanceProcAddr get_instance_proc_addr) {
@@ -207,6 +241,7 @@ XrDisplayTiming SessionRuntime::waitFrame() {
     if (XR_FAILED(result)) throwFailure("xrWaitFrame", result);
     frame_phase = FramePhase::waited;
     pending_display_time = frame_state.predictedDisplayTime;
+    input_located_views = {};
     return {frame_state.predictedDisplayTime, frame_state.predictedDisplayPeriod,
             frame_state.shouldRender == XR_TRUE};
 }
@@ -247,8 +282,9 @@ XrLocatedViews SessionRuntime::locateViews(const XrDisplayTiming &display_timing
     if (view_count > views.size()) {
         throw std::runtime_error("xrLocateViews returned more than two PRIMARY_STEREO views");
     }
-    return {view_state.viewStateFlags,
-            std::vector<XrView>{views.begin(), views.begin() + view_count}};
+    input_located_views = {view_state.viewStateFlags,
+                           std::vector<XrView>{views.begin(), views.begin() + view_count}};
+    return input_located_views;
 }
 
 void SessionRuntime::endFrame(const XrDisplayTiming &display_timing) {
@@ -272,10 +308,19 @@ void SessionRuntime::endFrame(const XrDisplayTiming &display_timing) {
     if (XR_FAILED(result)) throwFailure("xrEndFrame", result);
 }
 
-InputActionFrame SessionRuntime::syncActions(
+XrInputFrame SessionRuntime::syncActions(
     const std::vector<std::string> &active_action_set_stack) {
     if (action_runtime == nullptr) return {};
-    return action_runtime->sync(active_action_set_stack, isInputEligible());
+    auto frame = action_runtime->sync(active_action_set_stack, isInputEligible(), tracking_space,
+                                      pending_display_time, tracking_space_identity);
+    const auto head = std::find_if(frame.pose_samples.begin(), frame.pose_samples.end(),
+                                   [](const auto &sample) {
+                                       return sample.action_name == "head";
+                                   });
+    if (head != frame.pose_samples.end() && isInputEligible()) {
+        head->pose = syntheticHeadPose(input_located_views, tracking_space_identity);
+    }
+    return frame;
 }
 
 void SessionRuntime::endFrame(const XrDisplayTiming &display_timing,
@@ -316,12 +361,12 @@ XrFrameResult runSessionFrame(SessionRuntime &runtime, EngineTime &engine_time,
                               const std::function<void()> &update) {
     const auto display_timing = runtime.waitFrame();
     engine_time.advance();
-    update();
     runtime.beginFrame();
     XrLocatedViews located_views;
     if (display_timing.shouldRender()) {
         located_views = runtime.locateViews(display_timing);
     }
+    update();
     runtime.endFrame(display_timing);
     return {display_timing, std::move(located_views)};
 }

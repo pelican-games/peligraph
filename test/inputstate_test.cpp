@@ -36,6 +36,39 @@ TEST_CASE("Input events receive a process-lifetime monotonic sequence when queue
     REQUIRE(frame.ordered_events[0].event_seq == 2);
 }
 
+TEST_CASE("FrameInput carries typed pose samples without changing ordered event sequencing",
+          "[inputstate][frame-input][pose]") {
+    InputStateCore input;
+    input.queueButtonEvent(KeyCode::A, true);
+    ActionPose pose;
+    pose.position[0] = 1.0F;
+    pose.orientation_valid = true;
+    pose.position_valid = true;
+    pose.valid = true;
+    pose.source = ActionPoseSource::action_space;
+    pose.reference_space = ActionPoseReferenceSpace::local;
+    pose.hand = ActionPoseHand::left;
+    input.queuePoseSample({"aim_left", pose});
+    input.beginFrame();
+
+    {
+        const auto frame = input.currentFrameInput();
+        REQUIRE(frame.ordered_events.size() == 1);
+        CHECK(frame.ordered_events.front().event_seq == 0);
+        REQUIRE(frame.pose_samples.size() == 1);
+        CHECK(frame.pose_samples.front().action_name == "aim_left");
+        CHECK(frame.pose_samples.front().pose.position[0] == 1.0F);
+        CHECK(frame.pose_samples.front().pose.hand == ActionPoseHand::left);
+    }
+
+    input.queueButtonEvent(KeyCode::A, false);
+    input.beginFrame();
+    const auto next = input.currentFrameInput();
+    REQUIRE(next.ordered_events.size() == 1);
+    CHECK(next.ordered_events.front().event_seq == 1);
+    CHECK(next.pose_samples.empty());
+}
+
 TEST_CASE("Recorded input sequences use the canonical queue without renumbering", "[inputstate][frame-input]") {
     InputStateCore input;
     auto recorded = InputEvent::button(KeyCode::A, true);
