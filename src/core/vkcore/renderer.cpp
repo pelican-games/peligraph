@@ -220,18 +220,6 @@ FrameUniformData updateFrameResources(RenderFrameModules &modules, EngineTime &e
     return data;
 }
 
-void beginTiming(RenderTiming *render_timing, vk::CommandBuffer cmd_buf, const std::vector<std::string> &node_names) {
-    if (render_timing != nullptr) {
-        render_timing->beginGpuFrame(cmd_buf, node_names);
-    }
-}
-
-void endTiming(RenderTiming *render_timing) {
-    if (render_timing != nullptr) {
-        render_timing->endGpuFrame();
-    }
-}
-
 std::string loadOpName(vk::AttachmentLoadOp op) {
     switch (op) {
     case vk::AttachmentLoadOp::eLoad:
@@ -536,13 +524,20 @@ nlohmann::json finalLayoutsTrace(const CompiledRenderingPass &rendering_pass,
     return result;
 }
 
-std::vector<std::string> plannedNodeNames(const CompiledFrameGraphExecution &frame_graph) {
-    std::vector<std::string> names;
-    names.reserve(frame_graph.nodes.size());
-    for (const auto &node : frame_graph.nodes) {
-        names.push_back(node.name);
+std::vector<GpuTimingNodeDescriptor> plannedTimingNodes(
+    const CompiledFrameGraphExecution &frame_graph, const SpriteRenderModules &sprite) {
+    std::vector<GpuTimingNodeDescriptor> nodes;
+    nodes.reserve(frame_graph.nodes.size());
+    for (std::size_t ordinal = 0; ordinal < frame_graph.nodes.size(); ++ordinal) {
+        const auto &node = frame_graph.nodes[ordinal];
+        const bool anchor_has_work = node.kind != FramePlanNodeKind::anchor ||
+                                     (node.name == "__anchor_sprite" &&
+                                      sprite.scene != nullptr);
+        nodes.push_back(GpuTimingNodeDescriptor{
+            ordinal, std::string{framePlanNodeKindName(node.kind)}, node.name,
+            anchor_has_work});
     }
-    return names;
+    return nodes;
 }
 
 std::vector<std::string> pairedSrgbStorageEdges(
@@ -589,7 +584,10 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                               std::string_view graph_variant,
                               std::uint32_t view_index) {
     if (modules.render_timing != nullptr) {
-        beginTiming(modules.render_timing, render_ctx.cmd_buf, plannedNodeNames(frame_graph));
+        modules.render_timing->beginGpuRange(
+            render_ctx.cmd_buf, render_ctx.in_flight_frame_index, view_index,
+            GpuTimingRangeIdentity{logical_frame, std::string{graph_variant}, view_index},
+            plannedTimingNodes(frame_graph, modules.sprite));
     }
     const auto paired_storage_edges = pairedSrgbStorageEdges(
         rendering_pass, frame_graph, modules.render_target_container);
@@ -610,6 +608,10 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
         }
         ScopedCommandDebugLabel node_label{modules.debug_utils, render_ctx.cmd_buf,
                                            node_debug_name.c_str()};
+        if (modules.render_timing != nullptr) {
+            modules.render_timing->writeNodeSubrangeStart(
+                render_ctx.cmd_buf, node_index, GpuTimingSubrange::barriers);
+        }
         {
             ScopedCommandDebugLabel barrier_label{modules.debug_utils, render_ctx.cmd_buf,
                                                    "barriers"};
@@ -623,10 +625,15 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                     barrier.to_kind);
             }
         }
+        if (modules.render_timing != nullptr) {
+            modules.render_timing->writeNodeSubrangeEnd(
+                render_ctx.cmd_buf, node_index, GpuTimingSubrange::barriers);
+        }
         ScopedCommandDebugLabel body_label{modules.debug_utils, render_ctx.cmd_buf, "body"};
 
         if (modules.render_timing != nullptr) {
-            modules.render_timing->writePassStart(render_ctx.cmd_buf, node_index);
+            modules.render_timing->writeNodeSubrangeStart(
+                render_ctx.cmd_buf, node_index, GpuTimingSubrange::body);
         }
 
         if (execution_node.kind == FramePlanNodeKind::render) {
@@ -768,11 +775,12 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
         }
 
         if (modules.render_timing != nullptr) {
-            modules.render_timing->writePassEnd(render_ctx.cmd_buf, node_index);
+            modules.render_timing->writeNodeSubrangeEnd(
+                render_ctx.cmd_buf, node_index, GpuTimingSubrange::body);
         }
     }
 
-    endTiming(modules.render_timing);
+    if (modules.render_timing != nullptr) modules.render_timing->endGpuRange();
 }
 
 void executeRenderingPasses(const FrameRenderContext &render_ctx,
@@ -873,7 +881,8 @@ bool handleFrameTargetResize(RenderFrameModules &modules,
 void recordXrMirrorIntermediate(const FrameRenderContext &render_ctx,
                                 RenderFrameModules &modules,
                                 RenderTargetLayoutTracker &layout_tracker,
-                                nlohmann::json *node_trace) {
+                                nlohmann::json *node_trace,
+                                std::uint64_t logical_frame) {
     const auto source_id =
         modules.render_target_container.getRenderTargetIdByName("display");
     const auto destination_id = modules.render_target_container.getRenderTargetIdByName(
@@ -894,12 +903,45 @@ void recordXrMirrorIntermediate(const FrameRenderContext &render_ctx,
             std::to_string(destination.extent.width) + "x" +
             std::to_string(destination.extent.height) + ")");
     }
-    layout_tracker.transition(render_ctx.cmd_buf, modules.render_target_container,
-                              modules.vk_utils, source_id,
-                              vk::ImageLayout::eTransferSrcOptimal);
-    layout_tracker.transition(render_ctx.cmd_buf, modules.render_target_container,
-                              modules.vk_utils, destination_id,
-                              vk::ImageLayout::eTransferDstOptimal);
+    constexpr std::uint32_t mirror_view_index = 2;
+    constexpr std::uint32_t mirror_intermediate_range_slot = 2;
+    if (modules.render_timing != nullptr) {
+        modules.render_timing->beginGpuRange(
+            render_ctx.cmd_buf, render_ctx.in_flight_frame_index,
+            mirror_intermediate_range_slot,
+            GpuTimingRangeIdentity{logical_frame, "xr", mirror_view_index},
+            {GpuTimingNodeDescriptor{0, "mirror", "intermediate_copy", true}});
+    }
+    std::string node_debug_name;
+    if (modules.debug_utils.commandLabelsEnabled()) {
+        node_debug_name = makeFrameGraphDebugLabel(FrameGraphDebugLabelIdentity{
+            logical_frame, "xr", mirror_view_index, 0, "mirror", "intermediate_copy"});
+    }
+    ScopedCommandDebugLabel node_label{modules.debug_utils, render_ctx.cmd_buf,
+                                       node_debug_name.c_str()};
+    if (modules.render_timing != nullptr) {
+        modules.render_timing->writeNodeSubrangeStart(
+            render_ctx.cmd_buf, 0, GpuTimingSubrange::barriers);
+    }
+    {
+        ScopedCommandDebugLabel barrier_label{modules.debug_utils, render_ctx.cmd_buf,
+                                               "barriers"};
+        layout_tracker.transition(render_ctx.cmd_buf, modules.render_target_container,
+                                  modules.vk_utils, source_id,
+                                  vk::ImageLayout::eTransferSrcOptimal);
+        layout_tracker.transition(render_ctx.cmd_buf, modules.render_target_container,
+                                  modules.vk_utils, destination_id,
+                                  vk::ImageLayout::eTransferDstOptimal);
+    }
+    if (modules.render_timing != nullptr) {
+        modules.render_timing->writeNodeSubrangeEnd(
+            render_ctx.cmd_buf, 0, GpuTimingSubrange::barriers);
+    }
+    ScopedCommandDebugLabel body_label{modules.debug_utils, render_ctx.cmd_buf, "body"};
+    if (modules.render_timing != nullptr) {
+        modules.render_timing->writeNodeSubrangeStart(
+            render_ctx.cmd_buf, 0, GpuTimingSubrange::body);
+    }
     vk::ImageCopy copy;
     copy.srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
     copy.dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
@@ -912,6 +954,11 @@ void recordXrMirrorIntermediate(const FrameRenderContext &render_ctx,
     layout_tracker.transition(render_ctx.cmd_buf, modules.render_target_container,
                               modules.vk_utils, destination_id,
                               vk::ImageLayout::eShaderReadOnlyOptimal);
+    if (modules.render_timing != nullptr) {
+        modules.render_timing->writeNodeSubrangeEnd(
+            render_ctx.cmd_buf, 0, GpuTimingSubrange::body);
+        modules.render_timing->endGpuRange();
+    }
     if (node_trace != nullptr) {
         node_trace->push_back({
             {"name", "xr_mirror_left_intermediate"},
@@ -1125,6 +1172,20 @@ void Renderer::renderLogicalFrame(ILogicalFrameTarget &target, std::uint32_t vie
     deletion_queue.beginFrame();
 
     auto modules = resolveRenderFrameModules();
+    if (modules.render_timing != nullptr) {
+        std::size_t max_nodes = 0;
+        for (const auto pass_id : {flat_rendering_pass_id,
+                                   xr_rendering_pass_id.value_or(flat_rendering_pass_id)}) {
+            const auto *graph = modules.frame_graph_runtime.find(pass_id);
+            if (graph != nullptr) max_nodes = std::max(max_nodes, graph->nodes.size());
+        }
+        // XR range slots 0/1 are the eyes; 2 is the engine mirror copy and 3
+        // is the independently submitted desktop mirror sink.
+        const auto range_slots = xr_rendering_pass_id ? 4u : view_count;
+        modules.render_timing->configureGpuQueries(
+            static_cast<std::uint32_t>(in_flight_frames_num), range_slots,
+            static_cast<std::uint32_t>(max_nodes));
+    }
     auto &temporal_histories = activeTemporalHistories();
     if (temporal_histories.size() != view_count) {
         modules.render_target_container.resetHistory();
@@ -1229,7 +1290,8 @@ void Renderer::renderLogicalFrame(ILogicalFrameTarget &target, std::uint32_t vie
 #if PELICAN_WITH_OPENXR
         if (active_graph_variant == RenderGraphVariant::xr && view_index == 0) {
             recordXrMirrorIntermediate(render_ctx, modules,
-                                       render_target_layout_tracker, node_trace_ptr);
+                                       render_target_layout_tracker, node_trace_ptr,
+                                       engine_time.frameIndex());
         }
 #endif
         target.endView(view_index);

@@ -21,7 +21,7 @@ target_link_libraries(${target_name} PRIVATE Catch2::Catch2WithMain nlohmann_jso
     ${PELICAN_TEST_UNPARSED_ARGUMENTS})
 set(discovery_properties)
 if(source_name STREQUAL "golden_image_test")
-  # Discovered golden cases reuse deterministic temporary project names.
+  # Serialize golden cases so deterministic GPU fixtures do not contend for the device.
   list(APPEND discovery_properties RESOURCE_LOCK pelican_golden_gpu)
 endif()
 if(PELICAN_TEST_GPU)
@@ -830,6 +830,10 @@ endif()
 pelican_define_test(debugdraw_test pelican_core glm VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 pelican_define_test(debugtext_test pelican_core glm VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 pelican_define_test(debugutils_test pelican_core)
+pelican_define_test(rendertiming_test pelican_core)
+target_compile_definitions(pelican_test_rendertiming_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
 
 add_test(
     NAME gpu_timing_headless_player

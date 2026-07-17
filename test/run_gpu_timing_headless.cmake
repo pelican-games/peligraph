@@ -116,3 +116,39 @@ endif()
 if(NOT log_text MATCHES "cpu_present_wait_ms_avg=[0-9]+\\.[0-9]+")
     message(FATAL_ERROR "gpu timing metrics did not include numeric present wait time\nstdout:\n${stdout}\nstderr:\n${stderr}")
 endif()
+
+# Exercise the additive get_status.gpu_timing schema. Three current-time
+# renders rotate back to the first in-flight slot, which reclaims and
+# publishes at least one completed timestamp range without an explicit wait.
+set(rpc_script "${OUT_DIR}/gpu_timing_status.ndjson")
+file(WRITE "${rpc_script}"
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"render_frame\",\"params\":{}}\n"
+    "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"step_frame\",\"params\":{}}\n"
+    "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"step_frame\",\"params\":{}}\n"
+    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"get_status\",\"params\":{}}\n"
+)
+execute_process(
+    COMMAND "${PLAYER}"
+        --rpc
+        --headless
+        --project "${OUT_DIR}/project"
+        --size 32x32
+    WORKING_DIRECTORY "${PLAYER_DIR}"
+    INPUT_FILE "${rpc_script}"
+    RESULT_VARIABLE rpc_result
+    OUTPUT_VARIABLE rpc_stdout
+    ERROR_VARIABLE rpc_stderr
+)
+if(NOT rpc_result EQUAL 0)
+    message(FATAL_ERROR "gpu timing RPC status run failed with ${rpc_result}\nstdout:\n${rpc_stdout}\nstderr:\n${rpc_stderr}")
+endif()
+if(NOT rpc_stdout MATCHES [=["gpu_timing":\{"dropped_samples":0,"enabled":true,"history_capacity":120,"history_count":1]=])
+    message(FATAL_ERROR "get_status.gpu_timing did not expose the enabled 120-frame schema\nstdout:\n${rpc_stdout}")
+endif()
+if(NOT rpc_stdout MATCHES [=["schema_version":2,"supported":true]=] OR
+   NOT rpc_stdout MATCHES [=["view_index":0]=] OR
+   NOT rpc_stdout MATCHES [=["subrange":"barriers"]=] OR
+   NOT rpc_stdout MATCHES [=["subrange":"body"]=] OR
+   NOT rpc_stdout MATCHES [=["create_count":1]=])
+    message(FATAL_ERROR "get_status.gpu_timing omitted identity, subranges, or pool reuse counters\nstdout:\n${rpc_stdout}")
+endif()

@@ -9,6 +9,7 @@
 #include "../renderingpass/rendertargetcontainer.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/rendertarget.hpp"
+#include "../vkcore/rendertiming.hpp"
 
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_vulkan.h>
@@ -125,6 +126,50 @@ void feedOrderedInput(const FrameInput &frame_input) {
                                      snapshot.getKey(KeyCode::RightAlt));
     io.AddKeyEvent(ImGuiMod_Super, snapshot.getKey(KeyCode::LeftSuper) ||
                                        snapshot.getKey(KeyCode::RightSuper));
+}
+
+void drawGpuTimingTable() {
+    const auto *timing = FastModuleContainer::tryGet<RenderTiming>();
+    if (timing == nullptr) return;
+
+    ImGui::SeparatorText("GPU timing");
+    if (!timing->timestampsSupported()) {
+        const auto reason = timing->supportReason();
+        ImGui::TextDisabled("Unavailable: %.*s", static_cast<int>(reason.size()),
+                            reason.data());
+        return;
+    }
+    const auto &rows = timing->latestNodeRows();
+    if (rows.empty()) {
+        ImGui::TextDisabled("Waiting for timestamp results...");
+        return;
+    }
+    if (!ImGui::BeginTable("gpu_timing_nodes", 5,
+                           ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                               ImGuiTableFlags_SizingFixedFit)) {
+        return;
+    }
+    ImGui::TableSetupColumn("View");
+    ImGui::TableSetupColumn("Node");
+    ImGui::TableSetupColumn("Kind");
+    ImGui::TableSetupColumn("Barriers ms");
+    ImGui::TableSetupColumn("Body ms");
+    ImGui::TableHeadersRow();
+    for (const auto &row : rows) {
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::Text("%u", row.view_index);
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(row.node_name.c_str());
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(row.node_kind.c_str());
+        ImGui::TableNextColumn();
+        ImGui::Text("%.3f", row.barriers_ms);
+        ImGui::TableNextColumn();
+        if (row.body_supported) ImGui::Text("%.3f", row.body_ms);
+        else ImGui::TextDisabled("unsupported (0.000)");
+    }
+    ImGui::EndTable();
 }
 
 } // namespace
@@ -269,6 +314,7 @@ void ImGuiSystem::routeInputAndBeginFrame(InputState &input) {
             ImGui::Text("FPS %.1f", io.Framerate);
             ImGui::Text("Frame %llu", static_cast<unsigned long long>(GET_MODULE(EngineTime).frameIndex()));
             ImGui::Text("Frame time %.3f ms", io.DeltaTime * 1000.0f);
+            drawGpuTimingTable();
             ImGui::End();
         }
         if (impl->show_plan_viewer) impl->plan_viewer.draw(&impl->show_plan_viewer);

@@ -1,0 +1,59 @@
+{
+  "schema": "pelican.gpu_timing_attribution",
+  "version": 1,
+  "subrange_order": [
+    "barriers",
+    "body"
+  ],
+  "rows": [
+    {
+      "node_kind": "render",
+      "operation": "frame_graph",
+      "barriers": "compiled incoming barriers",
+      "body": "node-owned image transitions and render work",
+      "body_support": "supported"
+    },
+    {
+      "node_kind": "compute",
+      "operation": "frame_graph",
+      "barriers": "compiled incoming barriers",
+      "body": "node-owned resource transitions and dispatch",
+      "body_support": "supported"
+    },
+    {
+      "node_kind": "anchor",
+      "operation": "frame_graph",
+      "barriers": "compiled incoming barriers",
+      "body": "anchor-owned work such as sprite draw",
+      "body_support": "unsupported with zero ms when no work is bound"
+    },
+    {
+      "node_kind": "snapshot_copy",
+      "operation": "frame_graph",
+      "barriers": "compiled incoming barriers",
+      "body": "copy-owned image transitions and copy",
+      "body_support": "supported"
+    },
+    {
+      "node_kind": "output_transform",
+      "operation": "frame_graph",
+      "barriers": "compiled incoming barriers",
+      "body": "output-transform transitions and draw",
+      "body_support": "supported"
+    },
+    {
+      "node_kind": "mirror",
+      "operation": "xr_mirror_intermediate",
+      "barriers": "pre-copy display/intermediate layout transitions",
+      "body": "engine-owned left-eye copy and final layout transition",
+      "body_support": "supported"
+    },
+    {
+      "node_kind": "mirror",
+      "operation": "desktop_mirror",
+      "barriers": "empty; swapchain acquire transition is outside the node",
+      "body": "clear, output transform, and screen UI",
+      "body_support": "supported when the best-effort sink presents"
+    }
+  ]
+}
