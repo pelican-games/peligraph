@@ -3771,6 +3771,36 @@ rebind 経路。**WP146 と並走 — polygoninstancecontainer の id 管理に
 4. 受け入れ = 上記 fixture + WP99 敵対 fixture 全維持 + 既存全テスト +
    golden SKIP 0 + player 8 秒 + CI green
 
+### WP148: 負債 ECS0 — scheduler の hazard 照合(最大の構造リスク)
+
+参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
+の WP-ECS0 定義 + N3/Q5 節が正**(逐語: 「read/write hazard と
+declared DAG の照合、missing dependency/cycle/unexecuted-node
+fail-fast、必要な automatic serialization」。実コード指摘: 登録時に
+収集済みの read/write index を execution level 構築が無視し、同 level を
+並列 schedule — edge 1 本の忘れで write/write race)。
+依存: WP62(済)。見積: 大。**単独派遣(他 WP と並走禁止 — ECS コアは
+全系の土台)**。
+排他: `src/core/userpublic/details/ecs/` の scheduler + predefined の
+edge 検証。**登録 API の意味論・既存 system の実行結果は不変**。
+
+1. **hazard 照合(fail-fast)**: graph 構築時に、収集済み read/write
+   metadata に対し「全 conflict が依存辺で順序付けられているか」を
+   検査。未順序 conflict は **system 名ペア + component 名入りの
+   起動時エラー**(黙って並列にしない)
+2. cycle・missing dependency・unexecuted node も同時に fail-fast
+   (現行の静かな脱落を根絶)
+3. **automatic serialization(opt-in の既定 ON)**: 未順序 conflict を
+   エラーにする代わりに「登録順で直列化 + WARN」するモードを
+   起動フラグで(移行期の逃げ道 — strict では常にエラー)
+4. read/read 並列は維持。既存 predefined/example の全 system が
+   エラーなしで通ることを確認(必要な明示 edge の追加は本 WP で —
+   実行順が変わる場合は golden で検証)
+5. 受け入れ = hazard 正負 fixture(edge 忘れ検出・cycle・
+   unexecuted)+ 既存全テスト + **golden 全 byte 不変**(順序修正が
+   絵を変えないこと — 変わる場合は停止して質問)+ player 8 秒 +
+   CI green
+
 ### WP137: 負債 CI0 — CPU gate の常設(GitHub Actions)
 
 参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
