@@ -26,8 +26,7 @@
   },
   {
     "file": "invalid/pose_resolution.json",
-    "expect": "error",
-    "mode": "pose_resolution",
-    "error_kind": "openxr"
+    "expect": "ok",
+    "mode": "pose_resolution"
   }
 ]

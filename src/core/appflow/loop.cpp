@@ -278,10 +278,12 @@ void Loop::run() {
     auto *render_timing = modules.render_timing;
     (void)modules.vat_player;
 
+    const auto pose_action_names = internal::poseInputActionNames();
     if (launch_config.input_replay_path) {
-        input_sequence.startReplay(*launch_config.input_replay_path);
+        input_sequence.startReplay(*launch_config.input_replay_path, pose_action_names);
     } else if (launch_config.input_record) {
-        input_sequence.startRecording(*launch_config.input_record, launch_config.fps);
+        input_sequence.startRecording(*launch_config.input_record, launch_config.fps,
+                                      pose_action_names);
     }
     const auto time_mode = launch_config.headless || input_sequence.isReplaying()
                                ? EngineTime::Mode::fixed_step
@@ -379,8 +381,9 @@ void Loop::run() {
             if (xr_session->isSessionRunning()) {
                 const auto xr_frame = OpenXr::runSessionFrame(
                     *xr_session, engine_time, [&] {
-                        internal::setInputActionBackendFrame(
-                            xr_session->syncActions(Actions::actionSetStack()));
+                        auto xr_input = xr_session->syncActions(Actions::actionSetStack());
+                        internal::setInputActionBackendFrame(std::move(xr_input.actions));
+                        input_state.queuePoseSamples(std::move(xr_input.pose_samples));
                         update_interactive_state();
                     });
                 // XR1b retains frame-local timing/view values only.  XR2a will
@@ -388,8 +391,9 @@ void Loop::run() {
                 (void)xr_frame;
                 continue;
             }
-            internal::setInputActionBackendFrame(
-                xr_session->syncActions(Actions::actionSetStack()));
+            auto xr_input = xr_session->syncActions(Actions::actionSetStack());
+            internal::setInputActionBackendFrame(std::move(xr_input.actions));
+            input_state.queuePoseSamples(std::move(xr_input.pose_samples));
         }
 #endif
         const auto update_start = Clock::now();

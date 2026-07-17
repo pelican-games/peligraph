@@ -650,6 +650,16 @@ bool InputActionMap::usesGamepad() const noexcept {
     return false;
 }
 
+std::vector<std::string> InputActionMap::poseActionNames() const {
+    std::vector<std::string> result;
+    for (const auto &set : action_sets) {
+        for (const auto &action : set.actions) {
+            if (action.type == InputActionType::pose) result.push_back(action.name);
+        }
+    }
+    return result;
+}
+
 std::size_t InputActionMap::actionCount() const noexcept {
     return action_lookup.size();
 }
@@ -678,8 +688,8 @@ ActionPose InputActionFrame::pose(std::string_view action_name) const {
     if (type->second != InputActionType::pose) {
         throw std::runtime_error("input action is not a pose action: " + std::string{action_name});
     }
-    throw std::runtime_error("OpenXR pose binding resolution is not implemented for input action '" +
-                             std::string{action_name} + "'");
+    const auto found = poses.find(std::string{action_name});
+    return found == poses.end() ? ActionPose{} : found->second;
 }
 
 InputActionMap parseInputActionsJson(const nlohmann::json &document) {
@@ -830,6 +840,7 @@ InputActionFrame evaluateInputActions(const InputActionMap &map, const InputSnap
         for (const auto &action : set.actions) {
             frame.action_types.emplace(action.name, action.type);
             frame.actions.emplace(action.name, InputActionState{});
+            if (action.type == InputActionType::pose) frame.poses.emplace(action.name, ActionPose{});
         }
     }
 
@@ -866,6 +877,27 @@ InputActionFrame evaluateInputActions(const InputActionMap &map, const InputSnap
         consumed.merge(consumed_by_set);
     }
 
+    return frame;
+}
+
+InputActionFrame evaluateInputActions(const InputActionMap &map, const FrameInput &frame_input,
+                                      const std::vector<std::string> &action_set_stack) {
+    auto frame = evaluateInputActions(map, frame_input.snapshot, action_set_stack);
+    std::unordered_set<std::string> active_pose_actions;
+    for (const auto &set_name : action_set_stack) {
+        const auto *set = map.findActionSet(set_name);
+        if (set == nullptr) {
+            throw std::runtime_error("unknown input action set on stack: " + set_name);
+        }
+        for (const auto &action : set->actions) {
+            if (action.type == InputActionType::pose) active_pose_actions.insert(action.name);
+        }
+    }
+    for (const auto &sample : frame_input.pose_samples) {
+        if (active_pose_actions.contains(sample.action_name)) {
+            frame.poses.at(sample.action_name) = sample.pose;
+        }
+    }
     return frame;
 }
 

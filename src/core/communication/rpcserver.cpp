@@ -728,7 +728,9 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
     server.setHandler("start_input_record", [&modules](const nlohmann::json &params) {
         const auto path = absoluteCapturePath(requireStringParam(params, "path", "start_input_record"));
         try {
-            modules.input_sequence.startRecording(path, modules.launch_config.fps);
+            const auto pose_action_names = internal::poseInputActionNames();
+            modules.input_sequence.startRecording(path, modules.launch_config.fps,
+                                                  pose_action_names);
         } catch (const std::exception &error) {
             throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError, error.what());
         }
@@ -754,8 +756,9 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
                 throw std::runtime_error(
                     "start_input_replay cannot begin while inject_input events are pending");
             }
+            const auto pose_action_names = internal::poseInputActionNames();
+            modules.input_sequence.startReplay(path, pose_action_names);
             modules.input_state.clear();
-            modules.input_sequence.startReplay(path);
             auto &config = modules.launch_config;
             config.input_replay = true;
             modules.reload_gate.setReason(watch::ReloadGateReason::replay, true);

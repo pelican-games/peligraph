@@ -2,6 +2,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
+#include <array>
 #include <fstream>
 
 using namespace Pelican;
@@ -88,4 +89,26 @@ TEST_CASE("replay reconstructs held and released snapshots through InputState", 
 
     runtime.stopReplay();
     std::filesystem::remove(temp);
+}
+
+TEST_CASE("pelican.input_seq v1 rejects pose record and replay at start with the action name",
+          "[input-sequence][pose]") {
+    InputSequenceRuntime runtime;
+    const std::array<std::string, 1> pose_actions{"aim_left"};
+    const auto temp = std::filesystem::temp_directory_path() /
+                      "pelican_wp132_pose_inputsequence_test.jsonl";
+
+    REQUIRE_THROWS_WITH(
+        runtime.startRecording(temp, 60.0, pose_actions),
+        Catch::Matchers::ContainsSubstring("start_input_record") &&
+            Catch::Matchers::ContainsSubstring("aim_left") &&
+            Catch::Matchers::ContainsSubstring("pelican.input_seq v1"));
+    REQUIRE_FALSE(runtime.isRecording());
+
+    REQUIRE_THROWS_WITH(
+        runtime.startReplay(temp, pose_actions),
+        Catch::Matchers::ContainsSubstring("start_input_replay") &&
+            Catch::Matchers::ContainsSubstring("aim_left") &&
+            Catch::Matchers::ContainsSubstring("pelican.input_seq v1"));
+    REQUIRE_FALSE(runtime.isReplaying());
 }

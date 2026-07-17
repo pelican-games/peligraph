@@ -16,6 +16,14 @@ namespace {
 constexpr std::string_view inputSequenceSchema = "pelican.input_seq";
 constexpr int inputSequenceVersion = 1;
 
+void rejectPoseInputSequence(std::span<const std::string> pose_action_names,
+                             std::string_view operation) {
+    if (pose_action_names.empty()) return;
+    throw std::runtime_error(std::string{operation} +
+                             " does not support pose action '" + pose_action_names.front() +
+                             "' in pelican.input_seq v1");
+}
+
 constexpr std::array<std::string_view, key_code_count> keyCodeNames{
     "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M",
     "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
@@ -363,13 +371,15 @@ InputSequenceRuntime::~InputSequenceRuntime() {
     }
 }
 
-void InputSequenceRuntime::startRecording(const std::filesystem::path &path, double fps) {
+void InputSequenceRuntime::startRecording(const std::filesystem::path &path, double fps,
+                                          std::span<const std::string> pose_action_names) {
     if (isReplaying()) {
         throw std::runtime_error("start_input_record cannot run while start_input_replay is active");
     }
     if (isRecording()) {
         throw std::runtime_error("start_input_record is already active");
     }
+    rejectPoseInputSequence(pose_action_names, "start_input_record");
     sequence = InputSequence{fps};
     output_path = path;
     mode = Mode::recording;
@@ -386,13 +396,15 @@ InputRecordResult InputSequenceRuntime::stopRecording() {
     return result;
 }
 
-void InputSequenceRuntime::startReplay(const std::filesystem::path &path) {
+void InputSequenceRuntime::startReplay(const std::filesystem::path &path,
+                                       std::span<const std::string> pose_action_names) {
     if (isRecording()) {
         throw std::runtime_error("start_input_replay cannot run while start_input_record is active");
     }
     if (isReplaying()) {
         throw std::runtime_error("start_input_replay is already active");
     }
+    rejectPoseInputSequence(pose_action_names, "start_input_replay");
     sequence = InputSequence::loadFile(path);
     output_path = path;
     replay_frame = 0;
@@ -434,6 +446,11 @@ void InputSequenceRuntime::prepareFrame(InputState &input) {
 
 void InputSequenceRuntime::recordFrame(const FrameInput &frame_input) {
     if (isRecording()) {
+        if (!frame_input.pose_samples.empty()) {
+            throw std::runtime_error("start_input_record does not support pose action '" +
+                                     frame_input.pose_samples.front().action_name +
+                                     "' in pelican.input_seq v1");
+        }
         sequence.appendFrame(frame_input.ordered_events);
     }
 }

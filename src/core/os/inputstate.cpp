@@ -234,23 +234,28 @@ InputSnapshot InputConsumptionMask::apply(const InputSnapshot &source) const noe
     return result;
 }
 
-FrameInput::FrameInput(std::span<const InputEvent> events, const InputSnapshot &frame_snapshot,
+FrameInput::FrameInput(std::span<const InputEvent> events, std::span<const InputPoseSample> poses,
+                       const InputSnapshot &frame_snapshot,
                        std::shared_ptr<internal::FrameInputBorrowState> state) noexcept
-    : ordered_events(events), snapshot(frame_snapshot), borrow_state(std::move(state)),
+    : ordered_events(events), pose_samples(poses), snapshot(frame_snapshot),
+      borrow_state(std::move(state)),
       borrowed_generation(borrow_state ? borrow_state->generation : 0) {
     acquire();
 }
 
 FrameInput::FrameInput(const FrameInput &other) noexcept
-    : ordered_events(other.ordered_events), snapshot(other.snapshot), borrow_state(other.borrow_state),
+    : ordered_events(other.ordered_events), pose_samples(other.pose_samples), snapshot(other.snapshot),
+      borrow_state(other.borrow_state),
       borrowed_generation(other.borrowed_generation) {
     acquire();
 }
 
 FrameInput::FrameInput(FrameInput &&other) noexcept
-    : ordered_events(other.ordered_events), snapshot(other.snapshot), borrow_state(std::move(other.borrow_state)),
+    : ordered_events(other.ordered_events), pose_samples(other.pose_samples), snapshot(other.snapshot),
+      borrow_state(std::move(other.borrow_state)),
       borrowed_generation(other.borrowed_generation) {
     other.ordered_events = {};
+    other.pose_samples = {};
     other.borrowed_generation = 0;
 }
 
@@ -260,6 +265,7 @@ FrameInput &FrameInput::operator=(const FrameInput &other) noexcept {
     }
     release();
     ordered_events = other.ordered_events;
+    pose_samples = other.pose_samples;
     snapshot = other.snapshot;
     borrow_state = other.borrow_state;
     borrowed_generation = other.borrowed_generation;
@@ -273,10 +279,12 @@ FrameInput &FrameInput::operator=(FrameInput &&other) noexcept {
     }
     release();
     ordered_events = other.ordered_events;
+    pose_samples = other.pose_samples;
     snapshot = other.snapshot;
     borrow_state = std::move(other.borrow_state);
     borrowed_generation = other.borrowed_generation;
     other.ordered_events = {};
+    other.pose_samples = {};
     other.borrowed_generation = 0;
     return *this;
 }
@@ -349,6 +357,19 @@ void InputStateCore::queueEvents(const std::vector<InputEvent> &events) {
     }
 }
 
+void InputStateCore::queuePoseSample(InputPoseSample sample) {
+    if (sample.action_name.empty()) {
+        throw std::runtime_error("input pose sample requires an action name");
+    }
+    pending_pose_samples.push_back(std::move(sample));
+}
+
+void InputStateCore::queuePoseSamples(std::vector<InputPoseSample> samples) {
+    for (auto &sample : samples) {
+        queuePoseSample(std::move(sample));
+    }
+}
+
 void InputStateCore::beginFrame() {
     borrow_state->active = false;
     assert(borrow_state->borrowers == 0 && "FrameInput must not be retained across frames");
@@ -360,6 +381,8 @@ void InputStateCore::beginFrame() {
     consumption_mask = {};
     frame_events.clear();
     frame_events.swap(pending_events);
+    frame_pose_samples.clear();
+    frame_pose_samples.swap(pending_pose_samples);
 
     InputSnapshot next_snapshot{};
     const bool had_mouse_position = mouse_position_known;
@@ -453,6 +476,8 @@ void InputStateCore::clear() {
     current_gamepad_axes = {};
     pending_events.clear();
     frame_events.clear();
+    pending_pose_samples.clear();
+    frame_pose_samples.clear();
     consumption_mask = {};
     mouse_x = 0.0f;
     mouse_y = 0.0f;
@@ -467,7 +492,7 @@ const InputSnapshot &InputStateCore::currentSnapshot() const noexcept {
 
 FrameInput InputStateCore::currentFrameInput() const noexcept {
     assert(frame_active && "FrameInput is only available after beginFrame");
-    return FrameInput{frame_events, snapshot, borrow_state};
+    return FrameInput{frame_events, frame_pose_samples, snapshot, borrow_state};
 }
 
 void InputStateCore::consumeControlForActions(KeyCode code) noexcept {
@@ -516,6 +541,14 @@ void InputState::queueEvent(InputEvent event) {
 
 void InputState::queueEvents(const std::vector<InputEvent> &events) {
     core.queueEvents(events);
+}
+
+void InputState::queuePoseSample(InputPoseSample sample) {
+    core.queuePoseSample(std::move(sample));
+}
+
+void InputState::queuePoseSamples(std::vector<InputPoseSample> samples) {
+    core.queuePoseSamples(std::move(samples));
 }
 
 void InputState::beginFrame() {

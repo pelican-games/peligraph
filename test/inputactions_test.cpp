@@ -114,15 +114,30 @@ TEST_CASE("Input action parser fixtures", "[input-actions]") {
 
             if (mode == "pose_resolution") {
                 const auto map = parseInputActionsJson(document);
-                const auto frame = evaluateInputActions(map, InputSnapshot{}, std::vector<std::string>{"xr"});
-                std::string message;
-                try {
-                    (void)frame.pose("aim");
-                } catch (const std::exception &ex) {
-                    message = ex.what();
-                }
-                REQUIRE_FALSE(message.empty());
-                requireErrorKind(message, entry.at("error_kind").get<std::string>());
+                InputStateCore input;
+                ActionPose sample;
+                sample.position[0] = 4.0F;
+                sample.orientation_valid = true;
+                sample.position_valid = true;
+                sample.orientation_tracked = true;
+                sample.valid = true;
+                sample.source = ActionPoseSource::action_space;
+                sample.reference_space = ActionPoseReferenceSpace::local;
+                sample.hand = ActionPoseHand::left;
+                input.queuePoseSample({"aim", sample});
+                input.beginFrame();
+                const auto frame = evaluateInputActions(
+                    map, input.currentFrameInput(), std::vector<std::string>{"xr"});
+                const auto pose = frame.pose("aim");
+                CHECK(pose.position[0] == 4.0F);
+                CHECK(pose.valid);
+                CHECK(pose.orientation_valid);
+                CHECK(pose.position_valid);
+                CHECK(pose.orientation_tracked);
+                CHECK_FALSE(pose.position_tracked);
+                CHECK(pose.source == ActionPoseSource::action_space);
+                CHECK(pose.reference_space == ActionPoseReferenceSpace::local);
+                CHECK(pose.hand == ActionPoseHand::left);
                 return;
             }
 

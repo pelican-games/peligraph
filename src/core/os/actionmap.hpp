@@ -14,6 +14,7 @@
 namespace Pelican {
 
 struct InputSnapshot;
+struct FrameInput;
 
 enum class InputActionType : std::uint8_t {
     button,
@@ -79,6 +80,7 @@ class InputActionMap {
     bool hasActionSet(std::string_view name) const;
     std::size_t actionCount() const noexcept;
     bool usesGamepad() const noexcept;
+    std::vector<std::string> poseActionNames() const;
 
     friend InputActionMap parseInputActionsJson(const nlohmann::json &document);
     friend InputActionMap applyInputProfile(InputActionMap map, const InputBindingProfile &profile);
@@ -87,6 +89,7 @@ class InputActionMap {
 struct InputActionFrame {
     std::unordered_map<std::string, InputActionState> actions;
     std::unordered_map<std::string, InputActionType> action_types;
+    std::unordered_map<std::string, ActionPose> poses;
 
     const InputActionState *find(std::string_view action_name) const;
     InputActionState get(std::string_view action_name) const;
@@ -99,6 +102,8 @@ InputBindingProfile parseInputProfileJson(const nlohmann::json &document, const 
 InputBindingProfile parseInputProfileString(std::string_view document, const InputActionMap &actions);
 InputActionMap applyInputProfile(InputActionMap map, const InputBindingProfile &profile);
 InputActionFrame evaluateInputActions(const InputActionMap &map, const InputSnapshot &snapshot,
+                                      const std::vector<std::string> &action_set_stack);
+InputActionFrame evaluateInputActions(const InputActionMap &map, const FrameInput &frame_input,
                                       const std::vector<std::string> &action_set_stack);
 void mergeInputActionBackendFrame(InputActionFrame &destination,
                                   const InputActionFrame &backend_frame);

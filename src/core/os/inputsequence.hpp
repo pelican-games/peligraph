@@ -60,9 +60,11 @@ DECLARE_MODULE(InputSequenceRuntime) {
   public:
     ~InputSequenceRuntime();
 
-    void startRecording(const std::filesystem::path &path, double fps);
+    void startRecording(const std::filesystem::path &path, double fps,
+                        std::span<const std::string> pose_action_names = {});
     InputRecordResult stopRecording();
-    void startReplay(const std::filesystem::path &path);
+    void startReplay(const std::filesystem::path &path,
+                     std::span<const std::string> pose_action_names = {});
     void stopReplay();
 
     void prepareFrame(InputState &input);

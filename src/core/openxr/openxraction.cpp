@@ -56,7 +56,7 @@ std::string xrName(std::string_view project_name, std::size_t index) {
     return result;
 }
 
-std::optional<XrActionType> xrActionType(InputActionType type) {
+XrActionType xrActionType(InputActionType type) {
     switch (type) {
     case InputActionType::button:
         return XR_ACTION_TYPE_BOOLEAN_INPUT;
@@ -65,9 +65,9 @@ std::optional<XrActionType> xrActionType(InputActionType type) {
     case InputActionType::axis2:
         return XR_ACTION_TYPE_VECTOR2F_INPUT;
     case InputActionType::pose:
-        return std::nullopt;
+        return XR_ACTION_TYPE_POSE_INPUT;
     }
-    return std::nullopt;
+    return XR_ACTION_TYPE_BOOLEAN_INPUT;
 }
 
 std::optional<std::string_view> xrBindingPath(const InputActionBinding &binding) {
@@ -84,6 +84,52 @@ std::optional<std::string_view> handPath(std::string_view binding_path) {
     if (binding_path.starts_with(std::string{leftHandPath} + "/")) return leftHandPath;
     if (binding_path.starts_with(std::string{rightHandPath} + "/")) return rightHandPath;
     return std::nullopt;
+}
+
+ActionPoseHand handIdentity(std::string_view value) noexcept {
+    if (value == leftHandPath || value.ends_with("_left")) return ActionPoseHand::left;
+    if (value == rightHandPath || value.ends_with("_right")) return ActionPoseHand::right;
+    return ActionPoseHand::none;
+}
+
+std::string_view handPath(ActionPoseHand hand) noexcept {
+    switch (hand) {
+    case ActionPoseHand::left:
+        return leftHandPath;
+    case ActionPoseHand::right:
+        return rightHandPath;
+    case ActionPoseHand::none:
+        return {};
+    }
+    return {};
+}
+
+ActionPose poseIdentity(std::string_view action_name, ActionPoseReferenceSpace reference_space) {
+    ActionPose pose;
+    pose.source = action_name == "head" ? ActionPoseSource::synthetic_head
+                                        : ActionPoseSource::action_space;
+    pose.reference_space = reference_space;
+    pose.hand = handIdentity(action_name);
+    return pose;
+}
+
+void copyLocatedPose(ActionPose &destination, const XrSpaceLocation &location) noexcept {
+    destination.position[0] = location.pose.position.x;
+    destination.position[1] = location.pose.position.y;
+    destination.position[2] = location.pose.position.z;
+    destination.orientation[0] = location.pose.orientation.x;
+    destination.orientation[1] = location.pose.orientation.y;
+    destination.orientation[2] = location.pose.orientation.z;
+    destination.orientation[3] = location.pose.orientation.w;
+    destination.orientation_valid =
+        (location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0;
+    destination.position_valid =
+        (location.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0;
+    destination.orientation_tracked =
+        (location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT) != 0;
+    destination.position_tracked =
+        (location.locationFlags & XR_SPACE_LOCATION_POSITION_TRACKED_BIT) != 0;
+    destination.valid = destination.orientation_valid && destination.position_valid;
 }
 
 float clampAxis(float value) noexcept {
@@ -147,6 +193,10 @@ void XrActionRuntime::resolve(PFN_xrGetInstanceProcAddr get_instance_proc_addr) 
     resolveRequired(get_instance_proc_addr, instance, "xrGetActionStateBoolean", api.get_boolean);
     resolveRequired(get_instance_proc_addr, instance, "xrGetActionStateFloat", api.get_float);
     resolveRequired(get_instance_proc_addr, instance, "xrGetActionStateVector2f", api.get_vector2);
+    resolveRequired(get_instance_proc_addr, instance, "xrGetActionStatePose", api.get_pose);
+    resolveRequired(get_instance_proc_addr, instance, "xrCreateActionSpace", api.create_action_space);
+    resolveRequired(get_instance_proc_addr, instance, "xrLocateSpace", api.locate_space);
+    resolveRequired(get_instance_proc_addr, instance, "xrDestroySpace", api.destroy_space);
 }
 
 XrPath XrActionRuntime::path(std::string_view value) const {
@@ -185,8 +235,20 @@ void XrActionRuntime::create(const InputActionMap &input_actions) {
         for (const auto &input_action : input_set.actions) {
             inactive_frame.action_types.emplace(input_action.name, input_action.type);
             inactive_frame.actions.emplace(input_action.name, InputActionState{});
+            if (input_action.type == InputActionType::pose) {
+                inactive_frame.poses.emplace(input_action.name, ActionPose{});
+                inactive_pose_samples.push_back(
+                    {input_action.name,
+                     poseIdentity(input_action.name, ActionPoseReferenceSpace::unknown)});
+                if (input_action.name == "head") {
+                    if (!input_action.bindings.empty()) {
+                        throw std::runtime_error(
+                            "synthetic head pose action must not have an OpenXR binding: head");
+                    }
+                    continue;
+                }
+            }
             const auto action_type = xrActionType(input_action.type);
-            if (!action_type) continue; // XR3b owns pose actions and spaces.
 
             ActionRecord action_record;
             action_record.name = input_action.name;
@@ -200,16 +262,47 @@ void XrActionRuntime::create(const InputActionMap &input_actions) {
                 suggested_paths.push_back(path(*binding_path));
                 if (const auto hand = handPath(*binding_path)) {
                     const auto subaction = path(*hand);
+                    const auto identity = handIdentity(*hand);
+                    if (input_action.type == InputActionType::pose &&
+                        action_record.hand != ActionPoseHand::none &&
+                        action_record.hand != identity) {
+                        throw std::runtime_error(
+                            "OpenXR pose action must use a single left/right identity: " +
+                            input_action.name);
+                    }
+                    if (input_action.type == InputActionType::pose) action_record.hand = identity;
                     if (unique_subactions.insert(subaction).second) {
                         action_record.subaction_paths.push_back(subaction);
                     }
                 }
             }
+            if (input_action.type == InputActionType::pose &&
+                action_record.subaction_paths.empty()) {
+                const auto identity = handIdentity(input_action.name);
+                const auto default_path = handPath(identity);
+                if (!default_path.empty()) {
+                    action_record.hand = identity;
+                    action_record.subaction_paths.push_back(path(default_path));
+                }
+            }
+            const auto named_hand = handIdentity(input_action.name);
+            if (input_action.type == InputActionType::pose &&
+                named_hand != ActionPoseHand::none &&
+                action_record.hand != ActionPoseHand::none &&
+                named_hand != action_record.hand) {
+                throw std::runtime_error("OpenXR pose binding hand does not match action name: " +
+                                         input_action.name);
+            }
+            if (input_action.type == InputActionType::pose &&
+                action_record.subaction_paths.size() > 1) {
+                throw std::runtime_error("OpenXR pose action must use a single left/right identity: " +
+                                         input_action.name);
+            }
 
             XrActionCreateInfo action_info{XR_TYPE_ACTION_CREATE_INFO};
             copyName(action_info.actionName, xrName(input_action.name, action_index), "action");
             copyName(action_info.localizedActionName, input_action.name, "localized action");
-            action_info.actionType = *action_type;
+            action_info.actionType = action_type;
             action_info.countSubactionPaths =
                 static_cast<uint32_t>(action_record.subaction_paths.size());
             action_info.subactionPaths = action_record.subaction_paths.data();
@@ -220,6 +313,12 @@ void XrActionRuntime::create(const InputActionMap &input_actions) {
             }
             for (const auto suggested_path : suggested_paths) {
                 suggested_bindings.push_back({action_record.action, suggested_path});
+            }
+            if (input_action.type == InputActionType::pose) {
+                const auto inactive = std::find_if(
+                    inactive_pose_samples.begin(), inactive_pose_samples.end(),
+                    [&](const auto &sample) { return sample.action_name == input_action.name; });
+                if (inactive != inactive_pose_samples.end()) inactive->pose.hand = action_record.hand;
             }
             stored_set.actions.push_back(std::move(action_record));
             ++action_index;
@@ -248,9 +347,46 @@ void XrActionRuntime::create(const InputActionMap &input_actions) {
         const auto result = api.attach_action_sets(session, &attach_info);
         if (XR_FAILED(result)) throwFailure("xrAttachSessionActionSets", result);
     }
+
+    for (auto &set : action_sets) {
+        for (auto &action : set.actions) {
+            if (action.type != InputActionType::pose) continue;
+            const std::array<XrPath, 1> global_path{XR_NULL_PATH};
+            const auto *space_paths = action.subaction_paths.empty() ? global_path.data()
+                                                                     : action.subaction_paths.data();
+            const auto space_count = action.subaction_paths.empty() ? global_path.size()
+                                                                     : action.subaction_paths.size();
+            for (std::size_t index = 0; index < space_count; ++index) {
+                XrActionSpaceCreateInfo space_info{XR_TYPE_ACTION_SPACE_CREATE_INFO};
+                space_info.action = action.action;
+                space_info.subactionPath = space_paths[index];
+                space_info.poseInActionSpace.orientation.w = 1.0F;
+                PoseSpaceRecord pose_space;
+                pose_space.subaction_path = space_paths[index];
+                pose_space.hand = action.hand;
+                const auto result = api.create_action_space(session, &space_info, &pose_space.space);
+                if (XR_FAILED(result) || pose_space.space == XR_NULL_HANDLE) {
+                    throwFailure("xrCreateActionSpace(" + action.name + ")", result);
+                }
+                action.pose_spaces.push_back(pose_space);
+            }
+        }
+    }
 }
 
 void XrActionRuntime::destroy() noexcept {
+    for (auto set_it = action_sets.rbegin(); set_it != action_sets.rend(); ++set_it) {
+        for (auto action_it = set_it->actions.rbegin(); action_it != set_it->actions.rend();
+             ++action_it) {
+            for (auto space_it = action_it->pose_spaces.rbegin();
+                 space_it != action_it->pose_spaces.rend(); ++space_it) {
+                if (space_it->space != XR_NULL_HANDLE && api.destroy_space != nullptr) {
+                    (void)api.destroy_space(space_it->space);
+                    space_it->space = XR_NULL_HANDLE;
+                }
+            }
+        }
+    }
     // xrDestroyActionSet destroys all actions in that set. Avoid redundant
     // xrDestroyAction calls during normal teardown while still keeping the
     // dispatch entry available for the explicit ownership contract.
@@ -264,9 +400,12 @@ void XrActionRuntime::destroy() noexcept {
     set_lookup.clear();
 }
 
-InputActionFrame XrActionRuntime::sync(
-    const std::vector<std::string> &active_action_set_stack, bool input_eligible) {
-    if (!input_eligible) return inactive_frame;
+XrInputFrame XrActionRuntime::sync(
+    const std::vector<std::string> &active_action_set_stack, bool input_eligible,
+    XrSpace base_space, XrTime display_time, ActionPoseReferenceSpace reference_space) {
+    XrInputFrame result{inactive_frame, inactive_pose_samples};
+    for (auto &sample : result.pose_samples) sample.pose.reference_space = reference_space;
+    if (!input_eligible) return result;
 
     std::vector<XrActiveActionSet> active_sets;
     active_sets.reserve(active_action_set_stack.size());
@@ -284,7 +423,7 @@ InputActionFrame XrActionRuntime::sync(
     const auto sync_result = api.sync_actions(session, &sync_info);
     if (XR_FAILED(sync_result)) throwFailure("xrSyncActions", sync_result);
 
-    InputActionFrame frame = inactive_frame;
+    auto &frame = result.actions;
     for (const auto &active : active_sets) {
         const auto set_it = std::find_if(action_sets.begin(), action_sets.end(), [&](const auto &set) {
             return set.action_set == active.actionSet;
@@ -346,14 +485,48 @@ InputActionFrame XrActionRuntime::sync(
                     }
                     break;
                 }
-                case InputActionType::pose:
+                case InputActionType::pose: {
+                    XrActionStatePose state{XR_TYPE_ACTION_STATE_POSE};
+                    const auto state_result = api.get_pose(session, &get_info, &state);
+                    if (XR_FAILED(state_result)) {
+                        throwFailure("xrGetActionStatePose(" + action.name + ")", state_result);
+                    }
+                    if (state.isActive != XR_TRUE) break;
+                    if (base_space == XR_NULL_HANDLE) {
+                        throw std::runtime_error("xrLocateSpace requires a reference space for pose action '" +
+                                                 action.name + "'");
+                    }
+                    const auto pose_space = std::find_if(
+                        action.pose_spaces.begin(), action.pose_spaces.end(),
+                        [&](const auto &space) { return space.subaction_path == query_paths[i]; });
+                    if (pose_space == action.pose_spaces.end()) {
+                        throw std::runtime_error("OpenXR pose action has no action space: " +
+                                                 action.name);
+                    }
+                    XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};
+                    const auto locate_result =
+                        api.locate_space(pose_space->space, base_space, display_time, &location);
+                    if (XR_FAILED(locate_result)) {
+                        throwFailure("xrLocateSpace(" + action.name + ")", locate_result);
+                    }
+                    const auto destination = std::find_if(
+                        result.pose_samples.begin(), result.pose_samples.end(),
+                        [&](const auto &pose) { return pose.action_name == action.name; });
+                    if (destination == result.pose_samples.end()) {
+                        throw std::logic_error("OpenXR pose sample identity is missing: " +
+                                               action.name);
+                    }
+                    destination->pose = poseIdentity(action.name, reference_space);
+                    destination->pose.hand = pose_space->hand;
+                    copyLocatedPose(destination->pose, location);
                     break;
+                }
                 }
                 mergeState(destination, sample);
             }
         }
     }
-    return frame;
+    return result;
 }
 
 [[noreturn]] void XrActionRuntime::throwFailure(const std::string &operation, XrResult result) {

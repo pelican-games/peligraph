@@ -42,6 +42,9 @@ struct XrFrameResult {
     XrLocatedViews located_views;
 };
 
+ActionPose syntheticHeadPose(const XrLocatedViews &located_views,
+                             ActionPoseReferenceSpace reference_space) noexcept;
+
 enum class XrTerminalPath {
     none,
     loss_pending,
@@ -95,6 +98,8 @@ DECLARE_MODULE(SessionRuntime) {
     XrSessionState state = XR_SESSION_STATE_UNKNOWN;
     XrTerminalPath terminal_path = XrTerminalPath::none;
     std::unique_ptr<XrActionRuntime> action_runtime;
+    XrLocatedViews input_located_views;
+    ActionPoseReferenceSpace tracking_space_identity = ActionPoseReferenceSpace::local;
     bool session_running = false;
     FramePhase frame_phase = FramePhase::idle;
     XrTime pending_display_time = 0;
@@ -116,7 +121,7 @@ DECLARE_MODULE(SessionRuntime) {
     void beginFrame();
     XrLocatedViews locateViews(const XrDisplayTiming &display_timing);
     void endFrame(const XrDisplayTiming &display_timing);
-    InputActionFrame syncActions(const std::vector<std::string> &active_action_set_stack);
+    XrInputFrame syncActions(const std::vector<std::string> &active_action_set_stack);
     void endFrame(const XrDisplayTiming &display_timing,
                   const XrCompositionLayerBaseHeader &layer);
     void reportCompositionLoss(XrResult result) noexcept;
@@ -132,6 +137,9 @@ DECLARE_MODULE(SessionRuntime) {
     XrSystemId systemId() const noexcept { return system_id; }
     XrSession sessionHandle() const noexcept { return session; }
     XrSpace trackingSpace() const noexcept { return tracking_space; }
+    ActionPoseReferenceSpace trackingSpaceIdentity() const noexcept {
+        return tracking_space_identity;
+    }
 };
 
 // Executes the XR1b frame contract.  The callback is the existing simulation

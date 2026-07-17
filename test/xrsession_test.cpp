@@ -330,6 +330,7 @@ TEST_CASE("OpenXR frame timing is immutable simulation-external data and every f
     SECTION("shouldRender false still updates and closes the frame") {
         fake.should_render = false;
         const auto frame = Pelican::OpenXr::runSessionFrame(runtime, engine_time, [&] {
+            CHECK(fake.calls == std::vector<std::string>{"wait_frame", "begin_frame"});
             ++fake.update_count;
         });
         CHECK_FALSE(frame.display_timing.shouldRender());
@@ -346,6 +347,8 @@ TEST_CASE("OpenXR frame timing is immutable simulation-external data and every f
 
     SECTION("shouldRender true locates and retains views without drawing") {
         const auto frame = Pelican::OpenXr::runSessionFrame(runtime, engine_time, [&] {
+            CHECK(fake.calls == std::vector<std::string>{"wait_frame", "begin_frame",
+                                                         "locate_views"});
             ++fake.update_count;
         });
         CHECK(frame.display_timing.shouldRender());
@@ -388,7 +391,9 @@ TEST_CASE("OpenXR wait, begin, and end frame failures preserve their call bounda
             } else if (failure == std::string{"begin_frame"}) {
                 CHECK(fake.calls ==
                       std::vector<std::string>{"wait_frame", "begin_frame"});
-                CHECK(fake.update_count == 1);
+                // WP132 freezes XR poses before update; a failed begin cannot
+                // expose an unlocated pose frame to the simulation.
+                CHECK(fake.update_count == 0);
             } else {
                 CHECK(fake.calls ==
                       std::vector<std::string>{"wait_frame", "begin_frame", "locate_views",
@@ -398,6 +403,33 @@ TEST_CASE("OpenXR wait, begin, and end frame failures preserve their call bounda
             CHECK(engine_time.timeSetRevision() == 0);
         }
     }
+}
+
+TEST_CASE("synthetic head pose preserves view valid and tracked flags independently",
+          "[openxr][pose][head]") {
+    Pelican::OpenXr::XrLocatedViews views;
+    views.state_flags = XR_VIEW_STATE_ORIENTATION_VALID_BIT |
+                        XR_VIEW_STATE_POSITION_VALID_BIT |
+                        XR_VIEW_STATE_ORIENTATION_TRACKED_BIT;
+    views.views = {XrView{XR_TYPE_VIEW}, XrView{XR_TYPE_VIEW}};
+    views.views[0].pose.position = {-0.03F, 1.6F, 0.2F};
+    views.views[1].pose.position = {0.03F, 1.6F, 0.2F};
+    views.views[0].pose.orientation.w = 1.0F;
+    views.views[1].pose.orientation.w = 1.0F;
+
+    const auto pose = Pelican::OpenXr::syntheticHeadPose(
+        views, Pelican::ActionPoseReferenceSpace::local);
+    CHECK(pose.position[0] == 0.0F);
+    CHECK(pose.position[1] == 1.6F);
+    CHECK(pose.position[2] == 0.2F);
+    CHECK(pose.valid);
+    CHECK(pose.orientation_valid);
+    CHECK(pose.position_valid);
+    CHECK(pose.orientation_tracked);
+    CHECK_FALSE(pose.position_tracked);
+    CHECK(pose.source == Pelican::ActionPoseSource::synthetic_head);
+    CHECK(pose.reference_space == Pelican::ActionPoseReferenceSpace::local);
+    CHECK(pose.hand == Pelican::ActionPoseHand::none);
 }
 
 TEST_CASE("OpenXR event and begin/end session failures are fail-fast with explicit running state",

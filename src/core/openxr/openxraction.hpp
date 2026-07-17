@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../os/actionmap.hpp"
+#include "../os/inputstate.hpp"
 #include "openxrdiscovery.hpp"
 
 #include <string>
@@ -22,17 +23,34 @@ struct XrActionApi {
     PFN_xrGetActionStateBoolean get_boolean = nullptr;
     PFN_xrGetActionStateFloat get_float = nullptr;
     PFN_xrGetActionStateVector2f get_vector2 = nullptr;
+    PFN_xrGetActionStatePose get_pose = nullptr;
+    PFN_xrCreateActionSpace create_action_space = nullptr;
+    PFN_xrLocateSpace locate_space = nullptr;
+    PFN_xrDestroySpace destroy_space = nullptr;
+};
+
+struct XrInputFrame {
+    InputActionFrame actions;
+    std::vector<InputPoseSample> pose_samples;
 };
 
 // Owns the project action mirror attached to one OpenXR session. All action
 // sets and actions are created in the constructor before the single
 // xrAttachSessionActionSets call; no runtime path can add an action later.
 class XrActionRuntime {
+    struct PoseSpaceRecord {
+        XrPath subaction_path = XR_NULL_PATH;
+        XrSpace space = XR_NULL_HANDLE;
+        ActionPoseHand hand = ActionPoseHand::none;
+    };
+
     struct ActionRecord {
         std::string name;
         InputActionType type = InputActionType::button;
         XrAction action = XR_NULL_HANDLE;
         std::vector<XrPath> subaction_paths;
+        std::vector<PoseSpaceRecord> pose_spaces;
+        ActionPoseHand hand = ActionPoseHand::none;
     };
 
     struct ActionSetRecord {
@@ -47,6 +65,7 @@ class XrActionRuntime {
     std::vector<ActionSetRecord> action_sets;
     std::unordered_map<std::string, std::size_t> set_lookup;
     InputActionFrame inactive_frame;
+    std::vector<InputPoseSample> inactive_pose_samples;
 
     void resolve(PFN_xrGetInstanceProcAddr get_instance_proc_addr);
     void create(const InputActionMap &input_actions);
@@ -64,8 +83,9 @@ class XrActionRuntime {
 
     // A non-focused session deliberately yields a typed all-inactive frame and
     // does not call xrSyncActions (which runtimes may reject outside FOCUSED).
-    InputActionFrame sync(const std::vector<std::string> &active_action_set_stack,
-                          bool input_eligible);
+    XrInputFrame sync(const std::vector<std::string> &active_action_set_stack,
+                      bool input_eligible, XrSpace base_space, XrTime display_time,
+                      ActionPoseReferenceSpace reference_space);
 };
 
 } // namespace Pelican::OpenXr
