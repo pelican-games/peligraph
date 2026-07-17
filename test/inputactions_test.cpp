@@ -301,4 +301,35 @@ TEST_CASE("Input profiles switch gamepad buttons and process axes", "[input-acti
     REQUIRE(contains(message, "gamepad axis2"));
 }
 
+TEST_CASE("Input action backend frames merge without replacing existing device evaluation",
+          "[input-actions][backend]") {
+    const auto definitions =
+        parseInputActionsJson(readJson(fixtureRoot() / "valid" / "gameplay_menu.json"));
+    const auto keyboard =
+        parseInputProfileJson(readJson(fixtureRoot() / "valid" / "keyboard.json"), definitions);
+    const auto map = applyInputProfile(definitions, keyboard);
+
+    InputStateCore input;
+    input.queueEvent(InputEvent::button(KeyCode::D, true));
+    input.beginFrame();
+    auto frame = evaluateInputActions(map, input.currentSnapshot(), {"gameplay"});
+    REQUIRE(frame.get("move").axis2.x == 1.0F);
+
+    InputActionFrame backend;
+    backend.action_types.emplace("move", InputActionType::axis2);
+    backend.actions.emplace("move",
+                            InputActionState{.pressed = true,
+                                             .held = true,
+                                             .axis2 = {.x = 0.0F, .y = 0.5F}});
+    backend.action_types.emplace("jump", InputActionType::button);
+    backend.actions.emplace("jump", InputActionState{.pressed = true, .held = true});
+
+    mergeInputActionBackendFrame(frame, backend);
+    CHECK(frame.get("move").axis2.x == 1.0F);
+    CHECK(frame.get("move").axis2.y == 0.5F);
+    CHECK(frame.get("move").held);
+    CHECK(frame.get("jump").pressed);
+    CHECK(frame.get("jump").held);
+}
+
 } // namespace Pelican

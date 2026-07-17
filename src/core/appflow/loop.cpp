@@ -211,6 +211,7 @@ OpenXr::XrSessionDependencies resolveXrSessionDependencies() {
         .vulkan_device = static_cast<VkDevice>(vulkan.getDevice()),
         .graphics_queue_family_index = vulkan.getGraphicsQueueFamilyIndex(),
         .graphics_queue_index = 0,
+        .input_actions = internal::inputActionMap(),
     };
 }
 #endif
@@ -377,12 +378,18 @@ void Loop::run() {
             if (xr_session->hasTerminalPath()) break;
             if (xr_session->isSessionRunning()) {
                 const auto xr_frame = OpenXr::runSessionFrame(
-                    *xr_session, engine_time, update_interactive_state);
+                    *xr_session, engine_time, [&] {
+                        internal::setInputActionBackendFrame(
+                            xr_session->syncActions(Actions::actionSetStack()));
+                        update_interactive_state();
+                    });
                 // XR1b retains frame-local timing/view values only.  XR2a will
                 // consume them while adding composition targets and rendering.
                 (void)xr_frame;
                 continue;
             }
+            internal::setInputActionBackendFrame(
+                xr_session->syncActions(Actions::actionSetStack()));
         }
 #endif
         const auto update_start = Clock::now();

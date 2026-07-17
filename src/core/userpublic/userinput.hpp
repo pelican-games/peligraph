@@ -9,6 +9,9 @@
 
 namespace Pelican {
 
+class InputActionMap;
+struct InputActionFrame;
+
 enum class KeyCode : std::uint16_t {
     A,
     B,
@@ -138,6 +141,8 @@ bool gamepadPollingEnabled();
 std::optional<std::string> activeInputProfile();
 std::vector<std::string> availableInputProfiles();
 void selectInputProfile(std::string_view profile_name);
+const InputActionMap *inputActionMap();
+void setInputActionBackendFrame(InputActionFrame frame);
 
 } // namespace internal
 

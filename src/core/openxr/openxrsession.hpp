@@ -1,9 +1,11 @@
 #pragma once
 
+#include "openxraction.hpp"
 #include "openxrdiscovery.hpp"
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <vector>
 
 namespace Pelican {
@@ -72,6 +74,7 @@ struct XrSessionDependencies {
     VkDevice vulkan_device = VK_NULL_HANDLE;
     uint32_t graphics_queue_family_index = 0;
     uint32_t graphics_queue_index = 0;
+    const InputActionMap *input_actions = nullptr;
 };
 
 using XrSessionDependencyProvider = XrSessionDependencies (*)();
@@ -91,6 +94,7 @@ DECLARE_MODULE(SessionRuntime) {
     XrSpace tracking_space = XR_NULL_HANDLE;
     XrSessionState state = XR_SESSION_STATE_UNKNOWN;
     XrTerminalPath terminal_path = XrTerminalPath::none;
+    std::unique_ptr<XrActionRuntime> action_runtime;
     bool session_running = false;
     FramePhase frame_phase = FramePhase::idle;
     XrTime pending_display_time = 0;
@@ -112,6 +116,7 @@ DECLARE_MODULE(SessionRuntime) {
     void beginFrame();
     XrLocatedViews locateViews(const XrDisplayTiming &display_timing);
     void endFrame(const XrDisplayTiming &display_timing);
+    InputActionFrame syncActions(const std::vector<std::string> &active_action_set_stack);
 
     bool isSessionRunning() const noexcept { return session_running; }
     bool isInputEligible() const noexcept {

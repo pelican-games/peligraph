@@ -22,6 +22,7 @@ class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
     std::optional<std::string> active_profile;
     std::vector<std::string> action_set_stack;
     InputActionFrame current_frame;
+    InputActionFrame backend_frame;
     std::uint64_t frozen_generation = std::numeric_limits<std::uint64_t>::max();
     std::uint64_t evaluation_count = 0;
 
@@ -65,6 +66,7 @@ class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
         const auto action_snapshot = input_state.freezeActionsSnapshot();
         current_frame = action_map ? evaluateInputActions(*action_map, action_snapshot, action_set_stack)
                                    : InputActionFrame{};
+        if (action_map) mergeInputActionBackendFrame(current_frame, backend_frame);
         frozen_generation = generation;
         ++evaluation_count;
     }
@@ -208,6 +210,15 @@ class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
     std::vector<std::string> stack() const {
         return action_set_stack;
     }
+
+    const InputActionMap *map() const noexcept {
+        return action_map ? &*action_map : nullptr;
+    }
+
+    void setBackendFrame(InputActionFrame frame) {
+        backend_frame = std::move(frame);
+        frozen_generation = std::numeric_limits<std::uint64_t>::max();
+    }
 };
 
 } // namespace
@@ -300,6 +311,14 @@ std::vector<std::string> availableInputProfiles() {
 
 void selectInputProfile(std::string_view profile_name) {
     GET_MODULE(InputActionsRuntime).selectProfile(profile_name);
+}
+
+const InputActionMap *inputActionMap() {
+    return GET_MODULE(InputActionsRuntime).map();
+}
+
+void setInputActionBackendFrame(InputActionFrame frame) {
+    GET_MODULE(InputActionsRuntime).setBackendFrame(std::move(frame));
 }
 
 } // namespace internal
