@@ -25,6 +25,14 @@ inline constexpr bool isValidModelAssetId(ModelAssetId id) noexcept { return id.
 
 inline constexpr std::uint32_t noSourceMaterialIndex =
     std::numeric_limits<std::uint32_t>::max();
+inline constexpr std::uint32_t noSourceNodeIndex =
+    std::numeric_limits<std::uint32_t>::max();
+
+enum class PrimitiveViewVisibility : std::uint8_t {
+    third_person_only = 0,
+    both = 1,
+    first_person_only = 2,
+};
 
 struct SourceMaterialInitialValues {
     std::uint32_t source_material_index = noSourceMaterialIndex;
@@ -51,6 +59,8 @@ struct ModelPrimitiveRefInfo {
     // from GPU allocation offsets so an importer mapping survives regrouping.
     std::uint32_t mesh_index = 0;
     std::uint32_t primitive_index = 0;
+    std::uint32_t node_index = noSourceNodeIndex;
+    PrimitiveViewVisibility view_visibility = PrimitiveViewVisibility::both;
 };
 
 // Exact suballocations owned by one model generation. Keeping this metadata

@@ -4,6 +4,7 @@
 #include "../container.hpp"
 #include "../log.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
+#include "../userpublic/animation/pose_staging_v1.hpp"
 #include "../userpublic/details/reload/registrationowner.hpp"
 
 #include <algorithm>
@@ -17,6 +18,8 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+
+#include <glm/gtc/quaternion.hpp>
 
 namespace Pelican::Vrm {
 namespace {
@@ -94,6 +97,27 @@ float rangeMapWeight(float value, const std::optional<VrmLookAtRangeMap> &range)
                       0.0f, 1.0f);
 }
 
+float rangeMapDegrees(float value,
+                      const std::optional<VrmLookAtRangeMap> &range) {
+    const auto input_max = static_cast<float>(
+        range && range->input_max_value ? *range->input_max_value : 90.0);
+    const auto output_scale = static_cast<float>(
+        range && range->output_scale ? *range->output_scale : 1.0);
+    const auto magnitude = std::abs(value);
+    if (input_max == 0.0f)
+        return magnitude == 0.0f ? 0.0f : output_scale;
+    return std::min(magnitude, std::abs(input_max)) /
+           std::abs(input_max) * output_scale;
+}
+
+const VrmHumanBone *humanBone(const VrmSemanticData &semantic,
+                              std::string_view name) {
+    const auto found = std::find_if(
+        semantic.human_bones.begin(), semantic.human_bones.end(),
+        [&](const VrmHumanBone &bone) { return bone.name == name; });
+    return found == semantic.human_bones.end() ? nullptr : &*found;
+}
+
 const SourceMaterialInitialValues *initialMaterial(
     const SourceMaterialInitialValueTable *table, std::uint32_t index) {
     if (!table || index >= table->values.size() ||
@@ -153,6 +177,45 @@ Status evaluateExpressionLookAt(const VrmSemanticData &semantic,
             set("lookUp", rangeMapWeight(snapshot.look_at_pitch_degrees,
                                          look_at.vertical_up));
         }
+        return Status::ok;
+    } catch (...) {
+        return Status::out_of_memory;
+    }
+}
+
+Status evaluateBoneLookAt(const VrmSemanticData &semantic,
+                          const ExpressionInputSnapshot &snapshot,
+                          BoneLookAtRotations &rotations) noexcept {
+    try {
+        rotations = {};
+        if (!snapshot.look_at_enabled || !semantic.look_at ||
+            semantic.look_at->type.value_or("bone") != "bone")
+            return Status::ok;
+        const auto &look_at = *semantic.look_at;
+        const auto yaw = snapshot.look_at_yaw_degrees;
+        const auto pitch = snapshot.look_at_pitch_degrees;
+        const auto left_yaw = yaw > 0.0f
+                                  ? rangeMapDegrees(yaw, look_at.horizontal_outer)
+                                  : -rangeMapDegrees(yaw, look_at.horizontal_inner);
+        const auto right_yaw = yaw > 0.0f
+                                   ? rangeMapDegrees(yaw, look_at.horizontal_inner)
+                                   : -rangeMapDegrees(yaw, look_at.horizontal_outer);
+        const auto mapped_pitch =
+            pitch > 0.0f
+                ? rangeMapDegrees(pitch, look_at.vertical_down)
+                : -rangeMapDegrees(pitch, look_at.vertical_up);
+        const auto rotation = [&](float yaw_degrees) {
+            const auto yaw_rotation = glm::angleAxis(
+                glm::radians(yaw_degrees), glm::vec3{0.0f, 1.0f, 0.0f});
+            const auto pitch_rotation = glm::angleAxis(
+                glm::radians(mapped_pitch), glm::vec3{1.0f, 0.0f, 0.0f});
+            return glm::normalize(yaw_rotation * pitch_rotation);
+        };
+        rotations.active = true;
+        rotations.has_left_eye = humanBone(semantic, "leftEye") != nullptr;
+        rotations.has_right_eye = humanBone(semantic, "rightEye") != nullptr;
+        rotations.left_eye = rotation(left_yaw);
+        rotations.right_eye = rotation(right_yaw);
         return Status::ok;
     } catch (...) {
         return Status::out_of_memory;
@@ -747,7 +810,57 @@ struct ApplicationServiceRuntime::Impl {
         if (found == phase_frames.end()) return Status::ok;
         EvaluateExpressionLookAtDescV1 request;
         request.snapshot = found->second;
-        return evaluateLookAt(this, &request);
+        if (const auto status = evaluateLookAt(this, &request);
+            status != Status::ok)
+            return status;
+        auto *frame = find(found->second);
+        if (!frame) return Status::stale_generation;
+        const auto view = model(frame->snapshot.instance);
+        if (!view) return Status::stale_generation;
+        BoneLookAtRotations rotations;
+        if (const auto status = evaluateBoneLookAt(
+                *view->semantic, frame->snapshot, rotations);
+            status != Status::ok || !rotations.active)
+            return status;
+
+        Animation::PoseStagingServiceV1 staging;
+        if (const auto status = Animation::getPoseStagingServiceV1(
+                Animation::poseStagingServiceVersionV1, &staging);
+            status != Status::ok)
+            return status;
+        Animation::AcquireStagedPoseDescV1 acquire;
+        acquire.instance = context.instance;
+        acquire.frame_revision = context.frame_revision;
+        const auto acquire_status =
+            staging.acquire_staged_pose(staging.context, &acquire);
+        if (acquire_status == Status::not_found) return Status::ok;
+        if (acquire_status != Status::ok) return acquire_status;
+
+        const auto apply = [&](std::string_view name, const glm::quat &rotation,
+                               bool present) -> Status {
+            if (!present) return Status::ok;
+            const auto *bone = humanBone(*view->semantic, name);
+            if (!bone || bone->node < 0) return Status::not_found;
+            Animation::ResolveStagedSourceNodeDescV1 resolve;
+            resolve.stage = acquire.stage;
+            resolve.source_node_index =
+                static_cast<std::uint32_t>(bone->node);
+            if (const auto status = staging.resolve_source_node(
+                    staging.context, &resolve);
+                status != Status::ok)
+                return status;
+            if (resolve.layout_node_index >= acquire.local_pose.joint_count)
+                return Status::incompatible_layout;
+            acquire.local_pose.rotations[resolve.layout_node_index] = {
+                rotation.x, rotation.y, rotation.z, rotation.w};
+            return Status::ok;
+        };
+        if (const auto status = apply("leftEye", rotations.left_eye,
+                                      rotations.has_left_eye);
+            status != Status::ok)
+            return status;
+        return apply("rightEye", rotations.right_eye,
+                     rotations.has_right_eye);
     }
 
     Status resolveForPhase(const Animation::AnimationPhaseContextV1 &context) {

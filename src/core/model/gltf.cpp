@@ -13,6 +13,7 @@
 #include "vatformat.hpp"
 #include "vertbufcontainer.hpp"
 #include "vrmsemantic.hpp"
+#include "vrmfirstperson.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -517,6 +518,14 @@ struct InternalGltfLoader {
     std::shared_ptr<SkeletalModelData> skeletal_data;
     std::shared_ptr<MorphTargetLayout> morph_target_layout =
         std::make_shared<MorphTargetLayout>();
+    std::optional<std::vector<std::uint8_t>> head_related_nodes;
+
+    enum class FirstPersonAnnotation {
+        automatic,
+        both,
+        first_person_only,
+        third_person_only,
+    };
 
     struct NodeOccurrence {
         int node_index = -1;
@@ -1522,13 +1531,63 @@ struct InternalGltfLoader {
         return textures;
     }
 
+    FirstPersonAnnotation firstPersonAnnotation(int node_index) const {
+        if (!vrm_semantic) return FirstPersonAnnotation::both;
+        std::string_view annotation = "auto";
+        if (vrm_semantic->first_person) {
+            for (const auto &candidate :
+                 vrm_semantic->first_person->mesh_annotations) {
+                if (candidate.node == node_index) {
+                    annotation = candidate.type;
+                    break;
+                }
+            }
+        }
+        if (annotation == "auto") return FirstPersonAnnotation::automatic;
+        if (annotation == "both") return FirstPersonAnnotation::both;
+        if (annotation == "firstPersonOnly")
+            return FirstPersonAnnotation::first_person_only;
+        if (annotation == "thirdPersonOnly")
+            return FirstPersonAnnotation::third_person_only;
+        throw std::runtime_error("VRM firstPerson annotation has unknown type '" +
+                                 std::string{annotation} + "'");
+    }
+
+    const std::vector<std::uint8_t> &headRelatedNodes() {
+        if (head_related_nodes) return *head_related_nodes;
+        std::vector<std::uint8_t> related(model.nodes.size());
+        if (vrm_semantic) {
+            const auto head = std::find_if(
+                vrm_semantic->human_bones.begin(),
+                vrm_semantic->human_bones.end(),
+                [](const VrmHumanBone &bone) { return bone.name == "head"; });
+            if (head != vrm_semantic->human_bones.end() && head->node >= 0) {
+                std::vector<int> pending{head->node};
+                while (!pending.empty()) {
+                    const auto node = pending.back();
+                    pending.pop_back();
+                    if (node < 0 || node >= static_cast<int>(model.nodes.size()))
+                        throw std::runtime_error(
+                            "VRM head hierarchy references an invalid glTF node");
+                    if (related[static_cast<std::size_t>(node)] != 0) continue;
+                    related[static_cast<std::size_t>(node)] = 1;
+                    const auto &children = model.nodes[node].children;
+                    pending.insert(pending.end(), children.begin(), children.end());
+                }
+            }
+        }
+        head_related_nodes = std::move(related);
+        return *head_related_nodes;
+    }
+
     void loadMesh(int mesh_index, const glm::mat4 &world_transform, int node_index = -1) {
         const auto &mesh = model.meshes.at(mesh_index);
         const auto morph_target_count = meshMorphTargetCount(mesh_index);
         const auto morph_weight_offset =
             appendMorphDefaults(mesh_index, node_index, morph_target_count);
-        bool skinned = node_index >= 0 && model.nodes.at(node_index).skin >= 0;
-        const auto skin_index = skinned ? model.nodes.at(node_index).skin : -1;
+        const auto skin_index =
+            node_index >= 0 ? model.nodes.at(node_index).skin : -1;
+        bool skinned = skin_index >= 0;
         if (skinned && !skinFitsPalette(skin_index)) {
             // Assets whose skins exceed the v1 palette must still load (pre-WP38
             // parity: skins were ignored entirely). Only explicit animation use
@@ -1604,10 +1663,11 @@ struct InternalGltfLoader {
             }
 
             const auto vat_meta = tinyGltfValueToVatMeta(primitive.extras);
+            const auto primitive_mode =
+                primitive.mode < 0 ? TINYGLTF_MODE_TRIANGLES : primitive.mode;
 #if PELICAN_WITH_VAT
             const auto vat_info = parseVatPrimitiveExtras(
                 vat_meta, static_cast<uint32_t>(dat.pos.size()), vatBufferViewInfos());
-            const auto primitive_mode = primitive.mode < 0 ? TINYGLTF_MODE_TRIANGLES : primitive.mode;
             if (vat_info && primitive_mode != TINYGLTF_MODE_TRIANGLES) {
                 throw std::runtime_error("pelican.vat only supports TRIANGLES topology");
             }
@@ -1619,6 +1679,22 @@ struct InternalGltfLoader {
                 throwBuildFeatureDisabled("PELICAN_WITH_VAT", "GLB contains pelican.vat primitive extras");
             }
 #endif
+
+            const auto annotation = firstPersonAnnotation(node_index);
+            std::optional<VrmAutoTriangleSplit> auto_split;
+            if (annotation == FirstPersonAnnotation::automatic && skin_index >= 0) {
+                if (primitive_mode != TINYGLTF_MODE_TRIANGLES)
+                    throw std::runtime_error(
+                        "VRM firstPerson auto requires TRIANGLES topology");
+                auto_split = splitVrmAutoTriangles(VrmAutoTriangleSplitInput{
+                    .indices = dat.indices,
+                    .vertex_count = static_cast<std::uint32_t>(dat.pos.size()),
+                    .joints = dat.joint,
+                    .weights = dat.weight,
+                    .skin_joint_nodes = model.skins.at(skin_index).joints,
+                    .head_related_nodes = headRelatedNodes(),
+                });
+            }
 
             if (skinned && (dat.joint.empty() || dat.weight.empty())) {
                 throw std::runtime_error("glTF skinned primitive requires JOINTS_0 and WEIGHTS_0");
@@ -1639,35 +1715,84 @@ struct InternalGltfLoader {
             morph_presence.reserve(dat.morph_targets.size());
             for (const auto &target : dat.morph_targets)
                 morph_presence.push_back(target.presence_mask);
-            auto added = resources.addPrimitive(std::move(dat), skinned);
-            auto primitive_info = added.primitive;
-            primitive_info.mesh_index = static_cast<std::uint32_t>(mesh_index);
-            primitive_info.primitive_index = static_cast<std::uint32_t>(primitive_index);
-            if (!added.morph_ranges.empty()) {
-                for (std::size_t target = 0; target < added.morph_ranges.size(); ++target)
-                    added.morph_ranges[target].presence_mask = morph_presence[target];
-                morph_target_layout->primitives.push_back(MorphPrimitiveLayout{
-                    .node_index = node_index < 0 ? noMorphNode
-                                                 : static_cast<std::uint32_t>(node_index),
-                    .mesh_index = static_cast<std::uint32_t>(mesh_index),
-                    .primitive_index = static_cast<std::uint32_t>(primitive_index),
-                    .weight_offset = morph_weight_offset,
-                    .vertex_offset = static_cast<std::uint32_t>(primitive_info.vert_offset),
-                    .skinned = skinned,
-                    .delta_ranges = std::move(added.morph_ranges),
-                });
+
+            struct PrimitiveVariant {
+                CommonPolygonVertData data;
+                PrimitiveViewVisibility visibility =
+                    PrimitiveViewVisibility::both;
+            };
+            std::vector<PrimitiveVariant> variants;
+            if (auto_split &&
+                !auto_split->third_person_only_indices.empty()) {
+                if (!auto_split->both_indices.empty()) {
+                    auto body = dat;
+                    body.indices = std::move(auto_split->both_indices);
+                    variants.push_back(
+                        {std::move(body), PrimitiveViewVisibility::both});
+                }
+                dat.indices =
+                    std::move(auto_split->third_person_only_indices);
+                variants.push_back({std::move(dat),
+                                    PrimitiveViewVisibility::third_person_only});
+            } else {
+                auto visibility = PrimitiveViewVisibility::both;
+                if (annotation == FirstPersonAnnotation::first_person_only)
+                    visibility = PrimitiveViewVisibility::first_person_only;
+                else if (annotation ==
+                         FirstPersonAnnotation::third_person_only)
+                    visibility = PrimitiveViewVisibility::third_person_only;
+                variants.push_back({std::move(dat), visibility});
             }
+
+            for (auto &variant : variants) {
+                auto added =
+                    resources.addPrimitive(std::move(variant.data), skinned);
+                auto primitive_info = added.primitive;
+                primitive_info.mesh_index = static_cast<std::uint32_t>(mesh_index);
+                primitive_info.primitive_index =
+                    static_cast<std::uint32_t>(primitive_index);
+                primitive_info.node_index =
+                    node_index < 0 ? noSourceNodeIndex
+                                   : static_cast<std::uint32_t>(node_index);
+                primitive_info.view_visibility = variant.visibility;
+                if (!added.morph_ranges.empty()) {
+                    for (std::size_t target = 0;
+                         target < added.morph_ranges.size(); ++target)
+                        added.morph_ranges[target].presence_mask =
+                            morph_presence[target];
+                    morph_target_layout->primitives.push_back(
+                        MorphPrimitiveLayout{
+                            .node_index =
+                                node_index < 0
+                                    ? noMorphNode
+                                    : static_cast<std::uint32_t>(node_index),
+                            .mesh_index = static_cast<std::uint32_t>(mesh_index),
+                            .primitive_index =
+                                static_cast<std::uint32_t>(primitive_index),
+                            .weight_offset = morph_weight_offset,
+                            .vertex_offset = static_cast<std::uint32_t>(
+                                primitive_info.vert_offset),
+                            .skinned = skinned,
+                            .delta_ranges = std::move(added.morph_ranges),
+                        });
+                }
 #if PELICAN_WITH_VAT
-            if (skinned && vat_info) {
-                throw std::runtime_error("glTF skeletal skinning and pelican.vat cannot share one primitive");
-            }
-            const auto material_id =
-                vat_info ? registerVatMaterial(primitive.material, *vat_info, primitive_info)
-                         : (skinned ? skinnedMaterial(primitive.material) : primitive.material);
+                if (skinned && vat_info) {
+                    throw std::runtime_error("glTF skeletal skinning and pelican.vat cannot share one primitive");
+                }
+                const auto material_id =
+                    vat_info ? registerVatMaterial(primitive.material, *vat_info,
+                                                   primitive_info)
+                             : (skinned ? skinnedMaterial(primitive.material)
+                                        : primitive.material);
 #else
-            const auto material_id = skinned ? skinnedMaterial(primitive.material) : primitive.material;
+                const auto material_id = skinned
+                                             ? skinnedMaterial(primitive.material)
+                                             : primitive.material;
 #endif
-            tmp_material_primitives[material_id].emplace_back(std::move(primitive_info));
+                tmp_material_primitives[material_id].emplace_back(
+                    std::move(primitive_info));
+            }
         }
     }
 

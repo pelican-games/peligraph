@@ -123,6 +123,7 @@ RenderViewParameters buildRenderViewParameters(
         .view = glm::inverse(world_from_eye),
         .projection = asymmetricProjectionRhZo(view.fov, z_near, z_far),
         .camera_position = glm::vec3{world_from_eye[3]},
+        .first_person_view = true,
     };
 }
 

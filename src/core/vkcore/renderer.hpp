@@ -19,6 +19,9 @@ struct RenderViewParameters {
     glm::mat4 view{1.0f};
     glm::mat4 projection{1.0f};
     glm::vec3 camera_position{0.0f};
+    // XR eye views set this true. Flat and mirror/observer views retain the
+    // default so VRM head geometry remains visible.
+    bool first_person_view = false;
 };
 
 class ILogicalFrameTarget {

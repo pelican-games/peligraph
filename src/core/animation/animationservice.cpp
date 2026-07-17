@@ -112,6 +112,14 @@ struct AnimationServiceRuntime::Impl {
         std::uint32_t instance_generation{};
         std::uint64_t revision{};
     };
+    struct StagedFrame {
+        PoseStageHandle handle{};
+        AnimationSinkHandle sink{};
+        ObjectRecord *object{};
+        PublishAnimationFrameDescV1 frame{};
+        std::vector<Matrix4fV1> palette;
+        bool pose_accessed{};
+    };
 
     std::recursive_mutex mutex;
     AnimationAssetRegistry assets;
@@ -129,6 +137,10 @@ struct AnimationServiceRuntime::Impl {
     std::unordered_map<std::uint64_t, SourceRecord> sources;
     std::unordered_map<std::uint64_t, PhaseRecord> phases;
     std::vector<BlockedCommit> blocked_commits;
+    std::optional<AnimationSinkHandle> active_phase_sink;
+    std::uint64_t active_phase_revision{};
+    Phase active_phase{Phase::parameter_snapshot};
+    std::optional<StagedFrame> staged_frame;
     std::uint64_t next_identity{1};
     std::uint64_t registration_generation{1};
 
@@ -242,6 +254,9 @@ struct AnimationServiceRuntime::Impl {
         sources.clear();
         phases.clear();
         blocked_commits.clear();
+        active_phase_sink.reset();
+        active_phase_revision = 0;
+        staged_frame.reset();
         poses.clear();
         arenas.clear();
         sinks.clear();
@@ -294,6 +309,15 @@ struct AnimationServiceRuntime::Impl {
             std::scoped_lock lock{mutex};
             auto *sink = findSink(sink_handle);
             if (!sink || revision == 0) return Status::invalid_handle;
+            if (active_phase_sink) return Status::phase_order_error;
+            active_phase_sink = sink->handle;
+            active_phase_revision = revision;
+            staged_frame.reset();
+            const auto clear_active = [&]() {
+                staged_frame.reset();
+                active_phase_sink.reset();
+                active_phase_revision = 0;
+            };
             std::vector<PhaseRecord *> ordered;
             for (auto &[_, phase] : phases)
                 if (phase.active) ordered.push_back(&phase);
@@ -307,6 +331,7 @@ struct AnimationServiceRuntime::Impl {
                 return left->registration.source_ordinal < right->registration.source_ordinal;
             });
             for (const auto *phase : ordered) {
+                active_phase = phase->registration.phase;
                 AnimationPhaseContextV1 context{};
                 context.struct_size = sizeof(context);
                 context.version = descriptorVersionV1;
@@ -323,11 +348,23 @@ struct AnimationServiceRuntime::Impl {
                 }
                 if (status != Status::ok) {
                     blocked_commits.push_back({sink->instance.identity, sink->instance.generation, revision});
+                    clear_active();
                     return status == Status::ok ? Status::callback_failed : status;
                 }
             }
+            const auto commit_status = commitStagedFrame();
+            if (commit_status != Status::ok) {
+                blocked_commits.push_back(
+                    {sink->instance.identity, sink->instance.generation, revision});
+                clear_active();
+                return commit_status;
+            }
+            clear_active();
             return Status::ok;
         } catch (...) {
+            staged_frame.reset();
+            active_phase_sink.reset();
+            active_phase_revision = 0;
             return Status::out_of_memory;
         }
     }
@@ -354,6 +391,105 @@ struct AnimationServiceRuntime::Impl {
     }
 
     static Impl *self(void *context) { return static_cast<Impl *>(context); }
+
+    Status publishToSink(SinkRecord &sink, PublishAnimationFrameDescV1 &frame) {
+        const auto status =
+            sink.object->renderer_instance &&
+                    FastModuleContainer::isInitialized<PolygonInstanceContainer>()
+                ? GET_MODULE(PolygonInstanceContainer)
+                      .publishAnimationFrame(*sink.object->renderer_instance, frame)
+                : legacy_runtime.publishAnimationFrame(frame);
+        if (status == Status::ok) sink.reset_history = false;
+        return status;
+    }
+
+    Status commitStagedFrame() {
+        if (!staged_frame) return Status::ok;
+        auto staged = std::move(*staged_frame);
+        staged_frame.reset();
+        auto *sink = findSink(staged.sink);
+        if (!sink || sink->object != staged.object)
+            return Status::stale_generation;
+
+        if (staged.pose_accessed) {
+            auto *local = findPose(staged.frame.local_pose);
+            auto *model = findPose(staged.frame.model_pose);
+            if (!local || !model || !staged.object || !staged.object->asset)
+                return Status::stale_generation;
+            std::vector<Matrix4fV1> model_matrices(
+                staged.object->asset->rig.rest_pose.size());
+            if (const auto status = localToModel(
+                    staged.object->asset->rig, local->view, model_matrices,
+                    &model->view);
+                status != Status::ok)
+                return status;
+            staged.palette.resize(staged.object->model->joint_nodes.size());
+            if (const auto status = buildSkinPalette(
+                    *staged.object->asset, model_matrices, staged.palette);
+                status != Status::ok)
+                return status;
+        }
+        staged.frame.palette = staged.palette.empty() ? nullptr
+                                                       : staged.palette.data();
+        staged.frame.palette_count =
+            static_cast<std::uint32_t>(staged.palette.size());
+        return publishToSink(*sink, staged.frame);
+    }
+
+    static Status acquireStagedPose(void *context,
+                                    AcquireStagedPoseDescV1 *desc) {
+        if (!context || !desc) return Status::invalid_argument;
+        if (desc->struct_size < sizeof(*desc)) return Status::invalid_argument;
+        if (desc->version != poseStagingDescriptorVersionV1)
+            return Status::unsupported_version;
+        if (desc->reserved0 != 0 || desc->reserved1 != 0)
+            return Status::reserved_not_zero;
+        auto *runtime = self(context);
+        std::scoped_lock lock{runtime->mutex};
+        if (!isValid(desc->instance) || desc->frame_revision == 0)
+            return Status::invalid_argument;
+        if (!runtime->active_phase_sink || !runtime->staged_frame)
+            return Status::not_found;
+        auto &stage = *runtime->staged_frame;
+        if (!sameHandle(stage.frame.instance, desc->instance) ||
+            stage.frame.frame_revision != desc->frame_revision)
+            return Status::not_found;
+        auto *local = runtime->findPose(stage.frame.local_pose);
+        auto *model = runtime->findPose(stage.frame.model_pose);
+        if (!local || !model) return Status::stale_generation;
+        stage.pose_accessed = true;
+        desc->stage = stage.handle;
+        desc->local_pose = local->view;
+        desc->model_pose = model->view;
+        return Status::ok;
+    }
+
+    static Status resolveStagedSourceNode(
+        void *context, ResolveStagedSourceNodeDescV1 *desc) {
+        if (!context || !desc) return Status::invalid_argument;
+        if (desc->struct_size < sizeof(*desc)) return Status::invalid_argument;
+        if (desc->version != poseStagingDescriptorVersionV1)
+            return Status::unsupported_version;
+        if (desc->reserved0 != 0 || desc->reserved1 != 0)
+            return Status::reserved_not_zero;
+        auto *runtime = self(context);
+        std::scoped_lock lock{runtime->mutex};
+        if (!runtime->staged_frame ||
+            !Animation::isValid(desc->stage) ||
+            !sameHandle(runtime->staged_frame->handle, desc->stage))
+            return Status::stale_generation;
+        const auto *object = runtime->staged_frame->object;
+        if (!object || !object->asset ||
+            desc->source_node_index >=
+                object->asset->rig.original_to_layout.size())
+            return Status::not_found;
+        const auto mapped =
+            object->asset->rig.original_to_layout[desc->source_node_index];
+        if (mapped == std::numeric_limits<std::uint32_t>::max())
+            return Status::not_found;
+        desc->layout_node_index = mapped;
+        return Status::ok;
+    }
 
     static Status apiAdvance(void *context, const AdvanceDescV1 *desc, IntervalResultV1 *result) {
         if (!context || !desc || !result) return Status::invalid_argument;
@@ -817,13 +953,28 @@ struct AnimationServiceRuntime::Impl {
         }
         auto frame = desc->frame;
         if (sink->reset_history) frame.flags |= commit_reset_history;
-        const auto status = sink->object->renderer_instance &&
-                                    FastModuleContainer::isInitialized<PolygonInstanceContainer>()
-                                ? GET_MODULE(PolygonInstanceContainer)
-                                      .publishAnimationFrame(*sink->object->renderer_instance, frame)
-                                : runtime->legacy_runtime.publishAnimationFrame(frame);
-        if (status == Status::ok) sink->reset_history = false;
-        return status;
+        if (runtime->active_phase_sink &&
+            sameHandle(*runtime->active_phase_sink, sink->handle)) {
+            if (frame.frame_revision != runtime->active_phase_revision)
+                return Status::phase_order_error;
+            if (runtime->active_phase != Phase::base_pose_and_root_modifier)
+                return Status::phase_order_error;
+            if (runtime->staged_frame) return Status::duplicate_revision;
+            if (frame.palette_count != 0 && frame.palette == nullptr)
+                return Status::invalid_argument;
+            StagedFrame staged;
+            staged.handle = {runtime->next_identity++, 1, 0};
+            staged.sink = sink->handle;
+            staged.object = sink->object;
+            staged.frame = frame;
+            if (frame.palette_count != 0)
+                staged.palette.assign(frame.palette,
+                                      frame.palette + frame.palette_count);
+            staged.frame.palette = nullptr;
+            runtime->staged_frame = std::move(staged);
+            return Status::ok;
+        }
+        return runtime->publishToSink(*sink, frame);
     }
 
     static Status getService(void *context, std::uint32_t client_version, AnimationServiceV1 *out) {
@@ -875,6 +1026,13 @@ void AnimationServiceRuntime::registerObject(std::string name, const SkeletalMod
     impl_->registerObject(std::move(name), model);
 }
 
+void AnimationServiceRuntime::registerObject(
+    std::string name, const SkeletalModelData &model,
+    ModelInstanceId renderer_instance) {
+    std::scoped_lock lock{impl_->mutex};
+    impl_->registerObjectLocked(std::move(name), model, renderer_instance);
+}
+
 void AnimationServiceRuntime::reset() { impl_->reset(); }
 
 void AnimationServiceRuntime::releaseOwner(internal::RegistrationOwner owner) noexcept { impl_->releaseOwner(owner); }
@@ -924,6 +1082,37 @@ Status getApiV1(std::uint32_t client_abi_version, ApiV1 *out_api) noexcept {
     produced.get_animation_service = AnimationServiceRuntime::Impl::getService;
     std::memcpy(out_api, &produced, std::min<std::size_t>(caller_size, sizeof(produced)));
     return Status::ok;
+}
+
+Status getPoseStagingServiceV1(
+    std::uint32_t client_service_version,
+    PoseStagingServiceV1 *out_service) noexcept {
+    if (!out_service ||
+        out_service->struct_size < sizeof(DescriptorHeaderV1))
+        return Status::invalid_argument;
+    if (out_service->version != poseStagingDescriptorVersionV1)
+        return Status::unsupported_version;
+    if (out_service->reserved0 != 0 || out_service->reserved1 != 0)
+        return Status::reserved_not_zero;
+    if (client_service_version != poseStagingServiceVersionV1)
+        return Status::unsupported_version;
+    const auto caller_size = out_service->struct_size;
+    try {
+        PoseStagingServiceV1 produced;
+        produced.service_version = poseStagingServiceVersionV1;
+        produced.minimum_client_service_version = 1;
+        produced.capability_bits = poseStagingServiceCapabilitiesV1;
+        produced.context = animationServiceRuntime().impl_.get();
+        produced.acquire_staged_pose =
+            AnimationServiceRuntime::Impl::acquireStagedPose;
+        produced.resolve_source_node =
+            AnimationServiceRuntime::Impl::resolveStagedSourceNode;
+        std::memcpy(out_service, &produced,
+                    std::min<std::size_t>(caller_size, sizeof(produced)));
+        return Status::ok;
+    } catch (...) {
+        return Status::out_of_memory;
+    }
 }
 
 } // namespace Pelican::Animation

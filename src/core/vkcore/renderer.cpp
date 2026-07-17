@@ -754,6 +754,7 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
                             const CompiledRenderingPass &rendering_pass,
                             RenderFrameModules &modules,
                             const RenderFrameSnapshot &snapshot,
+                            bool first_person_view,
                             vk::Format frame_target_format,
                             RenderTargetLayoutTracker &layout_tracker,
                             nlohmann::json *node_trace) {
@@ -763,7 +764,8 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
                                                                       modules.frame_resources,
                                                                       modules.light_container,
                                                                       modules.camera,
-                                                                      snapshot.view_projection_jittered};
+                                                                      snapshot.view_projection_jittered,
+                                                                      first_person_view};
     const FullscreenPassRendererDependencies fullscreen_pass_renderer_dependencies{modules.fullscreen_pass_container,
                                                                                   modules.frame_resources};
     std::optional<UiRendererDependencies> ui_renderer_dependencies;
@@ -1080,7 +1082,8 @@ void Renderer::renderLogicalFrame(ILogicalFrameTarget &target, std::uint32_t vie
             node_trace_ptr = &node_trace;
         }
         executeRenderingPasses(render_ctx, current_rendering_pass_id, rendering_pass, modules,
-                               snapshot, frame_target_format, render_target_layout_tracker,
+                               snapshot, view.first_person_view, frame_target_format,
+                               render_target_layout_tracker,
                                node_trace_ptr);
         target.endView(view_index);
 

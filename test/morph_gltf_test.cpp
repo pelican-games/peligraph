@@ -10,6 +10,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <limits>
@@ -235,6 +236,55 @@ TEST_CASE("skinned morph reload keeps instance identity and resets weights",
     REQUIRE(reset.previous == reset.current);
     REQUIRE(reset.current_revision == 0);
     REQUIRE(reset.previous_revision == 0);
+}
+
+TEST_CASE("VRM firstPerson auto becomes exact node-aware per-view draw ranges",
+          "[wp134][vrm][firstperson][gltf][gpu]") {
+    setupLogger();
+    auto sandbox = makeMorphSandbox("first_person_auto");
+    const auto path = sandbox.root / "first_person.vrm";
+    TestMorphFixture::writeGlb(path, {.skinned = true,
+                                      .vrm_first_person = true});
+
+    FastModuleContainer modules;
+    requireMorphVulkan();
+    const auto model = GET_MODULE(GltfLoader).loadGltfBinary(path.string());
+    REQUIRE(model.vrm_semantic);
+    REQUIRE(model.material_primitives.size() == 1);
+    const auto &primitives = model.material_primitives.front().primitives;
+    REQUIRE(primitives.size() == 2);
+    REQUIRE(primitives[0].node_index == 0);
+    REQUIRE(primitives[1].node_index == 0);
+    REQUIRE(primitives[0].index_count == 3);
+    REQUIRE(primitives[1].index_count == 3);
+    REQUIRE(primitives[0].skinned);
+    REQUIRE(primitives[1].skinned);
+    const auto count_visibility = [&](PrimitiveViewVisibility visibility) {
+        return std::count_if(primitives.begin(), primitives.end(),
+                             [&](const auto &primitive) {
+                                 return primitive.view_visibility == visibility;
+                             });
+    };
+    REQUIRE(count_visibility(PrimitiveViewVisibility::both) == 1);
+    REQUIRE(count_visibility(PrimitiveViewVisibility::third_person_only) == 1);
+    REQUIRE(model.morph_targets);
+    REQUIRE(model.morph_targets->primitives.size() == 2);
+
+    auto &instances = GET_MODULE(PolygonInstanceContainer);
+    (void)instances.placeModelInstance(model);
+    instances.triggerUpdate();
+    const auto draw_count = [&](bool first_person) {
+        std::uint32_t total = 0;
+        for (const auto &draw : instances.getDrawCalls(first_person))
+            total += draw.draw_count;
+        return total;
+    };
+    REQUIRE(draw_count(false) == 2);
+    REQUIRE(draw_count(true) == 1);
+    REQUIRE(instances.renderCommandsForTesting().size() == 2);
+    REQUIRE(instances.renderCommandsForTesting()[0].node_index == 0);
+    REQUIRE(instances.renderCommandsForTesting()[1].node_index == 0);
+    GET_MODULE(VulkanManageCore).waitIdle();
 }
 
 } // namespace Pelican

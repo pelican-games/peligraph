@@ -8,6 +8,7 @@
 #include "modelinstance.hpp"
 #include <glm/ext/quaternion_float.hpp>
 #include <glm/glm.hpp>
+#include <array>
 #include <functional>
 #include <optional>
 #include <span>
@@ -179,7 +180,9 @@ struct RenderCommand {
     vk::DrawIndexedIndirectCommand command;
     GlobalMaterialId material;
     std::uint32_t source_material_index = noSourceMaterialIndex;
+    std::uint32_t node_index = noSourceNodeIndex;
     bool skinned = false;
+    PrimitiveViewVisibility view_visibility = PrimitiveViewVisibility::both;
 };
 
 struct DrawIndirectInfo {
@@ -198,7 +201,7 @@ struct ModelInstanceRebuild {
 DECLARE_MODULE(PolygonInstanceContainer) {
     std::vector<RenderCommand> render_commands;
     BufferWrapper indirect_buf;
-    std::vector<DrawIndirectInfo> draw_calls;
+    std::array<std::vector<DrawIndirectInfo>, 2> draw_calls;
 
     std::vector<glm::mat4> model_instances_data;
     std::vector<glm::mat4> previous_model_instances_data;
@@ -287,7 +290,8 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     const BufferWrapper &getIndirectBuf() const;
     const BufferWrapper &getObjectBuf() const;
     const BufferWrapper &getPreviousObjectBuf() const;
-    const std::vector<DrawIndirectInfo> &getDrawCalls() const;
+    const std::vector<DrawIndirectInfo> &
+    getDrawCalls(bool first_person_view = false) const;
     size_t instanceCountForTesting() const { return model_instances_data.size(); }
     std::uint64_t temporalHistoryAdvanceCountForTesting() const {
         return temporal_history_advance_count;
@@ -332,6 +336,13 @@ DECLARE_MODULE(PolygonInstanceContainer) {
         return material_absolute_override_frames.size();
     }
     size_t instanceCountForAssetForTesting(ModelAssetId asset_id) const;
+    const std::vector<RenderCommand> &renderCommandsForTesting() const {
+        return render_commands;
+    }
+    const std::vector<glm::mat4> &
+    currentSkinPaletteForTesting(ModelInstanceId id) const {
+        return skin_palettes.at(id.value);
+    }
 };
 
 } // namespace Pelican

@@ -4,6 +4,7 @@
 #include "../userpublic/animation/vrm_application_v1.hpp"
 
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -56,10 +57,23 @@ struct ResolvedExpressionFrame {
     std::vector<ApplicationDiagnostic> diagnostics;
 };
 
+struct BoneLookAtRotations {
+    bool active = false;
+    bool has_left_eye = false;
+    bool has_right_eye = false;
+    glm::quat left_eye{1.0f, 0.0f, 0.0f, 0.0f};
+    glm::quat right_eye{1.0f, 0.0f, 0.0f, 0.0f};
+};
+
 // Adds expression-type lookAt procedural weights to an immutable frame copy.
-// Bone lookAt and target/camera-to-yaw/pitch pose staging are intentionally S1c.
 Animation::Status evaluateExpressionLookAt(const VrmSemanticData &semantic,
                                            ExpressionInputSnapshot &snapshot) noexcept;
+
+// Resolves VRM 1.0 bone lookAt range maps into absolute left/right eye local
+// rotations. The caller applies the result through pose staging.
+Animation::Status evaluateBoneLookAt(
+    const VrmSemanticData &semantic, const ExpressionInputSnapshot &snapshot,
+    BoneLookAtRotations &rotations) noexcept;
 
 Animation::Status resolveExpressionFrame(
     const VrmSemanticData &semantic, const MorphTargetLayout *morph_layout,
