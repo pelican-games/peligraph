@@ -20,7 +20,16 @@ namespace Pelican {
 
 constexpr auto vulkan_api_version = VK_MAKE_API_VERSION(0, 1, 3, 283);
 
-static vk::UniqueInstance vulkanCreateInstance(bool headless) {
+static std::vector<std::string> supportedInstanceExtensions() {
+    std::vector<std::string> result;
+    for (const auto &extension : vk::enumerateInstanceExtensionProperties()) {
+        result.emplace_back(extension.extensionName.data());
+    }
+    return result;
+}
+
+static vk::UniqueInstance vulkanCreateInstance(
+    bool headless, const DebugUtilsExtensionSelection &debug_utils_selection) {
     LOG_INFO(logger, "initializing vulkan instance...");
 
     vk::ApplicationInfo app_info;
@@ -38,6 +47,9 @@ static vk::UniqueInstance vulkanCreateInstance(bool headless) {
 
     if (!headless) {
         exts = GET_MODULE(Window).getRequiredVulkanInstanceExts();
+    }
+    if (debug_utils_selection.enabled) {
+        exts.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     }
     vk::InstanceCreateInfo create_info;
 #ifdef _DEBUG
@@ -60,15 +72,8 @@ static vk::UniqueInstance vulkanCreateInstance(bool headless) {
 }
 
 #if PELICAN_WITH_OPENXR
-static std::vector<std::string> supportedInstanceExtensions() {
-    std::vector<std::string> result;
-    for (const auto &extension : vk::enumerateInstanceExtensionProperties()) {
-        result.emplace_back(extension.extensionName.data());
-    }
-    return result;
-}
-
-static std::vector<std::string> requiredXrInstanceExtensions(bool headless) {
+static std::vector<std::string> requiredXrInstanceExtensions(
+    bool headless, const DebugUtilsExtensionSelection &debug_utils_selection) {
     std::vector<std::string> result;
     if (!headless) {
         const auto window_extensions = GET_MODULE(Window).getRequiredVulkanInstanceExts();
@@ -78,10 +83,15 @@ static std::vector<std::string> requiredXrInstanceExtensions(bool headless) {
     constexpr std::array portability_extensions{VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME};
     appendUniqueVulkanExtensions(result, portability_extensions);
 #endif
+    if (debug_utils_selection.enabled) {
+        constexpr std::array debug_utils_extensions{VK_EXT_DEBUG_UTILS_EXTENSION_NAME};
+        appendUniqueVulkanExtensions(result, debug_utils_extensions);
+    }
     return result;
 }
 
-static vk::UniqueInstance xrCreateVulkanInstance(bool headless) {
+static vk::UniqueInstance xrCreateVulkanInstance(
+    bool headless, const DebugUtilsExtensionSelection &debug_utils_selection) {
     LOG_INFO(logger, "initializing OpenXR-selected vulkan instance...");
 
     vk::ApplicationInfo app_info;
@@ -96,7 +106,8 @@ static vk::UniqueInstance xrCreateVulkanInstance(bool headless) {
     layers.push_back("VK_LAYER_KHRONOS_validation");
 #endif
 
-    const auto required_extensions = requiredXrInstanceExtensions(headless);
+    const auto required_extensions =
+        requiredXrInstanceExtensions(headless, debug_utils_selection);
     const auto supported_extensions = supportedInstanceExtensions();
     if (const auto missing =
             firstMissingVulkanExtension(required_extensions, supported_extensions)) {
@@ -366,9 +377,10 @@ struct VulkanBootstrapState {
     vk::UniqueDevice device;
 };
 
-static VulkanBootstrapState bootstrapFlatVulkan(bool headless) {
+static VulkanBootstrapState bootstrapFlatVulkan(
+    bool headless, const DebugUtilsExtensionSelection &debug_utils_selection) {
     VulkanBootstrapState result;
-    result.instance = vulkanCreateInstance(headless);
+    result.instance = vulkanCreateInstance(headless, debug_utils_selection);
     if (!headless) result.surface = GET_MODULE(Window).getVulkanSurface(result.instance.get());
     result.physical_device = pickPhysicalDevice(result.instance.get(), result.surface.get(), headless);
     const auto queues = pickQueues(result.physical_device,
@@ -381,9 +393,10 @@ static VulkanBootstrapState bootstrapFlatVulkan(bool headless) {
 }
 
 #if PELICAN_WITH_OPENXR
-static VulkanBootstrapState bootstrapXrVulkan(bool headless) {
+static VulkanBootstrapState bootstrapXrVulkan(
+    bool headless, const DebugUtilsExtensionSelection &debug_utils_selection) {
     VulkanBootstrapState result;
-    result.instance = xrCreateVulkanInstance(headless);
+    result.instance = xrCreateVulkanInstance(headless, debug_utils_selection);
     if (!headless) result.surface = GET_MODULE(Window).getVulkanSurface(result.instance.get());
 
     const auto raw_physical_device =
@@ -414,22 +427,24 @@ VulkanManageCore::VulkanManageCore() {
     StartupPhaseTimer startup_timer{&StartupMetrics::addVulkan};
     auto &launch_config = GET_MODULE(EngineLaunchConfig);
     const bool headless = launch_config.headless;
+    const auto debug_utils_selection = selectDebugUtilsExtension(
+        launch_config.gpu_labels, supportedInstanceExtensions());
     VulkanBootstrapState bootstrap;
 #if PELICAN_WITH_OPENXR
     if (launch_config.xr_active) {
         try {
-            bootstrap = bootstrapXrVulkan(headless);
+            bootstrap = bootstrapXrVulkan(headless, debug_utils_selection);
         } catch (const OpenXr::VulkanBootstrapError &error) {
             OpenXr::abandonDiscovery();
             const auto info = resolveXrBootstrapFailure(launch_config, error.what());
             LOG_INFO(logger, "{}", info);
-            bootstrap = bootstrapFlatVulkan(headless);
+            bootstrap = bootstrapFlatVulkan(headless, debug_utils_selection);
         }
     } else {
-        bootstrap = bootstrapFlatVulkan(headless);
+        bootstrap = bootstrapFlatVulkan(headless, debug_utils_selection);
     }
 #else
-    bootstrap = bootstrapFlatVulkan(headless);
+    bootstrap = bootstrapFlatVulkan(headless, debug_utils_selection);
 #endif
     instance = std::move(bootstrap.instance);
     surface = std::move(bootstrap.surface);
@@ -439,6 +454,11 @@ VulkanManageCore::VulkanManageCore() {
     graphic_queue = device->getQueue(queue_set.graphic_queue, 0);
     presen_queue = device->getQueue(queue_set.presentation_queue, 0);
     compute_queue = device->getQueue(queue_set.compute_queue, 0);
+    debug_utils = DebugUtilsDispatch::resolve(instance.get(), device.get(),
+                                              debug_utils_selection);
+    const auto &debug_status = debug_utils.getStatus();
+    LOG_INFO(logger, "Vulkan debug utils: available={}, enabled={}, reason={}",
+             debug_status.available, debug_status.enabled, debug_status.reason);
     graphic_cmd_pool = createCommandPool(device.get(), queue_set.graphic_queue);
     compute_cmd_pool = createCommandPool(device.get(), queue_set.compute_queue);
     allocator = createAllocator(phys_device, device.get(), instance.get());

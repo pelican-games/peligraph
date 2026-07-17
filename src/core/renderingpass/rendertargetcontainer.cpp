@@ -59,6 +59,18 @@ static vk::UniqueImageView createImageView(vk::Device device, const ImageWrapper
     return device.createImageViewUnique(ci);
 }
 
+void nameRenderTargetSurfaces(const std::string &name,
+                              const std::array<ImageWrapper, 2> &images,
+                              const std::array<vk::UniqueImageView, 2> &image_views,
+                              std::uint32_t surface_count) {
+    const auto &debug_utils = GET_MODULE(VulkanManageCore).getDebugUtils();
+    for (std::uint32_t surface = 0; surface < surface_count; ++surface) {
+        const auto base = "rt/" + name + "/surface/" + std::to_string(surface);
+        debug_utils.nameImage(images[surface].image.get(), (base + "/image").c_str());
+        debug_utils.nameImageView(image_views[surface].get(), (base + "/view").c_str());
+    }
+}
+
 ImageWrapper createRenderTargetImage(const std::string &name, vk::Extent2D base_extent, float extent_scale,
                                      std::optional<vk::Extent2D> fixed_extent,
                                      vk::Format format, vk::ImageUsageFlags usage,
@@ -152,6 +164,7 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
                                             format, usage, memUsage);
         image_views[i] = createImageView(device, images[i]);
     }
+    nameRenderTargetSurfaces(name, images, image_views, surface_count);
     if (history) clearHistoryImages(images, history_clear_color);
 
     GlobalRenderTargetId id = render_targets.reg(InternalRenderTarget{
@@ -185,6 +198,7 @@ void RenderTargetContainer::recreateForExtent(vk::Extent2D base_extent) {
                                                      rt.memory_usage);
             next_views[i] = createImageView(device, next_images[i]);
         }
+        nameRenderTargetSurfaces(rt.name, next_images, next_views, surface_count);
         if (rt.history) clearHistoryImages(next_images, rt.history_clear_color);
 
         GET_MODULE(DeletionQueue)

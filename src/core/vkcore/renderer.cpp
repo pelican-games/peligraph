@@ -32,6 +32,8 @@
 #include "../shader/shaderlibrary.hpp"
 #include "../appflow/enginetime.hpp"
 #include "deletionqueue.hpp"
+#include "core.hpp"
+#include "debugutils.hpp"
 #include "render_pass_dispatch.hpp"
 #include "render_pass_executor.hpp"
 #include "render_pass_frame_setup.hpp"
@@ -48,6 +50,7 @@
 #endif
 #include <algorithm>
 #include <map>
+#include <string_view>
 
 namespace Pelican {
 
@@ -64,6 +67,7 @@ struct ShaderHotReloadModules {
 };
 
 struct RenderFrameModules {
+    const DebugUtilsDispatch &debug_utils;
     RenderTarget &render_target;
     RenderTargetContainer &render_target_container;
     RenderingPassContainer &rendering_pass_container;
@@ -147,6 +151,7 @@ RenderFrameModules resolveRenderFrameModules() {
     const bool ui_enabled = rendering_pass_container.isFeatureEnabled("ui");
 
     return RenderFrameModules{
+        GET_MODULE(VulkanManageCore).getDebugUtils(),
         GET_MODULE(RenderTarget),
         GET_MODULE(RenderTargetContainer),
         rendering_pass_container,
@@ -579,7 +584,10 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                               vk::Format frame_target_format,
                               RenderTargetLayoutTracker &layout_tracker,
                               const RenderPassExecutorDependencies &pass_executor_dependencies,
-                              nlohmann::json *node_trace) {
+                              nlohmann::json *node_trace,
+                              std::uint64_t logical_frame,
+                              std::string_view graph_variant,
+                              std::uint32_t view_index) {
     if (modules.render_timing != nullptr) {
         beginTiming(modules.render_timing, render_ctx.cmd_buf, plannedNodeNames(frame_graph));
     }
@@ -594,13 +602,28 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
             throw std::runtime_error("Frame graph execution no longer matches frame plan");
         }
 
-        for (const auto &barrier : execution_node.incoming_barriers) {
-            if (barrier.from_node_index >= node_index) {
-                throw std::runtime_error("Compiled frame graph barrier source was not executed before target");
-            }
-            modules.compute_task_container.bufferReadAfterWriteBarrier(
-                render_ctx.cmd_buf, barrier.resource, barrier.from_kind, barrier.to_kind);
+        std::string node_debug_name;
+        if (modules.debug_utils.commandLabelsEnabled()) {
+            node_debug_name = makeFrameGraphDebugLabel(FrameGraphDebugLabelIdentity{
+                logical_frame, graph_variant, view_index, node_index,
+                framePlanNodeKindName(execution_node.kind), execution_node.name});
         }
+        ScopedCommandDebugLabel node_label{modules.debug_utils, render_ctx.cmd_buf,
+                                           node_debug_name.c_str()};
+        {
+            ScopedCommandDebugLabel barrier_label{modules.debug_utils, render_ctx.cmd_buf,
+                                                   "barriers"};
+            for (const auto &barrier : execution_node.incoming_barriers) {
+                if (barrier.from_node_index >= node_index) {
+                    throw std::runtime_error(
+                        "Compiled frame graph barrier source was not executed before target");
+                }
+                modules.compute_task_container.bufferReadAfterWriteBarrier(
+                    render_ctx.cmd_buf, barrier.resource, barrier.from_kind,
+                    barrier.to_kind);
+            }
+        }
+        ScopedCommandDebugLabel body_label{modules.debug_utils, render_ctx.cmd_buf, "body"};
 
         if (modules.render_timing != nullptr) {
             modules.render_timing->writePassStart(render_ctx.cmd_buf, node_index);
@@ -760,7 +783,10 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
                             bool first_person_view,
                             vk::Format frame_target_format,
                             RenderTargetLayoutTracker &layout_tracker,
-                            nlohmann::json *node_trace) {
+                            nlohmann::json *node_trace,
+                            std::uint64_t logical_frame,
+                            std::string_view graph_variant,
+                            std::uint32_t view_index) {
     const MaterialRendererDependencies material_renderer_dependencies{modules.instance_container,
                                                                       modules.vert_buf_container,
                                                                       modules.material_container,
@@ -801,7 +827,8 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
     }
     executePlannedFrameGraph(render_ctx, rendering_pass, *frame_graph, modules,
                              frame_target_format, layout_tracker,
-                             pass_executor_dependencies, node_trace);
+                             pass_executor_dependencies, node_trace, logical_frame,
+                             graph_variant, view_index);
 }
 
 void rebindFullscreenInputs(RenderFrameModules &modules) {
@@ -1196,7 +1223,9 @@ void Renderer::renderLogicalFrame(ILogicalFrameTarget &target, std::uint32_t vie
         executeRenderingPasses(render_ctx, current_rendering_pass_id, rendering_pass, modules,
                                snapshot, view.first_person_view, frame_target_format,
                                render_target_layout_tracker,
-                               node_trace_ptr);
+                               node_trace_ptr, engine_time.frameIndex(),
+                               active_graph_variant == RenderGraphVariant::flat ? "flat" : "xr",
+                               view_index);
 #if PELICAN_WITH_OPENXR
         if (active_graph_variant == RenderGraphVariant::xr && view_index == 0) {
             recordXrMirrorIntermediate(render_ctx, modules,

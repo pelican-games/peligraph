@@ -22,6 +22,7 @@
 #include "../userpublic/details/system/registerer.hpp"
 #include "../vkcore/renderer.hpp"
 #include "../vkcore/rendertarget.hpp"
+#include "../vkcore/core.hpp"
 #include "../watch/reloadgate.hpp"
 #include "../watch/reloadservice.hpp"
 
@@ -250,6 +251,7 @@ struct EngineRpcModules {
     SpriteScene *sprite_scene;
     Renderer &renderer;
     SeqPlayer &seq_player;
+    VulkanManageCore &vulkan;
 };
 
 EngineRpcModules resolveEngineRpcModules() {
@@ -267,6 +269,7 @@ EngineRpcModules resolveEngineRpcModules() {
         FastModuleContainer::tryGet<SpriteScene>(),
         GET_MODULE(Renderer),
         GET_MODULE(SeqPlayer),
+        GET_MODULE(VulkanManageCore),
     };
 }
 
@@ -694,6 +697,7 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
         const auto color_caps = modules.render_target.caps();
         const auto startup = modules.startup_metrics.snapshot();
         const auto module_graph = FastModuleContainer::graphSnapshot();
+        const auto &debug_utils = modules.vulkan.getDebugUtils().getStatus();
         return nlohmann::json{
             {"instance_id", instance_id},
             {"project_root", projectRootString(modules.path_resolver)},
@@ -702,6 +706,12 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
             {"time", modules.engine_time.now()},
             {"seed", GameContext{}.seed()},
             {"xr", openXrStatusJson(modules.launch_config)},
+            {"debug_utils", {{"available", debug_utils.available},
+                             {"enabled", debug_utils.enabled},
+                             {"reason", debug_utils.reason},
+                             {"capabilities", {{"object_name", debug_utils.object_name},
+                                               {"command_label", debug_utils.command_label},
+                                               {"queue_label", debug_utils.queue_label}}}}},
             {"input", {{"recording", modules.input_sequence.isRecording()},
                        {"replaying", modules.input_sequence.isReplaying()},
                        {"replay_frame", modules.input_sequence.replayFrameIndex()},

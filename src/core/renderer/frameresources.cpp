@@ -6,6 +6,7 @@
 #include "../vkcore/rendertarget.hpp"
 #include <array>
 #include <stdexcept>
+#include <string>
 
 namespace Pelican {
 
@@ -60,6 +61,16 @@ void FrameResources::configureViewCount(std::uint32_t count) {
             vma::MemoryUsage::eAuto,
             vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
         frame_slot.descriptor_set = std::move(descriptor_sets[slot]);
+
+        const auto frame_index = slot / count;
+        const auto view_index = slot % count;
+        const auto base = "frame/in_flight/" + std::to_string(frame_index) +
+                          "/view/" + std::to_string(view_index);
+        const auto &debug_utils = GET_MODULE(VulkanManageCore).getDebugUtils();
+        debug_utils.nameBuffer(frame_slot.frame_buffer.buffer.get(),
+                               (base + "/ubo").c_str());
+        debug_utils.nameDescriptorSet(frame_slot.descriptor_set.get(),
+                                      (base + "/descriptor_set").c_str());
 
         vk::DescriptorBufferInfo frame_info{frame_slot.frame_buffer.buffer.get(), 0,
                                             sizeof(FrameUniformData)};

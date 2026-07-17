@@ -2953,7 +2953,7 @@ bool usesRenderer(const GoldenCase &golden_case) {
            golden_case.mode != "openpbr_coat_sphere";
 }
 
-RenderedCase renderCase(const GoldenCase &golden_case) {
+RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false) {
     FastModuleContainer modules;
     const auto temp_dir = makeTempProjectDir(golden_case.name);
     if (golden_case.mode == "stem_fullscreen") {
@@ -3106,6 +3106,7 @@ RenderedCase renderCase(const GoldenCase &golden_case) {
     auto &launch_config = GET_MODULE(EngineLaunchConfig);
     launch_config.headless = true;
     launch_config.shader_hot_reload = false;
+    launch_config.gpu_labels = gpu_labels;
     launch_config.headless_extent = vk::Extent2D{golden_case.width, golden_case.height};
     launch_config.headless_frames = 1;
 
@@ -4066,12 +4067,17 @@ TEST_CASE("golden final RGBA8 bytes match the WP74 C1b baseline hashes",
 
     for (const auto &golden_case : discoverGoldenCases()) {
         CAPTURE(golden_case.name);
-        const auto rendered = renderCase(golden_case);
-        const auto hash = picosha2::hash256_hex_string(rendered.image.pixels.begin(),
-                                                       rendered.image.pixels.end());
+        const auto labels_off = renderCase(golden_case, false);
+        const auto labels_on = renderCase(golden_case, true);
+        REQUIRE(labels_on.image.pixels == labels_off.image.pixels);
+        const auto hash = picosha2::hash256_hex_string(labels_off.image.pixels.begin(),
+                                                       labels_off.image.pixels.end());
+        const auto labels_on_hash = picosha2::hash256_hex_string(
+            labels_on.image.pixels.begin(), labels_on.image.pixels.end());
         captured[golden_case.name] = hash;
         if (!update_fixtures) {
             REQUIRE(hash == expected.at(golden_case.name).get<std::string>());
+            REQUIRE(labels_on_hash == expected.at(golden_case.name).get<std::string>());
         }
     }
 

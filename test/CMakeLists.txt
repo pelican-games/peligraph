@@ -824,6 +824,7 @@ endif()
 
 pelican_define_test(debugdraw_test pelican_core glm VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 pelican_define_test(debugtext_test pelican_core glm VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+pelican_define_test(debugutils_test pelican_core)
 
 add_test(
     NAME gpu_timing_headless_player

@@ -127,6 +127,12 @@ OffscreenFrameTarget::OffscreenFrameTarget()
                                     vma::MemoryUsage::eAutoPreferDevice, {});
     depth_image_view = createImageView(device, depth_image, vk::ImageAspectFlagBits::eDepth);
 
+    const auto &debug_utils = vkcore.getDebugUtils();
+    debug_utils.nameImage(color_image.image.get(), "offscreen/color/image");
+    debug_utils.nameImageView(color_image_view.get(), "offscreen/color/view");
+    debug_utils.nameImage(depth_image.image.get(), "offscreen/depth/image");
+    debug_utils.nameImageView(depth_image_view.get(), "offscreen/depth/view");
+
     GET_MODULE(Camera).setScreenSize(extent.width, extent.height);
     LOG_INFO(logger, "offscreen frame target initialized");
 }
