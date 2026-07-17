@@ -12,6 +12,7 @@ target_compile_definitions(pelican_core PUBLIC
   PELICAN_WITH_IMGUI=$<BOOL:${PELICAN_WITH_IMGUI}>
   PELICAN_WITH_PHYSICS=$<BOOL:${PELICAN_WITH_PHYSICS}>
   PELICAN_WITH_OPENXR=$<BOOL:${PELICAN_WITH_OPENXR}>
+  PELICAN_WITH_RENDERDOC=$<BOOL:${PELICAN_WITH_RENDERDOC}>
 )
 target_compile_definitions(pelican_core PRIVATE
   PELICAN_WITH_BUILTIN_PHYSICS=$<BOOL:${PELICAN_WITH_BUILTIN_PHYSICS}>
@@ -24,6 +25,7 @@ add_subdirectory(resources)
 add_subdirectory(appflow)
 add_subdirectory(audio)
 add_subdirectory(communication)
+add_subdirectory(renderdoc)
 add_subdirectory(os)
 add_subdirectory(watch)
 if(PELICAN_WITH_IMGUI)

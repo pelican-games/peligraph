@@ -28,6 +28,7 @@ option(PELICAN_WITH_SEQPLAYER "Enable transform sequence playback" ON)
 option(PELICAN_WITH_IMGUI "Enable the interactive engine developer UI" ON)
 option(PELICAN_WITH_PHYSICS "Enable the physics query service and collider world" ON)
 option(PELICAN_WITH_OPENXR "Enable the private OpenXR runtime unit" ON)
+option(PELICAN_WITH_RENDERDOC "Enable passive RenderDoc in-application capture integration" ON)
 cmake_dependent_option(
   PELICAN_WITH_JOLT_PHYSICS
   "Enable the optional Jolt query provider"

@@ -62,6 +62,7 @@ cmake . -B build -DSKIP_DEVSTUDIO=ON
 | `PELICAN_WITH_AUDIO` | WAV SE 再生 |
 | `PELICAN_WITH_IMGUI` | ImGui 開発者 UI(F1 トグル・Plan Viewer)。配布では dist-config が常時 OFF([第10章](10_tools.md)) |
 | `PELICAN_WITH_OPENXR` | OpenXR(PCVR)ランタイム。開発既定 ON・**配布は `dist-config --with openxr` を指定した時だけ ON** |
+| `PELICAN_WITH_RENDERDOC` | 注入済みRenderDocの受動検出とF11/RPC capture。binary/import libraryはリンクせず、配布では常にOFF |
 | `PELICAN_WITH_PHYSICS` | 物理クエリ層。配下に `PELICAN_WITH_BUILTIN_PHYSICS`(既定 ON)/ `PELICAN_WITH_JOLT_PHYSICS`(既定 OFF)のプロバイダ選択 |
 | `PELICAN_RUNTIME_SHADER_COMPILER` | 実行時 GLSL コンパイル(shaderc) |
 

@@ -465,6 +465,38 @@ function(run_openxr_smoke)
     )
 endfunction()
 
+function(verify_renderdoc_absent build_dir)
+    file(GLOB_RECURSE build_metadata LIST_DIRECTORIES false
+        "${build_dir}/build.ninja"
+        "${build_dir}/*.vcxproj"
+        "${build_dir}/*DependInfo.cmake"
+        "${build_dir}/compile_commands.json"
+    )
+    foreach(metadata IN LISTS build_metadata)
+        file(READ "${metadata}" contents)
+        foreach(forbidden IN ITEMS "renderdoccapture.cpp" "renderdoc_app.h")
+            string(FIND "${contents}" "${forbidden}" found_at)
+            if(NOT found_at EQUAL -1)
+                message(FATAL_ERROR "PELICAN_WITH_RENDERDOC=OFF retained ${forbidden}: ${metadata}")
+            endif()
+        endforeach()
+    endforeach()
+
+    file(GLOB_RECURSE artifacts LIST_DIRECTORIES false "${build_dir}/*")
+    foreach(artifact IN LISTS artifacts)
+        get_filename_component(name "${artifact}" NAME)
+        string(TOLOWER "${name}" lower_name)
+        if(lower_name MATCHES "^renderdoccapture[.](obj|o)$")
+            message(FATAL_ERROR "PELICAN_WITH_RENDERDOC=OFF emitted integration object: ${artifact}")
+        endif()
+    endforeach()
+endfunction()
+
+function(run_renderdoc_smoke)
+    configure_and_build("renderdoc" "PELICAN_WITH_RENDERDOC" renderdoc_build_dir)
+    verify_renderdoc_absent("${renderdoc_build_dir}")
+endfunction()
+
 if(PELICAN_BUILD_UNIT_SMOKE_PARSE_ONLY)
     message(STATUS "build-unit OFF smoke fixture parsed successfully")
     return()
@@ -474,12 +506,17 @@ file(REMOVE_RECURSE "${ARTIFACT_ROOT}")
 file(MAKE_DIRECTORY "${ARTIFACT_ROOT}")
 
 if(DEFINED PELICAN_BUILD_UNIT_SMOKE_ONLY)
-    if(NOT PELICAN_BUILD_UNIT_SMOKE_ONLY STREQUAL "openxr")
+    if(PELICAN_BUILD_UNIT_SMOKE_ONLY STREQUAL "openxr")
+        run_openxr_smoke()
+        message(STATUS "single-OFF smoke passed for OPENXR")
+        return()
+    elseif(PELICAN_BUILD_UNIT_SMOKE_ONLY STREQUAL "renderdoc")
+        run_renderdoc_smoke()
+        message(STATUS "single-OFF smoke passed for RENDERDOC")
+        return()
+    else()
         message(FATAL_ERROR "unsupported PELICAN_BUILD_UNIT_SMOKE_ONLY: ${PELICAN_BUILD_UNIT_SMOKE_ONLY}")
     endif()
-    run_openxr_smoke()
-    message(STATUS "single-OFF smoke passed for OPENXR")
-    return()
 endif()
 
 configure_and_build("audio" "PELICAN_WITH_AUDIO" audio_build_dir)
@@ -593,5 +630,6 @@ run_process(
 )
 
 run_openxr_smoke()
+run_renderdoc_smoke()
 
-message(STATUS "build-unit OFF smoke passed for AUDIO, VAT, EXR, RPC, SEQPLAYER, IMGUI, PHYSICS, and OPENXR; provider-only and Jolt physics also passed")
+message(STATUS "build-unit OFF smoke passed for AUDIO, VAT, EXR, RPC, SEQPLAYER, IMGUI, PHYSICS, OPENXR, and RENDERDOC; provider-only and Jolt physics also passed")

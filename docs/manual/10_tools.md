@@ -5,7 +5,7 @@
 ## この章で学ぶこと
 
 - `pelican_player` の全 CLI 引数(22 個)
-- JSON-RPC(stdio)による外部制御 — 全 19 メソッドと実セッション例
+- JSON-RPC(stdio)による外部制御 — 全 20 メソッドと実セッション例
 - `pelican_cli` の 6 サブコマンド系統(`project init` / `import` / `dist-config` / `assets` / `bake-camera` / `dump-lowered-material`)
 - ホットリロード(シェーダ・テクスチャ・マテリアル・モデル・ゲーム DLL)と起動高速化
 - ImGui 開発者 UI(F1)と Frame Plan Viewer
@@ -73,20 +73,21 @@ pelican_player --headless --project mygame --replay s.jsonl \
 ### 枠組み(不変)
 
 - stdin/stdout の NDJSON(1 行 = 1 つの JSON-RPC 2.0 リクエスト)。**stdout はプロトコル専用**(ログは `pelican.log`)。
-- batch・notification 非対応。エラーコードは標準 + アプリケーションエラー -32000。ハンドラ内例外は応答に変換されプロセスは落ちません。EOF で正常終了。
+- batch・notification 非対応。エラーコードは標準 + アプリケーションエラー -32000、RenderDoc capture -32010。ハンドラ内例外は応答に変換されプロセスは落ちません。EOF で正常終了。
 - 1 プロセス 1 クライアント。**ゲーム DLL リロード中は全メソッドがアプリケーションエラーで拒否**されます。
 
 > **設計決定(決定性):** 同一の RPC スクリプトを 2 回実行したとき、応答列は(instance_id を除き)完全一致しなければならない。CI で検証済み。
 
-### メソッド一覧(19 個)
+### メソッド一覧(20 個)
 
 | メソッド | params | 動作 |
 |---|---|---|
-| `get_status` | `{}` | `{instance_id, project_root, scene, frame, time, seed, stores, input:{...}, reload:{...}, sprite:{...}, color:{...}, startup:{...}, xr:{active, reference_space, floor_semantics, ...}}` ※rpc は常に flat 駆動のため `xr.active=true` は rpc からは観測できない |
+| `get_status` | `{}` | `{instance_id, project_root, scene, frame, time, seed, renderdoc, diagnostics:{renderdoc:{...}}, stores, input:{...}, reload:{...}, sprite:{...}, color:{...}, startup:{...}, xr:{active, reference_space, floor_semantics, ...}}` ※rpc は常に flat 駆動のため `xr.active=true` は rpc からは観測できない |
 | `set_seed` | `{seed}` | 決定的乱数のシード設定 |
 | `set_time` | `{t}` | 仮想時刻の直接設定(dt=0) |
 | `step_frame` | `{}` | 1 フレーム進める |
 | `render_frame` | `{}` | 時刻を進めず描画のみ |
+| `capture_gpu` | `{}` | `render_frame` と同じcurrent-time描画を1回だけRenderDoc captureし、実際に増えたindexのcanonical `.rdc` pathを返す |
 | `capture` | `{path}` | 直近フレームを PNG 保存(sRGB。応答に `encoding:"srgb"`) |
 | `get_frame_plan` | `{}` | フレームプラン JSON |
 | `load_gltf` | `{path, name?}` | glb の一時ロード(プロジェクト相対のみ) |
@@ -116,6 +117,10 @@ pelican_player --headless --project mygame --replay s.jsonl \
 ```
 
 名前(オブジェクト名・`load_gltf` の name)は `[a-zA-Z0-9_]` のみ(R7)です。
+
+`capture_gpu` は外部からRenderDocを注入して起動した場合だけ有効です。通常起動では
+`-32010` と `data.reason:"renderdoc_not_injected"` を返します。XR active中はv1境界として
+`capture_xr_unsupported` です。F11とRPCはいずれも同じcapture状態機械を使います。
 
 📐設計のみ: WebSocket 展開(複数クライアント)、薄い Python クライアント `pelican_rpc.py`。
 
@@ -168,6 +173,7 @@ pelican_cli assets status --project mygame              # OK / MISSING / MISMATC
 - `PELICAN_WITH_VAT` — GLB に `pelican.vat` extras が実在すれば ON / `PELICAN_WITH_EXR` — `.exr` 参照があれば ON
 - `PELICAN_WITH_RPC` / `PELICAN_WITH_SEQPLAYER` / `PELICAN_WITH_OPENXR` — 既定 OFF。`--with rpc,seqplayer,openxr` で明示 ON
 - **`PELICAN_WITH_IMGUI` — 常に OFF を書き出す**(配布ビルドに開発 UI を含めない)
+- **`PELICAN_WITH_RENDERDOC` — 常に OFF を書き出す**(配布ビルドにcapture integrationを含めない)
 
 ```sh
 pelican_cli dist-config projects/mygame --out build-dist/preset.cmake

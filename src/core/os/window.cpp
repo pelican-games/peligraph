@@ -6,6 +6,14 @@
 #include <optional>
 #include <stdexcept>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
+#endif
+
 namespace Pelican {
 
 namespace {
@@ -274,6 +282,14 @@ vk::Extent2D Window::logicalExtent() const {
     glfwGetWindowSize(window, &width, &height);
     return vk::Extent2D{static_cast<uint32_t>(std::max(width, 0)),
                         static_cast<uint32_t>(std::max(height, 0))};
+}
+
+void *Window::renderDocCaptureHandle() const noexcept {
+#ifdef _WIN32
+    return reinterpret_cast<void *>(glfwGetWin32Window(window));
+#else
+    return nullptr;
+#endif
 }
 
 bool Window::process() {

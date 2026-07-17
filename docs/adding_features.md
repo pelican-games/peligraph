@@ -238,6 +238,40 @@ Temporal effect は、品質やアルゴリズムのように今後も発展す�
   一行メモする**(将来の WASM ビルド保険。描画系の依存は対象外 — web には
   行かない。ゲーム側レイヤの依存のみ)
 
+## Recipe 8: RenderDocで絵の不具合を追う
+
+`PELICAN_WITH_RENDERDOC=ON` の開発buildで使う。PelicanはRenderDocをロードせず、
+RenderDoc UI/CLIからprocess起動時に注入済みの `renderdoc.dll` を
+`GetModuleHandleA` で受動検出するだけである。通常起動の `get_status` は
+`renderdoc:"absent"` となり、描画とgolden byteは変わらない。
+
+1. replay、`set_time`、`step_frame` で不具合を同じlogical frameに再現する。
+2. RenderDocのLaunch Applicationからplayerを起動する。pass木を読む場合は
+   player引数へ `--gpu-labels` も加える。起動後のattachや、applicationからの
+   `LoadLibrary`、`VK_LAYER_RENDERDOC_Capture` の通常layer化は使わない。
+3. windowed flatはF11を押す。PelicanがRenderDoc側のcapture hotkeyを無効化し、
+   次のlogical frameを明示 `StartFrameCapture/EndFrameCapture` で1枚だけ囲む。
+4. headlessはstdio RPCへ次を送る。`capture_gpu` はpending transformをflushし、
+   `render_frame` と同じcurrent-time sequence sample + renderを1回だけ行う。
+
+```jsonl
+{"jsonrpc":"2.0","id":1,"method":"set_time","params":{"t":1.25}}
+{"jsonrpc":"2.0","id":2,"method":"capture_gpu","params":{}}
+```
+
+成功応答の `path` はtemplateではなく、`GetNumCaptures` が実際に1増えたindexを
+`GetCapture`の二段呼び出しで引いたcanonical absolute `.rdc` pathである。
+`frame` はcaptureしたEngineTime frame indexで、time/frame自体は進まない。
+
+5. `.rdc` を開き、Event Browserの
+   `frame/<logical-frame>/graph/flat/view/0/node/<ordinal>:<kind>:<name>` 配下に
+   `barriers` と `body` がplan順に並ぶことを確認する。
+
+未注入RPCは `-32010` / `renderdoc_not_injected`、処理中の二重要求は要求元名を含む
+`capture_busy`、XR active中は `capture_xr_unsupported` で拒否する。XRのVulkan
+二眼captureは後続契約であり、このv1のflat/headless captureをHMD compositor像の
+captureと呼んではならない。
+
 ## テストの型 早見表
 
 | 対象 | 型 |
