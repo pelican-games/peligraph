@@ -64,7 +64,10 @@ StartupAssetsVerificationSummary verifyAssetsAtStartup(
         return summary;
     }
 
-    const auto message = "assets manifest: {} stores, {} matched, {} info, {} warnings, {} errors; stores={}";
+    // quill のログマクロは format 文字列の compile-time 評価を要求する
+    // (VS2026 の MSVC は const auto では C2131)。
+    static constexpr auto message =
+        "assets manifest: {} stores, {} matched, {} info, {} warnings, {} errors; stores={}";
     if (summary.errors > 0) {
         LOG_ERROR(logger, message, summary.stores, summary.matched, summary.info, summary.warnings,
                   summary.errors, resolved.str());
