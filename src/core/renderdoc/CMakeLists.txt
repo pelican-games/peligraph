@@ -1,0 +1,5 @@
+if(PELICAN_WITH_RENDERDOC)
+    target_sources(pelican_core PRIVATE renderdoccapture.cpp)
+else()
+    target_sources(pelican_core PRIVATE renderdoccapture_stub.cpp)
+endif()

@@ -16,6 +16,7 @@ constexpr int invalidRequest = -32600;
 constexpr int methodNotFound = -32601;
 constexpr int invalidParams = -32602;
 constexpr int applicationError = -32000;
+constexpr int renderDocCaptureError = -32010;
 } // namespace JsonRpcErrorCodes
 
 struct JsonRpcRequest {

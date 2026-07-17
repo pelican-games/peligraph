@@ -10,6 +10,12 @@ endif()
 if(NOT DEFINED OUT_DIR)
     message(FATAL_ERROR "OUT_DIR is required")
 endif()
+if(NOT DEFINED RENDERDOC_STATUS)
+    set(RENDERDOC_STATUS "absent")
+endif()
+if(NOT DEFINED RENDERDOC_REASON)
+    set(RENDERDOC_REASON "renderdoc_not_injected")
+endif()
 
 file(REMOVE_RECURSE "${OUT_DIR}")
 file(MAKE_DIRECTORY
@@ -97,6 +103,7 @@ file(WRITE "${script_path}"
 "{\"jsonrpc\":\"2.0\",\"id\":16,\"method\":\"set_seed\",\"params\":{\"seed\":99}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":17,\"method\":\"get_status\",\"params\":{}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":18,\"method\":\"update_transforms\",\"params\":{\"objects\":[\"movable\"],\"transforms\":[{\"pos\":[0.0,0.0,0.0],\"rot\":[0.0,0.0,0.0,1.0],\"scale\":[1.0,1.0,1.0]}]}}\n"
+"{\"jsonrpc\":\"2.0\",\"id\":19,\"method\":\"capture_gpu\",\"params\":{}}\n"
 )
 
 function(validate_rpc_stdout stdout label)
@@ -109,8 +116,8 @@ function(validate_rpc_stdout stdout label)
 
     string(REPLACE "\n" ";" lines "${trimmed}")
     list(LENGTH lines line_count)
-    if(NOT line_count EQUAL 20)
-        message(FATAL_ERROR "${label}: expected 20 JSON-RPC response lines, got ${line_count}\nstdout:\n${stdout}")
+    if(NOT line_count EQUAL 21)
+        message(FATAL_ERROR "${label}: expected 21 JSON-RPC response lines, got ${line_count}\nstdout:\n${stdout}")
     endif()
 
     foreach(line IN LISTS lines)
@@ -139,9 +146,13 @@ function(validate_rpc_stdout stdout label)
     list(GET lines 17 line17)
     list(GET lines 18 line18)
     list(GET lines 19 line19)
+    list(GET lines 20 line20)
 
     if(NOT line0 MATCHES [=["id":1]=] OR NOT line0 MATCHES [=["instance_id":"[0-9a-fA-F-]+"]=] OR NOT line0 MATCHES [=["project_root"]=] OR NOT line0 MATCHES [=["scene":"default_scene"]=] OR NOT line0 MATCHES [=["frame":0]=] OR NOT line0 MATCHES [=["time":0\.0]=] OR NOT line0 MATCHES [=["seed":1234]=] OR NOT line0 MATCHES [=["xr":\{"active":false,"applied_floor_offset_m":null,"floor_level_guaranteed":false,"floor_semantics":"not_applicable","reference_space":null,"session_state":null,"should_render":null,"view_configuration":null\}]=] OR NOT line0 MATCHES [=["contract":2]=] OR NOT line0 MATCHES [=["readback_encoding":"srgb"]=] OR NOT line0 MATCHES [=["capture":"available"]=])
         message(FATAL_ERROR "${label}: get_status initial response did not include expected fields:\n${line0}")
+    endif()
+    if(NOT line0 MATCHES "\"renderdoc\":\"${RENDERDOC_STATUS}\"" OR NOT line0 MATCHES "\"reason\":\"${RENDERDOC_REASON}\"")
+        message(FATAL_ERROR "${label}: get_status RenderDoc state was not ${RENDERDOC_STATUS}/${RENDERDOC_REASON}:\n${line0}")
     endif()
     if(NOT line0 MATCHES [=["startup":\{]=] OR NOT line0 MATCHES [=["config_ms":[0-9]]=] OR NOT line0 MATCHES [=["vulkan_ms":[0-9]]=] OR NOT line0 MATCHES [=["shaders_ms":[0-9]]=] OR NOT line0 MATCHES [=["shader_cache_hits":[0-9]]=] OR NOT line0 MATCHES [=["shader_cache_requests":[0-9]]=] OR NOT line0 MATCHES [=["models_ms":[0-9]]=] OR NOT line0 MATCHES [=["total_ms":[0-9]]=] OR NOT line0 MATCHES [=["complete":true]=])
         message(FATAL_ERROR "${label}: get_status startup report was incomplete:\n${line0}")
@@ -205,6 +216,9 @@ function(validate_rpc_stdout stdout label)
     endif()
     if(NOT line19 MATCHES [=["id":18]=] OR NOT line19 MATCHES [=["code":-32602]=] OR NOT line19 MATCHES [=['rot']=] OR NOT line19 MATCHES [=['rotation']=])
         message(FATAL_ERROR "${label}: legacy rot field did not name the rotation replacement:\n${line19}")
+    endif()
+    if(NOT line20 MATCHES [=["id":19]=] OR NOT line20 MATCHES [=["code":-32010]=] OR NOT line20 MATCHES "\"reason\":\"${RENDERDOC_REASON}\"" OR NOT line20 MATCHES [=["source":"rpc"]=])
+        message(FATAL_ERROR "${label}: uninjected capture_gpu did not return the named RenderDoc error:\n${line20}")
     endif()
 endfunction()
 

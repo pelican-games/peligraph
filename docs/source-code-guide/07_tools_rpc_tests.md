@@ -140,7 +140,7 @@ RPC は build option `PELICAN_WITH_RPC` で切り替わります。有効時は 
 [`jsonrpc.hpp`](../../src/project/jsonrpc.hpp#L12) と [`jsonrpc.cpp`](../../src/project/jsonrpc.cpp#L148) は engine module を知りません。
 
 - JSON-RPC 2.0 request の parse。
-- `-32700` parse error、`-32600` invalid request、`-32601` method not found、`-32602` invalid params、`-32000` application error。
+- `-32700` parse error、`-32600` invalid request、`-32601` method not found、`-32602` invalid params、`-32000` application error、`-32010` RenderDoc capture error。
 - success/error response の serialize。
 - injected input/event parameter の純粋 parse。
 
@@ -171,6 +171,7 @@ engine method の登録は [`runEngineRpcServer()`](../../src/core/communication
 | `set_camera` | [`rpcserver.cpp`](../../src/core/communication/rpcserver.cpp#L866) | 名前付き object を active camera にする |
 | `step_frame` | [`rpcserver.cpp`](../../src/core/communication/rpcserver.cpp#L874) | pending flush → time advance → 5 phase update → render |
 | `render_frame` | [`rpcserver.cpp`](../../src/core/communication/rpcserver.cpp#L883) | time/frame を進めず、pending flush → seq update → render |
+| `capture_gpu` | [`rpcserver.cpp`](../../src/core/communication/rpcserver.cpp) | `render_frame` と同型の1回描画を明示Start/Endでcaptureし、新規indexの`.rdc` pathを返す |
 | `get_frame_plan` | [`rpcserver.cpp`](../../src/core/communication/rpcserver.cpp#L891) | planner の JSON を返す |
 | `capture` | [`rpcserver.cpp`](../../src/core/communication/rpcserver.cpp#L896) | 最後の frame を PNG 保存 |
 

@@ -16,6 +16,7 @@
 #endif
 #include "../playback/seqplayer.hpp"
 #include "../renderingpass/renderingpassjsonhelpers.hpp"
+#include "../renderdoc/renderdoccapture.hpp"
 #include "../renderer/spritescene.hpp"
 #include "../userpublic/gamecontext.hpp"
 #include "../userpublic/userinput.hpp"
@@ -238,6 +239,7 @@ struct PendingTransformUpdate {
 };
 
 struct EngineRpcModules {
+    RenderDocCapture &renderdoc_capture;
     EngineTime &engine_time;
     PathResolver &path_resolver;
     SceneLoader &scene_loader;
@@ -256,6 +258,7 @@ struct EngineRpcModules {
 
 EngineRpcModules resolveEngineRpcModules() {
     return {
+        GET_MODULE(RenderDocCapture),
         GET_MODULE(EngineTime),
         GET_MODULE(PathResolver),
         GET_MODULE(SceneLoader),
@@ -611,6 +614,10 @@ nlohmann::json openXrStatusJsonForTesting(const OpenXr::XrDiagnosticStatus &stat
 JsonRpcHandlerError::JsonRpcHandlerError(int code, const std::string &message)
     : std::runtime_error(message), error_code{code} {}
 
+JsonRpcHandlerError::JsonRpcHandlerError(int code, const std::string &message,
+                                         nlohmann::json data)
+    : std::runtime_error(message), error_code{code}, error_data{std::move(data)} {}
+
 RpcServer::RpcServer(std::istream &input_stream, std::ostream &output_stream)
     : input{input_stream}, output{output_stream} {}
 
@@ -639,7 +646,12 @@ std::string RpcServer::handleLine(std::string_view line) const {
     try {
         return serializeJsonRpcResult(request.id, handler->second(request.params));
     } catch (const JsonRpcHandlerError &error) {
-        return serializeJsonRpcError(makeJsonRpcError(request.id, error.code(), error.what()));
+        if (error.data()) {
+            return serializeJsonRpcError(
+                makeJsonRpcError(request.id, error.code(), error.what(), *error.data()));
+        }
+        return serializeJsonRpcError(makeJsonRpcError(request.id, error.code(),
+                                                       error.what()));
     } catch (const JsonRpcInvalidParamsError &error) {
         return serializeJsonRpcError(
             makeJsonRpcError(request.id, JsonRpcErrorCodes::invalidParams, error.what()));
@@ -698,6 +710,19 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
         const auto startup = modules.startup_metrics.snapshot();
         const auto module_graph = FastModuleContainer::graphSnapshot();
         const auto &debug_utils = modules.vulkan.getDebugUtils().getStatus();
+        const auto renderdoc = modules.renderdoc_capture.status();
+        const nlohmann::json renderdoc_diagnostics{
+            {"status", renderdoc.status},
+            {"state", renderDocCaptureStateName(renderdoc.state)},
+            {"reason", renderdoc.reason.empty() ? nlohmann::json(nullptr)
+                                                  : nlohmann::json(renderdoc.reason)},
+            {"api_version", renderdoc.api_version.empty()
+                                ? nlohmann::json(nullptr)
+                                : nlohmann::json(renderdoc.api_version)},
+            {"source", renderdoc.source
+                           ? nlohmann::json(renderDocCaptureSourceName(*renderdoc.source))
+                           : nlohmann::json(nullptr)},
+        };
         return nlohmann::json{
             {"instance_id", instance_id},
             {"project_root", projectRootString(modules.path_resolver)},
@@ -706,6 +731,8 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
             {"time", modules.engine_time.now()},
             {"seed", GameContext{}.seed()},
             {"xr", openXrStatusJson(modules.launch_config)},
+            {"renderdoc", renderdoc.status},
+            {"diagnostics", {{"renderdoc", std::move(renderdoc_diagnostics)}}},
             {"debug_utils", {{"available", debug_utils.available},
                              {"enabled", debug_utils.enabled},
                              {"reason", debug_utils.reason},
@@ -918,6 +945,37 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
         modules.seq_player.update(modules.engine_time.now());
         modules.renderer.render();
         return frameResult(modules.engine_time);
+    });
+
+    server.setHandler("capture_gpu", [&pending_transforms, &modules](const nlohmann::json &params) {
+        requireObjectParams(params, "capture_gpu");
+        try {
+            modules.renderdoc_capture.request(RenderDocCaptureSource::rpc,
+                                              modules.launch_config.xr_active);
+            const auto raw_instance = reinterpret_cast<void *>(
+                static_cast<VkInstance>(modules.vulkan.getInstance()));
+            const auto result = modules.renderdoc_capture.captureArmedFrame(
+                modules.engine_time.frameIndex(),
+                renderDocDevicePointerFromVulkanInstance(raw_instance), nullptr, [&] {
+                    flushPendingTransforms(pending_transforms, modules.scene_loader);
+                    modules.seq_player.update(modules.engine_time.now());
+                    modules.renderer.render();
+                });
+            return nlohmann::json{
+                {"path", result.path.generic_string()},
+                {"capture_index", result.capture_index},
+                {"frame", result.frame_index},
+                {"timestamp", result.timestamp},
+            };
+        } catch (const RenderDocCaptureError &error) {
+            const auto state = modules.renderdoc_capture.status();
+            throw JsonRpcHandlerError{
+                JsonRpcErrorCodes::renderDocCaptureError,
+                "capture_gpu failed: " + std::string{error.what()},
+                {{"reason", error.reason()},
+                 {"state", renderDocCaptureStateName(state.state)},
+                 {"source", "rpc"}}};
+        }
     });
 
     server.setHandler("get_frame_plan", [&modules](const nlohmann::json &params) {

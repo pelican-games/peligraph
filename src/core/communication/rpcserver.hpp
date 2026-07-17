@@ -5,6 +5,7 @@
 #include <functional>
 #include <iosfwd>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -23,10 +24,13 @@ nlohmann::json openXrStatusJsonForTesting(const OpenXr::XrDiagnosticStatus &stat
 
 class JsonRpcHandlerError : public std::runtime_error {
     int error_code;
+    std::optional<nlohmann::json> error_data;
 
   public:
     JsonRpcHandlerError(int code, const std::string &message);
+    JsonRpcHandlerError(int code, const std::string &message, nlohmann::json data);
     int code() const { return error_code; }
+    const std::optional<nlohmann::json> &data() const { return error_data; }
 };
 
 class RpcServer {

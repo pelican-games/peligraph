@@ -25,6 +25,7 @@
 #include "../renderer/debugtext.hpp"
 #include "../renderer/camera.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
+#include "../renderdoc/renderdoccapture.hpp"
 #include "../startup.hpp"
 #include "../ui/module.hpp"
 #include "../userpublic/userinput.hpp"
@@ -136,7 +137,9 @@ void dumpFramePlanIfRequested(const EngineLaunchConfig &launch_config, const Ren
 
 struct LoopModules {
     const EngineLaunchConfig &launch_config;
+    RenderDocCapture &renderdoc_capture;
     Renderer &renderer;
+    VulkanManageCore &vulkan;
     EngineTime &engine_time;
     VatPlayer &vat_player;
     InputState &input_state;
@@ -149,6 +152,9 @@ struct LoopModules {
 
 LoopModules resolveLoopModules() {
     const auto &launch_config = GET_MODULE(EngineLaunchConfig);
+    // Resolve the passive API before Renderer can create the Vulkan instance.
+    // This never loads RenderDoc; it only observes an already injected module.
+    auto &renderdoc_capture = GET_MODULE(RenderDocCapture);
     auto &renderer = GET_MODULE(Renderer);
     auto &rendering_passes = GET_MODULE(RenderingPassContainer);
     // UI input routing precedes rendering, so create the purgeable CPU runtime
@@ -169,7 +175,9 @@ LoopModules resolveLoopModules() {
 
     return {
         launch_config,
+        renderdoc_capture,
         renderer,
+        GET_MODULE(VulkanManageCore),
         engine_time,
         vat_player,
         input_state,
@@ -265,7 +273,9 @@ void prepareRuntimeModuleGraph(LoopModules &modules) {
 void finishLoopResources(InputSequenceRuntime &input_sequence,
                          CameraBakeRecorder *camera_bake,
                          RenderTiming *render_timing,
+                         RenderDocCapture &renderdoc_capture,
                          bool flush_timing) {
+    renderdoc_capture.beginShutdown();
     auto gpu = resolveGpuDrainModules();
     gpu.vulkan.waitIdle();
     if (flush_timing && render_timing != nullptr) render_timing->flush();
@@ -274,6 +284,44 @@ void finishLoopResources(InputSequenceRuntime &input_sequence,
     if (camera_bake == nullptr)
         camera_bake = FastModuleContainer::tryGet<CameraBakeRecorder>();
     if (camera_bake != nullptr && camera_bake->isActive()) camera_bake->finish();
+}
+
+void requestF11CaptureIfNeeded(RenderDocCapture &capture, bool xr_active) {
+    if (!UserInput::isKeyPushed(KeyCode::F11) || !capture.available()) return;
+    try {
+        capture.request(RenderDocCaptureSource::f11, xr_active);
+        LOG_INFO(logger, "RenderDoc F11 capture armed");
+    } catch (const RenderDocCaptureError &error) {
+        LOG_ERROR(logger, "RenderDoc F11 capture rejected: {}", error.what());
+    }
+}
+
+void renderFlatFrameWithOptionalCapture(LoopModules &modules, Window &window) {
+    auto &capture = modules.renderdoc_capture;
+    if (capture.state() != RenderDocCaptureState::armed) {
+        modules.renderer.render();
+        return;
+    }
+
+    bool rendered = false;
+    try {
+        const auto raw_instance = reinterpret_cast<void *>(
+            static_cast<VkInstance>(modules.vulkan.getInstance()));
+        const auto result = capture.captureArmedFrame(
+            modules.engine_time.frameIndex(),
+            renderDocDevicePointerFromVulkanInstance(raw_instance),
+            window.renderDocCaptureHandle(), [&] {
+                rendered = true;
+                modules.renderer.render();
+            });
+        LOG_INFO(logger, "RenderDoc F11 capture complete: index={} frame={} path={}",
+                 result.capture_index, result.frame_index, result.path.string());
+    } catch (const RenderDocCaptureError &error) {
+        LOG_ERROR(logger, "RenderDoc F11 capture failed: {}", error.what());
+        // A failed capture must not suppress the logical frame. Do not render a
+        // second time if EndFrameCapture failed after rendering completed.
+        if (!rendered) modules.renderer.render();
+    }
 }
 
 } // namespace
@@ -332,7 +380,8 @@ void Loop::run() {
     if (launch_config.headless) {
         if (launch_config.rpc) {
             runEngineRpcServer(std::cin, std::cout);
-            finishLoopResources(input_sequence, modules.camera_bake, render_timing, false);
+            finishLoopResources(input_sequence, modules.camera_bake, render_timing,
+                                modules.renderdoc_capture, false);
             return;
         }
 
@@ -371,7 +420,8 @@ void Loop::run() {
         if (launch_config.render_out && !render_out_pattern.has_frame_token && launch_config.headless_frames > 0) {
             resolveOutputRenderTarget().captureLastFrameToPng(*launch_config.render_out);
         }
-        finishLoopResources(input_sequence, modules.camera_bake, render_timing, true);
+        finishLoopResources(input_sequence, modules.camera_bake, render_timing,
+                            modules.renderdoc_capture, true);
         return;
     }
 
@@ -386,13 +436,14 @@ void Loop::run() {
     auto *xr_mirror = xr_mirror_sink.get();
 #endif
 
-    const auto update_interactive_state = [&] {
+    const auto update_interactive_state = [&](bool xr_frame) {
         updateFrameState();
         if (UserInput::isKeyPushed(KeyCode::F5)) {
             (void)modules.reload_service.requestRuntimeReload(
                 watch::gameLogicReloadParticipantName);
         }
         logInputSnapshotIfRequested(input_state.currentSnapshot());
+        requestF11CaptureIfNeeded(modules.renderdoc_capture, xr_frame);
     };
 
     while (true) {
@@ -427,7 +478,7 @@ void Loop::run() {
                 auto xr_input = xr_session->syncActions(Actions::actionSetStack());
                 internal::setInputActionBackendFrame(std::move(xr_input.actions));
                 input_state.queuePoseSamples(std::move(xr_input.pose_samples));
-                update_interactive_state();
+                update_interactive_state(true);
                 const auto update_end = Clock::now();
 
                 renderer.selectGraphVariant(RenderGraphVariant::xr);
@@ -463,11 +514,11 @@ void Loop::run() {
 #endif
         const auto update_start = Clock::now();
         engine_time.advance();
-        update_interactive_state();
+        update_interactive_state(false);
         const auto update_end = Clock::now();
 
         const auto render_start = Clock::now();
-        renderer.render();
+        renderFlatFrameWithOptionalCapture(modules, window);
         const auto render_end = Clock::now();
 
         const auto wait_start = Clock::now();
@@ -482,7 +533,8 @@ void Loop::run() {
         }
     }
 
-    finishLoopResources(input_sequence, modules.camera_bake, render_timing, true);
+    finishLoopResources(input_sequence, modules.camera_bake, render_timing,
+                        modules.renderdoc_capture, true);
 }
 
 } // namespace Pelican

@@ -378,6 +378,9 @@ endif()
 if(PELICAN_WITH_RPC)
 pelican_define_test(jsonrpc_test pelican_project)
 endif()
+if(PELICAN_WITH_RENDERDOC)
+pelican_define_test(renderdoccapture_test pelican_core)
+endif()
 pelican_define_test(pathresolver_test pelican_core)
 target_compile_definitions(pelican_test_pathresolver_test PRIVATE
     PELICAN_WITH_VAT=$<BOOL:${PELICAN_WITH_VAT}>
@@ -594,6 +597,8 @@ if(PELICAN_WITH_RPC)
             -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
             -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/example
             -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/rpc_headless
+            -DRENDERDOC_STATUS=$<IF:$<BOOL:${PELICAN_WITH_RENDERDOC}>,absent,disabled>
+            -DRENDERDOC_REASON=$<IF:$<BOOL:${PELICAN_WITH_RENDERDOC}>,renderdoc_not_injected,renderdoc_build_disabled>
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_rpc_headless.cmake
     )
     set_tests_properties(rpc_headless_player PROPERTIES LABELS gpu)
