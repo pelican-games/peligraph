@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace Pelican {
@@ -20,6 +21,28 @@ struct InspectorPanelTrace {
     std::uint64_t edit_enqueue_calls = 0;
     std::uint64_t save_calls = 0;
 };
+
+inline constexpr std::uint64_t inspectorWatchPollFrameInterval = 30;
+
+struct InspectorWatchState {
+    std::optional<EditorWatchToken> observed;
+    std::uint64_t frames_since_poll = 0;
+
+    bool advanceFrame() noexcept;
+    bool differs(const EditorSceneRevisionResult &revision) const noexcept;
+    void observe(const EditorSceneRevisionResult &revision) noexcept;
+};
+
+template <class Query, class Refresh>
+bool pollInspectorWatch(InspectorWatchState &state, Query &&query,
+                        Refresh &&refresh) {
+    if (!state.advanceFrame()) return false;
+    const auto current = std::forward<Query>(query)();
+    const bool changed = state.differs(current);
+    if (changed) std::forward<Refresh>(refresh)();
+    state.observe(current);
+    return changed;
+}
 
 enum class InspectorWidgetKind : std::uint8_t {
     SignedIntegerDrag,
@@ -60,6 +83,7 @@ class InspectorServiceAdapter {
         : service_{service}, trace_{trace} {}
 
     EditorSceneTreeResult sceneTree(const EditorSceneTreeRequest &request = {});
+    EditorSceneRevisionResult getSceneRevision();
     EditorObjectQueryResult getComponents(const EditorGetComponentsRequest &request);
     nlohmann::ordered_json openEditorSession(const nlohmann::json &params);
     nlohmann::ordered_json edit(const nlohmann::json &params);

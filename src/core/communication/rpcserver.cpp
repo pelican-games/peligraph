@@ -899,6 +899,9 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
     server.setHandler("scene_tree", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.sceneTree(params); });
     });
+    server.setHandler("get_scene_revision", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.getSceneRevision(params); });
+    });
     server.setHandler("get_components", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getComponents(params); });
     });

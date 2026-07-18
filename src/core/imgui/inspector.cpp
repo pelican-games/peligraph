@@ -359,10 +359,32 @@ bool applyInspectorStaleResult(EditorObjectQueryResult &selected,
     return applied;
 }
 
+bool InspectorWatchState::advanceFrame() noexcept {
+    ++frames_since_poll;
+    if (frames_since_poll < inspectorWatchPollFrameInterval) return false;
+    frames_since_poll = 0;
+    return true;
+}
+
+bool InspectorWatchState::differs(
+    const EditorSceneRevisionResult &revision) const noexcept {
+    return observed && *observed != revision.token;
+}
+
+void InspectorWatchState::observe(
+    const EditorSceneRevisionResult &revision) noexcept {
+    observed = revision.token;
+}
+
 EditorSceneTreeResult
 InspectorServiceAdapter::sceneTree(const EditorSceneTreeRequest &request) {
     ++trace_.query_calls;
     return service_.sceneTree(request);
+}
+
+EditorSceneRevisionResult InspectorServiceAdapter::getSceneRevision() {
+    ++trace_.query_calls;
+    return service_.getSceneRevision();
 }
 
 EditorObjectQueryResult
@@ -463,6 +485,7 @@ struct InspectorPanel::Impl {
     std::vector<PendingEdit> pending_edits;
     std::optional<PreviewState> preview;
     std::unordered_set<std::string> preview_unavailable;
+    InspectorWatchState watch;
     std::uint64_t actor_id = 0;
     std::string message;
     bool message_is_error = false;
@@ -523,6 +546,17 @@ struct InspectorPanel::Impl {
                 {{"display_name", "ImGui Inspector"}});
             actor_id = session.at("actor_id").get<std::uint64_t>();
             refresh();
+            watch.observe(commands.getSceneRevision());
+        } catch (const std::exception &error) {
+            setMessage(error.what(), true);
+        }
+    }
+
+    void pollWatch() {
+        try {
+            (void)pollInspectorWatch(
+                watch, [&] { return commands.getSceneRevision(); },
+                [&] { refresh(); });
         } catch (const std::exception &error) {
             setMessage(error.what(), true);
         }
@@ -1028,6 +1062,7 @@ struct InspectorPanel::Impl {
 
     void draw(bool *tree_open, bool *inspector_open) {
         initialize();
+        pollWatch();
         pollEdits();
         pollPreview();
         if (tree_open && *tree_open) drawTree(tree_open);

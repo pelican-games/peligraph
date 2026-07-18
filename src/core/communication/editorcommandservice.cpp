@@ -360,6 +360,39 @@ EditorSceneTreeResult EditorCommandService::sceneTree(const EditorSceneTreeReque
     return result;
 }
 
+EditorSceneRevisionResult EditorCommandService::getSceneRevision() const {
+    if (edit_) synchronizePreviewWatch();
+    const auto revision = document().revision();
+    if (revision.value > maxExactEditorJsonInteger) {
+        throw std::overflow_error("SceneRevision exceeds 2^53-1");
+    }
+
+    auto preview_epoch = std::uint64_t{};
+    if (dependencies_.snapshot_state) {
+        preview_epoch = dependencies_.snapshot_state().preview_epoch;
+    }
+    if (edit_) preview_epoch = std::max(preview_epoch, edit_->previewEpoch());
+    if (preview_epoch > maxExactEditorJsonInteger) {
+        throw std::overflow_error("preview_epoch exceeds 2^53-1");
+    }
+
+    EditorSceneRevisionResult result{
+        .token = {.scene_revision = revision, .preview_epoch = preview_epoch},
+    };
+    if (edit_ && !edit_->journal().empty()) {
+        const auto &record = edit_->journal().back();
+        result.last_transaction = EditorLastTransactionResult{
+            .actor_id = record.actor_id,
+            .display_name = record.actor_display_name,
+            .affected_authoring_ids = record.affected_authoring_ids,
+        };
+    }
+    if (edit_ && edit_->hasOpenPreviewLease() && preview_lease_) {
+        result.preview_lease = preview_lease_;
+    }
+    return result;
+}
+
 EditorObjectQueryResult
 EditorCommandService::getComponents(const EditorGetComponentsRequest &request) const {
     if (request.authoring_object_id.has_value() == request.name.has_value()) {
@@ -555,12 +588,20 @@ SaveSceneResult EditorCommandService::saveScene() {
 
 OrderedJson EditorCommandService::openEditorSession(const Json &params) {
     if (!edit_) throw std::logic_error("editor edit service is unavailable");
-    return edit_->openSession(params);
+    auto result = edit_->openSession(params);
+    actor_display_names_.insert_or_assign(
+        result.at("actor_id").get<std::uint64_t>(),
+        result.at("display_name").get<std::string>());
+    return result;
 }
 
 OrderedJson EditorCommandService::resumeEditorSession(const Json &params) {
     if (!edit_) throw std::logic_error("editor edit service is unavailable");
-    return edit_->resumeSession(params);
+    auto result = edit_->resumeSession(params);
+    actor_display_names_.insert_or_assign(
+        result.at("actor_id").get<std::uint64_t>(),
+        result.at("display_name").get<std::string>());
+    return result;
 }
 
 OrderedJson EditorCommandService::canEdit(const Json &params) {
@@ -590,22 +631,30 @@ OrderedJson EditorCommandService::redo(const Json &params) {
 
 OrderedJson EditorCommandService::openPreview(const Json &params) {
     if (!edit_) throw std::logic_error("editor edit service is unavailable");
-    return edit_->openPreview(params);
+    auto result = edit_->openPreview(params);
+    trackPreviewTransition(result, params, PreviewWatchTransitionKind::Open);
+    return result;
 }
 
 OrderedJson EditorCommandService::updatePreview(const Json &params) {
     if (!edit_) throw std::logic_error("editor edit service is unavailable");
-    return edit_->updatePreview(params);
+    auto result = edit_->updatePreview(params);
+    trackPreviewTransition(result, params, PreviewWatchTransitionKind::Update);
+    return result;
 }
 
 OrderedJson EditorCommandService::commitPreview(const Json &params) {
     if (!edit_) throw std::logic_error("editor edit service is unavailable");
-    return edit_->commitPreview(params);
+    auto result = edit_->commitPreview(params);
+    trackPreviewTransition(result, params, PreviewWatchTransitionKind::Commit);
+    return result;
 }
 
 OrderedJson EditorCommandService::abortPreview(const Json &params) {
     if (!edit_) throw std::logic_error("editor edit service is unavailable");
-    return edit_->abortPreview(params);
+    auto result = edit_->abortPreview(params);
+    trackPreviewTransition(result, params, PreviewWatchTransitionKind::Abort);
+    return result;
 }
 
 OrderedJson EditorCommandService::getEditResult(const Json &params) const {
@@ -615,6 +664,7 @@ OrderedJson EditorCommandService::getEditResult(const Json &params) const {
 
 OrderedJson EditorCommandService::getPreviewResult(const Json &params) const {
     if (!edit_) throw std::logic_error("editor edit service is unavailable");
+    synchronizePreviewWatch();
     return edit_->getPreviewResult(params);
 }
 
@@ -628,11 +678,75 @@ std::vector<OrderedJson> EditorCommandService::takeCompletedEditResults() {
 }
 
 void EditorCommandService::commitPendingEdits() noexcept {
-    if (edit_) edit_->commitPending();
+    if (edit_) {
+        edit_->commitPending();
+        synchronizePreviewWatch();
+    }
 }
 
 bool EditorCommandService::forceAbortPreview(std::string reason) noexcept {
-    return edit_ && edit_->forceAbortPreview(std::move(reason));
+    if (!edit_ || !edit_->forceAbortPreview(std::move(reason))) return false;
+    preview_lease_.reset();
+    return true;
+}
+
+void EditorCommandService::trackPreviewTransition(
+    const OrderedJson &response, const Json &params,
+    PreviewWatchTransitionKind kind) {
+    synchronizePreviewWatch();
+    if (response.value("status", std::string{}) != "accepted") return;
+    pending_preview_watch_.push_back(PendingPreviewWatchTransition{
+        .request_id = response.at("request_id").get<std::string>(),
+        .ticket = response.at("ticket").get<std::string>(),
+        .actor_id = EditorActorId{params.at("actor_id").get<std::uint64_t>()},
+        .kind = kind,
+    });
+}
+
+void EditorCommandService::synchronizePreviewWatch() const noexcept {
+    try {
+        for (auto current = pending_preview_watch_.begin();
+             current != pending_preview_watch_.end();) {
+            const auto result = edit_->getPreviewResult(
+                {{"request_id", current->request_id}});
+            const auto status = result.value("status", std::string{});
+            if (status == "accepted") {
+                ++current;
+                continue;
+            }
+            if (current->kind == PreviewWatchTransitionKind::Open &&
+                status == "open") {
+                EditorPreviewLeaseResult lease{
+                    .actor = {.actor_id = current->actor_id},
+                    .ticket = current->ticket,
+                    .state = "open",
+                };
+                if (const auto actor = actor_display_names_.find(
+                        current->actor_id.value);
+                    actor != actor_display_names_.end()) {
+                    lease.actor.display_name = actor->second;
+                }
+                for (const auto &id : result.at("affected_authoring_ids")) {
+                    lease.affected_ids.push_back(
+                        AuthoringObjectId{id.get<std::uint64_t>()});
+                }
+                preview_lease_ = std::move(lease);
+            } else if (current->kind == PreviewWatchTransitionKind::Update &&
+                       status == "updated" && preview_lease_ &&
+                       preview_lease_->ticket == current->ticket) {
+                preview_lease_->state = "updated";
+            } else if ((current->kind == PreviewWatchTransitionKind::Commit ||
+                        current->kind == PreviewWatchTransitionKind::Abort) &&
+                       preview_lease_ &&
+                       preview_lease_->ticket == current->ticket) {
+                preview_lease_.reset();
+            }
+            current = pending_preview_watch_.erase(current);
+        }
+        if (!edit_->hasOpenPreviewLease()) preview_lease_.reset();
+    } catch (...) {
+        if (edit_ && !edit_->hasOpenPreviewLease()) preview_lease_.reset();
+    }
 }
 
 OrderedJson editorQueryJson(const EditorComponentQueryResult &component) {
@@ -672,6 +786,44 @@ OrderedJson editorQueryJson(const EditorComponentQueryResult &component) {
                                      : OrderedJson(nullptr)},
             {"status", component.pending ? "pending" : "available"},
         };
+    }
+    return result;
+}
+
+OrderedJson editorQueryJson(const EditorSceneRevisionResult &revision) {
+    OrderedJson result{
+        {"scene_revision", revision.token.scene_revision.value},
+        {"preview_epoch", revision.token.preview_epoch},
+    };
+    if (revision.last_transaction) {
+        result["last_transaction"] = OrderedJson{
+            {"actor_id", revision.last_transaction->actor_id.value},
+            {"display_name", revision.last_transaction->display_name},
+            {"affected_authoring_ids", OrderedJson::array()},
+        };
+        for (const auto id :
+             revision.last_transaction->affected_authoring_ids) {
+            result["last_transaction"]["affected_authoring_ids"].push_back(
+                id.value);
+        }
+    } else {
+        result["last_transaction"] = nullptr;
+    }
+    if (revision.preview_lease) {
+        result["preview_lease"] = OrderedJson{
+            {"actor",
+             OrderedJson{{"actor_id", revision.preview_lease->actor.actor_id.value},
+                         {"display_name",
+                          revision.preview_lease->actor.display_name}}},
+            {"ticket", revision.preview_lease->ticket},
+            {"affected_ids", OrderedJson::array()},
+            {"state", revision.preview_lease->state},
+        };
+        for (const auto id : revision.preview_lease->affected_ids) {
+            result["preview_lease"]["affected_ids"].push_back(id.value);
+        }
+    } else {
+        result["preview_lease"] = nullptr;
     }
     return result;
 }
@@ -745,6 +897,12 @@ OrderedJson editorQueryJson(const SaveSceneResult &save) {
 
 OrderedJson EditorCommandRpcAdapter::sceneTree(const Json &params) const {
     return editorQueryJson(service_.sceneTree(parseSceneTreeRequest(params)));
+}
+
+OrderedJson EditorCommandRpcAdapter::getSceneRevision(const Json &params) const {
+    requireObjectParams(params, "get_scene_revision");
+    requireOnlyFields(params, {}, "get_scene_revision");
+    return editorQueryJson(service_.getSceneRevision());
 }
 
 OrderedJson EditorCommandRpcAdapter::getComponents(const Json &params) const {
