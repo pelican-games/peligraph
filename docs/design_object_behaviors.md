@@ -107,8 +107,11 @@ PELICAN_REGISTER_BEHAVIOR(PlayerControl, "player_control", 1);
   `onEvent(const DoorOpened&, BehaviorContext&)` を登録時に thunk 化し、
   **matching type の attachment だけ**へ宣言順配送(暗黙 broadcast
   禁止)
-- 配送位置 = BehaviorSystem の system order 内(update と同じ位置規範 —
-  「event だけ別順」の穴を作らない)
+- 配送位置 = stable name **`"BehaviorSystem"`**、literal
+  **`order = 50`** の system order 内(update と同じ位置規範 —
+  「event だけ別順」の穴を作らない)。event/update とも全 system を
+  `(order, stable name)` で昇順に並べるため、同じ order の user system
+  との tie-break も同一である
 - owner unload 時に queued event の owner purge(既存 E1 の
   frozen queue との整合 — BEH1 fixture)
 
@@ -136,11 +139,13 @@ destroy:
 ### 4-2. 実行順(B-5 の解 — attachment_seq が正本)
 
 > EntityId 数値/ECS storage 順を使用しない。scene load は
-> `(object declaration index, component array index)`、runtime
+> `(object declaration index, component array index)` を
+> `(uint64_t(object_index) << 32) | uint32_t(component_index)` に pack した値、runtime
 > transaction は `(commit_seq, command index, attachment index)` から
 > engine-owned monotonic `attachment_seq` を確定する。frame 中 spawn は
 > 次 boundary から参加・destroy 済みは snapshot 上 skip。
-> BehaviorSystem の固定 system order/name tie-break を文書化。
+> BehaviorSystem は固定 `order = 50`、stable name `"BehaviorSystem"` とし、
+> `(order, stable name)` tie-break を event/update の双方に適用する。
 
 - 決定性 gate: 実行/イベント/lifecycle trace + RNG 結果を
   **新規 process 二回 + replay 二回で byte 一致**

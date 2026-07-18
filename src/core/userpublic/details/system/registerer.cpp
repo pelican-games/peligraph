@@ -50,6 +50,10 @@ void dispatchEventToRegisteredGameSystems(const QueuedEvent &event, GameContext 
                 handler.dispatch(event.payload.get(), ctx);
             }
         }
+        if (system.dispatch_queued_event != nullptr) {
+            ScopedRegistrationOwner owner_scope{system.owner};
+            system.dispatch_queued_event(event, ctx);
+        }
     }
 }
 

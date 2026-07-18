@@ -69,6 +69,27 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
   )
   pelican_configure_game_logic_target(pelican_wp90_fixture_bad_abi)
 
+  add_library(pelican_wp155_behavior_fixture SHARED
+    fixtures/behavior_game_dll/behavior.cpp
+    ${CMAKE_SOURCE_DIR}/src/player/gamelogic_entry.cpp
+  )
+  set_target_properties(pelican_wp155_behavior_fixture PROPERTIES
+    OUTPUT_NAME "pelican_wp155_behavior_fixture"
+  )
+  pelican_configure_game_logic_target(pelican_wp155_behavior_fixture)
+
+  add_test(
+    NAME behavior_project_e2e
+    COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+      -File ${CMAKE_CURRENT_SOURCE_DIR}/run_behavior_project.ps1
+      -Player $<TARGET_FILE:pelican_player>
+      -Fixture $<TARGET_FILE:pelican_wp155_behavior_fixture>
+      -ProjectPass ${CMAKE_SOURCE_DIR}/projects/example/passes/main_rendering_config.json
+      -OutDir ${CMAKE_BINARY_DIR}/test_artifacts/behavior_project
+  )
+  set_tests_properties(behavior_project_e2e PROPERTIES
+    TIMEOUT 120 RESOURCE_LOCK pelican_gpu LABELS gpu)
+
   add_test(
     NAME game_logic_dll_reload
     COMMAND powershell -NoProfile -ExecutionPolicy Bypass
@@ -258,6 +279,21 @@ pelican_define_test(ecs_scheduler_test pelican_core)
 pelican_define_test(eventlayer_test pelican_core)
 pelican_define_test(eventpayloadschema_test pelican_core)
 pelican_define_test(structfieldschema_test pelican_core)
+pelican_define_test(behaviorarena_test pelican_core)
+
+add_executable(pelican_test_behavior_determinism_probe behavior_determinism_probe.cpp)
+set_target_properties(pelican_test_behavior_determinism_probe PROPERTIES CXX_STANDARD 20)
+target_include_directories(pelican_test_behavior_determinism_probe PRIVATE ${Vulkan_INCLUDE_DIRS})
+target_compile_definitions(pelican_test_behavior_determinism_probe PRIVATE
+  "VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic"
+)
+target_link_libraries(pelican_test_behavior_determinism_probe PRIVATE pelican_core nlohmann_json)
+add_test(
+  NAME behavior_determinism_four_processes
+  COMMAND ${CMAKE_COMMAND}
+    -DPROBE=$<TARGET_FILE:pelican_test_behavior_determinism_probe>
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_behavior_determinism.cmake
+)
 pelican_define_test(componentcodec_test pelican_core glm)
 pelican_define_test(editorprojectiontransaction_test pelican_core glm
   VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)

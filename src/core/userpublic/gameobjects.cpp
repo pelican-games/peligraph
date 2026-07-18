@@ -4,6 +4,7 @@
 #include "../ecs/predefined/modelview.hpp"
 #include "../ecs/predefined/transform.hpp"
 #include "../geomhelper/geomhelper.hpp"
+#include "../gamelogic/behaviorarena.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
 #include "components/predefined.hpp"
 
@@ -11,6 +12,10 @@ namespace Pelican {
 
 GameObjectId GameObjects::create(std::span<const ComponentId> ids,
                                  const std::function<void(std::span<void *>)> &populate) {
+    if (internal::behaviorCallbackActive()) {
+        throw std::logic_error(
+            "direct GameObjects creation is not allowed during a behavior callback; use BehaviorContext");
+    }
     return GET_MODULE(ECSCore).createEntity(ids, populate);
 }
 
@@ -20,10 +25,22 @@ GameObjectId GameObjects::createWithComponents(
 }
 
 bool GameObjects::remove(GameObjectId id) {
-    return GET_MODULE(ECSCore).remove(id);
+    auto &ecs = GET_MODULE(ECSCore);
+    if (!ecs.getTemplatePublicModule().isAlive(id)) {
+        return false;
+    }
+    if (internal::routeBehaviorObjectRemoval(id) ==
+        internal::BehaviorObjectRemovalRoute::deferred) {
+        return true;
+    }
+    return ecs.remove(id);
 }
 
 void GameObjects::removeAll() {
+    if (internal::behaviorCallbackActive()) {
+        throw std::logic_error("GameObjects::removeAll is not allowed during a behavior callback");
+    }
+    internal::preDestroyAllBehaviorObjects();
     GET_MODULE(ECSCore).clearEntities();
 }
 

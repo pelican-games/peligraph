@@ -9,6 +9,8 @@
 #include "../renderer/camera.hpp"
 
 #include "../ecs/componentinfo.hpp"
+#include "../gamelogic/behaviorarena.hpp"
+#include "../gamelogic/gamelogicreload.hpp"
 #include "basicconfig.hpp"
 #include "componentcodec.hpp"
 #include "../light/lightcontainer.hpp"
@@ -71,6 +73,7 @@ struct EcsObjectLoad {
     std::vector<ComponentLoad> components;
     std::vector<ComponentId> components_id;
     std::vector<ColliderComponent> colliders;
+    std::vector<PreparedSceneBehaviorAttachment> behaviors;
 };
 
 ColliderComponent loadColliderComponent(const nlohmann::json &component, const std::string &object_name) {
@@ -86,9 +89,15 @@ ColliderComponent loadColliderComponent(const nlohmann::json &component, const s
 }
 
 std::vector<EcsObjectLoad> prepareSceneBindings(const nlohmann::json &objects, ComponentInfoManager &component_info_manager,
-                                                std::vector<LightLoadEntry> &light_entries) {
+                                                std::vector<LightLoadEntry> &light_entries,
+                                                std::vector<PreparedSceneBehaviorAttachment> behavior_entries) {
     std::vector<EcsObjectLoad> ecs_objects;
     ecs_objects.reserve(objects.size());
+
+    std::vector<std::vector<PreparedSceneBehaviorAttachment>> behaviors_by_object(objects.size());
+    for (auto &entry : behavior_entries) {
+        behaviors_by_object.at(entry.object_index).push_back(std::move(entry));
+    }
 
     std::unordered_set<std::string> parent_names;
     for (const auto &object : objects) {
@@ -102,7 +111,8 @@ std::vector<EcsObjectLoad> prepareSceneBindings(const nlohmann::json &objects, C
                                               component_info_manager.getComponentIdByName("localtransform")}
                                         : std::nullopt;
 
-    for (const auto &object : objects) {
+    for (std::size_t object_index = 0; object_index < objects.size(); ++object_index) {
+        const auto &object = objects.at(object_index);
         const auto object_name = object.value("name", std::string{});
         const auto parent_name = object.value("parent", std::string{});
         const auto &components_json = object.at("components");
@@ -111,6 +121,7 @@ std::vector<EcsObjectLoad> prepareSceneBindings(const nlohmann::json &objects, C
         ecs_object.name = object_name;
         ecs_object.parent = parent_name;
         ecs_object.hierarchy_participant = !parent_name.empty() || parent_names.contains(object_name);
+        ecs_object.behaviors = std::move(behaviors_by_object[object_index]);
         ecs_object.components.reserve(components_json.size());
         ecs_object.components_id.reserve(components_json.size());
 
@@ -141,6 +152,9 @@ std::vector<EcsObjectLoad> prepareSceneBindings(const nlohmann::json &objects, C
                 ecs_object.colliders.push_back(loadColliderComponent(component, object_name));
                 continue;
             }
+            if (component_name == "behavior") {
+                continue;
+            }
 
             const auto *codec = findComponentCodec(component_name);
             auto decoded = codec != nullptr ? codec->decodeAuthored(component) : ComponentCodecValue{};
@@ -161,7 +175,8 @@ std::vector<EcsObjectLoad> prepareSceneBindings(const nlohmann::json &objects, C
             }
         }
 
-        if (!ecs_object.components.empty() || !ecs_object.colliders.empty()) {
+        if (!ecs_object.components.empty() || !ecs_object.colliders.empty() ||
+            !ecs_object.behaviors.empty()) {
             ecs_objects.push_back(std::move(ecs_object));
         }
     }
@@ -262,7 +277,13 @@ void SceneLoader::load(SceneId scene_id) {
     std::vector<LightLoadEntry> light_entries;
     const auto &objects = scene_it.value().at("objects");
     auto &component_info_manager = GET_MODULE(ComponentInfoManager);
-    const auto ecs_objects = prepareSceneBindings(objects, component_info_manager, light_entries);
+    const auto game_logic_status = configuredGameLogicStatus();
+    const auto behavior_availability = game_logic_status.loaded
+                                           ? BehaviorRegistryAvailability::active
+                                           : BehaviorRegistryAvailability::dll_unavailable;
+    auto behavior_entries = prepareSceneBehaviorAttachments(objects, behavior_availability);
+    auto ecs_objects = prepareSceneBindings(objects, component_info_manager, light_entries,
+                                            std::move(behavior_entries));
 
     const auto transform_id = component_info_manager.getComponentIdByName("transform");
 
@@ -283,13 +304,13 @@ void SceneLoader::load(SceneId scene_id) {
     const bool scene_uses_parents = std::any_of(ecs_objects.begin(), ecs_objects.end(), [](const auto &object) {
         return object.hierarchy_participant;
     });
+    std::vector<GameObjectId> object_ids(ecs_objects.size(), invalidGameObjectId);
     if (scene_uses_parents) {
-        std::vector<GameObjectId> object_ids(ecs_objects.size(), invalidGameObjectId);
         std::unordered_map<std::string, GameObjectId> object_ids_by_name;
 
         for (size_t object_index = 0; object_index < ecs_objects.size(); ++object_index) {
             const auto &object = ecs_objects[object_index];
-            if (!object.components_id.empty()) {
+            if (!object.components_id.empty() || !object.behaviors.empty()) {
                 object_ids[object_index] = GameObjects::createWithComponents(
                     object.components_id, [&](std::span<void *> ptrs) {
                         for (size_t i = 0; i < object.components.size(); ++i) {
@@ -384,15 +405,17 @@ void SceneLoader::load(SceneId scene_id) {
 #endif
         }
     } else {
-        for (const auto &object : ecs_objects) {
-            GameObjectId object_id = invalidGameObjectId;
-            if (!object.components_id.empty()) {
+        for (std::size_t object_index = 0; object_index < ecs_objects.size(); ++object_index) {
+            const auto &object = ecs_objects[object_index];
+            if (!object.components_id.empty() || !object.behaviors.empty()) {
+                auto &object_id = object_ids[object_index];
                 object_id = GameObjects::createWithComponents(object.components_id, [&](std::span<void *> ptrs) {
                     for (size_t i = 0; i < object.components.size(); ++i) {
                         applyComponentLoad(component_info_manager, ptrs[i], object.components[i]);
                     }
                 });
             }
+            const auto object_id = object_ids[object_index];
             const bool has_transform =
                 object_id != invalidGameObjectId &&
                 std::find(object.components_id.begin(), object.components_id.end(), transform_id) !=
@@ -409,6 +432,27 @@ void SceneLoader::load(SceneId scene_id) {
                 }
             }
 #endif
+        }
+    }
+
+    std::vector<BoundSceneBehaviorAttachment> bound_behaviors;
+    for (std::size_t object_index = 0; object_index < ecs_objects.size(); ++object_index) {
+        auto &object = ecs_objects[object_index];
+        for (auto &behavior : object.behaviors) {
+            bound_behaviors.push_back(BoundSceneBehaviorAttachment{
+                .prepared = std::move(behavior),
+                .entity = object_ids[object_index],
+            });
+        }
+    }
+    if (!bound_behaviors.empty()) {
+        try {
+            auto &arena = GET_MODULE(BehaviorAttachmentArena);
+            arena.publishSceneAttachments(std::move(bound_behaviors));
+            arena.activatePublished();
+        } catch (...) {
+            clearRuntimeScene();
+            throw;
         }
     }
     current_scene_id = std::move(scene_id);
@@ -439,6 +483,9 @@ const SceneId &SceneLoader::currentScene() const {
 }
 
 void SceneLoader::clearRuntimeScene() {
+    // Behavior pre-destroy runs while entity/component/parent bindings, physics,
+    // renderer instances, and named transform bindings are still resolvable.
+    internal::preDestroyAllBehaviorObjects();
     object_bindings.clear();
     if (auto *seq_player = FastModuleContainer::tryGet<SeqPlayer>()) {
         seq_player->releaseInstancesForSceneLoad();
