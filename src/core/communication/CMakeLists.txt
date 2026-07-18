@@ -10,5 +10,6 @@ target_sources(pelican_core PRIVATE
 endif()
 
 target_sources(pelican_core PRIVATE
+    editorassetqueryruntime.cpp
     editorcommandservice.cpp
 )
