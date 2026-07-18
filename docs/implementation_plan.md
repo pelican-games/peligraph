@@ -4663,6 +4663,53 @@ rpcserver(WP170 並走中)・loader の editor 面・schema 三 header・
 受け入れ = 上記 fixture(例外注入 teardown・順列起動)+ 既存全
 テスト無変更 + golden SKIP 0・byte 不変 + player 8 秒 + CI green
 
+### WP172: PREVIEW0 — eval_preview / render_preview(エディタ設計最終 WP)
+
+前提: E-RPC1/JOURNAL0(済 WP157/161 — editor gate/override validator
+所有)+ WP133(済)+ WP153/158(PreparedProjection の材料)。
+
+参照: **`docs/design_editor_tooling.md` v2.5 §1-5-2(V22-C5)・
+§1-5-3(V22-C6)の逐語 + §1-6-2(renderer preview state inventory —
+全 12 行の literal 三分類)+ §1-6-1a の eval/render_preview 行が
+受け入れ条件**(逐語は v2.5 本文が正 — 全文添付済み)。中核:
+
+- **eval_preview**: live へ publish して revert する API に**しない**。
+  immutable base document + overrides を E-PROJTX0 と同じ codec/
+  validation/adapter prepare に通し、publish 直前の
+  `PreparedProjection` を request-local EvaluationContext として query
+  adapter へ渡す(descendant world/Light/Phys query/camera 派生値は
+  context の explicit state を読む)。live ECS/Light/Phys/renderer/
+  document/revision/journal を mutate せず、成功失敗とも context 破棄。
+  prepared 評価できない adapter/field = method_unavailable。
+  gate = 評価前後の全 shared state 逐語一致(V22-C5 第二段落の列挙)
+- **render_preview**: flat/xr と別の **`preview` graph variant** を
+  module graph freeze 前に precompile(feature policy: jitter/
+  velocity/history/TAA/UI/swapchain/XR mirror 除外・除外不能 authored
+  pass は名前入り起動時 reject)。request-local RT/layout tracker/
+  frame resources/temporal snapshot(§1-6-2 の三分類どおり —
+  DeletionQueue epoch/RenderTiming published/shared history/resize は
+  advance しない)。GPU timing は preview_request_id namespace。
+  capture schema(width/height/encoding/camera/上限)固定・
+  swapchain/XR へ present しない・xr_active 中 =
+  xr_active_unsupported。「通常 frame の直前/直後に preview を挟んで
+  全 shared state/次 capture bytes が control と一致」gate
+- rpc + typed service(can_preview gate は WP161 実装を消費)。
+  pelican_rpc.py に素通し helper 追加(スイープレシピの
+  eval/render_preview が実体化)
+
+依存: WP157/161/153/158/133(済)。見積: 大(本セッション最大級 —
+renderer 側は慎重に)。
+排他: 新 preview executor/graph variant(vkcore/renderingpass の
+preview 面)+ service/rpcserver の preview method + PreparedProjection
+評価 adapter + pelican_rpc.py + fixture。**flat/xr の既存 graph・
+selectGraphVariant の変更禁止(V22-C6)・editorjournal/transaction
+本体・schema 三 header・appflow teardown(WP171 並走中)・`.github`
+に触らない**。
+
+受け入れ = V22-C5/C6 逐語 gate(state 逐語一致・control 比較)+
+§1-6-2 全行の実測検査 + 既存全テスト無変更 + golden SKIP 0・byte
+不変 + player 8 秒 + CI green
+
 ### WP137: 負債 CI0 — CPU gate の常設(GitHub Actions)
 
 参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
