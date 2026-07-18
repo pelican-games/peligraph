@@ -1,0 +1,37 @@
+[
+  {
+    "name": "transform",
+    "authored": {"name":"transform","pos":[1,2,3],"rotation":[0,0,0,1],"scale":[2,1,0.5]},
+    "canonical": {"name":"transform","pos":[1.0,2.0,3.0],"rotation":[0.0,0.0,0.0,1.0],"scale":[2.0,1.0,0.5]}
+  },
+  {
+    "name": "simplemodelview",
+    "authored": {"name":"simplemodelview","model":"hero_model"},
+    "canonical": {"name":"simplemodelview","model":"hero_model"}
+  },
+  {
+    "name": "camera",
+    "authored": {"name":"camera","type":"perspective","yfov":1.0,"znear":0.25,"zfar":250.0,"aspect":1.5,"sprite":{"pixel_perfect":"strict","sort":"declaration"},"controller":{"type":"orbit","target":"hero","distance":6.0,"yaw":0.5,"pitch":-0.25,"sensitivity":2.0}},
+    "canonical": {"name":"camera","type":"perspective","yfov":1.0,"znear":0.25,"zfar":250.0,"aspect":1.5,"sprite":{"pixel_perfect":"strict","sort":"declaration"},"controller":{"type":"orbit","damping":0.0,"target":"hero","distance":6.0,"yaw":0.5,"pitch":-0.25,"sensitivity":2.0}}
+  },
+  {
+    "name": "light",
+    "authored": {"name":"light","type":"spot","position":[2,3,4],"direction":[0,-1,0],"intensity":2.5,"color":[1,0.5,0.25],"innerConeAngle":15,"outerConeAngle":30},
+    "canonical": {"name":"light","type":"spot","position":[2.0,3.0,4.0],"direction":[0.0,-1.0,0.0],"intensity":2.5,"color":[1.0,0.5,0.25],"innerConeAngle":15.0,"outerConeAngle":30.0}
+  },
+  {
+    "name": "collider",
+    "authored": {"name":"collider","shape":"capsule","pos":[0,1,0],"rotation":[0,0,0,1],"radius":0.75,"half_height":2.0,"layer":2,"mask":7,"trigger":true,"one_way":false},
+    "canonical": {"name":"collider","shape":"capsule","pos":[0.0,1.0,0.0],"rotation":[0.0,0.0,0.0,1.0],"radius":0.75,"half_height":2.0,"layer":2,"mask":7,"trigger":true,"one_way":false}
+  },
+  {
+    "name": "animation",
+    "authored": {"name":"animation","clip":"walk","speed":1.25,"loop":false,"start_time":0.5},
+    "canonical": {"name":"animation","clip":"walk","speed":1.25,"loop":false,"start_time":0.5}
+  },
+  {
+    "name": "sprite_view",
+    "authored": {"name":"sprite_view","texture":"demo_atlas#sprite/full","size":[2,3],"pivot":[0.25,0.75],"color":[1,0.5,0.25,0.75],"flip":[true,false],"layer":-3,"billboard":"y_axis"},
+    "canonical": {"name":"sprite_view","texture":"demo_atlas#sprite/full","size":[2.0,3.0],"pivot":[0.25,0.75],"color":[1.0,0.5,0.25,0.75],"flip":[true,false],"layer":-3,"billboard":"y_axis"}
+  }
+]

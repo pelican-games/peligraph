@@ -1,0 +1,29 @@
+[
+  {"name":"transform","kind":"type","authored":{"name":"transform","pos":"bad"}},
+  {"name":"transform","kind":"range","authored":{"name":"transform","rotation":[0,0,0,0]}},
+  {"name":"transform","kind":"unknown","authored":{"name":"transform","extra":1}},
+
+  {"name":"simplemodelview","kind":"type","authored":{"name":"simplemodelview","model":3}},
+  {"name":"simplemodelview","kind":"range","authored":{"name":"simplemodelview","model":""}},
+  {"name":"simplemodelview","kind":"unknown","authored":{"name":"simplemodelview","model":"hero","extra":1}},
+
+  {"name":"camera","kind":"type","authored":{"name":"camera","type":"perspective","yfov":"wide"}},
+  {"name":"camera","kind":"range","authored":{"name":"camera","type":"perspective","znear":1.0,"zfar":0.5}},
+  {"name":"camera","kind":"unknown","authored":{"name":"camera","extra":1}},
+
+  {"name":"light","kind":"type","authored":{"name":"light","type":"directional","direction":[0,-1,0],"color":[1,1,1],"intensity":"high"}},
+  {"name":"light","kind":"range","authored":{"name":"light","type":"directional","direction":[0,-1,0],"color":[1.1,1,1]}},
+  {"name":"light","kind":"unknown","authored":{"name":"light","type":"directional","direction":[0,-1,0],"color":[1,1,1],"extra":1}},
+
+  {"name":"collider","kind":"type","authored":{"name":"collider","shape":"sphere","radius":"large"}},
+  {"name":"collider","kind":"range","authored":{"name":"collider","shape":"sphere","radius":-1}},
+  {"name":"collider","kind":"unknown","authored":{"name":"collider","shape":"sphere","radius":1,"extra":1}},
+
+  {"name":"animation","kind":"type","authored":{"name":"animation","clip":"walk","loop":1}},
+  {"name":"animation","kind":"range","authored":{"name":"animation","clip":"walk","speed":0}},
+  {"name":"animation","kind":"unknown","authored":{"name":"animation","clip":"walk","extra":1}},
+
+  {"name":"sprite_view","kind":"type","authored":{"name":"sprite_view","texture":"demo_atlas#sprite/full","flip":[1,0]}},
+  {"name":"sprite_view","kind":"range","authored":{"name":"sprite_view","texture":"demo_atlas#sprite/full","pivot":[-0.1,0.5]}},
+  {"name":"sprite_view","kind":"unknown","authored":{"name":"sprite_view","texture":"demo_atlas#sprite/full","extra":1}}
+]

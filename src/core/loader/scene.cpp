@@ -10,6 +10,7 @@
 
 #include "../ecs/componentinfo.hpp"
 #include "basicconfig.hpp"
+#include "componentcodec.hpp"
 #include "../light/lightcontainer.hpp"
 #include "../log.hpp"
 #include "../build_features.hpp"
@@ -58,10 +59,16 @@ ComponentId getComponentIdForObject(ComponentInfoManager &component_info_manager
 }
 
 struct EcsObjectLoad {
+    struct ComponentLoad {
+        nlohmann::json authored_json;
+        const ComponentCodec *codec = nullptr;
+        ComponentCodecValue decoded;
+    };
+
     std::string name;
     std::string parent;
     bool hierarchy_participant = false;
-    std::vector<nlohmann::json> components_json;
+    std::vector<ComponentLoad> components;
     std::vector<ComponentId> components_id;
     std::vector<ColliderComponent> colliders;
 };
@@ -69,8 +76,9 @@ struct EcsObjectLoad {
 ColliderComponent loadColliderComponent(const nlohmann::json &component, const std::string &object_name) {
     try {
         ColliderComponent collider;
-        JsonArchiveLoader archive{static_cast<const void *>(&component)};
-        collider.ref(archive);
+        const auto &codec = requireComponentCodec("collider");
+        const auto decoded = codec.decodeAuthored(component);
+        codec.applyRuntime(decoded, &collider);
         return collider;
     } catch (const std::exception &ex) {
         throw std::runtime_error("Invalid collider on object '" + displayObjectName(object_name) + "': " + ex.what());
@@ -103,7 +111,7 @@ std::vector<EcsObjectLoad> prepareSceneBindings(const nlohmann::json &objects, C
         ecs_object.name = object_name;
         ecs_object.parent = parent_name;
         ecs_object.hierarchy_participant = !parent_name.empty() || parent_names.contains(object_name);
-        ecs_object.components_json.reserve(components_json.size());
+        ecs_object.components.reserve(components_json.size());
         ecs_object.components_id.reserve(components_json.size());
 
         bool has_transform = false;
@@ -121,7 +129,12 @@ std::vector<EcsObjectLoad> prepareSceneBindings(const nlohmann::json &objects, C
         for (const auto &component : components_json) {
             const std::string component_name = component.at("name");
             if (component_name == "light") {
-                light_entries.push_back(LightLoadEntry{object_name, component});
+                const auto &codec = requireComponentCodec("light");
+                const auto decoded = codec.decodeAuthored(component);
+                LightCodecData runtime;
+                codec.applyRuntime(decoded, &runtime);
+                light_entries.push_back(LightLoadEntry{
+                    object_name, codec.encodeCanonical(codec.projectRuntime(&runtime))});
                 continue;
             }
             if (component_name == "collider") {
@@ -129,43 +142,26 @@ std::vector<EcsObjectLoad> prepareSceneBindings(const nlohmann::json &objects, C
                 continue;
             }
 
-            if (component_name == "animation") {
-                if (component.contains("graph")) {
-                    throw std::runtime_error("animation component on object '" +
-                                             displayObjectName(object_name) +
-                                             "' uses reserved v1 key 'graph'");
-                }
-                if (!component.contains("clip") || !component.at("clip").is_string()) {
-                    throw std::runtime_error("animation component on object '" +
-                                             displayObjectName(object_name) +
-                                             "' requires string clip");
-                }
-                auto normalized_animation = component;
-                normalized_animation["speed"] = component.value("speed", 1.0);
-                normalized_animation["start_time"] = component.value("start_time", 0.0);
-                if (component.contains("loop") && !component.at("loop").is_boolean()) {
-                    throw std::runtime_error("animation component loop must be boolean on object '" +
-                                             displayObjectName(object_name) + "'");
-                }
-                normalized_animation["loop"] = component.value("loop", true) ? 1 : 0;
-                ecs_object.components_json.push_back(std::move(normalized_animation));
-                ecs_object.components_id.push_back(
-                    getComponentIdForObject(component_info_manager, component_name, object_name));
-                continue;
-            }
-
-            ecs_object.components_json.push_back(component);
+            const auto *codec = findComponentCodec(component_name);
+            auto decoded = codec != nullptr ? codec->decodeAuthored(component) : ComponentCodecValue{};
+            ecs_object.components.push_back(EcsObjectLoad::ComponentLoad{
+                .authored_json = component,
+                .codec = codec,
+                .decoded = std::move(decoded),
+            });
             ecs_object.components_id.push_back(
                 getComponentIdForObject(component_info_manager, component_name, object_name));
             if (ecs_object.hierarchy_participant && component_name == "transform" && !has_local_transform) {
-                auto local_component = component;
+                auto local_component = codec->encodeCanonical(ecs_object.components.back().decoded);
                 local_component["name"] = "localtransform";
-                ecs_object.components_json.push_back(std::move(local_component));
+                ecs_object.components.push_back(EcsObjectLoad::ComponentLoad{
+                    .authored_json = std::move(local_component),
+                });
                 ecs_object.components_id.push_back(*local_transform_id);
             }
         }
 
-        if (!ecs_object.components_json.empty() || !ecs_object.colliders.empty()) {
+        if (!ecs_object.components.empty() || !ecs_object.colliders.empty()) {
             ecs_objects.push_back(std::move(ecs_object));
         }
     }
@@ -221,6 +217,30 @@ void assignTransform(TransformComponent &dst, const SceneObjectTransform &src) {
     dst.scale = src.scale;
 }
 
+void applyComponentLoad(ComponentInfoManager &component_info_manager, void *target,
+                        const EcsObjectLoad::ComponentLoad &component) {
+    if (component.codec == nullptr || component.codec->runtime_kind != ComponentCodecRuntimeKind::Ecs) {
+        component_info_manager.loadByJson(target, component.authored_json);
+        return;
+    }
+    if (component.codec->name == "transform") {
+        TransformCodecTarget transform_target{.world = static_cast<TransformComponent *>(target)};
+        component.codec->applyRuntime(component.decoded, &transform_target);
+        return;
+    }
+    component.codec->applyRuntime(component.decoded, target);
+}
+
+const EcsObjectLoad::ComponentLoad &transformLoad(const EcsObjectLoad &object) {
+    const auto found = std::find_if(object.components.begin(), object.components.end(), [](const auto &component) {
+        return component.codec != nullptr && component.codec->name == "transform";
+    });
+    if (found == object.components.end()) {
+        throw std::logic_error("hierarchy participant has no prepared transform codec");
+    }
+    return *found;
+}
+
 } // namespace
 
 void SceneLoader::load(SceneId scene_id) {
@@ -272,8 +292,8 @@ void SceneLoader::load(SceneId scene_id) {
             if (!object.components_id.empty()) {
                 object_ids[object_index] = GameObjects::createWithComponents(
                     object.components_id, [&](std::span<void *> ptrs) {
-                        for (size_t i = 0; i < object.components_json.size(); ++i) {
-                            component_info_manager.loadByJson(ptrs[i], object.components_json[i]);
+                        for (size_t i = 0; i < object.components.size(); ++i) {
+                            applyComponentLoad(component_info_manager, ptrs[i], object.components[i]);
                         }
                     });
             }
@@ -313,6 +333,41 @@ void SceneLoader::load(SceneId scene_id) {
             }
         }
 
+        // Project authored local TRS to world before any SceneLoaded observer can
+        // query the runtime. This is the same recurrence as LocalTransformSystem.
+        std::unordered_map<std::string, size_t> object_indices_by_name;
+        for (size_t object_index = 0; object_index < ecs_objects.size(); ++object_index) {
+            if (!ecs_objects[object_index].name.empty()) {
+                object_indices_by_name.emplace(ecs_objects[object_index].name, object_index);
+            }
+        }
+        std::vector<std::uint8_t> transform_state(ecs_objects.size(), 0);
+        const auto project_transform = [&](auto &&self, size_t object_index) -> void {
+            if (transform_state[object_index] == 2) return;
+            if (transform_state[object_index] == 1) {
+                throw std::logic_error("validated scene hierarchy became cyclic during projection");
+            }
+            transform_state[object_index] = 1;
+            const auto &object = ecs_objects[object_index];
+            const TransformComponent *parent_world = nullptr;
+            if (!object.parent.empty()) {
+                const auto parent_index = object_indices_by_name.at(object.parent);
+                self(self, parent_index);
+                parent_world = ecs.tryComponent<TransformComponent>(object_ids[parent_index]);
+            }
+            auto *world = ecs.tryComponent<TransformComponent>(object_ids[object_index]);
+            auto *local = ecs.tryComponent<LocalTransformComponent>(object_ids[object_index]);
+            TransformCodecTarget target{.world = world, .local = local, .parent_world = parent_world};
+            const auto &prepared = transformLoad(object);
+            prepared.codec->applyRuntime(prepared.decoded, &target);
+            transform_state[object_index] = 2;
+        };
+        for (size_t object_index = 0; object_index < ecs_objects.size(); ++object_index) {
+            if (ecs_objects[object_index].hierarchy_participant) {
+                project_transform(project_transform, object_index);
+            }
+        }
+
         for (size_t object_index = 0; object_index < ecs_objects.size(); ++object_index) {
             const auto &object = ecs_objects[object_index];
             const auto object_id = object_ids[object_index];
@@ -333,8 +388,8 @@ void SceneLoader::load(SceneId scene_id) {
             GameObjectId object_id = invalidGameObjectId;
             if (!object.components_id.empty()) {
                 object_id = GameObjects::createWithComponents(object.components_id, [&](std::span<void *> ptrs) {
-                    for (size_t i = 0; i < object.components_json.size(); ++i) {
-                        component_info_manager.loadByJson(ptrs[i], object.components_json[i]);
+                    for (size_t i = 0; i < object.components.size(); ++i) {
+                        applyComponentLoad(component_info_manager, ptrs[i], object.components[i]);
                     }
                 });
             }

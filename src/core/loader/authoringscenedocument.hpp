@@ -13,6 +13,8 @@
 #include <string_view>
 #include <vector>
 
+#include "componentcodec.hpp"
+
 namespace Pelican {
 
 PELICAN_DEFINE_HANDLE(SceneRevision, std::uint64_t)
@@ -21,6 +23,7 @@ PELICAN_DEFINE_HANDLE(AuthoringObjectId, std::uint64_t)
 struct AuthoringComponentView {
     std::size_t declaration_index = 0;
     const nlohmann::json *authored_json = nullptr;
+    ComponentCodecQueryMetadata codec;
 
     const nlohmann::json &authoredJson() const { return *authored_json; }
 };
