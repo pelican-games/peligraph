@@ -427,6 +427,20 @@ void Loop::run() {
         return;
     }
 
+#if PELICAN_WITH_RPC
+    std::unique_ptr<EngineRpcEndpoint> windowed_rpc_endpoint;
+    std::unique_ptr<WindowedRpcHost> windowed_rpc_host;
+    if (launch_config.rpc) {
+        windowed_rpc_endpoint = std::make_unique<EngineRpcEndpoint>(std::cin, std::cout);
+        windowed_rpc_host = std::make_unique<WindowedRpcHost>(
+            std::cin, std::cout,
+            [&windowed_rpc_endpoint](std::string_view line) {
+                return windowed_rpc_endpoint->processLine(line);
+            },
+            defaultWindowedRpcQueueCapacity);
+    }
+#endif
+
     auto interactive = resolveInteractiveLoopModules();
     auto &window = interactive.window;
     auto &framerate_adjuster = interactive.framerate_adjuster;
@@ -440,6 +454,9 @@ void Loop::run() {
 
     const auto update_interactive_state = [&](bool xr_frame) {
         updateFrameState();
+#if PELICAN_WITH_RPC
+        if (windowed_rpc_host) windowed_rpc_host->processFrameBoundary();
+#endif
         if (UserInput::isKeyPushed(KeyCode::F5)) {
             (void)modules.reload_service.requestRuntimeReload(
                 watch::gameLogicReloadParticipantName);
