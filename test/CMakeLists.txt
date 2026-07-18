@@ -78,6 +78,54 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
   )
   pelican_configure_game_logic_target(pelican_wp155_behavior_fixture)
 
+  function(pelican_add_wp162_behavior_fixture target_name variant)
+    add_library(${target_name} SHARED
+      fixtures/behavior_reload_dll/behavior.cpp
+      ${CMAKE_SOURCE_DIR}/src/player/gamelogic_entry.cpp
+    )
+    set_target_properties(${target_name} PROPERTIES OUTPUT_NAME "${target_name}")
+    target_compile_definitions(${target_name} PRIVATE WP162_VARIANT=${variant})
+    pelican_configure_game_logic_target(${target_name})
+  endfunction()
+
+  pelican_add_wp162_behavior_fixture(pelican_wp162_fixture_v1 1)
+  pelican_add_wp162_behavior_fixture(pelican_wp162_fixture_code_v2 2)
+  pelican_add_wp162_behavior_fixture(pelican_wp162_fixture_drift 3)
+  pelican_add_wp162_behavior_fixture(pelican_wp162_fixture_bump_ok 4)
+  pelican_add_wp162_behavior_fixture(pelican_wp162_fixture_bump_bad 5)
+  pelican_add_wp162_behavior_fixture(pelican_wp162_fixture_removed 6)
+  pelican_add_wp162_behavior_fixture(pelican_wp162_fixture_init_fault 7)
+
+  foreach(wp162_case IN ITEMS
+      code_only
+      schema_drift
+      version_bump_success
+      version_bump_failure
+      type_removed
+      candidate_lifecycle_zero
+      pending_recovery
+      queued_event_purge
+      oninit_rollback)
+    add_test(
+      NAME behavior_dll_reload_${wp162_case}
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+        -File ${CMAKE_CURRENT_SOURCE_DIR}/run_behavior_dll_reload.ps1
+        -Case ${wp162_case}
+        -Player $<TARGET_FILE:pelican_player>
+        -FixtureV1 $<TARGET_FILE:pelican_wp162_fixture_v1>
+        -FixtureCodeV2 $<TARGET_FILE:pelican_wp162_fixture_code_v2>
+        -FixtureDrift $<TARGET_FILE:pelican_wp162_fixture_drift>
+        -FixtureBumpOk $<TARGET_FILE:pelican_wp162_fixture_bump_ok>
+        -FixtureBumpBad $<TARGET_FILE:pelican_wp162_fixture_bump_bad>
+        -FixtureRemoved $<TARGET_FILE:pelican_wp162_fixture_removed>
+        -FixtureInitFault $<TARGET_FILE:pelican_wp162_fixture_init_fault>
+        -ProjectPass ${CMAKE_SOURCE_DIR}/projects/example/passes/main_rendering_config.json
+        -OutDir ${CMAKE_BINARY_DIR}/test_artifacts/behavior_dll_reload_${wp162_case}
+    )
+    set_tests_properties(behavior_dll_reload_${wp162_case} PROPERTIES
+      TIMEOUT 120 RESOURCE_LOCK pelican_gpu LABELS gpu)
+  endforeach()
+
   add_test(
     NAME behavior_project_e2e
     COMMAND powershell -NoProfile -ExecutionPolicy Bypass

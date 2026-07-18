@@ -8,6 +8,7 @@
 
 #include "../appflow/teardown.hpp"
 #include "../launchconfig.hpp"
+#include "../loader/basicconfig.hpp"
 #include "../loader/scene.hpp"
 #include "../log.hpp"
 #include "../userpublic/details/event/registerer.hpp"
@@ -166,6 +167,21 @@ bool GameLogicReloader::validateCandidate(const std::filesystem::path &path, std
     const auto owner = internal::allocateRegistrationOwner();
     auto candidate = loadCopy(path, owner, error);
     if (!candidate) return false;
+    try {
+        if (active) {
+            const nlohmann::json *authoring_scenes = nullptr;
+            if (const auto *config =
+                    FastModuleContainer::tryGet<ProjectBasicConfig>()) {
+                authoring_scenes = &config->sceneDocument().scenesJson();
+            }
+            internal::validateBehaviorReload(active->owner, candidate->owner,
+                                             authoring_scenes);
+        }
+    } catch (const std::exception &validation_error) {
+        error = validation_error.what();
+        unload(*candidate);
+        return false;
+    }
     unload(*candidate);
     return true;
 }
@@ -231,6 +247,7 @@ bool GameLogicReloader::reloadTransaction(const ResetFn &teardown, const ResetFn
     auto previous = std::move(active);
     bool previous_unloaded = false;
     active.reset();
+    std::string reload_error;
     try {
         teardown();
         if (previous) {
@@ -254,48 +271,60 @@ bool GameLogicReloader::reloadTransaction(const ResetFn &teardown, const ResetFn
                  source_path.string(), generation, internal::gameSystemRegistrationCount(owner));
         return true;
     } catch (const std::exception &error) {
-        const std::string reload_error = error.what();
-        if (active) {
-            try { teardown(); } catch (...) {}
-            unload(*active);
-            active.reset();
-        }
-        removeFileNoThrow(candidate_path);
-
-        std::string rollback_error;
-        if (previous) {
-            bool activate_rollback_owner = false;
-            if (previous_unloaded) {
-                const auto rollback_owner = internal::allocateRegistrationOwner();
-                active = loadCopy(previous->path, rollback_owner, rollback_error);
-                activate_rollback_owner = active.has_value();
-            } else {
-                // Teardown failed before the old DLL was unloaded. Reuse that
-                // exact handle/owner instead of loading a second copy whose
-                // static registrations would not have a well-defined owner.
-                active = std::move(previous);
-            }
-            if (active) {
-#if PELICAN_WITH_PHYSICS
-                if (activate_rollback_owner) {
-                    physics_internal::activateProviderOwner(active->owner);
-                }
-#endif
-                try {
-                    rebuild();
-                } catch (const std::exception &rebuild_error) {
-                    rollback_error = rebuild_error.what();
-                    try { teardown(); } catch (...) {}
-                    unload(*active);
-                    active.reset();
-                }
-            }
-        }
-        last_error = "game logic DLL '" + source_path.string() + "' reload failed: " + reload_error;
-        if (!rollback_error.empty()) last_error += "; rollback failed: " + rollback_error;
-        LOG_ERROR(logger, "{}", last_error);
-        return false;
+        // Copy the message and leave the handler before unloading a DLL that
+        // may own the active exception's destructor/unwind metadata.
+        reload_error = error.what();
+    } catch (...) {
+        reload_error = "non-standard exception";
     }
+
+    if (active) {
+        try { teardown(); } catch (...) {}
+        unload(*active);
+        active.reset();
+    }
+    removeFileNoThrow(candidate_path);
+
+    std::string rollback_error;
+    if (previous) {
+        bool activate_rollback_owner = false;
+        if (previous_unloaded) {
+            const auto rollback_owner = internal::allocateRegistrationOwner();
+            active = loadCopy(previous->path, rollback_owner, rollback_error);
+            activate_rollback_owner = active.has_value();
+        } else {
+            // Teardown failed before the old DLL was unloaded. Reuse that
+            // exact handle/owner instead of loading a second copy whose
+            // static registrations would not have a well-defined owner.
+            active = std::move(previous);
+        }
+        if (active) {
+#if PELICAN_WITH_PHYSICS
+            if (activate_rollback_owner) {
+                physics_internal::activateProviderOwner(active->owner);
+            }
+#endif
+            bool rollback_rebuild_failed = false;
+            try {
+                rebuild();
+            } catch (const std::exception &error) {
+                rollback_error = error.what();
+                rollback_rebuild_failed = true;
+            } catch (...) {
+                rollback_error = "non-standard exception";
+                rollback_rebuild_failed = true;
+            }
+            if (rollback_rebuild_failed) {
+                try { teardown(); } catch (...) {}
+                unload(*active);
+                active.reset();
+            }
+        }
+    }
+    last_error = "game logic DLL '" + source_path.string() + "' reload failed: " + reload_error;
+    if (!rollback_error.empty()) last_error += "; rollback failed: " + rollback_error;
+    LOG_ERROR(logger, "{}", last_error);
+    return false;
 }
 
 GameLogicReloadAttempt GameLogicReloader::reloadNowAttempt(const ResetFn &teardown,

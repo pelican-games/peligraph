@@ -86,4 +86,88 @@ std::string canonicalizeBehaviorParams(std::string_view stable_name,
     return registration->canonicalize_params(params);
 }
 
+void validateBehaviorReload(RegistrationOwner active_owner,
+                            RegistrationOwner candidate_owner,
+                            const nlohmann::json *authoring_scenes) {
+    const auto &registry = getBehaviorRegisterer();
+    const auto &registrations = registry.registeredBehaviors();
+    for (const auto &active : registrations) {
+        if (active.owner != active_owner) continue;
+
+        const auto *candidate = registry.findByNameAndOwner(
+            active.stable_name, candidate_owner);
+        if (candidate == nullptr) {
+            throw std::runtime_error(
+                "behavior_type_removed: stable_name='" + active.stable_name +
+                "' version=" + std::to_string(active.schema_version));
+        }
+        if (candidate->schema_version == active.schema_version &&
+            candidate->params_schema_fingerprint !=
+                active.params_schema_fingerprint) {
+            throw std::runtime_error(
+                "schema_changed_without_version_bump: stable_name='" +
+                active.stable_name + "' version=" +
+                std::to_string(active.schema_version));
+        }
+        if (candidate->schema_version == active.schema_version) continue;
+
+        if (authoring_scenes == nullptr) {
+            throw std::runtime_error(
+                "schema_incompatible: stable_name='" + active.stable_name +
+                "' version=" + std::to_string(active.schema_version) + "->" +
+                std::to_string(candidate->schema_version) +
+                " field='params' authoring document is unavailable");
+        }
+
+        for (auto scene_it = authoring_scenes->begin();
+             scene_it != authoring_scenes->end(); ++scene_it) {
+            const auto &objects = scene_it.value().at("objects");
+            for (std::size_t object_index = 0; object_index < objects.size();
+                 ++object_index) {
+                const auto &object = objects.at(object_index);
+                const auto &components = object.at("components");
+                for (std::size_t component_index = 0;
+                     component_index < components.size(); ++component_index) {
+                    const auto &component = components.at(component_index);
+                    if (component.value("name", std::string{}) != "behavior" ||
+                        component.value("type", std::string{}) !=
+                            active.stable_name) {
+                        continue;
+                    }
+                    const auto params_it = component.find("params");
+                    const nlohmann::json empty_params = nlohmann::json::object();
+                    const auto &params = params_it == component.end()
+                                             ? empty_params
+                                             : *params_it;
+                    try {
+                        (void)candidate->canonicalize_params(params);
+                    } catch (const StructFieldValidationError &error) {
+                        throw std::runtime_error(
+                            "schema_incompatible: stable_name='" +
+                            active.stable_name + "' version=" +
+                            std::to_string(active.schema_version) + "->" +
+                            std::to_string(candidate->schema_version) +
+                            " scene='" + scene_it.key() + "' object_index=" +
+                            std::to_string(object_index) +
+                            " component_index=" +
+                            std::to_string(component_index) + " field='" +
+                            std::string{error.path()} + "': " + error.what());
+                    } catch (const std::exception &error) {
+                        throw std::runtime_error(
+                            "schema_incompatible: stable_name='" +
+                            active.stable_name + "' version=" +
+                            std::to_string(active.schema_version) + "->" +
+                            std::to_string(candidate->schema_version) +
+                            " scene='" + scene_it.key() + "' object_index=" +
+                            std::to_string(object_index) +
+                            " component_index=" +
+                            std::to_string(component_index) +
+                            " field='params': " + error.what());
+                    }
+                }
+            }
+        }
+    }
+}
+
 } // namespace Pelican::internal

@@ -41,6 +41,7 @@ struct BehaviorRegistration {
     std::type_index behavior_type = std::type_index{typeid(void)};
     std::type_index params_type = std::type_index{typeid(void)};
     std::vector<StructFieldSchema> params_schema;
+    std::string params_schema_fingerprint;
     BehaviorCanonicalizeParamsFn canonicalize_params = nullptr;
     BehaviorCreateFn create = nullptr;
     BehaviorDestroyFn destroy = nullptr;
@@ -102,6 +103,73 @@ std::vector<StructFieldSchema> materializeBehaviorParamsSchema() {
     return fields;
 }
 
+inline nlohmann::ordered_json behaviorParamsRangeFingerprint(
+    const StructFieldRange &range) {
+    return std::visit(
+        [](const auto &value) -> nlohmann::ordered_json {
+            using Range = std::remove_cvref_t<decltype(value)>;
+            if constexpr (std::same_as<Range, std::monostate>) {
+                return nullptr;
+            } else {
+                return nlohmann::ordered_json::array({value.first, value.second});
+            }
+        },
+        range);
+}
+
+template <class Params>
+std::string materializeBehaviorParamsSchemaFingerprint() {
+    static_assert(
+        std::same_as<typename decltype(Params::schema)::policy_type,
+                     BehaviorParamsPolicy>,
+        "Behavior Params::schema must use BehaviorParamsPolicy");
+
+    Params defaults{};
+    decodeBehaviorParams(nlohmann::json::object(), defaults, Params::schema);
+    const auto encoded_defaults = encodeBehaviorParams(defaults, Params::schema);
+    nlohmann::ordered_json fields = nlohmann::ordered_json::array();
+    std::apply(
+        [&](const auto &...policy_field) {
+            ([&] {
+                using PolicyField = std::remove_cvref_t<decltype(policy_field)>;
+                using Traits = PolicyFieldTraits<PolicyField>;
+                const auto descriptor = materializeStructField(
+                    policy_field.field.descriptor);
+                nlohmann::ordered_json field{
+                    {"name", descriptor.name},
+                    {"type", static_cast<std::uint8_t>(descriptor.type)},
+                    {"range", behaviorParamsRangeFingerprint(descriptor.range)},
+                    {"unit", descriptor.unit},
+                    {"presence", static_cast<std::uint8_t>(Traits::presence)},
+                    {"default", encoded_defaults.at(descriptor.name)},
+                };
+                if constexpr (Traits::has_enum_values) {
+                    nlohmann::ordered_json values = nlohmann::ordered_json::array();
+                    for (const auto &entry : policy_field.enum_values.values) {
+                        using Enum = std::remove_cvref_t<decltype(entry.value)>;
+                        using Underlying = std::underlying_type_t<Enum>;
+                        if constexpr (std::is_signed_v<Underlying>) {
+                            values.push_back(nlohmann::ordered_json{
+                                {"name", entry.name},
+                                {"value", static_cast<std::int64_t>(entry.value)},
+                            });
+                        } else {
+                            values.push_back(nlohmann::ordered_json{
+                                {"name", entry.name},
+                                {"value", static_cast<std::uint64_t>(entry.value)},
+                            });
+                        }
+                    }
+                    field["enum_values"] = std::move(values);
+                }
+                fields.push_back(std::move(field));
+            }(),
+             ...);
+        },
+        Params::schema.declarations);
+    return fields.dump();
+}
+
 class UserBehaviorRegistererTemplatePublic {
     std::vector<BehaviorRegistration> behaviors;
 
@@ -138,6 +206,8 @@ class UserBehaviorRegistererTemplatePublic {
             .behavior_type = std::type_index{typeid(Type)},
             .params_type = std::type_index{typeid(Params)},
             .params_schema = materializeBehaviorParamsSchema<Params>(),
+            .params_schema_fingerprint =
+                materializeBehaviorParamsSchemaFingerprint<Params>(),
             .canonicalize_params = [](const nlohmann::json &params) -> std::string {
                 Params decoded{};
                 decodeBehaviorParams(params, decoded, Params::schema);
@@ -178,6 +248,9 @@ void unregisterBehaviors(RegistrationOwner owner) noexcept;
 std::size_t behaviorRegistrationCount(RegistrationOwner owner) noexcept;
 std::string canonicalizeBehaviorParams(std::string_view stable_name,
                                        const nlohmann::json &params);
+void validateBehaviorReload(RegistrationOwner active_owner,
+                            RegistrationOwner candidate_owner,
+                            const nlohmann::json *authoring_scenes);
 
 } // namespace Pelican::internal
 

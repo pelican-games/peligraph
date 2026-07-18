@@ -29,6 +29,7 @@ struct QueuedEvent {
     std::type_index type = std::type_index{typeid(void)};
     std::string name;
     std::shared_ptr<const void> payload;
+    RegistrationOwner owner = engineRegistrationOwner;
 };
 
 using JsonPayloadLoadFn = std::shared_ptr<const void> (*)(const void *payload_json);
@@ -149,6 +150,7 @@ class UserEventRegistererTemplatePublic {
             .type = std::type_index{typeid(EventType)},
             .name = registration->name,
             .payload = std::make_shared<EventType>(event),
+            .owner = registration->owner,
         });
     }
 

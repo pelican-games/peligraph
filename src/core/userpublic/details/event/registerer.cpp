@@ -281,6 +281,7 @@ std::size_t UserEventRegistererTemplatePublic::emitByName(std::string_view name,
         .type = registration.type,
         .name = registration.name,
         .payload = (++payload_load_calls, registration.load_json_payload(payload_json)),
+        .owner = registration.owner,
     });
     return 1;
 }
@@ -439,12 +440,8 @@ void validateEventCatalog() {
 
 void unregisterEvents(RegistrationOwner owner) noexcept {
     auto &registerer = getEventRegisterer();
-    std::vector<std::type_index> removed_types;
-    for (const auto &registration : registerer.event_types) {
-        if (registration.owner == owner) removed_types.push_back(registration.type);
-    }
-    const auto removed = [&removed_types](const QueuedEvent &event) {
-        return std::find(removed_types.begin(), removed_types.end(), event.type) != removed_types.end();
+    const auto removed = [owner](const QueuedEvent &event) {
+        return event.owner == owner;
     };
     std::erase_if(registerer.pending_events, removed);
     std::erase_if(registerer.deliver_now_events, removed);
