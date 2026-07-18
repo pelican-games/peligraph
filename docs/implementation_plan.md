@@ -3930,6 +3930,52 @@ adapter の実装は E-PROJTX0/BEH0 の責務 — adapter の接合点だけ型�
 受け入れ = 上記逐語 fault matrix 全通過 + 既存全テスト(WP62/WP148
 fixture 無変更)+ golden SKIP 0・byte 不変 + player 8 秒 + CI green
 
+### WP153: E-PROJTX0 — 異種 projection の aggregate transaction
+
+参照: **再レビュー
+`docs/design_reviews/2026-07-18_editor_behavior_v2_rereview_codex.md`
+§2.1(E-C1)の逐語が受け入れ条件**:
+
+> EditorProjectionTransaction は immutable な base
+> AuthoringSceneDocument と staged next document を持ち、全 ordered
+> command を検証してから、対象となる ECS existing-value/archetype、
+> transform descendant closure、renderer/model、camera、
+> LightContainer、PhysWorld、behavior attachment の各 adapter に
+> `prepare` を行う。`prepare` は live state を変更せず、全
+> allocation/decode/validation と publish 後状態を構築し、失敗時は
+> staged document と全 prepared state を破棄する。全 prepare 成功後の
+> frame-boundary publish は observer が走らない区間で行い、各 adapter
+> の publish を `noexcept` swap/handle publication にする。staging
+> できない adapter は最初の live mutation より前に完全な inverse
+> token を作り、rollback を `noexcept` とする。AuthoringSceneDocument
+> と SceneRevision は runtime publish 成功後に no-throw swap し、途中
+> revision を公開しない。ECS-MUT0 は generic add/remove migration
+> だけを提供し、この aggregate transaction の代用としない。
+>
+> fault injection は各 adapter の prepare 点と、inverse-token 方式を
+> 使う各 publish 点に置く。失敗後に base document semantic equality、
+> SceneRevision、runtime query、EntityId/free-list/component version、
+> Light/Phys binding、renderer handle/値、behavior lifecycle trace が
+> 実行前と一致し、journal 追記がなく ticket が stable error code 付き
+> `failed` になることを gate とする。同じ transaction の複数 command
+> および ECS + special adapter 混在を必須 fixture とする。
+
+加えて **§2.2(E-C2)の逐語**(transform local 正本・descendant
+closure 再計算・reparent preserve 必須・zero scale/非有限/循環/表現
+不能の preflight reject — 全文は同レビュー §2.2 の二つの blockquote)
+を添付条件とする。behavior attachment adapter は接合点の型のみ
+(実 adapter は BEH0)。rpc 公開面(edit method)は本 WP に含めない
+(E-RPC1 の責務 — 本 WP は transaction 機構と fixture まで)。
+
+依存: WP149(済)+ WP151(済)+ WP152(済)。見積: 大。
+排他: projection transaction 新設 + loader/scene・light/phys の
+publish 経路 + WP152 adapter 接合点の実装 + fixture。**communication/
+rpcserver・schema 三 header・behavior 系に触らない**。
+
+受け入れ = E-C1/E-C2 逐語 gate(fault injection 全点 + 逐語復元
+検査)+ 既存全テスト(WP151/WP152 fixture 無変更)+ golden SKIP 0・
+byte 不変 + player 8 秒 + CI green
+
 ### WP137: 負債 CI0 — CPU gate の常設(GitHub Actions)
 
 参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
