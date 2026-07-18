@@ -24,6 +24,13 @@ class ECSArchetypeMigration;
 
 namespace internal {
     size_t getIndexFromComponentId_Ref(ComponentId id);
+    void registerECSSystemComponentDependencies(
+        const void *core, SystemId system_id, std::string name,
+        std::vector<size_t> component_indices);
+    void unregisterECSSystemComponentDependencies(const void *core,
+                                                  SystemId system_id) noexcept;
+    void unregisterECSCoreComponentDependencies(const void *core) noexcept;
+    std::vector<std::string> ecsComponentDependentNames(size_t component_index);
 
     enum class ECSHazardPolicy {
         automatic_serialization,
@@ -138,6 +145,8 @@ class ECSCoreTemplatePublic {
     void releaseId(EntityId id) noexcept;
 
   public:
+    ~ECSCoreTemplatePublic();
+
     using PopulateBatch =
         std::function<void(std::span<const EntityId>, std::span<void *>, size_t)>;
 
@@ -503,6 +512,9 @@ class ECSCoreTemplatePublic {
                 systems.at(id).matching_chunk_indices.push_back(i);
             }
         }
+
+        internal::registerECSSystemComponentDependencies(
+            this, id, systems.at(id).name, comp_indices);
 
         return id;
     }

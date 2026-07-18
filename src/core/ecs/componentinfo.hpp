@@ -9,6 +9,7 @@
 #include "component.hpp"
 #include "entity.hpp"
 #include <details/ecs/componentdeclare.hpp>
+#include <details/reload/registrationowner.hpp>
 #include <serialize/jsonarchive.hpp>
 
 namespace Pelican {
@@ -29,6 +30,8 @@ struct ComponentInfo {
     void (*cb_deinit)(void *ptr) noexcept = nullptr;
 
     void (*cb_load_by_json2)(void *ptr, JsonArchiveLoader &json) = nullptr;
+    internal::RegistrationOwner owner = internal::engineRegistrationOwner;
+    internal::RegistrationToken token;
 };
 
 DECLARE_MODULE(ComponentInfoManager) {
@@ -36,16 +39,19 @@ DECLARE_MODULE(ComponentInfoManager) {
     std::vector<ComponentInfo> infos;
     std::unordered_map<std::string, ComponentId> name_id_map;
 
-    void registerComponent(ComponentInfo info);
+    internal::RegistrationToken registerComponent(ComponentInfo info);
 
   public:
     ComponentInfoManager();
+    ~ComponentInfoManager();
 
     size_t getIndexFromComponentId(ComponentId id) const;
     const ComponentInfo &getFromIndex(size_t index) const;
     const ComponentInfo &get(ComponentId id) const;
     ComponentId getComponentIdByName(const std::string &name) const;
     void loadByJson(void *ptr, const nlohmann::json &json) const;
+    void unregisterComponent(internal::RegistrationToken token);
+    std::size_t registrationCount(internal::RegistrationOwner owner) const noexcept;
 };
 
 } // namespace Pelican

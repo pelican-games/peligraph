@@ -13,6 +13,7 @@
 #include "../log.hpp"
 #include "../userpublic/details/event/registerer.hpp"
 #include "../userpublic/details/behavior/registerer.hpp"
+#include "../userpublic/details/component/registerer.hpp"
 #include "../userpublic/details/system/registerer.hpp"
 #include "../userpublic/gamelogic.hpp"
 
@@ -39,8 +40,10 @@ void releaseGameLogicRegistrations(RegistrationOwner owner) noexcept {
     physics_internal::releaseProviderOwner(owner);
 #endif
     unregisterGameSystems(owner);
-    unregisterEvents(owner);
     unregisterBehaviors(owner);
+    unregisterEvents(owner);
+    unregisterComponents(owner);
+    releaseRegistrationOwner(owner);
 }
 
 } // namespace internal

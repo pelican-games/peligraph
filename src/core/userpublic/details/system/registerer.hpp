@@ -31,6 +31,7 @@ struct GameSystemRegistration {
     GameSystemQueuedEventFn dispatch_queued_event = nullptr;
     std::vector<GameSystemEventHandlerRegistration> event_handlers;
     RegistrationOwner owner = engineRegistrationOwner;
+    RegistrationToken token;
 };
 
 template <class System>
@@ -91,14 +92,16 @@ std::vector<GameSystemEventHandlerRegistration> collectGameSystemEventHandlers(s
 class UserGameSystemRegistererTemplatePublic {
     std::vector<GameSystemRegistration> systems;
 
-    PELICAN_API void __registerSystem(GameSystemRegistration registration);
+    PELICAN_API RegistrationToken __registerSystem(GameSystemRegistration registration);
 
+    friend void unregisterGameSystem(RegistrationToken token);
     friend void unregisterGameSystems(RegistrationOwner owner) noexcept;
 
   public:
     template <class System>
-    void registerSystem(std::string name, int order,
-                        std::vector<GameSystemEventHandlerRegistration> event_handlers) {
+    RegistrationToken registerSystem(
+        std::string name, int order,
+        std::vector<GameSystemEventHandlerRegistration> event_handlers) {
         constexpr bool has_update = HasGameSystemUpdate<System>;
         constexpr bool has_queued_event = HasGameSystemQueuedEvent<System>;
         if constexpr (!has_update) {
@@ -119,7 +122,7 @@ class UserGameSystemRegistererTemplatePublic {
             };
         }
 
-        __registerSystem(GameSystemRegistration{
+        return __registerSystem(GameSystemRegistration{
             .name = std::move(name),
             .order = order,
             .update = update,
@@ -135,6 +138,7 @@ PELICAN_API UserGameSystemRegistererTemplatePublic &getGameSystemRegisterer();
 std::vector<GameSystemRegistration> sortGameSystemRegistrations(std::vector<GameSystemRegistration> systems);
 void updateRegisteredGameSystems(GameContext &ctx);
 void dispatchEventToRegisteredGameSystems(const QueuedEvent &event, GameContext &ctx);
+void unregisterGameSystem(RegistrationToken token);
 void unregisterGameSystems(RegistrationOwner owner) noexcept;
 std::size_t gameSystemRegistrationCount(RegistrationOwner owner) noexcept;
 
@@ -151,6 +155,7 @@ std::size_t gameSystemRegistrationCount(RegistrationOwner owner) noexcept;
 #define PELICAN_REGISTER_SYSTEM_IMPL(Type, order, unique_id)                                                        \
     namespace {                                                                                                      \
     struct PELICAN_DETAIL_CONCAT(PelicanGameSystemAutoRegister_, unique_id) {                                        \
+        ::Pelican::internal::RegistrationToken token;                                                               \
         PELICAN_DETAIL_CONCAT(PelicanGameSystemAutoRegister_, unique_id)() {                                         \
             auto event_handlers = ::Pelican::internal::collectGameSystemEventHandlers<Type>(                         \
                 std::make_integer_sequence<int, unique_id>{},                                                        \
@@ -158,8 +163,8 @@ std::size_t gameSystemRegistrationCount(RegistrationOwner owner) noexcept;
                     -> decltype(pelicanEventCatalogEntry(::Pelican::internal::EventCatalogTag<Index>{})) {           \
                     return {};                                                                                       \
                 });                                                                                                  \
-            ::Pelican::internal::getGameSystemRegisterer().registerSystem<Type>(#Type, order,                        \
-                                                                                std::move(event_handlers));          \
+            token = ::Pelican::internal::getGameSystemRegisterer().registerSystem<Type>(                            \
+                #Type, order, std::move(event_handlers));                                                           \
         }                                                                                                           \
     };                                                                                                              \
     static const PELICAN_DETAIL_CONCAT(PelicanGameSystemAutoRegister_, unique_id)                                    \

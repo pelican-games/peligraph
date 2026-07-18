@@ -6,9 +6,19 @@ namespace Pelican {
 
 namespace internal {
 
-void UserGameSystemRegistererTemplatePublic::__registerSystem(GameSystemRegistration registration) {
+RegistrationToken UserGameSystemRegistererTemplatePublic::__registerSystem(
+    GameSystemRegistration registration) {
     registration.owner = currentRegistrationOwner();
-    systems.push_back(std::move(registration));
+    registration.token = acquireRegistrationToken(
+        RegistrationKind::system, registration.owner, registration.name);
+    const auto token = registration.token;
+    try {
+        systems.push_back(std::move(registration));
+    } catch (...) {
+        (void)releaseRegistrationToken(token, RegistrationKind::system);
+        throw;
+    }
+    return token;
 }
 
 const std::vector<GameSystemRegistration> &UserGameSystemRegistererTemplatePublic::registeredSystems() const noexcept {
@@ -57,11 +67,27 @@ void dispatchEventToRegisteredGameSystems(const QueuedEvent &event, GameContext 
     }
 }
 
+void unregisterGameSystem(RegistrationToken token) {
+    auto &systems = getGameSystemRegisterer().systems;
+    const auto found = std::find_if(
+        systems.begin(), systems.end(),
+        [token](const GameSystemRegistration &system) { return system.token == token; });
+    if (found == systems.end()) {
+        throw std::runtime_error("stale game system registration token");
+    }
+    systems.erase(found);
+    (void)releaseRegistrationToken(token, RegistrationKind::system);
+}
+
 void unregisterGameSystems(RegistrationOwner owner) noexcept {
     auto &systems = getGameSystemRegisterer().systems;
-    std::erase_if(systems, [owner](const GameSystemRegistration &system) {
-        return system.owner == owner;
-    });
+    for (const auto token : registrationTokens(owner, RegistrationKind::system)) {
+        const auto found = std::find_if(
+            systems.begin(), systems.end(),
+            [token](const GameSystemRegistration &system) { return system.token == token; });
+        if (found != systems.end()) systems.erase(found);
+        (void)releaseRegistrationToken(token, RegistrationKind::system);
+    }
 }
 
 std::size_t gameSystemRegistrationCount(RegistrationOwner owner) noexcept {

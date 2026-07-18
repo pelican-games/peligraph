@@ -47,6 +47,7 @@ struct BehaviorRegistration {
     BehaviorDestroyFn destroy = nullptr;
     std::vector<BehaviorEventHandlerRegistration> event_handlers;
     RegistrationOwner owner = engineRegistrationOwner;
+    RegistrationToken token;
 };
 
 template <class Type, class Event>
@@ -173,14 +174,15 @@ std::string materializeBehaviorParamsSchemaFingerprint() {
 class UserBehaviorRegistererTemplatePublic {
     std::vector<BehaviorRegistration> behaviors;
 
-    PELICAN_API void __registerBehavior(BehaviorRegistration registration);
+    PELICAN_API RegistrationToken __registerBehavior(BehaviorRegistration registration);
 
+    friend void unregisterBehavior(RegistrationToken token);
     friend void unregisterBehaviors(RegistrationOwner owner) noexcept;
     friend std::size_t behaviorRegistrationCount(RegistrationOwner owner) noexcept;
 
   public:
     template <class Type>
-    void registerBehavior(
+    RegistrationToken registerBehavior(
         std::string stable_name, std::uint32_t schema_version,
         std::vector<BehaviorEventHandlerRegistration> event_handlers) {
         static_assert(std::derived_from<Type, Behavior>,
@@ -200,7 +202,7 @@ class UserBehaviorRegistererTemplatePublic {
             throw std::runtime_error("behavior schema version must be positive");
         }
 
-        __registerBehavior(BehaviorRegistration{
+        return __registerBehavior(BehaviorRegistration{
             .stable_name = std::move(stable_name),
             .schema_version = schema_version,
             .behavior_type = std::type_index{typeid(Type)},
@@ -244,6 +246,7 @@ class UserBehaviorRegistererTemplatePublic {
 };
 
 PELICAN_API UserBehaviorRegistererTemplatePublic &getBehaviorRegisterer();
+void unregisterBehavior(RegistrationToken token);
 void unregisterBehaviors(RegistrationOwner owner) noexcept;
 std::size_t behaviorRegistrationCount(RegistrationOwner owner) noexcept;
 std::string canonicalizeBehaviorParams(std::string_view stable_name,
@@ -264,6 +267,7 @@ void validateBehaviorReload(RegistrationOwner active_owner,
 #define PELICAN_REGISTER_BEHAVIOR_IMPL(Type, stable_name, schema_version, unique_id)                 \
     namespace {                                                                                      \
     struct PELICAN_DETAIL_CONCAT(PelicanBehaviorAutoRegister_, unique_id) {                          \
+        ::Pelican::internal::RegistrationToken token;                                               \
         PELICAN_DETAIL_CONCAT(PelicanBehaviorAutoRegister_, unique_id)() {                           \
             auto event_handlers =                                                                    \
                 ::Pelican::internal::collectBehaviorEventHandlers<Type>(                             \
@@ -273,7 +277,7 @@ void validateBehaviorReload(RegistrationOwner active_owner,
                             ::Pelican::internal::EventCatalogTag<Index>{})) {                         \
                         return {};                                                                    \
                     });                                                                               \
-            ::Pelican::internal::getBehaviorRegisterer().registerBehavior<Type>(                     \
+            token = ::Pelican::internal::getBehaviorRegisterer().registerBehavior<Type>(             \
                 stable_name, schema_version, std::move(event_handlers));                             \
         }                                                                                             \
     };                                                                                                \
