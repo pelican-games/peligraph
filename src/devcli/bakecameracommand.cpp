@@ -1,8 +1,8 @@
 #include "bakecameracommand.hpp"
+#include "processrunner.hpp"
 
 #include <argparse/argparse.hpp>
 #include <chrono>
-#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -53,14 +53,6 @@ void validateDeliveryName(std::string_view name) {
             throw std::runtime_error("--name must match [a-zA-Z0-9_]+");
         }
     }
-}
-
-std::string quoteCommandArgument(const std::filesystem::path &path) {
-    const auto value = path.string();
-    if (value.find('"') != std::string::npos) {
-        throw std::runtime_error("process argument contains an unsupported quote: " + value);
-    }
-    return '"' + value + '"';
 }
 
 std::string fileSha256(const std::filesystem::path &path) {
@@ -150,19 +142,16 @@ int runBakeCameraCommand(int argc, char *argv[]) {
         const std::string sequence_name = "camera.transform_seq.jsonl";
         const auto sequence_path = delivery / sequence_name;
 
-        auto command = quoteCommandArgument(player) + " --headless --project " +
-                       quoteCommandArgument(project) + " --size 64x64 --replay " +
-                       quoteCommandArgument(replay) + " --bake-camera-output " +
-                       quoteCommandArgument(sequence_path);
-#ifdef _WIN32
-        // cmd.exe consumes the first quote as its own command-string delimiter.
-        // An outer pair is therefore required when the executable path itself is quoted.
-        command = '"' + command + '"';
-#endif
-        const auto process_result = std::system(command.c_str());
-        if (process_result != 0) {
+        const auto process_result = runProcess(
+            {.executable = player,
+             .arguments = {"--headless", "--project", project, "--size", "64x64", "--replay",
+                           replay, "--bake-camera-output", sequence_path},
+             .name = "pelican_player camera replay"});
+        std::cout << process_result.stdout_text;
+        std::cerr << process_result.stderr_text;
+        if (process_result.exit_code != 0) {
             throw std::runtime_error("pelican_player camera replay failed with exit code " +
-                                     std::to_string(process_result));
+                                     std::to_string(process_result.exit_code));
         }
 
         const auto sha256 = fileSha256(sequence_path);

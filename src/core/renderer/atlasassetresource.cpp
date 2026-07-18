@@ -19,6 +19,16 @@ vk::UniqueDescriptorSetLayout createLayout(vk::Device device) {
     return device.createDescriptorSetLayoutUnique(vk::DescriptorSetLayoutCreateInfo{{}, binding});
 }
 
+vk::UniqueDescriptorPool createDescriptorPool(vk::Device device, std::uint32_t descriptor_count) {
+    const vk::DescriptorPoolSize pool_size{vk::DescriptorType::eCombinedImageSampler,
+                                           descriptor_count};
+    vk::DescriptorPoolCreateInfo pool_info;
+    pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
+    pool_info.maxSets = descriptor_count;
+    pool_info.setPoolSizes(pool_size);
+    return device.createDescriptorPoolUnique(pool_info);
+}
+
 vk::UniqueSampler createSampler(vk::Device device, vk::Filter filter) {
     vk::SamplerCreateInfo info;
     info.magFilter = filter;
@@ -106,13 +116,7 @@ AtlasAssetResource::AtlasAssetResource() : device{GET_MODULE(VulkanManageCore).g
     descriptor_set_layout = createLayout(device);
     nearest_sampler = createSampler(device, vk::Filter::eNearest);
     linear_sampler = createSampler(device, vk::Filter::eLinear);
-    constexpr std::uint32_t descriptor_count = std::numeric_limits<std::uint16_t>::max() * 2U;
-    const vk::DescriptorPoolSize pool_size{vk::DescriptorType::eCombinedImageSampler, descriptor_count};
-    vk::DescriptorPoolCreateInfo pool_info;
-    pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
-    pool_info.maxSets = descriptor_count;
-    pool_info.setPoolSizes(pool_size);
-    descriptor_pool = device.createDescriptorPoolUnique(pool_info);
+    descriptor_pools.push_back(createDescriptorPool(device, descriptor_sets_per_pool));
 
     const std::array<std::uint8_t, 4> white{255, 255, 255, 255};
     pages.push_back(makePage(0, "white", uploadRgba8Srgb({1, 1, 1}, white.data(), white.size())));
@@ -150,12 +154,9 @@ AtlasGpuPage AtlasAssetResource::makePage(std::uint16_t id, std::string stable_n
                                           ImageWrapper image) {
     AtlasGpuPage page{.id = id, .stable_name = std::move(stable_name), .image = std::move(image)};
     page.view = createView(device, page.image);
-    const vk::DescriptorSetLayout layout = descriptor_set_layout.get();
-    vk::DescriptorSetAllocateInfo allocate{descriptor_pool.get(), 1, &layout};
-    auto nearest = device.allocateDescriptorSetsUnique(allocate);
-    auto linear = device.allocateDescriptorSetsUnique(allocate);
-    page.nearest_set = std::move(nearest.front());
-    page.linear_set = std::move(linear.front());
+    auto sets = allocatePageDescriptorSets();
+    page.nearest_set = std::move(sets[0]);
+    page.linear_set = std::move(sets[1]);
     const auto write = [&](vk::DescriptorSet set, vk::Sampler sampler) {
         const vk::DescriptorImageInfo image_info{sampler, page.view.get(),
                                                  vk::ImageLayout::eShaderReadOnlyOptimal};
@@ -167,6 +168,20 @@ AtlasGpuPage AtlasAssetResource::makePage(std::uint16_t id, std::string stable_n
     write(page.nearest_set.get(), nearest_sampler.get());
     write(page.linear_set.get(), linear_sampler.get());
     return page;
+}
+
+std::vector<vk::UniqueDescriptorSet> AtlasAssetResource::allocatePageDescriptorSets() {
+    constexpr std::uint32_t descriptors_per_page = 2;
+    if (active_pool_descriptor_count + descriptors_per_page > descriptor_sets_per_pool) {
+        descriptor_pools.push_back(createDescriptorPool(device, descriptor_sets_per_pool));
+        active_pool_descriptor_count = 0;
+    }
+    const std::array layouts{descriptor_set_layout.get(), descriptor_set_layout.get()};
+    vk::DescriptorSetAllocateInfo allocate{descriptor_pools.back().get(),
+                                           static_cast<std::uint32_t>(layouts.size()), layouts.data()};
+    auto result = device.allocateDescriptorSetsUnique(allocate);
+    active_pool_descriptor_count += descriptors_per_page;
+    return result;
 }
 
 vk::DescriptorSet AtlasAssetResource::descriptor(std::uint16_t page,

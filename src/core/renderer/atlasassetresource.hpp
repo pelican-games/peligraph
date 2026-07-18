@@ -33,11 +33,14 @@ struct AtlasGpuPage {
 DECLARE_MODULE(AtlasAssetResource) {
     vk::Device device;
     vk::UniqueDescriptorSetLayout descriptor_set_layout;
-    vk::UniqueDescriptorPool descriptor_pool;
+    std::vector<vk::UniqueDescriptorPool> descriptor_pools;
+    std::uint32_t active_pool_descriptor_count = 0;
     vk::UniqueSampler nearest_sampler;
     vk::UniqueSampler linear_sampler;
     std::vector<AtlasGpuPage> pages;
 
+    static constexpr std::uint32_t descriptor_sets_per_pool = 32;
+    std::vector<vk::UniqueDescriptorSet> allocatePageDescriptorSets();
     AtlasGpuPage makePage(std::uint16_t id, std::string stable_name, ImageWrapper image);
 
   public:
@@ -48,6 +51,10 @@ DECLARE_MODULE(AtlasAssetResource) {
     vk::DescriptorSet descriptor(std::uint16_t page, asset::SamplerKey sampler) const;
     vk::DescriptorSetLayout descriptorSetLayout() const { return descriptor_set_layout.get(); }
     std::size_t pageCountForTesting() const noexcept { return pages.size(); }
+    std::size_t descriptorPoolCountForTesting() const noexcept { return descriptor_pools.size(); }
+    static constexpr std::size_t pageCapacityPerPoolForTesting() noexcept {
+        return descriptor_sets_per_pool / 2;
+    }
 };
 
 } // namespace Pelican

@@ -1,6 +1,7 @@
 #include "rulesimport.hpp"
 
 #include "gltfsceneextract.hpp"
+#include "processrunner.hpp"
 
 #include "../project/importmanifest.hpp"
 #include "../project/importrules.hpp"
@@ -10,9 +11,12 @@
 #include <picosha2.h>
 
 #include <algorithm>
+#include <chrono>
+#include <csignal>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <optional>
@@ -22,11 +26,6 @@
 #include <string_view>
 #include <system_error>
 #include <vector>
-
-#ifdef _WIN32
-#define NOMINMAX
-#include <windows.h>
-#endif
 
 namespace Pelican::DevCli {
 
@@ -44,7 +43,32 @@ struct SelectedInput {
 };
 
 struct ToolCommand {
-    std::vector<std::string> prefix;
+    std::filesystem::path executable;
+    std::vector<std::filesystem::path> prefix_arguments;
+};
+
+struct ExternalRunConfig {
+    std::chrono::milliseconds timeout;
+    std::filesystem::path log_path;
+    std::function<bool()> cancelled;
+};
+
+volatile std::sig_atomic_t import_cancel_requested = 0;
+
+void requestImportCancel(int) { import_cancel_requested = 1; }
+
+class ScopedInterruptHandler {
+    using Handler = void (*)(int);
+    Handler previous_ = SIG_ERR;
+
+  public:
+    ScopedInterruptHandler() {
+        import_cancel_requested = 0;
+        previous_ = std::signal(SIGINT, requestImportCancel);
+    }
+    ~ScopedInterruptHandler() {
+        if (previous_ != SIG_ERR) std::signal(SIGINT, previous_);
+    }
 };
 
 std::string pathString(const std::filesystem::path &path) { return path.string(); }
@@ -350,114 +374,48 @@ ToolCommand resolveTool(const std::optional<std::filesystem::path> &configured) 
                 throw std::runtime_error("pelican-import-tools project was configured but uv was not found on PATH; "
                                          "install uv, run 'uv sync' in " + pathString(*configured));
             }
-            return {{pathString(*uv), "run", "--project", pathString(canonicalPath(*configured, "--import-tools")),
+            return {*uv,
+                    {"run", "--project", canonicalPath(*configured, "--import-tools"),
                      "pelican-import-tools"}};
         }
         if (std::filesystem::is_regular_file(*configured, ec) && !ec) {
-            return {{{pathString(canonicalPath(*configured, "--import-tools"))}}};
+            return {canonicalPath(*configured, "--import-tools"), {}};
         }
         throw std::runtime_error("pelican-import-tools configured path not found: " + pathString(*configured) +
                                  "; install with 'uv sync' in the pelican-import-tools repository");
     }
     if (const auto found = searchPath("pelican-import-tools")) {
-        return {{{pathString(*found)}}};
+        return {*found, {}};
     }
     throw std::runtime_error(
         "pelican-import-tools was not found on PATH; clone pelican-import-tools, run 'uv sync', then either "
         "install its pelican-import-tools command on PATH or pass --import-tools <repository-or-executable>");
 }
 
-std::string shellQuote(std::string_view value) {
-#ifdef _WIN32
-    std::string quoted{"\""};
-    for (const char ch : value) {
-        if (ch == '"') {
-            quoted += "\\\"";
-        } else {
-            quoted += ch;
-        }
-    }
-    return quoted + '"';
-#else
-    std::string quoted{"'"};
-    for (const char ch : value) {
-        quoted += ch == '\'' ? "'\\''" : std::string(1, ch);
-    }
-    return quoted + '\'';
-#endif
-}
-
-#ifdef _WIN32
-std::string windowsArgument(std::string_view value) {
-    if (value.find_first_of(" \t\n\v\"") == std::string_view::npos) {
-        return std::string{value};
-    }
-    std::string result{"\""};
-    std::size_t backslashes = 0;
-    for (const char ch : value) {
-        if (ch == '\\') {
-            ++backslashes;
-            continue;
-        }
-        if (ch == '"') {
-            result.append(backslashes * 2 + 1, '\\');
-            result += '"';
-        } else {
-            result.append(backslashes, '\\');
-            result += ch;
-        }
-        backslashes = 0;
-    }
-    result.append(backslashes * 2, '\\');
-    result += '"';
-    return result;
-}
-#endif
-
-void runExternal(const ToolCommand &tool, const std::vector<std::string> &arguments) {
-#ifdef _WIN32
-    std::vector<std::string> command_arguments = tool.prefix;
+void runExternal(const ToolCommand &tool, const std::vector<std::filesystem::path> &arguments,
+                 const ExternalRunConfig &config) {
+    auto command_arguments = tool.prefix_arguments;
     command_arguments.insert(command_arguments.end(), arguments.begin(), arguments.end());
-    std::string command;
-    for (const auto &argument : command_arguments) {
-        if (!command.empty()) command += ' ';
-        command += windowsArgument(argument);
+    const auto result = runProcess({.executable = tool.executable,
+                                    .arguments = std::move(command_arguments),
+                                    .timeout = config.timeout,
+                                    .cancelled = config.cancelled,
+                                    .log_path = config.log_path,
+                                    .name = "pelican-import-tools"});
+    std::cout << result.stdout_text;
+    std::cerr << result.stderr_text;
+    const auto log_note = " (log: " + pathString(config.log_path) + ")";
+    if (result.timed_out) {
+        throw std::runtime_error("pelican-import-tools external process timed out after " +
+                                 std::to_string(config.timeout.count()) + " ms" + log_note);
     }
-    std::vector<char> mutable_command(command.begin(), command.end());
-    mutable_command.push_back('\0');
-    STARTUPINFOA startup{};
-    startup.cb = sizeof(startup);
-    PROCESS_INFORMATION process{};
-    if (!CreateProcessA(tool.prefix.front().c_str(), mutable_command.data(), nullptr, nullptr, TRUE, 0,
-                        nullptr, nullptr, &startup, &process)) {
-        throw std::runtime_error("failed to start pelican-import-tools external process (Windows error " +
-                                 std::to_string(GetLastError()) + ")");
+    if (result.cancelled) {
+        throw std::runtime_error("pelican-import-tools external process cancelled" + log_note);
     }
-    WaitForSingleObject(process.hProcess, INFINITE);
-    DWORD result = 1;
-    GetExitCodeProcess(process.hProcess, &result);
-    CloseHandle(process.hThread);
-    CloseHandle(process.hProcess);
-    if (result != 0) {
+    if (result.exit_code != 0) {
         throw std::runtime_error("pelican-import-tools external process failed with status " +
-                                 std::to_string(result));
+                                 std::to_string(result.exit_code) + log_note);
     }
-#else
-    std::string command;
-    for (const auto &argument : tool.prefix) {
-        if (!command.empty()) command += ' ';
-        command += shellQuote(argument);
-    }
-    for (const auto &argument : arguments) {
-        command += ' ';
-        command += shellQuote(argument);
-    }
-    const int result = std::system(command.c_str());
-    if (result != 0) {
-        throw std::runtime_error("pelican-import-tools external process failed with status " +
-                                 std::to_string(result));
-    }
-#endif
 }
 
 void rewriteExternalSource(const std::filesystem::path &temporary, nlohmann::json source) {
@@ -468,14 +426,14 @@ void rewriteExternalSource(const std::filesystem::path &temporary, nlohmann::jso
 }
 
 void processIndividual(const ProjectContext &project, const SelectedInput &input, bool force,
-                       const std::optional<ToolCommand> &tool) {
+                       const std::optional<ToolCommand> &tool, const ExternalRunConfig &config) {
     const auto destination = individualDelivery(project, input);
     const auto temporary = prepareTemporary(destination);
     try {
         if (input.match.recipe.name == "extract_scene") {
             writeExtractDelivery(input, temporary);
         } else if (input.match.recipe.name == "psd_layers") {
-            runExternal(*tool, {"psd-extract", pathString(input.absolute), pathString(temporary)});
+            runExternal(*tool, {"psd-extract", input.absolute, temporary}, config);
             rewriteExternalSource(temporary, {{"file", input.relative}});
         } else {
             throw std::runtime_error("internal error: non-atlas input selected unknown recipe");
@@ -490,7 +448,7 @@ void processIndividual(const ProjectContext &project, const SelectedInput &input
 }
 
 void processAtlas(const ProjectContext &project, const std::vector<const SelectedInput *> &inputs,
-                  bool force, const ToolCommand &tool) {
+                  bool force, const ToolCommand &tool, const ExternalRunConfig &config) {
     const auto group_name = atlasGroupName(inputs.front()->match);
     const auto destination = project.imports / "atlas_pack" / group_name;
     const auto temporary = prepareTemporary(destination);
@@ -503,7 +461,7 @@ void processAtlas(const ProjectContext &project, const std::vector<const Selecte
             std::filesystem::create_directories(staged.parent_path());
             std::filesystem::copy_file(input->absolute, staged, std::filesystem::copy_options::overwrite_existing);
         }
-        std::vector<std::string> arguments{"atlas-pack", pathString(staging), pathString(temporary)};
+        std::vector<std::filesystem::path> arguments{"atlas-pack", staging, temporary};
         const auto &options = inputs.front()->match.recipe.options;
         if (const auto value = options.find("max_size"); value != options.end()) {
             arguments.insert(arguments.end(), {"--max-size", std::to_string(value->get<long long>())});
@@ -511,7 +469,7 @@ void processAtlas(const ProjectContext &project, const std::vector<const Selecte
         if (const auto value = options.find("padding"); value != options.end()) {
             arguments.insert(arguments.end(), {"--padding", std::to_string(value->get<long long>())});
         }
-        runExternal(tool, arguments);
+        runExternal(tool, arguments, config);
         auto files = nlohmann::json::array();
         for (const auto *input : inputs) files.push_back(input->relative);
         rewriteExternalSource(temporary, {{"files", std::move(files)}});
@@ -533,10 +491,25 @@ int runRulesImportCommand(int argc, char *argv[]) {
     program.add_argument("--project").required().metavar("dir|project.json");
     program.add_argument("--source").metavar("file");
     program.add_argument("--import-tools").metavar("repository|executable");
+    program.add_argument("--timeout-ms").default_value(300000).scan<'i', int>();
+    program.add_argument("--log").metavar("path");
     program.add_argument("--force").default_value(false).implicit_value(true);
     try {
         program.parse_args(argc, argv);
+        ScopedInterruptHandler interrupt_handler;
         const auto project = loadProject(program.get<std::string>("--project"));
+        const auto timeout_ms = program.get<int>("--timeout-ms");
+        if (timeout_ms <= 0) throw std::runtime_error("--timeout-ms must be positive");
+        std::filesystem::path log_path = project.root / ".pelican/logs/import-tools.log";
+        if (program.is_used("--log")) {
+            log_path = program.get<std::string>("--log");
+            if (!log_path.is_absolute()) log_path = project.root / log_path;
+        }
+        const ExternalRunConfig external_config{
+            .timeout = std::chrono::milliseconds{timeout_ms},
+            .log_path = std::move(log_path),
+            .cancelled = [] { return import_cancel_requested != 0; },
+        };
         const auto rules_path = rulesPath(project, program.get<std::string>("--rules"));
         const auto rules = parseImportRulesJson(nlohmann::json::parse(readFile(rules_path, "import rules")));
         std::optional<std::filesystem::path> source;
@@ -563,13 +536,13 @@ int runRulesImportCommand(int argc, char *argv[]) {
             if (input.match.recipe.name == "atlas_pack") {
                 atlases[atlasGroupKey(input.match)].push_back(&input);
             } else {
-                processIndividual(project, input, force, tool);
+                processIndividual(project, input, force, tool, external_config);
                 ++deliveries;
             }
         }
         for (const auto &[key, inputs] : atlases) {
             (void)key;
-            processAtlas(project, inputs, force, *tool);
+            processAtlas(project, inputs, force, *tool, external_config);
             ++deliveries;
         }
         std::cout << "import rules matched " << selected.size() << " files and produced " << deliveries

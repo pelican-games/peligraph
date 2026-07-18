@@ -679,6 +679,29 @@ pelican_define_test(vulkan_headless_test GPU pelican_core VulkanMemoryAllocator 
 target_compile_definitions(pelican_test_vulkan_headless_test PRIVATE
     VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic
 )
+pelican_define_test(atlas_descriptor_pool_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+target_compile_definitions(pelican_test_atlas_descriptor_pool_test PRIVATE
+    VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic
+)
+
+add_executable(pelican_test_process_fixture_child process_fixture_child.cpp)
+set_target_properties(pelican_test_process_fixture_child PROPERTIES CXX_STANDARD 20)
+pelican_define_test(processrunner_test)
+target_sources(pelican_test_processrunner_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/devcli/processrunner.cpp
+)
+target_compile_definitions(pelican_test_processrunner_test PRIVATE
+    PELICAN_PROCESS_FIXTURE_PATH="$<TARGET_FILE:pelican_test_process_fixture_child>"
+)
+add_dependencies(pelican_test_processrunner_test pelican_test_process_fixture_child)
+add_test(
+    NAME devcli_import_process_timeout_log
+    COMMAND ${CMAKE_COMMAND}
+        -DCLI=$<TARGET_FILE:pelican_cli>
+        -DCHILD=$<TARGET_FILE:pelican_test_process_fixture_child>
+        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/devcli_import_process
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_import_process.cmake
+)
 
 if(PELICAN_WITH_SEQPLAYER)
     add_test(

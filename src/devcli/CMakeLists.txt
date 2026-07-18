@@ -10,6 +10,7 @@ target_sources(pelican_cli PRIVATE
   gltfsceneextract.cpp
   importcommand.cpp
   materialcommand.cpp
+  processrunner.cpp
   projectinit.cpp
   rulesimport.cpp
   vrmcommand.cpp
