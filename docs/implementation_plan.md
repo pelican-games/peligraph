@@ -4576,6 +4576,34 @@ ImportSceneSnapshotRequestV1 の field 表・検証 5 段・失敗時非公開)+
 既存全テスト無変更 + golden SKIP 0・byte 不変 + player 8 秒 +
 CI green
 
+### WP169: 負債 DTXT0 — DebugText/UI の本物の互換 gate
+
+参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
+の「WP-DTXT0」定義が正**:
+
+> production DebugText/UI framebuffer A/B と共通
+> `BitmapFont::layout()`。GPU path 全面統合はこの結果と profiler を
+> 見て別決定。
+
+範囲: ①DebugText 経路と UI 経路のレイアウトを共通
+`BitmapFont::layout()` に一本化(現状の二重実装の解消)②production
+framebuffer での A/B 比較 gate(両経路の描画結果 byte 比較 fixture —
+「互換のつもり」を実測に)③差異が出た場合は差異を仕様として文書化
+するか一致させるかをレポートで提案(**GPU path の全面統合はしない** —
+別決定と明記)。
+
+依存: なし(WP54/75 の既存面)。見積: 中。
+排他: debug_text/UI のテキストレイアウト面 + fixture。**communication/
+rpcserver/loader(WP168 並走中)・schema 三 header・`.github` に
+触らない**。golden byte 不変が最重要 gate(レイアウト一本化で絵が
+変わったら即報告 — 黙って golden 更新禁止)。
+
+受け入れ = A/B 比較 fixture + layout 共通化 + 既存全テスト無変更 +
+golden SKIP 0・**byte 不変** + player 8 秒 + CI green
+
+**注: CI2(GPU gate/self-hosted runner)は runner 提供のユーザー判断
+待ちのため順序を入れ替えて DTXT0 を先行(2026-07-18)。**
+
 ### WP137: 負債 CI0 — CPU gate の常設(GitHub Actions)
 
 参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
