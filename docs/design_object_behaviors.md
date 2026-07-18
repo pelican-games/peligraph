@@ -1,4 +1,26 @@
-# オブジェクトへの振る舞い紐付け(behavior)(v2)
+# オブジェクトへの振る舞い紐付け(behavior)(v2.1 — 条件付き受理)
+
+**v2.1(2026-07-18)**: 再レビュー
+`docs/design_reviews/2026-07-18_editor_behavior_v2_rereview_codex.md` で
+**条件付き受理**。同レビュー **B-C1〜B-C3 が本書に優先する規範**。要点:
+
+- **STRUCT-SCHEMA0(新 WP・BEH-P0 の先行)**: 共通 descriptor は
+  **use-site policy 必須**(B-C1 逐語) — EventPayload policy は既存
+  どおり Bool/default 禁止・全 required・現行 error precedence 不変
+  (WP71 全 fixture 無変更 regression gate)。BehaviorParams policy
+  だけが Bool/Enum/default/部分適用を許可。policy 省略は compile error
+- **§8-3 は B-C2 で置換**: 「schema_version が変わる reload 時のみ
+  recreate」は撤回 — **DLL generation が変わる reload は version
+  一致でも必ず destroy→recreate**(旧 vtable を跨げない)。同一
+  generation の set-param は atomic live apply。schema_version は
+  recreate trigger でなく **params schema evolution の検証 key**
+  (fingerprint 変化 + version 据え置き = `schema_changed_without_
+  version_bump` で reload 拒否・version bump は全 raw params の
+  side-decode 全件成功が条件)
+- **B-C3**: BehaviorSystem の **literal order と stable name を BEH0
+  本文と fixture に記載**(実装の偶然を追認しない)。undo restore は
+  元 attachment_seq 復元・redo も同 seq。BEH1 に type 削除/schema
+  drift/version bump の fixture 群を明記
 
 対象読者: エンジン担当・ゲームロジックを書く人。
 ステータス: v2 ドラフト(2026-07-18)。v1 は敵対レビュー

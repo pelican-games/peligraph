@@ -1,4 +1,34 @@
-# 編集系 rpc とエンジン内インスペクタ/アセットブラウザ(v2)
+# 編集系 rpc とエンジン内インスペクタ/アセットブラウザ(v2.1 — 条件付き受理)
+
+**v2.1(2026-07-18)**: 再レビュー
+`docs/design_reviews/2026-07-18_editor_behavior_v2_rereview_codex.md` で
+**条件付き受理**。同レビュー **E-C1〜E-C5 が本書に優先する規範**であり、
+各 WP 登録時に逐語添付する。要点:
+
+- **E-PROJTX0(新 WP・E-RPC1 の先行)**: document+runtime の
+  failure-atomic 合成は「全 adapter の prepare(live 無変更)→ 全成功後
+  frame-boundary で noexcept publish」protocol(E-C1 逐語)。
+  ECS-MUT0 は generic migration participant であり aggregate
+  transaction の代用ではない
+- **transform 意味論(E-C2 逐語)**: authored=local が正本・
+  set は staged document + LocalTransformComponent → commit 区間内に
+  descendant closure の world 再計算 → observer 再開。runtime_json は
+  {local_trs, world_trs} 区別・world の自動 write-back 禁止。
+  reparent は `preserve: "local"|"world"` 必須・zero scale/循環は
+  preflight reject
+- **E-C3**: ECS-MUT0 の前回逐語(fault matrix)を WP に完全転記・
+  E-RPC1 の競合 fixture(phase trace/stale revision/scene transition/
+  callback・reload 競合)復元・ED-CODEC0 は七種の canonical JSON 例を
+  最小提出物に含む
+- **E-C4**: E-RPC1 は operation matrix(各 op の forward/inverse/
+  adapter/先行 WP/error/boundary)を WP 表に置く。未提供 method は
+  stable `method_unavailable`
+- **E-C5**: Save の公開は「全構築 → file replace → noexcept swap」。
+  中間状態を観測させない・各 prepare 点 + replace 直前の fault
+  injection・新規 process reload gate
+- **依存グラフはレビュー §6 が正**(STRUCT-SCHEMA0 →
+  ED-CODEC0/BEH-P0、ED-AUTH0+ED-CODEC0+ECS-MUT0 → E-PROJTX0 →
+  E-RPC1)。**ED-AUTH0 は §7 の境界逐語を添付すれば単独着地可**
 
 対象読者: エンジン担当・エディタ/ツールを使う人。
 ステータス: v2 ドラフト(2026-07-18)。v1 は敵対レビュー
