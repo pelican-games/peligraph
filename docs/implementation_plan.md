@@ -4329,6 +4329,41 @@ schema 三 header に触らない**。
 受け入れ = B-C2 逐語 gate 全 fixture + 既存全テスト無変更(WP155
 fixture 含む)+ golden SKIP 0・byte 不変 + player 8 秒 + CI green
 
+### WP163: 負債 ECS1 — registration lifetime/ABI
+
+参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
+の「WP-ECS1」定義が正**:
+
+> unregister token、dependent policy、raw owner generation、
+> component ID `<64` と duplicate rejection。
+
+範囲(同文書の N 系発見と WP148/155/162 の現状を踏まえる):
+
+1. **unregister token**: system/component/event/behavior の登録が
+   opaque token を返し、owner unload 時の解除が token 経由で決定的に
+   行われる(現行の名前照合/暗黙 owner 走査の穴を塞ぐ)
+2. **dependent policy**: 登録間依存(system が component/event 型に
+   依存)の unregister 順序規範 — 依存が残る解除は fail-fast
+3. **raw owner generation**: RegistrationOwner の世代を raw pointer
+   でなく世代付き ID で照合(reload 越しの dangling owner 誤一致
+   防止)
+4. **component ID `<64` と duplicate rejection**: 上限到達と重複登録
+   を名前入り hard error に(現行の silent 動作を fail-fast 化)
+
+WP155/162 の behavior registration・owner purge の意味論は**無変更**
+(既存 fixture 全 PASS が gate)。ABI v1(abi_v1.hpp)凍結面は
+変更禁止。
+
+依存: WP148(済)+ WP155(済)+ WP162(済)。見積: 中。
+排他: userpublic の registration 系(system/component/event/behavior
+registerer)+ ecs core の登録面 + fixture。**communication/
+rpcserver/editorjournal(WP161 並走中)・loader transaction 面・
+schema 三 header に触らない**。
+
+受け入れ = 上記 4 点の fixture(token 解除・依存順 fail-fast・世代
+照合・上限/重複 hard error)+ 既存全テスト無変更 + golden SKIP 0・
+byte 不変 + player 8 秒 + CI green
+
 ### WP137: 負債 CI0 — CPU gate の常設(GitHub Actions)
 
 参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
