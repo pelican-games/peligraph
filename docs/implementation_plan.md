@@ -4019,6 +4019,97 @@ header 凍結。edit 系 method は実装しない(E-RPC1 の責務)。
 export schema 逐語 + 既存全テスト無変更 + golden SKIP 0・byte 不変 +
 player 8 秒 + CI green
 
+### WP155: BEH0 — behavior attachment arena(スクリプト紐付けの本体)
+
+参照: `docs/design_object_behaviors.md` **v2.1 §0/§1/§3/§4 が正**
+(条件付き受理済み)。中核:
+
+- **正本 = engine-owned attachment arena(special binder で lower)。
+  ECS component ではない**(§0)。scene JSON の見た目(component 風
+  `{"name":"behavior","type":"player_control","params":{...}}`)は維持
+- `PELICAN_REGISTER_BEHAVIOR(Type, "stable_name", schema_version)` —
+  **登録 = 宣言のみ**(factory/destroy/typed-event thunk/params
+  schema/RegistrationOwner 記録)。static init・G2 候補検証中の
+  instance 生成/onInit は**一切禁止**(B-6 — 必須安全条件)
+- special binder: 反復 `behavior` record を declaration order で収集し
+  arena へ lower。behavior-only object にも有効 entity。1 object 複数
+  behavior・同 type 複数 attachment 可(handle + attachment_seq)。
+  `type` 未知 = active DLL 正常時 hard error / DLL unavailable 時のみ
+  raw pending + 名前入り WARN(§1)
+- typed event dispatch(§3): `onEvent(const DoorOpened&, ctx&)` を
+  登録時 thunk 化・matching type の attachment だけへ宣言順配送・
+  配送位置 = BehaviorSystem の system order 内・owner unload 時の
+  queued event purge
+- lifecycle(§4): scene activation barrier(attachment_seq 順
+  onInit・失敗 = 全 rollback 逆順 onDestroy)/ pre-destroy barrier
+  (逆順 onDestroy noexcept)/ callback 中 structural mutation は次
+  boundary へ defer。決定性 gate = trace + RNG を新規 process 二回 +
+  replay 二回で byte 一致
+- **owner 安全(§5-1 — BEH0 必須安全条件)**: owner 別 registry
+  purge・owner 別 live instance destroy・GameLogicReloader の**全
+  failure/unload branch** からの unregister(reload 未対応でも
+  dangling callback を残さない)
+
+**B-C3 逐語(再レビュー §3.3)**:
+
+> BEH0 本文と registration fixture に `BehaviorSystem` の literal
+> `order` と stable `name` を記載し、同 order の user system との
+> name tie-break を含む event/update total order を expected trace で
+> 固定する。scene attachment の undo restore は元 `attachment_seq` を
+> 復元し、redo も同じ seq を使う。runtime で新規 attach したものだけが
+> 新しい `(commit_seq, command_index, attachment_index)` を得る。
+> forward→inverse→forward で attachment seq 列と lifecycle/event/
+> update trace を一致させる。
+
+(undo/redo の forward→inverse→forward fixture は E-RPC1/BEH2 依存 —
+本 WP は seq 決定則(scene load = (object declaration index,
+component array index))と literal order/name/total order trace fixture
+まで。seq restore fixture は BEH2 gate へ持ち越すことをレポートに明記)
+
+**BEH-P0 残差(WP150 吸収の残り)**: params 全省略 = 全 default 化・
+全 scalar kind の往復 fixture を本 WP に含める。
+
+依存: WP149(済)+ WP150(済)+ **WP153 着地後に着手**(scene
+loader 競合回避)。見積: 大。
+排他: behavior arena/registration 新設(userpublic + gamelogic)+
+scene special binder + fixture。**communication/rpcserver(WP154/156
+系)・schema 三 header・ecs core に触らない**。
+
+受け入れ = 上記 §1/§3/§4/§5-1 + B-C3 逐語 gate + example 級の実証
+(自己完結 project で behavior が onInit/onUpdate/onEvent/onDestroy を
+決定的に回る)+ 既存全テスト無変更 + golden SKIP 0・byte 不変 +
+player 8 秒 + CI green
+
+### WP156: E-HOST0 — windowed rpc host(bounded queue service)
+
+参照: **`docs/design_editor_tooling.md` §1-4-3 前半(V22-C3)の
+逐語が受け入れ条件**:
+
+> v1 の watch は polling とし、poll 間の競合安全性は global
+> SceneRevision CAS が担保する。ただし stdio RPC を headless blocking
+> loop に限定したまま「windowed GUI + agent の同一 session」を完了
+> 条件にしない。windowed/embedded engine が外部 RPC request を bounded
+> queue として受け、EditorCommandService へ渡し、frame-boundary commit
+> 後に応答できる transport owner を先行 WP に置く。一つの外部接続 +
+> 組み込み GUI までを v1 とし、複数外部接続は WebSocket 後続でもよい。
+
+範囲: windowed フレームループが stdio rpc を **bounded queue 経由で
+frame boundary に処理**できる host 層。stdin reader スレッド(行単位
+enqueue・上限超過は stable busy)+ frame boundary での dequeue→
+handler→応答 flush。headless の既存 blocking 動作は完全無変更
+(regression gate)。replay/golden/strict の rpc 規範(reject 規則)も
+無変更。watch token/preview_epoch は WATCH0 の責務で本 WP に含めない。
+
+依存: WP27(済)+ **WP154 着地後に着手**(rpcserver 競合回避)。
+見積: 中。
+排他: appflow/loop + communication/rpcserver の host 層 + fixture。
+**loader/scene/ecs/behavior に触らない**。
+
+受け入れ = 逐語 gate(windowed + 外部 1 接続で query/get_status が
+frame boundary で応答・headless 経路 byte 不変)+ 既存全テスト無変更 +
+golden SKIP 0 + player 8 秒(windowed rpc 有効でも通常起動無影響)+
+CI green
+
 ### WP137: 負債 CI0 — CPU gate の常設(GitHub Actions)
 
 参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
