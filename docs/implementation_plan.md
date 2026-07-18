@@ -57,59 +57,45 @@ ctest --test-dir ./build -C Debug --output-on-failure
 
 | WP | 内容 | 状態 |
 |----|------|------|
-| 172 | PREVIEW0 — eval_preview / render_preview | 進行中(並走 worktree) |
+| 175 | 負債 CONTRACT0 — 境界 gate | 進行中(並走 worktree) |
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
+(WP172 は 2026-07-18 に完了・検収済み — 本文は archive 参照。)
 
 ## 2. WP 詳細
 
-### WP172: PREVIEW0 — eval_preview / render_preview(エディタ設計最終 WP)
+### WP175: 負債 CONTRACT0 — 境界 gate
 
-前提: E-RPC1/JOURNAL0(済 WP157/161 — editor gate/override validator
-所有)+ WP133(済)+ WP153/158(PreparedProjection の材料)。
+参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
+の「WP-CONTRACT0」定義が正**:
 
-参照: **`docs/design_editor_tooling.md` v2.5 §1-5-2(V22-C5)・
-§1-5-3(V22-C6)の逐語 + §1-6-2(renderer preview state inventory —
-全 12 行の literal 三分類)+ §1-6-1a の eval/render_preview 行が
-受け入れ条件**(逐語は v2.5 本文が正 — 全文添付済み)。中核:
+> OpenPBR engine/importer 6 variant exact-set、projection consumer
+> inventory、`engineMvp` の意味を次 ABI へ移す準備。
 
-- **eval_preview**: live へ publish して revert する API に**しない**。
-  immutable base document + overrides を E-PROJTX0 と同じ codec/
-  validation/adapter prepare に通し、publish 直前の
-  `PreparedProjection` を request-local EvaluationContext として query
-  adapter へ渡す(descendant world/Light/Phys query/camera 派生値は
-  context の explicit state を読む)。live ECS/Light/Phys/renderer/
-  document/revision/journal を mutate せず、成功失敗とも context 破棄。
-  prepared 評価できない adapter/field = method_unavailable。
-  gate = 評価前後の全 shared state 逐語一致(V22-C5 第二段落の列挙)
-- **render_preview**: flat/xr と別の **`preview` graph variant** を
-  module graph freeze 前に precompile(feature policy: jitter/
-  velocity/history/TAA/UI/swapchain/XR mirror 除外・除外不能 authored
-  pass は名前入り起動時 reject)。request-local RT/layout tracker/
-  frame resources/temporal snapshot(§1-6-2 の三分類どおり —
-  DeletionQueue epoch/RenderTiming published/shared history/resize は
-  advance しない)。GPU timing は preview_request_id namespace。
-  capture schema(width/height/encoding/camera/上限)固定・
-  swapchain/XR へ present しない・xr_active 中 =
-  xr_active_unsupported。「通常 frame の直前/直後に preview を挟んで
-  全 shared state/次 capture bytes が control と一致」gate
-- rpc + typed service(can_preview gate は WP161 実装を消費)。
-  pelican_rpc.py に素通し helper 追加(スイープレシピの
-  eval/render_preview が実体化)
+範囲(3 点とも関連 N 系発見を全文検索して対象特定):
 
-依存: WP157/161/153/158/133(済)。見積: 大(本セッション最大級 —
-renderer 側は慎重に)。
-排他: 新 preview executor/graph variant(vkcore/renderingpass の
-preview 面)+ service/rpcserver の preview method + PreparedProjection
-評価 adapter + pelican_rpc.py + fixture。**flat/xr の既存 graph・
-selectGraphVariant の変更禁止(V22-C6)・editorjournal/transaction
-本体・schema 三 header・appflow teardown(WP171 並走中)・`.github`
-に触らない**。
+1. **OpenPBR 6 variant exact-set gate**: engine 側(WP116/117 の
+   wrapper-B ×6)と importer 側(usd レーン)の variant 集合が
+   exact 一致することを機械検査(片側だけの追加/欠落 = 名前入り
+   fail)。v1.1.1 exact pin の検証込み
+2. **projection consumer inventory**: 投影行列(projection/jitter)を
+   消費する全箇所の台帳化 + 「新 consumer は台帳に登録しないと
+   fail-fast」の gate(TAA 一般式 `clip'.xy=clip.xy+jitter·clip.w` の
+   適用漏れ防止)
+3. **engineMvp の次 ABI 準備**: 現 `engineMvp` の意味論(どの空間・
+   どの jitter 適用段か)を文書化し、次期 shader ABI で意味を移す
+   ための準備(**現 ABI の変更・シェーダの挙動変更はしない** —
+   文書 + 検査のみ。golden byte 不変)
 
-受け入れ = V22-C5/C6 逐語 gate(state 逐語一致・control 比較)+
-§1-6-2 全行の実測検査 + 既存全テスト無変更 + golden SKIP 0・byte
-不変 + player 8 秒 + CI green
+依存: なし。見積: 中。
+排他: material/shader contract の検査面 + docs + fixture。
+**シェーダ実体・renderer 実行系の挙動変更禁止(検査とドキュメントの
+み)。communication・schema 三 header・`.github` に触らない**。
+golden byte 不変が gate。
+
+受け入れ = 3 点の gate/台帳 + 既存全テスト無変更 + golden SKIP 0・
+byte 不変 + player 8 秒 + CI green
 
 ## 3. 保留中のトラック(WP 化待ち)
 

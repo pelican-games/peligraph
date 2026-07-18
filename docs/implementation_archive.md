@@ -4709,3 +4709,33 @@ docs(CI 運用 1 ページ)。**エンジンコードの挙動変更禁止**
 ---
 
 未完了 WP と運用規則は [active ledger](implementation_plan.md) を参照。
+
+
+### WP172: PREVIEW0 — eval_preview / render_preview(エディタ設計最終 WP・2026-07-18 完了)
+
+前提: E-RPC1/JOURNAL0(済 WP157/161 — editor gate/override validator
+所有)+ WP133(済)+ WP153/158(PreparedProjection の材料)。
+
+参照: **`docs/design_editor_tooling.md` v2.5 §1-5-2(V22-C5)・
+§1-5-3(V22-C6)の逐語 + §1-6-2(renderer preview state inventory —
+全 12 行の literal 三分類)+ §1-6-1a の eval/render_preview 行が
+受け入れ条件**(逐語は v2.5 本文が正 — 全文添付済み)。中核:
+
+- **eval_preview**: live へ publish して revert する API にしない。
+  immutable base document + overrides を E-PROJTX0 と同じ codec/
+  validation/adapter prepare に通し、publish 直前の
+  `PreparedProjection` を request-local EvaluationContext として query
+  adapter へ渡す。live を mutate せず、成功失敗とも context 破棄。
+  gate = 評価前後の全 shared state 逐語一致(V22-C5 第二段落の列挙)
+- **render_preview**: flat/xr と別の `preview` graph variant を
+  module graph freeze 前に precompile。request-local RT/layout
+  tracker/frame resources/temporal snapshot(§1-6-2 の三分類)。
+  GPU timing は preview_request_id namespace。capture schema 固定・
+  present なし・xr_active 中 = xr_active_unsupported。control 比較
+  gate(通常 frame の直前/直後に preview を挟んで次 capture bytes
+  一致)
+- rpc + typed service + pelican_rpc.py helper
+
+受け入れ = V22-C5/C6 逐語 gate + §1-6-2 全行の実測検査 + 既存全
+テスト無変更 + golden SKIP 0・byte 不変 + player 8 秒 + CI green。
+完了レポート: `docs/design_reviews/2026-07-18_wp172_report.md`
