@@ -417,6 +417,10 @@ pelican_define_test(inputsequence_test pelican_core)
 if(PELICAN_WITH_IMGUI)
 pelican_define_test(imgui_isolation_test pelican_core)
 pelican_define_test(planviewer_test pelican_core)
+pelican_define_test(assetbrowser_test pelican_core glm)
+target_compile_definitions(pelican_test_assetbrowser_test PRIVATE
+  PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
 endif()
 if(PELICAN_WITH_RPC)
 pelican_define_test(jsonrpc_test pelican_project)

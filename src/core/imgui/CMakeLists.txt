@@ -18,6 +18,7 @@ if(NOT imgui_vendor_POPULATED)
 endif()
 
 add_library(pelican_imgui OBJECT
+  assetbrowser.cpp
   imguiruntime.cpp
   imguisystem.cpp
   planviewer.cpp
