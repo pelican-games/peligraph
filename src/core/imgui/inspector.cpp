@@ -264,7 +264,9 @@ makeInspectorWidgetPlan(const EditorComponentQueryResult &component) {
     for (const auto &field : component.schema_fields) {
         InspectorWidgetDescriptor widget{
             .field_name = std::string{field.name},
-            .json_pointer = inspectorJsonPointer(field.name),
+            .json_pointer = (component.name == "behavior" ? std::string{"/params"}
+                                                            : std::string{}) +
+                            inspectorJsonPointer(field.name),
         };
         const auto [minimum, maximum] = numericRange(field.range);
         widget.range_min = minimum;
@@ -340,9 +342,16 @@ bool applyInspectorStaleResult(EditorObjectQueryResult &selected,
     if (target == payload->end() || !target->is_object()) return applied;
     const auto authored = target->find("authored_component");
     if (authored == target->end()) return applied;
+    const auto attachment_index = target->find("attachment_index");
     const auto component = std::find_if(
         selected.components.begin(), selected.components.end(),
-        [&](const auto &candidate) { return candidate.name == component_slot; });
+        [&](const auto &candidate) {
+            return candidate.name == component_slot &&
+                   (attachment_index == target->end() ||
+                    !attachment_index->is_number_unsigned() ||
+                    candidate.component_index ==
+                        attachment_index->get<std::size_t>());
+        });
     if (component != selected.components.end()) {
         component->authored_json = *authored;
         applied = true;
@@ -765,18 +774,28 @@ struct InspectorPanel::Impl {
     OrderedJson fieldOperation(const EditorComponentQueryResult &component,
                                const InspectorWidgetDescriptor &widget,
                                const Json &value) const {
-        return {{"op", "set_component_value"},
-                {"object_id", selected->authoring_object_id.value},
-                {"component_slot", component.name},
-                {"field_path", widget.json_pointer},
-                {"value", value}};
+        OrderedJson result{{"op", "set_component_value"},
+                           {"object_id", selected->authoring_object_id.value},
+                           {"component_slot", component.name},
+                           {"field_path", widget.json_pointer},
+                           {"value", value}};
+        if (component.name == "behavior") {
+            result["attachment_index"] = component.component_index;
+            if (component.behavior_attachment_handle) {
+                result["attachment_handle"] =
+                    *component.behavior_attachment_handle;
+            }
+        }
+        return result;
     }
 
     void handleWidgetInteraction(EditorComponentQueryResult &component,
                                  const InspectorWidgetDescriptor &widget,
                                  const WidgetInteraction &interaction) {
         const auto field_key = std::to_string(selected->authoring_object_id.value) + ":" +
-                               component.name + ":" + widget.json_pointer;
+                               component.name + ":" +
+                               std::to_string(component.component_index) + ":" +
+                               widget.json_pointer;
         if (interaction.changed) {
             component.authored_json[Json::json_pointer{widget.json_pointer}] =
                 interaction.value;
@@ -887,9 +906,26 @@ struct InspectorPanel::Impl {
     }
 
     void drawComponent(EditorComponentQueryResult &component) {
-        ImGui::PushID(component.name.c_str());
-        const auto title = component.name + (component.pending ? " (pending)" : "");
+        ImGui::PushID(static_cast<int>(component.component_index));
+        std::string title = component.name;
+        if (component.name == "behavior") {
+            title += " " + component.authored_json.value("type", std::string{"<unknown>"});
+            title += " [index " + std::to_string(component.component_index);
+            if (component.behavior_attachment_handle) {
+                title += ", handle " +
+                         std::to_string(*component.behavior_attachment_handle);
+            }
+            title += "]";
+        }
+        if (component.pending) title += " (pending)";
         if (ImGui::CollapsingHeader(title.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (component.pending) {
+                ImGui::TextColored({0.95F, 0.70F, 0.25F, 1.0F},
+                                   "Pending | game-logic DLL unavailable | read-only");
+                drawReadonlyJson("pending params", component.authored_json);
+                ImGui::PopID();
+                return;
+            }
             if (!component.editable) {
                 ImGui::TextColored({0.95F, 0.70F, 0.25F, 1.0F},
                                    "Read-only | %s",

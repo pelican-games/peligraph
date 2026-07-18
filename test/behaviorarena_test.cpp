@@ -398,6 +398,115 @@ TEST_CASE("Behavior pre-destroy runs in reverse attachment order while entity is
     REQUIRE(arena.snapshot().empty());
 }
 
+TEST_CASE("WP167 live behavior edits preserve identity lifecycle and temporal visibility",
+          "[behavior][editor][wp167][attachment][params][undo-redo]") {
+    FastModuleContainer modules;
+    initializeBehaviorTestModules();
+    auto &arena = GET_MODULE(BehaviorAttachmentArena);
+    const auto entity = createEmptyEntity();
+    const auto identity = arena.reserveRuntimeAttachmentIdentity(9, 0, 0);
+    const auto event = internal::QueuedEvent{
+        .type = std::type_index{typeid(BehaviorProbeEvent)},
+        .name = "BehaviorProbeEvent",
+        .payload = std::make_shared<BehaviorProbeEvent>(),
+    };
+    GameContext ctx;
+
+    const auto component = [](std::string_view label) {
+        return nlohmann::json{{"name", "behavior"},
+                              {"type", "wp155_order"},
+                              {"params", {{"label", label}}}};
+    };
+    const auto attach_and_activate = [&](std::string_view label) {
+        const auto raw = component(label);
+        auto prepared = arena.prepareEditorEdits({BehaviorAttachmentEdit{
+            .kind = BehaviorAttachmentEditKind::attach,
+            .entity = entity,
+            .component_index = 0,
+            .identity = identity,
+            .stable_name = "wp155_order",
+            .canonical_params = internal::canonicalizeBehaviorParams(
+                "wp155_order", raw.at("params")),
+            .raw_component = raw,
+        }});
+        prepared->publish();
+        prepared->finish();
+        REQUIRE(arena.snapshot().size() == 1);
+        REQUIRE(arena.snapshot().front().handle == identity.handle);
+        REQUIRE(arena.snapshot().front().attachment_seq == identity.attachment_seq);
+        REQUIRE_FALSE(arena.snapshot().front().active);
+
+        trace.clear();
+        arena.dispatchEvent(event, ctx);
+        arena.update(ctx);
+        REQUIRE(trace.empty());
+
+        arena.dispatchEvent(event, ctx);
+        arena.update(ctx);
+        return trace;
+    };
+    const auto remove = [&] {
+        trace.clear();
+        auto prepared = arena.prepareEditorEdits({BehaviorAttachmentEdit{
+            .kind = BehaviorAttachmentEditKind::remove,
+            .entity = entity,
+            .component_index = 0,
+            .identity = identity,
+        }});
+        prepared->publish();
+        prepared->finish();
+        REQUIRE(arena.snapshot().empty());
+        return trace;
+    };
+
+    const auto first_forward = attach_and_activate("stable");
+    const auto first_inverse = remove();
+    const auto inverse_forward = attach_and_activate("stable");
+    const auto second_inverse = remove();
+    const auto second_forward = attach_and_activate("stable");
+    REQUIRE(first_forward == inverse_forward);
+    REQUIRE(inverse_forward == second_forward);
+    REQUIRE(first_inverse == second_inverse);
+    REQUIRE(first_forward == std::vector<std::string>{
+                                 "init:stable", "B:event:stable", "B:update:stable"});
+    REQUIRE(first_inverse ==
+            std::vector<std::string>{"destroy:stable:alive"});
+
+    trace.clear();
+    const auto edited = component("edited");
+    auto set_params = arena.prepareEditorEdits({BehaviorAttachmentEdit{
+        .kind = BehaviorAttachmentEditKind::set_params,
+        .entity = entity,
+        .component_index = 0,
+        .identity = identity,
+        .canonical_params = internal::canonicalizeBehaviorParams(
+            "wp155_order", edited.at("params")),
+        .raw_component = edited,
+    }});
+    set_params->publish();
+    set_params->finish();
+    arena.dispatchEvent(event, ctx);
+    arena.update(ctx);
+    REQUIRE(trace == std::vector<std::string>{"B:event:edited", "B:update:edited"});
+    REQUIRE(arena.snapshot().front().canonical_params == R"({"label":"edited"})");
+
+    REQUIRE_THROWS(arena.prepareEditorEdits({BehaviorAttachmentEdit{
+        .kind = BehaviorAttachmentEditKind::set_params,
+        .entity = entity,
+        .component_index = 0,
+        .identity = identity,
+        .canonical_params = R"({"label":7})",
+        .raw_component = component("unpublished"),
+    }}));
+    trace.clear();
+    arena.dispatchEvent(event, ctx);
+    REQUIRE(trace == std::vector<std::string>{"B:event:edited"});
+
+    REQUIRE(remove() == std::vector<std::string>{"destroy:edited:alive"});
+    REQUIRE(GET_MODULE(ECSCore).getTemplatePublicModule().isAlive(entity));
+    REQUIRE(GameObjects::remove(entity));
+}
+
 TEST_CASE("Structural removal during a behavior callback waits for the next boundary",
           "[behavior][mutation][snapshot]") {
     FastModuleContainer modules;

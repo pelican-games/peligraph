@@ -13,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <typeindex>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -24,8 +25,17 @@ struct RawBehaviorInstance {
     const std::type_info *params_type = &typeid(void);
 };
 
+struct RawBehaviorParams {
+    void *value = nullptr;
+    const std::type_info *type = &typeid(void);
+};
+
 using BehaviorCreateFn = RawBehaviorInstance (*)(std::string_view canonical_params);
 using BehaviorDestroyFn = void (*)(RawBehaviorInstance &instance) noexcept;
+using BehaviorPrepareParamsFn = RawBehaviorParams (*)(std::string_view canonical_params);
+using BehaviorApplyPreparedParamsFn = void (*)(void *live_params,
+                                                RawBehaviorParams &prepared) noexcept;
+using BehaviorDestroyPreparedParamsFn = void (*)(RawBehaviorParams &prepared) noexcept;
 using BehaviorCanonicalizeParamsFn = std::string (*)(const nlohmann::json &params);
 using BehaviorEventFn = void (*)(Behavior &behavior, const void *event,
                                  BehaviorContext &ctx);
@@ -45,6 +55,9 @@ struct BehaviorRegistration {
     BehaviorCanonicalizeParamsFn canonicalize_params = nullptr;
     BehaviorCreateFn create = nullptr;
     BehaviorDestroyFn destroy = nullptr;
+    BehaviorPrepareParamsFn prepare_params = nullptr;
+    BehaviorApplyPreparedParamsFn apply_prepared_params = nullptr;
+    BehaviorDestroyPreparedParamsFn destroy_prepared_params = nullptr;
     std::vector<BehaviorEventHandlerRegistration> event_handlers;
     RegistrationOwner owner = engineRegistrationOwner;
     RegistrationToken token;
@@ -194,6 +207,8 @@ class UserBehaviorRegistererTemplatePublic {
         using Params = typename Type::Params;
         static_assert(std::default_initializable<Params>,
                       "Behavior Params must be default initializable");
+        static_assert(std::is_nothrow_swappable_v<Params>,
+                      "Behavior Params must be nothrow swappable for atomic live apply");
 
         if (stable_name.empty()) {
             throw std::runtime_error("behavior stable name must not be empty");
@@ -231,6 +246,22 @@ class UserBehaviorRegistererTemplatePublic {
                 delete static_cast<Type *>(instance.behavior);
                 delete static_cast<Params *>(instance.params);
                 instance = {};
+            },
+            .prepare_params = [](std::string_view canonical_params) -> RawBehaviorParams {
+                auto params = std::make_unique<Params>();
+                decodeBehaviorParams(nlohmann::json::parse(canonical_params), *params,
+                                     Params::schema);
+                return RawBehaviorParams{.value = params.release(), .type = &typeid(Params)};
+            },
+            .apply_prepared_params = [](void *live_params,
+                                        RawBehaviorParams &prepared) noexcept {
+                using std::swap;
+                swap(*static_cast<Params *>(live_params),
+                     *static_cast<Params *>(prepared.value));
+            },
+            .destroy_prepared_params = [](RawBehaviorParams &prepared) noexcept {
+                delete static_cast<Params *>(prepared.value);
+                prepared = {};
             },
             .event_handlers = std::move(event_handlers),
         });

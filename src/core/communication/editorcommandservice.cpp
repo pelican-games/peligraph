@@ -1,5 +1,6 @@
 #include "editorcommandservice.hpp"
 #include "../loader/basicconfig.hpp"
+#include "../userpublic/details/behavior/registerer.hpp"
 
 #include <algorithm>
 #include <picosha2.h>
@@ -218,6 +219,10 @@ EditorObjectQueryResult EditorCommandService::queryObject(const AuthoringSceneDo
     if (!runtime.component_pending.empty() && runtime.component_pending.size() != object.components.size()) {
         throw std::logic_error("editor runtime adapter returned a pending count mismatch");
     }
+    if (!runtime.behavior_attachments.empty() &&
+        runtime.behavior_attachments.size() != object.components.size()) {
+        throw std::logic_error("editor runtime adapter returned a behavior attachment count mismatch");
+    }
 
     EditorObjectQueryResult result{.scene_revision = source.revision(),
                                    .authoring_object_id = object.authoring_object_id,
@@ -230,6 +235,7 @@ EditorObjectQueryResult EditorCommandService::queryObject(const AuthoringSceneDo
         const auto name = component.authoredJson().at("name").get<std::string>();
         EditorComponentQueryResult component_result{
             .name = name,
+            .component_index = index,
             .authored_json = component.authoredJson(),
             .editable = component.codec.editable,
             .codec_state = component.codec.state,
@@ -239,7 +245,37 @@ EditorObjectQueryResult EditorCommandService::queryObject(const AuthoringSceneDo
         if (!runtime.component_runtime_json.empty()) {
             component_result.runtime_json = runtime.component_runtime_json[index];
         }
-        if (const auto *codec = findComponentCodec(name)) {
+        if (name == "behavior") {
+            const auto stable_name = component_result.authored_json.value(
+                "type", std::string{});
+            const auto *registration =
+                internal::getBehaviorRegisterer().findByName(stable_name);
+            if (!runtime.behavior_attachments.empty() &&
+                runtime.behavior_attachments[index]) {
+                const auto &attachment = *runtime.behavior_attachments[index];
+                component_result.behavior_attachment_handle = attachment.handle;
+                component_result.behavior_attachment_seq = attachment.attachment_seq;
+                component_result.behavior_owner = attachment.owner;
+                component_result.behavior_owner_generation =
+                    attachment.owner_generation;
+                component_result.pending = attachment.pending;
+            }
+            if (registration != nullptr && !component_result.pending) {
+                const auto params = component_result.authored_json.contains("params")
+                                        ? component_result.authored_json.at("params")
+                                        : Json::object();
+                component_result.authored_json["params"] = Json::parse(
+                    registration->canonicalize_params(params));
+                component_result.editable = true;
+                component_result.codec_state = ComponentCodecState::Registered;
+                component_result.codec_name = "behavior_params";
+                component_result.schema_state =
+                    EditorComponentSchemaState::Available;
+                component_result.schema_fields = registration->params_schema;
+            } else {
+                component_result.editable = false;
+            }
+        } else if (const auto *codec = findComponentCodec(name)) {
             component_result.schema_state = EditorComponentSchemaState::Available;
             const auto fields = codec->fieldSchema();
             component_result.schema_fields.assign(fields.begin(), fields.end());
@@ -472,7 +508,9 @@ bool EditorCommandService::forceAbortPreview(std::string reason) noexcept {
 }
 
 OrderedJson editorQueryJson(const EditorComponentQueryResult &component) {
-    OrderedJson result{{"name", component.name}, {"authored_json", component.authored_json}};
+    OrderedJson result{{"name", component.name},
+                       {"component_index", component.component_index},
+                       {"authored_json", component.authored_json}};
     if (component.runtime_json) result["runtime_json"] = *component.runtime_json;
     result["editable"] = component.editable;
     result["codec"] = OrderedJson{{"state", component.codec_state == ComponentCodecState::Registered
@@ -489,6 +527,24 @@ OrderedJson editorQueryJson(const EditorComponentQueryResult &component) {
         }
     }
     result["pending"] = component.pending;
+    if (component.name == "behavior") {
+        result["behavior"] = OrderedJson{
+            {"attachment_index", component.component_index},
+            {"attachment_handle", component.behavior_attachment_handle
+                                      ? OrderedJson(*component.behavior_attachment_handle)
+                                      : OrderedJson(nullptr)},
+            {"attachment_seq", component.behavior_attachment_seq
+                                   ? OrderedJson(*component.behavior_attachment_seq)
+                                   : OrderedJson(nullptr)},
+            {"owner", component.behavior_owner
+                          ? OrderedJson(*component.behavior_owner)
+                          : OrderedJson(nullptr)},
+            {"owner_generation", component.behavior_owner_generation
+                                     ? OrderedJson(*component.behavior_owner_generation)
+                                     : OrderedJson(nullptr)},
+            {"status", component.pending ? "pending" : "available"},
+        };
+    }
     return result;
 }
 

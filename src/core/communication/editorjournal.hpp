@@ -2,6 +2,7 @@
 
 #include "../loader/editorprojectiontransaction.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -125,6 +126,11 @@ struct EditorPreviewExecutionRequest {
     bool restore_committed = false;
 };
 
+struct EditorBehaviorAttachmentIdentity {
+    std::uint64_t handle = 0;
+    std::uint64_t attachment_seq = 0;
+};
+
 struct EditorEditRuntimeDependencies {
     std::function<const AuthoringSceneDocument &()> document;
     std::function<std::string()> current_scene_id;
@@ -133,6 +139,13 @@ struct EditorEditRuntimeDependencies {
         execute_preview;
     std::function<void()> preview_boundary;
     std::function<EditorGateObservation()> gate;
+    std::function<EditorBehaviorAttachmentIdentity(
+        std::uint64_t commit_seq, std::size_t command_index,
+        std::size_t attachment_index)>
+        allocate_behavior_attachment;
+    std::function<std::optional<EditorBehaviorAttachmentIdentity>(
+        AuthoringObjectId object_id, std::size_t attachment_index)>
+        resolve_behavior_attachment;
     bool install_commit_hook = false;
 };
 

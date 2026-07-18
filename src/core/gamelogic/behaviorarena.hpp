@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
@@ -42,11 +43,54 @@ struct BehaviorAttachmentInfo {
     BehaviorAttachmentHandle handle = invalidBehaviorAttachmentHandle;
     std::uint64_t attachment_seq = 0;
     GameObjectId entity = invalidGameObjectId;
+    std::size_t component_index = 0;
     std::string stable_name;
     std::string canonical_params;
     internal::RegistrationOwner owner = internal::engineRegistrationOwner;
     bool pending = false;
     bool active = false;
+};
+
+struct BehaviorAttachmentIdentity {
+    BehaviorAttachmentHandle handle = invalidBehaviorAttachmentHandle;
+    std::uint64_t attachment_seq = 0;
+};
+
+enum class BehaviorAttachmentEditKind : std::uint8_t {
+    attach,
+    remove,
+    set_params,
+    insert_component,
+    remove_component,
+};
+
+struct BehaviorAttachmentEdit {
+    BehaviorAttachmentEditKind kind = BehaviorAttachmentEditKind::set_params;
+    GameObjectId entity = invalidGameObjectId;
+    std::size_t component_index = 0;
+    BehaviorAttachmentIdentity identity;
+    std::string stable_name;
+    std::string canonical_params;
+    nlohmann::json raw_component;
+};
+
+class PreparedBehaviorAttachmentEdits {
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+
+    explicit PreparedBehaviorAttachmentEdits(std::unique_ptr<Impl> impl) noexcept;
+    friend class BehaviorAttachmentArena;
+
+  public:
+    ~PreparedBehaviorAttachmentEdits();
+    PreparedBehaviorAttachmentEdits(PreparedBehaviorAttachmentEdits &&) noexcept;
+    PreparedBehaviorAttachmentEdits &operator=(PreparedBehaviorAttachmentEdits &&) noexcept;
+    PreparedBehaviorAttachmentEdits(const PreparedBehaviorAttachmentEdits &) = delete;
+    PreparedBehaviorAttachmentEdits &operator=(const PreparedBehaviorAttachmentEdits &) = delete;
+
+    void publish() noexcept;
+    void rollback() noexcept;
+    void finish() noexcept;
 };
 
 std::uint64_t sceneBehaviorAttachmentSeq(std::size_t object_index,
@@ -56,6 +100,7 @@ std::vector<PreparedSceneBehaviorAttachment> prepareSceneBehaviorAttachments(
 
 DECLARE_MODULE(BehaviorAttachmentArena) {
     friend class BehaviorCallbackScope;
+    friend class PreparedBehaviorAttachmentEdits;
 
     struct Attachment {
         BehaviorAttachmentInfo info;
@@ -63,6 +108,7 @@ DECLARE_MODULE(BehaviorAttachmentArena) {
         internal::RawBehaviorInstance instance;
         internal::BehaviorDestroyFn destroy = nullptr;
         bool initialized = false;
+        std::uint8_t activation_delay = 0;
     };
 
     struct DeferredMutation {
@@ -74,6 +120,7 @@ DECLARE_MODULE(BehaviorAttachmentArena) {
     std::vector<Attachment> attachments;
     std::vector<DeferredMutation> deferred_mutations;
     std::uint64_t next_handle = 1;
+    std::uint64_t next_attachment_seq = 1;
     std::size_t callback_depth = 0;
     internal::RegistrationOwner callback_owner = internal::engineRegistrationOwner;
 
@@ -85,6 +132,7 @@ DECLARE_MODULE(BehaviorAttachmentArena) {
                      GameContext &ctx);
     void destroyInstance(Attachment &attachment, bool invoke_destroy_callback) noexcept;
     void applyDeferredMutations();
+    void activateReadyEditorAttachments();
 
   public:
     BehaviorAttachmentArena() = default;
@@ -98,6 +146,14 @@ DECLARE_MODULE(BehaviorAttachmentArena) {
     void preDestroyEntity(GameObjectId entity) noexcept;
     void deactivateAll() noexcept;
     void releaseOwner(internal::RegistrationOwner owner) noexcept;
+
+    BehaviorAttachmentIdentity reserveRuntimeAttachmentIdentity(
+        std::uint64_t commit_seq, std::size_t command_index,
+        std::size_t attachment_index);
+    std::optional<BehaviorAttachmentInfo> findEditorAttachment(
+        GameObjectId entity, std::size_t component_index) const;
+    std::unique_ptr<PreparedBehaviorAttachmentEdits>
+    prepareEditorEdits(std::vector<BehaviorAttachmentEdit> edits);
 
     void deferCreateObject(LocalTransformComponent transform);
     void deferCreateSpriteObject(LocalTransformComponent transform,

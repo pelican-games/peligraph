@@ -179,6 +179,142 @@ const BehaviorAttachmentArena::Attachment *BehaviorAttachmentArena::findAttachme
     return found == attachments.end() ? nullptr : &*found;
 }
 
+struct PreparedBehaviorAttachmentEdits::Impl {
+    struct PreparedItem {
+        BehaviorAttachmentEdit edit;
+        std::optional<BehaviorAttachmentArena::Attachment> attachment;
+        internal::RawBehaviorParams params;
+        internal::BehaviorApplyPreparedParamsFn apply_params = nullptr;
+        internal::BehaviorDestroyPreparedParamsFn destroy_params = nullptr;
+    };
+
+    BehaviorAttachmentArena *arena = nullptr;
+    std::vector<PreparedItem> items;
+    bool published = false;
+
+    void releasePreparedParams() noexcept {
+        for (auto &item : items) {
+            if (item.params.value != nullptr && item.destroy_params != nullptr) {
+                item.destroy_params(item.params);
+            }
+        }
+    }
+
+    void releasePreparedAttachments() noexcept {
+        for (auto &item : items) {
+            if (!item.attachment || item.attachment->instance.behavior == nullptr ||
+                item.attachment->destroy == nullptr) {
+                continue;
+            }
+            item.attachment->destroy(item.attachment->instance);
+            item.attachment->destroy = nullptr;
+        }
+    }
+
+    ~Impl() {
+        releasePreparedParams();
+        releasePreparedAttachments();
+    }
+};
+
+PreparedBehaviorAttachmentEdits::PreparedBehaviorAttachmentEdits(
+    std::unique_ptr<Impl> impl) noexcept
+    : impl_{std::move(impl)} {}
+
+PreparedBehaviorAttachmentEdits::~PreparedBehaviorAttachmentEdits() = default;
+PreparedBehaviorAttachmentEdits::PreparedBehaviorAttachmentEdits(
+    PreparedBehaviorAttachmentEdits &&) noexcept = default;
+PreparedBehaviorAttachmentEdits &PreparedBehaviorAttachmentEdits::operator=(
+    PreparedBehaviorAttachmentEdits &&) noexcept = default;
+
+void PreparedBehaviorAttachmentEdits::publish() noexcept {
+    if (!impl_ || impl_->published) return;
+    auto &arena = *impl_->arena;
+    const auto find = [&](const BehaviorAttachmentEdit &edit) {
+        return std::find_if(
+            arena.attachments.begin(), arena.attachments.end(),
+            [&](const BehaviorAttachmentArena::Attachment &attachment) {
+                if (edit.identity.handle != invalidBehaviorAttachmentHandle) {
+                    return attachment.info.handle == edit.identity.handle;
+                }
+                return attachment.info.entity == edit.entity &&
+                       attachment.info.component_index == edit.component_index;
+            });
+    };
+    for (auto &item : impl_->items) {
+        auto &edit = item.edit;
+        switch (edit.kind) {
+        case BehaviorAttachmentEditKind::attach:
+            for (auto &attachment : arena.attachments) {
+                if (attachment.info.entity == edit.entity &&
+                    attachment.info.component_index >= edit.component_index) {
+                    ++attachment.info.component_index;
+                }
+            }
+            arena.attachments.push_back(std::move(*item.attachment));
+            item.attachment.reset();
+            break;
+        case BehaviorAttachmentEditKind::remove: {
+            const auto found = find(edit);
+            if (found != arena.attachments.end()) {
+                arena.destroyInstance(*found, true);
+                arena.attachments.erase(found);
+            }
+            for (auto &attachment : arena.attachments) {
+                if (attachment.info.entity == edit.entity &&
+                    attachment.info.component_index > edit.component_index) {
+                    --attachment.info.component_index;
+                }
+            }
+            break;
+        }
+        case BehaviorAttachmentEditKind::set_params: {
+            const auto found = find(edit);
+            if (found != arena.attachments.end()) {
+                if (found->instance.params != nullptr && item.params.value != nullptr) {
+                    item.apply_params(found->instance.params, item.params);
+                }
+                found->info.canonical_params = std::move(edit.canonical_params);
+                found->raw_component = std::move(edit.raw_component);
+            }
+            break;
+        }
+        case BehaviorAttachmentEditKind::insert_component:
+            for (auto &attachment : arena.attachments) {
+                if (attachment.info.entity == edit.entity &&
+                    attachment.info.component_index >= edit.component_index) {
+                    ++attachment.info.component_index;
+                }
+            }
+            break;
+        case BehaviorAttachmentEditKind::remove_component:
+            for (auto &attachment : arena.attachments) {
+                if (attachment.info.entity == edit.entity &&
+                    attachment.info.component_index > edit.component_index) {
+                    --attachment.info.component_index;
+                }
+            }
+            break;
+        }
+    }
+    std::sort(arena.attachments.begin(), arena.attachments.end(),
+              [](const auto &left, const auto &right) {
+                  return left.info.attachment_seq < right.info.attachment_seq;
+              });
+    impl_->published = true;
+}
+
+void PreparedBehaviorAttachmentEdits::rollback() noexcept {
+    if (!impl_ || impl_->published) return;
+    impl_->releasePreparedParams();
+    impl_->releasePreparedAttachments();
+}
+
+void PreparedBehaviorAttachmentEdits::finish() noexcept {
+    if (!impl_) return;
+    impl_->releasePreparedParams();
+}
+
 BehaviorAttachmentArena::~BehaviorAttachmentArena() {
     deactivateAll();
 }
@@ -205,6 +341,7 @@ void BehaviorAttachmentArena::publishSceneAttachments(
                 .handle = handle,
                 .attachment_seq = sequence,
                 .entity = bound.entity,
+                .component_index = bound.prepared.component_index,
                 .stable_name = bound.prepared.stable_name,
                 .canonical_params = bound.prepared.canonical_params,
                 .owner = bound.prepared.registration_owner,
@@ -213,6 +350,11 @@ void BehaviorAttachmentArena::publishSceneAttachments(
             },
             .raw_component = std::move(bound.prepared.raw_component),
         });
+        if (sequence == std::numeric_limits<std::uint64_t>::max()) {
+            next_attachment_seq = 0;
+        } else {
+            next_attachment_seq = std::max(next_attachment_seq, sequence + 1U);
+        }
     }
     std::sort(next.begin(), next.end(), [](const Attachment &left, const Attachment &right) {
         return left.info.attachment_seq < right.info.attachment_seq;
@@ -337,8 +479,48 @@ void BehaviorAttachmentArena::applyDeferredMutations() {
     }
 }
 
+void BehaviorAttachmentArena::activateReadyEditorAttachments() {
+    for (auto &attachment : attachments) {
+        if (attachment.info.pending || attachment.info.active ||
+            attachment.activation_delay != 0) {
+            continue;
+        }
+        try {
+            if (attachment.instance.behavior == nullptr) {
+                const auto *registration =
+                    internal::getBehaviorRegisterer().findByNameAndOwner(
+                        attachment.info.stable_name, attachment.info.owner);
+                if (registration == nullptr) {
+                    throw std::runtime_error(
+                        "behavior registration disappeared before editor activation: " +
+                        attachment.info.stable_name);
+                }
+                attachment.destroy = registration->destroy;
+                attachment.instance =
+                    registration->create(attachment.info.canonical_params);
+            }
+            invokeInit(attachment);
+            attachment.initialized = true;
+            attachment.info.active = true;
+        } catch (const std::exception &error) {
+            destroyInstance(attachment, false);
+            if (logger != nullptr) {
+                LOG_ERROR(logger, "editor behavior activation failed for type '{}': {}",
+                          attachment.info.stable_name, error.what());
+            }
+        } catch (...) {
+            destroyInstance(attachment, false);
+            if (logger != nullptr) {
+                LOG_ERROR(logger, "editor behavior activation failed for type '{}'",
+                          attachment.info.stable_name);
+            }
+        }
+    }
+}
+
 void BehaviorAttachmentArena::update(GameContext &ctx) {
     applyDeferredMutations();
+    activateReadyEditorAttachments();
     std::vector<BehaviorAttachmentHandle> snapshot_handles;
     snapshot_handles.reserve(attachments.size());
     for (const auto &attachment : attachments) {
@@ -357,11 +539,17 @@ void BehaviorAttachmentArena::update(GameContext &ctx) {
         }
         invokeUpdate(*attachment, ctx);
     }
+    for (auto &attachment : attachments) {
+        if (!attachment.info.active && attachment.activation_delay != 0) {
+            --attachment.activation_delay;
+        }
+    }
 }
 
 void BehaviorAttachmentArena::dispatchEvent(const internal::QueuedEvent &event,
                                             GameContext &ctx) {
     applyDeferredMutations();
+    activateReadyEditorAttachments();
     std::vector<BehaviorAttachmentHandle> snapshot_handles;
     snapshot_handles.reserve(attachments.size());
     for (const auto &attachment : attachments) {
@@ -379,6 +567,194 @@ void BehaviorAttachmentArena::dispatchEvent(const internal::QueuedEvent &event,
         }
         invokeEvent(*attachment, event, ctx);
     }
+}
+
+BehaviorAttachmentIdentity BehaviorAttachmentArena::reserveRuntimeAttachmentIdentity(
+    std::uint64_t, std::size_t, std::size_t) {
+    constexpr auto max_exact_json_integer = UINT64_C(9007199254740991);
+    if (next_handle == 0 || next_handle > max_exact_json_integer) {
+        throw std::overflow_error("BehaviorAttachmentHandle space exhausted");
+    }
+    if (next_attachment_seq == 0 ||
+        next_attachment_seq > max_exact_json_integer) {
+        throw std::overflow_error("runtime behavior attachment sequence space exhausted");
+    }
+    return BehaviorAttachmentIdentity{
+        .handle = BehaviorAttachmentHandle{next_handle++},
+        .attachment_seq = next_attachment_seq++,
+    };
+}
+
+std::optional<BehaviorAttachmentInfo> BehaviorAttachmentArena::findEditorAttachment(
+    GameObjectId entity, std::size_t component_index) const {
+    const auto found = std::find_if(
+        attachments.begin(), attachments.end(), [&](const Attachment &attachment) {
+            return attachment.info.entity == entity &&
+                   attachment.info.component_index == component_index;
+        });
+    return found == attachments.end() ? std::nullopt
+                                      : std::optional{found->info};
+}
+
+std::unique_ptr<PreparedBehaviorAttachmentEdits>
+BehaviorAttachmentArena::prepareEditorEdits(
+    std::vector<BehaviorAttachmentEdit> edits) {
+    struct SimulatedAttachment {
+        BehaviorAttachmentHandle handle = invalidBehaviorAttachmentHandle;
+        std::uint64_t attachment_seq = 0;
+        GameObjectId entity = invalidGameObjectId;
+        std::size_t component_index = 0;
+        std::string stable_name;
+        internal::RegistrationOwner owner = internal::engineRegistrationOwner;
+        bool pending = false;
+    };
+    std::vector<SimulatedAttachment> simulated;
+    simulated.reserve(attachments.size() + edits.size());
+    for (const auto &attachment : attachments) {
+        simulated.push_back({
+            .handle = attachment.info.handle,
+            .attachment_seq = attachment.info.attachment_seq,
+            .entity = attachment.info.entity,
+            .component_index = attachment.info.component_index,
+            .stable_name = attachment.info.stable_name,
+            .owner = attachment.info.owner,
+            .pending = attachment.info.pending,
+        });
+    }
+
+    auto impl = std::make_unique<PreparedBehaviorAttachmentEdits::Impl>();
+    impl->arena = this;
+    impl->items.reserve(edits.size());
+    const auto find_simulated = [&](const BehaviorAttachmentEdit &edit) {
+        return std::find_if(
+            simulated.begin(), simulated.end(), [&](const auto &attachment) {
+                if (edit.identity.handle != invalidBehaviorAttachmentHandle) {
+                    return attachment.handle == edit.identity.handle;
+                }
+                return attachment.entity == edit.entity &&
+                       attachment.component_index == edit.component_index;
+            });
+    };
+
+    std::size_t attach_count = 0;
+    for (auto &edit : edits) {
+        PreparedBehaviorAttachmentEdits::Impl::PreparedItem item;
+        item.edit = std::move(edit);
+        auto &current = item.edit;
+        if (current.entity == invalidGameObjectId) {
+            throw std::runtime_error("behavior editor attachment requires a live entity");
+        }
+        switch (current.kind) {
+        case BehaviorAttachmentEditKind::attach: {
+            if (current.identity.handle == invalidBehaviorAttachmentHandle) {
+                throw std::runtime_error("behavior editor attach requires a reserved identity");
+            }
+            if (std::any_of(simulated.begin(), simulated.end(), [&](const auto &candidate) {
+                    return candidate.handle == current.identity.handle ||
+                           candidate.attachment_seq == current.identity.attachment_seq;
+                })) {
+                throw std::runtime_error("behavior editor attach identity is already live");
+            }
+            const auto *registration =
+                internal::getBehaviorRegisterer().findByName(current.stable_name);
+            if (registration == nullptr) {
+                throw std::runtime_error("behavior registration unavailable: " +
+                                         current.stable_name);
+            }
+            auto instance = registration->create(current.canonical_params);
+            item.attachment.emplace(Attachment{
+                .info = BehaviorAttachmentInfo{
+                    .handle = current.identity.handle,
+                    .attachment_seq = current.identity.attachment_seq,
+                    .entity = current.entity,
+                    .component_index = current.component_index,
+                    .stable_name = current.stable_name,
+                    .canonical_params = current.canonical_params,
+                    .owner = registration->owner,
+                    .pending = false,
+                    .active = false,
+                },
+                .raw_component = current.raw_component,
+                .instance = instance,
+                .destroy = registration->destroy,
+                .initialized = false,
+                .activation_delay = 1,
+            });
+            for (auto &candidate : simulated) {
+                if (candidate.entity == current.entity &&
+                    candidate.component_index >= current.component_index) {
+                    ++candidate.component_index;
+                }
+            }
+            simulated.push_back({
+                .handle = current.identity.handle,
+                .attachment_seq = current.identity.attachment_seq,
+                .entity = current.entity,
+                .component_index = current.component_index,
+                .stable_name = current.stable_name,
+                .owner = registration->owner,
+            });
+            ++attach_count;
+            break;
+        }
+        case BehaviorAttachmentEditKind::remove: {
+            const auto found = find_simulated(current);
+            if (found == simulated.end() || found->entity != current.entity ||
+                found->component_index != current.component_index ||
+                (current.identity.attachment_seq != 0 &&
+                 found->attachment_seq != current.identity.attachment_seq)) {
+                throw std::runtime_error("behavior editor remove target is stale");
+            }
+            simulated.erase(found);
+            for (auto &candidate : simulated) {
+                if (candidate.entity == current.entity &&
+                    candidate.component_index > current.component_index) {
+                    --candidate.component_index;
+                }
+            }
+            break;
+        }
+        case BehaviorAttachmentEditKind::set_params: {
+            const auto found = find_simulated(current);
+            if (found == simulated.end() || found->entity != current.entity ||
+                found->component_index != current.component_index || found->pending ||
+                (current.identity.attachment_seq != 0 &&
+                 found->attachment_seq != current.identity.attachment_seq)) {
+                throw std::runtime_error("behavior editor params target is stale or pending");
+            }
+            const auto *registration =
+                internal::getBehaviorRegisterer().findByNameAndOwner(
+                    found->stable_name, found->owner);
+            if (registration == nullptr) {
+                throw std::runtime_error("behavior registration owner changed before params apply");
+            }
+            item.params = registration->prepare_params(current.canonical_params);
+            item.apply_params = registration->apply_prepared_params;
+            item.destroy_params = registration->destroy_prepared_params;
+            break;
+        }
+        case BehaviorAttachmentEditKind::insert_component:
+            for (auto &candidate : simulated) {
+                if (candidate.entity == current.entity &&
+                    candidate.component_index >= current.component_index) {
+                    ++candidate.component_index;
+                }
+            }
+            break;
+        case BehaviorAttachmentEditKind::remove_component:
+            for (auto &candidate : simulated) {
+                if (candidate.entity == current.entity &&
+                    candidate.component_index > current.component_index) {
+                    --candidate.component_index;
+                }
+            }
+            break;
+        }
+        impl->items.push_back(std::move(item));
+    }
+    attachments.reserve(attachments.size() + attach_count);
+    return std::unique_ptr<PreparedBehaviorAttachmentEdits>{
+        new PreparedBehaviorAttachmentEdits{std::move(impl)}};
 }
 
 void BehaviorAttachmentArena::preDestroyEntity(GameObjectId entity) noexcept {

@@ -50,6 +50,7 @@ enum class EditorComponentSchemaState : std::uint8_t {
 
 struct EditorComponentQueryResult {
     std::string name;
+    std::size_t component_index = 0;
     nlohmann::json authored_json;
     std::optional<nlohmann::ordered_json> runtime_json;
     bool editable = false;
@@ -58,6 +59,10 @@ struct EditorComponentQueryResult {
     EditorComponentSchemaState schema_state = EditorComponentSchemaState::Missing;
     std::vector<StructFieldSchema> schema_fields;
     bool pending = false;
+    std::optional<std::uint64_t> behavior_attachment_handle;
+    std::optional<std::uint64_t> behavior_attachment_seq;
+    std::optional<std::uint64_t> behavior_owner;
+    std::optional<std::uint32_t> behavior_owner_generation;
 };
 
 struct EditorObjectQueryResult {
@@ -128,10 +133,20 @@ struct ExportSceneSnapshotResponseV1 {
     std::uint64_t preview_epoch = 0;
 };
 
+struct EditorRuntimeBehaviorAttachmentState {
+    std::uint64_t handle = 0;
+    std::uint64_t attachment_seq = 0;
+    std::uint64_t owner = 0;
+    std::uint32_t owner_generation = 0;
+    bool pending = false;
+    bool active = false;
+};
+
 struct EditorRuntimeObjectState {
     std::optional<GameObjectId> entity_id;
     std::vector<std::optional<nlohmann::ordered_json>> component_runtime_json;
     std::vector<bool> component_pending;
+    std::vector<std::optional<EditorRuntimeBehaviorAttachmentState>> behavior_attachments;
 };
 
 struct EditorSnapshotState {

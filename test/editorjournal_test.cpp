@@ -1,8 +1,11 @@
 #include "../src/core/communication/editorjournal.hpp"
+#include "../src/core/communication/editorruntimefactory.hpp"
 #include "../src/core/gamelogic/behaviorarena.hpp"
+#include "../src/core/userpublic/behavior.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -13,6 +16,20 @@ namespace Pelican {
 namespace {
 
 using Json = nlohmann::json;
+
+struct JournalBehaviorParams {
+    std::string label;
+    static constexpr auto schema = structFields(
+        behaviorParamsPolicy,
+        defaulted(field<&JournalBehaviorParams::label>("label"), "journal-default"));
+};
+
+class JournalBehavior final : public Behavior {
+  public:
+    using Params = JournalBehaviorParams;
+};
+
+PELICAN_REGISTER_BEHAVIOR(JournalBehavior, "wp167_journal_behavior", 1);
 
 Json editorFixture() {
     return Json::parse(R"json({
@@ -33,7 +50,8 @@ Json editorFixture() {
               {"name":"collider","shape":"sphere","radius":0.5}
             ]},
             {"name":"Other","components":[
-              {"name":"transform","pos":[5,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]}
+              {"name":"transform","pos":[5,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
+              {"name":"behavior","type":"wp167_journal_behavior"}
             ]}
           ]
         }
@@ -118,6 +136,11 @@ class RuntimeMirrorAdapter final : public EditorProjectionAdapter {
 };
 
 struct Harness {
+    struct RuntimeBehavior {
+        std::size_t component_index = 0;
+        EditorBehaviorAttachmentIdentity identity;
+    };
+
     DocumentTarget target;
     std::string runtime = target.document.encodeSemantic();
     std::vector<std::string> lifecycle_trace;
@@ -129,6 +152,11 @@ struct Harness {
     std::string reconnect_token;
     std::size_t preview_execute_count = 0;
     std::size_t preview_boundary_count = 0;
+    std::uint64_t next_behavior_handle = 100;
+    std::uint64_t next_behavior_seq = 1000;
+    std::size_t behavior_allocation_count = 0;
+    std::vector<RuntimeBehavior> runtime_behaviors;
+    bool behavior_reload_in_progress = false;
 
     Harness() {
         edits = std::make_unique<EditorEditCoordinator>(
@@ -148,7 +176,50 @@ struct Harness {
                         for (const auto &operation : request.operations) {
                             const auto op =
                                 operation.at("op").get<std::string>();
-                            if (op == "spawn" || op == "restore_objects") {
+                            const auto slot = operation.value(
+                                "component_slot", std::string{});
+                            if (slot == "behavior" && op == "add_component") {
+                                const auto index = operation.at("component_index")
+                                                       .get<std::size_t>();
+                                for (auto &behavior : runtime_behaviors) {
+                                    if (behavior.component_index >= index) {
+                                        ++behavior.component_index;
+                                    }
+                                }
+                                runtime_behaviors.push_back(RuntimeBehavior{
+                                    .component_index = index,
+                                    .identity = {
+                                        .handle = operation.at("attachment_handle")
+                                                      .get<std::uint64_t>(),
+                                        .attachment_seq = operation.at("attachment_seq")
+                                                              .get<std::uint64_t>(),
+                                    },
+                                });
+                                lifecycle_trace.push_back("onInit");
+                            } else if (slot == "behavior" &&
+                                       op == "remove_component") {
+                                const auto index = operation.at("component_index")
+                                                       .get<std::size_t>();
+                                std::erase_if(runtime_behaviors, [&](const auto &behavior) {
+                                    return behavior.component_index == index;
+                                });
+                                for (auto &behavior : runtime_behaviors) {
+                                    if (behavior.component_index > index) {
+                                        --behavior.component_index;
+                                    }
+                                }
+                                lifecycle_trace.push_back("onDestroy");
+                            } else if (slot == "behavior" &&
+                                       op == "set_component_value") {
+                                const auto label = operation.contains("value")
+                                                       ? operation.at("value").get<std::string>()
+                                                       : operation.at("authored_component")
+                                                             .value("params", Json::object())
+                                                             .value("label",
+                                                                    "journal-default");
+                                lifecycle_trace.push_back("event:" + label);
+                                lifecycle_trace.push_back("update:" + label);
+                            } else if (op == "spawn" || op == "restore_objects") {
                                 lifecycle_trace.push_back("onInit");
                             } else if (op == "destroy" ||
                                        op == "remove_objects") {
@@ -177,7 +248,29 @@ struct Harness {
                     ++preview_boundary_count;
                     phase_trace.push_back("preview:temporal_reset");
                 },
-                .gate = [this] { return gate; },
+                .gate = [this] {
+                    return internal::applyBehaviorEditConcurrencyGate(
+                        gate, false, behavior_reload_in_progress, false);
+                },
+                .allocate_behavior_attachment =
+                    [this](std::uint64_t, std::size_t, std::size_t) {
+                        ++behavior_allocation_count;
+                        return EditorBehaviorAttachmentIdentity{
+                            .handle = next_behavior_handle++,
+                            .attachment_seq = next_behavior_seq++,
+                        };
+                    },
+                .resolve_behavior_attachment =
+                    [this](AuthoringObjectId, std::size_t attachment_index)
+                    -> std::optional<EditorBehaviorAttachmentIdentity> {
+                        const auto found = std::find_if(
+                            runtime_behaviors.begin(), runtime_behaviors.end(),
+                            [&](const auto &behavior) {
+                                return behavior.component_index == attachment_index;
+                            });
+                        if (found == runtime_behaviors.end()) return std::nullopt;
+                        return found->identity;
+                    },
             });
         const auto session = edits->openSession({{"display_name", "fixture actor"}});
         actor = session.at("actor_id").get<std::uint64_t>();
@@ -904,6 +997,247 @@ TEST_CASE("WP161 behavior attachment sequence survives spawn undo redo",
     REQUIRE(sceneBehaviorAttachmentSeq(4, 1) != original_seq);
     REQUIRE(harness.lifecycle_trace ==
             std::vector<std::string>{"onInit", "onDestroy", "onInit"});
+}
+
+TEST_CASE("WP167 params edit expands defaults temporarily and undo restores raw omission",
+          "[editor][journal][wp167][behavior][params][defaults][undo]") {
+    Harness harness;
+    const auto edited = harness.commit(
+        {{"op", "set_component_value"},
+         {"object_id", 4},
+         {"component_slot", "behavior"},
+         {"attachment_index", 1},
+         {"field_path", "/params/label"},
+         {"value", "expanded"}});
+    REQUIRE(edited.at("status") == "committed");
+    auto components = harness.target.document.rawJson()
+                          .at("scenes")
+                          .at("main")
+                          .at("objects")
+                          .at(3)
+                          .at("components");
+    REQUIRE(components.at(1).at("params").at("label") == "expanded");
+    const auto &record = harness.edits->journal().back();
+    REQUIRE_FALSE(record.ordered_inverse.front()
+                      .at("authored_component")
+                      .contains("params"));
+
+    const auto undo = harness.edits->enqueueUndo(
+        {{"actor_id", harness.actor},
+         {"base_revision", harness.target.document.revision().value}});
+    harness.edits->commitPending();
+    REQUIRE(harness.edits->getResult({{"ticket", undo.at("ticket")}})
+                .at("status") == "committed");
+    components = harness.target.document.rawJson()
+                     .at("scenes")
+                     .at("main")
+                     .at("objects")
+                     .at(3)
+                     .at("components");
+    REQUIRE_FALSE(components.at(1).contains("params"));
+    REQUIRE(harness.lifecycle_trace == std::vector<std::string>{
+                                           "event:expanded", "update:expanded",
+                                           "event:journal-default",
+                                           "update:journal-default"});
+}
+
+TEST_CASE("WP167 direct behavior attachment edits keep exact handles and sequences",
+          "[editor][journal][wp167][behavior][identity][undo-redo]") {
+    Harness harness;
+    const auto behavior = [](std::string_view label) {
+        return Json{{"name", "behavior"},
+                    {"type", "wp167_journal_behavior"},
+                    {"params", {{"label", label}}}};
+    };
+
+    const auto first = harness.commit({{"op", "add_component"},
+                                       {"object_id", 1},
+                                       {"component", behavior("one")}});
+    REQUIRE(first.at("status") == "committed");
+    REQUIRE(harness.runtime_behaviors.size() == 1);
+    const auto identity = harness.runtime_behaviors.front().identity;
+    const auto &forward_record = harness.edits->journal().back();
+    REQUIRE(forward_record.ordered_forward.front().at("attachment_handle") ==
+            identity.handle);
+    REQUIRE(forward_record.ordered_forward.front().at("attachment_seq") ==
+            identity.attachment_seq);
+    REQUIRE(forward_record.ordered_inverse.front().at("attachment_handle") ==
+            identity.handle);
+    REQUIRE(forward_record.ordered_inverse.front().at("attachment_seq") ==
+            identity.attachment_seq);
+    REQUIRE(forward_record.stable_targets.front().find(
+                "handles/" + std::to_string(identity.handle)) != std::string::npos);
+    const auto first_stable_target = forward_record.stable_targets.front();
+
+    const auto undo = harness.edits->enqueueUndo(
+        {{"actor_id", harness.actor},
+         {"base_revision", harness.target.document.revision().value}});
+    harness.edits->commitPending();
+    const auto undo_result =
+        harness.edits->getResult({{"ticket", undo.at("ticket")}});
+    REQUIRE(undo_result.at("status") == "committed");
+    REQUIRE(harness.runtime_behaviors.empty());
+
+    const auto redo = harness.edits->enqueueRedo(
+        {{"actor_id", harness.actor},
+         {"base_revision", harness.target.document.revision().value}});
+    harness.edits->commitPending();
+    REQUIRE(harness.edits->getResult({{"ticket", redo.at("ticket")}})
+                .at("status") == "committed");
+    REQUIRE(harness.runtime_behaviors.size() == 1);
+    REQUIRE(harness.runtime_behaviors.front().identity.handle == identity.handle);
+    REQUIRE(harness.runtime_behaviors.front().identity.attachment_seq ==
+            identity.attachment_seq);
+    REQUIRE(harness.lifecycle_trace ==
+            std::vector<std::string>{"onInit", "onDestroy", "onInit"});
+
+    REQUIRE(harness.commit({{"op", "add_component"},
+                            {"object_id", 1},
+                            {"component", behavior("two")}})
+                .at("status") == "committed");
+    REQUIRE(harness.runtime_behaviors.size() == 2);
+    const auto second_identity = harness.runtime_behaviors.back().identity;
+    REQUIRE(second_identity.handle != identity.handle);
+    REQUIRE(second_identity.attachment_seq != identity.attachment_seq);
+    REQUIRE(harness.edits->journal().back().stable_targets.front() !=
+            first_stable_target);
+
+    REQUIRE(harness.commit({{"op", "set_component_value"},
+                            {"object_id", 1},
+                            {"component_slot", "behavior"},
+                            {"attachment_index", 2},
+                            {"field_path", "/params/label"},
+                            {"value", "one-edited"}})
+                .at("status") == "committed");
+    const auto &components = harness.target.document.rawJson()
+                                 .at("scenes")
+                                 .at("main")
+                                 .at("objects")
+                                 .at(0)
+                                 .at("components");
+    REQUIRE(components.at(2).at("params").at("label") == "one-edited");
+    REQUIRE(components.at(3).at("params").at("label") == "two");
+    REQUIRE(harness.lifecycle_trace[harness.lifecycle_trace.size() - 2] ==
+            "event:one-edited");
+    REQUIRE(harness.lifecycle_trace.back() == "update:one-edited");
+
+    const auto semantic_before_invalid =
+        harness.target.document.encodeSemantic();
+    const auto lifecycle_before_invalid = harness.lifecycle_trace;
+    const auto invalid = harness.enqueue(
+        {{"op", "set_component_value"},
+         {"object_id", 1},
+         {"component_slot", "behavior"},
+         {"attachment_index", 2},
+         {"field_path", "/params/label"},
+         {"value", 7}});
+    REQUIRE(invalid.at("status") == "rejected");
+    REQUIRE(invalid.at("error").at("code") == "schema_violation");
+    REQUIRE(harness.target.document.encodeSemantic() == semantic_before_invalid);
+    REQUIRE(harness.lifecycle_trace == lifecycle_before_invalid);
+
+    const auto remove_second = harness.commit(
+        {{"op", "remove_component"},
+         {"object_id", 1},
+         {"component_slot", "behavior"},
+         {"attachment_index", 3}});
+    REQUIRE(remove_second.at("status") == "committed");
+    const auto &remove_record = harness.edits->journal().back();
+    REQUIRE(remove_record.ordered_forward.front().at("attachment_handle") ==
+            second_identity.handle);
+    REQUIRE(remove_record.ordered_inverse.front().at("attachment_seq") ==
+            second_identity.attachment_seq);
+    REQUIRE(harness.runtime_behaviors.size() == 1);
+    REQUIRE(harness.runtime_behaviors.front().identity.handle == identity.handle);
+
+    const auto undo_remove = harness.edits->enqueueUndo(
+        {{"actor_id", harness.actor},
+         {"base_revision", harness.target.document.revision().value}});
+    harness.edits->commitPending();
+    REQUIRE(harness.edits->getResult({{"ticket", undo_remove.at("ticket")}})
+                .at("status") == "committed");
+    REQUIRE(harness.runtime_behaviors.size() == 2);
+    REQUIRE(harness.runtime_behaviors.back().identity.handle ==
+            second_identity.handle);
+    REQUIRE(harness.runtime_behaviors.back().identity.attachment_seq ==
+            second_identity.attachment_seq);
+
+    const auto redo_remove = harness.edits->enqueueRedo(
+        {{"actor_id", harness.actor},
+         {"base_revision", harness.target.document.revision().value}});
+    harness.edits->commitPending();
+    REQUIRE(harness.edits->getResult({{"ticket", redo_remove.at("ticket")}})
+                .at("status") == "committed");
+    REQUIRE(harness.runtime_behaviors.size() == 1);
+    REQUIRE(harness.runtime_behaviors.front().identity.handle == identity.handle);
+    REQUIRE(std::vector<std::string>(harness.lifecycle_trace.end() - 3,
+                                     harness.lifecycle_trace.end()) ==
+            std::vector<std::string>{"onDestroy", "onInit", "onDestroy"});
+}
+
+TEST_CASE("WP167 replay and golden gates reject behavior edits before identity allocation",
+          "[editor][journal][wp167][behavior][gate]") {
+    for (const auto &[reason, name] :
+         std::vector<std::pair<EditorGateReason, std::string>>{
+             {EditorGateReason::replay, "replay"},
+             {EditorGateReason::golden, "golden"}}) {
+        DYNAMIC_SECTION(name) {
+            Harness harness;
+            harness.gate.reasons = editorGateReasonBit(reason);
+            const auto rejected = harness.enqueue(
+                {{"op", "add_component"},
+                 {"object_id", 1},
+                 {"component", {{"name", "behavior"},
+                                {"type", "wp167_journal_behavior"},
+                                {"params", {{"label", "blocked"}}}}}});
+            REQUIRE(rejected.at("status") == "rejected");
+            REQUIRE(rejected.at("error").at("code") == "gate_closed");
+            REQUIRE(rejected.at("error").at("payload").at("reason") == name);
+            REQUIRE(harness.behavior_allocation_count == 0);
+            REQUIRE(harness.target.document.revision() == SceneRevision{1});
+        }
+    }
+}
+
+TEST_CASE("WP167 G2 reload overlap is a stable reject at acceptance and execution",
+          "[editor][journal][wp167][behavior][g2][reload]") {
+    const auto add_behavior = Json{
+        {"op", "add_component"},
+        {"object_id", 1},
+        {"component", {{"name", "behavior"},
+                       {"type", "wp167_journal_behavior"},
+                       {"params", {{"label", "g2"}}}}},
+    };
+
+    SECTION("reload already active") {
+        Harness harness;
+        harness.behavior_reload_in_progress = true;
+        const auto rejected = harness.enqueue(add_behavior);
+        REQUIRE(rejected.at("status") == "rejected");
+        REQUIRE(rejected.at("error").at("code") == "gate_closed");
+        REQUIRE(rejected.at("error").at("payload").at("reason") ==
+                "reload_scene_transition");
+        REQUIRE(harness.behavior_allocation_count == 0);
+        REQUIRE(harness.edits->journal().empty());
+    }
+
+    SECTION("reload starts after acceptance") {
+        Harness harness;
+        const auto accepted = harness.enqueue(add_behavior);
+        REQUIRE(accepted.at("status") == "accepted");
+        REQUIRE(harness.behavior_allocation_count == 1);
+        harness.behavior_reload_in_progress = true;
+        harness.edits->commitPending();
+        const auto failed = harness.edits->getResult(
+            {{"ticket", accepted.at("ticket")}});
+        REQUIRE(failed.at("status") == "failed");
+        REQUIRE(failed.at("error").at("code") == "gate_closed");
+        REQUIRE(failed.at("error").at("payload").at("reason") ==
+                "reload_scene_transition");
+        REQUIRE(harness.target.document.revision() == SceneRevision{1});
+        REQUIRE(harness.runtime_behaviors.empty());
+        REQUIRE(harness.edits->journal().empty());
+    }
 }
 
 TEST_CASE("WP157 edit errors use only the canonical catalog",

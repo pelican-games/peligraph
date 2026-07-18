@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "../src/core/imgui/inspector.hpp"
+#include "../src/core/userpublic/behavior.hpp"
 
 #include <algorithm>
 #include <memory>
@@ -13,6 +14,22 @@ namespace {
 using Json = nlohmann::json;
 using OrderedJson = nlohmann::ordered_json;
 
+struct InspectorBehaviorParams {
+    std::string label;
+    bool enabled = false;
+    static constexpr auto schema = structFields(
+        behaviorParamsPolicy,
+        defaulted(field<&InspectorBehaviorParams::label>("label"), "inspector"),
+        defaulted(field<&InspectorBehaviorParams::enabled>("enabled"), true));
+};
+
+class InspectorBehavior final : public Behavior {
+  public:
+    using Params = InspectorBehaviorParams;
+};
+
+PELICAN_REGISTER_BEHAVIOR(InspectorBehavior, "wp167_inspector_behavior", 1);
+
 Json inspectorFixture() {
     return Json::parse(R"json({
       "schema":"pelican.scene",
@@ -21,10 +38,13 @@ Json inspectorFixture() {
         {"name":"Root","components":[
           {"name":"transform","pos":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
           {"name":"light","type":"directional","direction":[0,-1,0],"intensity":1,"color":[1,1,1]},
-          {"name":"collider","shape":"sphere","radius":0.5}
+          {"name":"collider","shape":"sphere","radius":0.5},
+          {"name":"behavior","type":"wp167_inspector_behavior","params":{"label":"one","enabled":true}},
+          {"name":"behavior","type":"wp167_inspector_behavior","params":{"label":"two","enabled":false}}
         ]},
         {"name":"ReadOnly","parent":"Root","components":[
-          {"name":"future_component","payload":{"kept":true}}
+          {"name":"future_component","payload":{"kept":true}},
+          {"name":"behavior","type":"wp167_missing_behavior","params":{"raw":"kept"}}
         ]}
       ]}}
     })json");
@@ -68,6 +88,7 @@ class PreviewTarget final : public EditorProjectionDocumentTarget {
 struct ServiceHarness {
     DocumentTarget target;
     std::unique_ptr<EditorCommandService> service;
+    std::uint32_t behavior_owner_generation = 3;
 
     ServiceHarness() {
         service = std::make_unique<EditorCommandService>(
@@ -76,6 +97,48 @@ struct ServiceHarness {
                     return target.document;
                 },
                 .current_scene_id = [] { return std::string{"main"}; },
+                .runtime_query =
+                    [this](const AuthoringSceneView &,
+                           const AuthoringObjectView &object) {
+                        EditorRuntimeObjectState state;
+                        state.component_runtime_json.resize(object.components.size());
+                        state.component_pending.resize(object.components.size(), false);
+                        state.behavior_attachments.resize(object.components.size());
+                        state.entity_id = object.name && *object.name == "Root"
+                                              ? std::optional{GameObjectId{7, 2}}
+                                              : std::optional{GameObjectId{8, 2}};
+                        for (std::size_t index = 0; index < object.components.size();
+                             ++index) {
+                            const auto &authored =
+                                object.components[index].authoredJson();
+                            if (authored.value("name", std::string{}) != "behavior") {
+                                continue;
+                            }
+                            if (object.name && *object.name == "Root") {
+                                state.behavior_attachments[index] =
+                                    EditorRuntimeBehaviorAttachmentState{
+                                        .handle = index == 3 ? 501U : 502U,
+                                        .attachment_seq = index == 3 ? 7001U : 7002U,
+                                        .owner = 41U,
+                                        .owner_generation = behavior_owner_generation,
+                                        .pending = false,
+                                        .active = true,
+                                    };
+                            } else {
+                                state.component_pending[index] = true;
+                                state.behavior_attachments[index] =
+                                    EditorRuntimeBehaviorAttachmentState{
+                                        .handle = 503U,
+                                        .attachment_seq = 7003U,
+                                        .owner = 42U,
+                                        .owner_generation = 9U,
+                                        .pending = true,
+                                        .active = false,
+                                    };
+                            }
+                        }
+                        return state;
+                    },
                 .edit = EditorEditRuntimeDependencies{
                     .document = [this]() -> const AuthoringSceneDocument & {
                         return target.document;
@@ -219,6 +282,68 @@ TEST_CASE("WP164 widget planning is schema-only and covers every inspector field
     REQUIRE(synthetic_plan[1].kind == InspectorWidgetKind::UnsignedIntegerDrag);
     REQUIRE(synthetic_plan[2].kind == InspectorWidgetKind::BooleanCheckbox);
     REQUIRE(synthetic_plan[3].kind == InspectorWidgetKind::StringInput);
+}
+
+TEST_CASE("WP167 inspector distinguishes repeated behavior attachments and pending DLL state",
+          "[imgui][inspector][behavior][wp167][schema][pending]") {
+    ServiceHarness harness;
+    const auto root = harness.service->getComponents(
+        {.name = std::string{"Root"}});
+    REQUIRE(root.components.size() == 5);
+    const auto &first = root.components.at(3);
+    const auto &second = root.components.at(4);
+    REQUIRE(first.name == "behavior");
+    REQUIRE(second.name == "behavior");
+    REQUIRE(first.component_index == 3);
+    REQUIRE(second.component_index == 4);
+    REQUIRE(first.behavior_attachment_handle == 501);
+    REQUIRE(second.behavior_attachment_handle == 502);
+    REQUIRE(first.behavior_attachment_seq == 7001);
+    REQUIRE(second.behavior_attachment_seq == 7002);
+    REQUIRE(first.behavior_owner == 41);
+    REQUIRE(first.behavior_owner_generation == 3);
+    REQUIRE(first.editable);
+    REQUIRE(second.editable);
+    REQUIRE(first.schema_state == EditorComponentSchemaState::Available);
+
+    const auto first_plan = makeInspectorWidgetPlan(first);
+    const auto second_plan = makeInspectorWidgetPlan(second);
+    REQUIRE(first_plan.size() == 2);
+    REQUIRE(second_plan.size() == first_plan.size());
+    REQUIRE(first_plan.at(0).field_name == "label");
+    REQUIRE(first_plan.at(0).json_pointer == "/params/label");
+    REQUIRE(first_plan.at(0).kind == InspectorWidgetKind::StringInput);
+    REQUIRE(first_plan.at(1).field_name == "enabled");
+    REQUIRE(first_plan.at(1).json_pointer == "/params/enabled");
+    REQUIRE(first_plan.at(1).kind == InspectorWidgetKind::BooleanCheckbox);
+
+    const auto first_json = editorQueryJson(first);
+    const auto second_json = editorQueryJson(second);
+    REQUIRE(first_json.at("behavior").at("attachment_index") == 3);
+    REQUIRE(second_json.at("behavior").at("attachment_index") == 4);
+    REQUIRE(first_json.at("behavior").at("attachment_handle") == 501);
+    REQUIRE(second_json.at("behavior").at("attachment_handle") == 502);
+    REQUIRE(first_json.at("behavior").at("owner_generation") == 3);
+
+    harness.behavior_owner_generation = 4;
+    const auto reloaded = harness.service->getComponents(
+        {.name = std::string{"Root"}});
+    REQUIRE(reloaded.components.at(3).behavior_attachment_handle == 501);
+    REQUIRE(reloaded.components.at(3).behavior_owner_generation == 4);
+
+    const auto read_only = harness.service->getComponents(
+        {.name = std::string{"ReadOnly"}});
+    const auto &pending = read_only.components.at(1);
+    REQUIRE(pending.name == "behavior");
+    REQUIRE(pending.pending);
+    REQUIRE_FALSE(pending.editable);
+    REQUIRE(pending.schema_state == EditorComponentSchemaState::Missing);
+    REQUIRE(pending.authored_json.at("params").at("raw") == "kept");
+    REQUIRE(makeInspectorWidgetPlan(pending).empty());
+    const auto pending_json = editorQueryJson(pending);
+    REQUIRE(pending_json.at("behavior").at("status") == "pending");
+    REQUIRE(pending_json.at("behavior").at("attachment_handle") == 503);
+    REQUIRE(pending_json.at("behavior").at("owner_generation") == 9);
 }
 
 TEST_CASE("WP164 UI and RPC adapters preserve query edit undo and preview results",

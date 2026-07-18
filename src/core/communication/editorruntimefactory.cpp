@@ -10,6 +10,7 @@
 #include "../ecs/predefined/modelview.hpp"
 #include "../ecs/predefined/transform.hpp"
 #include "../gamelogic/behaviorarena.hpp"
+#include "../gamelogic/gamelogicreload.hpp"
 #include "../launchconfig.hpp"
 #include "../light/lightcontainer.hpp"
 #include "../loader/basicconfig.hpp"
@@ -42,6 +43,18 @@
 #include <glm/gtx/quaternion.hpp>
 
 namespace Pelican {
+
+EditorGateObservation internal::applyBehaviorEditConcurrencyGate(
+    EditorGateObservation observation, bool behavior_callback_active,
+    bool game_logic_reload_active, bool reload_reconciling) noexcept {
+    if (behavior_callback_active || game_logic_reload_active ||
+        reload_reconciling) {
+        observation.reasons |= editorGateReasonBit(
+            EditorGateReason::reload_scene_transition);
+    }
+    return observation;
+}
+
 namespace {
 
 struct EditorRuntimeModules {
@@ -526,6 +539,43 @@ std::string operationSceneId(const nlohmann::ordered_json &operation,
     return std::string{fallback};
 }
 
+struct BehaviorProjectionJunctionState {
+    BehaviorAttachmentArena &arena;
+    std::vector<BehaviorAttachmentEdit> edits;
+    std::unique_ptr<PreparedBehaviorAttachmentEdits> prepared;
+
+    static void prepare(void *context,
+                        const EditorProjectionPrepareContext &) {
+        auto &state = *static_cast<BehaviorProjectionJunctionState *>(context);
+        state.prepared = state.arena.prepareEditorEdits(state.edits);
+    }
+    static void publish(void *context) noexcept {
+        auto &state = *static_cast<BehaviorProjectionJunctionState *>(context);
+        if (state.prepared) state.prepared->publish();
+    }
+    static void rollback(void *context) noexcept {
+        auto &state = *static_cast<BehaviorProjectionJunctionState *>(context);
+        if (state.prepared) state.prepared->rollback();
+        state.prepared.reset();
+    }
+    static void finish(void *context) noexcept {
+        auto &state = *static_cast<BehaviorProjectionJunctionState *>(context);
+        if (state.prepared) state.prepared->finish();
+        state.prepared.reset();
+    }
+};
+
+BehaviorAttachmentIdentity behaviorIdentity(
+    const nlohmann::ordered_json &operation) {
+    return BehaviorAttachmentIdentity{
+        .handle = operation.contains("attachment_handle")
+                      ? BehaviorAttachmentHandle{
+                            operation.at("attachment_handle").get<std::uint64_t>()}
+                      : invalidBehaviorAttachmentHandle,
+        .attachment_seq = operation.value("attachment_seq", std::uint64_t{}),
+    };
+}
+
 class EphemeralEditorProjectionTarget final
     : public EditorProjectionDocumentTarget {
     AuthoringSceneDocument document_;
@@ -593,6 +643,7 @@ EditorProjectionResult executeEditorProjection(
     const EditorEditExecutionRequest &request) {
     auto &ecs = modules.ecs_core.getTemplatePublicModule();
     std::vector<std::unique_ptr<EditorProjectionAdapter>> adapters;
+    std::vector<BehaviorAttachmentEdit> behavior_edits;
     struct LifecycleUpdate {
         AuthoringObjectId object_id{};
         SceneObjectProjectionAdapter *adapter = nullptr;
@@ -643,7 +694,31 @@ EditorProjectionResult executeEditorProjection(
                     index));
         } else if (op == "set_component_value") {
             const auto component = operation.at("component_slot").get<std::string>();
-            if (component == "transform") transform_scenes.insert(scene_id);
+            if (component == "behavior") {
+                const auto object_id = AuthoringObjectId{
+                    operation.at("object_id").get<std::uint64_t>()};
+                if (const auto entity = boundEditorEntity(runtime_bindings, object_id)) {
+                    const auto &authored = operation.at("authored_component");
+                    const auto stable_name =
+                        authored.at("type").get<std::string>();
+                    const nlohmann::json params =
+                        authored.contains("params")
+                            ? nlohmann::json{authored.at("params")}
+                            : nlohmann::json::object();
+                    behavior_edits.push_back(BehaviorAttachmentEdit{
+                        .kind = BehaviorAttachmentEditKind::set_params,
+                        .entity = *entity,
+                        .component_index = operation.at("attachment_index")
+                                               .get<std::size_t>(),
+                        .identity = behaviorIdentity(operation),
+                        .stable_name = stable_name,
+                        .canonical_params =
+                            internal::canonicalizeBehaviorParams(stable_name,
+                                                                 params),
+                        .raw_component = authored,
+                    });
+                }
+            } else if (component == "transform") transform_scenes.insert(scene_id);
             else if (component == "simplemodelview") renderer_scenes.insert(scene_id);
             else if (component == "animation" || component == "sprite_view")
                 ecs_codec_scenes.insert(scene_id);
@@ -652,6 +727,45 @@ EditorProjectionResult executeEditorProjection(
             else if (component == "collider") collider_scenes.insert(scene_id);
         } else if (op == "add_component" || op == "remove_component") {
             const auto component = operation.at("component_slot").get<std::string>();
+            const auto object_id = AuthoringObjectId{
+                operation.at("object_id").get<std::uint64_t>()};
+            const auto entity = boundEditorEntity(runtime_bindings, object_id);
+            const auto component_index = operation.at("component_index")
+                                             .get<std::size_t>();
+            if (component == "behavior") {
+                if (entity) {
+                    if (op == "add_component") {
+                        const auto &authored = operation.at("component");
+                        behavior_edits.push_back(BehaviorAttachmentEdit{
+                            .kind = BehaviorAttachmentEditKind::attach,
+                            .entity = *entity,
+                            .component_index = component_index,
+                            .identity = behaviorIdentity(operation),
+                            .stable_name = authored.at("type").get<std::string>(),
+                            .canonical_params = authored.at("params").dump(),
+                            .raw_component = authored,
+                        });
+                    } else {
+                        behavior_edits.push_back(BehaviorAttachmentEdit{
+                            .kind = BehaviorAttachmentEditKind::remove,
+                            .entity = *entity,
+                            .component_index = operation.at("attachment_index")
+                                                   .get<std::size_t>(),
+                            .identity = behaviorIdentity(operation),
+                        });
+                    }
+                }
+                continue;
+            }
+            if (entity) {
+                behavior_edits.push_back(BehaviorAttachmentEdit{
+                    .kind = op == "add_component"
+                                ? BehaviorAttachmentEditKind::insert_component
+                                : BehaviorAttachmentEditKind::remove_component,
+                    .entity = *entity,
+                    .component_index = component_index,
+                });
+            }
             const auto &codec = requireComponentCodec(component);
             if (codec.runtime_kind == ComponentCodecRuntimeKind::Ecs ||
                 codec.runtime_kind == ComponentCodecRuntimeKind::Camera) {
@@ -696,6 +810,23 @@ EditorProjectionResult executeEditorProjection(
     for (const auto &scene : collider_scenes) {
         adapters.push_back(std::make_unique<ColliderProjectionAdapter>(
             ecs, modules.physics, scene, runtime_bindings));
+    }
+
+    std::unique_ptr<BehaviorProjectionJunctionState> behavior_state;
+    if (!behavior_edits.empty()) {
+        behavior_state = std::make_unique<BehaviorProjectionJunctionState>(
+            BehaviorProjectionJunctionState{
+                .arena = GET_MODULE(BehaviorAttachmentArena),
+                .edits = std::move(behavior_edits),
+            });
+        auto junction = makeBehaviorAttachmentProjectionJunction(
+            "behavior_attachment.batch", behavior_state.get(),
+            &BehaviorProjectionJunctionState::prepare,
+            &BehaviorProjectionJunctionState::publish,
+            &BehaviorProjectionJunctionState::rollback,
+            &BehaviorProjectionJunctionState::finish);
+        adapters.push_back(
+            std::make_unique<EditorProjectionCallbackAdapter>(std::move(junction)));
     }
 
     std::vector<EditorProjectionAdapter *> adapter_ptrs;
@@ -754,20 +885,17 @@ EditorGateObservation editorGateObservation(const EditorRuntimeModules &modules)
     if (modules.launch_config.strict_assets) {
         reasons |= editorGateReasonBit(EditorGateReason::strict);
     }
-    if (internal::behaviorCallbackActive()) {
-        reasons |= editorGateReasonBit(
-            EditorGateReason::reload_scene_transition);
-    }
+    bool reload_reconciling = false;
     if (modules.reload_service != nullptr) {
         const auto state = modules.reload_service->statusJson().value(
             "state", std::string{});
-        if (state == "reconciling") {
-            reasons |= editorGateReasonBit(
-                EditorGateReason::reload_scene_transition);
-        }
+        reload_reconciling = state == "reconciling";
     }
-    return {.reasons = reasons,
-            .transition_epoch = editorTransitionEpoch(modules)};
+    return internal::applyBehaviorEditConcurrencyGate(
+        {.reasons = reasons,
+         .transition_epoch = editorTransitionEpoch(modules)},
+        internal::behaviorCallbackActive(), isGameLogicReloadInProgress(),
+        reload_reconciling);
 }
 
 EditorRuntimeObjectState queryEditorRuntime(const EditorRuntimeModules &modules,
@@ -776,6 +904,8 @@ EditorRuntimeObjectState queryEditorRuntime(const EditorRuntimeModules &modules,
                                             const AuthoringObjectView &object) {
     EditorRuntimeObjectState result;
     result.component_runtime_json.resize(object.components.size());
+    result.component_pending.resize(object.components.size(), false);
+    result.behavior_attachments.resize(object.components.size());
     if (scene.scene_id != modules.scene_loader.currentScene()) return result;
     const auto entity_id = boundEditorEntity(bindings, object.authoring_object_id);
     if (!entity_id) return result;
@@ -783,8 +913,41 @@ EditorRuntimeObjectState queryEditorRuntime(const EditorRuntimeModules &modules,
 
     auto &ecs = modules.ecs_core.getTemplatePublicModule();
     auto &component_info = modules.component_info;
+    const auto behavior_attachments =
+        GET_MODULE(BehaviorAttachmentArena).snapshot();
     for (std::size_t index = 0; index < object.components.size(); ++index) {
         const auto name = object.components[index].authoredJson().at("name").get<std::string>();
+        if (name == "behavior") {
+            const auto found = std::find_if(
+                behavior_attachments.begin(), behavior_attachments.end(),
+                [&](const BehaviorAttachmentInfo &attachment) {
+                    return attachment.entity == *entity_id &&
+                           attachment.component_index == index;
+                });
+            if (found != behavior_attachments.end()) {
+                result.component_pending[index] = found->pending;
+                result.behavior_attachments[index] =
+                    EditorRuntimeBehaviorAttachmentState{
+                        .handle = found->handle.value,
+                        .attachment_seq = found->attachment_seq,
+                        .owner = found->owner,
+                        .owner_generation =
+                            internal::registrationOwnerGeneration(found->owner),
+                        .pending = found->pending,
+                        .active = found->active,
+                    };
+                if (!found->pending) {
+                    result.component_runtime_json[index] =
+                        nlohmann::ordered_json{
+                            {"name", "behavior"},
+                            {"type", found->stable_name},
+                            {"params", nlohmann::ordered_json::parse(
+                                           found->canonical_params)},
+                        };
+                }
+            }
+            continue;
+        }
         const auto *codec = findComponentCodec(name);
         if (codec == nullptr || codec->runtime_kind != ComponentCodecRuntimeKind::Ecs) continue;
         const auto component_id = component_info.getComponentIdByName(name);
@@ -916,6 +1079,34 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService() {
             .gate = [runtime] {
                 return editorGateObservation(runtime->modules);
             },
+            .allocate_behavior_attachment =
+                [](std::uint64_t commit_seq, std::size_t command_index,
+                   std::size_t attachment_index) {
+                    const auto identity =
+                        GET_MODULE(BehaviorAttachmentArena)
+                            .reserveRuntimeAttachmentIdentity(
+                                commit_seq, command_index, attachment_index);
+                    return EditorBehaviorAttachmentIdentity{
+                        .handle = identity.handle.value,
+                        .attachment_seq = identity.attachment_seq,
+                    };
+                },
+            .resolve_behavior_attachment =
+                [runtime](AuthoringObjectId object_id,
+                          std::size_t attachment_index)
+                    -> std::optional<EditorBehaviorAttachmentIdentity> {
+                    const auto entity = boundEditorEntity(
+                        runtime->runtime_bindings, object_id);
+                    if (!entity) return std::nullopt;
+                    const auto attachment =
+                        GET_MODULE(BehaviorAttachmentArena)
+                            .findEditorAttachment(*entity, attachment_index);
+                    if (!attachment) return std::nullopt;
+                    return EditorBehaviorAttachmentIdentity{
+                        .handle = attachment->handle.value,
+                        .attachment_seq = attachment->attachment_seq,
+                    };
+                },
             .install_commit_hook = true,
         },
         .save_scene = [runtime] {
