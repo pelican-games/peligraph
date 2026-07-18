@@ -4710,6 +4710,36 @@ selectGraphVariant の変更禁止(V22-C6)・editorjournal/transaction
 §1-6-2 全行の実測検査 + 既存全テスト無変更 + golden SKIP 0・byte
 不変 + player 8 秒 + CI green
 
+### WP173: 負債 PORT0 — portability quick fixes
+
+参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
+の「WP-PORT0」定義が正**:
+
+> growable atlas descriptor pool、`CreateProcessW`、import
+> timeout/cancel/log capture。
+
+範囲(3 点とも関連 N 系発見を全文検索して対象特定):
+
+1. **growable atlas descriptor pool**: UI/atlas の descriptor pool
+   固定上限を growable に(上限到達で新 pool を追加 — 既存描画の
+   挙動/golden byte 不変)
+2. **`CreateProcessW`**: プロセス起動系の ANSI API(`CreateProcessA`
+   等)を wide 化(非 ASCII パスのユーザー環境対策)。対象箇所を
+   grep で全列挙してレポートに表を出すこと
+3. **import timeout/cancel/log capture**: pelican_cli import(外部
+   ツール起動)に timeout・cancel・子プロセス stdout/stderr の
+   log capture を追加(ハング・沈黙失敗の根絶)
+
+依存: なし。見積: 中。
+排他: atlas descriptor pool 面 + プロセス起動 util + devcli import。
+**vkcore/renderingpass の preview 面(WP172 並走中)・communication/
+rpcserver・schema 三 header・`.github` に触らない**。golden byte
+不変が gate。
+
+受け入れ = 3 点の fixture(pool 成長・wide パス起動・timeout/cancel/
+capture)+ 既存全テスト無変更 + golden SKIP 0・byte 不変 + player
+8 秒 + CI green
+
 ### WP137: 負債 CI0 — CPU gate の常設(GitHub Actions)
 
 参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
