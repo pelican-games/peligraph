@@ -96,6 +96,7 @@ target_link_libraries(pelican_core PRIVATE Jolt)
 endif()
 
 target_link_libraries(pelican_core PUBLIC nlohmann_json)
+target_link_libraries(pelican_core PRIVATE picosha2)
 
 # build distributable dir
 ## list up static lib dependencies
