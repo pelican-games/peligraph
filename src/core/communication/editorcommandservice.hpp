@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace Pelican {
@@ -172,6 +173,37 @@ struct EditorSnapshotState {
     std::uint64_t preview_epoch = 0;
 };
 
+struct EditorWatchToken {
+    SceneRevision scene_revision{};
+    std::uint64_t preview_epoch = 0;
+
+    friend bool operator==(const EditorWatchToken &, const EditorWatchToken &) = default;
+};
+
+struct EditorWatchActor {
+    EditorActorId actor_id{};
+    std::string display_name;
+};
+
+struct EditorLastTransactionResult {
+    EditorActorId actor_id{};
+    std::string display_name;
+    std::vector<AuthoringObjectId> affected_authoring_ids;
+};
+
+struct EditorPreviewLeaseResult {
+    EditorWatchActor actor;
+    std::string ticket;
+    std::vector<AuthoringObjectId> affected_ids;
+    std::string state;
+};
+
+struct EditorSceneRevisionResult {
+    EditorWatchToken token;
+    std::optional<EditorLastTransactionResult> last_transaction;
+    std::optional<EditorPreviewLeaseResult> preview_lease;
+};
+
 struct EditorCommandServiceDependencies {
     std::function<const AuthoringSceneDocument &()> document;
     std::function<std::string()> current_scene_id;
@@ -185,8 +217,25 @@ struct EditorCommandServiceDependencies {
 };
 
 class EditorCommandService {
+    enum class PreviewWatchTransitionKind : std::uint8_t {
+        Open,
+        Update,
+        Commit,
+        Abort,
+    };
+
+    struct PendingPreviewWatchTransition {
+        std::string request_id;
+        std::string ticket;
+        EditorActorId actor_id{};
+        PreviewWatchTransitionKind kind = PreviewWatchTransitionKind::Open;
+    };
+
     EditorCommandServiceDependencies dependencies_;
     std::unique_ptr<EditorEditCoordinator> edit_;
+    std::unordered_map<std::uint64_t, std::string> actor_display_names_;
+    mutable std::optional<EditorPreviewLeaseResult> preview_lease_;
+    mutable std::vector<PendingPreviewWatchTransition> pending_preview_watch_;
 
     const AuthoringSceneDocument &document() const;
     const AuthoringSceneView &selectScene(const std::vector<AuthoringSceneView> &scenes,
@@ -194,12 +243,17 @@ class EditorCommandService {
     EditorObjectQueryResult queryObject(const AuthoringSceneDocument &document,
                                         const AuthoringSceneView &scene,
                                         const AuthoringObjectView &object) const;
+    void trackPreviewTransition(const nlohmann::ordered_json &response,
+                                const nlohmann::json &params,
+                                PreviewWatchTransitionKind kind);
+    void synchronizePreviewWatch() const noexcept;
 
   public:
     explicit EditorCommandService(EditorCommandServiceDependencies dependencies);
     ~EditorCommandService();
 
     EditorSceneTreeResult sceneTree(const EditorSceneTreeRequest &request = {}) const;
+    EditorSceneRevisionResult getSceneRevision() const;
     EditorObjectQueryResult getComponents(const EditorGetComponentsRequest &request) const;
     EditorListAssetsResult listAssets(const EditorListAssetsRequest &request = {}) const;
     ExportSceneSnapshotResponseV1 exportSceneSnapshot(const ExportSceneSnapshotRequestV1 &request) const;
@@ -238,6 +292,7 @@ class EditorCommandRpcAdapter {
         : service_{service}, mutable_service_{&service} {}
 
     nlohmann::ordered_json sceneTree(const nlohmann::json &params) const;
+    nlohmann::ordered_json getSceneRevision(const nlohmann::json &params) const;
     nlohmann::ordered_json getComponents(const nlohmann::json &params) const;
     nlohmann::ordered_json listAssets(const nlohmann::json &params) const;
     nlohmann::ordered_json exportSceneSnapshot(const nlohmann::json &params) const;
@@ -275,6 +330,9 @@ class EditorCommandImGuiFakeAdapter {
     EditorSceneTreeResult sceneTree(const EditorSceneTreeRequest &request = {}) const {
         return service_.sceneTree(request);
     }
+    EditorSceneRevisionResult getSceneRevision() const {
+        return service_.getSceneRevision();
+    }
     EditorObjectQueryResult getComponents(const EditorGetComponentsRequest &request) const {
         return service_.getComponents(request);
     }
@@ -293,6 +351,7 @@ class EditorCommandImGuiFakeAdapter {
 };
 
 nlohmann::ordered_json editorQueryJson(const EditorComponentQueryResult &component);
+nlohmann::ordered_json editorQueryJson(const EditorSceneRevisionResult &revision);
 nlohmann::ordered_json editorQueryJson(const EditorObjectQueryResult &object);
 nlohmann::ordered_json editorQueryJson(const EditorSceneTreeResult &scene);
 nlohmann::ordered_json editorQueryJson(const EditorListAssetsResult &assets);

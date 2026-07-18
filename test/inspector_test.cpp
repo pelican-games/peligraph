@@ -560,4 +560,212 @@ TEST_CASE("WP166 Save is busy for pending tickets and an open preview lease",
     REQUIRE(harness.service->saveScene().scene_revision.value == 4);
 }
 
+TEST_CASE("WP170 watch epoch is monotonic across every preview transition",
+          "[editor][watch][preview][epoch][wp170]") {
+    ServiceHarness harness;
+    EditorCommandRpcAdapter rpc{*harness.service};
+    const auto session =
+        rpc.openEditorSession({{"display_name", "watch-actor"}});
+    const auto actor = session.at("actor_id").get<std::uint64_t>();
+    Json operation{{"op", "set_component_value"},
+                   {"object_id", 1},
+                   {"component_slot", "light"},
+                   {"field_path", "/intensity"},
+                   {"value", 2.0}};
+
+    std::vector<std::uint64_t> epochs{
+        rpc.getSceneRevision(Json::object()).at("preview_epoch")};
+
+    const auto open = rpc.openPreview(
+        {{"actor_id", actor}, {"operations", Json::array({operation})}});
+    harness.service->editCoordinator()->commitPending();
+    auto watch = rpc.getSceneRevision(Json::object());
+    epochs.push_back(watch.at("preview_epoch"));
+    REQUIRE(watch.at("scene_revision") == 1);
+    REQUIRE(watch.at("preview_lease").at("actor").at("actor_id") == actor);
+    REQUIRE(watch.at("preview_lease").at("actor").at("display_name") ==
+            "watch-actor");
+    REQUIRE(watch.at("preview_lease").at("ticket") == open.at("ticket"));
+    REQUIRE(watch.at("preview_lease").at("affected_ids") ==
+            OrderedJson::array({1}));
+    REQUIRE(watch.at("preview_lease").at("state") == "open");
+
+    operation["value"] = 3.0;
+    (void)rpc.updatePreview(
+        {{"actor_id", actor},
+         {"ticket", open.at("ticket")},
+         {"operations", Json::array({operation})}});
+    harness.service->editCoordinator()->commitPending();
+    watch = rpc.getSceneRevision(Json::object());
+    epochs.push_back(watch.at("preview_epoch"));
+    REQUIRE(watch.at("scene_revision") == 1);
+    REQUIRE(watch.at("preview_lease").at("state") == "updated");
+
+    (void)rpc.commitPreview(
+        {{"actor_id", actor}, {"ticket", open.at("ticket")}});
+    harness.service->editCoordinator()->commitPending();
+    watch = rpc.getSceneRevision(Json::object());
+    epochs.push_back(watch.at("preview_epoch"));
+    REQUIRE(watch.at("scene_revision") == 2);
+    REQUIRE(watch.at("preview_lease").is_null());
+
+    operation["value"] = 4.0;
+    const auto abort_open = rpc.openPreview(
+        {{"actor_id", actor}, {"operations", Json::array({operation})}});
+    harness.service->editCoordinator()->commitPending();
+    epochs.push_back(
+        rpc.getSceneRevision(Json::object()).at("preview_epoch"));
+    (void)rpc.abortPreview(
+        {{"actor_id", actor}, {"ticket", abort_open.at("ticket")}});
+    harness.service->editCoordinator()->commitPending();
+    watch = rpc.getSceneRevision(Json::object());
+    epochs.push_back(watch.at("preview_epoch"));
+    REQUIRE(watch.at("scene_revision") == 2);
+    REQUIRE(watch.at("preview_lease").is_null());
+
+    operation["value"] = 5.0;
+    (void)rpc.openPreview(
+        {{"actor_id", actor}, {"operations", Json::array({operation})}});
+    harness.service->editCoordinator()->commitPending();
+    epochs.push_back(
+        rpc.getSceneRevision(Json::object()).at("preview_epoch"));
+    REQUIRE(harness.service->forceAbortPreview("wp170_fixture"));
+    watch = rpc.getSceneRevision(Json::object());
+    epochs.push_back(watch.at("preview_epoch"));
+    REQUIRE(watch.at("scene_revision") == 2);
+    REQUIRE(watch.at("preview_lease").is_null());
+
+    REQUIRE(epochs == std::vector<std::uint64_t>{0, 1, 2, 3, 4, 5, 6, 7});
+}
+
+TEST_CASE("WP170 repeated watch queries are byte-identical and drive periodic refresh",
+          "[editor][watch][determinism][polling][wp170]") {
+    ServiceHarness harness;
+    EditorCommandRpcAdapter rpc{*harness.service};
+    const auto first = rpc.getSceneRevision(Json::object());
+    const auto second = rpc.getSceneRevision(Json::object());
+    REQUIRE(first.dump() == second.dump());
+    REQUIRE(first == OrderedJson{{"scene_revision", 1},
+                                 {"preview_epoch", 0},
+                                 {"last_transaction", nullptr},
+                                 {"preview_lease", nullptr}});
+
+    InspectorWatchState state;
+    state.observe(harness.service->getSceneRevision());
+    std::uint64_t query_calls = 0;
+    std::uint64_t displayed_object_queries = 0;
+    auto current = harness.service->getSceneRevision();
+    const auto poll = [&] {
+        return pollInspectorWatch(
+            state,
+            [&] {
+                ++query_calls;
+                return current;
+            },
+            [&] {
+                ++displayed_object_queries;
+                (void)harness.service->getComponents(
+                    {.authoring_object_id = AuthoringObjectId{1}});
+            });
+    };
+    for (std::uint64_t frame = 1; frame < inspectorWatchPollFrameInterval;
+         ++frame) {
+        REQUIRE_FALSE(poll());
+    }
+    REQUIRE_FALSE(poll());
+    REQUIRE(query_calls == 1);
+    REQUIRE(displayed_object_queries == 0);
+
+    ++current.token.preview_epoch;
+    for (std::uint64_t frame = 1; frame < inspectorWatchPollFrameInterval;
+         ++frame) {
+        REQUIRE_FALSE(poll());
+    }
+    REQUIRE(poll());
+    REQUIRE(query_calls == 2);
+    REQUIRE(displayed_object_queries == 1);
+}
+
+TEST_CASE("WP170 stale commit is rejected even when the client never reads watch",
+          "[editor][watch][cas][stale][wp170]") {
+    ServiceHarness harness;
+    const auto session = harness.service->openEditorSession(
+        {{"display_name", "cas-without-watch"}});
+    const auto actor = session.at("actor_id").get<std::uint64_t>();
+    const Json first_operation{{"op", "set_component_value"},
+                               {"object_id", 1},
+                               {"component_slot", "light"},
+                               {"field_path", "/intensity"},
+                               {"value", 2.0}};
+    const auto first = harness.service->edit(
+        {{"actor_id", actor},
+         {"base_revision", 1},
+         {"operations", Json::array({first_operation})}});
+    harness.service->commitPendingEdits();
+    REQUIRE(harness.service->getEditResult({{"ticket", first.at("ticket")}})
+                .at("status") == "committed");
+
+    const Json stale_operation{{"op", "set_component_value"},
+                               {"object_id", 1},
+                               {"component_slot", "collider"},
+                               {"field_path", "/radius"},
+                               {"value", 9.0}};
+    const auto stale = harness.service->edit(
+        {{"actor_id", actor},
+         {"base_revision", 1},
+         {"operations", Json::array({stale_operation})}});
+    REQUIRE(stale.at("status") == "rejected");
+    REQUIRE(stale.at("error").at("code") == "stale_revision");
+    REQUIRE(stale.at("error").at("payload").at("current_revision") == 2);
+    REQUIRE(harness.target.document.revision().value == 2);
+    REQUIRE(harness.service->editCoordinator()->journal().size() == 1);
+}
+
+TEST_CASE("WP170 last transaction retains the committing actor attribution",
+          "[editor][watch][transaction][actor][wp170]") {
+    ServiceHarness harness;
+    EditorCommandRpcAdapter rpc{*harness.service};
+    const auto actor_a =
+        rpc.openEditorSession({{"display_name", "watch-actor-a"}})
+            .at("actor_id")
+            .get<std::uint64_t>();
+    const Json light{{"op", "set_component_value"},
+                     {"object_id", 1},
+                     {"component_slot", "light"},
+                     {"field_path", "/intensity"},
+                     {"value", 2.0}};
+    const auto edit_a = rpc.edit(
+        {{"actor_id", actor_a},
+         {"base_revision", 1},
+         {"operations", Json::array({light})}});
+    harness.service->commitPendingEdits();
+    REQUIRE(rpc.getEditResult({{"ticket", edit_a.at("ticket")}})
+                .at("status") == "committed");
+    auto last = rpc.getSceneRevision(Json::object()).at("last_transaction");
+    REQUIRE(last.at("actor_id") == actor_a);
+    REQUIRE(last.at("display_name") == "watch-actor-a");
+    REQUIRE(last.at("affected_authoring_ids") == OrderedJson::array({1}));
+
+    const auto actor_b =
+        rpc.openEditorSession({{"display_name", "watch-actor-b"}})
+            .at("actor_id")
+            .get<std::uint64_t>();
+    const Json collider{{"op", "set_component_value"},
+                        {"object_id", 1},
+                        {"component_slot", "collider"},
+                        {"field_path", "/radius"},
+                        {"value", 1.25}};
+    const auto edit_b = rpc.edit(
+        {{"actor_id", actor_b},
+         {"base_revision", 2},
+         {"operations", Json::array({collider})}});
+    harness.service->commitPendingEdits();
+    REQUIRE(rpc.getEditResult({{"ticket", edit_b.at("ticket")}})
+                .at("status") == "committed");
+    last = rpc.getSceneRevision(Json::object()).at("last_transaction");
+    REQUIRE(last.at("actor_id") == actor_b);
+    REQUIRE(last.at("display_name") == "watch-actor-b");
+    REQUIRE(last.at("affected_authoring_ids") == OrderedJson::array({1}));
+}
+
 } // namespace Pelican
