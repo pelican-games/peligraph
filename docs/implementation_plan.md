@@ -4264,6 +4264,71 @@ scene/ecs/behavior/schema 三 header に触らない**。
 
 受け入れ = smoke green + 既存全テスト無変更 + golden SKIP 0 + CI green
 
+### WP161: E-RPC1b — undo/redo + ticket preview(E-RPC1 第二分割・完結)
+
+前提: WP157(済)。`docs/design_editor_tooling.md` v2.5 の
+**§1-4-1(undo 段)/§1-5-1(V22-C4)/§1-5-4(can_preview 分)/
+§1-6-1a(undo・ticket 全行)/§1-6-1c** の全文が受け入れ条件。
+undo 中核(V22-C1 後段の逐語):
+
+> actor revert は base SceneRevision を持つ一個の通常 transaction と
+> し、全 inverse command の postcondition/last-writer precondition を
+> 同じ snapshot で preflight する。一項でも original transaction 後の
+> 他 actor write または structural overlap があれば inverse を一項も
+> 適用せず `undo_conflict` と conflict domain/owner transaction/
+> revision を返す。conflict no-op は revision と journal を進めない。
+> 成功した revert だけを redo 対象にし、redo にも同じ CAS/
+> precondition を適用する。spawn-edit-undo、reparent-local-edit-undo、
+> destroy-index-insert-undo、add-edit/remove-undo と descendant
+> cross-edit を二 actor fixture に含める。
+
+範囲: ①undo/redo rpc(WP157 journal の inverse を消費・actor 別)
+②ticket preview lease(一 session 一個・§1-6-1a の open/update/
+commit/abort/forced-abort 5 行どおり・live_preview_capability は
+値 swap 純粋な adapter のみ v1 許可、他は method_unavailable)
+③can_preview 実体(gate bit 追加)④E-C3-2 逐語:
+
+> RPC/windowed の同一 phase trace、stale revision、scene transition
+> 競合、callback/reload 競合を fixture に含める。
+
+⑤BEH0 持ち越しの attachment_seq undo fixture(undo restore = 元 seq・
+redo 同 seq・forward→inverse→forward で seq 列と trace 一致)。
+
+依存: WP157(済)。見積: 大。
+排他: rpcserver/editorjournal/editorcommandservice の undo・ticket 面 +
+fixture。**transaction/adapters/document/ecs/behavior/schema 三 header
+は消費のみ**。
+
+受け入れ = 上記逐語 gate + 既存全テスト無変更 + golden SKIP 0・byte
+不変 + player 8 秒 + CI green
+
+### WP162: BEH1 — 二世代 DLL reload fixture(B-C2 逐語)
+
+前提: WP155(済)。`docs/design_object_behaviors.md` v2.1 §5(reload
+列・§5-2 正本規範)+ **再レビュー §3.2(B-C2)の 3 blockquote 全文が
+受け入れ条件**(中核: 「DLL generation が変わる reload は
+schema_version の一致に関わらず全 instance を destroy→unload→
+rebuild→recreate/onInit。同一 generation の set-param は atomic live
+apply で recreate しない。schema_version は検証 key」+
+`schema_changed_without_version_bump` / version bump 時の全 raw params
+side-decode 全件成功のみ許可・失敗は `schema_incompatible` で旧
+runtime 維持 / cross-process migration を主張しない)。
+
+fixture(B-C2 第 3 blockquote + BEH1 表): 同 version・同 schema の
+code-only reload でも destroy/recreate 各一回 / same-version schema
+drift reject / version bump + decode 成功 / version bump + decode 失敗
+rollback / type 削除 hard error / candidate validate 中 lifecycle
+trace 0 / pending 復旧 / queued event purge / onInit fault rollback —
+すべて**実二世代 DLL** で検査。
+
+依存: WP155(済)。見積: 中〜大。
+排他: gamelogic reload + behavior 系 + 二世代 DLL fixture。
+**communication/rpcserver(WP161 並走中)・loader transaction 面・
+schema 三 header に触らない**。
+
+受け入れ = B-C2 逐語 gate 全 fixture + 既存全テスト無変更(WP155
+fixture 含む)+ golden SKIP 0・byte 不変 + player 8 秒 + CI green
+
 ### WP137: 負債 CI0 — CPU gate の常設(GitHub Actions)
 
 参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
