@@ -3859,6 +3859,77 @@ ED-CODEC0 が消費者)。
 受け入れ = 上記逐語 gate(WP71 全 fixture 無変更が最重要)+ 既存全
 テスト + golden SKIP 0 + player 8 秒 + CI green
 
+**BEH-P0 の扱い(2026-07-18 確定)**: WP150 の BehaviorParamsPolicy が
+BEH-P0(再レビュー §6 の定義 = default construct / partial atomic
+decode / canonical encode)の gate を実測で満たしたため、**BEH-P0 は
+WP150 に吸収済み**とする。残差 2 点(params 全省略時の全 default 化・
+全 scalar kind の往復)は BEH0 の gate に折り込む。
+
+### WP151: ED-CODEC0 — component codec 五つ組 + 七種 coverage
+
+参照: **`docs/design_editor_tooling.md` §0-2 の逐語が受け入れ条件**:
+
+> component codec を `decode authored JSON / encode canonical authored
+> JSON / schema / runtime apply / runtime project` の組として登録する。
+> ComponentInfo の lifecycle/loader callback を逆方向 serializer が
+> 既にあるものとして扱わない。v1 coverage は transform(local/world
+> mapping と hierarchy)、simplemodelview、camera、light、collider、
+> animation(boolean loop)、sprite_view(closed schema)を必須とする。
+> 各 component について authored→runtime→canonical JSON→fresh load の
+> semantic equality と invalid type/range/unknown key を fixture 化する。
+> codec のない component は raw authored JSON を保存時に必ず保持し、
+> runtime edit 不可を query metadata で明示する。
+
+§0-2 の coverage 表(transform = local/world mapping・camera/light/
+collider = special adapter・sprite_view = closed schema 準拠 encode 等)
+に従うこと。加えて**再レビュー E-C3-3(最小提出物)の逐語**:
+
+> transform、simplemodelview、camera、light、collider、animation、
+> sprite_view の各一件以上について authored input、canonical output、
+> fresh load 後の semantic assertion を示す。transform は parent-child、
+> animation は JSON bool、sprite_view は `flip` 配列と文字列
+> `billboard` を必須例にする。
+
+制約(再レビュー §6): **共通 schema API を新設しない** — WP150 の
+StructFieldSchema/ComponentPolicy をそのまま使う。schema 三 header
+(structfieldschema.hpp / structfieldjson.hpp / payloadschema.hpp)は
+凍結 — 不足があれば実装せずレポートに質問を書くこと。
+
+依存: WP149(済)+ WP150(済)。見積: 大。
+排他: codec 登録層(新設)+ loader/scene の component 経路 +
+light/phys special adapter + fixture。**ECS core(WP152 と並走中)と
+behavior/gamelogic 系に触らない**。
+
+受け入れ = 上記逐語 gate + 七種 canonical JSON 例の提出 + 既存全
+テスト(scene 系 fixture 無変更)+ golden SKIP 0・byte 不変 +
+player 8 秒 + CI green
+
+### WP152: ECS-MUT0 — archetype migration transaction
+
+参照: **再レビュー
+`docs/design_reviews/2026-07-18_editor_behavior_v2_rereview_codex.md`
+§2.3(E-C3-1)の逐語が受け入れ条件**:
+
+> live entity の component add/remove に必要な archetype migration を
+> ECS transaction として実装する。重複/EntityId remove/不存在、
+> construct-populate-init fault、deinit/destroy、over-alignment、
+> move-only、system chunk cache/version、free-list/ID、external
+> binding の rollback を WP62 と同じ failure-atomicity で検査する。
+> special attachment(light/collider/behavior)は generic ECS
+> migration と同一視せず adapter を持つ。E-RPC1 はこの WP 完了前に
+> add/remove_component を約束しない。
+
+本 WP は **generic ECS migration transaction 本体まで**(special
+adapter の実装は E-PROJTX0/BEH0 の責務 — adapter の接合点だけ型で
+用意する)。fault 注入は WP62 の流儀(fault matrix + 逐語復元検査)。
+
+依存: WP62(済)。見積: 大。
+排他: `src/core/ecs/` + fixture。**loader/scene/codec 系(WP151 と
+並走中)・userpublic の schema 三 header・behavior 系に触らない**。
+
+受け入れ = 上記逐語 fault matrix 全通過 + 既存全テスト(WP62/WP148
+fixture 無変更)+ golden SKIP 0・byte 不変 + player 8 秒 + CI green
+
 ### WP137: 負債 CI0 — CPU gate の常設(GitHub Actions)
 
 参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
