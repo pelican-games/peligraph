@@ -7,6 +7,7 @@ target_sources(pelican_core PRIVATE
     pathresolver.cpp
     projectsrc.cpp
     authoringscenedocument.cpp
+    componentcodec.cpp
     basicconfig.cpp
     scene.cpp
 )

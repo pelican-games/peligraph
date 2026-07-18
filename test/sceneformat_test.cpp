@@ -202,7 +202,18 @@ TEST_CASE("AuthoringSceneDocument preserves every raw scene object and component
                 ++unnamed_count;
             }
             for (const auto &component : object.components) {
-                component_names.insert(component.authoredJson().at("name").get<std::string>());
+                const auto component_name = component.authoredJson().at("name").get<std::string>();
+                component_names.insert(component_name);
+                if (component_name == "unknown_read_only") {
+                    REQUIRE(component.codec.state == ComponentCodecState::Missing);
+                    REQUIRE_FALSE(component.codec.editable);
+                    REQUIRE(component.codec.codec_name.empty());
+                } else if (component_name == "transform" || component_name == "light" ||
+                           component_name == "collider") {
+                    REQUIRE(component.codec.state == ComponentCodecState::Registered);
+                    REQUIRE(component.codec.editable);
+                    REQUIRE(std::string{component.codec.codec_name} == component_name);
+                }
             }
         }
     }

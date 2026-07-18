@@ -87,6 +87,8 @@ std::vector<AuthoringSceneView> AuthoringSceneDocument::query() const {
                 object_view.components.push_back(AuthoringComponentView{
                     .declaration_index = component_index,
                     .authored_json = &components_json.at(component_index),
+                    .codec = componentCodecQueryMetadata(
+                        components_json.at(component_index).at("name").get_ref<const std::string &>()),
                 });
             }
             scene_view.objects.push_back(std::move(object_view));
