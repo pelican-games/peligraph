@@ -104,4 +104,56 @@ std::string AuthoringSceneDocument::encodeSemantic() const {
     return raw_document_.dump();
 }
 
+AuthoringSceneDocument AuthoringSceneDocument::stage(
+    nlohmann::json raw_document, SceneRevision revision) const {
+    if (revision.value == 0 || revision.value <= revision_.value) {
+        throw std::invalid_argument(
+            "staged AuthoringSceneDocument revision must increase");
+    }
+
+    auto validated = normalizeSceneDataJson(raw_document);
+    const auto &base_scenes = raw_document_.at("scenes");
+    const auto &next_scenes = raw_document.at("scenes");
+    if (next_scenes.size() != scene_metadata_.size()) {
+        throw std::invalid_argument(
+            "projection transaction cannot add or remove scenes");
+    }
+    for (const auto &scene : scene_metadata_) {
+        const auto found = next_scenes.find(scene.id);
+        if (found == next_scenes.end() ||
+            found->at("objects").size() != scene.objects.size()) {
+            throw std::invalid_argument(
+                "projection transaction cannot add, remove, or reorder authoring objects");
+        }
+        const auto &base_objects = base_scenes.at(scene.id).at("objects");
+        const auto &next_objects = found->at("objects");
+        for (std::size_t index = 0; index < base_objects.size(); ++index) {
+            const auto base_name = base_objects[index].find("name");
+            const auto next_name = next_objects[index].find("name");
+            if ((base_name == base_objects[index].end()) !=
+                    (next_name == next_objects[index].end()) ||
+                (base_name != base_objects[index].end() &&
+                 *base_name != *next_name)) {
+                throw std::invalid_argument(
+                    "projection transaction cannot add, remove, rename, or reorder authoring objects");
+            }
+        }
+    }
+
+    auto result = *this;
+    result.revision_ = revision;
+    result.raw_document_ = std::move(raw_document);
+    result.warnings_ = std::move(validated.warnings);
+    return result;
+}
+
+void AuthoringSceneDocument::swap(AuthoringSceneDocument &other) noexcept {
+    using std::swap;
+    swap(revision_, other.revision_);
+    raw_document_.swap(other.raw_document_);
+    warnings_.swap(other.warnings_);
+    scene_metadata_.swap(other.scene_metadata_);
+    swap(next_authoring_object_id_value_, other.next_authoring_object_id_value_);
+}
+
 } // namespace Pelican

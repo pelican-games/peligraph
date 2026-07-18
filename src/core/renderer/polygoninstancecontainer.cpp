@@ -1304,12 +1304,38 @@ void PolygonInstanceContainer::bindSkinning(vk::CommandBuffer cmd_buf,
     bindDeformation(cmd_buf, pipeline_layout, true);
 }
 
-void PolygonInstanceContainer::setTrs(ModelInstanceId id, glm::vec3 pos, glm::quat rotation, glm::vec3 scale) {
+PolygonInstanceContainer::PreparedModelTrs
+PolygonInstanceContainer::prepareTrs(ModelInstanceId id, glm::vec3 pos,
+                                     glm::quat rotation,
+                                     glm::vec3 scale) const {
     const auto index = requireLive(id, "setTrs");
+    const auto next = glm::translate(glm::identity<glm::mat4>(), pos) *
+                      glm::toMat4(rotation) *
+                      glm::scale(glm::identity<glm::mat4>(), scale);
+    return PreparedModelTrs{
+        .index = index,
+        .old_value = model_instances_data[index],
+        .next_value = next,
+    };
+}
 
-    model_instances_data[index] = glm::translate(glm::identity<glm::mat4>(), pos) *
-                                  glm::toMat4(rotation) *
-                                  glm::scale(glm::identity<glm::mat4>(), scale);
+void PolygonInstanceContainer::publishPreparedTrs(
+    PreparedModelTrs &prepared) noexcept {
+    model_instances_data[prepared.index] = prepared.next_value;
+    prepared.published = true;
+}
+
+void PolygonInstanceContainer::rollbackPreparedTrs(
+    PreparedModelTrs &prepared) noexcept {
+    if (!prepared.published) return;
+    model_instances_data[prepared.index] = prepared.old_value;
+    prepared.published = false;
+}
+
+void PolygonInstanceContainer::setTrs(ModelInstanceId id, glm::vec3 pos,
+                                      glm::quat rotation, glm::vec3 scale) {
+    auto prepared = prepareTrs(id, pos, rotation, scale);
+    publishPreparedTrs(prepared);
 }
 
 ModelInstanceId

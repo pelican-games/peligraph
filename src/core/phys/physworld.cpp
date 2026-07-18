@@ -249,6 +249,71 @@ phys::ColliderId PhysWorld::allocateColliderId() {
     return phys::ColliderId{next_collider_id_value++};
 }
 
+PhysWorld::PreparedState PhysWorld::snapshotPrepared() const {
+    return PreparedState{
+        .bindings = bindings,
+        .next_collider_id_value = next_collider_id_value,
+    };
+}
+
+PhysWorld::PreparedState
+PhysWorld::prepareBindings(std::vector<Binding> next_bindings) const {
+    PreparedState prepared{
+        .bindings = std::move(next_bindings),
+        .next_collider_id_value = next_collider_id_value,
+    };
+    std::unordered_set<std::string> names;
+    names.reserve(prepared.bindings.size());
+    auto *ecs = FastModuleContainer::tryGet<ECSCore>();
+    for (auto &binding : prepared.bindings) {
+        if (binding.identity.name.empty()) {
+            throw std::runtime_error("Collider object requires a name");
+        }
+        if (!names.insert(binding.identity.name).second) {
+            throw std::runtime_error("Duplicate collider object name: " +
+                                     binding.identity.name);
+        }
+        binding.collider.validate();
+        if (const auto *object_id =
+                std::get_if<GameObjectId>(&binding.transform_source)) {
+            if (ecs == nullptr ||
+                ecs->getTemplatePublicModule()
+                        .tryComponent<TransformComponent>(*object_id) == nullptr) {
+                throw std::runtime_error(
+                    "Collider object has no live transform: " +
+                    binding.identity.name + " (" + toString(*object_id) + ")");
+            }
+            binding.identity.entity = *object_id;
+        } else {
+            validateWorldTransform(
+                std::get<PhysWorldTransform>(binding.transform_source));
+            binding.identity.entity.reset();
+        }
+        if (binding.identity.collider_id == phys::invalid_collider_id) {
+            if (prepared.next_collider_id_value ==
+                phys::invalid_collider_id.value) {
+                throw std::overflow_error("PhysWorld collider id space exhausted");
+            }
+            binding.identity.collider_id =
+                phys::ColliderId{prepared.next_collider_id_value++};
+        } else if (binding.identity.collider_id.value >=
+                   prepared.next_collider_id_value) {
+            if (binding.identity.collider_id.value ==
+                std::numeric_limits<std::uint64_t>::max()) {
+                throw std::overflow_error("PhysWorld collider id space exhausted");
+            }
+            prepared.next_collider_id_value =
+                binding.identity.collider_id.value + 1;
+        }
+    }
+    return prepared;
+}
+
+void PhysWorld::publishPrepared(PreparedState &&prepared) noexcept {
+    bindings.swap(prepared.bindings);
+    std::swap(next_collider_id_value, prepared.next_collider_id_value);
+}
+
 void PhysWorld::clear() {
     bindings.clear();
 }

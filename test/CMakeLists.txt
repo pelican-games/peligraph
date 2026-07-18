@@ -259,6 +259,8 @@ pelican_define_test(eventlayer_test pelican_core)
 pelican_define_test(eventpayloadschema_test pelican_core)
 pelican_define_test(structfieldschema_test pelican_core)
 pelican_define_test(componentcodec_test pelican_core glm)
+pelican_define_test(editorprojectiontransaction_test pelican_core glm
+  VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_componentcodec_test PRIVATE
   PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )

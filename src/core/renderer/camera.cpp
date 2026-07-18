@@ -501,18 +501,64 @@ void Camera::resetToConfigDefaults() {
     rebuildProjectionMatrix();
 }
 
-void Camera::loadSceneCameras(std::string_view scene_id) {
-    ++discontinuity_revision;
-    resetToConfigDefaults();
+Camera::PreparedSceneState Camera::snapshotPrepared() const {
+    return PreparedSceneState{
+        .pos = pos,
+        .dir = dir,
+        .up = up,
+        .viewport_aspect = viewport_aspect,
+        .viewport_width = viewport_width,
+        .viewport_height = viewport_height,
+        .projection = projection,
+        .sprite_policy = sprite_policy,
+        .projection_matrix = projection_matrix,
+        .scene_cameras = scene_cameras,
+        .controlled_scene_camera_order = controlled_scene_camera_order,
+        .active_camera_name = active_camera_name,
+        .active_scene_camera_locked = active_scene_camera_locked,
+        .discontinuity_revision = discontinuity_revision,
+    };
+}
+
+Camera::PreparedSceneState
+Camera::prepareSceneCameras(std::string_view scene_id) const {
+    const auto &config = GET_MODULE(ProjectBasicConfig);
+    const auto props = config.initailCameraProperty();
+    const auto screen = config.initialWindowSize();
+    PreparedSceneState prepared{
+        .pos = {0.0f, 0.0f, 0.0f},
+        .dir = {1.0f, 0.0f, 0.0f},
+        .up = props.up,
+        .viewport_aspect = static_cast<float>(screen.width) / screen.height,
+        .viewport_width = static_cast<uint32_t>(screen.width),
+        .viewport_height = static_cast<uint32_t>(screen.height),
+        .projection = props.projection,
+        .sprite_policy = props.sprite,
+        .discontinuity_revision = discontinuity_revision + 1,
+    };
+    const auto rebuild = [&prepared] {
+        if (prepared.projection.kind == CameraProjectionKind::Orthographic) {
+            prepared.projection_matrix = glm::orthoRH_ZO(
+                -prepared.projection.xmag, prepared.projection.xmag,
+                -prepared.projection.ymag, prepared.projection.ymag,
+                prepared.projection.znear, prepared.projection.zfar);
+        } else {
+            const auto aspect = prepared.projection.aspect.value_or(
+                prepared.viewport_aspect);
+            prepared.projection_matrix = glm::perspectiveRH_ZO(
+                prepared.projection.yfov, aspect, prepared.projection.znear,
+                prepared.projection.zfar);
+        }
+    };
+    rebuild();
     if (!GET_MODULE(PathResolver).isSetup()) {
-        return;
+        return prepared;
     }
 
-    const auto &config = GET_MODULE(ProjectBasicConfig);
     const auto &scenes = config.sceneDocument().scenesJson();
     const auto scene_it = scenes.find(std::string{scene_id});
     if (scene_it == scenes.end()) {
-        return;
+        return prepared;
     }
 
     bool first_camera = true;
@@ -522,21 +568,49 @@ void Camera::loadSceneCameras(std::string_view scene_id) {
             continue;
         }
 
-        auto scene_camera = parseSceneCamera(object, *camera_component, projection, sprite_policy, up);
+        auto scene_camera = parseSceneCamera(
+            object, *camera_component, prepared.projection,
+            prepared.sprite_policy, prepared.up);
         if (first_camera) {
-            projection = scene_camera.projection;
-            sprite_policy = scene_camera.sprite;
-            rebuildProjectionMatrix();
-            active_scene_camera_locked = false;
+            prepared.projection = scene_camera.projection;
+            prepared.sprite_policy = scene_camera.sprite;
+            rebuild();
+            prepared.active_scene_camera_locked = false;
             first_camera = false;
         }
         if (!scene_camera.name.empty()) {
             if (scene_camera.controller) {
-                controlled_scene_camera_order.push_back(scene_camera.name);
+                prepared.controlled_scene_camera_order.push_back(
+                    scene_camera.name);
             }
-            scene_cameras.insert_or_assign(scene_camera.name, std::move(scene_camera));
+            prepared.scene_cameras.insert_or_assign(scene_camera.name,
+                                                     std::move(scene_camera));
         }
     }
+    return prepared;
+}
+
+void Camera::publishPrepared(PreparedSceneState &&prepared) noexcept {
+    pos = prepared.pos;
+    dir = prepared.dir;
+    up = prepared.up;
+    viewport_aspect = prepared.viewport_aspect;
+    viewport_width = prepared.viewport_width;
+    viewport_height = prepared.viewport_height;
+    projection = prepared.projection;
+    sprite_policy = prepared.sprite_policy;
+    projection_matrix = prepared.projection_matrix;
+    scene_cameras.swap(prepared.scene_cameras);
+    controlled_scene_camera_order.swap(
+        prepared.controlled_scene_camera_order);
+    active_camera_name.swap(prepared.active_camera_name);
+    active_scene_camera_locked = prepared.active_scene_camera_locked;
+    discontinuity_revision = prepared.discontinuity_revision;
+}
+
+void Camera::loadSceneCameras(std::string_view scene_id) {
+    auto prepared = prepareSceneCameras(scene_id);
+    publishPrepared(std::move(prepared));
 }
 
 void Camera::applySceneCamera(const SceneCamera &camera) {

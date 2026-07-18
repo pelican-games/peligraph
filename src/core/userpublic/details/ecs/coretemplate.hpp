@@ -11,6 +11,7 @@
 #include <string>
 #include <tuple>
 #include <typeinfo>
+#include <type_traits>
 
 #include <details/ecs/componentdeclare.hpp>
 #include <details/ecs/chunk.hpp>
@@ -151,6 +152,71 @@ class ECSCoreTemplatePublic {
     void *tryComponentRaw(EntityId id, ComponentId component_id);
     void *componentRaw(EntityId id, ComponentId component_id);
     [[nodiscard]] bool markComponentChanged(EntityId id, ComponentId component_id);
+
+    template <class TComponent> struct PreparedComponentValue {
+        TComponent *target = nullptr;
+        TComponent old_value;
+        TComponent next_value;
+        ECSComponentChunk *chunk = nullptr;
+        size_t component_index = 0;
+        uint64_t old_version = 0;
+        uint64_t publish_version = 0;
+        bool published = false;
+    };
+
+    // Existing-value projection counterpart to archetype migration. Every
+    // potentially throwing copy is completed before publication; publish and
+    // rollback only perform no-throw assignment plus exact version exchange.
+    template <class TComponent>
+        requires std::is_copy_constructible_v<TComponent> &&
+                 std::is_nothrow_copy_assignable_v<TComponent>
+    PreparedComponentValue<TComponent>
+    prepareComponentValue(EntityId id, const TComponent &next_value) {
+        const auto ref = resolve(id);
+        if (!ref.has_value()) {
+            throw std::runtime_error("ECS entity is not live: " + toString(id));
+        }
+        const auto component_index =
+            internal::getIndexFromComponentId_Ref(
+                ComponentIdByType<TComponent>::value);
+        auto &chunk = chunks_storage[ref->chunk_index];
+        if (!chunk.has(component_index)) {
+            throw std::runtime_error("ECS component is absent on entity " +
+                                     toString(id));
+        }
+        auto *target = static_cast<TComponent *>(
+            chunk.at(component_index, ref->array_index));
+        return PreparedComponentValue<TComponent>{
+            .target = target,
+            .old_value = *target,
+            .next_value = next_value,
+            .chunk = &chunk,
+            .component_index = component_index,
+            .old_version = chunk.getVersion(component_index),
+            .publish_version = global_tick,
+        };
+    }
+
+    template <class TComponent>
+        requires std::is_nothrow_copy_assignable_v<TComponent>
+    static void publishComponentValue(
+        PreparedComponentValue<TComponent> &prepared) noexcept {
+        *prepared.target = prepared.next_value;
+        prepared.chunk->updateVersion(prepared.component_index,
+                                      prepared.publish_version);
+        prepared.published = true;
+    }
+
+    template <class TComponent>
+        requires std::is_nothrow_copy_assignable_v<TComponent>
+    static void rollbackComponentValue(
+        PreparedComponentValue<TComponent> &prepared) noexcept {
+        if (!prepared.published) return;
+        *prepared.target = prepared.old_value;
+        prepared.chunk->updateVersion(prepared.component_index,
+                                      prepared.old_version);
+        prepared.published = false;
+    }
 
     template <class TComponent> TComponent *tryComponent(EntityId id) {
         return static_cast<TComponent *>(tryComponentRaw(id, ComponentIdByType<TComponent>::value));

@@ -43,6 +43,23 @@ DECLARE_MODULE(Camera) {
         std::optional<SceneCameraController> controller;
     };
 
+    struct PreparedSceneState {
+        glm::vec3 pos{0.0f, 0.0f, 0.0f};
+        glm::vec3 dir{1.0f, 0.0f, 0.0f};
+        glm::vec3 up{0.0f, 1.0f, 0.0f};
+        float viewport_aspect = 1.0f;
+        uint32_t viewport_width = 1;
+        uint32_t viewport_height = 1;
+        CameraProjectionSpec projection;
+        CameraSpritePolicySpec sprite_policy;
+        glm::mat4 projection_matrix{1.0f};
+        std::unordered_map<std::string, SceneCamera> scene_cameras;
+        std::vector<std::string> controlled_scene_camera_order;
+        std::string active_camera_name;
+        bool active_scene_camera_locked = false;
+        std::uint64_t discontinuity_revision = 0;
+    };
+
   private:
     glm::vec3 pos;
     glm::vec3 dir;
@@ -75,6 +92,9 @@ DECLARE_MODULE(Camera) {
     void setScreenSize(uint32_t width, uint32_t height);
     void setNearFar(float new_fov_y, float new_near, float new_far);
     bool hasSceneCamera(std::string_view name) const;
+    PreparedSceneState snapshotPrepared() const;
+    PreparedSceneState prepareSceneCameras(std::string_view scene_id) const;
+    void publishPrepared(PreparedSceneState &&prepared) noexcept;
     void loadSceneCameras(std::string_view scene_id);
     void setActiveCamera(std::string_view name);
     const std::string &activeCameraName() const { return active_camera_name; }
