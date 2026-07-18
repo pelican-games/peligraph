@@ -175,6 +175,14 @@ class PelicanRpc:
     def import_scene_snapshot(self, params: dict[str, Any] | None = None) -> Any:
         return self.call("import_scene_snapshot", params)
 
+    def eval_preview(self, params: dict[str, Any] | None = None) -> Any:
+        """Evaluate request-local scene overrides without publishing them."""
+        return self.call("eval_preview", params)
+
+    def render_preview(self, params: dict[str, Any] | None = None) -> Any:
+        """Capture the isolated preview graph and return its response unchanged."""
+        return self.call("render_preview", params)
+
     def terminate(self) -> None:
         """Terminate the player and wait until no child process remains."""
 

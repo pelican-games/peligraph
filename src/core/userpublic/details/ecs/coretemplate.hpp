@@ -145,6 +145,27 @@ class ECSCoreTemplatePublic {
     void releaseId(EntityId id) noexcept;
 
   public:
+    struct IsolationEntitySlot {
+        bool live = false;
+        std::uint32_t generation = 0;
+        std::optional<std::size_t> chunk_index;
+        std::optional<std::size_t> array_index;
+    };
+
+    struct IsolationChunk {
+        std::size_t count = 0;
+        std::uint64_t mask = 0;
+        std::vector<std::size_t> component_indices;
+        std::vector<std::uint64_t> component_versions;
+    };
+
+    struct IsolationSnapshot {
+        std::uint64_t global_tick = 0;
+        std::vector<std::uint32_t> free_indices;
+        std::vector<IsolationEntitySlot> entity_slots;
+        std::vector<IsolationChunk> chunks;
+    };
+
     ~ECSCoreTemplatePublic();
 
     using PopulateBatch =
@@ -159,6 +180,34 @@ class ECSCoreTemplatePublic {
     void clearEntities();
     bool isAlive(EntityId id) const noexcept { return resolve(id).has_value(); }
     size_t liveCount() const noexcept;
+    IsolationSnapshot isolationSnapshot() const {
+        IsolationSnapshot result;
+        result.global_tick = global_tick;
+        result.free_indices = free_indices;
+        result.entity_slots.reserve(id_table.size());
+        for (const auto &entry : id_table) {
+            result.entity_slots.push_back(IsolationEntitySlot{
+                .live = entry.live,
+                .generation = entry.generation,
+                .chunk_index = entry.ref
+                                   ? std::optional<std::size_t>{entry.ref->chunk_index}
+                                   : std::nullopt,
+                .array_index = entry.ref
+                                   ? std::optional<std::size_t>{entry.ref->array_index}
+                                   : std::nullopt,
+            });
+        }
+        result.chunks.reserve(chunks_storage.size());
+        for (const auto &chunk : chunks_storage) {
+            result.chunks.push_back(IsolationChunk{
+                .count = chunk.count,
+                .mask = chunk.mask,
+                .component_indices = chunk.indices,
+                .component_versions = chunk.component_versions,
+            });
+        }
+        return result;
+    }
     EntityId forceGenerationForTesting(EntityId id, std::uint32_t generation);
     static void validateFreshIndexCapacityForTesting(size_t id_table_size);
     void *tryComponentRaw(EntityId id, ComponentId component_id);

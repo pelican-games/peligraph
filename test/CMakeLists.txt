@@ -347,6 +347,8 @@ add_test(
 pelican_define_test(componentcodec_test pelican_core glm)
 pelican_define_test(editorprojectiontransaction_test pelican_core glm
   VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+pelican_define_test(editorpreviewprojection_test pelican_core glm)
+pelican_define_test(editorpreview_test pelican_core glm)
 target_compile_definitions(pelican_test_componentcodec_test PRIVATE
   PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )

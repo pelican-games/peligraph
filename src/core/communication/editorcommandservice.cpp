@@ -251,6 +251,39 @@ EditorCommandService::EditorCommandService(EditorCommandServiceDependencies depe
             std::move(*dependencies_.edit));
         dependencies_.edit.reset();
     }
+    if (dependencies_.preview) {
+        auto preview_dependencies = std::move(*dependencies_.preview);
+        const auto runtime_snapshot =
+            std::move(preview_dependencies.shared_state_snapshot);
+        preview_dependencies.shared_state_snapshot =
+            [this, runtime_snapshot]() -> OrderedJson {
+                auto result = runtime_snapshot();
+                auto journal = OrderedJson::array();
+                auto pending_tickets = OrderedJson::array();
+                auto preview_epoch = std::uint64_t{};
+                auto open_preview_lease = false;
+                if (edit_) {
+                    for (const auto &record : edit_->journal()) {
+                        journal.push_back(editorJournalJson(record));
+                    }
+                    for (const auto &ticket : edit_->pendingTicketIds()) {
+                        pending_tickets.push_back(ticket);
+                    }
+                    preview_epoch = edit_->previewEpoch();
+                    open_preview_lease = edit_->hasOpenPreviewLease();
+                }
+                result["journal"] = std::move(journal);
+                result["editor_coordinator"] = {
+                    {"pending_ticket_ids", std::move(pending_tickets)},
+                    {"preview_epoch", preview_epoch},
+                    {"open_preview_lease", open_preview_lease},
+                };
+                return result;
+            };
+        preview_ = std::make_unique<EditorPreviewService>(
+            std::move(preview_dependencies));
+        dependencies_.preview.reset();
+    }
 }
 
 EditorCommandService::~EditorCommandService() = default;
@@ -614,6 +647,46 @@ OrderedJson EditorCommandService::canPreview(const Json &params) {
     return edit_->canPreview(params);
 }
 
+OrderedJson EditorCommandService::evalPreview(const Json &params) {
+    if (!preview_ || !edit_) {
+        auto payload = OrderedJson::object();
+        payload["method"] = "eval_preview";
+        payload["reason"] = "preview_service_unavailable";
+        throw EditorPreviewError{
+            EditorPreviewErrorCode::method_unavailable,
+            "eval_preview is unavailable",
+            std::move(payload)};
+    }
+    return preview_->evalPreview(params, [this] {
+        const auto gate = edit_->canPreview(Json::object());
+        return EditorPreviewGateSnapshot{
+            .can_preview = gate.at("can_preview").get<bool>(),
+            .epoch = gate.at("gate_epoch").get<std::uint64_t>(),
+            .reasons = gate.at("reasons").get<std::vector<std::string>>(),
+        };
+    });
+}
+
+OrderedJson EditorCommandService::renderPreview(const Json &params) {
+    if (!preview_ || !edit_) {
+        auto payload = OrderedJson::object();
+        payload["method"] = "render_preview";
+        payload["reason"] = "preview_service_unavailable";
+        throw EditorPreviewError{
+            EditorPreviewErrorCode::method_unavailable,
+            "render_preview is unavailable",
+            std::move(payload)};
+    }
+    return preview_->renderPreview(params, [this] {
+        const auto gate = edit_->canPreview(Json::object());
+        return EditorPreviewGateSnapshot{
+            .can_preview = gate.at("can_preview").get<bool>(),
+            .epoch = gate.at("gate_epoch").get<std::uint64_t>(),
+            .reasons = gate.at("reasons").get<std::vector<std::string>>(),
+        };
+    });
+}
+
 OrderedJson EditorCommandService::edit(const Json &params) {
     if (!edit_) throw std::logic_error("editor edit service is unavailable");
     return edit_->enqueue(params);
@@ -947,6 +1020,16 @@ OrderedJson EditorCommandRpcAdapter::canEdit(const Json &params) const {
 OrderedJson EditorCommandRpcAdapter::canPreview(const Json &params) const {
     if (!mutable_service_) throw std::logic_error("editor RPC adapter is read-only");
     return mutable_service_->canPreview(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::evalPreview(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("editor RPC adapter is read-only");
+    return mutable_service_->evalPreview(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::renderPreview(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("editor RPC adapter is read-only");
+    return mutable_service_->renderPreview(params);
 }
 
 OrderedJson EditorCommandRpcAdapter::edit(const Json &params) const {

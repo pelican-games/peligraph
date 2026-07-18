@@ -1,6 +1,7 @@
 #pragma once
 
 #include "editorjournal.hpp"
+#include "editorpreviewservice.hpp"
 #include "../loader/authoringscenedocument.hpp"
 
 #include <cstddef>
@@ -211,6 +212,7 @@ struct EditorCommandServiceDependencies {
     std::function<std::vector<EditorAssetQueryResult>()> assets;
     std::function<EditorSnapshotState()> snapshot_state;
     std::optional<EditorEditRuntimeDependencies> edit;
+    std::optional<EditorPreviewServiceDependencies> preview;
     std::function<SceneRevision(std::string_view, std::string_view)>
         import_scene_snapshot;
     std::function<SaveSceneResult()> save_scene;
@@ -233,6 +235,7 @@ class EditorCommandService {
 
     EditorCommandServiceDependencies dependencies_;
     std::unique_ptr<EditorEditCoordinator> edit_;
+    std::unique_ptr<EditorPreviewService> preview_;
     std::unordered_map<std::uint64_t, std::string> actor_display_names_;
     mutable std::optional<EditorPreviewLeaseResult> preview_lease_;
     mutable std::vector<PendingPreviewWatchTransition> pending_preview_watch_;
@@ -265,6 +268,8 @@ class EditorCommandService {
     nlohmann::ordered_json resumeEditorSession(const nlohmann::json &params);
     nlohmann::ordered_json canEdit(const nlohmann::json &params);
     nlohmann::ordered_json canPreview(const nlohmann::json &params);
+    nlohmann::ordered_json evalPreview(const nlohmann::json &params);
+    nlohmann::ordered_json renderPreview(const nlohmann::json &params);
     nlohmann::ordered_json edit(const nlohmann::json &params);
     nlohmann::ordered_json undo(const nlohmann::json &params);
     nlohmann::ordered_json redo(const nlohmann::json &params);
@@ -302,6 +307,8 @@ class EditorCommandRpcAdapter {
     nlohmann::ordered_json resumeEditorSession(const nlohmann::json &params) const;
     nlohmann::ordered_json canEdit(const nlohmann::json &params) const;
     nlohmann::ordered_json canPreview(const nlohmann::json &params) const;
+    nlohmann::ordered_json evalPreview(const nlohmann::json &params) const;
+    nlohmann::ordered_json renderPreview(const nlohmann::json &params) const;
     nlohmann::ordered_json edit(const nlohmann::json &params) const;
     nlohmann::ordered_json undo(const nlohmann::json &params) const;
     nlohmann::ordered_json redo(const nlohmann::json &params) const;

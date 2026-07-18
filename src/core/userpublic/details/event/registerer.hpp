@@ -62,6 +62,20 @@ class UserEventRegistererTemplatePublic {
     friend std::size_t eventRegistrationCount(RegistrationOwner owner) noexcept;
 
   public:
+    struct IsolationEvent {
+        std::string name;
+        std::size_t type_hash = 0;
+        RegistrationOwner owner = engineRegistrationOwner;
+        std::uintptr_t payload_identity = 0;
+    };
+
+    struct IsolationSnapshot {
+        std::vector<IsolationEvent> pending;
+        std::vector<IsolationEvent> deliver_now;
+        std::size_t payload_load_calls = 0;
+        bool catalog_frozen = false;
+    };
+
     template <class Event> RegistrationToken registerEvent(std::string name) {
         using EventType = std::remove_cvref_t<Event>;
         static_assert(std::is_object_v<EventType>, "events must be object types");
@@ -165,6 +179,28 @@ class UserEventRegistererTemplatePublic {
     void freezeCatalog() noexcept;
     std::size_t pendingEventCount() const noexcept;
     std::size_t payloadLoadCallCount() const noexcept;
+    IsolationSnapshot isolationSnapshot() const {
+        const auto copy = [](const std::vector<QueuedEvent> &source) {
+            std::vector<IsolationEvent> result;
+            result.reserve(source.size());
+            for (const auto &event : source) {
+                result.push_back(IsolationEvent{
+                    .name = event.name,
+                    .type_hash = event.type.hash_code(),
+                    .owner = event.owner,
+                    .payload_identity = reinterpret_cast<std::uintptr_t>(
+                        event.payload.get()),
+                });
+            }
+            return result;
+        };
+        return IsolationSnapshot{
+            .pending = copy(pending_events),
+            .deliver_now = copy(deliver_now_events),
+            .payload_load_calls = payload_load_calls,
+            .catalog_frozen = catalog_frozen,
+        };
+    }
     void freezePendingEventsForFrame();
     std::vector<QueuedEvent> drainFrozenEvents();
     void clearPendingEvents();

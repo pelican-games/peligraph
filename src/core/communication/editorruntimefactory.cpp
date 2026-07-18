@@ -2,6 +2,7 @@
 #include "editorruntimefactory.hpp"
 
 #include "editorcommandservice.hpp"
+#include "../appflow/enginetime.hpp"
 #include "../asset/model.hpp"
 #include "../container.hpp"
 #include "../ecs/archetypemigration.hpp"
@@ -22,7 +23,11 @@
 #include "../renderer/camera.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
 #include "../userpublic/components/predefined.hpp"
+#include "../userpublic/details/event/registerer.hpp"
 #include "../vkcore/renderer.hpp"
+#include "../vkcore/deletionqueue.hpp"
+#include "../vkcore/rendertiming.hpp"
+#include "../watch/reloadgate.hpp"
 #include "../watch/reloadservice.hpp"
 
 #include <algorithm>
@@ -72,6 +77,11 @@ struct EditorRuntimeModules {
     EngineLaunchConfig &launch_config;
     watch::ReloadService *reload_service;
     Renderer &renderer;
+    EngineTime &engine_time;
+    DeletionQueue *deletion_queue;
+    RenderTiming *render_timing;
+    BehaviorAttachmentArena *behavior_arena;
+    watch::ReloadGate *reload_gate;
 };
 
 EditorRuntimeModules resolveEditorRuntimeModules() {
@@ -90,6 +100,11 @@ EditorRuntimeModules resolveEditorRuntimeModules() {
         GET_MODULE(EngineLaunchConfig),
         FastModuleContainer::tryGet<watch::ReloadService>(),
         GET_MODULE(Renderer),
+        GET_MODULE(EngineTime),
+        FastModuleContainer::tryGet<DeletionQueue>(),
+        FastModuleContainer::tryGet<RenderTiming>(),
+        FastModuleContainer::tryGet<BehaviorAttachmentArena>(),
+        FastModuleContainer::tryGet<watch::ReloadGate>(),
     };
 }
 
@@ -1033,6 +1048,213 @@ struct EditorRuntimeState {
     EditorRuntimeState()
         : modules{resolveEditorRuntimeModules()},
           runtime_bindings{collectEditorRuntimeBindings(modules)} {}
+
+    nlohmann::ordered_json previewSharedState() const {
+        using Json = nlohmann::ordered_json;
+        const auto vec3 = [](auto value) {
+            return Json::array({value.x, value.y, value.z});
+        };
+        const auto matrix = [](const glm::mat4 &value) {
+            auto result = Json::array();
+            for (glm::length_t row = 0; row < 4; ++row) {
+                auto values = Json::array();
+                for (glm::length_t column = 0; column < 4; ++column) {
+                    values.push_back(value[column][row]);
+                }
+                result.push_back(std::move(values));
+            }
+            return result;
+        };
+
+        const auto &document = modules.project_config.sceneDocument();
+        auto runtime_objects = Json::array();
+        for (const auto &scene : document.query()) {
+            for (const auto &object : scene.objects) {
+                const auto state = queryEditorRuntime(modules, runtime_bindings,
+                                                      scene, object);
+                auto components = Json::array();
+                for (std::size_t index = 0;
+                     index < state.component_runtime_json.size(); ++index) {
+                    components.push_back({
+                        {"index", index},
+                        {"value", state.component_runtime_json[index]
+                                      ? Json(*state.component_runtime_json[index])
+                                      : Json(nullptr)},
+                        {"pending", index < state.component_pending.size()
+                                        ? state.component_pending[index] : false},
+                    });
+                }
+                runtime_objects.push_back({
+                    {"authoring_object_id", object.authoring_object_id.value},
+                    {"entity", state.entity_id
+                                   ? Json{{"index", state.entity_id->index},
+                                          {"generation", state.entity_id->generation}}
+                                   : Json(nullptr)},
+                    {"components", std::move(components)},
+                });
+            }
+        }
+
+        const auto ecs_snapshot =
+            modules.ecs_core.getTemplatePublicModule().isolationSnapshot();
+        auto ecs_entity_slots = Json::array();
+        for (std::size_t index = 0; index < ecs_snapshot.entity_slots.size(); ++index) {
+            const auto &slot = ecs_snapshot.entity_slots[index];
+            ecs_entity_slots.push_back({
+                {"index", index}, {"live", slot.live},
+                {"generation", slot.generation},
+                {"chunk_index", slot.chunk_index ? Json(*slot.chunk_index) : Json(nullptr)},
+                {"array_index", slot.array_index ? Json(*slot.array_index) : Json(nullptr)},
+            });
+        }
+        auto ecs_chunks = Json::array();
+        for (std::size_t index = 0; index < ecs_snapshot.chunks.size(); ++index) {
+            const auto &chunk = ecs_snapshot.chunks[index];
+            ecs_chunks.push_back({
+                {"index", index}, {"count", chunk.count}, {"mask", chunk.mask},
+                {"component_indices", chunk.component_indices},
+                {"component_versions", chunk.component_versions},
+            });
+        }
+
+        const auto camera = modules.camera.snapshotPrepared();
+        const auto physics = modules.physics.snapshotPrepared();
+        auto physics_bindings = Json::array();
+        for (const auto &binding : physics.bindings) {
+            physics_bindings.push_back({
+                {"collider_id", binding.identity.collider_id.value},
+                {"name", binding.identity.name},
+                {"shape", binding.collider.shape},
+                {"pos", Json::array({binding.collider.pos.x,
+                                      binding.collider.pos.y,
+                                      binding.collider.pos.z})},
+                {"rotation", Json::array({binding.collider.rotation.x,
+                                           binding.collider.rotation.y,
+                                           binding.collider.rotation.z,
+                                           binding.collider.rotation.w})},
+                {"radius", binding.collider.radius},
+                {"half_extents", Json::array({binding.collider.half_extents.x,
+                                               binding.collider.half_extents.y,
+                                               binding.collider.half_extents.z})},
+                {"half_height", binding.collider.half_height},
+                {"layer", binding.collider.layer}, {"mask", binding.collider.mask},
+                {"trigger", binding.collider.trigger}, {"one_way", binding.collider.one_way},
+            });
+        }
+
+        const auto lights = modules.lights.snapshotPrepared();
+        auto light_state = Json{{"directional", Json::array()},
+                                {"point", Json::array()},
+                                {"spot", Json::array()}};
+        for (const auto &light : lights.directional_lights) {
+            light_state["directional"].push_back({
+                {"name", light.name}, {"direction", vec3(light.direction)},
+                {"intensity", light.intensity}, {"color", vec3(light.color)}});
+        }
+        for (const auto &light : lights.point_lights) {
+            light_state["point"].push_back({
+                {"name", light.name}, {"position", vec3(light.position)},
+                {"intensity", light.intensity}, {"color", vec3(light.color)}});
+        }
+        for (const auto &light : lights.spot_lights) {
+            light_state["spot"].push_back({
+                {"name", light.name}, {"position", vec3(light.position)},
+                {"direction", vec3(light.direction)}, {"intensity", light.intensity},
+                {"inner", light.innerConeAngle}, {"outer", light.outerConeAngle},
+                {"color", vec3(light.color)}});
+        }
+
+        auto behavior_state = Json::array();
+        auto behavior_isolation = Json(nullptr);
+        if (modules.behavior_arena) {
+            for (const auto &entry : modules.behavior_arena->snapshot()) {
+                behavior_state.push_back({
+                    {"handle", entry.handle.value}, {"attachment_seq", entry.attachment_seq},
+                    {"entity", {{"index", entry.entity.index},
+                                {"generation", entry.entity.generation}}},
+                    {"component_index", entry.component_index},
+                    {"stable_name", entry.stable_name},
+                    {"canonical_params", entry.canonical_params},
+                    {"owner", entry.owner}, {"pending", entry.pending},
+                    {"active", entry.active},
+                });
+            }
+            const auto isolation = modules.behavior_arena->isolationState();
+            behavior_isolation = {
+                {"next_handle", isolation.next_handle},
+                {"next_attachment_seq", isolation.next_attachment_seq},
+                {"deferred_mutation_count", isolation.deferred_mutation_count},
+                {"callback_depth", isolation.callback_depth},
+                {"callback_owner", isolation.callback_owner},
+            };
+        }
+
+        const auto event_snapshot =
+            internal::getEventRegisterer().isolationSnapshot();
+        const auto event_entries = [](const auto &entries) {
+            auto result = Json::array();
+            for (const auto &entry : entries) {
+                result.push_back({
+                    {"name", entry.name}, {"type_hash", entry.type_hash},
+                    {"owner", entry.owner},
+                    {"payload_identity", entry.payload_identity},
+                });
+            }
+            return result;
+        };
+
+        const auto reload = modules.reload_gate
+                                ? modules.reload_gate->snapshot()
+                                : watch::ReloadGateSnapshot{};
+        return {
+            {"authored_semantic_bytes", document.rawJson().dump()},
+            {"scene_revision", document.revision().value},
+            {"ecs_values_identity", std::move(runtime_objects)},
+            {"ecs_versions_tick_entity_free_list",
+             {{"global_tick", ecs_snapshot.global_tick},
+              {"free_indices", ecs_snapshot.free_indices},
+              {"entity_slots", std::move(ecs_entity_slots)},
+              {"chunks", std::move(ecs_chunks)},
+              {"live_count", modules.ecs_core.getTemplatePublicModule().liveCount()}}},
+            {"light", std::move(light_state)},
+            {"phys", {{"next_collider_id", physics.next_collider_id_value},
+                       {"bindings", std::move(physics_bindings)}}},
+            {"renderer", modules.renderer.previewIsolationStateJson()},
+            {"polygon", {{"instances", modules.polygon_instances.instanceCountForTesting()},
+                          {"slots", modules.polygon_instances.slotCountForTesting()},
+                          {"history_advance", modules.polygon_instances.temporalHistoryAdvanceCountForTesting()},
+                          {"material_override_entries", modules.polygon_instances.materialOverrideStorageEntryCountForTesting()},
+                          {"material_absolute_override_entries", modules.polygon_instances.materialAbsoluteOverrideStorageEntryCountForTesting()}}},
+            {"camera", {{"position", vec3(camera.pos)}, {"direction", vec3(camera.dir)},
+                        {"up", vec3(camera.up)}, {"projection", matrix(camera.projection_matrix)},
+                        {"viewport", Json::array({camera.viewport_width, camera.viewport_height})},
+                        {"active", camera.active_camera_name},
+                        {"discontinuity_revision", camera.discontinuity_revision}}},
+            {"deletion", modules.deletion_queue
+                 ? Json{{"epoch", modules.deletion_queue->currentFrameForTesting()},
+                        {"pending", modules.deletion_queue->pendingCountForTesting()}}
+                 : Json(nullptr)},
+            {"timing", modules.render_timing
+                 ? Json{{"status", modules.render_timing->statusJson()},
+                        {"pending", modules.render_timing->pendingRangeCountForTesting()},
+                        {"pool_generation", modules.render_timing->queryPoolCreateCountForTesting()}}
+                 : Json(nullptr)},
+            {"behavior", {{"attachments", std::move(behavior_state)},
+                           {"isolation", std::move(behavior_isolation)}}},
+            {"event_trace", {{"pending", event_entries(event_snapshot.pending)},
+                              {"deliver_now", event_entries(event_snapshot.deliver_now)},
+                              {"payload_load_calls", event_snapshot.payload_load_calls},
+                              {"catalog_frozen", event_snapshot.catalog_frozen}}},
+            {"engine_time", {{"now", modules.engine_time.now()},
+                             {"delta", modules.engine_time.dt()},
+                             {"frame_index", modules.engine_time.frameIndex()},
+                             {"set_revision", modules.engine_time.timeSetRevision()}}},
+            {"reload_generation", {{"enabled", reload.enabled},
+                                   {"epoch", reload.epoch}, {"reason", reload.reason},
+                                   {"service", modules.reload_service
+                                       ? Json(modules.reload_service->statusJson()) : Json(nullptr)}}},
+        };
+    }
 };
 
 } // namespace
@@ -1108,6 +1330,25 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService() {
                     };
                 },
             .install_commit_hook = true,
+        },
+        .preview = EditorPreviewServiceDependencies{
+            .document = [runtime]() -> const AuthoringSceneDocument & {
+                return runtime->modules.project_config.sceneDocument();
+            },
+            .preview_graph = [runtime]() -> const PreviewGraphProgram & {
+                return runtime->modules.renderer.previewGraphProgram();
+            },
+            .xr_active = [runtime] { return runtime->modules.launch_config.xr_active; },
+            .engine_time = [runtime] {
+                return PreviewEngineTimeSnapshot{
+                    .time = runtime->modules.engine_time.now(),
+                    .delta = runtime->modules.engine_time.dt(),
+                    .frame_index = runtime->modules.engine_time.frameIndex(),
+                };
+            },
+            .shared_state_snapshot = [runtime] {
+                return runtime->previewSharedState();
+            },
         },
         .import_scene_snapshot =
             [runtime](std::string_view bytes,

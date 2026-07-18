@@ -2,6 +2,7 @@
 
 #include "../container.hpp"
 #include "../renderingpass/renderingpass.hpp"
+#include "../renderingpass/previewgraph.hpp"
 #include "../renderer/projectionjitter.hpp"
 #include "render_target_layout_tracker.hpp"
 #include "rendertarget.hpp"
@@ -63,6 +64,7 @@ DECLARE_MODULE(Renderer) {
     std::vector<std::string> xr_excluded_features;
     nlohmann::json graph_variant_transition_trace = nlohmann::json::array();
     std::optional<std::size_t> pending_graph_transition;
+    PreviewGraphProgram preview_graph_program;
 
     std::vector<TemporalFrameHistory> &activeTemporalHistories();
     const std::vector<TemporalFrameHistory> &activeTemporalHistories() const;
@@ -85,6 +87,10 @@ DECLARE_MODULE(Renderer) {
     const std::vector<std::string> &xrExcludedFeatures() const noexcept {
         return xr_excluded_features;
     }
+    const PreviewGraphProgram &previewGraphProgram() const noexcept {
+        return preview_graph_program;
+    }
+    nlohmann::ordered_json previewIsolationStateJson() const;
     const nlohmann::json &graphVariantTransitionTraceForTesting() const noexcept {
         return graph_variant_transition_trace;
     }
