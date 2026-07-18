@@ -1035,8 +1035,20 @@ if(PELICAN_NODE_EXECUTABLE)
     )
 endif()
 
-# Golden inventory integrity is deliberately GPU-free and therefore runs in the CPU gate.
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
+if(PELICAN_WITH_RPC)
+    add_test(
+        NAME pelican_rpc_smoke
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/pelican_rpc_smoke.py
+            --repo-root ${CMAKE_SOURCE_DIR}
+            --player $<TARGET_FILE:pelican_player>
+    )
+    set_tests_properties(pelican_rpc_smoke PROPERTIES
+        TIMEOUT 120 RESOURCE_LOCK pelican_gpu LABELS gpu)
+endif()
+
+# Golden inventory integrity is deliberately GPU-free and therefore runs in the CPU gate.
 add_test(
     NAME golden_inventory
     COMMAND ${Python3_EXECUTABLE}

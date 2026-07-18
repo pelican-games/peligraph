@@ -122,7 +122,33 @@ pelican_player --headless --project mygame --replay s.jsonl \
 `-32010` と `data.reason:"renderdoc_not_injected"` を返します。XR active中はv1境界として
 `capture_xr_unsupported` です。F11とRPCはいずれも同じcapture状態機械を使います。
 
-📐設計のみ: WebSocket 展開(複数クライアント)、薄い Python クライアント `pelican_rpc.py`。
+### Python 薄型クライアント
+
+`tools/pelican_rpc.py` は Python 3.12 の標準ライブラリだけで player の起動と
+JSON-RPC の送受信を行います。リポジトリルートをカレントディレクトリにして、
+次のように使用します。
+
+```python
+from tools.pelican_rpc import PelicanRpc, PelicanRpcError
+
+try:
+    with PelicanRpc("projects/mygame") as rpc:
+        status = rpc.get_status()
+        rpc.set_time({"t": 1.25})
+        frame = rpc.step_frame()
+        tree = rpc.scene_tree()
+        print(status["scene"], frame["frame"], tree["objects"])
+except PelicanRpcError as error:
+    print(error.code, error.message, error.data)
+```
+
+`exe_path` を省略すると `build/src/player/Debug/pelican_player.exe` を探索します。
+別の build ツリーを使う場合は `PelicanRpc(project, exe_path=player_path)` と明示して
+ください。`call(method, params)` と各 helper は params の辞書を変換・検証せず
+エンジンへ渡します。形式の正は常に `rpcserver.cpp` です。常駐プロセスを残さない
+ため、通常は上例のように `with` を使用してください。
+
+📐設計のみ: WebSocket 展開(複数クライアント)。
 
 ## 10.4 pelican_cli リファレンス
 
