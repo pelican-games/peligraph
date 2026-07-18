@@ -2,6 +2,7 @@
 
 #include "../container.hpp"
 #include "../vkcore/buf.hpp"
+#include "../vkcore/deferredcallback.hpp"
 #include "modeltemplate.hpp"
 #include <glm/glm.hpp>
 #include <memory>
@@ -65,9 +66,9 @@ DECLARE_MODULE(VertBufContainer) {
     std::vector<FreeRange> free_vertices;
     std::vector<FreeRange> free_skin_vertices;
     std::vector<FreeRange> free_morph_deltas;
-    // Deferred range-return objects hold a weak guard rather than assuming a
-    // particular module teardown order.
-    std::shared_ptr<int> lifetime_token = std::make_shared<int>(0);
+    // Declared last and explicitly closed at destructor entry. Deferred range
+    // callbacks pin this state while using the owner.
+    DeferredCallbackLifetime deferred_callbacks;
 
     static uint32_t allocateRange(std::vector<FreeRange> &free_ranges,
                                   uint32_t &high_water, uint32_t count);
@@ -82,6 +83,7 @@ DECLARE_MODULE(VertBufContainer) {
 
   public:
     VertBufContainer();
+    ~VertBufContainer();
     ModelTemplate::PrimitiveRefInfo addPrimitiveEntry(CommonPolygonVertData &&data);
     ModelTemplate::PrimitiveRefInfo addSkinnedPrimitiveEntry(CommonPolygonVertData &&data);
     ModelGeometryAllocation addPrimitiveAllocation(CommonPolygonVertData &&data);

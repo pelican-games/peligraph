@@ -19,6 +19,7 @@ DeletionQueueCore::DeletionQueueCore(uint32_t in_flight_frames, std::function<vo
 }
 
 DeletionQueueCore::~DeletionQueueCore() noexcept {
+    accepting = false;
     if (pending.empty()) {
         return;
     }
@@ -42,7 +43,24 @@ DeletionQueueCore::~DeletionQueueCore() noexcept {
     }
 }
 
+void DeletionQueueCore::requireAccepting() const {
+    if (!accepting) {
+        throw std::logic_error("DeletionQueue cannot accept resources after teardown drain");
+    }
+    if (draining) {
+        throw std::logic_error("DeletionQueue cannot accept resources while callbacks are draining");
+    }
+}
+
 void DeletionQueueCore::releaseEligible(uint64_t oldest_frame) {
+    if (draining) {
+        throw std::logic_error("DeletionQueue callbacks are already draining");
+    }
+    draining = true;
+    struct DrainScope {
+        bool &draining;
+        ~DrainScope() { draining = false; }
+    } drain_scope{draining};
     for (auto it = pending.begin(); it != pending.end();) {
         if (it->frame <= oldest_frame) {
             it->resource->release();
@@ -54,6 +72,7 @@ void DeletionQueueCore::releaseEligible(uint64_t oldest_frame) {
 }
 
 void DeletionQueueCore::beginFrame() {
+    requireAccepting();
     ++current_frame;
     if (current_frame < in_flight_frames) {
         return;
@@ -63,10 +82,24 @@ void DeletionQueueCore::beginFrame() {
 }
 
 void DeletionQueueCore::flushAll() {
-    for (auto &item : pending) {
+    if (draining) {
+        throw std::logic_error("DeletionQueue callbacks are already draining");
+    }
+    draining = true;
+    struct DrainScope {
+        bool &draining;
+        ~DrainScope() { draining = false; }
+    } drain_scope{draining};
+    std::vector<PendingResource> draining_resources;
+    draining_resources.swap(pending);
+    for (auto &item : draining_resources) {
         item.resource->release();
     }
-    pending.clear();
+}
+
+void DeletionQueueCore::drainForTeardown() {
+    accepting = false;
+    flushAll();
 }
 
 size_t DeletionQueueCore::pendingCount() const { return pending.size(); }
@@ -79,5 +112,7 @@ DeletionQueue::DeletionQueue()
 void DeletionQueue::beginFrame() { core.beginFrame(); }
 
 void DeletionQueue::flushAll() { core.flushAll(); }
+
+void DeletionQueue::drainForTeardown() { core.drainForTeardown(); }
 
 } // namespace Pelican

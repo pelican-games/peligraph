@@ -767,12 +767,30 @@ void BehaviorAttachmentArena::preDestroyEntity(GameObjectId entity) noexcept {
                   [entity](const Attachment &attachment) { return attachment.info.entity == entity; });
 }
 
-void BehaviorAttachmentArena::deactivateAll() noexcept {
+void BehaviorAttachmentArena::deactivateAllInstances() noexcept {
     for (auto it = attachments.rbegin(); it != attachments.rend(); ++it) {
         destroyInstance(*it, true);
     }
     attachments.clear();
+}
+
+void BehaviorAttachmentArena::deactivateAll() noexcept {
+    deactivateAllInstances();
     deferred_mutations.clear();
+}
+
+void BehaviorAttachmentArena::deactivateAllForTeardown() noexcept {
+    deactivateAllInstances();
+}
+
+std::size_t BehaviorAttachmentArena::drainDeferredMutationsForTeardown() {
+    if (callback_depth != 0) {
+        throw std::logic_error(
+            "behavior deferred mutations cannot drain while a callback is active");
+    }
+    std::vector<DeferredMutation> pending;
+    pending.swap(deferred_mutations);
+    return pending.size();
 }
 
 void BehaviorAttachmentArena::releaseOwner(internal::RegistrationOwner owner) noexcept {
@@ -867,6 +885,19 @@ void preDestroyAllBehaviorObjects() noexcept {
     if (auto *arena = FastModuleContainer::tryGet<BehaviorAttachmentArena>()) {
         arena->deactivateAll();
     }
+}
+
+void preDestroyAllBehaviorObjectsForTeardown() noexcept {
+    if (auto *arena = FastModuleContainer::tryGet<BehaviorAttachmentArena>()) {
+        arena->deactivateAllForTeardown();
+    }
+}
+
+std::size_t drainDeferredBehaviorMutationsForTeardown() {
+    if (auto *arena = FastModuleContainer::tryGet<BehaviorAttachmentArena>()) {
+        return arena->drainDeferredMutationsForTeardown();
+    }
+    return 0;
 }
 
 bool behaviorCallbackActive() noexcept {

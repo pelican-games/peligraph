@@ -37,8 +37,11 @@ class DeletionQueueCore {
     uint32_t in_flight_frames;
     std::function<void()> wait_idle_hook;
     std::vector<PendingResource> pending;
+    bool accepting = true;
+    bool draining = false;
 
     void releaseEligible(uint64_t oldest_frame);
+    void requireAccepting() const;
 
   public:
     DeletionQueueCore(uint32_t in_flight_frames, std::function<void()> wait_idle_hook);
@@ -49,6 +52,7 @@ class DeletionQueueCore {
     ~DeletionQueueCore() noexcept;
 
     template <class T> void defer(T &&resource) {
+        requireAccepting();
         using Resource = std::decay_t<T>;
         pending.push_back(PendingResource{
             current_frame,
@@ -58,8 +62,10 @@ class DeletionQueueCore {
 
     void beginFrame();
     void flushAll();
+    void drainForTeardown();
     size_t pendingCount() const;
     uint64_t currentFrame() const { return current_frame; }
+    bool acceptingResources() const noexcept { return accepting; }
 };
 
 DECLARE_MODULE(DeletionQueue) {
@@ -71,8 +77,10 @@ DECLARE_MODULE(DeletionQueue) {
     template <class T> void defer(T &&resource) { core.defer(std::forward<T>(resource)); }
     void beginFrame();
     void flushAll();
+    void drainForTeardown();
     size_t pendingCountForTesting() const { return core.pendingCount(); }
     uint64_t currentFrameForTesting() const { return core.currentFrame(); }
+    bool acceptingResourcesForTesting() const { return core.acceptingResources(); }
 };
 
 } // namespace Pelican

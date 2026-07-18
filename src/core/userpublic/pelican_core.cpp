@@ -43,7 +43,7 @@ PelicanCore::PelicanCore(std::string _settings_str, bool reserve_stdout_for_prot
 
 bool PelicanCore::run() {
     FastModuleContainer container;
-    RuntimeTeardownGuard teardown;
+    RuntimeTeardownGuard teardown{RuntimeTeardownMode::terminal_shutdown};
     bool succeeded = true;
     try {
         GET_MODULE(StartupMetrics).begin();
@@ -95,7 +95,6 @@ bool PelicanCore::run() {
         LOG_ERROR(logger, "Pelican fatal error: non-standard exception");
         succeeded = false;
     }
-    FastModuleContainer::beginShutdown();
     teardown.run();
     shutdownConfiguredGameLogic();
     return succeeded;

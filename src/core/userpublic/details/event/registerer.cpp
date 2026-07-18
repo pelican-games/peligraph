@@ -418,9 +418,22 @@ std::vector<QueuedEvent> UserEventRegistererTemplatePublic::drainFrozenEvents() 
     return events;
 }
 
+EventQueueDrainResult UserEventRegistererTemplatePublic::drainForTeardown() noexcept {
+    EventQueueDrainResult result{
+        .pending = pending_events.size(),
+        .frozen = deliver_now_events.size(),
+    };
+    // Swap into locals so every payload (including a DLL-defined destructor)
+    // is released inside this explicit owner-live teardown step.
+    std::vector<QueuedEvent> pending;
+    std::vector<QueuedEvent> frozen;
+    pending.swap(pending_events);
+    frozen.swap(deliver_now_events);
+    return result;
+}
+
 void UserEventRegistererTemplatePublic::clearPendingEvents() {
-    pending_events.clear();
-    deliver_now_events.clear();
+    (void)drainForTeardown();
 }
 
 UserEventRegistererTemplatePublic &getEventRegisterer() {
@@ -437,6 +450,10 @@ void dispatchFrozenEvents(GameContext &ctx) {
     for (const auto &event : events) {
         dispatchEventToRegisteredGameSystems(event, ctx);
     }
+}
+
+EventQueueDrainResult drainPendingEventsForTeardown() noexcept {
+    return getEventRegisterer().drainForTeardown();
 }
 
 void clearPendingEvents() {
