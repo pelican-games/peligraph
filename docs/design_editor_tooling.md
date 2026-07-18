@@ -1,15 +1,21 @@
-# 編集系 rpc とエンジン内インスペクタ/アセットブラウザ(v2.4 — 付表の閉包・再々レビュー待ち)
+# 編集系 rpc とエンジン内インスペクタ/アセットブラウザ(v2.5 — 残 blocker 2 点の閉包・最終確認待ち)
 
-**v2.4(2026-07-18)**: v2.3 再レビュー
-`docs/design_reviews/2026-07-18_editor_v23_rereview_codex.md` は
-**逐語転記 8 件を全件合格**とした上で付表を Reject(V23-R1〜R4)。
-本版は §7 必須修正の 5 件を反映: ①逐語本文は不変 ②§1-6-1 を
-acceptance/execution 二段 + ticket 全遷移(open/update/commit/abort/
-forced-abort)+ preview lease overlap で閉じ、E-C4 matrix を別表で
-新設 ③§1-6-2 に FrameResources/flat・xr temporal histories/resize/
-RenderTiming allocator を追加し全行を三分類 literal に ④snapshot の
-versioned JSON schema(export/import)を掲載し RPC import に一本化
-⑤§3 に STRUCT-SCHEMA0 edge 復元 + E-C2/E-C4/E-C5/§1-6 の owner 添付。
+**v2.5(2026-07-18)**: v2.4 再々レビュー
+`docs/design_reviews/2026-07-18_editor_v24_rereview_codex.md` は逐語
+本文と §1-6-2 inventory を **Accept**、§3 を条件付き Accept とし、
+blocker を 2 点に限定(V24-R1 = ticket 遷移の execution 再検査と
+error catalog 統一 / V24-R2 = named versioned schema + 厳密 JSON)。
+本版はその 2 点のみ修正: ①§1-6-1c canonical error catalog 新設・
+§1-6-1a 全行 7 列化(open/update/commit/abort/forced-abort の
+execution で ticket 存在/所有/lease/capability 再検査・消滅済み abort
+= idempotent success)・§1-6-1b と code 名統一・E-C2 の非有限/表現
+不能/path payload 復元 ②§1-6-3 を三本の named V1 schema(field 表 +
+厳密 parse 可能な JSON 例 + uint ≤2^53−1 規律)+ schema 名 sequence 化。
+v2.4 レビュー §5 の owner 条件逐語は §1-6-3 冒頭と E-RPC0-base/
+SNAPSHOT0 の WP gate に添付する。
+
+**v2.4(2026-07-18)**: §7 必須修正 5 件を反映(逐語本文不変・
+§1-6-1a/1b・§1-6-2 三分類・snapshot schema・§3 owner 復元)。
 
 **v2.3(2026-07-18)**: v2.2 の §1-4/§1-5 は敵対レビュー
 `docs/design_reviews/2026-07-18_editor_v22_preview_review_codex.md` で
@@ -394,42 +400,73 @@ export/import。昇格専用 API は引き続き作らない — 採用値は通
 
 ### 1-6. matrix と inventory(再レビュー入口 §11 の提出物 — v2.4 で閉包)
 
+#### 1-6-1c. canonical stable error catalog(1a/1b 共通 — code 名は本表が正)
+
+| code | payload | 意味 |
+|---|---|---|
+| stale_revision | {current_revision, target 現値/存在} | base SceneRevision 不一致(V22-C2) |
+| gate_closed | {method, reason, gate_epoch} | execution 時に editor gate が閉(V22-C7) |
+| preview_lease_conflict | {ticket, owner} | 通常 edit が open lease の write set と overlap |
+| preview_lease_busy | {owner} | open 時に lease 占有中(一 session 一個) |
+| not_lease_owner | {ticket, owner} | 非所有 ActorId の ticket 操作 |
+| ticket_not_found | {ticket, final_status?} | 消滅済み ticket への update/commit |
+| undo_conflict | {domain, owner_txn, revision} | revert precondition 不成立(全 no-op) |
+| not_editable | {object, slot} | codec なし/read-only |
+| schema_violation | {object, slot, field path, detail} | 型/range/enum/required 違反 |
+| unknown_component_type | {object, name} | 未知 component 名(add) |
+| duplicate_component | {object, slot} | 既存 slot への add |
+| missing_component | {object, slot} | 不存在 slot への remove |
+| name_conflict | {name} | spawn の名前一意性違反 |
+| parent_not_found | {name} | spawn/reparent の親不在 |
+| closure_unresolvable | {object path} | destroy closure 解決不能 |
+| cycle_detected | {object path} | reparent 循環 |
+| zero_scale | {object path} | 親 zero scale で local/world 変換不能(E-C2) |
+| non_finite_transform | {object path} | 非有限値の TRS(E-C2) |
+| trs_unrepresentable | {object path} | canonical TRS 表現不能な行列(E-C2) |
+| preserve_missing | {child} | reparent の preserve 指定欠落(E-C2) |
+| method_unavailable | {method, adapter/field} | 未提供 op / live_preview・prepared 評価非対応(E-C4/V22-C4/C5) |
+| xr_active_unsupported | {method} | xr_active 中の render_preview(V22-C6) |
+| capture_schema_violation | {field, detail} | capture request の schema 違反 |
+| capture_too_large | {limit} | capture size 上限超過 |
+| snapshot_busy / snapshot_too_large / unsupported_snapshot_version / digest_mismatch / snapshot_invalid{detail} / scene_not_found | — | §1-6-3 参照 |
+
 #### 1-6-1a. transaction / preview state matrix(owner = E-RPC1/JOURNAL0)
 
 precondition は **acceptance(受付時)/ execution(frame-boundary
 実行時)の二段**。execution では必ず editor gate snapshot/epoch を
-再検査し、閉じていれば live mutation なしで
-`gate_closed{method, reason, gate_epoch}`(V22-C7)。通常 edit 行は
-**open preview lease との write-set overlap** を acceptance/execution
-双方で検査し、overlap は `preview_lease_conflict{ticket, owner}`。
+再検査し(V22-C7)、加えて **ticket 系 op は ticket 存在・ActorId
+所有・lease state・capability も execution で再検査する**(acceptance
+と execution の間に他 request が lease を作る/消すため)。通常 edit
+行は open preview lease との write-set overlap を acceptance/execution
+双方で検査する。error code は §1-6-1c の catalog のみを使う。
 
 | op | stable target / owner | acceptance precondition | execution precondition | adapter | rev / preview_epoch | stable conflict result |
 |---|---|---|---|---|---|---|
-| set_component_value | ObjectId+component slot+field path | base rev CAS・can_edit・editable・schema 検証・lease overlap なし | gate 再検査・lease 再検査・preflight | codec runtime apply(E-PROJTX0) | rev+1 | stale_revision / not_editable / preview_lease_conflict / gate_closed |
-| add_component | ObjectId+component slot(新設) | 同上 + slot 不存在 | 同上 + ECS-MUT0 prepare | migration + special adapter | rev+1 | stale_revision / duplicate_component / preview_lease_conflict / gate_closed |
+| set_component_value | ObjectId+component slot+field path | base rev CAS・can_edit・editable・schema 検証・lease overlap なし | gate 再検査・lease overlap 再検査・preflight | codec runtime apply(E-PROJTX0) | rev+1 | stale_revision / not_editable / schema_violation / preview_lease_conflict / gate_closed |
+| add_component | ObjectId+component slot(新設) | 同上 + component 名既知 + slot 不存在 | 同上 + ECS-MUT0 prepare | migration + special adapter | rev+1 | stale_revision / unknown_component_type / duplicate_component / schema_violation / preview_lease_conflict / gate_closed |
 | remove_component | ObjectId+component slot | 同上 + slot 存在 | 同上 | migration + special adapter | rev+1 | stale_revision / missing_component / preview_lease_conflict / gate_closed |
-| spawn | object/subtree existence + declaration interval + name reservation | CAS・can_edit・名前一意・parent 存在・lease overlap なし | gate/lease 再検査 + 全 codec preflight | 全 codec + migration | rev+1 | stale_revision / name_conflict / parent_not_found / preview_lease_conflict / gate_closed |
-| destroy | 同上(closure) | CAS・can_edit・closure 解決・lease overlap なし | gate/lease 再検査 | 同上(逆) | rev+1 | stale_revision / preview_lease_conflict / gate_closed |
-| reparent | child + old/new parent edge + descendant closure | CAS・can_edit・循環/zero-scale preflight・preserve 指定・lease overlap なし | gate/lease 再検査 + closure 再計算 preflight | transform closure 再計算 | rev+1 | stale_revision / cycle_detected / zero_scale / preview_lease_conflict / gate_closed |
-| undo / redo | 元 transaction の write set + structural domain | CAS・can_edit・**postcondition/last-writer precondition 全項**・lease overlap なし | gate/lease 再検査 + precondition 再検査(同一 snapshot) | inverse 経由で各 op と同一 | rev+1(成功時のみ) | **undo_conflict{domain, owner_txn, revision}**(全 no-op・rev/journal 不変)/ stale_revision / preview_lease_conflict / gate_closed |
-| ticket preview **open** | write set lease(ActorId 所有) | can_preview・lease 空き(一 session 一個)・全対象 field の live_preview_capability | gate 再検査 | E-C1 prepare→noexcept publish | epoch+1(rev 不変) | preview_lease_busy{owner} / method_unavailable{field} / gate_closed |
-| ticket preview **update** | 同一 lease(所有 ActorId のみ) | lease 所有・can_preview・capability | gate 再検査 | 同上 | epoch+1(rev 不変) | not_lease_owner / method_unavailable / gate_closed |
-| ticket **commit** | 同一 lease | lease 所有・ticket base rev CAS・can_edit | gate 再検査 + 通常 transaction preflight | 通常の一 transaction | rev+1・epoch+1・lease 解放 | stale_revision(→ forced-abort 遷移)/ not_lease_owner / gate_closed |
-| ticket **abort**(所有者) | 同一 lease | lease 所有 | — (abort は拒否されない) | committed document を E-C1 prepare→noexcept publish で再投影 | epoch+1(rev 不変)・lease 解放 | not_lease_owner のみ |
-| ticket **forced-abort**(system) | open lease(system 発火) | 発火条件: 非 overlap edit commit による base stale 化 / replay・reload・scene transition 遷移要求 | **frame observer 再開前**に abort と同一 adapter 経路 | epoch+1・lease 解放 | 結果通知 = ticket_forced_aborted{reason} |
-| eval_preview | overrides(request-local・lease 不要) | can_preview・全 override が prepared 評価可能 | gate 再検査 | PreparedProjection + EvaluationContext のみ(live 不変) | **rev/epoch とも不変** | method_unavailable{adapter/field} / gate_closed |
-| render_preview | overrides + camera(request-local) | can_preview・非 xr_active・capture schema 検証(size 上限) | gate 再検査 | preview graph executor(§1-6-2 準拠) | **rev/epoch とも不変** | xr_active_unsupported / capture_too_large / gate_closed |
+| spawn | object/subtree existence + declaration interval + name reservation | CAS・can_edit・名前一意・parent 存在・schema 検証・lease overlap なし | gate/lease 再検査 + 全 codec preflight | 全 codec + migration | rev+1 | stale_revision / name_conflict / parent_not_found / schema_violation / preview_lease_conflict / gate_closed |
+| destroy | 同上(closure) | CAS・can_edit・closure 解決・lease overlap なし | gate/lease 再検査 + closure 再解決 | 同上(逆) | rev+1 | stale_revision / closure_unresolvable / preview_lease_conflict / gate_closed |
+| reparent | child + old/new parent edge + descendant closure | CAS・can_edit・preserve 指定・循環/zero-scale/非有限/表現不能 preflight・lease overlap なし | gate/lease 再検査 + closure 再計算 preflight | transform closure 再計算(E-C2) | rev+1 | stale_revision / preserve_missing / cycle_detected / zero_scale / non_finite_transform / trs_unrepresentable / parent_not_found / preview_lease_conflict / gate_closed |
+| undo / redo | 元 transaction の write set + structural domain | CAS・can_edit・**postcondition/last-writer precondition 全項**・lease overlap なし | gate/lease 再検査 + precondition 再検査(同一 snapshot) | inverse 経由で各 op と同一 | rev+1(成功時のみ) | **undo_conflict**(全 no-op・rev/journal 不変)/ stale_revision / preview_lease_conflict / gate_closed |
+| ticket preview **open** | write set lease(ActorId 所有) | can_preview・lease 空き(一 session 一個)・全対象 field の live_preview_capability | gate 再検査 + **lease 空き再検査** + capability 再検査 | E-C1 prepare→noexcept publish | epoch+1(rev 不変) | preview_lease_busy / method_unavailable / gate_closed |
+| ticket preview **update** | 同一 lease(所有 ActorId のみ) | lease 所有・can_preview・capability | gate 再検査 + **ticket 存在/所有再検査**(先行 commit/abort/forced-abort で消滅済み → ticket_not_found{final_status}) | 同上 | epoch+1(rev 不変) | ticket_not_found / not_lease_owner / method_unavailable / gate_closed |
+| ticket **commit** | 同一 lease | lease 所有・ticket base rev CAS・can_edit | gate 再検査 + **ticket 存在/所有再検査** + CAS 再検査 + 通常 transaction preflight | 通常の一 transaction | rev+1・epoch+1・lease 解放 | stale_revision(→ forced-abort 遷移)/ ticket_not_found / not_lease_owner / gate_closed |
+| ticket **abort**(所有者) | 同一 lease | lease 所有 | **ticket 存在再検査 — 消滅済み(forced-abort 済み等)は idempotent success{final_status} を返し何もしない** | committed document を E-C1 prepare→noexcept publish で再投影 | epoch+1(rev 不変)・lease 解放(消滅済みなら epoch 不変) | not_lease_owner のみ(存在時)/ 消滅済み = success{final_status} |
+| ticket **forced-abort**(system 発火) | open lease | 発火条件: 非 overlap edit commit による base stale 化 / replay・reload・scene transition 遷移要求 | **frame observer 再開前**に実行(V22-C4) | abort と同一(committed document を E-C1 経路で再投影) | epoch+1・lease 解放 | none(request でないため conflict なし。owner への結果通知 = ticket_forced_aborted{reason}) |
+| eval_preview | overrides(request-local・lease 不要) | can_preview・全 override が prepared 評価可能 | gate 再検査 | PreparedProjection + EvaluationContext のみ(live 不変) | **rev/epoch とも不変** | method_unavailable / schema_violation / gate_closed |
+| render_preview | overrides + camera(request-local) | can_preview・非 xr_active・capture request schema 検証(型/範囲/size 上限) | gate 再検査 + xr_active 再検査 | preview graph executor(§1-6-2 準拠) | **rev/epoch とも不変** | xr_active_unsupported / capture_schema_violation / capture_too_large / method_unavailable / gate_closed |
 
 #### 1-6-1b. E-C4 operation matrix(owner = E-RPC1/JOURNAL0 — 受理済み E-C4 の列)
 
 | op | authoring forward | authoring inverse | runtime adapter | 必要先行 WP | preflight error | activation/deactivation boundary |
 |---|---|---|---|---|---|---|
-| set_component_value | staged document へ field write | 旧値 write(last-writer stamp 付き) | codec runtime apply(transform は descendant closure 再計算) | E-PROJTX0 | stale_revision / not_editable / schema violation | なし(observer 再開前に publish 完了) |
-| add_component | component 挿入(slot 採番・raw canonical) | 同 slot remove | ECS-MUT0 migration + special adapter publish | ECS-MUT0(済 WP152)+ E-PROJTX0 | duplicate / unknown type / schema violation | behavior 付き component は commit 後の次 activation boundary で onInit(BEH2 規範) |
+| set_component_value | staged document へ field write | 旧値 write(last-writer stamp 付き) | codec runtime apply(transform は descendant closure 再計算) | E-PROJTX0 | stale_revision / not_editable / schema_violation | なし(observer 再開前に publish 完了) |
+| add_component | component 挿入(slot 採番・raw canonical) | 同 slot remove | ECS-MUT0 migration + special adapter publish | ECS-MUT0(済 WP152)+ E-PROJTX0 | duplicate_component / unknown_component_type / schema_violation | behavior 付き component は commit 後の次 activation boundary で onInit(BEH2 規範) |
 | remove_component | component 削除(raw JSON・array index 保存) | 保存 raw から復元 | migration + special adapter unpublish | 同上 | missing_component | pre-destroy で deinit(逆 attachment 順) |
-| spawn | object 挿入(declaration interval + name reservation + parent edge) | closure destroy | 全 codec project + migration | E-PROJTX0 | name_conflict / parent_not_found | activation barrier で attachment_seq 順 onInit |
-| destroy | closure 削除(全 raw・order・parent edge を journal に保存) | 保存 closure から spawn 復元 | 逆順 unpublish + pre-destroy barrier | E-PROJTX0 | closure 解決不能 | pre-destroy barrier(逆 attachment 順 onDestroy) |
-| reparent | parent edge 差し替え + preserve policy 記録 | 旧 edge + 旧 local/world closure 復元 | descendant world 再計算(E-C2) | E-PROJTX0 | cycle / zero_scale | なし |
+| spawn | object 挿入(declaration interval + name reservation + parent edge) | closure destroy | 全 codec project + migration | E-PROJTX0 | name_conflict / parent_not_found / schema_violation | activation barrier で attachment_seq 順 onInit |
+| destroy | closure 削除(全 raw・order・parent edge を journal に保存) | 保存 closure から spawn 復元 | 逆順 unpublish + pre-destroy barrier | E-PROJTX0 | closure_unresolvable | pre-destroy barrier(逆 attachment 順 onDestroy) |
+| reparent | parent edge 差し替え + preserve policy 記録 | 旧 edge + 旧 local/world closure 復元 | descendant world 再計算(E-C2) | E-PROJTX0 | preserve_missing / cycle_detected / zero_scale / non_finite_transform / trs_unrepresentable(いずれも object path payload — E-C2)/ parent_not_found | なし |
 | undo / redo | inverse command 列の通常 transaction 再生 | (redo = revert の逆) | 各 op と同一 | JOURNAL0 | undo_conflict / stale_revision | 各 op に従う |
 
 #### 1-6-2. renderer preview state inventory(V22-C6 の gate 対象 — 全行 literal 三分類)
@@ -456,73 +493,84 @@ precondition は **acceptance(受付時)/ execution(frame-boundary
 #### 1-6-3. snapshot export/import JSON schema と sequence(owner = SNAPSHOT0)
 
 ingestion は **RPC import surface に一本化**する(scratch は headless
-stdio rpc = WP27 既存面。launch option 案は撤回 — bytes を CLI に載せる
-encoding/size 問題を避け、通常 project 起動 → import → reload の一本道
-にする)。
+stdio rpc = WP27 既存面。launch option 案は撤回)。schema は名前付き
+V1 の三本。数値 field の JSON 表現は **非負整数・最大 2^53−1**
+(イベント schema の ±2^53 整数規律と同じ床)。互換性変更は三 schema
+同時のみ(E-RPC0-base は SNAPSHOT0 が固定した schema を実装する
+prerequisite surface であって独立 owner ではない — v2.4 レビュー §5
+条件逐語)。
 
-export request(`export_scene_snapshot`):
+**ExportSceneSnapshotRequestV1**(method `export_scene_snapshot`):
 
-```json
-{ "allow_pending": false }
-```
+| field | JSON 型 | required | 値域/既定 |
+|---|---|---|---|
+| schema_version | number | ✔ | 1 のみ(他 = unsupported_snapshot_version) |
+| allow_pending | boolean | 省略可 | 既定 false。false で pending ticket or open preview lease あり → snapshot_busy(何も返さない) |
 
-- `allow_pending`(bool・省略時 false): false で pending_ticket_ids が
-  非空 or open preview lease あり → stable error `snapshot_busy`
-  (何も返さない)。true なら snapshot は commit 済み状態のみを含み、
-  pending/preview は metadata で明示。
+厳密 JSON 例: `{"schema_version":1,"allow_pending":false}`
 
-export response:
+**ExportSceneSnapshotResponseV1**:
 
-```json
-{
-  "schema_version": 1,
-  "scene_revision": 42,
-  "current_scene_id": "main",
-  "semantic_scene_bytes": "<AuthoringSceneDocument.encodeSemantic() の
-                            UTF-8 JSON text 全文(required・non-null)>",
-  "digest": { "algorithm": "sha256",
-              "hex": "<semantic_scene_bytes の UTF-8 byte 列の
-                      sha256、64 桁小文字 hex(required)>" },
-  "pending_ticket_ids": [],
-  "preview_epoch": 7
-}
-```
+| field | JSON 型 | required | 内容 |
+|---|---|---|---|
+| schema_version | number | ✔ non-null | 1 |
+| scene_revision | number | ✔ | uint(≤2^53−1)。export 時点の SceneRevision |
+| current_scene_id | string | ✔ non-null | document に存在する scene 名 |
+| semantic_scene_bytes | string | ✔ non-null | `encodeSemantic()` の UTF-8 JSON text 全文を **inline JSON string**(base64/別 file 不採用 — 二重 encode 回避)。JSON string escape は通常規則 |
+| digest | object | ✔ | 下記 DigestV1 |
+| digest.algorithm | string | ✔ | `"sha256"` のみ |
+| digest.hex | string | ✔ | semantic_scene_bytes の UTF-8 byte 列の SHA-256、64 桁小文字 hex |
+| pending_ticket_ids | array of string | ✔(空可) | allow_pending=true 時の未 commit ticket 一覧 |
+| preview_epoch | number | ✔ | uint(≤2^53−1) |
 
-- 型: scene_revision/preview_epoch = uint64、current_scene_id =
-  string(必須・document に存在する scene 名)、pending_ticket_ids =
-  string 配列(必須・空可)。bytes は **UTF-8 JSON string として
-  inline**(base64/別 file 不採用 — semantic encode は JSON text で
-  あり二重 encode を避ける)。
-- size 上限 64 MiB(超過 = stable error `snapshot_too_large`)。
-
-import request(`import_scene_snapshot`・scratch 側):
+厳密 JSON 例(bytes は最小 envelope の例):
 
 ```json
-{
-  "schema_version": 1,
-  "semantic_scene_bytes": "<export と同一 text>",
-  "digest": { "algorithm": "sha256", "hex": "<同上>" },
-  "current_scene_id": "main"
-}
+{"schema_version":1,"scene_revision":42,"current_scene_id":"main","semantic_scene_bytes":"{\"schema\":\"pelican.scene\",\"version\":1,\"scenes\":[]}","digest":{"algorithm":"sha256","hex":"0f9c2a4b8d6e13577531fedcba9876543210abcdef0123456789abcdef012345"},"pending_ticket_ids":[],"preview_epoch":7}
 ```
 
-- 検証順: ①schema_version 既知(`unsupported_snapshot_version`)
-  ②size 上限 ③digest 再計算一致(`digest_mismatch`)④parse +
-  semantic validate(`snapshot_invalid{detail}`)⑤current_scene_id
-  存在(`scene_not_found`)。**どの失敗でも通常 project の scene
-  source/ProjectBasicConfig cache/revision は不変**(公開は全検証
-  成功後の一 transaction — E-C5 と同型)。
+- size 上限: semantic_scene_bytes ≤ 64 MiB(超過 =
+  snapshot_too_large。export/import 双方で検査)。
+
+**ImportSceneSnapshotRequestV1**(method `import_scene_snapshot`・
+scratch 側):
+
+| field | JSON 型 | required | 内容 |
+|---|---|---|---|
+| schema_version | number | ✔ | 1 のみ |
+| semantic_scene_bytes | string | ✔ non-null | export と同一 text |
+| digest | object | ✔ | DigestV1(同上) |
+| current_scene_id | string | ✔ non-null | load する scene 名 |
+
+厳密 JSON 例:
+
+```json
+{"schema_version":1,"semantic_scene_bytes":"{\"schema\":\"pelican.scene\",\"version\":1,\"scenes\":[]}","digest":{"algorithm":"sha256","hex":"0f9c2a4b8d6e13577531fedcba9876543210abcdef0123456789abcdef012345"},"current_scene_id":"main"}
+```
+
+- 検証順: ①schema_version(unsupported_snapshot_version)②size
+  (snapshot_too_large)③digest 再計算一致(digest_mismatch)
+  ④parse + semantic validate(snapshot_invalid{detail})
+  ⑤current_scene_id 存在(scene_not_found)。**どの失敗でも通常
+  project の scene source/ProjectBasicConfig cache/revision は不変**
+  (公開は全検証成功後の一 transaction — E-C5 と同型)。
 - 成功: scene source を snapshot に差し替えて reload。asset/
   rendering/shader は project root を read-only 共有。
   AuthoringObjectId は再採番(source session の id を移植しない)。
+- 例の JSON は全て厳密 parse 可能であり、そのまま fixture の
+  parse gate に使う。
 
 sequence(schema 名で記述):
 
 ```
-人 session : export_scene_snapshot{allow_pending:false}
-             → response(scene_revision R, bytes, digest, ...)
+人 session : ExportSceneSnapshotRequestV1{schema_version:1,
+             allow_pending:false}
+             → ExportSceneSnapshotResponseV1(scene_revision R,
+               semantic_scene_bytes, digest, current_scene_id,
+               pending_ticket_ids:[], preview_epoch)
 scratch    : pelican_player --headless --rpc(通常 project 起動)
-             → import_scene_snapshot{bytes, digest, current_scene_id}
+             → ImportSceneSnapshotRequestV1{schema_version:1,
+               semantic_scene_bytes, digest, current_scene_id}
              → 検証 5 段 → 成功で snapshot scene を load
 agent      : overrides スイープ + eval_preview / render_preview
              + capture(scratch 内・人の GUI 無風)
