@@ -4241,6 +4241,29 @@ scene/ecs/behavior/schema 三 header に触らない**。
 受け入れ = §2-1 逐語 gate(fake-service 等価 + 0 回 trace)+ 既存全
 テスト無変更 + golden SKIP 0・byte 不変 + player 8 秒 + CI green
 
+### WP160: pelican_rpc.py — 薄型 rpc クライアント(D0 決定の小 WP)
+
+参照: D0 決定(2026-07-08)の「`pelican_rpc.py`(薄い rpc
+クライアント)を小 WP 候補に」を実施。エージェント/外部ツールが
+エンジンを操縦する公式の最短路。
+
+範囲: `tools/pelican_rpc.py`(標準ライブラリのみ・依存追加禁止)。
+1. `PelicanRpc` class: player プロセス起動(`--rpc --headless` /
+   接続先 stdio)+ JSON-RPC 2.0 の送受信(id 採番・error を例外化)
+2. 主要 method の薄い helper: get_status / step_frame / set_time /
+   render_frame / capture / load_scene / scene_tree / get_components /
+   list_assets / export_scene_snapshot(引数はそのまま辞書渡し —
+   schema の重複実装はしない。**第二 serializer 化の禁止**)
+3. context manager(with で必ず terminate — 常駐プロセス残し禁止)
+4. smoke test(ctest・gpu ラベル): headless player を起動し
+   get_status→step_frame→scene_tree が通ること
+5. docs/manual の rpc 章に使用例 1 節
+
+依存: WP154(済)。見積: 小。
+排他: tools/ 新設 + test 1 本 + docs。**エンジン C++ 側変更禁止**。
+
+受け入れ = smoke green + 既存全テスト無変更 + golden SKIP 0 + CI green
+
 ### WP137: 負債 CI0 — CPU gate の常設(GitHub Actions)
 
 参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
