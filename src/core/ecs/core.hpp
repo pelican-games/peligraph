@@ -3,6 +3,7 @@
 #include "../container.hpp"
 
 #include "componentinfo.hpp"
+#include "archetypemigration.hpp"
 #include <details/ecs/coretemplate.hpp>
 
 namespace Pelican {
@@ -24,6 +25,15 @@ DECLARE_MODULE(ECSCore) {
         return sub.createEntity(component_ids, populate);
     }
     [[nodiscard]] bool remove(EntityId id) { return sub.remove(id); }
+    void addComponent(EntityId entity, ComponentId component,
+                      const ECSArchetypeMigration::Populate &populate = {},
+                      ECSArchetypeMigration::Adapters adapters = {}) {
+        ECSArchetypeMigration::add(sub, entity, component, populate, adapters);
+    }
+    void removeComponent(EntityId entity, ComponentId component,
+                         ECSArchetypeMigration::Adapters adapters = {}) {
+        ECSArchetypeMigration::remove(sub, entity, component, adapters);
+    }
     void clearEntities() { sub.clearEntities(); }
 
     template <class TSystem, class... TComponents>

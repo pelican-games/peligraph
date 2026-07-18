@@ -1,4 +1,5 @@
 target_sources(pelican_core PRIVATE
+    archetypemigration.cpp
     componentinfo.cpp
     predefined.cpp
 )
