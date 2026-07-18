@@ -3,15 +3,19 @@
 #include "../../../container.hpp"
 #include "../../../ecs/componentinfo.hpp"
 #include "../../../job_system.hpp"
+#include "../../../launchconfig.hpp"
+#include "../../../log.hpp"
 #include "../../../profiler.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
 #include <limits>
-#include <queue>
+#include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <utility>
 
 namespace Pelican {
@@ -19,6 +23,205 @@ namespace Pelican {
 namespace internal {
 size_t getIndexFromComponentId_Ref(ComponentId id) {
     return GET_MODULE(ComponentInfoManager).getIndexFromComponentId(id);
+}
+
+namespace {
+
+using DependencyMap = std::unordered_map<SystemId, std::set<SystemId>>;
+
+std::vector<std::vector<SystemId>> makeExecutionLevels(
+    const std::vector<ECSSystemGraphNode> &nodes, const DependencyMap &dependencies) {
+    std::unordered_map<SystemId, size_t> in_degree;
+    std::unordered_map<SystemId, std::vector<SystemId>> depended_by;
+    std::set<SystemId> zero_degree;
+    for (const auto &node : nodes) {
+        const auto &node_dependencies = dependencies.at(node.id);
+        in_degree.emplace(node.id, node_dependencies.size());
+        if (node_dependencies.empty()) {
+            zero_degree.insert(node.id);
+        }
+        for (const auto dependency : node_dependencies) {
+            depended_by[dependency].push_back(node.id);
+        }
+    }
+    for (auto &[dependency, dependents] : depended_by) {
+        (void)dependency;
+        std::sort(dependents.begin(), dependents.end());
+    }
+
+    std::vector<std::vector<SystemId>> levels;
+    size_t executed_count = 0;
+    while (!zero_degree.empty()) {
+        std::vector<SystemId> level{zero_degree.begin(), zero_degree.end()};
+        zero_degree.clear();
+        executed_count += level.size();
+        levels.push_back(level);
+        for (const auto executed : level) {
+            const auto found = depended_by.find(executed);
+            if (found == depended_by.end()) {
+                continue;
+            }
+            for (const auto dependent : found->second) {
+                auto &degree = in_degree.at(dependent);
+                if (--degree == 0) {
+                    zero_degree.insert(dependent);
+                }
+            }
+        }
+    }
+
+    if (executed_count != nodes.size()) {
+        std::ostringstream message;
+        message << "ECS dependency cycle detected; unexecuted systems:";
+        for (const auto &node : nodes) {
+            if (in_degree.at(node.id) != 0) {
+                message << " '" << node.name << "'";
+            }
+        }
+        throw std::runtime_error(message.str());
+    }
+    return levels;
+}
+
+bool isOrderedBefore(SystemId before, SystemId after, const DependencyMap &dependencies) {
+    std::vector<SystemId> pending{after};
+    std::unordered_set<SystemId> visited;
+    while (!pending.empty()) {
+        const auto current = pending.back();
+        pending.pop_back();
+        if (!visited.insert(current).second) {
+            continue;
+        }
+        for (const auto dependency : dependencies.at(current)) {
+            if (dependency == before) {
+                return true;
+            }
+            pending.push_back(dependency);
+        }
+    }
+    return false;
+}
+
+std::vector<std::string> conflictingComponents(const ECSSystemGraphNode &left,
+                                               const ECSSystemGraphNode &right) {
+    std::map<size_t, std::string> conflicts;
+    for (const auto &left_access : left.component_accesses) {
+        for (const auto &right_access : right.component_accesses) {
+            if (left_access.component_index == right_access.component_index &&
+                (left_access.writes || right_access.writes)) {
+                conflicts.try_emplace(left_access.component_index, left_access.component_name);
+            }
+        }
+    }
+    std::vector<std::string> result;
+    result.reserve(conflicts.size());
+    for (const auto &[index, name] : conflicts) {
+        (void)index;
+        result.push_back(name);
+    }
+    return result;
+}
+
+std::string hazardMessage(const ECSSystemGraphNode &left, const ECSSystemGraphNode &right,
+                          const std::vector<std::string> &components) {
+    std::ostringstream message;
+    message << "ECS unordered component hazard between systems '" << left.name << "' and '"
+            << right.name << "' on component" << (components.size() == 1 ? " " : "s ");
+    for (size_t i = 0; i < components.size(); ++i) {
+        if (i != 0) {
+            message << ", ";
+        }
+        message << "'" << components[i] << "'";
+    }
+    return message.str();
+}
+
+} // namespace
+
+ECSExecutionPlan buildECSExecutionPlan(std::span<const ECSSystemGraphNode> input_nodes,
+                                       ECSHazardPolicy hazard_policy) {
+    std::vector<ECSSystemGraphNode> nodes{input_nodes.begin(), input_nodes.end()};
+    std::sort(nodes.begin(), nodes.end(),
+              [](const ECSSystemGraphNode &left, const ECSSystemGraphNode &right) {
+                  return left.id < right.id;
+              });
+
+    std::unordered_map<SystemId, const ECSSystemGraphNode *> nodes_by_id;
+    DependencyMap dependencies;
+    for (const auto &node : nodes) {
+        if (!nodes_by_id.emplace(node.id, &node).second) {
+            throw std::runtime_error("ECS execution graph contains duplicate system id " +
+                                     std::to_string(node.id));
+        }
+        dependencies.emplace(node.id, std::set<SystemId>{});
+    }
+    for (const auto &node : nodes) {
+        auto &node_dependencies = dependencies.at(node.id);
+        for (const auto dependency : node.dependencies) {
+            const auto found = nodes_by_id.find(dependency);
+            if (found == nodes_by_id.end()) {
+                throw std::runtime_error("ECS system '" + node.name +
+                                         "' depends on missing system id " +
+                                         std::to_string(dependency) +
+                                         "; system would be unexecuted");
+            }
+            if (!node_dependencies.insert(dependency).second) {
+                throw std::runtime_error("ECS system '" + node.name +
+                                         "' declares dependency on system '" +
+                                         found->second->name +
+                                         "' more than once; system would be unexecuted");
+            }
+        }
+    }
+
+    // Validate the declared graph before using reachability to inspect hazards.
+    (void)makeExecutionLevels(nodes, dependencies);
+
+    ECSExecutionPlan result;
+    std::vector<std::string> strict_hazards;
+    for (size_t left_index = 0; left_index < nodes.size(); ++left_index) {
+        for (size_t right_index = left_index + 1; right_index < nodes.size(); ++right_index) {
+            const auto &left = nodes[left_index];
+            const auto &right = nodes[right_index];
+            const auto components = conflictingComponents(left, right);
+            if (components.empty() || isOrderedBefore(left.id, right.id, dependencies) ||
+                isOrderedBefore(right.id, left.id, dependencies)) {
+                continue;
+            }
+
+            const auto message = hazardMessage(left, right, components);
+            if (hazard_policy == ECSHazardPolicy::strict) {
+                strict_hazards.push_back(message);
+                continue;
+            }
+
+            // System IDs are monotonic registration IDs, so left-before-right is the
+            // required registration-order migration behavior.
+            dependencies.at(right.id).insert(left.id);
+            result.automatic_serializations.push_back(ECSAutomaticSerialization{
+                .before = left.id,
+                .after = right.id,
+                .before_name = left.name,
+                .after_name = right.name,
+                .component_names = components,
+            });
+        }
+    }
+
+    if (!strict_hazards.empty()) {
+        std::ostringstream message;
+        for (size_t i = 0; i < strict_hazards.size(); ++i) {
+            if (i != 0) {
+                message << "; ";
+            }
+            message << strict_hazards[i];
+        }
+        message << "; add dependency edges or use automatic serialization";
+        throw std::runtime_error(message.str());
+    }
+
+    result.levels = makeExecutionLevels(nodes, dependencies);
+    return result;
 }
 } // namespace internal
 
@@ -381,42 +584,80 @@ void ECSCoreTemplatePublic::unregisterSystem(SystemId system_id) {
         systems.at(depends).depended_by.erase(system_id);
     }
     systems.erase(system_id);
+    execution_plan_dirty = true;
 }
 
 void ECSCoreTemplatePublic::update() {
     ++global_tick;
-    JobSystem::Get().init();
 
     TimeProfilerStart("ECS_Update_Sort");
-    std::unordered_map<SystemId, size_t> in_degree;
-    std::queue<SystemId> zero_degree_queue;
-    for (const auto &[id, system] : systems) {
-        in_degree[id] = system.depends_list.size();
-        if (system.depends_list.empty()) {
-            zero_degree_queue.push(id);
-        }
-    }
+    const auto hazard_policy = [] {
+        const auto *launch_config = FastModuleContainer::tryGet<EngineLaunchConfig>();
+        // --strict-assets is the existing startup-wide strict/determinism gate.
+        // Reusing it keeps WP148 inside the scheduler-only change boundary.
+        return launch_config != nullptr && launch_config->strict_assets
+                   ? internal::ECSHazardPolicy::strict
+                   : internal::ECSHazardPolicy::automatic_serialization;
+    }();
+    try {
+        if (execution_plan_dirty || cached_hazard_policy != hazard_policy) {
+            std::vector<internal::ECSSystemGraphNode> graph_nodes;
+            graph_nodes.reserve(systems.size());
+            const auto &component_infos = GET_MODULE(ComponentInfoManager);
+            for (const auto &[id, system] : systems) {
+                internal::ECSSystemGraphNode node{
+                    .id = id,
+                    .name = system.name,
+                    .dependencies = system.depends_list,
+                    .component_accesses = {},
+                };
+                node.component_accesses.reserve(system.read_indices.size() +
+                                                 system.write_indices.size());
+                for (const auto component_index : system.read_indices) {
+                    node.component_accesses.push_back({
+                        .component_index = component_index,
+                        .component_name = component_infos.getFromIndex(component_index).name,
+                        .writes = false,
+                    });
+                }
+                for (const auto component_index : system.write_indices) {
+                    node.component_accesses.push_back({
+                        .component_index = component_index,
+                        .component_name = component_infos.getFromIndex(component_index).name,
+                        .writes = true,
+                    });
+                }
+                graph_nodes.push_back(std::move(node));
+            }
 
-    std::vector<std::vector<SystemId>> execution_levels;
-    while (!zero_degree_queue.empty()) {
-        std::vector<SystemId> current_level;
-        const auto level_size = zero_degree_queue.size();
-        for (size_t i = 0; i < level_size; ++i) {
-            const auto id = zero_degree_queue.front();
-            zero_degree_queue.pop();
-            current_level.push_back(id);
-        }
-        execution_levels.push_back(std::move(current_level));
-        for (const auto executed_id : execution_levels.back()) {
-            for (const auto depended : systems.at(executed_id).depended_by) {
-                if (--in_degree[depended] == 0) {
-                    zero_degree_queue.push(depended);
+            auto plan = internal::buildECSExecutionPlan(graph_nodes, hazard_policy);
+            execution_levels = std::move(plan.levels);
+            cached_hazard_policy = hazard_policy;
+            execution_plan_dirty = false;
+            if (logger != nullptr) {
+                for (const auto &serialization : plan.automatic_serializations) {
+                    std::ostringstream components;
+                    for (size_t i = 0; i < serialization.component_names.size(); ++i) {
+                        if (i != 0) {
+                            components << ", ";
+                        }
+                        components << serialization.component_names[i];
+                    }
+                    LOG_WARNING(logger,
+                                "ECS auto serialization: '{}' before '{}' for component(s) {}; "
+                                "add an explicit dependency edge (strict mode rejects this hazard)",
+                                serialization.before_name, serialization.after_name,
+                                components.str());
                 }
             }
         }
+    } catch (...) {
+        TimeProfilerEnd("ECS_Update_Sort");
+        throw;
     }
     TimeProfilerEnd("ECS_Update_Sort");
 
+    JobSystem::Get().init();
     TimeProfilerStart("ECS_Update_Execution");
     for (const auto &level : execution_levels) {
         for (const auto system_id : level) {

@@ -8,18 +8,54 @@
 #include <vector>
 #include <functional>
 #include <optional>
+#include <string>
 #include <tuple>
+#include <typeinfo>
 
 #include <details/ecs/componentdeclare.hpp>
 #include <details/ecs/chunk.hpp>
 
 namespace Pelican {
 
+using SystemId = uint64_t;
+
 namespace internal {
     size_t getIndexFromComponentId_Ref(ComponentId id);
-}
 
-using SystemId = uint64_t;
+    enum class ECSHazardPolicy {
+        automatic_serialization,
+        strict,
+    };
+
+    struct ECSSystemComponentAccess {
+        size_t component_index;
+        std::string component_name;
+        bool writes;
+    };
+
+    struct ECSSystemGraphNode {
+        SystemId id;
+        std::string name;
+        std::vector<SystemId> dependencies;
+        std::vector<ECSSystemComponentAccess> component_accesses;
+    };
+
+    struct ECSAutomaticSerialization {
+        SystemId before;
+        SystemId after;
+        std::string before_name;
+        std::string after_name;
+        std::vector<std::string> component_names;
+    };
+
+    struct ECSExecutionPlan {
+        std::vector<std::vector<SystemId>> levels;
+        std::vector<ECSAutomaticSerialization> automatic_serializations;
+    };
+
+    ECSExecutionPlan buildECSExecutionPlan(std::span<const ECSSystemGraphNode> nodes,
+                                           ECSHazardPolicy hazard_policy);
+}
 
 template <class... TComponents>
 struct ChunkView {
@@ -137,6 +173,7 @@ class ECSCoreTemplatePublic {
 
     struct InternalSystemWrapper {
         SystemId id;
+        std::string name;
         ComponentMask matching_mask = 0;
         // p_func receives dense indices
         std::function<void(ECSCoreTemplatePublic &, void*, const std::vector<ChunkIndex> &, const std::vector<size_t>&)> p_func;
@@ -160,6 +197,9 @@ class ECSCoreTemplatePublic {
     std::unordered_map<SystemId, InternalSystemWrapper> systems;
     uint64_t system_id_counter = 0;
     uint64_t global_tick = 1; // Starts at 1
+    bool execution_plan_dirty = true;
+    std::optional<internal::ECSHazardPolicy> cached_hazard_policy;
+    std::vector<std::vector<SystemId>> execution_levels;
 
   public:
     template <class TSystem, class... TComponents>
@@ -194,6 +234,7 @@ class ECSCoreTemplatePublic {
         
         InternalSystemWrapper wrapper;
         wrapper.id = id;
+        wrapper.name = typeid(TSystem).name();
         wrapper.system_ref = &system;
         wrapper.depends_list = std::move(depends_list);
         wrapper.component_indices = comp_indices;
@@ -320,6 +361,7 @@ class ECSCoreTemplatePublic {
         };
 
         systems.emplace(id, std::move(wrapper));
+        execution_plan_dirty = true;
         
         // Check existing chunks
         for (size_t i = 0; i < chunks_storage.size(); ++i) {
