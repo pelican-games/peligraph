@@ -34,14 +34,17 @@ void ECSPredefinedRegistration::reg() {
     const auto model_update_system =
         ecs.registerSystemForce<SimpleModelViewUpdateSystem, SimpleModelViewComponent>(
             GET_MODULE(SimpleModelViewUpdateSystem), {});
-    ecs.registerSystemForce<AnimationSystem, AnimationComponent, SimpleModelViewComponent>(
+    const auto animation_system =
+        ecs.registerSystemForce<AnimationSystem, AnimationComponent, SimpleModelViewComponent>(
         GET_MODULE(AnimationSystem), {model_update_system});
-    ecs.registerSystemForce<SimpleModelViewTransformSystem, TransformComponent, SimpleModelViewComponent>(
-        GET_MODULE(SimpleModelViewTransformSystem), {local_transform_system, model_update_system});
-    ecs.registerSystemForce<CameraSystem, TransformComponent, CameraComponent>(
-        GET_MODULE(CameraSystem), {local_transform_system});
+    const auto model_transform_system =
+        ecs.registerSystemForce<SimpleModelViewTransformSystem, TransformComponent, SimpleModelViewComponent>(
+            GET_MODULE(SimpleModelViewTransformSystem),
+            {local_transform_system, model_update_system, animation_system});
+    const auto camera_system = ecs.registerSystemForce<CameraSystem, TransformComponent, CameraComponent>(
+        GET_MODULE(CameraSystem), {local_transform_system, model_transform_system});
     ecs.registerSystemForce<SpriteViewRenderSystem, EntityId, TransformComponent, SpriteViewComponent>(
-        GET_MODULE(SpriteViewRenderSystem), {local_transform_system});
+        GET_MODULE(SpriteViewRenderSystem), {local_transform_system, camera_system});
 }
 
 } // namespace Pelican
