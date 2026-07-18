@@ -4364,6 +4364,51 @@ schema 三 header に触らない**。
 照合・上限/重複 hard error)+ 既存全テスト無変更 + golden SKIP 0・
 byte 不変 + player 8 秒 + CI green
 
+### WP164: UI-INS0 — インスペクタ panel(ImGui)
+
+前提: E-RPC0-base(済 WP154)+ E-RPC1/JOURNAL0(済 WP157/161)+
+E-HOST0(済 WP156)— §3 graph の依存全充足。
+
+参照: **`docs/design_editor_tooling.md` v2.5 §2-1 の逐語が受け入れ
+条件**(WP159 と同一 — ImGui は EditorCommandService の
+query/enqueue/poll-result interface だけを使用・fake-service 等価・
+replay/golden/headless で callback/query/enqueue 0 回 trace)+ §2-1
+の付記:
+
+> インスペクタの表示: `editable=false`(codec なし)は authored_json
+> の read-only 表示 + 理由バッジ。runtime_json がある場合は authored
+> との差分表示(「実行時に変化した値」の可視化)
+
+範囲(v1):
+
+1. **オブジェクトツリー panel**(scene_tree query — 選択が
+   インスペクタへ連動)
+2. **インスペクタ panel**: 選択 object の component 一覧を schema
+   駆動で描画 — float/int = drag、bool = checkbox、enum = combo、
+   string = input、vec3/quat = 多列 drag(schema fields は query
+   応答の型情報が正・component 別の手書き UI 禁止)
+3. **編集**: widget 確定で edit rpc(service enqueue)→ ticket
+   poll。transform/light の **drag 中は ticket preview**
+   (open→update…→release で commit・Esc で abort)— §1-5-1 の
+   見える試行の実用第一号。他 field は確定時に直接 edit
+4. **undo/redo ボタン**(undo/redo rpc — undo_conflict は理由
+   トースト表示)
+5. editable=false の read-only 表示 + 理由バッジ・transform の
+   local/world 差分表示(world は表示のみ)
+6. stale 対応: edit reject(stale_revision)時は応答の現在値で
+   表示を更新して再操作を促す(黙って上書きしない)
+
+依存: WP154/156/157/161(済)。見積: 大。
+排他: ImGui panel 新設(assetbrowser の流儀)+ fake-service test。
+**editorcommandservice/editorjournal/rpcserver は消費のみ(変更禁止 —
+不足はレポートに質問)。loader/scene/ecs/behavior/schema 三 header に
+触らない**(WP163 が registration 系で並走中)。
+
+受け入れ = §2-1 逐語 gate(fake-service 等価 + 0 回 trace)+
+schema 駆動描画(component 別手書き UI が無いことをレビューで確認)+
+既存全テスト無変更 + golden SKIP 0・byte 不変 + player 8 秒 +
+CI green
+
 ### WP137: 負債 CI0 — CPU gate の常設(GitHub Actions)
 
 参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
