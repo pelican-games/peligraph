@@ -4167,6 +4167,80 @@ behavior 系(WP155 並走中)・schema 三 header に触らない**。
 fixture + E-C4 表の WP 表転記)+ 既存全テスト無変更 + golden SKIP 0・
 byte 不変 + player 8 秒 + CI green
 
+**着手前 blocker(2026-07-18・wp157_report)**: WP153 の `stage()` が
+構造変更 reject・WP152 migration が one-shot・spawn/destroy prepared
+token 不在・非 transform codec の production adapter 不在・commit 点
+hook 不在 → **WP158(E-PROJTX0b)を先行**させ、着地後に本 WP を同
+worktree で再投入する。
+
+### WP158: E-PROJTX0b — 構造 stage + prepared token(WP157 の前提補完)
+
+wp157_report の質問 4 件への正式回答を本 WP とする(すべて「補完 WP
+側が所有」)。E-C1 の protocol(prepare live 不変・publish/rollback
+noexcept)を全面に適用する。
+
+1. **構造 stage API**(質問 1): `AuthoringSceneDocument` に object
+   insert/remove/rename/reorder を扱う structural stage を追加。新
+   object への session-stable `AuthoringObjectId` 割当・destroy closure
+   の ID 保全・inverse spawn での同 identity 再 bind・declaration
+   interval 保持。既存の値変更 stage の検査(WP149 fixture)は無変更
+2. **prepare-only token**(質問 2): `ECSArchetypeMigration` に
+   prepareAdd/prepareRemove(token 返却・publish/rollback は
+   noexcept)を追加 — 既存 one-shot add/remove は内部で token 経路を
+   使う形に再配線し、WP152 の全 fixture 無変更で PASS。object
+   spawn/destroy の runtime prepared token(ECS 生成 + renderer/
+   camera/light/phys の各 prepared 経路の合成)も同様に
+3. **全 codec の production adapter**(質問 3): camera/light/
+   collider/simplemodelview/animation/sprite_view の
+   set_component_value を WP153 の prepared 経路(PreparedLoad/
+   PreparedState/PreparedSceneState/PreparedModelTrs)へ接続する
+   `EditorProjectionAdapter` 実装群を本 WP が所有(置き場所は
+   loader/editorprojectionadapters.{hpp,cpp} 新設)
+4. **commit 点 hook**(質問 4): runtime reload 後・`freeze_events`
+   前の一点に editor commit queue を差し込む hook を framephase/
+   interactive loop に追加(hook 自体は空実行で挙動不変 — WP157 が
+   消費者)
+
+依存: WP153(済)+ **WP155 着地後に着手**(scene loader 競合回避)。
+見積: 大。
+排他: authoringscenedocument / editorprojectiontransaction(+ 新
+adapters ファイル)/ ecs archetypemigration / scene loader の
+create・remove 経路 / framephase・loop の hook / light・phys・camera・
+renderer の prepared 面。**communication/rpcserver・schema 三 header・
+behavior 系に触らない**。
+
+受け入れ = E-C1 protocol 準拠(fault injection: 各 token の prepare
+点 + publish 点で WP153 流儀の逐語復元)+ WP149/151/152/153 全 fixture
+無変更 + 既存全テスト + golden SKIP 0・byte 不変 + player 8 秒 +
+CI green
+
+### WP159: UI-AB0 — アセットブラウザ panel(ImGui)
+
+参照: **`docs/design_editor_tooling.md` v2.5 §2-1 の逐語が受け入れ
+条件**:
+
+> ImGui は EditorCommandService の query/enqueue/poll-result interface
+> だけを使用し、ECS/SceneLoader/LightContainer/PhysWorld を直接
+> mutate しない。RPC adapter と UI adapter に同一 command を与え、
+> validation/error/ticket/commit trace が一致する fake-service test を
+> 置く。grep は補助に降格する。replay/golden/headless では panel
+> callback・query・edit enqueue が 0 回であることを既存規範と同じ
+> trace で検査する。
+
+範囲: v1 = **閲覧 + 参照コピー + provenance**(§2-1 の UI-AB0 行)。
+WP154 の `list_assets`(store/kind/status)を EditorCommandService
+経由で表示する ImGui panel。編集機能なし(read-only)。既存 ImGui
+面(XR デバッグ overlay)の流儀に従い、panel は windowed のみ・
+replay/golden/headless で callback 0 回 trace gate。
+
+依存: WP154(済)。見積: 中。
+排他: ImGui panel 新設(ui/エディタ panel 層)+ fake-service test。
+**EditorCommandService は読み取りのみ(変更禁止)・rpcserver/loader/
+scene/ecs/behavior/schema 三 header に触らない**。
+
+受け入れ = §2-1 逐語 gate(fake-service 等価 + 0 回 trace)+ 既存全
+テスト無変更 + golden SKIP 0・byte 不変 + player 8 秒 + CI green
+
 ### WP137: 負債 CI0 — CPU gate の常設(GitHub Actions)
 
 参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
