@@ -17,6 +17,7 @@
 #include "../loader/pathresolver.hpp"
 #include "../loader/scene.hpp"
 #include "../gamelogic/gamelogicreload.hpp"
+#include "../gamelogic/behaviorarena.hpp"
 #include "../launchconfig.hpp"
 #include "../material/materialcontainer.hpp"
 #include "../light/lightcontainer.hpp"
@@ -805,6 +806,67 @@ std::string operationSceneId(const nlohmann::ordered_json &operation,
     return std::string{fallback};
 }
 
+class EphemeralEditorProjectionTarget final
+    : public EditorProjectionDocumentTarget {
+    AuthoringSceneDocument document_;
+
+  public:
+    explicit EphemeralEditorProjectionTarget(
+        const AuthoringSceneDocument &source)
+        : document_{source.stage(
+              source.rawJson(), SceneRevision{source.revision().value + 1U})} {}
+
+    const AuthoringSceneDocument &projectionDocument() const override {
+        return document_;
+    }
+    SceneRevision nextProjectionRevision() const override {
+        return SceneRevision{document_.revision().value + 1U};
+    }
+    void publishProjectionDocument(
+        AuthoringSceneDocument &&document) noexcept override {
+        document_.swap(document);
+    }
+};
+
+EditorProjectionResult executeEditorPreview(
+    EngineRpcModules &modules,
+    std::span<const EditorProjectionRuntimeObjectBinding> runtime_bindings,
+    const EditorPreviewExecutionRequest &request) {
+    std::vector<std::unique_ptr<EditorProjectionAdapter>> adapters;
+    std::set<std::string> transform_scenes;
+    std::set<std::string> light_scenes;
+    const auto fallback_scene = modules.scene_loader.currentScene();
+    for (const auto &operation : request.operations) {
+        const auto scene_id = operationSceneId(operation, fallback_scene);
+        const auto component = operation.at("component_slot").get<std::string>();
+        if (component == "transform") transform_scenes.insert(scene_id);
+        if (component == "light") light_scenes.insert(scene_id);
+    }
+    if (!transform_scenes.empty()) {
+        adapters.push_back(std::make_unique<TransformProjectionAdapter>(
+            makeTransformBindings(modules, runtime_bindings)));
+        adapters.push_back(
+            std::make_unique<StandaloneTransformProjectionAdapter>(
+                modules.ecs_core.getTemplatePublicModule(),
+                std::vector<EditorProjectionRuntimeObjectBinding>{
+                    runtime_bindings.begin(), runtime_bindings.end()},
+                transform_scenes));
+    }
+    for (const auto &scene : light_scenes) {
+        adapters.push_back(std::make_unique<LightProjectionAdapter>(
+            modules.lights, scene));
+    }
+
+    std::vector<EditorProjectionAdapter *> adapter_ptrs;
+    adapter_ptrs.reserve(adapters.size());
+    for (auto &adapter : adapters) adapter_ptrs.push_back(adapter.get());
+    EphemeralEditorProjectionTarget target{
+        modules.project_config.sceneDocument()};
+    EditorProjectionTransaction transaction{
+        target, target.projectionDocument().revision()};
+    return transaction.commit(request.commands, adapter_ptrs);
+}
+
 EditorProjectionResult executeEditorProjection(
     EngineRpcModules &modules,
     std::vector<EditorProjectionRuntimeObjectBinding> &runtime_bindings,
@@ -971,6 +1033,18 @@ EditorGateObservation editorGateObservation(const EngineRpcModules &modules) {
     }
     if (modules.launch_config.strict_assets) {
         reasons |= editorGateReasonBit(EditorGateReason::strict);
+    }
+    if (internal::behaviorCallbackActive()) {
+        reasons |= editorGateReasonBit(
+            EditorGateReason::reload_scene_transition);
+    }
+    if (modules.reload_service != nullptr) {
+        const auto state = modules.reload_service->statusJson().value(
+            "state", std::string{});
+        if (state == "reconciling") {
+            reasons |= editorGateReasonBit(
+                EditorGateReason::reload_scene_transition);
+        }
     }
     return {.reasons = reasons,
             .transition_epoch = editorTransitionEpoch(modules)};
@@ -1487,7 +1561,7 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
                                 const std::string &instance_id,
                                 std::vector<PendingTransformUpdate> &pending_transforms,
                                 EditorCommandRpcAdapter &editor_rpc) {
-    server.setHandler("reload_game_logic", [&pending_transforms, &modules](const nlohmann::json &params) {
+    server.setHandler("reload_game_logic", [&pending_transforms, &modules, &editor_rpc](const nlohmann::json &params) {
         requireObjectParams(params, "reload_game_logic");
         const auto before = configuredGameLogicStatus();
         if (!before.configured) {
@@ -1498,6 +1572,7 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
             throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError,
                                       "reload_game_logic: reload service is unavailable");
         }
+        (void)editor_rpc.forceAbortPreview("reload");
         const auto result = modules.reload_service->applyRuntimeNow(
             watch::gameLogicReloadParticipantName);
         pending_transforms.clear();
@@ -1619,11 +1694,35 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
     server.setHandler("can_edit", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.canEdit(params); });
     });
+    server.setHandler("can_preview", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.canPreview(params); });
+    });
     server.setHandler("edit", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.edit(params); });
     });
+    server.setHandler("undo", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.undo(params); });
+    });
+    server.setHandler("redo", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.redo(params); });
+    });
+    server.setHandler("open_preview", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.openPreview(params); });
+    });
+    server.setHandler("update_preview", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.updatePreview(params); });
+    });
+    server.setHandler("commit_preview", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.commitPreview(params); });
+    });
+    server.setHandler("abort_preview", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.abortPreview(params); });
+    });
     server.setHandler("get_edit_result", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getEditResult(params); });
+    });
+    server.setHandler("get_preview_result", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.getPreviewResult(params); });
     });
     server.setHandler("query_journal", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.queryJournal(params); });
@@ -1685,7 +1784,7 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
         }
     });
 
-    server.setHandler("start_input_replay", [&modules](const nlohmann::json &params) {
+    server.setHandler("start_input_replay", [&modules, &editor_rpc](const nlohmann::json &params) {
         const auto path = absoluteCapturePath(requireStringParam(params, "path", "start_input_replay"));
         try {
             if (modules.input_state.pendingEventCount() != 0) {
@@ -1694,6 +1793,7 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
             }
             const auto pose_action_names = internal::poseInputActionNames();
             modules.input_sequence.startReplay(path, pose_action_names);
+            (void)editor_rpc.forceAbortPreview("replay");
             modules.input_state.clear();
             auto &config = modules.launch_config;
             config.input_replay = true;
@@ -1762,8 +1862,9 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
         return result;
     });
 
-    server.setHandler("load_scene", [&pending_transforms, &modules](const nlohmann::json &params) {
+    server.setHandler("load_scene", [&pending_transforms, &modules, &editor_rpc](const nlohmann::json &params) {
         const auto name = requireStringParam(params, "name", "load_scene");
+        (void)editor_rpc.forceAbortPreview("scene_transition");
         modules.scene_loader.load(name);
         pending_transforms.clear();
         return nlohmann::json{
@@ -1881,6 +1982,14 @@ struct EngineRpcEndpoint::Impl {
                   .execute = [this](const EditorEditExecutionRequest &request) {
                       return executeEditorProjection(
                           modules, editor_runtime_bindings, request);
+                  },
+                  .execute_preview =
+                      [this](const EditorPreviewExecutionRequest &request) {
+                          return executeEditorPreview(
+                              modules, editor_runtime_bindings, request);
+                      },
+                  .preview_boundary = [this] {
+                      modules.renderer.resetTemporalHistory();
                   },
                   .gate = [this] { return editorGateObservation(modules); },
                   .install_commit_hook = true,

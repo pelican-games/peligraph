@@ -283,6 +283,10 @@ EditorCommandService::exportSceneSnapshot(const ExportSceneSnapshotRequestV1 &re
         auto pending = edit_->pendingTicketIds();
         snapshot_state.pending_ticket_ids.insert(
             snapshot_state.pending_ticket_ids.end(), pending.begin(), pending.end());
+        snapshot_state.open_preview_lease =
+            snapshot_state.open_preview_lease || edit_->hasOpenPreviewLease();
+        snapshot_state.preview_epoch =
+            std::max(snapshot_state.preview_epoch, edit_->previewEpoch());
     }
     if (snapshot_state.preview_epoch > maxExactEditorJsonInteger) {
         throw std::overflow_error("preview_epoch exceeds 2^53-1");
@@ -335,14 +339,54 @@ OrderedJson EditorCommandService::canEdit(const Json &params) {
     return edit_->canEdit(params);
 }
 
+OrderedJson EditorCommandService::canPreview(const Json &params) {
+    if (!edit_) throw std::logic_error("editor edit service is unavailable");
+    return edit_->canPreview(params);
+}
+
 OrderedJson EditorCommandService::edit(const Json &params) {
     if (!edit_) throw std::logic_error("editor edit service is unavailable");
     return edit_->enqueue(params);
 }
 
+OrderedJson EditorCommandService::undo(const Json &params) {
+    if (!edit_) throw std::logic_error("editor edit service is unavailable");
+    return edit_->enqueueUndo(params);
+}
+
+OrderedJson EditorCommandService::redo(const Json &params) {
+    if (!edit_) throw std::logic_error("editor edit service is unavailable");
+    return edit_->enqueueRedo(params);
+}
+
+OrderedJson EditorCommandService::openPreview(const Json &params) {
+    if (!edit_) throw std::logic_error("editor edit service is unavailable");
+    return edit_->openPreview(params);
+}
+
+OrderedJson EditorCommandService::updatePreview(const Json &params) {
+    if (!edit_) throw std::logic_error("editor edit service is unavailable");
+    return edit_->updatePreview(params);
+}
+
+OrderedJson EditorCommandService::commitPreview(const Json &params) {
+    if (!edit_) throw std::logic_error("editor edit service is unavailable");
+    return edit_->commitPreview(params);
+}
+
+OrderedJson EditorCommandService::abortPreview(const Json &params) {
+    if (!edit_) throw std::logic_error("editor edit service is unavailable");
+    return edit_->abortPreview(params);
+}
+
 OrderedJson EditorCommandService::getEditResult(const Json &params) const {
     if (!edit_) throw std::logic_error("editor edit service is unavailable");
     return edit_->getResult(params);
+}
+
+OrderedJson EditorCommandService::getPreviewResult(const Json &params) const {
+    if (!edit_) throw std::logic_error("editor edit service is unavailable");
+    return edit_->getPreviewResult(params);
 }
 
 OrderedJson EditorCommandService::queryJournal(const Json &params) const {
@@ -356,6 +400,10 @@ std::vector<OrderedJson> EditorCommandService::takeCompletedEditResults() {
 
 void EditorCommandService::commitPendingEdits() noexcept {
     if (edit_) edit_->commitPending();
+}
+
+bool EditorCommandService::forceAbortPreview(std::string reason) noexcept {
+    return edit_ && edit_->forceAbortPreview(std::move(reason));
 }
 
 OrderedJson editorQueryJson(const EditorComponentQueryResult &component) {
@@ -458,13 +506,52 @@ OrderedJson EditorCommandRpcAdapter::canEdit(const Json &params) const {
     return mutable_service_->canEdit(params);
 }
 
+OrderedJson EditorCommandRpcAdapter::canPreview(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("editor RPC adapter is read-only");
+    return mutable_service_->canPreview(params);
+}
+
 OrderedJson EditorCommandRpcAdapter::edit(const Json &params) const {
     if (!mutable_service_) throw std::logic_error("editor RPC adapter is read-only");
     return mutable_service_->edit(params);
 }
 
+OrderedJson EditorCommandRpcAdapter::undo(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("editor RPC adapter is read-only");
+    return mutable_service_->undo(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::redo(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("editor RPC adapter is read-only");
+    return mutable_service_->redo(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::openPreview(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("editor RPC adapter is read-only");
+    return mutable_service_->openPreview(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::updatePreview(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("editor RPC adapter is read-only");
+    return mutable_service_->updatePreview(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::commitPreview(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("editor RPC adapter is read-only");
+    return mutable_service_->commitPreview(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::abortPreview(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("editor RPC adapter is read-only");
+    return mutable_service_->abortPreview(params);
+}
+
 OrderedJson EditorCommandRpcAdapter::getEditResult(const Json &params) const {
     return service_.getEditResult(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::getPreviewResult(const Json &params) const {
+    return service_.getPreviewResult(params);
 }
 
 OrderedJson EditorCommandRpcAdapter::queryJournal(const Json &params) const {
@@ -474,6 +561,11 @@ OrderedJson EditorCommandRpcAdapter::queryJournal(const Json &params) const {
 std::vector<OrderedJson> EditorCommandRpcAdapter::takeCompletedEditResults() const {
     if (!mutable_service_) return {};
     return mutable_service_->takeCompletedEditResults();
+}
+
+bool EditorCommandRpcAdapter::forceAbortPreview(std::string reason) const noexcept {
+    return mutable_service_ &&
+           mutable_service_->forceAbortPreview(std::move(reason));
 }
 
 } // namespace Pelican

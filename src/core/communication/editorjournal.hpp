@@ -37,6 +37,7 @@ struct EditorGateObservation {
 
 struct EditorGateSnapshot {
     bool can_edit = true;
+    bool can_preview = true;
     std::uint64_t epoch = 1;
     std::vector<std::string> reasons;
 };
@@ -45,6 +46,10 @@ enum class EditorEditErrorCode : std::uint8_t {
     stale_revision,
     gate_closed,
     preview_lease_conflict,
+    preview_lease_busy,
+    not_lease_owner,
+    ticket_not_found,
+    undo_conflict,
     not_editable,
     schema_violation,
     unknown_component_type,
@@ -91,6 +96,8 @@ struct EditorJournalRecord {
     std::vector<AuthoringObjectId> affected_authoring_ids;
     std::optional<std::string> coalesce_key;
     std::string status = "committed";
+    std::string operation_kind = "edit";
+    std::optional<std::string> source_transaction_id;
     std::vector<std::string> stable_targets;
     std::vector<std::string> read_set;
     std::vector<std::string> write_set;
@@ -107,10 +114,24 @@ struct EditorEditExecutionRequest {
     std::span<const nlohmann::ordered_json> operations;
 };
 
+// Live preview uses the same canonical commands and adapter preparation path
+// as a committed edit, but the composition root supplies an ephemeral
+// document target. restore_committed projects the current committed document
+// with no authored commands and is used by abort/forced-abort.
+struct EditorPreviewExecutionRequest {
+    SceneRevision base_revision{};
+    std::span<const EditorProjectionCommand> commands;
+    std::span<const nlohmann::ordered_json> operations;
+    bool restore_committed = false;
+};
+
 struct EditorEditRuntimeDependencies {
     std::function<const AuthoringSceneDocument &()> document;
     std::function<std::string()> current_scene_id;
     std::function<EditorProjectionResult(const EditorEditExecutionRequest &)> execute;
+    std::function<EditorProjectionResult(const EditorPreviewExecutionRequest &)>
+        execute_preview;
+    std::function<void()> preview_boundary;
     std::function<EditorGateObservation()> gate;
     bool install_commit_hook = false;
 };
@@ -122,6 +143,8 @@ struct EditorEditRuntimeDependencies {
 class EditorEditCoordinator {
     struct Impl;
     std::unique_ptr<Impl> impl_;
+    nlohmann::ordered_json enqueueRevert(const nlohmann::json &params,
+                                         bool redo);
 
   public:
     explicit EditorEditCoordinator(EditorEditRuntimeDependencies dependencies);
@@ -133,13 +156,25 @@ class EditorEditCoordinator {
     nlohmann::ordered_json openSession(const nlohmann::json &params);
     nlohmann::ordered_json resumeSession(const nlohmann::json &params);
     nlohmann::ordered_json canEdit(const nlohmann::json &params);
+    nlohmann::ordered_json canPreview(const nlohmann::json &params);
     nlohmann::ordered_json enqueue(const nlohmann::json &params);
+    nlohmann::ordered_json enqueueUndo(const nlohmann::json &params);
+    nlohmann::ordered_json enqueueRedo(const nlohmann::json &params);
+    nlohmann::ordered_json openPreview(const nlohmann::json &params);
+    nlohmann::ordered_json updatePreview(const nlohmann::json &params);
+    nlohmann::ordered_json commitPreview(const nlohmann::json &params);
+    nlohmann::ordered_json abortPreview(const nlohmann::json &params);
     nlohmann::ordered_json getResult(const nlohmann::json &params) const;
+    nlohmann::ordered_json getPreviewResult(const nlohmann::json &params) const;
     nlohmann::ordered_json queryJournal(const nlohmann::json &params) const;
 
     void commitPending() noexcept;
     std::vector<nlohmann::ordered_json> takeCompletedResults();
     std::vector<std::string> pendingTicketIds() const;
+    bool hasOpenPreviewLease() const noexcept;
+    std::uint64_t previewEpoch() const noexcept;
+    // Used by replay/reload/scene-transition owners before observers resume.
+    bool forceAbortPreview(std::string reason) noexcept;
     const std::vector<EditorJournalRecord> &journal() const noexcept;
 
     EditorProjectionResult executeJournalForVerification(

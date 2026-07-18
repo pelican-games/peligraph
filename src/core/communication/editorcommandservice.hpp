@@ -160,11 +160,20 @@ class EditorCommandService {
     nlohmann::ordered_json openEditorSession(const nlohmann::json &params);
     nlohmann::ordered_json resumeEditorSession(const nlohmann::json &params);
     nlohmann::ordered_json canEdit(const nlohmann::json &params);
+    nlohmann::ordered_json canPreview(const nlohmann::json &params);
     nlohmann::ordered_json edit(const nlohmann::json &params);
+    nlohmann::ordered_json undo(const nlohmann::json &params);
+    nlohmann::ordered_json redo(const nlohmann::json &params);
+    nlohmann::ordered_json openPreview(const nlohmann::json &params);
+    nlohmann::ordered_json updatePreview(const nlohmann::json &params);
+    nlohmann::ordered_json commitPreview(const nlohmann::json &params);
+    nlohmann::ordered_json abortPreview(const nlohmann::json &params);
     nlohmann::ordered_json getEditResult(const nlohmann::json &params) const;
+    nlohmann::ordered_json getPreviewResult(const nlohmann::json &params) const;
     nlohmann::ordered_json queryJournal(const nlohmann::json &params) const;
     std::vector<nlohmann::ordered_json> takeCompletedEditResults();
     void commitPendingEdits() noexcept;
+    bool forceAbortPreview(std::string reason) noexcept;
     EditorEditCoordinator *editCoordinator() noexcept { return edit_.get(); }
     const EditorEditCoordinator *editCoordinator() const noexcept { return edit_.get(); }
 };
@@ -185,10 +194,19 @@ class EditorCommandRpcAdapter {
     nlohmann::ordered_json openEditorSession(const nlohmann::json &params) const;
     nlohmann::ordered_json resumeEditorSession(const nlohmann::json &params) const;
     nlohmann::ordered_json canEdit(const nlohmann::json &params) const;
+    nlohmann::ordered_json canPreview(const nlohmann::json &params) const;
     nlohmann::ordered_json edit(const nlohmann::json &params) const;
+    nlohmann::ordered_json undo(const nlohmann::json &params) const;
+    nlohmann::ordered_json redo(const nlohmann::json &params) const;
+    nlohmann::ordered_json openPreview(const nlohmann::json &params) const;
+    nlohmann::ordered_json updatePreview(const nlohmann::json &params) const;
+    nlohmann::ordered_json commitPreview(const nlohmann::json &params) const;
+    nlohmann::ordered_json abortPreview(const nlohmann::json &params) const;
     nlohmann::ordered_json getEditResult(const nlohmann::json &params) const;
+    nlohmann::ordered_json getPreviewResult(const nlohmann::json &params) const;
     nlohmann::ordered_json queryJournal(const nlohmann::json &params) const;
     std::vector<nlohmann::ordered_json> takeCompletedEditResults() const;
+    bool forceAbortPreview(std::string reason) const noexcept;
 };
 
 // The ImGui WP consumes the same typed service. This fake is deliberately kept
