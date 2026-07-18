@@ -11,10 +11,14 @@
 namespace Pelican {
 
 class ECSCoreTemplatePublic;
+class ECSArchetypeMigration;
 
 class ECSComponentChunk {
     friend class ECSCoreTemplatePublic;
+    friend class ECSArchetypeMigration;
     class VariedArray {
+        friend class ECSArchetypeMigration;
+
         size_t count = 0;
         size_t stride = 0;
         size_t alignment = 0;

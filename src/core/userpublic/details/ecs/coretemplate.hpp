@@ -19,6 +19,8 @@ namespace Pelican {
 
 using SystemId = uint64_t;
 
+class ECSArchetypeMigration;
+
 namespace internal {
     size_t getIndexFromComponentId_Ref(ComponentId id);
 
@@ -85,6 +87,8 @@ concept HasEcsWorkerQueryDependencyPrepare =
     };
 
 class ECSCoreTemplatePublic {
+    friend class ECSArchetypeMigration;
+
     // Component Management
   private:
     using ChunkIndex = size_t;
