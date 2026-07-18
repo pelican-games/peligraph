@@ -13,8 +13,11 @@ endif()
 
 get_filename_component(SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 set(ARTIFACT_ROOT "${SOURCE_DIR}/build-unit-smoke-artifacts")
-if(WIN32 AND NOT DEFINED Python3_EXECUTABLE)
-    set(Python3_EXECUTABLE "%APPDATA%/uv/python/cpython-3.12.13-windows-x86_64-none/python.exe")
+if(NOT DEFINED Python3_EXECUTABLE)
+    find_program(Python3_EXECUTABLE NAMES python3 python)
+endif()
+if(NOT Python3_EXECUTABLE)
+    message(FATAL_ERROR "Python 3 is required; pass -DPython3_EXECUTABLE=<path>")
 endif()
 
 if(WIN32)
@@ -77,6 +80,12 @@ function(configure_and_build label option_name out_build_dir)
     )
 
     set("${out_build_dir}" "${build_dir}" PARENT_SCOPE)
+endfunction()
+
+function(clean_successful_build build_dir)
+    if(PELICAN_BUILD_UNIT_SMOKE_CLEAN_BUILDS)
+        file(REMOVE_RECURSE "${build_dir}")
+    endif()
 endfunction()
 
 function(verify_physics_sources_absent build_dir label)
@@ -344,8 +353,9 @@ function(write_common_project root)
   }
 }
 ]=])
-    file(WRITE "${root}/passes/main.json" [=[
+file(WRITE "${root}/passes/main.json" [=[
 {
+  "features": ["engine://features/ui.json"],
   "render_targets": [],
   "rendering_passes": [
     {
@@ -378,12 +388,27 @@ endfunction()
 
 function(write_exr_project root)
     write_empty_project("${root}")
-    file(WRITE "${root}/assets/dummy.exr" "not an exr; extension is enough for the OFF check\n")
+    file(WRITE "${root}/ui/dummy.exr" "not an exr; extension is enough for the OFF check\n")
+    file(WRITE "${root}/ui/exr.atlas.json" [=[
+{
+  "schema": "pelican.atlas",
+  "version": 1,
+  "pages": [{"image": "dummy.exr", "size": [1, 1]}],
+  "sprites": {"exr": {"page": 0, "rect": [0, 0, 1, 1]}}
+}
+]=])
     file(WRITE "${root}/ui/ui.json" [=[
 {
-  "images": [
-    {"name": "exr_smoke", "file": "assets/dummy.exr"}
-  ]
+  "schema": "pelican.ui",
+  "version": 1,
+  "key": "exr_smoke",
+  "root": {
+    "id": "root",
+    "type": "panel",
+    "children": [
+      {"id": "exr", "type": "image", "sprite": "ui/exr.atlas.json#sprite/exr"}
+    ]
+  }
 }
 ]=])
 endfunction()
@@ -463,6 +488,7 @@ function(run_openxr_smoke)
         "PELICAN_WITH_OPENXR"
         "${openxr_player}" --xr on
     )
+    clean_successful_build("${openxr_build_dir}")
 endfunction()
 
 function(verify_renderdoc_absent build_dir)
@@ -495,6 +521,7 @@ endfunction()
 function(run_renderdoc_smoke)
     configure_and_build("renderdoc" "PELICAN_WITH_RENDERDOC" renderdoc_build_dir)
     verify_renderdoc_absent("${renderdoc_build_dir}")
+    clean_successful_build("${renderdoc_build_dir}")
 endfunction()
 
 if(PELICAN_BUILD_UNIT_SMOKE_PARSE_ONLY)
@@ -505,130 +532,174 @@ endif()
 file(REMOVE_RECURSE "${ARTIFACT_ROOT}")
 file(MAKE_DIRECTORY "${ARTIFACT_ROOT}")
 
+function(run_audio_smoke)
+    configure_and_build("audio" "PELICAN_WITH_AUDIO" audio_build_dir)
+    find_built_executable("${audio_build_dir}" "pelican_test_audio_disabled_probe" audio_probe)
+    expect_disabled_error(
+        "audio_gamecontext_api"
+        "PELICAN_WITH_AUDIO"
+        "${audio_probe}"
+    )
+    clean_successful_build("${audio_build_dir}")
+endfunction()
+
+function(run_vat_smoke)
+    configure_and_build("vat" "PELICAN_WITH_VAT" vat_build_dir)
+    find_built_executable("${vat_build_dir}" "pelican_player" vat_player)
+    find_built_executable("${vat_build_dir}" "pelican_test_vat_fixture_writer" vat_writer)
+    set(vat_project "${ARTIFACT_ROOT}/vat_project")
+    write_vat_project("${vat_project}")
+    run_process("write_vat_fixture" TRUE "${vat_writer}" "${vat_project}/assets/tiny_vat.glb")
+    expect_disabled_error(
+        "vat_play_vat_cli"
+        "PELICAN_WITH_VAT"
+        "${vat_player}" --headless --project "${vat_project}" --frames 0 --play-vat "assets/tiny_vat.glb"
+    )
+    expect_disabled_error(
+        "vat_asset_load"
+        "PELICAN_WITH_VAT"
+        "${vat_player}" --headless --project "${vat_project}" --frames 1 --size 64x64
+    )
+    clean_successful_build("${vat_build_dir}")
+endfunction()
+
+function(run_exr_smoke)
+    configure_and_build("exr" "PELICAN_WITH_EXR" exr_build_dir)
+    find_built_executable("${exr_build_dir}" "pelican_player" exr_player)
+    set(exr_project "${ARTIFACT_ROOT}/exr_project")
+    write_exr_project("${exr_project}")
+    expect_disabled_error(
+        "exr_ui_reference"
+        "PELICAN_WITH_EXR"
+        "${exr_player}" --headless --project "${exr_project}" --frames 1 --size 64x64
+    )
+    clean_successful_build("${exr_build_dir}")
+endfunction()
+
+function(run_rpc_smoke)
+    configure_and_build("rpc" "PELICAN_WITH_RPC" rpc_build_dir)
+    find_built_executable("${rpc_build_dir}" "pelican_player" rpc_player)
+    expect_disabled_error(
+        "rpc_cli"
+        "PELICAN_WITH_RPC"
+        "${rpc_player}" --rpc --headless
+    )
+    clean_successful_build("${rpc_build_dir}")
+endfunction()
+
+function(run_seqplayer_smoke)
+    configure_and_build("seqplayer" "PELICAN_WITH_SEQPLAYER" seq_build_dir)
+    find_built_executable("${seq_build_dir}" "pelican_player" seq_player)
+    set(seq_project "${ARTIFACT_ROOT}/seq_project")
+    write_empty_project("${seq_project}")
+    set(seq_file "${ARTIFACT_ROOT}/tiny_seq.jsonl")
+    file(WRITE "${seq_file}"
+        "{\"schema\":\"pelican.transform_seq\",\"version\":1,\"fps\":30,\"objects\":[\"a\"]}\n"
+        "{\"t\":0,\"transforms\":[{\"pos\":[0,0,0],\"rot\":[0,0,0,1],\"scale\":[1,1,1]}]}\n"
+    )
+    expect_disabled_error(
+        "seqplayer_cli"
+        "PELICAN_WITH_SEQPLAYER"
+        "${seq_player}" --headless --project "${seq_project}" --frames 0 --play-seq "${seq_file}"
+    )
+    clean_successful_build("${seq_build_dir}")
+endfunction()
+
+function(run_imgui_smoke)
+    configure_and_build("imgui" "PELICAN_WITH_IMGUI" imgui_build_dir)
+    verify_imgui_absent("${imgui_build_dir}")
+    clean_successful_build("${imgui_build_dir}")
+endfunction()
+
+function(run_physics_smoke)
+    configure_and_build("physics_provider_only" "PELICAN_WITH_BUILTIN_PHYSICS" physics_provider_build_dir
+        "-DPELICAN_WITH_PHYSICS=ON"
+        "-DPELICAN_WITH_JOLT_PHYSICS=OFF")
+    verify_builtin_physics_absent("${physics_provider_build_dir}")
+    verify_jolt_physics_absent("${physics_provider_build_dir}" "provider-only physics")
+    find_built_executable("${physics_provider_build_dir}" "pelican_test_physicsservice_test" physics_provider_test)
+    run_process("physics_provider_only_service" TRUE "${physics_provider_test}")
+    run_process(
+        "physics_provider_only_game_dll"
+        TRUE
+        "${CMAKE_CTEST_COMMAND}"
+            --test-dir "${physics_provider_build_dir}"
+            --build-config "${PELICAN_BUILD_UNIT_SMOKE_CONFIG}"
+            --output-on-failure
+            -R "^physics_provider_game_dll_e2e$"
+    )
+    clean_successful_build("${physics_provider_build_dir}")
+
+    configure_and_build("physics" "PELICAN_WITH_PHYSICS" physics_build_dir)
+    verify_physics_absent("${physics_build_dir}")
+    verify_jolt_physics_absent("${physics_build_dir}" "PELICAN_WITH_PHYSICS=OFF")
+    find_built_executable("${physics_build_dir}" "pelican_test_physics_feature_probe" physics_probe)
+    run_process("physics_api_stub" TRUE "${physics_probe}")
+    find_built_executable("${physics_build_dir}" "pelican_player" physics_player)
+    set(physics_project "${ARTIFACT_ROOT}/physics_project")
+    write_physics_project("${physics_project}")
+    expect_disabled_error(
+        "physics_scene_collider"
+        "PELICAN_WITH_PHYSICS"
+        "${physics_player}" --headless --project "${physics_project}" --frames 1 --size 64x64
+    )
+    clean_successful_build("${physics_build_dir}")
+
+    configure_and_build("physics_jolt" "PELICAN_WITH_BUILTIN_PHYSICS" physics_jolt_build_dir
+        "-DPELICAN_WITH_PHYSICS=ON"
+        "-DPELICAN_WITH_JOLT_PHYSICS=ON")
+    verify_builtin_physics_absent("${physics_jolt_build_dir}")
+    find_built_executable("${physics_jolt_build_dir}" "pelican_test_physicsservice_test" physics_jolt_test)
+    run_process("physics_jolt_service" TRUE "${physics_jolt_test}")
+    find_built_executable("${physics_jolt_build_dir}" "pelican_test_physics_feature_probe" physics_jolt_probe)
+    run_process("physics_jolt_api" TRUE "${physics_jolt_probe}")
+    run_process(
+        "physics_jolt_game_dll"
+        TRUE
+        "${CMAKE_CTEST_COMMAND}"
+            --test-dir "${physics_jolt_build_dir}"
+            --build-config "${PELICAN_BUILD_UNIT_SMOKE_CONFIG}"
+            --output-on-failure
+            -R "^physics_provider_game_dll_e2e$"
+    )
+    clean_successful_build("${physics_jolt_build_dir}")
+endfunction()
+
 if(DEFINED PELICAN_BUILD_UNIT_SMOKE_ONLY)
-    if(PELICAN_BUILD_UNIT_SMOKE_ONLY STREQUAL "openxr")
+    string(TOLOWER "${PELICAN_BUILD_UNIT_SMOKE_ONLY}" smoke_only)
+    if(smoke_only STREQUAL "audio")
+        run_audio_smoke()
+    elseif(smoke_only STREQUAL "vat")
+        run_vat_smoke()
+    elseif(smoke_only STREQUAL "exr")
+        run_exr_smoke()
+    elseif(smoke_only STREQUAL "rpc")
+        run_rpc_smoke()
+    elseif(smoke_only STREQUAL "seqplayer")
+        run_seqplayer_smoke()
+    elseif(smoke_only STREQUAL "imgui")
+        run_imgui_smoke()
+    elseif(smoke_only STREQUAL "physics")
+        run_physics_smoke()
+    elseif(smoke_only STREQUAL "openxr")
         run_openxr_smoke()
-        message(STATUS "single-OFF smoke passed for OPENXR")
-        return()
-    elseif(PELICAN_BUILD_UNIT_SMOKE_ONLY STREQUAL "renderdoc")
+    elseif(smoke_only STREQUAL "renderdoc")
         run_renderdoc_smoke()
-        message(STATUS "single-OFF smoke passed for RENDERDOC")
-        return()
     else()
         message(FATAL_ERROR "unsupported PELICAN_BUILD_UNIT_SMOKE_ONLY: ${PELICAN_BUILD_UNIT_SMOKE_ONLY}")
     endif()
+    string(TOUPPER "${smoke_only}" smoke_only_upper)
+    message(STATUS "single-OFF smoke passed for ${smoke_only_upper}")
+    return()
 endif()
 
-configure_and_build("audio" "PELICAN_WITH_AUDIO" audio_build_dir)
-find_built_executable("${audio_build_dir}" "pelican_test_audio_disabled_probe" audio_probe)
-expect_disabled_error(
-    "audio_gamecontext_api"
-    "PELICAN_WITH_AUDIO"
-    "${audio_probe}"
-)
-
-configure_and_build("vat" "PELICAN_WITH_VAT" vat_build_dir)
-find_built_executable("${vat_build_dir}" "pelican_player" vat_player)
-find_built_executable("${vat_build_dir}" "pelican_test_vat_fixture_writer" vat_writer)
-set(vat_project "${ARTIFACT_ROOT}/vat_project")
-write_vat_project("${vat_project}")
-run_process("write_vat_fixture" TRUE "${vat_writer}" "${vat_project}/assets/tiny_vat.glb")
-expect_disabled_error(
-    "vat_play_vat_cli"
-    "PELICAN_WITH_VAT"
-    "${vat_player}" --headless --project "${vat_project}" --frames 0 --play-vat "assets/tiny_vat.glb"
-)
-expect_disabled_error(
-    "vat_asset_load"
-    "PELICAN_WITH_VAT"
-    "${vat_player}" --headless --project "${vat_project}" --frames 1 --size 64x64
-)
-
-configure_and_build("exr" "PELICAN_WITH_EXR" exr_build_dir)
-find_built_executable("${exr_build_dir}" "pelican_player" exr_player)
-set(exr_project "${ARTIFACT_ROOT}/exr_project")
-write_exr_project("${exr_project}")
-expect_disabled_error(
-    "exr_ui_reference"
-    "PELICAN_WITH_EXR"
-    "${exr_player}" --headless --project "${exr_project}" --frames 1 --size 64x64
-)
-
-configure_and_build("rpc" "PELICAN_WITH_RPC" rpc_build_dir)
-find_built_executable("${rpc_build_dir}" "pelican_player" rpc_player)
-expect_disabled_error(
-    "rpc_cli"
-    "PELICAN_WITH_RPC"
-    "${rpc_player}" --rpc --headless
-)
-
-configure_and_build("seqplayer" "PELICAN_WITH_SEQPLAYER" seq_build_dir)
-find_built_executable("${seq_build_dir}" "pelican_player" seq_player)
-set(seq_project "${ARTIFACT_ROOT}/seq_project")
-write_empty_project("${seq_project}")
-set(seq_file "${ARTIFACT_ROOT}/tiny_seq.jsonl")
-file(WRITE "${seq_file}"
-    "{\"schema\":\"pelican.transform_seq\",\"version\":1,\"fps\":30,\"objects\":[\"a\"]}\n"
-    "{\"t\":0,\"transforms\":[{\"pos\":[0,0,0],\"rot\":[0,0,0,1],\"scale\":[1,1,1]}]}\n"
-)
-expect_disabled_error(
-    "seqplayer_cli"
-    "PELICAN_WITH_SEQPLAYER"
-    "${seq_player}" --headless --project "${seq_project}" --frames 0 --play-seq "${seq_file}"
-)
-
-configure_and_build("imgui" "PELICAN_WITH_IMGUI" imgui_build_dir)
-verify_imgui_absent("${imgui_build_dir}")
-
-configure_and_build("physics_provider_only" "PELICAN_WITH_BUILTIN_PHYSICS" physics_provider_build_dir
-    "-DPELICAN_WITH_PHYSICS=ON"
-    "-DPELICAN_WITH_JOLT_PHYSICS=OFF")
-verify_builtin_physics_absent("${physics_provider_build_dir}")
-verify_jolt_physics_absent("${physics_provider_build_dir}" "provider-only physics")
-find_built_executable("${physics_provider_build_dir}" "pelican_test_physicsservice_test" physics_provider_test)
-run_process("physics_provider_only_service" TRUE "${physics_provider_test}")
-run_process(
-    "physics_provider_only_game_dll"
-    TRUE
-    "${CMAKE_CTEST_COMMAND}"
-        --test-dir "${physics_provider_build_dir}"
-        --build-config "${PELICAN_BUILD_UNIT_SMOKE_CONFIG}"
-        --output-on-failure
-        -R "^physics_provider_game_dll_e2e$"
-)
-
-configure_and_build("physics" "PELICAN_WITH_PHYSICS" physics_build_dir)
-verify_physics_absent("${physics_build_dir}")
-verify_jolt_physics_absent("${physics_build_dir}" "PELICAN_WITH_PHYSICS=OFF")
-find_built_executable("${physics_build_dir}" "pelican_test_physics_feature_probe" physics_probe)
-run_process("physics_api_stub" TRUE "${physics_probe}")
-find_built_executable("${physics_build_dir}" "pelican_player" physics_player)
-set(physics_project "${ARTIFACT_ROOT}/physics_project")
-write_physics_project("${physics_project}")
-expect_disabled_error(
-    "physics_scene_collider"
-    "PELICAN_WITH_PHYSICS"
-    "${physics_player}" --headless --project "${physics_project}" --frames 1 --size 64x64
-)
-
-configure_and_build("physics_jolt" "PELICAN_WITH_BUILTIN_PHYSICS" physics_jolt_build_dir
-    "-DPELICAN_WITH_PHYSICS=ON"
-    "-DPELICAN_WITH_JOLT_PHYSICS=ON")
-verify_builtin_physics_absent("${physics_jolt_build_dir}")
-find_built_executable("${physics_jolt_build_dir}" "pelican_test_physicsservice_test" physics_jolt_test)
-run_process("physics_jolt_service" TRUE "${physics_jolt_test}")
-find_built_executable("${physics_jolt_build_dir}" "pelican_test_physics_feature_probe" physics_jolt_probe)
-run_process("physics_jolt_api" TRUE "${physics_jolt_probe}")
-run_process(
-    "physics_jolt_game_dll"
-    TRUE
-    "${CMAKE_CTEST_COMMAND}"
-        --test-dir "${physics_jolt_build_dir}"
-        --build-config "${PELICAN_BUILD_UNIT_SMOKE_CONFIG}"
-        --output-on-failure
-        -R "^physics_provider_game_dll_e2e$"
-)
-
+run_audio_smoke()
+run_vat_smoke()
+run_exr_smoke()
+run_rpc_smoke()
+run_seqplayer_smoke()
+run_imgui_smoke()
+run_physics_smoke()
 run_openxr_smoke()
 run_renderdoc_smoke()
 

@@ -12,8 +12,9 @@ The `openpbr_coat_sphere` golden applies those values to an analytic sphere so
 the base/specular response and coat highlight stay visible and deterministic.
 
 Binary assets are intentionally not tracked in git. Their expected project-relative inventory is recorded in
-`assets.manifest.json`. After cloning, use the manifest-aware commands to see where the asset store resolves and
-which files still need to be supplied:
+`assets.manifest.json`. The acquisition procedure, redistribution rules, and per-file provenance/license ledger are
+maintained in [`docs/example_assets.md`](../../docs/example_assets.md). After cloning, use the manifest-aware commands
+to see where the asset store resolves and which files still need to be supplied:
 
 ```sh
 pelican_cli assets status --project projects/example
