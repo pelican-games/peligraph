@@ -53,6 +53,7 @@
 #include "synthetic_stereo_target.hpp"
 #include "vat_fixture.hpp"
 #include "vrm_xr_demo_fixture.hpp"
+#include "golden_harness.hpp"
 
 #include <algorithm>
 #include <array>
@@ -3495,8 +3496,7 @@ float srgbToLinear(std::uint8_t encoded) {
 
 } // namespace
 
-TEST_CASE("jitter-only Halton and equivalent table captures match byte-exactly",
-          "[golden][headless][projection-jitter]") {
+void GoldenHarness::runProjectionJitterEquivalence() {
     setupLogger();
     requireGoldenVulkanDevice();
 #if PELICAN_RUNTIME_SHADER_COMPILER
@@ -3537,8 +3537,7 @@ TEST_CASE("jitter-only Halton and equivalent table captures match byte-exactly",
 #endif
 }
 
-TEST_CASE("jitter preserves culling draw count and shadow-map bytes",
-          "[golden][headless][projection-jitter][shadow]") {
+void GoldenHarness::runProjectionJitterShadow() {
     setupLogger();
     requireGoldenVulkanDevice();
 #if PELICAN_RUNTIME_SHADER_COMPILER
@@ -3552,8 +3551,7 @@ TEST_CASE("jitter preserves culling draw count and shadow-map bytes",
 #endif
 }
 
-TEST_CASE("TAA static accumulation is byte-exact across two independent runs",
-          "[golden][headless][taa][determinism]") {
+void GoldenHarness::runTaaDeterminism() {
     setupLogger();
     requireGoldenVulkanDevice();
 #if PELICAN_RUNTIME_SHADER_COMPILER
@@ -3571,7 +3569,7 @@ TEST_CASE("TAA static accumulation is byte-exact across two independent runs",
 #endif
 }
 
-TEST_CASE("golden image cases match expected output", "[golden][headless]") {
+void GoldenHarness::runGoldenImages() {
     setupLogger();
     requireGoldenVulkanDevice();
     const auto cases = loadGoldenInventoryCases();
@@ -3667,8 +3665,7 @@ TEST_CASE("golden image cases match expected output", "[golden][headless]") {
     }
 }
 
-TEST_CASE("logical frame renders Vulkan-backed stereo views without advancing shared state twice",
-          "[wp128][headless][stereo][vulkan]") {
+void GoldenHarness::runLogicalFrameStereo() {
 #if PELICAN_RUNTIME_SHADER_COMPILER
     setupLogger();
     requireGoldenVulkanDevice();
@@ -3840,8 +3837,7 @@ TEST_CASE("logical frame renders Vulkan-backed stereo views without advancing sh
 #endif
 }
 
-TEST_CASE("OpenXR graph transition excludes TAA and restores flat temporal rendering once",
-          "[wp133][openxr][taa][headless][vulkan]") {
+void GoldenHarness::runOpenXrTaaTransition() {
 #if PELICAN_RUNTIME_SHADER_COMPILER && PELICAN_WITH_OPENXR
     setupLogger();
     requireGoldenVulkanDevice();
@@ -4000,8 +3996,7 @@ TEST_CASE("OpenXR graph transition excludes TAA and restores flat temporal rende
 #endif
 }
 
-TEST_CASE("velocity feature compiles its standard pass and renders headless",
-          "[temporal][velocity][headless]") {
+void GoldenHarness::runVelocityFeature() {
     setupLogger();
     requireGoldenVulkanDevice();
     FastModuleContainer modules;
@@ -4021,8 +4016,7 @@ TEST_CASE("velocity feature compiles its standard pass and renders headless",
     std::filesystem::remove_all(root);
 }
 
-TEST_CASE("set_time automatically resets skinned velocity history",
-          "[temporal][velocity][skeletal][headless]") {
+void GoldenHarness::runSetTimeSkinnedVelocity() {
     setupLogger();
     requireGoldenVulkanDevice();
     FastModuleContainer modules;
@@ -4081,8 +4075,7 @@ TEST_CASE("set_time automatically resets skinned velocity history",
     std::filesystem::remove_all(root);
 }
 
-TEST_CASE("morph-only deformation produces velocity and reset zeros it",
-          "[wp121][temporal][velocity][morph][headless]") {
+void GoldenHarness::runMorphVelocity() {
     setupLogger();
     requireGoldenVulkanDevice();
     FastModuleContainer modules;
@@ -4170,8 +4163,7 @@ std::string canonicalTraceLineForCase(const std::string &trace, const std::strin
     return match;
 }
 
-TEST_CASE("golden final RGBA8 bytes match the WP74 C1b baseline hashes",
-          "[golden][headless][byte-exact]") {
+void GoldenHarness::runRgba8Hashes() {
     setupLogger();
     requireGoldenVulkanDevice();
     const bool update_fixtures = updateRgba8HashFixturesRequested();
@@ -4205,8 +4197,7 @@ TEST_CASE("golden final RGBA8 bytes match the WP74 C1b baseline hashes",
     }
 }
 
-TEST_CASE("GPU timing on and off preserve bytes and publish ordered node identity",
-          "[wp143][golden][gpu-timing][byte-exact]") {
+void GoldenHarness::runGpuTimingIdentity() {
     setupLogger();
     requireGoldenVulkanDevice();
     const auto cases = loadGoldenInventoryCases();
@@ -4259,8 +4250,7 @@ TEST_CASE("GPU timing on and off preserve bytes and publish ordered node identit
     }
 }
 
-TEST_CASE("GPU timing reuses one in-flight query ring and caps history at 120 frames",
-          "[wp143][gpu-timing][ring][headless]") {
+void GoldenHarness::runGpuTimingRing() {
     setupLogger();
     requireGoldenVulkanDevice();
     FastModuleContainer modules;
@@ -4309,8 +4299,7 @@ TEST_CASE("GPU timing reuses one in-flight query ring and caps history at 120 fr
     std::filesystem::remove_all(root);
 }
 
-TEST_CASE("GPU timing records compute body separately from incoming barriers",
-          "[wp143][gpu-timing][compute][headless]") {
+void GoldenHarness::runGpuTimingCompute() {
 #if PELICAN_RUNTIME_SHADER_COMPILER
     setupLogger();
     requireGoldenVulkanDevice();
@@ -4351,8 +4340,7 @@ TEST_CASE("GPU timing records compute body separately from incoming barriers",
 #endif
 }
 
-TEST_CASE("GPU timing marks sprite anchor body as supported work",
-          "[wp143][gpu-timing][anchor][sprite][headless]") {
+void GoldenHarness::runGpuTimingSprite() {
 #if PELICAN_RUNTIME_SHADER_COMPILER
     setupLogger();
     requireGoldenVulkanDevice();
@@ -4398,7 +4386,7 @@ TEST_CASE("GPU timing marks sprite anchor body as supported work",
 #endif
 }
 
-TEST_CASE("Renderer execution matches plan order and captured traces", "[golden][headless][framegraph]") {
+void GoldenHarness::runRendererTrace() {
     setupLogger();
     requireGoldenVulkanDevice();
     const bool update_fixtures = updateRendererTraceFixturesRequested();
@@ -4457,8 +4445,7 @@ TEST_CASE("Renderer execution matches plan order and captured traces", "[golden]
     }
 }
 
-TEST_CASE("fullscreen inputs rebind after shader reload and render-target recreation",
-          "[golden][headless][framegraph][rebind]") {
+void GoldenHarness::runFullscreenRebind() {
     setupLogger();
     requireGoldenVulkanDevice();
 

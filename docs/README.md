@@ -9,7 +9,7 @@
 ## まずこれを読む(新規参加者・新エージェント)
 
 1. 本索引
-2. `implementation_plan.md` §0(共通規則)と §1(WP 一覧)— 実装指示書
+2. `implementation_plan.md` §0(共通規則)と §1(現行 WP 一覧)— active 実装指示書
 3. `design_project_format.md`([PF])— プロジェクトという単位の定義
 4. `adding_features.md` — 機能を足すときのレシピ集
 
@@ -54,7 +54,8 @@
 ## 指示書・レビュー記録
 
 - `agent_operations.md` — **マルチエージェント運用ガイド**(体制・WP/ウェーブ・codex 起動標準・敵対レビューループ・マージゲート・鉄則。新規エージェントはまずこれ)
-- `implementation_plan.md` — WP 詳細・受け入れ基準・ウェーブ運用(v3)
+- `implementation_plan.md` — 未完了 WP の詳細・受け入れ基準・ウェーブ運用(active ledger)
+- `implementation_archive.md` — 完了済み WP の一覧・詳細(逐語 archive)
 - `adding_features.md` — 機能追加レシピ集(cookbook)
 - `ci.md` — Windows/MSVC CPU gate、`gpu` ラベル、SKIP exact policy の運用
 - `example_assets.md` — example の外部 binary asset 22件の取得・provenance・ライセンス台帳
