@@ -4409,6 +4409,46 @@ schema 駆動描画(component 別手書き UI が無いことをレビューで�
 既存全テスト無変更 + golden SKIP 0・byte 不変 + player 8 秒 +
 CI green
 
+**着手前 blocker と回答(2026-07-18)**: ①query schema に enum
+ラベル不在 → WP164 に additive 露出を許可(StructFieldSchema/
+materialize/schemaFieldJson。WP71/150 fixture 無変更 gate)②
+interactive service が read-only → communication 層に共有 production
+factory を新設し rpcserver は消費移動のみ許可(既存 rpc テスト無変更
+gate)。v2 goal で再投入済み。
+
+### WP165: 負債 CI1 — 構成・clean-clone matrix
+
+参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
+の「WP-CI1」定義が正**:
+
+> feature OFF、build-unit/project-code smoke、self-contained default
+> project。heavy example は fetch/LFS + license/provenance へ分離。
+
+範囲(WP137 と同じ規律 — **エンジンコードの挙動変更禁止**):
+
+1. CI に**構成 matrix job** を追加: PELICAN_WITH_{VAT,EXR,RPC,
+   SEQPLAYER,AUDIO,OPENXR,IMGUI 等の存在ユニット} OFF の smoke
+   build(既存 run_build_units_smoke.cmake を CI へ載せる形)+
+   PELICAN_PROJECT(project-code)smoke。毎 push でなく重い job は
+   workflow_dispatch/nightly 可(CPU gate の速度を守る)
+2. **clean-clone gate**: fresh checkout で default/self-contained
+   project が(ローカル大物アセット無しで)configure→build→CPU
+   テストまで通ることを CI 上で保証(現状の green を明文の job に)
+3. **heavy example の分離方針を文書化**: projects/example の
+   untracked 大物(AliciaSolid.vrm 等 22 件)について fetch 手順/
+   ライセンス・出所(provenance)の記録場所を docs に 1 ページ
+   (LFS 移行はしない — 手順と台帳のみ。実バイナリの追加 commit
+   禁止)
+4. SKIP allowlist・retry なし等の WP137 規範を matrix job にも適用
+
+依存: WP137(済)。見積: 中。
+排他: `.github/workflows/` + CMake の smoke 配線 + docs。
+**エンジン/テストコードの挙動変更禁止**(ラベル付与・option 追加は
+可)。
+
+受け入れ = ローカルで matrix 相当のコマンド列が green + 既存全
+テスト/golden/player 無影響(byte 不変)+ push 後の実 run は私が確認
+
 ### WP137: 負債 CI0 — CPU gate の常設(GitHub Actions)
 
 参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
