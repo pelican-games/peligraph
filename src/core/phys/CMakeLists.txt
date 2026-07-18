@@ -21,5 +21,6 @@ if(PELICAN_WITH_PHYSICS)
 else()
   target_sources(pelican_core PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/physicsservice_stub.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/physworld_stub.cpp
   )
 endif()

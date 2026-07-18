@@ -491,7 +491,11 @@ pelican_define_test(inputstate_test pelican_core)
 pelican_define_test(xractivation_test quill)
 if(PELICAN_WITH_OPENXR)
 pelican_define_test(xrdiscovery_test pelican_core pelican_openxr)
+if(PELICAN_WITH_RPC)
+# This source also verifies the RPC get_status projection, whose implementation
+# is intentionally absent from a PELICAN_WITH_RPC=OFF build.
 pelican_define_test(xrsession_test pelican_core pelican_openxr)
+endif()
 pelican_define_test(xraction_test pelican_core pelican_openxr)
 pelican_define_test(xrcompositiontarget_test pelican_core pelican_openxr
     VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)

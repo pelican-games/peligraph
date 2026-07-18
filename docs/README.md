@@ -1,6 +1,6 @@
 # pelican2 設計文書 索引
 
-最終更新: 2026-07-15。文書が矛盾したら**凍結済み > ドラフト、設計文書 > 指示書**の順で優先。
+最終更新: 2026-07-18。文書が矛盾したら**凍結済み > ドラフト、設計文書 > 指示書**の順で優先。
 
 > **使い方を知りたい人へ**: 設計文書とは別に、人間向けの利用マニュアル(チュートリアル+リファレンス、実装状況バッジ付き)が [`manual/`](manual/00_index.md) にある。「いま何がどう動くか」はそちらが正(コード準拠・2026-07-10 全域調査)。
 
@@ -57,6 +57,7 @@
 - `implementation_plan.md` — WP 詳細・受け入れ基準・ウェーブ運用(v3)
 - `adding_features.md` — 機能追加レシピ集(cookbook)
 - `ci.md` — Windows/MSVC CPU gate、`gpu` ラベル、SKIP exact policy の運用
+- `example_assets.md` — example の外部 binary asset 22件の取得・provenance・ライセンス台帳
 - `rendering_phase1_review.md` — Validation Run の流儀
 
 ## 他リポジトリの文書
