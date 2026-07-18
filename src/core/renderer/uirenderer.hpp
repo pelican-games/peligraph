@@ -20,6 +20,7 @@ struct UiDrawRequest {
     vk::AttachmentLoadOp load_op;
     vk::AttachmentStoreOp store_op;
     vk::ClearColorValue clear_color;
+    double ui_scale = 1.0;
 };
 
 struct UiRendererDependencies {

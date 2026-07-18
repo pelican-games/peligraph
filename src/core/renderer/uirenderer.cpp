@@ -78,7 +78,7 @@ void UiRenderer::ensureBuffers(vk::DeviceSize vertex_bytes, vk::DeviceSize index
 
 void UiRenderer::render(vk::CommandBuffer cmd_buf, const UiDrawRequest &request,
                         const UiRendererDependencies &dependencies) {
-    const auto batch = dependencies.ui_module.buildFrame(request.target_extent);
+    const auto batch = dependencies.ui_module.buildFrame(request.target_extent, request.ui_scale);
     if (batch.indices.empty()) return;
     const auto vertex_bytes = static_cast<vk::DeviceSize>(batch.vertices.size() * sizeof(ui::QuadVertex));
     const auto index_bytes = static_cast<vk::DeviceSize>(batch.indices.size() * sizeof(std::uint16_t));
