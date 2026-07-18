@@ -4110,6 +4110,63 @@ frame boundary で応答・headless 経路 byte 不変)+ 既存全テスト無�
 golden SKIP 0 + player 8 秒(windowed rpc 有効でも通常起動無影響)+
 CI green
 
+### WP157: E-RPC1a — 編集 rpc + JOURNAL0(E-RPC1 の第一分割)
+
+前提: `docs/design_editor_tooling.md` **v2.5(条件付き Accept)が正本
+— §1-2/§1-3/§1-4-1/§1-4-2/§1-5-4/§1-6-1a/§1-6-1b/§1-6-1c の全文が
+受け入れ条件**(v2.5 は逐語受理済みのため本節は中核のみ再掲)。
+E-RPC1 の分割は再レビュー §6「部分版にするなら E-C4 の operation
+matrix で明示分割する」に従う: **WP157(本 WP)= 通常 edit 6 op +
+journal + CAS + editor gate + ActorId 発行。WP158(後続)= undo/redo +
+ticket preview lease + forced-abort**。§1-6-1a の undo/ticket 行と
+E-C3-2 の競合 fixture(reload/scene transition/callback 競合)は
+WP158 の gate。
+
+§1-2 中核(逐語):
+
+> edit request は enqueue acceptance と ticket を同期応答し、
+> frame-boundary commit の結果は `step_frame.edit_results[]` または
+> `get_edit_result(ticket)` で返す。commit 点を runtime reload 後・
+> freeze_events 前の一点に固定し、replay/golden/strict は method 名と
+> reason 入りで reject、rpc_driver 自体は許可する(ReloadGate の
+> `enabled()` 流用禁止 — `can_edit` を独立 query として追加)。
+> 全 transaction は base SceneRevision を検査し、ordered command を全
+> preflight 後、AuthoringSceneDocument と runtime adapter へ
+> failure-atomic に commit する。部分成功を禁止し、journal には
+> committed transaction だけを記録する。
+
+範囲:
+
+1. **6 op**: set_component_value / add_component / remove_component /
+   spawn / destroy / reparent — §1-6-1a の該当行(acceptance/
+   execution 二段・conflict result は §1-6-1c catalog の code のみ)+
+   §1-6-1b(forward/inverse/adapter/先行 WP/preflight/boundary)
+   どおり。実行は **WP153 の EditorProjectionTransaction** 経由
+   (behavior 行は BEH0/BEH2 未着なので v1 は method_unavailable)
+2. **JOURNAL0**(§1-3 逐語全文): record = {transaction_id,
+   base_revision, committed_revision, ordered_forward, ordered_inverse,
+   affected_authoring_ids, coalesce_key?, status} + V22-C1 後段の
+   stable target/read set/write set/structural domain/postcondition/
+   last-writer stamp。destroy inverse の lossless closure・reparent の
+   preserve policy・forward→inverse→forward の三等価 gate(inverse の
+   機械実行は可 — undo *rpc* が WP158)
+3. **ActorId**(§1-4-1 前段): session 発行・connection bind・表示名
+   分離。全 edit request に必須・journal/query へ記録
+4. **global CAS**(§1-4-2 逐語): stale は現在値つき reject・無関係
+   object でも stale の fixture を expected として固定
+5. **editor gate**(§1-5-4 の can_edit 分): ReloadGate 独立 snapshot・
+   reason bit・acceptance/execution 二重検査(can_preview の実体は
+   WP158 — bit の枠だけ予約)
+
+依存: WP153(済)+ WP154(済)+ WP156(済)。見積: 大。
+排他: rpcserver/EditorCommandService の edit 面 + journal 新設 +
+fixture。**loader の transaction 本体(WP153 成果)は消費のみ・
+behavior 系(WP155 並走中)・schema 三 header に触らない**。
+
+受け入れ = 上記 5 点の逐語 gate(§1-6-1a/1b の該当行と 1:1 の
+fixture + E-C4 表の WP 表転記)+ 既存全テスト無変更 + golden SKIP 0・
+byte 不変 + player 8 秒 + CI green
+
 ### WP137: 負債 CI0 — CPU gate の常設(GitHub Actions)
 
 参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
