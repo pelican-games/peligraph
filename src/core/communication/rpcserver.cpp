@@ -369,8 +369,10 @@ template <class Invoke> nlohmann::json invokeEditorRpc(Invoke &&invoke) {
         const auto rpc_code = error.code() == EditorCommandErrorCode::InvalidParams
                                   ? JsonRpcErrorCodes::invalidParams
                                   : JsonRpcErrorCodes::applicationError;
-        throw JsonRpcHandlerError{rpc_code, error.what(),
-                                  {{"code", editorCommandErrorCodeName(error.code())}}};
+        nlohmann::json data{
+            {"code", editorCommandErrorCodeName(error.code())}};
+        if (error.detail()) data["detail"] = *error.detail();
+        throw JsonRpcHandlerError{rpc_code, error.what(), std::move(data)};
     } catch (const std::invalid_argument &error) {
         throw JsonRpcHandlerError{JsonRpcErrorCodes::invalidParams, error.what()};
     }
@@ -905,6 +907,14 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
     });
     server.setHandler("export_scene_snapshot", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.exportSceneSnapshot(params); });
+    });
+    server.setHandler("import_scene_snapshot", [&pending_transforms, &editor_rpc](
+                                                   const nlohmann::json &params) {
+        return invokeEditorRpc([&] {
+            auto result = editor_rpc.importSceneSnapshot(params);
+            pending_transforms.clear();
+            return result;
+        });
     });
     server.setHandler("save_scene", [&pending_transforms, &editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] {

@@ -1109,6 +1109,22 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService() {
                 },
             .install_commit_hook = true,
         },
+        .import_scene_snapshot =
+            [runtime](std::string_view bytes,
+                      std::string_view current_scene_id) {
+                std::vector<EditorProjectionRuntimeObjectBinding>
+                    next_runtime_bindings;
+                const auto revision =
+                    runtime->modules.project_config.importSceneDocument(
+                        bytes, [&] {
+                            runtime->modules.scene_loader.load(
+                                std::string{current_scene_id});
+                            next_runtime_bindings =
+                                collectEditorRuntimeBindings(runtime->modules);
+                        });
+                runtime->runtime_bindings.swap(next_runtime_bindings);
+                return revision;
+            },
         .save_scene = [runtime] {
             if (runtime->modules.scene_loader.hasRuntimeOnlyChanges()) {
                 throw EditorCommandError{

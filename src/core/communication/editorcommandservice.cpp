@@ -148,6 +148,67 @@ ExportSceneSnapshotRequestV1 parseExportSceneSnapshotRequest(const Json &params)
     return request;
 }
 
+ImportSceneSnapshotRequestV1 parseImportSceneSnapshotRequest(const Json &params) {
+    constexpr auto method = "import_scene_snapshot";
+    requireObjectParams(params, method);
+
+    // Preserve the normative validation order even when later fields are
+    // malformed. A shaped request with an unsupported version must never
+    // inspect or allocate its payload.
+    const auto version = params.find("schema_version");
+    if (version == params.end()) {
+        invalidParams("import_scene_snapshot schema_version is required");
+    }
+    const auto schema_version =
+        exactUnsignedInteger(*version, "import_scene_snapshot schema_version");
+    if (schema_version != 1) {
+        throw EditorCommandError{
+            EditorCommandErrorCode::UnsupportedSnapshotVersion,
+            "unsupported snapshot version: " + std::to_string(schema_version)};
+    }
+
+    requireOnlyFields(params,
+                      {"schema_version", "semantic_scene_bytes", "digest",
+                       "current_scene_id"},
+                      method);
+    const auto bytes = params.find("semantic_scene_bytes");
+    if (bytes == params.end() || !bytes->is_string()) {
+        invalidParams(
+            "import_scene_snapshot semantic_scene_bytes must be a string");
+    }
+    if (bytes->get_ref<const std::string &>().size() > maxSceneSnapshotBytes) {
+        throw EditorCommandError{EditorCommandErrorCode::SnapshotTooLarge,
+                                 "snapshot exceeds 64 MiB"};
+    }
+
+    const auto digest = params.find("digest");
+    if (digest == params.end() || !digest->is_object()) {
+        invalidParams("import_scene_snapshot digest must be an object");
+    }
+    requireOnlyFields(*digest, {"algorithm", "hex"},
+                      "import_scene_snapshot digest");
+    const auto algorithm = digest->find("algorithm");
+    const auto hex = digest->find("hex");
+    if (algorithm == digest->end() || !algorithm->is_string() ||
+        hex == digest->end() || !hex->is_string()) {
+        invalidParams(
+            "import_scene_snapshot digest requires string algorithm and hex fields");
+    }
+
+    const auto current_scene =
+        optionalString(params, "current_scene_id", method);
+    if (!current_scene) {
+        invalidParams("import_scene_snapshot current_scene_id is required");
+    }
+    return ImportSceneSnapshotRequestV1{
+        .schema_version = schema_version,
+        .semantic_scene_bytes = bytes->get<std::string>(),
+        .digest = {.algorithm = algorithm->get<std::string>(),
+                   .hex = hex->get<std::string>()},
+        .current_scene_id = *current_scene,
+    };
+}
+
 void validateSaveSceneRequest(const Json &params) {
     constexpr auto method = "save_scene";
     requireObjectParams(params, method);
@@ -164,6 +225,8 @@ std::string_view editorCommandErrorCodeName(EditorCommandErrorCode code) noexcep
     case EditorCommandErrorCode::UnsupportedSnapshotVersion: return "unsupported_snapshot_version";
     case EditorCommandErrorCode::SnapshotBusy: return "snapshot_busy";
     case EditorCommandErrorCode::SnapshotTooLarge: return "snapshot_too_large";
+    case EditorCommandErrorCode::DigestMismatch: return "digest_mismatch";
+    case EditorCommandErrorCode::SnapshotInvalid: return "snapshot_invalid";
     case EditorCommandErrorCode::ExternalModification: return "external_modification";
     case EditorCommandErrorCode::SaveBusy: return "save_busy";
     case EditorCommandErrorCode::RuntimeOnlyData: return "runtime_only_data";
@@ -173,8 +236,10 @@ std::string_view editorCommandErrorCodeName(EditorCommandErrorCode code) noexcep
     return "unknown_editor_error";
 }
 
-EditorCommandError::EditorCommandError(EditorCommandErrorCode code, const std::string &message)
-    : std::runtime_error{message}, code_{code} {}
+EditorCommandError::EditorCommandError(EditorCommandErrorCode code,
+                                       const std::string &message,
+                                       std::optional<std::string> detail)
+    : std::runtime_error{message}, code_{code}, detail_{std::move(detail)} {}
 
 EditorCommandService::EditorCommandService(EditorCommandServiceDependencies dependencies)
     : dependencies_{std::move(dependencies)} {
@@ -376,6 +441,69 @@ EditorCommandService::exportSceneSnapshot(const ExportSceneSnapshotRequestV1 &re
         .pending_ticket_ids = snapshot_state.pending_ticket_ids,
         .preview_epoch = snapshot_state.preview_epoch,
     };
+}
+
+ImportSceneSnapshotResult EditorCommandService::importSceneSnapshot(
+    const ImportSceneSnapshotRequestV1 &request) {
+    // SNAPSHOT0 validation order is part of the wire contract. Do not merge
+    // these gates or move parsing ahead of the digest check.
+    if (request.schema_version != 1) {
+        throw EditorCommandError{
+            EditorCommandErrorCode::UnsupportedSnapshotVersion,
+            "unsupported snapshot version: " +
+                std::to_string(request.schema_version)};
+    }
+    if (request.semantic_scene_bytes.size() > maxSceneSnapshotBytes) {
+        throw EditorCommandError{EditorCommandErrorCode::SnapshotTooLarge,
+                                 "snapshot exceeds 64 MiB"};
+    }
+
+    const auto actual_digest = picosha2::hash256_hex_string(
+        request.semantic_scene_bytes.begin(),
+        request.semantic_scene_bytes.end());
+    if (request.digest.algorithm != "sha256" ||
+        request.digest.hex != actual_digest) {
+        throw EditorCommandError{EditorCommandErrorCode::DigestMismatch,
+                                 "snapshot digest does not match semantic_scene_bytes"};
+    }
+
+    AuthoringSceneDocument validated;
+    try {
+        validated = AuthoringSceneDocument::load(
+            request.semantic_scene_bytes, SceneRevision{1});
+    } catch (const std::exception &error) {
+        throw EditorCommandError{EditorCommandErrorCode::SnapshotInvalid,
+                                 "snapshot parse or semantic validation failed",
+                                 error.what()};
+    }
+    if (validated.scenesJson().find(request.current_scene_id) ==
+        validated.scenesJson().end()) {
+        throw EditorCommandError{
+            EditorCommandErrorCode::SceneNotFound,
+            "scene not found: " + request.current_scene_id};
+    }
+
+    if (!dependencies_.import_scene_snapshot) {
+        throw EditorCommandError{EditorCommandErrorCode::SnapshotInvalid,
+                                 "snapshot import is unavailable",
+                                 "runtime import surface is unavailable"};
+    }
+    try {
+        const auto revision = dependencies_.import_scene_snapshot(
+            request.semantic_scene_bytes, request.current_scene_id);
+        if (revision.value > maxExactEditorJsonInteger) {
+            throw std::overflow_error("SceneRevision exceeds 2^53-1");
+        }
+        return ImportSceneSnapshotResult{
+            .scene_revision = revision,
+            .current_scene_id = request.current_scene_id,
+        };
+    } catch (const EditorCommandError &) {
+        throw;
+    } catch (const std::exception &error) {
+        throw EditorCommandError{EditorCommandErrorCode::SnapshotInvalid,
+                                 "snapshot reload failed", error.what()};
+    }
 }
 
 SaveSceneResult EditorCommandService::saveScene() {
@@ -596,6 +724,14 @@ OrderedJson editorQueryJson(const ExportSceneSnapshotResponseV1 &snapshot) {
     };
 }
 
+OrderedJson editorQueryJson(const ImportSceneSnapshotResult &snapshot) {
+    return OrderedJson{
+        {"status", "imported"},
+        {"scene_revision", snapshot.scene_revision.value},
+        {"current_scene_id", snapshot.current_scene_id},
+    };
+}
+
 OrderedJson editorQueryJson(const SaveSceneResult &save) {
     return OrderedJson{
         {"status", "saved"},
@@ -621,6 +757,12 @@ OrderedJson EditorCommandRpcAdapter::listAssets(const Json &params) const {
 
 OrderedJson EditorCommandRpcAdapter::exportSceneSnapshot(const Json &params) const {
     return editorQueryJson(service_.exportSceneSnapshot(parseExportSceneSnapshotRequest(params)));
+}
+
+OrderedJson EditorCommandRpcAdapter::importSceneSnapshot(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("editor RPC adapter is read-only");
+    return editorQueryJson(mutable_service_->importSceneSnapshot(
+        parseImportSceneSnapshotRequest(params)));
 }
 
 OrderedJson EditorCommandRpcAdapter::saveScene(const Json &params) const {

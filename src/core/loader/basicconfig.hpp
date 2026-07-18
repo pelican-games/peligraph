@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <functional>
 #include <glm/glm.hpp>
 #include <optional>
 #include <stdexcept>
@@ -37,6 +38,11 @@ enum class SceneSaveFaultPoint : std::uint8_t {
     AfterTemporaryValidation,
     AfterCachePrepare,
     BeforeReplace,
+};
+
+enum class SceneImportFaultPoint : std::uint8_t {
+    AfterCandidatePrepare,
+    AfterPublication,
 };
 
 struct SceneSaveResult {
@@ -82,6 +88,7 @@ DECLARE_MODULE(ProjectBasicConfig) {
     mutable std::uint64_t next_scene_revision = 1;
     mutable std::uint64_t next_authoring_object_id = 1;
     std::optional<SceneSaveFaultPoint> scene_save_fault;
+    std::optional<SceneImportFaultPoint> scene_import_fault;
     mutable std::optional<std::string> asset_data_json;
     mutable std::optional<std::string> rendering_config_json;
     mutable std::optional<std::string> ui_config_json;
@@ -89,6 +96,7 @@ DECLARE_MODULE(ProjectBasicConfig) {
     mutable std::unordered_map<std::string, std::string> input_profile_jsons;
 
     void publishSceneDocument(std::string_view scene_v1_bytes) const;
+    void publishPreparedSceneDocument(AuthoringSceneDocument &document) const noexcept;
 
   public:
     ProjectBasicConfig();
@@ -106,10 +114,16 @@ DECLARE_MODULE(ProjectBasicConfig) {
     const AuthoringSceneDocument &sceneDocument() const;
     void updateSceneDocument(std::string_view scene_v1_bytes);
     void invalidateSceneDocument() noexcept;
+    SceneRevision importSceneDocument(std::string_view scene_v1_bytes,
+                                      const std::function<void()> &reload);
     SceneSaveResult saveSceneDocument();
     void setSceneSaveFaultForTesting(
         std::optional<SceneSaveFaultPoint> fault) noexcept {
         scene_save_fault = fault;
+    }
+    void setSceneImportFaultForTesting(
+        std::optional<SceneImportFaultPoint> fault) noexcept {
+        scene_import_fault = fault;
     }
     std::string sceneDataJson() const;
     std::string assetDataJson() const;

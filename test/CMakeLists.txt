@@ -349,7 +349,7 @@ pelican_define_test(editorprojectiontransaction_test pelican_core glm
 target_compile_definitions(pelican_test_componentcodec_test PRIVATE
   PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
-pelican_define_test(editorcommandservice_test pelican_core glm)
+pelican_define_test(editorcommandservice_test pelican_core glm picosha2)
 target_compile_definitions(pelican_test_editorcommandservice_test PRIVATE
   PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )

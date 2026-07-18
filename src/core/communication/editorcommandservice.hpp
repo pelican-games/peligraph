@@ -26,6 +26,8 @@ enum class EditorCommandErrorCode : std::uint8_t {
     UnsupportedSnapshotVersion,
     SnapshotBusy,
     SnapshotTooLarge,
+    DigestMismatch,
+    SnapshotInvalid,
     ExternalModification,
     SaveBusy,
     RuntimeOnlyData,
@@ -37,10 +39,13 @@ std::string_view editorCommandErrorCodeName(EditorCommandErrorCode code) noexcep
 
 class EditorCommandError : public std::runtime_error {
     EditorCommandErrorCode code_;
+    std::optional<std::string> detail_;
 
   public:
-    EditorCommandError(EditorCommandErrorCode code, const std::string &message);
+    EditorCommandError(EditorCommandErrorCode code, const std::string &message,
+                       std::optional<std::string> detail = std::nullopt);
     EditorCommandErrorCode code() const noexcept { return code_; }
+    const std::optional<std::string> &detail() const noexcept { return detail_; }
 };
 
 enum class EditorComponentSchemaState : std::uint8_t {
@@ -133,6 +138,18 @@ struct ExportSceneSnapshotResponseV1 {
     std::uint64_t preview_epoch = 0;
 };
 
+struct ImportSceneSnapshotRequestV1 {
+    std::uint64_t schema_version = 1;
+    std::string semantic_scene_bytes;
+    DigestV1 digest;
+    std::string current_scene_id;
+};
+
+struct ImportSceneSnapshotResult {
+    SceneRevision scene_revision{};
+    std::string current_scene_id;
+};
+
 struct EditorRuntimeBehaviorAttachmentState {
     std::uint64_t handle = 0;
     std::uint64_t attachment_seq = 0;
@@ -162,6 +179,8 @@ struct EditorCommandServiceDependencies {
     std::function<std::vector<EditorAssetQueryResult>()> assets;
     std::function<EditorSnapshotState()> snapshot_state;
     std::optional<EditorEditRuntimeDependencies> edit;
+    std::function<SceneRevision(std::string_view, std::string_view)>
+        import_scene_snapshot;
     std::function<SaveSceneResult()> save_scene;
 };
 
@@ -184,6 +203,8 @@ class EditorCommandService {
     EditorObjectQueryResult getComponents(const EditorGetComponentsRequest &request) const;
     EditorListAssetsResult listAssets(const EditorListAssetsRequest &request = {}) const;
     ExportSceneSnapshotResponseV1 exportSceneSnapshot(const ExportSceneSnapshotRequestV1 &request) const;
+    ImportSceneSnapshotResult importSceneSnapshot(
+        const ImportSceneSnapshotRequestV1 &request);
     SaveSceneResult saveScene();
 
     nlohmann::ordered_json openEditorSession(const nlohmann::json &params);
@@ -220,6 +241,7 @@ class EditorCommandRpcAdapter {
     nlohmann::ordered_json getComponents(const nlohmann::json &params) const;
     nlohmann::ordered_json listAssets(const nlohmann::json &params) const;
     nlohmann::ordered_json exportSceneSnapshot(const nlohmann::json &params) const;
+    nlohmann::ordered_json importSceneSnapshot(const nlohmann::json &params) const;
     nlohmann::ordered_json saveScene(const nlohmann::json &params) const;
     nlohmann::ordered_json openEditorSession(const nlohmann::json &params) const;
     nlohmann::ordered_json resumeEditorSession(const nlohmann::json &params) const;
@@ -275,6 +297,7 @@ nlohmann::ordered_json editorQueryJson(const EditorObjectQueryResult &object);
 nlohmann::ordered_json editorQueryJson(const EditorSceneTreeResult &scene);
 nlohmann::ordered_json editorQueryJson(const EditorListAssetsResult &assets);
 nlohmann::ordered_json editorQueryJson(const ExportSceneSnapshotResponseV1 &snapshot);
+nlohmann::ordered_json editorQueryJson(const ImportSceneSnapshotResult &snapshot);
 nlohmann::ordered_json editorQueryJson(const SaveSceneResult &save);
 
 } // namespace Pelican
