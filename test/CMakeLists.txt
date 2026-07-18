@@ -256,6 +256,7 @@ pelican_define_test(ecs_lifecycle_test pelican_core)
 pelican_define_test(ecs_scheduler_test pelican_core)
 pelican_define_test(eventlayer_test pelican_core)
 pelican_define_test(eventpayloadschema_test pelican_core)
+pelican_define_test(structfieldschema_test pelican_core)
 
 function(pelican_event_schema_compile_fixture fixture expect_failure)
     set(target_name pelican_event_schema_${fixture})
@@ -286,6 +287,34 @@ pelican_event_schema_compile_fixture(fail_min_max TRUE)
 pelican_event_schema_compile_fixture(fail_nonfinite TRUE)
 pelican_event_schema_compile_fixture(fail_f32_bound TRUE)
 pelican_event_schema_compile_fixture(fail_unsupported_type TRUE)
+
+function(pelican_struct_schema_compile_fixture fixture expect_failure)
+    set(target_name pelican_struct_schema_${fixture})
+    add_executable(${target_name} EXCLUDE_FROM_ALL fixtures/struct_schema/${fixture}.cpp)
+    set_target_properties(${target_name} PROPERTIES CXX_STANDARD 20)
+    add_test(
+        NAME struct_schema_compile_${fixture}
+        COMMAND ${CMAKE_COMMAND}
+            -DBUILD_DIR=${CMAKE_BINARY_DIR}
+            -DCONFIG=$<CONFIG>
+            -DTARGET_NAME=${target_name}
+            -DEXPECT_FAILURE=${expect_failure}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_event_schema_compile.cmake
+    )
+    set_tests_properties(struct_schema_compile_${fixture} PROPERTIES
+        RESOURCE_LOCK event_schema_compile_build
+    )
+endfunction()
+
+pelican_struct_schema_compile_fixture(event_policy_pass FALSE)
+pelican_struct_schema_compile_fixture(behavior_policy_pass FALSE)
+pelican_struct_schema_compile_fixture(component_policy_pass FALSE)
+pelican_struct_schema_compile_fixture(fail_policy_omitted TRUE)
+pelican_struct_schema_compile_fixture(fail_event_default TRUE)
+pelican_struct_schema_compile_fixture(fail_behavior_required TRUE)
+pelican_struct_schema_compile_fixture(fail_behavior_enum_values TRUE)
+pelican_struct_schema_compile_fixture(fail_component_implicit TRUE)
+pelican_struct_schema_compile_fixture(fail_component_codec TRUE)
 pelican_define_test(golden_image_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp spirv-reflect-static stb glm picosha2)
 target_compile_definitions(pelican_test_golden_image_test PRIVATE
     VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic
