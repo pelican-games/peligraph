@@ -503,6 +503,105 @@ TEST_CASE("SAVE0 is failure-atomic at every prepare point and reloads semantical
     std::filesystem::remove_all(temp_dir);
 }
 
+TEST_CASE("SNAPSHOT0 cache replacement is rollback-safe and never writes the scene file",
+          "[scene-format][authoring][snapshot][import][fault][wp168]") {
+    ensureLogger();
+    auto temp_dir = makeTempProjectDir();
+
+    try {
+        const auto disk_document = readJson(authoringFixturePath());
+        const auto disk_bytes = disk_document.dump(2);
+        const auto scene_path = temp_dir / "scene.json";
+        writeText(scene_path, disk_bytes);
+        const auto project = nlohmann::json{
+            {"schema", "pelican.project"},
+            {"version", 1},
+            {"name", "snapshot0-atomic-test"},
+            {"engine_min_version", "0.1.0"},
+            {"basic_config",
+             {{"default_scene_id", "main"},
+              {"scene_data_json", "scene.json"}}},
+        };
+
+        {
+            FastModuleContainer modules;
+            GET_MODULE(PathResolver).setup(temp_dir, false);
+            GET_MODULE(ProjectSource).setProjectData(project.dump());
+            auto &config = GET_MODULE(ProjectBasicConfig);
+            const auto &old_document = config.sceneDocument();
+            const auto *old_cache = &old_document;
+            const auto old_revision = old_document.revision();
+            const auto old_semantic = old_document.encodeSemantic();
+            std::uint64_t old_max_object_id = 0;
+            for (const auto &scene : old_document.query()) {
+                for (const auto &object : scene.objects) {
+                    old_max_object_id = std::max(
+                        old_max_object_id, object.authoring_object_id.value);
+                }
+            }
+
+            auto snapshot = disk_document;
+            snapshot["editor_envelope"]["snapshot_marker"] = "wp168";
+            const auto snapshot_bytes = snapshot.dump();
+            const auto require_old_state = [&] {
+                REQUIRE(&config.sceneDocument() == old_cache);
+                REQUIRE(config.sceneDocument().revision() == old_revision);
+                REQUIRE(config.sceneDocument().encodeSemantic() == old_semantic);
+                REQUIRE(readText(scene_path) == disk_bytes);
+            };
+
+            std::size_t reload_calls = 0;
+            for (const auto point :
+                 {SceneImportFaultPoint::AfterCandidatePrepare,
+                  SceneImportFaultPoint::AfterPublication}) {
+                DYNAMIC_SECTION("fault point " << static_cast<unsigned>(point)) {
+                    config.setSceneImportFaultForTesting(point);
+                    REQUIRE_THROWS(config.importSceneDocument(
+                        snapshot_bytes, [&] { ++reload_calls; }));
+                    require_old_state();
+                    REQUIRE(reload_calls == 0);
+                }
+            }
+            config.setSceneImportFaultForTesting(std::nullopt);
+
+            std::optional<std::string> loader_error;
+            try {
+                (void)config.importSceneDocument(snapshot_bytes, [&] {
+                    ++reload_calls;
+                    REQUIRE(config.sceneDocument().rawJson() == snapshot);
+                    throw std::runtime_error("injected loader fault");
+                });
+            } catch (const std::runtime_error &error) {
+                loader_error = error.what();
+            }
+            REQUIRE(loader_error == "injected loader fault");
+            REQUIRE(reload_calls == 1);
+            require_old_state();
+
+            const auto imported = config.importSceneDocument(snapshot_bytes, [&] {
+                ++reload_calls;
+                REQUIRE(config.sceneDocument().rawJson() == snapshot);
+            });
+            REQUIRE(reload_calls == 2);
+            REQUIRE(imported.value == old_revision.value + 1U);
+            REQUIRE(config.sceneDocument().revision() == imported);
+            REQUIRE(config.sceneDocument().rawJson() == snapshot);
+            REQUIRE(readText(scene_path) == disk_bytes);
+            for (const auto &scene : config.sceneDocument().query()) {
+                for (const auto &object : scene.objects) {
+                    REQUIRE(object.authoring_object_id.value >
+                            old_max_object_id);
+                }
+            }
+        }
+    } catch (...) {
+        std::filesystem::remove_all(temp_dir);
+        throw;
+    }
+
+    std::filesystem::remove_all(temp_dir);
+}
+
 TEST_CASE("SAVE0 new-process semantic reload probe",
           "[.][wp166-new-process-probe]") {
     const auto *scene_path = std::getenv("PELICAN_WP166_SCENE_PATH");

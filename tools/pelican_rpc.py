@@ -172,6 +172,9 @@ class PelicanRpc:
     def export_scene_snapshot(self, params: dict[str, Any] | None = None) -> Any:
         return self.call("export_scene_snapshot", params)
 
+    def import_scene_snapshot(self, params: dict[str, Any] | None = None) -> Any:
+        return self.call("import_scene_snapshot", params)
+
     def terminate(self) -> None:
         """Terminate the player and wait until no child process remains."""
 

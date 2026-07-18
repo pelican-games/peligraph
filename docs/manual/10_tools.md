@@ -5,7 +5,7 @@
 ## この章で学ぶこと
 
 - `pelican_player` の全 CLI 引数(22 個)
-- JSON-RPC(stdio)による外部制御 — 全 20 メソッドと実セッション例
+- JSON-RPC(stdio)による外部制御 — 基盤メソッド、エディタ拡張、実セッション例
 - `pelican_cli` の 6 サブコマンド系統(`project init` / `import` / `dist-config` / `assets` / `bake-camera` / `dump-lowered-material`)
 - ホットリロード(シェーダ・テクスチャ・マテリアル・モデル・ゲーム DLL)と起動高速化
 - ImGui 開発者 UI(F1)と Frame Plan Viewer
@@ -78,7 +78,7 @@ pelican_player --headless --project mygame --replay s.jsonl \
 
 > **設計決定(決定性):** 同一の RPC スクリプトを 2 回実行したとき、応答列は(instance_id を除き)完全一致しなければならない。CI で検証済み。
 
-### メソッド一覧(20 個)
+### 基盤メソッド一覧
 
 | メソッド | params | 動作 |
 |---|---|---|
@@ -102,6 +102,8 @@ pelican_player --headless --project mygame --replay s.jsonl \
 | `stop_input_record` | `{}` | 収録停止。`{path, frames, events}` |
 | `start_input_replay` | `{path}` | リプレイ開始(fixed-step 化・リロードゲート閉鎖) |
 | `stop_input_replay` | `{}` | リプレイ停止 |
+| `export_scene_snapshot` | `{schema_version:1, allow_pending?:false}` | current scene を含む全 authoring document の deterministic semantic bytes、SHA-256、revision を返す |
+| `import_scene_snapshot` | `{schema_version:1, semantic_scene_bytes, digest, current_scene_id}` | disk を上書きせず、検証済み snapshot を in-memory scene source として reload する |
 
 ### 実セッション例
 
@@ -147,6 +149,60 @@ except PelicanRpcError as error:
 ください。`call(method, params)` と各 helper は params の辞書を変換・検証せず
 エンジンへ渡します。形式の正は常に `rpcserver.cpp` です。常駐プロセスを残さない
 ため、通常は上例のように `with` を使用してください。
+
+`export_scene_snapshot(params)` と `import_scene_snapshot(params)` も同じ素通し helper
+です。import の検証は client ではなく engine が、必ず version → 64 MiB → SHA-256 →
+parse/semantic → current scene の順で行います。失敗時は `PelicanRpcError.data` の
+`code` が `unsupported_snapshot_version` / `snapshot_too_large` /
+`digest_mismatch` / `snapshot_invalid` / `scene_not_found` のいずれかになり、
+`snapshot_invalid` には `detail` も入ります。
+
+### snapshot を使った安全なスイープ
+
+人が操作している session の document を scratch process へ immutable に渡し、候補値だけを
+人 session へ戻す公式 sequence は次のとおりです。snapshot 自体を merge/save する API は
+ありません。
+
+```python
+from tools.pelican_rpc import PelicanRpc, PelicanRpcError
+
+with PelicanRpc("projects/mygame") as human:
+    exported = human.export_scene_snapshot(
+        {"schema_version": 1, "allow_pending": False}
+    )
+    revision = exported["scene_revision"]  # R
+    payload = {
+        "schema_version": 1,
+        "semantic_scene_bytes": exported["semantic_scene_bytes"],
+        "digest": exported["digest"],
+        "current_scene_id": exported["current_scene_id"],
+    }
+
+    with PelicanRpc("projects/mygame") as scratch:
+        scratch.import_scene_snapshot(payload)
+        # 候補ごとに PREVIEW0 の eval_preview / render_preview を call() し、
+        # 必要なら capture() する。scratch の scene file は変更されない。
+        chosen_operation = sweep_and_choose(scratch)
+
+    session = human.call(
+        "open_editor_session", {"display_name": "snapshot sweep adoption"}
+    )
+    accepted = human.call(
+        "edit",
+        {
+            "actor_id": session["actor_id"],
+            "base_revision": revision,
+            "operations": [chosen_operation],
+        },
+    )
+    # frame boundary 後に get_edit_result を確認する。stale_revision なら
+    # 自動再送せず、現在値を query → 再 export → 候補を再判断する。
+```
+
+`semantic_scene_bytes` は UTF-8 JSON text の inline string で、base64 ではありません。
+上限は 64 MiB です。import 成功時も通常 project の scene file は byte 不変で、
+AuthoringObjectId は scratch session 内で新しく採番されます。採用は必ず `base_revision=R`
+の通常 edit 一件に絞り、`stale_revision` を「人が R 以後に編集した」合図として扱います。
 
 📐設計のみ: WebSocket 展開(複数クライアント)。
 

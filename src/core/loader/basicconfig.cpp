@@ -588,6 +588,15 @@ void ProjectBasicConfig::publishSceneDocument(std::string_view scene_v1_bytes) c
     next_authoring_object_id = next_object_id;
 }
 
+void ProjectBasicConfig::publishPreparedSceneDocument(
+    AuthoringSceneDocument &document) const noexcept {
+    const auto next_object_id = document.next_authoring_object_id_value_;
+    const auto revision = document.revision_.value;
+    scene_document->swap(document);
+    next_scene_revision = revision + 1U;
+    next_authoring_object_id = next_object_id;
+}
+
 const AuthoringSceneDocument &ProjectBasicConfig::sceneDocument() const {
     if (!scene_document) {
         auto bytes = GET_MODULE(PathResolver).loadText(scene_data_json_ref);
@@ -605,6 +614,50 @@ void ProjectBasicConfig::updateSceneDocument(std::string_view scene_v1_bytes) {
 void ProjectBasicConfig::invalidateSceneDocument() noexcept {
     scene_document.reset();
     scene_baseline_digest.reset();
+}
+
+SceneRevision ProjectBasicConfig::importSceneDocument(
+    std::string_view scene_v1_bytes, const std::function<void()> &reload) {
+    if (!reload) {
+        throw std::invalid_argument("scene snapshot import requires a reload callback");
+    }
+    (void)sceneDocument();
+    if (next_scene_revision == std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error("SceneRevision space exhausted");
+    }
+
+    // Parse, semantic validation, fresh AuthoringObjectId allocation, and all
+    // candidate allocation complete before the live cache is touched.
+    auto candidate = AuthoringSceneDocument::load(
+        scene_v1_bytes, SceneRevision{next_scene_revision},
+        next_authoring_object_id);
+    const auto committed_revision = candidate.revision();
+    const auto previous_next_revision = next_scene_revision;
+    const auto previous_next_object_id = next_authoring_object_id;
+    if (scene_import_fault == SceneImportFaultPoint::AfterCandidatePrepare) {
+        throw std::runtime_error(
+            "injected scene import fault after candidate prepare");
+    }
+
+    // This is the same allocation-free document swap used by SAVE0. The disk
+    // baseline is deliberately retained: snapshot import changes only the
+    // in-memory scene source.
+    publishPreparedSceneDocument(candidate);
+    try {
+        if (scene_import_fault == SceneImportFaultPoint::AfterPublication) {
+            throw std::runtime_error(
+                "injected scene import fault after publication");
+        }
+        reload();
+    } catch (...) {
+        // candidate owns the old live document after the first swap. Restore
+        // it without parse/allocation and rewind both allocation authorities.
+        scene_document->swap(candidate);
+        next_scene_revision = previous_next_revision;
+        next_authoring_object_id = previous_next_object_id;
+        throw;
+    }
+    return committed_revision;
 }
 
 SceneSaveResult ProjectBasicConfig::saveSceneDocument() {
@@ -657,7 +710,6 @@ SceneSaveResult ProjectBasicConfig::saveSceneDocument() {
 
     auto next_document = source.stage(source.rawJson(),
                                       SceneRevision{next_scene_revision});
-    const auto next_object_id = next_document.next_authoring_object_id_value_;
     const auto committed_revision = next_document.revision();
     auto next_baseline_digest = sceneBytesDigest(semantic_bytes);
     SceneSaveResult result{
@@ -682,10 +734,8 @@ SceneSaveResult ProjectBasicConfig::saveSceneDocument() {
     // Publication after file replacement is allocation/decode/I/O-free. RPC
     // and ImGui call SAVE0 on the engine thread, so no reader can enter this
     // short no-throw interval and observe a mixed file/cache/revision state.
-    scene_document->swap(next_document);
+    publishPreparedSceneDocument(next_document);
     scene_baseline_digest->swap(next_baseline_digest);
-    next_scene_revision = committed_revision.value + 1U;
-    next_authoring_object_id = next_object_id;
     return result;
 }
 
