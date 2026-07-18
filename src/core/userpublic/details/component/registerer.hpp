@@ -2,6 +2,7 @@
 
 #include <details/ecs/component.hpp>
 #include <details/ecs/componentdeclare.hpp>
+#include <details/reload/registrationowner.hpp>
 #include <serialize/jsonarchive.hpp>
 #include <serialize/serialize.hpp>
 #include <cstring>
@@ -28,10 +29,11 @@ class UserComponentRegistererTemplatePublic {
         void (*json_loader)(void *component, JsonArchiveLoader &ar);
     };
 
-    void __registerComponent(ComponentId id, size_t sz, ComponentLoaderInfo loader);
+    RegistrationToken __registerComponent(ComponentId id, size_t sz,
+                                          ComponentLoaderInfo loader);
 
   public:
-    template <class Component> void registerComponent(std::string name) {
+    template <class Component> RegistrationToken registerComponent(std::string name) {
         static_assert(std::is_default_constructible_v<Component>,
                       "ECS components must be default constructible");
         static_assert(std::is_nothrow_move_constructible_v<Component>,
@@ -43,7 +45,7 @@ class UserComponentRegistererTemplatePublic {
                           "ECS component deinit() must be noexcept");
         }
 
-        __registerComponent(
+        return __registerComponent(
             ComponentIdByType<Component>::value, sizeof(Component),
             ComponentLoaderInfo{
                 .name = name,
@@ -85,6 +87,9 @@ class UserComponentRegistererTemplatePublic {
 };
 
 UserComponentRegistererTemplatePublic &getComponentRegisterer();
+void unregisterComponent(RegistrationToken token);
+void unregisterComponents(RegistrationOwner owner) noexcept;
+std::size_t componentRegistrationCount(RegistrationOwner owner) noexcept;
 
 } // namespace internal
 

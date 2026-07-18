@@ -43,6 +43,7 @@ struct EventTypeRegistration {
     JsonPayloadLoadFn load_json_payload = nullptr;
     RefFieldListFn list_ref_fields = nullptr;
     RegistrationOwner owner = engineRegistrationOwner;
+    RegistrationToken token;
 };
 
 class UserEventRegistererTemplatePublic {
@@ -52,15 +53,16 @@ class UserEventRegistererTemplatePublic {
     std::size_t payload_load_calls = 0;
     bool catalog_frozen = false;
 
-    PELICAN_API void __registerEvent(EventTypeRegistration registration);
+    PELICAN_API RegistrationToken __registerEvent(EventTypeRegistration registration);
     PELICAN_API void __emit(QueuedEvent event);
     const EventTypeRegistration &validateByName(std::string_view name, const void *payload_json) const;
 
+    friend void unregisterEvent(RegistrationToken token);
     friend void unregisterEvents(RegistrationOwner owner) noexcept;
     friend std::size_t eventRegistrationCount(RegistrationOwner owner) noexcept;
 
   public:
-    template <class Event> void registerEvent(std::string name) {
+    template <class Event> RegistrationToken registerEvent(std::string name) {
         using EventType = std::remove_cvref_t<Event>;
         static_assert(std::is_object_v<EventType>, "events must be object types");
         static_assert(!std::is_pointer_v<EventType>, "events must be emitted by value, not pointer");
@@ -83,7 +85,7 @@ class UserEventRegistererTemplatePublic {
                           "typed event ref must support the event catalog recording archive");
         }
 
-        __registerEvent(EventTypeRegistration{
+        return __registerEvent(EventTypeRegistration{
             .name = std::move(name),
             .type = std::type_index{typeid(EventType)},
             .schema_state = []() constexpr {
@@ -176,6 +178,7 @@ std::size_t emitEventByName(std::string_view name, const void *payload_json);
 void validateEventPayload(std::string_view name, const void *payload_json);
 EventSchemaLookup findEventSchema(std::string_view name);
 void validateEventCatalog();
+void unregisterEvent(RegistrationToken token);
 void unregisterEvents(RegistrationOwner owner) noexcept;
 std::size_t eventRegistrationCount(RegistrationOwner owner) noexcept;
 
@@ -197,8 +200,9 @@ std::size_t eventRegistrationCount(RegistrationOwner owner) noexcept;
     }                                                                                                              \
     namespace {                                                                                                    \
     struct PELICAN_DETAIL_CONCAT(PelicanEventAutoRegister_, unique_id) {                                           \
+        ::Pelican::internal::RegistrationToken token;                                                             \
         PELICAN_DETAIL_CONCAT(PelicanEventAutoRegister_, unique_id)() {                                            \
-            ::Pelican::internal::getEventRegisterer().registerEvent<Type>(#Type);                                  \
+            token = ::Pelican::internal::getEventRegisterer().registerEvent<Type>(#Type);                          \
         }                                                                                                          \
     };                                                                                                             \
     static const PELICAN_DETAIL_CONCAT(PelicanEventAutoRegister_, unique_id)                                       \

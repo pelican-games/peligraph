@@ -1,5 +1,8 @@
 #include "registerer.hpp"
+#include "../behavior/registerer.hpp"
+#include "../system/registerer.hpp"
 
+#include <exception>
 #include "../system/registerer.hpp"
 
 #include <algorithm>
@@ -232,7 +235,8 @@ void validateObject(std::string_view event_name, const EventPayloadSchema &schem
 
 namespace internal {
 
-void UserEventRegistererTemplatePublic::__registerEvent(EventTypeRegistration registration) {
+RegistrationToken UserEventRegistererTemplatePublic::__registerEvent(
+    EventTypeRegistration registration) {
     registration.owner = currentRegistrationOwner();
     registration.name = eventDisplayName(std::move(registration.name));
 
@@ -242,7 +246,11 @@ void UserEventRegistererTemplatePublic::__registerEvent(EventTypeRegistration re
         });
     if (same_name != event_types.end()) {
         if (same_name->type == registration.type) {
-            return;
+            if (same_name->owner == registration.owner ||
+                same_name->owner == engineRegistrationOwner ||
+                registration.owner == engineRegistrationOwner) {
+                return same_name->token;
+            }
         }
         if (same_name->owner == engineRegistrationOwner || registration.owner == engineRegistrationOwner) {
             throw std::runtime_error("duplicate event name: " + registration.name);
@@ -255,7 +263,11 @@ void UserEventRegistererTemplatePublic::__registerEvent(EventTypeRegistration re
         });
     if (same_type != event_types.end()) {
         if (same_type->name == registration.name) {
-            return;
+            if (same_type->owner == registration.owner ||
+                same_type->owner == engineRegistrationOwner ||
+                registration.owner == engineRegistrationOwner) {
+                return same_type->token;
+            }
         }
         if (same_type->owner == engineRegistrationOwner || registration.owner == engineRegistrationOwner) {
             throw std::runtime_error("duplicate event type registered as '" + same_type->name + "' and '" +
@@ -267,7 +279,16 @@ void UserEventRegistererTemplatePublic::__registerEvent(EventTypeRegistration re
         throw std::runtime_error("event registration after catalog validation is forbidden");
     }
 
-    event_types.push_back(std::move(registration));
+    registration.token = acquireRegistrationToken(
+        RegistrationKind::event, registration.owner, registration.name);
+    const auto token = registration.token;
+    try {
+        event_types.push_back(std::move(registration));
+    } catch (...) {
+        (void)releaseRegistrationToken(token, RegistrationKind::event);
+        throw;
+    }
+    return token;
 }
 
 void UserEventRegistererTemplatePublic::__emit(QueuedEvent event) {
@@ -438,6 +459,53 @@ void validateEventCatalog() {
     getEventRegisterer().validateCatalogAndFreeze();
 }
 
+void unregisterEvent(RegistrationToken token) {
+    auto &registerer = getEventRegisterer();
+    const auto found = std::find_if(
+        registerer.event_types.begin(), registerer.event_types.end(),
+        [token](const EventTypeRegistration &registration) {
+            return registration.token == token;
+        });
+    if (found == registerer.event_types.end()) {
+        throw std::runtime_error("stale event registration token");
+    }
+
+    const auto replacement = std::find_if(
+        registerer.event_types.begin(), registerer.event_types.end(),
+        [&](const EventTypeRegistration &registration) {
+            return &registration != &*found && registration.type == found->type;
+        });
+    if (replacement == registerer.event_types.end()) {
+        for (const auto &system : getGameSystemRegisterer().registeredSystems()) {
+            const auto handler = std::find_if(
+                system.event_handlers.begin(), system.event_handlers.end(),
+                [&](const GameSystemEventHandlerRegistration &candidate) {
+                    return candidate.event_type == found->type;
+                });
+            if (handler != system.event_handlers.end()) {
+                throw std::runtime_error(
+                    "cannot unregister event '" + found->name +
+                    "': dependent game system '" + system.name + "' remains");
+            }
+        }
+        for (const auto &behavior : getBehaviorRegisterer().registeredBehaviors()) {
+            const auto handler = std::find_if(
+                behavior.event_handlers.begin(), behavior.event_handlers.end(),
+                [&](const BehaviorEventHandlerRegistration &candidate) {
+                    return candidate.event_type == found->type;
+                });
+            if (handler != behavior.event_handlers.end()) {
+                throw std::runtime_error(
+                    "cannot unregister event '" + found->name +
+                    "': dependent behavior '" + behavior.stable_name + "' remains");
+            }
+        }
+    }
+
+    registerer.event_types.erase(found);
+    (void)releaseRegistrationToken(token, RegistrationKind::event);
+}
+
 void unregisterEvents(RegistrationOwner owner) noexcept {
     auto &registerer = getEventRegisterer();
     const auto removed = [owner](const QueuedEvent &event) {
@@ -445,9 +513,15 @@ void unregisterEvents(RegistrationOwner owner) noexcept {
     };
     std::erase_if(registerer.pending_events, removed);
     std::erase_if(registerer.deliver_now_events, removed);
-    std::erase_if(registerer.event_types, [owner](const EventTypeRegistration &registration) {
-        return registration.owner == owner;
-    });
+    for (const auto token : registrationTokens(owner, RegistrationKind::event)) {
+        try {
+            unregisterEvent(token);
+        } catch (...) {
+            // Continuing into FreeLibrary would leave a dependent registration
+            // pointing at an unloaded event type.
+            std::terminate();
+        }
+    }
 }
 
 std::size_t eventRegistrationCount(RegistrationOwner owner) noexcept {

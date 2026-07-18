@@ -4,7 +4,7 @@
 
 namespace Pelican::internal {
 
-void UserBehaviorRegistererTemplatePublic::__registerBehavior(
+RegistrationToken UserBehaviorRegistererTemplatePublic::__registerBehavior(
     BehaviorRegistration registration) {
     registration.owner = currentRegistrationOwner();
     const auto duplicate_name = std::find_if(
@@ -36,7 +36,17 @@ void UserBehaviorRegistererTemplatePublic::__registerBehavior(
                                      registration.stable_name);
         }
     }
-    behaviors.push_back(std::move(registration));
+    registration.token = acquireRegistrationToken(
+        RegistrationKind::behavior, registration.owner,
+        registration.stable_name);
+    const auto token = registration.token;
+    try {
+        behaviors.push_back(std::move(registration));
+    } catch (...) {
+        (void)releaseRegistrationToken(token, RegistrationKind::behavior);
+        throw;
+    }
+    return token;
 }
 
 const BehaviorRegistration *UserBehaviorRegistererTemplatePublic::findByName(
@@ -62,11 +72,31 @@ UserBehaviorRegistererTemplatePublic &getBehaviorRegisterer() {
     return registerer;
 }
 
+void unregisterBehavior(RegistrationToken token) {
+    auto &behaviors = getBehaviorRegisterer().behaviors;
+    const auto found = std::find_if(
+        behaviors.begin(), behaviors.end(),
+        [token](const BehaviorRegistration &registration) {
+            return registration.token == token;
+        });
+    if (found == behaviors.end()) {
+        throw std::runtime_error("stale behavior registration token");
+    }
+    behaviors.erase(found);
+    (void)releaseRegistrationToken(token, RegistrationKind::behavior);
+}
+
 void unregisterBehaviors(RegistrationOwner owner) noexcept {
     auto &behaviors = getBehaviorRegisterer().behaviors;
-    std::erase_if(behaviors, [owner](const BehaviorRegistration &registration) {
-        return registration.owner == owner;
-    });
+    for (const auto token : registrationTokens(owner, RegistrationKind::behavior)) {
+        const auto found = std::find_if(
+            behaviors.begin(), behaviors.end(),
+            [token](const BehaviorRegistration &registration) {
+                return registration.token == token;
+            });
+        if (found != behaviors.end()) behaviors.erase(found);
+        (void)releaseRegistrationToken(token, RegistrationKind::behavior);
+    }
 }
 
 std::size_t behaviorRegistrationCount(RegistrationOwner owner) noexcept {

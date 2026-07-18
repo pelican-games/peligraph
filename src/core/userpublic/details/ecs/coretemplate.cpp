@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <limits>
 #include <set>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -23,6 +24,70 @@ namespace Pelican {
 namespace internal {
 size_t getIndexFromComponentId_Ref(ComponentId id) {
     return GET_MODULE(ComponentInfoManager).getIndexFromComponentId(id);
+}
+
+namespace {
+struct ECSComponentDependency {
+    const void *core = nullptr;
+    SystemId system_id = 0;
+    std::string name;
+    std::vector<size_t> component_indices;
+};
+
+struct ECSComponentDependencyRegistry {
+    std::mutex mutex;
+    std::vector<ECSComponentDependency> entries;
+};
+
+ECSComponentDependencyRegistry &componentDependencyRegistry() {
+    static auto *value = new ECSComponentDependencyRegistry;
+    return *value;
+}
+} // namespace
+
+void registerECSSystemComponentDependencies(
+    const void *core, SystemId system_id, std::string name,
+    std::vector<size_t> component_indices) {
+    auto &registry = componentDependencyRegistry();
+    std::scoped_lock lock{registry.mutex};
+    registry.entries.push_back(ECSComponentDependency{
+        .core = core,
+        .system_id = system_id,
+        .name = std::move(name),
+        .component_indices = std::move(component_indices),
+    });
+}
+
+void unregisterECSSystemComponentDependencies(const void *core,
+                                              SystemId system_id) noexcept {
+    auto &registry = componentDependencyRegistry();
+    std::scoped_lock lock{registry.mutex};
+    std::erase_if(registry.entries, [&](const ECSComponentDependency &entry) {
+        return entry.core == core && entry.system_id == system_id;
+    });
+}
+
+void unregisterECSCoreComponentDependencies(const void *core) noexcept {
+    auto &registry = componentDependencyRegistry();
+    std::scoped_lock lock{registry.mutex};
+    std::erase_if(registry.entries, [&](const ECSComponentDependency &entry) {
+        return entry.core == core;
+    });
+}
+
+std::vector<std::string> ecsComponentDependentNames(size_t component_index) {
+    auto &registry = componentDependencyRegistry();
+    std::scoped_lock lock{registry.mutex};
+    std::vector<std::string> result;
+    for (const auto &entry : registry.entries) {
+        if (std::find(entry.component_indices.begin(), entry.component_indices.end(),
+                      component_index) != entry.component_indices.end()) {
+            result.push_back(entry.name);
+        }
+    }
+    std::sort(result.begin(), result.end());
+    result.erase(std::unique(result.begin(), result.end()), result.end());
+    return result;
 }
 
 namespace {
@@ -224,6 +289,10 @@ ECSExecutionPlan buildECSExecutionPlan(std::span<const ECSSystemGraphNode> input
     return result;
 }
 } // namespace internal
+
+ECSCoreTemplatePublic::~ECSCoreTemplatePublic() {
+    internal::unregisterECSCoreComponentDependencies(this);
+}
 
 ECSCoreTemplatePublic::MutationScope::MutationScope(ECSCoreTemplatePublic &value) : owner{value} {
     if (owner.mutation_active) {
@@ -584,6 +653,7 @@ void ECSCoreTemplatePublic::unregisterSystem(SystemId system_id) {
         systems.at(depends).depended_by.erase(system_id);
     }
     systems.erase(system_id);
+    internal::unregisterECSSystemComponentDependencies(this, system_id);
     execution_plan_dirty = true;
 }
 
