@@ -41,14 +41,20 @@ enum class StructFieldType : std::uint8_t {
 using StructFieldRange = std::variant<std::monostate, std::pair<std::int64_t, std::int64_t>,
                                       std::pair<std::uint64_t, std::uint64_t>, std::pair<double, double>>;
 
+inline constexpr std::size_t maxStructFieldEnumValues = 8;
+
 struct StructFieldSchema {
     std::string_view name;
     StructFieldType type;
     StructFieldRange range;
     std::string_view unit;
+    // Flat owned storage avoids self-referential spans and preserves the MSVC
+    // constexpr-in-incomplete-owner invariant used by WP71 fixtures.
+    std::string_view enum_values[maxStructFieldEnumValues]{};
+    std::size_t enum_value_count = 0;
 
     constexpr StructFieldSchema(std::string_view field_name, StructFieldType field_type,
-                                StructFieldRange field_range, std::string_view field_unit = {})
+                                 StructFieldRange field_range, std::string_view field_unit = {})
         : name(field_name), type(field_type), range(std::move(field_range)), unit(field_unit) {}
 };
 
@@ -124,6 +130,8 @@ struct StructFieldDescriptor {
     StructFieldType type;
     StructFieldRangeDescriptor range;
     std::string_view unit;
+    std::string_view enum_values[maxStructFieldEnumValues]{};
+    std::size_t enum_value_count = 0;
 };
 
 template <class T> consteval StructFieldType structFieldType() {
@@ -199,7 +207,13 @@ constexpr StructFieldRange materializeStructFieldRange(const StructFieldRangeDes
 }
 
 constexpr StructFieldSchema materializeStructField(const StructFieldDescriptor &field) {
-    return StructFieldSchema{field.name, field.type, materializeStructFieldRange(field.range), field.unit};
+    StructFieldSchema result{field.name, field.type,
+                             materializeStructFieldRange(field.range), field.unit};
+    result.enum_value_count = field.enum_value_count;
+    for (std::size_t index = 0; index < field.enum_value_count; ++index) {
+        result.enum_values[index] = field.enum_values[index];
+    }
+    return result;
 }
 
 template <class T>
@@ -450,6 +464,22 @@ consteval auto structFields(Policy policy, PolicyFields... policy_fields) {
 
         std::array<internal::StructFieldDescriptor, sizeof...(PolicyFields)> field_descriptors{
             policy_fields.field.descriptor...};
+        const auto copy_enum_values = [&]<class PolicyField>(
+                                          std::size_t index,
+                                          const PolicyField &policy_field) {
+            if constexpr (internal::PolicyFieldTraits<PolicyField>::has_enum_values) {
+                static_assert(
+                    std::tuple_size_v<decltype(policy_field.enum_values.values)> <=
+                        maxStructFieldEnumValues,
+                    "enumValues exceeds maxStructFieldEnumValues");
+                auto &target = field_descriptors[index];
+                for (const auto &entry : policy_field.enum_values.values) {
+                    target.enum_values[target.enum_value_count++] = entry.name;
+                }
+            }
+        };
+        std::size_t enum_index = 0;
+        (copy_enum_values(enum_index++, policy_fields), ...);
         for (std::size_t i = 0; i < field_descriptors.size(); ++i) {
             for (std::size_t j = i + 1; j < field_descriptors.size(); ++j) {
                 if (field_descriptors[i].name == field_descriptors[j].name) {
