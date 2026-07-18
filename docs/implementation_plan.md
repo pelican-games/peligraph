@@ -3976,6 +3976,49 @@ rpcserver・schema 三 header・behavior 系に触らない**。
 検査)+ 既存全テスト(WP151/WP152 fixture 無変更)+ golden SKIP 0・
 byte 不変 + player 8 秒 + CI green
 
+### WP154: E-RPC0-base — editor query 群 + snapshot export
+
+前提: `docs/design_editor_tooling.md` **v2.5 は条件付き Accept**
+(`docs/design_reviews/2026-07-18_editor_v25_final_review_codex.md`)。
+
+参照: **`docs/design_editor_tooling.md` §1-1 の逐語が受け入れ条件**:
+
+> query は `{scene_revision, authoring_object_id, name?, parent?,
+> entity_id?, components[]}` を返す。component ごとに `authored_json`,
+> optional `runtime_json`, `editable`, `codec/schema state`, `pending` を
+> 区別する。JSON key/order、object/component declaration order、
+> EntityId 表示は二回実行で一致させる。RPC handler の外に typed
+> EditorCommandService を置き、RPC/ImGui fake adapter が同じ query
+> 結果/error code を返すことを検査する。依存は ED-AUTH0/ED-CODEC0。
+
+加えて `export_scene_snapshot` を **§1-6-3 の
+ExportSceneSnapshotRequestV1/ResponseV1 逐語どおり**実装する
+(named V1 schema・uint ≤2^53−1・64 MiB 上限・snapshot_busy/
+snapshot_too_large・digest は実 bytes から sha256 生成 — 文書中の例の
+digest 値は placeholder であり fixture に流用禁止(v2.5 レビュー §3
+注意))。transform の runtime_json は `{local_trs, world_trs}` 区別
+(E-C2 — 表示用 projection・authored への write-back 禁止)。
+
+**schema owner 条件(v2.4 レビュー §5 の逐語 — SNAPSHOT0 と双方に
+添付)**:
+
+> §1-6-3 の schema evolution、compatibility fixture、export/import
+> 一組の acceptance owner は SNAPSHOT0 とする。E-RPC0-base は
+> SNAPSHOT0 が固定した export schema を実装する prerequisite surface
+> であって、独立した schema owner ではない。export/import の片側だけを
+> 互換性変更してはならない。
+
+依存: WP149(済)+ WP151(済)。見積: 中〜大。
+排他: EditorCommandService 新設 + communication/rpcserver への query
+method 追加 + fixture。**query は read-only** —
+componentcodec.cpp/scene.cpp/light/phys の変更禁止(WP153 が並走中。
+codec registry・AuthoringSceneDocument は読み取りのみ)。schema 三
+header 凍結。edit 系 method は実装しない(E-RPC1 の責務)。
+
+受け入れ = §1-1 逐語 gate(二回実行一致・fake adapter 等価)+
+export schema 逐語 + 既存全テスト無変更 + golden SKIP 0・byte 不変 +
+player 8 秒 + CI green
+
 ### WP137: 負債 CI0 — CPU gate の常設(GitHub Actions)
 
 参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
