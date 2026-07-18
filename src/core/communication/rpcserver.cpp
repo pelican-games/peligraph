@@ -787,6 +787,10 @@ void RpcServer::setHandler(std::string method, MethodHandler handler) {
     handlers.insert_or_assign(std::move(method), std::move(handler));
 }
 
+std::string RpcServer::processLine(std::string_view line) const {
+    return handleLine(line);
+}
+
 std::string RpcServer::handleLine(std::string_view line) const {
     const auto parsed = parseJsonRpcRequest(line);
     if (parsed.error) {
@@ -834,26 +838,10 @@ void RpcServer::run() {
     }
 }
 
-void runEngineRpcServer(std::istream &input, std::ostream &output) {
-    auto modules = resolveEngineRpcModules();
-    RpcServer server{input, output};
-    const auto instance_id = generateUuidV4();
-    std::vector<PendingTransformUpdate> pending_transforms;
-    EditorCommandService editor_service{EditorCommandServiceDependencies{
-        .document = [&modules]() -> const AuthoringSceneDocument & {
-            return modules.project_config.sceneDocument();
-        },
-        .current_scene_id = [&modules] { return modules.scene_loader.currentScene(); },
-        .runtime_query = [&modules](const AuthoringSceneView &scene,
-                                   const AuthoringObjectView &object) {
-            return queryEditorRuntime(modules, scene, object);
-        },
-        .assets = [&modules] { return collectEditorAssets(modules); },
-        // E-RPC0-base has no ticket or preview lease owner yet.
-        .snapshot_state = [] { return EditorSnapshotState{}; },
-    }};
-    EditorCommandRpcAdapter editor_rpc{editor_service};
-
+void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
+                                const std::string &instance_id,
+                                std::vector<PendingTransformUpdate> &pending_transforms,
+                                EditorCommandRpcAdapter &editor_rpc) {
     server.setHandler("reload_game_logic", [&pending_transforms, &modules](const nlohmann::json &params) {
         requireObjectParams(params, "reload_game_logic");
         const auto before = configuredGameLogicStatus();
@@ -1191,8 +1179,55 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
             {"contract", 2},
         };
     });
+}
 
-    server.run();
+struct EngineRpcEndpoint::Impl {
+    EngineRpcModules modules;
+    RpcServer server;
+    std::string instance_id;
+    std::vector<PendingTransformUpdate> pending_transforms;
+    EditorCommandService editor_service;
+    EditorCommandRpcAdapter editor_rpc;
+
+    Impl(std::istream &input, std::ostream &output)
+        : modules{resolveEngineRpcModules()}, server{input, output},
+          instance_id{generateUuidV4()},
+          editor_service{EditorCommandServiceDependencies{
+              .document = [this]() -> const AuthoringSceneDocument & {
+                  return modules.project_config.sceneDocument();
+              },
+              .current_scene_id = [this] { return modules.scene_loader.currentScene(); },
+              .runtime_query = [this](const AuthoringSceneView &scene,
+                                      const AuthoringObjectView &object) {
+                  return queryEditorRuntime(modules, scene, object);
+              },
+              .assets = [this] { return collectEditorAssets(modules); },
+              // E-RPC0-base has no ticket or preview lease owner yet.
+              .snapshot_state = [] { return EditorSnapshotState{}; },
+          }},
+          editor_rpc{editor_service} {
+        configureEngineRpcHandlers(server, modules, instance_id,
+                                   pending_transforms, editor_rpc);
+    }
+};
+
+EngineRpcEndpoint::EngineRpcEndpoint(std::istream &input_stream,
+                                     std::ostream &output_stream)
+    : impl_{std::make_unique<Impl>(input_stream, output_stream)} {}
+
+EngineRpcEndpoint::~EngineRpcEndpoint() = default;
+
+std::string EngineRpcEndpoint::processLine(std::string_view line) const {
+    return impl_->server.processLine(line);
+}
+
+void EngineRpcEndpoint::run() {
+    impl_->server.run();
+}
+
+void runEngineRpcServer(std::istream &input, std::ostream &output) {
+    EngineRpcEndpoint endpoint{input, output};
+    endpoint.run();
 }
 
 } // namespace Pelican

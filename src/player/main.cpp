@@ -226,7 +226,9 @@ void configureExplicitProject(ParsedLaunchConfig &parsed, const std::string &val
 ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
     argparse::ArgumentParser program("Pelican Player");
     program.add_argument("--headless").flag().help("run without a window");
-    program.add_argument("--rpc").flag().help("run stdio JSON-RPC mode; requires --headless");
+    program.add_argument("--rpc")
+        .flag()
+        .help("enable stdio JSON-RPC (blocking in headless, frame-boundary in windowed mode)");
     program.add_argument("--xr")
         .default_value(std::string{"off"})
         .metavar("off|auto|on")
@@ -300,9 +302,6 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         config.headless = program.get<bool>("--headless");
         config.rpc = program.get<bool>("--rpc");
         config.xr_mode = parseXrMode(program.get<std::string>("--xr"));
-        if (config.rpc && !config.headless) {
-            throw std::runtime_error("--rpc requires --headless in protocol v1");
-        }
 #if !PELICAN_WITH_RPC
         if (config.rpc) {
             Pelican::throwBuildFeatureDisabled("PELICAN_WITH_RPC", "--rpc is unavailable");
