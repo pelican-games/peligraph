@@ -427,5 +427,105 @@ TEST_CASE("ECS migration rolls back and commits system chunk cache and versions"
     REQUIRE(MigrationMoveOnlyComponent::resources == 0);
 }
 
+TEST_CASE("ECS migration prepare tokens leave live state unchanged and invert publication",
+          "[ecs][migration][prepared-token][atomic]") {
+    FastModuleContainer modules;
+    registerMigrationComponents();
+    MigrationMoveOnlyComponent::reset();
+    MigrationAddedComponent::reset();
+    ECSCoreTemplatePublic core;
+    const auto entity = createMigrationEntity(core, "prepared-source");
+    auto *const original = core.tryComponent<MigrationMoveOnlyComponent>(entity);
+
+    auto add = ECSArchetypeMigration::prepareAdd(
+        core, entity, ComponentIdByType<MigrationAddedComponent>::value,
+        [](void *ptr) {
+            static_cast<MigrationAddedComponent *>(ptr)->value = 808;
+        });
+    REQUIRE(core.liveCount() == 1);
+    REQUIRE(core.isAlive(entity));
+    REQUIRE(core.tryComponent<MigrationMoveOnlyComponent>(entity) == original);
+    REQUIRE(core.component<MigrationMoveOnlyComponent>(entity).value ==
+            "prepared-source");
+    REQUIRE(core.tryComponent<MigrationAddedComponent>(entity) == nullptr);
+    REQUIRE(MigrationMoveOnlyComponent::resources == 1);
+    REQUIRE(MigrationAddedComponent::resources == 1);
+    REQUIRE(static_cast<MigrationAddedComponent *>(add.stagedComponent())->value ==
+            808);
+    add.publish();
+    REQUIRE(core.component<MigrationAddedComponent>(entity).value == 808);
+    add.rollback();
+    requireUnchanged(core, entity, original, "prepared-source");
+
+    auto committed_add = ECSArchetypeMigration::prepareAdd(
+        core, entity, ComponentIdByType<MigrationAddedComponent>::value,
+        [](void *ptr) {
+            static_cast<MigrationAddedComponent *>(ptr)->value = 909;
+        });
+    committed_add.publish();
+    committed_add.finish();
+    REQUIRE(core.component<MigrationAddedComponent>(entity).value == 909);
+
+    auto remove = ECSArchetypeMigration::prepareRemove(
+        core, entity, ComponentIdByType<MigrationAddedComponent>::value);
+    REQUIRE(core.component<MigrationAddedComponent>(entity).value == 909);
+    remove.publish();
+    REQUIRE(core.tryComponent<MigrationAddedComponent>(entity) == nullptr);
+    remove.rollback();
+    REQUIRE(core.component<MigrationAddedComponent>(entity).value == 909);
+    core.clearEntities();
+    REQUIRE(MigrationMoveOnlyComponent::resources == 0);
+    REQUIRE(MigrationAddedComponent::resources == 0);
+}
+
+TEST_CASE("ECS entity create and destroy prepared tokens restore id generation and free list",
+          "[ecs][entity-mutation][prepared-token][atomic]") {
+    FastModuleContainer modules;
+    registerMigrationComponents();
+    MigrationMoveOnlyComponent::reset();
+    MigrationAddedComponent::reset();
+    ECSCoreTemplatePublic core;
+    const auto existing = createMigrationEntity(core, "existing");
+    const std::array components{
+        ComponentIdByType<MigrationMoveOnlyComponent>::value};
+
+    auto create = ECSEntityMutation::prepareCreate(
+        core, components, [](std::span<void *> values) {
+            static_cast<MigrationMoveOnlyComponent *>(values[0])->value =
+                "prepared-create";
+        });
+    const auto candidate = create.entity();
+    REQUIRE_FALSE(core.isAlive(candidate));
+    REQUIRE(core.liveCount() == 1);
+    create.publish();
+    REQUIRE(core.isAlive(candidate));
+    REQUIRE(core.component<MigrationMoveOnlyComponent>(candidate).value ==
+            "prepared-create");
+    create.rollback();
+    REQUIRE_FALSE(core.isAlive(candidate));
+    REQUIRE(core.liveCount() == 1);
+
+    auto destroy = ECSEntityMutation::prepareDestroy(core, existing);
+    REQUIRE(core.isAlive(existing));
+    REQUIRE(core.component<MigrationMoveOnlyComponent>(existing).value ==
+            "existing");
+    destroy.publish();
+    REQUIRE_FALSE(core.isAlive(existing));
+    destroy.rollback();
+    REQUIRE(core.isAlive(existing));
+    REQUIRE(core.component<MigrationMoveOnlyComponent>(existing).value ==
+            "existing");
+
+    auto committed_destroy = ECSEntityMutation::prepareDestroy(core, existing);
+    committed_destroy.publish();
+    committed_destroy.finish();
+    REQUIRE_FALSE(core.isAlive(existing));
+    const auto reused = createMigrationEntity(core, "reused");
+    REQUIRE(reused.index == existing.index);
+    REQUIRE(reused.generation == existing.generation + 1);
+    core.clearEntities();
+    REQUIRE(MigrationMoveOnlyComponent::resources == 0);
+}
+
 } // namespace
 } // namespace Pelican

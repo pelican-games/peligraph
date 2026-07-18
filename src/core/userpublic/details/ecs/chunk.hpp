@@ -12,12 +12,21 @@ namespace Pelican {
 
 class ECSCoreTemplatePublic;
 class ECSArchetypeMigration;
+class ECSArchetypeMigrationToken;
+class ECSEntityMutationToken;
+class ECSEntityMutation;
 
 class ECSComponentChunk {
     friend class ECSCoreTemplatePublic;
     friend class ECSArchetypeMigration;
+    friend class ECSArchetypeMigrationToken;
+    friend class ECSEntityMutationToken;
+    friend class ECSEntityMutation;
     class VariedArray {
         friend class ECSArchetypeMigration;
+        friend class ECSArchetypeMigrationToken;
+        friend class ECSEntityMutationToken;
+        friend class ECSEntityMutation;
 
         size_t count = 0;
         size_t stride = 0;

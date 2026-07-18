@@ -4,7 +4,9 @@
 #include <details/ecs/entity.hpp>
 
 #include <functional>
+#include <memory>
 #include <span>
+#include <vector>
 
 namespace Pelican {
 
@@ -47,10 +49,84 @@ class ECSArchetypeMigrationAdapter {
     virtual void publish(const ECSArchetypeMigrationPublishContext &context) noexcept = 0;
 };
 
+class ECSArchetypeMigrationToken {
+    struct State;
+    std::unique_ptr<State> state_;
+
+    explicit ECSArchetypeMigrationToken(std::unique_ptr<State> state) noexcept;
+    friend class ECSArchetypeMigration;
+
+  public:
+    ECSArchetypeMigrationToken() noexcept;
+    ~ECSArchetypeMigrationToken();
+    ECSArchetypeMigrationToken(ECSArchetypeMigrationToken &&) noexcept;
+    ECSArchetypeMigrationToken &operator=(ECSArchetypeMigrationToken &&) noexcept;
+    ECSArchetypeMigrationToken(const ECSArchetypeMigrationToken &) = delete;
+    ECSArchetypeMigrationToken &operator=(const ECSArchetypeMigrationToken &) = delete;
+
+    explicit operator bool() const noexcept { return state_ != nullptr; }
+    bool published() const noexcept;
+    void *stagedComponent() const noexcept;
+    void *removedComponent() const noexcept;
+
+    void publish() noexcept;
+    void rollback() noexcept;
+    void finish() noexcept;
+};
+
+enum class ECSEntityMutationKind {
+    create,
+    destroy,
+};
+
+class ECSEntityMutationToken {
+    struct State;
+    std::unique_ptr<State> state_;
+
+    explicit ECSEntityMutationToken(std::unique_ptr<State> state) noexcept;
+    friend class ECSEntityMutation;
+
+  public:
+    ECSEntityMutationToken() noexcept;
+    ~ECSEntityMutationToken();
+    ECSEntityMutationToken(ECSEntityMutationToken &&) noexcept;
+    ECSEntityMutationToken &operator=(ECSEntityMutationToken &&) noexcept;
+    ECSEntityMutationToken(const ECSEntityMutationToken &) = delete;
+    ECSEntityMutationToken &operator=(const ECSEntityMutationToken &) = delete;
+
+    explicit operator bool() const noexcept { return state_ != nullptr; }
+    EntityId entity() const noexcept;
+    ECSEntityMutationKind kind() const noexcept;
+    bool published() const noexcept;
+    void publish() noexcept;
+    void rollback() noexcept;
+    void finish() noexcept;
+};
+
+class ECSEntityMutation {
+  public:
+    using Populate = std::function<void(std::span<void *>)>;
+
+    static ECSEntityMutationToken
+    prepareCreate(ECSCoreTemplatePublic &core,
+                  std::span<const ComponentId> component_ids,
+                  const Populate &populate = {});
+    static ECSEntityMutationToken prepareDestroy(ECSCoreTemplatePublic &core,
+                                                 EntityId entity);
+};
+
 class ECSArchetypeMigration {
   public:
     using Populate = std::function<void(void *)>;
     using Adapters = std::span<ECSArchetypeMigrationAdapter *const>;
+
+    static ECSArchetypeMigrationToken
+    prepareAdd(ECSCoreTemplatePublic &core, EntityId entity,
+               ComponentId component, const Populate &populate = {},
+               Adapters adapters = {});
+    static ECSArchetypeMigrationToken
+    prepareRemove(ECSCoreTemplatePublic &core, EntityId entity,
+                  ComponentId component, Adapters adapters = {});
 
     static void add(ECSCoreTemplatePublic &core, EntityId entity, ComponentId component,
                     const Populate &populate = {}, Adapters adapters = {});
@@ -58,9 +134,10 @@ class ECSArchetypeMigration {
                        Adapters adapters = {});
 
   private:
-    static void migrate(ECSCoreTemplatePublic &core, EntityId entity, ComponentId component,
-                        ECSArchetypeMigrationKind kind, const Populate &populate,
-                        Adapters adapters);
+    static ECSArchetypeMigrationToken
+    prepare(ECSCoreTemplatePublic &core, EntityId entity, ComponentId component,
+            ECSArchetypeMigrationKind kind, const Populate &populate,
+            Adapters adapters);
 };
 
 } // namespace Pelican

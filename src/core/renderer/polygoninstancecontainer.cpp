@@ -260,6 +260,7 @@ size_t primitiveCount(const ModelTemplate &model) {
 
 struct StagedModelInstance::Impl {
     ModelInstanceId id{};
+    glm::mat4 model_matrix{1.0F};
     std::vector<glm::mat4> skin_palette;
     ModelAssetId asset_id{};
     std::shared_ptr<const SourceMaterialInitialValueTable> material_initial_values;
@@ -401,6 +402,12 @@ StagedModelInstance PolygonInstanceContainer::stageModelInstance(const ModelTemp
     return StagedModelInstance{std::move(staged)};
 }
 
+void PolygonInstanceContainer::setStagedModelMatrix(
+    StagedModelInstance &staged, const glm::mat4 &matrix) noexcept {
+    assert(staged.impl_ != nullptr);
+    staged.impl_->model_matrix = matrix;
+}
+
 void PolygonInstanceContainer::publishModelInstance(StagedModelInstance staged) noexcept {
     assert(staged.impl_ != nullptr);
     assert(render_commands.size() + staged.impl_->render_commands.size() <=
@@ -411,8 +418,8 @@ void PolygonInstanceContainer::publishModelInstance(StagedModelInstance staged) 
     assert(candidate.id.scene_epoch == scene_epoch);
     if (index == model_instances_data.size()) {
         assert(model_instances_data.size() < model_instances_data.capacity());
-        model_instances_data.push_back(glm::identity<glm::mat4>());
-        previous_model_instances_data.push_back(glm::identity<glm::mat4>());
+        model_instances_data.push_back(candidate.model_matrix);
+        previous_model_instances_data.push_back(candidate.model_matrix);
         model_history_valid.push_back(false);
         skin_palettes.push_back(std::move(candidate.skin_palette));
         previous_skin_palettes.emplace_back();
@@ -434,8 +441,8 @@ void PolygonInstanceContainer::publishModelInstance(StagedModelInstance staged) 
         assert(index < instance_alive.size() && !instance_alive[index]);
         assert(instance_generations[index] == candidate.id.generation);
         free_instance_indices.pop_back();
-        model_instances_data[index] = glm::identity<glm::mat4>();
-        previous_model_instances_data[index] = glm::identity<glm::mat4>();
+        model_instances_data[index] = candidate.model_matrix;
+        previous_model_instances_data[index] = candidate.model_matrix;
         model_history_valid[index] = false;
         skin_palettes[index] = std::move(candidate.skin_palette);
         previous_skin_palettes[index].clear();

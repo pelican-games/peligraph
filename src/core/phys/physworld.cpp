@@ -258,6 +258,12 @@ PhysWorld::PreparedState PhysWorld::snapshotPrepared() const {
 
 PhysWorld::PreparedState
 PhysWorld::prepareBindings(std::vector<Binding> next_bindings) const {
+    return prepareBindings(std::move(next_bindings), {});
+}
+
+PhysWorld::PreparedState PhysWorld::prepareBindings(
+    std::vector<Binding> next_bindings,
+    std::span<const GameObjectId> unpublished_entities) const {
     PreparedState prepared{
         .bindings = std::move(next_bindings),
         .next_collider_id_value = next_collider_id_value,
@@ -276,9 +282,14 @@ PhysWorld::prepareBindings(std::vector<Binding> next_bindings) const {
         binding.collider.validate();
         if (const auto *object_id =
                 std::get_if<GameObjectId>(&binding.transform_source)) {
-            if (ecs == nullptr ||
-                ecs->getTemplatePublicModule()
-                        .tryComponent<TransformComponent>(*object_id) == nullptr) {
+            const bool unpublished =
+                std::find(unpublished_entities.begin(),
+                          unpublished_entities.end(), *object_id) !=
+                unpublished_entities.end();
+            if (!unpublished &&
+                (ecs == nullptr ||
+                 ecs->getTemplatePublicModule()
+                         .tryComponent<TransformComponent>(*object_id) == nullptr)) {
                 throw std::runtime_error(
                     "Collider object has no live transform: " +
                     binding.identity.name + " (" + toString(*object_id) + ")");

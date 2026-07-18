@@ -291,6 +291,8 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     PolygonInstanceContainer();
     void preflightModelInstance(const ModelTemplate &model) const;
     StagedModelInstance stageModelInstance(const ModelTemplate &model);
+    void setStagedModelMatrix(StagedModelInstance &staged,
+                              const glm::mat4 &matrix) noexcept;
     void publishModelInstance(StagedModelInstance staged) noexcept;
     ModelInstanceId placeModelInstance(const ModelTemplate &model);
     bool removeModelInstance(ModelInstanceId id);

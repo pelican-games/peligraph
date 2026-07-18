@@ -4,6 +4,7 @@
 #include "../container.hpp"
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <nlohmann/json_fwd.hpp>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -94,6 +95,8 @@ DECLARE_MODULE(Camera) {
     bool hasSceneCamera(std::string_view name) const;
     PreparedSceneState snapshotPrepared() const;
     PreparedSceneState prepareSceneCameras(std::string_view scene_id) const;
+    PreparedSceneState prepareSceneCameras(
+        std::string_view scene_id, const nlohmann::json &scenes) const;
     void publishPrepared(PreparedSceneState &&prepared) noexcept;
     void loadSceneCameras(std::string_view scene_id);
     void setActiveCamera(std::string_view name);

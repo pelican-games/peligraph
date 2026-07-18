@@ -323,6 +323,138 @@ TEST_CASE("Editor projection restores every adapter prepare and inverse publish 
     REQUIRE(runtime == committed_runtime);
 }
 
+TEST_CASE("Editor projection structural stage preserves stable identity and destroy interval",
+          "[editor-projection][structural][identity]") {
+    DocumentTarget target{AuthoringSceneDocument::load(
+        projectionFixture().dump(), SceneRevision{100}, 400)};
+    const auto original = target.document.query().front().objects;
+    REQUIRE(original.size() == 4);
+    const auto middle_id = original[1].authoring_object_id;
+    const auto leaf_id = original[2].authoring_object_id;
+    const auto zero_id = original[3].authoring_object_id;
+
+    const std::array remove{makeRemoveObjectCommand(leaf_id)};
+    EditorProjectionTransaction destroy{target, SceneRevision{100}};
+    const auto destroyed = destroy.commit(remove, {});
+    REQUIRE(destroyed.committed());
+    REQUIRE(destroyed.removed_objects.size() == 1);
+    const auto closure = destroyed.removed_objects.front();
+    REQUIRE(closure.authoring_object_id == leaf_id);
+    REQUIRE(closure.previous_object_id == middle_id);
+    REQUIRE(closure.next_object_id == zero_id);
+    REQUIRE(target.document.query().front().objects.size() == 3);
+
+    const std::array restore{makeRestoreObjectCommand(closure)};
+    EditorProjectionTransaction inverse{target, SceneRevision{101}};
+    const auto restored = inverse.commit(restore, {});
+    REQUIRE(restored.committed());
+    const auto after_inverse = target.document.query().front().objects;
+    REQUIRE(after_inverse.size() == 4);
+    REQUIRE(after_inverse[1].authoring_object_id == middle_id);
+    REQUIRE(after_inverse[2].authoring_object_id == leaf_id);
+    REQUIRE(after_inverse[2].authoredJson() == closure.authored_json);
+
+    const auto spawned_json = nlohmann::json{
+        {"name", "Spawned"},
+        {"components", nlohmann::json::array({
+             nlohmann::json{{"name", "transform"},
+                            {"pos", {1, 2, 3}},
+                            {"rotation", {0, 0, 0, 1}},
+                            {"scale", {1, 1, 1}}}})}};
+    const std::array insert{makeInsertObjectCommand("main", 2, spawned_json)};
+    EditorProjectionTransaction spawn{target, SceneRevision{102}};
+    const auto spawned = spawn.commit(insert, {});
+    REQUIRE(spawned.committed());
+    REQUIRE(spawned.structural_changes.size() == 1);
+    const auto spawned_id = spawned.structural_changes.front().authoring_object_id;
+    REQUIRE(spawned_id.value == 404);
+    REQUIRE(target.document.query().front().objects[2].authoring_object_id ==
+            spawned_id);
+
+    const std::array rename_reorder{
+        makeRenameObjectCommand(spawned_id, std::optional<std::string>{"Renamed"}),
+        makeReorderObjectCommand(spawned_id, 4),
+    };
+    EditorProjectionTransaction reshape{target, SceneRevision{103}};
+    REQUIRE(reshape.commit(rename_reorder, {}).committed());
+    const auto final_objects = target.document.query().front().objects;
+    REQUIRE(final_objects.back().authoring_object_id == spawned_id);
+    REQUIRE(final_objects.back().name == std::optional<std::string>{"Renamed"});
+}
+
+TEST_CASE("Structural spawn destroy and mixed command faults restore document and runtime exactly",
+          "[editor-projection][structural][fault][mixed]") {
+    const auto source = projectionFixture();
+    const auto ids = AuthoringSceneDocument::load(
+                         source.dump(), SceneRevision{1}, 700)
+                         .query()
+                         .front()
+                         .objects;
+    const auto leaf_id = ids[2].authoring_object_id;
+    const auto spawned_object = nlohmann::json{
+        {"name", "FaultSpawn"},
+        {"components", nlohmann::json::array({
+             nlohmann::json{{"name", "transform"},
+                            {"pos", {4, 5, 6}},
+                            {"rotation", {0, 0, 0, 1}},
+                            {"scale", {1, 1, 1}}}})}};
+
+    const auto run_fault = [&](std::vector<EditorProjectionCommand> commands,
+                               EditorProjectionFaultPoint point,
+                               std::string adapter_name) {
+        DocumentTarget target{AuthoringSceneDocument::load(
+            source.dump(), SceneRevision{200}, 700)};
+        const auto document_before = target.document.encodeSemantic();
+        RuntimeSnapshot runtime;
+        runtime.lifecycle_trace.reserve(32);
+        const auto runtime_before = runtime;
+        auto adapters = makeSnapshotAdapters(runtime);
+        auto pointers = adapterPointers(adapters);
+        OnePointFault fault{point, std::move(adapter_name)};
+        EditorProjectionTransaction transaction{target, SceneRevision{200},
+                                                &fault};
+        const auto result = transaction.commit(commands, pointers);
+        REQUIRE(result.status == EditorProjectionStatus::Failed);
+        REQUIRE(target.document.revision() == SceneRevision{200});
+        REQUIRE(target.document.encodeSemantic() == document_before);
+        REQUIRE(runtime == runtime_before);
+    };
+
+    for (const auto point : {EditorProjectionFaultPoint::Prepare,
+                             EditorProjectionFaultPoint::Publish}) {
+        DYNAMIC_SECTION("spawn fault " << static_cast<int>(point)) {
+            run_fault(
+                {makeInsertObjectCommand("main", 1, spawned_object)}, point,
+                "ecs_archetype");
+        }
+        DYNAMIC_SECTION("destroy fault " << static_cast<int>(point)) {
+            run_fault({makeRemoveObjectCommand(leaf_id)}, point,
+                      "ecs_archetype");
+        }
+        DYNAMIC_SECTION("mixed spawn set light fault "
+                        << static_cast<int>(point)) {
+            run_fault(
+                {makeInsertObjectCommand("main", 1, spawned_object),
+                 makeSetComponentValueCommand(
+                     "main", "Root", "transform",
+                     nlohmann::json{{"name", "transform"},
+                                    {"pos", {20, 2, 0}},
+                                    {"rotation", {0, 0, 0, 1}},
+                                    {"scale", {2, 3, 4}}}),
+                 makeSetComponentValueCommand(
+                     "main", "Root", "light",
+                     nlohmann::json{{"name", "light"},
+                                    {"type", "directional"},
+                                    {"direction", {0, -1, -1}},
+                                    {"intensity", 4.0},
+                                    {"color", {1, 0.5, 0.25}}})},
+                point, point == EditorProjectionFaultPoint::Prepare
+                           ? "ecs_archetype"
+                           : "light");
+        }
+    }
+}
+
 TEST_CASE("Transform projection recomputes descendants and reparent policies",
           "[editor-projection][transform][reparent]") {
     DocumentTarget target{AuthoringSceneDocument::load(

@@ -83,6 +83,8 @@ struct EditorProjectionResult {
     SceneRevision base_revision{};
     SceneRevision committed_revision{};
     std::optional<EditorProjectionError> error;
+    std::vector<AuthoringStructuralChange> structural_changes;
+    std::vector<AuthoringObjectClosure> removed_objects;
 
     bool committed() const noexcept {
         return status == EditorProjectionStatus::Committed;
@@ -119,9 +121,11 @@ class ProjectBasicConfigProjectionTarget final
 
 struct EditorProjectionCommand {
     using Apply = std::function<void(nlohmann::json &)>;
+    using StructuralApply = std::function<void(AuthoringSceneDocumentStage &)>;
 
     std::string object_path;
     Apply apply;
+    StructuralApply structural_apply;
 };
 
 enum class ReparentPreserve : std::uint8_t {
@@ -136,6 +140,16 @@ EditorProjectionCommand makeSetComponentValueCommand(
 EditorProjectionCommand makeReparentCommand(
     std::string scene_id, std::string object_name,
     std::optional<std::string> new_parent, ReparentPreserve preserve);
+
+EditorProjectionCommand makeInsertObjectCommand(
+    std::string scene_id, std::size_t declaration_index,
+    nlohmann::json authored_object);
+EditorProjectionCommand makeRemoveObjectCommand(AuthoringObjectId object_id);
+EditorProjectionCommand makeRestoreObjectCommand(AuthoringObjectClosure closure);
+EditorProjectionCommand makeRenameObjectCommand(
+    AuthoringObjectId object_id, std::optional<std::string> name);
+EditorProjectionCommand makeReorderObjectCommand(
+    AuthoringObjectId object_id, std::size_t declaration_index);
 
 struct EditorProjectionPrepareContext {
     const AuthoringSceneDocument &base_document;
