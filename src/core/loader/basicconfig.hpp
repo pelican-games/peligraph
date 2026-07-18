@@ -10,7 +10,10 @@
 
 namespace Pelican {
 
+class ProjectBasicConfigProjectionTarget;
+
 DECLARE_MODULE(ProjectBasicConfig) {
+    friend class ProjectBasicConfigProjectionTarget;
   public:
     struct window_size {
         int width, height;
@@ -77,6 +80,7 @@ DECLARE_MODULE(ProjectBasicConfig) {
     std::unordered_map<std::string, std::string> inputProfileJsons() const;
     std::optional<std::string> defaultInputProfile() const;
     bool usesProjectSource() const { return project_source; }
+
 };
 
 } // namespace Pelican

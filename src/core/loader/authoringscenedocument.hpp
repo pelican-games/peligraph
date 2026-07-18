@@ -17,6 +17,8 @@
 
 namespace Pelican {
 
+class ProjectBasicConfigProjectionTarget;
+
 PELICAN_DEFINE_HANDLE(SceneRevision, std::uint64_t)
 PELICAN_DEFINE_HANDLE(AuthoringObjectId, std::uint64_t)
 
@@ -77,8 +79,17 @@ class AuthoringSceneDocument {
     std::vector<AuthoringSceneView> query() const;
     std::string encodeSemantic() const;
 
+    // Build an unpublished revision while retaining the session-stable object
+    // identities of this document. Projection commands may change component
+    // arrays and parent edges, but object declaration identity is deliberately
+    // fixed until the later spawn/destroy work package.
+    AuthoringSceneDocument stage(nlohmann::json raw_document,
+                                 SceneRevision revision) const;
+    void swap(AuthoringSceneDocument &other) noexcept;
+
   private:
     friend class ProjectBasicConfig;
+    friend class ProjectBasicConfigProjectionTarget;
 };
 
 } // namespace Pelican

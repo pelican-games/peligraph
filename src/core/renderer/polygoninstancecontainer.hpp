@@ -281,6 +281,13 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     void uploadMaterialAbsoluteOverrides();
 
   public:
+    struct PreparedModelTrs {
+        std::uint32_t index = 0;
+        glm::mat4 old_value{1.0F};
+        glm::mat4 next_value{1.0F};
+        bool published = false;
+    };
+
     PolygonInstanceContainer();
     void preflightModelInstance(const ModelTemplate &model) const;
     StagedModelInstance stageModelInstance(const ModelTemplate &model);
@@ -298,7 +305,12 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     void rebuildModelInstances(std::span<const ModelInstanceRebuild> replacements);
     void rebuildModelInstances(ModelAssetId asset_id, const ModelTemplate &replacement);
 
-    void setTrs(ModelInstanceId id, glm::vec3 pos, glm::quat rotation, glm::vec3 scale);
+    PreparedModelTrs prepareTrs(ModelInstanceId id, glm::vec3 pos,
+                                glm::quat rotation, glm::vec3 scale) const;
+    void publishPreparedTrs(PreparedModelTrs &prepared) noexcept;
+    void rollbackPreparedTrs(PreparedModelTrs &prepared) noexcept;
+    void setTrs(ModelInstanceId id, glm::vec3 pos, glm::quat rotation,
+                glm::vec3 scale);
     void setSkinningPalette(ModelInstanceId id, std::span<const glm::mat4> palette);
     bool isModelInstanceAlive(ModelInstanceId id) const noexcept { return isLive(id); }
     Animation::InstanceHandle animationInstance(ModelInstanceId id) const;

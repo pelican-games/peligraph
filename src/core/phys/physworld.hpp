@@ -34,6 +34,7 @@ struct PhysWorldColliderInput {
 std::vector<phys::Collider> buildPhysColliders(std::span<const PhysWorldColliderInput> inputs);
 
 DECLARE_MODULE(PhysWorld) {
+  public:
     struct Binding {
         phys::ColliderIdentity identity;
         phys::ColliderQueryMetadata metadata;
@@ -41,12 +42,22 @@ DECLARE_MODULE(PhysWorld) {
         std::variant<GameObjectId, PhysWorldTransform> transform_source;
     };
 
+    struct PreparedState {
+        std::vector<Binding> bindings;
+        std::uint64_t next_collider_id_value = 1;
+    };
+
+  private:
+
     std::vector<Binding> bindings;
     std::uint64_t next_collider_id_value = 1;
 
     phys::ColliderId allocateColliderId();
 
   public:
+    PreparedState snapshotPrepared() const;
+    PreparedState prepareBindings(std::vector<Binding> next_bindings) const;
+    void publishPrepared(PreparedState &&prepared) noexcept;
     void clear();
     void bindCollider(std::string name, const ColliderComponent &collider, GameObjectId object_id,
                       std::optional<phys::ColliderQueryMetadata> metadata = std::nullopt);

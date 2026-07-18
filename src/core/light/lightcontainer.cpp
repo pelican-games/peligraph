@@ -143,14 +143,9 @@ namespace Pelican
 		);
 	}
 
-	void LightContainer::load(const std::vector<LightLoadEntry>& lights)
+	LightContainer::PreparedLoad LightContainer::prepareLoad(const std::vector<LightLoadEntry>& lights)
 	{
-		m_DirectionalLights.clear();
-		m_LightNameMap.clear();
-		m_PointLights.clear();
-		m_PointLightNameMap.clear();
-		m_SpotLights.clear();
-		m_SpotLightNameMap.clear();
+		PreparedLoad prepared;
 
 		for (const auto& lightEntry : lights)
 		{
@@ -164,9 +159,9 @@ namespace Pelican
 				light.intensity = lightJson.value("intensity", 1.0f);
 				light.color = readSrgbColor(lightJson, light.name);
 
-				registerLightName(m_LightNameMap, light.name, static_cast<uint32_t>(m_DirectionalLights.size()),
+				registerLightName(prepared.directional_names, light.name, static_cast<uint32_t>(prepared.directional_lights.size()),
 					"directional");
-				m_DirectionalLights.push_back(light);
+				prepared.directional_lights.push_back(light);
 			}
 			else if (type == "point")
 			{
@@ -176,9 +171,9 @@ namespace Pelican
 				light.intensity = lightJson.value("intensity", 1.0f);
 				light.color = readSrgbColor(lightJson, light.name);
 
-				registerLightName(m_PointLightNameMap, light.name, static_cast<uint32_t>(m_PointLights.size()),
+				registerLightName(prepared.point_names, light.name, static_cast<uint32_t>(prepared.point_lights.size()),
 					"point");
-				m_PointLights.push_back(light);
+				prepared.point_lights.push_back(light);
 			}
 			else if (type == "spot")
 			{
@@ -191,9 +186,9 @@ namespace Pelican
 				light.outerConeAngle = lightJson.value("outerConeAngle", 17.5f);
 				light.color = readSrgbColor(lightJson, light.name);
 
-				registerLightName(m_SpotLightNameMap, light.name, static_cast<uint32_t>(m_SpotLights.size()),
+				registerLightName(prepared.spot_names, light.name, static_cast<uint32_t>(prepared.spot_lights.size()),
 					"spot");
-				m_SpotLights.push_back(light);
+				prepared.spot_lights.push_back(light);
 			}
 			else
 			{
@@ -201,13 +196,43 @@ namespace Pelican
 			}
 		}
 
+		prepared.warnings = collectLightCapWarnings(lights);
+		return prepared;
+	}
+
+	LightContainer::PreparedLoad LightContainer::snapshotPrepared() const
+	{
+		return PreparedLoad{
+			.directional_lights = m_DirectionalLights,
+			.directional_names = m_LightNameMap,
+			.point_lights = m_PointLights,
+			.point_names = m_PointLightNameMap,
+			.spot_lights = m_SpotLights,
+			.spot_names = m_SpotLightNameMap,
+		};
+	}
+
+	void LightContainer::publishPrepared(PreparedLoad&& prepared) noexcept
+	{
+		m_DirectionalLights.swap(prepared.directional_lights);
+		m_LightNameMap.swap(prepared.directional_names);
+		m_PointLights.swap(prepared.point_lights);
+		m_PointLightNameMap.swap(prepared.point_names);
+		m_SpotLights.swap(prepared.spot_lights);
+		m_SpotLightNameMap.swap(prepared.spot_names);
+	}
+
+	void LightContainer::load(const std::vector<LightLoadEntry>& lights)
+	{
+		auto prepared = prepareLoad(lights);
 		if (logger != nullptr)
 		{
-			for (const auto& warning : collectLightCapWarnings(lights))
+			for (const auto& warning : prepared.warnings)
 			{
 				LOG_WARNING(logger, "{}", warning);
 			}
 		}
+		publishPrepared(std::move(prepared));
 	}
 
 	DirectionalLight* LightContainer::getLight(const std::string& name)

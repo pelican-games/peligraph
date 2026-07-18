@@ -23,9 +23,23 @@ namespace Pelican
 	DECLARE_MODULE(LightContainer)
 	{
 	public:
+		struct PreparedLoad
+		{
+			std::vector<DirectionalLight> directional_lights;
+			std::unordered_map<std::string, uint32_t> directional_names;
+			std::vector<PointLight> point_lights;
+			std::unordered_map<std::string, uint32_t> point_names;
+			std::vector<SpotLight> spot_lights;
+			std::unordered_map<std::string, uint32_t> spot_names;
+			std::vector<std::string> warnings;
+		};
+
 		LightContainer();
 		~LightContainer();
 
+		static PreparedLoad prepareLoad(const std::vector<LightLoadEntry>& lights);
+		PreparedLoad snapshotPrepared() const;
+		void publishPrepared(PreparedLoad&& prepared) noexcept;
 		void load(const std::vector<LightLoadEntry>& lights);
 		void update();
 
