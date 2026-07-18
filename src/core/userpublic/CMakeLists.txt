@@ -16,6 +16,7 @@ target_sources(pelican_core PRIVATE
 add_subdirectory(serialize)
 add_subdirectory(components)
 add_subdirectory(details/component)
+add_subdirectory(details/behavior)
 add_subdirectory(details/ecs)
 add_subdirectory(details/event)
 add_subdirectory(details/system)

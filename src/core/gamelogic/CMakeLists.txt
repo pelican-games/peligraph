@@ -1,1 +1,4 @@
-target_sources(pelican_core PRIVATE gamelogicreload.cpp)
+target_sources(pelican_core PRIVATE
+    behaviorarena.cpp
+    gamelogicreload.cpp
+)

@@ -28,6 +28,10 @@ struct GameLogicReloadAttempt {
     std::string error;
 };
 
+namespace internal {
+void releaseGameLogicRegistrations(RegistrationOwner owner) noexcept;
+}
+
 DECLARE_MODULE(GameLogicReloader) {
     using ResetFn = std::function<void()>;
 

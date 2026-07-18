@@ -1,6 +1,7 @@
 #include "framephase.hpp"
 
 #include "../ecs/core.hpp"
+#include "../gamelogic/behaviorarena.hpp"
 #include "../loader/scene.hpp"
 #include "../os/inputstate.hpp"
 #include "../os/inputsequence.hpp"
@@ -38,6 +39,7 @@ struct FrameStateModules {
     ImGuiSystem *imgui_system;
 #endif
     ECSCore &ecs;
+    BehaviorAttachmentArena &behavior_arena;
     EngineTime &engine_time;
     SeqPlayer &seq_player;
     SceneLoader &scene_loader;
@@ -75,6 +77,7 @@ FrameStateModules resolveFrameStateModules() {
         imgui_system,
 #endif
         GET_MODULE(ECSCore),
+        GET_MODULE(BehaviorAttachmentArena),
         GET_MODULE(EngineTime),
         GET_MODULE(SeqPlayer),
         GET_MODULE(SceneLoader),

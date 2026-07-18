@@ -17,6 +17,7 @@ namespace internal {
 
 using GameSystemUpdateFn = void (*)(GameContext &ctx);
 using GameSystemEventFn = void (*)(const void *event, GameContext &ctx);
+using GameSystemQueuedEventFn = void (*)(const QueuedEvent &event, GameContext &ctx);
 
 struct GameSystemEventHandlerRegistration {
     std::type_index event_type = std::type_index{typeid(void)};
@@ -27,6 +28,7 @@ struct GameSystemRegistration {
     std::string name;
     int order = 0;
     GameSystemUpdateFn update = nullptr;
+    GameSystemQueuedEventFn dispatch_queued_event = nullptr;
     std::vector<GameSystemEventHandlerRegistration> event_handlers;
     RegistrationOwner owner = engineRegistrationOwner;
 };
@@ -39,6 +41,12 @@ concept HasGameSystemUpdate = requires(System &system, GameContext &ctx) {
 template <class System, class Event>
 concept HasGameSystemEvent = requires(System &system, const Event &event, GameContext &ctx) {
     { system.onEvent(event, ctx) } -> std::same_as<void>;
+};
+
+template <class System>
+concept HasGameSystemQueuedEvent = requires(System &system, const QueuedEvent &event,
+                                            GameContext &ctx) {
+    { system.dispatchQueuedEvent(event, ctx) } -> std::same_as<void>;
 };
 
 template <class System> System &gameSystemInstance() {
@@ -92,8 +100,9 @@ class UserGameSystemRegistererTemplatePublic {
     void registerSystem(std::string name, int order,
                         std::vector<GameSystemEventHandlerRegistration> event_handlers) {
         constexpr bool has_update = HasGameSystemUpdate<System>;
+        constexpr bool has_queued_event = HasGameSystemQueuedEvent<System>;
         if constexpr (!has_update) {
-            if (event_handlers.empty()) {
+            if (!has_queued_event && event_handlers.empty()) {
                 throw std::runtime_error("registered game systems must define update(ctx) or onEvent(event, ctx)");
             }
         }
@@ -103,10 +112,18 @@ class UserGameSystemRegistererTemplatePublic {
             update = [](GameContext &ctx) { gameSystemInstance<System>().update(ctx); };
         }
 
+        GameSystemQueuedEventFn dispatch_queued_event = nullptr;
+        if constexpr (has_queued_event) {
+            dispatch_queued_event = [](const QueuedEvent &event, GameContext &ctx) {
+                gameSystemInstance<System>().dispatchQueuedEvent(event, ctx);
+            };
+        }
+
         __registerSystem(GameSystemRegistration{
             .name = std::move(name),
             .order = order,
             .update = update,
+            .dispatch_queued_event = dispatch_queued_event,
             .event_handlers = std::move(event_handlers),
         });
     }

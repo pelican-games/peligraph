@@ -1,6 +1,7 @@
 #include "teardown.hpp"
 
 #include "../ecs/core.hpp"
+#include "../gamelogic/behaviorarena.hpp"
 #include "../log.hpp"
 #if PELICAN_WITH_PHYSICS
 #include "../phys/physworld.hpp"
@@ -31,6 +32,7 @@ void cleanupStep(const char *name, Function &&function) noexcept {
 void teardownRuntimeNoThrow() noexcept {
     if (auto *vulkan = FastModuleContainer::tryGet<VulkanManageCore>())
         cleanupStep("wait-idle", [vulkan] { vulkan->waitIdle(); });
+    cleanupStep("behaviors", [] { internal::preDestroyAllBehaviorObjects(); });
 #if PELICAN_WITH_PHYSICS
     if (auto *physics = FastModuleContainer::tryGet<PhysWorld>())
         cleanupStep("physics", [physics] { physics->clear(); });

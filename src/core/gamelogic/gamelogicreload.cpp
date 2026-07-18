@@ -1,4 +1,5 @@
 #include "gamelogicreload.hpp"
+#include "behaviorarena.hpp"
 
 #include "../animation/animationservice.hpp"
 #if PELICAN_WITH_PHYSICS
@@ -10,6 +11,7 @@
 #include "../loader/scene.hpp"
 #include "../log.hpp"
 #include "../userpublic/details/event/registerer.hpp"
+#include "../userpublic/details/behavior/registerer.hpp"
 #include "../userpublic/details/system/registerer.hpp"
 #include "../userpublic/gamelogic.hpp"
 
@@ -24,6 +26,24 @@
 #endif
 
 namespace Pelican {
+
+namespace internal {
+
+void releaseGameLogicRegistrations(RegistrationOwner owner) noexcept {
+    // Live behavior instances and their callbacks must be gone while the owner
+    // DLL is still loaded. Registry entries are erased only afterwards.
+    releaseBehaviorOwner(owner);
+    Animation::releaseAnimationOwner(owner);
+#if PELICAN_WITH_PHYSICS
+    physics_internal::releaseProviderOwner(owner);
+#endif
+    unregisterGameSystems(owner);
+    unregisterEvents(owner);
+    unregisterBehaviors(owner);
+}
+
+} // namespace internal
+
 namespace {
 
 std::atomic_bool reload_in_progress{false};
@@ -100,11 +120,7 @@ GameLogicReloader::loadCopy(const std::filesystem::path &path, internal::Registr
     const auto handle = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
 #endif
     if (handle == nullptr) {
-#if PELICAN_WITH_PHYSICS
-        physics_internal::releaseProviderOwner(owner);
-#endif
-        internal::unregisterGameSystems(owner);
-        internal::unregisterEvents(owner);
+        internal::releaseGameLogicRegistrations(owner);
         error = "game logic DLL '" + source_path.string() + "' load failed: " + platformLoadError();
         return std::nullopt;
     }
@@ -123,11 +139,7 @@ GameLogicReloader::loadCopy(const std::filesystem::path &path, internal::Registr
                 std::to_string(gameLogicAbiVersion);
     }
     if (!error.empty()) {
-#if PELICAN_WITH_PHYSICS
-        physics_internal::releaseProviderOwner(owner);
-#endif
-        internal::unregisterGameSystems(owner);
-        internal::unregisterEvents(owner);
+        internal::releaseGameLogicRegistrations(owner);
 #ifdef _WIN32
         FreeLibrary(handle);
 #else
@@ -139,12 +151,7 @@ GameLogicReloader::loadCopy(const std::filesystem::path &path, internal::Registr
 }
 
 void GameLogicReloader::unload(LoadedLibrary &library) noexcept {
-    Animation::releaseAnimationOwner(library.owner);
-#if PELICAN_WITH_PHYSICS
-    physics_internal::releaseProviderOwner(library.owner);
-#endif
-    internal::unregisterGameSystems(library.owner);
-    internal::unregisterEvents(library.owner);
+    internal::releaseGameLogicRegistrations(library.owner);
     if (library.handle != nullptr) {
 #ifdef _WIN32
         FreeLibrary(static_cast<HMODULE>(library.handle));
@@ -222,10 +229,14 @@ bool GameLogicReloader::reloadTransaction(const ResetFn &teardown, const ResetFn
 
     ReloadStateGuard reload_state;
     auto previous = std::move(active);
+    bool previous_unloaded = false;
     active.reset();
     try {
         teardown();
-        if (previous) unload(*previous);
+        if (previous) {
+            unload(*previous);
+            previous_unloaded = true;
+        }
 
         std::string load_error;
         const auto owner = internal::allocateRegistrationOwner();
@@ -253,16 +264,30 @@ bool GameLogicReloader::reloadTransaction(const ResetFn &teardown, const ResetFn
 
         std::string rollback_error;
         if (previous) {
-            const auto rollback_owner = internal::allocateRegistrationOwner();
-            active = loadCopy(previous->path, rollback_owner, rollback_error);
+            bool activate_rollback_owner = false;
+            if (previous_unloaded) {
+                const auto rollback_owner = internal::allocateRegistrationOwner();
+                active = loadCopy(previous->path, rollback_owner, rollback_error);
+                activate_rollback_owner = active.has_value();
+            } else {
+                // Teardown failed before the old DLL was unloaded. Reuse that
+                // exact handle/owner instead of loading a second copy whose
+                // static registrations would not have a well-defined owner.
+                active = std::move(previous);
+            }
             if (active) {
 #if PELICAN_WITH_PHYSICS
-                physics_internal::activateProviderOwner(rollback_owner);
+                if (activate_rollback_owner) {
+                    physics_internal::activateProviderOwner(active->owner);
+                }
 #endif
                 try {
                     rebuild();
                 } catch (const std::exception &rebuild_error) {
                     rollback_error = rebuild_error.what();
+                    try { teardown(); } catch (...) {}
+                    unload(*active);
+                    active.reset();
                 }
             }
         }
