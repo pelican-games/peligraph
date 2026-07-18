@@ -1,4 +1,11 @@
-# 編集系 rpc とエンジン内インスペクタ/アセットブラウザ(v2.1 — 条件付き受理)
+# 編集系 rpc とエンジン内インスペクタ/アセットブラウザ(v2.2 — 同時編集/試行実行を追加・レビュー待ち)
+
+**v2.2(2026-07-18)**: ユーザー方針「人+エージェントの同時作業」を受け
+§1-4(同時編集 = actor_id/CAS/watch/actor 別 undo)と §1-5(試行実行の
+三段梯子 = ticket preview / eval・render_preview / スクラッチ
+インスタンス)を新設。**§1-4/§1-5 は codex 敵対レビュー未通過** —
+E-RPC0/E-RPC1/JOURNAL0 の WP 登録前にレビューを通すこと。v2.1 までの
+受理済み本文は変更していない。
 
 **v2.1(2026-07-18)**: 再レビュー
 `docs/design_reviews/2026-07-18_editor_behavior_v2_rereview_codex.md` で
@@ -160,6 +167,73 @@ save:  digest 不一致 → external_modification error(何も書かない)
        replace 成功 → file+cache+revision を同一 transaction で公開
 ```
 
+### 1-4. 同時編集(人+エージェント — v2.2 新設・E-RPC1/JOURNAL0 追加条件)
+
+原則: **編集者は人もエージェントも対等な rpc クライアント**(D0 の帰結
+— エージェント専用の裏口も特権も作らない)。分岐する document は
+作らない(単一 journal・単一タイムライン)。
+
+1. **actor_id**: 全編集 rpc は `actor_id`(session 内安定な文字列 —
+   例 `human:gui` / `agent:<名前>`)を必須で持ち、journal record と
+   query 応答(最終更新者)に記録する。省略は stable error。
+2. **revision CAS(§1-2 の base SceneRevision 検査の帰結を明文化)**:
+   stale revision の edit は**黙って上書きせず** reject し、応答に
+   現在 revision と affected field の現在値を含める(再 query
+   不要で再判断可能に)。
+3. **watch**: `get_scene_revision`(revision + 最終 transaction の
+   {actor_id, affected_authoring_ids} のみの軽量 query)を追加。
+   v1 はポーリング・WebSocket 展開時に push へ。インスペクタは
+   revision 変化で表示中 object を再 query する(stale 表示からの
+   上書き事故防止)。
+4. **undo = actor 別 revert 方式**: undo は履歴の巻き戻しではなく
+   「自分の journal entry の ordered_inverse を**新規 transaction
+   として append**」(§1-3 の inverse をそのまま使う)。自分の最終
+   entry 以後に**他 actor が同一 field を変更していたら no-op +
+   理由応答**(黙って他人の作業を消さない)。redo は対称。
+   全 actor 混合のタイムライン undo は v1 非目標。
+5. fixture: 二 actor の交互編集で journal の actor 帰属・CAS reject・
+   undo no-op 通知・watch の revision 単調性を検査する。
+
+### 1-5. 試行実行(preview — v2.2 新設)
+
+原則: **エンジンは世界を 1 つしか持たない。世界を増やしたければ
+プロセスを増やし、操作者を増やしたければクライアントを増やす**。
+document のブランチ機構は作らない(試行は「隔離 → 1 commit or
+全破棄」であり、マージが存在しないため)。三段梯子:
+
+1. **ticket preview(人に見える試行)**: open 済み ticket 配下で
+   試行値を runtime 投影にのみ apply(document 未 commit・journal
+   記録なし)。commit で通常の 1 transaction に確定、abort で
+   document の値へ再投影(痕跡ゼロ)。WP90 凍結原則「commit して
+   いない runtime 値は消える」の意味論そのまま。query/can_edit は
+   「preview 中」を metadata で明示する。
+2. **eval_preview / render_preview(人に見せない判定)**:
+   `{overrides[], queries[] | render{camera?, capture}}` を受け、
+   一時 apply → **同一の投影パイプラインで評価**(descendant world
+   再計算・派生値・phys raycast/overlap 等を含む)→ 結果 data /
+   オフスクリーン capture を返して即 revert。swapchain へ present
+   しない・journal/revision/history を一切変更しない。
+   - 返すのは「設定した値」ではなく**評価済み状態**。将来
+     パラメータ間の数式/制約系(ユーザー空間で発展する側)が
+     入っても、評価後の値を返す契約なので additive に吸収される
+   - render_preview v1 は **temporal 系無効の単発決定的描画**
+     (history 汚染禁止 — TAA/velocity/prev-palette と非干渉)
+   - overrides は codec editable 値に限定。構造変更(spawn/destroy/
+     reparent)の試行は v1 対象外(→ 3 段目へ)
+   - replay/golden/strict では edit 系と同じ規範で reject
+3. **スクラッチインスタンス(重い尻尾)**: 構造ごと変える実験・
+   時間発展が要る検証(物理を数秒回す等)・クラッシュし得る試行は
+   別プロセス。公式パターン = 「query で現 document snapshot を
+   export → headless インスタンスに食わせる → rpc でスイープ +
+   capture → 採用値を人のセッションへ**通常の編集 rpc 1 件**として
+   送る」。昇格専用 API は作らない(D0)。プロジェクト読み取り
+   専有・複数インスタンス識別(get_status)は既存要件を流用。
+
+WP 化: §1-4 は E-RPC0(watch)/E-RPC1・JOURNAL0(actor_id/undo)の
+条件に統合。§1-5-1 は E-RPC1(ticket 意味論の拡張)、§1-5-2 は
+**PREVIEW0(新 WP — E-PROJTX0 後)**、§1-5-3 は機構新設なし
+(snapshot export は E-RPC0 query の再利用 + 運用レシピ文書化)。
+
 ## 2. エンジン内 UI(ImGui — F2)
 
 ### 2-1. UI-INS0 / UI-AB0(改訂条件 — レビュー逐語)
@@ -205,9 +279,10 @@ ED-AUTH0 + ED-CODEC0 → E-RPC0 → ECS-MUT0 + E-RPC1/JOURNAL0
 | **ED-CODEC0** | codec 五つ組 + 七種 coverage + StructFieldSchema 相乗り | §0-2 逐語(BEH-P0 と共通機構) |
 | **E-RPC0** | query 群 + EditorCommandService + fake adapter 等価 | §1-1 逐語 |
 | **ECS-MUT0** | archetype migration transaction(WP62 流儀の failure atomicity) | レビュー ECS-MUT0 逐語 |
-| **E-RPC1** | edit ticket/commit + can_edit + JOURNAL0 | §1-2/1-3 逐語 |
+| **E-RPC1** | edit ticket/commit + can_edit + JOURNAL0 + §1-4(actor_id/CAS/undo)+ §1-5-1(ticket preview) | §1-2/1-3/1-4 逐語 |
 | **UI-INS0/AB0** | ImGui パネル(service 経由のみ) | §2-1 逐語 |
 | **SAVE0** | atomic 全 document 保存 | §2-2 逐語 |
+| **PREVIEW0** | eval_preview / render_preview(E-PROJTX0 後) | §1-5-2 逐語 |
 
 ## 4. 未決事項
 
