@@ -1,10 +1,12 @@
 #pragma once
 
+#include "editorjournal.hpp"
 #include "../loader/authoringscenedocument.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <stdexcept>
@@ -132,10 +134,12 @@ struct EditorCommandServiceDependencies {
     std::function<EditorRuntimeObjectState(const AuthoringSceneView &, const AuthoringObjectView &)> runtime_query;
     std::function<std::vector<EditorAssetQueryResult>()> assets;
     std::function<EditorSnapshotState()> snapshot_state;
+    std::optional<EditorEditRuntimeDependencies> edit;
 };
 
 class EditorCommandService {
     EditorCommandServiceDependencies dependencies_;
+    std::unique_ptr<EditorEditCoordinator> edit_;
 
     const AuthoringSceneDocument &document() const;
     const AuthoringSceneView &selectScene(const std::vector<AuthoringSceneView> &scenes,
@@ -146,23 +150,45 @@ class EditorCommandService {
 
   public:
     explicit EditorCommandService(EditorCommandServiceDependencies dependencies);
+    ~EditorCommandService();
 
     EditorSceneTreeResult sceneTree(const EditorSceneTreeRequest &request = {}) const;
     EditorObjectQueryResult getComponents(const EditorGetComponentsRequest &request) const;
     EditorListAssetsResult listAssets(const EditorListAssetsRequest &request = {}) const;
     ExportSceneSnapshotResponseV1 exportSceneSnapshot(const ExportSceneSnapshotRequestV1 &request) const;
+
+    nlohmann::ordered_json openEditorSession(const nlohmann::json &params);
+    nlohmann::ordered_json resumeEditorSession(const nlohmann::json &params);
+    nlohmann::ordered_json canEdit(const nlohmann::json &params);
+    nlohmann::ordered_json edit(const nlohmann::json &params);
+    nlohmann::ordered_json getEditResult(const nlohmann::json &params) const;
+    nlohmann::ordered_json queryJournal(const nlohmann::json &params) const;
+    std::vector<nlohmann::ordered_json> takeCompletedEditResults();
+    void commitPendingEdits() noexcept;
+    EditorEditCoordinator *editCoordinator() noexcept { return edit_.get(); }
+    const EditorEditCoordinator *editCoordinator() const noexcept { return edit_.get(); }
 };
 
 class EditorCommandRpcAdapter {
     const EditorCommandService &service_;
+    EditorCommandService *mutable_service_ = nullptr;
 
   public:
     explicit EditorCommandRpcAdapter(const EditorCommandService &service) : service_{service} {}
+    explicit EditorCommandRpcAdapter(EditorCommandService &service)
+        : service_{service}, mutable_service_{&service} {}
 
     nlohmann::ordered_json sceneTree(const nlohmann::json &params) const;
     nlohmann::ordered_json getComponents(const nlohmann::json &params) const;
     nlohmann::ordered_json listAssets(const nlohmann::json &params) const;
     nlohmann::ordered_json exportSceneSnapshot(const nlohmann::json &params) const;
+    nlohmann::ordered_json openEditorSession(const nlohmann::json &params) const;
+    nlohmann::ordered_json resumeEditorSession(const nlohmann::json &params) const;
+    nlohmann::ordered_json canEdit(const nlohmann::json &params) const;
+    nlohmann::ordered_json edit(const nlohmann::json &params) const;
+    nlohmann::ordered_json getEditResult(const nlohmann::json &params) const;
+    nlohmann::ordered_json queryJournal(const nlohmann::json &params) const;
+    std::vector<nlohmann::ordered_json> takeCompletedEditResults() const;
 };
 
 // The ImGui WP consumes the same typed service. This fake is deliberately kept

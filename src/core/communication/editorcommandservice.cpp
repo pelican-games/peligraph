@@ -162,7 +162,14 @@ EditorCommandService::EditorCommandService(EditorCommandServiceDependencies depe
     if (!dependencies_.document || !dependencies_.current_scene_id) {
         throw std::invalid_argument("EditorCommandService requires document and current_scene_id providers");
     }
+    if (dependencies_.edit) {
+        edit_ = std::make_unique<EditorEditCoordinator>(
+            std::move(*dependencies_.edit));
+        dependencies_.edit.reset();
+    }
 }
+
+EditorCommandService::~EditorCommandService() = default;
 
 const AuthoringSceneDocument &EditorCommandService::document() const {
     return dependencies_.document();
@@ -270,8 +277,13 @@ EditorCommandService::exportSceneSnapshot(const ExportSceneSnapshotRequestV1 &re
                                  "unsupported snapshot version: " +
                                      std::to_string(request.schema_version)};
     }
-    const auto snapshot_state = dependencies_.snapshot_state ? dependencies_.snapshot_state()
-                                                               : EditorSnapshotState{};
+    auto snapshot_state = dependencies_.snapshot_state ? dependencies_.snapshot_state()
+                                                        : EditorSnapshotState{};
+    if (edit_) {
+        auto pending = edit_->pendingTicketIds();
+        snapshot_state.pending_ticket_ids.insert(
+            snapshot_state.pending_ticket_ids.end(), pending.begin(), pending.end());
+    }
     if (snapshot_state.preview_epoch > maxExactEditorJsonInteger) {
         throw std::overflow_error("preview_epoch exceeds 2^53-1");
     }
@@ -306,6 +318,44 @@ EditorCommandService::exportSceneSnapshot(const ExportSceneSnapshotRequestV1 &re
         .pending_ticket_ids = snapshot_state.pending_ticket_ids,
         .preview_epoch = snapshot_state.preview_epoch,
     };
+}
+
+OrderedJson EditorCommandService::openEditorSession(const Json &params) {
+    if (!edit_) throw std::logic_error("editor edit service is unavailable");
+    return edit_->openSession(params);
+}
+
+OrderedJson EditorCommandService::resumeEditorSession(const Json &params) {
+    if (!edit_) throw std::logic_error("editor edit service is unavailable");
+    return edit_->resumeSession(params);
+}
+
+OrderedJson EditorCommandService::canEdit(const Json &params) {
+    if (!edit_) throw std::logic_error("editor edit service is unavailable");
+    return edit_->canEdit(params);
+}
+
+OrderedJson EditorCommandService::edit(const Json &params) {
+    if (!edit_) throw std::logic_error("editor edit service is unavailable");
+    return edit_->enqueue(params);
+}
+
+OrderedJson EditorCommandService::getEditResult(const Json &params) const {
+    if (!edit_) throw std::logic_error("editor edit service is unavailable");
+    return edit_->getResult(params);
+}
+
+OrderedJson EditorCommandService::queryJournal(const Json &params) const {
+    if (!edit_) throw std::logic_error("editor edit service is unavailable");
+    return edit_->queryJournal(params);
+}
+
+std::vector<OrderedJson> EditorCommandService::takeCompletedEditResults() {
+    return edit_ ? edit_->takeCompletedResults() : std::vector<OrderedJson>{};
+}
+
+void EditorCommandService::commitPendingEdits() noexcept {
+    if (edit_) edit_->commitPending();
 }
 
 OrderedJson editorQueryJson(const EditorComponentQueryResult &component) {
@@ -391,6 +441,39 @@ OrderedJson EditorCommandRpcAdapter::listAssets(const Json &params) const {
 
 OrderedJson EditorCommandRpcAdapter::exportSceneSnapshot(const Json &params) const {
     return editorQueryJson(service_.exportSceneSnapshot(parseExportSceneSnapshotRequest(params)));
+}
+
+OrderedJson EditorCommandRpcAdapter::openEditorSession(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("editor RPC adapter is read-only");
+    return mutable_service_->openEditorSession(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::resumeEditorSession(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("editor RPC adapter is read-only");
+    return mutable_service_->resumeEditorSession(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::canEdit(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("editor RPC adapter is read-only");
+    return mutable_service_->canEdit(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::edit(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("editor RPC adapter is read-only");
+    return mutable_service_->edit(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::getEditResult(const Json &params) const {
+    return service_.getEditResult(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::queryJournal(const Json &params) const {
+    return service_.queryJournal(params);
+}
+
+std::vector<OrderedJson> EditorCommandRpcAdapter::takeCompletedEditResults() const {
+    if (!mutable_service_) return {};
+    return mutable_service_->takeCompletedEditResults();
 }
 
 } // namespace Pelican
