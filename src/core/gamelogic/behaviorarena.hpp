@@ -56,6 +56,14 @@ struct BehaviorAttachmentIdentity {
     std::uint64_t attachment_seq = 0;
 };
 
+struct BehaviorArenaIsolationState {
+    std::uint64_t next_handle = 0;
+    std::uint64_t next_attachment_seq = 0;
+    std::size_t deferred_mutation_count = 0;
+    std::size_t callback_depth = 0;
+    internal::RegistrationOwner callback_owner = internal::engineRegistrationOwner;
+};
+
 enum class BehaviorAttachmentEditKind : std::uint8_t {
     attach,
     remove,
@@ -168,6 +176,15 @@ DECLARE_MODULE(BehaviorAttachmentArena) {
     }
 
     std::vector<BehaviorAttachmentInfo> snapshot() const;
+    BehaviorArenaIsolationState isolationState() const noexcept {
+        return {
+            .next_handle = next_handle,
+            .next_attachment_seq = next_attachment_seq,
+            .deferred_mutation_count = deferred_mutations.size(),
+            .callback_depth = callback_depth,
+            .callback_owner = callback_owner,
+        };
+    }
     std::size_t liveInstanceCount(internal::RegistrationOwner owner) const noexcept;
 };
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../renderingpass/renderingpass.hpp"
+#include "../renderingpass/previewgraph.hpp"
 
 #include <optional>
 #include <string>
@@ -14,6 +15,7 @@ struct RenderGraphVariantConfig {
     RenderingPassId flat;
     std::optional<RenderingPassId> xr;
     std::vector<std::string> xr_excluded_features;
+    PreviewGraphProgram preview;
 };
 
 RenderGraphVariantConfig loadRenderGraphVariantsFromConfig();

@@ -8,6 +8,7 @@ target_sources(pelican_core PRIVATE
     projectsrc.cpp
     authoringscenedocument.cpp
     componentcodec.cpp
+    editorpreviewprojection.cpp
     editorprojectiontransaction.cpp
     editorprojectionadapters.cpp
     basicconfig.cpp

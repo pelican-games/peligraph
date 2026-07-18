@@ -365,6 +365,15 @@ EngineRpcModules resolveEngineRpcModules() {
 template <class Invoke> nlohmann::json invokeEditorRpc(Invoke &&invoke) {
     try {
         return nlohmann::json(std::forward<Invoke>(invoke)());
+    } catch (const EditorPreviewError &error) {
+        const auto invalid = error.code() == EditorPreviewErrorCode::schema_violation ||
+                             error.code() == EditorPreviewErrorCode::capture_schema_violation;
+        nlohmann::json data = error.payload();
+        data["code"] = editorPreviewErrorCodeName(error.code());
+        throw JsonRpcHandlerError{
+            invalid ? JsonRpcErrorCodes::invalidParams
+                    : JsonRpcErrorCodes::applicationError,
+            error.what(), std::move(data)};
     } catch (const EditorCommandError &error) {
         const auto rpc_code = error.code() == EditorCommandErrorCode::InvalidParams
                                   ? JsonRpcErrorCodes::invalidParams
@@ -941,6 +950,12 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
     });
     server.setHandler("can_preview", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.canPreview(params); });
+    });
+    server.setHandler("eval_preview", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.evalPreview(params); });
+    });
+    server.setHandler("render_preview", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.renderPreview(params); });
     });
     server.setHandler("edit", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.edit(params); });

@@ -1046,6 +1046,7 @@ Renderer::Renderer() {
     flat_rendering_pass_id = variants.flat;
     xr_rendering_pass_id = variants.xr;
     xr_excluded_features = variants.xr_excluded_features;
+    preview_graph_program = variants.preview;
     current_rendering_pass_id = flat_rendering_pass_id;
     projection_jitter = projectionJitterSettingsFor(GET_MODULE(FrameGraphRuntimeContainer),
                                                      current_rendering_pass_id);
@@ -1055,6 +1056,82 @@ Renderer::Renderer() {
 }
 
 Renderer::~Renderer() = default;
+
+nlohmann::ordered_json Renderer::previewIsolationStateJson() const {
+    using Json = nlohmann::ordered_json;
+    const auto matrix = [](const glm::mat4 &value) {
+        auto result = Json::array();
+        for (glm::length_t row = 0; row < 4; ++row) {
+            auto values = Json::array();
+            for (glm::length_t column = 0; column < 4; ++column) {
+                values.push_back(value[column][row]);
+            }
+            result.push_back(std::move(values));
+        }
+        return result;
+    };
+    const auto vec3 = [](glm::vec3 value) {
+        return Json::array({value.x, value.y, value.z});
+    };
+    const auto vec2 = [](glm::vec2 value) {
+        return Json::array({value.x, value.y});
+    };
+    const auto history = [&](const TemporalFrameHistory &value) {
+        return Json{{"valid", value.valid},
+                    {"projection_non_jittered", matrix(value.projection_non_jittered)},
+                    {"view_projection_non_jittered", matrix(value.view_projection_non_jittered)},
+                    {"projection_jittered", matrix(value.projection_jittered)},
+                    {"view_projection_jittered", matrix(value.view_projection_jittered)},
+                    {"view", matrix(value.view)},
+                    {"camera_position", vec3(value.camera_position)},
+                    {"jitter_ndc", vec2(value.jitter_ndc)},
+                    {"temporal_reset_epoch", value.temporal_reset_epoch}};
+    };
+    const auto histories = [&](const std::vector<TemporalFrameHistory> &values) {
+        auto result = Json::array();
+        for (const auto &value : values) result.push_back(history(value));
+        return result;
+    };
+    auto snapshots = Json::array();
+    for (const auto &value : last_view_snapshots) {
+        snapshots.push_back({
+            {"projection_non_jittered", matrix(value.projection_non_jittered)},
+            {"view_projection_non_jittered", matrix(value.view_projection_non_jittered)},
+            {"previous_projection_non_jittered", matrix(value.previous_projection_non_jittered)},
+            {"previous_view_projection_non_jittered", matrix(value.previous_view_projection_non_jittered)},
+            {"projection_jittered", matrix(value.projection_jittered)},
+            {"view_projection_jittered", matrix(value.view_projection_jittered)},
+            {"previous_projection_jittered", matrix(value.previous_projection_jittered)},
+            {"previous_view_projection_jittered", matrix(value.previous_view_projection_jittered)},
+            {"view", matrix(value.view)}, {"previous_view", matrix(value.previous_view)},
+            {"camera_position", vec3(value.camera_position)},
+            {"previous_camera_position", vec3(value.previous_camera_position)},
+            {"jitter_ndc", vec2(value.jitter_ndc)},
+            {"previous_jitter_ndc", vec2(value.previous_jitter_ndc)},
+            {"temporal_reset_epoch", value.temporal_reset_epoch},
+            {"previous_temporal_reset_epoch", value.previous_temporal_reset_epoch},
+        });
+    }
+    return {{"current_rendering_pass", current_rendering_pass_id.value},
+            {"flat_rendering_pass", flat_rendering_pass_id.value},
+            {"xr_rendering_pass", xr_rendering_pass_id
+                                       ? Json(xr_rendering_pass_id->value) : Json(nullptr)},
+            {"active_graph_variant", active_graph_variant == RenderGraphVariant::flat
+                                         ? "flat" : "xr"},
+            {"flat_histories", histories(flat_temporal_histories)},
+            {"xr_histories", histories(xr_temporal_histories)},
+            {"last_view_snapshots", std::move(snapshots)},
+            {"temporal_reset_requested", temporal_reset_requested},
+            {"observed_time_set_revision", observed_time_set_revision},
+            {"observed_camera_discontinuity_revision", observed_camera_discontinuity_revision},
+            {"internal_render_extent", internal_render_extent
+                 ? Json{{"width", internal_render_extent->width},
+                        {"height", internal_render_extent->height}} : Json(nullptr)},
+            {"graph_transition_trace", graph_variant_transition_trace},
+            {"pending_graph_transition", pending_graph_transition
+                 ? Json(*pending_graph_transition) : Json(nullptr)},
+            {"preview_graph_generation", preview_graph_program.generation}};
+}
 
 std::vector<TemporalFrameHistory> &Renderer::activeTemporalHistories() {
     return active_graph_variant == RenderGraphVariant::flat

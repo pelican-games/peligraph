@@ -133,7 +133,16 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfig() {
     registerConfiguredRenderingPasses(config);
 
     const auto default_pass_name = config.defaultRenderingPass();
-    RenderGraphVariantConfig variants{.flat = requireDefaultPass(default_pass_name)};
+    // Compose and validate the third graph before runtime modules are frozen.
+    // It remains a data program and intentionally performs no shared render
+    // target/pass registration.
+    auto &path_resolver = GET_MODULE(PathResolver);
+    auto preview = precompilePreviewGraph(
+        config.renderingConfigJson(),
+        [&path_resolver](std::string_view ref) { return path_resolver.loadText(ref); },
+        config.usesProjectSource());
+    RenderGraphVariantConfig variants{.flat = requireDefaultPass(default_pass_name),
+                                      .preview = std::move(preview)};
 #if PELICAN_WITH_OPENXR
     if (GET_MODULE(EngineLaunchConfig).xr_active) {
         registerXrMirrorIntermediate(baseExtentFromConfig(config));

@@ -7,6 +7,7 @@ target_sources(pelican_core PRIVATE
     util.cpp
     cmdbuf.cpp
     offscreenframetarget.cpp
+    previewexecutor.cpp
     rendertarget.cpp
     swapchainframetarget.cpp
     render_pass_dispatch.cpp
