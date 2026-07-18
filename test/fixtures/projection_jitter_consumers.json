@@ -1,65 +1,382 @@
-[
-  {
-    "consumer": "main_material",
-    "matrix": "jittered_view_projection",
-    "route": "render_frame_snapshot -> MaterialRenderer engineMvp",
-    "source": "src/core/renderer/materialrender.cpp",
-    "needle": "dependencies.view_projection"
+{
+  "schema": "pelican.projection_consumer_inventory",
+  "version": 1,
+  "invariant": "clip'.xy = clip.xy + jitter_ndc * clip.w",
+  "scan": {
+    "roots": ["src/core"],
+    "extensions": [".cpp", ".hpp", ".vert", ".frag", ".glsl"],
+    "patterns": [
+      "\\bengineMvp\\b",
+      "\\bshadowViewProjection\\b",
+      "\\bview_projection(?:_jittered)?\\b",
+      "\\bprojection_jittered\\b",
+      "\\bprevious_projection_jittered\\b",
+      "\\bjitter_ndc\\b",
+      "\\bprevious_jitter_ndc\\b",
+      "\\bpelicanFrame\\.projection\\b",
+      "\\bpelicanFrame\\.previous_projection\\b",
+      "\\bgetVPMatrix\\b",
+      "\\bgetProjectionMatrix\\b",
+      "\\brequest\\.projection\\b",
+      "\\bprojection_view\\b",
+      "\\bglm::mat4 projection\\b",
+      "\\basymmetricProjectionRhZo\\b",
+      "\\bbuildRenderViewParameters\\b",
+      "\\bRenderViewParameters\\b"
+    ]
   },
-  {
-    "consumer": "velocity",
-    "matrix": "jittered_current_previous",
-    "route": "FrameUBO; subtract jitter in NDC",
-    "source": "src/core/resources/velocity.frag",
-    "needle": "previous_jitter_ndc"
-  },
-  {
-    "consumer": "sprite",
-    "matrix": "jittered",
-    "route": "FrameUBO projection * view",
-    "source": "src/core/resources/sprite.vert",
-    "needle": "pelicanFrame.projection * pelicanFrame.view"
-  },
-  {
-    "consumer": "ssao",
-    "matrix": "jittered",
-    "route": "FrameUBO projection",
-    "source": "src/core/resources/ssao.frag",
-    "needle": "pelicanFrame.projection"
-  },
-  {
-    "consumer": "world_debug_draw",
-    "matrix": "jittered_view_projection",
-    "route": "render_frame_snapshot -> enqueue argument -> CPU NDC",
-    "source": "src/core/vkcore/render_pass_dispatch.cpp",
-    "needle": "dependencies.view_projection"
-  },
-  {
-    "consumer": "shadow",
-    "matrix": "light_view_projection",
-    "route": "unchanged push constant",
-    "source": "src/core/renderer/materialrender.cpp",
-    "needle": "shadowViewProjection"
-  },
-  {
-    "consumer": "fullscreen",
-    "matrix": "unused",
-    "route": "clip-space fullscreen triangle; projection unused",
-    "source": "src/core/resources/fullscreen.vert",
-    "needle": "gl_Position = vec4(outUV * 2.0 - 1.0"
-  },
-  {
-    "consumer": "ui",
-    "matrix": "independent_px_to_clip",
-    "route": "resolution-based pixel-to-clip conversion",
-    "source": "src/core/resources/ui.vert",
-    "needle": "inPositionPx.x * pelicanFrame.resolution.z"
-  },
-  {
-    "consumer": "culling_rpc_rays",
-    "matrix": "non_jittered",
-    "route": "Camera public API unchanged",
-    "source": "src/core/renderer/camera.cpp",
-    "needle": "Camera::getVPMatrix"
-  }
-]
+  "consumers": [
+    {
+      "name": "snapshot_and_frame_transport",
+      "matrix": "jittered current/previous projection and view-projection",
+      "route": "Camera/OpenXR projection -> RenderFrameSnapshot -> FrameUBO and draw dependencies",
+      "taa_policy": "single per-view snapshot is the semantic source of truth"
+    },
+    {
+      "name": "main_material",
+      "matrix": "jittered view-projection",
+      "route": "RenderFrameSnapshot -> MaterialRenderer -> engineMvp -> world position",
+      "taa_policy": "general projection jitter is already applied before the push constant"
+    },
+    {
+      "name": "velocity",
+      "matrix": "jittered current/previous projection",
+      "route": "FrameUBO -> velocity vertex clips -> fragment NDC de-jitter",
+      "taa_policy": "subtract current and previous jitter in NDC before UV velocity"
+    },
+    {
+      "name": "sprite",
+      "matrix": "jittered projection",
+      "route": "FrameUBO projection * view",
+      "taa_policy": "inherits the general projection jitter for both world and anchor clips"
+    },
+    {
+      "name": "ssao",
+      "matrix": "jittered projection",
+      "route": "FrameUBO projection",
+      "taa_policy": "projects view-space samples with the same jittered projection"
+    },
+    {
+      "name": "taa_resolve",
+      "matrix": "jittered projection",
+      "route": "FrameUBO inverse projection for depth reconstruction",
+      "taa_policy": "reconstructs from the projection that produced current depth"
+    },
+    {
+      "name": "world_debug_draw",
+      "matrix": "jittered view-projection",
+      "route": "RenderFrameSnapshot -> render dispatch -> PhysWorld CPU NDC",
+      "taa_policy": "CPU projection consumes the already-jittered view-projection"
+    },
+    {
+      "name": "shadow",
+      "matrix": "light view-projection",
+      "route": "LightContainer -> LightUBO/main sampling and shadow push constant",
+      "taa_policy": "camera jitter does not alter the light-space matrix"
+    },
+    {
+      "name": "fullscreen",
+      "matrix": "none",
+      "route": "vertex-index clip-space triangle",
+      "taa_policy": "projection-independent by construction"
+    },
+    {
+      "name": "ui",
+      "matrix": "resolution-derived pixel-to-clip",
+      "route": "FrameUBO resolution reciprocal",
+      "taa_policy": "camera projection and jitter are intentionally unused"
+    },
+    {
+      "name": "culling_rpc_rays",
+      "matrix": "non-jittered camera view-projection",
+      "route": "Camera public getVPMatrix API",
+      "taa_policy": "interaction and culling remain on the stable non-jittered camera projection"
+    },
+    {
+      "name": "editor_preview",
+      "matrix": "non-jittered preview view-projection",
+      "route": "isolated editor preview projection document -> capture request -> CPU raster",
+      "taa_policy": "preview metadata is outside the temporal render snapshot"
+    },
+    {
+      "name": "view_provider",
+      "matrix": "non-jittered flat or per-eye projection",
+      "route": "Camera/OpenXR view provider -> RenderFrameSnapshot",
+      "taa_policy": "renderer applies the general jitter after the provider boundary"
+    },
+    {
+      "name": "legacy_fullscreen_config",
+      "matrix": "FrameUBO projection/view transport",
+      "route": "legacy projection_view declaration accepted by rendering-pass parser",
+      "taa_policy": "declaration adds no push transport; GPU data remains FrameUBO"
+    }
+  ],
+  "sources": [
+    {
+      "source": "src/core/appflow/loop.cpp",
+      "consumer": "view_provider",
+      "role": "OpenXR per-eye view provider delivery",
+      "needles": ["OpenXr::buildRenderViewParameters(", "renderer.renderLogicalFrame("]
+    },
+    {
+      "source": "src/core/communication/editorpreviewservice.cpp",
+      "consumer": "editor_preview",
+      "role": "preview capture projection producer",
+      "needles": ["request.projection = matrix(", "request.projection = glm::perspectiveRH_ZO(", "request.projection = glm::orthoRH_ZO("]
+    },
+    {
+      "source": "src/core/light/light.hpp",
+      "consumer": "shadow",
+      "role": "LightUBO ABI storage",
+      "needles": ["glm::mat4 shadowViewProjection;"]
+    },
+    {
+      "source": "src/core/light/lightcontainer.cpp",
+      "consumer": "shadow",
+      "role": "light view-projection producer and UBO transport",
+      "needles": ["glm::mat4 LightContainer::shadowViewProjection() const", "ubo.shadowViewProjection = shadowViewProjection();"]
+    },
+    {
+      "source": "src/core/light/lightcontainer.hpp",
+      "consumer": "shadow",
+      "role": "light view-projection API",
+      "needles": ["glm::mat4 shadowViewProjection() const;"]
+    },
+    {
+      "source": "src/core/loader/editorpreviewprojection.cpp",
+      "consumer": "editor_preview",
+      "role": "preview view-projection producer",
+      "needles": ["{\"view_projection\", matrixJson(projection * view)}"]
+    },
+    {
+      "source": "src/core/openxr/openxrviewspace.cpp",
+      "consumer": "view_provider",
+      "role": "OpenXR asymmetric projection producer",
+      "needles": ["glm::mat4 asymmetricProjectionRhZo(", ".projection = asymmetricProjectionRhZo(view.fov, z_near, z_far)"]
+    },
+    {
+      "source": "src/core/openxr/openxrviewspace.hpp",
+      "consumer": "view_provider",
+      "role": "OpenXR view-provider API",
+      "needles": ["glm::mat4 asymmetricProjectionRhZo(", "RenderViewParameters buildRenderViewParameters("]
+    },
+    {
+      "source": "src/core/phys/physworld.cpp",
+      "consumer": "world_debug_draw",
+      "role": "CPU world-to-NDC consumer",
+      "needles": ["const glm::vec4 clip = view_projection * glm::vec4{world, 1.0f};"]
+    },
+    {
+      "source": "src/core/phys/physworld.hpp",
+      "consumer": "world_debug_draw",
+      "role": "CPU projection API",
+      "needles": ["void enqueueDebugDraw(DebugDraw &debug_draw, const glm::mat4 &view_projection) const;"]
+    },
+    {
+      "source": "src/core/phys/physworld_stub.cpp",
+      "consumer": "world_debug_draw",
+      "role": "disabled-physics projection boundary",
+      "needles": ["(void)view_projection;"]
+    },
+    {
+      "source": "src/core/renderer/camera.cpp",
+      "consumer": "culling_rpc_rays",
+      "role": "stable non-jittered camera view-projection producer",
+      "needles": ["glm::mat4 Camera::getVPMatrix() const { return projection_matrix * glm::lookAt(pos, pos + dir, up); }"]
+    },
+    {
+      "source": "src/core/renderer/camera.hpp",
+      "consumer": "culling_rpc_rays",
+      "role": "stable non-jittered camera API",
+      "needles": ["glm::mat4 getVPMatrix() const;"]
+    },
+    {
+      "source": "src/core/renderer/frameresources.hpp",
+      "consumer": "snapshot_and_frame_transport",
+      "role": "FrameUBO CPU ABI",
+      "needles": ["alignas(16) glm::mat4 projection{1.0f};", "alignas(8) glm::vec2 jitter_ndc{0.0f};"]
+    },
+    {
+      "source": "src/core/renderer/materialrender.cpp",
+      "consumer": "main_material",
+      "role": "jittered view-projection push and shadow push",
+      "needles": ["const PushConstantStruct engine_push{dependencies.view_projection};", "push_constant.mvp = dependencies.light_container.shadowViewProjection();"]
+    },
+    {
+      "source": "src/core/renderer/materialrender.hpp",
+      "consumer": "main_material",
+      "role": "draw dependency transport",
+      "needles": ["glm::mat4 view_projection{1.0f};"]
+    },
+    {
+      "source": "src/core/renderer/projectionjitter.cpp",
+      "consumer": "snapshot_and_frame_transport",
+      "role": "general jitter application and snapshot producer",
+      "needles": ["result[column][0] += jitter_ndc.x * projection[column][3];", "snapshot.view_projection_jittered = snapshot.projection_jittered * view;"]
+    },
+    {
+      "source": "src/core/renderer/projectionjitter.hpp",
+      "consumer": "snapshot_and_frame_transport",
+      "role": "snapshot semantic types",
+      "needles": ["glm::mat4 view_projection_jittered{1.0f};", "glm::vec2 jitter_ndc{0.0f};"]
+    },
+    {
+      "source": "src/core/renderer/temporal.cpp",
+      "consumer": "velocity",
+      "role": "CPU mirror of NDC de-jitter velocity equation",
+      "needles": ["glm::vec2{current_clip} / current_clip.w - current_jitter_ndc"]
+    },
+    {
+      "source": "src/core/renderer/temporal.hpp",
+      "consumer": "velocity",
+      "role": "CPU velocity contract",
+      "needles": ["glm::vec2 current_jitter_ndc", "glm::vec2 previous_jitter_ndc"]
+    },
+    {
+      "source": "src/core/renderingpass/fullscreenpassinfojsonparser.cpp",
+      "consumer": "legacy_fullscreen_config",
+      "role": "deprecated projection declaration diagnostic",
+      "needles": ["use push_constants: projection_view"]
+    },
+    {
+      "source": "src/core/renderingpass/renderingpassjsonhelpers.cpp",
+      "consumer": "legacy_fullscreen_config",
+      "role": "legacy projection_view parser",
+      "needles": ["if (data_str == \"projection_view\")"]
+    },
+    {
+      "source": "src/core/renderingpass/renderingpassvalidation.cpp",
+      "consumer": "legacy_fullscreen_config",
+      "role": "deprecated projection declaration validation",
+      "needles": ["use push_constants: projection_view"]
+    },
+    {
+      "source": "src/core/resources/default.vert",
+      "consumer": "main_material",
+      "role": "legacy rigid world-to-clip consumer",
+      "needles": ["gl_Position = pelicanPush.engineMvp * world_pos;"]
+    },
+    {
+      "source": "src/core/resources/fullscreen.frag",
+      "consumer": "shadow",
+      "role": "light-space shadow projection consumer",
+      "needles": ["vec4 shadowClip = pelicanLights.shadowViewProjection * vec4(worldPos, 1.0);"]
+    },
+    {
+      "source": "src/core/resources/fullscreen.vert",
+      "consumer": "fullscreen",
+      "role": "projection-independent clip-space producer",
+      "scan": false,
+      "needles": ["gl_Position = vec4(outUV * 2.0 - 1.0, 0.0, 1.0);"]
+    },
+    {
+      "source": "src/core/resources/shaders/include/pelican_frame.glsl",
+      "consumer": "snapshot_and_frame_transport",
+      "role": "FrameUBO shader ABI",
+      "needles": ["mat4 projection;", "mat4 previous_projection;", "vec2 jitter_ndc;", "vec2 previous_jitter_ndc;"]
+    },
+    {
+      "source": "src/core/resources/shaders/include/pelican_material.glsl",
+      "consumer": "main_material",
+      "role": "engineMvp push-constant ABI",
+      "needles": ["layout(offset = 0) mat4 engineMvp;"]
+    },
+    {
+      "source": "src/core/resources/shaders/material/surface_v1.vert",
+      "consumer": "main_material",
+      "role": "pelican_surface_v1 world-to-clip consumer",
+      "needles": ["vec4 world_pos = model_matrix * vec4(vertex.position, 1.0);", "gl_Position = pelicanPush.engineMvp * world_pos;"]
+    },
+    {
+      "source": "src/core/resources/skinned.vert",
+      "consumer": "main_material",
+      "role": "legacy skinned world-to-clip consumer",
+      "needles": ["gl_Position = pelicanPush.engineMvp * world_pos;"]
+    },
+    {
+      "source": "src/core/resources/sprite.vert",
+      "consumer": "sprite",
+      "role": "world and anchor clip consumer",
+      "needles": ["vec4 clip = pelicanFrame.projection * pelicanFrame.view * vec4(worldPosition, 1.0);", "vec4 anchorClip = pelicanFrame.projection * pelicanFrame.view * vec4(anchorWorld, 1.0);"]
+    },
+    {
+      "source": "src/core/resources/ssao.frag",
+      "consumer": "ssao",
+      "role": "view-to-clip sample projection",
+      "needles": ["offset = pelicanFrame.projection * offset;"]
+    },
+    {
+      "source": "src/core/resources/taa_resolve.frag",
+      "consumer": "taa_resolve",
+      "role": "current-depth reconstruction",
+      "needles": ["inverse(pelicanFrame.projection) * vec4(uv * 2.0 - 1.0, depth, 1.0)"]
+    },
+    {
+      "source": "src/core/resources/ui.vert",
+      "consumer": "ui",
+      "role": "projection-independent pixel-to-clip conversion",
+      "scan": false,
+      "needles": ["inPositionPx.x * pelicanFrame.resolution.z * 2.0 - 1.0", "gl_Position = vec4(clipPos, 0.0, 1.0);"]
+    },
+    {
+      "source": "src/core/resources/vat.vert",
+      "consumer": "main_material",
+      "role": "legacy VAT world-to-clip consumer",
+      "needles": ["gl_Position = pelicanPush.engineMvp * world_pos;"]
+    },
+    {
+      "source": "src/core/resources/velocity.frag",
+      "consumer": "velocity",
+      "role": "current/previous NDC de-jitter consumer",
+      "needles": ["currentClip.xy / currentClip.w - pelicanFrame.jitter_ndc", "previousClip.xy / previousClip.w - pelicanFrame.previous_jitter_ndc"]
+    },
+    {
+      "source": "src/core/resources/velocity.vert",
+      "consumer": "velocity",
+      "role": "rigid current/previous clip producer",
+      "needles": ["currentClip = pelicanFrame.projection * pelicanFrame.view", "previousClip = pelicanFrame.previous_projection * pelicanFrame.previous_view"]
+    },
+    {
+      "source": "src/core/resources/velocity_skinned.vert",
+      "consumer": "velocity",
+      "role": "skinned current/previous clip producer",
+      "needles": ["currentClip = pelicanFrame.projection * pelicanFrame.view", "previousClip = pelicanFrame.previous_projection * pelicanFrame.previous_view"]
+    },
+    {
+      "source": "src/core/vkcore/render_pass_dispatch.cpp",
+      "consumer": "world_debug_draw",
+      "role": "jittered view-projection delivery",
+      "needles": ["enqueueDebugDraw(*dependencies.debug_draw, dependencies.view_projection)"]
+    },
+    {
+      "source": "src/core/vkcore/render_pass_dispatch.hpp",
+      "consumer": "world_debug_draw",
+      "role": "render dispatch dependency transport",
+      "needles": ["glm::mat4 view_projection{1.0f};"]
+    },
+    {
+      "source": "src/core/vkcore/previewexecutor.cpp",
+      "consumer": "editor_preview",
+      "role": "CPU preview world-to-NDC consumer",
+      "needles": ["const auto projection_view = request.projection * request.view;", "const auto clip = projection_view * glm::vec4(position, 1.0f);"]
+    },
+    {
+      "source": "src/core/vkcore/previewexecutor.hpp",
+      "consumer": "editor_preview",
+      "role": "preview capture projection transport",
+      "needles": ["glm::mat4 projection{1.0f};"]
+    },
+    {
+      "source": "src/core/vkcore/renderer.cpp",
+      "consumer": "snapshot_and_frame_transport",
+      "role": "snapshot fan-out to FrameUBO, material, and debug consumers",
+      "needles": ["data.projection = snapshot.projection_jittered;", "data.jitter_ndc = snapshot.jitter_ndc;", "snapshot.view_projection_jittered"]
+    },
+    {
+      "source": "src/core/vkcore/renderer.hpp",
+      "consumer": "view_provider",
+      "role": "flat/XR projection input boundary",
+      "needles": ["struct RenderViewParameters", "glm::mat4 projection{1.0f};"]
+    }
+  ]
+}

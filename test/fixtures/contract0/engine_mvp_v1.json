@@ -1,0 +1,85 @@
+{
+  "schema": "pelican.engine_mvp_contract",
+  "version": 1,
+  "contract": {
+    "abi": "pelican_surface_v1",
+    "symbol": "engineMvp",
+    "offset_bytes": 0,
+    "size_bytes": 64,
+    "value": "RenderFrameSnapshot.view_projection_jittered",
+    "input_space": "world",
+    "output_space": "jittered_clip",
+    "model_application": "before_engineMvp_in_vertex_shader",
+    "jitter_application": "projection_before_view",
+    "rename_policy": "new_symbol_in_next_abi_only"
+  },
+  "engine_mvp_shader_sources": [
+    "src/core/resources/default.vert",
+    "src/core/resources/shaders/include/pelican_material.glsl",
+    "src/core/resources/shaders/material/surface_v1.vert",
+    "src/core/resources/skinned.vert",
+    "src/core/resources/vat.vert"
+  ],
+  "anchors": [
+    {
+      "source": "docs/shader_contract.md",
+      "needles": [
+        "### `engineMvp` v1 の規範意味論(WP175)",
+        "`RenderFrameSnapshot::view_projection_jittered`",
+        "world → jittered clip"
+      ]
+    },
+    {
+      "source": "src/core/shader/pelican_sets.hpp",
+      "needles": ["PELICAN_PUSH_ENGINE_BYTES = 64"]
+    },
+    {
+      "source": "src/core/material/materialcontainer.hpp",
+      "needles": [
+        "struct PushConstantStruct",
+        "static_assert(sizeof(PushConstantStruct) == PELICAN_PUSH_ENGINE_BYTES)"
+      ]
+    },
+    {
+      "source": "src/core/shader/shaderreflection.cpp",
+      "needles": ["Shader push constant engine region must be exactly the leading 64-byte MVP"]
+    },
+    {
+      "source": "src/core/vkcore/renderer.cpp",
+      "needles": ["snapshot.view_projection_jittered"]
+    },
+    {
+      "source": "src/core/renderer/materialrender.cpp",
+      "needles": [
+        "const PushConstantStruct engine_push{dependencies.view_projection};",
+        "sizeof(engine_push), &engine_push"
+      ]
+    },
+    {
+      "source": "src/core/resources/shaders/include/pelican_material.glsl",
+      "needles": ["layout(offset = 0) mat4 engineMvp;"]
+    },
+    {
+      "source": "src/core/resources/default.vert",
+      "needles": [
+        "vec4 world_pos = model_matrix * vec4(morphed.position, 1.0);",
+        "gl_Position = pelicanPush.engineMvp * world_pos;"
+      ]
+    },
+    {
+      "source": "src/core/resources/skinned.vert",
+      "needles": ["gl_Position = pelicanPush.engineMvp * world_pos;"]
+    },
+    {
+      "source": "src/core/resources/vat.vert",
+      "needles": ["gl_Position = pelicanPush.engineMvp * world_pos;"]
+    },
+    {
+      "source": "src/core/resources/shaders/material/surface_v1.vert",
+      "needles": [
+        "vec4 world_pos = model_matrix * vec4(vertex.position, 1.0);",
+        "gl_Position = pelicanPush.engineMvp * world_pos;"
+      ]
+    }
+  ]
+}

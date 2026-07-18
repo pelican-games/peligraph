@@ -1147,6 +1147,23 @@ if(PELICAN_NODE_EXECUTABLE)
 endif()
 
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
+# WP175 boundary contracts are source/fixture checks and require no GPU.
+foreach(contract_gate IN ITEMS openpbr projection engine-mvp)
+    add_test(
+        NAME contract_${contract_gate}_gate
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/contract_boundary_gate.py
+            --repo-root ${CMAKE_SOURCE_DIR}
+            --gate ${contract_gate}
+    )
+endforeach()
+add_test(
+    NAME contract_boundary_negative_fixtures
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/ci/test_contract_boundary_gate.py
+)
+
 if(PELICAN_WITH_RPC)
     add_test(
         NAME pelican_rpc_smoke

@@ -10,6 +10,7 @@
 #include <glm/ext/matrix_transform.hpp>
 #include <limits>
 #include <nlohmann/json.hpp>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -211,11 +212,24 @@ TEST_CASE("velocity subtracts current and previous jitter in NDC before UV conve
 TEST_CASE("projection consumer manifest stays reviewable and anchored to source",
           "[projection-jitter][consumers]") {
     const auto manifest = readJson(sourceRoot() / "test/fixtures/projection_jitter_consumers.json");
-    REQUIRE(manifest.size() == 9);
-    for (const auto &consumer : manifest) {
-        INFO(consumer.at("consumer").get<std::string>());
-        const auto source = readText(sourceRoot() / consumer.at("source").get<std::string>());
-        REQUIRE(source.find(consumer.at("needle").get<std::string>()) != std::string::npos);
+    REQUIRE(manifest.at("schema") == "pelican.projection_consumer_inventory");
+    REQUIRE(manifest.at("version") == 1);
+    REQUIRE(manifest.at("invariant") == "clip'.xy = clip.xy + jitter_ndc * clip.w");
+
+    std::set<std::string> consumer_names;
+    for (const auto &consumer : manifest.at("consumers")) {
+        REQUIRE(consumer_names.insert(consumer.at("name").get<std::string>()).second);
+    }
+    std::set<std::string> source_names;
+    for (const auto &entry : manifest.at("sources")) {
+        const auto entry_name = entry.at("source").get<std::string>();
+        INFO(entry_name);
+        REQUIRE(source_names.insert(entry_name).second);
+        REQUIRE(consumer_names.contains(entry.at("consumer").get<std::string>()));
+        const auto source = readText(sourceRoot() / entry_name);
+        for (const auto &needle : entry.at("needles")) {
+            REQUIRE(source.find(needle.get<std::string>()) != std::string::npos);
+        }
     }
 }
 

@@ -69,6 +69,24 @@ physical image while an unqualified target binds the current image.
   既存 pass JSON の `push_constants: camera_position|projection_view` と `uses_light_data` は
   形式互換のため受理するが、GPU 供給元は常に FrameUBO/LightUBO である。
 
+### `engineMvp` v1 の規範意味論(WP175)
+
+`pelican_surface_v1` を含む現行 v1 ABI では、push constant の offset 0..63 にある
+`engineMvp` は歴史的な名前であり、model 行列を含む MVP ではない。CPU が供給する値は
+`RenderFrameSnapshot::view_projection_jittered`、すなわち
+`applyProjectionJitter(projection_non_jittered, jitter_ndc) * view` である。
+入力空間と出力空間は **world → jittered clip** とする。
+
+vertex shader は skin/morph/vertex hook の後に model 行列を適用して world position を作り、
+その world position に `engineMvp` を一度だけ掛ける。jitter は一般式
+`clip'.xy = clip.xy + jitter_ndc * clip.w` により projection へ適用済みであり、shader が
+`engineMvp` の後へ追加してはならない。FrameUBO の `projection` と
+`previous_projection` も同じ snapshot の current/previous jittered projection である。
+
+この意味論、64 byte の範囲、symbol 名は v1 では凍結する。`engineMvp` を
+`viewProjectionJittered` 等へ直す場合は、既存 symbol の再解釈や in-place rename ではなく、
+次期 shader ABI の新 symbol として導入する。
+
 ## Vertex input
 
 `GraphicsPipelineDesc::use_engine_vertex_layout = true` の pipeline は
