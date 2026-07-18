@@ -7,3 +7,7 @@ target_sources(pelican_core PRIVATE
     rpcserver_stub.cpp
 )
 endif()
+
+target_sources(pelican_core PRIVATE
+    editorcommandservice.cpp
+)

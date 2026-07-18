@@ -1,10 +1,13 @@
 #include "rpcserver.hpp"
+#include "editorcommandservice.hpp"
 #include "../startup.hpp"
 
 #include "../appflow/framephase.hpp"
 
 #include "../appflow/enginetime.hpp"
 #include "../ecs/core.hpp"
+#include "../ecs/predefined/transform.hpp"
+#include "../loader/basicconfig.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../loader/scene.hpp"
 #include "../gamelogic/gamelogicreload.hpp"
@@ -22,6 +25,7 @@
 #include "../renderer/spritescene.hpp"
 #include "../userpublic/gamecontext.hpp"
 #include "../userpublic/userinput.hpp"
+#include "../userpublic/components/predefined.hpp"
 #include "../userpublic/details/system/registerer.hpp"
 #include "../vkcore/renderer.hpp"
 #include "../vkcore/rendertarget.hpp"
@@ -289,7 +293,10 @@ struct PendingTransformUpdate {
 struct EngineRpcModules {
     RenderDocCapture &renderdoc_capture;
     EngineTime &engine_time;
+    ECSCore &ecs_core;
+    ComponentInfoManager &component_info;
     PathResolver &path_resolver;
+    ProjectBasicConfig &project_config;
     SceneLoader &scene_loader;
     RenderTarget &render_target;
     StartupMetrics &startup_metrics;
@@ -308,7 +315,10 @@ EngineRpcModules resolveEngineRpcModules() {
     return {
         GET_MODULE(RenderDocCapture),
         GET_MODULE(EngineTime),
+        GET_MODULE(ECSCore),
+        GET_MODULE(ComponentInfoManager),
         GET_MODULE(PathResolver),
+        GET_MODULE(ProjectBasicConfig),
         GET_MODULE(SceneLoader),
         GET_MODULE(RenderTarget),
         GET_MODULE(StartupMetrics),
@@ -322,6 +332,110 @@ EngineRpcModules resolveEngineRpcModules() {
         GET_MODULE(SeqPlayer),
         GET_MODULE(VulkanManageCore),
     };
+}
+
+EditorRuntimeObjectState queryEditorRuntime(const EngineRpcModules &modules,
+                                            const AuthoringSceneView &scene,
+                                            const AuthoringObjectView &object) {
+    EditorRuntimeObjectState result;
+    result.component_runtime_json.resize(object.components.size());
+    if (scene.scene_id != modules.scene_loader.currentScene() || !object.name) return result;
+    const auto entity_id = modules.scene_loader.objectId(*object.name);
+    if (!entity_id) return result;
+    result.entity_id = entity_id;
+
+    auto &ecs = modules.ecs_core.getTemplatePublicModule();
+    auto &component_info = modules.component_info;
+    for (std::size_t index = 0; index < object.components.size(); ++index) {
+        const auto name = object.components[index].authoredJson().at("name").get<std::string>();
+        const auto *codec = findComponentCodec(name);
+        if (codec == nullptr || codec->runtime_kind != ComponentCodecRuntimeKind::Ecs) continue;
+        const auto component_id = component_info.getComponentIdByName(name);
+        auto *raw_component = ecs.tryComponentRaw(*entity_id, component_id);
+        if (raw_component == nullptr) continue;
+        if (name == "transform") {
+            auto *world = static_cast<TransformComponent *>(raw_component);
+            auto *local = ecs.tryComponent<LocalTransformComponent>(*entity_id);
+            result.component_runtime_json[index] = projectTransformRuntimeJson(
+                TransformCodecTarget{.world = world, .local = local});
+        } else {
+            result.component_runtime_json[index] =
+                codec->encodeCanonical(codec->projectRuntime(raw_component));
+        }
+    }
+    return result;
+}
+
+bool pathIsWithin(const std::filesystem::path &path, const std::filesystem::path &root) {
+    const auto relative = path.lexically_relative(root);
+    return !relative.empty() && *relative.begin() != "..";
+}
+
+std::vector<EditorAssetQueryResult> collectEditorAssets(const EngineRpcModules &modules) {
+    std::vector<EditorAssetQueryResult> result;
+    const auto asset_data = nlohmann::json::parse(modules.project_config.assetDataJson());
+    const auto stores = modules.path_resolver.stores();
+    if (!asset_data.is_object()) return result;
+    for (auto category = asset_data.begin(); category != asset_data.end(); ++category) {
+        if (!category.value().is_array()) continue;
+        auto kind = category.key();
+        if (kind.size() > 1 && kind.back() == 's') kind.pop_back();
+        for (const auto &entry : category.value()) {
+            if (!entry.is_object() || !entry.contains("name") || !entry.at("name").is_string() ||
+                !entry.contains("path") || !entry.at("path").is_string()) {
+                continue;
+            }
+            const auto path_text = entry.at("path").get<std::string>();
+            std::filesystem::path resolved_path{path_text};
+            bool exists = false;
+            if (resolved_path.is_absolute()) {
+                exists = std::filesystem::exists(resolved_path);
+            } else {
+                try {
+                    const auto resolved = modules.path_resolver.resolveExistingFileReference(path_text);
+                    if (const auto *path = std::get_if<std::filesystem::path>(&resolved)) {
+                        resolved_path = *path;
+                        exists = std::filesystem::exists(resolved_path);
+                    } else if (const auto *fragment = std::get_if<ResolvedPathFragment>(&resolved)) {
+                        resolved_path = fragment->path;
+                        exists = std::filesystem::exists(resolved_path);
+                    } else {
+                        exists = true;
+                    }
+                } catch (const std::exception &) {
+                    exists = false;
+                }
+            }
+
+            std::string store = "project";
+            if (resolved_path.is_absolute()) {
+                for (const auto &candidate : stores) {
+                    if (pathIsWithin(resolved_path.lexically_normal(), candidate.root.lexically_normal())) {
+                        store = candidate.name;
+                        break;
+                    }
+                }
+            }
+            result.push_back(EditorAssetQueryResult{.id = entry.at("name").get<std::string>(),
+                                                    .kind = kind,
+                                                    .path = path_text,
+                                                    .store = std::move(store),
+                                                    .status = exists ? "loaded" : "missing"});
+        }
+    }
+    return result;
+}
+
+template <class Invoke> nlohmann::json invokeEditorRpc(Invoke &&invoke) {
+    try {
+        return nlohmann::json(std::forward<Invoke>(invoke)());
+    } catch (const EditorCommandError &error) {
+        const auto rpc_code = error.code() == EditorCommandErrorCode::InvalidParams
+                                  ? JsonRpcErrorCodes::invalidParams
+                                  : JsonRpcErrorCodes::applicationError;
+        throw JsonRpcHandlerError{rpc_code, error.what(),
+                                  {{"code", editorCommandErrorCodeName(error.code())}}};
+    }
 }
 
 std::vector<PendingTransformUpdate> parseTransformUpdates(const nlohmann::json &params,
@@ -725,6 +839,20 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
     RpcServer server{input, output};
     const auto instance_id = generateUuidV4();
     std::vector<PendingTransformUpdate> pending_transforms;
+    EditorCommandService editor_service{EditorCommandServiceDependencies{
+        .document = [&modules]() -> const AuthoringSceneDocument & {
+            return modules.project_config.sceneDocument();
+        },
+        .current_scene_id = [&modules] { return modules.scene_loader.currentScene(); },
+        .runtime_query = [&modules](const AuthoringSceneView &scene,
+                                   const AuthoringObjectView &object) {
+            return queryEditorRuntime(modules, scene, object);
+        },
+        .assets = [&modules] { return collectEditorAssets(modules); },
+        // E-RPC0-base has no ticket or preview lease owner yet.
+        .snapshot_state = [] { return EditorSnapshotState{}; },
+    }};
+    EditorCommandRpcAdapter editor_rpc{editor_service};
 
     server.setHandler("reload_game_logic", [&pending_transforms, &modules](const nlohmann::json &params) {
         requireObjectParams(params, "reload_game_logic");
@@ -835,6 +963,19 @@ void runEngineRpcServer(std::istream &input, std::ostream &output) {
                        {"capture", color_caps.capture_available ? "available"
                                                                  : "unavailable_windowed"}}},
         };
+    });
+
+    server.setHandler("scene_tree", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.sceneTree(params); });
+    });
+    server.setHandler("get_components", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.getComponents(params); });
+    });
+    server.setHandler("list_assets", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.listAssets(params); });
+    });
+    server.setHandler("export_scene_snapshot", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.exportSceneSnapshot(params); });
     });
 
     server.setHandler("set_seed", [](const nlohmann::json &params) {

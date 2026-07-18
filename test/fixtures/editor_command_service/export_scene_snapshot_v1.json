@@ -1,0 +1,27 @@
+{
+  "request": {
+    "schema_version": 1,
+    "allow_pending": false
+  },
+  "document": {
+    "schema": "pelican.scene",
+    "version": 1,
+    "scenes": {
+      "main": {
+        "objects": []
+      }
+    }
+  },
+  "expected_response": {
+    "schema_version": 1,
+    "scene_revision": 42,
+    "current_scene_id": "main",
+    "semantic_scene_bytes": "{\"scenes\":{\"main\":{\"objects\":[]}},\"schema\":\"pelican.scene\",\"version\":1}",
+    "digest": {
+      "algorithm": "sha256",
+      "hex": "353a3317a58437bb4c5a0d746a29afa378d1d743532ed699b8740e0ecc4bcedf"
+    },
+    "pending_ticket_ids": [],
+    "preview_epoch": 7
+  }
+}

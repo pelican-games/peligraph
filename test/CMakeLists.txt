@@ -262,6 +262,10 @@ pelican_define_test(componentcodec_test pelican_core glm)
 target_compile_definitions(pelican_test_componentcodec_test PRIVATE
   PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
+pelican_define_test(editorcommandservice_test pelican_core glm)
+target_compile_definitions(pelican_test_editorcommandservice_test PRIVATE
+  PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
 
 function(pelican_event_schema_compile_fixture fixture expect_failure)
     set(target_name pelican_event_schema_${fixture})
