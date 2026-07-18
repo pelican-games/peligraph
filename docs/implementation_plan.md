@@ -4449,6 +4449,46 @@ gate)。v2 goal で再投入済み。
 受け入れ = ローカルで matrix 相当のコマンド列が green + 既存全
 テスト/golden/player 無影響(byte 不変)+ push 後の実 run は私が確認
 
+### WP166: SAVE0 — atomic 全 document 保存
+
+前提: ED-AUTH0(済 WP149)+ E-RPC1/JOURNAL0(済 WP157/161)。
+
+参照: **`docs/design_editor_tooling.md` v2.5 §2-2 の逐語 + 再レビュー
+`docs/design_reviews/2026-07-18_editor_behavior_v2_rereview_codex.md`
+§2.5(E-C5)の逐語が受け入れ条件**。§2-2:
+
+> Save は runtime ECS を列挙して「serialize 可能な component だけ」を
+> 出力してはならない。AuthoringSceneDocument の全 envelope/全 scene/
+> 全 raw component を deterministic encode し、baseline disk digest
+> 一致を確認後、同一 directory の temporary file へ
+> write+flush+parse/semantic validate し、atomic replace する。不一致は
+> external modification error、codec/pending/runtime-only data の loss
+> は hard error とする。file replace、ProjectBasicConfig cache、
+> AuthoringSceneDocument revision の公開を一 transaction とし、失敗時は
+> 旧 file/cache/revision を維持する。scene は HR 自動 reload 対象外で
+> あることを status/UI に明示する。保存→同一 process 明示 reload→
+> 新規 process reload の双方で全 scene tree/component semantic
+> equality を gate とする。
+
+E-C5(全文は再レビュー §2.5 の blockquote が正): 公開は「全構築 →
+file replace → noexcept swap」・中間状態を観測させない・各 prepare
+点 + replace 直前の fault injection・新規 process reload gate。
+
+範囲: `save_scene` rpc(+ EditorCommandService typed surface)+
+ImGui の Save ボタン(inspector 流儀)+ open preview/pending ticket
+中の Save policy(stable busy or 明示 flush — §1-6-3 の snapshot
+busy 規範と整合させる)。
+
+依存: WP149/157/161/164(済)。見積: 中〜大。
+排他: loader の save 面(authoringscenedocument encode/replace +
+basicconfig cache 公開)+ rpcserver/service の save method + ImGui
+Save ボタン + fixture。**editorjournal/transaction/adapters の変更
+禁止・schema 三 header 凍結・.github(WP165 並走中)に触らない**。
+
+受け入れ = §2-2 + E-C5 逐語 gate(fault injection・二重 reload
+semantic equality)+ 既存全テスト無変更 + golden SKIP 0・byte 不変 +
+player 8 秒 + CI green
+
 ### WP137: 負債 CI0 — CPU gate の常設(GitHub Actions)
 
 参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
