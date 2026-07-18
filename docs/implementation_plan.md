@@ -4489,6 +4489,50 @@ Save ボタン + fixture。**editorjournal/transaction/adapters の変更
 semantic equality)+ 既存全テスト無変更 + golden SKIP 0・byte 不変 +
 player 8 秒 + CI green
 
+### WP167: BEH2 — behavior の編集統合(attach/remove/set-param)
+
+前提: BEH0(済 WP155)+ BEH1(済 WP162)+ E-RPC1/JOURNAL0(済
+WP157/161)+ UI-INS0(済 WP164)。
+
+参照: **`docs/design_object_behaviors.md` v2.1 §6 の逐語が受け入れ
+条件**:
+
+> behavior attach/remove/set-param は generic ECS component name だけで
+> なく attachment handle/index を target にし、E-RPC transaction/
+> journal へ参加する。attach は commit 後の次 activation boundary で
+> onInit、remove は commit 前 pre-destroy で onDestroy、params edit は
+> 「live instance へ atomic apply」を固定し、同一 frame の
+> onEvent/onUpdate から見える版を規範化する。undo/redo、replay/golden
+> reject、G2 同時発生、type combo の owner generation 更新、pending
+> params 表示を fixture にする。
+
+加えて **B-C2 の再掲**(WP162 で実装済みの規範を消費): 同一 DLL
+generation 内の set-param = atomic live apply(recreate しない)。
+**B-C3 持ち越しの完済**: undo restore = 元 attachment_seq・redo 同
+seq・forward→inverse→forward で seq 列と lifecycle/event/update
+trace 一致(WP161 で spawn/destroy 経由は証明済み — 本 WP で
+attach/remove 直接編集経由も)。
+
+範囲: ①edit rpc の `add/remove_component`(type="behavior")を
+method_unavailable から実装へ(attachment handle/index target・
+WP155 arena の activation/pre-destroy barrier と WP158 の behavior
+junction を接続)②set-param(BehaviorParamsPolicy の atomic apply —
+live instance へ・同一 frame 可視版の規範化)③インスペクタ表示
+(behavior attachment 一覧・params の schema 駆動 widget・pending
+params 表示)④G2 reload と編集 transaction の同時発生規範
+(reload 中 reject or 順序固定)。
+
+依存: WP155/157/158/161/162/164(済)。見積: 大。
+排他: editorjournal/service/rpcserver の behavior op 面 + behavior
+arena の編集接合(WP155 の barrier 意味論は不変)+ inspector の
+behavior 表示 + fixture。**schema 三 header・
+editorprojectiontransaction/adapters の変更禁止(behavior junction は
+消費)・`.github`(WP165 並走中)に触らない**。
+
+受け入れ = §6 逐語 gate 全 fixture(undo/redo・replay/golden
+reject・G2 同時・owner generation・pending 表示)+ 既存全テスト
+無変更 + golden SKIP 0・byte 不変 + player 8 秒 + CI green
+
 ### WP137: 負債 CI0 — CPU gate の常設(GitHub Actions)
 
 参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
