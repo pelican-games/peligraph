@@ -4533,6 +4533,49 @@ editorprojectiontransaction/adapters の変更禁止(behavior junction は
 reject・G2 同時・owner generation・pending 表示)+ 既存全テスト
 無変更 + golden SKIP 0・byte 不変 + player 8 秒 + CI green
 
+### WP168: SNAPSHOT0 — scene snapshot の import(スクラッチ受け渡し完結)
+
+前提: export = `export_scene_snapshot`(済 WP154)。本 WP = **import
+側 + round-trip fixture**。`docs/design_editor_tooling.md` v2.5
+**§1-5-5(snapshot 必須修正逐語)+ §1-6-3(named V1 schema — 特に
+ImportSceneSnapshotRequestV1 の field 表・検証 5 段・失敗時非公開)+
+§1-6-3 冒頭の schema owner 条件逐語**が受け入れ条件。
+
+範囲:
+
+1. rpc `import_scene_snapshot`(ImportSceneSnapshotRequestV1 —
+   検証順: schema_version → size → digest → parse/semantic →
+   current_scene_id。**どの失敗でも通常 project の scene source/
+   cache/revision 不変** — E-C5 と同型の一 transaction 公開)
+2. 成功時: scene source を snapshot に差し替えて reload。asset/
+   rendering/shader は project root read-only 共有。
+   AuthoringObjectId は再採番(§1-6-3)
+3. round-trip fixture: 複数 scene・非 current scene・unknown/
+   read-only component・raw numeric/array order・export→import→
+   export の semantic/byte 等価・全 5 検証段の負例
+4. `tools/pelican_rpc.py` に export/import helper(素通し)+
+   スイープ公式レシピを docs/manual の rpc 章へ 1 節(§1-6-3 の
+   sequence どおり: export → scratch import → eval/capture → 採用は
+   人 session へ通常 edit 1 件・CAS reject の再判断込み)
+
+**schema owner 条件(v2.4 レビュー §5 逐語 — 本 WP に添付)**:
+
+> §1-6-3 の schema evolution、compatibility fixture、export/import
+> 一組の acceptance owner は SNAPSHOT0 とする。E-RPC0-base は
+> SNAPSHOT0 が固定した export schema を実装する prerequisite surface
+> であって、独立した schema owner ではない。export/import の片側だけを
+> 互換性変更してはならない。
+
+依存: WP154/156/166(済)。見積: 中。
+排他: rpcserver/service の import 面 + loader の snapshot 差し替え
+経路(SAVE0 の公開機構を再利用)+ pelican_rpc.py + docs + fixture。
+**editorjournal/transaction/adapters/schema 三 header・`.github`
+(WP165 並走中)・phys(同)に触らない**。
+
+受け入れ = 検証 5 段の正負 + round-trip 等価 + 失敗時非公開 fault +
+既存全テスト無変更 + golden SKIP 0・byte 不変 + player 8 秒 +
+CI green
+
 ### WP137: 負債 CI0 — CPU gate の常設(GitHub Actions)
 
 参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
