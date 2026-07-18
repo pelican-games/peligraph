@@ -4604,6 +4604,39 @@ golden SKIP 0・**byte 不変** + player 8 秒 + CI green
 **注: CI2(GPU gate/self-hosted runner)は runner 提供のユーザー判断
 待ちのため順序を入れ替えて DTXT0 を先行(2026-07-18)。**
 
+### WP170: WATCH0 — watch token(transaction enrichment)
+
+前提: E-RPC1/JOURNAL0(済 WP157/161)+ E-HOST0(済 WP156)。
+
+参照: **`docs/design_editor_tooling.md` v2.5 §1-4-3 後半(V22-C3
+第二段落)の逐語が受け入れ条件**:
+
+> watch token は `{scene_revision, preview_epoch}` とする。preview
+> open/update/commit/abort/forced-abort は SceneRevision を変えなくても
+> preview_epoch を単調増加させ、actor、ticket、affected_authoring_ids、
+> 状態を返す。client はどちらかの epoch 変化で表示対象を再 query する。
+> watch が遅延・欠落しても古い base revision の commit は必ず CAS
+> reject される fixture を置く。
+
+範囲: ①`get_scene_revision` rpc(軽量 — {scene_revision,
+preview_epoch} + 最終 committed transaction の {actor_id,
+display_name, affected_authoring_ids} + 現 preview lease の {actor,
+ticket, affected_ids, 状態})②インスペクタ/Object Tree の
+ポーリング再 query(epoch 変化時に表示中 object を再取得 — 他 actor
+の編集が画面に反映される)③「watch 遅延でも CAS が守る」fixture。
+V22-C2 の規範(watch は latency 最適化・correctness boundary は
+CAS)をレポートに再掲。
+
+依存: WP157/161(済)。見積: 小〜中。
+排他: rpcserver/service の watch query + inspector のポーリング +
+fixture。**journal/transaction 本体の変更禁止(読むだけ)・schema 三
+header・`.github`・debug_text/UI レイアウト(WP169 並走中)に
+触らない**。
+
+受け入れ = 逐語 gate(epoch 単調性・preview 遷移での epoch 増加・
+CAS fixture)+ 既存全テスト無変更 + golden SKIP 0・byte 不変 +
+player 8 秒 + CI green
+
 ### WP137: 負債 CI0 — CPU gate の常設(GitHub Actions)
 
 参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
