@@ -19,6 +19,7 @@ endif()
 
 add_library(pelican_imgui OBJECT
   assetbrowser.cpp
+  inspector.cpp
   imguiruntime.cpp
   imguisystem.cpp
   planviewer.cpp

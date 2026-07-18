@@ -507,6 +507,7 @@ pelican_define_test(assetbrowser_test pelican_core glm)
 target_compile_definitions(pelican_test_assetbrowser_test PRIVATE
   PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
+pelican_define_test(inspector_test pelican_core glm)
 endif()
 if(PELICAN_WITH_RPC)
 pelican_define_test(jsonrpc_test pelican_project)

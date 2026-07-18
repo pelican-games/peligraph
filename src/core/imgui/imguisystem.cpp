@@ -1,10 +1,11 @@
 #include "imguisystem.hpp"
 
 #include "assetbrowser.hpp"
+#include "inspector.hpp"
 #include "imguiruntime.hpp"
 #include "planviewer.hpp"
 #include "../appflow/enginetime.hpp"
-#include "../communication/editorassetqueryruntime.hpp"
+#include "../communication/editorruntimefactory.hpp"
 #include "../material/materialcontainer.hpp"
 #include "../model/vertbufcontainer.hpp"
 #include "../os/actionmap.hpp"
@@ -252,10 +253,14 @@ struct ImGuiSystem::Impl {
     bool show_stats = true;
     bool show_plan_viewer = true;
     bool show_asset_browser = true;
+    bool show_object_tree = true;
+    bool show_inspector = true;
     PlanViewer plan_viewer;
-    std::unique_ptr<EditorCommandService> editor_asset_service;
+    std::unique_ptr<EditorCommandService> editor_service;
     AssetBrowserPanelTrace asset_browser_trace;
     AssetBrowserPanel asset_browser;
+    InspectorPanelTrace inspector_trace;
+    InspectorPanel inspector;
     std::uint64_t public_api_calls = 0;
 
     Impl()
@@ -269,8 +274,9 @@ struct ImGuiSystem::Impl {
                                             .getRenderTargetIdByName("display"))
                            .format),
           raw_color_format(static_cast<VkFormat>(color_format)),
-          editor_asset_service{makeInteractiveEditorAssetQueryService()},
-          asset_browser{*editor_asset_service, asset_browser_trace} {
+          editor_service{makeEditorRuntimeService()},
+          asset_browser{*editor_service, asset_browser_trace},
+          inspector{*editor_service, inspector_trace} {
         IMGUI_CHECKVERSION();
         ImGui::CreateContext();
         ++public_api_calls;
@@ -365,6 +371,8 @@ void ImGuiSystem::routeInputAndBeginFrame(InputState &input) {
         if (ImGui::BeginMainMenuBar()) {
             if (ImGui::BeginMenu("Pelican")) {
                 ImGui::MenuItem("Asset Browser", nullptr, &impl->show_asset_browser);
+                ImGui::MenuItem("Object Tree", nullptr, &impl->show_object_tree);
+                ImGui::MenuItem("Inspector", nullptr, &impl->show_inspector);
                 ImGui::MenuItem("Frame Plan Viewer", nullptr, &impl->show_plan_viewer);
                 ImGui::MenuItem("Frame Stats", nullptr, &impl->show_stats);
                 ImGui::MenuItem("Dear ImGui Demo", nullptr, &impl->show_demo);
@@ -396,6 +404,14 @@ void ImGuiSystem::routeInputAndBeginFrame(InputState &input) {
                                                 impl->asset_browser.draw(
                                                     &impl->show_asset_browser);
                                             });
+        }
+        if (impl->show_object_tree || impl->show_inspector) {
+            invokeInspectorPanelCallback(GET_MODULE(EngineLaunchConfig),
+                                         impl->inspector_trace, [&] {
+                                             impl->inspector.draw(
+                                                 &impl->show_object_tree,
+                                                 &impl->show_inspector);
+                                         });
         }
         impl->public_api_calls += 12;
     }

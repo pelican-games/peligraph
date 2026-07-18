@@ -91,6 +91,12 @@ OrderedJson schemaFieldJson(const StructFieldSchema &field) {
         },
         field.range);
     if (!field.unit.empty()) result["unit"] = field.unit;
+    if (field.type == StructFieldType::Enum) {
+        result["enum"] = OrderedJson::array();
+        for (std::size_t index = 0; index < field.enum_value_count; ++index) {
+            result["enum"].push_back(field.enum_values[index]);
+        }
+    }
     return result;
 }
 
