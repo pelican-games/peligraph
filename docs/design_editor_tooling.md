@@ -1,11 +1,18 @@
-# 編集系 rpc とエンジン内インスペクタ/アセットブラウザ(v2.2 — 同時編集/試行実行を追加・レビュー待ち)
+# 編集系 rpc とエンジン内インスペクタ/アセットブラウザ(v2.3 — 同時編集/試行実行の改稿・再レビュー待ち)
 
-**v2.2(2026-07-18)**: ユーザー方針「人+エージェントの同時作業」を受け
-§1-4(同時編集 = actor_id/CAS/watch/actor 別 undo)と §1-5(試行実行の
-三段梯子 = ticket preview / eval・render_preview / スクラッチ
-インスタンス)を新設。**§1-4/§1-5 は codex 敵対レビュー未通過** —
-E-RPC0/E-RPC1/JOURNAL0 の WP 登録前にレビューを通すこと。v2.1 までの
-受理済み本文は変更していない。
+**v2.3(2026-07-18)**: v2.2 の §1-4/§1-5 は敵対レビュー
+`docs/design_reviews/2026-07-18_editor_v22_preview_review_codex.md` で
+**Reject**(v2.1 受理部は再審なし)。本版はその **V22-C1〜V22-C7 +
+snapshot 必須修正を逐語で本文に反映**し、§1-6(operation/write-set
+matrix・renderer preview state inventory・snapshot schema)を新設、
+§3 の依存グラフを受理済み再レビュー §6 へ再接続した。**§1-4〜§1-6 は
+再レビュー未通過** — E-RPC0 以降の WP 登録前に再提出すること。
+v2.2 で誤っていた主要点: ①undo の「同一 field」判定は structural op で
+破綻(→ write-set/domain + 一 transaction preflight)②eval_preview の
+live apply→revert は E-C1 と非両立(→ PreparedProjection の request-local
+評価)③render_preview は既存 renderLogicalFrame 流用不可(→ 第三の
+preview graph variant + 隔離 state)④scratch snapshot は query 再利用
+では不足(→ export/ingestion 機構 = SNAPSHOT0 新設)。
 
 **v2.1(2026-07-18)**: 再レビュー
 `docs/design_reviews/2026-07-18_editor_behavior_v2_rereview_codex.md` で
@@ -167,72 +174,265 @@ save:  digest 不一致 → external_modification error(何も書かない)
        replace 成功 → file+cache+revision を同一 transaction で公開
 ```
 
-### 1-4. 同時編集(人+エージェント — v2.2 新設・E-RPC1/JOURNAL0 追加条件)
+### 1-4. 同時編集(人+エージェント — v2.3・V22-C1〜C3 逐語)
 
-原則: **編集者は人もエージェントも対等な rpc クライアント**(D0 の帰結
-— エージェント専用の裏口も特権も作らない)。分岐する document は
-作らない(単一 journal・単一タイムライン)。
+原則: **編集者は人もエージェントも対等な rpc クライアント**(D0)。
+分岐する document は作らない(単一 journal・単一タイムライン)。
 
-1. **actor_id**: 全編集 rpc は `actor_id`(session 内安定な文字列 —
-   例 `human:gui` / `agent:<名前>`)を必須で持ち、journal record と
-   query 応答(最終更新者)に記録する。省略は stable error。
-2. **revision CAS(§1-2 の base SceneRevision 検査の帰結を明文化)**:
-   stale revision の edit は**黙って上書きせず** reject し、応答に
-   現在 revision と affected field の現在値を含める(再 query
-   不要で再判断可能に)。
-3. **watch**: `get_scene_revision`(revision + 最終 transaction の
-   {actor_id, affected_authoring_ids} のみの軽量 query)を追加。
-   v1 はポーリング・WebSocket 展開時に push へ。インスペクタは
-   revision 変化で表示中 object を再 query する(stale 表示からの
-   上書き事故防止)。
-4. **undo = actor 別 revert 方式**: undo は履歴の巻き戻しではなく
-   「自分の journal entry の ordered_inverse を**新規 transaction
-   として append**」(§1-3 の inverse をそのまま使う)。自分の最終
-   entry 以後に**他 actor が同一 field を変更していたら no-op +
-   理由応答**(黙って他人の作業を消さない)。redo は対称。
-   全 actor 混合のタイムライン undo は v1 非目標。
-5. fixture: 二 actor の交互編集で journal の actor 帰属・CAS reject・
-   undo no-op 通知・watch の revision 単調性を検査する。
+#### 1-4-1. actor identity と actor 別 revert(V22-C1 逐語)
 
-### 1-5. 試行実行(preview — v2.2 新設)
+> actor identity は各 edit request が自己申告する任意文字列にしない。
+> session が collision-free な ActorId を発行し、GUI adapter/transport
+> connection/再接続 token へ bind する。表示名は identity と分離する。
+> journal record は各 command の stable target、read set、write set、
+> structural domain、forward postcondition と
+> `{revision, transaction_id, actor_id}` last-writer stamp を保持する。
+> value field は AuthoringObjectId + stable component slot + schema
+> field path、reparent は child/old-new parent edge + descendant
+> transform closure、spawn/destroy は object/subtree existence、
+> parent edge、declaration-order interval、name reservation を domain に
+> 含める。
+>
+> actor revert は base SceneRevision を持つ一個の通常 transaction とし、
+> 全 inverse command の postcondition/last-writer precondition を同じ
+> snapshot で preflight する。一項でも original transaction 後の他 actor
+> write または structural overlap があれば inverse を一項も適用せず
+> `undo_conflict` と conflict domain/owner transaction/revision を返す。
+> conflict no-op は revision と journal を進めない。成功した revert
+> だけを redo 対象にし、redo にも同じ CAS/precondition を適用する。
+> spawn-edit-undo、reparent-local-edit-undo、destroy-index-insert-undo、
+> add-edit/remove-undo と descendant cross-edit を二 actor fixture に
+> 含める。
+
+(「conflict command だけ no-op、残り適用」は §1-2 の failure
+atomicity に反するため不採用 — conflict は transaction 全体 no-op。)
+
+#### 1-4-2. CAS 粒度(V22-C2 逐語 — global CAS は v1 の意図的制約)
+
+> v1 の CAS unit は AuthoringSceneDocument 全体の SceneRevision とする。
+> base と current が異なれば対象 object/field が不変でも
+> `stale_revision` とし、自動 merge/自動 rebase を行わない。これは
+> 偽競合を許容して correctness を優先する v1 の意図的制約である。
+> response は current revision と command target の現値/存在状態を
+> 返すが、structural command は closure を再 query せず current
+> revision だけを差し替えて retry してはならない。actor undo/redo、
+> ticket commit、通常 edit の全てに同じ CAS を適用する。watch/polling
+> は refresh latency の最適化であって stale overwrite 防止の
+> correctness boundary ではなく、CAS reject がその boundary である。
+> 無関係 object の edit でも stale になる fixture を expected behavior
+> として固定する。
+
+object/field 粒度への緩和は write-set/phantom/closure protocol を
+別版で設計してから(v1 ではやらない)。
+
+#### 1-4-3. watch と transport(V22-C3 逐語)
+
+> v1 の watch は polling とし、poll 間の競合安全性は global
+> SceneRevision CAS が担保する。ただし stdio RPC を headless blocking
+> loop に限定したまま「windowed GUI + agent の同一 session」を完了
+> 条件にしない。windowed/embedded engine が外部 RPC request を bounded
+> queue として受け、EditorCommandService へ渡し、frame-boundary commit
+> 後に応答できる transport owner を先行 WP に置く。一つの外部接続 +
+> 組み込み GUI までを v1 とし、複数外部接続は WebSocket 後続でもよい。
+>
+> watch token は `{scene_revision, preview_epoch}` とする。preview
+> open/update/commit/abort/forced-abort は SceneRevision を変えなくても
+> preview_epoch を単調増加させ、actor、ticket、affected_authoring_ids、
+> 状態を返す。client はどちらかの epoch 変化で表示対象を再 query する。
+> watch が遅延・欠落しても古い base revision の commit は必ず CAS
+> reject される fixture を置く。
+
+transport owner = **E-HOST0(新 WP)**: windowed loop に外部 rpc の
+bounded queue service を足す(WP27 stdio server の frame-boundary
+接続)。last-transaction 情報(actor/affected ids)の watch 応答は
+JOURNAL0 の publish data なので **WATCH0(JOURNAL0 後の enrichment)**
+に分離する。
+
+### 1-5. 試行実行(preview — v2.3・V22-C4〜C7 逐語)
 
 原則: **エンジンは世界を 1 つしか持たない。世界を増やしたければ
 プロセスを増やし、操作者を増やしたければクライアントを増やす**。
 document のブランチ機構は作らない(試行は「隔離 → 1 commit or
-全破棄」であり、マージが存在しないため)。三段梯子:
+全破棄」でありマージが存在しない)。三段梯子。
 
-1. **ticket preview(人に見える試行)**: open 済み ticket 配下で
-   試行値を runtime 投影にのみ apply(document 未 commit・journal
-   記録なし)。commit で通常の 1 transaction に確定、abort で
-   document の値へ再投影(痕跡ゼロ)。WP90 凍結原則「commit して
-   いない runtime 値は消える」の意味論そのまま。query/can_edit は
-   「preview 中」を metadata で明示する。
-2. **eval_preview / render_preview(人に見せない判定)**:
-   `{overrides[], queries[] | render{camera?, capture}}` を受け、
-   一時 apply → **同一の投影パイプラインで評価**(descendant world
-   再計算・派生値・phys raycast/overlap 等を含む)→ 結果 data /
-   オフスクリーン capture を返して即 revert。swapchain へ present
-   しない・journal/revision/history を一切変更しない。
-   - 返すのは「設定した値」ではなく**評価済み状態**。将来
-     パラメータ間の数式/制約系(ユーザー空間で発展する側)が
-     入っても、評価後の値を返す契約なので additive に吸収される
-   - render_preview v1 は **temporal 系無効の単発決定的描画**
-     (history 汚染禁止 — TAA/velocity/prev-palette と非干渉)
-   - overrides は codec editable 値に限定。構造変更(spawn/destroy/
-     reparent)の試行は v1 対象外(→ 3 段目へ)
-   - replay/golden/strict では edit 系と同じ規範で reject
-3. **スクラッチインスタンス(重い尻尾)**: 構造ごと変える実験・
-   時間発展が要る検証(物理を数秒回す等)・クラッシュし得る試行は
-   別プロセス。公式パターン = 「query で現 document snapshot を
-   export → headless インスタンスに食わせる → rpc でスイープ +
-   capture → 採用値を人のセッションへ**通常の編集 rpc 1 件**として
-   送る」。昇格専用 API は作らない(D0)。プロジェクト読み取り
-   専有・複数インスタンス識別(get_status)は既存要件を流用。
+#### 1-5-1. ticket preview(人に見える試行 — V22-C4 逐語)
 
-WP 化: §1-4 は E-RPC0(watch)/E-RPC1・JOURNAL0(actor_id/undo)の
-条件に統合。§1-5-1 は E-RPC1(ticket 意味論の拡張)、§1-5-2 は
-**PREVIEW0(新 WP — E-PROJTX0 後)**、§1-5-3 は機構新設なし
-(snapshot export は E-RPC0 query の再利用 + 運用レシピ文書化)。
+> ticket preview の「痕跡ゼロ」は AuthoringSceneDocument、
+> SceneRevision、journal、Save bytes に durable trace を残さない意味に
+> 限定し、任意の live observer の副作用まで rollback できるとは
+> 約束しない。v1 は一 session 一個の live preview lease とし、ticket に
+> actor、base revision、preview_epoch、affected write set、adapter
+> capability を持たせる。別 ticket、overlapping edit、scene transition、
+> reload、replay/golden/strict 遷移は同時進行させず、stable busy/reason
+> error にする。非 overlap edit を許す場合も、その commit で preview の
+> base revision が stale になった時点で frame observer 再開前に preview
+> を forced-abort する。
+>
+> live preview 可否は codec editable と同一視せず adapter ごとの
+> `live_preview_capability` で明示する。game callback/behavior/physics
+> identity/temporal history へ不可逆な副作用を持つ field は v1
+> `method_unavailable` とする。preview apply/abort は各々 E-C1 の
+> prepare→noexcept publish を通し、abort は current committed document を
+> 再投影する。commit は ticket base revision を検査する通常の一
+> transaction とし、成功時だけ journal と SceneRevision を一回進める。
+> renderer 対象は preview open/abort 境界で temporal reset を一回
+> 行うか、history 非参加 field に限定するかを capability ごとに
+> 固定する。
+
+#### 1-5-2. eval_preview(人に見せない数値判定 — V22-C5 逐語)
+
+live apply→revert は**しない**(E-C1 の「observer が走らない publish
+区間」と非両立)。prepared state の request-local 評価にする:
+
+> eval_preview は live runtime へ publish して revert する API に
+> しない。immutable base AuthoringSceneDocument と overrides を
+> E-PROJTX0 と同じ codec/validation/adapter prepare に通し、publish
+> 直前の `PreparedProjection` を request-local EvaluationContext として
+> query adapter へ渡す。descendant world、Light、Phys query、camera/
+> renderer-derived value はこの context の explicit state を読む。live
+> ECS/Light/Phys/renderer/document/SceneRevision/journal を mutate
+> せず、成功・失敗とも context を破棄する。prepared state を明示入力と
+> して評価できない adapter/field は v1 `method_unavailable` とする。
+> これは persistent document branch ではなく request-local staging で
+> あり、merge/commit API を持たない。
+>
+> gate は evaluation 前後で authored semantic bytes、SceneRevision、
+> journal、ECS values と component/chunk versions/global tick、
+> EntityId/free-list、Light/Phys binding と identity counter、renderer
+> handle/history/epoch、behavior/event trace、EngineTime、reload
+> generation が一致することを検査する。複数 override、parent-child
+> world closure、collider override + raycast/overlap、prepare fault、
+> query fault を含める。
+
+(返すのは「設定した値」でなく**評価済み状態** — 将来のパラメータ間
+数式/制約系も評価後の値を返す契約で additive に吸収される。実例:
+phys query は既に explicit collider span 入力で staged 評価可能。)
+
+#### 1-5-3. render_preview(人に見せない描画判定 — V22-C6 逐語)
+
+既存 `renderLogicalFrame` の流用は**不可**(deletion epoch/GPU
+timing/temporal history を必ず進める)。第三の graph variant を持つ:
+
+> PREVIEW0 は flat/xr と別の `preview` graph variant を module graph
+> freeze 前に precompile する。preview feature policy は projection
+> jitter、velocity、history read/write、TAA、UI、swapchain/XR mirror を
+> 除外し、除外不能な authored pass は feature/pass 名入りで起動時に
+> reject する。preview executor は request-local render target/layout
+> tracker/frame resources/temporal snapshot を持ち、shared
+> RenderTargetContainer history、PolygonInstanceContainer previous
+> state、Renderer flat/xr history、DeletionQueue logical epoch、
+> RenderTiming published history、EngineTime/frame index を
+> advance/reset しない。GPU timing が必要なら `preview_request_id`
+> namespace の非公開 timing とし、通常 logical-frame 集計へ混ぜない。
+>
+> capture request は width/height、pixel encoding、camera identity/
+> explicit camera、graph generation、最大 byte 数を schema で固定し、
+> swapchain/OpenXR へ present しない。v1 は `xr_active` 中の
+> render_preview を method+reason 付き `xr_active_unsupported` で
+> reject する。XR 中にも許可する版は HMD wait/begin/end、mirror、
+> pacing、GPU timing と非干渉な auxiliary submission を別 fixture/実機
+> gate で証明してから追加する。通常 frame の直前/直後に preview を
+> 挟み、flat/XR history epoch、previous palette/model、deletion epoch、
+> timing status、次の capture bytes が preview 無し control と一致する
+> ことを gate とする。
+
+(WP133 の feature filter/起動時 compile は再利用可・XR graph と
+`selectGraphVariant()` 自体の再利用は禁止。)
+
+#### 1-5-4. editor gate(V22-C7 逐語)
+
+> `can_edit` と `can_preview` は ReloadGate から独立した editor gate
+> snapshot とし、reason bit を replay、golden、strict、reload/
+> scene-transition、preview-lease conflict に分ける。rpc_driver と
+> headless は reject reason にしない。ticket preview の open/update/
+> commit、eval_preview、render_preview は request acceptance と
+> frame-boundary execution の双方で snapshot/epoch を検査し、途中で
+> gate が閉じた request は live mutation なしで method 名、reason、
+> gate epoch 付き reject/failed にする。open live preview がある状態
+> では replay 開始、reload、scene transition を reject するか、
+> observer 再開前に E-C1 abort を完了してから遷移する。replay/golden/
+> strict では preview handler/evaluation/render graph invocation が
+> 0 回であることを fixture にする。
+
+#### 1-5-5. スクラッチインスタンス(SNAPSHOT0 — レビュー §8 必須修正逐語)
+
+「E-RPC0 query の再利用で足りる」は**撤回**。export/ingestion を
+機構として持つ(document branch/merge ではなく immutable
+export/import。昇格専用 API は引き続き作らない — 採用値は通常 edit):
+
+> E-RPC0 に `export_scene_snapshot` を明示し、同一 lock/snapshot から
+> `{scene_revision, semantic_scene_bytes, digest, current_scene_id,
+> pending_ticket_ids, preview_epoch}` を返す。bytes は
+> AuthoringSceneDocument の deterministic semantic encode を一回だけ
+> 使用し、全 envelope/全 scene/全 object/全 raw component/declaration
+> order を含む。accepted 未 commit edit、ticket preview、runtime-only
+> component は bytes に含めず、metadata で明示する。caller は pending/
+> preview が 0 でない snapshot を許容するか stable busy error を
+> 選べる。AuthoringObjectId は source session 内 identity であり
+> scratch process へ永続移植しない。
+>
+> scratch 側には snapshot bytes/digest を startup 前に
+> ProjectBasicConfig へ与える launch surface または RPC import surface
+> を置き、通常 project の scene file を上書きしない。asset/rendering/
+> shader は同じ project root を read-only 共有し、scene source だけ
+> snapshot に差し替える。複数 scene、非 current scene、unknown/
+> read-only component、pending edit、preview 中、raw numeric/array
+> order の round-trip fixture を置く。採用 edit は source snapshot
+> revision を base とする人 session の通常 edit 一件であり、その間に
+> 人が edit していれば global CAS reject する。
+
+### 1-6. matrix と inventory(再レビュー入口 §11 の提出物)
+
+#### 1-6-1. operation / write-set matrix
+
+| op | stable target | precondition(preflight) | adapter | revision/epoch | conflict 時 |
+|---|---|---|---|---|---|
+| set_component_value | ObjectId+component slot+field path | base rev CAS・editable・schema 検証 | codec runtime apply | rev+1 | stale_revision |
+| add_component | ObjectId+component slot(新設) | CAS・slot 不存在・ECS-MUT0 prepare | migration+special adapter | rev+1 | stale_revision / duplicate |
+| remove_component | ObjectId+component slot | CAS・slot 存在 | migration+special adapter | rev+1 | stale_revision / missing |
+| spawn | subtree existence+declaration interval+name reservation | CAS・名前一意 | 全 codec+migration | rev+1 | stale_revision / name_conflict |
+| destroy | 同上(closure) | CAS・closure 解決 | 同上(逆) | rev+1 | stale_revision |
+| reparent | child+old/new parent edge+descendant closure | CAS・循環/zero-scale preflight・preserve 指定 | transform closure 再計算 | rev+1 | stale_revision / cycle |
+| undo/redo | 元 transaction の write set+domain | CAS・**postcondition/last-writer precondition 全項** | inverse 経由で同上 | rev+1(成功時のみ) | **undo_conflict**(全 no-op) |
+| ticket preview open/update | write set(lease) | can_preview・lease 空き・capability | E-C1 prepare→publish | **preview_epoch+1**(rev 不変) | busy / method_unavailable |
+| ticket commit | 同上 | ticket base rev CAS | 通常 transaction | rev+1・epoch+1 | stale_revision(forced-abort) |
+| ticket abort | — | — | committed document 再投影 | epoch+1 | — |
+| eval_preview | overrides(request-local) | can_preview・prepared 評価可能 | PreparedProjection のみ | **不変** | method_unavailable |
+| render_preview | overrides+camera | can_preview・非 xr_active | preview graph executor | **不変** | xr_active_unsupported |
+
+#### 1-6-2. renderer preview state inventory(V22-C6 の gate 対象)
+
+| shared state | preview での扱い |
+|---|---|
+| DeletionQueue(logical epoch) | **advance しない**(request-local frame resources) |
+| RenderTiming(published history) | **混ぜない**(preview_request_id namespace の非公開 timing) |
+| RenderTargetContainer history | read-only(preview は request-local RT) |
+| PolygonInstanceContainer previous state | read-only(advance しない) |
+| camera history/snapshot | read-only(explicit camera は request-local) |
+| layout tracker | request-local |
+| EngineTime / frame index | read-only(advance しない) |
+| flat/xr graph variant・selectGraphVariant | **不使用**(第三 preview variant) |
+| swapchain / XR mirror | **不使用**(present しない) |
+
+#### 1-6-3. snapshot export/import sequence
+
+```
+人 session: export_scene_snapshot
+  → {scene_revision R, semantic_scene_bytes, digest,
+     current_scene_id, pending_ticket_ids, preview_epoch}
+scratch: pelican_player --headless --rpc
+         --scene-snapshot <bytes/digest>(launch surface)
+  → 同一 project root read-only 共有・scene source だけ差し替え
+agent: overrides スイープ + eval/render_preview + capture
+採用: 人 session へ通常 edit 1 件(base = R)
+  → R の間に人が編集していれば stale_revision(CAS reject)→ 再判断
+```
+
+WP 化(§3 の表・グラフ参照): §1-4-1 → E-RPC1/JOURNAL0。§1-4-3 →
+E-HOST0(transport)+ WATCH0(enrichment)。§1-5-1/1-5-4 → E-RPC1
+(editor gate/override validator を所有)。§1-5-2/1-5-3 → PREVIEW0
+(**E-RPC1 完了後** — gate/validator の共通部を所有者から使う)。
+§1-5-5 → SNAPSHOT0。
 
 ## 2. エンジン内 UI(ImGui — F2)
 
@@ -266,23 +466,35 @@ WP 化: §1-4 は E-RPC0(watch)/E-RPC1・JOURNAL0(actor_id/undo)の
 > 新規 process reload の双方で全 scene tree/component semantic
 > equality を gate とする。
 
-## 3. WP 分割(レビュー §4.1 の依存順を採用)
+## 3. WP 分割(v2.3 — 受理済み再レビュー §6 + v2.2 レビュー §9 の修正グラフ)
 
 ```
-ED-AUTH0 + ED-CODEC0 → E-RPC0 → ECS-MUT0 + E-RPC1/JOURNAL0
-                                   → UI-INS0 / UI-AB0 / SAVE0
+ED-AUTH0(済) + ED-CODEC0                  → E-RPC0-base(query + export)
+ED-AUTH0 + ED-CODEC0 + ECS-MUT0(済)       → E-PROJTX0
+E-RPC0-base + E-PROJTX0                    → E-RPC1/JOURNAL0
+WP27(済)                                    → E-HOST0(windowed rpc host)
+E-RPC1/JOURNAL0                             → WATCH0(transaction enrichment)
+E-RPC1/JOURNAL0(gate/validator 所有)       → PREVIEW0(+WP133 済)
+E-RPC0-base(export) + E-HOST0              → SNAPSHOT0
+E-RPC0-base                                 → UI-AB0
+E-RPC0-base + E-RPC1/JOURNAL0 + E-HOST0    → UI-INS0
+ED-AUTH0 + E-RPC1/JOURNAL0                  → SAVE0
 ```
 
 | WP | 内容 | 条件の添付元 |
 |----|------|--------------|
-| **ED-AUTH0** | AuthoringSceneDocument/SceneRevision/AuthoringObjectId + cache 統合 | §0-1 逐語 |
+| **ED-AUTH0**(済 WP149) | AuthoringSceneDocument/SceneRevision/AuthoringObjectId + cache 統合 | §0-1 逐語 |
 | **ED-CODEC0** | codec 五つ組 + 七種 coverage + StructFieldSchema 相乗り | §0-2 逐語(BEH-P0 と共通機構) |
-| **E-RPC0** | query 群 + EditorCommandService + fake adapter 等価 | §1-1 逐語 |
-| **ECS-MUT0** | archetype migration transaction(WP62 流儀の failure atomicity) | レビュー ECS-MUT0 逐語 |
-| **E-RPC1** | edit ticket/commit + can_edit + JOURNAL0 + §1-4(actor_id/CAS/undo)+ §1-5-1(ticket preview) | §1-2/1-3/1-4 逐語 |
+| **E-RPC0-base** | query 群 + EditorCommandService + fake adapter 等価 + `export_scene_snapshot` | §1-1/§1-5-5 逐語 |
+| **ECS-MUT0**(済 WP152) | archetype migration transaction | レビュー ECS-MUT0 逐語 |
+| **E-PROJTX0** | 異種 projection の prepare→noexcept-publish 合成 | E-C1 逐語 |
+| **E-RPC1/JOURNAL0** | edit ticket/commit + JOURNAL0(write-set/domain/stamp 拡張)+ actor/undo(§1-4-1)+ ticket preview lease(§1-5-1)+ editor gate(§1-5-4)+ override validator | §1-2/1-3/1-4-1/1-4-2/1-5-1/1-5-4 逐語 |
+| **E-HOST0** | windowed loop の外部 rpc bounded queue service | §1-4-3 逐語(前半) |
+| **WATCH0** | watch token {scene_revision, preview_epoch} + last-transaction 応答 | §1-4-3 逐語(後半) |
+| **PREVIEW0** | eval_preview(PreparedProjection)+ render_preview(第三 graph variant) | §1-5-2/1-5-3 逐語 + §1-6 表 |
+| **SNAPSHOT0** | snapshot export/ingestion(launch surface) | §1-5-5 逐語 |
 | **UI-INS0/AB0** | ImGui パネル(service 経由のみ) | §2-1 逐語 |
 | **SAVE0** | atomic 全 document 保存 | §2-2 逐語 |
-| **PREVIEW0** | eval_preview / render_preview(E-PROJTX0 後) | §1-5-2 逐語 |
 
 ## 4. 未決事項
 
