@@ -36,6 +36,7 @@ set_target_properties(pelican_imgui PROPERTIES
 )
 target_include_directories(pelican_imgui PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/..
+  ${CMAKE_CURRENT_SOURCE_DIR}/../userpublic
   ${imgui_vendor_SOURCE_DIR}
   ${imgui_vendor_SOURCE_DIR}/backends
   ${Vulkan_INCLUDE_DIRS}

@@ -1,3 +1,4 @@
+#define GLM_ENABLE_EXPERIMENTAL
 #include "rpcserver.hpp"
 #include "editorcommandservice.hpp"
 #include "../startup.hpp"
@@ -5,14 +6,20 @@
 #include "../appflow/framephase.hpp"
 
 #include "../appflow/enginetime.hpp"
+#include "../asset/model.hpp"
+#include "../ecs/archetypemigration.hpp"
 #include "../ecs/core.hpp"
+#include "../ecs/componentinfo.hpp"
+#include "../ecs/predefined/modelview.hpp"
 #include "../ecs/predefined/transform.hpp"
 #include "../loader/basicconfig.hpp"
+#include "../loader/editorprojectionadapters.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../loader/scene.hpp"
 #include "../gamelogic/gamelogicreload.hpp"
 #include "../launchconfig.hpp"
 #include "../material/materialcontainer.hpp"
+#include "../light/lightcontainer.hpp"
 #include "../model/vertbufcontainer.hpp"
 #include "../os/inputsequence.hpp"
 #include "../os/inputstate.hpp"
@@ -20,9 +27,12 @@
 #include "../openxr/openxrsession.hpp"
 #endif
 #include "../playback/seqplayer.hpp"
+#include "../phys/physworld.hpp"
 #include "../renderingpass/renderingpassjsonhelpers.hpp"
 #include "../renderdoc/renderdoccapture.hpp"
 #include "../renderer/spritescene.hpp"
+#include "../renderer/camera.hpp"
+#include "../renderer/polygoninstancecontainer.hpp"
 #include "../userpublic/gamecontext.hpp"
 #include "../userpublic/userinput.hpp"
 #include "../userpublic/components/predefined.hpp"
@@ -44,10 +54,15 @@
 #include <optional>
 #include <ostream>
 #include <random>
+#include <set>
 #include <sstream>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
+
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtx/quaternion.hpp>
 
 namespace Pelican {
 
@@ -295,6 +310,11 @@ struct EngineRpcModules {
     EngineTime &engine_time;
     ECSCore &ecs_core;
     ComponentInfoManager &component_info;
+    ModelAssetContainer &models;
+    PolygonInstanceContainer &polygon_instances;
+    Camera &camera;
+    LightContainer &lights;
+    PhysWorld &physics;
     PathResolver &path_resolver;
     ProjectBasicConfig &project_config;
     SceneLoader &scene_loader;
@@ -317,6 +337,11 @@ EngineRpcModules resolveEngineRpcModules() {
         GET_MODULE(EngineTime),
         GET_MODULE(ECSCore),
         GET_MODULE(ComponentInfoManager),
+        GET_MODULE(ModelAssetContainer),
+        GET_MODULE(PolygonInstanceContainer),
+        GET_MODULE(Camera),
+        GET_MODULE(LightContainer),
+        GET_MODULE(PhysWorld),
         GET_MODULE(PathResolver),
         GET_MODULE(ProjectBasicConfig),
         GET_MODULE(SceneLoader),
@@ -334,13 +359,631 @@ EngineRpcModules resolveEngineRpcModules() {
     };
 }
 
+std::vector<EditorProjectionRuntimeObjectBinding>
+collectEditorRuntimeBindings(const EngineRpcModules &modules) {
+    std::vector<EditorProjectionRuntimeObjectBinding> result;
+    const auto scenes = modules.project_config.sceneDocument().query();
+    const auto scene = std::find_if(scenes.begin(), scenes.end(),
+                                    [&](const auto &candidate) {
+                                        return candidate.scene_id ==
+                                               modules.scene_loader.currentScene();
+                                    });
+    if (scene == scenes.end()) return result;
+    for (const auto &object : scene->objects) {
+        if (!object.name) continue;
+        const auto entity = modules.scene_loader.objectId(*object.name);
+        if (entity) result.push_back({object.authoring_object_id, *entity});
+    }
+    return result;
+}
+
+std::optional<EntityId> boundEditorEntity(
+    std::span<const EditorProjectionRuntimeObjectBinding> bindings,
+    AuthoringObjectId object_id) {
+    const auto found = std::find_if(bindings.begin(), bindings.end(),
+                                    [&](const auto &binding) {
+                                        return binding.authoring_object_id == object_id;
+                                    });
+    return found == bindings.end() ? std::nullopt
+                                   : std::optional{found->entity};
+}
+
+class SimpleModelMigrationParticipant final
+    : public ECSArchetypeMigrationAdapter {
+    ModelAssetContainer &models_;
+    PolygonInstanceContainer &renderer_;
+    ECSArchetypeMigrationKind original_kind_;
+    std::optional<StagedModelInstance> staged_;
+    std::optional<ModelInstanceId> next_id_;
+    std::optional<ModelInstanceId> old_id_;
+    bool published_ = false;
+
+  public:
+    SimpleModelMigrationParticipant(ModelAssetContainer &models,
+                                    PolygonInstanceContainer &renderer,
+                                    ECSArchetypeMigrationKind kind)
+        : models_{models}, renderer_{renderer}, original_kind_{kind} {}
+
+    void prepare(const ECSArchetypeMigrationPrepareContext &context) override {
+        if (context.kind == ECSArchetypeMigrationKind::add) {
+            auto *component = static_cast<SimpleModelViewComponent *>(
+                context.staged_component);
+            auto &model = models_.getModelTemplateByName(component->model_name);
+            staged_.emplace(renderer_.stageModelInstance(model));
+            glm::mat4 matrix{1.0F};
+            if (const auto *transform =
+                    context.core.tryComponent<TransformComponent>(context.entity)) {
+                matrix = glm::translate(glm::mat4{1.0F}, transform->pos) *
+                         glm::toMat4(transform->rotation) *
+                         glm::scale(glm::mat4{1.0F}, transform->scale);
+            }
+            renderer_.setStagedModelMatrix(*staged_, matrix);
+            next_id_ = staged_->id();
+            component->model_instance_id = next_id_;
+        } else {
+            const auto *component = static_cast<const SimpleModelViewComponent *>(
+                context.live_component);
+            old_id_ = component->model_instance_id;
+        }
+    }
+
+    void rollback(const ECSArchetypeMigrationPrepareContext &) noexcept override {
+        staged_.reset();
+        next_id_.reset();
+        old_id_.reset();
+        published_ = false;
+    }
+
+    void publish(const ECSArchetypeMigrationPublishContext &context) noexcept override {
+        if (original_kind_ == ECSArchetypeMigrationKind::add) {
+            if (context.kind == ECSArchetypeMigrationKind::add && staged_) {
+                renderer_.publishModelInstance(std::move(*staged_));
+                staged_.reset();
+                published_ = true;
+            } else if (context.kind == ECSArchetypeMigrationKind::remove &&
+                       published_ && next_id_) {
+                (void)renderer_.removeModelInstance(*next_id_);
+                published_ = false;
+            }
+        }
+    }
+
+    void finish() noexcept {
+        if (original_kind_ == ECSArchetypeMigrationKind::remove && old_id_) {
+            (void)renderer_.removeModelInstance(*old_id_);
+        }
+        staged_.reset();
+        next_id_.reset();
+        old_id_.reset();
+        published_ = false;
+    }
+};
+
+class EditorEcsMigrationProjectionAdapter final
+    : public EditorProjectionAdapter {
+    ECSCoreTemplatePublic &ecs_;
+    ComponentInfoManager &components_;
+    ModelAssetContainer &models_;
+    PolygonInstanceContainer &renderer_;
+    std::vector<EditorProjectionRuntimeObjectBinding> bindings_;
+    AuthoringObjectId object_id_{};
+    std::string component_name_;
+    nlohmann::ordered_json operation_;
+    ECSArchetypeMigrationKind kind_ = ECSArchetypeMigrationKind::add;
+    std::string name_;
+    std::optional<ECSArchetypeMigrationToken> token_;
+    std::optional<SimpleModelMigrationParticipant> simple_model_;
+
+  public:
+    EditorEcsMigrationProjectionAdapter(
+        ECSCoreTemplatePublic &ecs, ComponentInfoManager &components,
+        ModelAssetContainer &models, PolygonInstanceContainer &renderer,
+        std::vector<EditorProjectionRuntimeObjectBinding> bindings,
+        nlohmann::ordered_json operation, std::size_t operation_index)
+        : ecs_{ecs}, components_{components}, models_{models}, renderer_{renderer},
+          bindings_{std::move(bindings)},
+          object_id_{operation.at("object_id").get<std::uint64_t>()},
+          component_name_{operation.at("component_slot").get<std::string>()},
+          operation_{std::move(operation)},
+          kind_{operation_.at("op") == "add_component"
+                    ? ECSArchetypeMigrationKind::add
+                    : ECSArchetypeMigrationKind::remove},
+          name_{"component_migration." + std::to_string(object_id_.value) + "." +
+                component_name_ + "." + std::to_string(operation_index)} {}
+
+    EditorProjectionAdapterKind kind() const noexcept override {
+        return EditorProjectionAdapterKind::EcsArchetype;
+    }
+    std::string_view name() const noexcept override { return name_; }
+    EditorProjectionPublicationMode publicationMode() const noexcept override {
+        return EditorProjectionPublicationMode::InverseToken;
+    }
+
+    void prepare(const EditorProjectionPrepareContext &) override {
+        const auto entity = boundEditorEntity(bindings_, object_id_);
+        if (!entity) throw std::runtime_error("component edit target has no runtime binding");
+        const auto component_id = components_.getComponentIdByName(component_name_);
+        std::vector<ECSArchetypeMigrationAdapter *> participants;
+        if (component_name_ == "simplemodelview") {
+            simple_model_.emplace(models_, renderer_, kind_);
+            participants.push_back(&*simple_model_);
+        }
+        if (kind_ == ECSArchetypeMigrationKind::add) {
+            const auto &codec = requireComponentCodec(component_name_);
+            auto decoded = codec.decodeAuthored(operation_.at("component"));
+            token_.emplace(ECSArchetypeMigration::prepareAdd(
+                ecs_, *entity, component_id,
+                [this, codec = &codec,
+                 decoded = std::move(decoded)](void *target) {
+                    if (component_name_ == "transform") {
+                        TransformCodecTarget transform{
+                            .world = static_cast<TransformComponent *>(target)};
+                        codec->applyRuntime(decoded, &transform);
+                    } else if (codec->runtime_kind ==
+                               ComponentCodecRuntimeKind::Ecs) {
+                        codec->applyRuntime(decoded, target);
+                    } else {
+                        components_.loadByJson(target,
+                                               operation_.at("component"));
+                    }
+                },
+                participants));
+        } else {
+            token_.emplace(ECSArchetypeMigration::prepareRemove(
+                ecs_, *entity, component_id, participants));
+        }
+    }
+
+    void publish() noexcept override {
+        if (token_) token_->publish();
+    }
+    void rollback() noexcept override {
+        if (token_) token_->rollback();
+        token_.reset();
+        simple_model_.reset();
+    }
+    void finish() noexcept override {
+        if (token_) token_->finish();
+        token_.reset();
+        if (simple_model_) simple_model_->finish();
+        simple_model_.reset();
+    }
+};
+
+class StandaloneTransformProjectionAdapter final
+    : public EditorProjectionAdapter {
+    using Token =
+        ECSCoreTemplatePublic::PreparedComponentSwap<TransformComponent>;
+
+    ECSCoreTemplatePublic &ecs_;
+    std::vector<EditorProjectionRuntimeObjectBinding> bindings_;
+    std::set<std::string> scenes_;
+    std::vector<Token> prepared_;
+
+  public:
+    StandaloneTransformProjectionAdapter(
+        ECSCoreTemplatePublic &ecs,
+        std::vector<EditorProjectionRuntimeObjectBinding> bindings,
+        std::set<std::string> scenes)
+        : ecs_{ecs}, bindings_{std::move(bindings)},
+          scenes_{std::move(scenes)} {}
+
+    EditorProjectionAdapterKind kind() const noexcept override {
+        return EditorProjectionAdapterKind::EcsExistingValue;
+    }
+    std::string_view name() const noexcept override {
+        return "transform_standalone";
+    }
+    EditorProjectionPublicationMode publicationMode() const noexcept override {
+        return EditorProjectionPublicationMode::StagedNoexcept;
+    }
+
+    void prepare(const EditorProjectionPrepareContext &context) override {
+        prepared_.clear();
+        const auto next_scenes = context.next_document.query();
+        const auto &codec = requireComponentCodec("transform");
+
+        for (const auto &scene : next_scenes) {
+            if (!scenes_.contains(scene.scene_id)) continue;
+
+            std::unordered_map<std::string, const AuthoringObjectView *> by_name;
+            for (const auto &object : scene.objects) {
+                if (object.name) by_name.emplace(*object.name, &object);
+            }
+            std::unordered_map<std::uint64_t, TransformComponent> worlds;
+            std::unordered_set<std::uint64_t> visiting;
+            const auto compute_world = [&](auto &&self,
+                                           const AuthoringObjectView &object)
+                -> const TransformComponent & {
+                if (const auto found = worlds.find(object.authoring_object_id.value);
+                    found != worlds.end()) {
+                    return found->second;
+                }
+                if (!visiting.insert(object.authoring_object_id.value).second) {
+                    throw std::runtime_error(
+                        "validated transform hierarchy became cyclic");
+                }
+                const auto component = std::find_if(
+                    object.components.begin(), object.components.end(),
+                    [](const auto &candidate) {
+                        return candidate.authoredJson().at("name") ==
+                               "transform";
+                    });
+                if (component == object.components.end()) {
+                    throw std::runtime_error(
+                        "transform hierarchy object has no authored transform");
+                }
+                const TransformComponent *parent_world = nullptr;
+                if (object.parent) {
+                    const auto parent = by_name.find(*object.parent);
+                    if (parent == by_name.end()) {
+                        throw std::runtime_error(
+                            "transform hierarchy parent is absent");
+                    }
+                    parent_world = &self(self, *parent->second);
+                }
+                TransformComponent next{};
+                TransformCodecTarget target{.world = &next,
+                                            .parent_world = parent_world};
+                codec.applyRuntime(
+                    codec.decodeAuthored(component->authoredJson()), &target);
+                visiting.erase(object.authoring_object_id.value);
+                return worlds.emplace(object.authoring_object_id.value, next)
+                    .first->second;
+            };
+
+            for (const auto &binding : bindings_) {
+                auto *world =
+                    ecs_.tryComponent<TransformComponent>(binding.entity);
+                const auto *local =
+                    ecs_.tryComponent<LocalTransformComponent>(binding.entity);
+                if (world == nullptr || local != nullptr) continue;
+                const auto object = std::find_if(
+                    scene.objects.begin(), scene.objects.end(),
+                    [&](const auto &candidate) {
+                        return candidate.authoring_object_id ==
+                               binding.authoring_object_id;
+                    });
+                if (object == scene.objects.end()) continue;
+                prepared_.push_back(ecs_.prepareComponentSwap(
+                    binding.entity, compute_world(compute_world, *object)));
+            }
+        }
+    }
+
+    void publish() noexcept override {
+        for (auto &token : prepared_) token.publish();
+    }
+    void rollback() noexcept override {
+        for (auto it = prepared_.rbegin(); it != prepared_.rend(); ++it) {
+            it->rollback();
+        }
+        prepared_.clear();
+    }
+    void finish() noexcept override {
+        for (auto &token : prepared_) token.finish();
+        prepared_.clear();
+    }
+};
+
+class ReparentLocalTransformProjectionAdapter final
+    : public EditorProjectionAdapter {
+    ECSCoreTemplatePublic &ecs_;
+    ComponentInfoManager &components_;
+    std::vector<EditorProjectionRuntimeObjectBinding> bindings_;
+    AuthoringObjectId object_id_{};
+    std::optional<AuthoringObjectId> parent_id_;
+    std::string name_;
+    std::optional<ECSArchetypeMigrationToken> token_;
+
+  public:
+    ReparentLocalTransformProjectionAdapter(
+        ECSCoreTemplatePublic &ecs, ComponentInfoManager &components,
+        std::vector<EditorProjectionRuntimeObjectBinding> bindings,
+        const nlohmann::ordered_json &operation, std::size_t operation_index)
+        : ecs_{ecs}, components_{components}, bindings_{std::move(bindings)},
+          object_id_{operation.at("object_id").get<std::uint64_t>()},
+          parent_id_{operation.at("new_parent_id").is_null()
+                         ? std::optional<AuthoringObjectId>{}
+                         : std::optional{AuthoringObjectId{
+                               operation.at("new_parent_id")
+                                   .get<std::uint64_t>()}}},
+          name_{"reparent_local_transform." +
+                std::to_string(object_id_.value) + "." +
+                std::to_string(operation_index)} {}
+
+    EditorProjectionAdapterKind kind() const noexcept override {
+        return EditorProjectionAdapterKind::EcsArchetype;
+    }
+    std::string_view name() const noexcept override { return name_; }
+    EditorProjectionPublicationMode publicationMode() const noexcept override {
+        return EditorProjectionPublicationMode::InverseToken;
+    }
+
+    void prepare(const EditorProjectionPrepareContext &context) override {
+        token_.reset();
+        if (!parent_id_) return;
+        const auto entity = boundEditorEntity(bindings_, object_id_);
+        const auto parent = boundEditorEntity(bindings_, *parent_id_);
+        if (!entity || !parent) {
+            throw std::runtime_error(
+                "reparent target or parent has no runtime binding");
+        }
+        if (ecs_.tryComponent<LocalTransformComponent>(*entity) != nullptr) {
+            return;
+        }
+
+        const auto scenes = context.next_document.query();
+        const AuthoringObjectView *object = nullptr;
+        for (const auto &scene : scenes) {
+            const auto found = std::find_if(
+                scene.objects.begin(), scene.objects.end(),
+                [&](const auto &candidate) {
+                    return candidate.authoring_object_id == object_id_;
+                });
+            if (found != scene.objects.end()) {
+                object = &*found;
+                break;
+            }
+        }
+        if (object == nullptr) {
+            throw std::runtime_error("reparent target disappeared from document");
+        }
+        const auto transform = std::find_if(
+            object->components.begin(), object->components.end(),
+            [](const auto &candidate) {
+                return candidate.authoredJson().at("name") == "transform";
+            });
+        if (transform == object->components.end()) {
+            throw std::runtime_error("reparent target has no transform");
+        }
+        const auto decoded = requireComponentCodec("transform").decodeAuthored(
+            transform->authoredJson());
+        const auto &data =
+            std::any_cast<const TransformCodecData &>(decoded);
+        const LocalTransformComponent next{
+            .scale = data.scale,
+            .rotation = data.rotation,
+            .pos = data.pos,
+            .parent = *parent,
+        };
+        token_.emplace(ECSArchetypeMigration::prepareAdd(
+            ecs_, *entity,
+            components_.getComponentIdByName("localtransform"),
+            [next](void *target) {
+                *static_cast<LocalTransformComponent *>(target) = next;
+            }));
+    }
+
+    void publish() noexcept override {
+        if (token_) token_->publish();
+    }
+    void rollback() noexcept override {
+        if (token_) token_->rollback();
+        token_.reset();
+    }
+    void finish() noexcept override {
+        if (token_) token_->finish();
+        token_.reset();
+    }
+};
+
+std::vector<TransformProjectionBinding> makeTransformBindings(
+    EngineRpcModules &modules,
+    std::span<const EditorProjectionRuntimeObjectBinding> runtime_bindings) {
+    std::vector<TransformProjectionBinding> result;
+    auto &ecs = modules.ecs_core.getTemplatePublicModule();
+    const auto scenes = modules.project_config.sceneDocument().query();
+    for (const auto &binding : runtime_bindings) {
+        for (const auto &scene : scenes) {
+            const auto object = std::find_if(scene.objects.begin(), scene.objects.end(),
+                                             [&](const auto &candidate) {
+                                                 return candidate.authoring_object_id ==
+                                                        binding.authoring_object_id;
+                                             });
+            if (object == scene.objects.end() || !object->name) continue;
+            auto *world = ecs.tryComponent<TransformComponent>(binding.entity);
+            auto *local = ecs.tryComponent<LocalTransformComponent>(binding.entity);
+            if (world == nullptr || local == nullptr) continue;
+            result.push_back({scene.scene_id, *object->name, binding.entity,
+                              world, local});
+        }
+    }
+    return result;
+}
+
+std::string operationSceneId(const nlohmann::ordered_json &operation,
+                             std::string_view fallback) {
+    if (const auto scene = operation.find("scene_id");
+        scene != operation.end() && scene->is_string()) {
+        return scene->get<std::string>();
+    }
+    if (const auto closures = operation.find("closures");
+        closures != operation.end() && !closures->empty()) {
+        return closures->front().at("scene_id").get<std::string>();
+    }
+    return std::string{fallback};
+}
+
+EditorProjectionResult executeEditorProjection(
+    EngineRpcModules &modules,
+    std::vector<EditorProjectionRuntimeObjectBinding> &runtime_bindings,
+    const EditorEditExecutionRequest &request) {
+    auto &ecs = modules.ecs_core.getTemplatePublicModule();
+    std::vector<std::unique_ptr<EditorProjectionAdapter>> adapters;
+    struct LifecycleUpdate {
+        AuthoringObjectId object_id{};
+        SceneObjectProjectionAdapter *adapter = nullptr;
+    };
+    std::vector<LifecycleUpdate> lifecycle_updates;
+    std::set<std::string> transform_scenes;
+    std::set<std::string> ecs_codec_scenes;
+    std::set<std::string> renderer_scenes;
+    std::set<std::string> camera_scenes;
+    std::set<std::string> light_scenes;
+    std::set<std::string> collider_scenes;
+    const auto fallback_scene = modules.scene_loader.currentScene();
+
+    const auto addLifecycle = [&](AuthoringObjectId object_id,
+                                  const std::string &scene_id) {
+        auto adapter = std::make_unique<SceneObjectProjectionAdapter>(
+            ecs, modules.component_info, modules.models,
+            modules.polygon_instances, modules.camera, modules.lights,
+            modules.physics, scene_id, object_id, runtime_bindings);
+        auto *raw = adapter.get();
+        adapters.push_back(std::move(adapter));
+        lifecycle_updates.push_back({object_id, raw});
+    };
+
+    for (std::size_t index = 0; index < request.operations.size(); ++index) {
+        const auto &operation = request.operations[index];
+        const auto op = operation.at("op").get<std::string>();
+        const auto scene_id = operationSceneId(operation, fallback_scene);
+        if (op == "spawn") {
+            addLifecycle(AuthoringObjectId{
+                             operation.at("object_id").get<std::uint64_t>()},
+                         scene_id);
+        } else if (op == "destroy" || op == "remove_objects") {
+            for (const auto &id : operation.at("object_ids")) {
+                addLifecycle(AuthoringObjectId{id.get<std::uint64_t>()}, scene_id);
+            }
+        } else if (op == "restore_objects") {
+            for (const auto &closure : operation.at("closures")) {
+                addLifecycle(AuthoringObjectId{
+                                 closure.at("authoring_object_id").get<std::uint64_t>()},
+                             closure.at("scene_id").get<std::string>());
+            }
+        } else if (op == "reparent") {
+            transform_scenes.insert(scene_id);
+            adapters.push_back(
+                std::make_unique<ReparentLocalTransformProjectionAdapter>(
+                    ecs, modules.component_info, runtime_bindings, operation,
+                    index));
+        } else if (op == "set_component_value") {
+            const auto component = operation.at("component_slot").get<std::string>();
+            if (component == "transform") transform_scenes.insert(scene_id);
+            else if (component == "simplemodelview") renderer_scenes.insert(scene_id);
+            else if (component == "animation" || component == "sprite_view")
+                ecs_codec_scenes.insert(scene_id);
+            else if (component == "camera") camera_scenes.insert(scene_id);
+            else if (component == "light") light_scenes.insert(scene_id);
+            else if (component == "collider") collider_scenes.insert(scene_id);
+        } else if (op == "add_component" || op == "remove_component") {
+            const auto component = operation.at("component_slot").get<std::string>();
+            const auto &codec = requireComponentCodec(component);
+            if (codec.runtime_kind == ComponentCodecRuntimeKind::Ecs ||
+                codec.runtime_kind == ComponentCodecRuntimeKind::Camera) {
+                adapters.push_back(std::make_unique<EditorEcsMigrationProjectionAdapter>(
+                    ecs, modules.component_info, modules.models,
+                    modules.polygon_instances, runtime_bindings, operation, index));
+            }
+            if (codec.runtime_kind == ComponentCodecRuntimeKind::Camera) {
+                camera_scenes.insert(scene_id);
+            } else if (codec.runtime_kind == ComponentCodecRuntimeKind::Light) {
+                light_scenes.insert(scene_id);
+            } else if (codec.runtime_kind == ComponentCodecRuntimeKind::Collider) {
+                collider_scenes.insert(scene_id);
+            }
+        }
+    }
+
+    if (!transform_scenes.empty()) {
+        adapters.push_back(std::make_unique<TransformProjectionAdapter>(
+            makeTransformBindings(modules, runtime_bindings)));
+        adapters.push_back(
+            std::make_unique<StandaloneTransformProjectionAdapter>(
+                ecs, runtime_bindings, transform_scenes));
+    }
+    for (const auto &scene : ecs_codec_scenes) {
+        adapters.push_back(std::make_unique<EcsCodecProjectionAdapter>(
+            ecs, scene, runtime_bindings));
+    }
+    for (const auto &scene : renderer_scenes) {
+        adapters.push_back(std::make_unique<RendererModelProjectionAdapter>(
+            ecs, modules.models, modules.polygon_instances, scene,
+            runtime_bindings));
+    }
+    for (const auto &scene : camera_scenes) {
+        adapters.push_back(std::make_unique<CameraProjectionAdapter>(
+            modules.camera, scene));
+    }
+    for (const auto &scene : light_scenes) {
+        adapters.push_back(std::make_unique<LightProjectionAdapter>(
+            modules.lights, scene));
+    }
+    for (const auto &scene : collider_scenes) {
+        adapters.push_back(std::make_unique<ColliderProjectionAdapter>(
+            ecs, modules.physics, scene, runtime_bindings));
+    }
+
+    std::vector<EditorProjectionAdapter *> adapter_ptrs;
+    adapter_ptrs.reserve(adapters.size());
+    for (auto &adapter : adapters) adapter_ptrs.push_back(adapter.get());
+    ProjectBasicConfigProjectionTarget target{modules.project_config};
+    EditorProjectionTransaction transaction{target, request.base_revision};
+    auto result = transaction.commit(request.commands, adapter_ptrs);
+    if (result.committed()) {
+        for (const auto &update : lifecycle_updates) {
+            const auto next = update.adapter->runtimeBindings();
+            const auto replacement = std::find_if(next.begin(), next.end(),
+                                                  [&](const auto &binding) {
+                                                      return binding.authoring_object_id ==
+                                                             update.object_id;
+                                                  });
+            const auto current = std::find_if(runtime_bindings.begin(),
+                                              runtime_bindings.end(),
+                                              [&](const auto &binding) {
+                                                  return binding.authoring_object_id ==
+                                                         update.object_id;
+                                              });
+            if (replacement == next.end()) {
+                if (current != runtime_bindings.end()) runtime_bindings.erase(current);
+            } else if (current == runtime_bindings.end()) {
+                runtime_bindings.push_back(*replacement);
+            } else {
+                *current = *replacement;
+            }
+        }
+    }
+    return result;
+}
+
+std::uint64_t editorTransitionEpoch(const EngineRpcModules &modules) {
+    std::string state = modules.scene_loader.currentScene();
+    if (modules.reload_service != nullptr) {
+        const auto reload = modules.reload_service->statusJson();
+        state += "\n" + reload.value("state", std::string{});
+        state += "\n" + std::to_string(reload.value("epoch", std::uint64_t{}));
+        if (const auto runtime = reload.find("runtime"); runtime != reload.end()) {
+            state += "\n" + runtime->dump();
+        }
+    }
+    return static_cast<std::uint64_t>(std::hash<std::string>{}(state));
+}
+
+EditorGateObservation editorGateObservation(const EngineRpcModules &modules) {
+    std::uint32_t reasons = 0;
+    if (modules.launch_config.input_replay || modules.input_sequence.isReplaying()) {
+        reasons |= editorGateReasonBit(EditorGateReason::replay);
+    }
+    if (modules.launch_config.golden_mode) {
+        reasons |= editorGateReasonBit(EditorGateReason::golden);
+    }
+    if (modules.launch_config.strict_assets) {
+        reasons |= editorGateReasonBit(EditorGateReason::strict);
+    }
+    return {.reasons = reasons,
+            .transition_epoch = editorTransitionEpoch(modules)};
+}
+
 EditorRuntimeObjectState queryEditorRuntime(const EngineRpcModules &modules,
+                                            std::span<const EditorProjectionRuntimeObjectBinding> bindings,
                                             const AuthoringSceneView &scene,
                                             const AuthoringObjectView &object) {
     EditorRuntimeObjectState result;
     result.component_runtime_json.resize(object.components.size());
-    if (scene.scene_id != modules.scene_loader.currentScene() || !object.name) return result;
-    const auto entity_id = modules.scene_loader.objectId(*object.name);
+    if (scene.scene_id != modules.scene_loader.currentScene()) return result;
+    const auto entity_id = boundEditorEntity(bindings, object.authoring_object_id);
     if (!entity_id) return result;
     result.entity_id = entity_id;
 
@@ -435,6 +1078,8 @@ template <class Invoke> nlohmann::json invokeEditorRpc(Invoke &&invoke) {
                                   : JsonRpcErrorCodes::applicationError;
         throw JsonRpcHandlerError{rpc_code, error.what(),
                                   {{"code", editorCommandErrorCodeName(error.code())}}};
+    } catch (const std::invalid_argument &error) {
+        throw JsonRpcHandlerError{JsonRpcErrorCodes::invalidParams, error.what()};
     }
 }
 
@@ -965,6 +1610,24 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
     server.setHandler("export_scene_snapshot", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.exportSceneSnapshot(params); });
     });
+    server.setHandler("open_editor_session", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.openEditorSession(params); });
+    });
+    server.setHandler("resume_editor_session", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.resumeEditorSession(params); });
+    });
+    server.setHandler("can_edit", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.canEdit(params); });
+    });
+    server.setHandler("edit", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.edit(params); });
+    });
+    server.setHandler("get_edit_result", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.getEditResult(params); });
+    });
+    server.setHandler("query_journal", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.queryJournal(params); });
+    });
 
     server.setHandler("set_seed", [](const nlohmann::json &params) {
         const auto seed = requireUnsignedIntegerParam(params, "seed", "set_seed");
@@ -1116,14 +1779,16 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
         };
     });
 
-    server.setHandler("step_frame", [&pending_transforms, &modules](const nlohmann::json &params) {
+    server.setHandler("step_frame", [&pending_transforms, &modules, &editor_rpc](const nlohmann::json &params) {
         requireObjectParams(params, "step_frame");
         flushPendingTransforms(pending_transforms, modules.scene_loader);
         modules.engine_time.advance();
         modules.vulkan.setCurrentFrameIndex(modules.engine_time.frameIndex());
         updateFrameState();
         modules.renderer.render();
-        return frameResult(modules.engine_time);
+        auto result = frameResult(modules.engine_time);
+        result["edit_results"] = editor_rpc.takeCompletedEditResults();
+        return result;
     });
 
     server.setHandler("render_frame", [&pending_transforms, &modules](const nlohmann::json &params) {
@@ -1186,12 +1851,14 @@ struct EngineRpcEndpoint::Impl {
     RpcServer server;
     std::string instance_id;
     std::vector<PendingTransformUpdate> pending_transforms;
+    std::vector<EditorProjectionRuntimeObjectBinding> editor_runtime_bindings;
     EditorCommandService editor_service;
     EditorCommandRpcAdapter editor_rpc;
 
     Impl(std::istream &input, std::ostream &output)
         : modules{resolveEngineRpcModules()}, server{input, output},
           instance_id{generateUuidV4()},
+          editor_runtime_bindings{collectEditorRuntimeBindings(modules)},
           editor_service{EditorCommandServiceDependencies{
               .document = [this]() -> const AuthoringSceneDocument & {
                   return modules.project_config.sceneDocument();
@@ -1199,11 +1866,25 @@ struct EngineRpcEndpoint::Impl {
               .current_scene_id = [this] { return modules.scene_loader.currentScene(); },
               .runtime_query = [this](const AuthoringSceneView &scene,
                                       const AuthoringObjectView &object) {
-                  return queryEditorRuntime(modules, scene, object);
+                  return queryEditorRuntime(modules, editor_runtime_bindings,
+                                            scene, object);
               },
               .assets = [this] { return collectEditorAssets(modules); },
-              // E-RPC0-base has no ticket or preview lease owner yet.
               .snapshot_state = [] { return EditorSnapshotState{}; },
+              .edit = EditorEditRuntimeDependencies{
+                  .document = [this]() -> const AuthoringSceneDocument & {
+                      return modules.project_config.sceneDocument();
+                  },
+                  .current_scene_id = [this] {
+                      return modules.scene_loader.currentScene();
+                  },
+                  .execute = [this](const EditorEditExecutionRequest &request) {
+                      return executeEditorProjection(
+                          modules, editor_runtime_bindings, request);
+                  },
+                  .gate = [this] { return editorGateObservation(modules); },
+                  .install_commit_hook = true,
+              },
           }},
           editor_rpc{editor_service} {
         configureEngineRpcHandlers(server, modules, instance_id,
