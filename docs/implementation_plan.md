@@ -4740,6 +4740,40 @@ rpcserver・schema 三 header・`.github` に触らない**。golden byte
 capture)+ 既存全テスト無変更 + golden SKIP 0・byte 不変 + player
 8 秒 + CI green
 
+### WP174: 負債 TEST0 — テスト/台帳の保守性
+
+参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
+の「WP-TEST0」定義が正**:
+
+> golden harness の helper/target 分割、active implementation ledger と
+> completed archive の分離。
+
+範囲:
+
+1. **golden harness 分割**: 肥大化した golden テスト(単一 cpp/
+   target)を helper ライブラリ + 複数 target へ分割(**検査内容・
+   golden byte・inventory は 1 bit も変えない** — 構造のみ)
+2. **台帳分離**: `docs/implementation_plan.md`(肥大)を active
+   ledger(未着手/進行中 WP + §0 共通規則 + 運用)と completed
+   archive(済 WP の記録 — `docs/implementation_archive.md` 新設)へ
+   分離。**済 WP の本文は逐語のまま archive へ移動**(要約禁止 —
+   将来の逐語参照を壊さない)。docs/README の索引更新
+3. **flaky 恒久対策(2026-07-18 追記)**: `rpc_scene_flow_headless_player`
+   の get_status 二回比較から **VK_EXT_memory_budget の実測値
+   (heaps[].usage/budget)を決定性比較の対象外に**(構造・
+   driver_available 等の安定 field は比較継続)。並走 GPU での偽赤
+   3 回の実績が根拠(WP155/158/165/173 レポート)
+
+依存: なし。見積: 中。
+排他: golden harness の test 構造 + docs 台帳 + rpc_scene_flow
+fixture の比較条件。**エンジン src/ の挙動変更禁止**(fixture の
+比較条件変更のみ可)。vkcore/renderingpass の preview 面(WP172
+並走中)に触らない。
+
+受け入れ = golden byte/inventory 完全不変 + 分割後の全テスト green +
+台帳分離後も全逐語が archive で参照可能 + flaky fixture の安定化
+(memory budget 変動を注入しても PASS)+ player 8 秒 + CI green
+
 ### WP137: 負債 CI0 — CPU gate の常設(GitHub Actions)
 
 参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
