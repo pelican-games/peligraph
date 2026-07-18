@@ -1,0 +1,60 @@
+{
+  "schema": "pelican.scene",
+  "version": 1,
+  "editor_envelope": {
+    "read_only_metadata": ["keep", 7, true]
+  },
+  "scenes": {
+    "main": {
+      "scene_metadata": {
+        "purpose": "authoring-roundtrip"
+      },
+      "objects": [
+        {
+          "name": "ColliderOnly",
+          "object_metadata": {
+            "locked": true
+          },
+          "components": [
+            {
+              "name": "collider",
+              "shape": "box",
+              "half_extents": [1, 2, 3]
+            }
+          ]
+        },
+        {
+          "name": "MixedObject",
+          "components": [
+            {
+              "name": "transform",
+              "pos": [1, 2, 3],
+              "rotation": [0, 0, 0, 1],
+              "scale": [1, 1, 1]
+            },
+            {
+              "name": "unknown_read_only",
+              "payload": {
+                "nested": [3, 2, 1],
+                "nullable": null
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "secondary": {
+      "objects": [
+        {
+          "components": [
+            {
+              "name": "light",
+              "type": "point",
+              "color": [0.25, 0.5, 1.0]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

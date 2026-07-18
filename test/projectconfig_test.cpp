@@ -67,7 +67,16 @@ struct ProjectSandbox {
         base = std::filesystem::temp_directory_path() / ("pelican_projectconfig_" + suffix);
         root = base / "project";
 
-        writeText(root / "scenes" / "main.scene.json", R"json({"scene-ok":true})json");
+        writeText(root / "scenes" / "main.scene.json", R"json({
+  "schema": "pelican.scene",
+  "version": 1,
+  "scene-ok": true,
+  "scenes": {
+    "default_scene": {
+      "objects": []
+    }
+  }
+})json");
         writeText(root / "assets" / "model.glb", "fake model");
         writeText(root / "assets" / "image.png", "fake image");
         writeText(root / "assets" / "assets.json", R"json({

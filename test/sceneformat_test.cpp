@@ -1,4 +1,6 @@
 #include "../src/core/container.hpp"
+#include "../src/core/loader/authoringscenedocument.hpp"
+#include "../src/core/loader/basicconfig.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/loader/scene.hpp"
@@ -6,12 +8,14 @@
 #include "../src/core/log.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #ifndef PELICAN_TEST_SOURCE_DIR
@@ -24,6 +28,11 @@ namespace {
 
 std::filesystem::path fixtureRoot() {
     return std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" / "fixtures" / "project_format";
+}
+
+std::filesystem::path authoringFixturePath() {
+    return std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" / "fixtures" / "authoring_scene" /
+           "multi_scene_roundtrip.json";
 }
 
 void ensureLogger() {
@@ -141,6 +150,13 @@ TEST_CASE("Scene format fixtures accept only v1 documents", "[scene-format]") {
                     REQUIRE(lightObjectNames(scene) ==
                             scenario.at("expected_light_object_names").get<std::vector<std::string>>());
                 }
+
+                const auto authored =
+                    AuthoringSceneDocument::load(scenario.at("document").dump(), SceneRevision{1});
+                const auto encoded = authored.encodeSemantic();
+                const auto fresh = AuthoringSceneDocument::load(encoded, SceneRevision{2});
+                REQUIRE(fresh.rawJson() == authored.rawJson());
+                REQUIRE(fresh.encodeSemantic() == encoded);
             } else {
                 std::string message;
                 try {
@@ -153,6 +169,121 @@ TEST_CASE("Scene format fixtures accept only v1 documents", "[scene-format]") {
             }
         }
     }
+}
+
+TEST_CASE("AuthoringSceneDocument preserves every raw scene object and component", "[scene-format][authoring]") {
+    const auto source = readJson(authoringFixturePath());
+    const auto document = AuthoringSceneDocument::load(source.dump(2), SceneRevision{41});
+
+    REQUIRE(document.revision().value == 41);
+    REQUIRE(document.rawJson() == source);
+    REQUIRE(document.objectCount() == 3);
+    REQUIRE(document.rawJson().contains("editor_envelope"));
+
+    const auto first_query = document.query();
+    const auto second_query = document.query();
+    REQUIRE(first_query.size() == 2);
+    REQUIRE(second_query.size() == first_query.size());
+
+    std::unordered_set<std::uint64_t> object_ids;
+    std::unordered_set<std::string> component_names;
+    std::size_t unnamed_count = 0;
+    for (std::size_t scene_index = 0; scene_index < first_query.size(); ++scene_index) {
+        REQUIRE(first_query[scene_index].scene_id == second_query[scene_index].scene_id);
+        REQUIRE(first_query[scene_index].authoredJson() == second_query[scene_index].authoredJson());
+        for (std::size_t object_index = 0; object_index < first_query[scene_index].objects.size(); ++object_index) {
+            const auto &object = first_query[scene_index].objects[object_index];
+            const auto &second_object = second_query[scene_index].objects[object_index];
+            REQUIRE(object.authoring_object_id == second_object.authoring_object_id);
+            REQUIRE(object.authoring_object_id.value != 0);
+            REQUIRE(object_ids.insert(object.authoring_object_id.value).second);
+            REQUIRE_FALSE(object.runtime_entity_id.has_value());
+            if (!object.name) {
+                ++unnamed_count;
+            }
+            for (const auto &component : object.components) {
+                component_names.insert(component.authoredJson().at("name").get<std::string>());
+            }
+        }
+    }
+    REQUIRE(unnamed_count == 1);
+    REQUIRE(component_names.contains("light"));
+    REQUIRE(component_names.contains("collider"));
+    REQUIRE(component_names.contains("unknown_read_only"));
+
+    const auto encoded = document.encodeSemantic();
+    REQUIRE(document.encodeSemantic() == encoded);
+    const auto fresh = AuthoringSceneDocument::load(encoded, SceneRevision{42}, 100);
+    REQUIRE(fresh.rawJson() == source);
+    REQUIRE(fresh.encodeSemantic() == encoded);
+}
+
+TEST_CASE("ProjectBasicConfig has one authoring document cache authority", "[scene-format][authoring]") {
+    ensureLogger();
+    auto temp_dir = makeTempProjectDir();
+
+    try {
+        const auto source = readJson(authoringFixturePath());
+        writeText(temp_dir / "scene.json", source.dump(2));
+        const auto project = nlohmann::json{
+            {"schema", "pelican.project"},
+            {"version", 1},
+            {"name", "authoring-cache-test"},
+            {"engine_min_version", "0.1.0"},
+            {"basic_config",
+             {
+                 {"default_scene_id", "main"},
+                 {"scene_data_json", "scene.json"},
+             }},
+        };
+
+        {
+            FastModuleContainer modules;
+            GET_MODULE(PathResolver).setup(temp_dir, false);
+            GET_MODULE(ProjectSource).setProjectData(project.dump());
+            auto &config = GET_MODULE(ProjectBasicConfig);
+
+            const auto &first = config.sceneDocument();
+            REQUIRE(&config.sceneDocument() == &first);
+            const auto first_revision = first.revision().value;
+            std::uint64_t max_first_object_id = 0;
+            for (const auto &scene : first.query()) {
+                for (const auto &object : scene.objects) {
+                    max_first_object_id = std::max(max_first_object_id, object.authoring_object_id.value);
+                }
+            }
+
+            auto updated_json = first.rawJson();
+            updated_json["cache_update_marker"] = true;
+            config.updateSceneDocument(updated_json.dump());
+            const auto &updated = config.sceneDocument();
+            REQUIRE(updated.revision().value > first_revision);
+            REQUIRE(updated.rawJson().at("cache_update_marker") == true);
+            REQUIRE(config.sceneDataJson() == updated.encodeSemantic());
+            for (const auto &scene : updated.query()) {
+                for (const auto &object : scene.objects) {
+                    REQUIRE(object.authoring_object_id.value > max_first_object_id);
+                }
+            }
+
+            const auto updated_revision = updated.revision().value;
+            const auto *updated_address = &updated;
+            REQUIRE_THROWS_AS(config.updateSceneDocument("{not-json"), nlohmann::json::parse_error);
+            REQUIRE(&config.sceneDocument() == updated_address);
+            REQUIRE(config.sceneDocument().revision().value == updated_revision);
+
+            config.invalidateSceneDocument();
+            const auto &reloaded = config.sceneDocument();
+            REQUIRE(reloaded.revision().value > updated_revision);
+            REQUIRE(reloaded.rawJson() == source);
+            REQUIRE_FALSE(reloaded.rawJson().contains("cache_update_marker"));
+        }
+    } catch (...) {
+        std::filesystem::remove_all(temp_dir);
+        throw;
+    }
+
+    std::filesystem::remove_all(temp_dir);
 }
 
 TEST_CASE("Scene format rejects legacy lights and names the v1 replacement", "[scene-format]") {

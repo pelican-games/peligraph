@@ -20,7 +20,6 @@
 #include "../userpublic/events.hpp"
 #include "../userpublic/gameobjects.hpp"
 #include "pathresolver.hpp"
-#include "../../project/sceneformat.hpp"
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -227,15 +226,16 @@ void assignTransform(TransformComponent &dst, const SceneObjectTransform &src) {
 void SceneLoader::load(SceneId scene_id) {
     auto &config = GET_MODULE(ProjectBasicConfig);
 
-    const auto scene_document = normalizeSceneDataJson(nlohmann::json::parse(config.sceneDataJson()));
-    for (const auto &warning : scene_document.warnings) {
+    const auto &scene_document = config.sceneDocument();
+    for (const auto &warning : scene_document.warnings()) {
         if (logger != nullptr) {
             LOG_WARNING(logger, "{}", warning);
         }
     }
 
-    const auto scene_it = scene_document.scenes.find(scene_id);
-    if (scene_it == scene_document.scenes.end()) {
+    const auto &scenes = scene_document.scenesJson();
+    const auto scene_it = scenes.find(scene_id);
+    if (scene_it == scenes.end()) {
         throw std::runtime_error("scene not found: " + scene_id);
     }
 
@@ -362,8 +362,8 @@ void SceneLoader::load(SceneId scene_id) {
 
 void SceneLoader::requestLoad(SceneId scene_id) {
     auto &config = GET_MODULE(ProjectBasicConfig);
-    const auto scene_document = normalizeSceneDataJson(nlohmann::json::parse(config.sceneDataJson()));
-    if (scene_document.scenes.find(scene_id) == scene_document.scenes.end()) {
+    const auto &scenes = config.sceneDocument().scenesJson();
+    if (scenes.find(scene_id) == scenes.end()) {
         throw std::runtime_error("scene not found: " + scene_id);
     }
     pending_scene_id = std::move(scene_id);

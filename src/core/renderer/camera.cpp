@@ -1,7 +1,6 @@
 #include "camera.hpp"
 #include "../loader/basicconfig.hpp"
 #include "../loader/pathresolver.hpp"
-#include "../../project/sceneformat.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <nlohmann/json.hpp>
@@ -510,9 +509,9 @@ void Camera::loadSceneCameras(std::string_view scene_id) {
     }
 
     const auto &config = GET_MODULE(ProjectBasicConfig);
-    const auto scene_document = normalizeSceneDataJson(nlohmann::json::parse(config.sceneDataJson()));
-    const auto scene_it = scene_document.scenes.find(std::string{scene_id});
-    if (scene_it == scene_document.scenes.end()) {
+    const auto &scenes = config.sceneDocument().scenesJson();
+    const auto scene_it = scenes.find(std::string{scene_id});
+    if (scene_it == scenes.end()) {
         return;
     }
 

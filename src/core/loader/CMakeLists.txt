@@ -6,6 +6,7 @@ target_sources(pelican_core PRIVATE
     ktx2.cpp
     pathresolver.cpp
     projectsrc.cpp
+    authoringscenedocument.cpp
     basicconfig.cpp
     scene.cpp
 )
