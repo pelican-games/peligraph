@@ -556,6 +556,40 @@ Camera::prepareSceneCameras(std::string_view scene_id) const {
     }
 
     const auto &scenes = config.sceneDocument().scenesJson();
+    return prepareSceneCameras(scene_id, scenes);
+}
+
+Camera::PreparedSceneState Camera::prepareSceneCameras(
+    std::string_view scene_id, const nlohmann::json &scenes) const {
+    const auto &config = GET_MODULE(ProjectBasicConfig);
+    const auto props = config.initailCameraProperty();
+    const auto screen = config.initialWindowSize();
+    PreparedSceneState prepared{
+        .pos = {0.0f, 0.0f, 0.0f},
+        .dir = {1.0f, 0.0f, 0.0f},
+        .up = props.up,
+        .viewport_aspect = static_cast<float>(screen.width) / screen.height,
+        .viewport_width = static_cast<uint32_t>(screen.width),
+        .viewport_height = static_cast<uint32_t>(screen.height),
+        .projection = props.projection,
+        .sprite_policy = props.sprite,
+        .discontinuity_revision = discontinuity_revision + 1,
+    };
+    const auto rebuild = [&prepared] {
+        if (prepared.projection.kind == CameraProjectionKind::Orthographic) {
+            prepared.projection_matrix = glm::orthoRH_ZO(
+                -prepared.projection.xmag, prepared.projection.xmag,
+                -prepared.projection.ymag, prepared.projection.ymag,
+                prepared.projection.znear, prepared.projection.zfar);
+        } else {
+            const auto aspect = prepared.projection.aspect.value_or(
+                prepared.viewport_aspect);
+            prepared.projection_matrix = glm::perspectiveRH_ZO(
+                prepared.projection.yfov, aspect, prepared.projection.znear,
+                prepared.projection.zfar);
+        }
+    };
+    rebuild();
     const auto scene_it = scenes.find(std::string{scene_id});
     if (scene_it == scenes.end()) {
         return prepared;

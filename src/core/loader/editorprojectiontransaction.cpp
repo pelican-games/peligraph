@@ -506,6 +506,69 @@ EditorProjectionCommand makeReparentCommand(
     };
 }
 
+EditorProjectionCommand makeInsertObjectCommand(
+    std::string scene_id, std::size_t declaration_index,
+    Json authored_object) {
+    const auto path = "/scenes/" + scene_id + "/objects";
+    return EditorProjectionCommand{
+        .object_path = path,
+        .structural_apply =
+            [scene_id = std::move(scene_id), declaration_index,
+             authored_object = std::move(authored_object)](
+                AuthoringSceneDocumentStage &stage) {
+                (void)stage.insertObject(scene_id, declaration_index,
+                                         authored_object);
+            },
+    };
+}
+
+EditorProjectionCommand makeRemoveObjectCommand(AuthoringObjectId object_id) {
+    const auto path = "/authoring_objects/" + std::to_string(object_id.value);
+    return EditorProjectionCommand{
+        .object_path = path,
+        .structural_apply = [object_id](AuthoringSceneDocumentStage &stage) {
+            (void)stage.removeObject(object_id);
+        },
+    };
+}
+
+EditorProjectionCommand makeRestoreObjectCommand(AuthoringObjectClosure closure) {
+    const auto path = "/authoring_objects/" +
+                      std::to_string(closure.authoring_object_id.value);
+    return EditorProjectionCommand{
+        .object_path = path,
+        .structural_apply =
+            [closure = std::move(closure)](AuthoringSceneDocumentStage &stage) {
+                stage.restoreObject(closure);
+            },
+    };
+}
+
+EditorProjectionCommand makeRenameObjectCommand(
+    AuthoringObjectId object_id, std::optional<std::string> name) {
+    const auto path = "/authoring_objects/" + std::to_string(object_id.value);
+    return EditorProjectionCommand{
+        .object_path = path,
+        .structural_apply =
+            [object_id, name = std::move(name)](
+                AuthoringSceneDocumentStage &stage) {
+                stage.renameObject(object_id, name);
+            },
+    };
+}
+
+EditorProjectionCommand makeReorderObjectCommand(
+    AuthoringObjectId object_id, std::size_t declaration_index) {
+    const auto path = "/authoring_objects/" + std::to_string(object_id.value);
+    return EditorProjectionCommand{
+        .object_path = path,
+        .structural_apply = [object_id, declaration_index](
+                                AuthoringSceneDocumentStage &stage) {
+            stage.reorderObject(object_id, declaration_index);
+        },
+    };
+}
+
 EditorProjectionCallbackAdapter::EditorProjectionCallbackAdapter(
     EditorProjectionAdapterKind kind, std::string name,
     EditorProjectionPublicationMode mode, void *context, Prepare prepare,
@@ -668,17 +731,40 @@ EditorProjectionResult EditorProjectionTransaction::commit(
         }
 
         auto staged_json = base.rawJson();
+        std::optional<AuthoringSceneDocumentStage> structural_stage;
         for (const auto &command : commands) {
-            if (!command.apply) {
+            if (!command.apply && !command.structural_apply) {
                 projectionError(EditorProjectionErrorCode::CommandInvalid,
                                 command.object_path,
                                 "projection command has no apply callback");
             }
-            command.apply(staged_json);
+            if (command.structural_apply) {
+                if (!structural_stage) {
+                    structural_stage.emplace(base.structuralStage());
+                    structural_stage->rawJson() = std::move(staged_json);
+                }
+                command.structural_apply(*structural_stage);
+            } else if (structural_stage) {
+                command.apply(structural_stage->rawJson());
+            } else {
+                command.apply(staged_json);
+            }
         }
 
-        auto staged = base.stage(std::move(staged_json),
-                                 document_target_.nextProjectionRevision());
+        std::vector<AuthoringStructuralChange> structural_changes;
+        std::vector<AuthoringObjectClosure> removed_objects;
+        AuthoringSceneDocument staged;
+        if (structural_stage) {
+            structural_changes.assign(structural_stage->changes().begin(),
+                                      structural_stage->changes().end());
+            removed_objects.assign(structural_stage->removedObjects().begin(),
+                                   structural_stage->removedObjects().end());
+            staged = std::move(*structural_stage)
+                         .finish(document_target_.nextProjectionRevision());
+        } else {
+            staged = base.stage(std::move(staged_json),
+                                document_target_.nextProjectionRevision());
+        }
 
         std::unordered_set<EditorProjectionAdapter *> adapter_addresses;
         std::unordered_set<std::string> adapter_names;
@@ -740,6 +826,8 @@ EditorProjectionResult EditorProjectionTransaction::commit(
         }
         result.status = EditorProjectionStatus::Committed;
         result.committed_revision = committed_revision;
+        result.structural_changes = std::move(structural_changes);
+        result.removed_objects = std::move(removed_objects);
         return result;
     } catch (const std::exception &error) {
         for (auto it = prepared.rbegin(); it != prepared.rend(); ++it) {

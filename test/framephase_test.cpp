@@ -27,4 +27,24 @@ TEST_CASE("Windowed and RPC frames use the same five-phase executor", "[frame-ph
     REQUIRE(rpc_order == expected);
 }
 
+namespace {
+void recordEditorBoundary(void *context) noexcept {
+    ++*static_cast<int *>(context);
+}
+}
+
+TEST_CASE("Editor commit queue hook is optional and has one explicit boundary",
+          "[frame-phase][editor-commit]") {
+    removeEditorCommitQueueHook(nullptr);
+    invokeEditorCommitQueueHook();
+
+    int calls = 0;
+    REQUIRE(installEditorCommitQueueHook(&calls, &recordEditorBoundary));
+    invokeEditorCommitQueueHook();
+    REQUIRE(calls == 1);
+    removeEditorCommitQueueHook(&calls);
+    invokeEditorCommitQueueHook();
+    REQUIRE(calls == 1);
+}
+
 } // namespace Pelican

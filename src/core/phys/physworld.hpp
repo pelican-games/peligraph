@@ -57,6 +57,9 @@ DECLARE_MODULE(PhysWorld) {
   public:
     PreparedState snapshotPrepared() const;
     PreparedState prepareBindings(std::vector<Binding> next_bindings) const;
+    PreparedState prepareBindings(
+        std::vector<Binding> next_bindings,
+        std::span<const GameObjectId> unpublished_entities) const;
     void publishPrepared(PreparedState &&prepared) noexcept;
     void clear();
     void bindCollider(std::string name, const ColliderComponent &collider, GameObjectId object_id,

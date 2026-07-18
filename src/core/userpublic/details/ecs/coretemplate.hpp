@@ -89,6 +89,9 @@ concept HasEcsWorkerQueryDependencyPrepare =
 
 class ECSCoreTemplatePublic {
     friend class ECSArchetypeMigration;
+    friend class ECSArchetypeMigrationToken;
+    friend class ECSEntityMutationToken;
+    friend class ECSEntityMutation;
 
     // Component Management
   private:
@@ -164,6 +167,40 @@ class ECSCoreTemplatePublic {
         bool published = false;
     };
 
+    template <class TComponent> struct PreparedComponentSwap {
+        ECSCoreTemplatePublic *core = nullptr;
+        ChunkIndex chunk_index = 0;
+        WithinChunkIndex row = 0;
+        std::size_t component_index = 0;
+        TComponent staged;
+        std::uint64_t old_version = 0;
+        std::uint64_t publish_version = 0;
+        bool published = false;
+
+        void publish() noexcept {
+            auto &chunk = core->chunks_storage[chunk_index];
+            auto *target = static_cast<TComponent *>(
+                chunk.at(component_index, row));
+            using std::swap;
+            swap(*target, staged);
+            chunk.component_versions[component_index] = publish_version;
+            published = true;
+        }
+
+        void rollback() noexcept {
+            if (!published) return;
+            auto &chunk = core->chunks_storage[chunk_index];
+            auto *target = static_cast<TComponent *>(
+                chunk.at(component_index, row));
+            using std::swap;
+            swap(*target, staged);
+            chunk.component_versions[component_index] = old_version;
+            published = false;
+        }
+
+        void finish() noexcept { published = false; }
+    };
+
     // Existing-value projection counterpart to archetype migration. Every
     // potentially throwing copy is completed before publication; publish and
     // rollback only perform no-throw assignment plus exact version exchange.
@@ -192,6 +229,33 @@ class ECSCoreTemplatePublic {
             .next_value = next_value,
             .chunk = &chunk,
             .component_index = component_index,
+            .old_version = chunk.getVersion(component_index),
+            .publish_version = global_tick,
+        };
+    }
+
+    template <class TComponent>
+        requires std::is_copy_constructible_v<TComponent> &&
+                 std::is_nothrow_swappable_v<TComponent>
+    PreparedComponentSwap<TComponent>
+    prepareComponentSwap(EntityId id, const TComponent &next_value) {
+        const auto ref = resolve(id);
+        if (!ref.has_value()) {
+            throw std::runtime_error("ECS entity is not live: " + toString(id));
+        }
+        const auto component_index = internal::getIndexFromComponentId_Ref(
+            ComponentIdByType<TComponent>::value);
+        auto &chunk = chunks_storage[ref->chunk_index];
+        if (!chunk.has(component_index)) {
+            throw std::runtime_error("ECS component is absent on entity " +
+                                     toString(id));
+        }
+        return PreparedComponentSwap<TComponent>{
+            .core = this,
+            .chunk_index = ref->chunk_index,
+            .row = ref->array_index,
+            .component_index = component_index,
+            .staged = next_value,
             .old_version = chunk.getVersion(component_index),
             .publish_version = global_tick,
         };

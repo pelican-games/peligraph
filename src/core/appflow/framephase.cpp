@@ -29,6 +29,9 @@ namespace Pelican {
 
 namespace {
 
+void *editor_commit_queue_context = nullptr;
+EditorCommitQueueHook editor_commit_queue_hook = nullptr;
+
 struct FrameStateModules {
     watch::ReloadService *reload_service;
     InputSequenceRuntime &input_sequence;
@@ -90,11 +93,35 @@ void prepareFrameStateModules() {
     (void)resolveFrameStateModules();
 }
 
+bool installEditorCommitQueueHook(void *context,
+                                  EditorCommitQueueHook hook) noexcept {
+    if (context == nullptr || hook == nullptr ||
+        editor_commit_queue_hook != nullptr) {
+        return false;
+    }
+    editor_commit_queue_context = context;
+    editor_commit_queue_hook = hook;
+    return true;
+}
+
+void removeEditorCommitQueueHook(void *context) noexcept {
+    if (context != editor_commit_queue_context) return;
+    editor_commit_queue_hook = nullptr;
+    editor_commit_queue_context = nullptr;
+}
+
+void invokeEditorCommitQueueHook() noexcept {
+    if (editor_commit_queue_hook != nullptr) {
+        editor_commit_queue_hook(editor_commit_queue_context);
+    }
+}
+
 void updateFrameState() {
     auto modules = resolveFrameStateModules();
     // Reload publication is a frame-boundary operation and happens before any
     // phase can observe game/runtime state.
     if (modules.reload_service != nullptr) modules.reload_service->applyFrame();
+    invokeEditorCommitQueueHook();
     GameContext game_context;
     forEachFramePhase([&](FramePhase phase) {
         switch (phase) {
