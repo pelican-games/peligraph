@@ -7,6 +7,7 @@
 #include <cmath>
 #include <functional>
 #include <initializer_list>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <sstream>
@@ -428,11 +429,36 @@ float ProjectBasicConfig::spritePixelsPerUnit() const { return sprite_pixels_per
 ProjectBasicConfig::InitialCameraProperty ProjectBasicConfig::initailCameraProperty() const { return camera_prop; }
 
 std::string ProjectBasicConfig::defaultSceneId() const { return default_scene_id; }
-std::string ProjectBasicConfig::sceneDataJson() const {
-    if (!scene_data_json) {
-        scene_data_json = GET_MODULE(PathResolver).loadText(scene_data_json_ref);
+
+void ProjectBasicConfig::publishSceneDocument(std::string_view scene_v1_bytes) const {
+    if (next_scene_revision == std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error("SceneRevision space exhausted");
     }
-    return *scene_data_json;
+    auto candidate = AuthoringSceneDocument::load(scene_v1_bytes, SceneRevision{next_scene_revision},
+                                                   next_authoring_object_id);
+    const auto next_object_id = candidate.next_authoring_object_id_value_;
+    scene_document = std::move(candidate);
+    ++next_scene_revision;
+    next_authoring_object_id = next_object_id;
+}
+
+const AuthoringSceneDocument &ProjectBasicConfig::sceneDocument() const {
+    if (!scene_document) {
+        publishSceneDocument(GET_MODULE(PathResolver).loadText(scene_data_json_ref));
+    }
+    return *scene_document;
+}
+
+void ProjectBasicConfig::updateSceneDocument(std::string_view scene_v1_bytes) {
+    publishSceneDocument(scene_v1_bytes);
+}
+
+void ProjectBasicConfig::invalidateSceneDocument() noexcept {
+    scene_document.reset();
+}
+
+std::string ProjectBasicConfig::sceneDataJson() const {
+    return sceneDocument().encodeSemantic();
 }
 
 std::string ProjectBasicConfig::assetDataJson() const {

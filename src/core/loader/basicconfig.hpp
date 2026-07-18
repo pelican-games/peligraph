@@ -1,5 +1,6 @@
 #include "../cameradefinition.hpp"
 #include "../container.hpp"
+#include "authoringscenedocument.hpp"
 
 #include <cstdint>
 #include <glm/glm.hpp>
@@ -40,12 +41,16 @@ DECLARE_MODULE(ProjectBasicConfig) {
     std::optional<std::string> default_input_profile;
     bool project_source = false;
 
-    mutable std::optional<std::string> scene_data_json;
+    mutable std::optional<AuthoringSceneDocument> scene_document;
+    mutable std::uint64_t next_scene_revision = 1;
+    mutable std::uint64_t next_authoring_object_id = 1;
     mutable std::optional<std::string> asset_data_json;
     mutable std::optional<std::string> rendering_config_json;
     mutable std::optional<std::string> ui_config_json;
     mutable std::optional<std::string> input_actions_json;
     mutable std::unordered_map<std::string, std::string> input_profile_jsons;
+
+    void publishSceneDocument(std::string_view scene_v1_bytes) const;
 
   public:
     ProjectBasicConfig();
@@ -60,6 +65,9 @@ DECLARE_MODULE(ProjectBasicConfig) {
     InitialCameraProperty initailCameraProperty() const;
 
     std::string defaultSceneId() const;
+    const AuthoringSceneDocument &sceneDocument() const;
+    void updateSceneDocument(std::string_view scene_v1_bytes);
+    void invalidateSceneDocument() noexcept;
     std::string sceneDataJson() const;
     std::string assetDataJson() const;
     std::string renderingConfigJson() const;
