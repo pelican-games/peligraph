@@ -1,4 +1,5 @@
 #include "../src/core/communication/editorjournal.hpp"
+#include "../src/core/gamelogic/behaviorarena.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -59,6 +60,25 @@ class DocumentTarget final : public EditorProjectionDocumentTarget {
     }
 };
 
+class PreviewDocumentTarget final : public EditorProjectionDocumentTarget {
+  public:
+    AuthoringSceneDocument document;
+
+    explicit PreviewDocumentTarget(const AuthoringSceneDocument &source)
+        : document{source.stage(source.rawJson(),
+                                SceneRevision{source.revision().value + 1})} {}
+
+    const AuthoringSceneDocument &projectionDocument() const override {
+        return document;
+    }
+    SceneRevision nextProjectionRevision() const override {
+        return SceneRevision{document.revision().value + 1};
+    }
+    void publishProjectionDocument(AuthoringSceneDocument &&next) noexcept override {
+        document.swap(next);
+    }
+};
+
 class RuntimeMirrorAdapter final : public EditorProjectionAdapter {
     std::string &runtime_;
     std::string old_;
@@ -101,10 +121,14 @@ struct Harness {
     DocumentTarget target;
     std::string runtime = target.document.encodeSemantic();
     std::vector<std::string> lifecycle_trace;
+    std::vector<std::string> phase_trace;
+    std::string current_scene = "main";
     EditorGateObservation gate;
     std::unique_ptr<EditorEditCoordinator> edits;
     std::uint64_t actor = 0;
     std::string reconnect_token;
+    std::size_t preview_execute_count = 0;
+    std::size_t preview_boundary_count = 0;
 
     Harness() {
         edits = std::make_unique<EditorEditCoordinator>(
@@ -112,8 +136,9 @@ struct Harness {
                 .document = [this]() -> const AuthoringSceneDocument & {
                     return target.document;
                 },
-                .current_scene_id = [] { return std::string{"main"}; },
+                .current_scene_id = [this] { return current_scene; },
                 .execute = [this](const EditorEditExecutionRequest &request) {
+                    phase_trace.push_back("edit:prepare_publish");
                     RuntimeMirrorAdapter mirror{runtime};
                     std::vector<EditorProjectionAdapter *> adapters{&mirror};
                     EditorProjectionTransaction transaction{target,
@@ -135,6 +160,23 @@ struct Harness {
                     }
                     return result;
                 },
+                .execute_preview =
+                    [this](const EditorPreviewExecutionRequest &request) {
+                        ++preview_execute_count;
+                        phase_trace.push_back(request.restore_committed
+                                                  ? "preview:restore"
+                                                  : "preview:prepare_publish");
+                        PreviewDocumentTarget preview{target.document};
+                        RuntimeMirrorAdapter mirror{runtime};
+                        std::vector<EditorProjectionAdapter *> adapters{&mirror};
+                        EditorProjectionTransaction transaction{
+                            preview, preview.document.revision()};
+                        return transaction.commit(request.commands, adapters);
+                    },
+                .preview_boundary = [this] {
+                    ++preview_boundary_count;
+                    phase_trace.push_back("preview:temporal_reset");
+                },
                 .gate = [this] { return gate; },
             });
         const auto session = edits->openSession({{"display_name", "fixture actor"}});
@@ -149,6 +191,24 @@ struct Harness {
                                    target.document.revision().value)},
                                {"operations", Json::array({operation})},
                                {"coalesce_key", "fixture"}});
+    }
+
+    nlohmann::ordered_json commit(const Json &operation) {
+        const auto accepted = enqueue(operation);
+        edits->commitPending();
+        return edits->getResult({{"ticket", accepted.at("ticket")}});
+    }
+
+    std::pair<std::uint64_t, std::string> bindNewActor(
+        std::string display_name) {
+        const auto session = edits->openSession(
+            {{"display_name", std::move(display_name)}});
+        return {session.at("actor_id").get<std::uint64_t>(),
+                session.at("reconnect_token").get<std::string>()};
+    }
+
+    void bind(std::string_view token) {
+        (void)edits->resumeSession({{"reconnect_token", token}});
     }
 };
 
@@ -363,12 +423,499 @@ TEST_CASE("WP157 JOURNAL0 is complete and mechanical replay is three-way equival
     }
 }
 
+TEST_CASE("WP161 actor undo and redo are ordinary atomic transactions",
+          "[editor][journal][wp161][undo][redo]") {
+    Harness harness;
+    const auto initial = harness.target.document.encodeSemantic();
+    const auto edited = harness.commit(operationCases().front().valid);
+    REQUIRE(edited.at("status") == "committed");
+    const auto forward = harness.target.document.encodeSemantic();
+    REQUIRE(forward != initial);
+
+    const auto undo = harness.edits->enqueueUndo(
+        {{"actor_id", harness.actor},
+         {"base_revision", harness.target.document.revision().value},
+         {"transaction_id", edited.at("transaction_id")}});
+    REQUIRE(undo.at("status") == "accepted");
+    harness.edits->commitPending();
+    const auto undone = harness.edits->getResult({{"ticket", undo.at("ticket")}});
+    REQUIRE(undone.at("status") == "committed");
+    REQUIRE(undone.at("operation") == "undo");
+    REQUIRE(harness.target.document.encodeSemantic() == initial);
+    REQUIRE(harness.runtime == initial);
+    REQUIRE(harness.target.document.revision().value == 3);
+
+    const auto redo = harness.edits->enqueueRedo(
+        {{"actor_id", harness.actor},
+         {"base_revision", harness.target.document.revision().value},
+         {"transaction_id", undone.at("transaction_id")}});
+    REQUIRE(redo.at("status") == "accepted");
+    harness.edits->commitPending();
+    const auto redone = harness.edits->getResult({{"ticket", redo.at("ticket")}});
+    REQUIRE(redone.at("status") == "committed");
+    REQUIRE(redone.at("operation") == "redo");
+    REQUIRE(harness.target.document.encodeSemantic() == forward);
+    REQUIRE(harness.runtime == forward);
+    REQUIRE(harness.target.document.revision().value == 4);
+    REQUIRE(harness.edits->journal().size() == 3);
+    REQUIRE(harness.edits->journal()[1].operation_kind == "undo");
+    REQUIRE(harness.edits->journal()[2].operation_kind == "redo");
+}
+
+TEST_CASE("WP161 two-actor structural overlap makes the whole undo a no-op",
+          "[editor][journal][wp161][undo][conflict][two-actor]") {
+    struct ConflictCase {
+        const char *name;
+        Json actor_a;
+        std::function<Json(const Harness &)> actor_b;
+    };
+    const std::vector<ConflictCase> cases{
+        {"spawn-edit-undo",
+         {{"op", "spawn"}, {"scene_id", "main"},
+          {"object", {{"name", "Spawned"},
+                      {"components", Json::array({
+                          {{"name", "transform"}, {"pos", {0, 0, 0}},
+                           {"rotation", {0, 0, 0, 1}}, {"scale", {1, 1, 1}}}
+                      })}}}},
+         [](const Harness &harness) {
+             const auto object = harness.edits->journal().front()
+                                     .affected_authoring_ids.front().value;
+             return Json{{"op", "set_component_value"}, {"object_id", object},
+                         {"component_slot", "transform"}, {"field_path", "/pos"},
+                         {"value", {9, 0, 0}}};
+         }},
+        {"reparent-local-edit-undo",
+         {{"op", "reparent"}, {"object_id", 3}, {"new_parent_id", 1},
+          {"preserve", "local"}},
+         [](const Harness &) {
+             return Json{{"op", "set_component_value"}, {"object_id", 3},
+                         {"component_slot", "transform"}, {"field_path", "/pos"},
+                         {"value", {0, 8, 0}}};
+         }},
+        {"destroy-index-insert-undo",
+         {{"op", "destroy"}, {"object_id", 3}},
+         [](const Harness &) {
+             return Json{{"op", "spawn"}, {"scene_id", "main"},
+                         {"declaration_index", 2},
+                         {"object", {{"name", "Leaf"},
+                                     {"components", Json::array({
+                                         {{"name", "transform"},
+                                          {"pos", {0, 0, 0}},
+                                          {"rotation", {0, 0, 0, 1}},
+                                          {"scale", {1, 1, 1}}}
+                                     })}}}};
+         }},
+        {"add-edit-remove-undo",
+         {{"op", "add_component"}, {"object_id", 4},
+          {"component", {{"name", "collider"}, {"shape", "box"},
+                         {"half_extents", {1, 1, 1}}}}},
+         [](const Harness &) {
+             return Json{{"op", "set_component_value"}, {"object_id", 4},
+                         {"component_slot", "collider"},
+                         {"field_path", "/half_extents"},
+                         {"value", {2, 2, 2}}};
+         }},
+        {"remove-add-undo",
+         {{"op", "remove_component"}, {"object_id", 1},
+          {"component_slot", "light"}},
+         [](const Harness &) {
+             return Json{{"op", "add_component"}, {"object_id", 1},
+                         {"component_index", 1},
+                         {"component", {{"name", "light"},
+                                        {"type", "directional"},
+                                        {"direction", {0, -1, 0}},
+                                        {"intensity", 2},
+                                        {"color", {1, 1, 1}}}}};
+         }},
+    };
+
+    for (const auto &test : cases) {
+        DYNAMIC_SECTION(test.name) {
+            Harness harness;
+            const auto actor_a = harness.actor;
+            const auto actor_a_token = harness.reconnect_token;
+            const auto committed_a = harness.commit(test.actor_a);
+            REQUIRE(committed_a.at("status") == "committed");
+            const auto [actor_b, actor_b_token] = harness.bindNewActor("actor-b");
+            (void)actor_b_token;
+            const auto accepted_b = harness.edits->enqueue(
+                {{"actor_id", actor_b},
+                 {"base_revision", harness.target.document.revision().value},
+                 {"operations", Json::array({test.actor_b(harness)})}});
+            REQUIRE(accepted_b.at("status") == "accepted");
+            harness.edits->commitPending();
+            REQUIRE(harness.edits->getResult({{"ticket", accepted_b.at("ticket")}})
+                        .at("status") == "committed");
+            harness.bind(actor_a_token);
+
+            const auto before = harness.target.document.encodeSemantic();
+            const auto revision = harness.target.document.revision().value;
+            const auto journal_size = harness.edits->journal().size();
+            const auto rejected = harness.edits->enqueueUndo(
+                {{"actor_id", actor_a}, {"base_revision", revision},
+                 {"transaction_id", committed_a.at("transaction_id")}});
+            REQUIRE(rejected.at("status") == "rejected");
+            REQUIRE(rejected.at("error").at("code") == "undo_conflict");
+            REQUIRE(rejected.at("error").at("payload").contains("domain"));
+            REQUIRE(rejected.at("error").at("payload").contains("owner_txn"));
+            REQUIRE(rejected.at("error").at("payload").contains("revision"));
+            REQUIRE(harness.target.document.encodeSemantic() == before);
+            REQUIRE(harness.target.document.revision().value == revision);
+            REQUIRE(harness.edits->journal().size() == journal_size);
+        }
+    }
+}
+
+TEST_CASE("WP161 reparent descendant cross-edit is an undo conflict",
+          "[editor][journal][wp161][undo][descendant]") {
+    Harness harness;
+    const auto actor_a = harness.actor;
+    const auto actor_a_token = harness.reconnect_token;
+    const auto reparent = harness.commit(
+        {{"op", "reparent"}, {"object_id", 2}, {"new_parent_id", 4},
+         {"preserve", "local"}});
+    const auto [actor_b, token_b] = harness.bindNewActor("actor-b");
+    (void)token_b;
+    const auto descendant = harness.edits->enqueue(
+        {{"actor_id", actor_b},
+         {"base_revision", harness.target.document.revision().value},
+         {"operations", Json::array({
+             {{"op", "set_component_value"}, {"object_id", 3},
+              {"component_slot", "transform"}, {"field_path", "/pos"},
+              {"value", {0, 12, 0}}}
+         })}});
+    harness.edits->commitPending();
+    REQUIRE(harness.edits->getResult({{"ticket", descendant.at("ticket")}})
+                .at("status") == "committed");
+    harness.bind(actor_a_token);
+    const auto rejected = harness.edits->enqueueUndo(
+        {{"actor_id", actor_a},
+         {"base_revision", harness.target.document.revision().value},
+         {"transaction_id", reparent.at("transaction_id")}});
+    REQUIRE(rejected.at("error").at("code") == "undo_conflict");
+}
+
+TEST_CASE("WP161 preview open update forced-abort and idempotent abort obey the lease matrix",
+          "[editor][journal][wp161][preview][lease]") {
+    Harness harness;
+    const auto document_bytes = harness.target.document.encodeSemantic();
+    const Json light_preview{{"op", "set_component_value"}, {"object_id", 1},
+                             {"component_slot", "light"},
+                             {"field_path", "/intensity"}, {"value", 4.0}};
+    const auto open = harness.edits->openPreview(
+        {{"actor_id", harness.actor},
+         {"operations", Json::array({light_preview})}});
+    REQUIRE(open.at("status") == "accepted");
+    REQUIRE(harness.target.document.encodeSemantic() == document_bytes);
+    REQUIRE(harness.runtime == document_bytes);
+    harness.edits->commitPending();
+    const auto opened = harness.edits->getPreviewResult(
+        {{"request_id", open.at("request_id")}});
+    REQUIRE(opened.at("status") == "open");
+    REQUIRE(opened.at("preview_epoch") == 1);
+    REQUIRE(harness.target.document.encodeSemantic() == document_bytes);
+    REQUIRE(harness.target.document.revision().value == 1);
+    REQUIRE(harness.edits->journal().empty());
+    REQUIRE(harness.runtime != document_bytes);
+    REQUIRE(harness.preview_boundary_count == 1);
+    REQUIRE_FALSE(harness.edits->canPreview(Json::object()).at("can_preview"));
+    REQUIRE(harness.edits->canPreview(Json::object()).at("reasons").back() ==
+            "preview_lease_conflict");
+
+    auto updated_operation = light_preview;
+    updated_operation["value"] = 6.0;
+    const auto update = harness.edits->updatePreview(
+        {{"actor_id", harness.actor}, {"ticket", open.at("ticket")},
+         {"operations", Json::array({updated_operation})}});
+    REQUIRE(update.at("status") == "accepted");
+    harness.edits->commitPending();
+    const auto updated = harness.edits->getPreviewResult(
+        {{"request_id", update.at("request_id")}});
+    REQUIRE(updated.at("status") == "updated");
+    REQUIRE(updated.at("preview_epoch") == 2);
+    REQUIRE(harness.target.document.encodeSemantic() == document_bytes);
+
+    const auto overlap = harness.enqueue(light_preview);
+    REQUIRE(overlap.at("status") == "rejected");
+    REQUIRE(overlap.at("error").at("code") == "preview_lease_conflict");
+
+    const auto non_overlap = harness.enqueue(
+        {{"op", "set_component_value"}, {"object_id", 4},
+         {"component_slot", "transform"}, {"field_path", "/pos"},
+         {"value", {11, 0, 0}}});
+    REQUIRE(non_overlap.at("status") == "accepted");
+    harness.edits->commitPending();
+    REQUIRE(harness.edits->getResult({{"ticket", non_overlap.at("ticket")}})
+                .at("status") == "committed");
+    REQUIRE(harness.edits->previewEpoch() == 3);
+    REQUIRE_FALSE(harness.edits->hasOpenPreviewLease());
+    REQUIRE(harness.runtime == harness.target.document.encodeSemantic());
+    REQUIRE(harness.preview_boundary_count == 2);
+    const auto notifications = harness.edits->takeCompletedResults();
+    REQUIRE(std::any_of(notifications.begin(), notifications.end(),
+                        [&](const auto &value) {
+                            return value.value("event", std::string{}) ==
+                                       "ticket_forced_aborted" &&
+                                   value.at("ticket") == open.at("ticket") &&
+                                   value.at("reason") == "base_revision_stale";
+                        }));
+
+    const auto abort = harness.edits->abortPreview(
+        {{"actor_id", harness.actor}, {"ticket", open.at("ticket")}});
+    harness.edits->commitPending();
+    const auto aborted = harness.edits->getPreviewResult(
+        {{"request_id", abort.at("request_id")}});
+    REQUIRE(aborted.at("status") == "succeeded");
+    REQUIRE(aborted.at("final_status") == "forced_aborted");
+    REQUIRE(aborted.at("preview_epoch") == 3);
+}
+
+TEST_CASE("WP161 preview commit abort ownership capability and execution gate are stable",
+          "[editor][journal][wp161][preview][matrix]") {
+    const Json preview_operation{
+        {"op", "set_component_value"}, {"object_id", 1},
+        {"component_slot", "light"}, {"field_path", "/intensity"},
+        {"value", 3.0}};
+
+    SECTION("commit is one normal transaction") {
+        Harness harness;
+        const auto open = harness.edits->openPreview(
+            {{"actor_id", harness.actor},
+             {"operations", Json::array({preview_operation})}});
+        harness.edits->commitPending();
+        const auto commit = harness.edits->commitPreview(
+            {{"actor_id", harness.actor}, {"ticket", open.at("ticket")}});
+        REQUIRE(commit.at("status") == "accepted");
+        harness.edits->commitPending();
+        const auto committed = harness.edits->getPreviewResult(
+            {{"request_id", commit.at("request_id")}});
+        REQUIRE(committed.at("status") == "committed");
+        REQUIRE(committed.at("committed_revision") == 2);
+        REQUIRE(committed.at("preview_epoch") == 2);
+        REQUIRE(harness.edits->journal().size() == 1);
+        REQUIRE(harness.runtime == harness.target.document.encodeSemantic());
+        REQUIRE_FALSE(harness.edits->hasOpenPreviewLease());
+    }
+
+    SECTION("abort restores committed runtime without a durable trace") {
+        Harness harness;
+        const auto bytes = harness.target.document.encodeSemantic();
+        const auto open = harness.edits->openPreview(
+            {{"actor_id", harness.actor},
+             {"operations", Json::array({preview_operation})}});
+        harness.edits->commitPending();
+        const auto abort = harness.edits->abortPreview(
+            {{"actor_id", harness.actor}, {"ticket", open.at("ticket")}});
+        harness.edits->commitPending();
+        const auto result = harness.edits->getPreviewResult(
+            {{"request_id", abort.at("request_id")}});
+        REQUIRE(result.at("final_status") == "aborted");
+        REQUIRE(harness.runtime == bytes);
+        REQUIRE(harness.target.document.encodeSemantic() == bytes);
+        REQUIRE(harness.target.document.revision().value == 1);
+        REQUIRE(harness.edits->journal().empty());
+        REQUIRE(harness.preview_boundary_count == 2);
+    }
+
+    SECTION("stale ticket commit rejects and immediately forced-aborts") {
+        Harness harness;
+        const auto initial_edit = harness.commit(operationCases().front().valid);
+        const Json transform_preview{
+            {"op", "set_component_value"}, {"object_id", 4},
+            {"component_slot", "transform"}, {"field_path", "/pos"},
+            {"value", {13, 0, 0}}};
+        const auto open = harness.edits->openPreview(
+            {{"actor_id", harness.actor},
+             {"operations", Json::array({transform_preview})}});
+        harness.edits->commitPending();
+        REQUIRE(harness.edits->hasOpenPreviewLease());
+        REQUIRE(harness.edits->executeJournalForVerification(
+                    initial_edit.at("transaction_id").get<std::string>(), true)
+                    .committed());
+        const auto stale = harness.edits->commitPreview(
+            {{"actor_id", harness.actor}, {"ticket", open.at("ticket")}});
+        REQUIRE(stale.at("status") == "rejected");
+        REQUIRE(stale.at("error").at("code") == "stale_revision");
+        REQUIRE_FALSE(harness.edits->hasOpenPreviewLease());
+        REQUIRE(harness.edits->previewEpoch() == 2);
+        REQUIRE(harness.runtime == harness.target.document.encodeSemantic());
+    }
+
+    SECTION("only the lease owner may update or abort") {
+        Harness harness;
+        const auto owner_token = harness.reconnect_token;
+        const auto open = harness.edits->openPreview(
+            {{"actor_id", harness.actor},
+             {"operations", Json::array({preview_operation})}});
+        harness.edits->commitPending();
+        const auto [other, other_token] = harness.bindNewActor("other");
+        (void)other_token;
+        const auto update = harness.edits->updatePreview(
+            {{"actor_id", other}, {"ticket", open.at("ticket")},
+             {"operations", Json::array({preview_operation})}});
+        REQUIRE(update.at("error").at("code") == "not_lease_owner");
+        const auto abort = harness.edits->abortPreview(
+            {{"actor_id", other}, {"ticket", open.at("ticket")}});
+        REQUIRE(abort.at("error").at("code") == "not_lease_owner");
+        harness.bind(owner_token);
+        REQUIRE(harness.edits->forceAbortPreview("fixture"));
+    }
+
+    SECTION("irreversible adapter fields are unavailable") {
+        Harness harness;
+        const auto rejected = harness.edits->openPreview(
+            {{"actor_id", harness.actor},
+             {"operations", Json::array({
+                 {{"op", "set_component_value"}, {"object_id", 3},
+                  {"component_slot", "collider"},
+                  {"field_path", "/radius"}, {"value", 2.0}}
+             })}});
+        REQUIRE(rejected.at("error").at("code") == "method_unavailable");
+        REQUIRE(harness.preview_execute_count == 0);
+    }
+
+    SECTION("gate closes between acceptance and execution") {
+        Harness harness;
+        const auto bytes = harness.target.document.encodeSemantic();
+        const auto open = harness.edits->openPreview(
+            {{"actor_id", harness.actor},
+             {"operations", Json::array({preview_operation})}});
+        harness.gate.reasons =
+            editorGateReasonBit(EditorGateReason::reload_scene_transition);
+        ++harness.gate.transition_epoch;
+        harness.edits->commitPending();
+        const auto failed = harness.edits->getPreviewResult(
+            {{"request_id", open.at("request_id")}});
+        REQUIRE(failed.at("status") == "failed");
+        REQUIRE(failed.at("error").at("code") == "gate_closed");
+        REQUIRE(failed.at("error").at("payload").at("method") ==
+                "open_preview");
+        REQUIRE(harness.preview_execute_count == 0);
+        REQUIRE(harness.runtime == bytes);
+        REQUIRE(harness.target.document.encodeSemantic() == bytes);
+    }
+
+    SECTION("scene transition wins between acceptance and execution") {
+        Harness harness;
+        const auto bytes = harness.target.document.encodeSemantic();
+        const auto open = harness.edits->openPreview(
+            {{"actor_id", harness.actor},
+             {"operations", Json::array({preview_operation})}});
+        harness.current_scene = "other";
+        ++harness.gate.transition_epoch;
+        harness.edits->commitPending();
+        const auto failed = harness.edits->getPreviewResult(
+            {{"request_id", open.at("request_id")}});
+        REQUIRE(failed.at("status") == "failed");
+        REQUIRE(failed.at("error").at("code") == "gate_closed");
+        REQUIRE(failed.at("error").at("payload").at("reason") ==
+                "reload_scene_transition");
+        REQUIRE(harness.preview_execute_count == 0);
+        REQUIRE(harness.runtime == bytes);
+    }
+
+    SECTION("callback or reload gate forced-aborts before observers resume") {
+        Harness harness;
+        const auto open = harness.edits->openPreview(
+            {{"actor_id", harness.actor},
+             {"operations", Json::array({preview_operation})}});
+        harness.edits->commitPending();
+        REQUIRE(harness.edits->hasOpenPreviewLease());
+        harness.phase_trace.push_back("reload:published");
+        harness.gate.reasons =
+            editorGateReasonBit(EditorGateReason::reload_scene_transition);
+        ++harness.gate.transition_epoch;
+        harness.edits->commitPending();
+        harness.phase_trace.push_back("observer:resume");
+        REQUIRE_FALSE(harness.edits->hasOpenPreviewLease());
+        const auto restore = std::find(harness.phase_trace.begin(),
+                                       harness.phase_trace.end(),
+                                       "preview:restore");
+        const auto observer = std::find(harness.phase_trace.begin(),
+                                        harness.phase_trace.end(),
+                                        "observer:resume");
+        REQUIRE(restore != harness.phase_trace.end());
+        REQUIRE(restore < observer);
+        const auto notifications = harness.edits->takeCompletedResults();
+        REQUIRE(std::any_of(notifications.begin(), notifications.end(),
+                            [&](const auto &value) {
+                                return value.value("event", std::string{}) ==
+                                           "ticket_forced_aborted" &&
+                                       value.at("ticket") == open.at("ticket");
+                            }));
+    }
+}
+
+TEST_CASE("WP161 RPC and windowed paths share one frame-boundary phase trace",
+          "[editor][journal][wp161][ec3-2][phase]") {
+    const Json operation{{"op", "set_component_value"}, {"object_id", 1},
+                         {"component_slot", "light"},
+                         {"field_path", "/intensity"}, {"value", 2.0}};
+    Harness rpc;
+    const auto rpc_result = rpc.enqueue(operation);
+    rpc.edits->commitPending();
+    REQUIRE(rpc.edits->getResult({{"ticket", rpc_result.at("ticket")}})
+                .at("status") == "committed");
+
+    Harness windowed;
+    const auto windowed_result = windowed.enqueue(operation);
+    // WindowedRpcHost invokes the same coordinator hook at this boundary.
+    windowed.edits->commitPending();
+    REQUIRE(windowed.edits->getResult(
+                {{"ticket", windowed_result.at("ticket")}})
+                .at("status") == "committed");
+    REQUIRE(rpc.phase_trace == windowed.phase_trace);
+    REQUIRE(rpc.target.document.encodeSemantic() ==
+            windowed.target.document.encodeSemantic());
+}
+
+TEST_CASE("WP161 behavior attachment sequence survives spawn undo redo",
+          "[editor][journal][wp161][behavior][attachment-seq]") {
+    Harness harness;
+    const Json spawn{{"op", "spawn"}, {"scene_id", "main"},
+                     {"declaration_index", 2},
+                     {"object", {{"name", "BehaviorObject"},
+                                 {"components", Json::array({
+                                     {{"name", "transform"}, {"pos", {0, 0, 0}},
+                                      {"rotation", {0, 0, 0, 1}},
+                                      {"scale", {1, 1, 1}}},
+                                     {{"name", "behavior"},
+                                      {"type", "fixture_behavior"}}
+                                 })}}}};
+    const auto forward = harness.commit(spawn);
+    REQUIRE(forward.at("status") == "committed");
+    const auto original_seq = sceneBehaviorAttachmentSeq(2, 1);
+    const auto undo = harness.edits->enqueueUndo(
+        {{"actor_id", harness.actor},
+         {"base_revision", harness.target.document.revision().value}});
+    harness.edits->commitPending();
+    REQUIRE(harness.edits->getResult({{"ticket", undo.at("ticket")}})
+                .at("status") == "committed");
+    const auto redo = harness.edits->enqueueRedo(
+        {{"actor_id", harness.actor},
+         {"base_revision", harness.target.document.revision().value}});
+    harness.edits->commitPending();
+    REQUIRE(harness.edits->getResult({{"ticket", redo.at("ticket")}})
+                .at("status") == "committed");
+    const auto object = harness.target.document.query().front().objects.at(2);
+    REQUIRE(object.name == "BehaviorObject");
+    REQUIRE(sceneBehaviorAttachmentSeq(object.declaration_index, 1) ==
+            original_seq);
+    REQUIRE(sceneBehaviorAttachmentSeq(4, 1) != original_seq);
+    REQUIRE(harness.lifecycle_trace ==
+            std::vector<std::string>{"onInit", "onDestroy", "onInit"});
+}
+
 TEST_CASE("WP157 edit errors use only the canonical catalog",
           "[editor][journal][wp157][catalog]") {
     for (const auto code : {
              EditorEditErrorCode::stale_revision,
              EditorEditErrorCode::gate_closed,
              EditorEditErrorCode::preview_lease_conflict,
+             EditorEditErrorCode::preview_lease_busy,
+             EditorEditErrorCode::not_lease_owner,
+             EditorEditErrorCode::ticket_not_found,
+             EditorEditErrorCode::undo_conflict,
              EditorEditErrorCode::not_editable,
              EditorEditErrorCode::schema_violation,
              EditorEditErrorCode::unknown_component_type,

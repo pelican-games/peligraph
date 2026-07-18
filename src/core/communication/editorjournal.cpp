@@ -722,12 +722,19 @@ PreparedOperation prepareDestroy(const Json &raw,
     result.structural_domain = {{"kind", "object_subtree"},
                                 {"scene_id", root.scene_id},
                                 {"root", object_id.value},
-                                {"objects", OrderedJson::array()}};
+                                {"objects", OrderedJson::array()},
+                                {"declaration_indices", OrderedJson::array()},
+                                {"name_reservations", OrderedJson::array()}};
     for (const auto &object : subtree) {
         result.commands.push_back(makeRemoveObjectCommand(object.object_id));
         result.forward["object_ids"].push_back(object.object_id.value);
         result.affected.push_back(object.object_id);
         result.structural_domain["objects"].push_back(object.object_id.value);
+        result.structural_domain["declaration_indices"].push_back(
+            object.object_index);
+        if (object.name) {
+            result.structural_domain["name_reservations"].push_back(*object.name);
+        }
     }
     return result;
 }
@@ -783,6 +790,12 @@ PreparedOperation prepareReparent(const Json &raw,
     (void)transform_index;
     const auto target = "/authoring_objects/" + std::to_string(object_id.value) +
                         "/parent";
+    OrderedJson descendants = OrderedJson::array();
+    for (const auto &descendant : subtreeObjects(document, child)) {
+        if (descendant.object_id != object_id) {
+            descendants.push_back(descendant.object_id.value);
+        }
+    }
     OrderedJson forward{{"op", context},
                         {"object_id", object_id.value},
                         {"scene_id", child.scene_id},
@@ -823,6 +836,7 @@ PreparedOperation prepareReparent(const Json &raw,
                               {"new_parent", new_parent_id
                                                  ? OrderedJson(new_parent_id->value)
                                                  : OrderedJson(nullptr)},
+                              {"descendants", std::move(descendants)},
                               {"preserve", preserve_name}},
     };
 }
@@ -1093,21 +1107,76 @@ OrderedJson targetState(const Json &operations,
             const auto object = requireObjectLocation(document, object_id);
             result["exists"] = true;
             result["scene_id"] = object.scene_id;
+            result["declaration_index"] = object.object_index;
             result["name"] = object.name ? OrderedJson(*object.name) : OrderedJson(nullptr);
+            result["parent"] = object.parent ? OrderedJson(*object.parent)
+                                              : OrderedJson(nullptr);
+            const auto op = operation.value("op", std::string{});
+            if (op == "spawn") result["authored_object"] = object.authored;
+            if (op == "reparent" && hasComponent(object, "transform")) {
+                result["authored_transform"] =
+                    requireComponent(object, "transform").second;
+            }
             if (const auto slot = operation.find("component_slot");
                 slot != operation.end() && slot->is_string()) {
                 const auto name = slot->get<std::string>();
                 result["component_slot"] = name;
                 result["component_exists"] = hasComponent(object, name);
+                if (result["component_exists"].get<bool>()) {
+                    result["authored_component"] = requireComponent(object, name).second;
+                }
             }
         } catch (const EditFailure &) {
             result["exists"] = false;
         }
+    } else if (operation.contains("closures") &&
+               operation.at("closures").is_array()) {
+        result["objects"] = OrderedJson::array();
+        for (const auto &closure : operation.at("closures")) {
+            const auto object_id = AuthoringObjectId{exactUnsigned(
+                closure.at("authoring_object_id"), "edit object_id", true)};
+            OrderedJson entry{{"object_id", object_id.value}};
+            try {
+                const auto object = requireObjectLocation(document, object_id);
+                entry["exists"] = true;
+                entry["scene_id"] = object.scene_id;
+                entry["declaration_index"] = object.object_index;
+                entry["authored_object"] = object.authored;
+            } catch (const EditFailure &) {
+                entry["exists"] = false;
+            }
+            result["objects"].push_back(std::move(entry));
+        }
+    } else if (operation.contains("object_ids") &&
+               operation.at("object_ids").is_array()) {
+        result["objects"] = OrderedJson::array();
+        for (const auto &raw_id : operation.at("object_ids")) {
+            const auto object_id = AuthoringObjectId{
+                exactUnsigned(raw_id, "edit object_id", true)};
+            OrderedJson entry{{"object_id", object_id.value}};
+            try {
+                const auto object = requireObjectLocation(document, object_id);
+                entry["exists"] = true;
+                entry["scene_id"] = object.scene_id;
+                entry["declaration_index"] = object.object_index;
+                entry["authored_object"] = object.authored;
+            } catch (const EditFailure &) {
+                entry["exists"] = false;
+            }
+            result["objects"].push_back(std::move(entry));
+        }
     } else if (operation.value("op", std::string{}) == "spawn") {
         result["name"] = operation.at("object").value("name", std::string{});
-        result["exists"] = objectIdByName(
+        const auto object_id = objectIdByName(
             document, operation.value("scene_id", std::string{}),
-            operation.at("object").value("name", std::string{})).has_value();
+            operation.at("object").value("name", std::string{}));
+        result["exists"] = object_id.has_value();
+        if (object_id) {
+            const auto object = requireObjectLocation(document, *object_id);
+            result["object_id"] = object_id->value;
+            result["declaration_index"] = object.object_index;
+            result["authored_object"] = object.authored;
+        }
     }
     return result;
 }
@@ -1128,6 +1197,170 @@ std::string randomSessionToken() {
     return result;
 }
 
+std::vector<std::string> batchWriteSet(const PreparedBatch &batch) {
+    std::vector<std::string> result;
+    for (const auto &operation : batch.operations) {
+        result.insert(result.end(), operation.write_set.begin(),
+                      operation.write_set.end());
+    }
+    std::sort(result.begin(), result.end());
+    result.erase(std::unique(result.begin(), result.end()), result.end());
+    return result;
+}
+
+std::vector<OrderedJson> batchStructuralDomains(const PreparedBatch &batch) {
+    std::vector<OrderedJson> result;
+    result.reserve(batch.operations.size());
+    for (const auto &operation : batch.operations) {
+        result.push_back(operation.structural_domain);
+    }
+    return result;
+}
+
+bool stablePathsOverlap(std::string_view left, std::string_view right) {
+    if (left == right) return true;
+    const auto is_prefix = [](std::string_view prefix, std::string_view value) {
+        return value.size() > prefix.size() && value.starts_with(prefix) &&
+               value[prefix.size()] == '/';
+    };
+    return is_prefix(left, right) || is_prefix(right, left);
+}
+
+std::vector<std::uint64_t> domainObjects(const Json &domain) {
+    std::vector<std::uint64_t> result;
+    for (const auto *field : {"object", "root", "child", "old_parent",
+                              "new_parent"}) {
+        const auto found = domain.find(field);
+        if (found != domain.end() && found->is_number_unsigned()) {
+            result.push_back(found->get<std::uint64_t>());
+        }
+    }
+    for (const auto *field : {"objects", "descendants"}) {
+        const auto found = domain.find(field);
+        if (found == domain.end() || !found->is_array()) continue;
+        for (const auto &value : *found) {
+            if (value.is_number_unsigned()) {
+                result.push_back(value.get<std::uint64_t>());
+            }
+        }
+    }
+    std::sort(result.begin(), result.end());
+    result.erase(std::unique(result.begin(), result.end()), result.end());
+    return result;
+}
+
+std::vector<std::string> domainNames(const Json &domain) {
+    std::vector<std::string> result;
+    if (const auto found = domain.find("name_reservation");
+        found != domain.end() && found->is_string()) {
+        result.push_back(found->get<std::string>());
+    }
+    if (const auto found = domain.find("name_reservations");
+        found != domain.end() && found->is_array()) {
+        for (const auto &value : *found) {
+            if (value.is_string()) result.push_back(value.get<std::string>());
+        }
+    }
+    return result;
+}
+
+std::vector<std::uint64_t> domainIndices(const Json &domain) {
+    std::vector<std::uint64_t> result;
+    if (const auto found = domain.find("declaration_index");
+        found != domain.end() && found->is_number_unsigned()) {
+        result.push_back(found->get<std::uint64_t>());
+    }
+    if (const auto found = domain.find("declaration_indices");
+        found != domain.end() && found->is_array()) {
+        for (const auto &value : *found) {
+            if (value.is_number_unsigned()) {
+                result.push_back(value.get<std::uint64_t>());
+            }
+        }
+    }
+    return result;
+}
+
+template <class Value>
+bool intersects(const std::vector<Value> &left, const std::vector<Value> &right) {
+    return std::any_of(left.begin(), left.end(), [&](const auto &value) {
+        return std::find(right.begin(), right.end(), value) != right.end();
+    });
+}
+
+bool structuralDomainsOverlap(const Json &left, const Json &right) {
+    const auto left_objects = domainObjects(left);
+    const auto right_objects = domainObjects(right);
+    if (intersects(left_objects, right_objects)) return true;
+
+    const auto left_scene = left.value("scene_id", std::string{});
+    const auto right_scene = right.value("scene_id", std::string{});
+    if (!left_scene.empty() && left_scene == right_scene) {
+        if (intersects(domainNames(left), domainNames(right))) return true;
+        if (intersects(domainIndices(left), domainIndices(right))) return true;
+    }
+
+    const auto left_kind = left.value("kind", std::string{});
+    const auto right_kind = right.value("kind", std::string{});
+    if ((left_kind == "component_slot" || left_kind == "value_field") &&
+        (right_kind == "component_slot" || right_kind == "value_field") &&
+        left.value("object", std::uint64_t{}) ==
+            right.value("object", std::uint64_t{}) &&
+        left.value("slot", std::string{}) == right.value("slot", std::string{})) {
+        return true;
+    }
+    return false;
+}
+
+bool recordOverlaps(const EditorJournalRecord &record,
+                    std::span<const std::string> write_set,
+                    std::span<const OrderedJson> domains) {
+    for (const auto &left : record.write_set) {
+        for (const auto &right : write_set) {
+            if (stablePathsOverlap(left, right)) return true;
+        }
+    }
+    for (const auto &left : record.structural_domain) {
+        for (const auto &right : domains) {
+            if (structuralDomainsOverlap(left, right)) return true;
+        }
+    }
+    return false;
+}
+
+bool postconditionsHold(const EditorJournalRecord &record,
+                        const AuthoringSceneDocument &document) {
+    if (record.commands.size() != record.forward_postconditions.size()) return false;
+    for (const auto &command : record.commands) {
+        if (targetState(Json::array({command.forward}), document) !=
+            command.forward_postcondition) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void requireLivePreviewCapability(const PreparedBatch &batch,
+                                  std::string_view method) {
+    for (const auto &operation : batch.operations) {
+        const auto op = operation.forward.value("op", std::string{});
+        const auto slot = operation.forward.value("component_slot", std::string{});
+        if (op != "set_component_value" ||
+            (slot != "transform" && slot != "light")) {
+            editFailure(EditorEditErrorCode::method_unavailable,
+                        {{"method", method},
+                         {"field", op + ":" + slot}},
+                        "field has no side-effect-free live preview capability");
+        }
+    }
+}
+
+bool sameStableSet(std::span<const std::string> left,
+                   std::span<const std::string> right) {
+    return left.size() == right.size() &&
+           std::equal(left.begin(), left.end(), right.begin());
+}
+
 } // namespace
 
 std::string_view editorEditErrorCodeName(EditorEditErrorCode code) noexcept {
@@ -1135,6 +1368,10 @@ std::string_view editorEditErrorCodeName(EditorEditErrorCode code) noexcept {
     case EditorEditErrorCode::stale_revision: return "stale_revision";
     case EditorEditErrorCode::gate_closed: return "gate_closed";
     case EditorEditErrorCode::preview_lease_conflict: return "preview_lease_conflict";
+    case EditorEditErrorCode::preview_lease_busy: return "preview_lease_busy";
+    case EditorEditErrorCode::not_lease_owner: return "not_lease_owner";
+    case EditorEditErrorCode::ticket_not_found: return "ticket_not_found";
+    case EditorEditErrorCode::undo_conflict: return "undo_conflict";
     case EditorEditErrorCode::not_editable: return "not_editable";
     case EditorEditErrorCode::schema_violation: return "schema_violation";
     case EditorEditErrorCode::unknown_component_type: return "unknown_component_type";
@@ -1177,6 +1414,7 @@ OrderedJson editorJournalJson(const EditorJournalRecord &record) {
         {"ordered_inverse", record.ordered_inverse},
         {"affected_authoring_ids", affected},
         {"status", record.status},
+        {"operation_kind", record.operation_kind},
         {"stable_targets", record.stable_targets},
         {"read_set", record.read_set},
         {"write_set", record.write_set},
@@ -1187,6 +1425,9 @@ OrderedJson editorJournalJson(const EditorJournalRecord &record) {
     result["coalesce_key"] = record.coalesce_key
                                   ? OrderedJson(*record.coalesce_key)
                                   : OrderedJson(nullptr);
+    result["source_transaction_id"] = record.source_transaction_id
+                                                ? OrderedJson(*record.source_transaction_id)
+                                                : OrderedJson(nullptr);
     return result;
 }
 
@@ -1197,11 +1438,47 @@ struct EditorEditCoordinator::Impl {
         std::string reconnect_token;
     };
     struct Ticket {
+        enum class Kind : std::uint8_t { edit, undo, redo };
+
         std::string id;
+        Kind kind = Kind::edit;
         EditorActorId actor_id{};
         SceneRevision base_revision{};
         Json raw_operations;
+        std::optional<std::string> source_transaction_id;
         std::optional<std::string> coalesce_key;
+        std::uint64_t accepted_gate_epoch = 0;
+        std::uint64_t accepted_transition_epoch = 0;
+        std::string accepted_scene_id;
+        OrderedJson result;
+    };
+    struct RedoEntry {
+        std::string source_transaction_id;
+        std::string undo_transaction_id;
+    };
+    struct PreviewLease {
+        std::string ticket;
+        EditorActorId actor_id{};
+        SceneRevision base_revision{};
+        Json raw_operations;
+        std::vector<OrderedJson> canonical_operations;
+        std::vector<std::string> write_set;
+        std::vector<OrderedJson> structural_domain;
+        std::vector<AuthoringObjectId> affected;
+        std::string scene_id;
+    };
+    struct PreviewTombstone {
+        EditorActorId actor_id{};
+        std::string final_status;
+    };
+    struct PreviewRequest {
+        enum class Kind : std::uint8_t { open, update, commit, abort };
+
+        std::string request_id;
+        std::string ticket;
+        Kind kind = Kind::open;
+        EditorActorId actor_id{};
+        Json raw_operations;
         std::uint64_t accepted_gate_epoch = 0;
         std::uint64_t accepted_transition_epoch = 0;
         std::string accepted_scene_id;
@@ -1220,6 +1497,16 @@ struct EditorEditCoordinator::Impl {
     std::vector<OrderedJson> completed;
     std::vector<EditorJournalRecord> journal;
     std::unordered_map<std::string, EditorLastWriterStamp> last_writers;
+    std::unordered_map<std::uint64_t, std::vector<std::string>> undo_stacks;
+    std::unordered_map<std::uint64_t, std::vector<RedoEntry>> redo_stacks;
+    std::optional<PreviewLease> preview_lease;
+    std::optional<PreviewLease> preview_reservation;
+    std::vector<PreviewRequest> pending_preview;
+    std::unordered_map<std::string, OrderedJson> preview_results;
+    std::unordered_map<std::string, PreviewTombstone> preview_tombstones;
+    std::uint64_t next_preview_ticket = 1;
+    std::uint64_t next_preview_request = 1;
+    std::uint64_t preview_epoch = 0;
     std::uint32_t observed_reasons = 0;
     std::uint64_t observed_transition_epoch = 0;
     std::uint64_t gate_epoch = 1;
@@ -1245,6 +1532,7 @@ struct EditorEditCoordinator::Impl {
             ++gate_epoch;
         }
         return EditorGateSnapshot{.can_edit = observed_reasons == 0,
+                                  .can_preview = observed_reasons == 0,
                                   .epoch = gate_epoch,
                                   .reasons = gateReasonNames(observed_reasons)};
     }
@@ -1258,6 +1546,12 @@ struct EditorEditCoordinator::Impl {
     }
 
     std::string allocateTicket() { return "edit-" + std::to_string(next_ticket++); }
+    std::string allocatePreviewTicket() {
+        return "preview-" + std::to_string(next_preview_ticket++);
+    }
+    std::string allocatePreviewRequest() {
+        return "preview-request-" + std::to_string(next_preview_request++);
+    }
     std::string allocateTransaction() {
         return "txn-" + std::to_string(next_transaction++);
     }
@@ -1270,6 +1564,116 @@ struct EditorEditCoordinator::Impl {
                 {"status", "rejected"},
                 {"error", editErrorJson(failure.code, failure.payload,
                                          failure.what())}};
+    }
+
+    OrderedJson previewRejected(const PreviewRequest &request,
+                                const EditFailure &failure,
+                                std::string status = "rejected") const {
+        return {{"request_id", request.request_id},
+                {"ticket", request.ticket},
+                {"actor_id", request.actor_id.value},
+                {"status", std::move(status)},
+                {"error", editErrorJson(failure.code, failure.payload,
+                                         failure.what())}};
+    }
+
+    const EditorJournalRecord &requireJournal(std::string_view transaction_id) const {
+        const auto found = std::find_if(journal.begin(), journal.end(),
+                                        [&](const auto &record) {
+                                            return record.transaction_id == transaction_id;
+                                        });
+        if (found == journal.end()) {
+            editFailure(EditorEditErrorCode::method_unavailable,
+                        {{"method", "undo"}, {"adapter", "journal"}},
+                        "journal transaction does not exist");
+        }
+        return *found;
+    }
+
+    bool leaseOverlaps(const PreviewLease &lease,
+                       std::span<const std::string> writes,
+                       std::span<const OrderedJson> domains) const {
+        for (const auto &left : lease.write_set) {
+            for (const auto &right : writes) {
+                if (stablePathsOverlap(left, right)) return true;
+            }
+        }
+        for (const auto &left : lease.structural_domain) {
+            for (const auto &right : domains) {
+                if (structuralDomainsOverlap(left, right)) return true;
+            }
+        }
+        return false;
+    }
+
+    const PreviewLease *conflictingLease(
+        std::span<const std::string> writes,
+        std::span<const OrderedJson> domains) const {
+        if (preview_lease && leaseOverlaps(*preview_lease, writes, domains)) {
+            return &*preview_lease;
+        }
+        if (preview_reservation &&
+            leaseOverlaps(*preview_reservation, writes, domains)) {
+            return &*preview_reservation;
+        }
+        return nullptr;
+    }
+
+    void requireNoLeaseOverlap(std::span<const std::string> writes,
+                               std::span<const OrderedJson> domains) const {
+        if (const auto *lease = conflictingLease(writes, domains)) {
+            editFailure(EditorEditErrorCode::preview_lease_conflict,
+                        {{"ticket", lease->ticket},
+                         {"owner", lease->actor_id.value}},
+                        "edit overlaps the open preview lease");
+        }
+    }
+
+    [[noreturn]] void throwUndoConflict(const EditorJournalRecord &source,
+                                        const OrderedJson &domain,
+                                        std::string owner_transaction,
+                                        SceneRevision revision) const {
+        editFailure(EditorEditErrorCode::undo_conflict,
+                    {{"domain", domain},
+                     {"owner_txn", std::move(owner_transaction)},
+                     {"revision", revision.value}},
+                    "revert precondition was changed by a later transaction");
+    }
+
+    void requireRevertPreconditions(const EditorJournalRecord &source) const {
+        for (const auto &candidate : journal) {
+            if (candidate.committed_revision.value <=
+                    source.committed_revision.value ||
+                candidate.actor_id == source.actor_id) {
+                continue;
+            }
+            if (recordOverlaps(candidate, source.write_set,
+                               source.structural_domain)) {
+                const auto domain = source.structural_domain.empty()
+                                        ? OrderedJson(source.write_set)
+                                        : source.structural_domain.front();
+                throwUndoConflict(source, domain, candidate.transaction_id,
+                                  candidate.committed_revision);
+            }
+        }
+        for (const auto &command : source.commands) {
+            for (const auto &write : command.write_set) {
+                const auto writer = last_writers.find(write);
+                if (writer != last_writers.end() &&
+                    writer->second.transaction_id != source.transaction_id) {
+                    throwUndoConflict(source, command.structural_domain,
+                                      writer->second.transaction_id,
+                                      writer->second.revision);
+                }
+            }
+        }
+        if (!postconditionsHold(source, document())) {
+            const auto domain = source.structural_domain.empty()
+                                    ? OrderedJson(source.write_set)
+                                    : source.structural_domain.front();
+            throwUndoConflict(source, domain, source.transaction_id,
+                              document().revision());
+        }
     }
 
     void finalizeJournal(Ticket &ticket, PreparedBatch batch,
@@ -1327,7 +1731,367 @@ struct EditorEditCoordinator::Impl {
         deduplicate(record.stable_targets);
         deduplicate(record.read_set);
         deduplicate(record.write_set);
+        const auto committed_id = record.transaction_id;
         journal.push_back(std::move(record));
+        undo_stacks[ticket.actor_id.value].push_back(committed_id);
+        redo_stacks[ticket.actor_id.value].clear();
+    }
+
+    std::string finalizeRevertJournal(
+        const Ticket &ticket, const EditorJournalRecord &source,
+        const EditorProjectionResult &projection, std::string operation_kind) {
+        EditorJournalRecord record;
+        record.transaction_id = allocateTransaction();
+        record.actor_id = ticket.actor_id;
+        record.actor_display_name = sessions.at(ticket.actor_id.value).display_name;
+        record.base_revision = ticket.base_revision;
+        record.committed_revision = projection.committed_revision;
+        record.ordered_forward = source.ordered_inverse;
+        record.ordered_inverse = source.ordered_forward;
+        record.affected_authoring_ids = source.affected_authoring_ids;
+        record.operation_kind = std::move(operation_kind);
+        record.source_transaction_id = source.transaction_id;
+
+        const EditorLastWriterStamp stamp{projection.committed_revision,
+                                           record.transaction_id,
+                                           ticket.actor_id};
+        for (std::size_t index = 0; index < record.ordered_forward.size(); ++index) {
+            const auto source_index = source.commands.size() - 1U - index;
+            const auto &source_command = source.commands.at(source_index);
+            EditorJournalCommandRecord command{
+                .forward = record.ordered_forward[index],
+                .inverse = record.ordered_inverse[source_index],
+                .stable_target = source_command.stable_target,
+                .read_set = source_command.read_set,
+                .write_set = source_command.write_set,
+                .structural_domain = source_command.structural_domain,
+                .forward_postcondition = targetState(
+                    Json::array({record.ordered_forward[index]}), document()),
+                .last_writer = stamp,
+            };
+            record.stable_targets.push_back(command.stable_target);
+            record.read_set.insert(record.read_set.end(), command.read_set.begin(),
+                                   command.read_set.end());
+            record.write_set.insert(record.write_set.end(), command.write_set.begin(),
+                                    command.write_set.end());
+            record.structural_domain.push_back(command.structural_domain);
+            record.forward_postconditions.push_back(command.forward_postcondition);
+            for (const auto &write : command.write_set) last_writers[write] = stamp;
+            record.commands.push_back(std::move(command));
+        }
+        const auto deduplicate = [](std::vector<std::string> &values) {
+            std::sort(values.begin(), values.end());
+            values.erase(std::unique(values.begin(), values.end()), values.end());
+        };
+        deduplicate(record.stable_targets);
+        deduplicate(record.read_set);
+        deduplicate(record.write_set);
+        const auto transaction_id = record.transaction_id;
+        journal.push_back(std::move(record));
+        return transaction_id;
+    }
+
+    void advancePreviewEpoch() {
+        if (preview_epoch >= maxExactJsonInteger) {
+            throw std::overflow_error("preview_epoch space exhausted");
+        }
+        ++preview_epoch;
+    }
+
+    EditFailure missingPreviewTicket(std::string_view ticket) const {
+        OrderedJson payload{{"ticket", ticket}};
+        if (const auto found = preview_tombstones.find(std::string{ticket});
+            found != preview_tombstones.end()) {
+            payload["final_status"] = found->second.final_status;
+        }
+        return EditFailure{EditorEditErrorCode::ticket_not_found,
+                           std::move(payload),
+                           "preview ticket no longer exists"};
+    }
+
+    EditorProjectionResult executeLivePreview(
+        const PreviewLease &lease, std::span<const EditorProjectionCommand> commands,
+        std::span<const OrderedJson> operations, bool restore) {
+        if (!dependencies.execute_preview) {
+            editFailure(EditorEditErrorCode::method_unavailable,
+                        {{"method", restore ? "abort_preview" : "open_preview"},
+                         {"adapter", "live_preview"}},
+                        "live preview execution is unavailable");
+        }
+        const EditorPreviewExecutionRequest request{
+            .base_revision = document().revision(),
+            .commands = commands,
+            .operations = operations,
+            .restore_committed = restore,
+        };
+        return dependencies.execute_preview(request);
+    }
+
+    bool forceAbort(std::string reason) noexcept {
+        if (!preview_lease) return false;
+        try {
+            const auto lease = *preview_lease;
+            const auto projection = executeLivePreview(
+                lease, {}, lease.canonical_operations, true);
+            if (!projection.committed()) return false;
+            if (dependencies.preview_boundary) dependencies.preview_boundary();
+            advancePreviewEpoch();
+            preview_tombstones[lease.ticket] =
+                PreviewTombstone{lease.actor_id, "forced_aborted"};
+            completed.push_back({{"event", "ticket_forced_aborted"},
+                                 {"ticket", lease.ticket},
+                                 {"actor_id", lease.actor_id.value},
+                                 {"reason", std::move(reason)},
+                                 {"final_status", "forced_aborted"},
+                                 {"preview_epoch", preview_epoch}});
+            preview_lease.reset();
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+
+    void finishPreviewRequest(PreviewRequest &request, OrderedJson result) {
+        request.result = std::move(result);
+        preview_results[request.request_id] = request.result;
+        completed.push_back(request.result);
+    }
+
+    void commitPendingPreview() {
+        auto queue = std::move(pending_preview);
+        pending_preview.clear();
+        for (auto &request : queue) {
+            try {
+                const auto gate = gateSnapshot();
+                const bool gate_changed =
+                    gate.epoch != request.accepted_gate_epoch ||
+                    observed_transition_epoch != request.accepted_transition_epoch ||
+                    dependencies.current_scene_id() != request.accepted_scene_id;
+
+                if (request.kind != PreviewRequest::Kind::abort &&
+                    (!gate.can_preview || gate_changed)) {
+                    const EditFailure failure{
+                        EditorEditErrorCode::gate_closed,
+                        {{"method", request.kind == PreviewRequest::Kind::open
+                                        ? "open_preview"
+                                        : request.kind == PreviewRequest::Kind::update
+                                              ? "update_preview"
+                                              : "commit_preview"},
+                         {"reason", gate_changed ? "reload_scene_transition"
+                                                  : primaryGateReason(gate)},
+                         {"gate_epoch", gate.epoch}},
+                        "editor preview gate changed after request acceptance"};
+                    finishPreviewRequest(request,
+                                         previewRejected(request, failure, "failed"));
+                    if (request.kind == PreviewRequest::Kind::open &&
+                        preview_reservation &&
+                        preview_reservation->ticket == request.ticket) {
+                        preview_reservation.reset();
+                    }
+                    continue;
+                }
+
+                if (request.kind == PreviewRequest::Kind::open) {
+                    if (preview_lease) {
+                        const EditFailure failure{
+                            EditorEditErrorCode::preview_lease_busy,
+                            {{"owner", preview_lease->actor_id.value}},
+                            "live preview lease is already occupied"};
+                        finishPreviewRequest(request,
+                                             previewRejected(request, failure));
+                        preview_reservation.reset();
+                        continue;
+                    }
+                    auto batch = prepareBatch(request.raw_operations, document(),
+                                              request.accepted_scene_id);
+                    requireLivePreviewCapability(batch, "open_preview");
+                    PreviewLease lease{
+                        .ticket = request.ticket,
+                        .actor_id = request.actor_id,
+                        .base_revision = document().revision(),
+                        .raw_operations = request.raw_operations,
+                        .canonical_operations = batch.forward,
+                        .write_set = batchWriteSet(batch),
+                        .structural_domain = batchStructuralDomains(batch),
+                        .affected = batch.affected,
+                        .scene_id = request.accepted_scene_id,
+                    };
+                    const auto projection = executeLivePreview(
+                        lease, batch.commands, batch.forward, false);
+                    if (!projection.committed()) {
+                        throw projectionFailure(projection, "open_preview");
+                    }
+                    if (dependencies.preview_boundary) dependencies.preview_boundary();
+                    advancePreviewEpoch();
+                    preview_lease = std::move(lease);
+                    preview_reservation.reset();
+                    finishPreviewRequest(
+                        request,
+                        {{"request_id", request.request_id},
+                         {"ticket", request.ticket},
+                         {"actor_id", request.actor_id.value},
+                         {"base_revision", preview_lease->base_revision.value},
+                         {"affected_authoring_ids", [&] {
+                              OrderedJson values = OrderedJson::array();
+                              for (const auto id : preview_lease->affected) {
+                                  values.push_back(id.value);
+                              }
+                              return values;
+                          }()},
+                         {"status", "open"},
+                         {"preview_epoch", preview_epoch}});
+                    continue;
+                }
+
+                if (!preview_lease || preview_lease->ticket != request.ticket) {
+                    if (request.kind == PreviewRequest::Kind::abort) {
+                        const auto tombstone = preview_tombstones.find(request.ticket);
+                        const auto final_status =
+                            tombstone == preview_tombstones.end()
+                                ? std::string{"not_found"}
+                                : tombstone->second.final_status;
+                        finishPreviewRequest(
+                            request,
+                            {{"request_id", request.request_id},
+                             {"ticket", request.ticket},
+                             {"actor_id", request.actor_id.value},
+                             {"status", "succeeded"},
+                             {"final_status", final_status},
+                             {"preview_epoch", preview_epoch}});
+                    } else {
+                        const auto failure = missingPreviewTicket(request.ticket);
+                        finishPreviewRequest(request,
+                                             previewRejected(request, failure));
+                    }
+                    continue;
+                }
+                if (preview_lease->actor_id != request.actor_id) {
+                    const EditFailure failure{
+                        EditorEditErrorCode::not_lease_owner,
+                        {{"ticket", request.ticket},
+                         {"owner", preview_lease->actor_id.value}},
+                        "preview ticket belongs to another actor"};
+                    finishPreviewRequest(request,
+                                         previewRejected(request, failure));
+                    continue;
+                }
+
+                if (request.kind == PreviewRequest::Kind::update) {
+                    auto batch = prepareBatch(request.raw_operations, document(),
+                                              request.accepted_scene_id);
+                    requireLivePreviewCapability(batch, "update_preview");
+                    auto writes = batchWriteSet(batch);
+                    if (!sameStableSet(writes, preview_lease->write_set)) {
+                        editFailure(EditorEditErrorCode::method_unavailable,
+                                    {{"method", "update_preview"},
+                                     {"field", "lease_write_set"}},
+                                    "preview update cannot expand or replace its lease");
+                    }
+                    const auto projection = executeLivePreview(
+                        *preview_lease, batch.commands, batch.forward, false);
+                    if (!projection.committed()) {
+                        throw projectionFailure(projection, "update_preview");
+                    }
+                    preview_lease->raw_operations = request.raw_operations;
+                    preview_lease->canonical_operations = batch.forward;
+                    preview_lease->affected = batch.affected;
+                    advancePreviewEpoch();
+                    finishPreviewRequest(request,
+                                         {{"request_id", request.request_id},
+                                          {"ticket", request.ticket},
+                                          {"actor_id", request.actor_id.value},
+                                          {"status", "updated"},
+                                          {"preview_epoch", preview_epoch}});
+                    continue;
+                }
+
+                if (request.kind == PreviewRequest::Kind::commit) {
+                    if (document().revision() != preview_lease->base_revision) {
+                        const EditFailure failure{
+                            EditorEditErrorCode::stale_revision,
+                            {{"current_revision", document().revision().value},
+                             {"target", targetState(preview_lease->raw_operations,
+                                                    document())}},
+                            "preview ticket base SceneRevision is stale"};
+                        finishPreviewRequest(request,
+                                             previewRejected(request, failure));
+                        (void)forceAbort("stale_revision");
+                        continue;
+                    }
+                    auto batch = prepareBatch(preview_lease->raw_operations,
+                                              document(), preview_lease->scene_id);
+                    const EditorEditExecutionRequest execution{
+                        .base_revision = preview_lease->base_revision,
+                        .commands = batch.commands,
+                        .operations = batch.forward,
+                    };
+                    const auto projection = dependencies.execute(execution);
+                    if (!projection.committed()) {
+                        throw projectionFailure(projection, "commit_preview");
+                    }
+                    Ticket journal_ticket{
+                        .id = request.request_id,
+                        .kind = Ticket::Kind::edit,
+                        .actor_id = request.actor_id,
+                        .base_revision = preview_lease->base_revision,
+                        .raw_operations = preview_lease->raw_operations,
+                    };
+                    const auto transaction_id = allocateTransaction();
+                    finalizeJournal(journal_ticket, std::move(batch), projection,
+                                    transaction_id);
+                    advancePreviewEpoch();
+                    preview_tombstones[request.ticket] =
+                        PreviewTombstone{request.actor_id, "committed"};
+                    preview_lease.reset();
+                    finishPreviewRequest(
+                        request,
+                        {{"request_id", request.request_id},
+                         {"ticket", request.ticket},
+                         {"actor_id", request.actor_id.value},
+                         {"status", "committed"},
+                         {"committed_revision", projection.committed_revision.value},
+                         {"transaction_id", transaction_id},
+                         {"preview_epoch", preview_epoch}});
+                    continue;
+                }
+
+                const auto projection = executeLivePreview(
+                    *preview_lease, {}, preview_lease->canonical_operations, true);
+                if (!projection.committed()) {
+                    throw projectionFailure(projection, "abort_preview");
+                }
+                if (dependencies.preview_boundary) dependencies.preview_boundary();
+                advancePreviewEpoch();
+                preview_tombstones[request.ticket] =
+                    PreviewTombstone{request.actor_id, "aborted"};
+                preview_lease.reset();
+                finishPreviewRequest(request,
+                                     {{"request_id", request.request_id},
+                                      {"ticket", request.ticket},
+                                      {"actor_id", request.actor_id.value},
+                                      {"status", "succeeded"},
+                                      {"final_status", "aborted"},
+                                      {"preview_epoch", preview_epoch}});
+            } catch (const EditFailure &failure) {
+                finishPreviewRequest(request,
+                                     previewRejected(request, failure, "failed"));
+                if (request.kind == PreviewRequest::Kind::open &&
+                    preview_reservation &&
+                    preview_reservation->ticket == request.ticket) {
+                    preview_reservation.reset();
+                }
+            } catch (const std::exception &error) {
+                const EditFailure failure{
+                    EditorEditErrorCode::method_unavailable,
+                    {{"method", "preview"}, {"adapter", "execution"}},
+                    error.what()};
+                finishPreviewRequest(request,
+                                     previewRejected(request, failure, "failed"));
+                if (request.kind == PreviewRequest::Kind::open) {
+                    preview_reservation.reset();
+                }
+            }
+        }
     }
 
     static void hook(void *context) noexcept {
@@ -1335,6 +2099,20 @@ struct EditorEditCoordinator::Impl {
     }
 
     void commitPending() noexcept {
+        try {
+            commitPendingPreview();
+            const auto preview_gate = gateSnapshot();
+            if (preview_lease &&
+                (!preview_gate.can_preview ||
+                 dependencies.current_scene_id() != preview_lease->scene_id)) {
+                (void)forceAbort(preview_gate.can_preview
+                                     ? "scene_transition"
+                                     : primaryGateReason(preview_gate));
+            }
+        } catch (...) {
+            // Individual preview requests are converted to stable failures by
+            // commitPendingPreview. The frame boundary itself never throws.
+        }
         auto queue = std::move(pending);
         pending.clear();
         for (auto &ticket : queue) {
@@ -1344,7 +2122,11 @@ struct EditorEditCoordinator::Impl {
                     observed_transition_epoch != ticket.accepted_transition_epoch) {
                     const EditFailure failure{
                         EditorEditErrorCode::gate_closed,
-                        OrderedJson{{"method", "edit"},
+                        OrderedJson{{"method", ticket.kind == Ticket::Kind::edit
+                                                  ? "edit"
+                                                  : ticket.kind == Ticket::Kind::undo
+                                                        ? "undo"
+                                                        : "redo"},
                                     {"reason", primaryGateReason(snapshot)},
                                     {"gate_epoch", snapshot.epoch}},
                         "editor gate changed after request acceptance"};
@@ -1383,18 +2165,60 @@ struct EditorEditCoordinator::Impl {
                     continue;
                 }
 
-                auto batch = prepareBatch(ticket.raw_operations, document(),
-                                          ticket.accepted_scene_id);
+                PreparedBatch batch;
+                std::optional<EditorJournalRecord> revert_source;
+                std::vector<EditorProjectionCommand> revert_commands;
+                std::span<const OrderedJson> execution_operations;
+                std::span<const EditorProjectionCommand> execution_commands;
+                if (ticket.kind == Ticket::Kind::edit) {
+                    batch = prepareBatch(ticket.raw_operations, document(),
+                                         ticket.accepted_scene_id);
+                    const auto writes = batchWriteSet(batch);
+                    const auto domains = batchStructuralDomains(batch);
+                    requireNoLeaseOverlap(writes, domains);
+                    execution_operations = batch.forward;
+                    execution_commands = batch.commands;
+                } else {
+                    revert_source = requireJournal(*ticket.source_transaction_id);
+                    auto &undo_stack = undo_stacks[ticket.actor_id.value];
+                    auto &redo_stack = redo_stacks[ticket.actor_id.value];
+                    const bool stack_matches =
+                        ticket.kind == Ticket::Kind::undo
+                            ? !undo_stack.empty() &&
+                                  undo_stack.back() == revert_source->transaction_id
+                            : !redo_stack.empty() &&
+                                  redo_stack.back().undo_transaction_id ==
+                                      revert_source->transaction_id;
+                    if (!stack_matches) {
+                        throwUndoConflict(*revert_source,
+                                          revert_source->structural_domain.empty()
+                                              ? OrderedJson(revert_source->write_set)
+                                              : revert_source->structural_domain.front(),
+                                          revert_source->transaction_id,
+                                          document().revision());
+                    }
+                    requireRevertPreconditions(*revert_source);
+                    requireNoLeaseOverlap(revert_source->write_set,
+                                          revert_source->structural_domain);
+                    revert_commands = commandsFromCanonical(
+                        revert_source->ordered_inverse, document());
+                    execution_operations = revert_source->ordered_inverse;
+                    execution_commands = revert_commands;
+                }
                 const EditorEditExecutionRequest request{
                     .base_revision = ticket.base_revision,
-                    .commands = batch.commands,
-                    .operations = batch.forward,
+                    .commands = execution_commands,
+                    .operations = execution_operations,
                 };
                 const auto projection = dependencies.execute(request);
                 if (!projection.committed()) {
-                    const auto method = batch.forward.empty()
-                                            ? std::string{"edit"}
-                                            : batch.forward.front().at("op").get<std::string>();
+                    const auto method = ticket.kind == Ticket::Kind::edit
+                                            ? (batch.forward.empty()
+                                                   ? std::string{"edit"}
+                                                   : batch.forward.front().at("op").get<std::string>())
+                                            : ticket.kind == Ticket::Kind::undo
+                                                  ? std::string{"undo"}
+                                                  : std::string{"redo"};
                     const auto failure = projectionFailure(projection, method);
                     ticket.result = rejected(ticket.id, ticket.actor_id,
                                              ticket.base_revision, failure);
@@ -1406,18 +2230,45 @@ struct EditorEditCoordinator::Impl {
                     completed.push_back(ticket.result);
                     continue;
                 }
-                const auto transaction_id = allocateTransaction();
-                finalizeJournal(ticket, std::move(batch), projection,
-                                transaction_id);
+                std::string transaction_id;
+                if (ticket.kind == Ticket::Kind::edit) {
+                    transaction_id = allocateTransaction();
+                    finalizeJournal(ticket, std::move(batch), projection,
+                                    transaction_id);
+                } else {
+                    transaction_id = finalizeRevertJournal(
+                        ticket, *revert_source, projection,
+                        ticket.kind == Ticket::Kind::undo ? "undo" : "redo");
+                    auto &undo_stack = undo_stacks[ticket.actor_id.value];
+                    auto &redo_stack = redo_stacks[ticket.actor_id.value];
+                    if (ticket.kind == Ticket::Kind::undo) {
+                        undo_stack.pop_back();
+                        redo_stack.push_back(
+                            {revert_source->transaction_id, transaction_id});
+                    } else {
+                        redo_stack.pop_back();
+                        undo_stack.push_back(transaction_id);
+                    }
+                }
                 ticket.result = {{"ticket", ticket.id},
                                  {"actor_id", ticket.actor_id.value},
                                  {"base_revision", ticket.base_revision.value},
                                  {"committed_revision",
                                   projection.committed_revision.value},
                                  {"transaction_id", transaction_id},
+                                 {"operation", ticket.kind == Ticket::Kind::edit
+                                                   ? "edit"
+                                                   : ticket.kind == Ticket::Kind::undo
+                                                         ? "undo"
+                                                         : "redo"},
                                  {"status", "committed"}};
+                if (ticket.source_transaction_id) {
+                    ticket.result["source_transaction_id"] =
+                        *ticket.source_transaction_id;
+                }
                 results[ticket.id] = ticket.result;
                 completed.push_back(ticket.result);
+                if (preview_lease) (void)forceAbort("base_revision_stale");
             } catch (const EditFailure &failure) {
                 ticket.result = rejected(ticket.id, ticket.actor_id,
                                          ticket.base_revision, failure);
@@ -1512,6 +2363,21 @@ OrderedJson EditorEditCoordinator::canEdit(const Json &params) {
             {"reasons", snapshot.reasons}};
 }
 
+OrderedJson EditorEditCoordinator::canPreview(const Json &params) {
+    requireOnly(params, {}, "can_preview");
+    const auto snapshot = impl_->gateSnapshot();
+    auto reasons = snapshot.reasons;
+    if (impl_->preview_lease || impl_->preview_reservation) {
+        reasons.push_back("preview_lease_conflict");
+    }
+    return {{"can_preview", snapshot.can_preview &&
+                                !impl_->preview_lease &&
+                                !impl_->preview_reservation},
+            {"gate_epoch", snapshot.epoch},
+            {"preview_epoch", impl_->preview_epoch},
+            {"reasons", reasons}};
+}
+
 OrderedJson EditorEditCoordinator::enqueue(const Json &params) {
     requireOnly(params, {"actor_id", "base_revision", "operations",
                          "coalesce_key"}, "edit");
@@ -1546,8 +2412,11 @@ OrderedJson EditorEditCoordinator::enqueue(const Json &params) {
         return result;
     }
     try {
-        (void)prepareBatch(operations, impl_->document(),
-                           impl_->dependencies.current_scene_id());
+        const auto batch = prepareBatch(operations, impl_->document(),
+                                        impl_->dependencies.current_scene_id());
+        const auto writes = batchWriteSet(batch);
+        const auto domains = batchStructuralDomains(batch);
+        impl_->requireNoLeaseOverlap(writes, domains);
     } catch (const EditFailure &failure) {
         auto result = impl_->rejected(ticket, actor, base, failure);
         impl_->results[ticket] = result;
@@ -1572,12 +2441,347 @@ OrderedJson EditorEditCoordinator::enqueue(const Json &params) {
     return impl_->results.at(ticket);
 }
 
+OrderedJson EditorEditCoordinator::enqueueRevert(const Json &params,
+                                                  bool redo) {
+    auto &impl = *impl_;
+    const auto method = redo ? "redo" : "undo";
+    requireOnly(params, {"actor_id", "base_revision", "transaction_id"},
+                method);
+    const auto actor = EditorActorId{exactUnsigned(
+        params.at("actor_id"), std::string{method} + " actor_id", true)};
+    (void)impl.requireBound(actor);
+    const auto base = SceneRevision{exactUnsigned(
+        params.at("base_revision"), std::string{method} + " base_revision")};
+    const auto requested = optionalString(params, "transaction_id", method);
+    const auto ticket_id = impl.allocateTicket();
+    const auto gate = impl.gateSnapshot();
+    const auto reject = [&](const EditFailure &failure) {
+        auto result = impl.rejected(ticket_id, actor, base, failure);
+        result["operation"] = method;
+        impl.results[ticket_id] = result;
+        return result;
+    };
+    if (!gate.can_edit) {
+        return reject(EditFailure{
+            EditorEditErrorCode::gate_closed,
+            {{"method", method},
+             {"reason", primaryGateReason(gate)},
+             {"gate_epoch", gate.epoch}},
+            "editor gate is closed"});
+    }
+    if (impl.document().revision() != base) {
+        return reject(EditFailure{
+            EditorEditErrorCode::stale_revision,
+            {{"current_revision", impl.document().revision().value},
+             {"target", nullptr}},
+            "base SceneRevision is stale"});
+    }
+    try {
+        std::string source_id;
+        if (redo) {
+            const auto &stack = impl.redo_stacks[actor.value];
+            if (stack.empty()) {
+                editFailure(EditorEditErrorCode::method_unavailable,
+                            {{"method", method}, {"adapter", "journal"}},
+                            "actor has no successful revert to redo");
+            }
+            source_id = stack.back().undo_transaction_id;
+        } else {
+            const auto &stack = impl.undo_stacks[actor.value];
+            if (stack.empty()) {
+                editFailure(EditorEditErrorCode::method_unavailable,
+                            {{"method", method}, {"adapter", "journal"}},
+                            "actor has no committed transaction to undo");
+            }
+            source_id = stack.back();
+        }
+        if (requested && *requested != source_id) {
+            const auto &source = impl.requireJournal(source_id);
+            impl.throwUndoConflict(
+                source,
+                source.structural_domain.empty()
+                    ? OrderedJson(source.write_set)
+                    : source.structural_domain.front(),
+                source.transaction_id, impl.document().revision());
+        }
+        const auto &source = impl.requireJournal(source_id);
+        impl.requireRevertPreconditions(source);
+        impl.requireNoLeaseOverlap(source.write_set, source.structural_domain);
+        (void)commandsFromCanonical(source.ordered_inverse, impl.document());
+        Impl::Ticket pending{
+            .id = ticket_id,
+            .kind = redo ? Impl::Ticket::Kind::redo : Impl::Ticket::Kind::undo,
+            .actor_id = actor,
+            .base_revision = base,
+            .source_transaction_id = source_id,
+            .accepted_gate_epoch = gate.epoch,
+            .accepted_transition_epoch = impl.observed_transition_epoch,
+            .accepted_scene_id = impl.dependencies.current_scene_id(),
+            .result = {{"ticket", ticket_id},
+                       {"actor_id", actor.value},
+                       {"base_revision", base.value},
+                       {"operation", method},
+                       {"source_transaction_id", source_id},
+                       {"status", "accepted"}},
+        };
+        impl.results[ticket_id] = pending.result;
+        impl.pending.push_back(std::move(pending));
+        return impl.results.at(ticket_id);
+    } catch (const EditFailure &failure) {
+        return reject(failure);
+    }
+}
+
+OrderedJson EditorEditCoordinator::enqueueUndo(const Json &params) {
+    return enqueueRevert(params, false);
+}
+
+OrderedJson EditorEditCoordinator::enqueueRedo(const Json &params) {
+    return enqueueRevert(params, true);
+}
+
+OrderedJson EditorEditCoordinator::openPreview(const Json &params) {
+    constexpr auto method = "open_preview";
+    requireOnly(params, {"actor_id", "operations"}, method);
+    const auto actor = EditorActorId{exactUnsigned(params.at("actor_id"),
+                                                    "open_preview actor_id", true)};
+    (void)impl_->requireBound(actor);
+    const auto request_id = impl_->allocatePreviewRequest();
+    const auto ticket = impl_->allocatePreviewTicket();
+    const auto gate = impl_->gateSnapshot();
+    Impl::PreviewRequest request{
+        .request_id = request_id,
+        .ticket = ticket,
+        .kind = Impl::PreviewRequest::Kind::open,
+        .actor_id = actor,
+        .raw_operations = params.at("operations"),
+        .accepted_gate_epoch = gate.epoch,
+        .accepted_transition_epoch = impl_->observed_transition_epoch,
+        .accepted_scene_id = impl_->dependencies.current_scene_id(),
+        .result = {{"request_id", request_id},
+                   {"ticket", ticket},
+                   {"actor_id", actor.value},
+                   {"status", "accepted"}},
+    };
+    const auto reject = [&](const EditFailure &failure) {
+        auto result = impl_->previewRejected(request, failure);
+        impl_->preview_results[request_id] = result;
+        return result;
+    };
+    if (!gate.can_preview) {
+        return reject(EditFailure{
+            EditorEditErrorCode::gate_closed,
+            {{"method", method},
+             {"reason", primaryGateReason(gate)},
+             {"gate_epoch", gate.epoch}},
+            "editor preview gate is closed"});
+    }
+    if (impl_->preview_lease || impl_->preview_reservation) {
+        const auto owner = impl_->preview_lease
+                               ? impl_->preview_lease->actor_id.value
+                               : impl_->preview_reservation->actor_id.value;
+        return reject(EditFailure{EditorEditErrorCode::preview_lease_busy,
+                                  {{"owner", owner}},
+                                  "live preview lease is already occupied"});
+    }
+    try {
+        auto batch = prepareBatch(request.raw_operations, impl_->document(),
+                                  request.accepted_scene_id);
+        requireLivePreviewCapability(batch, method);
+        if (!impl_->dependencies.execute_preview) {
+            editFailure(EditorEditErrorCode::method_unavailable,
+                        {{"method", method}, {"adapter", "live_preview"}},
+                        "live preview execution is unavailable");
+        }
+        impl_->preview_reservation = Impl::PreviewLease{
+            .ticket = ticket,
+            .actor_id = actor,
+            .base_revision = impl_->document().revision(),
+            .raw_operations = request.raw_operations,
+            .canonical_operations = batch.forward,
+            .write_set = batchWriteSet(batch),
+            .structural_domain = batchStructuralDomains(batch),
+            .affected = batch.affected,
+            .scene_id = request.accepted_scene_id,
+        };
+    } catch (const EditFailure &failure) {
+        return reject(failure);
+    }
+    impl_->preview_results[request_id] = request.result;
+    impl_->pending_preview.push_back(std::move(request));
+    return impl_->preview_results.at(request_id);
+}
+
+OrderedJson EditorEditCoordinator::updatePreview(const Json &params) {
+    constexpr auto method = "update_preview";
+    requireOnly(params, {"actor_id", "ticket", "operations"}, method);
+    const auto actor = EditorActorId{exactUnsigned(params.at("actor_id"),
+                                                    "update_preview actor_id", true)};
+    (void)impl_->requireBound(actor);
+    const auto ticket = requireString(params, "ticket", method);
+    const auto request_id = impl_->allocatePreviewRequest();
+    const auto gate = impl_->gateSnapshot();
+    Impl::PreviewRequest request{
+        .request_id = request_id,
+        .ticket = ticket,
+        .kind = Impl::PreviewRequest::Kind::update,
+        .actor_id = actor,
+        .raw_operations = params.at("operations"),
+        .accepted_gate_epoch = gate.epoch,
+        .accepted_transition_epoch = impl_->observed_transition_epoch,
+        .accepted_scene_id = impl_->dependencies.current_scene_id(),
+        .result = {{"request_id", request_id}, {"ticket", ticket},
+                   {"actor_id", actor.value}, {"status", "accepted"}},
+    };
+    const auto reject = [&](const EditFailure &failure) {
+        auto result = impl_->previewRejected(request, failure);
+        impl_->preview_results[request_id] = result;
+        return result;
+    };
+    if (!gate.can_preview) {
+        return reject(EditFailure{EditorEditErrorCode::gate_closed,
+                                  {{"method", method},
+                                   {"reason", primaryGateReason(gate)},
+                                   {"gate_epoch", gate.epoch}},
+                                  "editor preview gate is closed"});
+    }
+    if (!impl_->preview_lease || impl_->preview_lease->ticket != ticket) {
+        return reject(impl_->missingPreviewTicket(ticket));
+    }
+    if (impl_->preview_lease->actor_id != actor) {
+        return reject(EditFailure{EditorEditErrorCode::not_lease_owner,
+                                  {{"ticket", ticket},
+                                   {"owner", impl_->preview_lease->actor_id.value}},
+                                  "preview ticket belongs to another actor"});
+    }
+    try {
+        auto batch = prepareBatch(request.raw_operations, impl_->document(),
+                                  request.accepted_scene_id);
+        requireLivePreviewCapability(batch, method);
+        const auto writes = batchWriteSet(batch);
+        if (!sameStableSet(writes, impl_->preview_lease->write_set)) {
+            editFailure(EditorEditErrorCode::method_unavailable,
+                        {{"method", method}, {"field", "lease_write_set"}},
+                        "preview update cannot expand or replace its lease");
+        }
+    } catch (const EditFailure &failure) {
+        return reject(failure);
+    }
+    impl_->preview_results[request_id] = request.result;
+    impl_->pending_preview.push_back(std::move(request));
+    return impl_->preview_results.at(request_id);
+}
+
+OrderedJson EditorEditCoordinator::commitPreview(const Json &params) {
+    constexpr auto method = "commit_preview";
+    requireOnly(params, {"actor_id", "ticket"}, method);
+    const auto actor = EditorActorId{exactUnsigned(params.at("actor_id"),
+                                                    "commit_preview actor_id", true)};
+    (void)impl_->requireBound(actor);
+    const auto ticket = requireString(params, "ticket", method);
+    const auto request_id = impl_->allocatePreviewRequest();
+    const auto gate = impl_->gateSnapshot();
+    Impl::PreviewRequest request{
+        .request_id = request_id,
+        .ticket = ticket,
+        .kind = Impl::PreviewRequest::Kind::commit,
+        .actor_id = actor,
+        .accepted_gate_epoch = gate.epoch,
+        .accepted_transition_epoch = impl_->observed_transition_epoch,
+        .accepted_scene_id = impl_->dependencies.current_scene_id(),
+        .result = {{"request_id", request_id}, {"ticket", ticket},
+                   {"actor_id", actor.value}, {"status", "accepted"}},
+    };
+    const auto reject = [&](const EditFailure &failure) {
+        auto result = impl_->previewRejected(request, failure);
+        impl_->preview_results[request_id] = result;
+        return result;
+    };
+    if (!gate.can_edit) {
+        return reject(EditFailure{EditorEditErrorCode::gate_closed,
+                                  {{"method", method},
+                                   {"reason", primaryGateReason(gate)},
+                                   {"gate_epoch", gate.epoch}},
+                                  "editor edit gate is closed"});
+    }
+    if (!impl_->preview_lease || impl_->preview_lease->ticket != ticket) {
+        return reject(impl_->missingPreviewTicket(ticket));
+    }
+    if (impl_->preview_lease->actor_id != actor) {
+        return reject(EditFailure{EditorEditErrorCode::not_lease_owner,
+                                  {{"ticket", ticket},
+                                   {"owner", impl_->preview_lease->actor_id.value}},
+                                  "preview ticket belongs to another actor"});
+    }
+    if (impl_->document().revision() != impl_->preview_lease->base_revision) {
+        const EditFailure failure{
+            EditorEditErrorCode::stale_revision,
+            {{"current_revision", impl_->document().revision().value},
+             {"target", targetState(impl_->preview_lease->raw_operations,
+                                    impl_->document())}},
+            "preview ticket base SceneRevision is stale"};
+        auto result = reject(failure);
+        (void)impl_->forceAbort("stale_revision");
+        return result;
+    }
+    impl_->preview_results[request_id] = request.result;
+    impl_->pending_preview.push_back(std::move(request));
+    return impl_->preview_results.at(request_id);
+}
+
+OrderedJson EditorEditCoordinator::abortPreview(const Json &params) {
+    constexpr auto method = "abort_preview";
+    requireOnly(params, {"actor_id", "ticket"}, method);
+    const auto actor = EditorActorId{exactUnsigned(params.at("actor_id"),
+                                                    "abort_preview actor_id", true)};
+    (void)impl_->requireBound(actor);
+    const auto ticket = requireString(params, "ticket", method);
+    const auto request_id = impl_->allocatePreviewRequest();
+    const auto gate = impl_->gateSnapshot();
+    Impl::PreviewRequest request{
+        .request_id = request_id,
+        .ticket = ticket,
+        .kind = Impl::PreviewRequest::Kind::abort,
+        .actor_id = actor,
+        .accepted_gate_epoch = gate.epoch,
+        .accepted_transition_epoch = impl_->observed_transition_epoch,
+        .accepted_scene_id = impl_->dependencies.current_scene_id(),
+        .result = {{"request_id", request_id}, {"ticket", ticket},
+                   {"actor_id", actor.value}, {"status", "accepted"}},
+    };
+    if (impl_->preview_lease && impl_->preview_lease->ticket == ticket &&
+        impl_->preview_lease->actor_id != actor) {
+        const EditFailure failure{EditorEditErrorCode::not_lease_owner,
+                                  {{"ticket", ticket},
+                                   {"owner", impl_->preview_lease->actor_id.value}},
+                                  "preview ticket belongs to another actor"};
+        auto result = impl_->previewRejected(request, failure);
+        impl_->preview_results[request_id] = result;
+        return result;
+    }
+    impl_->preview_results[request_id] = request.result;
+    impl_->pending_preview.push_back(std::move(request));
+    return impl_->preview_results.at(request_id);
+}
+
 OrderedJson EditorEditCoordinator::getResult(const Json &params) const {
     requireOnly(params, {"ticket"}, "get_edit_result");
     const auto ticket = requireString(params, "ticket", "get_edit_result");
     const auto found = impl_->results.find(ticket);
     if (found == impl_->results.end()) {
         throw std::invalid_argument("get_edit_result ticket was not issued by this session");
+    }
+    return found->second;
+}
+
+OrderedJson EditorEditCoordinator::getPreviewResult(const Json &params) const {
+    requireOnly(params, {"request_id"}, "get_preview_result");
+    const auto request_id = requireString(params, "request_id",
+                                          "get_preview_result");
+    const auto found = impl_->preview_results.find(request_id);
+    if (found == impl_->preview_results.end()) {
+        throw std::invalid_argument(
+            "get_preview_result request_id was not issued by this session");
     }
     return found->second;
 }
@@ -1611,7 +2815,22 @@ std::vector<std::string> EditorEditCoordinator::pendingTicketIds() const {
     std::vector<std::string> result;
     result.reserve(impl_->pending.size());
     for (const auto &ticket : impl_->pending) result.push_back(ticket.id);
+    for (const auto &request : impl_->pending_preview) {
+        result.push_back(request.request_id);
+    }
     return result;
+}
+
+bool EditorEditCoordinator::hasOpenPreviewLease() const noexcept {
+    return impl_->preview_lease.has_value();
+}
+
+std::uint64_t EditorEditCoordinator::previewEpoch() const noexcept {
+    return impl_->preview_epoch;
+}
+
+bool EditorEditCoordinator::forceAbortPreview(std::string reason) noexcept {
+    return impl_->forceAbort(std::move(reason));
 }
 
 const std::vector<EditorJournalRecord> &
