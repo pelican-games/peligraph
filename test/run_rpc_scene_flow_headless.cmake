@@ -11,6 +11,8 @@ if(NOT DEFINED OUT_DIR)
     message(FATAL_ERROR "OUT_DIR is required")
 endif()
 
+include("${CMAKE_CURRENT_LIST_DIR}/rpc_scene_flow_normalize.cmake")
+
 file(REMOVE_RECURSE "${OUT_DIR}")
 file(MAKE_DIRECTORY
     "${OUT_DIR}/project/assets"
@@ -187,8 +189,7 @@ function(validate_stdout stdout label)
 endfunction()
 
 function(normalize_rpc_stdout stdout output_var)
-    string(REGEX REPLACE [=["instance_id":"[0-9a-fA-F-]+"]=] [=["instance_id":"<uuid>"]=] normalized "${stdout}")
-    string(REGEX REPLACE [=["startup":\{[^\}]*\}]=] [=["startup":"<measured>"]=] normalized "${normalized}")
+    pelican_normalize_rpc_stdout("${stdout}" normalized)
     set(${output_var} "${normalized}" PARENT_SCOPE)
 endfunction()
 

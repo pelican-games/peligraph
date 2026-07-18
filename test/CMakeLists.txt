@@ -9,7 +9,7 @@ include(CTest)
 include(Catch)
 
 function(pelican_define_test source_name)
-cmake_parse_arguments(PELICAN_TEST "GPU" "" "" ${ARGN})
+cmake_parse_arguments(PELICAN_TEST "GOLDEN;GPU" "" "" ${ARGN})
 set(target_name pelican_test_${source_name})
 add_executable(${target_name} ${source_name}.cpp)
 set_target_properties(${target_name} PROPERTIES CXX_STANDARD 20)
@@ -20,7 +20,7 @@ target_compile_definitions(${target_name} PRIVATE
 target_link_libraries(${target_name} PRIVATE Catch2::Catch2WithMain nlohmann_json
     ${PELICAN_TEST_UNPARSED_ARGUMENTS})
 set(discovery_properties)
-if(source_name STREQUAL "golden_image_test" OR
+if(PELICAN_TEST_GOLDEN OR
    source_name STREQUAL "debugtext_ui_compat_test")
   # Serialize byte-comparison fixtures so deterministic GPU captures do not contend for the device.
   list(APPEND discovery_properties RESOURCE_LOCK pelican_golden_gpu)
@@ -414,8 +414,10 @@ pelican_struct_schema_compile_fixture(fail_behavior_required TRUE)
 pelican_struct_schema_compile_fixture(fail_behavior_enum_values TRUE)
 pelican_struct_schema_compile_fixture(fail_component_implicit TRUE)
 pelican_struct_schema_compile_fixture(fail_component_codec TRUE)
-pelican_define_test(golden_image_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp spirv-reflect-static stb glm picosha2)
-target_compile_definitions(pelican_test_golden_image_test PRIVATE
+add_library(pelican_golden_harness STATIC golden_harness.cpp)
+set_target_properties(pelican_golden_harness PROPERTIES CXX_STANDARD 20)
+target_include_directories(pelican_golden_harness PRIVATE ${Vulkan_INCLUDE_DIRS})
+target_compile_definitions(pelican_golden_harness PRIVATE
     VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
     PELICAN_WITH_OPENXR=$<BOOL:${PELICAN_WITH_OPENXR}>
@@ -423,12 +425,33 @@ target_compile_definitions(pelican_test_golden_image_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     PELICAN_TEST_BINARY_DIR="${CMAKE_BINARY_DIR}"
 )
+target_link_libraries(pelican_golden_harness PRIVATE
+    Catch2::Catch2
+    nlohmann_json
+    pelican_core
+    VulkanMemoryAllocator
+    VulkanMemoryAllocator-Hpp
+    spirv-reflect-static
+    stb
+    glm
+    picosha2
+)
 if(PELICAN_RUNTIME_SHADER_COMPILER)
-    target_link_libraries(pelican_test_golden_image_test PRIVATE pelican_shaderc)
-    if(COMMAND pelican_copy_shaderc_runtime)
-        pelican_copy_shaderc_runtime(pelican_test_golden_image_test)
-    endif()
+    target_link_libraries(pelican_golden_harness PRIVATE pelican_shaderc)
 endif()
+
+set(pelican_golden_test_sources
+    golden_cases_test
+    golden_temporal_test
+    golden_timing_test
+    golden_framegraph_test
+)
+foreach(golden_test_source IN LISTS pelican_golden_test_sources)
+    pelican_define_test(${golden_test_source} GOLDEN GPU pelican_golden_harness)
+    if(PELICAN_RUNTIME_SHADER_COMPILER AND COMMAND pelican_copy_shaderc_runtime)
+        pelican_copy_shaderc_runtime(pelican_test_${golden_test_source})
+    endif()
+endforeach()
 pelican_define_test(gltf_fragment_test GPU pelican_core pelican_project VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_gltf_fragment_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
@@ -786,6 +809,11 @@ if(PELICAN_WITH_RPC)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_rpc_scene_flow_headless.cmake
     )
     set_tests_properties(rpc_scene_flow_headless_player PROPERTIES LABELS gpu)
+    add_test(
+        NAME rpc_scene_flow_normalization_fixtures
+        COMMAND ${CMAKE_COMMAND}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_rpc_scene_flow_normalization_fixtures.cmake
+    )
     add_executable(
         pelican_test_rpc_inject_input_player
         ${CMAKE_SOURCE_DIR}/src/player/main.cpp
