@@ -3827,6 +3827,38 @@ edge 検証。**登録 API の意味論・既存 system の実行結果は不変
 受け入れ = 上記逐語 gate + 既存全テスト + golden SKIP 0・byte 不変 +
 player 8 秒 + CI green
 
+### WP150: STRUCT-SCHEMA0 — 共通 field descriptor + use-site policy
+
+参照: **再レビュー
+`docs/design_reviews/2026-07-18_editor_behavior_v2_rereview_codex.md`
+§3.1(B-C1)の逐語が受け入れ条件**:
+
+> StructFieldSchema は field descriptor の型情報を共通化するが、
+> decode/validation は `EventPayload`、`BehaviorParams`、`Component` の
+> 明示 use-site policy を必須とする。EventPayload policy は既存どおり
+> Bool/Enum/default/optional を許可せず全 field required、
+> unknown-field reject、現在の validation/error precedence、
+> `load_json_payload` 呼出回数を不変にする。BehaviorParams policy
+> だけが Bool/Enum/default と存在 key のみの atomic apply を許可する。
+> Component policy は codec ごとに required/default を明示する。同じ
+> field 宣言 primitive を使っても、policy の省略または暗黙 default は
+> compile error とする。
+>
+> WP71 の全既存 runtime/compile-fail fixture を無変更で通し、bool
+> event compile-fail、missing field、unknown+missing 同時入力の error
+> code 優先順位、typed/payloadless/opaque 分類、descriptor/ref 一致
+> 検査、payload load call count が refactor 前と一致する regression
+> gate を追加する。既存 event JSON の受理/拒否集合を一件も広げず
+> 狭めない。
+
+依存: WP71(済)。見積: 中〜大。
+排他: EventPayloadSchema からの descriptor 抽出 + policy 機構 +
+regression gate。**behavior/codec の実装は含めない**(BEH-P0/
+ED-CODEC0 が消費者)。
+
+受け入れ = 上記逐語 gate(WP71 全 fixture 無変更が最重要)+ 既存全
+テスト + golden SKIP 0 + player 8 秒 + CI green
+
 ### WP137: 負債 CI0 — CPU gate の常設(GitHub Actions)
 
 参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
