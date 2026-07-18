@@ -26,9 +26,7 @@ struct DebugTextVertex {
 
 DECLARE_MODULE(DebugText) {
     struct QueuedGlyph {
-        uint32_t code = 0;
-        int x = 0;
-        int y = 0;
+        ui::PositionedGlyph positioned;
         uint32_t scale = 1;
         glm::vec4 color{1.0f};
     };

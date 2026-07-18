@@ -230,12 +230,12 @@ void DebugText::buildVertices(vk::Extent2D target_extent) {
     }
 
     for (const auto &queued : queued_glyphs) {
-        const auto &glyph = font->glyph(queued.code);
+        const auto &glyph = queued.positioned;
         const auto scale = static_cast<int64_t>(std::max<uint32_t>(queued.scale, 1));
-        const int64_t x0 = queued.x;
-        const int64_t y0 = queued.y;
-        const int64_t x1 = x0 + static_cast<int64_t>(glyph.width) * scale;
-        const int64_t y1 = y0 + static_cast<int64_t>(glyph.height) * scale;
+        const int64_t x0 = glyph.destination.left;
+        const int64_t y0 = glyph.destination.top;
+        const int64_t x1 = glyph.destination.right;
+        const int64_t y1 = glyph.destination.bottom;
 
         const int64_t vx0 = std::clamp<int64_t>(x0, 0, target_extent.width);
         const int64_t vy0 = std::clamp<int64_t>(y0, 0, target_extent.height);
@@ -245,10 +245,10 @@ void DebugText::buildVertices(vk::Extent2D target_extent) {
             continue;
         }
 
-        const double src_x0 = glyph.x + static_cast<double>(vx0 - x0) / static_cast<double>(scale);
-        const double src_y0 = glyph.y + static_cast<double>(vy0 - y0) / static_cast<double>(scale);
-        const double src_x1 = glyph.x + static_cast<double>(vx1 - x0) / static_cast<double>(scale);
-        const double src_y1 = glyph.y + static_cast<double>(vy1 - y0) / static_cast<double>(scale);
+        const double src_x0 = glyph.source.left + static_cast<double>(vx0 - x0) / static_cast<double>(scale);
+        const double src_y0 = glyph.source.top + static_cast<double>(vy0 - y0) / static_cast<double>(scale);
+        const double src_x1 = glyph.source.left + static_cast<double>(vx1 - x0) / static_cast<double>(scale);
+        const double src_y1 = glyph.source.top + static_cast<double>(vy1 - y0) / static_cast<double>(scale);
 
         const float u0 = static_cast<float>(src_x0 / static_cast<double>(font->atlasWidth()));
         const float v0 = static_cast<float>(src_y0 / static_cast<double>(font->atlasHeight()));
@@ -298,33 +298,8 @@ void DebugText::text(int x, int y, std::string_view value, glm::vec4 color, int 
 
     const auto safe_scale =
         std::clamp<uint32_t>(scale < 1 ? 1u : static_cast<uint32_t>(scale), 1u, maxDebugTextScale);
-    int cursor_x = x;
-    int cursor_y = y;
-    const int line_height = static_cast<int>(font->cellHeight() * safe_scale);
-
-    for (const auto raw_ch : value) {
-        const auto ch = static_cast<unsigned char>(raw_ch);
-        if (ch == '\r') {
-            continue;
-        }
-        if (ch == '\n') {
-            cursor_x = x;
-            cursor_y += line_height;
-            continue;
-        }
-        if (ch == '\t') {
-            cursor_x += static_cast<int>(font->cellWidth() * safe_scale * 4);
-            continue;
-        }
-
-        auto code = static_cast<std::uint32_t>(ch);
-        if (code < ui::BitmapFont::firstCode || code > ui::BitmapFont::lastCode)
-            code = ui::BitmapFont::fallbackCode;
-        const auto &glyph = font->glyph(code);
-        if (code != static_cast<uint32_t>(' ')) {
-            queued_glyphs.push_back(QueuedGlyph{code, cursor_x, cursor_y, safe_scale, color});
-        }
-        cursor_x += glyph.advance * static_cast<int>(safe_scale);
+    for (auto positioned : font->layout(x, y, value, safe_scale)) {
+        queued_glyphs.push_back(QueuedGlyph{std::move(positioned), safe_scale, color});
     }
 }
 

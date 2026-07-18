@@ -20,8 +20,9 @@ target_compile_definitions(${target_name} PRIVATE
 target_link_libraries(${target_name} PRIVATE Catch2::Catch2WithMain nlohmann_json
     ${PELICAN_TEST_UNPARSED_ARGUMENTS})
 set(discovery_properties)
-if(source_name STREQUAL "golden_image_test")
-  # Serialize golden cases so deterministic GPU fixtures do not contend for the device.
+if(source_name STREQUAL "golden_image_test" OR
+   source_name STREQUAL "debugtext_ui_compat_test")
+  # Serialize byte-comparison fixtures so deterministic GPU captures do not contend for the device.
   list(APPEND discovery_properties RESOURCE_LOCK pelican_golden_gpu)
 endif()
 if(PELICAN_TEST_GPU)
@@ -968,6 +969,7 @@ endif()
 
 pelican_define_test(debugdraw_test pelican_core glm VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 pelican_define_test(debugtext_test pelican_core glm VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+pelican_define_test(debugtext_ui_compat_test GPU pelican_core glm VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 pelican_define_test(debugutils_test pelican_core)
 pelican_define_test(rendertiming_test pelican_core)
 pelican_define_test(memorydiagnostics_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
