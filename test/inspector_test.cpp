@@ -97,6 +97,21 @@ struct ServiceHarness {
                         },
                     .gate = [] { return EditorGateObservation{}; },
                 },
+                .save_scene = [this] {
+                    auto next = target.document.stage(
+                        target.document.rawJson(),
+                        SceneRevision{target.document.revision().value + 1U});
+                    const auto revision = next.revision();
+                    const auto bytes = next.encodeSemantic().size();
+                    target.document.swap(next);
+                    return SaveSceneResult{
+                        .scene_revision = revision,
+                        .digest = {.algorithm = "sha256",
+                                   .hex = std::string(64, 'b')},
+                        .byte_count = bytes,
+                        .scene_hot_reload = false,
+                    };
+                },
             });
     }
 };
@@ -343,6 +358,7 @@ TEST_CASE("deterministic drivers execute zero inspector callbacks queries and en
         REQUIRE(trace.panel_callback_calls == 0);
         REQUIRE(trace.query_calls == 0);
         REQUIRE(trace.edit_enqueue_calls == 0);
+        REQUIRE(trace.save_calls == 0);
     }
 
     EngineLaunchConfig interactive;
@@ -354,6 +370,69 @@ TEST_CASE("deterministic drivers execute zero inspector callbacks queries and en
     REQUIRE(trace.panel_callback_calls == 1);
     REQUIRE(trace.query_calls == 1);
     REQUIRE(trace.edit_enqueue_calls == 0);
+    REQUIRE(trace.save_calls == 0);
+}
+
+TEST_CASE("WP166 interactive Save uses the typed service and matches RPC",
+          "[imgui][inspector][save][equivalence][wp166]") {
+    ServiceHarness rpc_harness;
+    ServiceHarness ui_harness;
+    EditorCommandRpcAdapter rpc{*rpc_harness.service};
+    InspectorPanelTrace trace;
+    InspectorServiceAdapter ui{*ui_harness.service, trace};
+
+    const auto rpc_result = rpc.saveScene(Json::object());
+    const auto ui_result = ui.saveScene();
+    REQUIRE(rpc_result.dump() == editorQueryJson(ui_result).dump());
+    REQUIRE(rpc_result.at("scene_hot_reload") == false);
+    REQUIRE(trace.save_calls == 1);
+    REQUIRE(trace.query_calls == 0);
+    REQUIRE(trace.edit_enqueue_calls == 0);
+}
+
+TEST_CASE("WP166 Save is busy for pending tickets and an open preview lease",
+          "[imgui][inspector][save][busy][wp166]") {
+    ServiceHarness harness;
+    const auto session = harness.service->openEditorSession(
+        {{"display_name", "save-busy-fixture"}});
+    const auto actor = session.at("actor_id").get<std::uint64_t>();
+    const Json operation{{"op", "set_component_value"},
+                         {"object_id", 1},
+                         {"component_slot", "light"},
+                         {"field_path", "/intensity"},
+                         {"value", 3.0}};
+
+    const auto require_save_busy = [&] {
+        std::optional<EditorCommandErrorCode> code;
+        try {
+            (void)harness.service->saveScene();
+        } catch (const EditorCommandError &error) {
+            code = error.code();
+        }
+        REQUIRE(code == EditorCommandErrorCode::SaveBusy);
+    };
+
+    const auto edit = harness.service->edit(
+        {{"actor_id", actor},
+         {"base_revision", 1},
+         {"operations", Json::array({operation})}});
+    REQUIRE(edit.at("status") == "accepted");
+    require_save_busy();
+    harness.service->commitPendingEdits();
+    REQUIRE(harness.service->saveScene().scene_revision.value == 3);
+
+    const auto preview = harness.service->openPreview(
+        {{"actor_id", actor}, {"operations", Json::array({operation})}});
+    REQUIRE(preview.at("status") == "accepted");
+    require_save_busy();
+    harness.service->commitPendingEdits();
+    require_save_busy();
+
+    const auto abort = harness.service->abortPreview(
+        {{"actor_id", actor}, {"ticket", preview.at("ticket")}});
+    REQUIRE(abort.at("status") == "accepted");
+    harness.service->commitPendingEdits();
+    REQUIRE(harness.service->saveScene().scene_revision.value == 4);
 }
 
 } // namespace Pelican

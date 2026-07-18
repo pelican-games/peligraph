@@ -9,14 +9,22 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
 #include <vector>
+
+#ifdef _WIN32
+#define NOMINMAX
+#include <Windows.h>
+#endif
 
 #ifndef PELICAN_TEST_SOURCE_DIR
 #define PELICAN_TEST_SOURCE_DIR "."
@@ -115,11 +123,98 @@ void writeText(const std::filesystem::path &path, std::string_view text) {
     file << text;
 }
 
+std::string readText(const std::filesystem::path &path) {
+    std::ifstream file{path, std::ios_base::binary};
+    if (!file.is_open()) {
+        throw std::runtime_error("failed to open text fixture: " + path.string());
+    }
+    return std::string{std::istreambuf_iterator<char>{file},
+                       std::istreambuf_iterator<char>{}};
+}
+
 std::filesystem::path makeTempProjectDir() {
     const auto suffix = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
     auto dir = std::filesystem::temp_directory_path() / ("pelican_sceneformat_" + suffix);
     std::filesystem::create_directories(dir);
     return dir;
+}
+
+std::filesystem::path currentTestExecutable() {
+#ifdef _WIN32
+    std::wstring buffer(32768, L'\0');
+    const auto size = GetModuleFileNameW(nullptr, buffer.data(),
+                                         static_cast<DWORD>(buffer.size()));
+    if (size == 0 || size == buffer.size()) {
+        throw std::runtime_error("failed to resolve current test executable");
+    }
+    buffer.resize(size);
+    return std::filesystem::path{buffer};
+#else
+    std::error_code error;
+    const auto path = std::filesystem::read_symlink("/proc/self/exe", error);
+    if (error) {
+        throw std::runtime_error("failed to resolve current test executable: " +
+                                 error.message());
+    }
+    return path;
+#endif
+}
+
+void setProcessEnvironment(const char *name, const std::string &value) {
+#ifdef _WIN32
+    if (_putenv_s(name, value.c_str()) != 0) {
+        throw std::runtime_error("failed to set child-process environment");
+    }
+#else
+    if (setenv(name, value.c_str(), 1) != 0) {
+        throw std::runtime_error("failed to set child-process environment");
+    }
+#endif
+}
+
+void clearProcessEnvironment(const char *name) noexcept {
+#ifdef _WIN32
+    (void)_putenv_s(name, "");
+#else
+    (void)unsetenv(name);
+#endif
+}
+
+int runNewProcessProbe(const std::filesystem::path &executable) {
+#ifdef _WIN32
+    auto command_line = L"\"" + executable.wstring() +
+                        L"\" \"[wp166-new-process-probe]\" -r compact";
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    if (!CreateProcessW(executable.c_str(), command_line.data(), nullptr,
+                        nullptr, TRUE, 0, nullptr, nullptr, &startup,
+                        &process)) {
+        throw std::runtime_error("failed to launch new-process reload probe: " +
+                                 std::to_string(GetLastError()));
+    }
+    WaitForSingleObject(process.hProcess, INFINITE);
+    DWORD exit_code = 1;
+    (void)GetExitCodeProcess(process.hProcess, &exit_code);
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    return static_cast<int>(exit_code);
+#else
+    const auto command = "\"" + executable.string() +
+                         "\" \"[wp166-new-process-probe]\" -r compact";
+    return std::system(command.c_str());
+#endif
+}
+
+std::size_t temporarySceneFileCount(const std::filesystem::path &directory) {
+    std::size_t count = 0;
+    for (const auto &entry : std::filesystem::directory_iterator{directory}) {
+        if (entry.path().filename().string().find(".pelican-save-") !=
+            std::string::npos) {
+            ++count;
+        }
+    }
+    return count;
 }
 
 } // namespace
@@ -295,6 +390,133 @@ TEST_CASE("ProjectBasicConfig has one authoring document cache authority", "[sce
     }
 
     std::filesystem::remove_all(temp_dir);
+}
+
+TEST_CASE("SAVE0 is failure-atomic at every prepare point and reloads semantically",
+          "[scene-format][authoring][save][wp166]") {
+    ensureLogger();
+    auto temp_dir = makeTempProjectDir();
+
+    try {
+        auto source = readJson(authoringFixturePath());
+        const auto baseline_bytes = source.dump(2);
+        const auto scene_path = temp_dir / "scene.json";
+        writeText(scene_path, baseline_bytes);
+        const auto project = nlohmann::json{
+            {"schema", "pelican.project"},
+            {"version", 1},
+            {"name", "save0-atomic-test"},
+            {"engine_min_version", "0.1.0"},
+            {"basic_config",
+             {{"default_scene_id", "main"},
+              {"scene_data_json", "scene.json"}}},
+        };
+
+        {
+            FastModuleContainer modules;
+            GET_MODULE(PathResolver).setup(temp_dir, false);
+            GET_MODULE(ProjectSource).setProjectData(project.dump());
+            auto &config = GET_MODULE(ProjectBasicConfig);
+            (void)config.sceneDocument();
+
+            source["editor_envelope"]["save_marker"] = "wp166";
+            config.updateSceneDocument(source.dump());
+            const auto expected_semantic = config.sceneDataJson();
+            const auto old_revision = config.sceneDocument().revision();
+            const auto *old_cache = &config.sceneDocument();
+
+            // A byte-only external edit is still an external modification:
+            // SAVE0 must not silently replace formatting or comments/metadata
+            // from a source it did not load.
+            const auto externally_modified = baseline_bytes + "\n";
+            writeText(scene_path, externally_modified);
+            std::optional<SceneSaveErrorCode> external_error;
+            try {
+                (void)config.saveSceneDocument();
+            } catch (const SceneSaveError &error) {
+                external_error = error.code();
+            }
+            REQUIRE(external_error == SceneSaveErrorCode::ExternalModification);
+            REQUIRE(readText(scene_path) == externally_modified);
+            REQUIRE(&config.sceneDocument() == old_cache);
+            REQUIRE(config.sceneDocument().revision() == old_revision);
+            REQUIRE(config.sceneDataJson() == expected_semantic);
+            writeText(scene_path, baseline_bytes);
+
+            constexpr std::array fault_points{
+                SceneSaveFaultPoint::AfterEncode,
+                SceneSaveFaultPoint::AfterDiskDigest,
+                SceneSaveFaultPoint::AfterTemporaryWrite,
+                SceneSaveFaultPoint::AfterTemporaryValidation,
+                SceneSaveFaultPoint::AfterCachePrepare,
+                SceneSaveFaultPoint::BeforeReplace,
+            };
+            for (const auto point : fault_points) {
+                DYNAMIC_SECTION("fault point " << static_cast<unsigned>(point)) {
+                    config.setSceneSaveFaultForTesting(point);
+                    REQUIRE_THROWS(config.saveSceneDocument());
+                    REQUIRE(readText(scene_path) == baseline_bytes);
+                    REQUIRE(&config.sceneDocument() == old_cache);
+                    REQUIRE(config.sceneDocument().revision() == old_revision);
+                    REQUIRE(config.sceneDataJson() == expected_semantic);
+                    REQUIRE(temporarySceneFileCount(temp_dir) == 0);
+                }
+            }
+            config.setSceneSaveFaultForTesting(std::nullopt);
+
+            const auto saved = config.saveSceneDocument();
+            REQUIRE(saved.scene_revision.value == old_revision.value + 1U);
+            REQUIRE(saved.byte_count == expected_semantic.size());
+            REQUIRE(saved.digest.size() == 64);
+            REQUIRE(readText(scene_path) == expected_semantic);
+            REQUIRE(config.sceneDataJson() == expected_semantic);
+            REQUIRE(config.sceneDocument().revision() == saved.scene_revision);
+            REQUIRE(temporarySceneFileCount(temp_dir) == 0);
+
+            // Same-process explicit reload uses the replaced file and rebuilds
+            // the whole cache, including non-current scenes and raw components.
+            config.invalidateSceneDocument();
+            const auto &same_process = config.sceneDocument();
+            REQUIRE(same_process.encodeSemantic() == expected_semantic);
+            REQUIRE(same_process.rawJson() == source);
+            REQUIRE(same_process.query().size() == 2);
+
+            const auto expected_path = temp_dir / "expected-semantic.json";
+            writeText(expected_path, expected_semantic);
+            setProcessEnvironment("PELICAN_WP166_SCENE_PATH",
+                                  scene_path.string());
+            setProcessEnvironment("PELICAN_WP166_EXPECTED_PATH",
+                                  expected_path.string());
+            const auto executable = currentTestExecutable();
+            const auto child_result = runNewProcessProbe(executable);
+            clearProcessEnvironment("PELICAN_WP166_SCENE_PATH");
+            clearProcessEnvironment("PELICAN_WP166_EXPECTED_PATH");
+            REQUIRE(child_result == 0);
+        }
+    } catch (...) {
+        clearProcessEnvironment("PELICAN_WP166_SCENE_PATH");
+        clearProcessEnvironment("PELICAN_WP166_EXPECTED_PATH");
+        std::filesystem::remove_all(temp_dir);
+        throw;
+    }
+
+    std::filesystem::remove_all(temp_dir);
+}
+
+TEST_CASE("SAVE0 new-process semantic reload probe",
+          "[.][wp166-new-process-probe]") {
+    const auto *scene_path = std::getenv("PELICAN_WP166_SCENE_PATH");
+    const auto *expected_path = std::getenv("PELICAN_WP166_EXPECTED_PATH");
+    if (scene_path == nullptr || expected_path == nullptr) {
+        SKIP("new-process probe is launched by the SAVE0 parent fixture");
+    }
+    const auto disk_bytes = readText(scene_path);
+    const auto expected_bytes = readText(expected_path);
+    const auto fresh_process = AuthoringSceneDocument::load(
+        disk_bytes, SceneRevision{1});
+    REQUIRE(fresh_process.encodeSemantic() == expected_bytes);
+    REQUIRE(fresh_process.rawJson() == nlohmann::json::parse(expected_bytes));
+    REQUIRE(fresh_process.query().size() == 2);
 }
 
 TEST_CASE("Scene format rejects legacy lights and names the v1 replacement", "[scene-format]") {

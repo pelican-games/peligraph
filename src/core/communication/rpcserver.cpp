@@ -837,6 +837,8 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
             {"instance_id", instance_id},
             {"project_root", projectRootString(modules.path_resolver)},
             {"scene", modules.scene_loader.currentScene()},
+            {"scene_source", {{"hot_reload", false},
+                              {"save_method", "save_scene"}}},
             {"frame", modules.engine_time.frameIndex()},
             {"time", modules.engine_time.now()},
             {"seed", GameContext{}.seed()},
@@ -903,6 +905,17 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
     });
     server.setHandler("export_scene_snapshot", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.exportSceneSnapshot(params); });
+    });
+    server.setHandler("save_scene", [&pending_transforms, &editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] {
+            if (!pending_transforms.empty()) {
+                throw EditorCommandError{
+                    EditorCommandErrorCode::SaveBusy,
+                    "scene save is busy while runtime transform updates are pending",
+                };
+            }
+            return editor_rpc.saveScene(params);
+        });
     });
     server.setHandler("open_editor_session", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.openEditorSession(params); });

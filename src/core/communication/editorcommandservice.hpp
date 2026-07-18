@@ -26,6 +26,11 @@ enum class EditorCommandErrorCode : std::uint8_t {
     UnsupportedSnapshotVersion,
     SnapshotBusy,
     SnapshotTooLarge,
+    ExternalModification,
+    SaveBusy,
+    RuntimeOnlyData,
+    SaveUnavailable,
+    SaveFailed,
 };
 
 std::string_view editorCommandErrorCodeName(EditorCommandErrorCode code) noexcept;
@@ -106,6 +111,13 @@ struct DigestV1 {
     std::string hex;
 };
 
+struct SaveSceneResult {
+    SceneRevision scene_revision{};
+    DigestV1 digest;
+    std::size_t byte_count = 0;
+    bool scene_hot_reload = false;
+};
+
 struct ExportSceneSnapshotResponseV1 {
     std::uint64_t schema_version = 1;
     SceneRevision scene_revision{};
@@ -135,6 +147,7 @@ struct EditorCommandServiceDependencies {
     std::function<std::vector<EditorAssetQueryResult>()> assets;
     std::function<EditorSnapshotState()> snapshot_state;
     std::optional<EditorEditRuntimeDependencies> edit;
+    std::function<SaveSceneResult()> save_scene;
 };
 
 class EditorCommandService {
@@ -156,6 +169,7 @@ class EditorCommandService {
     EditorObjectQueryResult getComponents(const EditorGetComponentsRequest &request) const;
     EditorListAssetsResult listAssets(const EditorListAssetsRequest &request = {}) const;
     ExportSceneSnapshotResponseV1 exportSceneSnapshot(const ExportSceneSnapshotRequestV1 &request) const;
+    SaveSceneResult saveScene();
 
     nlohmann::ordered_json openEditorSession(const nlohmann::json &params);
     nlohmann::ordered_json resumeEditorSession(const nlohmann::json &params);
@@ -191,6 +205,7 @@ class EditorCommandRpcAdapter {
     nlohmann::ordered_json getComponents(const nlohmann::json &params) const;
     nlohmann::ordered_json listAssets(const nlohmann::json &params) const;
     nlohmann::ordered_json exportSceneSnapshot(const nlohmann::json &params) const;
+    nlohmann::ordered_json saveScene(const nlohmann::json &params) const;
     nlohmann::ordered_json openEditorSession(const nlohmann::json &params) const;
     nlohmann::ordered_json resumeEditorSession(const nlohmann::json &params) const;
     nlohmann::ordered_json canEdit(const nlohmann::json &params) const;
@@ -213,9 +228,12 @@ class EditorCommandRpcAdapter {
 // free of ImGui headers so equivalence is testable in the CPU-only suite.
 class EditorCommandImGuiFakeAdapter {
     const EditorCommandService &service_;
+    EditorCommandService *mutable_service_ = nullptr;
 
   public:
     explicit EditorCommandImGuiFakeAdapter(const EditorCommandService &service) : service_{service} {}
+    explicit EditorCommandImGuiFakeAdapter(EditorCommandService &service)
+        : service_{service}, mutable_service_{&service} {}
 
     EditorSceneTreeResult sceneTree(const EditorSceneTreeRequest &request = {}) const {
         return service_.sceneTree(request);
@@ -229,6 +247,12 @@ class EditorCommandImGuiFakeAdapter {
     ExportSceneSnapshotResponseV1 exportSceneSnapshot(const ExportSceneSnapshotRequestV1 &request) const {
         return service_.exportSceneSnapshot(request);
     }
+    SaveSceneResult saveScene() const {
+        if (!mutable_service_) {
+            throw std::logic_error("editor ImGui fake adapter is read-only");
+        }
+        return mutable_service_->saveScene();
+    }
 };
 
 nlohmann::ordered_json editorQueryJson(const EditorComponentQueryResult &component);
@@ -236,5 +260,6 @@ nlohmann::ordered_json editorQueryJson(const EditorObjectQueryResult &object);
 nlohmann::ordered_json editorQueryJson(const EditorSceneTreeResult &scene);
 nlohmann::ordered_json editorQueryJson(const EditorListAssetsResult &assets);
 nlohmann::ordered_json editorQueryJson(const ExportSceneSnapshotResponseV1 &snapshot);
+nlohmann::ordered_json editorQueryJson(const SaveSceneResult &save);
 
 } // namespace Pelican

@@ -1,18 +1,31 @@
 #include "basicconfig.hpp"
 #include "../startup.hpp"
 #include "../log.hpp"
+#include "../watch/contentdigest.hpp"
 #include "pathresolver.hpp"
 #include "projectsrc.hpp"
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <initializer_list>
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <picosha2.h>
 #include <sstream>
 #include <stdexcept>
+#include <system_error>
+#include <utility>
 #include <vector>
+
+#ifdef _WIN32
+#define NOMINMAX
+#include <Windows.h>
+#endif
 
 namespace Pelican {
 
@@ -348,6 +361,139 @@ std::string rewriteAssetPaths(std::string data) {
     return json.dump();
 }
 
+std::string sceneBytesDigest(std::string_view bytes) {
+    return picosha2::hash256_hex_string(bytes.begin(), bytes.end());
+}
+
+std::filesystem::path sceneFilePath(std::string_view reference) {
+    try {
+        return GET_MODULE(PathResolver).resolveExistingFile(reference);
+    } catch (const std::exception &error) {
+        throw SceneSaveError{
+            SceneSaveErrorCode::Unavailable,
+            "scene source is not a writable project file: " +
+                std::string{error.what()},
+        };
+    }
+}
+
+std::string stableDiskDigest(const std::filesystem::path &path) {
+    const auto digest = watch::readStableContentDigest(path);
+    switch (digest.status) {
+    case watch::DigestReadStatus::stable:
+        return digest.sha256;
+    case watch::DigestReadStatus::missing:
+        throw SceneSaveError{SceneSaveErrorCode::ExternalModification,
+                             "scene source was removed outside the editor"};
+    case watch::DigestReadStatus::retry:
+    case watch::DigestReadStatus::cancelled:
+    case watch::DigestReadStatus::error:
+        throw SceneSaveError{
+            SceneSaveErrorCode::IoFailure,
+            "failed to read a stable scene source digest: " + digest.error,
+        };
+    }
+    throw SceneSaveError{SceneSaveErrorCode::IoFailure,
+                         "failed to read scene source digest"};
+}
+
+std::string readSceneFile(const std::filesystem::path &path) {
+    std::ifstream input{path, std::ios::binary};
+    if (!input.is_open()) {
+        throw SceneSaveError{SceneSaveErrorCode::IoFailure,
+                             "failed to open temporary scene file"};
+    }
+    input.seekg(0, std::ios::end);
+    const auto end = input.tellg();
+    if (end < 0) {
+        throw SceneSaveError{SceneSaveErrorCode::IoFailure,
+                             "failed to size temporary scene file"};
+    }
+    std::string bytes(static_cast<std::size_t>(end), '\0');
+    input.seekg(0, std::ios::beg);
+    input.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    if (!input && !bytes.empty()) {
+        throw SceneSaveError{SceneSaveErrorCode::IoFailure,
+                             "failed to read temporary scene file"};
+    }
+    return bytes;
+}
+
+std::filesystem::path temporaryScenePath(
+    const std::filesystem::path &destination) {
+    static std::atomic<std::uint64_t> sequence{0};
+    const auto nonce = static_cast<std::uint64_t>(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+    for (std::uint64_t attempt = 0; attempt < 128; ++attempt) {
+        auto candidate = destination.parent_path() /
+            (destination.filename().string() + ".pelican-save-" +
+             std::to_string(nonce) + "-" +
+             std::to_string(sequence.fetch_add(1, std::memory_order_relaxed)) +
+             ".tmp");
+        std::error_code error;
+        if (!std::filesystem::exists(candidate, error) && !error) {
+            return candidate;
+        }
+    }
+    throw SceneSaveError{SceneSaveErrorCode::IoFailure,
+                         "failed to reserve a temporary scene file name"};
+}
+
+class TemporarySceneFile {
+    std::filesystem::path path_;
+
+  public:
+    explicit TemporarySceneFile(std::filesystem::path path)
+        : path_{std::move(path)} {}
+    ~TemporarySceneFile() {
+        if (path_.empty()) return;
+        std::error_code ignored;
+        std::filesystem::remove(path_, ignored);
+    }
+
+    const std::filesystem::path &path() const noexcept { return path_; }
+};
+
+void writeAndFlushSceneFile(const std::filesystem::path &path,
+                            std::string_view bytes) {
+    std::ofstream output{path, std::ios::binary | std::ios::trunc};
+    if (!output.is_open()) {
+        throw SceneSaveError{SceneSaveErrorCode::IoFailure,
+                             "failed to open temporary scene file for writing"};
+    }
+    output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    output.flush();
+    if (!output) {
+        throw SceneSaveError{SceneSaveErrorCode::IoFailure,
+                             "failed to write and flush temporary scene file"};
+    }
+    output.close();
+    if (!output) {
+        throw SceneSaveError{SceneSaveErrorCode::IoFailure,
+                             "failed to close temporary scene file"};
+    }
+}
+
+void replaceSceneFileAtomically(const std::filesystem::path &temporary,
+                                const std::filesystem::path &destination) {
+#ifdef _WIN32
+    if (!MoveFileExW(temporary.c_str(), destination.c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        const std::error_code error{static_cast<int>(GetLastError()),
+                                    std::system_category()};
+        throw SceneSaveError{SceneSaveErrorCode::IoFailure,
+                             "atomic scene replace failed: " + error.message()};
+    }
+#else
+    std::error_code error;
+    std::filesystem::rename(temporary, destination, error);
+    if (error) {
+        throw SceneSaveError{SceneSaveErrorCode::IoFailure,
+                             "atomic scene replace failed: " + error.message()};
+    }
+#endif
+}
+
 } // namespace
 
 ProjectBasicConfig::ProjectBasicConfig() {
@@ -444,7 +590,10 @@ void ProjectBasicConfig::publishSceneDocument(std::string_view scene_v1_bytes) c
 
 const AuthoringSceneDocument &ProjectBasicConfig::sceneDocument() const {
     if (!scene_document) {
-        publishSceneDocument(GET_MODULE(PathResolver).loadText(scene_data_json_ref));
+        auto bytes = GET_MODULE(PathResolver).loadText(scene_data_json_ref);
+        auto baseline = sceneBytesDigest(bytes);
+        publishSceneDocument(bytes);
+        scene_baseline_digest = std::move(baseline);
     }
     return *scene_document;
 }
@@ -455,6 +604,89 @@ void ProjectBasicConfig::updateSceneDocument(std::string_view scene_v1_bytes) {
 
 void ProjectBasicConfig::invalidateSceneDocument() noexcept {
     scene_document.reset();
+    scene_baseline_digest.reset();
+}
+
+SceneSaveResult ProjectBasicConfig::saveSceneDocument() {
+    const auto &source = sceneDocument();
+    if (!scene_baseline_digest) {
+        throw SceneSaveError{SceneSaveErrorCode::Unavailable,
+                             "scene source has no baseline disk digest"};
+    }
+    if (next_scene_revision == std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error("SceneRevision space exhausted");
+    }
+
+    // This is deliberately the only serialization call in SAVE0. Everything
+    // below consumes these exact semantic bytes.
+    auto semantic_bytes = source.encodeSemantic();
+    const auto inject = [&](SceneSaveFaultPoint point) {
+        if (scene_save_fault == point) {
+            throw std::runtime_error("injected scene save fault at " +
+                                     std::to_string(static_cast<unsigned>(point)));
+        }
+    };
+    inject(SceneSaveFaultPoint::AfterEncode);
+
+    const auto destination = sceneFilePath(scene_data_json_ref);
+    const auto disk_digest = stableDiskDigest(destination);
+    if (disk_digest != *scene_baseline_digest) {
+        throw SceneSaveError{
+            SceneSaveErrorCode::ExternalModification,
+            "scene source changed outside the editor (external_modification)",
+        };
+    }
+    inject(SceneSaveFaultPoint::AfterDiskDigest);
+
+    TemporarySceneFile temporary{temporaryScenePath(destination)};
+    writeAndFlushSceneFile(temporary.path(), semantic_bytes);
+    inject(SceneSaveFaultPoint::AfterTemporaryWrite);
+
+    const auto temporary_bytes = readSceneFile(temporary.path());
+    if (temporary_bytes != semantic_bytes) {
+        throw SceneSaveError{SceneSaveErrorCode::IoFailure,
+                             "temporary scene bytes differ after flush"};
+    }
+    const auto validated = AuthoringSceneDocument::load(
+        temporary_bytes, source.revision(), source.next_authoring_object_id_value_);
+    if (validated.rawJson() != source.rawJson()) {
+        throw SceneSaveError{SceneSaveErrorCode::IoFailure,
+                             "temporary scene semantic validation changed the document"};
+    }
+    inject(SceneSaveFaultPoint::AfterTemporaryValidation);
+
+    auto next_document = source.stage(source.rawJson(),
+                                      SceneRevision{next_scene_revision});
+    const auto next_object_id = next_document.next_authoring_object_id_value_;
+    const auto committed_revision = next_document.revision();
+    auto next_baseline_digest = sceneBytesDigest(semantic_bytes);
+    SceneSaveResult result{
+        .scene_revision = committed_revision,
+        .digest = next_baseline_digest,
+        .byte_count = semantic_bytes.size(),
+    };
+    inject(SceneSaveFaultPoint::AfterCachePrepare);
+
+    // Close the practical TOCTOU window made by temporary preparation. The
+    // final fault point is after this check and immediately before replace.
+    if (stableDiskDigest(destination) != *scene_baseline_digest) {
+        throw SceneSaveError{
+            SceneSaveErrorCode::ExternalModification,
+            "scene source changed during save (external_modification)",
+        };
+    }
+    inject(SceneSaveFaultPoint::BeforeReplace);
+
+    replaceSceneFileAtomically(temporary.path(), destination);
+
+    // Publication after file replacement is allocation/decode/I/O-free. RPC
+    // and ImGui call SAVE0 on the engine thread, so no reader can enter this
+    // short no-throw interval and observe a mixed file/cache/revision state.
+    scene_document->swap(next_document);
+    scene_baseline_digest->swap(next_baseline_digest);
+    next_scene_revision = committed_revision.value + 1U;
+    next_authoring_object_id = next_object_id;
+    return result;
 }
 
 std::string ProjectBasicConfig::sceneDataJson() const {

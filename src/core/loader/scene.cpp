@@ -456,6 +456,7 @@ void SceneLoader::load(SceneId scene_id) {
         }
     }
     current_scene_id = std::move(scene_id);
+    runtime_only_changes = false;
     internal::getEventRegisterer().emit(SceneLoaded{current_scene_id});
 }
 
@@ -579,6 +580,7 @@ void SceneLoader::applyObjectTransform(std::string_view name, const SceneObjectT
         GET_MODULE(PolygonInstanceContainer)
             .setTrs(*simple_model_view->model_instance_id, transform.pos, transform.rotation, transform.scale);
     }
+    runtime_only_changes = true;
 }
 
 std::filesystem::path SceneLoader::loadTransientGltf(std::string_view path_ref, const std::optional<std::string> &name) {
@@ -655,6 +657,7 @@ std::filesystem::path SceneLoader::loadTransientGltf(std::string_view path_ref, 
         const auto inserted = object_bindings.insert(std::move(*staged_binding));
         assert(inserted.inserted);
     }
+    runtime_only_changes = true;
     return path;
 }
 

@@ -1,4 +1,5 @@
 #include "editorcommandservice.hpp"
+#include "../loader/basicconfig.hpp"
 
 #include <algorithm>
 #include <picosha2.h>
@@ -146,6 +147,12 @@ ExportSceneSnapshotRequestV1 parseExportSceneSnapshotRequest(const Json &params)
     return request;
 }
 
+void validateSaveSceneRequest(const Json &params) {
+    constexpr auto method = "save_scene";
+    requireObjectParams(params, method);
+    requireOnlyFields(params, {}, method);
+}
+
 } // namespace
 
 std::string_view editorCommandErrorCodeName(EditorCommandErrorCode code) noexcept {
@@ -156,6 +163,11 @@ std::string_view editorCommandErrorCodeName(EditorCommandErrorCode code) noexcep
     case EditorCommandErrorCode::UnsupportedSnapshotVersion: return "unsupported_snapshot_version";
     case EditorCommandErrorCode::SnapshotBusy: return "snapshot_busy";
     case EditorCommandErrorCode::SnapshotTooLarge: return "snapshot_too_large";
+    case EditorCommandErrorCode::ExternalModification: return "external_modification";
+    case EditorCommandErrorCode::SaveBusy: return "save_busy";
+    case EditorCommandErrorCode::RuntimeOnlyData: return "runtime_only_data";
+    case EditorCommandErrorCode::SaveUnavailable: return "save_unavailable";
+    case EditorCommandErrorCode::SaveFailed: return "save_failed";
     }
     return "unknown_editor_error";
 }
@@ -330,6 +342,53 @@ EditorCommandService::exportSceneSnapshot(const ExportSceneSnapshotRequestV1 &re
     };
 }
 
+SaveSceneResult EditorCommandService::saveScene() {
+    auto state = dependencies_.snapshot_state ? dependencies_.snapshot_state()
+                                               : EditorSnapshotState{};
+    if (edit_) {
+        auto pending = edit_->pendingTicketIds();
+        state.pending_ticket_ids.insert(state.pending_ticket_ids.end(),
+                                        pending.begin(), pending.end());
+        state.open_preview_lease =
+            state.open_preview_lease || edit_->hasOpenPreviewLease();
+    }
+    if (!state.pending_ticket_ids.empty() || state.open_preview_lease) {
+        throw EditorCommandError{EditorCommandErrorCode::SaveBusy,
+                                 "scene save is busy while an edit ticket or preview is pending"};
+    }
+    if (!dependencies_.save_scene) {
+        throw EditorCommandError{EditorCommandErrorCode::SaveUnavailable,
+                                 "scene save is unavailable"};
+    }
+
+    try {
+        auto result = dependencies_.save_scene();
+        if (result.scene_revision.value > maxExactEditorJsonInteger) {
+            throw std::overflow_error("SceneRevision exceeds 2^53-1");
+        }
+        return result;
+    } catch (const SceneSaveError &error) {
+        switch (error.code()) {
+        case SceneSaveErrorCode::ExternalModification:
+            throw EditorCommandError{EditorCommandErrorCode::ExternalModification,
+                                     error.what()};
+        case SceneSaveErrorCode::Unavailable:
+            throw EditorCommandError{EditorCommandErrorCode::SaveUnavailable,
+                                     error.what()};
+        case SceneSaveErrorCode::IoFailure:
+            throw EditorCommandError{EditorCommandErrorCode::SaveFailed,
+                                     error.what()};
+        }
+    } catch (const EditorCommandError &) {
+        throw;
+    } catch (const std::exception &error) {
+        throw EditorCommandError{EditorCommandErrorCode::SaveFailed,
+                                 error.what()};
+    }
+    throw EditorCommandError{EditorCommandErrorCode::SaveFailed,
+                             "scene save failed"};
+}
+
 OrderedJson EditorCommandService::openEditorSession(const Json &params) {
     if (!edit_) throw std::logic_error("editor edit service is unavailable");
     return edit_->openSession(params);
@@ -481,6 +540,17 @@ OrderedJson editorQueryJson(const ExportSceneSnapshotResponseV1 &snapshot) {
     };
 }
 
+OrderedJson editorQueryJson(const SaveSceneResult &save) {
+    return OrderedJson{
+        {"status", "saved"},
+        {"scene_revision", save.scene_revision.value},
+        {"digest", OrderedJson{{"algorithm", save.digest.algorithm},
+                                {"hex", save.digest.hex}}},
+        {"byte_count", save.byte_count},
+        {"scene_hot_reload", save.scene_hot_reload},
+    };
+}
+
 OrderedJson EditorCommandRpcAdapter::sceneTree(const Json &params) const {
     return editorQueryJson(service_.sceneTree(parseSceneTreeRequest(params)));
 }
@@ -495,6 +565,12 @@ OrderedJson EditorCommandRpcAdapter::listAssets(const Json &params) const {
 
 OrderedJson EditorCommandRpcAdapter::exportSceneSnapshot(const Json &params) const {
     return editorQueryJson(service_.exportSceneSnapshot(parseExportSceneSnapshotRequest(params)));
+}
+
+OrderedJson EditorCommandRpcAdapter::saveScene(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("editor RPC adapter is read-only");
+    validateSaveSceneRequest(params);
+    return editorQueryJson(mutable_service_->saveScene());
 }
 
 OrderedJson EditorCommandRpcAdapter::openEditorSession(const Json &params) const {

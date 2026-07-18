@@ -918,6 +918,21 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService() {
             },
             .install_commit_hook = true,
         },
+        .save_scene = [runtime] {
+            if (runtime->modules.scene_loader.hasRuntimeOnlyChanges()) {
+                throw EditorCommandError{
+                    EditorCommandErrorCode::RuntimeOnlyData,
+                    "scene has runtime-only changes; reload or commit them through the editor before saving",
+                };
+            }
+            const auto saved = runtime->modules.project_config.saveSceneDocument();
+            return SaveSceneResult{
+                .scene_revision = saved.scene_revision,
+                .digest = {.algorithm = "sha256", .hex = saved.digest},
+                .byte_count = saved.byte_count,
+                .scene_hot_reload = false,
+            };
+        },
     });
 }
 

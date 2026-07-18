@@ -1,4 +1,5 @@
 #include "../src/core/communication/editorcommandservice.hpp"
+#include "../src/core/loader/basicconfig.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -216,6 +217,92 @@ TEST_CASE("ExportSceneSnapshot V1 rejects semantic payloads over 64 MiB",
     const ExportSceneSnapshotRequestV1 request{.schema_version = 1};
     const auto code = errorCode([&] { (void)service.exportSceneSnapshot(request); });
     REQUIRE(code == EditorCommandErrorCode::SnapshotTooLarge);
+}
+
+TEST_CASE("SAVE0 typed RPC and ImGui surfaces publish the same result",
+          "[editor-command][save][wp166]") {
+    const auto document = AuthoringSceneDocument::load(
+        readJson(authoringFixturePath()).dump(), SceneRevision{12});
+    std::size_t save_calls = 0;
+    EditorCommandService service{EditorCommandServiceDependencies{
+        .document = [&document]() -> const AuthoringSceneDocument & {
+            return document;
+        },
+        .current_scene_id = [] { return std::string{"main"}; },
+        .snapshot_state = [] { return EditorSnapshotState{}; },
+        .save_scene = [&save_calls] {
+            ++save_calls;
+            return SaveSceneResult{
+                .scene_revision = SceneRevision{13},
+                .digest = {.algorithm = "sha256", .hex = std::string(64, 'a')},
+                .byte_count = 1234,
+                .scene_hot_reload = false,
+            };
+        },
+    }};
+    const EditorCommandRpcAdapter rpc{service};
+    const EditorCommandImGuiFakeAdapter imgui{service};
+
+    const auto rpc_result = rpc.saveScene(nlohmann::json::object());
+    const auto typed_result = imgui.saveScene();
+    REQUIRE(rpc_result.dump() == editorQueryJson(typed_result).dump());
+    REQUIRE(rpc_result.at("status") == "saved");
+    REQUIRE(rpc_result.at("scene_revision") == 13);
+    REQUIRE(rpc_result.at("scene_hot_reload") == false);
+    REQUIRE(save_calls == 2);
+
+    REQUIRE(errorCode([&] { (void)rpc.saveScene({{"unknown", true}}); }) ==
+            EditorCommandErrorCode::InvalidParams);
+}
+
+TEST_CASE("SAVE0 rejects pending work and exposes stable hard error codes",
+          "[editor-command][save][negative][wp166]") {
+    const auto document = AuthoringSceneDocument::load(
+        readJson(authoringFixturePath()).dump(), SceneRevision{20});
+    std::size_t save_calls = 0;
+    EditorCommandService busy{EditorCommandServiceDependencies{
+        .document = [&document]() -> const AuthoringSceneDocument & {
+            return document;
+        },
+        .current_scene_id = [] { return std::string{"main"}; },
+        .snapshot_state = [] {
+            return EditorSnapshotState{.pending_ticket_ids = {"ticket-1"},
+                                       .open_preview_lease = true};
+        },
+        .save_scene = [&save_calls] {
+            ++save_calls;
+            return SaveSceneResult{};
+        },
+    }};
+    REQUIRE(errorCode([&] { (void)busy.saveScene(); }) ==
+            EditorCommandErrorCode::SaveBusy);
+    REQUIRE(save_calls == 0);
+
+    EditorCommandService external{EditorCommandServiceDependencies{
+        .document = [&document]() -> const AuthoringSceneDocument & {
+            return document;
+        },
+        .current_scene_id = [] { return std::string{"main"}; },
+        .save_scene = []() -> SaveSceneResult {
+            throw SceneSaveError{SceneSaveErrorCode::ExternalModification,
+                                 "external change"};
+        },
+    }};
+    REQUIRE(errorCode([&] { (void)external.saveScene(); }) ==
+            EditorCommandErrorCode::ExternalModification);
+
+    EditorCommandService runtime_only{EditorCommandServiceDependencies{
+        .document = [&document]() -> const AuthoringSceneDocument & {
+            return document;
+        },
+        .current_scene_id = [] { return std::string{"main"}; },
+        .save_scene = []() -> SaveSceneResult {
+            throw EditorCommandError{EditorCommandErrorCode::RuntimeOnlyData,
+                                     "runtime-only data"};
+        },
+    }};
+    REQUIRE(errorCode([&] { (void)runtime_only.saveScene(); }) ==
+            EditorCommandErrorCode::RuntimeOnlyData);
 }
 
 } // namespace Pelican

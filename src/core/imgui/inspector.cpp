@@ -411,6 +411,11 @@ OrderedJson InspectorServiceAdapter::getPreviewResult(const Json &params) {
     return service_.getPreviewResult(params);
 }
 
+SaveSceneResult InspectorServiceAdapter::saveScene() {
+    ++trace_.save_calls;
+    return service_.saveScene();
+}
+
 bool invokeInspectorPanelCallback(const EngineLaunchConfig &config,
                                   InspectorPanelTrace &trace,
                                   const std::function<void()> &callback) {
@@ -614,6 +619,21 @@ struct InspectorPanel::Impl {
             } else {
                 handleEditResult(response, pending);
             }
+        } catch (const std::exception &error) {
+            setMessage(error.what(), true);
+        }
+    }
+
+    void saveScene() {
+        try {
+            const auto saved = commands.saveScene();
+            setMessage("Scene saved at revision " +
+                       std::to_string(saved.scene_revision.value) + ".");
+            refresh();
+        } catch (const EditorCommandError &error) {
+            setMessage(std::string{editorCommandErrorCodeName(error.code())} +
+                           " - " + error.what(),
+                       true);
         } catch (const std::exception &error) {
             setMessage(error.what(), true);
         }
@@ -920,13 +940,18 @@ struct InspectorPanel::Impl {
         }
         const bool busy = !pending_edits.empty() || preview.has_value();
         if (busy) ImGui::BeginDisabled();
+        if (ImGui::Button("Save")) saveScene();
+        ImGui::SameLine();
         if (ImGui::Button("Undo")) enqueueUndoRedo(false);
         ImGui::SameLine();
         if (ImGui::Button("Redo")) enqueueUndoRedo(true);
         if (busy) ImGui::EndDisabled();
         ImGui::SameLine();
-        ImGui::TextDisabled("Ctrl+Z / Ctrl+Y");
+        ImGui::TextDisabled("Ctrl+S / Ctrl+Z / Ctrl+Y");
 
+        if (!busy && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S)) {
+            saveScene();
+        }
         if (!busy && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z)) {
             enqueueUndoRedo(false);
         }
@@ -943,6 +968,7 @@ struct InspectorPanel::Impl {
                                      : ImVec4{0.45F, 0.85F, 0.55F, 1.0F};
             ImGui::TextColored(color, "%s", message.c_str());
         }
+        ImGui::TextDisabled("Scene files are not hot-reloaded automatically.");
         ImGui::Separator();
         if (!selected) {
             ImGui::TextDisabled("Select an object in the Object Tree.");

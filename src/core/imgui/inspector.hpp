@@ -18,6 +18,7 @@ struct InspectorPanelTrace {
     std::uint64_t panel_callback_calls = 0;
     std::uint64_t query_calls = 0;
     std::uint64_t edit_enqueue_calls = 0;
+    std::uint64_t save_calls = 0;
 };
 
 enum class InspectorWidgetKind : std::uint8_t {
@@ -70,6 +71,7 @@ class InspectorServiceAdapter {
     nlohmann::ordered_json abortPreview(const nlohmann::json &params);
     nlohmann::ordered_json getEditResult(const nlohmann::json &params);
     nlohmann::ordered_json getPreviewResult(const nlohmann::json &params);
+    SaveSceneResult saveScene();
 };
 
 bool invokeInspectorPanelCallback(const EngineLaunchConfig &config,

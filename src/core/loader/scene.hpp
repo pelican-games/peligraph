@@ -32,6 +32,7 @@ DECLARE_MODULE(SceneLoader) {
     std::vector<ModelTemplate> transient_models;
     SceneId current_scene_id;
     std::optional<SceneId> pending_scene_id;
+    bool runtime_only_changes = false;
 
     void bindObjectTransform(const std::string &name, GameObjectId object_id);
     void clearRuntimeScene();
@@ -50,6 +51,7 @@ DECLARE_MODULE(SceneLoader) {
     SceneObjectTransform objectTransform(std::string_view name) const;
     void applyObjectTransform(std::string_view name, const SceneObjectTransform &transform);
     std::filesystem::path loadTransientGltf(std::string_view path_ref, const std::optional<std::string> &name);
+    bool hasRuntimeOnlyChanges() const noexcept { return runtime_only_changes; }
 };
 
 } // namespace Pelican

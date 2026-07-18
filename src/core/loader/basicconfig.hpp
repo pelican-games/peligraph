@@ -3,14 +3,47 @@
 #include "authoringscenedocument.hpp"
 
 #include <cstdint>
+#include <cstddef>
 #include <glm/glm.hpp>
 #include <optional>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 
 namespace Pelican {
 
 class ProjectBasicConfigProjectionTarget;
+
+enum class SceneSaveErrorCode : std::uint8_t {
+    ExternalModification,
+    Unavailable,
+    IoFailure,
+};
+
+class SceneSaveError : public std::runtime_error {
+    SceneSaveErrorCode code_;
+
+  public:
+    SceneSaveError(SceneSaveErrorCode code, const std::string &message)
+        : std::runtime_error{message}, code_{code} {}
+    SceneSaveErrorCode code() const noexcept { return code_; }
+};
+
+enum class SceneSaveFaultPoint : std::uint8_t {
+    AfterEncode,
+    AfterDiskDigest,
+    AfterTemporaryWrite,
+    AfterTemporaryValidation,
+    AfterCachePrepare,
+    BeforeReplace,
+};
+
+struct SceneSaveResult {
+    SceneRevision scene_revision{};
+    std::string digest;
+    std::size_t byte_count = 0;
+};
 
 DECLARE_MODULE(ProjectBasicConfig) {
     friend class ProjectBasicConfigProjectionTarget;
@@ -45,8 +78,10 @@ DECLARE_MODULE(ProjectBasicConfig) {
     bool project_source = false;
 
     mutable std::optional<AuthoringSceneDocument> scene_document;
+    mutable std::optional<std::string> scene_baseline_digest;
     mutable std::uint64_t next_scene_revision = 1;
     mutable std::uint64_t next_authoring_object_id = 1;
+    std::optional<SceneSaveFaultPoint> scene_save_fault;
     mutable std::optional<std::string> asset_data_json;
     mutable std::optional<std::string> rendering_config_json;
     mutable std::optional<std::string> ui_config_json;
@@ -71,6 +106,11 @@ DECLARE_MODULE(ProjectBasicConfig) {
     const AuthoringSceneDocument &sceneDocument() const;
     void updateSceneDocument(std::string_view scene_v1_bytes);
     void invalidateSceneDocument() noexcept;
+    SceneSaveResult saveSceneDocument();
+    void setSceneSaveFaultForTesting(
+        std::optional<SceneSaveFaultPoint> fault) noexcept {
+        scene_save_fault = fault;
+    }
     std::string sceneDataJson() const;
     std::string assetDataJson() const;
     std::string renderingConfigJson() const;
