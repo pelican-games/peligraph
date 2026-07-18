@@ -3801,6 +3801,32 @@ edge 検証。**登録 API の意味論・既存 system の実行結果は不変
    絵を変えないこと — 変わる場合は停止して質問)+ player 8 秒 +
    CI green
 
+### WP149: ED-AUTH0 — AuthoringSceneDocument(エディタトラック第 1 弾)
+
+参照: **`design_editor_tooling.md` v2.1 §0-1 + 再レビュー
+`docs/design_reviews/2026-07-18_editor_behavior_v2_rereview_codex.md`
+§7 の単独着地境界(逐語)が受け入れ条件**:
+
+> ED-AUTH0 は scene v1 bytes の parse、全 envelope/scene/object/
+> component raw JSON 保持、SceneRevision/AuthoringObjectId 割当、
+> ProjectBasicConfig cache との単一 read/update/invalidate 面、
+> deterministic semantic encode fixture までを所有する。`query` は
+> テスト用の raw authoring traversal を意味し、EditorCommandService/
+> RPC schema、component codec、runtime edit、journal、Save file
+> replace を含めない。runtime bind は既存 SceneLoader へ同じ semantic
+> JSON を供給するだけとし、未編集 load、scene 切替、G2 currentScene
+> rebuild の観測挙動を変えない。既存全 scene fixture に加え、複数
+> scene、無名、light-only、collider-only、unknown/read-only component
+> を含む未編集 document の load→encode→fresh load semantic equality を
+> gate とする。
+
+依存: なし(WP62 済)。見積: 中。
+排他: AuthoringSceneDocument 新設 + ProjectBasicConfig cache 統合。
+**codec・RPC・edit・Save を一切含めない**(単独着地性の条件)。
+
+受け入れ = 上記逐語 gate + 既存全テスト + golden SKIP 0・byte 不変 +
+player 8 秒 + CI green
+
 ### WP137: 負債 CI0 — CPU gate の常設(GitHub Actions)
 
 参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
