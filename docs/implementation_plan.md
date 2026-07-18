@@ -4637,6 +4637,32 @@ header・`.github`・debug_text/UI レイアウト(WP169 並走中)に
 CAS fixture)+ 既存全テスト無変更 + golden SKIP 0・byte 不変 +
 player 8 秒 + CI green
 
+### WP171: 負債 LIFETIME0 — exceptional teardown
+
+参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
+の「WP-LIFETIME0」定義が正**:
+
+> explicit queue drain、owner callback shared state、module 生成順を
+> 変えた test。generic topological container は導入しない。
+
+範囲: ①例外経路 teardown での explicit queue drain(pending
+event/deferred mutation/deletion queue 等が例外 unwind 中に安全に
+drain される — 現行の暗黙依存を明文の drain 順に)②owner callback が
+参照する shared state の寿命保証(callback 実行中に owner が先に
+死なない)③module 生成順を変えた組(依存が許す範囲の順列)での
+起動/終了 test — 生成順の暗黙依存を検出 ④**generic topological
+container は導入しない**(明示 drain 順 + fail-fast で足りることを
+示す)。関連する N 系発見(teardown/寿命の指摘)を全文検索して
+対象に含める。
+
+依存: WP163(済 — token 台帳が前提整備)。見積: 中。
+排他: appflow/teardown + module lifecycle + fixture。**communication/
+rpcserver(WP170 並走中)・loader の editor 面・schema 三 header・
+`.github` に触らない**。
+
+受け入れ = 上記 fixture(例外注入 teardown・順列起動)+ 既存全
+テスト無変更 + golden SKIP 0・byte 不変 + player 8 秒 + CI green
+
 ### WP137: 負債 CI0 — CPU gate の常設(GitHub Actions)
 
 参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
