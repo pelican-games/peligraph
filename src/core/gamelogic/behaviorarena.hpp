@@ -131,6 +131,7 @@ DECLARE_MODULE(BehaviorAttachmentArena) {
     void invokeEvent(Attachment &attachment, const internal::QueuedEvent &event,
                      GameContext &ctx);
     void destroyInstance(Attachment &attachment, bool invoke_destroy_callback) noexcept;
+    void deactivateAllInstances() noexcept;
     void applyDeferredMutations();
     void activateReadyEditorAttachments();
 
@@ -145,6 +146,8 @@ DECLARE_MODULE(BehaviorAttachmentArena) {
 
     void preDestroyEntity(GameObjectId entity) noexcept;
     void deactivateAll() noexcept;
+    void deactivateAllForTeardown() noexcept;
+    std::size_t drainDeferredMutationsForTeardown();
     void releaseOwner(internal::RegistrationOwner owner) noexcept;
 
     BehaviorAttachmentIdentity reserveRuntimeAttachmentIdentity(
@@ -160,6 +163,9 @@ DECLARE_MODULE(BehaviorAttachmentArena) {
                                  SpriteViewComponent sprite);
     bool deferRemoveObject(GameObjectId entity);
     bool callbacksActive() const noexcept { return callback_depth != 0; }
+    std::size_t deferredMutationCountForTesting() const noexcept {
+        return deferred_mutations.size();
+    }
 
     std::vector<BehaviorAttachmentInfo> snapshot() const;
     std::size_t liveInstanceCount(internal::RegistrationOwner owner) const noexcept;
@@ -174,6 +180,8 @@ enum class BehaviorObjectRemovalRoute {
 
 BehaviorObjectRemovalRoute routeBehaviorObjectRemoval(GameObjectId entity);
 void preDestroyAllBehaviorObjects() noexcept;
+void preDestroyAllBehaviorObjectsForTeardown() noexcept;
+std::size_t drainDeferredBehaviorMutationsForTeardown();
 bool behaviorCallbackActive() noexcept;
 void releaseBehaviorOwner(RegistrationOwner owner) noexcept;
 

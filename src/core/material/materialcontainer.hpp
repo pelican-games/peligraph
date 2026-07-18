@@ -7,6 +7,7 @@
 #include "../shader/pipelinefactory.hpp"
 #include "../watch/assetkey.hpp"
 #include "../vkcore/buf.hpp"
+#include "../vkcore/deferredcallback.hpp"
 #include "../vkcore/image.hpp"
 #include "material.hpp"
 #include <glm/glm.hpp>
@@ -104,10 +105,9 @@ DECLARE_MODULE(MaterialContainer) {
     BufferWrapper material_buffer;
     std::unique_ptr<TextureReloadHandler> texture_reload_handler;
     std::unique_ptr<MaterialValuesReloadHandler> material_values_reload_handler;
-    // Declared last so it expires before resource members during destruction.
-    // Deferred slot-recycle callbacks use it to avoid dereferencing a dead
-    // MaterialContainer when the module teardown order changes.
-    std::shared_ptr<int> lifetime_token = std::make_shared<int>(0);
+    // Declared last and explicitly closed at destructor entry. Deferred slot
+    // callbacks pin this state while using the owner.
+    DeferredCallbackLifetime deferred_callbacks;
 
     InternalTextureResource createTextureResource(const LoadedImage &image,
                                                   std::string_view name) const;

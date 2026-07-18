@@ -42,7 +42,7 @@
 4. [`updateFrameState()`](../../src/core/appflow/framephase.cpp#L81) — 1フレームのゲーム状態更新を5フェーズで実行する。
 5. [`ECSCoreTemplatePublic::update()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L386) — 内部ECS Systemを依存順に実行する。
 6. [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L1082) — フレームグラフをGPUコマンドへ変換する。flat画面は [`render()`](../../src/core/vkcore/renderer.cpp#L1244) がその1-viewラッパ。
-7. [`RuntimeTeardownGuard::run()`](../../src/core/appflow/teardown.cpp#L48) — 例外時もGPU/ECS資源を順序付きで解放する（実体は [`teardownRuntimeNoThrow()`](../../src/core/appflow/teardown.cpp#L31)）。
+7. [`RuntimeTeardownGuard::run()`](../../src/core/appflow/teardown.cpp) — 例外時もGPU/ECS/queue資源を規範順で解放する（実体は [`teardownRuntimeNoThrow()`](../../src/core/appflow/teardown.cpp)）。
 
 ## リンクの見方
 

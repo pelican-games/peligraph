@@ -6,6 +6,7 @@
 #include "../../serialize/serialize.hpp"
 
 #include <concepts>
+#include <cstddef>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -30,6 +31,13 @@ struct QueuedEvent {
     std::string name;
     std::shared_ptr<const void> payload;
     RegistrationOwner owner = engineRegistrationOwner;
+};
+
+struct EventQueueDrainResult {
+    std::size_t pending = 0;
+    std::size_t frozen = 0;
+
+    std::size_t total() const noexcept { return pending + frozen; }
 };
 
 using JsonPayloadLoadFn = std::shared_ptr<const void> (*)(const void *payload_json);
@@ -167,12 +175,14 @@ class UserEventRegistererTemplatePublic {
     std::size_t payloadLoadCallCount() const noexcept;
     void freezePendingEventsForFrame();
     std::vector<QueuedEvent> drainFrozenEvents();
+    EventQueueDrainResult drainForTeardown() noexcept;
     void clearPendingEvents();
 };
 
 PELICAN_API UserEventRegistererTemplatePublic &getEventRegisterer();
 void freezePendingEventsForFrame();
 void dispatchFrozenEvents(GameContext &ctx);
+EventQueueDrainResult drainPendingEventsForTeardown() noexcept;
 void clearPendingEvents();
 std::size_t emitEventByName(std::string_view name, const void *payload_json);
 void validateEventPayload(std::string_view name, const void *payload_json);

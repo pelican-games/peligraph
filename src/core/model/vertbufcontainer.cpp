@@ -72,6 +72,10 @@ VertBufContainer::VertBufContainer()
                     empty.size() * sizeof(MorphVertexGpuMetadata));
 }
 
+VertBufContainer::~VertBufContainer() {
+    deferred_callbacks.closeAndWait();
+}
+
 uint32_t VertBufContainer::allocateRange(std::vector<FreeRange> &free_ranges,
                                          uint32_t &high_water, uint32_t count) {
     if (count == 0) throw std::runtime_error("cannot allocate an empty model buffer range");
@@ -417,25 +421,28 @@ void VertBufContainer::releaseModelGeometry(
     if (deferred) {
         struct DeferredRelease {
             VertBufContainer *owner{};
-            std::weak_ptr<int> lifetime;
+            DeferredCallbackLifetime::Callback callback;
             std::vector<ModelGeometryAllocation> allocations;
             DeferredRelease(VertBufContainer *value,
-                            std::weak_ptr<int> guard,
+                            DeferredCallbackLifetime::Callback callback_handle,
                             std::vector<ModelGeometryAllocation> ranges)
-                : owner{value}, lifetime{std::move(guard)}, allocations{std::move(ranges)} {}
+                : owner{value}, callback{std::move(callback_handle)},
+                  allocations{std::move(ranges)} {}
             DeferredRelease(DeferredRelease &&other) noexcept
                 : owner{std::exchange(other.owner, nullptr)},
-                  lifetime{std::move(other.lifetime)},
+                  callback{std::move(other.callback)},
                   allocations{std::move(other.allocations)} {}
             DeferredRelease &operator=(DeferredRelease &&) = delete;
             DeferredRelease(const DeferredRelease &) = delete;
             ~DeferredRelease() {
-                if (owner && !lifetime.expired())
-                    owner->releaseModelGeometry(std::move(allocations), false);
+                if (!owner) return;
+                const auto lease = callback.acquire();
+                if (lease) owner->releaseModelGeometry(std::move(allocations), false);
             }
         };
         if (auto *queue = FastModuleContainer::tryGet<DeletionQueue>()) {
-            queue->defer(DeferredRelease{this, lifetime_token, std::move(allocations)});
+            queue->defer(DeferredRelease{this, deferred_callbacks.callback(),
+                                         std::move(allocations)});
             return;
         }
     }

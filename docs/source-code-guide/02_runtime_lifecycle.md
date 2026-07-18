@@ -124,16 +124,22 @@ Renderer
 
 ## 2.3 明示teardownが必要な理由
 
-moduleのC++ destructorだけに任せると、ECS Componentの`deinit()`が参照する描画moduleが先に壊れる可能性があります。そこで [`teardownRuntimeNoThrow()`](../../src/core/appflow/teardown.cpp#L31) が、module optionalの存在を確認して次の順で明示解放します。
+moduleのC++ destructorだけに任せると、ECS Componentの`deinit()`が参照する描画moduleが先に壊れるほか、pending/frozen event、behavior deferred mutation、GPU deletion callbackがowner/DLLの破棄後まで残る可能性があります。そこで [`teardownRuntimeNoThrow()`](../../src/core/appflow/teardown.cpp) が、module optionalの存在を確認して次の順で明示解放します。
 
 1. Vulkan `waitIdle()`
-2. physics bindingをclear（現在は `#if PELICAN_WITH_PHYSICS` 内）
-3. ECS entityをclearし、全Componentの`deinit()`とdestructorを実行
-4. model instanceをclear
+2. behavior owner callbackを完了
+3. physics bindingをclear（現在は `#if PELICAN_WITH_PHYSICS` 内）
+4. ECS entityをclearし、全Componentの`deinit()`とdestructorを実行
+5. model instanceをclear
+6. behavior deferred mutationをdrain
+7. pending/frozen eventをdrain
+8. GPU deletion queueをdrain
 
-各段階は例外を飲み込みつつログを残します。[`RuntimeTeardownGuard::~RuntimeTeardownGuard()`](../../src/core/appflow/teardown.cpp#L48) も`run()`を呼ぶため、loopや初期化の途中で例外が出ても同じ順序を通ります。
+terminal shutdownはこの前に`FastModuleContainer::beginShutdown()`で新規module生成を閉じ、最後のdeletion queueもcloseします。game-logic reloadの`runtime_reset`は同じ順で既存workをdrainしますが、module phaseとdeletion queueを再利用可能に保ちます。
 
-この契約は [`ecs_lifecycle_test.cpp`](../../test/ecs_lifecycle_test.cpp#L453) で「Componentのdeinit/destroyがmodule destructorより先」として検証されています。
+各段階は例外を飲み込みつつログを残します。[`RuntimeTeardownGuard::~RuntimeTeardownGuard()`](../../src/core/appflow/teardown.cpp) も`run()`を呼ぶため、loopや初期化の途中で例外が出ても同じ順序を通ります。
+
+この契約は [`ecs_lifecycle_test.cpp`](../../test/ecs_lifecycle_test.cpp) の「Componentのdeinit/destroyがmodule destructorより先」と、[`lifetime_teardown_test.cpp`](../../test/lifetime_teardown_test.cpp) の全工程fault injection、起動順列、起動途中失敗で検証されています。
 
 ## 2.4 `Loop::run()` の四経路
 

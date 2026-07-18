@@ -224,7 +224,9 @@ MaterialContainer::MaterialContainer()
       material_buffer{GET_MODULE(VulkanManageCore).allocBuf(
           sizeof(MaterialGpuData) * maxMaterials, vk::BufferUsageFlagBits::eStorageBuffer,
           vma::MemoryUsage::eAuto, vma::AllocationCreateFlagBits::eHostAccessSequentialWrite)} {}
-MaterialContainer::~MaterialContainer() {}
+MaterialContainer::~MaterialContainer() {
+    deferred_callbacks.closeAndWait();
+}
 
 GlobalTextureId MaterialContainer::registerTexture(vk::Extent3D extent, const void *data) {
     return registerTexture(extent, data, vk::Format::eR8G8B8A8Unorm,
@@ -607,9 +609,10 @@ void MaterialContainer::releaseModelResources(
 
         if (!retired.material_ids.empty()) {
             retired.recycle_material_ids =
-                [this, lifetime = std::weak_ptr<int>{lifetime_token},
+                [this, callback = deferred_callbacks.callback(),
                  ids = retired.material_ids] {
-                    if (lifetime.expired()) return;
+                    const auto lease = callback.acquire();
+                    if (!lease) return;
                     for (const auto id : ids) materials.recycle(id);
                 };
         }
