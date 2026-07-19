@@ -39,6 +39,12 @@
 3. 休眠中の `collision` ブランチは**部品取り**として再評価(そのままマージしない。
    現行本線との乖離が大きいため、使える純ロジックだけ移植)
 
+`trigger=true` は検知専用であり、transform・速度その他への物理応答を
+一切行わない。raycast / overlap / shapeCast は既定で trigger も通常の hit
+として返し、hit の `metadata.trigger` で識別できる。除外したい問い合わせは
+共通 `QueryFilter::include_triggers=false` を明示する。この可視性規則は
+trigger event の発生有無とは独立である。
+
 shapeCast の contact epsilon と TOI/MTD tie epsilon はともに `1e-5`。
 同深度 MTD は移動逆向きを優先し、その後 world x/y/z で固定する。
 all-hit は TOI bucket 後に ColliderId/full EntityId/shape ordinal/name の全順序。

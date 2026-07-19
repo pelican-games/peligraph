@@ -6,14 +6,18 @@
 #include "../ecs/core.hpp"
 #include "../geomhelper/geomhelper.hpp"
 #include "../renderer/debugdraw.hpp"
+#include "../userpublic/details/system/registerer.hpp"
+#include "../userpublic/gamecontext.hpp"
 #include <components/predefined.hpp>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <glm/gtc/quaternion.hpp>
+#include <limits>
 #include <stdexcept>
 #include <type_traits>
+#include <unordered_set>
 #include <utility>
 
 namespace Pelican {
@@ -22,6 +26,23 @@ namespace {
 constexpr int kCircleSegments = 32;
 constexpr float kProjectEpsilon = 1.0e-5f;
 const glm::vec4 kColliderColor{0.1f, 0.95f, 0.85f, 1.0f};
+
+struct PhysicsTriggerSystem {
+    void update(GameContext &ctx) {
+        if (auto *world = FastModuleContainer::tryGet<PhysWorld>()) {
+            world->updateTriggers(ctx);
+        }
+    }
+};
+
+struct PhysicsTriggerSystemRegistration {
+    PhysicsTriggerSystemRegistration() {
+        internal::getGameSystemRegisterer().registerSystem<PhysicsTriggerSystem>(
+            "PhysicsTriggerSystem", std::numeric_limits<int>::max(), {});
+    }
+};
+
+const PhysicsTriggerSystemRegistration physics_trigger_system_registration;
 
 glm::vec3 absVec(glm::vec3 value) {
     return {std::abs(value.x), std::abs(value.y), std::abs(value.z)};
@@ -327,6 +348,9 @@ void PhysWorld::publishPrepared(PreparedState &&prepared) noexcept {
 
 void PhysWorld::clear() {
     bindings.clear();
+    // A full scene reset is a domain boundary: old EntityIds are no longer
+    // addressable, so it deliberately produces no synthetic OverlapExit.
+    active_trigger_pairs.clear();
 }
 
 void PhysWorld::bindCollider(std::string name, const ColliderComponent &collider,
@@ -519,6 +543,88 @@ std::vector<std::string> PhysWorld::overlapAll(
     ids.reserve(hits.size());
     for (const auto &hit : hits) ids.push_back(hit.id);
     return ids;
+}
+
+void PhysWorld::updateTriggers(GameContext &ctx) {
+    const auto colliders = collectColliders();
+    std::vector<TriggerPair> current_pairs;
+
+    for (const auto &trigger : colliders) {
+        if (!trigger.metadata.trigger || !trigger.identity.entity.has_value()) {
+            continue;
+        }
+
+        const phys::QueryFilter filter{
+            .layer = trigger.metadata.layer,
+            .mask = trigger.metadata.mask,
+            .include_triggers = true,
+            .include_one_way = true,
+            .self = trigger.identity.collider_id,
+            .self_entity = trigger.identity.entity,
+        };
+        std::vector<phys::OverlapHit> hits;
+        const auto status = physics_internal::overlapAll(
+            trigger.shape, colliders, &filter, hits);
+        if (status == Physics::Status::unavailable) {
+            // Provider unavailability says nothing about physical separation.
+            // Preserve the last known set rather than manufacture Exit events.
+            return;
+        }
+        if (status != Physics::Status::ok) {
+            throw std::runtime_error(
+                "Physics trigger overlap failed with status " +
+                std::to_string(static_cast<std::uint32_t>(status)));
+        }
+
+        for (const auto &hit : hits) {
+            if (!hit.identity.entity.has_value() ||
+                *hit.identity.entity == *trigger.identity.entity) {
+                continue;
+            }
+            const auto first = std::min(*trigger.identity.entity,
+                                        *hit.identity.entity);
+            const auto second = std::max(*trigger.identity.entity,
+                                         *hit.identity.entity);
+            current_pairs.emplace_back(first, second);
+        }
+    }
+
+    std::sort(current_pairs.begin(), current_pairs.end());
+    current_pairs.erase(
+        std::unique(current_pairs.begin(), current_pairs.end()),
+        current_pairs.end());
+
+    // Merge the two sorted sets so mixed Enter/Exit frames also have one total
+    // EntityId-pair order. Each canonical pair is then emitted from both views,
+    // lower self first, through the ordinary E1 queue.
+    std::size_t previous_index = 0;
+    std::size_t current_index = 0;
+    while (previous_index < active_trigger_pairs.size() ||
+           current_index < current_pairs.size()) {
+        if (previous_index < active_trigger_pairs.size() &&
+            current_index < current_pairs.size() &&
+            active_trigger_pairs[previous_index] == current_pairs[current_index]) {
+            ++previous_index;
+            ++current_index;
+            continue;
+        }
+
+        const bool emit_exit =
+            previous_index < active_trigger_pairs.size() &&
+            (current_index == current_pairs.size() ||
+             active_trigger_pairs[previous_index] < current_pairs[current_index]);
+        if (emit_exit) {
+            const auto &pair = active_trigger_pairs[previous_index++];
+            ctx.emit(OverlapExit{.self = pair.first, .other = pair.second});
+            ctx.emit(OverlapExit{.self = pair.second, .other = pair.first});
+        } else {
+            const auto &pair = current_pairs[current_index++];
+            ctx.emit(OverlapEnter{.self = pair.first, .other = pair.second});
+            ctx.emit(OverlapEnter{.self = pair.second, .other = pair.first});
+        }
+    }
+
+    active_trigger_pairs = std::move(current_pairs);
 }
 
 void PhysWorld::enqueueDebugDraw(DebugDraw &debug_draw,

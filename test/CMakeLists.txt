@@ -79,6 +79,29 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
   )
   pelican_configure_game_logic_target(pelican_wp155_behavior_fixture)
 
+  if(PELICAN_WITH_PHYSICS)
+    add_library(pelican_wp179_trigger_behavior_fixture SHARED
+      fixtures/physics_trigger_behavior/behavior.cpp
+      ${CMAKE_SOURCE_DIR}/src/player/gamelogic_entry.cpp
+    )
+    set_target_properties(pelican_wp179_trigger_behavior_fixture PROPERTIES
+      OUTPUT_NAME "pelican_wp179_trigger_behavior_fixture"
+    )
+    pelican_configure_game_logic_target(pelican_wp179_trigger_behavior_fixture)
+
+    add_test(
+      NAME physics_trigger_behavior_e2e
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+        -File ${CMAKE_CURRENT_SOURCE_DIR}/run_physics_trigger_behavior.ps1
+        -Player $<TARGET_FILE:pelican_player>
+        -Fixture $<TARGET_FILE:pelican_wp179_trigger_behavior_fixture>
+        -ProjectPass ${CMAKE_SOURCE_DIR}/projects/example/passes/main_rendering_config.json
+        -OutDir ${CMAKE_BINARY_DIR}/test_artifacts/physics_trigger_behavior
+    )
+    set_tests_properties(physics_trigger_behavior_e2e PROPERTIES
+      TIMEOUT 120 RESOURCE_LOCK pelican_gpu LABELS gpu)
+  endif()
+
   function(pelican_add_wp162_behavior_fixture target_name variant)
     add_library(${target_name} SHARED
       fixtures/behavior_reload_dll/behavior.cpp

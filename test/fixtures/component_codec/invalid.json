@@ -15,7 +15,7 @@
   {"name":"light","kind":"range","authored":{"name":"light","type":"directional","direction":[0,-1,0],"color":[1.1,1,1]}},
   {"name":"light","kind":"unknown","authored":{"name":"light","type":"directional","direction":[0,-1,0],"color":[1,1,1],"extra":1}},
 
-  {"name":"collider","kind":"type","authored":{"name":"collider","shape":"sphere","radius":"large"}},
+  {"name":"collider","kind":"type","authored":{"name":"collider","shape":"sphere","radius":1,"trigger":1}},
   {"name":"collider","kind":"range","authored":{"name":"collider","shape":"sphere","radius":-1}},
   {"name":"collider","kind":"unknown","authored":{"name":"collider","shape":"sphere","radius":1,"extra":1}},
 

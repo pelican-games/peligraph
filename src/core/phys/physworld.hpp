@@ -10,12 +10,14 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <utility>
 #include <variant>
 #include <vector>
 
 namespace Pelican {
 
 class DebugDraw;
+class GameContext;
 
 struct PhysWorldTransform {
     vec3 pos{0.0f, 0.0f, 0.0f};
@@ -49,7 +51,10 @@ DECLARE_MODULE(PhysWorld) {
 
   private:
 
+    using TriggerPair = std::pair<EntityId, EntityId>;
+
     std::vector<Binding> bindings;
+    std::vector<TriggerPair> active_trigger_pairs;
     std::uint64_t next_collider_id_value = 1;
 
     phys::ColliderId allocateColliderId();
@@ -85,6 +90,7 @@ DECLARE_MODULE(PhysWorld) {
     std::vector<std::string> overlapAll(const phys::Shape &shape) const;
     std::vector<std::string> overlapAll(const phys::Shape &shape,
                                         const phys::QueryFilter &filter) const;
+    void updateTriggers(GameContext &ctx);
     void enqueueDebugDraw(DebugDraw &debug_draw, const glm::mat4 &view_projection) const;
 
     size_t colliderCountForTesting() const { return bindings.size(); }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "details/event/registerer.hpp"
+#include "details/ecs/entity.hpp"
 
 #include <string>
 
@@ -14,10 +15,24 @@ struct SceneLoaded {
     }
 };
 
+struct OverlapEnter {
+    EntityId self = invalidEntityId;
+    EntityId other = invalidEntityId;
+};
+
+struct OverlapExit {
+    EntityId self = invalidEntityId;
+    EntityId other = invalidEntityId;
+};
+
 } // namespace Pelican
 
 PELICAN_REGISTER_EVENT(Pelican::SceneLoaded);
+PELICAN_REGISTER_EVENT(Pelican::OverlapEnter);
+PELICAN_REGISTER_EVENT(Pelican::OverlapExit);
 
 namespace Pelican {
 PELICAN_REGISTER_EVENT(SceneLoaded);
+PELICAN_REGISTER_EVENT(OverlapEnter);
+PELICAN_REGISTER_EVENT(OverlapExit);
 } // namespace Pelican

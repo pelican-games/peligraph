@@ -18,6 +18,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <typeindex>
 #include <vector>
 
 namespace Pelican {
@@ -46,6 +47,123 @@ void ensureLogger() {
         return true;
     }();
     (void)initialized;
+}
+
+struct TriggerEventRecord {
+    bool enter = false;
+    EntityId self = invalidEntityId;
+    EntityId other = invalidEntityId;
+
+    bool operator==(const TriggerEventRecord &) const = default;
+};
+
+std::vector<TriggerEventRecord> drainTriggerEvents() {
+    internal::freezePendingEventsForFrame();
+    const auto queued = internal::getEventRegisterer().drainFrozenEvents();
+    std::vector<TriggerEventRecord> result;
+    result.reserve(queued.size());
+    for (const auto &event : queued) {
+        if (event.type == std::type_index{typeid(OverlapEnter)}) {
+            const auto &payload =
+                *static_cast<const OverlapEnter *>(event.payload.get());
+            result.push_back({true, payload.self, payload.other});
+        } else if (event.type == std::type_index{typeid(OverlapExit)}) {
+            const auto &payload =
+                *static_cast<const OverlapExit *>(event.payload.get());
+            result.push_back({false, payload.self, payload.other});
+        } else {
+            FAIL("unexpected event in physics trigger fixture: " << event.name);
+        }
+    }
+    return result;
+}
+
+void appendU32(std::vector<std::uint8_t> &bytes, std::uint32_t value) {
+    for (unsigned shift = 0; shift < 32; shift += 8) {
+        bytes.push_back(static_cast<std::uint8_t>(value >> shift));
+    }
+}
+
+std::vector<std::uint8_t>
+encodeTriggerEvents(const std::vector<TriggerEventRecord> &events) {
+    std::vector<std::uint8_t> bytes;
+    bytes.reserve(events.size() * 17);
+    for (const auto &event : events) {
+        bytes.push_back(event.enter ? 1U : 0U);
+        appendU32(bytes, event.self.index);
+        appendU32(bytes, event.self.generation);
+        appendU32(bytes, event.other.index);
+        appendU32(bytes, event.other.generation);
+    }
+    return bytes;
+}
+
+GameObjectId createColliderEntity(vec3 position) {
+    TransformComponent transform;
+    transform.pos = glm::vec3{position.x, position.y, position.z};
+    transform.rotation = glm::quat{1.0f, 0.0f, 0.0f, 0.0f};
+    transform.scale = glm::vec3{1.0f, 1.0f, 1.0f};
+    return GameObjects::add()
+        .addComponent<TransformComponent>(transform)
+        .finish();
+}
+
+std::vector<std::uint8_t> runTriggerReplay() {
+    internal::clearPendingEvents();
+    FastModuleContainer modules;
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &world = GET_MODULE(PhysWorld);
+    GameContext ctx;
+
+    const auto trigger_entity = createColliderEntity({0.0f, 0.0f, 0.0f});
+    const auto other_entity = createColliderEntity({4.0f, 0.0f, 0.0f});
+    auto trigger = ColliderComponent{};
+    trigger.radius = 1.0f;
+    trigger.trigger = true;
+    auto solid = ColliderComponent{};
+    solid.radius = 1.0f;
+    world.bindCollider("z-trigger", trigger, trigger_entity);
+    world.bindCollider("a-solid", solid, other_entity);
+
+    world.updateTriggers(ctx);
+    REQUIRE(drainTriggerEvents().empty());
+
+    auto &other_transform = GET_MODULE(ECSCore)
+                                .getTemplatePublicModule()
+                                .component<TransformComponent>(other_entity);
+    other_transform.pos = glm::vec3{1.0f, 0.0f, 0.0f};
+    world.updateTriggers(ctx);
+    auto records = drainTriggerEvents();
+    const std::vector<TriggerEventRecord> expected_enters{
+        {true, trigger_entity, other_entity},
+        {true, other_entity, trigger_entity},
+    };
+    REQUIRE(records == expected_enters);
+
+    world.updateTriggers(ctx);
+    REQUIRE(drainTriggerEvents().empty());
+
+    other_transform.pos = glm::vec3{4.0f, 0.0f, 0.0f};
+    world.updateTriggers(ctx);
+    const auto exits = drainTriggerEvents();
+    const std::vector<TriggerEventRecord> expected_exits{
+        {false, trigger_entity, other_entity},
+        {false, other_entity, trigger_entity},
+    };
+    REQUIRE(exits == expected_exits);
+    records.insert(records.end(), exits.begin(), exits.end());
+
+    const auto &trigger_transform = GET_MODULE(ECSCore)
+                                        .getTemplatePublicModule()
+                                        .component<TransformComponent>(trigger_entity);
+    requireVec({trigger_transform.pos.x, trigger_transform.pos.y,
+                trigger_transform.pos.z},
+               {0.0f, 0.0f, 0.0f});
+    requireVec({other_transform.pos.x, other_transform.pos.y,
+                other_transform.pos.z},
+               {4.0f, 0.0f, 0.0f});
+    internal::clearPendingEvents();
+    return encodeTriggerEvents(records);
 }
 
 } // namespace
@@ -337,6 +455,94 @@ TEST_CASE("PhysWorld module follows bound transforms and GameContext exposes que
     REQUIRE(ctx.raycastClosest(
         phys::Ray{{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, 5.0f},
         ignore_original));
+}
+
+TEST_CASE("PhysWorld trigger replay emits only symmetric Enter and Exit deltas",
+          "[physworld][trigger][wp179][determinism]") {
+    ensureLogger();
+    const auto first = runTriggerReplay();
+    const auto second = runTriggerReplay();
+    REQUIRE_FALSE(first.empty());
+    REQUIRE(first == second);
+}
+
+TEST_CASE("PhysWorld trigger changes use canonical EntityId pair order",
+          "[physworld][trigger][wp179][order]") {
+    ensureLogger();
+    internal::clearPendingEvents();
+    FastModuleContainer modules;
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &world = GET_MODULE(PhysWorld);
+    GameContext ctx;
+
+    const auto trigger_entity = createColliderEntity({0.0f, 0.0f, 0.0f});
+    const auto second_entity = createColliderEntity({0.0f, 0.0f, 0.0f});
+    const auto third_entity = createColliderEntity({0.0f, 0.0f, 0.0f});
+    auto trigger = ColliderComponent{};
+    trigger.trigger = true;
+    world.bindCollider("m-trigger", trigger, trigger_entity);
+    world.bindCollider("z-second", ColliderComponent{}, second_entity);
+    world.bindCollider("a-third", ColliderComponent{}, third_entity);
+
+    world.updateTriggers(ctx);
+    const std::vector<TriggerEventRecord> expected{
+        {true, trigger_entity, second_entity},
+        {true, second_entity, trigger_entity},
+        {true, trigger_entity, third_entity},
+        {true, third_entity, trigger_entity},
+    };
+    REQUIRE(drainTriggerEvents() == expected);
+    internal::clearPendingEvents();
+}
+
+TEST_CASE("PhysWorld guarantees Exit for destroy and collider removal but not scene reset",
+          "[physworld][trigger][wp179][exit]") {
+    ensureLogger();
+    internal::clearPendingEvents();
+    FastModuleContainer modules;
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &world = GET_MODULE(PhysWorld);
+    GameContext ctx;
+
+    const auto trigger_entity = createColliderEntity({0.0f, 0.0f, 0.0f});
+    const auto other_entity = createColliderEntity({0.0f, 0.0f, 0.0f});
+    auto trigger = ColliderComponent{};
+    trigger.trigger = true;
+    world.bindCollider("trigger", trigger, trigger_entity);
+    world.bindCollider("other", ColliderComponent{}, other_entity);
+    world.updateTriggers(ctx);
+    (void)drainTriggerEvents();
+
+    SECTION("entity destroy emits the pending symmetric Exit") {
+        REQUIRE(GameObjects::remove(other_entity));
+        world.updateTriggers(ctx);
+        const std::vector<TriggerEventRecord> expected{
+            {false, trigger_entity, other_entity},
+            {false, other_entity, trigger_entity},
+        };
+        REQUIRE(drainTriggerEvents() == expected);
+    }
+
+    SECTION("collider removal emits the pending symmetric Exit") {
+        auto prepared = world.snapshotPrepared();
+        std::erase_if(prepared.bindings, [&](const PhysWorld::Binding &binding) {
+            return binding.identity.entity == other_entity;
+        });
+        world.publishPrepared(world.prepareBindings(std::move(prepared.bindings)));
+        world.updateTriggers(ctx);
+        const std::vector<TriggerEventRecord> expected{
+            {false, trigger_entity, other_entity},
+            {false, other_entity, trigger_entity},
+        };
+        REQUIRE(drainTriggerEvents() == expected);
+    }
+
+    SECTION("full scene reset clears pairs without Exit") {
+        world.clear();
+        world.updateTriggers(ctx);
+        REQUIRE(drainTriggerEvents().empty());
+    }
+    internal::clearPendingEvents();
 }
 
 } // namespace Pelican

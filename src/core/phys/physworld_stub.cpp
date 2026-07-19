@@ -48,6 +48,7 @@ void PhysWorld::publishPrepared(PreparedState &&prepared) noexcept {
 
 void PhysWorld::clear() {
     bindings.clear();
+    active_trigger_pairs.clear();
     next_collider_id_value = 1;
 }
 
@@ -132,6 +133,10 @@ std::vector<std::string> PhysWorld::overlapAll(
     (void)shape;
     (void)filter;
     return {};
+}
+
+void PhysWorld::updateTriggers(GameContext &ctx) {
+    (void)ctx;
 }
 
 void PhysWorld::enqueueDebugDraw(

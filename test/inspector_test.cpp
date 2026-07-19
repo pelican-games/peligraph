@@ -284,6 +284,28 @@ TEST_CASE("WP164 widget planning is schema-only and covers every inspector field
     REQUIRE(synthetic_plan[3].kind == InspectorWidgetKind::StringInput);
 }
 
+TEST_CASE("WP179 collider trigger is planned as a schema-derived checkbox",
+          "[imgui][inspector][schema][collider][trigger][wp179]") {
+    ServiceHarness harness;
+    const auto object = harness.service->getComponents(
+        {.name = std::string{"Root"}});
+    const auto &collider = componentNamed(object, "collider");
+
+    const auto trigger_schema = std::find_if(
+        collider.schema_fields.begin(), collider.schema_fields.end(),
+        [](const auto &field) { return field.name == "trigger"; });
+    REQUIRE(trigger_schema != collider.schema_fields.end());
+    REQUIRE(trigger_schema->type == StructFieldType::Bool);
+
+    const auto plan = makeInspectorWidgetPlan(collider);
+    const auto trigger_widget = std::find_if(
+        plan.begin(), plan.end(),
+        [](const auto &widget) { return widget.field_name == "trigger"; });
+    REQUIRE(trigger_widget != plan.end());
+    REQUIRE(trigger_widget->json_pointer == "/trigger");
+    REQUIRE(trigger_widget->kind == InspectorWidgetKind::BooleanCheckbox);
+}
+
 TEST_CASE("WP167 inspector distinguishes repeated behavior attachments and pending DLL state",
           "[imgui][inspector][behavior][wp167][schema][pending]") {
     ServiceHarness harness;

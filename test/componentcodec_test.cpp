@@ -9,6 +9,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
@@ -183,6 +184,24 @@ TEST_CASE("animation and sprite authored booleans remain JSON booleans after run
             REQUIRE(canonical.at("billboard") == "y_axis");
         }
     }
+}
+
+TEST_CASE("collider trigger is an additive default-false boolean schema field",
+          "[component-codec][collider][trigger][wp179]") {
+    const auto &codec = requireComponentCodec("collider");
+    const auto fields = codec.fieldSchema();
+    const auto trigger = std::find_if(fields.begin(), fields.end(), [](const auto &field) {
+        return field.name == "trigger";
+    });
+    REQUIRE(trigger != fields.end());
+    REQUIRE(trigger->type == StructFieldType::Bool);
+
+    const auto canonical = canonicalThroughRuntime(
+        codec, nlohmann::json{{"name", "collider"},
+                              {"shape", "sphere"},
+                              {"radius", 1.0f}});
+    REQUIRE(canonical.at("trigger").is_boolean());
+    REQUIRE_FALSE(canonical.at("trigger").get<bool>());
 }
 
 TEST_CASE("every component codec rejects invalid type range and unknown key fixtures",
