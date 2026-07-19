@@ -57,7 +57,7 @@ ctest --test-dir ./build -C Debug --output-on-failure
 
 | WP | 内容 | 状態 |
 |----|------|------|
-| 176 | VRMA-C0 — `.vrma` コンテナ decode + typed channel | 進行中(並走 worktree) |
+| 177 | VRMA-R0 — versioned retarget/application profile | 進行中(並走 worktree) |
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
@@ -65,7 +65,42 @@ ctest --test-dir ./build -C Debug --output-on-failure
 
 ## 2. WP 詳細
 
-### WP176: VRMA-C0 — `.vrma` コンテナ decode + typed channel
+### WP177: VRMA-R0 — versioned retarget/application profile
+
+参照: **`docs/design_animation_graph.md` v2.1 §4 が正**(v2 レビュー
+§4.5 の 5 WP 分割の第 4)+ WP176 成果物
+(`src/core/loader/vrmadecoder.*`・`src/core/model/vrmaanimation.hpp` —
+VrmaClip/typed channel/source rig が入力)。
+
+- **versioned retarget/application profile**: source rig(VrmaClip が
+  保持)→ target rig(VRM-S0 の humanoid map)への写像を、版付き
+  profile として実装。humanoid bone 名対応・**rest/T-pose 正規化**
+  (source と target の rest 姿勢差の吸収)・**optional bone**
+  (target に無い bone の skip 規則)・**hips scale**(身長差の
+  平行移動スケール)
+- **hips translation の root motion 自動解釈は引き続き禁止**(hips は
+  scale 適用の平行移動として retarget — 抽出 policy は将来の profile
+  項目として枠だけ)
+- 出力 = target rig 空間の evaluate 可能な中間表現(**適用系には
+  接続しない** — AnimationSource 化・graph 接続は VRMA-I0)
+- **DCC provenance を retarget profile にも保持**(v2 レビュー指摘 —
+  source clip の provenance + profile version の合成)
+- 数値検証: 恒等 rig(source=target)で retarget 結果が入力と一致
+  (量子化誤差の許容を明示)・身長 2 倍 rig で hips translation が
+  2 倍・optional bone 欠落で該当 track だけ skip・T-pose 差のある
+  合成 rig で幾何的に正しい世界姿勢(手計算 fixture)
+
+依存: WP176(済)+ VRM-S0(済 WP111)。見積: 大(リターゲットの
+数学が本体 — 慎重に)。
+排他: retarget 面(新設ファイル推奨)+ fixture。**アニメ実行系
+(AnimationServiceV1/anim_graph/abi_v1.hpp 凍結)・renderer・
+communication・editor 面に触らない**。
+
+受け入れ = §4 逐語(rest/T-pose 正規化・optional bone・hips scale・
+provenance)+ 数値 fixture 4 系統 + 既存全テスト無変更 + golden
+SKIP 0・byte 不変 + player 8 秒 + CI green
+
+### WP176(済 2026-07-19): VRMA-C0 — `.vrma` コンテナ decode + typed channel
 
 参照: **`docs/design_animation_graph.md` v2.1 §4 が正**(条件付き
 承認済み — v2 レビュー §4.5 の 5 WP 分割の第 3。VRM-S0/S1 は済):
