@@ -258,6 +258,10 @@ add_executable(pelican_test_vrm_fixture_writer vrm_fixture_writer.cpp)
 set_target_properties(pelican_test_vrm_fixture_writer PROPERTIES CXX_STANDARD 20)
 target_link_libraries(pelican_test_vrm_fixture_writer PRIVATE nlohmann_json)
 
+add_executable(pelican_test_vrma_fixture_writer vrma_fixture_writer.cpp)
+set_target_properties(pelican_test_vrma_fixture_writer PROPERTIES CXX_STANDARD 20)
+target_link_libraries(pelican_test_vrma_fixture_writer PRIVATE nlohmann_json)
+
 add_executable(pelican_test_vrm_expression_preview_writer
   vrm_expression_preview_writer.cpp)
 set_target_properties(pelican_test_vrm_expression_preview_writer
@@ -282,6 +286,7 @@ pelican_define_test(vrmsemantic_test pelican_core tinygltf)
 target_compile_definitions(pelican_test_vrmsemantic_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
+pelican_define_test(vrmadecoder_test pelican_core tinygltf picosha2)
 pelican_define_test(animation_probe_test pelican_core glm)
 pelican_define_test(animation_jobs_test pelican_core glm)
 pelican_define_test(animgraph_test pelican_core glm)

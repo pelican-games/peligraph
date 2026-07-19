@@ -3,6 +3,7 @@ target_sources(pelican_core PRIVATE
     gltf.cpp
     modeltemplate.cpp
     skeletalanimation.cpp
+    vrmaanimation.hpp
     vrmfirstperson.cpp
     vrmsemantic.cpp
 )

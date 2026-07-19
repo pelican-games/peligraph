@@ -13,4 +13,5 @@ target_sources(pelican_core PRIVATE
     editorprojectionadapters.cpp
     basicconfig.cpp
     scene.cpp
+    vrmadecoder.cpp
 )
