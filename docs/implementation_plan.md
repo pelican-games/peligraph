@@ -57,7 +57,7 @@ ctest --test-dir ./build -C Debug --output-on-failure
 
 | WP | 内容 | 状態 |
 |----|------|------|
-| 178 | VRMA-I0 — AnimationSource/graph 接続 + hot reload generation | 進行中(並走 worktree) |
+| 179 | E2 — 物理トリガー(OverlapEnter/Exit) | 進行中(並走 worktree) |
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
@@ -65,7 +65,46 @@ ctest --test-dir ./build -C Debug --output-on-failure
 
 ## 2. WP 詳細
 
-### WP178: VRMA-I0 — AnimationSource/graph 接続 + hot reload generation
+### WP179: E2 — 物理トリガー(OverlapEnter/Exit)
+
+前提: **`docs/design_event_layer.md` v1.1 = ユーザーレビュー承認済み
+(2026-07-19)**。承認範囲 = Enter/Exit のみ(OverlapStay は不採用 —
+需要が出たら additive)。
+
+参照: design_event_layer v1.1 §3 + `docs/design_physics_queries.md`
+(collider/PhysWorld の規範)。
+
+- scene JSON: collider に `trigger: true`(既存 WP151 codec の
+  boolean field として additive — schema/codec の更新込み)。trigger
+  collider は物理衝突せず検知領域としてのみ働く
+- **PhysWorld が毎フレーム overlap 集合の差分検出** → 差分だけを
+  `OverlapEnter { self, other }` / `OverlapExit { self, other }`
+  (self/other = EntityId)として emit。押しっぱなし中は毎フレーム
+  飛ばない
+- 配送は E1 バスの規範どおり(次フレーム先頭・emit 順安定)。
+  イベント定義は PELICAN_REGISTER_EVENT の通常経路(特権なし)
+- **Exit の保証**: entity destroy・collider remove・scene 遷移で
+  「Enter したが Exit が来ない」を作らない(destroy 時に pending
+  Exit を発行 or 規範として「遷移時は全 clear・Exit なし」を明示 —
+  どちらを選んだかレポートに明記。推奨 = destroy/remove では Exit
+  発行・scene 全遷移では発行しない(WP90 full reset と整合))
+- 決定性: 差分検出の列挙順を安定化(EntityId 順等の決定的順序)。
+  リプレイ二回で Enter/Exit 列 byte 一致の fixture
+- 対称 pair(A-B)の重複抑止規則(self=A/other=B と self=B/other=A
+  の両方を発行するのか片方かを規範化 — 推奨 = 両方発行(各 self
+  視点で受けられる)・順序は EntityId 順で安定)
+
+依存: E1(済 WP56)+ WP151(codec)+ WP153/158(collider
+adapter — 変更ではなく整合確認)。見積: 中。
+排他: phys の trigger/差分検出面 + collider codec の trigger field +
+fixture。**イベントバス本体・schema 三 header・editor 面・renderer に
+触らない**。
+
+受け入れ = 上記規範(Exit 保証・対称 pair・安定順)+ リプレイ決定性
+fixture + 既存全テスト無変更 + golden SKIP 0・byte 不変 + player 8 秒
++ CI green
+
+### WP178(済 2026-07-19): VRMA-I0 — AnimationSource/graph 接続 + hot reload generation
 
 参照: **`docs/design_animation_graph.md` v2.1 §4(5 分割の第 5)+
 WP177 レポート §6 の引き継ぎ表が正**
