@@ -93,6 +93,19 @@ enum class AnimationSinkKind : std::uint32_t {
     skeletal_pose = 1,
     expression_curve = 2,
 };
+enum class AnimationClipKindV1 : std::uint32_t {
+    skeletal_clip = 0,
+    vrma_retargeted_clip = 1,
+};
+enum class AnimationSourceAuthorityV1 : std::uint32_t {
+    graph_apply = 0,
+    timeline_extract_only = 1,
+};
+enum AnimationTypedChannelFlagsV1 : std::uint32_t {
+    animation_typed_channel_none = 0,
+    animation_typed_channel_expression = 1u << 0u,
+    animation_typed_channel_gaze = 1u << 1u,
+};
 enum class AnimationNotificationKind : std::uint32_t {
     set_time = 0,
     replay_seek = 1,
@@ -155,6 +168,16 @@ struct ClipMetadataV1 {
     std::uint32_t sampling_context_generation;
     std::uint32_t cursor_generation;
     std::uint32_t reserved2;
+    // Additive VRMA-I0 tail. Older callers may stop at reserved2.
+    AnimationClipKindV1 clip_kind;
+    std::uint32_t typed_channel_flags;
+    std::uint32_t expression_channel_count;
+    std::uint32_t profile_version;
+    std::uint64_t asset_identity;
+    std::uint32_t asset_generation;
+    std::uint32_t reserved3;
+    std::uint8_t source_rig_sha256[32];
+    std::uint8_t target_rig_sha256[32];
 };
 
 struct CrossingV1 {
@@ -375,6 +398,43 @@ struct SamplePoseAtDescV1 {
     PoseHandle output_pose;
 };
 
+// Names point into the immutable source asset and are borrowed only for the
+// duration of sample_animation_source_at. Callers that retain them must copy.
+struct AnimationExpressionSampleV1 {
+    std::uint32_t element_size;
+    std::uint32_t version;
+    const char *name;
+    std::uint32_t name_size;
+    float weight;
+    std::uint32_t preset;
+    std::uint32_t reserved0;
+};
+
+struct AnimationGazeSampleV1 {
+    std::uint32_t struct_size;
+    std::uint32_t version;
+    std::uint32_t reserved0;
+    std::uint32_t reserved1;
+    std::uint32_t present;
+    std::uint32_t offset_present;
+    Vec4fV1 offset_from_head_bone;
+    QuatfV1 rotation;
+};
+
+struct SampleAnimationSourceAtDescV1 {
+    std::uint32_t struct_size;
+    std::uint32_t version;
+    std::uint32_t reserved0;
+    std::uint32_t reserved1;
+    ClipHandle clip;
+    double time_seconds;
+    PoseHandle output_pose;
+    AnimationExpressionSampleV1 *expressions;
+    std::uint32_t expression_capacity;
+    std::uint32_t expression_count;
+    AnimationGazeSampleV1 gaze;
+};
+
 struct BlendNormalDescV1 {
     std::uint32_t struct_size;
     std::uint32_t version;
@@ -461,6 +521,18 @@ struct ClaimAnimationSourceDescV1 {
     AnimationSourceHandle source;
 };
 
+struct ClaimAnimationSourcePolicyDescV1 {
+    std::uint32_t struct_size;
+    std::uint32_t version;
+    std::uint32_t reserved0;
+    std::uint32_t reserved1;
+    AnimationOwnerHandle owner;
+    AnimationSinkHandle sink;
+    std::uint32_t source_ordinal;
+    AnimationSourceAuthorityV1 authority;
+    AnimationSourceHandle source;
+};
+
 struct ReleaseAnimationSourceDescV1 {
     std::uint32_t struct_size;
     std::uint32_t version;
@@ -512,11 +584,14 @@ enum AnimationServiceCapabilityBitsV1 : std::uint64_t {
     animation_service_phase_registration = 1ull << 2,
     animation_service_source_authority = 1ull << 3,
     animation_service_notifications = 1ull << 4,
+    animation_service_typed_source_sampling = 1ull << 5,
+    animation_service_extract_only_authority = 1ull << 6,
 };
 inline constexpr std::uint64_t animationServiceCapabilitiesV1 =
     animation_service_asset_resolution | animation_service_pose_jobs |
     animation_service_phase_registration | animation_service_source_authority |
-    animation_service_notifications;
+    animation_service_notifications | animation_service_typed_source_sampling |
+    animation_service_extract_only_authority;
 
 struct AnimationServiceV1 {
     std::uint32_t struct_size;
@@ -549,6 +624,9 @@ struct AnimationServiceV1 {
     Status (*handoff_source)(void *, HandoffAnimationSourceDescV1 *);
     Status (*notify)(void *, const AnimationNotificationDescV1 *);
     Status (*publish_animation_frame_from_source)(void *, const PublishAnimationFrameFromSourceDescV1 *);
+    // Additive VRMA-I0 tail.
+    Status (*sample_animation_source_at)(void *, SampleAnimationSourceAtDescV1 *);
+    Status (*claim_source_policy)(void *, ClaimAnimationSourcePolicyDescV1 *);
 };
 
 using GetAnimationServiceV1Fn = Status (*)(void *, std::uint32_t, AnimationServiceV1 *);

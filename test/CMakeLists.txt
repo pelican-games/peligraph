@@ -291,6 +291,8 @@ pelican_define_test(vrmaretarget_test pelican_core glm)
 pelican_define_test(animation_probe_test pelican_core glm)
 pelican_define_test(animation_jobs_test pelican_core glm)
 pelican_define_test(animgraph_test pelican_core glm)
+pelican_define_test(vrmasource_test GPU pelican_core VulkanMemoryAllocator
+                    VulkanMemoryAllocator-Hpp glm)
 target_compile_definitions(pelican_test_animation_probe_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )

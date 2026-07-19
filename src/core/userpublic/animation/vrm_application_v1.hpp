@@ -56,6 +56,7 @@ enum ApplicationServiceCapabilityBitsV1 : std::uint64_t {
     application_service_material_publish = 1ull << 3,
     application_service_phase_evaluator = 1ull << 4,
     application_service_diagnostics = 1ull << 5,
+    application_service_typed_animation_sink = 1ull << 6,
 };
 
 inline constexpr std::uint64_t applicationServiceCapabilitiesV1 =
@@ -64,7 +65,8 @@ inline constexpr std::uint64_t applicationServiceCapabilitiesV1 =
     application_service_morph_publish |
     application_service_material_publish |
     application_service_phase_evaluator |
-    application_service_diagnostics;
+    application_service_diagnostics |
+    application_service_typed_animation_sink;
 
 enum class ApplicationDiagnosticCodeV1 : std::uint32_t {
     unsupported_material_color_type = 1,
@@ -93,6 +95,28 @@ struct SetExpressionInputDescV1 {
     float look_at_pitch_degrees = 0.0f;
     std::uint32_t flags = expression_input_none;
     std::uint32_t reserved2 = 0;
+};
+
+// Typed animation-source input. Unlike the general input setter, the frame
+// revision is explicit so a base-pose evaluator can join the already-open VRM
+// application transaction for that same frame.
+struct SetTypedAnimationInputDescV1 {
+    std::uint32_t struct_size = sizeof(SetTypedAnimationInputDescV1);
+    std::uint32_t version = applicationDescriptorVersionV1;
+    std::uint32_t reserved0 = 0;
+    std::uint32_t reserved1 = 0;
+    Animation::InstanceHandle instance{};
+    const ExpressionWeightV1 *weights = nullptr;
+    std::uint32_t weight_count = 0;
+    std::uint32_t source_ordinal = 0;
+    std::uint64_t frame_revision = 0;
+    float look_at_yaw_degrees = 0.0f;
+    float look_at_pitch_degrees = 0.0f;
+    std::uint32_t flags = expression_input_none;
+    std::uint32_t reserved2 = 0;
+    std::uint64_t asset_identity = 0;
+    std::uint32_t asset_generation = 0;
+    std::uint32_t profile_version = 0;
 };
 
 struct SnapshotExpressionInputDescV1 {
@@ -201,6 +225,9 @@ struct ApplicationServiceV1 {
                                                     const PublishApplicationFrameDescV1 *) = nullptr;
     Animation::Status (*discard_application_frame)(void *,
                                                     const DiscardApplicationFrameDescV1 *) = nullptr;
+    // Additive VRMA-I0 tail.
+    Animation::Status (*set_typed_animation_inputs)(
+        void *, const SetTypedAnimationInputDescV1 *) = nullptr;
 };
 
 // Separate additive negotiation surface. animation/abi_v1.hpp remains frozen.

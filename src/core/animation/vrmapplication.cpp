@@ -429,6 +429,9 @@ struct ApplicationServiceRuntime::Impl {
         float look_at_yaw_degrees = 0.0f;
         float look_at_pitch_degrees = 0.0f;
         std::uint32_t flags = expression_input_none;
+        std::uint64_t asset_identity = 0;
+        std::uint32_t asset_generation = 0;
+        std::uint32_t profile_version = 0;
     };
     struct FrameState {
         ApplicationFrameHandle handle{};
@@ -522,6 +525,88 @@ struct ApplicationServiceRuntime::Impl {
             }
             runtime->phase_frames.erase(desc->instance.identity);
             runtime->last_published_revisions.erase(desc->instance.identity);
+        }
+        runtime->inputs.insert_or_assign(desc->instance.identity,
+                                         std::move(next));
+        return Status::ok;
+    }
+
+    static Status setTypedInputs(
+        void *context, const SetTypedAnimationInputDescV1 *desc) {
+        if (!context || !desc) return Status::invalid_argument;
+        if (const auto status = validateDescriptor(*desc); status != Status::ok)
+            return status;
+        if (desc->reserved2 != 0 || !Animation::isValid(desc->instance) ||
+            desc->frame_revision == 0 || desc->asset_identity == 0 ||
+            desc->asset_generation == 0 || desc->profile_version == 0 ||
+            (desc->weight_count != 0 && !desc->weights) ||
+            !std::isfinite(desc->look_at_yaw_degrees) ||
+            !std::isfinite(desc->look_at_pitch_degrees) ||
+            (desc->flags & ~(expression_input_look_at |
+                             expression_input_reset_history |
+                             expression_input_discontinuity)) != 0)
+            return Status::invalid_argument;
+        auto *runtime = self(context);
+        std::scoped_lock lock{runtime->mutex};
+        const auto view = runtime->model(desc->instance);
+        if (!view) return Status::stale_generation;
+        const auto previous = runtime->inputs.find(desc->instance.identity);
+        if (previous != runtime->inputs.end() &&
+            sameInstance(previous->second.instance, desc->instance) &&
+            desc->frame_revision <= previous->second.input_revision)
+            return Status::duplicate_revision;
+
+        InputState next;
+        next.instance = desc->instance;
+        next.source_ordinal = desc->source_ordinal;
+        next.input_revision = desc->frame_revision;
+        next.look_at_yaw_degrees = desc->look_at_yaw_degrees;
+        next.look_at_pitch_degrees = desc->look_at_pitch_degrees;
+        next.flags = desc->flags;
+        next.asset_identity = desc->asset_identity;
+        next.asset_generation = desc->asset_generation;
+        next.profile_version = desc->profile_version;
+        for (std::uint32_t index = 0; index < desc->weight_count; ++index) {
+            const auto &weight = desc->weights[index];
+            if (weight.element_size < sizeof(ExpressionWeightV1) ||
+                weight.version != applicationDescriptorVersionV1 ||
+                weight.reserved0 != 0 ||
+                (!weight.name && weight.name_size != 0) ||
+                !std::isfinite(weight.value))
+                return Status::invalid_argument;
+            const auto name = std::string{weight.name ? weight.name : "",
+                                          weight.name_size};
+            if (name.empty() || !isExpression(*view->semantic, name))
+                return Status::not_found;
+            if (!next.weights.emplace(
+                    name, std::clamp(weight.value, 0.0f, 1.0f)).second)
+                return Status::invalid_argument;
+        }
+
+        // parameter_snapshot may already have materialized the previous input
+        // for this revision. Base-pose typed input replaces that immutable
+        // snapshot before world_post_process, keeping all consumers on the
+        // same frame revision.
+        if (const auto pending = runtime->phase_frames.find(
+                desc->instance.identity);
+            pending != runtime->phase_frames.end()) {
+            auto *frame = runtime->find(pending->second);
+            if (!frame || frame->snapshot.frame_revision != desc->frame_revision)
+                return Status::phase_order_error;
+            if (frame->stage != FrameStage::snapshot)
+                return Status::phase_order_error;
+            frame->snapshot.instance = next.instance;
+            frame->snapshot.input_revision = next.input_revision;
+            frame->snapshot.frame_revision = desc->frame_revision;
+            frame->snapshot.source_ordinal = next.source_ordinal;
+            frame->snapshot.flags = next.flags;
+            frame->snapshot.look_at_enabled =
+                (next.flags & expression_input_look_at) != 0;
+            frame->snapshot.look_at_yaw_degrees =
+                next.look_at_yaw_degrees;
+            frame->snapshot.look_at_pitch_degrees =
+                next.look_at_pitch_degrees;
+            frame->snapshot.expression_weights = next.weights;
         }
         runtime->inputs.insert_or_assign(desc->instance.identity,
                                          std::move(next));
@@ -806,8 +891,14 @@ struct ApplicationServiceRuntime::Impl {
     }
 
     Status lookAtForPhase(const Animation::AnimationPhaseContextV1 &context) {
-        const auto found = phase_frames.find(context.instance.identity);
-        if (found == phase_frames.end()) return Status::ok;
+        auto found = phase_frames.find(context.instance.identity);
+        if (found == phase_frames.end()) {
+            if (const auto status = snapshotForPhase(context);
+                status != Status::ok)
+                return status;
+            found = phase_frames.find(context.instance.identity);
+            if (found == phase_frames.end()) return Status::ok;
+        }
         EvaluateExpressionLookAtDescV1 request;
         request.snapshot = found->second;
         if (const auto status = evaluateLookAt(this, &request);
@@ -1069,6 +1160,8 @@ Status getApplicationServiceV1(std::uint32_t client_service_version,
             ApplicationServiceRuntime::Impl::publish;
         produced.discard_application_frame =
             ApplicationServiceRuntime::Impl::discard;
+        produced.set_typed_animation_inputs =
+            ApplicationServiceRuntime::Impl::setTypedInputs;
         std::memcpy(out_service, &produced,
                     std::min<std::size_t>(caller_size, sizeof(produced)));
         return Status::ok;

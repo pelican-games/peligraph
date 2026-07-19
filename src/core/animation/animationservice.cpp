@@ -2,6 +2,7 @@
 
 #include "animationjobs.hpp"
 #include "animationprobe.hpp"
+#include "vrmaretarget.hpp"
 #include "../asset/model.hpp"
 #include "../container.hpp"
 #include "../ecs/core.hpp"
@@ -12,6 +13,7 @@
 #include "../userpublic/details/reload/registrationowner.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -51,6 +53,23 @@ AnimationOwnerHandle publicOwner(internal::RegistrationOwner owner, std::uint32_
 
 std::string_view checkedString(const char *data, std::uint32_t size) {
     return data == nullptr ? std::string_view{} : std::string_view{data, size};
+}
+
+bool decodeSha256(std::string_view text, std::uint8_t (&output)[32]) {
+    if (text.size() != 64) return false;
+    const auto nibble = [](char value) -> int {
+        if (value >= '0' && value <= '9') return value - '0';
+        if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+        if (value >= 'A' && value <= 'F') return value - 'A' + 10;
+        return -1;
+    };
+    for (std::size_t index = 0; index < 32; ++index) {
+        const auto high = nibble(text[index * 2]);
+        const auto low = nibble(text[index * 2 + 1]);
+        if (high < 0 || low < 0) return false;
+        output[index] = static_cast<std::uint8_t>((high << 4) | low);
+    }
+    return true;
 }
 
 } // namespace
@@ -93,11 +112,21 @@ struct AnimationServiceRuntime::Impl {
         ClipHandle clip{};
         bool active{true};
     };
+    struct VrmaClipRecord {
+        ClipHandle handle{};
+        ObjectRecord *object{};
+        std::string name;
+        std::shared_ptr<const VrmaRetargetedClip> clip;
+        RigHandle target_rig{};
+        PoseLayoutHandle target_layout{};
+    };
     struct SourceRecord {
         AnimationSourceHandle handle{};
         AnimationOwnerHandle owner{};
         AnimationSinkHandle sink{};
         std::uint32_t ordinal{};
+        AnimationSourceAuthorityV1 authority{
+            AnimationSourceAuthorityV1::graph_apply};
         bool active{true};
     };
     struct PhaseRecord {
@@ -139,6 +168,7 @@ struct AnimationServiceRuntime::Impl {
     std::unordered_map<std::uint64_t, PoseRecord> poses;
     std::unordered_map<std::uint64_t, std::uint32_t> stale_poses;
     std::unordered_map<std::uint64_t, CursorRecord> cursors;
+    std::unordered_map<std::uint64_t, VrmaClipRecord> vrma_clips;
     std::unordered_map<std::uint64_t, SourceRecord> sources;
     std::unordered_map<std::uint64_t, PhaseRecord> phases;
     std::vector<BlockedCommit> blocked_commits;
@@ -147,6 +177,7 @@ struct AnimationServiceRuntime::Impl {
     Phase active_phase{Phase::parameter_snapshot};
     std::optional<StagedFrame> staged_frame;
     std::uint64_t next_identity{1};
+    std::uint64_t next_vrma_identity{1ull << 63u};
     std::uint64_t registration_generation{1};
 
     AnimationOwnerHandle ensureOwner(internal::RegistrationOwner internal_owner) {
@@ -206,6 +237,109 @@ struct AnimationServiceRuntime::Impl {
         return Status::ok;
     }
 
+    Status resolveVrmaClipResource(ClipHandle clip, VrmaClipRecord *&out) {
+        out = nullptr;
+        if (!isValid(clip)) return Status::invalid_handle;
+        const auto found = vrma_clips.find(clip.identity);
+        if (found == vrma_clips.end()) return Status::invalid_handle;
+        auto &resource = found->second;
+        if (resource.handle.generation != clip.generation)
+            return Status::stale_generation;
+        if (!resource.clip || !resource.object || !resource.object->asset)
+            return Status::stale_generation;
+        const auto &rig = resource.object->asset->rig;
+        if (!sameHandle(resource.target_rig, rig.handle) ||
+            !sameHandle(resource.target_layout, rig.layout))
+            return Status::stale_generation;
+        out = &resource;
+        return Status::ok;
+    }
+
+    Status validateVrmaRegistration(
+        const ObjectRecord &object,
+        const std::shared_ptr<const VrmaRetargetedClip> &clip) const {
+        if (!clip || !object.asset || !object.model ||
+            !(clip->end > clip->start) ||
+            clip->target_rest_pose.size() != object.model->nodes.size() ||
+            clip->profile.version == 0 ||
+            clip->profile.provenance.profile_version == 0)
+            return Status::invalid_argument;
+        std::uint8_t source_hash[32]{};
+        std::uint8_t target_hash[32]{};
+        if (!decodeSha256(clip->profile.provenance.source_rig_sha256,
+                          source_hash) ||
+            !decodeSha256(clip->profile.provenance.target_rig_sha256,
+                          target_hash))
+            return Status::invalid_argument;
+        for (const auto &channel : clip->body_channels) {
+            if (channel.target_node < 0 ||
+                static_cast<std::size_t>(channel.target_node) >=
+                    object.model->nodes.size())
+                return Status::incompatible_layout;
+        }
+        return Status::ok;
+    }
+
+    Status registerVrmaSource(
+        std::string object_name, std::string source_name,
+        std::shared_ptr<const VrmaRetargetedClip> clip) {
+        std::scoped_lock lock{mutex};
+        if (source_name.empty()) return Status::invalid_argument;
+        const auto object = objects.find(object_name);
+        if (object == objects.end()) return Status::not_found;
+        if (const auto status = validateVrmaRegistration(*object->second, clip);
+            status != Status::ok)
+            return status;
+        for (const auto &native : object->second->asset->clips)
+            if (native.source && native.source->name == source_name)
+                return Status::invalid_argument;
+        for (const auto &[_, source] : vrma_clips)
+            if (source.object == object->second.get() &&
+                source.name == source_name)
+                return Status::invalid_argument;
+        VrmaClipRecord record;
+        record.handle = {next_vrma_identity++, 1, 0};
+        record.object = object->second.get();
+        record.name = std::move(source_name);
+        record.clip = std::move(clip);
+        record.target_rig = record.object->asset->rig.handle;
+        record.target_layout = record.object->asset->rig.layout;
+        vrma_clips.emplace(record.handle.identity, std::move(record));
+        return Status::ok;
+    }
+
+    Status reloadVrmaSource(
+        std::string_view object_name, std::string_view source_name,
+        std::shared_ptr<const VrmaRetargetedClip> replacement) {
+        std::scoped_lock lock{mutex};
+        const auto object = objects.find(std::string{object_name});
+        if (object == objects.end()) return Status::not_found;
+        if (const auto status =
+                validateVrmaRegistration(*object->second, replacement);
+            status != Status::ok)
+            return status;
+        auto found = std::find_if(
+            vrma_clips.begin(), vrma_clips.end(), [&](const auto &entry) {
+                return entry.second.object == object->second.get() &&
+                       entry.second.name == source_name;
+            });
+        if (found == vrma_clips.end()) return Status::not_found;
+        auto &resource = found->second;
+        for (auto &[_, cursor] : cursors) {
+            if (!cursor.active ||
+                cursor.clip.identity != resource.handle.identity)
+                continue;
+            (void)legacy_runtime.destroyCursor(cursor.handle);
+            cursor.active = false;
+        }
+        if (++resource.handle.generation == 0)
+            ++resource.handle.generation;
+        resource.clip = std::move(replacement);
+        resource.target_rig = object->second->asset->rig.handle;
+        resource.target_layout = object->second->asset->rig.layout;
+        return Status::ok;
+    }
+
     SinkRecord *findSink(AnimationSinkHandle sink) {
         if (!isValid(sink)) return nullptr;
         const auto found = sinks.find(sink.identity);
@@ -233,6 +367,98 @@ struct AnimationServiceRuntime::Impl {
             stale != stale_poses.end() && stale->second == pose.generation)
             return Status::stale_generation;
         return ProbeRuntime::validatePoseHandle(pose);
+    }
+
+    Status sampleVrma(
+        const VrmaClipRecord &resource, double time_seconds, PoseRecord &pose,
+        AnimationExpressionSampleV1 *expressions,
+        std::uint32_t expression_capacity,
+        std::uint32_t *expression_count,
+        AnimationGazeSampleV1 *gaze) {
+        if (!std::isfinite(time_seconds) || !resource.clip ||
+            !resource.object || !resource.object->asset)
+            return Status::invalid_argument;
+        const auto required = static_cast<std::uint32_t>(
+            resource.clip->expression_channels.size());
+        if (expression_count) {
+            *expression_count = required;
+            if (required > expression_capacity ||
+                (required != 0 && expressions == nullptr))
+                return Status::buffer_too_small;
+        }
+        const auto &rig = resource.object->asset->rig;
+        if (!sameHandle(pose.view.layout, resource.target_layout) ||
+            pose.view.joint_count != rig.layout_to_original.size() ||
+            !pose.view.translations || !pose.view.rotations ||
+            !pose.view.scales)
+            return Status::incompatible_layout;
+        try {
+            const auto sample = resource.clip->sample(
+                static_cast<float>(time_seconds));
+            if (sample.local_transforms.size() !=
+                resource.object->model->nodes.size())
+                return Status::incompatible_layout;
+            for (std::size_t layout_node = 0;
+                 layout_node < rig.layout_to_original.size(); ++layout_node) {
+                const auto original_node = rig.layout_to_original[layout_node];
+                if (original_node >= sample.local_transforms.size())
+                    return Status::incompatible_layout;
+                const auto &value = sample.local_transforms[original_node];
+                pose.view.translations[layout_node] = {
+                    value.translation.x, value.translation.y,
+                    value.translation.z, 0.0f};
+                pose.view.rotations[layout_node] = {
+                    value.rotation.x, value.rotation.y, value.rotation.z,
+                    value.rotation.w};
+                pose.view.scales[layout_node] = {
+                    value.scale.x, value.scale.y, value.scale.z, 0.0f};
+            }
+            if (sample.expressions.size() != required)
+                return Status::invalid_argument;
+            if (expression_count) {
+                for (std::size_t index = 0;
+                     index < sample.expressions.size(); ++index) {
+                    const auto &value = sample.expressions[index];
+                    const auto &stable_name =
+                        resource.clip->expression_channels[index].expression;
+                    expressions[index] = {
+                        .element_size = sizeof(AnimationExpressionSampleV1),
+                        .version = descriptorVersionV1,
+                        .name = stable_name.data(),
+                        .name_size = static_cast<std::uint32_t>(
+                            stable_name.size()),
+                        .weight = value.weight,
+                        .preset = value.preset ? 1u : 0u,
+                        .reserved0 = 0,
+                    };
+                }
+            }
+            if (gaze) {
+                AnimationGazeSampleV1 produced{};
+                produced.struct_size = sizeof(produced);
+                produced.version = descriptorVersionV1;
+                produced.rotation.w = 1.0f;
+                if (sample.gaze) {
+                    produced.present = 1;
+                    produced.rotation = {
+                        sample.gaze->rotation.x, sample.gaze->rotation.y,
+                        sample.gaze->rotation.z, sample.gaze->rotation.w};
+                    if (sample.gaze->offset_from_head_bone) {
+                        produced.offset_present = 1;
+                        produced.offset_from_head_bone = {
+                            (*sample.gaze->offset_from_head_bone)[0],
+                            (*sample.gaze->offset_from_head_bone)[1],
+                            (*sample.gaze->offset_from_head_bone)[2], 0.0f};
+                    }
+                }
+                *gaze = produced;
+            }
+            return Status::ok;
+        } catch (const std::bad_alloc &) {
+            return Status::out_of_memory;
+        } catch (...) {
+            return Status::invalid_argument;
+        }
     }
 
     void registerObjectLocked(std::string name, const SkeletalModelData &model,
@@ -289,6 +515,12 @@ struct AnimationServiceRuntime::Impl {
         }
         for (const auto &binding : old_asset->skin_bindings)
             old_resources.push_back(binding.handle.identity);
+        for (auto &[identity, source] : vrma_clips) {
+            if (!affected.contains(source.object)) continue;
+            old_clips.insert(identity);
+            if (++source.handle.generation == 0)
+                ++source.handle.generation;
+        }
 
         const AnimationAsset *next_asset = nullptr;
         if (replacement) {
@@ -423,11 +655,13 @@ struct AnimationServiceRuntime::Impl {
         instances.clear();
         bindings.clear();
         clips.clear();
+        vrma_clips.clear();
         rigs.clear();
         objects.clear();
         assets.clear();
         owners.clear();
         ++next_identity;
+        ++next_vrma_identity;
         if (++registration_generation == 0) ++registration_generation;
     }
 
@@ -767,6 +1001,13 @@ struct AnimationServiceRuntime::Impl {
                 return Status::ok;
             }
         }
+        for (const auto &[_, clip] : runtime->vrma_clips) {
+            if (clip.object != object || clip.name != name) continue;
+            if (!sameHandle(clip.target_rig, desc->rig))
+                return Status::stale_generation;
+            desc->clip = clip.handle;
+            return Status::ok;
+        }
         return Status::not_found;
     }
 
@@ -828,9 +1069,66 @@ struct AnimationServiceRuntime::Impl {
 
     static Status getClipMetadata(void *context, ClipMetadataV1 *metadata) {
         if (!context || !metadata) return Status::invalid_argument;
-        if (const auto status = validateDescriptor(*metadata); status != Status::ok) return status;
+        constexpr auto minimum_size =
+            offsetof(ClipMetadataV1, reserved2) + sizeof(std::uint32_t);
+        if (const auto status = validateDescriptor(*metadata, minimum_size);
+            status != Status::ok)
+            return status;
         auto *runtime = self(context);
         std::scoped_lock lock{runtime->mutex};
+        if (auto vrma = runtime->vrma_clips.find(metadata->clip.identity);
+            vrma != runtime->vrma_clips.end()) {
+            VrmaClipRecord *resource{};
+            if (const auto status = runtime->resolveVrmaClipResource(
+                    metadata->clip, resource);
+                status != Status::ok)
+                return status;
+            const auto caller_size = metadata->struct_size;
+            ClipMetadataV1 produced{};
+            produced.struct_size = sizeof(produced);
+            produced.version = descriptorVersionV1;
+            produced.clip = resource->handle;
+            produced.source_rig = resource->target_rig;
+            produced.start_seconds = resource->clip->start;
+            produced.end_seconds = resource->clip->end;
+            produced.wrap_mode = WrapMode::repeat;
+            for (const auto &channel : resource->clip->body_channels)
+                produced.channel_kind_mask |=
+                    1u << static_cast<std::uint32_t>(
+                        channel.path == VrmaBodyPath::translation
+                            ? ChannelKind::translation
+                            : ChannelKind::rotation);
+            produced.annotation_identity = resource->handle.identity;
+            produced.annotation_generation = resource->handle.generation;
+            produced.sampling_context_generation =
+                resource->handle.generation;
+            produced.cursor_generation = resource->handle.generation;
+            produced.clip_kind =
+                AnimationClipKindV1::vrma_retargeted_clip;
+            if (!resource->clip->expression_channels.empty())
+                produced.typed_channel_flags |=
+                    animation_typed_channel_expression;
+            if (resource->clip->gaze_channel)
+                produced.typed_channel_flags |= animation_typed_channel_gaze;
+            produced.expression_channel_count =
+                static_cast<std::uint32_t>(
+                    resource->clip->expression_channels.size());
+            produced.profile_version =
+                resource->clip->profile.provenance.profile_version;
+            produced.asset_identity = resource->handle.identity;
+            produced.asset_generation = resource->handle.generation;
+            if (!decodeSha256(
+                    resource->clip->profile.provenance.source_rig_sha256,
+                    produced.source_rig_sha256) ||
+                !decodeSha256(
+                    resource->clip->profile.provenance.target_rig_sha256,
+                    produced.target_rig_sha256))
+                return Status::invalid_argument;
+            std::memcpy(metadata, &produced,
+                        std::min<std::size_t>(caller_size,
+                                              sizeof(produced)));
+            return Status::ok;
+        }
         std::pair<ObjectRecord *, const AnimationClipResource *> *found{};
         if (const auto status = runtime->resolveClipResource(metadata->clip, found);
             status != Status::ok)
@@ -851,6 +1149,9 @@ struct AnimationServiceRuntime::Impl {
         produced.annotation_generation = clip->handle.generation;
         produced.sampling_context_generation = clip->handle.generation;
         produced.cursor_generation = clip->handle.generation;
+        produced.clip_kind = AnimationClipKindV1::skeletal_clip;
+        produced.asset_identity = clip->handle.identity;
+        produced.asset_generation = clip->handle.generation;
         std::memcpy(metadata, &produced, std::min<std::size_t>(caller_size, sizeof(produced)));
         return Status::ok;
     }
@@ -861,6 +1162,22 @@ struct AnimationServiceRuntime::Impl {
         auto *runtime = self(context);
         std::scoped_lock lock{runtime->mutex};
         if (const auto status = runtime->validateOwner(desc->owner); status != Status::ok) return status;
+        if (runtime->vrma_clips.contains(desc->clip.identity)) {
+            VrmaClipRecord *resource{};
+            if (const auto status = runtime->resolveVrmaClipResource(
+                    desc->clip, resource);
+                status != Status::ok)
+                return status;
+            const auto duration = resource->clip->end - resource->clip->start;
+            const auto cursor = runtime->legacy_runtime.createCursor(
+                duration, WrapMode::repeat);
+            if (!isValid(cursor)) return Status::invalid_argument;
+            runtime->cursors.emplace(
+                cursor.identity,
+                CursorRecord{cursor, desc->owner, desc->clip, true});
+            desc->cursor = cursor;
+            return Status::ok;
+        }
         std::pair<ObjectRecord *, const AnimationClipResource *> *found{};
         if (const auto status = runtime->resolveClipResource(desc->clip, found);
             status != Status::ok)
@@ -895,6 +1212,20 @@ struct AnimationServiceRuntime::Impl {
         if (!std::isfinite(desc->time_seconds)) return Status::invalid_argument;
         auto *runtime = self(context);
         std::scoped_lock lock{runtime->mutex};
+        if (runtime->vrma_clips.contains(desc->clip.identity)) {
+            VrmaClipRecord *resource{};
+            if (const auto status = runtime->resolveVrmaClipResource(
+                    desc->clip, resource);
+                status != Status::ok)
+                return status;
+            PoseRecord *pose{};
+            if (const auto status = runtime->resolvePose(
+                    desc->output_pose, pose);
+                status != Status::ok)
+                return status;
+            return runtime->sampleVrma(*resource, desc->time_seconds, *pose,
+                                       nullptr, 0, nullptr, nullptr);
+        }
         std::pair<ObjectRecord *, const AnimationClipResource *> *clip{};
         if (const auto status = runtime->resolveClipResource(desc->clip, clip);
             status != Status::ok)
@@ -903,6 +1234,52 @@ struct AnimationServiceRuntime::Impl {
         if (const auto status = runtime->resolvePose(desc->output_pose, pose); status != Status::ok)
             return status;
         return samplePoseAt(*clip->first->asset, clip->second, desc->time_seconds, 1.0, true, 0.0, pose->view);
+    }
+
+    static Status sampleAnimationSource(
+        void *context, SampleAnimationSourceAtDescV1 *desc) {
+        if (!context || !desc) return Status::invalid_argument;
+        if (const auto status = validateDescriptor(*desc);
+            status != Status::ok)
+            return status;
+        if (!std::isfinite(desc->time_seconds) ||
+            (desc->expression_capacity != 0 && !desc->expressions))
+            return Status::invalid_argument;
+        if (const auto status = validateDescriptor(desc->gaze);
+            status != Status::ok)
+            return status;
+        auto *runtime = self(context);
+        std::scoped_lock lock{runtime->mutex};
+        PoseRecord *pose{};
+        if (const auto status = runtime->resolvePose(desc->output_pose, pose);
+            status != Status::ok)
+            return status;
+        if (runtime->vrma_clips.contains(desc->clip.identity)) {
+            VrmaClipRecord *resource{};
+            if (const auto status = runtime->resolveVrmaClipResource(
+                    desc->clip, resource);
+                status != Status::ok)
+                return status;
+            return runtime->sampleVrma(
+                *resource, desc->time_seconds, *pose, desc->expressions,
+                desc->expression_capacity, &desc->expression_count,
+                &desc->gaze);
+        }
+        std::pair<ObjectRecord *, const AnimationClipResource *> *clip{};
+        if (const auto status = runtime->resolveClipResource(desc->clip, clip);
+            status != Status::ok)
+            return status;
+        const auto status = samplePoseAt(
+            *clip->first->asset, clip->second, desc->time_seconds, 1.0, true,
+            0.0, pose->view);
+        if (status != Status::ok) return status;
+        desc->expression_count = 0;
+        AnimationGazeSampleV1 gaze{};
+        gaze.struct_size = sizeof(gaze);
+        gaze.version = descriptorVersionV1;
+        gaze.rotation.w = 1.0f;
+        desc->gaze = gaze;
+        return Status::ok;
     }
 
     static Status blendPoses(void *context, const BlendNormalDescV1 *desc) {
@@ -1048,7 +1425,40 @@ struct AnimationServiceRuntime::Impl {
         source.owner = desc->owner;
         source.sink = desc->sink;
         source.ordinal = desc->source_ordinal;
+        source.authority = AnimationSourceAuthorityV1::graph_apply;
         sink->active_source = source.handle;
+        desc->source = source.handle;
+        runtime->sources.emplace(source.handle.identity, source);
+        return Status::ok;
+    }
+
+    static Status claimSourcePolicy(
+        void *context, ClaimAnimationSourcePolicyDescV1 *desc) {
+        if (!context || !desc) return Status::invalid_argument;
+        if (const auto status = validateDescriptor(*desc);
+            status != Status::ok)
+            return status;
+        if (desc->authority >
+            AnimationSourceAuthorityV1::timeline_extract_only)
+            return Status::invalid_argument;
+        auto *runtime = self(context);
+        std::scoped_lock lock{runtime->mutex};
+        if (const auto status = runtime->validateOwner(desc->owner);
+            status != Status::ok)
+            return status;
+        auto *sink = runtime->findSink(desc->sink);
+        if (!sink) return Status::invalid_handle;
+        if (desc->authority == AnimationSourceAuthorityV1::graph_apply &&
+            runtime->findSource(sink->active_source))
+            return Status::authority_conflict;
+        SourceRecord source;
+        source.handle = {runtime->next_identity++, desc->owner.generation, 0};
+        source.owner = desc->owner;
+        source.sink = desc->sink;
+        source.ordinal = desc->source_ordinal;
+        source.authority = desc->authority;
+        if (source.authority == AnimationSourceAuthorityV1::graph_apply)
+            sink->active_source = source.handle;
         desc->source = source.handle;
         runtime->sources.emplace(source.handle.identity, source);
         return Status::ok;
@@ -1064,8 +1474,12 @@ struct AnimationServiceRuntime::Impl {
         if (!source) return Status::stale_generation;
         if (!sameHandle(source->owner, desc->owner)) return Status::authority_conflict;
         auto *sink = runtime->findSink(source->sink);
-        if (!sink || !sameHandle(sink->active_source, source->handle)) return Status::authority_conflict;
-        sink->active_source = invalidHandle<AnimationSourceHandle>();
+        if (!sink) return Status::authority_conflict;
+        if (source->authority == AnimationSourceAuthorityV1::graph_apply) {
+            if (!sameHandle(sink->active_source, source->handle))
+                return Status::authority_conflict;
+            sink->active_source = invalidHandle<AnimationSourceHandle>();
+        }
         source->active = false;
         if (++source->handle.generation == 0) ++source->handle.generation;
         return Status::ok;
@@ -1079,6 +1493,8 @@ struct AnimationServiceRuntime::Impl {
         std::scoped_lock lock{runtime->mutex};
         auto *source = runtime->findSource(desc->current_source);
         if (!source) return Status::stale_generation;
+        if (source->authority != AnimationSourceAuthorityV1::graph_apply)
+            return Status::authority_conflict;
         if (const auto status = runtime->validateOwner(desc->next_owner); status != Status::ok) return status;
         auto *sink = runtime->findSink(source->sink);
         if (!sink || !sameHandle(sink->active_source, source->handle)) return Status::authority_conflict;
@@ -1087,6 +1503,7 @@ struct AnimationServiceRuntime::Impl {
         next.owner = desc->next_owner;
         next.sink = source->sink;
         next.ordinal = desc->next_source_ordinal;
+        next.authority = AnimationSourceAuthorityV1::graph_apply;
         source->active = false;
         if (++source->handle.generation == 0) ++source->handle.generation;
         sink->active_source = next.handle;
@@ -1105,7 +1522,9 @@ struct AnimationServiceRuntime::Impl {
         std::scoped_lock lock{runtime->mutex};
         auto *source = runtime->findSource(desc->source);
         auto *sink = runtime->findSink(desc->sink);
-        if (!source || !sink || !sameHandle(source->sink, sink->handle) ||
+        if (!source || source->authority !=
+                           AnimationSourceAuthorityV1::graph_apply ||
+            !sink || !sameHandle(source->sink, sink->handle) ||
             !sameHandle(sink->active_source, source->handle))
             return Status::authority_conflict;
         if (desc->notification_revision <= sink->last_notification_revision)
@@ -1126,6 +1545,8 @@ struct AnimationServiceRuntime::Impl {
         std::scoped_lock lock{runtime->mutex};
         auto *source = runtime->findSource(desc->source);
         if (!source) return Status::stale_generation;
+        if (source->authority != AnimationSourceAuthorityV1::graph_apply)
+            return Status::authority_conflict;
         auto *sink = runtime->findSink(source->sink);
         if (!sink || !sameHandle(sink->active_source, source->handle)) return Status::authority_conflict;
         if (!sameHandle(sink->instance, desc->frame.instance)) return Status::authority_conflict;
@@ -1196,6 +1617,8 @@ struct AnimationServiceRuntime::Impl {
         produced.handoff_source = handoffSource;
         produced.notify = notify;
         produced.publish_animation_frame_from_source = publishFromSource;
+        produced.sample_animation_source_at = sampleAnimationSource;
+        produced.claim_source_policy = claimSourcePolicy;
         std::memcpy(out, &produced, std::min<std::size_t>(caller_size, sizeof(produced)));
         return Status::ok;
     }
@@ -1215,6 +1638,32 @@ void AnimationServiceRuntime::registerObject(
     ModelInstanceId renderer_instance) {
     std::scoped_lock lock{impl_->mutex};
     impl_->registerObjectLocked(std::move(name), model, renderer_instance);
+}
+
+Status AnimationServiceRuntime::registerVrmaSource(
+    std::string object_name, std::string source_name,
+    std::shared_ptr<const VrmaRetargetedClip> clip) noexcept {
+    try {
+        return impl_->registerVrmaSource(
+            std::move(object_name), std::move(source_name), std::move(clip));
+    } catch (const std::bad_alloc &) {
+        return Status::out_of_memory;
+    } catch (...) {
+        return Status::invalid_argument;
+    }
+}
+
+Status AnimationServiceRuntime::reloadVrmaSource(
+    std::string_view object_name, std::string_view source_name,
+    std::shared_ptr<const VrmaRetargetedClip> replacement) noexcept {
+    try {
+        return impl_->reloadVrmaSource(object_name, source_name,
+                                       std::move(replacement));
+    } catch (const std::bad_alloc &) {
+        return Status::out_of_memory;
+    } catch (...) {
+        return Status::invalid_argument;
+    }
 }
 
 void AnimationServiceRuntime::reloadAsset(

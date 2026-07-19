@@ -1,4 +1,5 @@
 #include "animgraph.hpp"
+#include "vrm_application_v1.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -28,6 +29,16 @@ namespace {
 
 using namespace Pelican::Animation;
 using Json = nlohmann::json;
+
+std::string sha256Hex(const std::uint8_t (&bytes)[32]) {
+    static constexpr char digits[] = "0123456789abcdef";
+    std::string result(64, '0');
+    for (std::size_t index = 0; index < 32; ++index) {
+        result[index * 2] = digits[bytes[index] >> 4u];
+        result[index * 2 + 1] = digits[bytes[index] & 0x0fu];
+    }
+    return result;
+}
 
 template <class T> T descriptor() {
     T value{};
@@ -261,12 +272,25 @@ struct EvaluatorV1::Impl {
         std::size_t target{};
         std::uint64_t sequence{};
     };
+    struct TypedIdentity {
+        std::uint64_t asset_identity{};
+        std::uint32_t asset_generation{};
+        std::uint32_t profile_version{};
+    };
+    struct TypedSideband {
+        std::map<std::string, float, std::less<>> expressions;
+        QuatfV1 gaze{0.0f, 0.0f, 0.0f, 1.0f};
+        bool gaze_present{};
+        bool typed_source{};
+        TypedIdentity identity;
+    };
 
     DocumentV1 document;
     std::string object_name;
     std::uint32_t source_ordinal{};
     ApiV1 api{};
     AnimationServiceV1 service{};
+    Vrm::ApplicationServiceV1 application{};
     AnimationOwnerHandle owner{};
     AnimationSinkHandle sink{};
     AnimationSourceHandle source{};
@@ -285,12 +309,15 @@ struct EvaluatorV1::Impl {
     std::vector<Forced> forced;
     std::uint64_t next_force_sequence{1};
     std::uint64_t notification_revision{};
+    std::uint64_t source_reset_count{};
     double absolute_time{};
     double dt{};
     std::uint64_t pending_revision{};
     bool tick_pending{};
     bool is_bound{};
     PoseBytes last_pose;
+    bool typed_sink_active{};
+    TypedIdentity last_typed_identity;
     StatusTraceV1 trace;
     std::string error;
 
@@ -339,6 +366,8 @@ struct EvaluatorV1::Impl {
         forced.clear();
         last_pose = {};
         trace = {};
+        trace.source_reset_count = source_reset_count;
+        trace.authority = AnimationSourceAuthorityV1::graph_apply;
         tick_pending = false;
     }
 
@@ -426,8 +455,130 @@ struct EvaluatorV1::Impl {
         })->first;
     }
 
+    static TypedSideband blendTyped(
+        const std::vector<std::pair<const TypedSideband *, float>> &inputs) {
+        TypedSideband result;
+        float dominant_weight = -1.0f;
+        bool any_gaze = false;
+        for (const auto &[input, weight] : inputs)
+            any_gaze = any_gaze ||
+                       (input && input->gaze_present && weight > 0.0f);
+        QuatfV1 reference{0.0f, 0.0f, 0.0f, 1.0f};
+        bool have_reference = false;
+        float qx = 0.0f, qy = 0.0f, qz = 0.0f, qw = 0.0f;
+        for (const auto &[input, weight] : inputs) {
+            if (!input || !(weight > 0.0f)) continue;
+            for (const auto &[name, value] : input->expressions)
+                result.expressions[name] += weight * value;
+            if (input->typed_source && weight > dominant_weight) {
+                dominant_weight = weight;
+                result.identity = input->identity;
+                result.typed_source = true;
+            }
+            if (!any_gaze) continue;
+            auto value = input->gaze_present
+                             ? input->gaze
+                             : QuatfV1{0.0f, 0.0f, 0.0f, 1.0f};
+            if (!have_reference) {
+                reference = value;
+                have_reference = true;
+            }
+            const auto dot = reference.x * value.x + reference.y * value.y +
+                             reference.z * value.z + reference.w * value.w;
+            const auto sign = dot < 0.0f ? -1.0f : 1.0f;
+            qx += weight * sign * value.x;
+            qy += weight * sign * value.y;
+            qz += weight * sign * value.z;
+            qw += weight * sign * value.w;
+        }
+        if (any_gaze) {
+            const auto length = std::sqrt(qx * qx + qy * qy + qz * qz +
+                                          qw * qw);
+            if (length > 0.0f) {
+                result.gaze = {qx / length, qy / length, qz / length,
+                               qw / length};
+                result.gaze_present = true;
+            }
+        }
+        return result;
+    }
+
+    Status ensureApplicationService(
+        const std::vector<RuntimeState> &runtime_states) {
+        const auto typed = std::any_of(
+            runtime_states.begin(), runtime_states.end(), [](const auto &state) {
+                return std::any_of(
+                    state.clips.begin(), state.clips.end(), [](const auto &clip) {
+                        return clip.metadata.typed_channel_flags != 0;
+                    });
+            });
+        if (!typed || application.set_typed_animation_inputs)
+            return Status::ok;
+        application = Vrm::ApplicationServiceV1{};
+        if (const auto status = Vrm::getApplicationServiceV1(
+                Vrm::applicationServiceVersionV1, &application);
+            status != Status::ok)
+            return fail(status, "VRM application service negotiation failed");
+        if ((application.capability_bits &
+             Vrm::application_service_typed_animation_sink) == 0 ||
+            !application.set_typed_animation_inputs)
+            return fail(Status::unsupported_version,
+                        "VRM typed animation sink is unavailable");
+        return Status::ok;
+    }
+
+    Status submitTyped(const TypedSideband &sideband) {
+        const auto clearing = !sideband.typed_source && typed_sink_active;
+        if (!sideband.typed_source && !clearing) return Status::ok;
+        if (!application.set_typed_animation_inputs)
+            return fail(Status::unsupported_version,
+                        "VRM typed animation sink is unavailable");
+        const auto identity = sideband.typed_source ? sideband.identity
+                                                    : last_typed_identity;
+        std::vector<Vrm::ExpressionWeightV1> weights;
+        weights.reserve(sideband.expressions.size());
+        for (const auto &[name, value] : sideband.expressions) {
+            Vrm::ExpressionWeightV1 weight;
+            weight.name = name.data();
+            weight.name_size = static_cast<std::uint32_t>(name.size());
+            weight.value = value;
+            weights.push_back(weight);
+        }
+        Vrm::SetTypedAnimationInputDescV1 request;
+        request.instance = instance;
+        request.weights = weights.data();
+        request.weight_count = static_cast<std::uint32_t>(weights.size());
+        request.source_ordinal = source_ordinal;
+        request.frame_revision = pending_revision;
+        request.asset_identity = identity.asset_identity;
+        request.asset_generation = identity.asset_generation;
+        request.profile_version = identity.profile_version;
+        if (sideband.gaze_present) {
+            const auto &q = sideband.gaze;
+            const auto forward_x = -2.0f * (q.x * q.z + q.w * q.y);
+            const auto forward_y = 2.0f * (q.w * q.x - q.y * q.z);
+            const auto forward_z =
+                -(1.0f - 2.0f * (q.x * q.x + q.y * q.y));
+            request.look_at_yaw_degrees =
+                std::atan2(-forward_x, -forward_z) * 180.0f /
+                3.14159265358979323846f;
+            request.look_at_pitch_degrees =
+                -std::asin(std::clamp(forward_y, -1.0f, 1.0f)) * 180.0f /
+                3.14159265358979323846f;
+            request.flags |= Vrm::expression_input_look_at;
+        }
+        const auto status = application.set_typed_animation_inputs(
+            application.context, &request);
+        if (status != Status::ok)
+            return fail(status, "VRM typed animation input failed");
+        typed_sink_active = sideband.typed_source;
+        if (sideband.typed_source) last_typed_identity = sideband.identity;
+        return Status::ok;
+    }
+
     Status sampleState(std::size_t index, PoseArenaHandle arena, PoseViewV1 &output,
-                       std::vector<PoseViewV1> &scratch) {
+                       std::vector<PoseViewV1> &scratch,
+                       TypedSideband &output_sideband) {
         auto &state = states[index];
         const auto ws = weights(state);
         const auto leader_index = leader(state, ws);
@@ -444,6 +595,7 @@ struct EvaluatorV1::Impl {
 
         scratch.resize(ws.size());
         std::vector<BlendLayerV1> layers(ws.size());
+        std::vector<TypedSideband> typed_samples(ws.size());
         for (std::size_t i = 0; i < ws.size(); ++i) {
             auto &clip = state.clips[ws[i].first];
             const auto duration = clip.metadata.end_seconds - clip.metadata.start_seconds;
@@ -451,11 +603,42 @@ struct EvaluatorV1::Impl {
             const auto unwrapped = clip.metadata.start_seconds + clip.node.start_offset + state.phase * duration;
             clip.time = canonicalTime(unwrapped, clip.metadata.start_seconds, clip.metadata.end_seconds, clip.node.loop);
             if (const auto status = acquire(arena, scratch[i]); status != Status::ok) return status;
-            auto sample = descriptor<SamplePoseAtDescV1>();
+            auto sample = descriptor<SampleAnimationSourceAtDescV1>();
             sample.clip = clip.handle;
             sample.time_seconds = clip.time;
             sample.output_pose = scratch[i].pose;
-            if (const auto status = service.sample_pose_at(service.context, &sample); status != Status::ok) return status;
+            std::vector<AnimationExpressionSampleV1> expressions(
+                clip.metadata.expression_channel_count);
+            sample.expressions = expressions.data();
+            sample.expression_capacity =
+                static_cast<std::uint32_t>(expressions.size());
+            sample.gaze = descriptor<AnimationGazeSampleV1>();
+            if (!service.sample_animation_source_at)
+                return fail(Status::unsupported_version,
+                            "typed AnimationSource sampler is unavailable");
+            if (const auto status = service.sample_animation_source_at(
+                    service.context, &sample);
+                status != Status::ok)
+                return status;
+            auto &typed = typed_samples[i];
+            typed.typed_source = clip.metadata.typed_channel_flags != 0;
+            if (typed.typed_source) {
+                typed.identity = {
+                    clip.metadata.asset_identity,
+                    clip.metadata.asset_generation,
+                    clip.metadata.profile_version};
+            }
+            for (std::uint32_t expression = 0;
+                 expression < sample.expression_count; ++expression) {
+                const auto &value = expressions[expression];
+                typed.expressions.emplace(
+                    std::string{value.name ? value.name : "", value.name_size},
+                    value.weight);
+            }
+            if (sample.gaze.present != 0) {
+                typed.gaze_present = true;
+                typed.gaze = sample.gaze.rotation;
+            }
             layers[i] = descriptor<BlendLayerV1>();
             layers[i].pose = scratch[i].pose;
             layers[i].weight = ws[i].second;
@@ -466,6 +649,11 @@ struct EvaluatorV1::Impl {
             layers[i].curve_policy = SidebandPolicy::suppress;
             layers[i].event_marker_policy = SidebandPolicy::suppress;
         }
+        std::vector<std::pair<const TypedSideband *, float>> typed_inputs;
+        typed_inputs.reserve(ws.size());
+        for (std::size_t i = 0; i < ws.size(); ++i)
+            typed_inputs.emplace_back(&typed_samples[i], ws[i].second);
+        output_sideband = blendTyped(typed_inputs);
         if (ws.size() == 1) {
             std::memcpy(output.translations, scratch[0].translations, joint_count * sizeof(Vec4fV1));
             std::memcpy(output.rotations, scratch[0].rotations, joint_count * sizeof(QuatfV1));
@@ -548,18 +736,28 @@ struct EvaluatorV1::Impl {
         if (auto status = acquire(begin.arena, output_pose); status != Status::ok) return status;
         if (auto status = acquire(begin.arena, model_pose); status != Status::ok) return status;
         std::vector<PoseViewV1> scratch;
+        TypedSideband source_sideband, target_sideband, output_sideband;
 
         // Materialize the current output before considering an interrupt.
         if (transition) {
-            if (transition->source_is_snapshot) restore(transition->snapshot, source_pose);
-            else if (const auto status = sampleState(transition->source, begin.arena, source_pose, scratch);
+            if (transition->source_is_snapshot) {
+                restore(transition->snapshot, source_pose);
+                source_sideband = {};
+            } else if (const auto status = sampleState(
+                           transition->source, begin.arena, source_pose,
+                           scratch, source_sideband);
                      status != Status::ok) return status;
-            if (const auto status = sampleState(transition->target, begin.arena, target_pose, scratch);
+            if (const auto status = sampleState(
+                    transition->target, begin.arena, target_pose, scratch,
+                    target_sideband);
                 status != Status::ok) return status;
             const auto alpha = transition->definition->duration == 0.0
                                    ? 1.0f
                                    : static_cast<float>(std::clamp(transition->elapsed / transition->definition->duration, 0.0, 1.0));
-            if (alpha == 0.0f && transition->source_is_snapshot) restore(transition->snapshot, output_pose);
+            if (alpha == 0.0f && transition->source_is_snapshot) {
+                restore(transition->snapshot, output_pose);
+                output_sideband = {};
+            }
             else {
                 std::array<BlendLayerV1, 2> layers{};
                 for (auto &layer : layers) {
@@ -576,8 +774,15 @@ struct EvaluatorV1::Impl {
                 auto blend = descriptor<BlendNormalDescV1>();
                 blend.rig = rig; blend.layers = layers.data(); blend.layer_count = 2; blend.output_pose = output_pose.pose;
                 if (const auto status = service.blend_normal(service.context, &blend); status != Status::ok) return status;
+                output_sideband = blendTyped({
+                    {&source_sideband, 1.0f - alpha},
+                    {&target_sideband, alpha},
+                });
             }
-        } else if (const auto status = sampleState(current, begin.arena, output_pose, scratch); status != Status::ok) {
+        } else if (const auto status = sampleState(
+                       current, begin.arena, output_pose, scratch,
+                       output_sideband);
+                   status != Status::ok) {
             return status;
         }
 
@@ -589,7 +794,10 @@ struct EvaluatorV1::Impl {
                 current = target;
                 states[current].phase = 0.0; // same-tick exit -> enter reset
                 transition.reset();
-                if (const auto status = sampleState(current, begin.arena, output_pose, scratch); status != Status::ok)
+                if (const auto status = sampleState(
+                        current, begin.arena, output_pose, scratch,
+                        output_sideband);
+                    status != Status::ok)
                     return status;
             } else {
                 ActiveTransition next;
@@ -603,6 +811,9 @@ struct EvaluatorV1::Impl {
                     next.snapshot = capture(output_pose, pending_revision);
                     // alpha=0 is restored, not re-blended, so bytes are exact.
                     restore(next.snapshot, output_pose);
+                    // Transition snapshots intentionally contain pose only;
+                    // expression/gaze sidebands are not re-emitted.
+                    output_sideband = {};
                 }
                 transition = std::move(next);
                 transition_started = true;
@@ -616,6 +827,10 @@ struct EvaluatorV1::Impl {
                 transition.reset();
             }
         }
+
+        if (const auto status = submitTyped(output_sideband);
+            status != Status::ok)
+            return status;
 
         std::vector<Matrix4fV1> matrices(joint_count);
         auto local_to_model = descriptor<LocalToModelDescV1>();
@@ -654,6 +869,8 @@ struct EvaluatorV1::Impl {
         trace.current_state = states[current].definition->name;
         trace.frame_revision = pending_revision;
         trace.semantic_pose_hash = last_pose.hash;
+        trace.source_reset_count = source_reset_count;
+        trace.authority = AnimationSourceAuthorityV1::graph_apply;
         if (transition) {
             trace.transition_active = true;
             trace.transition_target = states[transition->target].definition->name;
@@ -666,8 +883,25 @@ struct EvaluatorV1::Impl {
                 trace.snapshot_pose_hash = transition->snapshot.hash;
             }
         }
-        for (const auto &state : states) for (const auto &clip : state.clips)
-            trace.cursors.push_back({clip.node.clip, clip.time, state.phase});
+        for (const auto &state : states) {
+            for (const auto &clip : state.clips) {
+                CursorStatusV1 cursor;
+                cursor.clip = clip.node.clip;
+                cursor.time_seconds = clip.time;
+                cursor.normalized_phase = state.phase;
+                cursor.asset_identity = clip.metadata.asset_identity;
+                cursor.asset_generation = clip.metadata.asset_generation;
+                cursor.profile_version = clip.metadata.profile_version;
+                if (clip.metadata.clip_kind ==
+                    AnimationClipKindV1::vrma_retargeted_clip) {
+                    cursor.source_rig_sha256 =
+                        sha256Hex(clip.metadata.source_rig_sha256);
+                    cursor.target_rig_sha256 =
+                        sha256Hex(clip.metadata.target_rig_sha256);
+                }
+                trace.cursors.push_back(std::move(cursor));
+            }
+        }
         error.clear();
         return Status::ok;
     }
@@ -698,6 +932,7 @@ struct EvaluatorV1::Impl {
                         "pose layout identity changed; evaluator reset required");
 
         auto next_states = states;
+        bool vrma_generation_changed = false;
         std::vector<CursorHandle> created_cursors;
         const auto discard_created = [&]() {
             for (const auto cursor_handle : created_cursors) {
@@ -709,6 +944,7 @@ struct EvaluatorV1::Impl {
         };
         for (auto &state : next_states) {
             for (auto &clip : state.clips) {
+                const auto previous_metadata = clip.metadata;
                 auto resolve = descriptor<ResolveAnimationClipDescV1>();
                 resolve.rig = next_rig.rig;
                 resolve.clip_name = clip.node.clip.data();
@@ -749,7 +985,31 @@ struct EvaluatorV1::Impl {
                 clip.handle = resolve.clip;
                 clip.metadata = metadata;
                 clip.cursor = cursor.cursor;
+                const auto vrma_before =
+                    previous_metadata.clip_kind ==
+                    AnimationClipKindV1::vrma_retargeted_clip;
+                const auto vrma_after =
+                    metadata.clip_kind ==
+                    AnimationClipKindV1::vrma_retargeted_clip;
+                if ((vrma_before || vrma_after) &&
+                    (previous_metadata.asset_identity !=
+                         metadata.asset_identity ||
+                     previous_metadata.asset_generation !=
+                         metadata.asset_generation ||
+                     previous_metadata.profile_version !=
+                         metadata.profile_version ||
+                     std::memcmp(previous_metadata.source_rig_sha256,
+                                 metadata.source_rig_sha256, 32) != 0 ||
+                     std::memcmp(previous_metadata.target_rig_sha256,
+                                 metadata.target_rig_sha256, 32) != 0))
+                    vrma_generation_changed = true;
             }
+        }
+
+        if (const auto status = ensureApplicationService(next_states);
+            status != Status::ok) {
+            discard_created();
+            return status;
         }
 
         for (auto &state : states) {
@@ -768,9 +1028,14 @@ struct EvaluatorV1::Impl {
         joint_count = next_layout.joint_count;
         palette_count = next_layout.palette_count;
         states = std::move(next_states);
-        if (last_pose.valid) last_pose.layout = layout;
-        if (transition && transition->snapshot.valid)
-            transition->snapshot.layout = layout;
+        if (vrma_generation_changed) {
+            ++source_reset_count;
+            resetClockState();
+        } else {
+            if (last_pose.valid) last_pose.layout = layout;
+            if (transition && transition->snapshot.valid)
+                transition->snapshot.layout = layout;
+        }
         error.clear();
         return Status::ok;
     }
@@ -835,6 +1100,9 @@ struct EvaluatorV1::Impl {
             }
             states.push_back(std::move(state));
         }
+        if (const auto status = ensureApplicationService(states);
+            status != Status::ok)
+            return status;
         auto claim = descriptor<ClaimAnimationSourceDescV1>();
         claim.owner = owner; claim.sink = sink; claim.source_ordinal = source_ordinal;
         if (const auto status = service.claim_source(service.context, &claim); status != Status::ok)

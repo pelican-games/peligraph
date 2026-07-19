@@ -202,8 +202,7 @@ inline DocumentBuilder makeDocument(Kind kind) {
     return builder;
 }
 
-inline std::vector<std::uint8_t> makeGlb(Kind kind) {
-    auto builder = makeDocument(kind);
+inline std::vector<std::uint8_t> makeGlb(DocumentBuilder builder) {
     auto json_bytes = builder.document.dump();
     while (json_bytes.size() % 4 != 0) json_bytes.push_back(' ');
     while (builder.binary.size() % 4 != 0) builder.binary.push_back(0);
@@ -222,6 +221,10 @@ inline std::vector<std::uint8_t> makeGlb(Kind kind) {
         glb.insert(glb.end(), builder.binary.begin(), builder.binary.end());
     }
     return glb;
+}
+
+inline std::vector<std::uint8_t> makeGlb(Kind kind) {
+    return makeGlb(makeDocument(kind));
 }
 
 inline std::vector<std::uint8_t> makeNonGlbAlias() {

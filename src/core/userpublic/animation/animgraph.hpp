@@ -67,6 +67,11 @@ struct CursorStatusV1 {
     std::string clip;
     double time_seconds = 0.0;
     double normalized_phase = 0.0;
+    std::uint64_t asset_identity = 0;
+    std::uint32_t asset_generation = 0;
+    std::uint32_t profile_version = 0;
+    std::string source_rig_sha256;
+    std::string target_rig_sha256;
 };
 
 struct StatusTraceV1 {
@@ -81,6 +86,9 @@ struct StatusTraceV1 {
     std::uint64_t snapshot_pose_hash = 0;
     std::uint64_t semantic_pose_hash = 0;
     std::uint64_t frame_revision = 0;
+    std::uint64_t source_reset_count = 0;
+    Animation::AnimationSourceAuthorityV1 authority =
+        Animation::AnimationSourceAuthorityV1::graph_apply;
 };
 
 class PELICAN_API EvaluatorV1 {
