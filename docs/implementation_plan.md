@@ -57,7 +57,7 @@ ctest --test-dir ./build -C Debug --output-on-failure
 
 | WP | 内容 | 状態 |
 |----|------|------|
-| 177 | VRMA-R0 — versioned retarget/application profile | 進行中(並走 worktree) |
+| 178 | VRMA-I0 — AnimationSource/graph 接続 + hot reload generation | 進行中(並走 worktree) |
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
@@ -65,7 +65,44 @@ ctest --test-dir ./build -C Debug --output-on-failure
 
 ## 2. WP 詳細
 
-### WP177: VRMA-R0 — versioned retarget/application profile
+### WP178: VRMA-I0 — AnimationSource/graph 接続 + hot reload generation
+
+参照: **`docs/design_animation_graph.md` v2.1 §4(5 分割の第 5)+
+WP177 レポート §6 の引き継ぎ表が正**
+(`docs/design_reviews/2026-07-19_wp177_report.md` — R0 から渡すもの/
+I0 で追加すべきもの/R0 で行っていないことの三列)。
+
+- **typed AnimationSource / cursor**: `VrmaRetargetedClip` を既存
+  AnimationSource 語彙(A1/A2 系)の一員として graph/timeline から
+  消費可能に。caller-owned PoseView への転送・rig generation/stale
+  検査
+- **expression / gaze は joint Pose に畳まない**: R0 の typed sample を
+  VRM-S1 の application service(expression/lookAt)へ **typed sink**
+  として渡し、同一 frame revision で commit(§1-4 phase 写像)
+- **authority**: graph 所有時は apply、timeline/shot 所有時は
+  extract-only — source authority ごとの policy(暗黙の二重 writer
+  禁止 — §3 の規範)
+- **hot reload generation**: asset 単位 generation(WP147 の機構)に
+  乗せ、`.vrma`/profile の reload で該当 clip の cursor/pose を
+  generation 不一致として reset/rebind(旧 cursor の暗黙再利用禁止 —
+  R0 §6 の指示どおり)。status/trace identity 付き
+- デモ: projects/vrm_xr_demo(または自己完結 VRM project)に
+  `.vrma` 由来モーションを 1 本追加し、既存 Idle/Walk と anim_graph で
+  ブレンドが決定的に動くことを実証(合成 fixture 可 — 配布 vrma は
+  ローカルのみ)
+
+依存: WP176/177(済)+ WP147(済・generation 機構)+
+VRM-S1(済)。見積: 中〜大。
+排他: AnimationSource/graph 接続面 + typed sink 配線 + fixture。
+**abi_v1.hpp は凍結(additive 公開面のみ可)。vrmadecoder/
+vrmaretarget(WP176/177 成果)は消費のみ。renderer 実行系・
+communication・editor 面に触らない**。
+
+受け入れ = §4 逐語 + R0 §6 引き継ぎ表の全項 + ブレンド実証(二回
+実行 byte 一致)+ reload generation fixture + 既存全テスト無変更 +
+golden SKIP 0・byte 不変 + player 8 秒 + CI green
+
+### WP177(済 2026-07-19): VRMA-R0 — versioned retarget/application profile
 
 参照: **`docs/design_animation_graph.md` v2.1 §4 が正**(v2 レビュー
 §4.5 の 5 WP 分割の第 4)+ WP176 成果物
