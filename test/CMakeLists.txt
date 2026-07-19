@@ -287,6 +287,7 @@ target_compile_definitions(pelican_test_vrmsemantic_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 pelican_define_test(vrmadecoder_test pelican_core tinygltf picosha2)
+pelican_define_test(vrmaretarget_test pelican_core glm)
 pelican_define_test(animation_probe_test pelican_core glm)
 pelican_define_test(animation_jobs_test pelican_core glm)
 pelican_define_test(animgraph_test pelican_core glm)
