@@ -57,7 +57,7 @@ ctest --test-dir ./build -C Debug --output-on-failure
 
 | WP | 内容 | 状態 |
 |----|------|------|
-| 175 | 負債 CONTRACT0 — 境界 gate | 進行中(並走 worktree) |
+| 176 | VRMA-C0 — `.vrma` コンテナ decode + typed channel | 進行中(並走 worktree) |
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
@@ -65,7 +65,39 @@ ctest --test-dir ./build -C Debug --output-on-failure
 
 ## 2. WP 詳細
 
-### WP175: 負債 CONTRACT0 — 境界 gate
+### WP176: VRMA-C0 — `.vrma` コンテナ decode + typed channel
+
+参照: **`docs/design_animation_graph.md` v2.1 §4 が正**(条件付き
+承認済み — v2 レビュー §4.5 の 5 WP 分割の第 3。VRM-S0/S1 は済):
+
+- `.vrma` = **glb alias + `VRMC_vrm_animation`**。unnamed/first
+  animation の既定規則 = `#animation/0`
+- **body(humanoid joint)/ expression / gaze を typed channel** として
+  decode(joint Pose に混ぜない — UAF の Pose+Curve+Attribute と
+  同方向)
+- **hips translation を自動で root motion と解釈しない**(抽出は
+  import/clip profile の明示 policy — 本 WP では抽出しない)
+- **DCC provenance**: Clip metadata に source URI・content hash・
+  import profile・tool version を保持(v2 レビューで脱落指摘された
+  必須項)
+- Clip は model GLB から独立したリソース(source rig 参照を持つ)—
+  §1-1 の Clip 規範に従う
+- 範囲は **decode/storage/検証まで**。retarget(VRMA-R0)・graph/
+  timeline 接続(VRMA-I0)は後続 WP — 適用系に触れない
+- 検証: 実 `.vrma` 相当の合成 fixture(humanoid+expression+gaze)+
+  拡張 version 検証・不正入力の名前入り reject。VRM-S0(WP111)の
+  decoder/検証流儀に揃える
+
+依存: VRM-S0(済 WP111)+ VRM-S1(済 WP121/123/134)。見積: 中。
+排他: loader の vrma decode 面(新設)+ fixture。**アニメ実行系
+(AnimationServiceV1/anim_graph)・renderer・communication・schema 三
+header に触らない**(ABI v1 凍結)。
+
+受け入れ = §4 逐語(alias/既定規則/typed channel/root motion 非自動/
+provenance)+ 既存全テスト無変更 + golden SKIP 0・byte 不変 +
+player 8 秒 + CI green
+
+### WP175(済 2026-07-19): 負債 CONTRACT0 — 境界 gate
 
 参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
 の「WP-CONTRACT0」定義が正**:
