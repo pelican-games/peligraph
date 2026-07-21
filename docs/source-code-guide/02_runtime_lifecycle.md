@@ -92,7 +92,7 @@ sequenceDiagram
 
 ### 保存場所
 
-各module型`T`は、CRTP基底 [`ModuleBase<T>::__get()`](../../src/core/container.hpp#L42) が返す関数ローカルstaticな `std::optional<T>` に実体を持ちます。これは「containerインスタンスのメンバ」ではなく、型ごとのプロセス内staticです。
+各module型`T`は、CRTP基底（CRTP = Curiously Recurring Template Pattern。`class T : public ModuleBase<T>` のように派生クラスが自分自身を基底のテンプレート引数へ渡す書き方で、基底が「誰に継承されたか」を型として知れるため、virtual関数を使わずに型ごとの静的な置き場を持てます） [`ModuleBase<T>::__get()`](../../src/core/container.hpp#L42) が返す関数ローカルstaticな `std::optional<T>` に実体を持ちます。これは「containerインスタンスのメンバ」ではなく、型ごとのプロセス内staticです。
 
 ### 遅延生成
 
@@ -127,6 +127,29 @@ Renderer
 - `FastModuleContainer`を複数作ってもmodule実体は型ごとのstaticです。テストのcontainerはスコープ終了時に登録済みmoduleを全消去するための寿命ガードとして使われます。
 - 先に`main()`で作られたmoduleも同じstatic `cleaners`へ載るため、`PelicanCore::run()`内のcontainer破棄時にまとめて片付けられます。
 
+> 🧩 **難所 — 「生成の逆順」が成立する条件**([`FastModuleContainer::get<T>()`](../../src/core/container.hpp#L149) / [`~FastModuleContainer()`](../../src/core/container.hpp#L258))
+>
+> **何をする所か**: module 実体の遅延生成と、破棄順序の記録です。上の「基本は初期化の逆順」がなぜ正しいのか、そしてどこで破れるのかがここに書かれています。
+>
+> **素朴に読むと**: 「積んだ順の逆に pop するから安全」で終わりに見えます。しかし成立の根拠はもう一段細かい所にあります — [`cleaners.push_back()`](../../src/core/container.hpp#L181) は `obj_ref.emplace()` の**後**、つまり T の constructor が**終わってから**実行されます。constructor 内の `GET_MODULE(Dep)` は再帰的に先へ進むので、`cleaners` には必ず `Dep` が先、`T` が後で載ります。逆順 pop はしたがって「依存される側より、依存する側を先に壊す」になります。逆に言えば、**constructor の外で初めて `GET_MODULE` した依存は逆順保証の外**です。T の生成後に T のメソッドが初めて `Dep` を掴むと `cleaners` は `[T, Dep]` の順になり、破棄では `Dep` が先に消えて T の destructor が壊れた module を触ります。§2.4 の [`prepareRuntimeModuleGraph()`](../../src/core/appflow/loop.cpp#L244) と [`freezeCreation()`](../../src/core/container.hpp#L199) は、この穴を「loop へ入る前に全依存を実体化し、以後の初回生成を禁止する」ことで塞ぐ仕掛けです。
+>
+> **骨子**:
+> ```text
+> get<T>():
+>   __ready() が true       -> ロック無しで参照を返す(fast path)
+>   構築中スタックに T あり  -> Module construction cycle
+>   creation_frozen / shutting_down / 別スレッド -> logic_error
+>   obj_ref.emplace()          # ここで走る ctor が Dep を先に cleaners へ積む
+>   cleaners.push_back(T)      # ← ctor の「後」。ここが逆順保証の根拠
+>   __ready() = true           # ← 最後。ここまで T は公開されない
+>
+> cleaners: [ Dep, T ]  --pop_back-->  T を破棄 -> Dep を破棄
+> ```
+>
+> **手がかり**: `__ready()` を最後に立てるので、constructor が throw すると `cleaners` にも `__ready()` にも T は現れません(部分構築moduleが公開されない)。ただし**失敗した constructor が途中まで作った Dep は生き残ります** — 既に `cleaners` に載っているからで、これは意図的です。`cleaners.push_back` 自身の失敗を拾う catch（[#L187](../../src/core/container.hpp#L187)）が `obj_ref.reset()` するのも同じ対称性です。`construction_stack` だけが `thread_local`（[#L69](../../src/core/container.hpp#L69)）で `cleaners` / `dependency_edges` は static なので、循環検出と依存辺の記録はスレッドごとです — 実際には [`requireCreationAllowedLocked()`](../../src/core/container.hpp#L98) が生成を owner thread へ固定するため、差が出るのはテストだけです。テストは [`module_container_test.cpp#L114`](../../test/module_container_test.cpp#L114)(依存が後に壊れる)と [#L132](../../test/module_container_test.cpp#L132)(失敗と循環で部分公開しない)。
+>
+> **不変条件**: 依存は constructor で掴む(実行時に初めて掴むと破棄順が逆転する)。`__ready()` は `cleaners` 登録の後にだけ立てる。module 実体は container のメンバではなく型ごとの関数ローカル static なので、container の生存スコープは重ねられない（[#L124](../../src/core/container.hpp#L124) が `lifetime_scope_active` で拒否）。
+
 ## 2.3 明示teardownが必要な理由
 
 moduleのC++ destructorだけに任せると、ECS Componentの`deinit()`が参照する描画moduleが先に壊れるほか、pending/frozen event、behavior deferred mutation、GPU deletion callbackがowner/DLLの破棄後まで残る可能性があります。そこで [`teardownRuntimeNoThrow()`](../../src/core/appflow/teardown.cpp) が、module optionalの存在を確認して次の順で明示解放します。
@@ -144,7 +167,29 @@ terminal shutdownはこの前に`FastModuleContainer::beginShutdown()`で新規m
 
 各段階は例外を飲み込みつつログを残します。[`RuntimeTeardownGuard::~RuntimeTeardownGuard()`](../../src/core/appflow/teardown.cpp) も`run()`を呼ぶため、loopや初期化の途中で例外が出ても同じ順序を通ります。
 
-この契約は [`ecs_lifecycle_test.cpp`](../../test/ecs_lifecycle_test.cpp) の「Componentのdeinit/destroyがmodule destructorより先」と、[`lifetime_teardown_test.cpp`](../../test/lifetime_teardown_test.cpp) の全工程fault injection、起動順列、起動途中失敗で検証されています。
+この契約は [`ecs_lifecycle_test.cpp`](../../test/ecs_lifecycle_test.cpp) の「Componentのdeinit/destroyがmodule destructorより先」と、[`lifetime_teardown_test.cpp`](../../test/lifetime_teardown_test.cpp) の全工程fault injection（意図的に各段階を失敗させて、残りの段階が飛ばされないか・順序が崩れないかを確かめるテスト手法）、起動順列、起動途中失敗で検証されています。
+
+> 🧩 **難所 — 一本の順序が二つのモードを兼ねる**([`RuntimeTeardownGuard::run()`](../../src/core/appflow/teardown.cpp#L109) / [`runProductionStep()`](../../src/core/appflow/teardown.cpp#L47))
+>
+> **何をする所か**: 上の8段階を、terminal shutdown と game-logic reload の `runtime_reset` の**両方**で回します。順序の定義は [`runtime_teardown_order`](../../src/core/appflow/teardown.hpp#L22) の1本だけで、モードごとの別経路はありません。
+>
+> **素朴に読むと**: 「shutdown と reload は別処理」と読みたくなりますが、差分は実質2箇所です。(1) [`beginShutdown()`](../../src/core/container.hpp#L213) を呼ぶかどうか — `run()` の中で `mode == terminal_shutdown` のときだけ、8段階へ入る**直前**に呼びます(container の destructor ではありません)。(2) 最後の deletion queue の扱い — [#L76-L85](../../src/core/appflow/teardown.cpp#L76) が `FastModuleContainer::phase()` を見て、`shutting_down` なら `drainForTeardown()`、そうでなければ `flushAll()` を選びます。つまりモード分岐は入口で1回だけで、以後は module phase という**観測値**から導出されます。もう一つの要点は `runProductionStep()` が全段階で `tryGet<T>()` しか使わないことです。teardown 中は [`requireCreationAllowedLocked()`](../../src/core/container.hpp#L98) が生成を拒否するので、`GET_MODULE` を1つでも混ぜると「片付けようとして例外」になります。
+>
+> **骨子**:
+> ```text
+> RuntimeTeardownGuard::run():
+>   completed なら即 return                   # 明示呼びと destructor の二重実行を吸収
+>   completed = true
+>   mode == terminal_shutdown -> FastModuleContainer::beginShutdown()
+>   for step in runtime_teardown_order:       # 8段固定
+>       cleanupStep(step) { try { ... } catch { ログのみ } }
+>
+> deletion_queue: phase()==shutting_down ? drainForTeardown() : flushAll()
+> ```
+>
+> **手がかり**: [`cleanupStep()`](../../src/core/appflow/teardown.cpp#L17) が段階ごとに例外を飲むので、**途中の失敗が後続段階を飛ばしません** — 「wait_idle が落ちたので event が残った」という連鎖を作らないための構造です。`RuntimeTeardownActions` を取る overload は各段を `std::function` で差し替えるテスト用の面で、空の `std::function` は「起動が失敗してその module がまだ無い」を表します(ヘッダのコメント [#L47-L48](../../src/core/appflow/teardown.hpp#L47) が規範)。`completed` フラグがあるため、§2.1 の12番(明示 `teardown.run()`)と destructor 経由が重なっても8段階は1回しか走りません。テストは [`lifetime_teardown_test.cpp#L195`](../../test/lifetime_teardown_test.cpp#L195)(規範順序)/ [#L235](../../test/lifetime_teardown_test.cpp#L235)(runtime reset が terminal shutdown へ入らない)/ [#L312](../../test/lifetime_teardown_test.cpp#L312)(起動途中失敗)。
+>
+> **不変条件**: teardown 経路では module を新規生成しない(`tryGet` のみ)。段階の順序を変えない。`run()` は何度呼んでも副作用が1回。`runtime_reset` は module phase を `shutting_down` にしない(reload 後に再び module を作るため)。
 
 ## 2.4 `Loop::run()` の五経路
 
@@ -248,7 +293,7 @@ InputState::clear（replay中はスキップ）
 
 ### headless RPC
 
-RPCモードでは通常のfor-loopへ入らず、[`runEngineRpcServer(std::cin, std::cout)`](../../src/core/appflow/loop.cpp#L383) を呼びます。フレーム進行はクライアントの`step_frame`要求が所有します。stdoutはNDJSON protocol専用なので、[`PelicanCore` constructor](../../src/core/userpublic/pelican_core.cpp#L39) がloggerをprotocol対応で初期化します。
+RPCモードでは通常のfor-loopへ入らず、[`runEngineRpcServer(std::cin, std::cout)`](../../src/core/appflow/loop.cpp#L383) を呼びます。フレーム進行はクライアントの`step_frame`要求が所有します。stdoutはNDJSON protocol（newline-delimited JSON — 1行に1個のJSON値を置く形式。ここでは1行が1リクエストまたは1レスポンスにあたるため、ログを1行でも混ぜると相手のparseが壊れます）専用なので、[`PelicanCore` constructor](../../src/core/userpublic/pelican_core.cpp#L39) がloggerをprotocol対応で初期化します。
 
 ### 全経路に共通する `setCurrentFrameIndex()`
 
@@ -258,7 +303,7 @@ RPCモードでは通常のfor-loopへ入らず、[`runEngineRpcServer(std::cin,
 
 windowedでは、F11でRenderDocのin-applicationキャプチャを1フレーム分だけ要求できます。二段構えです。
 
-1. **arm**: [`requestF11CaptureIfNeeded()`](../../src/core/appflow/loop.cpp#L290) が `UserInput::isKeyPushed(KeyCode::F11) && capture.available()` のときだけ `RenderDocCapture::request(RenderDocCaptureSource::f11, xr_active)` を呼びます。呼び出しは `update_interactive_state` の末尾（[loop.cpp](../../src/core/appflow/loop.cpp#L465)）で、拒否されてもログを出すだけでフレームは継続します。
+1. **arm**（アーム — 「次に描く1フレームを撮る」という予約だけを立てて、実際の発行は後段へ任せる状態にすること）: [`requestF11CaptureIfNeeded()`](../../src/core/appflow/loop.cpp#L290) が `UserInput::isKeyPushed(KeyCode::F11) && capture.available()` のときだけ `RenderDocCapture::request(RenderDocCaptureSource::f11, xr_active)` を呼びます。呼び出しは `update_interactive_state` の末尾（[loop.cpp](../../src/core/appflow/loop.cpp#L465)）で、拒否されてもログを出すだけでフレームは継続します。
 2. **capture**: 実際のキャプチャは [`renderFlatFrameWithOptionalCapture()`](../../src/core/appflow/loop.cpp#L300) が行います（呼び出しは [#L550](../../src/core/appflow/loop.cpp#L550)）。`state() == armed` のときだけ `captureArmedFrame()` で `StartFrameCapture` / `EndFrameCapture` を明示発行し、それ以外は素の `renderer.render()` です。
 
 > **設計決定:** キャプチャが失敗しても**論理フレームは必ず1回描画されます**。`captureArmedFrame()` へ渡すコールバックが `rendered` フラグを立てるので、`EndFrameCapture` が描画後に失敗しても二重描画にはなりません（[loop.cpp#L322-L324](../../src/core/appflow/loop.cpp#L322)）。デバッグ機能がフレーム進行の正しさを壊さない、という線引きです。
@@ -320,6 +365,28 @@ ECSCore::update()
 
 > **設計決定:** ゲートは論理フレーム境界で閉じ得るため、「開始済みのImGuiフレームを、ImGui passを持たないグラフへ持ち越さない」ことを明示的に保証しています。ソース中のコメントがそのまま契約です。
 
+> 🧩 **難所 — 名前は「解決」、中身は副作用**([`resolveFrameStateModules()`](../../src/core/appflow/framephase.cpp#L51) / [`prepareFrameStateModules()`](../../src/core/appflow/framephase.cpp#L92))
+>
+> **何をする所か**: `updateFrameState()` の冒頭で、そのフレームが触る module 参照を1つの構造体へ集めます。名前どおりの解決に加えて、直前の節で見たImGuiゲートの後始末という**状態変更**もここで起きます。
+>
+> **素朴に読むと**: 「参照を集めるだけの純粋な関数」に見えるので、毎フレーム呼ぶのが無駄に見えます。実際には毎フレーム通ることに意味があります。(1) ImGuiゲートが閉じたフレームでは [`endFrameIfStarted()`](../../src/core/imgui/imguisystem.hpp#L22) をここで呼びます — ゲートは論理フレーム境界で閉じ得るので、判定と後始末を同じ場所へ置かないと開始済みImGuiフレームが持ち越されます。(2) `ui_module` と `render_target` は**どちらか一方が無ければ両方 nullptr にします**([#L54-L57](../../src/core/appflow/framephase.cpp#L54))。`freeze_actions` の [`routeFrameInput(input_state, render_target->getExtent())`](../../src/core/appflow/framephase.cpp#L148) が `ui_module != nullptr` の分岐の中で `render_target` を**無条件に**参照するからで、片方だけの nullptr を許すとここで落ちます。(3) `tryGet` と `GET_MODULE` の使い分けも意図的です。`GET_MODULE` 側は「必ず存在する前提」で、凍結後に未生成のmoduleを `GET_MODULE` すると例外になります。だから `prepareFrameStateModules()` が凍結前に同じ解決を一度だけ走らせて実体化しておきます([`prepareRuntimeModuleGraph()`](../../src/core/appflow/loop.cpp#L247) から呼ばれる)。
+>
+> **骨子**:
+> ```text
+> updateFrameState():
+>   resolveFrameStateModules()        # ImGui ゲート後始末 + module 参照の確定
+>   reload_service->applyFrame()      # reload 公開(フレーム境界)
+>   invokeEditorCommitQueueHook()     # 編集公開(フレーム境界)
+>   forEachFramePhase(...)            # 5フェーズ
+>   camera_bake->recordFrame()        # tryGet。無効なら何もしない
+>
+> ui_module==null または render_target==null -> 両方 null   # 対で扱う
+> ```
+>
+> **手がかり**: [`prepareFrameStateModules()`](../../src/core/appflow/framephase.cpp#L92) の中身は `(void)resolveFrameStateModules();` の一行で、**戻り値ではなく副作用が目的**であることがそのまま現れています。hookの位置(reload公開の後、`freeze_events` の直前)を規範として書いているのは [`framephase.hpp#L35-L43`](../../src/core/appflow/framephase.hpp#L35) のコメントです。[`installEditorCommitQueueHook()`](../../src/core/appflow/framephase.cpp#L96) は null と二重登録を弾き、[`removeEditorCommitQueueHook()`](../../src/core/appflow/framephase.cpp#L107) は**登録時と同じ context** でなければ何もしません(他人のhookを外せない)。テストは [`framephase_test.cpp#L9`](../../test/framephase_test.cpp#L9)(windowedとRPCが同じ5フェーズ)と [#L36](../../test/framephase_test.cpp#L36)(hookは任意で境界は1つ)。
+>
+> **不変条件**: `updateFrameState()` は毎フレーム `resolveFrameStateModules()` を通る(ゲート後始末を飛ばさない)。`ui_module` / `render_target` は対で有効・対で無効。フレーム実行中にmoduleを新規生成しない。hookはsingle-ownerで、外せるのは登録した本人だけ。
+
 ### eventの1フレーム遅延
 
 `GameContext::emit()`はeventを`pending_events`へ積みます（[`emit()`](../../src/core/userpublic/details/event/registerer.hpp#L163)）。次のフレーム冒頭で[`freezePendingEventsForFrame()`](../../src/core/userpublic/details/event/registerer.cpp#L444)が`deliver_now_events`へswapし、配送します（メンバ実装は[同 #L405](../../src/core/userpublic/details/event/registerer.cpp#L405)）。
@@ -341,7 +408,7 @@ ECSCore::update()
 - `realtime`: `steady_clock`差分。異常に長い停止は0.1秒へclamp（[`advance()`](../../src/core/appflow/enginetime.cpp#L30)）。
 - `fixed_step`: `1 / launch_config.fps`を毎回加算。headless/RPC/replayの再現性に使う。
 
-`advance()`後に`current_time += delta_time`、`frame_index++`です。最初の更新フレームはindex 1になります。RPCの`set_time`は時刻だけを直接変更し、deltaを0へ戻します。この不連続は [`timeSetRevision()`](../../src/core/appflow/enginetime.cpp#L57) で観測でき、rendererはこれとcamera不連続をまとめて検知してtemporal historyをリセットします（[renderer.cpp#L1285-L1290](../../src/core/vkcore/renderer.cpp#L1285)）。
+`advance()`後に`current_time += delta_time`、`frame_index++`です。最初の更新フレームはindex 1になります。RPCの`set_time`は時刻だけを直接変更し、deltaを0へ戻します。この不連続は [`timeSetRevision()`](../../src/core/appflow/enginetime.cpp#L57) で観測でき、rendererはこれとcamera不連続をまとめて検知してtemporal history（前フレームのview/projection行列やcamera位置をview単位で覚えておく履歴。前フレームの描画結果を今フレームへ再投影して混ぜる処理が使うので、時刻やcameraが飛ぶと対応関係が崩れて捨てる必要があります）をリセットします（[renderer.cpp#L1285-L1290](../../src/core/vkcore/renderer.cpp#L1285)）。
 
 ## 2.7 ゲームSystemと内部ECS Systemは別の更新列
 

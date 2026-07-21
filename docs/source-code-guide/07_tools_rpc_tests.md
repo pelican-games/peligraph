@@ -109,7 +109,7 @@ manifest の純粋 parser は [`src/project/importmanifest.cpp`](../../src/proje
 
 | feature | 導出方法 |
 |---|---|
-| `PELICAN_WITH_VAT` | asset data と import manifest にある GLB の JSON chunk を読み、VAT metadata を検査 |
+| `PELICAN_WITH_VAT` | asset data と import manifest にある GLB の JSON chunk を読み、VAT(Vertex Animation Texture — 頂点ごとの動きをテクスチャへ焼き込んで再生する方式)metadata を検査 |
 | `PELICAN_WITH_EXR` | asset/UI JSON 内の `path` / `file` に `.exr` reference があるか走査 |
 | `PELICAN_WITH_RPC` | 自動推測せず `--with rpc` で明示 |
 | `PELICAN_WITH_SEQPLAYER` | 自動推測せず `--with seqplayer` で明示 |
@@ -233,13 +233,120 @@ engine method の登録は [`runEngineRpcServer()`](../../src/core/communication
 | `can_edit` / `can_preview` | [#L948](../../src/core/communication/rpcserver.cpp#L948) / [#L951](../../src/core/communication/rpcserver.cpp#L951) | 編集ゲート判定 |
 | `eval_preview` | [#L954](../../src/core/communication/rpcserver.cpp#L954) | 公開せずリクエストローカルに評価 |
 | `render_preview` | [#L957](../../src/core/communication/rpcserver.cpp#L957) | preview グラフでキャプチャ(第6章 §6.19) |
-| `edit` | [#L960](../../src/core/communication/rpcserver.cpp#L960) | 正準コマンド列の適用(`base_revision` による CAS) |
+| `edit` | [#L960](../../src/core/communication/rpcserver.cpp#L960) | 正準コマンド列の適用(`base_revision` による CAS。ズレていれば `stale_revision` で弾きます) |
 | `undo` / `redo` | [#L963](../../src/core/communication/rpcserver.cpp#L963) / [#L966](../../src/core/communication/rpcserver.cpp#L966) | actor 単位 |
 | `open_preview` / `update_preview` / `commit_preview` / `abort_preview` | [#L969](../../src/core/communication/rpcserver.cpp#L969) 〜 [#L978](../../src/core/communication/rpcserver.cpp#L978) | preview ticket(lease)の発行・更新・確定・破棄 |
 | `get_edit_result` / `get_preview_result` | [#L981](../../src/core/communication/rpcserver.cpp#L981) / [#L984](../../src/core/communication/rpcserver.cpp#L984) | 非同期結果取得 |
 | `query_journal` | [#L987](../../src/core/communication/rpcserver.cpp#L987) | ジャーナル照会 |
 
+> 🧩 **難所 — 曖昧な重なり判定**([`stablePathsOverlap()`](../../src/core/communication/editorjournal.cpp#L1581) / [`structuralDomainsOverlap()`](../../src/core/communication/editorjournal.cpp#L1652) / [`recordOverlaps()`](../../src/core/communication/editorjournal.cpp#L1676))
+>
+> **何をする所か**: 上の表のうち `edit` / `undo` / `redo` / `*_preview` が共通で踏む土台です。2つの編集(あるいは編集とpreview lease)が同じ対象を触っているかを、安定パス集合(`write_set`)と構造ドメイン(`structural_domain`)の2系統で判定します。
+>
+> **素朴に読むと**: 「同じ `object_id` なら衝突」で済みそうに見えます。しかし編集の影響範囲は3種類あって表現が違います — 値編集はパス(`/authoring_objects/7/components/transform/pos`)、構造編集は集合(部分木のobject群・宣言index群・名前予約)、親子付け替えは辺(child / old_parent / new_parent / descendants)。`stablePathsOverlap` が**接頭辞一致**を取り、しかも境界が `/` であることを明示的に確かめているのはこのためです。単なる `starts_with` にすると `/a/b` と `/a/bc` が衝突扱いになってundoが通らなくなり、逆に完全一致だけにすると `.../transform` の付け替えと `.../transform/pos` の値編集がすり抜けて静かにロストアップデート(lost update — 2つの更新が重なったとき、片方の変更が気づかれないまま上書きされて消えること)します。`structuralDomainsOverlap` が名前と宣言indexを**同一scene内でのみ**比較するのも同様で、sceneが違えば同名でも別物です。判定は意図的に保守側(疑わしきは衝突)に倒してあります。
+>
+> **骨子**:
+> ```text
+> recordOverlaps(record, writes, domains):
+>   record.write_set × writes         で stablePathsOverlap が真 -> 衝突
+>   record.structural_domain × domains で structuralDomainsOverlap が真 -> 衝突
+> structuralDomainsOverlap(l, r):
+>   object集合(object/root/child/old_parent/new_parent/objects/descendants)が交差 -> 真
+>   同一 scene_id なら name_reservation と declaration_index の交差も見る
+>   両方が component_slot|value_field で object と slot が同じ -> 真
+> ```
+>
+> **手がかり**: `domainObjects()` が拾うキー名の一覧が、そのまま「構造ドメインが持ちうるobject参照フィールド」の仕様です(新しいopを足すときはここも足します)。粒度が意図的に不揃いな例として、spawnの `write_set` は `/scenes/<id>/objects` という**粗い**パス、`read_set` は `/scenes/<id>/name_reservations/<name>` という細かいパスです。behaviorは [`stableBehaviorTarget()`](../../src/core/communication/editorjournal.cpp#L486) がhandleがあれば `handles/<h>`、無ければ `indices/<i>` を使い分けます(indexは他の編集でずれるのでhandle優先)。テストは [`editorjournal_test.cpp#L558`](../../test/editorjournal_test.cpp#L558) / [#L662](../../test/editorjournal_test.cpp#L662)。
+>
+> **不変条件**: 判定は保守側へ倒す(取りこぼしは静かなロストアップデート、過検出は明示的な `undo_conflict` / `preview_lease_conflict` で済む)。パス比較は必ず `/` 境界を見る。
+
 > **設計決定:** 編集セッションを production で組み立てるのは [`makeEditorRuntimeService()`](../../src/core/communication/editorruntimefactory.hpp#L25) の 1 箇所だけです。RPC endpoint と interactive ImGui runtime の **どちらか一方** が使い、決定的ドライバ(golden / replay)は interactive runtime を作らないため編集面自体が存在しません。ticket・CAS・ゲートの落とし穴は [第9章](09_black_magic_and_gotchas.md)を参照してください。
+
+> 🧩 **難所 — `edit` の逐次プリフライト**([`prepareBatch()`](../../src/core/communication/editorjournal.cpp#L1241))
+>
+> **何をする所か**: `edit` の生 operation 配列を、正準forward / inverse・安定ターゲット・read/write set を持つ `PreparedOperation` 列へ変換します。その過程で各 operation を**使い捨ての文書**へ本物の `EditorProjectionTransaction` で実際に適用してみます。
+>
+> **素朴に読むと**: 「なぜ同じコマンドを二度実行するのか」が最大の壁です。理由は3つあります。(1) N番目のoperationは 0..N-1 適用後の文書を見なければ正しく準備できません(spawnした直後に同じobjectへsetする、など)。(2) [`makeReplaceComponentCommand()`](../../src/core/communication/editorjournal.cpp#L283) のようなコマンドのラムダは準備時の `object_index` / `component_index` を**値でキャプチャ**していて、実行時にその位置が別物なら `"stable component location disappeared"` を投げます — プリフライトはこの整合を受理前に確かめる場です。(3) spawnの `AuthoringObjectId` は文書側の割り当て器が決めるので、**プリフライトを通すまで確定しません**。だから `structural_changes` から `Insert` を探して `forward["object_id"]` と inverse の `object_ids` を後から埋め戻します。live文書を汚さないのは [`LocalDocumentTarget`](../../src/core/communication/editorjournal.cpp#L435) が `source.stage(source.rawJson(), revision+1)` でコピーを作るからで、adapter配列が空のままcommitしているのが「文書だけの試行」の印です。
+>
+> **骨子**:
+> ```text
+> local = LocalDocumentTarget(source)          # revision+1 の使い捨てコピー
+> for raw in operations:
+>     prepared = prepareRpcOperation(raw, local.projectionDocument(), scene)
+>     result   = EditorProjectionTransaction(local, ...).commit(prepared.commands, {})
+>     未commit -> projectionFailure(受理前に型付き失敗へ変換)
+>     spawn   -> Insert から object_id を確定して埋め戻す
+>     destroy -> removed_objects を declaration_index 昇順に並べて inverse.closures へ
+> batch.inverse = reverse(各 prepared.inverse)
+> ```
+>
+> **手がかり**: destroyのclosuresを**昇順**に並べるのは、restore再生時に前から挿し戻すためです。一方 `subtreeObjects()` は **降順** に並べます — 削除は後ろの宣言indexから消さないとindexがずれるからで、この逆向きの一対は取り違えやすい箇所です。`normalizeBehaviorAttachmentIdentities()` は `prepareBatch` の**前**に走り、`base_revision+1` とcommand index / attachment index の三つ組からhandleとseqを採番します(同じ入力なら同じidentity)。テストは [`editorjournal_test.cpp#L451`](../../test/editorjournal_test.cpp#L451)「JOURNAL0 is complete and mechanical replay is three-way equivalent」。
+>
+> **不変条件**: プリフライトはlive文書とliveランタイムに副作用を持たない。inverseは必ずforwardの逆順。spawnの `object_id` は必ずプリフライト結果から取る(自前で採番しない)。
+
+> 🧩 **難所 — undo前提の三段検証**([`requireRevertPreconditions()`](../../src/core/communication/editorjournal.cpp#L2004))
+>
+> **何をする所か**: `undo` / `redo` を「逆命令の普通のトランザクション」として実行してよいかを、実行前に3つの独立した条件で検査します。
+>
+> **素朴に読むと**: undoは「巻き戻し」ではなく**前向きの新規トランザクション**です。対象のjournal recordを書いた後に誰かが同じ領域を触っていたら、逆命令を流すと他人の編集を消します。ところが検査が3つあり、それぞれ別のすり抜けを塞いでいるのが読みにくい箇所です。(1) journal走査 — `source` より後のrevisionで、かつ**別actor**のrecordが重なっていたら衝突(同一actorをスキップするのは、自分の連続編集を自分でundoできなくしないため)。(2) `last_writers` — write pathごとの最終書き手が自分でなければ衝突。(1)がrecord単位なのに対しこちらは**パス単位の最終書き手**で、同一actorが別ticketで上書きした場合を拾います。(3) `postconditionsHold` — 実行時に採取した `forward_postcondition` と、いまの文書から再計算した `targetState` の厳密比較。ここだけが「journalに現れない経路(reload・import・save後)で文書が変わった」を検出できます。どれか一つでも落とすと、undoが他人の編集を静かに巻き戻します。
+>
+> **骨子**:
+> ```text
+> for candidate in journal:
+>     candidate.revision <= source.revision または actor が同じ -> skip
+>     recordOverlaps(candidate, source.write_set, source.structural_domain) -> undo_conflict
+> for write in 各 command.write_set:
+>     last_writers[write].transaction_id != source.transaction_id -> undo_conflict
+> postconditionsHold(source, document()) が偽 -> undo_conflict
+> ```
+>
+> **手がかり**: `throwUndoConflict()` のpayloadは `{domain, owner_txn, revision}` で、`domain` は `structural_domain` が空なら `write_set` を代用します(クライアントは「誰が何を触ったせいでundoできないか」をこれで出します)。スタック整合の検査は別にあり、受理時([`enqueueRevert`](../../src/core/communication/editorjournal.cpp#L2808))と実行時([`commitPending`](../../src/core/communication/editorjournal.cpp#L2462))の**二重**になっています。テストは [`editorjournal_test.cpp#L519`](../../test/editorjournal_test.cpp#L519) / [#L558](../../test/editorjournal_test.cpp#L558) / [#L662](../../test/editorjournal_test.cpp#L662)。
+>
+> **不変条件**: 3検査はAND。順番は変えてよいが、どれも消してはいけない。undoが成功したら `undo_stack.pop_back()` と `redo_stack.push_back()` は必ず対で動かす(片方だけだとredoが別トランザクションを指します)。
+
+> 🧩 **難所 — preview leaseの状態機械**([`commitPendingPreview()`](../../src/core/communication/editorjournal.cpp#L2221) / [`forceAbort()`](../../src/core/communication/editorjournal.cpp#L2191))
+>
+> **何をする所か**: `open_preview` / `update_preview` / `commit_preview` / `abort_preview` をフレーム境界でまとめて処理し、lease(排他権)の取得・維持・破棄と、外部要因による強制破棄を行います。
+>
+> **素朴に読むと**: 状態が `preview_reservation`(受理済み・未開通) / `preview_lease`(開通中) / `preview_tombstones`(終了済み)の3つに分かれ、遷移が「受理時」と「フレーム境界」の2箇所にまたがっています。予約が要るのは、`open_preview` を受理してから実際に開くまでの間に別actorの `open_preview` や重なる `edit` を通してはいけないからで、`conflictingLease()` はleaseとreservationの**両方**を見ます。失敗経路で予約を消し忘れるとpreviewが永久に開けなくなるため、明示的な `reset()` が各失敗経路に置かれています。tombstone(墓標 — 実体は消しても「このticketは確かに存在して終了した」という痕跡だけを残しておくレコード)は `abort_preview` の冪等性のためで、既に終了したticketへのabortは「成功 + `final_status`」を返します。`forceAbort()` が `noexcept` で失敗時に `false` を返すだけなのは、ゲート閉鎖・シーン遷移・base revision陳腐化のいずれからも呼ばれるからで、ここで例外を出すとフレーム境界そのものが壊れます。
+>
+> **骨子**:
+> ```text
+> commitPending():                                   # フレーム境界フック
+>   commitPendingPreview()
+>   lease あり かつ (ゲート閉 or scene が変わった) -> forceAbort(理由)
+>   ticket ごとにゲートepoch / scene id / base revision を受理時の値と再照合
+>   edit 成功後に lease が残っていれば forceAbort("base_revision_stale")
+> commitPendingPreview():
+>   open   : lease 占有中なら preview_lease_busy、成功で reservation -> lease、epoch++
+>   update : 所有者一致 + write_set が完全一致(sameStableSet)でなければ拒否
+>   commit : base revision 不一致なら reject して即 forceAbort("stale_revision")
+>   abort  : ライブ状態を committed へ復元し、tombstone を置いて lease を落とす
+> ```
+>
+> **手がかり**: [`gateSnapshot()`](../../src/core/communication/editorjournal.cpp#L1882) は観測値が変わったときだけ `gate_epoch` を進めます。つまりepochは「ゲートの状態が変わった回数」であって時刻ではなく、受理時epochと実行時epochの比較が「閉じて開き直した」ケースも捕まえます。[`sameStableSet()`](../../src/core/communication/editorjournal.cpp#L1719) が完全一致を要求するのでupdateでleaseの範囲を広げられません(広げられると、受理時に通した衝突判定の結論が後から嘘になります)。[`requireLivePreviewCapability()`](../../src/core/communication/editorjournal.cpp#L1704) は transform / light の `set_component_value` 以外を全部弾きます。テストは [`editorjournal_test.cpp#L691`](../../test/editorjournal_test.cpp#L691)(lease matrix)と [#L766](../../test/editorjournal_test.cpp#L766)。
+>
+> **不変条件**: `forceAbort()` の内部でthrowさせない。予約は成功でも失敗でも必ず落とす。leaseの `write_set` はopenで確定しupdateで変えない。editがcommitしたらpreview leaseは必ず落とす。
+
+> 🧩 **難所 — previewの状態不変性検証**([`isolated()`](../../src/core/communication/editorpreviewservice.cpp#L143) / [`requireStateUnchanged()`](../../src/core/communication/editorpreviewservice.cpp#L131))
+>
+> **何をする所か**: `eval_preview` / `render_preview` の前後で共有エンジン状態のスナップショットを取り、**厳密一致**しなければ `state_changed` を投げます。成功時も例外時も検査します。
+>
+> **素朴に読むと**: `before != after` の一行に見えますが、二点が効いています。第一に、catch側でも検査してから元の例外を再送出します。検査が落ちれば元の例外は**捨てられ** `state_changed` に置き換わります。これは意図的で、「リクエストが失敗した」より「エンジン状態を汚した」の方が重い障害だからです。ここを「元の例外を優先」に直すと、状態漏れが失敗の陰に隠れます。第二に、比較が寛容な近似ではなく `OrderedJson` の完全一致であることです。previewは [`prepareEditorPreviewProjection()`](../../src/core/loader/editorpreviewprojection.cpp#L675) が `stage()` した文書を**公開しない**ことで成立していて、浮動小数1ビットの差でも「どこかで公開してしまった」の証拠になります。
+>
+> **骨子**:
+> ```text
+> isolated(method, snapshot, invoke):
+>     before = snapshot()
+>     try:   result = invoke(); requireStateUnchanged(before, snapshot()); return result
+>     catch: failure = current_exception()
+>            requireStateUnchanged(before, snapshot())   # ここで throw したら元例外は失われる
+>            rethrow(failure)
+> ```
+>
+> **手がかり**: 両メソッドはゲートを**2回**消費します(受理時のepochを実行直前に照合するので、prepare中に閉じて開き直したゲートも捕まります)。`prepareEditorPreviewProjection()` のコメント「候補revisionを使うが決してpublishしない」が、この検査が守っている性質そのものです。`projection_fault_hook` / `execution_fault_hook` はprepareやqueryの途中で任意にthrowさせる注入点で、テストはこれで「途中で失敗しても状態が動かない」を叩きます([`editorpreview_test.cpp#L178`](../../test/editorpreview_test.cpp#L178) / [`editorpreviewprojection_test.cpp#L131`](../../test/editorpreviewprojection_test.cpp#L131))。
+>
+> **不変条件**: preview経路は `SceneRevision` を進めない。例外経路でも状態検査を通す(状態漏れの報告が元エラーより優先)。
 
 ### `get_status` の応答
 
@@ -483,7 +590,7 @@ engine 内蔵の開発者 UI に、読み取り専用の [`AssetBrowserPanel`](.
 > The ImGui WP consumes the same typed service. This fake is deliberately kept
 > free of ImGui headers so equivalence is testable in the CPU-only suite.
 
-inspector のウィジェットは component schema から決まります。[`makeInspectorWidgetPlan(const EditorComponentQueryResult &)`](../../src/core/imgui/inspector.hpp#L70) が [`InspectorWidgetKind`](../../src/core/imgui/inspector.hpp#L47) の 8 種(`SignedIntegerDrag` / `UnsignedIntegerDrag` / `FloatingPointDrag` / `BooleanCheckbox` / `EnumCombo` / `StringInput` / `VectorDrag` / `QuaternionDrag`)を割り当て、編集対象の位置は [`inspectorJsonPointer(schema_field_name)`](../../src/core/imgui/inspector.hpp#L68) が JSON pointer で表します。schema 側の宣言は [第5章 §5.14](05_gameplay_and_services.md) です。
+inspector のウィジェットは component schema から決まります。[`makeInspectorWidgetPlan(const EditorComponentQueryResult &)`](../../src/core/imgui/inspector.hpp#L70) が [`InspectorWidgetKind`](../../src/core/imgui/inspector.hpp#L47) の 8 種(`SignedIntegerDrag` / `UnsignedIntegerDrag` / `FloatingPointDrag` / `BooleanCheckbox` / `EnumCombo` / `StringInput` / `VectorDrag` / `QuaternionDrag`)を割り当て、編集対象の位置は [`inspectorJsonPointer(schema_field_name)`](../../src/core/imgui/inspector.hpp#L68) が JSON pointer(RFC 6901 の標準記法 — `/a/b/0` のようにスラッシュ区切りで JSON 文書内の 1 箇所を指す書き方)で表します。schema 側の宣言は [第5章 §5.14](05_gameplay_and_services.md) です。
 
 外部からの変更検知は watch token のポーリングです。[`inspectorWatchPollFrameInterval = 30`](../../src/core/imgui/inspector.hpp#L25) フレームごとに [`pollInspectorWatch(state, query, refresh)`](../../src/core/imgui/inspector.hpp#L37) が [`InspectorWatchState`](../../src/core/imgui/inspector.hpp#L27) を更新します。
 

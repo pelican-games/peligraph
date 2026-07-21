@@ -14,8 +14,8 @@
 
 - 主要な説明には、実装へ直接ジャンプできる `ファイル#L行番号` リンクがあります。
 - 公開API、エンジン内部モジュール、純粋なデータ変換層、Vulkan層を区別します。
-- ECSは利用法だけでなく、世代付きID、アーキタイプ、SoAチャンク、型消去、ライフサイクル、変更検知、並列スケジューリングまで追います。
-- マクロ、自動登録、`__COUNTER__`、型消去コールバックなどの「黒魔術」は、展開後に何が起きるかを段階的に説明します。
+- ECSは利用法だけでなく、世代付きID、アーキタイプ（archetype — 「同じComponentの組み合わせを持つentityの集まり」を1つの単位として扱うECSの分類）、SoAチャンク（SoA = structure of arrays。1 entity分をまとめた構造体を並べるのではなく、Componentごとに別々の連続配列へ分けて置く格納方式で、それを一定個数ずつ区切った箱がchunkです）、型消去（type erasure — 具体的な型ごとの情報をsize/alignmentと関数ポインタの表へ潰し、どんな型でも同じ経路で扱えるようにする手法）、ライフサイクル、変更検知、並列スケジューリングまで追います。
+- マクロ、自動登録、`__COUNTER__`（展開されるたびに0, 1, 2…と増える整数へ置き換わるプリプロセッサ組み込みマクロ。展開ごとに重複しない番号を作るのに使います）、型消去コールバックなどの「黒魔術」は、展開後に何が起きるかを段階的に説明します。
 - 完成済みの機能と、骨組みだけの箇所・現在の制約を分けて記載します。
 
 ## 読む順番
@@ -31,6 +31,22 @@
 | [第7章 ツール・RPC・テスト](07_tools_rpc_tests.md) | devcli、Studio、JSON-RPC、テストの種類と読み方 | ツール/CIを触る人 |
 | [第8章 クラス・インターフェース索引](08_class_interface_index.md) | 主要型を責務別に引ける宣言/実装/テスト索引 | 名前から探したい人 |
 | [第9章 黒魔術・制約・変更時の注意](09_black_magic_and_gotchas.md) | マクロ展開、型消去、静的初期化、寿命、現在の未実装点 | 深い改修をする人 |
+
+## 難所インデックス(詰まったときの逆引き)
+
+各章には、**「初見ではまず読めない」実装**に `🧩 難所 — …` という解説ブロックがぶら下げてあります。何をする所か / なぜ素朴に読むと壊すのか / 骨子 / 読むときの手がかり / 触るときの不変条件、の順で書いてあります。読み飛ばしても本文は繋がるので、**詰まったときだけ開いてください**。
+
+| 章 | 難所 |
+|---|---|
+| [第2章](02_runtime_lifecycle.md) | 「生成の逆順」が成立する条件 / 一本の順序が二つのモードを兼ねる / 名前は「解決」、中身は副作用 |
+| [第3章](03_project_and_loading.md) | 保存の TOCTOU 窓 / preserve-world の逆算 / 128 枚の結合 palette / closure が identity を運ぶ / 二段公開と巻き戻し順 / rest 差分の回転移送 |
+| [第4章](04_ecs_deep_dive.md) | 生成 transaction の三段構え / deinit を呼ぶ経路と呼ばない経路 / 型パックと indices の位置対応 / hazard 検出と計画の決定性 / generation 0 を跨がない台帳 / 移行 publish の relocate 舞踏 / publish を落とさない reserve |
+| [第5章](05_gameplay_and_services.md) | provider 索引の再マップ / ε クラスタの全順序 / GJK 最近点の全列挙 / 保守的前進で TOI を出す / EPA の四面体と面選択 / 差分は 1 パスのマージ / 滑りと skin の引き算 / one-way 足場の進入側 / N-way ブレンドの符号正準化 / 親 index < 子 index / publish しない publish / 割り込みとスナップショット / schema の指紋を採る / 不完全型のまま consteval / 3 回舐めてから swap |
+| [第6章](06_rendering_vulkan_shader.md) | preview 除外は 1 語差 / canonical bucket の番兵 / anchor 挿入と暗黙 after / format_class が format を上書き / writes-writes の曖昧検出 / barrier は後追いで作る / 決定性は set のキー / level は order で回す / `@history` は edge を作らない / sprite anchor の逆順スキャン / 量子化するのはアンカーだけ / 消さないための空呼び出し / リンクの向きは二方向 / push の先頭 64 byte / reload の swap は 3 回 / ジッタは w 倍で足す / epoch ペアが reset 信号 |
+| [第7章](07_tools_rpc_tests.md) | 曖昧な重なり判定 / `edit` の逐次プリフライト / undo 前提の三段検証 / preview lease の状態機械 / preview の状態不変性検証 |
+| [第9章](09_black_magic_and_gotchas.md) | 遅延生成の 49 行 / handle の CRTP と穴 / generation は 0 を跨がない / `struct_size` の 3 段ルール / `decltype` で catalog を掃く / void payload の消し方 |
+
+一般的でない専門用語(Floyd–Warshall・SFINAE・ADL・TOI・MTD・GJK/EPA・CAS・TOCTOU・ABA・Halton 列など)は、**各章の初出箇所で 1〜2 文の説明を添えてあります**。
 
 ## 最短の読解ルート
 
