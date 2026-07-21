@@ -1,6 +1,6 @@
 #include "renderingpassconfigregistration.hpp"
 #include "computetask.hpp"
-#include "../../project/featurecompose.hpp"
+#include "../../project/renderpipeline.hpp"
 #include "framegraphruntime.hpp"
 #include "frameplanner.hpp"
 #include "renderingpassconfigjsonparser.hpp"
@@ -78,37 +78,6 @@ std::vector<CompiledComputeTask> compileComputeTasks(
     return compiled;
 }
 
-RenderFeatureComposeResult composeRenderFeaturesForRegistration(
-    const nlohmann::json &rendering_pass_data,
-    RenderingPassConfigRuntimeDependencies &dependencies,
-    const RenderingPassConfigRegistrationDependencies::Options &options) {
-    const auto composed = composeRenderFeatureConfig(
-        rendering_pass_data,
-        RenderFeatureComposeDependencies{
-            [&dependencies](std::string_view ref) {
-                return dependencies.path_resolver.loadText(ref);
-            },
-#if PELICAN_RUNTIME_SHADER_COMPILER
-            true,
-#else
-            false,
-#endif
-            options.include_feature,
-            [&dependencies](std::string_view ref) {
-                return dependencies.path_resolver.loadText(ref);
-            },
-        });
-    dependencies.shader_defines = composed.shader_defines;
-    return composed;
-}
-
-void suffixRenderingPassNames(nlohmann::json &config, std::string_view suffix) {
-    if (suffix.empty()) return;
-    for (auto &pass : config.at("rendering_passes")) {
-        pass["name"] = pass.at("name").get<std::string>() + std::string{suffix};
-    }
-}
-
 void namespaceComputeTasks(std::vector<ComputeTaskDefinition> &tasks,
                            std::vector<FrameGraphDefinition> &graphs,
                            std::string_view suffix) {
@@ -136,21 +105,46 @@ void namespaceComputeTasks(std::vector<ComputeTaskDefinition> &tasks,
 RenderingPassConfigRegistrationResult registerRenderingPassConfigData(
     const nlohmann::json &rendering_pass_data, vk::Extent2D base_extent,
     RenderingPassConfigRegistrationDependencies dependencies) {
-    const auto composed =
-        composeRenderFeaturesForRegistration(rendering_pass_data, dependencies.runtime,
-                                             dependencies.options);
-    const bool hdr_enabled = std::find(composed.feature_names.begin(), composed.feature_names.end(), "hdr") !=
-                             composed.feature_names.end();
-    auto composed_rendering_pass_data = resolveRenderTargetFormatClassesV2(
-        composed.config, dependencies.runtime.render_target.getSwapchainFormat(),
-        dependencies.runtime.render_target.getExtent(), hdr_enabled);
-    if (dependencies.options.validate_composed_config) {
-        dependencies.options.validate_composed_config(composed_rendering_pass_data);
-    }
-    suffixRenderingPassNames(composed_rendering_pass_data,
-                             dependencies.options.rendering_pass_name_suffix);
+    const auto swapchain_format =
+        dependencies.runtime.render_target.getSwapchainFormat();
+    const auto target_extent = dependencies.runtime.render_target.getExtent();
+    auto resolved = resolveRenderPipeline(
+        RenderPipelineRequest{rendering_pass_data,
+                              "rendering pass registration"},
+        RenderEnvironmentCapabilities{
+#if PELICAN_RUNTIME_SHADER_COMPILER
+            true,
+#else
+            false,
+#endif
+            dependencies.options.graph_variant,
+        },
+        RenderPipelineResolveDependencies{
+            .load_feature_json = [&dependencies](std::string_view ref) {
+                return dependencies.runtime.path_resolver.loadText(ref);
+            },
+            .load_pipeline_json = [&dependencies](std::string_view ref) {
+                return dependencies.runtime.path_resolver.loadText(ref);
+            },
+            .include_feature = dependencies.options.include_feature,
+            .normalize_config = [swapchain_format, target_extent](
+                const nlohmann::json &config,
+                const std::vector<std::string> &feature_names) {
+                const bool hdr_enabled =
+                    std::find(feature_names.begin(), feature_names.end(),
+                              "hdr") != feature_names.end();
+                return resolveRenderTargetFormatClassesV2(
+                    config, swapchain_format, target_extent, hdr_enabled);
+            },
+            .validate_config =
+                dependencies.options.validate_composed_config,
+            .rendering_pass_name_suffix =
+                dependencies.options.rendering_pass_name_suffix,
+        });
+    dependencies.runtime.shader_defines = resolved.shader_defines;
+    auto composed_rendering_pass_data = std::move(resolved.normalized_config);
 #if PELICAN_WITH_IMGUI
-    if (dependencies.options.rendering_pass_name_suffix.empty()) {
+    if (resolved.rendering_pass_name_suffix.empty()) {
         invokeImGuiRuntimeCallback(GET_MODULE(EngineLaunchConfig), [&] {
             appendImGuiPassToCanonicalGraphs(composed_rendering_pass_data);
         });
@@ -173,7 +167,7 @@ RenderingPassConfigRegistrationResult registerRenderingPassConfigData(
     auto graph_definition_list =
         parseFrameGraphDefinitionsFromConfigJson(composed_rendering_pass_data);
     namespaceComputeTasks(compute_task_definitions, graph_definition_list,
-                          dependencies.options.rendering_pass_name_suffix);
+                          resolved.rendering_pass_name_suffix);
     auto compiled_compute_tasks =
         compileComputeTasks(compute_task_definitions, dependencies);
     auto graph_definitions = graphDefinitionsByName(std::move(graph_definition_list));
@@ -182,38 +176,13 @@ RenderingPassConfigRegistrationResult registerRenderingPassConfigData(
                                       toRuntimeDependencies(dependencies.runtime, rt_metadata, rt_views,
                                                             dependencies.frame_graph_resources));
     if (dependencies.options.publish_enabled_features) {
-        dependencies.pass_container.setEnabledFeatures(composed.feature_names);
+        dependencies.pass_container.setEnabledFeatures(resolved.feature_names);
     }
-    nlohmann::json composition_metadata = nlohmann::json::object();
-    if (composed.projection_jitter) {
-        composition_metadata["projection_jitter"] = *composed.projection_jitter;
-    }
-    nlohmann::json bound_instances = nlohmann::json::array();
-    for (const auto &instance : composed.feature_instances) {
-        if (!instance.at("parameters").empty()) {
-            bound_instances.push_back(instance);
-        }
-    }
-    if (!bound_instances.empty()) {
-        composition_metadata["feature_instances"] = std::move(bound_instances);
-    }
-    if (!composed.material_routing.is_null()) {
-        composition_metadata["material_routing"] = composed.material_routing;
-    }
-    if (composed.pipeline_preset) {
-        composition_metadata["pipeline_preset"] = {
-            {"ref", composed.pipeline_preset->reference},
-            {"name", composed.pipeline_preset->name},
-            {"version", composed.pipeline_preset->version},
-        };
-    }
-    if (!dependencies.options.rendering_pass_name_suffix.empty()) {
-        composition_metadata["graph_variant"] = "xr";
-        composition_metadata["excluded_features"] = composed.excluded_feature_names;
-    }
+    const auto composition_metadata =
+        serializeRenderPipelineCompositionMetadata(resolved);
     RenderingPassConfigRegistrationResult result;
-    result.feature_names = composed.feature_names;
-    result.excluded_feature_names = composed.excluded_feature_names;
+    result.feature_names = resolved.feature_names;
+    result.excluded_feature_names = resolved.excluded_feature_names;
     for (auto &compiled_pass : compiled_passes) {
         compiled_pass.compute_tasks = compiled_compute_tasks;
         const auto pass_name = compiled_pass.name;

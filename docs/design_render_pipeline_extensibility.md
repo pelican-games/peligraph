@@ -429,7 +429,7 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 | 段階 | 内容 | 主な gate |
 |------|------|-----------|
 | RPE0 | 本文書と既存文書の統合 | 用語・所有権・順序の合意 |
-| RPE1 / WP180 | `RenderPipelineRequest`、`RenderEnvironmentCapabilities`、`ResolvedRenderPipeline` と純粋 resolve 境界を抽出 | flat/preview/XR の既存 plan dump byte-equivalent、GPU mutation なし |
+| RPE1 / WP180（済 2026-07-21） | `RenderPipelineRequest`、`RenderEnvironmentCapabilities`、`ResolvedRenderPipeline` と純粋 resolve 境界を抽出 | flat/preview/XR の既存 plan dump byte-equivalent、GPU mutation なし |
 | RPE2 | typed `CompiledRenderPipeline` を導入し、`composition_metadata` の runtime 読みを段階移行 | JSON は dump のみ、既存 golden 不変 |
 | RPE3 | inventory と queue materialization を `DrawQueueBuilder` へ分離し、`state_batched_v1` で現行順を再現 | indirect bytes / draw ranges 不変、二回実行一致 |
 | RPE4 | owner-aware `RenderPolicyRegistry` + `DrawSortProviderV1`、builtin も同じ経路へ | game DLL register/unregister/reload、stale generation reject |
@@ -442,9 +442,10 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 
 ### 12.1 いま着手する範囲
 
-最初は RPE1 / WP180 だけを行う。公開 provider ABI、透明描画、MSAA の Vulkan
-変更を同時に入れない。現在の複数入口に散った compose / variant / validate を
-純粋な resolve 段階へ集約し、後続が依存できる typed 境界を作る。
+RPE1 / WP180 は完了した。公開 provider ABI、透明描画、MSAA の Vulkan 変更を
+混ぜず、複数入口に散っていた compose / variant / validate を純粋な resolve 段階へ
+集約した。次は RPE2 を独立 WP として登録し、この typed 境界から immutable plan を
+作る。
 
 ### 12.2 後回しにするもの
 

@@ -66,7 +66,7 @@ deferred、forward opaque/transparent 合成まで実装済み。
 21. **hybrid deferred + forward 基盤** [完了] — versioned preset、semantic
     route、OpenPBR base subset の G-buffer 化、scene-linear forward 合成、tone map
     一回を実装。後続の正本は `design_render_pipeline_extensibility.md`。
-    RPE1(WP180)→ typed plan → DrawQueueBuilder/provider → transparent sort →
+    RPE1(WP180、完了)→ typed plan → DrawQueueBuilder/provider → transparent sort →
     screen input → MSAA → XR/preview graph variant → pipeline transaction の順
 22. **スプライトライティング(surface 化)** [要設計小] — 2D の B 層接続
 23. **M3b 昇格ゲート実施**(spv-link 本採用判定)[設計済・ゲート明記済]
@@ -148,16 +148,16 @@ D-P5(validation 常設)→ D-P4(Tracy ユニット・既定 OFF)→ D-P6(crash �
 OPT-S(起動第 2 弾)/OPT-XR(Release 実機ベースライン)/OPT-MV
 (multiview 評価)。最適化は必ず計測の数字を根拠に(WP82 流儀の標準化)。
 
-## 推奨の直近候補(WP180 登録後)
+## 推奨の直近候補(WP180 完了後)
 
 | 順 | 候補 | 理由／前提 |
 |---|---|---|
-| active | **WP180 / RPE1: typed render-pipeline resolve boundary** | hybrid の次段。描画を変えず Request/Capabilities/Resolved と GPU mutation の境界を作り、後続 sort/MSAA/XR を同じ外枠へ載せる |
+| 次 WP 候補 | **RPE2: typed `CompiledRenderPipeline`** | WP180 の Request/Capabilities/Resolved 境界から immutable plan を作り、`composition_metadata` の runtime 読みを段階移行する。着手前に WP 登録 |
 | 2 | **HR2-I: input_actions/profile hot reload** | 設計済みで小さく、残る hot-reload 基本型を閉じる |
 | 3 | **U3: UI hot reload transaction** | HR0 watcher/reconcile を共有し、editor save 後の UI 往復を完成させる |
 | 4 | **VRMA watcher integration** | WP178 の generation/rebind entry point を FileWatcher/loader へ接続。WP 化前に asset identity と profile reload 範囲を固定する |
 | 5 | **CI2 / D-P5** | 負債ウェーブで唯一残った GPU/validation 常設 gate。runner 方針の決定が前提 |
-| 6 | **RPE2〜RPE6** | typed plan、draw queue/provider、transparent sort、hybrid screen input。WP180 の境界と fixture を確認して一段ずつ登録 |
+| 6 | **RPE3〜RPE6** | draw queue/provider、transparent sort、hybrid screen input。WP180/RPE2 の境界と fixture を確認して一段ずつ登録 |
 | 7 | **anim_graph v2 / clip events** | VRMA 基盤完成後の layers・sync marker・annotation/event sidecar。先に設計レビュー |
 | 8 | **XR2b multiview/depth** | RPE9 の graph variant 境界と WP143/145 の計測値を基準に sequential stereo との差を評価してから実装 |
 | 9 | ライティング/IBL、U-USD1/2 | 見た目と USD の次段。いずれも設計／受け入れ条件の登録が先 |

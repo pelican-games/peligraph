@@ -5,6 +5,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace Pelican {
 
@@ -99,5 +100,86 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
 // been composed.  The returned object is stable diagnostic metadata suitable
 // for frame-plan dumps.  A null JSON value means legacy routing.
 nlohmann::json resolveMaterialRoutingTable(const nlohmann::json &composed_config);
+
+// Authoring resolution is deliberately data-only.  These variants describe
+// which immutable graph program is being resolved; backend lifecycle remains
+// outside this layer.
+enum class RenderPipelineGraphVariant {
+    flat,
+    preview,
+    xr,
+};
+
+std::string_view renderPipelineGraphVariantName(
+    RenderPipelineGraphVariant variant);
+
+struct RenderPipelineRequest {
+    nlohmann::json authored_config = nlohmann::json::object();
+    std::string source_name = "render pipeline";
+};
+
+struct RenderEnvironmentCapabilities {
+    bool runtime_shader_compiler_enabled = false;
+    RenderPipelineGraphVariant graph_variant =
+        RenderPipelineGraphVariant::flat;
+};
+
+enum class RenderPipelineDiagnosticKind {
+    graph_variant_selected,
+    feature_excluded,
+    pipeline_preset_resolved,
+};
+
+struct RenderPipelineDiagnostic {
+    RenderPipelineDiagnosticKind kind =
+        RenderPipelineDiagnosticKind::graph_variant_selected;
+    std::string subject;
+    std::string detail;
+};
+
+// Every callback is a data transform or lookup. Callers snapshot mutable
+// environment values and expose lookup services explicitly instead of making
+// the resolver discover modules or containers. This keeps the resolver usable
+// in CPU-only tests; the resolver itself has no path for publishing
+// GPU/runtime state.
+struct RenderPipelineResolveDependencies {
+    std::function<std::string(std::string_view)> load_feature_json;
+    RenderPipelinePresetLoader load_pipeline_json;
+    std::function<bool(std::string_view, const nlohmann::json &)>
+        include_feature;
+    std::function<nlohmann::json(
+        const nlohmann::json &, const std::vector<std::string> &)>
+        normalize_config;
+    std::function<void(nlohmann::json &)> transform_config;
+    std::function<void(const nlohmann::json &)> validate_config;
+    std::string rendering_pass_name_suffix;
+};
+
+struct ResolvedRenderPipeline {
+    nlohmann::json normalized_config = nlohmann::json::object();
+    std::vector<std::string> shader_defines;
+    std::vector<std::string> feature_names;
+    std::vector<std::string> excluded_feature_names;
+    std::optional<nlohmann::json> projection_jitter;
+    nlohmann::json feature_instances = nlohmann::json::array();
+    nlohmann::json material_routing;
+    std::optional<RenderPipelinePresetInfo> pipeline_preset;
+    RenderPipelineGraphVariant graph_variant =
+        RenderPipelineGraphVariant::flat;
+    std::string rendering_pass_name_suffix;
+    std::vector<RenderPipelineDiagnostic> diagnostics;
+    bool used_features = false;
+};
+
+ResolvedRenderPipeline resolveRenderPipeline(
+    const RenderPipelineRequest &request,
+    const RenderEnvironmentCapabilities &capabilities,
+    const RenderPipelineResolveDependencies &dependencies = {});
+
+// Transitional serialization for FramePlan::composition_metadata.  Runtime
+// consumers can keep their current byte representation while typed fields
+// become the source of truth.  RPE2 removes runtime JSON reads.
+nlohmann::json serializeRenderPipelineCompositionMetadata(
+    const ResolvedRenderPipeline &pipeline);
 
 } // namespace Pelican

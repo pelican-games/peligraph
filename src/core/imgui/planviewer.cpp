@@ -6,7 +6,7 @@
 #include "../renderingpass/rendertargetjsonparser.hpp"
 #include "../vkcore/renderer.hpp"
 #include "../vkcore/rendertarget.hpp"
-#include "../../project/featurecompose.hpp"
+#include "../../project/renderpipeline.hpp"
 #include "../../project/materialformat.hpp"
 #include "../../project/surfaceformat.hpp"
 
@@ -169,15 +169,30 @@ nlohmann::json buildRuntimeAnnotations() {
         }
     }
 
-    auto composed_result = composeRenderFeatureConfig(
-        raw, RenderFeatureComposeDependencies{
-                 [&resolver](std::string_view ref) { return resolver.loadText(ref); }, true});
-    const bool hdr = std::find(composed_result.feature_names.begin(),
-                               composed_result.feature_names.end(), "hdr") !=
-                     composed_result.feature_names.end();
-    auto composed = resolveRenderTargetFormatClassesV2(
-        composed_result.config, GET_MODULE(RenderTarget).getSwapchainFormat(),
-        GET_MODULE(RenderTarget).getExtent(), hdr);
+    const auto swapchain_format = GET_MODULE(RenderTarget).getSwapchainFormat();
+    const auto target_extent = GET_MODULE(RenderTarget).getExtent();
+    auto resolved = resolveRenderPipeline(
+        RenderPipelineRequest{raw, "plan viewer annotations"},
+        RenderEnvironmentCapabilities{true,
+                                      RenderPipelineGraphVariant::flat},
+        RenderPipelineResolveDependencies{
+            .load_feature_json = [&resolver](std::string_view ref) {
+                return resolver.loadText(ref);
+            },
+            .load_pipeline_json = [&resolver](std::string_view ref) {
+                return resolver.loadText(ref);
+            },
+            .normalize_config = [swapchain_format, target_extent](
+                const nlohmann::json &config,
+                const std::vector<std::string> &feature_names) {
+                const bool hdr =
+                    std::find(feature_names.begin(), feature_names.end(),
+                              "hdr") != feature_names.end();
+                return resolveRenderTargetFormatClassesV2(
+                    config, swapchain_format, target_extent, hdr);
+            },
+        });
+    auto composed = std::move(resolved.normalized_config);
     appendImGuiPassToCanonicalGraphs(composed);
 
     nlohmann::json annotations{{"nodes", nlohmann::json::object()},

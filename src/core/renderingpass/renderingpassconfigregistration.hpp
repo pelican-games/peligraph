@@ -1,6 +1,7 @@
 #pragma once
 
 #include "renderingpass.hpp"
+#include "../../project/renderpipeline.hpp"
 
 #include <functional>
 #include <nlohmann/json_fwd.hpp>
@@ -46,6 +47,8 @@ struct RenderingPassConfigRegistrationDependencies {
     FrameGraphRuntimeContainer &frame_graph_runtime;
     RenderingPassContainer &pass_container;
     struct Options {
+        RenderPipelineGraphVariant graph_variant =
+            RenderPipelineGraphVariant::flat;
         std::function<bool(std::string_view, const nlohmann::json &)> include_feature;
         std::function<void(const nlohmann::json &)> validate_composed_config;
         std::string rendering_pass_name_suffix;

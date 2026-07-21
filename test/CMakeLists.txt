@@ -1048,6 +1048,8 @@ target_compile_definitions(pelican_test_featurecompose_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 
+pelican_define_test(renderpipeline_resolve_test pelican_core)
+
 pelican_define_test(shader_defines_test pelican_core)
 target_compile_definitions(pelican_test_shader_defines_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>

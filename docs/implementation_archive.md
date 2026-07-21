@@ -4924,6 +4924,51 @@ fixture + 既存全テスト無変更 + golden SKIP 0・byte 不変 + player 8 �
 
 完了レポート: `docs/design_reviews/2026-07-19_wp179_report.md`
 
+### WP180(済 2026-07-21): RPE1 — typed render-pipeline resolve boundary
+
+参照: **[`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md)
+§2、§4、§12 の RPE1 が正**。目的は `hybrid_v1` の機能追加ではなく、現在
+registration / preview / XR に散っている authoring 解決を、GPU mutation 前の
+一つの純粋境界へ集めること。
+
+- `RenderPipelineRequest`、`RenderEnvironmentCapabilities`、
+  `ResolvedRenderPipeline` を導入する。RPE1 の capabilities は runtime shader
+  compiler 可否と graph variant の解決に必要な最小集合から始め、MSAA / GPU
+  capability を先取りしない
+- `resolveRenderPipeline(...)` は preset 展開、feature compose、semantic
+  material routing、projection jitter / feature instance / preset provenance、
+  variant include/exclude と validation を明示 dependencies だけで解決する。
+  **`GET_MODULE`、Vulkan object、container 登録を参照しない**
+- `ResolvedRenderPipeline` は移行用の正規化済み config と typed 診断を持ってよい。
+  JSON を新しい runtime ABI として公開せず、最終
+  `CompiledRenderPipeline` 化は RPE2 に分ける
+- flat registration、preview precompile、XR variant は同じ resolver を使う。
+  現行 preview/XR policy の結果、suffix、excluded feature、エラー文脈を維持する
+- mutation は既存 registration / runtime compiler 側に残し、resolver の成功前に
+  render target、pass、compute task、enabled feature を publish しない
+- frame-plan dump が必要とする現行 metadata serialization は
+  `ResolvedRenderPipeline` の typed field から生成する。runtime metadata の全撤去は
+  RPE2 で行う
+
+依存: `hybrid_v1` / semantic route / pass contract 実装済み、FeatureCompose、
+preview graph、OpenXR feature policy。見積: 中。
+
+排他: `src/project/renderpipeline*`、`src/project/featurecompose*`、
+`src/core/renderingpass/*configregistration*`、preview graph と対応 test。
+**draw command / material GPU binding / Vulkan image・pipeline sample count / 公開 provider
+ABI / OpenXR lifecycle は変更しない。schema と描画結果も変更しない**。
+
+受け入れ:
+
+1. resolver 単体 test が Vulkan device と module 初期化なしで動く
+2. flat / preview / XR の代表 fixture で、既存の composed config、feature
+   include/exclude、material route、frame-plan dump が byte-equivalent
+3. resolve failure 後に registration container が未変更であることを fixture で固定
+4. 既存 rendering/material/OpenXR test、headless golden、全 build が不変
+5. `git diff --check` clean。挙動変更は別 WP
+
+完了レポート: `docs/design_reviews/2026-07-21_wp180_report.md`
+
 ---
 
 未完了 WP と運用規則は [active ledger](implementation_plan.md) を参照。

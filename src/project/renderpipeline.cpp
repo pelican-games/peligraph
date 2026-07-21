@@ -1,4 +1,5 @@
 #include "renderpipeline.hpp"
+#include "featurecompose.hpp"
 
 #include <algorithm>
 #include <array>
@@ -87,6 +88,15 @@ const nlohmann::json *findPass(const nlohmann::json &pass_set,
         }
     }
     return result;
+}
+
+void suffixRenderingPassNames(nlohmann::json &config,
+                              std::string_view suffix) {
+    if (suffix.empty()) return;
+    for (auto &pass : config.at("rendering_passes")) {
+        pass["name"] =
+            pass.at("name").get<std::string>() + std::string{suffix};
+    }
 }
 
 } // namespace
@@ -362,6 +372,117 @@ nlohmann::json resolveMaterialRoutingTable(const nlohmann::json &composed_config
         {"policy", policy},
         {"routes", std::move(resolved_routes)},
     };
+}
+
+std::string_view renderPipelineGraphVariantName(
+    RenderPipelineGraphVariant variant) {
+    switch (variant) {
+    case RenderPipelineGraphVariant::flat: return "flat";
+    case RenderPipelineGraphVariant::preview: return "preview";
+    case RenderPipelineGraphVariant::xr: return "xr";
+    }
+    return "unknown";
+}
+
+ResolvedRenderPipeline resolveRenderPipeline(
+    const RenderPipelineRequest &request,
+    const RenderEnvironmentCapabilities &capabilities,
+    const RenderPipelineResolveDependencies &dependencies) {
+    if (!request.authored_config.is_object()) {
+        throw std::runtime_error("Rendering config must be an object: " +
+                                 request.source_name);
+    }
+
+    auto composed = composeRenderFeatureConfig(
+        request.authored_config,
+        RenderFeatureComposeDependencies{
+            dependencies.load_feature_json,
+            capabilities.runtime_shader_compiler_enabled,
+            dependencies.include_feature,
+            dependencies.load_pipeline_json,
+        });
+
+    ResolvedRenderPipeline result;
+    result.normalized_config = std::move(composed.config);
+    result.shader_defines = std::move(composed.shader_defines);
+    result.feature_names = std::move(composed.feature_names);
+    result.excluded_feature_names =
+        std::move(composed.excluded_feature_names);
+    result.projection_jitter = std::move(composed.projection_jitter);
+    result.feature_instances = std::move(composed.feature_instances);
+    result.material_routing = std::move(composed.material_routing);
+    result.pipeline_preset = std::move(composed.pipeline_preset);
+    result.used_features = composed.used_features;
+    result.graph_variant = capabilities.graph_variant;
+    result.rendering_pass_name_suffix =
+        dependencies.rendering_pass_name_suffix;
+
+    if (dependencies.normalize_config) {
+        result.normalized_config = dependencies.normalize_config(
+            result.normalized_config, result.feature_names);
+    }
+    if (dependencies.transform_config) {
+        dependencies.transform_config(result.normalized_config);
+    }
+    if (dependencies.validate_config) {
+        dependencies.validate_config(result.normalized_config);
+    }
+    suffixRenderingPassNames(result.normalized_config,
+                             result.rendering_pass_name_suffix);
+
+    result.diagnostics.push_back(RenderPipelineDiagnostic{
+        RenderPipelineDiagnosticKind::graph_variant_selected,
+        std::string{renderPipelineGraphVariantName(result.graph_variant)},
+        "selected_by_environment",
+    });
+    if (result.pipeline_preset) {
+        result.diagnostics.push_back(RenderPipelineDiagnostic{
+            RenderPipelineDiagnosticKind::pipeline_preset_resolved,
+            result.pipeline_preset->reference,
+            result.pipeline_preset->name + "@" +
+                std::to_string(result.pipeline_preset->version),
+        });
+    }
+    for (const auto &feature : result.excluded_feature_names) {
+        result.diagnostics.push_back(RenderPipelineDiagnostic{
+            RenderPipelineDiagnosticKind::feature_excluded,
+            feature,
+            std::string{renderPipelineGraphVariantName(result.graph_variant)},
+        });
+    }
+    return result;
+}
+
+nlohmann::json serializeRenderPipelineCompositionMetadata(
+    const ResolvedRenderPipeline &pipeline) {
+    nlohmann::json metadata = nlohmann::json::object();
+    if (pipeline.projection_jitter) {
+        metadata["projection_jitter"] = *pipeline.projection_jitter;
+    }
+    nlohmann::json bound_instances = nlohmann::json::array();
+    for (const auto &instance : pipeline.feature_instances) {
+        if (!instance.at("parameters").empty()) {
+            bound_instances.push_back(instance);
+        }
+    }
+    if (!bound_instances.empty()) {
+        metadata["feature_instances"] = std::move(bound_instances);
+    }
+    if (!pipeline.material_routing.is_null()) {
+        metadata["material_routing"] = pipeline.material_routing;
+    }
+    if (pipeline.pipeline_preset) {
+        metadata["pipeline_preset"] = {
+            {"ref", pipeline.pipeline_preset->reference},
+            {"name", pipeline.pipeline_preset->name},
+            {"version", pipeline.pipeline_preset->version},
+        };
+    }
+    if (pipeline.graph_variant == RenderPipelineGraphVariant::xr) {
+        metadata["graph_variant"] = "xr";
+        metadata["excluded_features"] = pipeline.excluded_feature_names;
+    }
+    return metadata;
 }
 
 } // namespace Pelican

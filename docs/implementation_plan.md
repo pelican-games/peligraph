@@ -65,57 +65,17 @@ ctest --test-dir ./build -C Debug --output-on-failure
 
 | WP | 内容 | 状態 |
 |----|------|------|
-| 180 | RPE1 — typed render-pipeline resolve boundary | 未着手(次推奨) |
+| — | 登録済みの未完了 WP なし | 次候補は RPE2。着手前に WP 登録する |
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
-(最新完了: WP179、2026-07-19。WP175〜179 の本文と完了レポートは
-archive 参照。)
+(最新完了: WP180、2026-07-21。本文と完了レポートは archive 参照。)
 
 ## 2. WP 詳細
 
-### WP180: RPE1 — typed render-pipeline resolve boundary
-
-参照: **[`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md)
-§2、§4、§12 の RPE1 が正**。目的は `hybrid_v1` の機能追加ではなく、現在
-registration / preview / XR に散っている authoring 解決を、GPU mutation 前の
-一つの純粋境界へ集めること。
-
-- `RenderPipelineRequest`、`RenderEnvironmentCapabilities`、
-  `ResolvedRenderPipeline` を導入する。RPE1 の capabilities は runtime shader
-  compiler 可否と graph variant の解決に必要な最小集合から始め、MSAA / GPU
-  capability を先取りしない
-- `resolveRenderPipeline(...)` は preset 展開、feature compose、semantic
-  material routing、projection jitter / feature instance / preset provenance、
-  variant include/exclude と validation を明示 dependencies だけで解決する。
-  **`GET_MODULE`、Vulkan object、container 登録を参照しない**
-- `ResolvedRenderPipeline` は移行用の正規化済み config と typed 診断を持ってよい。
-  JSON を新しい runtime ABI として公開せず、最終
-  `CompiledRenderPipeline` 化は RPE2 に分ける
-- flat registration、preview precompile、XR variant は同じ resolver を使う。
-  現行 preview/XR policy の結果、suffix、excluded feature、エラー文脈を維持する
-- mutation は既存 registration / runtime compiler 側に残し、resolver の成功前に
-  render target、pass、compute task、enabled feature を publish しない
-- frame-plan dump が必要とする現行 metadata serialization は
-  `ResolvedRenderPipeline` の typed field から生成する。runtime metadata の全撤去は
-  RPE2 で行う
-
-依存: `hybrid_v1` / semantic route / pass contract 実装済み、FeatureCompose、
-preview graph、OpenXR feature policy。見積: 中。
-
-排他: `src/project/renderpipeline*`、`src/project/featurecompose*`、
-`src/core/renderingpass/*configregistration*`、preview graph と対応 test。
-**draw command / material GPU binding / Vulkan image・pipeline sample count / 公開 provider
-ABI / OpenXR lifecycle は変更しない。schema と描画結果も変更しない**。
-
-受け入れ:
-
-1. resolver 単体 test が Vulkan device と module 初期化なしで動く
-2. flat / preview / XR の代表 fixture で、既存の composed config、feature
-   include/exclude、material route、frame-plan dump が byte-equivalent
-3. resolve failure 後に registration container が未変更であることを fixture で固定
-4. 既存 rendering/material/OpenXR test、headless golden、全 build が不変
-5. `git diff --check` clean。挙動変更は別 WP
+現在、登録済みの未完了 WP はない。RPE2 を続ける場合は
+[`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md)
+§12 と WP180 完了レポートを基準に、独立 WP として受け入れ条件を登録する。
 
 ## 3. トラック現況(WP 化待ちを含む)
 

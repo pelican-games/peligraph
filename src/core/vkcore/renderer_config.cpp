@@ -147,6 +147,7 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfig() {
     if (GET_MODULE(EngineLaunchConfig).xr_active) {
         registerXrMirrorIntermediate(baseExtentFromConfig(config));
         RenderingPassConfigRegistrationDependencies::Options xr_options;
+        xr_options.graph_variant = RenderPipelineGraphVariant::xr;
         xr_options.include_feature = OpenXr::includeFeatureInXrGraph;
         xr_options.validate_composed_config = OpenXr::validateXrGraphConfig;
         xr_options.rendering_pass_name_suffix = "#xr";

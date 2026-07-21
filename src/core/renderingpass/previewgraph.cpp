@@ -1,7 +1,7 @@
 #include "previewgraph.hpp"
 
 #include "renderingpassconfigloader.hpp"
-#include "../../project/featurecompose.hpp"
+#include "../../project/renderpipeline.hpp"
 
 #include <algorithm>
 #include <array>
@@ -187,19 +187,26 @@ PreviewGraphProgram precompilePreviewGraph(
     bool runtime_shader_compiler_enabled) {
     const auto base = loadRenderingPassConfigJsonFromString(rendering_config_json,
                                                              "preview graph");
-    auto composed = composeRenderFeatureConfig(
-        base, RenderFeatureComposeDependencies{load_feature_json,
-                                                runtime_shader_compiler_enabled,
-                                                includeFeatureInPreviewGraph});
-    // The terminal is compiled against a request-owned image identity.  No
-    // swapchain image, mirror sink, present queue, or shared descriptor view is
-    // representable in the retained program.
-    redirectSwapchainToRequestLocalCapture(composed.config);
-    validatePreviewGraphConfig(composed.config);
+    auto resolved = resolveRenderPipeline(
+        RenderPipelineRequest{base, "preview graph"},
+        RenderEnvironmentCapabilities{runtime_shader_compiler_enabled,
+                                      RenderPipelineGraphVariant::preview},
+        RenderPipelineResolveDependencies{
+            .load_feature_json = load_feature_json,
+            .load_pipeline_json = load_feature_json,
+            .include_feature = includeFeatureInPreviewGraph,
+            // The terminal is compiled against a request-owned image
+            // identity. No swapchain image, mirror sink, present queue, or
+            // shared descriptor view is representable in the retained
+            // program.
+            .transform_config = redirectSwapchainToRequestLocalCapture,
+            .validate_config = validatePreviewGraphConfig,
+        });
 
     PreviewGraphProgram result;
-    result.excluded_feature_names = std::move(composed.excluded_feature_names);
-    result.composed_config = std::move(composed.config);
+    result.excluded_feature_names =
+        std::move(resolved.excluded_feature_names);
+    result.composed_config = std::move(resolved.normalized_config);
     result.generation = generationOf(result.composed_config);
     for (const auto &graph : result.composed_config.at("rendering_passes")) {
         if (!graph.is_object() || !graph.contains("passes") ||
