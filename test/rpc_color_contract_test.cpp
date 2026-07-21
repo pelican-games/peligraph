@@ -118,18 +118,19 @@ TransientInventory transientInventory(std::string_view anchor_name) {
                                     .tryComponent<SimpleModelViewComponent>(*result.anchor_object);
         if (component != nullptr) result.anchor_instance = component->model_instance_id;
     }
-    for (const auto &entry : instances.renderCommandsForTesting()) {
+    for (const auto &entry : instances.drawItemsForTesting()) {
         result.commands.push_back(RenderCommandIdentity{
-            .index_count = entry.command.indexCount,
-            .instance_count = entry.command.instanceCount,
-            .first_index = entry.command.firstIndex,
-            .vertex_offset = entry.command.vertexOffset,
-            .first_instance = entry.command.firstInstance,
-            .material = entry.material,
-            .source_material_index = entry.source_material_index,
-            .node_index = entry.node_index,
-            .skinned = entry.skinned,
-            .view_visibility = entry.view_visibility,
+            .index_count = entry.indexed.index_count,
+            .instance_count = entry.indexed.instance_count,
+            .first_index = entry.indexed.first_index,
+            .vertex_offset = entry.indexed.vertex_offset,
+            .first_instance = entry.indexed.first_instance,
+            .material = entry.pipeline_material_key.material,
+            .source_material_index =
+                entry.pipeline_material_key.source_material_index,
+            .node_index = entry.stable_identity.node_index,
+            .skinned = entry.pipeline_material_key.skinned,
+            .view_visibility = primitiveViewVisibility(entry.view_mask),
         });
     }
     return result;

@@ -206,9 +206,10 @@ class StagedModelInstance {
 };
 
 DECLARE_MODULE(PolygonInstanceContainer) {
-    std::vector<RenderCommand> render_commands;
+    std::vector<DrawItemSnapshot> draw_inventory;
+    CompiledDrawQueue compiled_draw_queue;
+    std::uint64_t next_draw_declaration_ordinal = 0;
     BufferWrapper indirect_buf;
-    std::array<std::vector<DrawIndirectInfo>, 2> draw_calls;
 
     std::vector<glm::mat4> model_instances_data;
     std::vector<glm::mat4> previous_model_instances_data;
@@ -371,8 +372,11 @@ DECLARE_MODULE(PolygonInstanceContainer) {
         return material_absolute_override_frames.size();
     }
     size_t instanceCountForAssetForTesting(ModelAssetId asset_id) const;
-    const std::vector<RenderCommand> &renderCommandsForTesting() const {
-        return render_commands;
+    const std::vector<DrawItemSnapshot> &drawItemsForTesting() const {
+        return draw_inventory;
+    }
+    const CompiledDrawQueue &compiledDrawQueueForTesting() const {
+        return compiled_draw_queue;
     }
     const std::vector<glm::mat4> &
     currentSkinPaletteForTesting(ModelInstanceId id) const {

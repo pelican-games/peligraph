@@ -1,5 +1,5 @@
 #include "polygoninstancecontainer.hpp"
-#include "indirectdrawlimits.hpp"
+#include "../material/materialcontainer.hpp"
 #include "../model/vertbufcontainer.hpp"
 #include "../shader/pelican_sets.hpp"
 #include "../vkcore/core.hpp"
@@ -9,6 +9,7 @@
 #include <cstring>
 #include <cmath>
 #include <glm/ext/matrix_transform.hpp>
+#include <limits>
 #include <stdexcept>
 #include <tuple>
 #include <unordered_map>
@@ -249,6 +250,41 @@ size_t primitiveCount(const ModelTemplate &model) {
     for (const auto &material : model.material_primitives) result += material.primitives.size();
     return result;
 }
+
+DrawItemSnapshot makeDrawItemSnapshot(
+    ModelInstanceId instance,
+    const ModelTemplate::MaterialPrimitives &material,
+    const ModelTemplate::PrimitiveRefInfo &primitive, MaterialRouteClass route,
+    std::uint64_t declaration_ordinal = 0) {
+    return DrawItemSnapshot{
+        .stable_identity =
+            DrawStableIdentity{
+                .instance = instance,
+                .mesh_index = primitive.mesh_index,
+                .primitive_index = primitive.primitive_index,
+                .node_index = primitive.node_index,
+            },
+        .declaration_ordinal = declaration_ordinal,
+        .indexed =
+            DrawIndexedArguments{
+                .index_count = primitive.index_count,
+                .instance_count = 1,
+                .first_index = primitive.index_offset,
+                .vertex_offset = primitive.vert_offset,
+                .first_instance = instance.index,
+            },
+        .pipeline_material_key =
+            DrawPipelineMaterialKey{
+                .material = material.material,
+                .source_material_index = material.source_material_index,
+                .skinned = primitive.skinned,
+            },
+        .route = route,
+        .phase = drawPhaseForMaterialRoute(route),
+        .world_bounds = std::nullopt,
+        .view_mask = drawViewMask(primitive.view_visibility),
+    };
+}
 } // namespace
 
 struct StagedModelInstance::Impl {
@@ -260,7 +296,7 @@ struct StagedModelInstance::Impl {
     std::shared_ptr<const VrmSemanticData> vrm_semantic;
     std::shared_ptr<const MorphTargetLayout> morph_layout;
     MorphWeightFrame morph_weight_frame;
-    std::vector<RenderCommand> render_commands;
+    std::vector<DrawItemSnapshot> draw_items;
 };
 
 StagedModelInstance::StagedModelInstance() noexcept = default;
@@ -293,9 +329,14 @@ void PolygonInstanceContainer::preflightModelInstance(const ModelTemplate &model
     for (const auto &material : model.material_primitives) {
         primitive_count += material.primitives.size();
     }
-    if (render_commands.size() > maxRenderCommands ||
-        primitive_count > maxRenderCommands - render_commands.size()) {
+    if (draw_inventory.size() > maxRenderCommands ||
+        primitive_count > maxRenderCommands - draw_inventory.size()) {
         throw std::runtime_error("Render command capacity exceeded");
+    }
+    if (primitive_count >
+        std::numeric_limits<std::uint64_t>::max() -
+            next_draw_declaration_ordinal) {
+        throw std::runtime_error("Draw declaration ordinal exhausted");
     }
 }
 
@@ -332,24 +373,17 @@ StagedModelInstance PolygonInstanceContainer::stageModelInstance(const ModelTemp
         .previous = defaults,
     };
 
-    staged->render_commands.reserve(primitiveCount(model));
-    for (const auto &material : model.material_primitives) {
-        for (const auto &primitive : material.primitives) {
-            staged->render_commands.push_back(RenderCommand{
-                .command =
-                    vk::DrawIndexedIndirectCommand{
-                        primitive.index_count,
-                        1,
-                        primitive.index_offset,
-                        primitive.vert_offset,
-                        staged->id.index,
-                    },
-                .material = material.material,
-                .source_material_index = material.source_material_index,
-                .node_index = primitive.node_index,
-                .skinned = primitive.skinned,
-                .view_visibility = primitive.view_visibility,
-            });
+    const auto draw_item_count = primitiveCount(model);
+    staged->draw_items.reserve(draw_item_count);
+    if (draw_item_count != 0) {
+        const auto &materials = GET_MODULE(MaterialContainer);
+        for (const auto &material : model.material_primitives) {
+            if (material.primitives.empty()) continue;
+            const auto route = materials.routeForMaterial(material.material);
+            for (const auto &primitive : material.primitives) {
+                staged->draw_items.push_back(makeDrawItemSnapshot(
+                    staged->id, material, primitive, route));
+            }
         }
     }
 
@@ -371,7 +405,7 @@ StagedModelInstance PolygonInstanceContainer::stageModelInstance(const ModelTemp
     morph_layouts.reserve(instance_capacity);
     morph_weight_frames.reserve(instance_capacity);
     morph_history_valid.reserve(instance_capacity);
-    render_commands.reserve(render_commands.size() + staged->render_commands.size());
+    draw_inventory.reserve(draw_inventory.size() + staged->draw_items.size());
 
     // The future slot is not addressable until publication, so a failed write
     // cannot change the live inventory or IDs.
@@ -393,8 +427,8 @@ void PolygonInstanceContainer::setStagedModelMatrix(
 
 void PolygonInstanceContainer::publishModelInstance(StagedModelInstance staged) noexcept {
     assert(staged.impl_ != nullptr);
-    assert(render_commands.size() + staged.impl_->render_commands.size() <=
-           render_commands.capacity());
+    assert(draw_inventory.size() + staged.impl_->draw_items.size() <=
+           draw_inventory.capacity());
 
     auto &candidate = *staged.impl_;
     const auto index = candidate.id.index;
@@ -434,9 +468,12 @@ void PolygonInstanceContainer::publishModelInstance(StagedModelInstance staged) 
         morph_history_valid[index] = false;
     }
     instance_slots.publish(candidate.id);
-    render_commands.insert(render_commands.end(),
-                           std::make_move_iterator(candidate.render_commands.begin()),
-                           std::make_move_iterator(candidate.render_commands.end()));
+    for (auto &item : candidate.draw_items) {
+        item.declaration_ordinal = next_draw_declaration_ordinal++;
+    }
+    draw_inventory.insert(draw_inventory.end(),
+                          std::make_move_iterator(candidate.draw_items.begin()),
+                          std::make_move_iterator(candidate.draw_items.end()));
 }
 
 ModelInstanceId PolygonInstanceContainer::placeModelInstance(const ModelTemplate &model) {
@@ -475,8 +512,8 @@ bool PolygonInstanceContainer::removeModelInstance(ModelInstanceId id) {
     if (!isLive(id)) return false;
 
     const auto index = id.index;
-    std::erase_if(render_commands, [index](const RenderCommand &command) {
-        return command.command.firstInstance == index;
+    std::erase_if(draw_inventory, [index](const DrawItemSnapshot &item) {
+        return item.stable_identity.instance.index == index;
     });
     resetSlot(index);
     instance_slots.retire(id);
@@ -490,8 +527,9 @@ bool PolygonInstanceContainer::removeModelInstance(ModelInstanceId id) {
 
 void PolygonInstanceContainer::clear() {
     instance_slots.prepareClear();
-    render_commands.clear();
-    for (auto &calls : draw_calls) calls.clear();
+    draw_inventory.clear();
+    compiled_draw_queue = {};
+    next_draw_declaration_ordinal = 0;
     for (std::uint32_t index = 0; index < instance_slots.slotCount(); ++index) {
         if (instance_slots.alive(index)) {
             resetSlot(index);
@@ -508,10 +546,10 @@ void PolygonInstanceContainer::clear() {
 }
 
 void PolygonInstanceContainer::triggerUpdate() {
-    // clear previous frame
-    for (auto &calls : draw_calls) calls.clear();
+    // Clear the published view before compiling the next immutable queue.
+    compiled_draw_queue = {};
 
-    if (render_commands.empty())
+    if (draw_inventory.empty())
         return;
 
     for (size_t i = 0; i < model_instances_data.size(); ++i) {
@@ -559,71 +597,23 @@ void PolygonInstanceContainer::triggerUpdate() {
             sizeof(MorphInstanceGpuData) * morph_instances.size());
     }
 
-    // prepare indirect buffer
-    std::sort(render_commands.begin(), render_commands.end(),
-              [](const RenderCommand &p, const RenderCommand &q) {
-                  return std::tie(p.material.value, p.source_material_index,
-                                  p.skinned, p.view_visibility) <
-                         std::tie(q.material.value, q.source_material_index,
-                                  q.skinned, q.view_visibility);
-              });
-    GET_MODULE(VulkanManageCore)
-        .writeBuf(indirect_buf, render_commands.data(), 0, sizeof(RenderCommand) * render_commands.size());
-
-    // Build immutable per-view ranges over the same command buffer. The enum
-    // order third/both/first makes each view's visible commands contiguous
-    // within one material group.
+    // Compile without changing the live inventory. The builder owns state
+    // ordering and per-view range materialization; this adapter only supplies
+    // the physical-device limit and publishes the validated bytes.
     const auto max_draw_indirect_count = GET_MODULE(VulkanManageCore)
                                              .getPhysDevice()
                                              .getProperties()
                                              .limits.maxDrawIndirectCount;
-    const auto build_draw_calls = [&](bool first_person_view) {
-        auto &output = draw_calls[first_person_view ? 1u : 0u];
-        std::optional<std::size_t> first;
-        const auto visible = [&](const RenderCommand &command) {
-            return first_person_view
-                       ? command.view_visibility !=
-                             PrimitiveViewVisibility::third_person_only
-                       : command.view_visibility !=
-                             PrimitiveViewVisibility::first_person_only;
-        };
-        const auto flush = [&](std::size_t end) {
-            if (!first) return;
-            for (const auto &segment : renderer_detail::splitIndirectDrawRange(
-                     *first, end, max_draw_indirect_count)) {
-                const auto &command = render_commands[segment.first_command];
-                output.push_back(DrawIndirectInfo{
-                    .material = command.material,
-                    .source_material_index = command.source_material_index,
-                    .offset = segment.first_command * sizeof(RenderCommand),
-                    .draw_count = segment.draw_count,
-                    .stride = sizeof(RenderCommand),
-                    .skinned = command.skinned,
-                });
-            }
-            first.reset();
-        };
-        for (std::size_t index = 0; index < render_commands.size(); ++index) {
-            const auto &command = render_commands[index];
-            if (!visible(command)) {
-                flush(index);
-                continue;
-            }
-            if (first) {
-                const auto &begin = render_commands[*first];
-                if (begin.material.value != command.material.value ||
-                    begin.source_material_index !=
-                        command.source_material_index ||
-                    begin.skinned != command.skinned) {
-                    flush(index);
-                }
-            }
-            if (!first) first = index;
-        }
-        flush(render_commands.size());
-    };
-    build_draw_calls(false);
-    build_draw_calls(true);
+    auto next_draw_queue = DrawQueueBuilder::build(DrawQueueBuildRequest{
+        .items = draw_inventory,
+        .max_draw_indirect_count = max_draw_indirect_count,
+        .policy = DrawQueuePolicy::state_batched_v1,
+    });
+    const auto &indirect_records = next_draw_queue.indirectRecords();
+    GET_MODULE(VulkanManageCore)
+        .writeBuf(indirect_buf, indirect_records.data(), 0,
+                  sizeof(RenderCommand) * indirect_records.size());
+    compiled_draw_queue = std::move(next_draw_queue);
 
     GET_MODULE(VulkanManageCore)
         .writeBuf(model_data_buffer, model_instances_data.data(), 0, sizeof(glm::mat4) * model_instances_data.size());
@@ -698,9 +688,9 @@ bool PolygonInstanceContainer::canRebuildModelInstances(
             return false;
     }
 
-    size_t command_count = render_commands.size();
-    for (const auto &command : render_commands) {
-        const auto instance = command.command.firstInstance;
+    size_t command_count = draw_inventory.size();
+    for (const auto &item : draw_inventory) {
+        const auto instance = item.stable_identity.instance.index;
         if (instance < model_asset_ids.size() &&
             instance_slots.alive(instance) &&
             by_asset.contains(model_asset_ids[instance].value)) {
@@ -736,16 +726,35 @@ void PolygonInstanceContainer::rebuildModelInstances(
         }
     }
 
-    std::vector<RenderCommand> rebuilt;
+    std::vector<DrawItemSnapshot> rebuilt;
     rebuilt.reserve(maxRenderCommands);
-    for (const auto &command : render_commands) {
-        const auto instance = command.command.firstInstance;
+    for (const auto &item : draw_inventory) {
+        const auto instance = item.stable_identity.instance.index;
         if (instance < model_asset_ids.size() &&
             instance_slots.alive(instance) &&
             by_asset.contains(model_asset_ids[instance].value))
             continue;
-        rebuilt.push_back(command);
+        rebuilt.push_back(item);
     }
+
+    std::size_t replacement_item_count = 0;
+    for (std::uint32_t instance = 0; instance < model_asset_ids.size();
+         ++instance) {
+        if (!instance_slots.alive(instance)) continue;
+        const auto found = by_asset.find(model_asset_ids[instance].value);
+        if (found != by_asset.end()) {
+            replacement_item_count += primitiveCount(*found->second);
+        }
+    }
+    if (replacement_item_count >
+        std::numeric_limits<std::uint64_t>::max() -
+            next_draw_declaration_ordinal) {
+        throw std::runtime_error("Draw declaration ordinal exhausted");
+    }
+    auto next_declaration_ordinal = next_draw_declaration_ordinal;
+    const auto *materials = replacement_item_count == 0
+                                ? nullptr
+                                : &GET_MODULE(MaterialContainer);
 
     auto next_skin_palettes = skin_palettes;
     auto next_previous_skin_palettes = previous_skin_palettes;
@@ -767,18 +776,14 @@ void PolygonInstanceContainer::rebuildModelInstances(
         const auto found = by_asset.find(model_asset_ids[instance].value);
         if (found == by_asset.end()) continue;
         const auto &replacement = *found->second;
+        const auto instance_id = instance_slots.idAt(instance);
         for (const auto &material : replacement.material_primitives) {
+            if (material.primitives.empty()) continue;
+            const auto route = materials->routeForMaterial(material.material);
             for (const auto &primitive : material.primitives) {
-                rebuilt.push_back(RenderCommand{
-                    .command = vk::DrawIndexedIndirectCommand{
-                        primitive.index_count, 1, primitive.index_offset,
-                        primitive.vert_offset, instance},
-                    .material = material.material,
-                    .source_material_index = material.source_material_index,
-                    .node_index = primitive.node_index,
-                    .skinned = primitive.skinned,
-                    .view_visibility = primitive.view_visibility,
-                });
+                rebuilt.push_back(makeDrawItemSnapshot(
+                    instance_id, material, primitive, route,
+                    next_declaration_ordinal++));
             }
         }
 
@@ -827,7 +832,8 @@ void PolygonInstanceContainer::rebuildModelInstances(
         next_previous_models[instance] = model_instances_data[instance];
         next_history_valid[instance] = false;
     }
-    render_commands = std::move(rebuilt);
+    draw_inventory = std::move(rebuilt);
+    next_draw_declaration_ordinal = next_declaration_ordinal;
     skin_palettes = std::move(next_skin_palettes);
     previous_skin_palettes = std::move(next_previous_skin_palettes);
     animation_revisions = std::move(next_animation_revisions);
@@ -1339,7 +1345,9 @@ const BufferWrapper &PolygonInstanceContainer::getObjectBuf() const { return mod
 const BufferWrapper &PolygonInstanceContainer::getPreviousObjectBuf() const { return previous_model_data_buffer; }
 const std::vector<DrawIndirectInfo> &
 PolygonInstanceContainer::getDrawCalls(bool first_person_view) const {
-    return draw_calls[first_person_view ? 1u : 0u];
+    return compiled_draw_queue.drawRanges(
+        first_person_view ? DrawQueueView::first_person
+                          : DrawQueueView::third_person);
 }
 
 } // namespace Pelican

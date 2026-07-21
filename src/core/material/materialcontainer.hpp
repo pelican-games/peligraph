@@ -195,6 +195,9 @@ DECLARE_MODULE(MaterialContainer) {
         std::span<const watch::AssetKey> material_documents);
 
     bool isRenderRequired(const PassDefinition &pass, GlobalMaterialId material) const;
+    MaterialRouteClass routeForMaterial(GlobalMaterialId material) const {
+        return materials.get(material).route;
+    }
     void bindResource(vk::CommandBuffer cmd_buf, PassId pass_id, GlobalMaterialId material,
                       GlobalMaterialId prev_material_id) const;
     vk::PipelineLayout getPipelineLayout() const;

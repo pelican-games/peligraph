@@ -14,6 +14,7 @@
 #include <chrono>
 #include <filesystem>
 #include <limits>
+#include <vector>
 
 namespace Pelican {
 namespace {
@@ -281,9 +282,27 @@ TEST_CASE("VRM firstPerson auto becomes exact node-aware per-view draw ranges",
     };
     REQUIRE(draw_count(false) == 2);
     REQUIRE(draw_count(true) == 1);
-    REQUIRE(instances.renderCommandsForTesting().size() == 2);
-    REQUIRE(instances.renderCommandsForTesting()[0].node_index == 0);
-    REQUIRE(instances.renderCommandsForTesting()[1].node_index == 0);
+    REQUIRE(instances.drawItemsForTesting().size() == 2);
+    REQUIRE(instances.drawItemsForTesting()[0].stable_identity.node_index == 0);
+    REQUIRE(instances.drawItemsForTesting()[1].stable_identity.node_index == 0);
+    REQUIRE(instances.drawItemsForTesting()[0].declaration_ordinal !=
+            instances.drawItemsForTesting()[1].declaration_ordinal);
+    REQUIRE(instances.drawItemsForTesting()[0].phase == MaterialPhase::opaque);
+
+    const auto first_bytes = [&] {
+        const auto bytes =
+            instances.compiledDrawQueueForTesting().indirectBytes();
+        return std::vector<std::byte>{bytes.begin(), bytes.end()};
+    }();
+    const auto first_third_person = instances.getDrawCalls(false);
+    const auto first_first_person = instances.getDrawCalls(true);
+    instances.triggerUpdate();
+    const auto second_bytes =
+        instances.compiledDrawQueueForTesting().indirectBytes();
+    REQUIRE(std::equal(first_bytes.begin(), first_bytes.end(),
+                       second_bytes.begin(), second_bytes.end()));
+    REQUIRE(instances.getDrawCalls(false) == first_third_person);
+    REQUIRE(instances.getDrawCalls(true) == first_first_person);
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 
