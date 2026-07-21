@@ -7,6 +7,7 @@
 #include "../vkcore/buf.hpp"
 #include "modelinstance.hpp"
 #include "modelinstanceslots.hpp"
+#include "drawqueuebuilder.hpp"
 #include <glm/ext/quaternion_float.hpp>
 #include <glm/glm.hpp>
 #include <array>
@@ -177,23 +178,6 @@ struct alignas(16) MaterialInstanceAbsoluteOverrideGpuData {
 };
 
 static_assert(sizeof(MaterialInstanceAbsoluteOverrideGpuData) == 80);
-
-struct RenderCommand {
-    vk::DrawIndexedIndirectCommand command;
-    GlobalMaterialId material;
-    std::uint32_t source_material_index = noSourceMaterialIndex;
-    std::uint32_t node_index = noSourceNodeIndex;
-    bool skinned = false;
-    PrimitiveViewVisibility view_visibility = PrimitiveViewVisibility::both;
-};
-
-struct DrawIndirectInfo {
-    GlobalMaterialId material;
-    std::uint32_t source_material_index = noSourceMaterialIndex;
-    vk::DeviceSize offset;
-    uint32_t draw_count, stride;
-    bool skinned = false;
-};
 
 struct ModelInstanceRebuild {
     ModelAssetId asset_id{};

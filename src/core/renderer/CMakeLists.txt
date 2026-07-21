@@ -4,6 +4,7 @@ target_sources(pelican_core PRIVATE
     spriterenderer.cpp
     debugdraw.cpp
     debugtext.cpp
+    drawqueuebuilder.cpp
     modelinstanceslots.cpp
     indirectdrawlimits.cpp
     polygoninstancecontainer.cpp
