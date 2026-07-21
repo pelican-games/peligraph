@@ -211,6 +211,47 @@ static std::optional<QueueSet> pickQueues(const vk::PhysicalDevice &phys_device,
     return std::nullopt;
 }
 
+struct DeviceFeatureSupport {
+    RequiredVulkanFeatureSupport required;
+    bool timeline_semaphore = false;
+};
+
+static DeviceFeatureSupport queryDeviceFeatureSupport(vk::PhysicalDevice physical_device) {
+    const auto chain =
+        physical_device.getFeatures2<vk::PhysicalDeviceFeatures2,
+                                    vk::PhysicalDeviceVulkan11Features,
+                                    vk::PhysicalDeviceVulkan12Features,
+                                    vk::PhysicalDeviceDynamicRenderingFeatures>();
+    const auto &core = chain.get<vk::PhysicalDeviceFeatures2>().features;
+    const auto &vk11 = chain.get<vk::PhysicalDeviceVulkan11Features>();
+    const auto &vk12 = chain.get<vk::PhysicalDeviceVulkan12Features>();
+    const auto &dynamic = chain.get<vk::PhysicalDeviceDynamicRenderingFeatures>();
+    return {
+        .required =
+            {
+                .multi_draw_indirect = core.multiDrawIndirect == VK_TRUE,
+                .draw_indirect_first_instance = core.drawIndirectFirstInstance == VK_TRUE,
+                .shader_draw_parameters = vk11.shaderDrawParameters == VK_TRUE,
+                .dynamic_rendering = dynamic.dynamicRendering == VK_TRUE,
+            },
+        .timeline_semaphore = vk12.timelineSemaphore == VK_TRUE,
+    };
+}
+
+static std::vector<std::string> supportedDeviceExtensions(vk::PhysicalDevice physical_device) {
+    std::vector<std::string> result;
+    for (const auto &extension : physical_device.enumerateDeviceExtensionProperties()) {
+        result.emplace_back(extension.extensionName.data());
+    }
+    return result;
+}
+
+static std::vector<std::string> requiredDeviceExtensions(bool headless) {
+    std::vector<std::string> result;
+    if (!headless) result.emplace_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    return result;
+}
+
 static vk::PhysicalDevice pickPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surface, bool headless) {
     LOG_INFO(logger, "initializing vulkan physical device...");
 
@@ -232,21 +273,11 @@ static vk::PhysicalDevice pickPhysicalDevice(vk::Instance instance, vk::SurfaceK
             if (headless || queue_set->graphic_queue == queue_set->presentation_queue)
                 score += 100;
         }
-        if (!headless) {
-            // evaluate extension
-            const auto supported_exts = phys_device.enumerateDeviceExtensionProperties();
-            std::vector<std::string> supported_exts_names;
-            std::vector<const char *> required_exts_names = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
-
-            for (const auto ext : supported_exts) {
-                supported_exts_names.push_back(ext.extensionName.data());
-            }
-        }
-        {
-            const auto feature = phys_device.getFeatures();
-            if (!feature.multiDrawIndirect)
-                continue;
-        }
+        const auto required_extensions = requiredDeviceExtensions(headless);
+        const auto supported_extensions = supportedDeviceExtensions(phys_device);
+        if (firstMissingVulkanExtension(required_extensions, supported_extensions)) continue;
+        if (firstMissingRequiredVulkanFeature(
+                queryDeviceFeatureSupport(phys_device).required)) continue;
 
         score_index_pair.push_back({score, i});
     }
@@ -260,20 +291,6 @@ static vk::PhysicalDevice pickPhysicalDevice(vk::Instance instance, vk::SurfaceK
     return phys_devices[choice_index];
 }
 
-static std::vector<std::string> supportedDeviceExtensions(vk::PhysicalDevice physical_device) {
-    std::vector<std::string> result;
-    for (const auto &extension : physical_device.enumerateDeviceExtensionProperties()) {
-        result.emplace_back(extension.extensionName.data());
-    }
-    return result;
-}
-
-static std::vector<std::string> requiredDeviceExtensions(bool headless) {
-    std::vector<std::string> result;
-    if (!headless) result.emplace_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
-    return result;
-}
-
 static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, const QueueSet &queues_info,
                                             bool headless, bool &memory_budget_enabled,
                                             bool use_openxr = false) {
@@ -281,6 +298,27 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
 
     const auto required_extensions = requiredDeviceExtensions(headless);
     const auto supported_extensions = supportedDeviceExtensions(phys_device);
+    if (const auto missing =
+            firstMissingVulkanExtension(required_extensions, supported_extensions)) {
+#if PELICAN_WITH_OPENXR
+        if (use_openxr) {
+            throw OpenXr::VulkanBootstrapError("required Vulkan device extension missing: " +
+                                               *missing);
+        }
+#endif
+        throw std::runtime_error("required Vulkan device extension missing: " + *missing);
+    }
+    const auto feature_support = queryDeviceFeatureSupport(phys_device);
+    if (const auto missing =
+            firstMissingRequiredVulkanFeature(feature_support.required)) {
+#if PELICAN_WITH_OPENXR
+        if (use_openxr) {
+            throw OpenXr::VulkanBootstrapError(
+                "runtime-selected physical device lacks Vulkan feature " + *missing);
+        }
+#endif
+        throw std::runtime_error("physical device lacks required Vulkan feature " + *missing);
+    }
     memory_budget_enabled = std::find(supported_extensions.begin(), supported_extensions.end(),
                                       VK_EXT_MEMORY_BUDGET_EXTENSION_NAME) != supported_extensions.end();
     auto enabled_extensions = required_extensions;
@@ -311,22 +349,17 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
 
     vk::PhysicalDeviceFeatures2 features;
     features.features.multiDrawIndirect = true; // necessary for multi draw indirect
+    features.features.drawIndirectFirstInstance = true; // firstInstance carries the model slot index
     vk::PhysicalDeviceVulkan11Features vk11features;
-    vk11features.shaderDrawParameters = true; // necessary for using gl_BaseIndex in shader
-    const auto supported_feature_chain =
-        phys_device.getFeatures2<vk::PhysicalDeviceFeatures2,
-                                 vk::PhysicalDeviceVulkan12Features>();
-    const bool timeline_semaphore_supported =
-        supported_feature_chain.get<vk::PhysicalDeviceVulkan12Features>()
-            .timelineSemaphore == VK_TRUE;
+    vk11features.shaderDrawParameters = true; // necessary for using gl_BaseInstance in shaders
 #if PELICAN_WITH_OPENXR
-    if (use_openxr && !timeline_semaphore_supported) {
+    if (use_openxr && !feature_support.timeline_semaphore) {
         throw OpenXr::VulkanBootstrapError(
             "runtime-selected physical device lacks Vulkan feature timelineSemaphore required by OpenXR");
     }
 #endif
     vk::PhysicalDeviceVulkan12Features vk12features;
-    vk12features.timelineSemaphore = timeline_semaphore_supported ? VK_TRUE : VK_FALSE;
+    vk12features.timelineSemaphore = feature_support.timeline_semaphore ? VK_TRUE : VK_FALSE;
 
     vk::StructureChain create_info_chain{
         create_info,
@@ -338,11 +371,6 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
 
 #if PELICAN_WITH_OPENXR
     if (use_openxr) {
-        if (const auto missing =
-                firstMissingVulkanExtension(required_extensions, supported_extensions)) {
-            throw OpenXr::VulkanBootstrapError("required Vulkan device extension missing: " +
-                                               *missing);
-        }
         const auto &chained_create_info = create_info_chain.get<vk::DeviceCreateInfo>();
         const auto raw_device = OpenXr::createVulkanDevice(
             &vkGetInstanceProcAddr, static_cast<VkPhysicalDevice>(phys_device),
@@ -419,10 +447,6 @@ static VulkanBootstrapState bootstrapXrVulkan(
     if (!queues) {
         throw OpenXr::VulkanBootstrapError(
             "runtime-selected physical device has no engine-compatible queue families");
-    }
-    if (!result.physical_device.getFeatures().multiDrawIndirect) {
-        throw OpenXr::VulkanBootstrapError(
-            "runtime-selected physical device lacks multiDrawIndirect");
     }
     result.queues = *queues;
 

@@ -1,4 +1,5 @@
 #include "polygoninstancecontainer.hpp"
+#include "indirectdrawlimits.hpp"
 #include "../model/vertbufcontainer.hpp"
 #include "../shader/pelican_sets.hpp"
 #include "../vkcore/core.hpp"
@@ -8,7 +9,6 @@
 #include <cstring>
 #include <cmath>
 #include <glm/ext/matrix_transform.hpp>
-#include <limits>
 #include <stdexcept>
 #include <tuple>
 #include <unordered_map>
@@ -22,13 +22,6 @@ namespace {
 
 constexpr size_t maxModelInstances = 1024;
 constexpr size_t maxRenderCommands = 1024;
-
-uint32_t checkedDrawCount(size_t count) {
-    if (count > std::numeric_limits<uint32_t>::max()) {
-        throw std::runtime_error("Draw call count exceeds uint32_t range");
-    }
-    return static_cast<uint32_t>(count);
-}
 
 } // namespace
 
@@ -580,6 +573,10 @@ void PolygonInstanceContainer::triggerUpdate() {
     // Build immutable per-view ranges over the same command buffer. The enum
     // order third/both/first makes each view's visible commands contiguous
     // within one material group.
+    const auto max_draw_indirect_count = GET_MODULE(VulkanManageCore)
+                                             .getPhysDevice()
+                                             .getProperties()
+                                             .limits.maxDrawIndirectCount;
     const auto build_draw_calls = [&](bool first_person_view) {
         auto &output = draw_calls[first_person_view ? 1u : 0u];
         std::optional<std::size_t> first;
@@ -592,15 +589,18 @@ void PolygonInstanceContainer::triggerUpdate() {
         };
         const auto flush = [&](std::size_t end) {
             if (!first) return;
-            const auto &command = render_commands[*first];
-            output.push_back(DrawIndirectInfo{
-                .material = command.material,
-                .source_material_index = command.source_material_index,
-                .offset = *first * sizeof(RenderCommand),
-                .draw_count = checkedDrawCount(end - *first),
-                .stride = sizeof(RenderCommand),
-                .skinned = command.skinned,
-            });
+            for (const auto &segment : renderer_detail::splitIndirectDrawRange(
+                     *first, end, max_draw_indirect_count)) {
+                const auto &command = render_commands[segment.first_command];
+                output.push_back(DrawIndirectInfo{
+                    .material = command.material,
+                    .source_material_index = command.source_material_index,
+                    .offset = segment.first_command * sizeof(RenderCommand),
+                    .draw_count = segment.draw_count,
+                    .stride = sizeof(RenderCommand),
+                    .skinned = command.skinned,
+                });
+            }
             first.reset();
         };
         for (std::size_t index = 0; index < render_commands.size(); ++index) {

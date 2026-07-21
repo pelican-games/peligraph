@@ -3,6 +3,7 @@
 #include "../src/core/log.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/playback/seqplayer.hpp"
+#include "../src/core/renderer/indirectdrawlimits.hpp"
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
 #include "../src/core/userpublic/animation/abi_v1.hpp"
 #include "../src/core/vkcore/core.hpp"
@@ -57,6 +58,25 @@ struct TempSequence {
 };
 
 } // namespace
+
+TEST_CASE("indirect draw ranges respect the physical-device draw-count limit",
+          "[renderer][indirect][limits]") {
+    const auto segments =
+        renderer_detail::splitIndirectDrawRange(7, 17, 4);
+    REQUIRE(segments.size() == 3);
+    CHECK(segments[0].first_command == 7);
+    CHECK(segments[0].draw_count == 4);
+    CHECK(segments[1].first_command == 11);
+    CHECK(segments[1].draw_count == 4);
+    CHECK(segments[2].first_command == 15);
+    CHECK(segments[2].draw_count == 2);
+
+    CHECK(renderer_detail::splitIndirectDrawRange(3, 3, 4).empty());
+    CHECK_THROWS_AS(renderer_detail::splitIndirectDrawRange(0, 1, 0),
+                    std::invalid_argument);
+    CHECK_THROWS_AS(renderer_detail::splitIndirectDrawRange(2, 1, 4),
+                    std::invalid_argument);
+}
 
 TEST_CASE("ModelInstanceId reuses one slot through ten thousand churn cycles",
           "[wp146][model-instance][slotmap][churn][gpu]") {

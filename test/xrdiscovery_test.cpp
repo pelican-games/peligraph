@@ -326,3 +326,35 @@ TEST_CASE("Vulkan required extensions merge uniquely and report missing names",
                               Catch::Matchers::ContainsSubstring(*missing));
     }
 }
+
+TEST_CASE("Vulkan bootstrap requires every feature used by indirect rendering",
+          "[openxr][vulkan][bootstrap]") {
+    Pelican::RequiredVulkanFeatureSupport support{
+        .multi_draw_indirect = true,
+        .draw_indirect_first_instance = true,
+        .shader_draw_parameters = true,
+        .dynamic_rendering = true,
+    };
+    CHECK_FALSE(Pelican::firstMissingRequiredVulkanFeature(support));
+
+    SECTION("multiDrawIndirect") {
+        support.multi_draw_indirect = false;
+        CHECK(*Pelican::firstMissingRequiredVulkanFeature(support) ==
+              "multiDrawIndirect");
+    }
+    SECTION("drawIndirectFirstInstance") {
+        support.draw_indirect_first_instance = false;
+        CHECK(*Pelican::firstMissingRequiredVulkanFeature(support) ==
+              "drawIndirectFirstInstance");
+    }
+    SECTION("shaderDrawParameters") {
+        support.shader_draw_parameters = false;
+        CHECK(*Pelican::firstMissingRequiredVulkanFeature(support) ==
+              "shaderDrawParameters");
+    }
+    SECTION("dynamicRendering") {
+        support.dynamic_rendering = false;
+        CHECK(*Pelican::firstMissingRequiredVulkanFeature(support) ==
+              "dynamicRendering");
+    }
+}

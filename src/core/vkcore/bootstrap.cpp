@@ -32,4 +32,13 @@ std::optional<std::string> firstMissingVulkanExtension(
     return std::nullopt;
 }
 
+std::optional<std::string> firstMissingRequiredVulkanFeature(
+    const RequiredVulkanFeatureSupport &support) {
+    if (!support.multi_draw_indirect) return "multiDrawIndirect";
+    if (!support.draw_indirect_first_instance) return "drawIndirectFirstInstance";
+    if (!support.shader_draw_parameters) return "shaderDrawParameters";
+    if (!support.dynamic_rendering) return "dynamicRendering";
+    return std::nullopt;
+}
+
 } // namespace Pelican
