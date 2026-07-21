@@ -2,6 +2,7 @@
 
 #include "animationjobs.hpp"
 #include "animationprobe.hpp"
+#include "animationserviceabi.hpp"
 #include "vrmaretarget.hpp"
 #include "../asset/model.hpp"
 #include "../container.hpp"
@@ -33,44 +34,11 @@ void linkAnchor() noexcept;
 namespace Pelican::Animation {
 namespace {
 
-constexpr std::size_t descriptorHeaderSize = sizeof(DescriptorHeaderV1);
-
-template <class T> Status validateDescriptor(const T &value, std::size_t minimum = sizeof(T)) {
-    if (value.struct_size < minimum) return Status::invalid_argument;
-    if (value.version != descriptorVersionV1) return Status::unsupported_version;
-    if (value.reserved0 != 0 || value.reserved1 != 0) return Status::reserved_not_zero;
-    return Status::ok;
-}
-
-template <class Handle> bool sameHandle(Handle left, Handle right) {
-    return left.identity == right.identity && left.generation == right.generation &&
-           left.reserved == 0 && right.reserved == 0;
-}
-
-AnimationOwnerHandle publicOwner(internal::RegistrationOwner owner, std::uint32_t generation) {
-    return {owner + 1, generation, 0};
-}
-
-std::string_view checkedString(const char *data, std::uint32_t size) {
-    return data == nullptr ? std::string_view{} : std::string_view{data, size};
-}
-
-bool decodeSha256(std::string_view text, std::uint8_t (&output)[32]) {
-    if (text.size() != 64) return false;
-    const auto nibble = [](char value) -> int {
-        if (value >= '0' && value <= '9') return value - '0';
-        if (value >= 'a' && value <= 'f') return value - 'a' + 10;
-        if (value >= 'A' && value <= 'F') return value - 'A' + 10;
-        return -1;
-    };
-    for (std::size_t index = 0; index < 32; ++index) {
-        const auto high = nibble(text[index * 2]);
-        const auto low = nibble(text[index * 2 + 1]);
-        if (high < 0 || low < 0) return false;
-        output[index] = static_cast<std::uint8_t>((high << 4) | low);
-    }
-    return true;
-}
+using Internal::checkedString;
+using Internal::decodeSha256;
+using Internal::descriptorHeaderSize;
+using Internal::sameHandle;
+using Internal::validateDescriptor;
 
 } // namespace
 
@@ -160,7 +128,7 @@ struct AnimationServiceRuntime::Impl {
     std::unordered_map<std::uint64_t, std::pair<ObjectRecord *, const AnimationSkinBinding *>> bindings;
     // Includes tombstones so a handle from a replaced/removed asset reports
     // stale_generation rather than degrading to invalid_handle.
-    std::unordered_map<std::uint64_t, std::uint32_t> resource_generations;
+    Internal::ResourceGenerationLedger resource_generations;
     std::unordered_map<std::uint64_t, SinkRecord> sinks;
     std::unordered_map<std::uint64_t, std::uint64_t> instances;
     std::unordered_map<std::uint64_t, OwnerRecord> owners;
@@ -197,9 +165,7 @@ struct AnimationServiceRuntime::Impl {
     }
 
     Status validateResource(std::uint64_t identity, std::uint32_t generation) const {
-        const auto found = resource_generations.find(identity);
-        if (found == resource_generations.end()) return Status::invalid_handle;
-        return found->second == generation ? Status::ok : Status::stale_generation;
+        return resource_generations.validate(identity, generation);
     }
 
     Status resolveRigResource(RigHandle rig, ObjectRecord *&out) {
@@ -471,17 +437,19 @@ struct AnimationServiceRuntime::Impl {
         object->asset = &assets.getOrCreate(model);
         object->renderer_instance = renderer_instance;
         auto *record = object.get();
-        resource_generations[record->asset->rig.handle.identity] =
-            record->asset->rig.handle.generation;
-        resource_generations[record->asset->rig.layout.identity] =
-            record->asset->rig.layout.generation;
+        resource_generations.remember(record->asset->rig.handle.identity,
+                                      record->asset->rig.handle.generation);
+        resource_generations.remember(record->asset->rig.layout.identity,
+                                      record->asset->rig.layout.generation);
         rigs.emplace(record->asset->rig.handle.identity, record);
         for (const auto &clip : record->asset->clips) {
-            resource_generations[clip.handle.identity] = clip.handle.generation;
+            resource_generations.remember(clip.handle.identity,
+                                          clip.handle.generation);
             clips.emplace(clip.handle.identity, std::pair{record, &clip});
         }
         for (const auto &binding : record->asset->skin_bindings) {
-            resource_generations[binding.handle.identity] = binding.handle.generation;
+            resource_generations.remember(binding.handle.identity,
+                                          binding.handle.generation);
             bindings.emplace(binding.handle.identity, std::pair{record, &binding});
         }
         objects.emplace(record->name, std::move(object));
@@ -531,7 +499,7 @@ struct AnimationServiceRuntime::Impl {
         const auto current_generation =
             generation_state->current.load(std::memory_order_acquire);
         for (const auto identity : old_resources)
-            resource_generations[identity] = current_generation;
+            resource_generations.remember(identity, current_generation);
 
         for (auto &[_, cursor] : cursors) {
             if (!cursor.active || !old_clips.contains(cursor.clip.identity)) continue;
@@ -562,19 +530,22 @@ struct AnimationServiceRuntime::Impl {
             object->asset = next_asset;
         }
         if (next_asset) {
-            resource_generations[next_asset->rig.handle.identity] =
-                next_asset->rig.handle.generation;
-            resource_generations[next_asset->rig.layout.identity] =
-                next_asset->rig.layout.generation;
+            resource_generations.remember(
+                next_asset->rig.handle.identity,
+                next_asset->rig.handle.generation);
+            resource_generations.remember(
+                next_asset->rig.layout.identity,
+                next_asset->rig.layout.generation);
             for (auto *object : affected) {
                 rigs.emplace(next_asset->rig.handle.identity, object);
                 for (const auto &clip : next_asset->clips) {
-                    resource_generations[clip.handle.identity] = clip.handle.generation;
+                    resource_generations.remember(clip.handle.identity,
+                                                  clip.handle.generation);
                     clips.emplace(clip.handle.identity, std::pair{object, &clip});
                 }
                 for (const auto &binding : next_asset->skin_bindings) {
-                    resource_generations[binding.handle.identity] =
-                        binding.handle.generation;
+                    resource_generations.remember(binding.handle.identity,
+                                                  binding.handle.generation);
                     bindings.emplace(binding.handle.identity,
                                      std::pair{object, &binding});
                 }
@@ -626,9 +597,8 @@ struct AnimationServiceRuntime::Impl {
     void reset() {
         std::scoped_lock lock{mutex};
         const auto tombstone = [&](auto handle) {
-            auto generation = handle.generation + 1;
-            if (generation == 0) ++generation;
-            resource_generations[handle.identity] = generation;
+            resource_generations.tombstone(handle.identity,
+                                           handle.generation);
         };
         for (const auto &[_, object] : objects) {
             if (!object->asset) continue;
