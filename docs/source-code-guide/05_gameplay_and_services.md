@@ -365,7 +365,9 @@ ABI面は [`userpublic/physics/abi_v1.hpp`](../../src/core/userpublic/physics/ab
 >
 > **手がかり**: `SupportVertex` は差ベクトルだけでなく両形状上の元の点も持ち回るので、最近点の重心座標をそのまま接触点(witness)の補間へ流用できます。`mask` は `vertices` のインデックスに対するビットで、`weights` も部分集合内の順序ではなく**頂点インデックス**で引きます。[`reduceSimplex()`](../../src/core/phys/physquerysweep.cpp#L304) が weight > 1e-7 の頂点だけ残すのが Johnson の「不要頂点の破棄」に当たります。
 >
-> **不変条件**: **simplex は 4 頂点を超えない**。`std::array<int,4> indices` / `std::array<float,4> weights` が固定長なので、5 頂点になると即バッファ溢れです。これは「距離 > 0 のとき最近点は面 / 辺 / 頂点上にある(= 正の重みは高々 3 個)」という幾何に依存していて、`convexDistance()` のループ先頭の早期 return を消すと前提が崩れます。`closestToOrigin()` は [`facePenetration()`](../../src/core/phys/physquerysweep.cpp#L521) からも 3 頂点で呼ばれるので、頂点数に関する仮定を増やさないこと。
+> **不変条件**: **simplex が 4 頂点を超えないことを前提に書かれています**。`std::array<int,4> indices` / `std::array<float,4> weights` が固定長なので、5 頂点になるとバッファ溢れです。根拠は「距離 > 0 のとき最近点は面 / 辺 / 頂点上にある(= 正の重みは高々 3 個)」という幾何で、`convexDistance()` のループ先頭の早期 return がその前提を支えています。`closestToOrigin()` は [`facePenetration()`](../../src/core/phys/physquerysweep.cpp#L521) からも 3 頂点で呼ばれるので、頂点数に関する仮定を増やさないこと。
+>
+> ⚠ ただし**この前提はコード上で強制されていません**。[`reduceSimplex()`](../../src/core/phys/physquerysweep.cpp#L304) は重み > 1e-7 の頂点をすべて残すだけで上限を持たず、その直後に `push_back` するため、4 頂点が残れば 5 になります。4 頂点すべてが正の重みを持つのは原点が四面体の内側にある場合(= 距離 0 で早期 return される)ですが、**ほぼ同一平面上の 4 点**では正の距離のまま 4 重み全部が正になり得ます(`richer_tie` が popcount の大きい部分集合を優先するため、その部分集合が採用されます)。`closestForSubset()` / `closestToOrigin()` の入口に `vertices.size() <= 4` の表明を置くのが安全側です。
 
 > 🧩 **難所 — 保守的前進で TOI を出す**([`shapeCast()`](../../src/core/phys/physquerysweep.cpp#L633) の後半ループ)
 >
