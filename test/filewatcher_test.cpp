@@ -11,6 +11,7 @@
 #include <fstream>
 #include <mutex>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -270,6 +271,62 @@ TEST_CASE("polling fallback uses fake-clock reconcile, gate cancellation, recove
     degraded.runControlCycleForTesting(t0 + 2ms);
     REQUIRE(degraded.status().state == WatcherState::degraded);
     degraded.stop();
+}
+
+TEST_CASE("Unreadable watcher roots retain live inventory instead of emitting removals",
+          "[wp96][watcher][unreadable]") {
+    Sandbox box;
+    const auto watched = box.root / "watched";
+    const auto unavailable = box.root / "temporarily-unavailable";
+    writeText(watched / "asset.txt", "v1");
+    GateFixture gate;
+    FileWatcherOptions options;
+    options.manual_clock = true;
+    options.poll_interval = 20ms;
+    options.watch_arm_override =
+        [](const WatchStore &, unsigned) { return false; };
+    FileWatcher watcher({{"project", watched}},
+                        [&] { return gate.snapshot(); }, options);
+    const auto t0 = FileWatcher::Clock::now();
+    watcher.runControlCycleForTesting(t0);
+
+    std::filesystem::rename(watched, unavailable);
+    watcher.runControlCycleForTesting(t0 + 25ms);
+    REQUIRE(applyAll(watcher).empty());
+    REQUIRE(watcher.status().error.find("retaining prior inventory") !=
+            std::string::npos);
+
+    std::filesystem::rename(unavailable, watched);
+    writeText(watched / "asset.txt", "v2");
+    watcher.runControlCycleForTesting(t0 + 50ms);
+    const auto requests = applyAll(watcher);
+    REQUIRE(requests.size() == 1);
+    REQUIRE(requests.front().kind == ReloadKind::modified);
+    REQUIRE(requests.front().key.path == "asset.txt");
+    watcher.stop();
+}
+
+TEST_CASE("FileWatcher worker contains scan exceptions and keeps running",
+          "[wp96][watcher][thread-boundary]") {
+    Sandbox box;
+    writeText(box.root / "asset.txt", "v1");
+    GateFixture gate;
+    FileWatcherOptions options;
+    options.retry_backoff = 1ms;
+    options.poll_interval = 1ms;
+    options.watch_arm_override =
+        [](const WatchStore &, unsigned) { return false; };
+    FileWatcher watcher({{"project", box.root}},
+                        [&] { return gate.snapshot(); }, options);
+    std::atomic<unsigned> scans{0};
+    watcher.setBeforeScanHook([&] {
+        if (++scans == 1) {
+            throw std::runtime_error{"injected scan failure"};
+        }
+    });
+    watcher.start();
+    REQUIRE(waitUntil([&] { return scans.load() >= 2; }));
+    watcher.stop();
 }
 
 #ifdef _WIN32

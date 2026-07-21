@@ -46,14 +46,19 @@ bool withinRoot(const std::filesystem::path &root, const std::filesystem::path &
 
 #ifdef _WIN32
 std::wstring extendedPath(const std::filesystem::path &input) {
-    auto path = std::filesystem::absolute(input).native();
+    std::error_code ec;
+    const auto absolute = std::filesystem::absolute(input, ec);
+    auto path = (ec ? input : absolute).native();
     if (path.starts_with(L"\\\\?\\")) return path;
     if (path.starts_with(L"\\\\")) return L"\\\\?\\UNC\\" + path.substr(2);
     return L"\\\\?\\" + path;
 }
 
 bool isNetworkStore(const std::filesystem::path &path) {
-    const auto absolute = std::filesystem::absolute(path).native();
+    std::error_code ec;
+    const auto resolved = std::filesystem::absolute(path, ec);
+    if (ec) return false;
+    const auto absolute = resolved.native();
     if (absolute.starts_with(L"\\\\")) return true;
     std::array<wchar_t, MAX_PATH> volume{};
     if (!GetVolumePathNameW(absolute.c_str(), volume.data(), static_cast<DWORD>(volume.size()))) return false;
@@ -106,7 +111,13 @@ class NativeWatch {
     void stop() {
         if (!running_) return;
         stopping_ = true;
-        CancelIoEx(directory_, &overlapped_);
+        {
+            // Serialize cancellation with the completion thread's stop-check
+            // and re-arm. Either stop observes the old request, or it cancels
+            // the newly armed request; there is no request-free race window.
+            std::scoped_lock lock{io_mutex_};
+            CancelIoEx(directory_, &overlapped_);
+        }
         {
             std::unique_lock lock{stop_mutex_};
             stop_cv_.wait(lock, [this] { return completion_collected_; });
@@ -149,7 +160,7 @@ class NativeWatch {
         stop_cv_.wait(lock, [this] { return resources_released_; });
     }
 
-    void threadMain() {
+    void threadMainImpl() {
         for (;;) {
             WaitForSingleObject(event_, INFINITE);
             DWORD bytes = 0;
@@ -161,12 +172,45 @@ class NativeWatch {
             }
             const bool overflow = (ok && bytes == 0) || error == ERROR_NOTIFY_ENUM_DIR;
             // Re-arm before handing work to the hash/reconcile worker.
-            if (!arm()) {
+            bool stop_now = false;
+            bool armed = false;
+            {
+                std::scoped_lock lock{io_mutex_};
+                stop_now = stopping_.load();
+                if (!stop_now) armed = arm();
+            }
+            if (stop_now) {
+                signalCollectedAndAwaitRelease();
+                return;
+            }
+            if (!armed) {
                 notify_(true);
                 signalCollectedAndAwaitRelease();
                 return;
             }
             notify_(overflow || !ok);
+        }
+    }
+
+    void threadMain() noexcept {
+        try {
+            threadMainImpl();
+        } catch (const std::exception &error) {
+            if (logger) {
+                LOG_ERROR(logger, "native file watcher failed: {}", error.what());
+            }
+            try {
+                notify_(true);
+            } catch (...) {
+            }
+            signalCollectedAndAwaitRelease();
+        } catch (...) {
+            if (logger) LOG_ERROR(logger, "native file watcher failed");
+            try {
+                notify_(true);
+            } catch (...) {
+            }
+            signalCollectedAndAwaitRelease();
         }
     }
 
@@ -179,6 +223,7 @@ class NativeWatch {
     std::thread thread_;
     std::atomic<bool> stopping_{false};
     bool running_ = false;
+    std::mutex io_mutex_;
     std::mutex stop_mutex_;
     std::condition_variable stop_cv_;
     bool completion_collected_ = false;
@@ -198,6 +243,31 @@ struct InventoryEntry {
     AssetKey key;
     std::filesystem::path path;
     std::string digest;
+};
+
+bool keyWithinRoot(std::string_view root, std::string_view candidate) {
+    return candidate == root ||
+           (candidate.size() > root.size() && candidate.starts_with(root) &&
+            candidate[root.size()] == '/');
+}
+
+struct InventoryScan {
+    std::map<std::string, InventoryEntry> entries;
+    std::set<std::string> unreadable_paths;
+    std::set<std::string> unreadable_roots;
+
+    bool incomplete() const noexcept {
+        return !unreadable_paths.empty() || !unreadable_roots.empty();
+    }
+
+    bool unreadable(std::string_view physical) const {
+        if (unreadable_paths.contains(std::string{physical})) return true;
+        return std::any_of(
+            unreadable_roots.begin(), unreadable_roots.end(),
+            [physical](const auto &root) {
+                return keyWithinRoot(root, physical);
+            });
+    }
 };
 
 } // namespace
@@ -289,7 +359,10 @@ struct FileWatcher::Impl {
         native = std::move(armed);
         ++consecutive_failures;
         next_retry = now + options.retry_backoff * (1u << std::min(consecutive_failures - 1, 5u));
-        status.error = std::move(error);
+        {
+            std::scoped_lock lock{mutex};
+            status.error = std::move(error);
+        }
         return false;
     }
 
@@ -298,52 +371,98 @@ struct FileWatcher::Impl {
         for (auto &watch : watches) watch->stop();
     }
 
-    std::map<std::string, InventoryEntry> scan(std::uint64_t epoch) {
+    InventoryScan scan(std::uint64_t epoch) {
         BeforeScanHook hook;
         {
             std::scoped_lock lock{mutex};
             hook = before_scan;
         }
         if (hook) hook();
-        std::map<std::string, InventoryEntry> result;
+        InventoryScan result;
         std::set<std::string> seen_identities;
         std::set<AssetKey> seen_logical_keys;
         for (const auto &store : stores) {
             std::error_code ec;
+            const auto root_key = physicalKey(store.root);
             std::filesystem::recursive_directory_iterator it{
                 store.root, std::filesystem::directory_options::skip_permission_denied, ec};
             const std::filesystem::recursive_directory_iterator end;
-            while (!ec && it != end) {
+            if (ec) {
+                result.unreadable_roots.insert(root_key);
+                continue;
+            }
+            while (it != end) {
                 const auto path = it->path();
-                if (it->is_symlink(ec) && it->is_directory(ec)) it.disable_recursion_pending();
-                const bool regular = it->is_regular_file(ec);
-                ++it;
-                if (ec) { ec.clear(); continue; }
-                if (!regular || !withinRoot(store.root, path)) continue;
-                const auto physical = physicalKey(path);
-                const auto relative = std::filesystem::relative(path, store.root, ec);
-                if (ec || relative.empty() || relative.native().starts_with(L"..")) { ec.clear(); continue; }
-                const auto key = makeAssetKey(store.logical_mount, relative);
-                if (!seen_logical_keys.insert(key).second) continue;
-                ContentDigestResult digest;
-                for (unsigned retry = 0; retry < 20; ++retry) {
-                    digest = readStableContentDigest(path, [this, epoch] {
-                        const auto gate_now = gate();
-                        std::scoped_lock lock{mutex};
-                        return stopping || !gate_now.enabled || gate_now.epoch != epoch;
-                    });
-                    if (digest.status != DigestReadStatus::retry) break;
-                    std::this_thread::sleep_for(std::chrono::milliseconds{25});
-                }
-                if (digest.status == DigestReadStatus::stable) {
-                    std::string identity_key = physical;
-                    if (digest.identity && (digest.identity->volume != 0 || digest.identity->file != 0)) {
-                        identity_key = "id:" + std::to_string(digest.identity->volume) + ":" +
-                                       std::to_string(digest.identity->file);
+                std::error_code metadata_error;
+                const bool symlink = it->is_symlink(metadata_error);
+                bool directory = false;
+                if (!metadata_error && symlink) {
+                    directory = it->is_directory(metadata_error);
+                    if (!metadata_error && directory) {
+                        it.disable_recursion_pending();
                     }
-                    if (!seen_identities.insert(identity_key).second) continue;
-                    result.emplace(physical, InventoryEntry{key, path,
-                                                            std::move(digest.sha256)});
+                }
+                const bool regular = !metadata_error &&
+                                     it->is_regular_file(metadata_error);
+                if (metadata_error) {
+                    result.unreadable_roots.insert(root_key);
+                } else if (regular && withinRoot(store.root, path)) {
+                    const auto physical = physicalKey(path);
+                    const auto relative =
+                        std::filesystem::relative(path, store.root, ec);
+                    if (ec || relative.empty() ||
+                        relative.native().starts_with(L"..")) {
+                        result.unreadable_paths.insert(physical);
+                        ec.clear();
+                    } else {
+                        const auto key =
+                            makeAssetKey(store.logical_mount, relative);
+                        if (seen_logical_keys.insert(key).second) {
+                            ContentDigestResult digest;
+                            for (unsigned retry = 0; retry < 20; ++retry) {
+                                digest = readStableContentDigest(
+                                    path, [this, epoch] {
+                                        const auto gate_now = gate();
+                                        std::scoped_lock lock{mutex};
+                                        return stopping || !gate_now.enabled ||
+                                               gate_now.epoch != epoch;
+                                    });
+                                if (digest.status != DigestReadStatus::retry)
+                                    break;
+                                std::this_thread::sleep_for(
+                                    std::chrono::milliseconds{25});
+                            }
+                            if (digest.status == DigestReadStatus::stable) {
+                                std::string identity_key = physical;
+                                if (digest.identity &&
+                                    (digest.identity->volume != 0 ||
+                                     digest.identity->file != 0)) {
+                                    identity_key =
+                                        "id:" +
+                                        std::to_string(
+                                            digest.identity->volume) +
+                                        ":" +
+                                        std::to_string(digest.identity->file);
+                                }
+                                if (seen_identities.insert(identity_key).second) {
+                                    result.entries.emplace(
+                                        physical,
+                                        InventoryEntry{key, path,
+                                                       std::move(digest.sha256)});
+                                }
+                            } else if (digest.status !=
+                                       DigestReadStatus::cancelled) {
+                                result.unreadable_paths.insert(physical);
+                            }
+                        }
+                    }
+                }
+
+                it.increment(ec);
+                if (ec) {
+                    result.unreadable_roots.insert(root_key);
+                    ec.clear();
+                    break;
                 }
             }
         }
@@ -357,7 +476,8 @@ struct FileWatcher::Impl {
                 std::scoped_lock lock{mutex};
                 generation = notification_generation;
             }
-            auto current = scan(epoch);
+            auto scanned = scan(epoch);
+            auto current = std::move(scanned.entries);
             const auto gate_now = gate();
             {
                 std::scoped_lock lock{mutex};
@@ -375,14 +495,30 @@ struct FileWatcher::Impl {
                         queue.push({entry.key, ReloadKind::modified, entry.digest, epoch});
                 }
                 for (const auto &[physical, entry] : inventory) {
-                    if (!current.contains(physical) && digests.observeMissing(entry.key))
-                        queue.push({entry.key, ReloadKind::removed, std::nullopt, epoch});
+                    if (current.contains(physical)) continue;
+                    if (scanned.unreadable(physical)) {
+                        // Preserve both the previous digest and physical source
+                        // until this path can be read again. Unreadable is not
+                        // evidence of deletion.
+                        current.emplace(physical, entry);
+                    } else if (digests.observeMissing(entry.key)) {
+                        queue.push({entry.key, ReloadKind::removed,
+                                    std::nullopt, epoch});
+                    }
                 }
             }
             inventory = std::move(current);
             std::scoped_lock lock{mutex};
             if (notification_generation == generation) {
-                dirty = false;
+                dirty = scanned.incomplete();
+                if (dirty) {
+                    dirty_since = Clock::now();
+                    status.error =
+                        "file watcher scan incomplete; retaining prior inventory";
+                } else if (status.error.starts_with(
+                               "file watcher scan incomplete")) {
+                    status.error.clear();
+                }
                 overflow = false;
                 return true;
             }
@@ -465,18 +601,53 @@ struct FileWatcher::Impl {
         }
     }
 
-    void workerMain() {
-        bool first = true;
-        while (true) {
-            const auto now = Clock::now();
-            cycle(now, first);
-            first = false;
-            std::unique_lock lock{mutex};
-            if (stopping) break;
-            cv.wait_for(lock, std::chrono::milliseconds{25});
-            if (stopping) break;
+    void workerMain() noexcept {
+        try {
+            bool first = true;
+            while (true) {
+                const auto now = Clock::now();
+                try {
+                    cycle(now, first);
+                } catch (const std::exception &error) {
+                    if (logger) {
+                        LOG_ERROR(logger, "file watcher cycle failed: {}",
+                                  error.what());
+                    }
+                    ++consecutive_failures;
+                    next_retry = now + options.retry_backoff;
+                    next_poll = now + options.poll_interval;
+                    std::scoped_lock lock{mutex};
+                    status.state = WatcherState::degraded;
+                    status.error = error.what();
+                } catch (...) {
+                    if (logger) LOG_ERROR(logger, "file watcher cycle failed");
+                    ++consecutive_failures;
+                    next_retry = now + options.retry_backoff;
+                    next_poll = now + options.poll_interval;
+                    std::scoped_lock lock{mutex};
+                    status.state = WatcherState::degraded;
+                    status.error = "unknown file watcher cycle failure";
+                }
+                first = false;
+                std::unique_lock lock{mutex};
+                if (stopping) break;
+                cv.wait_for(lock, std::chrono::milliseconds{25});
+                if (stopping) break;
+            }
+            stopNative();
+        } catch (...) {
+            // Last-resort thread boundary: no exception may escape a worker
+            // entry point and terminate the process.
+            try {
+                std::scoped_lock lock{mutex};
+                status.state = WatcherState::degraded;
+            } catch (...) {
+            }
+            try {
+                stopNative();
+            } catch (...) {
+            }
         }
-        stopNative();
     }
 };
 
