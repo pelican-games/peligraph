@@ -141,23 +141,62 @@ float sanitizeRayDistance(float t) {
     return t < 0.0f && t >= -kEpsilon ? 0.0f : t;
 }
 
-std::vector<float> raySphereRoots(const NormalizedRay &ray, vec3 center, float radius) {
-    const float r = std::max(0.0f, radius);
-    const vec3 oc = sub(ray.origin, center);
-    const float b = dot(oc, ray.direction);
-    const float c = dot(oc, oc) - r * r;
-    const float discriminant = b * b - c;
+bool withinRadiusTolerance(float distance_squared, float radius) {
+    const float limit = std::max(0.0f, radius) + kEpsilon;
+    return distance_squared <= limit * limit;
+}
 
-    if (discriminant < -kEpsilon) {
+std::vector<float> raySphereRoots(const NormalizedRay &ray, vec3 center, float radius) {
+    // Solve from the ray's closest point to the sphere center instead of
+    // subtracting two large quadratic terms. Double intermediates preserve a
+    // small perpendicular offset even when the ray origin is far away.
+    const double dx = static_cast<double>(ray.direction.x);
+    const double dy = static_cast<double>(ray.direction.y);
+    const double dz = static_cast<double>(ray.direction.z);
+    const double tx = static_cast<double>(center.x) - ray.origin.x;
+    const double ty = static_cast<double>(center.y) - ray.origin.y;
+    const double tz = static_cast<double>(center.z) - ray.origin.z;
+    const double direction_length_squared = dx * dx + dy * dy + dz * dz;
+    if (!std::isfinite(direction_length_squared) ||
+        direction_length_squared <= 0.0) {
         return {};
     }
 
-    if (std::abs(discriminant) <= kEpsilon) {
-        return {-b};
+    const double closest_t =
+        (tx * dx + ty * dy + tz * dz) / direction_length_squared;
+    const double px = tx - dx * closest_t;
+    const double py = ty - dy * closest_t;
+    const double pz = tz - dz * closest_t;
+    const double perpendicular_distance_squared =
+        px * px + py * py + pz * pz;
+    const double r = static_cast<double>(std::max(0.0f, radius));
+    const double allowed_radius = r + static_cast<double>(kEpsilon);
+    if (!std::isfinite(perpendicular_distance_squared) ||
+        perpendicular_distance_squared > allowed_radius * allowed_radius) {
+        return {};
     }
 
-    const float root = std::sqrt(std::max(0.0f, discriminant));
-    return {-b - root, -b + root};
+    const double half_chord_squared =
+        std::max(0.0, (r * r - perpendicular_distance_squared) /
+                          direction_length_squared);
+    const double half_chord = std::sqrt(half_chord_squared);
+    const auto representable = [](double value) {
+        return std::isfinite(value) &&
+               value >= -static_cast<double>(std::numeric_limits<float>::max()) &&
+               value <= static_cast<double>(std::numeric_limits<float>::max());
+    };
+    if (half_chord == 0.0) {
+        return representable(closest_t)
+                   ? std::vector<float>{static_cast<float>(closest_t)}
+                   : std::vector<float>{};
+    }
+    const double near_root = closest_t - half_chord;
+    const double far_root = closest_t + half_chord;
+    std::vector<float> roots;
+    roots.reserve(2);
+    if (representable(near_root)) roots.push_back(static_cast<float>(near_root));
+    if (representable(far_root)) roots.push_back(static_cast<float>(far_root));
+    return roots;
 }
 
 std::optional<RaycastHit> makeSphereHit(const NormalizedRay &ray, vec3 center, float radius) {
@@ -457,16 +496,20 @@ std::optional<RaycastHit> raycast(const Ray &ray, const Capsule &capsule) {
     const vec3 d_perp = sub(world_ray.direction, mul(axis, d_dot_axis));
     const vec3 m_perp = sub(m, mul(axis, m_dot_axis));
     const float qa = lengthSquared(d_perp);
-    const float qb = 2.0f * dot(d_perp, m_perp);
-    const float qc = lengthSquared(m_perp) - radius * radius;
 
     if (qa > kEpsilon) {
-        const float discriminant = qb * qb - 4.0f * qa * qc;
-        if (discriminant >= -kEpsilon) {
-            const float root = std::sqrt(std::max(0.0f, discriminant));
+        const float closest_t = -dot(d_perp, m_perp) / qa;
+        const vec3 closest_perpendicular =
+            add(m_perp, mul(d_perp, closest_t));
+        const float perpendicular_distance_squared =
+            lengthSquared(closest_perpendicular);
+        if (withinRadiusTolerance(perpendicular_distance_squared, radius)) {
+            const float half_chord = std::sqrt(std::max(
+                0.0f,
+                (radius * radius - perpendicular_distance_squared) / qa));
             std::array<float, 2> roots{
-                (-qb - root) / (2.0f * qa),
-                (-qb + root) / (2.0f * qa),
+                closest_t - half_chord,
+                closest_t + half_chord,
             };
             std::sort(roots.begin(), roots.end());
             for (float t : roots) {
@@ -504,13 +547,15 @@ std::optional<RaycastHit> raycast(const Ray &ray, const Shape &shape) {
 
 bool overlaps(const Sphere &lhs, const Sphere &rhs) {
     const float radius = std::max(0.0f, lhs.radius) + std::max(0.0f, rhs.radius);
-    return lengthSquared(sub(lhs.center, rhs.center)) <= radius * radius + kEpsilon;
+    return lengthSquared(sub(lhs.center, rhs.center)) <=
+           radius * radius + kEpsilon;
 }
 
 bool overlaps(const Sphere &lhs, const Box &rhs) {
     const vec3 local_center = inverseRotateVector(rhs.rotation, sub(lhs.center, rhs.center));
     const float radius = std::max(0.0f, lhs.radius);
-    return pointAabbDistanceSquared(local_center, rhs.half_extents) <= radius * radius + kEpsilon;
+    return pointAabbDistanceSquared(local_center, rhs.half_extents) <=
+           radius * radius + kEpsilon;
 }
 
 bool overlaps(const Box &lhs, const Sphere &rhs) {
@@ -521,7 +566,8 @@ bool overlaps(const Sphere &lhs, const Capsule &rhs) {
     const auto [a, b] = capsuleSegment(rhs);
     const vec3 closest = closestPointOnSegment(lhs.center, a, b);
     const float radius = std::max(0.0f, lhs.radius) + std::max(0.0f, rhs.radius);
-    return lengthSquared(sub(lhs.center, closest)) <= radius * radius + kEpsilon;
+    return lengthSquared(sub(lhs.center, closest)) <=
+           radius * radius + kEpsilon;
 }
 
 bool overlaps(const Capsule &lhs, const Sphere &rhs) {
@@ -592,7 +638,8 @@ bool overlaps(const Capsule &lhs, const Capsule &rhs) {
     const auto [lhs_a, lhs_b] = capsuleSegment(lhs);
     const auto [rhs_a, rhs_b] = capsuleSegment(rhs);
     const float radius = std::max(0.0f, lhs.radius) + std::max(0.0f, rhs.radius);
-    return segmentSegmentDistanceSquared(lhs_a, lhs_b, rhs_a, rhs_b) <= radius * radius + kEpsilon;
+    return segmentSegmentDistanceSquared(lhs_a, lhs_b, rhs_a, rhs_b) <=
+           radius * radius + kEpsilon;
 }
 
 bool overlaps(const Box &lhs, const Capsule &rhs) {
@@ -600,7 +647,8 @@ bool overlaps(const Box &lhs, const Capsule &rhs) {
     const vec3 local_a = inverseRotateVector(lhs.rotation, sub(a, lhs.center));
     const vec3 local_b = inverseRotateVector(lhs.rotation, sub(b, lhs.center));
     const float radius = std::max(0.0f, rhs.radius);
-    return segmentAabbDistanceSquared(local_a, local_b, lhs.half_extents) <= radius * radius + kEpsilon;
+    return segmentAabbDistanceSquared(local_a, local_b, lhs.half_extents) <=
+           radius * radius + kEpsilon;
 }
 
 bool overlaps(const Capsule &lhs, const Box &rhs) {

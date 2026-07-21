@@ -131,6 +131,26 @@ TEST_CASE("raycast hits sphere analytically including tangent and inside rays", 
     requireVec(inside->normal, {1.0f, 0.0f, 0.0f});
 }
 
+TEST_CASE("raycast keeps small sphere and capsule misses stable at long range",
+          "[physquery][small-shape][precision]") {
+    const Sphere sphere{{0.0f, 0.0f, 0.0f}, 1.0e-3f};
+    const Ray near_miss{{-100000.0f, 2.0e-3f, 0.0f},
+                        {1.0f, 0.0f, 0.0f}, 200000.0f};
+    REQUIRE_FALSE(raycast(near_miss, sphere));
+    REQUIRE(raycast(Ray{{-100000.0f, 5.0e-4f, 0.0f},
+                        {1.0f, 0.0f, 0.0f}, 200000.0f},
+                    sphere));
+
+    const Capsule capsule{{0.0f, 0.0f, 0.0f},
+                          {0.0f, 0.0f, 0.0f, 1.0f}, 1.0f, 1.0e-3f};
+    REQUIRE_FALSE(raycast(Ray{{-100000.0f, 0.0f, 2.0e-3f},
+                              {1.0f, 0.0f, 0.0f}, 200000.0f},
+                          capsule));
+    REQUIRE(raycast(Ray{{-100000.0f, 0.0f, 5.0e-4f},
+                        {1.0f, 0.0f, 0.0f}, 200000.0f},
+                    capsule));
+}
+
 TEST_CASE("raycast hits rotated OBBs and rejects misses", "[physquery]") {
     const Box box{{0.0f, 0.0f, 0.0f}, rotationZ(kPi * 0.5f), {1.0f, 2.0f, 1.0f}};
 
