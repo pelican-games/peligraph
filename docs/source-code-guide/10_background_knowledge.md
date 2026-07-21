@@ -68,19 +68,19 @@ vulkan-hpp は `VULKAN_HPP_NO_EXCEPTIONS` を定義していなければ既定�
 
 `vkCmdDrawIndexed` の `vertexOffset` は、仕様上「頂点バッファを引く前にインデックス値へ加算される値」です。インデックスバッファから読んだ値が `i` なら、実際に参照される頂点は `i + vertexOffset` になります。`int32_t` なので負値も取れます。これがあるおかげで、複数のメッシュを 1 本の頂点バッファと 1 本のインデックスバッファに連結して詰めても、各メッシュのインデックス値を 0 起点のまま書き換えずに済みます(連結時のずれは `firstIndex` と `vertexOffset` の 2 つで吸収する)。`firstIndex` はインデックスバッファ側の読み出し開始位置なので、両方を正しく設定しないと、別メッシュの頂点を引いた壊れた形状になります。
 
-**このリポジトリでは**: `src/core/renderer/spriterenderer.cpp` の `SpriteRenderer::render()` が、チャンクごとに `chunk_first_index` と `chunk_vertex_offset` を記録して `DrawRun` に持たせ、`cmd_buf.drawIndexed(run.index_count, 1, run.first_index, run.vertex_offset, 0)` を発行します。
+**このリポジトリでは**: `src/core/renderer/spriterenderer.cpp` の `buildSpriteDrawData()` が、チャンクごとに `chunk_first_index` と `chunk_vertex_offset` を記録して `SpriteDrawRun` に持たせ、`SpriteRenderer::render()` が `cmd_buf.drawIndexed(run.index_count, 1, run.first_index, run.vertex_offset, 0)` を発行します。各チャンクの uint16 index は 0 から再開するため、同じ batch がチャンクをまたいでも `vertex_offset` が変わる位置で必ず run を分けます。
 
 ### drawIndirect の stride は構造体より大きくてよい
 
 `vkCmdDrawIndexedIndirect` の `stride` は「連続する draw パラメータ間のバイト間隔」で、仕様の要件は `drawCount > 1` のとき「4 の倍数、かつ `sizeof(VkDrawIndexedIndirectCommand)` 以上」であることだけです。ちょうど `sizeof(VkDrawIndexedIndirectCommand)` である必要はありません。そのため、コマンド構造体を先頭メンバに持つ自前の構造体を配列にして、`stride` にその `sizeof` を渡す、というイディオムが使えます。GPU は各要素の先頭 20 バイトだけを読み、残りの CPU 側メタデータ(マテリアル ID など)は無視されます。`offset` の方も 4 の倍数である必要があり、またバッファは `VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT` 付きで作られていなければなりません。
 
-**このリポジトリでは**: `src/core/renderer/polygoninstancecontainer.hpp` の `struct RenderCommand` が `vk::DrawIndexedIndirectCommand command;` を先頭メンバに置き、`.cpp` 側の `PolygonInstanceContainer::triggerUpdate()` 内 `build_draw_calls` が `DrawIndirectInfo{... .offset = *first * sizeof(RenderCommand), .stride = sizeof(RenderCommand)}` を組み立てます。消費側は `src/core/renderer/materialrender.cpp` の `cmd_buf.drawIndexedIndirect(indirect_buf.buffer.get(), draw_call.offset, draw_call.draw_count, draw_call.stride)`。バッファ生成は同 `.cpp` の `createIndirectBuf()` で `eIndirectBuffer` を付けています。
+**このリポジトリでは**: `src/core/renderer/polygoninstancecontainer.hpp` の `struct RenderCommand` が `vk::DrawIndexedIndirectCommand command;` を先頭メンバに置き、`.cpp` 側の `PolygonInstanceContainer::triggerUpdate()` 内 `build_draw_calls` が `DrawIndirectInfo{... .offset = segment.first_command * sizeof(RenderCommand), .stride = sizeof(RenderCommand)}` を組み立てます。消費側は `src/core/renderer/materialrender.cpp` の `cmd_buf.drawIndexedIndirect(indirect_buf.buffer.get(), draw_call.offset, draw_call.draw_count, draw_call.stride)`。バッファ生成は同 `.cpp` の `createIndirectBuf()` で `eIndirectBuffer` を付けています。
 
-### multiDrawIndirect と shaderDrawParameters(gl_BaseInstance)
+### multiDrawIndirect、drawIndirectFirstInstance、shaderDrawParameters(gl_BaseInstance)
 
-`vkCmdDrawIndexedIndirect` の `drawCount` に 2 以上を渡すには、`VkPhysicalDeviceFeatures::multiDrawIndirect` が有効化されている必要があります(無効なら `drawCount` は 0 か 1 に限られます)。さらに `VkPhysicalDeviceLimits::maxDrawIndirectCount` が上限で、この feature が無効なデバイスではその値が 1 になります。feature は「物理デバイスが対応しているか」を照会したうえで、`vkCreateDevice` の `pEnabledFeatures` / `VkPhysicalDeviceFeatures2` で明示的に有効化しないと使えません(照会しただけでは有効になりません)。GLSL 側で `gl_BaseInstance` / `gl_BaseVertex` / `gl_DrawID` を読むのは別の機能で、Vulkan 1.1 の `shaderDrawParameters`(元は `VK_KHR_shader_draw_parameters`)が要ります。この 2 つが揃うと「1 回の間接描画でインスタンスごとに違う行列を引く」構成が書けます。
+`vkCmdDrawIndexedIndirect` の `drawCount` に 2 以上を渡すには、`VkPhysicalDeviceFeatures::multiDrawIndirect` が有効化されている必要があります(無効なら `drawCount` は 0 か 1 に限られます)。さらに `VkPhysicalDeviceLimits::maxDrawIndirectCount` が上限です。indirect command の `firstInstance` を 0 以外にするには `VkPhysicalDeviceFeatures::drawIndirectFirstInstance` が必要です。GLSL 側で `gl_BaseInstance` / `gl_BaseVertex` / `gl_DrawID` を読むのはさらに別の機能で、Vulkan 1.1 の `shaderDrawParameters`(元は `VK_KHR_shader_draw_parameters`)が要ります。feature は「物理デバイスが対応しているか」を照会したうえで、`vkCreateDevice` の `pEnabledFeatures` / `VkPhysicalDeviceFeatures2` で明示的に有効化しないと使えません(照会しただけでは有効になりません)。
 
-**このリポジトリでは**: `src/core/vkcore/core.cpp` の `pickPhysicalDevice()` が `feature.multiDrawIndirect` のないデバイスを候補から外し、`createLogicalDevice()` が `features.features.multiDrawIndirect = true;` と `vk11features.shaderDrawParameters = true;` を `vk::StructureChain` に載せます。読み出し側は `src/core/resources/default.vert` の `pelicanObjects.objects[gl_BaseInstance].model` です。
+**このリポジトリでは**: `src/core/vkcore/core.cpp` が上記 3 feature をまとめて照会し、device 選択時に不足を拒否したうえで `createLogicalDevice()` の `vk::StructureChain` にすべて載せます。`PolygonInstanceContainer::triggerUpdate()` は同じ material の連続範囲も `maxDrawIndirectCount` 以下へ分割します。読み出し側は `src/core/resources/default.vert` の `pelicanObjects.objects[gl_BaseInstance].model` です。
 
 ### bufferRowLength / bufferImageHeight の 0 は「詰めて配置」
 
