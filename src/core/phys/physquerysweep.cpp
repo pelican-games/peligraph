@@ -6,6 +6,7 @@
 #include <cmath>
 #include <limits>
 #include <optional>
+#include <stdexcept>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -18,6 +19,8 @@ constexpr float kDistanceTolerance = 2.0e-5F;
 constexpr float kEpaTolerance = 1.0e-6F;
 constexpr int kGjkIterations = 40;
 constexpr int kEpaIterations = 256;
+constexpr int kOverlapRefinementIterations = 24;
+constexpr std::size_t kMaxSimplexVertices = 4;
 
 vec3 add(vec3 lhs, vec3 rhs) {
     return {lhs.x + rhs.x, lhs.y + rhs.y, lhs.z + rhs.z};
@@ -125,6 +128,24 @@ Shape translated(const Shape &shape, vec3 offset) {
     }, shape);
 }
 
+float refineOverlapTime(const Shape &moving, vec3 delta,
+                        const Shape &collider, float separated_time,
+                        float overlapping_time) {
+    float lower = separated_time;
+    float upper = overlapping_time;
+    for (int iteration = 0; iteration < kOverlapRefinementIterations;
+         ++iteration) {
+        const float middle = (lower + upper) * 0.5F;
+        if (middle == lower || middle == upper) break;
+        if (overlaps(translated(moving, mul(delta, middle)), collider)) {
+            upper = middle;
+        } else {
+            lower = middle;
+        }
+    }
+    return upper;
+}
+
 vec3 support(const Shape &shape, vec3 direction) {
     const vec3 unit_direction = normalizeOr(direction, {1.0F, 0.0F, 0.0F});
     return std::visit([&](const auto &typed) {
@@ -228,6 +249,9 @@ struct ClosestHullPoint {
 
 std::optional<ClosestHullPoint> closestForSubset(
     const std::vector<SupportVertex> &vertices, std::uint32_t mask) {
+    if (vertices.empty() || vertices.size() > kMaxSimplexVertices) {
+        throw std::logic_error("GJK closest-point input exceeds simplex capacity");
+    }
     std::array<int, 4> indices{};
     int count = 0;
     for (int index = 0; index < static_cast<int>(vertices.size()); ++index) {
@@ -286,10 +310,23 @@ std::optional<ClosestHullPoint> closestForSubset(
     return result;
 }
 
-ClosestHullPoint closestToOrigin(const std::vector<SupportVertex> &vertices) {
+ClosestHullPoint closestToOrigin(
+    const std::vector<SupportVertex> &vertices,
+    std::uint32_t maximum_subset_vertices = kMaxSimplexVertices) {
+    if (vertices.empty() || vertices.size() > kMaxSimplexVertices) {
+        throw std::logic_error("GJK simplex must contain between one and four vertices");
+    }
+    if (maximum_subset_vertices == 0 ||
+        maximum_subset_vertices > kMaxSimplexVertices) {
+        throw std::logic_error("GJK subset vertex limit is invalid");
+    }
     ClosestHullPoint best;
     const std::uint32_t end_mask = 1U << static_cast<std::uint32_t>(vertices.size());
     for (std::uint32_t mask = 1; mask < end_mask; ++mask) {
+        if (std::popcount(mask) >
+            static_cast<int>(maximum_subset_vertices)) {
+            continue;
+        }
         const auto candidate = closestForSubset(vertices, mask);
         if (!candidate) continue;
         const bool smaller = candidate->distance_squared < best.distance_squared - 1.0e-12F;
@@ -303,8 +340,11 @@ ClosestHullPoint closestToOrigin(const std::vector<SupportVertex> &vertices) {
 
 void reduceSimplex(std::vector<SupportVertex> &vertices,
                    const ClosestHullPoint &closest) {
+    if (vertices.size() > kMaxSimplexVertices) {
+        throw std::logic_error("GJK reduction input exceeds simplex capacity");
+    }
     std::vector<SupportVertex> reduced;
-    reduced.reserve(4);
+    reduced.reserve(kMaxSimplexVertices);
     for (std::size_t index = 0; index < vertices.size(); ++index) {
         if (closest.weights[index] > 1.0e-7F) reduced.push_back(vertices[index]);
     }
@@ -335,7 +375,7 @@ DistanceResult convexDistance(const Shape &moving, const Shape &collider) {
     direction = normalizeOr(direction, {1.0F, 0.0F, 0.0F});
 
     std::vector<SupportVertex> simplex;
-    simplex.reserve(4);
+    simplex.reserve(kMaxSimplexVertices);
     simplex.push_back(supportDifference(moving, collider, direction));
     ClosestHullPoint closest = closestToOrigin(simplex);
 
@@ -375,6 +415,30 @@ DistanceResult convexDistance(const Shape &moving, const Shape &collider) {
         }
 
         reduceSimplex(simplex, closest);
+        if (simplex.size() == kMaxSimplexVertices) {
+            // A four-vertex active simplex represents an origin-containing
+            // tetrahedron and should have terminated above with distance zero.
+            // Nearly singular tetrahedra can leave a larger float residual.
+            // Confirm intersection using the shape-specific predicates; for a
+            // separated numerical false positive, project onto the boundary so
+            // a slot is always available for the next support point.
+            if (overlaps(moving, collider)) {
+                return DistanceResult{
+                    .distance = 0.0F,
+                    .point_on_moving = closest.point_on_moving,
+                    .point_on_collider = closest.point_on_collider,
+                    .normal = normalizeOr(
+                        sub(closest.point_on_moving, closest.point_on_collider),
+                        normalizeOr(sub(shapeCenter(moving), shapeCenter(collider)),
+                                    {1.0F, 0.0F, 0.0F})),
+                    .touching_or_intersecting = true,
+                    .simplex = simplex,
+                };
+            }
+            closest = closestToOrigin(simplex, kMaxSimplexVertices - 1);
+            reduceSimplex(simplex, closest);
+            continue;
+        }
         simplex.push_back(next);
         closest = closestToOrigin(simplex);
     }
@@ -675,10 +739,30 @@ std::optional<ShapeCastHit> shapeCast(const Shape &moving_shape, vec3 delta,
     }
 
     float time = 0.0F;
+    float last_separated_time = 0.0F;
     for (int iteration = 0; iteration < kGjkIterations; ++iteration) {
         const Shape moved = translated(moving_shape, mul(delta, time));
         const DistanceResult distance = convexDistance(moved, collider_shape);
-        if (distance.touching_or_intersecting || distance.distance <= kDistanceTolerance) {
+        if (overlaps(moved, collider_shape)) {
+            const float refined_time = refineOverlapTime(
+                moving_shape, delta, collider_shape, last_separated_time, time);
+            const Shape contact_shape = translated(
+                moving_shape, mul(delta, refined_time));
+            const DistanceResult contact_distance = convexDistance(
+                contact_shape, collider_shape);
+            const vec3 normal = normalizeOr(
+                contact_distance.normal,
+                fallbackNormal(contact_shape, collider_shape, delta));
+            return ShapeCastHit{
+                std::clamp(refined_time, 0.0F, 1.0F),
+                0.0F,
+                contact_distance.point_on_collider,
+                normal,
+                false,
+            };
+        }
+        if (distance.touching_or_intersecting ||
+            distance.distance <= kDistanceTolerance) {
             const vec3 normal = normalizeOr(
                 distance.normal, fallbackNormal(moved, collider_shape, delta));
             return ShapeCastHit{
@@ -689,6 +773,8 @@ std::optional<ShapeCastHit> shapeCast(const Shape &moving_shape, vec3 delta,
                 false,
             };
         }
+
+        last_separated_time = time;
 
         const vec3 normal = normalizeOr(
             distance.normal, fallbackNormal(moved, collider_shape, delta));
@@ -701,7 +787,9 @@ std::optional<ShapeCastHit> shapeCast(const Shape &moving_shape, vec3 delta,
             (distance.distance - kDistanceTolerance) / closing_speed, 1.0e-6F);
         if (!std::isfinite(step)) return std::nullopt;
         time += step;
-        if (time > 1.0F + kDistanceTolerance) return std::nullopt;
+        if (time > 1.0F + kDistanceTolerance) {
+            return std::nullopt;
+        }
         time = std::min(time, 1.0F);
     }
 

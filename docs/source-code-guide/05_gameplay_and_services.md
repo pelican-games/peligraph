@@ -365,20 +365,21 @@ ABI面は [`userpublic/physics/abi_v1.hpp`](../../src/core/userpublic/physics/ab
 >
 > **手がかり**: `SupportVertex` は差ベクトルだけでなく両形状上の元の点も持ち回るので、最近点の重心座標をそのまま接触点(witness)の補間へ流用できます。`mask` は `vertices` のインデックスに対するビットで、`weights` も部分集合内の順序ではなく**頂点インデックス**で引きます。[`reduceSimplex()`](../../src/core/phys/physquerysweep.cpp#L304) が weight > 1e-7 の頂点だけ残すのが Johnson の「不要頂点の破棄」に当たります。
 >
-> **不変条件**: **simplex が 4 頂点を超えないことを前提に書かれています**。`std::array<int,4> indices` / `std::array<float,4> weights` が固定長なので、5 頂点になるとバッファ溢れです。根拠は「距離 > 0 のとき最近点は面 / 辺 / 頂点上にある(= 正の重みは高々 3 個)」という幾何で、`convexDistance()` のループ先頭の早期 return がその前提を支えています。`closestToOrigin()` は [`facePenetration()`](../../src/core/phys/physquerysweep.cpp#L521) からも 3 頂点で呼ばれるので、頂点数に関する仮定を増やさないこと。
+> **不変条件**: simplex は 1〜4 頂点です。`std::array<int,4> indices` / `std::array<float,4> weights` が固定長なので、[`closestForSubset()`](../../src/core/phys/physquerysweep.cpp)・`closestToOrigin()`・`reduceSimplex()` は入口でこの上限を検査し、内部ロジックの退行をバッファ溢れではなく `logic_error` に変えます。根拠は「距離 > 0 のとき最近点は面 / 辺 / 頂点上にある(= 正の重みは高々 3 個)」という幾何です。`closestToOrigin()` は [`facePenetration()`](../../src/core/phys/physquerysweep.cpp) からも 3 頂点で呼ばれるので、頂点数に関する仮定を増やさないこと。
 >
-> ⚠ ただし**この前提はコード上で強制されていません**。[`reduceSimplex()`](../../src/core/phys/physquerysweep.cpp#L304) は重み > 1e-7 の頂点をすべて残すだけで上限を持たず、その直後に `push_back` するため、4 頂点が残れば 5 になります。4 頂点すべてが正の重みを持つのは原点が四面体の内側にある場合(= 距離 0 で早期 return される)ですが、**ほぼ同一平面上の 4 点**では正の距離のまま 4 重み全部が正になり得ます(`richer_tie` が popcount の大きい部分集合を優先するため、その部分集合が採用されます)。`closestForSubset()` / `closestToOrigin()` の入口に `vertices.size() <= 4` の表明を置くのが安全側です。
+> 浮動小数点では、**ほぼ同一平面上の 4 点**が正の距離を残したまま 4 個とも正の重みを持つことがあります。そのまま次の support 点を `push_back` すると 5 頂点になるため、`convexDistance()` は縮約後に 4 頂点が残った時点で分岐します。形状別 `overlaps()` が真なら原点を含む四面体として接触を確定し、偽なら最近点探索を最大 3 頂点の部分集合へ制限して境界へ縮約してから反復を続けます。`richer_tie` は EPA の種を保つ既存仕様なので、この安全策のために sparse 側へ反転させないでください。退化次元を含む全 shape pair と固定 seed corpus は [`physquery_test.cpp`](../../test/physquery_test.cpp) の `shapeCast keeps GJK bounded across degenerate convex dimensions` が覆います。
 
 > 🧩 **難所 — 保守的前進で TOI を出す**([`shapeCast()`](../../src/core/phys/physquerysweep.cpp#L633) の後半ループ)
 >
 > **何をする所か**: 非貫通で始まる並進スイープの衝突時刻 TOI ∈ [0,1] を求めます。形状ペアごとの閉形式は持たず、GJK 距離を使った conservative advancement(保守的前進法)1 本で全ペアを解きます。
 >
-> **素朴に読むと**: `step = max((distance - tol) / closing_speed, 1e-6F)` の 1 行に意図が 3 つ畳み込まれています。まずこの商は「TOI を絶対に飛び越さない安全な前進量」で、並進運動では距離の減少速度が現在の最近接方向 `n` に対する `-delta·n` を超えない、という上界に基づきます(だから「保守的」)。素朴に「区間二分で `overlaps()` を探す」と解像度依存の非決定的な TOI になり、薄い collider を素通りします(tunneling)。固定サブステップのサンプリングも薄板を跨いで見逃します。`1e-6F` の下限は終了保証で、これが無いと `distance ≈ tol` で商が 0 に潰れ、40 回のイテレーションを同じ `time` で消費して**最終的に「衝突なし」を返す**(見逃す)ことになります。代わりに TOI を最大 `1e-6*|delta|` 分だけ行き過ぎうる誤差を受け入れています。`closing_speed <= kDirectionEpsilon → nullopt` も単なる最適化ではなく、0/0 = NaN を作らないガードであり、同時に「現在の分離軸に沿って近づいていない並進は接触しえない」という判定です。
+> **素朴に読むと**: `step = max((distance - tol) / closing_speed, 1e-6F)` の 1 行に意図が 3 つ畳み込まれています。まずこの商は「TOI を飛び越えにくい安全側の前進量」で、並進運動では距離の減少速度が現在の最近接方向 `n` に対する `-delta·n` を超えない、という上界に基づきます(だから「保守的」)。素朴に「区間二分だけで `overlaps()` を探す」と、最初の overlap 区間を挟む bracket 自体が無いため薄い collider を素通りします(tunneling)。固定サブステップのサンプリングも同じです。`1e-6F` の下限は終了保証で、これが無いと `distance ≈ tol` で商が 0 に潰れ、40 回のイテレーションを同じ `time` で消費して**最終的に「衝突なし」を返す**(見逃す)ことになります。一方、退化 simplex の距離・法線誤差やこの下限により、現在時刻が実際の overlap 境界をわずかに越える場合があります。そのときだけ、直前の分離時刻と現在の overlap 時刻を bracket として `refineOverlapTime()` が 24 回二分し、TOI を境界へ戻します。これは全区間のサンプリングではなく、保守的前進が発見した単一の接触区間の後処理です。`closing_speed <= kDirectionEpsilon → nullopt` も単なる最適化ではなく、0/0 = NaN を作らないガードです。
 >
 > **骨子**:
 > ```text
 > time = 0、40 回まで:
 >   d = convexDistance(moving を delta*time だけ平行移動したもの, collider)
+>   overlaps(moved, collider) → [last_separated_time, time] を二分して TOI を境界へ戻す
 >   d.distance <= kDistanceTolerance → TOI = time で hit
 >   closing = -dot(delta, d.normal)         ← normal は cast 形状を外へ出す向き
 >   closing <= 1e-6 → なし                  ← 近づいていない / NaN 回避
@@ -387,7 +388,7 @@ ABI面は [`userpublic/physics/abi_v1.hpp`](../../src/core/userpublic/physics/ab
 > 40 回使い切ったら nullopt(偽陽性より偽陰性を選ぶ)
 > ```
 >
-> **手がかり**: ループの**前**に 3 つの早期経路があります — sphere-sphere の解析的初期接触、`overlaps()` が真なら EPA へ、`delta≈0` なら nullopt。つまりこのループは「最初は離れている」場合専用です。`normal` の向きの規約は [physquery.hpp#L124](../../src/core/phys/physquery.hpp#L124) のコメントが正。テストは [`physquery_test.cpp`](../../test/physquery_test.cpp#L264) の "shapeCast prevents thin-collider tunneling for every standard shape pair"。
+> **手がかり**: ループの**前**に 3 つの早期経路があります — sphere-sphere の解析的初期接触、`overlaps()` が真なら EPA へ、`delta≈0` なら nullopt。つまりこのループは「最初は離れている」場合専用で、`last_separated_time = 0` から安全に始められます。`normal` の向きの規約は [physquery.hpp#L124](../../src/core/phys/physquery.hpp#L124) のコメントが正。テストは [`physquery_test.cpp`](../../test/physquery_test.cpp) の "shapeCast prevents thin-collider tunneling for every standard shape pair" と退化形状 corpus。
 >
 > **不変条件**: `step` の下限を消さない(終了しなくなります)。逆に大きくすると TOI を飛び越えて貫通を見逃します。`kDistanceTolerance`(2e-5)は ABI 層の `shapeCastContactEpsilonV2`(1e-5)とは別物で、ABI 検証は `time_of_impact <= 1 + 1e-5` を要求するため、`1 + kDistanceTolerance` 超過の判定を緩めると host 側で `provider_error` になります。
 

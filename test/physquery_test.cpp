@@ -23,6 +23,72 @@ void requireVec(vec3 actual, vec3 expected, float epsilon = 1.0e-4f) {
     REQUIRE(actual.z == Catch::Approx(expected.z).margin(epsilon));
 }
 
+Shape recentered(Shape shape, vec3 center) {
+    std::visit([&](auto &typed) { typed.center = center; }, shape);
+    return shape;
+}
+
+Shape translatedForTest(Shape shape, vec3 offset) {
+    std::visit([&](auto &typed) {
+        typed.center.x += offset.x;
+        typed.center.y += offset.y;
+        typed.center.z += offset.z;
+    }, shape);
+    return shape;
+}
+
+struct CorpusRng {
+    std::uint32_t state = 0x7f4a7c15U;
+
+    std::uint32_t next() {
+        state = state * 1664525U + 1013904223U;
+        return state;
+    }
+
+    float signedUnit() {
+        return static_cast<float>(next() & 0xffffU) / 32767.5f - 1.0f;
+    }
+};
+
+float corpusExtent(CorpusRng &rng) {
+    constexpr std::array values{0.0f, 1.0e-7f, 1.0e-5f, 1.0e-3f,
+                                0.05f, 0.25f, 0.75f, 2.0f};
+    return values[rng.next() % values.size()];
+}
+
+Shape corpusShape(CorpusRng &rng, vec3 center) {
+    const quat rotation{rng.signedUnit(), rng.signedUnit(), rng.signedUnit(),
+                        rng.signedUnit()};
+    switch (rng.next() % 3U) {
+    case 0:
+        return Sphere{center, corpusExtent(rng)};
+    case 1:
+        return Box{center, rotation,
+                   {corpusExtent(rng), corpusExtent(rng), corpusExtent(rng)}};
+    default:
+        return Capsule{center, rotation, corpusExtent(rng), corpusExtent(rng)};
+    }
+}
+
+void requireValidShapeCastHit(const std::optional<ShapeCastHit> &hit) {
+    if (!hit) return;
+    REQUIRE(std::isfinite(hit->time_of_impact));
+    REQUIRE(std::isfinite(hit->penetration_depth));
+    REQUIRE(std::isfinite(hit->position.x));
+    REQUIRE(std::isfinite(hit->position.y));
+    REQUIRE(std::isfinite(hit->position.z));
+    REQUIRE(std::isfinite(hit->normal.x));
+    REQUIRE(std::isfinite(hit->normal.y));
+    REQUIRE(std::isfinite(hit->normal.z));
+    REQUIRE(hit->time_of_impact >= 0.0f);
+    REQUIRE(hit->time_of_impact <= 1.0f);
+    REQUIRE(hit->penetration_depth >= 0.0f);
+    const float normal_length_squared =
+        hit->normal.x * hit->normal.x + hit->normal.y * hit->normal.y +
+        hit->normal.z * hit->normal.z;
+    REQUIRE(normal_length_squared == Catch::Approx(1.0f).margin(2.0e-3f));
+}
+
 Collider identifiedCollider(std::string name, Shape shape, std::uint64_t collider_id,
                             ColliderQueryMetadata metadata = {},
                             std::optional<GameObjectId> entity = std::nullopt,
@@ -296,6 +362,126 @@ TEST_CASE("shapeCast prevents thin-collider tunneling for every standard shape p
     REQUIRE(exact->time_of_impact == Catch::Approx(0.4f).margin(2.0e-4f));
     requireVec(exact->normal, {-1.0f, 0.0f, 0.0f});
     requireVec(exact->position, {4.5f, 0.0f, 0.0f}, 2.0e-4f);
+}
+
+TEST_CASE("shapeCast keeps GJK bounded across degenerate convex dimensions",
+          "[physquery][shape-cast][degenerate][gjk]") {
+    const quat tilted{0.31f, -0.17f, 0.23f, 0.89f};
+    const std::array<Shape, 13> structures{
+        Sphere{{}, 0.0f},
+        Sphere{{}, 1.0e-6f},
+        Sphere{{}, 0.5f},
+        Box{{}, tilted, {0.0f, 0.0f, 0.0f}},
+        Box{{}, tilted, {1.0f, 0.0f, 0.0f}},
+        Box{{}, tilted, {1.0f, 0.75f, 0.0f}},
+        Box{{}, tilted, {1.0f, 0.75f, 1.0e-6f}},
+        Box{{}, tilted, {1.0f, 0.75f, 0.25f}},
+        Capsule{{}, tilted, 0.0f, 0.0f},
+        Capsule{{}, tilted, 1.0f, 0.0f},
+        Capsule{{}, tilted, 0.0f, 0.5f},
+        Capsule{{}, tilted, 1.0f, 1.0e-6f},
+        Capsule{{}, tilted, 1.0f, 0.25f},
+    };
+    struct CastLayout {
+        vec3 moving_center;
+        vec3 collider_center;
+        vec3 delta;
+    };
+    const std::array layouts{
+        CastLayout{{-3.0f, 0.125f, 2.0e-6f}, {},
+                   {6.0f, -0.25f, -4.0e-6f}},
+        CastLayout{{0.0f, 0.0f, 4.0e-5f}, {}, {0.0f, 0.0f, -8.0e-5f}},
+        CastLayout{{-2.0f, -1.5f, 0.75f}, {0.25f, 0.5f, -0.25f},
+                   {4.5f, 4.0f, -2.0f}},
+        CastLayout{{}, {}, {}},
+    };
+
+    for (std::size_t moving_index = 0; moving_index < structures.size();
+         ++moving_index) {
+        for (std::size_t collider_index = 0;
+             collider_index < structures.size(); ++collider_index) {
+            for (std::size_t layout_index = 0; layout_index < layouts.size();
+                 ++layout_index) {
+                CAPTURE(moving_index, collider_index, layout_index);
+                const auto &layout = layouts[layout_index];
+                const auto moving = recentered(
+                    structures[moving_index], layout.moving_center);
+                const auto collider = recentered(
+                    structures[collider_index], layout.collider_center);
+                const auto forward = shapeCast(moving, layout.delta, collider);
+                const auto reverse = shapeCast(
+                    collider,
+                    {-layout.delta.x, -layout.delta.y, -layout.delta.z}, moving);
+                requireValidShapeCastHit(forward);
+                requireValidShapeCastHit(reverse);
+                CAPTURE(overlaps(moving, collider), overlaps(collider, moving));
+                const float forward_toi =
+                    forward ? forward->time_of_impact : -1.0f;
+                const float reverse_toi =
+                    reverse ? reverse->time_of_impact : -1.0f;
+                const float forward_depth =
+                    forward ? forward->penetration_depth : -1.0f;
+                const float reverse_depth =
+                    reverse ? reverse->penetration_depth : -1.0f;
+                CAPTURE(forward_toi, reverse_toi, forward_depth, reverse_depth);
+                REQUIRE(forward.has_value() == reverse.has_value());
+                if (forward && reverse) {
+                    REQUIRE(forward->time_of_impact ==
+                            Catch::Approx(reverse->time_of_impact).margin(5.0e-4f));
+                    REQUIRE(forward->initial_overlap == reverse->initial_overlap);
+                    REQUIRE(forward->penetration_depth ==
+                            Catch::Approx(reverse->penetration_depth).margin(5.0e-3f));
+                }
+            }
+        }
+    }
+
+    const Shape grazing_box = recentered(structures[5], layouts[0].moving_center);
+    const Shape grazing_capsule = recentered(structures[12], {});
+    const auto grazing_hit = shapeCast(grazing_box, layouts[0].delta,
+                                       grazing_capsule);
+    REQUIRE_FALSE(overlaps(
+        translatedForTest(grazing_box, {layouts[0].delta.x * 0.2643f,
+                                        layouts[0].delta.y * 0.2643f,
+                                        layouts[0].delta.z * 0.2643f}),
+        grazing_capsule));
+    REQUIRE(overlaps(
+        translatedForTest(grazing_box, {layouts[0].delta.x * 0.2645f,
+                                        layouts[0].delta.y * 0.2645f,
+                                        layouts[0].delta.z * 0.2645f}),
+        grazing_capsule));
+    REQUIRE(grazing_hit);
+    REQUIRE(grazing_hit->time_of_impact >= 0.2643f);
+    REQUIRE(grazing_hit->time_of_impact <= 0.2645f);
+
+    CorpusRng rng;
+    for (std::size_t sample = 0; sample < 10'000; ++sample) {
+        const auto sample_state = rng.state;
+        CAPTURE(sample, sample_state);
+        const vec3 lateral{0.0f, rng.signedUnit() * 1.5f,
+                           rng.signedUnit() * 1.5f};
+        const vec3 moving_center{-6.0f, lateral.y, lateral.z};
+        const vec3 collider_center{rng.signedUnit() * 0.25f,
+                                   -lateral.y * 0.25f,
+                                   -lateral.z * 0.25f};
+        const vec3 delta{12.0f, -lateral.y * 1.5f,
+                         -lateral.z * 1.5f};
+        const auto moving = corpusShape(rng, moving_center);
+        const auto collider = corpusShape(rng, collider_center);
+        try {
+            const auto forward = shapeCast(moving, delta, collider);
+            const auto reverse = shapeCast(
+                collider, {-delta.x, -delta.y, -delta.z}, moving);
+            requireValidShapeCastHit(forward);
+            requireValidShapeCastHit(reverse);
+            REQUIRE(forward.has_value() == reverse.has_value());
+        } catch (const std::exception &error) {
+            FAIL("sample=" << sample << " state=" << sample_state
+                            << " moving_kind=" << moving.index()
+                            << " collider_kind=" << collider.index()
+                            << " error=" << error.what());
+        }
+    }
 }
 
 TEST_CASE("shapeCast reports deterministic initial-overlap minimum translation",
