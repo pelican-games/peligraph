@@ -1,4 +1,5 @@
 #include "../src/core/renderingpass/frameplanner.hpp"
+#include "../src/core/loader/engineresources.hpp"
 #include "../src/project/featurecompose.hpp"
 #include "../src/core/renderingpass/renderingpassconfigjsonparser.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
@@ -273,6 +274,60 @@ TEST_CASE("frame planner preserves existing rendering config order", "[frameplan
             }
         }
     }
+}
+
+TEST_CASE("hybrid preset resolves ordered deferred and forward writes",
+          "[frameplanner][hybrid][pipeline-preset]") {
+    const auto authored = nlohmann::json{
+        {"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}},
+    };
+    const auto load_engine = [](std::string_view ref) {
+        constexpr std::string_view prefix = "engine://";
+        if (ref.rfind(prefix, 0) != 0) throw std::runtime_error("expected engine ref");
+        return engineResourceOrThrow(ref.substr(prefix.size()));
+    };
+    const auto composed = composeRenderFeatureConfig(
+        authored, RenderFeatureComposeDependencies{{}, false, {}, load_engine});
+    const auto resolved = resolveRenderTargetFormatClassesV2(
+        composed.config, vk::Format::eB8G8R8A8Srgb, vk::Extent2D{1280, 720}, false);
+
+    const auto target_definitions = parseRenderTargetDefinitionsFromJson(resolved);
+    std::unordered_map<std::string, GlobalRenderTargetId> ids;
+    std::vector<RenderTargetMetadata> metadata;
+    for (std::size_t index = 0; index < target_definitions.size(); ++index) {
+        const auto &target = target_definitions[index];
+        const auto id = GlobalRenderTargetId{static_cast<int>(index)};
+        ids.emplace(target.name, id);
+        metadata.push_back(RenderTargetMetadata{
+            target.name, target.usage, target.format, vk::Extent2D{1280, 720},
+            target.history});
+    }
+    const RenderTargetNameResolver names{[&](const std::string &name) {
+        const auto found = ids.find(name);
+        return found == ids.end() ? noRenderTargetId() : found->second;
+    }};
+    const RenderTargetMetadataResolver target_metadata{
+        [&](GlobalRenderTargetId id) { return metadata.at(static_cast<std::size_t>(id.value)); }};
+    const auto passes = parseRenderingPassDefinitionsFromConfigJson(
+        resolved, names, target_metadata);
+    REQUIRE(passes.size() == 1);
+    REQUIRE(passes.front().passes.at(0).materialInfo().contract ==
+            MaterialPassContract::deferred_geometry_v1);
+
+    const auto graphs = parseFrameGraphDefinitionsFromConfigJson(resolved);
+    REQUIRE(graphs.size() == 1);
+    const auto plan = planFrameGraph(graphs.front());
+    const auto order = framePlanOrder(plan);
+    const auto position = [&](std::string_view name) {
+        const auto found = std::find(order.begin(), order.end(), name);
+        REQUIRE(found != order.end());
+        return std::distance(order.begin(), found);
+    };
+    REQUIRE(position("deferred_geometry") < position("deferred_lighting"));
+    REQUIRE(position("deferred_lighting") < position("forward_opaque"));
+    REQUIRE(position("forward_opaque") < position("forward_transparent"));
+    REQUIRE(position("forward_transparent") < position("scene_present"));
+    REQUIRE(position("scene_present") < position("output_transform"));
 }
 
 TEST_CASE("frame planner accepts compute tasks and serializes node kinds", "[frameplanner]") {

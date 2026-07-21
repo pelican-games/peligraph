@@ -57,7 +57,7 @@ void main() {
     // glTF ORM texture: R=Occlusion, G=Roughness, B=Metallic
     outMaterial = vec4(mr.g * material.surfaceFactors.y,
                        mr.b * material.surfaceFactors.x,
-                       mix(1.0, mr.r, material.surfaceFactors.w), 1.0);
+                       mix(1.0, mr.r, material.surfaceFactors.w), 0.0);
 
     // World Position
     outWorldPos = vec4(inWorldPos, 1.0);

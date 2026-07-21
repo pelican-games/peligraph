@@ -1,0 +1,174 @@
+{
+  "schema": "pelican.render_pipeline",
+  "version": 1,
+  "name": "hybrid_v1",
+  "config": {
+    "shader_defines": ["PELICAN_HYBRID_SCENE_LINEAR"],
+    "material_routing": {
+      "policy": "hybrid_auto_v1",
+      "routes": {
+        "deferred_geometry": "deferred_geometry",
+        "forward_opaque": "forward_opaque",
+        "forward_transparent": "forward_transparent"
+      }
+    },
+    "render_targets": [
+      {
+        "name": "gbuffer_albedo",
+        "extent_scale": 1.0,
+        "format": "B8G8R8A8_UNORM",
+        "format_class": "scene",
+        "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+      },
+      {
+        "name": "gbuffer_normal",
+        "extent_scale": 1.0,
+        "format": "R16G16B16A16_SFLOAT",
+        "format_class": "data",
+        "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+      },
+      {
+        "name": "gbuffer_material",
+        "extent_scale": 1.0,
+        "format": "R8G8B8A8_UNORM",
+        "format_class": "data",
+        "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+      },
+      {
+        "name": "gbuffer_worldpos",
+        "extent_scale": 1.0,
+        "format": "R16G16B16A16_SFLOAT",
+        "format_class": "data",
+        "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+      },
+      {
+        "name": "g_emissive",
+        "extent_scale": 1.0,
+        "format": "B8G8R8A8_UNORM",
+        "format_class": "scene",
+        "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+      },
+      {
+        "name": "scene_depth",
+        "extent_scale": 1.0,
+        "format": "D32_SFLOAT",
+        "format_class": "data",
+        "usage": ["DEPTH_STENCIL_ATTACHMENT"]
+      },
+      {
+        "name": "ssao_output",
+        "extent_scale": 1.0,
+        "format": "R8_UNORM",
+        "format_class": "data",
+        "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+      },
+      {
+        "name": "ssao_blur",
+        "extent_scale": 1.0,
+        "format": "R8_UNORM",
+        "format_class": "data",
+        "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+      },
+      {
+        "name": "lit_color",
+        "extent_scale": 1.0,
+        "format": "R16G16B16A16_SFLOAT",
+        "format_class": "explicit(R16G16B16A16_SFLOAT)",
+        "usage": ["COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"]
+      }
+    ],
+    "rendering_passes": [
+      {
+        "name": "main_render",
+        "passes": [
+          {
+            "name": "deferred_geometry",
+            "type": "material",
+            "material_contract": "deferred_geometry_v1",
+            "output": {
+              "color": [
+                "gbuffer_albedo",
+                "gbuffer_normal",
+                "gbuffer_material",
+                "gbuffer_worldpos",
+                "g_emissive"
+              ],
+              "depth": "scene_depth"
+            },
+            "depth_store_op": "store"
+          },
+          {
+            "name": "ssao_pass",
+            "type": "fullscreen",
+            "output": {"color": ["ssao_output"], "depth": null},
+            "input": ["gbuffer_worldpos", "gbuffer_normal"],
+            "push_constants": "projection_view",
+            "shader": {
+              "vertex": "engine://fullscreen",
+              "fragment": "engine://ssao"
+            },
+            "clear_color": [1.0, 1.0, 1.0, 1.0]
+          },
+          {
+            "name": "ssao_blur_pass",
+            "type": "fullscreen",
+            "output": {"color": ["ssao_blur"], "depth": null},
+            "input": ["ssao_output"],
+            "shader": {
+              "vertex": "engine://fullscreen",
+              "fragment": "engine://ssao_blur"
+            },
+            "clear_color": [1.0, 1.0, 1.0, 1.0]
+          },
+          {
+            "name": "deferred_lighting",
+            "type": "fullscreen",
+            "output": {"color": ["lit_color"], "depth": null},
+            "input": [
+              "gbuffer_albedo",
+              "gbuffer_normal",
+              "gbuffer_material",
+              "gbuffer_worldpos",
+              "g_emissive",
+              "ssao_blur"
+            ],
+            "shader": {
+              "vertex": "engine://fullscreen",
+              "fragment": "engine://fullscreen"
+            },
+            "push_constants": "camera_position",
+            "uses_light_data": true
+          },
+          {
+            "name": "forward_opaque",
+            "type": "material",
+            "material_contract": "forward_opaque_v1",
+            "output": {"color": ["lit_color"], "depth": "scene_depth"},
+            "color_load_op": "load",
+            "depth_load_op": "load",
+            "depth_store_op": "store"
+          },
+          {
+            "name": "forward_transparent",
+            "type": "material",
+            "material_contract": "forward_transparent_v1",
+            "output": {"color": ["lit_color"], "depth": "scene_depth"},
+            "color_load_op": "load",
+            "depth_load_op": "load",
+            "depth_store_op": "store"
+          },
+          {
+            "name": "scene_present",
+            "type": "fullscreen",
+            "output": {"color": ["swapchain"], "depth": null},
+            "input": ["lit_color"],
+            "shader": {
+              "vertex": "engine://fullscreen",
+              "fragment": "engine://scene_present"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

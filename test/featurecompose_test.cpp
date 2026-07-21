@@ -173,6 +173,70 @@ TEST_CASE("canonical color pipeline rejects unsupported resolver versions", "[re
     REQUIRE(message == "Only rendering resolver_version 2 is supported");
 }
 
+TEST_CASE("hybrid pipeline preset expands to explicit versioned material routes",
+          "[render-feature][pipeline-preset][hybrid]") {
+    const auto authored = nlohmann::json{
+        {"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}},
+        {"features", nlohmann::json::array({"engine://features/ui.json"})},
+    };
+    const auto result = composeRenderFeatureConfig(
+        authored, RenderFeatureComposeDependencies{loadEngineFeature, true});
+
+    REQUIRE(result.pipeline_preset.has_value());
+    REQUIRE(result.pipeline_preset->name == "hybrid_v1");
+    REQUIRE(result.pipeline_preset->version == 1);
+    REQUIRE_FALSE(result.config.contains("pipeline"));
+    REQUIRE(result.feature_names == std::vector<std::string>{"ui"});
+    REQUIRE(std::find(result.shader_defines.begin(), result.shader_defines.end(),
+                      "PELICAN_HYBRID_SCENE_LINEAR") != result.shader_defines.end());
+
+    const auto &routes = result.material_routing.at("routes");
+    REQUIRE(routes.at("deferred_geometry").at("pass") == "deferred_geometry");
+    REQUIRE(routes.at("forward_opaque").at("shader_contract") ==
+            "forward_scene_color_v1");
+    REQUIRE(routes.at("forward_transparent").at("phase") == "transparent");
+    REQUIRE(passByName(result.config, "deferred_geometry").at("material_contract") ==
+            "deferred_geometry_v1");
+    REQUIRE(passByName(result.config, "forward_opaque").at("material_contract") ==
+            "forward_opaque_v1");
+    REQUIRE(passByName(result.config, "forward_transparent").at("material_contract") ==
+            "forward_transparent_v1");
+    REQUIRE(passByName(result.config, "scene_present").at("shader").at("fragment") ==
+            "engine://scene_present");
+    const auto &targets = result.config.at("render_targets");
+    const auto lit_color = std::find_if(targets.begin(), targets.end(), [](const auto &target) {
+        return target.value("name", std::string{}) == "lit_color";
+    });
+    REQUIRE(lit_color != targets.end());
+    REQUIRE(lit_color->at("format") == "R16G16B16A16_SFLOAT");
+    REQUIRE(lit_color->at("format_class") == "explicit(R16G16B16A16_SFLOAT)");
+}
+
+TEST_CASE("pipeline preset refuses structural deep merge and invalid route contracts",
+          "[render-feature][pipeline-preset]") {
+    auto structural_override = nlohmann::json{
+        {"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}},
+        {"render_targets", nlohmann::json::array()},
+    };
+    REQUIRE_THROWS_WITH(
+        composeRenderFeatureConfig(
+            structural_override,
+            RenderFeatureComposeDependencies{loadEngineFeature, true}),
+        Catch::Matchers::ContainsSubstring("copy/eject") ||
+            Catch::Matchers::ContainsSubstring("unknown key 'render_targets'"));
+
+    auto invalid = nlohmann::json::parse(
+        engineResourceOrThrow("render_pipelines/hybrid_v1.json"));
+    invalid["config"]["rendering_passes"][0]["passes"][4]["material_contract"] =
+        "forward_transparent_v1";
+    REQUIRE_THROWS_WITH(
+        composeRenderFeatureConfig(
+            nlohmann::json{{"pipeline", {{"preset", "project://bad.json"}}}},
+            RenderFeatureComposeDependencies{
+                {}, true, {}, [text = invalid.dump()](std::string_view) { return text; }}),
+        Catch::Matchers::ContainsSubstring("forward_opaque_v1"));
+}
+
 TEST_CASE("render feature fixtures compose and reject expected cases", "[render-feature]") {
     const auto expectations = readJson(fixtureRoot() / "expectations.json");
 

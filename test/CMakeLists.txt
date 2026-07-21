@@ -508,7 +508,14 @@ target_sources(pelican_test_gltf_scene_extract_test PRIVATE
 pelican_define_test(headless_render_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_headless_render_test PRIVATE
     VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic
+    PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
 )
+if(PELICAN_RUNTIME_SHADER_COMPILER)
+    target_link_libraries(pelican_test_headless_render_test PRIVATE pelican_shaderc)
+    if(COMMAND pelican_copy_shaderc_runtime)
+        pelican_copy_shaderc_runtime(pelican_test_headless_render_test)
+    endif()
+endif()
 pelican_define_test(gamesystem_test pelican_core)
 pelican_define_test(lightpolicy_test pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_gamesystem_test PRIVATE

@@ -46,6 +46,38 @@ float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness) {
     return ggx1 * ggx2;
 }
 
+float OpenPbrDistributionGGX(vec3 N, vec3 H, float roughness) {
+    float alpha = max(roughness * roughness, 0.0025);
+    float alpha2 = alpha * alpha;
+    float NdotH = max(dot(N, H), 0.0);
+    float denominator = NdotH * NdotH * (alpha2 - 1.0) + 1.0;
+    return alpha2 / max(PI * denominator * denominator, 0.000001);
+}
+
+float OpenPbrSmithG1(float NdotX, float roughness) {
+    float alpha = max(roughness * roughness, 0.0025);
+    float alpha2 = alpha * alpha;
+    return (2.0 * NdotX) /
+           max(NdotX + sqrt(alpha2 + (1.0 - alpha2) * NdotX * NdotX), 0.000001);
+}
+
+float OpenPbrGeometrySmith(vec3 N, vec3 V, vec3 L, float roughness) {
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotL = max(dot(N, L), 0.0);
+    return OpenPbrSmithG1(NdotL, roughness) * OpenPbrSmithG1(NdotV, roughness);
+}
+
+float brdfDenominator(vec3 N, vec3 V, vec3 L, bool openPbrBase) {
+    float value = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0);
+    return openPbrBase ? max(value, 0.000001) : value + 0.0001;
+}
+
+float distanceAttenuation(float distance, bool openPbrBase) {
+    float distanceSquared = distance * distance;
+    return openPbrBase ? 1.0 / max(distanceSquared, 0.0001)
+                       : 1.0 / (distanceSquared + 0.01);
+}
+
 // Fresnel反射（Schlick近似）
 vec3 fresnelSchlick(float cosTheta, vec3 F0) {
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
@@ -75,7 +107,10 @@ void main() {
     // G-bufferからデータを読み取る
     vec3 albedo = texture(albedoSampler, inUV).rgb;
     vec3 normal = normalize(texture(normalSampler, inUV).rgb * 2.0 - 1.0);
-    vec3 material = texture(materialSampler, inUV).rgb;
+    vec4 materialSample = texture(materialSampler, inUV);
+    vec3 material = materialSample.rgb;
+    uint shadingModel = uint(round(materialSample.a * 255.0));
+    bool openPbrBase = shadingModel == 1u;
     vec3 worldPos = texture(worldPosSampler, inUV).rgb;
     vec3 emissive = texture(emissiveSampler, inUV).rgb;
     
@@ -113,8 +148,10 @@ void main() {
 #endif
         
         // Cook-Torrance BRDF
-        float NDF = DistributionGGX(normal, H, roughness);
-        float G = GeometrySmith(normal, V, L, roughness);
+        float NDF = openPbrBase ? OpenPbrDistributionGGX(normal, H, roughness)
+                                : DistributionGGX(normal, H, roughness);
+        float G = openPbrBase ? OpenPbrGeometrySmith(normal, V, L, roughness)
+                              : GeometrySmith(normal, V, L, roughness);
         vec3 F = fresnelSchlick(max(dot(H, V), 0.0), F0);
         
         vec3 kS = F;
@@ -122,23 +159,26 @@ void main() {
         kD *= 1.0 - metallic;
         
         vec3 numerator = NDF * G * F;
-        float denominator = 4.0 * max(dot(normal, V), 0.0) * max(dot(normal, L), 0.0) + 0.0001;
+        float denominator = brdfDenominator(normal, V, L, openPbrBase);
         vec3 specular = numerator / denominator;
         
         float NdotL = max(dot(normal, L), 0.0);
-        Lo += (kD * albedo / PI * ao + specular) * radiance * NdotL;
+        float directDiffuseOcclusion = openPbrBase ? 1.0 : ao;
+        Lo += (kD * albedo / PI * directDiffuseOcclusion + specular) * radiance * NdotL;
     }
 
     for(int i = 0; i < pelicanLights.pointLightCount; ++i) {
         vec3 L = normalize(pelicanLights.pointLights[i].position - worldPos);
         vec3 H = normalize(V + L);
         float distance = length(pelicanLights.pointLights[i].position - worldPos);
-        float attenuation = 1.0 / (distance * distance + 0.01);
+        float attenuation = distanceAttenuation(distance, openPbrBase);
         vec3 radiance = pelicanLights.pointLights[i].color * pelicanLights.pointLights[i].intensity * attenuation;
         
         // Cook-Torrance BRDF
-        float NDF = DistributionGGX(normal, H, roughness);
-        float G = GeometrySmith(normal, V, L, roughness);
+        float NDF = openPbrBase ? OpenPbrDistributionGGX(normal, H, roughness)
+                                : DistributionGGX(normal, H, roughness);
+        float G = openPbrBase ? OpenPbrGeometrySmith(normal, V, L, roughness)
+                              : GeometrySmith(normal, V, L, roughness);
         vec3 F = fresnelSchlick(max(dot(H, V), 0.0), F0);
         
         vec3 kS = F;
@@ -146,11 +186,12 @@ void main() {
         kD *= 1.0 - metallic;
         
         vec3 numerator = NDF * G * F;
-        float denominator = 4.0 * max(dot(normal, V), 0.0) * max(dot(normal, L), 0.0) + 0.0001;
+        float denominator = brdfDenominator(normal, V, L, openPbrBase);
         vec3 specular = numerator / denominator;
         
         float NdotL = max(dot(normal, L), 0.0);
-        Lo += (kD * albedo / PI * ao + specular) * radiance * NdotL;
+        float directDiffuseOcclusion = openPbrBase ? 1.0 : ao;
+        Lo += (kD * albedo / PI * directDiffuseOcclusion + specular) * radiance * NdotL;
     }
 
     for(int i = 0; i < pelicanLights.spotLightCount; ++i) {
@@ -163,14 +204,16 @@ void main() {
         
         // Attenuation and radiance
         float distance = length(pelicanLights.spotLights[i].position - worldPos);
-        float attenuation = 1.0 / (distance * distance + 0.01);
+        float attenuation = distanceAttenuation(distance, openPbrBase);
         vec3 radiance = pelicanLights.spotLights[i].color * pelicanLights.spotLights[i].intensity * attenuation * spotFactor;
 
         if (spotFactor > 0.0)
         {
             // Cook-Torrance BRDF
-            float NDF = DistributionGGX(normal, H, roughness);
-            float G = GeometrySmith(normal, V, L, roughness);
+            float NDF = openPbrBase ? OpenPbrDistributionGGX(normal, H, roughness)
+                                    : DistributionGGX(normal, H, roughness);
+            float G = openPbrBase ? OpenPbrGeometrySmith(normal, V, L, roughness)
+                                  : GeometrySmith(normal, V, L, roughness);
             vec3 F = fresnelSchlick(max(dot(H, V), 0.0), F0);
             
             vec3 kS = F;
@@ -178,19 +221,25 @@ void main() {
             kD *= 1.0 - metallic;
             
             vec3 numerator = NDF * G * F;
-            float denominator = 4.0 * max(dot(normal, V), 0.0) * max(dot(normal, L), 0.0) + 0.0001;
+            float denominator = brdfDenominator(normal, V, L, openPbrBase);
             vec3 specular = numerator / denominator;
             
             float NdotL = max(dot(normal, L), 0.0);
-            Lo += (kD * albedo / PI * ao + specular) * radiance * NdotL;
+            float directDiffuseOcclusion = openPbrBase ? 1.0 : ao;
+            Lo += (kD * albedo / PI * directDiffuseOcclusion + specular) * radiance * NdotL;
         }
     }
     
     // 環境光をより充実させる
-    vec3 ambient = mix(vec3(0.03) * albedo * ao, albedo * 0.12 * ao, metallic);
+    float sky = clamp(normal.y * 0.5 + 0.5, 0.0, 1.0);
+    vec3 openPbrAmbient = albedo * (1.0 - metallic) * ao *
+                          mix(vec3(0.015), vec3(0.06, 0.07, 0.09), sky);
+    vec3 standardAmbient = mix(vec3(0.03) * albedo * ao,
+                               albedo * 0.12 * ao, metallic);
+    vec3 ambient = openPbrBase ? openPbrAmbient : standardAmbient;
     vec3 color = ambient + Lo + emissive;
     
-#ifndef PELICAN_FEATURE_HDR
+#if !defined(PELICAN_FEATURE_HDR) && !defined(PELICAN_HYBRID_SCENE_LINEAR)
     // HDR off owns the single tone curve here. Transfer encoding is terminal-only.
     color = color / (color + vec3(0.155)) * 1.019;
 #endif

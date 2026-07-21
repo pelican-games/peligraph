@@ -11,9 +11,9 @@ namespace Pelican {
 namespace {
 
 #if PELICAN_WITH_VAT
-constexpr size_t registeredResourceCount = 84;
+constexpr size_t registeredResourceCount = 87;
 #else
-constexpr size_t registeredResourceCount = 83;
+constexpr size_t registeredResourceCount = 86;
 #endif
 
 constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
@@ -29,6 +29,7 @@ constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
     "default_config.json",
     "default.frag.spv",
     "default.vert.spv",
+    "render_pipelines/hybrid_v1.json",
     "debug_draw.frag.spv",
     "debug_draw.vert.spv",
     "debug_text.frag.spv",
@@ -50,6 +51,8 @@ constexpr std::array<std::string_view, registeredResourceCount> registered_ids{
     "fullscreen.frag.spv",
     "fullscreen.vert",
     "fullscreen.vert.spv",
+    "scene_present.frag",
+    "scene_present.frag.spv",
     "output_transform.frag",
     "output_transform.frag.spv",
     "shaders/include/pelican_features.glsl",
@@ -130,6 +133,7 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     }
     PELICAN_ENGINE_RESOURCE("default.frag.spv")
     PELICAN_ENGINE_RESOURCE("default.vert.spv")
+    PELICAN_ENGINE_RESOURCE("render_pipelines/hybrid_v1.json")
     PELICAN_ENGINE_RESOURCE("debug_draw.frag.spv")
     PELICAN_ENGINE_RESOURCE("debug_draw.vert.spv")
     PELICAN_ENGINE_RESOURCE("debug_text.frag.spv")
@@ -169,6 +173,8 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("fullscreen.frag.spv")
     PELICAN_ENGINE_RESOURCE("fullscreen.vert")
     PELICAN_ENGINE_RESOURCE("fullscreen.vert.spv")
+    PELICAN_ENGINE_RESOURCE("scene_present.frag")
+    PELICAN_ENGINE_RESOURCE("scene_present.frag.spv")
     PELICAN_ENGINE_RESOURCE("output_transform.frag")
     PELICAN_ENGINE_RESOURCE("output_transform.frag.spv")
     PELICAN_ENGINE_RESOURCE("shaders/include/pelican_features.glsl")

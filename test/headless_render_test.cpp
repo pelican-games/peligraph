@@ -2,10 +2,15 @@
 #include "../src/core/container.hpp"
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/loader/projectsrc.hpp"
+#include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/imageloader.hpp"
+#include "../src/core/loader/engineresources.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/material/materialcontainer.hpp"
+#include "../src/core/material/standardmaterialresource.hpp"
+#include "../src/core/shader/shaderlibrary.hpp"
 #include "../src/core/vkcore/core.hpp"
+#include "../src/core/vkcore/renderer.hpp"
 #include "../src/core/vkcore/rendertarget.hpp"
 
 #include <array>
@@ -155,6 +160,91 @@ TEST_CASE("headless render target renders and reads back RGBA8 frames", "[headle
         }
         SKIP(std::string{"Vulkan headless rendering unavailable: "} + ex.what());
     }
+}
+
+TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
+          "[headless][render][hybrid]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    std::filesystem::path temp_dir;
+
+    try {
+        FastModuleContainer modules;
+        temp_dir = makeTempProjectDir();
+        const auto scene_path = temp_dir / "scene.json";
+        const auto asset_path = temp_dir / "assets.json";
+        writeTextFile(
+            scene_path,
+            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+        writeTextFile(asset_path, R"json({"models":[]})json");
+        writeTextFile(temp_dir / "hybrid.json",
+                      nlohmann::json{{"pipeline", {{"preset",
+                          "engine://render_pipelines/hybrid_v1.json"}}}}.dump(2));
+
+        auto project = makeProjectConfig("scene.json", "assets.json");
+        project["basic_config"]["default_scene_id"] = "default_scene";
+        project["basic_config"]["rendering_config_json"] = "hybrid.json";
+        project["basic_config"]["default_rendering_pass"] = "main_render";
+        GET_MODULE(ProjectSource).setSourceByData(project.dump());
+        GET_MODULE(PathResolver).setup(temp_dir, false);
+
+        auto &launch_config = GET_MODULE(EngineLaunchConfig);
+        launch_config.headless = true;
+        launch_config.headless_extent = vk::Extent2D{32, 32};
+        launch_config.headless_frames = 1;
+        GET_MODULE(EngineTime).setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
+
+        auto &renderer = GET_MODULE(Renderer);
+        auto &standard = GET_MODULE(StandardMaterialResource);
+        const auto surface_reference =
+            std::string{"engine://surfaces/openpbr/opaque_single.surface"};
+        const auto surface = parseSurfaceFormat(
+            engineResourceOrThrow("surfaces/openpbr/opaque_single.surface"),
+            surface_reference);
+        MaterialSurfaceCatalog surfaces{{surface_reference, surface}};
+        const auto material_document = parseMaterialFormatJson(
+            nlohmann::json::parse(R"json({
+              "schema":"pelican.material","version":1,"materials":[{
+                "name":"hybrid_coat","surface":"engine://surfaces/openpbr/opaque_single.surface",
+                "values":{"coat_weight":0.5},
+                "routing":{"alpha_mode":"opaque","double_sided":false}
+              }]
+            })json"),
+            surfaces);
+        const auto lowered = lowerMaterial(material_document.materials.front(), surface);
+        REQUIRE(lowered.route == MaterialRouteClass::forward_opaque);
+        const auto shaders = GET_MODULE(ShaderLibrary).loadFromSurfaceForMaterial(
+            surface, surface_reference, lowered);
+        MaterialInfo material{
+            .vert_shader = shaders.vertex,
+            .frag_shader = shaders.fragment,
+            .base_color_texture = standard.whiteTexture(),
+            .metallic_roughness_texture = standard.metallicRoughnessDefaultTexture(),
+            .normal_texture = standard.normalDefaultTexture(),
+            .emissive_texture = standard.emissiveDefaultTexture(),
+        };
+        applyLoweredMaterialForRoute(material, lowered);
+        const auto material_id = GET_MODULE(MaterialContainer).registerMaterial(
+            std::move(material));
+        REQUIRE(isValidMaterialId(material_id));
+        renderer.render();
+        GET_MODULE(VulkanManageCore).waitIdle();
+
+        const auto pixels = GET_MODULE(RenderTarget).readbackLastFrameRGBA8();
+        REQUIRE(pixels.size() == 32u * 32u * 4u);
+        const auto plan = renderer.currentFramePlanJson();
+        REQUIRE(plan.dump().find("deferred_geometry") != std::string::npos);
+        REQUIRE(plan.dump().find("forward_transparent") != std::string::npos);
+        REQUIRE(plan.dump().find("scene_present") != std::string::npos);
+
+        std::filesystem::remove_all(temp_dir);
+    } catch (const std::exception &ex) {
+        if (!temp_dir.empty()) {
+            std::filesystem::remove_all(temp_dir);
+        }
+        SKIP(std::string{"Vulkan hybrid rendering unavailable: "} + ex.what());
+    }
+#endif
 }
 
 } // namespace Pelican
