@@ -1,10 +1,13 @@
 #pragma once
 
+#include <array>
+#include <cstdint>
 #include <functional>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 namespace Pelican {
@@ -135,6 +138,8 @@ struct RenderPipelineDiagnostic {
         RenderPipelineDiagnosticKind::graph_variant_selected;
     std::string subject;
     std::string detail;
+
+    bool operator==(const RenderPipelineDiagnostic &) const = default;
 };
 
 // Every callback is a data transform or lookup. Callers snapshot mutable
@@ -176,10 +181,86 @@ ResolvedRenderPipeline resolveRenderPipeline(
     const RenderEnvironmentCapabilities &capabilities,
     const RenderPipelineResolveDependencies &dependencies = {});
 
-// Transitional serialization for FramePlan::composition_metadata.  Runtime
-// consumers can keep their current byte representation while typed fields
-// become the source of truth.  RPE2 removes runtime JSON reads.
-nlohmann::json serializeRenderPipelineCompositionMetadata(
+enum class ProjectionJitterPattern {
+    halton23,
+    table,
+};
+
+std::string_view projectionJitterPatternName(ProjectionJitterPattern pattern);
+
+using CompiledRenderNumericValue =
+    std::variant<std::int64_t, std::uint64_t, double>;
+
+double compiledRenderNumericValueAsDouble(
+    const CompiledRenderNumericValue &value);
+
+struct CompiledProjectionJitter {
+    std::string provider;
+    ProjectionJitterPattern pattern = ProjectionJitterPattern::halton23;
+    std::uint32_t phases = 8;
+    std::vector<std::array<CompiledRenderNumericValue, 2>> offsets_px;
+};
+
+using CompiledRenderFeatureParameterValue =
+    std::variant<bool, std::int64_t, std::uint64_t, double, std::string>;
+
+struct CompiledRenderFeatureParameter {
+    std::string name;
+    CompiledRenderFeatureParameterValue value;
+};
+
+struct CompiledRenderFeatureInstance {
+    std::string feature;
+    std::string reference;
+    std::vector<CompiledRenderFeatureParameter> parameters;
+};
+
+enum class MaterialRoutingPolicy {
+    hybrid_auto_v1,
+};
+
+std::string_view materialRoutingPolicyName(MaterialRoutingPolicy policy);
+
+struct CompiledMaterialRoute {
+    MaterialRouteClass route = MaterialRouteClass::deferred_geometry;
+    std::string pass_name;
+    MaterialPassContract pass_contract =
+        MaterialPassContract::deferred_geometry_v1;
+};
+
+struct CompiledMaterialRouting {
+    MaterialRoutingPolicy policy = MaterialRoutingPolicy::hybrid_auto_v1;
+    std::vector<CompiledMaterialRoute> routes;
+};
+
+// Immutable after publication.  It deliberately contains neither the
+// normalized authoring JSON nor GPU/container state.  Runtime owners publish
+// it through shared_ptr<const CompiledRenderPipeline>; JSON is reconstructed
+// only by the dump serializer below.
+struct CompiledRenderPipeline {
+    std::vector<std::string> shader_defines;
+    std::vector<std::string> feature_names;
+    std::vector<std::string> excluded_feature_names;
+    std::optional<CompiledProjectionJitter> projection_jitter;
+    std::vector<CompiledRenderFeatureInstance> feature_instances;
+    std::optional<CompiledMaterialRouting> material_routing;
+    std::optional<RenderPipelinePresetInfo> pipeline_preset;
+    RenderPipelineGraphVariant graph_variant =
+        RenderPipelineGraphVariant::flat;
+    std::string rendering_pass_name_suffix;
+    std::vector<RenderPipelineDiagnostic> diagnostics;
+    bool used_features = false;
+};
+
+// Pure CPU-only transition from authoring resolution into the runtime
+// contract.  Any malformed transitional metadata is rejected before runtime
+// containers can be mutated.
+CompiledRenderPipeline compileRenderPipeline(
     const ResolvedRenderPipeline &pipeline);
+
+// Dump-only compatibility serializer.  Runtime code must consume the typed
+// fields above rather than reading keys from this representation.
+nlohmann::json serializeCompiledRenderPipelineMetadata(
+    const CompiledRenderPipeline &pipeline);
 
 } // namespace Pelican

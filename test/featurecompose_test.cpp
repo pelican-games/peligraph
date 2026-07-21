@@ -1,4 +1,5 @@
 #include "../src/project/featurecompose.hpp"
+#include "../src/project/renderpipeline.hpp"
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
 
@@ -171,6 +172,20 @@ TEST_CASE("canonical color pipeline rejects unsupported resolver versions", "[re
         message = ex.what();
     }
     REQUIRE(message == "Only rendering resolver_version 2 is supported");
+}
+
+CompiledRenderPipeline compileComposition(
+    const RenderFeatureComposeResult &composition) {
+    ResolvedRenderPipeline resolved;
+    resolved.shader_defines = composition.shader_defines;
+    resolved.feature_names = composition.feature_names;
+    resolved.excluded_feature_names = composition.excluded_feature_names;
+    resolved.projection_jitter = composition.projection_jitter;
+    resolved.feature_instances = composition.feature_instances;
+    resolved.material_routing = composition.material_routing;
+    resolved.pipeline_preset = composition.pipeline_preset;
+    resolved.used_features = composition.used_features;
+    return compileRenderPipeline(resolved);
 }
 
 TEST_CASE("hybrid pipeline preset expands to explicit versioned material routes",
@@ -476,9 +491,8 @@ TEST_CASE("bundled TAA composes into the example pipeline as a two-pass history 
     const auto graphs = parseFrameGraphDefinitionsFromConfigJson(result.config);
     REQUIRE(graphs.size() == 1);
     auto plan = planFrameGraph(graphs.front());
-    plan.composition_metadata["projection_jitter"] = result.projection_jitter;
-    plan.composition_metadata["feature_instances"] = result.feature_instances;
-    const auto frame_plan = framePlanToJson(plan);
+    const auto compiled_pipeline = compileComposition(result);
+    const auto frame_plan = framePlanToJson(plan, &compiled_pipeline);
     const auto findNode = [&](std::string_view name) -> const nlohmann::json & {
         const auto &nodes = frame_plan.at("nodes");
         const auto found = std::find_if(nodes.begin(), nodes.end(), [&](const auto &node) {
@@ -706,8 +720,12 @@ TEST_CASE("projection jitter table schema derives phases and rejects invalid tab
             const auto graphs = parseFrameGraphDefinitionsFromConfigJson(result.config);
             REQUIRE(graphs.size() == 1);
             auto plan = planFrameGraph(graphs.front());
-            plan.composition_metadata["projection_jitter"] = result.projection_jitter;
-            REQUIRE(framePlanToJson(plan).at("projection_jitter") == expected);
+            const auto compiled_pipeline = compileComposition(result);
+            const auto dumped_jitter =
+                framePlanToJson(plan, &compiled_pipeline)
+                    .at("projection_jitter");
+            REQUIRE(dumped_jitter == expected);
+            REQUIRE(dumped_jitter.dump() == expected.dump());
         }
     }
 
@@ -821,8 +839,8 @@ TEST_CASE("named render-target binding resolves pass IO history and override key
         const auto graphs = parseFrameGraphDefinitionsFromConfigJson(result.config);
         REQUIRE(graphs.size() == 1);
         auto plan = planFrameGraph(graphs.front());
-        plan.composition_metadata["feature_instances"] = result.feature_instances;
-        const auto plan_json = framePlanToJson(plan);
+        const auto compiled_pipeline = compileComposition(result);
+        const auto plan_json = framePlanToJson(plan, &compiled_pipeline);
         REQUIRE(plan_json.at("feature_instances").at(0).at("parameters").at("source") == source);
         const auto planned = std::find_if(
             plan_json.at("nodes").begin(), plan_json.at("nodes").end(),
@@ -948,8 +966,8 @@ TEST_CASE("scalar feature parameters resolve defaults and lower to deterministic
     const auto graphs = parseFrameGraphDefinitionsFromConfigJson(first.config);
     REQUIRE(graphs.size() == 1);
     auto plan = planFrameGraph(graphs.front());
-    plan.composition_metadata["feature_instances"] = first.feature_instances;
-    const auto plan_json = framePlanToJson(plan);
+    const auto compiled_pipeline = compileComposition(first);
+    const auto plan_json = framePlanToJson(plan, &compiled_pipeline);
     REQUIRE(plan_json.at("feature_instances").at(0).at("parameters").at("alpha") == 0.1);
     REQUIRE(plan_json.at("feature_instances").at(0).at("parameters").at("enabled") == false);
 

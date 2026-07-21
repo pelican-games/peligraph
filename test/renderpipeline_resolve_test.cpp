@@ -1,4 +1,5 @@
 #include "../src/core/renderingpass/previewgraph.hpp"
+#include "../src/core/renderingpass/frameplanner.hpp"
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/project/featurecompose.hpp"
 #include "../src/project/renderpipeline.hpp"
@@ -7,10 +8,14 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <algorithm>
+#include <cstdint>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <unordered_map>
+#include <variant>
 #include <vector>
 
 namespace Pelican {
@@ -55,6 +60,30 @@ std::string loadEngineResource(std::string_view reference) {
         throw std::runtime_error("expected engine resource reference");
     }
     return engineResourceOrThrow(reference.substr(prefix.size()));
+}
+
+Json hybridRouting() {
+    return {
+        {"policy", "hybrid_auto_v1"},
+        {"routes",
+         {
+             {"deferred_geometry",
+              {{"pass", "deferred_geometry"},
+               {"contract", "deferred_geometry_v1"},
+               {"shader_contract", "gbuffer_v1"},
+               {"phase", "opaque"}}},
+             {"forward_opaque",
+              {{"pass", "forward_opaque"},
+               {"contract", "forward_opaque_v1"},
+               {"shader_contract", "forward_scene_color_v1"},
+               {"phase", "opaque"}}},
+             {"forward_transparent",
+              {{"pass", "forward_transparent"},
+               {"contract", "forward_transparent_v1"},
+               {"shader_contract", "forward_scene_color_v1"},
+               {"phase", "transparent"}}},
+         }},
+    };
 }
 
 } // namespace
@@ -105,8 +134,9 @@ TEST_CASE("WP180 flat resolver preserves FeatureCompose bytes without modules",
     REQUIRE(resolved.pipeline_preset->name == "fixture_v1");
     REQUIRE(resolved.pipeline_preset->version == 1);
 
+    const auto compiled = compileRenderPipeline(resolved);
     const auto metadata =
-        serializeRenderPipelineCompositionMetadata(resolved);
+        serializeCompiledRenderPipelineMetadata(compiled);
     REQUIRE(metadata == Json{
                             {"pipeline_preset",
                              {{"ref", "fixture://pipeline"},
@@ -178,7 +208,8 @@ TEST_CASE("WP180 XR resolution preserves policy order suffix and metadata",
     REQUIRE(resolved.feature_names == std::vector<std::string>{"safe"});
     REQUIRE(resolved.excluded_feature_names ==
             std::vector<std::string>{"ui"});
-    REQUIRE(serializeRenderPipelineCompositionMetadata(resolved) ==
+    const auto compiled = compileRenderPipeline(resolved);
+    REQUIRE(serializeCompiledRenderPipelineMetadata(compiled) ==
             Json{{"graph_variant", "xr"},
                  {"excluded_features", Json::array({"ui"})}});
     REQUIRE(std::any_of(
@@ -216,8 +247,9 @@ TEST_CASE("WP180 hybrid resolver preserves semantic material routing",
     REQUIRE(resolved.material_routing.at("routes")
                 .at("forward_transparent")
                 .at("phase") == "transparent");
+    const auto compiled = compileRenderPipeline(resolved);
     const auto metadata =
-        serializeRenderPipelineCompositionMetadata(resolved);
+        serializeCompiledRenderPipelineMetadata(compiled);
     REQUIRE(metadata.at("material_routing") == legacy.material_routing);
     REQUIRE(metadata.at("pipeline_preset").at("name") == "hybrid_v1");
     REQUIRE_FALSE(metadata.contains("graph_variant"));
@@ -267,15 +299,16 @@ TEST_CASE("WP180 preview precompile resolves presets through the shared boundary
         {"name", "preview_fixture_v1"},
         {"config", baseConfig()},
     };
+    const auto load_pipeline = [&preset](std::string_view ref) {
+        if (ref != "fixture://preview_pipeline") {
+            throw std::runtime_error("unexpected preview resource");
+        }
+        return preset.dump();
+    };
+    const auto authored =
+        Json{{"pipeline", {{"preset", "fixture://preview_pipeline"}}}};
     const auto program = precompilePreviewGraph(
-        Json{{"pipeline", {{"preset", "fixture://preview_pipeline"}}}}
-            .dump(),
-        [&preset](std::string_view ref) {
-            if (ref != "fixture://preview_pipeline") {
-                throw std::runtime_error("unexpected preview resource");
-            }
-            return preset.dump();
-        },
+        authored.dump(), load_pipeline,
         true);
 
     REQUIRE(program.generation != 0);
@@ -285,6 +318,183 @@ TEST_CASE("WP180 preview precompile resolves presets through the shared boundary
             std::string::npos);
     REQUIRE(program.pass_names ==
             std::vector<std::string>{"scene", "output_transform"});
+
+    const auto resolved = resolveRenderPipeline(
+        RenderPipelineRequest{authored, "preview typed fixture"},
+        RenderEnvironmentCapabilities{true,
+                                      RenderPipelineGraphVariant::preview},
+        RenderPipelineResolveDependencies{
+            .load_pipeline_json = load_pipeline,
+        });
+    const auto compiled = compileRenderPipeline(resolved);
+    REQUIRE(compiled.graph_variant == RenderPipelineGraphVariant::preview);
+    REQUIRE(serializeCompiledRenderPipelineMetadata(compiled) ==
+            Json{{"pipeline_preset",
+                  {{"ref", "fixture://preview_pipeline"},
+                   {"name", "preview_fixture_v1"},
+                   {"version", 1}}}});
+}
+
+TEST_CASE("WP181 compiles dump metadata into a typed immutable runtime contract",
+          "[wp181][render-pipeline][compile][typed]") {
+    ResolvedRenderPipeline resolved;
+    resolved.normalized_config = {{"authoring_only", true}};
+    resolved.shader_defines = {"PELICAN_TYPED_FIXTURE"};
+    resolved.feature_names = {"typed_feature"};
+    resolved.excluded_feature_names = {"xr_excluded"};
+    resolved.projection_jitter = {
+        {"provider", "typed_jitter"},
+        {"pattern", "table"},
+        {"phases", 2},
+        {"offsets_px", Json::array({Json::array({0, 0.0}),
+                                     Json::array({0.25, -0.125})})},
+    };
+    resolved.feature_instances = Json::array({
+        {
+            {"feature", "typed_feature"},
+            {"parameters",
+             {
+                 {"bool_value", false},
+                 {"floating_value", 0.125},
+                 {"signed_value", -7},
+                 {"string_value", "history_a"},
+                 {"unsigned_value", Json(Json::number_unsigned_t{9})},
+             }},
+            {"ref", "fixture://typed_feature"},
+        },
+    });
+    resolved.material_routing = hybridRouting();
+    resolved.pipeline_preset = RenderPipelinePresetInfo{
+        "fixture://typed_pipeline", "typed_pipeline_v1", 1};
+    resolved.graph_variant = RenderPipelineGraphVariant::xr;
+    resolved.rendering_pass_name_suffix = "#xr";
+    resolved.diagnostics = {
+        {RenderPipelineDiagnosticKind::graph_variant_selected, "xr",
+         "selected_by_environment"},
+        {RenderPipelineDiagnosticKind::feature_excluded, "xr_excluded",
+         "xr"},
+    };
+    resolved.used_features = true;
+
+    const auto pipeline = std::make_shared<const CompiledRenderPipeline>(
+        compileRenderPipeline(resolved));
+    static_assert(std::is_const_v<
+                  std::remove_reference_t<decltype(*pipeline)>>);
+
+    REQUIRE(pipeline->shader_defines ==
+            std::vector<std::string>{"PELICAN_TYPED_FIXTURE"});
+    REQUIRE(pipeline->graph_variant == RenderPipelineGraphVariant::xr);
+    REQUIRE(pipeline->rendering_pass_name_suffix == "#xr");
+    REQUIRE(pipeline->projection_jitter.has_value());
+    REQUIRE(pipeline->projection_jitter->pattern ==
+            ProjectionJitterPattern::table);
+    REQUIRE(pipeline->projection_jitter->offsets_px.size() == 2);
+    REQUIRE(std::holds_alternative<std::int64_t>(
+        pipeline->projection_jitter->offsets_px.at(0).at(0)));
+    REQUIRE(std::holds_alternative<double>(
+        pipeline->projection_jitter->offsets_px.at(0).at(1)));
+    REQUIRE(pipeline->material_routing.has_value());
+    REQUIRE(pipeline->material_routing->routes.size() == 3);
+    REQUIRE(pipeline->material_routing->routes.at(2).route ==
+            MaterialRouteClass::forward_transparent);
+    REQUIRE(pipeline->material_routing->routes.at(2).pass_contract ==
+            MaterialPassContract::forward_transparent_v1);
+    REQUIRE(pipeline->diagnostics == resolved.diagnostics);
+
+    REQUIRE(pipeline->feature_instances.size() == 1);
+    const auto &parameters = pipeline->feature_instances.front().parameters;
+    const auto parameter = [&parameters](std::string_view name)
+        -> const CompiledRenderFeatureParameterValue & {
+        const auto found = std::find_if(
+            parameters.begin(), parameters.end(),
+            [name](const auto &candidate) { return candidate.name == name; });
+        REQUIRE(found != parameters.end());
+        return found->value;
+    };
+    REQUIRE(std::get<bool>(parameter("bool_value")) == false);
+    REQUIRE(std::get<double>(parameter("floating_value")) == 0.125);
+    REQUIRE(std::get<std::int64_t>(parameter("signed_value")) == -7);
+    REQUIRE(std::get<std::string>(parameter("string_value")) ==
+            "history_a");
+    REQUIRE(std::get<std::uint64_t>(parameter("unsigned_value")) == 9);
+
+    const auto metadata = serializeCompiledRenderPipelineMetadata(*pipeline);
+    REQUIRE_FALSE(metadata.contains("authoring_only"));
+    REQUIRE(metadata == Json{
+                            {"projection_jitter", *resolved.projection_jitter},
+                            {"feature_instances", resolved.feature_instances},
+                            {"material_routing", resolved.material_routing},
+                            {"pipeline_preset",
+                             {{"ref", "fixture://typed_pipeline"},
+                              {"name", "typed_pipeline_v1"},
+                              {"version", 1}}},
+                            {"graph_variant", "xr"},
+                            {"excluded_features",
+                             Json::array({"xr_excluded"})},
+                        });
+    const auto expected_metadata = Json{
+        {"projection_jitter", *resolved.projection_jitter},
+        {"feature_instances", resolved.feature_instances},
+        {"material_routing", resolved.material_routing},
+        {"pipeline_preset",
+         {{"ref", "fixture://typed_pipeline"},
+          {"name", "typed_pipeline_v1"},
+          {"version", 1}}},
+        {"graph_variant", "xr"},
+        {"excluded_features", Json::array({"xr_excluded"})},
+    };
+    REQUIRE(metadata.dump() == expected_metadata.dump());
+}
+
+TEST_CASE("WP181 compile and graph-plan failures precede publication",
+          "[wp181][render-pipeline][compile][atomic]") {
+    struct PublicationProbe {
+        int render_targets = 3;
+        int passes = 5;
+        void publish() {
+            ++render_targets;
+            ++passes;
+        }
+    } publication;
+
+    SECTION("typed compile failure") {
+        ResolvedRenderPipeline malformed;
+        malformed.projection_jitter = {
+            {"provider", "broken_table"},
+            {"pattern", "table"},
+            {"phases", 2},
+            {"offsets_px", Json::array({Json::array({0.0, 0.0})})},
+        };
+        const auto compile_then_publish = [&] {
+            (void)compileRenderPipeline(malformed);
+            publication.publish();
+        };
+
+        REQUIRE_THROWS_WITH(
+            compile_then_publish(),
+            "resolved projection_jitter table offsets_px length must match phases");
+    }
+
+    SECTION("frame graph planning failure") {
+        FrameGraphDefinition cyclic;
+        cyclic.name = "cyclic";
+        FrameGraphNodeDefinition first;
+        first.name = "first";
+        first.after = {"second"};
+        FrameGraphNodeDefinition second;
+        second.name = "second";
+        second.after = {"first"};
+        cyclic.nodes = {std::move(first), std::move(second)};
+        const auto plan_then_publish = [&] {
+            (void)planFrameGraph(cyclic);
+            publication.publish();
+        };
+
+        REQUIRE_THROWS(plan_then_publish());
+    }
+
+    REQUIRE(publication.render_targets == 3);
+    REQUIRE(publication.passes == 5);
 }
 
 } // namespace Pelican

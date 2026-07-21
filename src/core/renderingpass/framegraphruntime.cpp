@@ -22,6 +22,45 @@ std::unordered_map<std::string, size_t> computeTaskIndices(const CompiledRenderi
     return indices;
 }
 
+std::vector<CompiledMaterialRouteBinding> bindMaterialRoutes(
+    const CompiledRenderingPass &compiled_pass,
+    const CompiledRenderPipeline &render_pipeline) {
+    std::vector<CompiledMaterialRouteBinding> bindings;
+    if (!render_pipeline.material_routing) return bindings;
+
+    bindings.reserve(render_pipeline.material_routing->routes.size());
+    for (const auto &route : render_pipeline.material_routing->routes) {
+        const CompiledPass *selected = nullptr;
+        for (const auto &pass : compiled_pass.passes) {
+            if (pass.definition.name != route.pass_name) continue;
+            if (selected != nullptr) {
+                throw std::runtime_error(
+                    "Compiled material route pass is ambiguous: " +
+                    route.pass_name);
+            }
+            selected = &pass;
+        }
+        if (selected == nullptr) {
+            throw std::runtime_error("Compiled material route pass is missing: " +
+                                     route.pass_name);
+        }
+        if (!selected->definition.isMaterial()) {
+            throw std::runtime_error(
+                "Compiled material route selects a non-material pass: " +
+                route.pass_name);
+        }
+        if (selected->definition.materialInfo().contract !=
+            route.pass_contract) {
+            throw std::runtime_error(
+                "Compiled material route contract mismatch for pass: " +
+                route.pass_name);
+        }
+        bindings.push_back(CompiledMaterialRouteBinding{
+            route.route, selected->pass_id, route.pass_contract});
+    }
+    return bindings;
+}
+
 } // namespace
 
 FrameGraphRuntimeContainer::FrameGraphRuntimeContainer() = default;
@@ -30,15 +69,22 @@ FrameGraphRuntimeContainer::~FrameGraphRuntimeContainer() = default;
 
 void FrameGraphRuntimeContainer::registerExecutionPlan(RenderingPassId rendering_pass_id,
                                                        const CompiledRenderingPass &compiled_pass,
-                                                       const FrameGraphDefinition &definition,
-                                                       nlohmann::json composition_metadata) {
-    auto plan = planFrameGraph(definition);
-    plan.composition_metadata = std::move(composition_metadata);
+                                                       FramePlan plan,
+                                                       std::shared_ptr<const CompiledRenderPipeline>
+                                                           render_pipeline) {
+    if (!render_pipeline) {
+        throw std::runtime_error(
+            "Frame graph execution requires a compiled render pipeline");
+    }
     auto pass_indices = renderPassIndices(compiled_pass);
     auto task_indices = computeTaskIndices(compiled_pass);
+    auto material_routes =
+        bindMaterialRoutes(compiled_pass, *render_pipeline);
 
     CompiledFrameGraphExecution execution;
     execution.plan = std::move(plan);
+    execution.render_pipeline = std::move(render_pipeline);
+    execution.material_routes = std::move(material_routes);
     execution.nodes.reserve(execution.plan.nodes.size());
 
     for (const auto &node : execution.plan.nodes) {

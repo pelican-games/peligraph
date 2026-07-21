@@ -1,4 +1,5 @@
 #include "../src/core/renderingpass/frameplanner.hpp"
+#include "../src/core/renderingpass/framegraphruntime.hpp"
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/project/featurecompose.hpp"
 #include "../src/core/renderingpass/renderingpassconfigjsonparser.hpp"
@@ -6,10 +7,12 @@
 #include "../src/core/renderingpass/rendertargetmetadataresolver.hpp"
 #include "../src/core/renderingpass/rendertargetnameresolver.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <array>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <stdexcept>
@@ -745,6 +748,68 @@ TEST_CASE("frame planner shadow feature plan matches fixture", "[frameplanner]")
 
     const auto plan_json = framePlanToJson(planFrameGraph(graphs.front()));
     requirePlanFixture(plan_json, fixtureRoot() / "plans" / "shadow_directional_feature_main.json");
+}
+
+TEST_CASE("WP181 frame graph runtime retains one immutable typed pipeline",
+          "[wp181][frameplanner][render-pipeline]") {
+    FrameGraphDefinition definition;
+    definition.name = "typed_runtime";
+    CompiledRenderingPass rendering_pass;
+    rendering_pass.name = definition.name;
+    CompiledRenderPipeline compiled_pipeline;
+    compiled_pipeline.feature_names = {"typed_fixture"};
+    compiled_pipeline.material_routing = CompiledMaterialRouting{};
+    constexpr std::array routes{
+        MaterialRouteClass::deferred_geometry,
+        MaterialRouteClass::forward_opaque,
+        MaterialRouteClass::forward_transparent,
+    };
+    constexpr std::array contracts{
+        MaterialPassContract::deferred_geometry_v1,
+        MaterialPassContract::forward_opaque_v1,
+        MaterialPassContract::forward_transparent_v1,
+    };
+    constexpr std::array<std::string_view, 3> pass_names{
+        "deferred_geometry", "forward_opaque", "forward_transparent"};
+    for (std::size_t index = 0; index < routes.size(); ++index) {
+        FrameGraphNodeDefinition node;
+        node.name = pass_names[index];
+        node.kind = FramePlanNodeKind::render;
+        definition.nodes.push_back(std::move(node));
+
+        PassDefinition pass_definition;
+        pass_definition.name = pass_names[index];
+        pass_definition.materialInfo().contract = contracts[index];
+        rendering_pass.passes.push_back(CompiledPass{
+            std::move(pass_definition),
+            PassId{static_cast<int>(17 + index)},
+        });
+        compiled_pipeline.material_routing->routes.push_back(
+            CompiledMaterialRoute{routes[index], std::string{pass_names[index]},
+                                  contracts[index]});
+    }
+    auto pipeline = std::make_shared<const CompiledRenderPipeline>(
+        std::move(compiled_pipeline));
+
+    FrameGraphRuntimeContainer runtime;
+    const auto rendering_pass_id = RenderingPassId{23};
+    runtime.registerExecutionPlan(rendering_pass_id, rendering_pass,
+                                  planFrameGraph(definition), pipeline);
+
+    const auto *execution = runtime.find(rendering_pass_id);
+    REQUIRE(execution != nullptr);
+    REQUIRE(execution->render_pipeline == pipeline);
+    REQUIRE(execution->render_pipeline->feature_names ==
+            std::vector<std::string>{"typed_fixture"});
+    REQUIRE(execution->material_routes.size() == 3);
+    REQUIRE(execution->material_routes.at(0).pass_id == PassId{17});
+    REQUIRE(execution->material_routes.at(2).route ==
+            MaterialRouteClass::forward_transparent);
+    REQUIRE(execution->material_routes.at(2).pass_id == PassId{19});
+    REQUIRE(execution->material_routes.at(2).pass_contract ==
+            MaterialPassContract::forward_transparent_v1);
+    REQUIRE(execution->nodes.size() == 3);
+    REQUIRE(execution->nodes.front().index == 0);
 }
 
 } // namespace Pelican

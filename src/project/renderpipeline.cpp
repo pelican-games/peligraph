@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <stdexcept>
 #include <unordered_set>
 
@@ -453,23 +454,352 @@ ResolvedRenderPipeline resolveRenderPipeline(
     return result;
 }
 
-nlohmann::json serializeRenderPipelineCompositionMetadata(
+std::string_view projectionJitterPatternName(ProjectionJitterPattern pattern) {
+    switch (pattern) {
+    case ProjectionJitterPattern::halton23: return "halton23";
+    case ProjectionJitterPattern::table: return "table";
+    }
+    return "unknown";
+}
+
+double compiledRenderNumericValueAsDouble(
+    const CompiledRenderNumericValue &value) {
+    return std::visit(
+        [](const auto typed_value) { return static_cast<double>(typed_value); },
+        value);
+}
+
+std::string_view materialRoutingPolicyName(MaterialRoutingPolicy policy) {
+    switch (policy) {
+    case MaterialRoutingPolicy::hybrid_auto_v1: return "hybrid_auto_v1";
+    }
+    return "unknown";
+}
+
+namespace {
+
+CompiledProjectionJitter compileProjectionJitter(
+    const nlohmann::json &declaration) {
+    constexpr std::string_view context = "resolved projection_jitter";
+    if (!declaration.is_object()) {
+        throw std::runtime_error(std::string{context} + " must be an object");
+    }
+    requireOnlyKeys(declaration, {"provider", "pattern", "phases", "offsets_px"},
+                    context);
+
+    CompiledProjectionJitter result;
+    result.provider = requireString(declaration, "provider", context);
+    const auto pattern = requireString(declaration, "pattern", context);
+    if (pattern == "halton23") {
+        result.pattern = ProjectionJitterPattern::halton23;
+    } else if (pattern == "table") {
+        result.pattern = ProjectionJitterPattern::table;
+    } else {
+        throw std::runtime_error(std::string{context} +
+                                 " has unknown pattern: " + pattern);
+    }
+
+    const auto phases = declaration.find("phases");
+    if (phases == declaration.end() || !phases->is_number_integer()) {
+        throw std::runtime_error(std::string{context} +
+                                 " requires unsigned integer phases");
+    }
+    const bool phases_in_range =
+        phases->is_number_unsigned()
+            ? phases->get<std::uint64_t>() >= 1 &&
+                  phases->get<std::uint64_t>() <= 64
+            : phases->get<std::int64_t>() >= 1 &&
+                  phases->get<std::int64_t>() <= 64;
+    if (!phases_in_range) {
+        throw std::runtime_error(std::string{context} +
+                                 " phases must be in range 1..64");
+    }
+    result.phases = phases->get<std::uint32_t>();
+
+    if (result.pattern == ProjectionJitterPattern::halton23) {
+        if (declaration.contains("offsets_px")) {
+            throw std::runtime_error(std::string{context} +
+                                     " halton23 must not define offsets_px");
+        }
+        return result;
+    }
+
+    const auto offsets = declaration.find("offsets_px");
+    if (offsets == declaration.end() || !offsets->is_array() ||
+        offsets->size() != result.phases) {
+        throw std::runtime_error(std::string{context} +
+                                 " table offsets_px length must match phases");
+    }
+    result.offsets_px.reserve(offsets->size());
+    for (std::size_t index = 0; index < offsets->size(); ++index) {
+        const auto &offset = offsets->at(index);
+        if (!offset.is_array() || offset.size() != 2) {
+            throw std::runtime_error(std::string{context} + " offsets_px[" +
+                                     std::to_string(index) +
+                                     "] must contain exactly two numbers");
+        }
+        std::array<CompiledRenderNumericValue, 2> compiled_offset{};
+        for (std::size_t component = 0; component < 2; ++component) {
+            if (!offset.at(component).is_number()) {
+                throw std::runtime_error(std::string{context} + " offsets_px[" +
+                                         std::to_string(index) + "][" +
+                                         std::to_string(component) +
+                                         "] must be a finite number");
+            }
+            CompiledRenderNumericValue typed_value;
+            if (offset.at(component).is_number_unsigned()) {
+                typed_value = offset.at(component).get<std::uint64_t>();
+            } else if (offset.at(component).is_number_integer()) {
+                typed_value = offset.at(component).get<std::int64_t>();
+            } else {
+                typed_value = offset.at(component).get<double>();
+            }
+            const auto value = compiledRenderNumericValueAsDouble(typed_value);
+            if (!std::isfinite(value) || value < -0.5 || value >= 0.5) {
+                throw std::runtime_error(std::string{context} + " offsets_px[" +
+                                         std::to_string(index) + "][" +
+                                         std::to_string(component) +
+                                         "] must be finite and in range [-0.5, 0.5)");
+            }
+            compiled_offset[component] = std::move(typed_value);
+        }
+        result.offsets_px.push_back(compiled_offset);
+    }
+    return result;
+}
+
+CompiledRenderFeatureParameterValue compileFeatureParameterValue(
+    const nlohmann::json &value, std::string_view context) {
+    if (value.is_boolean()) return value.get<bool>();
+    if (value.is_number_unsigned()) return value.get<std::uint64_t>();
+    if (value.is_number_integer()) return value.get<std::int64_t>();
+    if (value.is_number_float()) return value.get<double>();
+    if (value.is_string()) return value.get<std::string>();
+    throw std::runtime_error(std::string{context} +
+                             " must be bool, integer, number, or string");
+}
+
+std::vector<CompiledRenderFeatureInstance> compileFeatureInstances(
+    const nlohmann::json &instances) {
+    if (!instances.is_array()) {
+        throw std::runtime_error("resolved feature_instances must be an array");
+    }
+    std::vector<CompiledRenderFeatureInstance> result;
+    result.reserve(instances.size());
+    for (std::size_t index = 0; index < instances.size(); ++index) {
+        const auto &instance = instances.at(index);
+        const auto context =
+            "resolved feature_instances[" + std::to_string(index) + "]";
+        if (!instance.is_object()) {
+            throw std::runtime_error(context + " must be an object");
+        }
+        requireOnlyKeys(instance, {"feature", "parameters", "ref"}, context);
+        CompiledRenderFeatureInstance compiled;
+        compiled.feature = requireString(instance, "feature", context);
+        compiled.reference = requireString(instance, "ref", context);
+        const auto parameters = instance.find("parameters");
+        if (parameters == instance.end() || !parameters->is_object()) {
+            throw std::runtime_error(context + " parameters must be an object");
+        }
+        compiled.parameters.reserve(parameters->size());
+        for (auto parameter = parameters->begin(); parameter != parameters->end();
+             ++parameter) {
+            const auto parameter_context =
+                context + " parameter '" + parameter.key() + "'";
+            compiled.parameters.push_back(CompiledRenderFeatureParameter{
+                parameter.key(),
+                compileFeatureParameterValue(parameter.value(),
+                                             parameter_context),
+            });
+        }
+        result.push_back(std::move(compiled));
+    }
+    return result;
+}
+
+CompiledMaterialRouting compileMaterialRouting(
+    const nlohmann::json &routing) {
+    constexpr std::string_view context = "resolved material_routing";
+    if (!routing.is_object()) {
+        throw std::runtime_error(std::string{context} + " must be an object");
+    }
+    requireOnlyKeys(routing, {"policy", "routes"}, context);
+    const auto policy = requireString(routing, "policy", context);
+    if (policy != materialRoutingPolicyName(
+                      MaterialRoutingPolicy::hybrid_auto_v1)) {
+        throw std::runtime_error(std::string{context} +
+                                 " has unsupported policy: " + policy);
+    }
+    const auto routes = routing.find("routes");
+    if (routes == routing.end() || !routes->is_object()) {
+        throw std::runtime_error(std::string{context} +
+                                 " requires object routes");
+    }
+    requireOnlyKeys(*routes,
+                    {"deferred_geometry", "forward_opaque",
+                     "forward_transparent"},
+                    "resolved material_routing routes");
+
+    constexpr std::array route_values{
+        MaterialRouteClass::deferred_geometry,
+        MaterialRouteClass::forward_opaque,
+        MaterialRouteClass::forward_transparent,
+    };
+    CompiledMaterialRouting result;
+    std::unordered_set<std::string> selected_passes;
+    result.routes.reserve(route_values.size());
+    for (const auto route : route_values) {
+        const auto route_name = materialRouteClassName(route);
+        const auto entry = routes->find(route_name);
+        if (entry == routes->end() || !entry->is_object()) {
+            throw std::runtime_error("resolved material_routing route '" +
+                                     std::string{route_name} +
+                                     "' must be an object");
+        }
+        const auto route_context = "resolved material_routing route '" +
+                                   std::string{route_name} + "'";
+        requireOnlyKeys(*entry,
+                        {"pass", "contract", "shader_contract", "phase"},
+                        route_context);
+        const auto pass_name = requireString(*entry, "pass", route_context);
+        if (!selected_passes.insert(pass_name).second) {
+            throw std::runtime_error(
+                "resolved material_routing routes must select distinct passes: " +
+                pass_name);
+        }
+        const auto contract_name =
+            requireString(*entry, "contract", route_context);
+        const auto contract = materialPassContractFromName(contract_name);
+        const auto expected = expectedContract(route);
+        if (!contract || *contract != expected) {
+            throw std::runtime_error(route_context + " requires contract '" +
+                                     std::string{materialPassContractName(expected)} +
+                                     "'");
+        }
+        const auto shader_contract =
+            requireString(*entry, "shader_contract", route_context);
+        const auto expected_shader = materialShaderContractName(
+            materialPassShaderContract(expected));
+        if (shader_contract != expected_shader) {
+            throw std::runtime_error(route_context +
+                                     " requires shader_contract '" +
+                                     std::string{expected_shader} + "'");
+        }
+        const auto phase = requireString(*entry, "phase", route_context);
+        const auto expected_phase =
+            materialPhaseName(materialPassPhase(expected));
+        if (phase != expected_phase) {
+            throw std::runtime_error(route_context + " requires phase '" +
+                                     std::string{expected_phase} + "'");
+        }
+        result.routes.push_back(
+            CompiledMaterialRoute{route, pass_name, expected});
+    }
+    return result;
+}
+
+nlohmann::json serializeFeatureParameterValue(
+    const CompiledRenderFeatureParameterValue &value) {
+    return std::visit(
+        [](const auto &typed_value) { return nlohmann::json(typed_value); },
+        value);
+}
+
+nlohmann::json serializeNumericValue(
+    const CompiledRenderNumericValue &value) {
+    return std::visit(
+        [](const auto typed_value) { return nlohmann::json(typed_value); },
+        value);
+}
+
+} // namespace
+
+CompiledRenderPipeline compileRenderPipeline(
     const ResolvedRenderPipeline &pipeline) {
+    if (renderPipelineGraphVariantName(pipeline.graph_variant) == "unknown") {
+        throw std::runtime_error("resolved render pipeline has unknown graph variant");
+    }
+
+    CompiledRenderPipeline result;
+    result.shader_defines = pipeline.shader_defines;
+    result.feature_names = pipeline.feature_names;
+    result.excluded_feature_names = pipeline.excluded_feature_names;
+    if (pipeline.projection_jitter) {
+        result.projection_jitter =
+            compileProjectionJitter(*pipeline.projection_jitter);
+    }
+    result.feature_instances =
+        compileFeatureInstances(pipeline.feature_instances);
+    if (!pipeline.material_routing.is_null()) {
+        result.material_routing =
+            compileMaterialRouting(pipeline.material_routing);
+    }
+    result.pipeline_preset = pipeline.pipeline_preset;
+    result.graph_variant = pipeline.graph_variant;
+    result.rendering_pass_name_suffix =
+        pipeline.rendering_pass_name_suffix;
+    result.diagnostics = pipeline.diagnostics;
+    result.used_features = pipeline.used_features;
+    return result;
+}
+
+nlohmann::json serializeCompiledRenderPipelineMetadata(
+    const CompiledRenderPipeline &pipeline) {
     nlohmann::json metadata = nlohmann::json::object();
     if (pipeline.projection_jitter) {
-        metadata["projection_jitter"] = *pipeline.projection_jitter;
+        const auto &jitter = *pipeline.projection_jitter;
+        nlohmann::json declaration{
+            {"provider", jitter.provider},
+            {"pattern", projectionJitterPatternName(jitter.pattern)},
+            {"phases", jitter.phases},
+        };
+        if (!jitter.offsets_px.empty()) {
+            auto offsets = nlohmann::json::array();
+            for (const auto &offset : jitter.offsets_px) {
+                offsets.push_back(
+                    {serializeNumericValue(offset[0]),
+                     serializeNumericValue(offset[1])});
+            }
+            declaration["offsets_px"] = std::move(offsets);
+        }
+        metadata["projection_jitter"] = std::move(declaration);
     }
     nlohmann::json bound_instances = nlohmann::json::array();
     for (const auto &instance : pipeline.feature_instances) {
-        if (!instance.at("parameters").empty()) {
-            bound_instances.push_back(instance);
+        if (!instance.parameters.empty()) {
+            auto parameters = nlohmann::json::object();
+            for (const auto &parameter : instance.parameters) {
+                parameters[parameter.name] =
+                    serializeFeatureParameterValue(parameter.value);
+            }
+            bound_instances.push_back({
+                {"feature", instance.feature},
+                {"parameters", std::move(parameters)},
+                {"ref", instance.reference},
+            });
         }
     }
     if (!bound_instances.empty()) {
         metadata["feature_instances"] = std::move(bound_instances);
     }
-    if (!pipeline.material_routing.is_null()) {
-        metadata["material_routing"] = pipeline.material_routing;
+    if (pipeline.material_routing) {
+        nlohmann::json routes = nlohmann::json::object();
+        for (const auto &route : pipeline.material_routing->routes) {
+            routes[materialRouteClassName(route.route)] = {
+                {"pass", route.pass_name},
+                {"contract", materialPassContractName(route.pass_contract)},
+                {"shader_contract",
+                 materialShaderContractName(
+                     materialPassShaderContract(route.pass_contract))},
+                {"phase",
+                 materialPhaseName(materialPassPhase(route.pass_contract))},
+            };
+        }
+        metadata["material_routing"] = {
+            {"policy",
+             materialRoutingPolicyName(pipeline.material_routing->policy)},
+            {"routes", std::move(routes)},
+        };
     }
     if (pipeline.pipeline_preset) {
         metadata["pipeline_preset"] = {

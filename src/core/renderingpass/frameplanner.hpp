@@ -61,7 +61,6 @@ struct FramePlan {
     std::vector<FramePlanNode> nodes;
     std::vector<std::vector<std::string>> levels;
     std::vector<FramePlanBarrier> barriers;
-    nlohmann::json composition_metadata = nlohmann::json::object();
 };
 
 std::string framePlanNodeKindName(FramePlanNodeKind kind);
@@ -72,6 +71,8 @@ std::vector<FrameGraphDefinition> parseFrameGraphDefinitionsFromConfigJson(const
 
 FramePlan planFrameGraph(const FrameGraphDefinition &definition);
 std::vector<std::string> framePlanOrder(const FramePlan &plan);
-nlohmann::json framePlanToJson(const FramePlan &plan);
+nlohmann::json framePlanToJson(
+    const FramePlan &plan,
+    const CompiledRenderPipeline *render_pipeline = nullptr);
 
 } // namespace Pelican

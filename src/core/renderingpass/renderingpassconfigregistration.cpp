@@ -21,6 +21,7 @@
 #include "../launchconfig.hpp"
 #endif
 #include <algorithm>
+#include <memory>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
@@ -51,11 +52,16 @@ RenderingPassRuntimeDependencies toRuntimeDependencies(
     };
 }
 
-std::unordered_map<std::string, FrameGraphDefinition> graphDefinitionsByName(
-    std::vector<FrameGraphDefinition> definitions) {
-    std::unordered_map<std::string, FrameGraphDefinition> by_name;
-    for (auto &definition : definitions) {
-        by_name.emplace(definition.name, std::move(definition));
+std::unordered_map<std::string, FramePlan> framePlansByName(
+    const std::vector<FrameGraphDefinition> &definitions) {
+    std::unordered_map<std::string, FramePlan> by_name;
+    for (const auto &definition : definitions) {
+        auto plan = planFrameGraph(definition);
+        const auto name = plan.name;
+        if (!by_name.emplace(name, std::move(plan)).second) {
+            throw std::runtime_error("Duplicate frame graph definition: " +
+                                     name);
+        }
     }
     return by_name;
 }
@@ -141,7 +147,10 @@ RenderingPassConfigRegistrationResult registerRenderingPassConfigData(
             .rendering_pass_name_suffix =
                 dependencies.options.rendering_pass_name_suffix,
         });
-    dependencies.runtime.shader_defines = resolved.shader_defines;
+    const auto compiled_pipeline =
+        std::make_shared<const CompiledRenderPipeline>(
+            compileRenderPipeline(resolved));
+    dependencies.runtime.shader_defines = compiled_pipeline->shader_defines;
     auto composed_rendering_pass_data = std::move(resolved.normalized_config);
 #if PELICAN_WITH_IMGUI
     if (resolved.rendering_pass_name_suffix.empty()) {
@@ -150,11 +159,22 @@ RenderingPassConfigRegistrationResult registerRenderingPassConfigData(
         });
     }
 #endif
-    const auto render_target_definitions = parseRenderTargetDefinitionsFromJson(composed_rendering_pass_data);
-    registerRenderTargetDefinitions(render_target_definitions, base_extent,
-                                    dependencies.render_targets.render_target_container);
-    const auto buffer_definitions = parseFrameGraphBufferDefinitionsFromJson(composed_rendering_pass_data);
+    const auto render_target_definitions =
+        parseRenderTargetDefinitionsFromJson(composed_rendering_pass_data);
+    const auto buffer_definitions =
+        parseFrameGraphBufferDefinitionsFromJson(composed_rendering_pass_data);
     const auto buffer_names = frameGraphBufferNameSet(buffer_definitions);
+    auto compute_task_definitions =
+        parseComputeTaskDefinitionsFromConfigJson(composed_rendering_pass_data);
+    auto graph_definition_list =
+        parseFrameGraphDefinitionsFromConfigJson(composed_rendering_pass_data);
+    namespaceComputeTasks(compute_task_definitions, graph_definition_list,
+                          compiled_pipeline->rendering_pass_name_suffix);
+    auto frame_plans = framePlansByName(graph_definition_list);
+
+    registerRenderTargetDefinitions(
+        render_target_definitions, base_extent,
+        dependencies.render_targets.render_target_container);
     dependencies.frame_graph_resources.registerBuffers(buffer_definitions);
 
     const RenderTargetNameResolver rt_resolver{dependencies.render_targets.render_target_container};
@@ -163,40 +183,34 @@ RenderingPassConfigRegistrationResult registerRenderingPassConfigData(
     const auto pass_definitions =
         parseRenderingPassDefinitionsFromConfigJson(composed_rendering_pass_data, rt_resolver, rt_metadata,
                                                     buffer_names);
-    auto compute_task_definitions = parseComputeTaskDefinitionsFromConfigJson(composed_rendering_pass_data);
-    auto graph_definition_list =
-        parseFrameGraphDefinitionsFromConfigJson(composed_rendering_pass_data);
-    namespaceComputeTasks(compute_task_definitions, graph_definition_list,
-                          resolved.rendering_pass_name_suffix);
     auto compiled_compute_tasks =
         compileComputeTasks(compute_task_definitions, dependencies);
-    auto graph_definitions = graphDefinitionsByName(std::move(graph_definition_list));
     auto compiled_passes =
         compileRenderingPassesRuntime(pass_definitions,
                                       toRuntimeDependencies(dependencies.runtime, rt_metadata, rt_views,
                                                             dependencies.frame_graph_resources));
     if (dependencies.options.publish_enabled_features) {
-        dependencies.pass_container.setEnabledFeatures(resolved.feature_names);
+        dependencies.pass_container.setEnabledFeatures(
+            compiled_pipeline->feature_names);
     }
-    const auto composition_metadata =
-        serializeRenderPipelineCompositionMetadata(resolved);
     RenderingPassConfigRegistrationResult result;
-    result.feature_names = resolved.feature_names;
-    result.excluded_feature_names = resolved.excluded_feature_names;
+    result.feature_names = compiled_pipeline->feature_names;
+    result.excluded_feature_names =
+        compiled_pipeline->excluded_feature_names;
     for (auto &compiled_pass : compiled_passes) {
         compiled_pass.compute_tasks = compiled_compute_tasks;
         const auto pass_name = compiled_pass.name;
         const auto rendering_pass_id = dependencies.pass_container.registerCompiledRenderingPass(std::move(compiled_pass));
         result.rendering_pass_ids.push_back(rendering_pass_id);
-        auto found_graph = graph_definitions.find(pass_name);
-        if (found_graph == graph_definitions.end()) {
+        auto found_plan = frame_plans.find(pass_name);
+        if (found_plan == frame_plans.end()) {
             throw std::runtime_error("Frame graph definition not found for rendering pass: " + pass_name);
         }
         dependencies.frame_graph_runtime.registerExecutionPlan(
             rendering_pass_id,
             dependencies.pass_container.getCompiledRenderingPass(rendering_pass_id),
-            found_graph->second,
-            composition_metadata);
+            std::move(found_plan->second),
+            compiled_pipeline);
     }
     return result;
 }

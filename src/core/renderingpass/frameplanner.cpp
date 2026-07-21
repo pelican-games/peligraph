@@ -763,7 +763,9 @@ std::vector<std::string> framePlanOrder(const FramePlan &plan) {
     return order;
 }
 
-nlohmann::json framePlanToJson(const FramePlan &plan) {
+nlohmann::json framePlanToJson(
+    const FramePlan &plan,
+    const CompiledRenderPipeline *render_pipeline) {
     auto nodes_json = nlohmann::json::array();
     for (const auto &node : plan.nodes) {
         auto node_json = nlohmann::json{
@@ -803,9 +805,10 @@ nlohmann::json framePlanToJson(const FramePlan &plan) {
         {"schema", "pelican.frame_plan"},
         {"version", 1},
     };
-    if (plan.composition_metadata.is_object()) {
-        for (auto field = plan.composition_metadata.begin();
-             field != plan.composition_metadata.end(); ++field) {
+    if (render_pipeline != nullptr) {
+        const auto metadata =
+            serializeCompiledRenderPipelineMetadata(*render_pipeline);
+        for (auto field = metadata.begin(); field != metadata.end(); ++field) {
             result[field.key()] = field.value();
         }
     }

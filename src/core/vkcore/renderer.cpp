@@ -1015,22 +1015,21 @@ void recordXrMirrorIntermediate(const FrameRenderContext &render_ctx,
 std::optional<ProjectionJitterSettings> projectionJitterSettingsFor(
     const FrameGraphRuntimeContainer &runtime, RenderingPassId rendering_pass_id) {
     const auto *frame_graph = runtime.find(rendering_pass_id);
-    if (frame_graph == nullptr ||
-        !frame_graph->plan.composition_metadata.contains("projection_jitter")) {
+    if (frame_graph == nullptr || !frame_graph->render_pipeline ||
+        !frame_graph->render_pipeline->projection_jitter) {
         return std::nullopt;
     }
-    const auto &json = frame_graph->plan.composition_metadata.at("projection_jitter");
+    const auto &jitter = *frame_graph->render_pipeline->projection_jitter;
     ProjectionJitterSettings settings{
-        json.at("provider").get<std::string>(),
-        json.at("pattern").get<std::string>(),
-        json.at("phases").get<std::uint32_t>(),
+        jitter.provider,
+        jitter.pattern,
+        jitter.phases,
     };
-    if (json.contains("offsets_px")) {
-        settings.offsets_px.reserve(json.at("offsets_px").size());
-        for (const auto &offset : json.at("offsets_px")) {
-            settings.offsets_px.emplace_back(offset.at(0).get<float>(),
-                                             offset.at(1).get<float>());
-        }
+    settings.offsets_px.reserve(jitter.offsets_px.size());
+    for (const auto &offset : jitter.offsets_px) {
+        settings.offsets_px.emplace_back(
+            static_cast<float>(compiledRenderNumericValueAsDouble(offset[0])),
+            static_cast<float>(compiledRenderNumericValueAsDouble(offset[1])));
     }
     return settings;
 }
@@ -1195,7 +1194,8 @@ nlohmann::json Renderer::currentFramePlanJson() const {
     if (frame_graph == nullptr) {
         throw std::runtime_error("Current frame plan is not registered");
     }
-    auto result = framePlanToJson(frame_graph->plan);
+    auto result = framePlanToJson(frame_graph->plan,
+                                  frame_graph->render_pipeline.get());
     const auto *sprite_scene = FastModuleContainer::tryGet<SpriteScene>();
     result["sprite"] = sprite_scene != nullptr ? sprite_scene->statusJson()
                                                  : nlohmann::json{{"enabled", false}};

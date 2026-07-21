@@ -53,7 +53,8 @@ std::string readText(const std::filesystem::path &path) {
 
 TEST_CASE("projection jitter Halton23 series is one-based and wraps at phase eight",
           "[projection-jitter][series]") {
-    const ProjectionJitterSettings settings{"jitter_fixture", "halton23", 8};
+    const ProjectionJitterSettings settings{
+        "jitter_fixture", ProjectionJitterPattern::halton23, 8};
     const std::vector<glm::vec2> expected{
         {0.0f, -1.0f / 6.0f},
         {-1.0f / 4.0f, 1.0f / 6.0f},
@@ -89,12 +90,13 @@ TEST_CASE("projection jitter table uses the shared one-based sample index and wr
     const auto fixtures =
         readJson(sourceRoot() / "test/fixtures/render_features/projection_jitter_table.json");
     const auto &declaration = fixtures.at("halton23_equivalent");
-    ProjectionJitterSettings table{"table_fixture", "table",
+    ProjectionJitterSettings table{"table_fixture", ProjectionJitterPattern::table,
                                    static_cast<std::uint32_t>(declaration.at("offsets_px").size())};
     for (const auto &offset : declaration.at("offsets_px")) {
         table.offsets_px.emplace_back(offset.at(0).get<float>(), offset.at(1).get<float>());
     }
-    const ProjectionJitterSettings halton{"halton_fixture", "halton23", table.phases};
+    const ProjectionJitterSettings halton{
+        "halton_fixture", ProjectionJitterPattern::halton23, table.phases};
 
     for (std::uint64_t frame = 1; frame <= table.phases + 1; ++frame) {
         const auto table_sample = projectionJitterSample(table, frame, 200, 100);
