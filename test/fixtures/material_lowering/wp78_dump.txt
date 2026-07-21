@@ -22,4 +22,6 @@ bindings:
   set=2 binding=7 type=combined_image_sampler name=detail view=SRGB default=engine://textures/white
 screen_inputs: []
 target_pass: deferred_geometry
+route: deferred_geometry reason=automatic_deferred_compatible
+deferred_eligibility: compatible model=standard_pbr_v1 reason=compatible
 render_state: blend=opaque cull=back depth_test=true depth_write=true depth_compare=less

@@ -27,11 +27,15 @@ layout(location = 5) in vec3 inBitangent;
 layout(location = 6) in vec4 inCustom0;
 layout(location = 7) in vec4 inCustom1;
 
+#ifdef PELICAN_PASS_FORWARD
+layout(location = 0) out vec4 outColor;
+#else
 layout(location = 0) out vec4 outAlbedo;
 layout(location = 1) out vec4 outNormal;
 layout(location = 2) out vec4 outMaterial;
 layout(location = 3) out vec4 outWorldPos;
 layout(location = 4) out vec4 outEmissive;
+#endif
 
 void main() {
 #ifdef PELICAN_PASS_DEPTH
@@ -70,6 +74,18 @@ void main() {
     surface.base_color = pelican_material_instance_apply_base_color(surface.base_color);
     surface.emissive = pelican_material_instance_apply_emissive(surface.emissive);
 
+#ifdef PELICAN_PASS_DEFERRED_GEOMETRY
+    float shading_model = 0.0;
+#ifdef PELICAN_GBUFFER_MODEL_OPENPBR_BASE_V1
+    shading_model = 1.0 / 255.0;
+#endif
+    outAlbedo = surface.base_color;
+    outNormal = vec4(surface.normal * 0.5 + 0.5, 1.0);
+    outMaterial = vec4(surface.roughness, surface.metallic, surface.occlusion,
+                       shading_model);
+    outWorldPos = vec4(input_data.world_position, 1.0);
+    outEmissive = vec4(surface.emissive, 1.0);
+#else
     vec3 lit;
 #ifdef PELICAN_HAS_LIGHTING_V1
     lit = pelican_lighting_v1(surface, input_data);
@@ -91,10 +107,15 @@ void main() {
     lit = pelican_lighting_v1(surface, input_data);
 #endif
 
+#ifdef PELICAN_PASS_FORWARD
+    outColor = vec4(lit, surface.base_color.a);
+#else
     outAlbedo = vec4(lit, surface.base_color.a);
     outNormal = vec4(surface.normal * 0.5 + 0.5, 1.0);
     outMaterial = vec4(surface.roughness, surface.metallic, surface.occlusion, 1.0);
     outWorldPos = vec4(input_data.world_position, 1.0);
     outEmissive = vec4(surface.emissive, 1.0);
+#endif
+#endif
 #endif
 }

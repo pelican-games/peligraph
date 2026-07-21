@@ -510,6 +510,33 @@ parseMaterialRouting(const nlohmann::json &material, const std::string &name,
     return parseRoutingObject(*found, materialContext(name), &warnings);
 }
 
+MaterialRenderPath parseMaterialRenderPath(const nlohmann::json &material,
+                                           const std::string &name) {
+    const auto found = material.find("render_path");
+    if (found == material.end()) return MaterialRenderPath::automatic;
+    if (!found->is_string()) {
+        throw std::runtime_error(materialContext(name) +
+                                 " render_path must be auto, deferred, or forward");
+    }
+    const auto value = found->get<std::string>();
+    if (value == "auto") return MaterialRenderPath::automatic;
+    if (value == "deferred") return MaterialRenderPath::deferred;
+    if (value == "forward") return MaterialRenderPath::forward;
+    throw std::runtime_error(materialContext(name) +
+                             " render_path must be auto, deferred, or forward: " + value);
+}
+
+std::optional<std::string> parseExactMaterialPass(const nlohmann::json &material,
+                                                  const std::string &name) {
+    const auto pass = optionalString(material, "pass", materialContext(name));
+    if (!pass) return std::nullopt;
+    if (!isR7Identifier(*pass)) {
+        throw std::runtime_error(materialContext(name) +
+                                 " pass must match [a-zA-Z0-9_]: " + *pass);
+    }
+    return pass;
+}
+
 std::vector<MaterialTextureOverride>
 parseTextureOverrides(const nlohmann::json &material, const std::string &name,
                       const std::optional<std::string> &surface_reference,
@@ -572,7 +599,7 @@ MaterialDefinition parseMaterial(const nlohmann::json &material, size_t index,
     }
     appendUnknownKeyWarnings(material,
                              {"name", "base", "shader", "defines", "surface", "values",
-                              "textures", "routing"},
+                              "textures", "routing", "render_path", "pass"},
                              context, warnings);
 
     MaterialDefinition parsed;
@@ -588,6 +615,8 @@ MaterialDefinition parseMaterial(const nlohmann::json &material, size_t index,
         parsed.surface = *surface;
     }
     parsed.routing = parseMaterialRouting(material, name, warnings);
+    parsed.render_path = parseMaterialRenderPath(material, name);
+    parsed.exact_pass = parseExactMaterialPass(material, name);
     parsed.values = parseValues(material, name, parsed.surface, surfaces);
     parsed.texture_overrides =
         parseTextureOverrides(material, name, parsed.surface, surfaces);
@@ -743,6 +772,15 @@ std::string_view materialAlphaModeName(MaterialAlphaMode mode) {
     case MaterialAlphaMode::opaque: return "opaque";
     case MaterialAlphaMode::mask: return "mask";
     case MaterialAlphaMode::blend: return "blend";
+    }
+    return "unknown";
+}
+
+std::string_view materialRenderPathName(MaterialRenderPath path) {
+    switch (path) {
+    case MaterialRenderPath::automatic: return "auto";
+    case MaterialRenderPath::deferred: return "deferred";
+    case MaterialRenderPath::forward: return "forward";
     }
     return "unknown";
 }

@@ -65,6 +65,9 @@ struct MaterialInfo {
     Std140Layout custom_values_layout;
     std::vector<std::byte> custom_values;
     SurfaceRenderState render_state;
+    MaterialRouteClass route = MaterialRouteClass::deferred_geometry;
+    MaterialShaderContract shader_contract = MaterialShaderContract::gbuffer_v1;
+    std::optional<std::string> exact_pass;
 };
 
 struct alignas(16) MaterialGpuData {
@@ -95,5 +98,15 @@ using LoweredMaterialTextureResolver =
 // retains the established semantic-dummy behavior.
 void applyLoweredMaterial(MaterialInfo &destination, const LoweredMaterial &lowered,
                           const LoweredMaterialTextureResolver &resolve_texture);
+
+// Opt-in route-aware application used by a hybrid pipeline.  The caller must
+// compile the surface with surfacePassForMaterialRoute(lowered.route); this
+// function selects the matching attachment ABI.  The established overloads
+// above retain the legacy five-MRT shader contract.
+void applyLoweredMaterialForRoute(MaterialInfo &destination,
+                                  const LoweredMaterial &lowered);
+void applyLoweredMaterialForRoute(MaterialInfo &destination,
+                                  const LoweredMaterial &lowered,
+                                  const LoweredMaterialTextureResolver &resolve_texture);
 
 } // namespace Pelican

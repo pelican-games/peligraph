@@ -55,6 +55,12 @@ struct MaterialLoweringCapabilities {
     bool depth_attachment = true;
 };
 
+struct DeferredEligibility {
+    bool compatible = false;
+    DeferredMaterialModel model = DeferredMaterialModel::standard_pbr_v1;
+    std::string reason;
+};
+
 struct LoweredMaterial {
     std::string name;
     std::string surface;
@@ -63,11 +69,21 @@ struct LoweredMaterial {
     std::vector<std::byte> values;
     std::vector<LoweredTextureBinding> textures;
     std::vector<std::string> screen_inputs;
+    MaterialRouteClass route = MaterialRouteClass::deferred_geometry;
+    MaterialRouteReason route_reason = MaterialRouteReason::automatic_deferred_compatible;
+    DeferredEligibility deferred_eligibility;
+    std::optional<std::string> exact_pass;
+    // Compatibility projection retained for PlanViewer and older tooling.
+    // It is the route name, not a globally unique runtime PassId.
     std::string target_pass;
     SurfaceRenderState render_state;
     SurfaceHookSet hooks;
     std::optional<MaterialVariantRouting> routing;
 };
+
+DeferredEligibility evaluateDeferredEligibility(
+    const MaterialDefinition &material,
+    const SurfaceFormatDocument &surface);
 
 Std140Layout makeSurfaceStd140Layout(const SurfaceFormatDocument &surface);
 

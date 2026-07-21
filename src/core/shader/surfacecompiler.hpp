@@ -2,6 +2,7 @@
 
 #include "shadercompiler.hpp"
 #include "spvlink.hpp"
+#include "../../project/renderpipeline.hpp"
 #include "../../project/surfaceformat.hpp"
 
 #include <string>
@@ -13,6 +14,8 @@ namespace Pelican {
 
 enum class SurfacePass {
     main,
+    deferred_geometry,
+    forward,
     depth,
     velocity,
 };
@@ -46,6 +49,7 @@ SurfaceCompileResult compileSurfaceShaders(ShaderCompiler &compiler,
                                            std::vector<std::string> defines = {});
 
 std::string_view surfacePassName(SurfacePass pass);
+SurfacePass surfacePassForMaterialRoute(MaterialRouteClass route);
 
 // Selection is deliberately process-explicit and defaults to false.  Merely
 // linking SPIRV-Tools into the engine never changes the WP78 source path.

@@ -84,6 +84,9 @@ DECLARE_MODULE(MaterialContainer) {
         };
 
         PipelineHandle pipeline;
+        MaterialRouteClass route = MaterialRouteClass::deferred_geometry;
+        MaterialShaderContract shader_contract = MaterialShaderContract::gbuffer_v1;
+        std::optional<std::string> exact_pass;
         GlobalTextureId base_color_texture;
         GlobalTextureId metallic_roughness_texture;
         GlobalTextureId normal_texture;
@@ -191,7 +194,7 @@ DECLARE_MODULE(MaterialContainer) {
         const std::map<watch::AssetKey, SurfaceFormatDocument> &surface_documents,
         std::span<const watch::AssetKey> material_documents);
 
-    bool isRenderRequired(PassId pass_id, GlobalMaterialId material) const;
+    bool isRenderRequired(const PassDefinition &pass, GlobalMaterialId material) const;
     void bindResource(vk::CommandBuffer cmd_buf, PassId pass_id, GlobalMaterialId material,
                       GlobalMaterialId prev_material_id) const;
     vk::PipelineLayout getPipelineLayout() const;

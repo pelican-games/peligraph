@@ -131,13 +131,17 @@ TEST_CASE("experimental SPV link compiles B hooks with split descriptor types an
 #endif
 }
 
-TEST_CASE("surface source composition compiles main depth and velocity variants",
+TEST_CASE("surface source composition compiles routed main depth and velocity variants",
           "[surface-compiler]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER
     const auto source = readText(fixtureRoot() / "valid" / "wp78.surface");
     const auto surface = parseSurfaceFormat(source, "wp78.surface");
     ShaderCompiler compiler;
     requireCompiled(compileSurfaceShaders(compiler, surface, "wp78.surface", SurfacePass::main));
+    requireCompiled(compileSurfaceShaders(compiler, surface, "wp78.surface",
+                                          SurfacePass::deferred_geometry));
+    requireCompiled(compileSurfaceShaders(compiler, surface, "wp78.surface",
+                                          SurfacePass::forward));
     requireCompiled(compileSurfaceShaders(compiler, surface, "wp78.surface", SurfacePass::depth));
     requireCompiled(compileSurfaceShaders(compiler, surface, "wp78.surface", SurfacePass::velocity));
     requireCompiled(compileSurfaceShaders(compiler, surface, "wp78.surface", SurfacePass::depth,
@@ -148,6 +152,17 @@ TEST_CASE("surface source composition compiles main depth and velocity variants"
             depth.defines.end());
     REQUIRE(std::find(depth.defines.begin(), depth.defines.end(),
                       "PELICAN_HAS_VERTEX_DISPLACE_V1") != depth.defines.end());
+    const auto deferred = composeSurfaceShaders(surface, "wp78.surface",
+                                                SurfacePass::deferred_geometry);
+    REQUIRE(std::find(deferred.defines.begin(), deferred.defines.end(),
+                      "PELICAN_PASS_DEFERRED_GEOMETRY") != deferred.defines.end());
+    const auto forward = composeSurfaceShaders(surface, "wp78.surface", SurfacePass::forward);
+    REQUIRE(std::find(forward.defines.begin(), forward.defines.end(),
+                      "PELICAN_PASS_FORWARD") != forward.defines.end());
+    REQUIRE(surfacePassForMaterialRoute(MaterialRouteClass::deferred_geometry) ==
+            SurfacePass::deferred_geometry);
+    REQUIRE(surfacePassForMaterialRoute(MaterialRouteClass::forward_transparent) ==
+            SurfacePass::forward);
     const auto shadow_depth = composeSurfaceShaders(surface, "wp78.surface", SurfacePass::depth,
                                                     {"PELICAN_FEATURE_SHADOW"});
     REQUIRE(std::find(shadow_depth.defines.begin(), shadow_depth.defines.end(),
@@ -169,7 +184,7 @@ TEST_CASE("standard and toon lighting dogfood only the public surface library",
 #endif
 }
 
-TEST_CASE("OpenPBR registers and compiles all six forward cache variants",
+TEST_CASE("OpenPBR registers and compiles all six routed cache variants",
           "[surface-compiler][openpbr][variants]") {
     const auto manifest = nlohmann::json::parse(
         engineResourceOrThrow("surfaces/openpbr/manifest.json"));
@@ -226,9 +241,32 @@ TEST_CASE("OpenPBR registers and compiles all six forward cache variants",
         REQUIRE(lowered.target_pass ==
                 (material.routing->alpha_mode == MaterialAlphaMode::blend
                      ? "forward_transparent"
-                     : "forward_opaque"));
+                     : "deferred_geometry"));
 #if PELICAN_RUNTIME_SHADER_COMPILER
-        requireCompiled(compileSurfaceShaders(compiler, surface, reference));
+        const auto pass = surfacePassForMaterialRoute(lowered.route);
+        const auto composition = composeSurfaceShaders(surface, reference, pass,
+                                                       lowered.defines);
+        REQUIRE(std::find(composition.defines.begin(), composition.defines.end(),
+                          pass == SurfacePass::deferred_geometry
+                              ? "PELICAN_PASS_DEFERRED_GEOMETRY"
+                              : "PELICAN_PASS_FORWARD") !=
+                composition.defines.end());
+        requireCompiled(compileSurfaceShaders(compiler, surface, reference, pass,
+                                              lowered.defines));
+        if (name == "opaque_single_sided") {
+            ShaderLibrary library{ShaderLibraryModuleMode::reflection_only};
+            const auto bundles = library.loadFromSurfaceForMaterial(
+                surface, reference, lowered, {"PELICAN_TEST_ROUTED"});
+            const auto &defines = library.get(bundles.fragment).defines;
+            REQUIRE(std::find(defines.begin(), defines.end(),
+                              "PELICAN_GBUFFER_MODEL_OPENPBR_BASE_V1") !=
+                    defines.end());
+            REQUIRE(std::find(defines.begin(), defines.end(),
+                              "PELICAN_PASS_DEFERRED_GEOMETRY") !=
+                    defines.end());
+            REQUIRE(std::find(defines.begin(), defines.end(),
+                              "PELICAN_TEST_ROUTED") != defines.end());
+        }
 #endif
     }
     REQUIRE(names == std::vector<std::string>{

@@ -8,6 +8,12 @@ void applyLoweredMaterial(MaterialInfo &destination, const LoweredMaterial &lowe
     destination.custom_values_layout = lowered.values_layout;
     destination.custom_values = lowered.values;
     destination.render_state = lowered.render_state;
+    destination.route = lowered.route;
+    // This overload is paired with SurfacePass::main.  Its five-MRT payload
+    // is the legacy lit-material contract, even though it has the same
+    // attachment count as the deferred G-buffer variant.
+    destination.shader_contract = MaterialShaderContract::legacy_gbuffer_v1;
+    destination.exact_pass = lowered.exact_pass;
     destination.custom_textures.clear();
     destination.custom_textures.reserve(lowered.textures.size());
     for (const auto &texture : lowered.textures) {
@@ -19,6 +25,24 @@ void applyLoweredMaterial(MaterialInfo &destination, const LoweredMaterial &lowe
         });
     }
 }
+
+namespace {
+
+MaterialShaderContract shaderContractForRoute(MaterialRouteClass route) {
+    return route == MaterialRouteClass::deferred_geometry
+               ? MaterialShaderContract::gbuffer_v1
+               : MaterialShaderContract::forward_scene_color_v1;
+}
+
+void requireSupportedRouteInputs(const LoweredMaterial &lowered) {
+    if (lowered.screen_inputs.empty()) return;
+    throw std::runtime_error(
+        "route-aware material '" + lowered.name + "' screen input '" +
+        lowered.screen_inputs.front() +
+        "' requires material-pass snapshot descriptors, which hybrid_v1 does not provide yet");
+}
+
+} // namespace
 
 void applyLoweredMaterial(MaterialInfo &destination, const LoweredMaterial &lowered,
                           const LoweredMaterialTextureResolver &resolve_texture) {
@@ -37,6 +61,21 @@ void applyLoweredMaterial(MaterialInfo &destination, const LoweredMaterial &lowe
                                      "': " + error.what());
         }
     }
+}
+
+void applyLoweredMaterialForRoute(MaterialInfo &destination,
+                                  const LoweredMaterial &lowered) {
+    requireSupportedRouteInputs(lowered);
+    applyLoweredMaterial(destination, lowered);
+    destination.shader_contract = shaderContractForRoute(lowered.route);
+}
+
+void applyLoweredMaterialForRoute(MaterialInfo &destination,
+                                  const LoweredMaterial &lowered,
+                                  const LoweredMaterialTextureResolver &resolve_texture) {
+    requireSupportedRouteInputs(lowered);
+    applyLoweredMaterial(destination, lowered, resolve_texture);
+    destination.shader_contract = shaderContractForRoute(lowered.route);
 }
 
 } // namespace Pelican

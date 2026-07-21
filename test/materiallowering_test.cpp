@@ -3,6 +3,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <filesystem>
@@ -176,6 +177,118 @@ TEST_CASE("screen input materials route forward and reject undefined snapshots b
     REQUIRE(dump.find("set=1 binding=0 type=combined_image_sampler name=opaque_color") !=
             std::string::npos);
     REQUIRE(dump.find("target_pass: forward_transparent") != std::string::npos);
+}
+
+TEST_CASE("material render path overrides are explicit and preserve exact pass intent",
+          "[material-lowering][routing]") {
+    const std::string opaque_source =
+        "//! pelican.surface v1\n"
+        "//! language: glsl\n"
+        "\nvoid pelican_surface_v1(in PelicanSurfaceInputV1 i, inout PelicanSurfaceV1 s) {}\n";
+    const auto opaque = parseSurfaceFormat(opaque_source, "opaque.surface");
+
+    MaterialDefinition forward;
+    forward.name = "forced_forward";
+    forward.render_path = MaterialRenderPath::forward;
+    forward.exact_pass = "hero_forward";
+    const auto lowered = lowerMaterial(forward, opaque);
+    REQUIRE(lowered.route == MaterialRouteClass::forward_opaque);
+    REQUIRE(lowered.route_reason == MaterialRouteReason::explicit_forward);
+    REQUIRE(lowered.exact_pass == "hero_forward");
+    REQUIRE(dumpLoweredMaterial(lowered).find("pass: hero_forward") != std::string::npos);
+
+    const std::string blended_source =
+        "//! pelican.surface v1\n"
+        "//! language: glsl\n"
+        "//! render_state: { blend: blend, cull: back, depth: read_only }\n"
+        "\nvoid pelican_surface_v1(in PelicanSurfaceInputV1 i, inout PelicanSurfaceV1 s) {}\n";
+    MaterialDefinition deferred;
+    deferred.name = "invalid_deferred";
+    deferred.render_path = MaterialRenderPath::deferred;
+    REQUIRE_THROWS_WITH(
+        lowerMaterial(deferred, parseSurfaceFormat(blended_source, "blend.surface")),
+        Catch::Matchers::ContainsSubstring("invalid_deferred") &&
+            Catch::Matchers::ContainsSubstring("incompatible with blending"));
+}
+
+TEST_CASE("custom ambient hooks stay on the forward route",
+          "[material-lowering][routing]") {
+    const auto surface = parseSurfaceFormat(
+        "//! pelican.surface v1\n"
+        "//! language: glsl\n\n"
+        "vec3 pelican_ambient_v1(in PelicanSurfaceV1 surface, vec3 view_direction, "
+        "vec3 environment) { return environment; }\n",
+        "custom_ambient.surface");
+    MaterialDefinition material;
+    material.name = "custom_ambient";
+
+    const auto lowered = lowerMaterial(material, surface);
+    REQUIRE(lowered.route == MaterialRouteClass::forward_opaque);
+    REQUIRE(lowered.route_reason ==
+            MaterialRouteReason::automatic_custom_ambient);
+    REQUIRE_FALSE(lowered.deferred_eligibility.compatible);
+    REQUIRE(lowered.deferred_eligibility.reason == "custom_ambient");
+
+    material.render_path = MaterialRenderPath::deferred;
+    REQUIRE_THROWS_WITH(
+        lowerMaterial(material, surface),
+        Catch::Matchers::ContainsSubstring("custom_ambient") &&
+            Catch::Matchers::ContainsSubstring("ambient"));
+}
+
+TEST_CASE("OpenPBR base subset routes deferred while extended lobes stay forward",
+          "[material-lowering][routing][openpbr]") {
+    const auto root = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
+                      "src" / "core" / "resources" / "surfaces" / "openpbr";
+    const auto opaque_reference =
+        std::string{"engine://surfaces/openpbr/opaque_single.surface"};
+    const auto opaque = parseSurfaceFormat(readText(root / "opaque_single.surface"),
+                                           opaque_reference);
+
+    MaterialDefinition base;
+    base.name = "openpbr_base";
+    base.surface = opaque_reference;
+    base.routing = MaterialVariantRouting{MaterialAlphaMode::opaque, false};
+    const auto lowered_base = lowerMaterial(base, opaque);
+    REQUIRE(lowered_base.route == MaterialRouteClass::deferred_geometry);
+    REQUIRE(lowered_base.route_reason == MaterialRouteReason::automatic_openpbr_base);
+    REQUIRE(lowered_base.deferred_eligibility.compatible);
+    REQUIRE(lowered_base.deferred_eligibility.model ==
+            DeferredMaterialModel::openpbr_base_v1);
+    REQUIRE(std::find(lowered_base.defines.begin(), lowered_base.defines.end(),
+                      "PELICAN_GBUFFER_MODEL_OPENPBR_BASE_V1") !=
+            lowered_base.defines.end());
+
+    auto coated = base;
+    coated.name = "openpbr_coated";
+    SurfaceParamValue coat_weight;
+    coat_weight.type = SurfaceParamType::floating;
+    coat_weight.values[0] = 0.5;
+    coated.values.push_back(MaterialValue{"coat_weight", coat_weight});
+    const auto lowered_coated = lowerMaterial(coated, opaque);
+    REQUIRE(lowered_coated.route == MaterialRouteClass::forward_opaque);
+    REQUIRE(lowered_coated.route_reason ==
+            MaterialRouteReason::automatic_custom_lighting);
+    REQUIRE_FALSE(lowered_coated.deferred_eligibility.compatible);
+    REQUIRE(lowered_coated.deferred_eligibility.reason == "coat_weight_nonzero");
+    REQUIRE(std::find(lowered_coated.defines.begin(), lowered_coated.defines.end(),
+                      "PELICAN_GBUFFER_MODEL_OPENPBR_BASE_V1") ==
+            lowered_coated.defines.end());
+
+    const auto blend_reference =
+        std::string{"engine://surfaces/openpbr/blend_single.surface"};
+    const auto blend = parseSurfaceFormat(readText(root / "blend_single.surface"),
+                                          blend_reference);
+    MaterialDefinition transparent;
+    transparent.name = "openpbr_transparent";
+    transparent.surface = blend_reference;
+    transparent.routing = MaterialVariantRouting{MaterialAlphaMode::blend, false};
+    const auto lowered_transparent = lowerMaterial(transparent, blend);
+    REQUIRE(lowered_transparent.route == MaterialRouteClass::forward_transparent);
+    REQUIRE(lowered_transparent.route_reason == MaterialRouteReason::automatic_blended);
+    REQUIRE_FALSE(lowered_transparent.deferred_eligibility.compatible);
+    REQUIRE(lowered_transparent.deferred_eligibility.reason ==
+            "blend_requires_forward");
 }
 
 TEST_CASE("six routing variants lower only through lighting hook and fixed forward states",

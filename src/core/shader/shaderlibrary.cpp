@@ -4,6 +4,7 @@
 #include "../loader/fileio.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../vkcore/core.hpp"
+#include "../../project/materiallowering.hpp"
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -583,6 +584,21 @@ ShaderLibrary::prepareUnits(const std::set<std::size_t> &units,
         add_candidate(fragment_id, unit_index, std::move(fragment));
     }
     return prepared;
+}
+
+SurfaceShaderBundleIds ShaderLibrary::loadFromSurfaceForMaterial(
+    const SurfaceFormatDocument &surface, std::string_view source_name,
+    const LoweredMaterial &material,
+    std::vector<std::string> additional_defines) {
+    auto defines = material.defines;
+    for (auto &define : additional_defines) {
+        if (std::find(defines.begin(), defines.end(), define) == defines.end()) {
+            defines.push_back(std::move(define));
+        }
+    }
+    return loadFromSurface(surface, source_name,
+                           surfacePassForMaterialRoute(material.route),
+                           std::move(defines));
 }
 
 bool ShaderLibrary::handlesReload(const watch::AssetKey &key) const {

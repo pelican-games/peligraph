@@ -108,6 +108,19 @@ TEST_CASE("lowered material binder resolves overridden texture references by dec
     REQUIRE(destination.custom_textures.size() == 2);
     REQUIRE(destination.custom_textures[0].texture == GlobalTextureId{101});
     REQUIRE(destination.custom_textures[1].texture == GlobalTextureId{202});
+    REQUIRE(destination.shader_contract ==
+            MaterialShaderContract::legacy_gbuffer_v1);
+
+    lowered.route = MaterialRouteClass::forward_opaque;
+    applyLoweredMaterialForRoute(destination, lowered);
+    REQUIRE(destination.shader_contract ==
+            MaterialShaderContract::forward_scene_color_v1);
+
+    lowered.screen_inputs = {"opaque_color"};
+    REQUIRE_THROWS_WITH(
+        applyLoweredMaterialForRoute(destination, lowered),
+        Catch::Matchers::ContainsSubstring("opaque_color") &&
+            Catch::Matchers::ContainsSubstring("does not provide yet"));
 }
 
 } // namespace Pelican

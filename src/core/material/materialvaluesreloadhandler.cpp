@@ -77,6 +77,8 @@ std::string nonValuesSignature(const MaterialDefinition &material) {
         {"shader", material.shader},
         {"defines", material.defines},
         {"surface", material.surface},
+        {"render_path", materialRenderPathName(material.render_path)},
+        {"pass", material.exact_pass},
     };
     signature["texture_overrides"] = nlohmann::json::array();
     for (const auto &texture : material.texture_overrides) {
@@ -170,6 +172,8 @@ struct MaterialValuesReloadHandler::TrackedMaterial {
     watch::LogicalResourceRef surface_resource;
     watch::AssetKey surface_dependency;
     std::shared_ptr<const void> live_payload;
+    MaterialRouteClass route = MaterialRouteClass::deferred_geometry;
+    DeferredMaterialModel deferred_model = DeferredMaterialModel::standard_pbr_v1;
 };
 
 struct MaterialValuesReloadHandler::TrackedFile {
@@ -244,6 +248,11 @@ void MaterialValuesReloadHandler::track(
         }
 
         const auto &live_values = materials_.materials.get(binding.material).custom_values;
+        const auto &live_material = materials_.materials.get(binding.material);
+        if (live_material.route != lowered.route) {
+            throw std::runtime_error("material '" + binding.name +
+                                     "' registered route does not match its source");
+        }
         if (live_values.size() != lowered.values_layout.size) {
             throw std::runtime_error("material '" + binding.name +
                                      "' registered values do not match its layout size");
@@ -256,7 +265,8 @@ void MaterialValuesReloadHandler::track(
             payload->values.size());
         tracked.materials.push_back(TrackedMaterial{
             binding.name, *definition.surface, nonValuesSignature(definition), binding.material,
-            std::move(resource), fake->second.resource, dependency, payload});
+            std::move(resource), fake->second.resource, dependency, payload,
+            lowered.route, lowered.deferred_eligibility.model});
     }
     files_.emplace(key, std::move(tracked));
 }
@@ -342,6 +352,12 @@ bool MaterialValuesReloadHandler::enqueue(const watch::ReloadRequest &request,
                                              "' surface is unavailable");
                 }
                 auto lowered = lowerMaterial(definition, surface->second);
+                if (lowered.route != material.route ||
+                    lowered.deferred_eligibility.model != material.deferred_model) {
+                    throw std::runtime_error(
+                        "material '" + material.name +
+                        "' changed render route/model; shader and pipeline reload transaction required");
+                }
                 if (!materials_.materialValuesLayoutMatches(material.material,
                                                             lowered.values_layout)) {
                     throw std::runtime_error("material '" + material.name +
@@ -473,6 +489,12 @@ std::function<void()> MaterialValuesReloadHandler::prepareSurfaceReload(
                                          "' surface is unavailable");
             }
             auto lowered = lowerMaterial(definition, found_surface->second);
+            if (lowered.route != material.route ||
+                lowered.deferred_eligibility.model != material.deferred_model) {
+                throw std::runtime_error(
+                    "material '" + material.name +
+                    "' changed render route/model; shader and pipeline reload transaction required");
+            }
             if (lowered.values.size() != lowered.values_layout.size ||
                 lowered.values.size() > materialCustomValueCapacity) {
                 throw std::runtime_error("material '" + material.name +

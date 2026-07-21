@@ -137,8 +137,7 @@ GlobalMaterialId registerValuesMaterial(MaterialContainer &materials,
         .normal_texture = standard.normalDefaultTexture(),
         .emissive_texture = standard.emissiveDefaultTexture(),
     };
-    info.custom_values_layout = lowered.values_layout;
-    info.custom_values = lowered.values;
+    applyLoweredMaterial(info, lowered);
     return materials.registerMaterial(std::move(info));
 }
 

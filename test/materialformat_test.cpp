@@ -148,6 +148,29 @@ TEST_CASE("minimal material format applies glTF-compatible defaults", "[material
     REQUIRE(material.base.emissive_factor == std::array<double, 3>{0.0, 0.0, 0.0});
 }
 
+TEST_CASE("material format parses optional render path and exact pass separately",
+          "[material-format][routing]") {
+    const auto input = nlohmann::json{
+        {"schema", "pelican.material"},
+        {"version", 1},
+        {"materials", {{{"name", "hero"},
+                        {"render_path", "forward"},
+                        {"pass", "hero_forward"}}}},
+    };
+    const auto parsed = parseMaterialFormatJson(input);
+    REQUIRE(parsed.materials.front().render_path == MaterialRenderPath::forward);
+    REQUIRE(parsed.materials.front().exact_pass == "hero_forward");
+
+    auto invalid = input;
+    invalid["materials"][0]["render_path"] = "magic";
+    REQUIRE_THROWS_WITH(parseMaterialFormatJson(invalid),
+                        Catch::Matchers::ContainsSubstring("auto, deferred, or forward"));
+    invalid = input;
+    invalid["materials"][0]["pass"] = "forward/pass";
+    REQUIRE_THROWS_WITH(parseMaterialFormatJson(invalid),
+                        Catch::Matchers::ContainsSubstring("pass must match"));
+}
+
 TEST_CASE("full material format round-trips into typed fields and warnings", "[material-format]") {
     const auto document =
         parseMaterialFormatJson(readJson(fixtureRoot() / "valid" / "full.json"), surfaceCatalog());

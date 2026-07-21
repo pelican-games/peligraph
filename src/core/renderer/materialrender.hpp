@@ -31,9 +31,11 @@ DECLARE_MODULE(MaterialRenderer) {
   public:
     MaterialRenderer();
     void render(vk::CommandBuffer cmd_buf, PassId pass_id,
+                const PassDefinition &pass,
                 const MaterialRendererDependencies &dependencies) const;
 
     void renderWithMaterialRange(vk::CommandBuffer cmd_buf, PassId pass_id,
+                                 const PassDefinition &pass,
                                  uint32_t material_start, uint32_t material_count,
                                  const MaterialRendererDependencies &dependencies) const;
     void renderShadowDepth(vk::CommandBuffer cmd_buf, PassId pass_id,

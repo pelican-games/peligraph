@@ -1,5 +1,6 @@
 #pragma once
 
+#include "renderpipeline.hpp"
 #include "surfaceformat.hpp"
 
 #include <nlohmann/json.hpp>
@@ -22,6 +23,12 @@ struct MaterialValue {
 struct MaterialTextureOverride {
     std::string name;
     std::string reference;
+};
+
+enum class MaterialRenderPath {
+    automatic,
+    deferred,
+    forward,
 };
 
 enum class MaterialAlphaMode {
@@ -75,6 +82,8 @@ struct MaterialDefinition {
     std::vector<MaterialValue> values;
     std::vector<MaterialTextureOverride> texture_overrides;
     std::optional<MaterialVariantRouting> routing;
+    MaterialRenderPath render_path = MaterialRenderPath::automatic;
+    std::optional<std::string> exact_pass;
 };
 
 struct MaterialFormatDocument {
@@ -92,6 +101,7 @@ PrimitiveMaterialBindingDocument
 parsePrimitiveMaterialBindingJson(const nlohmann::json &document);
 
 std::string_view materialAlphaModeName(MaterialAlphaMode mode);
+std::string_view materialRenderPathName(MaterialRenderPath path);
 std::string_view materialVariantName(const MaterialVariantRouting &routing);
 SurfaceRenderState materialVariantRenderState(const MaterialVariantRouting &routing);
 bool materialVariantKeepsFace(const MaterialVariantRouting &routing,

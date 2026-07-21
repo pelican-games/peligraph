@@ -114,6 +114,9 @@ SurfaceShaderComposition composeSurfaceShadersImpl(const SurfaceFormatDocument &
     if (surface.hooks.brdf_v1) appendUnique(defines, "PELICAN_HAS_BRDF_V1");
     if (surface.hooks.ambient_v1) appendUnique(defines, "PELICAN_HAS_AMBIENT_V1");
     if (surface.hooks.lighting_v1) appendUnique(defines, "PELICAN_HAS_LIGHTING_V1");
+    if (pass == SurfacePass::deferred_geometry)
+        appendUnique(defines, "PELICAN_PASS_DEFERRED_GEOMETRY");
+    if (pass == SurfacePass::forward) appendUnique(defines, "PELICAN_PASS_FORWARD");
     if (pass == SurfacePass::depth) appendUnique(defines, "PELICAN_PASS_DEPTH");
     if (pass == SurfacePass::velocity) appendUnique(defines, "PELICAN_PASS_VELOCITY");
 
@@ -361,10 +364,18 @@ ShaderCompileResult compileExperimentalStage(ShaderCompiler &compiler,
 std::string_view surfacePassName(SurfacePass pass) {
     switch (pass) {
     case SurfacePass::main: return "main";
+    case SurfacePass::deferred_geometry: return "deferred_geometry";
+    case SurfacePass::forward: return "forward";
     case SurfacePass::depth: return "depth";
     case SurfacePass::velocity: return "velocity";
     }
     return "unknown";
+}
+
+SurfacePass surfacePassForMaterialRoute(MaterialRouteClass route) {
+    return route == MaterialRouteClass::deferred_geometry
+               ? SurfacePass::deferred_geometry
+               : SurfacePass::forward;
 }
 
 SurfaceShaderComposition composeSurfaceShaders(const SurfaceFormatDocument &surface,

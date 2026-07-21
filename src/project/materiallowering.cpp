@@ -146,14 +146,149 @@ std::string_view depthCompareName(SurfaceDepthCompare compare) {
     return "unknown";
 }
 
-std::string routeMaterial(const SurfaceFormatDocument &surface) {
-    if (!surface.screen_inputs.empty() || surface.render_state.blend != SurfaceBlendMode::opaque) {
-        return "forward_transparent";
+struct MaterialRouteDecision {
+    MaterialRouteClass route;
+    MaterialRouteReason reason;
+};
+
+bool isOpenPbrSurface(std::string_view reference) {
+    constexpr std::array supported{
+        std::string_view{"engine://surfaces/openpbr/opaque_single.surface"},
+        std::string_view{"engine://surfaces/openpbr/opaque_double.surface"},
+        std::string_view{"engine://surfaces/openpbr/mask_single.surface"},
+        std::string_view{"engine://surfaces/openpbr/mask_double.surface"},
+        std::string_view{"engine://surfaces/openpbr/blend_single.surface"},
+        std::string_view{"engine://surfaces/openpbr/blend_double.surface"},
+    };
+    return std::find(supported.begin(), supported.end(), reference) != supported.end();
+}
+
+const SurfaceParamValue *effectiveValue(const MaterialDefinition &material,
+                                        const SurfaceFormatDocument &surface,
+                                        std::string_view name) {
+    const auto override_value = std::find_if(
+        material.values.begin(), material.values.end(), [&](const auto &value) {
+            return value.name == name;
+        });
+    if (override_value != material.values.end()) return &override_value->value;
+    const auto definition = std::find_if(
+        surface.params.begin(), surface.params.end(), [&](const auto &param) {
+            return param.name == name;
+        });
+    return definition == surface.params.end() ? nullptr : &definition->default_value;
+}
+
+bool scalarEquals(const MaterialDefinition &material,
+                  const SurfaceFormatDocument &surface, std::string_view name,
+                  double expected) {
+    const auto *value = effectiveValue(material, surface, name);
+    return value != nullptr && value->type == SurfaceParamType::floating &&
+           std::abs(value->values[0] - expected) <= 1e-6;
+}
+
+bool colorRgbEquals(const MaterialDefinition &material,
+                    const SurfaceFormatDocument &surface, std::string_view name,
+                    const std::array<double, 3> &expected) {
+    const auto *value = effectiveValue(material, surface, name);
+    if (value == nullptr || value->type != SurfaceParamType::color) return false;
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+        if (std::abs(value->values[index] - expected[index]) > 1e-6) return false;
     }
-    if (surface.hooks.brdf_v1 || surface.hooks.lighting_v1) {
-        return "forward_opaque";
+    return true;
+}
+
+bool hasTextureOverride(const MaterialDefinition &material, std::string_view name) {
+    return std::any_of(material.texture_overrides.begin(), material.texture_overrides.end(),
+                       [&](const auto &texture) { return texture.name == name; });
+}
+
+DeferredEligibility openPbrEligibility(const MaterialDefinition &material,
+                                       const SurfaceFormatDocument &surface) {
+    const auto incompatible = [](std::string reason) {
+        return DeferredEligibility{false, DeferredMaterialModel::openpbr_base_v1,
+                                   std::move(reason)};
+    };
+    if (surface.render_state.blend != SurfaceBlendMode::opaque)
+        return incompatible("blend_requires_forward");
+    if (!surface.screen_inputs.empty()) return incompatible("screen_input_requires_forward");
+    if (!scalarEquals(material, surface, "coat_weight", 0.0))
+        return incompatible("coat_weight_nonzero");
+    if (!scalarEquals(material, surface, "base_diffuse_roughness", 0.0))
+        return incompatible("diffuse_roughness_nonzero");
+    if (!scalarEquals(material, surface, "specular_weight", 1.0))
+        return incompatible("custom_specular_weight");
+    if (!colorRgbEquals(material, surface, "specular_color", {1.0, 1.0, 1.0}))
+        return incompatible("custom_specular_color");
+    if (!scalarEquals(material, surface, "specular_ior", 1.5))
+        return incompatible("custom_specular_ior");
+    for (const auto texture : {"base_diffuse_roughness_map", "specular_weight_map",
+                               "specular_color_map", "specular_ior_map"}) {
+        if (hasTextureOverride(material, texture))
+            return incompatible("custom_" + std::string{texture});
     }
-    return "deferred_geometry";
+    return {true, DeferredMaterialModel::openpbr_base_v1, "compatible"};
+}
+
+MaterialRouteDecision automaticRoute(const SurfaceFormatDocument &surface,
+                                     const DeferredEligibility &eligibility) {
+    if (!surface.screen_inputs.empty()) {
+        return {MaterialRouteClass::forward_transparent,
+                MaterialRouteReason::automatic_screen_input};
+    }
+    if (surface.render_state.blend != SurfaceBlendMode::opaque) {
+        return {MaterialRouteClass::forward_transparent,
+                MaterialRouteReason::automatic_blended};
+    }
+    if (eligibility.compatible &&
+        eligibility.model == DeferredMaterialModel::openpbr_base_v1) {
+        return {MaterialRouteClass::deferred_geometry,
+                MaterialRouteReason::automatic_openpbr_base};
+    }
+    if (surface.hooks.lighting_v1) {
+        return {MaterialRouteClass::forward_opaque,
+                MaterialRouteReason::automatic_custom_lighting};
+    }
+    if (surface.hooks.ambient_v1) {
+        return {MaterialRouteClass::forward_opaque,
+                MaterialRouteReason::automatic_custom_ambient};
+    }
+    if (surface.hooks.brdf_v1) {
+        return {MaterialRouteClass::forward_opaque,
+                MaterialRouteReason::automatic_custom_brdf};
+    }
+    return {MaterialRouteClass::deferred_geometry,
+            MaterialRouteReason::automatic_deferred_compatible};
+}
+
+MaterialRouteDecision routeMaterial(const MaterialDefinition &material,
+                                    const SurfaceFormatDocument &surface,
+                                    const DeferredEligibility &eligibility) {
+    if (material.render_path == MaterialRenderPath::automatic) {
+        return automaticRoute(surface, eligibility);
+    }
+    if (material.render_path == MaterialRenderPath::forward) {
+        const bool transparent = !surface.screen_inputs.empty() ||
+                                 surface.render_state.blend != SurfaceBlendMode::opaque;
+        return {transparent ? MaterialRouteClass::forward_transparent
+                            : MaterialRouteClass::forward_opaque,
+                MaterialRouteReason::explicit_forward};
+    }
+    if (!surface.screen_inputs.empty()) {
+        throw std::runtime_error("material '" + material.name +
+                                 "' render_path deferred is incompatible with screen_inputs");
+    }
+    if (surface.render_state.blend != SurfaceBlendMode::opaque) {
+        throw std::runtime_error("material '" + material.name +
+                                 "' render_path deferred is incompatible with blending");
+    }
+    if ((surface.hooks.brdf_v1 || surface.hooks.ambient_v1 ||
+         surface.hooks.lighting_v1) &&
+        !eligibility.compatible) {
+        throw std::runtime_error("material '" + material.name +
+                                 "' render_path deferred cannot preserve a custom BRDF/ambient/lighting hook");
+    }
+    return {MaterialRouteClass::deferred_geometry,
+            MaterialRouteReason::explicit_deferred};
 }
 
 void validateVariantSurface(const MaterialDefinition &material,
@@ -173,7 +308,7 @@ void validateVariantSurface(const MaterialDefinition &material,
     if (!surface.hooks.lighting_v1) {
         throw std::runtime_error("material '" + material.name + "' routing variant '" +
                                  std::string{materialVariantName(*material.routing)} +
-                                 "' requires pelican_lighting_v1 and forward shading");
+                                 "' requires the pelican_lighting_v1 OpenPBR wrapper contract");
     }
     if (material.routing->alpha_mode == MaterialAlphaMode::mask) {
         const auto cutoff = std::find_if(surface.params.begin(), surface.params.end(),
@@ -190,6 +325,28 @@ void validateVariantSurface(const MaterialDefinition &material,
 }
 
 } // namespace
+
+DeferredEligibility evaluateDeferredEligibility(
+    const MaterialDefinition &material,
+    const SurfaceFormatDocument &surface) {
+    if (material.surface && isOpenPbrSurface(*material.surface)) {
+        return openPbrEligibility(material, surface);
+    }
+    if (!surface.screen_inputs.empty())
+        return {false, DeferredMaterialModel::standard_pbr_v1,
+                "screen_input_requires_forward"};
+    if (surface.render_state.blend != SurfaceBlendMode::opaque)
+        return {false, DeferredMaterialModel::standard_pbr_v1,
+                "blend_requires_forward"};
+    if (surface.hooks.lighting_v1)
+        return {false, DeferredMaterialModel::standard_pbr_v1,
+                "custom_lighting"};
+    if (surface.hooks.ambient_v1)
+        return {false, DeferredMaterialModel::standard_pbr_v1, "custom_ambient"};
+    if (surface.hooks.brdf_v1)
+        return {false, DeferredMaterialModel::standard_pbr_v1, "custom_brdf"};
+    return {true, DeferredMaterialModel::standard_pbr_v1, "compatible"};
+}
 
 Std140Layout makeSurfaceStd140Layout(const SurfaceFormatDocument &surface) {
     Std140Layout layout;
@@ -285,7 +442,19 @@ LoweredMaterial lowerMaterial(const MaterialDefinition &material,
     lowered.hooks = surface.hooks;
     lowered.routing = material.routing;
     lowered.screen_inputs = surface.screen_inputs;
-    lowered.target_pass = routeMaterial(surface);
+    lowered.deferred_eligibility = evaluateDeferredEligibility(material, surface);
+    const auto route = routeMaterial(material, surface, lowered.deferred_eligibility);
+    lowered.route = route.route;
+    lowered.route_reason = route.reason;
+    lowered.exact_pass = material.exact_pass;
+    lowered.target_pass = materialRouteClassName(route.route);
+    if (lowered.route == MaterialRouteClass::deferred_geometry &&
+        lowered.deferred_eligibility.model == DeferredMaterialModel::openpbr_base_v1) {
+        if (std::find(lowered.defines.begin(), lowered.defines.end(),
+                      "PELICAN_GBUFFER_MODEL_OPENPBR_BASE_V1") == lowered.defines.end()) {
+            lowered.defines.emplace_back("PELICAN_GBUFFER_MODEL_OPENPBR_BASE_V1");
+        }
+    }
     std::unordered_map<std::string_view, std::string_view> texture_overrides;
     texture_overrides.reserve(material.texture_overrides.size());
     for (const auto &override_value : material.texture_overrides) {
@@ -402,6 +571,13 @@ std::string dumpLoweredMaterial(const LoweredMaterial &material) {
         for (const auto &input : material.screen_inputs) out << "  - " << input << '\n';
     }
     out << "target_pass: " << material.target_pass << '\n';
+    out << "route: " << materialRouteClassName(material.route)
+        << " reason=" << materialRouteReasonName(material.route_reason) << '\n';
+    out << "deferred_eligibility: "
+        << (material.deferred_eligibility.compatible ? "compatible" : "incompatible")
+        << " model=" << deferredMaterialModelName(material.deferred_eligibility.model)
+        << " reason=" << material.deferred_eligibility.reason << '\n';
+    if (material.exact_pass) out << "pass: " << *material.exact_pass << '\n';
     out << "render_state: blend=" << blendName(material.render_state.blend)
         << " cull=" << cullName(material.render_state.cull)
         << " depth_test=" << (material.render_state.depth_test ? "true" : "false")

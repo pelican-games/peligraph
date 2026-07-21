@@ -37,6 +37,7 @@ static std::string makePipelineKey(const MaterialInfo &info) {
     std::ostringstream key;
     key << info.vert_shader.value << ':' << info.frag_shader.value << ':'
         << info.skinned << ':'
+        << static_cast<int>(info.shader_contract) << ':'
         << static_cast<int>(info.render_state.blend) << ':'
         << static_cast<int>(info.render_state.cull) << ':'
         << info.render_state.depth_test << ':' << info.render_state.depth_write << ':'
@@ -73,7 +74,11 @@ static GraphicsPipelineDesc makeMaterialPipelineDesc(const MaterialInfo &info) {
     desc.frag = info.frag_shader;
     const auto &formats = materialPassColorAttachmentFormats(
         GET_MODULE(RenderingPassContainer).isFeatureEnabled("hdr"));
-    desc.color_formats.assign(formats.begin(), formats.end());
+    if (info.shader_contract == MaterialShaderContract::forward_scene_color_v1) {
+        desc.color_formats.push_back(forwardMaterialPassColorAttachmentFormat);
+    } else {
+        desc.color_formats.assign(formats.begin(), formats.end());
+    }
     desc.depth_format = materialPassDepthAttachmentFormat;
     desc.use_engine_vertex_layout = !info.skinned;
     desc.use_skinned_vertex_layout = info.skinned;
@@ -115,9 +120,15 @@ static void validateMaterialCapabilities(const MaterialInfo &info) {
         throw std::runtime_error(
             "material render_state requests depth_write while depth_test is disabled");
     }
-    const auto &formats = materialPassColorAttachmentFormats(
-        GET_MODULE(RenderingPassContainer).isFeatureEnabled("hdr"));
     if (info.render_state.blend != SurfaceBlendMode::opaque) {
+        std::vector<vk::Format> formats;
+        if (info.shader_contract == MaterialShaderContract::forward_scene_color_v1) {
+            formats.push_back(forwardMaterialPassColorAttachmentFormat);
+        } else {
+            const auto &material_formats = materialPassColorAttachmentFormats(
+                GET_MODULE(RenderingPassContainer).isFeatureEnabled("hdr"));
+            formats.assign(material_formats.begin(), material_formats.end());
+        }
         for (const auto format : formats) {
             const auto features = physical_device.getFormatProperties(format).optimalTilingFeatures;
             if (!(features & vk::FormatFeatureFlagBits::eColorAttachmentBlend)) {
@@ -389,6 +400,19 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         throw std::runtime_error("Material capacity exceeded");
     }
     validateMaterialCapabilities(info);
+    const auto &rendering_passes = GET_MODULE(RenderingPassContainer);
+    if (rendering_passes.hasMaterialPasses() &&
+        !rendering_passes.supportsMaterialPass(info.route, info.shader_contract,
+                                               info.exact_pass)) {
+        const auto selected = info.exact_pass
+                                  ? " exact pass '" + *info.exact_pass + "'"
+                                  : std::string{};
+        throw std::runtime_error("material route '" +
+                                 std::string{materialRouteClassName(info.route)} +
+                                 "' with shader contract '" +
+                                 std::string{materialShaderContractName(info.shader_contract)} +
+                                 "' has no compatible registered material pass" + selected);
+    }
     const auto pipeline_key = makePipelineKey(info);
     auto pipeline_it = pipelines.find(pipeline_key);
     if (pipeline_it == pipelines.end()) {
@@ -505,6 +529,9 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     const auto gpu_data = makeMaterialGpuData(info);
     const auto material_id = materials.reg(InternalMaterialInfo{
         .pipeline = pipeline,
+        .route = info.route,
+        .shader_contract = info.shader_contract,
+        .exact_pass = std::move(info.exact_pass),
         .base_color_texture = info.base_color_texture,
         .metallic_roughness_texture = info.metallic_roughness_texture,
         .normal_texture = info.normal_texture,
@@ -952,9 +979,13 @@ MaterialContainer::materialGpuRecordForTesting(GlobalMaterialId material) const 
     return record;
 }
 
-bool MaterialContainer::isRenderRequired(PassId pass_id, GlobalMaterialId material) const {
-    // Pass-specific material filtering is not defined yet.
-    return true;
+bool MaterialContainer::isRenderRequired(const PassDefinition &pass,
+                                         GlobalMaterialId material_id) const {
+    if (!pass.isMaterial()) return false;
+    const auto &material = materials.get(material_id);
+    const auto contract = pass.materialInfo().contract;
+    return materialPassAcceptsMaterial(contract, pass.name, material.route,
+                                       material.shader_contract, material.exact_pass);
 }
 
 void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pass_id, GlobalMaterialId material_id,

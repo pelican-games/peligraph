@@ -25,6 +25,8 @@ namespace Pelican {
 
 PELICAN_DEFINE_HANDLE(ShaderBundleId, int);
 
+struct LoweredMaterial;
+
 struct ShaderBundle {
     vk::UniqueShaderModule module;
     ShaderReflection reflection;
@@ -149,6 +151,13 @@ DECLARE_MODULE(ShaderLibrary) {
                                            std::string_view source_name,
                                            SurfacePass pass = SurfacePass::main,
                                            std::vector<std::string> defines = {});
+    // Selects the fragment-output ABI and generated model defines together,
+    // preventing a routed material from accidentally pairing a forward shader
+    // with a G-buffer pipeline (or vice versa).
+    SurfaceShaderBundleIds loadFromSurfaceForMaterial(
+        const SurfaceFormatDocument &surface, std::string_view source_name,
+        const LoweredMaterial &material,
+        std::vector<std::string> additional_defines = {});
     const ShaderBundle &get(ShaderBundleId id) const;
 
     bool reload(ShaderBundleId id);
