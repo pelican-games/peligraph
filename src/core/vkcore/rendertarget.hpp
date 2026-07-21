@@ -14,6 +14,7 @@ namespace Pelican {
 
 struct FrameRenderContext {
     vk::CommandBuffer cmd_buf;
+    vk::Image color_image;
     vk::ImageView color_attachment, depth_attachment;
     vk::Extent2D extent;
     vk::Semaphore image_prepared_semaphore;
@@ -39,6 +40,7 @@ DECLARE_MODULE(RenderTarget) {
     vk::Format getSwapchainFormat() const;
     vk::Extent2D getExtent() const;
     bool consumeExtentChanged();
+    bool recoverSurfaceIfStale();
     FrameTargetCaps caps() const;
     // Color contract 2: encoded-sRGB RGBA8 bytes with straight, untransferred alpha.
     std::vector<uint8_t> readbackLastFrameRGBA8();

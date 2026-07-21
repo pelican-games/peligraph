@@ -581,6 +581,22 @@ TEST_CASE("OpenXR shouldRender false closes without swapchain work",
     CHECK(fake.saw_zero_layer);
 }
 
+TEST_CASE("OpenXR discarded renderable timing still closes with zero layers",
+          "[openxr][composition][zero-layer][discard]") {
+    FakeRuntime fake;
+    fake.should_render = true;
+    FakeScope scope{fake};
+    Pelican::OpenXr::SessionRuntime session{sessionDependencies()};
+    makeReady(fake, session);
+    Pelican::OpenXr::XrCompositionTarget target{
+        compositionDependencies(session), std::make_unique<FakeGraphics>()};
+    auto frame = beginFrame(fake, session);
+
+    target.endFrameWithoutLayers(frame.timing);
+    CHECK(fake.calls == std::vector<std::string>{"end_zero"});
+    CHECK(fake.saw_zero_layer);
+}
+
 TEST_CASE("OpenXR second swapchain creation failure destroys the first",
           "[openxr][composition][creation]") {
     FakeRuntime fake;

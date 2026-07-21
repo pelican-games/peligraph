@@ -36,6 +36,7 @@ class OffscreenFrameTarget : public IFrameTarget {
     void render_end() override;
     FrameTargetCaps caps() const override;
     bool consumeExtentChanged() override;
+    bool recoverSurfaceIfStale() override { return false; }
     std::vector<uint8_t> readbackLastFrameRGBA8() override;
 };
 

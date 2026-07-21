@@ -172,6 +172,7 @@ void XrMirrorSink::tryPresent() noexcept {
     try {
         auto frame = target.tryRenderBegin();
         if (!frame) {
+            (void)target.recoverSurfaceIfStale();
             ++stats.dropped;
             reportProgress();
             return;
@@ -272,6 +273,7 @@ void XrMirrorSink::tryPresent() noexcept {
             render_timing->endGpuRange();
             timing_begun = false;
         }
+        (void)target.recoverSurfaceIfStale();
         ++stats.presented;
         reportProgress();
     } catch (const std::exception &e) {

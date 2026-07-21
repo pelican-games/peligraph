@@ -214,6 +214,7 @@ class VulkanXrCompositionGraphics final : public IXrCompositionGraphics {
 
         return FrameRenderContext{
             .cmd_buf = *cmd,
+            .color_image = resources.images[image_index],
             .color_attachment = resources.image_views[image_index].get(),
             .depth_attachment = resources.depth_view.get(),
             .extent = resources.extent,
@@ -545,9 +546,9 @@ class XrCompositionTarget::Impl {
     }
 
     void endFrameWithoutLayers(const XrDisplayTiming &timing) {
-        if (frame_prepared || logical_frame_begun || timing.shouldRender()) {
+        if (frame_prepared || logical_frame_begun) {
             throw std::logic_error(
-                "OpenXR zero-layer close requires an unprepared non-render frame");
+                "OpenXR zero-layer close requires an unprepared frame");
         }
         session_runtime.endFrame(timing);
     }

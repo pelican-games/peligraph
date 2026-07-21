@@ -76,6 +76,9 @@ DECLARE_MODULE(Renderer) {
     std::vector<std::string> currentFramePlanOrderForTesting() const;
     void setExecutionTracingForTesting(bool enabled) { execution_tracing_for_testing = enabled; }
     const nlohmann::json &lastExecutionTraceForTesting() const { return last_execution_trace; }
+    std::size_t imageMemoryDependencyCountForTesting() const noexcept {
+        return render_target_layout_tracker.memoryDependencyCountForTesting();
+    }
     const std::vector<RenderFrameSnapshot> &lastViewSnapshotsForTesting() const {
         return last_view_snapshots;
     }

@@ -146,6 +146,7 @@ class VulkanSyntheticStereoTarget final : public ILogicalFrameTarget {
         ++view_begin_count;
         return FrameRenderContext{
             .cmd_buf = *cmd,
+            .color_image = color_images[view_index].image.get(),
             .color_attachment = color_views[view_index].get(),
             .depth_attachment = {},
             .extent = extent,

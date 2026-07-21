@@ -200,6 +200,7 @@ void SwapchainFrameTarget::recreateSurfaceDependants() {
     const auto previous_format = swapchain.format;
     device.waitIdle();
     surfaceDependantsSetup();
+    surface_stale = false;
     if (previous_extent.width != extent.width || previous_extent.height != extent.height ||
         previous_format != swapchain.format) {
         extent_changed = true;
@@ -259,7 +260,10 @@ std::optional<FrameRenderContext> SwapchainFrameTarget::beginFrame(bool nonblock
             return std::nullopt;
         }
         if (image_acquire_result.result == vk::Result::eErrorOutOfDateKHR) {
-            if (nonblocking) return std::nullopt;
+            if (nonblocking) {
+                surface_stale = true;
+                return std::nullopt;
+            }
             recreateSurfaceDependants();
             continue;
         }
@@ -310,6 +314,7 @@ std::optional<FrameRenderContext> SwapchainFrameTarget::beginFrame(bool nonblock
 
         return FrameRenderContext{
             .cmd_buf = *cmd_buf,
+            .color_image = swapchain_images[image_acquire_result.value],
             .color_attachment = swapchain_image_views[image_acquire_result.value].get(),
             .depth_attachment = depth_image_view.get(),
             .extent = extent,
@@ -409,10 +414,10 @@ void SwapchainFrameTarget::render_end() {
     const auto present_result = presen_queue.presentKHR(presen_info);
     if (present_result == vk::Result::eSuboptimalKHR || present_result == vk::Result::eErrorOutOfDateKHR) {
         if (current_frame_nonblocking) {
-            // The optional mirror must never wait for device idle.  Mark the
-            // desktop target stale and let a later flat frame perform the
-            // normal blocking recreation; XR composition keeps running.
-            extent_changed = true;
+            // The optional mirror acquire/present path must never wait for
+            // device idle. Recovery is requested explicitly after this
+            // submission, outside the OpenXR composition path.
+            surface_stale = true;
         } else {
             recreateSurfaceDependants();
         }
@@ -443,6 +448,18 @@ bool SwapchainFrameTarget::consumeExtentChanged() {
     const auto changed = extent_changed;
     extent_changed = false;
     return changed;
+}
+
+bool SwapchainFrameTarget::recoverSurfaceIfStale() {
+    if (!surface_stale) {
+        return false;
+    }
+    const auto framebuffer = GET_MODULE(Window).framebufferExtent();
+    if (framebuffer.width == 0 || framebuffer.height == 0) {
+        return false;
+    }
+    recreateSurfaceDependants();
+    return true;
 }
 
 std::vector<uint8_t> SwapchainFrameTarget::readbackLastFrameRGBA8() {

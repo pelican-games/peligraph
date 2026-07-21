@@ -4,10 +4,12 @@
 #include "../shader/pelican_sets.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include "../vkcore/core.hpp"
+#include "../vkcore/deletionqueue.hpp"
 #include "../vkcore/render_target_layout_tracker.hpp"
 #include "../vkcore/util.hpp"
 #include <algorithm>
 #include <array>
+#include <iterator>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -16,8 +18,13 @@ namespace Pelican {
 
 namespace {
 
-constexpr uint32_t max_compute_descriptor_sets = 128;
-constexpr uint32_t max_compute_descriptors = 512;
+constexpr uint32_t max_compute_descriptor_sets = 256;
+constexpr uint32_t max_compute_descriptors = 1024;
+
+struct RetiredComputeDescriptorResources {
+    vk::UniqueDescriptorPool pool;
+    std::vector<std::array<vk::UniqueDescriptorSet, 2>> descriptor_sets;
+};
 
 std::string requireString(const nlohmann::json &json, std::string_view field, std::string_view context) {
     if (!json.contains(field) || !json.at(field).is_string()) {
@@ -82,31 +89,82 @@ void appendUnique(std::vector<std::string> &values, const std::string &value) {
     }
 }
 
-std::vector<std::string> taskResources(const ComputeTaskDefinition &definition) {
-    std::vector<std::string> resources;
+struct ComputeResourceReference {
+    std::string authored;
+    std::string name;
+    bool history_read = false;
+};
+
+ComputeResourceReference parseComputeResourceReference(
+    const std::string &authored, bool allow_history) {
+    constexpr std::string_view history_suffix = "@history";
+    if (authored.ends_with(history_suffix)) {
+        const auto name = authored.substr(0, authored.size() - history_suffix.size());
+        if (!allow_history || name.empty() || name.find('@') != std::string::npos) {
+            throw std::runtime_error("Invalid compute history resource: " + authored);
+        }
+        return {authored, name, true};
+    }
+    if (authored.empty() || authored.find('@') != std::string::npos) {
+        throw std::runtime_error("Unknown compute resource qualifier: " + authored);
+    }
+    return {authored, authored, false};
+}
+
+std::vector<ComputeResourceReference> taskResources(
+    const ComputeTaskDefinition &definition) {
+    std::vector<ComputeResourceReference> resources;
+    const auto append = [&](const std::string &authored, bool allow_history) {
+        auto resource = parseComputeResourceReference(authored, allow_history);
+        const auto duplicate = std::find_if(
+            resources.begin(), resources.end(), [&](const auto &candidate) {
+                return candidate.name == resource.name &&
+                       candidate.history_read == resource.history_read;
+            });
+        if (duplicate == resources.end()) {
+            resources.push_back(std::move(resource));
+        }
+    };
     for (const auto &resource : definition.reads) {
-        appendUnique(resources, resource);
+        append(resource, true);
     }
     for (const auto &resource : definition.writes) {
-        appendUnique(resources, resource);
+        append(resource, false);
     }
     return resources;
 }
 
-bool resourceExists(const std::string &resource, const ComputeTaskRuntimeDependencies &dependencies) {
-    if (GET_MODULE(FrameGraphResourceContainer).hasBuffer(resource)) {
+bool resourceExists(const ComputeResourceReference &resource,
+                    RenderTargetContainer &render_target_container) {
+    if (!resource.history_read &&
+        GET_MODULE(FrameGraphResourceContainer).hasBuffer(resource.name)) {
         return true;
     }
-    return isConcreteRenderTarget(dependencies.render_target_container.getRenderTargetIdByName(resource));
+    const auto target = render_target_container.getRenderTargetIdByName(resource.name);
+    if (!isConcreteRenderTarget(target)) {
+        return false;
+    }
+    return !resource.history_read ||
+           render_target_container.getMetadata(target).history;
 }
 
-std::string resourceForBinding(const ReflectedBinding &binding,
-                               size_t binding_index,
-                               const std::vector<std::string> &resources,
-                               const ComputeTaskRuntimeDependencies &dependencies) {
-    if (!binding.name.empty() && std::find(resources.begin(), resources.end(), binding.name) != resources.end() &&
-        resourceExists(binding.name, dependencies)) {
-        return binding.name;
+const ComputeResourceReference &resourceForBinding(
+    const ReflectedBinding &binding, size_t binding_index,
+    const std::vector<ComputeResourceReference> &resources,
+    RenderTargetContainer &render_target_container) {
+    if (!binding.name.empty()) {
+        const auto named = std::find_if(
+            resources.begin(), resources.end(), [&](const auto &resource) {
+                return resource.name == binding.name &&
+                       resourceExists(resource, render_target_container);
+            });
+        if (named != resources.end() &&
+            std::none_of(std::next(named), resources.end(), [&](const auto &resource) {
+                return resource.name == binding.name &&
+                       resourceExists(resource, render_target_container);
+            })) {
+            return *named;
+        }
     }
     if (resources.size() == 1) {
         return resources.front();
@@ -337,10 +395,11 @@ ComputeTaskContainer::ComputeTaskContainer()
 
 ComputeTaskContainer::~ComputeTaskContainer() = default;
 
-vk::UniqueDescriptorSet ComputeTaskContainer::createDescriptorSet(
-    PipelineHandle pipeline,
+ComputeTaskContainer::DescriptorSetRecord ComputeTaskContainer::createDescriptorSet(
+    vk::DescriptorPool pool, PipelineHandle pipeline,
     const ComputeTaskDefinition &definition,
-    const ComputeTaskRuntimeDependencies &dependencies) const {
+    RenderTargetContainer &render_target_container,
+    std::uint32_t frame_index) const {
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
     const auto bindings = passInputBindings(pipeline_factory.reflection(pipeline));
     if (bindings.empty()) {
@@ -349,7 +408,7 @@ vk::UniqueDescriptorSet ComputeTaskContainer::createDescriptorSet(
 
     const auto layout = pipeline_factory.descriptorSetLayout(pipeline, PELICAN_SET_PASS_INPUT);
     vk::DescriptorSetAllocateInfo alloc_info;
-    alloc_info.descriptorPool = descriptor_pool.get();
+    alloc_info.descriptorPool = pool;
     alloc_info.descriptorSetCount = 1;
     alloc_info.pSetLayouts = &layout;
     auto descriptor_sets = device.allocateDescriptorSetsUnique(alloc_info);
@@ -366,7 +425,12 @@ vk::UniqueDescriptorSet ComputeTaskContainer::createDescriptorSet(
     auto &resource_container = GET_MODULE(FrameGraphResourceContainer);
     for (size_t i = 0; i < bindings.size(); ++i) {
         const auto &binding = bindings[i];
-        const auto resource = resourceForBinding(binding, i, resources, dependencies);
+        const auto &resource = resourceForBinding(
+            binding, i, resources, render_target_container);
+        if (!resourceExists(resource, render_target_container)) {
+            throw std::runtime_error("Compute task resource not found: " +
+                                     resource.authored);
+        }
 
         vk::WriteDescriptorSet write;
         write.dstSet = descriptor_set.get();
@@ -375,16 +439,23 @@ vk::UniqueDescriptorSet ComputeTaskContainer::createDescriptorSet(
         write.descriptorCount = 1;
         write.descriptorType = binding.type;
 
-        if (resource_container.hasBuffer(resource)) {
+        if (resource_container.hasBuffer(resource.name)) {
+            if (resource.history_read) {
+                throw std::runtime_error(
+                    "Compute task history resource must be a render target: " +
+                    resource.authored);
+            }
             if (binding.type != vk::DescriptorType::eStorageBuffer) {
                 throw std::runtime_error("Compute task buffer binding must be a storage buffer: " + definition.name);
             }
-            buffer_infos.push_back(resource_container.descriptorInfo(resource));
+            buffer_infos.push_back(resource_container.descriptorInfo(resource.name));
             write.pBufferInfo = &buffer_infos.back();
         } else {
-            const auto rt_id = dependencies.render_target_container.getRenderTargetIdByName(resource);
+            const auto rt_id =
+                render_target_container.getRenderTargetIdByName(resource.name);
             if (!isConcreteRenderTarget(rt_id)) {
-                throw std::runtime_error("Compute task resource not found: " + resource);
+                throw std::runtime_error("Compute task resource not found: " +
+                                         resource.authored);
             }
             if (binding.type != vk::DescriptorType::eStorageImage) {
                 throw std::runtime_error("Compute task render target binding must be a storage image: " +
@@ -392,7 +463,8 @@ vk::UniqueDescriptorSet ComputeTaskContainer::createDescriptorSet(
             }
             image_infos.push_back(vk::DescriptorImageInfo{
                 {},
-                dependencies.render_target_container.getImageView(rt_id),
+                render_target_container.getImageViewForFrame(
+                    rt_id, resource.history_read, frame_index),
                 vk::ImageLayout::eGeneral,
             });
             write.pImageInfo = &image_infos.back();
@@ -401,7 +473,13 @@ vk::UniqueDescriptorSet ComputeTaskContainer::createDescriptorSet(
     }
 
     device.updateDescriptorSets(writes, {});
-    return descriptor_set;
+    DescriptorSetRecord result;
+    result.descriptor_set = std::move(descriptor_set);
+    result.bound_image_views.reserve(image_infos.size());
+    for (const auto &image_info : image_infos) {
+        result.bound_image_views.push_back(image_info.imageView);
+    }
+    return result;
 }
 
 ComputeTaskId ComputeTaskContainer::registerComputeTask(
@@ -411,24 +489,83 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
         return found->second;
     }
 
+    for (const auto &resource : taskResources(definition)) {
+        if (!resourceExists(resource, dependencies.render_target_container)) {
+            throw std::runtime_error("Compute task resource not found or invalid: " +
+                                     resource.authored);
+        }
+    }
+
     auto &shader_library = dependencies.shader_library;
     const auto shader = shader_library.loadFromReference(definition.shader, dependencies.path_resolver, true);
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
     const auto pipeline = pipeline_factory.createCompute(ComputePipelineDesc{shader});
-    auto descriptor_set = createDescriptorSet(pipeline, definition, dependencies);
+    std::array<vk::UniqueDescriptorSet, 2> descriptor_sets;
+    std::array<std::vector<vk::ImageView>, 2> bound_image_views;
+    for (std::uint32_t frame_index = 0; frame_index < 2; ++frame_index) {
+        auto binding = createDescriptorSet(
+            descriptor_pool.get(), pipeline, definition,
+            dependencies.render_target_container, frame_index);
+        descriptor_sets[frame_index] = std::move(binding.descriptor_set);
+        bound_image_views[frame_index] = std::move(binding.bound_image_views);
+    }
 
     const auto id = ComputeTaskId{static_cast<int>(tasks.size())};
     tasks.emplace(id.value,
                   TaskRecord{
                       definition,
                       pipeline,
-                      std::move(descriptor_set),
+                      std::move(descriptor_sets),
+                      std::move(bound_image_views),
+                      next_binding_revision++,
                       definition.dispatch.groups_x,
                       definition.dispatch.groups_y,
                       definition.dispatch.groups_z,
                   });
     name_to_id.emplace(definition.name, id);
     return id;
+}
+
+void ComputeTaskContainer::rebindRenderTargets(
+    RenderTargetContainer &render_target_container) {
+    auto next_pool = createDescriptorPool(device);
+    struct ReboundTask {
+        int id = -1;
+        std::array<vk::UniqueDescriptorSet, 2> descriptor_sets;
+        std::array<std::vector<vk::ImageView>, 2> bound_image_views;
+    };
+    std::vector<ReboundTask> rebound;
+    rebound.reserve(tasks.size());
+    for (const auto &[id, task] : tasks) {
+        ReboundTask next;
+        next.id = id;
+        for (std::uint32_t frame_index = 0; frame_index < 2; ++frame_index) {
+            auto binding = createDescriptorSet(
+                next_pool.get(), task.pipeline, task.definition,
+                render_target_container, frame_index);
+            next.descriptor_sets[frame_index] =
+                std::move(binding.descriptor_set);
+            next.bound_image_views[frame_index] =
+                std::move(binding.bound_image_views);
+        }
+        rebound.push_back(std::move(next));
+    }
+
+    RetiredComputeDescriptorResources retired;
+    retired.pool = std::move(descriptor_pool);
+    retired.descriptor_sets.reserve(tasks.size());
+    for (auto &[id, task] : tasks) {
+        (void)id;
+        retired.descriptor_sets.push_back(std::move(task.descriptor_sets));
+    }
+    descriptor_pool = std::move(next_pool);
+    for (auto &next : rebound) {
+        auto &task = tasks.at(next.id);
+        task.descriptor_sets = std::move(next.descriptor_sets);
+        task.bound_image_views = std::move(next.bound_image_views);
+        task.binding_revision = next_binding_revision++;
+    }
+    GET_MODULE(DeletionQueue).defer(std::move(retired));
 }
 
 const ComputeTaskDefinition &ComputeTaskContainer::definition(ComputeTaskId task_id) const {
@@ -473,12 +610,22 @@ void ComputeTaskContainer::transitionResourcesForDispatch(vk::CommandBuffer cmd_
                                                           VulkanUtils &vk_utils,
                                                           RenderTargetLayoutTracker &layout_tracker) const {
     const auto &task = definition(task_id);
-    std::vector<std::string> resources = taskResources(task);
+    const auto resources = taskResources(task);
     for (const auto &resource : resources) {
-        const auto rt_id = render_target_container.getRenderTargetIdByName(resource);
+        const auto rt_id =
+            render_target_container.getRenderTargetIdByName(resource.name);
         if (isConcreteRenderTarget(rt_id)) {
-            layout_tracker.transition(cmd_buf, render_target_container, vk_utils, rt_id,
-                                      vk::ImageLayout::eGeneral);
+            if (layout_tracker.currentLayout(rt_id, resource.history_read,
+                                             &render_target_container) ==
+                vk::ImageLayout::eGeneral) {
+                layout_tracker.memoryDependency(cmd_buf, render_target_container,
+                                                vk_utils, rt_id,
+                                                resource.history_read);
+            } else {
+                layout_tracker.transition(cmd_buf, render_target_container, vk_utils,
+                                          rt_id, vk::ImageLayout::eGeneral,
+                                          resource.history_read);
+            }
         }
     }
 }
@@ -491,9 +638,11 @@ void ComputeTaskContainer::dispatch(vk::CommandBuffer cmd_buf, ComputeTaskId tas
     const auto &record = found->second;
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
     cmd_buf.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline_factory.pipeline(record.pipeline));
-    if (record.descriptor_set) {
+    const auto parity = GET_MODULE(RenderTargetContainer).historyFrameIndex();
+    if (record.descriptor_sets[parity]) {
         cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eCompute, pipeline_factory.layout(record.pipeline),
-                                   PELICAN_SET_PASS_INPUT, record.descriptor_set.get(), {});
+                                   PELICAN_SET_PASS_INPUT,
+                                   record.descriptor_sets[parity].get(), {});
     }
     cmd_buf.dispatch(record.dispatch_x, record.dispatch_y, record.dispatch_z);
 }
@@ -516,6 +665,21 @@ void ComputeTaskContainer::bufferReadAfterWriteBarrier(vk::CommandBuffer cmd_buf
     barrier.offset = 0;
     barrier.size = resource_container.bufferSize(resource);
     cmd_buf.pipelineBarrier(shaderStage(from_kind), shaderStage(to_kind), {}, {}, {barrier}, {});
+}
+
+std::vector<vk::ImageView> ComputeTaskContainer::boundImageViewsForTesting(
+    ComputeTaskId task_id, std::uint32_t frame_index) const {
+    const auto found = tasks.find(task_id.value);
+    if (found == tasks.end() || frame_index >= 2) {
+        return {};
+    }
+    return found->second.bound_image_views[frame_index];
+}
+
+std::uint64_t ComputeTaskContainer::bindingRevisionForTesting(
+    ComputeTaskId task_id) const {
+    const auto found = tasks.find(task_id.value);
+    return found == tasks.end() ? 0 : found->second.binding_revision;
 }
 
 } // namespace Pelican

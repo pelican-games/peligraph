@@ -27,6 +27,7 @@
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
 #include "../src/core/renderer/uicontainer.hpp"
 #include "../src/core/renderer/uirenderer.hpp"
+#include "../src/core/renderingpass/computetask.hpp"
 #include "../src/core/renderingpass/renderingpasscontainer.hpp"
 #include "../src/core/renderingpass/rendertargetcontainer.hpp"
 #include "../src/core/shader/pipelinefactory.hpp"
@@ -518,6 +519,23 @@ layout(std430, set = 1, binding = 0) readonly buffer ComputeColor {
 layout(location = 0) out vec4 outColor;
 void main() {
     outColor = compute_color.color;
+}
+)glsl";
+}
+
+const char *computeHistoryImageShader() {
+    return R"glsl(
+#version 450
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+layout(rgba8, set = 1, binding = 0) uniform readonly image2D history_input;
+layout(rgba8, set = 1, binding = 1) uniform writeonly image2D current_output;
+layout(std430, set = 1, binding = 2) buffer HistoryProbe {
+    vec4 value;
+} history_probe;
+void main() {
+    vec4 value = imageLoad(history_input, ivec2(0));
+    imageStore(current_output, ivec2(0), value);
+    history_probe.value = value;
 }
 )glsl";
 }
@@ -1759,6 +1777,8 @@ void writeHdrProject(const std::filesystem::path &root, bool hdr_enabled) {
     writeTextFile(root / "shaders" / "fullscreen.vert", stemFullscreenVertexShader());
     writeTextFile(root / "shaders" / "hdr_source.frag", hdrSourceFragmentShader());
     writeTextFile(root / "shaders" / "copy_input.frag", copyInputFragmentShader());
+    writeTextFile(root / "shaders" / "history_image.comp",
+                  computeHistoryImageShader());
     writeTextFile(root / "passes" / "main.json", makeHdrRenderingConfig(hdr_enabled).dump(2));
 }
 
@@ -1771,8 +1791,8 @@ nlohmann::json makeFullscreenRebindRenderingConfig() {
                  {"extent_scale", 1.0},
                  {"format", "B8G8R8A8_UNORM"},
                  {"usage", nlohmann::json::array({"COLOR_ATTACHMENT", "SAMPLED"})},
-             },
-         })},
+              },
+          })},
         {"rendering_passes",
          nlohmann::json::array({
              {
@@ -1783,6 +1803,14 @@ nlohmann::json makeFullscreenRebindRenderingConfig() {
                           {"name", "source"},
                           {"type", "fullscreen"},
                           {"output", {{"color", "lit_color"}, {"depth", nullptr}}},
+                          {"shader", {{"vertex", "shaders/fullscreen"},
+                                      {"fragment", "shaders/hdr_source"}}},
+                      },
+                      {
+                          {"name", "overlay"},
+                          {"type", "fullscreen"},
+                          {"output", {{"color", "lit_color"}, {"depth", nullptr}}},
+                          {"color_load_op", "load"},
                           {"shader", {{"vertex", "shaders/fullscreen"},
                                       {"fragment", "shaders/hdr_source"}}},
                       },
@@ -4463,6 +4491,46 @@ void GoldenHarness::runFullscreenRebind() {
 
     auto &renderer = GET_MODULE(Renderer);
     auto &pass_container = GET_MODULE(RenderingPassContainer);
+    auto &render_targets = GET_MODULE(RenderTargetContainer);
+    auto &compute_tasks = GET_MODULE(ComputeTaskContainer);
+    const auto compute_history = render_targets.registerRenderTarget(
+        "compute_history", {goldenWidth, goldenHeight}, "rgba8", "test", 1.0f,
+        std::nullopt, vk::Format::eR8G8B8A8Unorm,
+        vk::ImageUsageFlagBits::eColorAttachment |
+            vk::ImageUsageFlagBits::eSampled |
+            vk::ImageUsageFlagBits::eStorage,
+        vma::MemoryUsage::eAutoPreferDevice, true);
+    REQUIRE(isConcreteRenderTarget(compute_history));
+    GET_MODULE(FrameGraphResourceContainer)
+        .registerBuffers({FrameGraphBufferDefinition{
+            "history_probe", 16, true}});
+    ComputeTaskDefinition history_task;
+    history_task.name = "history_probe_task";
+    history_task.shader =
+        makeShaderReference("shaders/history_image", ShaderStage::compute);
+    history_task.reads = {"compute_history@history"};
+    history_task.writes = {"compute_history", "history_probe"};
+    const auto compute_task_id = compute_tasks.registerComputeTask(
+        history_task,
+        ComputeTaskRuntimeDependencies{GET_MODULE(ShaderLibrary),
+                                       GET_MODULE(PathResolver), render_targets});
+    const auto initial_compute_views_0 =
+        compute_tasks.boundImageViewsForTesting(compute_task_id, 0);
+    const auto initial_compute_views_1 =
+        compute_tasks.boundImageViewsForTesting(compute_task_id, 1);
+    REQUIRE(initial_compute_views_0 == std::vector<vk::ImageView>{
+                                           render_targets.getImageViewForFrame(
+                                               compute_history, true, 0),
+                                           render_targets.getImageViewForFrame(
+                                               compute_history, false, 0)});
+    REQUIRE(initial_compute_views_1 == std::vector<vk::ImageView>{
+                                           render_targets.getImageViewForFrame(
+                                               compute_history, true, 1),
+                                           render_targets.getImageViewForFrame(
+                                               compute_history, false, 1)});
+    REQUIRE(initial_compute_views_0 != initial_compute_views_1);
+    const auto initial_compute_revision =
+        compute_tasks.bindingRevisionForTesting(compute_task_id);
     std::optional<PassId> input_pass;
     for (const auto rendering_pass_id : pass_container.getRegisteredPassIds()) {
         for (const auto &pass : pass_container.getCompiledRenderingPass(rendering_pass_id).passes) {
@@ -4489,9 +4557,17 @@ void GoldenHarness::runFullscreenRebind() {
 
     renderer.render();
     GET_MODULE(VulkanManageCore).waitIdle();
+    REQUIRE(renderer.imageMemoryDependencyCountForTesting() > 0);
     const auto hot_reload_revision = fullscreen_passes.inputBindingRevisionForTesting(*input_pass);
     REQUIRE(hot_reload_revision > initial_revision);
     REQUIRE(fullscreen_passes.boundInputImageViewsForTesting(*input_pass) == initial_views);
+    const auto hot_reload_compute_revision =
+        compute_tasks.bindingRevisionForTesting(compute_task_id);
+    REQUIRE(hot_reload_compute_revision > initial_compute_revision);
+    REQUIRE(compute_tasks.boundImageViewsForTesting(compute_task_id, 0) ==
+            initial_compute_views_0);
+    REQUIRE(compute_tasks.boundImageViewsForTesting(compute_task_id, 1) ==
+            initial_compute_views_1);
 
     writeTextFile(shader_path,
                   "#version 450\nlayout(location = 0) out vec4 outColor;\n"
@@ -4504,7 +4580,6 @@ void GoldenHarness::runFullscreenRebind() {
             hot_reload_revision);
     REQUIRE(fullscreen_passes.boundInputImageViewsForTesting(*input_pass) == initial_views);
 
-    auto &render_targets = GET_MODULE(RenderTargetContainer);
     const auto lit_color = render_targets.getRenderTargetIdByName("lit_color");
     const auto old_view = render_targets.getImageView(lit_color);
     renderer.recreateRenderTargetsAndRebindForTesting(vk::Extent2D{goldenWidth, goldenHeight});
@@ -4514,6 +4589,16 @@ void GoldenHarness::runFullscreenRebind() {
     REQUIRE(fullscreen_passes.inputBindingRevisionForTesting(*input_pass) > hot_reload_revision);
     REQUIRE(fullscreen_passes.boundInputImageViewsForTesting(*input_pass) ==
             std::vector<vk::ImageView>{new_view});
+    REQUIRE(compute_tasks.bindingRevisionForTesting(compute_task_id) >
+            hot_reload_compute_revision);
+    REQUIRE(compute_tasks.boundImageViewsForTesting(compute_task_id, 0) ==
+            std::vector<vk::ImageView>{
+                render_targets.getImageViewForFrame(compute_history, true, 0),
+                render_targets.getImageViewForFrame(compute_history, false, 0)});
+    REQUIRE(compute_tasks.boundImageViewsForTesting(compute_task_id, 1) ==
+            std::vector<vk::ImageView>{
+                render_targets.getImageViewForFrame(compute_history, true, 1),
+                render_targets.getImageViewForFrame(compute_history, false, 1)});
 
     renderer.render();
     GET_MODULE(VulkanManageCore).waitIdle();

@@ -157,6 +157,7 @@ FrameRenderContext OffscreenFrameTarget::render_begin() {
 
     return FrameRenderContext{
         .cmd_buf = *cmd_buf,
+        .color_image = color_image.image.get(),
         .color_attachment = color_image_view.get(),
         .depth_attachment = depth_image_view.get(),
         .extent = extent,

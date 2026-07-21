@@ -619,9 +619,49 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                     throw std::runtime_error(
                         "Compiled frame graph barrier source was not executed before target");
                 }
-                modules.compute_task_container.bufferReadAfterWriteBarrier(
-                    render_ctx.cmd_buf, barrier.resource, barrier.from_kind,
-                    barrier.to_kind);
+                if (modules.frame_graph_resources.hasBuffer(barrier.resource)) {
+                    modules.compute_task_container.bufferReadAfterWriteBarrier(
+                        render_ctx.cmd_buf, barrier.resource, barrier.from_kind,
+                        barrier.to_kind);
+                    continue;
+                }
+                if (barrier.resource == "swapchain") {
+                    if (!render_ctx.color_image) {
+                        throw std::runtime_error(
+                            "Compiled frame graph swapchain barrier has no frame image");
+                    }
+                    vk::ImageMemoryBarrier image_barrier;
+                    image_barrier.srcAccessMask =
+                        vk::AccessFlagBits::eColorAttachmentRead |
+                        vk::AccessFlagBits::eColorAttachmentWrite;
+                    image_barrier.dstAccessMask =
+                        vk::AccessFlagBits::eColorAttachmentRead |
+                        vk::AccessFlagBits::eColorAttachmentWrite;
+                    image_barrier.oldLayout =
+                        vk::ImageLayout::eColorAttachmentOptimal;
+                    image_barrier.newLayout =
+                        vk::ImageLayout::eColorAttachmentOptimal;
+                    image_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    image_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    image_barrier.image = render_ctx.color_image;
+                    image_barrier.subresourceRange = {
+                        vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+                    render_ctx.cmd_buf.pipelineBarrier(
+                        vk::PipelineStageFlagBits::eColorAttachmentOutput,
+                        vk::PipelineStageFlagBits::eColorAttachmentOutput, {}, {}, {},
+                        {image_barrier});
+                    continue;
+                }
+                const auto target_id = modules.render_target_container
+                                           .getRenderTargetIdByName(barrier.resource);
+                if (!isConcreteRenderTarget(target_id)) {
+                    throw std::runtime_error(
+                        "Compiled frame graph barrier references an unknown resource: " +
+                        barrier.resource);
+                }
+                layout_tracker.memoryDependency(
+                    render_ctx.cmd_buf, modules.render_target_container,
+                    modules.vk_utils, target_id);
             }
         }
         if (modules.render_timing != nullptr) {
@@ -852,6 +892,8 @@ void rebindFullscreenInputs(RenderFrameModules &modules) {
             }
         }
     }
+    modules.compute_task_container.rebindRenderTargets(
+        modules.render_target_container);
 }
 
 bool consumeShaderReloadPublication(ShaderHotReloadModules &modules) {

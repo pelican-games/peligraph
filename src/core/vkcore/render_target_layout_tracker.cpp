@@ -1,5 +1,6 @@
 #include "render_target_layout_tracker.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
+#include <stdexcept>
 
 namespace Pelican {
 
@@ -83,6 +84,32 @@ void RenderTargetLayoutTracker::transition(vk::CommandBuffer cmd_buf, RenderTarg
     it->second = new_layout;
 }
 
+void RenderTargetLayoutTracker::memoryDependency(
+    vk::CommandBuffer cmd_buf, RenderTargetContainer &rt_container,
+    VulkanUtils &vk_utils, GlobalRenderTargetId rt_id, bool history_read) {
+    if (isSpecialRenderTarget(rt_id)) {
+        return;
+    }
+
+    const auto surface = rt_container.surfaceIndex(rt_id, history_read);
+    const auto key =
+        (static_cast<std::uint64_t>(static_cast<std::uint32_t>(rt_id.value)) << 1u) |
+        surface;
+    const auto [it, inserted] =
+        layouts.try_emplace(key, rt_container.initialLayout(rt_id));
+    (void)inserted;
+    const auto layout = it->second;
+    if (layout == vk::ImageLayout::eUndefined) {
+        throw std::logic_error(
+            "frame graph image dependency has no preceding tracked image access");
+    }
+
+    const auto &image = rt_container.getImage(rt_id, history_read);
+    vk_utils.changeImageLayoutCmd(cmd_buf, image, layout, layout,
+                                  makeTransitionInfo(layout, layout));
+    ++memory_dependency_count;
+}
+
 vk::ImageLayout RenderTargetLayoutTracker::currentLayout(
     GlobalRenderTargetId rt_id, bool history_read,
     const RenderTargetContainer *rt_container) const {
@@ -94,6 +121,9 @@ vk::ImageLayout RenderTargetLayoutTracker::currentLayout(
     return rt_container != nullptr ? rt_container->initialLayout(rt_id) : vk::ImageLayout::eUndefined;
 }
 
-void RenderTargetLayoutTracker::reset() { layouts.clear(); }
+void RenderTargetLayoutTracker::reset() {
+    layouts.clear();
+    memory_dependency_count = 0;
+}
 
 } // namespace Pelican

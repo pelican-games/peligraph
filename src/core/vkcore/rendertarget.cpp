@@ -46,6 +46,8 @@ vk::Extent2D RenderTarget::getExtent() const { return impl->caps().extent; }
 
 bool RenderTarget::consumeExtentChanged() { return impl->consumeExtentChanged(); }
 
+bool RenderTarget::recoverSurfaceIfStale() { return impl->recoverSurfaceIfStale(); }
+
 FrameTargetCaps RenderTarget::caps() const { return impl->caps(); }
 
 std::vector<uint8_t> RenderTarget::readbackLastFrameRGBA8() {
