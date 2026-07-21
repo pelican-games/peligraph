@@ -1,6 +1,6 @@
 # 第7章 入力と UI
 
-対象: pelican2(2026-07-17 時点)/ このマニュアルはコードを正とする
+対象: pelican2(2026-07-21 時点)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
@@ -26,6 +26,7 @@ L1 の要点(✅WP69 で改訂):
 - フレーム先頭で入力が**凍結**され、フレーム内で不変(決定性の柱)。
 - `FrameInput` は「順序付きイベント列(`ordered_events` — 全イベントに単調増加の `event_seq` が付き、途中座標・発生順が保持される)」と「集約スナップショット」の両方を持ちます。スナップショット側では従来どおり同一フレームの「押して離す」は pressed / released が両方立ちます。
 - **入力消費マスク**: 消費の優先順は ImGui → `pelican.ui` → アクション層。UI がポインタを hit / capture したフレームは、そのポインタがアクション層から見えなくなります。
+- ImGui が消費者に入るのは**通常ウィンドウ起動のときだけ**です。headless / rpc / リプレイ / golden に加え、✅WP138 以降は **XR session が active な間もエンジンは ImGui frame を begin しません**(XR グラフに `imgui` パスが無いため。論理フレーム境界でゲートが閉じたときは開始済みフレームを閉じてから外します)。この場合の消費順は `pelican.ui` → アクション層になります([第6章](06_rendering.md) §6.12)。
 - フレーム位相は「イベント凍結 → 入力凍結(リプレイ注入→収録)→ アクション確定(ImGui → UI → Actions)→ イベント配送 → ゲーム更新」の固定順で、通常ループと rpc ループで同一です。
 
 ## 7.2 アクション定義とバインディングプロファイル
@@ -90,7 +91,7 @@ L1 の要点(✅WP69 で改訂):
 }
 ```
 
-- binding 要素のフィールド: `action` / `binding` + 任意 `deadzone`(数値 [0,1)、pad 軸限定)、`invert_x` / `invert_y`(bool、axis2 限定。deadzone 適用後に反転)。
+- binding 要素のフィールド: `action` / `binding` + 任意 `deadzone`(数値 [0,1)、pad 軸限定)、`invert_x`(bool、pad 軸なら axis1 / axis2 どちらでも可)/ `invert_y`(bool、axis2 限定)。反転はいずれも deadzone 適用後です。
 - プロファイルの登録と既定は `project.json`: `basic_config.input_profiles`(名前 → ファイルの辞書)と `basic_config.input_profile`(既定名)。
 - 切替は 3 通り: 起動引数 `--input-profile <name>` / rpc `set_input_profile` / ゲームコード `selectInputProfile`。筐体・環境差(アーケード筐体等)は**プロファイルを増やして**表現します。
 
@@ -140,8 +141,8 @@ void update(Pelican::GameContext &ctx) {
 {"jsonrpc":"2.0","id":3,"method":"inject_input","params":{"events":[
   {"type":"key_down","key":"w"},
   {"type":"mouse_move","x":100.0,"y":50.0},
-  {"type":"gamepadButtonDown","pad":0,"button":"a"},
-  {"type":"gamepadAxis","pad":0,"axis":"left_x","value":0.75}
+  {"type":"pad_button_down","pad":0,"button":"a"},
+  {"type":"pad_axis","pad":0,"axis":"left_x","value":0.75}
 ]}}
 ```
 
@@ -225,9 +226,26 @@ emit のソースには static 値のほか `stable_id` / `drag_delta_ui` / `wid
 - 🚧 `gauge` の描画 / ゲームコードから UI を書き換える公式 API(ラベル文字列・ゲージ値の更新など — UiCommandBuffer は内部のみ)/ DPI スケール(配管はあるが常に 1.0)
 - 📐 エンジン標準スキン(現状は色をノードのプロパティで直指定)/ `PELICAN_REGISTER_WIDGET` とツールウィジェットパック / UI のホットリロード(U3)
 
-## 7.5 テキスト HUD — debug_text(✅WP54)
+## 7.5 テキスト HUD — debug_text(✅WP54 / WP169)
 
-(変更なし)feature 1 行 + `ctx.debugText(x, y, text)`。ピクセル・左上原点、ASCII 32〜126、feature 不参照なら完全 no-op、golden は tolerance 0。`GameContext::debugText` は白・等倍固定のままです。`pelican.ui` の label/button のテキストも同じ埋め込みフォントを共有しています。SDF・日本語は 📐(backlog)。
+使い方は不変です — rendering config に `engine://features/debug_text.json` を 1 行 + ゲームコードから `ctx.debugText(x, y, text)`。座標はピクセル・左上原点、feature を参照しなければ完全 no-op、golden は tolerance 0 です。`GameContext::debugText` は**白・等倍固定**のままで、色や scale を渡す公開 API はありません。
+
+✅WP169 で、`debug_text` と `pelican.ui` の**ビットマップレイアウトが単一実装に統一**されました。以前は「フォントテーブルだけ共有・配置計算は別実装」でしたが、現在はどちらも [src/core/ui/bitmapfont.cpp](../../src/core/ui/bitmapfont.cpp) の `BitmapFont::layout()` を通ります。**見た目・座標・API は不変**で(既存 golden と凍結ハッシュはすべて維持、golden 更新 0)、production の `DebugText` と `UiRenderer` を同一オフスクリーン RT に描いた 96×80 RGBA8 の全 30,720 byte が一致することを `test/debugtext_ui_compat_test.cpp`(GPU ラベル付きの Catch2 テスト)がゲートしています。
+
+統一された文字レイアウトの規則(`pelican.ui` の label / button も同じ):
+
+| 入力 | 挙動 |
+|---|---|
+| ASCII 32〜126 | そのまま描画 |
+| 範囲外のコード | `'?'` に置換 |
+| `\r` | 無視 |
+| `\n` | 改行(行送り = セル高 × scale) |
+| `\t` | 水平送り = セル幅 × scale × 4 |
+| scale | 1〜64 に clamp(`DebugText` 側も `BitmapFont` 側も上限 64) |
+
+> ⚠ **新しい失敗(WP169):** 座標 × scale の結果が int32 を超えると `std::overflow_error("bitmap text layout exceeds int32")` になります。旧実装は黙って回り込んでいました。極端な座標を渡す可能性があるなら呼び出し側で丸めてください。
+
+GPU 経路自体は意図的に別のままです(`DebugText` は専用 atlas + SSBO・フレームバッファ四辺へのクリップ、`pelican.ui` は `AtlasAssetResource` + quad バッチ・ウィジェット clip の scissor)。SDF・日本語は 📐(backlog)。
 
 ## 7.6 実装状況ダッシュボード
 
@@ -244,7 +262,7 @@ emit のソースには static 値のほか `stable_id` / `drag_delta_ui` / `wid
 | ui_overlay.json(旧 images 形式) | ❌ 削除済み(WP87) |
 | イベント payload スキーマ | ✅ WP71 |
 | UI / 入力設定のホットリロード(U3 / HR2-I) | 📐(backlog Tier 1) |
-| debug_text HUD | ✅ WP54 |
+| debug_text HUD | ✅ WP54 / WP169(`pelican.ui` とレイアウト計算を統一・互換ゲート付き) |
 | SDF / 日本語テキスト | 📐 |
 
 オーディオ(`ctx.playSound` 等)は [第8章](08_gameplay.md) を参照してください。

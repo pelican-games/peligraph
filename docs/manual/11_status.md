@@ -1,6 +1,7 @@
 # 第11章 実装状況と文書マップ
 
-対象: pelican2(2026-07-17 時点、branch `codex/rendering-phase1-refactor`)/ このマニュアルはコードを正とする
+対象: pelican2(2026-07-21 時点・WP179 完了地点、HEAD=`d13fc26`、branch
+`codex/rendering-phase1-refactor`)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
@@ -11,7 +12,8 @@
 
 ## 11.1 WP 全台帳
 
-判定は「implementation_plan.md の記載 + 実装コミット + design_reviews のレポート実在」によります(2026-07-17 調査)。
+判定は「実装コミット + test 登録 + design_reviews の完了レポート +
+implementation archive」によります(2026-07-19 調査)。
 
 凡例: **済** = マージ済みで機能する / **未** = 登録済み・未実装 / **予約** = 番号予約のみ。
 
@@ -111,7 +113,7 @@
 | 85 | ImGui 導入 | 済 | PELICAN_WITH_IMGUI ユニット(dist は OFF)。golden/replay/headless では非実行 | F1(actions 経由)でデバッグ UI トグル |
 | 86 | Plan viewer(ImGui) | 済 | frame plan のノードグラフ可視化(パス = ノード、RT = エッジ) | ImGui 内ツール。データ源は get_frame_plan と同一意味論 |
 | 87 | UI U1 — GPU 描画 | 済 | quad buffer(20B 頂点)+ pelican.atlas 接続 + nested clip + ui の purgeable feature 化 | `engine://features/ui.json`。UI の `#sprite/` 参照。**旧 ui_overlay images 形式は廃止** |
-| 88 | temporal T1+T2 — history + velocity | 済 | RT 宣言 `"history": true`(2 面自動管理・`@history` 読み)+ velocity feature(RG16F) | JSON: RT の `history` キー、`@history` 参照。TAA 本体は未実装(ユーザー領分) |
+| 88 | temporal T1+T2 — history + velocity | 済 | RT 宣言 `"history": true`(2 面自動管理・`@history` 読み)+ velocity feature(RG16F) | JSON: RT の `history` キー、`@history` 参照。TAA stdlib は WP112〜115 で実装済み |
 | 89 | 入力 I3 — 収録とリプレイ | 済 | ordered InputEvent 列を `pelican.input_seq` v1(JSONL)へ収録・リプレイ(2 回 byte 一致) | rpc: `start_input_record`/`stop_input_record`、CLI: `--replay <file>`、`pelican_cli bake-camera --replay` |
 | 90 | G2 — ゲームロジック DLL ホットリロード | 済 | 実行中の再ロード(v1 = 全リセット方式)。ABI 版数ゲート・失敗時は旧 DLL 継続 | 保存 → 数秒で反映。リロード中 rpc/replay 拒否 |
 | 91 | 入力 I4 — ゲームパッド + プロファイル | 済 | GLFW gamepad API。actions を「アクション定義」と「バインディングプロファイル」に分離 | JSON: `profiles/*.json`(起動引数/設定/rpc で切替)。pad 入力は収録リプレイ対応 |
@@ -136,7 +138,7 @@
 | 110 | アセット HR2-G — model/fragment hot reload | 済 | 同一 container の全 fragment 一括 transaction + live instance の bulk rebuild | glb 保存 → 配置済みインスタンスが実行中に差し替わる |
 | 111 | VRM-S0 — .vrm semantic decoder | 済(2026-07-16) | VRM 1.0(`VRMC_vrm`)の humanoid/expressions/lookAt を保持・検証・canonical dump(renderer 適用なし)。VRM 0.x は素の GLB + INFO | CLI: `pelican_cli vrm dump`。実装 `src/core/model/vrmsemantic.*` |
 
-### WP112〜136(TAA / OpenPBR / USD / VRM 表情 / OpenXR 期 2026-07-16〜17)
+### WP112〜179(TAA / OpenPBR / XR / editor / VRMA / trigger、2026-07-16〜19)
 
 | WP | タイトル | 状態 | 1行説明 | ユーザーから見える面 |
 |---|---|---|---|---|
@@ -165,22 +167,72 @@
 | 133 | XR2a.3 — feature policy + mirror(実機初表示) | 済 | flat/XR 両 graph を起動時 precompile(XR graph = TAA/jitter/velocity/history/UI 除外)+ 左眼 mirror(best-effort) | `--xr on` で HMD 表示 + ウィンドウにミラー |
 | 134 | S1c — bone lookAt + firstPerson | 済 | application service に版付き pose staging + VRM bone lookAt(rangeMap)+ firstPerson(auto head-split・per-view visibility) | XR first-person view で頭部非表示・視線追従 |
 | 135 | XR4 — VRM キャラデモ(flat 先行) | 済 | `projects/vrm_xr_demo/` 新設(エンジン変更なし): 決定的 VRM + anim_graph + 表情サイクル + 視線追従。flat で全検証・XR は起動フラグのみ | 新デモ [projects/vrm_xr_demo](../../projects/vrm_xr_demo)(自分の .vrm への差し替え手順付き) |
-| 136 | XR Simulator smoke | **未**(登録のみ) | 実機前に desktop XR runtime で `--xr on` 実経路を検証(エンジン変更禁止) | (未着手) |
+| 136 | XR Simulator smoke | 済 | Meta XR Simulator v201.0 を署名/hash検証して実 runtime smoke | 配布・起動・runtime選定手順をレポート化 |
 | 137 | 負債 CI0 — Windows CPU ゲート | 済(2026-07-17) | GitHub Actions の CPU-only テストゲート(gpu ラベル除外・SKIP は完全一致 allowlist・リトライなし) | `.github/workflows/`(push/PR で自動実行) |
+| 138 | XRSIM blocker 修正 | 済 | ImGui frame、timeline semaphore、mirror extent、XR diagnostics を修正 | Simulator 1000 frame、3分超、validation 0 |
+| 139 | D-P0a — debug-utils/labels | 済 | optional `VK_EXT_debug_utils` と object/command/queue label | `--gpu-labels`、既定 OFF |
+| 140 | D-P1a — RenderDoc capture | 済 | 注入済み RenderDoc のみ受動利用し一フレーム capture | F11 / RPC `capture_gpu` |
+| 141 | GOLDEN0 | 済 | golden 正本を件数定数から `inventory.json` へ移行 | CPU gate でfixture/hashを照合 |
+| 142 | LIGHT0 | 済 | core の magic-name light animation を撤去し user system 化 | light cap超過を名前付きWARN |
+| 143 | D-P2a — stereo-safe GPU timing | 済 | logical frame/variant/view/node/mirror 別 timestamp | RPC/ImGui timing snapshot |
+| 144 | TRANSIENT0 | 済 | `load_gltf` を inspect/stage/single-publish transaction 化 | 失敗時に既存ID/資源を不変化 |
+| 145 | D-P2b — VRAM/XR timing | 済 | driver heap と engine usage を分離、XR frame counters/QPC変換 | `get_status.memory/xr` |
+| 146 | INSTANCE0 | 済 | `ModelInstanceId` を generation + scene epoch SlotMap 化 | stale/ABA操作を拒否 |
+| 147 | ANIM0 | 済 | model reloadをasset単位generation + evaluator rebindへ変更 | 別assetを巻き込む全体resetを撤去 |
+| 148 | ECS0 | 済 | scheduler hazard/DAG照合、既定serial化・strict fail-fast | conflictをsystem/component名付き診断 |
+| 149 | ED-AUTH0 | 済 | raw semantic JSONを唯一正本とする `AuthoringSceneDocument` | stable revision/authoring ID |
+| 150 | STRUCT-SCHEMA0 | 済 | Event/Behavior/Component共通field schema + use-site policy | Inspector/codecの型情報基盤 |
+| 151 | ED-CODEC0 | 済 | 7 componentのdecode/encode/schema/apply/project五つ組 | schema-driven editing |
+| 152 | ECS-MUT0 | 済 | 同じEntityIdを保つfailure-atomic archetype migration | component add/remove transaction |
+| 153 | E-PROJTX0 | 済 | documentと全runtime adapterのaggregate transaction | prepare後noexcept publish/rollback |
+| 154 | E-RPC0-base | 済 | scene tree/components/assets/snapshot queryをtyped service化 | RPCとImGuiが同じserviceを利用 |
+| 155 | BEH0 | 済 | engine-owned behavior attachment arena/lifecycle/event | project DLL behavior |
+| 156 | E-HOST0 | 済 | windowed stdio RPCをbounded queueでframe boundary dispatch | `--rpc` windowed対応 |
+| 157 | E-RPC1a | 済 | ActorId/CAS/edit RPC/JOURNAL0 | durable editor transaction |
+| 158 | E-PROJTX0b | 済 | structural stage、prepared ECS/adapter token、commit hook | WP157のproduction基盤 |
+| 159 | UI-AB0 | 済 | read-only ImGui Asset Browser | provenance/store/load status表示 |
+| 160 | `pelican_rpc.py` | 済 | Python 3.12標準ライブラリだけのthin RPC client | process lifecycle + helper API |
+| 161 | E-RPC1b | 済 | actor別undo/redo、ticket/live preview lease | preview epoch/CAS gate |
+| 162 | BEH1 | 済 | game DLL二世代side-decode後のatomic reload | 不適合候補は旧runtime不変で拒否 |
+| 163 | ECS1 | 済 | generation付きregistration tokenとowner dependency purge | DLL unload前の依存検証 |
+| 164 | UI-INS0 | 済 | Object Tree + schema-driven Inspector | edit/preview/undo/save UI |
+| 165 | CI1 | 済 | 9 build-unit + project code + clean-clone matrix | PHYSICS OFF stubも固定 |
+| 166 | SAVE0 | 済 | document正本のatomic whole-scene save | digest/CAS/validation付き `save_scene` |
+| 167 | BEH2 | 済 | behavior attach/remove/set-paramをeditor transactionへ統合 | Inspectorから編集可能 |
+| 168 | SNAPSHOT0 | 済 | version/hash/size検証付きscene snapshot import | file非変更のscratch session |
+| 169 | DTXT0 | 済 | DebugText/UI bitmap layoutを共通化 | production A/B RGBA8完全一致 |
+| 170 | WATCH0 | 済 | scene revision + preview epoch watch token | Inspector/Object Tree差分refresh |
+| 171 | LIFETIME0 | 済 | explicit teardown drain順とcallback lease | 例外後も後続drainを継続 |
+| 172 | PREVIEW0 | 済 | live不変の`eval_preview`と独立`render_preview` graph | request-local evaluation/capture |
+| 173 | PORT0 | 済 | growable atlas pool、CreateProcessW、import timeout/cancel/log | portability quick fixes |
+| 174 | TEST0 | 済 | golden harness分割、active/archive台帳、memory-budget flaky修正 | test/docs保守性 |
+| 175 | CONTRACT0 | 済 | OpenPBR exact set、projection inventory、engineMvp意味 gate | GPU不要contract CTest |
+| 176 | VRMA-C0 | 済 | `.vrma` GLB aliasをbody/expression/gaze typed channelへdecode | provenance/hash付きimmutable clip |
+| 177 | VRMA-R0 | 済 | versioned humanoid retarget profile | rest/T-pose、optional bone、hips scale |
+| 178 | VRMA-I0 | 済 | typed AnimationSource/graph/sink + generation/rebind | VRMA body/表情/視線を同revision適用 |
+| 179 | E2 — physics trigger | 済 | 決定的な対称Enter/Exit、stay抑止、destroy/remove Exit | typed behaviorへ通常E1配送 |
 
 audit stop の系譜(正しい停止の運用実績): WP113(スカラー配送不能 → WP114 先行)/ WP120(morph 機構不在 → 3 分割)/ WP123(override 表現力不足 → WP122b 先行)。いずれも停止レポートが後続 WP の仕様の正になっています。
 
-**要するに: WP1〜135 + WP137 はすべて実装済み(WP113/120/123 は正しい停止 → 分割・再派遣で着地)。未 = WP136(XR Simulator smoke)のみ。予約 = WP22 pointcache / WP32 IBL / WP36 GPU パーティクル。**
+**要するに: WP1〜179 のうち実装対象として着手したものは完了済みです
+(WP113/120/123 は正しい停止後に分割・再派遣で着地)。active ledger に
+未完了 WP はありません。予約 = WP22 pointcache / WP32 IBL /
+WP36 GPU particle。**
 
 WP 番号外の 2026-07-15 リファクタ群(design_reviews/ にレポートあり): module access hardening、PhysQuery 決定的クエリ基盤、purgeable physics provider boundary + provider DLL lifecycle。
 
-今後の候補は [../roadmap_backlog_2026-07.md](../roadmap_backlog_2026-07.md)(47 候補・6 ティア + デバッグ/プロファイリング D-P トラック + Quest standalone SA トラック)が正です。2026-07-17 の負債議論(codex ultra 監査 — design_reviews/ 収録)で **15 WP の負債ウェーブ**(CI0 = WP137 済、ロールバック三点・アニメ凍結経路・コア内マジックネームライト・カメラ split-brain 等)が合意され backlog に登録されました。Tier 1 の残りは HR2-I(input/profile hot reload)と U3(UI hot reload)。直近の候補は負債ウェーブ消化・WP136・debug/profiling 設計([../design_debug_profiling.md](../design_debug_profiling.md) v1)の敵対レビューです。
+今後の候補は [../roadmap_backlog_2026-07.md](../roadmap_backlog_2026-07.md)が
+正です。Tier 1 の残りは HR2-I(input/profile hot reload)と U3(UI hot
+reload)。続いて VRMA watcher 配線、唯一残った負債 CI2、anim_graph v2 /
+clip events、XR2b multiview が候補です。いずれも active WP へ受け入れ条件を
+登録してから着手します。
 
 web 側(my_webpage)の WW 台帳は [第9章](09_web.md) §9.6 を参照してください。
 
 ## 11.2 設計文書マップ(docs/ ⇔ 本マニュアル)
 
-矛盾時の優先順位: **凍結済み > ドラフト、設計文書 > 指示書**。ここでの「状態」は 2026-07-16 のコード実態基準です(docs/README.md の表記は大幅に古い — §11.3)。
+矛盾時の優先順位: **凍結済み > ドラフト、設計文書 > 指示書**。
+実装状態は 2026-07-19 のコード・test・完了レポート基準です。
 
 ### 凍結・規範文書
 
@@ -206,20 +258,22 @@ web 側(my_webpage)の WW 台帳は [第9章](09_web.md) §9.6 を参照して�
 | [design_postprocess_temporal.md](../design_postprocess_temporal.md) | ✅ T1/T2(WP88/95)。TAA は [design_taa_jitter.md](../design_taa_jitter.md) へ | [第6章](06_rendering.md) |
 | [design_taa_jitter.md](../design_taa_jitter.md) | ✅ v2.1(条件付き受理)・J1/J1b/J1c/T-TAA すべて実装済み(WP112〜115) | [第6章](06_rendering.md) |
 | [design_usd_openpbr.md](../design_usd_openpbr.md) | ✅ v2.1(条件付き受理)・M-PBR0a/0b + U-USD0a/0b/0c 実装済み(WP116〜119/124)。U-USD1 系は未 | [第5章](05_assets.md)・[第6章](06_rendering.md) |
-| [design_openxr.md](../design_openxr.md) | ✅ v2.1(条件付き受理)・XR0〜XR4 実装済み(WP125〜135)。XR2b multiview・実機 gate(WP136)は未 | [第6章](06_rendering.md) §6.12・[第2章](02_getting_started.md) |
-| [design_debug_profiling.md](../design_debug_profiling.md) | 📐 v1 ドラフト(敵対レビュー前)・D-P/OPT 系すべて未実装 | [第10章](10_tools.md) |
+| [design_openxr.md](../design_openxr.md) | ✅ v2.1・XR0〜XR4 + Meta XR Simulator gate 実装済み(WP125〜138)。XR2b multiview/depth・物理HMD・standaloneは未 | [第6章](06_rendering.md) §6.12・[第2章](02_getting_started.md) |
+| [design_debug_profiling.md](../design_debug_profiling.md) | ✅ D-P0〜D-P2 実装済み(WP139/140/143/145)。D-P3/D-P5/D-P4/D-P6/OPT は未 | [第10章](10_tools.md) |
 | [shader_contract.md](../shader_contract.md) | ✅(FrameUBO/SSBO/resources manifest まで反映) | [第6章](06_rendering.md) |
 | [design_input_actions.md](../design_input_actions.md) | ✅ I1〜I4 すべて(WP39/49/89/91) | [第7章](07_input_ui.md) |
 | [design_ui_2d_foundation.md](../design_ui_2d_foundation.md) | ✅ v8 Accept・U0/U1/U2 実装済み(WP75/87/93) | [第7章](07_input_ui.md) |
 | [design_2d_game_layer.md](../design_2d_game_layer.md) | ✅ v2.4・S2D-0a〜2 実装済み(WP103/104/106/107/109) | [第4章](04_scene_ecs.md)・[第6章](06_rendering.md)・[第8章](08_gameplay.md) |
 | [design_event_payload_schema.md](../design_event_payload_schema.md) | ✅ v2 Accept・WP71 で実装 | [第8章](08_gameplay.md) |
-| [design_animation_graph.md](../design_animation_graph.md) | ✅ v2.1・A0〜A2 実装済み(WP94/97/101/102)+ VRM application 層(S1a/S1b/S1c = WP121〜123b/134)実装済み | [第8章](08_gameplay.md) |
-| [design_asset_hot_reload.md](../design_asset_hot_reload.md) | ✅ v2.1・HR0〜HR2-G 実装済み(WP96/98/100/105/108/110)。HR2-I 未 | [第10章](10_tools.md) |
+| [design_animation_graph.md](../design_animation_graph.md) | ✅ v2.1・A0〜A2 + VRM application + VRMA-C0/R0/I0 実装済み(WP94〜102/111/121〜134/176〜178)。graph v2/live/SpringBone は未 | [第8章](08_gameplay.md) |
+| [design_asset_hot_reload.md](../design_asset_hot_reload.md) | ✅ v2.1・HR0〜HR2-G、targeted animation generation(WP147)、VRMA reload entry(WP178)実装済み。HR2-I/U3/VRMA watcher配線は未 | [第10章](10_tools.md) |
 | [design_text_hud.md](../design_text_hud.md) | ✅ WP54 | [第7章](07_input_ui.md) |
-| [design_game_logic_native.md](../design_game_logic_native.md) | ✅ G1/G2(DLL ホットリロード = WP90) | [第8章](08_gameplay.md) |
-| [design_event_layer.md](../design_event_layer.md) | ✅ E1 + WP71(E2 は未) | [第8章](08_gameplay.md) |
+| [design_game_logic_native.md](../design_game_logic_native.md) | ✅ G1/G2 + behavior attachment/edit + two-generation reload(WP90/155/162/167) | [第8章](08_gameplay.md) |
+| [design_editor_tooling.md](../design_editor_tooling.md) | ✅ v2.5(条件付き受理)。authoring/service/RPC/transaction/undo/save/snapshot/watch/preview 実装済み(WP149〜172)。Qt viewport/gizmo/WebSocket は未 | [第13章](13_editor.md)・[第10章](10_tools.md) |
+| [design_object_behaviors.md](../design_object_behaviors.md) | ✅ v2.1・BEH0/BEH1/BEH2 実装済み(WP155/162/167)。`onFixedUpdate` や behavior 間の直接参照は未 | [第4章](04_scene_ecs.md)・[第8章](08_gameplay.md) |
+| [design_event_layer.md](../design_event_layer.md) | ✅ v1.1 E1 + typed schema + E2 Enter/Exit(WP56/71/179)。Stay は未採用 | [第8章](08_gameplay.md) |
 | [design_scene_flow.md](../design_scene_flow.md) | ✅ S1(S2 は未) | [第8章](08_gameplay.md) |
-| [design_physics_queries.md](../design_physics_queries.md) | ✅ P1/P2 + shapeCast/Provider ABI V2(WP107)。シミュは未 | [第8章](08_gameplay.md) |
+| [design_physics_queries.md](../design_physics_queries.md) | ✅ P1/P2 + shapeCast/Provider ABI V2 + trigger events(WP107/179)。rpc P3/mesh/BVH/rigid simulation は未 | [第8章](08_gameplay.md) |
 | [design_camera_system.md](../design_camera_system.md) | ✅ C1/C2 + user-space 再編の追記 | [第8章](08_gameplay.md) |
 | [design_determinism_services.md](../design_determinism_services.md) | ✅ WP53 | [第8章](08_gameplay.md) |
 | [design_audio.md](../design_audio.md) | ✅ A1(A2/A3 は未) | [第8章](08_gameplay.md) |
@@ -259,21 +313,19 @@ web 側(my_webpage)の WW 台帳は [第9章](09_web.md) §9.6 を参照して�
 
 ## 11.3 既知の食い違い(設計文書 vs コード)
 
-2026-07-16 の再調査で更新。**常にコードが正**。
+2026-07-19 の再調査で更新。**常にコードが正**。
 
 ### 挙動に関わるもの
 
-1. **docs/README.md の索引が大幅に古い**(2026-07-15 更新だが表は未改訂): material_shading「未実装」/ postprocess_temporal「未実装」/ input_actions「I2〜I4 未」/ audio・scene_flow・event_layer・persistence・project_vcs「実装中」— すべてマージ済み。さらに ui_2d_foundation / 2d_game_layer / animation_graph / asset_hot_reload / color_pipeline / event_payload_schema / taa_jitter / usd_openpbr / animation_abi_v1 / roadmap_backlog が索引未掲載。**状態の正は本章 §11.1〜11.2**。
-2. **strict v1 化(WP63)が一部の設計文書に未反映**: scene のレガシー受理(「WARN+自動解釈」)、カメラ旧キーのエイリアス受理 — 文書にはあるが、実装はすべて名指しの hard error。
-3. **hello-project(web サンプル)の camera が旧形式**: web で開けて pelican で開けない = サブセット原則違反の実例([第9章](09_web.md) §9.7)。
-4. **`--play-seq` / `--seq-mesh` の相対パスが cwd 基準**([PF] はプロジェクトルート基準と規定)。`--play-vat` は設計どおり。
-5. **project.json の `name` が必須になっていない**([PF] は必須)。欠落は黙って `user://` 無効化に落ちる。
-6. **audio の `playMusic` が存在しない**(設計の API 表にはある)。全 voice は se バス固定。
-7. **rpc `raycast` は未実装**(P3 スコープ)。※ただし WP107 で GameContext/PhysWorld には `shapeCast` all/closest が追加済み(rpc 面ではない)。
-8. **エンジン発行イベントは `SceneLoaded` のみ**(設計表の OverlapEnter/Exit は E2 未実装 — backlog 登録済み)。
-9. **`GameContext::debugText` は白・等倍固定**(設計の色・スケールは内部 API のみ)。
-10. **OpenXR のセッション再生成はループ未配線**: [design_openxr.md](../design_openxr.md) §9 は swapchain/session 喪失時の再生成を規定するが、現行ループは teardown 要求で終了する(unwind・判定までは実装済み)。
-11. **XR は実機未確認のまま XR4 済**: 自動 gate(fake runtime + synthetic stereo)は全緑だが、実 HMD での表示・入力確認は未実施(WP136 = XR Simulator smoke が入口)。また rpc は常に flat 駆動のため `get_status.xr.active=true` を rpc から観測する手段がない。
+1. **strict v1 化(WP63)が一部の設計文書に未反映**: scene のレガシー受理(「WARN+自動解釈」)、カメラ旧キーのエイリアス受理 — 文書にはあるが、実装はすべて名指しの hard error。
+2. **hello-project(web サンプル)の camera が旧形式**: web で開けて pelican で開けない = サブセット原則違反の実例([第9章](09_web.md) §9.7)。
+3. **`--play-seq` / `--seq-mesh` の相対パスが cwd 基準**([PF] はプロジェクトルート基準と規定)。`--play-vat` は設計どおり。
+4. **project.json の `name` が必須になっていない**([PF] は必須)。欠落は黙って `user://` 無効化に落ちる。
+5. **audio の `playMusic` が存在しない**(設計の API 表にはある)。全 voice は se バス固定。
+6. **rpc `raycast` は未実装**(P3 スコープ)。※ただし WP107 で GameContext/PhysWorld には `shapeCast` all/closest が追加済み(rpc 面ではない)。
+7. **`GameContext::debugText` は白・等倍固定**(設計の色・スケールは内部 API のみ)。
+8. **OpenXR のセッション再生成はループ未配線**: [design_openxr.md](../design_openxr.md) §9 は swapchain/session 喪失時の再生成を規定するが、現行ループは teardown 要求で終了する(unwind・判定までは実装済み)。
+9. **XR は Meta XR Simulator では検証済みだが物理 HMD は未確認**: Simulator v201.0 で1000 frame/3分超/validation 0。Quest Link実機表示・入力、XR2b multiview、standaloneは未。rpc は常に flat 駆動のため `get_status.xr.active=true` を rpc から観測する手段がない。
 
 ### キー名・形式の非対称(混同注意)
 
@@ -283,19 +335,23 @@ web 側(my_webpage)の WW 台帳は [第9章](09_web.md) §9.6 を参照して�
 
 ### 文書の鮮度の問題
 
-- `implementation_plan.md` 冒頭の「設計の正は 3 文書」は実際には 5 文書。§1 の WP 表と §2 の詳細は概ね追随しているが、ファイルが 110KB 超で分割が backlog 登録済み。
-- `design_asset_format_policy.md` の状態列(VAT/EXR/音声/import/KTX2「未実装」)はすべて実装済み。
+- `design_asset_format_policy.md` の状態列(VAT/EXR/音声/import/KTX2
+  「未実装」)はすべて実装済み。
 
 ## 11.4 このマニュアルの更新ルール
 
-本マニュアル(`docs/manual/`)は 2026-07-10 に全域調査(9 領域並列コードリーディング)から書き起こされ、**2026-07-16 に WP64〜110 反映の全域更新**、**2026-07-17 に WP111〜135(TAA / OpenPBR / USD / VRM 表情 / OpenXR)反映の更新**を行いました。維持のためのルール:
+本マニュアル(`docs/manual/`)は 2026-07-10 に全域調査から書き起こされ、
+**2026-07-16 に WP64〜110**、**2026-07-17 に WP111〜137**、
+**2026-07-19 に WP138〜179 の状態・event/physics/VRMA 差分**を反映しました。
+維持のためのルール:
 
 1. **コードが正。** 設計文書と食い違ったら、実装を確認してマニュアルを実装に合わせる(意図の説明として設計文書を引用するのは可)。
 2. **実装状況バッジを守る。** ✅実装済み / 🚧実装中 / 📐設計のみ(未実装)。WP がマージされたら該当章のバッジと §11.1 の台帳を更新する。設計文書にしかない機能を「使える」と書かない。
 3. **JSON 例は実物から。** `projects/example/`・`projects/sprite_demo/`・`projects/animgraph_demo/`・`test/fixtures/`・`src/core/resources/` の実ファイル、またはパーサ実装で検証した形だけを載せる。創作例には「(例)」と明記。
 4. **章の追加**: `NN_slug.md` で採番し、[00_index.md](00_index.md) の目次と、関係する章の相互リンクを更新する。章の冒頭形式(タイトル → 対象行 → 「この章で学ぶこと」→ 末尾「関連文書」)を踏襲する。
-5. **バッジ更新のタイミング**: 形式(スキーマ)に触れる WP・strict 化 WP・機能追加 WP のマージ時。直近では WP136(XR Simulator)・HR2-I・U3(ホットリロード残件)・debug/profiling 系(D-P0〜)のマージ時に [第6章](06_rendering.md)・[第7章](07_input_ui.md)・[第10章](10_tools.md) の該当節の書き換えが必要。
-6. **§11.3 の食い違い一覧は「解消したら消す」**。設計文書側が改訂されたか、実装が設計に追いついたら該当行を削除する。
+5. **バッジ更新のタイミング**: 形式(スキーマ)に触れる WP・strict 化 WP・機能追加 WP のマージ時。直近では HR2-I・U3・VRMA watcher・CI2・XR2b の着地時に関係章を書き換える。
+6. **一緒に直すもの(再発防止)**: golden ケースを足したら `test/golden/inventory.json` にも登録する(件数の自動発見はもう無い)。RPC メソッドを足したら [第10章](10_tools.md) の表と、編集系なら [第13章](13_editor.md) にも書く。CLI 引数を足したら第10章 §10.2 の表に足す。
+7. **§11.3 の食い違い一覧は「解消したら消す」**。設計文書側が改訂されたか、実装が設計に追いついたら該当行を削除する。
 
 ## 関連文書
 

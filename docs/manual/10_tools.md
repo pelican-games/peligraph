@@ -31,7 +31,7 @@
 |---|---|---|
 | `--project <dir\|project.json>` | (暗黙探索) | プロジェクトを開く。省略時は exe ディレクトリ → 祖先の `projects/example` を探索し、WARN を出す |
 | `--headless` | off | ウィンドウなし実行(時刻は固定ステップになる) |
-| `--rpc` | off | stdio JSON-RPC モード。**v1 では `--headless` 必須** |
+| `--rpc` | off | stdio JSON-RPC モード。**`--headless` は不要になりました**(✅WP156): ヘッドレスでは stdin を読み切るまでブロッキング、**ウィンドウモードではフレーム境界処理 + 有界キュー(既定 64 件)**。溢れると `busy` エラーを即返します。※`--rpc` を付けると ImGui UI は無効([第13章](13_editor.md)) |
 | `--frames <n>` | 3 | ヘッドレスのフレーム数。**0 = 無制限** |
 | `--size WxH` | 1280x720 | ヘッドレスの描画サイズ |
 | `--render-out <path>` | なし | PNG 出力先(sRGB エンコード)。`%04d` 等で毎フレーム連番 |
@@ -104,6 +104,23 @@ pelican_player --headless --project mygame --replay s.jsonl \
 | `stop_input_replay` | `{}` | リプレイ停止 |
 | `export_scene_snapshot` | `{schema_version:1, allow_pending?:false}` | current scene を含む全 authoring document の deterministic semantic bytes、SHA-256、revision を返す |
 | `import_scene_snapshot` | `{schema_version:1, semantic_scene_bytes, digest, current_scene_id}` | disk を上書きせず、検証済み snapshot を in-memory scene source として reload する |
+
+### エディタ拡張メソッド(詳細は[第13章](13_editor.md))
+
+上の表の `export_scene_snapshot` / `import_scene_snapshot` と合わせて、エディタトラックで増えたのは **23 メソッド**です(RPC は全部で 43 メソッド)。
+
+シーンの編集・履歴・プレビュー・保存のためのメソッド群です(✅WP154/156/157/158/161/166/168/170/172)。params と戻り値、**エラーが `result.status` に出る**という重要な作法は [第13章](13_editor.md) §13.5〜§13.6 にまとめてあります。
+
+| 分類 | メソッド |
+|---|---|
+| 読み取り | `scene_tree` / `get_components` / `get_scene_revision` / `list_assets` / `query_journal` / `can_edit` / `can_preview` |
+| セッション | `open_editor_session` / `resume_editor_session` |
+| 編集 | `edit` / `undo` / `redo` / `get_edit_result` |
+| チケットプレビュー | `open_preview` / `update_preview` / `commit_preview` / `abort_preview` / `get_preview_result` |
+| 隔離プレビュー | `eval_preview` / `render_preview` |
+| 保存 | `save_scene` |
+
+既存メソッドの変化: `get_status` に `scene_source`(シーンは**ホットリロード対象外**・保存は `save_scene`)が追加、`step_frame` の応答に `edit_results[]` が追加、`load_scene` / `reload_game_logic` / `start_input_replay` は進行中のプレビューを強制中止します。
 
 ### 実セッション例
 
@@ -265,7 +282,7 @@ cmake --build build-dist --config Release
 
 ※ AUDIO / PHYSICS 系は導出対象外(常に既定 ON)。B3(embed サブセット)・B4(shaderc OFF 焼き込み配布)は 📐設計のみ。
 
-## 10.5 ホットリロード(✅WP90/96〜110)
+## 10.5 ホットリロード(✅WP90/96〜110/147/162/178)
 
 保存すれば動いたまま反映される、が現在の開発体験です。基盤は [src/core/watch/](../../src/core/watch)(FileWatcher + ReloadService。デバウンス 200ms、適用は**次フレーム先頭で一括**、mid-frame 差し替えなし)。
 
@@ -274,15 +291,16 @@ cmake --build build-dist --config Release
 | シェーダ / `.surface`(+ `.material.json` の cross-file) | ✅WP108 | 影響する全バリアント・パイプラインを準備してから atomic に公開。失敗時は旧世代維持 + WARNING |
 | テクスチャ(PNG / EXR / KTX2) | ✅WP100 | 同 shape は in-place、shape 変化は再バインド(実測 ~1ms) |
 | マテリアル値(`.material.json`) | ✅WP105 | **同レイアウトのみ** SSBO 値更新(レイアウト変化は WARN + 旧値継続 🚧) |
-| モデルコンテナ(.glb / .gltf / .vrm) | ✅WP110 | 同一コンテナの全 fragment + 配置済み全インスタンスを 1 トランザクションで再構築(ID・Transform・物理は不変) |
-| ゲームロジック DLL | ✅WP90 | 下記 |
+| モデルコンテナ(.glb / .gltf / .vrm) | ✅WP110/147 | 同一コンテナの全 fragment + live instanceを1 transactionで再構築。animationは対象asset generationだけ更新し、別assetは継続 |
+| VRMA source/profile | 部分✅WP178 | generation/stale/rebind entry pointは済。FileWatcher/loaderからの自動配線は未 |
+| ゲームロジック DLL | ✅WP90/162 | 下記。candidateを旧DLLと並存side-decodeしてから切替 |
 | input actions / profile(HR2-I)、pelican.ui(U3) | 📐 | backlog Tier 1 |
 | scene JSON / rendering config / project.json | 対象外 | 設計上の決定(再起動) |
 
 - **有効条件**: ウィンドウモードのみ(既定 ON・専用フラグなし)。リプレイ / `--strict-assets` / rpc 駆動中は中央ゲートで無効。headless では自動監視しません。
 - **fail-soft**: 壊れたファイルを保存しても旧リソースで動き続け、名前入り WARNING と `get_status.reload.last_reload_error` に出ます。修正して保存し直せば回復します。
 
-### ゲームロジック DLL のホットリロード(✅WP90 = G2)
+### ゲームロジック DLL のホットリロード(✅WP90/162 = G2/BEH1)
 
 `-DPELICAN_PROJECT=<dir>` でプロジェクトの `code/` は **`pelican_game_logic.dll`** としてビルドされます(静的リンクからの移行 — [第8章](08_gameplay.md))。リロードのトリガーは 3 通り:
 
@@ -290,20 +308,28 @@ cmake --build build-dist --config Release
 2. **F5** で強制リロード
 3. rpc `reload_game_logic`
 
-v1 は **full-reset 方式**: システムの状態と ECS を全破棄し、現在のシーンを再構築します(ホットステートの維持はしません)。ABI バージョン検証付きで、ロード失敗時は旧 DLL のまま続行します。
+適用方式は **full-reset**: system state/ECS/behaviorを破棄して現在sceneを
+再構築し、hot stateは維持しません。ただしcandidate DLLは旧DLLと並存する
+registration-only phaseでABI、schema fingerprint、type継続性、全authored
+behavior paramsをside-decodeします。不適合なら旧DLL/runtimeを一切変えず拒否します。
 
 ### 起動高速化(✅WP82)
 
 - **シェーダディスクキャッシュ**: `<project>/.pelican/shader_cache/`(SHA-256 キー)。2 回目以降のシェーダコンパイルはほぼゼロに。破損しても WARN 1 行で通常コンパイルに戻ります。
 - **並列モデルロード**: CPU 側 prepare を並列化(GPU commit は宣言順直列 = 決定性維持)。起動時に 1 行レポート(`startup: ...`)が出て、`get_status.startup` でも見えます。
 
-## 10.6 ImGui 開発者 UI(✅WP85/86)
+## 10.6 ImGui 開発者 UI(✅WP85/86/159/164/170)
 
-`PELICAN_WITH_IMGUI`(既定 ON・配布は dist-config が常時 OFF)でビルドすると、**通常ウィンドウ起動時のみ** ImGui のデバッグ UI が使えます(headless / rpc / リプレイ / golden では無効)。
+`PELICAN_WITH_IMGUI`(既定 ON・配布は dist-config が常時 OFF)でビルドすると、**通常ウィンドウ起動時のみ** ImGui のデバッグ UI が使えます。**`--rpc` / headless / リプレイ / golden / XR セッション中は無効**です(そのため「GUI で触りながら外部エージェントも繋ぐ」ことは現状できません — [第13章](13_editor.md) §13.1)。
 
-- **F1** で表示トグル(専用 CLI フラグはありません)。メニューバー「Pelican」→ Frame Plan Viewer / Frame Stats(FPS・frame index・CPU 時間)/ ImGui Demo。
+- **F1** で表示トグル(専用 CLI フラグはありません)。メニューバー
+  「Pelican」から Frame Plan Viewer、Frame Stats、Asset Browser、
+  Object Tree / Inspector、ImGui Demoを開けます。
 - **Frame Plan Viewer**: フレームプランのノードグラフ可視化(パス = ノード、RT = エッジ。ホイールでズーム、中/右ドラッグでパン、左クリックで選択詳細)。データ源は `get_frame_plan` と同一の公開 JSON のみ — **D0(エディタ特権の禁止)準拠の第 1 実例**です。
-- すべて読み取り専用の可視化で、編集系のミューテーション経路はありません。
+- Asset Browserは読み取り専用です。Object Tree / Inspectorの編集は
+  ECS/renderer/PhysWorldへ直接触れず、RPCと同じtyped
+  `EditorCommandService`を通ります。schema-driven field、live/ticket
+  preview、undo/redo、atomic save、watch tokenによる再queryを備えます。
 
 ## 10.7 Pelican Studio(devstudio)
 
@@ -311,7 +337,11 @@ v1 は **full-reset 方式**: システムの状態と ECS を全破棄し、現
 
 > **設計決定(D0: エディタ特権の禁止・2026-07-08):** devstudio は公開契約(rpc / pelican_project / データ形式)の上に建つ 1 クライアントであり、エンジン内部への裏口 API を持たない。編集操作はまず rpc メソッドとして定義し、devstudio はそれを呼ぶだけ。
 
-計画段階(すべて 📐未着手): D1(プロジェクトを開く+埋め込みビューポート)→ D2(ピッキング+ギズモ+編集)→ D3(保存 round-trip + undo/redo)。ツール自作の入口は 3 つ: データツール(`pelican_project`)/ ライブツール(JSON-RPC)/ 組み込みビュー(将来)。ImGui オーバーレイ(§10.6)が D0 準拠ツールの先行実例です。
+共通editor基盤はWP149〜172で実装済みです: authoring document、typed
+query/edit、CAS/journal、undo/redo、atomic save、snapshot import、watch、
+isolated preview。未着手なのはQt client側のD1 embedded viewportとD2
+picking/gizmo、複数client WebSocketです。ツール自作の入口は
+`pelican_project`、JSON-RPC/`pelican_rpc.py`、ImGuiの三つです。
 
 ## 10.8 テスト基盤
 
@@ -319,12 +349,14 @@ v1 は **full-reset 方式**: システムの状態と ECS を全破棄し、現
 - 結合テスト: `test/run_*.cmake` が player / cli を子プロセス起動して検証。2026-07-10 以降の追加: `run_devcli_assets`(WP66)/ `run_event_schema_compile`(WP71)/ `run_dump_lowered_material`(WP76)/ `run_devcli_gltf_extract`(WP79)/ `run_spvlink_golden`(WP80)/ `run_devcli_rules_import`(WP84)/ `run_devcli_bake_camera` + `run_input_record_replay_headless`(WP89)/ `run_ui_u2_rpc_replay`(WP93)など。
 - ゴールデンイメージテスト: **49 ケース**(ディレクトリ自動発見。[第6章](06_rendering.md) §6.10)。
 - ctest 非登録のスモーク: `run_build_units_smoke.cmake`(IMGUI / PHYSICS 系を含む単独 OFF ビルド検証)、`run_project_code_smoke.cmake`。
-- **CI(✅WP137)**: GitHub Actions の Windows **CPU ゲート**が push/PR で回ります(`.github/workflows/`)。GPU 必須テストは `gpu` ラベルで除外し、`SKIP` は完全一致 allowlist のみ許可(想定外の SKIP はゲート失敗)・リトライなし。
+- **CI(✅WP137/165)**: push/PRのWindows CPU gateに加え、手動/週次の
+  build-unit OFF/Jolt/project-code/clean-clone matrixがあります。GPU testは
+  `gpu` labelで除外し、`SKIP`はexact allowlist、retryなし。GPU CI2は未。
 
 ## 関連文書
 
 - [../external_tools_requirements.md](../external_tools_requirements.md) — 外部ツール契約(R1〜R10。JSON-RPC は R8)
-- [../design_asset_hot_reload.md](../design_asset_hot_reload.md) — アセットホットリロード(v2.1・HR0〜HR2-G 実装済み)
+- [../design_asset_hot_reload.md](../design_asset_hot_reload.md) — アセットホットリロード(v2.1・HR0〜HR2-G + targeted animation generation 実装済み)
 - [../design_game_logic_native.md](../design_game_logic_native.md) — ゲームロジック(G2 DLL リロード実装済み)
 - [../design_devstudio_direction.md](../design_devstudio_direction.md) — エディタの方向性(D0〜D3)
 - [../design_build_tiers.md](../design_build_tiers.md) — ビルドユニット・配布

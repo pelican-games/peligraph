@@ -1,10 +1,11 @@
 # 第8章 ゲームロジック
 
-対象: pelican2(2026-07-17 時点)/ このマニュアルはコードを正とする
+対象: pelican2(2026-07-21 時点)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
 - ゲームコード(C++)の書き方 — システム登録・`GameContext`・オブジェクト操作・DLL ホットリロード
+- **オブジェクト behavior**(`PELICAN_REGISTER_BEHAVIOR` — シーンに貼れる振る舞い。✅WP155/162/167)
 - イベント層(emit と購読、フレーム境界配送)
 - シーン遷移・カメラ(コントローラ含む)・物理クエリ(shapeCast / moveAndSlide)の使い方
 - 決定性(固定ループ順序・決定的乱数・シード)— 「なぜ毎回同じ結果になるのか」
@@ -100,7 +101,8 @@ PELICAN_REGISTER_SYSTEM(Type, order);
 - システム型は `void update(GameContext&)` と `void onEvent(const E&, GameContext&)` の**どちらか(または両方)**を持つ必要があります(どちらも無いと登録時エラー)。
 - 実行点は毎フレーム「ECS システム群の後・描画の前」。
 - **順序は order 昇順 → 同値は型名の辞書順**。静的初期化順に依存しない決定的順序です。
-- インスタンスは関数ローカル static のシングルトンで、**シーン切替をまたいで生存**します(§8.6 の落とし穴参照)。
+- behavior 全体は **`"BehaviorSystem"`(order = 50)という 1 個のシステム**としてこの順序に参加します(§8.5)。`order < 50` のシステムは全 behavior より前、`> 50` は後に走ります。
+- インスタンスは関数ローカル static のシングルトンで、**シーン切替をまたいで生存**します(§8.7 の落とし穴参照)。
 - エンジン組み込みのカメラコントローラは order **10000** で登録されています。ゲームが order < 10000 を使えば、カメラ追従はそのフレームのゲーム更新後の transform を見ます。
 
 ### フレームループの固定順序(決定性の土台)
@@ -123,17 +125,18 @@ rpc の `step_frame` も**同一順序**を再現します。「rpc 駆動のテ
 | 時刻 | `time()` / `deltaTime()` / `frameIndex()` | |
 | ログ | `logInfo/Warning/Error(msg)` | rpc モードでは stdout が使えないため、ログは必ずこれで |
 | オブジェクト | `createObject(LocalTransformComponent)` / `removeObject(id)`→bool / `localTransform(id)` / `setLocalTransform(id, t)`→bool | `setLocalTransform` は描画側へも即時伝播 |
-| スプライト | `createSpriteObject(transform, sprite)` / `spriteView(id)`→optional / `setSpriteView(id, s)`→bool / `setSpriteTexture(id, tex)`→bool | §8.13(✅WP103) |
-| 物理 | `raycastClosest(ray)` / `raycastClosest(ray, filter)` / `raycastAll(ray, filter)` / `overlapAll(shape)` / `overlapAllHits(shape, filter)` / `shapeCastAll` / `shapeCastClosest` | §8.7。filter 付き overload は stable identity 付きヒットを返す |
-| カメラ | `setCamera(name)` | §8.8 |
-| 乱数 | `random()` / `randomInt(min,max)` / `randomFloat(min,max)` / `setSeed(u64)` / `seed()` | §8.9 |
-| 音 | `playSound(path)`→SoundHandle / `stopSound(h)` / `setBusVolume(bus,v)` / `isPlaying(h)` | §8.10 |
-| シーン | `loadScene(name)` / `currentScene()` | §8.6 |
-| 永続化 | `gameSettings()` / `setGameSettings(json)` / `saveSettings()` / `saveData(slot, json)` / `loadData(slot)`→optional / `listSaves()` | §8.11(✅WP65) |
+| スプライト | `createSpriteObject(transform, sprite)` / `spriteView(id)`→optional / `setSpriteView(id, s)`→bool / `setSpriteTexture(id, tex)`→bool | §8.14(✅WP103) |
+| 物理 | `raycastClosest(ray)` / `raycastClosest(ray, filter)` / `raycastAll(ray, filter)` / `overlapAll(shape)` / `overlapAllHits(shape, filter)` / `shapeCastAll` / `shapeCastClosest` | §8.8。filter 付き overload は stable identity 付きヒットを返す |
+| カメラ | `setCamera(name)` | §8.9 |
+| 乱数 | `random()` / `randomInt(min,max)` / `randomFloat(min,max)` / `setSeed(u64)` / `seed()` | §8.10 |
+| 音 | `playSound(path)`→SoundHandle / `stopSound(h)` / `setBusVolume(bus,v)` / `isPlaying(h)` | §8.11 |
+| シーン | `loadScene(name)` / `currentScene()` | §8.7 |
+| 永続化 | `gameSettings()` / `setGameSettings(json)` / `saveSettings()` / `saveData(slot, json)` / `loadData(slot)`→optional / `listSaves()` | §8.12(✅WP65) |
+| ライト | `setDirectionalLightDirection(name, dir)` / `setDirectionalLightIntensity(name, f)` / `setPointLightPosition(name, pos)` / `setSpotLightDirection(name, dir)` — いずれも→bool | ✅WP142。[第4章](04_scene_ecs.md) §4.2 の light をオブジェクト `name` で指す。未知名は例外ではなく **false** が返る |
 | HUD | `debugText(x, y, text)` | debug_text feature 未参照時は no-op([第7章](07_input_ui.md)) |
-| イベント | `emit(const Event&)` | §8.5 |
+| イベント | `emit(const Event&)` | §8.6 |
 
-アニメーション操作の API は GameContext に**ありません** — クリップは宣言的コンポーネント([第4章](04_scene_ecs.md))、グラフは独立した公開評価器(§8.12)です。
+アニメーション操作の API は GameContext に**ありません** — クリップは宣言的コンポーネント([第4章](04_scene_ecs.md))、グラフは独立した公開評価器(§8.13)です。
 
 ### actionPose(✅WP132 — XR 姿勢入力)
 
@@ -150,7 +153,148 @@ if (head.valid && head.source == Pelican::ActionPoseSource::synthetic_head) {
 
 未知の名前(アクション・シーン・カメラ・オブジェクト・イベント)は**すべて名前入りの例外**になります。「静かに無視」はこのエンジンには存在しません(fail-fast の一貫した文化)。
 
-## 8.5 イベント層(✅WP56)
+## 8.5 オブジェクト behavior — もう一つのゲームコードの書き方(✅WP155/162/167)
+
+ゲームシステム(§8.3)が「プロセスに 1 個・シーン全体を見る処理」なのに対し、**behavior は「オブジェクトに貼りつける振る舞い」**です。シーン JSON にパラメータごと書けて、エディタから付け外しもできます。
+
+> **設計決定(engine-owned arena):** behavior は ECS コンポーネントではなく、light / collider と同じ「特別扱いのコンポーネント」としてエンジン所有の attachment arena に入る。理由は、ゲーム DLL の型をエンジンの ECS チャンクに載せずに、ホットリロード時の世代交代(§8.5.6)とエディタからの付け外しを安全に行うため。
+
+### 8.5.1 最小の実例
+
+`test/fixtures/behavior_game_dll/behavior.cpp`(実物・全文):
+
+```cpp
+#include <behavior.hpp>
+
+#include <string>
+
+namespace {
+
+struct ProjectBehaviorParams {
+    std::string label;
+
+    static constexpr auto schema = Pelican::structFields(
+        Pelican::behaviorParamsPolicy,
+        Pelican::defaulted(Pelican::field<&ProjectBehaviorParams::label>("label"),
+                           "default"));
+};
+
+class ProjectBehavior final : public Pelican::Behavior {
+  public:
+    using Params = ProjectBehaviorParams;
+
+    void onInit(Pelican::BehaviorContext &ctx) override {
+        ctx.logInfo("WP155 behavior init label=" + ctx.params<Params>().label);
+    }
+
+    void onEvent(const Pelican::SceneLoaded &, Pelican::BehaviorContext &ctx) {
+        ctx.logInfo("WP155 behavior event label=" + ctx.params<Params>().label);
+    }
+
+    void onUpdate(Pelican::BehaviorContext &ctx) override {
+        ctx.logInfo("WP155 behavior update label=" + ctx.params<Params>().label);
+    }
+
+    void onDestroy(Pelican::BehaviorContext &ctx) noexcept override {
+        ctx.logInfo("WP155 behavior destroy label=" + ctx.params<Params>().label);
+    }
+};
+
+} // namespace
+
+PELICAN_REGISTER_BEHAVIOR(ProjectBehavior, "wp155_project_behavior", 1);
+```
+
+シーン側([第4章](04_scene_ecs.md) §4.2):
+
+```json
+{ "name": "BehaviorOnly", "components": [
+    { "name": "behavior", "type": "wp155_project_behavior", "params": { "label": "second" } }
+] }
+```
+
+- include は **`<behavior.hpp>` 1 本**だけで足ります。
+- マクロの引数は `(C++ 型, 永続名, schema バージョン)`。**永続名と C++ 型名は分離**されているので、クラス名を変えてもシーン JSON は壊れません。
+- ⚠ 現時点で `projects/` 配下に behavior を使うサンプルはありません。実例はすべて `test/fixtures/behavior_game_dll/` ・ `behavior_reload_dll/` ・ `physics_trigger_behavior/` にあります。
+
+### 8.5.2 クラスの決まりごと
+
+| 項目 | 規則 |
+|---|---|
+| 基底 | `Pelican::Behavior` の継承が必須(コンパイル時 static_assert) |
+| ライフサイクル | `onInit` / `onUpdate` / `onDestroy` は **virtual**(`override` を付ける)。`onDestroy` は **`noexcept` 必須** |
+| イベント購読 | `onEvent(const E&, BehaviorContext&)` は **virtual ではない**(concept で検出され型消去される)。`override` は付けない |
+| `Params` | `Type::Params` と `Params::schema` が必須。default 構築可能かつ **nothrow swappable**(値の差し替えを atomic に行うため) |
+| 登録名 | 空文字は登録時エラー。同名の重複、エンジン側との衝突も名指しエラー |
+| schema バージョン | 1 以上(0 はエラー) |
+
+`onEvent` を持たせるときは、**同一翻訳単位で `PELICAN_REGISTER_EVENT(E)` → behavior 型定義 → `PELICAN_REGISTER_BEHAVIOR`** の順に書いてください(§8.6 のシステムと同じ制約です)。`onDestroy` から例外が漏れた場合は握りつぶされ、ERROR ログが出ます。
+
+### 8.5.3 params(型付きパラメータ)
+
+```cpp
+static constexpr auto schema = Pelican::structFields(
+    Pelican::behaviorParamsPolicy,
+    Pelican::defaulted(Pelican::field<&P::speed>("speed", Pelican::frange(0.0, 20.0), "m/s"), 4.0f),
+    Pelican::defaulted(Pelican::field<&P::can_jump>("can_jump"), true));
+```
+
+(例 — 書式は `test/behaviorarena_test.cpp` の実物に準拠)
+
+- **すべてのフィールドが `defaulted(...)` 必須**です(`required(...)` はコンパイルエラー)。シーン JSON 側で `params` を省略しても全部既定値で成立します。イベントペイロード([第7章](07_input_ui.md)の EventPayloadSchema)とは逆の規約なので注意してください。
+- 使える型: 整数各種 / `F32` / `F64` / `Vec2〜4` / `Quat` / `String` / **`Bool`** / **`Enum`**(`enumValues(...)` 必須・最大 8 個)。ネストした構造体・配列・任意 JSON は使えません。
+- 範囲は `irange` / `urange` / `frange`、単位文字列は `field<&P::x>("x", range, "m/s")` の第 3 引数。これらは**インスペクタのウィジェットにそのまま反映**されます([第13章](13_editor.md))。
+- 未知キー・型不一致・範囲外はすべて `field 'params.speed' is out of range` の形式で**フィールドパス付きの名指しエラー**になります。
+- 適用は「既定値で構築 → 存在するキーだけ適用 → 全検証成功後に swap」。途中で失敗しても既存の値は一切変わりません。
+- `ctx.params<Params>()` は非 const 参照を返すので実行中に書き換えられますが、**その変更は永続化されません**(リロードやシーン再構築で authoring 値に戻ります)。
+
+### 8.5.4 BehaviorContext
+
+`BehaviorContext` は **`GameContext` を継承**しているので、§8.4 の API(入力・時刻・ログ・物理クエリ・乱数・音・シーン遷移・永続化・`emit`)はそのまま使えます。追加されるのは次の 4 つです:
+
+| API | 意味 |
+|---|---|
+| `self()` | 自分が貼られているオブジェクトの `GameObjectId` |
+| `attachment()` / `attachmentSeq()` | attachment のハンドルと決定的な連番 |
+| `params<Params>()` | 型付きパラメータへの参照(型が違えば `std::logic_error`) |
+
+- `createObject` / `createSpriteObject` / `removeObject` も呼べますが、**構造変更は次の behavior 境界まで遅延**されます。生成系は常に `invalidGameObjectId` を返す(その場では ID が取れない)点に注意してください。
+- `GameObjects::removeAll()` を behavior のコールバック中に呼ぶと `std::logic_error` になります。
+
+### 8.5.5 実行順とライフサイクル(決定性)
+
+- behavior 全体は **`"BehaviorSystem"`(order = 50)という 1 個のゲームシステム**として、他のゲームシステムと同じ `(order, 型名)` の全順序に並びます。つまり `order < 50` のシステムは全 behavior より前、`order > 50` は後に走ります(ビルトインのカメラコントローラは 10000)。
+- attachment どうしの順序は `attachment_seq` の昇順。シーンロード時の seq は**宣言順**(オブジェクト順 → コンポーネント順)から決まります。
+- **生成**: シーンの entity/collider/light を publish した後、`attachment_seq` 昇順に `onInit`。途中で例外が出たら、それまでに init 済みのものを逆順に `onDestroy` して全部巻き戻し、例外を投げ直します(このとき失敗した本人の `onDestroy` は呼ばれません)。`SceneLoaded` の emit はその後です。
+- **破棄**: `attachment_seq` の**逆順**に `onDestroy`。**entity がまだ生きているうち**に呼ばれるので、`ctx.self()` から transform や物理を触れます。
+- 更新・イベント配送はどちらも開始時に有効な attachment のスナップショットを取ってから走るため、途中で消えたオブジェクトは安全にスキップされます。
+
+### 8.5.6 DLL ホットリロードとの関係(✅WP162)
+
+ゲームロジック DLL を差し替える([第10章](10_tools.md) §10.5)と、behavior は次の規律で世代交代します:
+
+| 新 DLL の状態 | 結果(エラーはリロード拒否 = 旧 DLL 継続) |
+|---|---|
+| 旧 DLL にあった登録名が消えた | `behavior_type_removed: stable_name='X' version=1` |
+| schema を変えたのにバージョン据え置き | `schema_changed_without_version_bump: ...` |
+| バージョンを上げたが既存 params が新 schema で読めない | `schema_incompatible: ... scene='...' object_index=0 field='params.count': ...` |
+
+- バージョンを上げたときは、**現在ロードしていないシーンも含めて**全 behavior の params が新 schema で読めることが条件です。
+- リロード後、behavior のインスタンス状態(メンバ変数)は失われ、params は authoring 値から再構築されます(full-reset 方式)。
+
+### 8.5.7 ゲームシステムとの使い分け
+
+| | ゲームシステム `PELICAN_REGISTER_SYSTEM` | behavior `PELICAN_REGISTER_BEHAVIOR` |
+|---|---|---|
+| 実体の数 | プロセスに 1 個 | 貼った attachment ごとに 1 個 |
+| 対象 | 自分で `GameObjectId` を管理 | `ctx.self()` が自オブジェクト |
+| データの与え方 | ハードコード / 自前で JSON を読む | **シーン JSON の `params`**(型付き・インスペクタ編集可) |
+| シーン切替 | インスタンスは**生き残る**(§8.7 の落とし穴) | **破棄され、新シーンで作り直される** |
+| エディタ | 触れない | attach / remove / params 編集 + undo([第13章](13_editor.md)) |
+
+指針としては、**「シーン全体を見る 1 つの処理」(入力ディスパッチ・グローバル状態・演出)はゲームシステム、「このオブジェクトはこう振る舞う」+「値をシーンデータとして持たせたい」は behavior** です。ユーザー定義の ECS コンポーネント登録 API は今も存在しないため([第4章](04_scene_ecs.md) §4.4)、**オブジェクト固有の authored データを持たせる唯一の公開手段が behavior params** でもあります。
+
+## 8.6 イベント層(✅WP56/71/179)
 
 > **設計決定(フレーム境界配送):** `emit` はフレーム中いつでもできるが、**配送は次フレームの頭**(全システム update 前)。同一フレーム内の即時配送はしない — システム実行順に依存する非決定性を絶つため。配送順は emit 順。「今すぐ知りたい」ものはイベントではなくクエリ API(raycast 等)を使う(イベントは通知、クエリは質問)。
 
@@ -172,10 +316,21 @@ void onEvent(const DoorOpened &e, Pelican::GameContext &ctx);
 - イベント名は型名の最後の `::` 以降(`Pelican::SceneLoaded` → `"SceneLoaded"`)。名前空間違いの同名型は起動時に衝突エラーになります。
 - ペイロードは値コピーで保持されます(1 フレーム跨ぐため、参照・ポインタは入れない)。
 - **同一翻訳単位内で `PELICAN_REGISTER_EVENT` → 型定義 → `PELICAN_REGISTER_SYSTEM` の順**に書いてください。システム登録マクロは、その時点で見えているイベントカタログだけを購読対象にします。
-- エンジンが発行するイベントは現在 **`SceneLoaded { scene_name }` のみ**です(起動時の初回ロードでも emit されます)。設計文書にある `OverlapEnter` / `OverlapExit`(物理トリガー)は 📐E2 未実装です。
+- エンジンが発行するイベントは `SceneLoaded { scene_name }` と、
+  物理トリガーの `OverlapEnter { self, other }` /
+  `OverlapExit { self, other }` です。`self` / `other` は generation を含む
+  full `EntityId` で、同じ pair を両オブジェクト視点へ配送します。
 - rpc の `inject_event` で外部からもイベントを注入できます(`ref()` を持つ型は JSON からペイロード構築)。
+- behavior も同じ `onEvent` でイベントを受けられます(§8.5)。書く順序の制約(`PELICAN_REGISTER_EVENT` → 型定義 → 登録マクロ)も同じです。
 
-## 8.6 シーン遷移(✅WP52)
+### 使い分けの作法(フレーム境界配送を前提にした設計)
+
+配送が次フレームである以上、**イベントで因果を積み上げると 1 つ進むごとに 1 フレーム遅れます**。次の 2 つを守ってください:
+
+- **同じフレームのうちに結果が要るものは、イベントではなく直接呼び出しかクエリで書く。** 「今ぶつかっているか」は `raycast` / `overlap` で問い合わせ、「ぶつかった**という出来事**を他所に知らせる」ときだけイベントにします。
+- **多段の連鎖(A→B→C→D)はイベントで繋がず、1 つのイベントに畳む。** 3 段連鎖は 3 フレームの遅れになります。中間状態を持つ側が一度にまとめて処理し、外に出す通知だけをイベントにします。
+
+## 8.7 シーン遷移(✅WP52)
 
 ```cpp
 ctx.loadScene("scene_flow_second");   // 予約(名前はその場で検証。未知名は即例外)
@@ -190,7 +345,7 @@ ctx.loadScene("scene_flow_second");   // 予約(名前はその場で検証。�
 
 システムのインスタンスは static シングルトンなので、メンバに保持した `GameObjectId` は切替後「死んだ ID」になります(`setLocalTransform` / `removeObject` は false を返し、`localTransform` は例外になり得ます)。**`SceneLoaded` の `onEvent` で状態をリセットする**のが正道です。「シーンをまたいで残るオブジェクト」(persistent)の仕組みは v1 にはありません。
 
-## 8.7 物理クエリ(✅P1/P2/WP107)
+## 8.8 物理クエリとトリガー(✅P1/P2/WP107/179)
 
 > **設計決定:** ランタイム物理シミュレーションは「やらない」ではなく「**後**」(2026-07-07 決定)。現在は raycast / overlap / shapeCast の query world。Jolt は query provider として実装済みですが、剛体 step/constraint を持つシミュレーションは未実装です。映像用の破壊・布は Houdini ベイク(transform_seq / VAT)レーンが担当([第5章](05_assets.md))。
 
@@ -220,12 +375,18 @@ if (auto hit = ctx.shapeCastClosest(player, {0, -4, 0})) {
 - collider metadata は scene component に `layer`(既定 1)、`mask`(既定 `0xffffffff`)、`trigger`、`one_way`(既定 false)で指定します。詳細 query overload の `QueryFilter` で reciprocal layer/mask、self/ignore、trigger/one-way inclusion を制御できます。
 - **決定性の規約**: shapeCast の TOI tie は ε=`1e-5` bucket 後に stable `ColliderId`、full entity generation、shape ordinal の順です。MTD tie は移動の逆向きを優先し、その後 world x/y/z で固定します。closest は同じ ordered all-hit の先頭です。方向付き one-way policy は `shapeCastAll` を順に評価するため、無視した後の「次の床」を再 query せず続行できます。
 - 初期 penetration が ε より深ければ TOI 0 + MTD。接触だけなら接近中に限り TOI 0、静止/離反では hit になりません。zero delta は depenetration query です。
-- `one_way` は metadata です。前位置や接近方向から「通す/乗る」を決める policy は、WP109 の標準ユーザー空間ライブラリ `platformer::moveAndSlide` が担当します。`trigger=true` も query filter には使えますが、enter/exit イベントは E2 未実装です。
+- `one_way` は metadata です。前位置や接近方向から「通す/乗る」を決める policy は、WP109 の標準ユーザー空間ライブラリ `platformer::moveAndSlide` が担当します。
+- `trigger=true` は物理応答を行わない検知専用 collider です。query では
+  既定で通常の hit として見え、`QueryFilter::include_triggers=false` で
+  除外できます。overlap 開始時に `OverlapEnter`、終了時に
+  `OverlapExit` を各 pair の両視点へ一度だけ emit し、stay は送りません。
+  entity destroy / collider remove は次の trigger update で Exit、scene
+  全 reset は旧 EntityId が無効になる domain boundary として Exit なしです。
 - Provider ABI V2 により Builtin/Jolt/game DLL provider を capability 単位で差し替えます。Jolt header は engine/game の公開型へ出ません。physics-off と provider-only build では不要な backend をリンクしません。
 - **プロバイダの選択はビルド時**です: `PELICAN_WITH_BUILTIN_PHYSICS`(既定 ON)/ `PELICAN_WITH_JOLT_PHYSICS`(既定 OFF。両方 ON なら Jolt が勝つ)。project.json や実行時の切替はありません。クエリ契約(順序・タイブレーク)はプロバイダによらずエンジン側が所有するため、通常は意識不要です。ゲーム DLL から capability 単位で provider をオーバーレイする上級拡張点(`physics/abi_v1.hpp` / `abi_v2.hpp` — raycast だけ独自実装し残りはフォールバック、等)もあります。
 - transform 追従は現行では毎フレーム再収集(BVH 等の加速構造なし — 計測してから見直す方針)。capsule の軸はローカル Y、box は OBB(回転対応)です。
 - `debug_draw` feature を rendering config で参照していると collider のワイヤフレームが描画されます([第6章](06_rendering.md))。
-- 📐未実装: rpc の query メソッド、メッシュコライダ/BVH、物理トリガーイベント、剛体シミュレーション。
+- 📐未実装: rpc の query メソッド、メッシュコライダ/BVH、剛体シミュレーション。
 
 ### 8.7.1 side-scroller controller(WP109)
 
@@ -252,7 +413,7 @@ Builtin/Jolt/game DLL provider の交換、ゲーム独自 controller への置�
 不使用が可能です。step-up、coyote time、moving platform はゲーム固有 policy として
 この最小 helper の外に残しています。実例は `projects/sprite_demo` を参照してください。
 
-## 8.8 カメラ(✅C1/C2 = WP48/50)
+## 8.9 カメラ(✅C1/C2 = WP48/50)
 
 カメラは「**定義**(glTF 1:1 の投影)/ **コントローラ**(orbit・follow・fly)/ **演出**(カット切替など)」の三層設計です。定義とコントローラの書き方(シーン JSON)は [第4章](04_scene_ecs.md) §4.2 を参照してください。
 
@@ -261,7 +422,7 @@ Builtin/Jolt/game DLL provider の交換、ゲーム独自 controller への置�
 - damping はブレンド重み `1 - exp(-damping * dt)` で、0 なら即時追従。パラメータ変更やフレーム巻き戻し(rpc `set_time`)を検出すると内部状態を自動リセットします(決定性のため)。
 - 📐未実装(C3 以降): glb カメラノードの取り込み/書き出し round-trip、transform_seq のカメラトラック、ブレンド・シェイク。
 
-## 8.9 決定性 — なぜ毎回同じ結果になるのか
+## 8.10 決定性 — なぜ毎回同じ結果になるのか
 
 > **設計決定:** エンジン内部の判定に wall clock・`std::rand`・`random_device` を使わない。乱数は **PCG32 の自前実装**(distribution も自前)で、プラットフォーム・コンパイラに依存しない列を生成する(`std::mt19937` + `std::uniform_*` は処理系差があるため不採用)。シードの既定は **0(固定)** — 「毎回違う」が欲しいゲームは自分で `ctx.setSeed(エントロピー)` を呼ぶ。
 
@@ -280,7 +441,7 @@ Builtin/Jolt/game DLL provider の交換、ゲーム独自 controller への置�
 
 ウィンドウモードの時刻は実測 dt(上限 0.1 秒でクランプ)なので、厳密なリプレイ互換が必要な検証はヘッドレスで行ってください。
 
-## 8.10 オーディオ(✅A1 = WP51)
+## 8.11 オーディオ(✅A1 = WP51)
 
 ```cpp
 auto h = ctx.playSound("assets/audio/shot.wav");  // WAV のみ。戻り値はハンドル
@@ -294,7 +455,7 @@ ctx.stopSound(h);
 - `PELICAN_WITH_AUDIO=OFF` ビルドで音 API を呼ぶと、どのフラグで無効化されたかを言うエラーになります。
 - ⚠️ 現状の制限: `playMusic`(ループ BGM)は未実装で、**すべての再生は se バス固定**です。`setBusVolume("bgm")` は受理されますが、bgm バスに音を載せる手段がまだありません。Ogg/ストリーミング/3D 音響も 📐未実装です。
 
-## 8.11 永続化(✅WP65)
+## 8.12 永続化(✅WP65)
 
 保存先は `user://`([第3章](03_project_format.md) §3.3。Windows 実体は `%APPDATA%/pelican/<プロジェクト name>/`)。プロジェクトディレクトリへの書き込みは設計上禁止です(読み取り専有原則)。
 
@@ -330,7 +491,7 @@ auto slots  = ctx.listSaves();                           // {slot, timestamp} �
 - **例外挙動の非対称に注意**: 書き込み系(`saveSettings` / `saveData`)は失敗で例外、読み込み系(`loadData`)は throw せず `nullopt` を返します(起動フローを壊さないため)。
 - 書き込みはすべて atomic(tmp + rename)。削除 API(`deleteSave`)や rpc 経由の永続化メソッドはまだありません。
 
-## 8.12 アニメーション再生(✅WP38/94/97/101/102)
+## 8.13 アニメーション再生(✅WP38/94/97/101/102/176〜178)
 
 3 つのレベルがあります。
 
@@ -400,9 +561,26 @@ svc->set_expression_input(input);
 - **bone lookAt / firstPerson(S1c)**: `animation/pose_staging_v1.hpp` の pose staging で eye bone の回転を段階適用。firstPerson `auto` はロード時に頭部メッシュを決定的に分割し、**XR の両眼 = 頭部非表示 / flat・ミラー = 全身**が自動で切り替わります。
 - 完成例は [projects/vrm_xr_demo](../../projects/vrm_xr_demo)(表情サイクル + 視線追従 + XR。エンジン変更ゼロで userpublic ヘッダのみ)。
 
-制限: joint 128 / 補間 LINEAR・STEP のみ / モーフの weight 駆動は VRM expression service 経由のみ(クリップの weights チャネルは非対応)/ IK・root motion 適用なし。決定性は「同一ビルドで byte 一致」です。
+5. **VRMA typed AnimationSource(✅WP176〜178)** — `.vrma` を
+   `VRMC_vrm_animation` 1.0 の GLB alias として decode し、body / expression /
+   gaze を別 channel のまま保持します。版付き retarget profile が humanoid
+   mapping、rest/T-pose 差、optional bone、hips scale を解決し、named source
+   として既存 graph の `clip` / `blend1d` から利用できます。expression / gaze
+   は joint Pose に混ぜず、body と同じ frame revision で VRM application sink
+   へ送られます。
 
-## 8.13 2D スプライトの操作(✅WP103/106)
+VRMA source/profile の差し替えは generation を進め、旧 metadata/cursor/graph
+pose を `stale_generation` にします。`EvaluatorV1::rebind()` は新 rig/profile
+へ再束縛し、古い cursor time や transition snapshot を暗黙再利用しません。
+ただし現在は decoder/retarget/source registry の接続面までで、project asset の
+自動 FileWatcher 配線は未実装です。
+
+制限: native clip path は joint 128 / 補間 LINEAR・STEP、morph の weight 駆動は
+VRM expression service 経由のみ(通常クリップの weights channel は非対応)。
+VRMA を含め IK・root motion の object-transform 適用はありません。決定性は
+「同一ビルドで byte 一致」です。
+
+## 8.14 2D スプライトの操作(✅WP103/106)
 
 シーン JSON の `sprite_view`([第4章](04_scene_ecs.md) §4.2)に加えて、C++ から生成・操作できます(実物: [../../projects/sprite_demo/code/flipbook_demo.cpp](../../projects/sprite_demo/code/flipbook_demo.cpp)):
 
@@ -425,16 +603,17 @@ const Pelican::sprite::FlipbookClip walk{
 walk.apply(ctx, id, local_time);   // local_time はゲームが管理(例: 接地中のみ加算)
 ```
 
-2D の移動・接地は §8.7.1 の `platformer::moveAndSlide`、pixel perfect は [第6章](06_rendering.md) §6.9 を参照してください。`projects/sprite_demo` が「入力 → moveAndSlide → transform 反映 → flip/flipbook → 着地イベント emit」を 1 ファイルで通した完成例です。
+2D の移動・接地は §8.8.1 の `platformer::moveAndSlide`、pixel perfect は [第6章](06_rendering.md) §6.9 を参照してください。`projects/sprite_demo` が「入力 → moveAndSlide → transform 反映 → flip/flipbook → 着地イベント emit」を 1 ファイルで通した完成例です。
 
 ## 関連文書
 
 - [../design_game_logic_native.md](../design_game_logic_native.md) — ネイティブゲームロジックの設計
-- [../design_event_layer.md](../design_event_layer.md) — イベント層(E2 は未実装)
+- [../design_object_behaviors.md](../design_object_behaviors.md) — オブジェクト behavior(v2.1。§8.5 の設計側。実装と食い違う箇所はコードが正)
+- [../design_event_layer.md](../design_event_layer.md) — イベント層 v1.1(E1/E2 実装済み、Stay は未採用)
 - [../design_scene_flow.md](../design_scene_flow.md) — シーン遷移(S2 は未実装)
 - [../design_physics_queries.md](../design_physics_queries.md) — 物理クエリと将来のシミュレーション方針
 - [../design_camera_system.md](../design_camera_system.md) — カメラ三層
 - [../design_determinism_services.md](../design_determinism_services.md) — 決定的乱数とシード規約
 - [../design_audio.md](../design_audio.md) — オーディオ
 - [../design_persistence.md](../design_persistence.md) — user:// と設定/セーブ三区分
-- [第4章 シーンと ECS](04_scene_ecs.md) / [第7章 入力と UI](07_input_ui.md) / [第10章 ツールリファレンス](10_tools.md)
+- [第4章 シーンと ECS](04_scene_ecs.md) / [第7章 入力と UI](07_input_ui.md) / [第10章 ツールリファレンス](10_tools.md) / [第13章 エディタ](13_editor.md)

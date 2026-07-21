@@ -1,6 +1,6 @@
 # 第2章 ビルドと起動
 
-対象: pelican2(2026-07-17 時点)/ このマニュアルはコードを正とする
+対象: pelican2(2026-07-21 時点)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
@@ -68,6 +68,13 @@ cmake . -B build -DSKIP_DEVSTUDIO=ON
 
 OFF でビルドした機能を使おうとすると、黙って無視されるのではなく `This binary was built with PELICAN_WITH_X=OFF: ...` という**名指しのエラー**で止まります(fail-fast 方針。[第1章](01_overview.md) 参照)。
 
+ビルドユニットではありませんが、同じ [CMakeLists.txt](../../CMakeLists.txt) には次の 2 オプションもあります:
+
+| オプション | 既定 | 内容 |
+|---|---|---|
+| `PELICAN_ENABLE_ASAN` | OFF | AddressSanitizer 付きでビルドする(テストビルド想定) |
+| `PELICAN_PROJECT` | 空(CACHE PATH) | `code/` をホットリロード可能なゲーム DLL としてビルドする対象プロジェクト(§2.4) |
+
 ## 2.3 example プロジェクトを起動する
 
 リポジトリには実プロジェクトの例 [projects/example](../../projects/example) が入っています。
@@ -78,7 +85,16 @@ build/src/player/Debug/pelican_player.exe --project projects/example
 
 `--project` は**任意の作業ディレクトリから**実行できます(パス解決に cwd を使わないため)。相対パスは cwd 基準で絶対化されます。
 
-> **注意(重要):** example の **3D モデルやテクスチャなどのバイナリアセットは git 管理されていません**。[projects/example/README.md](../../projects/example/README.md) に「ファイルパス / 入手元 / sha256 / サイズ」の一覧表があるので、記載どおりのファイルを配置してからフルシーンを起動してください。手元にバイナリが無い状態で試したい場合は、次節の `project init` から始めるのが確実です。
+> **注意(重要):** example の **3D モデルやテクスチャなどのバイナリアセットは git 管理されていません**。「ファイル / サイズ / SHA-256 / 出所 / ライセンス」の一覧表は [../example_assets.md](../example_assets.md) にあるので、記載どおりのファイルを配置してからフルシーンを起動してください。
+
+アセットストアの解決先と、まだ供給されていないファイルは、マニフェスト対応のコマンドで確認できます(手順の正本は [projects/example/README.md](../../projects/example/README.md)):
+
+```sh
+pelican_cli assets status --project projects/example
+pelican_cli assets verify --project projects/example
+```
+
+手元にバイナリが無い状態で試したい場合は、次節の `project init` から始めるのが確実です。
 
 example のほかに、機能別のデモプロジェクトが 3 つあります(いずれも同様に `--project` で起動):
 
@@ -86,16 +102,23 @@ example のほかに、機能別のデモプロジェクトが 3 つあります
 - [projects/animgraph_demo](../../projects/animgraph_demo) — アニメーショングラフ(歩き↔走りブレンド + ジャンプ割込み)
 - [projects/vrm_xr_demo](../../projects/vrm_xr_demo) — VRM キャラクター(表情・視線・一人称)+ OpenXR。**flat-first** — XR なしでも WASD で完全動作(下記)
 
-### XR モードで起動する(PCVR / Quest Link)✅WP125〜135
+### XR モードで起動する(PCVR / Quest Link)✅WP125〜138
 
 ```sh
 pelican_player --xr on --project projects/vrm_xr_demo --input-profile touch
 ```
 
-- `--xr off|auto|on`(既定 `off`)。`auto` = XR ランタイム不在なら INFO 1 行で flat 続行 / `on` = 不在なら名指しの hard error。`--headless` / `--rpc` / リプレイとの併用時、`on` はエラー・`auto` は flat に正規化されます。
+- `--xr off|auto|on`(既定 `off`)。`auto` = XR ランタイム不在なら INFO 1 行で flat 続行 / `on` = 不在なら名指しの hard error。
+- **決定的な駆動モードとの併用時は XR が強制 off** になります。判定は最も具体的なドライバを名指しする順序で、**rpc → golden → replay → headless**([xractivation.hpp](../../src/core/xractivation.hpp) の `xrForcedOffDriver()`)。`--xr on` なら `--xr on is incompatible with <driver>` の hard error、`--xr auto` なら黙って flat に正規化されます(この経路で INFO が出るのは `PELICAN_WITH_OPENXR=OFF` ビルドのときだけです)。
 - Quest 3 は Meta Quest Link(Air Link)を有効な OpenXR ランタイムにして接続してから実行します。XR 中もウィンドウには左眼のミラーが表示されます。
 - project.json 側に XR のキーはありません(有効化は CLI のみ。入力はいつもの `pelican.input_actions` + Touch 用プロファイル)。
-- ⚠ **実機(HMD)での表示確認はまだ行われていません**(自動テストは fake runtime + synthetic stereo まで。実ランタイム検証は WP136 として登録済み)。詳細は [第6章](06_rendering.md) §6.12。
+- Meta XR Simulator v201.0 の実 runtime では1000連続 frame、3分超、
+  mirror 1000/1000、Vulkan validation 0を確認済みです(WP136 の検証で見つかった
+  blocker 3 件 — XR session 中は ImGui frame を begin しない / `timelineSemaphore`
+  の常時有効化 / XR 診断ログの規範化 — は WP138 で修正済み。レポートは
+  [docs/design_reviews/](../design_reviews/))。⚠ Quest Linkを
+  含む物理HMDでの表示・入力確認はまだ行われていません。詳細は
+  [第6章](06_rendering.md) §6.12。
 
 ### 暗黙プロジェクト(`--project` 省略時)
 
@@ -125,7 +148,7 @@ mygame/
 ├── project.json                      # マニフェスト(下記)
 ├── scenes/main.scene.json            # MainCamera + KeyLight の最小シーン
 ├── assets/asset_data.json            # モデル登録(空)
-├── assets/{models,textures,audio}/   # 置き場(.gitkeep 入り)
+├── assets/{models,textures,audio}/   # 置き場(assets/ 自身を含め .gitkeep 入り)
 ├── input/actions.json                # 入力アクション定義
 ├── input/profiles/keyboard.json      # バインディングプロファイル(第7章)
 ├── passes/main_rendering_config.json # レンダリングパイプライン定義(deferred 構成)
@@ -134,6 +157,8 @@ mygame/
 ├── code/game.cpp                     # StarterSystem(空のゲームシステム)
 ├── .gitattributes / .gitignore / README.md
 ```
+
+生成されるファイルは全 16 エントリで、一覧は [projectinit.cpp](../../src/devcli/projectinit.cpp) の `templateFiles()` が正本です。
 
 生成される `project.json`(実物・`src/devcli/projectinit.cpp` が出力):
 
@@ -202,6 +227,8 @@ cmake --build ./build
 
 `code/game.cpp` の `PELICAN_REGISTER_SYSTEM(StarterSystem, 100)` が毎フレーム呼ばれる入口です。書き方は [第8章](08_gameplay.md) を参照してください。
 
+同じ DLL には、**オブジェクト単位の毎フレーム処理**である behavior(`PELICAN_REGISTER_BEHAVIOR`)も載ります(✅WP155/162/167)。シーン側は対象オブジェクトに `{ "name": "behavior", "type": "<登録名>" }` を書くだけで、実体は DLL の登録名で解決されます。BehaviorSystem はゲームシステムと同じ総順序に `order=50` で参加します。書き方は [第8章](08_gameplay.md)、JSON 側の語彙は [第4章](04_scene_ecs.md) を参照してください。
+
 ## 2.5 ヘッドレス実行(ウィンドウなしで PNG を出す)
 
 CI・ゴールデンイメージテスト・DCC 連携の基盤です(✅実装済み・WP1〜7)。
@@ -224,7 +251,7 @@ pelican_player --headless --project mygame --frames 10 --render-out out/%04d.png
 ctest --test-dir ./build -C Debug --output-on-failure
 ```
 
-- テストは Catch2 v3 の単体テストと、実際に `pelican_player` / `pelican_cli` を子プロセス起動する CMake スクリプト駆動の結合テスト(`test/run_*.cmake`)の 2 種類です。
+- テストは Catch2 v3 の単体テストと、実際に `pelican_player` / `pelican_cli` を子プロセス起動する CMake / PowerShell スクリプト駆動の結合テスト(`test/run_*.cmake` / `test/run_*.ps1`)の 2 種類です。
 - **GPU 必須のテストは、Vulkan デバイスの列挙に失敗した環境では `SKIP()`** されます(テスト規約)。
 - 開発全体の完了条件は常に「ビルド成功 + 全テストグリーン + `git diff --check` クリーン」です([../implementation_plan.md](../implementation_plan.md) §0)。
 
@@ -236,7 +263,13 @@ cmake --build ./build --target run_studio
 
 `run_studio` ターゲットは windeployqt(Qt DLL 配置)まで面倒を見ます。
 
-> **注意:** Studio は現状 **QML のダミー画面のみの休眠状態**です(テキストフィールド 2 個。プロジェクト読み込み・ビューポートは未実装 📐)。エディタの設計方向(D0「エディタ特権の禁止」など)は [第10章](10_tools.md) と [../design_devstudio_direction.md](../design_devstudio_direction.md) を参照してください。
+> **注意:** Qt Studio 自体は現状 **QML のダミー画面のみ**です。
+> 一方、engine側の typed editor service/RPC、Object Tree、Inspector、
+> undo/save/preview は実装済みで、通常playerのImGuiから利用できます。
+> Qtのプロジェクト読み込み・埋め込みviewport・gizmoは未実装です。
+> エディタの設計方向(D0「エディタ特権の禁止」など)は [第10章](10_tools.md) §10.7 と
+> [../design_devstudio_direction.md](../design_devstudio_direction.md) /
+> [../design_editor_tooling.md](../design_editor_tooling.md) を参照してください。
 
 ## 2.8 トラブルシューティング
 
@@ -249,7 +282,12 @@ cmake --build ./build --target run_studio
 | `engine_min_version` のエラー | プロジェクトが要求するエンジン版(現行 `0.1.0`)より新しい。`--ignore-engine-version` で WARN に降格可能 |
 | Qt が見つからず configure 失敗 | `-DCMAKE_PREFIX_PATH` に Qt のインストールパスを渡すか、`-DSKIP_DEVSTUDIO=ON` |
 | GPU テストが全部 SKIP | Vulkan デバイスが列挙できない環境(リモートデスクトップ等)。仕様どおりの挙動 |
-| rpc モードでログが出ない | rpc モードでは **stdout はプロトコル専用**。ログは cwd の `pelican.log` に出ます(Release ビルドも同様) |
+| rpc モードでログが出ない | rpc モードでは **stdout はプロトコル専用**(ヘッドレスの blocking rpc / ウィンドウのフレーム境界 rpc のどちらも同じ)。ログは cwd の `pelican.log` に出ます(Release ビルドも同様) |
+| `windowed rpc request queue is busy`(`data.reason = "busy"` / `queue_capacity`) | ウィンドウモードの `--rpc` はフレーム境界でのみ処理する**有界キュー**(既定 64)。詰め込みすぎると即エラーで返るので、応答を待ってから次のリクエストを送る([第10章](10_tools.md)) |
+| `--xr on is incompatible with <driver>` | `--xr on` と決定的な駆動モード(rpc / golden / replay / headless)の併用。`--xr auto` にすれば(ログなしで)flat に正規化されます(§2.3) |
+| `Unknown behavior type 'X' on object 'Y'` | シーンの `behavior.type` がゲームロジック DLL に登録されていない。`PELICAN_REGISTER_BEHAVIOR` の登録名と綴りを合わせる([第8章](08_gameplay.md)) |
+| `behavior type 'X' on object 'Y' is pending because the game-logic DLL is unavailable`(WARNING) | DLL 未ロード時は hard error にせず pending として保持する仕様。`-DPELICAN_PROJECT` 付きでビルドするか、F5 でリロードすると解決します |
+| `behavior on object 'X' requires a non-empty string type` | `behavior` コンポーネントに `type`(非空の文字列)が無い、または文字列以外 |
 
 ## 関連文書
 

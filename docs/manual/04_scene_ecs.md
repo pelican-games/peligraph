@@ -1,16 +1,16 @@
 # 第4章 シーンと ECS
 
-対象: pelican2(2026-07-17 時点)/ このマニュアルはコードを正とする
+対象: pelican2(2026-07-21 時点)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
 - シーン形式 `pelican.scene` v1 の正確なスキーマと実物例
-- v1 で書けるコンポーネント全種類(必須/任意フィールド・既定値・単位)
+- v1 で書けるコンポーネント全種類(必須/任意フィールド・既定値・単位)— **`behavior` を含む**
 - シーンがロードされてから ECS・ライト・物理に振り分けられるまでの流れ
 - ランタイム ECS(世代付き ID・生成トランザクション)の、ゲーム開発者が知るべき要点
 - シーン遷移(`loadScene`)の仕組み
 
-正本の設計文書は [../design_scene_format.md](../design_scene_format.md)(v1.1)ですが、コンポーネントの受理仕様の多くはコードにのみ存在するため、この章の表はパーサ実装(`src/project/sceneformat.cpp`、`src/core/loader/scene.cpp` ほか)から採録しています。
+正本の設計文書は [../design_scene_format.md](../design_scene_format.md)(v1.1)ですが、コンポーネントの受理仕様の多くはコードにのみ存在するため、この章の表は実装から採録しています。正本の所在は、エンベロープと識別子が [sceneformat.cpp](../../src/project/sceneformat.cpp)、**コンポーネントの受理仕様が [componentcodec.cpp](../../src/core/loader/componentcodec.cpp)**、振り分けが [scene.cpp](../../src/core/loader/scene.cpp)、behavior が [behaviorarena.cpp](../../src/core/gamelogic/behaviorarena.cpp) です。
 
 ## 4.1 シーンファイルの全体構造
 
@@ -95,15 +95,17 @@
 
 ## 4.2 コンポーネント一覧(v1 で書けるものすべて)
 
-`ref()` が読むフィールドは**すべて必須**(欠落は例外)です。既定値があるものは明記します。
+> **設計決定(受理仕様は component codec が正・✅WP151):** `transform` / `simplemodelview` / `camera` / `light` / `collider` / `animation` / `sprite_view` の 7 種は、**[componentcodec.cpp](../../src/core/loader/componentcodec.cpp) の codec が受理仕様の正**です(以前は各コンポーネントの `ref()` が正でした)。7 種はいずれも **closed schema** — 表に無いキーを書くと名指しのエラーになります。エディタの読み書き・インスペクタのウィジェット・保存の往復もすべてこの codec を通ります([第13章](13_editor.md))。`localtransform` だけは従来どおり `ref()` 経路です。
 
 ### transform(✅)
 
-| フィールド | 型 | 意味 |
-|---|---|---|
-| `pos` | [x,y,z] | 位置 |
-| `rotation` | [x,y,z,w] | クォータニオン(**x,y,z,w 順**) |
-| `scale` | [x,y,z] | スケール |
+| フィールド | 必須? | 既定 | 意味 |
+|---|---|---|---|
+| `pos` | 任意 | `[0,0,0]` | 位置 |
+| `rotation` | 任意 | `[0,0,0,1]` | クォータニオン(**x,y,z,w 順**) |
+| `scale` | 任意 | `[1,1,1]` | スケール |
+
+3 つとも省略でき、`{"name":"transform","pos":[0,0,0]}` のように必要なキーだけ書けます。
 
 ### simplemodelview(✅)— モデル表示
 
@@ -128,6 +130,9 @@ CameraComponent 自体はマーカーで、投影・コントローラのパラ�
 | `znear` / `zfar` | 省略時フォールバック |
 | `aspect` | 任意(省略時はビューポートから計算) |
 | `xmag` / `ymag` | orthographic 用 |
+| `perspective` | `{yfov, znear, zfar, aspect}` の**ネスト形式**(glTF 流。closed schema) |
+| `orthographic` | `{xmag, ymag, znear, zfar}` のネスト形式。`perspective` との併記はエラー |
+| `params` | 任意 object(authoring の往復保存用) |
 | `controller` | カメラコントローラ([第8章](08_gameplay.md)) |
 | `sprite` | `{"pixel_perfect":"off"\|"strict", "sort":"z"\|"declaration"}`(✅WP106。スプライトの pixel policy — [第6章](06_rendering.md) §6.9) |
 
@@ -142,14 +147,18 @@ CameraComponent 自体はマーカーで、投影・コントローラのパラ�
 
 | type | 必須フィールド | 任意(既定値) |
 |---|---|---|
-| `"directional"` | `direction` [x,y,z], `color` [r,g,b] | `intensity`(1.0) |
-| `"point"` | `position`, `color` | `intensity`(1.0) |
-| `"spot"` | `position`, `direction`, `color` | `intensity`(1.0), `innerConeAngle`(12.5), `outerConeAngle`(17.5) |
+| `"directional"` | `direction` [x,y,z], `color` [r,g,b] | `intensity`(1.0), `range` |
+| `"point"` | `position`, `color` | `intensity`(1.0), `range` |
+| `"spot"` | `position`, `direction`, `color` | `intensity`(1.0), `range`, `innerConeAngle`(12.5), `outerConeAngle`(17.5) |
 
-- コーン角は**度数**です(カメラの `yfov` はラジアン — 単位の非対称に注意)。
+- `color` は**必須**で、各成分は `[0,1]` の範囲です。
+- `range` は任意の正の値(0 は「未指定」扱い)。
+- 型に合わないキーは名指しで拒否されます: directional に `position`、point に `direction`、spot 以外に `innerConeAngle` / `outerConeAngle` はいずれもエラーです。
+- コーン角は**度数**(`[0,180]`。`innerConeAngle` が `outerConeAngle` を超えるとエラー)です。カメラの `yfov` はラジアンなので、単位の非対称に注意してください。
 - ライトの表示名はオブジェクトの `name`(型別に一意。無名ライトは複数可)。
 - シャドウは先頭の directional light の向きから作られます([第6章](06_rendering.md))。
-- ⚠️ 既知の挙動: `KeyLight` / `FillLight` / `PointLight1` / `SpotLight1` という名前のライトには、デモ用の**名前決め打ちアニメーション**がまだ残っています(`lightcontainer.cpp`)。この名前を使うと勝手に動きます。
+
+> **設計決定(オーサリング境界・✅WP142):** かつてエンジンのコアには「`KeyLight` / `FillLight` / `PointLight1` / `SpotLight1` という**名前のライトを勝手にアニメーションさせる**」デモ用コードが残っていました。これは撤去され、ライトを動かす処理は example のゲームコード(ユーザー空間)へ移りました。ライトを実行時に動かすには [第8章](08_gameplay.md) §8.4 のライト API(`setDirectionalLightDirection` など)を使います。**特定の名前を付けても、もう何も起きません。**
 
 ### collider(✅・WP46/47/107)— ECS を経由しない(PhysWorld へ)
 
@@ -182,7 +191,7 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 | `start_time` | 任意 | 0.0 | 開始オフセット秒 |
 | `graph` | 禁止 | — | v1 予約キー(存在するだけでエラー)。グラフ再生は C++ API — [第8章](08_gameplay.md) |
 
-制限: 補間は LINEAR / STEP のみ(CUBICSPLINE はロードエラー)、joint 上限 128。モーフターゲットは描画対応 ✅WP121(初期 weight で表示)ですが、**クリップの `weights` チャネルは v1 非対応**(表情などの weight 駆動は [第8章](08_gameplay.md) §8.12 の VRM service 経由)。時刻源は `EngineTime`(rpc `set_time` と同一経路 = 決定的)。
+制限: 補間は LINEAR / STEP のみ(CUBICSPLINE はロードエラー)、joint 上限 128。モーフターゲットは描画対応 ✅WP121(初期 weight で表示)ですが、**クリップの `weights` チャネルは v1 非対応**(表情などの weight 駆動は [第8章](08_gameplay.md) §8.13 の VRM service 経由)。時刻源は `EngineTime`(rpc `set_time` と同一経路 = 決定的)。
 
 ### sprite_view(✅WP103/104/106)— 2D スプライト
 
@@ -210,16 +219,40 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 
 **closed schema**(未知キーはエラー)。スプライトは常に **XY 平面 + Z 法線**(2026-07-12 決定 — 床置きは Transform 回転で)。描画には rendering config の `sprite` feature 参照が必要です([第6章](06_rendering.md) §6.9)。
 
+### behavior(✅WP155/162/167)— オブジェクトに振る舞いを貼る
+
+ゲームコードで書いた振る舞いを、パラメータごとオブジェクトに貼りつけます。C++ 側の書き方は [第8章](08_gameplay.md) §8.5 が本編で、ここでは**シーン JSON 側の書式**だけを説明します。
+
+```json
+{ "name": "TriggerZone", "components": [
+    { "name": "transform", "pos": [0, 0, 0] },
+    { "name": "collider", "shape": "sphere", "radius": 1.0, "trigger": true },
+    { "name": "behavior", "type": "wp179_trigger_behavior" }
+] }
+```
+
+(実物: `test/run_physics_trigger_behavior.ps1`)
+
+| フィールド | 必須? | 規則 |
+|---|---|---|
+| `type` | **必須** | `PELICAN_REGISTER_BEHAVIOR` の第 2 引数(永続名)。空文字・非文字列はエラー |
+| `params` | 任意 | オブジェクト。省略すると全フィールドが既定値。型・範囲は behavior 側の schema で検証され、違反は `field 'params.speed' is out of range` のようなフィールドパス付きエラー |
+
+- **同じオブジェクトに何個でも書けます**(コンポーネントの中で唯一)。実行順は宣言順です。
+- light / collider と同じく **ECS を経由しません**(エンジン所有の attachment arena に入ります)。ただし light と違い、**behavior だけを持つオブジェクトにも ECS entity が作られます**。
+- ゲームロジック DLL に無い `type` を書くと `Unknown behavior type 'X' on object 'Y'` で起動が止まります。DLL がまだロードされていない場合だけは WARNING を出して保留され、ロード後に有効化されます。
+
 ## 4.3 シーンロードの流れ
 
 `SceneLoader::load(scene_id)`([scene.cpp](../../src/core/loader/scene.cpp))の実際の処理順:
 
 1. **正規化・検証**(解釈レイヤ `sceneformat.cpp`): エンベロープ・識別子・name 一意性をチェック。不正は fail-fast。
-2. 各オブジェクトの components を振り分け: `light` → LightContainer、`collider` → PhysWorld、**それ以外 → ECS**(未知名はエラー)。ライトだけのオブジェクトは ECS entity を作りません。
-3. 旧シーンをクリア(name 束縛・物理・全 GameObject・モデルインスタンス)。
+2. 各オブジェクトの components を振り分け: `light` → LightContainer、`collider` → PhysWorld、**`behavior` → BehaviorAttachmentArena**、**それ以外 → ECS**(未知名はエラー)。ライトだけのオブジェクトは ECS entity を作りませんが、**behavior だけのオブジェクトには作られます**。
+3. 旧シーンをクリア(name 束縛・物理・全 GameObject・モデルインスタンス)。このとき、まず既存 behavior の `onDestroy` が走ります(物理・描画・名前束縛がまだ解決できる時点)。
 4. ECS オブジェクトを**トランザクション生成**(§4.4)。JSON 不正はロールバックして例外。
 5. name があり transform を持つオブジェクトは「name → GameObjectId」を束縛(rpc の宛先になる)。
-6. `SceneLoaded` イベントを emit([第8章](08_gameplay.md))。
+6. **behavior を宣言順に有効化**して `onInit` を呼ぶ。途中で例外が出たら、それまでの分を逆順に破棄して全体を巻き戻します。
+7. `SceneLoaded` イベントを emit([第8章](08_gameplay.md))。
 
 ### シーン遷移(✅・WP52)
 
@@ -251,7 +284,9 @@ ECS の実装(WP62・R5-core ✅)は archetype/chunk 方式ですが、ゲーム
 
 ### ユーザー定義コンポーネント
 
-シーン JSON に書けるコンポーネントの語彙は現在エンジン組み込みのみで、**プロジェクトから新しい ECS コンポーネント型を登録する公開 API はまだありません**(📐構想段階)。ゲーム固有の状態はゲームシステムのメンバ変数として持つのが現行の形です。
+**プロジェクトから新しい ECS コンポーネント型を登録する公開 API は今もありません**(📐構想段階)。ただし、**オブジェクト固有の authored データと毎フレーム処理は `behavior` で書けます**(§4.2・[第8章](08_gameplay.md) §8.5)。シーン全体にまたがる状態はゲームシステムのメンバ変数として持ちます。
+
+なお、稼働中の entity に対するコンポーネントの追加・削除は、内部的には失敗時に完全巻き戻しできるトランザクション機構(✅WP152)として実装済みですが、**公開 API はまだ無く、エディタ経路だけが使っています**([第13章](13_editor.md))。
 
 ## 4.5 よくあるエラー
 
@@ -279,4 +314,5 @@ ECS の実装(WP62・R5-core ✅)は archetype/chunk 方式ですが、ゲーム
 - [../design_ecs_lifecycle.md](../design_ecs_lifecycle.md) — ECS ライフサイクル設計(WP62 で実装)
 - [../design_camera_system.md](../design_camera_system.md) — カメラの三層設計
 - [../design_physics_queries.md](../design_physics_queries.md) — collider と物理クエリ
-- [第3章 プロジェクト形式](03_project_format.md) / [第8章 ゲームロジック](08_gameplay.md)
+- [../design_object_behaviors.md](../design_object_behaviors.md) — behavior コンポーネント(v2.1)
+- [第3章 プロジェクト形式](03_project_format.md) / [第8章 ゲームロジック](08_gameplay.md) / [第13章 エディタ](13_editor.md)

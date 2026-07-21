@@ -1,6 +1,6 @@
 # 第3章 プロジェクト形式
 
-対象: pelican2(2026-07-16 時点)/ このマニュアルはコードを正とする
+対象: pelican2(2026-07-21 時点)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
@@ -8,6 +8,7 @@
 - `project.json` の正確なスキーマ(必須/任意/既定値)と検証規則
 - パス参照の分類(素の相対 / `project://` / `engine://` / `user://` / 絶対 / `#` フラグメント)と PathResolver の解決規則
 - asset store(置き場所の間接化)と `.pelican/local.json`
+- シーン JSON の in-memory 表現(`AuthoringSceneDocument`)と保存の契約(エディタ経路)
 - なぜこの設計なのか — fail-fast、cwd 全廃、絶対パス拒否などの決定事項
 
 正本となる設計文書は [../design_project_format.md](../design_project_format.md)([PF] v6.3・**凍結済み**)です。この章はその実装(`src/core/loader/` と `src/project/`)を基準に書いています。
@@ -30,7 +31,16 @@
 | `ui/*.json` | UI ドキュメント(pelican.ui v1) | `basic_config.ui_config_json` |
 | `code/` | C++ ゲームコード | CMake `-DPELICAN_PROJECT` |
 | `imports/`(規約) | 外部ツールの納品物+manifest | `pelican_cli import` の入力 |
-| `.pelican/local.json` | マシン固有のパス上書き(**git 非追跡**) | asset store の実パス差し替え |
+| `.pelican/` | ツールとエンジンの生成物置き場(**git 非追跡**。`project init` の `.gitignore` に登録済み) | 下記 |
+
+`.pelican/` の住人(すべて生成物で、リポジトリにコミットしません):
+
+| パス | 内容 |
+|---|---|
+| `.pelican/local.json` | マシン固有のパス上書き(asset store の実パス差し替え。§3.4) |
+| `.pelican/shader_cache/` | シェーダのコンパイルキャッシュ(✅WP82 — [第6章](06_rendering.md)) |
+| `.pelican/assets-hash-cache.json` | assets manifest の差分ハッシュキャッシュ(§3.4) |
+| `.pelican/logs/import-tools.log` | `pelican_cli import --rules` が起動した外部ツールのログ(§5.5) |
 
 ## 3.2 project.json のスキーマ
 
@@ -43,6 +53,9 @@
   "name": "example",
   "generator": "hand-written",
   "engine_min_version": "0.1.0",
+  "asset_stores": {
+    "main": { "mount": "assets/", "manifest": "assets.manifest.json" }
+  },
   "basic_config": {
     "window_title": "Pelican App",
     "window_size": { "width": 1920, "height": 1080 },
@@ -55,7 +68,14 @@
     "rendering_config_json": "passes/main_rendering_config.json",
     "default_rendering_pass": "main_render",
     "ui_config_json": "ui/ui_overlay.json",
-    "input_actions_json": "input/actions.json"
+    "input_actions_json": "input/actions.json",
+    "input_profiles": {
+      "keyboard": "input/profiles/keyboard.json",
+      "gamepad": "input/profiles/gamepad.json",
+      "arcade": "input/profiles/arcade.json",
+      "touch": "input/profiles/touch.json"
+    },
+    "input_profile": "keyboard"
   }
 }
 ```
@@ -133,7 +153,7 @@
 
 ### engine:// と EngineResourceRegistry
 
-`engine://<id>` はエンジンバイナリに埋め込まれたリソース(既定設定・標準シェーダ・feature 定義・フォント等)を指します。id は埋め込み元 `src/core/resources/` からの相対パスで、現在 47〜48 エントリが [engineresources.cpp](../../src/core/loader/engineresources.cpp) に登録されています。
+`engine://<id>` はエンジンバイナリに埋め込まれたリソース(既定設定・標準シェーダ・feature 定義・フォント等)を指します。id は埋め込み元 `src/core/resources/` からの相対パスで、現在 **84 エントリ**が [engineresources.cpp](../../src/core/loader/engineresources.cpp) に登録されています(実数はフィクスチャ `test/fixtures/project_format/engine_resources.json` の `ids` 配列が正)。
 
 - 未知の id を参照すると、**登録済み id の全一覧付き**でエラーになります(タイポの即時発見)。
 - id 一覧はテストフィクスチャ `test/fixtures/project_format/engine_resources.json` と単体テストで同期が強制されます。web ビューアのレジストリはこの**鏡像サブセット**です([第9章](09_web.md))。
@@ -210,7 +230,7 @@ example の README にあった手書き sha256 表の役目は、この manifes
 > **設計決定(3 層構造):** プロジェクト形式の解釈は次の 3 層に分かれる。
 > ```
 > プロジェクト形式(ファイル群)
->   ↓ 解釈レイヤ: pelican_project 静的ライブラリ(エンジン非依存の純ロジック。依存は nlohmann_json のみ)
+>   ↓ 解釈レイヤ: pelican_project 静的ライブラリ(エンジン非依存の純ロジック。依存は nlohmann_json と picosha2 のみ)
 >   ↓ バインダ: src/core/loader のエンジン側変換(GET_MODULE を呼べるのはここと起動配線のみ)
 > ゲームエンジン本体
 > ```
@@ -239,11 +259,62 @@ example の README にあった手書き sha256 表の役目は、この manifes
 - `PathResolver::resolveCliRef`(CLI 文脈用 API)は本番の呼び出し元がまだありません。
 - [PF] 本文のコード例(`ResolvedRef` の variant 要素数、レジストリのエントリ数など)は v6.3 の追加機能に未追随の箇所があります。
 
+## 3.9 シーンドキュメントと保存(エディタ経路)(✅WP149/158/166/168)
+
+ここまでの節はすべて「ディスク上のファイル形式」の話でした。この節は、その形式をエンジンが**メモリ上でどう保持し、どう書き戻すか**を扱います。**プロジェクト形式(JSON の書き方)は一切変わりません**。エディタ機能を使わないなら読み飛ばして構いません。
+
+> **設計決定(編集の正本は authored JSON):** 編集の正本は `basic_config.scene_data_json` が指すシーン JSON の内容そのもの(`AuthoringSceneDocument`)であり、ランタイムの ECS はその**投影**である。保存はランタイム状態の serialize ではなく、authored ドキュメント全体の決定的エンコードとファイル置換で行う。これにより、エンジンが解釈しないコンポーネント(codec 未登録のもの)の raw JSON も保存で失われない。
+
+`ProjectBasicConfig`([basicconfig.hpp](../../src/core/loader/basicconfig.hpp))が唯一の保持者です。
+
+- **起動時**: PathResolver で読んだシーン JSON の bytes をそのまま `AuthoringSceneDocument` にし、同時にその**ディスク baseline digest** を記録します。
+- `SceneRevision` は編集がコミットされるたびに単調増加します。`AuthoringObjectId` はセッション内で安定した object 識別子で、無名オブジェクト・ライトのみ・コライダのみのオブジェクトにも付きます(ランタイムの `EntityId` は nullable な投影であり、同一性の代用にはしません)。
+- API は `sceneDocument()` / `updateSceneDocument()` / `importSceneDocument(bytes, reload)` / `saveSceneDocument()` の 4 本です。
+
+### 保存 — 全文書のアトミック置換
+
+`saveSceneDocument()`([basicconfig.cpp](../../src/core/loader/basicconfig.cpp))の手順です。
+
+1. ドキュメント全体を 1 回だけエンコードする(以降のすべての段はこの同じ bytes を消費します)。
+2. 記録済み baseline digest と**現在のディスク**の digest を照合する。
+3. 同じディレクトリの一時ファイルへ書き出して flush する。
+4. 読み返して byte 一致を検査する。
+5. 一時ファイルを再 parse + 意味検証し、元ドキュメントと一致するか検査する。
+6. 次リビジョンのドキュメントを準備し、digest と byte 数を確定する。
+7. **置換直前にもう一度**ディスクの digest を照合する(TOCTOU 窓を閉じる)。
+8. アトミックにファイルを置換し、例外を出さない区間でキャッシュとリビジョンを公開する。
+
+エラーは 3 種です(`SceneSaveErrorCode`):
+
+| コード | 意味 |
+|---|---|
+| `ExternalModification` | エディタの外でシーンファイルが書き換わっていた(2 と 7 のどちらで検出しても同じコード)。**上書きせずに失敗します** |
+| `Unavailable` | baseline digest が確立していない(ファイル由来でないシーンソースなど) |
+| `IoFailure` | 一時ファイルの書き戻し検査・意味検証に失敗した |
+
+> **設計決定(黙って上書きしない):** 保存はディスクの現在値を 2 回照合し、食い違いがあれば `ExternalModification` で中止する。エディタと外部エディタ/git 操作の競合を「後勝ちの静かな消失」にしないため。
+
+### 保存で変わること・変わらないこと
+
+- **キー順は辞書順に正規化されます**(オブジェクトのキー順は保存されません)。**配列の宣言順と JSON のスカラ型はそのまま保存されます**。手書きの JSON をエディタで一度保存すると、キーの並びだけが変わります。
+- codec が登録されていないコンポーネントも、raw JSON がそのまま保持されます(ドキュメント全体をエンコードするため構造的にデータ欠落が起きません)。
+
+### スナップショットの取り込み
+
+`importSceneDocument(bytes, reload)` は、外部から渡されたシーン JSON を**メモリ上のシーンソースとして差し替えて**リロードします。**ディスクの baseline は保持され、ファイルには何も書きません**。取り込み先で `AuthoringObjectId` は採番し直されます。
+
+### シーンはホットリロード対象ではない
+
+シーン JSON はファイル監視の対象外です([第10章](10_tools.md) §10.5)。書き戻しの経路は保存 API(rpc の `save_scene`)だけで、これは rpc の `get_status` にも `scene_source: {"hot_reload": false, "save_method": "save_scene"}` として現れます。
+
+編集操作・リビジョンの排他制御・プレビュー・rpc メソッドの詳細は [第10章](10_tools.md) と [第13章](13_editor.md) を参照してください。
+
 ## 関連文書
 
 - [../design_project_format.md](../design_project_format.md) — [PF] v6.3(凍結)。形式・PathResolver の正
+- [../design_editor_tooling.md](../design_editor_tooling.md) — AuthoringSceneDocument・保存・エディタ経路の設計(§3.9)
 - [../design_project_format_web_profile.md](../design_project_format_web_profile.md) — [PFW] v1.3。サブセット原則
 - [../design_project_interpretation_layer.md](../design_project_interpretation_layer.md) — 解釈レイヤの設計
 - [../design_project_vcs.md](../design_project_vcs.md) — asset store・manifest・雛形
 - [../design_persistence.md](../design_persistence.md) — user:// と設定/セーブ三区分
-- [第4章 シーンと ECS](04_scene_ecs.md) / [第5章 アセット](05_assets.md) / [第9章 Web プロファイル](09_web.md)
+- [第4章 シーンと ECS](04_scene_ecs.md) / [第5章 アセット](05_assets.md) / [第9章 Web プロファイル](09_web.md) / [第13章 エディタ](13_editor.md)

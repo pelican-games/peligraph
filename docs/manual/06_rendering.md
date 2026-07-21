@@ -1,6 +1,6 @@
 # 第6章 レンダリング
 
-対象: pelican2(2026-07-17 時点)/ このマニュアルはコードを正とする
+対象: pelican2(2026-07-21 時点)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
@@ -12,6 +12,7 @@
 - シェーダ基盤 — stem 参照・FrameUBO・ホットリロード・descriptor set 規約
 - マテリアル(`.surface` + `pelican.material` + **OpenPBR**)、テンポラル(history / velocity / **projection jitter / 標準 TAA**)、2D スプライト
 - OpenXR ステレオレンダリング(論理フレーム / feature policy / ミラー)
+- グラフ variant(flat / XR / preview)と、GPU デバッグラベル・GPU タイミング・VRAM の見方
 
 ## 6.1 全体像
 
@@ -31,11 +32,11 @@ project.json ──rendering_config_json──▶ rendering config JSON
               毎フレーム: プラン順に layout 遷移 → dynamic rendering でパス実行
 ```
 
-`basic_config.default_rendering_pass` が rendering config 内のどのパス列(`rendering_passes[].name`)を使うかを決めます。**デフォルトのパス列が `swapchain` に出力しない場合は起動時エラー**です。エンジンは常にパージ不能な終端 `output_transform` ノード(リニア → 表示エンコードの 1 箇所)を生成します(§6.3)。
+`basic_config.default_rendering_pass` が rendering config 内のどのパス列(`rendering_passes[].name`)を使うかを決めます。エンジンは常にパージ不能な終端 `output_transform` ノード(リニア → 表示エンコードの 1 箇所)を生成し、**このノードが終端に来ないパス列を既定に指定すると起動時エラー**です(§6.3)。なお authored な `"swapchain"` 出力は合成時に `display` RT へ置換されるため、`display` を誰も書かない構成はフレームグラフ検証で落ちます(§6.11)。
 
 ## 6.2 rendering config のスキーマ
 
-実物の最小構成([../../projects/example/passes/example_renderingpass_data.json](../../projects/example/passes/example_renderingpass_data.json) — G-buffer → ライティング → UI)は前版と同じ骨格で動きます。example が実際に使う [main_rendering_config.json](../../projects/example/passes/main_rendering_config.json) は SSAO と 4 段ブルームを足した 18 パス構成です。
+実物の最小構成([../../projects/example/passes/example_renderingpass_data.json](../../projects/example/passes/example_renderingpass_data.json) — G-buffer → ライティング → UI)は前版と同じ骨格で動きます。example が実際に使う [main_rendering_config.json](../../projects/example/passes/main_rendering_config.json) は SSAO と 4 段ブルームを足した 17 パス構成です(ファイルに書かれた authored 件数。実行時はこれに ui feature のパスと終端 `output_transform` が合成されます)。
 
 ### トップレベルキー
 
@@ -73,7 +74,7 @@ project.json ──rendering_config_json──▶ rendering config JSON
 | `name` | ✔ | — | パス列内で一意 |
 | `type` | ✔ | — | `material` / `fullscreen` / `output_transform` / `ui` / `shadow_depth` / `velocity` / `debug_draw` / `debug_text`(+ ImGui ビルド時 `imgui`) |
 | `output` | ✔ | — | `color`(null / 名前 / 名前配列)と `depth`(null / 名前)の**両キー必須**。`"swapchain"` は color のみ |
-| `input` | 任意 | — | 読み込む RT / バッファ名。RT には **`@history` サフィックス**可(history RT のみ) |
+| `input` | 任意 | — | **`fullscreen` / `output_transform` 限定**(ほかの type に書くと `Only fullscreen passes support input targets`)。読み込む RT / バッファ名で、RT には **`@history` サフィックス**可(history RT のみ) |
 | `color_load_op` / `color_store_op` | 任意 | `Clear` / `Store`(ui のみ load 既定) | `Clear` / `Load` / `DontCare` |
 | `depth_load_op` / `depth_store_op` | 任意 | `Clear` / `DontCare` | シャドウマップでは `depth_store_op: "store"` を明示 |
 | `clear_color` | 任意 | `[0,0,0,1]` | 4 要素固定 |
@@ -101,10 +102,10 @@ project.json ──rendering_config_json──▶ rendering config JSON
 
 ユーザーが気をつけること:
 
-1. **色テクスチャは sRGB で作る**(baseColor / emissive → SRGB view で自動デコード)。normal / metallicRoughness / データテクスチャはリニア(UNORM view)。`.surface` の custom texture は `role: color` 宣言で SRGB になります。
+1. **色テクスチャは sRGB で作る**(baseColor / emissive → SRGB view で自動デコード)。normal / metallicRoughness / データテクスチャはリニア(UNORM view)。`.surface` の custom texture は `color_space: srgb` 宣言で SRGB になります(§6.7)。
 2. **シェーダに gamma 補正を書かない**。書くと二重変換になります。
 3. glTF の `baseColorFactor` / `emissiveFactor` / `COLOR_0` は**リニア値のままエンジンに入ります**(仕様どおり)。C++ 側でデバッグ色などを直書きするときは `Pelican::srgb(r,g,b)` ヘルパ([color.hpp](../../src/core/userpublic/color.hpp))。
-4. RT の `format_class` を使うと実 format はリゾルバが決めます: `scene` → HDR 時 `R16G16B16A16_SFLOAT` / SDR 時 `B8G8R8A8_SRGB`、`display` → `B8G8R8A8_SRGB`、`data` → UNORM のまま。
+4. RT の `format_class` を使うと実 format はリゾルバが決めます: `scene` → HDR 時 `R16G16B16A16_SFLOAT` / SDR 時 `B8G8R8A8_SRGB`、`display` → `B8G8R8A8_SRGB`、`data` / `explicit(...)` → 宣言した `format` をそのまま使う(リゾルバは触りません — depth や float16 の data RT も普通にあります)。
 5. スワップチェーン・ヘッドレス出力とも既定 SRGB。SRGB 非対応デバイスのみ UNORM フォールバック(`output_transform` シェーダが OETF を適用)。capture / golden の PNG は「encoded-sRGB + リニア straight alpha」契約です(`test/golden/README.md`)。
 
 移行の台帳(何をどの根拠で変えたか)は [../color_migration_manifest.json](../../docs/color_migration_manifest.json)(WP72 監査の機械可読成果物)にあります。`get_status` の `color` オブジェクトで実行時の契約(swapchain format / readback encoding 等)を確認できます。
@@ -138,11 +139,11 @@ GLSL からは `#include "pelican_sets.glsl"` / `#include "pelican_frame.glsl"` 
 | 0 | `PELICAN_SET_FRAME` | **全パイプライン共通の固定 layout**: binding 0 `FrameUBO` / 1 `ObjectBuffer` SSBO / 2 `LightUBO` / 3 `PreviousObjectBuffer`(velocity 用)。シェーダが set 0 を宣言する場合は一致必須、宣言しなくても PipelineFactory が挿入 |
 | 1 | `PELICAN_SET_PASS_INPUT` | パス入力。fullscreen の `input` 配列順に binding 0..、compute の reads/writes も set 1 |
 | 2 | `PELICAN_SET_MATERIAL` | binding 0-3 標準 PBR テクスチャ、4-5 VAT、**6 = 全マテリアル配列の `MaterialBuffer` SSBO**(標準 96B + custom values 256B / 要素)、7 以降 = `.surface` の custom texture(宣言順) |
-| 3 | `PELICAN_SET_FREE` | 自由枠(debug_draw / debug_text が使用) |
+| 3 | `PELICAN_SET_FREE` | 名前に反して**大半はエンジンが所有**します: binding 0/1 = debug_draw / debug_text、2/3 = スキンパレット(現 / 前フレーム)、4-8 = morph(instance / weight / previous weight / metadata / delta)、9-11 = per-instance マテリアルオーバーライド(§6.8) |
 
 `FrameUBO`(全シェーダから読める・352B): `time` / `dt` / 64bit `frame_index` / `resolution` + 逆数 / `camera_position` / `view` / `projection` / `previous_view` / `previous_projection` / `jitter_ndc` / `previous_jitter_ndc` / `temporal_reset_epoch` / `previous_temporal_reset_epoch`。projection jitter が無効な既定構成では jitter は `(0, 0)` です。
 
-push constant は 128B(エンジン 64B + シェーダ 64B)で、✅**リフレクション段階で enforcement 済み**です(4B align・128B 上限・エンジン領域の部分使用をパイプライン作成前に拒否)。エンジン頂点レイアウトは location 0=`inPos`, 1=`inNormal`, 2=`inTexUV`, 3=`inColor`, 4=`inTangent`。
+push constant は 128B(エンジン 64B + シェーダ 64B)で、✅**リフレクション段階で enforcement 済み**です(4B align・128B 上限・エンジン領域の部分使用をパイプライン作成前に拒否)。エンジン領域 offset 0..63 の `engineMvp` は**名前に反して MVP ではなく `view_projection_jittered`(world → jittered clip)**です — 独自 vertex シェーダは model 行列で作った world position にこれを 1 回掛けるだけにし、**jitter を後から足してはいけません**(§6.8 の projection jitter が二重適用になります)。この意味論・64B の範囲・symbol 名は v1 で凍結です([../shader_contract.md](../shader_contract.md) の「`engineMvp` v1 の規範意味論」)。エンジン頂点レイアウトは location 0=`inPos`, 1=`inNormal`, 2=`inTexUV`, 3=`inColor`, 4=`inTangent`。
 
 エンジン同梱シェーダ(`engine://`、抜粋): `fullscreen` / `ssao` / `ssao_blur` / `bloom_*` / `tonemap` / **`output_transform`** / `shadow_depth` / `skinned` / `skinned_shadow_depth` / **`velocity` / `velocity_skinned`** / **`taa_resolve` / `taa_composite`** / **`sprite`** / `debug_draw` / `debug_text` / `default` / `vat` / `ui`、マテリアルテンプレート `shaders/material/surface_v1.{vert,frag}` + `standard_lighting.glsl` / `toon_lighting.glsl` / **`openpbr_lighting.glsl`**、**OpenPBR wrapper 6 種 `engine://surfaces/openpbr/*.surface`**、公開 include 群 `shaders/include/pelican_*.glsl`。
 
@@ -164,7 +165,7 @@ push constant は 128B(エンジン 64B + シェーダ 64B)で、✅**リフレ�
 
 | feature | 内容 |
 |---|---|
-| `hdr.json` | `lit_color` を float16 化し、トーンマップパスを `after:tonemap` アンカーに挿入 |
+| `hdr.json` | `format_class: scene` の RT を float16 化(切替はエンジンの色リゾルバが feature の有無で行う)し、`scene_ldr_in` を挟んでトーンマップパスを `after:tonemap` アンカーに挿入 |
 | `shadow_directional.json` | 2048×2048 シャドウマップ + `shadow_depth` パス挿入 + `lighting_pass` へ入力追加 |
 | `ui.json` | UI の GPU quad 描画(✅WP87。[第7章](07_input_ui.md)) |
 | `velocity.json` | モーションベクタ RT(`R16G16_SFLOAT`)+ `velocity` パスを `before:post_main` に挿入(✅WP88) |
@@ -172,7 +173,7 @@ push constant は 128B(エンジン 64B + シェーダ 64B)で、✅**リフレ�
 | `sprite.json` | **純ゲート**(RT もパスも足さない)。参照すると `__anchor_sprite` でスプライトが描かれる(§6.9) |
 | `debug_draw.json` | ワイヤフレームオーバーレイ(collider 可視化など) |
 | `debug_text.json` | ビットマップ文字 HUD([第7章](07_input_ui.md)) |
-| `gpu_timing.json` | パスなしの計測フラグ。GPU パス単位タイムスタンプをログに出力 |
+| `gpu_timing.json` | パスなしの計測フラグ。フレームグラフの**ノードごとに `barriers` / `body` の GPU タイムスタンプ**を取り、ログ・`get_status.gpu_timing`・ImGui に出す(✅WP29/143。XR では左右眼とミラーを別 view として分離。§6.14) |
 
 fragment(`pelican.render_feature` v1)に書けるもの: `render_targets` / `buffers` / `compute_tasks`(追加。名前衝突はエラー。RT には `format_class` / `role` / `history` も書ける)、`render_target_overrides`(既存 RT の format/usage 等を上書き)、`passes`(`insert: "before:<アンカー|パス名>" | "after:<...>" | "end"`)、`pass_overrides`(既存パスへの input 追加)、`shader_defines`、**`parameters`(下記)**、**`projection_jitter`(§6.8)**。`shadow_directional.json` の全文例は前版と同じです。
 
@@ -250,7 +251,7 @@ void pelican_surface_v1(in PelicanSurfaceInputV1 surface_input, inout PelicanSur
 vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, in PelicanSurfaceInputV1 surface_input) { ... }
 ```
 
-- ヘッダ語彙: `language` / 順序付き `params[]`(型 `floating|vec2|vec3|vec4|integer|color`、**`default` 必須**、min/max/hint 任意)/ `textures[]`(`role: color|data` — SRGB/UNORM view の選択)/ `screen_inputs[]`(§6.8)/ `render_state`。網羅例は `test/fixtures/surface_format/valid/full.surface`。
+- ヘッダ語彙: `language` / 順序付き `params[]`(型 `float|vec2|vec3|vec4|int|color`、**`default` 必須**、min/max/hint 任意)/ `textures[]`(`name` / `default` / `color_space: srgb|linear` が**必須** — SRGB/UNORM view を決めるのは `color_space` で、`role: color|data` は任意の整合チェック)/ `screen_inputs[]`(§6.8)/ `render_state`。網羅例は `test/fixtures/surface_format/valid/full.surface`。
 - **フック梯子 v1(凍結)**: `pelican_vertex_displace_v1` / `pelican_surface_v1` / `pelican_brdf_v1` / `pelican_ambient_v1` / `pelican_lighting_v1`。書いた関数がそのまま宣言になります。`brdf` と `lighting` は排他、未知の `pelican_` 関数定義やフックゼロはロードエラー。
 - スニペットはエンジン所有テンプレート(`engine://shaders/material/surface_v1.{vert,frag}`)へ逆 include され、エラーは `#line` で元ファイル名・行番号に翻訳されます。パラメータへは自動生成アクセサ `pelican_param_<name>()` / `pelican_sample_<name>(uv)` でアクセスします。
 - 同梱の standard / toon ライティングも**同じ公開経路**で書かれています(特権なし standard library。dogfooding)。
@@ -287,7 +288,7 @@ standard / toon に続く**特権なしの standard library surface** として�
 
 - レンダラ接続は ✅ — `.surface` → コンパイル → パイプライン → SSBO → 描画まで golden(`surface_toon` / `skeletal_toon` / `openpbr_coat_sphere`)で実証済みです。
 - **手書きの `.material.json` をプロジェクト起動時に読み込んでモデルへ割り当てる宣言的レーンは依然 🚧**です。既定のバインディング解決は **GLB 内の named material** にのみ働き(binding ABI ✅WP116)、OpenPBR golden もテストハーネスが登録を行っています。
-- **per-instance マテリアルオーバーライド**(factor / UV の乗算 + material 別の絶対上書き)は ✅WP122/122b で renderer 機構として実装済みです。公開の書き込み面は VRM application service([第8章](08_gameplay.md) §8.12)経由で、GameContext API はありません。
+- **per-instance マテリアルオーバーライド**(factor / UV の乗算 + material 別の絶対上書き)は ✅WP122/122b で renderer 機構として実装済みです。公開の書き込み面は VRM application service([第8章](08_gameplay.md) §8.13)経由で、GameContext API はありません。
 - **spv-link(M3b/WP80)は experimental**: 環境変数 `PELICAN_SPV_LINK=experimental` を明示したプロセスのみ SPIR-V リンクバックエンドに切り替わります。既定は常にソース経路です。
 - 設計文書 [../design_material_shading.md](../design_material_shading.md) は v1.2 のまま実装が追い越しています。**現行契約の正は [../shader_contract.md](../shader_contract.md)** です。
 
@@ -354,7 +355,7 @@ TAA は**特権なしの標準 feature** です(エンジン本体は §6.8 冒�
 
 ### per-instance マテリアルオーバーライド(✅WP122/122b — 機構)
 
-インスタンス単位の factor / UV 乗算オーバーライドと、`(インスタンス, glTF material index)` 単位の絶対上書きが renderer 機構として入っています(N/N-1 履歴付き — VRM 表情の適用先)。公開の書き込み面は VRM application service([第8章](08_gameplay.md) §8.12)で、rendering config に書くものはありません。
+インスタンス単位の factor / UV 乗算オーバーライドと、`(インスタンス, glTF material index)` 単位の絶対上書きが renderer 機構として入っています(N/N-1 履歴付き — VRM 表情の適用先)。公開の書き込み面は VRM application service([第8章](08_gameplay.md) §8.13)で、rendering config に書くものはありません。
 
 ### 名前付きスクリーンスナップショット(屈折・歪みの入口)
 
@@ -395,7 +396,17 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 ```
 
 - パス JSON の `"swapchain"` 出力は自動的にオフスクリーンイメージへ解決されるので、**config は無変更で動きます**。出力 PNG は encoded-sRGB(§6.3)。
-- ゴールデンイメージテストは **49 ケース**(2026-07-17 時点。`test/golden/` — ディレクトリを置くだけで自動発見されます)。プラン比較テストとあわせて回帰保護の柱です。検証の流儀は [../rendering_phase1_review.md](../rendering_phase1_review.md)。
+- ゴールデンイメージテストは **49 ケース**(2026-07-21 時点)。プラン比較テストとあわせて回帰保護の柱です。検証の流儀は [../rendering_phase1_review.md](../rendering_phase1_review.md)。
+
+> ⚠ **変更(✅WP141):** ケース集合の正本はコミット済みの **`test/golden/inventory.json`**(`pelican.golden_inventory` v1)になりました。**`test/golden/` にディレクトリを置くだけでは発見されません** — 未登録のディレクトリは描画テストの対象にならず、CPU 側の inventory ゲートが名指しで FAIL します。ケースを増減したら次の手順を踏みます。
+>
+> ```powershell
+> python test/golden_inventory.py --repo-root .            # 照合(PASS / FAIL + 理由列挙)
+> python test/golden_inventory.py --repo-root . --update   # 意図した変更のあと manifest を再生成
+> git diff -- test/golden/inventory.json                   # diff をレビューしてコミット
+> ```
+>
+> manifest はケースごとに `name` / `mode` / `files` / `expected_png_sha256` / `tolerance` / `vat`(`on_and_off` か `on_only`)/ `traces` を宣言します。照合は **GPU 不要**で、`ctest -LE gpu` と CPU CI ゲートの両方で毎回走ります。`PELICAN_UPDATE_GOLDEN` などの更新モードも manifest に載ったケースだけを回り、**manifest の再生成が `expected.png` を書き換えることはありません**(画像とトレースの再ベースラインは従来どおり [../design_color_pipeline.md](../design_color_pipeline.md) §3 の 6 段階手順です — `test/golden/README.md`)。
 
 > **設計決定(レイヤ規則):** `src/core/vkcore`(Vulkan 低層)から `src/core/renderingpass` 以上のレイヤへ include を追加しない。下位層はフラグを上げるだけで、編成は上位層 Renderer が行う。
 
@@ -403,7 +414,9 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 
 | エラー(抜粋) | 原因 |
 |---|---|
-| `Default rendering pass does not output to swapchain` | `default_rendering_pass` のパス列が画面に出力していない |
+| `Rendering pass not found: <name>` | `default_rendering_pass` の名前が rendering config のパス列に無い |
+| `Default rendering pass has no terminal output_transform: <name>` | 既定のパス列の終端が `output_transform` ノードになっていない |
+| `Pass input target is not produced as an earlier output: display` | authored な `"swapchain"` 出力は `display` RT へ置換されるため、`display` を誰も書かない構成はここで落ちる(§6.1) |
 | `uses an explicit file extension; use an extensionless ... shader stem` | shader 参照に拡張子を書いた |
 | `Shader stem could not be resolved: ... Tried: ...` | stem のパスミス(試行一覧がエラーに含まれる) |
 | `Unknown pass type: ...` | `type` の typo(§6.2 の一覧参照) |
@@ -421,8 +434,13 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 | `placeholder has no resolved binding` / parameter 名入り compose エラー | feature の `$名前` に対応する binding / default が無い(§6.5) |
 | projection jitter provider の重複エラー | `projection_jitter` を宣言する feature を 2 個以上参照した(単一 provider 排他) |
 | `OpenXR activation rejected history feature '<name>'` ほか XR activation 拒否 | XR graph から除外できない temporal / UI 構成(§6.12) |
+| `runtime-selected physical device lacks Vulkan feature timelineSemaphore required by OpenXR` | OpenXR ランタイムが選んだ GPU が `timelineSemaphore` 非対応(✅WP138 で silent 失敗から名指しエラーへ) |
+| `preview graph '<config>' rejects authored projection_jitter` / `... rejects authored history target '<name>'` / `... rejects authored unsafe target '<name>'` | preview graph に載せられない構成を rendering config が直書きしている(§6.13) |
+| `preview graph '<列名>' rejects authored pass '<パス名>': <理由>` | 同上(理由は `unsafe pass type/name <type>` / `history read` / `history write`)|
+| `preview graph config requires rendering_passes` | 合成後の config に `rendering_passes` が無い(§6.13) |
+| `golden inventory: FAIL` + `- <issue>` | `test/golden/inventory.json` と `test/golden/` の実体が食い違う(§6.10) |
 
-## 6.12 OpenXR ステレオレンダリング(✅WP125〜135)
+## 6.12 OpenXR ステレオレンダリング(✅WP125〜138)
 
 `--xr on|auto` で起動すると([第2章](02_getting_started.md))、レンダラは**論理フレーム**単位の二眼描画に切り替わります。
 
@@ -431,7 +449,137 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 - **座標系(WP131)**: `world_from_stage = inverse(フレーム開始時の active camera view)` — flat のカメラ API は不変のまま、XR アダプタ内でのみ変換します。reference space は STAGE → LOCAL_FLOOR → LOCAL の優先選択で、LOCAL への fallback 時は「床は非保証」を `get_status.xr` が明示します。
 - **feature policy(WP133)**: flat / XR の両グラフを起動時にコンパイルし、**XR グラフからは TAA・projection jitter・velocity・history・UI の feature を自動除外**します。除外できない構成(config 直書きの history 読み・UI パス・未知の history feature)は XR 起動を名指しで拒否します — **history を持つ自作 feature は `--xr on` を止める**ことに注意してください(vrm_xr_demo の config が features 空配列なのはこのため)。XR の出入り境界では temporal reset が 1 回入ります。
 - **ミラー(WP133)**: デスクトップウィンドウには左眼の best-effort ミラー(scale + letterbox、UI はミラー側にのみ重畳)。ウィンドウが詰まっても **HMD のフレームループは待たされません**。XR 中の従来 capture は名指しで拒否されます(headless / golden は常に flat 経路)。
-- ⚠ 制限: 実機(Quest 3 Link)での表示確認は未実施(WP136 = XR Simulator smoke が未着手)。multiview(XR2b)・深度 submit・world-space UI は 📐。セッション喪失時の再生成はループ側未配線(現状は終了)。
+- **ImGui は XR 中に出ません(✅WP138・v1 仕様)**: XR グラフには `imgui` パスが無いため、**XR session が active な間はエンジンが ImGui frame を begin しません**([src/core/imgui/imguiruntime.cpp](../../src/core/imgui/imguiruntime.cpp) の `isImGuiRuntimeEnabled()` が headless / rpc / リプレイ / golden と同列で `xr_active` を弾きます)。論理フレーム境界でゲートが閉じた場合、開始済みのフレームは `endFrameIfStarted()` で閉じられます。ミラーへの ImGui 表示は将来の別 WP です([第7章](07_input_ui.md) §7.1)。
+- **実ランタイム検証(✅WP136/138)**: Meta XR Simulator **v201.0** 上の `--xr on` 経路は検証済みです — `FOCUSED` 到達 / `shouldRender=true` / 連続 1000 XR フレーム / デスクトップミラー 1000 present・0 drop・0 failure / 190.5 秒連続運転 / Vulkan validation エラー 0。Simulator 検証で見つかった 3 つの blocker(XR 中の ImGui frame 不整合・`timelineSemaphore` 未有効化による validation エラー・診断ログが無く観測できないこと)は WP138 で修正済みです。
+- ⚠ 制限: **物理 HMD(Quest 3 Link 等)での表示確認は依然として未実施**です。focus loss / regain も未確認です(Simulator v201.0 が focus-loss イベントを発行しないランタイム制約のため、エンジン側の契約は headless の fake fixture で固定しています)。multiview(XR2b)・深度 submit・world-space UI は 📐。session loss 時の再生成は loop に未配線で、現状は安全に終了します。
+
+## 6.13 グラフ variant(flat / XR / preview)(✅WP133/172)
+
+同じ rendering config から、起動時に**最大 3 つのグラフ**が合成・検証されます([src/core/vkcore/renderer_config.cpp](../../src/core/vkcore/renderer_config.cpp) の `loadRenderGraphVariantsFromConfig()`)。
+
+| variant | いつ作られるか | 実行するもの |
+|---|---|---|
+| `flat` | 常に | 通常の描画([第2章](02_getting_started.md)の起動すべて) |
+| `xr` | `--xr on/auto` で XR session が立つときだけ | 二眼描画 + ミラー(§6.12)。パス列名(`rendering_passes[].name`)と compute task 名に `#xr` サフィックスが付きます(個々のパス名は不変) |
+| `preview` | **常に**(XR / headless / rpc を問わず起動時に必ずコンパイル) | エディタのプレビュー描画(`render_preview`)。[第13章](13_editor.md) |
+
+> **設計決定(preview は共有状態を持たないデータプログラム):** preview graph は `flat` / `xr` と違って `RenderingPassId` を持たず、**共有レンダーターゲットもパスも一切登録しません**。合成結果(`PreviewGraphProgram` = `{name, generation, pass_names, excluded_feature_names, composed_config}`)は**データとして保持**され、リクエストごとのリソースに対して実行されます。したがって `Renderer::renderLogicalFrame` の経路には入らず、通常描画のスループットにも決定性にも影響しません([src/core/renderingpass/previewgraph.hpp](../../src/core/renderingpass/previewgraph.hpp))。
+
+preview graph の合成規則(すべて起動時に検証されます):
+
+- 終端の `"swapchain"` 出力は**リクエストローカルな `preview_capture`** へ書き換えられます。swapchain イメージ・ミラーシンク・present キュー・共有 descriptor view は preview のプログラムに表現できません。
+- 名前または宣言面に `taa` / `velocity` / `motion_vector` / `projection_jitter` / `ui` / `imgui` / `mirror` / `present` を含む feature、`history: true` の RT を宣言する feature、`projection_jitter` を宣言する feature は**まるごと除外**されます(除外名は `excluded_feature_names` に記録され、composer の依存/アンカー検証はそのまま働きます)。
+- **config へ直書き**した同種の構成は除外できないため、名指しの起動エラーになります(§6.11 の `preview graph ...` 行)。`@history` の読み書きも同様です。ただし名前が `present` で終わる終端パスだけは、出力が request-local な終端(`preview_capture` / `display`)に解決されていて `mirror` / `ui` を含まない場合に限り保持されます。
+
+合成結果には `generation`(合成後 config の FNV ハッシュ)が付き、`render_preview` の応答に `graph_generation` として返ります。config を編集して再合成すると値が変わるので、エディタ側の再取得判定に使えます。
+
+## 6.14 GPU デバッグラベルと計測(✅WP139/140/143/145)
+
+「絵が違う」「重い」を追うための面は 4 つあり、有効化の重さが違います。設計の正は [../design_debug_profiling.md](../design_debug_profiling.md)(v1.1)です。
+
+| 面 | 有効化 | 出口 |
+|---|---|---|
+| フレームメトリクスログ / `get_status.memory` / `get_status.xr.timing` | 常設(何もしない) | ログ・rpc・ImGui |
+| GPU タイミング | rendering config の features に `engine://features/gpu_timing.json` を 1 行 | ログ・`get_status.gpu_timing`・ImGui |
+| Vulkan のデバッグ名とコマンドラベル | 起動フラグ `--gpu-labels`(既定 OFF) | RenderDoc / NSight / validation メッセージ |
+| RenderDoc キャプチャ | RenderDoc の Launch Application から player を起動(注入) | F11 / rpc `capture_gpu` → `.rdc` |
+
+### `--gpu-labels` — ラベルの読み方(✅WP139)
+
+`--gpu-labels` は**ビルドフラグではなく起動フラグ**です(配布ビルドでも使えます。`PELICAN_WITH_RENDERDOC` とは独立で、ラベルだけ欲しいなら RenderDoc は不要)。有効になる条件は 3 つの AND — フラグ / instance extension `VK_EXT_debug_utils` の存在 / 関数ポインタの解決。結果は `get_status.debug_utils` で確認します:
+
+```json
+"debug_utils": { "available": true, "enabled": true, "reason": "enabled",
+                 "capabilities": { "object_name": true, "command_label": true, "queue_label": true } }
+```
+
+`reason` は `disabled_by_launch_option` / `VK_EXT_debug_utils_unavailable` / `required_function_unavailable` / `enabled` のいずれかです。関数が足りないときは例外にせず `enabled: false` に落ちます。
+
+コマンドラベルは**フレームプランの順序どおり**に、次の正規形で入れ子になります:
+
+```
+frame/<logical-frame>/graph/<flat|xr>/view/<index>/node/<ordinal>:<kind>:<name>
+  ├─ barriers
+  └─ body
+```
+
+`<kind>` は §6.6 のノード種別(`render` / `compute` / `anchor` / `snapshot_copy` / `output_transform`)に、XR ミラー経路の `mirror` を加えたものです。オブジェクト名は RT が `rt/<名前>/surface/<n>/image`(と `/view`)、ほかに `swapchain/...` / `offscreen/...` / `xr/view/<view>/swapchain/image/<n>/...` / `frame/in_flight/<frame>/view/<view>/ubo`(と `/descriptor_set`)が付きます。
+
+- ⚠ `queue_label: true` は「関数が解決できた」という意味だけで、**submit 境界に queue label は出ません**(呼び出し側が未実装)。バッファ / パイプライン / テクスチャ / サンプラの網羅命名も 📐 です。
+- ラベルの ON / OFF で**最終 RGBA8 は byte 一致**します(golden 全ケースで検証済み)。無効時はラベル文字列の組み立て自体を行いません。
+- validation layer は `--gpu-labels` では有効になりません(`_DEBUG` 構成のみ)。ただし `--gpu-labels` を付けると validation メッセージにも同じ論理名が出ます。
+
+### RenderDoc キャプチャ(✅WP140)
+
+> **設計決定(受動接続):** Pelican は RenderDoc を**ロードしません**。既に注入済みの `renderdoc.dll` を観測するだけです。したがって **RenderDoc の Launch Application から player を起動する**のが唯一の有効化手段で、起動後の attach は使いません。接続に成功すると RenderDoc 側のキャプチャホットキーは無効化され、F11 の所有権は Pelican に一本化されます。
+
+トリガは 2 系統で、**キャプチャ専用の CLI 引数はありません**。
+
+- **F11**(ウィンドウ + flat モード): armed 状態の次の 1 フレームだけが `StartFrameCapture` / `EndFrameCapture` で囲まれます。キャプチャに失敗しても論理フレームは必ず 1 回描かれます(二重描画はしません)。⚠ リプレイ中はライブのウィンドウイベントを積まないので、**キーボードの F11 は効きません**(収録シーケンスに F11 が入っている場合だけ発火します)。
+- **rpc `capture_gpu`**(headless 想定): `render_frame` と同型で、**時刻もフレーム index も進めません**。決定的リプレイで同じ論理フレームに固定してから撮るのが定石です([第10章](10_tools.md) / [../adding_features.md](../adding_features.md) Recipe 8)。
+
+XR session が active な間は `capture_xr_unsupported` で拒否されます(v1 の境界)。状態と失敗理由は `get_status` の `renderdoc`(文字列)と `diagnostics.renderdoc`(`{status, state, reason, api_version, source}`)で読めます。RenderDoc 未注入なら `absent` / `renderdoc_not_injected`、`PELICAN_WITH_RENDERDOC=OFF` ビルドなら `disabled` / `renderdoc_build_disabled` です。
+
+### GPU タイミング(✅WP143)
+
+有効化は rendering config の 1 行だけです。**同梱プロジェクトはどれも参照していない**ので、自分の config に足してください(feature が無ければ query pool 自体を作りません)。
+
+```json
+{
+  "features": ["engine://features/gpu_timing.json"],
+  "render_targets": [],
+  "rendering_passes": [ { "name": "main", "passes": [ /* ... */ ] } ]
+}
+```
+
+(結合テストのフィクスチャ `test/run_gpu_timing_headless.cmake` からの抜粋)
+
+`get_status.gpu_timing`(`schema_version: 2`)の読み方:
+
+| フィールド | 内容 |
+|---|---|
+| `enabled` / `supported` / `reason` | feature の有無 / キューが timestamp を持つか / `enabled`・`graphics_queue_timestamps_unsupported`・`feature_not_enabled` |
+| `history_capacity` / `history_count` | 論理フレーム単位の履歴リング(容量 120)|
+| `dropped_samples` | best-effort な提出が失敗して捨てた sample 数 |
+| `logical_frame_total_sum_views_ms` | 最新フレームの view 行の**単純合計**(左右眼を平均しません)|
+| `views[]` | `{logical_frame, graph_variant, view_index, label, barriers_ms, body_ms, total_ms}`。`label` は flat/0 → `flat`、xr/0 → `left`、xr/1 → `right`、xr/2 → `mirror` |
+| `nodes[]` | `{..., node_ordinal, node_kind, node_name, subrange, identity, supported, reason, ms}` |
+| `query_pool` | `{frame_slots, range_slots, max_nodes, query_capacity, create_count, pending_ranges}` |
+
+`nodes[].identity` は**コマンドラベルと同じ文字列に `/barriers` または `/body` を足したもの**なので、RenderDoc の Event Browser の木と 1:1 で突き合わせられます。`barriers` は「合成されて入ってきたバリア」、`body` は「そのノード自身の遷移と描画/ディスパッチ」です(帰属契約の正本は `test/fixtures/gpu_timing_attribution.json`)。仕事を持たないアンカーは `supported: false` / `reason: "no_gpu_work"` / `ms: 0.0` になります。
+
+feature 無効時も**同じ封筒**が返ります(`{"schema_version": 2, "enabled": false, "supported": false, "reason": "feature_not_enabled", ...}`)。
+
+ログは 1 秒ごとに 1 行です(GPU 側のキーは `graph/<variant>/view/<i>/node/<ordinal>:<kind>:<name>/<subrange>`):
+
+```
+pelican frame metrics frames=<n> cpu_update_ms_avg=<x> cpu_render_ms_avg=<x> cpu_present_wait_ms_avg=<x> gpu_ms_avg=<key=ms,...>
+```
+
+GUI では ImGui の `Pelican Engine Stats` → `GPU timing`(View / Node / Kind / Barriers ms / Body ms)。表示は**最新フレームのみ**で、120 フレームの積み上げグラフは 🚧 です。
+
+### VRAM(✅WP145)
+
+`get_status.memory`(`schema_version: 1`)は常設で、feature も CLI も要りません。
+
+```
+{ "schema_version": 1, "driver_available": <bool>, "driver_reason": <string|null>,
+  "heaps": [ {heap_index, device_local, size, usage, budget, source} ],
+  "engine_categories": [ {category, allocated_bytes, logical_used_bytes, free_bytes,
+                          high_water_bytes, object_count, source, reason} ] }
+```
+
+- **ドライバ heap とエンジン論理値は別物で、足しません。** `heaps[]` が埋まるのは `VK_EXT_memory_budget` が有効なときだけで、非対応時は **0 byte の偽 heap を作らず**空配列 + `driver_reason` を返します。
+- `engine_categories[]` は 6 カテゴリ(`model_indices` / `model_vertices` / `model_skinned_vertices` / `model_morph_deltas` / `textures` / `materials`)。
+- ⚠ **`null` は「0 バイト」ではありません。** 読み取り専用サーフェスから公開できない値は `null` + `reason` の named absence です(現状 `allocated_bytes` / `free_bytes` / `high_water_bytes` は `null`)。
+
+GUI では ImGui の `Pelican Engine Stats` → `Memory`(heap 別の Size / Usage / Budget MiB と engine category)。
+
+### 決定性との関係・未実装
+
+- 計測値は**診断専用**で、simulation や render policy にフィードバックしません。rpc の 2 回一致比較では `gpu_timing` と `memory` を丸ごと `<measured>` に正規化して除外します。一方 `frame` / `time` / `seed` などの simulation state と最終 RGBA8 は正規化しません。`.rdc` の byte 一致は決定性ゲートにしません。
+- 📐 未実装: buffer / pipeline / texture / sampler の網羅命名と submit 境界の queue label(D-P0b)、ImGui からのキャプチャボタン、XR 中のキャプチャ、Tracy、validation 常設 CI、crash 診断(minidump / `VK_EXT_device_fault`)。
+- 🚧 CPU フェーズ計測は `update` / `render` / `present_wait` の 3 区間が上のログに出るだけです(`get_status.cpu_timing` はありません)。
 
 ## 関連文書
 
@@ -446,7 +594,8 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 - [../design_taa_jitter.md](../design_taa_jitter.md) — TAA + projection jitter(v2.1・J1/J1b/J1c + 標準 TAA すべて実装済み)
 - [../design_usd_openpbr.md](../design_usd_openpbr.md) — USD レーン + OpenPBR(v2.1・M-PBR0/U-USD0 実装済み)
 - [../openpbr_1_1_1_mapping.md](../openpbr_1_1_1_mapping.md) — OpenPBR 写像表の正
-- [../design_openxr.md](../design_openxr.md) — OpenXR(v2.1・XR0〜XR4 実装済み。XR2b・実機 gate は未)
+- [../design_openxr.md](../design_openxr.md) — OpenXR(v2.1・XR0〜XR4 + Simulator gate 実装済み。XR2b・物理HMD gate は未)
 - [../design_2d_game_layer.md](../design_2d_game_layer.md) — 2D ゲーム層(v2.4・S2D 実装済み)
 - [../design_asset_hot_reload.md](../design_asset_hot_reload.md) — アセットホットリロード(v2.1・HR0〜HR2-G 実装済み)
+- [../design_debug_profiling.md](../design_debug_profiling.md) — デバッグ・プロファイリング(v1.1・条件付き受理。D-P0a/D-P1a/D-P2a/D-P2b 実装済み、§6.14)
 - [第5章 アセット](05_assets.md) / [第9章 Web プロファイル](09_web.md) / [第10章 ツールリファレンス](10_tools.md)
