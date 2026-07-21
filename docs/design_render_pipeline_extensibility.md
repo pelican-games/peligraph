@@ -180,10 +180,11 @@ pass ではない。全 envelope を交換したい利用者には source / back
 - resource lifetime / barrier / resolve plan
 - excluded feature と fallback を含む structured diagnostics
 
-現状の `FramePlan::composition_metadata` にある `projection_jitter`、
-`material_routing`、`pipeline_preset`、`graph_variant` 等は移行対象である。
-JSON は authoring input と dump serialization に限定し、runtime がキー文字列を
-読んで動作を変える状態を終わらせる。
+WP181 / RPE2 で旧 `FramePlan::composition_metadata` にあった
+`projection_jitter`、`material_routing`、`pipeline_preset`、`graph_variant` 等は
+初期 `CompiledRenderPipeline` の typed field へ移行した。JSON は authoring input と
+dump serialization に限定し、runtime がキー文字列を読んで動作を変える状態を
+終了した。
 
 移行中は `ResolvedRenderPipeline` が正規化済み JSON を一時的に保持してよい。
 ただしその JSON を新しい runtime 契約として公開せず、typed field への移行表と
@@ -430,7 +431,7 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 |------|------|-----------|
 | RPE0 | 本文書と既存文書の統合 | 用語・所有権・順序の合意 |
 | RPE1 / WP180（済 2026-07-21） | `RenderPipelineRequest`、`RenderEnvironmentCapabilities`、`ResolvedRenderPipeline` と純粋 resolve 境界を抽出 | flat/preview/XR の既存 plan dump byte-equivalent、GPU mutation なし |
-| RPE2 | typed `CompiledRenderPipeline` を導入し、`composition_metadata` の runtime 読みを段階移行 | JSON は dump のみ、既存 golden 不変 |
+| RPE2 / WP181（済 2026-07-22） | typed `CompiledRenderPipeline` を導入し、`composition_metadata` の runtime 読みを撤去 | JSON は dump のみ、既存 golden 不変 |
 | RPE3 | inventory と queue materialization を `DrawQueueBuilder` へ分離し、`state_batched_v1` で現行順を再現 | indirect bytes / draw ranges 不変、二回実行一致 |
 | RPE4 | owner-aware `RenderPolicyRegistry` + `DrawSortProviderV1`、builtin も同じ経路へ | game DLL register/unregister/reload、stale generation reject |
 | RPE5 | `back_to_front_v1`、phase 別 queue、XR logical-center/per-view | 混在 scene golden、安定 tie-break、左右眼 fixture |
@@ -442,10 +443,11 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 
 ### 12.1 いま着手する範囲
 
-RPE1 / WP180 は完了した。公開 provider ABI、透明描画、MSAA の Vulkan 変更を
-混ぜず、複数入口に散っていた compose / variant / validate を純粋な resolve 段階へ
-集約した。次は RPE2 を独立 WP として登録し、この typed 境界から immutable plan を
-作る。
+RPE1 / WP180 と RPE2 / WP181 は完了した。authoring resolve と immutable typed plan、
+dump-only JSON、semantic route から `PassId` への runtime binding が分離済みである。
+次は RPE3 を独立 WP として登録し、現行 draw inventory と queue materialization を
+`DrawQueueBuilder` へ分離して `state_batched_v1` で既存 byte 列を再現する。公開
+provider ABI、透明 sort、MSAA の Vulkan 変更はまだ混ぜない。
 
 ### 12.2 後回しにするもの
 

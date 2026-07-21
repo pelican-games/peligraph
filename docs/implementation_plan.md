@@ -65,57 +65,17 @@ ctest --test-dir ./build -C Debug --output-on-failure
 
 | WP | 内容 | 状態 |
 |----|------|------|
-| WP181 | RPE2 — typed immutable `CompiledRenderPipeline` | 実装中 |
+| — | 登録済みの未完了 WP なし | 次候補は RPE3。着手前に WP 登録する |
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
-(最新完了: WP180、2026-07-21。本文と完了レポートは archive 参照。)
+(最新完了: WP181、2026-07-22。本文と完了レポートは archive 参照。)
 
 ## 2. WP 詳細
 
-### WP181: RPE2 — typed immutable `CompiledRenderPipeline`
-
-参照: **[`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md)
-§2、§4、§12 の RPE2 が正**。WP180 の `ResolvedRenderPipeline` を authoring
-解決結果として維持しつつ、runtime が消費する immutable な typed plan を導入する。
-
-- `compileRenderPipeline(...)` は projection jitter、feature instance parameter、
-  semantic material route、preset provenance、graph variant、excluded feature、診断を
-  typed field へ変換する。正規化済み authoring JSON、Vulkan object、module、container
-  は保持・参照しない
-- `FrameGraphRuntimeContainer` は compiled plan を `shared_ptr<const ...>` で保持し、
-  registration 後の runtime code は JSON key を読まず typed field だけを消費する
-- `FramePlan::composition_metadata` を撤去する。frame-plan dump / RPC / plan viewer では
-  typed plan から従来と同じ JSON をその場で serialize し、JSON を runtime state として
-  保存しない
-- compile と graph planning は container mutation より前に完了させる。typed compile
-  failure で render target、pass、compute task、enabled feature、frame graph を publish
-  しない
-- RPE2 は既存の graph node / barrier / compiled pass を再利用する。最終契約に必要な
-  sample policy、draw sort policy、color domain、resource lifetime の追加は対応する後続
-  RPE WP で typed plan へ additive に加える
-
-依存: WP180、FeatureCompose、FramePlanner、semantic material routing、projection jitter。
-見積: 中。
-
-排他: `src/project/renderpipeline*`、`src/core/renderingpass/frameplanner*`、
-`framegraphruntime*`、`renderingpassconfigregistration*`、renderer の jitter 読取、対応 test。
-**draw command / queue materialization / 公開 provider ABI / transparent sort / Vulkan
-sample count・resolve / OpenXR lifecycle / schema / shader / 描画結果は変更しない**。
-
-受け入れ:
-
-1. `compileRenderPipeline(...)` の CPU-only test が Vulkan device / module 初期化なしで
-   projection jitter、feature parameter、material route、preset、flat / preview / XR、
-   structured diagnostic を検証する
-2. production runtime に `composition_metadata` と JSON key による pipeline 意味解釈が
-   残らず、renderer の jitter 設定が typed plan から得られる
-3. flat / preview / XR / hybrid の既存 frame-plan dump と golden が byte-equivalent。
-   feature instance の bool / signed / unsigned / floating / string 値も往復不変
-4. compile / graph-plan failure 後に registration container が未変更であることを fixture
-   で固定する
-5. 全 build、全 CTest、描画 Player 短時間起動、`git diff --check` が成功する
-6. RPE3 以降の draw queue/provider、透明 sort、MSAA を先取りしない
+現在、登録済みの未完了 WP はない。RPE3 を続ける場合は
+[`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md)
+§6、§12 と WP181 完了レポートを基準に、独立 WP として受け入れ条件を登録する。
 
 ## 3. トラック現況(WP 化待ちを含む)
 
@@ -144,8 +104,8 @@ sample count・resolve / OpenXR lifecycle / schema / shader / 描画結果は変
   `hybrid_v1`、semantic material route、deferred + forward の scene-linear 合成は
   実装済み。以後は [RPE] の preset / eject / policy provider / backend と
   Request / Resolved / Compiled / Prepared / Runtime 語彙へ揃える。現在の単一
-  material-batched draw queue、`composition_metadata` JSON、sample count 1 固定、
-  XR/preview ad-hoc callback を一度に直さず、RPE1(WP180)→ typed plan →
+  material-batched draw queue、sample count 1 固定、XR/preview ad-hoc callback を
+  一度に直さず、RPE1(WP180)→ RPE2 typed plan(WP181) →
   DrawQueueBuilder/provider → transparent sort → screen input → MSAA → graph variant →
   pipeline transaction の順で進める
 
