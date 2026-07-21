@@ -80,7 +80,7 @@ struct EditorRuntimeModules {
     EngineTime &engine_time;
     DeletionQueue *deletion_queue;
     RenderTiming *render_timing;
-    BehaviorAttachmentArena *behavior_arena;
+    BehaviorAttachmentArena &behavior_arena;
     watch::ReloadGate *reload_gate;
 };
 
@@ -103,7 +103,7 @@ EditorRuntimeModules resolveEditorRuntimeModules() {
         GET_MODULE(EngineTime),
         FastModuleContainer::tryGet<DeletionQueue>(),
         FastModuleContainer::tryGet<RenderTiming>(),
-        FastModuleContainer::tryGet<BehaviorAttachmentArena>(),
+        GET_MODULE(BehaviorAttachmentArena),
         FastModuleContainer::tryGet<watch::ReloadGate>(),
     };
 }
@@ -831,7 +831,7 @@ EditorProjectionResult executeEditorProjection(
     if (!behavior_edits.empty()) {
         behavior_state = std::make_unique<BehaviorProjectionJunctionState>(
             BehaviorProjectionJunctionState{
-                .arena = GET_MODULE(BehaviorAttachmentArena),
+                .arena = modules.behavior_arena,
                 .edits = std::move(behavior_edits),
             });
         auto junction = makeBehaviorAttachmentProjectionJunction(
@@ -928,8 +928,7 @@ EditorRuntimeObjectState queryEditorRuntime(const EditorRuntimeModules &modules,
 
     auto &ecs = modules.ecs_core.getTemplatePublicModule();
     auto &component_info = modules.component_info;
-    const auto behavior_attachments =
-        GET_MODULE(BehaviorAttachmentArena).snapshot();
+    const auto behavior_attachments = modules.behavior_arena.snapshot();
     for (std::size_t index = 0; index < object.components.size(); ++index) {
         const auto name = object.components[index].authoredJson().at("name").get<std::string>();
         if (name == "behavior") {
@@ -1165,29 +1164,26 @@ struct EditorRuntimeState {
         }
 
         auto behavior_state = Json::array();
-        auto behavior_isolation = Json(nullptr);
-        if (modules.behavior_arena) {
-            for (const auto &entry : modules.behavior_arena->snapshot()) {
-                behavior_state.push_back({
-                    {"handle", entry.handle.value}, {"attachment_seq", entry.attachment_seq},
-                    {"entity", {{"index", entry.entity.index},
-                                {"generation", entry.entity.generation}}},
-                    {"component_index", entry.component_index},
-                    {"stable_name", entry.stable_name},
-                    {"canonical_params", entry.canonical_params},
-                    {"owner", entry.owner}, {"pending", entry.pending},
-                    {"active", entry.active},
-                });
-            }
-            const auto isolation = modules.behavior_arena->isolationState();
-            behavior_isolation = {
-                {"next_handle", isolation.next_handle},
-                {"next_attachment_seq", isolation.next_attachment_seq},
-                {"deferred_mutation_count", isolation.deferred_mutation_count},
-                {"callback_depth", isolation.callback_depth},
-                {"callback_owner", isolation.callback_owner},
-            };
+        for (const auto &entry : modules.behavior_arena.snapshot()) {
+            behavior_state.push_back({
+                {"handle", entry.handle.value}, {"attachment_seq", entry.attachment_seq},
+                {"entity", {{"index", entry.entity.index},
+                            {"generation", entry.entity.generation}}},
+                {"component_index", entry.component_index},
+                {"stable_name", entry.stable_name},
+                {"canonical_params", entry.canonical_params},
+                {"owner", entry.owner}, {"pending", entry.pending},
+                {"active", entry.active},
+            });
         }
+        const auto isolation = modules.behavior_arena.isolationState();
+        const auto behavior_isolation = Json{
+            {"next_handle", isolation.next_handle},
+            {"next_attachment_seq", isolation.next_attachment_seq},
+            {"deferred_mutation_count", isolation.deferred_mutation_count},
+            {"callback_depth", isolation.callback_depth},
+            {"callback_owner", isolation.callback_owner},
+        };
 
         const auto event_snapshot =
             internal::getEventRegisterer().isolationSnapshot();
@@ -1302,12 +1298,12 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService() {
                 return editorGateObservation(runtime->modules);
             },
             .allocate_behavior_attachment =
-                [](std::uint64_t commit_seq, std::size_t command_index,
-                   std::size_t attachment_index) {
-                    const auto identity =
-                        GET_MODULE(BehaviorAttachmentArena)
-                            .reserveRuntimeAttachmentIdentity(
-                                commit_seq, command_index, attachment_index);
+                [runtime](std::uint64_t commit_seq, std::size_t command_index,
+                          std::size_t attachment_index) {
+                    const auto identity = runtime->modules.behavior_arena
+                                              .reserveRuntimeAttachmentIdentity(
+                                                  commit_seq, command_index,
+                                                  attachment_index);
                     return EditorBehaviorAttachmentIdentity{
                         .handle = identity.handle.value,
                         .attachment_seq = identity.attachment_seq,
@@ -1320,9 +1316,9 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService() {
                     const auto entity = boundEditorEntity(
                         runtime->runtime_bindings, object_id);
                     if (!entity) return std::nullopt;
-                    const auto attachment =
-                        GET_MODULE(BehaviorAttachmentArena)
-                            .findEditorAttachment(*entity, attachment_index);
+                    const auto attachment = runtime->modules.behavior_arena
+                                                .findEditorAttachment(
+                                                    *entity, attachment_index);
                     if (!attachment) return std::nullopt;
                     return EditorBehaviorAttachmentIdentity{
                         .handle = attachment->handle.value,
