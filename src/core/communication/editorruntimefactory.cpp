@@ -554,6 +554,41 @@ std::string operationSceneId(const nlohmann::ordered_json &operation,
     return std::string{fallback};
 }
 
+std::size_t operationComponentIndex(
+    const EditorRuntimeModules &modules,
+    const nlohmann::ordered_json &operation, AuthoringObjectId object_id,
+    std::string_view component_name) {
+    if (const auto index = operation.find("component_index");
+        index != operation.end()) {
+        return index->get<std::size_t>();
+    }
+
+    // Compatibility for inverse records produced before component_index was
+    // included for non-behavior add_component operations. A remove inverse is
+    // executed against a document where that component is currently present.
+    for (const auto &scene : modules.project_config.sceneDocument().query()) {
+        const auto object = std::find_if(
+            scene.objects.begin(), scene.objects.end(),
+            [object_id](const auto &candidate) {
+                return candidate.authoring_object_id == object_id;
+            });
+        if (object == scene.objects.end()) continue;
+        const auto component = std::find_if(
+            object->components.begin(), object->components.end(),
+            [component_name](const auto &candidate) {
+                return candidate.authoredJson()
+                           .at("name")
+                           .template get_ref<const std::string &>() ==
+                       component_name;
+            });
+        if (component != object->components.end()) {
+            return component->declaration_index;
+        }
+    }
+    throw std::runtime_error(
+        "component edit has no declaration index and cannot resolve one");
+}
+
 struct BehaviorProjectionJunctionState {
     BehaviorAttachmentArena &arena;
     std::vector<BehaviorAttachmentEdit> edits;
@@ -745,19 +780,27 @@ EditorProjectionResult executeEditorProjection(
             const auto object_id = AuthoringObjectId{
                 operation.at("object_id").get<std::uint64_t>()};
             const auto entity = boundEditorEntity(runtime_bindings, object_id);
-            const auto component_index = operation.at("component_index")
-                                             .get<std::size_t>();
             if (component == "behavior") {
                 if (entity) {
                     if (op == "add_component") {
                         const auto &authored = operation.at("component");
+                        const auto stable_name =
+                            authored.at("type").get<std::string>();
+                        const nlohmann::json params =
+                            authored.contains("params")
+                                ? nlohmann::json{authored.at("params")}
+                                : nlohmann::json::object();
                         behavior_edits.push_back(BehaviorAttachmentEdit{
                             .kind = BehaviorAttachmentEditKind::attach,
                             .entity = *entity,
-                            .component_index = component_index,
+                            .component_index =
+                                operation.at("component_index")
+                                    .get<std::size_t>(),
                             .identity = behaviorIdentity(operation),
-                            .stable_name = authored.at("type").get<std::string>(),
-                            .canonical_params = authored.at("params").dump(),
+                            .stable_name = stable_name,
+                            .canonical_params =
+                                internal::canonicalizeBehaviorParams(
+                                    stable_name, params),
                             .raw_component = authored,
                         });
                     } else {
@@ -773,6 +816,8 @@ EditorProjectionResult executeEditorProjection(
                 continue;
             }
             if (entity) {
+                const auto component_index = operationComponentIndex(
+                    modules, operation, object_id, component);
                 behavior_edits.push_back(BehaviorAttachmentEdit{
                     .kind = op == "add_component"
                                 ? BehaviorAttachmentEditKind::insert_component

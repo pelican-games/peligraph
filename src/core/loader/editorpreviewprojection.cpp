@@ -743,34 +743,50 @@ OrderedJson EditorPreviewEvaluationContext::evaluate(
                                                context + "/object_id");
             const auto &root = findEvaluatedObject(
                 projection_.evaluated_scene, root_id, context + "/object_id");
+            const auto &scenes = projection_.evaluated_scene.at("scenes");
+            const auto root_scene = std::find_if(
+                scenes.begin(), scenes.end(), [root_id](const auto &scene) {
+                    return std::any_of(
+                        scene.at("objects").begin(), scene.at("objects").end(),
+                        [root_id](const auto &object) {
+                            return object.at("object_id") == root_id;
+                        });
+                });
+            if (root_scene == scenes.end()) {
+                schemaError(context + "/object_id",
+                            "descendant_world root scene is absent");
+            }
             std::unordered_set<std::string> descendants;
             if (!root.at("name").is_null()) {
                 descendants.insert(root.at("name").get<std::string>());
             }
             data = OrderedJson::array();
-            for (const auto &scene : projection_.evaluated_scene.at("scenes")) {
-                bool changed = true;
-                while (changed) {
-                    changed = false;
-                    for (const auto &object : scene.at("objects")) {
-                        if (object.at("parent").is_string() &&
-                            descendants.contains(object.at("parent").get<std::string>()) &&
-                            object.at("name").is_string()) {
-                            changed |= descendants.insert(
-                                object.at("name").get<std::string>()).second;
-                        }
+            bool changed = true;
+            while (changed) {
+                changed = false;
+                for (const auto &object : root_scene->at("objects")) {
+                    if (object.at("parent").is_string() &&
+                        descendants.contains(
+                            object.at("parent").get<std::string>()) &&
+                        object.at("name").is_string()) {
+                        changed |= descendants
+                                       .insert(object.at("name")
+                                                   .get<std::string>())
+                                       .second;
                     }
                 }
-                for (const auto &object : scene.at("objects")) {
-                    const auto id = object.at("object_id").get<std::uint64_t>();
-                    const bool include = id == root_id ||
-                        (object.at("name").is_string() &&
-                         descendants.contains(object.at("name").get<std::string>()));
-                    if (include) {
-                        data.push_back({{"object_id", id},
-                                        {"name", object.at("name")},
-                                        {"world_trs", object.at("world_trs")}});
-                    }
+            }
+            for (const auto &object : root_scene->at("objects")) {
+                const auto id = object.at("object_id").get<std::uint64_t>();
+                const bool include =
+                    id == root_id ||
+                    (object.at("name").is_string() &&
+                     descendants.contains(
+                         object.at("name").get<std::string>()));
+                if (include) {
+                    data.push_back({{"object_id", id},
+                                    {"name", object.at("name")},
+                                    {"world_trs", object.at("world_trs")}});
                 }
             }
         } else if (kind == "raycast") {

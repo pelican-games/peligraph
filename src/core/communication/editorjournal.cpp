@@ -691,11 +691,11 @@ PreparedOperation prepareAdd(const Json &raw,
     OrderedJson inverse{{"op", "remove_component"},
                         {"object_id", object_id.value},
                         {"scene_id", object.scene_id},
-                        {"component_slot", component_name}};
+                        {"component_slot", component_name},
+                        {"component_index", component_index}};
     if (behavior) {
         forward["attachment_handle"] = attachment_handle;
         forward["attachment_seq"] = attachment_seq;
-        inverse["component_index"] = component_index;
         inverse["attachment_index"] = component_index;
         inverse["attachment_handle"] = attachment_handle;
         inverse["attachment_seq"] = attachment_seq;
@@ -1857,7 +1857,10 @@ struct EditorEditCoordinator::Impl {
     std::unordered_map<std::string, OrderedJson> results;
     std::vector<OrderedJson> completed;
     std::vector<EditorJournalRecord> journal;
-    std::unordered_map<std::string, EditorLastWriterStamp> last_writers;
+    // Active writer history, not journal-action history. Undo removes the
+    // reverted writer; redo installs its new transaction as the active top.
+    std::unordered_map<std::string, std::vector<EditorLastWriterStamp>>
+        last_writers;
     std::unordered_map<std::uint64_t, std::vector<std::string>> undo_stacks;
     std::unordered_map<std::uint64_t, std::vector<RedoEntry>> redo_stacks;
     std::optional<PreviewLease> preview_lease;
@@ -2017,14 +2020,28 @@ struct EditorEditCoordinator::Impl {
                                   candidate.committed_revision);
             }
         }
-        for (const auto &command : source.commands) {
-            for (const auto &write : command.write_set) {
-                const auto writer = last_writers.find(write);
-                if (writer != last_writers.end() &&
-                    writer->second.transaction_id != source.transaction_id) {
-                    throwUndoConflict(source, command.structural_domain,
-                                      writer->second.transaction_id,
-                                      writer->second.revision);
+        // An undo journal record represents the absence of its source writer,
+        // so redo is guarded by its postcondition and the actor redo stack.
+        // Normal edits and redo records remain active writers and must be the
+        // current top before they can be undone.
+        if (source.operation_kind != "undo") {
+            for (const auto &command : source.commands) {
+                for (const auto &write : command.write_set) {
+                    const auto writer = last_writers.find(write);
+                    if (writer == last_writers.end() ||
+                        writer->second.empty() ||
+                        writer->second.back().transaction_id !=
+                            source.transaction_id) {
+                        const auto owner =
+                            writer != last_writers.end() &&
+                                    !writer->second.empty()
+                                ? writer->second.back()
+                                : EditorLastWriterStamp{document().revision(),
+                                                        "<none>", {}};
+                        throwUndoConflict(source, command.structural_domain,
+                                          owner.transaction_id,
+                                          owner.revision);
+                    }
                 }
             }
         }
@@ -2082,7 +2099,6 @@ struct EditorEditCoordinator::Impl {
                                     command.write_set.end());
             record.structural_domain.push_back(command.structural_domain);
             record.forward_postconditions.push_back(command.forward_postcondition);
-            for (const auto &write : command.write_set) last_writers[write] = stamp;
             record.commands.push_back(std::move(command));
         }
         const auto deduplicate = [](std::vector<std::string> &values) {
@@ -2092,6 +2108,13 @@ struct EditorEditCoordinator::Impl {
         deduplicate(record.stable_targets);
         deduplicate(record.read_set);
         deduplicate(record.write_set);
+        for (const auto &write : record.write_set) {
+            auto &history = last_writers[write];
+            if (history.empty() ||
+                history.back().transaction_id != stamp.transaction_id) {
+                history.push_back(stamp);
+            }
+        }
         const auto committed_id = record.transaction_id;
         journal.push_back(std::move(record));
         undo_stacks[ticket.actor_id.value].push_back(committed_id);
@@ -2137,7 +2160,6 @@ struct EditorEditCoordinator::Impl {
                                     command.write_set.end());
             record.structural_domain.push_back(command.structural_domain);
             record.forward_postconditions.push_back(command.forward_postcondition);
-            for (const auto &write : command.write_set) last_writers[write] = stamp;
             record.commands.push_back(std::move(command));
         }
         const auto deduplicate = [](std::vector<std::string> &values) {
@@ -2147,6 +2169,22 @@ struct EditorEditCoordinator::Impl {
         deduplicate(record.stable_targets);
         deduplicate(record.read_set);
         deduplicate(record.write_set);
+        if (record.operation_kind == "undo") {
+            for (const auto &write : source.write_set) {
+                const auto found = last_writers.find(write);
+                if (found == last_writers.end() || found->second.empty() ||
+                    found->second.back().transaction_id !=
+                        source.transaction_id) {
+                    continue;
+                }
+                found->second.pop_back();
+                if (found->second.empty()) last_writers.erase(found);
+            }
+        } else {
+            for (const auto &write : record.write_set) {
+                last_writers[write].push_back(stamp);
+            }
+        }
         const auto transaction_id = record.transaction_id;
         journal.push_back(std::move(record));
         return transaction_id;

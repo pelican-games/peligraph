@@ -555,6 +555,60 @@ TEST_CASE("WP161 actor undo and redo are ordinary atomic transactions",
     REQUIRE(harness.edits->journal()[2].operation_kind == "redo");
 }
 
+TEST_CASE("WP161 writer history supports multi-level undo and redo on one path",
+          "[editor][journal][wp161][undo][redo][history]") {
+    Harness harness;
+    const auto initial = harness.target.document.encodeSemantic();
+    const auto first = harness.commit(
+        {{"op", "set_component_value"},
+         {"object_id", 1},
+         {"component_slot", "transform"},
+         {"field_path", "/pos"},
+         {"value", {1, 0, 0}}});
+    REQUIRE(first.at("status") == "committed");
+    const auto after_first = harness.target.document.encodeSemantic();
+    const auto second = harness.commit(
+        {{"op", "set_component_value"},
+         {"object_id", 1},
+         {"component_slot", "transform"},
+         {"field_path", "/pos"},
+         {"value", {2, 0, 0}}});
+    REQUIRE(second.at("status") == "committed");
+    const auto after_second = harness.target.document.encodeSemantic();
+
+    const auto revert = [&] {
+        const auto accepted = harness.edits->enqueueUndo(
+            {{"actor_id", harness.actor},
+             {"base_revision",
+              harness.target.document.revision().value}});
+        REQUIRE(accepted.at("status") == "accepted");
+        harness.edits->commitPending();
+        const auto result = harness.edits->getResult(
+            {{"ticket", accepted.at("ticket")}});
+        REQUIRE(result.at("status") == "committed");
+    };
+    revert();
+    REQUIRE(harness.target.document.encodeSemantic() == after_first);
+    revert();
+    REQUIRE(harness.target.document.encodeSemantic() == initial);
+
+    const auto replay = [&] {
+        const auto accepted = harness.edits->enqueueRedo(
+            {{"actor_id", harness.actor},
+             {"base_revision",
+              harness.target.document.revision().value}});
+        REQUIRE(accepted.at("status") == "accepted");
+        harness.edits->commitPending();
+        const auto result = harness.edits->getResult(
+            {{"ticket", accepted.at("ticket")}});
+        REQUIRE(result.at("status") == "committed");
+    };
+    replay();
+    REQUIRE(harness.target.document.encodeSemantic() == after_first);
+    replay();
+    REQUIRE(harness.target.document.encodeSemantic() == after_second);
+}
+
 TEST_CASE("WP161 two-actor structural overlap makes the whole undo a no-op",
           "[editor][journal][wp161][undo][conflict][two-actor]") {
     struct ConflictCase {

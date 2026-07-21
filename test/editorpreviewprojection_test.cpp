@@ -169,6 +169,39 @@ TEST_CASE("WP172 eval_preview prepare and query faults discard request-local sta
     REQUIRE(base.encodeSemantic() == before.authored_semantic_bytes);
 }
 
+TEST_CASE("WP172 descendant_world remains scoped to the root scene",
+          "[wp172][editor][eval-preview][multi-scene]") {
+    auto fixture = previewFixture();
+    fixture["scenes"]["other"] = {
+        {"objects",
+         Json::array({
+             {{"name", "Root"},
+              {"components",
+               Json::array({{{"name", "transform"},
+                             {"pos", {100, 0, 0}},
+                             {"rotation", {0, 0, 0, 1}},
+                             {"scale", {1, 1, 1}}}})}},
+             {{"name", "OtherLeaf"},
+              {"parent", "Root"},
+              {"components",
+               Json::array({{{"name", "transform"},
+                             {"pos", {1, 0, 0}},
+                             {"rotation", {0, 0, 0, 1}},
+                             {"scale", {1, 1, 1}}}})}}})}};
+    const auto base = AuthoringSceneDocument::load(
+        fixture.dump(), SceneRevision{12});
+    const auto prepared =
+        prepareEditorPreviewProjection(base, Json::array());
+    const auto result = EditorPreviewEvaluationContext{prepared}.evaluate(
+        Json::array({{{"kind", "descendant_world"}, {"object_id", 1}}}));
+
+    const auto &closure = result.at(0).at("data");
+    REQUIRE(closure.size() == 3);
+    REQUIRE(closure.at(0).at("object_id") == 1);
+    REQUIRE(closure.at(1).at("object_id") == 2);
+    REQUIRE(closure.at(2).at("object_id") == 3);
+}
+
 TEST_CASE("WP172 eval_preview rejects unsupported prepared fields without publication",
           "[wp172][editor][eval-preview][negative]") {
     auto fixture = previewFixture();
