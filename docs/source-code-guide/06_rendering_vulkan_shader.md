@@ -483,15 +483,15 @@ skinning palette(スキニング行列パレット — ボーンごとの変換�
 >                        → morphInstances[i]
 > ```
 >
-> **手がかり**: push constant は engine 用の先頭 64 byte と material index で埋まっており(§6.9)、instance ごとの値を載せる余地がありません。material グループごとに 1 回の [`drawIndexedIndirect`](../../src/core/renderer/materialrender.cpp#L70) で回す以上、「今どのインスタンスか」を伝える経路が firstInstance しか残っていない、というのがこの使い方の理由です。CPU 側も `firstInstance` を instance の同定に使います([`removeModelInstance()`](../../src/core/renderer/polygoninstancecontainer.cpp#L481) の `erase_if`、[`rebuildModelInstances()`](../../src/core/renderer/polygoninstancecontainer.cpp#L724))。バッファ書き込みの offset も同じ添字です(skin は [#L387-L388](../../src/core/renderer/polygoninstancecontainer.cpp#L387) の `maxSkinJoints * id.index`、material override は [#L491-L493](../../src/core/renderer/polygoninstancecontainer.cpp#L491))。
+> **手がかり**: push constant は engine 用の先頭 64 byte と material index で埋まっており(§6.9)、instance ごとの値を載せる余地がありません。material グループごとに 1 回の [`drawIndexedIndirect`](../../src/core/renderer/materialrender.cpp) で回す以上、「今どのインスタンスか」を伝える経路が firstInstance しか残っていない、というのがこの使い方の理由です。CPU 側の live inventory は [`DrawItemSnapshot`](../../src/core/renderer/drawqueuebuilder.hpp) の stable `ModelInstanceId` で instance を同定し、同じ index を `DrawIndexedArguments::first_instance` に保存します。バッファ書き込みの行番号も同じ index です。
 >
 > **不変条件**: `ModelInstanceId.index` = model / previous-model / skin palette / morph weight / material override 各バッファの行番号。スロットは retire して再利用しますが、生きている instance を詰め直しません([`modelinstance_slotmap_test.cpp`](../../test/modelinstance_slotmap_test.cpp))。indirect command の `firstInstance` を 0 以外にするため `drawIndirectFirstInstance`、shader で `gl_BaseInstance` を読むため `shaderDrawParameters` がそれぞれ必要で、device 選択時に両方を検査し logical device 生成時に明示的に有効化します。
 
-> 🧩 **難所 — enum の並びが描画範囲**([`build_draw_calls`](../../src/core/renderer/polygoninstancecontainer.cpp#L583) / [`render_commands` のソート](../../src/core/renderer/polygoninstancecontainer.cpp#L570))
+> 🧩 **難所 — `state_batched_v1` の view 順が描画範囲を作る**([`DrawQueueBuilder`](../../src/core/renderer/drawqueuebuilder.cpp))
 >
-> **何をする所か**: [`triggerUpdate()`](../../src/core/renderer/polygoninstancecontainer.cpp#L517) の中で、全 primitive の indirect コマンドを 1 本の配列に並べ替えて GPU へ上げ、その上に「三人称ビュー用」「一人称ビュー用」の描画区間([`DrawIndirectInfo`](../../src/core/renderer/polygoninstancecontainer.hpp#L190))を 2 組作り置きします。
+> **何をする所か**: `PolygonInstanceContainer` は全 primitive の declaration-order inventory を `DrawItemSnapshot` として保持します。`triggerUpdate()` は pure CPU `DrawQueueBuilder` を呼び、並べ替えた indirect record と「三人称ビュー用」「一人称ビュー用」の描画区間を immutable `CompiledDrawQueue` として一度だけ発行します。
 >
-> **素朴に読むと**: [#L580-L582](../../src/core/renderer/polygoninstancecontainer.cpp#L580) のコメント "The enum order third/both/first makes each view's visible commands contiguous" は事実の宣言で、**なぜそうなるかは書いてありません**。鍵は、ソートキーの最後が `view_visibility` であること([#L572-L575](../../src/core/renderer/polygoninstancecontainer.cpp#L572))と、[`PrimitiveViewVisibility`](../../src/core/model/modeltemplate.hpp#L31) の**宣言順**が `third_person_only = 0` / `both = 1` / `first_person_only = 2` であることの結び付きです。この順なら、三人称ビューは値 2 だけを外す(= 区間の末尾を落とす)、一人称ビューは値 0 だけを外す(= 先頭を落とす)ので、どちらも残りが 1 本の連続区間になります。だから material グループごとに概念上 1 本の範囲で済み、`offset` と `draw_count` のペアだけでビューを切り替えられます。実際の `DrawIndirectInfo` は、この範囲が physical device の `maxDrawIndirectCount` を超える場合だけ複数へ分割されます。もし `both` を端へ動かすと(例えば both / third / first)、一人称側で both と first の間に穴が空き、同じ material に区間が 2 本要ります — **結果は壊れず、ソート順も正しいまま描画コール数だけが跳ねる**ので、原因が分かりません。つまり enum の定義順は単なる列挙ではなく描画性能の仕様です。
+> **素朴に読むと**: snapshot は bit mask なので、enum 順への依存が消えたように見えます。しかし互換 policy の `legacyVisibilityOrder()` は `third_person_only = 0` / `both = 1` / `first_person_only = 2` の順へ明示変換します。この順なら、三人称ビューは末尾の first だけを外し、一人称ビューは先頭の third だけを外すので、material group ごとの可視 item が連続します。`DrawIndirectInfo` はこの連続範囲が physical device の `maxDrawIndirectCount` を超える場合だけ複数へ分割されます。RPE4 以降で別 policy を追加するときも、穴のある順序を許すなら不可視位置で range を閉じる必要があり、同じ material の draw call 数が増えることを受け入れます。
 >
 > **骨子**:
 > ```text
@@ -500,9 +500,9 @@ skinning palette(スキニング行列パレット — ボーンごとの変換�
 >   三人称: 末尾の first を落とす → 連続   一人称: 先頭の third を落とす → 連続
 > ```
 >
-> **手がかり**: 区間を切る条件は material / source_material_index / skinned の変化だけで、`view_visibility` は見ません([#L614-L617](../../src/core/renderer/polygoninstancecontainer.cpp#L614))。可視でないコマンドに当たったら `flush()` して区間を閉じ、[`splitIndirectDrawRange()`](../../src/core/renderer/indirectdrawlimits.cpp) が device 上限に合わせて分割します。`build_draw_calls(false)` / `(true)` が `draw_calls[0]` / `[1]` を作り、描画時は [`getDrawCalls(first_person_view)`](../../src/core/renderer/polygoninstancecontainer.cpp#L1342) が添字で選ぶだけになります(両ビュー分を 1 回で作り置きするので、フレーム内では不変です)。実例は VRM の頭部を一人称で隠す用途([`vrm_xr_demo_test.cpp`](../../test/vrm_xr_demo_test.cpp))。
+> **手がかり**: 区間を切る state 条件は material / source_material_index / skinned の変化だけです。可視でない item に当たったら range を閉じ、[`splitIndirectDrawRange()`](../../src/core/renderer/indirectdrawlimits.cpp) が device 上限に合わせて分割します。`CompiledDrawQueue` は両 view の range を private storage に持ち、描画時は [`getDrawCalls(first_person_view)`](../../src/core/renderer/polygoninstancecontainer.cpp) が const view を選ぶだけです。CPU-only 互換 fixture は [`drawqueuebuilder_test.cpp`](../../test/drawqueuebuilder_test.cpp)、VRM 一人称の実例は [`morph_gltf_test.cpp`](../../test/morph_gltf_test.cpp) にあります。
 >
-> **不変条件**: `view_visibility` はソートキーの**最後**に置くこと。値を増やすときは「どのビューでも残りが連続する並び」を先に決めること(端に置いてよいのは、片方のビューでだけ落ちる値です)。
+> **不変条件**: `state_batched_v1` では view visibility をソートキーの**最後**に置きます。互換順を変えず、新しい view / sort 規則は別の versioned policy として追加します。
 
 ## 6.6 Frame target: window と headless の共通インターフェース
 

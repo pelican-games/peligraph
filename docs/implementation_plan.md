@@ -65,54 +65,20 @@ ctest --test-dir ./build -C Debug --output-on-failure
 
 | WP | 内容 | 状態 |
 |----|------|------|
-| 182 | RPE3 — `DrawQueueBuilder` と `state_batched_v1` 互換キュー | 実装中 |
+| — | 登録済みの未完了 WP なし | 次候補は RPE4。着手前に WP 登録する |
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
-(最新完了: WP181、2026-07-22。本文と完了レポートは archive 参照。)
+(最新完了: WP182、2026-07-22。本文と完了レポートは archive 参照。)
 
 ## 2. WP 詳細
 
-### WP182: RPE3 — `DrawQueueBuilder` と `state_batched_v1` 互換キュー
-
-参照: **[`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md)
-§6、§12 の RPE3 が正**。`PolygonInstanceContainer::triggerUpdate()` に同居する
-primitive inventory の snapshot 化、state sort、view visibility による range 分割、
-indirect command materialization を、Vulkan device / module を持たない純 CPU
-`DrawQueueBuilder` へ分離する。
-
-- primitive ごとの不変入力を `DrawItemSnapshot`、materialize 済み command と
-  third-person / first-person range を `CompiledDrawQueue` として型で分ける
-- builtin `state_batched_v1` は現行の material / source material / skinned / view
-  visibility 順と、`maxDrawIndirectCount` による segment 分割を再現する
-- `PolygonInstanceContainer` は inventory と GPU resource を所有し続け、builder の
-  結果を publish する薄い adapter にする。builder から `GET_MODULE`、Vulkan device、
-  material/render container を参照しない
-- stable identity / declaration ordinal / route / phase / bounds の snapshot 語彙は
-  後続 policy が JSON や live container を読み直さない形で保持する。RPE3 では現在
-  取得できる identity/state を固定し、未取得の bounds は明示的な optional とする
-
-受け入れ条件:
-
-1. mixed material / source material / skinned / view visibility fixture で、抽出前の
-   legacy 実装と `CompiledDrawQueue` の command byte 列、両 view の draw range が一致
-2. 小さい `maxDrawIndirectCount` を与えた fixture で、material range の segment 境界、
-   offset、count、stride が現行と一致
-3. 同一 `DrawItemSnapshot` から二回 build した結果が byte-for-byte 一致し、入力順・
-   入力値を変更しない
-4. empty inventory と不正 capability を fail-fast / 空結果の既存意味どおり固定する
-5. CPU-only test は Vulkan instance/device/module 初期化なしで通る。既存 GPU/golden、
-   full build / CTest、Player smoke、`git diff --check` が通り、golden 更新は 0
-
-非対象: public `DrawSortProviderV1` / owner-generation registry、透明物の
-back-to-front、opaque/transparent 別 queue、XR logical-center/per-view sort、screen
-input、MSAA、GPU-driven/bindless sort。これらは RPE4 以降で独立 WP にする。
-
-依存: WP180、WP181、`PolygonInstanceContainer`、`splitIndirectDrawRange`。
-見積: 中。
-
-排他: `src/core/renderer/drawqueuebuilder*`、`polygoninstancecontainer*`、renderer/test の
-CMake 登録、[RPE] の RPE3 状態、WP182 完了レポート。
+現在、登録済みの未完了 WP はない。RPE4 を続ける場合は
+[`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md)
+§5、§6、§12 と
+[`design_reviews/2026-07-22_wp182_report.md`](design_reviews/2026-07-22_wp182_report.md)
+を読み、owner-aware `RenderPolicyRegistry` + `DrawSortProviderV1` の範囲と受け入れ条件を
+新しい WP として先に登録すること。
 
 ## 3. トラック現況(WP 化待ちを含む)
 
@@ -143,8 +109,8 @@ CMake 登録、[RPE] の RPE3 状態、WP182 完了レポート。
   Request / Resolved / Compiled / Prepared / Runtime 語彙へ揃える。現在の単一
   material-batched draw queue、sample count 1 固定、XR/preview ad-hoc callback を
   一度に直さず、RPE1(WP180)→ RPE2 typed plan(WP181) →
-  DrawQueueBuilder/provider → transparent sort → screen input → MSAA → graph variant →
-  pipeline transaction の順で進める
+  RPE3 DrawQueueBuilder(WP182) まで完了。以後は provider registry → transparent sort →
+  screen input → MSAA → graph variant → pipeline transaction の順で進める
 
 - **コマンド／エディタ層**: stdio JSON-RPC、`load_gltf` /
   `update_transforms`、typed editor query/edit、actor/CAS、undo/redo、

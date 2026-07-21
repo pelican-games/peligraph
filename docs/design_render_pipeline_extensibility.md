@@ -231,9 +231,11 @@ request、selected provider、version、capability match、fallback / reject rea
 
 ### 6.1 現状のネック
 
-現在は一つの `render_commands` を material、source material、skinned、view
-visibility で一度だけ sort し、そこから material ごとの indirect range を作る。
-これは opaque の state batching には適するが、次を同時には満たせない。
+RPE3 着手前は一つの `render_commands` を material、source material、skinned、view
+visibility で直接 sort し、同じ関数内で material ごとの indirect range を作っていた。
+WP182 で live inventory と queue materialization は分離したが、builtin policy はまだ
+単一の `state_batched_v1` である。これは opaque の state batching には適するが、次を
+同時には満たせない。
 
 - opaque は state change を減らす
 - transparent は view depth の back-to-front にする
@@ -255,6 +257,14 @@ visibility で一度だけ sort し、そこから material ごとの indirect r
 4. `CompiledDrawQueue`
    - engine が provider key を検証し、stable identity を最終 tie-break にして
      indirect command / range を materialize した結果
+
+RPE3 / WP182 ではこのうち `DrawItemSnapshot` と `CompiledDrawQueue`、純 CPU
+`DrawQueueBuilder` を実装した。snapshot は model-instance generation / scene epoch、
+mesh / primitive / node、declaration ordinal、indexed draw 引数、material state key、
+route / phase、view mask を保持する。現行 importer は primitive bounds を永続化して
+いないため `world_bounds` だけは optional であり、RPE5 の depth sort 前に取得経路を
+追加する。`DrawSortInput`、provider callback、provider key の stable tie-break は RPE4
+以降で導入する。
 
 provider は item の移動や GPU buffer 作成を行わず、key だけを返す。engine の
 stable tie-break により、同値 key でも replay が決定的になる。
@@ -432,7 +442,7 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 | RPE0 | 本文書と既存文書の統合 | 用語・所有権・順序の合意 |
 | RPE1 / WP180（済 2026-07-21） | `RenderPipelineRequest`、`RenderEnvironmentCapabilities`、`ResolvedRenderPipeline` と純粋 resolve 境界を抽出 | flat/preview/XR の既存 plan dump byte-equivalent、GPU mutation なし |
 | RPE2 / WP181（済 2026-07-22） | typed `CompiledRenderPipeline` を導入し、`composition_metadata` の runtime 読みを撤去 | JSON は dump のみ、既存 golden 不変 |
-| RPE3 | inventory と queue materialization を `DrawQueueBuilder` へ分離し、`state_batched_v1` で現行順を再現 | indirect bytes / draw ranges 不変、二回実行一致 |
+| RPE3 / WP182（済 2026-07-22） | inventory と queue materialization を `DrawQueueBuilder` へ分離し、`state_batched_v1` で現行順を再現 | indirect bytes / draw ranges 不変、二回実行一致 |
 | RPE4 | owner-aware `RenderPolicyRegistry` + `DrawSortProviderV1`、builtin も同じ経路へ | game DLL register/unregister/reload、stale generation reject |
 | RPE5 | `back_to_front_v1`、phase 別 queue、XR logical-center/per-view | 混在 scene golden、安定 tie-break、左右眼 fixture |
 | RPE6 | typed color domain + hybrid screen-input descriptor binding | 屈折/深度 fade golden、tone map 一回 |
@@ -443,11 +453,12 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 
 ### 12.1 いま着手する範囲
 
-RPE1 / WP180 と RPE2 / WP181 は完了した。authoring resolve と immutable typed plan、
-dump-only JSON、semantic route から `PassId` への runtime binding が分離済みである。
-次は RPE3 を独立 WP として登録し、現行 draw inventory と queue materialization を
-`DrawQueueBuilder` へ分離して `state_batched_v1` で既存 byte 列を再現する。公開
-provider ABI、透明 sort、MSAA の Vulkan 変更はまだ混ぜない。
+RPE1 / WP180、RPE2 / WP181、RPE3 / WP182 は完了した。authoring resolve、immutable
+typed pipeline plan、draw inventory、queue materialization がそれぞれ分離済みである。
+次は RPE4 を独立 WP として登録し、owner / generation を検証する
+`RenderPolicyRegistry` と `DrawSortProviderV1` を追加して、builtin
+`state_batched_v1` も同じ provider 経路で dogfood する。透明 depth sort、phase 別
+queue、XR view policy、MSAA の Vulkan 変更はまだ混ぜない。
 
 ### 12.2 後回しにするもの
 
