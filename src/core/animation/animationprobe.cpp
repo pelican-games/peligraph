@@ -7,6 +7,7 @@
 #include <limits>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -50,6 +51,15 @@ double wrapTime(double time, double duration, WrapMode wrap) {
     double value = std::fmod(time, duration);
     if (value < 0.0) value += duration;
     return value;
+}
+
+std::optional<std::int64_t> checkedLoopIndex(double value) noexcept {
+    if (!std::isfinite(value) ||
+        value < static_cast<double>(std::numeric_limits<std::int64_t>::min()) ||
+        value >= static_cast<double>(std::numeric_limits<std::int64_t>::max())) {
+        return std::nullopt;
+    }
+    return static_cast<std::int64_t>(value);
 }
 
 glm::mat4 transformMatrix(const TransformV1 &value) {
@@ -261,39 +271,97 @@ Status ProbeRuntime::advanceCursor(const AdvanceDescV1 &desc, IntervalResultV1 &
     const bool seek = (desc.flags & advance_absolute_seek) != 0;
     const double start = cursor.time;
     const double end_unwrapped = seek ? desc.absolute_seconds : start + desc.delta_seconds;
+    if (!std::isfinite(end_unwrapped)) return Status::invalid_argument;
+    if (!seek && cursor.wrap == WrapMode::repeat) {
+        const auto traversal_loops =
+            std::abs(desc.delta_seconds) / cursor.duration;
+        if (!std::isfinite(traversal_loops) ||
+            traversal_loops >
+                static_cast<double>(maxIntervalTraversalLoopsV1)) {
+            return Status::invalid_argument;
+        }
+    }
     const double end = wrapTime(end_unwrapped, cursor.duration, cursor.wrap);
+    if (!std::isfinite(end)) return Status::invalid_argument;
     const double traversal_end = cursor.wrap == WrapMode::clamp ? end : end_unwrapped;
+    const double root_delta_seconds =
+        seek ? 0.0
+             : (cursor.wrap == WrapMode::clamp ? end - start
+                                                : desc.delta_seconds);
+    if (!std::isfinite(root_delta_seconds) ||
+        std::abs(root_delta_seconds) >
+            static_cast<double>(std::numeric_limits<float>::max())) {
+        return Status::invalid_argument;
+    }
     std::vector<CrossingV1> crossings;
     std::int64_t loop_count = 0;
 
     if (!seek && desc.delta_seconds != 0.0) {
-        const double low = std::min(start, traversal_end);
-        const double high = std::max(start, traversal_end);
-        const auto first_loop = static_cast<std::int64_t>(std::floor(low / cursor.duration)) - 1;
-        const auto last_loop = static_cast<std::int64_t>(std::ceil(high / cursor.duration)) + 1;
-        const auto actual_first_loop = cursor.wrap == WrapMode::repeat ? first_loop : std::int64_t{0};
-        const auto actual_last_loop = cursor.wrap == WrapMode::repeat ? last_loop : std::int64_t{0};
-        for (std::int64_t loop = actual_first_loop; loop <= actual_last_loop; ++loop) {
-            for (const auto &annotation : cursor.annotations) {
-                const double occurrence = annotation.time_seconds + static_cast<double>(loop) * cursor.duration;
-                const bool crossed = desc.delta_seconds > 0.0 ? (occurrence > start && occurrence <= traversal_end)
-                                                                  : (occurrence >= traversal_end && occurrence < start);
-                if (!crossed) continue;
-                crossings.push_back({sizeof(CrossingV1), descriptorVersionV1, annotation.kind, annotation.source,
-                                     annotation.ordinal, 0, annotation.time_seconds, loop, annotation.identity});
-            }
+        if (cursor.wrap == WrapMode::repeat) {
+            const auto value = checkedLoopIndex(
+                std::floor(end_unwrapped / cursor.duration));
+            if (!value) return Status::invalid_argument;
+            loop_count = *value;
         }
-        std::stable_sort(crossings.begin(), crossings.end(), [reverse = desc.delta_seconds < 0.0,
-                                                               duration = cursor.duration](const auto &a,
-                                                                                            const auto &b) {
-            const double ta = a.clip_time_seconds + static_cast<double>(a.loop_index) * duration;
-            const double tb = b.clip_time_seconds + static_cast<double>(b.loop_index) * duration;
-            if (ta != tb) return reverse ? ta > tb : ta < tb;
-            if (a.source != b.source) return a.source < b.source;
-            return a.ordinal < b.ordinal;
-        });
-        if (cursor.wrap == WrapMode::repeat)
-            loop_count = static_cast<std::int64_t>(std::floor(end_unwrapped / cursor.duration));
+
+        // Cursor-only clients have no sideband to enumerate. Avoid walking one
+        // candidate interval per loop when the annotation table is empty.
+        if (!cursor.annotations.empty()) {
+            const double low = std::min(start, traversal_end);
+            const double high = std::max(start, traversal_end);
+            const auto first_base = checkedLoopIndex(
+                std::floor(low / cursor.duration));
+            const auto last_base = checkedLoopIndex(
+                std::ceil(high / cursor.duration));
+            if (!first_base || !last_base ||
+                *first_base == std::numeric_limits<std::int64_t>::min() ||
+                *last_base == std::numeric_limits<std::int64_t>::max()) {
+                return Status::invalid_argument;
+            }
+            const auto first_loop = *first_base - 1;
+            const auto last_loop = *last_base + 1;
+            const auto actual_first_loop = cursor.wrap == WrapMode::repeat
+                                               ? first_loop
+                                               : std::int64_t{0};
+            const auto actual_last_loop = cursor.wrap == WrapMode::repeat
+                                              ? last_loop
+                                              : std::int64_t{0};
+            for (std::int64_t loop = actual_first_loop;
+                 loop <= actual_last_loop; ++loop) {
+                for (const auto &annotation : cursor.annotations) {
+                    const double occurrence =
+                        annotation.time_seconds +
+                        static_cast<double>(loop) * cursor.duration;
+                    const bool crossed = desc.delta_seconds > 0.0
+                                             ? (occurrence > start &&
+                                                occurrence <= traversal_end)
+                                             : (occurrence >= traversal_end &&
+                                                occurrence < start);
+                    if (!crossed) continue;
+                    if (crossings.size() >= maxIntervalCrossingsV1)
+                        return Status::invalid_argument;
+                    crossings.push_back(
+                        {sizeof(CrossingV1), descriptorVersionV1,
+                         annotation.kind, annotation.source,
+                         annotation.ordinal, 0, annotation.time_seconds, loop,
+                         annotation.identity});
+                }
+            }
+            std::stable_sort(
+                crossings.begin(), crossings.end(),
+                [reverse = desc.delta_seconds < 0.0,
+                 duration = cursor.duration](const auto &a, const auto &b) {
+                    const double ta =
+                        a.clip_time_seconds +
+                        static_cast<double>(a.loop_index) * duration;
+                    const double tb =
+                        b.clip_time_seconds +
+                        static_cast<double>(b.loop_index) * duration;
+                    if (ta != tb) return reverse ? ta > tb : ta < tb;
+                    if (a.source != b.source) return a.source < b.source;
+                    return a.ordinal < b.ordinal;
+                });
+        }
     }
 
     const auto required = static_cast<std::uint32_t>(crossings.size());
@@ -317,7 +385,7 @@ Status ProbeRuntime::advanceCursor(const AdvanceDescV1 &desc, IntervalResultV1 &
     result.root_delta.rotation.w = 1.0f;
     if (!seek)
         result.root_delta.translation.x =
-            static_cast<float>(cursor.wrap == WrapMode::clamp ? end - start : desc.delta_seconds);
+            static_cast<float>(root_delta_seconds);
     cursor.time = end;
     return Status::ok;
 }

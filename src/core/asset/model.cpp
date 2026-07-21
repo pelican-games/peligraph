@@ -346,8 +346,9 @@ struct ModelAssetContainer::Impl {
             const auto *previous = retired[index].skeletal.get();
             const auto *replacement = installs[index].record->model.skeletal.get();
             if (previous || replacement) {
-                Animation::animationServiceRuntime().reloadAsset(previous,
-                                                                 replacement);
+                Animation::animationServiceRuntime().reloadAsset(
+                    installs[index].record->model.asset_id, previous,
+                    replacement);
             }
         }
         for (auto &model : retired) releaseModelGpuResources(model, true);

@@ -11,6 +11,8 @@ namespace Pelican::Animation {
 inline constexpr std::uint32_t abiVersionV1 = 1;
 inline constexpr std::uint32_t descriptorVersionV1 = 1;
 inline constexpr std::uint32_t poseAlignmentV1 = 64;
+inline constexpr std::uint32_t maxIntervalTraversalLoopsV1 = 65536;
+inline constexpr std::uint32_t maxIntervalCrossingsV1 = 65536;
 
 // Every descriptor starts with these four fields. Reserved fields must be zero.
 struct DescriptorHeaderV1 {

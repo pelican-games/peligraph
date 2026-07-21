@@ -19,6 +19,7 @@
 #include <cstring>
 #include <limits>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <string_view>
 #include <thread>
@@ -47,6 +48,7 @@ struct AnimationServiceRuntime::Impl {
         std::string name;
         const SkeletalModelData *model{};
         const AnimationAsset *asset{};
+        ModelAssetId logical_asset{};
         std::optional<ModelInstanceId> renderer_instance;
     };
     struct SinkRecord {
@@ -428,13 +430,15 @@ struct AnimationServiceRuntime::Impl {
     }
 
     void registerObjectLocked(std::string name, const SkeletalModelData &model,
-                              std::optional<ModelInstanceId> renderer_instance = std::nullopt) {
+                              std::optional<ModelInstanceId> renderer_instance = std::nullopt,
+                              ModelAssetId logical_asset = {}) {
         if (name.empty()) throw std::runtime_error("animation object name must not be empty");
         if (objects.contains(name)) throw std::runtime_error("animation object name is already registered");
         auto object = std::make_unique<ObjectRecord>();
         object->name = std::move(name);
         object->model = &model;
         object->asset = &assets.getOrCreate(model);
+        object->logical_asset = logical_asset;
         object->renderer_instance = renderer_instance;
         auto *record = object.get();
         resource_generations.remember(record->asset->rig.handle.identity,
@@ -460,29 +464,44 @@ struct AnimationServiceRuntime::Impl {
         registerObjectLocked(std::move(name), model);
     }
 
-    void reloadAsset(const SkeletalModelData *previous,
+    void reloadAsset(ModelAssetId logical_asset,
+                     const SkeletalModelData *previous,
                      const SkeletalModelData *replacement) {
-        if (!previous) return;
+        if (!previous && !replacement) return;
         std::scoped_lock lock{mutex};
         std::unordered_set<ObjectRecord *> affected;
         for (auto &[_, object] : objects) {
-            if (object->model == previous) affected.insert(object.get());
+            if ((previous != nullptr && object->model == previous) ||
+                (isValidModelAssetId(logical_asset) &&
+                 object->logical_asset == logical_asset)) {
+                affected.insert(object.get());
+            }
         }
         if (affected.empty()) return;
 
-        const auto *old_asset = (*affected.begin())->asset;
-        if (!old_asset) return;
-        const auto generation_state = old_asset->rig.generation_state;
-        const auto old_layout_identity = old_asset->rig.layout.identity;
-        std::vector<std::uint64_t> old_resources{
-            old_asset->rig.handle.identity, old_layout_identity};
-        std::unordered_set<std::uint64_t> old_clips;
-        for (const auto &clip : old_asset->clips) {
-            old_resources.push_back(clip.handle.identity);
-            old_clips.insert(clip.handle.identity);
+        const AnimationAsset *old_asset = nullptr;
+        for (const auto *object : affected) {
+            if (object->asset) {
+                old_asset = object->asset;
+                break;
+            }
         }
-        for (const auto &binding : old_asset->skin_bindings)
-            old_resources.push_back(binding.handle.identity);
+        const auto generation_state =
+            old_asset ? old_asset->rig.generation_state : nullptr;
+        const auto old_layout_identity =
+            old_asset ? old_asset->rig.layout.identity : 0;
+        std::vector<std::uint64_t> old_resources;
+        std::unordered_set<std::uint64_t> old_clips;
+        if (old_asset) {
+            old_resources = {old_asset->rig.handle.identity,
+                             old_layout_identity};
+            for (const auto &clip : old_asset->clips) {
+                old_resources.push_back(clip.handle.identity);
+                old_clips.insert(clip.handle.identity);
+            }
+            for (const auto &binding : old_asset->skin_bindings)
+                old_resources.push_back(binding.handle.identity);
+        }
         for (auto &[identity, source] : vrma_clips) {
             if (!affected.contains(source.object)) continue;
             old_clips.insert(identity);
@@ -492,14 +511,23 @@ struct AnimationServiceRuntime::Impl {
 
         const AnimationAsset *next_asset = nullptr;
         if (replacement) {
-            next_asset = &assets.reloadAsset(*previous, *replacement);
-        } else {
-            assets.invalidateAsset(*previous);
+            if (old_asset) {
+                const auto *previous_model =
+                    previous ? previous : old_asset->source;
+                next_asset = &assets.reloadAsset(*previous_model, *replacement);
+            } else {
+                next_asset = &assets.getOrCreate(*replacement);
+            }
+        } else if (old_asset) {
+            const auto *previous_model = previous ? previous : old_asset->source;
+            assets.invalidateAsset(*previous_model);
         }
-        const auto current_generation =
-            generation_state->current.load(std::memory_order_acquire);
-        for (const auto identity : old_resources)
-            resource_generations.remember(identity, current_generation);
+        if (generation_state) {
+            const auto current_generation =
+                generation_state->current.load(std::memory_order_acquire);
+            for (const auto identity : old_resources)
+                resource_generations.remember(identity, current_generation);
+        }
 
         for (auto &[_, cursor] : cursors) {
             if (!cursor.active || !old_clips.contains(cursor.clip.identity)) continue;
@@ -507,7 +535,8 @@ struct AnimationServiceRuntime::Impl {
             cursor.active = false;
         }
         for (auto iterator = poses.begin(); iterator != poses.end();) {
-            if (iterator->second.view.layout.identity != old_layout_identity) {
+            if (old_layout_identity == 0 ||
+                iterator->second.view.layout.identity != old_layout_identity) {
                 ++iterator;
                 continue;
             }
@@ -590,7 +619,9 @@ struct AnimationServiceRuntime::Impl {
         if (!model_view || !model_view->model_instance_id || model_view->model_name.empty()) return false;
         auto &model_template = GET_MODULE(ModelAssetContainer).getModelTemplateByName(model_view->model_name);
         if (!model_template.skeletal) return false;
-        registerObjectLocked(std::string{name}, *model_template.skeletal, *model_view->model_instance_id);
+        registerObjectLocked(std::string{name}, *model_template.skeletal,
+                             *model_view->model_instance_id,
+                             model_template.asset_id);
         return true;
     }
 
@@ -855,9 +886,16 @@ struct AnimationServiceRuntime::Impl {
         return Status::ok;
     }
 
-    static Status apiAdvance(void *context, const AdvanceDescV1 *desc, IntervalResultV1 *result) {
+    static Status apiAdvance(void *context, const AdvanceDescV1 *desc,
+                             IntervalResultV1 *result) noexcept {
         if (!context || !desc || !result) return Status::invalid_argument;
-        return self(context)->legacy_runtime.advanceCursor(*desc, *result);
+        try {
+            return self(context)->legacy_runtime.advanceCursor(*desc, *result);
+        } catch (const std::bad_alloc &) {
+            return Status::out_of_memory;
+        } catch (...) {
+            return Status::invalid_argument;
+        }
     }
     static Status apiPublish(void *context, const PublishAnimationFrameDescV1 *desc) {
         if (!context || !desc) return Status::invalid_argument;
@@ -1499,8 +1537,11 @@ struct AnimationServiceRuntime::Impl {
             return Status::authority_conflict;
         if (desc->notification_revision <= sink->last_notification_revision)
             return Status::duplicate_revision;
+        if (!sink->object) return Status::stale_generation;
         if (desc->kind == AnimationNotificationKind::layout_generation_mismatch &&
-            sameHandle(desc->observed_layout, sink->object->asset->rig.layout))
+            sink->object->asset &&
+            sameHandle(desc->observed_layout,
+                       sink->object->asset->rig.layout))
             return Status::invalid_argument;
         sink->last_notification_revision = desc->notification_revision;
         sink->reset_history = true;
@@ -1605,6 +1646,14 @@ void AnimationServiceRuntime::registerObject(std::string name, const SkeletalMod
 
 void AnimationServiceRuntime::registerObject(
     std::string name, const SkeletalModelData &model,
+    ModelAssetId logical_asset) {
+    std::scoped_lock lock{impl_->mutex};
+    impl_->registerObjectLocked(std::move(name), model, std::nullopt,
+                                logical_asset);
+}
+
+void AnimationServiceRuntime::registerObject(
+    std::string name, const SkeletalModelData &model,
     ModelInstanceId renderer_instance) {
     std::scoped_lock lock{impl_->mutex};
     impl_->registerObjectLocked(std::move(name), model, renderer_instance);
@@ -1639,7 +1688,13 @@ Status AnimationServiceRuntime::reloadVrmaSource(
 void AnimationServiceRuntime::reloadAsset(
     const SkeletalModelData *previous,
     const SkeletalModelData *replacement) {
-    impl_->reloadAsset(previous, replacement);
+    impl_->reloadAsset({}, previous, replacement);
+}
+
+void AnimationServiceRuntime::reloadAsset(
+    ModelAssetId logical_asset, const SkeletalModelData *previous,
+    const SkeletalModelData *replacement) {
+    impl_->reloadAsset(logical_asset, previous, replacement);
 }
 
 void AnimationServiceRuntime::reset() { impl_->reset(); }

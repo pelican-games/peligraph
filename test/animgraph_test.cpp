@@ -1,5 +1,6 @@
 #include "../src/core/userpublic/animation/animgraph.hpp"
 #include "../src/core/animation/animationservice.hpp"
+#include "../src/core/model/modeltemplate.hpp"
 #include "../src/core/model/skeletalanimation.hpp"
 #include "../src/core/userpublic/details/reload/registrationowner.hpp"
 
@@ -325,6 +326,38 @@ TEST_CASE("all discontinuity notifications reset graph clocks and require monoto
         REQUIRE(evaluator.getStatus().current_state == "A");
         REQUIRE(evaluator.getStatus().cursors.front().normalized_phase == 0.0);
     }
+}
+
+TEST_CASE("layout mismatch notification survives skeletal asset removal",
+          "[animation][animgraph][notification][reload]") {
+    auto model = graphAsset();
+    auto replacement = graphAsset();
+    const ModelAssetId logical_asset{42};
+    auto &runtime = animationServiceRuntime();
+    runtime.reset();
+    runtime.registerObject("Hero", model, logical_asset);
+    auto evaluator = bind(orderedGraph, "Hero", 113);
+    const auto sink = resolveSink("Hero");
+
+    runtime.reloadAsset(logical_asset, &model, nullptr);
+
+    REQUIRE(evaluator.notify(
+                AnimationNotificationKind::layout_generation_mismatch, 2.0,
+                PoseLayoutHandle{999, 1, 0}) == Status::ok);
+    REQUIRE(evaluator.getStatus().current_state.empty());
+
+    runtime.reloadAsset(logical_asset, nullptr, &replacement);
+    auto api = descriptor<ApiV1>();
+    REQUIRE(getApiV1(abiVersionV1, &api) == Status::ok);
+    auto service = descriptor<AnimationServiceV1>();
+    REQUIRE(api.get_animation_service(api.context, animationServiceVersionV1,
+                                      &service) == Status::ok);
+    auto instance = descriptor<ResolveAnimationInstanceDescV1>();
+    instance.sink = sink;
+    REQUIRE(service.resolve_instance(service.context, &instance) == Status::ok);
+    auto rig = descriptor<ResolveAnimationRigDescV1>();
+    rig.instance = instance.instance;
+    REQUIRE(service.resolve_rig(service.context, &rig) == Status::ok);
 }
 
 TEST_CASE("WP147 evaluator rebind preserves graph state and unrelated actor frames",

@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <ranges>
 #include <thread>
 #include <vector>
@@ -174,6 +175,52 @@ TEST_CASE("interval advance is atomic and handles wrap reverse multi-loop and se
 
     REQUIRE(runtime.destroyCursor(cursor) == Status::ok);
     REQUIRE(runtime.advanceCursor(advance, result) == Status::stale_generation);
+}
+
+TEST_CASE("interval advance bounds hostile repeat traversal", "[animation][a0][hostile]") {
+    ProbeRuntime runtime;
+    const auto cursor = runtime.createCursor(1.0, WrapMode::repeat);
+    REQUIRE(isValid(cursor));
+
+    auto advance = descriptor<AdvanceDescV1>();
+    advance.cursor = cursor;
+    auto result = descriptor<IntervalResultV1>();
+    result.crossing_count = 17;
+    result.normalized_phase = 0.75f;
+
+    advance.delta_seconds = std::numeric_limits<double>::max();
+    REQUIRE(runtime.advanceCursor(advance, result) == Status::invalid_argument);
+    REQUIRE(runtime.cursorTime(cursor) == 0.0);
+    REQUIRE(result.crossing_count == 17);
+    REQUIRE(result.normalized_phase == 0.75f);
+
+    advance.delta_seconds =
+        static_cast<double>(maxIntervalTraversalLoopsV1);
+    REQUIRE(runtime.advanceCursor(advance, result) == Status::ok);
+    REQUIRE(runtime.cursorTime(cursor) == 0.0);
+    REQUIRE(result.crossing_count == 0);
+    REQUIRE((result.result_flags & interval_looped) != 0);
+}
+
+TEST_CASE("interval advance caps reported crossings without moving cursor",
+          "[animation][a0][hostile]") {
+    ProbeRuntime runtime;
+    const std::array annotations{
+        ProbeAnnotation{.time_seconds = 0.25, .source = 0, .ordinal = 0,
+                        .identity = 1},
+        ProbeAnnotation{.time_seconds = 0.75, .source = 0, .ordinal = 1,
+                        .identity = 2},
+    };
+    const auto cursor = runtime.createCursor(1.0, WrapMode::repeat, annotations);
+    auto advance = descriptor<AdvanceDescV1>();
+    advance.cursor = cursor;
+    advance.delta_seconds =
+        static_cast<double>(maxIntervalCrossingsV1 / annotations.size() + 1);
+    auto result = descriptor<IntervalResultV1>();
+
+    REQUIRE(runtime.advanceCursor(advance, result) == Status::invalid_argument);
+    REQUIRE(runtime.cursorTime(cursor) == 0.0);
+    REQUIRE(result.crossing_count == 0);
 }
 
 TEST_CASE("local-to-model and commit history complete one frozen round trip", "[animation][a0][golden]") {

@@ -289,6 +289,26 @@ TEST_CASE("VRM expression resolution applies override, binary, lookAt and Base p
     REQUIRE(resolved.diagnostics[3].material_color_type == "outlineColor");
 }
 
+TEST_CASE("VRM expression overrides use one immutable contributor snapshot",
+          "[vrm][expression][override][unit]") {
+    VrmSemanticData semantic;
+    VrmExpression mouth;
+    mouth.override_blink = "block";
+    semantic.preset_expressions.emplace("aa", mouth);
+    VrmExpression blink;
+    blink.override_mouth = "block";
+    semantic.preset_expressions.emplace("blink", blink);
+
+    ExpressionInputSnapshot snapshot;
+    snapshot.expression_weights = {{"aa", 1.0f}, {"blink", 1.0f}};
+    ResolvedExpressionFrame resolved;
+
+    REQUIRE(resolveExpressionFrame(semantic, nullptr, nullptr, snapshot,
+                                   resolved) == Status::ok);
+    REQUIRE(resolved.expression_weights.at("aa") == 0.0f);
+    REQUIRE(resolved.expression_weights.at("blink") == 0.0f);
+}
+
 TEST_CASE("VRM bone lookAt maps inner outer up and down to absolute eye rotations",
           "[wp134][vrm][lookat][bone][unit]") {
     VrmSemanticData semantic;

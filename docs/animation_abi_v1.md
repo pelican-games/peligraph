@@ -69,6 +69,9 @@ ABI v1 の Pose 実装形は **engine-owned scratch arena + opaque `PoseHandle` 
   sampling context を一切進めない。caller は必要量を確保して同じ入力を再実行すると同じ順序・内容を得る。
 - stale generation、reserved/flag/version、非 finite 数、その他 validation error でも cursor は不変。成功時だけ cursor と全 sideband を
   一括 publish する。失敗時に変更してよい out field は required count と診断 field だけである。
+- 1 回の repeat advance が走査できる loop 数は `maxIntervalTraversalLoopsV1`、返せる crossing 数は
+  `maxIntervalCrossingsV1` までとする。上限超過は `invalid_argument` とし、cursor と結果配列を変更しない。
+  annotation table が空なら crossing 列挙ループ自体を実行しない。
 
 ### 4.2 時間と端点
 

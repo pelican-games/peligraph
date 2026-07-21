@@ -248,6 +248,7 @@ Status resolveExpressionFrame(
 
         // Override contributors use their post-binary values. A binary target
         // is completely suppressed by any non-zero received effect.
+        const auto override_contributor_weights = next.expression_weights;
         for (auto &[target_name, target_weight] : next.expression_weights) {
             const auto target_group = proceduralGroup(target_name);
             if (target_group == ProceduralGroup::none) continue;
@@ -256,7 +257,8 @@ Status resolveExpressionFrame(
             forEachExpression(semantic, [&](const std::string &source_name,
                                             const VrmExpression &source) {
                 if (proceduralGroup(source_name) == target_group) return;
-                const auto weight = next.expression_weights.at(source_name);
+                const auto weight =
+                    override_contributor_weights.at(source_name);
                 if (weight <= 0.0f) return;
                 const auto mode = overrideFor(source, target_group);
                 if (mode == "block") block = true;

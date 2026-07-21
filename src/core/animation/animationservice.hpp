@@ -10,6 +10,7 @@
 #include <string_view>
 
 namespace Pelican {
+struct ModelAssetId;
 struct SkeletalModelData;
 struct VrmaRetargetedClip;
 namespace internal {
@@ -27,6 +28,8 @@ class AnimationServiceRuntime {
 
     void registerObject(std::string name, const SkeletalModelData &model);
     void registerObject(std::string name, const SkeletalModelData &model,
+                        ModelAssetId logical_asset);
+    void registerObject(std::string name, const SkeletalModelData &model,
                         ModelInstanceId renderer_instance);
     // Registers a retargeted .vrma asset in the same named Clip/Cursor
     // vocabulary used by anim_graph. Reload preserves logical identity and
@@ -40,6 +43,9 @@ class AnimationServiceRuntime {
     // Frame-boundary model replacement. Only objects bound to previous are
     // advanced to the replacement generation; unrelated objects keep running.
     void reloadAsset(const SkeletalModelData *previous,
+                     const SkeletalModelData *replacement);
+    void reloadAsset(ModelAssetId logical_asset,
+                     const SkeletalModelData *previous,
                      const SkeletalModelData *replacement);
     void reset();
     void releaseOwner(internal::RegistrationOwner owner) noexcept;
