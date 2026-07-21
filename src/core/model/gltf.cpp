@@ -18,6 +18,7 @@
 #include <atomic>
 #include <cctype>
 #include <cmath>
+#include <cstring>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <limits>
@@ -590,110 +591,182 @@ struct InternalGltfLoader {
 #endif
 
     template <class InType, class OutType>
-    std::vector<OutType> readComponentByType(const unsigned char *p_data, size_t count, int stride) {
+    std::vector<OutType> readComponentByType(const unsigned char *p_data,
+                                             std::size_t count,
+                                             std::size_t stride,
+                                             std::size_t element_size) {
+        if (sizeof(InType) < element_size) {
+            throw std::runtime_error(
+                "glTF accessor element does not fit its decoded component type");
+        }
         std::vector<OutType> buf(count);
-        for (int i = 0; i < count; i++) {
-            buf[i] = static_cast<OutType>(*reinterpret_cast<const InType *>(p_data + stride * i));
+        for (std::size_t i = 0; i < count; ++i) {
+            InType value{};
+            std::memcpy(&value, p_data + stride * i, element_size);
+            buf[i] = static_cast<OutType>(value);
         }
         return buf;
     }
     template <int expected_type, class T> std::vector<T> getDataFromAccessor(int accessor_index) {
-        const auto &accessor = model.accessors[accessor_index];
-        const auto &buffer_view = model.bufferViews[accessor.bufferView];
-        const auto &buffer = model.buffers[buffer_view.buffer];
-        const auto p_data = buffer.data.data() + accessor.byteOffset + buffer_view.byteOffset;
-        const auto stride = accessor.ByteStride(buffer_view);
-
-        if (expected_type != accessor.type) {
-            LOG_ERROR(logger, "gltf loading error, expected accessor type: {}, actual type : {}", expected_type,
-                      accessor.type);
-            return {};
+        const auto context = "glTF accessor " + std::to_string(accessor_index) +
+                             " in '" + source_path + "'";
+        if (accessor_index < 0 ||
+            accessor_index >= static_cast<int>(model.accessors.size())) {
+            throw std::runtime_error(context + " is out of range");
         }
+        const auto &accessor = model.accessors.at(
+            static_cast<std::size_t>(accessor_index));
+        if (expected_type != accessor.type) {
+            throw std::runtime_error(context + " has unexpected accessor type " +
+                                     std::to_string(accessor.type));
+        }
+        if (accessor.sparse.isSparse) {
+            throw std::runtime_error(context +
+                                     " uses an unsupported sparse accessor");
+        }
+        if (accessor.bufferView < 0 ||
+            accessor.bufferView >= static_cast<int>(model.bufferViews.size())) {
+            throw std::runtime_error(context + " has no valid bufferView");
+        }
+        const auto &buffer_view = model.bufferViews.at(
+            static_cast<std::size_t>(accessor.bufferView));
+        if (buffer_view.buffer < 0 ||
+            buffer_view.buffer >= static_cast<int>(model.buffers.size())) {
+            throw std::runtime_error(context +
+                                     " bufferView references an invalid buffer");
+        }
+        const auto &buffer = model.buffers.at(
+            static_cast<std::size_t>(buffer_view.buffer));
+        const auto component_size =
+            tinygltf::GetComponentSizeInBytes(accessor.componentType);
+        const auto component_count =
+            tinygltf::GetNumComponentsInType(accessor.type);
+        if (component_size <= 0 || component_count <= 0) {
+            throw std::runtime_error(context +
+                                     " has an unsupported component encoding");
+        }
+        const auto element_size = static_cast<std::size_t>(component_size) *
+                                  static_cast<std::size_t>(component_count);
+        const auto stride_value = accessor.ByteStride(buffer_view);
+        if (stride_value < 0 ||
+            static_cast<std::size_t>(stride_value) < element_size) {
+            throw std::runtime_error(context + " has an invalid byte stride");
+        }
+        const auto stride = static_cast<std::size_t>(stride_value);
+        const auto view_begin = static_cast<std::size_t>(buffer_view.byteOffset);
+        const auto view_size = static_cast<std::size_t>(buffer_view.byteLength);
+        if (view_begin > buffer.data.size() ||
+            view_size > buffer.data.size() - view_begin) {
+            throw std::runtime_error(context + " bufferView exceeds its buffer");
+        }
+        const auto accessor_offset =
+            static_cast<std::size_t>(accessor.byteOffset);
+        if (accessor_offset > view_size) {
+            throw std::runtime_error(context +
+                                     " byteOffset exceeds its bufferView");
+        }
+        const auto count = static_cast<std::size_t>(accessor.count);
+        std::size_t required = 0;
+        if (count != 0) {
+            if ((count - 1) >
+                (std::numeric_limits<std::size_t>::max() - element_size) /
+                    stride) {
+                throw std::runtime_error(context + " byte range overflows");
+            }
+            required = (count - 1) * stride + element_size;
+        }
+        const auto available = view_size - accessor_offset;
+        const auto begin = view_begin + accessor_offset;
+        if (required > available || required > buffer.data.size() - begin) {
+            throw std::runtime_error(context +
+                                     " data exceeds its bufferView");
+        }
+        const auto *p_data = count == 0 ? nullptr : buffer.data.data() + begin;
 
         if constexpr (expected_type == TINYGLTF_TYPE_SCALAR) {
             switch (accessor.componentType) {
             case TINYGLTF_COMPONENT_TYPE_FLOAT:
-                return readComponentByType<float, T>(p_data, accessor.count, stride);
+                return readComponentByType<float, T>(p_data, count, stride, element_size);
             case TINYGLTF_COMPONENT_TYPE_DOUBLE:
-                return readComponentByType<double, T>(p_data, accessor.count, stride);
+                return readComponentByType<double, T>(p_data, count, stride, element_size);
             case TINYGLTF_COMPONENT_TYPE_BYTE:
-                return readComponentByType<int8_t, T>(p_data, accessor.count, stride);
+                return readComponentByType<int8_t, T>(p_data, count, stride, element_size);
             case TINYGLTF_COMPONENT_TYPE_SHORT:
-                return readComponentByType<int16_t, T>(p_data, accessor.count, stride);
+                return readComponentByType<int16_t, T>(p_data, count, stride, element_size);
             case TINYGLTF_COMPONENT_TYPE_INT:
-                return readComponentByType<int32_t, T>(p_data, accessor.count, stride);
+                return readComponentByType<int32_t, T>(p_data, count, stride, element_size);
             case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
-                return readComponentByType<uint8_t, T>(p_data, accessor.count, stride);
+                return readComponentByType<uint8_t, T>(p_data, count, stride, element_size);
             case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
-                return readComponentByType<uint16_t, T>(p_data, accessor.count, stride);
+                return readComponentByType<uint16_t, T>(p_data, count, stride, element_size);
             case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:
-                return readComponentByType<uint32_t, T>(p_data, accessor.count, stride);
+                return readComponentByType<uint32_t, T>(p_data, count, stride, element_size);
             }
         } else if constexpr (expected_type == TINYGLTF_TYPE_VEC2) {
             switch (accessor.componentType) {
             case TINYGLTF_COMPONENT_TYPE_FLOAT:
-                return readComponentByType<glm::vec2, T>(p_data, accessor.count, stride);
+                return readComponentByType<glm::vec2, T>(p_data, count, stride, element_size);
             case TINYGLTF_COMPONENT_TYPE_DOUBLE:
-                return readComponentByType<glm::f64vec2, T>(p_data, accessor.count, stride);
+                return readComponentByType<glm::f64vec2, T>(p_data, count, stride, element_size);
             case TINYGLTF_COMPONENT_TYPE_BYTE:
-                return readComponentByType<glm::i8vec2, T>(p_data, accessor.count, stride);
+                return readComponentByType<glm::i8vec2, T>(p_data, count, stride, element_size);
             case TINYGLTF_COMPONENT_TYPE_SHORT:
-                return readComponentByType<glm::i16vec2, T>(p_data, accessor.count, stride);
+                return readComponentByType<glm::i16vec2, T>(p_data, count, stride, element_size);
             case TINYGLTF_COMPONENT_TYPE_INT:
-                return readComponentByType<glm::i32vec2, T>(p_data, accessor.count, stride);
+                return readComponentByType<glm::i32vec2, T>(p_data, count, stride, element_size);
             case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
-                return readComponentByType<glm::u8vec2, T>(p_data, accessor.count, stride);
+                return readComponentByType<glm::u8vec2, T>(p_data, count, stride, element_size);
             case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
-                return readComponentByType<glm::u16vec2, T>(p_data, accessor.count, stride);
+                return readComponentByType<glm::u16vec2, T>(p_data, count, stride, element_size);
             case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:
-                return readComponentByType<glm::u32vec2, T>(p_data, accessor.count, stride);
+                return readComponentByType<glm::u32vec2, T>(p_data, count, stride, element_size);
             }
         } else if constexpr (expected_type == TINYGLTF_TYPE_VEC3) {
             switch (accessor.componentType) {
             case TINYGLTF_COMPONENT_TYPE_FLOAT:
-                return readComponentByType<glm::vec3, T>(p_data, accessor.count, stride);
+                return readComponentByType<glm::vec3, T>(p_data, count, stride, element_size);
             case TINYGLTF_COMPONENT_TYPE_DOUBLE:
-                return readComponentByType<glm::f64vec3, T>(p_data, accessor.count, stride);
+                return readComponentByType<glm::f64vec3, T>(p_data, count, stride, element_size);
             case TINYGLTF_COMPONENT_TYPE_BYTE:
-                return readComponentByType<glm::i8vec3, T>(p_data, accessor.count, stride);
+                return readComponentByType<glm::i8vec3, T>(p_data, count, stride, element_size);
             case TINYGLTF_COMPONENT_TYPE_SHORT:
-                return readComponentByType<glm::i16vec3, T>(p_data, accessor.count, stride);
+                return readComponentByType<glm::i16vec3, T>(p_data, count, stride, element_size);
             case TINYGLTF_COMPONENT_TYPE_INT:
-                return readComponentByType<glm::i32vec3, T>(p_data, accessor.count, stride);
+                return readComponentByType<glm::i32vec3, T>(p_data, count, stride, element_size);
             case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
-                return readComponentByType<glm::u8vec3, T>(p_data, accessor.count, stride);
+                return readComponentByType<glm::u8vec3, T>(p_data, count, stride, element_size);
             case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
-                return readComponentByType<glm::u16vec3, T>(p_data, accessor.count, stride);
+                return readComponentByType<glm::u16vec3, T>(p_data, count, stride, element_size);
             case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:
-                return readComponentByType<glm::u32vec3, T>(p_data, accessor.count, stride);
+                return readComponentByType<glm::u32vec3, T>(p_data, count, stride, element_size);
             }
         } else if constexpr (expected_type == TINYGLTF_TYPE_VEC4) {
             switch (accessor.componentType) {
             case TINYGLTF_COMPONENT_TYPE_FLOAT:
-                return readComponentByType<glm::vec4, T>(p_data, accessor.count, stride);
+                return readComponentByType<glm::vec4, T>(p_data, count, stride, element_size);
             case TINYGLTF_COMPONENT_TYPE_DOUBLE:
-                return readComponentByType<glm::f64vec4, T>(p_data, accessor.count, stride);
+                return readComponentByType<glm::f64vec4, T>(p_data, count, stride, element_size);
             case TINYGLTF_COMPONENT_TYPE_BYTE:
-                return readComponentByType<glm::i8vec4, T>(p_data, accessor.count, stride);
+                return readComponentByType<glm::i8vec4, T>(p_data, count, stride, element_size);
             case TINYGLTF_COMPONENT_TYPE_SHORT:
-                return readComponentByType<glm::i16vec4, T>(p_data, accessor.count, stride);
+                return readComponentByType<glm::i16vec4, T>(p_data, count, stride, element_size);
             case TINYGLTF_COMPONENT_TYPE_INT:
-                return readComponentByType<glm::i32vec4, T>(p_data, accessor.count, stride);
+                return readComponentByType<glm::i32vec4, T>(p_data, count, stride, element_size);
             case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
-                return readComponentByType<glm::u8vec4, T>(p_data, accessor.count, stride);
+                return readComponentByType<glm::u8vec4, T>(p_data, count, stride, element_size);
             case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
-                return readComponentByType<glm::u16vec4, T>(p_data, accessor.count, stride);
+                return readComponentByType<glm::u16vec4, T>(p_data, count, stride, element_size);
             case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:
-                return readComponentByType<glm::u32vec4, T>(p_data, accessor.count, stride);
+                return readComponentByType<glm::u32vec4, T>(p_data, count, stride, element_size);
             }
         } else if constexpr (expected_type == TINYGLTF_TYPE_MAT4) {
             if (accessor.componentType == TINYGLTF_COMPONENT_TYPE_FLOAT) {
-                return readComponentByType<glm::mat4, T>(p_data, accessor.count, stride);
+                return readComponentByType<glm::mat4, T>(p_data, count, stride, element_size);
             }
         }
-        LOG_ERROR(logger, "gltf loading error : unsupported accessor, type={},componentType={}", accessor.type,
-                  accessor.componentType);
-        return {};
+        throw std::runtime_error(
+            context + " has unsupported component type " +
+            std::to_string(accessor.componentType));
     }
 
     std::vector<glm::vec3> readMorphDeltaAccessor(
@@ -1184,9 +1257,34 @@ struct InternalGltfLoader {
         if (!fragment) {
             LoadSelection selection;
             selection.whole_model = true;
-            const auto &scene = model.scenes[model.defaultScene < 0 ? 0 : model.defaultScene];
-            for (const auto node : scene.nodes) {
-                selection.roots.push_back(RootSelection{node, -1, glm::mat4{1.0f}, true, true});
+            if (model.scenes.empty()) {
+                std::vector<bool> is_child(model.nodes.size(), false);
+                for (const auto &node : model.nodes) {
+                    for (const auto child : node.children) {
+                        if (child >= 0 &&
+                            child < static_cast<int>(is_child.size())) {
+                            is_child[static_cast<std::size_t>(child)] = true;
+                        }
+                    }
+                }
+                for (int node = 0; node < static_cast<int>(model.nodes.size());
+                     ++node) {
+                    if (!is_child[static_cast<std::size_t>(node)]) {
+                        selection.roots.push_back(
+                            RootSelection{node, -1, glm::mat4{1.0f}, true, true});
+                    }
+                }
+                return selection;
+            }
+            const auto scene_index = model.defaultScene < 0 ? 0 : model.defaultScene;
+            if (scene_index >= static_cast<int>(model.scenes.size())) {
+                throw std::runtime_error("glTF default scene index is out of range in '" +
+                                         source_path + "'");
+            }
+            for (const auto node : model.scenes.at(
+                     static_cast<std::size_t>(scene_index)).nodes) {
+                selection.roots.push_back(
+                    RootSelection{node, -1, glm::mat4{1.0f}, true, true});
             }
             return selection;
         }

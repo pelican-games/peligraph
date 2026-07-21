@@ -289,6 +289,40 @@ TEST_CASE("Project sprite ppu and default camera policy are validated", "[camera
                         Catch::Matchers::ContainsSubstring("pixels_per_unit"));
 }
 
+TEST_CASE("Project camera up is a finite non-zero vec3", "[camera][config]") {
+    ensureLogger();
+
+    struct InvalidUp {
+        const char *name;
+        nlohmann::json value;
+        const char *message;
+    };
+    const InvalidUp invalid_values[] = {
+        {"too short", nlohmann::json::array({0.0, 1.0}), "exactly 3 numbers"},
+        {"too long", nlohmann::json::array({0.0, 1.0, 0.0, 0.0}),
+         "exactly 3 numbers"},
+        {"not an array", "up", "exactly 3 numbers"},
+        {"non-numeric component", nlohmann::json::array({0.0, "up", 0.0}),
+         "exactly 3 numbers"},
+        {"zero vector", nlohmann::json::array({0.0, 0.0, 0.0}), "non-zero"},
+    };
+
+    for (const auto &invalid : invalid_values) {
+        DYNAMIC_SECTION(invalid.name) {
+            Sandbox sandbox;
+            auto project = projectJson();
+            project["basic_config"]["camera"]["up"] = invalid.value;
+
+            FastModuleContainer modules;
+            GET_MODULE(PathResolver).setup(sandbox.root, false);
+            GET_MODULE(ProjectSource).setProjectData(project.dump());
+            REQUIRE_THROWS_WITH(
+                GET_MODULE(ProjectBasicConfig),
+                Catch::Matchers::ContainsSubstring(invalid.message));
+        }
+    }
+}
+
 TEST_CASE("Scene camera sprite policy is closed and names invalid values", "[camera][sprite]") {
     ensureLogger();
     Sandbox sandbox;

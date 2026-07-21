@@ -41,6 +41,20 @@ TEST_CASE("glTF skin and clips connect to animation component without ECS bones"
     const TempDir guard{root};
     TestSkeletalFixture::writeGlb(root / "character.glb");
     TestSkeletalFixture::writeGlb(root / "cubic.glb", true);
+    TestSkeletalFixture::writeGlb(
+        root / "no_scene.glb", TestSkeletalFixture::Options{.omit_scenes = true});
+    TestSkeletalFixture::writeGlb(
+        root / "bad_accessor.glb",
+        TestSkeletalFixture::Options{.invalid_animation_accessor = true});
+    TestSkeletalFixture::writeGlb(
+        root / "bad_buffer_view.glb",
+        TestSkeletalFixture::Options{.invalid_inverse_bind_buffer_view = true});
+    TestSkeletalFixture::writeGlb(
+        root / "truncated_accessor.glb",
+        TestSkeletalFixture::Options{.truncated_inverse_bind_view = true});
+    TestSkeletalFixture::writeGlb(
+        root / "bad_default_scene.glb",
+        TestSkeletalFixture::Options{.invalid_default_scene = true});
     writeText(root / "assets.json", R"json({"models":[{"name":"character","path":"character.glb"}]})json");
     writeText(root / "scene.json", R"json({
       "schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[{
@@ -76,6 +90,21 @@ TEST_CASE("glTF skin and clips connect to animation component without ECS bones"
     REQUIRE_THROWS_WITH(loader.loadGltfBinary((root / "cubic.glb").string()),
                         Catch::Matchers::ContainsSubstring("animation 'Turn'") &&
                         Catch::Matchers::ContainsSubstring("CUBICSPLINE"));
+    REQUIRE(loader.loadGltfBinary((root / "no_scene.glb").string())
+                .material_primitives.size() == 1);
+    REQUIRE_THROWS_WITH(
+        loader.loadGltfBinary((root / "bad_accessor.glb").string()),
+        Catch::Matchers::ContainsSubstring("accessor 17") &&
+            Catch::Matchers::ContainsSubstring("out of range"));
+    REQUIRE_THROWS_WITH(
+        loader.loadGltfBinary((root / "bad_buffer_view.glb").string()),
+        Catch::Matchers::ContainsSubstring("no valid bufferView"));
+    REQUIRE_THROWS_WITH(
+        loader.loadGltfBinary((root / "truncated_accessor.glb").string()),
+        Catch::Matchers::ContainsSubstring("data exceeds its bufferView"));
+    REQUIRE_THROWS_WITH(
+        loader.loadGltfBinary((root / "bad_default_scene.glb").string()),
+        Catch::Matchers::ContainsSubstring("default scene index is out of range"));
 
     auto &time = GET_MODULE(EngineTime);
     time.setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);

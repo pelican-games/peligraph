@@ -11,6 +11,15 @@
 #include <vector>
 
 namespace Pelican::TestSkeletalFixture {
+struct Options {
+    bool cubic = false;
+    bool invalid_animation_accessor = false;
+    bool invalid_inverse_bind_buffer_view = false;
+    bool truncated_inverse_bind_view = false;
+    bool omit_scenes = false;
+    bool invalid_default_scene = false;
+};
+
 namespace detail {
 inline void u32(std::vector<std::uint8_t> &out, std::uint32_t value) {
     for (int shift = 0; shift < 32; shift += 8) out.push_back(static_cast<std::uint8_t>(value >> shift));
@@ -26,7 +35,7 @@ inline void write(const std::filesystem::path &path, const std::vector<std::uint
 }
 } // namespace detail
 
-inline std::vector<std::uint8_t> makeGlb(bool cubic = false) {
+inline std::vector<std::uint8_t> makeGlb(Options options) {
     std::vector<std::uint8_t> bin;
     nlohmann::json views = nlohmann::json::array();
     nlohmann::json accessors = nlohmann::json::array();
@@ -70,14 +79,14 @@ inline std::vector<std::uint8_t> makeGlb(bool cubic = false) {
     nlohmann::json animations = nlohmann::json::array({
         {{"name", "Turn"},
          {"samplers", {{{"input", time_accessor}, {"output", rotation_accessor},
-                         {"interpolation", cubic ? "CUBICSPLINE" : "LINEAR"}}}},
+                         {"interpolation", options.cubic ? "CUBICSPLINE" : "LINEAR"}}}},
          {"channels", {{{"sampler", 0}, {"target", {{"node", 1}, {"path", "rotation"}}}}}}},
         {{"name", "Step"},
          {"samplers", {{{"input", time_accessor}, {"output", translation_accessor},
                          {"interpolation", "STEP"}}}},
          {"channels", {{{"sampler", 0}, {"target", {{"node", 2}, {"path", "translation"}}}}}}},
     });
-    const nlohmann::json json{
+    nlohmann::json json{
         {"asset", {{"version", "2.0"}, {"generator", "pelican WP38 fixture"}}},
         {"scene", 0}, {"scenes", {{{"nodes", {0}}}}},
         {"nodes", {{{"name", "Character"}, {"mesh", 0}, {"skin", 0}, {"children", {1}}},
@@ -93,6 +102,25 @@ inline std::vector<std::uint8_t> makeGlb(bool cubic = false) {
         {"animations", animations}, {"bufferViews", views}, {"accessors", accessors},
         {"buffers", {{{"byteLength", bin.size()}}}},
     };
+    if (options.invalid_animation_accessor) {
+        json["animations"][0]["samplers"][0]["input"] =
+            static_cast<int>(accessors.size()) + 7;
+    }
+    if (options.invalid_inverse_bind_buffer_view) {
+        json["accessors"][bind_accessor]["bufferView"] =
+            static_cast<int>(views.size()) + 3;
+    }
+    if (options.truncated_inverse_bind_view) {
+        const auto view =
+            json["accessors"][bind_accessor]["bufferView"].get<int>();
+        json["bufferViews"][view]["byteLength"] = 4;
+    }
+    if (options.omit_scenes) {
+        json.erase("scene");
+        json.erase("scenes");
+    } else if (options.invalid_default_scene) {
+        json["scene"] = 99;
+    }
     auto json_bytes = json.dump();
     while (json_bytes.size() % 4) json_bytes.push_back(' ');
     detail::align4(bin);
@@ -106,7 +134,14 @@ inline std::vector<std::uint8_t> makeGlb(bool cubic = false) {
     return glb;
 }
 
+inline std::vector<std::uint8_t> makeGlb(bool cubic = false) {
+    return makeGlb(Options{.cubic = cubic});
+}
+
 inline void writeGlb(const std::filesystem::path &path, bool cubic = false) {
     detail::write(path, makeGlb(cubic));
+}
+inline void writeGlb(const std::filesystem::path &path, Options options) {
+    detail::write(path, makeGlb(options));
 }
 } // namespace Pelican::TestSkeletalFixture

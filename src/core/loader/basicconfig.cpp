@@ -229,6 +229,37 @@ CameraSpritePolicySpec parseBasicCameraSpritePolicy(const JsonLoader &loader) {
     return result;
 }
 
+glm::vec3 parseBasicCameraUp(const JsonLoader &loader) {
+    const auto value = loader.getVal("basic_config/camera/up");
+    if (!value.is_array() || value.size() != 3) {
+        throw std::runtime_error(
+            "basic_config.camera.up must be an array of exactly 3 numbers");
+    }
+
+    glm::vec3 result{};
+    for (std::size_t i = 0; i < 3; ++i) {
+        const auto &component = value.at(i);
+        if (!component.is_number()) {
+            throw std::runtime_error(
+                "basic_config.camera.up must be an array of exactly 3 numbers");
+        }
+        const auto decoded = component.get<double>();
+        if (!std::isfinite(decoded) ||
+            std::abs(decoded) > std::numeric_limits<float>::max()) {
+            throw std::runtime_error(
+                "basic_config.camera.up components must be finite float values");
+        }
+        result[static_cast<glm::vec3::length_type>(i)] =
+            static_cast<float>(decoded);
+    }
+    if (std::hypot(static_cast<double>(result.x),
+                   static_cast<double>(result.y),
+                   static_cast<double>(result.z)) == 0.0) {
+        throw std::runtime_error("basic_config.camera.up must be non-zero");
+    }
+    return result;
+}
+
 CameraProjectionSpec parseBasicCameraProjection(const JsonLoader &loader) {
     rejectDeprecatedCameraFields(loader);
     CameraProjectionSpec projection;
@@ -528,8 +559,7 @@ ProjectBasicConfig::ProjectBasicConfig() {
 
     camera_prop.projection = parseBasicCameraProjection(loader);
     camera_prop.sprite = parseBasicCameraSpritePolicy(loader);
-    const auto camera_up = loader.getVal("basic_config/camera/up");
-    camera_prop.up = {camera_up[0], camera_up[1], camera_up[2]};
+    camera_prop.up = parseBasicCameraUp(loader);
 
     default_scene_id = loader.getVal("basic_config/default_scene_id");
     rendering_config_json_ref = loader.getVal("basic_config/rendering_config_json");
