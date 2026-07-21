@@ -384,6 +384,28 @@ TEST_CASE("shapeCast prevents thin-collider tunneling for every standard shape p
     requireVec(exact->position, {4.5f, 0.0f, 0.0f}, 2.0e-4f);
 }
 
+TEST_CASE("shapeCast preserves exact box face normals at contact",
+          "[physquery][shape-cast][normal]") {
+    for (const float angle : std::array{0.0f, 0.01f}) {
+        CAPTURE(angle);
+        const vec3 face_normal{-std::sin(angle), std::cos(angle), 0.0f};
+        const Capsule moving{
+            {face_normal.x * 3.0f, face_normal.y * 3.0f, 0.0f},
+            {},
+            0.4f,
+            0.2f,
+        };
+        const Box floor{{}, rotationZ(angle), {4.0f, 0.025f, 1.0f}};
+        const vec3 delta{-face_normal.x * 20.0f,
+                         -face_normal.y * 20.0f, 0.0f};
+
+        const auto hit = shapeCast(Shape{moving}, delta, Shape{floor});
+        REQUIRE(hit);
+        REQUIRE_FALSE(hit->initial_overlap);
+        requireVec(hit->normal, face_normal, 2.0e-5f);
+    }
+}
+
 TEST_CASE("shapeCast keeps GJK bounded across degenerate convex dimensions",
           "[physquery][shape-cast][degenerate][gjk]") {
     const quat tilted{0.31f, -0.17f, 0.23f, 0.89f};

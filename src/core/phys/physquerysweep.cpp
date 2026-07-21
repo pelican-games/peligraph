@@ -128,22 +128,28 @@ Shape translated(const Shape &shape, vec3 offset) {
     }, shape);
 }
 
-float refineOverlapTime(const Shape &moving, vec3 delta,
-                        const Shape &collider, float separated_time,
-                        float overlapping_time) {
-    float lower = separated_time;
-    float upper = overlapping_time;
+struct OverlapTimeBracket {
+    float separated;
+    float overlapping;
+};
+
+OverlapTimeBracket refineOverlapTime(const Shape &moving, vec3 delta,
+                                     const Shape &collider,
+                                     float separated_time,
+                                     float overlapping_time) {
+    OverlapTimeBracket bracket{separated_time, overlapping_time};
     for (int iteration = 0; iteration < kOverlapRefinementIterations;
          ++iteration) {
-        const float middle = (lower + upper) * 0.5F;
-        if (middle == lower || middle == upper) break;
+        const float middle =
+            (bracket.separated + bracket.overlapping) * 0.5F;
+        if (middle == bracket.separated || middle == bracket.overlapping) break;
         if (overlaps(translated(moving, mul(delta, middle)), collider)) {
-            upper = middle;
+            bracket.overlapping = middle;
         } else {
-            lower = middle;
+            bracket.separated = middle;
         }
     }
-    return upper;
+    return bracket;
 }
 
 vec3 support(const Shape &shape, vec3 direction) {
@@ -185,6 +191,60 @@ vec3 support(const Shape &shape, vec3 direction) {
                        mul(unit_direction, std::max(0.0F, typed.radius)));
         }
     }, shape);
+}
+
+void appendBoxFaceAxes(const Shape &shape, std::array<vec3, 6> &axes,
+                       std::size_t &axis_count) {
+    const auto *box = std::get_if<Box>(&shape);
+    if (!box) return;
+    axes[axis_count++] = normalizeOr(
+        rotateVector(box->rotation, {1.0F, 0.0F, 0.0F}),
+        {1.0F, 0.0F, 0.0F});
+    axes[axis_count++] = normalizeOr(
+        rotateVector(box->rotation, {0.0F, 1.0F, 0.0F}),
+        {0.0F, 1.0F, 0.0F});
+    axes[axis_count++] = normalizeOr(
+        rotateVector(box->rotation, {0.0F, 0.0F, 1.0F}),
+        {0.0F, 0.0F, 1.0F});
+}
+
+vec3 stabilizeBoxFaceNormal(const Shape &moving, const Shape &collider,
+                            vec3 raw_normal, vec3 delta) {
+    constexpr float kMinimumAlignment = 0.9999F;
+    constexpr float kSeparationTolerance = 4.0F * kDistanceTolerance;
+
+    const vec3 normalized_raw = normalizeOr(
+        raw_normal, normalizeOr(neg(delta), {1.0F, 0.0F, 0.0F}));
+    std::array<vec3, 6> axes{};
+    std::size_t axis_count = 0;
+    appendBoxFaceAxes(moving, axes, axis_count);
+    appendBoxFaceAxes(collider, axes, axis_count);
+
+    vec3 selected = normalized_raw;
+    float selected_alignment = kMinimumAlignment;
+    for (std::size_t axis_index = 0; axis_index < axis_count; ++axis_index) {
+        const vec3 axis = axes[axis_index];
+        for (const float sign : std::array{-1.0F, 1.0F}) {
+            const vec3 candidate = mul(axis, sign);
+            const float alignment = dot(candidate, normalized_raw);
+            if (alignment <= selected_alignment ||
+                dot(delta, candidate) >= -kDirectionEpsilon) {
+                continue;
+            }
+
+            const vec3 moving_support = support(moving, neg(candidate));
+            const vec3 collider_support = support(collider, candidate);
+            const float separation = dot(
+                sub(moving_support, collider_support), candidate);
+            if (!std::isfinite(separation) ||
+                std::abs(separation) > kSeparationTolerance) {
+                continue;
+            }
+            selected = candidate;
+            selected_alignment = alignment;
+        }
+    }
+    return selected;
 }
 
 struct SupportVertex {
@@ -744,17 +804,24 @@ std::optional<ShapeCastHit> shapeCast(const Shape &moving_shape, vec3 delta,
         const Shape moved = translated(moving_shape, mul(delta, time));
         const DistanceResult distance = convexDistance(moved, collider_shape);
         if (overlaps(moved, collider_shape)) {
-            const float refined_time = refineOverlapTime(
+            const auto refined_time = refineOverlapTime(
                 moving_shape, delta, collider_shape, last_separated_time, time);
+            // The overlapping side of the bracket is the conservative TOI,
+            // while its GJK simplex may already be an origin-containing,
+            // numerically ambiguous tetrahedron. Derive the contact normal
+            // from the separated side where the closest features remain
+            // well-defined.
             const Shape contact_shape = translated(
-                moving_shape, mul(delta, refined_time));
+                moving_shape, mul(delta, refined_time.separated));
             const DistanceResult contact_distance = convexDistance(
                 contact_shape, collider_shape);
-            const vec3 normal = normalizeOr(
-                contact_distance.normal,
-                fallbackNormal(contact_shape, collider_shape, delta));
+            const vec3 normal = stabilizeBoxFaceNormal(
+                contact_shape, collider_shape,
+                normalizeOr(contact_distance.normal,
+                            fallbackNormal(contact_shape, collider_shape, delta)),
+                delta);
             return ShapeCastHit{
-                std::clamp(refined_time, 0.0F, 1.0F),
+                std::clamp(refined_time.overlapping, 0.0F, 1.0F),
                 0.0F,
                 contact_distance.point_on_collider,
                 normal,
@@ -763,8 +830,11 @@ std::optional<ShapeCastHit> shapeCast(const Shape &moving_shape, vec3 delta,
         }
         if (distance.touching_or_intersecting ||
             distance.distance <= kDistanceTolerance) {
-            const vec3 normal = normalizeOr(
-                distance.normal, fallbackNormal(moved, collider_shape, delta));
+            const vec3 normal = stabilizeBoxFaceNormal(
+                moved, collider_shape,
+                normalizeOr(distance.normal,
+                            fallbackNormal(moved, collider_shape, delta)),
+                delta);
             return ShapeCastHit{
                 std::clamp(time, 0.0F, 1.0F),
                 0.0F,
