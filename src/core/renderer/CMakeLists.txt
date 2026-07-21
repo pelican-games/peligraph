@@ -4,6 +4,7 @@ target_sources(pelican_core PRIVATE
     spriterenderer.cpp
     debugdraw.cpp
     debugtext.cpp
+    modelinstanceslots.cpp
     polygoninstancecontainer.cpp
     projectionjitter.cpp
     materialrender.cpp

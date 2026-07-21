@@ -6,6 +6,7 @@
 #include "../userpublic/animation/abi_v1.hpp"
 #include "../vkcore/buf.hpp"
 #include "modelinstance.hpp"
+#include "modelinstanceslots.hpp"
 #include <glm/ext/quaternion_float.hpp>
 #include <glm/glm.hpp>
 #include <array>
@@ -236,13 +237,7 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     std::vector<std::uint64_t> animation_revisions;
     std::vector<std::uint64_t> previous_animation_revisions;
     std::vector<std::uint32_t> animation_generations;
-    // Slot identity is independent from animation generation and model asset
-    // content revision. It advances only when a model-instance slot dies.
-    std::vector<std::uint32_t> instance_generations;
-    std::vector<bool> instance_alive;
-    std::vector<std::uint32_t> free_instance_indices;
-    std::size_t live_instance_count = 0;
-    std::uint64_t scene_epoch = 1;
+    RendererInternal::ModelInstanceSlots instance_slots;
     std::vector<ModelAssetId> model_asset_ids;
     std::vector<std::shared_ptr<const SourceMaterialInitialValueTable>>
         material_initial_value_tables;
@@ -342,7 +337,7 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     const BufferWrapper &getPreviousObjectBuf() const;
     const std::vector<DrawIndirectInfo> &
     getDrawCalls(bool first_person_view = false) const;
-    size_t instanceCountForTesting() const { return live_instance_count; }
+    size_t instanceCountForTesting() const { return instance_slots.liveCount(); }
     size_t slotCountForTesting() const { return model_instances_data.size(); }
     ModelInstanceId modelInstanceIdForTesting(std::uint32_t index) const;
     ModelInstanceId forceGenerationForTesting(ModelInstanceId id,
