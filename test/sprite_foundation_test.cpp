@@ -7,6 +7,7 @@
 #include "../src/core/container.hpp"
 #include "../src/core/ecs/predefined.hpp"
 #include "../src/core/log.hpp"
+#include "../src/core/renderer/spritedrawdata.hpp"
 #include "../src/core/userpublic/gamecontext.hpp"
 
 #include <catch2/catch_approx.hpp>
@@ -310,6 +311,24 @@ TEST_CASE("sprite chunks cross 16384 without loss, duplication, or uint16 overfl
         const auto rerun = buildFrame(std::move(reversed), view, SortPolicy::z);
         REQUIRE(commandOrderHash(frame) == commandOrderHash(rerun));
     }
+}
+
+TEST_CASE("sprite draw runs split when uint16 indices restart at a chunk boundary",
+          "[sprite][chunk][renderer]") {
+    const Bounds2 view{-2.0f, -2.0f, 2.0f, 2.0f};
+    const auto frame = buildFrame(commands(maxQuadsPerChunk + 1), view, SortPolicy::z);
+    const auto draw_data = renderer_detail::buildSpriteDrawData(frame);
+
+    REQUIRE(frame.chunks.size() == 2);
+    REQUIRE(draw_data.runs.size() == 2);
+    REQUIRE(draw_data.runs[0].key == draw_data.runs[1].key);
+    REQUIRE(draw_data.runs[0].first_index == 0);
+    REQUIRE(draw_data.runs[0].index_count == maxQuadsPerChunk * 6);
+    REQUIRE(draw_data.runs[0].vertex_offset == 0);
+    REQUIRE(draw_data.runs[1].first_index == maxQuadsPerChunk * 6);
+    REQUIRE(draw_data.runs[1].index_count == 6);
+    REQUIRE(draw_data.runs[1].vertex_offset == maxQuadsPerChunk * 4);
+    REQUIRE(draw_data.indices.at(draw_data.runs[1].first_index) == 0);
 }
 
 TEST_CASE("50k logical sprites cull to 2k and static revisions control cache reuse",

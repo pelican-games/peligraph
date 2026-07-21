@@ -2,6 +2,7 @@
 
 #include "atlasassetresource.hpp"
 #include "frameresources.hpp"
+#include "spritedrawdata.hpp"
 #include "spritegpuabi.hpp"
 #include "spritescene.hpp"
 #include "../shader/pelican_sets.hpp"
@@ -45,14 +46,49 @@ vk::DeviceSize nextCapacity(vk::DeviceSize required) {
     return result;
 }
 
-struct DrawRun {
-    sprite::SpriteBatchKey key;
-    std::uint32_t first_index = 0;
-    std::uint32_t index_count = 0;
-    std::int32_t vertex_offset = 0;
-};
-
 } // namespace
+
+namespace renderer_detail {
+
+SpriteDrawData buildSpriteDrawData(const sprite::SpriteFrame &frame) {
+    SpriteDrawData result;
+    result.vertices.reserve(frame.visible_count * 4);
+    result.indices.reserve(frame.visible_count * 6);
+    static constexpr std::array<std::array<float, 2>, 4> corners{{{0, 0}, {1, 0}, {1, 1}, {0, 1}}};
+    for (const auto &chunk : frame.chunks) {
+        const auto chunk_first_index = static_cast<std::uint32_t>(result.indices.size());
+        const auto chunk_vertex_offset = static_cast<std::int32_t>(result.vertices.size());
+        result.indices.insert(result.indices.end(), chunk.indices.begin(), chunk.indices.end());
+        for (std::size_t command_index = 0; command_index < chunk.commands.size(); ++command_index) {
+            const auto &command = chunk.commands[command_index];
+            const auto first_index =
+                chunk_first_index + static_cast<std::uint32_t>(command_index * 6);
+            if (result.runs.empty() || result.runs.back().key != command.batch ||
+                result.runs.back().vertex_offset != chunk_vertex_offset ||
+                result.runs.back().first_index + result.runs.back().index_count != first_index) {
+                result.runs.push_back({command.batch, first_index, 0, chunk_vertex_offset});
+            }
+            result.runs.back().index_count += 6;
+            for (std::size_t vertex = 0; vertex < 4; ++vertex) {
+                sprite::GpuVertex gpu;
+                gpu.corner = {corners[vertex][0] - command.pivot[0],
+                              corners[vertex][1] - command.pivot[1]};
+                const bool right = vertex == 1 || vertex == 2;
+                const bool bottom = vertex >= 2;
+                gpu.uv = {command.uv_rect[right ? 2 : 0], command.uv_rect[bottom ? 3 : 1]};
+                gpu.world = command.world_transform;
+                gpu.color = command.color;
+                gpu.billboard = static_cast<std::uint32_t>(command.billboard);
+                gpu.snap_anchor = {-command.pivot[0], -command.pivot[1]};
+                gpu.pixel_snap = command.pixel_snap == sprite::PixelSnapReason::eligible ? 1u : 0u;
+                result.vertices.push_back(gpu);
+            }
+        }
+    }
+    return result;
+}
+
+} // namespace renderer_detail
 
 SpriteRenderer::SpriteRenderer() : device{GET_MODULE(VulkanManageCore).getDevice()} {
     const auto vert = b::embed<"sprite.vert.spv">();
@@ -96,47 +132,16 @@ void SpriteRenderer::render(vk::CommandBuffer cmd_buf, const SpriteDrawRequest &
     const auto &frame = dependencies.scene.frame();
     if (frame.visible_count == 0) return;
 
-    std::vector<sprite::GpuVertex> vertices;
-    std::vector<std::uint16_t> indices;
-    std::vector<DrawRun> runs;
-    vertices.reserve(frame.visible_count * 4);
-    indices.reserve(frame.visible_count * 6);
-    static constexpr std::array<std::array<float, 2>, 4> corners{{{0, 0}, {1, 0}, {1, 1}, {0, 1}}};
-    for (const auto &chunk : frame.chunks) {
-        const auto chunk_first_index = static_cast<std::uint32_t>(indices.size());
-        const auto chunk_vertex_offset = static_cast<std::int32_t>(vertices.size());
-        indices.insert(indices.end(), chunk.indices.begin(), chunk.indices.end());
-        for (std::size_t command_index = 0; command_index < chunk.commands.size(); ++command_index) {
-            const auto &command = chunk.commands[command_index];
-            if (runs.empty() || runs.back().key != command.batch ||
-                runs.back().first_index + runs.back().index_count != chunk_first_index + command_index * 6) {
-                runs.push_back({command.batch, chunk_first_index + static_cast<std::uint32_t>(command_index * 6),
-                                0, chunk_vertex_offset});
-            }
-            runs.back().index_count += 6;
-            for (std::size_t vertex = 0; vertex < 4; ++vertex) {
-                sprite::GpuVertex gpu;
-                gpu.corner = {corners[vertex][0] - command.pivot[0],
-                              corners[vertex][1] - command.pivot[1]};
-                const bool right = vertex == 1 || vertex == 2;
-                const bool bottom = vertex >= 2;
-                gpu.uv = {command.uv_rect[right ? 2 : 0], command.uv_rect[bottom ? 3 : 1]};
-                gpu.world = command.world_transform;
-                gpu.color = command.color;
-                gpu.billboard = static_cast<std::uint32_t>(command.billboard);
-                gpu.snap_anchor = {-command.pivot[0], -command.pivot[1]};
-                gpu.pixel_snap = command.pixel_snap == sprite::PixelSnapReason::eligible ? 1u : 0u;
-                vertices.push_back(gpu);
-            }
-        }
-    }
+    const auto draw_data = renderer_detail::buildSpriteDrawData(frame);
 
-    const auto vertex_bytes = static_cast<vk::DeviceSize>(vertices.size() * sizeof(sprite::GpuVertex));
-    const auto index_bytes = static_cast<vk::DeviceSize>(indices.size() * sizeof(std::uint16_t));
+    const auto vertex_bytes =
+        static_cast<vk::DeviceSize>(draw_data.vertices.size() * sizeof(sprite::GpuVertex));
+    const auto index_bytes =
+        static_cast<vk::DeviceSize>(draw_data.indices.size() * sizeof(std::uint16_t));
     ensureBuffers(vertex_bytes, index_bytes);
     auto &core = GET_MODULE(VulkanManageCore);
-    core.writeBuf(vertex_buffer, vertices.data(), 0, vertex_bytes);
-    core.writeBuf(index_buffer, indices.data(), 0, index_bytes);
+    core.writeBuf(vertex_buffer, draw_data.vertices.data(), 0, vertex_bytes);
+    core.writeBuf(index_buffer, draw_data.indices.data(), 0, index_bytes);
 
     vk::RenderingAttachmentInfo color;
     color.imageView = request.color_view;
@@ -166,7 +171,7 @@ void SpriteRenderer::render(vk::CommandBuffer cmd_buf, const SpriteDrawRequest &
     cmd_buf.setViewport(0, vk::Viewport{0.0f, 0.0f, static_cast<float>(request.extent.width),
                                        static_cast<float>(request.extent.height), 0.0f, 1.0f});
     cmd_buf.setScissor(0, vk::Rect2D{{0, 0}, request.extent});
-    for (const auto &run : runs) {
+    for (const auto &run : draw_data.runs) {
         const auto descriptor = dependencies.atlas.descriptor(run.key.texture_page, run.key.sampler);
         cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, layout, PELICAN_SET_PASS_INPUT,
                                    descriptor, {});
