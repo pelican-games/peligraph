@@ -716,6 +716,7 @@ EditorProjectionResult EditorProjectionTransaction::commit(
     std::span<EditorProjectionAdapter *const> adapters) noexcept {
     EditorProjectionResult result;
     std::vector<EditorProjectionAdapter *> prepared;
+    std::unordered_set<EditorProjectionAdapter *> published_during_prepare;
     try {
         const auto &base = document_target_.projectionDocument();
         result.base_revision = base.revision();
@@ -786,6 +787,7 @@ EditorProjectionResult EditorProjectionTransaction::commit(
         }
 
         prepared.reserve(adapters.size());
+        published_during_prepare.reserve(adapters.size());
         const EditorProjectionPrepareContext context{base, staged};
         for (auto *adapter : adapters) {
             prepared.push_back(adapter);
@@ -798,9 +800,35 @@ EditorProjectionResult EditorProjectionTransaction::commit(
                                 "injected adapter prepare failure");
             }
             adapter->prepare(context);
+            // ECS structural tokens intentionally keep the core's mutation
+            // guard until publication. Publish each one before preparing the
+            // next structural participant, while retaining its inverse token
+            // for aggregate rollback if a later adapter fails.
+            if (adapter->kind() == EditorProjectionAdapterKind::EcsArchetype &&
+                adapter->publicationMode() ==
+                    EditorProjectionPublicationMode::InverseToken) {
+                if (fault_injector_ != nullptr &&
+                    fault_injector_->shouldFail(
+                        EditorProjectionFaultPoint::Publish,
+                        adapter->name())) {
+                    for (auto it = prepared.rbegin(); it != prepared.rend();
+                         ++it) {
+                        (*it)->rollback();
+                    }
+                    result.status = EditorProjectionStatus::Failed;
+                    result.error = EditorProjectionError{
+                        EditorProjectionErrorCode::AdapterPublishFailed,
+                        "/adapters/" + std::string{adapter->name()},
+                        "injected inverse-token publish failure"};
+                    return result;
+                }
+                adapter->publish();
+                published_during_prepare.insert(adapter);
+            }
         }
 
         for (auto *adapter : adapters) {
+            if (published_during_prepare.contains(adapter)) continue;
             if (adapter->publicationMode() ==
                     EditorProjectionPublicationMode::InverseToken &&
                 fault_injector_ != nullptr &&

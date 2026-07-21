@@ -1,6 +1,7 @@
 #include "../src/core/container.hpp"
 #include "../src/core/appflow/teardown.hpp"
 #include "../src/core/ecs/core.hpp"
+#include "../src/core/ecs/archetypemigration.hpp"
 #include "../src/core/ecs/componentinfo.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/userpublic/components/predefined.hpp"
@@ -52,6 +53,16 @@ struct PrepareProbeSystem {
         process_thread = std::this_thread::get_id();
         process_saw_dependency = dependency != nullptr && dependency->value == 42;
         if (count != 0) std::get<0>(components)[0].value = dependency->value;
+    }
+};
+
+struct RemovalReadProbeSystem {
+    int calls = 0;
+    std::vector<size_t> entity_counts;
+
+    void process(std::tuple<const TrivialValueComponent *>, size_t count) {
+        ++calls;
+        entity_counts.push_back(count);
     }
 };
 
@@ -478,6 +489,53 @@ TEST_CASE("Move-only components relocate without copy fallback", "[ecs][lifecycl
         });
     REQUIRE(core.remove(ids[0]));
     REQUIRE(core.component<MoveOnlyComponent>(ids[1]).value == 20);
+    core.clearEntities();
+}
+
+TEST_CASE("Prepared component swaps follow entities across archetype migration",
+          "[ecs][lifecycle][migration][prepared-token]") {
+    FastModuleContainer modules;
+    registerComponents<TrivialValueComponent, PrepareProbeComponent>();
+    ECSCoreTemplatePublic core;
+    const auto ids = core.createEntities(
+        componentIds<TrivialValueComponent>(), 2,
+        [](std::span<const EntityId>, std::span<void *> ptrs, size_t) {
+            auto *values = static_cast<TrivialValueComponent *>(ptrs[0]);
+            values[0].value = 10;
+            values[1].value = 20;
+        });
+
+    auto swap = core.prepareComponentSwap(ids[1], TrivialValueComponent{99});
+    auto migration = ECSArchetypeMigration::prepareAdd(
+        core, ids[1], ComponentIdByType<PrepareProbeComponent>::value);
+    migration.publish();
+    swap.publish();
+
+    REQUIRE(core.component<TrivialValueComponent>(ids[1]).value == 99);
+    swap.rollback();
+    migration.rollback();
+    REQUIRE(core.component<TrivialValueComponent>(ids[1]).value == 20);
+    REQUIRE(core.tryComponent<PrepareProbeComponent>(ids[1]) == nullptr);
+    core.clearEntities();
+}
+
+TEST_CASE("Entity removal invalidates non-forced read systems",
+          "[ecs][lifecycle][scheduler][version]") {
+    FastModuleContainer modules;
+    registerComponents<TrivialValueComponent>();
+    ECSCoreTemplatePublic core;
+    const auto ids = core.createEntities(componentIds<TrivialValueComponent>(), 2);
+    RemovalReadProbeSystem system;
+    core.registerSystem<RemovalReadProbeSystem, const TrivialValueComponent>(system, {});
+
+    core.update();
+    REQUIRE(system.calls == 1);
+    REQUIRE(system.entity_counts.back() == 2);
+
+    REQUIRE(core.remove(ids[0]));
+    core.update();
+    REQUIRE(system.calls == 2);
+    REQUIRE(system.entity_counts.back() == 1);
     core.clearEntities();
 }
 

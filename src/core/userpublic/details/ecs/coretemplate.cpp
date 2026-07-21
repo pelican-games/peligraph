@@ -559,6 +559,9 @@ bool ECSCoreTemplatePublic::remove(EntityId id) {
         ComponentIdByType<EntityId>::value);
     const auto moved_id = *static_cast<EntityId *>(chunk.at(entity_index, chunk.size() - 1));
     chunk.removeAt(ref.array_index);
+    for (const auto component_index : chunk.getIndices()) {
+        chunk.updateVersion(component_index, global_tick);
+    }
     if (moved_id != id) {
         id_table[moved_id.index].ref = EntityRef{ref.chunk_index, ref.array_index};
     }

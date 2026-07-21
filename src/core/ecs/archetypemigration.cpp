@@ -9,6 +9,7 @@
 #include <array>
 #include <cassert>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <unordered_set>
 #include <utility>
@@ -40,9 +41,13 @@ struct ECSArchetypeMigrationToken::State {
 
     std::vector<ECSArchetypeMigrationAdapter *> adapters;
     bool inserted_target_archetype = false;
+    std::optional<std::size_t> reusable_target_chunk_index;
+    std::vector<std::pair<std::size_t, std::uint64_t>> target_versions;
     bool published = false;
+    bool published_new_target_chunk = false;
     std::size_t published_target_chunk_index =
         std::numeric_limits<std::size_t>::max();
+    std::size_t published_target_row = 0;
     EntityId backfilled_entity{};
 
     ECSArchetypeMigrationPrepareContext prepareContext() const noexcept {
@@ -93,20 +98,53 @@ struct ECSArchetypeMigrationToken::State {
             source.component_arrays[entity_component_index]->atUnchecked(
                 source_last_row));
 
-        published_target_chunk_index = core->chunks_storage.size();
-        core->chunks_storage.emplace_back(std::move(*target_chunk));
-        target_chunk.reset();
-        auto &target = core->chunks_storage[published_target_chunk_index];
-        core->archetype_to_chunks.find(target_key)->second.push_back(
-            published_target_chunk_index);
-        for (auto &[id, system] : core->systems) {
-            (void)id;
-            if ((target.getMask() & system.matching_mask) ==
-                system.matching_mask) {
-                system.matching_chunk_indices.push_back(
-                    published_target_chunk_index);
+        published_new_target_chunk = !reusable_target_chunk_index.has_value();
+        if (published_new_target_chunk) {
+            published_target_chunk_index = core->chunks_storage.size();
+            core->chunks_storage.emplace_back(std::move(*target_chunk));
+            target_chunk.reset();
+            auto &new_target = core->chunks_storage[published_target_chunk_index];
+            core->archetype_to_chunks.find(target_key)->second.push_back(
+                published_target_chunk_index);
+            for (auto &[id, system] : core->systems) {
+                (void)id;
+                if ((new_target.getMask() & system.matching_mask) ==
+                    system.matching_mask) {
+                    system.matching_chunk_indices.push_back(
+                        published_target_chunk_index);
+                }
             }
+            published_target_row = 0;
+        } else {
+            published_target_chunk_index = *reusable_target_chunk_index;
+            auto &existing_target =
+                core->chunks_storage[published_target_chunk_index];
+            published_target_row = existing_target.size();
+
+            // Staging constructed every target component so prepare could
+            // fail without touching live storage. Existing chunks already own
+            // raw tail capacity: keep only the newly added value and discard
+            // the placeholder objects for components sourced from the entity.
+            for (const auto component_index : target_chunk->indices) {
+                auto &staged_array =
+                    *target_chunk->component_arrays[component_index];
+                if (kind == ECSArchetypeMigrationKind::add &&
+                    component_index == changed_component_index) {
+                    auto &target_array =
+                        *existing_target.component_arrays[component_index];
+                    target_array.relocate_one(
+                        target_array.atUnchecked(published_target_row),
+                        staged_array.atUnchecked(0));
+                    ++target_array.count;
+                    --staged_array.count;
+                } else {
+                    staged_array.destroy_one(staged_array.atUnchecked(0));
+                    --staged_array.count;
+                }
+            }
+            target_chunk->count = 0;
         }
+        auto &target = core->chunks_storage[published_target_chunk_index];
 
         if (kind == ECSArchetypeMigrationKind::remove) {
             auto &source_array =
@@ -134,10 +172,14 @@ struct ECSArchetypeMigrationToken::State {
             }
             auto &source_array = *source.component_arrays[component_index];
             auto &target_array = *target.component_arrays[component_index];
-            auto *target_ptr = target_array.atUnchecked(0);
-            target_array.destroy_one(target_ptr);
+            auto *target_ptr =
+                target_array.atUnchecked(published_target_row);
+            if (published_new_target_chunk) {
+                target_array.destroy_one(target_ptr);
+            }
             source_array.relocate_one(
                 target_ptr, source_array.atUnchecked(source_row));
+            if (!published_new_target_chunk) ++target_array.count;
             if (source_row != source_last_row) {
                 source_array.relocate_one(
                     source_array.atUnchecked(source_row),
@@ -146,9 +188,14 @@ struct ECSArchetypeMigrationToken::State {
             --source_array.count;
         }
         --source.count;
+        if (!published_new_target_chunk) {
+            ++target.count;
+            target_chunk.reset();
+        }
 
         core->id_table[entity.index].ref =
-            ECSCoreTemplatePublic::EntityRef{published_target_chunk_index, 0};
+            ECSCoreTemplatePublic::EntityRef{published_target_chunk_index,
+                                             published_target_row};
         if (backfilled_entity != entity) {
             core->id_table[backfilled_entity.index].ref =
                 ECSCoreTemplatePublic::EntityRef{source_chunk_index, source_row};
@@ -167,19 +214,27 @@ struct ECSArchetypeMigrationToken::State {
             .kind = kind,
             .live_component = kind == ECSArchetypeMigrationKind::add
                                   ? target.component_arrays[changed_component_index]
-                                        ->atUnchecked(0)
+                                        ->atUnchecked(published_target_row)
                                   : nullptr,
         };
         for (auto *adapter : adapters) adapter->publish(context);
         published = true;
+        // The inverse token now owns everything required for rollback. Do not
+        // keep the core-wide structural guard across the rest of an aggregate
+        // editor transaction; the next structural token may now prepare.
+        mutation.reset();
     }
 
     void rollbackPublished() noexcept {
-        assert(published && core != nullptr && mutation != nullptr);
-        assert(published_target_chunk_index + 1 ==
-               core->chunks_storage.size());
+        assert(published && core != nullptr && mutation == nullptr);
+        ECSCoreTemplatePublic::MutationScope rollback_mutation{*core};
+        if (published_new_target_chunk) {
+            assert(published_target_chunk_index + 1 ==
+                   core->chunks_storage.size());
+        }
         auto &source = core->chunks_storage[source_chunk_index];
         auto &target = core->chunks_storage[published_target_chunk_index];
+        assert(published_target_row + 1 == target.size());
         const auto source_last_row = source.size();
 
         for (auto it = source.indices.rbegin(); it != source.indices.rend();
@@ -209,7 +264,8 @@ struct ECSArchetypeMigrationToken::State {
                     source_array.atUnchecked(source_row));
             }
             source_array.relocate_one(source_array.atUnchecked(source_row),
-                                      target_array.atUnchecked(0));
+                                      target_array.atUnchecked(
+                                          published_target_row));
             ++source_array.count;
             --target_array.count;
         }
@@ -246,44 +302,55 @@ struct ECSArchetypeMigrationToken::State {
 
         if (kind == ECSArchetypeMigrationKind::add) {
             auto *added = target.component_arrays[changed_component_index]
-                              ->atUnchecked(0);
+                              ->atUnchecked(published_target_row);
             const auto &info = GET_MODULE(ComponentInfoManager)
                                    .getFromIndex(changed_component_index);
             if (added_initialized && info.cb_deinit != nullptr) {
                 info.cb_deinit(added);
             }
+            target.component_arrays[changed_component_index]->destroy_one(
+                added);
+            --target.component_arrays[changed_component_index]->count;
             added_initialized = false;
         }
-
-        auto &archetype_chunks =
-            core->archetype_to_chunks.find(target_key)->second;
-        assert(!archetype_chunks.empty() &&
-               archetype_chunks.back() == published_target_chunk_index);
-        archetype_chunks.pop_back();
-        for (auto &[id, system] : core->systems) {
-            (void)id;
-            if ((target.getMask() & system.matching_mask) ==
-                system.matching_mask) {
-                assert(!system.matching_chunk_indices.empty() &&
-                       system.matching_chunk_indices.back() ==
-                           published_target_chunk_index);
-                system.matching_chunk_indices.pop_back();
-            }
+        --target.count;
+        for (const auto [component_index, version] : target_versions) {
+            target.component_versions[component_index] = version;
         }
-        target.count = 0;
-        core->chunks_storage.pop_back();
+
+        if (published_new_target_chunk) {
+            auto &archetype_chunks =
+                core->archetype_to_chunks.find(target_key)->second;
+            assert(!archetype_chunks.empty() &&
+                   archetype_chunks.back() == published_target_chunk_index);
+            archetype_chunks.pop_back();
+            for (auto &[id, system] : core->systems) {
+                (void)id;
+                if ((target.getMask() & system.matching_mask) ==
+                    system.matching_mask) {
+                    assert(!system.matching_chunk_indices.empty() &&
+                           system.matching_chunk_indices.back() ==
+                               published_target_chunk_index);
+                    system.matching_chunk_indices.pop_back();
+                }
+            }
+            assert(target.size() == 0);
+            core->chunks_storage.pop_back();
+        }
         published = false;
+        published_new_target_chunk = false;
         published_target_chunk_index =
             std::numeric_limits<std::size_t>::max();
+        published_target_row = 0;
         removed_component_chunk.reset();
         staged_component = nullptr;
         removed_live_component = nullptr;
         eraseUnpublishedArchetype();
-        mutation.reset();
     }
 
     void finishPublished() noexcept {
-        assert(published && mutation != nullptr);
+        assert(published && mutation == nullptr);
+        ECSCoreTemplatePublic::MutationScope finish_mutation{*core};
         if (kind == ECSArchetypeMigrationKind::remove &&
             removed_component_chunk != nullptr) {
             auto &array = *removed_component_chunk
@@ -296,7 +363,6 @@ struct ECSArchetypeMigrationToken::State {
         removed_component_chunk.reset();
         staged_component = nullptr;
         removed_live_component = nullptr;
-        mutation.reset();
     }
 };
 
@@ -521,18 +587,32 @@ ECSArchetypeMigrationToken ECSArchetypeMigration::prepare(
                                                 source.getVersion(index));
         }
 
-        core.chunks_storage.reserve(core.chunks_storage.size() + 1);
         auto [archetype, inserted] =
             core.archetype_to_chunks.try_emplace(state->target_key);
         state->inserted_target_archetype = inserted;
-        archetype->second.reserve(archetype->second.size() + 1);
-        const auto target_mask = state->target_chunk->getMask();
-        for (auto &[id, system] : core.systems) {
-            (void)id;
-            if ((target_mask & system.matching_mask) ==
-                system.matching_mask) {
-                system.matching_chunk_indices.reserve(
-                    system.matching_chunk_indices.size() + 1);
+        for (auto it = archetype->second.rbegin();
+             it != archetype->second.rend(); ++it) {
+            auto &candidate = core.chunks_storage[*it];
+            if (candidate.remainingCapacity() == 0) continue;
+            state->reusable_target_chunk_index = *it;
+            state->target_versions.reserve(candidate.indices.size());
+            for (const auto index : candidate.indices) {
+                state->target_versions.emplace_back(
+                    index, candidate.getVersion(index));
+            }
+            break;
+        }
+        if (!state->reusable_target_chunk_index) {
+            core.chunks_storage.reserve(core.chunks_storage.size() + 1);
+            archetype->second.reserve(archetype->second.size() + 1);
+            const auto target_mask = state->target_chunk->getMask();
+            for (auto &[id, system] : core.systems) {
+                (void)id;
+                if ((target_mask & system.matching_mask) ==
+                    system.matching_mask) {
+                    system.matching_chunk_indices.reserve(
+                        system.matching_chunk_indices.size() + 1);
+                }
             }
         }
 
@@ -561,6 +641,8 @@ struct ECSEntityMutationToken::State {
     std::vector<std::size_t> initialized_indices;
     bool reuses_id = false;
     bool inserted_archetype = false;
+    std::optional<std::size_t> reusable_chunk_index;
+    std::vector<std::pair<std::size_t, std::uint64_t>> target_versions;
 
     std::size_t source_chunk_index = 0;
     std::size_t source_row = 0;
@@ -570,8 +652,10 @@ struct ECSEntityMutationToken::State {
     bool free_index_published = false;
 
     bool published = false;
+    bool published_new_chunk = false;
     std::size_t published_chunk_index =
         std::numeric_limits<std::size_t>::max();
+    std::size_t published_row = 0;
 
     void eraseEmptyArchetype() noexcept {
         if (!inserted_archetype) return;
@@ -625,11 +709,32 @@ struct ECSEntityMutationToken::State {
     }
 
     void publishCreate() noexcept {
-        published_chunk_index = core->chunks_storage.size();
-        core->chunks_storage.emplace_back(std::move(*staged_chunk));
-        staged_chunk.reset();
+        published_new_chunk = !reusable_chunk_index.has_value();
+        if (published_new_chunk) {
+            published_chunk_index = core->chunks_storage.size();
+            core->chunks_storage.emplace_back(std::move(*staged_chunk));
+            staged_chunk.reset();
+            registerPublishedChunk(core->chunks_storage[published_chunk_index],
+                                   published_chunk_index);
+            published_row = 0;
+        } else {
+            published_chunk_index = *reusable_chunk_index;
+            auto &existing = core->chunks_storage[published_chunk_index];
+            published_row = existing.size();
+            for (const auto index : component_indices) {
+                auto &target_array = *existing.component_arrays[index];
+                auto &staged_array = *staged_chunk->component_arrays[index];
+                target_array.relocate_one(
+                    target_array.atUnchecked(published_row),
+                    staged_array.atUnchecked(0));
+                ++target_array.count;
+                --staged_array.count;
+            }
+            ++existing.count;
+            staged_chunk->count = 0;
+            staged_chunk.reset();
+        }
         auto &chunk = core->chunks_storage[published_chunk_index];
-        registerPublishedChunk(chunk, published_chunk_index);
 
         if (reuses_id) {
             assert(!core->free_indices.empty() &&
@@ -641,12 +746,14 @@ struct ECSEntityMutationToken::State {
         }
         auto &entry = core->id_table[entity.index];
         assert(entry.generation == entity.generation && !entry.live);
-        entry.ref = ECSCoreTemplatePublic::EntityRef{published_chunk_index, 0};
+        entry.ref = ECSCoreTemplatePublic::EntityRef{published_chunk_index,
+                                                     published_row};
         entry.live = true;
         for (const auto index : chunk.indices) {
             chunk.updateVersion(index, core->global_tick);
         }
         published = true;
+        mutation.reset();
     }
 
     void publishDestroy() noexcept {
@@ -691,6 +798,7 @@ struct ECSEntityMutationToken::State {
             source.updateVersion(index, core->global_tick);
         }
         published = true;
+        mutation.reset();
     }
 
     void publish() noexcept {
@@ -703,8 +811,13 @@ struct ECSEntityMutationToken::State {
     }
 
     void rollbackCreate() noexcept {
-        assert(published_chunk_index + 1 == core->chunks_storage.size());
+        assert(mutation == nullptr);
+        ECSCoreTemplatePublic::MutationScope rollback_mutation{*core};
+        if (published_new_chunk) {
+            assert(published_chunk_index + 1 == core->chunks_storage.size());
+        }
         auto &chunk = core->chunks_storage[published_chunk_index];
+        assert(published_row + 1 == chunk.size());
         auto &entry = core->id_table[entity.index];
         entry.ref.reset();
         entry.live = false;
@@ -713,25 +826,40 @@ struct ECSEntityMutationToken::State {
         } else {
             core->id_table.pop_back();
         }
-        unregisterPublishedChunk(chunk, published_chunk_index);
         for (auto it = initialized_indices.rbegin();
              it != initialized_indices.rend(); ++it) {
             const auto &info = GET_MODULE(ComponentInfoManager)
                                    .getFromIndex(*it);
             if (info.cb_deinit != nullptr) {
                 info.cb_deinit(
-                    chunk.component_arrays[*it]->atUnchecked(0));
+                    chunk.component_arrays[*it]->atUnchecked(published_row));
             }
         }
         initialized_indices.clear();
-        core->chunks_storage.pop_back();
+        for (auto it = component_indices.rbegin();
+             it != component_indices.rend(); ++it) {
+            auto &array = *chunk.component_arrays[*it];
+            array.destroy_one(array.atUnchecked(published_row));
+            --array.count;
+        }
+        --chunk.count;
+        for (const auto [index, version] : target_versions) {
+            chunk.component_versions[index] = version;
+        }
+        if (published_new_chunk) {
+            unregisterPublishedChunk(chunk, published_chunk_index);
+            core->chunks_storage.pop_back();
+        }
+        published_new_chunk = false;
         published_chunk_index = std::numeric_limits<std::size_t>::max();
+        published_row = 0;
         published = false;
         eraseEmptyArchetype();
-        mutation.reset();
     }
 
     void rollbackDestroy() noexcept {
+        assert(mutation == nullptr);
+        ECSCoreTemplatePublic::MutationScope rollback_mutation{*core};
         auto &source = core->chunks_storage[source_chunk_index];
         const auto source_last_row = source.size();
         for (auto it = source.indices.rbegin(); it != source.indices.rend();
@@ -768,7 +896,6 @@ struct ECSEntityMutationToken::State {
         }
         staged_chunk.reset();
         published = false;
-        mutation.reset();
     }
 
     void rollback() noexcept {
@@ -787,7 +914,8 @@ struct ECSEntityMutationToken::State {
     }
 
     void finish() noexcept {
-        assert(published && mutation != nullptr);
+        assert(published && mutation == nullptr);
+        ECSCoreTemplatePublic::MutationScope finish_mutation{*core};
         if (kind == ECSEntityMutationKind::destroy) {
             auto &manager = GET_MODULE(ComponentInfoManager);
             for (auto it = component_indices.rbegin();
@@ -800,7 +928,6 @@ struct ECSEntityMutationToken::State {
             }
             staged_chunk.reset();
         }
-        mutation.reset();
     }
 };
 
@@ -909,17 +1036,31 @@ ECSEntityMutationToken ECSEntityMutation::prepareCreate(
             }
         }
 
-        core.chunks_storage.reserve(core.chunks_storage.size() + 1);
         auto [archetype, inserted] =
             core.archetype_to_chunks.try_emplace(state->archetype_key);
         state->inserted_archetype = inserted;
-        archetype->second.reserve(archetype->second.size() + 1);
-        const auto mask = state->staged_chunk->getMask();
-        for (auto &[id, system] : core.systems) {
-            (void)id;
-            if ((mask & system.matching_mask) == system.matching_mask) {
-                system.matching_chunk_indices.reserve(
-                    system.matching_chunk_indices.size() + 1);
+        for (auto it = archetype->second.rbegin();
+             it != archetype->second.rend(); ++it) {
+            auto &candidate = core.chunks_storage[*it];
+            if (candidate.remainingCapacity() == 0) continue;
+            state->reusable_chunk_index = *it;
+            state->target_versions.reserve(candidate.indices.size());
+            for (const auto index : candidate.indices) {
+                state->target_versions.emplace_back(
+                    index, candidate.getVersion(index));
+            }
+            break;
+        }
+        if (!state->reusable_chunk_index) {
+            core.chunks_storage.reserve(core.chunks_storage.size() + 1);
+            archetype->second.reserve(archetype->second.size() + 1);
+            const auto mask = state->staged_chunk->getMask();
+            for (auto &[id, system] : core.systems) {
+                (void)id;
+                if ((mask & system.matching_mask) == system.matching_mask) {
+                    system.matching_chunk_indices.reserve(
+                        system.matching_chunk_indices.size() + 1);
+                }
             }
         }
         return ECSEntityMutationToken{std::move(state)};

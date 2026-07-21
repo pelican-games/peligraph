@@ -7,6 +7,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <stdexcept>
@@ -478,6 +479,50 @@ TEST_CASE("ECS migration prepare tokens leave live state unchanged and invert pu
     REQUIRE(MigrationAddedComponent::resources == 0);
 }
 
+TEST_CASE("Published structural tokens release the core for the next inverse token",
+          "[ecs][migration][prepared-token][batch]") {
+    FastModuleContainer modules;
+    registerMigrationComponents();
+    MigrationMoveOnlyComponent::reset();
+    MigrationAddedComponent::reset();
+    ECSCoreTemplatePublic core;
+    const auto first = createMigrationEntity(core, "first");
+    const auto second = createMigrationEntity(core, "second");
+
+    auto first_add = ECSArchetypeMigration::prepareAdd(
+        core, first, ComponentIdByType<MigrationAddedComponent>::value,
+        [](void *ptr) {
+            static_cast<MigrationAddedComponent *>(ptr)->value = 11;
+        });
+    first_add.publish();
+
+    // The first publication backfills the second entity in its source chunk.
+    // Preparing the next token must both be allowed and resolve that new row.
+    auto second_add = ECSArchetypeMigration::prepareAdd(
+        core, second, ComponentIdByType<MigrationAddedComponent>::value,
+        [](void *ptr) {
+            static_cast<MigrationAddedComponent *>(ptr)->value = 22;
+        });
+    second_add.publish();
+    REQUIRE(core.component<MigrationAddedComponent>(first).value == 11);
+    REQUIRE(core.component<MigrationAddedComponent>(second).value == 22);
+    const auto migrated = core.isolationSnapshot();
+    REQUIRE(migrated.chunks.size() == 2);
+    REQUIRE(std::count_if(migrated.chunks.begin(), migrated.chunks.end(),
+                          [](const auto &chunk) { return chunk.count == 2; }) ==
+            1);
+
+    second_add.rollback();
+    first_add.rollback();
+    REQUIRE(core.tryComponent<MigrationAddedComponent>(first) == nullptr);
+    REQUIRE(core.tryComponent<MigrationAddedComponent>(second) == nullptr);
+    REQUIRE(core.component<MigrationMoveOnlyComponent>(first).value == "first");
+    REQUIRE(core.component<MigrationMoveOnlyComponent>(second).value == "second");
+    core.clearEntities();
+    REQUIRE(MigrationMoveOnlyComponent::resources == 0);
+    REQUIRE(MigrationAddedComponent::resources == 0);
+}
+
 TEST_CASE("ECS entity create and destroy prepared tokens restore id generation and free list",
           "[ecs][entity-mutation][prepared-token][atomic]") {
     FastModuleContainer modules;
@@ -504,6 +549,24 @@ TEST_CASE("ECS entity create and destroy prepared tokens restore id generation a
     create.rollback();
     REQUIRE_FALSE(core.isAlive(candidate));
     REQUIRE(core.liveCount() == 1);
+
+    auto committed_create_a = ECSEntityMutation::prepareCreate(
+        core, components, [](std::span<void *> values) {
+            static_cast<MigrationMoveOnlyComponent *>(values[0])->value =
+                "committed-a";
+        });
+    committed_create_a.publish();
+    committed_create_a.finish();
+    auto committed_create_b = ECSEntityMutation::prepareCreate(
+        core, components, [](std::span<void *> values) {
+            static_cast<MigrationMoveOnlyComponent *>(values[0])->value =
+                "committed-b";
+        });
+    committed_create_b.publish();
+    committed_create_b.finish();
+    const auto created = core.isolationSnapshot();
+    REQUIRE(created.chunks.size() == 1);
+    REQUIRE(created.chunks.front().count == 3);
 
     auto destroy = ECSEntityMutation::prepareDestroy(core, existing);
     REQUIRE(core.isAlive(existing));

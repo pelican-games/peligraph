@@ -23,6 +23,7 @@ class ECSComponentChunk {
     friend class ECSEntityMutationToken;
     friend class ECSEntityMutation;
     class VariedArray {
+        friend class ECSComponentChunk;
         friend class ECSArchetypeMigration;
         friend class ECSArchetypeMigrationToken;
         friend class ECSEntityMutationToken;
@@ -86,6 +87,7 @@ class ECSComponentChunk {
 
     ComponentRef getRef(size_t component_index) const;
     void *at(size_t component_index, size_t array_index) const;
+    void *tryAt(size_t component_index, size_t array_index) const noexcept;
     std::span<const ComponentId> getComponentList() const noexcept { return component_ids; }
     std::span<const size_t> getIndices() const noexcept { return indices; }
 

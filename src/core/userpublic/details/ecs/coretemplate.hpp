@@ -227,8 +227,7 @@ class ECSCoreTemplatePublic {
 
     template <class TComponent> struct PreparedComponentSwap {
         ECSCoreTemplatePublic *core = nullptr;
-        ChunkIndex chunk_index = 0;
-        WithinChunkIndex row = 0;
+        EntityId entity = invalidEntityId;
         std::size_t component_index = 0;
         TComponent staged;
         std::uint64_t old_version = 0;
@@ -236,9 +235,13 @@ class ECSCoreTemplatePublic {
         bool published = false;
 
         void publish() noexcept {
-            auto &chunk = core->chunks_storage[chunk_index];
+            if (core == nullptr) return;
+            const auto ref = core->resolve(entity);
+            if (!ref.has_value()) return;
+            auto &chunk = core->chunks_storage[ref->chunk_index];
             auto *target = static_cast<TComponent *>(
-                chunk.at(component_index, row));
+                chunk.tryAt(component_index, ref->array_index));
+            if (target == nullptr) return;
             using std::swap;
             swap(*target, staged);
             chunk.component_versions[component_index] = publish_version;
@@ -247,9 +250,18 @@ class ECSCoreTemplatePublic {
 
         void rollback() noexcept {
             if (!published) return;
-            auto &chunk = core->chunks_storage[chunk_index];
+            const auto ref = core->resolve(entity);
+            if (!ref.has_value()) {
+                published = false;
+                return;
+            }
+            auto &chunk = core->chunks_storage[ref->chunk_index];
             auto *target = static_cast<TComponent *>(
-                chunk.at(component_index, row));
+                chunk.tryAt(component_index, ref->array_index));
+            if (target == nullptr) {
+                published = false;
+                return;
+            }
             using std::swap;
             swap(*target, staged);
             chunk.component_versions[component_index] = old_version;
@@ -310,8 +322,7 @@ class ECSCoreTemplatePublic {
         }
         return PreparedComponentSwap<TComponent>{
             .core = this,
-            .chunk_index = ref->chunk_index,
-            .row = ref->array_index,
+            .entity = id,
             .component_index = component_index,
             .staged = next_value,
             .old_version = chunk.getVersion(component_index),

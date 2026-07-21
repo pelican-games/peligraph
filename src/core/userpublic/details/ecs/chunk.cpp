@@ -150,6 +150,13 @@ void *ECSComponentChunk::at(size_t component_index, size_t array_index) const {
     return component_arrays[component_index]->at(array_index);
 }
 
+void *ECSComponentChunk::tryAt(size_t component_index, size_t array_index) const noexcept {
+    if (!has(component_index) || array_index >= count) {
+        return nullptr;
+    }
+    return component_arrays[component_index]->atUnchecked(array_index);
+}
+
 size_t ECSComponentChunk::allocate(std::span<const size_t> component_indices,
                                    std::span<void *> component_ptrs, size_t expand_count) {
     if (component_indices.size() != component_ptrs.size()) {
