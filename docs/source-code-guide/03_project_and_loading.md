@@ -45,7 +45,11 @@ Runtime object
 
 ### sceneだけはcacheではなくdocument
 
-sceneは単なる文字列cacheから **[`AuthoringSceneDocument`](../../src/core/loader/authoringscenedocument.hpp#L81) へ格上げ**されました（WP149 / WP166）。保持しているのは次の四つです（[basicconfig.hpp#L86-L89](../../src/core/loader/basicconfig.hpp#L86)）。
+sceneは単なる文字列cacheから **[`AuthoringSceneDocument`](../../src/core/loader/authoringscenedocument.hpp#L81) へ格上げ**されました（WP149 / WP166）。
+
+格上げされたのがsceneだけなのは、編集の有無で必要な機能が違うからです。assets/rendering/UI/inputのJSONは読み取り専用で、cacheの役目は「二度目以降のファイル読みを省く」ことだけです。一方sceneはセッション中に書き換えられ、(a) ディスクへの書き戻し（本節の `saveSceneDocument()`）、(b) 改訂番号による競合検出（§3.12 のCAS）、(c) renameや並べ替えに耐えるobject単位の安定identity（§3.12 の `AuthoringObjectId`）を必要とします。`std::optional<std::string>` にはこの三つを置く場所がありません。
+
+保持しているのは次の四つです（[basicconfig.hpp#L86-L89](../../src/core/loader/basicconfig.hpp#L86)）。
 
 ```cpp
 mutable std::optional<AuthoringSceneDocument> scene_document;
@@ -82,17 +86,17 @@ std::string ProjectBasicConfig::sceneDataJson() const {
 >
 > **何をする所か**: 編集済み文書を一時ファイル経由でディスクへ書き戻し、原子的に置換してから、メモリ側の文書とbaseline digestを差し替えます。
 >
-> **素朴に読むと**: digest比較が **2回** あるのが冗長に見えます。しかし1回目([#L685](../../src/core/loader/basicconfig.cpp#L685))だけにすると、一時ファイルの書き込み・読み戻し・意味検証にかかる時間がまるごと TOCTOU 窓(time-of-check to time-of-use の略 — 検査した時点と実際に使う時点がずれるせいで生まれる、その間に外部が書き換えられる隙間)になり、その間に外部エディタが書いた内容を黙って上書きします。2回目([#L724](../../src/core/loader/basicconfig.cpp#L724))は置換の直前に置かれていて、窓を実務上無視できる幅まで縮めるためのものです。もう一つ見落としやすいのが末尾の順序で、ファイル置換の **後** に文書公開と `scene_baseline_digest->swap()` が来ます。この区間を確保・decode・I/Oなしの無throwにしてあり、逆順にすると「置換に失敗したのにメモリ側だけ新しいrevision」が作れてしまいます。代入ではなく `swap` なのも同じ理由で、`std::string` の代入は確保を伴いうるのに対しswapは伴いません。
+> **素朴に読むと**: digest比較が **2回** あるのが冗長に見えます。しかしdigest比較が言えるのは「**比較したその瞬間まで**外部変更が無かった」ことだけで、比較を過ぎてから外部が書いた分については何も保証しません。1回目([#L685](../../src/core/loader/basicconfig.cpp#L685))は一時ファイルを書く**前**にあるので、これだけにすると一時ファイルの書き込み・読み戻し・意味検証にかかる時間がまるごと TOCTOU 窓(time-of-check to time-of-use の略 — 検査した時点と実際に使う時点がずれるせいで生まれる、その間に外部が書き換えられる隙間)になり、保存処理はその間に外部エディタが書いた内容を、気付かないまま上書きしてしまいます。2回目([#L724](../../src/core/loader/basicconfig.cpp#L724))は置換の直前に置かれていて、窓を実務上無視できる幅まで縮めるためのものです。もう一つ見落としやすいのが末尾の順序で、ファイル置換の **後** に文書公開と `scene_baseline_digest->swap()` が来ます(置換の後にあるのは3回目の比較ではありません。baselineを保存したバイト列のdigestへ**更新**する操作です)。この区間を確保・decode・I/Oなしの無throwにしてあり、逆順にすると「置換に失敗したのにメモリ側だけ新しいrevision」が作れてしまいます。代入ではなく `swap` なのも同じ理由で、`std::string` の代入は確保を伴いうるのに対しswapは伴いません。
 >
 > **骨子**:
 > ```text
 > semantic_bytes = source.encodeSemantic()      # SAVE0唯一の直列化
-> disk_digest != baseline          -> ExternalModification
+> disk_digest != baseline(1回目)   -> ExternalModification   # tmpを書く前
 > tmpへwrite → 読み戻し一致 → load し直して rawJson 一致
 > next_document = source.stage(...)             # 確保はここまで
-> disk_digest != baseline(2回目)   -> ExternalModification
+> disk_digest != baseline(2回目)   -> ExternalModification   # 置換の直前
 > replaceSceneFileAtomically(tmp, destination)
-> publishPreparedSceneDocument(next); baseline.swap(next_digest)   # 無throw
+> publishPreparedSceneDocument(next); baseline.swap(next_digest)   # 無throw / 比較ではなくbaseline更新
 > ```
 >
 > **手がかり**: 上の `SceneSaveFaultPoint` 6値がそのまま手順の段名で、2回目のdigest検査は `AfterCachePrepare` と `BeforeReplace` の**間**にあります。[`stableDiskDigest()`](../../src/core/loader/basicconfig.cpp#L380) が `watch::readStableContentDigest()` を使うのは、「書き込み途中のファイルを読んだ」状態(`retry`)を成功と混同しないためです。一時ファイルは `TemporarySceneFile` のデストラクタが必ず消すので、どの中断点でthrowしてもゴミが残りません。[`importSceneDocument()`](../../src/core/loader/basicconfig.cpp#L619) が同じswap手法で「reload失敗時に確保なしで元へ戻す」を作っているので、対にして読むと早いです。テストは [`sceneformat_test.cpp#L395`](../../test/sceneformat_test.cpp#L395)「SAVE0 is failure-atomic at every prepare point」。
@@ -262,7 +266,7 @@ ECS objectを作った後、`SceneLoaded` を配送する**前**に、親子tran
 >
 > **何をする所か**: 同じ漸化式の逆向きです。エディタが `preserve: "world"` で親を付け替えるとき、新しい親のworld TRSから「worldを保ったままの子のlocal TRS」を逆算します。
 >
-> **素朴に読むと**: `local = parent^-1 * world` を書くだけに見えます。ところがTRS(平行移動・回転・非一様スケール)は逆演算に対して**閉じていません**。親が非一様スケールと回転を同時に持つと、真の相対変換はせん断を含み、正準TRSでは表現できません。素朴に計算しても数値そのものは出るので、壊れ方は「公開した瞬間に物体が歪む/ずれる」という無音の形になります。だからこの関数は計算して終わりではなく、**逆算 → もう一度合成 → 元のworldと一致しなければ `TransformUnrepresentable` で拒否** という表現可能性の検査になっています。検査の位置も一律ではありません。除算の**前**に並ぶゼロスケール判定と親TRSの有限性判定([#L229-L241](../../src/core/loader/editorprojectiontransaction.cpp#L229))は `inf` / `NaN` を作らないためのガードで、クォータニオンのノルム判定([#L257](../../src/core/loader/editorprojectiontransaction.cpp#L257))は除算の**後**に来る表現可能性検査の一部です — 前者は `TransformZeroParentScale` / `TransformNonFinite`、後者は `TransformUnrepresentable` と、出るエラーコードも別です。
+> **素朴に読むと**: `local = parent^-1 * world` を書くだけに見えます。ところがTRS(平行移動・回転・非一様スケール)は逆演算に対して**閉じていません**。親が非一様スケールと回転を同時に持つと、真の相対変換はせん断を含み、正準TRSでは表現できません。せん断が出る仕組みは合成側([`composeWorld()`](../../src/core/loader/editorprojectiontransaction.cpp#L127))を見ると分かります — `world.pos = parent.pos + parent.R * (parent.S * local.pos)` / `world.R = parent.R * local.R` / `world.S = parent.S * local.S` で、**親のスケールは親の軸に沿って**掛かります。子が回転していると伸縮の軸と子の軸が揃わないので、子の直交していた軸が斜交します。これがせん断で、「回転させた直交軸に沿った軸別スケール」しか書けない正準TRSの表現範囲の外です。素朴に計算しても数値そのものは出るので、壊れ方は「公開した瞬間に物体が歪む/ずれる」という無音の形になります。だからこの関数は計算して終わりではなく、**逆算 → もう一度合成 → 元のworldと一致しなければ `TransformUnrepresentable` で拒否** という表現可能性の検査になっています。検査の位置も一律ではありません。除算の**前**に並ぶゼロスケール判定と親TRSの有限性判定([#L229-L241](../../src/core/loader/editorprojectiontransaction.cpp#L229))は `inf` / `NaN` を作らないためのガードで、クォータニオンのノルム判定([#L257](../../src/core/loader/editorprojectiontransaction.cpp#L257))は除算の**後**に来る表現可能性検査の一部です — 前者は `TransformZeroParentScale` / `TransformNonFinite`、後者は `TransformUnrepresentable` と、出るエラーコードも別です。ただし「非有限の検査は除算前だけ」ではありません。逆算した結果そのものの有限性も除算の後にもう一度見ていて([#L252](../../src/core/loader/editorprojectiontransaction.cpp#L252))、こちらのエラーコードは `TransformNonFinite` です。
 >
 > **骨子**:
 > ```text
@@ -271,6 +275,7 @@ ECS objectを作った後、`SceneLoaded` を配送する**前**に、親子tran
 > pos      = inverse(parent.rot) * (world.pos - parent.pos) / parent.scale
 > rotation = inverse(parent.rot) * world.rot
 > scale    = world.scale / parent.scale
+> 逆算結果が非有限 -> TransformNonFinite                          # 除算後
 > |rotation|^2 が非有限または <= eps -> TransformUnrepresentable  # 除算後
 > recomposed = composeWorld(parent, result)
 > 全成分が相対許容差 32*FLT_EPSILON 内で一致しなければ TransformUnrepresentable
@@ -349,7 +354,7 @@ tinygltf Model
 >   buildSkinPalette(): palette[offset+i] = model_matrix[layout_node[i]] * inverse_bind[i]
 > ```
 >
-> **手がかり**: `skin_joint_offsets` は「このskinは既にpaletteへ載せた」というメモで、同じskinを使う複数メッシュがjointを二重に積むのを防ぎます。分割側の [`addBinding`](../../src/core/animation/animationjobs.cpp#L152) は `expected_offset` を進めながら「binding群がpaletteを隙間なく覆っているか」を検証します — [`buildSkinPalette()`](../../src/core/animation/animationjobs.cpp#L403) 自体は `std::vector<Matrix4fV1> produced(required)` を値初期化してから `[0, required)` を丸ごとコピーする([#L411](../../src/core/animation/animationjobs.cpp#L411) / [#L428](../../src/core/animation/animationjobs.cpp#L428))ので、穴は未初期化ではなく**ゼロ行列**になります。壊れ方は不定値ではなく「その関節に属する頂点が原点へ潰れる」という決まった形で、覆い漏れを弾く責任は `addBinding` 側にあります。`maxSkinJoints = 128`([skeletalanimation.hpp#L11](../../src/core/model/skeletalanimation.hpp#L11))とGLSL側の `PELICAN_MAX_SKIN_JOINTS`([pelican_skinning.glsl](../../src/core/resources/shaders/include/pelican_skinning.glsl))は同じ値の二重定義です。
+> **手がかり**: `skin_joint_offsets` は「このskinは既にpaletteへ載せた」というメモ(skin index → offsetのmap)です。防ぎ方は単純で、`selectSkin()` は本体に入る前にこのmapを引き、載せ済みなら**記録済みのoffsetを返して即座に戻ります**([gltf.cpp#L947](../../src/core/model/gltf.cpp#L947))。joint配列への追記([#L981](../../src/core/model/gltf.cpp#L981))はその後ろにあるので、同じskinを参照するメッシュが何個あってもjointが積まれるのは最初の1回だけです。分割側の [`addBinding`](../../src/core/animation/animationjobs.cpp#L152) は `expected_offset` を進めながら「binding群がpaletteを隙間なく覆っているか」を検証します — [`buildSkinPalette()`](../../src/core/animation/animationjobs.cpp#L403) 自体は `std::vector<Matrix4fV1> produced(required)` を値初期化してから `[0, required)` を丸ごとコピーする([#L411](../../src/core/animation/animationjobs.cpp#L411) / [#L428](../../src/core/animation/animationjobs.cpp#L428))ので、穴は未初期化ではなく**ゼロ行列**になります。壊れ方は不定値ではなく「その関節に属する頂点が原点へ潰れる」という決まった形で、覆い漏れを弾く責任は `addBinding` 側にあります。`maxSkinJoints = 128`([skeletalanimation.hpp#L11](../../src/core/model/skeletalanimation.hpp#L11))とGLSL側の `PELICAN_MAX_SKIN_JOINTS`([pelican_skinning.glsl](../../src/core/resources/shaders/include/pelican_skinning.glsl))は同じ値の二重定義です。
 >
 > **不変条件**: binding群はoffset 0から結合paletteを隙間なく覆う。`JOINTS_0` は必ず `joint_offset` 加算済みでGPUへ届く。skinned primitiveの頂点はnode変換を含まない。
 
@@ -465,6 +470,8 @@ struct ComponentCodec {
 
 `runtime_apply` と `runtime_project` がどの型を指すかは [`ComponentCodecRuntimeKind`](../../src/core/loader/componentcodec.hpp#L19) が決めます。ヘッダのコメントが規範です — transform は `TransformCodecTarget`、その他のECS codecはそのcomponent自身、camera/light は `CameraCodecData` / `LightCodecData`、collider は `ColliderComponent` です。
 
+この中でtransformだけが、componentを直接指さずに [`TransformCodecTarget`](../../src/core/loader/componentcodec.hpp#L44)（`world` / `local` / `parent_world` の三つのポインタ）を経由します。authoredなのは **local TRS** ですが、ランタイムで全員が読むのは world の `TransformComponent` で、`LocalTransformComponent` は親を持つobjectにしか付かない、という食い違いがあるためです（[editorruntimefactory.cpp#L972](../../src/core/communication/editorruntimefactory.cpp#L972) の `tryComponent<LocalTransformComponent>` はrootではnullになります）。そのため `runtime_apply` は local へ書いたうえで world も自分で合成し直し（[componentcodec.cpp#L329-L352](../../src/core/loader/componentcodec.cpp#L329)）、`runtime_project` は local があればそれを返し、無ければ `parent_world` を使って world から逆算します（[同 #L354-L385](../../src/core/loader/componentcodec.cpp#L354)）。`parent_world` は両方向の変換に必要な係数で、これが無いと親の下のobjectについてlocalとworldを行き来できません。
+
 現在の登録は7種です（[componentcodec.cpp#L856-L871](../../src/core/loader/componentcodec.cpp#L856)）。
 
 | codec名 | `runtime_kind` |
@@ -512,7 +519,9 @@ componentごとに §3.11 のcodec metadataが付くので、「宣言として�
 - [`stage(raw_document, revision)`](../../src/core/loader/authoringscenedocument.hpp#L114) — **オブジェクト宣言のidentityを固定したまま**の未公開改訂。component配列やparentエッジは変えられますが、object宣言のidentityは動きません。
 - [`structuralStage()`](../../src/core/loader/authoringscenedocument.hpp#L116) → [`AuthoringSceneDocumentStage`](../../src/core/loader/authoringscenedocument.hpp#L130) — object配列そのものを触る唯一の経路。`insertObject` / `removeObject` / `restoreObject` / `renameObject` / `reorderObject` を持ち、`finish(revision) &&` で確定します。変更種別は [`AuthoringStructuralChangeKind`](../../src/core/loader/authoringscenedocument.hpp#L63) の `Insert` / `Remove` / `Restore` / `Rename` / `Reorder` です。
 
-> **設計決定:** `removeObject()` は破棄ではなく [`AuthoringObjectClosure`](../../src/core/loader/authoringscenedocument.hpp#L54)(ここでのclosureは関数のクロージャでもグラフの閉包でもなく、「取り除いた宣言を元の場所へそのまま戻すための記録一式」という意味です)を**返します**。closureは同じ `AuthoringObjectId` を、保存した宣言区間の中へ復元できる無損失な記録です。ヘッダのコメント通り、object配列の変更をこれらの操作だけに限ることで、metadataのidentity列とauthored JSONの並びがずれないことを型で保証しています。
+実際にはどちらを使うかを呼び出し側が選ぶことはありません。[`EditorProjectionTransaction::commit()`](../../src/core/loader/editorprojectiontransaction.cpp#L714) がコマンド列を見て振り分けます（[#L741-L766](../../src/core/loader/editorprojectiontransaction.cpp#L741)）— `structural_apply` を持つコマンド（`makeInsertObjectCommand` / `makeRemoveObjectCommand` / `makeRestoreObjectCommand` / `makeRenameObjectCommand` / `makeReorderObjectCommand`）が1つでも混ざっていれば `structuralStage()` 経路へ、component値の書き換えやreparent（`makeSetComponentValueCommand` / `makeReparentCommand`）だけなら `stage()` 経路へ進みます。つまり「objectを増やす・消す・戻す・改名する・並べ替える」RPCが `structuralStage()`、それ以外の編集RPCが `stage()` に対応します。
+
+> **設計決定:** `removeObject()` は破棄ではなく [`AuthoringObjectClosure`](../../src/core/loader/authoringscenedocument.hpp#L54) を**返します**。ここでのclosureは「取り除いた宣言を元の場所へそのまま戻すための記録一式」という意味で、関数のクロージャでもグラフの閉包でもありません。中身は `authoring_object_id` / `scene_id` / `declaration_index` / `previous_object_id` / `next_object_id` / `authored_json` の六つで（[authoringscenedocument.hpp#L54-L61](../../src/core/loader/authoringscenedocument.hpp#L54)）、これだけあれば **同じ `AuthoringObjectId` を、消したときと同じ宣言区間（前後の兄弟の間）へ、JSONを一字も落とさずに戻せます** — 「無損失」はこの意味です。ヘッダのコメント通り、object配列の変更をこれらの操作だけに限ることで、metadataのidentity列とauthored JSONの並びがずれないことを型で保証しています。
 
 > 🧩 **難所 — closureがidentityを運ぶ**([`restoreObject()`](../../src/core/loader/authoringscenedocument.cpp#L271) / journal側の [`finalizeJournal()`](../../src/core/communication/editorjournal.cpp#L2040))
 >
@@ -591,7 +600,7 @@ WP176〜WP178で入った、アニメーションクリップの交換形式で�
 - [`VrmaRootMotionPolicy`](../../src/core/animation/vrmaretarget.hpp#L21) は現在 `preserve_hips_translation` のみです。抽出モードを持たないのは、後のプロファイルがv1データを読み替えずに方針を足せるようにするための、意図的な空きスロットです。
 - 出力 [`VrmaRetargetedClip`](../../src/core/animation/vrmaretarget.hpp#L108) は provenance（[`VrmaRetargetProvenance`](../../src/core/animation/vrmaretarget.hpp#L41) の `source_rig_sha256` / `target_rig_sha256` / `profile_version`）と、警告 [`VrmaRetargetWarningKind`](../../src/core/animation/vrmaretarget.hpp#L29)（`missing_optional_target_bone` / `missing_target_expression`）を持ちます。
 
-> **設計決定:** これは**不変のtarget-rig-local中間クリップ**であり、この型自体は `AnimationSource` ではありません。`retargetVrmaClip()` は instance / graph / renderer / ABI のどこへもpublishせず、publishは次項のWP178 APIが担います。交換形式の取り込みと、実行時のアニメーション再生を別の層に保つための境界です。
+> **設計決定:** これは**不変のtarget-rig-local中間クリップ**であり、この型自体は `AnimationSource` ではありません。「不変」は、`retargetVrmaClip()` の戻り値が `std::shared_ptr<const VrmaRetargetedClip>` で、作った後は誰も書き換えないことを指します（`sample()` はconstで、毎回新しい `VrmaRetargetSample` を返すだけです）。「中間」は、decode（source rigのlocal）と実行時の再生の**間**に置かれた段という意味で、座標系をtarget rigのlocalへ移すところまでしかやらず、再生位置・速度・blend状態のような実行時の状態は持ちません。`retargetVrmaClip()` は instance / graph / renderer / ABI のどこへもpublishせず、publishは次項のWP178 APIが担います。交換形式の取り込みと、実行時のアニメーション再生を別の層に保つための境界です。
 
 > **注意:** [`vrmaretarget.hpp#L122`](../../src/core/animation/vrmaretarget.hpp#L122) のコメント（`This is not an AnimationSource and does not publish to an instance, graph, renderer, or ABI.`）はWP177時点のままで、WP178で入った登録経路を反映していません。ソース側のコメントが古い箇所です。
 
@@ -599,7 +608,7 @@ WP176〜WP178で入った、アニメーションクリップの交換形式で�
 >
 > **何をする所か**: 上の箇条書きは方針とプロファイルまでで、**移送の式そのもの**が書かれていません。R0プロファイルの中身は「回転はrest差分で移送」「hipsのtranslationだけrest高さ比でスケール」の2規則です。
 >
-> **素朴に読むと**: 同じhuman boneなのだから、sourceのlocal回転をそのまま入れればよさそうに見えます。しかしsourceとtargetはbindポーズ(restの向き)が違うので、そのまま入れるとキーが0のフレームですらtargetがsourceのbind姿勢に化けます。実際の式は `target_rest.R * inverse(source_rest.R) * sample(t)` で、内側の括弧が「sourceのrestからの局所差分」、それをtargetのrestへ載せ直す形です。**掛ける順序が意味そのもの**で、`inverse(source_rest) * target_rest * sample` と書くと別の回転になります。hipsのtranslationも非自明で、係数は「sourceのhips rest **world** Y の絶対値」と「targetの同じ値」の比 — 腰の高さの比で歩幅を合わせています。素朴にtranslationをそのまま流すと、背の低いモデルが宙に浮き、背の高いモデルが地面にめり込みます。`std::abs` はY軸が下向きのrigでも比を正に保つためです。
+> **素朴に読むと**: 同じhuman boneなのだから、sourceのlocal回転をそのまま入れればよさそうに見えます。しかしsourceとtargetはbindポーズ(restの向き)が違うので、そのまま入れるとキーが0のフレームですらtargetがsourceのbind姿勢に化けます。実際の式は `target_rest.R * inverse(source_rest.R) * sample(t)` で、内側の `inverse(source_rest.R) * sample(t)` が「sourceのrestからの局所差分」、それをtargetのrestへ載せ直す形です。差分と呼べる理由は式を裏返すと見えます — `sample(t) = source_rest.R * (差分)` なので、括弧の中身は「restの姿勢から**さらに**どれだけ回したか」をrest基準で測った回転です。いちばん分かりやすいのは `sample(t)` がちょうど `source_rest.R` に等しいフレームで、そこでは差分が単位回転になり、結果は `target_rest.R` そのもの、つまりtargetは自分のrest姿勢のまま立ちます。**掛ける順序が意味そのもの**で、`inverse(source_rest) * target_rest * sample` と書くと別の回転になります。hipsのtranslationも非自明で、係数は「sourceのhips rest **world** Y の絶対値」と「targetの同じ値」の比 — 腰の高さの比で歩幅を合わせています。素朴にtranslationをそのまま流すと、背の低いモデルが宙に浮き、背の高いモデルが地面にめり込みます。`std::abs` はY軸が下向きのrigでも比を正に保つためです。
 >
 > **骨子**:
 > ```text

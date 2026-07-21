@@ -44,7 +44,7 @@ cleaners: [B, A]
 >
 > **何をする所か**: module の遅延生成です。初回だけ default 構築して cleaner を積み、2 回目以降は同じ参照を返します。
 >
-> **素朴に読むと**: この 49 行には独立した仕掛けが 5 つ同居していて、どれか 1 つを知らないと「なぜこの順序なのか」が読めません。速い経路が lock を取らずに `__ready()` を読む double-checked locking(二重チェックロック — lock を取らずにフラグを読み、まだ初期化前に見えたときだけ lock を取って**もう一度**確かめる方式)なので、**公開の [`store(release)`](../../src/core/container.hpp#L192) は `emplace` と `cleaners.push_back` の両方が終わった後の 1 点だけ**です(`release` で書いて `acquire` で読むのは「フラグが true に見えたなら、その前に済ませた構築も必ず見える」という順序を保証するためで、ここを緩めると ready だけが先に見えかねません) — 順序を入れ替えると「ready なのに cleaner が無い module」ができ、teardown で破棄されずに漏れます。[`state_mutex`](../../src/core/container.hpp#L62) が `recursive_mutex` なのは、`obj_ref.emplace()` が走らせる `T` のコンストラクタの中で `GET_MODULE(U)` が呼ばれ、同じスレッドが `get()` へ再入するからで、ただの `mutex` なら自己デッドロックします。`ConstructionScope`([#L174](../../src/core/container.hpp#L174))を `construction_stack.push_back` の直後・`emplace()` の直前に置くのは、コンストラクタが throw しても必ず pop させるためで、**宣言位置そのものが意味を持ちます**。依存辺の記録を自分を積む前に行うのは `construction_stack.back()` を「親」にするため、循環検出を `requireCreationAllowedLocked()`([#L98](../../src/core/container.hpp#L98))より先に置くのは freeze 済みでも「循環」という正しい診断を出すためです。
+> **素朴に読むと**: この 49 行には独立した仕掛けが 5 つ同居していて、どれか 1 つを知らないと「なぜこの順序なのか」が読めません。速い経路が lock を取らずに `__ready()` を読む double-checked locking(二重チェックロック — lock を取らずにフラグを読み、まだ初期化前に見えたときだけ lock を取って**もう一度**確かめる方式)なので、**公開の [`store(release)`](../../src/core/container.hpp#L192) は `emplace` と `cleaners.push_back` の両方が終わった後の 1 点だけ**です。この 1 点には理由が 2 つ重なっています。第 1 に**書く順序**で、`ready` を先に立てると「ready なのに cleaner が無い module」ができ、teardown で破棄されずに漏れます。第 2 に**スレッド間の可視性**で、生成は owner スレッド限定でも読み取りは他スレッドから自由なため([test #L147](../../test/module_container_test.cpp#L147))、`release` で書き `acquire`([#L141](../../src/core/container.hpp#L141) / [#L145](../../src/core/container.hpp#L145) / [#L151](../../src/core/container.hpp#L151))で読む対にして「`ready` が true に見えたスレッドからは、その前に済ませた `emplace` も必ず見える」を保証します。`relaxed` へ緩めると、`ready` だけが先に見えて未構築の optional を掴み得ます。[`state_mutex`](../../src/core/container.hpp#L62) が `recursive_mutex` なのは、`obj_ref.emplace()` が走らせる `T` のコンストラクタの中で `GET_MODULE(U)` が呼ばれ、同じスレッドが `get()` へ再入するからで、ただの `mutex` なら自己デッドロックします。`ConstructionScope`([#L174](../../src/core/container.hpp#L174))を `construction_stack.push_back` の直後・`emplace()` の直前に置くのは、コンストラクタが throw しても必ず pop させるためで、**宣言位置そのものが意味を持ちます**。依存辺の記録を自分を積む前に行うのは `construction_stack.back()` を「親」にするため、循環検出を `requireCreationAllowedLocked()`([#L98](../../src/core/container.hpp#L98))より先に置くのは freeze 済みでも「循環」という正しい診断を出すためです。
 >
 > **骨子**:
 > ```text
@@ -87,7 +87,7 @@ cleaners: [B, A]
 >
 > **何をする所か**: `struct PassId : BasicHandle<PassId, int> {};` の 1 行で、整数 1 個分の強い型を作ります。
 >
-> **素朴に読むと**: まず、なぜ CRTP なのかがコードから読めません。`T` は本体で 1 回しか使われず、[`struct Hash { size_t operator()(T key) const ... }`](../../src/core/handle.hpp#L15) だけです — つまり CRTP は**派生型を引数に取る `Hash` を基底の中で定義するため**だけにあり、`unordered_map<PassId, V, PassId::Hash>` が書けるのはこの一手のおかげです。次に、型安全が片側だけであることが読み取れません。[`operator Base()`](../../src/core/handle.hpp#L11) の暗黙変換があるので、**異なる handle 型どうしの `==` はコンパイルが通ります** — メンバの `operator==` は候補集合には入るものの右辺を変換できず viable になりませんが、組み込みの `Base == Base`(この例なら `int == int`)が両辺のユーザー定義変換を経て候補になるためです。さらに `value` に既定メンバ初期化子が無いので `H h;` は不定値、`H h{};` がゼロで、[`invalidBehaviorAttachmentHandle{}`](../../src/core/userpublic/behavior.hpp#L15) がわざわざ `{}` なのはそのためです。「一度包めば全部守られる」と読むと、この 3 点を取り違えます。
+> **素朴に読むと**: まず、なぜ CRTP なのかがコードから読めません。`T` は本体で 1 回しか使われず、[`struct Hash { size_t operator()(T key) const ... }`](../../src/core/handle.hpp#L15) だけです — つまり CRTP は**派生型を引数に取る `Hash` を基底の中で定義するため**だけにあり、`unordered_map<PassId, V, PassId::Hash>` が書けるのは、この CRTP の定義があるからです。次に、型安全が片側だけであることが読み取れません。[`operator Base()`](../../src/core/handle.hpp#L11) の暗黙変換があるので、**異なる handle 型どうしの `==` はコンパイルが通ります** — メンバの `operator==` は候補集合には入るものの右辺を変換できず viable になりませんが、組み込みの `Base == Base`(この例なら `int == int`)が両辺のユーザー定義変換を経て候補になるためです。さらに `value` に既定メンバ初期化子が無いので `H h;` は不定値、`H h{};` がゼロで、[`invalidBehaviorAttachmentHandle{}`](../../src/core/userpublic/behavior.hpp#L15) がわざわざ `{}` なのはそのためです。「一度包めば全部守られる」と読むと、この 3 点を取り違えます。
 >
 > **骨子**:
 > ```text
@@ -195,11 +195,11 @@ PELICAN_REGISTER_SYSTEM(CombatSystem, 100)
 >
 > 本体 `{ return {}; }` は飾りで、**意味があるのは戻り値型の `decltype` だけ**です。その番号の event が登録されていなければ戻り値型の置換に失敗し、`operator()<Index>` が ill-formed になる — これを requires 式で bool にして「あるかどうか」を判定しています。これが **SFINAE**(スフィネ。"Substitution Failure Is Not An Error" の略で、テンプレート引数を当てはめた結果おかしな型になっても**コンパイルエラーにはせず、その候補を黙って外す**という C++ の規則。「エラーにならない」性質を逆手に取って、存在検査に使う常套手段です)です。`if constexpr` で存在しない番号を黙って捨てているのも必須で、これが無いと `__COUNTER__` の抜け番(他のマクロが消費した番号)でビルドごと落ちます。素朴に「全 event を実行時に走査」する実装にすると `onEvent` の有無を実行時に判定できず、`virtual onEvent` にすると event 型ごとに vtable が要ります。この方式は両方を避けています。
 >
-> **なぜ「前だけ」見えるのか**: 呼び出し引数がテンプレート引数 `Index` に依存するため、**二相名前解決**(テンプレートの名前解決を「定義を書いた位置」と「型が決まって実体化される位置」の 2 段階で行う C++ の規則)になります。候補になるのは「マクロを展開した位置での通常の名前探索」と「実体化時の **ADL**(実引数依存探索 — 引数の型が属する名前空間も探しに行く仕組み)」の和です。ADL が探すのは `Pelican::internal` ですが、マクロが生む宣言は展開先(普通はグローバルかゲームの名前空間)にあるので **ADL では見つかりません**。結果として「同じ翻訳単位で、登録マクロより前にある宣言だけ」が見えます。
+> **なぜ「前だけ」見えるのか**: 呼び出し引数がテンプレート引数 `Index` に依存するため、**二相名前解決**(テンプレートの名前解決を「定義を書いた位置」と「型が決まって実体化される位置」の 2 段階で行う C++ の規則)になります。候補になるのは「マクロを展開した位置での通常の名前探索」と「実体化時の **ADL**(実引数依存探索 — 引数の型が属する名前空間も探しに行く仕組み)」の和です。ADL が探すのは引数の型が属する `Pelican::internal` だけですが、マクロが生む `pelicanEventCatalogEntry` の宣言は展開先(普通はグローバルかゲームの名前空間)にあるので **ADL では見つかりません**。つまり ADL 側の寄与は常に空で、実際に効くのは展開位置での通常の名前探索だけ — 結果として「同じ翻訳単位で、登録マクロより前にある宣言だけ」が見えます。逆に言うと、`EventCatalogTag` をマクロの展開先と同じ名前空間へ移すと ADL の寄与が空でなくなり、**ADL は実体化時点で探す**ので、登録マクロより後ろに書かれた overload まで拾えるようになります。
 >
 > **手がかり**: `unique_id`(= `__COUNTER__`)は **catalog の添字と走査上限を兼ねます**。overload は宣言だけで、本体は一度も呼ばれません。走査コストはテンプレート実体化 O(`__COUNTER__`) なので、event ヘッダを大量に include した翻訳単位で system を登録すると、その TU だけコンパイルが目に見えて遅くなります。behavior 側([behavior/registerer.hpp](../../src/core/userpublic/details/behavior/registerer.hpp#L87))は完全に同じ構造の複製なので、片方を直すなら両方直します。
 >
-> **不変条件**: `EventCatalogTag` は `Pelican::internal` に置いたままにする(動かすと ADL 経路が生えて「後ろの event も見える」ようになり、TU 順序依存が静かに変わります)。ハンドラの第 2 引数は system が `GameContext&`、behavior が `BehaviorContext&` — 取り違えると concept が false になり、**コンパイルは通るのに登録されません**。
+> **不変条件**: `EventCatalogTag` は `Pelican::internal` に置いたままにする(マクロの展開先と同じ名前空間へ動かすと ADL 経路が生えて「後ろの event も見える」ようになり、TU 順序依存が静かに変わります)。ハンドラの第 2 引数は system が `GameContext&`、behavior が `BehaviorContext&` — 取り違えると concept が false になり、**コンパイルは通るのに登録されません**。
 
 ### behavior 登録の展開
 
@@ -232,7 +232,7 @@ registered game systems must define update(ctx) or onEvent(event, ctx)
 
 runtime update 順は static 初期化順ではなく、[`sortGameSystemRegistrations()`](../../src/core/userpublic/details/system/registerer.cpp#L33) が `(order, name)` で決めます。ここは決定論的です。Behavior もこの全順序に order 50 の 1 点として参加します([第5章 §5.13](05_gameplay_and_services.md))。
 
-registry の各登録には [`RegistrationOwner`](../../src/core/userpublic/details/system/registerer.hpp#L33)(engine / game DLL)が付きます。game DLL reload では [`unregisterGameSystems(owner)`](../../src/core/userpublic/details/system/registerer.hpp#L142) が旧 DLL の static 登録を外し、新 DLL の static 初期化が再登録します。個別解除用に [`unregisterGameSystem(token)`](../../src/core/userpublic/details/system/registerer.hpp#L141) もあります。また event 型は [`EventPayloadSchema`](../../src/core/userpublic/details/event/payloadschema.hpp#L53) で宣言的 payload schema を持てるようになり、`fail_*` fixture は compile-time 検証([`run_event_schema_compile.cmake`](../../test/run_event_schema_compile.cmake))になっています。
+registry の各登録には [`RegistrationOwner`](../../src/core/userpublic/details/system/registerer.hpp#L33)(engine / game DLL)が付きます。game DLL reload では [`unregisterGameSystems(owner)`](../../src/core/userpublic/details/system/registerer.hpp#L142) が旧 DLL の static 登録を外し、新 DLL の static 初期化が再登録します。個別解除用に [`unregisterGameSystem(token)`](../../src/core/userpublic/details/system/registerer.hpp#L141) もあります。また event 型は静的記述子 `pelican_payload`([`EventPayloadDescriptor`](../../src/core/userpublic/details/event/payloadschema.hpp#L39) / 実体化後は [`EventPayloadSchema`](../../src/core/userpublic/details/event/payloadschema.hpp#L22))で payload の field schema を宣言できるようになり、`fail_*` fixture は compile-time 検証([`run_event_schema_compile.cmake`](../../test/run_event_schema_compile.cmake))になっています。
 
 ### event 名と RPC payload
 
@@ -375,6 +375,7 @@ storage 自体は chunk の生存中に再 allocation されません。しか�
 
 - entity remove は穴へ末尾 entity を move する swap-delete。
 - 別 entity の remove でも、自分が末尾なら自分の値が別 address へ移る。
+- 移った entity は **id 表の側も直す**必要があります。`EntityId` から行を引くのは [`id_table[id.index].ref`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L108)(= `{chunk_index, array_index}`)なので、[`remove()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L551) は末尾 entity を穴へ move した直後に、その entity の `ref` を穴の位置へ書き換えます([#L561-L564](../../src/core/userpublic/details/ecs/coretemplate.cpp#L561))(例: E1 が row 5、末尾の E2 が row 10 で、E1 を remove すると E2 は row 5 へ移るので、`id_table[E2.index].ref.array_index` を 10 → 5 にする)。この更新を落とすと E2 は消えた row 10 を指したままになり、[`resolve()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L308) の範囲検査で当面は「いない」扱い、その後 create が row 10 を埋めると別 entity の行を指します。
 - scene load/clear は全 component を破棄。
 - `GameObjectId` は generation で再解決できるが、生 pointer には generation がない。
 
@@ -531,6 +532,8 @@ graph の node 順が正しいことと、Vulkan memory visibility が正しい�
 
 根拠は [`parseDispatch()`](../../src/core/renderingpass/computetask.cpp#L152)、[`registerBuffers()`](../../src/core/renderingpass/computetask.cpp#L287)、[`registerComputeTask()`](../../src/core/renderingpass/computetask.cpp#L407) です。
 
+表の「自動算出」は、**group 数を `dispatch.groups` の直書きではなく要素数から割り出す**機能を指します。設計上は `groups_from` が要素数の取得元となる名前付きパラメータ名、`local_size` が 1 group あたりのスレッド数で、`{"groups_from": "particle_count", "local_size": 64}` のように書く想定です([design_compute_task_graph.md](../design_compute_task_graph.md))。現在は両方とも `ComputeDispatchDefinition`([renderingpass.hpp#L151-L157](../../src/core/renderingpass/renderingpass.hpp#L151))へ読み込まれるだけで、`registerComputeTask()` が `TaskRecord` に記録するのも実 dispatch が使うのも `groups_x/y/z` だけです。結合時期は未定で、同設計書の未決事項1「`dispatch.groups_from` の名前付きパラメータ注入の正確な API」が先に必要です。shader reflection 側の `local_size`([shaderreflection.hpp#L25](../../src/core/shader/shaderreflection.hpp#L25))は別経路で取れていますが、この JSON の `local_size` とは照合していません。
+
 compute task は dedicated compute queue へ submit せず、graphics frame command buffer に記録します。一方 [`pickQueues()`](../../src/core/vkcore/core.cpp#L141) の fallback は graphics と compute を別 family として受理できます。現 frame graph compute は graphics queue に compute capability があることを実質仮定していますが、fallback path はそれを必須検証していません。async compute を実装する場合は command pool/submit だけでなく queue family ownership transfer も必要です。
 
 ## 9.11 Shader reflection と hot reload の境界
@@ -643,7 +646,7 @@ optional build feature には stub 実装もあります。たとえば SeqPlaye
 - Component ID は一意かつ64未満か。
 - lifecycle callbacks は construct された object にだけ呼ばれるか。
 - init failure の逆順 rollback が保たれるか。
-- remove の swap entity に対して `id_table.ref.array_index` を更新するか。
+- remove の swap entity(穴へ移した末尾 entity)に対して `id_table[...].ref.array_index` を更新するか(§9.6)。
 - raw write 後に component version を更新するか。
 - 並列 system の read/write conflict に明示 dependency があるか。
 - empty chunk と zero entity batch を処理できるか。
@@ -689,6 +692,8 @@ headless / RPC / golden / replay では XR は決定的に off です([`xrForced
 
 WP144〜WP172 で、変更のプロトコルがコードベース全体で統一されました。この節が第9章で最も重要な追加です。
 
+以下は 3 層に分かれています。**(a) 1 回の編集をどう原子的に適用するか**(1〜2)、**(b) その編集をいつ受理してよいか**(3 の CAS / 4 の lease / 5 の gate)、**(c) どこで確定し、何を拒否・出力するか**(6〜8)です。(a) を束ねているのは [`EditorProjectionTransaction::commit(commands, adapters)`](../../src/core/loader/editorprojectiontransaction.hpp#L276) の 1 関数で、`base_revision` の照合 → command を staged document へ適用 → **全 adapter の `prepare()`** → **全 adapter の `publish()`** → document 公開 → 逆順に `finish()`、という並びです。どこかで例外が出れば、そこまでに `prepare()` した adapter を**逆順に `rollback()`** して `Rejected` / `Failed` を返します([editorprojectiontransaction.cpp#L714-L860](../../src/core/loader/editorprojectiontransaction.cpp#L714))。
+
 ### 1. prepare は throw してよいが、publish は絶対に失敗できない
 
 [`ECSArchetypeMigrationAdapter`](../../src/core/ecs/archetypemigration.hpp#L44) のコメントが規範です。
@@ -708,7 +713,9 @@ WP144〜WP172 で、変更のプロトコルがコードベース全体で統一
 | physics | [`PhysWorld::prepareBindings()`](../../src/core/phys/physworld.hpp#L64) → [`publishPrepared()`](../../src/core/phys/physworld.hpp#L68)(`noexcept`) |
 | 編集投影 | [`EditorProjectionPublicationMode{StagedNoexcept, InverseToken}`](../../src/core/loader/editorprojectiontransaction.hpp#L34) |
 
-> **設計決定:** 新しい adapter を足すときは **prepare / rollback / publish の三点セットを必ず作ってください**。「途中まで適用された状態」を許す実装を1つ混ぜるだけで、編集・reload・scene 遷移の原子性が全体として崩れます。
+`EditorProjectionPublicationMode` は「公開をどう戻せる形にしてあるか」の宣言です。`StagedNoexcept` は publish 時点に失敗要因が残らないよう prepare 側へ寄せ切る形、`InverseToken` は publish 後でも `rollback()` が完全な逆操作を復元できる形です。`publish()` / `rollback()` / `finish()` はどちらのモードでも `noexcept` で、`rollback()` は publish 前(prepared 状態を捨てる)・publish 後(逆トークンで戻す)のどちらの経路も allocation-free であることが要求されます([editorprojectiontransaction.hpp#L159-L171](../../src/core/loader/editorprojectiontransaction.hpp#L159))。
+
+> **設計決定:** 新しい adapter を足すときは **prepare / rollback / publish の三点セットを必ず作ってください**。「途中まで適用された状態」を許す実装を1つ混ぜるだけで、その adapter だけでなく、**同じ `commit()` が束ねる transaction 全体**(= 編集・reload・scene 遷移が共有するこのプロトコル)の原子性が崩れます。他の adapter が正しく rollback できても、その 1 つが戻らなければ transaction は半端な状態で終わるからです。
 
 `load_gltf` の単一公開点がわかりやすい実例です([`scene.cpp#L652-L654`](../../src/core/loader/scene.cpp#L652))。
 

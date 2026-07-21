@@ -38,7 +38,7 @@ class全体が [`PELICAN_API`](../../src/core/userpublic/export.hpp) でexport�
 [[nodiscard]] bool setSpotLightDirection(std::string_view name, vec3 direction) const;
 ```
 
-> **設計決定:** engine側でライト名（`"KeyLight"`など）を特別扱いしてアニメーションさせる旧挙動は撤去されました。`LightContainer::updateAnimation()`と原本ライト配列は削除済みで、ライトの時間変化は**ユーザー空間の責務**です。実例は [`projects/example/code/playercontrol.cpp`](../../projects/example/code/playercontrol.cpp) の`updateLightAnimation()`です。詳細は[第9章](09_black_magic_and_gotchas.md)を参照してください。
+> **設計決定:** engine側でライト名（`"KeyLight"`など）を特別扱いしてアニメーションさせる旧挙動は廃止しました。`LightContainer::updateAnimation()`と原本ライト配列は削除済みで、ライトの時間変化は**ユーザー空間の責務**です。実例は [`projects/example/code/playercontrol.cpp`](../../projects/example/code/playercontrol.cpp) の`updateLightAnimation()`です。詳細は[第9章](09_black_magic_and_gotchas.md)を参照してください。
 
 ## 5.2 ゲームSystemの形
 
@@ -91,7 +91,7 @@ void onEvent(const MyEvent& event, Pelican::GameContext& ctx);
 1. `PELICAN_REGISTER_EVENT(Event)`が`__COUNTER__`番号付きのcatalog関数を宣言。
 2. `PELICAN_REGISTER_SYSTEM(System, order)`が自分の`__COUNTER__`までの番号を`integer_sequence`で走査。
 3. そのtranslation unitから見えるcatalog entryについて、`HasGameSystemEvent<System, Event>`を判定。
-4. 該当する型だけtype-erased（型消去 — 型ごとに違う処理を、元の型を見せない共通の関数ポインタ1種類へ揃えてしまう手法。ここでは`void (*)(const void*, GameContext&)`一種類に潰し、型ごとに生成された関数の内側で、compile時に確定しているEvent型へ`static_cast`し直します。登録時に併せて保存する`std::type_index`は呼ぶ相手を選ぶための照合用で、cast自体には使いません）なdispatch関数をregistryへ保存。
+4. 該当する型だけtype-erased（型消去 — 型ごとに違う処理を、元の型を見せない共通の関数ポインタ1種類へまとめる手法。ここでは`void (*)(const void*, GameContext&)`一種類に潰し、型ごとに生成された関数の内側で、compile時に確定しているEvent型へ`static_cast`し直します。登録時に併せて保存する`std::type_index`は呼ぶ相手を選ぶための照合用で、cast自体には使いません）なdispatch関数をregistryへ保存。
 
 マクロ展開の詳細と制約は[第9章](09_black_magic_and_gotchas.md)で扱います。
 
@@ -145,7 +145,7 @@ event emit順
   × 各eventについてSystem order/name順
 ```
 
-payload が `shared_ptr<const void>` である理由(control block が元の型のデストラクタを運ぶので、game DLL 側で定義された型でも安全に破棄できる)と、teardown で payload を drain してから DLL をアンロードしなければならない順序は、[第9章](09_black_magic_and_gotchas.md) §9.3「event 名と RPC payload」で扱います。
+payload が `shared_ptr<const void>` である理由(`make_shared<Event>` が作った control block は `~Event` を呼ぶ手続きを内部に焼き付けたまま `shared_ptr<const void>` へ暗黙変換されるので、静的型が `const void` になっても破棄だけは元の型のデストラクタで行われる — だから game DLL 側で定義された型でも安全に捨てられます)と、teardown で payload を drain してから DLL をアンロードしなければならない順序は、[第9章](09_black_magic_and_gotchas.md) §9.3「event 名と RPC payload」で扱います。
 
 ## 5.5 入力の四層
 
@@ -187,7 +187,7 @@ eventはbutton、cursor move、axis deltaの三種です（[`InputEvent`](../../
 
 [`parseInputActionsJson()`](../../src/core/os/actionmap.cpp#L695) が`pelican.input_actions` v1を読みます。現対応bindingはkeyboard key、mouse delta axis、WASD/arrows composite、gamepad（[`gamepad_button` / `gamepad_axis1` / `gamepad_axis2`](../../src/core/os/actionmap.cpp#L24)）などです。プロファイルは `input/profiles/*.json` から選べます（起動オプション`--input-profile`、RPC `set_input_profile`）。
 
-[`evaluateInputActions()`](../../src/core/os/actionmap.cpp#L836) はaction set stackを**末尾から先頭へ**評価します。つまり最後にpushしたsetが高優先です。上位setが使ったcontrolを`ConsumedControls`へ記録し、下位setでは同じkey/axisを無視します。
+action set stackの実体は`std::vector<std::string>`（set名の列）で、[`Actions::pushActionSet` / `popActionSet`](../../src/core/userpublic/userinput.hpp#L150) が`push_back` / `pop_back`する本物のLIFOです（実体は [`InputActionsRuntime::pushSet()`](../../src/core/userpublic/userinput.cpp#L192)）。[`evaluateInputActions()`](../../src/core/os/actionmap.cpp#L836) はこのvectorを`rbegin()`→`rend()`、つまり**末尾要素から先頭要素へ**走査します。最後にpushしたsetが最初に評価される＝高優先、ということです。上位setが使ったcontrolを`ConsumedControls`へ記録し、下位setでは同じkey/axisを無視します。
 
 Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`pose`型は実装済みで（WP130/132）、[`InputActionFrame::pose()`](../../src/core/os/actionmap.cpp#L683) は`poses` mapから返し、未サンプルならdefaultの`ActionPose`を返します。XR pose providerがない環境（flat）ではpose sampleが来ないため常にdefaultです。
 
@@ -211,7 +211,9 @@ Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`po
 
 [`Camera::loadSceneCameras()`](../../src/core/renderer/camera.cpp#L645) はscene JSONを再正規化し、`camera` componentを持つobjectを抽出します。最初のcameraを初期表示へ使い、名前付きcameraはmapへ保存します。
 
-`GameContext::setCamera(name)`は [`Camera::setActiveCamera()`](../../src/core/renderer/camera.cpp#L716) を呼び、以後そのcameraのpose/projectionをactiveにします。active scene cameraがlockされると、旧内部`CameraSystem`の`setPos/setDir`は無視されます。
+`GameContext::setCamera(name)`は [`Camera::setActiveCamera()`](../../src/core/renderer/camera.cpp#L716) を呼び、以後そのcameraのpose/projectionをactiveにします。
+
+このとき`bool active_scene_camera_locked`（[camera.hpp#L77](../../src/core/renderer/camera.hpp#L77)）が`true`になります。特別なlock機構ではなくただのフラグで、[`Camera::setPos()` / `setDir()`](../../src/core/renderer/camera.cpp#L659) がこのフラグを見て先頭で早期returnし、何も書き換えません。つまりtransform componentからcameraを駆動するECSの [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L13) が効かなくなり、scene camera側のposeが勝ちます。フラグは次のscene camera読み込み（[`prepareSceneCameras()`](../../src/core/renderer/camera.cpp#L562)）と`resetToConfigDefaults()`で`false`へ戻ります。なお組み込みcamera controllerは`setPos/setDir`ではなく [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L708) を通るため、このフラグの影響を受けません。
 
 ### controller
 
@@ -240,7 +242,13 @@ ABI面は [`userpublic/physics/abi_v1.hpp`](../../src/core/userpublic/physics/ab
 >
 > **骨子**:
 > ```text
+> 元の colliders[]   : [0]A  [1]B  [2]C  [3]D   ← filter で B と D が落ちたとする
+> selected[]/shapes[]: [0]A  [1]C               ← provider が見るのはこの 2 本だけ
+> provider が返す collider_index = 1 は C(元配列の [1]B ではない)
+>
 > selectColliders : filter を通った collider だけを selected[] / shapes[] へ(添字は共有)
+>                   逆写像用の対応表は作らない。selected[i] が collider ポインタと
+>                   ColliderIdentity を並べて持つので、復元は selected[raw.collider_index] の 1 回引き
 > invokeProvider  : out_hits を selected.size() に先に resize(確保を provider にさせない)
 > 検証ループ      : reserved==0 / index 範囲内 / seen[index] 未使用 / 数値が有限で範囲内
 >                   raycast   は position を origin+dir*distance で作り直す(ABI に position が無い)
@@ -257,13 +265,13 @@ ABI面は [`userpublic/physics/abi_v1.hpp`](../../src/core/userpublic/physics/ab
 
 [`physquery.hpp`](../../src/core/phys/physquery.hpp#L12) はSphere、oriented Box、Capsuleを`std::variant`で表します（[`Shape`](../../src/core/phys/physquery.hpp#L41)）。クエリは [`QueryFilter`](../../src/core/phys/physquery.hpp#L76) と [`ShapeCastHit`](../../src/core/phys/physquery.hpp#L138) を持ち、実装はaggregate/contract/sweepに分割されています。
 
-`raycastClosest`は距離最小を選び、距離がepsilon内で同じなら文字列ID昇順をtie-breakerにします。`overlapAll`もIDをsortして返すため、sceneの内部登録順に結果が左右されません。
+`raycastClosest`は距離最小を選び、距離がepsilon内で同じなら文字列ID昇順を tie-break（同値になったときの順序決定）に使います。`overlapAll`もIDをsortして返すため、sceneの内部登録順に結果が左右されません。
 
 > 🧩 **難所 — ε クラスタの全順序**([`orderShapeCastHits()`](../../src/core/phys/physquerycontract.cpp#L124) / [`orderRaycastHits()`](../../src/core/phys/physquerycontract.cpp#L90))
 >
 > **何をする所か**: provider から返ってきた hit 列を、TOI(または距離)昇順 + collider identity 順の**一意な全順序**へ並べ替えます。TOI は time of impact — 形状を動かしたときに最初に接触する瞬間を、移動全体に対する 0〜1 の割合で表した値です。`shapeCastClosest` / `raycastClosest` は「ソート済み列の先頭」でしかないので、この関数が closest の定義そのものです。
 >
-> **素朴に読むと**: `std::sort` を 2 回している冗長なコードに見えますが、1 回目とクラスタ内の 2 回目は**別の順序**を課しています。素直に書きたくなるのは「距離が ε 以内なら identity で、そうでなければ距離で比較」という 1 個の comparator ですが、**これは strict weak ordering ではありません**(狭義弱順序 — `std::sort` が comparator に要求する性質。「a < a は偽」「a<b かつ b<c なら a<c」に加えて、「どちらの向きも < が偽」という同値関係まで推移的でなければならない、という規則です。ε 近接は推移的でない: a≈b, b≈c でも a≉c がありえます)。それを `std::sort` へ渡すのは UB で、実装によってはクラッシュや順序破壊になります。さらにクラスタを「隣接差が ε 以内なら連結」と鎖状に伸ばすと、ε/2 間隔で並んだ hit 列が 1 個の巨大クラスタへ潰れ、**遠くの collider を 1 個足しただけで近い 2 件の順序が入れ替わります**。この関数はクラスタを常に「その時点で最も手前の生の値」に**アンカー**することで、クラスタ幅を ε 以下に固定しています(コード内コメントがまさにこれです)。
+> **素朴に読むと**: `std::sort` を 2 回している冗長なコードに見えますが、1 回目とクラスタ内の 2 回目は**別の順序**を課しています。まず誤解を潰しておくと、**1 回目の `(距離, identity)` 比較そのものは何も壊れていません** — float の `<` は全順序で、identity も一意なので、これは正真正銘の strict weak ordering です。ε が絡んだ途端に壊れるのは、ε を comparator の**内側**へ持ち込んだ場合だけです。素直に書きたくなるのは「距離が ε 以内なら identity で、そうでなければ距離で比較」という 1 個の comparator ですが、**これは strict weak ordering ではありません**(狭義弱順序 — `std::sort` が comparator に要求する性質。「a < a は偽」「a<b かつ b<c なら a<c」に加えて、「どちらの向きも < が偽」という同値関係まで推移的でなければならない、という規則です。ε 近接は推移的でない: a≈b, b≈c でも a≉c がありえます)。それを `std::sort` へ渡すのは UB で、実装によってはクラッシュや順序破壊になります。さらにクラスタを「隣接差が ε 以内なら連結」と鎖状に伸ばすと、ε/2 間隔で並んだ hit 列が 1 個の巨大クラスタへ潰れ、**遠くの collider を 1 個足しただけで近い 2 件の順序が入れ替わります**。この関数はクラスタを常に「その時点で最も手前の生の値」に**アンカー**することで、クラスタ幅を ε 以下に固定しています(コード内コメントがまさにこれです)。
 >
 > **骨子**:
 > ```text
@@ -399,7 +407,7 @@ typed System/Behavior handlerへ配送されます。trigger query と rigid-bod
 
 > 🧩 **難所 — 滑りと skin の引き算**([`moveAndSlide()`](../../src/core/userpublic/platformer/charactercontroller2d.cpp#L260) / [`slideRemainder()`](../../src/core/userpublic/platformer/charactercontroller2d.cpp#L227))
 >
-> **何をする所か**: 2D 側面視の character controller(§5.12 の `platformer/charactercontroller2d.hpp`)です。`shapeCastAll` を最大 `max_iterations`(既定 8)回まで繰り返し、接触ごとに残り移動を接触面へ射影して「進んで滑る」を反復します。
+> **何をする所か**: 2D 横スクロール(サイドビュー)の character controller(§5.12 の `platformer/charactercontroller2d.hpp`)です。移動は XY 平面に閉じていて、`delta.z` が `motion_epsilon` を超えると `invalid_argument` を投げます。`shapeCastAll` を最大 `max_iterations`(既定 8)回まで繰り返し、接触ごとに残り移動を接触面へ射影して「進んで滑る」を反復します。
 >
 > **素朴に読むと**: 数字の入れ替えが 3 か所あり、どれを間違えても静かに壊れます。(1) 前進は `travel = max(0, |remaining| * toi - skin_width)` なのに、残りは `remainder = remaining * (1 - toi)` で **skin_width を引きません**。ここを `remaining - travel` にすると skin 分が残りへ戻り、次の反復で面を突き抜けるか面際で前後に振動します。skin は「面から浮かせる距離」であって「使った移動量」ではありません。(2) `max(0, ...)` が効くのは接触が skin より近いときで、そのとき**前進はゼロだが滑りは行われます**。負のまま使うと壁にめり込む方向へ後退します。(3) `initial_overlap` 枝は TOI を一切消費せず、`normal * (penetration_depth + skin_width)` だけ押し出して `continue` します。押し出しの後で `slideRemainder()` を通さないと、同じ collider に対して押し出し→再進入を繰り返します。`slideRemainder()` の分岐も理由が深く、上向き(`normal.y > 0`)でも walkable でない接触は「壁」として扱い、法線を水平成分だけへ潰してから射影します。斜面の接線へそのまま射影すると**上向き速度が生成され、`max_slope_degrees` を超える崖を登ってしまう**からです。
 >
@@ -411,7 +419,7 @@ typed System/Behavior handlerへ配送されます。trigger query と rigid-bod
 >  次の remaining = slideRemainder(remaining * (1 - toi), 接触)   ← skin は引かない
 > ```
 >
-> **手がかり**: [`selectBlockingHit()`](../../src/core/userpublic/platformer/charactercontroller2d.cpp#L206) は **hits の先頭から最初に条件を満たすものを採ります**。これは `shapeCastAll` がこの節の ε クラスタ正準順で返すことに依存した設計で、`ShapeCastAll2DQuery` を自作するときの暗黙の契約です(ヘッダのコメントが規範)。[`planarNormal()`](../../src/core/userpublic/platformer/charactercontroller2d.cpp#L160) は z を落として再正規化し、**z を落とした後の xy 成分の長さ**が epsilon 以下(= 法線がほぼ ±z を向く面外の法線)なら `nullopt` = その hit を**ブロッカーとして無視**します。z がほぼ 0 の法線は逆に、完全な平面法線としてそのまま採用されます。`applied_translation` は overlap recovery を含むので `requested_delta` より大きくなりえます。テストは [`platformer_controller_test.cpp`](../../test/platformer_controller_test.cpp#L177) の薄い床 / 壁滑り / walkable と steep / 初期貫通回復 / 固定ステップ replay の byte 一致。
+> **手がかり**: [`selectBlockingHit()`](../../src/core/userpublic/platformer/charactercontroller2d.cpp#L206) は **hits の先頭から最初に条件を満たすものを採ります**。これは `shapeCastAll` がこの節の ε クラスタ正準順で返すことに依存した設計で、`ShapeCastAll2DQuery` を自作するときの暗黙の契約です(ヘッダのコメントが規範)。[`planarNormal()`](../../src/core/userpublic/platformer/charactercontroller2d.cpp#L160) は z を落として再正規化し、**z を落とした後の xy 成分の長さ**が epsilon 以下(= 法線がほぼ ±z を向く面外の法線)なら `nullopt` = その hit を**ブロッカーとして無視**します。理由は幾何です — この controller の移動は XY 平面に閉じている(`delta.z` は 0 が必須、各反復の末尾でも `remaining_delta.z = 0`)ので、法線が画面の手前 / 奥を向いている面は移動を止められません。仮にブロッカーとして採用しても、滑りの射影 `removeInwardComponent()` は `dot(残り移動, 法線)` が負のときだけ成分を削るので、残り移動の z が 0 で法線がほぼ ±z なら内積はほぼ 0、つまり何も削れずに反復だけ 1 回無駄になります。3D 的には「体の手前側 / 奥側にある壁」で、横スクロールの体はそこへは動けないので接触として意味を持たない、ということです。z がほぼ 0 の法線は逆に、完全な平面法線としてそのまま採用されます。`applied_translation` は overlap recovery を含むので `requested_delta` より大きくなりえます。テストは [`platformer_controller_test.cpp`](../../test/platformer_controller_test.cpp#L177) の薄い床 / 壁滑り / walkable と steep / 初期貫通回復 / 固定ステップ replay の byte 一致。
 >
 > **不変条件**: `remainder` は必ず `(1 - toi)` 比例で、skin を二重に差し引かない。`travel` は非負にクランプ。`movement_filter` は caller の filter を **AND でしか狭められない**(settings が filter を広げてはいけません)。反復上限超過はエラーではなくフラグ(`iteration_limit_reached`)なので `throw` に変えない。ループ内の hit 選択はソート済み前提なので並べ替えを追加しない。
 
@@ -542,21 +550,21 @@ busはmaster/bgm/seで、実効音量はmaster×個別busです。設定変更�
 >
 > **何をする所か**: anim graph が `base_pose_and_root_modifier` フェーズで publish したフレームを、その場では renderer へ流さず 1 枚だけ staging し、全フェーズ終了後に `commitStagedFrame()` が 1 回だけ publish します。
 >
-> **素朴に読むと**: `publishFromSource()` は名前に反して、フェーズ実行中は **publish しません**。ここを読み飛ばすと「publish したのに画面に出ない」の原因が追えません。さらに深いのは `commitStagedFrame()` の `if (staged.pose_accessed)` です。anim graph は自分で local→model→palette(matrix palette — skinning 用に、joint ごとの「model 行列 × inverse bind 行列」を並べた行列配列。頂点シェーダはこれを joint index で引いて頂点を変形します)まで済ませた palette を渡してきますが、その後の `world_post_process` フェーズで VRM の視線適用([`lookAtForPhase()`](../../src/core/animation/vrmapplication.cpp#L893))が staged local pose の回転を**直接上書き**します。上書き後の palette は graph が計算したものと食い違うので、「誰かが staged pose を acquire したら」model matrix と palette を local pose から作り直し、graph の palette を捨てます。素朴に「publish された palette をそのまま使う」と、目だけ動かないモデルができます(頭は動くので気付きにくい)。逆に「常に作り直す」と、pose を誰も触らないフレームでも `localToModel` + `buildSkinPalette` を二度払います。もう 1 つの罠は palette の所有権で、staging 時に呼び出し側のポインタを**深いコピー**して `frame.palette = nullptr` にします。呼び出し側のバッファは `evaluate()` を抜けた時点で消えるので、ポインタを保持すると commit 時にダングリングになります。
+> **素朴に読むと**: `publishFromSource()` は名前に反して、フェーズ実行中は **publish しません**。ここを読み飛ばすと「publish したのに画面に出ない」の原因が追えません。さらに深いのは `commitStagedFrame()` の `if (staged.pose_accessed)` です。anim graph は自分で local→model→palette(matrix palette — skinning 用に、joint ごとの「model 行列 × inverse bind 行列」を並べた行列配列。頂点シェーダはこれを joint index で引いて頂点を変形します)まで済ませた palette を渡してきますが、その後の `world_post_process` フェーズで VRM の視線適用([`lookAtForPhase()`](../../src/core/animation/vrmapplication.cpp#L893))が staged local pose の回転を**直接上書き**します。上書き後の palette は graph が計算したものと食い違うので、「誰かが staged pose を acquire したら」model matrix と palette を local pose から作り直し、graph の palette を捨てます。素朴に「publish された palette をそのまま使う」と、目だけ動かないモデルができます(頭は動くので気付きにくい)。逆に「常に作り直す」と、pose を誰も触らないフレームでも `localToModel` + `buildSkinPalette` を二度払います。もう 1 つの罠は palette の所有権で、staging 時に呼び出し側の palette を `staged.palette` へ**深いコピー**したうえで、**staged 側に控えた descriptor** の `staged.frame.palette` を `nullptr` にします(呼び出し側のバッファを書き換えるわけではありません。staged 側に生ポインタを一切残さないための処置です)。呼び出し側のバッファは `evaluate()` を抜けた時点で消えるので、ポインタを保持すると commit 時にダングリングになります。
 >
 > **骨子**:
 > ```text
 > publish_from_source(frame):
 >   フェーズ実行中でない → 即 publish
 >   フェーズ実行中       → revision と phase を検査、staged が既にあれば duplicate_revision
->                          palette を deep copy し frame.palette = nullptr にして staging
+>                          palette を deep copy し staged.frame.palette = nullptr にして staging
 > acquire_staged_pose() → stage.pose_accessed := true     // 読むだけでも立つ
 > commit_staged_frame():
 >   pose_accessed なら local_pose から localToModel → buildSkinPalette で作り直し
 >   frame.palette を自前バッファへ差し替えて publish
 > ```
 >
-> **手がかり**: `pose_accessed` は「書いた」ではなく「acquire した」で立ちます(保守的ですが決定的)。フェーズ順は `(phase, priority, registration_identity, source_ordinal)` の 4 段安定ソートで、VRM 側の priority は [vrm_application_v1.hpp#L31](../../src/core/userpublic/animation/vrm_application_v1.hpp#L31)(snapshot 0 / lookAt 100 / resolve 200 / commit 200)。`registration_identity` が `source_ordinal` より**先**に効くのがタイブレークの肝です。コールバックが `ok` 以外を返すと `blocked_commits` に `(instance, revision)` が積まれ、同じ revision の後続 publish が `callback_failed` で弾かれます — 半端なフレームを出さないための門です。フェーズを回す位置は [第2章 §2.5](02_runtime_lifecycle.md) の `update_game` 順を参照してください。
+> **手がかり**: `pose_accessed` は「書いた」ではなく「acquire した」で立ちます(保守的ですが決定的)。フェーズ順は `(phase, priority, registration_identity, source_ordinal)` の 4 段安定ソートで、VRM 側の priority は [vrm_application_v1.hpp#L31](../../src/core/userpublic/animation/vrm_application_v1.hpp#L31)(snapshot 0 / lookAt 100 / resolve 200 / commit 200)。`registration_identity` が `source_ordinal` より**先**に効くのがタイブレークの肝です。コールバックが `ok` 以外を返すと `blocked_commits` に `(instance, revision)` が積まれ、同じ revision の後続 publish が `callback_failed` で弾かれます — 半端なフレームを出さないための門です。フェーズを実行する位置は [第2章 §2.5](02_runtime_lifecycle.md) の `update_game` 順を参照してください。
 >
 > **不変条件**: 1 フェーズ実行につき staged frame は 1 枚。staged frame の palette は必ず自前バッファで、呼び出し側のポインタを保持しない。`pose_accessed` が立ったら palette は必ず作り直す(最適化するなら「書き込みがあったか」を別途追跡することになり、読み取り専用 acquire との区別を ABI へ足す必要があります)。
 
@@ -761,7 +769,14 @@ teardownの8段階（[第2章 §2.3](02_runtime_lifecycle.md)）のうち`owner-
 
 event payload、behavior params、component codecの3か所が、同じ **consteval なフィールド宣言DSL**（`consteval`は「必ずコンパイル時に評価される関数」を宣言するキーワードで、`constexpr`と違って実行時に呼ぶことが一切できません。おかげでフィールド宣言の検査は、ビルドが通った時点で必ず終わっています）を共有します。実体は [`src/core/userpublic/details/schema/structfieldschema.hpp`](../../src/core/userpublic/details/schema/structfieldschema.hpp) で、`behavior.hpp`経由で`Pelican::`名前空間から使えます。
 
-[`structFields(policy, fields...)`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L445) は **policy引数が必須** です。省略するとcompile errorになります。
+[`structFields(policy, fields...)`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L445) は **policy引数が必須** です。
+
+```cpp
+template <class Policy, class... PolicyFields>
+consteval auto structFields(Policy policy, PolicyFields... policy_fields);
+```
+
+policyは可変長パラメータの**手前にある通常の引数**なので、省略して`structFields(required(field<&T::a>("a")))`と書くと`Policy`がフィールド型のほうへ推論されます。関数本体の先頭が`if constexpr (!internal::StructUseSitePolicy<Policy>)`（[#L413](../../src/core/userpublic/details/schema/structfieldschema.hpp#L413) のconcept。`EventPayloadPolicy` / `BehaviorParamsPolicy` / `ComponentPolicy` の3種のみ）で、外れた枝の`static_assert(always_false_v<Policy>, ...)`が`structFields requires an explicit EventPayloadPolicy, BehaviorParamsPolicy, or ComponentPolicy`というメッセージで落とします。同様にフィールド側の`required(...)` / `defaulted(...)`忘れは次の枝の`every struct field requires an explicit required(...) or defaulted(...) policy`です。
 
 | policy | 取得方法 | 強制されること |
 |---|---|---|

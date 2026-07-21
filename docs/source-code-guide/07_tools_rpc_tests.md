@@ -139,7 +139,7 @@ flowchart LR
 
 [`ProjectInfo`](../../src/devstudio/model/project.hpp#L15) という model skeleton もありますが、現在の window/backend 経路には接続されていません。したがって `src/devstudio` を読んで asset browser、scene editor、engine IPC が既にあると解釈してはいけません。拡張するなら、まず `TestBackend` を実 model/view-model に置き換え、project load/save の ownership と error surface を定義する段階です。
 
-> **設計決定:** Studio が prototype のままなのに対し、**エンジン側の編集面は先に実装されました**。編集 RPC 23 メソッド(§7.7)と ImGui inspector / asset browser(§7.12)が同じ [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L221) を呼ぶ構成です。Studio を進めるときは、独自の編集ロジックを書くのではなくこの typed サービスへ接続する側になります。
+> **設計決定:** Studio が prototype のままなのに対し、**エンジン側の編集面 — 編集 RPC 23 メソッド(§7.7)と ImGui inspector / asset browser(§7.12)の両方 — は先に実装されました**。この2つは別々の編集実装ではなく、同じ [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L221) を呼ぶ2つの入口です。Studio を進めるときは、独自の編集ロジックを書くのではなくこの typed サービスへ接続する側になります。
 
 ## 7.7 JSON-RPC を2層に分けて読む
 
@@ -203,7 +203,7 @@ engine method の登録は [`runEngineRpcServer()`](../../src/core/communication
 | `set_input_profile` | [#L999](../../src/core/communication/rpcserver.cpp#L999) | input profile を切替 |
 | `inject_input` | [#L1010](../../src/core/communication/rpcserver.cpp#L1010) | canonical input queue へ key/mouse/axis event を積む |
 | `start_input_record` / `stop_input_record` | [#L1023](../../src/core/communication/rpcserver.cpp#L1023) / [#L1035](../../src/core/communication/rpcserver.cpp#L1035) | 入力記録の開始/終了 |
-| `start_input_replay` / `stop_input_replay` | [#L1047](../../src/core/communication/rpcserver.cpp#L1047) / [#L1071](../../src/core/communication/rpcserver.cpp#L1071) | 入力再生の開始/終了 |
+| `start_input_replay` / `stop_input_replay` | [#L1047](../../src/core/communication/rpcserver.cpp#L1047) / [#L1071](../../src/core/communication/rpcserver.cpp#L1071) | 入力再生の開始/終了。開始側は再生だけでなく `EngineTime` を記録時 fps の fixed step へ切り替え、reload gate を閉じ、preview lease を強制 abort します |
 | `inject_event` | [#L1084](../../src/core/communication/rpcserver.cpp#L1084) | 名前から登録済み event layer へ JSON payload を積む |
 | `set_time` | [#L1098](../../src/core/communication/rpcserver.cpp#L1098) | time を直接設定。frame index は進めない |
 | `update_transforms` | [#L1105](../../src/core/communication/rpcserver.cpp#L1105) | update を pending queue へ積む |
@@ -215,6 +215,8 @@ engine method の登録は [`runEngineRpcServer()`](../../src/core/communication
 | `capture_gpu` | [#L1163](../../src/core/communication/rpcserver.cpp#L1163) | `render_frame` と同型の1回描画を明示 Start/End で capture し、新規 index の `.rdc` path を返す |
 | `get_frame_plan` | [#L1194](../../src/core/communication/rpcserver.cpp#L1194) | planner の JSON を返す |
 | `capture` | [#L1199](../../src/core/communication/rpcserver.cpp#L1199) | 最後の frame を PNG 保存 |
+
+`set_seed` と replay は役割が別です。`set_seed` は `DeterministicRng` の種を撒き直すだけで、時間の刻みも入力も固定しません。再現可能な実行は「seed」「fixed step の時間」「記録済み入力」の3つが揃って初めて成立し、後ろ2つを与えるのが `start_input_replay` です。
 
 #### 編集系(23) ✅実装済み(WP153〜WP172)
 
@@ -256,9 +258,9 @@ engine method の登録は [`runEngineRpcServer()`](../../src/core/communication
 >   両方が component_slot|value_field で object と slot が同じ -> 真
 > ```
 >
-> **手がかり**: `domainObjects()` が拾うキー名の一覧が、そのまま「構造ドメインが持ちうるobject参照フィールド」の仕様です(新しいopを足すときはここも足します)。粒度が意図的に不揃いな例として、spawnの `write_set` は `/scenes/<id>/objects` という**粗い**パス、`read_set` は `/scenes/<id>/name_reservations/<name>` という細かいパスです。behaviorは [`stableBehaviorTarget()`](../../src/core/communication/editorjournal.cpp#L486) がhandleがあれば `handles/<h>`、無ければ `indices/<i>` を使い分けます(indexは他の編集でずれるのでhandle優先)。テストは [`editorjournal_test.cpp#L558`](../../test/editorjournal_test.cpp#L558) / [#L662](../../test/editorjournal_test.cpp#L662)。
+> **手がかり**: [`domainObjects()`](../../src/core/communication/editorjournal.cpp#L1590) が拾うキー名の一覧は、**op の `kind` ごとに違うフィールド名の総和**です — `value_field` / `component_slot` は `object`、`object_existence`(spawn)はプリフライト後に埋め戻される `object`、`object_subtree`(destroy)は `root` と配列 `objects`、`parent_edge`(reparent)は `child` / `old_parent` / `new_parent` と配列 `descendants`。単数フィールドと配列フィールドを別扱いで読むので、新しいopを足すときにここへ追記するのは、**そのopが既存にない名前でobject IDを持つ場合だけ**です。粒度が意図的に不揃いな例として、spawnの `write_set` は `/scenes/<id>/objects` という**粗い**パス、`read_set` は `/scenes/<id>/name_reservations/<name>` という細かいパスです。behaviorは [`stableBehaviorTarget()`](../../src/core/communication/editorjournal.cpp#L486) がhandleがあれば `handles/<h>`、無ければ `indices/<i>` を使い分けます(indexは他の編集でずれるのでhandle優先)。テストは [`editorjournal_test.cpp#L558`](../../test/editorjournal_test.cpp#L558) / [#L662](../../test/editorjournal_test.cpp#L662)。
 >
-> **不変条件**: 判定は保守側へ倒す(取りこぼしは静かなロストアップデート、過検出は明示的な `undo_conflict` / `preview_lease_conflict` で済む)。パス比較は必ず `/` 境界を見る。
+> **不変条件**: 判定は保守側へ倒す(検出漏れは静かなロストアップデート、過検出は明示的な `undo_conflict` / `preview_lease_conflict` で済む)。パス比較は必ず `/` 境界を見る。
 
 > **設計決定:** 編集セッションを production で組み立てるのは [`makeEditorRuntimeService()`](../../src/core/communication/editorruntimefactory.hpp#L25) の 1 箇所だけです。RPC endpoint と interactive ImGui runtime の **どちらか一方** が使い、決定的ドライバ(golden / replay)は interactive runtime を作らないため編集面自体が存在しません。ticket・CAS・ゲートの落とし穴は [第9章](09_black_magic_and_gotchas.md)を参照してください。
 
@@ -280,7 +282,7 @@ engine method の登録は [`runEngineRpcServer()`](../../src/core/communication
 > batch.inverse = reverse(各 prepared.inverse)
 > ```
 >
-> **手がかり**: destroyのclosuresを**昇順**に並べるのは、restore再生時に前から挿し戻すためです。一方 `subtreeObjects()` は **降順** に並べます — 削除は後ろの宣言indexから消さないとindexがずれるからで、この逆向きの一対は取り違えやすい箇所です。`normalizeBehaviorAttachmentIdentities()` は `prepareBatch` の**前**に走り、`base_revision+1` とcommand index / attachment index の三つ組からhandleとseqを採番します(同じ入力なら同じidentity)。テストは [`editorjournal_test.cpp#L451`](../../test/editorjournal_test.cpp#L451)「JOURNAL0 is complete and mechanical replay is three-way equivalent」。
+> **手がかり**: 並び順が2つ出てきますが、向きが違うのは**対象が forward と inverse で別だから**です。[`subtreeObjects()`](../../src/core/communication/editorjournal.cpp#L916) が並べるのは forward の削除命令列で、`object_index`(scene内の宣言index)の**降順** — 後ろから消さないと残りのindexがずれます。closuresが並ぶのは inverse(`restore_objects`)の再生順で、`declaration_index` の**昇順** — 前から挿し戻さないと同じ理由でずれます。「indexで位置を指すリストは末尾から消し、先頭から挿す」という一つの規則の表と裏で、逆向きに見えるのはそのためです。`normalizeBehaviorAttachmentIdentities()` は `prepareBatch` の**前**に走り、`base_revision+1` とcommand index / attachment index の三つ組からhandleとseqを採番します(同じ入力なら同じidentity)。テストは [`editorjournal_test.cpp#L451`](../../test/editorjournal_test.cpp#L451)「JOURNAL0 is complete and mechanical replay is three-way equivalent」。
 >
 > **不変条件**: プリフライトはlive文書とliveランタイムに副作用を持たない。inverseは必ずforwardの逆順。spawnの `object_id` は必ずプリフライト結果から取る(自前で採番しない)。
 
@@ -288,7 +290,7 @@ engine method の登録は [`runEngineRpcServer()`](../../src/core/communication
 >
 > **何をする所か**: `undo` / `redo` を「逆命令の普通のトランザクション」として実行してよいかを、実行前に3つの独立した条件で検査します。
 >
-> **素朴に読むと**: undoは「巻き戻し」ではなく**前向きの新規トランザクション**です。対象のjournal recordを書いた後に誰かが同じ領域を触っていたら、逆命令を流すと他人の編集を消します。ところが検査が3つあり、それぞれ別のすり抜けを塞いでいるのが読みにくい箇所です。(1) journal走査 — `source` より後のrevisionで、かつ**別actor**のrecordが重なっていたら衝突(同一actorをスキップするのは、自分の連続編集を自分でundoできなくしないため)。(2) `last_writers` — write pathごとの最終書き手が自分でなければ衝突。(1)がrecord単位なのに対しこちらは**パス単位の最終書き手**で、同一actorが別ticketで上書きした場合を拾います。(3) `postconditionsHold` — 実行時に採取した `forward_postcondition` と、いまの文書から再計算した `targetState` の厳密比較。ここだけが「journalに現れない経路(reload・import・save後)で文書が変わった」を検出できます。どれか一つでも落とすと、undoが他人の編集を静かに巻き戻します。
+> **素朴に読むと**: undoは「巻き戻し」ではなく**前向きの新規トランザクション**です。対象のjournal recordを書いた後に誰かが同じ領域を触っていたら、逆命令を流すと他人の編集を消します。ところが検査が3つあり、それぞれ別のすり抜けを塞いでいるのが読みにくい箇所です。(1) journal走査 — `source` より後のrevisionで、かつ**別actor**のrecordが重なっていたら衝突(同一actorをスキップするのは、自分の連続編集を自分でundoできなくしないため)。(2) `last_writers` — write pathごとの最終書き手が、いま巻き戻そうとしている record の**トランザクションそのもの**(actorではなく `transaction_id` 一致)でなければ衝突。(1)がrecord単位なのに対しこちらは**パス単位の最終書き手**なので、同一actorが別ticketで上書きした場合も拾えます。(3) `postconditionsHold` — 実行時に採取した `forward_postcondition` と、いまの文書から再計算した `targetState` の厳密比較。ここだけが「journalに現れない経路(reload・import・save後)で文書が変わった」を検出できます。どれか一つでも落とすと、undoが他人の編集を静かに巻き戻します。
 >
 > **骨子**:
 > ```text
@@ -300,7 +302,7 @@ engine method の登録は [`runEngineRpcServer()`](../../src/core/communication
 > postconditionsHold(source, document()) が偽 -> undo_conflict
 > ```
 >
-> **手がかり**: `throwUndoConflict()` のpayloadは `{domain, owner_txn, revision}` で、`domain` は `structural_domain` が空なら `write_set` を代用します(クライアントは「誰が何を触ったせいでundoできないか」をこれで出します)。スタック整合の検査は別にあり、受理時([`enqueueRevert`](../../src/core/communication/editorjournal.cpp#L2808))と実行時([`commitPending`](../../src/core/communication/editorjournal.cpp#L2462))の**二重**になっています。テストは [`editorjournal_test.cpp#L519`](../../test/editorjournal_test.cpp#L519) / [#L558](../../test/editorjournal_test.cpp#L558) / [#L662](../../test/editorjournal_test.cpp#L662)。
+> **手がかり**: `throwUndoConflict()` のpayloadは `{domain, owner_txn, revision}` で、`domain` は「衝突した領域」を人が読める形で示すための欄です。渡す値は呼び出し側ごとに違い、(1)(3)は record 全体を代表させて `structural_domain` の**先頭要素**(空なら `write_set` 全体)、(2)は落ちた command 自身の `structural_domain` です。どれも「誰が何を触ったせいでundoできないか」をクライアントが出すための材料です。undo / redo スタックの先頭が対象トランザクションと一致するかの検査は別にあり、受理時([`enqueueRevert`](../../src/core/communication/editorjournal.cpp#L2808))と実行時([`commitPending`](../../src/core/communication/editorjournal.cpp#L2462))の**二重**になっています。テストは [`editorjournal_test.cpp#L519`](../../test/editorjournal_test.cpp#L519) / [#L558](../../test/editorjournal_test.cpp#L558) / [#L662](../../test/editorjournal_test.cpp#L662)。
 >
 > **不変条件**: 3検査はAND。順番は変えてよいが、どれも消してはいけない。undoが成功したら `undo_stack.pop_back()` と `redo_stack.push_back()` は必ず対で動かす(片方だけだとredoが別トランザクションを指します)。
 
@@ -308,7 +310,7 @@ engine method の登録は [`runEngineRpcServer()`](../../src/core/communication
 >
 > **何をする所か**: `open_preview` / `update_preview` / `commit_preview` / `abort_preview` をフレーム境界でまとめて処理し、lease(排他権)の取得・維持・破棄と、外部要因による強制破棄を行います。
 >
-> **素朴に読むと**: 状態が `preview_reservation`(受理済み・未開通) / `preview_lease`(開通中) / `preview_tombstones`(終了済み)の3つに分かれ、遷移が「受理時」と「フレーム境界」の2箇所にまたがっています。予約が要るのは、`open_preview` を受理してから実際に開くまでの間に別actorの `open_preview` や重なる `edit` を通してはいけないからで、`conflictingLease()` はleaseとreservationの**両方**を見ます。失敗経路で予約を消し忘れるとpreviewが永久に開けなくなるため、明示的な `reset()` が各失敗経路に置かれています。tombstone(墓標 — 実体は消しても「このticketは確かに存在して終了した」という痕跡だけを残しておくレコード)は `abort_preview` の冪等性のためで、既に終了したticketへのabortは「成功 + `final_status`」を返します。`forceAbort()` が `noexcept` で失敗時に `false` を返すだけなのは、ゲート閉鎖・シーン遷移・base revision陳腐化のいずれからも呼ばれるからで、ここで例外を出すとフレーム境界そのものが壊れます。
+> **素朴に読むと**: 状態が `preview_reservation`(受理済み・未開通) / `preview_lease`(開通中) / `preview_tombstones`(終了済み)の3つに分かれ、遷移が「受理時」と「フレーム境界」の2箇所にまたがっています。予約が要るのは、`open_preview` を受理してから実際に開くまでの間に別actorの `open_preview` や重なる `edit` を通してはいけないからで、`conflictingLease()` はleaseとreservationの**両方**を見ます。失敗経路で予約を消し忘れるとpreviewが永久に開けなくなるため、明示的な `reset()` が各失敗経路に置かれています。tombstone(実体を消しても「このticketは確かに存在して終了した」という痕跡だけを残すレコード)は `abort_preview` の冪等性 — 同じ操作を何度行っても結果が変わらない性質 — のためで、既に終了したticketへのabortは「成功 + `final_status`」を返します。`forceAbort()` が `noexcept` で、leaseが無いときも失敗したときも `false` を返すだけなのは、ゲート閉鎖・シーン遷移・base revision陳腐化のいずれからも呼ばれるからです。呼び出し元の [`commitPending()`](../../src/core/communication/editorjournal.cpp#L2462) 自体が `noexcept` のフレーム境界フックとして登録されていて、ここから例外が漏れれば `std::terminate` でプロセスごと落ちます(「フレームの一部だけ失敗する」ではありません)。だから `forceAbort()` の唯一の逃げ道は `false` を返して次のフレーム境界に委ねることです。
 >
 > **骨子**:
 > ```text
@@ -321,6 +323,7 @@ engine method の登録は [`runEngineRpcServer()`](../../src/core/communication
 >   open   : lease 占有中なら preview_lease_busy、成功で reservation -> lease、epoch++
 >   update : 所有者一致 + write_set が完全一致(sameStableSet)でなければ拒否
 >   commit : base revision 不一致なら reject して即 forceAbort("stale_revision")
+>            一致すれば journal へ確定し、tombstone を置いて lease を落とす
 >   abort  : ライブ状態を committed へ復元し、tombstone を置いて lease を落とす
 > ```
 >
@@ -603,6 +606,6 @@ return !config.headless && !config.rpc && !config.input_replay && !config.golden
        !config.xr_active;
 ```
 
-つまり **`--rpc` を付けた windowed セッションでは ImGui UI(したがって inspector)は動きません**。windowed RPC ホストと ImGui inspector は排他です。ヘッダ側のコメントにあるとおり、XR を除外しているのは「XR グラフに ImGui pass が無いので、開始した ImGui フレームに対応する Render/EndFrame が無くなる」ためです。
+つまり **`--rpc` を付けた windowed セッションでは ImGui UI(したがって inspector)は動きません**。排他の実体は「リクエストを処理する間だけ UI を止める」「stdin 読み取りでブロックする」といった実行時の調停ではなく、**config を見るだけの一枚のゲート**です。同じ述語は frame graph の合成時にも通るため([`renderingpassconfigregistration.cpp#L153`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L153))、`--rpc` のセッションには `imgui_pass` がそもそも合成グラフに入りません。実行時も [`resolveFrameStateModules()`](../../src/core/appflow/framephase.cpp#L50) が毎フレーム同じ述語を評価し、偽なら `ImGuiSystem` を frame state に載せないので、パネルの callback は一度も呼ばれません。ヘッダのコメント「Deterministic drivers therefore skip callbacks, instead of running an invisible ImGui frame.」がこの並び(headless / rpc / replay / golden)の意図です。ゲートが**実行中に**閉じうるのは XR activation と replay 開始で、そのとき開始済みの ImGui フレームは `endFrameIfStarted()` で閉じられます。XR を除外している理由だけは別で、実装側のコメントにあるとおり「XR グラフに ImGui pass が無いので、開始した ImGui フレームに対応する Render/EndFrame が無くなる」ためです。
 
 テストは [`test/assetbrowser_test.cpp`](../../test/assetbrowser_test.cpp) と [`test/inspector_test.cpp`](../../test/inspector_test.cpp) です。

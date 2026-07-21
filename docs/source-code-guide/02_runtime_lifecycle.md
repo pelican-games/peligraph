@@ -98,7 +98,7 @@ sequenceDiagram
 
 [`FastModuleContainer::get<T>()`](../../src/core/container.hpp#L149) はoptionalが空なら`emplace()`し、破棄関数をstaticな`cleaners`へ積みます。従って、**最初に`GET_MODULE(T)`を呼んだ瞬間がTのconstructor実行時点**です。
 
-例として [`Renderer` のconstructor](../../src/core/vkcore/renderer.cpp#L1044) は [`loadRenderGraphVariantsFromConfig()`](../../src/core/vkcore/renderer_config.cpp#L128) を呼ぶだけに見えますが、その内部で次のmoduleが連鎖的に生成されます。ただし現在は、[`Renderer::prepareRuntimeModules()`](../../src/core/vkcore/renderer.hpp#L99) と [`prepareRuntimeModuleGraph()`](../../src/core/appflow/loop.cpp#L244) により「render前に依存を全解決してから凍結する」方式へ変わっています。
+例として [`Renderer` のconstructor](../../src/core/vkcore/renderer.cpp#L1044) は [`loadRenderGraphVariantsFromConfig()`](../../src/core/vkcore/renderer_config.cpp#L128) を呼ぶだけに見えますが、その内部で次のmoduleが連鎖的に生成されます。ただし現在は、[`Renderer::prepareRuntimeModules()`](../../src/core/vkcore/renderer.hpp#L99) と [`prepareRuntimeModuleGraph()`](../../src/core/appflow/loop.cpp#L244) により「render前に依存を全解決してから、以後の新規module生成を禁止する（module graphを凍結する）」方式へ変わっています。
 
 ```text
 Renderer
@@ -121,17 +121,17 @@ Renderer
 
 ### 注意点
 
-- `get<T>()`と`cleaners`更新は [`std::recursive_mutex state_mutex`](../../src/core/container.hpp#L62) で保護されています（各APIがscoped_lockを取る）。それでもmodule生成は基本的にmain threadで済ませてからjobを走らせる前提です。
+- `get<T>()`と`cleaners`更新は [`std::recursive_mutex state_mutex`](../../src/core/container.hpp#L62) で保護されています。`__ready()`がfalseだった経路はlockを取ってからもう一度`__ready()`を確認するので、同じ型のconstructorが二重に走ることはありません。加えて初回生成は [`requireCreationAllowedLocked()`](../../src/core/container.hpp#L98) がowner thread（最初にmoduleを生成したthread）へ固定するため、別threadからの初回`GET_MODULE`は`logic_error`になります。生成済みmoduleの読み取りだけは別threadからでもlock無しのfast pathで通ります（[`module_container_test.cpp#L147`](../../test/module_container_test.cpp#L147)）。
 - [`FastModuleContainer::freezeCreation()`](../../src/core/container.hpp#L199) がLoop開始直前に呼ばれ（[loop.cpp](../../src/core/appflow/loop.cpp#L374)）、以後の新規module生成はエラーになります。[`tryGet<T>()`](../../src/core/container.hpp#L144) は生成せずoptional参照を返します。`graphSnapshot()` がmodule依存グラフを記録します。
 - constructor内の`GET_MODULE()`が隠れた依存になります。調査時はconstructorと全`GET_MODULE`呼び出しをセットで検索します。
-- `FastModuleContainer`を複数作ってもmodule実体は型ごとのstaticです。テストのcontainerはスコープ終了時に登録済みmoduleを全消去するための寿命ガードとして使われます。
+- module実体は型ごとのstaticなので、containerが管理するのは「何個目のcontainerか」ではなく「生存スコープが今1本開いているか」だけです。スコープは重ねられず、生きているcontainerがあるうちに2個目を作るとconstructorが`logic_error`を投げます（[#L124](../../src/core/container.hpp#L124)、[`module_container_test.cpp#L214`](../../test/module_container_test.cpp#L214)）。したがって「containerごとにmoduleの寿命が分かれる」ことはありません。テストがcontainerを作るのは、スコープを抜けるときに登録済みmoduleを（どこで生成されたものでも）全て破棄させるためで、destructorが最後にphaseを`booting`へ戻すので同じプロセスで次のcontainerを作り直せます。
 - 先に`main()`で作られたmoduleも同じstatic `cleaners`へ載るため、`PelicanCore::run()`内のcontainer破棄時にまとめて片付けられます。
 
 > 🧩 **難所 — 「生成の逆順」が成立する条件**([`FastModuleContainer::get<T>()`](../../src/core/container.hpp#L149) / [`~FastModuleContainer()`](../../src/core/container.hpp#L258))
 >
 > **何をする所か**: module 実体の遅延生成と、破棄順序の記録です。上の「基本は初期化の逆順」がなぜ正しいのか、そしてどこで破れるのかがここに書かれています。
 >
-> **素朴に読むと**: 「積んだ順の逆に pop するから安全」で終わりに見えます。しかし成立の根拠はもう一段細かい所にあります — [`cleaners.push_back()`](../../src/core/container.hpp#L181) は `obj_ref.emplace()` の**後**、つまり T の constructor が**終わってから**実行されます。constructor 内の `GET_MODULE(Dep)` は再帰的に先へ進むので、`cleaners` には必ず `Dep` が先、`T` が後で載ります。逆順 pop はしたがって「依存される側より、依存する側を先に壊す」になります。逆に言えば、**constructor の外で初めて `GET_MODULE` した依存は逆順保証の外**です。T の生成後に T のメソッドが初めて `Dep` を掴むと `cleaners` は `[T, Dep]` の順になり、破棄では `Dep` が先に消えて T の destructor が壊れた module を触ります。§2.4 の [`prepareRuntimeModuleGraph()`](../../src/core/appflow/loop.cpp#L244) と [`freezeCreation()`](../../src/core/container.hpp#L199) は、この穴を「loop へ入る前に全依存を実体化し、以後の初回生成を禁止する」ことで塞ぐ仕掛けです。
+> **素朴に読むと**: 「積んだ順の逆に pop するから安全」で終わりに見えます。しかし成立の根拠はもう一段細かい所にあります — [`cleaners.push_back()`](../../src/core/container.hpp#L181) は `obj_ref.emplace()` の**後**、つまり T の constructor が**終わってから**実行されます。constructor 内の `GET_MODULE(Dep)` は再帰的に先へ進むので、`cleaners` には必ず `Dep` が先、`T` が後で載ります。逆順 pop はしたがって「依存される側より、依存する側を先に壊す」になります。逆に言えば、**constructor の外で初めて `GET_MODULE` した依存は逆順保証の外**です。T の生成後に T のメソッドが初めて `Dep` を掴むと `cleaners` は `[T, Dep]` の順になり、破棄では `Dep` が先に消えて T の destructor が壊れた module を触ります。この穴は §2.4 の二つで塞ぎます — [`prepareRuntimeModuleGraph()`](../../src/core/appflow/loop.cpp#L244) が loop へ入る前に全依存を実体化し、その後で [`freezeCreation()`](../../src/core/container.hpp#L199) が以後の初回生成を禁止します（実体化するのは前者、禁止するのは後者です）。
 >
 > **骨子**:
 > ```text
@@ -146,7 +146,7 @@ Renderer
 > cleaners: [ Dep, T ]  --pop_back-->  T を破棄 -> Dep を破棄
 > ```
 >
-> **手がかり**: `__ready()` を最後に立てるので、constructor が throw すると `cleaners` にも `__ready()` にも T は現れません(部分構築moduleが公開されない)。ただし**失敗した constructor が途中まで作った Dep は生き残ります** — 既に `cleaners` に載っているからで、これは意図的です。`cleaners.push_back` 自身の失敗を拾う catch（[#L187](../../src/core/container.hpp#L187)）が `obj_ref.reset()` するのも同じ対称性です。`construction_stack` だけが `thread_local`（[#L69](../../src/core/container.hpp#L69)）で `cleaners` / `dependency_edges` は static なので、循環検出と依存辺の記録はスレッドごとです — 実際には [`requireCreationAllowedLocked()`](../../src/core/container.hpp#L98) が生成を owner thread へ固定するため、差が出るのはテストだけです。テストは [`module_container_test.cpp#L114`](../../test/module_container_test.cpp#L114)(依存が後に壊れる)と [#L132](../../test/module_container_test.cpp#L132)(失敗と循環で部分公開しない)。
+> **手がかり**: `__ready()` を最後に立てるので、constructor が throw すると `cleaners` にも `__ready()` にも T は現れません(部分構築moduleが公開されない)。`obj_ref.emplace()` が throw した場合 `std::optional` は値を持たないままなので、**T には破棄すべき実体がそもそも存在しません** — `cleaners` に T が載らないことはリークではなく、後始末が不要な状態です。ただし**失敗した constructor が途中まで作った Dep は生き残ります** — 既に `cleaners` に載っているからで、これは意図的です。`cleaners.push_back` 自身の失敗を拾う catch（[#L187](../../src/core/container.hpp#L187)）が `obj_ref.reset()` するのも同じ対称性です。`construction_stack` だけが `thread_local`（[#L69](../../src/core/container.hpp#L69)）で `cleaners` / `dependency_edges` は static なので、循環検出と依存辺の記録はスレッドごとです — 実際には [`requireCreationAllowedLocked()`](../../src/core/container.hpp#L98) が生成を owner thread へ固定するため、差が出るのはテストだけです。テストは [`module_container_test.cpp#L114`](../../test/module_container_test.cpp#L114)(依存が後に壊れる)と [#L132](../../test/module_container_test.cpp#L132)(失敗と循環で部分公開しない)。
 >
 > **不変条件**: 依存は constructor で掴む(実行時に初めて掴むと破棄順が逆転する)。`__ready()` は `cleaners` 登録の後にだけ立てる。module 実体は container のメンバではなく型ごとの関数ローカル static なので、container の生存スコープは重ねられない（[#L124](../../src/core/container.hpp#L124) が `lifetime_scope_active` で拒否）。
 
@@ -173,7 +173,7 @@ terminal shutdownはこの前に`FastModuleContainer::beginShutdown()`で新規m
 >
 > **何をする所か**: 上の8段階を、terminal shutdown と game-logic reload の `runtime_reset` の**両方**で回します。順序の定義は [`runtime_teardown_order`](../../src/core/appflow/teardown.hpp#L22) の1本だけで、モードごとの別経路はありません。
 >
-> **素朴に読むと**: 「shutdown と reload は別処理」と読みたくなりますが、差分は実質2箇所です。(1) [`beginShutdown()`](../../src/core/container.hpp#L213) を呼ぶかどうか — `run()` の中で `mode == terminal_shutdown` のときだけ、8段階へ入る**直前**に呼びます(container の destructor ではありません)。(2) 最後の deletion queue の扱い — [#L76-L85](../../src/core/appflow/teardown.cpp#L76) が `FastModuleContainer::phase()` を見て、`shutting_down` なら `drainForTeardown()`、そうでなければ `flushAll()` を選びます。つまりモード分岐は入口で1回だけで、以後は module phase という**観測値**から導出されます。もう一つの要点は `runProductionStep()` が全段階で `tryGet<T>()` しか使わないことです。teardown 中は [`requireCreationAllowedLocked()`](../../src/core/container.hpp#L98) が生成を拒否するので、`GET_MODULE` を1つでも混ぜると「片付けようとして例外」になります。
+> **素朴に読むと**: 「shutdown と reload は別処理」と読みたくなりますが、差分は実質2箇所です。(1) [`beginShutdown()`](../../src/core/container.hpp#L213) を呼ぶかどうか — `run()` の中で `mode == terminal_shutdown` のときだけ、8段階へ入る**直前**に呼びます(container の destructor ではありません)。(2) 最後の deletion queue の扱い — [#L76-L85](../../src/core/appflow/teardown.cpp#L76) が `FastModuleContainer::phase()` の値で分岐し、`shutting_down` なら `drainForTeardown()`（空にしたうえで以後の登録を拒否）、そうでなければ `flushAll()`（空にするだけで受付は継続）です。つまり mode フラグを8段階へ引き回すのではなく、入口で phase を動かしておき、後段は**そのときの phase を読んで**振る舞いを決めます。もう一つの要点は `runProductionStep()` が全段階で `tryGet<T>()` しか使わないことです。teardown 中は [`requireCreationAllowedLocked()`](../../src/core/container.hpp#L98) が生成を拒否するので、`GET_MODULE` を1つでも混ぜると「片付けようとして例外」になります。
 >
 > **骨子**:
 > ```text
@@ -185,11 +185,18 @@ terminal shutdownはこの前に`FastModuleContainer::beginShutdown()`で新規m
 >       cleanupStep(step) { try { ... } catch { ログのみ } }
 >
 > deletion_queue: phase()==shutting_down ? drainForTeardown() : flushAll()
+>
+> phase を動かすのはこの3箇所だけ:
+>   booting --freezeCreation() (loop.cpp#L374、loop直前に1回)--> running
+>   running --beginShutdown() (teardown.cpp#L115、terminal_shutdown のみ)--> shutting_down
+>   ~FastModuleContainer(): 入口で shutting_down にして全破棄、最後に booting へ戻す
+>   runtime_reset は phase に触れないので running のまま(戻す処理も要らない)
+>   ※ enterRunningPhase() も phase を動かせるが production では未使用(test が loop.cpp に無いことを検査)
 > ```
 >
 > **手がかり**: [`cleanupStep()`](../../src/core/appflow/teardown.cpp#L17) が段階ごとに例外を飲むので、**途中の失敗が後続段階を飛ばしません** — 「wait_idle が落ちたので event が残った」という連鎖を作らないための構造です。`RuntimeTeardownActions` を取る overload は各段を `std::function` で差し替えるテスト用の面で、空の `std::function` は「起動が失敗してその module がまだ無い」を表します(ヘッダのコメント [#L47-L48](../../src/core/appflow/teardown.hpp#L47) が規範)。`completed` フラグがあるため、§2.1 の12番(明示 `teardown.run()`)と destructor 経由が重なっても8段階は1回しか走りません。テストは [`lifetime_teardown_test.cpp#L195`](../../test/lifetime_teardown_test.cpp#L195)(規範順序)/ [#L235](../../test/lifetime_teardown_test.cpp#L235)(runtime reset が terminal shutdown へ入らない)/ [#L312](../../test/lifetime_teardown_test.cpp#L312)(起動途中失敗)。
 >
-> **不変条件**: teardown 経路では module を新規生成しない(`tryGet` のみ)。段階の順序を変えない。`run()` は何度呼んでも副作用が1回。`runtime_reset` は module phase を `shutting_down` にしない(reload 後に再び module を作るため)。
+> **不変条件**: teardown 経路では module を新規生成しない(`tryGet` のみ)。段階の順序を変えない。`run()` は何度呼んでも副作用が1回。`runtime_reset` は module phase を `shutting_down` にしない(reload 後もフレームを回し続けるため。`shutting_down` にすると deletion queue が `drainForTeardown()` で閉じ、以後のGPU資源登録が拒否されます)。
 
 ## 2.4 `Loop::run()` の五経路
 
@@ -205,7 +212,7 @@ terminal shutdownはこの前に`FastModuleContainer::beginShutdown()`で新規m
 | windowed + RPC | windowed かつ `rpc` | windowのフレーム。RPCはフレーム境界で処理 |
 | windowed | 上記以外 | windowのフレーム |
 
-windowed + RPC は他のwindowed経路と排他ではなく、同じwhileループに**追加**される層です。
+windowed + RPC は他のwindowed経路と排他ではなく、同じwhileループへ**追加**される層です。ホスト自体はwhileループへ入る前に1個だけ作られ（[loop.cpp#L430-L442](../../src/core/appflow/loop.cpp#L430)）、ループ側に増えるのは `update_interactive_state` の中のdispatch1行だけです（[#L458](../../src/core/appflow/loop.cpp#L458)）。
 
 ### windowed
 
@@ -241,7 +248,7 @@ windowed_rpc_host = std::make_unique<WindowedRpcHost>(
     defaultWindowedRpcQueueCapacity);
 ```
 
-分業がこの経路の要点です。
+この経路の要点は、readerスレッドとエンジンスレッドの分業です。
 
 - 読み取り専用スレッドは**行をqueueへ積むだけ**で、エンジン状態に一切触りません。
 - dispatchは [`WindowedRpcHost::processFrameBoundary()`](../../src/core/communication/windowedrpchost.cpp#L119) がエンジンスレッドで行い、呼び出し点は `updateFrameState()` の直後（[loop.cpp](../../src/core/appflow/loop.cpp#L458)）です。
@@ -361,7 +368,7 @@ ECSCore::update()
 
 ### `freeze_actions` とImGuiゲートの後始末
 
-`freeze_actions` でImGuiへ入力をルーティングする前に、[`resolveFrameStateModules()`](../../src/core/appflow/framephase.cpp#L51) がゲートの開閉を見ます。ImGuiゲートが閉じたフレーム（XR activationが勝った場合など）では、開始済みのImGuiフレームを [`ImGuiSystem::endFrameIfStarted()`](../../src/core/imgui/imguisystem.hpp#L22) で畳みます（[framephase.cpp#L60-L68](../../src/core/appflow/framephase.cpp#L60)）。
+`freeze_actions` でImGuiへ入力をルーティングする前に、[`resolveFrameStateModules()`](../../src/core/appflow/framephase.cpp#L51) がゲートの開閉を判定します。ゲートの実体は [`isImGuiRuntimeEnabled(config)`](../../src/core/imgui/imguiruntime.cpp#L9) で、`EngineLaunchConfig` の `headless` / `rpc` / `input_replay` / `golden_mode` / `xr_active` を読むだけの述語です（この関数自身は何も書き換えません）。開閉が変わるのは、読んでいる側のlaunch configが変わったときです（例: XRのVulkan bootstrapが失敗してflatへ落ちる [core.cpp#L451](../../src/core/vkcore/core.cpp#L451)）。ImGuiゲートが閉じたフレームでは、開始済みのImGuiフレームを [`ImGuiSystem::endFrameIfStarted()`](../../src/core/imgui/imguisystem.hpp#L22) で畳みます（[framephase.cpp#L60-L68](../../src/core/appflow/framephase.cpp#L60)）。守っている対応関係は「`freeze_actions` の `routeInputAndBeginFrame()` が立てた `frame_started` は、そのフレームの `ImGuiSystem::render()` が必ず倒す」で、ImGuiパスを持たないグラフへ持ち越すと `render()` が呼ばれず、立ったままのフレームへ次の `NewFrame()` が重なります。
 
 > **設計決定:** ゲートは論理フレーム境界で閉じ得るため、「開始済みのImGuiフレームを、ImGui passを持たないグラフへ持ち越さない」ことを明示的に保証しています。ソース中のコメントがそのまま契約です。
 

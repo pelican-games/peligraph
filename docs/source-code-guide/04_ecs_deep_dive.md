@@ -47,7 +47,12 @@ DECLARE_COMPONENT(型, 数値ID)
 | 17 | `AnimationComponent` | `animation` | アニメーション再生状態 |
 | 18 | `SpriteViewComponent` | `sprite_view` | 2D sprite表示（登録は [`registerSpriteViewComponent()`](../../src/core/userpublic/components/spriteview.cpp#L108) 経由） |
 
-IDは単なる外部識別子ではありません。[`ComponentInfoManager::getIndexFromComponentId()`](../../src/core/ecs/componentinfo.cpp#L86) は現在IDをそのまま`size_t`へcastします。従って、IDがそのまま次の「dense index」（密なindex — 本来は0から詰めて使う想定の内部用の添字。外部識別子であるComponent IDとは別物ですが、PelicanではIDと同値なので実際には欠番があります。Chunk内のComponent配列を引くのもmaskのbit位置もこちらの番号です）とmask bit位置になります。
+IDは単なる外部識別子ではありません。ECS内部では、次の二つの番号を使い分けます。
+
+- **Component ID**: `DECLARE_COMPONENT`で型に与える宣言上の識別子。上の表やscene名と対応する、外向きの番号です。
+- **dense index**: 配列の添字そのもの。`ComponentInfoManager`の`infos[index]`、Chunkの`component_arrays[index]`と`component_versions[index]`、maskの`1ULL << index`は、すべてこちらで引きます（[chunk.hpp#L60](../../src/core/userpublic/details/ecs/chunk.hpp#L60) の `// Indexed by dense component index.`）。
+
+両者を繋ぐのが [`ComponentInfoManager::getIndexFromComponentId()`](../../src/core/ecs/componentinfo.cpp#L86) で、現在の実装はIDをそのまま添字として返します。つまりIDと添字は**値としては同じですが、概念としては別物**です。IDに欠番（上の表の4〜15）があれば添字にもそのまま穴が空くので、「dense（0から詰まっている）」は名前が示す想定であって、現状の実装が満たしている保証ではありません。コード側の区別も徹底されておらず、[`ECSComponentChunk::has()`](../../src/core/userpublic/details/ecs/chunk.hpp#L82) は引数の型が`ComponentId`ですが、呼び出し側は全てdense indexを渡しています。型名ではなく用途で読んでください。
 
 ただし**未登録スロットの読み出しは例外になります**。実体は [`getFromIndex()`](../../src/core/ecs/componentinfo.cpp#L89) で、`token` が未設定なら `std::out_of_range("component index N is not registered")` を投げます。「IDがそのままindex」という値の関係は保ちつつ、穴の空いたスロットを黙って読むことはできません。
 
@@ -58,7 +63,7 @@ IDは単なる外部識別子ではありません。[`ComponentInfoManager::get
 - `size`, `alignment`, `name`
 - default construct
 - destroy
-- relocate（末尾swap用）
+- relocate（末尾要素での穴埋め用、§4.7）
 - optional `init()`
 - optional `deinit() noexcept`
 - optional JSON `ref(JsonArchiveLoader&)`
@@ -82,7 +87,7 @@ compile時制約は次です。
 - trivially copyable（自明にcopy可能 — bit列をそのまま複製しても意味が壊れない型。`std::is_trivially_copyable_v`で判定します）: `memcpy`
 - それ以外: destinationへmove constructし、sourceをdestroy
 
-`std::string`や`std::optional`を持つ`SimpleModelViewComponent`も安全に末尾swapできます。テストは [`ecs_lifecycle_test.cpp`](../../test/ecs_lifecycle_test.cpp#L207) です。
+`std::string`や`std::optional`を持つ`SimpleModelViewComponent`も、末尾要素の移動で安全に詰め直せます。テストは [`ecs_lifecycle_test.cpp`](../../test/ecs_lifecycle_test.cpp#L207) です。
 
 ## 4.3 EntityId: index + generation
 
@@ -168,6 +173,8 @@ Chunkは64 bitのComponent maskを持ちます。Component indexごとに`1ULL <
 
 制約は最大64 indexです。自動追加される`EntityId`を含めてmaskに収まる必要があります。現在indexはIDそのものなので、登録Component IDも0〜63に収める必要があります。
 
+64という数はmask型 [`ComponentMask = uint64_t`](../../src/core/userpublic/details/ecs/componentdeclare.hpp#L22) が1語であることから来ます。matchingが`(chunk_mask & required) == required`という1回のAND＋比較で済み、ChunkにもSystemにも可変長のmask領域が要りません。増やすなら、`ComponentMask`と [`MAX_COMPONENTS`](../../src/core/userpublic/details/ecs/componentdeclare.hpp#L21)、登録時の上限チェック（§4.16）、Chunk構築時の`index >= 64`チェック（[chunk.cpp#L108](../../src/core/userpublic/details/ecs/chunk.cpp#L108)）を揃えて変える必要があります。
+
 ## 4.5 Entityの一括生成はtransaction
 
 最重要実装は [`ECSCoreTemplatePublic::createEntities()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L365) です。
@@ -191,7 +198,7 @@ Chunkは64 bitのComponent maskを持ちます。Component indexごとに`1ULL <
 
 ### rollback経路
 
-populateまたはinitがthrowすると [`catch` block](../../src/core/userpublic/details/ecs/coretemplate.cpp#L519) が次を逆順に戻します。
+`try`の中でthrowが起きると（`populate`や`init()`はもちろん、Chunk確保の失敗も含みます）、[`catch` block](../../src/core/userpublic/details/ecs/coretemplate.cpp#L519) が**次の順で**巻き戻します。番号がそのまま実行順で、各段の内部を逆順にたどります。
 
 1. 成功済みinitに対応する`deinit()`を逆順実行。
 2. 各Chunkの追加末尾をdestroy。
@@ -206,7 +213,7 @@ populateまたはinitがthrowすると [`catch` block](../../src/core/userpublic
 >
 > **何をする所か**: Chunk領域の確保・ID割当・`populate`・`init()`・公開を一括で行い、途中の任意の例外で「呼ぶ前の状態」へ完全に戻します。
 >
-> **素朴に読むと**: `try` の中に巻き戻し対象が3種類（Chunk末尾の構築済み要素・`init()`済みComponent・`id_table`/`free_indices`）混在していて、しかもそれぞれ戻し方が違います。素朴に「例外が来たら作ったentityを `remove()` する」と書くと、まだ `live = false` のentityは `resolve()` に弾かれて消せず、Chunkに幽霊行が残ります。さらに [`ECSComponentChunk::allocate()`](../../src/core/userpublic/details/ecs/chunk.cpp#L153) は**自分の中で既に部分ロールバック済み**（[chunk.cpp#L173-L179](../../src/core/userpublic/details/ecs/chunk.cpp#L173)）なので、外側でもう一度 `rollbackTail()` すると生メモリをdestroyする二重解放になります。それを防ぐのが「`Allocation` を `count = 0` で先に `push_back` し、`allocate()` が返ってから `allocation.count = batch_count` を代入する」という一見冗長な2行（[#L448-L458](../../src/core/userpublic/details/ecs/coretemplate.cpp#L448)）です。
+> **素朴に読むと**: `try` の中に巻き戻し対象が3種類（Chunk末尾の構築済み要素・`init()`済みComponent・`id_table`/`free_indices`）混在していて、しかもそれぞれ戻し方が違います。素朴に「例外が来たら作ったentityを `remove()` する」と書くと、まだ `live = false` のentityは `resolve()` に弾かれて消せず、Chunkに幽霊行が残ります。さらに [`ECSComponentChunk::allocate()`](../../src/core/userpublic/details/ecs/chunk.cpp#L153) は、途中の配列で失敗すると**それまでに伸ばした配列を自分で戻してから再throwします**（[chunk.cpp#L173-L179](../../src/core/userpublic/details/ecs/chunk.cpp#L173)）。`chunk.count`も各`VariedArray`の`count`も呼ぶ前の値のままなので、外側がここで `rollbackTail(batch_count)` を呼ぶと、消えるのは今回追加した分ではなく**元から居た末尾のentity**です（`count`が足りなければそのまま下へ突き抜け、まだ何も構築していない領域を`destroy_one`します）。それを防ぐのが「`Allocation` を `count = 0` で先に `push_back` し、`allocate()` が返ってから `allocation.count = batch_count` を代入する」という一見冗長な2行（[#L448-L458](../../src/core/userpublic/details/ecs/coretemplate.cpp#L448)）です。
 >
 > **骨子**:
 > ```text
@@ -218,7 +225,7 @@ populateまたはinitがthrowすると [`catch` block](../../src/core/userpublic
 >        新設Chunkを erase → id_table/free_indices を copy から復元 → rebuildChunkCaches()
 > ```
 >
-> **手がかり**: `duplicate_check` は重複検出用のsort済みcopyですが、そのまま**archetype keyとして再利用**されます（[#L428](../../src/core/userpublic/details/ecs/coretemplate.cpp#L428)・[#L440](../../src/core/userpublic/details/ecs/coretemplate.cpp#L440)）。名前から用途が読めません。`initialized` が持つのは`EntityId`ではなく `{deinit関数ポインタ, void*}` の生ポインタで、この時点ではまだ末尾swapが一度も起きていない＝アドレスが安定している、という前提に乗っています。テストは [`ecs_lifecycle_test.cpp#L324`](../../test/ecs_lifecycle_test.cpp#L324) "Populate and init failures roll back storage IDs and resources" と [#L366](../../test/ecs_lifecycle_test.cpp#L366) "Bulk creation splits chunks and faults atomically"。
+> **手がかり**: `duplicate_check` は重複検出用のsort済みcopyですが、そのまま**archetype keyとして再利用**されます（[#L428](../../src/core/userpublic/details/ecs/coretemplate.cpp#L428)・[#L440](../../src/core/userpublic/details/ecs/coretemplate.cpp#L440)）。名前から用途が読めません。`initialized` が持つのは`EntityId`ではなく `{deinit関数ポインタ, void*}` の生ポインタで、この時点ではまだ末尾要素での穴埋め（§4.7）が一度も起きていない＝アドレスが安定している、という前提に乗っています。テストは [`ecs_lifecycle_test.cpp#L324`](../../test/ecs_lifecycle_test.cpp#L324) "Populate and init failures roll back storage IDs and resources" と [#L366](../../test/ecs_lifecycle_test.cpp#L366) "Bulk creation splits chunks and faults atomically"。
 >
 > **不変条件**: `populate`/`init` の実行中、対象entityは `live = false`（公開APIから観測させない）。`allocation.count` は `chunk.allocate()` が成功した後にだけ代入する。`initialized` は成功した分だけを順に積み、巻き戻しは必ず逆順。
 
@@ -258,9 +265,9 @@ GameObjects::add()
 
 値tupleは`const T&`を保持します。通常の一続きの式では`finish()`までtemporaryが生存しますが、builder contextを長期保存したり、参照元を先に破棄したりしないでください。意図された使い方は一式のchainです。
 
-## 4.7 削除は末尾swap
+## 4.7 削除は末尾要素での穴埋め
 
-[`ECSCoreTemplatePublic::remove()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L550) はO(Component数)で削除します。
+[`ECSCoreTemplatePublic::remove()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L550) はO(Component数)で削除します。一般にswap-and-pop（swap-remove）と呼ばれる手法ですが、実装は入れ替えではありません。削除位置をdestroyしてから末尾要素をそこへrelocateし、`count`を1減らす片道の移動で、末尾側へ書き戻すものは何もありません。
 
 ```text
 削除前: [A, B, C, D]
@@ -269,8 +276,8 @@ GameObjects::add()
 各Component配列で:
 1. B.deinit()
 2. B.destroy()
-3. DをBの位置へrelocate
-4. Dの旧位置をdestroy
+3. DをBの位置へrelocate（relocate自身がDの旧位置をdestroyします）
+4. --count
 
 削除後: [A, D, C]
 ```
@@ -295,7 +302,7 @@ GameObjects::add()
 >
 > **手がかり**: Chunk側の3関数（[`rollbackTail`](../../src/core/userpublic/details/ecs/chunk.cpp#L182) / [`removeAt`](../../src/core/userpublic/details/ecs/chunk.cpp#L190) / [`clear`](../../src/core/userpublic/details/ecs/chunk.cpp#L198)）はいずれも `indices.rbegin()` から回します。Componentの破棄順をindex降順に固定して、ログや副作用の順序を決定的にするためです。`deinit_one` は `init()`/`deinit()` を持たないComponentでnullになりうるので、毎回nullptrチェックが入ります。テストは [`ecs_lifecycle_test.cpp#L248`](../../test/ecs_lifecycle_test.cpp#L248) "Modelview GPU instance deinit covers remove clear and teardown" と [#L285](../../test/ecs_lifecycle_test.cpp#L285) "Aligned non-trivial component observes lifecycle and relocation order"。
 >
-> **不変条件**: §4.16 の不変条件5（`init()` 成功済みComponentは全経路でちょうど一度だけ `deinit()`）。`rollbackTail` に `deinit` を足す変更はこれを静かに破ります。destroyと `--count` の順序は経路ごとに逆で（`removeAt` / `clear` はdestroy→`--count`、`rollbackTail` は `--count`→destroy）、揃っているのは結果だけです。守るべきは順序そのものではなく「関数を抜けた時点で `count` の範囲に生きたオブジェクトだけが並ぶ」ことで、relocateのdstは必ずdestroy済みの生メモリ。
+> **不変条件**: §4.16 の不変条件5（`init()` 成功済みComponentは全経路でちょうど一度だけ `deinit()`）。`rollbackTail` に `deinit` を足す変更はこれを静かに破ります。destroyと `--count` の順序は経路ごとに逆で（`removeAt` / `clear` はdestroy→`--count`、`rollbackTail` は `--count`→destroy）、揃っているのは結果だけです。守るべきは順序そのものではなく「関数を抜けた時点で `count` の範囲に生きたオブジェクトだけが並ぶ」ことで、relocateのdstは必ずdestroy済み＝オブジェクトの居ない領域。
 
 ### 生ポインタ保持が危険な理由
 
@@ -361,7 +368,7 @@ Component packの型が次を同時に表します。
 >
 > **何をする所か**: 型パックから (1) dense index列、(2) read/write分類、(3) matching maskを作り、実行時に `void*` を正しい `T*` へ戻します。
 >
-> **素朴に読むと**: foldの `(process_component(static_cast<TComponents*>(nullptr)), ...)` は**値を渡していません**。null pointerは型を運ぶためだけの実引数で、受け側は `auto* ptr` から `remove_pointer` → `remove_const` してIDを引きます。「なぜdereferenceしないのか」ではなく「なぜpointerなのか」を掴まないと読めません。より危険なのは消費側です。`chunk.getRef(indices[Is]).ptr` を `std::tuple_element_t<Is, std::tuple<TComponents...>>*` へ `static_cast` している、つまり **`component_indices` の並び順と `TComponents...` の並び順が位置で一対一に対応している**ことが暗黙の前提になっています。誰かが「archetype keyと同じようにsortしよう」「重複を潰そう」と `comp_indices` に手を入れると、全Chunk配列が別の型としてreinterpretされ、**コンパイルエラーも実行時チェックも出ないまま**壊れます。read/writeの分類も同じfoldで決まりますが、そちらは `read_indices` / `write_indices` という**集合**として §4.12 へ渡り、hazard判定はcomponent indexをキーにした `std::map` で畳まれる（[coretemplate.cpp#L684](../../src/core/userpublic/details/ecs/coretemplate.cpp#L684) / [#L172](../../src/core/userpublic/details/ecs/coretemplate.cpp#L172)）ため、**並び順には依存しません**。hazard検出を巻き添えにするのは順序変更ではなく、重複除去のように集合そのものを変える改変です。
+> **素朴に読むと**: foldの `(process_component(static_cast<TComponents*>(nullptr)), ...)` は**値を渡していません**。null pointerは型を運ぶためだけの実引数で、受け側は `auto* ptr` から `remove_pointer` → `remove_const` してIDを引きます。「なぜdereferenceしないのか」ではなく「なぜpointerなのか」を掴まないと読めません。より危険なのは消費側です。`chunk.getRef(indices[Is]).ptr` を `std::tuple_element_t<Is, std::tuple<TComponents...>>*` へ `static_cast` している、つまり **`component_indices` の並び順と `TComponents...` の並び順が位置で一対一に対応している**ことが暗黙の前提になっています。この対応を保証しているのは、fold式のカンマ演算子が左から右への評価順を持つことと、`comp_indices.push_back(idx)` が末尾へ積むことの二つだけです（[coretemplate.hpp#L410-L425](../../src/core/userpublic/details/ecs/coretemplate.hpp#L410)）。型の側には何の裏付けもありません。誰かが「archetype keyと同じようにsortしよう」「重複を潰そう」と `comp_indices` に手を入れると、全Chunk配列が別の型としてreinterpretされ、**コンパイルエラーも実行時チェックも出ないまま**壊れます。read/writeの分類も同じfoldで決まりますが、そちらは `read_indices` / `write_indices`（実体は `std::vector<size_t>` ですが、並び順に意味はありません）として §4.12 へ渡り、hazard判定はcomponent indexをキーにした `std::map` で畳まれる（[coretemplate.cpp#L684](../../src/core/userpublic/details/ecs/coretemplate.cpp#L684) / [#L172](../../src/core/userpublic/details/ecs/coretemplate.cpp#L172)）ため、**並び順には依存しません**。hazard検出を巻き添えにするのは順序変更ではなく、重複除去のように集合そのものを変える改変です。
 >
 > **骨子**:
 > ```text
@@ -371,6 +378,13 @@ Component packの型が次を同時に表します。
 >         matching_mask |= 1ULL << idx / is_const<T> ? read_indices : write_indices
 > 実行時: { static_cast<tuple_element_t<Is, tuple<TComponents...>>*>(chunk.getRef(indices[Is]).ptr)... }
 >                                                        ↑ 位置 Is で突き合わせ
+>
+> 例: registerSystem<Sys, const TransformComponent, SpriteViewComponent>
+>       パック位置        0                          1
+>       comp_indices  [   1,                        18 ]   ← push_back順＝パック順
+>       実行時 Is=0 → getRef(1)  を const TransformComponent* へ
+>              Is=1 → getRef(18) を       SpriteViewComponent* へ
+>     ここで comp_indices を [18, 1] へ並べ替えると、Sprite配列を Transform として読みます
 > ```
 >
 > **手がかり**: [`getRef()`](../../src/core/userpublic/details/ecs/chunk.cpp#L138) はdense indexキーなので**Chunk側の配列順は無関係**で、効いているのは `indices[]` の並びだけです。同じComponentを `const T` と `T` の両方でパックに書くと、readとwriteの両方にindexが入り、§4.12 の `conflictingComponents()` はwriteありとみなします。テストは [`ecs_scheduler_test.cpp#L73`](../../test/ecs_scheduler_test.cpp#L73) "ECS scheduler keeps read read systems parallel"（`ECSSystemGraphNode` を手組みして `writes=false` を直接与え、スケジューラ単体がread-readを並列に残すことを見る）。`const` 宣言から分類を実際に通すのは [#L164](../../test/ecs_scheduler_test.cpp#L164) / [#L186](../../test/ecs_scheduler_test.cpp#L186) の `registerSystem<SchedulerReader, const SchedulerProbeComponent>` 側です。
@@ -415,7 +429,7 @@ Level 2: F        ── workerへschedule      ── wait
 >
 > **何をする所か**: 宣言済み依存で順序が付いていないread/write衝突をhazardとして拾い、policyに応じて暗黙edgeを足すか例外にします。
 >
-> **素朴に読むと**: 罠が三つあります。(1) `isOrderedBefore(before, after, deps)` は**逆向きに歩きます**。`dependencies.at(current)` は「currentが依存している相手」＝前任者集合なので、この関数は `after` から前任者を遡って `before` に届くかを見ています。前向き探索だと思って読むと符号が反転します。(2) hazardループは `dependencies` を**書き換えながら**走ります（[#L265](../../src/core/userpublic/details/ecs/coretemplate.cpp#L265)）。追加した結果は以降のペアの `isOrderedBefore()` 判定に即座に効くので、「先に全hazardを集めてから一括でedgeを足す」実装へ変えると、後続ペアが既に順序付いたことに気付けず余計な直列化が増えます。追加edgeは必ず小さいid→大きいid（[#L208-L212](../../src/core/userpublic/details/ecs/coretemplate.cpp#L208) でid昇順にsort済み）で、この向きの一貫性が循環を作らない支えです。(3) 入力順が非決定です。`update()` は `unordered_map` の `systems` を走査して `graph_nodes` を作る（[#L677](../../src/core/userpublic/details/ecs/coretemplate.cpp#L677)）ため、plan builder側のsortが必須になります。`zero_degree` が `std::set`、`conflicts` が `std::map<size_t, std::string>`（component index順）なのも「level内の順序とエラー文言に並ぶComponent名の順を実行ごとに変えない」ためで、`unordered_*` へ置き換えるとgolden testが揺れます。
+> **素朴に読むと**: 罠が三つあります。(1) `isOrderedBefore(before, after, deps)` は**逆向きに歩きます**。`dependencies.at(current)` は「currentが依存している相手」＝前任者集合なので、この関数は `after` から前任者を遡って `before` に届くかを見ています。前向き探索だと思って読むと符号が反転します。そもそも順方向（誰が自分に依存しているか）の表はここにありません。`depended_by` を組むのは [`makeExecutionLevels()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L97) の中だけで、`buildECSExecutionPlan()` が持っているのは前任者集合の `dependencies` だけです。`A ← B ← C`（Cの依存がB、Bの依存がA）なら、`isOrderedBefore(A, C)` は C の依存 `{B}` → B の依存 `{A}` と遡って true を返します。(2) hazardループは `dependencies` を**書き換えながら**走ります（[#L265](../../src/core/userpublic/details/ecs/coretemplate.cpp#L265)）。追加した結果は以降のペアの `isOrderedBefore()` 判定に即座に効くので、「先に全hazardを集めてから一括でedgeを足す」実装へ変えると、後続ペアが既に順序付いたことに気付けず余計な直列化が増えます。追加edgeは必ず小さいid→大きいid（[#L208-L212](../../src/core/userpublic/details/ecs/coretemplate.cpp#L208) でid昇順にsort済み）で、この向きの一貫性が循環を作らない支えです。(3) 入力順が非決定です。`update()` は `unordered_map` の `systems` を走査して `graph_nodes` を作る（[#L677](../../src/core/userpublic/details/ecs/coretemplate.cpp#L677)）ため、plan builder側のsortが必須になります。`zero_degree` が `std::set`、`conflicts` が `std::map<size_t, std::string>`（component index順）なのも「level内の順序とエラー文言に並ぶComponent名の順を実行ごとに変えない」ためで、`unordered_*` へ置き換えるとgolden testが揺れます。
 >
 > **骨子**:
 > ```text
