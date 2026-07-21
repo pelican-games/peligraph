@@ -276,6 +276,11 @@ void PreparedBehaviorAttachmentEdits::publish() noexcept {
                 }
                 found->info.canonical_params = std::move(edit.canonical_params);
                 found->raw_component = std::move(edit.raw_component);
+                if (found->info.activation_failed) {
+                    found->info.activation_failed = false;
+                    found->info.activation_error.clear();
+                    found->activation_delay = 1;
+                }
             }
             break;
         }
@@ -482,9 +487,10 @@ void BehaviorAttachmentArena::applyDeferredMutations() {
 void BehaviorAttachmentArena::activateReadyEditorAttachments() {
     for (auto &attachment : attachments) {
         if (attachment.info.pending || attachment.info.active ||
-            attachment.activation_delay != 0) {
+            attachment.info.activation_failed || attachment.activation_delay != 0) {
             continue;
         }
+        const auto deferred_base = deferred_mutations.size();
         try {
             if (attachment.instance.behavior == nullptr) {
                 const auto *registration =
@@ -502,14 +508,21 @@ void BehaviorAttachmentArena::activateReadyEditorAttachments() {
             invokeInit(attachment);
             attachment.initialized = true;
             attachment.info.active = true;
+            attachment.info.activation_error.clear();
         } catch (const std::exception &error) {
             destroyInstance(attachment, false);
+            deferred_mutations.resize(deferred_base);
+            attachment.info.activation_failed = true;
+            attachment.info.activation_error = error.what();
             if (logger != nullptr) {
                 LOG_ERROR(logger, "editor behavior activation failed for type '{}': {}",
                           attachment.info.stable_name, error.what());
             }
         } catch (...) {
             destroyInstance(attachment, false);
+            deferred_mutations.resize(deferred_base);
+            attachment.info.activation_failed = true;
+            attachment.info.activation_error = "unknown editor behavior activation failure";
             if (logger != nullptr) {
                 LOG_ERROR(logger, "editor behavior activation failed for type '{}'",
                           attachment.info.stable_name);

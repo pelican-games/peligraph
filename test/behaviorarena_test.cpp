@@ -102,7 +102,8 @@ class GoodInitBehavior final : public Behavior {
 class ThrowInitBehavior final : public Behavior {
   public:
     using Params = LabelParams;
-    void onInit(BehaviorContext &) override {
+    void onInit(BehaviorContext &ctx) override {
+        (void)ctx.createObject(LocalTransformComponent{});
         trace.push_back("throw:init");
         throw std::runtime_error("wp155 activation fault");
     }
@@ -379,6 +380,56 @@ TEST_CASE("Behavior activation fault rolls initialized attachments back in rever
     REQUIRE_THROWS_WITH(arena.activatePublished(), "wp155 activation fault");
     REQUIRE(trace == std::vector<std::string>{"good:init", "throw:init", "good:destroy"});
     REQUIRE(arena.snapshot().empty());
+    REQUIRE(arena.deferredMutationCountForTesting() == 0);
+}
+
+TEST_CASE("Editor behavior activation failure is terminal until its params change",
+          "[behavior][editor][activation][rollback]") {
+    FastModuleContainer modules;
+    initializeBehaviorTestModules();
+    auto &arena = GET_MODULE(BehaviorAttachmentArena);
+    const auto entity = createEmptyEntity();
+    const auto identity = arena.reserveRuntimeAttachmentIdentity(10, 0, 0);
+    const nlohmann::json raw{{"name", "behavior"},
+                             {"type", "wp155_throw_init"},
+                             {"params", {{"label", "fault"}}}};
+    auto prepared = arena.prepareEditorEdits({BehaviorAttachmentEdit{
+        .kind = BehaviorAttachmentEditKind::attach,
+        .entity = entity,
+        .component_index = 0,
+        .identity = identity,
+        .stable_name = "wp155_throw_init",
+        .canonical_params = internal::canonicalizeBehaviorParams(
+            "wp155_throw_init", raw.at("params")),
+        .raw_component = raw,
+    }});
+    prepared->publish();
+    prepared->finish();
+
+    GameContext ctx;
+    trace.clear();
+    arena.update(ctx);
+    REQUIRE(trace.empty());
+    arena.update(ctx);
+    REQUIRE(trace == std::vector<std::string>{"throw:init"});
+    REQUIRE(arena.deferredMutationCountForTesting() == 0);
+    const auto failed = arena.snapshot();
+    REQUIRE(failed.size() == 1);
+    REQUIRE_FALSE(failed.front().active);
+    REQUIRE(failed.front().activation_failed);
+    REQUIRE(failed.front().activation_error == "wp155 activation fault");
+
+    arena.update(ctx);
+    arena.dispatchEvent(internal::QueuedEvent{
+                            .type = std::type_index{typeid(BehaviorProbeEvent)},
+                            .name = "BehaviorProbeEvent",
+                            .payload = std::make_shared<BehaviorProbeEvent>()},
+                        ctx);
+    REQUIRE(trace == std::vector<std::string>{"throw:init"});
+    REQUIRE(arena.deferredMutationCountForTesting() == 0);
+
+    arena.deactivateAll();
+    REQUIRE(GameObjects::remove(entity));
 }
 
 TEST_CASE("Behavior pre-destroy runs in reverse attachment order while entity is live",

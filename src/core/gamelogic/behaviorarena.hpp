@@ -49,6 +49,8 @@ struct BehaviorAttachmentInfo {
     internal::RegistrationOwner owner = internal::engineRegistrationOwner;
     bool pending = false;
     bool active = false;
+    bool activation_failed = false;
+    std::string activation_error;
 };
 
 struct BehaviorAttachmentIdentity {
