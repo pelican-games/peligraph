@@ -5,9 +5,12 @@
 `docs/design_reviews/2026-07-08_material_bc_codex.md` の差し戻しを受理**。
 主な改訂: .surface 自己記述コンテナ / spv-link を experimental に降格 /
 ターミナルフック排他 / 版付きシンボル / 名前付きスナップショット /
-実装順の組み替え。M1 = WP58 実装済みだが **v1.2 形式には未追従**(M2a で解消))。
+実装順の組み替え)。
+追補(2026-07-21): M1〜M3.5 と `hybrid_v1` 基盤は実装済み。renderer 全体の
+拡張境界と後続順序は `design_render_pipeline_extensibility.md` を正とする。
 前提: `design_render_feature_modules.md`(shader_defines・variant 機構)、
-`design_scene_format.md`、[PF] シェーダ stem 規約、[PFW] サブセット原則。
+`design_render_pipeline_extensibility.md`、`design_scene_format.md`、
+[PF] シェーダ stem 規約、[PFW] サブセット原則。
 
 ## 0. 目的とスコープ
 
@@ -19,7 +22,7 @@
    文書化された安定 API に昇格
 3. **variant 管理の規律** — feature defines × マテリアル defines の爆発抑制
 
-スコープ外: シェーディングモデル自体の刷新(現行 forward を維持)、
+スコープ外: シェーディングモデル自体の刷新、
 ノードグラフ的マテリアルエディタ(devstudio の遠い将来)、bindless。
 
 ## 1. 現状(2026-07-08 実装ベース)
@@ -314,7 +317,7 @@ surface は brdf/lighting と共存する(surface が struct を埋め、ライ�
   副産物: 同梱 standard/toon も「lighting フックだけのスニペット」として
   完全に同型になる(dogfooding の純化)
 
-### 3-9. deferred 展望とパス振り分け規約(2026-07-08)
+### 3-9. deferred / forward とパス振り分け規約(2026-07-08、2026-07-21 追補)
 
 **deferred 化してもユーザー契約は無傷**という設計検証済みの見通し:
 
@@ -340,7 +343,21 @@ surface は brdf/lighting と共存する(surface が struct を埋め、ライ�
   定義した任意パスも指せる — アウトライン専用パス等への出口)
 - 成立しない指定(blend を deferred_geometry 等)は**名前入りの起動時エラー**
   (黙って直さない)
-- deferred 設計書(将来)の残宿題 = ハイブリッド用アンカー標準名の追加のみ
+
+**実装追補(2026-07-21)**:
+
+- versioned `hybrid_v1` preset、`deferred_geometry` / `forward_opaque` /
+  `forward_transparent` semantic route と pass contract を実装済み
+- OpenPBR は base color / roughness / metalness / normal の表現可能 subset を
+  deferred へ送り、coat、custom IOR/specular、blend、custom lighting 等を
+  forward へ送る。明示 route と不一致は fail-fast
+- deferred lighting と forward は scene-linear HDR target へ合成し、tone mapping は
+  terminal で一度だけ行う
+- 残る機能穴は、phase 別 transparent sort と `hybrid_v1` material pass の
+  screen-input descriptor binding。snapshot graph 機構自体は既存
+- preset/eject/provider、typed compiled plan、MSAA/XR variant、transaction の
+  正式な境界は [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md)
+  を参照
 
 ### 3-10. .surface 自己記述コンテナ(v1.2 — 形式の中核改訂)
 

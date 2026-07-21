@@ -1,10 +1,14 @@
-# 機能追加バックログ(2026-07-16 時点・順序付き)
+# 機能追加バックログ(2026-07-21 時点・順序付き)
 
-作成: セッション引き継ぎ用(tip b26d1a3 時点の全体棚卸し)。
-状態の正: `docs/implementation_plan.md`(WP71〜110 登録済み)・
-`docs/manual/`・各 `docs/design_*.md`。
-既完了の目安: アニメ A0〜A2 完成 / HR = HR0/HR1/HR1-T/HR1-M/HR2-S/HR2-G 完成 /
-2D = S2D-0a/0b/S2D-1/S2D-P/S2D-2 完成 / UI U2 / temporal T1+T2。
+作成: セッション引き継ぎ用。WP179 完了 + `hybrid_v1` 実装 + RPE 設計地点へ同期。
+状態の正: active は `docs/implementation_plan.md`、完了済みは
+`docs/implementation_archive.md` と `docs/design_reviews/*_wp*_report.md`、
+挙動はコードとテスト。
+既完了の目安: アニメ A0〜A2 + VRM/VRMA C0/R0/I0、HR0〜HR2-G +
+per-asset animation generation、2D S2D-0a〜2、UI U2、TAA、OpenPBR/USD、
+OpenXR sequential PCVR、editor authoring/RPC/save/preview、E2 trigger。
+レンダリングは versioned `hybrid_v1`、semantic material route、OpenPBR base subset
+deferred、forward opaque/transparent 合成まで実装済み。
 
 凡例: ★ = 高レバレッジ(体験が一段変わる)、[設計済] = 設計文書に
 仕様あり(WP 登録して派遣可能)、[要設計] = 私(設計担当)の起草 +
@@ -21,9 +25,10 @@
 4. ★ **HR2-S: shader hot reload の新基盤移行** [完了: WP108] — 1s poll を
    FileWatcher/ContentDigest へ移行。include/.surface reverse dependency、
    全 variant/pipeline、material layout の cross-file transaction を実装
-5. **HR2-G: モデル/フラグメント hot reload** [完了: WP110] —
+5. **HR2-G: モデル/フラグメント hot reload** [完了: WP110 + WP147] —
    ModelAsset/Instance identity・fragment 一括 transaction・in-place rebuild・
-   anim/temporal reset・in-flight 資源解放を実装
+   in-flight 資源解放を実装。animation は全体 reset ではなく対象 asset の
+   generation 更新 + evaluator rebind
 6. **HR2-I: input_actions/プロファイル hot reload** [設計済] — 小
 7. **U3: UI hot reload transaction** [設計済(UI v8 §9)] — HR0 契約に
    乗せる。エディタ往復(D3)の前提
@@ -31,13 +36,14 @@
 ## Tier 2 — アニメの実用化(VRM/VRMA 5 連 + グラフ拡張)
 
 8. ★ **VRM-S0: .vrm semantic decoder**(humanoid/expression/lookAt の
-   保持)[設計済・5 分割の第 1] — 「VRM を一級で扱う」の入口
+   保持)[完了: WP111] — 「VRM を一級で扱う」の入口
 9. **VRM-S1: per-instance application sink**(morph/expression/gaze の
-   実適用)[設計済] — renderer の per-instance 化を含む大物
-10. **VRMA-C0: .vrma コンテナ + typed channel** [設計済]
-11. **VRMA-R0: versioned humanoid retarget profile** [設計済] — 大物
-12. **VRMA-I0: AnimationSource 接続** [設計済] — ここで「VRMA を
-    どのモデルにも再生」が成立
+   実適用)[完了: WP121/122/122b/123b/134]
+10. **VRMA-C0: .vrma コンテナ + typed channel** [完了: WP176]
+11. **VRMA-R0: versioned humanoid retarget profile** [完了: WP177]
+12. **VRMA-I0: AnimationSource 接続** [完了: WP178] — named source、
+    graph blend、typed expression/gaze sink、reload generation/rebind が成立。
+    自動 FileWatcher 配線は後続
 13. **anim_graph v2 拡張**(layers・sync marker・trigger・2D blend
     space・inertialization)[要設計 — v2 予約キーの解禁順を決める]
 14. **clip annotation/events sidecar** [要設計小] — 足音・ヒット判定を
@@ -51,14 +57,17 @@
 
 ## Tier 3 — 見た目の底上げ(レンダリング)
 
-18. ★ **TAA feature(ユーザー空間)** [要設計 — projection jitter 枠の
-    API 形をこのとき確定(render 側 modifier・カメラ API から不可視)]。
-    WP88 history/velocity + WP95 skinned velocity で材料は揃っている
+18. ★ **TAA feature(ユーザー空間)** [完了: WP112〜115] — jitter 機構、
+    scalar parameter、resolve/composite、ユーザー定義 table pattern まで
+    stdlib feature として実装
 19. **motion blur feature** [要設計小] — velocity buffer の第 2 の消費者
 20. ★ **ライティング/IBL 設計**(保留中のトラック 3)[要設計] —
     punctual lights KHR 1:1・複数シャドウの RT 配分・IBL は import 焼き
-21. **deferred パス** [設計済(material §3-9)] — ユーザー契約無傷で
-    G-buffer 化。ライト数が増えてから
+21. **hybrid deferred + forward 基盤** [完了] — versioned preset、semantic
+    route、OpenPBR base subset の G-buffer 化、scene-linear forward 合成、tone map
+    一回を実装。後続の正本は `design_render_pipeline_extensibility.md`。
+    RPE1(WP180)→ typed plan → DrawQueueBuilder/provider → transparent sort →
+    screen input → MSAA → XR/preview graph variant → pipeline transaction の順
 22. **スプライトライティング(surface 化)** [要設計小] — 2D の B 層接続
 23. **M3b 昇格ゲート実施**(spv-link 本採用判定)[設計済・ゲート明記済]
 24. **M4: B-web capability プロファイル** [設計済] — web を見るなら
@@ -67,20 +76,22 @@
 
 ## Tier 4 — 開発体験・ツール
 
-27. ★ **編集系 rpc(D2 前提)+ pelican_rpc.py** [要設計 — D0 原則で] —
-    devstudio とエージェント駆動編集の共通入口
+27. ★ **編集系 rpc(D2 前提)+ pelican_rpc.py** [完了: WP149〜161] —
+    typed query/edit、CAS、journal、undo/redo、preview lease、windowed host、
+    Python client が devstudio とエージェント駆動編集の共通入口
 28. **devstudio D1(Qt 埋め込みビューポート + アウトライナ)** [設計済]
-29. **devstudio D2(ピッキング/ギズモ)→ D3(保存 round-trip/undo)**
-    [設計済] — D3 は HR/U3 が実行基盤
+29. **devstudio D2/D3 共通実装** [部分完了: WP164/166〜172] —
+    schema-driven Inspector、atomic save、behavior edit、snapshot/watch、
+    isolated preview は済。Qt viewport の picking/gizmo は未
 30. **WebSocket コマンド層** [設計済(§3 予約)] — 複数クライアント
 31. **リロード履歴 ImGui パネル + get_status.reload の可視化**
     [設計済(HR §5)] — 小
 32. **起動高速化第 2 弾** [要計測] — 現在 models 1.9s が支配的。
     KTX2 一括化(WP92 レシピ適用)+ モデルロード並列化
-33. **R6: docs 分割**(implementation_plan 110KB → 台帳/アーカイブ)
-    [計画済] — 人間とエージェント双方の読み込み効率
-34. **CI 常設**(GitHub Actions: build + ctest + golden hash + OFF
-    スモーク + UBSan)[要設計小] — 現在はローカルゲートのみ
+33. **R6: docs 分割**(implementation_plan → active ledger/archive)
+    [完了: WP174]
+34. **CI 常設** [部分完了: WP137/165] — Windows CPU gate、SKIP exact
+    allowlist、構成/OFF matrix、clean-clone は済。GPU CI2・UBSan は未
 35. **import-tools 拡充**: msdf-atlas-gen(本格テキストの前提)・
     gh repo create(import-tools / houdini-adapter のリモート化)
 
@@ -94,16 +105,18 @@
     S2D-2 の後、2D ゲームの実需で]
 39. **オーディオ A2**(空間音響・BGM フェード等)[要設計 — A1 は済]
 40. **シーン S2(非同期ロード)** [設計済(scene_flow)]
-41. **E2: 物理トリガーイベント** [設計済予約 — E1 済]
+41. **E2: 物理トリガーイベント** [完了: WP179] — 決定的な対称
+    Enter/Exit、stay 抑止、destroy/remove Exit、scene reset no-Exit
 42. **物理シミュレーション判断**(Jolt 導入 vs 自前最小)[要設計 —
     S2D-P の実需を見てから。設計文書に Jolt 推奨メモあり]
-43. **永続化残り**(settings/saveData の実運用 API)[設計済 — P1 の
-    上物]
+43. **永続化 P1** [完了: WP65] — settings/saveData/listSaves と atomic
+    write は済。delete/cloud/async 等は需要時に別設計
 
 ## Tier 6 — プラットフォーム(遠景)
 
-44. **OpenXR**(xrWaitFrame ループ・multiview・XrFrameTarget)
-    [方向決定済・要設計] — 入力アクション層は準備済み
+44. **OpenXR PCVR sequential stereo** [完了: WP125〜138] — Vulkan
+    bootstrap、session loop、composition target、action/pose、mirror、VRM demo、
+    Meta XR Simulator gate は済。XR2b multiview/depth・物理 HMD・SA は未
 45. **web ビルド案 B**(WASM ゲームコア + TS レンダラ接合)[方向
     決定済・遠景] — RHI 後付け禁止の規律のまま
 46. **RT(レイトレ)** [遠景]
@@ -116,16 +129,11 @@
 (Claude 棚卸し→敵対議論の全記録。A1=WP64 完了済みの事実誤認訂正・
 N1〜N10 の新規発見を含む)。推奨順:
 
-CI0(CPU gate)→ GOLDEN0(GPU 不要 inventory・完了後 count REQUIRE
-削除)→ **LIGHT0(マジックネームライトの core 撤去 — 即修正)**→
-TRANSIENT0(load_gltf rollback/stage-commit)→ INSTANCE0(SlotMap
-handle + ownership)→ ANIM0(reload generation/evaluator rebind)→
-**ECS0(scheduler hazard 照合 — 最大の構造リスク)**→ ECS1(登録
-lifetime/ID 検証)→ CI1(構成 matrix + clean-clone 既定 project)→
-CI2(GPU gate/D-P5)→ DTXT0(本物の A/B gate)→ LIFETIME0(例外
-teardown drain)→ PORT0(atlas pool/CreateProcessW)→ CONTRACT0
-(openpbr 6 variant cross-repo/consumer inventory)→ TEST0(harness
-分割/R6)。
+CI0(WP137)→ GOLDEN0(WP141)→ LIGHT0(WP142)→ TRANSIENT0(WP144)→
+INSTANCE0(WP146)→ ANIM0(WP147)→ ECS0(WP148)→ ECS1(WP163)→
+CI1(WP165)→ DTXT0(WP169)→ LIFETIME0(WP171)→ PORT0(WP173)→
+CONTRACT0(WP175)→ TEST0(WP174) は完了。**未完了は CI2(GPU gate /
+D-P5)だけ**。
 
 **WP 化しないと合意**: R4 再監査(完了済み)・行列配送一本化・
 generic history・module topological teardown・汎用 .surface variant
@@ -133,35 +141,27 @@ generic history・module topological teardown・汎用 .surface variant
 
 ## デバッグ/プロファイリング/最適化トラック(2026-07-17 起草 — ユーザー要望)
 
-正本 = `design_debug_profiling.md` v1(敵対レビュー待ち)。
-D-P0(debug 命名)→ D-P1(RenderDoc capture)→ D-P2(GPU 計測 v2 +
-VRAM + XR timing)→ D-P3(CPU フェーズ)→ D-P5(validation 常設)→
-D-P4(Tracy ユニット・既定 OFF)→ D-P6(crash 診断)→
+正本 = `design_debug_profiling.md`。D-P0(debug 命名/WP139)→
+D-P1(RenderDoc capture/WP140)→ D-P2(GPU 計測 + VRAM + XR timing/
+WP143/145)は完了。残りは D-P3(CPU フェーズ)→
+D-P5(validation 常設)→ D-P4(Tracy ユニット・既定 OFF)→ D-P6(crash 診断)→
 OPT-S(起動第 2 弾)/OPT-XR(Release 実機ベースライン)/OPT-MV
 (multiview 評価)。最適化は必ず計測の数字を根拠に(WP82 流儀の標準化)。
 
-## 推奨の直近ウェーブ(1 系統運用・上から順に)
+## 推奨の直近候補(WP180 登録後)
 
-| 順 | WP | 理由 |
+| 順 | 候補 | 理由／前提 |
 |---|---|---|
-| 済 | S2D-1 / WP106 | C4 を閉じ、strict pixel policy と flipbook dogfood 完了 |
-| 済 | S2D-P / WP107 | C5 を閉じ、shapeCast/MTD/filter と provider V2 完了 |
-| 済 | HR2-S / WP108 | include/.surface と material layout の一括差し替え完了 |
-| 済 | S2D-2 / WP109 | 非特権 controller と side-scroller vertical slice 完了 |
-| 済 | HR2-G / WP110 | モデル/全 fragment の原子的差し替えと live instance 再構築完了 |
-| 済 | VRM-S0 / WP111 | VRM 1.0 semantic decoder 着地 |
-| 済 | TAA/USD 設計二往復 | v1 Reject → v2 → 条件付き受理(v2.1 反映済み) |
-| 済 | J1 / WP112・J1b / WP114 | jitter 機構 + スカラー parameter 配送着地 |
-| 実装中 | T-TAA / WP113(再派遣) | TAA feature 本体(scalar blocker は WP114 で解消) |
-| 1 | **J1c / WP115**(T-TAA 着地後) | ジッタ系列のユーザー定義(pattern:table)+ **adding_features.md へ temporal ユーザー管理枠の境界表を転載**(正本 = design_taa_jitter.md §0-1・2026-07-16 ユーザー指示) |
-| 済 | M-PBR0a/WP116 → M-PBR0b/WP117 | OpenPBR エンジン側完成(3 stdlib surface 体制) |
-| 済 | U-USD0a/WP118 → U-USD0b/WP119 | usd-core 26.5 採用・USD→描画の一本道開通 |
-| 実装中 | WP121(VRM-S1a morph 描画)・WP124(U-USD0c マテリアル) | morph は WP120 監査停止からの分割 1 段目 |
-| 1 | WP122(M-INST0)→ WP123(VRM-S1b) | instance override ABI → VRM 表情 sink |
-| 2 | **OpenXR 設計レビュー → XR1 → XR2a → XR3 → XR4**(2026-07-17 ユーザー要望: Quest 3 で VRM キャラ) | `design_openxr.md` v1 起草済み。**MVP = PCVR(Link)**・sequential stereo 先行・multiview は XR2b。XR4 = VRM キャラデモが受け入れ実体 |
-| 3 | ライティング/IBL 設計(私)→ WP 化 | 保留トラック 3 の再開(VR ステージの見栄えにも効く) |
-| 4 | U-USD1a/1b・2a/2b(UsdSkel/camera/anim/instancer) | USD の残り |
-| 遠景 | **Quest standalone(Android/ARM64 移植)— 2026-07-17 ユーザー方向表明** | 段階計画は下記 SA 節 |
+| active | **WP180 / RPE1: typed render-pipeline resolve boundary** | hybrid の次段。描画を変えず Request/Capabilities/Resolved と GPU mutation の境界を作り、後続 sort/MSAA/XR を同じ外枠へ載せる |
+| 2 | **HR2-I: input_actions/profile hot reload** | 設計済みで小さく、残る hot-reload 基本型を閉じる |
+| 3 | **U3: UI hot reload transaction** | HR0 watcher/reconcile を共有し、editor save 後の UI 往復を完成させる |
+| 4 | **VRMA watcher integration** | WP178 の generation/rebind entry point を FileWatcher/loader へ接続。WP 化前に asset identity と profile reload 範囲を固定する |
+| 5 | **CI2 / D-P5** | 負債ウェーブで唯一残った GPU/validation 常設 gate。runner 方針の決定が前提 |
+| 6 | **RPE2〜RPE6** | typed plan、draw queue/provider、transparent sort、hybrid screen input。WP180 の境界と fixture を確認して一段ずつ登録 |
+| 7 | **anim_graph v2 / clip events** | VRMA 基盤完成後の layers・sync marker・annotation/event sidecar。先に設計レビュー |
+| 8 | **XR2b multiview/depth** | RPE9 の graph variant 境界と WP143/145 の計測値を基準に sequential stereo との差を評価してから実装 |
+| 9 | ライティング/IBL、U-USD1/2 | 見た目と USD の次段。いずれも設計／受け入れ条件の登録が先 |
+| 遠景 | Quest standalone(Android/ARM64) | SA0〜SA3 の段階計画は下記 |
 
 ## Quest standalone(SA トラック — 遠景・段階計画)
 

@@ -4708,9 +4708,6 @@ docs(CI 運用 1 ページ)。**エンジンコードの挙動変更禁止**
 
 ---
 
-未完了 WP と運用規則は [active ledger](implementation_plan.md) を参照。
-
-
 ### WP172: PREVIEW0 — eval_preview / render_preview(エディタ設計最終 WP・2026-07-18 完了)
 
 前提: E-RPC1/JOURNAL0(済 WP157/161 — editor gate/override validator
@@ -4739,3 +4736,194 @@ docs(CI 運用 1 ページ)。**エンジンコードの挙動変更禁止**
 受け入れ = V22-C5/C6 逐語 gate + §1-6-2 全行の実測検査 + 既存全
 テスト無変更 + golden SKIP 0・byte 不変 + player 8 秒 + CI green。
 完了レポート: `docs/design_reviews/2026-07-18_wp172_report.md`
+
+---
+
+### WP175(済 2026-07-19): 負債 CONTRACT0 — 境界 gate
+
+参照: **負債議論 `docs/design_reviews/2026-07-17_debt_discussion_codex.md`
+の「WP-CONTRACT0」定義が正**:
+
+> OpenPBR engine/importer 6 variant exact-set、projection consumer
+> inventory、`engineMvp` の意味を次 ABI へ移す準備。
+
+範囲(3 点とも関連 N 系発見を全文検索して対象特定):
+
+1. **OpenPBR 6 variant exact-set gate**: engine 側(WP116/117 の
+   wrapper-B ×6)と importer 側(usd レーン)の variant 集合が
+   exact 一致することを機械検査(片側だけの追加/欠落 = 名前入り
+   fail)。v1.1.1 exact pin の検証込み
+2. **projection consumer inventory**: 投影行列(projection/jitter)を
+   消費する全箇所の台帳化 + 「新 consumer は台帳に登録しないと
+   fail-fast」の gate(TAA 一般式 `clip'.xy=clip.xy+jitter·clip.w` の
+   適用漏れ防止)
+3. **engineMvp の次 ABI 準備**: 現 `engineMvp` の意味論(どの空間・
+   どの jitter 適用段か)を文書化し、次期 shader ABI で意味を移す
+   ための準備(**現 ABI の変更・シェーダの挙動変更はしない** —
+   文書 + 検査のみ。golden byte 不変)
+
+依存: なし。見積: 中。
+排他: material/shader contract の検査面 + docs + fixture。
+**シェーダ実体・renderer 実行系の挙動変更禁止(検査とドキュメントの
+み)。communication・schema 三 header・`.github` に触らない**。
+golden byte 不変が gate。
+
+受け入れ = 3 点の gate/台帳 + 既存全テスト無変更 + golden SKIP 0・
+byte 不変 + player 8 秒 + CI green
+
+完了レポート: `docs/design_reviews/2026-07-19_wp175_report.md`
+
+### WP176(済 2026-07-19): VRMA-C0 — `.vrma` コンテナ decode + typed channel
+
+参照: **`docs/design_animation_graph.md` v2.1 §4 が正**(条件付き
+承認済み — v2 レビュー §4.5 の 5 WP 分割の第 3。VRM-S0/S1 は済):
+
+- `.vrma` = **glb alias + `VRMC_vrm_animation`**。unnamed/first
+  animation の既定規則 = `#animation/0`
+- **body(humanoid joint)/ expression / gaze を typed channel** として
+  decode(joint Pose に混ぜない — UAF の Pose+Curve+Attribute と
+  同方向)
+- **hips translation を自動で root motion と解釈しない**(抽出は
+  import/clip profile の明示 policy — 本 WP では抽出しない)
+- **DCC provenance**: Clip metadata に source URI・content hash・
+  import profile・tool version を保持(v2 レビューで脱落指摘された
+  必須項)
+- Clip は model GLB から独立したリソース(source rig 参照を持つ)—
+  §1-1 の Clip 規範に従う
+- 範囲は **decode/storage/検証まで**。retarget(VRMA-R0)・graph/
+  timeline 接続(VRMA-I0)は後続 WP — 適用系に触れない
+- 検証: 実 `.vrma` 相当の合成 fixture(humanoid+expression+gaze)+
+  拡張 version 検証・不正入力の名前入り reject。VRM-S0(WP111)の
+  decoder/検証流儀に揃える
+
+依存: VRM-S0(済 WP111)+ VRM-S1(済 WP121/123/134)。見積: 中。
+排他: loader の vrma decode 面(新設)+ fixture。**アニメ実行系
+(AnimationServiceV1/anim_graph)・renderer・communication・schema 三
+header に触らない**(ABI v1 凍結)。
+
+受け入れ = §4 逐語(alias/既定規則/typed channel/root motion 非自動/
+provenance)+ 既存全テスト無変更 + golden SKIP 0・byte 不変 +
+player 8 秒 + CI green
+
+完了レポート: `docs/design_reviews/2026-07-19_wp176_report.md`
+
+### WP177(済 2026-07-19): VRMA-R0 — versioned retarget/application profile
+
+参照: **`docs/design_animation_graph.md` v2.1 §4 が正**(v2 レビュー
+§4.5 の 5 WP 分割の第 4)+ WP176 成果物
+(`src/core/loader/vrmadecoder.*`・`src/core/model/vrmaanimation.hpp` —
+VrmaClip/typed channel/source rig が入力)。
+
+- **versioned retarget/application profile**: source rig(VrmaClip が
+  保持)→ target rig(VRM-S0 の humanoid map)への写像を、版付き
+  profile として実装。humanoid bone 名対応・**rest/T-pose 正規化**
+  (source と target の rest 姿勢差の吸収)・**optional bone**
+  (target に無い bone の skip 規則)・**hips scale**(身長差の
+  平行移動スケール)
+- **hips translation の root motion 自動解釈は引き続き禁止**(hips は
+  scale 適用の平行移動として retarget — 抽出 policy は将来の profile
+  項目として枠だけ)
+- 出力 = target rig 空間の evaluate 可能な中間表現(**適用系には
+  接続しない** — AnimationSource 化・graph 接続は VRMA-I0)
+- **DCC provenance を retarget profile にも保持**(v2 レビュー指摘 —
+  source clip の provenance + profile version の合成)
+- 数値検証: 恒等 rig(source=target)で retarget 結果が入力と一致
+  (量子化誤差の許容を明示)・身長 2 倍 rig で hips translation が
+  2 倍・optional bone 欠落で該当 track だけ skip・T-pose 差のある
+  合成 rig で幾何的に正しい世界姿勢(手計算 fixture)
+
+依存: WP176(済)+ VRM-S0(済 WP111)。見積: 大(リターゲットの
+数学が本体 — 慎重に)。
+排他: retarget 面(新設ファイル推奨)+ fixture。**アニメ実行系
+(AnimationServiceV1/anim_graph/abi_v1.hpp 凍結)・renderer・
+communication・editor 面に触らない**。
+
+受け入れ = §4 逐語(rest/T-pose 正規化・optional bone・hips scale・
+provenance)+ 数値 fixture 4 系統 + 既存全テスト無変更 + golden
+SKIP 0・byte 不変 + player 8 秒 + CI green
+
+完了レポート: `docs/design_reviews/2026-07-19_wp177_report.md`
+
+### WP178(済 2026-07-19): VRMA-I0 — AnimationSource/graph 接続 + hot reload generation
+
+参照: **`docs/design_animation_graph.md` v2.1 §4(5 分割の第 5)+
+WP177 レポート §6 の引き継ぎ表が正**
+(`docs/design_reviews/2026-07-19_wp177_report.md` — R0 から渡すもの/
+I0 で追加すべきもの/R0 で行っていないことの三列)。
+
+- **typed AnimationSource / cursor**: `VrmaRetargetedClip` を既存
+  AnimationSource 語彙(A1/A2 系)の一員として graph/timeline から
+  消費可能に。caller-owned PoseView への転送・rig generation/stale
+  検査
+- **expression / gaze は joint Pose に畳まない**: R0 の typed sample を
+  VRM-S1 の application service(expression/lookAt)へ **typed sink**
+  として渡し、同一 frame revision で commit(§1-4 phase 写像)
+- **authority**: graph 所有時は apply、timeline/shot 所有時は
+  extract-only — source authority ごとの policy(暗黙の二重 writer
+  禁止 — §3 の規範)
+- **hot reload generation**: asset 単位 generation(WP147 の機構)に
+  乗せ、`.vrma`/profile の reload で該当 clip の cursor/pose を
+  generation 不一致として reset/rebind(旧 cursor の暗黙再利用禁止 —
+  R0 §6 の指示どおり)。status/trace identity 付き
+- デモ: projects/vrm_xr_demo(または自己完結 VRM project)に
+  `.vrma` 由来モーションを 1 本追加し、既存 Idle/Walk と anim_graph で
+  ブレンドが決定的に動くことを実証(合成 fixture 可 — 配布 vrma は
+  ローカルのみ)
+
+依存: WP176/177(済)+ WP147(済・generation 機構)+
+VRM-S1(済)。見積: 中〜大。
+排他: AnimationSource/graph 接続面 + typed sink 配線 + fixture。
+**abi_v1.hpp は凍結(additive 公開面のみ可)。vrmadecoder/
+vrmaretarget(WP176/177 成果)は消費のみ。renderer 実行系・
+communication・editor 面に触らない**。
+
+受け入れ = §4 逐語 + R0 §6 引き継ぎ表の全項 + ブレンド実証(二回
+実行 byte 一致)+ reload generation fixture + 既存全テスト無変更 +
+golden SKIP 0・byte 不変 + player 8 秒 + CI green
+
+完了レポート: `docs/design_reviews/2026-07-19_wp178_report.md`
+
+### WP179(済 2026-07-19): E2 — 物理トリガー(OverlapEnter/Exit)
+
+前提: **`docs/design_event_layer.md` v1.1 = ユーザーレビュー承認済み
+(2026-07-19)**。承認範囲 = Enter/Exit のみ(OverlapStay は不採用 —
+需要が出たら additive)。
+
+参照: design_event_layer v1.1 §3 + `docs/design_physics_queries.md`
+(collider/PhysWorld の規範)。
+
+- scene JSON: collider に `trigger: true`(既存 WP151 codec の
+  boolean field として additive — schema/codec の更新込み)。trigger
+  collider は物理衝突せず検知領域としてのみ働く
+- **PhysWorld が毎フレーム overlap 集合の差分検出** → 差分だけを
+  `OverlapEnter { self, other }` / `OverlapExit { self, other }`
+  (self/other = EntityId)として emit。押しっぱなし中は毎フレーム
+  飛ばない
+- 配送は E1 バスの規範どおり(次フレーム先頭・emit 順安定)。
+  イベント定義は PELICAN_REGISTER_EVENT の通常経路(特権なし)
+- **Exit の保証**: entity destroy・collider remove・scene 遷移で
+  「Enter したが Exit が来ない」を作らない(destroy 時に pending
+  Exit を発行 or 規範として「遷移時は全 clear・Exit なし」を明示 —
+  どちらを選んだかレポートに明記。推奨 = destroy/remove では Exit
+  発行・scene 全遷移では発行しない(WP90 full reset と整合))
+- 決定性: 差分検出の列挙順を安定化(EntityId 順等の決定的順序)。
+  リプレイ二回で Enter/Exit 列 byte 一致の fixture
+- 対称 pair(A-B)の重複抑止規則(self=A/other=B と self=B/other=A
+  の両方を発行するのか片方かを規範化 — 推奨 = 両方発行(各 self
+  視点で受けられる)・順序は EntityId 順で安定)
+
+依存: E1(済 WP56)+ WP151(codec)+ WP153/158(collider
+adapter — 変更ではなく整合確認)。見積: 中。
+排他: phys の trigger/差分検出面 + collider codec の trigger field +
+fixture。**イベントバス本体・schema 三 header・editor 面・renderer に
+触らない**。
+
+受け入れ = 上記規範(Exit 保証・対称 pair・安定順)+ リプレイ決定性
+fixture + 既存全テスト無変更 + golden SKIP 0・byte 不変 + player 8 秒
++ CI green
+
+完了レポート: `docs/design_reviews/2026-07-19_wp179_report.md`
+
+---
+
+未完了 WP と運用規則は [active ledger](implementation_plan.md) を参照。

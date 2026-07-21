@@ -1,8 +1,13 @@
 # pelican2 設計文書 索引
 
-最終更新: 2026-07-18。文書が矛盾したら**凍結済み > ドラフト、設計文書 > 指示書**の順で優先。
+最終更新: 2026-07-21(`hybrid_v1` 実装・RPE 設計地点)。文書が矛盾したら
+**凍結済み > ドラフト、設計文書 > 指示書**の順で優先し、実装状態は
+コード・テスト・`design_reviews` の完了レポートを正とする。
 
-> **使い方を知りたい人へ**: 設計文書とは別に、人間向けの利用マニュアル(チュートリアル+リファレンス、実装状況バッジ付き)が [`manual/`](manual/00_index.md) にある。「いま何がどう動くか」はそちらが正(コード準拠・2026-07-10 全域調査)。
+> **使い方を知りたい人へ**: 設計文書とは別に、人間向けの利用マニュアル
+> (チュートリアル+リファレンス、実装状況バッジ付き)が
+> [`manual/`](manual/00_index.md) にある。2026-07-10 の全域調査を基礎に、
+> WP179 までの状態差分を同期している。
 
 > **実装を読みたい人へ**: 起動、ECS、Vulkan、RPC、テストをソースから追う技術資料は [`source-code-guide/`](source-code-guide/README.md) にまとめている。
 
@@ -30,23 +35,29 @@
 | `design_scene_format.md` | v1.1・実装済み(WP25) | pelican.scene v1。エンベロープ・light コンポーネント・objects[].name |
 | `design_render_feature_modules.md` | v1・実装済み(WP28〜30) | **パージ可能 GPU 機能**。fragment 合成・defines・RT overrides |
 | `design_compute_task_graph.md` | v2・実装済み(WP33〜35) | **統一フレームグラフ**。依存宣言→機械最適化→手詰めの三層。CPU 拡張予約 |
-| `design_input_actions.md` | v1・I1 実装済み(WP39) | 入力四層・アクション層・OpenXR 整合・収録→データ化(I2〜I4 未) |
-| `design_project_interpretation_layer.md` | v1・部分実施 | 解釈(pelican_project)とバインダの分離。ターゲット分離は未 |
-| `design_project_dcc_houdini.md` | v1・部分実施 | Houdini レーン・**pelican.import manifest**(WP21 済)。VAT レーン未 |
-| `design_asset_format_policy.md` | v1.1・部分実施 | **二層モデル**(ランタイム層/ソース層)。EXR 済、KTX2/音声未 |
-| `design_build_tiers.md` | v1・実装中(WP40) | **配布ビルド**。PELICAN_WITH_* ユニット + dist-config 導出 |
-| `design_physics_queries.md` | v1・P2 実装済み(WP46/47) | 物理クエリ(raycast/overlap)。collider・PhysWorld・シミュは将来トラック(§6) |
+| `design_render_pipeline_extensibility.md` | v1 方針・RPE1 未着手 | **renderer 拡張境界の正本**。preset/eject/provider/backend、typed compiled plan、draw sort/MSAA/XR/hot reload の分離 |
+| `design_input_actions.md` | v1・I1〜I4 + XR action/pose 実装済み(WP39/49/89/91/130/132) | 入力四層・アクション層・プロファイル・収録/再生。HR2-I は未 |
+| `design_project_interpretation_layer.md` | v1・主要分離実施済み | 解釈(`pelican_project`)と engine binder の分離 |
+| `design_project_dcc_houdini.md` | v1・engine 側受け口実装済み | import manifest/VAT 再生は実装済み。Houdini adapter は外部リポジトリ |
+| `design_asset_format_policy.md` | v1.1・主要形式実装済み | 二層モデル。EXR/KTX2/音声/import を実装済み(本文の古い状態列に注意) |
+| `design_build_tiers.md` | v1・B1/B2 + CI matrix 実装済み(WP40/41/137/165) | `PELICAN_WITH_*` ユニット、dist-config、OFF/clean-clone gate |
+| `design_physics_queries.md` | v2・query/E2 実装済み(WP46/47/107/179) | raycast/overlap/shapeCast、provider ABI、trigger Enter/Exit。剛体 simulation は未 |
 | `design_camera_system.md` | v1・C2 実装済み(WP48/50) | カメラ glTF 同等以上。定義/コントローラ/演出の三層 |
-| `design_material_shading.md` | v1 ドラフト・未実装 | **pelican.material v1**・シェーダ契約の安定 API 化・variant 規律(M1→M3) |
-| `design_postprocess_temporal.md` | v1 ドラフト・未実装 | **history/velocity + ポストスタック規約**(フレームグラフ v2.5、T1→T3) |
-| `design_scene_flow.md` | v1 ドラフト・S1 実装中(WP52) | シーン遷移(loadScene)+ 非同期ロード(S2 将来) |
-| `design_audio.md` | v1 ドラフト・A1 実装中(WP51) | **PELICAN_WITH_AUDIO** + miniaudio + null バックエンド + バス |
-| `design_persistence.md` | v1・承認済み・実装中(WP55/P1) | user:// スキーム・設定/セーブの三区分 |
-| `design_event_layer.md` | v1・API 承認済み・実装中(WP56) | フレーム境界配送のイベントバス・物理トリガー |
+| `design_material_shading.md` | M1〜M3.5 実装済み | `pelican.material`、`.surface`、FrameUBO/SSBO、stdlib/OpenPBR、screen snapshot。spv-link は experimental |
+| `design_postprocess_temporal.md` | T1/T2 + TAA 実装済み(WP88/95/112〜115) | history/velocity、projection jitter、ユーザー空間 TAA stdlib |
+| `design_scene_flow.md` | S1 実装済み(WP52) | 同期 scene transition。非同期 S2 は未 |
+| `design_audio.md` | A1 実装済み(WP51) | `PELICAN_WITH_AUDIO` + miniaudio/null backend + bus。A2/A3 は未 |
+| `design_persistence.md` | P1 実装済み(WP55/65) | `user://`、settings/saveData、atomic write |
+| `design_event_layer.md` | v1.1・E1/E2 実装済み(WP56/71/179) | frame-boundary typed event bus + deterministic `OverlapEnter/Exit` |
 | `design_determinism_services.md` | v1・実装済み(WP53) | PCG32 決定的乱数 + シード規約 |
 | `design_text_hud.md` | v1・実装済み(WP54) | debug_text feature(ビットマップ HUD)。本格テキストは 2D/UI 設計で |
-| `design_project_vcs.md` | v1・レビュー 3 巡承認済み・実装中(WP55/57) | asset store(マウント間接化)+ assets manifest + project init 雛形 + 外部 DAM 契約 |
-| `design_asset_containers.md` | v1・レビュー 3 巡承認済み・実装中(WP55〜) | **#フラグメント参照**・glTF シーン抽出・PSD レーン(psd-tools)・import ルール表 |
+| `design_project_vcs.md` | v1・主要機能実装済み(WP55/57/66) | asset store、assets manifest、project init、外部 DAM 契約 |
+| `design_asset_containers.md` | v1・K1〜K4 実装済み(WP77/79/81/84) | `#` fragment、glTF scene extract、PSD/atlas tools、import rules |
+| `design_animation_graph.md` | v2.1・A0〜A2 + VRM/VRMA 実装済み(WP94〜102/111/121〜134/176〜178) | graph v1、typed VRMA decode/retarget/source。graph v2/live/SpringBone は未 |
+| `design_openxr.md` | v2.1・XR0〜XR4実装済み(WP125〜138) | sequential stereo PCVR、action/pose、mirror、Simulator gate。XR2b/standalone は未 |
+| `design_editor_tooling.md` | v2.5・共通 authoring/editor 基盤実装済み(WP149〜172) | typed RPC/service、transaction、undo/save/snapshot/watch/preview。Qt viewport/gizmo は未 |
+| `design_asset_hot_reload.md` | v2.1・HR0〜HR2-G + targeted animation generation 実装済み | 残り HR2-I、U3、VRMA watcher 自動配線 |
+| `design_debug_profiling.md` | D-P0〜D-P2 実装済み(WP139/140/143/145) | debug labels、RenderDoc、GPU/VRAM/XR timing。D-P3以降は未 |
 | `dcc_integration_qa_2026-06-12.md` | — | DCC 連携 QA。**§6 = pelican.vat v1 仕様の正** |
 | `design_roadmap_renderworld.md` | 古い | 全体ロードマップと ECS 境界。合意後回し方針(2026-07-02)で一部失効 |
 | `design_cloth_simulation.md` | 古い | 布シミュ構想。VAT レーンに実質置換 |
@@ -69,12 +80,19 @@
   `design-engine-gui-system.md`(GUI 三層: tokens/primitives/surfaces)
 - `pelican-houdini-adapter/docs/`: 契約文書のコピー(正本はこちら側)
 
-## 方向決定済み・設計/実装待ち(2026-07-07 時点)
+## 次段の方向(2026-07-19 時点)
 
-- ゲームロジック = ネイティブ C++(`design_game_logic_native.md`、G1a→G1b→G2)
-- devstudio = Qt(`design_devstudio_direction.md`、D1→D3)
-- コマンド層 stage 3 = GO(複数インスタンス要件込み — implementation_plan §3)
-- OpenXR = 推進(view 次元・XrFrameTarget — implementation_plan §3)
-- 2D ゲーム機能 + 2D⇔3D 変換 / アニメーショングラフ —
-  implementation_plan §3 に方向記録。設計文書はこれから
-- 物理シミュレーション = 将来トラック(`design_physics_queries.md` §6、Jolt 推奨)
+- hot reload 残件 = HR2-I(input/profile)、U3(UI)、VRMA watcher 配線
+- editor = 共通 authoring/RPC/ImGui 基盤は済。Qt embedded viewport、
+  picking/gizmo、WebSocket multiple-client は後続
+- animation = VRMA-I0 まで済。graph v2、clip event sidecar、timeline/live
+  source、SpringBone は設計・WP 登録待ち
+- OpenXR = sequential PCVR は済。XR2b multiview/depth と Quest
+  standalone SA0〜SA3 が後続
+- physics = query/Jolt provider/E2 trigger は済。rigid-body simulation は
+  将来トラック(`design_physics_queries.md` §6、Jolt 推奨)
+- rendering = `hybrid_v1` の deferred + forward 合成と semantic material route
+  は基盤実装済み。次は `design_render_pipeline_extensibility.md` の RPE1
+  (typed resolve 境界)から、draw sort、screen input、MSAA、XR variant、
+  pipeline transaction の順に進める。lighting/IBL、motion blur、bindless、
+  compute particles はこの境界上で需要と計測を伴う設計から開始
