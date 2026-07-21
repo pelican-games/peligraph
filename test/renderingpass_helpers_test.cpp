@@ -1,10 +1,12 @@
 #include "../src/core/renderingpass/fullscreenpassinfojsonparser.hpp"
+#include "../src/core/renderingpass/materialpassattachments.hpp"
 #include "../src/core/renderingpass/materialpassinfojsonparser.hpp"
 #include "../src/core/renderingpass/passattachmentoptionsjsonparser.hpp"
 #include "../src/core/renderingpass/passdefinitionjsonparser.hpp"
 #include "../src/core/renderingpass/passinfojsonparser.hpp"
 #include "../src/core/renderingpass/passsequencejsonparser.hpp"
 #include "../src/core/renderingpass/renderingpassjsonhelpers.hpp"
+#include "../src/core/renderingpass/renderingpasscontainer.hpp"
 #include "../src/core/renderingpass/renderingpassruntimecompiler.hpp"
 #include "../src/core/renderingpass/renderingpasstargetjsonparser.hpp"
 #include "../src/core/renderingpass/rendertargetmetadataresolver.hpp"
@@ -12,6 +14,7 @@
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <variant>
@@ -558,6 +561,72 @@ TEST_CASE("material pass info parser applies explicit material range", "[renderi
 
     REQUIRE(pass_def.materialInfo().material_start == 3);
     REQUIRE(pass_def.materialInfo().material_count == 7);
+}
+
+TEST_CASE("material pass contracts parse and filter independently of local pass ids",
+          "[renderingpass][material-routing]") {
+    REQUIRE(forwardMaterialPassColorAttachmentFormat ==
+            vk::Format::eR16G16B16A16Sfloat);
+    PassDefinition pass_def;
+    pass_def.name = "forward_opaque";
+    pass_def.pass_info = MaterialPassInfo{};
+    parseMaterialPassInfoFromJson(
+        pass_def, nlohmann::json{{"material_contract", "forward_opaque_v1"}});
+    REQUIRE(pass_def.materialInfo().contract == MaterialPassContract::forward_opaque_v1);
+    REQUIRE(materialPassShaderContract(pass_def.materialInfo().contract) ==
+            MaterialShaderContract::forward_scene_color_v1);
+    REQUIRE(materialPassAcceptsMaterial(
+        pass_def.materialInfo().contract, pass_def.name,
+        MaterialRouteClass::forward_opaque,
+        MaterialShaderContract::forward_scene_color_v1));
+    REQUIRE_FALSE(materialPassAcceptsMaterial(
+        pass_def.materialInfo().contract, pass_def.name,
+        MaterialRouteClass::forward_transparent,
+        MaterialShaderContract::forward_scene_color_v1));
+    REQUIRE_FALSE(materialPassAcceptsMaterial(
+        pass_def.materialInfo().contract, pass_def.name,
+        MaterialRouteClass::forward_opaque,
+        MaterialShaderContract::forward_scene_color_v1,
+        std::optional<std::string>{"hero_forward"}));
+    REQUIRE_THROWS_WITH(
+        parseMaterialPassInfoFromJson(
+            pass_def, nlohmann::json{{"material_contract", "unknown_v1"}}),
+        Catch::Matchers::ContainsSubstring("Unknown material_contract"));
+
+    REQUIRE(materialPassAcceptsMaterial(
+        MaterialPassContract::legacy_gbuffer_v1, "geometry",
+        MaterialRouteClass::deferred_geometry,
+        MaterialShaderContract::legacy_gbuffer_v1));
+    REQUIRE(materialPassAcceptsMaterial(
+        MaterialPassContract::legacy_gbuffer_v1, "geometry",
+        MaterialRouteClass::deferred_geometry,
+        MaterialShaderContract::gbuffer_v1));
+    REQUIRE_FALSE(materialPassAcceptsMaterial(
+        MaterialPassContract::legacy_gbuffer_v1, "geometry",
+        MaterialRouteClass::forward_opaque,
+        MaterialShaderContract::forward_scene_color_v1));
+}
+
+TEST_CASE("material pass availability distinguishes fullscreen-only graphs",
+          "[renderingpass][material-routing]") {
+    RenderingPassContainer container;
+
+    PassDefinition fullscreen;
+    fullscreen.name = "present";
+    fullscreen.pass_info = FullscreenPassInfo{};
+    container.registerCompiledRenderingPass(CompiledRenderingPass{
+        "fullscreen_only", {{fullscreen, PassId{0}}}, {}});
+    REQUIRE_FALSE(container.hasMaterialPasses());
+
+    PassDefinition material;
+    material.name = "geometry";
+    material.pass_info = MaterialPassInfo{};
+    container.registerCompiledRenderingPass(CompiledRenderingPass{
+        "with_material", {{material, PassId{0}}}, {}});
+    REQUIRE(container.hasMaterialPasses());
+    REQUIRE(container.supportsMaterialPass(
+        MaterialRouteClass::deferred_geometry,
+        MaterialShaderContract::gbuffer_v1));
 }
 
 TEST_CASE("material pass info parser preserves defaults when material range is omitted", "[renderingpass]") {

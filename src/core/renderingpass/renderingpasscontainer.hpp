@@ -5,6 +5,7 @@
 #include "renderingpass.hpp"
 #include <string>
 #include <string_view>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -27,6 +28,10 @@ DECLARE_MODULE(RenderingPassContainer) {
     void setEnabledFeatures(std::vector<std::string> feature_names);
     bool isFeatureEnabled(std::string_view feature_name) const;
     const std::vector<std::string> &getEnabledFeatures() const;
+    bool hasMaterialPasses() const;
+    bool supportsMaterialPass(MaterialRouteClass route,
+                              MaterialShaderContract shader_contract,
+                              const std::optional<std::string> &exact_pass = std::nullopt) const;
 };
 
 } // namespace Pelican

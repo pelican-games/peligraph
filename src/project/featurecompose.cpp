@@ -1509,9 +1509,15 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         throw std::runtime_error("Rendering config must be an object");
     }
 
-    const auto feature_instances = parseFeatureInstances(config);
+    const auto preset_resolution = resolveRenderPipelinePreset(
+        config, dependencies.load_pipeline_json
+                    ? dependencies.load_pipeline_json
+                    : dependencies.load_feature_json);
+    const auto &resolved_config = preset_resolution.config;
+
+    const auto feature_instances = parseFeatureInstances(resolved_config);
     std::vector<std::string> shader_defines;
-    appendShaderDefines(shader_defines, config, "rendering config");
+    appendShaderDefines(shader_defines, resolved_config, "rendering config");
     if (!feature_instances.empty() && !dependencies.runtime_shader_compiler_enabled) {
         throw std::runtime_error(std::string{runtime_compiler_required_message});
     }
@@ -1549,7 +1555,7 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         loaded_features.push_back(LoadedFeature{instance, feature_name, std::move(feature)});
     }
 
-    auto composed = config;
+    auto composed = resolved_config;
     composed.erase("features");
     initializeCanonicalColorPipeline(composed, hdr_enabled);
 
@@ -1597,6 +1603,7 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         enforceCanonicalOrder(pass_set.at("passes"));
     }
     enforceTerminalAfterComputeTasks(composed);
+    auto material_routing = resolveMaterialRoutingTable(composed);
     RenderFeatureComposeResult result;
     result.config = std::move(composed);
     result.shader_defines = std::move(shader_defines);
@@ -1604,6 +1611,8 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     result.excluded_feature_names = std::move(excluded_feature_names);
     result.projection_jitter = std::move(projection_jitter);
     result.feature_instances = std::move(resolved_instances);
+    result.material_routing = std::move(material_routing);
+    result.pipeline_preset = preset_resolution.preset;
     result.used_features = !feature_instances.empty();
     return result;
 }

@@ -94,6 +94,9 @@ RenderFeatureComposeResult composeRenderFeaturesForRegistration(
             false,
 #endif
             options.include_feature,
+            [&dependencies](std::string_view ref) {
+                return dependencies.path_resolver.loadText(ref);
+            },
         });
     dependencies.shader_defines = composed.shader_defines;
     return composed;
@@ -193,6 +196,16 @@ RenderingPassConfigRegistrationResult registerRenderingPassConfigData(
     }
     if (!bound_instances.empty()) {
         composition_metadata["feature_instances"] = std::move(bound_instances);
+    }
+    if (!composed.material_routing.is_null()) {
+        composition_metadata["material_routing"] = composed.material_routing;
+    }
+    if (composed.pipeline_preset) {
+        composition_metadata["pipeline_preset"] = {
+            {"ref", composed.pipeline_preset->reference},
+            {"name", composed.pipeline_preset->name},
+            {"version", composed.pipeline_preset->version},
+        };
     }
     if (!dependencies.options.rendering_pass_name_suffix.empty()) {
         composition_metadata["graph_variant"] = "xr";

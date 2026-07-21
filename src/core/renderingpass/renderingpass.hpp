@@ -3,6 +3,7 @@
 #include "../container.hpp"
 #include "../handle.hpp"
 #include "../shader/shaderreference.hpp"
+#include "../../project/renderpipeline.hpp"
 #include <array>
 #include <cstdint>
 #include <optional>
@@ -54,6 +55,7 @@ inline constexpr bool isSwapchainRenderTarget(GlobalRenderTargetId rt_id) {
 struct MaterialPassInfo {
     uint32_t material_start = 0;
     uint32_t material_count = 0;
+    MaterialPassContract contract = MaterialPassContract::legacy_gbuffer_v1;
 };
 
 enum class FullscreenPushConstantData {

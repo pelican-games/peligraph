@@ -1,5 +1,7 @@
 #pragma once
 
+#include "renderpipeline.hpp"
+
 #include <functional>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -16,6 +18,10 @@ struct RenderFeatureComposeDependencies {
     // composed.  This is a startup-only policy seam used by immutable graph
     // variants; returning false removes the whole feature from that variant.
     std::function<bool(std::string_view, const nlohmann::json &)> include_feature;
+    // Kept separate from feature loading so embedders may apply distinct
+    // allowlists.  Registration normally supplies the same PathResolver-backed
+    // loader to both seams.
+    RenderPipelinePresetLoader load_pipeline_json;
 };
 
 struct RenderFeatureComposeResult {
@@ -25,6 +31,8 @@ struct RenderFeatureComposeResult {
     std::vector<std::string> excluded_feature_names;
     std::optional<nlohmann::json> projection_jitter;
     nlohmann::json feature_instances = nlohmann::json::array();
+    nlohmann::json material_routing;
+    std::optional<RenderPipelinePresetInfo> pipeline_preset;
     bool used_features = false;
 };
 

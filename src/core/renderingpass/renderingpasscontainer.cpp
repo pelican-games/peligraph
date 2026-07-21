@@ -48,4 +48,33 @@ const std::vector<std::string> &RenderingPassContainer::getEnabledFeatures() con
     return enabled_feature_names;
 }
 
+bool RenderingPassContainer::hasMaterialPasses() const {
+    for (const auto rendering_pass_id : registered_pass_ids) {
+        const auto &rendering_pass = rendering_passes.get(rendering_pass_id);
+        if (std::any_of(rendering_pass.passes.begin(), rendering_pass.passes.end(),
+                        [](const auto &pass) { return pass.definition.isMaterial(); })) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool RenderingPassContainer::supportsMaterialPass(
+    MaterialRouteClass route, MaterialShaderContract shader_contract,
+    const std::optional<std::string> &exact_pass) const {
+    for (const auto rendering_pass_id : registered_pass_ids) {
+        const auto &rendering_pass = rendering_passes.get(rendering_pass_id);
+        for (const auto &compiled : rendering_pass.passes) {
+            const auto &pass = compiled.definition;
+            if (!pass.isMaterial()) continue;
+            if (exact_pass && pass.name != *exact_pass) continue;
+            if (materialPassAcceptsMaterial(pass.materialInfo().contract, pass.name,
+                                            route, shader_contract, exact_pass)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 } // namespace Pelican

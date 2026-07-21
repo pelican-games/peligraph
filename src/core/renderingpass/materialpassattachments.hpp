@@ -25,6 +25,13 @@ inline constexpr const std::array<vk::Format, 5> &materialPassColorAttachmentFor
     return hdr ? materialPassColorAttachmentFormatsHdr : materialPassColorAttachmentFormatsSdr;
 }
 
+// Routed forward materials are composed with deferred lighting before the
+// single presentation tone curve.  Keep this ABI scene-linear and capable of
+// preserving values above 1.0 regardless of whether the display HDR feature
+// is enabled.
+inline constexpr vk::Format forwardMaterialPassColorAttachmentFormat =
+    vk::Format::eR16G16B16A16Sfloat;
+
 inline constexpr vk::Format materialPassDepthAttachmentFormat = vk::Format::eD32Sfloat;
 
 } // namespace Pelican

@@ -118,8 +118,17 @@ void validateMaterialPassAttachments(const PassDefinition &pass_def, const Rende
         return;
     }
 
-    if (pass_def.output_color.size() != materialPassColorAttachmentFormatsSdr.size()) {
-        throw std::runtime_error("Material pass requires exactly five color outputs: " + pass_def.name);
+    const auto contract = pass_def.materialInfo().contract;
+    const bool forward = materialPassShaderContract(contract) ==
+                         MaterialShaderContract::forward_scene_color_v1;
+    const auto expected_color_count = forward ? std::size_t{1}
+                                              : materialPassColorAttachmentFormatsSdr.size();
+    if (pass_def.output_color.size() != expected_color_count) {
+        throw std::runtime_error("Material pass contract '" +
+                                 std::string{materialPassContractName(contract)} +
+                                 "' requires exactly " + std::to_string(expected_color_count) +
+                                 " color output" + (expected_color_count == 1 ? "" : "s") +
+                                 ": " + pass_def.name);
     }
     if (!isConcreteRenderTarget(pass_def.output_depth)) {
         throw std::runtime_error("Material pass requires depth output: " + pass_def.name);
@@ -135,7 +144,9 @@ void validateMaterialPassAttachments(const PassDefinition &pass_def, const Rende
         }
 
         const auto rt = rt_metadata.get(rt_id);
-        if (rt.format != expected_formats[i]) {
+        const auto expected_format = forward ? forwardMaterialPassColorAttachmentFormat
+                                             : expected_formats[i];
+        if (rt.format != expected_format) {
             throw std::runtime_error("Material pass color output format mismatch: " + rt.name + " in pass: " +
                                      pass_def.name);
         }
