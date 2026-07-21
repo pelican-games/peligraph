@@ -579,6 +579,28 @@ teardown の最終段は phase で分岐します。
 
 したがって「module の destructor から GPU object を defer する」コードは、terminal shutdown では失敗します。destructor は既に所有している資源で完結させるか、明示 teardown 段階へ移してください。受け入れ状態の確認は `acceptingResources()`(core)/ `acceptingResourcesForTesting()`(module ラッパ)です。
 
+> 🧩 **難所 — drain 中は受け付けない**([`releaseEligible()`](../../src/core/vkcore/deletionqueue.cpp#L55) / [`beginFrame()`](../../src/core/vkcore/deletionqueue.cpp#L74))
+>
+> **何をする所か**: defer された資源を「積んだ frame + in-flight 分」だけ寝かせ、期限の来たものだけ本物のデストラクタへ落とします。`beginFrame()` が毎 frame の入口です。
+>
+> **素朴に読むと**: `draining` を立てて 4 行の `DrainScope` で必ず倒す、という同じ形が [releaseEligible](../../src/core/vkcore/deletionqueue.cpp#L60) と [flushAll](../../src/core/vkcore/deletionqueue.cpp#L89) に重複していて、「念のための再入禁止」に見えます。実際に塞いでいるのはもっと具体的な事故です — `release()` の実体は [`optional<T>.reset()`](../../src/core/vkcore/deletionqueue.hpp#L28)、つまり**走るのは寝かせた型のデストラクタで、その中身は各 container のコード**です([`VertBufContainer` の `DeferredRelease::~DeferredRelease()`](../../src/core/model/vertbufcontainer.cpp#L437) は owner のメソッドを呼び戻します)。そこから `defer()` が呼ばれると [`pending.push_back`](../../src/core/vkcore/deletionqueue.hpp#L57) が走り、`std::vector` が再確保された瞬間に走査中の `it` の指す先が消えて、直後の [`pending.erase(it)`](../../src/core/vkcore/deletionqueue.cpp#L67) が UB になります。`flushAll()` は先に空 vector と `swap` してあるので erase は壊れませんが、drain 中に積まれた資源が「全部流した」はずの queue に黙って居残ります。drain 中の `defer()` を [`logic_error`](../../src/core/vkcore/deletionqueue.cpp#L50) にするのは、この 2 つを「壊れる」から「その場で分かる」へ変えるためで、`DrainScope` が try-catch でなく RAII なのは、`release()` が throw しても、後から早期 return を足しても、1 か所でフラグを倒せるからです。もう 1 つの [`if (current_frame < in_flight_frames) return;`](../../src/core/vkcore/deletionqueue.cpp#L77) は「最初の数 frame は掃除を遅らせる」という設計上の猶予ではなく、**符号なし減算の保護**です。`current_frame` は `uint64_t` なので、起動直後に `1 - 2` を計算しても負にはならず `2^64 - 1` へ回り込み(ラップアラウンド — 符号なし整数の演算は範囲外へ出ると剰余を取って反対側の端へ折り返す規則)、`it->frame <= oldest_frame` が全件真になって **GPU がまだ使っている資源を即座に破棄します**。この 2 行を「無駄な分岐」として消すと、起動直後の 1 frame だけが壊れる、再現性の低い不具合になります。
+>
+> **骨子**:
+> ```text
+> beginFrame():  requireAccepting()            ← accepting と draining をここで見る
+>                ++current_frame
+>                if (current_frame < in_flight_frames) return;   ← 下の減算を守るためだけの 2 行
+>                releaseEligible(current_frame - in_flight_frames)
+>
+> releaseEligible(): draining=true + DrainScope(RAII で false へ戻す)
+>                    pending を走査し frame <= oldest を release() → erase(it)
+>                    ↑ この release() の中から defer() が来たら logic_error
+> ```
+>
+> **手がかり**: `in_flight_frames` は [`in_flight_frames_num = 2`](../../src/core/vkcore/rendertarget.hpp#L24) 由来なので、この保護が実際に効くのは frame 1 の 1 回だけです。`flushAll()` は wait-idle を呼びません(待つのはデストラクタの [`wait_idle_hook()`](../../src/core/vkcore/deletionqueue.cpp#L33) と、`wait_idle` step を先に通す [teardown の順序](../../src/core/appflow/teardown.cpp#L49))。テストは [`deletionqueue_test.cpp#L37`](../../test/deletionqueue_test.cpp#L37)(in-flight 分だけ遅れて破棄)/ [#L104](../../test/deletionqueue_test.cpp#L104)(drain 後は `defer()` も `beginFrame()` も throw)です。
+>
+> **不変条件**: `draining` を立てる区間には必ず RAII で対になる復帰を置く(早期 return と例外の両方を塞ぐ)。`releaseEligible()` の引数は `current_frame >= in_flight_frames` のときだけ計算する。`release()` の実行中に `pending` を触らない。
+
 ## 9.13 宣言・schema はあるが、runtime が未完成または別経路のもの
 
 ソースを読むときに「型がある = 利用可能」と誤解しやすい箇所です。

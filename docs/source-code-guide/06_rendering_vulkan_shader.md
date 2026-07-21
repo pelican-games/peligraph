@@ -406,6 +406,25 @@ logical frame には不変条件があり、破ると例外になります([rend
 
 UI pass だけは [`RenderPassExecutor` の特別分岐](../../src/core/vkcore/render_pass_executor.cpp#L20) で早期 return します。UI renderer 自身が rendering scope を管理するため、通常 pass と同じ `beginRendering()` を二重に呼ばないためです。同様に ImGui pass も [専用分岐](../../src/core/vkcore/render_pass_executor.cpp#L25) で処理されます。
 
+> 🧩 **難所 — uint16 の天井が 16384**([`buildDrawBatch()`](../../src/core/ui/drawcommands.cpp#L10))
+>
+> **何をする所か**: UI pass が投げる quad コマンド列を塗り順に並べ、隣接する同一 `DrawKey` を 1 本の [`DrawRun`](../../src/core/ui/drawcommands.hpp#L54) にまとめ、頂点と 16 bit 索引を展開します。
+>
+> **素朴に読むと**: 並べ替えの基準は `(layer, decl_seq)` = **塗り順**であって key ではありません([drawcommands.cpp#L11-L13](../../src/core/ui/drawcommands.cpp#L11))。run を切る条件は [#L32](../../src/core/ui/drawcommands.cpp#L32) の `runs.back().key != quad.key` **だけ**なので、ソート後でも同じ key の run が複数できます。「無駄だからまとめよう」と非隣接の同一 key を束ねると重なり順が入れ替わり、バッチ最適化のつもりで Z 順を壊します(`DrawKey::operator==` は pipeline / texture_page / sampler / clip_id しか見ないので、`texture` 文字列や scissor が違っても同一 key になりえます — [drawcommands.hpp#L38](../../src/core/ui/drawcommands.hpp#L38))。もう 1 つが [`static_assert(maxQuads * 4 == 65536)`](../../src/core/ui/drawcommands.hpp#L29) です。索引は `std::uint16_t`、quad は 4 頂点なので、16384 quad が**ちょうど**表現限界(最後の `base` は 65532)。上限検査([#L14-L19](../../src/core/ui/drawcommands.cpp#L14))が頂点構築より**前**に置いてあるのはこのためで、順序を入れ替えると [#L36](../../src/core/ui/drawcommands.cpp#L36) の `static_cast<std::uint16_t>` が黙って巻き、画面外の三角形やゴミが出ます。
+>
+> **骨子**:
+> ```text
+> stable_sort(layer, decl_seq)                  # 塗り順。key は見ない
+> if (commands.size() > maxQuads) throw         # ← 必ず頂点構築より前
+> for quad in quads:
+>   runs.back().key != quad.key なら run を追加  # 隣接のみ併合
+>   base = uint16(vertices.size())              # 最大 16383*4 = 65532
+> ```
+>
+> **手がかり**: 上限超過の例外が報告する widget 名は `commands.back().widget_id`、つまり**ソート後の末尾** = 最前面の widget であって、quad を増やした原因の widget とは限りません。スプライト側の [`maxQuadsPerChunk = 16384`](../../src/core/userpublic/sprite/spriteworld.hpp#L18) が同じ値で切り、超過を例外ではなく chunk 分割で処理するのも同じ 16 bit 索引の制約です([spriteworld.cpp#L107](../../src/core/userpublic/sprite/spriteworld.cpp#L107)、[#L140](../../src/core/userpublic/sprite/spriteworld.cpp#L140))。テストは [`ui_foundation_test.cpp`](../../test/ui_foundation_test.cpp) の "Draw commands are stably sorted and only adjacent equal keys merge" と、A/B/A が 3 run に割れることを固定する U1 の正規テストです。
+>
+> **不変条件**: `maxQuads * 4` が uint16 の表現域を超えないこと(`maxQuads` を増やすなら索引を 32 bit にする)。run の併合は隣接のみ。上限検査は頂点構築より前。
+
 ### Material 描画のデータ経路
 
 モデル描画は概ね次の所有分担です。
@@ -449,6 +468,42 @@ skinning palette(スキニング行列パレット — ボーンごとの変換�
 >
 > **不変条件**: 丸めは `floor(x+0.5)`(`std::round` に替えない)。スナップ量はスプライト内で一定に保つ。条件を緩めるときは対応する `PixelSnapReason` を残したまま緩めること — 黙って eligible にしないのがこの API の設計です。
 
+> 🧩 **難所 — firstInstance は索引**([`stageModelInstance()` の `DrawIndexedIndirectCommand`](../../src/core/renderer/polygoninstancecontainer.cpp#L345))
+>
+> **何をする所か**: モデル 1 個を staging するとき、primitive ごとに indirect 描画コマンド(GPU が読むバッファへ描画引数を並べておき、CPU からは「このバッファのここから N 個」とだけ指示する方式)を 1 つずつ積む所です。
+>
+> **素朴に読むと**: `instanceCount` は常に `1` で、`firstInstance` には `staged->id.index` が入ります([#L347-L353](../../src/core/renderer/polygoninstancecontainer.cpp#L347))。Vulkan の意味での firstInstance は「インスタンス番号の開始値」ですが、ここは 1 個しか描かないので開始値としては何の意味もありません。実際にはこのフィールドは、**GPU 側 SSBO**(shader storage buffer object — シェーダから添字で自由に読める大きなバッファ)**の行番号**を渡す唯一の無料チャネルとして使われています。頂点シェーダは `gl_BaseInstance` から model 行列([default.vert#L29](../../src/core/resources/default.vert#L29))、material instance の行([pelican_material_instance.glsl#L63](../../src/core/resources/shaders/include/pelican_material_instance.glsl#L63))、skin palette の基底(`gl_BaseInstance * PELICAN_MAX_SKIN_JOINTS`、[pelican_skinning.glsl#L17](../../src/core/resources/shaders/include/pelican_skinning.glsl#L17))、morph weight の instance([pelican_morph.glsl#L63](../../src/core/resources/shaders/include/pelican_morph.glsl#L63))を一斉に引きます。つまり `ModelInstanceId.index` は CPU 側のスロット番号であると同時に、これら複数バッファの行番号でもあります。この一致が不変条件で、instance を詰め直す(compaction する)なら全バッファを同じ順で並べ替えなければならず、片方だけ動かすとメッシュは正しいのに別インスタンスの姿勢で描かれます。
+>
+> **骨子**:
+> ```text
+> CPU: cmd.instanceCount = 1;  cmd.firstInstance = id.index
+> GPU: gl_BaseInstance = i → objects[i].model
+>                        → material instance[i]
+>                        → skinPalette[i * 128 + joint]
+>                        → morphInstances[i]
+> ```
+>
+> **手がかり**: push constant は engine 用の先頭 64 byte と material index で埋まっており(§6.9)、instance ごとの値を載せる余地がありません。material グループごとに 1 回の [`drawIndexedIndirect`](../../src/core/renderer/materialrender.cpp#L70) で回す以上、「今どのインスタンスか」を伝える経路が firstInstance しか残っていない、というのがこの使い方の理由です。CPU 側も `firstInstance` を instance の同定に使います([`removeModelInstance()`](../../src/core/renderer/polygoninstancecontainer.cpp#L481) の `erase_if`、[`rebuildModelInstances()`](../../src/core/renderer/polygoninstancecontainer.cpp#L724))。バッファ書き込みの offset も同じ添字です(skin は [#L387-L388](../../src/core/renderer/polygoninstancecontainer.cpp#L387) の `maxSkinJoints * id.index`、material override は [#L491-L493](../../src/core/renderer/polygoninstancecontainer.cpp#L491))。
+>
+> **不変条件**: `ModelInstanceId.index` = model / previous-model / skin palette / morph weight / material override 各バッファの行番号。スロットは retire して再利用しますが、生きている instance を詰め直しません([`modelinstance_slotmap_test.cpp`](../../test/modelinstance_slotmap_test.cpp))。
+
+> 🧩 **難所 — enum の並びが描画範囲**([`build_draw_calls`](../../src/core/renderer/polygoninstancecontainer.cpp#L583) / [`render_commands` のソート](../../src/core/renderer/polygoninstancecontainer.cpp#L570))
+>
+> **何をする所か**: [`triggerUpdate()`](../../src/core/renderer/polygoninstancecontainer.cpp#L517) の中で、全 primitive の indirect コマンドを 1 本の配列に並べ替えて GPU へ上げ、その上に「三人称ビュー用」「一人称ビュー用」の描画区間([`DrawIndirectInfo`](../../src/core/renderer/polygoninstancecontainer.hpp#L190))を 2 組作り置きします。
+>
+> **素朴に読むと**: [#L580-L582](../../src/core/renderer/polygoninstancecontainer.cpp#L580) のコメント "The enum order third/both/first makes each view's visible commands contiguous" は事実の宣言で、**なぜそうなるかは書いてありません**。鍵は、ソートキーの最後が `view_visibility` であること([#L572-L575](../../src/core/renderer/polygoninstancecontainer.cpp#L572))と、[`PrimitiveViewVisibility`](../../src/core/model/modeltemplate.hpp#L31) の**宣言順**が `third_person_only = 0` / `both = 1` / `first_person_only = 2` であることの結び付きです。この順なら、三人称ビューは値 2 だけを外す(= 区間の末尾を落とす)、一人称ビューは値 0 だけを外す(= 先頭を落とす)ので、どちらも残りが 1 本の連続区間になります。だから material グループごとに `DrawIndirectInfo` が 1 個で済み、`offset` と `draw_count` のペアだけでビューを切り替えられます。もし `both` を端へ動かすと(例えば both / third / first)、一人称側で both と first の間に穴が空き、同じ material に区間が 2 本要ります — **結果は壊れず、ソート順も正しいまま描画コール数だけが跳ねる**ので、原因が分かりません。つまり enum の定義順は単なる列挙ではなく描画性能の仕様です。
+>
+> **骨子**:
+> ```text
+> sort key = (material, source_material_index, skinned, view_visibility)
+>   1 グループ内の並び: [ third(0) … ][ both(1) … ][ first(2) … ]
+>   三人称: 末尾の first を落とす → 連続   一人称: 先頭の third を落とす → 連続
+> ```
+>
+> **手がかり**: 区間を切る条件は material / source_material_index / skinned の変化だけで、`view_visibility` は見ません([#L614-L617](../../src/core/renderer/polygoninstancecontainer.cpp#L614))。可視でないコマンドに当たったら `flush()` して区間を閉じるだけです。`build_draw_calls(false)` / `(true)` が `draw_calls[0]` / `[1]` を作り、描画時は [`getDrawCalls(first_person_view)`](../../src/core/renderer/polygoninstancecontainer.cpp#L1342) が添字で選ぶだけになります(両ビュー分を 1 回で作り置きするので、フレーム内では不変です)。実例は VRM の頭部を一人称で隠す用途([`vrm_xr_demo_test.cpp`](../../test/vrm_xr_demo_test.cpp))。
+>
+> **不変条件**: `view_visibility` はソートキーの**最後**に置くこと。値を増やすときは「どのビューでも残りが連続する並び」を先に決めること(端に置いてよいのは、片方のビューでだけ落ちる値です)。
+
 ## 6.6 Frame target: window と headless の共通インターフェース
 
 [`IFrameTarget`](../../src/core/vkcore/frametarget.hpp#L20) が描画先の抽象インターフェースです。
@@ -477,6 +532,22 @@ virtual std::vector<uint8_t> readbackLastFrameRGBA8() = 0;
 
 headless capture は [`RenderTarget::captureLastFrameToPng()`](../../src/core/vkcore/rendertarget.cpp#L66) が BGRA/RGBA を補正して PNG を書きます。swapchain 実装の [`readbackLastFrameRGBA8()`](../../src/core/vkcore/swapchainframetarget.cpp#L448) も、surface が TRANSFER_SRC を持てば windowed で readback を実装済みです。持たない場合のみ `capture unavailable_windowed` 例外になります。
 
+> 🧩 **難所 — 0 タイムアウトで降りる**([`SwapchainFrameTarget::beginFrame(bool nonblocking)`](../../src/core/vkcore/swapchainframetarget.cpp#L231))
+>
+> **何をする所か**: `render_begin()`(必ず 1 枚返す)と `try_render_begin()`(返せなければ諦める)を 1 本に畳んだ関数で、fence 待ち → swapchain image の acquire → 初期 barrier までを行います。
+>
+> **素朴に読むと**: 同じ関数の中で `nonblocking` が 4 回分岐します — framebuffer が 0×0 なら諦める([#L233](../../src/core/vkcore/swapchainframetarget.cpp#L233))、`waitForFences` のタイムアウトが `0`([#L243](../../src/core/vkcore/swapchainframetarget.cpp#L243))、`acquireNextImageKHR` のタイムアウトが `0`([#L254](../../src/core/vkcore/swapchainframetarget.cpp#L254))、そして `eErrorOutOfDateKHR` の扱い([#L261](../../src/core/vkcore/swapchainframetarget.cpp#L261))。とくに out-of-date のとき blocking なら `recreateSurfaceDependants()` して `continue`、nonblocking なら `std::nullopt` という非対称が読めず、`do { … } while (true)` が無限ループに見えます。理由は呼び出し元にあります。`nonblocking = true` で入る唯一の経路は [`OpenXrMirrorSink`](../../src/core/openxr/openxrmirrorsink.cpp#L173) が呼ぶ `tryRenderBegin()`、つまり**落としてよい任意の sink** である XR ミラーだけです。XR のフレームループを OS ウィンドウの都合で待たせないため、fence も acquire も timeout `0`(無限待ちではなく即時ポーリング)にして、`eTimeout` / `eNotReady` をそのまま「今回は描かない」へ翻訳します。out-of-date で recreate しないのも同じ理由で、swapchain の作り直しは device 待ちを伴う重い操作なので、ミラー側からは絶対に起こさず、次の blocking な `render_begin()` に任せます。ループが回るのは blocking で recreate した直後の 1 周だけで、その後の acquire は成功するか throw します。
+>
+> **骨子**:
+> ```text
+> render_begin()      = *beginFrame(false)  # 無限待ち。out-of-date は recreate して retry
+> try_render_begin(c) =  beginFrame(true)   # timeout 0。諦めたら false = フレームドロップ
+> ```
+>
+> **手がかり**: 「今回は描かない」は `false` / `nullopt` であって例外ではありません([frametarget.hpp#L24-L26](../../src/core/vkcore/frametarget.hpp#L24))。ミラー側は drop を `stats.dropped` に数えて次へ進みます。選んだモードは `current_frame_nonblocking` に残り、提出後の [`render_end()`](../../src/core/vkcore/swapchainframetarget.cpp#L411) でも効きます — present が suboptimal / out-of-date を返したとき、nonblocking なら `extent_changed = true` を立てるだけで recreate せず、後続の flat フレームに任せます(そこのコメントが規範です)。
+>
+> **不変条件**: nonblocking 経路は swapchain を作り直さないこと。ここを「ついでに recreate する」よう直すと、第9章の「XR mirror は drop 可能な optional sink」という前提が壊れます。
+
 ## 6.7 Offscreen render target と layout tracker
 
 frame target の color/depth と、frame graph 設定で宣言する offscreen target は別物です。後者は [`RenderTargetContainer`](../../src/core/renderingpass/rendertargetcontainer.hpp#L15) が、名前、format、固定/相対 extent、image、view を所有します。
@@ -504,6 +575,24 @@ layout transition は単なる状態ラベルではありません。[`makeTrans
 compute target は [`transitionResourcesForDispatch()`](../../src/core/renderingpass/computetask.cpp#L470) で `eGeneral` へ遷移します。しかし tracker は old layout と new layout が同じなら [`transition()` から早期 return](../../src/core/vkcore/render_target_layout_tracker.cpp#L76) します。また frame graph の明示 RAW barrier 実装は [`bufferReadAfterWriteBarrier()`](../../src/core/renderingpass/computetask.cpp#L501) で、buffer でなければ return します。
 
 したがって調査時点では、同じ storage image を `GENERAL` のまま連続 compute task で write → read する場合、graph 上の順序は付きますが、その依存専用の image memory barrier は発行されません。layout が変わる compute → render などとは事情が違います。これは「設定に edge を書けば全 resource の同期も完全」という意味ではない、現在実装上の制約です。
+
+> 🧩 **難所 — 色は経路名で申告する**([`OffscreenFrameTarget::OffscreenFrameTarget()`](../../src/core/vkcore/offscreenframetarget.cpp#L97) / [`caps()`](../../src/core/vkcore/offscreenframetarget.cpp#L227))
+>
+> **何をする所か**: frame target 側(headless)の color attachment のフォーマットを決め、選んだ結果を `FrameTargetCaps::color_path` という**文字列**で外へ申告します。
+>
+> **素朴に読むと**: 第一候補は `R8G8B8A8Srgb` ですが、`COLOR_ATTACHMENT` と `TRANSFER_SRC` を optimalTiling で両方満たさない実装があるため `R8G8B8A8Unorm` へ落ちます(UNORM でも満たさなければ throw して黙って進みません、[#L112-L115](../../src/core/vkcore/offscreenframetarget.cpp#L112))。読みにくいのは、その判定式に**テスト専用フラグが `||` で混ざっている**ことです([`force_unorm_color_path_for_testing`](../../src/core/launchconfig.hpp#L46) / [#L108](../../src/core/vkcore/offscreenframetarget.cpp#L108))。この分岐は大抵の開発機では絶対に通らないので、放っておくとテストが一度も踏まない到達不能経路になります。フラグはそれを CI で踏むための唯一の入口で、[`rpc_color_contract_test.cpp#L190`](../../test/rpc_color_contract_test.cpp#L190) が `GENERATE(false, true)` で両方を回します。そして肝心なのは、**フォールバックしても出力バイトの意味は変わらない**ことです。選んだ format は [`getSwapchainFormat()`](../../src/core/vkcore/rendertarget.cpp#L43) 経由で終端 pass のフォーマットになり、UNORM なら [`registerFullscreenPipeline()`](../../src/core/renderingpass/renderingpassruntimecompiler.cpp#L235) が `PELICAN_OUTPUT_UNORM_FALLBACK` を define して [`output_transform.frag`](../../src/core/resources/output_transform.frag) が `linearToSrgb()` を自分で掛けるからです(§6.1 の「HW が OETF」の代替)。違うのは**手段と丸め誤差**だけで、同じテストが許容差を `fallback ? 1 : 0` に切り替えているのがその現れです。
+>
+> **骨子**:
+> ```text
+> Srgb が COLOR_ATTACHMENT|TRANSFER_SRC を満たす → Srgb 、 color_path = "srgb"
+> 満たさない or force_unorm_..._for_testing      → Unorm、color_path = "unorm_fallback"
+>                                                  → 終端 frag に PELICAN_OUTPUT_UNORM_FALLBACK
+> Unorm でも満たさない                            → throw
+> ```
+>
+> **手がかり**: つまり `color_path` は「絵が違う」の申告ではなく、**どちらの経路で sRGB になったか**の申告です。RPC の `get_status` は `color.path` として返し([rpcserver.cpp#L877](../../src/core/communication/rpcserver.cpp#L877))、`readback_encoding` は経路によらず常に `"srgb"` です。golden 比較はこの文字列を見て許容差(0 か ±1 LSB か)を選ぶ必要があります。同じ判定は windowed 側にもあり、[`SwapchainFrameTarget::caps()`](../../src/core/vkcore/swapchainframetarget.cpp#L429) は surface format が `R8G8B8A8_SRGB` / `B8G8R8A8_SRGB` のときだけ `"srgb"` を返します。
+>
+> **不変条件**: フォールバックしても readback の意味(sRGB エンコード済み 8 bit)を変えないこと。経路を増やしたら `color_path` の値も増やし、テスト用フラグで到達できるようにすること。候補が尽きたら例外にして黙って進まないこと。
 
 ## 6.8 Compute task
 
@@ -940,6 +1029,22 @@ fixture は [`test/fixtures/gpu_timing_attribution.json`](../../test/fixtures/gp
 > contract and is deliberately shared by RPC, tests, and the design report.
 
 12 行の各エントリが `request-local` / `explicitly suppressed` / `read-only` のいずれかに分類され、DeletionQueue、RenderTargetContainer history、`PolygonInstanceContainer` の前フレーム状態、`Renderer` の temporal history、swapchain / XR mirror などが **明示的に抑止されている** ことを列挙します。`Renderer` 側の対応は [`previewIsolationStateJson()`](../../src/core/vkcore/renderer.cpp#L1060) です。
+
+> 🧩 **難所 — 圧縮しない zlib を書く**([`zlibStored()`](../../src/core/vkcore/previewexecutor.cpp#L42) / [`crc32()`](../../src/core/vkcore/previewexecutor.cpp#L22) / [`appendChunk()`](../../src/core/vkcore/previewexecutor.cpp#L33))
+>
+> **何をする所か**: preview の RGBA8 バッファを、zlib も libpng も使わずに PNG バイト列へ変換します([`encodePng()`](../../src/core/vkcore/previewexecutor.cpp#L69))。
+>
+> **素朴に読むと**: `0x78 0x01` の 2 バイト、`LEN` とその 1 の補数 `NLEN`、テーブル無しのビット単位 CRC32、手書きの adler32 が並んでいて、「圧縮ライブラリを避けた」だけではなぜこれが PNG として正当なのかが分かりません。理屈はこうです。PNG の `IDAT` は生の deflate ではなく **zlib ストリーム**でなければなりませんが、deflate には**無圧縮ブロック(type 00)**があり、「最終ブロックフラグ 1 bit + LEN + NLEN + 生バイト」という並びだけで完全に合法です。だから「圧縮しないが正しい zlib」が数十行で書けます。`0x78 0x01` は CM=8 / CINFO=7 で、FCHECK 条件(2 バイトを big-endian で見て 31 の倍数、`0x7801 = 31 × 991`)を満たす既定ヘッダです。65535 で切りながらループするのは `LEN` が uint16 だからで、`IHDR` の `{8, 6, 0, 0, 0}` は 8 bit / truecolor+alpha / 非インタレースを意味します。
+>
+> **骨子**:
+> ```text
+> [78 01] { [BFINAL][LEN][~LEN][raw ≤65535] }*  [adler32(圧縮前バイト列)]
+> chunk = [len][type][data][crc32(type + data)]     ← len は CRC の対象外
+> ```
+>
+> **手がかり**: 2 つのチェックサムは**対象が違います**。adler32 は zlib ストリームの中身、つまり**圧縮前**のスキャンライン列に対して取り([#L59-L65](../../src/core/vkcore/previewexecutor.cpp#L59))、CRC32 は各チャンクの `type + data` に対して取ります(長さフィールドは含めません、[#L39](../../src/core/vkcore/previewexecutor.cpp#L39))。取り違えると「多くのビューアは開けるのに一部が壊れていると言う」という追いにくい形で出ます。各スキャンラインの先頭に付く `0` は PNG の filter type(None)で、これも省けません([#L74](../../src/core/vkcore/previewexecutor.cpp#L74))。`crc32()` の `0xedb88320u & (0u - (crc & 1u))` は分岐無しの条件付き XOR です。
+>
+> **不変条件**: adler32 は圧縮前、CRC32 は `type + data`、無圧縮ブロックは 65535 byte 以下。エンコーダが入力だけで決まる純粋関数であること — 外部の圧縮器に置き換えると同じ入力から同じバイト列が出る保証が消えます(テストは [`editorpreview_test.cpp`](../../test/editorpreview_test.cpp)、base64 が `iVBORw0KGgo` で始まる = PNG シグネチャ一致を固定)。
 
 ---
 

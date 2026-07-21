@@ -173,6 +173,24 @@ XRセッション中は **XR action backend** もこの層に入ります。`syn
 
 eventはbutton、cursor move、axis deltaの三種です（[`InputEvent`](../../src/core/os/inputstate.hpp#L86)）。
 
+> 🧩 **難所 — リプレイ番号の平行移動**([`InputSequenceRuntime::prepareFrame()`](../../src/core/os/inputsequence.cpp#L425))
+>
+> **何をする所か**: 記録ファイルの 1 フレーム分の `InputEvent` 列を、実行中の `InputState` の event queue へ注入します。上の「勝手に番号を付け替えません」の裏側で、**番号を合わせているのはこちら側**です。
+>
+> **素朴に読むと**: [`queueEvent()`](../../src/core/os/inputstate.cpp#L335) は注入された `event_seq` が `next_event_seq` 未満なら `recorded input event sequence is not monotonic` を投げます。記録ファイルの生の番号は 0 始まりなので、再生を始める頃には既に window event で `next_event_seq` が進んでおり、そのまま流すと開始と同時に例外です。そこで再生側が「現在の `nextEventSequence()` − 記録の先頭 event の番号」を**最初の非空フレームで一度だけ**求め、以後は全 event に同じ値を足して**平行移動**します。毎フレーム引き直したくなりますが、そうすると記録中の `event_seq` の**間隔**(同フレーム内の前後だけでなく、フレームを跨いだ差)が潰れ、記録の相対順序が保存されません。オーバーフロー検査を `event_seq + offset` で書けないのも読み解きが要ります — 足した瞬間に `std::uint64_t` が巻いて検査自体が無意味になるので、`unassigned_sequence - 1 - offset` を右辺に置く「足す前に足せるか調べる」定石になっています。`unassigned_sequence`(= `uint64` の最大値)は「番号未割り当て」を表す番兵値(sentinel — 取り得ない値を 1 つ予約して「値なし」を表す手法)で、`queueEvent()` 側にも `event_seq == unassigned_sequence - 1` なら `next_event_seq` を番兵へ固定して以後の自動採番を止める枝があり、この上限検査と対になっています。
+>
+> **骨子**:
+> ```text
+> 最初の非空フレームだけ:
+>   offset = next > events.front().event_seq ? next - events.front().event_seq : 0
+> 各 event: event_seq > unassigned_sequence - 1 - offset → throw  ← 足す前に検査
+>           event_seq += offset                                   ← 間隔はそのまま
+> ```
+>
+> **手がかり**: `startReplay()` / `stopReplay()` がどちらも `replay_sequence_offset.reset()` するので、offset は 1 回の replay に閉じています(`std::optional` の空が「まだ決めていない」印)。空フレームでは `queueEvents()` ごと飛ばすため、先頭が空だと offset の決定は最初に event が現れたフレームまで遅れます。テストは [`inputsequence_test.cpp#L55`](../../test/inputsequence_test.cpp#L55) の "replay reconstructs held and released snapshots through InputState" と、単調性違反を弾く側の [#L41](../../test/inputsequence_test.cpp#L41)。
+>
+> **不変条件**: offset は replay 開始後 1 回だけ決め、以後変えない(記録の相対順序と間隔が保存されます)。オーバーフロー検査は必ず加算の**前**に、引き算の形で行う。`queueEvent()` の単調性検査を緩めて「注入側で番号を付け替える」設計へ寄せない。
+
 ### L3: InputSnapshot
 
 [`beginFrame()`](../../src/core/os/inputstate.cpp#L373) がpending列を一回処理し、down/pushed/released、mouse position、mouse deltaを生成します。
@@ -190,6 +208,28 @@ eventはbutton、cursor move、axis deltaの三種です（[`InputEvent`](../../
 action set stackの実体は`std::vector<std::string>`（set名の列）で、[`Actions::pushActionSet` / `popActionSet`](../../src/core/userpublic/userinput.hpp#L150) が`push_back` / `pop_back`する本物のLIFOです（実体は [`InputActionsRuntime::pushSet()`](../../src/core/userpublic/userinput.cpp#L192)）。[`evaluateInputActions()`](../../src/core/os/actionmap.cpp#L836) はこのvectorを`rbegin()`→`rend()`、つまり**末尾要素から先頭要素へ**走査します。最後にpushしたsetが最初に評価される＝高優先、ということです。上位setが使ったcontrolを`ConsumedControls`へ記録し、下位setでは同じkey/axisを無視します。
 
 Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`pose`型は実装済みで（WP130/132）、[`InputActionFrame::pose()`](../../src/core/os/actionmap.cpp#L683) は`poses` mapから返し、未サンプルならdefaultの`ActionPose`を返します。XR pose providerがない環境（flat）ではpose sampleが来ないため常にdefaultです。
+
+> 🧩 **難所 — 消費は set 単位で効く**([`evaluateInputActions()`](../../src/core/os/actionmap.cpp#L836))
+>
+> **何をする所か**: action set stack を高優先から走査し、各 action の binding を評価します。使われた key / mouse axis / gamepad control を記録して、下位 set が同じ control を二重に読まないようにします。
+>
+> **素朴に読むと**: `ConsumedControls` が `consumed` / `consumed_by_set` / `consumed_by_action` と 3 つあり、なぜ 3 段要るのかがコードからは読めません。鍵は **binding の評価が参照するのは常に `consumed` だけ**という点です(`readBinding(resolved, snapshot, consumed, action.type)`)。`consumed_by_action` は action を抜けるときに `consumed_by_set` へ、`consumed_by_set` は set を抜けるときに `consumed` へ、と**一段遅れて**合流します。つまり同じ set の中では、どの action も互いの入力を奪えません。おかげで JSON の `actions` 配列を並べ替えても結果が変わらず、決定性が宣言順に依存しません。`consumed_by_action.merge(...)` を `consumed.merge(...)` へ 1 行内側で書き換えると「同じ set の先頭 action が W を食う」挙動になり、順序依存が静かに入ります。その代償として、同一 action に複数 binding があるときは互いを見ないまま [`mergeSample()`](../../src/core/os/actionmap.cpp#L392) で**加算**され、`clampAxis()` で [-1,1] へ丸められます。WASD とスティックを同時に倒して 2.0 が 1.0 に飽和するのは仕様であって取りこぼしではありません。`released` も `any_release && !held` と**全 binding を見た後で**決めるので、どれかを離しても他が押されていれば立ちません。
+>
+> **骨子**:
+> ```text
+> stack を rbegin→rend(最後に push した set が最初 = 高優先)
+>   set ごと  : consumed_by_set = {}
+>     action ごと: consumed_by_action = {}
+>       binding ごと: readBinding(..., consumed, ...)  ← 見るのは常に consumed だけ
+>                     consumed_by_action へ記録
+>     released = any_release && !held
+>     consumed_by_set.merge(consumed_by_action)   ← action を抜けてから
+>   consumed.merge(consumed_by_set)               ← set を抜けてから
+> ```
+>
+> **手がかり**: fixture では `jump`(gameplay)と `confirm`(menu)が両方 `kbd:space` です([gameplay_menu.json](../../test/fixtures/input_actions/valid/gameplay_menu.json) / [keyboard.json](../../test/fixtures/input_actions/valid/keyboard.json))。stack が `{"gameplay","menu"}` のとき menu が先に評価されて Space を消費するので、`confirm.held` が真・`jump.held` が偽になります([inputactions_test.cpp#L161](../../test/inputactions_test.cpp#L161))。`pose` 型 action はループ先頭で `continue` するため一切消費しません(pose は別経路の `frame_input.pose_samples` から入ります)。`ConsumedControls::merge()` は全フィールドの論理和なので、記録は増える一方で消えません。
+>
+> **不変条件**: 2 つの `merge` の位置を内側へ動かさない(同一 set 内は互いに非干渉 = 宣言順非依存)。`readBinding()` へ渡すのは `consumed` だけに保つ。同一 action の複数 binding は加算 + clamp であり、先勝ちにしない。`released` は全 binding を見終わってから決める。
 
 ### raw inputとAction消費は別
 
@@ -225,6 +265,25 @@ Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`po
 - damping: `1 - exp(-damping * dt)`でframe rateに依存しにくい補間
 
 controllerは名前bindingからtarget transformを毎回resolveし、scene遷移・entity削除を検知できます。
+
+> 🧩 **難所 — 基底は +Z を向く**([`rotationFromPose()`](../../src/core/userpublic/cameracontrollersystem.cpp#L136))
+>
+> **何をする所か**: controller が作った `CameraPose`(pos / dir / up)を、scene object の transform へ書き戻すための四元数へ変換します。直交化してから `glm::quat_cast`(回転行列から四元数を復元する glm の関数)へ渡す 4 行です。
+>
+> **素朴に読むと**: `right = cross(pose.up, dir)` の順が `glm::lookAt` の慣習と逆で、しかも `up` を `cross(dir, right)` で作り直しています。前提は **このエンジンのカメラは +Z が前**であること — [`directionFromYawPitch()`](../../src/core/userpublic/cameracontrollersystem.cpp#L88) は yaw=pitch=0 で `(0,0,1)` を返し、`yawFromDirection()` は `atan2(x, z)`、`pitchFromDirection()` は `asin(y)`、ECS 側の [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L13) も `rotation * vec3{0,0,1}` を dir にしています。この規約では基底の巡回順が X×Y=Z、すなわち Y×Z=X(= `cross(up, dir)` が right)、Z×X=Y(= `cross(dir, right)` が up)になります。`glm::lookAt` 系は view 空間の前方が -Z なので `cross(dir, up)` の順で、そこから写すと外積が逆向きになります。厄介なのは**どちらも例外にならず画が出る**ことです。2 本とも反転すれば行列式は +1 のままなので、前方軸まわりに 180° 回った上下逆の回転が返ります。片方だけ直すと行列式 -1 の鏡像行列になり、`quat_cast` は入力が正規直交(各列が長さ 1 で互いに直交)な回転行列である前提で符号を復元するため、返る四元数に意味がなくなります。`up` を作り直すのも同じ系統で、ユーザが与えた `pose.up` が `dir` と直交している保証はなく、そのまま列に置くと非直交な行列を `quat_cast` へ渡して回転が歪みます。
+>
+> **骨子**:
+> ```text
+> glm::mat3{right, up, dir} は列ベクトル 3 本 = 第1列 X基底 / 第2列 Y基底 / 第3列 Z基底
+>   dir   = normalizeOr(pose.dir, +Z)             ← 第 3 列が前方
+>   right = normalizeOr(cross(up, dir), +X)
+>   up    = normalizeOr(cross(dir, right), +Y)    ← 与えられた up ではなく作り直した up
+> quat_cast(mat3{right, up, dir})
+> ```
+>
+> **手がかり**: `normalizeOr()` の fallback は順に +X / +Y / +Z で、3 本揃うと単位行列 = 恒等回転です。長さ 0 のベクトルが来ても `NaN` を四元数へ流さないための受け皿なので、`glm::normalize` を直接使う形へ戻さないこと。同じ直交化は [`makePose()`](../../src/core/userpublic/cameracontrollersystem.cpp#L74) と `updateFly()` にもあり、そちらは `worldUpFor()` が world up と dir のほぼ平行(内積の絶対値が 0.98 超)を検知して up hint を +Z へ切り替え、縮退を避けます。書き戻し先は scene object の transform で、`Camera` 本体へは [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L707) が dir / up のまま渡ります(§5.6 の `active_scene_camera_locked` を迂回する経路です)。
+>
+> **不変条件**: 外積の順は `right = cross(up, dir)` / `up = cross(dir, right)`(+Z 前方の巡回順)を保つ。`quat_cast` へ渡す前に必ず直交化する。fallback は縮退時の受け皿であって直交性までは保証しないので、`dir` と `up` をほぼ平行にしない責務は呼び出し側(`worldUpFor()`)に残る。
 
 ## 5.7 Physics
 
@@ -760,6 +819,27 @@ teardownの8段階（[第2章 §2.3](02_runtime_lifecycle.md)）のうち`owner-
 > **手がかり**: `PolicyFieldTraits<PolicyField>::presence` / `::has_enum_values` が required/defaulted と enum 有無の分岐点です。指紋は**文字列比較しかしません**。フィールドの順序を入れ替えただけでも別物になりますが、これは仕様です。対応する回帰ケースは上の 9 ケースのうち `schema_drift` / `version_bump_success` / `version_bump_failure`。
 >
 > **不変条件**: 指紋に入れる項目・順序・キー名を変えると、既存の全 behavior が `schema_changed_without_version_bump` になります(変えるなら reload 側の互換方針とセットで)。`ordered_json` を `json` に変えない。指紋生成はデフォルト値の encode を経由するので、この経路を短絡させない。
+
+> 🧩 **難所 — 例外を捨ててから unload**([`GameLogicReloader::reloadTransaction()`](../../src/core/gamelogic/gamelogicreload.cpp#L231))
+>
+> **何をする所か**: 候補 DLL のシャドウコピーを検証し、teardown → 旧 DLL の unload → 新 DLL の load → rebuild を 1 つの transaction として実行します。どこで失敗しても旧 DLL の状態へ戻すのがロールバック側の仕事です。
+>
+> **素朴に読むと**: `catch` 節が `reload_error = error.what();` の 1 行だけで、後始末が全部 catch の**外**に置かれているのが不自然に見えます。理由は例外オブジェクトの所有者です — 例外は投げた側(= game DLL)のコードで構築され、デストラクタと unwind メタデータ(巻き戻し情報 — 例外が飛んだときにスタックを遡ってデストラクタを呼ぶために必要な表。DLL ごとに持ちます)もその DLL に属します。`catch` ブロックの中では例外がまだ生きているので、そこで `FreeLibrary` / `dlclose` すると、ハンドラを抜ける瞬間に消えたコードへ飛びます。症状は「reload 失敗時だけ不定のクラッシュ」で、後から原因を追うのはほぼ不可能です。だからメッセージだけ `std::string` へ写して脱出し、DLL の解放は例外が完全に消えてから行います(ソースのコメント "Copy the message and leave the handler before unloading a DLL that may own the active exception's destructor/unwind metadata." が根拠です)。ロールバックが `previous_unloaded` で 2 経路に分かれるのも同系統の注意で、teardown が旧 DLL を落とす**前**に失敗したなら旧ハンドルはまだ生きているので、そのハンドルと owner をそのまま再利用します。2 個目のコピーを load すると static 登録の owner が定まらなくなるからで、こちらもソースのコメントが規範です。
+>
+> **骨子**:
+> ```text
+> try { teardown(); unload(previous) → previous_unloaded=true; load(candidate); rebuild(); }
+> catch (...) { reload_error = what() だけを写す }   ← ここでは何も unload しない
+> ── 以降、例外はもう生存していない ──
+> active が残っていれば teardown + unload、candidate のコピーを removeFileNoThrow
+> ロールバック: previous_unloaded  → previous->path を新しい owner で load し直す
+>               そうでなければ      → previous のハンドル / owner をそのまま再利用
+>               rebuild() が失敗したら teardown + unload して active を捨てる
+> ```
+>
+> **手がかり**: [`unload()`](../../src/core/gamelogic/gamelogicreload.cpp#L157) は `noexcept` で、`FreeLibrary` / `dlclose` の前に `releaseGameLogicRegistrations(owner)` を呼びます — owner 単位の登録解除(§5.2)が先、コード解放が後です。候補の後始末が [`removeFileNoThrow()`](../../src/core/gamelogic/gamelogicreload.cpp#L72) なのは `noexcept` 文脈から例外を漏らさないためで、`.pdb` も一緒に消します。`ReloadStateGuard` は transaction 中だけ `reload_in_progress` を立てる RAII です。候補の検証は load 前ではなく [`validateCandidate()`](../../src/core/gamelogic/gamelogicreload.cpp#L169) が**一度ロードして即 unload する**形で行うので、teardown に入る時点で候補は既に 1 回開かれています。回帰は [`test/run_game_logic_reload.ps1`](../../test/run_game_logic_reload.ps1)(壊れた DLL / ABI 不一致の後も旧挙動が続くこと、participant の `applied` / `failed` カウンタ、`systems=1` で登録が漏れないこと)。
+>
+> **不変条件**: `catch` の中で DLL を unload しない。`previous_unloaded` の 2 経路を 1 本化しない(旧ハンドルの再利用は「まだ落としていない」ときだけ正しい)。後始末経路は `noexcept` を保ち、`removeFileNoThrow()` を throw する削除へ替えない。ロールバックの `rebuild()` が失敗したら active を残さず捨てる。
 
 ### 決定性
 

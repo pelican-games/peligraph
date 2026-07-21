@@ -189,6 +189,24 @@ sceneは実装を追う価値の高い、純粋層とruntime層の典型です�
 
 この時点ではECS型やGPUには触れません。
 
+> 🧩 **難所 — 3値のDFSが名前を出す**([`normalizeScene()`](../../src/project/sceneformat.cpp#L68) 内の visit ラムダ [#L166](../../src/project/sceneformat.cpp#L166))
+>
+> **何をする所か**: `parent` エッジをたどって親子関係の循環を検出し、循環に参加しているobject名を並べたメッセージでthrowします。
+>
+> **素朴に読むと**: `auto &&self` を引数に取って `self(self, i)` で再帰する書き方が回りくどく見えます。generic lambda(引数型が `auto` のラムダ)は本体を書いている時点で自分の型が確定していないので、キャプチャ経由で自分を呼べません。`std::function<void(size_t)>` にすれば書けますが、型消去とヒープ確保が入り、純粋パーサ層にわざわざ間接呼び出しを増やすことになります。自分を第1引数で受け取ればキャプチャは参照のままで、インライン化も効きます(これを不要にする C++23 の deducing this は使えません — `pelican_project` は C++20 ビルドです、[src/project/CMakeLists.txt#L16](../../src/project/CMakeLists.txt#L16))。もっと本質的なのは `state` が `0/1/2` の3値である点です。「訪問済み」を1値でしか持たないと、複数の子が同じ親を指す形(親リンクは森なので普通に起きます)で2度目の到達を循環と誤報するか、区別を諦めて毎回スタックを線形探索する羽目になります。1=いま辿っているスタック上、2=走査済みで安全、を分けて初めて `state[parent] == 1` だけが循環になります。さらに `stack` を別に持つのは「循環がある」ではなく `NodeA -> NodeB -> NodeC -> NodeA` と**実際の名前の並び**をエラーに載せるためで、scene作者に対する診断の質がこの構造の目的です。エッジの向きが子→親である点も、`std::find` で循環の始点を拾える前提になっています。
+>
+> **骨子**:
+> ```text
+> state[i] = 1; stack.push(i)
+> parent あり かつ state[parent] == 0 -> self(self, parent)
+> parent あり かつ state[parent] == 1 -> stack の parent 位置から末尾までを " -> " で連結して throw
+> stack.pop(); state[i] = 2
+> ```
+>
+> **手がかり**: 「未知parent」と「曖昧parent」はDFSより**前**の別ループで弾いてあるので([#L132-L147](../../src/project/sceneformat.cpp#L132))、DFS中の `object_index_by_name.at(parent_name)` は必ず成功します。名前の無いobjectは `object_index_by_name` に載らないため親になれません。テストは [`sceneformat_test.cpp#L110`](../../test/sceneformat_test.cpp#L110) で、`NodeA` / `NodeB` / `NodeC` の3名がメッセージに出ることまで検査します。
+>
+> **不変条件**: 3値stateの `1` と `2` を統合しない。エラーには循環に参加する名前の並びを載せる(「循環あり」だけにしない)。重複名・未知親・曖昧親の検査はDFSより前に済ませる。
+
 ### 2. runtime用にcomponentを分類
 
 [`prepareSceneBindings()`](../../src/core/loader/scene.cpp#L91) はcomponentを四系統へ分けます。
@@ -358,6 +376,59 @@ tinygltf Model
 >
 > **不変条件**: binding群はoffset 0から結合paletteを隙間なく覆う。`JOINTS_0` は必ず `joint_offset` 加算済みでGPUへ届く。skinned primitiveの頂点はnode変換を含まない。
 
+> 🧩 **難所 — 頭に触れたら三角ごと**([`splitVrmAutoTriangles()`](../../src/core/model/vrmfirstperson.cpp#L23) / 呼び出しは [gltf.cpp#L1597](../../src/core/model/gltf.cpp#L1597))
+>
+> **何をする所か**: VRM 1.0 の firstPerson アノテーションが `auto` のメッシュを、「一人称でも見える三角形」と「三人称専用の三角形」の2群へ分けます。
+>
+> **素朴に読むと**: まず索引が3段に変換されるのが読みづらい所です。`JOINTS_0` の値は**そのskinのjoints配列内のローカル番号**で、`model.skins[skin_index].joints` を引いて初めてglTFのnode indexになり、そこから頭関連ノード表([`headRelatedNodes()`](../../src/core/model/gltf.cpp#L1464))を引いて分類します。もう一つが呼び出し**位置**の制約です。この呼び出しは、直後にある `joints[component] + joint_offset` の書き換え([gltf.cpp#L1617](../../src/core/model/gltf.cpp#L1617))より**前**でなければなりません。offset加算後へ動かすと、渡した `skin_joint_nodes` の範囲外になるか、たまたま範囲内なら別ボーンとして解決されて静かに誤分類されます。この順序制約はコード上どこにも書かれておらず、隣接する2箇所の並びとしてしか表れていません。分類規則自体も非対称です — 重み `> 0` の成分だけを見る(重み0のjointスロットは無視する)一方、頂点が1つでも頭関連なら**三角形ごと** `third_person_only_indices` へ落とします。`first_person_only` の群を作らないのは、VRMの `auto` が「一人称で頭を消す」だけを意味し、逆方向は明示アノテーションでしか作れないからで、[`VrmAutoTriangleSplit`](../../src/core/model/vrmfirstperson.hpp#L22) がバケツを2本しか持たないのはその反映です。
+>
+> **骨子**:
+> ```text
+> joint(JOINTS_0 のローカル番号) -> skin_joint_nodes[joint] -> glTF node index
+> weight > 0 かつ head_related_nodes[node] != 0 -> その頂点は頭関連
+> 三角形の3頂点のどれかが頭関連 -> third_person_only、それ以外 -> both
+> ```
+>
+> **手がかり**: `indices` が空なら 0,1,2,… を生成して三角形列として扱う([#L10-L18](../../src/core/model/vrmfirstperson.cpp#L10))ので、非indexedプリミティブも同じ経路です。TRIANGLES以外は呼び出し側([gltf.cpp#L1594](../../src/core/model/gltf.cpp#L1594))と本体([#L25](../../src/core/model/vrmfirstperson.cpp#L25))の両方で弾きます。分割後は both 側と third 側が別プリミティブとして `variants` へ積まれる([gltf.cpp#L1633-L1653](../../src/core/model/gltf.cpp#L1633))ので、1つのglTFプリミティブから2つの描画レンジが生まれます。ヘッダのコメントが規範で、各群の中では**元の三角形順が保たれます**([vrmfirstperson.hpp#L27-L29](../../src/core/model/vrmfirstperson.hpp#L27))。テストは [`vrmfirstperson_test.cpp#L7`](../../test/vrmfirstperson_test.cpp#L7) と [`morph_gltf_test.cpp#L241`](../../test/morph_gltf_test.cpp#L241)。
+>
+> **不変条件**: 呼び出しは `joint_offset` 加算より前。分類の単位は頂点ではなく三角形。`auto` が返すのは both / third の2群だけ。
+
+> 🧩 **難所 — -1を空けて負へ伸ばす**([`skinnedMaterial()`](../../src/core/model/gltf.cpp#L1406) / [`registerVatMaterial()`](../../src/core/model/gltf.cpp#L559))
+>
+> **何をする所か**: 頂点シェーダだけを差し替えた派生マテリアルを登録し、そのIDをモデル内ローカルのmaterial ID空間へ割り当てます。
+>
+> **素朴に読むと**: `using ModelLocalMaterialId = int;`([#L408](../../src/core/model/gltf.cpp#L408))はglTFのmaterial indexをそのまま入れる型に見えます。ところが [#L424](../../src/core/model/gltf.cpp#L424) に `next_generated_material = -2` があり、派生を作るたびに**減って**いきます。ID空間が符号で二分されていて、0以上は「glTFが書いたmaterial」、負は「エンジンが派生させたmaterial」です。`-1` から始めないのは、`-1` がglTF側の『material無し』を表す予約値だからで、採番から外してあります。派生を作る理由はvert shaderの差し替えだけで、skinnedは `skinnedVertShader()`、VATは `vatVertShader()` へ変えた同内容のコピーを `registerMaterial()` し直します — 同じ元materialから最大3種の実体が生まれます。ここで `generated_material_sources` に「派生ID → 元のsource index」を残すのが要です。実行時のマテリアル上書きは authored 側の index で来て、[`polygoninstancecontainer.cpp#L1123-L1125`](../../src/core/renderer/polygoninstancecontainer.cpp#L1123) がその index で初期値表を引き直すため、この表が無いと [gltf.cpp#L1787](../../src/core/model/gltf.cpp#L1787) で `source_material_index` が `noSourceMaterialIndex` に落ち、skinnedプリミティブにだけ上書きが効かないという片側だけの不具合になります。
+>
+> **骨子**:
+> ```text
+> 0,1,2,…    glTF の material index(authored)
+> -1         material 無し(予約・採番しない)
+> -2,-3,…    skinned / VAT 派生(next_generated_material--)
+> generated_material_sources[派生ID] = 元の material index(無ければ noSourceMaterialIndex)
+> ```
+>
+> **手がかり**: `skinned_material_variants` は「この元materialのskinned派生は作成済み」というキャッシュ([#L1407-L1408](../../src/core/model/gltf.cpp#L1407))で、同じ元から二重に派生を作らない同一性保証も兼ねます(`registerVatMaterial()` に同種のキャッシュが無いのは、`base_vertex` がプリミティブごとに違って共有できないためです)。`source_material_index` は再グループ化のキーでもあり、[`modeltemplate.cpp#L103-L105`](../../src/core/model/modeltemplate.cpp#L103) は「解決後のmaterial」と「元のindex」の**組**でまとめ直します。テストは [`materialinstanceoverride_test.cpp#L257`](../../test/materialinstanceoverride_test.cpp#L257)「material absolute overrides are source-material scoped」。
+>
+> **不変条件**: `-1` は採番しない。派生を登録したら必ず `generated_material_sources` へ元のindexを残す。負のIDは `ModelTemplate` の外へ出さない(外向きは `source_material_index`)。
+
+> 🧩 **難所 — morphはnode単位で切る**([`appendMorphDefaults()`](../../src/core/model/gltf.cpp#L761) / [`loadMesh()`](../../src/core/model/gltf.cpp#L1491))
+>
+> **何をする所か**: モデル全体で1本の `default_weights` 配列へこのmesh分の既定weightを追記し、そのスライスの先頭位置を `morph_weight_offset` として返します。
+>
+> **素朴に読むと**: `appendMorphDefaults()` は「追記する前の `default_weights.size()`」を返すだけで([#L783-L784](../../src/core/model/gltf.cpp#L783))、そのsizeがいつ増えるのかは呼ばれ方に依存します。鍵は `loadMesh()` が **nodeごとに**呼ばれる点で([`loadNode()` #L1717](../../src/core/model/gltf.cpp#L1717))、同じmeshを2つのnodeが参照すれば独立した2スライスができ、nodeごとに別の表情を付けられます。つまりoffsetは「mesh単位」でも「target単位」でもなく「**このnodeのこのmesh**のスライスの先頭」です。GPU側は `instance_index * PELICAN_MAX_MORPH_WEIGHTS + weight_offset` でweightを引く([pelican_morph.glsl#L73-L74](../../src/core/resources/shaders/include/pelican_morph.glsl#L73)、CPU側の書き込みは [vertbufcontainer.cpp#L211](../../src/core/model/vertbufcontainer.cpp#L211))ので、offsetをprimitiveから外してmeshに1つ持たせると、同じmeshを共有する2体の表情が連動します。容量検査([#L764-L770](../../src/core/model/gltf.cpp#L764))を追記の**前**に置いてあるのも意図で、途中まで積んで失敗したlayoutを残さないためです。`node.weights` が `mesh.weights` より優先されるのはglTF仕様どおりですが、要素数が合わなければ黙ってmesh側へ落ちず、node名を添えてthrowします([#L775-L781](../../src/core/model/gltf.cpp#L775))。
+>
+> **骨子**:
+> ```text
+> default_weights: [ nodeA/mesh0 の 4 個 | nodeB/mesh0 の 4 個 | nodeC/mesh1 の 2 個 | … ]
+>                    ^offset=0             ^offset=4             ^offset=8
+> appendMorphDefaults(): 容量検査 -> offset = size() -> target_count 個 push_back -> offset を返す
+> GPU: weight_base = instance_index * PELICAN_MAX_MORPH_WEIGHTS + metadata.weight_offset
+> ```
+>
+> **手がかり**: `target_count == 0` なら何も積まず 0 を返す([#L763](../../src/core/model/gltf.cpp#L763))ので、morphを持たないプリミティブは全部offset 0を共有します(`target_count` が0なのでシェーダは即returnします、[pelican_morph.glsl#L71](../../src/core/resources/shaders/include/pelican_morph.glsl#L71))。同じ容量検査は [vertbufcontainer.cpp#L141-L145](../../src/core/model/vertbufcontainer.cpp#L141) にもあり、GPU公開の直前でもう一度掛かります。`maxMorphWeightsPerInstance = 256`([morphtarget.hpp#L14](../../src/core/model/morphtarget.hpp#L14))はインスタンスあたりのweight総数の上限で、プリミティブあたりのtarget数の上限 `maxMorphTargetsPerPrimitive = 64` とは別物です。テストは [`morph_gltf_test.cpp#L62`](../../test/morph_gltf_test.cpp#L62) / [#L133](../../test/morph_gltf_test.cpp#L133)。
+>
+> **不変条件**: `morph_weight_offset` はprimitiveが持つ(mesh単位へ移さない)。容量検査は `default_weights` へ積む前に行う。`node.weights` の要素数不一致はthrowであってfallbackではない。
+
 sceneの`SimpleModelViewComponent`は初期化時にdirtyになり、内部 [`SimpleModelViewUpdateSystem`](../../src/core/ecs/predefined/modelviewupdatesystem.cpp#L23) がmodel名からtemplateを引き、`PolygonInstanceContainer`へinstanceを置きます。
 
 ### `ModelInstanceId` はSlotMapハンドル（WP146）
@@ -417,6 +488,44 @@ instances.publishModelInstance(std::move(staged_instance));
 
 ## 3.9 その他の純粋形式
 
+> 🧩 **難所 — 端数は先頭から配る**([`distribute()`](../../src/core/ui/layout.cpp#L93))
+>
+> **何をする所か**: stackレイアウトで、固定サイズを引いた残り幅を `Fill` の子へweight比で配り、整数除算で出た端数まで配り切ります。
+>
+> **素朴に読むと**: `while (!pool.empty())` の中でclampされた要素を pool から外し、`remaining` と `total_weight` を引き直してやり直す形が、目的の見えない不動点ループに見えます。これはflexboxのfreezeループと同じ形で、`min` / `max` に当たった要素をその値で凍結してから残り幅と総weightを引き直す処理です。1パスの比例配分で済ませると、clampされた分の余りが誰にも配られずレイアウトに隙間が残ります。凍結が1つも起きなかった回で初めて確定させ、`break` で抜けます(この `break` が無いと同じ配分を延々と繰り返します)。後半の `pool[(remaining - assigned - rem) % pool.size()]` は整数除算の切り捨てで生じた `R = remaining - assigned` ピクセルを配る処理で、`rem` を `R` から1へ減らすと `(remaining - assigned - rem)` は 0,1,2,… と増えるので、結果は「poolの先頭R要素に1pxずつ」です。丸め誤差を最後の要素へ押し付けたり四捨五入したりしないのは、レイアウトが `std::int64_t` の厳密ピクセルで決定性を要求するからで、同じdocumentと同じ幅なら常に同じ1pxの配り先になります。`remaining < 0` のときにfill要素を `min` に落として即returnする分岐([#L106-L109](../../src/core/ui/layout.cpp#L106))も、負の `remaining` をweightで割らないための前提です。
+>
+> **骨子**:
+> ```text
+> remaining = available - Σ(固定サイズ)
+> remaining < 0 -> fill を全部 min にして return
+> loop:
+>   share   = remaining * weight / total_weight
+>   bounded = clamp(share, min, max)
+>   bounded != share -> 凍結: sizes[i]=bounded; remaining-=bounded; total_weight-=weight; pool から除去
+>   1つも凍結しなかった -> 比例配分を確定し、余り R を pool[0..R) へ 1px ずつ足して break
+> ```
+>
+> **手がかり**: `weight` はパース時に正であることが保証されている([document.cpp#L73](../../src/core/ui/document.cpp#L73) の `weight must be positive`)ので、poolが空でない限り `total_weight` は0になりません — `total_weight == 0 ? 0 : …` は防御的な分岐です。`pool` の並びは子の宣言順のまま(`fill` を宣言順に積み、`erase` は順序を保つ)なので、「先頭R要素」は宣言順で先に来る `Fill` の子です。テストは [`ui_foundation_test.cpp#L190`](../../test/ui_foundation_test.cpp#L190)「stack layout distributes integer remainder」。
+>
+> **不変条件**: 凍結が起きた回は確定せず必ずもう一周する。端数は宣言順の先頭から1pxずつ配る(最後の要素へまとめない)。負の `remaining` をweight除算へ渡さない。
+
+> 🧩 **難所 — 丸めは足してから床**([`anchorEdge()`](../../src/core/ui/types.cpp#L62) / [`scaleEdge()`](../../src/core/ui/types.cpp#L70) / [`checkedI32()`](../../src/core/ui/types.cpp#L75))
+>
+> **何をする所か**: UI座標をbinary64(IEEE 754の倍精度浮動小数点)で計算してから整数ピクセルへ落とし、float32で厳密に表せる範囲を超えた座標を拒否します。
+>
+> **素朴に読むと**: `t2 + 0.5` を `floor` するだけの3行に見えますが、宣言側のコメントがこれを正の設計演算として明記しています — `floor((binary64(edge) + binary64(size)*anchor) + 0.5)`([types.hpp#L63](../../src/core/ui/types.hpp#L63))。`std::round` / `std::lround` を使わないのは、それらが丸めモードに関係なくhalf-away-from-zero(0から遠い側へ丸める)で、`-0.5` と `+0.5` が非対称になるからです。`floor(x + 0.5)` なら規則が1つで、負側でも同じ向きに揃います。ただし `x + 0.5` の**加算自体**が丸められるので、FPUの丸めモードが `FE_TONEAREST`(最近接偶数丸め)でないと同じ入力から違うピクセルが出ます — 両関数の先頭にある `assert(std::fegetround() == FE_TONEAREST)` はその前提の宣言であって飾りではありません(ImGuiや外部DLLが丸めモードを触ると壊れます)。`checkedI32()` がint32の範囲だけでなく `|value| > 2^24` でもthrowするのは、UI矩形が最終的に [`buildDrawBatch()`](../../src/core/ui/drawcommands.cpp#L10) で `static_cast<float>` の頂点座標になるからです([#L39-L42](../../src/core/ui/drawcommands.cpp#L39))。float32が整数を厳密に表せるのは 2^24 までで、それを超えると「1pxずれる」ではなく「隣のピクセルと同じ座標になる」= クリップと当たり判定が食い違います。int32の範囲で通してしまうと、この破綻はGPU上でしか現れません。
+>
+> **骨子**:
+> ```text
+> anchorEdge : assert(FE_TONEAREST); t2 = edge + size*anchor; return checkedFloor(t2 + 0.5)
+> checkedFloor: 非有限 / int64 範囲外            -> overflow_error("UI coordinate exceeds int64")
+> checkedI32  : int32 範囲外 または |v| > 2^24   -> overflow_error("exact float32 integer domain")
+> ```
+>
+> **手がかり**: `#pragma STDC FENV_ACCESS ON` がMSVC以外で立っている([types.cpp#L10-L12](../../src/core/ui/types.cpp#L10)、[layout.cpp#L10-L12](../../src/core/ui/layout.cpp#L10))のは、コンパイラに浮動小数点環境を勝手に仮定させないためです。`checkedFloor()` の上限判定が `value >= -static_cast<double>(int64_min)` という書き方なのは、`int64_max` をdoubleで厳密に表せないからです([#L55-L56](../../src/core/ui/types.cpp#L55))。レイアウト側の `edge()`([layout.cpp#L24](../../src/core/ui/layout.cpp#L24))はint32範囲しか見ません — 2^24 の検査はpxへ変換する [`uiToPx()`](../../src/core/ui/types.cpp#L101) 側の責任です。テストは [`ui_foundation_test.cpp#L61`](../../test/ui_foundation_test.cpp#L61)「UI binary64 half-up vectors and viewport edge rounding are normative」。
+>
+> **不変条件**: 丸めは `floor(x + 0.5)` 固定(`round` 系へ置き換えない)。丸めモードは `FE_TONEAREST`。GPUへ出る座標は `|value| <= 2^24`。
+
 ### render feature
 
 [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L1505) はfeature JSONを順番に読み、render target、buffer、pass、compute taskを追加し、限定的なoverrideを適用します。名前衝突、曖昧anchor、未知override fieldは即時エラーです。shader defineも重複排除して集約します。
@@ -429,9 +538,72 @@ instances.publishModelInstance(std::move(staged_instance));
 
 material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](../../src/project/materialformat.hpp#L45) の `usd_path`、[`modeltemplate.cpp`](../../src/core/model/modeltemplate.cpp#L61) で重複/未解決を検証）。これはU-USDレーン（WP119/124）の観測境界です。
 
+> 🧩 **難所 — vec3の後ろ4 byte**([`std140SizeAlignment()`](../../src/project/materiallowering.cpp#L20) / [`makeSurfaceStd140Layout()`](../../src/project/materiallowering.cpp#L351))
+>
+> **何をする所か**: surfaceのparameter宣言順にstd140(GLSLのuniform block標準レイアウト規則)のオフセットを割り付け、values領域の総サイズを決めます。
+>
+> **素朴に読むと**: `vec3` に `{12, 16}` を返すのが「std140ではvec3は16バイト」という一般論と食い違って見えます。std140の規則は「開始位置は16の倍数、占有は12」で、直後に `float` が来ればその4バイトへ滑り込みます。だからパッカーは2つの値を別々の目的に使い分けます — `alignUp(offset, alignment)` で次の**開始位置**を決め、`offset += size` で**自分が食う量**だけ進めます([#L356-L359](../../src/project/materiallowering.cpp#L356))。`size` を16にすると、規則どおりに計算するGLSLコンパイラ側とCPU側で4バイトずれ、vec3より後ろの**全パラメータ**が1つずつずれて読まれます。バリデーションレイヤもreflectionも検出できず、色が微妙に違うだけの症状になるのが最悪の性質です。だから12と16を分けて持つことが必須で、alignmentは次の要素の開始位置、sizeは自分が食う量、と役割が違います。最後に構造体全体を `layout.alignment`(既定16、[materiallowering.hpp#L29](../../src/project/materiallowering.hpp#L29))へ切り上げるのも規則どおりです。
+>
+> **骨子**:
+> ```text
+> float/int -> {4, 4}   vec2 -> {8, 8}   vec3 -> {12, 16}   vec4/color -> {16, 16}
+> offset = alignUp(offset, alignment)     # 開始位置(vec3 は 16 の倍数へ)
+> members += {name, type, offset, size, alignment}
+> offset += size                          # 占有量(vec3 は 12 なので直後の float が入る)
+> layout.size = alignUp(offset, 16)
+> ```
+>
+> **手がかり**: 割り付けは**宣言順**で、名前順でもサイズ順でもありません(テスト名がそのまま [`materiallowering_test.cpp#L45`](../../test/materiallowering_test.cpp#L45)「surface values use declaration-order std140 offsets」)。上限 `materialCustomValueCapacity = 256`([materiallowering.hpp#L16](../../src/project/materiallowering.hpp#L16))はGPU側の `MaterialGpuData::custom_values` と同じ値で、[material.hpp#L86](../../src/core/material/material.hpp#L86) の `static_assert` が両者を結び付けています。超過時に `surface.params.back()` の名前を添えてthrowするのは、どのパラメータで溢れたかを作者に返すためですが、**溢れた位置ではなく末尾の名前**である点は割り切りです([#L362-L369](../../src/project/materiallowering.cpp#L362))。
+>
+> **不変条件**: `size` と `alignment` を1つの値へ畳まない。割り付けは宣言順。構造体全体のサイズは16バイト境界へ切り上げる。
+
+> 🧩 **難所 — 逸脱がforwardへ落とす**([`openPbrEligibility()`](../../src/project/materiallowering.cpp#L205) / [`automaticRoute()`](../../src/project/materiallowering.cpp#L232))
+>
+> **何をする所か**: `render_path: automatic` のmaterialをdeferred(G-buffer経由)へ流してよいかを判定し、駄目ならforward側のrouteを返します。
+>
+> **素朴に読むと**: `coat_weight == 0`、`specular_weight == 1`、`specular_ior == 1.5` …と、値が**規定の既定値と一致するか**を `1e-6` の許容で調べる条件が並びます。範囲検査でも能力検査でもないので、何を守っているのかコードからは読めません。理由はG-bufferが運べるのがOpenPBRのごく一部(base color / roughness / metalness / normal)だけで、それ以外のパラメータは「既定値のまま」でなければG-buffer経由で再現できないことです。だから条件は能力の判定ではなく「**既定から動いていないことの確認**」で、1つでも動いていればforwardへ回すしかありません。比較対象がmaterialの上書き値だけでなくsurface側の `default_value` にもフォールバックする([`effectiveValue()` #L166-L179](../../src/project/materiallowering.cpp#L166))のはそのためです。テクスチャ側も同じ理由で、値が既定でも `*_map` が付いていればピクセルごとに動くので不適格です([#L224-L228](../../src/project/materiallowering.cpp#L224) の4つ)。`blend` がopaqueでない、`screen_input` を使う、の2つだけは深度・順序の理由で別枠になっています。
+>
+> **骨子**:
+> ```text
+> blend != opaque              -> blend_requires_forward
+> screen_inputs あり           -> screen_input_requires_forward
+> coat_weight != 0             -> coat_weight_nonzero
+> base_diffuse_roughness != 0  -> diffuse_roughness_nonzero
+> specular_weight != 1         -> custom_specular_weight
+> specular_color != (1,1,1)    -> custom_specular_color
+> specular_ior != 1.5          -> custom_specular_ior
+> *_map のどれかが付く         -> custom_<map名>
+> すべて既定 -> {compatible, openpbr_base_v1} -> automaticRoute が deferred_geometry
+> ```
+>
+> **手がかり**: `reason` 文字列(`coat_weight_nonzero` など)がそのまま診断に出るので、G-bufferにチャネルを足したときは**この一覧から対応する条件を消す**、という対応関係になっています。逆に条件を足し忘れたままG-bufferを変えると、deferredに流れたmaterialが静かに違う見た目になります。不適格になったOpenPBR materialが実際にどこへ落ちるかは `automaticRoute()` の続きで、engine提供のOpenPBR surfaceはいずれも `pelican_lighting_v1` を実装しているため `forward_opaque` / `automatic_custom_lighting` になります([#L247-L250](../../src/project/materiallowering.cpp#L247))。判定の入口は [`evaluateDeferredEligibility()`](../../src/project/materiallowering.cpp#L329) で、OpenPBR surface以外は `standard_pbr_v1` の別条件を通ります。テストは [`materiallowering_test.cpp#L239`](../../test/materiallowering_test.cpp#L239)「OpenPBR base subset routes deferred while extended lobes stay forward」。
+>
+> **不変条件**: 既定値の一覧とG-bufferのチャネル構成は対で動かす。`reason` 文字列は診断の一部なので条件と1対1に保つ。判定は既定からの逸脱の有無であって、値の妥当性検査ではない。
+
 ### import manifest / import rules
 
 [`parseImportManifestJson()`](../../src/project/importmanifest.cpp#L249) はDCC納品物のtool/source/outputとSHA-256、対応schemaを検証します。runtime playerではなく、[`pelican_cli import`](../../src/devcli/importcommand.cpp#L358) が主利用者です。加えて [`importrules.hpp`](../../src/project/importrules.hpp) がmatch/recipe/defaultsの3層優先を持つルールベースimport（`pelican_cli import --rules`、[importcommand.cpp](../../src/devcli/importcommand.cpp#L362)）を提供します。
+
+> 🧩 **難所 — `*` は `/` を越えない**([`segmentMatches()`](../../src/project/importrules.cpp#L155) / [`importGlobMatches()`](../../src/project/importrules.cpp#L258))
+>
+> **何をする所か**: importルールのglobパターンを、プロジェクト相対パスへ突き合わせます。
+>
+> **素朴に読むと**: 同じ形のDP(動的計画法 — 部分問題の可否を表へ埋めながら前進させる解き方)が2つ並び、片方は文字を、片方はパスセグメントを舐めます。`*` と `**` の遷移式は字面上まったく同じ2本(パターンを進める = 0個マッチ、値を1つ進めてパターンを留める = 1個以上)なので、両者の違いがどこから生まれるのかコードから読み取れません。違いは遷移式ではなく**何を1単位とするDPか**にあります。`*` のDPは `splitPath()` 済みの1セグメント内だけを走るので、区切り文字を消費する術が構造的にありません = `*` は `/` を越えられません。`**` のDPはセグメントの列を走るので、同じ2本の遷移が「0個以上のディレクトリ階層」になります。つまりglobの意味論が正規表現の特別扱いではなく、DPを2段に分けたこと自体で表現されています。どちらもpush型(`dp[i][j]` が真のときだけ前進し、偽なら `continue`)なので、バックトラック実装にありがちな `a*a*a*b` の指数爆発が起きません — 外部から与えられるルール文字列を舐めるので、これは性能ではなく安全性の選択です。片方だけ「便利だから」と `*` に `/` を跨がせると、ルールの優先順位(最初に一致したruleが勝つ、[#L285-L289](../../src/project/importrules.cpp#L285))が変わり、import先が黙って入れ替わります。
+>
+> **骨子**:
+> ```text
+> importGlobMatches: 単位 = パスセグメント
+>   patterns[i] == "**" -> dp[i+1][j] = true;  dp[i][j+1] = true   # 0 階層 / 1 階層以上
+>   それ以外            -> segmentMatches(patterns[i], values[j]) なら dp[i+1][j+1] = true
+> segmentMatches:    単位 = 1 文字(1 セグメント内)
+>   pattern[i] == '*'   -> dp[i+1][j] = true;  dp[i][j+1] = true   # 0 文字 / 1 文字以上
+>   pattern[i] == '?'   -> dp[i+1][j+1] = true
+>   それ以外            -> pattern[i] == value[j] なら dp[i+1][j+1] = true
+> ```
+>
+> **手がかり**: `splitPath()`([#L141](../../src/project/importrules.cpp#L141))は空セグメントも残す(`a//b` は3要素)ので、`*` が空文字列にも一致することと合わせて挙動が決まります。この2段のDPを使うのは3層のうちrule層だけで、defaults層は拡張子の完全一致です([#L291-L296](../../src/project/importrules.cpp#L291))。テストは [`importrules_test.cpp#L49`](../../test/importrules_test.cpp#L49)「import globstar spans zero or more complete path segments」と [#L26](../../test/importrules_test.cpp#L26)(優先順位)。
+>
+> **不変条件**: `*` は1セグメント内で閉じる。DPはpush型で、パターン長×値長の表を超えて探索しない。ルールは最初に一致したものが勝つ。
 
 ### JSON-RPC
 
@@ -447,6 +619,51 @@ material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](.
 6. valid/invalid fixtureとruntime binding testの両方を追加したか。
 7. 形式パーサ実装とruntime接続済み範囲を混同していないか。
 8. componentを増やすなら、§3.11 のcodec五点セットを揃えたか。
+
+> 🧩 **難所 — 舐め直しで閉じる窓**([`Impl::reconcile()`](../../src/core/watch/filewatcher.cpp#L353) / [`Impl::scan()`](../../src/core/watch/filewatcher.cpp#L301))
+>
+> **何をする所か**: 監視対象のstoreを一巡して各ファイルの安定digestを取り、前回のinventoryとlive digestに照らしてreloadを積みます。
+>
+> **素朴に読むと**: `for (;;)` の先頭で `notification_generation` を控え、scan完了後に一致していなければ**もう一周まるごと**やり直す形が、終わらないループに見えます。ここまでするのは、native watchを張る `armAll()` と最初のscanの間、およびscan実行中に届いた変更が、ディスクinventoryの差分だけでは検出できないからです(スキャン済みの位置が後から書き変わります)。generationを前後で比べるのは「スキャン中に通知が来たか」を知る唯一の手段で、来ていればハッシュを全部取り直します — 部分再スキャンにしないのは、どのファイルが変わったかを通知が持っていない(overflowもある)からです。`scan()` が [`readStableContentDigest()`](../../src/core/watch/contentdigest.cpp#L47) へ渡すcancelクロージャ([#L330-L334](../../src/core/watch/filewatcher.cpp#L330))は別の理由です。プロジェクト全体のSHA-256は数秒かかりうるのに、その間にreload gateが閉じたりepochが進んだりすれば結果は捨てるしかありません。捕まえた `epoch` と現在を比べて途中で降りることで、gateを閉じる操作(replay開始など)がwatcherスレッドの完了待ちでブロックしなくなります。ループが止まるのは、`stopping` / gate無効 / epoch不一致で `false` を返す出口([#L364](../../src/core/watch/filewatcher.cpp#L364))と、generation一致で `true` を返す出口([#L384-L388](../../src/core/watch/filewatcher.cpp#L384))の2つがあるためです。
+>
+> **骨子**:
+> ```text
+> for (;;):
+>     generation = notification_generation      # scan の前に控える
+>     current = scan(epoch)                     # 各ファイルの安定 digest
+>     stopping / gate 無効 / epoch 違い -> return false
+>     observe() が queue_reload を返したものを queue へ、消えたものは removed
+>     inventory = current
+>     notification_generation == generation -> dirty/overflow を落として return true
+>     # 違えば scan 中に通知が来ている: もう一周(部分ではなく全体)
+> ```
+>
+> **手がかり**: 呼び出し側は「arm → reconcile」の順を守る必要があり、[#L447-L448](../../src/core/watch/filewatcher.cpp#L447) にコメントで `Required transition order: arm, reconcile while still in polling state, then publish watching` と明記されています。`readStableContentDigest()` は書き込み途中のファイルを読むと `retry` を返し、`scan()` は25ms間隔で最大20回まで粘ります([#L329-L337](../../src/core/watch/filewatcher.cpp#L329))。テストは [`filewatcher_test.cpp#L346`](../../test/filewatcher_test.cpp#L346)「disabled changes resume through arm-scan barrier exactly once」と [#L216](../../test/filewatcher_test.cpp#L216)(gate cancellation)。
+>
+> **不変条件**: generationはscanの**前**に控える。scan中に通知が来たら部分ではなく全体を取り直す。epochが動いたら結果を採用せず `false` で降りる。
+
+> 🧩 **難所 — 自分の書き込みを一度だけ**([`ContentDigestState::observe()`](../../src/core/watch/contentdigest.cpp#L154) / [`registerSelfWrite()`](../../src/core/watch/contentdigest.cpp#L146))
+>
+> **何をする所か**: watcherが見つけたdigestを「外部の変更」と「エンジン自身の保存」へ振り分け、reloadを積むかどうかを返します。
+>
+> **素朴に読むと**: digestが一致していてepochも一致しているのにreloadを積む経路があるのが引っかかります。エンジン自身が保存したファイルは、watcherから見れば外部変更と区別できません。そこで保存側が「このdigestが来たら自分の書き込みだ」というトークン([`SelfWriteToken`](../../src/core/watch/contentdigest.hpp#L42))を置きます。条件は4つあり、digest一致 / epoch一致 / `runtime_applied` / `live_digest` 一致が揃ったときだけ `consumed_self_write` になります。`match` と `may_consume` を先に計算したうえで `state.self_write.reset()` を分岐の**前**に無条件で実行するのが要点で、トークンは1回の観測で必ず消えます(消費されても、外れても)。消えなければ、一致し続ける限り永久にリロードが抑止されます。`runtime_applied` がfalseのときに消費しないのは「ディスクには書けたが、実行中の状態への適用は失敗した」場合で、そのとき `registerSelfWrite()` は `live_digest` を更新しない([#L150](../../src/core/watch/contentdigest.cpp#L150))ので、下の `live_digest == digest` の近道にも掛からず `queue_reload` になります — ファイルとランタイムが食い違ったまま静かに固定されるのを防ぐ、あえての積み直しです。epoch違いを `live_digest` 一致の近道へ落とさない([#L168-L171](../../src/core/watch/contentdigest.cpp#L168))のはコメントが規範で、gateが閉じて開き直った後(= 世界が入れ替わったかもしれない後)は古いtransactionの抑止を効かせない、という決めです。
+>
+> **骨子**:
+> ```text
+> observed_digest = digest; pending_digest = digest
+> self_write あり:
+>     match       = expected_digest == digest && epoch 一致
+>     may_consume = match && runtime_applied && live_digest == digest
+>     self_write.reset()                 # 分岐の前に無条件で消す
+>     may_consume -> pending を落として consumed_self_write
+>     !match      -> queue_reload        # live_digest 一致の近道へ落とさない
+> live_digest == digest -> unchanged
+> それ以外              -> queue_reload
+> ```
+>
+> **手がかり**: `observe()` が比較するのは前回の**ディスクinventory**ではなく `live_digest`(= ランタイムへ実際に適用済みの内容)です。[`reconcile()` #L371-L373](../../src/core/watch/filewatcher.cpp#L371) のコメントが規範で、「一度失敗した候補は、バイトが同じでも次の保存/reconcileで再び対象になる」ためにこの比較になっています。トークンを置くのは [`FileWatcher::registerSelfWrite()`](../../src/core/watch/filewatcher.cpp#L517) 経由で、`runtime_apply_succeeded` をそのまま持ち回ります。テストは [`filewatcher_test.cpp#L101`](../../test/filewatcher_test.cpp#L101)「ContentDigest streams bytes and separates observed live pending and self-write」と [#L150](../../test/filewatcher_test.cpp#L150)。
+>
+> **不変条件**: トークンは1回の観測で必ず消える。epochが違うトークンは抑止に使わない。`runtime_applied` がfalseの保存はreloadを積み直す。
 
 ## 3.11 Component codec（authored ↔ canonical ↔ runtime） ✅実装済み
 
