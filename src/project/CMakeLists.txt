@@ -1,6 +1,7 @@
 add_library(pelican_project
     assetsmanifest.cpp
     featurecompose.cpp
+    featurejitter.cpp
     importmanifest.cpp
     importrules.cpp
     jsonrpc.cpp
