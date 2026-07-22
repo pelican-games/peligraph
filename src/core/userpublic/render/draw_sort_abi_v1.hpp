@@ -178,13 +178,20 @@ struct ApiV1 {
 PELICAN_API Status getApiV1(std::uint32_t client_abi_version,
                             ApiV1 *out_api) noexcept;
 
+static_assert(std::is_standard_layout_v<Vec3V1>);
+static_assert(std::is_trivially_copyable_v<Vec3V1>);
 static_assert(std::is_standard_layout_v<DrawSortItemV1>);
 static_assert(std::is_trivially_copyable_v<DrawSortItemV1>);
 static_assert(std::is_standard_layout_v<DrawSortInputV1>);
+static_assert(std::is_trivially_copyable_v<DrawSortInputV1>);
 static_assert(std::is_standard_layout_v<DrawSortKeyV1>);
 static_assert(std::is_trivially_copyable_v<DrawSortKeyV1>);
 static_assert(std::is_standard_layout_v<ProviderV1>);
+static_assert(std::is_trivially_copyable_v<ProviderV1>);
+static_assert(std::is_standard_layout_v<ProviderHandleV1>);
+static_assert(std::is_trivially_copyable_v<ProviderHandleV1>);
 static_assert(std::is_standard_layout_v<ApiV1>);
+static_assert(std::is_trivially_copyable_v<ApiV1>);
 static_assert(offsetof(DrawSortInputV1, struct_size) == 0);
 static_assert(offsetof(ProviderV1, struct_size) == 0);
 static_assert(offsetof(ApiV1, struct_size) == 0);
