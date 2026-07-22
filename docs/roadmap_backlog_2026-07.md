@@ -66,8 +66,10 @@ deferred、forward opaque/transparent 合成まで実装済み。
 21. **hybrid deferred + forward 基盤** [完了] — versioned preset、semantic
     route、OpenPBR base subset の G-buffer 化、scene-linear forward 合成、tone map
     一回を実装。後続の正本は `design_render_pipeline_extensibility.md`。
-    RPE1(WP180、完了)→ RPE2 typed plan(WP181、完了) → RPE3 DrawQueueBuilder(WP182、完了) → provider → transparent sort →
-    screen input → MSAA → XR/preview graph variant → pipeline transaction の順
+    RPE1(WP180、完了) → RPE2 typed plan(WP181、完了) →
+    RPE3 DrawQueueBuilder(WP182、完了) → RPE4 provider registry(WP183、完了) →
+    RPE5 bounds / phase queue / transparent sort / XR view policy(WP184、完了)まで実装。
+    以後は screen input → MSAA → XR/preview graph variant → pipeline transaction の順
 22. **スプライトライティング(surface 化)** [要設計小] — 2D の B 層接続
 23. **M3b 昇格ゲート実施**(spv-link 本採用判定)[設計済・ゲート明記済]
 24. **M4: B-web capability プロファイル** [設計済] — web を見るなら

@@ -6,7 +6,9 @@
 基盤を出発点とする。本文の層・語彙・所有規則は以後の実装判断の正とするが、
 公開 provider ABI は個別の実装 fixture が揃ったものから凍結する。
 `DrawSortProviderV1` の v1 バイナリレイアウトは WP183 の public game-DLL fixture を
-もって凍結済み(2026-07-22)である。
+もって凍結済み(2026-07-22)である。WP184 は `DrawSortInputV1` の既存 prefix を変えず、
+`struct_size` で検出する logical-view snapshot を末尾追加した。旧 provider が読む prefix
+の byte extent は public header の static assertion で固定している。
 
 関連文書:
 
@@ -237,22 +239,24 @@ request、selected provider、version、capability match、fallback / reject rea
 
 ## 6. 最初の実証: draw queue と透明ソート
 
-### 6.1 現状のネック
+### 6.1 解消したネック
 
 RPE3 着手前は一つの `render_commands` を material、source material、skinned、view
 visibility で直接 sort し、同じ関数内で material ごとの indirect range を作っていた。
 WP182 で live inventory と queue materialization を分離し、WP183 で builtin
 `state_batched_v1` と game-DLL provider を同じ registry / callback 経路へ移した。
-ただし production はまだ `mixed` phase / `shared` logical view の一つの queue を
-`state_batched_v1` で構築する。これは opaque の state batching には適するが、次を
-同時には満たせない。
+WP184 以前の production は `mixed` phase / `shared` logical view の一つの queue を
+`state_batched_v1` で構築していたため、次を同時には満たせなかった。
 
 - opaque は state change を減らす
 - transparent は view depth の back-to-front にする
 - XR の左右眼で順序を安定させる
 - custom policy を game DLL から交換する
 
-単に comparator を差し替えるだけでは不十分である。
+WP184 / RPE5 では immutable inventory を維持したまま phase/view ごとの queue を純 CPU
+compile し、最後に一つの indirect buffer へ canonical に連結する構成へ移した。単一
+comparator の差し替えではなく、phase 選択、provider、logical view、range publication を
+それぞれ明示した。
 
 ### 6.2 分離する型
 
@@ -267,6 +271,12 @@ WP182 で live inventory と queue materialization を分離し、WP183 で buil
 4. `CompiledDrawQueue`
    - engine が provider key を検証し、stable identity を最終 tie-break にして
      indirect command / range を materialize した結果
+5. `ModelPrimitiveBoundsSource`
+   - indexed base AABB、morph target ごとの position delta AABB、weight offset を持つ
+     reference-space envelope
+6. `CompiledDrawQueueSet`
+   - phase/view 別 `CompiledDrawQueue` を view-major、opaque → transparent の順で一つの
+     indirect record 列へ連結し、各 range offset を rebased した frame publication
 
 RPE3 / WP182 では `DrawItemSnapshot` と `CompiledDrawQueue`、純 CPU
 `DrawQueueBuilder` を実装した。RPE4 / WP183 では data-only `DrawSortInputV1`、
@@ -275,32 +285,79 @@ stable tie-break を実装し、builtin も public descriptor と同じ経路で
 snapshot は model-instance generation / scene epoch、mesh / primitive / node、declaration
 ordinal、indexed draw 引数、material state key、route / phase、view mask を保持する。
 
-現行 importer は primitive bounds を永続化していないため `world_bounds` だけは optional
-である。また RPE4 は provider 選択を authoring plan へまだ配線せず、互換維持のため
-`mixed` / `shared` だけを渡す。bounds 取得、opaque / transparent 別 queue、provider
-選択、XR logical view は RPE5 で同時に整合させる。
+RPE5 / WP184 では importer / procedural upload が bounds source を primitive に永続化し、
+frame freeze 時に current world bounds を一時 snapshot へ解決する。authoring の
+`draw_sort` は `ResolvedRenderPipeline` から typed `CompiledDrawSorting` へ compile され、
+production は phase と logical view を provider へ明示する。bounds source がない primitive、
+不正 AABB、非 finite transform / weight、skinned item の palette 欠落は fail-fast する。
 
 provider は item の移動や GPU buffer 作成を行わず、key だけを返す。engine の
 stable tie-break により、同値 key でも replay が決定的になる。
 
-### 6.3 Builtin policy
+### 6.3 Bounds と reference-envelope 規約
 
-| 名前 | 用途 | 規則 |
-|------|------|------|
-| `state_batched_v1` | opaque 既定 | 現行 material/source/skinned/view grouping を互換維持 |
-| `back_to_front_v1` | transparent 既定 | 論理 view から bounds center までの view depth 降順、state は副 key |
-| `declaration_order_v1` | デバッグ・厳密順 | authoring / stable draw ordinal |
-| `none_v1` | order-independent feature | stable identity のみ。非決定的な無順序にはしない |
+RPE5 の world bounds は culling 用の別所有物を live query せず、primitive が保持する
+reference-space source と frame freeze 済み deformation state だけから求める。
+
+- indexed primitive は実際に index から参照される POSITION だけで base AABB を作る
+- morph は参照頂点の target delta AABB を current weight で base へ加える。負 weight は
+  min/max の寄与を反転して処理する
+- skin は current palette の各 joint で morph 後 envelope を変換し、その union を取る。
+  glTF の非負・正規化 weight に対する保守的 envelope である
+- VAT は static POSITION ではなく clip 全体の宣言 `bounds_min` / `bounds_max` を使う
+- 最後に instance model matrix で 8 corner を変換するため、非一様／負 scale も扱う
+
+custom vertex displacement を engine が shader から推測してはならない。v1 では、変位後の
+頂点が上記 reference envelope 内に留まることを author の契約とする。任意変位には VAT の
+ような宣言済み envelope を持つ geometry 経路、または bounds に依存しない custom sort
+provider を使う。一般的な material-side bounds override はまだ公開していないため、envelope
+外へ動く custom shader に `back_to_front_v1` の正確性を保証しない。
+
+### 6.4 Builtin policy
+
+| 名前 | 状態 | 用途 | 規則 |
+|------|------|------|------|
+| `state_batched_v1` | 実装済み | opaque 既定 | 現行 material/source/skinned/view grouping を互換維持 |
+| `back_to_front_v1` | 実装済み | transparent 既定 | 論理 view から bounds center までの view depth 降順、state は副 key |
+| `declaration_order_v1` | 未実装 | デバッグ・厳密順 | authoring / stable draw ordinal |
+| `none_v1` | 未実装 | order-independent feature | stable identity のみ。非決定的な無順序にはしない |
 
 opaque と transparent は別 queue を持つ。透明物で batching が分断されても、
 正しい depth order を優先する。
 
+`back_to_front_v1` は AABB center の view depth を使う決定的な標準解であり、交差する面、
+大きく重なる bounds、自己交差する透明 mesh の厳密な pixel order までは解決しない。
+その場合は mesh 分割、custom provider、または OIT feature を選ぶ。
+
+### 6.5 Authoring、XR、publication
+
+未指定時も次と同じ既定を得る。`hybrid_v1` はこの設定を preset 内で明示し、project は
+必要な項目だけ同じ top-level `draw_sort` object で置換できる。
+
+```json
+{
+  "pipeline": { "preset": "engine://render_pipelines/hybrid_v1.json" },
+  "draw_sort": {
+    "opaque": { "provider": "state_batched_v1" },
+    "transparent": { "provider": "back_to_front_v1" },
+    "xr_view_policy": "logical_view_center"
+  }
+}
+```
+
+provider 名は engine builtin と active game-DLL provider を同じ registry から解決する。
+unknown key、空 provider、未知 XR policy は compile error、未登録 provider 名は frame build
+時に名前入りで失敗し、builtin へ暗黙 fallback しない。
+
 XR の既定は左右眼共通の `logical_view_center` で一度 sort する。左右眼で別順序に
 すると stereo mismatch が出やすいためである。必要な preset だけ `per_view` を
-明示し、左右別 queue の追加コストを受け入れる。
+明示し、左右別 queue と indirect record 複製の追加コストを受け入れる。flat / preview と
+XR logical-center は sort view 一組、XR per-view は左右二組を compile し、各 render view は
+自分の sort-view index で rebased range を選ぶ。
 
 weighted blended OIT 等は pass / target / composite を増やす render feature であり、
-sort provider ではない。OIT feature が `none_v1` を選ぶことはできる。
+sort provider ではない。将来の OIT feature が `none_v1` 相当を選ぶ場合も、provider 自体は
+決定的な順序を返す。
 
 ## 7. Material route、MSAA、XR はどう分けるか
 
@@ -458,7 +515,7 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 | RPE2 / WP181（済 2026-07-22） | typed `CompiledRenderPipeline` を導入し、`composition_metadata` の runtime 読みを撤去 | JSON は dump のみ、既存 golden 不変 |
 | RPE3 / WP182（済 2026-07-22） | inventory と queue materialization を `DrawQueueBuilder` へ分離し、`state_batched_v1` で現行順を再現 | indirect bytes / draw ranges 不変、二回実行一致 |
 | RPE4 / WP183（済 2026-07-22） | owner-aware `RenderPolicyRegistry` + `DrawSortProviderV1`、builtin も同じ経路へ | game DLL register/unregister/reload、stale generation reject |
-| RPE5 | `back_to_front_v1`、phase 別 queue、XR logical-center/per-view | 混在 scene golden、安定 tie-break、左右眼 fixture |
+| RPE5 / WP184（済 2026-07-22） | `back_to_front_v1`、phase 別 queue、XR logical-center/per-view | 混在 scene、安定 tie-break、左右眼 fixture |
 | RPE6 | typed color domain + hybrid screen-input descriptor binding | 屈折/深度 fade golden、tone map 一回 |
 | RPE7 | `SampleCountRequest` / capabilities / resolution の純粋段階 | unsupported/fallback 診断 fixture |
 | RPE8 | MSAA graph transform + image/pipeline sample count + resolve | 1x byte 不変、2x/4x headless Vulkan、depth capability gate |
@@ -467,14 +524,13 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 
 ### 12.1 いま着手する範囲
 
-RPE1 / WP180、RPE2 / WP181、RPE3 / WP182、RPE4 / WP183 は完了した。authoring
-resolve、immutable typed pipeline plan、draw inventory / queue materialization、versioned
-draw-sort provider registry がそれぞれ分離済みである。
+RPE1 / WP180 から RPE5 / WP184 まで完了した。authoring resolve、immutable typed
+pipeline plan、draw inventory / queue materialization、versioned draw-sort provider registry、
+world bounds、phase/view 別 queue が分離済みである。
 
-次は RPE5 を独立 WP として登録する。まず全 draw item の world-space bounds 取得を
-固定し、opaque / transparent phase 別 queue と provider 選択を typed plan へ加える。
-その上で builtin `back_to_front_v1` と XR `logical_view_center` / opt-in `per_view` を
-導入する。screen input、MSAA の Vulkan 変更はまだ混ぜない。
+次は RPE6 を独立 WP として登録する。typed color domain と `hybrid_v1` material-pass の
+screen-input descriptor binding を閉じ、屈折／depth fade と tone-map 一回の invariant を
+fixture で固定する。MSAA image / pipeline / resolve の Vulkan 変更は RPE7 / RPE8 まで混ぜない。
 
 ### 12.2 後回しにするもの
 

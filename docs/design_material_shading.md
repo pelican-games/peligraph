@@ -353,8 +353,10 @@ surface は brdf/lighting と共存する(surface が struct を埋め、ライ�
   forward へ送る。明示 route と不一致は fail-fast
 - deferred lighting と forward は scene-linear HDR target へ合成し、tone mapping は
   terminal で一度だけ行う
-- 残る機能穴は、phase 別 transparent sort と `hybrid_v1` material pass の
-  screen-input descriptor binding。snapshot graph 機構自体は既存
+- WP184 で indexed / morph / skin / VAT bounds、phase 別 opaque / transparent queue、
+  `back_to_front_v1`、typed provider 選択、XR logical-center / per-view sort を実装済み
+- 残る機能穴は `hybrid_v1` material pass の screen-input descriptor binding。
+  snapshot graph 機構自体は既存で、次の RPE6 では typed color/depth domain とともに配線する
 - preset/eject/provider、typed compiled plan、MSAA/XR variant、transaction の
   正式な境界は [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md)
   を参照
