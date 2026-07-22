@@ -65,7 +65,7 @@ ctest --test-dir ./build -C Debug --output-on-failure
 
 | WP | 内容 | 状態 |
 |----|------|------|
-| — | 登録済みの未完了 WP なし | 次候補は RPE5。着手前に WP 登録する |
+| WP184 | RPE5 — world bounds、phase 別 draw queue、透明 sort、XR view policy | 実装中 |
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
@@ -73,13 +73,51 @@ ctest --test-dir ./build -C Debug --output-on-failure
 
 ## 2. WP 詳細
 
-現在、登録済みの未完了 WP はない。RPE5 を続ける場合は
-[`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md)
-§6、§12 と
-[`design_reviews/2026-07-22_wp183_report.md`](design_reviews/2026-07-22_wp183_report.md)
-を読み、world-space bounds 取得、opaque / transparent phase 別 queue、
-`back_to_front_v1`、XR logical-center / per-view policy の範囲と受け入れ条件を
-新しい WP として先に登録すること。
+### WP184: RPE5 — world bounds、phase 別 draw queue、透明 sort、XR view policy
+
+依存: WP183。設計の正は [RPE] §6、§12 と
+[`design_reviews/2026-07-22_wp183_report.md`](design_reviews/2026-07-22_wp183_report.md)。
+
+**目的**: opaque の state batching と transparent の back-to-front を分離し、
+同じ typed pipeline / provider registry から flat、preview、XR の決定的な draw queue を
+構築する。screen input、MSAA、OIT、graph variant provider は含めない。
+
+**実装範囲**:
+
+1. importer / procedural geometry が indexed primitive の object-space bounds を保持する。
+   VAT は clip 全体の宣言 bounds を使う。`PolygonInstanceContainer` は frame freeze 時の
+   model matrix から全 inventory item の finite な world-space bounds を再計算する。
+   skin / morph / custom vertex displacement については v1 の reference-envelope 規約を
+   文書化し、bounds 欠落を無言で許可しない。
+2. `DrawSortInputV1` に forward-compatible な logical-view origin / forward snapshot を
+   末尾追加する。provider は GPU / module に触れず、この data-only snapshot だけで key を
+   生成する。
+3. `DrawQueueBuilder` は明示 phase と logical view を受け取り、対象外 phase を混ぜない。
+   production は opaque / transparent を別 queue として compile し、既存の単一 indirect
+   buffer へ deterministic に連結する。explicit material contract は対応 phase、legacy /
+   shadow / velocity は両 phase の range を取得する。
+4. builtin `back_to_front_v1` を registry の通常 provider として登録する。bounds center の
+   view depth 降順を primary、material state を secondary、engine stable identity を最終
+   tie-break とする。opaque 既定は `state_batched_v1` のままにする。
+5. authoring の `draw_sort` を `ResolvedRenderPipeline` から typed
+   `CompiledRenderPipeline` へ compile する。preset 未指定でも同じ既定を得て、
+   `hybrid_v1` は既定を明示する。provider 名は game DLL provider を選択できる。
+6. XR 既定 `logical_view_center` は両眼の origin / forward から一組だけ compile する。
+   opt-in `per_view` は左右別 queue を compile し、record 中の view index で選ぶ。
+   flat / preview は一 view のみとする。
+
+**受け入れ条件**:
+
+- indexed subset、非一様／負 scale、instance transform 更新、VAT envelope の bounds fixture
+- opaque / transparent 混在 scene で phase が交差せず、opaque bytes は従来の
+  `state_batched_v1` 規則、transparent は depth 降順になる
+- depth 同値時の stable tie、二回 build の byte / range 一致、custom provider への
+  phase / view snapshot 配送
+- XR 左右眼 fixture で `logical_view_center` は一組、`per_view` は二組となり、左右で
+  順序が反転する配置も deterministic
+- flat / preview / XR の typed metadata、未知 key / provider / view policy の名前入り失敗
+- public ABI trait / game-DLL reload fixture、全ビルド、全 CTest、Player 短時間起動、
+  `git diff --check` が成功
 
 ## 3. トラック現況(WP 化待ちを含む)
 
