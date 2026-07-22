@@ -5058,6 +5058,59 @@ CMake 登録、[RPE] の RPE3 状態、WP182 完了レポート。
 
 完了レポート: `docs/design_reviews/2026-07-22_wp182_report.md`
 
+### WP183(済 2026-07-22): RPE4 — owner-aware `RenderPolicyRegistry` + `DrawSortProviderV1`
+
+参照: **[`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md)
+§5、§6、§12 の RPE4 が正**。WP182 の immutable `DrawItemSnapshot` と純 CPU
+`DrawQueueBuilder` を維持しつつ、draw sort の手法だけを engine builtin / game DLL で
+同じ規律から交換できる versioned provider 境界を追加する。
+
+- public `DrawSortProviderV1` は Physics `ProviderV2` と同じ descriptor envelope
+  (`struct_size` / version / capability / UTF-8 name + length / opaque context /
+  `noexcept` callback)を使い、STL container、例外、Vulkan / OpenXR 型を ABI 越境させない
+- callback は caller-owned `DrawSortItemV1` 列から item ごとの primary / secondary key
+  だけを書く。item の移動、GPU buffer / command、module / container 参照は許可しない
+- `RenderPolicyRegistry` は世代付き handle と `RegistrationOwner` を検証する。名前解決で
+  得る lease / snapshot は callback 完了まで owner DLL の unload を止め、unregister /
+  owner release は in-flight callback の終了を待つ
+- engine は callback status / output count を検証し、provider key の後ろへ stable draw
+  identity と declaration ordinal を最終 tie-break として加える。同じ input と provider
+  generation は同じ順序になる
+- builtin `state_batched_v1` も public descriptor と callback を registry へ登録し、
+  `PolygonInstanceContainer` の production build を含めて特権経路を残さない
+- game DLL candidate は live owner と同時登録できるが、明示 activation 前は名前解決へ
+  出さない。reload commit / rollback / shutdown は既存 `GameLogicReloader` の owner lifecycle
+  と統合する
+
+受け入れ条件:
+
+1. CPU-only fixture で builtin provider が WP182 の legacy indirect byte 列と両 view rangeを
+   維持し、同値 provider key でも stable identity tie-break により二回実行が一致する
+2. custom provider fixture で key 順が反映される一方、入力 snapshot は不変で、malformed
+   descriptor、unknown name/version/capability、callback error / 不正 output count を名前入りで
+   reject する
+3. register → unregister → slot reuse 後の stale handle generation、wrong/stale owner、同一
+   owner 内の duplicate name を検証する。engine builtin と game provider は同じ registry
+   情報を返す
+4. public game-DLL fixture で load → candidate coexistence → reload → rollback → shutdown を
+   通し、旧 provider callback が残らない。in-flight callback 中の owner release / DLL unload
+   は callback 完了まで待つ
+5. ABI header の standard-layout / trivially-copyable 条件と userpublic-only fixture build、
+   full build / CTest、Player smoke、`git diff --check` が通り、golden 更新は 0
+
+非対象: authoring JSON / preset からの opaque・transparent 別 provider 選択、
+`back_to_front_v1`、phase 別 queue、world bounds の取得、XR logical-center/per-view sort、
+screen input、MSAA、GPU-driven/bindless sort。これらは RPE5 以降で独立 WP にする。
+
+依存: WP182、`RegistrationOwner`、`GameLogicReloader`、Physics provider lifecycle。
+見積: 中〜大。
+
+排他: `src/core/userpublic/render/*`、`src/core/renderer/renderpolicyregistry*`、
+`drawqueuebuilder*`、`gamelogicreload.cpp`、renderer/test CMake と provider fixture、[RPE] の
+RPE4 状態、WP183 完了レポート。
+
+完了レポート: `docs/design_reviews/2026-07-22_wp183_report.md`
+
 ---
 
 未完了 WP と運用規則は [active ledger](implementation_plan.md) を参照。

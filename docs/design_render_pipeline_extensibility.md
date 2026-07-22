@@ -4,7 +4,9 @@
 
 ステータス: v1 実装方針(2026-07-21)。`hybrid_v1` の deferred/forward
 基盤を出発点とする。本文の層・語彙・所有規則は以後の実装判断の正とするが、
-公開 provider ABI のバイナリレイアウトは実装 fixture が揃うまで凍結しない。
+公開 provider ABI は個別の実装 fixture が揃ったものから凍結する。
+`DrawSortProviderV1` の v1 バイナリレイアウトは WP183 の public game-DLL fixture を
+もって凍結済み(2026-07-22)である。
 
 関連文書:
 
@@ -203,6 +205,10 @@ dump serialization に限定し、runtime がキー文字列を読んで動作�
 - `noexcept` C ABI と status return。例外、STL container、Vulkan 型を越境させない
 - register は世代付き handle を返し、unregister は owner / generation を検査
 - game DLL 登録は `RegistrationOwner` に関連付け、reload 時に一括 retire
+- 名前解決で得た lease は callback 完了まで owner DLL を保持し、unregister / owner
+  release は in-flight lease の終了を待つ
+- owner release は registry 側にも世代付き失効を残し、owner 台帳を無効化する直前の
+  遅延登録が callback を再挿入できないようにする
 - engine は callback 出力を検証・canonicalize してから使用
 
 registry は owner-aware な小さな engine mechanism として残る。個々の provider
@@ -214,6 +220,8 @@ provider は次をしてはならない。
 
 - `GET_MODULE`、Vulkan / OpenXR API、GPU resource への直接アクセス
 - engine 所有 pointer を callback 後まで保持
+- callback 内から provider の register / unregister を再入すること。これらは
+  outstanding lease の終了を待つため、同一 callback から呼ぶと自己待機になる
 - command buffer を並べ替えたり descriptor を作成すること
 - wall clock、unordered iteration、未固定乱数に依存すること
 - engine の validation を迂回して pass / resource id を捏造すること
@@ -233,8 +241,10 @@ request、selected provider、version、capability match、fallback / reject rea
 
 RPE3 着手前は一つの `render_commands` を material、source material、skinned、view
 visibility で直接 sort し、同じ関数内で material ごとの indirect range を作っていた。
-WP182 で live inventory と queue materialization は分離したが、builtin policy はまだ
-単一の `state_batched_v1` である。これは opaque の state batching には適するが、次を
+WP182 で live inventory と queue materialization を分離し、WP183 で builtin
+`state_batched_v1` と game-DLL provider を同じ registry / callback 経路へ移した。
+ただし production はまだ `mixed` phase / `shared` logical view の一つの queue を
+`state_batched_v1` で構築する。これは opaque の state batching には適するが、次を
 同時には満たせない。
 
 - opaque は state change を減らす
@@ -258,13 +268,17 @@ WP182 で live inventory と queue materialization は分離したが、builtin 
    - engine が provider key を検証し、stable identity を最終 tie-break にして
      indirect command / range を materialize した結果
 
-RPE3 / WP182 ではこのうち `DrawItemSnapshot` と `CompiledDrawQueue`、純 CPU
-`DrawQueueBuilder` を実装した。snapshot は model-instance generation / scene epoch、
-mesh / primitive / node、declaration ordinal、indexed draw 引数、material state key、
-route / phase、view mask を保持する。現行 importer は primitive bounds を永続化して
-いないため `world_bounds` だけは optional であり、RPE5 の depth sort 前に取得経路を
-追加する。`DrawSortInput`、provider callback、provider key の stable tie-break は RPE4
-以降で導入する。
+RPE3 / WP182 では `DrawItemSnapshot` と `CompiledDrawQueue`、純 CPU
+`DrawQueueBuilder` を実装した。RPE4 / WP183 では data-only `DrawSortInputV1`、
+`DrawSortProviderV1`、owner-aware `RenderPolicyRegistry`、provider key 後段の engine
+stable tie-break を実装し、builtin も public descriptor と同じ経路で登録した。
+snapshot は model-instance generation / scene epoch、mesh / primitive / node、declaration
+ordinal、indexed draw 引数、material state key、route / phase、view mask を保持する。
+
+現行 importer は primitive bounds を永続化していないため `world_bounds` だけは optional
+である。また RPE4 は provider 選択を authoring plan へまだ配線せず、互換維持のため
+`mixed` / `shared` だけを渡す。bounds 取得、opaque / transparent 別 queue、provider
+選択、XR logical view は RPE5 で同時に整合させる。
 
 provider は item の移動や GPU buffer 作成を行わず、key だけを返す。engine の
 stable tie-break により、同値 key でも replay が決定的になる。
@@ -443,7 +457,7 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 | RPE1 / WP180（済 2026-07-21） | `RenderPipelineRequest`、`RenderEnvironmentCapabilities`、`ResolvedRenderPipeline` と純粋 resolve 境界を抽出 | flat/preview/XR の既存 plan dump byte-equivalent、GPU mutation なし |
 | RPE2 / WP181（済 2026-07-22） | typed `CompiledRenderPipeline` を導入し、`composition_metadata` の runtime 読みを撤去 | JSON は dump のみ、既存 golden 不変 |
 | RPE3 / WP182（済 2026-07-22） | inventory と queue materialization を `DrawQueueBuilder` へ分離し、`state_batched_v1` で現行順を再現 | indirect bytes / draw ranges 不変、二回実行一致 |
-| RPE4 | owner-aware `RenderPolicyRegistry` + `DrawSortProviderV1`、builtin も同じ経路へ | game DLL register/unregister/reload、stale generation reject |
+| RPE4 / WP183（済 2026-07-22） | owner-aware `RenderPolicyRegistry` + `DrawSortProviderV1`、builtin も同じ経路へ | game DLL register/unregister/reload、stale generation reject |
 | RPE5 | `back_to_front_v1`、phase 別 queue、XR logical-center/per-view | 混在 scene golden、安定 tie-break、左右眼 fixture |
 | RPE6 | typed color domain + hybrid screen-input descriptor binding | 屈折/深度 fade golden、tone map 一回 |
 | RPE7 | `SampleCountRequest` / capabilities / resolution の純粋段階 | unsupported/fallback 診断 fixture |
@@ -453,12 +467,14 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 
 ### 12.1 いま着手する範囲
 
-RPE1 / WP180、RPE2 / WP181、RPE3 / WP182 は完了した。authoring resolve、immutable
-typed pipeline plan、draw inventory、queue materialization がそれぞれ分離済みである。
-次は RPE4 を独立 WP として登録し、owner / generation を検証する
-`RenderPolicyRegistry` と `DrawSortProviderV1` を追加して、builtin
-`state_batched_v1` も同じ provider 経路で dogfood する。透明 depth sort、phase 別
-queue、XR view policy、MSAA の Vulkan 変更はまだ混ぜない。
+RPE1 / WP180、RPE2 / WP181、RPE3 / WP182、RPE4 / WP183 は完了した。authoring
+resolve、immutable typed pipeline plan、draw inventory / queue materialization、versioned
+draw-sort provider registry がそれぞれ分離済みである。
+
+次は RPE5 を独立 WP として登録する。まず全 draw item の world-space bounds 取得を
+固定し、opaque / transparent phase 別 queue と provider 選択を typed plan へ加える。
+その上で builtin `back_to_front_v1` と XR `logical_view_center` / opt-in `per_view` を
+導入する。screen input、MSAA の Vulkan 変更はまだ混ぜない。
 
 ### 12.2 後回しにするもの
 
