@@ -1,6 +1,6 @@
 # pelican2 設計文書 索引
 
-最終更新: 2026-07-21(`hybrid_v1` 実装・RPE 設計地点)。文書が矛盾したら
+最終更新: 2026-07-23(RPE6a logical type / shadow graph 完了)。文書が矛盾したら
 **凍結済み > ドラフト、設計文書 > 指示書**の順で優先し、実装状態は
 コード・テスト・`design_reviews` の完了レポートを正とする。
 
@@ -33,9 +33,10 @@
 | 文書 | 状態 | 内容 |
 |------|------|------|
 | `design_scene_format.md` | v1.1・実装済み(WP25) | pelican.scene v1。エンベロープ・light コンポーネント・objects[].name |
-| `design_render_feature_modules.md` | v1・実装済み(WP28〜30) | **パージ可能 GPU 機能**。fragment 合成・defines・RT overrides |
-| `design_compute_task_graph.md` | v2・実装済み(WP33〜35) | **統一フレームグラフ**。依存宣言→機械最適化→手詰めの三層。CPU 拡張予約 |
-| `design_render_pipeline_extensibility.md` | v1 方針・RPE1 未着手 | **renderer 拡張境界の正本**。preset/eject/provider/backend、typed compiled plan、draw sort/MSAA/XR/hot reload の分離 |
+| `design_render_feature_modules.md` | v1.1・実装済み(WP28〜30) | **パージ可能 GPU 機能**。fragment 合成・defines・RT overrides。将来 ResourcePattern へ接続 |
+| `design_compute_task_graph.md` | v2.1・実装済み(WP33〜35) | **統一フレームグラフ**。依存宣言→機械最適化→手詰めの三層。CPU 拡張予約 |
+| `design_render_pipeline_extensibility.md` | v2 方針・RPE1〜RPE6a実装済み | **renderer 拡張境界の正本**。preset から physical/native までの拡張 ladder、二段階 compiler、draw sort/MSAA/XR/hot reload の分離 |
+| `design_render_graph_compiler.md` | v1 方針・RPE6a実装済み | **renderer compiler の詳細設計**。logical type / constraint、material/light contract、target planning、tile GPU、Vulkan physical IR / NativeScope |
 | `design_input_actions.md` | v1・I1〜I4 + XR action/pose 実装済み(WP39/49/89/91/130/132) | 入力四層・アクション層・プロファイル・収録/再生。HR2-I は未 |
 | `design_project_interpretation_layer.md` | v1・主要分離実施済み | 解釈(`pelican_project`)と engine binder の分離 |
 | `design_project_dcc_houdini.md` | v1・engine 側受け口実装済み | import manifest/VAT 再生は実装済み。Houdini adapter は外部リポジトリ |
@@ -80,7 +81,7 @@
   `design-engine-gui-system.md`(GUI 三層: tokens/primitives/surfaces)
 - `pelican-houdini-adapter/docs/`: 契約文書のコピー(正本はこちら側)
 
-## 次段の方向(2026-07-19 時点)
+## 次段の方向(2026-07-23 時点)
 
 - hot reload 残件 = HR2-I(input/profile)、U3(UI)、VRMA watcher 配線
 - editor = 共通 authoring/RPC/ImGui 基盤は済。Qt embedded viewport、
@@ -91,8 +92,9 @@
   standalone SA0〜SA3 が後続
 - physics = query/Jolt provider/E2 trigger は済。rigid-body simulation は
   将来トラック(`design_physics_queries.md` §6、Jolt 推奨)
-- rendering = `hybrid_v1` の deferred + forward 合成と semantic material route
-  は基盤実装済み。次は `design_render_pipeline_extensibility.md` の RPE1
-  (typed resolve 境界)から、draw sort、screen input、MSAA、XR variant、
-  pipeline transaction の順に進める。lighting/IBL、motion blur、bindless、
-  compute particles はこの境界上で需要と計測を伴う設計から開始
+- rendering = `hybrid_v1` の deferred + forward 合成、semantic material route、
+  RPE1〜RPE6a(resolve、typed manifest、draw queue/provider、transparent/XR sort、
+  logical type kernel / shadow graph)は実装済み。次は RPE6b screen input、
+  RPE6c desktop/tile target planner、MSAA、XR variant、pipeline transaction の順。
+  lighting/IBL、motion blur、bindless、compute particles はこの compiler 境界上で
+  需要と計測を伴う設計から開始

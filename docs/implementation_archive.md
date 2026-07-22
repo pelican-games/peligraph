@@ -5159,6 +5159,60 @@ RPE4 状態、WP183 完了レポート。
 
 完了レポート: `docs/design_reviews/2026-07-22_wp184_report.md`
 
+### WP185(済 2026-07-23): RPE6a — logical type kernel / typed shadow graph
+
+参照: [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md) §12、
+[`design_render_graph_compiler.md`](design_render_graph_compiler.md) §2、§3、§11、§12、
+[`design_reviews/2026-07-22_wp184_report.md`](design_reviews/2026-07-22_wp184_report.md)。
+
+**目的**: Vulkan 実行所有権を変えず、renderer compiler の最初の純 CPU 縦切りとして、
+意味型・正規化済み型引数・宣言的 matcher・conversion・logical port/resource-use と、
+現行 `FrameGraphDefinition` からの typed shadow graph / dump を導入する。
+
+**実装範囲**:
+
+1. `Image` / `Buffer` / `Stream` / `ObjectSet` / `Value` の閉じた constructor、
+   `SemanticTypeId(namespace/name/major)`、型付き argument value、parameter schema、
+   canonicalization / stable key / hash を純粋 `pelican_project` データ型として実装する。
+2. `TypePattern` の exact / one-of / range / set-contains / trait、symbolic deferred binding、
+   `exact` / `convertible` / `deferred` / `rejected` の理由付き結果を実装する。
+   conversion は版付き ID、automatic-safe / explicit-only、有限・決定的な最短経路とし、
+   同順位複数経路を曖昧エラーにする。
+3. `LogicalPortContract`、port relation、`LogicalResourceDesc`、read/write use、
+   same-pixel / neighborhood / arbitrary / temporal footprint、materialization requirement、
+   logical graph validation / deterministic dump を実装する。
+4. canonical alias `SceneLinearHdrV1` / `DisplayLinearV1` / `DisplayEncodedV1` /
+   `DeviceDepthV1` / `LinearViewDepthV1` と、移行専用 `LegacyOpaqueResourceV1` を用意する。
+5. `FrameGraphDefinition` を mutation せず typed shadow graph へ写す adapter を追加する。
+   explicit resource type を受け取れ、未移行 resource は machine-readable reason 付き
+   legacy type、legacy read は conservative `arbitrary`、history read は `temporal` とする。
+6. shadow dump は新規 `pelican.logical_render_graph` schema とし、既存
+   `pelican.frame_plan` dump、runtime graph、barrier executor へ接続しない。
+
+**受け入れ条件**:
+
+- argument 順序・省略 default の違いが同一 canonical key / hash となり、unknown argument、
+  missing required、invalid enum/range/version を名前入りで拒否する
+- exact / trait applicability / symbolic deferred / semantic mismatch、automatic-safe /
+  explicit-only、multi-hop、ambiguous conversion の CPU-only fixture
+- port type mismatch、unknown resource/port、不正 footprint/relation を compile 時に拒否する
+- typed color/depth resource と legacy fallback/history を含む shadow graph dump が二回一致する
+- repo 内の現行 `FrameGraphDefinition` 群で shadow compile 前後の既存 frame-plan JSON が一致する
+- `pelican_project` の logical type/graph header は Vulkan 型・module・GPU handle を含まない
+- 全 build / CTest、Player 短時間起動、`git diff --check` が成功する
+
+**非対象**: screen-input descriptor binding、屈折／depth fade shader、tone-map runtime
+validation、ResourcePattern / target cost planner、Vulkan physical plan、MSAA、XR graph variant、
+public game-DLL Domain/Graph provider ABI、runtime publication。これらは RPE6b 以降。
+
+依存: WP180〜WP184。見積: 中。
+
+排他: `src/project/logicalrender*`、`src/core/renderingpass/logicalframegraphadapter*`、
+project/renderingpass/test CMake、logical/frameplanner tests、[RPE]/[RGC] の RPE6a 状態と
+WP185 完了レポート。
+
+完了レポート: `docs/design_reviews/2026-07-23_wp185_report.md`
+
 ---
 
 未完了 WP と運用規則は [active ledger](implementation_plan.md) を参照。

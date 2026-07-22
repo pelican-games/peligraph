@@ -1,6 +1,6 @@
-# 機能追加バックログ(2026-07-22 時点・順序付き)
+# 機能追加バックログ(2026-07-23 時点・順序付き)
 
-作成: セッション引き継ぎ用。WP181 / RPE2 完了地点へ同期。
+作成: セッション引き継ぎ用。WP185 / RPE6a logical type / shadow graph 完了地点へ同期。
 状態の正: active は `docs/implementation_plan.md`、完了済みは
 `docs/implementation_archive.md` と `docs/design_reviews/*_wp*_report.md`、
 挙動はコードとテスト。
@@ -68,8 +68,12 @@ deferred、forward opaque/transparent 合成まで実装済み。
     一回を実装。後続の正本は `design_render_pipeline_extensibility.md`。
     RPE1(WP180、完了) → RPE2 typed plan(WP181、完了) →
     RPE3 DrawQueueBuilder(WP182、完了) → RPE4 provider registry(WP183、完了) →
-    RPE5 bounds / phase queue / transparent sort / XR view policy(WP184、完了)まで実装。
-    以後は screen input → MSAA → XR/preview graph variant → pipeline transaction の順
+    RPE5 bounds / phase queue / transparent sort / XR view policy(WP184、完了)と
+    RPE6a logical type / shadow graph(WP185、完了)まで実装。
+    以後は RPE6b screen input → RPE6c
+    desktop/tile target planner → MSAA → XR/preview graph variant → pipeline transaction の順。
+    論理型、material/light contract、Vulkan physical plan / NativeScope の詳細は
+    `design_render_graph_compiler.md`
 22. **スプライトライティング(surface 化)** [要設計小] — 2D の B 層接続
 23. **M3b 昇格ゲート実施**(spv-link 本採用判定)[設計済・ゲート明記済]
 24. **M4: B-web capability プロファイル** [設計済] — web を見るなら
@@ -150,16 +154,16 @@ D-P5(validation 常設)→ D-P4(Tracy ユニット・既定 OFF)→ D-P6(crash �
 OPT-S(起動第 2 弾)/OPT-XR(Release 実機ベースライン)/OPT-MV
 (multiview 評価)。最適化は必ず計測の数字を根拠に(WP82 流儀の標準化)。
 
-## 推奨の直近候補(WP182 完了後)
+## 推奨の直近候補(WP185 完了後)
 
 | 順 | 候補 | 理由／前提 |
 |---|---|---|
-| 次 WP 候補 | **RPE4: `RenderPolicyRegistry` + `DrawSortProviderV1`** | WP182 の immutable snapshot / compiled queue を入力に、game DLL owner・generation・register/unregister/reload と stale generation reject を固定する。builtin `state_batched_v1` も同じ経路へ移す。着手前に WP 登録 |
-| 2 | **HR2-I: input_actions/profile hot reload** | 設計済みで小さく、残る hot-reload 基本型を閉じる |
-| 3 | **U3: UI hot reload transaction** | HR0 watcher/reconcile を共有し、editor save 後の UI 往復を完成させる |
-| 4 | **VRMA watcher integration** | WP178 の generation/rebind entry point を FileWatcher/loader へ接続。WP 化前に asset identity と profile reload 範囲を固定する |
-| 5 | **CI2 / D-P5** | 負債ウェーブで唯一残った GPU/validation 常設 gate。runner 方針の決定が前提 |
-| 6 | **RPE5〜RPE6** | transparent sort、phase 別 queue、hybrid screen input。WP182 の provider fixture を確認して一段ずつ登録 |
+| 次 WP 候補 | **RPE6b: hybrid screen input vertical slice** | WP185 の logical color/depth type と port/use を `hybrid_v1` material-pass へ接続し、depth fade／屈折、descriptor binding、tone-map 一回を固定する。着手前に WP 登録 |
+| 2 | **RPE6c: desktop/tile target planner** | `ResourcePattern` と mock capability facts から materialize／tile-local／snapshot を比較し、Vulkan 実行所有権を移す前に target plan を固定する |
+| 3 | **HR2-I: input_actions/profile hot reload** | 設計済みで小さく、残る hot-reload 基本型を閉じる |
+| 4 | **U3: UI hot reload transaction** | HR0 watcher/reconcile を共有し、editor save 後の UI 往復を完成させる |
+| 5 | **VRMA watcher integration** | WP178 の generation/rebind entry point を FileWatcher/loader へ接続。WP 化前に asset identity と profile reload 範囲を固定する |
+| 6 | **CI2 / D-P5** | 負債ウェーブで唯一残った GPU/validation 常設 gate。runner 方針の決定が前提 |
 | 7 | **anim_graph v2 / clip events** | VRMA 基盤完成後の layers・sync marker・annotation/event sidecar。先に設計レビュー |
 | 8 | **XR2b multiview/depth** | RPE9 の graph variant 境界と WP143/145 の計測値を基準に sequential stereo との差を評価してから実装 |
 | 9 | ライティング/IBL、U-USD1/2 | 見た目と USD の次段。いずれも設計／受け入れ条件の登録が先 |

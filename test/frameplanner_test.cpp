@@ -1,5 +1,6 @@
 #include "../src/core/renderingpass/frameplanner.hpp"
 #include "../src/core/renderingpass/framegraphruntime.hpp"
+#include "../src/core/renderingpass/logicalframegraphadapter.hpp"
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/project/featurecompose.hpp"
 #include "../src/core/renderingpass/renderingpassconfigjsonparser.hpp"
@@ -274,6 +275,31 @@ TEST_CASE("frame planner preserves existing rendering config order", "[frameplan
                 const auto graph = makeFrameGraphDefinition(definition);
                 const auto plan = planFrameGraph(graph);
                 REQUIRE(framePlanOrder(plan) == passNames(definition));
+            }
+        }
+    }
+}
+
+TEST_CASE("logical shadow compilation preserves every existing frame plan",
+          "[frameplanner][logical-render-graph][compatibility]") {
+    const auto registry = makeBuiltinLogicalTypeRegistry();
+    const auto cases = allShadowConfigCases();
+    REQUIRE_FALSE(cases.empty());
+
+    for (const auto &config_case : cases) {
+        DYNAMIC_SECTION(config_case.name) {
+            const auto graphs =
+                parseFrameGraphDefinitionsFromConfigJson(config_case.config);
+            REQUIRE_FALSE(graphs.empty());
+            for (const auto &graph : graphs) {
+                const auto before = framePlanToJson(planFrameGraph(graph));
+                const auto first = compileLogicalFrameGraphShadow(graph, registry);
+                const auto second = compileLogicalFrameGraphShadow(graph, registry);
+                const auto after = framePlanToJson(planFrameGraph(graph));
+
+                REQUIRE(before == after);
+                REQUIRE(compiledLogicalRenderGraphToJson(first) ==
+                        compiledLogicalRenderGraphToJson(second));
             }
         }
     }

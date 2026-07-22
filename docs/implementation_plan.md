@@ -13,6 +13,8 @@
 - `docs/design_project_format_web_profile.md` — 共通形式 Web プロファイル(以下 [PFW])
 - `docs/design_render_pipeline_extensibility.md` — renderer の拡張境界と
   段階実装(以下 [RPE])
+- `docs/design_render_graph_compiler.md` — logical type / target planning /
+  Vulkan physical plan の詳細(以下 [RGC])
 
 改訂履歴: v2 で実装者レビューを反映し WP を再分割・採番し直した。旧番号との対応: 旧WP1→WP1、旧WP2→WP3、旧WP3→WP4+5+6、旧WP4→WP7、旧WP5→WP8、旧WP6→WP9、旧WP7→WP10、旧WP8→WP11、旧WP9→WP12、旧WP10→WP13、旧WP11→WP14、旧WP12→WP15、旧WP13→WP16。WP2(EngineTime)は新設。
 v3(2026-07-02): WP1〜17 完了を受けて WP18(プロジェクト形式)・WP19(シェーダ stem)を追加。設計の正に [PF] / [PFW] を追加。web 側の対応作業(WW1〜3)は my_webpage リポジトリの `docs/implementation_plan_web.md` にある(本書の管轄外)。
@@ -65,19 +67,16 @@ ctest --test-dir ./build -C Debug --output-on-failure
 
 | WP | 内容 | 状態 |
 |----|------|------|
-| — | 登録済みの未完了 WP なし | 次候補は RPE6。着手前に WP 登録する |
+| — | 現在アクティブな WP なし | — |
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
-(最新完了: WP184、2026-07-22。本文と完了レポートは archive 参照。)
+(最新完了: WP185、2026-07-23。本文と完了レポートは archive 参照。)
 
 ## 2. WP 詳細
 
-現在、登録済みの未完了 WP はない。RPE6 を続ける場合は
-[`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md) §8、§12 と
-[`design_reviews/2026-07-22_wp184_report.md`](design_reviews/2026-07-22_wp184_report.md) を読み、
-typed color domain、`hybrid_v1` screen-input descriptor binding、屈折／depth fade、
-tone map 一回の範囲と受け入れ条件を新しい WP として先に登録すること。
+現在アクティブな WP はない。renderer の次候補は RPE6b hybrid screen input vertical
+slice であり、着手前に独立 WP として登録する。
 
 ## 3. トラック現況(WP 化待ちを含む)
 
@@ -102,15 +101,17 @@ tone map 一回の範囲と受け入れ条件を新しい WP として先に登�
   5. 新手法対応の型: エンジンは機構語彙を 1 個足すだけ(例: 将来の
      アップスケーラ向けフェーズ数属性)→ ユーザー feature が組み合わせる
 
-- **レンダーパイプライン拡張境界(RPE、2026-07-21)**: versioned
+- **レンダーパイプライン拡張境界(RPE、2026-07-23 v2)**: versioned
   `hybrid_v1`、semantic material route、deferred + forward の scene-linear 合成は
-  実装済み。以後は [RPE] の preset / eject / policy provider / backend と
+  実装済み。以後は [RPE] / [RGC] の preset から physical/native までの拡張 ladder と
   Request / Resolved / Compiled / Prepared / Runtime 語彙へ揃える。現在の単一
   material-batched draw queue、sample count 1 固定、XR/preview ad-hoc callback を
   一度に直さず、RPE1(WP180)→ RPE2 typed plan(WP181) →
   RPE3 DrawQueueBuilder(WP182) → RPE4 provider registry(WP183) →
-  RPE5 bounds / phase queue / transparent sort / XR view policy(WP184) まで完了。以後は
-  screen input → MSAA → graph variant → pipeline transaction の順で進める
+  RPE5 bounds / phase queue / transparent sort / XR view policy(WP184) →
+  RPE6a logical type / shadow graph(WP185) まで完了。以後は RPE6b screen input →
+  RPE6c desktop/tile target plan →
+  MSAA → graph variant → pipeline transaction の順で進める
 
 - **コマンド／エディタ層**: stdio JSON-RPC、`load_gltf` /
   `update_transforms`、typed editor query/edit、actor/CAS、undo/redo、
