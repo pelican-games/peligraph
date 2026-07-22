@@ -4,6 +4,11 @@
   "name": "hybrid_v1",
   "config": {
     "shader_defines": ["PELICAN_HYBRID_SCENE_LINEAR"],
+    "draw_sort": {
+      "opaque": {"provider": "state_batched_v1"},
+      "transparent": {"provider": "back_to_front_v1"},
+      "xr_view_policy": "logical_view_center"
+    },
     "material_routing": {
       "policy": "hybrid_auto_v1",
       "routes": {

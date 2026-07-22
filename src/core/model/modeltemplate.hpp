@@ -50,6 +50,25 @@ struct SourceMaterialInitialValueTable {
     std::vector<SourceMaterialInitialValues> values;
 };
 
+struct ModelPrimitiveBounds {
+    glm::vec3 minimum{0.0f};
+    glm::vec3 maximum{0.0f};
+
+    bool operator==(const ModelPrimitiveBounds &) const = default;
+};
+
+// CPU-side source for the per-frame world bounds used by draw-sort providers.
+// The base and morph delta envelopes contain only vertices referenced by this
+// indexed primitive. Skinning is applied later from the current instance
+// palette, after the current morph weights have expanded this local envelope.
+struct ModelPrimitiveBoundsSource {
+    ModelPrimitiveBounds base;
+    std::vector<ModelPrimitiveBounds> morph_position_deltas;
+    std::uint32_t morph_weight_offset = 0;
+
+    bool operator==(const ModelPrimitiveBoundsSource &) const = default;
+};
+
 struct ModelPrimitiveRefInfo {
     uint32_t index_count = 0;
     uint32_t index_offset = 0;
@@ -61,6 +80,7 @@ struct ModelPrimitiveRefInfo {
     std::uint32_t primitive_index = 0;
     std::uint32_t node_index = noSourceNodeIndex;
     PrimitiveViewVisibility view_visibility = PrimitiveViewVisibility::both;
+    std::shared_ptr<const ModelPrimitiveBoundsSource> bounds_source;
 };
 
 // Exact suballocations owned by one model generation. Keeping this metadata

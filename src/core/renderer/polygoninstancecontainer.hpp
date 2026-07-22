@@ -15,6 +15,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <unordered_map>
 #include <vulkan/vulkan.hpp>
 
@@ -184,6 +185,21 @@ struct ModelInstanceRebuild {
     const ModelTemplate *replacement = nullptr;
 };
 
+struct DrawQueueSortView {
+    RenderPolicy::DrawSortLogicalViewV1 logical_view =
+        RenderPolicy::DrawSortLogicalViewV1::shared;
+    std::array<float, 3> origin{};
+    std::array<float, 3> forward{0.0F, 0.0F, -1.0F};
+};
+
+struct DrawQueueFramePlan {
+    std::string_view opaque_provider =
+        builtinStateBatchedDrawSortProvider;
+    std::string_view transparent_provider =
+        builtinBackToFrontDrawSortProvider;
+    std::span<const DrawQueueSortView> sort_views;
+};
+
 // A fully allocated CPU candidate for one model instance. Staging performs all
 // capacity checks and allocations without changing the live instance/command
 // inventories. publishModelInstance() is the single no-fail publication point.
@@ -207,7 +223,7 @@ class StagedModelInstance {
 
 DECLARE_MODULE(PolygonInstanceContainer) {
     std::vector<DrawItemSnapshot> draw_inventory;
-    CompiledDrawQueue compiled_draw_queue;
+    CompiledDrawQueueSet compiled_draw_queue;
     std::uint64_t next_draw_declaration_ordinal = 0;
     BufferWrapper indirect_buf;
 
@@ -278,6 +294,7 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     bool removeModelInstance(ModelInstanceId id);
     void clear();
     void triggerUpdate();
+    void triggerUpdate(const DrawQueueFramePlan &frame_plan);
     void commitFrameHistory();
     void advanceMorphHistoryAfterRender();
     void advanceMaterialOverrideHistoryAfterRender();
@@ -321,7 +338,9 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     const BufferWrapper &getObjectBuf() const;
     const BufferWrapper &getPreviousObjectBuf() const;
     const std::vector<DrawIndirectInfo> &
-    getDrawCalls(bool first_person_view = false) const;
+    getDrawCalls(bool first_person_view = false,
+                 std::optional<MaterialPhase> phase = std::nullopt,
+                 std::uint32_t sort_view_index = 0) const;
     size_t instanceCountForTesting() const { return instance_slots.liveCount(); }
     size_t slotCountForTesting() const { return model_instances_data.size(); }
     ModelInstanceId modelInstanceIdForTesting(std::uint32_t index) const;
@@ -375,7 +394,7 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     const std::vector<DrawItemSnapshot> &drawItemsForTesting() const {
         return draw_inventory;
     }
-    const CompiledDrawQueue &compiledDrawQueueForTesting() const {
+    const CompiledDrawQueueSet &compiledDrawQueueForTesting() const {
         return compiled_draw_queue;
     }
     const std::vector<glm::mat4> &

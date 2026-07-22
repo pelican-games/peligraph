@@ -511,11 +511,7 @@ void Loop::run() {
                     const auto view_parameters = OpenXr::buildRenderViewParameters(
                         active_camera_view, located_views.views,
                         camera_projection.znear, camera_projection.zfar);
-                    renderer.renderLogicalFrame(
-                        *xr_target, OpenXr::xr_stereo_view_count,
-                        [&](std::uint32_t view_index, const FrameRenderContext &) {
-                            return view_parameters.at(view_index);
-                        });
+                    renderer.renderLogicalFrame(*xr_target, view_parameters);
                     if (xr_mirror != nullptr) {
                         xr_mirror->tryPresent();
                         const auto &mirror = xr_mirror->statistics();

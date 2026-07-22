@@ -168,6 +168,7 @@ struct ResolvedRenderPipeline {
     std::optional<nlohmann::json> projection_jitter;
     nlohmann::json feature_instances = nlohmann::json::array();
     nlohmann::json material_routing;
+    nlohmann::json draw_sort;
     std::optional<RenderPipelinePresetInfo> pipeline_preset;
     RenderPipelineGraphVariant graph_variant =
         RenderPipelineGraphVariant::flat;
@@ -233,6 +234,25 @@ struct CompiledMaterialRouting {
     std::vector<CompiledMaterialRoute> routes;
 };
 
+enum class DrawSortXrViewPolicy {
+    logical_view_center,
+    per_view,
+};
+
+std::string_view drawSortXrViewPolicyName(DrawSortXrViewPolicy policy);
+
+struct CompiledDrawSortPolicy {
+    std::string provider;
+};
+
+struct CompiledDrawSorting {
+    CompiledDrawSortPolicy opaque{"state_batched_v1"};
+    CompiledDrawSortPolicy transparent{"back_to_front_v1"};
+    DrawSortXrViewPolicy xr_view_policy =
+        DrawSortXrViewPolicy::logical_view_center;
+    bool authored = false;
+};
+
 // Immutable after publication.  It deliberately contains neither the
 // normalized authoring JSON nor GPU/container state.  Runtime owners publish
 // it through shared_ptr<const CompiledRenderPipeline>; JSON is reconstructed
@@ -244,6 +264,7 @@ struct CompiledRenderPipeline {
     std::optional<CompiledProjectionJitter> projection_jitter;
     std::vector<CompiledRenderFeatureInstance> feature_instances;
     std::optional<CompiledMaterialRouting> material_routing;
+    CompiledDrawSorting draw_sorting;
     std::optional<RenderPipelinePresetInfo> pipeline_preset;
     RenderPipelineGraphVariant graph_variant =
         RenderPipelineGraphVariant::flat;

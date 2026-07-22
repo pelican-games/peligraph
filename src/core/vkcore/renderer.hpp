@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -41,9 +42,6 @@ class ILogicalFrameTarget {
     virtual vk::Format colorFormat(std::uint32_t view_index) const = 0;
     virtual bool consumeExtentChanged() = 0;
 };
-
-using RenderViewProvider =
-    std::function<RenderViewParameters(std::uint32_t, const FrameRenderContext &)>;
 
 DECLARE_MODULE(Renderer) {
     RenderingPassId current_rendering_pass_id;
@@ -100,8 +98,9 @@ DECLARE_MODULE(Renderer) {
     // Resolves every renderer-owned runtime dependency while module creation is
     // still legal. Subsequent render calls only read the frozen module graph.
     void prepareRuntimeModules();
-    void renderLogicalFrame(ILogicalFrameTarget &target, std::uint32_t view_count,
-                            const RenderViewProvider &view_provider);
+    void renderLogicalFrame(
+        ILogicalFrameTarget &target,
+        std::span<const RenderViewParameters> views);
     void render();
 };
 

@@ -31,8 +31,14 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
     const auto &vert_buf_container = dependencies.vert_buf_container;
     const auto &material_container = dependencies.material_container;
 
+    const auto contract = pass.materialInfo().contract;
+    const auto phase =
+        contract == MaterialPassContract::legacy_gbuffer_v1
+            ? std::optional<MaterialPhase>{}
+            : std::optional{materialPassPhase(contract)};
     const auto &draw_calls = instance_container.getDrawCalls(
-        dependencies.first_person_view);
+        dependencies.first_person_view, phase,
+        dependencies.draw_sort_view_index);
     if (draw_calls.empty()) {
         return;
     }
@@ -79,7 +85,8 @@ void renderShadowDepthDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
     const auto &vert_buf_container = dependencies.vert_buf_container;
 
     const auto &draw_calls = instance_container.getDrawCalls(
-        dependencies.first_person_view);
+        dependencies.first_person_view, std::nullopt,
+        dependencies.draw_sort_view_index);
     if (draw_calls.empty()) {
         return;
     }
@@ -105,7 +112,8 @@ void renderVelocityDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
                          const MaterialRendererDependencies &dependencies) {
     auto &instances = dependencies.instance_container;
     const auto &draw_calls = instances.getDrawCalls(
-        dependencies.first_person_view);
+        dependencies.first_person_view, std::nullopt,
+        dependencies.draw_sort_view_index);
     if (draw_calls.empty()) return;
     const auto &indirect = instances.getIndirectBuf();
     for (const auto &draw_call : draw_calls) {

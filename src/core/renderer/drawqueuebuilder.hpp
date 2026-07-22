@@ -45,6 +45,12 @@ enum class DrawQueueView : std::uint8_t {
     first_person,
 };
 
+enum class DrawQueuePhase : std::uint8_t {
+    mixed,
+    opaque,
+    transparent,
+};
+
 enum class DrawViewMask : std::uint8_t {
     none = 0,
     third_person = 1u << 0u,
@@ -89,9 +95,10 @@ struct DrawWorldBounds {
     bool operator==(const DrawWorldBounds &) const = default;
 };
 
-// Immutable input to queue compilation. RPE3 records bounds as optional
-// because the current ModelPrimitiveRefInfo does not retain accessor bounds;
-// transparent sorting can require them when RPE5 enriches the inventory.
+// Immutable input to queue compilation. RPE5 retains both the reference-space
+// source and the current world-space envelope. Bounds remain optional for
+// legacy or custom geometry that has not declared a safe envelope; policies
+// that require them reject those items instead of guessing.
 struct DrawItemSnapshot {
     DrawStableIdentity stable_identity{};
     std::uint64_t declaration_ordinal = 0;
@@ -99,11 +106,21 @@ struct DrawItemSnapshot {
     DrawPipelineMaterialKey pipeline_material_key{};
     MaterialRouteClass route = MaterialRouteClass::deferred_geometry;
     MaterialPhase phase = MaterialPhase::opaque;
+    std::shared_ptr<const ModelPrimitiveBoundsSource> bounds_source;
     std::optional<DrawWorldBounds> world_bounds;
     DrawViewMask view_mask = DrawViewMask::both;
 
     bool operator==(const DrawItemSnapshot &) const = default;
 };
+
+// Resolves the current deformation envelope without querying live modules.
+// Morph deltas expand the indexed base AABB, skin palettes conservatively
+// enclose the weighted joint results, and the instance matrix produces the
+// final provider-facing world-space bounds.
+DrawWorldBounds resolveDrawWorldBounds(
+    const ModelPrimitiveBoundsSource &source, const glm::mat4 &model_matrix,
+    std::span<const glm::mat4> skin_palette = {},
+    std::span<const float> morph_weights = {});
 
 DrawViewMask drawViewMask(PrimitiveViewVisibility visibility) noexcept;
 PrimitiveViewVisibility primitiveViewVisibility(DrawViewMask mask);
@@ -112,6 +129,11 @@ MaterialPhase drawPhaseForMaterialRoute(MaterialRouteClass route) noexcept;
 struct DrawQueueBuildRequest {
     std::span<const DrawItemSnapshot> items;
     std::uint32_t max_draw_indirect_count = 0;
+    DrawQueuePhase target_phase = DrawQueuePhase::mixed;
+    RenderPolicy::DrawSortLogicalViewV1 logical_view =
+        RenderPolicy::DrawSortLogicalViewV1::shared;
+    std::array<float, 3> logical_view_origin{};
+    std::array<float, 3> logical_view_forward{0.0F, 0.0F, -1.0F};
 };
 
 class CompiledDrawQueue {
@@ -142,6 +164,55 @@ class DrawQueueBuilder {
     // modules, devices, material containers, or render-graph state.
     static CompiledDrawQueue build(const DrawQueueBuildRequest &request,
                                    const DrawSortProviderLease &provider);
+};
+
+struct CompiledDrawQueueVariant {
+    DrawQueuePhase phase = DrawQueuePhase::opaque;
+    std::uint32_t sort_view_index = 0;
+    CompiledDrawQueue queue;
+};
+
+// Canonical frame publication: view-major, then opaque/transparent. The GPU
+// still sees one indirect buffer; CPU consumers select a phase/view range
+// whose offsets have already been rebased into that flattened storage.
+class CompiledDrawQueueSet {
+    struct Variant {
+        DrawQueuePhase phase = DrawQueuePhase::opaque;
+        std::uint32_t sort_view_index = 0;
+        CompiledDrawQueue queue;
+        std::array<std::vector<DrawIndirectInfo>, 2> draw_ranges;
+    };
+
+    std::vector<Variant> variants_;
+    std::vector<RenderCommand> indirect_records_;
+    std::vector<std::array<std::vector<DrawIndirectInfo>, 2>> all_ranges_;
+
+    const Variant &variant(DrawQueuePhase phase,
+                           std::uint32_t sort_view_index) const;
+
+  public:
+    static CompiledDrawQueueSet
+    combine(std::vector<CompiledDrawQueueVariant> variants);
+
+    bool empty() const noexcept { return indirect_records_.empty(); }
+    std::uint32_t sortViewCount() const noexcept {
+        return static_cast<std::uint32_t>(all_ranges_.size());
+    }
+    std::size_t queueCount() const noexcept { return variants_.size(); }
+    const std::vector<RenderCommand> &indirectRecords() const noexcept {
+        return indirect_records_;
+    }
+    std::span<const std::byte> indirectBytes() const noexcept;
+    const std::vector<DrawIndirectInfo> &
+    drawRanges(DrawQueuePhase phase, std::uint32_t sort_view_index,
+               DrawQueueView visibility_view) const;
+    const std::vector<DrawIndirectInfo> &
+    allDrawRanges(std::uint32_t sort_view_index,
+                  DrawQueueView visibility_view) const;
+    const CompiledDrawQueue &
+    queue(DrawQueuePhase phase, std::uint32_t sort_view_index) const {
+        return variant(phase, sort_view_index).queue;
+    }
 };
 
 } // namespace Pelican

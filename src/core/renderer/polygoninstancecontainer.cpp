@@ -23,6 +23,7 @@ namespace {
 
 constexpr size_t maxModelInstances = 1024;
 constexpr size_t maxRenderCommands = 1024;
+constexpr size_t maxDrawSortViews = 2;
 
 } // namespace
 
@@ -167,7 +168,8 @@ static vk::UniqueDescriptorPool createDeformationPool(vk::Device device) {
 
 PolygonInstanceContainer::PolygonInstanceContainer()
     : indirect_buf{
-          createIndirectBuf(GET_MODULE(VulkanManageCore), maxRenderCommands),
+          createIndirectBuf(GET_MODULE(VulkanManageCore),
+                            maxRenderCommands * maxDrawSortViews),
       },
       model_data_buffer{
           createModelInstanceDataBuf(GET_MODULE(VulkanManageCore), maxModelInstances),
@@ -256,6 +258,10 @@ DrawItemSnapshot makeDrawItemSnapshot(
     const ModelTemplate::MaterialPrimitives &material,
     const ModelTemplate::PrimitiveRefInfo &primitive, MaterialRouteClass route,
     std::uint64_t declaration_ordinal = 0) {
+    if (!primitive.bounds_source) {
+        throw std::runtime_error(
+            "model primitive is missing the draw bounds source");
+    }
     return DrawItemSnapshot{
         .stable_identity =
             DrawStableIdentity{
@@ -281,6 +287,7 @@ DrawItemSnapshot makeDrawItemSnapshot(
             },
         .route = route,
         .phase = drawPhaseForMaterialRoute(route),
+        .bounds_source = primitive.bounds_source,
         .world_bounds = std::nullopt,
         .view_mask = drawViewMask(primitive.view_visibility),
     };
@@ -546,6 +553,14 @@ void PolygonInstanceContainer::clear() {
 }
 
 void PolygonInstanceContainer::triggerUpdate() {
+    constexpr std::array default_views{
+        DrawQueueSortView{},
+    };
+    triggerUpdate(DrawQueueFramePlan{.sort_views = default_views});
+}
+
+void PolygonInstanceContainer::triggerUpdate(
+    const DrawQueueFramePlan &frame_plan) {
     // Clear the published view before compiling the next immutable queue.
     compiled_draw_queue = {};
 
@@ -597,21 +612,93 @@ void PolygonInstanceContainer::triggerUpdate() {
             sizeof(MorphInstanceGpuData) * morph_instances.size());
     }
 
-    // Compile without changing the live inventory. The builder owns state
-    // ordering and per-view range materialization; this adapter only supplies
-    // the physical-device limit and publishes the validated bytes.
+    if (frame_plan.opaque_provider.empty() ||
+        frame_plan.transparent_provider.empty()) {
+        throw std::invalid_argument(
+            "draw queue frame plan requires non-empty provider names");
+    }
+    if (frame_plan.sort_views.empty() ||
+        frame_plan.sort_views.size() > maxDrawSortViews) {
+        throw std::invalid_argument(
+            "draw queue frame plan requires one or two sort views");
+    }
+
+    // Resolve the frame-varying world bounds into a temporary immutable
+    // snapshot. The declaration inventory and its object-space sources stay
+    // unchanged across builds.
+    auto frame_items = draw_inventory;
+    for (auto &item : frame_items) {
+        const auto instance = item.stable_identity.instance.index;
+        if (!instance_slots.alive(instance) ||
+            instance >= model_instances_data.size() || !item.bounds_source) {
+            throw std::runtime_error(
+                "draw inventory contains a stale instance or missing bounds source");
+        }
+        const auto weights = instance < morph_weight_frames.size()
+                                 ? std::span<const float>{
+                                       morph_weight_frames[instance].current}
+                                 : std::span<const float>{};
+        std::span<const glm::mat4> palette;
+        if (item.pipeline_material_key.skinned) {
+            if (instance >= skin_palettes.size() ||
+                skin_palettes[instance].empty()) {
+                throw std::runtime_error(
+                    "skinned draw inventory item is missing its current skin palette");
+            }
+            palette = skin_palettes[instance];
+        }
+        item.world_bounds = resolveDrawWorldBounds(
+            *item.bounds_source, model_instances_data[instance], palette,
+            weights);
+    }
+
+    // Compile phase/view variants without changing the live inventory. The
+    // set flattens them back into one indirect buffer after rebasing ranges.
     const auto max_draw_indirect_count = GET_MODULE(VulkanManageCore)
                                              .getPhysDevice()
                                              .getProperties()
                                              .limits.maxDrawIndirectCount;
-    const auto draw_sort_provider =
+    const auto opaque_provider =
         renderPolicyRegistry().resolveDrawSortProvider(
-            builtinStateBatchedDrawSortProvider);
-    auto next_draw_queue = DrawQueueBuilder::build(DrawQueueBuildRequest{
-        .items = draw_inventory,
-        .max_draw_indirect_count = max_draw_indirect_count,
-    }, draw_sort_provider);
+            frame_plan.opaque_provider);
+    const auto transparent_provider =
+        renderPolicyRegistry().resolveDrawSortProvider(
+            frame_plan.transparent_provider);
+    std::vector<CompiledDrawQueueVariant> variants;
+    variants.reserve(frame_plan.sort_views.size() * 2);
+    for (std::uint32_t view_index = 0;
+         view_index < frame_plan.sort_views.size(); ++view_index) {
+        const auto &view = frame_plan.sort_views[view_index];
+        const auto request = [&](DrawQueuePhase phase) {
+            return DrawQueueBuildRequest{
+                .items = frame_items,
+                .max_draw_indirect_count = max_draw_indirect_count,
+                .target_phase = phase,
+                .logical_view = view.logical_view,
+                .logical_view_origin = view.origin,
+                .logical_view_forward = view.forward,
+            };
+        };
+        variants.push_back(CompiledDrawQueueVariant{
+            .phase = DrawQueuePhase::opaque,
+            .sort_view_index = view_index,
+            .queue = DrawQueueBuilder::build(
+                request(DrawQueuePhase::opaque), opaque_provider),
+        });
+        variants.push_back(CompiledDrawQueueVariant{
+            .phase = DrawQueuePhase::transparent,
+            .sort_view_index = view_index,
+            .queue = DrawQueueBuilder::build(
+                request(DrawQueuePhase::transparent), transparent_provider),
+        });
+    }
+    auto next_draw_queue =
+        CompiledDrawQueueSet::combine(std::move(variants));
     const auto &indirect_records = next_draw_queue.indirectRecords();
+    if (indirect_records.size() > maxRenderCommands * maxDrawSortViews) {
+        throw std::runtime_error(
+            "compiled draw queue exceeds indirect buffer capacity");
+    }
     GET_MODULE(VulkanManageCore)
         .writeBuf(indirect_buf, indirect_records.data(), 0,
                   sizeof(RenderCommand) * indirect_records.size());
@@ -1346,10 +1433,19 @@ const BufferWrapper &PolygonInstanceContainer::getIndirectBuf() const { return i
 const BufferWrapper &PolygonInstanceContainer::getObjectBuf() const { return model_data_buffer; }
 const BufferWrapper &PolygonInstanceContainer::getPreviousObjectBuf() const { return previous_model_data_buffer; }
 const std::vector<DrawIndirectInfo> &
-PolygonInstanceContainer::getDrawCalls(bool first_person_view) const {
+PolygonInstanceContainer::getDrawCalls(
+    bool first_person_view, std::optional<MaterialPhase> phase,
+    std::uint32_t sort_view_index) const {
+    const auto visibility = first_person_view
+                                ? DrawQueueView::first_person
+                                : DrawQueueView::third_person;
+    if (!phase) {
+        return compiled_draw_queue.allDrawRanges(sort_view_index, visibility);
+    }
     return compiled_draw_queue.drawRanges(
-        first_person_view ? DrawQueueView::first_person
-                          : DrawQueueView::third_person);
+        *phase == MaterialPhase::opaque ? DrawQueuePhase::opaque
+                                        : DrawQueuePhase::transparent,
+        sort_view_index, visibility);
 }
 
 } // namespace Pelican

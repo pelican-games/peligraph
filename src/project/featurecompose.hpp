@@ -32,6 +32,7 @@ struct RenderFeatureComposeResult {
     std::optional<nlohmann::json> projection_jitter;
     nlohmann::json feature_instances = nlohmann::json::array();
     nlohmann::json material_routing;
+    nlohmann::json draw_sort;
     std::optional<RenderPipelinePresetInfo> pipeline_preset;
     bool used_features = false;
 };

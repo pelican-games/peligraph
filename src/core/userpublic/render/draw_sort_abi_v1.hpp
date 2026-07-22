@@ -113,7 +113,21 @@ struct DrawSortInputV1 {
     const DrawSortItemV1 *items = nullptr;
     std::uint32_t item_count = 0;
     std::uint32_t reserved2 = 0;
+    // Additive v1 tail. Older providers may ignore it by using the prefix
+    // size they were compiled against. New depth policies require the flag
+    // and consume this canonical world-space origin/forward snapshot.
+    std::uint32_t has_logical_view_snapshot = 0;
+    std::uint32_t reserved3 = 0;
+    Vec3V1 logical_view_origin{};
+    Vec3V1 logical_view_forward{0.0F, 0.0F, -1.0F};
 };
+
+// Locks the byte extent understood by providers compiled before the logical
+// view tail was added. Such providers continue to consume this prefix while
+// current providers gate tail access with struct_size.
+inline constexpr std::uint32_t drawSortInputV1LegacyPrefixSize =
+    static_cast<std::uint32_t>(
+        offsetof(DrawSortInputV1, has_logical_view_snapshot));
 
 // Keys are compared lexicographically in ascending order. A provider may
 // invert a component when it needs descending order. The engine always adds a
@@ -193,6 +207,9 @@ static_assert(std::is_trivially_copyable_v<ProviderHandleV1>);
 static_assert(std::is_standard_layout_v<ApiV1>);
 static_assert(std::is_trivially_copyable_v<ApiV1>);
 static_assert(offsetof(DrawSortInputV1, struct_size) == 0);
+static_assert(drawSortInputV1LegacyPrefixSize ==
+              offsetof(DrawSortInputV1, reserved2) +
+                  sizeof(std::uint32_t));
 static_assert(offsetof(ProviderV1, struct_size) == 0);
 static_assert(offsetof(ApiV1, struct_size) == 0);
 

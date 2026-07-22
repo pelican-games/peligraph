@@ -314,6 +314,7 @@ class ValidationGltfResourceSink final : public GltfResourceSink {
             throw std::runtime_error("glTF candidate geometry exceeds draw address space");
         ModelTemplate::PrimitiveRefInfo primitive{index_count, next_index_,
                                                   static_cast<int32_t>(vertex_offset), skinned};
+        primitive.bounds_source = makePrimitiveBoundsSource(data);
         std::vector<MorphTargetDeltaRange> ranges;
         if (!data.morph_targets.empty()) {
             if (vertex_offset > maxMorphVerticesPerPool ||
@@ -1761,6 +1762,18 @@ struct InternalGltfLoader {
                     node_index < 0 ? noSourceNodeIndex
                                    : static_cast<std::uint32_t>(node_index);
                 primitive_info.view_visibility = variant.visibility;
+#if PELICAN_WITH_VAT
+                if (vat_info) {
+                    primitive_info.bounds_source =
+                        std::make_shared<const ModelPrimitiveBoundsSource>(
+                            ModelPrimitiveBoundsSource{
+                                .base = ModelPrimitiveBounds{
+                                    vat_info->bounds_min,
+                                    vat_info->bounds_max,
+                                },
+                            });
+                }
+#endif
                 if (!added.morph_ranges.empty()) {
                     for (std::size_t target = 0;
                          target < added.morph_ranges.size(); ++target)

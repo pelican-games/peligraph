@@ -1,6 +1,8 @@
 #include "renderpolicyregistry.hpp"
 
 #include <algorithm>
+#include <bit>
+#include <cmath>
 #include <exception>
 #include <limits>
 #include <mutex>
@@ -58,6 +60,44 @@ bool validRoutePhase(RenderPolicy::MaterialRouteV1 route,
     return false;
 }
 
+bool finiteVec3(RenderPolicy::Vec3V1 value) noexcept {
+    return std::isfinite(value.x) && std::isfinite(value.y) &&
+           std::isfinite(value.z);
+}
+
+bool validViewSnapshot(const RenderPolicy::DrawSortInputV1 &input) noexcept {
+    if (input.has_logical_view_snapshot > 1 || input.reserved3 != 0)
+        return false;
+    if (input.has_logical_view_snapshot == 0) return true;
+    if (!finiteVec3(input.logical_view_origin) ||
+        !finiteVec3(input.logical_view_forward))
+        return false;
+    const auto length_squared =
+        input.logical_view_forward.x * input.logical_view_forward.x +
+        input.logical_view_forward.y * input.logical_view_forward.y +
+        input.logical_view_forward.z * input.logical_view_forward.z;
+    return std::isfinite(length_squared) && length_squared > 0.0F;
+}
+
+bool validItem(const RenderPolicy::DrawSortItemV1 &item) noexcept {
+    constexpr std::uint32_t known_flags = RenderPolicy::item_skinned;
+    if (item.material_id < 0 || (item.flags & ~known_flags) != 0 ||
+        !validRoutePhase(item.route, item.phase) ||
+        (item.view_mask != RenderPolicy::view_third_person &&
+         item.view_mask != RenderPolicy::view_first_person &&
+         item.view_mask != RenderPolicy::view_both) ||
+        item.has_world_bounds > 1 || item.reserved != 0) {
+        return false;
+    }
+    if (item.has_world_bounds == 0) return true;
+    if (!finiteVec3(item.world_bounds_minimum) ||
+        !finiteVec3(item.world_bounds_maximum))
+        return false;
+    return item.world_bounds_minimum.x <= item.world_bounds_maximum.x &&
+           item.world_bounds_minimum.y <= item.world_bounds_maximum.y &&
+           item.world_bounds_minimum.z <= item.world_bounds_maximum.z;
+}
+
 Status stateBatchedSort(
     void *, const RenderPolicy::DrawSortInputV1 *input,
     RenderPolicy::DrawSortKeyV1 *output, std::uint32_t output_capacity,
@@ -67,7 +107,7 @@ Status stateBatchedSort(
         input->version != RenderPolicy::descriptorVersionV1 ||
         input->reserved0 != 0 || input->reserved1 != 0 ||
         input->reserved2 != 0 || !validPhase(input->target_phase) ||
-        !validLogicalView(input->logical_view) ||
+        !validLogicalView(input->logical_view) || !validViewSnapshot(*input) ||
         (input->item_count != 0 && input->items == nullptr) ||
         (output_capacity != 0 && output == nullptr)) {
         return Status::invalid_argument;
@@ -79,13 +119,7 @@ Status stateBatchedSort(
 
     for (std::uint32_t index = 0; index < input->item_count; ++index) {
         const auto &item = input->items[index];
-        constexpr std::uint32_t known_flags = RenderPolicy::item_skinned;
-        if (item.material_id < 0 || (item.flags & ~known_flags) != 0 ||
-            !validRoutePhase(item.route, item.phase) ||
-            (item.view_mask != RenderPolicy::view_third_person &&
-             item.view_mask != RenderPolicy::view_first_person &&
-             item.view_mask != RenderPolicy::view_both) ||
-            item.has_world_bounds > 1 || item.reserved != 0) {
+        if (!validItem(item)) {
             return Status::invalid_argument;
         }
 
@@ -102,6 +136,69 @@ Status stateBatchedSort(
             .primary = (static_cast<std::uint64_t>(material) << 32U) |
                        item.source_material_index,
             .secondary = (skinned << 32U) | visibility,
+        };
+    }
+    return Status::ok;
+}
+
+std::uint32_t descendingFloatKey(float value) noexcept {
+    const auto bits = std::bit_cast<std::uint32_t>(value);
+    const auto ascending = (bits & 0x80000000U) != 0
+                               ? ~bits
+                               : (bits ^ 0x80000000U);
+    return ~ascending;
+}
+
+Status backToFrontSort(
+    void *, const RenderPolicy::DrawSortInputV1 *input,
+    RenderPolicy::DrawSortKeyV1 *output, std::uint32_t output_capacity,
+    std::uint32_t *out_count) noexcept {
+    if (input == nullptr || out_count == nullptr ||
+        input->struct_size < sizeof(RenderPolicy::DrawSortInputV1) ||
+        input->version != RenderPolicy::descriptorVersionV1 ||
+        input->reserved0 != 0 || input->reserved1 != 0 ||
+        input->reserved2 != 0 || input->reserved3 != 0 ||
+        input->target_phase != RenderPolicy::DrawSortPhaseV1::transparent ||
+        !validLogicalView(input->logical_view) || !validViewSnapshot(*input) ||
+        input->has_logical_view_snapshot == 0 ||
+        (input->item_count != 0 && input->items == nullptr) ||
+        (output_capacity != 0 && output == nullptr)) {
+        return Status::invalid_argument;
+    }
+    *out_count = input->item_count;
+    if (output_capacity < input->item_count) {
+        return Status::buffer_too_small;
+    }
+
+    for (std::uint32_t index = 0; index < input->item_count; ++index) {
+        const auto &item = input->items[index];
+        if (!validItem(item) || item.has_world_bounds == 0 ||
+            item.phase != RenderPolicy::MaterialPhaseV1::transparent) {
+            return Status::invalid_argument;
+        }
+        const RenderPolicy::Vec3V1 center{
+            item.world_bounds_minimum.x * 0.5F +
+                item.world_bounds_maximum.x * 0.5F,
+            item.world_bounds_minimum.y * 0.5F +
+                item.world_bounds_maximum.y * 0.5F,
+            item.world_bounds_minimum.z * 0.5F +
+                item.world_bounds_maximum.z * 0.5F,
+        };
+        const auto depth =
+            (center.x - input->logical_view_origin.x) *
+                input->logical_view_forward.x +
+            (center.y - input->logical_view_origin.y) *
+                input->logical_view_forward.y +
+            (center.z - input->logical_view_origin.z) *
+                input->logical_view_forward.z;
+        if (!std::isfinite(depth)) return Status::invalid_argument;
+        output[index] = RenderPolicy::DrawSortKeyV1{
+            .primary = descendingFloatKey(depth),
+            .secondary =
+                (static_cast<std::uint64_t>(
+                     static_cast<std::uint32_t>(item.material_id))
+                 << 32U) |
+                item.source_material_index,
         };
     }
     return Status::ok;
@@ -206,17 +303,25 @@ struct RenderPolicyRegistry::Impl {
 };
 
 RenderPolicyRegistry::RenderPolicyRegistry() : impl_{std::make_unique<Impl>()} {
-    constexpr char builtin_name[] = "state_batched_v1";
-    auto provider = RenderPolicy::descriptor<RenderPolicy::ProviderV1>();
-    provider.capability_bits = RenderPolicy::builtinProviderCapabilitiesV1;
-    provider.name_utf8 = builtin_name;
-    provider.name_size = static_cast<std::uint32_t>(sizeof(builtin_name) - 1);
-    provider.sort_items = stateBatchedSort;
-    RenderPolicy::ProviderHandleV1 handle{};
-    if (registerDrawSortProvider(provider, internal::engineRegistrationOwner,
-                                 handle) != Status::ok) {
-        throw std::logic_error("failed to register builtin draw sort provider");
-    }
+    const auto register_builtin = [&](std::string_view name,
+                                      RenderPolicy::SortItemsV1Fn sort) {
+        auto provider = RenderPolicy::descriptor<RenderPolicy::ProviderV1>();
+        provider.capability_bits =
+            RenderPolicy::builtinProviderCapabilitiesV1;
+        provider.name_utf8 = name.data();
+        provider.name_size = static_cast<std::uint32_t>(name.size());
+        provider.sort_items = sort;
+        RenderPolicy::ProviderHandleV1 handle{};
+        if (registerDrawSortProvider(provider,
+                                     internal::engineRegistrationOwner,
+                                     handle) != Status::ok) {
+            throw std::logic_error(
+                "failed to register builtin draw sort provider '" +
+                std::string{name} + "'");
+        }
+    };
+    register_builtin(builtinStateBatchedDrawSortProvider, stateBatchedSort);
+    register_builtin(builtinBackToFrontDrawSortProvider, backToFrontSort);
 }
 
 RenderPolicyRegistry::~RenderPolicyRegistry() = default;

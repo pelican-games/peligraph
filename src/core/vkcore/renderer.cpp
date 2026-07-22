@@ -49,6 +49,9 @@
 #include "../imgui/imguisystem.hpp"
 #endif
 #include <algorithm>
+#include <cmath>
+#include <glm/gtc/matrix_inverse.hpp>
+#include <limits>
 #include <map>
 #include <string_view>
 
@@ -833,7 +836,8 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
                             nlohmann::json *node_trace,
                             std::uint64_t logical_frame,
                             std::string_view graph_variant,
-                            std::uint32_t view_index) {
+                            std::uint32_t view_index,
+                            std::uint32_t draw_sort_view_index) {
     const MaterialRendererDependencies material_renderer_dependencies{modules.instance_container,
                                                                       modules.vert_buf_container,
                                                                       modules.material_container,
@@ -841,7 +845,8 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
                                                                       modules.light_container,
                                                                       modules.camera,
                                                                       snapshot.view_projection_jittered,
-                                                                      first_person_view};
+                                                                      first_person_view,
+                                                                      draw_sort_view_index};
     const FullscreenPassRendererDependencies fullscreen_pass_renderer_dependencies{modules.fullscreen_pass_container,
                                                                                   modules.frame_resources};
     std::optional<UiRendererDependencies> ui_renderer_dependencies;
@@ -1277,13 +1282,16 @@ void Renderer::prepareRuntimeModules() {
     (void)GET_MODULE(StandardMaterialResource);
 }
 
-void Renderer::renderLogicalFrame(ILogicalFrameTarget &target, std::uint32_t view_count,
-                                   const RenderViewProvider &view_provider) {
+void Renderer::renderLogicalFrame(
+    ILogicalFrameTarget &target,
+    std::span<const RenderViewParameters> views) {
+    if (views.size() > std::numeric_limits<std::uint32_t>::max()) {
+        throw std::runtime_error(
+            "Renderer logical frame view count exceeds the public index range");
+    }
+    const auto view_count = static_cast<std::uint32_t>(views.size());
     if (view_count == 0) {
         throw std::runtime_error("Renderer logical frame requires at least one view");
-    }
-    if (!view_provider) {
-        throw std::runtime_error("Renderer logical frame requires a view provider");
     }
 
     auto &deletion_queue = resolveFrameDeletionQueue();
@@ -1338,6 +1346,93 @@ void Renderer::renderLogicalFrame(ILogicalFrameTarget &target, std::uint32_t vie
 
     const auto &rendering_pass =
         modules.rendering_pass_container.getCompiledRenderingPass(current_rendering_pass_id);
+    const auto *frame_graph =
+        modules.frame_graph_runtime.find(current_rendering_pass_id);
+    if (frame_graph == nullptr || !frame_graph->render_pipeline) {
+        throw std::runtime_error(
+            "Renderer logical frame requires a compiled render pipeline");
+    }
+    const auto &draw_sorting = frame_graph->render_pipeline->draw_sorting;
+    const bool per_view_sort =
+        active_graph_variant == RenderGraphVariant::xr &&
+        draw_sorting.xr_view_policy == DrawSortXrViewPolicy::per_view;
+    if (per_view_sort && view_count != 2) {
+        throw std::runtime_error(
+            "XR per_view draw sorting requires exactly two views");
+    }
+    const auto sort_view_for = [](const RenderViewParameters &view) {
+        if (!std::isfinite(view.camera_position.x) ||
+            !std::isfinite(view.camera_position.y) ||
+            !std::isfinite(view.camera_position.z)) {
+            throw std::runtime_error(
+                "render view has a non-finite camera position");
+        }
+        for (glm::length_t column = 0; column < 4; ++column) {
+            for (glm::length_t row = 0; row < 4; ++row) {
+                if (!std::isfinite(view.view[column][row])) {
+                    throw std::runtime_error(
+                        "render view has a non-finite view matrix");
+                }
+            }
+        }
+        const auto world_from_view = glm::inverse(view.view);
+        auto forward = -glm::vec3{world_from_view[2]};
+        const auto length = glm::length(forward);
+        if (!std::isfinite(length) || length <= 0.0F) {
+            throw std::runtime_error(
+                "render view has an invalid forward direction");
+        }
+        forward /= length;
+        return DrawQueueSortView{
+            .logical_view =
+                view.first_person_view
+                    ? RenderPolicy::DrawSortLogicalViewV1::first_person
+                    : RenderPolicy::DrawSortLogicalViewV1::third_person,
+            .origin = {view.camera_position.x, view.camera_position.y,
+                       view.camera_position.z},
+            .forward = {forward.x, forward.y, forward.z},
+        };
+    };
+    std::vector<DrawQueueSortView> sort_views;
+    if (per_view_sort) {
+        sort_views.reserve(view_count);
+        for (const auto &view : views)
+            sort_views.push_back(sort_view_for(view));
+    } else {
+        glm::dvec3 origin{0.0};
+        glm::dvec3 forward{0.0};
+        bool all_first_person = true;
+        bool all_third_person = true;
+        for (const auto &view : views) {
+            const auto snapshot = sort_view_for(view);
+            origin += glm::dvec3{snapshot.origin[0], snapshot.origin[1],
+                                 snapshot.origin[2]};
+            forward += glm::dvec3{snapshot.forward[0], snapshot.forward[1],
+                                  snapshot.forward[2]};
+            all_first_person = all_first_person && view.first_person_view;
+            all_third_person = all_third_person && !view.first_person_view;
+        }
+        origin /= static_cast<double>(view_count);
+        const auto length = glm::length(forward);
+        if (!std::isfinite(length) || length <= 0.0) {
+            throw std::runtime_error(
+                "logical view center has an invalid forward direction");
+        }
+        forward /= length;
+        sort_views.push_back(DrawQueueSortView{
+            .logical_view = all_first_person
+                                ? RenderPolicy::DrawSortLogicalViewV1::first_person
+                            : all_third_person
+                                ? RenderPolicy::DrawSortLogicalViewV1::third_person
+                                : RenderPolicy::DrawSortLogicalViewV1::shared,
+            .origin = {static_cast<float>(origin.x),
+                       static_cast<float>(origin.y),
+                       static_cast<float>(origin.z)},
+            .forward = {static_cast<float>(forward.x),
+                        static_cast<float>(forward.y),
+                        static_cast<float>(forward.z)},
+        });
+    }
     std::vector<RenderFrameSnapshot> snapshots;
     snapshots.reserve(view_count);
     nlohmann::json view_traces = nlohmann::json::array();
@@ -1360,7 +1455,11 @@ void Renderer::renderLogicalFrame(ILogicalFrameTarget &target, std::uint32_t vie
             }
             // Object, skin, morph, and material-override GPU state is frozen
             // after target acquisition and before the first view records.
-            modules.instance_container.triggerUpdate();
+            modules.instance_container.triggerUpdate(DrawQueueFramePlan{
+                .opaque_provider = draw_sorting.opaque.provider,
+                .transparent_provider = draw_sorting.transparent.provider,
+                .sort_views = sort_views,
+            });
         } else {
             if (render_ctx.in_flight_frame_index != *logical_in_flight_frame) {
                 throw std::runtime_error(
@@ -1378,7 +1477,7 @@ void Renderer::renderLogicalFrame(ILogicalFrameTarget &target, std::uint32_t vie
                 "Renderer logical-frame target format does not match the compiled flat graph");
         }
 
-        const auto view = view_provider(view_index, render_ctx);
+        const auto &view = views[view_index];
         glm::vec2 jitter_ndc{0.0f};
         if (projection_jitter) {
             jitter_ndc = projectionJitterSample(*projection_jitter, engine_time.frameIndex(),
@@ -1404,7 +1503,8 @@ void Renderer::renderLogicalFrame(ILogicalFrameTarget &target, std::uint32_t vie
                                render_target_layout_tracker,
                                node_trace_ptr, engine_time.frameIndex(),
                                active_graph_variant == RenderGraphVariant::flat ? "flat" : "xr",
-                               view_index);
+                               view_index,
+                               per_view_sort ? view_index : 0);
 #if PELICAN_WITH_OPENXR
         if (active_graph_variant == RenderGraphVariant::xr && view_index == 0) {
             recordXrMirrorIntermediate(render_ctx, modules,
@@ -1459,16 +1559,15 @@ void Renderer::renderLogicalFrame(ILogicalFrameTarget &target, std::uint32_t vie
 void Renderer::render() {
     selectGraphVariant(RenderGraphVariant::flat);
     FlatLogicalFrameTarget target{GET_MODULE(RenderTarget)};
-    renderLogicalFrame(
-        target, 1,
-        [](std::uint32_t, const FrameRenderContext &) {
-            const auto &camera = GET_MODULE(Camera);
-            return RenderViewParameters{
-                .view = camera.getViewMatrix(),
-                .projection = camera.getProjectionMatrix(),
-                .camera_position = camera.getPos(),
-            };
-        });
+    const auto &camera = GET_MODULE(Camera);
+    const std::array views{
+        RenderViewParameters{
+            .view = camera.getViewMatrix(),
+            .projection = camera.getProjectionMatrix(),
+            .camera_position = camera.getPos(),
+        },
+    };
+    renderLogicalFrame(target, views);
 }
 
 } // namespace Pelican

@@ -278,7 +278,8 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
     // Keep v1 deterministic.  Structural overrides use an explicit eject/copy
     // workflow so a preset update cannot silently reinterpret a deep merge.
     requireOnlyKeys(authored_config,
-                    {"pipeline", "features", "snapshots", "shader_defines"},
+                    {"pipeline", "features", "snapshots", "shader_defines",
+                     "draw_sort"},
                     "rendering config using pipeline preset");
     appendUniqueArray(resolved, authored_config, "features", "rendering config", false);
     appendUniqueArray(resolved, authored_config, "shader_defines", "rendering config", true);
@@ -291,6 +292,13 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
             throw std::runtime_error("rendering config snapshots must be an array");
         }
         resolved["snapshots"] = authored_config.at("snapshots");
+    }
+    if (authored_config.contains("draw_sort")) {
+        if (!authored_config.at("draw_sort").is_object()) {
+            throw std::runtime_error(
+                "rendering config draw_sort must be an object");
+        }
+        resolved["draw_sort"] = authored_config.at("draw_sort");
     }
     return {std::move(resolved), RenderPipelinePresetInfo{
                                          reference, name, supported_preset_version}};
@@ -412,6 +420,7 @@ ResolvedRenderPipeline resolveRenderPipeline(
     result.projection_jitter = std::move(composed.projection_jitter);
     result.feature_instances = std::move(composed.feature_instances);
     result.material_routing = std::move(composed.material_routing);
+    result.draw_sort = std::move(composed.draw_sort);
     result.pipeline_preset = std::move(composed.pipeline_preset);
     result.used_features = composed.used_features;
     result.graph_variant = capabilities.graph_variant;
@@ -472,6 +481,15 @@ double compiledRenderNumericValueAsDouble(
 std::string_view materialRoutingPolicyName(MaterialRoutingPolicy policy) {
     switch (policy) {
     case MaterialRoutingPolicy::hybrid_auto_v1: return "hybrid_auto_v1";
+    }
+    return "unknown";
+}
+
+std::string_view drawSortXrViewPolicyName(DrawSortXrViewPolicy policy) {
+    switch (policy) {
+    case DrawSortXrViewPolicy::logical_view_center:
+        return "logical_view_center";
+    case DrawSortXrViewPolicy::per_view: return "per_view";
     }
     return "unknown";
 }
@@ -698,6 +716,49 @@ CompiledMaterialRouting compileMaterialRouting(
     return result;
 }
 
+CompiledDrawSorting compileDrawSorting(const nlohmann::json &declaration) {
+    CompiledDrawSorting result;
+    if (declaration.is_null()) return result;
+    if (!declaration.is_object()) {
+        throw std::runtime_error("resolved draw_sort must be an object");
+    }
+    result.authored = true;
+    requireOnlyKeys(declaration, {"opaque", "transparent", "xr_view_policy"},
+                    "resolved draw_sort");
+    const auto compile_phase = [&](std::string_view phase,
+                                   CompiledDrawSortPolicy &output) {
+        const auto found = declaration.find(phase);
+        if (found == declaration.end()) return;
+        const auto context = "resolved draw_sort " + std::string{phase};
+        if (!found->is_object()) {
+            throw std::runtime_error(context + " must be an object");
+        }
+        requireOnlyKeys(*found, {"provider"}, context);
+        output.provider = requireString(*found, "provider", context);
+    };
+    compile_phase("opaque", result.opaque);
+    compile_phase("transparent", result.transparent);
+
+    if (const auto found = declaration.find("xr_view_policy");
+        found != declaration.end()) {
+        if (!found->is_string()) {
+            throw std::runtime_error(
+                "resolved draw_sort xr_view_policy must be a string");
+        }
+        const auto value = found->get<std::string>();
+        if (value == "logical_view_center") {
+            result.xr_view_policy =
+                DrawSortXrViewPolicy::logical_view_center;
+        } else if (value == "per_view") {
+            result.xr_view_policy = DrawSortXrViewPolicy::per_view;
+        } else {
+            throw std::runtime_error(
+                "resolved draw_sort has unknown xr_view_policy: " + value);
+        }
+    }
+    return result;
+}
+
 nlohmann::json serializeFeatureParameterValue(
     const CompiledRenderFeatureParameterValue &value) {
     return std::visit(
@@ -734,6 +795,7 @@ CompiledRenderPipeline compileRenderPipeline(
         result.material_routing =
             compileMaterialRouting(pipeline.material_routing);
     }
+    result.draw_sorting = compileDrawSorting(pipeline.draw_sort);
     result.pipeline_preset = pipeline.pipeline_preset;
     result.graph_variant = pipeline.graph_variant;
     result.rendering_pass_name_suffix =
@@ -799,6 +861,16 @@ nlohmann::json serializeCompiledRenderPipelineMetadata(
             {"policy",
              materialRoutingPolicyName(pipeline.material_routing->policy)},
             {"routes", std::move(routes)},
+        };
+    }
+    if (pipeline.draw_sorting.authored) {
+        metadata["draw_sort"] = {
+            {"opaque", {{"provider", pipeline.draw_sorting.opaque.provider}}},
+            {"transparent",
+             {{"provider", pipeline.draw_sorting.transparent.provider}}},
+            {"xr_view_policy",
+             drawSortXrViewPolicyName(
+                 pipeline.draw_sorting.xr_view_policy)},
         };
     }
     if (pipeline.pipeline_preset) {

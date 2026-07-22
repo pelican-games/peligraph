@@ -25,6 +25,7 @@ struct MaterialRendererDependencies {
     const Camera &camera;
     glm::mat4 view_projection{1.0f};
     bool first_person_view = false;
+    std::uint32_t draw_sort_view_index = 0;
 };
 
 DECLARE_MODULE(MaterialRenderer) {

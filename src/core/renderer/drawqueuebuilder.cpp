@@ -3,6 +3,7 @@
 #include "indirectdrawlimits.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <numeric>
@@ -38,6 +39,38 @@ bool isValidRoute(MaterialRouteClass route) noexcept {
     case MaterialRouteClass::deferred_geometry:
     case MaterialRouteClass::forward_opaque:
     case MaterialRouteClass::forward_transparent:
+        return true;
+    }
+    return false;
+}
+
+bool selectsPhase(DrawQueuePhase target, MaterialPhase item) noexcept {
+    switch (target) {
+    case DrawQueuePhase::mixed: return true;
+    case DrawQueuePhase::opaque: return item == MaterialPhase::opaque;
+    case DrawQueuePhase::transparent:
+        return item == MaterialPhase::transparent;
+    }
+    return false;
+}
+
+RenderPolicy::DrawSortPhaseV1 providerTargetPhase(DrawQueuePhase phase) {
+    switch (phase) {
+    case DrawQueuePhase::mixed:
+        return RenderPolicy::DrawSortPhaseV1::mixed;
+    case DrawQueuePhase::opaque:
+        return RenderPolicy::DrawSortPhaseV1::opaque;
+    case DrawQueuePhase::transparent:
+        return RenderPolicy::DrawSortPhaseV1::transparent;
+    }
+    throw std::invalid_argument("Unknown draw queue target phase");
+}
+
+bool validLogicalView(RenderPolicy::DrawSortLogicalViewV1 view) noexcept {
+    switch (view) {
+    case RenderPolicy::DrawSortLogicalViewV1::shared:
+    case RenderPolicy::DrawSortLogicalViewV1::third_person:
+    case RenderPolicy::DrawSortLogicalViewV1::first_person:
         return true;
     }
     return false;
@@ -202,7 +235,102 @@ bool sameLegacyBatch(const DrawItemSnapshot &left,
     return left.pipeline_material_key == right.pipeline_material_key;
 }
 
+void validatePrimitiveBounds(const ModelPrimitiveBounds &bounds,
+                             const char *description) {
+    for (glm::length_t axis = 0; axis < 3; ++axis) {
+        if (!std::isfinite(bounds.minimum[axis]) ||
+            !std::isfinite(bounds.maximum[axis]) ||
+            bounds.minimum[axis] > bounds.maximum[axis]) {
+            throw std::invalid_argument(description);
+        }
+    }
+}
+
 } // namespace
+
+DrawWorldBounds resolveDrawWorldBounds(
+    const ModelPrimitiveBoundsSource &source, const glm::mat4 &model_matrix,
+    std::span<const glm::mat4> skin_palette,
+    std::span<const float> morph_weights) {
+    validatePrimitiveBounds(
+        source.base,
+        "draw bounds base envelope must be finite and ordered");
+    for (const auto &delta : source.morph_position_deltas) {
+        validatePrimitiveBounds(
+            delta,
+            "draw bounds morph envelope must be finite and ordered");
+    }
+
+    auto local = source.base;
+    if (!source.morph_position_deltas.empty()) {
+        if (source.morph_weight_offset > morph_weights.size() ||
+            source.morph_position_deltas.size() >
+                morph_weights.size() - source.morph_weight_offset) {
+            throw std::invalid_argument(
+                "draw bounds morph weights do not cover the primitive envelope");
+        }
+        for (std::size_t target = 0;
+             target < source.morph_position_deltas.size(); ++target) {
+            const auto weight =
+                morph_weights[source.morph_weight_offset + target];
+            if (!std::isfinite(weight)) {
+                throw std::invalid_argument(
+                    "draw bounds morph weight must be finite");
+            }
+            const auto &delta = source.morph_position_deltas[target];
+            for (glm::length_t axis = 0; axis < 3; ++axis) {
+                const auto first = weight * delta.minimum[axis];
+                const auto second = weight * delta.maximum[axis];
+                local.minimum[axis] += std::min(first, second);
+                local.maximum[axis] += std::max(first, second);
+                if (!std::isfinite(local.minimum[axis]) ||
+                    !std::isfinite(local.maximum[axis])) {
+                    throw std::invalid_argument(
+                        "draw bounds morph envelope is non-finite");
+                }
+            }
+        }
+    }
+
+    const auto transformed = [](const ModelPrimitiveBounds &bounds,
+                                const glm::mat4 &matrix) {
+        glm::vec3 minimum{std::numeric_limits<float>::max()};
+        glm::vec3 maximum{std::numeric_limits<float>::lowest()};
+        for (std::uint32_t corner = 0; corner < 8; ++corner) {
+            const glm::vec3 local_corner{
+                (corner & 1U) != 0 ? bounds.maximum.x : bounds.minimum.x,
+                (corner & 2U) != 0 ? bounds.maximum.y : bounds.minimum.y,
+                (corner & 4U) != 0 ? bounds.maximum.z : bounds.minimum.z,
+            };
+            const auto world = matrix * glm::vec4{local_corner, 1.0F};
+            if (!std::isfinite(world.x) || !std::isfinite(world.y) ||
+                !std::isfinite(world.z) || !std::isfinite(world.w)) {
+                throw std::invalid_argument(
+                    "draw bounds transform produced a non-finite value");
+            }
+            minimum = glm::min(minimum, glm::vec3{world});
+            maximum = glm::max(maximum, glm::vec3{world});
+        }
+        return ModelPrimitiveBounds{minimum, maximum};
+    };
+
+    ModelPrimitiveBounds world;
+    if (skin_palette.empty()) {
+        world = transformed(local, model_matrix);
+    } else {
+        world.minimum = glm::vec3{std::numeric_limits<float>::max()};
+        world.maximum = glm::vec3{std::numeric_limits<float>::lowest()};
+        for (const auto &joint : skin_palette) {
+            const auto joint_bounds = transformed(local, model_matrix * joint);
+            world.minimum = glm::min(world.minimum, joint_bounds.minimum);
+            world.maximum = glm::max(world.maximum, joint_bounds.maximum);
+        }
+    }
+    return DrawWorldBounds{
+        .minimum = {world.minimum.x, world.minimum.y, world.minimum.z},
+        .maximum = {world.maximum.x, world.maximum.y, world.maximum.z},
+    };
+}
 
 DrawViewMask drawViewMask(PrimitiveViewVisibility visibility) noexcept {
     switch (visibility) {
@@ -266,6 +394,27 @@ DrawQueueBuilder::build(const DrawQueueBuildRequest &request,
             "DrawQueueBuilder item count exceeds the provider ABI limit");
     }
 
+    if (!validLogicalView(request.logical_view)) {
+        throw std::invalid_argument("DrawQueueBuilder logical view is unknown");
+    }
+    glm::vec3 view_origin{
+        request.logical_view_origin[0], request.logical_view_origin[1],
+        request.logical_view_origin[2]};
+    glm::vec3 view_forward{
+        request.logical_view_forward[0], request.logical_view_forward[1],
+        request.logical_view_forward[2]};
+    const auto finiteVector = [](const glm::vec3 &value) {
+        return std::isfinite(value.x) && std::isfinite(value.y) &&
+               std::isfinite(value.z);
+    };
+    const auto forward_length = glm::length(view_forward);
+    if (!finiteVector(view_origin) || !finiteVector(view_forward) ||
+        !std::isfinite(forward_length) || forward_length <= 0.0F) {
+        throw std::invalid_argument(
+            "DrawQueueBuilder logical view snapshot must be finite with a non-zero forward vector");
+    }
+    view_forward /= forward_length;
+
     std::unordered_set<std::uint64_t> declaration_ordinals;
     declaration_ordinals.reserve(request.items.size());
     for (const auto &item : request.items) {
@@ -276,36 +425,48 @@ DrawQueueBuilder::build(const DrawQueueBuildRequest &request,
         }
     }
 
-    std::vector<RenderPolicy::DrawSortItemV1> provider_items;
-    provider_items.reserve(request.items.size());
+    std::vector<const DrawItemSnapshot *> selected_items;
+    selected_items.reserve(request.items.size());
     for (const auto &item : request.items) {
-        provider_items.push_back(providerItem(item));
+        if (selectsPhase(request.target_phase, item.phase)) {
+            selected_items.push_back(&item);
+        }
     }
+    std::vector<RenderPolicy::DrawSortItemV1> provider_items;
+    provider_items.reserve(selected_items.size());
+    for (const auto *item : selected_items)
+        provider_items.push_back(providerItem(*item));
     std::vector<RenderPolicy::DrawSortKeyV1> provider_keys(
-        request.items.size());
+        selected_items.size());
     const auto provider_input =
         RenderPolicy::DrawSortInputV1{
-            .target_phase = RenderPolicy::DrawSortPhaseV1::mixed,
-            .logical_view = RenderPolicy::DrawSortLogicalViewV1::shared,
+            .target_phase = providerTargetPhase(request.target_phase),
+            .logical_view = request.logical_view,
             .items = provider_items.data(),
             .item_count = static_cast<std::uint32_t>(provider_items.size()),
+            .has_logical_view_snapshot = 1,
+            .logical_view_origin = {view_origin.x, view_origin.y, view_origin.z},
+            .logical_view_forward = {view_forward.x, view_forward.y,
+                                     view_forward.z},
         };
     std::uint32_t output_count = 0;
-    const auto status = provider.sort(provider_input, provider_keys,
-                                      output_count);
+    const auto status = provider_keys.empty()
+                            ? RenderPolicy::Status::ok
+                            : provider.sort(provider_input, provider_keys,
+                                            output_count);
     if (status != RenderPolicy::Status::ok) {
         throw std::runtime_error(
             "draw sort provider '" + provider.info().name +
             "' failed with status " + statusName(status));
     }
-    if (output_count != provider_keys.size()) {
+    if (!provider_keys.empty() && output_count != provider_keys.size()) {
         throw std::runtime_error(
             "draw sort provider '" + provider.info().name + "' returned " +
             std::to_string(output_count) + " keys for " +
             std::to_string(provider_keys.size()) + " draw items");
     }
 
-    std::vector<std::size_t> order(request.items.size());
+    std::vector<std::size_t> order(selected_items.size());
     std::iota(order.begin(), order.end(), std::size_t{0});
     std::sort(order.begin(), order.end(), [&](std::size_t left,
                                               std::size_t right) {
@@ -317,13 +478,13 @@ DrawQueueBuilder::build(const DrawQueueBuildRequest &request,
         if (left_key.secondary != right_key.secondary) {
             return left_key.secondary < right_key.secondary;
         }
-        return stableOrderKey(request.items[left]) <
-               stableOrderKey(request.items[right]);
+        return stableOrderKey(*selected_items[left]) <
+               stableOrderKey(*selected_items[right]);
     });
 
     result.ordered_items_.reserve(order.size());
     for (const auto index : order) {
-        result.ordered_items_.push_back(request.items[index]);
+        result.ordered_items_.push_back(*selected_items[index]);
     }
 
     result.indirect_records_.reserve(result.ordered_items_.size());
@@ -371,6 +532,134 @@ DrawQueueBuilder::build(const DrawQueueBuildRequest &request,
     build_ranges(DrawQueueView::third_person);
     build_ranges(DrawQueueView::first_person);
     return result;
+}
+
+const CompiledDrawQueueSet::Variant &CompiledDrawQueueSet::variant(
+    DrawQueuePhase phase, std::uint32_t sort_view_index) const {
+    const auto found = std::find_if(
+        variants_.begin(), variants_.end(), [&](const Variant &candidate) {
+            return candidate.phase == phase &&
+                   candidate.sort_view_index == sort_view_index;
+        });
+    if (found == variants_.end()) {
+        throw std::out_of_range("compiled draw queue phase/view is unavailable");
+    }
+    return *found;
+}
+
+CompiledDrawQueueSet CompiledDrawQueueSet::combine(
+    std::vector<CompiledDrawQueueVariant> variants) {
+    CompiledDrawQueueSet result;
+    if (variants.empty()) return result;
+    const auto phaseOrder = [](DrawQueuePhase phase) {
+        switch (phase) {
+        case DrawQueuePhase::opaque: return 0;
+        case DrawQueuePhase::transparent: return 1;
+        case DrawQueuePhase::mixed: return 2;
+        }
+        return 3;
+    };
+    std::sort(variants.begin(), variants.end(), [&](const auto &left,
+                                                    const auto &right) {
+        return std::tuple{left.sort_view_index, phaseOrder(left.phase)} <
+               std::tuple{right.sort_view_index, phaseOrder(right.phase)};
+    });
+
+    std::uint32_t view_count = 0;
+    for (std::size_t index = 0; index < variants.size(); ++index) {
+        const auto &entry = variants[index];
+        if (entry.phase == DrawQueuePhase::mixed) {
+            throw std::invalid_argument(
+                "compiled draw queue set cannot contain a mixed phase");
+        }
+        if (index != 0 &&
+            variants[index - 1].sort_view_index == entry.sort_view_index &&
+            variants[index - 1].phase == entry.phase) {
+            throw std::invalid_argument(
+                "compiled draw queue set phase/view pair is duplicated");
+        }
+        view_count = std::max(view_count, entry.sort_view_index + 1);
+    }
+    if (view_count > 2) {
+        throw std::invalid_argument(
+            "compiled draw queue set supports at most two sort views");
+    }
+    for (std::uint32_t view = 0; view < view_count; ++view) {
+        for (const auto phase : {DrawQueuePhase::opaque,
+                                 DrawQueuePhase::transparent}) {
+            if (std::none_of(variants.begin(), variants.end(),
+                             [&](const auto &entry) {
+                                 return entry.sort_view_index == view &&
+                                        entry.phase == phase;
+                             })) {
+                throw std::invalid_argument(
+                    "compiled draw queue set requires both phases for every sort view");
+            }
+        }
+    }
+
+    result.all_ranges_.resize(view_count);
+    std::size_t total_records = 0;
+    for (const auto &entry : variants) {
+        if (entry.queue.indirectRecords().size() >
+            std::numeric_limits<std::size_t>::max() - total_records) {
+            throw std::overflow_error(
+                "compiled draw queue set record count overflow");
+        }
+        total_records += entry.queue.indirectRecords().size();
+    }
+    result.indirect_records_.reserve(total_records);
+    result.variants_.reserve(variants.size());
+    for (auto &entry : variants) {
+        const auto base = result.indirect_records_.size();
+        result.indirect_records_.insert(
+            result.indirect_records_.end(), entry.queue.indirectRecords().begin(),
+            entry.queue.indirectRecords().end());
+        Variant compiled{
+            .phase = entry.phase,
+            .sort_view_index = entry.sort_view_index,
+            .queue = std::move(entry.queue),
+        };
+        for (const auto visibility : {DrawQueueView::third_person,
+                                      DrawQueueView::first_person}) {
+            const auto index = viewIndex(visibility);
+            compiled.draw_ranges[index] =
+                compiled.queue.drawRanges(visibility);
+            for (auto &range : compiled.draw_ranges[index]) {
+                range.offset += base * sizeof(RenderCommand);
+            }
+            auto &all = result.all_ranges_[compiled.sort_view_index][index];
+            all.insert(all.end(), compiled.draw_ranges[index].begin(),
+                       compiled.draw_ranges[index].end());
+        }
+        result.variants_.push_back(std::move(compiled));
+    }
+    return result;
+}
+
+std::span<const std::byte>
+CompiledDrawQueueSet::indirectBytes() const noexcept {
+    return std::as_bytes(std::span<const RenderCommand>{
+        indirect_records_.data(), indirect_records_.size()});
+}
+
+const std::vector<DrawIndirectInfo> &CompiledDrawQueueSet::drawRanges(
+    DrawQueuePhase phase, std::uint32_t sort_view_index,
+    DrawQueueView visibility_view) const {
+    static const std::vector<DrawIndirectInfo> empty;
+    if (variants_.empty() && sort_view_index == 0) return empty;
+    return variant(phase, sort_view_index)
+        .draw_ranges[viewIndex(visibility_view)];
+}
+
+const std::vector<DrawIndirectInfo> &CompiledDrawQueueSet::allDrawRanges(
+    std::uint32_t sort_view_index, DrawQueueView visibility_view) const {
+    static const std::vector<DrawIndirectInfo> empty;
+    if (all_ranges_.empty() && sort_view_index == 0) return empty;
+    if (sort_view_index >= all_ranges_.size()) {
+        throw std::out_of_range("compiled draw queue sort view is unavailable");
+    }
+    return all_ranges_[sort_view_index][viewIndex(visibility_view)];
 }
 
 } // namespace Pelican

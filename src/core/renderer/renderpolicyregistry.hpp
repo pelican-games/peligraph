@@ -13,6 +13,8 @@ namespace Pelican {
 
 inline constexpr std::string_view builtinStateBatchedDrawSortProvider =
     "state_batched_v1";
+inline constexpr std::string_view builtinBackToFrontDrawSortProvider =
+    "back_to_front_v1";
 
 struct DrawSortProviderInfo {
     std::string name;

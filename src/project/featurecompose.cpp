@@ -1604,6 +1604,9 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     }
     enforceTerminalAfterComputeTasks(composed);
     auto material_routing = resolveMaterialRoutingTable(composed);
+    auto draw_sort = composed.contains("draw_sort")
+                         ? composed.at("draw_sort")
+                         : nlohmann::json{};
     RenderFeatureComposeResult result;
     result.config = std::move(composed);
     result.shader_defines = std::move(shader_defines);
@@ -1612,6 +1615,7 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     result.projection_jitter = std::move(projection_jitter);
     result.feature_instances = std::move(resolved_instances);
     result.material_routing = std::move(material_routing);
+    result.draw_sort = std::move(draw_sort);
     result.pipeline_preset = preset_resolution.preset;
     result.used_features = !feature_instances.empty();
     return result;

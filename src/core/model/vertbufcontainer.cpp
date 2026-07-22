@@ -3,6 +3,7 @@
 #include "../vkcore/deletionqueue.hpp"
 #include "../vkcore/util.hpp"
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <numeric>
 #include <stdexcept>
@@ -150,8 +151,78 @@ void validateVertexStreams(const CommonPolygonVertData &data, bool skinned) {
             throw std::runtime_error(
                 "invalid glTF morph target: delta accessor count does not match POSITION");
     }
+    for (const auto index : data.indices) {
+        if (index >= count)
+            throw std::runtime_error(
+                "model primitive index exceeds POSITION count");
+    }
 }
 } // namespace
+
+std::shared_ptr<const ModelPrimitiveBoundsSource>
+makePrimitiveBoundsSource(const CommonPolygonVertData &data) {
+    if (data.pos.empty()) {
+        throw std::runtime_error(
+            "model primitive bounds require a non-empty POSITION stream");
+    }
+
+    const auto requireFinite = [](const glm::vec3 &value,
+                                  const char *semantic) {
+        if (!std::isfinite(value.x) || !std::isfinite(value.y) ||
+            !std::isfinite(value.z)) {
+            throw std::runtime_error(std::string{"model primitive "} + semantic +
+                                     " contains a non-finite value");
+        }
+    };
+    const auto referenced = [&](auto &&visit) {
+        if (data.indices.empty()) {
+            for (std::size_t index = 0; index < data.pos.size(); ++index)
+                visit(index);
+            return;
+        }
+        for (const auto index : data.indices) {
+            if (index >= data.pos.size()) {
+                throw std::runtime_error(
+                    "model primitive index exceeds POSITION count");
+            }
+            visit(static_cast<std::size_t>(index));
+        }
+    };
+    const auto boundsFor = [&](const std::vector<glm::vec3> &values,
+                               const char *semantic,
+                               bool missing_is_zero) {
+        if (values.empty()) {
+            if (!missing_is_zero) {
+                throw std::runtime_error(
+                    "model primitive bounds source is empty");
+            }
+            return ModelPrimitiveBounds{};
+        }
+        glm::vec3 minimum{std::numeric_limits<float>::max()};
+        glm::vec3 maximum{std::numeric_limits<float>::lowest()};
+        referenced([&](std::size_t index) {
+            if (index >= values.size()) {
+                throw std::runtime_error(
+                    "model primitive bounds stream count mismatch");
+            }
+            const auto value = values[index];
+            requireFinite(value, semantic);
+            minimum = glm::min(minimum, value);
+            maximum = glm::max(maximum, value);
+        });
+        return ModelPrimitiveBounds{minimum, maximum};
+    };
+
+    auto result = std::make_shared<ModelPrimitiveBoundsSource>();
+    result->base = boundsFor(data.pos, "POSITION", false);
+    result->morph_weight_offset = data.morph_weight_offset;
+    result->morph_position_deltas.reserve(data.morph_targets.size());
+    for (const auto &target : data.morph_targets) {
+        result->morph_position_deltas.push_back(
+            boundsFor(target.position, "morph POSITION", true));
+    }
+    return result;
+}
 
 std::vector<MorphTargetDeltaRange>
 VertBufContainer::uploadMorphData(const CommonPolygonVertData &data,
@@ -282,6 +353,7 @@ void VertBufContainer::ensureVertexCapacity(uint32_t required, bool skinned) {
 
 ModelGeometryAllocation VertBufContainer::addPrimitiveAllocation(CommonPolygonVertData &&data) {
     validateVertexStreams(data, false);
+    const auto bounds_source = makePrimitiveBoundsSource(data);
     const auto vertex_count = static_cast<uint32_t>(data.pos.size());
     if (data.indices.empty()) {
         data.indices.resize(vertex_count);
@@ -323,12 +395,15 @@ ModelGeometryAllocation VertBufContainer::addPrimitiveAllocation(CommonPolygonVe
         if (vertex_allocated) releaseRange(free_vertices, vertex_offset, vertex_count);
         throw;
     }
-    return {{index_count, index_offset, static_cast<int32_t>(vertex_offset), false},
-            vertex_count, morph_offset, morph_count};
+    ModelPrimitiveRefInfo primitive{
+        index_count, index_offset, static_cast<int32_t>(vertex_offset), false};
+    primitive.bounds_source = bounds_source;
+    return {std::move(primitive), vertex_count, morph_offset, morph_count};
 }
 
 ModelGeometryAllocation VertBufContainer::addSkinnedPrimitiveAllocation(CommonPolygonVertData &&data) {
     validateVertexStreams(data, true);
+    const auto bounds_source = makePrimitiveBoundsSource(data);
     const auto vertex_count = static_cast<uint32_t>(data.pos.size());
     if (data.indices.empty()) {
         data.indices.resize(vertex_count);
@@ -376,8 +451,10 @@ ModelGeometryAllocation VertBufContainer::addSkinnedPrimitiveAllocation(CommonPo
             releaseRange(free_skin_vertices, vertex_offset, vertex_count);
         throw;
     }
-    return {{index_count, index_offset, static_cast<int32_t>(vertex_offset), true},
-            vertex_count, morph_offset, morph_count};
+    ModelPrimitiveRefInfo primitive{
+        index_count, index_offset, static_cast<int32_t>(vertex_offset), true};
+    primitive.bounds_source = bounds_source;
+    return {std::move(primitive), vertex_count, morph_offset, morph_count};
 }
 
 ModelTemplate::PrimitiveRefInfo VertBufContainer::addPrimitiveEntry(CommonPolygonVertData &&data) {
