@@ -11,6 +11,7 @@
 #include "../loader/basicconfig.hpp"
 #include "../loader/scene.hpp"
 #include "../log.hpp"
+#include "../renderer/renderpolicyregistry.hpp"
 #include "../userpublic/details/event/registerer.hpp"
 #include "../userpublic/details/behavior/registerer.hpp"
 #include "../userpublic/details/component/registerer.hpp"
@@ -36,6 +37,7 @@ void releaseGameLogicRegistrations(RegistrationOwner owner) noexcept {
     // DLL is still loaded. Registry entries are erased only afterwards.
     releaseBehaviorOwner(owner);
     Animation::releaseAnimationOwner(owner);
+    render_policy_internal::releaseProviderOwner(owner);
 #if PELICAN_WITH_PHYSICS
     physics_internal::releaseProviderOwner(owner);
 #endif
@@ -212,6 +214,7 @@ bool GameLogicReloader::initialize(const std::filesystem::path &source) {
             LOG_ERROR(logger, "{}", last_error);
             return false;
         }
+        render_policy_internal::activateProviderOwner(owner);
 #if PELICAN_WITH_PHYSICS
         physics_internal::activateProviderOwner(owner);
 #endif
@@ -262,6 +265,7 @@ bool GameLogicReloader::reloadTransaction(const ResetFn &teardown, const ResetFn
         const auto owner = internal::allocateRegistrationOwner();
         active = loadCopy(candidate_path, owner, load_error);
         if (!active) throw std::runtime_error(load_error);
+        render_policy_internal::activateProviderOwner(owner);
 #if PELICAN_WITH_PHYSICS
         physics_internal::activateProviderOwner(owner);
 #endif
@@ -302,6 +306,9 @@ bool GameLogicReloader::reloadTransaction(const ResetFn &teardown, const ResetFn
             active = std::move(previous);
         }
         if (active) {
+            if (activate_rollback_owner) {
+                render_policy_internal::activateProviderOwner(active->owner);
+            }
 #if PELICAN_WITH_PHYSICS
             if (activate_rollback_owner) {
                 physics_internal::activateProviderOwner(active->owner);

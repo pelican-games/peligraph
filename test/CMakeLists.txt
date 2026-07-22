@@ -177,6 +177,94 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
   set_tests_properties(game_logic_dll_reload PROPERTIES
     TIMEOUT 120 RESOURCE_LOCK pelican_gpu LABELS gpu)
 
+  # The executable exports the real SDK symbol consumed by fixture DLL static
+  # registration. Fixtures include only userpublic headers and link the host's
+  # import library, matching a shipped game DLL rather than an in-process fake.
+  add_executable(pelican_test_render_policy_dll_test
+    render_policy_dll_test.cpp
+  )
+  set_target_properties(pelican_test_render_policy_dll_test PROPERTIES
+    CXX_STANDARD 20
+    ENABLE_EXPORTS TRUE
+  )
+  target_include_directories(pelican_test_render_policy_dll_test PRIVATE
+    ${Vulkan_INCLUDE_DIRS}
+  )
+  target_compile_definitions(pelican_test_render_policy_dll_test PRIVATE
+    "VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic"
+  )
+  if(MSVC)
+    target_link_options(pelican_test_render_policy_dll_test PRIVATE
+      "/WHOLEARCHIVE:$<TARGET_LINKER_FILE:pelican_core>"
+    )
+  endif()
+  target_link_libraries(pelican_test_render_policy_dll_test PRIVATE
+    Catch2::Catch2WithMain
+    nlohmann_json
+    pelican_core
+    glm
+  )
+
+  foreach(render_policy_fixture_version IN ITEMS 1 2)
+    set(render_policy_fixture_target
+        pelican_render_policy_fixture_v${render_policy_fixture_version})
+    add_library(${render_policy_fixture_target} SHARED
+      fixtures/render_policy_dll/provider.cpp
+      ${CMAKE_SOURCE_DIR}/src/player/gamelogic_entry.cpp
+    )
+    set_target_properties(${render_policy_fixture_target} PROPERTIES
+      CXX_STANDARD 20
+      MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+      OUTPUT_NAME "pelican_render_policy_fixture_v${render_policy_fixture_version}"
+    )
+    add_dependencies(${render_policy_fixture_target}
+      pelican_test_render_policy_dll_test)
+    target_link_libraries(${render_policy_fixture_target} PRIVATE
+      "$<TARGET_LINKER_FILE:pelican_test_render_policy_dll_test>"
+    )
+    target_include_directories(${render_policy_fixture_target} PRIVATE
+      ${CMAKE_SOURCE_DIR}/src/core/userpublic
+    )
+    target_compile_definitions(${render_policy_fixture_target} PRIVATE
+      PELICAN_GAME_DLL=1
+      PELICAN_RENDER_POLICY_FIXTURE_VERSION=${render_policy_fixture_version}
+    )
+  endforeach()
+
+  add_library(pelican_render_policy_fixture_bad_abi SHARED
+    fixtures/render_policy_dll/provider.cpp
+    ${CMAKE_SOURCE_DIR}/src/player/gamelogic_entry.cpp
+  )
+  set_target_properties(pelican_render_policy_fixture_bad_abi PROPERTIES
+    CXX_STANDARD 20
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+    OUTPUT_NAME "pelican_render_policy_fixture_bad_abi"
+  )
+  add_dependencies(pelican_render_policy_fixture_bad_abi
+    pelican_test_render_policy_dll_test)
+  target_link_libraries(pelican_render_policy_fixture_bad_abi PRIVATE
+    "$<TARGET_LINKER_FILE:pelican_test_render_policy_dll_test>"
+  )
+  target_include_directories(pelican_render_policy_fixture_bad_abi PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/core/userpublic
+  )
+  target_compile_definitions(pelican_render_policy_fixture_bad_abi PRIVATE
+    PELICAN_GAME_DLL=1
+    PELICAN_RENDER_POLICY_FIXTURE_VERSION=2
+    PELICAN_GAME_LOGIC_ABI_VERSION=999
+  )
+
+  add_test(
+    NAME render_policy_game_dll_e2e
+    COMMAND ${CMAKE_COMMAND} -E env
+      "PELICAN_RENDER_POLICY_FIXTURE_V1=$<TARGET_FILE:pelican_render_policy_fixture_v1>"
+      "PELICAN_RENDER_POLICY_FIXTURE_V2=$<TARGET_FILE:pelican_render_policy_fixture_v2>"
+      "PELICAN_RENDER_POLICY_FIXTURE_BAD_ABI=$<TARGET_FILE:pelican_render_policy_fixture_bad_abi>"
+      $<TARGET_FILE:pelican_test_render_policy_dll_test>
+      "[render-policy-dll]"
+  )
+  set_tests_properties(render_policy_game_dll_e2e PROPERTIES TIMEOUT 30)
+
   if(PELICAN_WITH_PHYSICS)
     # This executable is the real SDK export host for the fixture DLLs. The
     # fixtures link only its import library and see only userpublic headers.
@@ -491,6 +579,7 @@ target_compile_definitions(pelican_test_gltf_fragment_test PRIVATE
 )
 pelican_define_test(modelhotreload_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
 pelican_define_test(drawqueuebuilder_test pelican_core)
+pelican_define_test(renderpolicyregistry_test pelican_core)
 pelican_define_test(modelinstance_slotmap_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
 pelican_define_test(skeletal_gltf_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
 pelican_define_test(morph_gltf_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
