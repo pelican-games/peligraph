@@ -251,8 +251,101 @@ TEST_CASE("WP180 hybrid resolver preserves semantic material routing",
     const auto metadata =
         serializeCompiledRenderPipelineMetadata(compiled);
     REQUIRE(metadata.at("material_routing") == legacy.material_routing);
+    REQUIRE(compiled.draw_sorting.opaque.provider == "state_batched_v1");
+    REQUIRE(compiled.draw_sorting.transparent.provider ==
+            "back_to_front_v1");
+    REQUIRE(compiled.draw_sorting.xr_view_policy ==
+            DrawSortXrViewPolicy::logical_view_center);
+    REQUIRE(metadata.at("draw_sort") == legacy.draw_sort);
     REQUIRE(metadata.at("pipeline_preset").at("name") == "hybrid_v1");
     REQUIRE_FALSE(metadata.contains("graph_variant"));
+}
+
+TEST_CASE("WP184 compiles draw sort providers and XR view policy for every graph variant",
+          "[wp184][render-pipeline][draw-sort][typed]") {
+    ResolvedRenderPipeline resolved;
+    resolved.draw_sort = {
+        {"opaque", {{"provider", "fixture.opaque"}}},
+        {"transparent", {{"provider", "fixture.transparent"}}},
+        {"xr_view_policy", "per_view"},
+    };
+
+    for (const auto variant : {
+             RenderPipelineGraphVariant::flat,
+             RenderPipelineGraphVariant::preview,
+             RenderPipelineGraphVariant::xr,
+         }) {
+        const auto variant_name =
+            std::string{renderPipelineGraphVariantName(variant)};
+        CAPTURE(variant_name);
+        resolved.graph_variant = variant;
+        const auto compiled = compileRenderPipeline(resolved);
+        REQUIRE(compiled.draw_sorting.authored);
+        REQUIRE(compiled.draw_sorting.opaque.provider == "fixture.opaque");
+        REQUIRE(compiled.draw_sorting.transparent.provider ==
+                "fixture.transparent");
+        REQUIRE(compiled.draw_sorting.xr_view_policy ==
+                DrawSortXrViewPolicy::per_view);
+        const auto metadata =
+            serializeCompiledRenderPipelineMetadata(compiled);
+        REQUIRE(metadata.at("draw_sort") == resolved.draw_sort);
+        REQUIRE(metadata.contains("graph_variant") ==
+                (variant == RenderPipelineGraphVariant::xr));
+    }
+
+    ResolvedRenderPipeline defaults;
+    const auto compiled_defaults = compileRenderPipeline(defaults);
+    REQUIRE_FALSE(compiled_defaults.draw_sorting.authored);
+    REQUIRE(compiled_defaults.draw_sorting.opaque.provider ==
+            "state_batched_v1");
+    REQUIRE(compiled_defaults.draw_sorting.transparent.provider ==
+            "back_to_front_v1");
+    REQUIRE(compiled_defaults.draw_sorting.xr_view_policy ==
+            DrawSortXrViewPolicy::logical_view_center);
+    REQUIRE_FALSE(
+        serializeCompiledRenderPipelineMetadata(compiled_defaults)
+            .contains("draw_sort"));
+}
+
+TEST_CASE("WP184 draw sort declarations reject malformed policy with named errors",
+          "[wp184][render-pipeline][draw-sort][validation]") {
+    ResolvedRenderPipeline resolved;
+
+    SECTION("unknown root key") {
+        resolved.draw_sort = {{"opaque", {{"provider", "valid"}}},
+                              {"surprise", true}};
+        REQUIRE_THROWS_WITH(
+            compileRenderPipeline(resolved),
+            Catch::Matchers::ContainsSubstring(
+                "resolved draw_sort has unknown key 'surprise'"));
+    }
+
+    SECTION("unknown phase key") {
+        resolved.draw_sort = {
+            {"transparent",
+             {{"provider", "valid"}, {"direction", "front_to_back"}}},
+        };
+        REQUIRE_THROWS_WITH(
+            compileRenderPipeline(resolved),
+            Catch::Matchers::ContainsSubstring(
+                "resolved draw_sort transparent has unknown key 'direction'"));
+    }
+
+    SECTION("empty provider") {
+        resolved.draw_sort = {{"opaque", {{"provider", ""}}}};
+        REQUIRE_THROWS_WITH(
+            compileRenderPipeline(resolved),
+            Catch::Matchers::ContainsSubstring(
+                "resolved draw_sort opaque requires non-empty string provider"));
+    }
+
+    SECTION("unknown XR policy") {
+        resolved.draw_sort = {{"xr_view_policy", "both_at_once"}};
+        REQUIRE_THROWS_WITH(
+            compileRenderPipeline(resolved),
+            Catch::Matchers::ContainsSubstring(
+                "resolved draw_sort has unknown xr_view_policy: both_at_once"));
+    }
 }
 
 TEST_CASE("WP180 resolve failure cannot publish partial registration state",

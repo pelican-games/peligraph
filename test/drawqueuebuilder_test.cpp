@@ -1,13 +1,18 @@
 #include "../src/core/renderer/drawqueuebuilder.hpp"
 #include "../src/core/renderer/indirectdrawlimits.hpp"
+#include "../src/core/model/polygonvertdata.hpp"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <optional>
 #include <tuple>
 #include <vector>
+
+#include <glm/gtc/matrix_transform.hpp>
 
 namespace Pelican {
 namespace {
@@ -15,6 +20,11 @@ namespace {
 DrawSortProviderLease builtinProvider() {
     return renderPolicyRegistry().resolveDrawSortProvider(
         builtinStateBatchedDrawSortProvider);
+}
+
+DrawSortProviderLease backToFrontProvider() {
+    return renderPolicyRegistry().resolveDrawSortProvider(
+        builtinBackToFrontDrawSortProvider);
 }
 
 DrawItemSnapshot item(std::uint64_t ordinal, int material,
@@ -56,6 +66,29 @@ DrawItemSnapshot item(std::uint64_t ordinal, int material,
                             : std::nullopt,
         .view_mask = drawViewMask(visibility),
     };
+}
+
+DrawItemSnapshot transparentItem(std::uint64_t ordinal,
+                                 std::uint32_t instance, float x, float z,
+                                 int material = 5) {
+    auto result = item(ordinal, material, 0, false,
+                       PrimitiveViewVisibility::both, instance,
+                       static_cast<std::uint32_t>(ordinal * 3),
+                       MaterialRouteClass::forward_transparent);
+    result.world_bounds = DrawWorldBounds{
+        .minimum = {x - 0.25F, -0.25F, z - 0.25F},
+        .maximum = {x + 0.25F, 0.25F, z + 0.25F},
+    };
+    return result;
+}
+
+void requireBounds(const DrawWorldBounds &actual,
+                   const std::array<float, 3> &minimum,
+                   const std::array<float, 3> &maximum) {
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        REQUIRE(actual.minimum[axis] == Catch::Approx(minimum[axis]));
+        REQUIRE(actual.maximum[axis] == Catch::Approx(maximum[axis]));
+    }
 }
 
 RenderCommand legacyRecord(const DrawItemSnapshot &snapshot) {
@@ -283,6 +316,260 @@ TEST_CASE("draw queue compilation is repeatable, input preserving, and fail fast
                         .max_draw_indirect_count = 64},
                         provider),
                     std::invalid_argument);
+}
+
+TEST_CASE("RPE5 bounds use indexed vertices and current deformation envelopes",
+          "[renderer][draw-queue][bounds][wp184]") {
+    CommonPolygonVertData geometry;
+    geometry.pos = {
+        {100.0F, 100.0F, 100.0F}, // deliberately unreferenced
+        {-1.0F, 2.0F, 3.0F},
+        {4.0F, -2.0F, 1.0F},
+    };
+    geometry.indices = {1, 2, 1};
+    geometry.morph_weight_offset = 1;
+    geometry.morph_targets.push_back(MorphTargetVertexData{
+        .position = {
+            {1000.0F, 1000.0F, 1000.0F}, // deliberately unreferenced
+            {-2.0F, 1.0F, 0.0F},
+            {3.0F, -4.0F, 2.0F},
+        },
+        .presence_mask = morphPositionPresent,
+    });
+
+    const auto source = makePrimitiveBoundsSource(geometry);
+    REQUIRE(source != nullptr);
+    REQUIRE(source->base.minimum == glm::vec3{-1.0F, -2.0F, 1.0F});
+    REQUIRE(source->base.maximum == glm::vec3{4.0F, 2.0F, 3.0F});
+    REQUIRE(source->morph_position_deltas.size() == 1);
+    REQUIRE(source->morph_position_deltas[0].minimum ==
+            glm::vec3{-2.0F, -4.0F, 0.0F});
+    REQUIRE(source->morph_position_deltas[0].maximum ==
+            glm::vec3{3.0F, 1.0F, 2.0F});
+
+    const auto model =
+        glm::translate(glm::mat4{1.0F}, {10.0F, -1.0F, 7.0F}) *
+        glm::scale(glm::mat4{1.0F}, {-2.0F, 3.0F, 0.5F});
+    const std::array weights{99.0F, -0.5F};
+    const auto world = resolveDrawWorldBounds(*source, model, {}, weights);
+    requireBounds(world, {0.0F, -8.5F, 7.0F}, {15.0F, 11.0F, 8.5F});
+
+    const auto moved = resolveDrawWorldBounds(
+        *source, glm::translate(glm::mat4{1.0F}, {2.0F, 0.0F, 0.0F}) *
+                     model,
+        {}, weights);
+    requireBounds(moved, {2.0F, -8.5F, 7.0F}, {17.0F, 11.0F, 8.5F});
+
+    const ModelPrimitiveBoundsSource skinned_source{
+        .base = ModelPrimitiveBounds{{-1.0F, -1.0F, -1.0F},
+                                     {1.0F, 1.0F, 1.0F}},
+    };
+    const std::array skin_palette{
+        glm::translate(glm::mat4{1.0F}, {-3.0F, 0.0F, 0.0F}),
+        glm::translate(glm::mat4{1.0F}, {4.0F, 0.0F, 0.0F}),
+    };
+    const auto skinned = resolveDrawWorldBounds(
+        skinned_source,
+        glm::translate(glm::mat4{1.0F}, {10.0F, 0.0F, 0.0F}),
+        skin_palette);
+    requireBounds(skinned, {6.0F, -1.0F, -1.0F},
+                  {15.0F, 1.0F, 1.0F});
+
+    auto invalid_index = geometry;
+    invalid_index.indices = {3};
+    CHECK_THROWS_AS(makePrimitiveBoundsSource(invalid_index),
+                    std::runtime_error);
+
+    auto invalid_position = geometry;
+    invalid_position.pos[1].x = std::numeric_limits<float>::quiet_NaN();
+    CHECK_THROWS_AS(makePrimitiveBoundsSource(invalid_position),
+                    std::runtime_error);
+
+    auto invalid_source = skinned_source;
+    invalid_source.base.minimum.x = 2.0F;
+    CHECK_THROWS_AS(resolveDrawWorldBounds(invalid_source, glm::mat4{1.0F}),
+                    std::invalid_argument);
+
+    invalid_source = skinned_source;
+    invalid_source.morph_position_deltas.push_back(ModelPrimitiveBounds{
+        {std::numeric_limits<float>::quiet_NaN(), 0.0F, 0.0F},
+        {0.0F, 0.0F, 0.0F},
+    });
+    const std::array invalid_source_weights{1.0F};
+    CHECK_THROWS_AS(resolveDrawWorldBounds(invalid_source, glm::mat4{1.0F},
+                                           {}, invalid_source_weights),
+                    std::invalid_argument);
+
+    auto extreme = transparentItem(99, 99, 0.0F, 0.0F);
+    extreme.world_bounds = DrawWorldBounds{
+        .minimum = {std::numeric_limits<float>::max(), 0.0F, 0.0F},
+        .maximum = {std::numeric_limits<float>::max(), 0.0F, 0.0F},
+    };
+    const std::array extreme_input{extreme};
+    auto depth_provider = backToFrontProvider();
+    CHECK_NOTHROW(DrawQueueBuilder::build(
+        DrawQueueBuildRequest{
+            .items = extreme_input,
+            .max_draw_indirect_count = 1,
+            .target_phase = DrawQueuePhase::transparent,
+            .logical_view_forward = {1.0F, 0.0F, 0.0F},
+        },
+        depth_provider));
+}
+
+TEST_CASE("RPE5 phase queues preserve opaque batching and sort transparent back to front",
+          "[renderer][draw-queue][transparent][wp184]") {
+    const std::vector input{
+        item(0, 2, 0, false, PrimitiveViewVisibility::both, 0, 30),
+        transparentItem(1, 1, 0.0F, -2.0F),
+        item(2, 1, 0, false, PrimitiveViewVisibility::both, 2, 20,
+             MaterialRouteClass::forward_opaque),
+        transparentItem(3, 9, 0.0F, -8.0F),
+        transparentItem(4, 4, 0.0F, -8.0F),
+    };
+
+    const auto compile = [&] {
+        auto opaque_provider = builtinProvider();
+        auto transparent_provider = backToFrontProvider();
+        std::vector<CompiledDrawQueueVariant> variants;
+        variants.push_back({
+            .phase = DrawQueuePhase::opaque,
+            .sort_view_index = 0,
+            .queue = DrawQueueBuilder::build(
+                DrawQueueBuildRequest{
+                    .items = input,
+                    .max_draw_indirect_count = 64,
+                    .target_phase = DrawQueuePhase::opaque,
+                },
+                opaque_provider),
+        });
+        variants.push_back({
+            .phase = DrawQueuePhase::transparent,
+            .sort_view_index = 0,
+            .queue = DrawQueueBuilder::build(
+                DrawQueueBuildRequest{
+                    .items = input,
+                    .max_draw_indirect_count = 64,
+                    .target_phase = DrawQueuePhase::transparent,
+                },
+                transparent_provider),
+        });
+        return CompiledDrawQueueSet::combine(std::move(variants));
+    };
+
+    const auto first = compile();
+    const auto second = compile();
+    REQUIRE(first.sortViewCount() == 1);
+    REQUIRE(first.queueCount() == 2);
+
+    const auto &opaque = first.queue(DrawQueuePhase::opaque, 0).orderedItems();
+    REQUIRE(opaque.size() == 2);
+    REQUIRE(opaque[0].pipeline_material_key.material.value == 1);
+    REQUIRE(opaque[1].pipeline_material_key.material.value == 2);
+    REQUIRE(std::all_of(opaque.begin(), opaque.end(), [](const auto &entry) {
+        return entry.phase == MaterialPhase::opaque;
+    }));
+
+    const auto &transparent =
+        first.queue(DrawQueuePhase::transparent, 0).orderedItems();
+    REQUIRE(transparent.size() == 3);
+    REQUIRE(transparent[0].stable_identity.instance.index == 4);
+    REQUIRE(transparent[1].stable_identity.instance.index == 9);
+    REQUIRE(transparent[2].stable_identity.instance.index == 1);
+    REQUIRE(std::all_of(
+        transparent.begin(), transparent.end(), [](const auto &entry) {
+            return entry.phase == MaterialPhase::transparent;
+        }));
+
+    REQUIRE(first.indirectRecords().size() == input.size());
+    const auto &transparent_ranges = first.drawRanges(
+        DrawQueuePhase::transparent, 0, DrawQueueView::third_person);
+    REQUIRE(transparent_ranges.size() == 1);
+    REQUIRE(transparent_ranges[0].offset == 2 * sizeof(RenderCommand));
+    REQUIRE(transparent_ranges[0].draw_count == 3);
+
+    REQUIRE(first.indirectBytes().size() == second.indirectBytes().size());
+    REQUIRE(std::equal(first.indirectBytes().begin(),
+                       first.indirectBytes().end(),
+                       second.indirectBytes().begin()));
+    REQUIRE(first.allDrawRanges(0, DrawQueueView::third_person) ==
+            second.allDrawRanges(0, DrawQueueView::third_person));
+}
+
+TEST_CASE("RPE5 XR queue policy supports one logical center or deterministic per-view order",
+          "[renderer][draw-queue][xr][wp184]") {
+    const std::vector input{
+        transparentItem(0, 10, -2.0F, -5.0F),
+        transparentItem(1, 20, 2.0F, -5.0F),
+    };
+
+    const auto compile = [&](std::span<const std::array<float, 3>> forwards) {
+        std::vector<CompiledDrawQueueVariant> variants;
+        for (std::uint32_t view = 0; view < forwards.size(); ++view) {
+            auto opaque_provider = builtinProvider();
+            auto transparent_provider = backToFrontProvider();
+            const auto request = [&](DrawQueuePhase phase) {
+                return DrawQueueBuildRequest{
+                    .items = input,
+                    .max_draw_indirect_count = 64,
+                    .target_phase = phase,
+                    .logical_view =
+                        RenderPolicy::DrawSortLogicalViewV1::first_person,
+                    .logical_view_forward = forwards[view],
+                };
+            };
+            variants.push_back({
+                .phase = DrawQueuePhase::opaque,
+                .sort_view_index = view,
+                .queue = DrawQueueBuilder::build(
+                    request(DrawQueuePhase::opaque), opaque_provider),
+            });
+            variants.push_back({
+                .phase = DrawQueuePhase::transparent,
+                .sort_view_index = view,
+                .queue = DrawQueueBuilder::build(
+                    request(DrawQueuePhase::transparent),
+                    transparent_provider),
+            });
+        }
+        return CompiledDrawQueueSet::combine(std::move(variants));
+    };
+
+    const std::array<std::array<float, 3>, 1> logical_center_forwards{
+        std::array{0.0F, 0.0F, -1.0F},
+    };
+    const auto logical_center = compile(logical_center_forwards);
+    REQUIRE(logical_center.sortViewCount() == 1);
+    const auto &center_order = logical_center
+                                   .queue(DrawQueuePhase::transparent, 0)
+                                   .orderedItems();
+    REQUIRE(center_order[0].stable_identity.instance.index == 10);
+    REQUIRE(center_order[1].stable_identity.instance.index == 20);
+
+    const std::array<std::array<float, 3>, 2> per_view_forwards{
+        std::array{1.0F, 0.0F, -1.0F},
+        std::array{-1.0F, 0.0F, -1.0F},
+    };
+    const auto per_view = compile(per_view_forwards);
+    REQUIRE(per_view.sortViewCount() == 2);
+    REQUIRE(per_view.queueCount() == 4);
+    const auto &left =
+        per_view.queue(DrawQueuePhase::transparent, 0).orderedItems();
+    const auto &right =
+        per_view.queue(DrawQueuePhase::transparent, 1).orderedItems();
+    REQUIRE(left[0].stable_identity.instance.index == 20);
+    REQUIRE(left[1].stable_identity.instance.index == 10);
+    REQUIRE(right[0].stable_identity.instance.index == 10);
+    REQUIRE(right[1].stable_identity.instance.index == 20);
+
+    const auto &left_ranges = per_view.drawRanges(
+        DrawQueuePhase::transparent, 0, DrawQueueView::third_person);
+    const auto &right_ranges = per_view.drawRanges(
+        DrawQueuePhase::transparent, 1, DrawQueueView::third_person);
+    REQUIRE(left_ranges.size() == 1);
+    REQUIRE(right_ranges.size() == 1);
+    REQUIRE(left_ranges[0].offset == 0);
+    REQUIRE(right_ranges[0].offset == 2 * sizeof(RenderCommand));
 }
 
 } // namespace Pelican

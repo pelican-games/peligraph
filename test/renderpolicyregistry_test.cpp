@@ -3,6 +3,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -57,6 +58,9 @@ struct ProviderState {
         RenderPolicy::DrawSortPhaseV1::opaque;
     RenderPolicy::DrawSortLogicalViewV1 last_view =
         RenderPolicy::DrawSortLogicalViewV1::first_person;
+    std::uint32_t last_has_view_snapshot = 0;
+    std::array<float, 3> last_view_origin{};
+    std::array<float, 3> last_view_forward{};
 };
 
 RenderPolicy::Status customSort(
@@ -67,7 +71,7 @@ RenderPolicy::Status customSort(
         input->struct_size < sizeof(RenderPolicy::DrawSortInputV1) ||
         input->version != RenderPolicy::descriptorVersionV1 ||
         input->reserved0 != 0 || input->reserved1 != 0 ||
-        input->reserved2 != 0 ||
+        input->reserved2 != 0 || input->reserved3 != 0 ||
         (input->item_count != 0 && input->items == nullptr) ||
         (capacity != 0 && output == nullptr)) {
         return RenderPolicy::Status::invalid_argument;
@@ -76,6 +80,13 @@ RenderPolicy::Status customSort(
     ++state.calls;
     state.last_phase = input->target_phase;
     state.last_view = input->logical_view;
+    state.last_has_view_snapshot = input->has_logical_view_snapshot;
+    state.last_view_origin = {input->logical_view_origin.x,
+                              input->logical_view_origin.y,
+                              input->logical_view_origin.z};
+    state.last_view_forward = {input->logical_view_forward.x,
+                               input->logical_view_forward.y,
+                               input->logical_view_forward.z};
     if (state.behavior == ProviderBehavior::error) {
         return RenderPolicy::Status::provider_error;
     }
@@ -177,15 +188,23 @@ TEST_CASE("custom draw sort keys are contained and malformed callback output is 
         const DrawQueueBuildRequest request{
             .items = input,
             .max_draw_indirect_count = 64,
+            .target_phase = DrawQueuePhase::opaque,
+            .logical_view =
+                RenderPolicy::DrawSortLogicalViewV1::first_person,
+            .logical_view_origin = {1.0F, 2.0F, 3.0F},
+            .logical_view_forward = {0.0F, 0.0F, -4.0F},
         };
         const auto reverse = DrawQueueBuilder::build(request, lease);
         REQUIRE(input == original);
         REQUIRE(reverse.orderedItems().at(0).declaration_ordinal == 2);
         REQUIRE(reverse.orderedItems().at(1).declaration_ordinal == 1);
         REQUIRE(reverse.orderedItems().at(2).declaration_ordinal == 0);
-        REQUIRE(state.last_phase == RenderPolicy::DrawSortPhaseV1::mixed);
+        REQUIRE(state.last_phase == RenderPolicy::DrawSortPhaseV1::opaque);
         REQUIRE(state.last_view ==
-                RenderPolicy::DrawSortLogicalViewV1::shared);
+                RenderPolicy::DrawSortLogicalViewV1::first_person);
+        REQUIRE(state.last_has_view_snapshot == 1);
+        REQUIRE(state.last_view_origin == std::array{1.0F, 2.0F, 3.0F});
+        REQUIRE(state.last_view_forward == std::array{0.0F, 0.0F, -1.0F});
 
         state.behavior = ProviderBehavior::short_output;
         requireThrowsContaining(

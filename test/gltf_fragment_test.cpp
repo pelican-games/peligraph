@@ -17,6 +17,7 @@
 #include "../src/project/materialformat.hpp"
 #include "../src/project/sceneformat.hpp"
 #include "gltf_fragment_fixture.hpp"
+#include "vat_fixture.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -176,6 +177,23 @@ TEST_CASE("glTF fragments load only the selected object and dependencies", "[glt
                         whole.material_primitives.end(), [](const auto &group) {
                             return group.source_material_index == 1;
                         }));
+
+#if PELICAN_WITH_VAT
+    const auto vat_path = temp_dir / "bounds_vat.glb";
+    TestVatFixture::writeTinyVatGlb(vat_path);
+    const auto vat = loader.loadGltfBinary(vat_path.string());
+    REQUIRE(primitiveCount(vat) == 1);
+    REQUIRE(vat.material_primitives.size() == 1);
+    REQUIRE(vat.material_primitives.front().primitives.size() == 1);
+    const auto &vat_primitive =
+        vat.material_primitives.front().primitives.front();
+    REQUIRE(vat_primitive.bounds_source != nullptr);
+    REQUIRE(vat_primitive.bounds_source->base.minimum ==
+            glm::vec3{-0.8F, -0.4F, -0.1F});
+    REQUIRE(vat_primitive.bounds_source->base.maximum ==
+            glm::vec3{0.8F, 0.4F, 0.1F});
+    REQUIRE(vat_primitive.bounds_source->morph_position_deltas.empty());
+#endif
 
     REQUIRE(primitiveCount(GET_MODULE(ModelAssetContainer).getModelTemplateByName("selected")) == 1);
     GET_MODULE(ECSPredefinedRegistration).reg();

@@ -3731,19 +3731,13 @@ void GoldenHarness::runLogicalFrameStereo() {
         make_view(-0.5f, 0.9f, -1.5f),
         make_view(0.5f, 1.4f, 1.5f),
     };
-    const auto provider = [](const auto &views) {
-        return [&views](std::uint32_t view_index, const FrameRenderContext &) {
-            return views.at(view_index);
-        };
-    };
-
     auto &renderer = GET_MODULE(Renderer);
     auto &flat_target = GET_MODULE(RenderTarget);
     Test::VulkanSyntheticStereoTarget stereo_target{
         launch.headless_extent, flat_target.getSwapchainFormat()};
 
     time.advance();
-    renderer.renderLogicalFrame(stereo_target, 2, provider(first_views));
+    renderer.renderLogicalFrame(stereo_target, first_views);
     const auto first_snapshots = renderer.lastViewSnapshotsForTesting();
     const auto first_left = stereo_target.readback(0);
     const auto first_right = stereo_target.readback(1);
@@ -3757,6 +3751,9 @@ void GoldenHarness::runLogicalFrameStereo() {
     REQUIRE(GET_MODULE(RenderTargetContainer).historyFrameIndex() == 1);
     REQUIRE(GET_MODULE(PolygonInstanceContainer)
                 .temporalHistoryAdvanceCountForTesting() == 1);
+    REQUIRE(GET_MODULE(PolygonInstanceContainer)
+                .compiledDrawQueueForTesting()
+                .sortViewCount() == 1);
 
     REQUIRE(first_snapshots.size() == 2);
     for (std::size_t view = 0; view < first_views.size(); ++view) {
@@ -3780,7 +3777,7 @@ void GoldenHarness::runLogicalFrameStereo() {
                      glm::quat{1.0f, 0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f});
 
     time.advance();
-    renderer.renderLogicalFrame(stereo_target, 2, provider(second_views));
+    renderer.renderLogicalFrame(stereo_target, second_views);
     const auto second_snapshots = renderer.lastViewSnapshotsForTesting();
     const auto second_left = stereo_target.readback(0);
     const auto second_right = stereo_target.readback(1);
@@ -3878,6 +3875,11 @@ void GoldenHarness::runOpenXrTaaTransition() {
         auto config = nlohmann::json::parse(config_file);
         config["features"].push_back("engine://features/ui.json");
         config["features"].push_back("engine://features/gpu_timing.json");
+        config["draw_sort"] = {
+            {"opaque", {{"provider", "state_batched_v1"}}},
+            {"transparent", {{"provider", "back_to_front_v1"}}},
+            {"xr_view_policy", "per_view"},
+        };
         writeTextFile(root / "passes" / "main.json", config.dump(2));
     }
     GET_MODULE(PathResolver).setup(root, false);
@@ -3921,18 +3923,21 @@ void GoldenHarness::runOpenXrTaaTransition() {
         GET_MODULE(RenderTarget).getSwapchainFormat()};
     time.advance();
     const auto xr_logical_frame = time.frameIndex();
-    renderer.renderLogicalFrame(
-        stereo_target, 2,
-        [](std::uint32_t view_index, const FrameRenderContext &) {
-            RenderViewParameters view;
-            view.view[3][0] = view_index == 0 ? -0.03f : 0.03f;
-            view.camera_position.x = view_index == 0 ? -0.03f : 0.03f;
-            return view;
-        });
+    std::array xr_views{RenderViewParameters{}, RenderViewParameters{}};
+    xr_views[0].view[3][0] = -0.03f;
+    xr_views[0].camera_position.x = -0.03f;
+    xr_views[0].first_person_view = true;
+    xr_views[1].view[3][0] = 0.03f;
+    xr_views[1].camera_position.x = 0.03f;
+    xr_views[1].first_person_view = true;
+    renderer.renderLogicalFrame(stereo_target, xr_views);
     const auto xr_snapshots = renderer.lastViewSnapshotsForTesting();
     REQUIRE(xr_snapshots.size() == 2);
     REQUIRE(xr_snapshots[0].jitter_ndc == glm::vec2{0.0f});
     REQUIRE(xr_snapshots[1].jitter_ndc == glm::vec2{0.0f});
+    REQUIRE(GET_MODULE(PolygonInstanceContainer)
+                .compiledDrawQueueForTesting()
+                .sortViewCount() == 2);
     const auto &targets = GET_MODULE(RenderTargetContainer);
     const auto display = targets.getRenderTargetIdByName("display");
     const auto mirror = targets.getRenderTargetIdByName(

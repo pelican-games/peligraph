@@ -183,6 +183,7 @@ CompiledRenderPipeline compileComposition(
     resolved.projection_jitter = composition.projection_jitter;
     resolved.feature_instances = composition.feature_instances;
     resolved.material_routing = composition.material_routing;
+    resolved.draw_sort = composition.draw_sort;
     resolved.pipeline_preset = composition.pipeline_preset;
     resolved.used_features = composition.used_features;
     return compileRenderPipeline(resolved);
@@ -218,6 +219,12 @@ TEST_CASE("hybrid pipeline preset expands to explicit versioned material routes"
             "forward_transparent_v1");
     REQUIRE(passByName(result.config, "scene_present").at("shader").at("fragment") ==
             "engine://scene_present");
+    REQUIRE(result.draw_sort.at("opaque").at("provider") ==
+            "state_batched_v1");
+    REQUIRE(result.draw_sort.at("transparent").at("provider") ==
+            "back_to_front_v1");
+    REQUIRE(result.draw_sort.at("xr_view_policy") ==
+            "logical_view_center");
     const auto &targets = result.config.at("render_targets");
     const auto lit_color = std::find_if(targets.begin(), targets.end(), [](const auto &target) {
         return target.value("name", std::string{}) == "lit_color";
@@ -225,6 +232,29 @@ TEST_CASE("hybrid pipeline preset expands to explicit versioned material routes"
     REQUIRE(lit_color != targets.end());
     REQUIRE(lit_color->at("format") == "R16G16B16A16_SFLOAT");
     REQUIRE(lit_color->at("format_class") == "explicit(R16G16B16A16_SFLOAT)");
+}
+
+TEST_CASE("pipeline preset accepts an explicit typed draw-sort override",
+          "[render-feature][pipeline-preset][draw-sort][wp184]") {
+    const auto authored = nlohmann::json{
+        {"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}},
+        {"draw_sort",
+         {
+             {"opaque", {{"provider", "fixture.opaque"}}},
+             {"transparent", {{"provider", "fixture.transparent"}}},
+             {"xr_view_policy", "per_view"},
+         }},
+    };
+    const auto composition = composeRenderFeatureConfig(
+        authored, RenderFeatureComposeDependencies{loadEngineFeature, true});
+    const auto compiled = compileComposition(composition);
+
+    REQUIRE(composition.config.at("draw_sort") == authored.at("draw_sort"));
+    REQUIRE(compiled.draw_sorting.opaque.provider == "fixture.opaque");
+    REQUIRE(compiled.draw_sorting.transparent.provider ==
+            "fixture.transparent");
+    REQUIRE(compiled.draw_sorting.xr_view_policy ==
+            DrawSortXrViewPolicy::per_view);
 }
 
 TEST_CASE("pipeline preset refuses structural deep merge and invalid route contracts",
