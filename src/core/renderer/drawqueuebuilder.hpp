@@ -3,6 +3,7 @@
 #include "../material/material.hpp"
 #include "../model/modeltemplate.hpp"
 #include "modelinstance.hpp"
+#include "renderpolicyregistry.hpp"
 
 #include <array>
 #include <cstddef>
@@ -37,10 +38,6 @@ struct DrawIndirectInfo {
     bool skinned = false;
 
     bool operator==(const DrawIndirectInfo &) const = default;
-};
-
-enum class DrawQueuePolicy : std::uint8_t {
-    state_batched_v1,
 };
 
 enum class DrawQueueView : std::uint8_t {
@@ -115,19 +112,18 @@ MaterialPhase drawPhaseForMaterialRoute(MaterialRouteClass route) noexcept;
 struct DrawQueueBuildRequest {
     std::span<const DrawItemSnapshot> items;
     std::uint32_t max_draw_indirect_count = 0;
-    DrawQueuePolicy policy = DrawQueuePolicy::state_batched_v1;
 };
 
 class CompiledDrawQueue {
     friend class DrawQueueBuilder;
 
-    DrawQueuePolicy policy_ = DrawQueuePolicy::state_batched_v1;
+    DrawSortProviderInfo provider_;
     std::vector<DrawItemSnapshot> ordered_items_;
     std::vector<RenderCommand> indirect_records_;
     std::array<std::vector<DrawIndirectInfo>, 2> draw_ranges_;
 
   public:
-    DrawQueuePolicy policy() const noexcept { return policy_; }
+    const DrawSortProviderInfo &provider() const noexcept { return provider_; }
     bool empty() const noexcept { return indirect_records_.empty(); }
     const std::vector<DrawItemSnapshot> &orderedItems() const noexcept {
         return ordered_items_;
@@ -144,7 +140,8 @@ class DrawQueueBuilder {
   public:
     // Pure CPU-only compilation. It neither mutates request.items nor resolves
     // modules, devices, material containers, or render-graph state.
-    static CompiledDrawQueue build(const DrawQueueBuildRequest &request);
+    static CompiledDrawQueue build(const DrawQueueBuildRequest &request,
+                                   const DrawSortProviderLease &provider);
 };
 
 } // namespace Pelican

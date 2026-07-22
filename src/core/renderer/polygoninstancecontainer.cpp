@@ -604,11 +604,13 @@ void PolygonInstanceContainer::triggerUpdate() {
                                              .getPhysDevice()
                                              .getProperties()
                                              .limits.maxDrawIndirectCount;
+    const auto draw_sort_provider =
+        renderPolicyRegistry().resolveDrawSortProvider(
+            builtinStateBatchedDrawSortProvider);
     auto next_draw_queue = DrawQueueBuilder::build(DrawQueueBuildRequest{
         .items = draw_inventory,
         .max_draw_indirect_count = max_draw_indirect_count,
-        .policy = DrawQueuePolicy::state_batched_v1,
-    });
+    }, draw_sort_provider);
     const auto &indirect_records = next_draw_queue.indirectRecords();
     GET_MODULE(VulkanManageCore)
         .writeBuf(indirect_buf, indirect_records.data(), 0,

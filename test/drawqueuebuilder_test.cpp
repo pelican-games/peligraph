@@ -12,6 +12,11 @@
 namespace Pelican {
 namespace {
 
+DrawSortProviderLease builtinProvider() {
+    return renderPolicyRegistry().resolveDrawSortProvider(
+        builtinStateBatchedDrawSortProvider);
+}
+
 DrawItemSnapshot item(std::uint64_t ordinal, int material,
                       std::uint32_t source_material, bool skinned,
                       PrimitiveViewVisibility visibility,
@@ -169,12 +174,17 @@ TEST_CASE("state_batched_v1 reproduces the legacy command bytes and view ranges"
     };
     const auto original = input;
     const auto legacy = legacyBuild(input, 2);
+    const auto provider = builtinProvider();
     const auto compiled = DrawQueueBuilder::build(
         DrawQueueBuildRequest{.items = input,
-                              .max_draw_indirect_count = 2});
+                              .max_draw_indirect_count = 2},
+        provider);
 
     REQUIRE(input == original);
-    REQUIRE(compiled.policy() == DrawQueuePolicy::state_batched_v1);
+    REQUIRE(compiled.provider().name ==
+            std::string{builtinStateBatchedDrawSortProvider});
+    REQUIRE(compiled.provider().provider_version ==
+            RenderPolicy::providerVersionV1);
     REQUIRE(compiled.orderedItems().size() == input.size());
     requireSameBytes(compiled.indirectBytes(), legacy.commands);
     REQUIRE(compiled.drawRanges(DrawQueueView::third_person) ==
@@ -203,9 +213,11 @@ TEST_CASE("state_batched_v1 splits large batches without changing stride or offs
                              static_cast<std::uint32_t>(ordinal * 3)));
     }
 
+    const auto provider = builtinProvider();
     const auto compiled = DrawQueueBuilder::build(
         DrawQueueBuildRequest{.items = input,
-                              .max_draw_indirect_count = 2});
+                              .max_draw_indirect_count = 2},
+        provider);
     for (const auto view : {DrawQueueView::third_person,
                             DrawQueueView::first_person}) {
         const auto &ranges = compiled.drawRanges(view);
@@ -231,8 +243,9 @@ TEST_CASE("draw queue compilation is repeatable, input preserving, and fail fast
     const auto original = input;
     const DrawQueueBuildRequest request{.items = input,
                                         .max_draw_indirect_count = 64};
-    const auto first = DrawQueueBuilder::build(request);
-    const auto second = DrawQueueBuilder::build(request);
+    const auto provider = builtinProvider();
+    const auto first = DrawQueueBuilder::build(request, provider);
+    const auto second = DrawQueueBuilder::build(request, provider);
 
     REQUIRE(input == original);
     REQUIRE(first.orderedItems() == second.orderedItems());
@@ -245,18 +258,21 @@ TEST_CASE("draw queue compilation is repeatable, input preserving, and fail fast
                        second.indirectBytes().begin()));
 
     const auto empty = DrawQueueBuilder::build(
-        DrawQueueBuildRequest{.items = {}, .max_draw_indirect_count = 0});
+        DrawQueueBuildRequest{.items = {}, .max_draw_indirect_count = 0},
+        provider);
     REQUIRE(empty.empty());
 
     CHECK_THROWS_AS(DrawQueueBuilder::build(DrawQueueBuildRequest{
-                        .items = input, .max_draw_indirect_count = 0}),
+                        .items = input, .max_draw_indirect_count = 0},
+                        provider),
                     std::invalid_argument);
 
     auto invalid_phase = input;
     invalid_phase.front().phase = MaterialPhase::transparent;
     CHECK_THROWS_AS(DrawQueueBuilder::build(DrawQueueBuildRequest{
                         .items = invalid_phase,
-                        .max_draw_indirect_count = 64}),
+                        .max_draw_indirect_count = 64},
+                        provider),
                     std::invalid_argument);
 
     auto duplicate_ordinal = input;
@@ -264,7 +280,8 @@ TEST_CASE("draw queue compilation is repeatable, input preserving, and fail fast
         duplicate_ordinal.front().declaration_ordinal;
     CHECK_THROWS_AS(DrawQueueBuilder::build(DrawQueueBuildRequest{
                         .items = duplicate_ordinal,
-                        .max_draw_indirect_count = 64}),
+                        .max_draw_indirect_count = 64},
+                        provider),
                     std::invalid_argument);
 }
 
