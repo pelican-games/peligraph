@@ -5,6 +5,8 @@ add_library(pelican_project
     importmanifest.cpp
     importrules.cpp
     jsonrpc.cpp
+    logicalrendergraph.cpp
+    logicalrendertype.cpp
     materiallowering.cpp
     materialformat.cpp
     openpbrmapping.cpp

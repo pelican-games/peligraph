@@ -4,6 +4,7 @@ target_sources(pelican_core PRIVATE
     debugtextpassinfojsonparser.cpp
     frameplanner.cpp
     framegraphruntime.cpp
+    logicalframegraphadapter.cpp
     fullscreenpassinfojsonparser.cpp
     materialpassinfojsonparser.cpp
     passattachmentoptionsjsonparser.cpp
