@@ -139,6 +139,13 @@ bit-preserving copy・hash 比較 gate)を明文化)。
 - 名前付きスクリーンスナップショット・capture は `display`(= linear LDR の
   encoded バイト)を読む。readback の意味論は §2-7
 
+**logical type 追補(2026-07-23)**: `display` の shader-visible 意味は
+`DisplayLinearV1`、output-transform 後または readback byte の意味は
+`DisplayEncodedV1` とする。`R8G8B8A8_SRGB` view に linear 値を書き、格納 byte が
+encode されることは Vulkan physical representation の性質であり、logical type を
+`DisplayEncodedV1` に変えない。scene / display、linear / encoded の判定と変換規則は
+[`design_render_graph_compiler.md`](design_render_graph_compiler.md) §2.4、§2.6 を正とする。
+
 swapchain / headless の format 選択と **resource role 別 capability 要件**
 (照会は `vkGetPhysicalDeviceFormatProperties` の format feature bit。
 「SRGB attachment 対応」と「SRGB attachment **blend** 対応」は別 bit として

@@ -1,12 +1,19 @@
 # フレームグラフ: 宣言的依存とスケジュール最適化(レンダー・コンピュート統一)
 
 対象読者: エンジン担当。
-ステータス: v2 ドラフト(2026-07-04。レビュー前。
+ステータス: v2.1 ドラフト(2026-07-23。v2: 2026-07-04。
 v1: compute タスクグラフとして起草。
 v2: ユーザー方針によりレンダーパスにも同モデルを拡張 — 統一フレームグラフ化、
-手詰め層の設計、既存 config の意味論保存移行を追加)。
+手詰め層の設計、既存 config の意味論保存移行を追加。
+v2.1: `design_render_graph_compiler.md` の logical / physical 分離へ接続)。
 前提: [SF](実装済み)、`design_render_feature_modules.md`(v1 ドラフト)、
 ロードマップ §3 の compute パス予約枠。GPU 計測(WP29 候補)と強く連携。
+
+本書の `FrameGraphDefinition` / `FramePlan` は、現行 config から依存と安定順を導く
+logical scheduling の実装である。concrete Vulkan resource、queue、barrier、scope の
+最終決定は [`design_render_graph_compiler.md`](design_render_graph_compiler.md) の
+`VulkanPhysicalPlan` へ段階移行する。`FramePlanBarrier` は依存診断であり、将来の
+Vulkan barrier 記述そのものではない。
 
 ## 0. 要求(2026-07-04 ユーザー方針・v2 で拡張)
 
@@ -24,7 +31,7 @@ v2: ユーザー方針によりレンダーパスにも同モデルを拡張 —
 | 層 | 役割 | 手段(両者共通) |
 |----|------|----------------|
 | 正しさ | 順序の制約を宣言する | データ依存(reads/writes)+ 明示エッジ(`after` / `before`) |
-| 機械最適化 | 制約内でエンジンが計画する | トポロジカルソート・層別・バリア自動挿入と融合・(v2 以降)キュー分割 |
+| 機械最適化 | 制約内でエンジンが計画する | logical: トポロジカルソート・層別、physical: barrier・scope 融合・queue 分割 |
 | 手詰め | 機械の計画を人が微調整する | ①宣言順 = **安定タイブレーク** ②明示エッジの追加 ③統一プランダンプで結果を確認 |
 
 手詰め層の設計判断(v2 の核心):

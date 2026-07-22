@@ -356,10 +356,24 @@ surface は brdf/lighting と共存する(surface が struct を埋め、ライ�
 - WP184 で indexed / morph / skin / VAT bounds、phase 別 opaque / transparent queue、
   `back_to_front_v1`、typed provider 選択、XR logical-center / per-view sort を実装済み
 - 残る機能穴は `hybrid_v1` material pass の screen-input descriptor binding。
-  snapshot graph 機構自体は既存で、次の RPE6 では typed color/depth domain とともに配線する
+  snapshot graph 機構自体は既存で、RPE6b では typed color/depth domain とともに配線する
 - preset/eject/provider、typed compiled plan、MSAA/XR variant、transaction の
   正式な境界は [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md)
   を参照
+
+**compiler contract 追補(2026-07-23)**:
+
+- material は image / buffer の semantic type と同じ enum に入れず、closure、opacity、
+  effect、encode 可能 schema、必要 screen input を持つ版付き `MaterialContract` とする
+- `screen_inputs` は資源名だけでなく、logical image type と `same_pixel` /
+  `neighborhood` / `arbitrary` read footprint へ lower する。depth fade は same-pixel、
+  offset 屈折は neighborhood が標準 contract
+- route policy の結果は `RouteDecision { tag, reason, contract_snapshot }` として保持する。
+  現行 `MaterialRouteClass` は `hybrid_v1` の互換 tag とし、将来の renderer strategy は
+  namespaced route tag または独自 partition を使える
+- G-buffer schema は strategy-private domain にできる。複数実装で共有する必要が
+  確認されるまで canonical logical type へ昇格させない
+- 詳細は [`design_render_graph_compiler.md`](design_render_graph_compiler.md) §2〜§6 を正とする
 
 ### 3-10. .surface 自己記述コンテナ(v1.2 — 形式の中核改訂)
 

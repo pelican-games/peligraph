@@ -1,7 +1,7 @@
 # レンダリング機能モジュール: パージ可能な GPU 機能と 1 行有効化
 
 対象読者: エンジン担当。
-ステータス: v1 ドラフト(2026-07-04。レビュー前)。
+ステータス: v1.1 ドラフト(2026-07-23。v1: 2026-07-04)。
 前提: [SF](シェーダ自由化キット・実装済み)、[PF]/[PFW](凍結)、
 `design_roadmap_renderworld.md` §6(機能はなるべくアセットに)。
 
@@ -91,6 +91,14 @@ feature がマテリアル/ライティングシェーダに合流する点(影�
 HDR のように「既存パスグラフの RT フォーマットだけ変えたい」ケース用。
 override は format / usage の追加に限定(サイズ・名前は不可)。
 validation は合成後に走るので、feature が壊れた組を作れば従来どおり弾かれる。
+
+**renderer compiler 追補(2026-07-23)**: 現行 `render_target_overrides` は互換 authoring
+frontend として維持する。新しい logical graph では色・深度等の意味を
+`LogicalType`、物理候補と品質既定を `ResourcePattern`、exact format pin を
+`VulkanPhysicalPlan` 側へ分離する。usage は logical resource use と選択 mechanism から
+導出し、feature が常時過剰な usage bit を足す構造を終える。移行中は既存 override を
+pattern / pin へ変換する adapter を使い、RPE6a で parser や runtime 挙動を変更しない。
+詳細は [`design_render_graph_compiler.md`](design_render_graph_compiler.md) §3.5、§6、§11。
 
 ## 2. 要求された各機能の適合表
 

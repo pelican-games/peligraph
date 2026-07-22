@@ -1,0 +1,778 @@
+# レンダラ構築コンパイラ: 論理型・ターゲット計画・物理実行計画(v1)
+
+対象読者: レンダラ実装者、独自描画方式・最適化・Vulkan backend を実装する人。
+
+ステータス: v1 設計方針(2026-07-23)。公開 ABI は未凍結。RPE1〜RPE6a まで実装済み。
+RPE6a は純 CPU の logical type / port-use kernel と現行 FrameGraph の diagnostic shadow
+adapter までであり、runtime 実行所有権は未移行。RPE1〜RPE5 で実装済みの
+`RenderPipelineRequest` / `ResolvedRenderPipeline` / `CompiledRenderPipeline` と
+draw queue 基盤を移行元とし、既存の flat 1x 描画結果を変えずに段階導入する。
+
+本書は [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md)
+の compiler / compiled plan / backend 境界を詳述する。関連文書:
+
+- [`design_compute_task_graph.md`](design_compute_task_graph.md) — 現行フレームグラフの
+  依存導出、安定スケジュール、plan dump
+- [`design_material_shading.md`](design_material_shading.md) — material / `.surface` /
+  OpenPBR / screen input 契約
+- [`design_color_pipeline.md`](design_color_pipeline.md) — scene / display domain と
+  output transform
+- [`design_asset_hot_reload.md`](design_asset_hot_reload.md) — prepare / publish / rollback /
+  retire
+- [`design_openxr.md`](design_openxr.md) — view family と XR lifecycle
+
+## 0. 決定事項
+
+1. 標準経路は **論理コンパイル**と**ターゲットコンパイル**の二段階とする。
+2. 論理グラフと物理グラフの構造的一致や相互逆変換は要求しない。
+3. 論理型は **少数の閉じた型構造 × 拡張可能な意味型**とする。
+4. 型、ポート間制約、アクセス特性、物理表現の選好、Vulkan 記述を分離する。
+5. 型パラメータ判定は文字列比較の散在でなく、正規化済み値と宣言的な制約式で行う。
+6. material と light は image / buffer と同じ巨大 enum に入れず、個別の contract を持つ。
+7. region は置換・診断用のタグであり、barrier・allocation・最適化境界ではない。
+8. tile GPU は後付け preset でなく、同じ論理グラフに対する第一級の物理 lowering
+   target とする。
+9. 上級者は論理層を迂回して物理グラフを直接供給できる。物理 IR でも表現できない
+   処理には、境界契約付き `NativeScope` を用意する。
+10. 通常利用者の入口は引き続き一つの preset と少数設定であり、本書の型式や
+    constraint DSL を毎回記述させない。
+
+本設計は Vulkan を隠す RHI の設計ではない。現在の backend は Vulkan 専用であり、
+物理計画も Vulkan の能力を完全に利用できる。論理層はその部分集合を移植可能に
+記述するが、物理層全体を再表現しない。
+
+## 1. 二段階コンパイラと中間表現
+
+```text
+project / preset / material / light / view intent
+                         │
+                         ▼
+               resolve authoring intent
+                         │
+                         ▼
+        [1] Logical Render Compiler
+                         │
+                         ▼
+              CompiledLogicalGraph
+                         │
+       + target facts / user pins / cost policy
+                         │
+                         ▼
+        [2] Vulkan Target Compiler
+                         │
+                         ▼
+              VulkanPhysicalPlan
+                         │
+                  prepare GPU objects
+                         │
+                         ▼
+              PreparedRenderPipeline
+                         │
+                         ▼
+                    Runtime
+```
+
+### 1.1 論理コンパイラ
+
+論理コンパイラは「何を計算し、どの意味の値を受け渡すか」を決める。
+
+- preset / recipe の展開
+- material / light / geometry / view 要求の収集
+- material 集合の route / phase partition
+- logical pass と typed port の構築
+- feature、history、screen input、XR view family の意味的な依存
+- 登録済み変換の挿入と型・制約検査
+- 有限個の実装候補または variant family の保持
+
+`VkFormat`、image usage、load/store、barrier、queue family、実 allocation、descriptor、
+command buffer はここへ入れない。
+
+### 1.2 ターゲットコンパイラ
+
+ターゲットコンパイラは、論理グラフと data-only な Vulkan capability / cost facts から
+実行可能な物理計画を作る。単純な一対一変換ではなく、次を行ってよい。
+
+- logical pass の融合・分割・削除
+- resolve / snapshot / copy / materialization の追加
+- material route の再 partition
+- G-buffer schema や lighting strategy の候補選択
+- rendering scope、attachment、load/store、queue、同期、aliasing の決定
+- same-pixel read の tile-local 化
+- multiview / sequential、graphics / async compute variant の選択
+
+Vulkan object の作成は意味選択を行わない backend code generation / prepare とし、
+二つ目のコンパイラの後段に置く。
+
+### 1.3 対応関係
+
+要求するのは次の片方向の性質である。
+
+- 対象 profile に対して有効な論理グラフは、物理化できるか理由付きで拒否される。
+- 一つの論理グラフから複数の物理計画を生成できる。
+- 物理計画には対応する論理グラフが存在しないものがあってよい。
+- 物理計画から論理グラフへの損失なし逆変換は保証しない。
+
+したがって、構造の同型ではなく **境界契約を保存する refinement** を検証する。
+logical resource が物理 image にならない場合や、複数 logical pass が一つの shader /
+rendering scope になる場合も正しい。
+
+### 1.4 既存語彙への写像
+
+```text
+RenderPipelineRequest       ユーザー意図
+ResolvedRenderPipeline      preset・policy・候補の解決結果
+CompiledRenderPipeline      論理コンパイル結果を所有する root
+  └ CompiledLogicalGraph    typed logical IR
+VulkanPhysicalPlan          GPU object を持たない物理 IR
+PreparedRenderPipeline      rollback 可能な GPU candidate
+RenderRuntime               publish 済み plan の実行
+```
+
+現行 `CompiledRenderPipeline` は policy manifest の実装まで完了しており、
+`CompiledLogicalGraph` を段階的に追加する。新 root 型へ一括 rename しない。
+
+## 2. 論理型: 閉じた構造と開いた意味
+
+### 2.1 型構造
+
+core が理解する constructor は原則として次の五つに閉じる。
+
+| constructor | 用途 | 例 |
+|-------------|------|----|
+| `Image` | 画素・voxel・view image | scene color、depth、motion、shadow |
+| `Buffer` | index 可能な構造化データ | light records、cluster index、indirect args |
+| `Stream` | 順序・partition を持つ仕事列 | draw stream、dispatch stream、ray work |
+| `ObjectSet` | scene semantic 集合 | view family、geometry、material、light |
+| `Value` | 小さな immutable 値 | exposure、camera parameters、quality intent |
+
+acceleration structure のような Vulkan 固有実体を無理に constructor へ追加しない。
+論理層では `ObjectSet<RayScene>` 等の意味契約として扱い、物理層で AS へ lower する。
+物理操作そのものを公開したい場合は物理 IR を使う。
+
+概念上の型は次の形を取る。
+
+```cpp
+struct LogicalType {
+    LogicalTypeConstructor constructor;
+    SemanticTypeId semantic;
+    TypeArgumentSet identity_arguments;
+    TypeArgumentSet refinements;
+};
+```
+
+`SemanticTypeId` は `namespace + name + major version` からなる。未知型を enum の
+末尾へ追加する方式にせず、engine、project、game DLL が同じ registry 規則で登録する。
+
+```text
+pelican.render.color_signal@1
+pelican.render.depth@1
+pelican.scene.view_family@1
+pelican.scene.material_set@1
+game.water.thickness@1
+plugin.volumetric.froxel_scattering@2
+```
+
+constructor 固有の構造も schema で固定する。`Image` は 2D / array / cube / volume 等の
+logical topology、`Buffer` は element schema、`Stream` は item contract と順序保証、
+`ObjectSet` は要素 contract、`Value` は record schema を持てる。実 extent、layer 数、
+sample count、format は relation / target constraint / physical plan 側で決める。
+
+### 2.2 型引数と、それ以外の値
+
+型の内部へ入れるのは、意味上の同一性または適用範囲を変える値だけとする。
+
+| 種類 | 置き場所 | 例 |
+|------|----------|----|
+| identity argument | `LogicalType` | scene/display、linear/encoded、depth representation |
+| refinement | `LogicalType` | RGB/spectral、alpha convention、必要 feature set |
+| port relation | `PortConstraint` | `same_extent(MainDepth)`、per-view、half-resolution |
+| access / footprint | `ResourceUse` | read/write、same-pixel、neighborhood |
+| target constraint | planning constraint | sample set、format feature、attachment budget |
+| policy hint | `ResourcePattern` / planning policy | quality、bandwidth、latency 優先 |
+| concrete value | `VulkanPhysicalPlan` | `vk::Format`、usage、tiling、load/store、barrier |
+
+これにより、sample count や format の全組合せを論理型名として列挙しない。
+
+### 2.3 型引数の表現
+
+型引数は自由な JSON object や生文字列 map にしない。domain 登録時に parameter schema
+を宣言し、compiler が default 補完・順序正規化・範囲検査を行う。
+
+```cpp
+using TypeArgumentValue = std::variant<
+    bool,
+    std::int64_t,
+    std::uint64_t,
+    Rational,
+    EnumValueId,
+    SemanticTypeId,
+    IntegerInterval,
+    EnumValueSet,
+    SymbolId>;
+```
+
+- float の曖昧比較が必要な型引数には `Rational` または量子化済み整数を使う。
+- omitted default と明示 default は canonicalize 後に同じ hash を持つ。
+- 未知引数、重複引数、不正 enum、範囲外値は登録時または compile 時に拒否する。
+- cache key と dump は canonical form を使う。
+
+### 2.4 canonical alias
+
+利用者と診断には読みやすい版付き alias を提供する。alias は opaque enum でなく
+正規化された型式へ展開される。
+
+```text
+SceneLinearHdrV1
+  = Image<color_signal@1,
+          reference=scene, transfer=linear, range=extended>
+
+DisplayLinearV1
+  = Image<color_signal@1,
+          reference=display, transfer=linear, range=normalized>
+
+DisplayEncodedV1
+  = Image<color_signal@1,
+          reference=display, transfer=output_encoded, range=normalized>
+
+DeviceDepthV1
+  = Image<depth@1, representation=device>
+
+LinearViewDepthV1
+  = Image<depth@1, representation=linear_distance, space=view>
+```
+
+working primaries、reverse-Z convention 等、consumer の正しさに必要な値は identity /
+refinement または `ViewFamily` との relation として追加する。bit depth、image tiling、
+attachment usage はここへ入れない。
+
+### 2.5 type pattern と判定結果
+
+pass / algorithm は個別型名の `if` 連鎖でなく `TypePattern` と constraint expression を
+宣言する。標準式は少なくとも次を持つ。
+
+- exact / equals / not-equals
+- enum `one_of`
+- set contains / subset / intersection
+- integer / rational range
+- trait requirement
+- symbol binding と `same_as`
+- extent の整数比関係
+
+判定は `bool` で情報を捨てず、次を返す。
+
+```cpp
+enum class MatchStatus { exact, convertible, deferred, rejected };
+
+struct TypeMatchResult {
+    MatchStatus status;
+    TypeBindings bindings;
+    ConversionPath conversion;
+    DecisionReason reason;
+};
+```
+
+`deferred` は `samples = same_as(MainColor)` のように、論理 compile 時点では正しいが
+target compile まで値が決まらない状態である。未解決を `0` や unknown enum で表さない。
+
+trait は候補選択に使えるが、代入互換性を与えない。`ColorLike` / `SceneReferred` が
+一致しても、nominal type が異なる値は変換なしに接続できない。
+
+この query builder / data schema は recipe・provider 実装と診断用であり、通常の project
+設定や material ごとに記述させない。core の代入互換規則を任意 callback で上書きする
+ことも許さない。custom domain は parameter schema と conversion を登録して参加する。
+一つの candidate 内は正規化可能な制約の conjunction、分岐は明示的な有限 candidate
+list とし、一般 SAT / SMT や再帰的 user expression を renderer 起動経路へ持ち込まない。
+
+### 2.6 変換
+
+異なる semantic type の接続は、登録済み `DomainConversion` を graph node として挟む。
+
+- `automatic_safe`: 必要 context が揃い、意味と損失が規約上許容される変換
+- `explicit_only`: tone map、gamut mapping、不可逆圧縮等、pipeline の意図を変える変換
+
+例えば `DeviceDepthV1 -> LinearViewDepthV1` は view parameter があれば自動候補にできる。
+`SceneLinearHdrV1 -> DisplayLinearV1` の tone map は explicit-only とし、terminal に
+二重挿入されることを型検査で防ぐ。
+
+変換探索は登録済み有限 graph に限定する。同順位の複数経路が残ったら暗黙選択せず、
+provider 名または変換を pin させる。
+
+## 3. 型、ポート、resource use
+
+型だけでは tile-local read、history、外部所有等を表せないため、三つの契約へ分ける。
+
+```cpp
+struct LogicalPortContract {
+    TypePattern accepted_type;
+    ConstraintSet relations;
+};
+
+struct LogicalResourceDesc {
+    LogicalType type;
+    MaterializationPolicy materialization;
+};
+
+struct LogicalResourceUse {
+    LogicalValueId value;
+    AccessMode access;
+    ReadFootprint footprint;
+};
+```
+
+### 3.1 SSA に近い値モデル
+
+logical output は原則 immutable な新しい value とする。同じ `SceneLinearHDR` に
+透明物を合成する場合も、意味上は `opaque_color -> composed_color` とする。
+physical lowering は安全なら同一 image / attachment へ alias または in-place 化できる。
+
+external target、history state、query 等の副作用は暗黙の名前順でなく effect として
+宣言する。通常ユーザーに SSA 記法を要求せず、preset / recipe が生成する。
+
+### 3.2 read footprint
+
+最低限、次を区別する。
+
+| footprint | 意味 | 代表例 |
+|-----------|------|--------|
+| `same_pixel` | 同じ画素位置だけ読む | deferred lighting、depth fade |
+| `neighborhood` | 有限近傍・offset sample | 屈折、blur、reconstruction |
+| `arbitrary` | 任意位置・scatter/gather | 一般 compute、global lookup |
+| `temporal` | 過去 frame / persistent state | TAA、exposure history |
+
+必要なら neighborhood radius、derivative、sample-frequency を refinement する。
+footprint は resource の型でなく use ごとの性質である。
+
+### 3.3 materialization
+
+logical resource は既定で virtual とし、次の方針を持てる。
+
+- `virtual`: 物理 image を要求しない
+- `preferred`: 診断・再利用・cost policy 上の選好
+- `required`: capture、外部 API、任意 sample 等により実体が必要
+- `external`: swapchain / XR image / import resource 等、外部所有
+
+`preferred` は correctness を変えず、planner が退けられる。`required` / `external` は
+融合や tile-local 化を制約し、退けた最適化理由を診断へ残す。
+
+### 3.4 region
+
+logical node には `region:opaque`, `region:transparency/water`, `region:post/taa` のような
+階層タグを付けられる。これは次のためだけに使う。
+
+- override / subgraph replacement の範囲指定
+- eject diff の安定した anchor
+- resolver / provider の所有範囲
+- profiler / plan dump の grouping
+
+region 境界で resource を実体化したり barrier を入れたりしない。global graph transform、
+target compiler、physical lowering は型・effect 契約を守る限り region を横断できる。
+
+### 3.5 ResourcePattern
+
+logical type と具体 Vulkan representation の間には、copy / override 可能な
+`ResourcePattern` を置く。pattern は型ではなく、物理候補と選好の標準ライブラリである。
+
+```text
+engine://render_patterns/scene_hdr_quality@1
+engine://render_patterns/main_depth@1
+engine://render_patterns/history_color@1
+project://render_patterns/water_scene_copy@1
+```
+
+pattern は次を宣言する。
+
+- 適用できる `TypePattern`
+- format class または順位付き concrete format 候補
+- extent / layer / mip / sample constraint
+- transient、host-visible、history、capture 等の residency / lifetime 選好
+- capability 不足時の明示 fallback または error
+- provider / asset version と provenance
+
+image usage / buffer usage は logical `ResourceUse` と選ばれた physical mechanism から導出し、
+pattern が過剰な usage bit を常時要求しない。通常 project は pattern 名だけを選び、変更時は
+標準 pattern をコピーするか、型付き field pin で一部だけ固定する。曖昧な recursive deep
+merge は導入しない。最終的に `vk::Format` や usage を完全固定したい場合は physical plan
+override へ降りる。
+
+## 4. scene、material、light の contract
+
+### 4.1 Semantic Scene IR
+
+論理グラフの入力には、GPU buffer に変換する前の semantic 集合を置く。
+
+- `ObjectSet<ViewFamily>`
+- `ObjectSet<GeometrySet>`
+- `ObjectSet<MaterialSet>`
+- `ObjectSet<LightSet>`
+- `Value<QualityIntent>`
+
+forward / deferred / path tracing はこの段階の型ではない。選択した recipe / strategy が
+これらを draw stream、surface data、acceleration structure 等へ lower する。
+
+### 4.2 MaterialContract
+
+material は resource domain と別 registry の `MaterialContract` を持つ。
+
+- closure / shading family と版
+- opacity / blend / coverage model
+- derivative、discard、custom lighting 等の effect capability
+- encode 可能な surface schema の集合
+- 必要な screen input type と read footprint
+- forward/deferred/ray 等の実装候補と拒否理由
+- shader ABI / layout identity
+
+OpenPBR の base subset は standard G-buffer schema へ encode でき、coat、transmission、
+custom lighting 等は別 route を要求できる。これは OpenPBR 型そのものを forward と
+定義するのではなく、選択 strategy が contract を問い合わせた結果である。
+
+### 4.3 LightContract
+
+light も別の `LightContract` を持つ。
+
+- emitter / spatial support
+- radiometric quantity
+- sampling interface
+- shadow query / visibility requirement
+- volumetric participation
+- packing / clustering schema の候補
+
+同じ light 集合を clustered forward、deferred、ray/path tracing が異なる方法で lower
+できる。material / light contract は DomainRegistry と同じ version / ownership /
+diagnostic 規律を再利用するが、一つの万能 Type enum には統合しない。
+
+### 4.4 route label
+
+algorithm が material 集合へ付ける route / partition label は有効である。ただし label を
+resource type と混同しない。結果は `RouteDecision { tag, reason, contract_snapshot }` として
+保持する。
+
+現行 `MaterialRouteClass` は `hybrid_v1` の互換 route tag として維持する。将来の recipe は
+名前空間付き `RouteTagId` を使い、標準 enum への追加を要求しない。
+
+strategy 固有の G-buffer / reservoir / visibility buffer 型は private domain にできる。
+複数の独立実装が共有し、変換の数学的意味を engine が検証する必要が生じたものだけを
+canonical domain へ昇格する。
+
+## 5. recipe、pass、strategy
+
+役割を次のように分ける。
+
+| 要素 | 責務 |
+|------|------|
+| `PipelineRecipe` | preset、scene contract、settings から logical graph / finite variants を生成 |
+| `PassContract` | typed input/output、effect、必要 capability を宣言 |
+| `PassImplementation` | contract を満たす shader / CPU / compute 実装 |
+| `GraphTransform` | typed logical graph を別の typed logical graph へ変換 |
+| `RenderStrategy` | hybrid / forward+ / path tracing 等、renderer 全体または大領域を生成 |
+| `PhysicalLowering` | logical candidate を Vulkan physical nodes / resources へ変換 |
+
+巨大な `IRenderPolicy` に全処理を集約しない。同じ contract の implementation 差し替えと、
+graph 構造を変える transform、renderer 全体を変える strategy を別の extension point にする。
+
+概念上の最小 descriptor は次の形である。
+
+```cpp
+struct PassContract {
+    PassContractId id;
+    std::vector<LogicalPortContract> inputs;
+    std::vector<LogicalPortContract> outputs;
+    EffectSet effects;
+};
+
+struct PassImplementationDescriptor {
+    PassImplementationId id;
+    PassContractId implements;
+    CapabilityPredicate applicability;
+    OwnerGeneration owner;
+};
+```
+
+implementation は contract より狭い capability 条件を持てるが、port の意味を変更したり
+具体 format を勝手に固定しない。必要な物理条件は planning constraint として返し、
+target compiler が他候補と合わせて解決する。
+
+標準 compiler は未知アルゴリズムを発明しない。recipe / provider が列挙した有限候補を
+検査・順位付けする。
+
+## 6. ターゲット計画と層横断最適化
+
+### 6.1 capability / cost facts
+
+target compiler へ渡す facts は data-only snapshot とする。
+
+- Vulkan version / extension / feature bits
+- format feature と sample count の表
+- multiview、dynamic rendering local read、input attachment 等
+- graphics / compute / transfer queue の能力
+- tile-based / immediate の既知 profile
+- transient / lazily allocated memory の可用性
+- attachment / descriptor budget class
+- XR view count、external image contract
+
+実 device、queue、module、Vulkan handle は渡さない。portable Vulkan から取得できない
+tile size 等を推測して correctness に使わない。vendor provider が明示する情報は
+namespaced optional facts として扱う。
+
+cost estimate は少なくとも feasibility、rendering scope 数、materialized image 数、
+external store 数、transient bytes、bandwidth class、理由を返す。精密な時間予測を
+必須にしない。
+
+### 6.2 bounded planning
+
+標準手順を次に固定する。
+
+1. recipe / strategy が有限個の logical candidate を生成
+2. user pin と logical contract で候補を絞る
+3. backend facts で feasibility と概算 cost を得る
+4. deterministic policy で一つを選ぶ
+5. target-aware graph transform を一回適用
+6. physical lowering と最終 validation を行う
+
+無制限の fixed-point solver、任意 callback の総当たり、frame ごとの再 compile は行わない。
+実行時に必要な少数 variant は prepare 済みにし、runtime は variant を選ぶだけにする。
+
+### 6.3 層横断変換
+
+最適化は三種類に分ける。
+
+1. physical-only: barrier、alias、queue、load/store、schedule
+2. target-aware graph rewrite: scope fusion、snapshot / resolve 挿入、local read 化
+3. semantic strategy: deferred / forward+、compact G-buffer、material partition 変更
+
+2 と 3 は `CrossLayerTransform` が logical subgraph、backend facts、quality intent を受け、
+typed replacement と decision log を返す。backend が logical graph を直接 mutation したり、
+logical compiler が GPU handle を読む構造にはしない。
+
+### 6.4 tile GPU を基準にした検証
+
+同じ logical hybrid graph に対して、少なくとも次を成立させる。
+
+```text
+desktop profile:
+  materialized G-buffer images
+  sampled deferred lighting
+  separate forward / post scopes
+
+tile profile:
+  transient attachments
+  same-pixel G-buffer / depth local read
+  lighting + compatible forward work の scope fusion 候補
+  external consumer がなければ G-buffer store なし
+```
+
+depth fade は `same_pixel` なら local read 候補になる。屈折は通常
+`neighborhood` なので opaque scene snapshot / materialization を要求する。TAA、bloom、
+history は物理 image を必要とする。この違いを pass 名や「透明だから」という推測でなく、
+`MaterialContract` と `ResourceUse` から導く。
+
+local read 非対応 device では materialized sampled image へ明示 fallback し、選択理由を
+dump する。まず CPU-only mock profile で両計画を検証し、その後 Vulkan 実機 path を足す。
+
+## 7. 物理 IR と直接 authoring
+
+### 7.1 VulkanPhysicalPlan
+
+物理 IR は GPU object 作成前の immutable data とし、少なくとも次を持つ。
+
+- concrete image / buffer description と ownership
+- memory / alias group / transient intent
+- rendering scope、attachment、subpass / local-read relation
+- load/store、resolve、clear
+- queue assignment と synchronization dependency
+- shader / pipeline variant と descriptor binding map
+- external acquire / release boundary
+- logical boundary value への provenance
+
+これは backend-neutral RHI ではない。Vulkan 固有機能を表せない共通最小公倍数へ
+丸めない。将来別 backend を作る場合は、同じ logical graph から兄弟 target compiler が
+別の physical plan を作る。
+
+### 7.2 三つの入口
+
+```text
+通常:
+  Request -> Logical -> VulkanPhysicalPlan -> Prepared
+
+物理グラフ直書き:
+  PhysicalPipelinePackage -> validate -> Prepared
+
+生 Vulkan:
+  Logical/Physical graph -> NativeScope -> Prepared/Runtime
+```
+
+`PhysicalPipelinePackage` は logical graph 全体を要求せず、外部へ公開する入力・出力・effect
+の `BoundaryContract` を持つ。engine は boundary と外側の lifetime / synchronization を
+検証し、内部を logical optimizer へ持ち上げない。
+
+### 7.3 NativeScope
+
+`NativeScope` は次を明示する unsafe / non-portable escape hatch である。
+
+- boundary input / output と semantic type
+- resource ownership と alias declaration
+- queue / stage / access effect
+- scope 内外の synchronization responsibility
+- required Vulkan extensions / features
+- capture / device-loss / hot-reload 対応能力
+
+scope 内の command、barrier、resource は実装側が所有できる。engine は宣言された境界の
+外側だけを保証し、内部最適化や自動 alias を行わない。初期版は source extension とし、
+安全性 fixture が揃う前に game-DLL ABI を凍結しない。
+
+## 8. 拡張の段階
+
+利用者が必要な深さだけ降りられるよう、次を別々の入口として提供する。
+
+1. preset と少数 settings
+2. `ResourcePattern` override
+3. `PassImplementation` replacement
+4. tagged region / subgraph replacement
+5. global `GraphTransform`
+6. renderer-wide `RenderStrategy`
+7. `PhysicalLowering` または physical graph 直書き
+8. `NativeScope`
+
+上位の入口ほど portability、自動最適化、検証範囲が狭くなる。この損失を隠さず
+diagnostic に表示する。
+
+provider registry は既存の `RegistrationOwner`、generation、lease、version、capability、
+data-only callback 規律を再利用する。ただし logical policy provider、physical lowering、
+native backend extension は権限が違うため、同一 callback ABI へ統合しない。
+
+## 9. diagnostics、pin、eject
+
+すべての compiler decision は最低限次を保持する。
+
+- decision id と対象 node / resource / material partition
+- request / preset / user pin
+- 検討した provider / strategy / representation
+- selected value と選択理由
+- rejected candidate と不足 capability / contract
+- fallback、conversion、materialization、scope split の理由
+- provider owner / version / content hash
+
+user override は値を上書きするだけでなく、特定 decision を `pin` できる。pin が
+capability と矛盾した場合は黙って解除せず、名前入り compile error にする。
+
+eject / dump は層別にする。
+
+- resolved authoring を eject
+- logical graph と型・制約・decision provenance を eject
+- Vulkan physical plan を eject
+- `NativeScope` の boundary / source skeleton を eject
+
+同じ層での parse -> dump -> parse round-trip は保証対象にできるが、physical plan を
+logical graph へ戻す round-trip は保証しない。
+
+## 10. 決定性、hot reload、purge
+
+- registry snapshot、request、target facts、pins が同じなら byte-equivalent な plan を得る。
+- unordered iteration、wall clock、GPU handle address、driver 列挙順を decision に使わない。
+- custom rule は純粋・有限・版付きで、engine が出力を canonicalize / validate する。
+- compiled type / contract は registry 内部 pointer を保持せず、正規化済み descriptor と
+  owner / generation provenance を snapshot する。callback が必要な conversion / lowering は
+  prepare 完了まで世代 lease を保持する。
+- compile は side state で行い、logical + physical + material route + GPU candidate を一括
+  prepare して frame boundary publish する。
+- provider unload は新 lease を止め、compile / frame が持つ generation の終了後に retire
+  する。
+- 未選択 recipe / strategy / implementation は runtime resource を作らない。
+- optional implementation の binary purge は別 build unit / game DLL で行う。
+
+## 11. 現行実装からの移行
+
+| 現行要素 | 当面の扱い | 目標 |
+|----------|------------|------|
+| `RenderPipelineRequest` / `ResolvedRenderPipeline` | 維持 | logical compiler の frontend |
+| `CompiledRenderPipeline` | typed policy manifest として維持 | `CompiledLogicalGraph` を所有する root |
+| `FrameGraphDefinition` / `FramePlan` | 既存 config の dependency graph | typed logical graph への互換 adapter |
+| `FramePlanBarrier` | dependency の診断表現 | Vulkan barrier と区別し、physical plan で具体化 |
+| `PassDefinition` | logical と `vk::*` が混在 | pass contract/use と Vulkan physical pass desc に分離 |
+| `RenderTargetDefinition` | format / usage まで確定 | logical resource + pattern + Vulkan image desc に分離 |
+| `compileRenderingPassRuntime` | resource 参照と runtime object を構築 | physical plan の backend prepare へ縮小 |
+| `RenderTargetLayoutTracker` | 現行 Vulkan 遷移を所有 | physical synchronization plan の唯一の executor |
+| `FeatureCompose` | verbose config を生成 | recipe / graph transform authoring への互換 frontend |
+| `MaterialRouteClass` | `hybrid_v1` の固定 enum | namespaced route tag への adapter |
+
+移行中に新旧 planner が同時に Vulkan barrier を発行してはならない。shadow compile は
+plan dump と比較だけを行い、実行所有権を切り替える WP で単一 executor を選ぶ。
+
+## 12. 段階実装
+
+### RPE6a — logical type kernel / shadow graph
+
+状態: **WP185 で実装済み(2026-07-23)**。`pelican.logical_render_graph` dump は
+diagnostic-only であり、既存 `FramePlan` / Vulkan barrier executor を変更しない。
+
+- `SemanticTypeId`、正規化済み `LogicalType`、parameter schema
+- `TypePattern`、constraint expression、`TypeMatchResult`
+- `LogicalPortContract` / `LogicalResourceUse`
+- canonical color/depth aliases
+- current `FrameGraphDefinition` から typed shadow graph を生成
+- logical dump と decision provenance
+
+gate:
+
+- Vulkan device なしの純 CPU test
+- exact / convertible / deferred / rejected の fixture
+- parameter default・順序違いの canonical hash 一致
+- unknown / ambiguous conversion の名前入り reject
+- flat 1x の runtime /既存 dump は変更なし
+
+### RPE6b — hybrid screen input vertical slice
+
+- `hybrid_v1` の scene color / device depth / linear depth port
+- material screen-input contract と descriptor binding
+- depth linearization conversion
+- depth fade(`same_pixel`)と屈折(`neighborhood`) fixture
+- tone map explicit-only と terminal 一回 invariant
+
+gate:
+
+- 既存 material を無変更で描画
+- 未定義・型不一致 screen input を compile 時に拒否
+- 屈折／depth fade golden
+- scene-linear から display への変換が exactly once
+
+### RPE6c — target planner vertical slice
+
+- `ResourcePattern`、materialization、read footprint
+- mock desktop / mock tile capability facts
+- `GBuffer -> Lighting -> Forward -> ToneMap` の二つの physical plan
+- local-read 不可時の materialized fallback
+- physical plan dump と理由
+
+gate:
+
+- desktop は G-buffer materialize
+- tile profile は same-pixel resource を virtual / transient にできる
+- refraction を加えると opaque snapshot が materialize される
+- region tag を越えた fusion が許可される
+- 二回 compile で byte-equivalent plan
+
+### それ以後
+
+1. RPE7 の sample policy を target constraint / symbolic binding へ載せる
+2. RPE8 で current 1x physical adapter を基準に MSAA / resolve を物理化
+3. RPE9 で XR / preview variant と multiview lowering
+4. RPE10 で logical + physical + GPU candidate の transaction publication
+5. pass / region / global transform / strategy provider fixture
+6. physical plan eject / direct authoring fixture
+7. `NativeScope` は具体的な Vulkan-only 使用例が得られてから ABI 設計
+
+## 13. north-star acceptance scenarios
+
+1. **普通のゲーム**: `hybrid_v1` 一行で現行と同じ絵・順序・resource を得る。
+2. **水だけ改造**: transparency/water region と material contract を置換し、必要な
+   scene color / depth だけ compiler が接続する。
+3. **tile GPU**: 同じ logical recipe から local-read / transient plan を生成し、
+   neighborhood refraction だけ snapshot を強制する。
+4. **renderer 全交換**: custom path-tracing `RenderStrategy` が material / light /
+   geometry contract を消費し、標準 forward/deferred route を使わない。
+5. **物理最適化実験**: user-authored Vulkan physical plan が logical internals を持たず、
+   typed boundary だけで present / XR envelope と接続できる。
+6. **未知 Vulkan 実験**: `NativeScope` が必要 extension と effect を宣言し、通常 graph の
+   外側 lifetime を壊さずに実行できる。
+
+この六つを同じ API の万能 callback で満たそうとしない。各段階を独立した fixture で
+実証し、実証済みの境界だけを public ABI として凍結する。
