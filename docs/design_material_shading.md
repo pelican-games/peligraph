@@ -6,7 +6,8 @@
 主な改訂: .surface 自己記述コンテナ / spv-link を experimental に降格 /
 ターミナルフック排他 / 版付きシンボル / 名前付きスナップショット /
 実装順の組み替え)。
-追補(2026-07-21): M1〜M3.5 と `hybrid_v1` 基盤は実装済み。renderer 全体の
+追補(2026-07-23): M1〜M3.5、`hybrid_v1` 基盤、typed material screen input
+(WP187)は実装済み。renderer 全体の
 拡張境界と後続順序は `design_render_pipeline_extensibility.md` を正とする。
 前提: `design_render_feature_modules.md`(shader_defines・variant 機構)、
 `design_render_pipeline_extensibility.md`、`design_scene_format.md`、
@@ -344,7 +345,7 @@ surface は brdf/lighting と共存する(surface が struct を埋め、ライ�
 - 成立しない指定(blend を deferred_geometry 等)は**名前入りの起動時エラー**
   (黙って直さない)
 
-**実装追補(2026-07-21)**:
+**実装追補(2026-07-23)**:
 
 - versioned `hybrid_v1` preset、`deferred_geometry` / `forward_opaque` /
   `forward_transparent` semantic route と pass contract を実装済み
@@ -355,8 +356,13 @@ surface は brdf/lighting と共存する(surface が struct を埋め、ライ�
   terminal で一度だけ行う
 - WP184 で indexed / morph / skin / VAT bounds、phase 別 opaque / transparent queue、
   `back_to_front_v1`、typed provider 選択、XR logical-center / per-view sort を実装済み
-- 残る機能穴は `hybrid_v1` material pass の screen-input descriptor binding。
-  snapshot graph 機構自体は既存で、RPE6b では typed color/depth domain とともに配線する
+- WP187 / RPE6b1 で `hybrid_v1` material pass の screen-input descriptor binding を接続した。
+  `opaque_color` は scene-linear HDR + `neighborhood`、`opaque_depth` / `scene_depth` は
+  device depth + `same_pixel`、`linear_view_depth` は device depth から view-space linear
+  depth への明示実装付き変換として lower する。opaque color/depth は
+  `forward_opaque` 後に一度 snapshot し、透明 material の set 1 へ宣言順で bind する
+- descriptor は target 再生成と shader reload の既存 rebind 経路に参加する。未知名、target
+  format の型不一致、surface reflection と pass binding 数の不一致は描画前に拒否する
 - preset/eject/provider、typed compiled plan、MSAA/XR variant、transaction の
   正式な境界は [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md)
   を参照
@@ -373,7 +379,13 @@ surface は brdf/lighting と共存する(surface が struct を埋め、ライ�
   namespaced route tag または独自 partition を使える
 - G-buffer schema は strategy-private domain にできる。複数実装で共有する必要が
   確認されるまで canonical logical type へ昇格させない
+- material / pass implementation は planning 前に data-only `ShaderInterfaceContract` を
+  宣言する。target compiler は reflection から semantic type / effect を推測せず、compiled
+  shader reflection は宣言との一致検証に使う。これによりmaterial / shader / graph compilerの
+  相互callbackを避ける
 - 詳細は [`design_render_graph_compiler.md`](design_render_graph_compiler.md) §2〜§6 を正とする
+- artifact順序は
+  [`design_heterogeneous_execution_graph.md`](design_heterogeneous_execution_graph.md) §4.7を正とする
 
 ### 3-10. .surface 自己記述コンテナ(v1.2 — 形式の中核改訂)
 

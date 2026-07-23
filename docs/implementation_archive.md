@@ -5215,4 +5215,115 @@ WP185 完了レポート。
 
 ---
 
+### WP186(済 2026-07-23): RPE6b0 — canonical logical value graph
+
+参照: [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md) §12、
+[`design_render_graph_compiler.md`](design_render_graph_compiler.md) §2.6、§3、§6、§12、
+[`design_heterogeneous_execution_graph.md`](design_heterogeneous_execution_graph.md) §7、§14、
+[`design_reviews/2026-07-23_wp185_report.md`](design_reviews/2026-07-23_wp185_report.md)。
+
+**目的**: Vulkan 実行所有権を変えず、RPE6a の typed shadow graph に canonical logical
+value / producer edge を導入する。接続を nominal type に限定し、将来の minimal sync に必要な
+access intent と、実装へ materialize 可能な conversion descriptor を固定する。
+
+**実装範囲**:
+
+1. resource family + version の `LogicalValueId` と、version 0 の `graph_input` /
+   `previous_epoch` / `external` / `legacy_implicit` import を追加する。
+2. `(resource, version)` の producer を一意にし、exact input value から data edge を導出する。
+   version の大小と node 配列順は dependency にしない。
+3. data edge と明示 `after` / `before` を合わせて cycle 検証する。duplicate producer、
+   missing producer/import、self-consumption を名前入りで拒否する。
+4. port connection に nominal semantic type を必須化する。trait-only pattern は接続契約として
+   拒否する。
+5. use に `automatic` / `sampled` / `attachment` / `storage` / `transfer` / `host` の
+   `LogicalAccessIntent` を追加し、論理 access との構造的な不整合を拒否する。
+6. conversion に版付き operation / provider ID と provider identity / generation descriptor を
+   必須化し、選択した conversion を registry から解決できるようにする。
+7. legacy adapter は通常 read/write、history、swapchain、暗黙初期値を versioned value/importへ
+   写す。logical dump schema を v2 へ上げるが、既存 `FramePlan` / runtime は変更しない。
+
+**受け入れ条件**:
+
+- node 配列順に関係なく producer→consumer edge が決定的に導出される
+- duplicate producer、未解決 input、data + explicit cycle を拒否する
+- 同じ resource family の異なる version に暗黙順序を与えない
+- trait-only connection、access/intent 不整合、conversion implementation 欠落を拒否する
+- shadow graph が previous-epoch / external / legacy import と値の版を再現する
+- shadow compile 前後で既存 `pelican.frame_plan` と runtime 所有権が不変
+- Debug 全 build、全 CTest、Player 短時間起動、`git diff --check` が成功する
+
+**非対象**: hybrid screen-input descriptor / shader 配線、immutable registry snapshot / lease、
+target topology / backend probe、hazard-stress 実装、target cost planner、Vulkan physical plan、
+runtime publication。前者は RPE6b1、planning contract は RPE6c0 以降。
+
+依存: WP185。見積: 小〜中。
+
+排他: `src/project/logicalrender*`、`src/core/renderingpass/logicalframegraphadapter*`、
+logical/frameplanner tests、[RPE]/[RGC]/[HEG] の RPE6b0 状態、WP186 完了レポート。
+
+完了レポート: `docs/design_reviews/2026-07-23_wp186_report.md`
+
+---
+
+### WP187(済 2026-07-23): RPE6b1 — hybrid typed screen input vertical slice
+
+参照: [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md) §8、§12、
+[`design_render_graph_compiler.md`](design_render_graph_compiler.md) §2、§6、§12、
+[`design_material_shading.md`](design_material_shading.md) §3、
+[`design_reviews/2026-07-23_wp186_report.md`](design_reviews/2026-07-23_wp186_report.md)。
+
+**目的**: WP186 の logical color/depth type と conversion descriptor を、既存
+`FramePlan` / Vulkan executor の所有権を変えずに `hybrid_v1` material pass へ縦に接続する。
+opaque scene color/depth の一回 snapshot、material descriptor、surface accessor、target
+再生成時の rebind を一つの実行可能 fixture として閉じる。
+
+**実装範囲**:
+
+1. Vulkan 非依存の `MaterialScreenInputContract` を追加し、`opaque_color`、
+   `opaque_depth`、`scene_depth`、`linear_view_depth` の source/sample logical type、
+   `same_pixel` / `neighborhood` footprint、depth conversion ID を固定する。
+2. builtin conversion registry に depth linearization を `automatic_safe`、tone map と display
+   encode を `explicit_only` として登録する。surface/material lowering は screen-input 名を
+   typed contract へ解決し、未知名を拒否する。
+3. material pass JSON に名前付き `screen_inputs` map を追加する。render-target format から
+   scene-linear HDR / device depth を検証し、同じ宣言を pass input と frame-graph read edge の
+   両方へ写す。positional `input` との混在、未知 target、型不一致を拒否する。
+4. `hybrid_v1` は `forward_opaque` 後に `lit_color -> opaque_color` と
+   `scene_depth -> opaque_depth` を一度 copy し、`forward_transparent` に四つの標準 alias を
+   提供する。depth snapshot は depth aspect で copy し、色/深度とも sampled target にする。
+5. `MaterialContainer` は surface 宣言順に set 1 combined-image-sampler descriptor を二つの
+   frame parity へ割り当てる。color は linear-clamp、depth は nearest-clamp。shader reflection
+   の binding 数・連番・descriptor type と pass contract を描画前に照合する。
+6. target resize と shader reload の既存 rebind 経路へ material screen input を参加させる。
+   stale image view は新 descriptor set へ置換し、test revision で再生成を検証する。
+7. generated surface accessor に `linear_view_depth` の inverse-projection reconstruction を追加し、
+   projection consumer inventory へ登録する。example に depth-fade surface/material を追加する。
+8. typed contract、parser、frame order、tone-map exactly-once、surface compile、snapshot trace、
+   Vulkan descriptor/rebind と実 quad 描画を CPU/GPU fixture で固定する。
+
+**受け入れ条件**:
+
+- screen input を持たない既存 material と OpenPBR route が無変更で登録・描画できる
+- 未定義 alias、source type/format 不一致、reflection binding 不一致を描画前に拒否する
+- frozen snapshot-refraction golden が不変で、実 material quad の opaque-only 領域と
+  depth-fade/refraction 領域が異なる pixel を出す
+- color/depth snapshot が透明 pass より前に一度だけ実行され、resize 後は新 image view を bind する
+- scene-linear -> display-linear tone map と display encode は explicit-only で、標準 graph に各一回
+- Debug 全 build、全 CTest、Player 短時間起動、`git diff --check` が成功する
+
+**非対象**: 任意 screen-input alias / public provider registry、history material input、sequential
+refraction、tile-local/subpass materialization、target cost planner、Vulkan physical plan、MSAA、OIT、
+public game-DLL graph ABI。topology/probe と materialization 選択は RPE6c0 / RPE6c1 で扱う。
+
+依存: WP186。見積: 中。
+
+排他: `src/project/materialscreeninput*`、material lowering、material container / renderer、
+rendering-pass parser / planner、`hybrid_v1`、surface compiler、logical/rendering/headless tests、
+[RPE]/[RGC]/[HEG] の RPE6b1 状態、WP187 完了レポート。
+
+完了レポート: `docs/design_reviews/2026-07-23_wp187_report.md`
+
+---
+
 未完了 WP と運用規則は [active ledger](implementation_plan.md) を参照。

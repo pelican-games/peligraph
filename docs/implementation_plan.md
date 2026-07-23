@@ -15,6 +15,8 @@
   段階実装(以下 [RPE])
 - `docs/design_render_graph_compiler.md` — logical type / target planning /
   Vulkan physical plan の詳細(以下 [RGC])
+- `docs/design_heterogeneous_execution_graph.md` — typed dialect / domain partition /
+  CPU・Vulkan sibling lowering / fragment・closed forest の詳細(以下 [HEG])
 
 改訂履歴: v2 で実装者レビューを反映し WP を再分割・採番し直した。旧番号との対応: 旧WP1→WP1、旧WP2→WP3、旧WP3→WP4+5+6、旧WP4→WP7、旧WP5→WP8、旧WP6→WP9、旧WP7→WP10、旧WP8→WP11、旧WP9→WP12、旧WP10→WP13、旧WP11→WP14、旧WP12→WP15、旧WP13→WP16。WP2(EngineTime)は新設。
 v3(2026-07-02): WP1〜17 完了を受けて WP18(プロジェクト形式)・WP19(シェーダ stem)を追加。設計の正に [PF] / [PFW] を追加。web 側の対応作業(WW1〜3)は my_webpage リポジトリの `docs/implementation_plan_web.md` にある(本書の管轄外)。
@@ -71,12 +73,12 @@ ctest --test-dir ./build -C Debug --output-on-failure
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
-(最新完了: WP185、2026-07-23。本文と完了レポートは archive 参照。)
+(最新完了: WP187、2026-07-23。本文と完了レポートは archive 参照。)
 
 ## 2. WP 詳細
 
-現在アクティブな WP はない。renderer の次候補は RPE6b hybrid screen input vertical
-slice であり、着手前に独立 WP として登録する。
+現在アクティブな WP はない。renderer の次候補は RPE6c0 topology / backend probe /
+planning contracts であり、着手前に独立 WP として登録する。
 
 ## 3. トラック現況(WP 化待ちを含む)
 
@@ -101,7 +103,7 @@ slice であり、着手前に独立 WP として登録する。
   5. 新手法対応の型: エンジンは機構語彙を 1 個足すだけ(例: 将来の
      アップスケーラ向けフェーズ数属性)→ ユーザー feature が組み合わせる
 
-- **レンダーパイプライン拡張境界(RPE、2026-07-23 v2)**: versioned
+- **レンダーパイプライン拡張境界(RPE、2026-07-23 v2.1 / HEG v1)**: versioned
   `hybrid_v1`、semantic material route、deferred + forward の scene-linear 合成は
   実装済み。以後は [RPE] / [RGC] の preset から physical/native までの拡張 ladder と
   Request / Resolved / Compiled / Prepared / Runtime 語彙へ揃える。現在の単一
@@ -109,9 +111,16 @@ slice であり、着手前に独立 WP として登録する。
   一度に直さず、RPE1(WP180)→ RPE2 typed plan(WP181) →
   RPE3 DrawQueueBuilder(WP182) → RPE4 provider registry(WP183) →
   RPE5 bounds / phase queue / transparent sort / XR view policy(WP184) →
-  RPE6a logical type / shadow graph(WP185) まで完了。以後は RPE6b screen input →
-  RPE6c desktop/tile target plan →
-  MSAA → graph variant → pipeline transaction の順で進める
+  RPE6a logical type / shadow graph(WP185) → RPE6b0 versioned logical value /
+  producer edge(WP186) → RPE6b1 typed screen input / opaque snapshot(WP187)まで完了。
+  以後は RPE6c0 topology / backend probe / optimize-by-default / advisory diagnostics →
+  RPE6c1 desktop/tile target plan → MSAA → graph variant → pipeline transaction の順で
+  進める。RPE6c0/1 では [HEG] の immutable canonical / disposable lowering seam、
+  dialect legality、pairwise endpoint relationを置くが、汎用 CPU scheduler、execution linker、
+  動画 backend は計測・具体需要まで実装しない。logical effectは作者を信頼する任意宣言、
+  lower-level warningのstrict化はproject / CI opt-inとする。通常policyは宣言contractを信頼して
+  parallel / fusion / aliasを許すoptimize-by-defaultとし、serial / isolation / conservative
+  debugは明示時だけ有効にする
 
 - **コマンド／エディタ層**: stdio JSON-RPC、`load_gltf` /
   `update_transforms`、typed editor query/edit、actor/CAS、undo/redo、
