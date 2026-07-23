@@ -22,10 +22,22 @@ class FullscreenPassContainer;
 class FrameGraphResourceContainer;
 class FrameGraphRuntimeContainer;
 class PathResolver;
+class PipelineFactory;
 class RenderingPassContainer;
 class RenderTarget;
 class RenderTargetContainer;
 class ShaderLibrary;
+class ShadowDepthPassContainer;
+class VelocityPassContainer;
+
+enum class RenderPipelineGpuRegistrationFaultPoint {
+    none,
+    after_render_targets,
+    after_frame_graph_buffers,
+    after_compute_tasks,
+    after_rendering_passes,
+    after_runtime_prepare,
+};
 
 struct RenderingPassConfigRenderTargetDependencies {
     RenderTargetContainer &render_target_container;
@@ -35,6 +47,9 @@ struct RenderingPassConfigRuntimeDependencies {
     RenderTarget &render_target;
     ShaderLibrary &shader_library;
     FullscreenPassContainer &fullscreen_pass_container;
+    PipelineFactory &pipeline_factory;
+    ShadowDepthPassContainer &shadow_depth_pass_container;
+    VelocityPassContainer &velocity_pass_container;
     const PathResolver &path_resolver;
     std::vector<std::string> shader_defines;
     bool warn_backend_specific_shader_refs = false;
@@ -53,6 +68,10 @@ struct RenderingPassConfigRegistrationDependencies {
         RenderPipelineGraphVariant graph_variant =
             RenderPipelineGraphVariant::flat;
         bool publish_enabled_features = true;
+        std::string gpu_owner_scope;
+        std::function<void()> prepare_additional_gpu_resources;
+        RenderPipelineGpuRegistrationFaultPoint fault_point =
+            RenderPipelineGpuRegistrationFaultPoint::none;
     } options;
 };
 

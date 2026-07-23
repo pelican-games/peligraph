@@ -6,14 +6,23 @@
 #include "../src/core/loader/imageloader.hpp"
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/core/log.hpp"
+#include "../src/core/fullscreenpass/fullscreenpasscontainer.hpp"
 #include "../src/core/material/materialcontainer.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/model/vertbufcontainer.hpp"
 #include "../src/core/renderer/camera.hpp"
+#include "../src/core/renderer/debugdraw.hpp"
+#include "../src/core/renderer/debugtext.hpp"
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
+#include "../src/core/renderer/shadowdepthpasscontainer.hpp"
+#include "../src/core/renderer/velocitypasscontainer.hpp"
+#include "../src/core/renderingpass/computetask.hpp"
 #include "../src/core/renderingpass/renderingpasscontainer.hpp"
 #include "../src/core/renderingpass/framegraphruntime.hpp"
+#include "../src/core/renderingpass/renderingpassconfigregistration.hpp"
+#include "../src/core/renderingpass/renderpipelinegpuarena.hpp"
 #include "../src/core/renderingpass/rendertargetcontainer.hpp"
+#include "../src/core/shader/pipelinefactory.hpp"
 #include "../src/core/shader/shaderlibrary.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/vkcore/renderer.hpp"
@@ -22,6 +31,7 @@
 #include <algorithm>
 #include <array>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -89,6 +99,225 @@ CommonPolygonVertData makeScreenQuad(float half_extent, float z) {
                      {1.0f, 1.0f}, {0.0f, 1.0f}};
     data.color.assign(4, glm::vec4{1.0f});
     return data;
+}
+
+const char *gpuArenaFullscreenVertexShader() {
+    return R"glsl(
+#version 450
+layout(location = 0) out vec2 outUV;
+vec2 positions[6] = vec2[](
+    vec2(-1.0, -1.0),
+    vec2( 1.0, -1.0),
+    vec2( 1.0,  1.0),
+    vec2(-1.0, -1.0),
+    vec2( 1.0,  1.0),
+    vec2(-1.0,  1.0)
+);
+void main() {
+    vec2 pos = positions[gl_VertexIndex];
+    outUV = pos * 0.5 + 0.5;
+    gl_Position = vec4(pos, 0.0, 1.0);
+}
+)glsl";
+}
+
+const char *gpuArenaComputeShader() {
+    return R"glsl(
+#version 450
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 1, binding = 0) buffer ComputeColor {
+    vec4 color;
+} compute_color;
+void main() {
+    compute_color.color = vec4(0.1, 0.2, 0.3, 1.0);
+}
+)glsl";
+}
+
+const char *gpuArenaBufferFragmentShader() {
+    return R"glsl(
+#version 450
+layout(std430, set = 1, binding = 0) readonly buffer ComputeColor {
+    vec4 color;
+} compute_color;
+layout(location = 0) out vec4 outColor;
+void main() {
+    outColor = compute_color.color;
+}
+)glsl";
+}
+
+const char *gpuArenaCopyFragmentShader() {
+    return R"glsl(
+#version 450
+layout(set = 1, binding = 0) uniform sampler2D inputTexture;
+layout(location = 0) in vec2 inUV;
+layout(location = 0) out vec4 outColor;
+void main() {
+    outColor = texture(inputTexture, inUV);
+}
+)glsl";
+}
+
+nlohmann::json gpuArenaRenderingConfig() {
+    return nlohmann::json::parse(R"json(
+{
+  "features": [
+    "engine://features/debug_draw.json",
+    "engine://features/debug_text.json"
+  ],
+  "render_targets": [
+    {
+      "name": "gpu_arena_scratch",
+      "extent_scale": 1.0,
+      "format": "R8G8B8A8_UNORM",
+      "format_class": "data",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "gpu_arena_shadow",
+      "extent_scale": 1.0,
+      "format": "D32_SFLOAT",
+      "format_class": "data",
+      "usage": ["DEPTH_STENCIL_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "gpu_arena_velocity",
+      "extent_scale": 1.0,
+      "format": "R16G16_SFLOAT",
+      "format_class": "data",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "gpu_arena_velocity_depth",
+      "extent_scale": 1.0,
+      "format": "D32_SFLOAT",
+      "format_class": "data",
+      "usage": ["DEPTH_STENCIL_ATTACHMENT"]
+    }
+  ],
+  "buffers": [
+    {
+      "name": "gpu_arena_buffer",
+      "size": 16,
+      "lifetime": "persistent"
+    }
+  ],
+  "rendering_passes": [
+    {
+      "name": "gpu_arena_main",
+      "passes": [
+        {
+          "name": "gpu_arena_shadow_pass",
+          "type": "shadow_depth",
+          "output": {
+            "color": null,
+            "depth": "gpu_arena_shadow"
+          },
+          "depth_store_op": "store",
+          "shader": {
+            "vertex": "engine://shadow_depth"
+          }
+        },
+        {
+          "name": "gpu_arena_velocity_pass",
+          "type": "velocity",
+          "output": {
+            "color": "gpu_arena_velocity",
+            "depth": "gpu_arena_velocity_depth"
+          },
+          "shader": {
+            "vertex": "engine://velocity",
+            "skinned_vertex": "engine://velocity_skinned",
+            "fragment": "engine://velocity"
+          }
+        },
+        {
+          "name": "gpu_arena_present",
+          "type": "fullscreen",
+          "input": ["gpu_arena_buffer"],
+          "output": {
+            "color": "gpu_arena_scratch",
+            "depth": null
+          },
+          "shader": {
+            "vertex": "shaders/gpu_arena_fullscreen",
+            "fragment": "shaders/gpu_arena_buffer"
+          }
+        },
+        {
+          "name": "gpu_arena_output",
+          "type": "fullscreen",
+          "input": ["gpu_arena_scratch"],
+          "output": {
+            "color": "swapchain",
+            "depth": null
+          },
+          "shader": {
+            "vertex": "shaders/gpu_arena_fullscreen",
+            "fragment": "shaders/gpu_arena_copy"
+          }
+        }
+      ]
+    }
+  ],
+  "compute_tasks": [
+    {
+      "name": "gpu_arena_compute",
+      "shader": "shaders/gpu_arena_compute",
+      "writes": ["gpu_arena_buffer"],
+      "before": ["gpu_arena_present"],
+      "dispatch": {"groups": [1, 1, 1]},
+      "schedule": "per_frame"
+    }
+  ]
+}
+)json");
+}
+
+RenderingPassConfigRegistrationDependencies
+gpuArenaRegistrationDependencies(
+    RenderingPassConfigRegistrationDependencies::Options
+        options) {
+    return {
+        {GET_MODULE(RenderTargetContainer)},
+        {
+            GET_MODULE(RenderTarget),
+            GET_MODULE(ShaderLibrary),
+            GET_MODULE(FullscreenPassContainer),
+            GET_MODULE(PipelineFactory),
+            GET_MODULE(ShadowDepthPassContainer),
+            GET_MODULE(VelocityPassContainer),
+            GET_MODULE(PathResolver),
+            {},
+            true,
+            []() -> DebugDraw & {
+                return GET_MODULE(DebugDraw);
+            },
+            []() -> DebugText & {
+                return GET_MODULE(DebugText);
+            },
+        },
+        GET_MODULE(FrameGraphResourceContainer),
+        GET_MODULE(ComputeTaskContainer),
+        GET_MODULE(FrameGraphRuntimeContainer),
+        GET_MODULE(RenderingPassContainer),
+        std::move(options),
+    };
+}
+
+RenderPipelineGpuRegistrationDependencies
+gpuArenaRegistryDependencies() {
+    return {
+        GET_MODULE(RenderTargetContainer),
+        GET_MODULE(FrameGraphResourceContainer),
+        GET_MODULE(ComputeTaskContainer),
+        GET_MODULE(FullscreenPassContainer),
+        GET_MODULE(ShaderLibrary),
+        GET_MODULE(PipelineFactory),
+        GET_MODULE(ShadowDepthPassContainer),
+        GET_MODULE(VelocityPassContainer),
+    };
 }
 
 } // namespace
@@ -444,6 +673,23 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
         REQUIRE(plan.dump().find("__snapshot_opaque_depth") !=
                 std::string::npos);
         REQUIRE(plan.dump().find("scene_present") != std::string::npos);
+        REQUIRE(plan.contains("gpu_resource_arena"));
+        const auto &gpu_arena =
+            plan.at("gpu_resource_arena");
+        REQUIRE(
+            gpu_arena.at("runtime_generation") ==
+            plan.at("runtime_generation"));
+        REQUIRE(
+            gpu_arena.at("resource_count")
+                .get<std::size_t>() > 0);
+        REQUIRE(
+            std::any_of(
+                gpu_arena.at("scopes").begin(),
+                gpu_arena.at("scopes").end(),
+                [](const auto &scope) {
+                    return scope.at("owner_scope") ==
+                           "render_pipeline/flat";
+                }));
 
         std::filesystem::remove_all(temp_dir);
     } catch (const std::exception &ex) {
@@ -451,6 +697,189 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
             std::filesystem::remove_all(temp_dir);
         }
         SKIP(std::string{"Vulkan hybrid rendering unavailable: "} + ex.what());
+    }
+#endif
+}
+
+TEST_CASE(
+    "WP194 GPU registration faults restore every live registry before publication",
+    "[wp194][headless][render-pipeline][gpu-arena][rollback]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    std::filesystem::path temp_dir;
+    try {
+        FastModuleContainer modules;
+        temp_dir = makeTempProjectDir();
+        std::filesystem::create_directories(
+            temp_dir / "shaders");
+        const auto scene_path = temp_dir / "scene.json";
+        const auto asset_path = temp_dir / "assets.json";
+        writeTextFile(
+            scene_path,
+            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+        writeTextFile(asset_path, R"json({"models":[]})json");
+        writeTextFile(
+            temp_dir / "shaders" /
+                "gpu_arena_fullscreen.vert",
+            gpuArenaFullscreenVertexShader());
+        writeTextFile(
+            temp_dir / "shaders" /
+                "gpu_arena_compute.comp",
+            gpuArenaComputeShader());
+        writeTextFile(
+            temp_dir / "shaders" /
+                "gpu_arena_buffer.frag",
+            gpuArenaBufferFragmentShader());
+        writeTextFile(
+            temp_dir / "shaders" /
+                "gpu_arena_copy.frag",
+            gpuArenaCopyFragmentShader());
+
+        auto project =
+            makeProjectConfig("scene.json", "assets.json");
+        project["basic_config"]["default_scene_id"] =
+            "default_scene";
+        GET_MODULE(ProjectSource).setSourceByData(
+            project.dump());
+        GET_MODULE(PathResolver).setup(temp_dir, false);
+        auto &launch = GET_MODULE(EngineLaunchConfig);
+        launch.headless = true;
+        launch.headless_extent = vk::Extent2D{16, 16};
+        (void)GET_MODULE(RenderTarget);
+
+        const auto registries =
+            gpuArenaRegistryDependencies();
+        auto &debug_draw = GET_MODULE(DebugDraw);
+        auto &debug_text = GET_MODULE(DebugText);
+        const auto baseline =
+            inspectRenderPipelineGpuRegistryCounts(
+                registries, &debug_draw, &debug_text);
+        auto &runtime =
+            GET_MODULE(FrameGraphRuntimeContainer);
+        REQUIRE(runtime.snapshot() == nullptr);
+
+        constexpr std::array fault_points{
+            RenderPipelineGpuRegistrationFaultPoint::
+                after_render_targets,
+            RenderPipelineGpuRegistrationFaultPoint::
+                after_frame_graph_buffers,
+            RenderPipelineGpuRegistrationFaultPoint::
+                after_compute_tasks,
+            RenderPipelineGpuRegistrationFaultPoint::
+                after_rendering_passes,
+            RenderPipelineGpuRegistrationFaultPoint::
+                after_runtime_prepare,
+        };
+        const auto config = gpuArenaRenderingConfig().dump();
+        for (const auto fault_point : fault_points) {
+            RenderingPassConfigRegistrationDependencies::
+                Options options;
+            options.fault_point = fault_point;
+            REQUIRE_THROWS_WITH(
+                registerRenderingPassConfigFromJsonData(
+                    config, {16, 16},
+                    gpuArenaRegistrationDependencies(
+                        std::move(options))),
+                "Injected render pipeline GPU registration failure");
+            REQUIRE(
+                inspectRenderPipelineGpuRegistryCounts(
+                    registries, &debug_draw,
+                    &debug_text) == baseline);
+            REQUIRE(runtime.snapshot() == nullptr);
+            REQUIRE_FALSE(
+                isConcreteRenderTarget(
+                    GET_MODULE(RenderTargetContainer)
+                        .getRenderTargetIdByName(
+                            "gpu_arena_scratch")));
+            REQUIRE_FALSE(
+                GET_MODULE(FrameGraphResourceContainer)
+                    .hasBuffer("gpu_arena_buffer"));
+            REQUIRE(
+                GET_MODULE(ComputeTaskContainer)
+                    .getComputeTaskIdByName(
+                        "gpu_arena_compute")
+                    .value < 0);
+        }
+
+        const auto registered =
+            registerRenderingPassConfigFromJsonData(
+                config, {16, 16},
+                gpuArenaRegistrationDependencies({}));
+        REQUIRE(registered.runtime_generation == 1);
+        const auto generation = runtime.snapshot();
+        REQUIRE(generation != nullptr);
+        REQUIRE(generation->generation == 1);
+        REQUIRE(generation->gpu_arena != nullptr);
+        REQUIRE(
+            generation->gpu_arena->runtime_generation ==
+            generation->generation);
+        const auto *scope =
+            generation->gpu_arena->findScope(
+                "render_pipeline/flat");
+        REQUIRE(scope != nullptr);
+        const auto has_kind =
+            [scope](RenderPipelineGpuResourceKind kind) {
+                return std::any_of(
+                    scope->resources.begin(),
+                    scope->resources.end(),
+                    [kind](const auto &resource) {
+                        return resource.kind == kind;
+                    });
+            };
+        REQUIRE(has_kind(
+            RenderPipelineGpuResourceKind::render_target));
+        REQUIRE(has_kind(
+            RenderPipelineGpuResourceKind::
+                frame_graph_buffer));
+        REQUIRE(has_kind(
+            RenderPipelineGpuResourceKind::compute_task));
+        REQUIRE(has_kind(
+            RenderPipelineGpuResourceKind::fullscreen_pass));
+        REQUIRE(has_kind(
+            RenderPipelineGpuResourceKind::shader_bundle));
+        REQUIRE(has_kind(
+            RenderPipelineGpuResourceKind::pipeline));
+        REQUIRE(has_kind(
+            RenderPipelineGpuResourceKind::debug_draw_pass));
+        REQUIRE(has_kind(
+            RenderPipelineGpuResourceKind::debug_text_pass));
+        REQUIRE(has_kind(
+            RenderPipelineGpuResourceKind::shadow_depth_pass));
+        REQUIRE(has_kind(
+            RenderPipelineGpuResourceKind::velocity_pass));
+        const auto committed =
+            inspectRenderPipelineGpuRegistryCounts(
+                registries, &debug_draw, &debug_text);
+        REQUIRE(committed.render_targets >
+                baseline.render_targets);
+        REQUIRE(committed.frame_graph_buffers >
+                baseline.frame_graph_buffers);
+        REQUIRE(committed.compute_tasks >
+                baseline.compute_tasks);
+        REQUIRE(committed.fullscreen_passes >
+                baseline.fullscreen_passes);
+        REQUIRE(committed.shader_bundles >
+                baseline.shader_bundles);
+        REQUIRE(committed.pipelines >
+                baseline.pipelines);
+        REQUIRE(committed.debug_draw_passes >
+                baseline.debug_draw_passes);
+        REQUIRE(committed.debug_text_passes >
+                baseline.debug_text_passes);
+        REQUIRE(committed.shadow_depth_passes >
+                baseline.shadow_depth_passes);
+        REQUIRE(committed.velocity_passes >
+                baseline.velocity_passes);
+
+        GET_MODULE(VulkanManageCore).waitIdle();
+        std::filesystem::remove_all(temp_dir);
+    } catch (const std::exception &ex) {
+        if (!temp_dir.empty()) {
+            std::filesystem::remove_all(temp_dir);
+        }
+        SKIP(std::string{
+                 "Vulkan GPU arena transaction unavailable: "} +
+             ex.what());
     }
 #endif
 }

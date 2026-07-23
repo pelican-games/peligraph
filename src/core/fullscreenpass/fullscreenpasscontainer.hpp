@@ -25,6 +25,7 @@ DECLARE_MODULE(FullscreenPassContainer) {
     vk::UniqueDescriptorPool desc_pool;
 
     std::unordered_map<PipelineId, PipelineHandle, PipelineId::Hash> pipelines;
+    std::vector<PipelineId> registration_order;
 
     struct InputTextureInfo {
         std::array<vk::UniqueDescriptorSet, 2> descsets;
@@ -38,6 +39,11 @@ DECLARE_MODULE(FullscreenPassContainer) {
     uint64_t next_binding_revision = 1;
 
   public:
+    struct RegistrationCheckpoint {
+        std::size_t registration_count = 0;
+        std::uint64_t next_binding_revision = 1;
+    };
+
     FullscreenPassContainer();
     ~FullscreenPassContainer();
 
@@ -56,6 +62,14 @@ DECLARE_MODULE(FullscreenPassContainer) {
     std::vector<vk::ImageView> boundInputImageViewsForTesting(PassId pass_id) const;
     uint64_t inputBindingRevisionForTesting(PassId pass_id) const;
     vk::PipelineLayout getPipelineLayout(PassId pass_id) const;
+
+    RegistrationCheckpoint checkpointRegistrations() const noexcept;
+    void rollbackRegistrations(RegistrationCheckpoint checkpoint);
+    std::vector<PipelineId>
+    registrationsSince(RegistrationCheckpoint checkpoint) const;
+    std::size_t registrationCount() const noexcept {
+        return registration_order.size();
+    }
 };
 
 } // namespace Pelican

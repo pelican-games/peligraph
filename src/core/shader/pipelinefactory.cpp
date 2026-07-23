@@ -436,12 +436,14 @@ void PipelineFactory::savePipelineCache() noexcept {
 }
 
 PipelineHandle PipelineFactory::create(const GraphicsPipelineDesc &desc) {
+    pipeline_handles.reserve(pipeline_handles.size() + 1);
     auto handle = pipelines.reg(buildGraphicsPipeline(desc));
     pipeline_handles.push_back(handle);
     return handle;
 }
 
 PipelineHandle PipelineFactory::createCompute(const ComputePipelineDesc &desc) {
+    pipeline_handles.reserve(pipeline_handles.size() + 1);
     auto handle = pipelines.reg(buildComputePipeline(desc));
     pipeline_handles.push_back(handle);
     return handle;
@@ -621,6 +623,60 @@ PipelineRebuildResult PipelineFactory::rebuildDirty() {
     }
     result.committed = result.failed_pipelines == 0;
     return result;
+}
+
+PipelineFactory::RegistrationCheckpoint
+PipelineFactory::checkpointRegistrations() const {
+    RegistrationCheckpoint checkpoint;
+    checkpoint.pipeline_count = pipeline_handles.size();
+    checkpoint.descriptor_set_layout_keys.reserve(
+        descriptor_set_layout_cache.size());
+    for (const auto &[key, layout] :
+         descriptor_set_layout_cache) {
+        (void)layout;
+        checkpoint.descriptor_set_layout_keys.push_back(key);
+    }
+    return checkpoint;
+}
+
+void PipelineFactory::rollbackRegistrations(
+    const RegistrationCheckpoint &checkpoint) {
+    if (checkpoint.pipeline_count > pipeline_handles.size()) {
+        throw std::runtime_error(
+            "Pipeline registration checkpoint is invalid");
+    }
+    while (pipeline_handles.size() >
+           checkpoint.pipeline_count) {
+        const auto handle = pipeline_handles.back();
+        (void)pipelines.extract(handle, false);
+        pipeline_handles.pop_back();
+    }
+    for (auto found = descriptor_set_layout_cache.begin();
+         found != descriptor_set_layout_cache.end();) {
+        if (std::find(
+                checkpoint.descriptor_set_layout_keys.begin(),
+                checkpoint.descriptor_set_layout_keys.end(),
+                found->first) ==
+            checkpoint.descriptor_set_layout_keys.end()) {
+            found = descriptor_set_layout_cache.erase(found);
+        } else {
+            ++found;
+        }
+    }
+}
+
+std::vector<PipelineHandle>
+PipelineFactory::registrationsSince(
+    const RegistrationCheckpoint &checkpoint) const {
+    if (checkpoint.pipeline_count > pipeline_handles.size()) {
+        throw std::runtime_error(
+            "Pipeline registration checkpoint is invalid");
+    }
+    return {
+        pipeline_handles.begin() +
+            static_cast<std::ptrdiff_t>(
+                checkpoint.pipeline_count),
+        pipeline_handles.end()};
 }
 
 } // namespace Pelican

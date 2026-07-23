@@ -280,3 +280,98 @@ TEST_CASE(
     REQUIRE(passes.getRenderingPassIdByName("main#xr") ==
             RenderingPassId{1});
 }
+
+TEST_CASE(
+    "WP194 GPU arena candidate and leases stay unpublished until root publication",
+    "[wp194][render-pipeline][gpu-arena][transaction]") {
+    FrameGraphRuntimeContainer runtime;
+    auto lease = std::make_shared<int>(194);
+    std::weak_ptr<const void> lifetime = lease;
+    RenderPipelineGpuScopePreparation gpu_scope;
+    gpu_scope.owner_scope = "render_pipeline/flat";
+    gpu_scope.resources.push_back(
+        RenderPipelineGpuResourceRegistration{
+            RenderPipelineGpuResourceKind::pipeline,
+            7,
+            "pipeline/7",
+            0,
+        });
+    gpu_scope.resource_leases.push_back(lease);
+    lease.reset();
+
+    auto prepared = runtime.prepareGeneration(
+        {programFor(1)}, std::nullopt,
+        std::move(gpu_scope));
+    REQUIRE(runtime.snapshot() == nullptr);
+    REQUIRE_FALSE(lifetime.expired());
+
+    runtime.publishPreparedGeneration(std::move(prepared));
+    const auto published = runtime.snapshot();
+    REQUIRE(published != nullptr);
+    REQUIRE(published->gpu_arena != nullptr);
+    REQUIRE(published->gpu_arena->runtime_generation == 1);
+    REQUIRE(published->gpu_arena->resourceCount() == 1);
+    REQUIRE(
+        published->gpu_arena
+            ->findScope("render_pipeline/flat")
+            ->resources.front()
+            .name == "pipeline/7");
+    REQUIRE_FALSE(lifetime.expired());
+}
+
+TEST_CASE(
+    "WP194 rollback releases unpublished GPU arena leases and duplicate owner scope is rejected",
+    "[wp194][render-pipeline][gpu-arena][rollback]") {
+    FrameGraphRuntimeContainer runtime;
+    auto initial = runtime.prepareGeneration(
+        {programFor(1)}, std::nullopt,
+        RenderPipelineGpuScopePreparation{
+            .owner_scope = "render_pipeline/flat",
+            .resources = {
+                RenderPipelineGpuResourceRegistration{
+                    RenderPipelineGpuResourceKind::render_target,
+                    0,
+                    "display",
+                    0,
+                }},
+        });
+    runtime.publishPreparedGeneration(std::move(initial));
+    const auto before = runtime.snapshot();
+
+    auto lease = std::make_shared<int>(195);
+    std::weak_ptr<const void> lifetime = lease;
+    RenderPipelineGpuScopePreparation next_scope{
+        .owner_scope = "render_pipeline/xr",
+        .resources = {
+            RenderPipelineGpuResourceRegistration{
+                RenderPipelineGpuResourceKind::pipeline,
+                8,
+                "pipeline/8",
+                0,
+            }},
+        .resource_leases = {lease},
+    };
+    lease.reset();
+    auto rolled_back = runtime.prepareGeneration(
+        {programFor(2, "main#xr")}, std::nullopt,
+        std::move(next_scope));
+    runtime.rollbackPreparedGeneration(rolled_back);
+    REQUIRE(lifetime.expired());
+    REQUIRE(runtime.snapshot() == before);
+
+    REQUIRE_THROWS_WITH(
+        runtime.prepareGeneration(
+            {programFor(3)}, std::nullopt,
+            RenderPipelineGpuScopePreparation{
+                .owner_scope = "render_pipeline/flat",
+                .resources = {
+                    RenderPipelineGpuResourceRegistration{
+                        RenderPipelineGpuResourceKind::pipeline,
+                        9,
+                        "pipeline/9",
+                        0,
+                    }},
+            }),
+        "Render pipeline GPU owner scope is already published: render_pipeline/flat");
+    REQUIRE(runtime.snapshot() == before);
+}

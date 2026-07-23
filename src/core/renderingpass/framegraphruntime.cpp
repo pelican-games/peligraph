@@ -187,7 +187,9 @@ PreparedRenderPipelineGeneration
 FrameGraphRuntimeContainer::prepareGeneration(
     std::vector<RenderPipelineProgramPreparation> programs,
     std::optional<std::vector<std::string>>
-        enabled_feature_names) const {
+        enabled_feature_names,
+    std::optional<RenderPipelineGpuScopePreparation>
+        gpu_scope) const {
     const auto current = snapshot();
     const auto base_generation = generationOf(current);
     if (base_generation ==
@@ -202,6 +204,9 @@ FrameGraphRuntimeContainer::prepareGeneration(
                   *current)
             : std::make_shared<RenderPipelineRuntimeGeneration>();
     candidate->generation = base_generation + 1;
+    candidate->gpu_arena = compileRenderPipelineGpuArena(
+        current != nullptr ? current->gpu_arena : nullptr,
+        candidate->generation, std::move(gpu_scope));
     if (enabled_feature_names) {
         candidate->enabled_feature_names =
             std::move(*enabled_feature_names);

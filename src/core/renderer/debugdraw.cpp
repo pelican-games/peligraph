@@ -106,6 +106,7 @@ PassId DebugDraw::registerPass(vk::Format color_format, ShaderBundleId vert_shad
                                std::vector<std::string> shader_defines,
                                vk::SampleCountFlagBits samples) {
     ensureDevice();
+    registration_order.reserve(registration_order.size() + 1);
     enabled = true;
 
     GraphicsPipelineDesc desc;
@@ -122,7 +123,17 @@ PassId DebugDraw::registerPass(vk::Format color_format, ShaderBundleId vert_shad
     desc.rasterization_samples = samples;
 
     const auto pass_id = PassId{static_cast<int>(pipelines.size())};
-    pipelines.emplace(pass_id, PipelineRecord{GET_MODULE(PipelineFactory).create(desc), {}});
+    if (!pipelines
+             .emplace(
+                 pass_id,
+                 PipelineRecord{
+                     GET_MODULE(PipelineFactory).create(desc),
+                     {}})
+             .second) {
+        throw std::runtime_error(
+            "DebugDraw pipeline table changed during registration");
+    }
+    registration_order.push_back(pass_id);
     return pass_id;
 }
 
@@ -167,6 +178,41 @@ void DebugDraw::render(vk::CommandBuffer cmd_buf, PassId pass_id, const FrameRes
                                PELICAN_SET_FREE, found->second.descriptor_set.get(), {});
     cmd_buf.draw(static_cast<uint32_t>(vertices.size()), 1, 0, 0);
     vertices.clear();
+}
+
+DebugDraw::RegistrationCheckpoint
+DebugDraw::checkpointRegistrations() const noexcept {
+    return RegistrationCheckpoint{
+        registration_order.size(), enabled};
+}
+
+void DebugDraw::rollbackRegistrations(
+    RegistrationCheckpoint checkpoint) {
+    if (checkpoint.registration_count >
+        registration_order.size()) {
+        throw std::runtime_error(
+            "DebugDraw registration checkpoint is invalid");
+    }
+    while (registration_order.size() >
+           checkpoint.registration_count) {
+        pipelines.erase(registration_order.back());
+        registration_order.pop_back();
+    }
+    enabled = checkpoint.enabled;
+}
+
+std::vector<PassId> DebugDraw::registrationsSince(
+    RegistrationCheckpoint checkpoint) const {
+    if (checkpoint.registration_count >
+        registration_order.size()) {
+        throw std::runtime_error(
+            "DebugDraw registration checkpoint is invalid");
+    }
+    return {
+        registration_order.begin() +
+            static_cast<std::ptrdiff_t>(
+                checkpoint.registration_count),
+        registration_order.end()};
 }
 
 } // namespace Pelican

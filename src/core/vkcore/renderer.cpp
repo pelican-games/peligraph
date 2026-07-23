@@ -1275,6 +1275,35 @@ nlohmann::json Renderer::currentFramePlanJson() const {
     auto result = framePlanToJson(frame_graph->plan,
                                   frame_graph->render_pipeline.get());
     result["runtime_generation"] = generation->generation;
+    if (generation->gpu_arena != nullptr) {
+        nlohmann::json scopes = nlohmann::json::array();
+        for (const auto &scope :
+             generation->gpu_arena->scopes) {
+            nlohmann::json resources =
+                nlohmann::json::array();
+            for (const auto &resource : scope.resources) {
+                resources.push_back(
+                    {{"kind",
+                      renderPipelineGpuResourceKindName(
+                          resource.kind)},
+                     {"handle", resource.handle},
+                     {"name", resource.name},
+                     {"declared_bytes",
+                      resource.declared_bytes}});
+            }
+            scopes.push_back(
+                {{"owner_scope", scope.owner_scope},
+                 {"resources", std::move(resources)}});
+        }
+        result["gpu_resource_arena"] = {
+            {"runtime_generation",
+             generation->gpu_arena
+                 ->runtime_generation},
+            {"resource_count",
+             generation->gpu_arena->resourceCount()},
+            {"scopes", std::move(scopes)},
+        };
+    }
     if (frame_graph->target_plan != nullptr) {
         result["physical_target_plan"] =
             vulkanTargetPlanToJson(*frame_graph->target_plan);

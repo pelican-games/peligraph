@@ -100,6 +100,12 @@ DECLARE_MODULE(PipelineFactory) {
     void savePipelineCache() noexcept;
 
   public:
+    struct RegistrationCheckpoint {
+        std::size_t pipeline_count = 0;
+        std::vector<DescriptorSetLayoutKey>
+            descriptor_set_layout_keys;
+    };
+
     PipelineFactory();
     ~PipelineFactory();
 
@@ -119,6 +125,16 @@ DECLARE_MODULE(PipelineFactory) {
         PreparedShaderReload prepared,
         const std::function<void()> &before_publish = {});
     PipelineRebuildResult rebuildDirty();
+
+    RegistrationCheckpoint checkpointRegistrations() const;
+    void rollbackRegistrations(
+        const RegistrationCheckpoint &checkpoint);
+    std::vector<PipelineHandle>
+    registrationsSince(
+        const RegistrationCheckpoint &checkpoint) const;
+    std::size_t registrationCount() const noexcept {
+        return pipeline_handles.size();
+    }
 };
 
 } // namespace Pelican

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "frameplanner.hpp"
+#include "renderpipelinegpuarena.hpp"
 #include "renderingpass.hpp"
 #include "../../project/targetrenderplanning.hpp"
 #include "../container.hpp"
@@ -62,6 +63,7 @@ struct RenderPipelineRuntimeGeneration {
     std::unordered_map<RenderingPassId, CompiledRenderProgram,
                        RenderingPassId::Hash>
         programs;
+    std::shared_ptr<const RenderPipelineGpuArena> gpu_arena;
 
     const CompiledRenderProgram *find(
         RenderingPassId rendering_pass_id) const noexcept;
@@ -129,7 +131,9 @@ DECLARE_MODULE(FrameGraphRuntimeContainer) {
     PreparedRenderPipelineGeneration prepareGeneration(
         std::vector<RenderPipelineProgramPreparation> programs,
         std::optional<std::vector<std::string>> enabled_feature_names =
-            std::nullopt) const;
+            std::nullopt,
+        std::optional<RenderPipelineGpuScopePreparation>
+            gpu_scope = std::nullopt) const;
     void publishPreparedGeneration(
         PreparedRenderPipelineGeneration &&prepared);
     void rollbackPreparedGeneration(

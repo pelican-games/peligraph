@@ -245,6 +245,7 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
             "multisampled depth render target requires depth resolve support: " +
             name);
     }
+    registration_order.reserve(registration_order.size() + 1);
     std::array<ImageWrapper, 2> images;
     std::array<vk::UniqueImageView, 2> image_views;
     std::array<ImageWrapper, 2> attachment_images;
@@ -290,7 +291,17 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
         .attachment_image_views = std::move(attachment_image_views),
     });
 
-    name_to_id.emplace(name, id);
+    try {
+        if (!name_to_id.emplace(name, id).second) {
+            throw std::runtime_error(
+                "Render target name table changed during registration: " +
+                name);
+        }
+    } catch (...) {
+        (void)render_targets.extract(id, false);
+        throw;
+    }
+    registration_order.push_back(id);
     return id;
 }
 
@@ -449,6 +460,48 @@ vk::ImageLayout RenderTargetContainer::initialLayout(
     }
     return rt.history ? vk::ImageLayout::eShaderReadOnlyOptimal
                       : vk::ImageLayout::eUndefined;
+}
+
+RenderTargetContainer::RegistrationCheckpoint
+RenderTargetContainer::checkpointRegistrations() const noexcept {
+    return RegistrationCheckpoint{registration_order.size()};
+}
+
+void RenderTargetContainer::rollbackRegistrations(
+    RegistrationCheckpoint checkpoint) {
+    if (checkpoint.registration_count >
+        registration_order.size()) {
+        throw std::runtime_error(
+            "Render target registration checkpoint is invalid");
+    }
+    while (registration_order.size() >
+           checkpoint.registration_count) {
+        const auto id = registration_order.back();
+        const auto &name = render_targets.get(id).name;
+        name_to_id.erase(name);
+        (void)render_targets.extract(id, false);
+        registration_order.pop_back();
+    }
+}
+
+std::vector<std::pair<std::string, GlobalRenderTargetId>>
+RenderTargetContainer::registrationsSince(
+    RegistrationCheckpoint checkpoint) const {
+    if (checkpoint.registration_count >
+        registration_order.size()) {
+        throw std::runtime_error(
+            "Render target registration checkpoint is invalid");
+    }
+    std::vector<std::pair<std::string, GlobalRenderTargetId>>
+        result;
+    result.reserve(registration_order.size() -
+                   checkpoint.registration_count);
+    for (std::size_t index = checkpoint.registration_count;
+         index < registration_order.size(); ++index) {
+        const auto id = registration_order[index];
+        result.emplace_back(render_targets.get(id).name, id);
+    }
+    return result;
 }
 
 } // namespace Pelican

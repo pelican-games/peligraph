@@ -317,6 +317,7 @@ void ShaderLibrary::markDirty(ShaderBundleId id) {
 
 ShaderBundleId ShaderLibrary::loadFromFile(const std::filesystem::path &path, std::vector<std::string> defines) {
     auto bundle = buildFromFile(path, 1, defines);
+    bundle_ids.reserve(bundle_ids.size() + 1);
     const auto id = bundles.reg(std::move(bundle));
     bundle_ids.push_back(id);
     registerFileReloadUnit(id, bundles.get(id), std::move(defines));
@@ -349,6 +350,7 @@ ShaderBundleId ShaderLibrary::loadResolvedReference(const ResolvedRef &resolved,
     } else {
         bundle = buildFromEngineSource(resource, reference.stage, display_name, 1, defines);
     }
+    bundle_ids.reserve(bundle_ids.size() + 1);
     const auto id = bundles.reg(std::move(bundle));
     bundle_ids.push_back(id);
     return id;
@@ -425,6 +427,7 @@ ShaderBundleId ShaderLibrary::loadFromBytes(size_t len, const char *data, std::s
 }
 
 ShaderBundleId ShaderLibrary::loadFromSpirv(std::span<const uint32_t> spirv, std::string_view name) {
+    bundle_ids.reserve(bundle_ids.size() + 1);
     const auto id = bundles.reg(buildFromSpirv(spirv, {}, 1, std::string{name}));
     bundle_ids.push_back(id);
     return id;
@@ -469,9 +472,10 @@ SurfaceShaderBundleIds ShaderLibrary::loadFromSurface(const SurfaceFormatDocumen
     fragment_bundle.cache_hit = result.fragment.cache_hit;
     fragment_bundle.dependency_paths = result.fragment.dependencies;
     appendPathUnique(fragment_bundle.dependency_paths, source_path);
+    bundle_ids.reserve(bundle_ids.size() + 2);
     const auto vertex = bundles.reg(std::move(vertex_bundle));
-    const auto fragment = bundles.reg(std::move(fragment_bundle));
     bundle_ids.push_back(vertex);
+    const auto fragment = bundles.reg(std::move(fragment_bundle));
     bundle_ids.push_back(fragment);
     const SurfaceShaderBundleIds ids{vertex, fragment};
     if (reloadable) {
@@ -715,6 +719,50 @@ std::vector<ShaderBundleId> ShaderLibrary::takeDirtyBundles() {
     auto dirty = std::move(dirty_bundles);
     dirty_bundles.clear();
     return dirty;
+}
+
+ShaderLibrary::RegistrationCheckpoint
+ShaderLibrary::checkpointRegistrations() const {
+    return RegistrationCheckpoint{
+        .bundle_count = bundle_ids.size(),
+        .reload_unit_count = reload_units.size(),
+        .unit_by_bundle = unit_by_bundle,
+        .units_by_dependency = units_by_dependency,
+        .dirty_bundles = dirty_bundles,
+    };
+}
+
+void ShaderLibrary::rollbackRegistrations(
+    RegistrationCheckpoint &checkpoint) {
+    if (checkpoint.bundle_count > bundle_ids.size() ||
+        checkpoint.reload_unit_count > reload_units.size()) {
+        throw std::runtime_error(
+            "Shader registration checkpoint is invalid");
+    }
+    while (bundle_ids.size() > checkpoint.bundle_count) {
+        const auto id = bundle_ids.back();
+        (void)bundles.extract(id, false);
+        bundle_ids.pop_back();
+    }
+    reload_units.resize(checkpoint.reload_unit_count);
+    unit_by_bundle.swap(checkpoint.unit_by_bundle);
+    units_by_dependency.swap(
+        checkpoint.units_by_dependency);
+    dirty_bundles.swap(checkpoint.dirty_bundles);
+}
+
+std::vector<ShaderBundleId>
+ShaderLibrary::registrationsSince(
+    const RegistrationCheckpoint &checkpoint) const {
+    if (checkpoint.bundle_count > bundle_ids.size()) {
+        throw std::runtime_error(
+            "Shader registration checkpoint is invalid");
+    }
+    return {
+        bundle_ids.begin() +
+            static_cast<std::ptrdiff_t>(
+                checkpoint.bundle_count),
+        bundle_ids.end()};
 }
 
 } // namespace Pelican

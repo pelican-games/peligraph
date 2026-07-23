@@ -8,6 +8,8 @@
 #include <optional>
 #include <array>
 #include <string>
+#include <utility>
+#include <vector>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
@@ -36,8 +38,13 @@ DECLARE_MODULE(RenderTargetContainer) {
     ResourceContainer<GlobalRenderTargetId, InternalRenderTarget> render_targets;
 
     std::unordered_map<std::string, GlobalRenderTargetId> name_to_id;
+    std::vector<GlobalRenderTargetId> registration_order;
 
   public:
+    struct RegistrationCheckpoint {
+        std::size_t registration_count = 0;
+    };
+
     RenderTargetContainer();
     ~RenderTargetContainer();
 
@@ -72,6 +79,16 @@ DECLARE_MODULE(RenderTargetContainer) {
     vk::ResolveModeFlagBits resolveMode(GlobalRenderTargetId id) const;
     vk::ImageLayout initialLayout(GlobalRenderTargetId id,
                                   bool attachment = false) const;
+
+    // Internal append-only transaction surface used by render-config
+    // candidate registration.
+    RegistrationCheckpoint checkpointRegistrations() const noexcept;
+    void rollbackRegistrations(RegistrationCheckpoint checkpoint);
+    std::vector<std::pair<std::string, GlobalRenderTargetId>>
+    registrationsSince(RegistrationCheckpoint checkpoint) const;
+    std::size_t registrationCount() const noexcept {
+        return registration_order.size();
+    }
 
   private:
     uint32_t history_frame_index = 0;

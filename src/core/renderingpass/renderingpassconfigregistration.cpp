@@ -3,6 +3,7 @@
 #include "../../project/renderpipeline.hpp"
 #include "framegraphruntime.hpp"
 #include "frameplanner.hpp"
+#include "renderpipelinegpuarena.hpp"
 #include "renderingpassconfigjsonparser.hpp"
 #include "renderingpassconfigloader.hpp"
 #include "renderingpasscontainer.hpp"
@@ -16,6 +17,7 @@
 #include "../loader/pathresolver.hpp"
 #include "../renderer/shadowdepthpasscontainer.hpp"
 #include "../renderer/velocitypasscontainer.hpp"
+#include "../shader/pipelinefactory.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/rendertarget.hpp"
 #if PELICAN_WITH_IMGUI
@@ -24,6 +26,7 @@
 #endif
 #include <algorithm>
 #include <memory>
+#include <mutex>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
@@ -36,22 +39,65 @@ RenderingPassRuntimeDependencies toRuntimeDependencies(
     RenderingPassConfigRuntimeDependencies &dependencies,
     const RenderTargetMetadataResolver &rt_metadata,
     const RenderTargetImageViewResolver &rt_views,
-    FrameGraphResourceContainer &frame_graph_resources) {
+    FrameGraphResourceContainer &frame_graph_resources,
+    RenderPipelineGpuRegistrationArena &gpu_arena) {
+    auto debug_draw_provider =
+        dependencies.debug_draw_provider;
+    if (debug_draw_provider) {
+        debug_draw_provider =
+            [provider = std::move(debug_draw_provider),
+             &gpu_arena]() -> DebugDraw & {
+            auto &debug_draw = provider();
+            gpu_arena.enlist(debug_draw);
+            return debug_draw;
+        };
+    }
+    auto debug_text_provider =
+        dependencies.debug_text_provider;
+    if (debug_text_provider) {
+        debug_text_provider =
+            [provider = std::move(debug_text_provider),
+             &gpu_arena]() -> DebugText & {
+            auto &debug_text = provider();
+            gpu_arena.enlist(debug_text);
+            return debug_text;
+        };
+    }
     return RenderingPassRuntimeDependencies{
         &dependencies.render_target,
         &rt_metadata,
         &rt_views,
         &dependencies.shader_library,
         &dependencies.fullscreen_pass_container,
-        &GET_MODULE(ShadowDepthPassContainer),
-        &GET_MODULE(VelocityPassContainer),
+        &dependencies.shadow_depth_pass_container,
+        &dependencies.velocity_pass_container,
         &frame_graph_resources,
         &dependencies.path_resolver,
         dependencies.shader_defines,
         dependencies.warn_backend_specific_shader_refs,
-        dependencies.debug_draw_provider,
-        dependencies.debug_text_provider,
+        std::move(debug_draw_provider),
+        std::move(debug_text_provider),
     };
+}
+
+void injectGpuRegistrationFault(
+    const RenderingPassConfigRegistrationDependencies::Options
+        &options,
+    RenderPipelineGpuRegistrationFaultPoint point) {
+    if (options.fault_point != point) return;
+    throw std::runtime_error(
+        "Injected render pipeline GPU registration failure");
+}
+
+std::string gpuOwnerScope(
+    const RenderingPassConfigRegistrationDependencies::Options
+        &options) {
+    if (!options.gpu_owner_scope.empty()) {
+        return options.gpu_owner_scope;
+    }
+    return "render_pipeline/" +
+           std::string{renderPipelineGraphVariantName(
+               options.graph_variant)};
 }
 
 std::unordered_map<std::string, FramePlan> framePlansByName(
@@ -198,10 +244,40 @@ RenderingPassConfigRegistrationResult registerRenderingPassConfigData(
         targetPlansByName(target_plan_compilation);
     auto frame_plans = framePlansByName(graph_definition_list);
 
+    // Legacy registries are mutable containers rather than isolated
+    // candidates. Serialize the checkpoint-to-publication interval so a
+    // stale transaction cannot roll back another transaction's records.
+    static std::mutex gpu_registration_mutex;
+    const std::scoped_lock gpu_registration_lock{
+        gpu_registration_mutex};
+    RenderPipelineGpuRegistrationArena gpu_arena{
+        RenderPipelineGpuRegistrationDependencies{
+            dependencies.render_targets.render_target_container,
+            dependencies.frame_graph_resources,
+            dependencies.compute_task_container,
+            dependencies.runtime.fullscreen_pass_container,
+            dependencies.runtime.shader_library,
+            dependencies.runtime.pipeline_factory,
+            dependencies.runtime.shadow_depth_pass_container,
+            dependencies.runtime.velocity_pass_container,
+        }};
+    if (dependencies.options
+            .prepare_additional_gpu_resources) {
+        dependencies.options
+            .prepare_additional_gpu_resources();
+    }
     registerRenderTargetDefinitions(
         render_target_definitions, base_extent,
         dependencies.render_targets.render_target_container);
+    injectGpuRegistrationFault(
+        dependencies.options,
+        RenderPipelineGpuRegistrationFaultPoint::
+            after_render_targets);
     dependencies.frame_graph_resources.registerBuffers(buffer_definitions);
+    injectGpuRegistrationFault(
+        dependencies.options,
+        RenderPipelineGpuRegistrationFaultPoint::
+            after_frame_graph_buffers);
 
     const RenderTargetNameResolver rt_resolver{dependencies.render_targets.render_target_container};
     const RenderTargetMetadataResolver rt_metadata{dependencies.render_targets.render_target_container};
@@ -211,10 +287,19 @@ RenderingPassConfigRegistrationResult registerRenderingPassConfigData(
                                                     buffer_names);
     auto compiled_compute_tasks =
         compileComputeTasks(compute_task_definitions, dependencies);
+    injectGpuRegistrationFault(
+        dependencies.options,
+        RenderPipelineGpuRegistrationFaultPoint::
+            after_compute_tasks);
     auto compiled_passes =
         compileRenderingPassesRuntime(pass_definitions,
                                       toRuntimeDependencies(dependencies.runtime, rt_metadata, rt_views,
-                                                            dependencies.frame_graph_resources));
+                                                            dependencies.frame_graph_resources,
+                                                            gpu_arena));
+    injectGpuRegistrationFault(
+        dependencies.options,
+        RenderPipelineGpuRegistrationFaultPoint::
+            after_rendering_passes);
     RenderingPassConfigRegistrationResult result;
     result.feature_names = compiled_pipeline->feature_names;
     result.excluded_feature_names =
@@ -257,7 +342,13 @@ RenderingPassConfigRegistrationResult registerRenderingPassConfigData(
             std::move(program_preparations),
             dependencies.options.publish_enabled_features
                 ? std::optional{compiled_pipeline->feature_names}
-                : std::nullopt);
+                : std::nullopt,
+            gpu_arena.preparedScope(
+                gpuOwnerScope(dependencies.options)));
+    injectGpuRegistrationFault(
+        dependencies.options,
+        RenderPipelineGpuRegistrationFaultPoint::
+            after_runtime_prepare);
     result.rendering_pass_ids =
         prepared_generation.renderingPassIds();
     result.runtime_generation =
@@ -266,6 +357,7 @@ RenderingPassConfigRegistrationResult registerRenderingPassConfigData(
         dependencies.frame_graph_runtime.publicationState());
     dependencies.frame_graph_runtime.publishPreparedGeneration(
         std::move(prepared_generation));
+    gpu_arena.commit();
     return result;
 }
 

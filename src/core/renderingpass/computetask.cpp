@@ -354,13 +354,25 @@ void FrameGraphResourceContainer::registerBuffers(const std::vector<FrameGraphBu
         if (buffers.find(definition.name) != buffers.end()) {
             continue;
         }
+        auto registered_name = definition.name;
+        registration_order.reserve(
+            registration_order.size() + 1);
         auto buffer = vkcore.allocBuf(definition.size,
                                       vk::BufferUsageFlagBits::eStorageBuffer |
                                           vk::BufferUsageFlagBits::eTransferSrc |
                                           vk::BufferUsageFlagBits::eTransferDst,
                                       vma::MemoryUsage::eAutoPreferDevice,
                                       {});
-        buffers.emplace(definition.name, BufferRecord{definition, std::move(buffer)});
+        const auto [_, inserted] = buffers.emplace(
+            definition.name,
+            BufferRecord{definition, std::move(buffer)});
+        if (!inserted) {
+            throw std::runtime_error(
+                "Frame graph buffer name table changed during registration: " +
+                definition.name);
+        }
+        registration_order.push_back(
+            std::move(registered_name));
     }
 }
 
@@ -482,6 +494,46 @@ ComputeTaskContainer::DescriptorSetRecord ComputeTaskContainer::createDescriptor
     return result;
 }
 
+FrameGraphResourceContainer::RegistrationCheckpoint
+FrameGraphResourceContainer::checkpointRegistrations() const noexcept {
+    return RegistrationCheckpoint{registration_order.size()};
+}
+
+void FrameGraphResourceContainer::rollbackRegistrations(
+    RegistrationCheckpoint checkpoint) {
+    if (checkpoint.registration_count >
+        registration_order.size()) {
+        throw std::runtime_error(
+            "Frame graph buffer registration checkpoint is invalid");
+    }
+    while (registration_order.size() >
+           checkpoint.registration_count) {
+        buffers.erase(registration_order.back());
+        registration_order.pop_back();
+    }
+}
+
+std::vector<std::pair<std::string, vk::DeviceSize>>
+FrameGraphResourceContainer::registrationsSince(
+    RegistrationCheckpoint checkpoint) const {
+    if (checkpoint.registration_count >
+        registration_order.size()) {
+        throw std::runtime_error(
+            "Frame graph buffer registration checkpoint is invalid");
+    }
+    std::vector<std::pair<std::string, vk::DeviceSize>>
+        result;
+    result.reserve(registration_order.size() -
+                   checkpoint.registration_count);
+    for (std::size_t index = checkpoint.registration_count;
+         index < registration_order.size(); ++index) {
+        const auto &name = registration_order[index];
+        result.emplace_back(
+            name, buffers.at(name).definition.size);
+    }
+    return result;
+}
+
 ComputeTaskId ComputeTaskContainer::registerComputeTask(
     const ComputeTaskDefinition &definition,
     const ComputeTaskRuntimeDependencies &dependencies) {
@@ -510,19 +562,36 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
         bound_image_views[frame_index] = std::move(binding.bound_image_views);
     }
 
-    const auto id = ComputeTaskId{static_cast<int>(tasks.size())};
-    tasks.emplace(id.value,
-                  TaskRecord{
-                      definition,
-                      pipeline,
-                      std::move(descriptor_sets),
-                      std::move(bound_image_views),
-                      next_binding_revision++,
-                      definition.dispatch.groups_x,
-                      definition.dispatch.groups_y,
-                      definition.dispatch.groups_z,
-                  });
-    name_to_id.emplace(definition.name, id);
+    registration_order.reserve(registration_order.size() + 1);
+    const auto id =
+        ComputeTaskId{static_cast<int>(tasks.size())};
+    const auto [task_it, task_inserted] = tasks.emplace(
+        id.value,
+        TaskRecord{
+            definition,
+            pipeline,
+            std::move(descriptor_sets),
+            std::move(bound_image_views),
+            next_binding_revision++,
+            definition.dispatch.groups_x,
+            definition.dispatch.groups_y,
+            definition.dispatch.groups_z,
+        });
+    if (!task_inserted) {
+        throw std::runtime_error(
+            "Compute task handle table changed during registration");
+    }
+    try {
+        if (!name_to_id.emplace(definition.name, id).second) {
+            throw std::runtime_error(
+                "Compute task name table changed during registration: " +
+                definition.name);
+        }
+    } catch (...) {
+        tasks.erase(task_it);
+        throw;
+    }
+    registration_order.push_back(id);
     return id;
 }
 
@@ -680,6 +749,56 @@ std::uint64_t ComputeTaskContainer::bindingRevisionForTesting(
     ComputeTaskId task_id) const {
     const auto found = tasks.find(task_id.value);
     return found == tasks.end() ? 0 : found->second.binding_revision;
+}
+
+ComputeTaskContainer::RegistrationCheckpoint
+ComputeTaskContainer::checkpointRegistrations() const noexcept {
+    return RegistrationCheckpoint{
+        registration_order.size(), next_binding_revision};
+}
+
+void ComputeTaskContainer::rollbackRegistrations(
+    RegistrationCheckpoint checkpoint) {
+    if (checkpoint.registration_count >
+        registration_order.size()) {
+        throw std::runtime_error(
+            "Compute task registration checkpoint is invalid");
+    }
+    while (registration_order.size() >
+           checkpoint.registration_count) {
+        const auto id = registration_order.back();
+        const auto found = tasks.find(id.value);
+        if (found == tasks.end()) {
+            throw std::runtime_error(
+                "Compute task registration log is inconsistent");
+        }
+        name_to_id.erase(found->second.definition.name);
+        tasks.erase(found);
+        registration_order.pop_back();
+    }
+    next_binding_revision =
+        checkpoint.next_binding_revision;
+}
+
+std::vector<std::pair<std::string, ComputeTaskId>>
+ComputeTaskContainer::registrationsSince(
+    RegistrationCheckpoint checkpoint) const {
+    if (checkpoint.registration_count >
+        registration_order.size()) {
+        throw std::runtime_error(
+            "Compute task registration checkpoint is invalid");
+    }
+    std::vector<std::pair<std::string, ComputeTaskId>>
+        result;
+    result.reserve(registration_order.size() -
+                   checkpoint.registration_count);
+    for (std::size_t index = checkpoint.registration_count;
+         index < registration_order.size(); ++index) {
+        const auto id = registration_order[index];
+        result.emplace_back(tasks.at(id.value).definition.name,
+                            id);
+    }
+    return result;
 }
 
 } // namespace Pelican

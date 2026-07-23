@@ -117,7 +117,9 @@ FullscreenPassContainer::registerFullscreenPass(vk::Format colorFormat, ShaderBu
                                                 ShaderBundleId fragShader,
                                                 std::vector<std::string> shader_defines,
                                                 vk::SampleCountFlagBits samples) {
-    PipelineId pipeline_id = {static_cast<uint32_t>(pipelines.size())};
+    registration_order.reserve(registration_order.size() + 1);
+    PipelineId pipeline_id = {
+        static_cast<uint32_t>(pipelines.size())};
 
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
     auto desc = GraphicsPipelineDesc{
@@ -129,7 +131,11 @@ FullscreenPassContainer::registerFullscreenPass(vk::Format colorFormat, ShaderBu
     };
     desc.rasterization_samples = samples;
     const auto pipeline_handle = pipeline_factory.create(desc);
-    pipelines.insert({pipeline_id, pipeline_handle});
+    if (!pipelines.insert({pipeline_id, pipeline_handle}).second) {
+        throw std::runtime_error(
+            "Fullscreen pipeline handle table changed during registration");
+    }
+    registration_order.push_back(pipeline_id);
 
     return pipeline_id;
 }
@@ -238,6 +244,45 @@ uint64_t FullscreenPassContainer::inputBindingRevisionForTesting(PassId pass_id)
 
 vk::PipelineLayout FullscreenPassContainer::getPipelineLayout(PassId pass_id) const {
     return GET_MODULE(PipelineFactory).layout(requirePipelineHandle(pass_id, pipelines));
+}
+
+FullscreenPassContainer::RegistrationCheckpoint
+FullscreenPassContainer::checkpointRegistrations() const noexcept {
+    return RegistrationCheckpoint{
+        registration_order.size(), next_binding_revision};
+}
+
+void FullscreenPassContainer::rollbackRegistrations(
+    RegistrationCheckpoint checkpoint) {
+    if (checkpoint.registration_count >
+        registration_order.size()) {
+        throw std::runtime_error(
+            "Fullscreen pass registration checkpoint is invalid");
+    }
+    while (registration_order.size() >
+           checkpoint.registration_count) {
+        const auto id = registration_order.back();
+        input_textures.erase(static_cast<int>(id.value));
+        pipelines.erase(id);
+        registration_order.pop_back();
+    }
+    next_binding_revision =
+        checkpoint.next_binding_revision;
+}
+
+std::vector<FullscreenPassContainer::PipelineId>
+FullscreenPassContainer::registrationsSince(
+    RegistrationCheckpoint checkpoint) const {
+    if (checkpoint.registration_count >
+        registration_order.size()) {
+        throw std::runtime_error(
+            "Fullscreen pass registration checkpoint is invalid");
+    }
+    return {
+        registration_order.begin() +
+            static_cast<std::ptrdiff_t>(
+                checkpoint.registration_count),
+        registration_order.end()};
 }
 
 } // namespace Pelican

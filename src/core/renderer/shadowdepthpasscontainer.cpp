@@ -31,6 +31,7 @@ PassId ShadowDepthPassContainer::registerShadowDepthPass(vk::Format depth_format
                                                          ShaderBundleId vert_shader,
                                                          std::vector<std::string> shader_defines,
                                                          vk::SampleCountFlagBits samples) {
+    registration_order.reserve(registration_order.size() + 1);
     const auto pass_id = pipelineIndexToPassId(pipelines.size());
 
     GraphicsPipelineDesc desc;
@@ -53,7 +54,14 @@ PassId ShadowDepthPassContainer::registerShadowDepthPass(vk::Format depth_format
     desc.use_engine_vertex_layout = false;
     desc.use_skinned_vertex_layout = true;
     const auto skinned = GET_MODULE(PipelineFactory).create(desc);
-    pipelines.emplace(pass_id.value, PipelineVariants{regular, skinned});
+    if (!pipelines
+             .emplace(pass_id.value,
+                      PipelineVariants{regular, skinned})
+             .second) {
+        throw std::runtime_error(
+            "Shadow depth pipeline table changed during registration");
+    }
+    registration_order.push_back(pass_id);
     return pass_id;
 }
 
@@ -67,6 +75,40 @@ void ShadowDepthPassContainer::bind(vk::CommandBuffer cmd_buf, PassId pass_id, b
 vk::PipelineLayout ShadowDepthPassContainer::pipelineLayout(PassId pass_id, bool skinned) const {
     const auto &variants = requirePipeline(pass_id, pipelines);
     return GET_MODULE(PipelineFactory).layout(skinned ? variants.skinned : variants.regular);
+}
+
+ShadowDepthPassContainer::RegistrationCheckpoint
+ShadowDepthPassContainer::checkpointRegistrations() const noexcept {
+    return RegistrationCheckpoint{registration_order.size()};
+}
+
+void ShadowDepthPassContainer::rollbackRegistrations(
+    RegistrationCheckpoint checkpoint) {
+    if (checkpoint.registration_count >
+        registration_order.size()) {
+        throw std::runtime_error(
+            "Shadow depth pass registration checkpoint is invalid");
+    }
+    while (registration_order.size() >
+           checkpoint.registration_count) {
+        pipelines.erase(registration_order.back().value);
+        registration_order.pop_back();
+    }
+}
+
+std::vector<PassId>
+ShadowDepthPassContainer::registrationsSince(
+    RegistrationCheckpoint checkpoint) const {
+    if (checkpoint.registration_count >
+        registration_order.size()) {
+        throw std::runtime_error(
+            "Shadow depth pass registration checkpoint is invalid");
+    }
+    return {
+        registration_order.begin() +
+            static_cast<std::ptrdiff_t>(
+                checkpoint.registration_count),
+        registration_order.end()};
 }
 
 } // namespace Pelican

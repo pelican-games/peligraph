@@ -140,6 +140,17 @@ DECLARE_MODULE(ShaderLibrary) {
     void markDirty(ShaderBundleId id);
 
   public:
+    struct RegistrationCheckpoint {
+        std::size_t bundle_count = 0;
+        std::size_t reload_unit_count = 0;
+        std::unordered_map<ShaderBundleId, std::size_t,
+                           ShaderBundleId::Hash>
+            unit_by_bundle;
+        std::map<watch::AssetKey, std::vector<std::size_t>>
+            units_by_dependency;
+        std::vector<ShaderBundleId> dirty_bundles;
+    };
+
     explicit ShaderLibrary(ShaderLibraryModuleMode mode = ShaderLibraryModuleMode::create_modules);
 
     ShaderBundleId loadFromFile(const std::filesystem::path &path, std::vector<std::string> defines = {});
@@ -168,6 +179,16 @@ DECLARE_MODULE(ShaderLibrary) {
                              std::string_view error);
     ShaderReloadTrackingStatus reloadTrackingStatus() const noexcept;
     std::vector<ShaderBundleId> takeDirtyBundles();
+
+    RegistrationCheckpoint checkpointRegistrations() const;
+    void rollbackRegistrations(
+        RegistrationCheckpoint &checkpoint);
+    std::vector<ShaderBundleId>
+    registrationsSince(
+        const RegistrationCheckpoint &checkpoint) const;
+    std::size_t registrationCount() const noexcept {
+        return bundle_ids.size();
+    }
 };
 
 } // namespace Pelican

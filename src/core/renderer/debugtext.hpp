@@ -51,6 +51,7 @@ DECLARE_MODULE(DebugText) {
     std::vector<QueuedGlyph> queued_glyphs;
     std::vector<DebugTextVertex> vertices;
     std::unordered_map<PassId, PipelineRecord, PassId::Hash> pipelines;
+    std::vector<PassId> registration_order;
 
     void ensureDevice();
     void ensureFontResources();
@@ -61,6 +62,11 @@ DECLARE_MODULE(DebugText) {
     void buildVertices(vk::Extent2D target_extent);
 
   public:
+    struct RegistrationCheckpoint {
+        std::size_t registration_count = 0;
+        bool enabled = false;
+    };
+
     DebugText();
     ~DebugText();
 
@@ -77,6 +83,14 @@ DECLARE_MODULE(DebugText) {
 
     bool isEnabledForTesting() const { return enabled; }
     size_t queuedGlyphCountForTesting() const { return queued_glyphs.size(); }
+
+    RegistrationCheckpoint checkpointRegistrations() const noexcept;
+    void rollbackRegistrations(RegistrationCheckpoint checkpoint);
+    std::vector<PassId>
+    registrationsSince(RegistrationCheckpoint checkpoint) const;
+    std::size_t registrationCount() const noexcept {
+        return registration_order.size();
+    }
 };
 
 } // namespace Pelican

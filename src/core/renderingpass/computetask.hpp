@@ -45,8 +45,13 @@ DECLARE_MODULE(FrameGraphResourceContainer) {
     };
 
     std::unordered_map<std::string, BufferRecord> buffers;
+    std::vector<std::string> registration_order;
 
   public:
+    struct RegistrationCheckpoint {
+        std::size_t registration_count = 0;
+    };
+
     FrameGraphResourceContainer();
     ~FrameGraphResourceContainer();
 
@@ -55,6 +60,14 @@ DECLARE_MODULE(FrameGraphResourceContainer) {
     const BufferWrapper &buffer(std::string_view name) const;
     vk::DeviceSize bufferSize(std::string_view name) const;
     vk::DescriptorBufferInfo descriptorInfo(std::string_view name) const;
+
+    RegistrationCheckpoint checkpointRegistrations() const noexcept;
+    void rollbackRegistrations(RegistrationCheckpoint checkpoint);
+    std::vector<std::pair<std::string, vk::DeviceSize>>
+    registrationsSince(RegistrationCheckpoint checkpoint) const;
+    std::size_t registrationCount() const noexcept {
+        return registration_order.size();
+    }
 };
 
 DECLARE_MODULE(ComputeTaskContainer) {
@@ -73,6 +86,7 @@ DECLARE_MODULE(ComputeTaskContainer) {
     vk::UniqueDescriptorPool descriptor_pool;
     std::unordered_map<int, TaskRecord> tasks;
     std::unordered_map<std::string, ComputeTaskId> name_to_id;
+    std::vector<ComputeTaskId> registration_order;
     std::uint64_t next_binding_revision = 1;
 
     struct DescriptorSetRecord {
@@ -86,6 +100,11 @@ DECLARE_MODULE(ComputeTaskContainer) {
         std::uint32_t frame_index) const;
 
   public:
+    struct RegistrationCheckpoint {
+        std::size_t registration_count = 0;
+        std::uint64_t next_binding_revision = 1;
+    };
+
     ComputeTaskContainer();
     ~ComputeTaskContainer();
 
@@ -110,6 +129,14 @@ DECLARE_MODULE(ComputeTaskContainer) {
     std::vector<vk::ImageView> boundImageViewsForTesting(
         ComputeTaskId task_id, std::uint32_t frame_index) const;
     std::uint64_t bindingRevisionForTesting(ComputeTaskId task_id) const;
+
+    RegistrationCheckpoint checkpointRegistrations() const noexcept;
+    void rollbackRegistrations(RegistrationCheckpoint checkpoint);
+    std::vector<std::pair<std::string, ComputeTaskId>>
+    registrationsSince(RegistrationCheckpoint checkpoint) const;
+    std::size_t registrationCount() const noexcept {
+        return registration_order.size();
+    }
 };
 
 } // namespace Pelican

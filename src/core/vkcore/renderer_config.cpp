@@ -7,12 +7,15 @@
 #include "../profiler.hpp"
 #include "../renderer/debugdraw.hpp"
 #include "../renderer/debugtext.hpp"
+#include "../renderer/shadowdepthpasscontainer.hpp"
+#include "../renderer/velocitypasscontainer.hpp"
 #include "../renderingpass/computetask.hpp"
 #include "../renderingpass/framegraphruntime.hpp"
 #include "../renderingpass/renderingpassconfigregistration.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
 #include "../shader/shaderlibrary.hpp"
+#include "../shader/pipelinefactory.hpp"
 #include "core.hpp"
 #include "rendertarget.hpp"
 #if PELICAN_WITH_OPENXR
@@ -48,7 +51,12 @@ RenderingPassConfigRegistrationDependencies registrationDependencies(
     auto &rt_module = GET_MODULE(RenderTarget);
     auto &rt_container = GET_MODULE(RenderTargetContainer);
     auto &shader_library = GET_MODULE(ShaderLibrary);
+    auto &pipeline_factory = GET_MODULE(PipelineFactory);
     auto &fs_container = GET_MODULE(FullscreenPassContainer);
+    auto &shadow_depth_passes =
+        GET_MODULE(ShadowDepthPassContainer);
+    auto &velocity_passes =
+        GET_MODULE(VelocityPassContainer);
     auto &pass_container = GET_MODULE(RenderingPassContainer);
     auto &frame_graph_resources = GET_MODULE(FrameGraphResourceContainer);
     auto &compute_task_container = GET_MODULE(ComputeTaskContainer);
@@ -60,6 +68,9 @@ RenderingPassConfigRegistrationDependencies registrationDependencies(
             rt_module,
             shader_library,
             fs_container,
+            pipeline_factory,
+            shadow_depth_passes,
+            velocity_passes,
             path_resolver,
             {},
             GET_MODULE(ProjectBasicConfig).usesProjectSource(),
@@ -147,10 +158,14 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfig() {
                                       .preview = std::move(preview)};
 #if PELICAN_WITH_OPENXR
     if (GET_MODULE(EngineLaunchConfig).xr_active) {
-        registerXrMirrorIntermediate(baseExtentFromConfig(config));
+        const auto base_extent = baseExtentFromConfig(config);
         RenderingPassConfigRegistrationDependencies::Options xr_options;
         xr_options.graph_variant = RenderPipelineGraphVariant::xr;
         xr_options.publish_enabled_features = false;
+        xr_options.prepare_additional_gpu_resources =
+            [base_extent] {
+                registerXrMirrorIntermediate(base_extent);
+            };
         const auto xr_registration =
             registerConfiguredRenderingPasses(config, std::move(xr_options));
         variants.xr = requireDefaultPass(default_pass_name + "#xr");

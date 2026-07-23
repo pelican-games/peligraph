@@ -274,6 +274,7 @@ PassId DebugText::registerPass(vk::Format color_format, ShaderBundleId vert_shad
                                vk::SampleCountFlagBits samples) {
     ensureDevice();
     ensureFontResources();
+    registration_order.reserve(registration_order.size() + 1);
     enabled = true;
 
     GraphicsPipelineDesc desc;
@@ -290,7 +291,17 @@ PassId DebugText::registerPass(vk::Format color_format, ShaderBundleId vert_shad
     desc.rasterization_samples = samples;
 
     const auto pass_id = PassId{static_cast<int>(pipelines.size())};
-    pipelines.emplace(pass_id, PipelineRecord{GET_MODULE(PipelineFactory).create(desc), {}});
+    if (!pipelines
+             .emplace(
+                 pass_id,
+                 PipelineRecord{
+                     GET_MODULE(PipelineFactory).create(desc),
+                     {}})
+             .second) {
+        throw std::runtime_error(
+            "DebugText pipeline table changed during registration");
+    }
+    registration_order.push_back(pass_id);
     return pass_id;
 }
 
@@ -344,6 +355,41 @@ void DebugText::render(vk::CommandBuffer cmd_buf, PassId pass_id, vk::Extent2D t
                                PELICAN_SET_FREE, found->second.descriptor_set.get(), {});
     cmd_buf.draw(static_cast<uint32_t>(vertices.size()), 1, 0, 0);
     vertices.clear();
+}
+
+DebugText::RegistrationCheckpoint
+DebugText::checkpointRegistrations() const noexcept {
+    return RegistrationCheckpoint{
+        registration_order.size(), enabled};
+}
+
+void DebugText::rollbackRegistrations(
+    RegistrationCheckpoint checkpoint) {
+    if (checkpoint.registration_count >
+        registration_order.size()) {
+        throw std::runtime_error(
+            "DebugText registration checkpoint is invalid");
+    }
+    while (registration_order.size() >
+           checkpoint.registration_count) {
+        pipelines.erase(registration_order.back());
+        registration_order.pop_back();
+    }
+    enabled = checkpoint.enabled;
+}
+
+std::vector<PassId> DebugText::registrationsSince(
+    RegistrationCheckpoint checkpoint) const {
+    if (checkpoint.registration_count >
+        registration_order.size()) {
+        throw std::runtime_error(
+            "DebugText registration checkpoint is invalid");
+    }
+    return {
+        registration_order.begin() +
+            static_cast<std::ptrdiff_t>(
+                checkpoint.registration_count),
+        registration_order.end()};
 }
 
 } // namespace Pelican
