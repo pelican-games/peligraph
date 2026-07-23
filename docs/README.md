@@ -1,6 +1,6 @@
 # pelican2 設計文書 索引
 
-最終更新: 2026-07-23(RPE6c1 desktop/tile target planner / WP189 完了)。文書が矛盾したら
+最終更新: 2026-07-23(physical target planner runtime統合 / WP191 完了)。文書が矛盾したら
 **凍結済み > ドラフト、設計文書 > 指示書**の順で優先し、実装状態は
 コード・テスト・`design_reviews` の完了レポートを正とする。
 

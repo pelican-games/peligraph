@@ -938,7 +938,7 @@ completion、required capabilityだけを検証する。未指定情報は隠れ
 - `optimized` / `conservative_debug` / `hazard_stress(seed)`を純CPU decision reportとして実装。
   alias集合のlifetime導出、domain partition、bridge実行はHEG2bへ残す
 
-### HEG2b — RPE6c1 target planner vertical slice(実装済み WP189)
+### HEG2b — target planner vertical slice / runtime接続(実装済み WP189 / WP191)
 
 - immutable canonical graph と disposable `TargetLoweringGraph` を分離
 - mock desktop / tile topologyとVulkan probeでtarget-aware rewrite / physical planを検証
@@ -947,7 +947,8 @@ completion、required capabilityだけを検証する。未指定情報は隠れ
 - CPU / external lowerer は null fixture または型予約に留める
 - `ResourcePattern`とresource bindingを分離し、追加G-bufferを固定enumなしで計画
 - read footprint / materialization / lifetimeからtile-local、snapshot、alias候補を導出
-- 実Vulkan executor / GPU object / CPU・external・video runtime workは追加しない
+- WP191でmaterialized imageのformat / sample-count contractだけを現Vulkan runtimeへ接続
+- tile-local / alias / NativeScope、CPU・external・video runtime workはまだ追加しない
 
 ### HEG3 — 実証後の異種 domain
 

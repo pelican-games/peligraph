@@ -5503,4 +5503,56 @@ material fragment-output ABIは後続とする。現行material contractの5-MRT
 
 ---
 
+### WP191(済 2026-07-23): physical target planner runtime integration
+
+参照: [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md) §12、
+[`design_render_graph_compiler.md`](design_render_graph_compiler.md) §12、
+[`design_reviews/2026-07-23_wp191_report.md`](design_reviews/2026-07-23_wp191_report.md)。
+
+**目的**: WP189 の data-only physical target planner と WP190 の executable MSAA
+runtime bridgeを単一lowering経路へ統合する。runtimeがnormalized JSONを再走査して
+attachment graphを二重構築せず、同じimmutable physical planをresource登録、実行所有権、
+診断dumpで共有する。
+
+**実装範囲**:
+
+1. `VulkanSampleCountPlanRequest`を`VulkanTargetPlanRequest`へ追加し、logical render nodeの
+   image outputからattachment connected componentを導出する。
+2. `VulkanPhysicalResourcePlan`へ`rasterization_samples` / `resolve_required`、
+   `VulkanPhysicalScopePlan`へ`rasterization_samples`を追加する。
+3. sample/resolve contractをalias compatibilityとtile rendering scope fusionへ反映する。
+4. 任意data attachment用に`pelican.render.legacy_opaque_image@1`を追加し、runtime targetを
+   color signalと偽らずlogical shadow graphへ写す。
+5. `FrameGraphNodeDefinition.raster_geometry`をtyped parser境界で確定し、project plannerへ
+   node labelとして渡す。runtime plannerはpass type stringを再解釈しない。
+6. 実deviceのformat sample count、depth resolve、max color attachmentsをtarget factsへ変換し、
+   current executorが消費可能なmaterialized-only topologyを構築する。
+7. physical planのformat/representationを`RenderTargetDefinition`と照合し、sample数を
+   planから適用する。swapchainはexternal 1xに固定する。
+8. `CompiledFrameGraphExecution`が`VulkanTargetPlan`を所有し、従来sample plan viewと
+   `currentFramePlanJson().physical_target_plan`を同じ所有物へ結び付ける。
+9. 旧runtime JSON走査、geometry type判定、独自disjoint-set、registration内device queryを
+   削除する。
+
+**受け入れ条件**:
+
+- 追加G-buffer名・枚数にplanner変更が不要
+- exact / lower-supported診断が制約resource名とformatを保持する
+- physical resource/scope sample数が実attachment metadataと一致する
+- sample数が異なるtile scopeをfusionせず、不整合aliasを作らない
+- current runtimeが未実装tile-local/transient/alias planをconsumeしない
+- standard/hybrid headless 4x描画、feature composition、XR/golden/hot-reload回帰が成功する
+- Debug全target build、CTest 784/784、`git diff --check`が成功する
+
+**残件**: tile-native rendering scope / allocator、XR swapchain MSAA / multiview、
+material fragment-output可変ABI、compute/CPU execution linker、physical plan ejectは後続。
+複数frame graphが同一attachmentへ異なるphysical sample contractを要求した場合は、
+自動統合せず明示的にrejectする。
+
+依存: WP181、WP185、WP188〜WP190。見積: 大。
+
+完了レポート: `docs/design_reviews/2026-07-23_wp191_report.md`
+
+---
+
 未完了 WP と運用規則は [active ledger](implementation_plan.md) を参照。

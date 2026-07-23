@@ -25,7 +25,9 @@ dialect legalityを純CPUで追加したが、汎用logical graphの実行所有
 `FramePlan` / Vulkan executorにある。RPE7 / RPE8 runtime slice / WP190 は
 `SampleCountPolicy` と capability resolve を typed compiled plan へ追加し、現在の
 `FramePlan` / Vulkan executor に実 MSAA image、pipeline sample count、color/depth resolve
-を接続した。
+を接続した。WP191 はその runtime bridge を WP189 の `VulkanTargetPlan` へ統合し、
+physical format / representation / sample-count contract を実行時にも同じ lowering
+結果から消費する。
 
 関連文書:
 
@@ -643,12 +645,13 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 | RPE6c1 / WP189（済 2026-07-23） | `ResourcePattern` / read footprint / materialization + mock desktop/tile target planner。canonical / disposable lowering seam と dialect legality を追加 | desktop materialize、tile local-read、追加 G-buffer、屈折 snapshot、physical dump、optional domain zero-cost |
 | RPE7 / WP190（済 2026-07-23） | `SampleCountPolicy` / capabilities / deterministic resolution の純粋段階 | exact / lower-supported、limiting resource 診断、typed compiled plan |
 | RPE8 runtime slice / WP190（済 2026-07-23） | attachment-connected MSAA transform + image/pipeline sample count + color/depth resolve | 1x互換、実4x hybrid headless、depth capability gate、validation errorなし |
+| RPE8b / WP191（済 2026-07-23） | WP189 physical target planner と WP190 runtime bridge の single lowering path | JSON/DSU重複削除、physical resource/scope sample contract、materialized runtime consume、追加G-buffer、desktop/tile/headless |
 | RPE9 | XR / preview callback を builtin `GraphVariantPolicy` へ移行 | sequential XR/preview plan 不変、OpenXR lifecycle 非依存 test |
 | RPE10 | pipeline hot reload の prepare/publish/rollback/retire | route/sample/provider 同時変更の atomic fixture、in-flight retire |
 
 ### 12.1 いま着手する範囲
 
-RPE1 / WP180 から RPE8 runtime slice / WP190 まで完了した。authoring resolve、immutable typed
+RPE1 / WP180 から RPE8b / WP191 まで完了した。authoring resolve、immutable typed
 pipeline plan、draw inventory / queue materialization、versioned draw-sort provider registry、
 world bounds、phase/view 別 queue に加え、Vulkan 非依存の logical type / port-use kernel と
 現行 `FrameGraphDefinition` の diagnostic shadow graph が分離済みである。shadow graph は
@@ -663,9 +666,11 @@ attachment budget factで上限を検査する。WP190 は authoring の
 `pipeline.settings.msaa` を typed `SampleCountPolicy` へcompileし、実デバイスのformat /
 depth-resolve能力でattachment連結成分ごとの共通sample数を解決する。Vulkan runtimeは
 multisample attachmentとsingle-sample resolved imageを分離し、後段sample/copyはresolved
-imageだけを見る。現在の変換は既存pass出力から連結成分を作るruntime bridgeであり、
-WP189の汎用physical plannerとの単一lowering経路への統合は後続作業とする。各段階の
-詳細gateは `design_render_graph_compiler.md` §12 を正とする。
+imageだけを見る。WP191ではこの連結成分解決を`VulkanTargetPlan`へ移し、runtimeは
+`FrameGraphDefinition`からlogical shadow graphを経て得たphysical format /
+representation / sample-count contractを検証・適用する。現runtime adapterは実装済みの
+materialized imageだけをtarget topologyへadvertiseし、tile-local / transient / alias planを
+誤って実行しない。各段階の詳細gateは `design_render_graph_compiler.md` §12 を正とする。
 
 ### 12.2 後回しにするもの
 

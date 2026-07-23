@@ -948,7 +948,7 @@ compute / transferはresolved surfaceだけを使い、暗黙のsample expandが
 
 この段階は実行可能性を先に検証したruntime bridgeであり、WP189のdata-only
 `TargetLoweringGraph` / `VulkanPhysicalPlan`と変換を二重実装し続けることは意図しない。
-次段で単一lowering経路へ統合する。
+この重複は WP191 で解消した。
 
 gate:
 
@@ -960,15 +960,36 @@ gate:
 - depth resolve非対応deviceは候補から除外
 - 1x互換、実4x headless、Vulkan validation / synchronization errorなし
 
+### RPE8b — physical target planner runtime integration
+
+状態: **WP191で実装済み(2026-07-23)**。`FrameGraphDefinition`をlogical shadow graphへ
+変換し、WP189の`compileVulkanTargetPlan()`でformat、representation、attachment component、
+sample count、resolve requirement、physical scope sample countを一括loweringする。
+旧runtime bridgeのJSON再走査、pass type string判定、独自disjoint-setは削除した。
+
+現runtime adapterは実deviceのformat sample count、depth resolve、color attachment budgetを
+target factsへ変換する。current Vulkan executorが実装済みの`materialized_image`だけを
+advertiseし、返されたphysical planのformat/representationを検証してから
+`RenderTargetDefinition.samples`へ適用する。`CompiledFrameGraphExecution`がplan本体を所有し、
+従来の`ResolvedSampleCountPlan`は同じimmutable planへのviewである。
+
+gate:
+
+- runtime側にattachment group構築アルゴリズムを重複させない
+- 任意名・追加枚数のG-bufferがlogical outputだけからcomponentへ入る
+- physical resource/scopeのsample countと実attachment metadataが一致する
+- sample countが異なるtile scopeをfusionせず、alias compatibilityにもsample contractを含める
+- current runtimeはtile-local/transient/alias候補を実装済みと偽らない
+- standard/hybrid headless、feature composition、XR回帰、全CTestが成功する
+
 ### それ以後
 
-1. WP189 physical target plannerとWP190 runtime bridgeを単一lowering経路へ統合
-2. RPE9 で XR / preview variant と multiview lowering
-3. RPE10 で logical + physical + GPU candidate の transaction publication
-4. pass / region / global transform / strategy provider fixture
-5. physical plan eject / direct authoring fixture
-6. `NativeScope` は具体的な Vulkan-only 使用例が得られてから ABI 設計
-7. CPU / external domain は計測と具体的な二候補 task が得られてから
+1. RPE9 で XR / preview variant と multiview lowering
+2. RPE10 で logical + physical + GPU candidate の transaction publication
+3. pass / region / global transform / strategy provider fixture
+4. physical plan eject / direct authoring fixture
+5. `NativeScope` は具体的な Vulkan-only 使用例が得られてから ABI 設計
+6. CPU / external domain は計測と具体的な二候補 task が得られてから
    `design_heterogeneous_execution_graph.md` の HEG3 / HEG4 として実装
 
 ## 13. north-star acceptance scenarios
