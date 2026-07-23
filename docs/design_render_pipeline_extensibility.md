@@ -516,7 +516,8 @@ authoring v1 の最小形は次を想定する。
 ### 7.3 XR / preview は graph variant policy
 
 OpenXR backend は session、swapchain image、frame wait/acquire/release/submit を所有
-し続ける。一方、次は compile-time の `GraphVariantPolicy` へ移す。
+し続ける。一方、WP192 では graph の選択を compile-time の
+`CompiledGraphVariantPolicy` へ移した。
 
 - feature の include / exclude
 - history / projection jitter の許否
@@ -524,9 +525,21 @@ OpenXR backend は session、swapchain image、frame wait/acquire/release/submit
 - multiview / sequential の選択
 - mirror 用 output の要求
 
-現行の XR / preview 固有 `include_feature` と JSON validation callback は、typed
-request / capabilities / decision へ移す。初期は builtin policy として挙動を完全
-維持し、public provider 化は typed plan の検証規則が固まってから行う。
+XR / preview 固有 `include_feature` と JSON validation callback は削除し、typed
+request / capabilities / feature decision / config validation へ移した。feature の
+除外と reject は `GraphVariantFeatureDisposition` と
+`GraphVariantFeatureReason` を持ち、文字列 callback の戻り値だけに理由を失わない。
+
+初期 builtin の実行契約は次で固定する。
+
+- flat: view 数は caller-defined。通常 1 view だが、汎用 logical-frame API の
+  sequential multi-view 再利用を禁止しない
+- preview: exact 1 view、request-local capture、history / jitter 禁止
+- XR: exact 2 view、sequential 2D resource、history / jitter 禁止、left-eye mirror
+
+XR の multiview は実装済みと偽らず、`GraphVariantViewExecution::sequential` のまま
+保持する。XR2b ではこの typed policy に capability と array-layer lowering を加える。
+public provider 化は typed plan の検証規則が固まってから行う。
 
 ### 7.4 TAA jitter は無理に provider 化しない
 
@@ -646,12 +659,12 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 | RPE7 / WP190（済 2026-07-23） | `SampleCountPolicy` / capabilities / deterministic resolution の純粋段階 | exact / lower-supported、limiting resource 診断、typed compiled plan |
 | RPE8 runtime slice / WP190（済 2026-07-23） | attachment-connected MSAA transform + image/pipeline sample count + color/depth resolve | 1x互換、実4x hybrid headless、depth capability gate、validation errorなし |
 | RPE8b / WP191（済 2026-07-23） | WP189 physical target planner と WP190 runtime bridge の single lowering path | JSON/DSU重複削除、physical resource/scope sample contract、materialized runtime consume、追加G-buffer、desktop/tile/headless |
-| RPE9 | XR / preview callback を builtin `GraphVariantPolicy` へ移行 | sequential XR/preview plan 不変、OpenXR lifecycle 非依存 test |
+| RPE9 / WP192（済 2026-07-23） | XR / preview callback を builtin `GraphVariantPolicy` へ移行 | sequential XR/preview plan 不変、OpenXR lifecycle 非依存 test |
 | RPE10 | pipeline hot reload の prepare/publish/rollback/retire | route/sample/provider 同時変更の atomic fixture、in-flight retire |
 
 ### 12.1 いま着手する範囲
 
-RPE1 / WP180 から RPE8b / WP191 まで完了した。authoring resolve、immutable typed
+RPE1 / WP180 から RPE9 / WP192 まで完了した。authoring resolve、immutable typed
 pipeline plan、draw inventory / queue materialization、versioned draw-sort provider registry、
 world bounds、phase/view 別 queue に加え、Vulkan 非依存の logical type / port-use kernel と
 現行 `FrameGraphDefinition` の diagnostic shadow graph が分離済みである。shadow graph は
@@ -670,7 +683,12 @@ imageだけを見る。WP191ではこの連結成分解決を`VulkanTargetPlan`�
 `FrameGraphDefinition`からlogical shadow graphを経て得たphysical format /
 representation / sample-count contractを検証・適用する。現runtime adapterは実装済みの
 materialized imageだけをtarget topologyへadvertiseし、tile-local / transient / alias planを
-誤って実行しない。各段階の詳細gateは `design_render_graph_compiler.md` §12 を正とする。
+誤って実行しない。WP192ではflat / preview / XRを
+`GraphVariantPolicyRequest + GraphVariantPolicyCapabilities` から
+`CompiledGraphVariantPolicy`へ純粋compileし、feature decision、history/jitter、
+view execution、resource layout、terminal、mirror、pass suffixを一つの値に集約した。
+registrationとrendererはこのcompiled policyを読み、OpenXR session stateをcompilerへ
+持ち込まない。各段階の詳細gateは `design_render_graph_compiler.md` §12 を正とする。
 
 ### 12.2 後回しにするもの
 

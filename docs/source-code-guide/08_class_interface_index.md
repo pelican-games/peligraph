@@ -276,7 +276,7 @@ Component value は [`LocalTransformComponent`](../../src/core/userpublic/compon
 | `IXrCompositionTarget` / `XrCompositionTarget` | interface/impl | [`openxrcompositiontarget.hpp`](../../src/core/openxr/openxrcompositiontarget.hpp#L59) | XR swapchain を `ILogicalFrameTarget` として公開(impl は同 #L69) |
 | `XrMirrorSink` | optional sink | [`openxrmirrorsink.hpp`](../../src/core/openxr/openxrmirrorsink.hpp#L24) | window への zero-wait mirror(drop 可) |
 | `buildRenderViewParameters()` | free function | [`openxrviewspace.hpp`](../../src/core/openxr/openxrviewspace.hpp#L37) | 両 eye pose を active camera に anchor(WP131) |
-| feature policy | free functions | [`openxrfeaturepolicy.hpp`](../../src/core/openxr/openxrfeaturepolicy.hpp) | `#xr` graph variant 合成時の feature 除外 |
+| `CompiledGraphVariantPolicy` | pure compiled value | [`graphvariantpolicy.hpp`](../../src/project/graphvariantpolicy.hpp) | flat / preview / `#xr` の feature decision、view execution、resource layout、terminal、mirror、suffix |
 
 ## 8.10 RPC、CLI、Studio
 

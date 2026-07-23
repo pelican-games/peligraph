@@ -5555,4 +5555,58 @@ material fragment-output可変ABI、compute/CPU execution linker、physical plan
 
 ---
 
+### WP192(済 2026-07-23): RPE9 — builtin GraphVariantPolicy
+
+参照: [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md) §7.3、§12、
+[`design_render_graph_compiler.md`](design_render_graph_compiler.md) §12、
+[`design_reviews/2026-07-23_wp191_report.md`](design_reviews/2026-07-23_wp191_report.md)。
+
+**目的**: flat / preview / XR の graph variant 分岐を、core/OpenXR/preview が個別に
+注入する bool callback と suffix 文字列から、project compiler が生成する immutable typed
+policyへ移す。現行の preview隔離とXR sequential stereoを維持しつつ、将来のmultiviewを
+未実装のまま明示できる境界を作る。
+
+**実装範囲**:
+
+1. `GraphVariantPolicyRequest`、`GraphVariantPolicyCapabilities`、
+   `CompiledGraphVariantPolicy`を追加する。history、projection jitter、view family、
+   view execution、resource layout、terminal、mirror、exact/caller-defined view count、
+   rendering-pass suffixを型で保持する。
+2. flatをcaller-defined view count、previewをexact 1-view request-local capture、
+   XRをexact 2-view sequential 2D + left-eye mirrorとして純CPU compileする。
+3. feature単位のinclude/exclude/rejectを`GraphVariantFeatureDecision`へ変換し、
+   `GraphVariantFeatureReason`をdiagnosticへ保持する。未知history featureのXR reject、
+   既知TAA/velocity/UIのatomic exclusion、preview unsafe surfaceの除外を維持する。
+4. previewのswapchain→request-local capture変換と、preview/XRのdirect authored
+   surface検証をtyped policyへ移す。
+5. `resolveRenderPipeline()`がpolicyを一度compileし、`ResolvedRenderPipeline`から
+   `CompiledRenderPipeline`へ同じ値を渡す。registration optionsからXR/preview固有
+   include/validate/suffix callbackを削除する。
+6. rendererがcompiled policyのvariant、view family/count、timing label、mirror要求を
+   消費する。既存のflat graphをcaller-defined sequential multi-viewへ再利用する契約は
+   維持する。
+7. preview programもcompiled policyを保持する。OpenXR session/swapchain lifecycleは
+   compilerへ持ち込まない。
+8. `PELICAN_WITH_OPENXR=OFF`ではXR builtin判定/検証をコンパイル除外し、typed mechanismと
+   preview/flatだけを残す。
+
+**受け入れ条件**:
+
+- policy compile / feature decision / config transform・validationがVulkan device、
+  module container、OpenXR sessionなしで動く
+- flat / preview / XRの既存feature除外、pass名、preview capture、frame-plan dumpを維持する
+- XR runtimeはexact 2-view sequentialをcompiled policyから読み、multiviewをadvertiseしない
+- flat logical-frameのcaller-defined multi-view回帰を壊さない
+- XR無効buildでOpenXR backendとXR policy実装をpurgeできる
+- Debug全target build、全CTest、OpenXR OFF build、`git diff --check`が成功する
+
+**非対象**: multiview / array-layer / depth-submit、XR swapchain MSAA、public
+`GraphVariantProvider` ABI、runtime policy hot reload、pipeline transaction。
+
+依存: WP180、WP184、WP191。見積: 中。
+
+完了レポート: `docs/design_reviews/2026-07-23_wp192_report.md`
+
+---
+
 未完了 WP と運用規則は [active ledger](implementation_plan.md) を参照。

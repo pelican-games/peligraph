@@ -984,8 +984,12 @@ gate:
 
 ### それ以後
 
-1. RPE9 で XR / preview variant と multiview lowering
-2. RPE10 で logical + physical + GPU candidate の transaction publication
+RPE9 / WP192 では XR / preview の ad-hoc callback を typed
+`CompiledGraphVariantPolicy` へ移し、現行 XR を exact 2-view sequential として
+固定した。multiview は未実装であり、同じ値の別名にはしていない。
+
+1. RPE10 で logical + physical + GPU candidate の transaction publication
+2. XR2b で multiview / array-layer / depth-submit lowering
 3. pass / region / global transform / strategy provider fixture
 4. physical plan eject / direct authoring fixture
 5. `NativeScope` は具体的な Vulkan-only 使用例が得られてから ABI 設計

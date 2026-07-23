@@ -73,9 +73,10 @@ deferred、forward opaque/transparent 合成、typed color/depth screen input �
     producer edge(WP186、完了)、RPE6b1 typed screen input / opaque snapshot
     (WP187、完了)、RPE6c0 topology / backend probe / planning policy
     (WP188、完了)、RPE6c1 ResourcePattern / desktop/tile target plan
-    (WP189、完了)まで実装。
-    以後は RPE7 sample-count resolve → RPE8 MSAA physical transform →
-    XR/preview graph variant → pipeline transaction の順。
+    (WP189、完了)、RPE7/RPE8 sample-count + executable MSAA(WP190、完了)、
+    physical target runtime統合(WP191、完了)、XR/preview builtin
+    GraphVariantPolicy(WP192、完了)まで実装。
+    次は pipeline transaction を独立 WP として扱う。
     論理型、material/light contract、Vulkan physical plan / NativeScope の詳細は
     `design_render_graph_compiler.md`。CPU / GPU compute / external backend を横 domain として
     接続する共通 typed dialect、fragment / closed forest は
@@ -162,11 +163,11 @@ D-P5(validation 常設)→ D-P4(Tracy ユニット・既定 OFF)→ D-P6(crash �
 OPT-S(起動第 2 弾)/OPT-XR(Release 実機ベースライン)/OPT-MV
 (multiview 評価)。最適化は必ず計測の数字を根拠に(WP82 流儀の標準化)。
 
-## 推奨の直近候補(WP191 完了後)
+## 推奨の直近候補(WP192 完了後)
 
 | 順 | 候補 | 理由／前提 |
 |---|---|---|
-| 次 WP 候補 | **RPE9: XR / preview GraphVariantPolicy** | WP191でphysical target runtime統合まで完了。variant選択をbuiltin policyへ移し、sequential XR/preview planを同じcompiler境界へ寄せる |
+| 次 WP 候補 | **RPE10: pipeline transaction** | WP192でlogical/physical/runtimeが読むvariant policyを統一済み。route/sample/providerをcandidateとしてprepareし、frame境界でatomic publishする |
 | 2 | **HR2-I: input_actions/profile hot reload** | 設計済みで小さく、残る hot-reload 基本型を閉じる |
 | 3 | **U3: UI hot reload transaction** | HR0 watcher/reconcile を共有し、editor save 後の UI 往復を完成させる |
 | 4 | **VRMA watcher integration** | WP178 の generation/rebind entry point を FileWatcher/loader へ接続。WP 化前に asset identity と profile reload 範囲を固定する |
