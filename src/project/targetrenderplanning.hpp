@@ -1,5 +1,6 @@
 #pragma once
 
+#include "samplecountplanning.hpp"
 #include "targetplanning.hpp"
 
 #include <cstddef>
@@ -154,6 +155,8 @@ struct VulkanPhysicalResourcePlan {
     bool aliasable = false;
     std::vector<std::string> required_physical_features;
     std::string reason;
+    std::uint32_t rasterization_samples = 1;
+    bool resolve_required = false;
 };
 
 enum class VulkanPhysicalScopeKind : std::uint8_t {
@@ -174,11 +177,18 @@ struct VulkanPhysicalScopePlan {
     std::vector<std::string> nodes;
     std::vector<std::string> local_reads;
     std::vector<std::string> region_tags;
+    std::uint32_t rasterization_samples = 1;
 };
 
 struct VulkanAliasGroupPlan {
     std::string id;
     std::vector<std::string> resources;
+};
+
+struct VulkanSampleCountPlanRequest {
+    SampleCountPolicy policy;
+    std::vector<SampleCountResourceCapability> capabilities;
+    std::vector<std::string> geometry_nodes;
 };
 
 struct VulkanTargetPlanRequest {
@@ -189,6 +199,7 @@ struct VulkanTargetPlanRequest {
     std::vector<PlanningNodeConstraint> node_constraints;
     std::vector<PlanningResourceConstraint> resource_constraints;
     PlanningDiagnosticPolicy diagnostic_policy;
+    std::optional<VulkanSampleCountPlanRequest> sample_count;
 };
 
 struct VulkanTargetPlan {
@@ -201,6 +212,7 @@ struct VulkanTargetPlan {
     std::vector<VulkanAliasGroupPlan> alias_groups;
     std::vector<std::string> required_physical_features;
     std::vector<PlanningDecision> decisions;
+    std::optional<ResolvedSampleCountPlan> sample_count_plan;
 };
 
 void validateVulkanPhysicalFeatureClosure(

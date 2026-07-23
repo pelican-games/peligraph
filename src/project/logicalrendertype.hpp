@@ -155,6 +155,7 @@ LogicalType displayLinearV1(const LogicalTypeRegistry &registry);
 LogicalType displayEncodedV1(const LogicalTypeRegistry &registry);
 LogicalType deviceDepthV1(const LogicalTypeRegistry &registry);
 LogicalType linearViewDepthV1(const LogicalTypeRegistry &registry);
+LogicalType legacyOpaqueImageV1(const LogicalTypeRegistry &registry);
 LogicalType legacyOpaqueResourceV1(const LogicalTypeRegistry &registry);
 
 nlohmann::ordered_json typeArgumentValueToJson(const TypeArgumentValue &value);

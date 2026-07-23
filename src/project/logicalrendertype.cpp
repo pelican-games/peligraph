@@ -588,6 +588,11 @@ LogicalTypeRegistry makeBuiltinLogicalTypeRegistry() {
          topology},
         {"depth_like"}});
     registry.registerSchema(SemanticTypeSchema{
+        parseSemanticTypeId("pelican.render.legacy_opaque_image@1"),
+        LogicalTypeConstructor::image,
+        {},
+        {"legacy_untyped"}});
+    registry.registerSchema(SemanticTypeSchema{
         parseSemanticTypeId("pelican.render.legacy_opaque_resource@1"),
         LogicalTypeConstructor::value,
         {},
@@ -631,6 +636,11 @@ LogicalType linearViewDepthV1(const LogicalTypeRegistry &registry) {
         parseSemanticTypeId("pelican.render.depth@1"),
         {{"representation", EnumValueId{"linear_distance"}},
          {"space", EnumValueId{"view"}}});
+}
+
+LogicalType legacyOpaqueImageV1(const LogicalTypeRegistry &registry) {
+    return registry.canonicalize(
+        parseSemanticTypeId("pelican.render.legacy_opaque_image@1"));
 }
 
 LogicalType legacyOpaqueResourceV1(const LogicalTypeRegistry &registry) {

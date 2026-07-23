@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <charconv>
 #include <map>
+#include <numeric>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -386,6 +387,28 @@ struct CandidateDraft {
     BackendCostEstimate cost;
 };
 
+class DisjointSet {
+    std::vector<std::size_t> parents_;
+
+  public:
+    explicit DisjointSet(std::size_t size) : parents_(size) {
+        std::iota(parents_.begin(), parents_.end(), 0);
+    }
+
+    std::size_t find(std::size_t value) {
+        if (parents_[value] != value) {
+            parents_[value] = find(parents_[value]);
+        }
+        return parents_[value];
+    }
+
+    void join(std::size_t left, std::size_t right) {
+        left = find(left);
+        right = find(right);
+        if (left != right) parents_[right] = left;
+    }
+};
+
 const VulkanPhysicalResourcePlan *findPhysicalResource(
     std::span<const VulkanPhysicalResourcePlan> resources,
     std::string_view name) {
@@ -399,6 +422,221 @@ const VulkanPhysicalResourcePlan *findPhysicalResource(
                    found->logical_resource == name
                ? &*found
                : nullptr;
+}
+
+std::vector<std::string> attachmentOutputs(
+    const LogicalGraphNode &node,
+    const std::map<std::string, const LogicalResourceDesc *,
+                   std::less<>> &resources) {
+    if (node.kind != LogicalGraphNodeKind::render) return {};
+    std::vector<std::string> result;
+    for (const auto &use : node.uses) {
+        if (!use.output_value ||
+            (use.intent != LogicalAccessIntent::automatic &&
+             use.intent != LogicalAccessIntent::attachment)) {
+            continue;
+        }
+        const auto resource =
+            resources.find(use.output_value->resource);
+        if (resource == resources.end() ||
+            resource->second->type.constructor !=
+                LogicalTypeConstructor::image) {
+            continue;
+        }
+        result.push_back(use.output_value->resource);
+    }
+    sortAndUnique(result);
+    return result;
+}
+
+ResolvedSampleCountPlan resolveTargetSampleCounts(
+    const CompiledLogicalRenderGraph &graph,
+    const VulkanSampleCountPlanRequest &request) {
+    std::map<std::string, const LogicalResourceDesc *, std::less<>>
+        logical_resources;
+    for (const auto &resource : graph.resources) {
+        logical_resources.emplace(resource.name, &resource);
+    }
+
+    std::set<std::string, std::less<>> attachment_names;
+    std::map<std::string, std::vector<std::string>, std::less<>>
+        node_attachments;
+    std::map<std::string, const LogicalGraphNode *, std::less<>>
+        nodes;
+    for (const auto &node : graph.nodes) {
+        if (!nodes.emplace(node.name, &node).second) {
+            throw std::runtime_error(
+                "sample-count planning found duplicate logical node: " +
+                node.name);
+        }
+        auto attachments =
+            attachmentOutputs(node, logical_resources);
+        attachment_names.insert(attachments.begin(),
+                                attachments.end());
+        node_attachments.emplace(node.name,
+                                 std::move(attachments));
+    }
+
+    std::set<std::string, std::less<>> geometry_nodes;
+    for (const auto &name : request.geometry_nodes) {
+        const auto node = nodes.find(name);
+        if (node == nodes.end() ||
+            node->second->kind != LogicalGraphNodeKind::render) {
+            throw std::runtime_error(
+                "sample-count geometry node is not a logical render node: " +
+                name);
+        }
+        if (!geometry_nodes.insert(name).second) {
+            throw std::runtime_error(
+                "sample-count geometry nodes must be unique: " + name);
+        }
+    }
+
+    std::vector<std::string> attachments(
+        attachment_names.begin(), attachment_names.end());
+    std::map<std::string, std::size_t, std::less<>>
+        attachment_indices;
+    for (std::size_t index = 0; index < attachments.size(); ++index) {
+        attachment_indices.emplace(attachments[index], index);
+    }
+
+    DisjointSet sets{attachments.size()};
+    std::vector<bool> geometry_members(attachments.size(), false);
+    for (const auto &[node_name, outputs] : node_attachments) {
+        if (outputs.empty()) continue;
+        const auto first = attachment_indices.at(outputs.front());
+        for (std::size_t index = 1; index < outputs.size(); ++index) {
+            sets.join(first, attachment_indices.at(outputs[index]));
+        }
+        if (geometry_nodes.contains(node_name)) {
+            for (const auto &output : outputs) {
+                geometry_members[attachment_indices.at(output)] = true;
+            }
+        }
+    }
+
+    std::map<std::string, SampleCountResourceCapability, std::less<>>
+        capabilities;
+    for (const auto &capability : request.capabilities) {
+        if (!attachment_indices.contains(capability.resource)) {
+            throw std::runtime_error(
+                "sample-count capability is not an attachment logical "
+                "resource: " +
+                capability.resource);
+        }
+        if (!capabilities.emplace(capability.resource, capability).second) {
+            throw std::runtime_error(
+                "sample-count capabilities must name unique resources: " +
+                capability.resource);
+        }
+    }
+    for (const auto &attachment : attachments) {
+        if (!capabilities.contains(attachment)) {
+            throw std::runtime_error(
+                "sample-count attachment lacks a physical capability: " +
+                attachment);
+        }
+    }
+
+    std::set<std::size_t> explicit_members;
+    for (const auto &target : request.policy.targets) {
+        const auto found = attachment_indices.find(target);
+        if (found == attachment_indices.end()) {
+            throw std::runtime_error(
+                "multisampling target is not an attachment logical "
+                "resource: " +
+                target);
+        }
+        explicit_members.insert(found->second);
+    }
+
+    std::map<std::size_t, std::vector<std::size_t>> components;
+    for (std::size_t index = 0; index < attachments.size(); ++index) {
+        components[sets.find(index)].push_back(index);
+    }
+
+    std::vector<SampleCountGroupRequest> groups;
+    groups.reserve(components.size());
+    for (const auto &[root, members] : components) {
+        (void)root;
+        bool selected =
+            request.policy.scope == SampleCountScope::all;
+        std::vector<SampleCountResourceCapability> resources;
+        resources.reserve(members.size());
+        for (const auto member : members) {
+            if (request.policy.scope == SampleCountScope::geometry &&
+                geometry_members[member]) {
+                selected = true;
+            }
+            if (explicit_members.contains(member)) selected = true;
+            resources.push_back(capabilities.at(attachments[member]));
+        }
+        std::sort(
+            resources.begin(), resources.end(),
+            [](const auto &left, const auto &right) {
+                return left.resource < right.resource;
+            });
+        groups.push_back(SampleCountGroupRequest{
+            .id = "attachments:" + resources.front().resource,
+            .multisampling_enabled = selected,
+            .resources = std::move(resources),
+        });
+    }
+    return resolveSampleCountPlan(request.policy.request, groups);
+}
+
+void applyResolvedSampleCounts(
+    CandidateDraft &candidate,
+    const ResolvedSampleCountPlan &sample_count_plan) {
+    for (const auto &resolved : sample_count_plan.resources) {
+        const auto found = std::lower_bound(
+            candidate.resources.begin(), candidate.resources.end(),
+            resolved.resource,
+            [](const VulkanPhysicalResourcePlan &resource,
+               std::string_view name) {
+                return resource.logical_resource < name;
+            });
+        if (found == candidate.resources.end() ||
+            found->logical_resource != resolved.resource) {
+            throw std::runtime_error(
+                "sample-count physical resource was not lowered: " +
+                resolved.resource);
+        }
+        if (found->format != resolved.format) {
+            throw std::runtime_error(
+                "sample-count format does not match lowered physical "
+                "format for '" +
+                resolved.resource + "': capability reports '" +
+                resolved.format + "', lowering selected '" +
+                found->format + "'");
+        }
+        found->rasterization_samples = resolved.samples;
+        found->resolve_required =
+            resolved.samples > 1 &&
+            found->representation !=
+                VulkanResourceRepresentation::external;
+    }
+}
+
+std::uint32_t nodeRasterizationSamples(
+    const LogicalGraphNode &node,
+    const std::map<std::string, const LogicalResourceDesc *,
+                   std::less<>> &logical_resources,
+    std::span<const VulkanPhysicalResourcePlan> resources) {
+    std::optional<std::uint32_t> result;
+    for (const auto &name :
+         attachmentOutputs(node, logical_resources)) {
+        const auto *resource =
+            findPhysicalResource(resources, name);
+        if (resource == nullptr) continue;
+        if (result && *result != resource->rasterization_samples) {
+            throw std::runtime_error(
+                "logical render node '" + node.name +
+                "' has incompatible attachment sample counts");
+        }
+        result = resource->rasterization_samples;
+    }
+    return result.value_or(1);
 }
 
 const LogicalResourceUse *findNodeUse(
@@ -846,12 +1084,22 @@ std::vector<VulkanPhysicalScopePlan> buildPhysicalScopes(
          deriveLogicalDataEdges(canonical_graph)) {
         incoming_edges[edge.consumer_node].push_back(edge);
     }
+    std::map<std::string, const LogicalResourceDesc *, std::less<>>
+        logical_resources;
+    for (const auto &resource : canonical_graph.resources) {
+        logical_resources.emplace(resource.name, &resource);
+    }
     const auto constraints = nodeConstraintMap(node_constraints);
 
     std::vector<VulkanPhysicalScopePlan> result;
     for (const auto &lowering_node : workspace.nodes) {
         const auto &node = lowering_node.logical;
         const auto kind = physicalScopeKind(node.kind);
+        const auto rasterization_samples =
+            kind == VulkanPhysicalScopeKind::rendering
+                ? nodeRasterizationSamples(
+                      node, logical_resources, resources)
+                : 1u;
         bool fuse = false;
         std::vector<std::string> local_reads;
         if (tile_candidate &&
@@ -861,6 +1109,8 @@ std::vector<VulkanPhysicalScopePlan> buildPhysicalScopes(
             !result.empty() &&
             result.back().kind ==
                 VulkanPhysicalScopeKind::rendering &&
+            result.back().rasterization_samples ==
+                rasterization_samples &&
             !constraintBlocksFusion(constraints, node.name)) {
             bool current_scope_blocked = false;
             for (const auto &scope_node : result.back().nodes) {
@@ -946,6 +1196,7 @@ std::vector<VulkanPhysicalScopePlan> buildPhysicalScopes(
                 .kind = kind,
                 .nodes = {node.name},
                 .region_tags = node.region_tags,
+                .rasterization_samples = rasterization_samples,
             };
             sortAndUnique(scope.region_tags);
             result.push_back(std::move(scope));
@@ -958,7 +1209,8 @@ CandidateDraft buildCandidateDraft(
     const CompiledLogicalRenderGraph &canonical_graph,
     const TargetLoweringGraph &workspace,
     const TargetEndpoint &endpoint, bool tile_candidate,
-    const VulkanTargetPlanRequest &request) {
+    const VulkanTargetPlanRequest &request,
+    const ResolvedSampleCountPlan *sample_count_plan) {
     CandidateDraft result;
     result.name = std::string{
         tile_candidate ? kTileLocalCandidate
@@ -1208,6 +1460,9 @@ CandidateDraft buildCandidateDraft(
             return left.logical_resource <
                    right.logical_resource;
         });
+    if (sample_count_plan != nullptr) {
+        applyResolvedSampleCounts(result, *sample_count_plan);
+    }
 
     for (const auto &node : workspace.nodes) {
         if (node.logical.kind ==
@@ -1381,6 +1636,10 @@ std::vector<PlanningNamePair> deriveLegalAliasCandidates(
                     resources[right].representation ||
                 resources[left].format !=
                     resources[right].format ||
+                resources[left].rasterization_samples !=
+                    resources[right].rasterization_samples ||
+                resources[left].resolve_required !=
+                    resources[right].resolve_required ||
                 !lifetimesDoNotOverlap(
                     resources[left].lifetime,
                     resources[right].lifetime)) {
@@ -1584,11 +1843,19 @@ VulkanTargetPlan compileVulkanTargetPlan(
     auto workspace = makeTargetLoweringGraph(
         types, canonical_graph, request.pattern_bindings,
         initial_opportunities.node_order);
+    auto sample_count_plan =
+        request.sample_count
+            ? std::optional<ResolvedSampleCountPlan>{
+                  resolveTargetSampleCounts(
+                      canonical_graph, *request.sample_count)}
+            : std::nullopt;
 
     auto materialized = buildCandidateDraft(
-        canonical_graph, workspace, endpoint, false, request);
+        canonical_graph, workspace, endpoint, false, request,
+        sample_count_plan ? &*sample_count_plan : nullptr);
     auto tile_local = buildCandidateDraft(
-        canonical_graph, workspace, endpoint, true, request);
+        canonical_graph, workspace, endpoint, true, request,
+        sample_count_plan ? &*sample_count_plan : nullptr);
     applyAttachmentBudget(materialized, canonical_graph,
                           endpoint);
     applyAttachmentBudget(tile_local, canonical_graph,
@@ -1696,6 +1963,7 @@ VulkanTargetPlan compileVulkanTargetPlan(
         .required_physical_features =
             selected_draft.required_features,
         .decisions = std::move(decisions),
+        .sample_count_plan = std::move(sample_count_plan),
     };
 }
 
@@ -1732,8 +2000,7 @@ nlohmann::ordered_json vulkanTargetPlanToJson(
             lifetime["last_use"] =
                 resource.lifetime.last_use;
         }
-        result["resources"].push_back(
-            nlohmann::ordered_json{
+        nlohmann::ordered_json resource_json{
                 {"logical_resource",
                  resource.logical_resource},
                 {"pattern", resource.pattern},
@@ -1750,19 +2017,30 @@ nlohmann::ordered_json vulkanTargetPlanToJson(
                 {"required_physical_features",
                  resource.required_physical_features},
                 {"reason", resource.reason},
-            });
+        };
+        if (plan.sample_count_plan) {
+            resource_json["rasterization_samples"] =
+                resource.rasterization_samples;
+            resource_json["resolve_required"] =
+                resource.resolve_required;
+        }
+        result["resources"].push_back(std::move(resource_json));
     }
     result["scopes"] = nlohmann::ordered_json::array();
     for (const auto &scope : plan.scopes) {
-        result["scopes"].push_back(
-            nlohmann::ordered_json{
+        nlohmann::ordered_json scope_json{
                 {"id", scope.id},
                 {"kind",
                  vulkanPhysicalScopeKindName(scope.kind)},
                 {"nodes", scope.nodes},
                 {"local_reads", scope.local_reads},
                 {"regions", scope.region_tags},
-            });
+            };
+        if (plan.sample_count_plan) {
+            scope_json["rasterization_samples"] =
+                scope.rasterization_samples;
+        }
+        result["scopes"].push_back(std::move(scope_json));
     }
     result["alias_groups"] =
         nlohmann::ordered_json::array();
@@ -1782,6 +2060,11 @@ nlohmann::ordered_json vulkanTargetPlanToJson(
                 {"selected", decision.selected},
                 {"detail", decision.detail},
             });
+    }
+    if (plan.sample_count_plan) {
+        result["sample_count_plan"] =
+            resolvedSampleCountPlanToJson(
+                *plan.sample_count_plan);
     }
     return result;
 }

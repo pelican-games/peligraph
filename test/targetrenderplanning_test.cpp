@@ -147,7 +147,7 @@ const LogicalResourceDesc &resource(
 
 CompiledLogicalRenderGraph hybridGraph(
     const LogicalTypeRegistry &types, std::size_t gbuffer_count,
-    bool refraction) {
+    bool refraction, bool shared_depth = false) {
     CompiledLogicalRenderGraph graph;
     graph.name = refraction ? "hybrid_refraction"
                             : "hybrid_base";
@@ -160,6 +160,12 @@ CompiledLogicalRenderGraph hybridGraph(
                 : "gbuffer_" + std::to_string(index);
         graph.resources.push_back(
             LogicalResourceDesc{.name = name, .type = scene});
+    }
+    if (shared_depth) {
+        graph.resources.push_back(LogicalResourceDesc{
+            .name = "scene_depth",
+            .type = deviceDepthV1(types),
+        });
     }
     graph.resources.push_back(
         LogicalResourceDesc{.name = "scene_color", .type = scene});
@@ -187,6 +193,10 @@ CompiledLogicalRenderGraph hybridGraph(
         addWrite(types, gbuffer, entry, 1,
                  "out_" + std::to_string(index));
     }
+    if (shared_depth) {
+        addWrite(types, gbuffer, resource(graph, "scene_depth"), 1,
+                 "depth");
+    }
 
     LogicalGraphNode lighting;
     lighting.name = "Lighting";
@@ -207,6 +217,10 @@ CompiledLogicalRenderGraph hybridGraph(
     forward.region_tags = {"region.forward_opaque"};
     addReadWrite(types, forward, resource(graph, "scene_color"), 1, 2,
                  "scene");
+    if (shared_depth) {
+        addReadWrite(types, forward, resource(graph, "scene_depth"), 1, 2,
+                     "depth");
+    }
 
     graph.nodes = {std::move(forward), std::move(lighting),
                    std::move(gbuffer)};
@@ -302,14 +316,46 @@ VulkanTargetPlan compile(
     const LogicalTypeRegistry &types,
     const CompiledLogicalRenderGraph &graph,
     TargetTopologySnapshot target,
-    std::vector<ResourcePatternBinding> bindings) {
+    std::vector<ResourcePatternBinding> bindings,
+    std::optional<VulkanSampleCountPlanRequest> sample_count =
+        std::nullopt) {
     return compileVulkanTargetPlan(
         types, graph, target, providers(),
         VulkanTargetPlanRequest{
             .endpoint = "device:0",
             .provider = std::string{kProvider},
             .pattern_bindings = std::move(bindings),
+            .sample_count = std::move(sample_count),
         });
+}
+
+VulkanSampleCountPlanRequest sampleCountRequest(
+    const CompiledLogicalRenderGraph &graph,
+    SampleCountPolicy policy,
+    std::string_view limited_resource = {},
+    std::vector<std::string> geometry_nodes =
+        {"GBuffer", "Forward"}) {
+    std::vector<SampleCountResourceCapability> capabilities;
+    for (const auto &entry : graph.resources) {
+        if (entry.type.constructor != LogicalTypeConstructor::image ||
+            entry.name == "display_output" ||
+            entry.name == "opaque_snapshot") {
+            continue;
+        }
+        capabilities.push_back({
+            .resource = entry.name,
+            .format = "R16G16B16A16_SFLOAT",
+            .supported_samples =
+                entry.name == limited_resource
+                    ? std::vector<std::uint32_t>{1, 2}
+                    : std::vector<std::uint32_t>{1, 2, 4},
+        });
+    }
+    return {
+        .policy = std::move(policy),
+        .capabilities = std::move(capabilities),
+        .geometry_nodes = std::move(geometry_nodes),
+    };
 }
 
 const VulkanPhysicalResourcePlan &physicalResource(
@@ -343,7 +389,7 @@ bool oneScopeContains(const VulkanTargetPlan &plan,
 TEST_CASE("desktop materializes arbitrary G-buffer attachments while tile keeps same-pixel data local",
           "[target-render-planning][desktop][tile][gbuffer]") {
     const auto types = makeBuiltinLogicalTypeRegistry();
-    const auto graph = hybridGraph(types, 6, false);
+    const auto graph = hybridGraph(types, 6, false, true);
     const auto canonical_before =
         compiledLogicalRenderGraphToJson(graph).dump();
     auto bindings = bindingsFor(types, graph);
@@ -509,6 +555,92 @@ TEST_CASE("non-overlapping materialized resource lifetimes become legal alias gr
     REQUIRE(plan.alias_groups.size() == 1);
     REQUIRE(plan.alias_groups.front().resources ==
             std::vector<std::string>{"temporary_a", "temporary_b"});
+}
+
+TEST_CASE("target lowering resolves sample counts on physical resources and scopes",
+          "[target-render-planning][sample-count][gbuffer]") {
+    const auto types = makeBuiltinLogicalTypeRegistry();
+    const auto graph = hybridGraph(types, 6, false, true);
+    SampleCountPolicy policy{
+        .request = {SampleCountRequestMode::prefer, 4},
+        .scope = SampleCountScope::geometry,
+        .authored = true,
+    };
+    const auto plan = compile(
+        types, graph, topology(false), bindingsFor(types, graph),
+        sampleCountRequest(graph, policy,
+                           "gbuffer_custom_attribute"));
+
+    REQUIRE(plan.sample_count_plan.has_value());
+    REQUIRE(physicalResource(
+                plan, "gbuffer_custom_attribute")
+                .rasterization_samples == 2);
+    REQUIRE(physicalResource(plan, "scene_color")
+                .rasterization_samples == 2);
+    REQUIRE(physicalResource(plan, "scene_color")
+                .resolve_required);
+    REQUIRE(std::all_of(
+        plan.scopes.begin(), plan.scopes.end(),
+        [](const VulkanPhysicalScopePlan &scope) {
+            return scope.kind !=
+                       VulkanPhysicalScopeKind::rendering ||
+                   scope.rasterization_samples == 2;
+        }));
+    REQUIRE(plan.sample_count_plan->groups.at(0)
+                .limiting_resources ==
+            std::vector<std::string>{
+                "gbuffer_custom_attribute "
+                "(R16G16B16A16_SFLOAT)"});
+    const auto json = vulkanTargetPlanToJson(plan);
+    REQUIRE(json.at("sample_count_plan")
+                .at("resources")
+                .is_array());
+    REQUIRE(json.at("resources").at(0).contains(
+        "rasterization_samples"));
+}
+
+TEST_CASE("exact target sample planning reports a user-added attachment",
+          "[target-render-planning][sample-count][diagnostic]") {
+    const auto types = makeBuiltinLogicalTypeRegistry();
+    const auto graph = hybridGraph(types, 6, false);
+    SampleCountPolicy policy{
+        .request = {SampleCountRequestMode::exact, 4},
+        .scope = SampleCountScope::geometry,
+        .authored = true,
+    };
+    requireThrowsContaining(
+        [&] {
+            (void)compile(
+                types, graph, topology(false),
+                bindingsFor(types, graph),
+                sampleCountRequest(
+                    graph, policy,
+                    "gbuffer_custom_attribute"));
+        },
+        "gbuffer_custom_attribute (R16G16B16A16_SFLOAT)");
+}
+
+TEST_CASE("explicit sample target selects its attachment component and blocks incompatible scope fusion",
+          "[target-render-planning][sample-count][tile]") {
+    const auto types = makeBuiltinLogicalTypeRegistry();
+    const auto graph = hybridGraph(types, 5, false);
+    SampleCountPolicy policy{
+        .request = {SampleCountRequestMode::exact, 4},
+        .scope = SampleCountScope::none,
+        .targets = {"gbuffer_0"},
+        .authored = true,
+    };
+    const auto plan = compile(
+        types, graph, topology(true), bindingsFor(types, graph),
+        sampleCountRequest(graph, policy));
+
+    REQUIRE(physicalResource(plan, "gbuffer_0")
+                .rasterization_samples == 4);
+    REQUIRE(physicalResource(plan, "gbuffer_4")
+                .rasterization_samples == 4);
+    REQUIRE(physicalResource(plan, "scene_color")
+                .rasterization_samples == 1);
+    REQUIRE_FALSE(oneScopeContains(plan, "GBuffer", "Lighting"));
 }
 
 } // namespace Pelican
