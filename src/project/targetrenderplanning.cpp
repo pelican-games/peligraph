@@ -1,0 +1,1789 @@
+#include "targetrenderplanning.hpp"
+
+#include <algorithm>
+#include <charconv>
+#include <map>
+#include <set>
+#include <sstream>
+#include <stdexcept>
+#include <tuple>
+#include <utility>
+
+#include <nlohmann/json.hpp>
+
+namespace Pelican {
+namespace {
+
+constexpr std::string_view kGraphicsCapability =
+    "pelican.vulkan.graphics@1";
+constexpr std::string_view kSampledImageCapability =
+    "pelican.vulkan.sampled_image@1";
+constexpr std::string_view kStorageBufferCapability =
+    "pelican.vulkan.storage_buffer@1";
+constexpr std::string_view kTransferCopyCapability =
+    "pelican.vulkan.transfer_copy@1";
+constexpr std::string_view kTileBasedCapability =
+    "pelican.vulkan.tile_based@1";
+constexpr std::string_view kLocalReadCapability =
+    "pelican.vulkan.dynamic_rendering_local_read@1";
+constexpr std::string_view kTransientAttachmentCapability =
+    "pelican.vulkan.transient_attachment@1";
+constexpr std::string_view kColorAttachmentBudgetFact =
+    "pelican.vulkan.max_color_attachments@1";
+constexpr std::string_view kMaterializedCandidate =
+    "pelican.vulkan.materialized_plan@1";
+constexpr std::string_view kTileLocalCandidate =
+    "pelican.vulkan.tile_local_plan@1";
+
+void requireNonEmpty(std::string_view value, std::string_view subject) {
+    if (value.empty()) {
+        throw std::runtime_error(std::string{subject} +
+                                 " must not be empty");
+    }
+}
+
+void requireVersionedName(std::string_view value,
+                          std::string_view subject) {
+    requireNonEmpty(value, subject);
+    try {
+        const auto parsed = parseSemanticTypeId(value);
+        if (semanticTypeIdName(parsed) != value) {
+            throw std::runtime_error("name is not canonical");
+        }
+    } catch (const std::runtime_error &error) {
+        throw std::runtime_error(
+            std::string{subject} +
+            " must use namespace.name@major: " + std::string{value} +
+            " (" + error.what() + ")");
+    }
+}
+
+void canonicalizeCapabilities(std::vector<std::string> &capabilities,
+                              std::string_view subject) {
+    for (const auto &capability : capabilities) {
+        requireVersionedName(capability, subject);
+    }
+    std::sort(capabilities.begin(), capabilities.end());
+    capabilities.erase(
+        std::unique(capabilities.begin(), capabilities.end()),
+        capabilities.end());
+}
+
+bool hasCapability(std::span<const std::string> capabilities,
+                   std::string_view capability) {
+    return std::binary_search(capabilities.begin(), capabilities.end(),
+                              capability);
+}
+
+int footprintRank(LogicalReadFootprintKind footprint) {
+    switch (footprint) {
+    case LogicalReadFootprintKind::none: return 0;
+    case LogicalReadFootprintKind::same_pixel: return 1;
+    case LogicalReadFootprintKind::neighborhood: return 2;
+    case LogicalReadFootprintKind::arbitrary: return 3;
+    case LogicalReadFootprintKind::temporal: return 4;
+    }
+    throw std::runtime_error("unknown logical read footprint");
+}
+
+void widenFootprint(LogicalReadFootprintKind &destination,
+                    LogicalReadFootprintKind source) {
+    if (footprintRank(source) > footprintRank(destination)) {
+        destination = source;
+    }
+}
+
+template <typename Value>
+void sortAndUnique(std::vector<Value> &values) {
+    std::sort(values.begin(), values.end());
+    values.erase(std::unique(values.begin(), values.end()), values.end());
+}
+
+ResourcePattern canonicalizePattern(
+    const LogicalTypeRegistry &types,
+    const LogicalResourceDesc &resource,
+    ResourcePattern pattern) {
+    requireVersionedName(pattern.id, "resource pattern id");
+    requireNonEmpty(pattern.provenance,
+                    "resource pattern provenance");
+
+    const auto match =
+        matchLogicalType(types, resource.type, pattern.applicable_type);
+    if (match.status == LogicalTypeMatchStatus::rejected ||
+        match.status == LogicalTypeMatchStatus::convertible) {
+        throw std::runtime_error(
+            "resource pattern '" + pattern.id + "' does not apply to '" +
+            resource.name + "': " + match.reason_code + " (" +
+            match.detail + ")");
+    }
+
+    std::set<std::string, std::less<>> formats;
+    for (auto &candidate : pattern.format_candidates) {
+        requireNonEmpty(candidate.format,
+                        "resource pattern format candidate");
+        if (!formats.insert(candidate.format).second) {
+            throw std::runtime_error(
+                "resource pattern '" + pattern.id +
+                "' has duplicate format candidate '" +
+                candidate.format + "'");
+        }
+        canonicalizeCapabilities(
+            candidate.required_capabilities,
+            "resource pattern format capability");
+    }
+    if (resource.type.constructor == LogicalTypeConstructor::image &&
+        pattern.format_candidates.empty()) {
+        throw std::runtime_error(
+            "image resource pattern '" + pattern.id +
+            "' requires at least one format candidate");
+    }
+    return pattern;
+}
+
+std::map<std::string, ResourcePattern, std::less<>>
+canonicalPatternBindings(
+    const LogicalTypeRegistry &types,
+    const CompiledLogicalRenderGraph &graph,
+    std::span<const ResourcePatternBinding> bindings) {
+    std::map<std::string, const LogicalResourceDesc *, std::less<>>
+        resources;
+    for (const auto &resource : graph.resources) {
+        resources.emplace(resource.name, &resource);
+    }
+
+    std::map<std::string, ResourcePattern, std::less<>> result;
+    for (const auto &binding : bindings) {
+        requireNonEmpty(binding.resource,
+                        "resource pattern binding resource");
+        const auto resource = resources.find(binding.resource);
+        if (resource == resources.end()) {
+            throw std::runtime_error(
+                "resource pattern binding references unknown resource: " +
+                binding.resource);
+        }
+        auto pattern =
+            canonicalizePattern(types, *resource->second, binding.pattern);
+        if (!result.emplace(binding.resource, std::move(pattern)).second) {
+            throw std::runtime_error(
+                "duplicate resource pattern binding: " +
+                binding.resource);
+        }
+    }
+    for (const auto &resource : graph.resources) {
+        if (result.contains(resource.name)) continue;
+        if (resource.type.constructor ==
+                LogicalTypeConstructor::image ||
+            resource.type.constructor ==
+                LogicalTypeConstructor::buffer) {
+            throw std::runtime_error(
+                "logical resource has no ResourcePattern binding: " +
+                resource.name);
+        }
+        result.emplace(
+            resource.name,
+            ResourcePattern{
+                .id =
+                    "pelican.render.compile_time_value_pattern@1",
+                .applicable_type =
+                    exactLogicalTypePattern(types, resource.type),
+                .prefer_transient = false,
+                .allow_tile_local = false,
+                .allow_alias = false,
+                .provenance =
+                    "builtin:compile-time-value-pattern-v1",
+            });
+    }
+    return result;
+}
+
+std::vector<std::string> canonicalNodeOrder(
+    const CompiledLogicalRenderGraph &graph,
+    std::span<const std::string> requested_order) {
+    std::vector<std::string> result;
+    if (requested_order.empty()) {
+        result =
+            analyzeLogicalPlanningOpportunities(graph).node_order;
+    } else {
+        result.assign(requested_order.begin(), requested_order.end());
+    }
+
+    std::set<std::string, std::less<>> expected;
+    for (const auto &node : graph.nodes) expected.insert(node.name);
+    std::set<std::string, std::less<>> actual;
+    for (const auto &node : result) {
+        if (!actual.insert(node).second) {
+            throw std::runtime_error(
+                "target lowering node order contains duplicate node: " +
+                node);
+        }
+    }
+    if (actual != expected) {
+        throw std::runtime_error(
+            "target lowering node order is not a permutation of the "
+            "canonical graph nodes");
+    }
+    return result;
+}
+
+TargetIrDialect expectedDialect(TargetLoweringStage stage) {
+    switch (stage) {
+    case TargetLoweringStage::canonical_workspace:
+        return TargetIrDialect::logical;
+    case TargetLoweringStage::target_execution_complete:
+        return TargetIrDialect::execution_gpu;
+    case TargetLoweringStage::vulkan_physical_complete:
+        return TargetIrDialect::physical_vulkan;
+    }
+    throw std::runtime_error("unknown target lowering stage");
+}
+
+const TargetEndpoint &requireEndpoint(
+    const TargetTopologySnapshot &topology, std::string_view id) {
+    const auto *endpoint = findTargetEndpoint(topology, id);
+    if (endpoint == nullptr) {
+        throw std::runtime_error(
+            "target planner endpoint does not exist: " +
+            std::string{id});
+    }
+    if (endpoint->kind != TargetEndpointKind::vulkan_device) {
+        throw std::runtime_error(
+            "target planner endpoint is not a Vulkan device: " +
+            std::string{id});
+    }
+    return *endpoint;
+}
+
+std::optional<std::uint32_t> endpointUnsignedFact(
+    const TargetEndpoint &endpoint, std::string_view name) {
+    const auto found = std::lower_bound(
+        endpoint.facts.begin(), endpoint.facts.end(), name,
+        [](const TargetFact &fact, std::string_view key) {
+            return fact.name < key;
+        });
+    if (found == endpoint.facts.end() || found->name != name) {
+        return std::nullopt;
+    }
+    std::uint32_t value = 0;
+    const auto *begin = found->value.data();
+    const auto *end = begin + found->value.size();
+    const auto parsed = std::from_chars(begin, end, value);
+    if (parsed.ec != std::errc{} || parsed.ptr != end) {
+        throw std::runtime_error(
+            "target endpoint fact '" + found->name +
+            "' must be an unsigned integer on endpoint '" +
+            endpoint.id + "'");
+    }
+    return value;
+}
+
+VulkanPhysicalScopeKind physicalScopeKind(
+    LogicalGraphNodeKind kind) {
+    switch (kind) {
+    case LogicalGraphNodeKind::render:
+        return VulkanPhysicalScopeKind::rendering;
+    case LogicalGraphNodeKind::compute:
+        return VulkanPhysicalScopeKind::compute;
+    case LogicalGraphNodeKind::snapshot_copy:
+        return VulkanPhysicalScopeKind::transfer;
+    case LogicalGraphNodeKind::output_transform:
+        return VulkanPhysicalScopeKind::output;
+    case LogicalGraphNodeKind::anchor:
+        return VulkanPhysicalScopeKind::marker;
+    }
+    throw std::runtime_error("unknown logical graph node kind");
+}
+
+bool isMaterialized(VulkanResourceRepresentation representation) {
+    return representation ==
+               VulkanResourceRepresentation::materialized_image ||
+           representation ==
+               VulkanResourceRepresentation::materialized_buffer ||
+           representation == VulkanResourceRepresentation::external;
+}
+
+struct SelectedFormat {
+    std::string format;
+    std::vector<std::string> required_capabilities;
+};
+
+SelectedFormat selectFormat(
+    const ResourcePattern &pattern,
+    const TargetEndpoint &endpoint,
+    LogicalTypeConstructor constructor) {
+    if (constructor != LogicalTypeConstructor::image) return {};
+    const auto supported = std::find_if(
+        pattern.format_candidates.begin(),
+        pattern.format_candidates.end(),
+        [&](const ResourceFormatCandidate &candidate) {
+            return std::all_of(
+                candidate.required_capabilities.begin(),
+                candidate.required_capabilities.end(),
+                [&](const std::string &capability) {
+                    return hasCapability(endpoint.capabilities,
+                                         capability);
+                });
+        });
+    const auto &selected =
+        supported == pattern.format_candidates.end()
+            ? pattern.format_candidates.front()
+            : *supported;
+    return {selected.format, selected.required_capabilities};
+}
+
+std::string materializationReason(
+    const TargetLoweringResource &resource, bool tile_candidate,
+    bool tile_local_eligible,
+    VulkanResourceRepresentation representation) {
+    if (representation == VulkanResourceRepresentation::external) {
+        return "logical resource is externally owned";
+    }
+    if (resource.uses.produced_by_snapshot) {
+        return "snapshot output requires a stable sampled image";
+    }
+    if (resource.logical.materialization ==
+        LogicalMaterializationRequirement::required) {
+        return "logical materialization requirement is required";
+    }
+    if (resource.pattern.require_store) {
+        return "ResourcePattern requires contents to be stored";
+    }
+    if (resource.uses.widest_read ==
+        LogicalReadFootprintKind::neighborhood) {
+        return "neighborhood read cannot use same-pixel tile-local access";
+    }
+    if (resource.uses.widest_read ==
+        LogicalReadFootprintKind::arbitrary) {
+        return "arbitrary read requires a materialized resource";
+    }
+    if (resource.uses.widest_read ==
+        LogicalReadFootprintKind::temporal) {
+        return "temporal read requires persistent materialization";
+    }
+    if (representation ==
+        VulkanResourceRepresentation::tile_local_attachment) {
+        return "same-pixel render use selected tile-local access";
+    }
+    if (representation ==
+        VulkanResourceRepresentation::transient_attachment) {
+        return "write-only frame-local resource selected transient "
+               "attachment";
+    }
+    if (tile_candidate && !tile_local_eligible) {
+        return "tile-local constraints were not satisfied; materialized "
+               "fallback selected";
+    }
+    return "desktop materialized sampled representation selected";
+}
+
+struct CandidateDraft {
+    std::string name;
+    std::vector<VulkanPhysicalResourcePlan> resources;
+    std::vector<VulkanPhysicalScopePlan> scopes;
+    std::vector<std::string> required_features;
+    std::vector<PlanningDecision> decisions;
+    std::vector<PlanningDiagnostic> diagnostics;
+    std::vector<BackendConstraintFailure> failures;
+    BackendCostEstimate cost;
+};
+
+const VulkanPhysicalResourcePlan *findPhysicalResource(
+    std::span<const VulkanPhysicalResourcePlan> resources,
+    std::string_view name) {
+    const auto found = std::lower_bound(
+        resources.begin(), resources.end(), name,
+        [](const VulkanPhysicalResourcePlan &resource,
+           std::string_view key) {
+            return resource.logical_resource < key;
+        });
+    return found != resources.end() &&
+                   found->logical_resource == name
+               ? &*found
+               : nullptr;
+}
+
+const LogicalResourceUse *findNodeUse(
+    const LogicalGraphNode &node, std::string_view port) {
+    const auto found = std::find_if(
+        node.uses.begin(), node.uses.end(),
+        [&](const LogicalResourceUse &use) {
+            return use.port == port;
+        });
+    return found == node.uses.end() ? nullptr : &*found;
+}
+
+std::map<std::string, PlanningNodeConstraint, std::less<>>
+nodeConstraintMap(
+    std::span<const PlanningNodeConstraint> constraints) {
+    std::map<std::string, PlanningNodeConstraint, std::less<>> result;
+    for (const auto &constraint : constraints) {
+        result.emplace(constraint.node, constraint);
+    }
+    return result;
+}
+
+bool constraintBlocksFusion(
+    const std::map<std::string, PlanningNodeConstraint, std::less<>>
+        &constraints,
+    std::string_view node) {
+    const auto found = constraints.find(node);
+    return found != constraints.end() &&
+           (found->second.serial || found->second.isolate);
+}
+
+} // namespace
+
+std::string_view resourcePatternFallbackName(
+    ResourcePatternFallback fallback) {
+    switch (fallback) {
+    case ResourcePatternFallback::materialize: return "materialize";
+    case ResourcePatternFallback::reject: return "reject";
+    }
+    throw std::runtime_error("unknown ResourcePattern fallback");
+}
+
+std::string_view targetIrDialectName(TargetIrDialect dialect) {
+    switch (dialect) {
+    case TargetIrDialect::logical: return "logical";
+    case TargetIrDialect::execution_gpu: return "execution.gpu";
+    case TargetIrDialect::physical_vulkan:
+        return "physical.vulkan";
+    }
+    throw std::runtime_error("unknown target IR dialect");
+}
+
+std::string_view targetLoweringStageName(TargetLoweringStage stage) {
+    switch (stage) {
+    case TargetLoweringStage::canonical_workspace:
+        return "canonical_workspace";
+    case TargetLoweringStage::target_execution_complete:
+        return "target_execution_complete";
+    case TargetLoweringStage::vulkan_physical_complete:
+        return "vulkan_physical_complete";
+    }
+    throw std::runtime_error("unknown target lowering stage");
+}
+
+TargetLoweringGraph makeTargetLoweringGraph(
+    const LogicalTypeRegistry &types,
+    const CompiledLogicalRenderGraph &canonical_graph,
+    std::span<const ResourcePatternBinding> pattern_bindings,
+    std::span<const std::string> requested_node_order) {
+    validateCompiledLogicalRenderGraph(types, canonical_graph);
+    const auto patterns = canonicalPatternBindings(
+        types, canonical_graph, pattern_bindings);
+    const auto node_order =
+        canonicalNodeOrder(canonical_graph, requested_node_order);
+
+    std::map<std::string, const LogicalGraphNode *, std::less<>>
+        logical_nodes;
+    for (const auto &node : canonical_graph.nodes) {
+        logical_nodes.emplace(node.name, &node);
+    }
+
+    TargetLoweringGraph result;
+    result.name = canonical_graph.name;
+    result.nodes.reserve(node_order.size());
+    for (const auto &name : node_order) {
+        const auto &node = *logical_nodes.at(name);
+        result.nodes.push_back(TargetLoweringNode{
+            .logical = node,
+            .dialect = TargetIrDialect::logical,
+            .source_nodes = {node.name},
+        });
+    }
+
+    auto resources = canonical_graph.resources;
+    std::sort(resources.begin(), resources.end(),
+              [](const LogicalResourceDesc &left,
+                 const LogicalResourceDesc &right) {
+                  return left.name < right.name;
+              });
+    result.resources.reserve(resources.size());
+    for (auto &resource : resources) {
+        const auto pattern = patterns.find(resource.name);
+        result.resources.push_back(TargetLoweringResource{
+            .logical = std::move(resource),
+            .pattern = pattern->second,
+        });
+    }
+
+    std::map<std::string, TargetLoweringResource *, std::less<>>
+        lowering_resources;
+    for (auto &resource : result.resources) {
+        lowering_resources.emplace(resource.logical.name, &resource);
+    }
+    for (std::size_t node_index = 0;
+         node_index < result.nodes.size(); ++node_index) {
+        const auto &node = result.nodes[node_index].logical;
+        for (const auto &use : node.uses) {
+            const auto &value =
+                use.input_value ? *use.input_value : *use.output_value;
+            auto &resource =
+                *lowering_resources.at(value.resource);
+            if (!resource.lifetime.used) {
+                resource.lifetime = {true, node_index, node_index};
+            } else {
+                resource.lifetime.first_use =
+                    std::min(resource.lifetime.first_use, node_index);
+                resource.lifetime.last_use =
+                    std::max(resource.lifetime.last_use, node_index);
+            }
+
+            const auto reads =
+                use.access == LogicalAccessMode::read ||
+                use.access == LogicalAccessMode::read_write;
+            const auto writes =
+                use.access == LogicalAccessMode::write ||
+                use.access == LogicalAccessMode::read_write;
+            resource.uses.read = resource.uses.read || reads;
+            resource.uses.written = resource.uses.written || writes;
+            if (reads) {
+                widenFootprint(resource.uses.widest_read,
+                               use.footprint.kind);
+            }
+            if (node.kind != LogicalGraphNodeKind::render) {
+                resource.uses.non_render_access = true;
+            }
+            switch (use.intent) {
+            case LogicalAccessIntent::automatic:
+                if (node.kind == LogicalGraphNodeKind::render) {
+                    resource.uses.attachment_access = true;
+                }
+                break;
+            case LogicalAccessIntent::sampled:
+                resource.uses.sampled_access = true;
+                break;
+            case LogicalAccessIntent::attachment:
+                resource.uses.attachment_access = true;
+                break;
+            case LogicalAccessIntent::storage:
+                resource.uses.storage_access = true;
+                break;
+            case LogicalAccessIntent::transfer:
+                resource.uses.transfer_access = true;
+                break;
+            case LogicalAccessIntent::host:
+                resource.uses.host_access = true;
+                break;
+            }
+            if (writes &&
+                node.kind == LogicalGraphNodeKind::snapshot_copy) {
+                resource.uses.produced_by_snapshot = true;
+            }
+        }
+    }
+
+    if (!result.nodes.empty()) {
+        const auto terminal = result.nodes.size() - 1;
+        for (auto &resource : result.resources) {
+            if (!resource.lifetime.used) continue;
+            if (resource.logical.materialization ==
+                    LogicalMaterializationRequirement::required ||
+                resource.logical.materialization ==
+                    LogicalMaterializationRequirement::external ||
+                resource.pattern.require_store) {
+                resource.lifetime.last_use = terminal;
+            }
+        }
+    }
+
+    for (const auto &resource : result.resources) {
+        result.decisions.push_back(PlanningDecision{
+            "pelican.plan.resource_pattern_bound@1",
+            resource.logical.name,
+            resource.pattern.id,
+            resource.pattern.provenance,
+        });
+    }
+    validateTargetLoweringGraphDialect(
+        result, TargetLoweringStage::canonical_workspace);
+    return result;
+}
+
+void validateTargetLoweringGraphDialect(
+    const TargetLoweringGraph &graph,
+    TargetLoweringStage expected_stage) {
+    requireNonEmpty(graph.name, "target lowering graph name");
+    if (graph.stage != expected_stage) {
+        throw std::runtime_error(
+            "target lowering graph stage mismatch: expected " +
+            std::string{targetLoweringStageName(expected_stage)} +
+            ", got " +
+            std::string{targetLoweringStageName(graph.stage)});
+    }
+    const auto expected = expectedDialect(expected_stage);
+    std::set<std::string, std::less<>> nodes;
+    for (const auto &node : graph.nodes) {
+        requireNonEmpty(node.logical.name,
+                        "target lowering node name");
+        if (!nodes.insert(node.logical.name).second) {
+            throw std::runtime_error(
+                "duplicate target lowering node: " +
+                node.logical.name);
+        }
+        if (node.dialect != expected) {
+            throw std::runtime_error(
+                "target lowering dialect is illegal at stage '" +
+                std::string{targetLoweringStageName(expected_stage)} +
+                "': node '" + node.logical.name + "' is '" +
+                std::string{targetIrDialectName(node.dialect)} +
+                "', expected '" +
+                std::string{targetIrDialectName(expected)} + "'");
+        }
+        if (node.source_nodes.empty()) {
+            throw std::runtime_error(
+                "target lowering node lacks canonical provenance: " +
+                node.logical.name);
+        }
+    }
+    std::set<std::string, std::less<>> resources;
+    for (const auto &resource : graph.resources) {
+        requireNonEmpty(resource.logical.name,
+                        "target lowering resource name");
+        if (!resources.insert(resource.logical.name).second) {
+            throw std::runtime_error(
+                "duplicate target lowering resource: " +
+                resource.logical.name);
+        }
+        if (resource.dialect != expected) {
+            throw std::runtime_error(
+                "target lowering dialect is illegal at stage '" +
+                std::string{targetLoweringStageName(expected_stage)} +
+                "': resource '" + resource.logical.name + "' is '" +
+                std::string{targetIrDialectName(resource.dialect)} +
+                "', expected '" +
+                std::string{targetIrDialectName(expected)} + "'");
+        }
+    }
+}
+
+void lowerTargetExecutionDialect(TargetLoweringGraph &graph) {
+    validateTargetLoweringGraphDialect(
+        graph, TargetLoweringStage::canonical_workspace);
+    for (auto &node : graph.nodes) {
+        node.dialect = TargetIrDialect::execution_gpu;
+    }
+    for (auto &resource : graph.resources) {
+        resource.dialect = TargetIrDialect::execution_gpu;
+    }
+    graph.stage = TargetLoweringStage::target_execution_complete;
+    graph.decisions.push_back(PlanningDecision{
+        "pelican.plan.dialect_lowered@1", graph.name,
+        "execution.gpu", "logical operations were eliminated from the "
+                         "disposable target workspace",
+    });
+    validateTargetLoweringGraphDialect(
+        graph, TargetLoweringStage::target_execution_complete);
+}
+
+void lowerVulkanPhysicalDialect(TargetLoweringGraph &graph) {
+    validateTargetLoweringGraphDialect(
+        graph, TargetLoweringStage::target_execution_complete);
+    for (auto &node : graph.nodes) {
+        node.dialect = TargetIrDialect::physical_vulkan;
+    }
+    for (auto &resource : graph.resources) {
+        resource.dialect = TargetIrDialect::physical_vulkan;
+    }
+    graph.stage = TargetLoweringStage::vulkan_physical_complete;
+    graph.decisions.push_back(PlanningDecision{
+        "pelican.plan.dialect_lowered@1", graph.name,
+        "physical.vulkan",
+        "execution.gpu operations were eliminated after Vulkan lowering",
+    });
+    validateTargetLoweringGraphDialect(
+        graph, TargetLoweringStage::vulkan_physical_complete);
+}
+
+nlohmann::ordered_json targetLoweringGraphToJson(
+    const TargetLoweringGraph &graph) {
+    validateTargetLoweringGraphDialect(graph, graph.stage);
+    nlohmann::ordered_json result{
+        {"schema", "pelican.target_lowering_graph"},
+        {"version", 1},
+        {"graph", graph.name},
+        {"stage", targetLoweringStageName(graph.stage)},
+    };
+    result["nodes"] = nlohmann::ordered_json::array();
+    for (const auto &node : graph.nodes) {
+        result["nodes"].push_back(nlohmann::ordered_json{
+            {"name", node.logical.name},
+            {"kind", logicalGraphNodeKindName(node.logical.kind)},
+            {"dialect", targetIrDialectName(node.dialect)},
+            {"sources", node.source_nodes},
+            {"regions", node.logical.region_tags},
+            {"required_physical_features",
+             node.required_physical_features},
+        });
+    }
+    result["resources"] = nlohmann::ordered_json::array();
+    for (const auto &resource : graph.resources) {
+        nlohmann::ordered_json lifetime{
+            {"used", resource.lifetime.used}};
+        if (resource.lifetime.used) {
+            lifetime["first_use"] = resource.lifetime.first_use;
+            lifetime["last_use"] = resource.lifetime.last_use;
+        }
+        nlohmann::ordered_json formats =
+            nlohmann::ordered_json::array();
+        for (const auto &candidate :
+             resource.pattern.format_candidates) {
+            formats.push_back(nlohmann::ordered_json{
+                {"format", candidate.format},
+                {"required_capabilities",
+                 candidate.required_capabilities},
+            });
+        }
+        result["resources"].push_back(nlohmann::ordered_json{
+            {"name", resource.logical.name},
+            {"dialect", targetIrDialectName(resource.dialect)},
+            {"type", logicalTypeToJson(resource.logical.type)},
+            {"logical_materialization",
+             logicalMaterializationRequirementName(
+                 resource.logical.materialization)},
+            {"pattern",
+             nlohmann::ordered_json{
+                 {"id", resource.pattern.id},
+                 {"formats", std::move(formats)},
+                 {"prefer_transient",
+                  resource.pattern.prefer_transient},
+                 {"allow_tile_local",
+                  resource.pattern.allow_tile_local},
+                 {"allow_alias", resource.pattern.allow_alias},
+                 {"require_store", resource.pattern.require_store},
+                 {"local_read_fallback",
+                  resourcePatternFallbackName(
+                      resource.pattern.local_read_fallback)},
+                 {"estimated_bytes",
+                  resource.pattern.estimated_bytes},
+                 {"provenance", resource.pattern.provenance},
+             }},
+            {"uses",
+             nlohmann::ordered_json{
+                 {"read", resource.uses.read},
+                 {"written", resource.uses.written},
+                 {"attachment_access",
+                  resource.uses.attachment_access},
+                 {"sampled_access",
+                  resource.uses.sampled_access},
+                 {"storage_access",
+                  resource.uses.storage_access},
+                 {"transfer_access",
+                  resource.uses.transfer_access},
+                 {"host_access", resource.uses.host_access},
+                 {"non_render_access",
+                  resource.uses.non_render_access},
+                 {"produced_by_snapshot",
+                  resource.uses.produced_by_snapshot},
+                 {"widest_read",
+                  logicalReadFootprintKindName(
+                      resource.uses.widest_read)},
+             }},
+            {"lifetime", std::move(lifetime)},
+            {"required_physical_features",
+             resource.required_physical_features},
+        });
+    }
+    result["decisions"] = nlohmann::ordered_json::array();
+    for (const auto &decision : graph.decisions) {
+        result["decisions"].push_back(nlohmann::ordered_json{
+            {"id", decision.id},
+            {"subject", decision.subject},
+            {"selected", decision.selected},
+            {"detail", decision.detail},
+        });
+    }
+    return result;
+}
+
+std::string_view vulkanResourceRepresentationName(
+    VulkanResourceRepresentation representation) {
+    switch (representation) {
+    case VulkanResourceRepresentation::materialized_image:
+        return "materialized_image";
+    case VulkanResourceRepresentation::materialized_buffer:
+        return "materialized_buffer";
+    case VulkanResourceRepresentation::transient_attachment:
+        return "transient_attachment";
+    case VulkanResourceRepresentation::tile_local_attachment:
+        return "tile_local_attachment";
+    case VulkanResourceRepresentation::external:
+        return "external";
+    }
+    throw std::runtime_error(
+        "unknown Vulkan resource representation");
+}
+
+std::string_view vulkanPhysicalScopeKindName(
+    VulkanPhysicalScopeKind kind) {
+    switch (kind) {
+    case VulkanPhysicalScopeKind::rendering: return "rendering";
+    case VulkanPhysicalScopeKind::compute: return "compute";
+    case VulkanPhysicalScopeKind::transfer: return "transfer";
+    case VulkanPhysicalScopeKind::output: return "output";
+    case VulkanPhysicalScopeKind::marker: return "marker";
+    }
+    throw std::runtime_error("unknown Vulkan physical scope kind");
+}
+
+namespace {
+
+std::vector<VulkanPhysicalScopePlan> buildPhysicalScopes(
+    const CompiledLogicalRenderGraph &canonical_graph,
+    const TargetLoweringGraph &workspace,
+    std::span<const VulkanPhysicalResourcePlan> resources,
+    bool tile_candidate, const PlanningProfile &profile,
+    std::span<const PlanningNodeConstraint> node_constraints,
+    std::vector<PlanningDecision> &decisions) {
+    std::map<std::string, const LogicalGraphNode *, std::less<>>
+        nodes;
+    for (const auto &node : workspace.nodes) {
+        nodes.emplace(node.logical.name, &node.logical);
+    }
+    std::map<std::string, std::vector<LogicalDataEdge>, std::less<>>
+        incoming_edges;
+    for (const auto &edge :
+         deriveLogicalDataEdges(canonical_graph)) {
+        incoming_edges[edge.consumer_node].push_back(edge);
+    }
+    const auto constraints = nodeConstraintMap(node_constraints);
+
+    std::vector<VulkanPhysicalScopePlan> result;
+    for (const auto &lowering_node : workspace.nodes) {
+        const auto &node = lowering_node.logical;
+        const auto kind = physicalScopeKind(node.kind);
+        bool fuse = false;
+        std::vector<std::string> local_reads;
+        if (tile_candidate &&
+            profile.kind !=
+                PlanningProfileKind::conservative_debug &&
+            kind == VulkanPhysicalScopeKind::rendering &&
+            !result.empty() &&
+            result.back().kind ==
+                VulkanPhysicalScopeKind::rendering &&
+            !constraintBlocksFusion(constraints, node.name)) {
+            bool current_scope_blocked = false;
+            for (const auto &scope_node : result.back().nodes) {
+                if (constraintBlocksFusion(constraints,
+                                           scope_node)) {
+                    current_scope_blocked = true;
+                    break;
+                }
+            }
+            if (!current_scope_blocked) {
+                const std::set<std::string, std::less<>>
+                    current_nodes(result.back().nodes.begin(),
+                                  result.back().nodes.end());
+                std::vector<const LogicalDataEdge *> crossing;
+                if (const auto found =
+                        incoming_edges.find(node.name);
+                    found != incoming_edges.end()) {
+                    for (const auto &edge : found->second) {
+                        if (current_nodes.contains(
+                                edge.producer_node)) {
+                            crossing.push_back(&edge);
+                        }
+                    }
+                }
+                fuse = !crossing.empty();
+                for (const auto *edge : crossing) {
+                    const auto *resource = findPhysicalResource(
+                        resources, edge->value.resource);
+                    const auto *use =
+                        findNodeUse(node, edge->consumer_port);
+                    const auto attachment_read_write =
+                        resource != nullptr && use != nullptr &&
+                        resource->representation ==
+                            VulkanResourceRepresentation::
+                                materialized_image &&
+                        use->access ==
+                            LogicalAccessMode::read_write &&
+                        use->footprint.kind ==
+                            LogicalReadFootprintKind::
+                                same_pixel &&
+                        (use->intent ==
+                             LogicalAccessIntent::automatic ||
+                         use->intent ==
+                             LogicalAccessIntent::attachment);
+                    const auto tile_local =
+                        resource != nullptr &&
+                        resource->representation ==
+                            VulkanResourceRepresentation::
+                                tile_local_attachment;
+                    if (!tile_local && !attachment_read_write) {
+                        fuse = false;
+                        break;
+                    }
+                    if (tile_local) {
+                        local_reads.push_back(
+                            edge->value.resource);
+                    }
+                }
+            }
+        }
+
+        if (fuse) {
+            auto &scope = result.back();
+            scope.nodes.push_back(node.name);
+            scope.local_reads.insert(scope.local_reads.end(),
+                                     local_reads.begin(),
+                                     local_reads.end());
+            scope.region_tags.insert(scope.region_tags.end(),
+                                     node.region_tags.begin(),
+                                     node.region_tags.end());
+            sortAndUnique(scope.local_reads);
+            sortAndUnique(scope.region_tags);
+            decisions.push_back(PlanningDecision{
+                "pelican.plan.rendering_scope_fused@1",
+                node.name, scope.id,
+                "typed resource access allowed fusion; region tags "
+                "were retained only as provenance",
+            });
+        } else {
+            VulkanPhysicalScopePlan scope{
+                .id = "scope:" +
+                      std::to_string(result.size()),
+                .kind = kind,
+                .nodes = {node.name},
+                .region_tags = node.region_tags,
+            };
+            sortAndUnique(scope.region_tags);
+            result.push_back(std::move(scope));
+        }
+    }
+    return result;
+}
+
+CandidateDraft buildCandidateDraft(
+    const CompiledLogicalRenderGraph &canonical_graph,
+    const TargetLoweringGraph &workspace,
+    const TargetEndpoint &endpoint, bool tile_candidate,
+    const VulkanTargetPlanRequest &request) {
+    CandidateDraft result;
+    result.name = std::string{
+        tile_candidate ? kTileLocalCandidate
+                       : kMaterializedCandidate};
+    result.required_features = {
+        std::string{kGraphicsCapability},
+        std::string{kSampledImageCapability},
+    };
+    if (tile_candidate) {
+        result.required_features.insert(
+            result.required_features.end(),
+            {std::string{kTileBasedCapability},
+             std::string{kLocalReadCapability},
+             std::string{kTransientAttachmentCapability}});
+    }
+
+    result.resources.reserve(workspace.resources.size());
+    for (const auto &resource : workspace.resources) {
+        if (!resource.lifetime.used) {
+            result.decisions.push_back(PlanningDecision{
+                "pelican.plan.resource_purged@1",
+                resource.logical.name, "unused",
+                "resource has no use in the canonical graph",
+            });
+            continue;
+        }
+
+        const auto selected_format =
+            selectFormat(resource.pattern, endpoint,
+                         resource.logical.type.constructor);
+        const auto image =
+            resource.logical.type.constructor ==
+            LogicalTypeConstructor::image;
+        const auto buffer =
+            resource.logical.type.constructor ==
+            LogicalTypeConstructor::buffer;
+        const auto external =
+            resource.logical.materialization ==
+            LogicalMaterializationRequirement::external;
+        const auto read_requires_materialization =
+            resource.uses.widest_read ==
+                LogicalReadFootprintKind::neighborhood ||
+            resource.uses.widest_read ==
+                LogicalReadFootprintKind::arbitrary ||
+            resource.uses.widest_read ==
+                LogicalReadFootprintKind::temporal;
+        const auto tile_local_eligible =
+            tile_candidate && image &&
+            resource.pattern.allow_tile_local &&
+            resource.uses.read && resource.uses.written &&
+            resource.uses.widest_read ==
+                LogicalReadFootprintKind::same_pixel &&
+            resource.uses.attachment_access &&
+            !resource.uses.storage_access &&
+            !resource.uses.transfer_access &&
+            !resource.uses.host_access &&
+            !resource.uses.non_render_access &&
+            !resource.uses.produced_by_snapshot &&
+            resource.logical.materialization !=
+                LogicalMaterializationRequirement::required &&
+            !external && !resource.pattern.require_store;
+
+        VulkanResourceRepresentation representation;
+        if (external) {
+            representation =
+                VulkanResourceRepresentation::external;
+        } else if (buffer) {
+            representation =
+                VulkanResourceRepresentation::
+                    materialized_buffer;
+        } else if (!image) {
+            // Semantic Value/ObjectSet/Stream resources remain compile-time
+            // values in this renderer-only slice and create no Vulkan
+            // resource.
+            result.decisions.push_back(PlanningDecision{
+                "pelican.plan.semantic_resource_elided@1",
+                resource.logical.name, "compile_time",
+                "non-image/non-buffer logical value has no Vulkan "
+                "resource in this vertical slice",
+            });
+            continue;
+        } else if (tile_local_eligible) {
+            representation =
+                VulkanResourceRepresentation::
+                    tile_local_attachment;
+        } else if (tile_candidate &&
+                   resource.pattern.prefer_transient &&
+                   resource.uses.written &&
+                   !resource.uses.read &&
+                   resource.logical.materialization ==
+                       LogicalMaterializationRequirement::
+                           virtual_resource &&
+                   !resource.pattern.require_store) {
+            representation =
+                VulkanResourceRepresentation::
+                    transient_attachment;
+        } else {
+            representation =
+                VulkanResourceRepresentation::
+                    materialized_image;
+        }
+
+        const auto tile_local_was_requested =
+            tile_candidate && image &&
+            resource.pattern.allow_tile_local &&
+            resource.uses.read && resource.uses.written &&
+            resource.logical.materialization !=
+                LogicalMaterializationRequirement::required &&
+            !external;
+        if (tile_local_was_requested &&
+            !tile_local_eligible &&
+            resource.pattern.local_read_fallback ==
+                ResourcePatternFallback::reject &&
+            !resource.uses.produced_by_snapshot) {
+            result.failures.push_back(
+                BackendConstraintFailure{
+                    "pelican.plan.tile_local_required@1",
+                    resource.logical.name,
+                    "ResourcePattern rejects materialization fallback "
+                    "for read footprint '" +
+                        std::string{
+                            logicalReadFootprintKindName(
+                                resource.uses.widest_read)} +
+                        "'",
+                });
+        } else if (tile_local_was_requested &&
+                   !tile_local_eligible) {
+            result.diagnostics.push_back(PlanningDiagnostic{
+                "pelican.plan.tile_local_fallback@1",
+                PlanningDiagnosticSeverity::info,
+                resource.logical.name,
+                materializationReason(
+                    resource, tile_candidate,
+                    tile_local_eligible, representation),
+            });
+        }
+
+        std::vector<std::string> required_features =
+            selected_format.required_capabilities;
+        if (representation ==
+                VulkanResourceRepresentation::
+                    materialized_image ||
+            representation ==
+                VulkanResourceRepresentation::external) {
+            required_features.push_back(
+                std::string{kSampledImageCapability});
+        } else if (representation ==
+                   VulkanResourceRepresentation::
+                       materialized_buffer) {
+            required_features.push_back(
+                std::string{kStorageBufferCapability});
+        } else if (representation ==
+                   VulkanResourceRepresentation::
+                       tile_local_attachment) {
+            required_features.insert(
+                required_features.end(),
+                {std::string{kTileBasedCapability},
+                 std::string{kLocalReadCapability},
+                 std::string{
+                     kTransientAttachmentCapability}});
+        } else if (representation ==
+                   VulkanResourceRepresentation::
+                       transient_attachment) {
+            required_features.push_back(
+                std::string{
+                    kTransientAttachmentCapability});
+        }
+        if (resource.uses.produced_by_snapshot ||
+            resource.uses.transfer_access) {
+            required_features.push_back(
+                std::string{kTransferCopyCapability});
+        }
+        canonicalizeCapabilities(
+            required_features,
+            "lowered resource physical feature");
+        result.required_features.insert(
+            result.required_features.end(),
+            required_features.begin(), required_features.end());
+
+        const auto stored =
+            representation ==
+                VulkanResourceRepresentation::external ||
+            representation ==
+                VulkanResourceRepresentation::
+                    materialized_image ||
+            representation ==
+                VulkanResourceRepresentation::
+                    materialized_buffer;
+        const auto aliasable =
+            isMaterialized(representation) &&
+            representation !=
+                VulkanResourceRepresentation::external &&
+            resource.pattern.allow_alias &&
+            !resource.pattern.require_store &&
+            resource.logical.materialization !=
+                LogicalMaterializationRequirement::external &&
+            resource.uses.widest_read !=
+                LogicalReadFootprintKind::temporal;
+        const auto reason = materializationReason(
+            resource, tile_candidate, tile_local_eligible,
+            representation);
+        result.resources.push_back(
+            VulkanPhysicalResourcePlan{
+                .logical_resource = resource.logical.name,
+                .pattern = resource.pattern.id,
+                .format = selected_format.format,
+                .representation = representation,
+                .widest_read = resource.uses.widest_read,
+                .lifetime = resource.lifetime,
+                .stored = stored,
+                .aliasable = aliasable,
+                .required_physical_features =
+                    std::move(required_features),
+                .reason = reason,
+            });
+        result.decisions.push_back(PlanningDecision{
+            "pelican.plan.resource_format_selected@1",
+            resource.logical.name, selected_format.format,
+            selected_format.format.empty()
+                ? "resource constructor has no image format"
+                : "highest-priority format candidate supported by "
+                  "endpoint facts",
+        });
+        result.decisions.push_back(PlanningDecision{
+            "pelican.plan.resource_representation@1",
+            resource.logical.name,
+            std::string{vulkanResourceRepresentationName(
+                representation)},
+            reason,
+        });
+        if (read_requires_materialization &&
+            representation !=
+                VulkanResourceRepresentation::
+                    materialized_image) {
+            result.failures.push_back(
+                BackendConstraintFailure{
+                    "pelican.plan.read_footprint_not_materialized@1",
+                    resource.logical.name,
+                    "read footprint requires a materialized image",
+                });
+        }
+    }
+    std::sort(
+        result.resources.begin(), result.resources.end(),
+        [](const VulkanPhysicalResourcePlan &left,
+           const VulkanPhysicalResourcePlan &right) {
+            return left.logical_resource <
+                   right.logical_resource;
+        });
+
+    for (const auto &node : workspace.nodes) {
+        if (node.logical.kind ==
+            LogicalGraphNodeKind::snapshot_copy) {
+            result.required_features.push_back(
+                std::string{kTransferCopyCapability});
+        } else if (node.logical.kind ==
+                   LogicalGraphNodeKind::compute) {
+            result.required_features.push_back(
+                std::string{kStorageBufferCapability});
+        }
+    }
+    canonicalizeCapabilities(
+        result.required_features,
+        "target candidate physical feature");
+    result.scopes = buildPhysicalScopes(
+        canonical_graph, workspace, result.resources,
+        tile_candidate, request.profile,
+        request.node_constraints, result.decisions);
+
+    for (const auto &resource : result.resources) {
+        if (isMaterialized(resource.representation)) {
+            ++result.cost.materialized_resources;
+        }
+        if (resource.stored) ++result.cost.external_stores;
+        if (resource.representation ==
+                VulkanResourceRepresentation::
+                    tile_local_attachment ||
+            resource.representation ==
+                VulkanResourceRepresentation::
+                    transient_attachment) {
+            const auto lowering = std::lower_bound(
+                workspace.resources.begin(),
+                workspace.resources.end(),
+                resource.logical_resource,
+                [](const TargetLoweringResource &entry,
+                   std::string_view name) {
+                    return entry.logical.name < name;
+                });
+            if (lowering != workspace.resources.end() &&
+                lowering->logical.name ==
+                    resource.logical_resource) {
+                result.cost.transient_bytes +=
+                    lowering->pattern.estimated_bytes;
+            }
+        }
+    }
+    result.cost.rendering_scopes =
+        static_cast<std::uint32_t>(std::count_if(
+            result.scopes.begin(), result.scopes.end(),
+            [](const VulkanPhysicalScopePlan &scope) {
+                return scope.kind ==
+                       VulkanPhysicalScopeKind::rendering;
+            }));
+    result.cost.bandwidth_class = tile_candidate ? 1 : 3;
+    return result;
+}
+
+std::uint32_t maximumColorAttachmentCount(
+    const CompiledLogicalRenderGraph &graph) {
+    std::map<std::string, const LogicalResourceDesc *, std::less<>>
+        resources;
+    for (const auto &resource : graph.resources) {
+        resources.emplace(resource.name, &resource);
+    }
+    std::uint32_t maximum = 0;
+    for (const auto &node : graph.nodes) {
+        if (node.kind != LogicalGraphNodeKind::render) continue;
+        std::set<std::string, std::less<>> attachments;
+        for (const auto &use : node.uses) {
+            if (!use.output_value) continue;
+            const auto resource =
+                resources.find(use.output_value->resource);
+            if (resource == resources.end() ||
+                resource->second->type.constructor !=
+                    LogicalTypeConstructor::image) {
+                continue;
+            }
+            if (semanticTypeIdName(
+                    resource->second->type.semantic) ==
+                "pelican.render.depth@1") {
+                continue;
+            }
+            if (use.intent == LogicalAccessIntent::automatic ||
+                use.intent == LogicalAccessIntent::attachment) {
+                attachments.insert(
+                    use.output_value->resource);
+            }
+        }
+        maximum = std::max(
+            maximum,
+            static_cast<std::uint32_t>(
+                attachments.size()));
+    }
+    return maximum;
+}
+
+void applyAttachmentBudget(
+    CandidateDraft &candidate,
+    const CompiledLogicalRenderGraph &graph,
+    const TargetEndpoint &endpoint) {
+    const auto budget = endpointUnsignedFact(
+        endpoint, kColorAttachmentBudgetFact);
+    if (!budget) return;
+    const auto required =
+        maximumColorAttachmentCount(graph);
+    if (required > *budget) {
+        candidate.failures.push_back(
+            BackendConstraintFailure{
+                "pelican.plan.color_attachment_budget_exceeded@1",
+                candidate.name,
+                "logical render pass requires " +
+                    std::to_string(required) +
+                    " color attachments but endpoint '" +
+                    endpoint.id + "' reports budget " +
+                    std::to_string(*budget),
+            });
+    }
+}
+
+BackendProbeResult probeCandidate(
+    const TargetTopologySnapshot &topology,
+    const CompilerProviderRegistrySnapshot &providers,
+    const VulkanTargetPlanRequest &request,
+    const CandidateDraft &draft) {
+    BackendProbeInput input{
+        .candidate = draft.name,
+        .provider = request.provider,
+        .endpoint = request.endpoint,
+        .required_endpoint_capabilities =
+            draft.required_features,
+        .required_physical_features =
+            draft.required_features,
+        .cost = draft.cost,
+        .diagnostics = draft.diagnostics,
+    };
+    auto result = probeVulkanBackend(
+        topology, providers, std::move(input));
+    result.failures.insert(result.failures.end(),
+                           draft.failures.begin(),
+                           draft.failures.end());
+    std::sort(
+        result.failures.begin(), result.failures.end(),
+        [](const BackendConstraintFailure &left,
+           const BackendConstraintFailure &right) {
+            return std::tie(left.id, left.subject, left.detail) <
+                   std::tie(right.id, right.subject,
+                            right.detail);
+        });
+    result.feasible = result.failures.empty();
+    return result;
+}
+
+bool lifetimesDoNotOverlap(const TargetResourceLifetime &left,
+                           const TargetResourceLifetime &right) {
+    return left.used && right.used &&
+           (left.last_use < right.first_use ||
+            right.last_use < left.first_use);
+}
+
+std::vector<PlanningNamePair> deriveLegalAliasCandidates(
+    const TargetLoweringGraph &workspace,
+    std::span<const VulkanPhysicalResourcePlan> resources) {
+    std::vector<PlanningNamePair> result;
+    for (std::size_t left = 0; left < resources.size(); ++left) {
+        if (!resources[left].aliasable) continue;
+        for (std::size_t right = left + 1;
+             right < resources.size(); ++right) {
+            if (!resources[right].aliasable ||
+                resources[left].representation !=
+                    resources[right].representation ||
+                resources[left].format !=
+                    resources[right].format ||
+                !lifetimesDoNotOverlap(
+                    resources[left].lifetime,
+                    resources[right].lifetime)) {
+                continue;
+            }
+            const auto left_logical = std::lower_bound(
+                workspace.resources.begin(),
+                workspace.resources.end(),
+                resources[left].logical_resource,
+                [](const TargetLoweringResource &entry,
+                   std::string_view name) {
+                    return entry.logical.name < name;
+                });
+            const auto right_logical = std::lower_bound(
+                workspace.resources.begin(),
+                workspace.resources.end(),
+                resources[right].logical_resource,
+                [](const TargetLoweringResource &entry,
+                   std::string_view name) {
+                    return entry.logical.name < name;
+                });
+            if (left_logical == workspace.resources.end() ||
+                right_logical == workspace.resources.end() ||
+                left_logical->logical.type.constructor !=
+                    right_logical->logical.type.constructor) {
+                continue;
+            }
+            result.push_back(PlanningNamePair{
+                resources[left].logical_resource,
+                resources[right].logical_resource,
+            });
+        }
+    }
+    sortAndUnique(result);
+    return result;
+}
+
+std::vector<VulkanAliasGroupPlan> buildAliasGroups(
+    std::span<const PlanningNamePair> selected_pairs) {
+    std::set<PlanningNamePair> legal(selected_pairs.begin(),
+                                     selected_pairs.end());
+    std::vector<std::vector<std::string>> groups;
+    const auto pair_is_legal =
+        [&](std::string_view left, std::string_view right) {
+            PlanningNamePair pair{std::string{left},
+                                  std::string{right}};
+            if (pair.second < pair.first) {
+                std::swap(pair.first, pair.second);
+            }
+            return legal.contains(pair);
+        };
+
+    for (const auto &pair : selected_pairs) {
+        auto left_group = groups.end();
+        auto right_group = groups.end();
+        for (auto iterator = groups.begin();
+             iterator != groups.end(); ++iterator) {
+            if (std::find(iterator->begin(), iterator->end(),
+                          pair.first) != iterator->end()) {
+                left_group = iterator;
+            }
+            if (std::find(iterator->begin(), iterator->end(),
+                          pair.second) != iterator->end()) {
+                right_group = iterator;
+            }
+        }
+        if (left_group == groups.end() &&
+            right_group == groups.end()) {
+            groups.push_back({pair.first, pair.second});
+        } else if (left_group != groups.end() &&
+                   right_group == groups.end()) {
+            if (std::all_of(
+                    left_group->begin(), left_group->end(),
+                    [&](const std::string &member) {
+                        return pair_is_legal(member,
+                                             pair.second);
+                    })) {
+                left_group->push_back(pair.second);
+            }
+        } else if (left_group == groups.end()) {
+            if (std::all_of(
+                    right_group->begin(), right_group->end(),
+                    [&](const std::string &member) {
+                        return pair_is_legal(pair.first,
+                                             member);
+                    })) {
+                right_group->push_back(pair.first);
+            }
+        } else if (left_group != right_group) {
+            const auto compatible = std::all_of(
+                left_group->begin(), left_group->end(),
+                [&](const std::string &left) {
+                    return std::all_of(
+                        right_group->begin(),
+                        right_group->end(),
+                        [&](const std::string &right) {
+                            return pair_is_legal(left, right);
+                        });
+                });
+            if (compatible) {
+                left_group->insert(left_group->end(),
+                                   right_group->begin(),
+                                   right_group->end());
+                groups.erase(right_group);
+            }
+        }
+    }
+
+    for (auto &group : groups) sortAndUnique(group);
+    std::sort(groups.begin(), groups.end());
+    std::vector<VulkanAliasGroupPlan> result;
+    for (std::size_t index = 0; index < groups.size(); ++index) {
+        result.push_back(VulkanAliasGroupPlan{
+            "alias:" + std::to_string(index),
+            std::move(groups[index]),
+        });
+    }
+    return result;
+}
+
+const BackendProbeResult &selectedProbe(
+    const BackendSelection &selection) {
+    const auto found = std::find_if(
+        selection.candidates.begin(),
+        selection.candidates.end(),
+        [&](const BackendProbeResult &candidate) {
+            return candidate.candidate ==
+                   selection.selected_candidate;
+        });
+    if (found == selection.candidates.end()) {
+        throw std::runtime_error(
+            "backend selection does not contain its selected "
+            "candidate");
+    }
+    return *found;
+}
+
+} // namespace
+
+void validateVulkanPhysicalFeatureClosure(
+    const BackendProbeResult &selected_probe,
+    std::span<const std::string> lowered_required_features) {
+    if (!selected_probe.feasible) {
+        throw std::runtime_error(
+            "physical feature closure requires a feasible selected "
+            "probe");
+    }
+    auto declared =
+        selected_probe.required_physical_features;
+    auto lowered = std::vector<std::string>(
+        lowered_required_features.begin(),
+        lowered_required_features.end());
+    canonicalizeCapabilities(
+        declared, "selected probe physical feature");
+    canonicalizeCapabilities(
+        lowered, "lowered physical feature");
+    std::vector<std::string> growth;
+    std::set_difference(
+        lowered.begin(), lowered.end(), declared.begin(),
+        declared.end(), std::back_inserter(growth));
+    if (!growth.empty()) {
+        std::ostringstream detail;
+        for (std::size_t index = 0; index < growth.size();
+             ++index) {
+            if (index != 0) detail << ", ";
+            detail << growth[index];
+        }
+        throw std::runtime_error(
+            "pelican.plan.lowering_capability_growth@1: selected "
+            "probe for '" +
+            selected_probe.candidate +
+            "' did not declare lowered physical feature(s): " +
+            detail.str());
+    }
+}
+
+VulkanTargetPlan compileVulkanTargetPlan(
+    const LogicalTypeRegistry &types,
+    const CompiledLogicalRenderGraph &canonical_graph,
+    const TargetTopologySnapshot &source_topology,
+    const CompilerProviderRegistrySnapshot &providers,
+    VulkanTargetPlanRequest request) {
+    requireNonEmpty(request.endpoint,
+                    "Vulkan target plan endpoint");
+    requireVersionedName(request.provider,
+                         "Vulkan target plan provider");
+    const auto topology =
+        canonicalizeTargetTopology(source_topology);
+    const auto &endpoint =
+        requireEndpoint(topology, request.endpoint);
+
+    LogicalPlanningOpportunityInput initial_input{
+        .profile = request.profile,
+        .node_constraints = request.node_constraints,
+        .resource_constraints =
+            request.resource_constraints,
+    };
+    const auto initial_opportunities =
+        analyzeLogicalPlanningOpportunities(
+            canonical_graph, initial_input);
+    auto workspace = makeTargetLoweringGraph(
+        types, canonical_graph, request.pattern_bindings,
+        initial_opportunities.node_order);
+
+    auto materialized = buildCandidateDraft(
+        canonical_graph, workspace, endpoint, false, request);
+    auto tile_local = buildCandidateDraft(
+        canonical_graph, workspace, endpoint, true, request);
+    applyAttachmentBudget(materialized, canonical_graph,
+                          endpoint);
+    applyAttachmentBudget(tile_local, canonical_graph,
+                          endpoint);
+
+    auto materialized_probe = probeCandidate(
+        topology, providers, request, materialized);
+    auto tile_probe = probeCandidate(
+        topology, providers, request, tile_local);
+    auto selection = selectBackendCandidate(
+        {std::move(materialized_probe),
+         std::move(tile_probe)},
+        request.diagnostic_policy);
+    const auto selected_name = selection.selected_candidate;
+    const auto &selected_draft =
+        selected_name == tile_local.name ? tile_local
+                                         : materialized;
+    if (selected_name != tile_local.name &&
+        selected_name != materialized.name) {
+        throw std::runtime_error(
+            "target planner selected an unknown finite "
+            "candidate: " +
+            selected_name);
+    }
+
+    const auto legal_aliases = deriveLegalAliasCandidates(
+        workspace, selected_draft.resources);
+    LogicalPlanningOpportunityInput final_input{
+        .profile = request.profile,
+        .node_constraints =
+            std::move(request.node_constraints),
+        .resource_constraints =
+            std::move(request.resource_constraints),
+        .legal_alias_candidates = legal_aliases,
+    };
+    auto opportunities =
+        analyzeLogicalPlanningOpportunities(
+            canonical_graph, std::move(final_input));
+    auto alias_groups =
+        buildAliasGroups(opportunities.alias_candidates);
+
+    std::map<std::string,
+             const VulkanPhysicalResourcePlan *,
+             std::less<>>
+        physical_resources;
+    for (const auto &resource : selected_draft.resources) {
+        physical_resources.emplace(resource.logical_resource,
+                                   &resource);
+    }
+    for (auto &resource : workspace.resources) {
+        if (const auto physical =
+                physical_resources.find(
+                    resource.logical.name);
+            physical != physical_resources.end()) {
+            resource.required_physical_features =
+                physical->second
+                    ->required_physical_features;
+        }
+    }
+    for (auto &node : workspace.nodes) {
+        if (node.logical.kind ==
+            LogicalGraphNodeKind::snapshot_copy) {
+            node.required_physical_features = {
+                std::string{kTransferCopyCapability}};
+        } else if (node.logical.kind ==
+                   LogicalGraphNodeKind::compute) {
+            node.required_physical_features = {
+                std::string{kStorageBufferCapability}};
+        } else {
+            node.required_physical_features = {
+                std::string{kGraphicsCapability}};
+        }
+    }
+
+    lowerTargetExecutionDialect(workspace);
+    validateVulkanPhysicalFeatureClosure(
+        selectedProbe(selection),
+        selected_draft.required_features);
+    lowerVulkanPhysicalDialect(workspace);
+
+    auto decisions = selected_draft.decisions;
+    for (const auto &group : alias_groups) {
+        decisions.push_back(PlanningDecision{
+            "pelican.plan.alias_group_selected@1",
+            group.id, std::to_string(group.resources.size()),
+            "all members have compatible representations and "
+            "pairwise non-overlapping logical lifetimes",
+        });
+    }
+    decisions.push_back(PlanningDecision{
+        "pelican.plan.target_candidate_materialized@1",
+        canonical_graph.name, selection.selected_candidate,
+        "selected probe features were closed before "
+        "physical.vulkan lowering",
+    });
+
+    return VulkanTargetPlan{
+        .graph = canonical_graph.name,
+        .backend_selection = std::move(selection),
+        .opportunities = std::move(opportunities),
+        .lowering_graph = std::move(workspace),
+        .resources = selected_draft.resources,
+        .scopes = selected_draft.scopes,
+        .alias_groups = std::move(alias_groups),
+        .required_physical_features =
+            selected_draft.required_features,
+        .decisions = std::move(decisions),
+    };
+}
+
+nlohmann::ordered_json vulkanTargetPlanToJson(
+    const VulkanTargetPlan &plan) {
+    validateTargetLoweringGraphDialect(
+        plan.lowering_graph,
+        TargetLoweringStage::vulkan_physical_complete);
+    validateVulkanPhysicalFeatureClosure(
+        selectedProbe(plan.backend_selection),
+        plan.required_physical_features);
+
+    nlohmann::ordered_json result{
+        {"schema", "pelican.vulkan_target_plan"},
+        {"version", 1},
+        {"graph", plan.graph},
+        {"backend_selection",
+         backendSelectionToJson(plan.backend_selection)},
+        {"planning_opportunities",
+         logicalPlanningOpportunityReportToJson(
+             plan.opportunities)},
+        {"lowering_graph",
+         targetLoweringGraphToJson(plan.lowering_graph)},
+        {"required_physical_features",
+         plan.required_physical_features},
+    };
+    result["resources"] = nlohmann::ordered_json::array();
+    for (const auto &resource : plan.resources) {
+        nlohmann::ordered_json lifetime{
+            {"used", resource.lifetime.used}};
+        if (resource.lifetime.used) {
+            lifetime["first_use"] =
+                resource.lifetime.first_use;
+            lifetime["last_use"] =
+                resource.lifetime.last_use;
+        }
+        result["resources"].push_back(
+            nlohmann::ordered_json{
+                {"logical_resource",
+                 resource.logical_resource},
+                {"pattern", resource.pattern},
+                {"format", resource.format},
+                {"representation",
+                 vulkanResourceRepresentationName(
+                     resource.representation)},
+                {"widest_read",
+                 logicalReadFootprintKindName(
+                     resource.widest_read)},
+                {"lifetime", std::move(lifetime)},
+                {"stored", resource.stored},
+                {"aliasable", resource.aliasable},
+                {"required_physical_features",
+                 resource.required_physical_features},
+                {"reason", resource.reason},
+            });
+    }
+    result["scopes"] = nlohmann::ordered_json::array();
+    for (const auto &scope : plan.scopes) {
+        result["scopes"].push_back(
+            nlohmann::ordered_json{
+                {"id", scope.id},
+                {"kind",
+                 vulkanPhysicalScopeKindName(scope.kind)},
+                {"nodes", scope.nodes},
+                {"local_reads", scope.local_reads},
+                {"regions", scope.region_tags},
+            });
+    }
+    result["alias_groups"] =
+        nlohmann::ordered_json::array();
+    for (const auto &group : plan.alias_groups) {
+        result["alias_groups"].push_back(
+            nlohmann::ordered_json{
+                {"id", group.id},
+                {"resources", group.resources},
+            });
+    }
+    result["decisions"] = nlohmann::ordered_json::array();
+    for (const auto &decision : plan.decisions) {
+        result["decisions"].push_back(
+            nlohmann::ordered_json{
+                {"id", decision.id},
+                {"subject", decision.subject},
+                {"selected", decision.selected},
+                {"detail", decision.detail},
+            });
+    }
+    return result;
+}
+
+} // namespace Pelican
