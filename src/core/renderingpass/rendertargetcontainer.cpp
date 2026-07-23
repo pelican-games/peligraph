@@ -306,7 +306,7 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
 }
 
 void RenderTargetContainer::recreateForExtent(vk::Extent2D base_extent) {
-    for (const auto &[name, id] : name_to_id) {
+    for (const auto id : registration_order) {
         auto &rt = render_targets.get(id);
         std::array<ImageWrapper, 2> next_images;
         std::array<vk::UniqueImageView, 2> next_views;
@@ -357,8 +357,7 @@ void RenderTargetContainer::recreateForExtent(vk::Extent2D base_extent) {
 
 void RenderTargetContainer::resetHistory() {
     GET_MODULE(VulkanManageCore).waitIdle();
-    for (const auto &[name, id] : name_to_id) {
-        (void)name;
+    for (const auto id : registration_order) {
         auto &rt = render_targets.get(id);
         if (rt.history) clearHistoryImages(rt.images, rt.history_clear_color);
     }
@@ -463,8 +462,9 @@ vk::ImageLayout RenderTargetContainer::initialLayout(
 }
 
 RenderTargetContainer::RegistrationCheckpoint
-RenderTargetContainer::checkpointRegistrations() const noexcept {
-    return RegistrationCheckpoint{registration_order.size()};
+RenderTargetContainer::checkpointRegistrations() const {
+    return RegistrationCheckpoint{
+        registration_order.size(), name_to_id};
 }
 
 void RenderTargetContainer::rollbackRegistrations(
@@ -477,11 +477,10 @@ void RenderTargetContainer::rollbackRegistrations(
     while (registration_order.size() >
            checkpoint.registration_count) {
         const auto id = registration_order.back();
-        const auto &name = render_targets.get(id).name;
-        name_to_id.erase(name);
         (void)render_targets.extract(id, false);
         registration_order.pop_back();
     }
+    name_to_id = std::move(checkpoint.name_to_id);
 }
 
 std::vector<std::pair<std::string, GlobalRenderTargetId>>
@@ -502,6 +501,36 @@ RenderTargetContainer::registrationsSince(
         result.emplace_back(render_targets.get(id).name, id);
     }
     return result;
+}
+
+void RenderTargetContainer::hideRegistrationName(
+    const std::string &name, GlobalRenderTargetId expected) {
+    const auto found = name_to_id.find(name);
+    if (found != name_to_id.end() &&
+        found->second == expected) {
+        name_to_id.erase(found);
+    }
+}
+
+void RenderTargetContainer::retireRegistrations(
+    const std::vector<GlobalRenderTargetId> &ids) noexcept {
+    for (const auto id : ids) {
+        if (!render_targets.contains(id)) continue;
+        const auto name = render_targets.get(id).name;
+        hideRegistrationName(name, id);
+        auto retired = render_targets.extract(id, false);
+        std::erase(registration_order, id);
+        if (!retired) continue;
+        try {
+            auto *queue =
+                FastModuleContainer::tryGet<DeletionQueue>();
+            if (queue != nullptr &&
+                queue->acceptingResources()) {
+                queue->defer(std::move(*retired));
+            }
+        } catch (...) {
+        }
+    }
 }
 
 } // namespace Pelican

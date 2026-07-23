@@ -11,6 +11,8 @@
 #include "../shader/shaderlibrary.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <limits>
 #include <stdexcept>
 #include <unordered_set>
 #include <utility>
@@ -123,21 +125,213 @@ compileRenderPipelineGpuArena(
     candidate->runtime_generation = runtime_generation;
     if (prepared_scope) {
         validatePreparedScope(*prepared_scope);
-        if (candidate->findScope(
-                prepared_scope->owner_scope) != nullptr) {
-            throw std::runtime_error(
-                "Render pipeline GPU owner scope is already published: " +
-                prepared_scope->owner_scope);
-        }
-        candidate->scopes.push_back(
-            RenderPipelineGpuResourceScope{
-                std::move(prepared_scope->owner_scope),
-                std::move(prepared_scope->resources),
-                std::move(prepared_scope->resource_leases),
+        const auto existing = std::find_if(
+            candidate->scopes.begin(),
+            candidate->scopes.end(),
+            [&prepared_scope](const auto &scope) {
+                return scope.owner_scope ==
+                       prepared_scope->owner_scope;
             });
+        RenderPipelineGpuResourceScope replacement{
+            std::move(prepared_scope->owner_scope),
+            std::move(prepared_scope->resources),
+            std::move(prepared_scope->resource_leases),
+        };
+        if (existing != candidate->scopes.end()) {
+            *existing = std::move(replacement);
+        } else {
+            candidate->scopes.push_back(
+                std::move(replacement));
+        }
     }
     return candidate;
 }
+
+namespace {
+
+template <typename Module>
+bool moduleIsLive(Module *module) noexcept {
+    return module != nullptr &&
+           FastModuleContainer::tryGet<Module>() == module;
+}
+
+class ScopeRegistrationLease {
+    RenderPipelineGpuRegistrationDependencies dependencies_;
+    DebugDraw *debug_draw_ = nullptr;
+    DebugText *debug_text_ = nullptr;
+    std::vector<GlobalRenderTargetId> render_targets_;
+    std::vector<FrameGraphBufferId> frame_graph_buffers_;
+    std::vector<ComputeTaskId> compute_tasks_;
+    std::vector<FullscreenPassContainer::PipelineId>
+        fullscreen_passes_;
+    std::vector<ShaderBundleId> shader_bundles_;
+    std::vector<PipelineHandle> pipelines_;
+    std::vector<PassId> debug_draw_passes_;
+    std::vector<PassId> debug_text_passes_;
+    std::vector<PassId> shadow_depth_passes_;
+    std::vector<PassId> velocity_passes_;
+    std::atomic_bool armed_{false};
+
+  public:
+    ScopeRegistrationLease(
+        RenderPipelineGpuRegistrationDependencies dependencies,
+        DebugDraw *debug_draw, DebugText *debug_text,
+        const std::vector<RenderPipelineGpuResourceRegistration>
+            &resources)
+        : dependencies_{dependencies},
+          debug_draw_{debug_draw},
+          debug_text_{debug_text} {
+        for (const auto &resource : resources) {
+            if (resource.handle >
+                std::numeric_limits<int>::max()) {
+                throw std::runtime_error(
+                    "Render pipeline GPU resource handle is too large");
+            }
+            const auto int_handle =
+                static_cast<int>(resource.handle);
+            switch (resource.kind) {
+            case RenderPipelineGpuResourceKind::render_target:
+                render_targets_.push_back(
+                    GlobalRenderTargetId{int_handle});
+                break;
+            case RenderPipelineGpuResourceKind::frame_graph_buffer:
+                frame_graph_buffers_.push_back(
+                    FrameGraphBufferId{int_handle});
+                break;
+            case RenderPipelineGpuResourceKind::shader_bundle:
+                shader_bundles_.push_back(
+                    ShaderBundleId{int_handle});
+                break;
+            case RenderPipelineGpuResourceKind::pipeline:
+                pipelines_.push_back(
+                    PipelineHandle{int_handle});
+                break;
+            case RenderPipelineGpuResourceKind::fullscreen_pass:
+                if (resource.handle >
+                    std::numeric_limits<std::uint32_t>::max()) {
+                    throw std::runtime_error(
+                        "Fullscreen pass handle is too large");
+                }
+                fullscreen_passes_.push_back(
+                    FullscreenPassContainer::PipelineId{
+                        static_cast<std::uint32_t>(
+                            resource.handle)});
+                break;
+            case RenderPipelineGpuResourceKind::compute_task:
+                compute_tasks_.push_back(
+                    ComputeTaskId{int_handle});
+                break;
+            case RenderPipelineGpuResourceKind::debug_draw_pass:
+                debug_draw_passes_.push_back(
+                    PassId{int_handle});
+                break;
+            case RenderPipelineGpuResourceKind::debug_text_pass:
+                debug_text_passes_.push_back(
+                    PassId{int_handle});
+                break;
+            case RenderPipelineGpuResourceKind::shadow_depth_pass:
+                shadow_depth_passes_.push_back(
+                    PassId{int_handle});
+                break;
+            case RenderPipelineGpuResourceKind::velocity_pass:
+                velocity_passes_.push_back(
+                    PassId{int_handle});
+                break;
+            }
+        }
+    }
+
+    void arm() noexcept {
+        armed_.store(true, std::memory_order_release);
+    }
+
+    ~ScopeRegistrationLease() {
+        if (!armed_.load(std::memory_order_acquire)) return;
+
+        // Drop descriptor/pass records before the pipelines and shaders
+        // they reference. Each registry defers its Vulkan payload through
+        // the engine deletion queue when it is still accepting resources.
+        if (moduleIsLive(debug_text_)) {
+            debug_text_->retireRegistrations(
+                debug_text_passes_);
+        }
+        if (moduleIsLive(debug_draw_)) {
+            debug_draw_->retireRegistrations(
+                debug_draw_passes_);
+        }
+        if (moduleIsLive(
+                &dependencies_.velocity_passes)) {
+            dependencies_.velocity_passes.retireRegistrations(
+                velocity_passes_);
+        }
+        if (moduleIsLive(
+                &dependencies_.shadow_depth_passes)) {
+            dependencies_.shadow_depth_passes.retireRegistrations(
+                shadow_depth_passes_);
+        }
+        if (moduleIsLive(
+                &dependencies_.fullscreen_passes)) {
+            dependencies_.fullscreen_passes.retireRegistrations(
+                fullscreen_passes_);
+        }
+        if (moduleIsLive(&dependencies_.compute_tasks)) {
+            dependencies_.compute_tasks.retireRegistrations(
+                compute_tasks_);
+        }
+        if (moduleIsLive(
+                &dependencies_.frame_graph_buffers)) {
+            dependencies_.frame_graph_buffers.retireRegistrations(
+                frame_graph_buffers_);
+        }
+        if (moduleIsLive(&dependencies_.render_targets)) {
+            dependencies_.render_targets.retireRegistrations(
+                render_targets_);
+        }
+        if (moduleIsLive(&dependencies_.pipeline_factory)) {
+            dependencies_.pipeline_factory.retireRegistrations(
+                pipelines_);
+        }
+        if (moduleIsLive(&dependencies_.shader_library)) {
+            dependencies_.shader_library.retireRegistrations(
+                shader_bundles_);
+        }
+    }
+};
+
+void hideReplacedScopeNames(
+    const RenderPipelineGpuResourceScope &scope,
+    RenderPipelineGpuRegistrationDependencies &dependencies) {
+    for (const auto &resource : scope.resources) {
+        if (resource.handle < 0 ||
+            resource.handle >
+                std::numeric_limits<int>::max()) {
+            continue;
+        }
+        const auto handle =
+            static_cast<int>(resource.handle);
+        switch (resource.kind) {
+        case RenderPipelineGpuResourceKind::render_target:
+            dependencies.render_targets.hideRegistrationName(
+                resource.name,
+                GlobalRenderTargetId{handle});
+            break;
+        case RenderPipelineGpuResourceKind::frame_graph_buffer:
+            dependencies.frame_graph_buffers
+                .hideRegistrationName(
+                    resource.name,
+                    FrameGraphBufferId{handle});
+            break;
+        case RenderPipelineGpuResourceKind::compute_task:
+            dependencies.compute_tasks.hideRegistrationName(
+                resource.name, ComputeTaskId{handle});
+            break;
+        default:
+            break;
+        }
+    }
+}
+
+} // namespace
 
 struct RenderPipelineGpuRegistrationArena::Impl {
     RenderPipelineGpuRegistrationDependencies dependencies;
@@ -163,10 +357,13 @@ struct RenderPipelineGpuRegistrationArena::Impl {
     DebugText *debug_text = nullptr;
     std::optional<DebugText::RegistrationCheckpoint>
         debug_text_checkpoint;
+    std::shared_ptr<ScopeRegistrationLease>
+        prepared_ownership;
     bool active = true;
 
     explicit Impl(
-        RenderPipelineGpuRegistrationDependencies dependencies_value)
+        RenderPipelineGpuRegistrationDependencies dependencies_value,
+        const RenderPipelineGpuResourceScope *replaced_scope)
         : dependencies{dependencies_value},
           render_target_checkpoint{
               dependencies.render_targets
@@ -191,7 +388,12 @@ struct RenderPipelineGpuRegistrationArena::Impl {
                   .checkpointRegistrations()},
           velocity_checkpoint{
               dependencies.velocity_passes
-                  .checkpointRegistrations()} {}
+                  .checkpointRegistrations()} {
+        if (replaced_scope != nullptr) {
+            hideReplacedScopeNames(
+                *replaced_scope, dependencies);
+        }
+    }
 
     void rollback() {
         if (!active) return;
@@ -225,8 +427,10 @@ struct RenderPipelineGpuRegistrationArena::Impl {
 
 RenderPipelineGpuRegistrationArena::
     RenderPipelineGpuRegistrationArena(
-        RenderPipelineGpuRegistrationDependencies dependencies)
-    : impl_{std::make_unique<Impl>(dependencies)} {}
+        RenderPipelineGpuRegistrationDependencies dependencies,
+        const RenderPipelineGpuResourceScope *replaced_scope)
+    : impl_{std::make_unique<Impl>(
+          dependencies, replaced_scope)} {}
 
 RenderPipelineGpuRegistrationArena::
     ~RenderPipelineGpuRegistrationArena() {
@@ -271,7 +475,7 @@ void RenderPipelineGpuRegistrationArena::enlist(
 
 RenderPipelineGpuScopePreparation
 RenderPipelineGpuRegistrationArena::preparedScope(
-    std::string owner_scope) const {
+    std::string owner_scope) {
     if (!impl_->active) {
         throw std::runtime_error(
             "Render pipeline GPU registration arena is inactive");
@@ -296,14 +500,13 @@ RenderPipelineGpuRegistrationArena::preparedScope(
         append(RenderPipelineGpuResourceKind::render_target,
                id.value, name);
     }
-    std::int64_t buffer_ordinal = 0;
-    for (const auto &[name, bytes] :
+    for (const auto &[name, id, bytes] :
          impl_->dependencies.frame_graph_buffers
              .registrationsSince(
                  impl_->frame_graph_buffer_checkpoint)) {
         append(
             RenderPipelineGpuResourceKind::frame_graph_buffer,
-            buffer_ordinal++, name,
+            id.value, name,
             static_cast<std::uint64_t>(bytes));
     }
     for (const auto id :
@@ -377,11 +580,25 @@ RenderPipelineGpuRegistrationArena::preparedScope(
                numericResourceName("velocity_pass",
                                    id.value));
     }
+    if (impl_->prepared_ownership != nullptr) {
+        throw std::runtime_error(
+            "Render pipeline GPU scope was prepared more than once");
+    }
+    impl_->prepared_ownership =
+        std::make_shared<ScopeRegistrationLease>(
+            impl_->dependencies, impl_->debug_draw,
+            impl_->debug_text, result.resources);
+    result.resource_leases.push_back(
+        impl_->prepared_ownership);
     return result;
 }
 
 void RenderPipelineGpuRegistrationArena::commit() noexcept {
-    if (impl_) impl_->active = false;
+    if (!impl_) return;
+    if (impl_->prepared_ownership != nullptr) {
+        impl_->prepared_ownership->arm();
+    }
+    impl_->active = false;
 }
 
 void RenderPipelineGpuRegistrationArena::rollback() noexcept {

@@ -16,10 +16,12 @@ DECLARE_MODULE(VelocityPassContainer) {
   private:
     std::unordered_map<int, PipelineVariants> pipelines;
     std::vector<PassId> registration_order;
+    int next_pass_id = 0;
 
   public:
     struct RegistrationCheckpoint {
         std::size_t registration_count = 0;
+        int next_pass_id = 0;
     };
 
     PassId registerVelocityPass(vk::Format color_format, vk::Format depth_format,
@@ -38,6 +40,8 @@ DECLARE_MODULE(VelocityPassContainer) {
     std::size_t registrationCount() const noexcept {
         return registration_order.size();
     }
+    void retireRegistrations(
+        const std::vector<PassId> &ids) noexcept;
 };
 
 } // namespace Pelican

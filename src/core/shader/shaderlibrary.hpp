@@ -189,6 +189,8 @@ DECLARE_MODULE(ShaderLibrary) {
     std::size_t registrationCount() const noexcept {
         return bundle_ids.size();
     }
+    void retireRegistrations(
+        const std::vector<ShaderBundleId> &ids) noexcept;
 };
 
 } // namespace Pelican

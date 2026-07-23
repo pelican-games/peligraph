@@ -8,6 +8,8 @@
 #include <optional>
 #include <array>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 #include <vulkan/vulkan.hpp>
@@ -43,6 +45,8 @@ DECLARE_MODULE(RenderTargetContainer) {
   public:
     struct RegistrationCheckpoint {
         std::size_t registration_count = 0;
+        std::unordered_map<std::string, GlobalRenderTargetId>
+            name_to_id;
     };
 
     RenderTargetContainer();
@@ -82,13 +86,21 @@ DECLARE_MODULE(RenderTargetContainer) {
 
     // Internal append-only transaction surface used by render-config
     // candidate registration.
-    RegistrationCheckpoint checkpointRegistrations() const noexcept;
+    RegistrationCheckpoint checkpointRegistrations() const;
     void rollbackRegistrations(RegistrationCheckpoint checkpoint);
     std::vector<std::pair<std::string, GlobalRenderTargetId>>
     registrationsSince(RegistrationCheckpoint checkpoint) const;
     std::size_t registrationCount() const noexcept {
         return registration_order.size();
     }
+    std::unordered_map<std::string, GlobalRenderTargetId>
+    currentNameBindings() const {
+        return name_to_id;
+    }
+    void hideRegistrationName(const std::string &name,
+                              GlobalRenderTargetId expected);
+    void retireRegistrations(
+        const std::vector<GlobalRenderTargetId> &ids) noexcept;
 
   private:
     uint32_t history_frame_index = 0;

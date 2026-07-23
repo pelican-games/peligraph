@@ -48,10 +48,9 @@ struct RenderPipelineGpuResourceRegistration {
         const RenderPipelineGpuResourceRegistration &) const = default;
 };
 
-// One append-only owner scope prepared by the GPU registration transaction.
-// Type-erased leases are available for registries that can already transfer
-// ownership into the runtime root. The legacy Vulkan registries currently
-// contribute records and remain engine-owned until scope replacement lands.
+// One owner scope candidate prepared by the GPU registration transaction.
+// Its type-erased leases keep the exact registry generation alive after a
+// same-name replacement until every runtime/frame reference releases it.
 struct RenderPipelineGpuScopePreparation {
     std::string owner_scope;
     std::vector<RenderPipelineGpuResourceRegistration> resources;
@@ -65,8 +64,8 @@ struct RenderPipelineGpuResourceScope {
 };
 
 // Immutable metadata and lifetime root paired with a runtime generation.
-// RPE10b1 is append-only: replacing/removing an existing owner scope is
-// deliberately rejected until the scope-aware replacement WP.
+// Recompiling an owner replaces exactly that scope while unrelated scopes
+// and their programs remain available.
 struct RenderPipelineGpuArena {
     std::uint64_t runtime_generation = 0;
     std::vector<RenderPipelineGpuResourceScope> scopes;
@@ -113,16 +112,19 @@ RenderPipelineGpuRegistryCounts inspectRenderPipelineGpuRegistryCounts(
     const DebugDraw *debug_draw = nullptr,
     const DebugText *debug_text = nullptr) noexcept;
 
-// Captures append-only checkpoints across every GPU registry touched by
-// render-config compilation. Unless commit() is called, destruction rolls
-// every enlisted registry back to its exact pre-prepare registration state.
+// Captures checkpoints across every GPU registry touched by render-config
+// compilation. A replacement temporarily hides the old scope's public names
+// while preserving its handle-addressable records. Unless commit() is called,
+// destruction restores the exact pre-prepare registry state.
 class RenderPipelineGpuRegistrationArena {
     struct Impl;
     std::unique_ptr<Impl> impl_;
 
   public:
     explicit RenderPipelineGpuRegistrationArena(
-        RenderPipelineGpuRegistrationDependencies dependencies);
+        RenderPipelineGpuRegistrationDependencies dependencies,
+        const RenderPipelineGpuResourceScope *replaced_scope =
+            nullptr);
     ~RenderPipelineGpuRegistrationArena();
 
     RenderPipelineGpuRegistrationArena(
@@ -138,7 +140,7 @@ class RenderPipelineGpuRegistrationArena {
     void enlist(DebugText &debug_text);
 
     RenderPipelineGpuScopePreparation preparedScope(
-        std::string owner_scope) const;
+        std::string owner_scope);
 
     void commit() noexcept;
     void rollback() noexcept;

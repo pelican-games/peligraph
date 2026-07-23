@@ -78,9 +78,14 @@ DECLARE_MODULE(DeletionQueue) {
     void beginFrame();
     void flushAll();
     void drainForTeardown();
+    bool acceptingResources() const noexcept {
+        return core.acceptingResources();
+    }
     size_t pendingCountForTesting() const { return core.pendingCount(); }
     uint64_t currentFrameForTesting() const { return core.currentFrame(); }
-    bool acceptingResourcesForTesting() const { return core.acceptingResources(); }
+    bool acceptingResourcesForTesting() const {
+        return acceptingResources();
+    }
 };
 
 } // namespace Pelican

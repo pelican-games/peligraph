@@ -3,12 +3,14 @@
 #include "frameplanner.hpp"
 #include "renderingpass.hpp"
 #include "../container.hpp"
+#include "../resourcecontainer.hpp"
 #include "../shader/pipelinefactory.hpp"
 #include "../vkcore/buf.hpp"
 #include <array>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -17,6 +19,7 @@
 namespace Pelican {
 
 class PathResolver;
+class FrameGraphResourceContainer;
 class RenderTargetContainer;
 class RenderTargetLayoutTracker;
 class ShaderLibrary;
@@ -32,6 +35,14 @@ struct ComputeTaskRuntimeDependencies {
     ShaderLibrary &shader_library;
     const PathResolver &path_resolver;
     RenderTargetContainer &render_target_container;
+    FrameGraphResourceContainer &frame_graph_resources;
+};
+
+struct ResolvedComputeResourceBinding {
+    std::string name;
+    bool history_read = false;
+    GlobalRenderTargetId render_target = noRenderTargetId();
+    FrameGraphBufferId buffer = noFrameGraphBufferId();
 };
 
 std::vector<FrameGraphBufferDefinition> parseFrameGraphBufferDefinitionsFromJson(const nlohmann::json &config_json);
@@ -44,12 +55,15 @@ DECLARE_MODULE(FrameGraphResourceContainer) {
         BufferWrapper buffer;
     };
 
-    std::unordered_map<std::string, BufferRecord> buffers;
-    std::vector<std::string> registration_order;
+    ResourceContainer<FrameGraphBufferId, BufferRecord> buffers;
+    std::unordered_map<std::string, FrameGraphBufferId> name_to_id;
+    std::vector<FrameGraphBufferId> registration_order;
 
   public:
     struct RegistrationCheckpoint {
         std::size_t registration_count = 0;
+        std::unordered_map<std::string, FrameGraphBufferId>
+            name_to_id;
     };
 
     FrameGraphResourceContainer();
@@ -57,22 +71,37 @@ DECLARE_MODULE(FrameGraphResourceContainer) {
 
     void registerBuffers(const std::vector<FrameGraphBufferDefinition> &definitions);
     bool hasBuffer(std::string_view name) const;
+    bool hasBuffer(FrameGraphBufferId id) const;
+    FrameGraphBufferId getBufferIdByName(std::string_view name) const;
     const BufferWrapper &buffer(std::string_view name) const;
+    const BufferWrapper &buffer(FrameGraphBufferId id) const;
     vk::DeviceSize bufferSize(std::string_view name) const;
+    vk::DeviceSize bufferSize(FrameGraphBufferId id) const;
     vk::DescriptorBufferInfo descriptorInfo(std::string_view name) const;
+    vk::DescriptorBufferInfo descriptorInfo(FrameGraphBufferId id) const;
 
-    RegistrationCheckpoint checkpointRegistrations() const noexcept;
+    RegistrationCheckpoint checkpointRegistrations() const;
     void rollbackRegistrations(RegistrationCheckpoint checkpoint);
-    std::vector<std::pair<std::string, vk::DeviceSize>>
+    std::vector<std::tuple<std::string, FrameGraphBufferId,
+                           vk::DeviceSize>>
     registrationsSince(RegistrationCheckpoint checkpoint) const;
     std::size_t registrationCount() const noexcept {
         return registration_order.size();
     }
+    std::unordered_map<std::string, FrameGraphBufferId>
+    currentNameBindings() const {
+        return name_to_id;
+    }
+    void hideRegistrationName(const std::string &name,
+                              FrameGraphBufferId expected);
+    void retireRegistrations(
+        const std::vector<FrameGraphBufferId> &ids) noexcept;
 };
 
 DECLARE_MODULE(ComputeTaskContainer) {
     struct TaskRecord {
         ComputeTaskDefinition definition;
+        std::vector<ResolvedComputeResourceBinding> resource_bindings;
         PipelineHandle pipeline;
         std::array<vk::UniqueDescriptorSet, 2> descriptor_sets;
         std::array<std::vector<vk::ImageView>, 2> bound_image_views;
@@ -87,6 +116,7 @@ DECLARE_MODULE(ComputeTaskContainer) {
     std::unordered_map<int, TaskRecord> tasks;
     std::unordered_map<std::string, ComputeTaskId> name_to_id;
     std::vector<ComputeTaskId> registration_order;
+    int next_task_id = 0;
     std::uint64_t next_binding_revision = 1;
 
     struct DescriptorSetRecord {
@@ -95,14 +125,18 @@ DECLARE_MODULE(ComputeTaskContainer) {
     };
     DescriptorSetRecord createDescriptorSet(
         vk::DescriptorPool pool, PipelineHandle pipeline,
-        const ComputeTaskDefinition &definition,
+        const std::vector<ResolvedComputeResourceBinding> &resources,
         RenderTargetContainer &render_target_container,
+        const FrameGraphResourceContainer &frame_graph_resources,
         std::uint32_t frame_index) const;
 
   public:
     struct RegistrationCheckpoint {
         std::size_t registration_count = 0;
         std::uint64_t next_binding_revision = 1;
+        int next_task_id = 0;
+        std::unordered_map<std::string, ComputeTaskId>
+            name_to_id;
     };
 
     ComputeTaskContainer();
@@ -123,20 +157,24 @@ DECLARE_MODULE(ComputeTaskContainer) {
                                         RenderTargetLayoutTracker &layout_tracker) const;
     void dispatch(vk::CommandBuffer cmd_buf, ComputeTaskId task_id) const;
     void bufferReadAfterWriteBarrier(vk::CommandBuffer cmd_buf,
-                                     const std::string &resource,
+                                     FrameGraphBufferId resource,
                                      FramePlanNodeKind from_kind,
                                      FramePlanNodeKind to_kind) const;
     std::vector<vk::ImageView> boundImageViewsForTesting(
         ComputeTaskId task_id, std::uint32_t frame_index) const;
     std::uint64_t bindingRevisionForTesting(ComputeTaskId task_id) const;
 
-    RegistrationCheckpoint checkpointRegistrations() const noexcept;
+    RegistrationCheckpoint checkpointRegistrations() const;
     void rollbackRegistrations(RegistrationCheckpoint checkpoint);
     std::vector<std::pair<std::string, ComputeTaskId>>
     registrationsSince(RegistrationCheckpoint checkpoint) const;
     std::size_t registrationCount() const noexcept {
         return registration_order.size();
     }
+    void hideRegistrationName(const std::string &name,
+                              ComputeTaskId expected);
+    void retireRegistrations(
+        const std::vector<ComputeTaskId> &ids) noexcept;
 };
 
 } // namespace Pelican

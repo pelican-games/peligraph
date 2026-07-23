@@ -1,17 +1,11 @@
 #include "velocitypasscontainer.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <stdexcept>
 
 namespace Pelican {
 namespace {
-
-PassId pipelineIndexToPassId(size_t index) {
-    if (index > static_cast<size_t>(std::numeric_limits<int>::max())) {
-        throw std::runtime_error("Velocity pipeline id is too large");
-    }
-    return PassId{static_cast<int>(index)};
-}
 
 const VelocityPassContainer::PipelineVariants &requirePipeline(
     PassId pass_id,
@@ -29,7 +23,11 @@ PassId VelocityPassContainer::registerVelocityPass(
     std::vector<std::string> shader_defines,
     vk::SampleCountFlagBits samples) {
     registration_order.reserve(registration_order.size() + 1);
-    const auto pass_id = pipelineIndexToPassId(pipelines.size());
+    if (next_pass_id == std::numeric_limits<int>::max()) {
+        throw std::runtime_error(
+            "Velocity pipeline id table is exhausted");
+    }
+    const auto pass_id = PassId{next_pass_id++};
     GraphicsPipelineDesc desc;
     desc.vert = regular_vert;
     desc.frag = frag;
@@ -76,7 +74,8 @@ vk::PipelineLayout VelocityPassContainer::pipelineLayout(PassId pass_id,
 
 VelocityPassContainer::RegistrationCheckpoint
 VelocityPassContainer::checkpointRegistrations() const noexcept {
-    return RegistrationCheckpoint{registration_order.size()};
+    return RegistrationCheckpoint{
+        registration_order.size(), next_pass_id};
 }
 
 void VelocityPassContainer::rollbackRegistrations(
@@ -91,6 +90,7 @@ void VelocityPassContainer::rollbackRegistrations(
         pipelines.erase(registration_order.back().value);
         registration_order.pop_back();
     }
+    next_pass_id = checkpoint.next_pass_id;
 }
 
 std::vector<PassId>
@@ -106,6 +106,14 @@ VelocityPassContainer::registrationsSince(
             static_cast<std::ptrdiff_t>(
                 checkpoint.registration_count),
         registration_order.end()};
+}
+
+void VelocityPassContainer::retireRegistrations(
+    const std::vector<PassId> &ids) noexcept {
+    for (const auto id : ids) {
+        pipelines.erase(id.value);
+        std::erase(registration_order, id);
+    }
 }
 
 } // namespace Pelican

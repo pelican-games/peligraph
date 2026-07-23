@@ -134,34 +134,56 @@ std::vector<ComputeResourceReference> taskResources(
     return resources;
 }
 
-bool resourceExists(const ComputeResourceReference &resource,
-                    RenderTargetContainer &render_target_container) {
-    if (!resource.history_read &&
-        GET_MODULE(FrameGraphResourceContainer).hasBuffer(resource.name)) {
-        return true;
+ResolvedComputeResourceBinding resolveResource(
+    const ComputeResourceReference &resource,
+    RenderTargetContainer &render_target_container,
+    FrameGraphResourceContainer &frame_graph_resources) {
+    if (!resource.history_read) {
+        const auto buffer =
+            frame_graph_resources.getBufferIdByName(resource.name);
+        if (isValidFrameGraphBufferId(buffer)) {
+            return ResolvedComputeResourceBinding{
+                resource.name, false, noRenderTargetId(), buffer};
+        }
     }
-    const auto target = render_target_container.getRenderTargetIdByName(resource.name);
-    if (!isConcreteRenderTarget(target)) {
-        return false;
+    const auto target =
+        render_target_container.getRenderTargetIdByName(resource.name);
+    if (!isConcreteRenderTarget(target) ||
+        (resource.history_read &&
+         !render_target_container.getMetadata(target).history)) {
+        throw std::runtime_error(
+            "Compute task resource not found or invalid: " +
+            resource.authored);
     }
-    return !resource.history_read ||
-           render_target_container.getMetadata(target).history;
+    return ResolvedComputeResourceBinding{
+        resource.name, resource.history_read, target,
+        noFrameGraphBufferId()};
 }
 
-const ComputeResourceReference &resourceForBinding(
+std::vector<ResolvedComputeResourceBinding> resolveTaskResources(
+    const ComputeTaskDefinition &definition,
+    RenderTargetContainer &render_target_container,
+    FrameGraphResourceContainer &frame_graph_resources) {
+    std::vector<ResolvedComputeResourceBinding> result;
+    for (const auto &resource : taskResources(definition)) {
+        result.push_back(resolveResource(
+            resource, render_target_container,
+            frame_graph_resources));
+    }
+    return result;
+}
+
+const ResolvedComputeResourceBinding &resourceForBinding(
     const ReflectedBinding &binding, size_t binding_index,
-    const std::vector<ComputeResourceReference> &resources,
-    RenderTargetContainer &render_target_container) {
+    const std::vector<ResolvedComputeResourceBinding> &resources) {
     if (!binding.name.empty()) {
         const auto named = std::find_if(
             resources.begin(), resources.end(), [&](const auto &resource) {
-                return resource.name == binding.name &&
-                       resourceExists(resource, render_target_container);
+                return resource.name == binding.name;
             });
         if (named != resources.end() &&
             std::none_of(std::next(named), resources.end(), [&](const auto &resource) {
-                return resource.name == binding.name &&
-                       resourceExists(resource, render_target_container);
+                return resource.name == binding.name;
             })) {
             return *named;
         }
@@ -174,6 +196,20 @@ const ComputeResourceReference &resourceForBinding(
     }
     throw std::runtime_error("Compute task descriptor binding does not map to a declared resource: " +
                              binding.name);
+}
+
+template <typename T>
+void deferOrDestroy(T &&resource) noexcept {
+    try {
+        auto *queue = FastModuleContainer::tryGet<DeletionQueue>();
+        if (queue != nullptr &&
+            queue->acceptingResources()) {
+            queue->defer(std::forward<T>(resource));
+        }
+    } catch (...) {
+        // The moved-from value (or the original value when defer failed)
+        // is destroyed by the caller's stack during teardown.
+    }
 }
 
 vk::UniqueDescriptorPool createDescriptorPool(vk::Device device) {
@@ -351,10 +387,9 @@ void FrameGraphResourceContainer::registerBuffers(const std::vector<FrameGraphBu
         if (definition.size == 0) {
             continue;
         }
-        if (buffers.find(definition.name) != buffers.end()) {
+        if (name_to_id.contains(definition.name)) {
             continue;
         }
-        auto registered_name = definition.name;
         registration_order.reserve(
             registration_order.size() + 1);
         auto buffer = vkcore.allocBuf(definition.size,
@@ -363,41 +398,79 @@ void FrameGraphResourceContainer::registerBuffers(const std::vector<FrameGraphBu
                                           vk::BufferUsageFlagBits::eTransferDst,
                                       vma::MemoryUsage::eAutoPreferDevice,
                                       {});
-        const auto [_, inserted] = buffers.emplace(
-            definition.name,
+        const auto id = buffers.reg(
             BufferRecord{definition, std::move(buffer)});
-        if (!inserted) {
-            throw std::runtime_error(
-                "Frame graph buffer name table changed during registration: " +
-                definition.name);
+        try {
+            if (!name_to_id.emplace(definition.name, id).second) {
+                throw std::runtime_error(
+                    "Frame graph buffer name table changed during registration: " +
+                    definition.name);
+            }
+        } catch (...) {
+            (void)buffers.extract(id, false);
+            throw;
         }
-        registration_order.push_back(
-            std::move(registered_name));
+        registration_order.push_back(id);
     }
 }
 
 bool FrameGraphResourceContainer::hasBuffer(std::string_view name) const {
-    return buffers.find(std::string{name}) != buffers.end();
+    return isValidFrameGraphBufferId(getBufferIdByName(name));
+}
+
+bool FrameGraphResourceContainer::hasBuffer(
+    FrameGraphBufferId id) const {
+    return isValidFrameGraphBufferId(id) &&
+           buffers.contains(id);
+}
+
+FrameGraphBufferId
+FrameGraphResourceContainer::getBufferIdByName(
+    std::string_view name) const {
+    const auto found = name_to_id.find(std::string{name});
+    return found != name_to_id.end()
+               ? found->second
+               : noFrameGraphBufferId();
 }
 
 const BufferWrapper &FrameGraphResourceContainer::buffer(std::string_view name) const {
-    const auto found = buffers.find(std::string{name});
-    if (found == buffers.end()) {
+    const auto id = getBufferIdByName(name);
+    if (!isValidFrameGraphBufferId(id)) {
         throw std::runtime_error("Frame graph buffer not found: " + std::string{name});
     }
-    return found->second.buffer;
+    return buffer(id);
+}
+
+const BufferWrapper &FrameGraphResourceContainer::buffer(
+    FrameGraphBufferId id) const {
+    return buffers.get(id).buffer;
 }
 
 vk::DeviceSize FrameGraphResourceContainer::bufferSize(std::string_view name) const {
-    const auto found = buffers.find(std::string{name});
-    if (found == buffers.end()) {
+    const auto id = getBufferIdByName(name);
+    if (!isValidFrameGraphBufferId(id)) {
         throw std::runtime_error("Frame graph buffer not found: " + std::string{name});
     }
-    return found->second.definition.size;
+    return bufferSize(id);
+}
+
+vk::DeviceSize FrameGraphResourceContainer::bufferSize(
+    FrameGraphBufferId id) const {
+    return buffers.get(id).definition.size;
 }
 
 vk::DescriptorBufferInfo FrameGraphResourceContainer::descriptorInfo(std::string_view name) const {
-    const auto &record = buffers.at(std::string{name});
+    const auto id = getBufferIdByName(name);
+    if (!isValidFrameGraphBufferId(id)) {
+        throw std::runtime_error(
+            "Frame graph buffer not found: " + std::string{name});
+    }
+    return descriptorInfo(id);
+}
+
+vk::DescriptorBufferInfo FrameGraphResourceContainer::descriptorInfo(
+    FrameGraphBufferId id) const {
+    const auto &record = buffers.get(id);
     return vk::DescriptorBufferInfo{record.buffer.buffer.get(), 0, record.definition.size};
 }
 
@@ -409,8 +482,9 @@ ComputeTaskContainer::~ComputeTaskContainer() = default;
 
 ComputeTaskContainer::DescriptorSetRecord ComputeTaskContainer::createDescriptorSet(
     vk::DescriptorPool pool, PipelineHandle pipeline,
-    const ComputeTaskDefinition &definition,
+    const std::vector<ResolvedComputeResourceBinding> &resources,
     RenderTargetContainer &render_target_container,
+    const FrameGraphResourceContainer &frame_graph_resources,
     std::uint32_t frame_index) const {
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
     const auto bindings = passInputBindings(pipeline_factory.reflection(pipeline));
@@ -426,7 +500,6 @@ ComputeTaskContainer::DescriptorSetRecord ComputeTaskContainer::createDescriptor
     auto descriptor_sets = device.allocateDescriptorSetsUnique(alloc_info);
     auto descriptor_set = std::move(descriptor_sets.front());
 
-    const auto resources = taskResources(definition);
     std::vector<vk::DescriptorBufferInfo> buffer_infos;
     std::vector<vk::DescriptorImageInfo> image_infos;
     std::vector<vk::WriteDescriptorSet> writes;
@@ -434,15 +507,10 @@ ComputeTaskContainer::DescriptorSetRecord ComputeTaskContainer::createDescriptor
     image_infos.reserve(bindings.size());
     writes.reserve(bindings.size());
 
-    auto &resource_container = GET_MODULE(FrameGraphResourceContainer);
     for (size_t i = 0; i < bindings.size(); ++i) {
         const auto &binding = bindings[i];
         const auto &resource = resourceForBinding(
-            binding, i, resources, render_target_container);
-        if (!resourceExists(resource, render_target_container)) {
-            throw std::runtime_error("Compute task resource not found: " +
-                                     resource.authored);
-        }
+            binding, i, resources);
 
         vk::WriteDescriptorSet write;
         write.dstSet = descriptor_set.get();
@@ -451,27 +519,28 @@ ComputeTaskContainer::DescriptorSetRecord ComputeTaskContainer::createDescriptor
         write.descriptorCount = 1;
         write.descriptorType = binding.type;
 
-        if (resource_container.hasBuffer(resource.name)) {
+        if (isValidFrameGraphBufferId(resource.buffer)) {
             if (resource.history_read) {
                 throw std::runtime_error(
                     "Compute task history resource must be a render target: " +
-                    resource.authored);
+                    resource.name);
             }
             if (binding.type != vk::DescriptorType::eStorageBuffer) {
-                throw std::runtime_error("Compute task buffer binding must be a storage buffer: " + definition.name);
+                throw std::runtime_error("Compute task buffer binding must be a storage buffer");
             }
-            buffer_infos.push_back(resource_container.descriptorInfo(resource.name));
+            buffer_infos.push_back(
+                frame_graph_resources.descriptorInfo(
+                    resource.buffer));
             write.pBufferInfo = &buffer_infos.back();
         } else {
-            const auto rt_id =
-                render_target_container.getRenderTargetIdByName(resource.name);
+            const auto rt_id = resource.render_target;
             if (!isConcreteRenderTarget(rt_id)) {
                 throw std::runtime_error("Compute task resource not found: " +
-                                         resource.authored);
+                                         resource.name);
             }
             if (binding.type != vk::DescriptorType::eStorageImage) {
-                throw std::runtime_error("Compute task render target binding must be a storage image: " +
-                                         definition.name);
+                throw std::runtime_error(
+                    "Compute task render target binding must be a storage image");
             }
             image_infos.push_back(vk::DescriptorImageInfo{
                 {},
@@ -495,8 +564,9 @@ ComputeTaskContainer::DescriptorSetRecord ComputeTaskContainer::createDescriptor
 }
 
 FrameGraphResourceContainer::RegistrationCheckpoint
-FrameGraphResourceContainer::checkpointRegistrations() const noexcept {
-    return RegistrationCheckpoint{registration_order.size()};
+FrameGraphResourceContainer::checkpointRegistrations() const {
+    return RegistrationCheckpoint{
+        registration_order.size(), name_to_id};
 }
 
 void FrameGraphResourceContainer::rollbackRegistrations(
@@ -508,12 +578,15 @@ void FrameGraphResourceContainer::rollbackRegistrations(
     }
     while (registration_order.size() >
            checkpoint.registration_count) {
-        buffers.erase(registration_order.back());
+        (void)buffers.extract(
+            registration_order.back(), false);
         registration_order.pop_back();
     }
+    name_to_id = std::move(checkpoint.name_to_id);
 }
 
-std::vector<std::pair<std::string, vk::DeviceSize>>
+std::vector<std::tuple<std::string, FrameGraphBufferId,
+                       vk::DeviceSize>>
 FrameGraphResourceContainer::registrationsSince(
     RegistrationCheckpoint checkpoint) const {
     if (checkpoint.registration_count >
@@ -521,17 +594,41 @@ FrameGraphResourceContainer::registrationsSince(
         throw std::runtime_error(
             "Frame graph buffer registration checkpoint is invalid");
     }
-    std::vector<std::pair<std::string, vk::DeviceSize>>
+    std::vector<std::tuple<std::string, FrameGraphBufferId,
+                           vk::DeviceSize>>
         result;
     result.reserve(registration_order.size() -
                    checkpoint.registration_count);
     for (std::size_t index = checkpoint.registration_count;
          index < registration_order.size(); ++index) {
-        const auto &name = registration_order[index];
+        const auto id = registration_order[index];
+        const auto &record = buffers.get(id);
         result.emplace_back(
-            name, buffers.at(name).definition.size);
+            record.definition.name, id,
+            record.definition.size);
     }
     return result;
+}
+
+void FrameGraphResourceContainer::hideRegistrationName(
+    const std::string &name, FrameGraphBufferId expected) {
+    const auto found = name_to_id.find(name);
+    if (found != name_to_id.end() &&
+        found->second == expected) {
+        name_to_id.erase(found);
+    }
+}
+
+void FrameGraphResourceContainer::retireRegistrations(
+    const std::vector<FrameGraphBufferId> &ids) noexcept {
+    for (const auto id : ids) {
+        if (!buffers.contains(id)) continue;
+        const auto name = buffers.get(id).definition.name;
+        hideRegistrationName(name, id);
+        auto retired = buffers.extract(id, false);
+        std::erase(registration_order, id);
+        if (retired) deferOrDestroy(std::move(*retired));
+    }
 }
 
 ComputeTaskId ComputeTaskContainer::registerComputeTask(
@@ -541,12 +638,9 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
         return found->second;
     }
 
-    for (const auto &resource : taskResources(definition)) {
-        if (!resourceExists(resource, dependencies.render_target_container)) {
-            throw std::runtime_error("Compute task resource not found or invalid: " +
-                                     resource.authored);
-        }
-    }
+    auto resolved_resources = resolveTaskResources(
+        definition, dependencies.render_target_container,
+        dependencies.frame_graph_resources);
 
     auto &shader_library = dependencies.shader_library;
     const auto shader = shader_library.loadFromReference(definition.shader, dependencies.path_resolver, true);
@@ -556,19 +650,25 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
     std::array<std::vector<vk::ImageView>, 2> bound_image_views;
     for (std::uint32_t frame_index = 0; frame_index < 2; ++frame_index) {
         auto binding = createDescriptorSet(
-            descriptor_pool.get(), pipeline, definition,
-            dependencies.render_target_container, frame_index);
+            descriptor_pool.get(), pipeline,
+            resolved_resources,
+            dependencies.render_target_container,
+            dependencies.frame_graph_resources, frame_index);
         descriptor_sets[frame_index] = std::move(binding.descriptor_set);
         bound_image_views[frame_index] = std::move(binding.bound_image_views);
     }
 
     registration_order.reserve(registration_order.size() + 1);
-    const auto id =
-        ComputeTaskId{static_cast<int>(tasks.size())};
+    if (next_task_id == std::numeric_limits<int>::max()) {
+        throw std::runtime_error(
+            "Compute task handle table is exhausted");
+    }
+    const auto id = ComputeTaskId{next_task_id++};
     const auto [task_it, task_inserted] = tasks.emplace(
         id.value,
         TaskRecord{
             definition,
+            std::move(resolved_resources),
             pipeline,
             std::move(descriptor_sets),
             std::move(bound_image_views),
@@ -605,13 +705,17 @@ void ComputeTaskContainer::rebindRenderTargets(
     };
     std::vector<ReboundTask> rebound;
     rebound.reserve(tasks.size());
+    const auto &frame_graph_resources =
+        GET_MODULE(FrameGraphResourceContainer);
     for (const auto &[id, task] : tasks) {
         ReboundTask next;
         next.id = id;
         for (std::uint32_t frame_index = 0; frame_index < 2; ++frame_index) {
             auto binding = createDescriptorSet(
-                next_pool.get(), task.pipeline, task.definition,
-                render_target_container, frame_index);
+                next_pool.get(), task.pipeline,
+                task.resource_bindings,
+                render_target_container,
+                frame_graph_resources, frame_index);
             next.descriptor_sets[frame_index] =
                 std::move(binding.descriptor_set);
             next.bound_image_views[frame_index] =
@@ -678,11 +782,13 @@ void ComputeTaskContainer::transitionResourcesForDispatch(vk::CommandBuffer cmd_
                                                           RenderTargetContainer &render_target_container,
                                                           VulkanUtils &vk_utils,
                                                           RenderTargetLayoutTracker &layout_tracker) const {
-    const auto &task = definition(task_id);
-    const auto resources = taskResources(task);
-    for (const auto &resource : resources) {
-        const auto rt_id =
-            render_target_container.getRenderTargetIdByName(resource.name);
+    const auto found = tasks.find(task_id.value);
+    if (found == tasks.end()) {
+        throw std::runtime_error("Compute task not found");
+    }
+    for (const auto &resource :
+         found->second.resource_bindings) {
+        const auto rt_id = resource.render_target;
         if (isConcreteRenderTarget(rt_id)) {
             if (layout_tracker.currentLayout(rt_id, resource.history_read,
                                              &render_target_container) ==
@@ -717,7 +823,7 @@ void ComputeTaskContainer::dispatch(vk::CommandBuffer cmd_buf, ComputeTaskId tas
 }
 
 void ComputeTaskContainer::bufferReadAfterWriteBarrier(vk::CommandBuffer cmd_buf,
-                                                       const std::string &resource,
+                                                       FrameGraphBufferId resource,
                                                        FramePlanNodeKind from_kind,
                                                        FramePlanNodeKind to_kind) const {
     const auto &resource_container = GET_MODULE(FrameGraphResourceContainer);
@@ -752,9 +858,10 @@ std::uint64_t ComputeTaskContainer::bindingRevisionForTesting(
 }
 
 ComputeTaskContainer::RegistrationCheckpoint
-ComputeTaskContainer::checkpointRegistrations() const noexcept {
+ComputeTaskContainer::checkpointRegistrations() const {
     return RegistrationCheckpoint{
-        registration_order.size(), next_binding_revision};
+        registration_order.size(), next_binding_revision,
+        next_task_id, name_to_id};
 }
 
 void ComputeTaskContainer::rollbackRegistrations(
@@ -772,12 +879,13 @@ void ComputeTaskContainer::rollbackRegistrations(
             throw std::runtime_error(
                 "Compute task registration log is inconsistent");
         }
-        name_to_id.erase(found->second.definition.name);
         tasks.erase(found);
         registration_order.pop_back();
     }
     next_binding_revision =
         checkpoint.next_binding_revision;
+    next_task_id = checkpoint.next_task_id;
+    name_to_id = std::move(checkpoint.name_to_id);
 }
 
 std::vector<std::pair<std::string, ComputeTaskId>>
@@ -799,6 +907,29 @@ ComputeTaskContainer::registrationsSince(
                             id);
     }
     return result;
+}
+
+void ComputeTaskContainer::hideRegistrationName(
+    const std::string &name, ComputeTaskId expected) {
+    const auto found = name_to_id.find(name);
+    if (found != name_to_id.end() &&
+        found->second == expected) {
+        name_to_id.erase(found);
+    }
+}
+
+void ComputeTaskContainer::retireRegistrations(
+    const std::vector<ComputeTaskId> &ids) noexcept {
+    for (const auto id : ids) {
+        const auto found = tasks.find(id.value);
+        if (found == tasks.end()) continue;
+        hideRegistrationName(
+            found->second.definition.name, id);
+        auto retired = std::move(found->second);
+        tasks.erase(found);
+        std::erase(registration_order, id);
+        deferOrDestroy(std::move(retired));
+    }
 }
 
 } // namespace Pelican

@@ -120,6 +120,15 @@ void XrMirrorSink::initialize() {
 }
 
 void XrMirrorSink::rebindSourceIfNeeded() {
+    const auto latest =
+        GET_MODULE(RenderTargetContainer)
+            .getRenderTargetIdByName(
+                std::string{xr_mirror_intermediate_name});
+    if (!isConcreteRenderTarget(latest)) {
+        throw std::runtime_error(
+            "engine-owned OpenXR mirror intermediate is unavailable");
+    }
+    source_id = latest;
     auto &fullscreen = GET_MODULE(FullscreenPassContainer);
     const auto bound =
         fullscreen.boundInputImageViewsForTesting(output_transform->pass_id);
@@ -178,6 +187,7 @@ void XrMirrorSink::tryPresent() noexcept {
         }
         frame_begun = true;
         cmd = frame->cmd_buf;
+        rebindSourceIfNeeded();
         const auto source_extent =
             GET_MODULE(RenderTargetContainer).getMetadata(source_id).extent;
         const auto letterbox = mirrorLetterboxRect(source_extent, frame->extent);
@@ -188,8 +198,6 @@ void XrMirrorSink::tryPresent() noexcept {
             reportProgress();
             return;
         }
-        rebindSourceIfNeeded();
-
         const auto &debug_utils = GET_MODULE(VulkanManageCore).getDebugUtils();
         std::string node_debug_name;
         if (debug_utils.commandLabelsEnabled()) {

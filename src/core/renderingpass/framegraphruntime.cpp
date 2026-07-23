@@ -67,7 +67,11 @@ std::vector<CompiledMaterialRouteBinding> bindMaterialRoutes(
 CompiledFrameGraphExecution compileExecution(
     const CompiledRenderingPass &compiled_pass, FramePlan plan,
     std::shared_ptr<const CompiledRenderPipeline> render_pipeline,
-    std::shared_ptr<const VulkanTargetPlan> target_plan) {
+    std::shared_ptr<const VulkanTargetPlan> target_plan,
+    std::unordered_map<std::string, GlobalRenderTargetId>
+        render_target_bindings,
+    std::unordered_map<std::string, FrameGraphBufferId>
+        buffer_bindings) {
     if (!render_pipeline) {
         throw std::runtime_error(
             "Frame graph execution requires a compiled render pipeline");
@@ -89,6 +93,10 @@ CompiledFrameGraphExecution compileExecution(
                 &*execution.target_plan->sample_count_plan);
     }
     execution.material_routes = std::move(material_routes);
+    execution.render_target_bindings =
+        std::move(render_target_bindings);
+    execution.buffer_bindings =
+        std::move(buffer_bindings);
     execution.nodes.reserve(execution.plan.nodes.size());
 
     for (const auto &node : execution.plan.nodes) {
@@ -198,19 +206,26 @@ FrameGraphRuntimeContainer::prepareGeneration(
             "Render pipeline runtime generation is exhausted");
     }
 
+    std::optional<std::string> replaced_owner;
+    std::vector<std::shared_ptr<const void>>
+        replaced_scope_leases;
+    if (gpu_scope && current != nullptr &&
+        current->gpu_arena != nullptr) {
+        if (const auto *scope =
+                current->gpu_arena->findScope(
+                    gpu_scope->owner_scope)) {
+            replaced_owner = scope->owner_scope;
+            replaced_scope_leases =
+                scope->resource_leases;
+        }
+    }
+
     auto candidate =
         current != nullptr
             ? std::make_shared<RenderPipelineRuntimeGeneration>(
                   *current)
             : std::make_shared<RenderPipelineRuntimeGeneration>();
     candidate->generation = base_generation + 1;
-    candidate->gpu_arena = compileRenderPipelineGpuArena(
-        current != nullptr ? current->gpu_arena : nullptr,
-        candidate->generation, std::move(gpu_scope));
-    if (enabled_feature_names) {
-        candidate->enabled_feature_names =
-            std::move(*enabled_feature_names);
-    }
 
     std::int64_t next_id = 0;
     for (const auto id : candidate->rendering_pass_ids) {
@@ -219,10 +234,75 @@ FrameGraphRuntimeContainer::prepareGeneration(
             static_cast<std::int64_t>(id.value) + 1);
     }
 
+    std::unordered_map<std::string, RenderingPassId>
+        replaced_program_ids;
+    std::vector<RenderingPassId> published_order;
+    if (replaced_owner) {
+        published_order =
+            candidate->rendering_pass_ids;
+        for (auto found = candidate->programs.begin();
+             found != candidate->programs.end();) {
+            if (found->second.owner_scope !=
+                *replaced_owner) {
+                ++found;
+                continue;
+            }
+            replaced_program_ids.emplace(
+                found->second.rendering_pass.name,
+                found->first);
+            candidate->name_to_id.erase(
+                found->second.rendering_pass.name);
+            std::erase(candidate->rendering_pass_ids,
+                       found->first);
+            found = candidate->programs.erase(found);
+        }
+
+        // A still-published program from another owner may reference
+        // resources supplied by the replaced scope. Conservatively retain
+        // that old lease until the dependent program is itself replaced.
+        for (auto &[id, program] : candidate->programs) {
+            (void)id;
+            for (const auto &lease :
+                 replaced_scope_leases) {
+                if (lease == nullptr) continue;
+                const auto duplicate = std::find_if(
+                    program.resource_leases.begin(),
+                    program.resource_leases.end(),
+                    [&lease](const auto &existing) {
+                        return existing.get() == lease.get();
+                    });
+                if (duplicate ==
+                    program.resource_leases.end()) {
+                    program.resource_leases.push_back(
+                        lease);
+                }
+            }
+        }
+    }
+
+    const auto prepared_owner =
+        gpu_scope ? gpu_scope->owner_scope
+                  : std::string{};
+    candidate->gpu_arena = compileRenderPipelineGpuArena(
+        current != nullptr ? current->gpu_arena : nullptr,
+        candidate->generation, std::move(gpu_scope));
+    if (enabled_feature_names) {
+        candidate->enabled_feature_names =
+            std::move(*enabled_feature_names);
+    }
+
     std::unordered_set<std::string> prepared_names;
     std::vector<RenderingPassId> prepared_ids;
     prepared_ids.reserve(programs.size());
     for (auto &program : programs) {
+        if (program.owner_scope.empty()) {
+            program.owner_scope = prepared_owner;
+        }
+        if (!prepared_owner.empty() &&
+            program.owner_scope != prepared_owner) {
+            throw std::runtime_error(
+                "Prepared render program owner does not match GPU scope");
+        }
         const auto &name = program.rendering_pass.name;
         if (name.empty()) {
             throw std::runtime_error(
@@ -238,16 +318,26 @@ FrameGraphRuntimeContainer::prepareGeneration(
         const auto existing = candidate->name_to_id.find(name);
         if (existing != candidate->name_to_id.end()) {
             rendering_pass_id = existing->second;
+            const auto *published =
+                candidate->find(rendering_pass_id);
+            if (published == nullptr) {
+                throw std::runtime_error(
+                    "Published render pipeline name table is inconsistent: " +
+                    name);
+            }
+            if (!published->owner_scope.empty() &&
+                !program.owner_scope.empty() &&
+                published->owner_scope !=
+                    program.owner_scope) {
+                throw std::runtime_error(
+                    "Prepared render pipeline cannot overwrite another owner: " +
+                    name);
+            }
             if (program.rendering_pass_id &&
                 *program.rendering_pass_id !=
                     rendering_pass_id) {
                 throw std::runtime_error(
                     "Prepared rendering pass id changed for existing pass: " +
-                    name);
-            }
-            if (candidate->find(rendering_pass_id) == nullptr) {
-                throw std::runtime_error(
-                    "Published render pipeline name table is inconsistent: " +
                     name);
             }
         } else {
@@ -267,6 +357,11 @@ FrameGraphRuntimeContainer::prepareGeneration(
                     static_cast<std::int64_t>(
                         rendering_pass_id.value) +
                         1);
+            } else if (const auto replaced =
+                           replaced_program_ids.find(name);
+                       replaced !=
+                       replaced_program_ids.end()) {
+                rendering_pass_id = replaced->second;
             } else {
                 if (next_id >
                     std::numeric_limits<int>::max()) {
@@ -287,15 +382,45 @@ FrameGraphRuntimeContainer::prepareGeneration(
             program.rendering_pass,
             std::move(program.frame_plan),
             std::move(program.render_pipeline),
-            std::move(program.target_plan));
+            std::move(program.target_plan),
+            std::move(program.render_target_bindings),
+            std::move(program.buffer_bindings));
         candidate->programs.insert_or_assign(
             rendering_pass_id,
             CompiledRenderProgram{
                 rendering_pass_id,
+                std::move(program.owner_scope),
                 std::move(program.rendering_pass),
                 std::move(execution),
+                {},
             });
         prepared_ids.push_back(rendering_pass_id);
+    }
+
+    if (replaced_owner) {
+        std::vector<RenderingPassId> stable_order;
+        stable_order.reserve(
+            candidate->rendering_pass_ids.size());
+        const auto append_if_live =
+            [&candidate, &stable_order](
+                RenderingPassId id) {
+                if (candidate->programs.contains(id) &&
+                    std::find(stable_order.begin(),
+                              stable_order.end(),
+                              id) ==
+                        stable_order.end()) {
+                    stable_order.push_back(id);
+                }
+            };
+        for (const auto id : published_order) {
+            append_if_live(id);
+        }
+        for (const auto id :
+             candidate->rendering_pass_ids) {
+            append_if_live(id);
+        }
+        candidate->rendering_pass_ids =
+            std::move(stable_order);
     }
 
     return PreparedRenderPipelineGeneration{
@@ -373,9 +498,12 @@ void FrameGraphRuntimeContainer::registerExecutionPlan(RenderingPassId rendering
                                                            target_plan) {
     auto prepared = prepareGeneration(
         {RenderPipelineProgramPreparation{
-            compiled_pass, std::move(plan),
-            std::move(render_pipeline), std::move(target_plan),
-            rendering_pass_id}});
+            .rendering_pass = compiled_pass,
+            .frame_plan = std::move(plan),
+            .render_pipeline = std::move(render_pipeline),
+            .target_plan = std::move(target_plan),
+            .rendering_pass_id = rendering_pass_id,
+        }});
     if (prepared.renderingPassIds().size() != 1 ||
         prepared.renderingPassIds().front() != rendering_pass_id) {
         throw std::runtime_error(

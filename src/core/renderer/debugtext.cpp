@@ -5,6 +5,7 @@
 #include "../loader/imageloader.hpp"
 #include "../shader/pelican_sets.hpp"
 #include "../vkcore/core.hpp"
+#include "../vkcore/deletionqueue.hpp"
 #include "../vkcore/util.hpp"
 #include <algorithm>
 #include <array>
@@ -290,7 +291,11 @@ PassId DebugText::registerPass(vk::Format color_format, ShaderBundleId vert_shad
     desc.topology = vk::PrimitiveTopology::eTriangleList;
     desc.rasterization_samples = samples;
 
-    const auto pass_id = PassId{static_cast<int>(pipelines.size())};
+    if (next_pass_id == std::numeric_limits<int>::max()) {
+        throw std::runtime_error(
+            "DebugText pass handle table is exhausted");
+    }
+    const auto pass_id = PassId{next_pass_id++};
     if (!pipelines
              .emplace(
                  pass_id,
@@ -360,7 +365,7 @@ void DebugText::render(vk::CommandBuffer cmd_buf, PassId pass_id, vk::Extent2D t
 DebugText::RegistrationCheckpoint
 DebugText::checkpointRegistrations() const noexcept {
     return RegistrationCheckpoint{
-        registration_order.size(), enabled};
+        registration_order.size(), enabled, next_pass_id};
 }
 
 void DebugText::rollbackRegistrations(
@@ -376,6 +381,7 @@ void DebugText::rollbackRegistrations(
         registration_order.pop_back();
     }
     enabled = checkpoint.enabled;
+    next_pass_id = checkpoint.next_pass_id;
 }
 
 std::vector<PassId> DebugText::registrationsSince(
@@ -390,6 +396,28 @@ std::vector<PassId> DebugText::registrationsSince(
             static_cast<std::ptrdiff_t>(
                 checkpoint.registration_count),
         registration_order.end()};
+}
+
+void DebugText::retireRegistrations(
+    const std::vector<PassId> &ids) noexcept {
+    for (const auto id : ids) {
+        const auto found = pipelines.find(id);
+        if (found != pipelines.end()) {
+            auto retired = std::move(found->second);
+            pipelines.erase(found);
+            try {
+                auto *queue =
+                    FastModuleContainer::tryGet<DeletionQueue>();
+                if (queue != nullptr &&
+                    queue->acceptingResources()) {
+                    queue->defer(std::move(retired));
+                }
+            } catch (...) {
+            }
+        }
+        std::erase(registration_order, id);
+    }
+    enabled = !registration_order.empty();
 }
 
 } // namespace Pelican

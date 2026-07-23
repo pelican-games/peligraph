@@ -15,10 +15,12 @@ DECLARE_MODULE(ShadowDepthPassContainer) {
   private:
     std::unordered_map<int, PipelineVariants> pipelines;
     std::vector<PassId> registration_order;
+    int next_pass_id = 0;
 
   public:
     struct RegistrationCheckpoint {
         std::size_t registration_count = 0;
+        int next_pass_id = 0;
     };
 
     PassId registerShadowDepthPass(vk::Format depth_format, ShaderBundleId vert_shader,
@@ -35,6 +37,8 @@ DECLARE_MODULE(ShadowDepthPassContainer) {
     std::size_t registrationCount() const noexcept {
         return registration_order.size();
     }
+    void retireRegistrations(
+        const std::vector<PassId> &ids) noexcept;
 };
 
 } // namespace Pelican

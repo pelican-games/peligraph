@@ -679,4 +679,22 @@ PipelineFactory::registrationsSince(
         pipeline_handles.end()};
 }
 
+void PipelineFactory::retireRegistrations(
+    const std::vector<PipelineHandle> &handles) noexcept {
+    for (const auto handle : handles) {
+        auto retired = pipelines.extract(handle, false);
+        std::erase(pipeline_handles, handle);
+        if (!retired) continue;
+        try {
+            auto *queue =
+                FastModuleContainer::tryGet<DeletionQueue>();
+            if (queue != nullptr &&
+                queue->acceptingResources()) {
+                queue->defer(std::move(*retired));
+            }
+        } catch (...) {
+        }
+    }
+}
+
 } // namespace Pelican

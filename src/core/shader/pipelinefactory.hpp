@@ -135,6 +135,8 @@ DECLARE_MODULE(PipelineFactory) {
     std::size_t registrationCount() const noexcept {
         return pipeline_handles.size();
     }
+    void retireRegistrations(
+        const std::vector<PipelineHandle> &handles) noexcept;
 };
 
 } // namespace Pelican

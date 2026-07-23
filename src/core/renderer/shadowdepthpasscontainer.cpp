@@ -2,19 +2,13 @@
 #include "../shader/shaderlibrary.hpp"
 #include "battery/embed.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <stdexcept>
 
 namespace Pelican {
 
 namespace {
-
-PassId pipelineIndexToPassId(size_t pipeline_index) {
-    if (pipeline_index > static_cast<size_t>(std::numeric_limits<int>::max())) {
-        throw std::runtime_error("Shadow depth pipeline id is too large");
-    }
-    return PassId{static_cast<int>(pipeline_index)};
-}
 
 const ShadowDepthPassContainer::PipelineVariants &requirePipeline(
     PassId pass_id, const std::unordered_map<int, ShadowDepthPassContainer::PipelineVariants> &pipelines) {
@@ -32,7 +26,11 @@ PassId ShadowDepthPassContainer::registerShadowDepthPass(vk::Format depth_format
                                                          std::vector<std::string> shader_defines,
                                                          vk::SampleCountFlagBits samples) {
     registration_order.reserve(registration_order.size() + 1);
-    const auto pass_id = pipelineIndexToPassId(pipelines.size());
+    if (next_pass_id == std::numeric_limits<int>::max()) {
+        throw std::runtime_error(
+            "Shadow depth pipeline id table is exhausted");
+    }
+    const auto pass_id = PassId{next_pass_id++};
 
     GraphicsPipelineDesc desc;
     desc.vert = vert_shader;
@@ -79,7 +77,8 @@ vk::PipelineLayout ShadowDepthPassContainer::pipelineLayout(PassId pass_id, bool
 
 ShadowDepthPassContainer::RegistrationCheckpoint
 ShadowDepthPassContainer::checkpointRegistrations() const noexcept {
-    return RegistrationCheckpoint{registration_order.size()};
+    return RegistrationCheckpoint{
+        registration_order.size(), next_pass_id};
 }
 
 void ShadowDepthPassContainer::rollbackRegistrations(
@@ -94,6 +93,7 @@ void ShadowDepthPassContainer::rollbackRegistrations(
         pipelines.erase(registration_order.back().value);
         registration_order.pop_back();
     }
+    next_pass_id = checkpoint.next_pass_id;
 }
 
 std::vector<PassId>
@@ -109,6 +109,14 @@ ShadowDepthPassContainer::registrationsSince(
             static_cast<std::ptrdiff_t>(
                 checkpoint.registration_count),
         registration_order.end()};
+}
+
+void ShadowDepthPassContainer::retireRegistrations(
+    const std::vector<PassId> &ids) noexcept {
+    for (const auto id : ids) {
+        pipelines.erase(id.value);
+        std::erase(registration_order, id);
+    }
 }
 
 } // namespace Pelican

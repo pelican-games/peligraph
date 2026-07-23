@@ -5,7 +5,9 @@
 #include "../shader/pelican_sets.hpp"
 #include "../shader/pipelinefactory.hpp"
 #include "../vkcore/core.hpp"
+#include "../vkcore/deletionqueue.hpp"
 #include <array>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -118,8 +120,13 @@ FullscreenPassContainer::registerFullscreenPass(vk::Format colorFormat, ShaderBu
                                                 std::vector<std::string> shader_defines,
                                                 vk::SampleCountFlagBits samples) {
     registration_order.reserve(registration_order.size() + 1);
-    PipelineId pipeline_id = {
-        static_cast<uint32_t>(pipelines.size())};
+    if (next_pipeline_id >
+        static_cast<uint32_t>(
+            std::numeric_limits<int>::max())) {
+        throw std::runtime_error(
+            "Fullscreen pipeline handle table is exhausted");
+    }
+    PipelineId pipeline_id = {next_pipeline_id++};
 
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
     auto desc = GraphicsPipelineDesc{
@@ -166,6 +173,30 @@ void FullscreenPassContainer::setInputResources(PassId pass_id,
                                                 const std::vector<std::string> &input_buffers,
                                                 const RenderTargetImageViewResolver &rt_views,
                                                 const FrameGraphResourceContainer &frame_graph_resources) {
+    std::vector<FrameGraphBufferId> buffer_ids;
+    buffer_ids.reserve(input_buffers.size());
+    for (const auto &name : input_buffers) {
+        const auto id =
+            frame_graph_resources.getBufferIdByName(name);
+        if (!isValidFrameGraphBufferId(id)) {
+            throw std::runtime_error(
+                "Fullscreen pass input buffer not found: " +
+                name);
+        }
+        buffer_ids.push_back(id);
+    }
+    setInputResourcesById(
+        pass_id, input_rts, input_rt_history, buffer_ids,
+        rt_views, frame_graph_resources);
+}
+
+void FullscreenPassContainer::setInputResourcesById(
+    PassId pass_id,
+    const std::vector<GlobalRenderTargetId> &input_rts,
+    const std::vector<bool> &input_rt_history,
+    const std::vector<FrameGraphBufferId> &input_buffers,
+    const RenderTargetImageViewResolver &rt_views,
+    const FrameGraphResourceContainer &frame_graph_resources) {
     const auto pipeline_handle = requirePipelineHandle(pass_id, pipelines);
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
     requireInputBindings(pipeline_factory.reflection(pipeline_handle), input_rts.size(), input_buffers.size());
@@ -187,7 +218,7 @@ void FullscreenPassContainer::setInputResources(PassId pass_id,
     InputTextureInfo info;
     info.input_rt_ids = input_rts;
     info.input_rt_history = input_rt_history;
-    info.input_buffer_names = input_buffers;
+    info.input_buffer_ids = input_buffers;
     info.binding_revision = next_binding_revision++;
     for (uint32_t parity = 0; parity < 2; ++parity) {
         vk::DescriptorSetAllocateInfo alloc_info;
@@ -229,6 +260,22 @@ void FullscreenPassContainer::setInputResources(PassId pass_id,
     input_textures.insert_or_assign(pass_id.value, std::move(info));
 }
 
+void FullscreenPassContainer::rebindInputResources(
+    PassId pass_id,
+    const RenderTargetImageViewResolver &rt_views,
+    const FrameGraphResourceContainer &frame_graph_resources) {
+    const auto found = input_textures.find(pass_id.value);
+    if (found == input_textures.end()) return;
+    const auto input_rts = found->second.input_rt_ids;
+    const auto input_history =
+        found->second.input_rt_history;
+    const auto input_buffers =
+        found->second.input_buffer_ids;
+    setInputResourcesById(
+        pass_id, input_rts, input_history, input_buffers,
+        rt_views, frame_graph_resources);
+}
+
 std::vector<vk::ImageView> FullscreenPassContainer::boundInputImageViewsForTesting(PassId pass_id) const {
     const auto found = input_textures.find(pass_id.value);
     if (found == input_textures.end()) {
@@ -249,7 +296,8 @@ vk::PipelineLayout FullscreenPassContainer::getPipelineLayout(PassId pass_id) co
 FullscreenPassContainer::RegistrationCheckpoint
 FullscreenPassContainer::checkpointRegistrations() const noexcept {
     return RegistrationCheckpoint{
-        registration_order.size(), next_binding_revision};
+        registration_order.size(), next_binding_revision,
+        next_pipeline_id};
 }
 
 void FullscreenPassContainer::rollbackRegistrations(
@@ -268,6 +316,7 @@ void FullscreenPassContainer::rollbackRegistrations(
     }
     next_binding_revision =
         checkpoint.next_binding_revision;
+    next_pipeline_id = checkpoint.next_pipeline_id;
 }
 
 std::vector<FullscreenPassContainer::PipelineId>
@@ -283,6 +332,29 @@ FullscreenPassContainer::registrationsSince(
             static_cast<std::ptrdiff_t>(
                 checkpoint.registration_count),
         registration_order.end()};
+}
+
+void FullscreenPassContainer::retireRegistrations(
+    const std::vector<PipelineId> &ids) noexcept {
+    for (const auto id : ids) {
+        const auto textures =
+            input_textures.find(static_cast<int>(id.value));
+        if (textures != input_textures.end()) {
+            auto retired = std::move(textures->second);
+            input_textures.erase(textures);
+            try {
+                auto *queue =
+                    FastModuleContainer::tryGet<DeletionQueue>();
+                if (queue != nullptr &&
+                    queue->acceptingResources()) {
+                    queue->defer(std::move(retired));
+                }
+            } catch (...) {
+            }
+        }
+        pipelines.erase(id);
+        std::erase(registration_order, id);
+    }
 }
 
 } // namespace Pelican

@@ -52,6 +52,7 @@ DECLARE_MODULE(DebugText) {
     std::vector<DebugTextVertex> vertices;
     std::unordered_map<PassId, PipelineRecord, PassId::Hash> pipelines;
     std::vector<PassId> registration_order;
+    int next_pass_id = 0;
 
     void ensureDevice();
     void ensureFontResources();
@@ -65,6 +66,7 @@ DECLARE_MODULE(DebugText) {
     struct RegistrationCheckpoint {
         std::size_t registration_count = 0;
         bool enabled = false;
+        int next_pass_id = 0;
     };
 
     DebugText();
@@ -91,6 +93,8 @@ DECLARE_MODULE(DebugText) {
     std::size_t registrationCount() const noexcept {
         return registration_order.size();
     }
+    void retireRegistrations(
+        const std::vector<PassId> &ids) noexcept;
 };
 
 } // namespace Pelican

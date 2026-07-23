@@ -70,10 +70,10 @@ RenderPipelineProgramPreparation programFor(
         static_cast<std::uint32_t>(revision);
 
     return RenderPipelineProgramPreparation{
-        std::move(rendering_pass),
-        std::move(frame_plan),
-        std::move(pipeline),
-        std::move(target_plan),
+        .rendering_pass = std::move(rendering_pass),
+        .frame_plan = std::move(frame_plan),
+        .render_pipeline = std::move(pipeline),
+        .target_plan = std::move(target_plan),
     };
 }
 
@@ -320,7 +320,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "WP194 rollback releases unpublished GPU arena leases and duplicate owner scope is rejected",
+    "WP194 rollback releases unpublished GPU arena leases",
     "[wp194][render-pipeline][gpu-arena][rollback]") {
     FrameGraphRuntimeContainer runtime;
     auto initial = runtime.prepareGeneration(
@@ -358,20 +358,117 @@ TEST_CASE(
     runtime.rollbackPreparedGeneration(rolled_back);
     REQUIRE(lifetime.expired());
     REQUIRE(runtime.snapshot() == before);
+}
 
-    REQUIRE_THROWS_WITH(
-        runtime.prepareGeneration(
-            {programFor(3)}, std::nullopt,
-            RenderPipelineGpuScopePreparation{
-                .owner_scope = "render_pipeline/flat",
-                .resources = {
-                    RenderPipelineGpuResourceRegistration{
-                        RenderPipelineGpuResourceKind::pipeline,
-                        9,
-                        "pipeline/9",
-                        0,
-                    }},
-            }),
-        "Render pipeline GPU owner scope is already published: render_pipeline/flat");
-    REQUIRE(runtime.snapshot() == before);
+TEST_CASE(
+    "WP195 owner replacement keeps old resources for old frames and removes omitted programs",
+    "[wp195][render-pipeline][gpu-arena][replacement]") {
+    FrameGraphRuntimeContainer runtime;
+    auto old_lease = std::make_shared<int>(195);
+    std::weak_ptr<const void> old_lifetime = old_lease;
+    auto initial = runtime.prepareGeneration(
+        {programFor(1, "main"),
+         programFor(1, "removed")},
+        std::nullopt,
+        RenderPipelineGpuScopePreparation{
+            .owner_scope = "render_pipeline/flat",
+            .resources = {
+                RenderPipelineGpuResourceRegistration{
+                    RenderPipelineGpuResourceKind::render_target,
+                    1,
+                    "display",
+                    0,
+                }},
+            .resource_leases = {old_lease},
+        });
+    old_lease.reset();
+    runtime.publishPreparedGeneration(std::move(initial));
+
+    auto old_frame = runtime.snapshot();
+    const auto main_id =
+        old_frame->name_to_id.at("main");
+    const auto removed_id =
+        old_frame->name_to_id.at("removed");
+
+    auto new_lease = std::make_shared<int>(196);
+    std::weak_ptr<const void> new_lifetime = new_lease;
+    auto replacement = runtime.prepareGeneration(
+        {programFor(2, "main")}, std::nullopt,
+        RenderPipelineGpuScopePreparation{
+            .owner_scope = "render_pipeline/flat",
+            .resources = {
+                RenderPipelineGpuResourceRegistration{
+                    RenderPipelineGpuResourceKind::render_target,
+                    2,
+                    "display",
+                    0,
+                }},
+            .resource_leases = {new_lease},
+        });
+    new_lease.reset();
+
+    REQUIRE(runtime.snapshot() == old_frame);
+    REQUIRE_FALSE(old_lifetime.expired());
+    runtime.publishPreparedGeneration(
+        std::move(replacement));
+
+    auto active = runtime.snapshot();
+    REQUIRE(active->name_to_id.at("main") == main_id);
+    REQUIRE_FALSE(active->name_to_id.contains("removed"));
+    REQUIRE(active->find(removed_id) == nullptr);
+    REQUIRE(revisionOf(*active, main_id) == 2);
+    REQUIRE(
+        active->gpu_arena
+            ->findScope("render_pipeline/flat")
+            ->resources.front()
+            .handle == 2);
+    REQUIRE(revisionOf(*old_frame, main_id) == 1);
+    REQUIRE(old_frame->find(removed_id) != nullptr);
+    REQUIRE_FALSE(old_lifetime.expired());
+    REQUIRE_FALSE(new_lifetime.expired());
+
+    active.reset();
+    old_frame.reset();
+    REQUIRE(old_lifetime.expired());
+    REQUIRE_FALSE(new_lifetime.expired());
+}
+
+TEST_CASE(
+    "WP195 unchanged foreign programs retain replaced scope dependencies",
+    "[wp195][render-pipeline][gpu-arena][dependency]") {
+    FrameGraphRuntimeContainer runtime;
+    auto flat_lease = std::make_shared<int>(1);
+    std::weak_ptr<const void> flat_lifetime = flat_lease;
+    auto flat = runtime.prepareGeneration(
+        {programFor(1, "main")}, std::nullopt,
+        RenderPipelineGpuScopePreparation{
+            .owner_scope = "render_pipeline/flat",
+            .resource_leases = {flat_lease},
+        });
+    flat_lease.reset();
+    runtime.publishPreparedGeneration(std::move(flat));
+
+    auto xr = runtime.prepareGeneration(
+        {programFor(1, "main#xr")}, std::nullopt,
+        RenderPipelineGpuScopePreparation{
+            .owner_scope = "render_pipeline/xr",
+        });
+    runtime.publishPreparedGeneration(std::move(xr));
+
+    auto next_flat = runtime.prepareGeneration(
+        {programFor(2, "main")}, std::nullopt,
+        RenderPipelineGpuScopePreparation{
+            .owner_scope = "render_pipeline/flat",
+        });
+    runtime.publishPreparedGeneration(
+        std::move(next_flat));
+    REQUIRE_FALSE(flat_lifetime.expired());
+
+    auto next_xr = runtime.prepareGeneration(
+        {programFor(2, "main#xr")}, std::nullopt,
+        RenderPipelineGpuScopePreparation{
+            .owner_scope = "render_pipeline/xr",
+        });
+    runtime.publishPreparedGeneration(std::move(next_xr));
+    REQUIRE(flat_lifetime.expired());
 }

@@ -26,12 +26,13 @@ DECLARE_MODULE(FullscreenPassContainer) {
 
     std::unordered_map<PipelineId, PipelineHandle, PipelineId::Hash> pipelines;
     std::vector<PipelineId> registration_order;
+    uint32_t next_pipeline_id = 0;
 
     struct InputTextureInfo {
         std::array<vk::UniqueDescriptorSet, 2> descsets;
         std::vector<GlobalRenderTargetId> input_rt_ids;
         std::vector<bool> input_rt_history;
-        std::vector<std::string> input_buffer_names;
+        std::vector<FrameGraphBufferId> input_buffer_ids;
         std::array<std::vector<vk::ImageView>, 2> bound_image_views;
         uint64_t binding_revision = 0;
     };
@@ -42,6 +43,7 @@ DECLARE_MODULE(FullscreenPassContainer) {
     struct RegistrationCheckpoint {
         std::size_t registration_count = 0;
         std::uint64_t next_binding_revision = 1;
+        uint32_t next_pipeline_id = 0;
     };
 
     FullscreenPassContainer();
@@ -59,6 +61,17 @@ DECLARE_MODULE(FullscreenPassContainer) {
                            const std::vector<std::string> &input_buffers,
                            const RenderTargetImageViewResolver &rt_views,
                            const FrameGraphResourceContainer &frame_graph_resources);
+    void setInputResourcesById(
+        PassId pass_id,
+        const std::vector<GlobalRenderTargetId> &input_rts,
+        const std::vector<bool> &input_rt_history,
+        const std::vector<FrameGraphBufferId> &input_buffers,
+        const RenderTargetImageViewResolver &rt_views,
+        const FrameGraphResourceContainer &frame_graph_resources);
+    void rebindInputResources(
+        PassId pass_id,
+        const RenderTargetImageViewResolver &rt_views,
+        const FrameGraphResourceContainer &frame_graph_resources);
     std::vector<vk::ImageView> boundInputImageViewsForTesting(PassId pass_id) const;
     uint64_t inputBindingRevisionForTesting(PassId pass_id) const;
     vk::PipelineLayout getPipelineLayout(PassId pass_id) const;
@@ -70,6 +83,8 @@ DECLARE_MODULE(FullscreenPassContainer) {
     std::size_t registrationCount() const noexcept {
         return registration_order.size();
     }
+    void retireRegistrations(
+        const std::vector<PipelineId> &ids) noexcept;
 };
 
 } // namespace Pelican

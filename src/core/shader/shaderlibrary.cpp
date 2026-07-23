@@ -4,6 +4,7 @@
 #include "../loader/fileio.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../vkcore/core.hpp"
+#include "../vkcore/deletionqueue.hpp"
 #include "../../project/materiallowering.hpp"
 #include <algorithm>
 #include <cctype>
@@ -15,6 +16,7 @@
 #include <stdexcept>
 #include <system_error>
 #include <tuple>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 
@@ -763,6 +765,94 @@ ShaderLibrary::registrationsSince(
             static_cast<std::ptrdiff_t>(
                 checkpoint.bundle_count),
         bundle_ids.end()};
+}
+
+void ShaderLibrary::retireRegistrations(
+    const std::vector<ShaderBundleId> &ids) noexcept {
+    if (ids.empty()) return;
+    const std::unordered_set<ShaderBundleId,
+                             ShaderBundleId::Hash>
+        retiring{ids.begin(), ids.end()};
+
+    std::vector<ShaderBundleId> next_bundle_ids;
+    std::vector<ShaderBundleId> next_dirty;
+    std::vector<ReloadUnit> next_units;
+    std::unordered_map<ShaderBundleId, std::size_t,
+                       ShaderBundleId::Hash>
+        next_unit_by_bundle;
+    std::map<watch::AssetKey, std::vector<std::size_t>>
+        next_units_by_dependency;
+    try {
+        next_bundle_ids.reserve(bundle_ids.size());
+        for (const auto id : bundle_ids) {
+            if (!retiring.contains(id)) {
+                next_bundle_ids.push_back(id);
+            }
+        }
+        next_dirty.reserve(dirty_bundles.size());
+        for (const auto id : dirty_bundles) {
+            if (!retiring.contains(id)) {
+                next_dirty.push_back(id);
+            }
+        }
+        next_units.reserve(reload_units.size());
+        for (const auto &unit : reload_units) {
+            const auto retiring_count =
+                std::count_if(
+                    unit.bundle_ids.begin(),
+                    unit.bundle_ids.end(),
+                    [&retiring](ShaderBundleId id) {
+                        return retiring.contains(id);
+                    });
+            if (retiring_count == 0) {
+                next_units.push_back(unit);
+            } else if (retiring_count !=
+                       unit.bundle_ids.size()) {
+                // A reload unit is an ownership atom (notably a
+                // vertex/fragment .surface pair). Keep the registry
+                // intact if a malformed scope tries to split it.
+                return;
+            }
+        }
+        for (std::size_t index = 0;
+             index < next_units.size(); ++index) {
+            for (const auto id :
+                 next_units[index].bundle_ids) {
+                next_unit_by_bundle.emplace(id, index);
+            }
+            for (const auto &dependency :
+                 next_units[index].dependencies) {
+                next_units_by_dependency[dependency]
+                    .push_back(index);
+            }
+        }
+    } catch (...) {
+        // Allocation failure during retirement must not leave a
+        // half-updated reload index. The registry will be reclaimed
+        // during engine teardown instead.
+        return;
+    }
+
+    bundle_ids.swap(next_bundle_ids);
+    dirty_bundles.swap(next_dirty);
+    reload_units.swap(next_units);
+    unit_by_bundle.swap(next_unit_by_bundle);
+    units_by_dependency.swap(
+        next_units_by_dependency);
+
+    for (const auto id : ids) {
+        auto retired = bundles.extract(id, false);
+        if (!retired) continue;
+        try {
+            auto *queue =
+                FastModuleContainer::tryGet<DeletionQueue>();
+            if (queue != nullptr &&
+                queue->acceptingResources()) {
+                queue->defer(std::move(*retired));
+            }
+        } catch (...) {
+        }
+    }
 }
 
 } // namespace Pelican

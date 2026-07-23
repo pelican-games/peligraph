@@ -478,14 +478,39 @@ nlohmann::json outputTransformTrace(size_t order, vk::ImageLayout source_old_lay
     };
 }
 
+GlobalRenderTargetId boundRenderTarget(
+    const CompiledFrameGraphExecution &frame_graph,
+    const std::string &name) {
+    const auto found =
+        frame_graph.render_target_bindings.find(
+            name);
+    return found !=
+                   frame_graph.render_target_bindings.end()
+               ? found->second
+               : noRenderTargetId();
+}
+
+FrameGraphBufferId boundFrameGraphBuffer(
+    const CompiledFrameGraphExecution &frame_graph,
+    const std::string &name) {
+    const auto found =
+        frame_graph.buffer_bindings.find(
+            name);
+    return found != frame_graph.buffer_bindings.end()
+               ? found->second
+               : noFrameGraphBufferId();
+}
+
 nlohmann::json computeNodeTrace(const CompiledComputeTask &task, size_t order,
+                                const CompiledFrameGraphExecution &frame_graph,
                                 const RenderTargetContainer &rt_container,
                                 const RenderTargetLayoutTracker &layout_tracker) {
     const auto trace_resources = [&](const std::vector<std::string> &resources) {
         nlohmann::json result = nlohmann::json::array();
         for (const auto &resource : resources) {
             nlohmann::json entry{{"resource", resource}};
-            const auto target = rt_container.getRenderTargetIdByName(resource);
+            const auto target =
+                boundRenderTarget(frame_graph, resource);
             if (isConcreteRenderTarget(target)) {
                 entry["final_layout"] = layoutName(layout_tracker.currentLayout(target, false, &rt_container));
             } else {
@@ -506,6 +531,7 @@ nlohmann::json computeNodeTrace(const CompiledComputeTask &task, size_t order,
 }
 
 nlohmann::json finalLayoutsTrace(const CompiledRenderingPass &rendering_pass,
+                                 const CompiledFrameGraphExecution &frame_graph,
                                  const RenderTargetContainer &rt_container,
                                  const RenderTargetLayoutTracker &layout_tracker,
                                  vk::ImageLayout frame_target_layout) {
@@ -529,13 +555,16 @@ nlohmann::json finalLayoutsTrace(const CompiledRenderingPass &rendering_pass,
     }
     for (const auto &task : rendering_pass.compute_tasks) {
         for (const auto &resource : task.definition.reads) {
-            add_target(rt_container.getRenderTargetIdByName(resource));
+            add_target(boundRenderTarget(
+                frame_graph, resource));
         }
         for (const auto &resource : task.definition.writes) {
-            add_target(rt_container.getRenderTargetIdByName(resource));
+            add_target(boundRenderTarget(
+                frame_graph, resource));
         }
     }
-    const auto display = rt_container.getRenderTargetIdByName("display");
+    const auto display =
+        boundRenderTarget(frame_graph, "display");
     if (isConcreteRenderTarget(display)) {
         add_target(display);
     }
@@ -572,7 +601,9 @@ std::vector<std::string> pairedSrgbStorageEdges(
     for (size_t to = 0; to < frame_graph.nodes.size(); ++to) {
         const auto &node = frame_graph.nodes[to];
         for (const auto &barrier : node.incoming_barriers) {
-            const auto target = rt_container.getRenderTargetIdByName(barrier.resource);
+            const auto target =
+                boundRenderTarget(
+                    frame_graph, barrier.resource);
             if (!isConcreteRenderTarget(target)) {
                 continue;
             }
@@ -644,9 +675,12 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                     throw std::runtime_error(
                         "Compiled frame graph barrier source was not executed before target");
                 }
-                if (modules.frame_graph_resources.hasBuffer(barrier.resource)) {
+                const auto buffer_id =
+                    boundFrameGraphBuffer(
+                        frame_graph, barrier.resource);
+                if (isValidFrameGraphBufferId(buffer_id)) {
                     modules.compute_task_container.bufferReadAfterWriteBarrier(
-                        render_ctx.cmd_buf, barrier.resource, barrier.from_kind,
+                        render_ctx.cmd_buf, buffer_id, barrier.from_kind,
                         barrier.to_kind);
                     continue;
                 }
@@ -677,8 +711,9 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                         {image_barrier});
                     continue;
                 }
-                const auto target_id = modules.render_target_container
-                                           .getRenderTargetIdByName(barrier.resource);
+                const auto target_id =
+                    boundRenderTarget(
+                        frame_graph, barrier.resource);
                 if (!isConcreteRenderTarget(target_id)) {
                     throw std::runtime_error(
                         "Compiled frame graph barrier references an unknown resource: " +
@@ -715,7 +750,8 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                 layout_tracker);
             modules.compute_task_container.dispatch(render_ctx.cmd_buf, task.task_id);
             if (node_trace != nullptr) {
-                node_trace->push_back(computeNodeTrace(task, node_index, modules.render_target_container,
+                node_trace->push_back(computeNodeTrace(task, node_index, frame_graph,
+                                                       modules.render_target_container,
                                                        layout_tracker));
             }
         } else if (execution_node.kind == FramePlanNodeKind::anchor) {
@@ -812,10 +848,10 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                 throw std::runtime_error("snapshot copy node requires exactly one source and destination: " +
                                          execution_node.name);
             }
-            const auto source_id = modules.render_target_container.getRenderTargetIdByName(
-                planned_node.reads.front());
-            const auto destination_id = modules.render_target_container.getRenderTargetIdByName(
-                planned_node.writes.front());
+            const auto source_id = boundRenderTarget(
+                frame_graph, planned_node.reads.front());
+            const auto destination_id = boundRenderTarget(
+                frame_graph, planned_node.writes.front());
             if (!isConcreteRenderTarget(source_id) || !isConcreteRenderTarget(destination_id)) {
                 throw std::runtime_error("snapshot copy node references an unknown render target: " +
                                          execution_node.name);
@@ -848,7 +884,8 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                 node_trace->push_back(snapshotCopyTrace(planned_node, source, destination));
             }
         } else if (execution_node.kind == FramePlanNodeKind::output_transform) {
-            const auto display_id = modules.render_target_container.getRenderTargetIdByName("display");
+            const auto display_id =
+                boundRenderTarget(frame_graph, "display");
             if (!isConcreteRenderTarget(display_id)) {
                 throw std::runtime_error("output_transform requires the canonical display target");
             }
@@ -956,10 +993,10 @@ void rebindFullscreenInputs(RenderFrameModules &modules) {
         for (const auto &pass : compiled_pass.passes) {
             if (pass.definition.isFullscreen() &&
                 (!pass.definition.input_targets.empty() || !pass.definition.input_buffers.empty())) {
-                modules.fullscreen_pass_container.setInputResources(pass.pass_id, pass.definition.input_targets,
-                                                                    pass.definition.input_target_history,
-                                                                    pass.definition.input_buffers, rt_views,
-                                                                    modules.frame_graph_resources);
+                modules.fullscreen_pass_container
+                    .rebindInputResources(
+                        pass.pass_id, rt_views,
+                        modules.frame_graph_resources);
             }
         }
     }
@@ -992,14 +1029,17 @@ bool handleFrameTargetResize(RenderFrameModules &modules,
 
 #if PELICAN_WITH_OPENXR
 void recordXrMirrorIntermediate(const FrameRenderContext &render_ctx,
+                                const CompiledFrameGraphExecution &frame_graph,
                                 RenderFrameModules &modules,
                                 RenderTargetLayoutTracker &layout_tracker,
                                 nlohmann::json *node_trace,
                                 std::uint64_t logical_frame) {
     const auto source_id =
-        modules.render_target_container.getRenderTargetIdByName("display");
-    const auto destination_id = modules.render_target_container.getRenderTargetIdByName(
-        std::string{OpenXr::xr_mirror_intermediate_name});
+        boundRenderTarget(frame_graph, "display");
+    const auto destination_id = boundRenderTarget(
+        frame_graph,
+        std::string{
+            OpenXr::xr_mirror_intermediate_name});
     if (!isConcreteRenderTarget(source_id) || !isConcreteRenderTarget(destination_id)) {
         throw std::runtime_error(
             "OpenXR mirror requires engine-owned display and left-eye intermediates");
@@ -1275,6 +1315,9 @@ nlohmann::json Renderer::currentFramePlanJson() const {
     auto result = framePlanToJson(frame_graph->plan,
                                   frame_graph->render_pipeline.get());
     result["runtime_generation"] = generation->generation;
+    result["gpu_owner_scope"] = program->owner_scope;
+    result["retained_resource_lease_count"] =
+        program->resource_leases.size();
     if (generation->gpu_arena != nullptr) {
         nlohmann::json scopes = nlohmann::json::array();
         for (const auto &scope :
@@ -1293,6 +1336,8 @@ nlohmann::json Renderer::currentFramePlanJson() const {
             }
             scopes.push_back(
                 {{"owner_scope", scope.owner_scope},
+                 {"resource_lease_count",
+                  scope.resource_leases.size()},
                  {"resources", std::move(resources)}});
         }
         result["gpu_resource_arena"] = {
@@ -1669,7 +1714,8 @@ void Renderer::renderLogicalFrame(
         if (graph_variant_policy.mirror_output ==
                 GraphVariantMirrorOutput::left_eye &&
             view_index == 0) {
-            recordXrMirrorIntermediate(render_ctx, modules,
+            recordXrMirrorIntermediate(render_ctx, frame_graph,
+                                       modules,
                                        render_target_layout_tracker, node_trace_ptr,
                                        engine_time.frameIndex());
         }
@@ -1681,7 +1727,8 @@ void Renderer::renderLogicalFrame(
                 {"view_index", view_index},
                 {"nodes", std::move(node_trace)},
                 {"final_layouts",
-                 finalLayoutsTrace(rendering_pass, modules.render_target_container,
+                 finalLayoutsTrace(rendering_pass, frame_graph,
+                                   modules.render_target_container,
                                    render_target_layout_tracker, render_ctx.required_layout)},
             });
         }

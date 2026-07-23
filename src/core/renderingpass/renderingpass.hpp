@@ -20,6 +20,7 @@ PELICAN_DEFINE_HANDLE(PassId, int)
 
 PELICAN_DEFINE_HANDLE(GlobalRenderTargetId, int)
 PELICAN_DEFINE_HANDLE(ComputeTaskId, int)
+PELICAN_DEFINE_HANDLE(FrameGraphBufferId, int)
 
 inline constexpr int invalidRenderingPassIdValue = -1;
 inline constexpr int invalidRenderTargetIdValue = -1;
@@ -35,6 +36,14 @@ inline constexpr bool isValidRenderingPassId(RenderingPassId pass_id) {
 
 inline constexpr GlobalRenderTargetId noRenderTargetId() {
     return GlobalRenderTargetId{invalidRenderTargetIdValue};
+}
+
+inline constexpr FrameGraphBufferId noFrameGraphBufferId() {
+    return FrameGraphBufferId{-1};
+}
+
+inline constexpr bool isValidFrameGraphBufferId(FrameGraphBufferId id) {
+    return id.value >= 0;
 }
 
 inline constexpr GlobalRenderTargetId swapchainRenderTargetId() {

@@ -43,13 +43,21 @@ struct CompiledFrameGraphExecution {
     std::shared_ptr<const VulkanTargetPlan> target_plan;
     std::shared_ptr<const ResolvedSampleCountPlan> sample_count_plan;
     std::vector<CompiledMaterialRouteBinding> material_routes;
+    std::unordered_map<std::string, GlobalRenderTargetId>
+        render_target_bindings;
+    std::unordered_map<std::string, FrameGraphBufferId>
+        buffer_bindings;
     std::vector<FrameGraphExecutionNode> nodes;
 };
 
 struct CompiledRenderProgram {
     RenderingPassId rendering_pass_id = invalidRenderingPassId();
+    std::string owner_scope;
     CompiledRenderingPass rendering_pass;
     CompiledFrameGraphExecution frame_graph;
+    // Conservative cross-scope dependencies transferred when another
+    // owner is replaced while this program remains published.
+    std::vector<std::shared_ptr<const void>> resource_leases;
 };
 
 // One immutable publication root for every value that must agree while a
@@ -76,10 +84,15 @@ struct RenderPipelineRuntimePublication {
 };
 
 struct RenderPipelineProgramPreparation {
+    std::string owner_scope;
     CompiledRenderingPass rendering_pass;
     FramePlan frame_plan;
     std::shared_ptr<const CompiledRenderPipeline> render_pipeline;
     std::shared_ptr<const VulkanTargetPlan> target_plan;
+    std::unordered_map<std::string, GlobalRenderTargetId>
+        render_target_bindings;
+    std::unordered_map<std::string, FrameGraphBufferId>
+        buffer_bindings;
     std::optional<RenderingPassId> rendering_pass_id;
 };
 

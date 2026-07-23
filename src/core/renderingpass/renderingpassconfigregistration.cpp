@@ -10,6 +10,7 @@
 #include "renderingpassruntimecompiler.hpp"
 #include "renderingsamplecount.hpp"
 #include "rendertargetconfigregistration.hpp"
+#include "rendertargetcontainer.hpp"
 #include "rendertargetimageviewresolver.hpp"
 #include "rendertargetjsonparser.hpp"
 #include "rendertargetmetadataresolver.hpp"
@@ -143,6 +144,7 @@ std::vector<CompiledComputeTask> compileComputeTasks(
                 dependencies.runtime.shader_library,
                 dependencies.runtime.path_resolver,
                 dependencies.render_targets.render_target_container,
+                dependencies.frame_graph_resources,
             });
         compiled.push_back(CompiledComputeTask{definition, task_id});
     }
@@ -250,6 +252,16 @@ RenderingPassConfigRegistrationResult registerRenderingPassConfigData(
     static std::mutex gpu_registration_mutex;
     const std::scoped_lock gpu_registration_lock{
         gpu_registration_mutex};
+    const auto owner_scope =
+        gpuOwnerScope(dependencies.options);
+    const auto current_generation =
+        dependencies.frame_graph_runtime.snapshot();
+    const auto *replaced_scope =
+        current_generation != nullptr &&
+                current_generation->gpu_arena != nullptr
+            ? current_generation->gpu_arena->findScope(
+                  owner_scope)
+            : nullptr;
     RenderPipelineGpuRegistrationArena gpu_arena{
         RenderPipelineGpuRegistrationDependencies{
             dependencies.render_targets.render_target_container,
@@ -260,7 +272,8 @@ RenderingPassConfigRegistrationResult registerRenderingPassConfigData(
             dependencies.runtime.pipeline_factory,
             dependencies.runtime.shadow_depth_pass_container,
             dependencies.runtime.velocity_pass_container,
-        }};
+        },
+        replaced_scope};
     if (dependencies.options
             .prepare_additional_gpu_resources) {
         dependencies.options
@@ -315,6 +328,12 @@ RenderingPassConfigRegistrationResult registerRenderingPassConfigData(
     std::vector<RenderPipelineProgramPreparation>
         program_preparations;
     program_preparations.reserve(compiled_passes.size());
+    const auto render_target_bindings =
+        dependencies.render_targets.render_target_container
+            .currentNameBindings();
+    const auto buffer_bindings =
+        dependencies.frame_graph_resources
+            .currentNameBindings();
     for (auto &compiled_pass : compiled_passes) {
         compiled_pass.compute_tasks = compiled_compute_tasks;
         const auto pass_name = compiled_pass.name;
@@ -331,10 +350,14 @@ RenderingPassConfigRegistrationResult registerRenderingPassConfigData(
         }
         program_preparations.push_back(
             RenderPipelineProgramPreparation{
-                std::move(compiled_pass),
-                std::move(found_plan->second),
-                compiled_pipeline,
-                found_target_plan->second,
+                .owner_scope = owner_scope,
+                .rendering_pass = std::move(compiled_pass),
+                .frame_plan = std::move(found_plan->second),
+                .render_pipeline = compiled_pipeline,
+                .target_plan = found_target_plan->second,
+                .render_target_bindings =
+                    render_target_bindings,
+                .buffer_bindings = buffer_bindings,
             });
     }
     auto prepared_generation =
@@ -343,8 +366,7 @@ RenderingPassConfigRegistrationResult registerRenderingPassConfigData(
             dependencies.options.publish_enabled_features
                 ? std::optional{compiled_pipeline->feature_names}
                 : std::nullopt,
-            gpu_arena.preparedScope(
-                gpuOwnerScope(dependencies.options)));
+            gpu_arena.preparedScope(owner_scope));
     injectGpuRegistrationFault(
         dependencies.options,
         RenderPipelineGpuRegistrationFaultPoint::

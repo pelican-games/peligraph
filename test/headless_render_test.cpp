@@ -702,8 +702,8 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
 }
 
 TEST_CASE(
-    "WP194 GPU registration faults restore every live registry before publication",
-    "[wp194][headless][render-pipeline][gpu-arena][rollback]") {
+    "WP194 rollback and WP195 scope replacement preserve generation-owned GPU resources",
+    "[wp194][wp195][headless][render-pipeline][gpu-arena][rollback][replacement]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER
     setupLogger();
     std::filesystem::path temp_dir;
@@ -806,7 +806,7 @@ TEST_CASE(
                 config, {16, 16},
                 gpuArenaRegistrationDependencies({}));
         REQUIRE(registered.runtime_generation == 1);
-        const auto generation = runtime.snapshot();
+        auto generation = runtime.snapshot();
         REQUIRE(generation != nullptr);
         REQUIRE(generation->generation == 1);
         REQUIRE(generation->gpu_arena != nullptr);
@@ -870,6 +870,185 @@ TEST_CASE(
                 baseline.shadow_depth_passes);
         REQUIRE(committed.velocity_passes >
                 baseline.velocity_passes);
+
+        const auto old_program_id =
+            generation->name_to_id.at(
+                "gpu_arena_main");
+        const auto old_target =
+            GET_MODULE(RenderTargetContainer)
+                .getRenderTargetIdByName(
+                    "gpu_arena_scratch");
+        const auto old_buffer =
+            GET_MODULE(FrameGraphResourceContainer)
+                .getBufferIdByName(
+                    "gpu_arena_buffer");
+        const auto old_task =
+            GET_MODULE(ComputeTaskContainer)
+                .getComputeTaskIdByName(
+                    "gpu_arena_compute");
+        REQUIRE(isConcreteRenderTarget(old_target));
+        REQUIRE(isValidFrameGraphBufferId(old_buffer));
+        REQUIRE(old_task.value >= 0);
+
+        auto replacement_config =
+            gpuArenaRenderingConfig();
+        replacement_config["features"].erase(
+            std::remove(
+                replacement_config["features"].begin(),
+                replacement_config["features"].end(),
+                "engine://features/debug_text.json"),
+            replacement_config["features"].end());
+        replacement_config["buffers"][0]["size"] = 32;
+        auto &replacement_targets =
+            replacement_config["render_targets"];
+        replacement_targets.erase(
+            std::remove_if(
+                replacement_targets.begin(),
+                replacement_targets.end(),
+                [](const auto &target) {
+                    const auto &name =
+                        target.at("name");
+                    return name == "gpu_arena_velocity" ||
+                           name ==
+                               "gpu_arena_velocity_depth";
+                }),
+            replacement_targets.end());
+        auto &replacement_passes =
+            replacement_config["rendering_passes"][0]
+                              ["passes"];
+        replacement_passes.erase(
+            std::remove_if(
+                replacement_passes.begin(),
+                replacement_passes.end(),
+                [](const auto &pass) {
+                    return pass.at("name") ==
+                           "gpu_arena_velocity_pass";
+                }),
+            replacement_passes.end());
+
+        RenderingPassConfigRegistrationDependencies::
+            Options failed_replacement_options;
+        failed_replacement_options.fault_point =
+            RenderPipelineGpuRegistrationFaultPoint::
+                after_runtime_prepare;
+        REQUIRE_THROWS_WITH(
+            registerRenderingPassConfigFromJsonData(
+                replacement_config.dump(), {16, 16},
+                gpuArenaRegistrationDependencies(
+                    std::move(
+                        failed_replacement_options))),
+            "Injected render pipeline GPU registration failure");
+        REQUIRE(runtime.snapshot() == generation);
+        REQUIRE(
+            inspectRenderPipelineGpuRegistryCounts(
+                registries, &debug_draw,
+                &debug_text) == committed);
+        REQUIRE(
+            GET_MODULE(RenderTargetContainer)
+                .getRenderTargetIdByName(
+                    "gpu_arena_scratch") ==
+            old_target);
+        REQUIRE(
+            GET_MODULE(FrameGraphResourceContainer)
+                .getBufferIdByName(
+                    "gpu_arena_buffer") ==
+            old_buffer);
+        REQUIRE(
+            GET_MODULE(ComputeTaskContainer)
+                .getComputeTaskIdByName(
+                    "gpu_arena_compute") ==
+            old_task);
+
+        const auto replaced =
+            registerRenderingPassConfigFromJsonData(
+                replacement_config.dump(), {16, 16},
+                gpuArenaRegistrationDependencies({}));
+        REQUIRE(replaced.runtime_generation == 2);
+        auto replacement_generation =
+            runtime.snapshot();
+        REQUIRE(
+            replacement_generation->name_to_id.at(
+                "gpu_arena_main") == old_program_id);
+        const auto new_target =
+            GET_MODULE(RenderTargetContainer)
+                .getRenderTargetIdByName(
+                    "gpu_arena_scratch");
+        const auto new_buffer =
+            GET_MODULE(FrameGraphResourceContainer)
+                .getBufferIdByName(
+                    "gpu_arena_buffer");
+        const auto new_task =
+            GET_MODULE(ComputeTaskContainer)
+                .getComputeTaskIdByName(
+                    "gpu_arena_compute");
+        REQUIRE(new_target != old_target);
+        REQUIRE(new_buffer != old_buffer);
+        REQUIRE(new_task != old_task);
+        REQUIRE(
+            GET_MODULE(FrameGraphResourceContainer)
+                .bufferSize(new_buffer) == 32);
+        REQUIRE_FALSE(isConcreteRenderTarget(
+            GET_MODULE(RenderTargetContainer)
+                .getRenderTargetIdByName(
+                    "gpu_arena_velocity")));
+
+        const auto *old_program =
+            generation->find(old_program_id);
+        const auto *new_program =
+            replacement_generation->find(
+                old_program_id);
+        REQUIRE(old_program != nullptr);
+        REQUIRE(new_program != nullptr);
+        REQUIRE(
+            old_program->frame_graph
+                .render_target_bindings.at(
+                    "gpu_arena_scratch") ==
+            old_target);
+        REQUIRE(
+            new_program->frame_graph
+                .render_target_bindings.at(
+                    "gpu_arena_scratch") ==
+            new_target);
+        REQUIRE(
+            old_program->frame_graph.buffer_bindings.at(
+                "gpu_arena_buffer") == old_buffer);
+        REQUIRE(
+            new_program->frame_graph.buffer_bindings.at(
+                "gpu_arena_buffer") == new_buffer);
+        REQUIRE(old_program->frame_graph
+                    .render_target_bindings.contains(
+                        "gpu_arena_velocity"));
+        REQUIRE_FALSE(
+            new_program->frame_graph
+                .render_target_bindings.contains(
+                    "gpu_arena_velocity"));
+
+        const auto both_generations =
+            inspectRenderPipelineGpuRegistryCounts(
+                registries, &debug_draw, &debug_text);
+        REQUIRE(both_generations.render_targets >
+                committed.render_targets);
+        REQUIRE(both_generations.frame_graph_buffers >
+                committed.frame_graph_buffers);
+        REQUIRE(both_generations.compute_tasks >
+                committed.compute_tasks);
+        REQUIRE(
+            GET_MODULE(RenderTargetContainer)
+                .getMetadata(old_target)
+                .name == "gpu_arena_scratch");
+        generation.reset();
+        const auto retired =
+            inspectRenderPipelineGpuRegistryCounts(
+                registries, &debug_draw, &debug_text);
+        REQUIRE(retired.render_targets <
+                both_generations.render_targets);
+        REQUIRE(retired.frame_graph_buffers <
+                both_generations.frame_graph_buffers);
+        REQUIRE(retired.compute_tasks <
+                both_generations.compute_tasks);
+        REQUIRE_THROWS(
+            GET_MODULE(RenderTargetContainer)
+                .getMetadata(old_target));
 
         GET_MODULE(VulkanManageCore).waitIdle();
         std::filesystem::remove_all(temp_dir);
