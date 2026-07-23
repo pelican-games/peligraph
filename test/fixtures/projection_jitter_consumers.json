@@ -39,6 +39,12 @@
       "taa_policy": "general projection jitter is already applied before the push constant"
     },
     {
+      "name": "material_screen_depth",
+      "matrix": "jittered projection",
+      "route": "FrameUBO inverse projection -> material linear_view_depth accessor",
+      "taa_policy": "reconstructs the opaque depth snapshot with the projection that produced it"
+    },
+    {
       "name": "velocity",
       "matrix": "jittered current/previous projection",
       "route": "FrameUBO -> velocity vertex clips -> fragment NDC de-jitter",
@@ -249,6 +255,12 @@
       "consumer": "legacy_fullscreen_config",
       "role": "deprecated projection declaration validation",
       "needles": ["use push_constants: projection_view"]
+    },
+    {
+      "source": "src/core/shader/surfacecompiler.cpp",
+      "consumer": "material_screen_depth",
+      "role": "generated material screen-depth reconstruction accessor",
+      "needles": ["inverse(pelicanFrame.projection)"]
     },
     {
       "source": "src/core/resources/default.vert",

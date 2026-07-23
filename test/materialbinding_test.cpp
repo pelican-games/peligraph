@@ -117,10 +117,14 @@ TEST_CASE("lowered material binder resolves overridden texture references by dec
             MaterialShaderContract::forward_scene_color_v1);
 
     lowered.screen_inputs = {"opaque_color"};
-    REQUIRE_THROWS_WITH(
-        applyLoweredMaterialForRoute(destination, lowered),
-        Catch::Matchers::ContainsSubstring("opaque_color") &&
-            Catch::Matchers::ContainsSubstring("does not provide yet"));
+    const auto logical_types = makeBuiltinLogicalTypeRegistry();
+    lowered.screen_input_contracts = {
+        makeBuiltinMaterialScreenInputContract(logical_types,
+                                               "opaque_color")};
+    applyLoweredMaterialForRoute(destination, lowered);
+    REQUIRE(destination.screen_inputs == lowered.screen_input_contracts);
+    REQUIRE(destination.screen_inputs.front().footprint.kind ==
+            LogicalReadFootprintKind::neighborhood);
 }
 
 } // namespace Pelican

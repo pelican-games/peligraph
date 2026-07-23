@@ -8,11 +8,17 @@
 #include "../src/core/log.hpp"
 #include "../src/core/material/materialcontainer.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
+#include "../src/core/model/vertbufcontainer.hpp"
+#include "../src/core/renderer/camera.hpp"
+#include "../src/core/renderer/polygoninstancecontainer.hpp"
+#include "../src/core/renderingpass/renderingpasscontainer.hpp"
+#include "../src/core/renderingpass/rendertargetcontainer.hpp"
 #include "../src/core/shader/shaderlibrary.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/vkcore/renderer.hpp"
 #include "../src/core/vkcore/rendertarget.hpp"
 
+#include <algorithm>
 #include <array>
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
@@ -68,6 +74,20 @@ void renderClearFrame(RenderTarget &render_target, vk::ClearColorValue clear_col
     frame.cmd_buf.endRendering();
 
     render_target.render_end();
+}
+
+CommonPolygonVertData makeScreenQuad(float half_extent, float z) {
+    CommonPolygonVertData data;
+    data.indices = {0, 1, 2, 0, 2, 3};
+    data.pos = {{-half_extent, -half_extent, z},
+                {half_extent, -half_extent, z},
+                {half_extent, half_extent, z},
+                {-half_extent, half_extent, z}};
+    data.normal.assign(4, glm::vec3{0.0f, 0.0f, 1.0f});
+    data.texcoord = {{0.0f, 0.0f}, {1.0f, 0.0f},
+                     {1.0f, 1.0f}, {0.0f, 1.0f}};
+    data.color.assign(4, glm::vec4{1.0f});
+    return data;
 }
 
 } // namespace
@@ -227,14 +247,131 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
         const auto material_id = GET_MODULE(MaterialContainer).registerMaterial(
             std::move(material));
         REQUIRE(isValidMaterialId(material_id));
+
+        const auto refraction_source = std::string{
+            "//! pelican.surface v1\n"
+            "//! language: glsl\n"
+            "//! screen_inputs: [opaque_color, linear_view_depth]\n"
+            "//! render_state: { blend: blend, cull: none, depth: read_only, depth_compare: less_equal }\n\n"
+            "void pelican_surface_v1(in PelicanSurfaceInputV1 input_data, "
+            "inout PelicanSurfaceV1 surface) { "
+            "vec2 bent_uv = input_data.uv + vec2(0.08, 0.0); "
+            "vec3 behind = pelican_screen_opaque_color(bent_uv).rgb; "
+            "float scene_depth = pelican_screen_linear_view_depth(input_data.uv).r; "
+            "float fragment_depth = -(pelicanFrame.view * "
+            "vec4(input_data.world_position, 1.0)).z; "
+            "float fade = clamp((scene_depth - fragment_depth) * 2.0, 0.0, 1.0); "
+            "surface.base_color = vec4(vec3(0.0), 0.25 + 0.5 * fade); "
+            "surface.emissive = behind * vec3(0.25, 0.75, 1.25); }\n"};
+        const auto refraction_surface = parseSurfaceFormat(
+            refraction_source, "project://shaders/headless_refraction.surface");
+        const auto refraction_lowered = lowerSurfaceDefaults(
+            refraction_surface,
+            "project://shaders/headless_refraction.surface");
+        REQUIRE(refraction_lowered.route ==
+                MaterialRouteClass::forward_transparent);
+        const auto refraction_shaders =
+            GET_MODULE(ShaderLibrary).loadFromSurfaceForMaterial(
+                refraction_surface,
+                "project://shaders/headless_refraction.surface",
+                refraction_lowered);
+        MaterialInfo refraction_material{
+            .vert_shader = refraction_shaders.vertex,
+            .frag_shader = refraction_shaders.fragment,
+            .base_color_texture = standard.whiteTexture(),
+            .metallic_roughness_texture =
+                standard.metallicRoughnessDefaultTexture(),
+            .normal_texture = standard.normalDefaultTexture(),
+            .emissive_texture = standard.emissiveDefaultTexture(),
+        };
+        applyLoweredMaterialForRoute(refraction_material,
+                                     refraction_lowered);
+        auto &materials = GET_MODULE(MaterialContainer);
+        const auto refraction_id =
+            materials.registerMaterial(std::move(refraction_material));
+        REQUIRE(isValidMaterialId(refraction_id));
+
+        const auto rendering_pass_id =
+            GET_MODULE(RenderingPassContainer)
+                .getRenderingPassIdByName("main_render");
+        const auto &compiled =
+            GET_MODULE(RenderingPassContainer)
+                .getCompiledRenderingPass(rendering_pass_id);
+        const auto transparent = std::find_if(
+            compiled.passes.begin(), compiled.passes.end(),
+            [](const auto &pass) {
+                return pass.definition.name == "forward_transparent";
+            });
+        REQUIRE(transparent != compiled.passes.end());
+        const auto first_revision = materials.screenInputBindingRevisionForTesting(
+            refraction_id, transparent->definition);
+        REQUIRE(first_revision != 0);
+        const auto opaque_color = GET_MODULE(RenderTargetContainer)
+                                      .getRenderTargetIdByName("opaque_color");
+        const auto opaque_depth = GET_MODULE(RenderTargetContainer)
+                                      .getRenderTargetIdByName("opaque_depth");
+        const auto first_views = materials.boundScreenInputImageViewsForTesting(
+            refraction_id, transparent->definition);
+        REQUIRE(first_views ==
+                std::vector<vk::ImageView>{
+                    GET_MODULE(RenderTargetContainer).getImageView(opaque_color),
+                    GET_MODULE(RenderTargetContainer).getImageView(opaque_depth)});
+        renderer.recreateRenderTargetsAndRebindForTesting({32, 32});
+        REQUIRE(materials.screenInputBindingRevisionForTesting(
+                    refraction_id, transparent->definition) > first_revision);
+        REQUIRE(materials.boundScreenInputImageViewsForTesting(
+                    refraction_id, transparent->definition) ==
+                std::vector<vk::ImageView>{
+                    GET_MODULE(RenderTargetContainer).getImageView(opaque_color),
+                    GET_MODULE(RenderTargetContainer).getImageView(opaque_depth)});
+
+        auto &geometry = GET_MODULE(VertBufContainer);
+        ModelTemplate model;
+        model.asset_id = ModelAssetId{187};
+        model.material_primitives = {
+            ModelTemplate::MaterialPrimitives{
+                .material = material_id,
+                .primitives = {geometry.addPrimitiveEntry(
+                    makeScreenQuad(0.8f, 0.0f))},
+                .source_material_index = 0},
+            ModelTemplate::MaterialPrimitives{
+                .material = refraction_id,
+                .primitives = {geometry.addPrimitiveEntry(
+                    makeScreenQuad(0.35f, 0.5f))},
+                .source_material_index = 1},
+        };
+        const auto model_instance =
+            GET_MODULE(PolygonInstanceContainer).placeModelInstance(model);
+        REQUIRE(GET_MODULE(PolygonInstanceContainer)
+                    .isModelInstanceAlive(model_instance));
+        auto &camera = GET_MODULE(Camera);
+        camera.setPos({0.0f, 0.0f, 2.0f});
+        camera.setDir({0.0f, 0.0f, -1.0f});
+        camera.setUp({0.0f, 1.0f, 0.0f});
         renderer.render();
         GET_MODULE(VulkanManageCore).waitIdle();
 
         const auto pixels = GET_MODULE(RenderTarget).readbackLastFrameRGBA8();
         REQUIRE(pixels.size() == 32u * 32u * 4u);
+        const auto rgbDistance = [&](std::size_t left, std::size_t right) {
+            return std::abs(static_cast<int>(pixels[left]) -
+                            static_cast<int>(pixels[right])) +
+                   std::abs(static_cast<int>(pixels[left + 1]) -
+                            static_cast<int>(pixels[right + 1])) +
+                   std::abs(static_cast<int>(pixels[left + 2]) -
+                            static_cast<int>(pixels[right + 2]));
+        };
+        const auto center = (16u * 32u + 16u) * 4u;
+        const auto opaque_only = (16u * 32u + 4u) * 4u;
+        REQUIRE(pixels[center] + pixels[center + 1] + pixels[center + 2] > 0);
+        REQUIRE(rgbDistance(center, opaque_only) > 8);
         const auto plan = renderer.currentFramePlanJson();
         REQUIRE(plan.dump().find("deferred_geometry") != std::string::npos);
         REQUIRE(plan.dump().find("forward_transparent") != std::string::npos);
+        REQUIRE(plan.dump().find("__snapshot_opaque_color") !=
+                std::string::npos);
+        REQUIRE(plan.dump().find("__snapshot_opaque_depth") !=
+                std::string::npos);
         REQUIRE(plan.dump().find("scene_present") != std::string::npos);
 
         std::filesystem::remove_all(temp_dir);

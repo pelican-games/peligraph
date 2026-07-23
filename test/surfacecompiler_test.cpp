@@ -382,6 +382,44 @@ TEST_CASE("example refraction surface exposes its named screen snapshot accessor
 #endif
 }
 
+TEST_CASE("example depth fade lowers same-pixel depth and emits linearization accessor",
+          "[surface-compiler][screen-input][depth-fade][rpe6b1]") {
+    const auto path = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
+                      "projects" / "example" / "shaders" /
+                      "depth_fade.surface";
+    const auto surface = parseSurfaceFormat(
+        readText(path), "project://shaders/depth_fade.surface");
+    REQUIRE(surface.screen_inputs ==
+            std::vector<std::string>{"linear_view_depth"});
+    const auto lowered = lowerSurfaceDefaults(
+        surface, "project://shaders/depth_fade.surface");
+    REQUIRE(lowered.route == MaterialRouteClass::forward_transparent);
+    REQUIRE(lowered.screen_input_contracts.size() == 1);
+    REQUIRE(lowered.screen_input_contracts.front().footprint.kind ==
+            LogicalReadFootprintKind::same_pixel);
+    REQUIRE(lowered.screen_input_contracts.front().conversion ==
+            std::optional<std::string>{
+                "pelican.render.depth_linearize@1"});
+
+    const auto composition = composeSurfaceShaders(
+        surface, "project://shaders/depth_fade.surface");
+    const auto params = std::find_if(
+        composition.virtual_includes.begin(),
+        composition.virtual_includes.end(), [](const auto &include) {
+            return include.first == "__pelican_surface_params.glsl";
+        });
+    REQUIRE(params != composition.virtual_includes.end());
+    REQUIRE(params->second.find("inverse(pelicanFrame.projection)") !=
+            std::string::npos);
+    REQUIRE(params->second.find("-view_position.z / view_position.w") !=
+            std::string::npos);
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    ShaderCompiler compiler;
+    requireCompiled(compileSurfaceShaders(
+        compiler, surface, "project://shaders/depth_fade.surface"));
+#endif
+}
+
 TEST_CASE("unchanged example toon surface compiles all skinned template variants",
           "[surface-compiler][skeletal]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER

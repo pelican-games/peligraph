@@ -217,6 +217,16 @@ TEST_CASE("hybrid pipeline preset expands to explicit versioned material routes"
             "forward_opaque_v1");
     REQUIRE(passByName(result.config, "forward_transparent").at("material_contract") ==
             "forward_transparent_v1");
+    REQUIRE(passByName(result.config, "forward_transparent")
+                .at("screen_inputs")
+                .at("opaque_color") == "opaque_color");
+    REQUIRE(passByName(result.config, "forward_transparent")
+                .at("screen_inputs")
+                .at("linear_view_depth") == "opaque_depth");
+    REQUIRE(passByName(result.config, "__snapshot_opaque_color").at("source") ==
+            "lit_color");
+    REQUIRE(passByName(result.config, "__snapshot_opaque_depth").at("source") ==
+            "scene_depth");
     REQUIRE(passByName(result.config, "scene_present").at("shader").at("fragment") ==
             "engine://scene_present");
     REQUIRE(result.draw_sort.at("opaque").at("provider") ==
@@ -232,6 +242,26 @@ TEST_CASE("hybrid pipeline preset expands to explicit versioned material routes"
     REQUIRE(lit_color != targets.end());
     REQUIRE(lit_color->at("format") == "R16G16B16A16_SFLOAT");
     REQUIRE(lit_color->at("format_class") == "explicit(R16G16B16A16_SFLOAT)");
+    const auto opaque_color = std::find_if(
+        targets.begin(), targets.end(), [](const auto &target) {
+            return target.value("name", std::string{}) == "opaque_color";
+        });
+    const auto opaque_depth = std::find_if(
+        targets.begin(), targets.end(), [](const auto &target) {
+            return target.value("name", std::string{}) == "opaque_depth";
+        });
+    REQUIRE(opaque_color != targets.end());
+    REQUIRE(opaque_depth != targets.end());
+    REQUIRE(opaque_color->at("format") == "R16G16B16A16_SFLOAT");
+    REQUIRE(opaque_depth->at("format") == "D32_SFLOAT");
+
+    const auto &passes = result.config.at("rendering_passes").at(0).at("passes");
+    REQUIRE(std::count_if(passes.begin(), passes.end(), [](const auto &pass) {
+                return pass.value("name", std::string{}) == "scene_present";
+            }) == 1);
+    REQUIRE(std::count_if(passes.begin(), passes.end(), [](const auto &pass) {
+                return pass.value("type", std::string{}) == "output_transform";
+            }) == 1);
 }
 
 TEST_CASE("pipeline preset accepts an explicit typed draw-sort override",

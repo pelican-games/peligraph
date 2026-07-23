@@ -15,6 +15,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
+#include <algorithm>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <variant>
@@ -561,6 +562,87 @@ TEST_CASE("material pass info parser applies explicit material range", "[renderi
 
     REQUIRE(pass_def.materialInfo().material_start == 3);
     REQUIRE(pass_def.materialInfo().material_count == 7);
+}
+
+TEST_CASE("material pass screen inputs resolve named typed targets and reject mismatches",
+          "[renderingpass][material-screen-input][rpe6b1]") {
+    const RenderTargetNameResolver names{[](const std::string &name) {
+        if (name == "opaque_color") return GlobalRenderTargetId{10};
+        if (name == "opaque_depth") return GlobalRenderTargetId{11};
+        return noRenderTargetId();
+    }};
+    const RenderTargetMetadataResolver metadata{
+        [](GlobalRenderTargetId target) {
+            if (target == GlobalRenderTargetId{10}) {
+                return RenderTargetMetadata{
+                    "opaque_color",
+                    vk::ImageUsageFlagBits::eTransferDst |
+                        vk::ImageUsageFlagBits::eSampled,
+                    vk::Format::eR16G16B16A16Sfloat,
+                    vk::Extent2D{1280, 720}};
+            }
+            if (target == GlobalRenderTargetId{11}) {
+                return RenderTargetMetadata{
+                    "opaque_depth",
+                    vk::ImageUsageFlagBits::eTransferDst |
+                        vk::ImageUsageFlagBits::eSampled,
+                    vk::Format::eD32Sfloat, vk::Extent2D{1280, 720}};
+            }
+            throw std::runtime_error("unexpected target");
+        }};
+
+    PassDefinition pass;
+    pass.name = "forward_transparent";
+    pass.pass_info = MaterialPassInfo{};
+    parseMaterialPassScreenInputsFromJson(
+        pass,
+        nlohmann::json{{"screen_inputs",
+                        {{"opaque_color", "opaque_color"},
+                         {"opaque_depth", "opaque_depth"},
+                         {"scene_depth", "opaque_depth"},
+                         {"linear_view_depth", "opaque_depth"}}}},
+        names, metadata);
+    REQUIRE(pass.materialInfo().screen_inputs.size() == 4);
+    REQUIRE(pass.input_targets.size() == 2);
+    REQUIRE(std::find(pass.input_targets.begin(), pass.input_targets.end(),
+                      GlobalRenderTargetId{10}) != pass.input_targets.end());
+    REQUIRE(std::find(pass.input_targets.begin(), pass.input_targets.end(),
+                      GlobalRenderTargetId{11}) != pass.input_targets.end());
+    const auto linear = std::find_if(
+        pass.materialInfo().screen_inputs.begin(),
+        pass.materialInfo().screen_inputs.end(), [](const auto &input) {
+            return input.contract.name == "linear_view_depth";
+        });
+    REQUIRE(linear != pass.materialInfo().screen_inputs.end());
+    REQUIRE(linear->contract.sampled_type ==
+            linearViewDepthV1(makeBuiltinLogicalTypeRegistry()));
+    REQUIRE(linear->contract.footprint.kind ==
+            LogicalReadFootprintKind::same_pixel);
+    REQUIRE(linear->contract.conversion ==
+            std::optional<std::string>{"pelican.render.depth_linearize@1"});
+
+    PassDefinition mismatch;
+    mismatch.name = "bad_forward";
+    mismatch.pass_info = MaterialPassInfo{};
+    REQUIRE_THROWS_WITH(
+        parseMaterialPassScreenInputsFromJson(
+            mismatch,
+            nlohmann::json{{"screen_inputs",
+                            {{"opaque_color", "opaque_depth"}}}},
+            names, metadata),
+        Catch::Matchers::ContainsSubstring("opaque_color") &&
+            Catch::Matchers::ContainsSubstring("source type"));
+
+    PassDefinition unknown;
+    unknown.name = "unknown_forward";
+    unknown.pass_info = MaterialPassInfo{};
+    REQUIRE_THROWS_WITH(
+        parseMaterialPassScreenInputsFromJson(
+            unknown,
+            nlohmann::json{{"screen_inputs",
+                            {{"history_magic", "opaque_color"}}}},
+            names, metadata),
+        Catch::Matchers::ContainsSubstring("history_magic"));
 }
 
 TEST_CASE("material pass contracts parse and filter independently of local pass ids",

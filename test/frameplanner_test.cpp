@@ -354,9 +354,23 @@ TEST_CASE("hybrid preset resolves ordered deferred and forward writes",
     };
     REQUIRE(position("deferred_geometry") < position("deferred_lighting"));
     REQUIRE(position("deferred_lighting") < position("forward_opaque"));
-    REQUIRE(position("forward_opaque") < position("forward_transparent"));
+    REQUIRE(position("forward_opaque") < position("__snapshot_opaque_color"));
+    REQUIRE(position("forward_opaque") < position("__snapshot_opaque_depth"));
+    REQUIRE(position("__snapshot_opaque_color") <
+            position("forward_transparent"));
+    REQUIRE(position("__snapshot_opaque_depth") <
+            position("forward_transparent"));
     REQUIRE(position("forward_transparent") < position("scene_present"));
     REQUIRE(position("scene_present") < position("output_transform"));
+    const auto transparent = std::find_if(
+        plan.nodes.begin(), plan.nodes.end(), [](const auto &node) {
+            return node.name == "forward_transparent";
+        });
+    REQUIRE(transparent != plan.nodes.end());
+    REQUIRE(std::find(transparent->reads.begin(), transparent->reads.end(),
+                      "opaque_color") != transparent->reads.end());
+    REQUIRE(std::find(transparent->reads.begin(), transparent->reads.end(),
+                      "opaque_depth") != transparent->reads.end());
 }
 
 TEST_CASE("frame planner accepts compute tasks and serializes node kinds", "[frameplanner]") {
