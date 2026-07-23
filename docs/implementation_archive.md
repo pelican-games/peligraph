@@ -5713,4 +5713,64 @@ submission fence後の`DeletionQueue` retire、FileWatcher / `ReloadGate`から�
 
 ---
 
+### WP195(済 2026-07-24): RPE10b2 — GPU owner-scope replacement and generation lease
+
+参照: [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md) §9、§12、
+[`design_render_graph_compiler.md`](design_render_graph_compiler.md) §12、
+[`design_reviews/2026-07-24_wp195_report.md`](design_reviews/2026-07-24_wp195_report.md)。
+
+**目的**: 同じ owner scope の render config を再登録しても active generation と旧 frame を
+壊さず、同名 resource を新しい registry handle へ置換する。config から消えた program /
+resource は新 generation から除去し、旧 Vulkan resource は最後の generation lease が
+解放されるまで参照可能にする。
+
+**実装範囲**:
+
+1. `RenderPipelineGpuRegistrationArena` が置換対象 scope の current-name facade を一時的に
+   隠し、同名 target / buffer / compute task を新 handle として登録する。candidate publish
+   失敗時は checkpoint へ戻し、旧 name binding と全 registry membership を復元する。
+2. render target、frame-graph buffer、compute task、fullscreen/debug/debug-text/shadow/
+   velocity pass、pipeline、shader に exact-handle retire を追加する。handle は retire 後も
+   再利用せず、ABA を避ける。
+3. owner scope manifest の type-erased lease が登録集合を所有する。root CAS 成功後だけ
+   lease を arm し、最後の参照解放時に pass/descriptor → compute/buffer/target →
+   pipeline → shader の順で membership を retire する。Vulkan payload は利用可能なら
+   既存 `DeletionQueue` へ渡す。
+4. `CompiledFrameGraphExecution` は target / buffer の typed name binding snapshot を持つ。
+   barrier、copy、fullscreen descriptor、compute task、output transform、XR mirror は
+   実行時に mutable global name table を引き直さない。
+5. runtime program に owner scope を追加する。同じ owner の再登録では旧 program 集合を
+   候補から除去し、同名 program の `RenderingPassId` と公開順を維持し、候補から消えた
+   program は新 generation から除去する。別 owner program は依存明示化まで旧 scope
+   lease を保守的に継承する。
+6. `currentFramePlanJson()` に GPU owner scope と scope/program が保持する resource lease
+   数を追加する。XR mirror sink は使用直前に現 generation の mirror sourceへ再bindする。
+
+**受け入れ条件**:
+
+- same-owner replacement が成功し、同名 target / buffer / compute task は新 handle を得る
+- 同名 rendering pass ID と公開順は安定し、config から消えた pass/target/feature は
+  新 generation に存在しない
+- 旧 generation を保持中は旧/new registry membership が共存し、それぞれの frame graph
+  typed binding が正しい世代を参照する
+- 旧 generation 解放後は旧 exact membership が退役し、新 membership は生存する
+- replacement prepare fault 後に active root、name binding、旧/new membership count が
+  完全に復元される
+- 別 owner program の保守的 lease 継承が dangling shared resource を防ぎ、その program
+  自身の置換後に旧 lease を解放できる
+- Debug 全 target build、全 CTest 800 / 800、OpenXR OFF core + transaction + headless build、
+  transaction 10 cases / 63 assertions、Vulkan replacement 1 case / 89 assertions、
+  `git diff --check` が成功
+
+**非対象 / RPE10b3へ残すもの**: submission と runtime generation の対応表、
+GPU fence 完了を条件にした retire token、FileWatcher / `ReloadGate` の coalesce、
+frame boundary での reload publication、実 shader/config 保存からの end-to-end reload。
+shared descriptor-set-layout cache は scope-owned resource ではなく engine cache として残す。
+
+依存: WP194。見積: 中。
+
+完了レポート: `docs/design_reviews/2026-07-24_wp195_report.md`
+
+---
+
 未完了 WP と運用規則は [active ledger](implementation_plan.md) を参照。

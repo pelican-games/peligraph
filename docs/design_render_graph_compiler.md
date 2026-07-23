@@ -999,18 +999,32 @@ compute task、shader、pipeline、fullscreen/debug/shadow/velocity pass を一�
 append-only registration arena で checkpoint した。prepare failure は全 registry の
 新規 membership を逆依存順に取り消し、成功時は owner scope 付き immutable manifest を
 runtime root と同じ CAS で公開する。manifest は将来の type-erased resource lease を
-保持できるが、現時点の legacy Vulkan object 自体は registry 所有のままである。
-同じ scope の replacement、fence retire、pipeline FileWatcher は未接続である。
+保持できる。
+
+RPE10b2 / WP195 では同じ owner scope の manifest と program 集合を replacement できる。
+target / buffer / compute / pass / pipeline / shader の registry handle は再利用せず、
+新 generation の同名 resource に新しい handle を割り当てる。frame graph execution と
+compute/fullscreen descriptor は compile 時の typed handle snapshot を保持するため、
+旧 generation は mutable name facade が新 scope を指した後も旧 resource を使い続ける。
+scope の type-erased lease が exact registry membership を所有し、最後の runtime
+generation 参照が消えた時に逆依存順で retire する。Vulkan payload は既存
+`DeletionQueue` へ委譲するが、submission fence token 自体はまだ generation lease の
+所有物ではない。別 owner program の resource dependency は現状保守的に旧 lease を
+継承し、今後の明示 dependency graph まで dangling reference を避ける。
+
+同じ owner の同名 program は pass ID と順序を維持し、候補から消えた program は新
+generation から除去する。prepare failure / stale publication は active generation、
+current name facade、全 registry membership を不変に保つ。pipeline FileWatcher と
+submission-aware retire は未接続である。
 実際のdraw-sort provider generationも別registryのqueue構築時leaseであり、このrootが
 所有するのはcompiled policy内のprovider名までである。
 
-1. RPE10b2 で owner scope replacement と generation-owned Vulkan resource lease を実装
-2. RPE10b3 で submission fence retire と pipeline watcher を同じ transactionへ接続
-3. XR2b で multiview / array-layer / depth-submit lowering
-4. pass / region / global transform / strategy provider fixture
-5. physical plan eject / direct authoring fixture
-6. `NativeScope` は具体的な Vulkan-only 使用例が得られてから ABI 設計
-7. CPU / external domain は計測と具体的な二候補 task が得られてから
+1. RPE10b3 で submission fence retire と pipeline watcher を同じ transactionへ接続
+2. XR2b で multiview / array-layer / depth-submit lowering
+3. pass / region / global transform / strategy provider fixture
+4. physical plan eject / direct authoring fixture
+5. `NativeScope` は具体的な Vulkan-only 使用例が得られてから ABI 設計
+6. CPU / external domain は計測と具体的な二候補 task が得られてから
    `design_heterogeneous_execution_graph.md` の HEG3 / HEG4 として実装
 
 ## 13. north-star acceptance scenarios

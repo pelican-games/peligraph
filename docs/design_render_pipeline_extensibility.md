@@ -32,7 +32,10 @@ RPE10a / WP193 は pass、frame graph、logical/physical plan、route、sample�
 draw-sort provider 選択を一つの immutable runtime generation として原子的に公開する root を追加した。
 RPE10b1 / WP194 は render-config が触る GPU registry 群に共通 checkpoint / rollback を追加し、
 owner scope 付き immutable GPU arena manifest を同じ root へ原子的に公開する。
-scope replacement、Vulkan object の世代所有・fence retire、watcher 接続は RPE10b2 以降に残る。
+RPE10b2 / WP195 は同じ owner scope の置換、世代ローカルの typed resource binding、
+generation-owned registry lease を追加した。旧 frame は旧 handle を保持し、最後の
+generation lease 解放時に registry membership を retire する。submission fence と watcher
+接続は RPE10b3 以降に残る。
 
 関連文書:
 
@@ -637,12 +640,30 @@ resource kind / handle / name / declared bytes を immutable manifest にして
 から不可視であり、`currentFramePlanJson()` で runtime generation と対応付けて診断できる。
 将来 registry が所有権を移せる場合に備え、scope は type-erased resource lease も保持できる。
 
-ただし RPE10b1 は append-only compatibility slice であり、既存 Vulkan registry の実体は
-まだ engine-owned である。同じ owner scope の再登録は拒否し、古い scope の差し替え・削除、
-Vulkan object の generation lease への移管、submission fence 後 retire、
-FileWatcher からの pipeline reload publication は未接続である。
+RPE10b2 / WP195 では、同じ owner scope の再登録を replacement として扱う。prepare 開始時に
+旧 scope の current-name facade だけを隠し、旧 registry entry と Vulkan payload は旧
+generation lease が保持する。新 scope は同名 resource でも単調増加する別 handle を得る。
+`CompiledFrameGraphExecution` は target / buffer の name-to-handle snapshot を所有し、
+barrier、copy、fullscreen descriptor、compute task、XR mirror は実行中に mutable な
+global name table を引き直さない。candidate publish 後にだけ新 scope lease を arm するため、
+prepare failure / stale publication は name table と新規 membership を WP194 の checkpoint
+へ戻せる。
+
+runtime program は owner scope を持ち、replacement 時は同じ owner の旧 program 集合を
+候補から一度除去する。同名 program は `RenderingPassId` と公開順を維持し、候補から消えた
+program は新 generation から除去する。別 owner の program が旧 scope resource を参照する
+可能性は、依存の明示化が完了するまで旧 scope lease をその program へ保守的に継承して守る。
+最後の参照解放時は pass/descriptor から shader への逆依存順で exact handle membership を
+retire し、Vulkan payload は利用可能なら既存 `DeletionQueue` へ渡す。共有
+descriptor-set-layout cache は scope resource ではなく engine cache として残す。
+
+RPE10b2 の lifetime 起点は CPU-side runtime generation lease である。どの submission が
+その generation を参照したかを追う fence token はまだ scope lease に結び付いていない。
+また FileWatcher から frame boundary publication を起動する経路も未接続である。
+したがって config registration は引き続き engine owner thread の直列化区間で呼び、
+mutable registry を任意 worker から並行更新する API とは扱わない。
 `RenderPolicyRegistry` の実 provider generation も root の所有物ではなく、queue 構築時の
-個別 lease で保護される。このため WP194 を「pipeline hot reload 完了」とは扱わない。
+個別 lease で保護される。このため WP195 を「pipeline hot reload 完了」とは扱わない。
 
 ## 10. `GET_MODULE` の位置
 
@@ -699,7 +720,7 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 | RPE9 / WP192（済 2026-07-23） | XR / preview callback を builtin `GraphVariantPolicy` へ移行 | sequential XR/preview plan 不変、OpenXR lifecycle 非依存 test |
 | RPE10a / WP193（済 2026-07-24） | immutable runtime generation、prepare/rollback、base-generation CAS publish、frame lease | route/sample/draw-sort provider 選択/pass/plan 同時変更の atomic fixture、stale candidate reject、CPU-side retire |
 | RPE10b1 / WP194（済 2026-07-24） | append-only GPU registration arena、cross-registry rollback、owner-scope manifest の root 同時公開 | 5段 fault injectionで全registry membership復元、candidate不可視、lease rollback、hybrid診断 |
-| RPE10b2 | scope-aware replacement、generation-owned Vulkan resource lease | same-name reload、pass/target削除、旧世代frameから旧resource参照 |
+| RPE10b2 / WP195（済 2026-07-24） | scope-aware replacement、generation-owned registry lease、世代ローカル typed binding | same-name reload、pass/target削除、旧世代frameから旧resource参照、最後のlease解放後のexact retire |
 | RPE10b3 | submission fence retire、watcher 接続 | in-flight完了前の破棄なし、連続保存coalesce、失敗時active世代不変、実reload |
 
 ### 12.1 いま着手する範囲
@@ -733,7 +754,10 @@ registrationとrendererはこのcompiled policyを読み、OpenXR session state�
 `RenderPipelineRuntimeGeneration`へ束ねた。prepare中のcandidateはobserverから不可視で、
 publishはbase generation付きCAS一回、frameは同じrootを全viewで保持する。WP194では
 GPU registrationのappend-only checkpoint/rollbackとowner-scope manifestを同じrootへ接続した。
-scope replacement、Vulkan resourceの世代所有・fence retire、実reloadはRPE10b2以降で行う。
+WP195では同じowner scopeを置換し、programの維持/削除、target/bufferの世代ローカルhandle、
+registry membershipのgeneration lease所有を接続した。旧frameは旧resourceを参照でき、
+最後のlease解放後にexact handleをretireする。submission fence tokenとFileWatcher起点の
+実reloadはRPE10b3で行う。
 各段階の詳細gateは
 `design_render_graph_compiler.md` §12 を正とする。
 

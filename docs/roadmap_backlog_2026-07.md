@@ -1,6 +1,6 @@
 # 機能追加バックログ(2026-07-24 時点・順序付き)
 
-作成: セッション引き継ぎ用。WP194 / RPE10b1 GPU registration transaction 完了地点へ同期。
+作成: セッション引き継ぎ用。WP195 / RPE10b2 GPU scope replacement 完了地点へ同期。
 状態の正: active は `docs/implementation_plan.md`、完了済みは
 `docs/implementation_archive.md` と `docs/design_reviews/*_wp*_report.md`、
 挙動はコードとテスト。
@@ -77,9 +77,9 @@ deferred、forward opaque/transparent 合成、typed color/depth screen input �
     physical target runtime統合(WP191、完了)、XR/preview builtin
     GraphVariantPolicy(WP192、完了)、immutable runtime generation /
     atomic publication root(WP193、完了)、append-only GPU registry rollback /
-    owner-scope manifest(WP194、完了)まで実装。
-    次は scope-aware replacement / generation-owned resource lease をRPE10b2、
-    fence retire / watcher接続をRPE10b3として扱う。
+    owner-scope manifest(WP194、完了)、scope-aware replacement /
+    generation-owned registry lease(WP195、完了)まで実装。
+    次は submission fence retire / watcher接続をRPE10b3として扱う。
     論理型、material/light contract、Vulkan physical plan / NativeScope の詳細は
     `design_render_graph_compiler.md`。CPU / GPU compute / external backend を横 domain として
     接続する共通 typed dialect、fragment / closed forest は
@@ -166,11 +166,11 @@ D-P5(validation 常設)→ D-P4(Tracy ユニット・既定 OFF)→ D-P6(crash �
 OPT-S(起動第 2 弾)/OPT-XR(Release 実機ベースライン)/OPT-MV
 (multiview 評価)。最適化は必ず計測の数字を根拠に(WP82 流儀の標準化)。
 
-## 推奨の直近候補(WP194 完了後)
+## 推奨の直近候補(WP195 完了後)
 
 | 順 | 候補 | 理由／前提 |
 |---|---|---|
-| 次 WP 候補 | **RPE10b2 / WP195: GPU scope replacement** | WP194でcross-registry rollbackとowner-scope manifestは成立。same-name scopeを差し替え、Vulkan resourceをgeneration leaseへ移して旧frameから参照可能にする |
+| 次 WP 候補 | **RPE10b3 / WP196: submission-aware pipeline reload** | WP195でsame-name scope replacementと旧generation resource leaseは成立。submission fence完了後のretireとFileWatcher/ReloadGateからのframe-boundary publicationを接続する |
 | 2 | **HR2-I: input_actions/profile hot reload** | 設計済みで小さく、残る hot-reload 基本型を閉じる |
 | 3 | **U3: UI hot reload transaction** | HR0 watcher/reconcile を共有し、editor save 後の UI 往復を完成させる |
 | 4 | **VRMA watcher integration** | WP178 の generation/rebind entry point を FileWatcher/loader へ接続。WP 化前に asset identity と profile reload 範囲を固定する |
