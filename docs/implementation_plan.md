@@ -73,12 +73,13 @@ ctest --test-dir ./build -C Debug --output-on-failure
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
-(最新完了: WP189、2026-07-23。本文と完了レポートは archive 参照。)
+(最新完了: WP190、2026-07-23。本文と完了レポートは archive 参照。)
 
 ## 2. WP 詳細
 
-現在アクティブな WP はない。renderer の次候補は RPE7 sample-count request /
-capability resolve の純粋段階であり、着手前に独立 WP として登録する。
+現在アクティブな WP はない。renderer の次候補は、WP190 で実ランタイムまで通した
+sample-count / MSAA 経路を WP189 の汎用 physical planner へ統合する段階、または
+RPE9 の XR / preview `GraphVariantPolicy` である。
 
 ## 3. トラック現況(WP 化待ちを含む)
 
@@ -114,9 +115,10 @@ capability resolve の純粋段階であり、着手前に独立 WP として登
   RPE6a logical type / shadow graph(WP185) → RPE6b0 versioned logical value /
   producer edge(WP186) → RPE6b1 typed screen input / opaque snapshot(WP187) →
   RPE6c0 topology / backend probe / optimize-by-default / advisory diagnostics(WP188) →
-  RPE6c1 desktop/tile target plan(WP189)まで完了。
-  以後は sample-count resolve → MSAA physical transform → graph variant →
-  pipeline transaction の順で進める。RPE6c0/1 では [HEG] の immutable canonical / disposable lowering seam、
+  RPE6c1 desktop/tile target plan(WP189) → typed sample-count resolve + 実 MSAA
+  runtime vertical slice(WP190)まで完了。
+  以後は physical planner 統合 → graph variant → pipeline transaction の順で進める。
+  RPE6c0/1 では [HEG] の immutable canonical / disposable lowering seam、
   dialect legality、pairwise endpoint relationを置くが、汎用 CPU scheduler、execution linker、
   動画 backend は計測・具体需要まで実装しない。logical effectは作者を信頼する任意宣言、
   lower-level warningのstrict化はproject / CI opt-inとする。通常policyは宣言contractを信頼して

@@ -5445,4 +5445,62 @@ project/test CMake、target planner tests、[RPE]/[RGC]/[HEG]のRPE6c1状態、W
 
 ---
 
+### WP190(済 2026-07-23): RPE7 / RPE8 runtime slice — typed sample count and executable MSAA
+
+参照: [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md) §7.2、§12、
+[`design_render_graph_compiler.md`](design_render_graph_compiler.md) §12、
+[`design_reviews/2026-07-23_wp189_report.md`](design_reviews/2026-07-23_wp189_report.md)。
+
+**目的**: data-only physical planningだけを重ね続けず、sample-count authoringから実デバイス
+capability resolve、Vulkan image / pipeline、dynamic-rendering resolve、後段sampleまでを
+一本の実行可能な縦切りとして接続する。JSON解釈はproject compilerで終え、runtimeは
+immutable typed policy / planだけを読む。
+
+**実装範囲**:
+
+1. `pipeline.settings.msaa`を`SampleCountPolicy`へcompileする。未指定はexact 1x、
+   `fallback: error | lower_supported`、`scope: geometry | all | none`、高度な
+   `targets`を名前付きで検証する。
+2. attachment formatごとの実デバイスsample-count factsとdepth-resolve能力をqueryし、
+   同じrendering scopeへ結合され得るattachment連結成分ごとに共通sample数を決定する。
+   exact失敗とfallbackは制約したresource名・format・reasonを保持する。
+3. pass出力から連結成分を導出し、G-buffer名・枚数を列挙しない。追加attachmentが
+   sample数を制限するfixtureを持つ。
+4. `RenderTargetContainer`がsingle-sample resolved imageと必要時だけ生成する
+   multisample attachment imageを分離所有する。sample/copy/history側の既存APIは
+   resolved imageを返し、dynamic renderingだけがattachment viewを使う。
+5. graphics pipeline、material / fullscreen / shadow / velocity / debug / sprite / UI /
+   ImGuiへresolved sample countを配線する。color/depth output sample数不一致は
+   pipeline作成前に拒否する。
+6. dynamic renderingへcolor/depth resolveを設定し、layout trackerはresolved /
+   attachment surfaceを別々に追跡する。depth resolveの
+   `COLOR_ATTACHMENT_OUTPUT` accessもbarrierへ含める。color resolve modeは
+   non-integer formatの`AVERAGE`とinteger formatの`SAMPLE_ZERO`を区別する。
+   compute / transferのresolved-only accessへ不要なattachment barrierを課さず、
+   resolved-only producerからのraster `Load`は未実装のsample expandとして拒否する。
+7. `CompiledFrameGraphExecution`へ同一`ResolvedSampleCountPlan`を保持し、authoring時の
+   `currentFramePlanJson()`へ掲載して実行計画とdiagnostic dumpを対応付ける。
+
+**受け入れ条件**:
+
+- 未指定configは1xで既存挙動を維持する
+- unsupported exactは制限resource名付きで失敗し、`lower_supported`だけが共通下位sample数へ落ちる
+- hybrid deferred + forwardのcolor/depthが同じ実sample数で描画される
+- multisample attachmentをresolve後、後段fullscreen/sample/readbackがsingle-sample imageを見る
+- depth resolve非対応deviceは1xへfallbackまたはexact errorになり、不正なresourceを作らない
+- 4x hybrid headless描画が成功し、Vulkan validation / synchronization errorがない
+- public aggregateの既存field順を保持し、追加fieldは末尾へ置く
+- Debug全build、全CTest、`git diff --check`が成功する
+
+**残件**: WP189の汎用`TargetLoweringGraph` / `VulkanPhysicalPlan`と今回のruntime bridgeを
+単一lowering経路へ統合すること、tile-local native scope、XR swapchain MSAA、任意
+material fragment-output ABIは後続とする。現行material contractの5-MRT ABI自体は本WPで
+可変化しない。
+
+依存: WP181、WP187〜WP189。見積: 大。
+
+完了レポート: `docs/design_reviews/2026-07-23_wp190_report.md`
+
+---
+
 未完了 WP と運用規則は [active ledger](implementation_plan.md) を参照。

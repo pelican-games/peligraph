@@ -22,7 +22,10 @@ conversion implementation descriptor を追加した。RPE6b1 / WP187 はその�
 `hybrid_v1` の opaque snapshot と material descriptor へ接続した。RPE6c0 / WP188 と
 RPE6c1 / WP189 はtarget topology/probe、`ResourcePattern`、desktop/tile physical plan fixture、
 dialect legalityを純CPUで追加したが、汎用logical graphの実行所有権は引き続き既存
-`FramePlan` / Vulkan executorにある。
+`FramePlan` / Vulkan executorにある。RPE7 / RPE8 runtime slice / WP190 は
+`SampleCountPolicy` と capability resolve を typed compiled plan へ追加し、現在の
+`FramePlan` / Vulkan executor に実 MSAA image、pipeline sample count、color/depth resolve
+を接続した。
 
 関連文書:
 
@@ -494,6 +497,10 @@ authoring v1 の最小形は次を想定する。
 
 - 未指定は 1 sample で現状互換
 - `fallback` は `error` を既定とし、明示時だけ `lower_supported` を許す
+- `scope` は `geometry` を既定とし、`all` / `none`、および高度な
+  `targets` 指定で attachment 連結成分単位に上書きできる
+- authoring JSON は project compiler で `SampleCountPolicy` へ変換し、
+  core / Vulkan runtime は JSON key を再解釈しない
 - compiler が multisample target と single-sample resolve target を生成する
 - pass の color/depth attachment sample count は一致させる
 - resolve 後に sample する feature は single-sample resource を見る
@@ -634,14 +641,14 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 | RPE6b1 / WP187（済 2026-07-23） | typed color/depth domain + hybrid screen-input descriptor binding | 屈折/深度 fade fixture、tone map 一回、型不一致 reject |
 | RPE6c0 / WP188（済 2026-07-23） | data-only target topology / directed links、pure Vulkan backend probe、immutable registry snapshot、optimize-by-default / advisory diagnostics | deviceなしprobe、link有無のbridge可否、reason付きreject、opt-in strict/hazard stress、追加注釈なしのparallel/fusion候補、runtime不変 |
 | RPE6c1 / WP189（済 2026-07-23） | `ResourcePattern` / read footprint / materialization + mock desktop/tile target planner。canonical / disposable lowering seam と dialect legality を追加 | desktop materialize、tile local-read、追加 G-buffer、屈折 snapshot、physical dump、optional domain zero-cost |
-| RPE7 | `SampleCountRequest` / capabilities / resolution の純粋段階 | unsupported/fallback 診断 fixture |
-| RPE8 | MSAA graph transform + image/pipeline sample count + resolve | 1x byte 不変、2x/4x headless Vulkan、depth capability gate |
+| RPE7 / WP190（済 2026-07-23） | `SampleCountPolicy` / capabilities / deterministic resolution の純粋段階 | exact / lower-supported、limiting resource 診断、typed compiled plan |
+| RPE8 runtime slice / WP190（済 2026-07-23） | attachment-connected MSAA transform + image/pipeline sample count + color/depth resolve | 1x互換、実4x hybrid headless、depth capability gate、validation errorなし |
 | RPE9 | XR / preview callback を builtin `GraphVariantPolicy` へ移行 | sequential XR/preview plan 不変、OpenXR lifecycle 非依存 test |
 | RPE10 | pipeline hot reload の prepare/publish/rollback/retire | route/sample/provider 同時変更の atomic fixture、in-flight retire |
 
 ### 12.1 いま着手する範囲
 
-RPE1 / WP180 から RPE6c1 / WP189 まで完了した。authoring resolve、immutable typed
+RPE1 / WP180 から RPE8 runtime slice / WP190 まで完了した。authoring resolve、immutable typed
 pipeline plan、draw inventory / queue materialization、versioned draw-sort provider registry、
 world bounds、phase/view 別 queue に加え、Vulkan 非依存の logical type / port-use kernel と
 現行 `FrameGraphDefinition` の diagnostic shadow graph が分離済みである。shadow graph は
@@ -652,9 +659,13 @@ depth linearization、tone-map 一回の fixture は RPE6b1 で固定した。RP
 probe / warning・planning profileをruntime非変更で固定した。RPE6c1では`ResourcePattern`、
 resource lifetime、desktop materialization、tile-local read、屈折snapshot、dialect legalityを
 data-only physical planとして実証した。G-buffer名や枚数はplannerへ固定せず、endpointの
-attachment budget factで上限を検査する。次はRPE7のsample-count resolveであり、MSAA image /
-pipeline / resolveのVulkan変更はRPE8まで混ぜない。各段階の詳細gateは
-`design_render_graph_compiler.md` §12 を正とする。
+attachment budget factで上限を検査する。WP190 は authoring の
+`pipeline.settings.msaa` を typed `SampleCountPolicy` へcompileし、実デバイスのformat /
+depth-resolve能力でattachment連結成分ごとの共通sample数を解決する。Vulkan runtimeは
+multisample attachmentとsingle-sample resolved imageを分離し、後段sample/copyはresolved
+imageだけを見る。現在の変換は既存pass出力から連結成分を作るruntime bridgeであり、
+WP189の汎用physical plannerとの単一lowering経路への統合は後続作業とする。各段階の
+詳細gateは `design_render_graph_compiler.md` §12 を正とする。
 
 ### 12.2 後回しにするもの
 
