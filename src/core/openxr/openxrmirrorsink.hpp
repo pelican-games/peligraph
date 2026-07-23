@@ -3,9 +3,13 @@
 #include "../renderingpass/renderingpass.hpp"
 #include <cstdint>
 #include <optional>
+#include <string_view>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican::OpenXr {
+
+inline constexpr std::string_view xr_mirror_intermediate_name =
+    "__xr_mirror_left";
 
 // Returns an empty rectangle for minimized/zero-sized destinations.  The
 // source aspect ratio is preserved and the unused destination area is black.

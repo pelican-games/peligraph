@@ -2,7 +2,6 @@ add_library(pelican_openxr STATIC
     openxraction.cpp
     openxrcompositiontarget.cpp
     openxrdiscovery.cpp
-    openxrfeaturepolicy.cpp
     openxrmirrorsink.cpp
     openxrsession.cpp
     openxrviewspace.cpp

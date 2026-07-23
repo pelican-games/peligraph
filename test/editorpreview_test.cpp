@@ -138,21 +138,30 @@ TEST_CASE("WP172 preview graph is a third startup program with an exclusion poli
     const Json velocity_feature{{"render_targets", Json::array({
         {{"name", "motion_vectors"}}
     })}};
-    REQUIRE_FALSE(includeFeatureInPreviewGraph("ui", ui_feature));
-    REQUIRE_FALSE(includeFeatureInPreviewGraph("custom_taa", taa_feature));
-    REQUIRE_FALSE(includeFeatureInPreviewGraph("custom_motion", velocity_feature));
+    const auto is_excluded = [&](std::string_view name,
+                                 const Json &feature) {
+        return decideGraphVariantFeature(
+                   first.graph_variant_policy, name, feature)
+                   .disposition ==
+               GraphVariantFeatureDisposition::exclude;
+    };
+    REQUIRE(is_excluded("ui", ui_feature));
+    REQUIRE(is_excluded("custom_taa", taa_feature));
+    REQUIRE(is_excluded("custom_motion", velocity_feature));
 
     auto retained_terminal = first.composed_config;
     retained_terminal.at("rendering_passes").at(0).at("passes").push_back(
         {{"name", "taa_present"}, {"type", "fullscreen"},
          {"output", {{"color", "preview_capture"}, {"depth", nullptr}}}});
-    REQUIRE_NOTHROW(validatePreviewGraphConfig(retained_terminal));
+    REQUIRE_NOTHROW(validateGraphVariantConfig(
+        first.graph_variant_policy, retained_terminal));
 
     auto unsafe = first.composed_config;
     unsafe.at("rendering_passes").at(0).at("passes").push_back(
         {{"name", "authored_velocity"}, {"type", "velocity"}});
     try {
-        validatePreviewGraphConfig(unsafe);
+        validateGraphVariantConfig(first.graph_variant_policy,
+                                   unsafe);
         FAIL("unsafe authored pass was accepted");
     } catch (const std::runtime_error &error) {
         REQUIRE(std::string{error.what()}.find("main_render") != std::string::npos);

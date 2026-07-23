@@ -51,9 +51,6 @@ struct RenderingPassConfigRegistrationDependencies {
     struct Options {
         RenderPipelineGraphVariant graph_variant =
             RenderPipelineGraphVariant::flat;
-        std::function<bool(std::string_view, const nlohmann::json &)> include_feature;
-        std::function<void(const nlohmann::json &)> validate_composed_config;
-        std::string rendering_pass_name_suffix;
         bool publish_enabled_features = true;
     } options;
 };

@@ -1,6 +1,6 @@
-#include "../src/core/openxr/openxrfeaturepolicy.hpp"
 #include "../src/core/openxr/openxrmirrorsink.hpp"
 #include "../src/project/featurecompose.hpp"
+#include "../src/project/graphvariantpolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -18,6 +18,27 @@ nlohmann::json envelope(std::string name) {
         {"version", 1},
         {"name", std::move(name)},
     };
+}
+
+const Pelican::CompiledGraphVariantPolicy &xrPolicy() {
+    static const auto policy = Pelican::compileGraphVariantPolicy(
+        Pelican::GraphVariantPolicyRequest{
+            Pelican::RenderPipelineGraphVariant::xr});
+    return policy;
+}
+
+bool includeInXrGraph(std::string_view feature_name,
+                      const nlohmann::json &feature) {
+    const auto decision = Pelican::decideGraphVariantFeature(
+        xrPolicy(), feature_name, feature);
+    if (decision.disposition ==
+        Pelican::GraphVariantFeatureDisposition::reject) {
+        throw std::runtime_error(
+            Pelican::graphVariantFeatureRejectionMessage(
+                xrPolicy(), decision));
+    }
+    return decision.disposition ==
+           Pelican::GraphVariantFeatureDisposition::include;
 }
 
 } // namespace
@@ -56,7 +77,7 @@ TEST_CASE("OpenXR graph policy removes temporal velocity and UI features as unit
         Pelican::RenderFeatureComposeDependencies{
             [&](std::string_view ref) { return features.at(std::string{ref}).dump(); },
             true,
-            Pelican::OpenXr::includeFeatureInXrGraph,
+            includeInXrGraph,
         });
 
     REQUIRE(composed.excluded_feature_names ==
@@ -66,7 +87,8 @@ TEST_CASE("OpenXR graph policy removes temporal velocity and UI features as unit
     for (const auto &target : composed.config.at("render_targets")) {
         REQUIRE_FALSE(target.value("history", false));
     }
-    Pelican::OpenXr::validateXrGraphConfig(composed.config);
+    Pelican::validateGraphVariantConfig(xrPolicy(),
+                                        composed.config);
 }
 
 TEST_CASE("OpenXR activation rejects an unknown history feature by name",
@@ -87,7 +109,7 @@ TEST_CASE("OpenXR activation rejects an unknown history feature by name",
             Pelican::RenderFeatureComposeDependencies{
                 [&](std::string_view) { return trails.dump(); },
                 true,
-                Pelican::OpenXr::includeFeatureInXrGraph,
+                includeInXrGraph,
             }),
         "OpenXR activation rejected history feature 'custom_trails'");
 }
@@ -103,8 +125,8 @@ TEST_CASE("OpenXR graph policy removes custom velocity and UI providers as units
         {{"insert", "after:pelican_ui"},
          {"pass", {{"name", "hud"}, {"type", "fullscreen"}}}},
     });
-    REQUIRE_FALSE(Pelican::OpenXr::includeFeatureInXrGraph("custom_motion", motion));
-    REQUIRE_FALSE(Pelican::OpenXr::includeFeatureInXrGraph("custom_hud", hud));
+    REQUIRE_FALSE(includeInXrGraph("custom_motion", motion));
+    REQUIRE_FALSE(includeInXrGraph("custom_hud", hud));
 }
 
 TEST_CASE("OpenXR graph validation rejects authored history reads by pass name",
@@ -122,7 +144,7 @@ TEST_CASE("OpenXR graph validation rejects authored history reads by pass name",
          })},
     };
     REQUIRE_THROWS_WITH(
-        Pelican::OpenXr::validateXrGraphConfig(config),
+        Pelican::validateGraphVariantConfig(xrPolicy(), config),
         "OpenXR activation rejected history feature '<base rendering config>:custom_temporal'");
 }
 

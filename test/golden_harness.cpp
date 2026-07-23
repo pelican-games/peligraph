@@ -15,7 +15,7 @@
 #include "../src/core/material/materialcontainer.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/model/gltf.hpp"
-#include "../src/core/openxr/openxrfeaturepolicy.hpp"
+#include "../src/core/openxr/openxrmirrorsink.hpp"
 #include "../src/core/playback/vatplayer.hpp"
 #include "../src/core/renderer/debugdraw.hpp"
 #include "../src/core/renderer/debugtext.hpp"

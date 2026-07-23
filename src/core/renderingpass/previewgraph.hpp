@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../../project/graphvariantpolicy.hpp"
+
 #include <cstdint>
 #include <functional>
 #include <nlohmann/json.hpp>
@@ -17,12 +19,12 @@ struct PreviewGraphProgram {
     std::uint64_t generation = 0;
     std::vector<std::string> pass_names;
     std::vector<std::string> excluded_feature_names;
+    CompiledGraphVariantPolicy graph_variant_policy =
+        compileGraphVariantPolicy(
+            GraphVariantPolicyRequest{
+                RenderPipelineGraphVariant::preview});
     nlohmann::json composed_config = nlohmann::json::object();
 };
-
-bool includeFeatureInPreviewGraph(std::string_view feature_name,
-                                  const nlohmann::json &feature);
-void validatePreviewGraphConfig(const nlohmann::json &config);
 
 PreviewGraphProgram precompilePreviewGraph(
     std::string_view rendering_config_json,

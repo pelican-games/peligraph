@@ -16,7 +16,7 @@
 #include "core.hpp"
 #include "rendertarget.hpp"
 #if PELICAN_WITH_OPENXR
-#include "../openxr/openxrfeaturepolicy.hpp"
+#include "../openxr/openxrmirrorsink.hpp"
 #endif
 #include <cstdint>
 #include <optional>
@@ -148,9 +148,6 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfig() {
         registerXrMirrorIntermediate(baseExtentFromConfig(config));
         RenderingPassConfigRegistrationDependencies::Options xr_options;
         xr_options.graph_variant = RenderPipelineGraphVariant::xr;
-        xr_options.include_feature = OpenXr::includeFeatureInXrGraph;
-        xr_options.validate_composed_config = OpenXr::validateXrGraphConfig;
-        xr_options.rendering_pass_name_suffix = "#xr";
         xr_options.publish_enabled_features = false;
         const auto xr_registration =
             registerConfiguredRenderingPasses(config, std::move(xr_options));

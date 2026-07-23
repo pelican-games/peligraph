@@ -42,7 +42,7 @@
 #include "rendertiming.hpp"
 #include "util.hpp"
 #if PELICAN_WITH_OPENXR
-#include "../openxr/openxrfeaturepolicy.hpp"
+#include "../openxr/openxrmirrorsink.hpp"
 #endif
 #if PELICAN_WITH_IMGUI
 #include "../imgui/imguiruntime.hpp"
@@ -1418,9 +1418,31 @@ void Renderer::renderLogicalFrame(
         throw std::runtime_error(
             "Renderer logical frame requires a compiled render pipeline");
     }
+    const auto &graph_variant_policy =
+        frame_graph->render_pipeline->graph_variant_policy;
+    const auto expected_graph_variant =
+        active_graph_variant == RenderGraphVariant::flat
+            ? RenderPipelineGraphVariant::flat
+            : RenderPipelineGraphVariant::xr;
+    if (graph_variant_policy.variant !=
+        expected_graph_variant) {
+        throw std::runtime_error(
+            "Renderer selected graph does not match its compiled graph variant policy");
+    }
+    if (graph_variant_policy.view_count != 0 &&
+        view_count != graph_variant_policy.view_count) {
+        throw std::runtime_error(
+            "Renderer graph variant '" +
+            std::string{renderPipelineGraphVariantName(
+                graph_variant_policy.variant)} +
+            "' requires " +
+            std::to_string(graph_variant_policy.view_count) +
+            " views");
+    }
     const auto &draw_sorting = frame_graph->render_pipeline->draw_sorting;
     const bool per_view_sort =
-        active_graph_variant == RenderGraphVariant::xr &&
+        graph_variant_policy.view_family ==
+            GraphVariantViewFamily::stereo &&
         draw_sorting.xr_view_policy == DrawSortXrViewPolicy::per_view;
     if (per_view_sort && view_count != 2) {
         throw std::runtime_error(
@@ -1568,11 +1590,14 @@ void Renderer::renderLogicalFrame(
                                snapshot, view.first_person_view, frame_target_format,
                                render_target_layout_tracker,
                                node_trace_ptr, engine_time.frameIndex(),
-                               active_graph_variant == RenderGraphVariant::flat ? "flat" : "xr",
+                               renderPipelineGraphVariantName(
+                                   graph_variant_policy.variant),
                                view_index,
                                per_view_sort ? view_index : 0);
 #if PELICAN_WITH_OPENXR
-        if (active_graph_variant == RenderGraphVariant::xr && view_index == 0) {
+        if (graph_variant_policy.mirror_output ==
+                GraphVariantMirrorOutput::left_eye &&
+            view_index == 0) {
             recordXrMirrorIntermediate(render_ctx, modules,
                                        render_target_layout_tracker, node_trace_ptr,
                                        engine_time.frameIndex());

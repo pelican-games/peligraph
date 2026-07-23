@@ -1,7 +1,6 @@
 #include "openxrmirrorsink.hpp"
 
 #include "openxrcompositiontarget.hpp"
-#include "openxrfeaturepolicy.hpp"
 #include "../appflow/enginetime.hpp"
 #include "../fullscreenpass/fullscreenpasscontainer.hpp"
 #include "../loader/basicconfig.hpp"

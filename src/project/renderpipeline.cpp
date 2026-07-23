@@ -403,16 +403,6 @@ nlohmann::json resolveMaterialRoutingTable(const nlohmann::json &composed_config
     };
 }
 
-std::string_view renderPipelineGraphVariantName(
-    RenderPipelineGraphVariant variant) {
-    switch (variant) {
-    case RenderPipelineGraphVariant::flat: return "flat";
-    case RenderPipelineGraphVariant::preview: return "preview";
-    case RenderPipelineGraphVariant::xr: return "xr";
-    }
-    return "unknown";
-}
-
 ResolvedRenderPipeline resolveRenderPipeline(
     const RenderPipelineRequest &request,
     const RenderEnvironmentCapabilities &capabilities,
@@ -422,12 +412,35 @@ ResolvedRenderPipeline resolveRenderPipeline(
                                  request.source_name);
     }
 
+    const auto graph_variant_policy = compileGraphVariantPolicy(
+        GraphVariantPolicyRequest{capabilities.graph_variant},
+        capabilities.graph_variant_capabilities);
+    std::vector<GraphVariantFeatureDecision> feature_decisions;
     auto composed = composeRenderFeatureConfig(
         request.authored_config,
         RenderFeatureComposeDependencies{
             dependencies.load_feature_json,
             capabilities.runtime_shader_compiler_enabled,
-            dependencies.include_feature,
+            [&graph_variant_policy, &feature_decisions](
+                std::string_view feature_name,
+                const nlohmann::json &feature) {
+                auto decision = decideGraphVariantFeature(
+                    graph_variant_policy, feature_name, feature);
+                if (decision.disposition ==
+                    GraphVariantFeatureDisposition::reject) {
+                    throw std::runtime_error(
+                        graphVariantFeatureRejectionMessage(
+                            graph_variant_policy, decision));
+                }
+                const auto include =
+                    decision.disposition ==
+                    GraphVariantFeatureDisposition::include;
+                if (!include) {
+                    feature_decisions.push_back(
+                        std::move(decision));
+                }
+                return include;
+            },
             dependencies.load_pipeline_json,
         });
 
@@ -443,28 +456,34 @@ ResolvedRenderPipeline resolveRenderPipeline(
     result.draw_sort = std::move(composed.draw_sort);
     result.pipeline_preset = std::move(composed.pipeline_preset);
     result.used_features = composed.used_features;
-    result.graph_variant = capabilities.graph_variant;
-    result.rendering_pass_name_suffix =
-        dependencies.rendering_pass_name_suffix;
+    result.graph_variant_policy = graph_variant_policy;
+    result.graph_variant_feature_decisions =
+        std::move(feature_decisions);
 
     if (dependencies.normalize_config) {
         result.normalized_config = dependencies.normalize_config(
             result.normalized_config, result.feature_names);
     }
+    transformGraphVariantConfig(
+        result.graph_variant_policy, result.normalized_config);
     if (dependencies.transform_config) {
         dependencies.transform_config(result.normalized_config);
     }
+    validateGraphVariantConfig(
+        result.graph_variant_policy, result.normalized_config);
     if (dependencies.validate_config) {
         dependencies.validate_config(result.normalized_config);
     }
     result.sample_count_policy =
         compileSampleCountPolicy(result.normalized_config);
     suffixRenderingPassNames(result.normalized_config,
-                             result.rendering_pass_name_suffix);
+                             result.graph_variant_policy
+                                 .rendering_pass_name_suffix);
 
     result.diagnostics.push_back(RenderPipelineDiagnostic{
         RenderPipelineDiagnosticKind::graph_variant_selected,
-        std::string{renderPipelineGraphVariantName(result.graph_variant)},
+        std::string{renderPipelineGraphVariantName(
+            result.graph_variant_policy.variant)},
         "selected_by_environment",
     });
     if (result.pipeline_preset) {
@@ -475,11 +494,16 @@ ResolvedRenderPipeline resolveRenderPipeline(
                 std::to_string(result.pipeline_preset->version),
         });
     }
-    for (const auto &feature : result.excluded_feature_names) {
+    for (const auto &decision :
+         result.graph_variant_feature_decisions) {
         result.diagnostics.push_back(RenderPipelineDiagnostic{
             RenderPipelineDiagnosticKind::feature_excluded,
-            feature,
-            std::string{renderPipelineGraphVariantName(result.graph_variant)},
+            decision.feature_name,
+            std::string{renderPipelineGraphVariantName(
+                result.graph_variant_policy.variant)} +
+                ":" +
+                std::string{graphVariantFeatureReasonName(
+                    decision.reason)},
         });
     }
     return result;
@@ -799,8 +823,18 @@ nlohmann::json serializeNumericValue(
 
 CompiledRenderPipeline compileRenderPipeline(
     const ResolvedRenderPipeline &pipeline) {
-    if (renderPipelineGraphVariantName(pipeline.graph_variant) == "unknown") {
+    if (renderPipelineGraphVariantName(
+            pipeline.graph_variant_policy.variant) == "unknown") {
         throw std::runtime_error("resolved render pipeline has unknown graph variant");
+    }
+    const auto canonical_graph_variant_policy =
+        compileGraphVariantPolicy(
+            GraphVariantPolicyRequest{
+                pipeline.graph_variant_policy.variant});
+    if (pipeline.graph_variant_policy !=
+        canonical_graph_variant_policy) {
+        throw std::runtime_error(
+            "resolved render pipeline has inconsistent graph variant policy");
     }
 
     CompiledRenderPipeline result;
@@ -820,9 +854,10 @@ CompiledRenderPipeline compileRenderPipeline(
     result.draw_sorting = compileDrawSorting(pipeline.draw_sort);
     result.sample_count_policy = pipeline.sample_count_policy;
     result.pipeline_preset = pipeline.pipeline_preset;
-    result.graph_variant = pipeline.graph_variant;
-    result.rendering_pass_name_suffix =
-        pipeline.rendering_pass_name_suffix;
+    result.graph_variant_policy =
+        pipeline.graph_variant_policy;
+    result.graph_variant_feature_decisions =
+        pipeline.graph_variant_feature_decisions;
     result.diagnostics = pipeline.diagnostics;
     result.used_features = pipeline.used_features;
     return result;
@@ -907,7 +942,8 @@ nlohmann::json serializeCompiledRenderPipelineMetadata(
             {"version", pipeline.pipeline_preset->version},
         };
     }
-    if (pipeline.graph_variant == RenderPipelineGraphVariant::xr) {
+    if (pipeline.graph_variant_policy.variant ==
+        RenderPipelineGraphVariant::xr) {
         metadata["graph_variant"] = "xr";
         metadata["excluded_features"] = pipeline.excluded_feature_names;
     }

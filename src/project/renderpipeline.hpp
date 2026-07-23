@@ -1,5 +1,6 @@
 #pragma once
 
+#include "graphvariantpolicy.hpp"
 #include "samplecountplanning.hpp"
 
 #include <array>
@@ -106,18 +107,6 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
 // for frame-plan dumps.  A null JSON value means legacy routing.
 nlohmann::json resolveMaterialRoutingTable(const nlohmann::json &composed_config);
 
-// Authoring resolution is deliberately data-only.  These variants describe
-// which immutable graph program is being resolved; backend lifecycle remains
-// outside this layer.
-enum class RenderPipelineGraphVariant {
-    flat,
-    preview,
-    xr,
-};
-
-std::string_view renderPipelineGraphVariantName(
-    RenderPipelineGraphVariant variant);
-
 struct RenderPipelineRequest {
     nlohmann::json authored_config = nlohmann::json::object();
     std::string source_name = "render pipeline";
@@ -127,6 +116,7 @@ struct RenderEnvironmentCapabilities {
     bool runtime_shader_compiler_enabled = false;
     RenderPipelineGraphVariant graph_variant =
         RenderPipelineGraphVariant::flat;
+    GraphVariantPolicyCapabilities graph_variant_capabilities;
 };
 
 enum class RenderPipelineDiagnosticKind {
@@ -152,14 +142,11 @@ struct RenderPipelineDiagnostic {
 struct RenderPipelineResolveDependencies {
     std::function<std::string(std::string_view)> load_feature_json;
     RenderPipelinePresetLoader load_pipeline_json;
-    std::function<bool(std::string_view, const nlohmann::json &)>
-        include_feature;
     std::function<nlohmann::json(
         const nlohmann::json &, const std::vector<std::string> &)>
         normalize_config;
     std::function<void(nlohmann::json &)> transform_config;
     std::function<void(const nlohmann::json &)> validate_config;
-    std::string rendering_pass_name_suffix;
 };
 
 struct ResolvedRenderPipeline {
@@ -173,9 +160,9 @@ struct ResolvedRenderPipeline {
     nlohmann::json draw_sort;
     SampleCountPolicy sample_count_policy;
     std::optional<RenderPipelinePresetInfo> pipeline_preset;
-    RenderPipelineGraphVariant graph_variant =
-        RenderPipelineGraphVariant::flat;
-    std::string rendering_pass_name_suffix;
+    CompiledGraphVariantPolicy graph_variant_policy;
+    std::vector<GraphVariantFeatureDecision>
+        graph_variant_feature_decisions;
     std::vector<RenderPipelineDiagnostic> diagnostics;
     bool used_features = false;
 };
@@ -270,9 +257,9 @@ struct CompiledRenderPipeline {
     CompiledDrawSorting draw_sorting;
     SampleCountPolicy sample_count_policy;
     std::optional<RenderPipelinePresetInfo> pipeline_preset;
-    RenderPipelineGraphVariant graph_variant =
-        RenderPipelineGraphVariant::flat;
-    std::string rendering_pass_name_suffix;
+    CompiledGraphVariantPolicy graph_variant_policy;
+    std::vector<GraphVariantFeatureDecision>
+        graph_variant_feature_decisions;
     std::vector<RenderPipelineDiagnostic> diagnostics;
     bool used_features = false;
 };

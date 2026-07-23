@@ -151,7 +151,6 @@ RenderingPassConfigRegistrationResult registerRenderingPassConfigData(
             .load_pipeline_json = [&dependencies](std::string_view ref) {
                 return dependencies.runtime.path_resolver.loadText(ref);
             },
-            .include_feature = dependencies.options.include_feature,
             .normalize_config = [swapchain_format, target_extent](
                 const nlohmann::json &config,
                 const std::vector<std::string> &feature_names) {
@@ -161,10 +160,6 @@ RenderingPassConfigRegistrationResult registerRenderingPassConfigData(
                 return resolveRenderTargetFormatClassesV2(
                     config, swapchain_format, target_extent, hdr_enabled);
             },
-            .validate_config =
-                dependencies.options.validate_composed_config,
-            .rendering_pass_name_suffix =
-                dependencies.options.rendering_pass_name_suffix,
         });
     const auto compiled_pipeline =
         std::make_shared<const CompiledRenderPipeline>(
@@ -172,7 +167,8 @@ RenderingPassConfigRegistrationResult registerRenderingPassConfigData(
     dependencies.runtime.shader_defines = compiled_pipeline->shader_defines;
     auto composed_rendering_pass_data = std::move(resolved.normalized_config);
 #if PELICAN_WITH_IMGUI
-    if (resolved.rendering_pass_name_suffix.empty()) {
+    if (resolved.graph_variant_policy
+            .rendering_pass_name_suffix.empty()) {
         invokeImGuiRuntimeCallback(GET_MODULE(EngineLaunchConfig), [&] {
             appendImGuiPassToCanonicalGraphs(composed_rendering_pass_data);
         });
@@ -188,7 +184,8 @@ RenderingPassConfigRegistrationResult registerRenderingPassConfigData(
     auto graph_definition_list =
         parseFrameGraphDefinitionsFromConfigJson(composed_rendering_pass_data);
     namespaceComputeTasks(compute_task_definitions, graph_definition_list,
-                          compiled_pipeline->rendering_pass_name_suffix);
+                          compiled_pipeline->graph_variant_policy
+                              .rendering_pass_name_suffix);
     auto target_plan_compilation =
         compileRenderingTargetPlansForVulkanDevice(
             graph_definition_list, render_target_definitions,

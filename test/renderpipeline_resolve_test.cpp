@@ -177,29 +177,29 @@ TEST_CASE("WP180 XR resolution preserves policy order suffix and metadata",
         RenderEnvironmentCapabilities{true,
                                       RenderPipelineGraphVariant::xr},
         RenderPipelineResolveDependencies{
-            load_feature,
-            {},
-            include_feature,
-            [&resolution_order](const Json &config,
-                                const std::vector<std::string> &) {
+            .load_feature_json = load_feature,
+            .normalize_config =
+                [&resolution_order](
+                    const Json &config,
+                    const std::vector<std::string> &) {
                 resolution_order.push_back("normalize");
                 auto normalized = config;
                 normalized["normalization_probe"] = "normalized";
                 return normalized;
             },
-            [&resolution_order](Json &config) {
+            .transform_config = [&resolution_order](Json &config) {
                 resolution_order.push_back("transform");
                 REQUIRE(config.at("normalization_probe") == "normalized");
                 config["transform_probe"] = "transformed";
             },
-            [&resolution_order](const Json &config) {
+            .validate_config =
+                [&resolution_order](const Json &config) {
                 resolution_order.push_back("validate");
                 REQUIRE(config.at("normalization_probe") == "normalized");
                 REQUIRE(config.at("transform_probe") == "transformed");
                 REQUIRE(config.at("rendering_passes").at(0).at("name") ==
                         "main");
             },
-            "#xr",
         });
 
     REQUIRE(resolution_order ==
@@ -217,7 +217,9 @@ TEST_CASE("WP180 XR resolution preserves policy order suffix and metadata",
         [](const auto &diagnostic) {
             return diagnostic.kind ==
                        RenderPipelineDiagnosticKind::feature_excluded &&
-                   diagnostic.subject == "ui" && diagnostic.detail == "xr";
+                   diagnostic.subject == "ui" &&
+                   diagnostic.detail ==
+                       "xr:known_incompatible";
         }));
 }
 
@@ -278,7 +280,9 @@ TEST_CASE("WP184 compiles draw sort providers and XR view policy for every graph
         const auto variant_name =
             std::string{renderPipelineGraphVariantName(variant)};
         CAPTURE(variant_name);
-        resolved.graph_variant = variant;
+        resolved.graph_variant_policy =
+            compileGraphVariantPolicy(
+                GraphVariantPolicyRequest{variant});
         const auto compiled = compileRenderPipeline(resolved);
         REQUIRE(compiled.draw_sorting.authored);
         REQUIRE(compiled.draw_sorting.opaque.provider == "fixture.opaque");
@@ -368,9 +372,10 @@ TEST_CASE("WP180 resolve failure cannot publish partial registration state",
             RenderPipelineRequest{authored, "invalid fixture"},
             RenderEnvironmentCapabilities{},
             RenderPipelineResolveDependencies{
-                {}, {}, {}, {},
-                [](Json &config) { config["partial_transform"] = true; },
-                [](const Json &config) {
+                .transform_config = [](Json &config) {
+                    config["partial_transform"] = true;
+                },
+                .validate_config = [](const Json &config) {
                     REQUIRE(config.at("partial_transform") == true);
                     throw std::runtime_error("fixture validation failed");
                 },
@@ -420,7 +425,8 @@ TEST_CASE("WP180 preview precompile resolves presets through the shared boundary
             .load_pipeline_json = load_pipeline,
         });
     const auto compiled = compileRenderPipeline(resolved);
-    REQUIRE(compiled.graph_variant == RenderPipelineGraphVariant::preview);
+    REQUIRE(compiled.graph_variant_policy.variant ==
+            RenderPipelineGraphVariant::preview);
     REQUIRE(serializeCompiledRenderPipelineMetadata(compiled) ==
             Json{{"pipeline_preset",
                   {{"ref", "fixture://preview_pipeline"},
@@ -459,8 +465,10 @@ TEST_CASE("WP181 compiles dump metadata into a typed immutable runtime contract"
     resolved.material_routing = hybridRouting();
     resolved.pipeline_preset = RenderPipelinePresetInfo{
         "fixture://typed_pipeline", "typed_pipeline_v1", 1};
-    resolved.graph_variant = RenderPipelineGraphVariant::xr;
-    resolved.rendering_pass_name_suffix = "#xr";
+    resolved.graph_variant_policy =
+        compileGraphVariantPolicy(
+            GraphVariantPolicyRequest{
+                RenderPipelineGraphVariant::xr});
     resolved.diagnostics = {
         {RenderPipelineDiagnosticKind::graph_variant_selected, "xr",
          "selected_by_environment"},
@@ -476,8 +484,10 @@ TEST_CASE("WP181 compiles dump metadata into a typed immutable runtime contract"
 
     REQUIRE(pipeline->shader_defines ==
             std::vector<std::string>{"PELICAN_TYPED_FIXTURE"});
-    REQUIRE(pipeline->graph_variant == RenderPipelineGraphVariant::xr);
-    REQUIRE(pipeline->rendering_pass_name_suffix == "#xr");
+    REQUIRE(pipeline->graph_variant_policy.variant ==
+            RenderPipelineGraphVariant::xr);
+    REQUIRE(pipeline->graph_variant_policy
+                .rendering_pass_name_suffix == "#xr");
     REQUIRE(pipeline->projection_jitter.has_value());
     REQUIRE(pipeline->projection_jitter->pattern ==
             ProjectionJitterPattern::table);
