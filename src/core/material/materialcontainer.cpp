@@ -1050,25 +1050,17 @@ static bool isDepthScreenInput(const MaterialScreenInputContract &contract) {
 
 static void requireScreenInputReflection(const ShaderReflection &reflection,
                                          std::size_t input_count) {
-    std::vector<const ReflectedBinding *> bindings;
+    std::vector<MaterialScreenInputReflectionBinding> bindings;
+    bindings.reserve(reflection.bindings.size());
     for (const auto &binding : reflection.bindings) {
-        if (binding.set == PELICAN_SET_PASS_INPUT) bindings.push_back(&binding);
+        bindings.push_back(MaterialScreenInputReflectionBinding{
+            binding.set, binding.binding,
+            binding.type == vk::DescriptorType::eCombinedImageSampler
+                ? MaterialScreenInputReflectionKind::combined_image_sampler
+                : MaterialScreenInputReflectionKind::unsupported});
     }
-    std::sort(bindings.begin(), bindings.end(), [](const auto *left, const auto *right) {
-        return left->binding < right->binding;
-    });
-    if (bindings.size() != input_count) {
-        throw std::runtime_error(
-            "material screen inputs do not match shader reflection binding count");
-    }
-    for (std::size_t index = 0; index < bindings.size(); ++index) {
-        if (bindings[index]->binding != index ||
-            bindings[index]->type !=
-                vk::DescriptorType::eCombinedImageSampler) {
-            throw std::runtime_error(
-                "material screen inputs require consecutive combined image samplers in set 1");
-        }
-    }
+    validateMaterialScreenInputInterfaceReflection(
+        input_count, bindings, PELICAN_SET_PASS_INPUT);
 }
 
 MaterialContainer::InternalMaterialInfo::ScreenInputDescriptor

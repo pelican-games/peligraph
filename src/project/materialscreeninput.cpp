@@ -1,7 +1,9 @@
 #include "materialscreeninput.hpp"
 
+#include <algorithm>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 namespace Pelican {
 
@@ -62,6 +64,32 @@ ResolvedMaterialScreenInputContract resolveMaterialScreenInputContract(
             "' unexpectedly requires a conversion");
     }
     return {std::move(contract), match.conversion_path};
+}
+
+void validateMaterialScreenInputInterfaceReflection(
+    std::size_t declared_input_count,
+    std::span<const MaterialScreenInputReflectionBinding> reflection,
+    std::uint32_t expected_set) {
+    std::vector<MaterialScreenInputReflectionBinding> bindings;
+    for (const auto &binding : reflection) {
+        if (binding.set == expected_set) bindings.push_back(binding);
+    }
+    std::sort(bindings.begin(), bindings.end(),
+              [](const auto &left, const auto &right) {
+                  return left.binding < right.binding;
+              });
+    if (bindings.size() != declared_input_count) {
+        throw std::runtime_error(
+            "material screen inputs do not match shader reflection binding count");
+    }
+    for (std::size_t index = 0; index < bindings.size(); ++index) {
+        if (bindings[index].binding != index ||
+            bindings[index].kind !=
+                MaterialScreenInputReflectionKind::combined_image_sampler) {
+            throw std::runtime_error(
+                "material screen inputs require consecutive combined image samplers in set 1");
+        }
+    }
 }
 
 } // namespace Pelican

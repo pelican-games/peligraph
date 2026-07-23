@@ -14,6 +14,7 @@ add_library(pelican_project
     renderpipeline.cpp
     sceneformat.cpp
     surfaceformat.cpp
+    targetplanning.cpp
 )
 
 set_target_properties(pelican_project PROPERTIES CXX_STANDARD 20)
