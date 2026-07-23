@@ -1,5 +1,7 @@
 #pragma once
 
+#include "samplecountplanning.hpp"
+
 #include <array>
 #include <cstdint>
 #include <functional>
@@ -169,6 +171,7 @@ struct ResolvedRenderPipeline {
     nlohmann::json feature_instances = nlohmann::json::array();
     nlohmann::json material_routing;
     nlohmann::json draw_sort;
+    SampleCountPolicy sample_count_policy;
     std::optional<RenderPipelinePresetInfo> pipeline_preset;
     RenderPipelineGraphVariant graph_variant =
         RenderPipelineGraphVariant::flat;
@@ -265,6 +268,7 @@ struct CompiledRenderPipeline {
     std::vector<CompiledRenderFeatureInstance> feature_instances;
     std::optional<CompiledMaterialRouting> material_routing;
     CompiledDrawSorting draw_sorting;
+    SampleCountPolicy sample_count_policy;
     std::optional<RenderPipelinePresetInfo> pipeline_preset;
     RenderPipelineGraphVariant graph_variant =
         RenderPipelineGraphVariant::flat;

@@ -238,7 +238,8 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
     if (!pipeline.is_object()) {
         throw std::runtime_error("rendering config pipeline must be an object");
     }
-    requireOnlyKeys(pipeline, {"preset"}, "rendering config pipeline");
+    requireOnlyKeys(pipeline, {"preset", "settings"},
+                    "rendering config pipeline");
     const auto reference = requireString(pipeline, "preset", "rendering config pipeline");
     if (!load_preset_json) {
         throw std::runtime_error("render pipeline preset loader is unavailable: " + reference);
@@ -299,6 +300,25 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
                 "rendering config draw_sort must be an object");
         }
         resolved["draw_sort"] = authored_config.at("draw_sort");
+    }
+    if (pipeline.contains("settings")) {
+        const auto &settings = pipeline.at("settings");
+        if (!settings.is_object()) {
+            throw std::runtime_error(
+                "rendering config pipeline settings must be an object");
+        }
+        requireOnlyKeys(settings, {"msaa"},
+                        "rendering config pipeline settings");
+        if (settings.contains("msaa")) {
+            if (!settings.at("msaa").is_object()) {
+                throw std::runtime_error(
+                    "rendering config pipeline settings msaa must be an object");
+            }
+            // The preset envelope is an authoring convenience. The expanded
+            // config uses the same canonical compiler input as an ejected
+            // verbose rendering config.
+            resolved["multisampling"] = settings.at("msaa");
+        }
     }
     return {std::move(resolved), RenderPipelinePresetInfo{
                                          reference, name, supported_preset_version}};
@@ -437,6 +457,8 @@ ResolvedRenderPipeline resolveRenderPipeline(
     if (dependencies.validate_config) {
         dependencies.validate_config(result.normalized_config);
     }
+    result.sample_count_policy =
+        compileSampleCountPolicy(result.normalized_config);
     suffixRenderingPassNames(result.normalized_config,
                              result.rendering_pass_name_suffix);
 
@@ -796,6 +818,7 @@ CompiledRenderPipeline compileRenderPipeline(
             compileMaterialRouting(pipeline.material_routing);
     }
     result.draw_sorting = compileDrawSorting(pipeline.draw_sort);
+    result.sample_count_policy = pipeline.sample_count_policy;
     result.pipeline_preset = pipeline.pipeline_preset;
     result.graph_variant = pipeline.graph_variant;
     result.rendering_pass_name_suffix =
@@ -872,6 +895,10 @@ nlohmann::json serializeCompiledRenderPipelineMetadata(
              drawSortXrViewPolicyName(
                  pipeline.draw_sorting.xr_view_policy)},
         };
+    }
+    if (pipeline.sample_count_policy.authored) {
+        metadata["sample_count"] =
+            sampleCountPolicyToJson(pipeline.sample_count_policy);
     }
     if (pipeline.pipeline_preset) {
         metadata["pipeline_preset"] = {

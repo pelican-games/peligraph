@@ -12,6 +12,7 @@ add_library(pelican_project
     materialformat.cpp
     openpbrmapping.cpp
     renderpipeline.cpp
+    samplecountplanning.cpp
     sceneformat.cpp
     surfaceformat.cpp
     targetplanning.cpp
