@@ -865,6 +865,10 @@ gate:
 
 ### RPE6c0 — planning contracts
 
+状態: **WP188 で実装済み(2026-07-23)**。`pelican_project` の `targetplanning` は
+Vulkan header / device / runtime objectを持たない。現行`FramePlan`とVulkan executorは
+このcontractをまだ消費せず、実行所有権は変更していない。
+
 - data-only `TargetTopologySnapshot` と directed endpoint link
 - pure Vulkan `BackendProbeInput` / `BackendProbeResult`
 - finite candidate / probe / deterministic selection のdecision dump
@@ -874,6 +878,11 @@ gate:
 - optimize-by-default policyと明示`serial` / `isolate` / `no_alias` constraint
 - immutable registry snapshot、conversion / lowering provider lease
 - opt-in `conservative_debug` / `hazard_stress(seed)` profile
+
+実装上、RPE6c0のalias入力はtarget側で合法性を確認済みの有限candidate pairとした。
+`optimized`は全候補を維持し、`no_alias` / `isolate`だけが明示的に狭める。
+`hazard_stress(seed)`はその合法集合から再現可能なsubset/orderを選ぶ。resource lifetimeから
+candidate pairを導く責務はRPE6c1へ残し、RPE6c0が未検証aliasを発明しない。
 
 gate:
 

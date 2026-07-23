@@ -5326,4 +5326,65 @@ rendering-pass parser / planner、`hybrid_v1`、surface compiler、logical/rende
 
 ---
 
+### WP188(済 2026-07-23): RPE6c0 — target planning contracts
+
+参照: [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md) §12、
+[`design_render_graph_compiler.md`](design_render_graph_compiler.md) §6、§10、§12、
+[`design_heterogeneous_execution_graph.md`](design_heterogeneous_execution_graph.md) §7、§8、§14、
+[`design_reviews/2026-07-23_wp187_report.md`](design_reviews/2026-07-23_wp187_report.md)。
+
+**目的**: logical graph と target-aware lowering の間へ、Vulkan device / runtime objectを
+持たない immutable planning contract を置く。compile中のprovider世代をsnapshot/leaseで
+固定し、通常compileはoptimize-by-default、保守化とhazard stressは明示profileに限定する。
+
+**実装範囲**:
+
+1. data-only `TargetTopologySnapshot`、host / Vulkan device / external endpoint、directed
+   endpoint link、versioned capability/fact/bridge offer、canonical JSON dumpを実装する。
+2. finite `BackendProbeInput`をendpoint/link factsだけで評価するpure
+   `probeVulkanBackend()`を追加する。resultはfeasibility、missing constraint、selected link、
+   required physical feature、bridge offer、cost、provider fingerprintを値として持つ。
+3. feasible候補を固定cost tupleと名前tie-breakで選ぶorder-independent selection/dumpを
+   実装し、候補なしは全reject理由とfingerprintを含む名前入りerrorにする。
+4. conversion / target-lowering providerを同じdescriptor registryへ登録する。snapshotは
+   descriptorを値として複製し、reloadable providerはshared generation leaseを保持する。
+   registryのregister/unregister/snapshotはshared mutexで直列化する。
+5. stable ID付きinfo/warning/errorと、既定advisory、warning ID単位のopt-in strict昇格を
+   実装する。重複diagnosticは一回へcanonicalizeする。
+6. logical data edgeと明示dependencyからtopological order、independent parallel/fusion
+   candidateを導出する。`serial` / `isolate` / `no_alias`だけが候補を狭める。
+7. `optimized` / `conservative_debug` / `hazard_stress(seed)` profileを実装する。同じseedは
+   byte-equivalentなreportとなり、異なるseedはdependencyを守ったorderと、target検証済み
+   alias candidate subset/orderを再現可能に変える。
+8. material screen-input宣言とshader reflectionのset/binding/combined-sampler shape検証を
+   Vulkan非依存project helperへ抽出し、既存runtimeはbackend型を小さい語彙へ写して利用する。
+
+**受け入れ条件**:
+
+- Vulkan deviceなしのmock topology/probeが動き、同じendpoint factsでもdirected link有無・向きで
+  bridge feasibilityが変わる
+- candidate入力順によらず同じselection/dumpを得て、rejectが名前・constraint・provider
+  fingerprintを保持する
+- registry更新・旧provider削除後も既存snapshotが旧generation descriptor/leaseを保持する
+- warningは既定compileを失敗させず、指定IDだけstrict errorへ昇格できる
+- 独立nodeは追加注釈なしでparallel/fusion候補となり、保守profileだけが抑止する
+- hazard stressの同じseedは同じdump、複数seedは合法なschedule/alias decisionを変える
+- shader declaration/reflection mismatchをGPU object作成前に拒否する
+- 現行`FramePlan`/Vulkan executorの所有権とflat 1x runtimeを変更しない
+- Debug全build、765/765 CTest、Player短時間起動、`git diff --check`が成功する
+
+**非対象**: `ResourcePattern`からのalias/lifetime/materialization候補導出、desktop/tile
+target plan、`TargetLoweringGraph`、Vulkan physical plan、queue/barrier/alias実行、MSAA、
+XR graph variant、汎用CPU scheduler、execution linker、動画backend、public game-DLL provider
+ABI。前半はRPE6c1、Vulkan実行移行は後続WPで扱う。
+
+依存: WP185〜WP187。見積: 中。
+
+排他: `src/project/targetplanning*`、`materialscreeninput*`、material reflection adapter、
+project/test CMake、target-planning tests、[RPE]/[RGC]/[HEG]のRPE6c0状態、WP188完了レポート。
+
+完了レポート: `docs/design_reviews/2026-07-23_wp188_report.md`
+
+---
+
 未完了 WP と運用規則は [active ledger](implementation_plan.md) を参照。

@@ -1,6 +1,6 @@
 # pelican2 設計文書 索引
 
-最終更新: 2026-07-23(RPE6b1 hybrid screen input vertical slice / WP187 完了)。文書が矛盾したら
+最終更新: 2026-07-23(RPE6c0 target planning contracts / WP188 完了)。文書が矛盾したら
 **凍結済み > ドラフト、設計文書 > 指示書**の順で優先し、実装状態は
 コード・テスト・`design_reviews` の完了レポートを正とする。
 
@@ -94,9 +94,9 @@
 - physics = query/Jolt provider/E2 trigger は済。rigid-body simulation は
   将来トラック(`design_physics_queries.md` §6、Jolt 推奨)
 - rendering = `hybrid_v1` の deferred + forward 合成、semantic material route、
-  RPE1〜RPE6b1(resolve、typed manifest、draw queue/provider、transparent/XR sort、
-  logical type kernel / versioned shadow graph、typed material screen input)は実装済み。次は
-  RPE6c0 topology / backend probe / optimize-by-default policy、RPE6c1 desktop/tile target planner、MSAA、XR variant、
+  RPE1〜RPE6c0(resolve、typed manifest、draw queue/provider、transparent/XR sort、
+  logical type/value graph、typed material screen input、target topology/backend probe/
+  planning policy)は実装済み。次はRPE6c1 desktop/tile target planner、MSAA、XR variant、
   pipeline transaction の順。RPE6c0/1では異種 execution 設計の canonical / disposable
   lowering seamだけを置き、CPU schedulerと動画backendは計測・具体需要まで実装しない。
   lighting/IBL、motion blur、bindless、compute particles はこの compiler 境界上で

@@ -630,7 +630,7 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 | RPE6a / WP185（済 2026-07-23） | logical type kernel、parameter matcher、port/use contract、typed shadow graph | CPU-only exact/convertible/deferred/rejected、canonical hash、runtime 不変 |
 | RPE6b0 / WP186（済 2026-07-23） | versioned logical value / producer edge、nominal connection、access intent、conversion implementation descriptor | 宣言順非依存、duplicate/missing producer reject、schema v2、runtime 不変 |
 | RPE6b1 / WP187（済 2026-07-23） | typed color/depth domain + hybrid screen-input descriptor binding | 屈折/深度 fade fixture、tone map 一回、型不一致 reject |
-| RPE6c0 | data-only target topology / directed links、pure Vulkan backend probe、immutable registry snapshot、optimize-by-default / advisory diagnostics | deviceなしprobe、link有無のbridge可否、reason付きreject、opt-in strict/hazard stress、追加注釈なしのparallel/fusion候補、runtime不変 |
+| RPE6c0 / WP188（済 2026-07-23） | data-only target topology / directed links、pure Vulkan backend probe、immutable registry snapshot、optimize-by-default / advisory diagnostics | deviceなしprobe、link有無のbridge可否、reason付きreject、opt-in strict/hazard stress、追加注釈なしのparallel/fusion候補、runtime不変 |
 | RPE6c1 | `ResourcePattern` / read footprint / materialization + mock desktop/tile target planner。canonical / disposable lowering seam と dialect legality を追加 | desktop materialize、tile local-read 候補、屈折 snapshot、physical dump、optional domain zero-cost |
 | RPE7 | `SampleCountRequest` / capabilities / resolution の純粋段階 | unsupported/fallback 診断 fixture |
 | RPE8 | MSAA graph transform + image/pipeline sample count + resolve | 1x byte 不変、2x/4x headless Vulkan、depth capability gate |
@@ -639,16 +639,16 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 
 ### 12.1 いま着手する範囲
 
-RPE1 / WP180 から RPE6b1 / WP187 まで完了した。authoring resolve、immutable typed
+RPE1 / WP180 から RPE6c0 / WP188 まで完了した。authoring resolve、immutable typed
 pipeline plan、draw inventory / queue materialization、versioned draw-sort provider registry、
 world bounds、phase/view 別 queue に加え、Vulkan 非依存の logical type / port-use kernel と
 現行 `FrameGraphDefinition` の diagnostic shadow graph が分離済みである。shadow graph は
 resource family + version の値と exact producer edge を持ち、宣言順を correctness に使わない。
 
 `hybrid_v1` material-pass の typed screen-input descriptor、opaque color/depth snapshot、
-depth linearization、tone-map 一回の fixture は RPE6b1 で固定した。次の RPE6c0 は topology /
-probe / warning policy を runtime 非変更で固定し、RPE6c1 は mock desktop/tile facts で target
-planning を実証する。MSAA image / pipeline / resolve の Vulkan 変更は RPE7 / RPE8 まで
+depth linearization、tone-map 一回の fixture は RPE6b1 で固定した。RPE6c0ではtopology /
+probe / warning・planning profileをruntime非変更で固定した。次のRPE6c1はmock desktop/tile
+factsでtarget planningを実証する。MSAA image / pipeline / resolve の Vulkan 変更は RPE7 / RPE8 まで
 混ぜない。各段階の詳細 gate は
 `design_render_graph_compiler.md` §12 を正とする。
 

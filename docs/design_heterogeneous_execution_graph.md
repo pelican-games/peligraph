@@ -924,7 +924,7 @@ completion、required capabilityだけを検証する。未指定情報は隠れ
 - tone-map / display encode は explicit-only conversion と terminal 一回 fixture で固定
 - generic fragment/provider framework は導入せず、追加 alias / provider registry は RPE6c 以降へ残す
 
-### HEG2a — RPE6c0 planning contracts
+### HEG2a — RPE6c0 planning contracts(実装済み WP188)
 
 - data-only `TargetTopologySnapshot` と directed endpoint link
 - pure `BackendProbeInput` / `BackendProbeResult` と有限候補選択
@@ -932,6 +932,10 @@ completion、required capabilityだけを検証する。未指定情報は隠れ
 - logical data dependencyの自動導出、optional semantic effect、parallel eligible CPU defaultの型予約
 - shader interface declarationとreflection一致のfixture
 - runtime / Vulkan execution ownershipは変更せず、CPU / video APIを追加しない
+- conversion / target-lowering providerを同じdata descriptorでsnapshotし、reloadable世代だけ
+  compile snapshotがgeneration leaseを保持
+- `optimized` / `conservative_debug` / `hazard_stress(seed)`を純CPU decision reportとして実装。
+  alias集合のlifetime導出、domain partition、bridge実行はHEG2bへ残す
 
 ### HEG2b — RPE6c1 target planner vertical slice
 
