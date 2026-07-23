@@ -27,6 +27,7 @@ struct FrameGraphNodeDefinition {
     std::vector<std::string> before;
     std::string snapshot_after;
     std::size_t byte_size = 0;
+    bool raster_geometry = false;
 };
 
 struct FrameGraphDefinition {

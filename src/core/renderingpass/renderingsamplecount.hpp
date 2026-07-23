@@ -1,15 +1,15 @@
 #pragma once
 
+#include "frameplanner.hpp"
 #include "rendertargetdefinition.hpp"
-#include "../../project/samplecountplanning.hpp"
+#include "../../project/targetrenderplanning.hpp"
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <span>
 #include <string>
 #include <vector>
-
-#include <nlohmann/json_fwd.hpp>
 
 namespace Pelican {
 
@@ -24,24 +24,36 @@ struct RenderingSampleCountAssignment {
     bool operator==(const RenderingSampleCountAssignment &) const = default;
 };
 
-struct RenderingSampleCountResolution {
-    ResolvedSampleCountPlan plan;
+struct RenderingTargetPlanDeviceFacts {
+    std::uint32_t max_color_attachments = 8;
+    AttachmentSampleCapabilityQuery query_attachment_samples;
+};
+
+struct RenderingTargetPlanCompilation {
+    std::vector<std::shared_ptr<const VulkanTargetPlan>> plans;
     std::vector<RenderingSampleCountAssignment> assignments;
 };
 
-// Builds attachment-connected components from the authored pass outputs.
-// Geometry components are selected by default; "scope": "all" selects every
-// renderable component and explicit "targets" can opt individual components
-// in without hard-coding G-buffer names or attachment counts.
-RenderingSampleCountResolution resolveRenderingSampleCounts(
-    const nlohmann::json &rendering_config,
+// Adapts the existing FrameGraphDefinition into the canonical logical/target
+// planner. The returned VulkanTargetPlan is authoritative for the concrete
+// image format, representation, and rasterization sample count consumed by
+// the current materialized-image runtime.
+RenderingTargetPlanCompilation compileRenderingTargetPlans(
+    std::span<const FrameGraphDefinition> frame_graphs,
     std::span<const RenderTargetDefinition> render_targets,
     const SampleCountPolicy &policy,
-    const AttachmentSampleCapabilityQuery &query_capabilities);
+    vk::Format swapchain_format,
+    const RenderingTargetPlanDeviceFacts &device_facts);
+RenderingTargetPlanCompilation compileRenderingTargetPlansForVulkanDevice(
+    std::span<const FrameGraphDefinition> frame_graphs,
+    std::span<const RenderTargetDefinition> render_targets,
+    const SampleCountPolicy &policy,
+    vk::Format swapchain_format,
+    vk::PhysicalDevice physical_device);
 
-void applyRenderingSampleCounts(
+void applyRenderingTargetPlan(
     std::span<RenderTargetDefinition> render_targets,
-    const RenderingSampleCountResolution &resolution);
+    const RenderingTargetPlanCompilation &compilation);
 
 vk::ResolveModeFlagBits colorAttachmentResolveMode(vk::Format format);
 

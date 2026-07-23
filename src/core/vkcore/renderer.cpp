@@ -1258,6 +1258,10 @@ nlohmann::json Renderer::currentFramePlanJson() const {
     }
     auto result = framePlanToJson(frame_graph->plan,
                                   frame_graph->render_pipeline.get());
+    if (frame_graph->target_plan != nullptr) {
+        result["physical_target_plan"] =
+            vulkanTargetPlanToJson(*frame_graph->target_plan);
+    }
     if (frame_graph->sample_count_plan != nullptr &&
         frame_graph->render_pipeline->sample_count_policy.authored) {
         result["sample_count_plan"] =

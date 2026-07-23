@@ -2,7 +2,7 @@
 
 #include "frameplanner.hpp"
 #include "renderingpass.hpp"
-#include "../../project/samplecountplanning.hpp"
+#include "../../project/targetrenderplanning.hpp"
 #include "../container.hpp"
 #include <cstddef>
 #include <memory>
@@ -36,6 +36,7 @@ struct CompiledMaterialRouteBinding {
 struct CompiledFrameGraphExecution {
     FramePlan plan;
     std::shared_ptr<const CompiledRenderPipeline> render_pipeline;
+    std::shared_ptr<const VulkanTargetPlan> target_plan;
     std::shared_ptr<const ResolvedSampleCountPlan> sample_count_plan;
     std::vector<CompiledMaterialRouteBinding> material_routes;
     std::vector<FrameGraphExecutionNode> nodes;
@@ -53,8 +54,8 @@ DECLARE_MODULE(FrameGraphRuntimeContainer) {
                                FramePlan plan,
                                std::shared_ptr<const CompiledRenderPipeline>
                                    render_pipeline,
-                               std::shared_ptr<const ResolvedSampleCountPlan>
-                                   sample_count_plan = {});
+                               std::shared_ptr<const VulkanTargetPlan>
+                                   target_plan = {});
     const CompiledFrameGraphExecution *find(RenderingPassId rendering_pass_id) const;
 };
 

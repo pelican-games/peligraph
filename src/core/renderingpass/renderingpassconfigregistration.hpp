@@ -2,7 +2,7 @@
 
 #include "renderingpass.hpp"
 #include "../../project/renderpipeline.hpp"
-#include "../../project/samplecountplanning.hpp"
+#include "../../project/targetrenderplanning.hpp"
 
 #include <functional>
 #include <memory>
@@ -62,6 +62,8 @@ struct RenderingPassConfigRegistrationResult {
     std::vector<RenderingPassId> rendering_pass_ids;
     std::vector<std::string> feature_names;
     std::vector<std::string> excluded_feature_names;
+    std::vector<std::shared_ptr<const VulkanTargetPlan>>
+        target_plans;
     std::shared_ptr<const ResolvedSampleCountPlan> sample_count_plan;
 };
 

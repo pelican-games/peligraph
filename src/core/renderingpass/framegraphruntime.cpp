@@ -72,8 +72,8 @@ void FrameGraphRuntimeContainer::registerExecutionPlan(RenderingPassId rendering
                                                        FramePlan plan,
                                                        std::shared_ptr<const CompiledRenderPipeline>
                                                            render_pipeline,
-                                                       std::shared_ptr<const ResolvedSampleCountPlan>
-                                                           sample_count_plan) {
+                                                       std::shared_ptr<const VulkanTargetPlan>
+                                                           target_plan) {
     if (!render_pipeline) {
         throw std::runtime_error(
             "Frame graph execution requires a compiled render pipeline");
@@ -86,7 +86,14 @@ void FrameGraphRuntimeContainer::registerExecutionPlan(RenderingPassId rendering
     CompiledFrameGraphExecution execution;
     execution.plan = std::move(plan);
     execution.render_pipeline = std::move(render_pipeline);
-    execution.sample_count_plan = std::move(sample_count_plan);
+    execution.target_plan = std::move(target_plan);
+    if (execution.target_plan != nullptr &&
+        execution.target_plan->sample_count_plan) {
+        execution.sample_count_plan =
+            std::shared_ptr<const ResolvedSampleCountPlan>(
+                execution.target_plan,
+                &*execution.target_plan->sample_count_plan);
+    }
     execution.material_routes = std::move(material_routes);
     execution.nodes.reserve(execution.plan.nodes.size());
 

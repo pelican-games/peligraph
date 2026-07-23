@@ -28,14 +28,26 @@ RenderTargetDefinition target(
 }
 
 const RenderingSampleCountAssignment &assignment(
-    const RenderingSampleCountResolution &resolution,
+    const RenderingTargetPlanCompilation &compilation,
     std::string_view resource) {
     const auto found = std::find_if(
-        resolution.assignments.begin(), resolution.assignments.end(),
+        compilation.assignments.begin(),
+        compilation.assignments.end(),
         [resource](const auto &candidate) {
             return candidate.resource == resource;
         });
-    REQUIRE(found != resolution.assignments.end());
+    REQUIRE(found != compilation.assignments.end());
+    return *found;
+}
+
+const VulkanPhysicalResourcePlan &physicalResource(
+    const VulkanTargetPlan &plan, std::string_view resource) {
+    const auto found = std::find_if(
+        plan.resources.begin(), plan.resources.end(),
+        [resource](const auto &candidate) {
+            return candidate.logical_resource == resource;
+        });
+    REQUIRE(found != plan.resources.end());
     return *found;
 }
 
@@ -108,16 +120,28 @@ TEST_CASE("rendering sample planning discovers a hybrid attachment component",
     };
 
     const auto config = hybridConfig();
-    const auto resolution = resolveRenderingSampleCounts(
-        config, targets, compileSampleCountPolicy(config), query);
-    REQUIRE(assignment(resolution, "albedo").samples == 2);
-    REQUIRE(assignment(resolution, "normal").samples == 2);
-    REQUIRE(assignment(resolution, "custom_id").samples == 2);
-    REQUIRE(assignment(resolution, "depth").samples == 2);
-    REQUIRE(assignment(resolution, "lit").samples == 2);
-    REQUIRE(assignment(resolution, "display").samples == 1);
-    REQUIRE(resolution.plan.groups.at(0).limiting_resources ==
+    const auto graphs =
+        parseFrameGraphDefinitionsFromConfigJson(config);
+    const auto compilation = compileRenderingTargetPlans(
+        graphs, targets, compileSampleCountPolicy(config),
+        vk::Format::eB8G8R8A8Unorm,
+        RenderingTargetPlanDeviceFacts{
+            .query_attachment_samples = query,
+        });
+    REQUIRE(assignment(compilation, "albedo").samples == 2);
+    REQUIRE(assignment(compilation, "normal").samples == 2);
+    REQUIRE(assignment(compilation, "custom_id").samples == 2);
+    REQUIRE(assignment(compilation, "depth").samples == 2);
+    REQUIRE(assignment(compilation, "lit").samples == 2);
+    REQUIRE(assignment(compilation, "display").samples == 1);
+    REQUIRE(compilation.plans.size() == 1);
+    REQUIRE(compilation.plans.front()
+                ->sample_count_plan->groups.at(0)
+                .limiting_resources ==
             std::vector<std::string>{"custom_id (R32Uint)"});
+    REQUIRE(physicalResource(
+                *compilation.plans.front(), "custom_id")
+                .rasterization_samples == 2);
 }
 
 TEST_CASE("exact rendering sample planning reports an added G-buffer target",
@@ -135,12 +159,20 @@ TEST_CASE("exact rendering sample planning reports an added G-buffer target",
     };
     requireThrowsContaining(
         [&] {
-            (void)resolveRenderingSampleCounts(
-                config, targets, compileSampleCountPolicy(config),
-                [](const RenderTargetDefinition &definition) {
-                    return definition.name == "custom_id"
-                               ? std::vector<std::uint32_t>{1}
-                               : std::vector<std::uint32_t>{1, 2, 4};
+            const auto graphs =
+                parseFrameGraphDefinitionsFromConfigJson(config);
+            (void)compileRenderingTargetPlans(
+                graphs, targets,
+                compileSampleCountPolicy(config),
+                vk::Format::eB8G8R8A8Unorm,
+                RenderingTargetPlanDeviceFacts{
+                    .query_attachment_samples =
+                        [](const RenderTargetDefinition &definition) {
+                            return definition.name == "custom_id"
+                                       ? std::vector<std::uint32_t>{1}
+                                       : std::vector<std::uint32_t>{
+                                             1, 2, 4};
+                        },
                 });
         },
         "custom_id (R32Uint)");
@@ -160,14 +192,20 @@ TEST_CASE("explicit target selects its whole attachment component",
         target("lit", vk::Format::eR16G16B16A16Sfloat),
         target("display", vk::Format::eB8G8R8A8Srgb),
     };
-    const auto resolution = resolveRenderingSampleCounts(
-        config, targets, compileSampleCountPolicy(config),
-        [](const auto &) {
-            return std::vector<std::uint32_t>{1, 2, 4};
+    const auto graphs =
+        parseFrameGraphDefinitionsFromConfigJson(config);
+    const auto compilation = compileRenderingTargetPlans(
+        graphs, targets, compileSampleCountPolicy(config),
+        vk::Format::eB8G8R8A8Unorm,
+        RenderingTargetPlanDeviceFacts{
+            .query_attachment_samples =
+                [](const auto &) {
+                    return std::vector<std::uint32_t>{1, 2, 4};
+                },
         });
-    REQUIRE(assignment(resolution, "albedo").samples == 4);
-    REQUIRE(assignment(resolution, "lit").samples == 4);
-    REQUIRE(assignment(resolution, "display").samples == 1);
+    REQUIRE(assignment(compilation, "albedo").samples == 4);
+    REQUIRE(assignment(compilation, "lit").samples == 4);
+    REQUIRE(assignment(compilation, "display").samples == 1);
 }
 
 TEST_CASE("color resolve mode follows Vulkan numeric format rules",

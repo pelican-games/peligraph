@@ -192,6 +192,9 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
     appendMaterialScreenInputReads(pass_json, node.reads);
     node.kind = type == "output_transform" ? FramePlanNodeKind::output_transform
                                             : FramePlanNodeKind::render;
+    node.raster_geometry =
+        type == "material" || type == "shadow_depth" ||
+        type == "velocity";
     const bool ui_pass = type == "ui";
     const auto &output = pass_json.at("output");
     const auto color_outputs = parseOutputColors(output);
@@ -399,6 +402,9 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
     node.name = pass.name;
     node.kind = passKind(pass);
     node.declaration_index = declaration_index;
+    node.raster_geometry =
+        pass.isMaterial() || pass.isShadowDepth() ||
+        pass.isVelocity();
     for (size_t i = 0; i < pass.input_targets.size(); ++i) {
         if (pass.input_target_history.at(i)) {
             appendUnique(node.reads_history, renderTargetResourceName(pass.input_targets[i]));

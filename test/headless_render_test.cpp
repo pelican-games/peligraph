@@ -250,11 +250,29 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
         const auto *execution =
             GET_MODULE(FrameGraphRuntimeContainer).find(main_render_id);
         REQUIRE(execution != nullptr);
+        REQUIRE(execution->target_plan != nullptr);
         REQUIRE(execution->sample_count_plan != nullptr);
-        REQUIRE(renderer.currentFramePlanJson()
-                    .at("sample_count_plan")
+        const auto frame_plan_json =
+            renderer.currentFramePlanJson();
+        REQUIRE(frame_plan_json.at("sample_count_plan")
                     .at("request")
                     .at("samples") == 4);
+        REQUIRE(frame_plan_json.at("physical_target_plan")
+                    .at("backend_selection")
+                    .at("selected_candidate") ==
+                "pelican.vulkan.materialized_plan@1");
+        const auto physical_lit = std::find_if(
+            execution->target_plan->resources.begin(),
+            execution->target_plan->resources.end(),
+            [](const auto &resource) {
+                return resource.logical_resource == "lit_color";
+            });
+        REQUIRE(physical_lit !=
+                execution->target_plan->resources.end());
+        REQUIRE(physical_lit->representation ==
+                VulkanResourceRepresentation::materialized_image);
+        REQUIRE(physical_lit->rasterization_samples ==
+                lit_metadata.samples);
         REQUIRE(std::any_of(
             execution->sample_count_plan->groups.begin(),
             execution->sample_count_plan->groups.end(),
