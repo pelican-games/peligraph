@@ -5559,7 +5559,7 @@ material fragment-output可変ABI、compute/CPU execution linker、physical plan
 
 参照: [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md) §7.3、§12、
 [`design_render_graph_compiler.md`](design_render_graph_compiler.md) §12、
-[`design_reviews/2026-07-23_wp191_report.md`](design_reviews/2026-07-23_wp191_report.md)。
+[`design_reviews/2026-07-23_wp192_report.md`](design_reviews/2026-07-23_wp192_report.md)。
 
 **目的**: flat / preview / XR の graph variant 分岐を、core/OpenXR/preview が個別に
 注入する bool callback と suffix 文字列から、project compiler が生成する immutable typed
@@ -5606,6 +5606,58 @@ policyへ移す。現行の preview隔離とXR sequential stereoを維持しつ�
 依存: WP180、WP184、WP191。見積: 中。
 
 完了レポート: `docs/design_reviews/2026-07-23_wp192_report.md`
+
+---
+
+### WP193(済 2026-07-24): RPE10a — render pipeline runtime publication root
+
+参照: [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md) §9、§12、
+[`design_render_graph_compiler.md`](design_render_graph_compiler.md) §12、
+[`design_reviews/2026-07-24_wp193_report.md`](design_reviews/2026-07-24_wp193_report.md)。
+
+**目的**: compiled pass、frame graph、logical/physical plan、material route、
+sample-count、variant policy、draw-sort provider選択を一つのimmutable runtime generationとしてprepareし、
+observerへ部分状態を見せず一回でpublishする。frame中は同じgeneration leaseを保持する。
+
+**実装範囲**:
+
+1. `CompiledRenderProgram`と`RenderPipelineRuntimeGeneration`を追加し、pass name/ID、
+   enabled feature、`CompiledRenderingPass`、`CompiledFrameGraphExecution`、
+   `CompiledRenderPipeline`、`VulkanTargetPlan`を一つのrootへ束ねる。
+2. move-only `PreparedRenderPipelineGeneration`を追加する。prepareはactive rootを変更せず、
+   pass/node/barrier/material route bindingを全件検証する。
+3. 同名passのIDを世代間で維持し、新variantは決定的にappendする。candidate内の重複名、
+   invalid/重複ID、generation枯渇をrejectする。
+4. publishはcandidateのbase generationを検査するCAS一回とし、stale candidate /
+   publication raceをlive root不変のままrejectする。明示rollbackもcandidateだけを破棄する。
+5. `FrameGraphRuntimeContainer`と`RenderingPassContainer`は同じ
+   `RenderPipelineRuntimePublication`を共有し、facade用の二重publishを行わない。
+6. `Renderer::renderLogicalFrame()`は開始時にroot snapshotを一度取得し、timing capacity、
+   pass、frame graph、route/sample/target plan、draw-sort provider選択・variant・jitterを全viewで同じ
+   snapshotから読む。
+7. compatibility `find()`はaliasing `shared_ptr`を返し、返却後のpublicationでも参照先世代を
+   生存させる。diagnostic dumpへ`runtime_generation`を追加する。
+
+**受け入れ条件**:
+
+- prepare中candidateはruntime/pass facade双方から不可視
+- rollback、prepare失敗、stale candidateでactive root不変
+- route/sample/draw-sort provider選択/pass/plan revisionを同時に500世代publishして混在なし
+- old generationはframe lease中生存し、最後のlease解放後にretire
+- flat feature publicationを保ったままXR variantをappend
+- headless hybrid、frame planner、preview、XR feature、temporal golden回帰が成功
+- Debug全build、全CTest、OpenXR OFF build、`git diff --check`が成功
+
+**非対象 / RPE10bへ残すもの**: render target / buffer / compute-task /
+fullscreen/material pipeline registryのcandidate arena、消えたprogramのscope-aware removal、
+Vulkan objectのin-flight fence後retire、FileWatcherからのpipeline reload publication。
+WP193のretire保証はCPU-side generation/reader lifetimeであり、GPU object lifetime完了を
+意味しない。実draw-sort provider generationは`RenderPolicyRegistry`のqueue構築時leaseで
+保護され、WP193 rootが所有するのはcompiled policy内のprovider名までである。
+
+依存: WP181、WP183、WP191、WP192。見積: 中。
+
+完了レポート: `docs/design_reviews/2026-07-24_wp193_report.md`
 
 ---
 

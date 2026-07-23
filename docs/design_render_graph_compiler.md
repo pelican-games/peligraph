@@ -2,7 +2,8 @@
 
 対象読者: レンダラ実装者、独自描画方式・最適化・Vulkan backend を実装する人。
 
-ステータス: v1.1 設計方針(2026-07-23)。公開 ABI は未凍結。RPE1〜RPE6c1まで実装済み。
+ステータス: v1.1 設計方針(2026-07-24)。公開 ABI は未凍結。RPE1〜RPE9と
+RPE10a runtime publication rootまで実装済み。
 RPE6b0の純CPU logical graph、RPE6b1のcolor/depth screen-input contractに加え、
 RPE6c0/1でdata-only topology/probe、`ResourcePattern`、desktop/tile physical plan fixture、
 canonical/disposable lowering seamを追加した。汎用graphのruntime実行所有権は未移行。
@@ -988,7 +989,15 @@ RPE9 / WP192 では XR / preview の ad-hoc callback を typed
 `CompiledGraphVariantPolicy` へ移し、現行 XR を exact 2-view sequential として
 固定した。multiview は未実装であり、同じ値の別名にはしていない。
 
-1. RPE10 で logical + physical + GPU candidate の transaction publication
+RPE10a / WP193 では compiled pass、frame graph、logical/physical plan、route、
+sample-count、variant policy、draw-sort provider選択を一つの immutable runtime generationへ束ね、
+base-generation CASでpublishする境界を実装した。frameは同じgeneration leaseを全viewで
+保持する。現時点ではGPU registry/Vulkan objectはgeneration所有ではなく、pipeline
+FileWatcherも未接続である。実際のdraw-sort provider generationは別registryのqueue構築時
+leaseであり、このrootが所有するのはcompiled policy内のprovider名までである。
+
+1. RPE10b で GPU registry candidate、scope-aware replacement、fence retire、
+   pipeline watcherを同じ transactionへ接続
 2. XR2b で multiview / array-layer / depth-submit lowering
 3. pass / region / global transform / strategy provider fixture
 4. physical plan eject / direct authoring fixture

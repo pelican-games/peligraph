@@ -27,7 +27,10 @@ dialect legalityを純CPUで追加したが、汎用logical graphの実行所有
 `FramePlan` / Vulkan executor に実 MSAA image、pipeline sample count、color/depth resolve
 を接続した。WP191 はその runtime bridge を WP189 の `VulkanTargetPlan` へ統合し、
 physical format / representation / sample-count contract を実行時にも同じ lowering
-結果から消費する。
+結果から消費する。RPE9 / WP192 は graph variant policy を同じ compiled plan へ統合した。
+RPE10a / WP193 は pass、frame graph、logical/physical plan、route、sample、variant policy と
+draw-sort provider 選択を一つの immutable runtime generation として原子的に公開する root を追加した。
+GPU object staging と watcher 接続は RPE10b に残る。
 
 関連文書:
 
@@ -607,6 +610,23 @@ game DLL provider unload 時は新 callback の取得を止め、frame が保持
 generation の参照が消えてから context を retire する。unregister と callback 実行を
 競合させない。
 
+RPE10a / WP193 で、上記のうち runtime publication root を実装した。
+`PreparedRenderPipelineGeneration` は現在の世代を基準に candidate を構築し、
+pass/node/barrier/material route binding の検証を publish 前に完了する。
+`FrameGraphRuntimeContainer` と `RenderingPassContainer` は同じ publication state を読み、
+base generation が一致する CAS 一回で active root を差し替える。renderer は論理フレーム
+開始時に `shared_ptr` snapshot を一度だけ取得し、全 view の pass、frame graph、
+sample/target plan、draw-sort provider 選択・variant・jitter policy をその snapshot から読む。旧 root は
+最後の frame lease が消えるまで生存する。
+
+ただしこれは GPU transaction の完成ではない。現在の render target / buffer /
+compute-task / fullscreen/material pipeline registry は candidate root の外にあり、
+registration 中に先行更新される。消えた graph program の scope-aware removal、
+Vulkan object の fence 後 retire、FileWatcher からの pipeline reload publication も未接続で
+ある。`RenderPolicyRegistry` の実 provider generation も root の所有物ではなく、
+queue 構築時の個別 lease で保護される。RPE10a が原子的にするのは provider 名を含む
+compiled policy 選択までである。このため RPE10a を「pipeline hot reload 完了」とは扱わない。
+
 ## 10. `GET_MODULE` の位置
 
 `GET_MODULE` は便利なため削除しない。ただし使用位置を次に限定する。
@@ -660,7 +680,8 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 | RPE8 runtime slice / WP190（済 2026-07-23） | attachment-connected MSAA transform + image/pipeline sample count + color/depth resolve | 1x互換、実4x hybrid headless、depth capability gate、validation errorなし |
 | RPE8b / WP191（済 2026-07-23） | WP189 physical target planner と WP190 runtime bridge の single lowering path | JSON/DSU重複削除、physical resource/scope sample contract、materialized runtime consume、追加G-buffer、desktop/tile/headless |
 | RPE9 / WP192（済 2026-07-23） | XR / preview callback を builtin `GraphVariantPolicy` へ移行 | sequential XR/preview plan 不変、OpenXR lifecycle 非依存 test |
-| RPE10 | pipeline hot reload の prepare/publish/rollback/retire | route/sample/provider 同時変更の atomic fixture、in-flight retire |
+| RPE10a / WP193（済 2026-07-24） | immutable runtime generation、prepare/rollback、base-generation CAS publish、frame lease | route/sample/draw-sort provider 選択/pass/plan 同時変更の atomic fixture、stale candidate reject、CPU-side retire |
+| RPE10b | GPU registry candidate、scope-aware replacement、fence retire、watcher 接続 | fault injectionでlive GPU state不変、pass削除、in-flight Vulkan resource retire、実reload |
 
 ### 12.1 いま着手する範囲
 
@@ -688,7 +709,12 @@ materialized imageだけをtarget topologyへadvertiseし、tile-local / transie
 `CompiledGraphVariantPolicy`へ純粋compileし、feature decision、history/jitter、
 view execution、resource layout、terminal、mirror、pass suffixを一つの値に集約した。
 registrationとrendererはこのcompiled policyを読み、OpenXR session stateをcompilerへ
-持ち込まない。各段階の詳細gateは `design_render_graph_compiler.md` §12 を正とする。
+持ち込まない。WP193では`CompiledRenderingPass`、`CompiledFrameGraphExecution`、
+`CompiledRenderPipeline`、`VulkanTargetPlan`、material route binding、enabled featureを
+`RenderPipelineRuntimeGeneration`へ束ねた。prepare中のcandidateはobserverから不可視で、
+publishはbase generation付きCAS一回、frameは同じrootを全viewで保持する。GPU registryの
+世代所有と実reloadはRPE10bで行う。各段階の詳細gateは
+`design_render_graph_compiler.md` §12 を正とする。
 
 ### 12.2 後回しにするもの
 
