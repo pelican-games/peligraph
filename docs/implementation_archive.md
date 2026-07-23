@@ -5387,4 +5387,62 @@ project/test CMake、target-planning tests、[RPE]/[RGC]/[HEG]のRPE6c0状態、
 
 ---
 
+### WP189(済 2026-07-23): RPE6c1 — desktop/tile target planner vertical slice
+
+参照: [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md) §12、
+[`design_render_graph_compiler.md`](design_render_graph_compiler.md) §3、§6、§7、§12、
+[`design_heterogeneous_execution_graph.md`](design_heterogeneous_execution_graph.md) §4、§9、§14、
+[`design_reviews/2026-07-23_wp188_report.md`](design_reviews/2026-07-23_wp188_report.md)。
+
+**目的**: WP188のdata-only topology/probe契約を使い、immutable canonical logical graphから
+使い捨て可能な`TargetLoweringGraph`を作る。`ResourcePattern`、useごとのread footprint、
+materialization requirementを基に、同じhybrid graphをdesktop materialized planまたは
+tile-local/transient planへ決定的にlowerできることを純CPU fixtureで実証する。
+
+**実装範囲**:
+
+1. applicable logical type、順位付きformat候補、transient/tile-local/alias/store選好、
+   fallbackとprovenanceを持つcopy可能な`ResourcePattern`を追加する。patternはresource名や
+   G-buffer枚数を列挙せず、追加G-buffer attachmentも通常resourceと同じ経路で処理する。
+2. canonical graphを変更せず、node/resource/use/provenanceを値として複製する
+   disposable `TargetLoweringGraph`を追加する。resource lifetimeと最大read footprintを導出し、
+   非重複lifetimeかつcompatibleなresourceだけをWP188のalias policy入力へ渡す。
+3. mock desktop/tile topologyに対し、materialized sampled image候補と
+   transient tile-local候補を有限列挙してWP188のbackend probe/cost selectionで選ぶ。
+4. same-pixel attachment readだけをtile-local候補にし、neighborhood/arbitrary/temporal read、
+   required/external materialization、snapshot output、明示storeはmaterializeする。
+5. logical nodeを`execution.gpu`へ、選択済みplanを`physical.vulkan`へlowerし、各境界の
+   dialect legalityを検証する。lowering後のrequired capabilityがselected probeの宣言集合を
+   超えた場合はprovider inconsistencyとして拒否する。
+6. GPU objectを持たないVulkan physical resource/scope/alias planとcanonical dumpを追加する。
+   region tagはgrouping/provenanceだけに残し、fusion境界にはしない。
+7. `GBuffer -> Lighting -> Forward -> ToneMap`、追加G-buffer attachment、屈折snapshotを
+   CPU-only fixture化する。attachment budget超過はtarget factを用いて理由付きで拒否する。
+
+**受け入れ条件**:
+
+- desktop profileはG-bufferをmaterialized sampled imageとして計画する
+- tile profileはsame-pixel G-bufferをtile-local/transientにし、region tagを越えてscope fusionできる
+- neighborhood refractionを追加するとopaque snapshotがmaterializeされる
+- G-buffer attachmentを追加してもplannerの列挙変更なしでplanへ現れ、target budgetだけが上限になる
+- 二回compileと入力順を変えたpattern指定がbyte-equivalentなphysical dumpになる
+- selected probeからlowering後に未知required capabilityが増えない
+- canonical logical graphのdumpがcompile前後で不変
+- CPU/external/video backend、runtime work、GPU object、現行`FramePlan`所有権を追加しない
+- Debug全build、770/770 CTest、Player短時間起動、`git diff --check`が成功する
+
+**非対象**: 実Vulkan image/rendering scope/barrier/alias allocationの作成・実行、
+queue family選択、MSAA/resolve、XR/preview graph variant、public game-DLL pattern/provider ABI、
+汎用CPU scheduler、execution linker、動画backend。Vulkan実行移行はphysical plan fixtureが
+固定された後続WPで扱う。
+
+依存: WP185〜WP188。見積: 中〜大。
+
+排他: `src/project/targetplanning*`、新規target lowering/physical plan helper、
+project/test CMake、target planner tests、[RPE]/[RGC]/[HEG]のRPE6c1状態、WP189完了レポート。
+
+完了レポート: `docs/design_reviews/2026-07-23_wp189_report.md`
+
+---
+
 未完了 WP と運用規則は [active ledger](implementation_plan.md) を参照。

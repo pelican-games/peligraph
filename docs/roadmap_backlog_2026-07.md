@@ -1,6 +1,6 @@
 # 機能追加バックログ(2026-07-23 時点・順序付き)
 
-作成: セッション引き継ぎ用。WP188 / RPE6c0 target planning contracts 完了地点へ同期。
+作成: セッション引き継ぎ用。WP189 / RPE6c1 desktop/tile target planner 完了地点へ同期。
 状態の正: active は `docs/implementation_plan.md`、完了済みは
 `docs/implementation_archive.md` と `docs/design_reviews/*_wp*_report.md`、
 挙動はコードとテスト。
@@ -72,9 +72,10 @@ deferred、forward opaque/transparent 合成、typed color/depth screen input �
     RPE6a logical type / shadow graph(WP185、完了)、RPE6b0 versioned logical value /
     producer edge(WP186、完了)、RPE6b1 typed screen input / opaque snapshot
     (WP187、完了)、RPE6c0 topology / backend probe / planning policy
-    (WP188、完了)まで実装。
-    以後は RPE6c1
-    desktop/tile target planner → MSAA → XR/preview graph variant → pipeline transaction の順。
+    (WP188、完了)、RPE6c1 ResourcePattern / desktop/tile target plan
+    (WP189、完了)まで実装。
+    以後は RPE7 sample-count resolve → RPE8 MSAA physical transform →
+    XR/preview graph variant → pipeline transaction の順。
     論理型、material/light contract、Vulkan physical plan / NativeScope の詳細は
     `design_render_graph_compiler.md`。CPU / GPU compute / external backend を横 domain として
     接続する共通 typed dialect、fragment / closed forest は
@@ -161,11 +162,11 @@ D-P5(validation 常設)→ D-P4(Tracy ユニット・既定 OFF)→ D-P6(crash �
 OPT-S(起動第 2 弾)/OPT-XR(Release 実機ベースライン)/OPT-MV
 (multiview 評価)。最適化は必ず計測の数字を根拠に(WP82 流儀の標準化)。
 
-## 推奨の直近候補(WP188 完了後)
+## 推奨の直近候補(WP189 完了後)
 
 | 順 | 候補 | 理由／前提 |
 |---|---|---|
-| 次 WP 候補 | **RPE6c1: desktop/tile target planner** | `ResourcePattern` と mock topology/probe facts から materialize／tile-local／snapshot を比較し、Vulkan 実行所有権を移す前に target plan を固定する |
+| 次 WP 候補 | **RPE7: sample-count request / capability resolve** | 1x/2x/4x等の要求、target capability、fallback/error理由を純CPUで解き、実Vulkan image/pipeline/resolveを触るRPE8の入力契約を固定する |
 | 2 | **HR2-I: input_actions/profile hot reload** | 設計済みで小さく、残る hot-reload 基本型を閉じる |
 | 3 | **U3: UI hot reload transaction** | HR0 watcher/reconcile を共有し、editor save 後の UI 往復を完成させる |
 | 4 | **VRMA watcher integration** | WP178 の generation/rebind entry point を FileWatcher/loader へ接続。WP 化前に asset identity と profile reload 範囲を固定する |

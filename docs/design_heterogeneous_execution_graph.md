@@ -3,11 +3,12 @@
 対象読者: renderer / compute / runtime scheduler / backend 実装者、独自の CPU・GPU
 実装方式を追加する人。
 
-ステータス: v1 設計方針(2026-07-23)。公開 ABI は未凍結。実装済みなのは renderer の
-`FrameGraphDefinition` / `FramePlan`、RPE6b0 の versioned logical value / producer edge を持つ
-diagnostic shadow graph、および RPE6b1 の typed material screen-input 縦切りまでである。汎用 CPU task scheduler、異種
-execution linker、動画 encode/decode は未実装であり、必要性と計測を確認してから個別 WP に
-する。
+ステータス: v1 設計方針(2026-07-23)。公開 ABI は未凍結。rendererの
+`FrameGraphDefinition` / `FramePlan`、RPE6b0のversioned logical value / producer edgeを持つ
+diagnostic shadow graph、RPE6b1のtyped material screen-input縦切りに加え、RPE6c0/1の
+topology/probe、immutable/disposable lowering seam、desktop/tile physical plan fixtureまで
+実装済みである。汎用CPU task scheduler、異種execution linker、動画encode/decodeは未実装で
+あり、必要性と計測を確認してから個別WPにする。
 
 本書は、renderer 固有の [`design_render_graph_compiler.md`](design_render_graph_compiler.md)
 と、現行 render / GPU compute 依存グラフの
@@ -937,13 +938,16 @@ completion、required capabilityだけを検証する。未指定情報は隠れ
 - `optimized` / `conservative_debug` / `hazard_stress(seed)`を純CPU decision reportとして実装。
   alias集合のlifetime導出、domain partition、bridge実行はHEG2bへ残す
 
-### HEG2b — RPE6c1 target planner vertical slice
+### HEG2b — RPE6c1 target planner vertical slice(実装済み WP189)
 
 - immutable canonical graph と disposable `TargetLoweringGraph` を分離
 - mock desktop / tile topologyとVulkan probeでtarget-aware rewrite / physical planを検証
 - target execution と Vulkan lowering の内部 seam、dialect legality verifier を置く
 - selected probeからlowering後に新しいrequired capabilityが生えないことを検証
 - CPU / external lowerer は null fixture または型予約に留める
+- `ResourcePattern`とresource bindingを分離し、追加G-bufferを固定enumなしで計画
+- read footprint / materialization / lifetimeからtile-local、snapshot、alias候補を導出
+- 実Vulkan executor / GPU object / CPU・external・video runtime workは追加しない
 
 ### HEG3 — 実証後の異種 domain
 

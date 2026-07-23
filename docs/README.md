@@ -1,6 +1,6 @@
 # pelican2 設計文書 索引
 
-最終更新: 2026-07-23(RPE6c0 target planning contracts / WP188 完了)。文書が矛盾したら
+最終更新: 2026-07-23(RPE6c1 desktop/tile target planner / WP189 完了)。文書が矛盾したら
 **凍結済み > ドラフト、設計文書 > 指示書**の順で優先し、実装状態は
 コード・テスト・`design_reviews` の完了レポートを正とする。
 
@@ -35,9 +35,9 @@
 | `design_scene_format.md` | v1.1・実装済み(WP25) | pelican.scene v1。エンベロープ・light コンポーネント・objects[].name |
 | `design_render_feature_modules.md` | v1.2・config合成実装済み(WP28〜30)、typed接続未 | **パージ可能 GPU 機能**。fragment 合成・defines・RT overrides。typed GraphFragment / closed forest へ接続 |
 | `design_compute_task_graph.md` | v2.2・現行render/compute実装済み(WP33〜35)、異種拡張未 | **統一フレームグラフ**。依存宣言→機械最適化→手詰めの三層。authoring kind と execution domain を分離 |
-| `design_heterogeneous_execution_graph.md` | v1 方針・HEG1a/1b実装済み | **異種 execution の正本**。共通 typed dialect、endpoint/link topology、backend probe、CPU/Vulkan sibling lowering、fragment / closed forest、trust-first・optimize-by-default・advisory診断。動画は拡張可能性だけを予約 |
-| `design_render_pipeline_extensibility.md` | v2.1 方針・RPE1〜RPE6b1実装済み | **renderer 拡張境界の正本**。preset から physical/native までの拡張 ladder、renderer compiler facade、draw sort/MSAA/XR/hot reload の分離 |
-| `design_render_graph_compiler.md` | v1.1 方針・RPE6b1実装済み | **renderer compiler の詳細設計**。logical type / versioned value、material/light contract、target execution seam、tile GPU、Vulkan physical IR / NativeScope |
+| `design_heterogeneous_execution_graph.md` | v1 方針・HEG1a〜HEG2b実装済み | **異種 execution の正本**。共通 typed dialect、endpoint/link topology、backend probe、CPU/Vulkan sibling lowering、fragment / closed forest、trust-first・optimize-by-default・advisory診断。動画は拡張可能性だけを予約 |
+| `design_render_pipeline_extensibility.md` | v2.1 方針・RPE1〜RPE6c1実装済み | **renderer 拡張境界の正本**。preset から physical/native までの拡張 ladder、renderer compiler facade、draw sort/MSAA/XR/hot reload の分離 |
+| `design_render_graph_compiler.md` | v1.1 方針・RPE6c1実装済み | **renderer compiler の詳細設計**。logical type / versioned value、material/light contract、target execution seam、tile GPU、Vulkan physical IR / NativeScope |
 | `design_input_actions.md` | v1・I1〜I4 + XR action/pose 実装済み(WP39/49/89/91/130/132) | 入力四層・アクション層・プロファイル・収録/再生。HR2-I は未 |
 | `design_project_interpretation_layer.md` | v1・主要分離実施済み | 解釈(`pelican_project`)と engine binder の分離 |
 | `design_project_dcc_houdini.md` | v1・engine 側受け口実装済み | import manifest/VAT 再生は実装済み。Houdini adapter は外部リポジトリ |
@@ -94,10 +94,11 @@
 - physics = query/Jolt provider/E2 trigger は済。rigid-body simulation は
   将来トラック(`design_physics_queries.md` §6、Jolt 推奨)
 - rendering = `hybrid_v1` の deferred + forward 合成、semantic material route、
-  RPE1〜RPE6c0(resolve、typed manifest、draw queue/provider、transparent/XR sort、
+  RPE1〜RPE6c1(resolve、typed manifest、draw queue/provider、transparent/XR sort、
   logical type/value graph、typed material screen input、target topology/backend probe/
-  planning policy)は実装済み。次はRPE6c1 desktop/tile target planner、MSAA、XR variant、
-  pipeline transaction の順。RPE6c0/1では異種 execution 設計の canonical / disposable
+  planning policy、desktop/tile materialization physical fixture)は実装済み。次は
+  sample-count resolve、MSAA、XR variant、pipeline transaction の順。RPE6c0/1では
+  異種 execution 設計の canonical / disposable
   lowering seamだけを置き、CPU schedulerと動画backendは計測・具体需要まで実装しない。
   lighting/IBL、motion blur、bindless、compute particles はこの compiler 境界上で
   需要と計測を伴う設計から開始

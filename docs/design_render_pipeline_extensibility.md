@@ -19,8 +19,10 @@ external backend を縦層でなく横 domain として追加する境界へ接�
 の byte extent は public header の static assertion で固定している。
 RPE6b0 / WP186 では logical value の版と producer edge、nominal connection、access intent、
 conversion implementation descriptor を追加した。RPE6b1 / WP187 はその型契約を
-`hybrid_v1` の opaque snapshot と material descriptor へ接続したが、汎用 logical graph の
-実行所有権は引き続き既存 `FramePlan` / Vulkan executor にある。
+`hybrid_v1` の opaque snapshot と material descriptor へ接続した。RPE6c0 / WP188 と
+RPE6c1 / WP189 はtarget topology/probe、`ResourcePattern`、desktop/tile physical plan fixture、
+dialect legalityを純CPUで追加したが、汎用logical graphの実行所有権は引き続き既存
+`FramePlan` / Vulkan executorにある。
 
 関連文書:
 
@@ -631,7 +633,7 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 | RPE6b0 / WP186（済 2026-07-23） | versioned logical value / producer edge、nominal connection、access intent、conversion implementation descriptor | 宣言順非依存、duplicate/missing producer reject、schema v2、runtime 不変 |
 | RPE6b1 / WP187（済 2026-07-23） | typed color/depth domain + hybrid screen-input descriptor binding | 屈折/深度 fade fixture、tone map 一回、型不一致 reject |
 | RPE6c0 / WP188（済 2026-07-23） | data-only target topology / directed links、pure Vulkan backend probe、immutable registry snapshot、optimize-by-default / advisory diagnostics | deviceなしprobe、link有無のbridge可否、reason付きreject、opt-in strict/hazard stress、追加注釈なしのparallel/fusion候補、runtime不変 |
-| RPE6c1 | `ResourcePattern` / read footprint / materialization + mock desktop/tile target planner。canonical / disposable lowering seam と dialect legality を追加 | desktop materialize、tile local-read 候補、屈折 snapshot、physical dump、optional domain zero-cost |
+| RPE6c1 / WP189（済 2026-07-23） | `ResourcePattern` / read footprint / materialization + mock desktop/tile target planner。canonical / disposable lowering seam と dialect legality を追加 | desktop materialize、tile local-read、追加 G-buffer、屈折 snapshot、physical dump、optional domain zero-cost |
 | RPE7 | `SampleCountRequest` / capabilities / resolution の純粋段階 | unsupported/fallback 診断 fixture |
 | RPE8 | MSAA graph transform + image/pipeline sample count + resolve | 1x byte 不変、2x/4x headless Vulkan、depth capability gate |
 | RPE9 | XR / preview callback を builtin `GraphVariantPolicy` へ移行 | sequential XR/preview plan 不変、OpenXR lifecycle 非依存 test |
@@ -639,7 +641,7 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 
 ### 12.1 いま着手する範囲
 
-RPE1 / WP180 から RPE6c0 / WP188 まで完了した。authoring resolve、immutable typed
+RPE1 / WP180 から RPE6c1 / WP189 まで完了した。authoring resolve、immutable typed
 pipeline plan、draw inventory / queue materialization、versioned draw-sort provider registry、
 world bounds、phase/view 別 queue に加え、Vulkan 非依存の logical type / port-use kernel と
 現行 `FrameGraphDefinition` の diagnostic shadow graph が分離済みである。shadow graph は
@@ -647,9 +649,11 @@ resource family + version の値と exact producer edge を持ち、宣言順を
 
 `hybrid_v1` material-pass の typed screen-input descriptor、opaque color/depth snapshot、
 depth linearization、tone-map 一回の fixture は RPE6b1 で固定した。RPE6c0ではtopology /
-probe / warning・planning profileをruntime非変更で固定した。次のRPE6c1はmock desktop/tile
-factsでtarget planningを実証する。MSAA image / pipeline / resolve の Vulkan 変更は RPE7 / RPE8 まで
-混ぜない。各段階の詳細 gate は
+probe / warning・planning profileをruntime非変更で固定した。RPE6c1では`ResourcePattern`、
+resource lifetime、desktop materialization、tile-local read、屈折snapshot、dialect legalityを
+data-only physical planとして実証した。G-buffer名や枚数はplannerへ固定せず、endpointの
+attachment budget factで上限を検査する。次はRPE7のsample-count resolveであり、MSAA image /
+pipeline / resolveのVulkan変更はRPE8まで混ぜない。各段階の詳細gateは
 `design_render_graph_compiler.md` §12 を正とする。
 
 ### 12.2 後回しにするもの

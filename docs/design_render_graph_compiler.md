@@ -2,10 +2,11 @@
 
 対象読者: レンダラ実装者、独自描画方式・最適化・Vulkan backend を実装する人。
 
-ステータス: v1.1 設計方針(2026-07-23)。公開 ABI は未凍結。RPE1〜RPE6b1 まで実装済み。
-RPE6b0 の純 CPU logical graph に加え、RPE6b1 は color/depth screen-input contract を
-`hybrid_v1` の snapshot、material descriptor、shader accessor へ縦に接続した。汎用 graph の
-runtime 実行所有権は未移行。RPE1〜RPE5 で実装済みの
+ステータス: v1.1 設計方針(2026-07-23)。公開 ABI は未凍結。RPE1〜RPE6c1まで実装済み。
+RPE6b0の純CPU logical graph、RPE6b1のcolor/depth screen-input contractに加え、
+RPE6c0/1でdata-only topology/probe、`ResourcePattern`、desktop/tile physical plan fixture、
+canonical/disposable lowering seamを追加した。汎用graphのruntime実行所有権は未移行。
+RPE1〜RPE5で実装済みの
 `RenderPipelineRequest` / `ResolvedRenderPipeline` / `CompiledRenderPipeline` と
 draw queue 基盤を移行元とし、既存の flat 1x 描画結果を変えずに段階導入する。
 v1.1 は CPU、GPU compute、将来の specialized device operation を縦の compiler 層として
@@ -896,6 +897,10 @@ gate:
 
 ### RPE6c1 — target planner vertical slice
 
+状態: **WP189で実装済み(2026-07-23)**。`pelican_project`の
+`targetrenderplanning`はVulkan header / device / runtime objectを持たず、現行`FramePlan` /
+executorから未参照のdata-only fixtureである。
+
 - `ResourcePattern`、materialization、read footprint
 - mock desktop / mock tile topology / probe facts
 - immutable canonical graph と disposable `TargetLoweringGraph` の seam
@@ -904,6 +909,16 @@ gate:
 - `GBuffer -> Lighting -> Forward -> ToneMap` の二つの physical plan
 - local-read 不可時の materialized fallback
 - physical plan dump と理由
+
+実装した`ResourcePattern`は適用型、順位付きformat候補、transient / tile-local / alias /
+store選好、fallback、provenanceを持ち、resource bindingと分離される。同じpatternを任意個の
+G-buffer attachmentへ適用でき、plannerは標準G-buffer名や枚数を列挙しない。実上限は
+`pelican.vulkan.max_color_attachments@1` target factで検査する。
+
+workspaceはresourceごとの最大read footprintとlifetimeを導出し、compatibleかつ非重複の
+pairだけをRPE6c0 alias policyへ渡す。`logical`、`execution.gpu`、`physical.vulkan`の各完了
+境界では残存dialectを拒否し、lowering後のrequired featureがselected probe宣言集合を
+超えることも拒否する。
 
 gate:
 
@@ -914,6 +929,8 @@ gate:
 - 二回 compile で byte-equivalent plan
 - selected probeからlowering後に未知required capabilityが生えない
 - CPU / external / video backend を登録しなくても現行 runtime work と resource が増えない
+- 追加 G-buffer attachment はplanner変更なしで計画され、endpoint budget超過だけが理由付きで
+  rejectされる
 
 ### それ以後
 
