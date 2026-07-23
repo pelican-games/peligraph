@@ -2,6 +2,7 @@
 
 #include "frameplanner.hpp"
 
+#include <limits>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -28,13 +29,6 @@ LogicalPortContract makePort(const LogicalTypeRegistry &types, std::string name,
                              const LogicalType &type) {
     return LogicalPortContract{std::move(name), direction,
                                exactLogicalTypePattern(types, type), {}};
-}
-
-LogicalResourceUse makeUse(std::string port, std::string resource,
-                           LogicalAccessMode access,
-                           LogicalReadFootprintKind footprint) {
-    return LogicalResourceUse{std::move(port), std::move(resource), access,
-                              LogicalReadFootprint{footprint, std::nullopt}};
 }
 
 } // namespace
@@ -172,6 +166,31 @@ CompiledLogicalRenderGraph compileLogicalFrameGraphShadow(
         }
     }
 
+    std::map<std::string, std::uint32_t, std::less<>> current_versions;
+    std::map<std::string, LogicalValueImportKind, std::less<>> imported_resources;
+    const auto add_import = [&](const std::string &resource,
+                                LogicalValueImportKind kind) {
+        const auto [found, inserted] = imported_resources.emplace(resource, kind);
+        if (!inserted && found->second != kind) {
+            throw std::runtime_error("logical shadow graph resource '" + resource +
+                                     "' has conflicting import kinds");
+        }
+        if (inserted) {
+            result.imports.push_back(
+                LogicalValueImport{LogicalValueId{resource, 0}, kind});
+        }
+    };
+    for (const auto &resource : resource_order) {
+        current_versions.emplace(resource, 0);
+        if (history_resources.contains(resource)) {
+            add_import(resource, LogicalValueImportKind::previous_epoch);
+        } else if (resource == "swapchain") {
+            add_import(resource, LogicalValueImportKind::external);
+        } else if (declared.contains(resource)) {
+            add_import(resource, LogicalValueImportKind::legacy_implicit);
+        }
+    }
+
     bool used_conservative_footprint = false;
     result.nodes.reserve(definition.nodes.size());
     for (const auto &source : definition.nodes) {
@@ -200,9 +219,17 @@ CompiledLogicalRenderGraph compileLogicalFrameGraphShadow(
             auto port = "in." + resource;
             node.ports.push_back(makePort(types, port, LogicalPortDirection::input,
                                           type->second));
-            node.uses.push_back(makeUse(std::move(port), resource,
-                                        LogicalAccessMode::read,
-                                        LogicalReadFootprintKind::arbitrary));
+            const auto version = current_versions.at(resource);
+            if (version == 0 && !imported_resources.contains(resource)) {
+                add_import(resource, LogicalValueImportKind::legacy_implicit);
+                result.decisions.push_back(LogicalCompileDecision{
+                    "legacy_unproduced_value_import", resource,
+                    "legacy declaration order reads the resource before its first write"});
+            }
+            node.uses.push_back(makeLogicalReadUse(
+                std::move(port), LogicalValueId{resource, version},
+                LogicalReadFootprint{LogicalReadFootprintKind::arbitrary,
+                                     std::nullopt}));
             used_conservative_footprint = true;
         }
         for (const auto &resource : source.reads_history) {
@@ -215,9 +242,10 @@ CompiledLogicalRenderGraph compileLogicalFrameGraphShadow(
             auto port = "history." + resource;
             node.ports.push_back(makePort(types, port, LogicalPortDirection::input,
                                           type->second));
-            node.uses.push_back(makeUse(std::move(port), resource,
-                                        LogicalAccessMode::read,
-                                        LogicalReadFootprintKind::temporal));
+            node.uses.push_back(makeLogicalReadUse(
+                std::move(port), LogicalValueId{resource, 0},
+                LogicalReadFootprint{LogicalReadFootprintKind::temporal,
+                                     std::nullopt}));
         }
         for (const auto &resource : source.writes) {
             const auto type = resource_types.find(resource);
@@ -228,9 +256,14 @@ CompiledLogicalRenderGraph compileLogicalFrameGraphShadow(
             auto port = "out." + resource;
             node.ports.push_back(makePort(types, port, LogicalPortDirection::output,
                                           type->second));
-            node.uses.push_back(makeUse(std::move(port), resource,
-                                        LogicalAccessMode::write,
-                                        LogicalReadFootprintKind::none));
+            auto &version = current_versions.at(resource);
+            if (version == std::numeric_limits<std::uint32_t>::max()) {
+                throw std::runtime_error("logical shadow graph resource version overflow: " +
+                                         resource);
+            }
+            ++version;
+            node.uses.push_back(makeLogicalWriteUse(
+                std::move(port), LogicalValueId{resource, version}));
         }
         result.nodes.push_back(std::move(node));
     }

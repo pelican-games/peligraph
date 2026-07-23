@@ -61,6 +61,35 @@ struct LogicalResourceDesc {
         LogicalMaterializationRequirement::virtual_resource;
 };
 
+struct LogicalValueId {
+    std::string resource;
+    std::uint32_t version = 0;
+
+    bool operator==(const LogicalValueId &) const = default;
+    bool operator<(const LogicalValueId &other) const {
+        if (resource != other.resource) return resource < other.resource;
+        return version < other.version;
+    }
+};
+
+std::string logicalValueIdName(const LogicalValueId &value);
+
+enum class LogicalValueImportKind : std::uint8_t {
+    graph_input,
+    previous_epoch,
+    external,
+    legacy_implicit,
+};
+
+std::string_view logicalValueImportKindName(LogicalValueImportKind kind);
+
+struct LogicalValueImport {
+    LogicalValueId value;
+    LogicalValueImportKind kind = LogicalValueImportKind::graph_input;
+
+    bool operator==(const LogicalValueImport &) const = default;
+};
+
 enum class LogicalAccessMode : std::uint8_t {
     read,
     write,
@@ -68,6 +97,17 @@ enum class LogicalAccessMode : std::uint8_t {
 };
 
 std::string_view logicalAccessModeName(LogicalAccessMode access);
+
+enum class LogicalAccessIntent : std::uint8_t {
+    automatic,
+    sampled,
+    attachment,
+    storage,
+    transfer,
+    host,
+};
+
+std::string_view logicalAccessIntentName(LogicalAccessIntent intent);
 
 enum class LogicalReadFootprintKind : std::uint8_t {
     none,
@@ -82,14 +122,30 @@ std::string_view logicalReadFootprintKindName(LogicalReadFootprintKind kind);
 struct LogicalReadFootprint {
     LogicalReadFootprintKind kind = LogicalReadFootprintKind::none;
     std::optional<std::uint32_t> radius;
+
+    bool operator==(const LogicalReadFootprint &) const = default;
 };
 
 struct LogicalResourceUse {
     std::string port;
-    std::string resource;
     LogicalAccessMode access = LogicalAccessMode::read;
     LogicalReadFootprint footprint;
+    LogicalAccessIntent intent = LogicalAccessIntent::automatic;
+    std::optional<LogicalValueId> input_value;
+    std::optional<LogicalValueId> output_value;
 };
+
+LogicalResourceUse makeLogicalReadUse(
+    std::string port, LogicalValueId input,
+    LogicalReadFootprint footprint,
+    LogicalAccessIntent intent = LogicalAccessIntent::automatic);
+LogicalResourceUse makeLogicalWriteUse(
+    std::string port, LogicalValueId output,
+    LogicalAccessIntent intent = LogicalAccessIntent::automatic);
+LogicalResourceUse makeLogicalReadWriteUse(
+    std::string port, LogicalValueId input, LogicalValueId output,
+    LogicalReadFootprint footprint,
+    LogicalAccessIntent intent = LogicalAccessIntent::automatic);
 
 enum class LogicalGraphNodeKind : std::uint8_t {
     render,
@@ -118,13 +174,26 @@ struct LogicalCompileDecision {
     std::string detail;
 };
 
+struct LogicalDataEdge {
+    LogicalValueId value;
+    std::string producer_node;
+    std::string producer_port;
+    std::string consumer_node;
+    std::string consumer_port;
+
+    bool operator==(const LogicalDataEdge &) const = default;
+};
+
 struct CompiledLogicalRenderGraph {
     std::string name;
     std::vector<LogicalResourceDesc> resources;
+    std::vector<LogicalValueImport> imports;
     std::vector<LogicalGraphNode> nodes;
     std::vector<LogicalCompileDecision> decisions;
 };
 
+std::vector<LogicalDataEdge> deriveLogicalDataEdges(
+    const CompiledLogicalRenderGraph &graph);
 void validateCompiledLogicalRenderGraph(
     const LogicalTypeRegistry &types,
     const CompiledLogicalRenderGraph &graph);

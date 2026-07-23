@@ -264,6 +264,23 @@ std::string conversionPathName(const std::vector<std::string> &path) {
     return stream.str();
 }
 
+void requireVersionedIdString(std::string_view value, std::string_view subject) {
+    if (value.empty()) {
+        throw std::runtime_error(std::string{subject} + " must not be empty");
+    }
+    try {
+        const auto parsed = parseSemanticTypeId(value);
+        if (semanticTypeIdName(parsed) != value) {
+            throw std::runtime_error(std::string{subject} + " is not canonical: " +
+                                     std::string{value});
+        }
+    } catch (const std::runtime_error &error) {
+        throw std::runtime_error(std::string{subject} +
+                                 " must use namespace.name@major: " +
+                                 std::string{value} + " (" + error.what() + ")");
+    }
+}
+
 bool addBinding(std::vector<TypeBinding> &bindings, const SymbolId &symbol,
                 const TypeArgumentValue &value, std::string &error) {
     const auto found = std::find_if(bindings.begin(), bindings.end(),
@@ -964,19 +981,20 @@ LogicalTypeMatchResult matchLogicalType(
 
 void LogicalTypeConversionRegistry::registerConversion(
     const LogicalTypeRegistry &types, LogicalTypeConversion conversion) {
-    if (conversion.id.empty()) {
-        throw std::runtime_error("logical type conversion id must not be empty");
-    }
-    try {
-        const auto parsed_id = parseSemanticTypeId(conversion.id);
-        if (semanticTypeIdName(parsed_id) != conversion.id) {
-            throw std::runtime_error("logical type conversion id is not canonical: " +
-                                     conversion.id);
-        }
-    } catch (const std::runtime_error &error) {
-        throw std::runtime_error("logical type conversion id must use "
-                                 "namespace.name@major: " +
-                                 conversion.id + " (" + error.what() + ")");
+    requireVersionedIdString(conversion.id, "logical type conversion id");
+    requireVersionedIdString(conversion.implementation.operation,
+                             "logical conversion operation id");
+    requireVersionedIdString(conversion.implementation.provider,
+                             "logical conversion provider id");
+    const auto has_provider_identity =
+        conversion.implementation.provider_identity != 0;
+    const auto has_provider_generation =
+        conversion.implementation.provider_generation != 0;
+    if (has_provider_identity != has_provider_generation) {
+        throw std::runtime_error(
+            "logical conversion provider identity and generation must both be zero "
+            "for static providers or both be non-zero for reloadable providers: " +
+            conversion.id);
     }
     types.requireCanonical(conversion.source);
     types.requireCanonical(conversion.destination);
@@ -998,6 +1016,20 @@ void LogicalTypeConversionRegistry::registerConversion(
     std::sort(conversions_.begin(), conversions_.end(),
               [](const LogicalTypeConversion &left,
                  const LogicalTypeConversion &right) { return left.id < right.id; });
+}
+
+const LogicalTypeConversion &LogicalTypeConversionRegistry::conversion(
+    std::string_view id) const {
+    const auto found = std::lower_bound(
+        conversions_.begin(), conversions_.end(), id,
+        [](const LogicalTypeConversion &entry, std::string_view candidate) {
+            return entry.id < candidate;
+        });
+    if (found == conversions_.end() || found->id != id) {
+        throw std::runtime_error("logical type conversion is not registered: " +
+                                 std::string{id});
+    }
+    return *found;
 }
 
 LogicalTypeMatchResult LogicalTypeConversionRegistry::match(
@@ -1106,6 +1138,37 @@ LogicalTypeMatchResult LogicalTypeConversionRegistry::match(
     result.reason_code = "conversion_selected";
     result.detail = "selected logical type conversion path: " +
                     conversionPathName(result.conversion_path);
+    return result;
+}
+
+LogicalTypeConversionRegistry makeBuiltinLogicalTypeConversionRegistry(
+    const LogicalTypeRegistry &types) {
+    const LogicalConversionImplementation depth_implementation{
+        "pelican.render.depth_linearize@1",
+        "pelican.render.builtin_conversion_provider@1", 0, 0};
+    const LogicalConversionImplementation tone_implementation{
+        "pelican.render.tone_map@1",
+        "pelican.render.builtin_conversion_provider@1", 0, 0};
+    const LogicalConversionImplementation encode_implementation{
+        "pelican.render.display_encode@1",
+        "pelican.render.builtin_conversion_provider@1", 0, 0};
+
+    LogicalTypeConversionRegistry result;
+    result.registerConversion(
+        types,
+        {"pelican.render.depth_linearize@1", deviceDepthV1(types),
+         linearViewDepthV1(types), LogicalConversionMode::automatic_safe, 1,
+         depth_implementation});
+    result.registerConversion(
+        types,
+        {"pelican.render.tone_map@1", sceneLinearHdrV1(types),
+         displayLinearV1(types), LogicalConversionMode::explicit_only, 1,
+         tone_implementation});
+    result.registerConversion(
+        types,
+        {"pelican.render.display_encode@1", displayLinearV1(types),
+         displayEncodedV1(types), LogicalConversionMode::explicit_only, 1,
+         encode_implementation});
     return result;
 }
 

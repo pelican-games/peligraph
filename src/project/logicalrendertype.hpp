@@ -247,12 +247,22 @@ enum class LogicalConversionMode : std::uint8_t {
     explicit_only,
 };
 
+struct LogicalConversionImplementation {
+    std::string operation;
+    std::string provider;
+    std::uint64_t provider_identity = 0;
+    std::uint32_t provider_generation = 0;
+
+    bool operator==(const LogicalConversionImplementation &) const = default;
+};
+
 struct LogicalTypeConversion {
     std::string id;
     LogicalType source;
     LogicalType destination;
     LogicalConversionMode mode = LogicalConversionMode::automatic_safe;
     std::uint32_t cost = 1;
+    LogicalConversionImplementation implementation;
 };
 
 class LogicalTypeConversionRegistry {
@@ -261,10 +271,17 @@ class LogicalTypeConversionRegistry {
   public:
     void registerConversion(const LogicalTypeRegistry &types,
                             LogicalTypeConversion conversion);
+    const LogicalTypeConversion &conversion(std::string_view id) const;
     LogicalTypeMatchResult match(
         const LogicalTypeRegistry &types, const LogicalType &actual,
         const LogicalTypePattern &pattern,
         bool allow_explicit_conversions = false) const;
 };
+
+// Static engine conversions used by the first typed hybrid vertical slice.
+// Tone mapping and terminal encoding are explicit-only so a generic matcher
+// can never silently move or duplicate display conversion.
+LogicalTypeConversionRegistry makeBuiltinLogicalTypeConversionRegistry(
+    const LogicalTypeRegistry &types);
 
 } // namespace Pelican

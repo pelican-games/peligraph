@@ -5,6 +5,7 @@
 #include <numeric>
 #include <set>
 #include <stdexcept>
+#include <tuple>
 
 namespace Pelican {
 
@@ -48,6 +49,26 @@ nlohmann::ordered_json rationalToJson(const Rational &value) {
                                   {"denominator", value.denominator}};
 }
 
+nlohmann::ordered_json logicalValueIdToJson(const LogicalValueId &value) {
+    return nlohmann::ordered_json{{"resource", value.resource},
+                                  {"version", value.version}};
+}
+
+bool accessIntentAccepts(LogicalAccessIntent intent, LogicalAccessMode access) {
+    switch (intent) {
+    case LogicalAccessIntent::automatic:
+    case LogicalAccessIntent::attachment:
+    case LogicalAccessIntent::storage:
+    case LogicalAccessIntent::host:
+        return true;
+    case LogicalAccessIntent::sampled:
+        return access == LogicalAccessMode::read;
+    case LogicalAccessIntent::transfer:
+        return access != LogicalAccessMode::read_write;
+    }
+    return false;
+}
+
 } // namespace
 
 std::string_view logicalPortDirectionName(LogicalPortDirection direction) {
@@ -81,6 +102,20 @@ std::string_view logicalMaterializationRequirementName(
     throw std::runtime_error("unknown logical materialization requirement");
 }
 
+std::string logicalValueIdName(const LogicalValueId &value) {
+    return value.resource + "#" + std::to_string(value.version);
+}
+
+std::string_view logicalValueImportKindName(LogicalValueImportKind kind) {
+    switch (kind) {
+    case LogicalValueImportKind::graph_input: return "graph_input";
+    case LogicalValueImportKind::previous_epoch: return "previous_epoch";
+    case LogicalValueImportKind::external: return "external";
+    case LogicalValueImportKind::legacy_implicit: return "legacy_implicit";
+    }
+    throw std::runtime_error("unknown logical value import kind");
+}
+
 std::string_view logicalAccessModeName(LogicalAccessMode access) {
     switch (access) {
     case LogicalAccessMode::read: return "read";
@@ -88,6 +123,18 @@ std::string_view logicalAccessModeName(LogicalAccessMode access) {
     case LogicalAccessMode::read_write: return "read_write";
     }
     throw std::runtime_error("unknown logical access mode");
+}
+
+std::string_view logicalAccessIntentName(LogicalAccessIntent intent) {
+    switch (intent) {
+    case LogicalAccessIntent::automatic: return "automatic";
+    case LogicalAccessIntent::sampled: return "sampled";
+    case LogicalAccessIntent::attachment: return "attachment";
+    case LogicalAccessIntent::storage: return "storage";
+    case LogicalAccessIntent::transfer: return "transfer";
+    case LogicalAccessIntent::host: return "host";
+    }
+    throw std::runtime_error("unknown logical access intent");
 }
 
 std::string_view logicalReadFootprintKindName(LogicalReadFootprintKind kind) {
@@ -101,6 +148,41 @@ std::string_view logicalReadFootprintKindName(LogicalReadFootprintKind kind) {
     throw std::runtime_error("unknown logical read footprint kind");
 }
 
+LogicalResourceUse makeLogicalReadUse(std::string port, LogicalValueId input,
+                                      LogicalReadFootprint footprint,
+                                      LogicalAccessIntent intent) {
+    LogicalResourceUse result;
+    result.port = std::move(port);
+    result.access = LogicalAccessMode::read;
+    result.footprint = footprint;
+    result.intent = intent;
+    result.input_value = std::move(input);
+    return result;
+}
+
+LogicalResourceUse makeLogicalWriteUse(std::string port, LogicalValueId output,
+                                       LogicalAccessIntent intent) {
+    LogicalResourceUse result;
+    result.port = std::move(port);
+    result.access = LogicalAccessMode::write;
+    result.intent = intent;
+    result.output_value = std::move(output);
+    return result;
+}
+
+LogicalResourceUse makeLogicalReadWriteUse(
+    std::string port, LogicalValueId input, LogicalValueId output,
+    LogicalReadFootprint footprint, LogicalAccessIntent intent) {
+    LogicalResourceUse result;
+    result.port = std::move(port);
+    result.access = LogicalAccessMode::read_write;
+    result.footprint = footprint;
+    result.intent = intent;
+    result.input_value = std::move(input);
+    result.output_value = std::move(output);
+    return result;
+}
+
 std::string_view logicalGraphNodeKindName(LogicalGraphNodeKind kind) {
     switch (kind) {
     case LogicalGraphNodeKind::render: return "render";
@@ -110,6 +192,82 @@ std::string_view logicalGraphNodeKindName(LogicalGraphNodeKind kind) {
     case LogicalGraphNodeKind::output_transform: return "output_transform";
     }
     throw std::runtime_error("unknown logical graph node kind");
+}
+
+std::vector<LogicalDataEdge> deriveLogicalDataEdges(
+    const CompiledLogicalRenderGraph &graph) {
+    using Producer = std::pair<std::string, std::string>;
+    std::map<LogicalValueId, Producer> producers;
+    std::set<LogicalValueId> imports;
+
+    for (const auto &imported : graph.imports) {
+        requireName(imported.value.resource, "logical imported value resource");
+        if (imported.value.version != 0) {
+            throw std::runtime_error("logical imported value must use version zero: " +
+                                     logicalValueIdName(imported.value));
+        }
+        if (!imports.insert(imported.value).second) {
+            throw std::runtime_error("duplicate logical value import: " +
+                                     logicalValueIdName(imported.value));
+        }
+    }
+
+    for (const auto &node : graph.nodes) {
+        for (const auto &use : node.uses) {
+            if (!use.output_value) continue;
+            requireName(use.output_value->resource, "logical output value resource");
+            if (use.output_value->version == 0) {
+                throw std::runtime_error("logical node output must not produce version zero: " +
+                                         logicalValueIdName(*use.output_value));
+            }
+            const auto [found, inserted] = producers.emplace(
+                *use.output_value, Producer{node.name, use.port});
+            if (!inserted) {
+                throw std::runtime_error(
+                    "logical value has multiple producers: " +
+                    logicalValueIdName(*use.output_value) + " ('" +
+                    found->second.first + "." + found->second.second + "' and '" +
+                    node.name + "." + use.port + "')");
+            }
+        }
+    }
+    for (const auto &imported : imports) {
+        if (producers.contains(imported)) {
+            throw std::runtime_error("logical value is both imported and produced: " +
+                                     logicalValueIdName(imported));
+        }
+    }
+
+    std::vector<LogicalDataEdge> result;
+    for (const auto &node : graph.nodes) {
+        for (const auto &use : node.uses) {
+            if (!use.input_value) continue;
+            requireName(use.input_value->resource, "logical input value resource");
+            if (const auto producer = producers.find(*use.input_value);
+                producer != producers.end()) {
+                if (producer->second.first == node.name) {
+                    throw std::runtime_error(
+                        "logical node consumes its own output value: " +
+                        logicalValueIdName(*use.input_value));
+                }
+                result.push_back(LogicalDataEdge{
+                    *use.input_value, producer->second.first,
+                    producer->second.second, node.name, use.port});
+            } else if (!imports.contains(*use.input_value)) {
+                throw std::runtime_error("logical input value has no producer or import: " +
+                                         logicalValueIdName(*use.input_value) +
+                                         " consumed by '" + node.name + "." +
+                                         use.port + "'");
+            }
+        }
+    }
+    std::sort(result.begin(), result.end(), [](const auto &left, const auto &right) {
+        return std::tie(left.value, left.producer_node, left.producer_port,
+                        left.consumer_node, left.consumer_port) <
+               std::tie(right.value, right.producer_node, right.producer_port,
+                        right.consumer_node, right.consumer_port);
+    });
+    return result;
 }
 
 void validateCompiledLogicalRenderGraph(
@@ -122,6 +280,12 @@ void validateCompiledLogicalRenderGraph(
         types.requireCanonical(resource.type);
         if (!resources.emplace(resource.name, &resource).second) {
             throw std::runtime_error("duplicate logical resource: " + resource.name);
+        }
+    }
+    for (const auto &imported : graph.imports) {
+        if (!resources.contains(imported.value.resource)) {
+            throw std::runtime_error("logical value import references unknown resource: " +
+                                     logicalValueIdName(imported.value));
         }
     }
 
@@ -162,6 +326,11 @@ void validateCompiledLogicalRenderGraph(
         std::map<std::string, const LogicalPortContract *, std::less<>> ports;
         for (const auto &port : node.ports) {
             requireName(port.name, "logical port name");
+            if (!port.accepted_type.semantic) {
+                throw std::runtime_error("logical graph node '" + node.name +
+                                         "' port '" + port.name +
+                                         "' requires a nominal semantic type");
+            }
             if (!ports.emplace(port.name, &port).second) {
                 throw std::runtime_error("logical graph node '" + node.name +
                                          "' has duplicate port '" + port.name + "'");
@@ -174,18 +343,37 @@ void validateCompiledLogicalRenderGraph(
                 throw std::runtime_error("logical graph node '" + node.name +
                                          "' uses port more than once: " + use.port);
             }
-            const auto resource = resources.find(use.resource);
+            const auto has_input = use.input_value.has_value();
+            const auto has_output = use.output_value.has_value();
+            const auto value_shape_matches =
+                (use.access == LogicalAccessMode::read && has_input && !has_output) ||
+                (use.access == LogicalAccessMode::write && !has_input && has_output) ||
+                (use.access == LogicalAccessMode::read_write && has_input && has_output);
+            if (!value_shape_matches) {
+                throw std::runtime_error("logical graph node '" + node.name +
+                                         "' port '" + use.port +
+                                         "' has invalid value bindings for access " +
+                                         std::string{logicalAccessModeName(use.access)});
+            }
+            if (has_input && has_output &&
+                use.input_value->resource != use.output_value->resource) {
+                throw std::runtime_error("logical graph node '" + node.name +
+                                         "' read-write port '" + use.port +
+                                         "' must keep one resource family");
+            }
+            const auto &value = has_input ? *use.input_value : *use.output_value;
+            const auto resource = resources.find(value.resource);
             if (resource == resources.end()) {
                 throw std::runtime_error("logical graph node '" + node.name +
                                          "' references unknown resource '" +
-                                         use.resource + "'");
+                                         value.resource + "'");
             }
             const auto type_match =
                 matchLogicalType(types, resource->second->type, port.accepted_type);
             if (type_match.status == LogicalTypeMatchStatus::rejected) {
                 throw std::runtime_error("logical graph node '" + node.name +
                                          "' port '" + port.name +
-                                         "' rejects resource '" + use.resource +
+                                         "' rejects resource '" + value.resource +
                                          "': " + type_match.reason_code + " (" +
                                          type_match.detail + ")");
             }
@@ -200,6 +388,13 @@ void validateCompiledLogicalRenderGraph(
                 throw std::runtime_error("logical graph node '" + node.name +
                                          "' port '" + port.name +
                                          "' direction/access mismatch");
+            }
+            if (!accessIntentAccepts(use.intent, use.access)) {
+                throw std::runtime_error("logical graph node '" + node.name +
+                                         "' port '" + port.name + "' intent " +
+                                         std::string{logicalAccessIntentName(use.intent)} +
+                                         " rejects access " +
+                                         std::string{logicalAccessModeName(use.access)});
             }
             const auto reads = use.access == LogicalAccessMode::read ||
                                use.access == LogicalAccessMode::read_write;
@@ -276,6 +471,10 @@ void validateCompiledLogicalRenderGraph(
         for (const auto &dependent : node.before) add_edge(node.name, dependent);
     }
 
+    for (const auto &edge : deriveLogicalDataEdges(graph)) {
+        add_edge(edge.producer_node, edge.consumer_node);
+    }
+
     std::set<std::string, std::less<>> ready;
     for (const auto &[name, degree] : indegree) {
         if (degree == 0) ready.insert(name);
@@ -305,7 +504,7 @@ nlohmann::ordered_json compiledLogicalRenderGraphToJson(
     const CompiledLogicalRenderGraph &graph) {
     nlohmann::ordered_json result;
     result["schema"] = "pelican.logical_render_graph";
-    result["version"] = 1;
+    result["version"] = 2;
     result["graph"] = graph.name;
     result["resources"] = nlohmann::ordered_json::array();
     for (const auto &resource : graph.resources) {
@@ -314,6 +513,18 @@ nlohmann::ordered_json compiledLogicalRenderGraphToJson(
             {"type", logicalTypeToJson(resource.type)},
             {"materialization",
              logicalMaterializationRequirementName(resource.materialization)}});
+    }
+    result["imports"] = nlohmann::ordered_json::array();
+    auto imports = graph.imports;
+    std::sort(imports.begin(), imports.end(), [](const auto &left, const auto &right) {
+        if (left.value != right.value) return left.value < right.value;
+        return logicalValueImportKindName(left.kind) <
+               logicalValueImportKindName(right.kind);
+    });
+    for (const auto &imported : imports) {
+        result["imports"].push_back(nlohmann::ordered_json{
+            {"value", logicalValueIdToJson(imported.value)},
+            {"kind", logicalValueImportKindName(imported.kind)}});
     }
     result["nodes"] = nlohmann::ordered_json::array();
     for (const auto &node : graph.nodes) {
@@ -348,14 +559,33 @@ nlohmann::ordered_json compiledLogicalRenderGraphToJson(
             nlohmann::ordered_json footprint{
                 {"kind", logicalReadFootprintKindName(use.footprint.kind)}};
             if (use.footprint.radius) footprint["radius"] = *use.footprint.radius;
-            encoded["uses"].push_back(nlohmann::ordered_json{
+            nlohmann::ordered_json encoded_use{
                 {"port", use.port},
-                {"resource", use.resource},
                 {"access", logicalAccessModeName(use.access)},
+                {"intent", logicalAccessIntentName(use.intent)},
                 {"footprint", std::move(footprint)},
-            });
+            };
+            if (use.input_value) {
+                encoded_use["input_value"] =
+                    logicalValueIdToJson(*use.input_value);
+            }
+            if (use.output_value) {
+                encoded_use["output_value"] =
+                    logicalValueIdToJson(*use.output_value);
+            }
+            encoded["uses"].push_back(std::move(encoded_use));
         }
         result["nodes"].push_back(std::move(encoded));
+    }
+    result["data_edges"] = nlohmann::ordered_json::array();
+    for (const auto &edge : deriveLogicalDataEdges(graph)) {
+        result["data_edges"].push_back(nlohmann::ordered_json{
+            {"value", logicalValueIdToJson(edge.value)},
+            {"producer", nlohmann::ordered_json{{"node", edge.producer_node},
+                                                 {"port", edge.producer_port}}},
+            {"consumer", nlohmann::ordered_json{{"node", edge.consumer_node},
+                                                 {"port", edge.consumer_port}}},
+        });
     }
     result["decisions"] = nlohmann::ordered_json::array();
     for (const auto &decision : graph.decisions) {
