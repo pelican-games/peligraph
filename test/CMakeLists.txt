@@ -1136,6 +1136,7 @@ target_compile_definitions(pelican_test_frameplanner_test PRIVATE
 pelican_define_test(logicalrendergraph_test pelican_core)
 pelican_define_test(targetplanning_test pelican_project)
 pelican_define_test(targetrenderplanning_test pelican_project)
+pelican_define_test(samplecountplanning_test pelican_project)
 
 pelican_define_test(featurecompose_test pelican_core)
 target_compile_definitions(pelican_test_featurecompose_test PRIVATE
@@ -1143,6 +1144,7 @@ target_compile_definitions(pelican_test_featurecompose_test PRIVATE
 )
 
 pelican_define_test(renderpipeline_resolve_test pelican_core)
+pelican_define_test(renderingsamplecount_test pelican_core)
 
 pelican_define_test(shader_defines_test pelican_core)
 target_compile_definitions(pelican_test_shader_defines_test PRIVATE

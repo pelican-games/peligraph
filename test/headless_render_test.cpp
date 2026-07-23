@@ -12,6 +12,7 @@
 #include "../src/core/renderer/camera.hpp"
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
 #include "../src/core/renderingpass/renderingpasscontainer.hpp"
+#include "../src/core/renderingpass/framegraphruntime.hpp"
 #include "../src/core/renderingpass/rendertargetcontainer.hpp"
 #include "../src/core/shader/shaderlibrary.hpp"
 #include "../src/core/vkcore/core.hpp"
@@ -197,9 +198,19 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
             scene_path,
             R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(asset_path, R"json({"models":[]})json");
-        writeTextFile(temp_dir / "hybrid.json",
-                      nlohmann::json{{"pipeline", {{"preset",
-                          "engine://render_pipelines/hybrid_v1.json"}}}}.dump(2));
+        writeTextFile(
+            temp_dir / "hybrid.json",
+            nlohmann::json{
+                {"pipeline",
+                 {{"preset",
+                   "engine://render_pipelines/hybrid_v1.json"},
+                  {"settings",
+                   {{"msaa",
+                     {{"samples", 4},
+                      {"fallback", "lower_supported"},
+                      {"scope", "geometry"}}}}}}},
+            }
+                .dump(2));
 
         auto project = makeProjectConfig("scene.json", "assets.json");
         project["basic_config"]["default_scene_id"] = "default_scene";
@@ -215,6 +226,42 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
         GET_MODULE(EngineTime).setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
 
         auto &renderer = GET_MODULE(Renderer);
+        const auto lit_color =
+            GET_MODULE(RenderTargetContainer)
+                .getRenderTargetIdByName("lit_color");
+        const auto scene_depth =
+            GET_MODULE(RenderTargetContainer)
+                .getRenderTargetIdByName("scene_depth");
+        const auto lit_metadata =
+            GET_MODULE(RenderTargetContainer).getMetadata(lit_color);
+        const auto depth_metadata =
+            GET_MODULE(RenderTargetContainer).getMetadata(scene_depth);
+        REQUIRE(lit_metadata.samples == depth_metadata.samples);
+        if (lit_metadata.samples == 1) {
+            SKIP("device exposes no multisampled common hybrid attachment count");
+        }
+        REQUIRE(GET_MODULE(RenderTargetContainer)
+                    .hasSeparateAttachment(lit_color));
+        REQUIRE(GET_MODULE(RenderTargetContainer)
+                    .hasSeparateAttachment(scene_depth));
+        const auto main_render_id =
+            GET_MODULE(RenderingPassContainer)
+                .getRenderingPassIdByName("main_render");
+        const auto *execution =
+            GET_MODULE(FrameGraphRuntimeContainer).find(main_render_id);
+        REQUIRE(execution != nullptr);
+        REQUIRE(execution->sample_count_plan != nullptr);
+        REQUIRE(renderer.currentFramePlanJson()
+                    .at("sample_count_plan")
+                    .at("request")
+                    .at("samples") == 4);
+        REQUIRE(std::any_of(
+            execution->sample_count_plan->groups.begin(),
+            execution->sample_count_plan->groups.end(),
+            [&](const auto &group) {
+                return group.selected_samples == lit_metadata.samples &&
+                       group.selected_samples > 1;
+            }));
         auto &standard = GET_MODULE(StandardMaterialResource);
         const auto surface_reference =
             std::string{"engine://surfaces/openpbr/opaque_single.surface"};

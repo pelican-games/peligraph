@@ -184,6 +184,8 @@ CompiledRenderPipeline compileComposition(
     resolved.feature_instances = composition.feature_instances;
     resolved.material_routing = composition.material_routing;
     resolved.draw_sort = composition.draw_sort;
+    resolved.sample_count_policy =
+        compileSampleCountPolicy(composition.config);
     resolved.pipeline_preset = composition.pipeline_preset;
     resolved.used_features = composition.used_features;
     return compileRenderPipeline(resolved);
@@ -285,6 +287,36 @@ TEST_CASE("pipeline preset accepts an explicit typed draw-sort override",
             "fixture.transparent");
     REQUIRE(compiled.draw_sorting.xr_view_policy ==
             DrawSortXrViewPolicy::per_view);
+}
+
+TEST_CASE("pipeline preset compiles MSAA settings to a typed policy",
+          "[render-feature][pipeline-preset][sample-count]") {
+    const auto authored = nlohmann::json{
+        {"pipeline",
+         {
+             {"preset", "engine://render_pipelines/hybrid_v1.json"},
+             {"settings",
+              {{"msaa",
+                {{"samples", 4},
+                 {"fallback", "lower_supported"},
+                 {"scope", "geometry"}}}}},
+         }},
+    };
+    const auto composition = composeRenderFeatureConfig(
+        authored,
+        RenderFeatureComposeDependencies{loadEngineFeature, true});
+    const auto compiled = compileComposition(composition);
+
+    REQUIRE(composition.config.at("multisampling") ==
+            authored.at("pipeline").at("settings").at("msaa"));
+    REQUIRE(compiled.sample_count_policy.authored);
+    REQUIRE(compiled.sample_count_policy.request ==
+            (SampleCountRequest{SampleCountRequestMode::prefer, 4}));
+    REQUIRE(compiled.sample_count_policy.scope ==
+            SampleCountScope::geometry);
+    REQUIRE(serializeCompiledRenderPipelineMetadata(compiled)
+                .at("sample_count")
+                .at("samples") == 4);
 }
 
 TEST_CASE("pipeline preset refuses structural deep merge and invalid route contracts",

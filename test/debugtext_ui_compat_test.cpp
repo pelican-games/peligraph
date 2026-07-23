@@ -158,10 +158,17 @@ std::vector<std::uint8_t> renderUi(RenderTarget &target, UiRenderer &renderer,
     selectFrameResources(frame, frame_resources);
     renderer.render(
         frame.cmd_buf,
-        UiDrawRequest{frame.color_attachment, frame.extent, target.getSwapchainFormat(),
-                      vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore,
-                      vk::ClearColorValue{std::array{0.0f, 0.0f, 0.0f, 0.0f}},
-                      fixture_scale},
+        UiDrawRequest{
+            .target_view = frame.color_attachment,
+            .target_extent = frame.extent,
+            .target_format = target.getSwapchainFormat(),
+            .load_op = vk::AttachmentLoadOp::eClear,
+            .store_op = vk::AttachmentStoreOp::eStore,
+            .clear_color =
+                vk::ClearColorValue{
+                    std::array{0.0f, 0.0f, 0.0f, 0.0f}},
+            .ui_scale = fixture_scale,
+        },
         dependencies);
     target.render_end();
     return target.readbackLastFrameRGBA8();
