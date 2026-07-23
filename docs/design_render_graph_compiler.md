@@ -992,17 +992,25 @@ RPE9 / WP192 では XR / preview の ad-hoc callback を typed
 RPE10a / WP193 では compiled pass、frame graph、logical/physical plan、route、
 sample-count、variant policy、draw-sort provider選択を一つの immutable runtime generationへ束ね、
 base-generation CASでpublishする境界を実装した。frameは同じgeneration leaseを全viewで
-保持する。現時点ではGPU registry/Vulkan objectはgeneration所有ではなく、pipeline
-FileWatcherも未接続である。実際のdraw-sort provider generationは別registryのqueue構築時
-leaseであり、このrootが所有するのはcompiled policy内のprovider名までである。
+保持する。
 
-1. RPE10b で GPU registry candidate、scope-aware replacement、fence retire、
-   pipeline watcherを同じ transactionへ接続
-2. XR2b で multiview / array-layer / depth-submit lowering
-3. pass / region / global transform / strategy provider fixture
-4. physical plan eject / direct authoring fixture
-5. `NativeScope` は具体的な Vulkan-only 使用例が得られてから ABI 設計
-6. CPU / external domain は計測と具体的な二候補 task が得られてから
+RPE10b1 / WP194 では render-config compilation が追加する render target、buffer、
+compute task、shader、pipeline、fullscreen/debug/shadow/velocity pass を一つの
+append-only registration arena で checkpoint した。prepare failure は全 registry の
+新規 membership を逆依存順に取り消し、成功時は owner scope 付き immutable manifest を
+runtime root と同じ CAS で公開する。manifest は将来の type-erased resource lease を
+保持できるが、現時点の legacy Vulkan object 自体は registry 所有のままである。
+同じ scope の replacement、fence retire、pipeline FileWatcher は未接続である。
+実際のdraw-sort provider generationも別registryのqueue構築時leaseであり、このrootが
+所有するのはcompiled policy内のprovider名までである。
+
+1. RPE10b2 で owner scope replacement と generation-owned Vulkan resource lease を実装
+2. RPE10b3 で submission fence retire と pipeline watcher を同じ transactionへ接続
+3. XR2b で multiview / array-layer / depth-submit lowering
+4. pass / region / global transform / strategy provider fixture
+5. physical plan eject / direct authoring fixture
+6. `NativeScope` は具体的な Vulkan-only 使用例が得られてから ABI 設計
+7. CPU / external domain は計測と具体的な二候補 task が得られてから
    `design_heterogeneous_execution_graph.md` の HEG3 / HEG4 として実装
 
 ## 13. north-star acceptance scenarios

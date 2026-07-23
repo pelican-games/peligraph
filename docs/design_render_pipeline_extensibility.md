@@ -30,7 +30,9 @@ physical format / representation / sample-count contract を実行時にも同�
 結果から消費する。RPE9 / WP192 は graph variant policy を同じ compiled plan へ統合した。
 RPE10a / WP193 は pass、frame graph、logical/physical plan、route、sample、variant policy と
 draw-sort provider 選択を一つの immutable runtime generation として原子的に公開する root を追加した。
-GPU object staging と watcher 接続は RPE10b に残る。
+RPE10b1 / WP194 は render-config が触る GPU registry 群に共通 checkpoint / rollback を追加し、
+owner scope 付き immutable GPU arena manifest を同じ root へ原子的に公開する。
+scope replacement、Vulkan object の世代所有・fence retire、watcher 接続は RPE10b2 以降に残る。
 
 関連文書:
 
@@ -619,13 +621,28 @@ base generation が一致する CAS 一回で active root を差し替える。r
 sample/target plan、draw-sort provider 選択・variant・jitter policy をその snapshot から読む。旧 root は
 最後の frame lease が消えるまで生存する。
 
-ただしこれは GPU transaction の完成ではない。現在の render target / buffer /
-compute-task / fullscreen/material pipeline registry は candidate root の外にあり、
-registration 中に先行更新される。消えた graph program の scope-aware removal、
-Vulkan object の fence 後 retire、FileWatcher からの pipeline reload publication も未接続で
-ある。`RenderPolicyRegistry` の実 provider generation も root の所有物ではなく、
-queue 構築時の個別 lease で保護される。RPE10a が原子的にするのは provider 名を含む
-compiled policy 選択までである。このため RPE10a を「pipeline hot reload 完了」とは扱わない。
+RPE10b1 / WP194 では、この root に `RenderPipelineGpuArena` を追加した。
+render target、frame-graph buffer、compute task、shader bundle、graphics/compute pipeline、
+fullscreen/debug/shadow/velocity pass の各 registry は registration checkpoint を公開し、
+`RenderPipelineGpuRegistrationArena` が一つの prepare 区間として束ねる。途中の例外、
+明示 fault、runtime candidate 構築失敗、stale publication では arena の destructor が
+逆依存順に新規登録だけを取り消す。publish 成功後だけ rollback を解除する。
+legacy registry の checkpoint-to-publication 区間は直列化し、stale transaction が別
+transaction の登録を巻き戻す競合を防ぐ。XR mirror intermediate の登録も同じ prepare
+callback 内へ移した。
+
+同時に `render_pipeline/flat`、`render_pipeline/xr` の owner scope と、その区間で増えた
+resource kind / handle / name / declared bytes を immutable manifest にして
+`RenderPipelineRuntimeGeneration` と同じ CAS で公開する。prepare 中の manifest は observer
+から不可視であり、`currentFramePlanJson()` で runtime generation と対応付けて診断できる。
+将来 registry が所有権を移せる場合に備え、scope は type-erased resource lease も保持できる。
+
+ただし RPE10b1 は append-only compatibility slice であり、既存 Vulkan registry の実体は
+まだ engine-owned である。同じ owner scope の再登録は拒否し、古い scope の差し替え・削除、
+Vulkan object の generation lease への移管、submission fence 後 retire、
+FileWatcher からの pipeline reload publication は未接続である。
+`RenderPolicyRegistry` の実 provider generation も root の所有物ではなく、queue 構築時の
+個別 lease で保護される。このため WP194 を「pipeline hot reload 完了」とは扱わない。
 
 ## 10. `GET_MODULE` の位置
 
@@ -681,7 +698,9 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 | RPE8b / WP191（済 2026-07-23） | WP189 physical target planner と WP190 runtime bridge の single lowering path | JSON/DSU重複削除、physical resource/scope sample contract、materialized runtime consume、追加G-buffer、desktop/tile/headless |
 | RPE9 / WP192（済 2026-07-23） | XR / preview callback を builtin `GraphVariantPolicy` へ移行 | sequential XR/preview plan 不変、OpenXR lifecycle 非依存 test |
 | RPE10a / WP193（済 2026-07-24） | immutable runtime generation、prepare/rollback、base-generation CAS publish、frame lease | route/sample/draw-sort provider 選択/pass/plan 同時変更の atomic fixture、stale candidate reject、CPU-side retire |
-| RPE10b | GPU registry candidate、scope-aware replacement、fence retire、watcher 接続 | fault injectionでlive GPU state不変、pass削除、in-flight Vulkan resource retire、実reload |
+| RPE10b1 / WP194（済 2026-07-24） | append-only GPU registration arena、cross-registry rollback、owner-scope manifest の root 同時公開 | 5段 fault injectionで全registry membership復元、candidate不可視、lease rollback、hybrid診断 |
+| RPE10b2 | scope-aware replacement、generation-owned Vulkan resource lease | same-name reload、pass/target削除、旧世代frameから旧resource参照 |
+| RPE10b3 | submission fence retire、watcher 接続 | in-flight完了前の破棄なし、連続保存coalesce、失敗時active世代不変、実reload |
 
 ### 12.1 いま着手する範囲
 
@@ -712,8 +731,10 @@ registrationとrendererはこのcompiled policyを読み、OpenXR session state�
 持ち込まない。WP193では`CompiledRenderingPass`、`CompiledFrameGraphExecution`、
 `CompiledRenderPipeline`、`VulkanTargetPlan`、material route binding、enabled featureを
 `RenderPipelineRuntimeGeneration`へ束ねた。prepare中のcandidateはobserverから不可視で、
-publishはbase generation付きCAS一回、frameは同じrootを全viewで保持する。GPU registryの
-世代所有と実reloadはRPE10bで行う。各段階の詳細gateは
+publishはbase generation付きCAS一回、frameは同じrootを全viewで保持する。WP194では
+GPU registrationのappend-only checkpoint/rollbackとowner-scope manifestを同じrootへ接続した。
+scope replacement、Vulkan resourceの世代所有・fence retire、実reloadはRPE10b2以降で行う。
+各段階の詳細gateは
 `design_render_graph_compiler.md` §12 を正とする。
 
 ### 12.2 後回しにするもの

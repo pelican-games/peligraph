@@ -73,15 +73,16 @@ ctest --test-dir ./build -C Debug --output-on-failure
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
-(最新完了: WP193、2026-07-24。本文と完了レポートは archive 参照。)
+(最新完了: WP194、2026-07-24。本文と完了レポートは archive 参照。)
 
 ## 2. WP 詳細
 
-現在アクティブな WP はない。WP193 で pass / frame graph / logical・physical plan /
-route / sample / variant policy・draw-sort provider 選択の immutable runtime generation、
-prepare/rollback、base-generation CAS publish、frame lease を実装済みである。
-renderer の次候補は RPE10b の GPU registry candidate / fence retire / watcher 接続、
-または material fragment-output schema / tile-native rendering scope の独立縦切りである。
+現在アクティブな WP はない。WP194 で render-config compilation が触る GPU registry 群を
+append-only registration arena へ束ね、prepare failure 時の cross-registry rollback と
+owner-scope manifest の runtime root 同時公開を実装済みである。
+renderer の次候補は RPE10b2 / WP195 の scope-aware replacement と
+generation-owned Vulkan resource lease である。その後に submission fence retire と
+pipeline watcher publication を接続する。
 
 ## 3. トラック現況(WP 化待ちを含む)
 
@@ -119,8 +120,10 @@ renderer の次候補は RPE10b の GPU registry candidate / fence retire / watc
   RPE6c0 topology / backend probe / optimize-by-default / advisory diagnostics(WP188) →
   RPE6c1 desktop/tile target plan(WP189) → typed sample-count resolve + 実 MSAA
   runtime vertical slice(WP190) → physical target planner runtime統合(WP191) →
-  builtin graph variant policy(WP192)と runtime publication root(WP193)まで完了。
-  次は pipeline transaction のGPU resource側(RPE10b)を独立WPとして進める。
+  builtin graph variant policy(WP192)、runtime publication root(WP193)、
+  append-only GPU registration transaction(WP194)まで完了。
+  次は scope-aware replacement と generation-owned Vulkan resource lease
+  (RPE10b2 / WP195)を独立WPとして進める。
   RPE6c0/1 では [HEG] の immutable canonical / disposable lowering seam、
   dialect legality、pairwise endpoint relationを置くが、汎用 CPU scheduler、execution linker、
   動画 backend は計測・具体需要まで実装しない。logical effectは作者を信頼する任意宣言、

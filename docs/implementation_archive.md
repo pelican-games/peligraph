@@ -5661,4 +5661,56 @@ WP193のretire保証はCPU-side generation/reader lifetimeであり、GPU object
 
 ---
 
+### WP194(済 2026-07-24): RPE10b1 — append-only GPU registration transaction
+
+参照: [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md) §9、§12、
+[`design_render_graph_compiler.md`](design_render_graph_compiler.md) §12、
+[`design_reviews/2026-07-24_wp194_report.md`](design_reviews/2026-07-24_wp194_report.md)。
+
+**目的**: render-config compilation が複数の GPU registry を順に更新する途中で失敗しても
+部分登録を残さず、成功した登録集合を runtime generation と同じ publication root で
+owner scope 付きに観測できるようにする。
+
+**実装範囲**:
+
+1. `RenderPipelineGpuRegistrationArena` を追加し、render target、frame-graph buffer、
+   compute task、shader bundle、pipeline、fullscreen/debug/debug-text/shadow/velocity pass の
+   registration checkpoint を一つの RAII transaction に束ねる。
+2. 各 registry に append-only registration log、checkpoint、registrations-since、
+   rollback を追加する。登録中に後段の map/log 更新が失敗しても孤立 resource を残さない
+   insertion ordering に揃える。
+3. rollback は descriptor/pass、compute/buffer/target、pipeline/layout、shader の逆依存順で
+   新規 membership だけを破棄する。checkpoint-to-publication 区間は直列化し、
+   runtime root publish 成功後だけ arena を commit する。
+4. render target、buffer、compute、rendering pass、runtime prepare 後の5段 fault pointを追加する。
+   XR mirror intermediate も flat/XR registration の transaction 内 callbackへ移す。
+5. immutable `RenderPipelineGpuArena` を `RenderPipelineRuntimeGeneration` に追加する。
+   `render_pipeline/flat` / `render_pipeline/xr` 等の owner scope と resource kind、handle、
+   name、declared bytesを runtime root と同じCASで公開する。
+6. scope は将来の generation-owned registry 向けに type-erased resource lease を保持できる。
+   `currentFramePlanJson()` は arena generation、resource count、scope manifestを出力する。
+
+**受け入れ条件**:
+
+- prepare中のGPU manifestとleaseはactive rootから不可視
+- rollbackで未公開leaseが解放され、active rootは不変
+- owner scope重複をpublish前にreject
+- Vulkan上の5段fault injection後に全対象registryのmembership countが基準値へ戻る
+- fault retry後にtarget/buffer/compute/fullscreen/debug/shadow/velocity/shader/pipelineを
+  含むscopeを公開できる
+- 通常の`hybrid_v1` headless描画でruntime generationとarena generationが一致する
+- render pipeline transaction、headless hybrid、関連回帰、OpenXR OFF core/transaction build、
+  全CTest、`git diff --check`が成功
+
+**非対象 / RPE10b2以降へ残すもの**: 同一owner scopeのreplacement/removal、既存
+Vulkan registry実体のgeneration ownership、旧frameが参照するVk objectのlease、
+submission fence後の`DeletionQueue` retire、FileWatcher / `ReloadGate`からのpipeline reload。
+本WPはappend-only互換sliceであり、pipeline hot reloadの完成ではない。
+
+依存: WP193。見積: 中。
+
+完了レポート: `docs/design_reviews/2026-07-24_wp194_report.md`
+
+---
+
 未完了 WP と運用規則は [active ledger](implementation_plan.md) を参照。
