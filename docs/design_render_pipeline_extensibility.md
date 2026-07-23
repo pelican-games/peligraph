@@ -1,23 +1,33 @@
-# レンダーパイプライン拡張境界とポリシー統合(v2)
+# レンダーパイプライン拡張境界とポリシー統合(v2.1)
 
 対象読者: レンダラ実装者、独自描画方式を組み込むゲーム実装者。
 
-ステータス: v2 実装方針(2026-07-23。v1: 2026-07-21)。`hybrid_v1` の
+ステータス: v2.1 実装方針(2026-07-23。v1: 2026-07-21)。`hybrid_v1` の
 deferred/forward 基盤を出発点とする。v2 では renderer 構築を論理／ターゲットの
 二段階コンパイラとして定義し、論理型、Vulkan 物理計画、物理グラフ直書き、
 `NativeScope` の境界を追加した。詳細は
 [`design_render_graph_compiler.md`](design_render_graph_compiler.md) を正とする。
+v2.1 はこの renderer 二段階経路を互換 facade として維持しつつ、CPU / GPU compute /
+external backend を縦層でなく横 domain として追加する境界へ接続した。異種 execution の
+共通規則は
+[`design_heterogeneous_execution_graph.md`](design_heterogeneous_execution_graph.md) を正とする。
 本文の層・語彙・所有規則は以後の実装判断の正とするが、
 公開 provider ABI は個別の実装 fixture が揃ったものから凍結する。
 `DrawSortProviderV1` の v1 バイナリレイアウトは WP183 の public game-DLL fixture を
 もって凍結済み(2026-07-22)である。WP184 は `DrawSortInputV1` の既存 prefix を変えず、
 `struct_size` で検出する logical-view snapshot を末尾追加した。旧 provider が読む prefix
 の byte extent は public header の static assertion で固定している。
+RPE6b0 / WP186 では logical value の版と producer edge、nominal connection、access intent、
+conversion implementation descriptor を追加した。RPE6b1 / WP187 はその型契約を
+`hybrid_v1` の opaque snapshot と material descriptor へ接続したが、汎用 logical graph の
+実行所有権は引き続き既存 `FramePlan` / Vulkan executor にある。
 
 関連文書:
 
 - [`design_render_graph_compiler.md`](design_render_graph_compiler.md) —
   二段階 compiler、論理型、target planning、物理 IR / NativeScope
+- [`design_heterogeneous_execution_graph.md`](design_heterogeneous_execution_graph.md) —
+  typed dialect、domain partition、CPU / Vulkan sibling lowering、fragment / closed forest
 - [`design_render_feature_modules.md`](design_render_feature_modules.md) —
   purgeable feature と 1 行有効化
 - [`design_material_shading.md`](design_material_shading.md) —
@@ -45,7 +55,9 @@ deferred/forward 基盤を出発点とする。v2 では renderer 構築を論�
 回答は、普通の入口を **preset** に保ったまま、必要に応じて resource pattern、pass、
 subgraph、global transform、renderer strategy、Vulkan physical plan、`NativeScope` まで
 段階的に降りられる構造である。標準経路は **logical compile → target compile** の
-二段階とし、物理層を直接所有する利用者は logical compile を迂回できる。
+renderer facade を維持し、物理層を直接所有する利用者は logical compile を迂回できる。
+内部では target compile を `TargetExecutionCompiler` と `VulkanLowerer` の data-only seam
+で分けられるようにし、CPU / external backend は sibling lowerer として追加する。
 
 本設計の非目標:
 
@@ -113,8 +125,14 @@ project JSON / preset / feature / settings
                  │ frame boundary publish
                  ▼
        RenderRuntime / VulkanBackend   Execution
-                 └── OpenXRBackend owns XR lifecycle
+                  └── OpenXRBackend owns XR lifecycle
 ```
+
+この図は CPU / external task を持たない現行 renderer の経路である。将来も通常の render
+利用者には同じ一つの compile 操作として見せる。内部では
+`CompiledLogicalGraph -> TargetExecutionCompiler -> execution.gpu -> VulkanLowerer` と分け、
+CPU を Vulkan compiler の上下へ挿入しない。graphics / GPU compute / transfer は同じ
+Vulkan physical plan で resource と synchronization を全体解決する。
 
 論理グラフは物理グラフの完全なモデルではない。一つの logical value が物理 image を
 持たない場合、複数 logical pass が一つの rendering scope へ融合される場合、または
@@ -135,7 +153,8 @@ logical graph に対応しない user-authored physical plan があってよい�
 | `...Pattern` | 物理表現の候補・既定・選好。具体 Vulkan 値を確定しない |
 | `Resolved...` | request と capabilities から選ばれた有効値。必ず選択理由を持つ |
 | `Compiled...` | typed logical value と依存へ変換済みの immutable data。JSON を要求しない |
-| `...PhysicalPlan` | GPU object 作成前の backend-specific resource / scope / synchronization plan |
+| `...ExecutionPlan` | backend plan と cross-domain bridge を閉じた immutable forest |
+| `...PhysicalPlan` | backend object 作成前の backend-specific resource / scope / synchronization plan |
 | `Prepared...` | publish 前の GPU / runtime candidate。破棄して rollback できる |
 | `...Runtime` | frame ごとに状態を進める engine 機構 |
 | `...Backend` | Vulkan / OpenXR / OS 等の外部 API lifecycle |
@@ -162,6 +181,8 @@ logical graph に対応しない user-authored physical plan があってよい�
    - target facts と user pin から候補を選び、pass の融合・分割、materialization、
      concrete format / sample、scope、load/store、queue、barrier、aliasing を決める
    - GPU handle を持たない immutable data とし、物理グラフ直書きの検証入口にも使う
+   - 最終形では前半の候補 / domain 選択を `TargetExecutionCompiler`、Vulkan 具体化を
+     `VulkanLowerer` が所有する。現行実装は互換 facade 内で一体でもよい
 5. **Runtime / Backend**
    - GPU resource、descriptor、pipeline、command、in-flight lifetime を所有
    - swapchain / present と OpenXR acquire / wait / release / submit を所有
@@ -526,9 +547,16 @@ screen snapshot は logical source、capture point、semantic type、extent rela
 materialization requirement を compiled logical plan に持ち、sample count、format、
 descriptor visibility は target compiler が physical plan へ解決する。material の
 screen input は型に加えて `same_pixel` / `neighborhood` / `arbitrary` の read footprint を
-宣言する。現状の snapshot graph 機構はあるが、
-`hybrid_v1` の material-pass descriptor binding は未接続で fail-fast する。これは
-transparent sort の次に閉じる hybrid の機能穴とする。
+宣言する。WP187 では target compiler 導入前の互換縦切りとして、`forward_opaque` 後の
+scene-linear color / device-depth snapshot を `hybrid_v1` に固定し、名前付き pass input と
+material descriptor set 1 を接続した。resize / shader reload 時は既存 target rebind 経路で
+descriptor を再生成する。
+
+標準 alias は `opaque_color`、`opaque_depth`、`scene_depth`、`linear_view_depth` である。
+前者は `neighborhood`、depth 系は `same_pixel`。`linear_view_depth` は
+`pelican.render.depth_linearize@1` を通し、投影行列の consumer inventory にも登録する。
+未知 alias、source format と型の不一致、shader reflection と宣言 binding の不一致は
+描画前に拒否する。任意 alias の registry と tile-local / materialized の選択は RPE6c で扱う。
 
 depth fade の same-pixel read は tile-local 候補、offset を伴う屈折は opaque scene
 snapshot の materialization 候補になる。この判断を「transparent pass だから」と
@@ -600,8 +628,10 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 | RPE4 / WP183（済 2026-07-22） | owner-aware `RenderPolicyRegistry` + `DrawSortProviderV1`、builtin も同じ経路へ | game DLL register/unregister/reload、stale generation reject |
 | RPE5 / WP184（済 2026-07-22） | `back_to_front_v1`、phase 別 queue、XR logical-center/per-view | 混在 scene、安定 tie-break、左右眼 fixture |
 | RPE6a / WP185（済 2026-07-23） | logical type kernel、parameter matcher、port/use contract、typed shadow graph | CPU-only exact/convertible/deferred/rejected、canonical hash、runtime 不変 |
-| RPE6b | typed color/depth domain + hybrid screen-input descriptor binding | 屈折/深度 fade golden、tone map 一回、型不一致 reject |
-| RPE6c | `ResourcePattern` / read footprint / materialization + mock desktop/tile target planner | desktop materialize、tile local-read 候補、屈折 snapshot、physical dump |
+| RPE6b0 / WP186（済 2026-07-23） | versioned logical value / producer edge、nominal connection、access intent、conversion implementation descriptor | 宣言順非依存、duplicate/missing producer reject、schema v2、runtime 不変 |
+| RPE6b1 / WP187（済 2026-07-23） | typed color/depth domain + hybrid screen-input descriptor binding | 屈折/深度 fade fixture、tone map 一回、型不一致 reject |
+| RPE6c0 | data-only target topology / directed links、pure Vulkan backend probe、immutable registry snapshot、optimize-by-default / advisory diagnostics | deviceなしprobe、link有無のbridge可否、reason付きreject、opt-in strict/hazard stress、追加注釈なしのparallel/fusion候補、runtime不変 |
+| RPE6c1 | `ResourcePattern` / read footprint / materialization + mock desktop/tile target planner。canonical / disposable lowering seam と dialect legality を追加 | desktop materialize、tile local-read 候補、屈折 snapshot、physical dump、optional domain zero-cost |
 | RPE7 | `SampleCountRequest` / capabilities / resolution の純粋段階 | unsupported/fallback 診断 fixture |
 | RPE8 | MSAA graph transform + image/pipeline sample count + resolve | 1x byte 不変、2x/4x headless Vulkan、depth capability gate |
 | RPE9 | XR / preview callback を builtin `GraphVariantPolicy` へ移行 | sequential XR/preview plan 不変、OpenXR lifecycle 非依存 test |
@@ -609,15 +639,17 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 
 ### 12.1 いま着手する範囲
 
-RPE1 / WP180 から RPE6a / WP185 まで完了した。authoring resolve、immutable typed
+RPE1 / WP180 から RPE6b1 / WP187 まで完了した。authoring resolve、immutable typed
 pipeline plan、draw inventory / queue materialization、versioned draw-sort provider registry、
 world bounds、phase/view 別 queue に加え、Vulkan 非依存の logical type / port-use kernel と
-現行 `FrameGraphDefinition` の diagnostic shadow graph が分離済みである。
+現行 `FrameGraphDefinition` の diagnostic shadow graph が分離済みである。shadow graph は
+resource family + version の値と exact producer edge を持ち、宣言順を correctness に使わない。
 
-次は RPE6b で `hybrid_v1` material-pass の screen-input descriptor binding を閉じ、
-屈折／depth fade と tone-map 一回の invariant を fixture で固定する。RPE6c は mock
-desktop/tile facts で target planning を実証する。MSAA image / pipeline / resolve の
-Vulkan 変更は RPE7 / RPE8 まで混ぜない。各段階の詳細 gate は
+`hybrid_v1` material-pass の typed screen-input descriptor、opaque color/depth snapshot、
+depth linearization、tone-map 一回の fixture は RPE6b1 で固定した。次の RPE6c0 は topology /
+probe / warning policy を runtime 非変更で固定し、RPE6c1 は mock desktop/tile facts で target
+planning を実証する。MSAA image / pipeline / resolve の Vulkan 変更は RPE7 / RPE8 まで
+混ぜない。各段階の詳細 gate は
 `design_render_graph_compiler.md` §12 を正とする。
 
 ### 12.2 後回しにするもの
@@ -630,8 +662,10 @@ Vulkan 変更は RPE7 / RPE8 まで混ぜない。各段階の詳細 gate は
 - bindless / GPU-driven sort
 - forward object へ SSR / SSAO / decal を適用する個別方式
 - RHI / WebGPU backend 共通化
+- 汎用 CPU task scheduler / execution linker(計測と具体的二候補 task が先)
+- 動画 encode/decode dialect / backend(codec、session、backpressure は需要時に設計)
 
-これらは RPE6a〜RPE6c の typed graph / physical plan fixture と具体的な利用要求を得てから
+これらは RPE6b0〜RPE6c1 の typed graph / physical plan fixture と具体的な利用要求を得てから
 公開形式・ABI を凍結する。Vulkan physical plan と `NativeScope` という入口自体は本設計で
 予約済みであり、論理型へ押し込んで代替しない。
 
@@ -645,9 +679,19 @@ Vulkan 変更は RPE7 / RPE8 まで混ぜない。各段階の詳細 gate は
 - fallback、exclude、自動 route のすべてに machine-readable reason がある
 - builtin と project/game 実装に特権差がない
 - unknown name、version、capability、stale owner を名前入りで reject する
+- target選択はdata-only topology / backend probeを使い、linkerやlowererが未知fallbackを
+  発明しない
 - logical connection は nominal type 一致または登録済み conversion を要求し、trait 一致だけで
   接続しない
+- logical effectは作者の任意宣言とし、portから導出できるdata useを二重記述させない。
+  effect未記述だけをerror / warningにしない
+- 宣言contractを完全なものとして信頼し、依存がなければparallel / fusion / alias候補にする。
+  `serial` / `isolate` / `no_alias`と保守debug profileは明示時だけ適用する
+- manual / nativeの同期・portability・性能診断は既定advisoryとし、個別warning idのstrict化は
+  project / CI opt-inにする
 - region tag を barrier / allocation / optimization boundary として扱わない
+- open fragment は typed import / export を要求し、publish plan は connected でなく closed
+  であることを検証する
 - physical-only graph は typed boundary を検証するが、logical graph への逆変換を要求しない
 - flat 1x の既存 golden と frame-plan dump を意図なく変更しない
 - optional build OFF と clean-clone gate を維持する

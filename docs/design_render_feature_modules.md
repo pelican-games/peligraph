@@ -1,7 +1,7 @@
 # レンダリング機能モジュール: パージ可能な GPU 機能と 1 行有効化
 
 対象読者: エンジン担当。
-ステータス: v1.1 ドラフト(2026-07-23。v1: 2026-07-04)。
+ステータス: v1.2 ドラフト(2026-07-23。v1: 2026-07-04)。
 前提: [SF](シェーダ自由化キット・実装済み)、[PF]/[PFW](凍結)、
 `design_roadmap_renderworld.md` §6(機能はなるべくアセットに)。
 
@@ -99,6 +99,15 @@ frontend として維持する。新しい logical graph では色・深度等�
 導出し、feature が常時過剰な usage bit を足す構造を終える。移行中は既存 override を
 pattern / pin へ変換する adapter を使い、RPE6a で parser や runtime 挙動を変更しない。
 詳細は [`design_render_graph_compiler.md`](design_render_graph_compiler.md) §3.5、§6、§11。
+
+**異種 execution 追補(v1.2)**: `pelican.render_feature` は render authoring frontend であり、
+logical compile 後は typed import / export / effect を持つ `GraphFragment` へ変換する。fragment
+は合成、所有、hot reload、dump grouping の単位だが、暗黙の barrier / materialization /
+最適化境界ではない。非連結 component は許し、publish 前に必須 import と宣言済み
+external / state effect の接続が閉じていることを検証する。共通 fragment / closed forest 規則は
+[`design_heterogeneous_execution_graph.md`](design_heterogeneous_execution_graph.md) §6 を正とする。
+通常featureのdata dependencyはtyped portから導出し、semantic effectの明示はhistory / external
+write等がある場合だけでよい。純粋passへeffect boilerplateを要求しない。
 
 ## 2. 要求された各機能の適合表
 

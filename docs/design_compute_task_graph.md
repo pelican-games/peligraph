@@ -1,12 +1,14 @@
 # フレームグラフ: 宣言的依存とスケジュール最適化(レンダー・コンピュート統一)
 
 対象読者: エンジン担当。
-ステータス: v2.1 ドラフト(2026-07-23。v2: 2026-07-04。
+ステータス: v2.2 ドラフト(2026-07-23。v2: 2026-07-04。
 v1: compute タスクグラフとして起草。
 v2: ユーザー方針によりレンダーパスにも同モデルを拡張 — 統一フレームグラフ化、
 手詰め層の設計、既存 config の意味論保存移行を追加。
-v2.1: `design_render_graph_compiler.md` の logical / physical 分離へ接続)。
-前提: [SF](実装済み)、`design_render_feature_modules.md`(v1 ドラフト)、
+v2.1: `design_render_graph_compiler.md` の logical / physical 分離へ接続。
+v2.2: `design_heterogeneous_execution_graph.md` の typed dialect / domain 分割へ接続し、
+authoring `kind` と selected execution endpoint を分離)。
+前提: [SF](実装済み)、`design_render_feature_modules.md`(v1.2 ドラフト)、
 ロードマップ §3 の compute パス予約枠。GPU 計測(WP29 候補)と強く連携。
 
 本書の `FrameGraphDefinition` / `FramePlan` は、現行 config から依存と安定順を導く
@@ -14,6 +16,12 @@ logical scheduling の実装である。concrete Vulkan resource、queue、barri
 最終決定は [`design_render_graph_compiler.md`](design_render_graph_compiler.md) の
 `VulkanPhysicalPlan` へ段階移行する。`FramePlanBarrier` は依存診断であり、将来の
 Vulkan barrier 記述そのものではない。
+
+CPU、Vulkan、external backend を横方向に分ける最終構造、共通 typed IR kernel、open
+fragment / closed forest の規則は
+[`design_heterogeneous_execution_graph.md`](design_heterogeneous_execution_graph.md) を正と
+する。本書の `render` / `compute` は現行 authoring node category であり、実行先を表す
+閉じた domain enum ではない。
 
 ## 0. 要求(2026-07-04 ユーザー方針・v2 で拡張)
 
@@ -91,6 +99,17 @@ Vulkan barrier 記述そのものではない。
    passes も追加でき、挿入アンカーは**明示エッジの糖衣**として再定義する
    (`insert: "before:present"` ≡ `before: ["present"]`)
 
+現行 `reads` / `writes` は data dependency の互換 authoring であり、一般的な effect を
+すべて列挙する欄ではない。typed port 移行後は data use をportから導出する。history、external
+write等のsemantic effectはlogical作者が必要な場合だけ宣言し、未記述はeffectなしという
+作者の主張として受理する。engineはcustom shader / callbackの隠れたeffectを推測・証明しない。
+
+RPE6b0 の diagnostic adapter は現行名ベースの `reads` / `writes` を resource family + version
+の logical value へ写し、一意 producer と exact consumer から data edge を導出する。同じ
+resource の version 番号が大きいだけでは順序を作らない。この adapter はまだ
+`pelican.frame_plan` の schedule / runtime / barrier 所有権を変更せず、未明示の初期値は
+移行専用 `legacy_implicit` import として可視化する。
+
 ## 3. スケジューラ
 
 ### v1 — 単一キュー内の自動化
@@ -110,6 +129,11 @@ Vulkan barrier 記述そのものではない。
   タイムラインセマフォ。導入判断は GPU 計測で graphics 飽和が見えてから
 - transient リソースのメモリエイリアシング、フレーム跨ぎ(`latency: 1`)、
   `on_demand` スケジュール(ベイク等の単発実行、fence 追跡)
+
+graphics、GPU compute、transfer は同じ Vulkan physical resource graph へ lower し、queue、
+barrier、alias を全体で解く。CPU 実装候補を持つ logical compute が将来追加されても、GPU
+compute scheduler の下へ CPU scheduler を置かない。target execution planner が domain を
+選び、CPU / Vulkan sibling lowerer へ分ける。
 
 ## 4. パージ可能性・web との関係
 
@@ -134,8 +158,9 @@ F0 が要: 「新モデルは既存の意味を変えない」を主張ではな
 
 ## 6. CPU タスクへの拡張(予約 — 2026-07-04 検討)
 
-CPU タスク(アニメサンプリング・物理・ストリーミング等)の最適化層も
-**同じ三層モデルで**将来統合する。ただし導入は測定条件付き:
+CPU タスク(アニメサンプリング・物理・ストリーミング等)の最適化層も、共通 typed IR /
+effect / dependency model 上で将来統合する。ただし CPU scheduler 自体は Vulkan scheduler
+とは別 backend とし、導入は測定条件付き:
 
 1. **今は作らない**。負荷の実証がなく、CPU 並列はデータ競合という
    より重い正しさ負担を持ち込む。判断材料は WP29 の計測
@@ -147,9 +172,16 @@ CPU タスク(アニメサンプリング・物理・ストリーミング等)�
    ロジックの決定的順序を保証し、並列化は副作用のないステージ内に限る)
 4. 粒度は ECS 境界の外側(粗いタスク)から。ECS システム内部の並列化は
    ECS 側の領分
-5. **今やる唯一のこと**: F0 のプランダンプ JSON スキーマに
-   ノード種 `"kind": "render" | "compute"` を持たせ、将来 `"cpu"` を
-   追加できる形にしておく(語彙の予約のみ。実装は持ち込まない)
+5. **今やる唯一のこと**: F0 のプランダンプ JSON スキーマにある
+   `"kind": "render" | "compute"` を authoring category として固定し、execution domain
+   には流用しない。将来の schema v2 では `semantic_dialect`、
+   `selected_implementation`、`selected_endpoint`、`required_capabilities`、`bridge_ids` を
+   別 field として追加する。CPU 対応を `kind: "cpu"` の一値追加だけで実装しない
+
+CPU implementation はdata / effect依存がなければ既定でparallel / reentrant候補にする。
+`serial` / `non_reentrant` / `main_thread` / `exclusive` / `blocking`は必要な実装だけが制約として
+宣言する。未宣言global stateは作者側のcontract違反であり、その可能性だけを理由にengineが
+全taskを直列化しない。保守的な直列実行はdebug / CIの診断profileとして任意に選べる。
 
 ## 7. 未決事項
 
@@ -157,10 +189,11 @@ CPU タスク(アニメサンプリング・物理・ストリーミング等)�
    (コマンド層 stage 3 / ゲームロジック設計と同時に確定)
 2. indirect dispatch(GPU 駆動のディスパッチ数)— v1 は CPU 指定のみ
 3. compute 結果の CPU readback(rpc `capture` 類似)— 需要が出てから
-4. プランダンプの JSON スキーマ(プラン比較テストの fixture 形式)— **解決済み**:
+4. プランダンプの JSON スキーマ(プラン比較テストの fixture 形式)— **F0 v1 は解決済み**:
    F0 では `pelican.frame_plan` v1 とし、`schema` / `version` / `graph` /
    `nodes` / `levels` / `barriers` を持つ。`nodes[*].kind` は
-   `"render" | "compute"`、将来追加用に `"cpu"` を予約する。
+   `"render" | "compute"` の authoring category。異種 execution の選択結果は schema v2 の
+   独立 field とし、v1 へ詰め込まない。
 5. 非同期キュー導入時期(v2)
 
 ### 7-4. プランダンプ JSON スキーマ(F0 確定)
@@ -203,5 +236,7 @@ F0 のプラン比較 fixture は次の形を正とする。
    導出実行順に従う。
 3. `barriers` は F0 では計画上の依存可視化に留める。実バリア発行は F1 以降で
    既存 `RenderTargetLayoutTracker` と統合し、二重管理にしない。
-4. `kind` は `"render" | "compute"` を v1 の有効値とし、CPU タスク統合時の
-   追加値として `"cpu"` を予約する。
+4. `kind` は `"render" | "compute"` を v1 の有効値とする。これは authoring category
+   であり、host / device endpoint や graphics / compute queue assignment を表さない。
+   CPU / external task 統合時は schema version を上げ、namespaced semantic dialect と
+   selected endpoint を別 field で表現する。

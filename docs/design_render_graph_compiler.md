@@ -1,18 +1,25 @@
-# レンダラ構築コンパイラ: 論理型・ターゲット計画・物理実行計画(v1)
+# レンダラ構築コンパイラ: 論理型・ターゲット計画・物理実行計画(v1.1)
 
 対象読者: レンダラ実装者、独自描画方式・最適化・Vulkan backend を実装する人。
 
-ステータス: v1 設計方針(2026-07-23)。公開 ABI は未凍結。RPE1〜RPE6a まで実装済み。
-RPE6a は純 CPU の logical type / port-use kernel と現行 FrameGraph の diagnostic shadow
-adapter までであり、runtime 実行所有権は未移行。RPE1〜RPE5 で実装済みの
+ステータス: v1.1 設計方針(2026-07-23)。公開 ABI は未凍結。RPE1〜RPE6b1 まで実装済み。
+RPE6b0 の純 CPU logical graph に加え、RPE6b1 は color/depth screen-input contract を
+`hybrid_v1` の snapshot、material descriptor、shader accessor へ縦に接続した。汎用 graph の
+runtime 実行所有権は未移行。RPE1〜RPE5 で実装済みの
 `RenderPipelineRequest` / `ResolvedRenderPipeline` / `CompiledRenderPipeline` と
 draw queue 基盤を移行元とし、既存の flat 1x 描画結果を変えずに段階導入する。
+v1.1 は CPU、GPU compute、将来の specialized device operation を縦の compiler 層として
+増やさず、共通 typed dialect と横方向の backend domain へ接続する境界を明記した。異種
+execution 全体の正は
+[`design_heterogeneous_execution_graph.md`](design_heterogeneous_execution_graph.md) とする。
 
 本書は [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md)
 の compiler / compiled plan / backend 境界を詳述する。関連文書:
 
 - [`design_compute_task_graph.md`](design_compute_task_graph.md) — 現行フレームグラフの
   依存導出、安定スケジュール、plan dump
+- [`design_heterogeneous_execution_graph.md`](design_heterogeneous_execution_graph.md) —
+  typed dialect、target execution、CPU / Vulkan sibling lowering、fragment / closed forest
 - [`design_material_shading.md`](design_material_shading.md) — material / `.surface` /
   OpenPBR / screen input 契約
 - [`design_color_pipeline.md`](design_color_pipeline.md) — scene / display domain と
@@ -23,7 +30,8 @@ draw queue 基盤を移行元とし、既存の flat 1x 描画結果を変えず
 
 ## 0. 決定事項
 
-1. 標準経路は **論理コンパイル**と**ターゲットコンパイル**の二段階とする。
+1. renderer の標準公開経路は **論理コンパイル**と**ターゲットコンパイル**の二段階
+   facade とする。内部では target execution と backend physical lowering を分離可能にする。
 2. 論理グラフと物理グラフの構造的一致や相互逆変換は要求しない。
 3. 論理型は **少数の閉じた型構造 × 拡張可能な意味型**とする。
 4. 型、ポート間制約、アクセス特性、物理表現の選好、Vulkan 記述を分離する。
@@ -36,12 +44,16 @@ draw queue 基盤を移行元とし、既存の flat 1x 描画結果を変えず
    処理には、境界契約付き `NativeScope` を用意する。
 10. 通常利用者の入口は引き続き一つの preset と少数設定であり、本書の型式や
     constraint DSL を毎回記述させない。
+11. renderer の logical / Vulkan 経路は異種 execution graph の一 dialect / backend とする。
+    CPU や specialized GPU 機能を `PassKind` の閉じた enum へ足し続けない。
+12. 中間層では typed `GraphFragment`、全層では非連結 component を許す。publish 前の
+    physical execution plan は connected でなく closed であることを要求する。
 
 本設計は Vulkan を隠す RHI の設計ではない。現在の backend は Vulkan 専用であり、
 物理計画も Vulkan の能力を完全に利用できる。論理層はその部分集合を移植可能に
 記述するが、物理層全体を再表現しない。
 
-## 1. 二段階コンパイラと中間表現
+## 1. renderer の二段階 facade と内部 compiler 境界
 
 ```text
 project / preset / material / light / view intent
@@ -72,6 +84,31 @@ project / preset / material / light / view intent
                     Runtime
 ```
 
+この図は現行 renderer の互換 facade である。内部の目標境界では、`Vulkan Target
+Compiler` を target-aware な domain / implementation 選択と Vulkan physical lowering に
+分離する。
+
+```text
+CompiledLogicalGraph
+        │
+        ▼
+TargetExecutionCompiler
+        │
+        ▼
+execution.gpu fragment
+        │
+        ▼
+VulkanLowerer
+        │
+        ▼
+VulkanPhysicalPlan
+```
+
+CPU task が必要になった場合は `TargetExecutionCompiler` から sibling `CpuLowerer` へ分岐し、
+Vulkan の下や上へ新しい縦層を挿さない。graphics / GPU compute / transfer は同じ Vulkan
+fragment として全体最適化する。現行実装は両段を一つの `Vulkan Target Compiler` 関数群に
+置いてよいが、RPE6c0 / RPE6c1 で data-only seam を作る。
+
 ### 1.1 論理コンパイラ
 
 論理コンパイラは「何を計算し、どの意味の値を受け渡すか」を決める。
@@ -89,8 +126,9 @@ command buffer はここへ入れない。
 
 ### 1.2 ターゲットコンパイラ
 
-ターゲットコンパイラは、論理グラフと data-only な Vulkan capability / cost facts から
-実行可能な物理計画を作る。単純な一対一変換ではなく、次を行ってよい。
+ターゲットコンパイラは、論理グラフ、data-only な `TargetTopologySnapshot`、Vulkan
+`BackendProbe` 結果から実行可能な物理計画を作る。単純な一対一変換ではなく、次を
+行ってよい。
 
 - logical pass の融合・分割・削除
 - resolve / snapshot / copy / materialization の追加
@@ -102,6 +140,11 @@ command buffer はここへ入れない。
 
 Vulkan object の作成は意味選択を行わない backend code generation / prepare とし、
 二つ目のコンパイラの後段に置く。
+
+異種 execution へ拡張した最終形では、本節前半の candidate / domain / target-aware rewrite を
+`TargetExecutionCompiler`、Vulkan enum、queue family、barrier、alias の具体化を
+`VulkanLowerer` が所有する。CPU / external backend が存在しない構成では、この分離は
+runtime object や追加 work を発生させない。
 
 ### 1.3 対応関係
 
@@ -297,6 +340,13 @@ list とし、一般 SAT / SMT や再帰的 user expression を renderer 起動�
 変換探索は登録済み有限 graph に限定する。同順位の複数経路が残ったら暗黙選択せず、
 provider 名または変換を pin させる。
 
+conversion は型の辺だけで終わらせず、選択後に node へ materialize できる版付き operation
+ID と provider fingerprint を持つ。builtin の静的 provider は owner identity / generation を
+ともに 0、reload 可能な provider は両方を非 0 とし、片方だけの descriptor は拒否する。
+registry から compile snapshot を採る際はこの descriptor を値として複製し、callback が必要な
+provider lease は prepare 完了まで別途保持する。RPE6b0 は descriptor と検証まで、immutable
+registry snapshot / lease は RPE6c0 で閉じる。
+
 ## 3. 型、ポート、resource use
 
 型だけでは tile-local read、history、外部所有等を表せないため、三つの契約へ分ける。
@@ -313,8 +363,10 @@ struct LogicalResourceDesc {
 };
 
 struct LogicalResourceUse {
-    LogicalValueId value;
+    optional<LogicalValueId> input_value;
+    optional<LogicalValueId> output_value;
     AccessMode access;
+    AccessIntent intent;
     ReadFootprint footprint;
 };
 ```
@@ -324,6 +376,15 @@ struct LogicalResourceUse {
 logical output は原則 immutable な新しい value とする。同じ `SceneLinearHDR` に
 透明物を合成する場合も、意味上は `opaque_color -> composed_color` とする。
 physical lowering は安全なら同一 image / attachment へ alias または in-place 化できる。
+
+実装上の `LogicalValueId` は resource family と version の組である。一つの `(resource,
+version)` には producer を高々一つだけ許し、consumer がその値を読むことで data edge を
+導出する。version の大小だけでは依存を作らない。例えば `color#1` と `color#2` の writer は、
+後者が前者を input として消費しない限り独立であり、宣言順を correctness edge に昇格しない。
+
+graph 外から入る値は version 0 の明示 import とする。通常 input、previous epoch、external
+ownership を区別する。現行 `FrameGraphDefinition` 互換 adapter だけは未明示初期値を
+`legacy_implicit` として記録できるが、新しい実行 graph の authoring 入口では許可しない。
 
 external target、history state、query 等の副作用は暗黙の名前順でなく effect として
 宣言する。通常ユーザーに SSA 記法を要求せず、preset / recipe が生成する。
@@ -341,6 +402,14 @@ external target、history state、query 等の副作用は暗黙の名前順で�
 
 必要なら neighborhood radius、derivative、sample-frequency を refinement する。
 footprint は resource の型でなく use ごとの性質である。
+
+### 3.2.1 access intent
+
+`AccessMode` が read / write の論理方向を表すのに対し、`AccessIntent` は sampled、attachment、
+storage、transfer、host のどの利用形へ lower したいかを表す。`automatic` は operation
+implementation に選択を委ねる既定値である。これは Vulkan stage / access mask を直接書く
+欄ではない。target compiler は選択済み implementation と intent から最小 scope を導出し、
+不可能な組み合わせだけを拒否する。
 
 ### 3.3 materialization
 
@@ -487,6 +556,10 @@ struct PassImplementationDescriptor {
 };
 ```
 
+`inputs` / `outputs` から導出できるdata useを `effects` に重複記述しない。`effects` はhistory、
+present、external write等がある場合だけ設定し、空なら追加semantic effectなしという作者の
+宣言として受理する。
+
 implementation は contract より狭い capability 条件を持てるが、port の意味を変更したり
 具体 format を勝手に固定しない。必要な物理条件は planning constraint として返し、
 target compiler が他候補と合わせて解決する。
@@ -496,9 +569,11 @@ target compiler が他候補と合わせて解決する。
 
 ## 6. ターゲット計画と層横断最適化
 
-### 6.1 capability / cost facts
+### 6.1 topology / capability / probe facts
 
-target compiler へ渡す facts は data-only snapshot とする。
+target compiler へ渡す facts は data-only snapshot とする。単体 device facts に加え、host、
+Vulkan device、external endpoint 間の memory / transfer / synchronization relation を
+`TargetTopologySnapshot` の directed link として持つ。
 
 - Vulkan version / extension / feature bits
 - format feature と sample count の表
@@ -513,6 +588,10 @@ target compiler へ渡す facts は data-only snapshot とする。
 tile size 等を推測して correctness に使わない。vendor provider が明示する情報は
 namespaced optional facts として扱う。
 
+Vulkan backend probe は graph を変更せず、candidate ごとの feasibility、refinement
+constraint、bridge offer、required physical features、cost、理由を返す。endpoint 間の
+zero-copy / copy 可否は capability set の積から推測せず、topology link と probe で決める。
+
 cost estimate は少なくとも feasibility、rendering scope 数、materialized image 数、
 external store 数、transient bytes、bandwidth class、理由を返す。精密な時間予測を
 必須にしない。
@@ -523,13 +602,32 @@ external store 数、transient bytes、bandwidth class、理由を返す。精�
 
 1. recipe / strategy が有限個の logical candidate を生成
 2. user pin と logical contract で候補を絞る
-3. backend facts で feasibility と概算 cost を得る
-4. deterministic policy で一つを選ぶ
-5. target-aware graph transform を一回適用
-6. physical lowering と最終 validation を行う
+3. topology snapshot と backend probe で feasibility、constraint、概算 cost を得る
+4. rejected candidate と理由を記録する
+5. deterministic policy で一つを選ぶ
+6. target-aware graph transform を一回適用
+7. selected probe result を physical lowering し、最終 validation を行う
 
 無制限の fixed-point solver、任意 callback の総当たり、frame ごとの再 compile は行わない。
 実行時に必要な少数 variant は prepare 済みにし、runtime は variant を選ぶだけにする。
+lowering が probe 未宣言の必須 capability を後から要求した場合は暗黙 fallback せず、provider /
+compiler inconsistency として拒否する。
+
+logical type / effect は作者の宣言を正とし、engine が数学的意味や隠れた effect の完全性を
+証明しない。hard error は未解決参照、ambiguous conversion、実現候補なし、final plan を
+閉じられない場合、engine が発行する既知の Vulkan 違反に限定する。manual / native scope の
+疑わしい同期、portability、性能問題は stable id 付き warning とし、CI の strict 化は opt-in
+にする。
+
+通常policyはoptimize-by-defaultとする。宣言されたdata / effect edgeがなければreorder、
+parallel execution、scope fusion、transient aliasの候補とし、annotation不足を理由にglobal
+barrierやmaterializationを足さない。`serial` / `isolate` / `no_alias`等のnegative constraintと
+保守的diagnostic profileは明示時だけ適用する。
+
+`conservative_debug` だけでは隠れた依存を覆い隠す場合があるため、CI / 診断用に
+`hazard_stress(seed)` も用意する。これは宣言上合法な reorder、overlap、fusion、alias を
+積極的に変化させ、固定 seed と選択結果を plan dump に残す。release の cost policyではなく、
+contract 違反を再現可能に露出させる opt-in profile とする。
 
 ### 6.3 層横断変換
 
@@ -604,20 +702,28 @@ dump する。まず CPU-only mock profile で両計画を検証し、その後 
 の `BoundaryContract` を持つ。engine は boundary と外側の lifetime / synchronization を
 検証し、内部を logical optimizer へ持ち上げない。
 
+package は link 前の open physical fragment であってよいが、publish される plan では必須
+import、resource ownership、completion がすべて解決済みでなければならない。独立した
+physical component は正当であり、無関係な component 間へ偽の依存を追加しない。
+
 ### 7.3 NativeScope
 
 `NativeScope` は次を明示する unsafe / non-portable escape hatch である。
 
-- boundary input / output と semantic type
-- resource ownership と alias declaration
-- queue / stage / access effect
-- scope 内外の synchronization responsibility
-- required Vulkan extensions / features
+- boundary input / output と semantic type(必須)
+- endpoint / queue capability(既定queueで足りなければ明示)
+- resource ownership と alias declaration(宣言boundary外の隠れたaccessなしとみなす)
+- queue / stage / access effect(未指定はtyped useとoperation classからminimal scopeを導出)
+- scope 内外の synchronization mode(`automatic`既定、`manual` / `unchecked`は明示)
+- required Vulkan extensions / features(engineがobject / commandを発行する部分は必須)
 - capture / device-loss / hot-reload 対応能力
 
 scope 内の command、barrier、resource は実装側が所有できる。engine は宣言された境界の
 外側だけを保証し、内部最適化や自動 alias を行わない。初期版は source extension とし、
-安全性 fixture が揃う前に game-DLL ABI を凍結しない。
+boundary contractを完全なものとしてautomatic minimal syncを作る。詳細effectの未指定だけを
+理由にscope全体を隔離したりalias / overlapを禁止しない。`manual` / `unchecked`内部の疑わしい
+同期はadvisoryであり、作者がcorrectnessを所有する。保守的な全scope barrierはdebug診断profile
+でだけ任意に選ぶ。安全性fixtureが揃う前に game-DLL ABI を凍結しない。
 
 ## 8. 拡張の段階
 
@@ -719,7 +825,30 @@ gate:
 - unknown / ambiguous conversion の名前入り reject
 - flat 1x の runtime /既存 dump は変更なし
 
-### RPE6b — hybrid screen input vertical slice
+### RPE6b0 — canonical logical value graph
+
+状態: **WP186 で実装済み(2026-07-23)**。既存 `FramePlan` / Vulkan barrier executor は
+変更せず、diagnostic shadow graph の schema を version 2 へ更新した。
+
+- resource family + version の `LogicalValueId`、version 0 の明示 import
+- output ごとの一意 producer と、exact input value から導出する data edge
+- nominal semantic type を必須にした port connection
+- `automatic` / sampled / attachment / storage / transfer / host の access intent
+- conversion operation ID と provider identity / generation descriptor
+- legacy graph を `legacy_implicit` / previous-epoch / external import へ写す adapter
+
+gate:
+
+- node 配列順に依存せず producer→consumer edge が得られる
+- duplicate producer、未解決 input、data + explicit dependency cycle を名前入りで拒否
+- 同じ resource family の異なる version に大小順を暗黙付与しない
+- trait-only connection、access / intent 不整合、実装のない conversion を拒否
+- shadow compile 前後で既存 `FramePlan` が不変
+
+### RPE6b1 — hybrid screen input vertical slice
+
+状態: **WP187 で実装済み(2026-07-23)**。標準 alias は `hybrid_v1` の固定 ABI とし、
+任意 alias / provider registry と target-aware materialization は RPE6c 以降へ残した。
 
 - `hybrid_v1` の scene color / device depth / linear depth port
 - material screen-input contract と descriptor binding
@@ -731,13 +860,38 @@ gate:
 
 - 既存 material を無変更で描画
 - 未定義・型不一致 screen input を compile 時に拒否
-- 屈折／depth fade golden
+- frozen snapshot-refraction golden と、実 material quad の屈折／depth-fade headless fixture
 - scene-linear から display への変換が exactly once
 
-### RPE6c — target planner vertical slice
+### RPE6c0 — planning contracts
+
+- data-only `TargetTopologySnapshot` と directed endpoint link
+- pure Vulkan `BackendProbeInput` / `BackendProbeResult`
+- finite candidate / probe / deterministic selection のdecision dump
+- advisory warning id と opt-in strict policy
+- declared shader interface と reflection の一致fixture
+- logical effect はoptional、data dependencyはportから導出
+- optimize-by-default policyと明示`serial` / `isolate` / `no_alias` constraint
+- immutable registry snapshot、conversion / lowering provider lease
+- opt-in `conservative_debug` / `hazard_stress(seed)` profile
+
+gate:
+
+- Vulkan deviceなしのmock topology / probe test
+- endpoint capabilityが同じでもlink有無でbridge候補可否が変わる
+- rejected candidateが名前・不足constraint・provider fingerprintを持つ
+- warningは既定compileを失敗させず、指定idだけstrictでerror化できる
+- 依存のないnodeは追加注釈なしでparallel / fusion候補になり、保守profileだけが抑止する
+- hazard stress の同じ seed は同じ plan、異なる seed は合法な順序／alias候補を再現可能に変える
+- flat 1x runtime / current planは変更なし
+
+### RPE6c1 — target planner vertical slice
 
 - `ResourcePattern`、materialization、read footprint
-- mock desktop / mock tile capability facts
+- mock desktop / mock tile topology / probe facts
+- immutable canonical graph と disposable `TargetLoweringGraph` の seam
+- `logical + execution -> execution.gpu` と
+  `execution.gpu + physical.vulkan -> physical.vulkan` の dialect legality 検証
 - `GBuffer -> Lighting -> Forward -> ToneMap` の二つの physical plan
 - local-read 不可時の materialized fallback
 - physical plan dump と理由
@@ -749,6 +903,8 @@ gate:
 - refraction を加えると opaque snapshot が materialize される
 - region tag を越えた fusion が許可される
 - 二回 compile で byte-equivalent plan
+- selected probeからlowering後に未知required capabilityが生えない
+- CPU / external / video backend を登録しなくても現行 runtime work と resource が増えない
 
 ### それ以後
 
@@ -759,6 +915,8 @@ gate:
 5. pass / region / global transform / strategy provider fixture
 6. physical plan eject / direct authoring fixture
 7. `NativeScope` は具体的な Vulkan-only 使用例が得られてから ABI 設計
+8. CPU / external domain は計測と具体的な二候補 task が得られてから
+   `design_heterogeneous_execution_graph.md` の HEG3 / HEG4 として実装
 
 ## 13. north-star acceptance scenarios
 
