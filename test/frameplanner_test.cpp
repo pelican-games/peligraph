@@ -836,7 +836,7 @@ TEST_CASE("WP181 frame graph runtime retains one immutable typed pipeline",
     runtime.registerExecutionPlan(rendering_pass_id, rendering_pass,
                                   planFrameGraph(definition), pipeline);
 
-    const auto *execution = runtime.find(rendering_pass_id);
+    const auto execution = runtime.find(rendering_pass_id);
     REQUIRE(execution != nullptr);
     REQUIRE(execution->render_pipeline == pipeline);
     REQUIRE(execution->render_pipeline->feature_names ==

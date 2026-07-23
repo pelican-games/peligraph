@@ -247,13 +247,19 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
         const auto main_render_id =
             GET_MODULE(RenderingPassContainer)
                 .getRenderingPassIdByName("main_render");
-        const auto *execution =
+        const auto execution =
             GET_MODULE(FrameGraphRuntimeContainer).find(main_render_id);
         REQUIRE(execution != nullptr);
         REQUIRE(execution->target_plan != nullptr);
         REQUIRE(execution->sample_count_plan != nullptr);
         const auto frame_plan_json =
             renderer.currentFramePlanJson();
+        const auto runtime_generation =
+            GET_MODULE(FrameGraphRuntimeContainer)
+                .activeGeneration();
+        REQUIRE(runtime_generation > 0);
+        REQUIRE(frame_plan_json.at("runtime_generation") ==
+                runtime_generation);
         REQUIRE(frame_plan_json.at("sample_count_plan")
                     .at("request")
                     .at("samples") == 4);

@@ -1133,6 +1133,7 @@ target_compile_definitions(pelican_test_frameplanner_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 
+pelican_define_test(renderpipelinetransaction_test pelican_core)
 pelican_define_test(logicalrendergraph_test pelican_core)
 pelican_define_test(targetplanning_test pelican_project)
 pelican_define_test(targetrenderplanning_test pelican_project)

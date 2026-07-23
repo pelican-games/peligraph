@@ -57,7 +57,6 @@ DECLARE_MODULE(Renderer) {
     bool temporal_reset_requested = true;
     std::uint64_t observed_time_set_revision = 0;
     std::uint64_t observed_camera_discontinuity_revision = 0;
-    std::optional<ProjectionJitterSettings> projection_jitter;
     std::optional<vk::Extent2D> internal_render_extent;
     std::vector<std::string> xr_excluded_features;
     nlohmann::json graph_variant_transition_trace = nlohmann::json::array();

@@ -215,10 +215,6 @@ RenderingPassConfigRegistrationResult registerRenderingPassConfigData(
         compileRenderingPassesRuntime(pass_definitions,
                                       toRuntimeDependencies(dependencies.runtime, rt_metadata, rt_views,
                                                             dependencies.frame_graph_resources));
-    if (dependencies.options.publish_enabled_features) {
-        dependencies.pass_container.setEnabledFeatures(
-            compiled_pipeline->feature_names);
-    }
     RenderingPassConfigRegistrationResult result;
     result.feature_names = compiled_pipeline->feature_names;
     result.excluded_feature_names =
@@ -231,11 +227,12 @@ RenderingPassConfigRegistrationResult registerRenderingPassConfigData(
                 result.target_plans.front(),
                 &*result.target_plans.front()->sample_count_plan);
     }
+    std::vector<RenderPipelineProgramPreparation>
+        program_preparations;
+    program_preparations.reserve(compiled_passes.size());
     for (auto &compiled_pass : compiled_passes) {
         compiled_pass.compute_tasks = compiled_compute_tasks;
         const auto pass_name = compiled_pass.name;
-        const auto rendering_pass_id = dependencies.pass_container.registerCompiledRenderingPass(std::move(compiled_pass));
-        result.rendering_pass_ids.push_back(rendering_pass_id);
         auto found_plan = frame_plans.find(pass_name);
         if (found_plan == frame_plans.end()) {
             throw std::runtime_error("Frame graph definition not found for rendering pass: " + pass_name);
@@ -247,12 +244,28 @@ RenderingPassConfigRegistrationResult registerRenderingPassConfigData(
                 "Physical target plan not found for rendering pass: " +
                 pass_name);
         }
-        dependencies.frame_graph_runtime.registerExecutionPlan(
-            rendering_pass_id,
-            dependencies.pass_container.getCompiledRenderingPass(rendering_pass_id),
-            std::move(found_plan->second),
-            compiled_pipeline, found_target_plan->second);
+        program_preparations.push_back(
+            RenderPipelineProgramPreparation{
+                std::move(compiled_pass),
+                std::move(found_plan->second),
+                compiled_pipeline,
+                found_target_plan->second,
+            });
     }
+    auto prepared_generation =
+        dependencies.frame_graph_runtime.prepareGeneration(
+            std::move(program_preparations),
+            dependencies.options.publish_enabled_features
+                ? std::optional{compiled_pipeline->feature_names}
+                : std::nullopt);
+    result.rendering_pass_ids =
+        prepared_generation.renderingPassIds();
+    result.runtime_generation =
+        prepared_generation.generation();
+    dependencies.pass_container.bindRuntimePublication(
+        dependencies.frame_graph_runtime.publicationState());
+    dependencies.frame_graph_runtime.publishPreparedGeneration(
+        std::move(prepared_generation));
     return result;
 }
 

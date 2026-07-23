@@ -4,6 +4,7 @@
 #include "../../project/renderpipeline.hpp"
 #include "../../project/targetrenderplanning.hpp"
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <nlohmann/json_fwd.hpp>
@@ -62,6 +63,7 @@ struct RenderingPassConfigRegistrationResult {
     std::vector<std::shared_ptr<const VulkanTargetPlan>>
         target_plans;
     std::shared_ptr<const ResolvedSampleCountPlan> sample_count_plan;
+    std::uint64_t runtime_generation = 0;
 };
 
 RenderingPassConfigRegistrationResult registerRenderingPassConfigFromJson(

@@ -28,7 +28,9 @@ namespace Pelican {
 namespace {
 
 bool hasOutputTransform(RenderingPassId rendering_pass_id) {
-    const auto *frame_graph = GET_MODULE(FrameGraphRuntimeContainer).find(rendering_pass_id);
+    const auto frame_graph =
+        GET_MODULE(FrameGraphRuntimeContainer).find(
+            rendering_pass_id);
     return frame_graph != nullptr && !frame_graph->nodes.empty() &&
            frame_graph->nodes.back().kind == FramePlanNodeKind::output_transform;
 }

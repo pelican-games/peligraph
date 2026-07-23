@@ -53,6 +53,7 @@
 #include <glm/gtc/matrix_inverse.hpp>
 #include <limits>
 #include <map>
+#include <stdexcept>
 #include <string_view>
 
 namespace Pelican {
@@ -882,8 +883,8 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
 }
 
 void executeRenderingPasses(const FrameRenderContext &render_ctx,
-                            RenderingPassId rendering_pass_id,
                             const CompiledRenderingPass &rendering_pass,
+                            const CompiledFrameGraphExecution &frame_graph,
                             RenderFrameModules &modules,
                             const RenderFrameSnapshot &snapshot,
                             bool first_person_view,
@@ -929,11 +930,7 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
     const RenderPassExecutorDependencies pass_executor_dependencies{modules.render_target_container, modules.vk_utils,
                                                                     pass_dispatch_dependencies};
 
-    const auto *frame_graph = modules.frame_graph_runtime.find(rendering_pass_id);
-    if (frame_graph == nullptr) {
-        throw std::runtime_error("Frame graph execution is not registered");
-    }
-    executePlannedFrameGraph(render_ctx, rendering_pass, *frame_graph, modules,
+    executePlannedFrameGraph(render_ctx, rendering_pass, frame_graph, modules,
                              frame_target_format, layout_tracker,
                              pass_executor_dependencies, node_trace, logical_frame,
                              graph_variant, view_index);
@@ -941,8 +938,21 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
 
 void rebindFullscreenInputs(RenderFrameModules &modules) {
     RenderTargetImageViewResolver rt_views{modules.render_target_container};
-    for (const auto pass_id : modules.rendering_pass_container.getRegisteredPassIds()) {
-        const auto &compiled_pass = modules.rendering_pass_container.getCompiledRenderingPass(pass_id);
+    const auto generation =
+        modules.frame_graph_runtime.snapshot();
+    if (generation == nullptr) {
+        throw std::runtime_error(
+            "Fullscreen input rebind requires a published render pipeline");
+    }
+    for (const auto pass_id :
+         generation->rendering_pass_ids) {
+        const auto *program = generation->find(pass_id);
+        if (program == nullptr) {
+            throw std::logic_error(
+                "Published render pipeline pass table is inconsistent");
+        }
+        const auto &compiled_pass =
+            program->rendering_pass;
         for (const auto &pass : compiled_pass.passes) {
             if (pass.definition.isFullscreen() &&
                 (!pass.definition.input_targets.empty() || !pass.definition.input_buffers.empty())) {
@@ -1074,14 +1084,15 @@ void recordXrMirrorIntermediate(const FrameRenderContext &render_ctx,
 }
 #endif
 
-std::optional<ProjectionJitterSettings> projectionJitterSettingsFor(
-    const FrameGraphRuntimeContainer &runtime, RenderingPassId rendering_pass_id) {
-    const auto *frame_graph = runtime.find(rendering_pass_id);
-    if (frame_graph == nullptr || !frame_graph->render_pipeline ||
-        !frame_graph->render_pipeline->projection_jitter) {
+std::optional<ProjectionJitterSettings>
+projectionJitterSettingsFor(
+    const CompiledFrameGraphExecution &frame_graph) {
+    if (!frame_graph.render_pipeline ||
+        !frame_graph.render_pipeline->projection_jitter) {
         return std::nullopt;
     }
-    const auto &jitter = *frame_graph->render_pipeline->projection_jitter;
+    const auto &jitter =
+        *frame_graph.render_pipeline->projection_jitter;
     ProjectionJitterSettings settings{
         jitter.provider,
         jitter.pattern,
@@ -1151,8 +1162,6 @@ Renderer::Renderer() {
     xr_excluded_features = variants.xr_excluded_features;
     preview_graph_program = variants.preview;
     current_rendering_pass_id = flat_rendering_pass_id;
-    projection_jitter = projectionJitterSettingsFor(GET_MODULE(FrameGraphRuntimeContainer),
-                                                     current_rendering_pass_id);
     flat_temporal_histories.resize(1);
     if (xr_rendering_pass_id) xr_temporal_histories.resize(2);
     internal_render_extent = GET_MODULE(RenderTarget).getExtent();
@@ -1250,14 +1259,22 @@ const std::vector<TemporalFrameHistory> &Renderer::activeTemporalHistories() con
 
 nlohmann::json Renderer::currentFramePlanJson() const {
     const auto *frame_graph_runtime = FastModuleContainer::tryGet<FrameGraphRuntimeContainer>();
-    const auto *frame_graph = frame_graph_runtime == nullptr
-                                  ? nullptr
-                                  : frame_graph_runtime->find(current_rendering_pass_id);
+    const auto generation =
+        frame_graph_runtime != nullptr
+            ? frame_graph_runtime->snapshot()
+            : nullptr;
+    const auto *program =
+        generation != nullptr
+            ? generation->find(current_rendering_pass_id)
+            : nullptr;
+    const auto *frame_graph =
+        program != nullptr ? &program->frame_graph : nullptr;
     if (frame_graph == nullptr) {
         throw std::runtime_error("Current frame plan is not registered");
     }
     auto result = framePlanToJson(frame_graph->plan,
                                   frame_graph->render_pipeline.get());
+    result["runtime_generation"] = generation->generation;
     if (frame_graph->target_plan != nullptr) {
         result["physical_target_plan"] =
             vulkanTargetPlanToJson(*frame_graph->target_plan);
@@ -1275,9 +1292,16 @@ nlohmann::json Renderer::currentFramePlanJson() const {
 
 std::vector<std::string> Renderer::currentFramePlanOrderForTesting() const {
     const auto *frame_graph_runtime = FastModuleContainer::tryGet<FrameGraphRuntimeContainer>();
-    const auto *frame_graph = frame_graph_runtime == nullptr
-                                  ? nullptr
-                                  : frame_graph_runtime->find(current_rendering_pass_id);
+    const auto generation =
+        frame_graph_runtime != nullptr
+            ? frame_graph_runtime->snapshot()
+            : nullptr;
+    const auto *program =
+        generation != nullptr
+            ? generation->find(current_rendering_pass_id)
+            : nullptr;
+    const auto *frame_graph =
+        program != nullptr ? &program->frame_graph : nullptr;
     if (frame_graph == nullptr) {
         throw std::runtime_error("Current frame plan is not registered");
     }
@@ -1320,8 +1344,6 @@ void Renderer::selectGraphVariant(RenderGraphVariant variant) {
     current_rendering_pass_id =
         variant == RenderGraphVariant::flat ? flat_rendering_pass_id
                                             : *xr_rendering_pass_id;
-    projection_jitter = projectionJitterSettingsFor(
-        GET_MODULE(FrameGraphRuntimeContainer), current_rendering_pass_id);
     graph_variant_transition_trace.push_back({
         {"from", from == RenderGraphVariant::flat ? "flat" : "xr"},
         {"to", variant == RenderGraphVariant::flat ? "flat" : "xr"},
@@ -1364,12 +1386,39 @@ void Renderer::renderLogicalFrame(
     deletion_queue.beginFrame();
 
     auto modules = resolveRenderFrameModules();
+    // Keep one immutable publication root alive for the whole logical frame.
+    // A frame therefore observes either the complete old generation or the
+    // complete new generation, never a pass/plan mixture.
+    const auto runtime_generation =
+        modules.frame_graph_runtime.snapshot();
+    const auto *program =
+        runtime_generation != nullptr
+            ? runtime_generation->find(
+                  current_rendering_pass_id)
+            : nullptr;
+    if (program == nullptr ||
+        !program->frame_graph.render_pipeline) {
+        throw std::runtime_error(
+            "Renderer logical frame requires a compiled render pipeline");
+    }
+    const auto &rendering_pass =
+        program->rendering_pass;
+    const auto &frame_graph =
+        program->frame_graph;
+    const auto frame_projection_jitter =
+        projectionJitterSettingsFor(frame_graph);
+
     if (modules.render_timing != nullptr) {
         std::size_t max_nodes = 0;
         for (const auto pass_id : {flat_rendering_pass_id,
                                    xr_rendering_pass_id.value_or(flat_rendering_pass_id)}) {
-            const auto *graph = modules.frame_graph_runtime.find(pass_id);
-            if (graph != nullptr) max_nodes = std::max(max_nodes, graph->nodes.size());
+            const auto *candidate =
+                runtime_generation->find(pass_id);
+            if (candidate != nullptr) {
+                max_nodes = std::max(
+                    max_nodes,
+                    candidate->frame_graph.nodes.size());
+            }
         }
         // XR range slots 0/1 are the eyes; 2 is the engine mirror copy and 3
         // is the independently submitted desktop mirror sink.
@@ -1410,16 +1459,8 @@ void Renderer::renderLogicalFrame(
     observed_camera_discontinuity_revision = camera_discontinuity_revision;
     updateFrameLights(modules.light_container);
 
-    const auto &rendering_pass =
-        modules.rendering_pass_container.getCompiledRenderingPass(current_rendering_pass_id);
-    const auto *frame_graph =
-        modules.frame_graph_runtime.find(current_rendering_pass_id);
-    if (frame_graph == nullptr || !frame_graph->render_pipeline) {
-        throw std::runtime_error(
-            "Renderer logical frame requires a compiled render pipeline");
-    }
     const auto &graph_variant_policy =
-        frame_graph->render_pipeline->graph_variant_policy;
+        frame_graph.render_pipeline->graph_variant_policy;
     const auto expected_graph_variant =
         active_graph_variant == RenderGraphVariant::flat
             ? RenderPipelineGraphVariant::flat
@@ -1439,7 +1480,8 @@ void Renderer::renderLogicalFrame(
             std::to_string(graph_variant_policy.view_count) +
             " views");
     }
-    const auto &draw_sorting = frame_graph->render_pipeline->draw_sorting;
+    const auto &draw_sorting =
+        frame_graph.render_pipeline->draw_sorting;
     const bool per_view_sort =
         graph_variant_policy.view_family ==
             GraphVariantViewFamily::stereo &&
@@ -1567,8 +1609,8 @@ void Renderer::renderLogicalFrame(
 
         const auto &view = views[view_index];
         glm::vec2 jitter_ndc{0.0f};
-        if (projection_jitter) {
-            jitter_ndc = projectionJitterSample(*projection_jitter, engine_time.frameIndex(),
+        if (frame_projection_jitter) {
+            jitter_ndc = projectionJitterSample(*frame_projection_jitter, engine_time.frameIndex(),
                                                 render_ctx.extent.width, render_ctx.extent.height)
                              .jitter_ndc;
         }
@@ -1586,7 +1628,7 @@ void Renderer::renderLogicalFrame(
             node_trace = nlohmann::json::array();
             node_trace_ptr = &node_trace;
         }
-        executeRenderingPasses(render_ctx, current_rendering_pass_id, rendering_pass, modules,
+        executeRenderingPasses(render_ctx, rendering_pass, frame_graph, modules,
                                snapshot, view.first_person_view, frame_target_format,
                                render_target_layout_tracker,
                                node_trace_ptr, engine_time.frameIndex(),
@@ -1641,7 +1683,8 @@ void Renderer::renderLogicalFrame(
         for (const auto &snapshot : last_view_snapshots) {
             transition["reset_epochs"].push_back(snapshot.temporal_reset_epoch);
         }
-        transition["projection_jitter"] = projection_jitter.has_value();
+        transition["projection_jitter"] =
+            frame_projection_jitter.has_value();
         transition["frame_plan"] = currentFramePlanOrderForTesting();
         pending_graph_transition.reset();
     }

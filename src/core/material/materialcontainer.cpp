@@ -1,5 +1,6 @@
 #include "materialcontainer.hpp"
 #include "../loader/imageloader.hpp"
+#include "../renderingpass/framegraphruntime.hpp"
 #include "../renderingpass/materialpassattachments.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
@@ -589,14 +590,36 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
             throw std::runtime_error("Material capacity exceeded");
         }
         const auto &registered_passes = GET_MODULE(RenderingPassContainer);
-        for (const auto rendering_pass_id : registered_passes.getRegisteredPassIds()) {
-            const auto &rendering_pass =
-                registered_passes.getCompiledRenderingPass(rendering_pass_id);
-            for (const auto &compiled : rendering_pass.passes) {
-                if (isRenderRequired(compiled.definition, material_id)) {
-                    (void)ensureScreenInputDescriptor(material_id,
-                                                      compiled.definition);
+        const auto bind_screen_inputs =
+            [&](const CompiledRenderingPass &rendering_pass) {
+                for (const auto &compiled :
+                     rendering_pass.passes) {
+                    if (isRenderRequired(
+                            compiled.definition, material_id)) {
+                        (void)ensureScreenInputDescriptor(
+                            material_id, compiled.definition);
+                    }
                 }
+            };
+        if (const auto generation =
+                registered_passes.snapshot()) {
+            for (const auto rendering_pass_id :
+                 generation->rendering_pass_ids) {
+                const auto *program =
+                    generation->find(rendering_pass_id);
+                if (program == nullptr) {
+                    throw std::logic_error(
+                        "Published render pipeline pass table is inconsistent");
+                }
+                bind_screen_inputs(program->rendering_pass);
+            }
+        } else {
+            for (const auto rendering_pass_id :
+                 registered_passes.getRegisteredPassIds()) {
+                bind_screen_inputs(
+                    registered_passes
+                        .getCompiledRenderingPass(
+                            rendering_pass_id));
             }
         }
         GET_MODULE(VulkanManageCore)
