@@ -7,6 +7,7 @@ add_library(pelican_project
     jsonrpc.cpp
     logicalrendergraph.cpp
     logicalrendertype.cpp
+    materialscreeninput.cpp
     materiallowering.cpp
     materialformat.cpp
     openpbrmapping.cpp

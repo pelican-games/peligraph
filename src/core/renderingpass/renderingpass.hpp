@@ -4,6 +4,7 @@
 #include "../handle.hpp"
 #include "../shader/shaderreference.hpp"
 #include "../../project/renderpipeline.hpp"
+#include "../../project/materialscreeninput.hpp"
 #include <array>
 #include <cstdint>
 #include <optional>
@@ -52,10 +53,17 @@ inline constexpr bool isSwapchainRenderTarget(GlobalRenderTargetId rt_id) {
     return rt_id.value == swapchainRenderTargetIdValue;
 }
 
+struct MaterialPassScreenInputBinding {
+    MaterialScreenInputContract contract;
+    GlobalRenderTargetId target = noRenderTargetId();
+    bool history = false;
+};
+
 struct MaterialPassInfo {
     uint32_t material_start = 0;
     uint32_t material_count = 0;
     MaterialPassContract contract = MaterialPassContract::legacy_gbuffer_v1;
+    std::vector<MaterialPassScreenInputBinding> screen_inputs;
 };
 
 enum class FullscreenPushConstantData {

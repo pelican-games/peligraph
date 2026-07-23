@@ -87,9 +87,19 @@ std::string makeParamsInclude(const SurfaceFormatDocument &surface, bool split_s
         const auto &input = surface.screen_inputs[i];
         source << "layout(set = PELICAN_SET_PASS_INPUT, binding = " << i
                << ") uniform sampler2D pelican_screen_" << input << "_texture;\n";
-        source << "vec4 pelican_screen_" << input
-               << "(vec2 uv) { return texture(pelican_screen_" << input
-               << "_texture, uv); }\n";
+        if (input == "linear_view_depth") {
+            source << "vec4 pelican_screen_linear_view_depth(vec2 uv) { "
+                      "float device_depth = texture("
+                      "pelican_screen_linear_view_depth_texture, uv).r; "
+                      "vec4 view_position = inverse(pelicanFrame.projection) * "
+                      "vec4(uv * 2.0 - 1.0, device_depth, 1.0); "
+                      "float linear_depth = -view_position.z / view_position.w; "
+                      "return vec4(linear_depth); }\n";
+        } else {
+            source << "vec4 pelican_screen_" << input
+                   << "(vec2 uv) { return texture(pelican_screen_" << input
+                   << "_texture, uv); }\n";
+        }
     }
     return source.str();
 }

@@ -56,7 +56,8 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
             continue;
         }
 
-        material_container.bindResource(cmd_buf, pass_id, draw_call.material, current_material_id);
+        material_container.bindResource(cmd_buf, pass_id, pass, draw_call.material,
+                                        current_material_id);
         const auto pipeline_layout = material_container.pipelineLayout(draw_call.material);
         vert_buf_container.bindVertexBuffer(cmd_buf, draw_call.skinned);
         dependencies.frame_resources.bindGraphics(cmd_buf, pipeline_layout);

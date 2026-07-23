@@ -2,6 +2,7 @@
 #include "renderingpassjsonhelpers.hpp"
 #include <algorithm>
 #include <cctype>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -88,6 +89,25 @@ std::vector<std::string> parseOptionalStringList(const nlohmann::json &json, std
     return parseStringList(json.at(field), std::string{context} + "." + std::string{field});
 }
 
+void appendMaterialScreenInputReads(const nlohmann::json &pass_json,
+                                    std::vector<std::string> &reads) {
+    if (!pass_json.contains("screen_inputs")) {
+        return;
+    }
+    const auto &screen_inputs = pass_json.at("screen_inputs");
+    if (!screen_inputs.is_object()) {
+        throw std::runtime_error(
+            "Frame graph pass.screen_inputs must be an object");
+    }
+    for (auto entry = screen_inputs.begin(); entry != screen_inputs.end(); ++entry) {
+        if (!entry.value().is_string()) {
+            throw std::runtime_error(
+                "Frame graph pass.screen_inputs entries must name resources");
+        }
+        appendUnique(reads, entry.value().get<std::string>());
+    }
+}
+
 void splitHistoryReads(const std::vector<std::string> &authored,
                        std::vector<std::string> &reads,
                        std::vector<std::string> &reads_history) {
@@ -169,6 +189,7 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
     }
     splitHistoryReads(parseOptionalStringList(pass_json, "input", "pass"),
                       node.reads, node.reads_history);
+    appendMaterialScreenInputReads(pass_json, node.reads);
     node.kind = type == "output_transform" ? FramePlanNodeKind::output_transform
                                             : FramePlanNodeKind::render;
     const bool ui_pass = type == "ui";
@@ -278,14 +299,36 @@ std::size_t formatBlockBytes(std::string_view format) {
 std::unordered_map<std::string, std::size_t> parseRenderTargetByteSizes(const nlohmann::json &json) {
     std::unordered_map<std::string, std::size_t> sizes;
     if (!json.contains("render_targets") || !json.at("render_targets").is_array()) return sizes;
+    std::optional<std::pair<std::size_t, std::size_t>> base_extent;
     for (const auto &target : json.at("render_targets")) {
-        if (!target.is_object() || !target.contains("width") || !target.contains("height")) continue;
+        if (!target.is_object() || !target.contains("width") ||
+            !target.contains("height")) {
+            continue;
+        }
+        if (target.value("format_class", std::string{}) == "display") {
+            base_extent = {target.at("width").get<std::size_t>(),
+                           target.at("height").get<std::size_t>()};
+            break;
+        }
+    }
+    for (const auto &target : json.at("render_targets")) {
+        if (!target.is_object()) continue;
         const auto name = requireString(target, "name", "render target");
+        std::size_t width = 0;
+        std::size_t height = 0;
+        if (target.contains("width") && target.contains("height")) {
+            width = target.at("width").get<std::size_t>();
+            height = target.at("height").get<std::size_t>();
+        } else if (base_extent && target.contains("extent_scale") &&
+                   target.at("extent_scale").is_number()) {
+            const auto scale = target.at("extent_scale").get<double>();
+            width = static_cast<std::size_t>(base_extent->first * scale);
+            height = static_cast<std::size_t>(base_extent->second * scale);
+        }
+        if (width == 0 || height == 0) continue;
         const auto format = requireString(target, "format", "render target '" + name + "'");
         const auto bytes = formatBlockBytes(format);
-        if (bytes == 0) continue;
-        sizes.emplace(name, target.at("width").get<std::size_t>() *
-                                target.at("height").get<std::size_t>() * bytes);
+        if (bytes != 0) sizes.emplace(name, width * height * bytes);
     }
     return sizes;
 }

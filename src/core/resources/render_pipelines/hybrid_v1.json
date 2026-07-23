@@ -58,7 +58,7 @@
         "extent_scale": 1.0,
         "format": "D32_SFLOAT",
         "format_class": "data",
-        "usage": ["DEPTH_STENCIL_ATTACHMENT"]
+        "usage": ["DEPTH_STENCIL_ATTACHMENT", "TRANSFER_SRC"]
       },
       {
         "name": "ssao_output",
@@ -80,6 +80,20 @@
         "format": "R16G16B16A16_SFLOAT",
         "format_class": "explicit(R16G16B16A16_SFLOAT)",
         "usage": ["COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"]
+      },
+      {
+        "name": "opaque_color",
+        "extent_scale": 1.0,
+        "format": "R16G16B16A16_SFLOAT",
+        "format_class": "explicit(R16G16B16A16_SFLOAT)",
+        "usage": ["TRANSFER_DST", "SAMPLED"]
+      },
+      {
+        "name": "opaque_depth",
+        "extent_scale": 1.0,
+        "format": "D32_SFLOAT",
+        "format_class": "data",
+        "usage": ["TRANSFER_DST", "SAMPLED"]
       }
     ],
     "rendering_passes": [
@@ -154,9 +168,31 @@
             "depth_store_op": "store"
           },
           {
+            "name": "__snapshot_opaque_color",
+            "type": "snapshot_copy",
+            "source": "lit_color",
+            "destination": "opaque_color",
+            "snapshot": "opaque_color",
+            "snapshot_after": "forward_opaque"
+          },
+          {
+            "name": "__snapshot_opaque_depth",
+            "type": "snapshot_copy",
+            "source": "scene_depth",
+            "destination": "opaque_depth",
+            "snapshot": "opaque_depth",
+            "snapshot_after": "forward_opaque"
+          },
+          {
             "name": "forward_transparent",
             "type": "material",
             "material_contract": "forward_transparent_v1",
+            "screen_inputs": {
+              "opaque_color": "opaque_color",
+              "opaque_depth": "opaque_depth",
+              "scene_depth": "opaque_depth",
+              "linear_view_depth": "opaque_depth"
+            },
             "output": {"color": ["lit_color"], "depth": "scene_depth"},
             "color_load_op": "load",
             "depth_load_op": "load",

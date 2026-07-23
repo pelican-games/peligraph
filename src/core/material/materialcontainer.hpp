@@ -10,6 +10,8 @@
 #include "../vkcore/deferredcallback.hpp"
 #include "../vkcore/image.hpp"
 #include "material.hpp"
+#include <array>
+#include <cstdint>
 #include <glm/glm.hpp>
 #include <map>
 #include <limits>
@@ -29,6 +31,7 @@ namespace Pelican {
 struct LoadedImage;
 class TextureReloadHandler;
 class MaterialValuesReloadHandler;
+class RenderTargetImageViewResolver;
 namespace watch {
 struct AssetKey;
 struct ReloadRequest;
@@ -57,7 +60,9 @@ DECLARE_MODULE(MaterialContainer) {
     bool split_custom_samplers = false;
 
     vk::UniqueSampler nearest_sampler, linear_sampler;
+    vk::UniqueSampler screen_nearest_sampler, screen_linear_sampler;
     vk::UniqueDescriptorPool desc_pool;
+    vk::UniqueDescriptorPool screen_input_desc_pool;
 
     struct InternalTextureResource {
         ImageWrapper image;
@@ -83,10 +88,23 @@ DECLARE_MODULE(MaterialContainer) {
             bool srgb = false;
         };
 
+        struct ScreenInputResource {
+            MaterialScreenInputContract contract;
+            GlobalRenderTargetId target = noRenderTargetId();
+            bool history = false;
+        };
+        struct ScreenInputDescriptor {
+            std::array<vk::UniqueDescriptorSet, 2> descsets;
+            std::vector<ScreenInputResource> resources;
+            std::array<std::vector<vk::ImageView>, 2> bound_image_views;
+            std::uint64_t binding_revision = 0;
+        };
+
         PipelineHandle pipeline;
         MaterialRouteClass route = MaterialRouteClass::deferred_geometry;
         MaterialShaderContract shader_contract = MaterialShaderContract::gbuffer_v1;
         std::optional<std::string> exact_pass;
+        std::vector<MaterialScreenInputContract> screen_inputs;
         GlobalTextureId base_color_texture;
         GlobalTextureId metallic_roughness_texture;
         GlobalTextureId normal_texture;
@@ -97,6 +115,8 @@ DECLARE_MODULE(MaterialContainer) {
         std::vector<std::byte> custom_values;
         mutable std::uint64_t descriptor_revision = 0;
         vk::UniqueDescriptorSet descset;
+        mutable std::unordered_map<std::string, ScreenInputDescriptor>
+            screen_input_descriptors;
     };
     std::unordered_map<std::string, PipelineHandle> pipelines;
     std::optional<PipelineHandle> default_pipeline;
@@ -108,6 +128,7 @@ DECLARE_MODULE(MaterialContainer) {
     BufferWrapper material_buffer;
     std::unique_ptr<TextureReloadHandler> texture_reload_handler;
     std::unique_ptr<MaterialValuesReloadHandler> material_values_reload_handler;
+    mutable std::uint64_t next_screen_input_binding_revision = 1;
     // Declared last and explicitly closed at destructor entry. Deferred slot
     // callbacks pin this state while using the owner.
     DeferredCallbackLifetime deferred_callbacks;
@@ -125,6 +146,12 @@ DECLARE_MODULE(MaterialContainer) {
                         std::vector<StagedMaterialDescriptor> descriptors);
     bool materialValuesLayoutMatches(GlobalMaterialId material,
                                      const Std140Layout &layout) const;
+    InternalMaterialInfo::ScreenInputDescriptor buildScreenInputDescriptor(
+        PipelineHandle pipeline,
+        std::vector<InternalMaterialInfo::ScreenInputResource> resources,
+        const RenderTargetImageViewResolver &rt_views) const;
+    const InternalMaterialInfo::ScreenInputDescriptor *ensureScreenInputDescriptor(
+        GlobalMaterialId material, const PassDefinition &pass) const;
 
   public:
     MaterialContainer();
@@ -198,8 +225,14 @@ DECLARE_MODULE(MaterialContainer) {
     MaterialRouteClass routeForMaterial(GlobalMaterialId material) const {
         return materials.get(material).route;
     }
-    void bindResource(vk::CommandBuffer cmd_buf, PassId pass_id, GlobalMaterialId material,
+    void bindResource(vk::CommandBuffer cmd_buf, PassId pass_id,
+                      const PassDefinition &pass, GlobalMaterialId material,
                       GlobalMaterialId prev_material_id) const;
+    void rebindScreenInputs(const RenderTargetImageViewResolver &rt_views) const;
+    std::vector<vk::ImageView> boundScreenInputImageViewsForTesting(
+        GlobalMaterialId material, const PassDefinition &pass) const;
+    std::uint64_t screenInputBindingRevisionForTesting(
+        GlobalMaterialId material, const PassDefinition &pass) const;
     vk::PipelineLayout getPipelineLayout() const;
     vk::PipelineLayout pipelineLayout(GlobalMaterialId material) const;
 };

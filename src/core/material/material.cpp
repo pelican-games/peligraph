@@ -14,6 +14,7 @@ void applyLoweredMaterial(MaterialInfo &destination, const LoweredMaterial &lowe
     // attachment count as the deferred G-buffer variant.
     destination.shader_contract = MaterialShaderContract::legacy_gbuffer_v1;
     destination.exact_pass = lowered.exact_pass;
+    destination.screen_inputs = lowered.screen_input_contracts;
     destination.custom_textures.clear();
     destination.custom_textures.reserve(lowered.textures.size());
     for (const auto &texture : lowered.textures) {
@@ -32,14 +33,6 @@ MaterialShaderContract shaderContractForRoute(MaterialRouteClass route) {
     return route == MaterialRouteClass::deferred_geometry
                ? MaterialShaderContract::gbuffer_v1
                : MaterialShaderContract::forward_scene_color_v1;
-}
-
-void requireSupportedRouteInputs(const LoweredMaterial &lowered) {
-    if (lowered.screen_inputs.empty()) return;
-    throw std::runtime_error(
-        "route-aware material '" + lowered.name + "' screen input '" +
-        lowered.screen_inputs.front() +
-        "' requires material-pass snapshot descriptors, which hybrid_v1 does not provide yet");
 }
 
 } // namespace
@@ -65,7 +58,6 @@ void applyLoweredMaterial(MaterialInfo &destination, const LoweredMaterial &lowe
 
 void applyLoweredMaterialForRoute(MaterialInfo &destination,
                                   const LoweredMaterial &lowered) {
-    requireSupportedRouteInputs(lowered);
     applyLoweredMaterial(destination, lowered);
     destination.shader_contract = shaderContractForRoute(lowered.route);
 }
@@ -73,7 +65,6 @@ void applyLoweredMaterialForRoute(MaterialInfo &destination,
 void applyLoweredMaterialForRoute(MaterialInfo &destination,
                                   const LoweredMaterial &lowered,
                                   const LoweredMaterialTextureResolver &resolve_texture) {
-    requireSupportedRouteInputs(lowered);
     applyLoweredMaterial(destination, lowered, resolve_texture);
     destination.shader_contract = shaderContractForRoute(lowered.route);
 }

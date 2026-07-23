@@ -8,8 +8,24 @@
 namespace Pelican {
 
 void validatePassInputs(const PassDefinition &pass_def) {
-    if ((!pass_def.input_targets.empty() || !pass_def.input_buffers.empty()) && !pass_def.isFullscreen()) {
-        throw std::runtime_error("Only fullscreen passes support input targets: " + pass_def.name);
+    if ((!pass_def.input_targets.empty() || !pass_def.input_buffers.empty()) &&
+        !pass_def.isFullscreen() && !pass_def.isMaterial()) {
+        throw std::runtime_error(
+            "Only fullscreen and material passes support input targets: " +
+            pass_def.name);
+    }
+    if (pass_def.isMaterial()) {
+        if (!pass_def.input_buffers.empty()) {
+            throw std::runtime_error(
+                "Material pass screen inputs do not support buffers: " +
+                pass_def.name);
+        }
+        if (!pass_def.input_targets.empty() &&
+            pass_def.materialInfo().screen_inputs.empty()) {
+            throw std::runtime_error(
+                "Material pass inputs must use named screen_inputs: " +
+                pass_def.name);
+        }
     }
 
     if (pass_def.input_target_history.size() != pass_def.input_targets.size()) {
@@ -206,6 +222,10 @@ void validatePassOutputs(const PassDefinition &pass_def) {
 void validatePassSpecificFields(const PassDefinition &pass_def, const nlohmann::json &pass_json) {
     if (!pass_def.isMaterial() && pass_json.contains("material_range")) {
         throw std::runtime_error("Only material passes support material_range: " + pass_def.name);
+    }
+    if (!pass_def.isMaterial() && pass_json.contains("screen_inputs")) {
+        throw std::runtime_error("Only material passes support screen_inputs: " +
+                                 pass_def.name);
     }
 
     if (pass_json.contains("needs_projection_matrix")) {

@@ -2,6 +2,8 @@
 #include "../loader/imageloader.hpp"
 #include "../renderingpass/materialpassattachments.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
+#include "../renderingpass/rendertargetcontainer.hpp"
+#include "../renderingpass/rendertargetimageviewresolver.hpp"
 #include "../shader/pelican_sets.hpp"
 #include "../shader/pipelinefactory.hpp"
 #include "../shader/surfacecompiler.hpp"
@@ -12,6 +14,7 @@
 #include "standardmaterialresource.hpp"
 #include "materialvaluesreloadhandler.hpp"
 #include "texturereloadhandler.hpp"
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <sstream>
@@ -32,6 +35,7 @@ constexpr uint32_t materialBufferBinding = PELICAN_MATERIAL_BUFFER_BINDING;
 constexpr uint32_t baseMaterialTextureBindingCount = 4;
 constexpr uint32_t vatMaterialTextureBindingCount = 6;
 constexpr size_t maxMaterials = 1024;
+constexpr uint32_t maxMaterialScreenInputs = 4;
 
 static std::string makePipelineKey(const MaterialInfo &info) {
     std::ostringstream key;
@@ -188,6 +192,18 @@ static vk::UniqueDescriptorPool createDescriptorPool(vk::Device device, bool spl
     return device.createDescriptorPoolUnique(create_info);
 }
 
+static vk::UniqueDescriptorPool createScreenInputDescriptorPool(
+    vk::Device device, uint32_t max_sets = maxMaterials * 4) {
+    const vk::DescriptorPoolSize pool_size{
+        vk::DescriptorType::eCombinedImageSampler,
+        max_sets * maxMaterialScreenInputs};
+    vk::DescriptorPoolCreateInfo create_info;
+    create_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
+    create_info.maxSets = max_sets;
+    create_info.setPoolSizes(pool_size);
+    return device.createDescriptorPoolUnique(create_info);
+}
+
 static vk::UniqueSampler createSampler(vk::Device device, vk::Filter filter) {
     vk::SamplerCreateInfo create_info;
     create_info.magFilter = filter;
@@ -205,6 +221,20 @@ static vk::UniqueSampler createSampler(vk::Device device, vk::Filter filter) {
     create_info.maxLod = VK_LOD_CLAMP_NONE;
     create_info.borderColor = vk::BorderColor::eIntOpaqueBlack;
     create_info.unnormalizedCoordinates = false;
+    return device.createSamplerUnique(create_info);
+}
+
+static vk::UniqueSampler createScreenSampler(vk::Device device,
+                                             vk::Filter filter) {
+    vk::SamplerCreateInfo create_info;
+    create_info.magFilter = filter;
+    create_info.minFilter = filter;
+    create_info.mipmapMode = vk::SamplerMipmapMode::eNearest;
+    create_info.addressModeU = vk::SamplerAddressMode::eClampToEdge;
+    create_info.addressModeV = vk::SamplerAddressMode::eClampToEdge;
+    create_info.addressModeW = vk::SamplerAddressMode::eClampToEdge;
+    create_info.minLod = 0.0f;
+    create_info.maxLod = 0.0f;
     return device.createSamplerUnique(create_info);
 }
 
@@ -231,7 +261,10 @@ MaterialContainer::MaterialContainer()
       split_custom_samplers{surfaceSpvLinkExperimentalEnabled()},
       nearest_sampler{createSampler(device, vk::Filter::eNearest)},
       linear_sampler{createSampler(device, vk::Filter::eLinear)},
+      screen_nearest_sampler{createScreenSampler(device, vk::Filter::eNearest)},
+      screen_linear_sampler{createScreenSampler(device, vk::Filter::eLinear)},
       desc_pool{createDescriptorPool(device, split_custom_samplers)},
+      screen_input_desc_pool{createScreenInputDescriptorPool(device)},
       material_buffer{GET_MODULE(VulkanManageCore).allocBuf(
           sizeof(MaterialGpuData) * maxMaterials, vk::BufferUsageFlagBits::eStorageBuffer,
           vma::MemoryUsage::eAuto, vma::AllocationCreateFlagBits::eHostAccessSequentialWrite)} {}
@@ -532,6 +565,7 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         .route = info.route,
         .shader_contract = info.shader_contract,
         .exact_pass = std::move(info.exact_pass),
+        .screen_inputs = std::move(info.screen_inputs),
         .base_color_texture = info.base_color_texture,
         .metallic_roughness_texture = info.metallic_roughness_texture,
         .normal_texture = info.normal_texture,
@@ -546,6 +580,17 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     try {
         if (material_id.value < 0 || static_cast<size_t>(material_id.value) >= maxMaterials) {
             throw std::runtime_error("Material capacity exceeded");
+        }
+        const auto &registered_passes = GET_MODULE(RenderingPassContainer);
+        for (const auto rendering_pass_id : registered_passes.getRegisteredPassIds()) {
+            const auto &rendering_pass =
+                registered_passes.getCompiledRenderingPass(rendering_pass_id);
+            for (const auto &compiled : rendering_pass.passes) {
+                if (isRenderRequired(compiled.definition, material_id)) {
+                    (void)ensureScreenInputDescriptor(material_id,
+                                                      compiled.definition);
+                }
+            }
         }
         GET_MODULE(VulkanManageCore)
             .writeBuf(material_buffer, &gpu_data, sizeof(MaterialGpuData) * material_id.value,
@@ -988,8 +1033,158 @@ bool MaterialContainer::isRenderRequired(const PassDefinition &pass,
                                        material.shader_contract, material.exact_pass);
 }
 
-void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pass_id, GlobalMaterialId material_id,
+static std::string makeScreenInputPassKey(const PassDefinition &pass) {
+    std::ostringstream key;
+    key << pass.name << ':' << static_cast<int>(pass.materialInfo().contract);
+    for (const auto &input : pass.materialInfo().screen_inputs) {
+        key << ':' << input.contract.name << '=' << input.target.value
+            << (input.history ? "@history" : "");
+    }
+    return key.str();
+}
+
+static bool isDepthScreenInput(const MaterialScreenInputContract &contract) {
+    return contract.source_type.semantic ==
+           parseSemanticTypeId("pelican.render.depth@1");
+}
+
+static void requireScreenInputReflection(const ShaderReflection &reflection,
+                                         std::size_t input_count) {
+    std::vector<const ReflectedBinding *> bindings;
+    for (const auto &binding : reflection.bindings) {
+        if (binding.set == PELICAN_SET_PASS_INPUT) bindings.push_back(&binding);
+    }
+    std::sort(bindings.begin(), bindings.end(), [](const auto *left, const auto *right) {
+        return left->binding < right->binding;
+    });
+    if (bindings.size() != input_count) {
+        throw std::runtime_error(
+            "material screen inputs do not match shader reflection binding count");
+    }
+    for (std::size_t index = 0; index < bindings.size(); ++index) {
+        if (bindings[index]->binding != index ||
+            bindings[index]->type !=
+                vk::DescriptorType::eCombinedImageSampler) {
+            throw std::runtime_error(
+                "material screen inputs require consecutive combined image samplers in set 1");
+        }
+    }
+}
+
+MaterialContainer::InternalMaterialInfo::ScreenInputDescriptor
+MaterialContainer::buildScreenInputDescriptor(
+    PipelineHandle pipeline,
+    std::vector<InternalMaterialInfo::ScreenInputResource> resources,
+    const RenderTargetImageViewResolver &rt_views) const {
+    if (resources.empty()) return {};
+    if (resources.size() > maxMaterialScreenInputs) {
+        throw std::runtime_error("material has too many screen inputs");
+    }
+
+    auto &pipeline_factory = GET_MODULE(PipelineFactory);
+    requireScreenInputReflection(pipeline_factory.reflection(pipeline),
+                                 resources.size());
+    const auto layout = pipeline_factory.descriptorSetLayout(
+        pipeline, PELICAN_SET_PASS_INPUT);
+
+    InternalMaterialInfo::ScreenInputDescriptor result;
+    result.resources = std::move(resources);
+    result.binding_revision = next_screen_input_binding_revision++;
+    for (uint32_t parity = 0; parity < 2; ++parity) {
+        vk::DescriptorSetAllocateInfo allocation;
+        allocation.descriptorPool = screen_input_desc_pool.get();
+        allocation.descriptorSetCount = 1;
+        allocation.pSetLayouts = &layout;
+        result.descsets[parity] =
+            std::move(device.allocateDescriptorSetsUnique(allocation).front());
+
+        std::vector<vk::DescriptorImageInfo> image_infos;
+        std::vector<vk::WriteDescriptorSet> writes;
+        image_infos.reserve(result.resources.size());
+        writes.reserve(result.resources.size());
+        result.bound_image_views[parity].reserve(result.resources.size());
+        for (uint32_t binding = 0; binding < result.resources.size(); ++binding) {
+            const auto &resource = result.resources[binding];
+            if (!isConcreteRenderTarget(resource.target)) {
+                throw std::runtime_error(
+                    "material screen input must resolve to a render target: " +
+                    resource.contract.name);
+            }
+            const auto image_view = rt_views.getImageViewForFrame(
+                resource.target, resource.history, parity);
+            image_infos.push_back(vk::DescriptorImageInfo{
+                isDepthScreenInput(resource.contract)
+                    ? screen_nearest_sampler.get()
+                    : screen_linear_sampler.get(),
+                image_view, vk::ImageLayout::eShaderReadOnlyOptimal});
+            result.bound_image_views[parity].push_back(image_view);
+            vk::WriteDescriptorSet write{
+                result.descsets[parity].get(), binding, 0, 1,
+                vk::DescriptorType::eCombinedImageSampler};
+            write.pImageInfo = &image_infos.back();
+            writes.push_back(write);
+        }
+        device.updateDescriptorSets(writes, {});
+    }
+    return result;
+}
+
+const MaterialContainer::InternalMaterialInfo::ScreenInputDescriptor *
+MaterialContainer::ensureScreenInputDescriptor(
+    GlobalMaterialId material_id, const PassDefinition &pass) const {
+    const auto &material = materials.get(material_id);
+    if (material.screen_inputs.empty()) return nullptr;
+    if (!pass.isMaterial() ||
+        !materialPassAcceptsMaterial(pass.materialInfo().contract, pass.name,
+                                     material.route, material.shader_contract,
+                                     material.exact_pass)) {
+        throw std::runtime_error(
+            "material screen inputs requested for an incompatible pass: " +
+            pass.name);
+    }
+
+    const auto key = makeScreenInputPassKey(pass);
+    if (const auto found = material.screen_input_descriptors.find(key);
+        found != material.screen_input_descriptors.end()) {
+        return &found->second;
+    }
+
+    std::vector<InternalMaterialInfo::ScreenInputResource> resources;
+    resources.reserve(material.screen_inputs.size());
+    for (const auto &required : material.screen_inputs) {
+        const auto binding = std::find_if(
+            pass.materialInfo().screen_inputs.begin(),
+            pass.materialInfo().screen_inputs.end(), [&](const auto &candidate) {
+                return candidate.contract.name == required.name;
+            });
+        if (binding == pass.materialInfo().screen_inputs.end()) {
+            throw std::runtime_error(
+                "material screen input '" + required.name +
+                "' is not provided by pass '" + pass.name + "'");
+        }
+        if (binding->contract != required) {
+            throw std::runtime_error(
+                "material screen input '" + required.name +
+                "' type or footprint does not match pass '" + pass.name +
+                "'");
+        }
+        resources.push_back({required, binding->target, binding->history});
+    }
+
+    const RenderTargetImageViewResolver rt_views{
+        GET_MODULE(RenderTargetContainer)};
+    auto [inserted, unused] = material.screen_input_descriptors.emplace(
+        key, buildScreenInputDescriptor(material.pipeline, std::move(resources),
+                                        rt_views));
+    (void)unused;
+    return &inserted->second;
+}
+
+void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pass_id,
+                                     const PassDefinition &pass,
+                                     GlobalMaterialId material_id,
                                      GlobalMaterialId prev_material_id) const {
+    (void)pass_id;
     const auto &material = materials.get(material_id);
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
     const auto pipeline_layout = pipeline_factory.layout(material.pipeline);
@@ -1006,6 +1201,44 @@ void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pass_id, 
             cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout,
                                        imageDescriptorSetNumber, {material.descset.get()}, {});
     }
+
+    if (const auto *screen_inputs =
+            ensureScreenInputDescriptor(material_id, pass)) {
+        const auto parity = GET_MODULE(RenderTargetContainer).historyFrameIndex();
+        cmd_buf.bindDescriptorSets(
+            vk::PipelineBindPoint::eGraphics, pipeline_layout,
+            PELICAN_SET_PASS_INPUT,
+            {screen_inputs->descsets[parity].get()}, {});
+    }
+}
+
+void MaterialContainer::rebindScreenInputs(
+    const RenderTargetImageViewResolver &rt_views) const {
+    for (int value = 0; value < static_cast<int>(maxMaterials); ++value) {
+        const auto material_id = GlobalMaterialId{value};
+        if (!materials.contains(material_id)) continue;
+        const auto &material = materials.get(material_id);
+        for (auto &[key, descriptor] : material.screen_input_descriptors) {
+            (void)key;
+            descriptor = buildScreenInputDescriptor(
+                material.pipeline, descriptor.resources, rt_views);
+        }
+    }
+}
+
+std::vector<vk::ImageView>
+MaterialContainer::boundScreenInputImageViewsForTesting(
+    GlobalMaterialId material, const PassDefinition &pass) const {
+    const auto *descriptor = ensureScreenInputDescriptor(material, pass);
+    if (descriptor == nullptr) return {};
+    return descriptor->bound_image_views[
+        GET_MODULE(RenderTargetContainer).historyFrameIndex()];
+}
+
+std::uint64_t MaterialContainer::screenInputBindingRevisionForTesting(
+    GlobalMaterialId material, const PassDefinition &pass) const {
+    const auto *descriptor = ensureScreenInputDescriptor(material, pass);
+    return descriptor == nullptr ? 0 : descriptor->binding_revision;
 }
 
 vk::PipelineLayout MaterialContainer::getPipelineLayout() const {

@@ -366,13 +366,30 @@ nlohmann::json anchorNodeTrace(const std::string &name, size_t order) {
 std::size_t formatTexelBytes(vk::Format format) {
     switch (format) {
     case vk::Format::eR8Unorm: return 1;
+    case vk::Format::eR16Sfloat:
+    case vk::Format::eD16Unorm: return 2;
     case vk::Format::eR8G8B8A8Unorm:
     case vk::Format::eR8G8B8A8Srgb:
     case vk::Format::eB8G8R8A8Unorm:
     case vk::Format::eB8G8R8A8Srgb: return 4;
-    case vk::Format::eR16G16Sfloat: return 4;
-    case vk::Format::eR16G16B16A16Sfloat: return 8;
+    case vk::Format::eR16G16Sfloat:
+    case vk::Format::eD24UnormS8Uint:
+    case vk::Format::eD32Sfloat: return 4;
+    case vk::Format::eR16G16B16A16Sfloat:
+    case vk::Format::eD32SfloatS8Uint: return 8;
     default: return 0;
+    }
+}
+
+vk::ImageAspectFlags snapshotAspect(vk::Format format) {
+    switch (format) {
+    case vk::Format::eD16Unorm:
+    case vk::Format::eD24UnormS8Uint:
+    case vk::Format::eD32Sfloat:
+    case vk::Format::eD32SfloatS8Uint:
+        return vk::ImageAspectFlagBits::eDepth;
+    default:
+        return vk::ImageAspectFlagBits::eColor;
     }
 }
 
@@ -386,6 +403,10 @@ nlohmann::json snapshotCopyTrace(const FramePlanNode &node, const RenderTargetMe
         {"source", source.name},
         {"destination", destination.name},
         {"format", formatToString(destination.format)},
+        {"aspect", snapshotAspect(destination.format) ==
+                           vk::ImageAspectFlagBits::eDepth
+                       ? "depth"
+                       : "color"},
         {"extent", {destination.extent.width, destination.extent.height}},
         {"texel_block_bytes", formatTexelBytes(destination.format)},
         {"byte_size", static_cast<std::size_t>(destination.extent.width) * destination.extent.height *
@@ -777,8 +798,9 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                                       modules.vk_utils, destination_id,
                                       vk::ImageLayout::eTransferDstOptimal);
             vk::ImageCopy copy;
-            copy.srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
-            copy.dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+            const auto aspect = snapshotAspect(source.format);
+            copy.srcSubresource = {aspect, 0, 0, 1};
+            copy.dstSubresource = {aspect, 0, 0, 1};
             copy.extent = vk::Extent3D{source.extent.width, source.extent.height, 1};
             render_ctx.cmd_buf.copyImage(modules.render_target_container.getImage(source_id).image.get(),
                                          vk::ImageLayout::eTransferSrcOptimal,
@@ -897,6 +919,7 @@ void rebindFullscreenInputs(RenderFrameModules &modules) {
             }
         }
     }
+    modules.material_container.rebindScreenInputs(rt_views);
     modules.compute_task_container.rebindRenderTargets(
         modules.render_target_container);
 }

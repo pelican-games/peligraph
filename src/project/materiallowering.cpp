@@ -442,6 +442,22 @@ LoweredMaterial lowerMaterial(const MaterialDefinition &material,
     lowered.hooks = surface.hooks;
     lowered.routing = material.routing;
     lowered.screen_inputs = surface.screen_inputs;
+    if (!surface.screen_inputs.empty()) {
+        const auto logical_types = makeBuiltinLogicalTypeRegistry();
+        const auto logical_conversions =
+            makeBuiltinLogicalTypeConversionRegistry(logical_types);
+        lowered.screen_input_contracts.reserve(surface.screen_inputs.size());
+        for (const auto &input : surface.screen_inputs) {
+            auto contract =
+                makeBuiltinMaterialScreenInputContract(logical_types, input);
+            const auto source_type = contract.source_type;
+            lowered.screen_input_contracts.push_back(
+                resolveMaterialScreenInputContract(
+                    logical_types, logical_conversions, std::move(contract),
+                    source_type)
+                    .contract);
+        }
+    }
     lowered.deferred_eligibility = evaluateDeferredEligibility(material, surface);
     const auto route = routeMaterial(material, surface, lowered.deferred_eligibility);
     lowered.route = route.route;
