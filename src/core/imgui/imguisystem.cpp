@@ -243,6 +243,7 @@ struct ImGuiSystem::Impl {
     Window &window;
     InputActionMap toggle_actions;
     vk::Format color_format;
+    VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
     VkFormat raw_color_format;
     VkPipelineRenderingCreateInfo pipeline_rendering_info{};
     bool platform_initialized = false;
@@ -296,6 +297,12 @@ struct ImGuiSystem::Impl {
         platform_initialized = true;
 
         auto &vk_core = GET_MODULE(VulkanManageCore);
+        const auto display_metadata =
+            GET_MODULE(RenderTargetContainer)
+                .getMetadata(GET_MODULE(RenderTargetContainer)
+                                 .getRenderTargetIdByName("display"));
+        samples = static_cast<VkSampleCountFlagBits>(
+            display_metadata.samples);
         pipeline_rendering_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
         pipeline_rendering_info.colorAttachmentCount = 1;
         pipeline_rendering_info.pColorAttachmentFormats = &raw_color_format;
@@ -310,7 +317,7 @@ struct ImGuiSystem::Impl {
         init_info.DescriptorPoolSize = 128;
         init_info.MinImageCount = static_cast<uint32_t>(in_flight_frames_num);
         init_info.ImageCount = static_cast<uint32_t>(in_flight_frames_num);
-        init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+        init_info.MSAASamples = samples;
         init_info.UseDynamicRendering = true;
         init_info.PipelineRenderingCreateInfo = pipeline_rendering_info;
         init_info.MinAllocationSize = 1024 * 1024;
@@ -426,8 +433,12 @@ void ImGuiSystem::endFrameIfStarted() {
     impl->frame_started = false;
 }
 
-void ImGuiSystem::render(vk::CommandBuffer command_buffer, vk::ImageView target_view,
-                         vk::Extent2D target_extent, vk::Format target_format) {
+void ImGuiSystem::render(vk::CommandBuffer command_buffer,
+                         vk::ImageView target_view,
+                         vk::Extent2D target_extent,
+                         vk::Format target_format,
+                         vk::ImageView resolve_view,
+                         vk::ResolveModeFlagBits resolve_mode) {
     if (!impl->frame_started) {
         throw std::runtime_error("ImGui render called without an interactive input frame");
     }
@@ -445,6 +456,14 @@ void ImGuiSystem::render(vk::CommandBuffer command_buffer, vk::ImageView target_
     color_attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
     color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    if (resolve_view) {
+        color_attachment.resolveMode =
+            static_cast<VkResolveModeFlagBits>(resolve_mode);
+        color_attachment.resolveImageView =
+            static_cast<VkImageView>(resolve_view);
+        color_attachment.resolveImageLayout =
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    }
 
     VkRenderingInfo rendering_info{};
     rendering_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;

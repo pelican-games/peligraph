@@ -2,8 +2,10 @@
 
 #include "renderingpass.hpp"
 #include "../../project/renderpipeline.hpp"
+#include "../../project/samplecountplanning.hpp"
 
 #include <functional>
+#include <memory>
 #include <nlohmann/json_fwd.hpp>
 #include <string>
 #include <string_view>
@@ -60,6 +62,7 @@ struct RenderingPassConfigRegistrationResult {
     std::vector<RenderingPassId> rendering_pass_ids;
     std::vector<std::string> feature_names;
     std::vector<std::string> excluded_feature_names;
+    std::shared_ptr<const ResolvedSampleCountPlan> sample_count_plan;
 };
 
 RenderingPassConfigRegistrationResult registerRenderingPassConfigFromJson(

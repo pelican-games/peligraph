@@ -71,7 +71,9 @@ void FrameGraphRuntimeContainer::registerExecutionPlan(RenderingPassId rendering
                                                        const CompiledRenderingPass &compiled_pass,
                                                        FramePlan plan,
                                                        std::shared_ptr<const CompiledRenderPipeline>
-                                                           render_pipeline) {
+                                                           render_pipeline,
+                                                       std::shared_ptr<const ResolvedSampleCountPlan>
+                                                           sample_count_plan) {
     if (!render_pipeline) {
         throw std::runtime_error(
             "Frame graph execution requires a compiled render pipeline");
@@ -84,6 +86,7 @@ void FrameGraphRuntimeContainer::registerExecutionPlan(RenderingPassId rendering
     CompiledFrameGraphExecution execution;
     execution.plan = std::move(plan);
     execution.render_pipeline = std::move(render_pipeline);
+    execution.sample_count_plan = std::move(sample_count_plan);
     execution.material_routes = std::move(material_routes);
     execution.nodes.reserve(execution.plan.nodes.size());
 

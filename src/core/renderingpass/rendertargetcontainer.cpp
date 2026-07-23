@@ -1,4 +1,5 @@
 #include "rendertargetcontainer.hpp"
+#include "renderingsamplecount.hpp"
 #include "../vkcore/deletionqueue.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/util.hpp"
@@ -6,6 +7,7 @@
 #include <cstdint>
 #include <optional>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 
 namespace Pelican {
@@ -15,7 +17,42 @@ namespace {
 struct RetiredRenderTargetResources {
     std::array<ImageWrapper, 2> images;
     std::array<vk::UniqueImageView, 2> image_views;
+    std::array<ImageWrapper, 2> attachment_images;
+    std::array<vk::UniqueImageView, 2> attachment_image_views;
 };
+
+vk::SampleCountFlagBits toSampleCount(std::uint32_t samples) {
+    switch (samples) {
+    case 1: return vk::SampleCountFlagBits::e1;
+    case 2: return vk::SampleCountFlagBits::e2;
+    case 4: return vk::SampleCountFlagBits::e4;
+    case 8: return vk::SampleCountFlagBits::e8;
+    case 16: return vk::SampleCountFlagBits::e16;
+    case 32: return vk::SampleCountFlagBits::e32;
+    case 64: return vk::SampleCountFlagBits::e64;
+    default:
+        throw std::runtime_error(
+            "render target samples must be a power of two between 1 and 64");
+    }
+}
+
+vk::ResolveModeFlagBits selectDepthResolveMode(
+    vk::PhysicalDevice physical_device) {
+    vk::PhysicalDeviceDepthStencilResolveProperties resolve;
+    vk::PhysicalDeviceProperties2 properties;
+    properties.pNext = &resolve;
+    physical_device.getProperties2(&properties);
+    constexpr std::array preferred{
+        vk::ResolveModeFlagBits::eSampleZero,
+        vk::ResolveModeFlagBits::eAverage,
+        vk::ResolveModeFlagBits::eMin,
+        vk::ResolveModeFlagBits::eMax,
+    };
+    for (const auto mode : preferred) {
+        if (resolve.supportedDepthResolveModes & mode) return mode;
+    }
+    return vk::ResolveModeFlagBits::eNone;
+}
 
 vk::Extent2D resolveRenderTargetExtent(const std::string &name, vk::Extent2D base_extent, float extent_scale,
                                        std::optional<vk::Extent2D> fixed_extent) {
@@ -71,10 +108,28 @@ void nameRenderTargetSurfaces(const std::string &name,
     }
 }
 
+void nameAttachmentSurfaces(
+    const std::string &name,
+    const std::array<ImageWrapper, 2> &images,
+    const std::array<vk::UniqueImageView, 2> &image_views,
+    std::uint32_t surface_count) {
+    const auto &debug_utils = GET_MODULE(VulkanManageCore).getDebugUtils();
+    for (std::uint32_t surface = 0; surface < surface_count; ++surface) {
+        const auto base = "rt/" + name + "/surface/" +
+                          std::to_string(surface) + "/msaa";
+        debug_utils.nameImage(images[surface].image.get(),
+                              (base + "/image").c_str());
+        debug_utils.nameImageView(image_views[surface].get(),
+                                  (base + "/view").c_str());
+    }
+}
+
 ImageWrapper createRenderTargetImage(const std::string &name, vk::Extent2D base_extent, float extent_scale,
                                      std::optional<vk::Extent2D> fixed_extent,
                                      vk::Format format, vk::ImageUsageFlags usage,
-                                     vma::MemoryUsage memory_usage) {
+                                     vma::MemoryUsage memory_usage,
+                                     vk::SampleCountFlagBits samples =
+                                         vk::SampleCountFlagBits::e1) {
     const auto &vkcore = GET_MODULE(VulkanManageCore);
     const auto features = vkcore.getPhysDevice().getFormatProperties(format).optimalTilingFeatures;
     vk::FormatFeatureFlags required;
@@ -93,7 +148,8 @@ ImageWrapper createRenderTargetImage(const std::string &name, vk::Extent2D base_
     }
     const auto extent = resolveRenderTargetExtent(name, base_extent, extent_scale, fixed_extent);
     return vkcore.allocImage(vk::Extent3D{extent.width, extent.height, 1}, format, usage,
-                             memory_usage, {});
+                             memory_usage, {}, VulkanProcessType::graphics,
+                             {}, 1, samples);
 }
 
 void clearHistoryImages(const std::array<ImageWrapper, 2> &images,
@@ -129,7 +185,10 @@ void clearHistoryImages(const std::array<ImageWrapper, 2> &images,
 
 } // namespace
 
-RenderTargetContainer::RenderTargetContainer() : device{GET_MODULE(VulkanManageCore).getDevice()} {}
+RenderTargetContainer::RenderTargetContainer()
+    : device{GET_MODULE(VulkanManageCore).getDevice()},
+      depth_resolve_mode{selectDepthResolveMode(
+          GET_MODULE(VulkanManageCore).getPhysDevice())} {}
 
 RenderTargetContainer::~RenderTargetContainer() {}
 
@@ -143,12 +202,8 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
                                                                  vk::ImageUsageFlags usage,
                                                                  vma::MemoryUsage memUsage,
                                                                  bool history,
-                                                                 vk::ClearColorValue history_clear_color) {
-    // Reuse an existing target when config registration is called more than once.
-    if (auto it = name_to_id.find(name); it != name_to_id.end()) {
-        return it->second;
-    }
-
+                                                                 vk::ClearColorValue history_clear_color,
+                                                                 std::uint32_t samples) {
     if (history && !(usage & vk::ImageUsageFlagBits::eSampled)) {
         throw std::runtime_error("History render target requires SAMPLED usage: " + name);
     }
@@ -156,15 +211,65 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
         throw std::runtime_error("History render target requires COLOR_ATTACHMENT usage: " + name);
     }
     if (history) usage |= vk::ImageUsageFlagBits::eTransferDst;
+
+    // Reuse an existing target when config registration is called more than once.
+    if (auto it = name_to_id.find(name); it != name_to_id.end()) {
+        const auto &existing = render_targets.get(it->second);
+        std::string changed;
+        const auto note = [&changed](std::string_view field) {
+            if (!changed.empty()) changed += ", ";
+            changed += field;
+        };
+        if (existing.format != format) note("format");
+        // Variant composition may remove a reader (for example XR excludes
+        // TAA) and therefore request fewer usage bits for the same target.
+        // Reusing the already-created superset image is valid. Adding a bit
+        // that the physical image was not created with is not.
+        if ((existing.usage & usage) != usage) note("usage expansion");
+        if (existing.extent_scale != extent_scale) note("extent_scale");
+        if (existing.fixed_extent != fixed_extent) note("fixed_extent");
+        if (existing.history != history) note("history");
+        if (existing.samples != samples) note("samples");
+        if (!changed.empty()) {
+            throw std::runtime_error(
+                "Render target re-registration changed its physical contract: " +
+                name + " (" + changed + ")");
+        }
+        return it->second;
+    }
+
+    const auto sample_count = toSampleCount(samples);
+    if (samples > 1 && depth_resolve_mode == vk::ResolveModeFlagBits::eNone &&
+        (usage & vk::ImageUsageFlagBits::eDepthStencilAttachment)) {
+        throw std::runtime_error(
+            "multisampled depth render target requires depth resolve support: " +
+            name);
+    }
     std::array<ImageWrapper, 2> images;
     std::array<vk::UniqueImageView, 2> image_views;
+    std::array<ImageWrapper, 2> attachment_images;
+    std::array<vk::UniqueImageView, 2> attachment_image_views;
     const uint32_t surface_count = history ? 2u : 1u;
     for (uint32_t i = 0; i < surface_count; ++i) {
         images[i] = createRenderTargetImage(name, base_extent, extent_scale, fixed_extent,
                                             format, usage, memUsage);
         image_views[i] = createImageView(device, images[i]);
+        if (samples > 1) {
+            const auto attachment_usage =
+                usage & (vk::ImageUsageFlagBits::eColorAttachment |
+                         vk::ImageUsageFlagBits::eDepthStencilAttachment);
+            attachment_images[i] = createRenderTargetImage(
+                name, base_extent, extent_scale, fixed_extent, format,
+                attachment_usage, memUsage, sample_count);
+            attachment_image_views[i] =
+                createImageView(device, attachment_images[i]);
+        }
     }
     nameRenderTargetSurfaces(name, images, image_views, surface_count);
+    if (samples > 1) {
+        nameAttachmentSurfaces(name, attachment_images,
+                               attachment_image_views, surface_count);
+    }
     if (history) clearHistoryImages(images, history_clear_color);
 
     GlobalRenderTargetId id = render_targets.reg(InternalRenderTarget{
@@ -178,8 +283,11 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
         .memory_usage = memUsage,
         .history = history,
         .history_clear_color = history_clear_color,
+        .samples = samples,
         .images = std::move(images),
         .image_views = std::move(image_views),
+        .attachment_images = std::move(attachment_images),
+        .attachment_image_views = std::move(attachment_image_views),
     });
 
     name_to_id.emplace(name, id);
@@ -191,24 +299,47 @@ void RenderTargetContainer::recreateForExtent(vk::Extent2D base_extent) {
         auto &rt = render_targets.get(id);
         std::array<ImageWrapper, 2> next_images;
         std::array<vk::UniqueImageView, 2> next_views;
+        std::array<ImageWrapper, 2> next_attachment_images;
+        std::array<vk::UniqueImageView, 2> next_attachment_views;
         const uint32_t surface_count = rt.history ? 2u : 1u;
         for (uint32_t i = 0; i < surface_count; ++i) {
             next_images[i] = createRenderTargetImage(rt.name, base_extent, rt.extent_scale,
                                                      rt.fixed_extent, rt.format, rt.usage,
                                                      rt.memory_usage);
             next_views[i] = createImageView(device, next_images[i]);
+            if (rt.samples > 1) {
+                const auto attachment_usage =
+                    rt.usage &
+                    (vk::ImageUsageFlagBits::eColorAttachment |
+                     vk::ImageUsageFlagBits::eDepthStencilAttachment);
+                next_attachment_images[i] = createRenderTargetImage(
+                    rt.name, base_extent, rt.extent_scale, rt.fixed_extent,
+                    rt.format, attachment_usage, rt.memory_usage,
+                    toSampleCount(rt.samples));
+                next_attachment_views[i] =
+                    createImageView(device, next_attachment_images[i]);
+            }
         }
         nameRenderTargetSurfaces(rt.name, next_images, next_views, surface_count);
+        if (rt.samples > 1) {
+            nameAttachmentSurfaces(rt.name, next_attachment_images,
+                                   next_attachment_views, surface_count);
+        }
         if (rt.history) clearHistoryImages(next_images, rt.history_clear_color);
 
         GET_MODULE(DeletionQueue)
             .defer(RetiredRenderTargetResources{
                 .images = std::move(rt.images),
                 .image_views = std::move(rt.image_views),
+                .attachment_images = std::move(rt.attachment_images),
+                .attachment_image_views =
+                    std::move(rt.attachment_image_views),
             });
 
         rt.images = std::move(next_images);
         rt.image_views = std::move(next_views);
+        rt.attachment_images = std::move(next_attachment_images);
+        rt.attachment_image_views = std::move(next_attachment_views);
     }
     history_frame_index = 0;
 }
@@ -248,6 +379,7 @@ RenderTargetMetadata RenderTargetContainer::getMetadata(GlobalRenderTargetId id)
         rt.format,
         vk::Extent2D{rt.images[0].extent.width, rt.images[0].extent.height},
         rt.history,
+        rt.samples,
     };
 }
 
@@ -262,6 +394,14 @@ const ImageWrapper &RenderTargetContainer::getImageForFrame(GlobalRenderTargetId
     return rt.images[index];
 }
 
+const ImageWrapper &RenderTargetContainer::getAttachmentImage(
+    GlobalRenderTargetId id, bool history_read) const {
+    const auto &rt = render_targets.get(id);
+    const auto surface = surfaceIndex(id, history_read);
+    return rt.samples > 1 ? rt.attachment_images[surface]
+                          : rt.images[surface];
+}
+
 vk::ImageView RenderTargetContainer::getImageView(GlobalRenderTargetId id, bool history_read) const {
     return render_targets.get(id).image_views[surfaceIndex(id, history_read)].get();
 }
@@ -273,9 +413,42 @@ vk::ImageView RenderTargetContainer::getImageViewForFrame(GlobalRenderTargetId i
     return rt.image_views[index].get();
 }
 
-vk::ImageLayout RenderTargetContainer::initialLayout(GlobalRenderTargetId id) const {
-    return render_targets.get(id).history ? vk::ImageLayout::eShaderReadOnlyOptimal
-                                          : vk::ImageLayout::eUndefined;
+vk::ImageView RenderTargetContainer::getAttachmentImageView(
+    GlobalRenderTargetId id, bool history_read) const {
+    const auto &rt = render_targets.get(id);
+    const auto surface = surfaceIndex(id, history_read);
+    return rt.samples > 1 ? rt.attachment_image_views[surface].get()
+                          : rt.image_views[surface].get();
+}
+
+bool RenderTargetContainer::hasSeparateAttachment(
+    GlobalRenderTargetId id) const {
+    return render_targets.get(id).samples > 1;
+}
+
+vk::SampleCountFlagBits RenderTargetContainer::sampleCount(
+    GlobalRenderTargetId id) const {
+    return toSampleCount(render_targets.get(id).samples);
+}
+
+vk::ResolveModeFlagBits RenderTargetContainer::resolveMode(
+    GlobalRenderTargetId id) const {
+    const auto &rt = render_targets.get(id);
+    if (rt.samples == 1) return vk::ResolveModeFlagBits::eNone;
+    if (rt.usage & vk::ImageUsageFlagBits::eDepthStencilAttachment) {
+        return depth_resolve_mode;
+    }
+    return colorAttachmentResolveMode(rt.format);
+}
+
+vk::ImageLayout RenderTargetContainer::initialLayout(
+    GlobalRenderTargetId id, bool attachment) const {
+    const auto &rt = render_targets.get(id);
+    if (attachment && rt.samples > 1) {
+        return vk::ImageLayout::eUndefined;
+    }
+    return rt.history ? vk::ImageLayout::eShaderReadOnlyOptimal
+                      : vk::ImageLayout::eUndefined;
 }
 
 } // namespace Pelican

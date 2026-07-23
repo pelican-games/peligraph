@@ -7,6 +7,7 @@
 #include "renderingpassconfigloader.hpp"
 #include "renderingpasscontainer.hpp"
 #include "renderingpassruntimecompiler.hpp"
+#include "renderingsamplecount.hpp"
 #include "rendertargetconfigregistration.hpp"
 #include "rendertargetimageviewresolver.hpp"
 #include "rendertargetjsonparser.hpp"
@@ -15,12 +16,15 @@
 #include "../loader/pathresolver.hpp"
 #include "../renderer/shadowdepthpasscontainer.hpp"
 #include "../renderer/velocitypasscontainer.hpp"
+#include "../vkcore/core.hpp"
 #include "../vkcore/rendertarget.hpp"
 #if PELICAN_WITH_IMGUI
 #include "../imgui/imguiruntime.hpp"
 #include "../launchconfig.hpp"
 #endif
 #include <algorithm>
+#include <array>
+#include <cstdint>
 #include <memory>
 #include <string_view>
 #include <unordered_map>
@@ -64,6 +68,68 @@ std::unordered_map<std::string, FramePlan> framePlansByName(
         }
     }
     return by_name;
+}
+
+std::vector<std::uint32_t> sampleCounts(
+    vk::SampleCountFlags flags) {
+    constexpr std::array candidates{
+        vk::SampleCountFlagBits::e1, vk::SampleCountFlagBits::e2,
+        vk::SampleCountFlagBits::e4, vk::SampleCountFlagBits::e8,
+        vk::SampleCountFlagBits::e16, vk::SampleCountFlagBits::e32,
+        vk::SampleCountFlagBits::e64,
+    };
+    std::vector<std::uint32_t> result;
+    for (const auto candidate : candidates) {
+        if (flags & candidate) {
+            result.push_back(
+                static_cast<std::uint32_t>(candidate));
+        }
+    }
+    return result;
+}
+
+bool supportsDepthResolve(vk::PhysicalDevice physical_device) {
+    vk::PhysicalDeviceDepthStencilResolveProperties resolve;
+    vk::PhysicalDeviceProperties2 properties;
+    properties.pNext = &resolve;
+    physical_device.getProperties2(&properties);
+    return bool(resolve.supportedDepthResolveModes);
+}
+
+std::vector<std::uint32_t> queryAttachmentSampleCounts(
+    vk::PhysicalDevice physical_device,
+    const RenderTargetDefinition &definition) {
+    vk::ImageUsageFlags attachment_usage;
+    if (definition.usage &
+        vk::ImageUsageFlagBits::eColorAttachment) {
+        attachment_usage |= vk::ImageUsageFlagBits::eColorAttachment;
+    }
+    const bool depth =
+        bool(definition.usage &
+             vk::ImageUsageFlagBits::eDepthStencilAttachment);
+    if (depth) {
+        attachment_usage |=
+            vk::ImageUsageFlagBits::eDepthStencilAttachment;
+    }
+    try {
+        auto counts = sampleCounts(
+            physical_device
+                .getImageFormatProperties(
+                    definition.format, vk::ImageType::e2D,
+                    vk::ImageTiling::eOptimal, attachment_usage)
+                .sampleCounts);
+        if (depth && !supportsDepthResolve(physical_device)) {
+            counts.erase(
+                std::remove_if(counts.begin(), counts.end(),
+                               [](const auto samples) {
+                                   return samples != 1;
+                               }),
+                counts.end());
+        }
+        return counts;
+    } catch (const vk::SystemError &) {
+        return {1};
+    }
 }
 
 std::vector<CompiledComputeTask> compileComputeTasks(
@@ -159,8 +225,21 @@ RenderingPassConfigRegistrationResult registerRenderingPassConfigData(
         });
     }
 #endif
-    const auto render_target_definitions =
+    auto render_target_definitions =
         parseRenderTargetDefinitionsFromJson(composed_rendering_pass_data);
+    const auto physical_device =
+        GET_MODULE(VulkanManageCore).getPhysDevice();
+    auto sample_count_resolution = resolveRenderingSampleCounts(
+        composed_rendering_pass_data, render_target_definitions,
+        compiled_pipeline->sample_count_policy,
+        [physical_device](const RenderTargetDefinition &definition) {
+            return queryAttachmentSampleCounts(physical_device, definition);
+        });
+    applyRenderingSampleCounts(render_target_definitions,
+                               sample_count_resolution);
+    auto sample_count_plan =
+        std::make_shared<const ResolvedSampleCountPlan>(
+            std::move(sample_count_resolution.plan));
     const auto buffer_definitions =
         parseFrameGraphBufferDefinitionsFromJson(composed_rendering_pass_data);
     const auto buffer_names = frameGraphBufferNameSet(buffer_definitions);
@@ -197,6 +276,7 @@ RenderingPassConfigRegistrationResult registerRenderingPassConfigData(
     result.feature_names = compiled_pipeline->feature_names;
     result.excluded_feature_names =
         compiled_pipeline->excluded_feature_names;
+    result.sample_count_plan = sample_count_plan;
     for (auto &compiled_pass : compiled_passes) {
         compiled_pass.compute_tasks = compiled_compute_tasks;
         const auto pass_name = compiled_pass.name;
@@ -210,7 +290,7 @@ RenderingPassConfigRegistrationResult registerRenderingPassConfigData(
             rendering_pass_id,
             dependencies.pass_container.getCompiledRenderingPass(rendering_pass_id),
             std::move(found_plan->second),
-            compiled_pipeline);
+            compiled_pipeline, sample_count_plan);
     }
     return result;
 }

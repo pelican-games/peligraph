@@ -21,6 +21,10 @@ struct UiDrawRequest {
     vk::AttachmentStoreOp store_op;
     vk::ClearColorValue clear_color;
     double ui_scale = 1.0;
+    vk::ImageView resolve_view;
+    vk::SampleCountFlagBits samples = vk::SampleCountFlagBits::e1;
+    vk::ResolveModeFlagBits resolve_mode =
+        vk::ResolveModeFlagBits::eNone;
 };
 
 struct UiRendererDependencies {
@@ -33,13 +37,14 @@ DECLARE_MODULE(UiRenderer) {
     vk::Device device;
     ShaderBundleId vert_shader;
     ShaderBundleId frag_shader;
-    std::unordered_map<int, PipelineHandle> pipelines;
+    std::unordered_map<std::uint64_t, PipelineHandle> pipelines;
     BufferWrapper vertex_buffer;
     BufferWrapper index_buffer;
     vk::DeviceSize vertex_capacity = 0;
     vk::DeviceSize index_capacity = 0;
 
-    PipelineHandle getPipeline(vk::Format color_format);
+    PipelineHandle getPipeline(vk::Format color_format,
+                               vk::SampleCountFlagBits samples);
     void ensureBuffers(vk::DeviceSize vertex_bytes, vk::DeviceSize index_bytes);
 
   public:

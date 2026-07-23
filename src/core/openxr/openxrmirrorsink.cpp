@@ -253,11 +253,16 @@ void XrMirrorSink::tryPresent() noexcept {
         if (screen_ui) {
             GET_MODULE(UiRenderer).render(
                 cmd,
-                UiDrawRequest{frame->color_attachment, frame->extent,
-                              target.getSwapchainFormat(), vk::AttachmentLoadOp::eLoad,
-                              vk::AttachmentStoreOp::eStore,
-                              vk::ClearColorValue{
-                                  std::array{0.0f, 0.0f, 0.0f, 0.0f}}},
+                UiDrawRequest{
+                    .target_view = frame->color_attachment,
+                    .target_extent = frame->extent,
+                    .target_format = target.getSwapchainFormat(),
+                    .load_op = vk::AttachmentLoadOp::eLoad,
+                    .store_op = vk::AttachmentStoreOp::eStore,
+                    .clear_color =
+                        vk::ClearColorValue{
+                            std::array{0.0f, 0.0f, 0.0f, 0.0f}},
+                },
                 UiRendererDependencies{GET_MODULE(UIContainer),
                                        GET_MODULE(ui::UiModule),
                                        GET_MODULE(FrameResources)});

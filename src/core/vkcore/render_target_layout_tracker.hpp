@@ -10,16 +10,25 @@ namespace Pelican {
 
 class RenderTargetContainer;
 
+enum class RenderTargetImageKind : std::uint8_t {
+    resolved,
+    attachment,
+};
+
 class RenderTargetLayoutTracker {
   public:
     void transition(vk::CommandBuffer cmd_buf, RenderTargetContainer &rt_container, VulkanUtils &vk_utils,
                     GlobalRenderTargetId rt_id, vk::ImageLayout new_layout,
-                    bool history_read = false);
+                    bool history_read = false,
+                    RenderTargetImageKind image_kind =
+                        RenderTargetImageKind::resolved);
     void memoryDependency(vk::CommandBuffer cmd_buf, RenderTargetContainer &rt_container,
                           VulkanUtils &vk_utils, GlobalRenderTargetId rt_id,
                           bool history_read = false);
     vk::ImageLayout currentLayout(GlobalRenderTargetId rt_id, bool history_read = false,
-                                  const RenderTargetContainer *rt_container = nullptr) const;
+                                  const RenderTargetContainer *rt_container = nullptr,
+                                  RenderTargetImageKind image_kind =
+                                      RenderTargetImageKind::resolved) const;
     void reset();
     std::size_t memoryDependencyCountForTesting() const noexcept {
         return memory_dependency_count;

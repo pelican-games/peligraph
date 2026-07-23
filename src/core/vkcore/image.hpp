@@ -10,6 +10,7 @@ struct ImageWrapper {
     uint32_t mip_levels = 1;
     vma::UniqueImage image;
     vma::UniqueAllocation allocation;
+    vk::SampleCountFlagBits samples = vk::SampleCountFlagBits::e1;
 };
 
 } // namespace Pelican

@@ -19,7 +19,9 @@ DECLARE_MODULE(VelocityPassContainer) {
     PassId registerVelocityPass(vk::Format color_format, vk::Format depth_format,
                                 ShaderBundleId regular_vert, ShaderBundleId skinned_vert,
                                 ShaderBundleId frag,
-                                std::vector<std::string> shader_defines = {});
+                                std::vector<std::string> shader_defines = {},
+                                vk::SampleCountFlagBits samples =
+                                    vk::SampleCountFlagBits::e1);
     void bind(vk::CommandBuffer cmd_buf, PassId pass_id, bool skinned = false) const;
     vk::PipelineLayout pipelineLayout(PassId pass_id, bool skinned = false) const;
 };

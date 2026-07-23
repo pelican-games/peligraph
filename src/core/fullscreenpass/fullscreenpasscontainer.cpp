@@ -115,17 +115,20 @@ FullscreenPassContainer::~FullscreenPassContainer() {}
 FullscreenPassContainer::PipelineId
 FullscreenPassContainer::registerFullscreenPass(vk::Format colorFormat, ShaderBundleId vertShader,
                                                 ShaderBundleId fragShader,
-                                                std::vector<std::string> shader_defines) {
+                                                std::vector<std::string> shader_defines,
+                                                vk::SampleCountFlagBits samples) {
     PipelineId pipeline_id = {static_cast<uint32_t>(pipelines.size())};
 
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
-    const auto pipeline_handle = pipeline_factory.create(GraphicsPipelineDesc{
+    auto desc = GraphicsPipelineDesc{
         vertShader,
         fragShader,
         {colorFormat},
         {},
         std::move(shader_defines),
-    });
+    };
+    desc.rasterization_samples = samples;
+    const auto pipeline_handle = pipeline_factory.create(desc);
     pipelines.insert({pipeline_id, pipeline_handle});
 
     return pipeline_id;

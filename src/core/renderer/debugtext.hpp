@@ -65,7 +65,10 @@ DECLARE_MODULE(DebugText) {
     ~DebugText();
 
     PassId registerPass(vk::Format color_format, ShaderBundleId vert_shader,
-                        ShaderBundleId frag_shader, std::vector<std::string> shader_defines = {});
+                        ShaderBundleId frag_shader,
+                        std::vector<std::string> shader_defines = {},
+                        vk::SampleCountFlagBits samples =
+                            vk::SampleCountFlagBits::e1);
     void text(int x, int y, std::string_view value,
               glm::vec4 color = glm::vec4{1.0f}, int scale = 1);
     void clear();

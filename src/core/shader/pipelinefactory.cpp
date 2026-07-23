@@ -307,7 +307,7 @@ vk::UniquePipeline PipelineFactory::createGraphicsPipeline(const GraphicsPipelin
     rasterization.lineWidth = 1.0f;
 
     vk::PipelineMultisampleStateCreateInfo multisample;
-    multisample.rasterizationSamples = vk::SampleCountFlagBits::e1;
+    multisample.rasterizationSamples = desc.rasterization_samples;
     multisample.sampleShadingEnable = false;
 
     vk::PipelineDepthStencilStateCreateInfo depth;

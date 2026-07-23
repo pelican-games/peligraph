@@ -17,7 +17,9 @@ DECLARE_MODULE(ShadowDepthPassContainer) {
 
   public:
     PassId registerShadowDepthPass(vk::Format depth_format, ShaderBundleId vert_shader,
-                                   std::vector<std::string> shader_defines = {});
+                                   std::vector<std::string> shader_defines = {},
+                                   vk::SampleCountFlagBits samples =
+                                       vk::SampleCountFlagBits::e1);
     void bind(vk::CommandBuffer cmd_buf, PassId pass_id, bool skinned = false) const;
     vk::PipelineLayout pipelineLayout(PassId pass_id, bool skinned = false) const;
 };

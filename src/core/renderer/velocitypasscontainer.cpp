@@ -26,7 +26,8 @@ const VelocityPassContainer::PipelineVariants &requirePipeline(
 PassId VelocityPassContainer::registerVelocityPass(
     vk::Format color_format, vk::Format depth_format, ShaderBundleId regular_vert,
     ShaderBundleId skinned_vert, ShaderBundleId frag,
-    std::vector<std::string> shader_defines) {
+    std::vector<std::string> shader_defines,
+    vk::SampleCountFlagBits samples) {
     const auto pass_id = pipelineIndexToPassId(pipelines.size());
     GraphicsPipelineDesc desc;
     desc.vert = regular_vert;
@@ -40,6 +41,7 @@ PassId VelocityPassContainer::registerVelocityPass(
     desc.depth_compare = vk::CompareOp::eLessOrEqual;
     desc.cull_mode = vk::CullModeFlagBits::eBack;
     desc.front_face = vk::FrontFace::eClockwise;
+    desc.rasterization_samples = samples;
     const auto regular = GET_MODULE(PipelineFactory).create(desc);
 
     desc.vert = skinned_vert;

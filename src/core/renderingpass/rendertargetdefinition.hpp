@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <string>
 #include <optional>
 #include <vulkan/vulkan.hpp>
@@ -18,6 +19,7 @@ struct RenderTargetDefinition {
     bool history = false;
     vk::ClearColorValue history_clear_color =
         vk::ClearColorValue{std::array{0.0f, 0.0f, 0.0f, 0.0f}};
+    std::uint32_t samples = 1;
 };
 
 } // namespace Pelican

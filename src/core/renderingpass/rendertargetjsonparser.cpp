@@ -145,6 +145,7 @@ std::vector<RenderTargetDefinition> parseRenderTargetDefinitionsFromJson(const n
             stringToUsageFlags(usage_strs),
             history,
             history_clear_color,
+            1,
         });
     }
 

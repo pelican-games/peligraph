@@ -43,7 +43,10 @@ DECLARE_MODULE(DebugDraw) {
     ~DebugDraw();
 
     PassId registerPass(vk::Format color_format, ShaderBundleId vert_shader,
-                        ShaderBundleId frag_shader, std::vector<std::string> shader_defines = {});
+                        ShaderBundleId frag_shader,
+                        std::vector<std::string> shader_defines = {},
+                        vk::SampleCountFlagBits samples =
+                            vk::SampleCountFlagBits::e1);
     void line(glm::vec3 from_ndc, glm::vec3 to_ndc, glm::vec4 color);
     void line(glm::vec3 from_ndc, glm::vec3 to_ndc, glm::vec4 from_color, glm::vec4 to_color);
     void clear();

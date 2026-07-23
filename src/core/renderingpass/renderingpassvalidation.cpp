@@ -129,6 +129,49 @@ void validatePassOutputExtents(const PassDefinition &pass_def, const RenderTarge
     }
 }
 
+vk::SampleCountFlagBits resolvePassOutputSamples(
+    const PassDefinition &pass_def,
+    const RenderTargetMetadataResolver &rt_metadata) {
+    std::optional<std::uint32_t> expected;
+    const auto check = [&](std::uint32_t samples,
+                           const std::string &target) {
+        if (!expected) {
+            expected = samples;
+            return;
+        }
+        if (*expected != samples) {
+            throw std::runtime_error(
+                "Pass output target sample-count mismatch at " + target +
+                " in pass: " + pass_def.name);
+        }
+    };
+    for (const auto target : pass_def.output_color) {
+        if (isSwapchainRenderTarget(target)) {
+            check(1, "swapchain");
+        } else if (isConcreteRenderTarget(target)) {
+            const auto metadata = rt_metadata.get(target);
+            check(metadata.samples, metadata.name);
+        }
+    }
+    if (isConcreteRenderTarget(pass_def.output_depth)) {
+        const auto metadata = rt_metadata.get(pass_def.output_depth);
+        check(metadata.samples, metadata.name);
+    }
+    switch (expected.value_or(1)) {
+    case 1: return vk::SampleCountFlagBits::e1;
+    case 2: return vk::SampleCountFlagBits::e2;
+    case 4: return vk::SampleCountFlagBits::e4;
+    case 8: return vk::SampleCountFlagBits::e8;
+    case 16: return vk::SampleCountFlagBits::e16;
+    case 32: return vk::SampleCountFlagBits::e32;
+    case 64: return vk::SampleCountFlagBits::e64;
+    default:
+        throw std::runtime_error(
+            "Pass output target has invalid sample count in pass: " +
+            pass_def.name);
+    }
+}
+
 void validateMaterialPassAttachments(const PassDefinition &pass_def, const RenderTargetMetadataResolver &rt_metadata) {
     if (!pass_def.isMaterial()) {
         return;

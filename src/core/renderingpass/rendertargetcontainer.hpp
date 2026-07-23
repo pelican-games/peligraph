@@ -27,8 +27,11 @@ DECLARE_MODULE(RenderTargetContainer) {
         vma::MemoryUsage memory_usage;
         bool history;
         vk::ClearColorValue history_clear_color;
+        std::uint32_t samples;
         std::array<ImageWrapper, 2> images;
         std::array<vk::UniqueImageView, 2> image_views;
+        std::array<ImageWrapper, 2> attachment_images;
+        std::array<vk::UniqueImageView, 2> attachment_image_views;
     };
     ResourceContainer<GlobalRenderTargetId, InternalRenderTarget> render_targets;
 
@@ -45,7 +48,8 @@ DECLARE_MODULE(RenderTargetContainer) {
                                               vk::Format format, vk::ImageUsageFlags usage,
                                               vma::MemoryUsage memUsage, bool history = false,
                                               vk::ClearColorValue history_clear_color =
-                                                  vk::ClearColorValue{std::array{0.0f, 0.0f, 0.0f, 0.0f}});
+                                                  vk::ClearColorValue{std::array{0.0f, 0.0f, 0.0f, 0.0f}},
+                                              std::uint32_t samples = 1);
     void recreateForExtent(vk::Extent2D base_extent);
     void resetHistory();
     void advanceHistoryFrame();
@@ -56,13 +60,23 @@ DECLARE_MODULE(RenderTargetContainer) {
     const ImageWrapper &getImage(GlobalRenderTargetId id, bool history_read = false) const;
     const ImageWrapper &getImageForFrame(GlobalRenderTargetId id, bool history_read,
                                          uint32_t frame_index) const;
+    const ImageWrapper &getAttachmentImage(
+        GlobalRenderTargetId id, bool history_read = false) const;
     vk::ImageView getImageView(GlobalRenderTargetId id, bool history_read = false) const;
     vk::ImageView getImageViewForFrame(GlobalRenderTargetId id, bool history_read,
                                        uint32_t frame_index) const;
-    vk::ImageLayout initialLayout(GlobalRenderTargetId id) const;
+    vk::ImageView getAttachmentImageView(
+        GlobalRenderTargetId id, bool history_read = false) const;
+    bool hasSeparateAttachment(GlobalRenderTargetId id) const;
+    vk::SampleCountFlagBits sampleCount(GlobalRenderTargetId id) const;
+    vk::ResolveModeFlagBits resolveMode(GlobalRenderTargetId id) const;
+    vk::ImageLayout initialLayout(GlobalRenderTargetId id,
+                                  bool attachment = false) const;
 
   private:
     uint32_t history_frame_index = 0;
+    vk::ResolveModeFlagBits depth_resolve_mode =
+        vk::ResolveModeFlagBits::eSampleZero;
 };
 
 } // namespace Pelican

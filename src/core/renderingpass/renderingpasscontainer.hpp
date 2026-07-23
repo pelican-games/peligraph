@@ -32,6 +32,8 @@ DECLARE_MODULE(RenderingPassContainer) {
     bool supportsMaterialPass(MaterialRouteClass route,
                               MaterialShaderContract shader_contract,
                               const std::optional<std::string> &exact_pass = std::nullopt) const;
+    vk::SampleCountFlagBits materialRasterizationSamples(
+        MaterialShaderContract shader_contract) const;
 };
 
 } // namespace Pelican

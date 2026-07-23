@@ -38,6 +38,9 @@ constexpr size_t maxMaterials = 1024;
 constexpr uint32_t maxMaterialScreenInputs = 4;
 
 static std::string makePipelineKey(const MaterialInfo &info) {
+    const auto samples =
+        GET_MODULE(RenderingPassContainer)
+            .materialRasterizationSamples(info.shader_contract);
     std::ostringstream key;
     key << info.vert_shader.value << ':' << info.frag_shader.value << ':'
         << info.skinned << ':'
@@ -45,7 +48,8 @@ static std::string makePipelineKey(const MaterialInfo &info) {
         << static_cast<int>(info.render_state.blend) << ':'
         << static_cast<int>(info.render_state.cull) << ':'
         << info.render_state.depth_test << ':' << info.render_state.depth_write << ':'
-        << static_cast<int>(info.render_state.depth_compare);
+        << static_cast<int>(info.render_state.depth_compare) << ':'
+        << static_cast<std::uint32_t>(samples);
     return key.str();
 }
 
@@ -91,6 +95,9 @@ static GraphicsPipelineDesc makeMaterialPipelineDesc(const MaterialInfo &info) {
     desc.depth_compare = toVkCompare(info.render_state.depth_compare);
     desc.cull_mode = toVkCull(info.render_state.cull);
     desc.front_face = vk::FrontFace::eClockwise;
+    desc.rasterization_samples =
+        GET_MODULE(RenderingPassContainer)
+            .materialRasterizationSamples(info.shader_contract);
     if (info.render_state.blend == SurfaceBlendMode::blend) {
         desc.blend = true;
         desc.src_color_blend_factor = vk::BlendFactor::eSrcAlpha;

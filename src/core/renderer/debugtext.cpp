@@ -269,7 +269,9 @@ void DebugText::buildVertices(vk::Extent2D target_extent) {
 }
 
 PassId DebugText::registerPass(vk::Format color_format, ShaderBundleId vert_shader,
-                               ShaderBundleId frag_shader, std::vector<std::string> shader_defines) {
+                               ShaderBundleId frag_shader,
+                               std::vector<std::string> shader_defines,
+                               vk::SampleCountFlagBits samples) {
     ensureDevice();
     ensureFontResources();
     enabled = true;
@@ -285,6 +287,7 @@ PassId DebugText::registerPass(vk::Format color_format, ShaderBundleId vert_shad
     desc.src_alpha_blend_factor = vk::BlendFactor::eOne;
     desc.dst_alpha_blend_factor = vk::BlendFactor::eOneMinusSrcAlpha;
     desc.topology = vk::PrimitiveTopology::eTriangleList;
+    desc.rasterization_samples = samples;
 
     const auto pass_id = PassId{static_cast<int>(pipelines.size())};
     pipelines.emplace(pass_id, PipelineRecord{GET_MODULE(PipelineFactory).create(desc), {}});

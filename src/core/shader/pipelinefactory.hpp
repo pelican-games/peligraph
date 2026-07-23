@@ -38,6 +38,8 @@ struct GraphicsPipelineDesc {
     vk::BlendFactor dst_alpha_blend_factor = vk::BlendFactor::eZero;
     vk::BlendOp alpha_blend_op = vk::BlendOp::eAdd;
     vk::PrimitiveTopology topology = vk::PrimitiveTopology::eTriangleList;
+    vk::SampleCountFlagBits rasterization_samples =
+        vk::SampleCountFlagBits::e1;
 };
 
 struct ComputePipelineDesc {

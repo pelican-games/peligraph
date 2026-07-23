@@ -2,6 +2,7 @@
 
 #include "frameplanner.hpp"
 #include "renderingpass.hpp"
+#include "../../project/samplecountplanning.hpp"
 #include "../container.hpp"
 #include <cstddef>
 #include <memory>
@@ -35,6 +36,7 @@ struct CompiledMaterialRouteBinding {
 struct CompiledFrameGraphExecution {
     FramePlan plan;
     std::shared_ptr<const CompiledRenderPipeline> render_pipeline;
+    std::shared_ptr<const ResolvedSampleCountPlan> sample_count_plan;
     std::vector<CompiledMaterialRouteBinding> material_routes;
     std::vector<FrameGraphExecutionNode> nodes;
 };
@@ -50,7 +52,9 @@ DECLARE_MODULE(FrameGraphRuntimeContainer) {
                                const CompiledRenderingPass &compiled_pass,
                                FramePlan plan,
                                std::shared_ptr<const CompiledRenderPipeline>
-                                   render_pipeline);
+                                   render_pipeline,
+                               std::shared_ptr<const ResolvedSampleCountPlan>
+                                   sample_count_plan = {});
     const CompiledFrameGraphExecution *find(RenderingPassId rendering_pass_id) const;
 };
 

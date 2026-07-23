@@ -18,7 +18,8 @@ namespace Pelican {
 namespace {
 
 GraphicsPipelineDesc makeSpritePipelineDesc(ShaderBundleId vert, ShaderBundleId frag,
-                                            vk::Format color, vk::Format depth) {
+                                            vk::Format color, vk::Format depth,
+                                            vk::SampleCountFlagBits samples) {
     GraphicsPipelineDesc desc;
     desc.vert = vert;
     desc.frag = frag;
@@ -37,6 +38,7 @@ GraphicsPipelineDesc makeSpritePipelineDesc(ShaderBundleId vert, ShaderBundleId 
     const auto layout = sprite::gpuVertexLayout();
     desc.vertex_bindings = {layout.binding};
     desc.vertex_attributes.assign(layout.attributes.begin(), layout.attributes.end());
+    desc.rasterization_samples = samples;
     return desc;
 }
 
@@ -101,13 +103,17 @@ SpriteRenderer::SpriteRenderer() : device{GET_MODULE(VulkanManageCore).getDevice
 
 SpriteRenderer::~SpriteRenderer() = default;
 
-PipelineHandle SpriteRenderer::getPipeline(vk::Format color_format, vk::Format depth_format) {
-    const auto key = (std::uint64_t{static_cast<std::uint32_t>(color_format)} << 32) |
-                     std::uint32_t(depth_format);
+PipelineHandle SpriteRenderer::getPipeline(
+    vk::Format color_format, vk::Format depth_format,
+    vk::SampleCountFlagBits samples) {
+    const auto key =
+        std::tuple{color_format, depth_format, samples};
     if (const auto found = pipelines.find(key); found != pipelines.end()) return found->second;
     return pipelines.emplace(key, GET_MODULE(PipelineFactory).create(
                                       makeSpritePipelineDesc(vert_shader, frag_shader,
-                                                             color_format, depth_format))).first->second;
+                                                             color_format, depth_format,
+                                                             samples)))
+        .first->second;
 }
 
 void SpriteRenderer::ensureBuffers(vk::DeviceSize vertex_bytes, vk::DeviceSize index_bytes) {
@@ -148,11 +154,23 @@ void SpriteRenderer::render(vk::CommandBuffer cmd_buf, const SpriteDrawRequest &
     color.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
     color.loadOp = vk::AttachmentLoadOp::eLoad;
     color.storeOp = vk::AttachmentStoreOp::eStore;
+    if (request.color_resolve_view) {
+        color.resolveMode = request.color_resolve_mode;
+        color.resolveImageView = request.color_resolve_view;
+        color.resolveImageLayout =
+            vk::ImageLayout::eColorAttachmentOptimal;
+    }
     vk::RenderingAttachmentInfo depth;
     depth.imageView = request.depth_view;
     depth.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
     depth.loadOp = vk::AttachmentLoadOp::eLoad;
     depth.storeOp = vk::AttachmentStoreOp::eStore;
+    if (request.depth_resolve_view) {
+        depth.resolveMode = request.depth_resolve_mode;
+        depth.resolveImageView = request.depth_resolve_view;
+        depth.resolveImageLayout =
+            vk::ImageLayout::eDepthAttachmentOptimal;
+    }
     vk::RenderingInfo rendering;
     rendering.renderArea = vk::Rect2D{{0, 0}, request.extent};
     rendering.layerCount = 1;
@@ -161,7 +179,9 @@ void SpriteRenderer::render(vk::CommandBuffer cmd_buf, const SpriteDrawRequest &
     cmd_buf.beginRendering(rendering);
 
     auto &factory = GET_MODULE(PipelineFactory);
-    const auto pipeline = getPipeline(request.color_format, request.depth_format);
+    const auto pipeline =
+        getPipeline(request.color_format, request.depth_format,
+                    request.samples);
     const auto layout = factory.layout(pipeline);
     cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, factory.pipeline(pipeline));
     dependencies.frame_resources.bindGraphics(cmd_buf, layout);

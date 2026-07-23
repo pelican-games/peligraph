@@ -102,7 +102,9 @@ void DebugDraw::updateDescriptorSet(const PipelineRecord &record, vk::DeviceSize
 }
 
 PassId DebugDraw::registerPass(vk::Format color_format, ShaderBundleId vert_shader,
-                               ShaderBundleId frag_shader, std::vector<std::string> shader_defines) {
+                               ShaderBundleId frag_shader,
+                               std::vector<std::string> shader_defines,
+                               vk::SampleCountFlagBits samples) {
     ensureDevice();
     enabled = true;
 
@@ -117,6 +119,7 @@ PassId DebugDraw::registerPass(vk::Format color_format, ShaderBundleId vert_shad
     desc.src_alpha_blend_factor = vk::BlendFactor::eOne;
     desc.dst_alpha_blend_factor = vk::BlendFactor::eOneMinusSrcAlpha;
     desc.topology = vk::PrimitiveTopology::eLineList;
+    desc.rasterization_samples = samples;
 
     const auto pass_id = PassId{static_cast<int>(pipelines.size())};
     pipelines.emplace(pass_id, PipelineRecord{GET_MODULE(PipelineFactory).create(desc), {}});

@@ -627,14 +627,15 @@ ImageWrapper VulkanManageCore::allocImage(vk::Extent3D extent, vk::Format format
                                           vma::MemoryUsage mem_usage, vma::AllocationCreateFlags alloc_flags,
                                           VulkanProcessType type,
                                           std::span<const vk::Format> compatible_view_formats,
-                                          uint32_t mip_levels) const {
+                                          uint32_t mip_levels,
+                                          vk::SampleCountFlagBits samples) const {
     vk::ImageCreateInfo create_info;
     create_info.imageType = vk::ImageType::e2D;
     create_info.format = format;
     create_info.extent = extent;
     create_info.mipLevels = mip_levels;
     create_info.arrayLayers = 1;
-    create_info.samples = vk::SampleCountFlagBits::e1;
+    create_info.samples = samples;
     create_info.tiling = vk::ImageTiling::eOptimal;
     create_info.usage = usage;
     create_info.sharingMode = vk::SharingMode::eExclusive;
@@ -668,6 +669,7 @@ ImageWrapper VulkanManageCore::allocImage(vk::Extent3D extent, vk::Format format
         .mip_levels = mip_levels,
         .image = std::move(image),
         .allocation = std::move(allocation),
+        .samples = samples,
     };
 }
 void VulkanManageCore::writeImage(const ImageWrapper &dst, const void *src, vk::DeviceSize bytes_num) const {

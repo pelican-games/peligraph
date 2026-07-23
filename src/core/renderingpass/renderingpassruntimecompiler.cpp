@@ -241,7 +241,8 @@ PassId registerFullscreenPipeline(const PassDefinition &pass_def, FullscreenRunt
     }
     const auto shaders = registerFullscreenShaders(pass_def.fullscreenInfo(), dependencies);
     const auto pipeline_id = dependencies.fullscreen_pass_container.registerFullscreenPass(
-        color_format, shaders.vert_shader, shaders.frag_shader, dependencies.shader_defines);
+        color_format, shaders.vert_shader, shaders.frag_shader,
+        dependencies.shader_defines, pass_def.rasterization_samples);
     return fullscreenPipelineValueToPassId(pipeline_id.value);
 }
 
@@ -271,7 +272,8 @@ PassId compileDebugDrawPass(const PassDefinition &pass_def, DebugDrawRuntimeDepe
                                                      dependencies.warn_backend_specific_shader_refs,
                                                      dependencies.shader_defines);
     return dependencies.debug_draw.registerPass(color_format, vert_shader, frag_shader,
-                                                dependencies.shader_defines);
+                                                dependencies.shader_defines,
+                                                pass_def.rasterization_samples);
 }
 
 PassId compileDebugTextPass(const PassDefinition &pass_def, DebugTextRuntimeDependencies dependencies) {
@@ -287,7 +289,8 @@ PassId compileDebugTextPass(const PassDefinition &pass_def, DebugTextRuntimeDepe
                                                      dependencies.warn_backend_specific_shader_refs,
                                                      dependencies.shader_defines);
     return dependencies.debug_text.registerPass(color_format, vert_shader, frag_shader,
-                                                dependencies.shader_defines);
+                                                dependencies.shader_defines,
+                                                pass_def.rasterization_samples);
 }
 
 PassId compileShadowDepthPass(const PassDefinition &pass_def, ShadowDepthRuntimeDependencies dependencies) {
@@ -297,7 +300,8 @@ PassId compileShadowDepthPass(const PassDefinition &pass_def, ShadowDepthRuntime
                                                      dependencies.warn_backend_specific_shader_refs,
                                                      dependencies.shader_defines);
     return dependencies.shadow_depth_pass_container.registerShadowDepthPass(depth_rt.format, vert_shader,
-                                                                           dependencies.shader_defines);
+                                                                           dependencies.shader_defines,
+                                                                           pass_def.rasterization_samples);
 }
 
 PassId compileVelocityPass(const PassDefinition &pass_def,
@@ -322,7 +326,7 @@ PassId compileVelocityPass(const PassDefinition &pass_def,
         dependencies.warn_backend_specific_shader_refs, dependencies.shader_defines);
     return dependencies.velocity_pass_container.registerVelocityPass(
         color.format, depth.format, regular_vert, skinned_vert, frag,
-        dependencies.shader_defines);
+        dependencies.shader_defines, pass_def.rasterization_samples);
 }
 
 } // namespace

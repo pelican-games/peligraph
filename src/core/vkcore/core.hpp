@@ -69,7 +69,9 @@ DECLARE_MODULE(VulkanManageCore) {
                             vma::MemoryUsage mem_usage, vma::AllocationCreateFlags alloc_flags,
                             VulkanProcessType type = VulkanProcessType::graphics,
                             std::span<const vk::Format> compatible_view_formats = {},
-                            uint32_t mip_levels = 1) const;
+                            uint32_t mip_levels = 1,
+                            vk::SampleCountFlagBits samples =
+                                vk::SampleCountFlagBits::e1) const;
     void writeImage(const ImageWrapper &dst, const void *src, vk::DeviceSize bytes_num) const;
 };
 

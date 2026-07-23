@@ -21,7 +21,10 @@ DECLARE_MODULE(ImGuiSystem) {
     void routeInputAndBeginFrame(InputState &input);
     void endFrameIfStarted();
     void render(vk::CommandBuffer command_buffer, vk::ImageView target_view,
-                vk::Extent2D target_extent, vk::Format target_format);
+                vk::Extent2D target_extent, vk::Format target_format,
+                vk::ImageView resolve_view = {},
+                vk::ResolveModeFlagBits resolve_mode =
+                    vk::ResolveModeFlagBits::eNone);
     std::uint64_t publicApiCallCountForTesting() const noexcept;
 };
 

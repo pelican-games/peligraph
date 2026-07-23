@@ -85,13 +85,29 @@ void renderUiPass(vk::CommandBuffer cmd_buf, const FrameRenderContext &frame, co
 
     const auto rt_id = pass_def.output_color.front();
     const bool targets_swapchain = isSwapchainRenderTarget(rt_id);
-    const vk::ImageView target_view = targets_swapchain ? frame.color_attachment
-                                                        : rt_container.getImageView(rt_id);
+    const vk::ImageView target_view =
+        targets_swapchain ? frame.color_attachment
+                          : rt_container.getAttachmentImageView(rt_id);
+    const vk::ImageView resolve_view =
+        !targets_swapchain && rt_container.hasSeparateAttachment(rt_id)
+            ? rt_container.getImageView(rt_id)
+            : vk::ImageView{};
     const vk::Format target_format = targets_swapchain ? dependencies.swapchain_color_format
                                                        : rt_container.getMetadata(rt_id).format;
-    dependencies.ui_renderer->render(cmd_buf, UiDrawRequest{target_view, target_extent, target_format,
-                                                           pass_def.color_load_op, pass_def.color_store_op,
-                                                           pass_def.clear_color},
+    dependencies.ui_renderer->render(cmd_buf, UiDrawRequest{
+                                                           .target_view = target_view,
+                                                           .target_extent = target_extent,
+                                                           .target_format = target_format,
+                                                           .load_op = pass_def.color_load_op,
+                                                           .store_op = pass_def.color_store_op,
+                                                           .clear_color = pass_def.clear_color,
+                                                           .resolve_view = resolve_view,
+                                                           .samples = pass_def.rasterization_samples,
+                                                           .resolve_mode =
+                                                               targets_swapchain
+                                                                   ? vk::ResolveModeFlagBits::eNone
+                                                                   : rt_container.resolveMode(rt_id),
+                                                       },
                                     *dependencies.ui_renderer_dependencies);
 }
 
@@ -110,9 +126,15 @@ void renderImGuiPass(vk::CommandBuffer cmd_buf, const FrameRenderContext &frame,
     const bool swapchain = isSwapchainRenderTarget(target);
     dependencies.imgui_system->render(
         cmd_buf,
-        swapchain ? frame.color_attachment : rt_container.getImageView(target),
+        swapchain ? frame.color_attachment
+                  : rt_container.getAttachmentImageView(target),
         target_extent,
-        swapchain ? dependencies.swapchain_color_format : rt_container.getMetadata(target).format);
+        swapchain ? dependencies.swapchain_color_format : rt_container.getMetadata(target).format,
+        !swapchain && rt_container.hasSeparateAttachment(target)
+            ? rt_container.getImageView(target)
+            : vk::ImageView{},
+        swapchain ? vk::ResolveModeFlagBits::eNone
+                  : rt_container.resolveMode(target));
 }
 #endif
 

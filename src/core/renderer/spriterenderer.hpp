@@ -4,7 +4,8 @@
 #include "../shader/pipelinefactory.hpp"
 #include "../vkcore/buf.hpp"
 
-#include <unordered_map>
+#include <map>
+#include <tuple>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
@@ -19,6 +20,13 @@ struct SpriteDrawRequest {
     vk::Extent2D extent;
     vk::Format color_format;
     vk::Format depth_format;
+    vk::ImageView color_resolve_view;
+    vk::ImageView depth_resolve_view;
+    vk::SampleCountFlagBits samples = vk::SampleCountFlagBits::e1;
+    vk::ResolveModeFlagBits color_resolve_mode =
+        vk::ResolveModeFlagBits::eNone;
+    vk::ResolveModeFlagBits depth_resolve_mode =
+        vk::ResolveModeFlagBits::eNone;
 };
 
 struct SpriteRendererDependencies {
@@ -31,13 +39,18 @@ DECLARE_MODULE(SpriteRenderer) {
     vk::Device device;
     ShaderBundleId vert_shader;
     ShaderBundleId frag_shader;
-    std::unordered_map<std::uint64_t, PipelineHandle> pipelines;
+    std::map<std::tuple<vk::Format, vk::Format,
+                        vk::SampleCountFlagBits>,
+             PipelineHandle>
+        pipelines;
     BufferWrapper vertex_buffer;
     BufferWrapper index_buffer;
     vk::DeviceSize vertex_capacity = 0;
     vk::DeviceSize index_capacity = 0;
 
-    PipelineHandle getPipeline(vk::Format color_format, vk::Format depth_format);
+    PipelineHandle getPipeline(vk::Format color_format,
+                               vk::Format depth_format,
+                               vk::SampleCountFlagBits samples);
     void ensureBuffers(vk::DeviceSize vertex_bytes, vk::DeviceSize index_bytes);
 
   public:

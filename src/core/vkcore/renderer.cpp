@@ -746,7 +746,8 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                                                           layout_tracker);
                 const auto color_view = isSwapchainRenderTarget(color_id)
                                             ? render_ctx.color_attachment
-                                            : modules.render_target_container.getImageView(color_id);
+                                            : modules.render_target_container
+                                                  .getAttachmentImageView(color_id);
                 const auto &depth_meta = modules.render_target_container.getMetadata(depth_id);
                 const auto color_format = isSwapchainRenderTarget(color_id)
                                               ? frame_target_format
@@ -758,8 +759,41 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                     throw std::runtime_error("sprite color and depth attachments must have matching extents");
                 modules.sprite.renderer->render(
                     render_ctx.cmd_buf,
-                    SpriteDrawRequest{color_view, modules.render_target_container.getImageView(depth_id), extent,
-                                      color_format, depth_meta.format},
+                    SpriteDrawRequest{
+                        .color_view = color_view,
+                        .depth_view =
+                            modules.render_target_container
+                                .getAttachmentImageView(depth_id),
+                        .extent = extent,
+                        .color_format = color_format,
+                        .depth_format = depth_meta.format,
+                        .color_resolve_view =
+                            isConcreteRenderTarget(color_id) &&
+                                    modules.render_target_container
+                                        .hasSeparateAttachment(color_id)
+                                ? modules.render_target_container
+                                      .getImageView(color_id)
+                                : vk::ImageView{},
+                        .depth_resolve_view =
+                            modules.render_target_container
+                                    .hasSeparateAttachment(depth_id)
+                                ? modules.render_target_container
+                                      .getImageView(depth_id)
+                                : vk::ImageView{},
+                        .samples =
+                            isConcreteRenderTarget(color_id)
+                                ? modules.render_target_container
+                                      .sampleCount(color_id)
+                                : vk::SampleCountFlagBits::e1,
+                        .color_resolve_mode =
+                            isConcreteRenderTarget(color_id)
+                                ? modules.render_target_container
+                                      .resolveMode(color_id)
+                                : vk::ResolveModeFlagBits::eNone,
+                        .depth_resolve_mode =
+                            modules.render_target_container
+                                .resolveMode(depth_id),
+                    },
                     SpriteRendererDependencies{*modules.sprite.scene, *modules.sprite.atlas,
                                                modules.frame_resources});
                 if (node_trace != nullptr && isConcreteRenderTarget(color_id)) {
@@ -1224,6 +1258,11 @@ nlohmann::json Renderer::currentFramePlanJson() const {
     }
     auto result = framePlanToJson(frame_graph->plan,
                                   frame_graph->render_pipeline.get());
+    if (frame_graph->sample_count_plan != nullptr &&
+        frame_graph->render_pipeline->sample_count_policy.authored) {
+        result["sample_count_plan"] =
+            resolvedSampleCountPlanToJson(*frame_graph->sample_count_plan);
+    }
     const auto *sprite_scene = FastModuleContainer::tryGet<SpriteScene>();
     result["sprite"] = sprite_scene != nullptr ? sprite_scene->statusJson()
                                                  : nlohmann::json{{"enabled", false}};

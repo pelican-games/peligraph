@@ -130,6 +130,8 @@ struct PassDefinition {
     vk::AttachmentLoadOp depth_load_op = vk::AttachmentLoadOp::eClear;
     vk::AttachmentStoreOp depth_store_op = vk::AttachmentStoreOp::eDontCare;
     vk::ClearColorValue clear_color = vk::ClearColorValue{std::array{0.0f, 0.0f, 0.0f, 1.0f}};
+    vk::SampleCountFlagBits rasterization_samples =
+        vk::SampleCountFlagBits::e1;
 
     bool isMaterial() const { return std::holds_alternative<MaterialPassInfo>(pass_info); }
     bool isFullscreen() const { return std::holds_alternative<FullscreenPassInfo>(pass_info); }

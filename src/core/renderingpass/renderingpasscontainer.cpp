@@ -1,5 +1,6 @@
 #include "renderingpasscontainer.hpp"
 #include <algorithm>
+#include <stdexcept>
 #include <utility>
 
 namespace Pelican {
@@ -75,6 +76,42 @@ bool RenderingPassContainer::supportsMaterialPass(
         }
     }
     return false;
+}
+
+vk::SampleCountFlagBits
+RenderingPassContainer::materialRasterizationSamples(
+    MaterialShaderContract shader_contract) const {
+    std::optional<vk::SampleCountFlagBits> samples;
+    for (const auto rendering_pass_id : registered_pass_ids) {
+        const auto &rendering_pass =
+            rendering_passes.get(rendering_pass_id);
+        for (const auto &compiled : rendering_pass.passes) {
+            const auto &pass = compiled.definition;
+            if (!pass.isMaterial()) continue;
+            const auto pass_shader_contract =
+                materialPassShaderContract(pass.materialInfo().contract);
+            const bool legacy_compatible =
+                pass.materialInfo().contract ==
+                    MaterialPassContract::legacy_gbuffer_v1 &&
+                (shader_contract ==
+                     MaterialShaderContract::legacy_gbuffer_v1 ||
+                 shader_contract == MaterialShaderContract::gbuffer_v1);
+            if (pass_shader_contract != shader_contract &&
+                !legacy_compatible) {
+                continue;
+            }
+            if (samples &&
+                *samples != pass.rasterization_samples) {
+                throw std::runtime_error(
+                    "material shader contract is bound to passes with "
+                    "different rasterization sample counts: " +
+                    std::string{
+                        materialShaderContractName(shader_contract)});
+            }
+            samples = pass.rasterization_samples;
+        }
+    }
+    return samples.value_or(vk::SampleCountFlagBits::e1);
 }
 
 } // namespace Pelican

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vulkan/vulkan.hpp>
 
@@ -11,6 +12,7 @@ struct RenderTargetMetadata {
     vk::Format format;
     vk::Extent2D extent;
     bool history = false;
+    std::uint32_t samples = 1;
 };
 
 } // namespace Pelican

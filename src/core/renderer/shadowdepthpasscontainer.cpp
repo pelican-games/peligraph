@@ -29,7 +29,8 @@ const ShadowDepthPassContainer::PipelineVariants &requirePipeline(
 
 PassId ShadowDepthPassContainer::registerShadowDepthPass(vk::Format depth_format,
                                                          ShaderBundleId vert_shader,
-                                                         std::vector<std::string> shader_defines) {
+                                                         std::vector<std::string> shader_defines,
+                                                         vk::SampleCountFlagBits samples) {
     const auto pass_id = pipelineIndexToPassId(pipelines.size());
 
     GraphicsPipelineDesc desc;
@@ -43,6 +44,7 @@ PassId ShadowDepthPassContainer::registerShadowDepthPass(vk::Format depth_format
     desc.depth_compare = vk::CompareOp::eLessOrEqual;
     desc.cull_mode = vk::CullModeFlagBits::eBack;
     desc.front_face = vk::FrontFace::eClockwise;
+    desc.rasterization_samples = samples;
 
     const auto regular = GET_MODULE(PipelineFactory).create(desc);
     const auto embedded = b::embed<"skinned_shadow_depth.vert.spv">();

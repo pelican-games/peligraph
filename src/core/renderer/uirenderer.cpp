@@ -16,7 +16,9 @@
 namespace Pelican {
 namespace {
 
-GraphicsPipelineDesc makeUiPipelineDesc(ShaderBundleId vert, ShaderBundleId frag, vk::Format format) {
+GraphicsPipelineDesc makeUiPipelineDesc(
+    ShaderBundleId vert, ShaderBundleId frag, vk::Format format,
+    vk::SampleCountFlagBits samples) {
     GraphicsPipelineDesc desc;
     desc.vert = vert;
     desc.frag = frag;
@@ -31,6 +33,7 @@ GraphicsPipelineDesc makeUiPipelineDesc(ShaderBundleId vert, ShaderBundleId frag
     const auto layout = ui::quadVertexLayout();
     desc.vertex_bindings = {layout.binding};
     desc.vertex_attributes.assign(layout.attributes.begin(), layout.attributes.end());
+    desc.rasterization_samples = samples;
     return desc;
 }
 
@@ -53,11 +56,18 @@ UiRenderer::UiRenderer() : device{GET_MODULE(VulkanManageCore).getDevice()} {
 
 UiRenderer::~UiRenderer() = default;
 
-PipelineHandle UiRenderer::getPipeline(vk::Format color_format) {
-    const auto key = static_cast<int>(color_format);
+PipelineHandle UiRenderer::getPipeline(
+    vk::Format color_format, vk::SampleCountFlagBits samples) {
+    const auto key =
+        (static_cast<std::uint64_t>(
+             static_cast<std::uint32_t>(color_format))
+         << 32u) |
+        static_cast<std::uint32_t>(samples);
     if (const auto found = pipelines.find(key); found != pipelines.end()) return found->second;
     return pipelines.emplace(key, GET_MODULE(PipelineFactory).create(
-                                      makeUiPipelineDesc(vert_shader, frag_shader, color_format))).first->second;
+                                      makeUiPipelineDesc(vert_shader, frag_shader,
+                                                         color_format, samples)))
+        .first->second;
 }
 
 void UiRenderer::ensureBuffers(vk::DeviceSize vertex_bytes, vk::DeviceSize index_bytes) {
@@ -93,6 +103,12 @@ void UiRenderer::render(vk::CommandBuffer cmd_buf, const UiDrawRequest &request,
     attachment.loadOp = request.load_op;
     attachment.storeOp = request.store_op;
     attachment.clearValue.color = request.clear_color;
+    if (request.resolve_view) {
+        attachment.resolveMode = request.resolve_mode;
+        attachment.resolveImageView = request.resolve_view;
+        attachment.resolveImageLayout =
+            vk::ImageLayout::eColorAttachmentOptimal;
+    }
     vk::RenderingInfo rendering;
     rendering.renderArea = vk::Rect2D{{0, 0}, request.target_extent};
     rendering.layerCount = 1;
@@ -100,7 +116,8 @@ void UiRenderer::render(vk::CommandBuffer cmd_buf, const UiDrawRequest &request,
     cmd_buf.beginRendering(rendering);
 
     auto &factory = GET_MODULE(PipelineFactory);
-    const auto pipeline = getPipeline(request.target_format);
+    const auto pipeline =
+        getPipeline(request.target_format, request.samples);
     const auto layout = factory.layout(pipeline);
     cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, factory.pipeline(pipeline));
     dependencies.frame_resources.bindGraphics(cmd_buf, layout);
