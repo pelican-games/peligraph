@@ -1134,6 +1134,7 @@ target_compile_definitions(pelican_test_frameplanner_test PRIVATE
 )
 
 pelican_define_test(logicalrendergraph_test pelican_core)
+pelican_define_test(targetplanning_test pelican_project)
 
 pelican_define_test(featurecompose_test pelican_core)
 target_compile_definitions(pelican_test_featurecompose_test PRIVATE
