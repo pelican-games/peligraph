@@ -1029,8 +1029,71 @@ offscreen submit、OpenXRの各eye、独立desktop mirror submitへleaseとし�
 旧resource退役が正しく分離される。OpenXRの部分失敗ではsubmit済みeyeをabort経路で待ち、
 wait不能時はtarget teardownまでleaseを保持する。
 
-1. pass / region / global transform / strategy provider fixture
-2. XR2b で multiview / array-layer / depth-submit lowering
+### RPE11a — fullscreen PassImplementation provider
+
+状態: **WP200で実装済み(2026-07-24)**。最初の`PassImplementation` fixtureは
+fullscreen shader pairだけを対象にする。authoringのpassへ任意のprovider名を指定でき、
+未指定時はbuiltin identity providerを同じregistry経路で解決する。
+
+provider入力は`PassContractV1`であり、portのnominal type pattern / relation、direction、
+access、intent、read footprintとradius、fullscreen interface flagをcanonical byte rangeで
+渡す。callbackはimplementation idとshader referenceだけを返し、logical port、resource use、
+effect、physical representationを変更できない。contract fingerprintとprovider
+owner / identity / generation / version / capabilityをcompiled passへ保持する。
+
+このv1はphysical planningへ制約を返さないため、`VulkanTargetPlan`が保持するlogical nodeから
+contractをsnapshotし、runtime shader/pipeline生成前に解決する。将来のapplicability /
+planning constraintはtarget compiler前の別版入力・出力として追加し、shader-pair ABIに
+Vulkan値や遅い逆依存を混ぜない。複数passの解決結果は全callback成功後だけ適用する。
+
+registry snapshotはflat / preview / XR一括transactionのpublicationまで同じものを保持し、
+owner releaseはin-flight compile完了を待つ。game DLL fixtureでV1→V2切替、invalid ABI、
+prepared rebuild失敗のrollback、shutdown後の失効を固定した。
+
+gate:
+
+- builtinとgame DLLが同じcontract callbackを通る
+- providerが変更できるのはfullscreen shader pairだけ
+- footprint radiusを含むcontract fingerprintが決定的
+- unknown / stale / wrong-owner / invalid outputを名前入りでreject
+- 二つ目のpass失敗で一つ目を部分適用しない
+- registry snapshot中はowner release / DLL unloadしない
+- production configの未指定passはbuiltin identityで既存挙動を維持
+
+### RPE11b — tagged region / subgraph replacement
+
+状態: **WP201で実装済み(2026-07-24)**。authoring passの`regions`とgraphの
+`region_replacements`から置換対象を選ぶ。provider未指定時のbuiltin identityと
+game DLL providerは、`RegionContractV1`を受けてreplacement pass-array JSONを返す
+同じowner-aware registry経路を使う。
+
+置換はcompiled logical graphへのin-place mutationではない。元のnormalized configを
+typed logical graphへcompileして境界contractを作り、provider結果をlocal config candidateへ
+spliceし、candidate全体をもう一度typed logical graphへcompileする。resource集合、type、
+materialization、boundary portとfingerprintが一致した場合だけtarget loweringへ進む。
+結果のprovider/source/replacement provenanceは`CompiledLogicalRenderGraph`と
+`VulkanTargetPlan`に残る。
+
+v1は連続fullscreen region、既存resource、protected terminal/anchor非対象に限定した。
+置換passへ元regionの共通tagを強制し、region外の明示順序をreplacement全体へ張り直す。
+region tagは最適化境界にしない。provider出力不正、非連続、型／境界変更、unknown ownerは
+候補全体を捨て、active generationを変更しない。
+
+gate:
+
+- builtin identityとgame DLLが同じtyped region contractを使う
+- 1 passを2 passへ展開してもinput/output boundary、resource type、materializationが不変
+- resource追加削除、境界変更、malformed JSON、非連続regionを理由付きでreject
+- logical graphとtarget planへprovider/source/replacement provenanceを保持
+- provider snapshot解放前にowner registration / DLLをretireしない
+- pass→subgraphのregistry lock順をcompileとowner releaseで統一する
+- production GPU registrationでbuiltin identity regionをpublishできる
+- V1→V2 reload、invalid candidate、rebuild rollback、shutdown後失効を維持する
+
+次の候補:
+
+1. XR2b で multiview / array-layer / depth-submit lowering
+2. global `GraphTransform` / renderer-wide `RenderStrategy` fixture
 3. physical plan eject / direct authoring fixture
 4. `NativeScope` は具体的な Vulkan-only 使用例が得られてから ABI 設計
 5. CPU / external domain は計測と具体的な二候補 task が得られてから

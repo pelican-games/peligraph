@@ -5938,4 +5938,121 @@ CI gateやfixture生成toolを無理にC++へ移植しない自然な開発境�
 
 ---
 
+### WP200(済 2026-07-24): RPE11a — fullscreen PassImplementation provider
+
+参照: [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md) §3、§5、
+§6.6、§12、[`design_render_graph_compiler.md`](design_render_graph_compiler.md) §5、§8、§12、
+[`design_reviews/2026-07-24_wp200_report.md`](design_reviews/2026-07-24_wp200_report.md)。
+
+**目的**: 同じlogical pass contractを満たす実装差し替えとgraph構造変更を分離する。
+最初の縦切りとしてfullscreen passのshader pairだけを公開providerで差し替え、
+builtinとgame DLLを同じtyped contract / registry / reload lifetimeへ通す。
+
+**実装範囲**:
+
+1. C ABI `PassImplementationProviderV1`を追加する。descriptor size/version、provider
+   version/minimum engine version、capability、UTF-8 range、opaque context、`noexcept`
+   callback、owner/generation付きhandleを持つ。
+2. `pelican.render.fullscreen_pass@1` contractへpass名、typed port pattern、relation、
+   direction、access、intent、read footprintの種類と任意radius、fullscreen interface
+   flag、stable fingerprintをflattenする。STL、engine pointer、Vulkan型をABI越境させない。
+3. provider出力を版付きimplementation idとvertex / fragment shader referenceに限定する。
+   push constant、light-data use、port/resource/effect、target planはengine-ownedのままにする。
+4. owner-aware `PassImplementationRegistry`とimmutable snapshotを追加する。builtin
+   `builtin.fullscreen_v1`もauthoring shaderを返すidentity providerとして同じ経路へ登録する。
+5. pass JSONへ`implementation.provider`を追加する。fullscreen以外、空/長過ぎるprovider名、
+   unknown field、未登録provider、version/capability不一致、不正callback出力をrejectする。
+6. target planのlogical nodeからcontractを作り、runtime shader/pipeline生成前に実装を
+   解決する。複数passは全callback成功後だけ結果を適用し、途中失敗を部分反映しない。
+7. provider / implementation / contract fingerprint / owner / identity / generation /
+   version / capability / explicit selectionを`PassImplementationSelection`としてcompiled
+   passへ保持する。
+8. flat / preview / XRの一括registrationは同じregistry snapshotをpublication CASまで保持する。
+   game DLL initialize/reload/rollback/shutdownへowner activate/releaseを接続し、in-flight
+   snapshot中のowner releaseを待たせる。
+9. public game-DLL fixtureをV1/V2でshader差し替えし、invalid ABI、prepared rebuild失敗、
+   shutdown後失効を既存draw-sort fixtureと同じreload transactionで検証する。
+
+**受け入れ条件**:
+
+- 未指定fullscreen passはbuiltin identity経路で既存shaderを維持する
+- game DLL providerがtyped contractを受け、shader pairだけを差し替えられる
+- footprint radiusを含むcontract変更でfingerprintが変わり、pass名だけの変更では変わらない
+- providerはlogical/physical contractを変更できず、provenanceがcompiled passに残る
+- inactive/stale/wrong-owner/duplicate/invalid outputが理由付きで失敗する
+- 二つ目のpass失敗で一つ目を部分適用しない
+- registry snapshot解放前にowner registration / DLLをretireしない
+- V1→V2 reload、invalid candidate、rebuild rollback、shutdownが既存active実装を壊さない
+- Debug build、関連CPU test、game-DLL E2E、render pipeline回帰、
+  `git diff --check`が成功する
+
+**非対象 / RPE11b以降へ残すもの**: material pass / custom pass kind、implementation
+applicabilityとplanning constraint、tagged region / subgraph replacement、global
+`GraphTransform`、renderer-wide `RenderStrategy`、physical plan direct authoring、
+`NativeScope`。planning constraintはshader-pair ABIへVulkan値として後付けせず、
+target compiler前の別版境界で扱う。
+
+依存: WP183、WP185〜WP191、WP193〜WP196。見積: 中。
+
+完了レポート: `docs/design_reviews/2026-07-24_wp200_report.md`
+
+---
+
+### WP201(済 2026-07-24): RPE11b — tagged region / subgraph replacement
+
+参照: [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md) §6.7、§12、
+[`design_render_graph_compiler.md`](design_render_graph_compiler.md) §12、
+[`design_reviews/2026-07-24_wp201_report.md`](design_reviews/2026-07-24_wp201_report.md)。
+
+**目的**: graph構造を変えないWP200のpass実装差し替えと、1 passを複数passへ展開する
+subgraph置換を分離する。region境界のlogical typeを維持した候補だけを通常のtarget
+compilerへ戻し、元のcompiled graphやactive runtimeを直接変更しない。
+
+**実装範囲**:
+
+1. public C ABI `RenderSubgraph::ProviderV1`を追加する。typed boundary contract、
+   authored subgraph JSON、implementation id、replacement pass-array JSONを、versioned
+   standard-layout descriptorとして受け渡す。
+2. pass JSONの`regions`とgraph JSONの`region_replacements`を追加する。provider省略時は
+   `builtin.identity_v1`を選び、明示providerへ暗黙fallbackしない。
+3. 元configをtyped logical graphへcompileし、regionを横切るinput/output resource、
+   concrete type JSON、direction、materializationから
+   `pelican.render.tagged_region@1` contractとstable fingerprintを作る。
+4. provider結果をlocal config candidateへspliceし、全logical graphを再compileする。
+   resource集合、type、materialization、boundary port/fingerprintが元と一致した候補だけを
+   target loweringへ進める。
+5. v1を連続fullscreen region、既存resource、1〜256 replacement passへ限定する。
+   canonical anchor / `output_transform`、compute/material/snapshot、非連続regionをrejectする。
+6. 外側の`after` / `before`をreplacement全体へ張り直し、source regionに共通するtagだけを
+   replacementへ強制する。region tag自体はbarrier / fusion / alias boundaryにしない。
+7. provider、implementation、contract fingerprint、owner / identity / generation /
+   version / capability、source/replacement nodeをlogical graphと`VulkanTargetPlan`へ残す。
+8. owner-aware registry、builtin/game DLL共通callback、snapshot leaseを追加する。
+   pass provider→subgraph providerのlock順をcompileとDLL owner releaseで統一する。
+9. production flat/preview/XR一括prepareの前に同じsnapshot pairを取得し、target loweringから
+   publication CASまで保持する。候補失敗はactive generationを変更しない。
+10. CPU contract/展開/失敗原子性/lifetime test、public game-DLL V1/V2 reload fixture、
+    builtin identityを通す実headless GPU registration回帰を追加する。
+
+**受け入れ条件**:
+
+- builtin identityとgame DLLが同じtyped region callbackを通る
+- 1 pass→2 pass展開後もregion input/output boundaryとresource contractが一致する
+- malformed JSON、boundary変更、非連続region、unknown/stale ownerを理由付きでrejectする
+- original config、compiled logical graph、active runtimeを途中状態へ変更しない
+- provider/source/replacement provenanceがlogical/target plan dumpに残る
+- snapshot中にowner registration / DLLをretireせず、registry間lock inversionがない
+- V1→V2 reload、invalid ABI、prepared rebuild rollback、shutdown後失効を維持する
+- production GPU registration、関連CPU test、game-DLL E2E、`git diff --check`が成功する
+
+**非対象**: material/compute/snapshot region、非連続・入れ子region、resource declaration追加、
+global `GraphTransform`、renderer-wide `RenderStrategy`、physical direct authoring、
+`NativeScope`。region tagは最適化境界へ昇格させない。
+
+依存: WP185〜WP191、WP193〜WP196、WP200。見積: 中。
+
+完了レポート: `docs/design_reviews/2026-07-24_wp201_report.md`
+
+---
+
 未完了 WP と運用規則は [active ledger](implementation_plan.md) を参照。

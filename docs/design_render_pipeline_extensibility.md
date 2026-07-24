@@ -1,8 +1,8 @@
-# レンダーパイプライン拡張境界とポリシー統合(v2.2)
+# レンダーパイプライン拡張境界とポリシー統合(v2.4)
 
 対象読者: レンダラ実装者、独自描画方式を組み込むゲーム実装者。
 
-ステータス: v2.2 実装方針(2026-07-24。v1: 2026-07-21)。`hybrid_v1` の
+ステータス: v2.4 実装方針(2026-07-24。v1: 2026-07-21)。`hybrid_v1` の
 deferred/forward 基盤を出発点とする。v2 では renderer 構築を論理／ターゲットの
 二段階コンパイラとして定義し、論理型、Vulkan 物理計画、物理グラフ直書き、
 `NativeScope` の境界を追加した。詳細は
@@ -37,6 +37,13 @@ generation-owned registry lease を追加した。RPE10b3 / WP196 はproject-bac
 feature / preset watcher、flat/XR一括prepare・単一CAS、実submission fenceが保持する
 generation leaseを接続した。旧 frameが参照したregistry membershipは、そのCPU frameが
 終わった時点ではなく最後の対応GPU fence完了後にretireする。
+RPE11a / WP200 は最初の公開 `PassImplementation` 境界として fullscreen shader pair
+差し替えを実装し、builtinとgame DLLを同じtyped contract / owner-aware registry /
+transaction snapshot経路へ通した。RPE11b / WP201 はgraph構造を変更する別境界として
+tagged region / subgraph replacementを実装した。元のlogical graphを破壊せず、
+置換後のlocal candidateをtyped graphへ再compileしてからtarget loweringへ渡す。
+global transformとstrategyはこの二つの小さなABIへ押し込まず、後続の独立した
+extension pointとして残す。
 
 関連文書:
 
@@ -461,6 +468,108 @@ weighted blended OIT 等は pass / target / composite を増やす render featur
 sort provider ではない。将来の OIT feature が `none_v1` 相当を選ぶ場合も、provider 自体は
 決定的な順序を返す。
 
+### 6.6 Fullscreen `PassImplementation` v1
+
+RPE11a / WP200 では、graph構造を変えず同じlogical contractを満たす実装差し替えの
+最小fixtureとして `PassImplementationProviderV1` を公開した。fullscreen passは
+次のようにproviderを選べる。
+
+```json
+{
+  "name": "custom_composite",
+  "type": "fullscreen",
+  "implementation": {
+    "provider": "game.custom_composite"
+  },
+  "shader": {
+    "vertex": "fullscreen",
+    "fragment": "fallback_composite"
+  }
+}
+```
+
+未指定時は `builtin.fullscreen_v1` を選び、authoringされたvertex / fragment shaderを
+そのまま返す。builtinも特権経路を持たず、game DLL providerと同じregistry callbackを通る。
+明示providerが未登録、version / capabilityが不一致、callback出力が不正な場合は、builtinへ
+黙ってfallbackせずpass名とprovider名を含むcompile errorにする。
+
+callbackへ渡す `pelican.render.fullscreen_pass@1` contractは、pass名、typed port pattern、
+port relation、read/write、access intent、read footprintの種類と任意radius、fullscreen
+interface flagを持つcanonical data-only snapshotである。providerが返せるのは版付き
+implementation idとvertex / fragment shader referenceだけである。push constant、
+light-data use、port、resource、effect、target plan、Vulkan handleは変更できない。
+contract fingerprintとprovider owner / identity / generation / version / capabilityは
+`PassImplementationSelection`としてcompiled passに残す。
+
+flat / preview / XRを一括prepareするtransactionは、一つのimmutable registry snapshotを
+全variantの解決からpublication CAS完了まで保持する。owner release / DLL unloadはsnapshot
+解放を待つ。callback内からregister / unregisterを再入してはならず、入力pointerを保持しては
+ならない。出力stringは入力rangeをaliasしてよい。それ以外はprovider unregisterまで有効な
+immutable storageに置き、engineはlease解放前にcopyする。
+
+v1はshader pairだけを差し替えるため、target planning完了後かつruntime shader/pipeline
+生成前に解決してよい。将来、implementationがapplicabilityやplanning constraintを返す場合は
+target compiler前の別版境界として設計し、このcallbackへphysical条件を後付けしない。
+material pass、未知pass kind、region/subgraph、global transform、renderer strategyも非対象である。
+エンジンが常設する`output_transform`はlogical node kindこそ専用だが、runtime実装は
+fullscreen shader pairなので同じcontract経路を通る。通常はproviderを明示できずbuiltin
+identityがauthoring shaderを保つため、この扱いはterminal構造や色invariantの改造権を
+追加するものではない。
+
+### 6.7 Tagged region / subgraph replacement v1
+
+RPE11b / WP201 は、同じpassの実装差し替えでは足りず、ある区間を複数passへ展開したい場合の
+独立した境界である。passは一つ以上のregion tagを持ち、graph側で置換対象と任意providerを
+選ぶ。
+
+```json
+{
+  "name": "main",
+  "region_replacements": [
+    {
+      "region": "region.post",
+      "provider": "game.custom_post"
+    }
+  ],
+  "passes": [
+    {
+      "name": "tone",
+      "type": "fullscreen",
+      "regions": ["region.post"],
+      "input": ["scene_linear"],
+      "output": {"color": "display_linear", "depth": null}
+    }
+  ]
+}
+```
+
+provider省略時は`builtin.identity_v1`を選び、authoringされたsubgraphを同じcallbackから返す。
+engineは元configからtyped logical graphを一度作り、選択regionを横切るinput/output resource、
+concrete logical type、direction、materializationから
+`pelican.render.tagged_region@1` contractとstable fingerprintを作る。region名、graph名、
+node名は選択・診断用でありfingerprintには含めない。
+
+provider出力はpass array JSONである。engineは元configや公開済みlogical graphを直接変更せず、
+local candidateへspliceし、全graphをtyped logical graphへ再compileする。resource集合、
+logical type、materialization、region境界contractが元と完全一致した候補だけを
+`VulkanTargetPlan`へloweringする。失敗したcandidateは捨てるため、部分的に書き換えられた
+compiled logical graphは存在しない。
+
+v1は安全に凍結できる最小範囲として、連続したfullscreen pass regionだけを対象にする。
+replacementは1〜256個のfullscreen passで、既に宣言されたresourceだけを使える。
+canonical anchorと`output_transform`は置換できない。region外の`after` / `before`は
+replacement全体へ保守的に張り直し、共通region tagだけを継承する。compute、material、
+snapshot、非連続／入れ子region、resource宣言の追加削除は後続版で具体例を得てから扱う。
+
+region tag自体はbarrier、fusion、alias、allocation boundaryではない。置換後の通常graphを
+plannerが再解析し、依存と型から最適化を決める。provider選択とsource/replacement node、
+contract fingerprint、owner / identity / generation / version / capabilityはlogical graphと
+target planのprovenanceへ残す。
+
+subgraph provider snapshotはpass implementation snapshotより後に取得し、両方を全variantの
+publicationまで保持する。DLL owner解放もpass→subgraphの順に行い、shared/exclusive lockの
+順序逆転を避ける。
+
 ## 7. Material route、MSAA、XR はどう分けるか
 
 ### 7.1 Material route
@@ -736,6 +845,8 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 | RPE10b1 / WP194（済 2026-07-24） | append-only GPU registration arena、cross-registry rollback、owner-scope manifest の root 同時公開 | 5段 fault injectionで全registry membership復元、candidate不可視、lease rollback、hybrid診断 |
 | RPE10b2 / WP195（済 2026-07-24） | scope-aware replacement、generation-owned registry lease、世代ローカル typed binding | same-name reload、pass/target削除、旧世代frameから旧resource参照、最後のlease解放後のexact retire |
 | RPE10b3 / WP196（済 2026-07-24） | submission fence retire、project config / feature / preset watcher、flat/XR一括publication | in-flight完了前の破棄なし、同一frame変更coalesce、失敗時active世代不変、実Vulkan reload |
+| RPE11a / WP200（済 2026-07-24） | fullscreen `PassImplementationProviderV1`、typed logical contract、builtin/game DLL同一registry | shader pair限定差し替え、contract不変、owner/generation provenance、failure atomic、reload/rollback/unload |
+| RPE11b / WP201（済 2026-07-24） | tagged region、typed boundary contract、builtin/game DLL subgraph replacement | immutable candidate再compile、1→N fullscreen展開、境界不変、provenance、failure atomic、reload/rollback/unload |
 
 ### 12.1 いま着手する範囲
 
@@ -773,6 +884,13 @@ registry membershipのgeneration lease所有を接続した。WP196ではroot / 
 FileWatcher batchをpreview + flat (+ XR)の一括transactionへ接続し、一回のCASで公開する。
 swapchain slot、OpenXR eye、offscreen、desktop mirrorの実submission fenceがgeneration
 leaseを保持するため、旧resourceのexact retireは最後のGPU完了より前に起きない。
+WP200ではfullscreen passのshader pair実装を、target plan由来のtyped logical contractを
+受けるowner-aware providerへ分離した。builtin identityとgame DLL差し替えは同じABIを使い、
+全variant transactionは同じregistry snapshotを保持する。WP201ではpassのregion tagから
+typed input/output境界を作り、builtin identityまたはgame DLL providerが返すsubgraphを
+local config candidateへspliceして全logical graphを再compileする経路を追加した。
+元graphやactive runtimeは破壊せず、resource/type/materialization/境界が一致した候補だけを
+target loweringとpublicationへ進める。v1は連続fullscreen regionと既存resourceに限定する。
 各段階の詳細gateは
 `design_render_graph_compiler.md` §12 を正とする。
 

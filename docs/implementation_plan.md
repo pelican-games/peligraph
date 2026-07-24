@@ -75,11 +75,17 @@ ctest --test-dir ./build -C Debug --output-on-failure
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
-(最新完了: WP199、2026-07-24。本文と完了レポートは archive 参照。)
+(最新完了: WP201、2026-07-24。本文と完了レポートは archive 参照。)
 
 ## 2. WP 詳細
 
-現在アクティブな WP はない。WP199 でPython製gateを既定OFFの明示opt-inへ変更し、
+現在アクティブな WP はない。WP201 でtagged region / subgraph replacementを
+public game-DLL providerまで縦切りし、元graphを破壊しないcandidate再compile、
+typed boundary不変検証、logical/target provenance、transaction snapshotへ接続した。
+WP200 ではfullscreen passのshader pair差し替えを
+`PassImplementationProviderV1`として公開し、builtin identityとgame DLL実装を
+同じtyped logical contract / owner-aware registry / transaction snapshot経路へ接続した。
+WP199 でPython製gateを既定OFFの明示opt-inへ変更し、
 OpenXRの不要な任意Python探索を通常構成から隔離した。
 WP198 でruntime shader compilerのproviderを
 Vulkan SDKへ限定し、PC host compile / target precompiled-SPIR-V境界を固定した。
@@ -91,8 +97,9 @@ preset の同一 watcher-frame 変更を一つのtransactionへcoalesceし、pre
 window swapchain、offscreen、OpenXR各eye、独立desktop mirrorの実submission fenceが
 使用generationを保持し、旧GPU resourceは最後の対応fence完了より前にretireされない。
 失敗時はactive generation、registry、config cache、watch dependencyを維持する。
-renderer の次候補は pass / region / global transform / strategy provider の縦切りfixture
-(RPE11、WP未採番)である。
+renderer の次候補は XR2b multiview / array-layer / depth-submit lowering、または
+global transform / renderer strategyの独立fixtureである。physical direct authoringや
+NativeScopeは具体的な利用例を得てから進める。
 
 ## 3. トラック現況(WP 化待ちを含む)
 
@@ -133,9 +140,12 @@ renderer の次候補は pass / region / global transform / strategy provider �
   builtin graph variant policy(WP192)、runtime publication root(WP193)、
   append-only GPU registration transaction(WP194)、scope-aware replacement と
   generation-owned registry lease(WP195)、submission-fence lifetime と
-  pipeline watcher publication(RPE10b3 / WP196)まで完了。
-  次は pass / region / global transform / strategy provider を、既存builtinと
-  差し替えproviderが同じtyped contractを使う縦切りfixtureとして進める。
+  pipeline watcher publication(RPE10b3 / WP196)、fullscreen
+  PassImplementation provider(RPE11a / WP200)、tagged region / subgraph replacement
+  (RPE11b / WP201)まで完了。builtin identityとgame DLL差し替えproviderは同じtyped
+  boundary contractを使い、replacement candidateは全logical graphを再compileしてから
+  target loweringへ進む。global transformとrenderer strategyは同じ万能callbackへ統合せず、
+  今後も個別fixtureとして置く。
   RPE6c0/1 では [HEG] の immutable canonical / disposable lowering seam、
   dialect legality、pairwise endpoint relationを置くが、汎用 CPU scheduler、execution linker、
   動画 backend は計測・具体需要まで実装しない。logical effectは作者を信頼する任意宣言、
