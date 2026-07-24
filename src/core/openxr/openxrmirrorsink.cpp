@@ -175,9 +175,12 @@ void XrMirrorSink::tryPresent() noexcept {
     bool frame_begun = false;
     bool rendering_begun = false;
     bool timing_begun = false;
+    GpuSubmissionLease submission_lease;
     RenderTiming *render_timing = FastModuleContainer::tryGet<RenderTiming>();
     vk::CommandBuffer cmd;
     try {
+        submission_lease =
+            GET_MODULE(FrameGraphRuntimeContainer).snapshot();
         auto frame = target.tryRenderBegin();
         if (!frame) {
             (void)target.recoverSurfaceIfStale();
@@ -193,7 +196,7 @@ void XrMirrorSink::tryPresent() noexcept {
         const auto letterbox = mirrorLetterboxRect(source_extent, frame->extent);
         if (!letterbox) {
             frame_begun = false;
-            target.render_end();
+            target.render_end(submission_lease);
             ++stats.dropped;
             reportProgress();
             return;
@@ -280,7 +283,7 @@ void XrMirrorSink::tryPresent() noexcept {
         body_label.end();
         node_label.end();
         frame_begun = false;
-        target.render_end();
+        target.render_end(submission_lease);
         if (render_timing != nullptr) {
             render_timing->endGpuRange();
             timing_begun = false;
@@ -296,7 +299,7 @@ void XrMirrorSink::tryPresent() noexcept {
         reportProgress();
         try {
             if (rendering_begun) cmd.endRendering();
-            if (frame_begun) target.render_end();
+            if (frame_begun) target.render_end(submission_lease);
         } catch (...) {
         }
     } catch (...) {
@@ -307,7 +310,7 @@ void XrMirrorSink::tryPresent() noexcept {
         reportProgress();
         try {
             if (rendering_begun) cmd.endRendering();
-            if (frame_begun) target.render_end();
+            if (frame_begun) target.render_end(submission_lease);
         } catch (...) {
         }
     }

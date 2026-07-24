@@ -22,6 +22,8 @@ class SwapchainFrameTarget : public IFrameTarget {
     vk::Device device;
     std::vector<vk::UniqueSemaphore> image_acquire_semaphores, rendered_semaphores;
     std::array<CommandBufWrapper, in_flight_frames_num> render_cmd_bufs;
+    GpuSubmissionLeaseSlots<in_flight_frames_num>
+        submission_leases;
 
     uint32_t current_image_index, in_flight_frame_index;
 
@@ -52,7 +54,7 @@ class SwapchainFrameTarget : public IFrameTarget {
     bool try_render_begin(FrameRenderContext &context) override;
     void recordOutputTransformCopy(vk::CommandBuffer cmd_buf, vk::Image source,
                                    vk::Format source_format, vk::Extent2D source_extent) override;
-    void render_end() override;
+    void render_end(GpuSubmissionLease lease) override;
     FrameTargetCaps caps() const override;
     bool consumeExtentChanged() override;
     bool recoverSurfaceIfStale() override;

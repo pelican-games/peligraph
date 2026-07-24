@@ -128,6 +128,9 @@ DECLARE_MODULE(ProjectBasicConfig) {
     std::string sceneDataJson() const;
     std::string assetDataJson() const;
     std::string renderingConfigJson() const;
+    std::string renderingConfigReference() const;
+    void publishRenderingConfigJson(
+        std::string prepared_json) noexcept;
     std::string defaultRenderingPass() const;
     std::string uiConfigJson() const;
     std::optional<std::string> inputActionsJson() const;

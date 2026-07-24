@@ -264,6 +264,9 @@ class XrCompositionTarget::Impl {
     XrCompositionDependencies dependencies;
     SessionRuntime &session_runtime;
     XrCompositionApi api;
+    // Declared before graphics so the graphics bridge (which waits the device
+    // idle on destruction) is destroyed before a retained failed-wait lease.
+    GpuSubmissionLease submission_lease;
     std::unique_ptr<IXrCompositionGraphics> graphics;
     std::array<XrViewConfigurationView, xr_stereo_view_count> view_configs{
         XrViewConfigurationView{XR_TYPE_VIEW_CONFIGURATION_VIEW},
@@ -419,6 +422,7 @@ class XrCompositionTarget::Impl {
     }
 
     void abortFrame() noexcept {
+        bool all_submissions_complete = true;
         for (std::uint32_t view_index = 0; view_index < xr_stereo_view_count;
              ++view_index) {
             auto &view = views[view_index];
@@ -429,6 +433,7 @@ class XrCompositionTarget::Impl {
                     view.submission_complete = true;
                 } catch (...) {
                     teardown_required = true;
+                    all_submissions_complete = false;
                     continue;
                 }
             }
@@ -443,6 +448,9 @@ class XrCompositionTarget::Impl {
             }
         }
         closeZeroLayerAfterFailure();
+        if (all_submissions_complete) {
+            submission_lease.reset();
+        }
         resetFrameFlags();
     }
 
@@ -602,15 +610,26 @@ class XrCompositionTarget::Impl {
         }
     }
 
-    void endView(std::uint32_t view_index) {
+    void endView(
+        std::uint32_t view_index,
+        GpuSubmissionLease lease) {
         if (!logical_frame_begun || view_index != next_view ||
             view_index >= xr_stereo_view_count ||
             !views[view_index].view_begun || views[view_index].view_ended ||
             views[view_index].state != XrSwapchainState::waited) {
             throw std::logic_error("OpenXR composition view end is out of order");
         }
+        if (submission_lease != nullptr &&
+            lease != nullptr &&
+            submission_lease.get() != lease.get()) {
+            throw std::logic_error(
+                "OpenXR composition views cannot span GPU submission leases");
+        }
         try {
             graphics->submitView(view_index, in_flight_frame_index);
+            if (submission_lease == nullptr) {
+                submission_lease = std::move(lease);
+            }
             views[view_index].state = XrSwapchainState::submitted;
             views[view_index].view_ended = true;
             ++next_view;
@@ -621,10 +640,18 @@ class XrCompositionTarget::Impl {
         }
     }
 
-    void endLogicalFrame() {
+    void endLogicalFrame(GpuSubmissionLease lease) {
         if (!logical_frame_begun || next_view != xr_stereo_view_count) {
             throw std::logic_error(
                 "OpenXR composition logical frame ended before both submissions");
+        }
+        if (submission_lease == nullptr) {
+            submission_lease = std::move(lease);
+        } else if (
+            lease != nullptr &&
+            submission_lease.get() != lease.get()) {
+            throw std::logic_error(
+                "OpenXR composition frame cannot span GPU submission leases");
         }
         try {
             for (std::uint32_t view = 0; view < xr_stereo_view_count; ++view) {
@@ -678,6 +705,7 @@ class XrCompositionTarget::Impl {
             abortFrame();
             throw;
         }
+        submission_lease.reset();
         resetFrameFlags();
     }
 
@@ -727,11 +755,15 @@ FrameRenderContext XrCompositionTarget::beginView(std::uint32_t view_index) {
     return impl->beginView(view_index);
 }
 
-void XrCompositionTarget::endView(std::uint32_t view_index) {
-    impl->endView(view_index);
+void XrCompositionTarget::endView(
+    std::uint32_t view_index,
+    GpuSubmissionLease lease) {
+    impl->endView(view_index, std::move(lease));
 }
 
-void XrCompositionTarget::endLogicalFrame() { impl->endLogicalFrame(); }
+void XrCompositionTarget::endLogicalFrame(GpuSubmissionLease lease) {
+    impl->endLogicalFrame(std::move(lease));
+}
 
 vk::Format XrCompositionTarget::colorFormat(std::uint32_t view_index) const {
     return impl->colorFormat(view_index);

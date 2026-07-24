@@ -11,12 +11,15 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <vector>
 
 namespace Pelican {
+
+struct RenderPipelineReloadState;
 
 enum class RenderGraphVariant {
     flat,
@@ -37,8 +40,14 @@ class ILogicalFrameTarget {
     virtual ~ILogicalFrameTarget() = default;
     virtual void beginLogicalFrame(std::uint32_t view_count) = 0;
     virtual FrameRenderContext beginView(std::uint32_t view_index) = 0;
-    virtual void endView(std::uint32_t view_index) = 0;
-    virtual void endLogicalFrame() = 0;
+    // Targets that submit per view must capture the lease before this call
+    // returns after a successful submit.
+    virtual void endView(
+        std::uint32_t view_index,
+        GpuSubmissionLease lease = {}) = 0;
+    // Implementations must capture the lease before returning (or throwing)
+    // after any successful GPU submit, and release it only after completion.
+    virtual void endLogicalFrame(GpuSubmissionLease lease = {}) = 0;
     virtual vk::Format colorFormat(std::uint32_t view_index) const = 0;
     virtual bool consumeExtentChanged() = 0;
 };
@@ -62,9 +71,14 @@ DECLARE_MODULE(Renderer) {
     nlohmann::json graph_variant_transition_trace = nlohmann::json::array();
     std::optional<std::size_t> pending_graph_transition;
     PreviewGraphProgram preview_graph_program;
+    std::unique_ptr<RenderPipelineReloadState>
+        render_pipeline_reload_state;
 
     std::vector<TemporalFrameHistory> &activeTemporalHistories();
     const std::vector<TemporalFrameHistory> &activeTemporalHistories() const;
+    void installRenderPipelineReloadParticipant();
+    bool reloadRenderPipelineFromDisk(
+        std::string &error) noexcept;
 
   public:
     Renderer();

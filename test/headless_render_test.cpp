@@ -27,6 +27,7 @@
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/vkcore/renderer.hpp"
 #include "../src/core/vkcore/rendertarget.hpp"
+#include "../src/core/watch/reloadservice.hpp"
 
 #include <algorithm>
 #include <array>
@@ -159,6 +160,16 @@ void main() {
 )glsl";
 }
 
+const char *pipelineReloadFragmentShader() {
+    return R"glsl(
+#version 450
+layout(location = 0) out vec4 outColor;
+void main() {
+    outColor = vec4(0.2, 0.4, 0.6, 1.0);
+}
+)glsl";
+}
+
 nlohmann::json gpuArenaRenderingConfig() {
     return nlohmann::json::parse(R"json(
 {
@@ -269,6 +280,35 @@ nlohmann::json gpuArenaRenderingConfig() {
       "before": ["gpu_arena_present"],
       "dispatch": {"groups": [1, 1, 1]},
       "schedule": "per_frame"
+    }
+  ]
+}
+)json");
+}
+
+nlohmann::json pipelineReloadRenderingConfig() {
+    return nlohmann::json::parse(R"json(
+{
+  "features": ["features/reload_marker.json"],
+  "shader_defines": ["WP196_INITIAL"],
+  "render_targets": [],
+  "rendering_passes": [
+    {
+      "name": "pipeline_reload_main",
+      "passes": [
+        {
+          "name": "pipeline_reload_present",
+          "type": "fullscreen",
+          "shader": {
+            "vertex": "shaders/gpu_arena_fullscreen",
+            "fragment": "shaders/pipeline_reload"
+          },
+          "output": {
+            "color": "swapchain",
+            "depth": null
+          }
+        }
+      ]
     }
   ]
 }
@@ -702,6 +742,175 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
 }
 
 TEST_CASE(
+    "WP196 pipeline watcher coalesces dependencies and preserves the active generation on failure",
+    "[wp196][headless][render-pipeline][hot-reload][coalesce][rollback]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    std::filesystem::path temp_dir;
+    try {
+        FastModuleContainer modules;
+        temp_dir = makeTempProjectDir();
+        std::filesystem::create_directories(
+            temp_dir / "shaders");
+        std::filesystem::create_directories(
+            temp_dir / "features");
+        writeTextFile(
+            temp_dir / "scene.json",
+            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+        writeTextFile(temp_dir / "assets.json",
+                      R"json({"models":[]})json");
+        writeTextFile(
+            temp_dir / "shaders" /
+                "gpu_arena_fullscreen.vert",
+            gpuArenaFullscreenVertexShader());
+        writeTextFile(
+            temp_dir / "shaders" /
+                "pipeline_reload.frag",
+            pipelineReloadFragmentShader());
+
+        auto initial_config =
+            pipelineReloadRenderingConfig();
+        writeTextFile(
+            temp_dir / "features" /
+                "reload_marker.json",
+            R"json({"schema":"pelican.render_feature","version":1,"name":"reload_marker"})json");
+        writeTextFile(
+            temp_dir / "pipeline.json",
+            initial_config.dump());
+
+        auto project =
+            makeProjectConfig("scene.json",
+                              "assets.json");
+        project["basic_config"]
+               ["rendering_config_json"] =
+            "pipeline.json";
+        project["basic_config"]
+               ["default_rendering_pass"] =
+            "pipeline_reload_main";
+        project["basic_config"]
+               ["default_scene_id"] =
+            "default_scene";
+        project["schema"] =
+            "pelican.project";
+        project["version"] = 1;
+        project["name"] =
+            "wp196-pipeline-reload";
+        GET_MODULE(ProjectSource)
+            .setProjectData(project.dump());
+        GET_MODULE(PathResolver).setup(
+            temp_dir, false, project.dump());
+        auto &launch =
+            GET_MODULE(EngineLaunchConfig);
+        launch.headless = true;
+        launch.headless_extent =
+            vk::Extent2D{16, 16};
+
+        auto &renderer = GET_MODULE(Renderer);
+        (void)renderer;
+        auto &runtime =
+            GET_MODULE(FrameGraphRuntimeContainer);
+        auto before = runtime.snapshot();
+        REQUIRE(before != nullptr);
+        const auto before_generation =
+            before->generation;
+
+        auto replacement = initial_config;
+        replacement["shader_defines"][0] =
+            "WP196_RELOADED";
+        writeTextFile(
+            temp_dir / "pipeline.json",
+            replacement.dump());
+        // A real watcher batch can contain both the root and one dependency.
+        // The participant must compile and publish exactly once.
+        const std::array requests{
+            watch::ReloadRequest{
+                watch::makeAssetKey(
+                    "pipeline.json"),
+                watch::ReloadKind::modified,
+                {}, 1},
+            watch::ReloadRequest{
+                watch::makeAssetKey(
+                    "features/reload_marker.json"),
+                watch::ReloadKind::modified,
+                {}, 1},
+        };
+        const auto applied =
+            GET_MODULE(watch::ReloadService)
+                .applyRequestsForTesting(requests);
+        REQUIRE(applied ==
+                std::vector<bool>{true, true});
+        auto after = runtime.snapshot();
+        REQUIRE(after != nullptr);
+        REQUIRE(after->generation ==
+                before_generation + 1);
+        const auto *program =
+            after->find(
+                after->name_to_id.at(
+                    "pipeline_reload_main"));
+        REQUIRE(program != nullptr);
+        REQUIRE(
+            program->frame_graph.render_pipeline
+                ->shader_defines ==
+            std::vector<std::string>{
+                "WP196_RELOADED"});
+
+        writeTextFile(
+            temp_dir / "features" /
+                "reload_marker.json",
+            "{ not valid json");
+        REQUIRE_FALSE(
+            GET_MODULE(watch::ReloadService)
+                .applyRequestForTesting(
+                    watch::ReloadRequest{
+                        watch::makeAssetKey(
+                            "features/reload_marker.json"),
+                        watch::ReloadKind::modified,
+                        {}, 1}));
+        REQUIRE(runtime.snapshot() == after);
+
+        writeTextFile(
+            temp_dir / "features" /
+                "reload_marker.json",
+            R"json({"schema":"pelican.render_feature","version":1,"name":"reload_marker"})json");
+        auto unsupported_feature =
+            replacement;
+        unsupported_feature.erase(
+            "shader_defines");
+        unsupported_feature["features"]
+            .push_back(
+                "engine://features/ui.json");
+        writeTextFile(
+            temp_dir / "pipeline.json",
+            unsupported_feature.dump());
+        FastModuleContainer::freezeCreation();
+        REQUIRE_FALSE(
+            GET_MODULE(watch::ReloadService)
+                .applyRequestForTesting(
+                    watch::ReloadRequest{
+                        watch::makeAssetKey(
+                            "pipeline.json"),
+                        watch::ReloadKind::modified,
+                        {}, 1}));
+        REQUIRE(runtime.snapshot() == after);
+
+        GET_MODULE(VulkanManageCore).waitIdle();
+        before.reset();
+        after.reset();
+        std::filesystem::remove_all(temp_dir);
+    } catch (const std::exception &error) {
+        if (!temp_dir.empty()) {
+            std::filesystem::remove_all(
+                temp_dir);
+        }
+        SKIP(
+            std::string{
+                "Vulkan pipeline reload unavailable: "} +
+            error.what());
+    }
+#endif
+}
+
+TEST_CASE(
     "WP194 rollback and WP195 scope replacement preserve generation-owned GPU resources",
     "[wp194][wp195][headless][render-pipeline][gpu-arena][rollback][replacement]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER
@@ -889,6 +1098,92 @@ TEST_CASE(
         REQUIRE(isConcreteRenderTarget(old_target));
         REQUIRE(isValidFrameGraphBufferId(old_buffer));
         REQUIRE(old_task.value >= 0);
+
+        auto batch_config_json =
+            gpuArenaRenderingConfig();
+        auto &batch_targets =
+            batch_config_json["render_targets"];
+        batch_targets.erase(
+            std::remove_if(
+                batch_targets.begin(),
+                batch_targets.end(),
+                [](const auto &target) {
+                    return target.value(
+                               "name",
+                               std::string{})
+                           .find("velocity") !=
+                           std::string::npos;
+                }),
+            batch_targets.end());
+        auto &batch_passes =
+            batch_config_json["rendering_passes"][0]
+                             ["passes"];
+        batch_passes.erase(
+            std::remove_if(
+                batch_passes.begin(),
+                batch_passes.end(),
+                [](const auto &pass) {
+                    return pass.value(
+                               "type",
+                               std::string{}) ==
+                           "velocity";
+                }),
+            batch_passes.end());
+        const auto batch_config =
+            batch_config_json.dump();
+
+        RenderingPassConfigRegistrationDependencies::
+            Options batch_flat_options;
+        batch_flat_options.gpu_owner_scope =
+            "render_pipeline/flat";
+        RenderingPassConfigRegistrationDependencies::
+            Options batch_xr_options;
+        batch_xr_options.graph_variant =
+            RenderPipelineGraphVariant::xr;
+        batch_xr_options.publish_enabled_features =
+            false;
+        batch_xr_options.gpu_owner_scope =
+            "render_pipeline/flat";
+        batch_xr_options
+            .validate_prepared_generation =
+            [](const RenderPipelineRuntimeGeneration &) {
+                throw std::runtime_error(
+                    "Injected variant-batch validation failure");
+            };
+        std::vector<
+            RenderingPassConfigRegistrationDependencies>
+            failed_variant_batch;
+        failed_variant_batch.push_back(
+            gpuArenaRegistrationDependencies(
+                std::move(batch_flat_options)));
+        failed_variant_batch.push_back(
+            gpuArenaRegistrationDependencies(
+                std::move(batch_xr_options)));
+        REQUIRE_THROWS_WITH(
+            registerRenderingPassConfigVariantsFromJsonData(
+                batch_config, {16, 16},
+                std::move(failed_variant_batch)),
+            "Injected variant-batch validation failure");
+        REQUIRE(runtime.snapshot() == generation);
+        REQUIRE(
+            inspectRenderPipelineGpuRegistryCounts(
+                registries, &debug_draw,
+                &debug_text) == committed);
+        REQUIRE(
+            GET_MODULE(RenderTargetContainer)
+                .getRenderTargetIdByName(
+                    "gpu_arena_scratch") ==
+            old_target);
+        REQUIRE(
+            GET_MODULE(FrameGraphResourceContainer)
+                .getBufferIdByName(
+                    "gpu_arena_buffer") ==
+            old_buffer);
+        REQUIRE(
+            GET_MODULE(ComputeTaskContainer)
+                .getComputeTaskIdByName(
+                    "gpu_arena_compute") ==
+            old_task);
 
         auto replacement_config =
             gpuArenaRenderingConfig();

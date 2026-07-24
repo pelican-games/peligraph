@@ -144,8 +144,12 @@ FrameRenderContext OffscreenFrameTarget::render_begin() {
 
     if (auto result = device.waitForFences({cmd_buf.getFence()}, VK_TRUE, UINT64_MAX);
         result != vk::Result::eSuccess) {
-        LOG_WARNING(logger, "vkWaitForFences didn't succeed : {}", vk::to_string(result));
+        throw std::runtime_error(
+            "failed to wait for offscreen submission fence: " +
+            vk::to_string(result));
     }
+    submission_leases.complete(
+        in_flight_frame_index);
 
     cmd_buf.recordBegin();
     GET_MODULE(VulkanUtils)
@@ -204,7 +208,7 @@ void OffscreenFrameTarget::recordOutputTransformCopy(vk::CommandBuffer cmd_buf, 
     output_transform_recorded = true;
 }
 
-void OffscreenFrameTarget::render_end() {
+void OffscreenFrameTarget::render_end(GpuSubmissionLease lease) {
     const auto &cmd_buf = render_cmd_bufs[in_flight_frame_index];
 
     if (!output_transform_recorded) {
@@ -215,10 +219,16 @@ void OffscreenFrameTarget::render_end() {
     }
 
     cmd_buf.recordEndSubmit();
+    submission_leases.submitted(
+        in_flight_frame_index, std::move(lease));
     if (auto result = device.waitForFences({cmd_buf.getFence()}, VK_TRUE, UINT64_MAX);
         result != vk::Result::eSuccess) {
-        LOG_WARNING(logger, "vkWaitForFences didn't succeed : {}", vk::to_string(result));
+        throw std::runtime_error(
+            "failed to wait for offscreen submission fence: " +
+            vk::to_string(result));
     }
+    submission_leases.complete(
+        in_flight_frame_index);
     has_rendered_frame = true;
 
     in_flight_frame_index++;

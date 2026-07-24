@@ -38,7 +38,9 @@ void RenderTarget::recordOutputTransformCopy(vk::CommandBuffer cmd_buf, vk::Imag
     impl->recordOutputTransformCopy(cmd_buf, source, source_format, source_extent);
 }
 
-void RenderTarget::render_end() { impl->render_end(); }
+void RenderTarget::render_end(GpuSubmissionLease lease) {
+    impl->render_end(std::move(lease));
+}
 
 vk::Format RenderTarget::getSwapchainFormat() const { return impl->caps().color_format; }
 

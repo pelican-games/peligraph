@@ -28,6 +28,8 @@ inline constexpr std::string_view materialReloadParticipantName = "pelican.mater
 inline constexpr std::string_view shaderReloadParticipantName = "pelican.shaders";
 inline constexpr std::string_view gameLogicReloadParticipantName = "pelican.game_logic";
 inline constexpr std::string_view modelReloadParticipantName = "pelican.models";
+inline constexpr std::string_view renderPipelineReloadParticipantName =
+    "pelican.render_pipeline";
 
 enum class RuntimeReloadBoundary : std::uint8_t {
     frame_start,
@@ -66,6 +68,11 @@ struct ReloadParticipant {
     std::string name;
     std::function<bool(const ReloadRequest &)> claims;
     std::function<bool(const ReloadRequest &, ReloadCoordinator &)> enqueue;
+    // Requests claimed by one participant in the same watcher frame are
+    // delivered once. This is intended for whole-domain transactions such as
+    // render-pipeline recompilation, where rebuilding once per changed
+    // dependency would publish intermediate generations.
+    std::function<bool(std::span<const ReloadRequest>)> apply_batch;
     // Retirement callbacks must not throw. ReloadService still guards the
     // boundary so one faulty participant cannot terminate frame teardown.
     std::function<bool(std::shared_ptr<const void>, ReloadCoordinator &)> retire;
@@ -104,6 +111,9 @@ DECLARE_MODULE(ReloadService) {
     std::vector<bool> applyRequests(std::span<const ReloadRequest> requests);
     bool applyClaimedRequest(ReloadParticipant &claimant,
                              const ReloadRequest &request);
+    bool applyClaimedBatch(
+        ReloadParticipant &claimant,
+        std::span<const ReloadRequest> requests);
     bool applyShaderReloadBatch(std::span<const ReloadRequest> shader_requests,
                                 std::span<const AssetKey> material_documents);
     RuntimeReloadResult forceShaderReload();

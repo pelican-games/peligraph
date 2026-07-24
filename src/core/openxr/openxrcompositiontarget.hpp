@@ -84,8 +84,10 @@ class XrCompositionTarget final : public IXrCompositionTarget {
     void endFrameWithoutLayers(const XrDisplayTiming &display_timing) override;
     void beginLogicalFrame(std::uint32_t view_count) override;
     FrameRenderContext beginView(std::uint32_t view_index) override;
-    void endView(std::uint32_t view_index) override;
-    void endLogicalFrame() override;
+    void endView(
+        std::uint32_t view_index,
+        GpuSubmissionLease lease = {}) override;
+    void endLogicalFrame(GpuSubmissionLease lease = {}) override;
     vk::Format colorFormat(std::uint32_t view_index) const override;
     bool consumeExtentChanged() override;
     bool generationTeardownRequired() const noexcept override;

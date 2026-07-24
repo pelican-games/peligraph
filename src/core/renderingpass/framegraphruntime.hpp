@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -130,6 +131,13 @@ class PreparedRenderPipelineGeneration {
     }
     const std::vector<RenderingPassId> &renderingPassIds() const noexcept {
         return prepared_rendering_pass_ids_;
+    }
+    const RenderPipelineRuntimeGeneration &candidate() const {
+        if (candidate_ == nullptr) {
+            throw std::logic_error(
+                "Render pipeline runtime candidate is empty");
+        }
+        return *candidate_;
     }
 };
 

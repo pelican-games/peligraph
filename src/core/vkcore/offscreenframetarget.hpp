@@ -13,6 +13,8 @@ namespace Pelican {
 class OffscreenFrameTarget : public IFrameTarget {
     vk::Device device;
     std::array<CommandBufWrapper, in_flight_frames_num> render_cmd_bufs;
+    GpuSubmissionLeaseSlots<in_flight_frames_num>
+        submission_leases;
     uint32_t in_flight_frame_index;
 
     vk::Extent2D extent;
@@ -33,7 +35,7 @@ class OffscreenFrameTarget : public IFrameTarget {
     bool try_render_begin(FrameRenderContext &context) override;
     void recordOutputTransformCopy(vk::CommandBuffer cmd_buf, vk::Image source,
                                    vk::Format source_format, vk::Extent2D source_extent) override;
-    void render_end() override;
+    void render_end(GpuSubmissionLease lease) override;
     FrameTargetCaps caps() const override;
     bool consumeExtentChanged() override;
     bool recoverSurfaceIfStale() override { return false; }

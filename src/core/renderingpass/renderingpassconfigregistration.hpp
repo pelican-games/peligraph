@@ -21,6 +21,7 @@ class ComputeTaskContainer;
 class FullscreenPassContainer;
 class FrameGraphResourceContainer;
 class FrameGraphRuntimeContainer;
+struct RenderPipelineRuntimeGeneration;
 class PathResolver;
 class PipelineFactory;
 class RenderingPassContainer;
@@ -70,6 +71,10 @@ struct RenderingPassConfigRegistrationDependencies {
         bool publish_enabled_features = true;
         std::string gpu_owner_scope;
         std::function<void()> prepare_additional_gpu_resources;
+        // Runs after every program and GPU scope in the transaction has been
+        // prepared, but before the single publication CAS.
+        std::function<void(const RenderPipelineRuntimeGeneration &)>
+            validate_prepared_generation;
         RenderPipelineGpuRegistrationFaultPoint fault_point =
             RenderPipelineGpuRegistrationFaultPoint::none;
     } options;
@@ -91,5 +96,9 @@ RenderingPassConfigRegistrationResult registerRenderingPassConfigFromJson(
 RenderingPassConfigRegistrationResult registerRenderingPassConfigFromJsonData(
     std::string_view json_data, vk::Extent2D base_extent,
     RenderingPassConfigRegistrationDependencies dependencies);
+std::vector<RenderingPassConfigRegistrationResult>
+registerRenderingPassConfigVariantsFromJsonData(
+    std::string_view json_data, vk::Extent2D base_extent,
+    std::vector<RenderingPassConfigRegistrationDependencies> dependencies);
 
 } // namespace Pelican

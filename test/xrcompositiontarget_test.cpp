@@ -435,6 +435,32 @@ TEST_CASE("OpenXR composition owns two arraySize-one swapchains and one projecti
     CHECK_FALSE(target.generationTeardownRequired());
 }
 
+TEST_CASE("OpenXR composition retains a submitted generation until both view fences complete",
+          "[openxr][composition][submission-lifetime]") {
+    FakeRuntime fake;
+    FakeScope scope{fake};
+    Pelican::OpenXr::SessionRuntime session{sessionDependencies()};
+    makeReady(fake, session);
+    Pelican::OpenXr::XrCompositionTarget target{
+        compositionDependencies(session), std::make_unique<FakeGraphics>()};
+    auto frame = beginFrame(fake, session);
+    target.prepareFrame(frame.timing, frame.views);
+
+    auto lease = std::make_shared<int>(42);
+    std::weak_ptr<int> observed = lease;
+    target.beginLogicalFrame(2);
+    (void)target.beginView(0);
+    target.endView(0, lease);
+    lease.reset();
+    CHECK_FALSE(observed.expired());
+
+    (void)target.beginView(1);
+    target.endView(1);
+    CHECK_FALSE(observed.expired());
+    target.endLogicalFrame();
+    CHECK(observed.expired());
+}
+
 TEST_CASE("OpenXR swapchain wait timeout retries the same acquired image",
           "[openxr][composition][timeout]") {
     for (const auto timeout_view : {0U, 1U}) {

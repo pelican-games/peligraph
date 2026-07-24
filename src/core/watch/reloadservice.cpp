@@ -41,12 +41,24 @@ void ReloadService::registerParticipant(ReloadParticipant participant) {
     if (participant.name.empty()) {
         throw std::invalid_argument("reload participant name cannot be empty");
     }
-    const bool has_file_callbacks = participant.claims || participant.enqueue || participant.retire;
-    if (static_cast<bool>(participant.claims) != static_cast<bool>(participant.enqueue)) {
-        throw std::invalid_argument("reload participant '" + participant.name +
-                                    "' requires both claims and enqueue callbacks");
+    const bool has_apply =
+        static_cast<bool>(participant.enqueue) ||
+        static_cast<bool>(participant.apply_batch);
+    const bool has_file_callbacks =
+        participant.claims || has_apply ||
+        participant.retire;
+    if (participant.enqueue &&
+        participant.apply_batch) {
+        throw std::invalid_argument(
+            "reload participant '" + participant.name +
+            "' cannot register both per-request and batch apply callbacks");
     }
-    if (has_file_callbacks && (!participant.claims || !participant.enqueue)) {
+    if (static_cast<bool>(participant.claims) != has_apply) {
+        throw std::invalid_argument("reload participant '" + participant.name +
+                                    "' requires claims plus one apply callback");
+    }
+    if (has_file_callbacks &&
+        (!participant.claims || !has_apply)) {
         throw std::invalid_argument("reload participant '" + participant.name +
                                     "' cannot register a retire callback by itself");
     }
@@ -471,6 +483,47 @@ bool ReloadService::applyClaimedRequest(ReloadParticipant &claimant,
     return after.failed == before.failed && after.applied > before.applied;
 }
 
+bool ReloadService::applyClaimedBatch(
+    ReloadParticipant &claimant,
+    std::span<const ReloadRequest> requests) {
+    bool applied = false;
+    std::string error;
+    try {
+        applied = claimant.apply_batch(requests);
+        if (!applied) {
+            error = "file-triggered batch apply failed";
+        }
+    } catch (const std::exception &caught) {
+        error = caught.what();
+        if (logger) {
+            LOG_ERROR(
+                logger,
+                "reload participant '{}' batch failed: {}",
+                claimant.name, caught.what());
+        }
+    } catch (...) {
+        error = "unknown file-triggered batch failure";
+        if (logger) {
+            LOG_ERROR(
+                logger,
+                "reload participant '{}' batch failed with an unknown error",
+                claimant.name);
+        }
+    }
+    if (claimant.runtime) {
+        auto &status = runtime_status_[claimant.name];
+        ++status.attempted;
+        if (applied) {
+            ++status.applied;
+            status.last_error.clear();
+        } else {
+            ++status.failed;
+            status.last_error = std::move(error);
+        }
+    }
+    return applied;
+}
+
 std::vector<bool> ReloadService::applyRequests(
     std::span<const ReloadRequest> requests) {
     ensureBuiltInParticipants();
@@ -544,6 +597,28 @@ std::vector<bool> ReloadService::applyRequests(
         const bool applied = applyShaderReloadBatch(shader_requests, material_documents);
         for (const auto index : shader_indices) results[index] = applied;
         for (const auto index : material_value_indices) results[index] = applied;
+    }
+
+    for (auto &participant : participants_) {
+        if (!participant.apply_batch) continue;
+        std::vector<std::size_t> indices;
+        std::vector<ReloadRequest> batch;
+        for (std::size_t index = 0;
+             index < requests.size(); ++index) {
+            if (!results[index] || consumed[index] ||
+                claimants[index] != &participant) {
+                continue;
+            }
+            indices.push_back(index);
+            batch.push_back(requests[index]);
+        }
+        if (batch.empty()) continue;
+        const bool applied =
+            applyClaimedBatch(participant, batch);
+        for (const auto index : indices) {
+            results[index] = applied;
+            consumed[index] = true;
+        }
     }
 
     for (std::size_t index = 0; index < requests.size(); ++index) {

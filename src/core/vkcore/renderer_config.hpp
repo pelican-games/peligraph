@@ -5,6 +5,7 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Pelican {
@@ -19,5 +20,7 @@ struct RenderGraphVariantConfig {
 };
 
 RenderGraphVariantConfig loadRenderGraphVariantsFromConfig();
+RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
+    std::string_view rendering_config_json);
 
 } // namespace Pelican

@@ -156,7 +156,9 @@ class VulkanSyntheticStereoTarget final : public ILogicalFrameTarget {
         };
     }
 
-    void endView(std::uint32_t view_index) override {
+    void endView(
+        std::uint32_t view_index,
+        GpuSubmissionLease) override {
         if (!logical_frame_begun || view_index >= stereo_view_count ||
             !view_begun[view_index] || view_ended[view_index]) {
             throw std::runtime_error("synthetic stereo target view end is out of order");
@@ -173,7 +175,10 @@ class VulkanSyntheticStereoTarget final : public ILogicalFrameTarget {
         ++view_end_count;
     }
 
-    void endLogicalFrame() override {
+    void endLogicalFrame(GpuSubmissionLease lease) override {
+        // This fixture waits synchronously below; the parameter keeps the
+        // submitted generation alive through that wait.
+        (void)lease;
         if (!logical_frame_begun || !view_ended[0] || !view_ended[1]) {
             throw std::runtime_error(
                 "synthetic stereo target logical frame ended before both views");

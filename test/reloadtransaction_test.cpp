@@ -5,6 +5,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <nlohmann/json.hpp>
 
+#include <array>
 #include <atomic>
 #include <memory>
 #include <stdexcept>
@@ -276,6 +277,57 @@ TEST_CASE("ReloadService routes requests through one named participant",
         {makeAssetKey("fake/unclaimed.bin"), ReloadKind::modified, {}, 1}));
     REQUIRE(service.unregisterParticipant("fake"));
     REQUIRE_FALSE(service.unregisterParticipant("fake"));
+}
+
+TEST_CASE(
+    "ReloadService coalesces one participant's dependency changes into one batch",
+    "[wp196][reload-participant][batch][coalesce]") {
+    if (!logger) setupLogger();
+    ReloadService service;
+    const auto root =
+        makeAssetKey("passes/main.json");
+    const auto feature =
+        makeAssetKey("features/lighting.json");
+    std::size_t apply_count = 0;
+    std::vector<AssetKey> received;
+
+    service.registerParticipant(ReloadParticipant{
+        .name = "fake.pipeline",
+        .claims =
+            [root, feature](
+                const ReloadRequest &request) {
+                return request.key == root ||
+                       request.key == feature;
+            },
+        .apply_batch =
+            [&apply_count, &received](
+                std::span<const ReloadRequest>
+                    requests) {
+                ++apply_count;
+                for (const auto &request : requests) {
+                    received.push_back(request.key);
+                }
+                return true;
+            },
+    });
+
+    const std::array requests{
+        ReloadRequest{root, ReloadKind::modified,
+                      {}, 1},
+        ReloadRequest{feature,
+                      ReloadKind::modified, {}, 1},
+        ReloadRequest{
+            makeAssetKey("unclaimed.txt"),
+            ReloadKind::modified, {}, 1},
+    };
+    const auto results =
+        service.applyRequestsForTesting(requests);
+
+    REQUIRE(results ==
+            std::vector<bool>{true, true, true});
+    REQUIRE(apply_count == 1);
+    REQUIRE(received ==
+            std::vector<AssetKey>{root, feature});
 }
 
 TEST_CASE("ReloadService rejects ambiguous participant claims before enqueue",

@@ -199,6 +199,7 @@ void SwapchainFrameTarget::recreateSurfaceDependants() {
     const auto previous_extent = extent;
     const auto previous_format = swapchain.format;
     device.waitIdle();
+    submission_leases.completeAll();
     surfaceDependantsSetup();
     surface_stale = false;
     if (previous_extent.width != extent.width || previous_extent.height != extent.height ||
@@ -246,9 +247,12 @@ std::optional<FrameRenderContext> SwapchainFrameTarget::beginFrame(bool nonblock
             return std::nullopt;
         }
         if (fence_result != vk::Result::eSuccess) {
-            LOG_WARNING(logger, "vkWaitForFences didn't succeed : {}",
-                        vk::to_string(fence_result));
+            throw std::runtime_error(
+                "failed to wait for swapchain submission fence: " +
+                vk::to_string(fence_result));
         }
+        submission_leases.complete(
+            in_flight_frame_index);
 
         auto image_acquire_result =
             device.acquireNextImageKHR(swapchain.swapchain.get(),
@@ -383,7 +387,7 @@ void SwapchainFrameTarget::recordOutputTransformCopy(vk::CommandBuffer cmd_buf, 
     output_transform_recorded = true;
 }
 
-void SwapchainFrameTarget::render_end() {
+void SwapchainFrameTarget::render_end(GpuSubmissionLease lease) {
     const auto &cmd_buf = render_cmd_bufs[in_flight_frame_index];
 
     if (!output_transform_recorded) {
@@ -405,6 +409,10 @@ void SwapchainFrameTarget::render_end() {
     cmd_buf.recordEndSubmit({rendered_semaphores[in_flight_frame_index].get()},
                             {image_acquire_semaphores[in_flight_frame_index].get()},
                             {vk::PipelineStageFlagBits::eTopOfPipe});
+    // Capture immediately after queue submission. Presentation may fail after
+    // the GPU has accepted the work, so the lease must already be retained.
+    submission_leases.submitted(
+        in_flight_frame_index, std::move(lease));
 
     vk::PresentInfoKHR presen_info;
     presen_info.setSwapchains(swapchain.swapchain.get());

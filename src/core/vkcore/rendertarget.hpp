@@ -35,7 +35,7 @@ DECLARE_MODULE(RenderTarget) {
     std::optional<FrameRenderContext> tryRenderBegin();
     void recordOutputTransformCopy(vk::CommandBuffer cmd_buf, vk::Image source,
                                    vk::Format source_format, vk::Extent2D source_extent);
-    void render_end();
+    void render_end(GpuSubmissionLease lease = {});
 
     vk::Format getSwapchainFormat() const;
     vk::Extent2D getExtent() const;

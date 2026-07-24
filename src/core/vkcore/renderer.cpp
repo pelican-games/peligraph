@@ -12,10 +12,13 @@
 #include "../renderer/uicontainer.hpp"
 #include "../renderer/uirenderer.hpp"
 #include "../ui/module.hpp"
+#include "../watch/assetkey.hpp"
 #include "../watch/reloadgate.hpp"
 #include "../watch/reloadservice.hpp"
 #include "../launchconfig.hpp"
 #include "../light/lightcontainer.hpp"
+#include "../loader/basicconfig.hpp"
+#include "../loader/pathresolver.hpp"
 #include "../fullscreenpass/fullscreenpasscontainer.hpp"
 #include "../material/materialcontainer.hpp"
 #include "../material/standardmaterialresource.hpp"
@@ -53,12 +56,71 @@
 #include <glm/gtc/matrix_inverse.hpp>
 #include <limits>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <string_view>
 
 namespace Pelican {
 
+struct RenderPipelineReloadState {
+    std::string source_reference;
+    std::set<watch::AssetKey> watched_sources;
+    std::uint64_t attempted = 0;
+    std::uint64_t applied = 0;
+    std::uint64_t failed = 0;
+    std::uint64_t last_generation = 0;
+    std::string last_error;
+};
+
 namespace {
+
+std::optional<watch::AssetKey> projectAssetKeyForReference(
+    std::string_view reference) {
+    if (reference.empty() ||
+        reference.starts_with("engine://") ||
+        reference.starts_with("user://")) {
+        return std::nullopt;
+    }
+    try {
+        return watch::makeAssetKey(reference);
+    } catch (...) {
+        // Absolute/foreign sources are loadable only through explicit policy
+        // and do not belong to the project watcher identity space.
+        return std::nullopt;
+    }
+}
+
+std::set<watch::AssetKey> renderPipelineWatchSources(
+    std::string_view root_reference,
+    const RenderPipelineRuntimeGeneration &generation,
+    RenderingPassId flat_rendering_pass_id) {
+    std::set<watch::AssetKey> result;
+    const auto append =
+        [&result](std::string_view reference) {
+            if (auto key =
+                    projectAssetKeyForReference(
+                        reference)) {
+                result.insert(std::move(*key));
+            }
+        };
+    append(root_reference);
+    const auto *program =
+        generation.find(flat_rendering_pass_id);
+    if (program == nullptr ||
+        !program->frame_graph.render_pipeline) {
+        return result;
+    }
+    const auto &pipeline =
+        *program->frame_graph.render_pipeline;
+    if (pipeline.pipeline_preset) {
+        append(pipeline.pipeline_preset->reference);
+    }
+    for (const auto &feature :
+         pipeline.feature_instances) {
+        append(feature.reference);
+    }
+    return result;
+}
 
 struct SpriteRenderModules {
     SpriteScene *scene = nullptr;
@@ -1169,17 +1231,19 @@ class FlatLogicalFrameTarget final : public ILogicalFrameTarget {
         return target.render_begin();
     }
 
-    void endView(std::uint32_t view_index) override {
+    void endView(
+        std::uint32_t view_index,
+        GpuSubmissionLease) override {
         if (view_index != 0 || !view_begun) {
             throw std::runtime_error("flat IFrameTarget view was ended out of order");
         }
     }
 
-    void endLogicalFrame() override {
+    void endLogicalFrame(GpuSubmissionLease lease) override {
         if (!view_begun) {
             throw std::runtime_error("flat IFrameTarget logical frame ended without a view");
         }
-        target.render_end();
+        target.render_end(std::move(lease));
         view_begun = false;
     }
 
@@ -1205,9 +1269,213 @@ Renderer::Renderer() {
     flat_temporal_histories.resize(1);
     if (xr_rendering_pass_id) xr_temporal_histories.resize(2);
     internal_render_extent = GET_MODULE(RenderTarget).getExtent();
+    installRenderPipelineReloadParticipant();
 }
 
-Renderer::~Renderer() = default;
+Renderer::~Renderer() {
+    if (render_pipeline_reload_state != nullptr) {
+        if (auto *reload_service =
+                FastModuleContainer::tryGet<
+                    watch::ReloadService>()) {
+            (void)reload_service->unregisterParticipant(
+                watch::renderPipelineReloadParticipantName);
+        }
+    }
+}
+
+void Renderer::installRenderPipelineReloadParticipant() {
+    auto state =
+        std::make_unique<RenderPipelineReloadState>();
+    state->source_reference =
+        GET_MODULE(ProjectBasicConfig)
+            .renderingConfigReference();
+    const auto generation =
+        GET_MODULE(FrameGraphRuntimeContainer).snapshot();
+    if (generation != nullptr) {
+        state->watched_sources =
+            renderPipelineWatchSources(
+                state->source_reference, *generation,
+                flat_rendering_pass_id);
+        state->last_generation =
+            generation->generation;
+    }
+    render_pipeline_reload_state =
+        std::move(state);
+
+    auto &reload_service =
+        GET_MODULE(watch::ReloadService);
+    reload_service.registerParticipant(
+        watch::ReloadParticipant{
+            .name = std::string{
+                watch::renderPipelineReloadParticipantName},
+            .claims =
+                [this](
+                    const watch::ReloadRequest &request) {
+                    return render_pipeline_reload_state !=
+                               nullptr &&
+                           render_pipeline_reload_state
+                               ->watched_sources
+                               .contains(request.key);
+                },
+            .apply_batch =
+                [this](std::span<
+                       const watch::ReloadRequest>) {
+                    std::string error;
+                    return reloadRenderPipelineFromDisk(
+                        error);
+                },
+            .runtime =
+                watch::RuntimeReloadParticipant{
+                    .boundary =
+                        watch::RuntimeReloadBoundary::
+                            frame_start,
+                    .apply =
+                        [this](
+                            watch::RuntimeReloadTrigger
+                                trigger) {
+                            if (trigger ==
+                                watch::
+                                    RuntimeReloadTrigger::
+                                        poll) {
+                                return watch::
+                                    RuntimeReloadResult{};
+                            }
+                            std::string error;
+                            const bool applied =
+                                reloadRenderPipelineFromDisk(
+                                    error);
+                            return watch::
+                                RuntimeReloadResult{
+                                    .attempted = true,
+                                    .committed = applied,
+                                    .error =
+                                        std::move(error),
+                                };
+                        },
+                    .describe =
+                        [this](nlohmann::json &output) {
+                            if (render_pipeline_reload_state ==
+                                nullptr) {
+                                output = {
+                                    {"available", false}};
+                                return;
+                            }
+                            const auto &state =
+                                *render_pipeline_reload_state;
+                            auto sources =
+                                nlohmann::json::array();
+                            for (const auto &source :
+                                 state.watched_sources) {
+                                sources.push_back(
+                                    watch::assetKeyString(
+                                        source));
+                            }
+                            output = {
+                                {"available", true},
+                                {"source", "file_watcher"},
+                                {"root",
+                                 state.source_reference},
+                                {"watched_sources",
+                                 std::move(sources)},
+                                {"attempted",
+                                 state.attempted},
+                                {"applied", state.applied},
+                                {"failed", state.failed},
+                                {"generation",
+                                 state.last_generation},
+                                {"domain_error",
+                                 state.last_error.empty()
+                                     ? nlohmann::json(
+                                           nullptr)
+                                     : nlohmann::json(
+                                           state.last_error)},
+                            };
+                        },
+                },
+        });
+}
+
+bool Renderer::reloadRenderPipelineFromDisk(
+    std::string &error) noexcept {
+    if (render_pipeline_reload_state == nullptr) {
+        error =
+            "render pipeline reload state is unavailable";
+        return false;
+    }
+    auto &state = *render_pipeline_reload_state;
+    ++state.attempted;
+    try {
+        auto &config =
+            GET_MODULE(ProjectBasicConfig);
+        auto json =
+            GET_MODULE(PathResolver).loadText(
+                state.source_reference);
+        auto variants =
+            loadRenderGraphVariantsFromConfigData(json);
+        const auto generation =
+            GET_MODULE(FrameGraphRuntimeContainer)
+                .snapshot();
+        if (generation == nullptr) {
+            throw std::runtime_error(
+                "render pipeline reload published no generation");
+        }
+        auto watched_sources =
+            renderPipelineWatchSources(
+                state.source_reference, *generation,
+                variants.flat);
+
+        flat_rendering_pass_id = variants.flat;
+        xr_rendering_pass_id = variants.xr;
+        xr_excluded_features =
+            std::move(
+                variants.xr_excluded_features);
+        preview_graph_program =
+            std::move(variants.preview);
+        current_rendering_pass_id =
+            active_graph_variant ==
+                    RenderGraphVariant::flat
+                ? flat_rendering_pass_id
+                : xr_rendering_pass_id.value();
+        config.publishRenderingConfigJson(
+            std::move(json));
+
+        if (auto *targets =
+                FastModuleContainer::tryGet<
+                    RenderTargetContainer>()) {
+            targets->resetHistory();
+        }
+        if (auto *instances =
+                FastModuleContainer::tryGet<
+                    PolygonInstanceContainer>()) {
+            instances->resetTemporalHistory();
+        }
+        render_target_layout_tracker.reset();
+        temporal_reset_requested = true;
+
+        state.watched_sources =
+            std::move(watched_sources);
+        state.last_generation =
+            generation->generation;
+        state.last_error.clear();
+        ++state.applied;
+        error.clear();
+        return true;
+    } catch (const std::exception &caught) {
+        error = caught.what();
+    } catch (...) {
+        error =
+            "unknown render pipeline reload failure";
+    }
+    state.last_error = error;
+    ++state.failed;
+    if (logger) {
+        LOG_WARNING(
+            logger,
+            "render pipeline reload failed: {}",
+            error);
+    }
+    return false;
+}
 
 nlohmann::ordered_json Renderer::previewIsolationStateJson() const {
     using Json = nlohmann::ordered_json;
@@ -1720,7 +1988,7 @@ void Renderer::renderLogicalFrame(
                                        engine_time.frameIndex());
         }
 #endif
-        target.endView(view_index);
+        target.endView(view_index, runtime_generation);
 
         if (execution_tracing_for_testing) {
             view_traces.push_back({
@@ -1734,7 +2002,7 @@ void Renderer::renderLogicalFrame(
         }
     }
 
-    target.endLogicalFrame();
+    target.endLogicalFrame(runtime_generation);
     if (execution_tracing_for_testing) {
         if (view_count == 1) {
             last_execution_trace = nlohmann::json{

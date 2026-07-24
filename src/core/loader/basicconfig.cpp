@@ -787,6 +787,16 @@ std::string ProjectBasicConfig::renderingConfigJson() const {
     return *rendering_config_json;
 }
 
+std::string ProjectBasicConfig::renderingConfigReference() const {
+    return rendering_config_json_ref;
+}
+
+void ProjectBasicConfig::publishRenderingConfigJson(
+    std::string prepared_json) noexcept {
+    rendering_config_json =
+        std::move(prepared_json);
+}
+
 std::string ProjectBasicConfig::defaultRenderingPass() const { return default_rendering_pass; }
 
 std::string ProjectBasicConfig::uiConfigJson() const {
