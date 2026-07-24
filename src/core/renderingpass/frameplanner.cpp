@@ -171,6 +171,9 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
     node.declaration_index = declaration_index;
     node.after = parseOptionalStringList(pass_json, "after", "pass");
     node.before = parseOptionalStringList(pass_json, "before", "pass");
+    node.region_tags =
+        parseOptionalRegionTags(
+            pass_json, "Frame graph pass '" + node.name + "'");
 
     const auto type = pass_json.value("type", std::string{});
     if (type == "canonical_anchor") {
@@ -226,6 +229,10 @@ FrameGraphNodeDefinition parseComputeNodeFromJson(const nlohmann::json &task_jso
     node.writes = parseOptionalStringList(task_json, "writes", "compute task");
     node.after = parseOptionalStringList(task_json, "after", "compute task");
     node.before = parseOptionalStringList(task_json, "before", "compute task");
+    node.region_tags =
+        parseOptionalRegionTags(
+            task_json,
+            "Frame graph compute task '" + node.name + "'");
     return node;
 }
 
@@ -402,6 +409,7 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
     node.name = pass.name;
     node.kind = passKind(pass);
     node.declaration_index = declaration_index;
+    node.region_tags = pass.region_tags;
     node.raster_geometry =
         pass.isMaterial() || pass.isShadowDepth() ||
         pass.isVelocity();

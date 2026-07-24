@@ -1954,6 +1954,8 @@ VulkanTargetPlan compileVulkanTargetPlan(
 
     return VulkanTargetPlan{
         .graph = canonical_graph.name,
+        .subgraph_replacements =
+            canonical_graph.subgraph_replacements,
         .backend_selection = std::move(selection),
         .opportunities = std::move(opportunities),
         .lowering_graph = std::move(workspace),
@@ -1980,6 +1982,8 @@ nlohmann::ordered_json vulkanTargetPlanToJson(
         {"schema", "pelican.vulkan_target_plan"},
         {"version", 1},
         {"graph", plan.graph},
+        {"subgraph_replacements",
+         nlohmann::ordered_json::array()},
         {"backend_selection",
          backendSelectionToJson(plan.backend_selection)},
         {"planning_opportunities",
@@ -1990,6 +1994,35 @@ nlohmann::ordered_json vulkanTargetPlanToJson(
         {"required_physical_features",
          plan.required_physical_features},
     };
+    for (const auto &selection :
+         plan.subgraph_replacements) {
+        result["subgraph_replacements"].push_back(
+            nlohmann::ordered_json{
+                {"region", selection.region},
+                {"provider", selection.provider},
+                {"implementation",
+                 selection.implementation},
+                {"contract", selection.contract},
+                {"contract_fingerprint",
+                 selection.contract_fingerprint},
+                {"provider_owner",
+                 selection.provider_owner},
+                {"provider_identity",
+                 selection.provider_identity},
+                {"provider_generation",
+                 selection.provider_generation},
+                {"provider_version",
+                 selection.provider_version},
+                {"provider_capability_bits",
+                 selection.provider_capability_bits},
+                {"explicitly_selected",
+                 selection.explicitly_selected},
+                {"source_nodes",
+                 selection.source_nodes},
+                {"replacement_nodes",
+                 selection.replacement_nodes},
+            });
+    }
     result["resources"] = nlohmann::ordered_json::array();
     for (const auto &resource : plan.resources) {
         nlohmann::ordered_json lifetime{

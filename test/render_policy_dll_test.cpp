@@ -1,6 +1,7 @@
 #include "../src/core/gamelogic/gamelogicreload.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/renderingpass/passimplementationregistry.hpp"
+#include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
 #include "../src/core/renderer/drawqueuebuilder.hpp"
 #include "../src/core/renderer/renderpolicyregistry.hpp"
 
@@ -92,6 +93,7 @@ struct FixtureControls {
 
     StatusFn registration_status = nullptr;
     StatusFn pass_registration_status = nullptr;
+    StatusFn subgraph_registration_status = nullptr;
     VoidFn arm_next_sort = nullptr;
     BoolFn sort_entered = nullptr;
     VoidFn resume_sort = nullptr;
@@ -121,6 +123,8 @@ FixtureControls fixtureControls(const GameLogicReloadStatus &status) {
             module, "pelican_render_policy_fixture_registration_status"),
         fixtureFunction<FixtureControls::StatusFn>(
             module, "pelican_render_pass_fixture_registration_status"),
+        fixtureFunction<FixtureControls::StatusFn>(
+            module, "pelican_render_subgraph_fixture_registration_status"),
         fixtureFunction<FixtureControls::VoidFn>(
             module, "pelican_render_policy_fixture_arm_next_sort"),
         fixtureFunction<FixtureControls::BoolFn>(
@@ -226,6 +230,79 @@ std::string resolveFullscreenFragment() {
         .fragment_shader.ref;
 }
 
+std::pair<std::string, std::string>
+resolveSubgraphImplementation() {
+    const auto config = nlohmann::json{
+        {"render_targets",
+         nlohmann::json::array(
+             {{{"name", "scene_in"},
+               {"extent_scale", 1.0},
+               {"format", "R16G16B16A16_SFLOAT"},
+               {"usage",
+                nlohmann::json::array(
+                    {"COLOR_ATTACHMENT", "SAMPLED"})}},
+              {{"name", "scene_out"},
+               {"extent_scale", 1.0},
+               {"format", "R16G16B16A16_SFLOAT"},
+               {"usage",
+                nlohmann::json::array(
+                    {"COLOR_ATTACHMENT", "SAMPLED"})}}})},
+        {"rendering_passes",
+         nlohmann::json::array(
+             {{{"name", "main"},
+               {"region_replacements",
+                nlohmann::json::array(
+                    {{{"region",
+                       "region.post.fixture"},
+                      {"provider",
+                       "fixture.subgraph"}}})},
+               {"passes",
+                nlohmann::json::array(
+                    {{{"name", "pre"},
+                      {"type", "fullscreen"},
+                      {"output",
+                       {{"color", "scene_in"},
+                        {"depth", nullptr}}}},
+                     {{"name", "tone"},
+                      {"type", "fullscreen"},
+                      {"regions",
+                       nlohmann::json::array(
+                           {"region.post.fixture"})},
+                      {"input",
+                       nlohmann::json::array(
+                           {"scene_in"})},
+                      {"output",
+                       {{"color", "scene_out"},
+                        {"depth", nullptr}}}},
+                     {{"name", "present"},
+                      {"type", "fullscreen"},
+                      {"input",
+                       nlohmann::json::array(
+                           {"scene_out"})},
+                      {"output",
+                       {{"color", "swapchain"},
+                        {"depth", nullptr}}}}})}}})},
+    };
+    const auto providers =
+        subgraphReplacementRegistry().snapshot();
+    const auto resolved =
+        resolveTaggedSubgraphReplacements(
+            config, providers);
+    const auto &selection =
+        resolved.graphs.front().selections.front();
+    const auto replacement_name =
+        resolved.config.at("rendering_passes")
+            .at(0)
+            .at("passes")
+            .at(1)
+            .at("name")
+            .get<std::string>();
+    return {
+        selection.implementation,
+        replacement_name,
+    };
+}
+
 } // namespace
 
 TEST_CASE("public render providers survive reload rollback and in-flight unload",
@@ -249,9 +326,20 @@ TEST_CASE("public render providers survive reload rollback and in-flight unload"
     REQUIRE(static_cast<RenderPass::Status>(
                 controls.pass_registration_status()) ==
             RenderPass::Status::ok);
+    REQUIRE(static_cast<RenderSubgraph::Status>(
+                controls.subgraph_registration_status()) ==
+            RenderSubgraph::Status::ok);
     REQUIRE(buildOrder() == std::vector<std::uint32_t>{30, 20, 10});
     REQUIRE(resolveFullscreenFragment() ==
             "shaders/fixture_composite_v1");
+    const auto subgraph_v1 =
+        resolveSubgraphImplementation();
+    REQUIRE(
+        subgraph_v1.first ==
+        "fixture.render.subgraph_v1@1");
+    REQUIRE(
+        subgraph_v1.second ==
+        "fixture_tone_v1");
 
     replaceFixture(fixture_v2, live_dll);
     controls.arm_next_sort();
@@ -306,9 +394,20 @@ TEST_CASE("public render providers survive reload rollback and in-flight unload"
     REQUIRE(static_cast<RenderPass::Status>(
                 controls.pass_registration_status()) ==
             RenderPass::Status::ok);
+    REQUIRE(static_cast<RenderSubgraph::Status>(
+                controls.subgraph_registration_status()) ==
+            RenderSubgraph::Status::ok);
     REQUIRE(buildOrder() == std::vector<std::uint32_t>{10, 20, 30});
     REQUIRE(resolveFullscreenFragment() ==
             "shaders/fixture_composite_v2");
+    auto subgraph_v2 =
+        resolveSubgraphImplementation();
+    REQUIRE(
+        subgraph_v2.first ==
+        "fixture.render.subgraph_v2@1");
+    REQUIRE(
+        subgraph_v2.second ==
+        "fixture_tone_v2");
 
     replaceFixture(fixture_bad_abi, live_dll);
     REQUIRE_FALSE(reloader.reloadNow([] {}, [] {}));
@@ -316,6 +415,14 @@ TEST_CASE("public render providers survive reload rollback and in-flight unload"
     REQUIRE(buildOrder() == std::vector<std::uint32_t>{10, 20, 30});
     REQUIRE(resolveFullscreenFragment() ==
             "shaders/fixture_composite_v2");
+    subgraph_v2 =
+        resolveSubgraphImplementation();
+    REQUIRE(
+        subgraph_v2.first ==
+        "fixture.render.subgraph_v2@1");
+    REQUIRE(
+        subgraph_v2.second ==
+        "fixture_tone_v2");
 
     replaceFixture(fixture_v1, live_dll);
     int rebuild_calls = 0;
@@ -330,6 +437,14 @@ TEST_CASE("public render providers survive reload rollback and in-flight unload"
     REQUIRE(buildOrder() == std::vector<std::uint32_t>{10, 20, 30});
     REQUIRE(resolveFullscreenFragment() ==
             "shaders/fixture_composite_v2");
+    subgraph_v2 =
+        resolveSubgraphImplementation();
+    REQUIRE(
+        subgraph_v2.first ==
+        "fixture.render.subgraph_v2@1");
+    REQUIRE(
+        subgraph_v2.second ==
+        "fixture_tone_v2");
 
     reloader.shutdown();
     REQUIRE_THROWS_WITH(
@@ -339,6 +454,10 @@ TEST_CASE("public render providers survive reload rollback and in-flight unload"
         resolveFullscreenFragment(),
         Catch::Matchers::ContainsSubstring(
             "pass implementation provider 'fixture.fullscreen' is not registered"));
+    REQUIRE_THROWS_WITH(
+        resolveSubgraphImplementation(),
+        Catch::Matchers::ContainsSubstring(
+            "subgraph replacement provider 'fixture.subgraph' is not registered"));
     const auto builtin = renderPolicyRegistry().resolveDrawSortProvider(
         builtinStateBatchedDrawSortProvider);
     REQUIRE(builtin.info().owner == internal::engineRegistrationOwner);

@@ -10,6 +10,7 @@
 #include "renderingpasscontainer.hpp"
 #include "renderingpassruntimecompiler.hpp"
 #include "renderingsamplecount.hpp"
+#include "subgraphreplacementregistry.hpp"
 #include "rendertargetconfigregistration.hpp"
 #include "rendertargetcontainer.hpp"
 #include "rendertargetimageviewresolver.hpp"
@@ -193,7 +194,9 @@ struct PreparedRenderingPassConfigVariant {
 
 PreparedRenderingPassConfigVariant prepareRenderingPassConfigVariant(
     const nlohmann::json &rendering_pass_data,
-    RenderingPassConfigRegistrationDependencies &dependencies) {
+    RenderingPassConfigRegistrationDependencies &dependencies,
+    const SubgraphReplacementRegistrySnapshot
+        &subgraph_replacement_providers) {
     const auto swapchain_format =
         dependencies.runtime.render_target.getSwapchainFormat();
     const auto target_extent = dependencies.runtime.render_target.getExtent();
@@ -238,6 +241,12 @@ PreparedRenderingPassConfigVariant prepareRenderingPassConfigVariant(
         });
     }
 #endif
+    auto resolved_subgraphs =
+        resolveTaggedSubgraphReplacements(
+            composed_rendering_pass_data,
+            subgraph_replacement_providers);
+    composed_rendering_pass_data =
+        std::move(resolved_subgraphs.config);
     auto render_target_definitions =
         parseRenderTargetDefinitionsFromJson(composed_rendering_pass_data);
     auto buffer_definitions =
@@ -247,6 +256,9 @@ PreparedRenderingPassConfigVariant prepareRenderingPassConfigVariant(
         parseComputeTaskDefinitionsFromConfigJson(composed_rendering_pass_data);
     auto graph_definition_list =
         parseFrameGraphDefinitionsFromConfigJson(composed_rendering_pass_data);
+    applyResolvedTaggedSubgraphSelections(
+        graph_definition_list,
+        resolved_subgraphs.graphs);
     namespaceComputeTasks(compute_task_definitions, graph_definition_list,
                           compiled_pipeline->graph_variant_policy
                               .rendering_pass_name_suffix);
@@ -481,10 +493,14 @@ registerRenderingPassConfigVariantsData(
             "Render pipeline variant transaction has multiple feature publishers");
     }
 
-    // Keep one immutable provider generation across every variant and through
-    // the complete prepare-to-publication transaction.
+    // Acquire provider leases in the same order used by game-DLL owner
+    // release (pass implementation, then subgraph replacement). Keeping one
+    // immutable pair across every variant avoids both mixed generations and
+    // a shared/exclusive lock-order inversion during hot reload.
     auto pass_implementation_providers =
         passImplementationRegistry().snapshot();
+    auto subgraph_replacement_providers =
+        subgraphReplacementRegistry().snapshot();
 
     // Every pure CPU candidate is completed before any mutable GPU registry
     // checkpoint is opened.
@@ -494,7 +510,8 @@ registerRenderingPassConfigVariantsData(
     for (auto &variant : dependencies) {
         prepared_variants.push_back(
             prepareRenderingPassConfigVariant(
-                rendering_pass_data, variant));
+                rendering_pass_data, variant,
+                subgraph_replacement_providers));
     }
 
     // Legacy registries are mutable containers rather than isolated

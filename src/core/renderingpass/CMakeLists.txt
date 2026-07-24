@@ -24,6 +24,7 @@ target_sources(pelican_core PRIVATE
     renderingsamplecount.cpp
     renderingpasstargetjsonparser.cpp
     renderingpassvalidation.cpp
+    subgraphreplacementregistry.cpp
     rendertargetconfigregistration.cpp
     rendertargetimageviewresolver.cpp
     rendertargetjsonparser.cpp

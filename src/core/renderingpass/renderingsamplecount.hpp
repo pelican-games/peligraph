@@ -34,6 +34,11 @@ struct RenderingTargetPlanCompilation {
     std::vector<RenderingSampleCountAssignment> assignments;
 };
 
+std::vector<CompiledLogicalRenderGraph>
+compileRenderingLogicalGraphs(
+    std::span<const FrameGraphDefinition> frame_graphs,
+    std::span<const RenderTargetDefinition> render_targets);
+
 // Adapts the existing FrameGraphDefinition into the canonical logical/target
 // planner. The returned VulkanTargetPlan is authoritative for the concrete
 // image format, representation, and rasterization sample count consumed by

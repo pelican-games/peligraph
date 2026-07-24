@@ -462,6 +462,12 @@ void validateCompiledLogicalRenderGraph(
         std::set<std::string, std::less<>> regions;
         for (const auto &region : node.region_tags) {
             requireName(region, "logical graph region tag");
+            if (region.size() >
+                maximumLogicalRegionTagBytes) {
+                throw std::runtime_error(
+                    "logical graph node '" + node.name +
+                    "' has an overlong region tag");
+            }
             if (!regions.insert(region).second) {
                 throw std::runtime_error("logical graph node '" + node.name +
                                          "' has duplicate region tag '" + region + "'");
@@ -492,6 +498,97 @@ void validateCompiledLogicalRenderGraph(
     if (visited != nodes.size()) {
         throw std::runtime_error("logical graph contains a dependency cycle: " +
                                  graph.name);
+    }
+
+    std::set<std::string, std::less<>>
+        replacement_regions;
+    for (const auto &selection :
+         graph.subgraph_replacements) {
+        requireName(
+            selection.region,
+            "logical subgraph replacement region");
+        if (selection.region.size() >
+            maximumLogicalRegionTagBytes) {
+            throw std::runtime_error(
+                "logical subgraph replacement region is "
+                "too long: " +
+                selection.region);
+        }
+        requireName(
+            selection.provider,
+            "logical subgraph replacement provider");
+        requireName(
+            selection.implementation,
+            "logical subgraph replacement implementation");
+        requireName(
+            selection.contract,
+            "logical subgraph replacement contract");
+        if (!replacement_regions
+                 .insert(selection.region)
+                 .second) {
+            throw std::runtime_error(
+                "logical graph has duplicate subgraph replacement "
+                "selection for region: " +
+                selection.region);
+        }
+        if (selection.provider_identity == 0 ||
+            selection.provider_generation == 0 ||
+            selection.provider_version == 0 ||
+            selection.provider_capability_bits == 0) {
+            throw std::runtime_error(
+                "logical subgraph replacement has incomplete provider "
+                "provenance: " +
+                selection.region);
+        }
+        if (selection.source_nodes.empty() ||
+            selection.replacement_nodes.empty()) {
+            throw std::runtime_error(
+                "logical subgraph replacement requires source and "
+                "replacement node provenance: " +
+                selection.region);
+        }
+        std::set<std::string, std::less<>>
+            source_names;
+        for (const auto &source :
+             selection.source_nodes) {
+            requireName(
+                source,
+                "logical subgraph source node");
+            if (!source_names.insert(source).second) {
+                throw std::runtime_error(
+                    "logical subgraph replacement has duplicate source "
+                    "node: " +
+                    source);
+            }
+        }
+        std::set<std::string, std::less<>>
+            replacement_names;
+        for (const auto &replacement :
+             selection.replacement_nodes) {
+            requireName(
+                replacement,
+                "logical subgraph replacement node");
+            if (!replacement_names
+                     .insert(replacement)
+                     .second) {
+                throw std::runtime_error(
+                    "logical subgraph replacement has duplicate "
+                    "replacement node: " +
+                    replacement);
+            }
+            const auto found = nodes.find(replacement);
+            if (found == nodes.end() ||
+                std::find(
+                    found->second->region_tags.begin(),
+                    found->second->region_tags.end(),
+                    selection.region) ==
+                    found->second->region_tags.end()) {
+                throw std::runtime_error(
+                    "logical subgraph replacement node does not belong "
+                    "to selected region: " +
+                    replacement);
+            }
+        }
     }
 
     for (const auto &decision : graph.decisions) {
@@ -586,6 +683,37 @@ nlohmann::ordered_json compiledLogicalRenderGraphToJson(
             {"consumer", nlohmann::ordered_json{{"node", edge.consumer_node},
                                                  {"port", edge.consumer_port}}},
         });
+    }
+    result["subgraph_replacements"] =
+        nlohmann::ordered_json::array();
+    for (const auto &selection :
+         graph.subgraph_replacements) {
+        result["subgraph_replacements"].push_back(
+            nlohmann::ordered_json{
+                {"region", selection.region},
+                {"provider", selection.provider},
+                {"implementation",
+                 selection.implementation},
+                {"contract", selection.contract},
+                {"contract_fingerprint",
+                 selection.contract_fingerprint},
+                {"provider_owner",
+                 selection.provider_owner},
+                {"provider_identity",
+                 selection.provider_identity},
+                {"provider_generation",
+                 selection.provider_generation},
+                {"provider_version",
+                 selection.provider_version},
+                {"provider_capability_bits",
+                 selection.provider_capability_bits},
+                {"explicitly_selected",
+                 selection.explicitly_selected},
+                {"source_nodes",
+                 selection.source_nodes},
+                {"replacement_nodes",
+                 selection.replacement_nodes},
+            });
     }
     result["decisions"] = nlohmann::ordered_json::array();
     for (const auto &decision : graph.decisions) {

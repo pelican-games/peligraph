@@ -149,6 +149,7 @@ struct PassDefinition {
     std::vector<GlobalRenderTargetId> input_targets;
     std::vector<bool> input_target_history;
     std::vector<std::string> input_buffers;
+    std::vector<std::string> region_tags;
 
     PassInfo pass_info = MaterialPassInfo{};
     std::optional<std::string> requested_implementation_provider;

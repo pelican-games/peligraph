@@ -397,6 +397,35 @@ void validateRuntimePhysicalPlan(
 
 } // namespace
 
+std::vector<CompiledLogicalRenderGraph>
+compileRenderingLogicalGraphs(
+    std::span<const FrameGraphDefinition> frame_graphs,
+    std::span<const RenderTargetDefinition> render_targets) {
+    const auto target_by_name =
+        renderTargetsByName(render_targets);
+    const auto types = makeBuiltinLogicalTypeRegistry();
+    std::vector<CompiledLogicalRenderGraph> result;
+    result.reserve(frame_graphs.size());
+    std::set<std::string, std::less<>>
+        graph_names;
+    for (const auto &definition : frame_graphs) {
+        if (definition.name.empty() ||
+            !graph_names.insert(definition.name).second) {
+            throw std::runtime_error(
+                "logical rendering graph names must be unique and "
+                "non-empty: " +
+                definition.name);
+        }
+        result.push_back(
+            compileLogicalFrameGraphShadow(
+                definition, types,
+                shadowOptions(
+                    definition, types,
+                    target_by_name)));
+    }
+    return result;
+}
+
 RenderingTargetPlanCompilation compileRenderingTargetPlans(
     std::span<const FrameGraphDefinition> frame_graphs,
     std::span<const RenderTargetDefinition> render_targets,

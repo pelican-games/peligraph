@@ -2,6 +2,7 @@
 
 #include "frameplanner.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <map>
 #include <set>
@@ -200,7 +201,17 @@ CompiledLogicalRenderGraph compileLogicalFrameGraphShadow(
         node.declaration_index = source.declaration_index;
         node.after = source.after;
         node.before = source.before;
-        node.region_tags = {"legacy." + std::string{logicalGraphNodeKindName(node.kind)}};
+        node.region_tags = source.region_tags;
+        const auto legacy_region =
+            "legacy." +
+            std::string{logicalGraphNodeKindName(node.kind)};
+        if (std::find(
+                node.region_tags.begin(),
+                node.region_tags.end(),
+                legacy_region) ==
+            node.region_tags.end()) {
+            node.region_tags.push_back(legacy_region);
+        }
         if (source.kind == FramePlanNodeKind::snapshot_copy) {
             result.decisions.push_back(LogicalCompileDecision{
                 "legacy_snapshot_point", source.name, source.snapshot_after});
@@ -275,6 +286,8 @@ CompiledLogicalRenderGraph compileLogicalFrameGraphShadow(
     result.decisions.push_back(LogicalCompileDecision{
         "shadow_graph_only", result.name,
         "logical graph is diagnostic-only and does not own runtime execution"});
+    result.subgraph_replacements =
+        definition.subgraph_replacements;
 
     validateCompiledLogicalRenderGraph(types, result);
     return result;

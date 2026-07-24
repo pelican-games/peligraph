@@ -22,6 +22,7 @@
 #include "../src/core/renderingpass/renderingpassconfigregistration.hpp"
 #include "../src/core/renderingpass/renderpipelinegpuarena.hpp"
 #include "../src/core/renderingpass/rendertargetcontainer.hpp"
+#include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
 #include "../src/core/shader/pipelinefactory.hpp"
 #include "../src/core/shader/shaderlibrary.hpp"
 #include "../src/core/vkcore/core.hpp"
@@ -217,6 +218,9 @@ nlohmann::json gpuArenaRenderingConfig() {
   "rendering_passes": [
     {
       "name": "gpu_arena_main",
+      "region_replacements": [
+        {"region": "region.gpu_arena.output"}
+      ],
       "passes": [
         {
           "name": "gpu_arena_shadow_pass",
@@ -259,6 +263,7 @@ nlohmann::json gpuArenaRenderingConfig() {
         {
           "name": "gpu_arena_output",
           "type": "fullscreen",
+          "regions": ["region.gpu_arena.output"],
           "input": ["gpu_arena_scratch"],
           "output": {
             "color": "swapchain",
@@ -1015,6 +1020,16 @@ TEST_CASE(
                 config, {16, 16},
                 gpuArenaRegistrationDependencies({}));
         REQUIRE(registered.runtime_generation == 1);
+        REQUIRE(registered.target_plans.size() == 1);
+        REQUIRE(
+            registered.target_plans.front()
+                ->subgraph_replacements.size() == 1);
+        REQUIRE(
+            registered.target_plans.front()
+                ->subgraph_replacements.front()
+                .provider ==
+            std::string{
+                builtinTaggedSubgraphReplacementProvider});
         auto generation = runtime.snapshot();
         REQUIRE(generation != nullptr);
         REQUIRE(generation->generation == 1);

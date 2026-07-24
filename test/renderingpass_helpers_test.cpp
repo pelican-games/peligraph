@@ -64,6 +64,32 @@ TEST_CASE("rendering pass JSON helpers parse known values", "[renderingpass]") {
     REQUIRE(parseFloatField(object, "scale", "test") == 1.5f);
     REQUIRE(parseStringArrayField(object, "usage", "test").size() == 2);
     REQUIRE(parseUint32Field(object, "count", "test") == 42);
+    REQUIRE(
+        parseOptionalRegionTags(
+            nlohmann::json{
+                {"regions",
+                 nlohmann::json::array(
+                     {"region.post", "region.debug"})}},
+            "test") ==
+        std::vector<std::string>{
+            "region.post", "region.debug"});
+    REQUIRE_THROWS_WITH(
+        parseOptionalRegionTags(
+            nlohmann::json{
+                {"regions",
+                 nlohmann::json::array(
+                     {"region.post", "region.post"})}},
+            "test"),
+        Catch::Matchers::ContainsSubstring(
+            "duplicate region tag"));
+    REQUIRE_THROWS_WITH(
+        parseOptionalRegionTags(
+            nlohmann::json{
+                {"regions",
+                 nlohmann::json::array({""})}},
+            "test"),
+        Catch::Matchers::ContainsSubstring(
+            "empty or too long"));
 
     const auto clear_color = jsonToClearColor(nlohmann::json::array({1.0f, 0.5f, 0.25f, 1.0f}));
     REQUIRE(clear_color.float32[0] == 1.0f);
@@ -355,6 +381,9 @@ TEST_CASE("pass definition JSON parser builds a fullscreen pass definition", "[r
         {"output", {{"color", "half_color"}, {"depth", nullptr}}},
         {"shader", {{"vertex", "fullscreen"}, {"fragment", "debug_texture"}}},
         {"implementation", {{"provider", "fixture.fullscreen"}}},
+        {"regions",
+         nlohmann::json::array(
+             {"region.post.fixture", "region.post"})},
         {"push_constants", "projection_view"},
         {"clear_color", nlohmann::json::array({0.0f, 0.0f, 0.0f, 1.0f})},
     };
@@ -372,6 +401,10 @@ TEST_CASE("pass definition JSON parser builds a fullscreen pass definition", "[r
         pass_def.requested_implementation_provider ==
         std::optional<std::string>{"fixture.fullscreen"});
     REQUIRE_FALSE(pass_def.implementation_selection.has_value());
+    REQUIRE(
+        pass_def.region_tags ==
+        std::vector<std::string>{
+            "region.post.fixture", "region.post"});
 }
 
 TEST_CASE(

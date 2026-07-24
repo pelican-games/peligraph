@@ -13,6 +13,7 @@
 #include "../log.hpp"
 #include "../renderer/renderpolicyregistry.hpp"
 #include "../renderingpass/passimplementationregistry.hpp"
+#include "../renderingpass/subgraphreplacementregistry.hpp"
 #include "../userpublic/details/event/registerer.hpp"
 #include "../userpublic/details/behavior/registerer.hpp"
 #include "../userpublic/details/component/registerer.hpp"
@@ -40,6 +41,7 @@ void releaseGameLogicRegistrations(RegistrationOwner owner) noexcept {
     Animation::releaseAnimationOwner(owner);
     render_policy_internal::releaseProviderOwner(owner);
     render_pass_internal::releaseProviderOwner(owner);
+    render_subgraph_internal::releaseProviderOwner(owner);
 #if PELICAN_WITH_PHYSICS
     physics_internal::releaseProviderOwner(owner);
 #endif
@@ -218,6 +220,7 @@ bool GameLogicReloader::initialize(const std::filesystem::path &source) {
         }
         render_policy_internal::activateProviderOwner(owner);
         render_pass_internal::activateProviderOwner(owner);
+        render_subgraph_internal::activateProviderOwner(owner);
 #if PELICAN_WITH_PHYSICS
         physics_internal::activateProviderOwner(owner);
 #endif
@@ -270,6 +273,7 @@ bool GameLogicReloader::reloadTransaction(const ResetFn &teardown, const ResetFn
         if (!active) throw std::runtime_error(load_error);
         render_policy_internal::activateProviderOwner(owner);
         render_pass_internal::activateProviderOwner(owner);
+        render_subgraph_internal::activateProviderOwner(owner);
 #if PELICAN_WITH_PHYSICS
         physics_internal::activateProviderOwner(owner);
 #endif
@@ -313,6 +317,7 @@ bool GameLogicReloader::reloadTransaction(const ResetFn &teardown, const ResetFn
             if (activate_rollback_owner) {
                 render_policy_internal::activateProviderOwner(active->owner);
                 render_pass_internal::activateProviderOwner(active->owner);
+                render_subgraph_internal::activateProviderOwner(active->owner);
             }
 #if PELICAN_WITH_PHYSICS
             if (activate_rollback_owner) {

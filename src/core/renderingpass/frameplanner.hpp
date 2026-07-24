@@ -1,6 +1,7 @@
 #pragma once
 
 #include "renderingpass.hpp"
+#include "../../project/logicalrendergraph.hpp"
 #include <cstddef>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -25,6 +26,7 @@ struct FrameGraphNodeDefinition {
     std::vector<std::string> writes;
     std::vector<std::string> after;
     std::vector<std::string> before;
+    std::vector<std::string> region_tags;
     std::string snapshot_after;
     std::size_t byte_size = 0;
     bool raster_geometry = false;
@@ -35,6 +37,8 @@ struct FrameGraphDefinition {
     std::vector<std::string> declared_resources;
     std::vector<std::string> history_resources;
     std::vector<FrameGraphNodeDefinition> nodes;
+    std::vector<LogicalSubgraphReplacementSelection>
+        subgraph_replacements;
 };
 
 struct FramePlanNode {

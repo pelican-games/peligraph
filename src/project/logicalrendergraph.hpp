@@ -12,6 +12,8 @@
 
 namespace Pelican {
 
+inline constexpr std::size_t maximumLogicalRegionTagBytes = 255;
+
 enum class LogicalPortDirection : std::uint8_t {
     input,
     output,
@@ -174,6 +176,25 @@ struct LogicalCompileDecision {
     std::string detail;
 };
 
+struct LogicalSubgraphReplacementSelection {
+    std::string region;
+    std::string provider;
+    std::string implementation;
+    std::string contract;
+    std::uint64_t contract_fingerprint = 0;
+    std::uint64_t provider_owner = 0;
+    std::uint64_t provider_identity = 0;
+    std::uint32_t provider_generation = 0;
+    std::uint32_t provider_version = 0;
+    std::uint64_t provider_capability_bits = 0;
+    bool explicitly_selected = false;
+    std::vector<std::string> source_nodes;
+    std::vector<std::string> replacement_nodes;
+
+    bool operator==(
+        const LogicalSubgraphReplacementSelection &) const = default;
+};
+
 struct LogicalDataEdge {
     LogicalValueId value;
     std::string producer_node;
@@ -189,6 +210,8 @@ struct CompiledLogicalRenderGraph {
     std::vector<LogicalResourceDesc> resources;
     std::vector<LogicalValueImport> imports;
     std::vector<LogicalGraphNode> nodes;
+    std::vector<LogicalSubgraphReplacementSelection>
+        subgraph_replacements;
     std::vector<LogicalCompileDecision> decisions;
 };
 

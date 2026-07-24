@@ -1,6 +1,8 @@
 #include "renderingpassjsonhelpers.hpp"
+#include "../../project/logicalrendergraph.hpp"
 #include <array>
 #include <limits>
+#include <set>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -183,6 +185,38 @@ std::vector<std::string> parseStringArrayField(const nlohmann::json &json, const
         values.push_back(value_json.get<std::string>());
     }
     return values;
+}
+
+std::vector<std::string> parseOptionalRegionTags(
+    const nlohmann::json &json, const std::string &context) {
+    if (!json.contains("regions")) {
+        return {};
+    }
+    if (!json.at("regions").is_array()) {
+        throw std::runtime_error(
+            context + " regions must be a string array");
+    }
+    std::vector<std::string> result;
+    result.reserve(json.at("regions").size());
+    std::set<std::string, std::less<>> unique;
+    for (const auto &encoded : json.at("regions")) {
+        if (!encoded.is_string()) {
+            throw std::runtime_error(
+                context + " regions must be a string array");
+        }
+        auto region = encoded.get<std::string>();
+        if (region.empty() ||
+            region.size() > maximumLogicalRegionTagBytes) {
+            throw std::runtime_error(
+                context + " region tag is empty or too long");
+        }
+        if (!unique.insert(region).second) {
+            throw std::runtime_error(
+                context + " has duplicate region tag: " + region);
+        }
+        result.push_back(std::move(region));
+    }
+    return result;
 }
 
 uint32_t parseUint32Field(const nlohmann::json &json, const std::string &field_name,
