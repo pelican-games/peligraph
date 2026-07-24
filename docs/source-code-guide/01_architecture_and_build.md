@@ -64,6 +64,7 @@ playerは `ENABLE_EXPORTS` と `/WHOLEARCHIVE:pelican_core` でSDKシンボル�
 
 ### `spvlink`
 
+`PELICAN_WITH_SPIRV_LINK=ON`時に
 [`src/spvlink/CMakeLists.txt`](../../src/spvlink/CMakeLists.txt#L2) が作るオフラインSPIR-VリンカCLI（実行ファイル名 `pelican-spv-link`）です。[`src/core/shader/spvlink.hpp`](../../src/core/shader/spvlink.hpp) の実装を使います。
 
 ### `pelican_cli`
@@ -207,7 +208,7 @@ Pelicanは継承ベースのinterfaceを多用しません。実際には次の�
 | miniaudio | 音声backend |
 | OpenXR SDK | loader + headers（[`CMakeLists.txt`](../../CMakeLists.txt#L246)、`PELICAN_WITH_OPENXR` 時） |
 | JoltPhysics | optionalの物理provider（[`CMakeLists.txt`](../../CMakeLists.txt#L394)、`PELICAN_WITH_JOLT_PHYSICS` 時） |
-| SPIRV-Tools | SPIR-V linking（spvlink用、[`CMakeLists.txt`](../../CMakeLists.txt#L180)） |
+| SPIRV-Tools | experimental SPIR-V linking（`PELICAN_WITH_SPIRV_LINK=ON`時だけ取得、[`CMakeLists.txt`](../../CMakeLists.txt#L180)） |
 | Dear ImGui | 開発者UI（`PELICAN_WITH_IMGUI` 時） |
 | picosha2 | SHA-256。`pelican_project` の形式ハッシュに加え、`pelican_core` でもscene snapshot digestやVRMA content hashに使います（[`src/core/CMakeLists.txt`](../../src/core/CMakeLists.txt#L99) で PRIVATE リンク） |
 | RenderDoc in-application API | ヘッダのみvendor同梱（[`src/third_party/renderdoc/renderdoc_app.h`](../../src/third_party/renderdoc/renderdoc_app.h)）。外部取得もバイナリリンクもしません |
@@ -233,6 +234,22 @@ ctest --test-dir build
 cmake . -B build -DSKIP_DEVSTUDIO=ON
 cmake --build build
 ```
+
+テストとテスト専用toolingも外す場合は、標準CMakeオプションを使います。
+
+```powershell
+cmake . -B build -DSKIP_DEVSTUDIO=ON -DBUILD_TESTING=OFF
+cmake --build build
+```
+
+この構成はPythonを探索しません。`BUILD_TESTING=ON`では
+`PELICAN_PYTHON_TESTS=AUTO`が既定で、Python 3がなければC++/CMakeテストだけを
+登録します。完全なgateを要求するCIは`PELICAN_PYTHON_TESTS=ON`、明示的に
+Pythonテストだけを外す場合は`OFF`を使います。
+
+experimental SPIR-V linkerも通常build graphから分離されており、
+`PELICAN_WITH_SPIRV_LINK=OFF`が既定です。ON時だけpinned SPIRV-Toolsと
+`pelican-spv-link` CLIを構成し、実行時の`PELICAN_SPV_LINK=experimental`を有効にできます。
 
 ゲームコードをplayerへ組み込む場合:
 
@@ -263,14 +280,14 @@ cmake --build build --target pelican_player
 
 CPU gateは、ビルドの前にCIポリシー自体を検証する2ステップを持ちます。
 
-- `python -m unittest discover -s test/ci -p "test_*.py"` — [`test/ci/`](../../test/ci) のポリシーチェッカ（[`test_golden_inventory.py`](../../test/ci/test_golden_inventory.py)、[`test_contract_boundary_gate.py`](../../test/ci/test_contract_boundary_gate.py)、[`test_skip_policy.py`](../../test/ci/test_skip_policy.py)）
-- `python test/golden_inventory.py --repo-root .` — golden testの台帳と実体の突き合わせ
+- `python -B -m unittest discover -s test/ci -p "test_*.py"` — [`test/ci/`](../../test/ci) のポリシーチェッカ（[`test_golden_inventory.py`](../../test/ci/test_golden_inventory.py)、[`test_contract_boundary_gate.py`](../../test/ci/test_contract_boundary_gate.py)、[`test_skip_policy.py`](../../test/ci/test_skip_policy.py)）
+- `python -B test/golden_inventory.py --repo-root .` — golden testの台帳と実体の突き合わせ
 
 本体のCTestは [`test/ci/run_cpu_gate.py`](../../test/ci/run_cpu_gate.py) が実行し、SKIPしてよいテストを [`test/ci/cpu_skip_allowlist.txt`](../../test/ci/cpu_skip_allowlist.txt) と厳密に照合します。
 
 configuration smokeは2つのjobからなります。
 
-- **機能フラグOFFのmatrix**: `PELICAN_WITH_AUDIO` / `VAT` / `EXR` / `RPC` / `SEQPLAYER` / `IMGUI` / `PHYSICS`（provider variantを含む）/ `OPENXR` / `RENDERDOC` を1つずつOFFにしたビルドと、`PELICAN_PROJECT` を使うproject-code smoke。ドライバは [`test/run_build_units_smoke.cmake`](../../test/run_build_units_smoke.cmake) と [`test/run_project_code_smoke.cmake`](../../test/run_project_code_smoke.cmake) です。`fail-fast: false` で、自動リトライはありません。
+- **機能フラグOFFのmatrix**: `PELICAN_WITH_AUDIO` / `VAT` / `EXR` / `RPC` / `SEQPLAYER` / `IMGUI` / `PHYSICS`（provider variantを含む）/ `OPENXR` / `RENDERDOC` を1つずつOFFにしたビルドと、`PELICAN_PROJECT` を使うproject-code smoke。ドライバは [`test/run_build_units_smoke.cmake`](../../test/run_build_units_smoke.cmake) と [`test/run_project_code_smoke.cmake`](../../test/run_project_code_smoke.cmake) です。build-unit側はC++ probeを残して`PELICAN_PYTHON_TESTS=OFF`、project-code側は`BUILD_TESTING=OFF`で、どちらも`CMAKE_DISABLE_FIND_PACKAGE_Python3=TRUE`によりPython探索の再混入を検出します。`fail-fast: false` で、自動リトライはありません。
 - **clean-clone job**: 新規checkoutに重いexample assetが混ざっていないことを確認したうえで、ポリシーチェッカ → golden inventory → configure → build → `run_cpu_gate.py` を順に流します。
 
 > **設計決定:** 機能フラグOFFビルドはPRゲートに入れず週次にしています。ビルド構成の組み合わせ爆発をPRの待ち時間へ持ち込まず、それでも「OFFビルドが静かに壊れたまま放置される」状態は防ぐ、という配分です。CIの運用ルールは [`docs/ci.md`](../ci.md) が正です。

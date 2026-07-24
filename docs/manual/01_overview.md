@@ -14,14 +14,14 @@
 
 Pelican2 は **C++20 / Vulkan(vulkan.hpp)/ Windows(MSVC)** のゲームエンジンです。ゲームは「**プロジェクト**」(`project.json` + JSON データ + アセット + 任意の C++ コード)として作り、エンジン本体のコードには手を入れません。
 
-実行物は 4 つ(うち `pelican-spv-link` は experimental)+web ビューアです:
+実行物は通常3つ、experimental build unitを有効にすると4つ + web ビューアです:
 
 | 実行物 | 役割 |
 |---|---|
 | `pelican_player` | ゲームランタイム。ウィンドウ / ヘッドレス / JSON-RPC 駆動([第2章](02_getting_started.md)・[第10章](10_tools.md))。JSON-RPC はヘッドレス(blocking)とウィンドウ(フレーム境界処理)の両方で使えます ✅WP156 |
 | `pelican_cli` | 開発 CLI。7 サブコマンド系統(`assets` / `bake-camera` / `import` / `dist-config` / `project` / `dump-lowered-material` / `vrm` — [main.cpp](../../src/devcli/main.cpp))。エンジン本体にリンクしない |
 | `pelican_studio` | Qt6 製エディタ(現状は骨組みのみ 🚧)。**エディタ機能の実体は player 側の JSON-RPC + ImGui パネルに入っており(WP149〜172)、Qt Studio はまだそれらを呼んでいません**([第2章](02_getting_started.md) §2.7・[第10章](10_tools.md)・[第13章](13_editor.md)) |
-| `pelican-spv-link` | experimental な SPIR-V リンカ CLI([spvlink/main.cpp](../../src/spvlink/main.cpp)・[第10章](10_tools.md)) 🚧 |
+| `pelican-spv-link` | `PELICAN_WITH_SPIRV_LINK=ON`時だけ作るexperimental SPIR-V リンカ CLI([spvlink/main.cpp](../../src/spvlink/main.cpp)・[第10章](10_tools.md)) 🚧 |
 | web ビューア | 別リポジトリ `my_webpage` の WebGPU「Shader Dock」。**同じプロジェクトファイルをブラウザで開く**([第9章](09_web.md)) |
 
 特徴を一言でいうと: **「データ(JSON)で宣言し、C++ で振る舞いを書き、すべてを決定的・検証可能にする」** エンジンです。レンダリングパイプラインは JSON だけで定義でき([第6章](06_rendering.md))、ゲームロジックはネイティブ C++(ホットリロード可能な DLL — [第8章](08_gameplay.md))、実行はヘッドレス+JSON-RPC で完全に自動化できます。
@@ -89,7 +89,7 @@ pelican2/
 │   ├── player/           # pelican_player(main.cpp)
 │   ├── devcli/           # pelican_cli
 │   ├── devstudio/        # Pelican Studio(Qt)
-│   └── spvlink/          # pelican-spv-link CLI(experimental)
+│   └── spvlink/          # pelican-spv-link CLI(experimental、build unitは既定OFF)
 ├── projects/             # example / sprite_demo / animgraph_demo / vrm_xr_demo(JSON 例の出典)
 ├── docs/                 # 設計文書(索引: docs/README.md)+ 本マニュアル(manual/)+ コード解説(source-code-guide/)
 └── test/                 # Catch2 単体(116 実行ファイル)+ fixture + golden(49)+ 結合スクリプト(run_*、33 本)

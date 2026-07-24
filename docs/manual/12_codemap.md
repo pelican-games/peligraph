@@ -25,7 +25,7 @@ pelican2/
     devcli/      … pelican_cli.exe(7 サブコマンド系統: assets / bake-camera / import /
                    dist-config / project / dump-lowered-material / vrm)
     devstudio/   … pelican_studio.exe(Qt。現状は休眠骨組み)
-    spvlink/     … pelican-spv-link 単体 CLI(experimental)
+    spvlink/     … pelican-spv-link 単体 CLI(experimental、PELICAN_WITH_SPIRV_LINK=ON時)
   projects/
     example/       … 実例プロジェクト(全 JSON 形式の生きた見本)
     sprite_demo/   … 2D 横スクロールの vertical slice(sprite / pixel policy / platformer)

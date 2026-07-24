@@ -213,6 +213,10 @@ user.spv(pelican_surface を Export。GLSL/HLSL/Slang 何産でもよい)
   ⑤monolithic 比の GPU time/ISA/コンパイル時間/hot reload 閾値 ⑥fuzzer による
   不正 SPIR-V 耐性 ⑦toolchain 全版数 + 入力 hash を含む再現可能キャッシュ。
   SPIRV-Headers/Tools/Reflect は pin/vendor する(SDK 追従禁止)
+- **build境界**: `PELICAN_WITH_SPIRV_LINK=OFF`を既定とし、ON時だけpinned
+  SPIRV-Headers/Toolsと`pelican-spv-link`をbuild graphへ加える。runtime選択の
+  `PELICAN_SPV_LINK=experimental`だけでは有効にならない。これにより通常／配布buildは
+  SPIRV-Toolsの生成用Pythonを含めず、完全CIだけがbuild unitをONにして検証する
 - **WP59 スパイク結果(2026-07-08): 機構成立の実証**(`experiments/spvlink/REPORT.md`
   が一次資料)。GLSL 産と Slang 産の同一 `pelican_surface` が両方リンク・
   spirv-val 通過・パイプライン生成成功。variant 再リンクも実証。

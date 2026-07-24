@@ -21,10 +21,10 @@ cmake . -B build -DSKIP_DEVSTUDIO
 cmake --build ./build
 ```
 
-skip test:
+skip tests and all test-only tooling:
 
 ```sh
-cmake . -B build -DSKIP_TEST
+cmake . -B build -DBUILD_TESTING=OFF
 cmake --build ./build
 ```
 
@@ -40,3 +40,16 @@ cmake --build ./build --target run_studio
 ```sh
 ctest --test-dir ./build
 ```
+
+Python is not required by the default engine build or by production
+`BUILD_TESTING=OFF` builds with the experimental linker left disabled.
+With tests enabled, `PELICAN_PYTHON_TESTS=AUTO` (the default) registers the
+Python-backed policy/RPC tests only when Python 3 is available. CI uses
+`-DPELICAN_PYTHON_TESTS=ON`; use `OFF` to build and run only the C++/CMake
+test suite.
+
+The experimental SPIR-V linker and its `pelican-spv-link` CLI are a separate
+build unit and default to OFF. Enable them with
+`-DPELICAN_WITH_SPIRV_LINK=ON`; selecting the runtime backend still requires
+`PELICAN_SPV_LINK=experimental`. The pinned SPIRV-Tools build uses Python for
+code generation when this unit is enabled.

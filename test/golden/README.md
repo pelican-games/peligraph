@@ -23,16 +23,16 @@ GPU-free and is part of `ctest -LE gpu` and the CPU CI gate.
 Run the local inventory gate from the repository root:
 
 ```powershell
-python test/golden_inventory.py --repo-root .
+python -B test/golden_inventory.py --repo-root .
 ```
 
 After an intentional case/file/trace membership change, regenerate the manifest and review its
 diff explicitly:
 
 ```powershell
-python test/golden_inventory.py --repo-root . --update
+python -B test/golden_inventory.py --repo-root . --update
 git diff -- test/golden/inventory.json
-python test/golden_inventory.py --repo-root .
+python -B test/golden_inventory.py --repo-root .
 ```
 
 Generating the inventory never changes `expected.png`. Image and trace rebaselining still follows

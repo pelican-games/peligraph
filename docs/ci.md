@@ -25,9 +25,11 @@ Python 3.12 と Vulkan SDK 1.4.x を PATH / `VULKAN_SDK` から参照できる�
 Python の場所は環境ごとに異なるため、リポジトリ内に絶対パスを保存しない。
 
 ```powershell
-cmake -S . -B build -DSKIP_DEVSTUDIO=ON
+cmake -S . -B build -DSKIP_DEVSTUDIO=ON `
+  -DPELICAN_PYTHON_TESTS=ON `
+  -DPELICAN_WITH_SPIRV_LINK=ON
 cmake --build build --config Debug
-python test/ci/run_cpu_gate.py `
+python -B test/ci/run_cpu_gate.py `
   --build-dir build `
   --config Debug `
   --artifacts-dir build/ci-artifacts
@@ -40,6 +42,16 @@ ctest --test-dir build -C Debug -LE gpu --output-on-failure
 ```
 
 GPU 対象だけを確認する場合は `ctest --test-dir build -C Debug -L gpu -N` を使う。
+
+Pythonはエンジン／ゲームの実行依存ではない。`BUILD_TESTING=OFF`なら探索自体を行わず、
+`BUILD_TESTING=ON`でも`PELICAN_PYTHON_TESTS=AUTO`（既定）はinterpreter不在時に
+C++/CMakeテストだけを残す。完全なgateを要求するCI0/clean-cloneだけが
+`PELICAN_PYTHON_TESTS=ON`を指定する。Python製CTestには`python`ラベルを付け、
+実行時は`-B` / `PYTHONDONTWRITEBYTECODE=1`でsource treeへ`__pycache__`を作らない。
+
+experimental SPIR-V linkerは`PELICAN_WITH_SPIRV_LINK=OFF`が既定である。ON時だけ
+pinned SPIRV-Toolsと`pelican-spv-link`をbuild graphへ加える。この依存の生成処理も
+Pythonを使うため、完全なCI gateはPython testと同時にON、通常／配布buildはOFFにする。
 
 ## `gpu` ラベル
 
@@ -67,7 +79,7 @@ PathResolver rejects symlink escapes after canonicalization
 追加する。Vulkan 不在や実エラーを allowlist に入れない。policy checker 自体は次で検査できる。
 
 ```powershell
-python -m unittest discover -s test/ci -p "test_*.py" -v
+python -B -m unittest discover -s test/ci -p "test_*.py" -v
 ```
 
 ## 失敗時の調査
@@ -92,6 +104,10 @@ build-unit entry は同じ `test/run_build_units_smoke.cmake` に
 `PELICAN_BUILD_UNIT_SMOKE_ONLY` を渡す。matrix の `fail-fast` は false で、ある構成の赤が
 ほかの構成の一次結果を隠さない。自動 retry はない。各 entry の CMake 診断と smoke log は
 `configuration-smoke-<entry>-<run id>-<attempt>` artifact に14日保存する。
+build-unit nested configureはC++のOFF機能probeを使うため`BUILD_TESTING=ON`のまま
+`PELICAN_PYTHON_TESTS=OFF`、project-code nested configureは`BUILD_TESTING=OFF`である。
+どちらも`PELICAN_WITH_SPIRV_LINK=OFF`かつ
+`CMAKE_DISABLE_FIND_PACKAGE_Python3=TRUE`で、Python探索が再混入した場合も即失敗する。
 
 clean-clone job は `actions/checkout` の clean checkout を使い、最初に
 `projects/example/assets` の ignored binary が 0 件であることを機械確認する。その後、
@@ -106,24 +122,22 @@ allowlist は作らない。失敗 artifact と retry なしの規律も CI0 と
 
 ## CI1 をローカルで再現する
 
-Python の絶対パスはローカルコマンドにだけ渡し、workflowやCMake scriptには保存しない。
+build-unit / project-code smokeはPython不要である。clean-cloneの完全なCPU gateだけは
+Python 3.12を用意する。
 
 ```powershell
-$python = 'C:\path\to\python.exe'
-
 # 9 entry を一括実行。個別実行は -DPELICAN_BUILD_UNIT_SMOKE_ONLY=audio 等を追加する。
 cmake -DPELICAN_BUILD_UNIT_SMOKE_CONFIG=Debug `
-  "-DPython3_EXECUTABLE=$python" `
   -P test/run_build_units_smoke.cmake
 
 cmake -DPELICAN_PROJECT_CODE_SMOKE_CONFIG=Debug `
-  "-DPython3_EXECUTABLE=$python" `
   -P test/run_project_code_smoke.cmake
 
 cmake -S . -B build-clean-clone -DSKIP_DEVSTUDIO=ON `
-  "-DPython3_EXECUTABLE=$python"
+  -DPELICAN_PYTHON_TESTS=ON `
+  -DPELICAN_WITH_SPIRV_LINK=ON
 cmake --build build-clean-clone --config Debug
-python test/ci/run_cpu_gate.py `
+python -B test/ci/run_cpu_gate.py `
   --build-dir build-clean-clone `
   --config Debug `
   --artifacts-dir build-clean-clone/ci-artifacts

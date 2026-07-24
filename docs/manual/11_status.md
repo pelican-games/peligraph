@@ -105,7 +105,7 @@ implementation archive」によります(2026-07-19 調査)。
 | 77 | コンテナ K1 — #フラグメント実ロード | 済 | glb の `#mesh/#material/#node/#animation` 部分ロード | asset_data / scene から `foo.glb#mesh/名前` 参照が使える |
 | 78 | マテリアル M3a — B 層ソース経路 | 済 | .surface コードスニペット → テンプレート合成(`pelican_*_v1` フック反射、engine:// GLSL ライブラリ) | .surface に `pelican_surface_v1` 等を書くだけでカスタムシェーダ。standard/toon は同経路の dogfood |
 | 79 | コンテナ K2 — glTF シーン抽出 + 親子 | 済 | scene v1 に `objects[].parent` 追加 + glTF ノード階層の抽出 | CLI: `pelican_cli import gltf --extract-scene <glb>`。JSON: scene v1 `parent` キー |
-| 80 | マテリアル M3b — spv-link | 済 | SPIR-V リンクの experimental バックエンド(既定は WP78 ソース経路) | opt-in: `PELICAN_SPV_LINK=experimental`。昇格判定は保留 |
+| 80 | マテリアル M3b — spv-link | 済 | SPIR-V リンクの experimental バックエンド(既定は WP78 ソース経路) | build: `PELICAN_WITH_SPIRV_LINK=ON` + runtime: `PELICAN_SPV_LINK=experimental`。昇格判定は保留 |
 | 81 | コンテナ K3 — pelican-import-tools | 済(別リポジトリ) | Python 製外部ツール: psd_extract + atlas_pack(決定的パッキング) | 出力: `pelican.atlas` v1 JSON(`#sprite/<名前>` の解決先) |
 | 82 | 起動高速化 | 済 | シェーダディスクキャッシュ(`.pelican/shader_cache/`)+ モデルロード並列化(決定的) | 起動 1 行レポート + `get_status.startup`。2 回目以降の起動が大幅短縮 |
 | 83 | マテリアル M3.5 — スクリーンスナップショット | 済 | rendering config `"snapshots"` + `screen_inputs` 宣言で forward 自動振り分け | JSON: `"snapshots":[{"name","after"}]`、.surface `//! screen_inputs: [...]`、シェーダ `pelican_screen_<name>(uv)` |

@@ -5831,4 +5831,40 @@ GPU registry mutation、explicit program-to-scope dependency graph。shader sour
 
 ---
 
+### WP197(済 2026-07-24): Python / test-tool build isolation
+
+参照: [`docs/ci.md`](ci.md)、
+[`docs/design_build_tiers.md`](design_build_tiers.md)、
+[`docs/design_reviews/2026-07-24_wp197_report.md`](design_reviews/2026-07-24_wp197_report.md)。
+
+**目的**: Pythonをエンジン／ゲームの通常build依存から外し、Python製test gateを
+ローカル任意・完全CI必須として扱う。Python生成処理を持つexperimental SPIRV-Toolsも
+通常／配布build graphから分離する。
+
+**実装範囲**:
+
+1. 標準`BUILD_TESTING`へ移行し、旧`SKIP_TEST`はdeprecated互換aliasとして残す。
+2. `PELICAN_PYTHON_TESTS=AUTO|ON|OFF`を追加する。AUTOはinterpreter不在時にPython testだけ
+   省略、ONは`REQUIRED`、OFFはPythonを探索しない。
+3. Python製CTestへ`python` labelを付け、`-B` +
+   `PYTHONDONTWRITEBYTECODE=1`でbytecode cache生成を抑止する。
+4. `PELICAN_WITH_SPIRV_LINK`を既定OFFで追加する。OFF時はruntime experimental選択へ
+   明示errorを返すstubを使い、pinned SPIRV-Toolsと`pelican-spv-link` CLIを構成しない。
+5. distribution presetはtestとexperimental linkerをOFFにする。
+6. build-unit / project-code smokeはPython探索をCMakeで禁止し、完全CIはPython testと
+   SPIR-V linkerを明示ONにする。
+
+**受け入れ条件**:
+
+- Python探索禁止 + tests OFFでplayer / CLIがconfigure・buildできる
+- Python探索禁止 + tests ON/AUTOでC++/CMake suiteを構成できる
+- Python tests ON + interpreter不在はconfigure errorになる
+- linker OFF/ON双方のsurface compilerと専用testが成功する
+- Debug全target build、GPU-free CTest 707 / 707、Python CTest 8 / 8、
+  SPIR-V重点test 10 / 10、`git diff --check`が成功
+
+完了レポート: `docs/design_reviews/2026-07-24_wp197_report.md`
+
+---
+
 未完了 WP と運用規則は [active ledger](implementation_plan.md) を参照。

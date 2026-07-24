@@ -7,7 +7,7 @@ Each file contains one 16-byte BC block and no supercompression.
 Regenerate them with:
 
 ```powershell
-python test/fixtures/ktx2/generate_fixtures.py
+python -B test/fixtures/ktx2/generate_fixtures.py
 ```
 
 The script writes the KTX2 header, level index, Khronos basic DFD, and already

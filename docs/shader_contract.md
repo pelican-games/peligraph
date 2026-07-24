@@ -191,9 +191,11 @@ JOINTS_0/WEIGHTS_0 と palette を適用してからユーザー hook を呼ぶ�
 
 ## B 層 experimental SPIR-V link ABI (M3b / WP80)
 
-`PELICAN_SPV_LINK=experimental` を明示したプロセスだけが同じ `.surface` API の
-SPIR-V link backend を選ぶ。その他の値・未指定は上記 source 経路であり、既定の
-shader source、define、golden、binding は変えない。
+build時に`PELICAN_WITH_SPIRV_LINK=ON`、実行時に
+`PELICAN_SPV_LINK=experimental`を明示したプロセスだけが同じ `.surface` API の
+SPIR-V link backend を選ぶ。build unitは既定OFFで、OFF binaryがruntime選択を受けた場合は
+名指しの診断を返す。その他の値・未指定は上記 source 経路であり、既定のshader source、
+define、golden、binding は変えない。
 
 linker は固定 revision の SPIRV-Headers / SPIRV-Tools / SPIRV-Reflect を使い、binary parser、
 linker、optimizer、validator、reflection/remap API だけで処理する。SPIR-V text assembly の

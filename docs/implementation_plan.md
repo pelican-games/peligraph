@@ -73,11 +73,13 @@ ctest --test-dir ./build -C Debug --output-on-failure
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
-(最新完了: WP196、2026-07-24。本文と完了レポートは archive 参照。)
+(最新完了: WP197、2026-07-24。本文と完了レポートは archive 参照。)
 
 ## 2. WP 詳細
 
-現在アクティブな WP はない。WP196 で project-backed rendering config / feature /
+現在アクティブな WP はない。WP197 でPython/test-tool dependencyを通常buildから分離し、
+Python testをAUTO/ON/OFF化、experimental SPIR-V linkerを既定OFFのbuild unit化した。
+WP196 では project-backed rendering config / feature /
 preset の同一 watcher-frame 変更を一つのtransactionへcoalesceし、preview + flat
 (+ 起動中のXR)を全prepare後に一回のruntime generation CASで公開する経路を実装済みである。
 window swapchain、offscreen、OpenXR各eye、独立desktop mirrorの実submission fenceが

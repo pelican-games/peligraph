@@ -289,7 +289,7 @@ standard / toon に続く**特権なしの standard library surface** として�
 - レンダラ接続は ✅ — `.surface` → コンパイル → パイプライン → SSBO → 描画まで golden(`surface_toon` / `skeletal_toon` / `openpbr_coat_sphere`)で実証済みです。
 - **手書きの `.material.json` をプロジェクト起動時に読み込んでモデルへ割り当てる宣言的レーンは依然 🚧**です。既定のバインディング解決は **GLB 内の named material** にのみ働き(binding ABI ✅WP116)、OpenPBR golden もテストハーネスが登録を行っています。
 - **per-instance マテリアルオーバーライド**(factor / UV の乗算 + material 別の絶対上書き)は ✅WP122/122b で renderer 機構として実装済みです。公開の書き込み面は VRM application service([第8章](08_gameplay.md) §8.13)経由で、GameContext API はありません。
-- **spv-link(M3b/WP80)は experimental**: 環境変数 `PELICAN_SPV_LINK=experimental` を明示したプロセスのみ SPIR-V リンクバックエンドに切り替わります。既定は常にソース経路です。
+- **spv-link(M3b/WP80)は experimental**: build時に`PELICAN_WITH_SPIRV_LINK=ON`、実行時に環境変数 `PELICAN_SPV_LINK=experimental` の両方を明示した場合だけ SPIR-V リンクバックエンドに切り替わります。build unitの既定はOFF、runtimeの既定は常にソース経路です。
 - 設計文書 [../design_material_shading.md](../design_material_shading.md) は v1.2 のまま実装が追い越しています。**現行契約の正は [../shader_contract.md](../shader_contract.md)** です。
 
 ## 6.8 テンポラルとスナップショット(✅T1/T2 = WP88/95、M3.5 = WP83)
@@ -401,8 +401,8 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 > ⚠ **変更(✅WP141):** ケース集合の正本はコミット済みの **`test/golden/inventory.json`**(`pelican.golden_inventory` v1)になりました。**`test/golden/` にディレクトリを置くだけでは発見されません** — 未登録のディレクトリは描画テストの対象にならず、CPU 側の inventory ゲートが名指しで FAIL します。ケースを増減したら次の手順を踏みます。
 >
 > ```powershell
-> python test/golden_inventory.py --repo-root .            # 照合(PASS / FAIL + 理由列挙)
-> python test/golden_inventory.py --repo-root . --update   # 意図した変更のあと manifest を再生成
+> python -B test/golden_inventory.py --repo-root .            # 照合(PASS / FAIL + 理由列挙)
+> python -B test/golden_inventory.py --repo-root . --update   # 意図した変更のあと manifest を再生成
 > git diff -- test/golden/inventory.json                   # diff をレビューしてコミット
 > ```
 >

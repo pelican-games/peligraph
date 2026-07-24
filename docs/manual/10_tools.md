@@ -19,7 +19,7 @@
 | `pelican_game_logic` | **DLL**(`PELICAN_PROJECT` 指定時) | player と同ディレクトリ | プロジェクトの `code/` のビルド産物(✅WP90 で静的リンクから移行) |
 | `pelican_cli` | exe | `dist/`(Debug は `dist_debug/`) | 開発 CLI。**エンジン(pelican_core)にリンクしない** |
 | `pelican_studio` | exe(Qt6) | `dist/`(同上) | エディタ。現状はダミー画面のみ(§10.8) |
-| `pelican-spv-link` | exe | build 内 | experimental SPIR-V リンカ CLI([第6章](06_rendering.md) §6.7) |
+| `pelican-spv-link` | exe | build 内 | `PELICAN_WITH_SPIRV_LINK=ON`時だけ作るexperimental SPIR-V リンカ CLI([第6章](06_rendering.md) §6.7) |
 | `pelican_project` | 静的 lib | build 内 | 解釈レイヤ(JSON パース/検証の純ロジック) |
 | `pelican_core` | 静的 lib | build 内+`dist/lib` | エンジン本体。公開ヘッダは `dist/lib/include` へコピー |
 

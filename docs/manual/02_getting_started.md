@@ -37,7 +37,15 @@ Qt を入れていない、または player だけ欲しい場合は Studio を�
 cmake . -B build -DSKIP_DEVSTUDIO=ON
 ```
 
-テストをスキップする場合は `-DSKIP_TEST=ON` を追加します。
+テストとテスト専用依存をすべて外す場合は `-DBUILD_TESTING=OFF` を追加します。
+旧`-DSKIP_TEST=ON`は互換aliasですが非推奨です。エンジン／ゲームの実行にPythonは
+必要ありません。
+
+テストを有効にした場合、`PELICAN_PYTHON_TESTS`は次の三値です。
+
+- `AUTO`（既定）: Python 3があればPython製gateも登録し、なければC++/CMakeテストだけを登録
+- `ON`: Python 3とPython製gateを必須化（CIの完全テスト構成）
+- `OFF`: Pythonを探索せず、C++/CMakeテストだけを登録
 
 > **注意:** リポジトリの [README.md](../../README.md) には値なしの `-DSKIP_DEVSTUDIO` と書かれていますが、リポジトリ内の実運用(`test/run_build_units_smoke.cmake`)は `=ON` 付きです。`=ON` を付ける書き方が確実です。
 
@@ -51,7 +59,7 @@ cmake . -B build -DSKIP_DEVSTUDIO=ON
 
 ### 機能ユニット(PELICAN_WITH_*)
 
-エンジンの一部機能は CMake オプションで切り離せる「ビルドユニット」になっています(✅実装済み・WP40/51)。すべて**既定 ON** なので、開発中は意識する必要はありません。配布ビルドで OFF にする方法は [第10章](10_tools.md) の `dist-config` を参照してください。
+エンジンの一部機能は CMake オプションで切り離せる「ビルドユニット」になっています(✅実装済み・WP40/51)。production機能は**既定 ON** なので、開発中は意識する必要はありません。experimental SPIR-V linkerだけは既定OFFです。配布ビルドで OFF にする方法は [第10章](10_tools.md) の `dist-config` を参照してください。
 
 | オプション | 内容 |
 |---|---|
@@ -65,15 +73,22 @@ cmake . -B build -DSKIP_DEVSTUDIO=ON
 | `PELICAN_WITH_RENDERDOC` | 注入済みRenderDocの受動検出とF11/RPC capture。binary/import libraryはリンクせず、配布では常にOFF |
 | `PELICAN_WITH_PHYSICS` | 物理クエリ層。配下に `PELICAN_WITH_BUILTIN_PHYSICS`(既定 ON)/ `PELICAN_WITH_JOLT_PHYSICS`(既定 OFF)のプロバイダ選択 |
 | `PELICAN_RUNTIME_SHADER_COMPILER` | 実行時 GLSL コンパイル(shaderc) |
+| `PELICAN_WITH_SPIRV_LINK` | experimental SPIR-V linker、pinned SPIRV-Tools、`pelican-spv-link` CLI（**既定 OFF**） |
 
 OFF でビルドした機能を使おうとすると、黙って無視されるのではなく `This binary was built with PELICAN_WITH_X=OFF: ...` という**名指しのエラー**で止まります(fail-fast 方針。[第1章](01_overview.md) 参照)。
 
-ビルドユニットではありませんが、同じ [CMakeLists.txt](../../CMakeLists.txt) には次の 2 オプションもあります:
+ビルドユニットではありませんが、同じ [CMakeLists.txt](../../CMakeLists.txt) には次のオプションもあります:
 
 | オプション | 既定 | 内容 |
 |---|---|---|
 | `PELICAN_ENABLE_ASAN` | OFF | AddressSanitizer 付きでビルドする(テストビルド想定) |
 | `PELICAN_PROJECT` | 空(CACHE PATH) | `code/` をホットリロード可能なゲーム DLL としてビルドする対象プロジェクト(§2.4) |
+| `BUILD_TESTING` | ON | OFFでCatch2を含む全テストとテスト専用toolingを構成対象から除外 |
+| `PELICAN_PYTHON_TESTS` | AUTO | Python製test gateを`AUTO` / `ON` / `OFF`で登録 |
+
+`PELICAN_SPV_LINK=experimental`は実行時のbackend選択です。build時に
+`PELICAN_WITH_SPIRV_LINK=ON`を指定していないbinaryでは利用できず、名指しの診断を返します。
+ON時のpinned SPIRV-Tools生成処理にはPython 3が必要です。
 
 ## 2.3 example プロジェクトを起動する
 

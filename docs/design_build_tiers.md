@@ -65,7 +65,10 @@ pelican_cli dist-config <project> --out dist-preset.cmake
    - rpc / seqplayer は既定 OFF(配布ゲームに不要。`--with rpc` で明示追加)
 2. 対応する `PELICAN_WITH_*` の ON/OFF 一覧を CMake キャッシュファイル
    (または CMakePresets.json の configurePreset)として出力
-3. **embed セットの絞り込み一覧**も同時に出力: プロジェクトが参照する
+3. 配布presetは`BUILD_TESTING=OFF`と`PELICAN_WITH_SPIRV_LINK=OFF`を必ず出力し、
+   Catch2、Python test gate、fixture executable、experimental linker toolchainを
+   配布build graphへ入れない
+4. **embed セットの絞り込み一覧**も同時に出力: プロジェクトが参照する
    engine:// id だけを埋め込む(engine_resources の部分集合。
    レジストリ一致テストは「フルセット」前提なので、配布ビルドでは
    `PELICAN_EMBED_SUBSET` としてビルド時にリスト注入する形)
