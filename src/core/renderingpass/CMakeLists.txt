@@ -10,6 +10,7 @@ target_sources(pelican_core PRIVATE
     materialpassinfojsonparser.cpp
     passattachmentoptionsjsonparser.cpp
     passdefinitionjsonparser.cpp
+    passimplementationregistry.cpp
     passinfojsonparser.cpp
     passsequencejsonparser.cpp
     previewgraph.cpp

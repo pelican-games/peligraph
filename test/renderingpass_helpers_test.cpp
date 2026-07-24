@@ -12,6 +12,7 @@
 #include "../src/core/renderingpass/rendertargetmetadataresolver.hpp"
 #include "../src/core/renderingpass/rendertargetnameresolver.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
+#include "../src/core/userpublic/render/pass_implementation_abi_v1.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -353,6 +354,7 @@ TEST_CASE("pass definition JSON parser builds a fullscreen pass definition", "[r
         {"type", "fullscreen"},
         {"output", {{"color", "half_color"}, {"depth", nullptr}}},
         {"shader", {{"vertex", "fullscreen"}, {"fragment", "debug_texture"}}},
+        {"implementation", {{"provider", "fixture.fullscreen"}}},
         {"push_constants", "projection_view"},
         {"clear_color", nlohmann::json::array({0.0f, 0.0f, 0.0f, 1.0f})},
     };
@@ -366,6 +368,91 @@ TEST_CASE("pass definition JSON parser builds a fullscreen pass definition", "[r
     REQUIRE(pass_def.output_depth == noRenderTargetId());
     REQUIRE(pass_def.fullscreenInfo().frag_shader.ref == "debug_texture");
     REQUIRE(pass_def.fullscreenInfo().push_constants == FullscreenPushConstantData::eProjectionView);
+    REQUIRE(
+        pass_def.requested_implementation_provider ==
+        std::optional<std::string>{"fixture.fullscreen"});
+    REQUIRE_FALSE(pass_def.implementation_selection.has_value());
+}
+
+TEST_CASE(
+    "pass definition JSON parser keeps implementation selection typed and fullscreen-only",
+    "[renderingpass][render-pass][wp200]") {
+    const auto name_resolver =
+        RenderTargetNameResolver{
+            [](const std::string &name) {
+                return name == "half_color"
+                           ? GlobalRenderTargetId{3}
+                           : noRenderTargetId();
+            }};
+    const auto metadata_resolver =
+        RenderTargetMetadataResolver{
+            [](GlobalRenderTargetId id) {
+                if (id != GlobalRenderTargetId{3}) {
+                    throw std::runtime_error(
+                        "unexpected render target metadata lookup");
+                }
+                return RenderTargetMetadata{
+                    "half_color",
+                    vk::ImageUsageFlagBits::eColorAttachment |
+                        vk::ImageUsageFlagBits::eSampled,
+                    vk::Format::eR8G8B8A8Unorm,
+                    vk::Extent2D{1280, 720}};
+            }};
+    const nlohmann::json material_json{
+        {"name", "material"},
+        {"type", "material"},
+        {"implementation",
+         {{"provider", "fixture.fullscreen"}}},
+        {"output",
+         {{"color", "half_color"},
+          {"depth", nullptr}}},
+    };
+    REQUIRE_THROWS_WITH(
+        parsePassDefinitionFromJson(
+            material_json, name_resolver,
+            metadata_resolver),
+        Catch::Matchers::ContainsSubstring(
+            "fullscreen passes only"));
+
+    auto malformed = nlohmann::json{
+        {"name", "fullscreen"},
+        {"type", "fullscreen"},
+        {"implementation",
+         {{"provider", "fixture.fullscreen"},
+          {"fallback", "builtin.fullscreen_v1"}}},
+        {"output",
+         {{"color", "half_color"},
+          {"depth", nullptr}}},
+        {"shader",
+         {{"vertex", "fullscreen"},
+          {"fragment", "composite"}}},
+    };
+    REQUIRE_THROWS_WITH(
+        parsePassDefinitionFromJson(
+            malformed, name_resolver,
+            metadata_resolver),
+        Catch::Matchers::ContainsSubstring(
+            "containing only a provider string"));
+
+    malformed["implementation"] =
+        {{"provider", ""}};
+    REQUIRE_THROWS_WITH(
+        parsePassDefinitionFromJson(
+            malformed, name_resolver,
+            metadata_resolver),
+        Catch::Matchers::ContainsSubstring(
+            "empty or too long"));
+    malformed["implementation"] = {
+        {"provider",
+         std::string(
+             RenderPass::maximumProviderNameBytesV1 + 1,
+             'x')}};
+    REQUIRE_THROWS_WITH(
+        parsePassDefinitionFromJson(
+            malformed, name_resolver,
+            metadata_resolver),
+        Catch::Matchers::ContainsSubstring(
+            "empty or too long"));
 }
 
 TEST_CASE("fullscreen pass JSON parser accepts shader stem references", "[renderingpass]") {

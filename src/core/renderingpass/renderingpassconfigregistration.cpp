@@ -3,6 +3,7 @@
 #include "../../project/renderpipeline.hpp"
 #include "framegraphruntime.hpp"
 #include "frameplanner.hpp"
+#include "passimplementationregistry.hpp"
 #include "renderpipelinegpuarena.hpp"
 #include "renderingpassconfigjsonparser.hpp"
 #include "renderingpassconfigloader.hpp"
@@ -279,6 +280,8 @@ registerPreparedRenderingPassConfigVariant(
     vk::Extent2D base_extent,
     RenderingPassConfigRegistrationDependencies &dependencies,
     RenderPipelineGpuRegistrationArena &gpu_arena,
+    const PassImplementationRegistrySnapshot
+        &pass_implementation_providers,
     RenderingPassConfigRegistrationResult &result) {
     if (dependencies.options
             .prepare_additional_gpu_resources) {
@@ -305,7 +308,7 @@ registerPreparedRenderingPassConfigVariant(
         dependencies.render_targets.render_target_container};
     const RenderTargetImageViewResolver rt_views{
         dependencies.render_targets.render_target_container};
-    const auto pass_definitions =
+    auto pass_definitions =
         parseRenderingPassDefinitionsFromConfigJson(
             // The normalized JSON is no longer needed after the CPU phase,
             // but pass parsing depends on the concrete target metadata
@@ -313,6 +316,21 @@ registerPreparedRenderingPassConfigVariant(
             // is intentionally avoided; retain it in the prepared variant.
             prepared.normalized_config,
             rt_resolver, rt_metadata, prepared.buffer_names);
+    for (auto &definition : pass_definitions) {
+        const auto target_plan =
+            prepared.target_plans.find(definition.name);
+        if (target_plan ==
+                prepared.target_plans.end() ||
+            target_plan->second == nullptr) {
+            throw std::runtime_error(
+                "Physical target plan not found while resolving pass "
+                "implementations: " +
+                definition.name);
+        }
+        resolveRenderingPassImplementations(
+            definition, *target_plan->second,
+            pass_implementation_providers);
+    }
     auto compiled_compute_tasks =
         compileComputeTasks(prepared.compute_task_definitions,
                             dependencies);
@@ -463,6 +481,11 @@ registerRenderingPassConfigVariantsData(
             "Render pipeline variant transaction has multiple feature publishers");
     }
 
+    // Keep one immutable provider generation across every variant and through
+    // the complete prepare-to-publication transaction.
+    auto pass_implementation_providers =
+        passImplementationRegistry().snapshot();
+
     // Every pure CPU candidate is completed before any mutable GPU registry
     // checkpoint is opened.
     std::vector<PreparedRenderingPassConfigVariant>
@@ -516,6 +539,7 @@ registerRenderingPassConfigVariantsData(
             registerPreparedRenderingPassConfigVariant(
                 prepared_variants[index], base_extent,
                 dependencies[index], gpu_arena,
+                pass_implementation_providers,
                 results[index]);
         program_preparations.insert(
             program_preparations.end(),

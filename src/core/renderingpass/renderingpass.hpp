@@ -121,6 +121,24 @@ using PassInfo = std::variant<MaterialPassInfo, FullscreenPassInfo, DebugDrawPas
 #endif
                               >;
 
+// Immutable provenance for a pass implementation selected from the typed
+// provider registry. The provider may replace implementation data, but never
+// the logical contract represented by contract/fingerprint.
+struct PassImplementationSelection {
+    std::string provider;
+    std::string implementation;
+    std::string contract;
+    std::uint64_t contract_fingerprint = 0;
+    std::uint64_t provider_owner = 0;
+    std::uint64_t provider_identity = 0;
+    std::uint32_t provider_generation = 0;
+    std::uint32_t provider_version = 0;
+    std::uint64_t provider_capability_bits = 0;
+    bool explicitly_selected = false;
+
+    bool operator==(const PassImplementationSelection &) const = default;
+};
+
 struct PassDefinition {
     PassDefinition() : output_depth{noRenderTargetId()} {}
 
@@ -133,6 +151,8 @@ struct PassDefinition {
     std::vector<std::string> input_buffers;
 
     PassInfo pass_info = MaterialPassInfo{};
+    std::optional<std::string> requested_implementation_provider;
+    std::optional<PassImplementationSelection> implementation_selection;
 
     vk::AttachmentLoadOp color_load_op = vk::AttachmentLoadOp::eClear;
     vk::AttachmentStoreOp color_store_op = vk::AttachmentStoreOp::eStore;

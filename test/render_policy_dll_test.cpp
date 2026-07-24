@@ -1,5 +1,6 @@
 #include "../src/core/gamelogic/gamelogicreload.hpp"
 #include "../src/core/log.hpp"
+#include "../src/core/renderingpass/passimplementationregistry.hpp"
 #include "../src/core/renderer/drawqueuebuilder.hpp"
 #include "../src/core/renderer/renderpolicyregistry.hpp"
 
@@ -12,6 +13,7 @@
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
+#include <optional>
 #include <semaphore>
 #include <stdexcept>
 #include <string>
@@ -89,6 +91,7 @@ struct FixtureControls {
     using BoolFn = bool (*)();
 
     StatusFn registration_status = nullptr;
+    StatusFn pass_registration_status = nullptr;
     VoidFn arm_next_sort = nullptr;
     BoolFn sort_entered = nullptr;
     VoidFn resume_sort = nullptr;
@@ -116,6 +119,8 @@ FixtureControls fixtureControls(const GameLogicReloadStatus &status) {
     return FixtureControls{
         fixtureFunction<FixtureControls::StatusFn>(
             module, "pelican_render_policy_fixture_registration_status"),
+        fixtureFunction<FixtureControls::StatusFn>(
+            module, "pelican_render_pass_fixture_registration_status"),
         fixtureFunction<FixtureControls::VoidFn>(
             module, "pelican_render_policy_fixture_arm_next_sort"),
         fixtureFunction<FixtureControls::BoolFn>(
@@ -175,9 +180,55 @@ std::vector<std::uint32_t> buildOrder() {
     return result;
 }
 
+std::string resolveFullscreenFragment() {
+    const auto types = makeBuiltinLogicalTypeRegistry();
+    const auto scene = sceneLinearHdrV1(types);
+    LogicalGraphNode node;
+    node.name = "fixture_composite";
+    node.kind = LogicalGraphNodeKind::render;
+    node.ports = {
+        LogicalPortContract{
+            "in.scene", LogicalPortDirection::input,
+            exactLogicalTypePattern(types, scene), {}},
+        LogicalPortContract{
+            "out.scene", LogicalPortDirection::output,
+            exactLogicalTypePattern(types, scene), {}},
+    };
+    node.uses = {
+        makeLogicalReadUse(
+            "in.scene", LogicalValueId{"scene_in", 0},
+            LogicalReadFootprint{
+                LogicalReadFootprintKind::same_pixel,
+                std::nullopt},
+            LogicalAccessIntent::sampled),
+        makeLogicalWriteUse(
+            "out.scene", LogicalValueId{"scene_out", 1},
+            LogicalAccessIntent::attachment),
+    };
+
+    PassDefinition pass;
+    pass.name = node.name;
+    pass.pass_info = FullscreenPassInfo{
+        .vert_shader =
+            makeShaderReference(
+                "engine://fullscreen",
+                ShaderStage::vertex),
+        .frag_shader =
+            makeShaderReference(
+                "engine://scene_present",
+                ShaderStage::fragment),
+    };
+    pass.requested_implementation_provider =
+        "fixture.fullscreen";
+    const auto providers =
+        passImplementationRegistry().snapshot();
+    return providers.resolveFullscreen(pass, node)
+        .fragment_shader.ref;
+}
+
 } // namespace
 
-TEST_CASE("public draw sort provider survives reload rollback and in-flight unload",
+TEST_CASE("public render providers survive reload rollback and in-flight unload",
           "[render-policy-dll]") {
     ensureLogger();
     const auto fixture_v1 = requiredFixture("PELICAN_RENDER_POLICY_FIXTURE_V1");
@@ -195,7 +246,12 @@ TEST_CASE("public draw sort provider survives reload rollback and in-flight unlo
     auto controls = fixtureControls(reloader.status());
     REQUIRE(static_cast<RenderPolicy::Status>(
                 controls.registration_status()) == RenderPolicy::Status::ok);
+    REQUIRE(static_cast<RenderPass::Status>(
+                controls.pass_registration_status()) ==
+            RenderPass::Status::ok);
     REQUIRE(buildOrder() == std::vector<std::uint32_t>{30, 20, 10});
+    REQUIRE(resolveFullscreenFragment() ==
+            "shaders/fixture_composite_v1");
 
     replaceFixture(fixture_v2, live_dll);
     controls.arm_next_sort();
@@ -247,12 +303,19 @@ TEST_CASE("public draw sort provider survives reload rollback and in-flight unlo
     controls = fixtureControls(reloader.status());
     REQUIRE(static_cast<RenderPolicy::Status>(
                 controls.registration_status()) == RenderPolicy::Status::ok);
+    REQUIRE(static_cast<RenderPass::Status>(
+                controls.pass_registration_status()) ==
+            RenderPass::Status::ok);
     REQUIRE(buildOrder() == std::vector<std::uint32_t>{10, 20, 30});
+    REQUIRE(resolveFullscreenFragment() ==
+            "shaders/fixture_composite_v2");
 
     replaceFixture(fixture_bad_abi, live_dll);
     REQUIRE_FALSE(reloader.reloadNow([] {}, [] {}));
     REQUIRE(reloader.status().generation == 2);
     REQUIRE(buildOrder() == std::vector<std::uint32_t>{10, 20, 30});
+    REQUIRE(resolveFullscreenFragment() ==
+            "shaders/fixture_composite_v2");
 
     replaceFixture(fixture_v1, live_dll);
     int rebuild_calls = 0;
@@ -265,11 +328,17 @@ TEST_CASE("public draw sort provider survives reload rollback and in-flight unlo
     REQUIRE(rebuild_calls == 2);
     REQUIRE(reloader.status().generation == 2);
     REQUIRE(buildOrder() == std::vector<std::uint32_t>{10, 20, 30});
+    REQUIRE(resolveFullscreenFragment() ==
+            "shaders/fixture_composite_v2");
 
     reloader.shutdown();
     REQUIRE_THROWS_WITH(
         renderPolicyRegistry().resolveDrawSortProvider("fixture.draw_sort"),
         "draw sort provider 'fixture.draw_sort' is not registered for the active owner");
+    REQUIRE_THROWS_WITH(
+        resolveFullscreenFragment(),
+        Catch::Matchers::ContainsSubstring(
+            "pass implementation provider 'fixture.fullscreen' is not registered"));
     const auto builtin = renderPolicyRegistry().resolveDrawSortProvider(
         builtinStateBatchedDrawSortProvider);
     REQUIRE(builtin.info().owner == internal::engineRegistrationOwner);
