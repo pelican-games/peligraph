@@ -285,6 +285,15 @@ endif()
 find_package(Vulkan)
 
 if(PELICAN_RUNTIME_SHADER_COMPILER)
+  # Runtime compilation belongs to the PC development toolchain. Cross targets
+  # consume host-baked SPIR-V instead of implicitly building shaderc for target.
+  if(NOT Vulkan_FOUND)
+    message(FATAL_ERROR
+      "PELICAN_RUNTIME_SHADER_COMPILER=ON requires the Vulkan SDK. "
+      "Install the SDK and set VULKAN_SDK, or configure the target with "
+      "-DPELICAN_RUNTIME_SHADER_COMPILER=OFF to consume precompiled SPIR-V.")
+  endif()
+
   set(PELICAN_VULKAN_SDK_LIB_DIR "")
   set(PELICAN_VULKAN_SDK_BIN_DIR "")
   if(DEFINED ENV{VULKAN_SDK})
@@ -309,42 +318,32 @@ if(PELICAN_RUNTIME_SHADER_COMPILER)
     HINTS ${PELICAN_VULKAN_SDK_BIN_DIR}
   )
 
-  set(PELICAN_USE_FETCHCONTENT_SHADERC OFF)
   if(NOT PELICAN_SHADERC_COMBINED_RELEASE)
-    set(PELICAN_USE_FETCHCONTENT_SHADERC ON)
+    message(FATAL_ERROR
+      "PELICAN_RUNTIME_SHADER_COMPILER=ON requires shaderc_combined from the "
+      "installed Vulkan SDK. Set VULKAN_SDK to a complete SDK installation, "
+      "or configure the target with -DPELICAN_RUNTIME_SHADER_COMPILER=OFF "
+      "to consume SPIR-V compiled on the host.")
   endif()
+
   if(MSVC AND NOT PELICAN_SHADERC_COMBINED_DEBUG)
     if(PELICAN_SHADERC_SHARED_IMPLIB AND PELICAN_SHADERC_SHARED_DLL)
       message(STATUS "shaderc_combinedd.lib was not found; using shaderc_shared.dll for Debug builds")
     else()
-      message(WARNING "shaderc_combinedd.lib was not found; falling back to FetchContent shaderc for Debug builds")
-      set(PELICAN_USE_FETCHCONTENT_SHADERC ON)
+      message(FATAL_ERROR
+        "The Vulkan SDK does not provide a Debug-compatible shaderc library. "
+        "Expected shaderc_combinedd.lib, or both shaderc_shared.lib and "
+        "shaderc_shared.dll. Install a complete Vulkan SDK, or configure the "
+        "target with -DPELICAN_RUNTIME_SHADER_COMPILER=OFF.")
     endif()
   endif()
 
-  if(PELICAN_USE_FETCHCONTENT_SHADERC)
-    set(SHADERC_SKIP_TESTS ON CACHE BOOL "" FORCE)
-    set(SHADERC_SKIP_EXAMPLES ON CACHE BOOL "" FORCE)
-    set(SHADERC_SKIP_EXECUTABLES ON CACHE BOOL "" FORCE)
-    set(SHADERC_SKIP_INSTALL ON CACHE BOOL "" FORCE)
-    set(SHADERC_SKIP_COPYRIGHT_CHECK ON CACHE BOOL "" FORCE)
-    set(SHADERC_ENABLE_WGSL_OUTPUT OFF CACHE BOOL "" FORCE)
-    FetchContent_Declare(
-      shaderc
-      GIT_REPOSITORY https://github.com/google/shaderc.git
-      GIT_TAG        v2026.2
-    )
-    FetchContent_MakeAvailable(shaderc)
-  endif()
-
   add_library(pelican_shaderc INTERFACE)
-  if(PELICAN_SHADERC_COMBINED_RELEASE)
-    add_library(pelican_shaderc_sdk_release STATIC IMPORTED)
-    set_target_properties(pelican_shaderc_sdk_release PROPERTIES
-      IMPORTED_LOCATION ${PELICAN_SHADERC_COMBINED_RELEASE}
-      INTERFACE_INCLUDE_DIRECTORIES ${Vulkan_INCLUDE_DIRS}
-    )
-  endif()
+  add_library(pelican_shaderc_sdk_release STATIC IMPORTED)
+  set_target_properties(pelican_shaderc_sdk_release PROPERTIES
+    IMPORTED_LOCATION ${PELICAN_SHADERC_COMBINED_RELEASE}
+    INTERFACE_INCLUDE_DIRECTORIES ${Vulkan_INCLUDE_DIRS}
+  )
   if(PELICAN_SHADERC_COMBINED_DEBUG)
     add_library(pelican_shaderc_sdk_debug STATIC IMPORTED)
     set_target_properties(pelican_shaderc_sdk_debug PROPERTIES
@@ -361,20 +360,7 @@ if(PELICAN_RUNTIME_SHADER_COMPILER)
     )
   endif()
 
-  if(PELICAN_USE_FETCHCONTENT_SHADERC)
-    target_link_libraries(pelican_shaderc INTERFACE
-      $<$<CONFIG:Debug>:shaderc_combined>
-    )
-    if(PELICAN_SHADERC_COMBINED_RELEASE)
-      target_link_libraries(pelican_shaderc INTERFACE
-        $<$<NOT:$<CONFIG:Debug>>:pelican_shaderc_sdk_release>
-      )
-    else()
-      target_link_libraries(pelican_shaderc INTERFACE
-        $<$<NOT:$<CONFIG:Debug>>:shaderc_combined>
-      )
-    endif()
-  elseif(PELICAN_SHADERC_COMBINED_DEBUG)
+  if(PELICAN_SHADERC_COMBINED_DEBUG)
     target_link_libraries(pelican_shaderc INTERFACE
       $<$<CONFIG:Debug>:pelican_shaderc_sdk_debug>
       $<$<NOT:$<CONFIG:Debug>>:pelican_shaderc_sdk_release>

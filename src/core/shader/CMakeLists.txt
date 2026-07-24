@@ -12,10 +12,10 @@ if(PELICAN_WITH_SPIRV_LINK)
 else()
     target_sources(pelican_core PRIVATE spvlink_stub.cpp)
 endif()
-if(PELICAN_USE_FETCHCONTENT_SHADERC)
-    set(PELICAN_SHADERC_CACHE_VERSION "fetch-v2025.1")
-else()
+if(PELICAN_RUNTIME_SHADER_COMPILER)
     set(PELICAN_SHADERC_CACHE_VERSION "vulkan-sdk-${Vulkan_VERSION}")
+else()
+    set(PELICAN_SHADERC_CACHE_VERSION "disabled")
 endif()
 target_compile_definitions(pelican_core PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
