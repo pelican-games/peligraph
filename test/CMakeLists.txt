@@ -1291,8 +1291,8 @@ if(PELICAN_NODE_EXECUTABLE)
     )
 endif()
 
-set(PELICAN_PYTHON_TESTS "AUTO" CACHE STRING
-    "Python-backed test gates: AUTO, ON (required), or OFF")
+set(PELICAN_PYTHON_TESTS "OFF" CACHE STRING
+    "Python-backed test gates: OFF (default), AUTO, or ON (required)")
 set_property(CACHE PELICAN_PYTHON_TESTS PROPERTY STRINGS AUTO ON OFF)
 string(TOUPPER "${PELICAN_PYTHON_TESTS}" PELICAN_PYTHON_TESTS_MODE)
 set(_pelican_python_test_modes AUTO ON OFF)

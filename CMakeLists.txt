@@ -273,7 +273,15 @@ if(PELICAN_WITH_OPENXR)
     GIT_REPOSITORY https://github.com/KhronosGroup/OpenXR-SDK-Source.git
     GIT_TAG        211e2f4f0b79932300a845f3a8ed75026dbfa4a3
   )
-  FetchContent_MakeAvailable(openxr_sdk)
+  function(pelican_add_openxr_sdk)
+    # OpenXR probes Python unconditionally even though its checked-in generated
+    # sources are sufficient when BUILD_FORCE_GENERATION=OFF. Keep that
+    # optional probe out of Pelican's normal configure without changing the
+    # caller's Python package policy.
+    set(CMAKE_DISABLE_FIND_PACKAGE_Python3 TRUE)
+    FetchContent_MakeAvailable(openxr_sdk)
+  endfunction()
+  pelican_add_openxr_sdk()
   foreach(PELICAN_UNUSED_OPENXR_TARGET openxr-gfxwrapper openxr-glad-loader)
     if(TARGET ${PELICAN_UNUSED_OPENXR_TARGET})
       set_target_properties(${PELICAN_UNUSED_OPENXR_TARGET} PROPERTIES EXCLUDE_FROM_ALL TRUE)
