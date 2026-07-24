@@ -1090,10 +1090,46 @@ gate:
 - production GPU registrationでbuiltin identity regionをpublishできる
 - V1→V2 reload、invalid candidate、rebuild rollback、shutdown後失効を維持する
 
+### RPE11c — global GraphTransform
+
+状態: **WP202aで実装済み(2026-07-24)**。`graph_transforms`はfeature合成・graph variant
+rewrite・ImGui合成後、tagged region置換とtarget loweringより前に実行する有限の順序付き
+chainである。各entryは一意な`name`、任意の`provider`、object `parameters`を持ち、
+provider未指定時は`builtin.identity_v1`を選ぶ。preset overlayからも同じ配列を追加できる。
+
+public C ABI `RenderGraphTransform::ProviderV1`は、全graphのcanonical logical JSON、
+canonical normalized config JSON、parameters、graph-set contractとfingerprintを受け、
+完全な候補config JSONとsemantic implementation idを返す。STL、engine pointer、Vulkan型は
+ABIを越えない。provider出力はlocal candidateへparseし、全logical graphを再compileして
+からだけ採用する。
+
+graph-set contractはgraph entrypoint名と、既存のexternal/history/graph-inputおよび
+materialization-required resourceの具体logical typeを保持する。transformは内部pass、
+compute task、buffer、runtime-materialized render targetを追加できるが、既存のprotected
+boundaryを削除・改型できず、新しいexternal/history importも作れない。pipeline policy、
+material routing、graph-local control、canonical anchor列、`output_transform`は変更不可で、
+flat/preview/XR policyを変換後に再検証する。
+
+選択結果はtransform名とchain index、provider owner / identity / generation / version /
+capability、boundary fingerprint、入力・出力graph fingerprintを
+`CompiledRenderPipeline`、`CompiledLogicalRenderGraph`、`VulkanTargetPlan`へ残す。
+pass→subgraph→graph-transformの順でsnapshot lockとowner releaseを統一し、全variantの
+publication完了まで同じleaseを保持する。
+
+gate:
+
+- builtin identityとgame DLLが同じgraph-set callbackを通る
+- 変換chainの順序と各段のinput/output fingerprintが一致する
+- internal target/pass追加を許し、external/history/既存required境界変更をrejectする
+- malformed JSON、control再導入、policy/material route/terminal変更を理由付きでrejectする
+- original configとactive runtimeを途中状態へ変更しない
+- logical/pipeline/target planへproviderとgraph fingerprint provenanceを保持する
+- preset overlay、production GPU registration、V1→V2 reload、rollback、shutdownを維持する
+
 次の候補:
 
 1. XR2b で multiview / array-layer / depth-submit lowering
-2. global `GraphTransform` / renderer-wide `RenderStrategy` fixture
+2. renderer-wide `RenderStrategy` fixture（WP202b。global transformとは別ABI）
 3. physical plan eject / direct authoring fixture
 4. `NativeScope` は具体的な Vulkan-only 使用例が得られてから ABI 設計
 5. CPU / external domain は計測と具体的な二候補 task が得られてから

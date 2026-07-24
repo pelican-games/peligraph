@@ -176,6 +176,26 @@ struct LogicalCompileDecision {
     std::string detail;
 };
 
+struct LogicalGraphTransformSelection {
+    std::string name;
+    std::string provider;
+    std::string implementation;
+    std::string contract;
+    std::uint64_t boundary_fingerprint = 0;
+    std::uint64_t input_graph_fingerprint = 0;
+    std::uint64_t output_graph_fingerprint = 0;
+    std::uint64_t provider_owner = 0;
+    std::uint64_t provider_identity = 0;
+    std::uint32_t provider_generation = 0;
+    std::uint32_t provider_version = 0;
+    std::uint64_t provider_capability_bits = 0;
+    std::uint32_t transform_index = 0;
+    bool explicitly_selected = false;
+
+    bool operator==(
+        const LogicalGraphTransformSelection &) const = default;
+};
+
 struct LogicalSubgraphReplacementSelection {
     std::string region;
     std::string provider;
@@ -210,6 +230,8 @@ struct CompiledLogicalRenderGraph {
     std::vector<LogicalResourceDesc> resources;
     std::vector<LogicalValueImport> imports;
     std::vector<LogicalGraphNode> nodes;
+    std::vector<LogicalGraphTransformSelection>
+        graph_transforms;
     std::vector<LogicalSubgraphReplacementSelection>
         subgraph_replacements;
     std::vector<LogicalCompileDecision> decisions;

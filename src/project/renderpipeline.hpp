@@ -1,6 +1,7 @@
 #pragma once
 
 #include "graphvariantpolicy.hpp"
+#include "logicalrendergraph.hpp"
 #include "samplecountplanning.hpp"
 
 #include <array>
@@ -260,6 +261,8 @@ struct CompiledRenderPipeline {
     CompiledGraphVariantPolicy graph_variant_policy;
     std::vector<GraphVariantFeatureDecision>
         graph_variant_feature_decisions;
+    std::vector<LogicalGraphTransformSelection>
+        graph_transforms;
     std::vector<RenderPipelineDiagnostic> diagnostics;
     bool used_features = false;
 };

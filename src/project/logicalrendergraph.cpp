@@ -501,6 +501,56 @@ void validateCompiledLogicalRenderGraph(
     }
 
     std::set<std::string, std::less<>>
+        transform_names;
+    std::set<std::uint32_t>
+        transform_indices;
+    for (const auto &selection :
+         graph.graph_transforms) {
+        requireName(
+            selection.name,
+            "logical graph transform name");
+        requireName(
+            selection.provider,
+            "logical graph transform provider");
+        requireName(
+            selection.implementation,
+            "logical graph transform implementation");
+        requireName(
+            selection.contract,
+            "logical graph transform contract");
+        if (!transform_names
+                 .insert(selection.name)
+                 .second) {
+            throw std::runtime_error(
+                "logical graph has duplicate transform "
+                "selection: " +
+                selection.name);
+        }
+        if (!transform_indices
+                 .insert(selection.transform_index)
+                 .second ||
+            selection.transform_index >=
+                graph.graph_transforms.size()) {
+            throw std::runtime_error(
+                "logical graph transform has an invalid or "
+                "duplicate chain index: " +
+                selection.name);
+        }
+        if (selection.boundary_fingerprint == 0 ||
+            selection.input_graph_fingerprint == 0 ||
+            selection.output_graph_fingerprint == 0 ||
+            selection.provider_identity == 0 ||
+            selection.provider_generation == 0 ||
+            selection.provider_version == 0 ||
+            selection.provider_capability_bits == 0) {
+            throw std::runtime_error(
+                "logical graph transform has incomplete "
+                "provider or graph provenance: " +
+                selection.name);
+        }
+    }
+
+    std::set<std::string, std::less<>>
         replacement_regions;
     for (const auto &selection :
          graph.subgraph_replacements) {
@@ -683,6 +733,39 @@ nlohmann::ordered_json compiledLogicalRenderGraphToJson(
             {"consumer", nlohmann::ordered_json{{"node", edge.consumer_node},
                                                  {"port", edge.consumer_port}}},
         });
+    }
+    result["graph_transforms"] =
+        nlohmann::ordered_json::array();
+    for (const auto &selection :
+         graph.graph_transforms) {
+        result["graph_transforms"].push_back(
+            nlohmann::ordered_json{
+                {"name", selection.name},
+                {"provider", selection.provider},
+                {"implementation",
+                 selection.implementation},
+                {"contract", selection.contract},
+                {"boundary_fingerprint",
+                 selection.boundary_fingerprint},
+                {"input_graph_fingerprint",
+                 selection.input_graph_fingerprint},
+                {"output_graph_fingerprint",
+                 selection.output_graph_fingerprint},
+                {"provider_owner",
+                 selection.provider_owner},
+                {"provider_identity",
+                 selection.provider_identity},
+                {"provider_generation",
+                 selection.provider_generation},
+                {"provider_version",
+                 selection.provider_version},
+                {"provider_capability_bits",
+                 selection.provider_capability_bits},
+                {"transform_index",
+                 selection.transform_index},
+                {"explicitly_selected",
+                 selection.explicitly_selected},
+            });
     }
     result["subgraph_replacements"] =
         nlohmann::ordered_json::array();

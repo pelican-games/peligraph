@@ -280,10 +280,12 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
     // workflow so a preset update cannot silently reinterpret a deep merge.
     requireOnlyKeys(authored_config,
                     {"pipeline", "features", "snapshots", "shader_defines",
-                     "draw_sort"},
+                     "draw_sort", "graph_transforms"},
                     "rendering config using pipeline preset");
     appendUniqueArray(resolved, authored_config, "features", "rendering config", false);
     appendUniqueArray(resolved, authored_config, "shader_defines", "rendering config", true);
+    appendUniqueArray(resolved, authored_config, "graph_transforms",
+                      "rendering config", false);
     if (authored_config.contains("snapshots")) {
         if (resolved.contains("snapshots")) {
             throw std::runtime_error(
@@ -866,6 +868,41 @@ CompiledRenderPipeline compileRenderPipeline(
 nlohmann::json serializeCompiledRenderPipelineMetadata(
     const CompiledRenderPipeline &pipeline) {
     nlohmann::json metadata = nlohmann::json::object();
+    if (!pipeline.graph_transforms.empty()) {
+        auto transforms = nlohmann::json::array();
+        for (const auto &selection :
+             pipeline.graph_transforms) {
+            transforms.push_back({
+                {"name", selection.name},
+                {"provider", selection.provider},
+                {"implementation",
+                 selection.implementation},
+                {"contract", selection.contract},
+                {"boundary_fingerprint",
+                 selection.boundary_fingerprint},
+                {"input_graph_fingerprint",
+                 selection.input_graph_fingerprint},
+                {"output_graph_fingerprint",
+                 selection.output_graph_fingerprint},
+                {"provider_owner",
+                 selection.provider_owner},
+                {"provider_identity",
+                 selection.provider_identity},
+                {"provider_generation",
+                 selection.provider_generation},
+                {"provider_version",
+                 selection.provider_version},
+                {"provider_capability_bits",
+                 selection.provider_capability_bits},
+                {"transform_index",
+                 selection.transform_index},
+                {"explicitly_selected",
+                 selection.explicitly_selected},
+            });
+        }
+        metadata["graph_transforms"] =
+            std::move(transforms);
+    }
     if (pipeline.projection_jitter) {
         const auto &jitter = *pipeline.projection_jitter;
         nlohmann::json declaration{

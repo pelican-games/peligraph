@@ -566,9 +566,9 @@ plannerが再解析し、依存と型から最適化を決める。provider選�
 contract fingerprint、owner / identity / generation / version / capabilityはlogical graphと
 target planのprovenanceへ残す。
 
-subgraph provider snapshotはpass implementation snapshotより後に取得し、両方を全variantの
-publicationまで保持する。DLL owner解放もpass→subgraphの順に行い、shared/exclusive lockの
-順序逆転を避ける。
+subgraph provider snapshotはpass implementation snapshotより後、graph-transform snapshotは
+その後に取得し、三つを全variantのpublicationまで保持する。DLL owner解放も
+pass→subgraph→graph-transformの順に行い、shared/exclusive lockの順序逆転を避ける。
 
 ## 7. Material route、MSAA、XR はどう分けるか
 
@@ -847,6 +847,7 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 | RPE10b3 / WP196（済 2026-07-24） | submission fence retire、project config / feature / preset watcher、flat/XR一括publication | in-flight完了前の破棄なし、同一frame変更coalesce、失敗時active世代不変、実Vulkan reload |
 | RPE11a / WP200（済 2026-07-24） | fullscreen `PassImplementationProviderV1`、typed logical contract、builtin/game DLL同一registry | shader pair限定差し替え、contract不変、owner/generation provenance、failure atomic、reload/rollback/unload |
 | RPE11b / WP201（済 2026-07-24） | tagged region、typed boundary contract、builtin/game DLL subgraph replacement | immutable candidate再compile、1→N fullscreen展開、境界不変、provenance、failure atomic、reload/rollback/unload |
+| RPE11c / WP202a（済 2026-07-24） | global `GraphTransformProviderV1`、graph-set boundary、順序付き変換chain | full-config candidate再compile、internal target/pass追加、external/history/required境界と常設node保護、provenance、reload/rollback/unload |
 
 ### 12.1 いま着手する範囲
 

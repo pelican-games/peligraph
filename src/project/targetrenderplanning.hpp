@@ -204,6 +204,8 @@ struct VulkanTargetPlanRequest {
 
 struct VulkanTargetPlan {
     std::string graph;
+    std::vector<LogicalGraphTransformSelection>
+        graph_transforms;
     std::vector<LogicalSubgraphReplacementSelection>
         subgraph_replacements;
     BackendSelection backend_selection;

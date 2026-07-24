@@ -37,6 +37,8 @@ struct FrameGraphDefinition {
     std::vector<std::string> declared_resources;
     std::vector<std::string> history_resources;
     std::vector<FrameGraphNodeDefinition> nodes;
+    std::vector<LogicalGraphTransformSelection>
+        graph_transforms;
     std::vector<LogicalSubgraphReplacementSelection>
         subgraph_replacements;
 };

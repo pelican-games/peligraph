@@ -3,6 +3,7 @@
 #include "../../project/renderpipeline.hpp"
 #include "framegraphruntime.hpp"
 #include "frameplanner.hpp"
+#include "graphtransformregistry.hpp"
 #include "passimplementationregistry.hpp"
 #include "renderpipelinegpuarena.hpp"
 #include "renderingpassconfigjsonparser.hpp"
@@ -195,6 +196,8 @@ struct PreparedRenderingPassConfigVariant {
 PreparedRenderingPassConfigVariant prepareRenderingPassConfigVariant(
     const nlohmann::json &rendering_pass_data,
     RenderingPassConfigRegistrationDependencies &dependencies,
+    const GraphTransformRegistrySnapshot
+        &graph_transform_providers,
     const SubgraphReplacementRegistrySnapshot
         &subgraph_replacement_providers) {
     const auto swapchain_format =
@@ -228,10 +231,10 @@ PreparedRenderingPassConfigVariant prepareRenderingPassConfigVariant(
                     config, swapchain_format, target_extent, hdr_enabled);
             },
         });
-    auto compiled_pipeline =
-        std::make_shared<const CompiledRenderPipeline>(
-            compileRenderPipeline(resolved));
-    dependencies.runtime.shader_defines = compiled_pipeline->shader_defines;
+    auto compiled_pipeline_value =
+        compileRenderPipeline(resolved);
+    dependencies.runtime.shader_defines =
+        compiled_pipeline_value.shader_defines;
     auto composed_rendering_pass_data = std::move(resolved.normalized_config);
 #if PELICAN_WITH_IMGUI
     if (resolved.graph_variant_policy
@@ -241,6 +244,15 @@ PreparedRenderingPassConfigVariant prepareRenderingPassConfigVariant(
         });
     }
 #endif
+    auto resolved_transforms =
+        resolveLogicalGraphTransforms(
+            composed_rendering_pass_data,
+            graph_transform_providers);
+    composed_rendering_pass_data =
+        std::move(resolved_transforms.config);
+    validateGraphVariantConfig(
+        resolved.graph_variant_policy,
+        composed_rendering_pass_data);
     auto resolved_subgraphs =
         resolveTaggedSubgraphReplacements(
             composed_rendering_pass_data,
@@ -256,9 +268,17 @@ PreparedRenderingPassConfigVariant prepareRenderingPassConfigVariant(
         parseComputeTaskDefinitionsFromConfigJson(composed_rendering_pass_data);
     auto graph_definition_list =
         parseFrameGraphDefinitionsFromConfigJson(composed_rendering_pass_data);
+    applyResolvedLogicalGraphTransformSelections(
+        graph_definition_list,
+        resolved_transforms.selections);
     applyResolvedTaggedSubgraphSelections(
         graph_definition_list,
         resolved_subgraphs.graphs);
+    compiled_pipeline_value.graph_transforms =
+        resolved_transforms.selections;
+    auto compiled_pipeline =
+        std::make_shared<const CompiledRenderPipeline>(
+            std::move(compiled_pipeline_value));
     namespaceComputeTasks(compute_task_definitions, graph_definition_list,
                           compiled_pipeline->graph_variant_policy
                               .rendering_pass_name_suffix);
@@ -494,13 +514,16 @@ registerRenderingPassConfigVariantsData(
     }
 
     // Acquire provider leases in the same order used by game-DLL owner
-    // release (pass implementation, then subgraph replacement). Keeping one
-    // immutable pair across every variant avoids both mixed generations and
-    // a shared/exclusive lock-order inversion during hot reload.
+    // release (pass implementation, subgraph replacement, then graph
+    // transform). Keeping one immutable set across every variant avoids
+    // mixed generations and a shared/exclusive lock-order inversion during
+    // hot reload.
     auto pass_implementation_providers =
         passImplementationRegistry().snapshot();
     auto subgraph_replacement_providers =
         subgraphReplacementRegistry().snapshot();
+    auto graph_transform_providers =
+        graphTransformRegistry().snapshot();
 
     // Every pure CPU candidate is completed before any mutable GPU registry
     // checkpoint is opened.
@@ -511,6 +534,7 @@ registerRenderingPassConfigVariantsData(
         prepared_variants.push_back(
             prepareRenderingPassConfigVariant(
                 rendering_pass_data, variant,
+                graph_transform_providers,
                 subgraph_replacement_providers));
     }
 

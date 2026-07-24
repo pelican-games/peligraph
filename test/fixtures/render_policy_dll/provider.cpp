@@ -1,4 +1,5 @@
 #include <render/draw_sort_abi_v1.hpp>
+#include <render/graph_transform_abi_v1.hpp>
 #include <render/pass_implementation_abi_v1.hpp>
 #include <render/subgraph_replacement_abi_v1.hpp>
 
@@ -24,6 +25,8 @@ constexpr char provider_name[] = "fixture.draw_sort";
 constexpr char pass_provider_name[] = "fixture.fullscreen";
 constexpr char subgraph_provider_name[] =
     "fixture.subgraph";
+constexpr char graph_transform_provider_name[] =
+    "fixture.graph_transform";
 constexpr char pass_vertex_shader[] = "shaders/fixture_fullscreen";
 #if PELICAN_RENDER_POLICY_FIXTURE_VERSION == 1
 constexpr char pass_implementation_id[] =
@@ -32,6 +35,8 @@ constexpr char pass_fragment_shader[] =
     "shaders/fixture_composite_v1";
 constexpr char subgraph_implementation_id[] =
     "fixture.render.subgraph_v1@1";
+constexpr char graph_transform_implementation_id[] =
+    "fixture.render.graph_transform_v1@1";
 constexpr char subgraph_json[] =
     R"json([{
       "name": "fixture_tone_v1",
@@ -50,6 +55,8 @@ constexpr char pass_fragment_shader[] =
     "shaders/fixture_composite_v2";
 constexpr char subgraph_implementation_id[] =
     "fixture.render.subgraph_v2@1";
+constexpr char graph_transform_implementation_id[] =
+    "fixture.render.graph_transform_v2@1";
 constexpr char subgraph_json[] =
     R"json([{
       "name": "fixture_tone_v2",
@@ -75,6 +82,10 @@ std::atomic<std::uint32_t> pass_registration_status{
 std::atomic<std::uint32_t> subgraph_registration_status{
     static_cast<std::uint32_t>(
         RenderSubgraph::Status::unavailable)};
+std::atomic<std::uint32_t>
+    graph_transform_registration_status{
+        static_cast<std::uint32_t>(
+            RenderGraphTransform::Status::unavailable)};
 
 RenderPolicy::Status sortItems(
     void *, const RenderPolicy::DrawSortInputV1 *input,
@@ -250,6 +261,100 @@ RenderSubgraph::Status resolveSubgraph(
     return RenderSubgraph::Status::ok;
 }
 
+RenderGraphTransform::Status resolveGraphTransform(
+    void *,
+    const RenderGraphTransform::
+        ResolveGraphTransformInputV1 *input,
+    RenderGraphTransform::GraphTransformOutputV1
+        *output) noexcept {
+    if (input == nullptr || output == nullptr ||
+        input->struct_size <
+            sizeof(RenderGraphTransform::
+                       ResolveGraphTransformInputV1) ||
+        input->version !=
+            RenderGraphTransform::descriptorVersionV1 ||
+        input->reserved0 != 0 ||
+        input->reserved1 != 0 ||
+        input->reserved2 != 0 ||
+        input->reserved3 != 0 ||
+        input->reserved4 != 0 ||
+        input->contract == nullptr ||
+        input->contract->struct_size <
+            sizeof(RenderGraphTransform::
+                       GraphSetContractV1) ||
+        input->contract->version !=
+            RenderGraphTransform::descriptorVersionV1 ||
+        input->contract->reserved0 != 0 ||
+        input->contract->reserved1 != 0 ||
+        input->contract->reserved2 != 0 ||
+        input->contract->contract_id_utf8 == nullptr ||
+        input->contract->contract_id_size !=
+            sizeof(RenderGraphTransform::
+                       graphSetContractIdV1) -
+                1 ||
+        input->contract->graph_count == 0 ||
+        input->transform_name_utf8 == nullptr ||
+        input->transform_name_size == 0 ||
+        input->parameters_json_utf8 == nullptr ||
+        input->parameters_json_size == 0 ||
+        input->config_json_utf8 == nullptr ||
+        input->config_json_size == 0 ||
+        input->logical_graphs_json_utf8 == nullptr ||
+        input->logical_graphs_json_size == 0 ||
+        output->struct_size <
+            sizeof(RenderGraphTransform::
+                       GraphTransformOutputV1) ||
+        output->version !=
+            RenderGraphTransform::descriptorVersionV1) {
+        return RenderGraphTransform::Status::
+            invalid_argument;
+    }
+    for (std::uint32_t index = 0;
+         index <
+         input->contract->boundary_port_count;
+         ++index) {
+        const auto &port =
+            input->contract->boundary_ports[index];
+        if (port.struct_size <
+                sizeof(RenderGraphTransform::
+                           BoundaryPortV1) ||
+            port.version !=
+                RenderGraphTransform::
+                    descriptorVersionV1 ||
+            port.reserved0 != 0 ||
+            port.reserved1 != 0 ||
+            port.reserved2 != 0 ||
+            port.reserved3 != 0 ||
+            port.reserved4 != 0 ||
+            port.reserved5 != 0 ||
+            port.graph_name_utf8 == nullptr ||
+            port.graph_name_size == 0 ||
+            port.resource_utf8 == nullptr ||
+            port.resource_size == 0 ||
+            port.type_json_utf8 == nullptr ||
+            port.type_json_size == 0) {
+            return RenderGraphTransform::Status::
+                invalid_argument;
+        }
+    }
+    *output =
+        RenderGraphTransform::descriptor<
+            RenderGraphTransform::
+                GraphTransformOutputV1>();
+    output->implementation_id_utf8 =
+        graph_transform_implementation_id;
+    output->implementation_id_size =
+        static_cast<std::uint32_t>(
+            sizeof(
+                graph_transform_implementation_id) -
+            1);
+    output->config_json_utf8 =
+        input->config_json_utf8;
+    output->config_json_size =
+        input->config_json_size;
+    return RenderGraphTransform::Status::ok;
+}
+
 struct Registration {
     Registration() noexcept {
         auto api = RenderPolicy::descriptor<RenderPolicy::ApiV1>();
@@ -330,6 +435,42 @@ struct Registration {
             static_cast<std::uint32_t>(
                 subgraph_status),
             std::memory_order_release);
+
+        auto transform_api =
+            RenderGraphTransform::descriptor<
+                RenderGraphTransform::ApiV1>();
+        auto transform_status =
+            RenderGraphTransform::getApiV1(
+                RenderGraphTransform::abiVersionV1,
+                &transform_api);
+        if (transform_status ==
+            RenderGraphTransform::Status::ok) {
+            auto provider =
+                RenderGraphTransform::descriptor<
+                    RenderGraphTransform::ProviderV1>();
+            provider.capability_bits =
+                RenderGraphTransform::
+                    builtinProviderCapabilitiesV1;
+            provider.name_utf8 =
+                graph_transform_provider_name;
+            provider.name_size =
+                static_cast<std::uint32_t>(
+                    sizeof(
+                        graph_transform_provider_name) -
+                    1);
+            provider.resolve_graph_transform =
+                resolveGraphTransform;
+            RenderGraphTransform::ProviderHandleV1
+                handle{};
+            transform_status =
+                transform_api.register_provider(
+                    transform_api.context, &provider,
+                    &handle);
+        }
+        graph_transform_registration_status.store(
+            static_cast<std::uint32_t>(
+                transform_status),
+            std::memory_order_release);
     }
 };
 
@@ -351,6 +492,12 @@ pelican_render_pass_fixture_registration_status() {
 PELICAN_FIXTURE_EXPORT std::uint32_t
 pelican_render_subgraph_fixture_registration_status() {
     return subgraph_registration_status.load(
+        std::memory_order_acquire);
+}
+
+PELICAN_FIXTURE_EXPORT std::uint32_t
+pelican_render_graph_transform_fixture_registration_status() {
+    return graph_transform_registration_status.load(
         std::memory_order_acquire);
 }
 

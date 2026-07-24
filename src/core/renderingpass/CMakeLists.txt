@@ -4,6 +4,7 @@ target_sources(pelican_core PRIVATE
     debugtextpassinfojsonparser.cpp
     frameplanner.cpp
     framegraphruntime.cpp
+    graphtransformregistry.cpp
     renderpipelinegpuarena.cpp
     logicalframegraphadapter.cpp
     fullscreenpassinfojsonparser.cpp

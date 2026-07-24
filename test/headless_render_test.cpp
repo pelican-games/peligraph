@@ -19,6 +19,7 @@
 #include "../src/core/renderingpass/computetask.hpp"
 #include "../src/core/renderingpass/renderingpasscontainer.hpp"
 #include "../src/core/renderingpass/framegraphruntime.hpp"
+#include "../src/core/renderingpass/graphtransformregistry.hpp"
 #include "../src/core/renderingpass/renderingpassconfigregistration.hpp"
 #include "../src/core/renderingpass/renderpipelinegpuarena.hpp"
 #include "../src/core/renderingpass/rendertargetcontainer.hpp"
@@ -174,6 +175,9 @@ void main() {
 nlohmann::json gpuArenaRenderingConfig() {
     return nlohmann::json::parse(R"json(
 {
+  "graph_transforms": [
+    {"name": "gpu_arena.identity"}
+  ],
   "features": [
     "engine://features/debug_draw.json",
     "engine://features/debug_text.json"
@@ -483,6 +487,10 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
                      {{"samples", 4},
                       {"fallback", "lower_supported"},
                       {"scope", "geometry"}}}}}}},
+                {"graph_transforms",
+                 nlohmann::json::array(
+                     {{{"name",
+                        "headless.hybrid_identity"}}})},
             }
                 .dump(2));
 
@@ -526,6 +534,21 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
         REQUIRE(execution != nullptr);
         REQUIRE(execution->target_plan != nullptr);
         REQUIRE(execution->sample_count_plan != nullptr);
+        REQUIRE(execution->render_pipeline != nullptr);
+        REQUIRE(
+            execution->render_pipeline
+                ->graph_transforms.size() == 1);
+        REQUIRE(
+            execution->target_plan
+                ->graph_transforms ==
+            execution->render_pipeline
+                ->graph_transforms);
+        REQUIRE(
+            execution->target_plan
+                ->graph_transforms.front()
+                .provider ==
+            std::string{
+                builtinLogicalGraphTransformProvider});
         const auto frame_plan_json =
             renderer.currentFramePlanJson();
         const auto runtime_generation =
@@ -1021,6 +1044,15 @@ TEST_CASE(
                 gpuArenaRegistrationDependencies({}));
         REQUIRE(registered.runtime_generation == 1);
         REQUIRE(registered.target_plans.size() == 1);
+        REQUIRE(
+            registered.target_plans.front()
+                ->graph_transforms.size() == 1);
+        REQUIRE(
+            registered.target_plans.front()
+                ->graph_transforms.front()
+                .provider ==
+            std::string{
+                builtinLogicalGraphTransformProvider});
         REQUIRE(
             registered.target_plans.front()
                 ->subgraph_replacements.size() == 1);

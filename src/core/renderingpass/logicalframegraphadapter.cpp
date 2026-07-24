@@ -286,6 +286,8 @@ CompiledLogicalRenderGraph compileLogicalFrameGraphShadow(
     result.decisions.push_back(LogicalCompileDecision{
         "shadow_graph_only", result.name,
         "logical graph is diagnostic-only and does not own runtime execution"});
+    result.graph_transforms =
+        definition.graph_transforms;
     result.subgraph_replacements =
         definition.subgraph_replacements;
 

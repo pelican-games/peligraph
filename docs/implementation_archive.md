@@ -6055,4 +6055,44 @@ global `GraphTransform`、renderer-wide `RenderStrategy`、physical direct autho
 
 ---
 
+### WP202a(済 2026-07-24): RPE11c — global GraphTransform
+
+参照: [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md) §3、§12、
+[`design_render_graph_compiler.md`](design_render_graph_compiler.md) §5、§8、§12、
+[`design_reviews/2026-07-24_wp202a_report.md`](design_reviews/2026-07-24_wp202a_report.md)。
+
+**目的**: tagged regionより広いlogical graph全体の構造変更を、renderer全生成の
+`RenderStrategy`やVulkan physical loweringと混ぜずに公開する。候補configを再compileし、
+外部契約とエンジン常設構造を維持した変換だけを通常のtarget compilerへ戻す。
+
+**実装範囲**:
+
+1. public C ABI `RenderGraphTransform::ProviderV1`を追加した。graph-set contract、
+   parameters、canonical config / logical graph JSONを入力し、semantic implementation idと
+   完全な候補config JSONを返す。
+2. top-level `graph_transforms`を一意名・任意provider・object parametersの最大32段chainとして
+   追加した。provider省略時は`builtin.identity_v1`、preset overlayも同じ宣言を受理する。
+3. graph entrypoint、concrete logical type、materialization、external / graph-input /
+   previous-epoch import、retained/input/output roleから
+   `pelican.render.logical_graph_set@1` contractを作る。
+4. 各段をlocal candidateへ適用して全logical graphを再compileする。既存protected boundary、
+   material routing、pipeline/graph control、canonical anchor列、`output_transform`を守りつつ、
+   internal pass / compute / buffer / render target追加を許す。
+5. graph variant policyを変換後に再検証し、tagged region置換より前、physical target
+   loweringより前へproduction経路を接続した。
+6. provider/implementation/owner/generation/capability、boundary fingerprint、
+   input/output graph fingerprint、chain indexをpipeline/logical/target planへ伝播した。
+7. owner-aware registryとimmutable snapshotを追加し、pass→subgraph→graph-transformの
+   lock/release順をgame DLL reload、rollback、shutdownへ接続した。
+8. identity、internal target/pass展開、invalid candidate原子性、ordered chain、preset、
+   snapshot lifetime、public DLL V1/V2、production headless provenanceを回帰化した。
+
+**非対象**: renderer全体を生成する`RenderStrategy`(WP202b)、physical plan direct
+authoring、`NativeScope`、logical configを介さないVulkan mutation。global transformと
+renderer strategyは別ABIのままにする。
+
+完了レポート: `docs/design_reviews/2026-07-24_wp202a_report.md`
+
+---
+
 未完了 WP と運用規則は [active ledger](implementation_plan.md) を参照。

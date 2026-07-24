@@ -1,5 +1,6 @@
 #include "../src/core/gamelogic/gamelogicreload.hpp"
 #include "../src/core/log.hpp"
+#include "../src/core/renderingpass/graphtransformregistry.hpp"
 #include "../src/core/renderingpass/passimplementationregistry.hpp"
 #include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
 #include "../src/core/renderer/drawqueuebuilder.hpp"
@@ -94,6 +95,8 @@ struct FixtureControls {
     StatusFn registration_status = nullptr;
     StatusFn pass_registration_status = nullptr;
     StatusFn subgraph_registration_status = nullptr;
+    StatusFn graph_transform_registration_status =
+        nullptr;
     VoidFn arm_next_sort = nullptr;
     BoolFn sort_entered = nullptr;
     VoidFn resume_sort = nullptr;
@@ -125,6 +128,9 @@ FixtureControls fixtureControls(const GameLogicReloadStatus &status) {
             module, "pelican_render_pass_fixture_registration_status"),
         fixtureFunction<FixtureControls::StatusFn>(
             module, "pelican_render_subgraph_fixture_registration_status"),
+        fixtureFunction<FixtureControls::StatusFn>(
+            module,
+            "pelican_render_graph_transform_fixture_registration_status"),
         fixtureFunction<FixtureControls::VoidFn>(
             module, "pelican_render_policy_fixture_arm_next_sort"),
         fixtureFunction<FixtureControls::BoolFn>(
@@ -303,6 +309,51 @@ resolveSubgraphImplementation() {
     };
 }
 
+std::string resolveGraphTransformImplementation() {
+    const auto config = nlohmann::json{
+        {"graph_transforms",
+         nlohmann::json::array(
+             {{{"name", "fixture.global"},
+               {"provider",
+                "fixture.graph_transform"},
+               {"parameters",
+                nlohmann::json::object()}}})},
+        {"render_targets",
+         nlohmann::json::array(
+             {{{"name", "scene"},
+               {"extent_scale", 1.0},
+               {"format", "R16G16B16A16_SFLOAT"},
+               {"usage",
+                nlohmann::json::array(
+                    {"COLOR_ATTACHMENT", "SAMPLED"})}}})},
+        {"rendering_passes",
+         nlohmann::json::array(
+             {{{"name", "main"},
+               {"passes",
+                nlohmann::json::array(
+                    {{{"name", "scene"},
+                      {"type", "fullscreen"},
+                      {"output",
+                       {{"color", "scene"},
+                        {"depth", nullptr}}}},
+                     {{"name", "present"},
+                      {"type", "fullscreen"},
+                      {"input",
+                       nlohmann::json::array(
+                           {"scene"})},
+                      {"output",
+                       {{"color", "swapchain"},
+                        {"depth", nullptr}}}}})}}})},
+    };
+    const auto providers =
+        graphTransformRegistry().snapshot();
+    const auto resolved =
+        resolveLogicalGraphTransforms(
+            config, providers);
+    return resolved.selections.front()
+        .implementation;
+}
+
 } // namespace
 
 TEST_CASE("public render providers survive reload rollback and in-flight unload",
@@ -329,6 +380,9 @@ TEST_CASE("public render providers survive reload rollback and in-flight unload"
     REQUIRE(static_cast<RenderSubgraph::Status>(
                 controls.subgraph_registration_status()) ==
             RenderSubgraph::Status::ok);
+    REQUIRE(static_cast<RenderGraphTransform::Status>(
+                controls.graph_transform_registration_status()) ==
+            RenderGraphTransform::Status::ok);
     REQUIRE(buildOrder() == std::vector<std::uint32_t>{30, 20, 10});
     REQUIRE(resolveFullscreenFragment() ==
             "shaders/fixture_composite_v1");
@@ -340,6 +394,9 @@ TEST_CASE("public render providers survive reload rollback and in-flight unload"
     REQUIRE(
         subgraph_v1.second ==
         "fixture_tone_v1");
+    REQUIRE(
+        resolveGraphTransformImplementation() ==
+        "fixture.render.graph_transform_v1@1");
 
     replaceFixture(fixture_v2, live_dll);
     controls.arm_next_sort();
@@ -397,6 +454,9 @@ TEST_CASE("public render providers survive reload rollback and in-flight unload"
     REQUIRE(static_cast<RenderSubgraph::Status>(
                 controls.subgraph_registration_status()) ==
             RenderSubgraph::Status::ok);
+    REQUIRE(static_cast<RenderGraphTransform::Status>(
+                controls.graph_transform_registration_status()) ==
+            RenderGraphTransform::Status::ok);
     REQUIRE(buildOrder() == std::vector<std::uint32_t>{10, 20, 30});
     REQUIRE(resolveFullscreenFragment() ==
             "shaders/fixture_composite_v2");
@@ -408,6 +468,9 @@ TEST_CASE("public render providers survive reload rollback and in-flight unload"
     REQUIRE(
         subgraph_v2.second ==
         "fixture_tone_v2");
+    REQUIRE(
+        resolveGraphTransformImplementation() ==
+        "fixture.render.graph_transform_v2@1");
 
     replaceFixture(fixture_bad_abi, live_dll);
     REQUIRE_FALSE(reloader.reloadNow([] {}, [] {}));
@@ -423,6 +486,9 @@ TEST_CASE("public render providers survive reload rollback and in-flight unload"
     REQUIRE(
         subgraph_v2.second ==
         "fixture_tone_v2");
+    REQUIRE(
+        resolveGraphTransformImplementation() ==
+        "fixture.render.graph_transform_v2@1");
 
     replaceFixture(fixture_v1, live_dll);
     int rebuild_calls = 0;
@@ -445,6 +511,9 @@ TEST_CASE("public render providers survive reload rollback and in-flight unload"
     REQUIRE(
         subgraph_v2.second ==
         "fixture_tone_v2");
+    REQUIRE(
+        resolveGraphTransformImplementation() ==
+        "fixture.render.graph_transform_v2@1");
 
     reloader.shutdown();
     REQUIRE_THROWS_WITH(
@@ -458,6 +527,10 @@ TEST_CASE("public render providers survive reload rollback and in-flight unload"
         resolveSubgraphImplementation(),
         Catch::Matchers::ContainsSubstring(
             "subgraph replacement provider 'fixture.subgraph' is not registered"));
+    REQUIRE_THROWS_WITH(
+        resolveGraphTransformImplementation(),
+        Catch::Matchers::ContainsSubstring(
+            "logical graph transform provider 'fixture.graph_transform' is not registered"));
     const auto builtin = renderPolicyRegistry().resolveDrawSortProvider(
         builtinStateBatchedDrawSortProvider);
     REQUIRE(builtin.info().owner == internal::engineRegistrationOwner);

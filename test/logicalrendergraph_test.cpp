@@ -583,14 +583,29 @@ TEST_CASE("legacy frame graph compiles to a diagnostic-only logical shadow",
     source.declared_resources = {"scene_color", "main_depth", "history_color"};
     source.history_resources = {"history_color"};
     source.nodes = {
-        FrameGraphNodeDefinition{"opaque", FramePlanNodeKind::render, 0, {}, {},
-                                 {"scene_color", "main_depth"}, {}, {}, {}, 0},
-        FrameGraphNodeDefinition{"composite", FramePlanNodeKind::render, 1,
-                                 {"scene_color", "main_depth"}, {"history_color"},
-                                 {"scene_color"}, {"opaque"}, {}, {}, 0},
-        FrameGraphNodeDefinition{"present", FramePlanNodeKind::render, 2,
-                                 {"scene_color"}, {}, {"swapchain"},
-                                 {"composite"}, {}, {}, 0},
+        FrameGraphNodeDefinition{
+            .name = "opaque",
+            .kind = FramePlanNodeKind::render,
+            .declaration_index = 0,
+            .writes = {"scene_color", "main_depth"},
+        },
+        FrameGraphNodeDefinition{
+            .name = "composite",
+            .kind = FramePlanNodeKind::render,
+            .declaration_index = 1,
+            .reads = {"scene_color", "main_depth"},
+            .reads_history = {"history_color"},
+            .writes = {"scene_color"},
+            .after = {"opaque"},
+        },
+        FrameGraphNodeDefinition{
+            .name = "present",
+            .kind = FramePlanNodeKind::render,
+            .declaration_index = 2,
+            .reads = {"scene_color"},
+            .writes = {"swapchain"},
+            .after = {"composite"},
+        },
     };
 
     const auto before = framePlanToJson(planFrameGraph(source));
@@ -699,8 +714,14 @@ TEST_CASE("legacy frame graph compiles to a diagnostic-only logical shadow",
     snapshot.name = "snapshot";
     snapshot.declared_resources = {"scene_color"};
     snapshot.nodes = {FrameGraphNodeDefinition{
-        "copy", FramePlanNodeKind::snapshot_copy, 0, {"scene_color"}, {},
-        {"captured_color"}, {}, {}, "opaque", 4096}};
+        .name = "copy",
+        .kind = FramePlanNodeKind::snapshot_copy,
+        .declaration_index = 0,
+        .reads = {"scene_color"},
+        .writes = {"captured_color"},
+        .snapshot_after = "opaque",
+        .byte_size = 4096,
+    }};
     const auto snapshot_shadow =
         compileLogicalFrameGraphShadow(snapshot, registry);
     REQUIRE(std::any_of(snapshot_shadow.decisions.begin(),

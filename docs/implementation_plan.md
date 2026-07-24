@@ -142,10 +142,11 @@ NativeScopeは具体的な利用例を得てから進める。
   generation-owned registry lease(WP195)、submission-fence lifetime と
   pipeline watcher publication(RPE10b3 / WP196)、fullscreen
   PassImplementation provider(RPE11a / WP200)、tagged region / subgraph replacement
-  (RPE11b / WP201)まで完了。builtin identityとgame DLL差し替えproviderは同じtyped
+  (RPE11b / WP201)、global GraphTransform(RPE11c / WP202a)まで完了。builtin identityと
+  game DLL差し替えproviderは同じtyped
   boundary contractを使い、replacement candidateは全logical graphを再compileしてから
-  target loweringへ進む。global transformとrenderer strategyは同じ万能callbackへ統合せず、
-  今後も個別fixtureとして置く。
+  target loweringへ進む。global transformは順序付きfull-config candidateとして実装し、
+  renderer strategyとは同じ万能callbackへ統合せず、次の個別fixtureとして残す。
   RPE6c0/1 では [HEG] の immutable canonical / disposable lowering seam、
   dialect legality、pairwise endpoint relationを置くが、汎用 CPU scheduler、execution linker、
   動画 backend は計測・具体需要まで実装しない。logical effectは作者を信頼する任意宣言、

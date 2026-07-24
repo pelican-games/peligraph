@@ -1954,6 +1954,8 @@ VulkanTargetPlan compileVulkanTargetPlan(
 
     return VulkanTargetPlan{
         .graph = canonical_graph.name,
+        .graph_transforms =
+            canonical_graph.graph_transforms,
         .subgraph_replacements =
             canonical_graph.subgraph_replacements,
         .backend_selection = std::move(selection),
@@ -1982,6 +1984,8 @@ nlohmann::ordered_json vulkanTargetPlanToJson(
         {"schema", "pelican.vulkan_target_plan"},
         {"version", 1},
         {"graph", plan.graph},
+        {"graph_transforms",
+         nlohmann::ordered_json::array()},
         {"subgraph_replacements",
          nlohmann::ordered_json::array()},
         {"backend_selection",
@@ -1994,6 +1998,37 @@ nlohmann::ordered_json vulkanTargetPlanToJson(
         {"required_physical_features",
          plan.required_physical_features},
     };
+    for (const auto &selection :
+         plan.graph_transforms) {
+        result["graph_transforms"].push_back(
+            nlohmann::ordered_json{
+                {"name", selection.name},
+                {"provider", selection.provider},
+                {"implementation",
+                 selection.implementation},
+                {"contract", selection.contract},
+                {"boundary_fingerprint",
+                 selection.boundary_fingerprint},
+                {"input_graph_fingerprint",
+                 selection.input_graph_fingerprint},
+                {"output_graph_fingerprint",
+                 selection.output_graph_fingerprint},
+                {"provider_owner",
+                 selection.provider_owner},
+                {"provider_identity",
+                 selection.provider_identity},
+                {"provider_generation",
+                 selection.provider_generation},
+                {"provider_version",
+                 selection.provider_version},
+                {"provider_capability_bits",
+                 selection.provider_capability_bits},
+                {"transform_index",
+                 selection.transform_index},
+                {"explicitly_selected",
+                 selection.explicitly_selected},
+            });
+    }
     for (const auto &selection :
          plan.subgraph_replacements) {
         result["subgraph_replacements"].push_back(
