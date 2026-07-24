@@ -168,7 +168,7 @@ Pelicanは継承ベースのinterfaceを多用しません。実際には次の�
 
 | フラグ | ON時 | OFF時の動作 |
 |---|---|---|
-| `PELICAN_RUNTIME_SHADER_COMPILER` | shadercでGLSLを実行時コンパイル、feature合成可 | source shader/feature利用時に明示エラー |
+| `PELICAN_RUNTIME_SHADER_COMPILER` | Vulkan SDK版shadercでGLSLを実行時コンパイル、feature合成可 | shadercをリンクせず、source shader/feature利用時に明示エラー |
 | `PELICAN_WITH_AUDIO` | miniaudioと`Audio`実装をリンク | `GameContext`音声APIが`BuildFeatureDisabledError` |
 | `PELICAN_WITH_VAT` | VAT parser/player、VAT shaderをリンク | GLBにVAT extrasがあれば明示エラー、playerはstub |
 | `PELICAN_WITH_EXR` | tinyexrでEXRロード | EXR指定時に明示エラー |
@@ -201,7 +201,7 @@ Pelicanは継承ベースのinterfaceを多用しません。実際には次の�
 | GLFW | window、入力、surface（[`Window`](../../src/core/os/window.hpp#L15)） |
 | GLM | 行列・quaternion・vectorの内部演算 |
 | nlohmann/json | project/scene/rendering/RPC/保存など全JSON |
-| shaderc | GLSLからSPIR-V（[`ShaderCompiler`](../../src/core/shader/shadercompiler.hpp#L39)） |
+| shaderc | GLSLからSPIR-V（[`ShaderCompiler`](../../src/core/shader/shadercompiler.hpp#L39)）。runtime compiler ON時だけVulkan SDK版をリンクし、暗黙のFetchContent fallbackは行わない |
 | SPIRV-Reflect | descriptor/push constant/vertex input抽出（[`reflect()`](../../src/core/shader/shaderreflection.hpp#L28)） |
 | tinygltf | glTF/GLB/VRMロード（[`GltfLoader`](../../src/core/model/gltf.cpp#L1916)） |
 | stb / tinyexr | PNG等とEXRの画像ロード |

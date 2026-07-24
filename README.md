@@ -7,6 +7,11 @@ game engine
 - Vulkan SDK 1.4.x (verified with 1.4.350; 1.3.x is no longer supported since vma-hpp v3.3.0)
 - Qt6
 
+Development builds use the `shaderc` libraries shipped with the Vulkan SDK.
+Pelican does not download and build shaderc as an implicit fallback. A target
+that consumes host-precompiled SPIR-V instead can be configured with
+`-DPELICAN_RUNTIME_SHADER_COMPILER=OFF`.
+
 ## How to build
 
 ```sh

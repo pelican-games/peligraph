@@ -1,7 +1,7 @@
 # ビルド階層: プロジェクト導出の配布ビルド(バイナリからのパージ)
 
 対象読者: エンジン担当。
-ステータス: v1 ドラフト(2026-07-07。レビュー前)。
+ステータス: v1 ドラフト(2026-07-24更新。レビュー前)。
 前提: `design_render_feature_modules.md`(参照パージ)、[PF]/[PFW]、
 `design_asset_format_policy.md`(二層モデル)、WP21(import/devcli)。
 
@@ -86,11 +86,21 @@ cmake --build build-dist --config Release
 配布ビルドで shaderc を OFF にするには、stem 参照 + feature defines の
 **バリアント事前焼き出し**が必要(既知の未決)。方針だけ確定する:
 
+- 開発ホスト(PC)は `PELICAN_RUNTIME_SHADER_COMPILER=ON` とし、Vulkan SDK
+  同梱の shaderc を使う。shaderc を FetchContent で暗黙構築する fallback は持たない
+- モバイル等の実行ターゲットは `PELICAN_RUNTIME_SHADER_COMPILER=OFF` とし、
+  ホストが**ターゲット capability profile 向けに**生成した SPIR-V と
+  reflection/binding manifest、compiler/cache key を消費する
+- ホスト GPU 用の `VkPipelineCache` はターゲットへ送らない。pipeline cache は
+  device/driver 固有物としてターゲット上で生成する
+- 将来オンデバイスコンパイルが本当に必要になった場合だけ、cross-build用shadercを
+  明示providerとして追加する。通常のターゲット構成へ自動取得を戻さない
 - `pelican_cli dist-config` が使用 define 集合を列挙できる(合成結果から確定的)
   → `dist-bake` サブコマンド(将来)が「stem × 実際に使う define 集合」の
   .spv を生成して配布プロジェクトに同梱
-- それまでの間、**配布ビルド v1 は shaderc ON のまま**でよい(サイズ削減の
-  残りを先に回収する。shaderc OFF は dist-bake とセットで v2)
+- 現時点では `dist-bake` とtarget profile付きcompileが未完成である。したがって
+  `PELICAN_RUNTIME_SHADER_COMPILER=OFF` 自体はbuild可能だが、任意projectをそのまま
+  mobile配布できるという意味ではない。B4完成まではPC開発ビルドをshaderc ONとする
 
 ## 5. 検証
 

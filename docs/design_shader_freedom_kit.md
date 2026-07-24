@@ -46,7 +46,7 @@ PipelineFactory (Bundle + PipelineStateDesc → vk::Pipeline、VkPipelineCache) 
 ### 4.1 ShaderCompiler
 
 ```cpp
-// shaderc をライブラリとしてリンク(FetchContent または Vulkan SDK 同梱)
+// PC開発時はVulkan SDK同梱shadercをリンク。targetは事前生成SPIR-Vを消費可能
 struct ShaderCompileResult {
     std::vector<uint32_t> spirv;
     std::string log;                 // 警告含む
@@ -206,7 +206,8 @@ DECLARE_MODULE(PipelineFactory) {
 
 ## 7. 移行手順(各段で動作を保ったまま)
 
-1. **shaderc + spirv-reflect の導入**(FetchContent 追加のみ。既存経路は無変更)
+1. **shaderc + spirv-reflect の導入**(shadercはVulkan SDK provider、
+   spirv-reflectは固定revision。shadercの暗黙source-build fallbackは持たない)
 2. **ShaderCompiler / ShaderReflection 実装 + 単体テスト**: 既存の `default.vert` 等を実行時コンパイルし、生成 SPIR-V が embed 済み .spv と同等に動くこと、リフレクション結果が手書き layout と一致することを Catch2 で検証
 3. **ShaderLibrary 導入**: `renderingpassruntimecompiler.cpp` の `registerShaderFromFile()` を ShaderLibrary 経由に置換(.spv 直読みに加えて .vert/.frag 直読みを許可)
 4. **PipelineFactory 導入 + FullscreenPassContainer 移行**: `registerFullscreenPass()` 内のパイプライン生成を PipelineFactory 呼び出しに置換。fullscreen 系は構造が単純なので最初の移行対象に最適

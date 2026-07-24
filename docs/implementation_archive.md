@@ -5867,4 +5867,42 @@ GPU registry mutation、explicit program-to-scope dependency graph。shader sour
 
 ---
 
+### WP198(済 2026-07-24): host shaderc / target SPIR-V provider boundary
+
+参照: [`docs/design_build_tiers.md`](design_build_tiers.md) §4、
+[`docs/design_shader_freedom_kit.md`](design_shader_freedom_kit.md)、
+[`docs/design_reviews/2026-07-24_wp198_report.md`](design_reviews/2026-07-24_wp198_report.md)。
+
+**目的**: PC開発ホストのshader compilerとcross targetの実行binaryを分離し、
+shadercの暗黙source-build fallbackをtarget buildへ持ち込まない。
+
+**実装範囲**:
+
+1. `PELICAN_RUNTIME_SHADER_COMPILER=ON`はVulkan SDKと
+   `shaderc_combined`をconfigure時に必須化する。
+2. MSVC Debugは`shaderc_combinedd`、または
+   `shaderc_shared.lib` + `shaderc_shared.dll`を必須化する。
+3. SDK provider欠落時はFetchContentへfallbackせず、SDK修復または
+   runtime compiler OFFを案内するfail-fastにする。
+4. runtime compiler OFFではshadercを探索・構成・リンクせず、
+   shader compiler cache identityを`disabled`とする。
+5. PC hostがtarget capability profile向けSPIR-Vとmanifest/keyを生成し、
+   targetはそれを消費する方針をbuild tier / manual / source guideへ記録する。
+   device固有`VkPipelineCache`は転送対象にしない。
+
+**受け入れ条件**:
+
+- SDK shadercを使うruntime compiler ON構成とDebug全target buildが成功する
+- runtime compiler OFF構成でcore/playerがshadercなしにbuildできる
+- shaderc欠落を模擬すると、source取得せず意図したconfigure errorになる
+- GPU-free 707件、GPU 99件、Python 8件、`git diff --check`が成功する
+
+**非対象 / 後続へ残すもの**: target capability profileの形式、
+host compile artifact bundle、全variantを列挙・焼き出す`dist-bake` B4、
+mobile deploy/hot-reload transport、明示的on-device compiler provider。
+
+完了レポート: `docs/design_reviews/2026-07-24_wp198_report.md`
+
+---
+
 未完了 WP と運用規則は [active ledger](implementation_plan.md) を参照。

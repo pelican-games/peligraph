@@ -19,7 +19,11 @@
 | Qt6 | Pelican Studio(エディタ)用。6.10 以上。**player だけなら不要** |
 | CMake | ルートの [CMakeLists.txt](../../CMakeLists.txt) が全体を構成 |
 
-外部ライブラリ(quill / glm / nlohmann_json / argparse / shaderc / tinyexr / miniaudio など)はすべて CMake の FetchContent で自動取得されるので、個別インストールは不要です。
+quill / glm / nlohmann_json / argparse / tinyexr / miniaudio などは CMake の
+FetchContent で自動取得されます。shaderc は例外で、Vulkan SDK 同梱版を使います。
+`PELICAN_RUNTIME_SHADER_COMPILER=ON` の PC 開発ビルドには完全な Vulkan SDK が必要です。
+ホスト PC で事前生成した SPIR-V を消費するモバイル等のターゲットは
+`-DPELICAN_RUNTIME_SHADER_COMPILER=OFF` で shaderc をリンクしません。
 
 ## 2.2 ビルド
 
@@ -72,7 +76,7 @@ cmake . -B build -DSKIP_DEVSTUDIO=ON
 | `PELICAN_WITH_OPENXR` | OpenXR(PCVR)ランタイム。開発既定 ON・**配布は `dist-config --with openxr` を指定した時だけ ON** |
 | `PELICAN_WITH_RENDERDOC` | 注入済みRenderDocの受動検出とF11/RPC capture。binary/import libraryはリンクせず、配布では常にOFF |
 | `PELICAN_WITH_PHYSICS` | 物理クエリ層。配下に `PELICAN_WITH_BUILTIN_PHYSICS`(既定 ON)/ `PELICAN_WITH_JOLT_PHYSICS`(既定 OFF)のプロバイダ選択 |
-| `PELICAN_RUNTIME_SHADER_COMPILER` | 実行時 GLSL コンパイル(shaderc) |
+| `PELICAN_RUNTIME_SHADER_COMPILER` | 実行時 GLSL コンパイル(Vulkan SDK版shaderc)。OFFでは事前生成SPIR-Vだけを消費 |
 | `PELICAN_WITH_SPIRV_LINK` | experimental SPIR-V linker、pinned SPIRV-Tools、`pelican-spv-link` CLI（**既定 OFF**） |
 
 OFF でビルドした機能を使おうとすると、黙って無視されるのではなく `This binary was built with PELICAN_WITH_X=OFF: ...` という**名指しのエラー**で止まります(fail-fast 方針。[第1章](01_overview.md) 参照)。

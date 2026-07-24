@@ -45,7 +45,9 @@ ctest --test-dir ./build -C Debug --output-on-failure
   [RPE] §10)
 - ID 型は `PELICAN_DEFINE_HANDLE`(handle.hpp)、ログは quill の `LOG_INFO(logger, ...)` 系
 - エラーは fail-fast(`throw std::runtime_error`)。ただしシェーダコンパイル失敗のみ result 返却([SF] §4.1)
-- 外部ライブラリ追加はルート CMakeLists.txt の FetchContent 節に追記
+- 通常の外部ライブラリ追加はルート CMakeLists.txt の FetchContent 節に追記する。
+  ただしVulkan SDK等のplatform toolchain dependencyは明示providerとし、
+  cross targetへ暗黙source-build fallbackを持ち込まない
 
 ### レイヤ規則
 
@@ -73,11 +75,13 @@ ctest --test-dir ./build -C Debug --output-on-failure
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
-(最新完了: WP197、2026-07-24。本文と完了レポートは archive 参照。)
+(最新完了: WP198、2026-07-24。本文と完了レポートは archive 参照。)
 
 ## 2. WP 詳細
 
-現在アクティブな WP はない。WP197 でPython/test-tool dependencyを通常buildから分離し、
+現在アクティブな WP はない。WP198 でruntime shader compilerのproviderを
+Vulkan SDKへ限定し、PC host compile / target precompiled-SPIR-V境界を固定した。
+WP197 でPython/test-tool dependencyを通常buildから分離し、
 Python testをAUTO/ON/OFF化、experimental SPIR-V linkerを既定OFFのbuild unit化した。
 WP196 では project-backed rendering config / feature /
 preset の同一 watcher-frame 変更を一つのtransactionへcoalesceし、preview + flat
