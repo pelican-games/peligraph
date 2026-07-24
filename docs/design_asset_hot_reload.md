@@ -1,7 +1,8 @@
-# アセットホットリロード(v2.1)
+# アセットホットリロード(v2.2)
 
 対象読者: エンジン担当・開発体験を気にする人。
-ステータス: **v2.1 — 条件付き受理(2026-07-12)**。v1 は敵対レビュー
+ステータス: **v2.2 — 条件付き受理 + pipeline runtime 接続済み
+(2026-07-24)**。v1 は敵対レビュー
 `docs/design_reviews/2026-07-12_anim_v2_hotreload_review_codex.md`(以下
 「レビュー」)§6-9 で **Reject** — Watcher の overflow/復帰プロトコル欠落、
 WP82 hash「流用」の不成立、WP62 EntityId の取り違え、GPU resource
@@ -12,7 +13,9 @@ dependency transaction group / platform fixture / HR0-HR2 再分割)を反映し
 `docs/design_reviews/2026-07-12_hr_v2_2d_v1_review_codex.md`(以下
 「再レビュー」)で条件付き受理 — **HR0/HR1 着手は HR-C1〜C4 を各 WP の
 受入条件に添付することが条件**。v2.1 = その 4 条件の正本反映(§2-1a・
-§3-1a・§2-4・§7 の gate 追記)。
+§3-1a・§2-4・§7 の gate 追記)。v2.2 は WP196 で rendering config /
+render feature / pipeline preset の transaction と submission-fence lifetime を
+同じ runtime publication 経路へ接続した。
 実装状況: **HR2-S は WP108(2026-07-15)で完了**。以下の規範どおり、
 shader の独自 mtime poll は撤去され、FileWatcher/ContentDigest の単一路、
 source/include/.surface reverse dependency、全 variant/pipeline/material layout の
@@ -222,8 +225,43 @@ append — リロード反復で 1024 上限に到達)。よって種別ハン�
 | input_actions / プロファイル | 再パース candidate → フレーム境界 swap。held input / consume の扱いを fixture 化 | HR0 | HR2-I |
 | pelican.ui | U3 の hot reload トランザクションに委譲 — ただし **HR0 の AssetKey/epoch/reconcile 契約は共有**(UI 独自 watcher を作らない) | HR0 | U3 合流 |
 | scene JSON | 自動リロード対象外(ゲーム状態の全消し)。rpc `load_scene` / ImGui ボタンの明示操作のみ | — | 対象外 |
-| rendering config / feature JSON | v1 対象外(frame graph 全再構築 = 実質再起動。将来候補) | — | 対象外 |
+| rendering config / feature JSON / pipeline preset | project-backed root とその feature / preset 依存を一つの watcher batch にまとめ、preview + flat (+ 起動中なら XR)を全 prepare 後に一回の runtime generation CAS で公開する。失敗時は旧 root / registry / watch dependency を維持する | RPE10b2 | RPE10b3(WP196 済) |
 | project.json / manifest | 対象外(再起動事項) | — | 対象外 |
+
+### 3-2a. rendering pipeline reload の境界(WP196)
+
+pipeline participant が監視するのは、active flat program から確定した次の
+project logical source である。
+
+- `basic_config.rendering_config_json` の root
+- project-backed render-pipeline preset
+- project-backed render-feature instance
+
+`engine://` / `user://` / 絶対・foreign source は project watcher identity に
+入れない。同梱 feature を編集したい場合は project へコピーし、その参照へ
+差し替える。shader source/includeは従来の shader participant が所有し、
+pipeline participantとの二重claimを作らない。
+
+同じ watcher frame に root、preset、feature の変更が複数届いても、pipeline
+participantは一度だけ次を行う。
+
+1. rootをdiskから読み直し、preview、flat、必要ならXRをCPU側で全解決する
+2. 全variantを一つのGPU registration checkpointとowner scopeでprepareする
+3. default pass、terminal、凍結済みruntime moduleとの整合をcandidate上で検証する
+4. 一回のgeneration CAS後だけGPU arenaをcommitし、config cacheとwatch source集合を更新する
+5. parse / shader compile / target planning / GPU registration / validationのどこで
+   失敗してもcandidateだけをrollbackし、active generationと旧watch sourceを維持する
+
+起動後に初めて`ui` / `sprite` / `gpu_timing`等を有効化し、必要moduleが
+startup profileで初期化されていない場合は、module graph凍結後の遅延生成をせず
+publish前に名前付きエラーで拒否する。既に初期化済みのfeatureの編集・再有効化は
+同じreload経路を使える。
+
+GPU resourceの退役条件は論理frame終了ではない。各swapchain in-flight slot、
+offscreen submit、OpenXRの各eye submit、独立desktop mirror submitが、使用した
+runtime generationをtype-erased leaseとして保持する。対応fence完了後だけleaseを
+解放するため、active rootが差し替わってCPU側参照が消えても、GPUが旧pipeline /
+descriptor / targetを実行中なら旧scopeは退役しない。
 
 ### 3-3. delete / rename の policy
 
@@ -349,5 +387,5 @@ UI(U3)は HR0 の AssetKey/epoch/reconcile 契約だけを共有して独立に�
    直結か — D2 の編集系 rpc 設計と同時に)
 3. mega-buffer の回収方式(suballocation/free-list vs reload 専用
    buffer ownership)— HR1 設計時に現行 VertBufContainer の実測で決める
-4. rendering config / feature JSON の将来ホットリロード(frame graph
-   再構築の粒度)— 対象外のまま保留
+4. pipeline feature追加時に必要なruntime module profile自体をhot-expandするか
+   (現状は未初期化moduleをpublish前rejectし、再起動を要求)

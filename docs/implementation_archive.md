@@ -5773,4 +5773,62 @@ shared descriptor-set-layout cache は scope-owned resource ではなく engine 
 
 ---
 
+### WP196(済 2026-07-24): RPE10b3 — submission-fence lifetime and pipeline watcher publication
+
+参照: [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md) §9、§12、
+[`design_render_graph_compiler.md`](design_render_graph_compiler.md) §12、
+[`design_asset_hot_reload.md`](design_asset_hot_reload.md) §3-2a、
+[`design_reviews/2026-07-24_wp196_report.md`](design_reviews/2026-07-24_wp196_report.md)。
+
+**目的**: WP195のgeneration-owned GPU registry leaseを実queue submission完了へ結び付け、
+project-backed rendering config / feature / presetの保存から、失敗原子的かつflat/XR整合な
+runtime generation publicationまでを一つのframe-boundary運用経路として完成させる。
+
+**実装範囲**:
+
+1. `GpuSubmissionLease`とin-flight slot表をframe target境界へ追加する。window swapchainは
+   queue submit直後に対応slotへgenerationを保持し、同slotのfence成功後だけ解放する。
+   surface recreateの`device.waitIdle()`後は全slotを完了扱いにする。
+2. offscreen submit、OpenXRの各eye submit、synthetic stereo、独立desktop mirror submitへ
+   同じlease契約を接続する。OpenXRは部分失敗時にsubmit済みeyeを待ってから解放し、
+   wait不能時はgraphics bridge teardownまで保持する。
+3. blocking fence waitの非successをwarning継続せず失敗として扱い、未完了submissionの
+   resourceを再利用しない。
+4. `ReloadParticipant::apply_batch`を追加し、一participantが同じwatcher frameでclaimした
+   root / preset / feature変更を一回のdomain transactionとして処理する。
+5. Rendererがactive flat programからproject-backed root、pipeline preset、feature instanceの
+   `AssetKey`集合を構築する。`engine://` / `user://` / absolute・foreign sourceとshader
+   sourceはclaimせず、既存participantとの二重適用を避ける。
+6. previewをGPU mutation前にprecompileし、flatと起動中XRを一つのGPU owner scope /
+   registration checkpointでprepareする。全program、default terminal、runtime module
+   profileをcandidate上で検証し、一回のCAS後だけarenaをcommitする。
+7. reload成功時だけRendererのvariant ID、preview program、config cache、watch source、
+   temporal/layout historyを更新する。失敗時はactive generation、registry membership、
+   cache、旧watch dependencyを維持し、statusへattempt/applied/failed/error/generationを出す。
+8. module graph凍結後に未初期化`ui` / `sprite` / `gpu_timing`等を初回有効化するcandidateは、
+   runtime中に`GET_MODULE`で遅延生成せずpublish前に拒否する。
+
+**受け入れ条件**:
+
+- root + featureの同一batchが一回だけcompileされ、runtime generationがちょうど1増える
+- invalid dependency JSON、prepared validation failure、flat/XR片側failureでactive rootと
+  全GPU registry count / name bindingが不変
+- actual Vulkan reload後のtyped pipeline metadataが新値を持つ
+- 未初期化runtime featureの追加はfreeze後に旧generationを維持して拒否される
+- swapchain slotとOpenXR eyeが対応fence完了までgeneration leaseを保持する
+- desktop mirrorを含む独立submitも使用直前のgenerationを保持する
+- Debug build、関連unit/OpenXR/Vulkan headless、OpenXR OFF build、全CTest、
+  `git diff --check`が成功
+
+**非対象 / 後続へ残すもの**: runtime module profile自体のhot expansion、engine resourceの
+watch、project.json / manifest reload、public graph-variant provider ABI、汎用worker-thread
+GPU registry mutation、explicit program-to-scope dependency graph。shader source/includeは
+既存shader participantのtransactionを正とする。
+
+依存: WP193〜WP195、HR0、WP108。見積: 中。
+
+完了レポート: `docs/design_reviews/2026-07-24_wp196_report.md`
+
+---
+
 未完了 WP と運用規則は [active ledger](implementation_plan.md) を参照。

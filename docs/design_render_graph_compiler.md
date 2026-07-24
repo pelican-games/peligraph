@@ -1008,23 +1008,32 @@ compute/fullscreen descriptor は compile 時の typed handle snapshot を保持
 旧 generation は mutable name facade が新 scope を指した後も旧 resource を使い続ける。
 scope の type-erased lease が exact registry membership を所有し、最後の runtime
 generation 参照が消えた時に逆依存順で retire する。Vulkan payload は既存
-`DeletionQueue` へ委譲するが、submission fence token 自体はまだ generation lease の
-所有物ではない。別 owner program の resource dependency は現状保守的に旧 lease を
+`DeletionQueue` へ委譲する。別 owner program の resource dependency は現状保守的に旧 lease を
 継承し、今後の明示 dependency graph まで dangling reference を避ける。
 
 同じ owner の同名 program は pass ID と順序を維持し、候補から消えた program は新
 generation から除去する。prepare failure / stale publication は active generation、
-current name facade、全 registry membership を不変に保つ。pipeline FileWatcher と
-submission-aware retire は未接続である。
+current name facade、全 registry membership を不変に保つ。
 実際のdraw-sort provider generationも別registryのqueue構築時leaseであり、このrootが
 所有するのはcompiled policy内のprovider名までである。
 
-1. RPE10b3 で submission fence retire と pipeline watcher を同じ transactionへ接続
+RPE10b3 / WP196では、project-backed rendering config / feature / presetの変更を
+`ReloadService`のbatch participantへ集約し、preview、flat、起動中のXRを全prepareしてから
+一回のruntime generation CASで公開する。flat / XRは同じGPU owner scopeを使い、一方だけを
+公開しない。parse、compile、target plan、GPU registration、prepared validationの失敗は
+active rootと全registry membershipを不変にする。
+
+logical frameが取得したgeneration snapshotは、window swapchainのin-flight slot、
+offscreen submit、OpenXRの各eye、独立desktop mirror submitへleaseとして渡される。
+各targetは対応fence完了後だけleaseを解放するため、CPU側のactive root置換とGPU側の
+旧resource退役が正しく分離される。OpenXRの部分失敗ではsubmit済みeyeをabort経路で待ち、
+wait不能時はtarget teardownまでleaseを保持する。
+
+1. pass / region / global transform / strategy provider fixture
 2. XR2b で multiview / array-layer / depth-submit lowering
-3. pass / region / global transform / strategy provider fixture
-4. physical plan eject / direct authoring fixture
-5. `NativeScope` は具体的な Vulkan-only 使用例が得られてから ABI 設計
-6. CPU / external domain は計測と具体的な二候補 task が得られてから
+3. physical plan eject / direct authoring fixture
+4. `NativeScope` は具体的な Vulkan-only 使用例が得られてから ABI 設計
+5. CPU / external domain は計測と具体的な二候補 task が得られてから
    `design_heterogeneous_execution_graph.md` の HEG3 / HEG4 として実装
 
 ## 13. north-star acceptance scenarios

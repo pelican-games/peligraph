@@ -73,16 +73,18 @@ ctest --test-dir ./build -C Debug --output-on-failure
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
-(最新完了: WP195、2026-07-24。本文と完了レポートは archive 参照。)
+(最新完了: WP196、2026-07-24。本文と完了レポートは archive 参照。)
 
 ## 2. WP 詳細
 
-現在アクティブな WP はない。WP195 で同じ GPU owner scope の置換、同名 resource の
-単調増加 handle、世代ローカル target/buffer binding、generation-owned registry lease、
-config から消えた program の除去を実装済みである。旧 frame は旧 resource を参照でき、
-最後の generation lease 解放後に exact registry membership が retire される。
-renderer の次候補は RPE10b3 / WP196 の submission fence retire と pipeline watcher
-publication である。
+現在アクティブな WP はない。WP196 で project-backed rendering config / feature /
+preset の同一 watcher-frame 変更を一つのtransactionへcoalesceし、preview + flat
+(+ 起動中のXR)を全prepare後に一回のruntime generation CASで公開する経路を実装済みである。
+window swapchain、offscreen、OpenXR各eye、独立desktop mirrorの実submission fenceが
+使用generationを保持し、旧GPU resourceは最後の対応fence完了より前にretireされない。
+失敗時はactive generation、registry、config cache、watch dependencyを維持する。
+renderer の次候補は pass / region / global transform / strategy provider の縦切りfixture
+(RPE11、WP未採番)である。
 
 ## 3. トラック現況(WP 化待ちを含む)
 
@@ -122,9 +124,10 @@ publication である。
   runtime vertical slice(WP190) → physical target planner runtime統合(WP191) →
   builtin graph variant policy(WP192)、runtime publication root(WP193)、
   append-only GPU registration transaction(WP194)、scope-aware replacement と
-  generation-owned registry lease(WP195)まで完了。
-  次は submission fence retire と pipeline watcher publication
-  (RPE10b3 / WP196)を独立WPとして進める。
+  generation-owned registry lease(WP195)、submission-fence lifetime と
+  pipeline watcher publication(RPE10b3 / WP196)まで完了。
+  次は pass / region / global transform / strategy provider を、既存builtinと
+  差し替えproviderが同じtyped contractを使う縦切りfixtureとして進める。
   RPE6c0/1 では [HEG] の immutable canonical / disposable lowering seam、
   dialect legality、pairwise endpoint relationを置くが、汎用 CPU scheduler、execution linker、
   動画 backend は計測・具体需要まで実装しない。logical effectは作者を信頼する任意宣言、
@@ -179,8 +182,9 @@ publication である。
   rebind へ置換し、WP162 で game DLL の二世代 side-decode を固定、
   WP178 で VRMA reload generation entry point を追加した。確定規約
   (リプレイ/strict/rpc 中無効・自己書き込み `(AssetKey, hash, epoch)`
-  token)と単一 FileWatcher 経路を維持する。残りは HR2-I(input/profile)、
-  U3(UI)、`.vrma` watcher の自動配線
+  token)と単一 FileWatcher 経路を維持する。WP196で rendering config /
+  render feature / pipeline preset の一括publicationを接続済み。残りは
+  HR2-I(input/profile)、U3(UI)、`.vrma` watcher の自動配線
 - **イベント層**: E1(WP56)と typed payload schema(WP71)に加え、
   ユーザーレビュー済み v1.1 の E2 `OverlapEnter/Exit` を WP179 で
   実装済み。Stay は需要が出た場合だけ additive に追加する

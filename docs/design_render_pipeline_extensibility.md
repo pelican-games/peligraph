@@ -1,8 +1,8 @@
-# レンダーパイプライン拡張境界とポリシー統合(v2.1)
+# レンダーパイプライン拡張境界とポリシー統合(v2.2)
 
 対象読者: レンダラ実装者、独自描画方式を組み込むゲーム実装者。
 
-ステータス: v2.1 実装方針(2026-07-23。v1: 2026-07-21)。`hybrid_v1` の
+ステータス: v2.2 実装方針(2026-07-24。v1: 2026-07-21)。`hybrid_v1` の
 deferred/forward 基盤を出発点とする。v2 では renderer 構築を論理／ターゲットの
 二段階コンパイラとして定義し、論理型、Vulkan 物理計画、物理グラフ直書き、
 `NativeScope` の境界を追加した。詳細は
@@ -33,9 +33,10 @@ draw-sort provider 選択を一つの immutable runtime generation として原�
 RPE10b1 / WP194 は render-config が触る GPU registry 群に共通 checkpoint / rollback を追加し、
 owner scope 付き immutable GPU arena manifest を同じ root へ原子的に公開する。
 RPE10b2 / WP195 は同じ owner scope の置換、世代ローカルの typed resource binding、
-generation-owned registry lease を追加した。旧 frame は旧 handle を保持し、最後の
-generation lease 解放時に registry membership を retire する。submission fence と watcher
-接続は RPE10b3 以降に残る。
+generation-owned registry lease を追加した。RPE10b3 / WP196 はproject-backed config /
+feature / preset watcher、flat/XR一括prepare・単一CAS、実submission fenceが保持する
+generation leaseを接続した。旧 frameが参照したregistry membershipは、そのCPU frameが
+終わった時点ではなく最後の対応GPU fence完了後にretireする。
 
 関連文書:
 
@@ -657,13 +658,26 @@ program は新 generation から除去する。別 owner の program が旧 scop
 retire し、Vulkan payload は利用可能なら既存 `DeletionQueue` へ渡す。共有
 descriptor-set-layout cache は scope resource ではなく engine cache として残す。
 
-RPE10b2 の lifetime 起点は CPU-side runtime generation lease である。どの submission が
-その generation を参照したかを追う fence token はまだ scope lease に結び付いていない。
-また FileWatcher から frame boundary publication を起動する経路も未接続である。
-したがって config registration は引き続き engine owner thread の直列化区間で呼び、
-mutable registry を任意 worker から並行更新する API とは扱わない。
+RPE10b3 / WP196 では`ReloadService`へbatch participantを追加した。active flat programの
+project-backed root / preset / feature参照をwatch sourceとし、同じwatcher frameの変更を
+一度のreloadへcoalesceする。previewのCPU precompileとflat / XR全variantのGPU prepareを
+完了し、default terminalとruntime module profileをcandidate上で検証してから、一回の
+generation CASで公開する。flat / XRは一つのowner scopeを共有するため、片方だけ成功した
+中間世代は存在しない。失敗時はactive root、registry membership、config cache、watch
+dependency集合を更新しない。
+
+rendererはlogical frame開始時のgeneration snapshotを、実際にsubmitするframe targetへ
+渡す。window swapchainはin-flight slotごとのfence、offscreenは同期fence、OpenXRは各eye
+submit、desktop mirrorは独立swapchain submitにleaseを保持し、それぞれの完了後だけ解放する。
+OpenXRの部分失敗もsubmitted eyeを待ってから解放し、wait自体が失敗した場合はgeneration
+teardownまで保持する。config registrationは引き続きengine owner threadの直列化区間で
+呼び、mutable registryを任意workerから並行更新するAPIとは扱わない。
+
+module graph凍結後に、初期化されていないruntime moduleを必要とする`ui` / `sprite` /
+`gpu_timing`等をconfigだけで初回有効化する操作はpublish前に拒否する。startup時に
+初期化済みなら編集・再有効化できる。runtime module profile自体のhot expansionは別課題である。
 `RenderPolicyRegistry` の実 provider generation も root の所有物ではなく、queue 構築時の
-個別 lease で保護される。このため WP195 を「pipeline hot reload 完了」とは扱わない。
+個別 lease で保護される。
 
 ## 10. `GET_MODULE` の位置
 
@@ -721,7 +735,7 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 | RPE10a / WP193（済 2026-07-24） | immutable runtime generation、prepare/rollback、base-generation CAS publish、frame lease | route/sample/draw-sort provider 選択/pass/plan 同時変更の atomic fixture、stale candidate reject、CPU-side retire |
 | RPE10b1 / WP194（済 2026-07-24） | append-only GPU registration arena、cross-registry rollback、owner-scope manifest の root 同時公開 | 5段 fault injectionで全registry membership復元、candidate不可視、lease rollback、hybrid診断 |
 | RPE10b2 / WP195（済 2026-07-24） | scope-aware replacement、generation-owned registry lease、世代ローカル typed binding | same-name reload、pass/target削除、旧世代frameから旧resource参照、最後のlease解放後のexact retire |
-| RPE10b3 | submission fence retire、watcher 接続 | in-flight完了前の破棄なし、連続保存coalesce、失敗時active世代不変、実reload |
+| RPE10b3 / WP196（済 2026-07-24） | submission fence retire、project config / feature / preset watcher、flat/XR一括publication | in-flight完了前の破棄なし、同一frame変更coalesce、失敗時active世代不変、実Vulkan reload |
 
 ### 12.1 いま着手する範囲
 
@@ -755,9 +769,10 @@ registrationとrendererはこのcompiled policyを読み、OpenXR session state�
 publishはbase generation付きCAS一回、frameは同じrootを全viewで保持する。WP194では
 GPU registrationのappend-only checkpoint/rollbackとowner-scope manifestを同じrootへ接続した。
 WP195では同じowner scopeを置換し、programの維持/削除、target/bufferの世代ローカルhandle、
-registry membershipのgeneration lease所有を接続した。旧frameは旧resourceを参照でき、
-最後のlease解放後にexact handleをretireする。submission fence tokenとFileWatcher起点の
-実reloadはRPE10b3で行う。
+registry membershipのgeneration lease所有を接続した。WP196ではroot / feature / presetの
+FileWatcher batchをpreview + flat (+ XR)の一括transactionへ接続し、一回のCASで公開する。
+swapchain slot、OpenXR eye、offscreen、desktop mirrorの実submission fenceがgeneration
+leaseを保持するため、旧resourceのexact retireは最後のGPU完了より前に起きない。
 各段階の詳細gateは
 `design_render_graph_compiler.md` §12 を正とする。
 
