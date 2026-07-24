@@ -897,7 +897,9 @@ std::string renderDistConfigPreset(const DistConfigResult &result) {
     out << "# PELICAN_WITH_OPENXR: " << boolString(result.with_openxr) << " - "
         << oneLine(result.openxr_reason) << "\n\n";
     out << "# PELICAN_WITH_IMGUI: OFF - distribution builds exclude engine developer UI\n";
-    out << "# PELICAN_WITH_RENDERDOC: OFF - distribution builds exclude capture integration\n\n";
+    out << "# PELICAN_WITH_RENDERDOC: OFF - distribution builds exclude capture integration\n";
+    out << "# PELICAN_WITH_SPIRV_LINK: OFF - experimental linker is a developer-only build unit\n";
+    out << "# BUILD_TESTING: OFF - distribution builds exclude developer tests and test tooling\n\n";
 
     out << "set(PELICAN_WITH_VAT " << boolString(result.with_vat) << " CACHE BOOL \"\" FORCE)\n";
     out << "set(PELICAN_WITH_EXR " << boolString(result.with_exr) << " CACHE BOOL \"\" FORCE)\n";
@@ -907,6 +909,8 @@ std::string renderDistConfigPreset(const DistConfigResult &result) {
     out << "set(PELICAN_WITH_OPENXR " << boolString(result.with_openxr) << " CACHE BOOL \"\" FORCE)\n";
     out << "set(PELICAN_WITH_IMGUI OFF CACHE BOOL \"\" FORCE)\n";
     out << "set(PELICAN_WITH_RENDERDOC OFF CACHE BOOL \"\" FORCE)\n";
+    out << "set(PELICAN_WITH_SPIRV_LINK OFF CACHE BOOL \"\" FORCE)\n";
+    out << "set(BUILD_TESTING OFF CACHE BOOL \"\" FORCE)\n";
     return out.str();
 }
 

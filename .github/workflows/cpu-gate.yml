@@ -43,19 +43,24 @@ jobs:
       - name: Test CI policy checkers
         shell: pwsh
         run: |
-          python -m unittest discover -s test/ci -p "test_*.py" -v 2>&1 |
+          python -B -m unittest discover -s test/ci -p "test_*.py" -v 2>&1 |
             Tee-Object -FilePath build/ci-artifacts/skip-policy-tests.log
           $result = $LASTEXITCODE
           if ($result -ne 0) { exit $result }
 
       - name: Check golden inventory
         shell: pwsh
-        run: python test/golden_inventory.py --repo-root .
+        run: python -B test/golden_inventory.py --repo-root .
 
       - name: Configure
         shell: pwsh
         run: |
-          cmake -S . -B build -DSKIP_DEVSTUDIO=ON 2>&1 |
+          cmake `
+            -S . `
+            -B build `
+            -DSKIP_DEVSTUDIO=ON `
+            -DPELICAN_PYTHON_TESTS=ON `
+            -DPELICAN_WITH_SPIRV_LINK=ON 2>&1 |
             Tee-Object -FilePath build/ci-artifacts/configure.log
           $result = $LASTEXITCODE
           if ($result -ne 0) { exit $result }
@@ -71,7 +76,7 @@ jobs:
       - name: Run GPU-free CTest with exact SKIP policy
         shell: pwsh
         run: >-
-          python test/ci/run_cpu_gate.py
+          python -B test/ci/run_cpu_gate.py
           --build-dir build
           --config Debug
           --artifacts-dir build/ci-artifacts

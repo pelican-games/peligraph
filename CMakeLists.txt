@@ -2,6 +2,15 @@ cmake_minimum_required(VERSION 3.13)
 
 project(pelican2)
 
+if(DEFINED SKIP_TEST)
+  message(DEPRECATION
+    "SKIP_TEST is deprecated; use -DBUILD_TESTING=OFF instead")
+  if(SKIP_TEST)
+    set(BUILD_TESTING OFF CACHE BOOL "Build Pelican tests" FORCE)
+  endif()
+endif()
+include(CTest)
+
 if(WIN32)
 set(PLATFORM_DESKTOP TRUE)
 endif()
@@ -20,6 +29,9 @@ set(PELICAN_INSTALL_DIR ${CMAKE_SOURCE_DIR}/dist$<$<CONFIG:Debug>:_debug>)
 set(PELICAN_LIB_DIR ${PELICAN_INSTALL_DIR}/lib/bin)
 set(PELICAN_INCLUDE_DIR ${PELICAN_INSTALL_DIR}/lib/include)
 option(PELICAN_RUNTIME_SHADER_COMPILER "Enable runtime GLSL shader compilation with shaderc" ON)
+option(PELICAN_WITH_SPIRV_LINK
+  "Enable the experimental pinned SPIRV-Tools linker backend"
+  OFF)
 option(PELICAN_WITH_AUDIO "Enable WAV sound-effect playback with miniaudio" ON)
 option(PELICAN_WITH_VAT "Enable pelican.vat GLB playback support" ON)
 option(PELICAN_WITH_EXR "Enable EXR texture loading with tinyexr" ON)
@@ -155,46 +167,48 @@ endif()
 # WP80 owns a reproducible SPIR-V linker toolchain.  These revisions are
 # deliberately independent of the installed Vulkan SDK; changing them is a
 # reviewed cache/ABI event rather than an implicit SDK upgrade.
-FetchContent_Declare(
-  spirv_headers
-  GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Headers.git
-  GIT_TAG        09913f088a1197aba4aefd300a876b2ebbaa3391 # vulkan-sdk-1.4.309.0
-)
-FetchContent_GetProperties(spirv_headers)
-if(NOT spirv_headers_POPULATED)
-  if(POLICY CMP0169)
-    cmake_policy(PUSH)
-    cmake_policy(SET CMP0169 OLD)
+if(PELICAN_WITH_SPIRV_LINK)
+  FetchContent_Declare(
+    spirv_headers
+    GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Headers.git
+    GIT_TAG        09913f088a1197aba4aefd300a876b2ebbaa3391 # vulkan-sdk-1.4.309.0
+  )
+  FetchContent_GetProperties(spirv_headers)
+  if(NOT spirv_headers_POPULATED)
+    if(POLICY CMP0169)
+      cmake_policy(PUSH)
+      cmake_policy(SET CMP0169 OLD)
+    endif()
+    FetchContent_Populate(spirv_headers)
+    if(POLICY CMP0169)
+      cmake_policy(POP)
+    endif()
   endif()
-  FetchContent_Populate(spirv_headers)
-  if(POLICY CMP0169)
-    cmake_policy(POP)
-  endif()
-endif()
 
-set(SPIRV-Headers_SOURCE_DIR ${spirv_headers_SOURCE_DIR} CACHE PATH "" FORCE)
-set(SPIRV_SKIP_TESTS ON CACHE BOOL "" FORCE)
-set(SPIRV_SKIP_EXECUTABLES ON CACHE BOOL "" FORCE)
-set(SKIP_SPIRV_TOOLS_INSTALL ON CACHE BOOL "" FORCE)
-FetchContent_Declare(
-  spirv_tools
-  GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Tools.git
-  GIT_TAG        f289d047f49fb60488301ec62bafab85573668cc # v2025.1
-)
-FetchContent_MakeAvailable(spirv_tools)
-# SPIRV-Tools always declares a shared library and auxiliary libraries as ALL
-# targets.  Pelican owns only the pinned static parser/link/optimizer surface;
-# keep unrelated distro/fuzzer tooling out of the normal engine build.
-foreach(PELICAN_UNUSED_SPIRV_TARGET
-    SPIRV-Tools-shared
-    SPIRV-Tools-diff
-    SPIRV-Tools-lint
-    SPIRV-Tools-reduce
-)
-  if(TARGET ${PELICAN_UNUSED_SPIRV_TARGET})
-    set_target_properties(${PELICAN_UNUSED_SPIRV_TARGET} PROPERTIES EXCLUDE_FROM_ALL TRUE)
-  endif()
-endforeach()
+  set(SPIRV-Headers_SOURCE_DIR ${spirv_headers_SOURCE_DIR} CACHE PATH "" FORCE)
+  set(SPIRV_SKIP_TESTS ON CACHE BOOL "" FORCE)
+  set(SPIRV_SKIP_EXECUTABLES ON CACHE BOOL "" FORCE)
+  set(SKIP_SPIRV_TOOLS_INSTALL ON CACHE BOOL "" FORCE)
+  FetchContent_Declare(
+    spirv_tools
+    GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Tools.git
+    GIT_TAG        f289d047f49fb60488301ec62bafab85573668cc # v2025.1
+  )
+  FetchContent_MakeAvailable(spirv_tools)
+  # SPIRV-Tools always declares a shared library and auxiliary libraries as ALL
+  # targets. Pelican owns only the pinned static parser/link/optimizer surface;
+  # keep unrelated distro/fuzzer tooling out of the normal engine build.
+  foreach(PELICAN_UNUSED_SPIRV_TARGET
+      SPIRV-Tools-shared
+      SPIRV-Tools-diff
+      SPIRV-Tools-lint
+      SPIRV-Tools-reduce
+  )
+    if(TARGET ${PELICAN_UNUSED_SPIRV_TARGET})
+      set_target_properties(${PELICAN_UNUSED_SPIRV_TARGET} PROPERTIES EXCLUDE_FROM_ALL TRUE)
+    endif()
+  endforeach()
+endif()
 
 FetchContent_Declare(
   spirv_reflect
@@ -437,7 +451,9 @@ endif()
 ## pelican lib
 add_subdirectory(src/project)
 add_subdirectory(src/core)
+if(PELICAN_WITH_SPIRV_LINK)
 add_subdirectory(src/spvlink)
+endif()
 add_subdirectory(src/player)
 add_subdirectory(src/devcli)
 
@@ -447,7 +463,6 @@ add_subdirectory(src/devstudio)
 endif()
 
 ## test
-if(NOT SKIP_TEST)
-enable_testing()
+if(BUILD_TESTING)
 add_subdirectory(test)
 endif()

@@ -5,7 +5,6 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(Catch2)
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
-include(CTest)
 include(Catch)
 
 function(pelican_define_test source_name)
@@ -747,6 +746,7 @@ endif()
 pelican_define_test(surfacecompiler_test pelican_core spirv-reflect-static glm)
 target_compile_definitions(pelican_test_surfacecompiler_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
+    PELICAN_WITH_SPIRV_LINK=$<BOOL:${PELICAN_WITH_SPIRV_LINK}>
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 if(PELICAN_RUNTIME_SHADER_COMPILER)
@@ -755,19 +755,25 @@ if(PELICAN_RUNTIME_SHADER_COMPILER)
         pelican_copy_shaderc_runtime(pelican_test_surfacecompiler_test)
     endif()
 endif()
-pelican_define_test(spvlink_test pelican_core spirv-reflect-static glm)
-target_compile_definitions(pelican_test_spvlink_test PRIVATE
-    PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
-    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
-)
-if(PELICAN_RUNTIME_SHADER_COMPILER)
-    target_link_libraries(pelican_test_spvlink_test PRIVATE pelican_shaderc)
-    if(COMMAND pelican_copy_shaderc_runtime)
-        pelican_copy_shaderc_runtime(pelican_test_spvlink_test)
+if(PELICAN_WITH_SPIRV_LINK)
+    pelican_define_test(spvlink_test pelican_core spirv-reflect-static glm)
+    target_compile_definitions(pelican_test_spvlink_test PRIVATE
+        PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
+        PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    )
+    if(PELICAN_RUNTIME_SHADER_COMPILER)
+        target_link_libraries(pelican_test_spvlink_test PRIVATE pelican_shaderc)
+        if(COMMAND pelican_copy_shaderc_runtime)
+            pelican_copy_shaderc_runtime(pelican_test_spvlink_test)
+        endif()
     endif()
+else()
+    pelican_define_test(spvlink_disabled_test pelican_core)
 endif()
-find_program(PELICAN_SLANGC_EXECUTABLE slangc HINTS $ENV{VULKAN_SDK}/Bin)
-if(PELICAN_SLANGC_EXECUTABLE)
+if(PELICAN_WITH_SPIRV_LINK)
+    find_program(PELICAN_SLANGC_EXECUTABLE slangc HINTS $ENV{VULKAN_SDK}/Bin)
+endif()
+if(PELICAN_WITH_SPIRV_LINK AND PELICAN_SLANGC_EXECUTABLE)
     set(PELICAN_SLANG_COOL_FIXTURE ${CMAKE_CURRENT_BINARY_DIR}/fixtures/spvlink/surface_slang_cool.spv)
     set(PELICAN_SLANG_WARM_FIXTURE ${CMAKE_CURRENT_BINARY_DIR}/fixtures/spvlink/surface_slang_warm.spv)
     add_custom_command(
@@ -805,7 +811,7 @@ if(PELICAN_SLANGC_EXECUTABLE)
         PELICAN_TEST_SLANG_WARM_FIXTURE="${PELICAN_SLANG_WARM_FIXTURE}"
     )
 endif()
-if(Vulkan_GLSLANG_VALIDATOR_EXECUTABLE)
+if(PELICAN_WITH_SPIRV_LINK AND Vulkan_GLSLANG_VALIDATOR_EXECUTABLE)
     add_test(
         NAME spvlink_cli_linked_golden
         COMMAND ${CMAKE_COMMAND}
@@ -1285,45 +1291,88 @@ if(PELICAN_NODE_EXECUTABLE)
     )
 endif()
 
-find_package(Python3 COMPONENTS Interpreter REQUIRED)
+set(PELICAN_PYTHON_TESTS "AUTO" CACHE STRING
+    "Python-backed test gates: AUTO, ON (required), or OFF")
+set_property(CACHE PELICAN_PYTHON_TESTS PROPERTY STRINGS AUTO ON OFF)
+string(TOUPPER "${PELICAN_PYTHON_TESTS}" PELICAN_PYTHON_TESTS_MODE)
+set(_pelican_python_test_modes AUTO ON OFF)
+list(FIND _pelican_python_test_modes "${PELICAN_PYTHON_TESTS_MODE}"
+     _pelican_python_test_mode_index)
+if(_pelican_python_test_mode_index EQUAL -1)
+    message(FATAL_ERROR
+        "PELICAN_PYTHON_TESTS must be AUTO, ON, or OFF (got '${PELICAN_PYTHON_TESTS}')")
+endif()
 
-# WP175 boundary contracts are source/fixture checks and require no GPU.
-foreach(contract_gate IN ITEMS openpbr projection engine-mvp)
-    add_test(
-        NAME contract_${contract_gate}_gate
-        COMMAND ${Python3_EXECUTABLE}
+set(PELICAN_PYTHON_TESTS_AVAILABLE OFF)
+if(PELICAN_PYTHON_TESTS_MODE STREQUAL "ON")
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    set(PELICAN_PYTHON_TESTS_AVAILABLE ON)
+elseif(PELICAN_PYTHON_TESTS_MODE STREQUAL "AUTO")
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        set(PELICAN_PYTHON_TESTS_AVAILABLE ON)
+    else()
+        message(STATUS
+            "Python 3 was not found; Python-backed tests are omitted "
+            "(use -DPELICAN_PYTHON_TESTS=ON to require them)")
+    endif()
+else()
+    message(STATUS "Python-backed tests are disabled")
+endif()
+
+if(PELICAN_PYTHON_TESTS_AVAILABLE)
+    message(STATUS
+        "Python-backed tests are enabled with ${Python3_EXECUTABLE}")
+
+    function(pelican_define_python_test test_name script)
+        add_test(
+            NAME ${test_name}
+            COMMAND ${CMAKE_COMMAND} -E env
+                PYTHONDONTWRITEBYTECODE=1
+                ${Python3_EXECUTABLE} -B
+                ${script} ${ARGN}
+        )
+        set_tests_properties(${test_name} PROPERTIES LABELS python)
+    endfunction()
+
+    # WP175 boundary contracts are source/fixture checks and require no GPU.
+    foreach(contract_gate IN ITEMS openpbr projection engine-mvp)
+        pelican_define_python_test(
+            contract_${contract_gate}_gate
             ${CMAKE_CURRENT_SOURCE_DIR}/contract_boundary_gate.py
             --repo-root ${CMAKE_SOURCE_DIR}
             --gate ${contract_gate}
-    )
-endforeach()
-add_test(
-    NAME contract_boundary_negative_fixtures
-    COMMAND ${Python3_EXECUTABLE}
+        )
+    endforeach()
+    pelican_define_python_test(
+        contract_boundary_negative_fixtures
         ${CMAKE_CURRENT_SOURCE_DIR}/ci/test_contract_boundary_gate.py
-)
+    )
+    pelican_define_python_test(
+        ci_skip_policy_unit
+        ${CMAKE_CURRENT_SOURCE_DIR}/ci/test_skip_policy.py
+    )
 
-if(PELICAN_WITH_RPC)
-    add_test(
-        NAME pelican_rpc_smoke
-        COMMAND ${Python3_EXECUTABLE}
+    if(PELICAN_WITH_RPC)
+        pelican_define_python_test(
+            pelican_rpc_smoke
             ${CMAKE_CURRENT_SOURCE_DIR}/pelican_rpc_smoke.py
             --repo-root ${CMAKE_SOURCE_DIR}
             --player $<TARGET_FILE:pelican_player>
-    )
-    set_tests_properties(pelican_rpc_smoke PROPERTIES
-        TIMEOUT 120 RESOURCE_LOCK pelican_gpu LABELS gpu)
-endif()
+        )
+        set_tests_properties(pelican_rpc_smoke PROPERTIES
+            TIMEOUT 120 RESOURCE_LOCK pelican_gpu LABELS "gpu;python")
+    endif()
 
-# Golden inventory integrity is deliberately GPU-free and therefore runs in the CPU gate.
-add_test(
-    NAME golden_inventory
-    COMMAND ${Python3_EXECUTABLE}
+    # Golden inventory integrity is deliberately GPU-free and therefore runs
+    # in the CPU gate.
+    pelican_define_python_test(
+        golden_inventory
         ${CMAKE_CURRENT_SOURCE_DIR}/golden_inventory.py
         --repo-root ${CMAKE_SOURCE_DIR}
-)
-add_test(
-    NAME golden_inventory_negative_fixtures
-    COMMAND ${Python3_EXECUTABLE}
+    )
+    pelican_define_python_test(
+        golden_inventory_negative_fixtures
         ${CMAKE_CURRENT_SOURCE_DIR}/ci/test_golden_inventory.py
-)
+    )
+endif()

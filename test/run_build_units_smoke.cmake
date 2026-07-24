@@ -13,12 +13,6 @@ endif()
 
 get_filename_component(SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 set(ARTIFACT_ROOT "${SOURCE_DIR}/build-unit-smoke-artifacts")
-if(NOT DEFINED Python3_EXECUTABLE)
-    find_program(Python3_EXECUTABLE NAMES python3 python)
-endif()
-if(NOT Python3_EXECUTABLE)
-    message(FATAL_ERROR "Python 3 is required; pass -DPython3_EXECUTABLE=<path>")
-endif()
 
 if(WIN32)
     set(EXE_SUFFIX ".exe")
@@ -64,9 +58,12 @@ function(configure_and_build label option_name out_build_dir)
             -S "${SOURCE_DIR}"
             -B "${build_dir}"
             -DSKIP_DEVSTUDIO=ON
+            -DBUILD_TESTING=ON
+            -DPELICAN_PYTHON_TESTS=OFF
+            -DPELICAN_WITH_SPIRV_LINK=OFF
+            -DCMAKE_DISABLE_FIND_PACKAGE_Python3=TRUE
             "-D${option_name}=OFF"
             "-DCMAKE_BUILD_TYPE=${PELICAN_BUILD_UNIT_SMOKE_CONFIG}"
-            "-DPython3_EXECUTABLE=${Python3_EXECUTABLE}"
             ${ARGN}
     )
 

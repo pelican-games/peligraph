@@ -90,7 +90,7 @@ TEST_CASE("SPV link backend is opt-in and keeps source composition as the defaul
 
 TEST_CASE("experimental SPV link compiles B hooks with split descriptor types and stable keys",
           "[surface-compiler][spv-link]") {
-#if PELICAN_RUNTIME_SHADER_COMPILER
+#if PELICAN_RUNTIME_SHADER_COMPILER && PELICAN_WITH_SPIRV_LINK
     ScopedSpvLinkEnvironment environment{"experimental"};
     REQUIRE(surfaceSpvLinkExperimentalEnabled());
     const auto surface = parseSurfaceFormat(readText(fixtureRoot() / "valid" / "wp78.surface"),
@@ -128,6 +128,15 @@ TEST_CASE("experimental SPV link compiles B hooks with split descriptor types an
     const auto bundles = library.loadFromSurface(surface, "wp78.surface");
     REQUIRE_FALSE(library.get(bundles.fragment).binding_table.empty());
     REQUIRE(library.get(bundles.fragment).cache_key == first.fragment_cache_key);
+#elif PELICAN_RUNTIME_SHADER_COMPILER
+    ScopedSpvLinkEnvironment environment{"experimental"};
+    const auto surface = parseSurfaceFormat(readText(fixtureRoot() / "valid" / "wp78.surface"),
+                                            "wp78.surface");
+    ShaderCompiler compiler;
+    const auto result = compileSurfaceShaders(compiler, surface, "wp78.surface");
+    REQUIRE(result.experimental_spv_link);
+    REQUIRE_FALSE(result.vertex.ok);
+    REQUIRE(result.vertex.log.find("PELICAN_WITH_SPIRV_LINK=OFF") != std::string::npos);
 #endif
 }
 

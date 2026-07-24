@@ -71,6 +71,8 @@ function(run_dist_config name project_dir expected_vat expected_exr expected_rpc
     expect_contains("${contents}" "set(PELICAN_WITH_OPENXR ${expected_openxr} CACHE BOOL \"\" FORCE)" "${name} OpenXR flag")
     expect_contains("${contents}" "set(PELICAN_WITH_IMGUI OFF CACHE BOOL \"\" FORCE)" "${name} ImGui flag")
     expect_contains("${contents}" "set(PELICAN_WITH_RENDERDOC OFF CACHE BOOL \"\" FORCE)" "${name} RenderDoc flag")
+    expect_contains("${contents}" "set(PELICAN_WITH_SPIRV_LINK OFF CACHE BOOL \"\" FORCE)" "${name} SPIR-V linker flag")
+    expect_contains("${contents}" "set(BUILD_TESTING OFF CACHE BOOL \"\" FORCE)" "${name} test tooling flag")
 
     if(expected_vat STREQUAL "ON")
         expect_contains("${contents}" "pelican.vat extras" "${name} VAT evidence")

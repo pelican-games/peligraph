@@ -15,12 +15,6 @@ endif()
 get_filename_component(SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 set(BUILD_DIR "${SOURCE_DIR}/build-project-example")
 set(ARTIFACT_ROOT "${SOURCE_DIR}/build-project-example-artifacts")
-if(NOT DEFINED Python3_EXECUTABLE)
-    find_program(Python3_EXECUTABLE NAMES python3 python)
-endif()
-if(NOT Python3_EXECUTABLE)
-    message(FATAL_ERROR "Python 3 is required; pass -DPython3_EXECUTABLE=<path>")
-endif()
 
 if(WIN32)
     set(EXE_SUFFIX ".exe")
@@ -70,9 +64,11 @@ run_process(
         -S "${SOURCE_DIR}"
         -B "${BUILD_DIR}"
         -DSKIP_DEVSTUDIO=ON
+        -DBUILD_TESTING=OFF
+        -DPELICAN_WITH_SPIRV_LINK=OFF
+        -DCMAKE_DISABLE_FIND_PACKAGE_Python3=TRUE
         -DPELICAN_PROJECT=projects/example
         "-DCMAKE_BUILD_TYPE=${PELICAN_PROJECT_CODE_SMOKE_CONFIG}"
-        "-DPython3_EXECUTABLE=${Python3_EXECUTABLE}"
 )
 
 run_process(
