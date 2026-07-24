@@ -75,11 +75,13 @@ ctest --test-dir ./build -C Debug --output-on-failure
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
-(最新完了: WP198、2026-07-24。本文と完了レポートは archive 参照。)
+(最新完了: WP199、2026-07-24。本文と完了レポートは archive 参照。)
 
 ## 2. WP 詳細
 
-現在アクティブな WP はない。WP198 でruntime shader compilerのproviderを
+現在アクティブな WP はない。WP199 でPython製gateを既定OFFの明示opt-inへ変更し、
+OpenXRの不要な任意Python探索を通常構成から隔離した。
+WP198 でruntime shader compilerのproviderを
 Vulkan SDKへ限定し、PC host compile / target precompiled-SPIR-V境界を固定した。
 WP197 でPython/test-tool dependencyを通常buildから分離し、
 Python testをAUTO/ON/OFF化、experimental SPIR-V linkerを既定OFFのbuild unit化した。

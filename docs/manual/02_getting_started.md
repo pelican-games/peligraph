@@ -47,9 +47,9 @@ cmake . -B build -DSKIP_DEVSTUDIO=ON
 
 テストを有効にした場合、`PELICAN_PYTHON_TESTS`は次の三値です。
 
-- `AUTO`（既定）: Python 3があればPython製gateも登録し、なければC++/CMakeテストだけを登録
+- `OFF`（既定）: Pythonを探索せず、C++/CMakeテストだけを登録
+- `AUTO`: Python 3があればPython製gateも登録し、なければC++/CMakeテストだけを登録
 - `ON`: Python 3とPython製gateを必須化（CIの完全テスト構成）
-- `OFF`: Pythonを探索せず、C++/CMakeテストだけを登録
 
 > **注意:** リポジトリの [README.md](../../README.md) には値なしの `-DSKIP_DEVSTUDIO` と書かれていますが、リポジトリ内の実運用(`test/run_build_units_smoke.cmake`)は `=ON` 付きです。`=ON` を付ける書き方が確実です。
 
@@ -88,7 +88,7 @@ OFF でビルドした機能を使おうとすると、黙って無視される�
 | `PELICAN_ENABLE_ASAN` | OFF | AddressSanitizer 付きでビルドする(テストビルド想定) |
 | `PELICAN_PROJECT` | 空(CACHE PATH) | `code/` をホットリロード可能なゲーム DLL としてビルドする対象プロジェクト(§2.4) |
 | `BUILD_TESTING` | ON | OFFでCatch2を含む全テストとテスト専用toolingを構成対象から除外 |
-| `PELICAN_PYTHON_TESTS` | AUTO | Python製test gateを`AUTO` / `ON` / `OFF`で登録 |
+| `PELICAN_PYTHON_TESTS` | OFF | Python製test gateを`OFF` / `AUTO` / `ON`で登録 |
 
 `PELICAN_SPV_LINK=experimental`は実行時のbackend選択です。build時に
 `PELICAN_WITH_SPIRV_LINK=ON`を指定していないbinaryでは利用できず、名指しの診断を返します。

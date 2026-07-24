@@ -48,10 +48,9 @@ ctest --test-dir ./build
 
 Python is not required by the default engine build or by production
 `BUILD_TESTING=OFF` builds with the experimental linker left disabled.
-With tests enabled, `PELICAN_PYTHON_TESTS=AUTO` (the default) registers the
-Python-backed policy/RPC tests only when Python 3 is available. CI uses
-`-DPELICAN_PYTHON_TESTS=ON`; use `OFF` to build and run only the C++/CMake
-test suite.
+With tests enabled, `PELICAN_PYTHON_TESTS=OFF` is the default and does not
+search for Python. Use `AUTO` to add the Python-backed policy/RPC tests when
+Python 3 is available. Complete CI uses `-DPELICAN_PYTHON_TESTS=ON`.
 
 The experimental SPIR-V linker and its `pelican-spv-link` CLI are a separate
 build unit and default to OFF. Enable them with

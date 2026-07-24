@@ -242,10 +242,11 @@ cmake . -B build -DSKIP_DEVSTUDIO=ON -DBUILD_TESTING=OFF
 cmake --build build
 ```
 
-この構成はPythonを探索しません。`BUILD_TESTING=ON`では
-`PELICAN_PYTHON_TESTS=AUTO`が既定で、Python 3がなければC++/CMakeテストだけを
-登録します。完全なgateを要求するCIは`PELICAN_PYTHON_TESTS=ON`、明示的に
-Pythonテストだけを外す場合は`OFF`を使います。
+この構成はPythonを探索しません。`BUILD_TESTING=ON`でも
+`PELICAN_PYTHON_TESTS=OFF`が既定で、C++/CMakeテストだけを登録します。
+手元でPython 3がある場合だけ追加するには`AUTO`、完全なgateを要求するCIは
+`PELICAN_PYTHON_TESTS=ON`を使います。OpenXR SDKのchecked-in生成済みsourceを
+使う通常構成も、上流CMakeの任意Python探索を局所的に無効化します。
 
 experimental SPIR-V linkerも通常build graphから分離されており、
 `PELICAN_WITH_SPIRV_LINK=OFF`が既定です。ON時だけpinned SPIRV-Toolsと

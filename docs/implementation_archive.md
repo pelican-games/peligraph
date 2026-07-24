@@ -5905,4 +5905,37 @@ mobile deploy/hot-reload transport、明示的on-device compiler provider。
 
 ---
 
+### WP199(済 2026-07-24): Python opt-in development boundary
+
+参照: [`docs/ci.md`](ci.md)、
+[`docs/manual/02_getting_started.md`](manual/02_getting_started.md)、
+[`docs/design_reviews/2026-07-24_wp199_report.md`](design_reviews/2026-07-24_wp199_report.md)。
+
+**目的**: Pythonを通常configureからも外し、完全CIだけが明示的に要求する一方、
+CI gateやfixture生成toolを無理にC++へ移植しない自然な開発境界を固定する。
+
+**実装範囲**:
+
+1. `PELICAN_PYTHON_TESTS`の既定を`AUTO`から`OFF`へ変更する。
+   `AUTO`は手元のopt-in、`ON`は完全CI必須laneとして残す。
+2. OpenXRのchecked-in生成済みsource利用時は、上流CMakeの任意Python探索を
+   OpenXR追加function scope内だけ無効化する。
+3. 呼び出し元のPython package policyは維持し、後段の
+   `PELICAN_PYTHON_TESTS=ON`とSPIRV-Tools明示ON経路を壊さない。
+4. README、manual、source guide、CI運用文書の既定値と境界を更新する。
+
+**受け入れ条件**:
+
+- Python探索禁止 + OpenXR ON + tests ON + Python option未指定でconfigureでき、
+  cache値がOFF、core/playerがbuildできる
+- Python tests ON + linker ONの完全構成で全targetがbuildできる
+- GPU-free 707件、GPU 99件、Python label 8件、`git diff --check`が成功する
+
+**非対象**: Python製CI gate、RPC client、fixture generatorのC++移植、
+明示ONのexperimental SPIRV-ToolsからのPython除去、`.py`件数のゼロ化。
+
+完了レポート: `docs/design_reviews/2026-07-24_wp199_report.md`
+
+---
+
 未完了 WP と運用規則は [active ledger](implementation_plan.md) を参照。

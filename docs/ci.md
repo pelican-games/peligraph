@@ -44,9 +44,10 @@ ctest --test-dir build -C Debug -LE gpu --output-on-failure
 GPU 対象だけを確認する場合は `ctest --test-dir build -C Debug -L gpu -N` を使う。
 
 Pythonはエンジン／ゲームの実行依存ではない。`BUILD_TESTING=OFF`なら探索自体を行わず、
-`BUILD_TESTING=ON`でも`PELICAN_PYTHON_TESTS=AUTO`（既定）はinterpreter不在時に
-C++/CMakeテストだけを残す。完全なgateを要求するCI0/clean-cloneだけが
-`PELICAN_PYTHON_TESTS=ON`を指定する。Python製CTestには`python`ラベルを付け、
+`BUILD_TESTING=ON`でも`PELICAN_PYTHON_TESTS=OFF`（既定）はPythonを探索しない。
+手元で任意登録する場合だけ`AUTO`、完全なgateを要求するCI0/clean-cloneは
+`PELICAN_PYTHON_TESTS=ON`を指定する。OpenXRもchecked-in生成済みsourceを使う通常構成では
+上流CMakeの任意Python探索を局所的に無効化する。Python製CTestには`python`ラベルを付け、
 実行時は`-B` / `PYTHONDONTWRITEBYTECODE=1`でsource treeへ`__pycache__`を作らない。
 
 experimental SPIR-V linkerは`PELICAN_WITH_SPIRV_LINK=OFF`が既定である。ON時だけ
