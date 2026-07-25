@@ -912,8 +912,14 @@ resource materialization、automatic scope内のsplit、compatibleなalias group
 same-layerでeject/importする。logical graphに加えてtarget/device factsとprovider
 generationをfingerprintへ束縛し、scope boundary、lifetime、sample/view/extent、
 required capability closureをlink時に再検証する。これはopen fragmentやcomplete raw
-physical planではない。alternate format、load/store、scope fusion、queue/barrier、
-native/external boundaryは対応verifierができるまで受理しない。
+physical planではない。
+
+WP204の次sliceでは、logical `ResourcePattern`へrender targetの`format_candidates`を
+運び、別formatを選ぶresourceだけをtarget固有のdevice evidenceへ照合する境界を追加した。
+required image usage、sample count、array layer、external-depth transfer-sourceを満たす
+`materialized_image`だけを許可し、選択結果をsample planとruntime GPU resourceへ適用する。
+load/store、scope fusion、queue/barrier、native/external boundaryは対応verifierが
+できるまで受理しない。
 
 ## 14. 段階導入
 
@@ -967,7 +973,9 @@ native/external boundaryは対応verifierができるまで受理しない。
   pinのeject/importをruntime target compilerへ接続
 - WP204 Phase B v1でenvironment-bound physical fragment、conservative resource
   materialization、split-only scope、alias verifierを同じruntime target compilerへ接続
-- tile-local / aliasのruntime実行、aggressive physical control、NativeScope、
+- WP204 alternate-format sliceで宣言済み候補、device capability evidence、
+  runtime format assignmentとhot-reload世代交換を同じ経路へ接続
+- tile-local / aliasのruntime実行、load/store等のaggressive physical control、NativeScope、
   CPU・external・video runtime workはまだ追加しない
 
 ### HEG3 — 実証後の異種 domain

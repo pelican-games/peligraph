@@ -72,7 +72,7 @@ ctest --test-dir ./build -C Debug --output-on-failure
 | WP | 内容 | 状態 |
 |----|------|------|
 | WP203c | XR2b-c — OpenXR array swapchain / depth submit / GPU gate | 実装済み・Simulator/実機 gate待ち |
-| WP204 | physical plan eject / direct authoring | Phase B v1(fragment verifier/linker/runtime route)実装済み・aggressive physical control待ち |
+| WP204 | physical plan eject / direct authoring | Phase B v1 + verified alternate-format runtime slice実装済み・load/store等のaggressive physical control待ち |
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
@@ -177,12 +177,28 @@ XR2b最終gateを満たす。
 - fragment無しのautomatic planは従来経路のままで、追加runtime workを持たない
 - OpenXR OFF / ONの両構成でvariant選択と関連runtime regressionを検証済み
 
+**Phase B follow-up — verified alternate format(実装済み 2026-07-26)**:
+
+1. render targetに`format_candidates`を追加した。`format`はautomatic/defaultのまま、
+   候補宣言だけでは自動選択を変えない。feature overrideからも候補を重複なしで追加できる。
+2. fragmentが別formatを選ぶ場合は、`ResourcePattern`での宣言、
+   `materialized_image` representation、対象logical resourceのdevice evidenceを必須にした。
+   required image usage、sample count、array layer上限、external depthのtransfer-source契約を
+   target固有に照合し、証拠なし・非対応・未宣言をfail-closedで拒否する。
+3. linkerは選択formatをresource plan、sample-count plan、lowering required feature、
+   external-depth contractへ反映し、同じbackend candidateのfeature closureを再検証する。
+4. runtime target bridgeは同じdevice capability snapshotをsample planningとfragment linkへ渡し、
+   format assignmentを各`RenderTargetDefinition`へ適用する。同名targetを共有するgraphおよび
+   flat/XR variant間でformatが競合する場合はGPU登録前に拒否する。
+5. headless Vulkan hot reloadで`R8G8B8A8_UNORM`から`R16G16B16A16_SFLOAT`へ実imageと
+   pipelineを世代交換し、reload前後の出力画素一致を検証した。OpenXR OFF / ONの両構成と
+   XR protocol/runtime fixtureも回帰済みである。
+
 **残る WP204 後続**:
 
-1. alternate formatをformat feature / usage / sample-countまで再解決するverifier
-2. explicit load/store、scope fusion/reorder、queue/barrierを扱うaggressive physical fragment
-3. tile-local / alias planを実行するruntime adapterと対象GPU gate
-4. open external boundary、complete raw physical plan、`NativeScope`
+1. explicit load/store、scope fusion/reorder、queue/barrierを扱うaggressive physical fragment
+2. tile-local / alias planを実行するruntime adapterと対象GPU gate
+3. open external boundary、complete raw physical plan、`NativeScope`
 
 依存: RPE6c1/WP191、WP202b。見積: 後続は大。
 
@@ -239,9 +255,11 @@ preset の同一 watcher-frame 変更を一つのtransactionへcoalesceし、pre
 window swapchain、offscreen、OpenXR各eye、独立desktop mirrorの実submission fenceが
 使用generationを保持し、旧GPU resourceは最後の対応fence完了より前にretireされない。
 失敗時はactive generation、registry、config cache、watch dependencyを維持する。
-physical plan eject / direct authoring は WP204 Phase B v1 まで実装済みである。
+physical plan eject / direct authoring は WP204 Phase B v1とverified alternate-format
+runtime sliceまで実装済みである。
 自動planへconservative resource materialization、split-only scope partition、verified alias
-groupをlinkできる。次はalternate format / load-store等のaggressive controlと
+group、宣言済みかつdevice検証済みのmaterialized-image format変更をlinkできる。
+次はload/store等のaggressive controlと
 tile-local / alias runtimeを具体的なGPU gate付きで進める。`NativeScope`は具体的な
 Vulkan-only利用例を得てから進める。
 

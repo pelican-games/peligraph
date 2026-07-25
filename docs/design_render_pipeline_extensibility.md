@@ -51,8 +51,10 @@ graph fingerprint に束縛された versioned Vulkan backend decision pin を�
 RPE12b / WP204 Phase B v1 はその下へverified physical fragmentを追加した。自動planを
 基準にconservative resource materialization、split-only scope partition、compatibleな
 alias groupだけをlinkし、logical/environment fingerprint、boundary、lifetime、feature
-closureを再検証する。alternate format、load/store、queue/barrier、scope fusionは
-aggressive follow-upまでcompiler-ownedに残す。
+closureを再検証する。後続sliceではrender targetが宣言した`format_candidates`から
+materialized-image formatを選び、実deviceのusage/sample/layer/external-depth capabilityを
+再検証してruntime generationへ適用する経路まで追加した。load/store、queue/barrier、
+scope fusionはaggressive follow-upまでcompiler-ownedに残す。
 
 関連文書:
 
@@ -259,7 +261,8 @@ config の `vulkan_plan_pins.flat|preview|xr` へ貼り戻すと同じ candidate
 resource/scopeを編集する別schemaは`pelican.vulkan_physical_fragment` version 1である。
 `vulkan_physical_fragments.flat|preview|xr`へ貼り戻し、適用結果を
 `applied_physical_fragment`で再観測する。v1は自動planを安全側へmaterializeする変更、
-scope split、verified aliasだけを受け、format変更や任意Vulkan同期値は受けない。
+scope split、verified alias、および宣言済み候補から実device検証済み
+`materialized_image` formatへの変更を受ける。任意Vulkan同期値は受けない。
 
 ### 3.3 Policy provider — アルゴリズムを交換する入口
 
@@ -933,6 +936,7 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 | RPE11d / WP202b（済 2026-07-25） | renderer-wide `RenderStrategyProviderV1`、typed renderer facade、preset後の全config生成 | feature/variant/logical/physical再compile、config fingerprint provenance、preview/headless、reload/rollback/unload |
 | RPE12a / WP204 Phase A（済 2026-07-26） | graph-scoped target planning control、logical fingerprint付きVulkan backend decision pin/eject | variant別package、round-trip、stale/unknown/infeasible reject、strategy fingerprint非自己参照、headless runtime観測 |
 | RPE12b / WP204 Phase B v1（済 2026-07-26） | environment-bound Vulkan physical fragment、pure verifier/linker、runtime route | conservative materialize、split-only scope、alias/lifetime/capability検証、variant別round-trip、OpenXR OFF/ON |
+| RPE12b / WP204 alternate-format slice（済 2026-07-26） | authored format candidate、target固有device evidence、runtime format assignment | undeclared/unsupported reject、sample/layer/external-depth再検証、flat/XR競合reject、Vulkan hot reload実描画 |
 
 ### 12.1 いま着手する範囲
 
@@ -994,7 +998,11 @@ physical fragmentをejectし、conservative representation変更、scope split�
 pure verifier/linkerで再検証してruntime target compilerへ戻す経路を追加した。
 environment fingerprintはdevice factsとprovider generationを含み、logical graphが同じでも
 実行前提が変わったartifactをstaleとして拒否する。現runtime未対応のtile-local/aliasは
-明示capability gateを維持する。
+明示capability gateを維持する。alternate-format sliceでは、render targetの
+`format_candidates`をlogical `ResourcePattern`へ運び、対象resource/formatごとの
+image usage、sample count、array layer、external-depth transfer capabilityを実deviceから
+snapshotしてlinkする。選択formatはsample planとGPU target/pipeline登録へ同時に適用し、
+同名targetを共有するgraph/variantの競合はpublish前にrejectする。
 各段階の詳細gateは
 `design_render_graph_compiler.md` §12 を正とする。
 
@@ -1003,7 +1011,7 @@ environment fingerprintはdevice factsとprovider generationを含み、logical 
 - OIT の方式選定
 - `PassInfo` の未知 custom pass kind ABI
 - public `GraphVariantProvider` の ABI 凍結
-- alternate-format / load-store / scope-fusion / queue-barrier physical fragment
+- load-store / scope-fusion / queue-barrier physical fragment
 - complete raw physical plan の公開形式
 - `NativeScope` の game-DLL ABI
 - bindless / GPU-driven sort
@@ -1013,8 +1021,9 @@ environment fingerprintはdevice factsとprovider generationを含み、logical 
 - 動画 encode/decode dialect / backend(codec、session、backpressure は需要時に設計)
 
 backend candidateだけを固定するWP204 Phase Aのpinと、自動planへ安全な部分編集を戻す
-Phase B v1 fragmentは実装済みである。それより強いalternate format / load-store /
-scope-fusion / queue-barrier、complete raw plan、`NativeScope`は、現在のverifierを
+Phase B v1 fragment、宣言済み候補からdevice検証済みmaterialized-image formatを選ぶ
+runtime sliceは実装済みである。それより強いload-store / scope-fusion / queue-barrier、
+complete raw plan、`NativeScope`は、現在のverifierを
 具体的な利用要求と対象GPU fixtureで拡張してから公開形式・ABIを凍結する。
 Vulkan physical plan と `NativeScope` という入口自体は本設計で予約済みであり、
 論理型へ押し込んで代替しない。

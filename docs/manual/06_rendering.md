@@ -61,6 +61,7 @@ project.json ──rendering_config_json──▶ rendering config JSON
 | `extent_scale` | ✔ | ウィンドウ(swapchain)サイズ × scale。> 0 |
 | `width` / `height` | 任意(両方セット) | 固定サイズ RT(シャドウマップ等)。片方だけはエラー |
 | `format` | ✔ | `B8G8R8A8_UNORM` / `B8G8R8A8_SRGB` / `R8G8B8A8_UNORM` / `R8G8B8A8_SRGB` / `R8_UNORM` / `R16G16_SFLOAT` / `R16G16B16A16_SFLOAT` / `D32_SFLOAT` / `D24_UNORM_S8_UINT` / `D16_UNORM` |
+| `format_candidates` | 任意 string 配列 | verified Vulkan physical fragment が選択してよい追加 format。`format` は常に自動/default候補として先頭へ補われ、重複は除去される。宣言しただけでは自動formatは変わらない |
 | `format_class` | 任意 | `scene` / `display` / `data` / `explicit(<FORMAT>)`。カラーリゾルバが実 format を決める(§6.3)✅WP73 |
 | `role` | 任意 | `color` / `data`。SRGB view / UNORM view の選択 |
 | `history` | 任意 bool | `true` で 2 面持ち。前フレーム面は `<名前>@history` で読める(§6.8)✅WP88 |
@@ -175,7 +176,7 @@ push constant は 128B(エンジン 64B + シェーダ 64B)で、✅**リフレ�
 | `debug_text.json` | ビットマップ文字 HUD([第7章](07_input_ui.md)) |
 | `gpu_timing.json` | パスなしの計測フラグ。フレームグラフの**ノードごとに `barriers` / `body` の GPU タイムスタンプ**を取り、ログ・`get_status.gpu_timing`・ImGui に出す(✅WP29/143。XR では左右眼とミラーを別 view として分離。§6.14) |
 
-fragment(`pelican.render_feature` v1)に書けるもの: `render_targets` / `buffers` / `compute_tasks`(追加。名前衝突はエラー。RT には `format_class` / `role` / `history` も書ける)、`render_target_overrides`(既存 RT の format/usage 等を上書き)、`passes`(`insert: "before:<アンカー|パス名>" | "after:<...>" | "end"`)、`pass_overrides`(既存パスへの input 追加)、`shader_defines`、**`parameters`(下記)**、**`projection_jitter`(§6.8)**。`shadow_directional.json` の全文例は前版と同じです。
+fragment(`pelican.render_feature` v1)に書けるもの: `render_targets` / `buffers` / `compute_tasks`(追加。名前衝突はエラー。RT には `format_class` / `role` / `history` / `format_candidates` も書ける)、`render_target_overrides`(既存 RT の format/usage 上書きと `format_candidates` の重複なし追記)、`passes`(`insert: "before:<アンカー|パス名>" | "after:<...>" | "end"`)、`pass_overrides`(既存パスへの input 追加)、`shader_defines`、**`parameters`(下記)**、**`projection_jitter`(§6.8)**。`shadow_directional.json` の全文例は前版と同じです。
 
 ### feature パラメータと named binding(✅WP112/114)
 
@@ -313,7 +314,7 @@ v1 pin が固定するのは有限集合の **backend candidate だけ**です�
         "resources": [
           {
             "logical_resource": "gbuffer_albedo",
-            "format": "R8G8B8A8_UNORM",
+            "format": "R8G8B8A8Unorm",
             "representation": "materialized_image"
           }
         ],
@@ -336,16 +337,36 @@ v1 pin が固定するのは有限集合の **backend candidate だけ**です�
 
 eject結果は全resource/scope/alias groupを含みますが、手書きpackageの`resources`は変更するresourceだけに減らせます。`scopes`または`alias_groups`自体を省略すると、その部分は自動planを維持します。`alias_groups: []`はaliasなしの明示指定です。`scopes`は全nodeのexact partitionなので、空配列が有効なのはnodeを持たないgraphだけです。
 
+別formatを選ぶ場合は、先にrender target側で許可する集合を宣言します。
+
+```json
+{
+  "name": "low_color",
+  "format": "R8G8B8A8_UNORM",
+  "format_candidates": ["R16G16B16A16_SFLOAT"],
+  "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+}
+```
+
+その後、自動planからejectしたfragmentの該当resourceを、eject結果と同じcanonical表記
+（例: `"R16G16B16A16Sfloat"`）へ変更します。render target JSONのformat名をfragmentへ
+推測で転記せず、必ず現在の`ejectable_physical_fragment`を編集してください。
+link時には、対象deviceのrequired image usage（historyなら`TRANSFER_DST`も含む）、
+sample count、array layer上限、external depthなら`TRANSFER_SRC`契約を再照合します。
+候補未宣言、非`materialized_image`、device非対応の変更はfallbackせずrejectされます。
+
 v1 verifierが許可する編集は次です。
 
 - resource representationの維持、または自動`tile_local_attachment` / `transient_attachment`から`materialized_image`への保守的な変更
-- 自動planが選んだformatの明示的な保持。別formatはsample/usage capabilityを再解決するverifierが入るまでv1では変更不可
+- 自動planが選んだformatの保持、または`format_candidates`で宣言され、実device capabilityを満たす`materialized_image` formatへの変更
 - 自動scopeをさらに分けるexact ordered partition。tile-local値が新しいscope境界をまたぐ場合は、そのresourceを先にmaterializeする
 - format、representation、sample count、view layout、extentが一致し、論理lifetimeが重ならないresourceだけのalias group
 
 貼り付け後は`applied_physical_fragment`で適用内容を再観測できます。logical graphだけでなく、変更前の自動plan、target facts、選択候補、provider generationも`automatic_plan_fingerprint`へ束縛されます。いずれかが変わった古いfragmentはstale errorとなり、部分的に推測して修復しません。
 
-v1は`materialized_image`からtile-localへの攻めた変更、別の自動scope同士の融合、format変更、load/store、barrier、queue、任意Vulkan flagをまだ受理しません。現在のproduction runtimeもalias groupと非materialized imageを実行しないため、planner上で有効でもruntime capability gateが名指し拒否します。これらは実行機構と検証を同時に追加できる版で拡張します。
+同じ名前のtargetを複数graphやflat/XR variantが共有する場合、全planは同じphysical formatを選ぶ必要があります。異なるformatを同時に使う設計ならtarget名を分けてください。hot reloadでformatを変更した場合は、新しいruntime generationのimage・view・pipelineを作ってから一括publishし、旧generationは既存のGPU lease規則でretireします。
+
+v1は`materialized_image`からtile-localへの攻めた変更、別の自動scope同士の融合、load/store、barrier、queue、任意Vulkan flagをまだ受理しません。現在のproduction runtimeもalias groupと非materialized imageを実行しないため、planner上で有効でもruntime capability gateが名指し拒否します。これらは実行機構と検証を同時に追加できる版で拡張します。
 
 ## 6.7 マテリアル(✅M1〜M3.5 = WP58/68/70/76/78/83)
 
