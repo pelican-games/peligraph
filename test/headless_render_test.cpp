@@ -794,6 +794,29 @@ TEST_CASE(
             vk::to_string(
                 vk::Format::
                     eR16G16B16A16Sfloat);
+        REQUIRE(
+            physical_fragment.attachments
+                .has_value());
+        const auto low_attachment =
+            std::find_if(
+                physical_fragment.attachments
+                    ->begin(),
+                physical_fragment.attachments
+                    ->end(),
+                [](const auto &attachment) {
+                    return attachment.node ==
+                               "produce_low" &&
+                           attachment
+                                   .logical_resource ==
+                               "low_color";
+                });
+        REQUIRE(
+            low_attachment !=
+            physical_fragment.attachments
+                ->end());
+        low_attachment->load_op =
+            VulkanPhysicalAttachmentLoadOp::
+                discard;
 
         auto replacement =
             upscaleContractRenderingConfig();
@@ -864,6 +887,25 @@ TEST_CASE(
             vk::to_string(
                 vk::Format::
                     eR16G16B16A16Sfloat));
+        const auto reloaded_produce_low =
+            std::find_if(
+                reloaded_program
+                    ->rendering_pass.passes.begin(),
+                reloaded_program
+                    ->rendering_pass.passes.end(),
+                [](const auto &pass) {
+                    return pass.definition.name ==
+                           "produce_low";
+                });
+        REQUIRE(
+            reloaded_produce_low !=
+            reloaded_program
+                ->rendering_pass.passes.end());
+        REQUIRE(
+            reloaded_produce_low->definition
+                .colorAttachmentOperations(0)
+                .load_op ==
+            vk::AttachmentLoadOp::eDontCare);
 
         engine_time.advance();
         renderer.render();

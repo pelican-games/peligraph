@@ -7,6 +7,7 @@
 #include "../../project/renderpipeline.hpp"
 #include "../../project/materialscreeninput.hpp"
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -173,6 +174,16 @@ struct RenderPassViewInvocation {
     std::uint32_t view_index = 0;
 };
 
+struct PassAttachmentOperations {
+    vk::AttachmentLoadOp load_op =
+        vk::AttachmentLoadOp::eClear;
+    vk::AttachmentStoreOp store_op =
+        vk::AttachmentStoreOp::eStore;
+
+    bool operator==(
+        const PassAttachmentOperations &) const = default;
+};
+
 // A pass labels the resolution space in which its raster work is defined.
 // The compiler uses the scene domain to derive the camera/jitter render
 // extent. Output and independent work (for example UI and shadow maps) do not
@@ -208,6 +219,13 @@ struct PassDefinition {
     vk::AttachmentStoreOp color_store_op = vk::AttachmentStoreOp::eStore;
     vk::AttachmentLoadOp depth_load_op = vk::AttachmentLoadOp::eClear;
     vk::AttachmentStoreOp depth_store_op = vk::AttachmentStoreOp::eDontCare;
+    // Runtime-only physical overrides. Authored JSON retains the compact
+    // pass-wide defaults above; the target-plan compiler expands them to
+    // individual attachments and may safely override selected entries.
+    std::vector<PassAttachmentOperations>
+        physical_color_attachment_operations;
+    std::optional<PassAttachmentOperations>
+        physical_depth_attachment_operations;
     vk::ClearColorValue clear_color = vk::ClearColorValue{std::array{0.0f, 0.0f, 0.0f, 1.0f}};
     vk::SampleCountFlagBits rasterization_samples =
         vk::SampleCountFlagBits::e1;
@@ -224,6 +242,25 @@ struct PassDefinition {
 #if PELICAN_WITH_IMGUI
     bool isImGui() const { return std::holds_alternative<ImGuiPassInfo>(pass_info); }
 #endif
+
+    PassAttachmentOperations colorAttachmentOperations(
+        std::size_t index) const {
+        if (physical_color_attachment_operations.empty()) {
+            return {
+                color_load_op,
+                color_store_op,
+            };
+        }
+        return physical_color_attachment_operations.at(index);
+    }
+
+    PassAttachmentOperations depthAttachmentOperations() const {
+        return physical_depth_attachment_operations.value_or(
+            PassAttachmentOperations{
+                depth_load_op,
+                depth_store_op,
+            });
+    }
 
     MaterialPassInfo &materialInfo() { return std::get<MaterialPassInfo>(pass_info); }
     const MaterialPassInfo &materialInfo() const { return std::get<MaterialPassInfo>(pass_info); }

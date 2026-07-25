@@ -99,12 +99,14 @@ void renderUiPass(vk::CommandBuffer cmd_buf, const FrameRenderContext &frame, co
             : vk::ImageView{};
     const vk::Format target_format = targets_swapchain ? dependencies.swapchain_color_format
                                                        : rt_container.getMetadata(rt_id).format;
+    const auto operations =
+        pass_def.colorAttachmentOperations(0);
     dependencies.ui_renderer->render(cmd_buf, UiDrawRequest{
                                                            .target_view = target_view,
                                                            .target_extent = target_extent,
                                                            .target_format = target_format,
-                                                           .load_op = pass_def.color_load_op,
-                                                           .store_op = pass_def.color_store_op,
+                                                           .load_op = operations.load_op,
+                                                           .store_op = operations.store_op,
                                                            .clear_color = pass_def.clear_color,
                                                            .resolve_view = resolve_view,
                                                            .samples = pass_def.rasterization_samples,
@@ -129,12 +131,17 @@ void renderImGuiPass(vk::CommandBuffer cmd_buf, const FrameRenderContext &frame,
     }
     const auto target = pass_def.output_color.front();
     const bool swapchain = isSwapchainRenderTarget(target);
+    const auto operations =
+        pass_def.colorAttachmentOperations(0);
     dependencies.imgui_system->render(
         cmd_buf,
         swapchain ? frame.color_attachment
                   : rt_container.getAttachmentImageView(target),
         target_extent,
         swapchain ? dependencies.swapchain_color_format : rt_container.getMetadata(target).format,
+        operations.load_op,
+        operations.store_op,
+        pass_def.clear_color,
         !swapchain && rt_container.hasSeparateAttachment(target)
             ? rt_container.getImageView(target)
             : vk::ImageView{},

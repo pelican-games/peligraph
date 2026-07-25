@@ -1000,6 +1000,69 @@ TEST_CASE("rendering pass runtime compiler requires fullscreen dependencies", "[
 }
 
 TEST_CASE(
+    "rendering pass runtime compiler applies per-attachment physical operations",
+    "[renderingpass][physical-attachment]") {
+    PassDefinition pass;
+    pass.name = "geometry";
+    pass.pass_info = MaterialPassInfo{};
+    pass.output_color = {
+        swapchainRenderTargetId()};
+
+    RenderingPassDefinition definition;
+    definition.name = "main";
+    definition.passes = {pass};
+
+    VulkanTargetPlan plan;
+    plan.scopes = {
+        {
+            .id = "geometry",
+            .nodes = {"geometry"},
+        },
+    };
+    plan.attachments = {
+        {
+            .node = "geometry",
+            .logical_resource = "swapchain",
+            .aspect =
+                VulkanPhysicalAttachmentAspect::color,
+            .load_op =
+                VulkanPhysicalAttachmentLoadOp::discard,
+            .store_op =
+                VulkanPhysicalAttachmentStoreOp::discard,
+        },
+    };
+
+    const auto compiled =
+        compileRenderingPassRuntime(
+            definition,
+            RenderingPassRuntimeDependencies{
+                .target_plan = &plan,
+            });
+    const auto &physical =
+        compiled.passes.front().definition;
+    REQUIRE(
+        physical.color_load_op ==
+        vk::AttachmentLoadOp::eClear);
+    REQUIRE((
+        physical.colorAttachmentOperations(0) ==
+        PassAttachmentOperations{
+            vk::AttachmentLoadOp::eDontCare,
+            vk::AttachmentStoreOp::eDontCare,
+        }));
+
+    plan.attachments.front().aspect =
+        VulkanPhysicalAttachmentAspect::depth;
+    REQUIRE_THROWS_WITH(
+        compileRenderingPassRuntime(
+            definition,
+            RenderingPassRuntimeDependencies{
+                .target_plan = &plan,
+            }),
+        Catch::Matchers::ContainsSubstring(
+            "attachment aspect disagrees"));
+}
+
+TEST_CASE(
     "view-family scheduler expands mixed physical scopes in node-major order",
     "[renderingpass][view-execution][schedule]") {
     const std::vector<FrameGraphExecutionNode> nodes{

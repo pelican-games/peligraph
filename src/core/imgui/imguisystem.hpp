@@ -22,6 +22,9 @@ DECLARE_MODULE(ImGuiSystem) {
     void endFrameIfStarted();
     void render(vk::CommandBuffer command_buffer, vk::ImageView target_view,
                 vk::Extent2D target_extent, vk::Format target_format,
+                vk::AttachmentLoadOp load_op,
+                vk::AttachmentStoreOp store_op,
+                vk::ClearColorValue clear_color,
                 vk::ImageView resolve_view = {},
                 vk::ResolveModeFlagBits resolve_mode =
                     vk::ResolveModeFlagBits::eNone);

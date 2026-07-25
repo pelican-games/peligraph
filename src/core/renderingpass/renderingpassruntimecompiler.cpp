@@ -157,11 +157,103 @@ PassInputViewDimension inputViewDimension(
         "unknown physical input view layout");
 }
 
+vk::AttachmentLoadOp runtimeAttachmentLoadOp(
+    VulkanPhysicalAttachmentLoadOp op) {
+    switch (op) {
+    case VulkanPhysicalAttachmentLoadOp::load:
+        return vk::AttachmentLoadOp::eLoad;
+    case VulkanPhysicalAttachmentLoadOp::clear:
+        return vk::AttachmentLoadOp::eClear;
+    case VulkanPhysicalAttachmentLoadOp::discard:
+        return vk::AttachmentLoadOp::eDontCare;
+    }
+    throw std::runtime_error(
+        "unknown physical attachment load op");
+}
+
+vk::AttachmentStoreOp runtimeAttachmentStoreOp(
+    VulkanPhysicalAttachmentStoreOp op) {
+    switch (op) {
+    case VulkanPhysicalAttachmentStoreOp::store:
+        return vk::AttachmentStoreOp::eStore;
+    case VulkanPhysicalAttachmentStoreOp::discard:
+        return vk::AttachmentStoreOp::eDontCare;
+    }
+    throw std::runtime_error(
+        "unknown physical attachment store op");
+}
+
+std::string physicalTargetName(
+    GlobalRenderTargetId target,
+    const RenderTargetMetadataResolver *metadata) {
+    if (isSwapchainRenderTarget(target)) {
+        return "swapchain";
+    }
+    if (!isConcreteRenderTarget(target)) {
+        throw std::runtime_error(
+            "physical attachment contract references no render target");
+    }
+    if (metadata == nullptr) {
+        throw std::runtime_error(
+            "physical attachment contract requires render-target "
+            "metadata");
+    }
+    return metadata->get(target).name;
+}
+
+PassAttachmentOperations physicalAttachmentOperations(
+    const VulkanTargetPlan &plan,
+    std::string_view pass,
+    std::string_view resource,
+    VulkanPhysicalAttachmentAspect aspect) {
+    const VulkanPhysicalAttachmentPlan *result =
+        nullptr;
+    for (const auto &attachment :
+         plan.attachments) {
+        if (attachment.node != pass ||
+            attachment.logical_resource !=
+                resource) {
+            continue;
+        }
+        if (result != nullptr) {
+            throw std::runtime_error(
+                "physical target plan has duplicate attachment: " +
+                std::string{pass} + " -> " +
+                std::string{resource});
+        }
+        result = &attachment;
+    }
+    if (result == nullptr) {
+        throw std::runtime_error(
+            "render pass attachment is absent from the physical "
+            "target plan: " +
+            std::string{pass} + " -> " +
+            std::string{resource});
+    }
+    if (result->aspect != aspect) {
+        throw std::runtime_error(
+            "render pass attachment aspect disagrees with the "
+            "physical target plan: " +
+            std::string{pass} + " -> " +
+            std::string{resource});
+    }
+    return {
+        runtimeAttachmentLoadOp(
+            result->load_op),
+        runtimeAttachmentStoreOp(
+            result->store_op),
+    };
+}
+
 PassDefinition applyPhysicalPassContract(
     const PassDefinition &source,
     const VulkanTargetPlan *plan,
     const RenderTargetMetadataResolver *metadata) {
     auto result = source;
+    result.physical_color_attachment_operations
+        .clear();
+    result.physical_depth_attachment_operations
+        .reset();
     result.input_target_views.clear();
     result.input_target_views.reserve(
         result.input_targets.size());
@@ -175,6 +267,36 @@ PassDefinition applyPhysicalPassContract(
         result.input_target_views.push_back(
             inputViewDimension(
                 plan, metadata->get(target).name));
+    }
+    if (plan == nullptr ||
+        plan->attachments.empty()) {
+        return result;
+    }
+    result.physical_color_attachment_operations
+        .reserve(result.output_color.size());
+    for (const auto target :
+         result.output_color) {
+        result.physical_color_attachment_operations
+            .push_back(
+                physicalAttachmentOperations(
+                    *plan, result.name,
+                    physicalTargetName(
+                        target, metadata),
+                    VulkanPhysicalAttachmentAspect::
+                        color));
+    }
+    if (isSwapchainRenderTarget(
+            result.output_depth) ||
+        isConcreteRenderTarget(
+            result.output_depth)) {
+        result.physical_depth_attachment_operations =
+            physicalAttachmentOperations(
+                *plan, result.name,
+                physicalTargetName(
+                    result.output_depth,
+                    metadata),
+                VulkanPhysicalAttachmentAspect::
+                    depth);
     }
     return result;
 }

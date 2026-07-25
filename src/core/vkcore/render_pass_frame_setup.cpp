@@ -63,10 +63,17 @@ vk::Extent2D getRenderPassTargetExtent(const FrameRenderContext &frame, const Pa
 void transitionPassOutputsToAttachmentLayouts(vk::CommandBuffer cmd_buf, const PassDefinition &pass_def,
                                               RenderTargetContainer &rt_container, VulkanUtils &vk_utils,
                                               RenderTargetLayoutTracker &layout_tracker) {
-    for (const auto &rt_id : pass_def.output_color) {
+    for (std::size_t index = 0;
+         index < pass_def.output_color.size();
+         ++index) {
+        const auto rt_id =
+            pass_def.output_color[index];
         if (isConcreteRenderTarget(rt_id) &&
             rt_container.hasSeparateAttachment(rt_id) &&
-            pass_def.color_load_op == vk::AttachmentLoadOp::eLoad &&
+            pass_def
+                    .colorAttachmentOperations(index)
+                    .load_op ==
+                vk::AttachmentLoadOp::eLoad &&
             layout_tracker.currentLayout(
                 rt_id, false, &rt_container,
                 RenderTargetImageKind::attachment) ==
@@ -85,9 +92,12 @@ void transitionPassOutputsToAttachmentLayouts(vk::CommandBuffer cmd_buf, const P
                 RenderTargetImageKind::attachment);
         }
     }
+    const auto depth_operations =
+        pass_def.depthAttachmentOperations();
     if (isConcreteRenderTarget(pass_def.output_depth) &&
         rt_container.hasSeparateAttachment(pass_def.output_depth) &&
-        pass_def.depth_load_op == vk::AttachmentLoadOp::eLoad &&
+        depth_operations.load_op ==
+            vk::AttachmentLoadOp::eLoad &&
         layout_tracker.currentLayout(
             pass_def.output_depth, false, &rt_container,
             RenderTargetImageKind::attachment) ==
@@ -125,7 +135,14 @@ std::vector<vk::RenderingAttachmentInfo> createColorAttachments(const FrameRende
     std::vector<vk::RenderingAttachmentInfo> color_attachments;
     color_attachments.reserve(pass_def.output_color.size());
 
-    for (const auto &rt_id : pass_def.output_color) {
+    for (std::size_t index = 0;
+         index < pass_def.output_color.size();
+         ++index) {
+        const auto rt_id =
+            pass_def.output_color[index];
+        const auto operations =
+            pass_def.colorAttachmentOperations(
+                index);
         vk::RenderingAttachmentInfo color_att;
         if (isSwapchainRenderTarget(rt_id)) {
             if (view.execution ==
@@ -159,8 +176,8 @@ std::vector<vk::RenderingAttachmentInfo> createColorAttachments(const FrameRende
         }
 
         color_att.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
-        color_att.loadOp = pass_def.color_load_op;
-        color_att.storeOp = pass_def.color_store_op;
+        color_att.loadOp = operations.load_op;
+        color_att.storeOp = operations.store_op;
         color_att.clearValue.color = pass_def.clear_color;
         color_attachments.push_back(color_att);
     }
@@ -188,8 +205,10 @@ vk::RenderingAttachmentInfo createDepthAttachment(const PassDefinition &pass_def
         depth_attachment.resolveImageLayout =
             vk::ImageLayout::eDepthAttachmentOptimal;
     }
-    depth_attachment.loadOp = pass_def.depth_load_op;
-    depth_attachment.storeOp = pass_def.depth_store_op;
+    const auto operations =
+        pass_def.depthAttachmentOperations();
+    depth_attachment.loadOp = operations.load_op;
+    depth_attachment.storeOp = operations.store_op;
     depth_attachment.clearValue.depthStencil = vk::ClearDepthStencilValue{1.0f, 0};
     return depth_attachment;
 }

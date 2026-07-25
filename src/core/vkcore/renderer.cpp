@@ -465,36 +465,47 @@ nlohmann::json renderNodeTrace(const CompiledPass &pass, size_t order,
                                const RenderTargetLayoutTracker &layout_tracker) {
     const auto &definition = pass.definition;
     nlohmann::json attachments = nlohmann::json::array();
-    for (const auto target : definition.output_color) {
+    for (std::size_t index = 0;
+         index < definition.output_color.size();
+         ++index) {
+        const auto target =
+            definition.output_color[index];
+        const auto operations =
+            definition.colorAttachmentOperations(
+                index);
         const auto format = isConcreteRenderTarget(target)
                                 ? rt_container.getMetadata(target).format
                                 : vk::Format::eUndefined;
         nlohmann::json attachment{
             {"resource", renderTargetName(target, rt_container)},
             {"aspect", "color"},
-            {"load", loadOpName(definition.color_load_op)},
-            {"store", storeOpName(definition.color_store_op)},
+            {"load", loadOpName(operations.load_op)},
+            {"store", storeOpName(operations.store_op)},
             {"final_layout", trackedLayoutName(target, vk::ImageLayout::eColorAttachmentOptimal,
                                                  layout_tracker, rt_container)},
             {"format", isConcreteRenderTarget(target) ? formatToString(format) : "frame_target"},
             {"samples", 1},
         };
-        if (definition.color_load_op == vk::AttachmentLoadOp::eClear) {
+        if (operations.load_op ==
+            vk::AttachmentLoadOp::eClear) {
             attachment["clear"] = clearColorJson(definition.clear_color);
         }
         attachments.push_back(std::move(attachment));
     }
     if (isConcreteRenderTarget(definition.output_depth)) {
+        const auto operations =
+            definition.depthAttachmentOperations();
         nlohmann::json attachment{
             {"resource", renderTargetName(definition.output_depth, rt_container)},
             {"aspect", "depth"},
-            {"load", loadOpName(definition.depth_load_op)},
-            {"store", storeOpName(definition.depth_store_op)},
+            {"load", loadOpName(operations.load_op)},
+            {"store", storeOpName(operations.store_op)},
             {"final_layout", trackedLayoutName(definition.output_depth,
                                                  vk::ImageLayout::eDepthAttachmentOptimal,
                                                  layout_tracker, rt_container)},
         };
-        if (definition.depth_load_op == vk::AttachmentLoadOp::eClear) {
+        if (operations.load_op ==
+            vk::AttachmentLoadOp::eClear) {
             attachment["clear"] = 1.0;
         }
         attachments.push_back(std::move(attachment));

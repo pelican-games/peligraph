@@ -437,6 +437,9 @@ void ImGuiSystem::render(vk::CommandBuffer command_buffer,
                          vk::ImageView target_view,
                          vk::Extent2D target_extent,
                          vk::Format target_format,
+                         vk::AttachmentLoadOp load_op,
+                         vk::AttachmentStoreOp store_op,
+                         vk::ClearColorValue clear_color,
                          vk::ImageView resolve_view,
                          vk::ResolveModeFlagBits resolve_mode) {
     if (!impl->frame_started) {
@@ -454,8 +457,16 @@ void ImGuiSystem::render(vk::CommandBuffer command_buffer,
     color_attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     color_attachment.imageView = static_cast<VkImageView>(target_view);
     color_attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-    color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    color_attachment.loadOp =
+        static_cast<VkAttachmentLoadOp>(load_op);
+    color_attachment.storeOp =
+        static_cast<VkAttachmentStoreOp>(store_op);
+    for (std::size_t channel = 0;
+         channel < 4; ++channel) {
+        color_attachment.clearValue.color
+            .float32[channel] =
+            clear_color.float32[channel];
+    }
     if (resolve_view) {
         color_attachment.resolveMode =
             static_cast<VkResolveModeFlagBits>(resolve_mode);

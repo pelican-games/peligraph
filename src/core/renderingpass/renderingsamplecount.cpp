@@ -376,6 +376,9 @@ std::set<std::string, std::less<>> attachmentResources(
                    std::less<>> &render_targets) {
     std::set<std::string, std::less<>> result;
     for (const auto &node : definition.nodes) {
+        if (node.kind != FramePlanNodeKind::render) {
+            continue;
+        }
         for (const auto &attachment :
              node.attachments) {
             const auto &resource =
