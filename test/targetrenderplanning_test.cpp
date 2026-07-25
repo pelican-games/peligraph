@@ -382,7 +382,9 @@ VulkanTargetPlan compile(
     std::optional<VulkanPhysicalFragmentPackage>
         fragment_package = std::nullopt,
     std::vector<VulkanPhysicalResourceFormatCapability>
-        format_capabilities = {}) {
+        format_capabilities = {},
+    std::vector<VulkanPhysicalAttachmentPlan>
+        attachments = {}) {
     return compileVulkanTargetPlan(
         types, graph, target, providers(),
         VulkanTargetPlanRequest{
@@ -399,6 +401,8 @@ VulkanTargetPlan compile(
                 std::move(fragment_package),
             .fragment_format_capabilities =
                 std::move(format_capabilities),
+            .automatic_attachments =
+                std::move(attachments),
         });
 }
 
@@ -658,6 +662,249 @@ TEST_CASE("Vulkan physical fragments round-trip against an automatic target envi
     REQUIRE(encoded.at(
                 "applied_physical_fragment") ==
             document);
+}
+
+TEST_CASE("Vulkan physical attachment fragments preserve logical dependencies and resolve semantics",
+          "[target-render-planning][physical-fragment][attachment]") {
+    const auto types = makeBuiltinLogicalTypeRegistry();
+    const auto graph =
+        hybridGraph(types, 3, false, true);
+    const auto attachment_contract = [] {
+        return std::vector<VulkanPhysicalAttachmentPlan>{
+            {
+                .node = "GBuffer",
+                .logical_resource = "gbuffer_0",
+                .aspect =
+                    VulkanPhysicalAttachmentAspect::color,
+                .load_op =
+                    VulkanPhysicalAttachmentLoadOp::clear,
+                .store_op =
+                    VulkanPhysicalAttachmentStoreOp::store,
+            },
+            {
+                .node = "Forward",
+                .logical_resource = "scene_color",
+                .aspect =
+                    VulkanPhysicalAttachmentAspect::color,
+                .load_op =
+                    VulkanPhysicalAttachmentLoadOp::load,
+                .store_op =
+                    VulkanPhysicalAttachmentStoreOp::store,
+            },
+            {
+                .node = "Lighting",
+                .logical_resource = "scene_color",
+                .aspect =
+                    VulkanPhysicalAttachmentAspect::color,
+                .load_op =
+                    VulkanPhysicalAttachmentLoadOp::clear,
+                .store_op =
+                    VulkanPhysicalAttachmentStoreOp::store,
+            },
+            {
+                .node = "ToneMap",
+                .logical_resource = "display_output",
+                .aspect =
+                    VulkanPhysicalAttachmentAspect::color,
+                .load_op =
+                    VulkanPhysicalAttachmentLoadOp::clear,
+                .store_op =
+                    VulkanPhysicalAttachmentStoreOp::store,
+            },
+        };
+    };
+    const auto automatic = compile(
+        types, graph, topology(false),
+        bindingsFor(types, graph),
+        std::nullopt, std::nullopt,
+        std::nullopt, std::nullopt,
+        std::nullopt, {},
+        attachment_contract());
+    const auto ejected =
+        ejectVulkanPhysicalFragmentPackage(
+            automatic);
+    REQUIRE(ejected.schema_version == 2);
+    REQUIRE(ejected.attachments.has_value());
+    REQUIRE(ejected.attachments->size() == 4);
+    const auto document =
+        vulkanPhysicalFragmentPackageToJson(
+            ejected);
+    REQUIRE(document.at("version") == 2);
+    REQUIRE(document.at("attachments").size() == 4);
+    REQUIRE(
+        vulkanPhysicalFragmentPackageFromJson(
+            document) == ejected);
+
+    const auto linked = compile(
+        types, graph, topology(false),
+        bindingsFor(types, graph),
+        std::nullopt, std::nullopt,
+        std::nullopt, std::nullopt,
+        ejected, {}, attachment_contract());
+    REQUIRE(linked.attachments ==
+            automatic.attachments);
+
+    auto discard_clear = ejected;
+    const auto gbuffer = std::find_if(
+        discard_clear.attachments->begin(),
+        discard_clear.attachments->end(),
+        [](const auto &attachment) {
+            return attachment.node == "GBuffer";
+        });
+    REQUIRE(gbuffer !=
+            discard_clear.attachments->end());
+    gbuffer->load_op =
+        VulkanPhysicalAttachmentLoadOp::discard;
+    const auto discard_clear_linked = compile(
+        types, graph, topology(false),
+        bindingsFor(types, graph),
+        std::nullopt, std::nullopt,
+        std::nullopt, std::nullopt,
+        discard_clear, {},
+        attachment_contract());
+    REQUIRE(
+        discard_clear_linked.attachments.front().load_op ==
+        VulkanPhysicalAttachmentLoadOp::discard);
+
+    auto erase_load = ejected;
+    const auto forward = std::find_if(
+        erase_load.attachments->begin(),
+        erase_load.attachments->end(),
+        [](const auto &attachment) {
+            return attachment.node == "Forward";
+        });
+    REQUIRE(forward != erase_load.attachments->end());
+    forward->load_op =
+        VulkanPhysicalAttachmentLoadOp::clear;
+    requireThrowsContaining(
+        [&] {
+            (void)compile(
+                types, graph, topology(false),
+                bindingsFor(types, graph),
+                std::nullopt, std::nullopt,
+                std::nullopt, std::nullopt,
+                erase_load, {},
+                attachment_contract());
+        },
+        "cannot discard or clear a logical read dependency");
+
+    auto invent_load = ejected;
+    std::find_if(
+        invent_load.attachments->begin(),
+        invent_load.attachments->end(),
+        [](const auto &attachment) {
+            return attachment.node == "GBuffer";
+        })->load_op =
+        VulkanPhysicalAttachmentLoadOp::load;
+    requireThrowsContaining(
+        [&] {
+            (void)compile(
+                types, graph, topology(false),
+                bindingsFor(types, graph),
+                std::nullopt, std::nullopt,
+                std::nullopt, std::nullopt,
+                invent_load, {},
+                attachment_contract());
+        },
+        "Load has no logical read dependency");
+
+    auto discard_single_sample_store = ejected;
+    std::find_if(
+        discard_single_sample_store
+            .attachments->begin(),
+        discard_single_sample_store
+            .attachments->end(),
+        [](const auto &attachment) {
+            return attachment.node == "GBuffer";
+        })->store_op =
+        VulkanPhysicalAttachmentStoreOp::discard;
+    requireThrowsContaining(
+        [&] {
+            (void)compile(
+                types, graph, topology(false),
+                bindingsFor(types, graph),
+                std::nullopt, std::nullopt,
+                std::nullopt, std::nullopt,
+                discard_single_sample_store, {},
+                attachment_contract());
+        },
+        "separate multisample resolve");
+
+    const SampleCountPolicy msaa_policy{
+        .request =
+            {SampleCountRequestMode::exact, 4},
+        .scope = SampleCountScope::geometry,
+        .authored = true,
+    };
+    const auto msaa = compile(
+        types, graph, topology(false),
+        bindingsFor(types, graph),
+        sampleCountRequest(graph, msaa_policy),
+        std::nullopt, std::nullopt,
+        std::nullopt, std::nullopt, {},
+        attachment_contract());
+    REQUIRE(
+        physicalResource(msaa, "gbuffer_0")
+            .resolve_required);
+    REQUIRE(
+        physicalResource(msaa, "scene_color")
+            .resolve_required);
+    auto discard_resolved_store =
+        ejectVulkanPhysicalFragmentPackage(msaa);
+    std::find_if(
+        discard_resolved_store
+            .attachments->begin(),
+        discard_resolved_store
+            .attachments->end(),
+        [](const auto &attachment) {
+            return attachment.node == "GBuffer";
+        })->store_op =
+        VulkanPhysicalAttachmentStoreOp::discard;
+    const auto resolved = compile(
+        types, graph, topology(false),
+        bindingsFor(types, graph),
+        sampleCountRequest(graph, msaa_policy),
+        std::nullopt, std::nullopt,
+        std::nullopt,
+        discard_resolved_store, {},
+        attachment_contract());
+    REQUIRE(
+        resolved.attachments.front().store_op ==
+        VulkanPhysicalAttachmentStoreOp::discard);
+
+    auto discard_before_attachment_load =
+        ejectVulkanPhysicalFragmentPackage(msaa);
+    std::find_if(
+        discard_before_attachment_load
+            .attachments->begin(),
+        discard_before_attachment_load
+            .attachments->end(),
+        [](const auto &attachment) {
+            return attachment.node == "Lighting";
+        })->store_op =
+        VulkanPhysicalAttachmentStoreOp::discard;
+    requireThrowsContaining(
+        [&] {
+            (void)compile(
+                types, graph, topology(false),
+                bindingsFor(types, graph),
+                sampleCountRequest(
+                    graph, msaa_policy),
+                std::nullopt, std::nullopt,
+                std::nullopt,
+                discard_before_attachment_load,
+                {}, attachment_contract());
+        },
+        "downstream attachment loads");
+
+    auto v1_with_attachments = document;
+    v1_with_attachments["version"] = 1;
+    requireThrowsContaining(
+        [&] {
+            (void)vulkanPhysicalFragmentPackageFromJson(
+                v1_with_attachments);
+        },
+        "unknown key 'attachments'");
 }
 
 TEST_CASE("physical fragments conservatively materialize tile data before splitting scopes",

@@ -1380,6 +1380,37 @@ std::string_view vulkanPhysicalScopeKindName(
     throw std::runtime_error("unknown Vulkan physical scope kind");
 }
 
+std::string_view vulkanPhysicalAttachmentAspectName(
+    VulkanPhysicalAttachmentAspect aspect) {
+    switch (aspect) {
+    case VulkanPhysicalAttachmentAspect::color: return "color";
+    case VulkanPhysicalAttachmentAspect::depth: return "depth";
+    }
+    throw std::runtime_error(
+        "unknown Vulkan physical attachment aspect");
+}
+
+std::string_view vulkanPhysicalAttachmentLoadOpName(
+    VulkanPhysicalAttachmentLoadOp op) {
+    switch (op) {
+    case VulkanPhysicalAttachmentLoadOp::load: return "load";
+    case VulkanPhysicalAttachmentLoadOp::clear: return "clear";
+    case VulkanPhysicalAttachmentLoadOp::discard: return "discard";
+    }
+    throw std::runtime_error(
+        "unknown Vulkan physical attachment load op");
+}
+
+std::string_view vulkanPhysicalAttachmentStoreOpName(
+    VulkanPhysicalAttachmentStoreOp op) {
+    switch (op) {
+    case VulkanPhysicalAttachmentStoreOp::store: return "store";
+    case VulkanPhysicalAttachmentStoreOp::discard: return "discard";
+    }
+    throw std::runtime_error(
+        "unknown Vulkan physical attachment store op");
+}
+
 namespace {
 
 std::vector<VulkanPhysicalScopePlan> buildPhysicalScopes(
@@ -2678,6 +2709,8 @@ VulkanTargetPlan compileVulkanTargetPlan(
         .lowering_graph = std::move(workspace),
         .resources = selected_draft.resources,
         .scopes = selected_draft.scopes,
+        .attachments =
+            std::move(request.automatic_attachments),
         .alias_groups = std::move(alias_groups),
         .required_physical_features =
             selected_draft.required_features,
@@ -2689,6 +2722,9 @@ VulkanTargetPlan compileVulkanTargetPlan(
         .applied_pin_package =
             std::move(request.pin_package),
     };
+    validateVulkanPhysicalAttachmentPlans(
+        canonical_graph, result.resources,
+        result.attachments);
     result.automatic_plan_fingerprint =
         vulkanAutomaticTargetPlanFingerprint(
             topology, result);
@@ -3000,6 +3036,28 @@ nlohmann::ordered_json vulkanTargetPlanToJson(
                 scope.rasterization_samples;
         }
         result["scopes"].push_back(std::move(scope_json));
+    }
+    if (!plan.attachments.empty()) {
+        result["attachments"] =
+            nlohmann::ordered_json::array();
+        for (const auto &attachment :
+             plan.attachments) {
+            result["attachments"].push_back(
+                nlohmann::ordered_json{
+                    {"node", attachment.node},
+                    {"logical_resource",
+                     attachment.logical_resource},
+                    {"aspect",
+                     vulkanPhysicalAttachmentAspectName(
+                         attachment.aspect)},
+                    {"load_op",
+                     vulkanPhysicalAttachmentLoadOpName(
+                         attachment.load_op)},
+                    {"store_op",
+                     vulkanPhysicalAttachmentStoreOpName(
+                         attachment.store_op)},
+                });
+        }
     }
     result["alias_groups"] =
         nlohmann::ordered_json::array();

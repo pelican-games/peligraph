@@ -18,7 +18,8 @@ namespace {
 
 constexpr std::string_view kFragmentSchema =
     "pelican.vulkan_physical_fragment";
-constexpr std::uint32_t kFragmentVersion = 1;
+constexpr std::uint32_t kFragmentVersionV1 = 1;
+constexpr std::uint32_t kFragmentVersionV2 = 2;
 constexpr std::string_view kSampledImageCapability =
     "pelican.vulkan.sampled_image@1";
 constexpr std::string_view kStorageBufferCapability =
@@ -124,6 +125,35 @@ VulkanResourceRepresentation parseRepresentation(
         std::string{value});
 }
 
+VulkanPhysicalAttachmentLoadOp parseAttachmentLoadOp(
+    std::string_view value) {
+    if (value == "load") {
+        return VulkanPhysicalAttachmentLoadOp::load;
+    }
+    if (value == "clear") {
+        return VulkanPhysicalAttachmentLoadOp::clear;
+    }
+    if (value == "discard") {
+        return VulkanPhysicalAttachmentLoadOp::discard;
+    }
+    throw std::runtime_error(
+        "Vulkan physical attachment fragment has unknown load_op: " +
+        std::string{value});
+}
+
+VulkanPhysicalAttachmentStoreOp parseAttachmentStoreOp(
+    std::string_view value) {
+    if (value == "store") {
+        return VulkanPhysicalAttachmentStoreOp::store;
+    }
+    if (value == "discard") {
+        return VulkanPhysicalAttachmentStoreOp::discard;
+    }
+    throw std::runtime_error(
+        "Vulkan physical attachment fragment has unknown store_op: " +
+        std::string{value});
+}
+
 template <typename Range>
 void requireNoDuplicateStrings(
     const Range &values, std::string_view context) {
@@ -153,6 +183,11 @@ void sortAndUniqueCapabilities(
 
 VulkanPhysicalFragmentPackage canonicalizePackage(
     VulkanPhysicalFragmentPackage package) {
+    if (package.schema_version != kFragmentVersionV1 &&
+        package.schema_version != kFragmentVersionV2) {
+        throw std::runtime_error(
+            "Vulkan physical fragment package version must be 1 or 2");
+    }
     requireNonEmpty(package.graph,
                     "Vulkan physical fragment graph");
     requireVersionedName(
@@ -253,8 +288,56 @@ VulkanPhysicalFragmentPackage canonicalizePackage(
         }
     }
 
+    if (package.attachments) {
+        if (package.schema_version != kFragmentVersionV2) {
+            throw std::runtime_error(
+                "Vulkan physical attachment fragments require package "
+                "version 2");
+        }
+        for (const auto &attachment : *package.attachments) {
+            requireNonEmpty(
+                attachment.node,
+                "Vulkan physical attachment fragment node");
+            requireNonEmpty(
+                attachment.logical_resource,
+                "Vulkan physical attachment fragment resource");
+            if (!attachment.load_op &&
+                !attachment.store_op) {
+                throw std::runtime_error(
+                    "Vulkan physical attachment fragment must override "
+                    "load_op or store_op: " +
+                    attachment.node + " -> " +
+                    attachment.logical_resource);
+            }
+        }
+        std::sort(
+            package.attachments->begin(),
+            package.attachments->end(),
+            [](const auto &left, const auto &right) {
+                return std::tie(
+                           left.node,
+                           left.logical_resource) <
+                       std::tie(
+                           right.node,
+                           right.logical_resource);
+            });
+        if (std::adjacent_find(
+                package.attachments->begin(),
+                package.attachments->end(),
+                [](const auto &left, const auto &right) {
+                    return left.node == right.node &&
+                           left.logical_resource ==
+                               right.logical_resource;
+                }) != package.attachments->end()) {
+            throw std::runtime_error(
+                "Vulkan physical fragment has duplicate attachment "
+                "overrides");
+        }
+    }
+
     if (package.resources.empty() &&
-        !package.scopes && !package.alias_groups) {
+        !package.scopes && !package.alias_groups &&
+        !package.attachments) {
         throw std::runtime_error(
             "Vulkan physical fragment package has no edits");
     }
@@ -331,6 +414,24 @@ nlohmann::ordered_json physicalScopeToJson(
     };
 }
 
+nlohmann::ordered_json physicalAttachmentToJson(
+    const VulkanPhysicalAttachmentPlan &attachment) {
+    return {
+        {"node", attachment.node},
+        {"logical_resource",
+         attachment.logical_resource},
+        {"aspect",
+         vulkanPhysicalAttachmentAspectName(
+             attachment.aspect)},
+        {"load_op",
+         vulkanPhysicalAttachmentLoadOpName(
+             attachment.load_op)},
+        {"store_op",
+         vulkanPhysicalAttachmentStoreOpName(
+             attachment.store_op)},
+    };
+}
+
 nlohmann::ordered_json automaticPlanPayload(
     const TargetTopologySnapshot &topology,
     const VulkanTargetPlan &plan) {
@@ -389,6 +490,16 @@ nlohmann::ordered_json automaticPlanPayload(
     for (const auto &scope : plan.scopes) {
         payload["scopes"].push_back(
             physicalScopeToJson(scope));
+    }
+    if (!plan.attachments.empty()) {
+        payload["attachments"] =
+            nlohmann::ordered_json::array();
+        for (const auto &attachment :
+             plan.attachments) {
+            payload["attachments"].push_back(
+                physicalAttachmentToJson(
+                    attachment));
+        }
     }
     for (const auto &group : plan.alias_groups) {
         payload["alias_groups"].push_back(
@@ -852,7 +963,7 @@ void applyScopePartition(
             }
             if (found->second != first->second) {
                 throw std::runtime_error(
-                    "Vulkan physical fragment V1 may split an "
+                    "Vulkan physical fragments may split an "
                     "automatic scope but cannot fuse nodes from "
                     "different automatic scopes: " +
                     fragment.id);
@@ -1024,6 +1135,109 @@ void validateScopeResourceBoundaries(
 
 } // namespace
 
+void validateVulkanPhysicalAttachmentPlans(
+    const CompiledLogicalRenderGraph &canonical_graph,
+    std::span<const VulkanPhysicalResourcePlan> resources,
+    std::span<const VulkanPhysicalAttachmentPlan> attachments) {
+    std::map<std::string,
+             const LogicalGraphNode *, std::less<>>
+        nodes;
+    for (const auto &node : canonical_graph.nodes) {
+        nodes.emplace(node.name, &node);
+    }
+    std::set<std::string, std::less<>>
+        physical_resources;
+    for (const auto &resource : resources) {
+        physical_resources.insert(
+            resource.logical_resource);
+    }
+    std::set<
+        std::pair<std::string, std::string>>
+        identities;
+    for (const auto &attachment : attachments) {
+        requireNonEmpty(
+            attachment.node,
+            "Vulkan physical attachment node");
+        requireNonEmpty(
+            attachment.logical_resource,
+            "Vulkan physical attachment resource");
+        if (!identities.emplace(
+                attachment.node,
+                attachment.logical_resource)
+                 .second) {
+            throw std::runtime_error(
+                "Vulkan physical attachment plan has duplicate "
+                "node/resource identity: " +
+                attachment.node + " -> " +
+                attachment.logical_resource);
+        }
+        if (!physical_resources.contains(
+                attachment.logical_resource)) {
+            throw std::runtime_error(
+                "Vulkan physical attachment plan references an "
+                "unknown physical resource: " +
+                attachment.logical_resource);
+        }
+        const auto found_node =
+            nodes.find(attachment.node);
+        if (found_node == nodes.end()) {
+            throw std::runtime_error(
+                "Vulkan physical attachment plan references an "
+                "unknown logical node: " +
+                attachment.node);
+        }
+        if (found_node->second->kind !=
+                LogicalGraphNodeKind::render &&
+            found_node->second->kind !=
+                LogicalGraphNodeKind::output_transform) {
+            throw std::runtime_error(
+                "Vulkan physical attachment plan references a "
+                "non-raster logical node: " +
+                attachment.node);
+        }
+        const auto writes_resource =
+            std::any_of(
+                found_node->second->uses.begin(),
+                found_node->second->uses.end(),
+                [&](const LogicalResourceUse &use) {
+                    return use.output_value &&
+                           use.output_value->resource ==
+                               attachment.logical_resource;
+                });
+        if (!writes_resource) {
+            throw std::runtime_error(
+                "Vulkan physical attachment plan resource is not "
+                "written by its logical node: " +
+                attachment.node + " -> " +
+                attachment.logical_resource);
+        }
+        const auto reads_existing =
+            std::any_of(
+                found_node->second->uses.begin(),
+                found_node->second->uses.end(),
+                [&](const LogicalResourceUse &use) {
+                    return use.input_value &&
+                           use.input_value->resource ==
+                               attachment.logical_resource;
+                });
+        const auto physically_loads =
+            attachment.load_op ==
+            VulkanPhysicalAttachmentLoadOp::load;
+        if (reads_existing != physically_loads) {
+            throw std::runtime_error(
+                physically_loads
+                    ? "Vulkan physical attachment Load has no "
+                      "logical read dependency: " +
+                          attachment.node + " -> " +
+                          attachment.logical_resource
+                    : "Vulkan physical attachment cannot discard or "
+                      "clear a logical read dependency: " +
+                          attachment.node + " -> " +
+                          attachment.logical_resource);
+        }
+    }
+}
+
 std::uint64_t vulkanAutomaticTargetPlanFingerprint(
     const TargetTopologySnapshot &topology,
     const VulkanTargetPlan &automatic_plan) {
@@ -1047,6 +1261,10 @@ ejectVulkanPhysicalFragmentPackage(
         "Vulkan target plan selected backend candidate");
 
     VulkanPhysicalFragmentPackage package{
+        .schema_version =
+            plan.attachments.empty()
+                ? kFragmentVersionV1
+                : kFragmentVersionV2,
         .graph = plan.graph,
         .logical_graph_fingerprint =
             plan.logical_graph_fingerprint,
@@ -1059,6 +1277,7 @@ ejectVulkanPhysicalFragmentPackage(
         .alias_groups =
             std::vector<
                 VulkanPhysicalAliasGroupFragment>{},
+        .attachments = std::nullopt,
     };
     package.resources.reserve(plan.resources.size());
     for (const auto &resource : plan.resources) {
@@ -1092,6 +1311,24 @@ ejectVulkanPhysicalFragmentPackage(
                 .resources = group.resources,
             });
     }
+    if (!plan.attachments.empty()) {
+        package.attachments.emplace();
+        package.attachments->reserve(
+            plan.attachments.size());
+        for (const auto &attachment :
+             plan.attachments) {
+            package.attachments->push_back(
+                VulkanPhysicalAttachmentFragment{
+                    .node = attachment.node,
+                    .logical_resource =
+                        attachment.logical_resource,
+                    .load_op =
+                        attachment.load_op,
+                    .store_op =
+                        attachment.store_op,
+                });
+        }
+    }
     return canonicalizePackage(std::move(package));
 }
 
@@ -1102,7 +1339,7 @@ vulkanPhysicalFragmentPackageToJson(
         canonicalizePackage(source);
     nlohmann::ordered_json result{
         {"schema", kFragmentSchema},
-        {"version", kFragmentVersion},
+        {"version", package.schema_version},
         {"graph", package.graph},
         {"logical_graph_fingerprint",
          stableFingerprint64String(
@@ -1153,6 +1390,30 @@ vulkanPhysicalFragmentPackageToJson(
                 });
         }
     }
+    if (package.attachments) {
+        result["attachments"] =
+            nlohmann::ordered_json::array();
+        for (const auto &attachment :
+             *package.attachments) {
+            nlohmann::ordered_json entry{
+                {"node", attachment.node},
+                {"logical_resource",
+                 attachment.logical_resource},
+            };
+            if (attachment.load_op) {
+                entry["load_op"] =
+                    vulkanPhysicalAttachmentLoadOpName(
+                        *attachment.load_op);
+            }
+            if (attachment.store_op) {
+                entry["store_op"] =
+                    vulkanPhysicalAttachmentStoreOpName(
+                        *attachment.store_op);
+            }
+            result["attachments"].push_back(
+                std::move(entry));
+        }
+    }
     return result;
 }
 
@@ -1165,20 +1426,6 @@ vulkanPhysicalFragmentPackageFromJson(
         throw std::runtime_error(
             std::string{context} + " must be an object");
     }
-    requireOnlyKeys(
-        document,
-        {
-            "schema",
-            "version",
-            "graph",
-            "logical_graph_fingerprint",
-            "automatic_plan_fingerprint",
-            "backend_candidate",
-            "resources",
-            "scopes",
-            "alias_groups",
-        },
-        context);
     if (requireJsonString(
             document, "schema", context) !=
         kFragmentSchema) {
@@ -1188,15 +1435,56 @@ vulkanPhysicalFragmentPackageFromJson(
     }
     const auto version = document.find("version");
     if (version == document.end() ||
-        !version->is_number_integer() ||
-        version->get<std::int64_t>() !=
-            kFragmentVersion) {
+        !version->is_number_integer()) {
         throw std::runtime_error(
             std::string{context} +
-            " version must be exactly 1");
+            " version must be 1 or 2");
+    }
+    const auto schema_version =
+        version->get<std::int64_t>();
+    if (schema_version != kFragmentVersionV1 &&
+        schema_version != kFragmentVersionV2) {
+        throw std::runtime_error(
+            std::string{context} +
+            " version must be 1 or 2");
+    }
+    if (schema_version == kFragmentVersionV1) {
+        requireOnlyKeys(
+            document,
+            {
+                "schema",
+                "version",
+                "graph",
+                "logical_graph_fingerprint",
+                "automatic_plan_fingerprint",
+                "backend_candidate",
+                "resources",
+                "scopes",
+                "alias_groups",
+            },
+            context);
+    } else {
+        requireOnlyKeys(
+            document,
+            {
+                "schema",
+                "version",
+                "graph",
+                "logical_graph_fingerprint",
+                "automatic_plan_fingerprint",
+                "backend_candidate",
+                "resources",
+                "scopes",
+                "alias_groups",
+                "attachments",
+            },
+            context);
     }
 
     VulkanPhysicalFragmentPackage package{
+        .schema_version =
+            static_cast<std::uint32_t>(
+                schema_version),
         .graph =
             requireJsonString(
                 document, "graph", context),
@@ -1373,9 +1661,111 @@ vulkanPhysicalFragmentPackageFromJson(
                 std::move(group));
         }
     }
+    if (const auto attachments =
+            document.find("attachments");
+        attachments != document.end()) {
+        if (!attachments->is_array()) {
+            throw std::runtime_error(
+                std::string{context} +
+                " attachments must be an array");
+        }
+        package.attachments =
+            std::vector<
+                VulkanPhysicalAttachmentFragment>{};
+        for (const auto &entry : *attachments) {
+            if (!entry.is_object()) {
+                throw std::runtime_error(
+                    "Vulkan physical attachment fragment must be "
+                    "an object");
+            }
+            requireOnlyKeys(
+                entry,
+                {
+                    "node",
+                    "logical_resource",
+                    "load_op",
+                    "store_op",
+                },
+                "Vulkan physical attachment fragment");
+            VulkanPhysicalAttachmentFragment attachment{
+                .node =
+                    requireJsonString(
+                        entry, "node",
+                        "Vulkan physical attachment fragment"),
+                .logical_resource =
+                    requireJsonString(
+                        entry, "logical_resource",
+                        "Vulkan physical attachment fragment"),
+            };
+            if (const auto load =
+                    entry.find("load_op");
+                load != entry.end()) {
+                if (!load->is_string()) {
+                    throw std::runtime_error(
+                        "Vulkan physical attachment fragment "
+                        "load_op must be a string");
+                }
+                attachment.load_op =
+                    parseAttachmentLoadOp(
+                        load->get_ref<
+                            const std::string &>());
+            }
+            if (const auto store =
+                    entry.find("store_op");
+                store != entry.end()) {
+                if (!store->is_string()) {
+                    throw std::runtime_error(
+                        "Vulkan physical attachment fragment "
+                        "store_op must be a string");
+                }
+                attachment.store_op =
+                    parseAttachmentStoreOp(
+                        store->get_ref<
+                            const std::string &>());
+            }
+            package.attachments->push_back(
+                std::move(attachment));
+        }
+    }
     return canonicalizePackage(
         std::move(package));
 }
+
+namespace {
+
+using AttachmentIdentity =
+    std::pair<std::string, std::string>;
+
+bool hasDownstreamAttachmentLoad(
+    const CompiledLogicalRenderGraph &graph,
+    std::span<const VulkanPhysicalAttachmentPlan> attachments,
+    std::string_view producer_node,
+    std::string_view resource) {
+    for (const auto &edge :
+         deriveLogicalDataEdges(graph)) {
+        if (edge.producer_node != producer_node ||
+            edge.value.resource != resource) {
+            continue;
+        }
+        const auto consumer = std::find_if(
+            attachments.begin(), attachments.end(),
+            [&](const auto &attachment) {
+                return attachment.node ==
+                           edge.consumer_node &&
+                       attachment.logical_resource ==
+                           resource &&
+                       attachment.load_op ==
+                           VulkanPhysicalAttachmentLoadOp::
+                               load;
+            });
+        if (consumer != attachments.end()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+} // namespace
 
 VulkanTargetPlan linkVulkanPhysicalFragment(
     const CompiledLogicalRenderGraph &canonical_graph,
@@ -1456,6 +1846,9 @@ VulkanTargetPlan linkVulkanPhysicalFragment(
     const auto indexed_format_capabilities =
         indexFormatCapabilities(
             format_capabilities);
+    validateVulkanPhysicalAttachmentPlans(
+        canonical_graph, automatic_plan.resources,
+        automatic_plan.attachments);
 
     std::map<std::string,
              TargetLoweringResource *,
@@ -1642,6 +2035,143 @@ VulkanTargetPlan linkVulkanPhysicalFragment(
             });
     }
     validateAliasGroups(automatic_plan);
+
+    if (package.attachments) {
+        std::map<
+            AttachmentIdentity,
+            VulkanPhysicalAttachmentPlan *>
+            attachments;
+        std::map<
+            AttachmentIdentity,
+            VulkanPhysicalAttachmentPlan>
+            automatic_attachments;
+        for (auto &attachment :
+             automatic_plan.attachments) {
+            const AttachmentIdentity identity{
+                attachment.node,
+                attachment.logical_resource};
+            attachments.emplace(
+                identity, &attachment);
+            automatic_attachments.emplace(
+                identity, attachment);
+        }
+
+        bool changed = false;
+        for (const auto &fragment :
+             *package.attachments) {
+            const AttachmentIdentity identity{
+                fragment.node,
+                fragment.logical_resource};
+            const auto found =
+                attachments.find(identity);
+            if (found == attachments.end()) {
+                throw std::runtime_error(
+                    "Vulkan physical attachment fragment references "
+                    "an unknown node/resource attachment: " +
+                    fragment.node + " -> " +
+                    fragment.logical_resource);
+            }
+            const auto resource =
+                physical_resources.find(
+                    fragment.logical_resource);
+            if (resource ==
+                physical_resources.end()) {
+                throw std::runtime_error(
+                    "Vulkan physical attachment fragment references "
+                    "an unknown physical resource: " +
+                    fragment.logical_resource);
+            }
+            const auto original =
+                automatic_attachments.at(identity);
+            const auto requested_load =
+                fragment.load_op.value_or(
+                    found->second->load_op);
+            const auto requested_store =
+                fragment.store_op.value_or(
+                    found->second->store_op);
+            const auto entry_changed =
+                requested_load !=
+                    original.load_op ||
+                requested_store !=
+                    original.store_op;
+            if (entry_changed &&
+                resource->second->representation !=
+                    VulkanResourceRepresentation::
+                        materialized_image &&
+                resource->second->representation !=
+                    VulkanResourceRepresentation::
+                        external) {
+                throw std::runtime_error(
+                    "Vulkan physical attachment edits currently "
+                    "require a materialized_image or external "
+                    "resource: " +
+                    fragment.logical_resource);
+            }
+            found->second->load_op =
+                requested_load;
+            found->second->store_op =
+                requested_store;
+            changed = changed || entry_changed;
+        }
+
+        validateVulkanPhysicalAttachmentPlans(
+            canonical_graph,
+            automatic_plan.resources,
+            automatic_plan.attachments);
+
+        for (const auto &fragment :
+             *package.attachments) {
+            const AttachmentIdentity identity{
+                fragment.node,
+                fragment.logical_resource};
+            const auto &original =
+                automatic_attachments.at(identity);
+            const auto &linked =
+                *attachments.at(identity);
+            if (original.store_op !=
+                    VulkanPhysicalAttachmentStoreOp::
+                        store ||
+                linked.store_op !=
+                    VulkanPhysicalAttachmentStoreOp::
+                        discard) {
+                continue;
+            }
+            const auto &resource =
+                *physical_resources
+                     .at(fragment.logical_resource);
+            if (!resource.resolve_required) {
+                throw std::runtime_error(
+                    "Vulkan physical attachment Store may only be "
+                    "discarded when a separate multisample resolve "
+                    "preserves the logical value: " +
+                    fragment.node + " -> " +
+                    fragment.logical_resource);
+            }
+            if (hasDownstreamAttachmentLoad(
+                    canonical_graph,
+                    automatic_plan.attachments,
+                    fragment.node,
+                    fragment.logical_resource)) {
+                throw std::runtime_error(
+                    "Vulkan physical attachment Store cannot be "
+                    "discarded because a downstream attachment "
+                    "loads the multisample surface: " +
+                    fragment.node + " -> " +
+                    fragment.logical_resource);
+            }
+        }
+        if (changed) {
+            automatic_plan.decisions.push_back(
+                PlanningDecision{
+                    "pelican.plan.physical_attachment_fragment@1",
+                    automatic_plan.graph,
+                    std::to_string(
+                        package.attachments->size()),
+                    "same-layer fragment supplied verified "
+                    "per-attachment load/store operations",
+                });
+        }
+    }
 
     automatic_plan.required_physical_features.clear();
     for (const auto &resource :

@@ -236,6 +236,48 @@ struct VulkanPhysicalScopePlan {
         const VulkanPhysicalScopePlan &) const = default;
 };
 
+enum class VulkanPhysicalAttachmentAspect : std::uint8_t {
+    color,
+    depth,
+};
+
+std::string_view vulkanPhysicalAttachmentAspectName(
+    VulkanPhysicalAttachmentAspect aspect);
+
+enum class VulkanPhysicalAttachmentLoadOp : std::uint8_t {
+    load,
+    clear,
+    discard,
+};
+
+std::string_view vulkanPhysicalAttachmentLoadOpName(
+    VulkanPhysicalAttachmentLoadOp op);
+
+enum class VulkanPhysicalAttachmentStoreOp : std::uint8_t {
+    store,
+    discard,
+};
+
+std::string_view vulkanPhysicalAttachmentStoreOpName(
+    VulkanPhysicalAttachmentStoreOp op);
+
+// Per-node attachment state belongs to the physical plan rather than the
+// logical resource type. A resource can be cleared in one raster scope and
+// loaded in another, so the node/resource pair is the stable identity.
+struct VulkanPhysicalAttachmentPlan {
+    std::string node;
+    std::string logical_resource;
+    VulkanPhysicalAttachmentAspect aspect =
+        VulkanPhysicalAttachmentAspect::color;
+    VulkanPhysicalAttachmentLoadOp load_op =
+        VulkanPhysicalAttachmentLoadOp::clear;
+    VulkanPhysicalAttachmentStoreOp store_op =
+        VulkanPhysicalAttachmentStoreOp::store;
+
+    bool operator==(
+        const VulkanPhysicalAttachmentPlan &) const = default;
+};
+
 struct VulkanAliasGroupPlan {
     std::string id;
     std::vector<std::string> resources;
@@ -292,8 +334,8 @@ struct VulkanTargetPlanPinPackage {
 
 // A sparse, same-layer edit over the automatically compiled physical plan.
 // V1 permits conservative resource materialization, safe scope splitting,
-// verified alias groups, and a declared alternate image format when the
-// target bridge supplies matching usage/sample/layer capability evidence.
+// verified alias groups, and capability-backed alternate image formats. V2
+// additionally permits verified per-node attachment load/store edits.
 struct VulkanPhysicalResourceFragment {
     std::string logical_resource;
     std::optional<std::string> format;
@@ -319,6 +361,16 @@ struct VulkanPhysicalAliasGroupFragment {
         const VulkanPhysicalAliasGroupFragment &) const = default;
 };
 
+struct VulkanPhysicalAttachmentFragment {
+    std::string node;
+    std::string logical_resource;
+    std::optional<VulkanPhysicalAttachmentLoadOp> load_op;
+    std::optional<VulkanPhysicalAttachmentStoreOp> store_op;
+
+    bool operator==(
+        const VulkanPhysicalAttachmentFragment &) const = default;
+};
+
 // Target-specific evidence for selecting a non-automatic image format from
 // a ResourcePattern. The target bridge snapshots these facts from the actual
 // device. A fragment cannot infer support from a format name alone.
@@ -336,6 +388,7 @@ struct VulkanPhysicalResourceFormatCapability {
 };
 
 struct VulkanPhysicalFragmentPackage {
+    std::uint32_t schema_version = 1;
     std::string graph;
     std::uint64_t logical_graph_fingerprint = 0;
     std::uint64_t automatic_plan_fingerprint = 0;
@@ -346,6 +399,9 @@ struct VulkanPhysicalFragmentPackage {
     std::optional<
         std::vector<VulkanPhysicalAliasGroupFragment>>
         alias_groups;
+    std::optional<
+        std::vector<VulkanPhysicalAttachmentFragment>>
+        attachments;
 
     bool operator==(
         const VulkanPhysicalFragmentPackage &) const = default;
@@ -369,6 +425,8 @@ struct VulkanTargetPlanRequest {
         fragment_package;
     std::vector<VulkanPhysicalResourceFormatCapability>
         fragment_format_capabilities;
+    std::vector<VulkanPhysicalAttachmentPlan>
+        automatic_attachments;
 };
 
 struct VulkanTargetPlan {
@@ -386,6 +444,7 @@ struct VulkanTargetPlan {
     TargetLoweringGraph lowering_graph;
     std::vector<VulkanPhysicalResourcePlan> resources;
     std::vector<VulkanPhysicalScopePlan> scopes;
+    std::vector<VulkanPhysicalAttachmentPlan> attachments;
     std::vector<VulkanAliasGroupPlan> alias_groups;
     std::vector<std::string> required_physical_features;
     std::vector<PlanningDecision> decisions;
@@ -438,6 +497,10 @@ VulkanTargetPlan linkVulkanPhysicalFragment(
     std::span<
         const VulkanPhysicalResourceFormatCapability>
         format_capabilities = {});
+void validateVulkanPhysicalAttachmentPlans(
+    const CompiledLogicalRenderGraph &canonical_graph,
+    std::span<const VulkanPhysicalResourcePlan> resources,
+    std::span<const VulkanPhysicalAttachmentPlan> attachments);
 nlohmann::ordered_json vulkanTargetPlanToJson(
     const VulkanTargetPlan &plan);
 
