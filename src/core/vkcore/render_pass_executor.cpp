@@ -88,9 +88,20 @@ void validateViewExecution(
         require_layers(target);
     }
     require_layers(pass.definition.output_depth);
-    for (const auto target :
-         pass.definition.input_targets) {
-        require_layers(target);
+    for (std::size_t input_index = 0;
+         input_index <
+         pass.definition.input_targets.size();
+         ++input_index) {
+        const auto shared =
+            pass.definition.input_target_views.size() ==
+                    pass.definition.input_targets.size() &&
+                pass.definition.input_target_views[input_index] ==
+                    PassInputViewDimension::shared_2d;
+        if (!shared) {
+            require_layers(
+                pass.definition
+                    .input_targets[input_index]);
+        }
     }
 }
 
@@ -143,7 +154,8 @@ void RenderPassExecutor::execute(const FrameRenderContext &frame, const Compiled
     cmd_buf.beginRendering(render_info);
     setDynamicViewportAndScissor(cmd_buf, target_extent);
 
-    renderDynamicPassDrawCalls(cmd_buf, pass.pass_id, pass_def, target_extent, dependencies.dispatch);
+    renderDynamicPassDrawCalls(cmd_buf, pass.pass_id, pass_def, target_extent,
+                               dependencies.dispatch, invocation);
 
     cmd_buf.endRendering();
 }

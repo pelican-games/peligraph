@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <vector>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
@@ -16,6 +17,10 @@ struct FrameRenderContext {
     vk::CommandBuffer cmd_buf;
     vk::Image color_image;
     vk::ImageView color_attachment, depth_attachment;
+    // A view-family context exposes the full-array attachment above and the
+    // compatible per-layer views here for mixed sequential/multiview scopes.
+    std::vector<vk::ImageView> color_layer_attachments;
+    std::uint32_t color_array_layers = 1;
     vk::Extent2D extent;
     vk::Semaphore image_prepared_semaphore;
     vk::ImageLayout required_layout;

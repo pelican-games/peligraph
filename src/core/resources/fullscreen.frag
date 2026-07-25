@@ -8,14 +8,14 @@
 layout(location = 0) in vec2 inUV;
 layout(location = 0) out vec4 outColor;
 
-layout(set = PELICAN_SET_PASS_INPUT, binding = 0) uniform sampler2D albedoSampler;
-layout(set = PELICAN_SET_PASS_INPUT, binding = 1) uniform sampler2D normalSampler;
-layout(set = PELICAN_SET_PASS_INPUT, binding = 2) uniform sampler2D materialSampler; // R: roughness, G: metallic, B: AO
-layout(set = PELICAN_SET_PASS_INPUT, binding = 3) uniform sampler2D worldPosSampler;
-layout(set = PELICAN_SET_PASS_INPUT, binding = 4) uniform sampler2D emissiveSampler;
-layout(set = PELICAN_SET_PASS_INPUT, binding = 5) uniform sampler2D ssaoSampler;
+layout(set = PELICAN_SET_PASS_INPUT, binding = 0) uniform PELICAN_SAMPLER_2D_0 albedoSampler;
+layout(set = PELICAN_SET_PASS_INPUT, binding = 1) uniform PELICAN_SAMPLER_2D_1 normalSampler;
+layout(set = PELICAN_SET_PASS_INPUT, binding = 2) uniform PELICAN_SAMPLER_2D_2 materialSampler; // R: roughness, G: metallic, B: AO
+layout(set = PELICAN_SET_PASS_INPUT, binding = 3) uniform PELICAN_SAMPLER_2D_3 worldPosSampler;
+layout(set = PELICAN_SET_PASS_INPUT, binding = 4) uniform PELICAN_SAMPLER_2D_4 emissiveSampler;
+layout(set = PELICAN_SET_PASS_INPUT, binding = 5) uniform PELICAN_SAMPLER_2D_5 ssaoSampler;
 #ifdef PELICAN_FEATURE_SHADOW
-layout(set = PELICAN_SET_PASS_INPUT, binding = 6) uniform sampler2D shadowMapSampler;
+layout(set = PELICAN_SET_PASS_INPUT, binding = 6) uniform PELICAN_SAMPLER_2D_6 shadowMapSampler;
 #endif
 
 const float PI = 3.14159265359;
@@ -97,7 +97,7 @@ float directionalShadowVisibility(vec3 worldPos, vec3 normal, vec3 lightDir) {
         return 1.0;
     }
 
-    float storedDepth = texture(shadowMapSampler, shadowUv).r;
+    float storedDepth = PELICAN_TEXTURE_2D_6(shadowMapSampler, shadowUv).r;
     float bias = max(0.0025 * (1.0 - dot(normal, lightDir)), 0.0008);
     return shadowNdc.z - bias <= storedDepth ? 1.0 : 0.35;
 }
@@ -105,21 +105,21 @@ float directionalShadowVisibility(vec3 worldPos, vec3 normal, vec3 lightDir) {
 
 void main() {
     // G-bufferからデータを読み取る
-    vec3 albedo = texture(albedoSampler, inUV).rgb;
-    vec3 normal = normalize(texture(normalSampler, inUV).rgb * 2.0 - 1.0);
-    vec4 materialSample = texture(materialSampler, inUV);
+    vec3 albedo = PELICAN_TEXTURE_2D_0(albedoSampler, inUV).rgb;
+    vec3 normal = normalize(PELICAN_TEXTURE_2D_1(normalSampler, inUV).rgb * 2.0 - 1.0);
+    vec4 materialSample = PELICAN_TEXTURE_2D_2(materialSampler, inUV);
     vec3 material = materialSample.rgb;
     uint shadingModel = uint(round(materialSample.a * 255.0));
     bool openPbrBase = shadingModel == 1u;
-    vec3 worldPos = texture(worldPosSampler, inUV).rgb;
-    vec3 emissive = texture(emissiveSampler, inUV).rgb;
+    vec3 worldPos = PELICAN_TEXTURE_2D_3(worldPosSampler, inUV).rgb;
+    vec3 emissive = PELICAN_TEXTURE_2D_4(emissiveSampler, inUV).rgb;
     
     float roughness = clamp(material.r, 0.04, 1.0);  // material.r = roughness
     float metallic = clamp(material.g, 0.0, 1.0);   // material.g = metallic
     float materialAO = material.b;
 
     // Sample SSAO
-    float ssao = texture(ssaoSampler, inUV).r;
+    float ssao = PELICAN_TEXTURE_2D_5(ssaoSampler, inUV).r;
     
     // Combine material AO with SSAO
     // You can adjust the power to control the strength of the SSAO effect.

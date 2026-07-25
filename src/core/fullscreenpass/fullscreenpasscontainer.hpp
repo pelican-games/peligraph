@@ -29,12 +29,18 @@ DECLARE_MODULE(FullscreenPassContainer) {
     uint32_t next_pipeline_id = 0;
 
     struct InputTextureInfo {
-        std::array<vk::UniqueDescriptorSet, 2> descsets;
+        struct DescriptorVariant {
+            std::array<vk::UniqueDescriptorSet, 2> descsets;
+            std::array<std::vector<vk::ImageView>, 2>
+                bound_image_views;
+        };
+        std::vector<DescriptorVariant> variants;
         std::vector<GlobalRenderTargetId> input_rt_ids;
         std::vector<bool> input_rt_history;
+        std::vector<PassInputViewDimension> input_rt_views;
         std::vector<FullscreenInputSampling> input_sampling;
         std::vector<FrameGraphBufferId> input_buffer_ids;
-        std::array<std::vector<vk::ImageView>, 2> bound_image_views;
+        GraphicsPipelineViewContract view;
         uint64_t binding_revision = 0;
     };
     std::unordered_map<int, InputTextureInfo> input_textures;
@@ -53,8 +59,10 @@ DECLARE_MODULE(FullscreenPassContainer) {
     PipelineId registerFullscreenPass(vk::Format colorFormat, ShaderBundleId vertShader, ShaderBundleId fragShader,
                                       std::vector<std::string> shader_defines = {},
                                       vk::SampleCountFlagBits samples =
-                                          vk::SampleCountFlagBits::e1);
-    void bindResource(vk::CommandBuffer cmd_buf, PassId pass_id);
+                                          vk::SampleCountFlagBits::e1,
+                                      GraphicsPipelineViewContract view = {});
+    void bindResource(vk::CommandBuffer cmd_buf, PassId pass_id,
+                      RenderPassViewInvocation invocation = {});
     void setInputTextures(PassId pass_id, const std::vector<GlobalRenderTargetId> &input_rts,
                           const RenderTargetImageViewResolver &rt_views);
     void setInputResources(PassId pass_id, const std::vector<GlobalRenderTargetId> &input_rts,
@@ -62,7 +70,9 @@ DECLARE_MODULE(FullscreenPassContainer) {
                            const std::vector<std::string> &input_buffers,
                            const RenderTargetImageViewResolver &rt_views,
                            const FrameGraphResourceContainer &frame_graph_resources,
-                           const std::vector<FullscreenInputSampling> &input_sampling = {});
+                           const std::vector<FullscreenInputSampling> &input_sampling = {},
+                           const std::vector<PassInputViewDimension> &input_views = {},
+                           GraphicsPipelineViewContract view = {});
     void setInputResourcesById(
         PassId pass_id,
         const std::vector<GlobalRenderTargetId> &input_rts,
@@ -70,12 +80,16 @@ DECLARE_MODULE(FullscreenPassContainer) {
         const std::vector<FrameGraphBufferId> &input_buffers,
         const RenderTargetImageViewResolver &rt_views,
         const FrameGraphResourceContainer &frame_graph_resources,
-        const std::vector<FullscreenInputSampling> &input_sampling = {});
+        const std::vector<FullscreenInputSampling> &input_sampling = {},
+        const std::vector<PassInputViewDimension> &input_views = {},
+        GraphicsPipelineViewContract view = {});
     void rebindInputResources(
         PassId pass_id,
         const RenderTargetImageViewResolver &rt_views,
         const FrameGraphResourceContainer &frame_graph_resources);
-    std::vector<vk::ImageView> boundInputImageViewsForTesting(PassId pass_id) const;
+    std::vector<vk::ImageView> boundInputImageViewsForTesting(
+        PassId pass_id,
+        std::uint32_t view_index = 0) const;
     std::vector<FullscreenInputSampling>
     inputSamplingForTesting(PassId pass_id) const;
     uint64_t inputBindingRevisionForTesting(PassId pass_id) const;

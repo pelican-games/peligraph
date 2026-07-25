@@ -97,6 +97,9 @@ DECLARE_MODULE(RenderTargetContainer) {
         bool history_read = false) const;
     vk::ImageView getLayeredImageView(
         GlobalRenderTargetId id, bool history_read = false) const;
+    vk::ImageView getLayeredImageViewForFrame(
+        GlobalRenderTargetId id, bool history_read,
+        std::uint32_t frame_index) const;
     vk::ImageView getLayeredAttachmentImageView(
         GlobalRenderTargetId id, bool history_read = false) const;
     bool hasSeparateAttachment(GlobalRenderTargetId id) const;

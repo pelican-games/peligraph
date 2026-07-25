@@ -10,11 +10,6 @@
 
 namespace Pelican {
 
-struct RenderPassViewInvocation {
-    std::uint32_t logical_view_count = 1;
-    std::uint32_t view_index = 0;
-};
-
 vk::Extent2D getRenderPassTargetExtent(const FrameRenderContext &frame, const PassDefinition &pass_def,
                                        RenderTargetContainer &rt_container);
 void transitionPassOutputsToAttachmentLayouts(vk::CommandBuffer cmd_buf, const PassDefinition &pass_def,

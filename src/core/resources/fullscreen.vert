@@ -10,4 +10,11 @@ void main() {
     // フルスクリーンクワッド（頂点バッファ不要）
     outUV = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
     gl_Position = vec4(outUV * 2.0 - 1.0, 0.0, 1.0);
+#if defined(PELICAN_MULTIVIEW)
+    // Keep gl_ViewIndex in the compiled vertex interface. The physical
+    // pipeline reflection uses it as the final multiview capability gate.
+    if (PELICAN_VIEW_INDEX >= uint(PELICAN_VIEW_COUNT)) {
+        gl_Position = vec4(0.0);
+    }
+#endif
 }

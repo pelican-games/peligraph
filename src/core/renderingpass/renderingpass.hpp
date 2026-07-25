@@ -162,6 +162,17 @@ struct PassImplementationSelection {
     bool operator==(const PassImplementationSelection &) const = default;
 };
 
+enum class PassInputViewDimension : std::uint8_t {
+    shared_2d,
+    sequential_2d,
+    layered_2d_array,
+};
+
+struct RenderPassViewInvocation {
+    std::uint32_t logical_view_count = 1;
+    std::uint32_t view_index = 0;
+};
+
 // A pass labels the resolution space in which its raster work is defined.
 // The compiler uses the scene domain to derive the camera/jitter render
 // extent. Output and independent work (for example UI and shadow maps) do not
@@ -182,6 +193,10 @@ struct PassDefinition {
     GlobalRenderTargetId output_depth;
     std::vector<GlobalRenderTargetId> input_targets;
     std::vector<bool> input_target_history;
+    // Runtime physical annotation aligned with input_targets. Parsed logical
+    // definitions leave it empty; runtime compilation fills it from the
+    // immutable Vulkan target plan.
+    std::vector<PassInputViewDimension> input_target_views;
     std::vector<std::string> input_buffers;
     std::vector<std::string> region_tags;
 

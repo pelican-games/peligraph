@@ -2,6 +2,7 @@
 #include "computetask.hpp"
 #include "rendertargetimageviewresolver.hpp"
 #include "rendertargetmetadataresolver.hpp"
+#include "../../project/targetrenderplanning.hpp"
 #include "../fullscreenpass/fullscreenpasscontainer.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../log.hpp"
@@ -12,8 +13,10 @@
 #include "../renderer/velocitypasscontainer.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include "../vkcore/rendertarget.hpp"
+#include <algorithm>
 #include <limits>
 #include <stdexcept>
+#include <string_view>
 
 namespace Pelican {
 
@@ -73,6 +76,157 @@ struct FullscreenShaderModules {
     ShaderBundleId vert_shader;
     ShaderBundleId frag_shader;
 };
+
+const VulkanPhysicalScopePlan &requirePassScope(
+    const VulkanTargetPlan &plan,
+    std::string_view pass_name) {
+    const VulkanPhysicalScopePlan *result = nullptr;
+    for (const auto &scope : plan.scopes) {
+        if (std::find(scope.nodes.begin(), scope.nodes.end(),
+                      pass_name) == scope.nodes.end()) {
+            continue;
+        }
+        if (result != nullptr) {
+            throw std::runtime_error(
+                "render pass belongs to more than one physical scope: " +
+                std::string{pass_name});
+        }
+        result = &scope;
+    }
+    if (result == nullptr) {
+        throw std::runtime_error(
+            "render pass has no physical target-plan scope: " +
+            std::string{pass_name});
+    }
+    return *result;
+}
+
+GraphicsPipelineViewContract passViewContract(
+    const VulkanTargetPlan *plan,
+    const PassDefinition &pass) {
+    if (plan == nullptr) return {};
+    const auto &scope =
+        requirePassScope(*plan, pass.name);
+    if (scope.view_execution !=
+        VulkanScopeViewExecution::multiview) {
+        return {};
+    }
+    if (!pass.isFullscreen()) {
+        throw std::runtime_error(
+            "physical multiview scope selected an unsupported production "
+            "pass implementation: " +
+            pass.name);
+    }
+    const auto view =
+        GraphicsPipelineViewContract::multiview(
+            scope.view_count);
+    if (view.view_mask != scope.view_mask) {
+        throw std::runtime_error(
+            "physical multiview scope and graphics pipeline view masks "
+            "do not match: " +
+            pass.name);
+    }
+    return view;
+}
+
+PassInputViewDimension inputViewDimension(
+    const VulkanTargetPlan *plan,
+    std::string_view resource) {
+    if (plan == nullptr) {
+        return PassInputViewDimension::shared_2d;
+    }
+    const auto found = std::find_if(
+        plan->resources.begin(), plan->resources.end(),
+        [&](const VulkanPhysicalResourcePlan &candidate) {
+            return candidate.logical_resource == resource;
+        });
+    if (found == plan->resources.end()) {
+        throw std::runtime_error(
+            "render-pass input is absent from the physical target plan: " +
+            std::string{resource});
+    }
+    switch (found->view_layout) {
+    case VulkanResourceViewLayout::shared_2d:
+        return PassInputViewDimension::shared_2d;
+    case VulkanResourceViewLayout::sequential_2d:
+        return PassInputViewDimension::sequential_2d;
+    case VulkanResourceViewLayout::layered_2d_array:
+        return PassInputViewDimension::layered_2d_array;
+    }
+    throw std::runtime_error(
+        "unknown physical input view layout");
+}
+
+PassDefinition applyPhysicalPassContract(
+    const PassDefinition &source,
+    const VulkanTargetPlan *plan,
+    const RenderTargetMetadataResolver *metadata) {
+    auto result = source;
+    result.input_target_views.clear();
+    result.input_target_views.reserve(
+        result.input_targets.size());
+    for (const auto target : result.input_targets) {
+        if (!isConcreteRenderTarget(target) ||
+            metadata == nullptr) {
+            result.input_target_views.push_back(
+                PassInputViewDimension::shared_2d);
+            continue;
+        }
+        result.input_target_views.push_back(
+            inputViewDimension(
+                plan, metadata->get(target).name));
+    }
+    return result;
+}
+
+void appendMultiviewShaderDefines(
+    std::vector<std::string> &defines,
+    const PassDefinition &pass,
+    const GraphicsPipelineViewContract &view) {
+    if (view.execution !=
+        GraphicsPipelineViewExecution::multiview) {
+        return;
+    }
+    defines.push_back("PELICAN_MULTIVIEW=1");
+    defines.push_back(
+        "PELICAN_VIEW_COUNT=" +
+        std::to_string(view.view_count));
+    for (std::size_t binding = 0;
+         binding < pass.input_target_views.size();
+         ++binding) {
+        if (pass.input_target_views[binding] ==
+            PassInputViewDimension::layered_2d_array) {
+            defines.push_back(
+                "PELICAN_INPUT_" +
+                std::to_string(binding) +
+                "_LAYERED=1");
+        }
+    }
+}
+
+void validatePassInputViewContract(
+    const PassDefinition &pass,
+    const GraphicsPipelineViewContract &view) {
+    if (view.execution !=
+        GraphicsPipelineViewExecution::multiview) {
+        return;
+    }
+    if (pass.input_target_views.size() !=
+        pass.input_targets.size()) {
+        throw std::runtime_error(
+            "multiview pass input view metadata is incomplete: " +
+            pass.name);
+    }
+    if (std::find(
+            pass.input_target_views.begin(),
+            pass.input_target_views.end(),
+            PassInputViewDimension::sequential_2d) !=
+        pass.input_target_views.end()) {
+        throw std::runtime_error(
+            "multiview pass cannot consume a sequential-only input: " +
+            pass.name);
+    }
+}
 
 vk::Format resolveFirstColorFormat(const PassDefinition &pass_def, RenderTarget &rt_module,
                                    const RenderTargetMetadataResolver &rt_metadata) {
@@ -232,29 +386,42 @@ FullscreenShaderModules registerFullscreenShaders(const FullscreenPassInfo &full
     };
 }
 
-PassId registerFullscreenPipeline(const PassDefinition &pass_def, FullscreenRuntimeDependencies dependencies) {
+PassId registerFullscreenPipeline(
+    const PassDefinition &pass_def,
+    FullscreenRuntimeDependencies dependencies,
+    GraphicsPipelineViewContract view) {
     const auto color_format =
         resolveFirstColorFormat(pass_def, dependencies.render_target, dependencies.render_target_metadata);
     if (pass_def.name == "output_transform" &&
         (color_format == vk::Format::eR8G8B8A8Unorm || color_format == vk::Format::eB8G8R8A8Unorm)) {
         dependencies.shader_defines.push_back("PELICAN_OUTPUT_UNORM_FALLBACK");
     }
+    appendMultiviewShaderDefines(
+        dependencies.shader_defines, pass_def, view);
     const auto shaders = registerFullscreenShaders(pass_def.fullscreenInfo(), dependencies);
     const auto pipeline_id = dependencies.fullscreen_pass_container.registerFullscreenPass(
         color_format, shaders.vert_shader, shaders.frag_shader,
-        dependencies.shader_defines, pass_def.rasterization_samples);
+        dependencies.shader_defines, pass_def.rasterization_samples,
+        view);
     return fullscreenPipelineValueToPassId(pipeline_id.value);
 }
 
-PassId compileFullscreenPass(const PassDefinition &pass_def, FullscreenRuntimeDependencies dependencies) {
-    const auto pass_id = registerFullscreenPipeline(pass_def, dependencies);
+PassId compileFullscreenPass(
+    const PassDefinition &pass_def,
+    FullscreenRuntimeDependencies dependencies,
+    GraphicsPipelineViewContract view) {
+    const auto pass_id =
+        registerFullscreenPipeline(
+            pass_def, dependencies, view);
 
     if (!pass_def.input_targets.empty() || !pass_def.input_buffers.empty()) {
         dependencies.fullscreen_pass_container.setInputResources(
             pass_id, pass_def.input_targets, pass_def.input_target_history, pass_def.input_buffers,
             dependencies.render_target_views,
             dependencies.frame_graph_resources,
-            pass_def.fullscreenInfo().input_sampling);
+            pass_def.fullscreenInfo().input_sampling,
+            pass_def.input_target_views,
+            view);
     }
 
     return pass_id;
@@ -341,29 +508,42 @@ CompiledRenderingPass compileRenderingPassRuntime(const RenderingPassDefinition 
     compiled_pass.passes.reserve(definition.passes.size());
 
     for (size_t i = 0; i < definition.passes.size(); ++i) {
-        const auto &pass_def = definition.passes[i];
+        auto pass_def = applyPhysicalPassContract(
+            definition.passes[i],
+            dependencies.target_plan,
+            dependencies.render_target_metadata);
+        const auto view =
+            passViewContract(
+                dependencies.target_plan, pass_def);
+        validatePassInputViewContract(
+            pass_def, view);
         if (pass_def.isFullscreen()) {
             const auto fullscreen_dependencies = requireFullscreenDependencies(pass_def, dependencies);
             compiled_pass.passes.push_back(
-                CompiledPass{pass_def, compileFullscreenPass(pass_def, fullscreen_dependencies)});
+                CompiledPass{
+                    pass_def,
+                    compileFullscreenPass(
+                        pass_def, fullscreen_dependencies,
+                        view),
+                    view});
         } else if (pass_def.isDebugDraw()) {
             const auto debug_draw_dependencies = requireDebugDrawDependencies(pass_def, dependencies);
             compiled_pass.passes.push_back(
-                CompiledPass{pass_def, compileDebugDrawPass(pass_def, debug_draw_dependencies)});
+                CompiledPass{pass_def, compileDebugDrawPass(pass_def, debug_draw_dependencies), view});
         } else if (pass_def.isDebugText()) {
             const auto debug_text_dependencies = requireDebugTextDependencies(pass_def, dependencies);
             compiled_pass.passes.push_back(
-                CompiledPass{pass_def, compileDebugTextPass(pass_def, debug_text_dependencies)});
+                CompiledPass{pass_def, compileDebugTextPass(pass_def, debug_text_dependencies), view});
         } else if (pass_def.isShadowDepth()) {
             const auto shadow_depth_dependencies = requireShadowDepthDependencies(pass_def, dependencies);
             compiled_pass.passes.push_back(
-                CompiledPass{pass_def, compileShadowDepthPass(pass_def, shadow_depth_dependencies)});
+                CompiledPass{pass_def, compileShadowDepthPass(pass_def, shadow_depth_dependencies), view});
         } else if (pass_def.isVelocity()) {
             const auto velocity_dependencies = requireVelocityDependencies(pass_def, dependencies);
             compiled_pass.passes.push_back(
-                CompiledPass{pass_def, compileVelocityPass(pass_def, velocity_dependencies)});
+                CompiledPass{pass_def, compileVelocityPass(pass_def, velocity_dependencies), view});
         } else {
-            compiled_pass.passes.push_back(CompiledPass{pass_def, passIndexToPassId(i)});
+            compiled_pass.passes.push_back(CompiledPass{pass_def, passIndexToPassId(i), view});
         }
     }
 

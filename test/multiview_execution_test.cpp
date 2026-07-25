@@ -3,8 +3,14 @@
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/log.hpp"
+#include "../src/core/fullscreenpass/fullscreenpasscontainer.hpp"
 #include "../src/core/renderer/frameresources.hpp"
+#include "../src/core/renderingpass/computetask.hpp"
+#include "../src/core/renderingpass/renderingpassruntimecompiler.hpp"
 #include "../src/core/renderingpass/rendertargetcontainer.hpp"
+#include "../src/core/renderingpass/rendertargetimageviewresolver.hpp"
+#include "../src/core/renderingpass/rendertargetmetadataresolver.hpp"
+#include "../src/project/targetrenderplanning.hpp"
 #include "../src/core/shader/pelican_sets.hpp"
 #include "../src/core/shader/pipelinefactory.hpp"
 #include "../src/core/shader/shadercompiler.hpp"
@@ -21,6 +27,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -50,6 +57,10 @@ class TempProject {
                 ("pelican_multiview_" +
                  std::to_string(suffix));
         std::filesystem::create_directories(root_);
+        std::ofstream{root_ / "scene.json", std::ios::binary}
+            << R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json";
+        std::ofstream{root_ / "assets.json", std::ios::binary}
+            << R"json({"schema":"pelican.assets","version":1,"assets":{}})json";
     }
 
     ~TempProject() {
@@ -145,6 +156,20 @@ void main() {
         pelicanFrame.projection[0][0],
         pelicanFrame.camera_position.w,
         1.0);
+}
+)glsl";
+}
+
+const char *layeredInputFragmentShader() {
+    return R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_sets.glsl"
+#include "pelican_view.glsl"
+layout(set = PELICAN_SET_PASS_INPUT, binding = 0) uniform PELICAN_SAMPLER_2D_0 inputColor;
+layout(location = 0) out vec4 outColor;
+void main() {
+    outColor = PELICAN_TEXTURE_2D_0(inputColor, vec2(0.5));
 }
 )glsl";
 }
@@ -414,11 +439,32 @@ TEST_CASE(
         "wp203b_multiview.frag",
         {"PELICAN_MULTIVIEW=1",
          "PELICAN_VIEW_COUNT=2"});
+    const auto sequential_input_frag =
+        compileBundle(
+            library, compiler,
+            layeredInputFragmentShader(),
+            vk::ShaderStageFlagBits::eFragment,
+            "wp203b_sequential_input.frag");
+    const auto multiview_input_frag =
+        compileBundle(
+            library, compiler,
+            layeredInputFragmentShader(),
+            vk::ShaderStageFlagBits::eFragment,
+            "wp203b_multiview_input.frag",
+            {"PELICAN_MULTIVIEW=1",
+             "PELICAN_VIEW_COUNT=2",
+             "PELICAN_INPUT_0_LAYERED=1"});
     REQUIRE_FALSE(
         library.get(sequential_frag)
             .reflection.uses_view_index);
     REQUIRE(
         library.get(multiview_frag)
+            .reflection.uses_view_index);
+    REQUIRE_FALSE(
+        library.get(sequential_input_frag)
+            .reflection.uses_view_index);
+    REQUIRE(
+        library.get(multiview_input_frag)
             .reflection.uses_view_index);
 
     auto &factory = GET_MODULE(PipelineFactory);
@@ -549,7 +595,8 @@ TEST_CASE(
 
     const auto usage =
         vk::ImageUsageFlagBits::eColorAttachment |
-        vk::ImageUsageFlagBits::eTransferSrc;
+        vk::ImageUsageFlagBits::eTransferSrc |
+        vk::ImageUsageFlagBits::eSampled;
 
     auto &render_targets =
         GET_MODULE(RenderTargetContainer);
@@ -585,6 +632,159 @@ TEST_CASE(
     REQUIRE_THROWS(
         render_targets.getImageLayerView(
             managed_target, stereo_view_count));
+
+    auto &fullscreen_passes =
+        GET_MODULE(FullscreenPassContainer);
+    const auto sequential_input_pipeline =
+        fullscreen_passes.registerFullscreenPass(
+            test_format, sequential_vert,
+            sequential_input_frag);
+    const auto multiview_input_pipeline =
+        fullscreen_passes.registerFullscreenPass(
+            test_format, sequential_vert,
+            multiview_input_frag,
+            {"PELICAN_MULTIVIEW=1",
+             "PELICAN_VIEW_COUNT=2",
+             "PELICAN_INPUT_0_LAYERED=1"},
+            vk::SampleCountFlagBits::e1,
+            GraphicsPipelineViewContract::multiview(
+                stereo_view_count));
+    const PassId sequential_input_pass{
+        static_cast<int>(
+            sequential_input_pipeline.value)};
+    const PassId multiview_input_pass{
+        static_cast<int>(
+            multiview_input_pipeline.value)};
+    const RenderTargetImageViewResolver
+        target_views{render_targets};
+    auto &frame_graph_resources =
+        GET_MODULE(FrameGraphResourceContainer);
+    fullscreen_passes.setInputResourcesById(
+        sequential_input_pass,
+        {managed_target}, {false}, {},
+        target_views, frame_graph_resources, {},
+        {PassInputViewDimension::sequential_2d});
+    fullscreen_passes.setInputResourcesById(
+        multiview_input_pass,
+        {managed_target}, {false}, {},
+        target_views, frame_graph_resources, {},
+        {PassInputViewDimension::layered_2d_array},
+        GraphicsPipelineViewContract::multiview(
+            stereo_view_count));
+    REQUIRE(
+        fullscreen_passes
+            .boundInputImageViewsForTesting(
+                sequential_input_pass, 0)
+            .front() == managed_left);
+    REQUIRE(
+        fullscreen_passes
+            .boundInputImageViewsForTesting(
+                sequential_input_pass, 1)
+            .front() == managed_right);
+    REQUIRE(
+        fullscreen_passes
+            .boundInputImageViewsForTesting(
+                multiview_input_pass)
+            .front() ==
+        render_targets.getLayeredImageView(
+            managed_target));
+
+    PassDefinition runtime_pass;
+    runtime_pass.name = "wp203b_runtime_multiview";
+    runtime_pass.output_color = {managed_target};
+    runtime_pass.input_targets = {managed_target};
+    runtime_pass.input_target_history = {false};
+    runtime_pass.pass_info = FullscreenPassInfo{
+        .vert_shader = makeShaderReference(
+            "engine://fullscreen", ShaderStage::vertex),
+        .frag_shader = makeShaderReference(
+            "engine://scene_present", ShaderStage::fragment),
+    };
+    RenderingPassDefinition runtime_definition{
+        .name = "wp203b_runtime",
+        .passes = {runtime_pass},
+    };
+    VulkanTargetPlan runtime_plan;
+    runtime_plan.graph = runtime_definition.name;
+    runtime_plan.view_execution_plan.view_count =
+        stereo_view_count;
+    runtime_plan.view_execution_plan.uses_multiview = true;
+    runtime_plan.resources = {
+        {
+            .logical_resource = "wp203b_layered_target",
+            .view_layout =
+                VulkanResourceViewLayout::layered_2d_array,
+            .array_layers = stereo_view_count,
+        },
+    };
+    runtime_plan.scopes = {
+        {
+            .id = "wp203b_runtime_multiview",
+            .nodes = {runtime_pass.name},
+            .view_execution =
+                VulkanScopeViewExecution::multiview,
+            .view_count = stereo_view_count,
+            .execution_count = 1,
+            .view_mask = stereo_view_mask,
+        },
+    };
+    const RenderTargetMetadataResolver target_metadata{
+        render_targets};
+    const auto compiled_runtime =
+        compileRenderingPassRuntime(
+            runtime_definition,
+            RenderingPassRuntimeDependencies{
+                .render_target = &GET_MODULE(RenderTarget),
+                .render_target_metadata = &target_metadata,
+                .render_target_views = &target_views,
+                .shader_library = &library,
+                .fullscreen_pass_container =
+                    &fullscreen_passes,
+                .frame_graph_resources =
+                    &frame_graph_resources,
+                .path_resolver =
+                    &GET_MODULE(PathResolver),
+                .target_plan = &runtime_plan,
+            });
+    REQUIRE(compiled_runtime.passes.size() == 1);
+    REQUIRE(
+        compiled_runtime.passes.front().view ==
+        GraphicsPipelineViewContract::multiview(
+            stereo_view_count));
+    REQUIRE(
+        compiled_runtime.passes.front()
+            .definition.input_target_views ==
+        std::vector{
+            PassInputViewDimension::layered_2d_array});
+    REQUIRE(
+        fullscreen_passes
+            .boundInputImageViewsForTesting(
+                compiled_runtime.passes.front().pass_id)
+            .front() ==
+        render_targets.getLayeredImageView(
+            managed_target));
+
+    auto invalid_runtime_plan = runtime_plan;
+    invalid_runtime_plan.resources.front().view_layout =
+        VulkanResourceViewLayout::sequential_2d;
+    REQUIRE_THROWS_WITH(
+        compileRenderingPassRuntime(
+            runtime_definition,
+            RenderingPassRuntimeDependencies{
+                .render_target = &GET_MODULE(RenderTarget),
+                .render_target_metadata = &target_metadata,
+                .render_target_views = &target_views,
+                .shader_library = &library,
+                .fullscreen_pass_container =
+                    &fullscreen_passes,
+                .frame_graph_resources =
+                    &frame_graph_resources,
+                .path_resolver =
+                    &GET_MODULE(PathResolver),
+                .target_plan = &invalid_runtime_plan,
+            }),
+        Catch::Matchers::ContainsSubstring(
+            "cannot consume a sequential-only input"));
 
     PassDefinition managed_pass;
     managed_pass.name = "wp203b_attachment_probe";

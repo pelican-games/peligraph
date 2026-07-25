@@ -55,6 +55,7 @@ void renderImGuiPass(vk::CommandBuffer cmd_buf, const FrameRenderContext &frame,
 #endif
 void renderDynamicPassDrawCalls(vk::CommandBuffer cmd_buf, PassId pass_id, const PassDefinition &pass_def,
                                 vk::Extent2D target_extent,
-                                const RenderPassDispatchDependencies &dependencies);
+                                const RenderPassDispatchDependencies &dependencies,
+                                RenderPassViewInvocation invocation = {});
 
 } // namespace Pelican

@@ -636,6 +636,21 @@ vk::ImageView RenderTargetContainer::getLayeredImageView(
 }
 
 vk::ImageView
+RenderTargetContainer::getLayeredImageViewForFrame(
+    GlobalRenderTargetId id, bool history_read,
+    std::uint32_t frame_index) const {
+    const auto &rt = render_targets.get(id);
+    const std::uint32_t surface =
+        rt.history
+            ? ((frame_index & 1u) ^
+               (history_read ? 1u : 0u))
+            : 0u;
+    return rt.layered_image_views[surface]
+               ? rt.layered_image_views[surface].get()
+               : rt.image_layer_views[surface].front().get();
+}
+
+vk::ImageView
 RenderTargetContainer::getLayeredAttachmentImageView(
     GlobalRenderTargetId id, bool history_read) const {
     const auto &rt = render_targets.get(id);

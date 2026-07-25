@@ -10,6 +10,7 @@ function(embed_shader file_name)
             -o ${CMAKE_CURRENT_SOURCE_DIR}/${file_name}.spv
         DEPENDS ${file_name} shaders/include/pelican_sets.glsl
                 shaders/include/pelican_frame.glsl
+                shaders/include/pelican_view.glsl
                 shaders/include/pelican_material.glsl
                 shaders/include/pelican_material_instance.glsl
                 shaders/include/pelican_features.glsl
@@ -72,6 +73,7 @@ b_embed(pelican_resources features/velocity.json)
 b_embed(pelican_resources features/taa.json)
 b_embed(pelican_resources shaders/include/pelican_sets.glsl)
 b_embed(pelican_resources shaders/include/pelican_frame.glsl)
+b_embed(pelican_resources shaders/include/pelican_view.glsl)
 b_embed(pelican_resources shaders/include/pelican_material.glsl)
 b_embed(pelican_resources shaders/include/pelican_material_instance.glsl)
 b_embed(pelican_resources shaders/include/pelican_features.glsl)

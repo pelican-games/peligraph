@@ -68,6 +68,10 @@ struct RenderingPassConfigRegistrationDependencies {
     struct Options {
         RenderPipelineGraphVariant graph_variant =
             RenderPipelineGraphVariant::flat;
+        // WP203b production wiring is enabled only for targets that can
+        // provide one command context spanning the complete view family.
+        // OpenXR enables this after its array-swapchain target is installed.
+        bool enable_multiview_runtime = false;
         bool publish_enabled_features = true;
         std::string gpu_owner_scope;
         std::function<void()> prepare_additional_gpu_resources;

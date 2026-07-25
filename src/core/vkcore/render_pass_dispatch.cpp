@@ -20,23 +20,28 @@ namespace Pelican {
 namespace {
 
 void renderMaterialPass(vk::CommandBuffer cmd_buf, PassId pass_id, const PassDefinition &pass_def,
-                        const RenderPassDispatchDependencies &dependencies) {
+                        const RenderPassDispatchDependencies &dependencies,
+                        RenderPassViewInvocation invocation) {
     const auto &materialInfo = pass_def.materialInfo();
     if (materialInfo.material_count > 0) {
         dependencies.material_renderer.renderWithMaterialRange(cmd_buf, pass_id, pass_def,
                                                                materialInfo.material_start,
                                                                materialInfo.material_count,
-                                                               dependencies.material_renderer_dependencies);
+                                                               dependencies.material_renderer_dependencies,
+                                                               invocation);
     } else {
         dependencies.material_renderer.render(cmd_buf, pass_id, pass_def,
-                                              dependencies.material_renderer_dependencies);
+                                              dependencies.material_renderer_dependencies,
+                                              invocation);
     }
 }
 
 void renderFullscreenPass(vk::CommandBuffer cmd_buf, PassId pass_id, const PassDefinition &pass_def,
-                          const RenderPassDispatchDependencies &dependencies) {
+                          const RenderPassDispatchDependencies &dependencies,
+                          RenderPassViewInvocation invocation) {
     dependencies.fullscreen_pass_renderer.render(cmd_buf, pass_id, pass_def,
-                                                 dependencies.fullscreen_pass_renderer_dependencies);
+                                                 dependencies.fullscreen_pass_renderer_dependencies,
+                                                 invocation);
 }
 
 void renderDebugDrawPass(vk::CommandBuffer cmd_buf, PassId pass_id,
@@ -140,11 +145,14 @@ void renderImGuiPass(vk::CommandBuffer cmd_buf, const FrameRenderContext &frame,
 
 void renderDynamicPassDrawCalls(vk::CommandBuffer cmd_buf, PassId pass_id, const PassDefinition &pass_def,
                                 vk::Extent2D target_extent,
-                                const RenderPassDispatchDependencies &dependencies) {
+                                const RenderPassDispatchDependencies &dependencies,
+                                RenderPassViewInvocation invocation) {
     if (pass_def.isMaterial()) {
-        renderMaterialPass(cmd_buf, pass_id, pass_def, dependencies);
+        renderMaterialPass(cmd_buf, pass_id, pass_def, dependencies,
+                           invocation);
     } else if (pass_def.isFullscreen()) {
-        renderFullscreenPass(cmd_buf, pass_id, pass_def, dependencies);
+        renderFullscreenPass(cmd_buf, pass_id, pass_def, dependencies,
+                             invocation);
     } else if (pass_def.isShadowDepth()) {
         renderShadowDepthPass(cmd_buf, pass_id, dependencies);
     } else if (pass_def.isVelocity()) {

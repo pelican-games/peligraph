@@ -92,11 +92,17 @@ DECLARE_MODULE(MaterialContainer) {
             MaterialScreenInputContract contract;
             GlobalRenderTargetId target = noRenderTargetId();
             bool history = false;
+            PassInputViewDimension view_dimension =
+                PassInputViewDimension::shared_2d;
         };
         struct ScreenInputDescriptor {
-            std::array<vk::UniqueDescriptorSet, 2> descsets;
+            struct DescriptorVariant {
+                std::array<vk::UniqueDescriptorSet, 2> descsets;
+                std::array<std::vector<vk::ImageView>, 2>
+                    bound_image_views;
+            };
+            std::vector<DescriptorVariant> variants;
             std::vector<ScreenInputResource> resources;
-            std::array<std::vector<vk::ImageView>, 2> bound_image_views;
             std::uint64_t binding_revision = 0;
         };
 
@@ -227,7 +233,8 @@ DECLARE_MODULE(MaterialContainer) {
     }
     void bindResource(vk::CommandBuffer cmd_buf, PassId pass_id,
                       const PassDefinition &pass, GlobalMaterialId material,
-                      GlobalMaterialId prev_material_id) const;
+                      GlobalMaterialId prev_material_id,
+                      RenderPassViewInvocation invocation = {}) const;
     void rebindScreenInputs(const RenderTargetImageViewResolver &rt_views) const;
     std::vector<vk::ImageView> boundScreenInputImageViewsForTesting(
         GlobalMaterialId material, const PassDefinition &pass) const;

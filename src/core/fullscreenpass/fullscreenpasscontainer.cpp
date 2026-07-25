@@ -6,6 +6,7 @@
 #include "../shader/pipelinefactory.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/deletionqueue.hpp"
+#include <algorithm>
 #include <array>
 #include <limits>
 #include <stdexcept>
@@ -70,7 +71,8 @@ void requireInputBindings(const ShaderReflection &reflection, size_t texture_cou
     }
 }
 
-vk::UniqueDescriptorPool createDescPool(vk::Device device, uint32_t maxSets = 128) {
+vk::UniqueDescriptorPool createDescPool(vk::Device device,
+                                        uint32_t maxSets = 1024) {
     std::array<vk::DescriptorPoolSize, 2> pool_sizes{
         vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler,
                                maxSets * fullscreenInputBindingCount},
@@ -159,7 +161,8 @@ FullscreenPassContainer::PipelineId
 FullscreenPassContainer::registerFullscreenPass(vk::Format colorFormat, ShaderBundleId vertShader,
                                                 ShaderBundleId fragShader,
                                                 std::vector<std::string> shader_defines,
-                                                vk::SampleCountFlagBits samples) {
+                                                vk::SampleCountFlagBits samples,
+                                                GraphicsPipelineViewContract view) {
     registration_order.reserve(registration_order.size() + 1);
     if (next_pipeline_id >
         static_cast<uint32_t>(
@@ -178,6 +181,7 @@ FullscreenPassContainer::registerFullscreenPass(vk::Format colorFormat, ShaderBu
         std::move(shader_defines),
     };
     desc.rasterization_samples = samples;
+    desc.view = view;
     const auto pipeline_handle = pipeline_factory.create(desc);
     if (!pipelines.insert({pipeline_id, pipeline_handle}).second) {
         throw std::runtime_error(
@@ -188,7 +192,9 @@ FullscreenPassContainer::registerFullscreenPass(vk::Format colorFormat, ShaderBu
     return pipeline_id;
 }
 
-void FullscreenPassContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pass_id) {
+void FullscreenPassContainer::bindResource(
+    vk::CommandBuffer cmd_buf, PassId pass_id,
+    RenderPassViewInvocation invocation) {
     const auto pipeline_handle = requirePipelineHandle(pass_id, pipelines);
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
 
@@ -197,8 +203,34 @@ void FullscreenPassContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pas
     auto it = input_textures.find(pass_id.value);
     if (it != input_textures.end()) {
         const auto parity = GET_MODULE(RenderTargetContainer).historyFrameIndex();
+        const auto &info = it->second;
+        std::size_t variant_index = 0;
+        if (info.view.execution ==
+            GraphicsPipelineViewExecution::multiview) {
+            if (invocation.view_index != 0 ||
+                invocation.logical_view_count !=
+                    info.view.view_count) {
+                throw std::runtime_error(
+                    "fullscreen multiview descriptor invocation does not "
+                    "match its pipeline");
+            }
+        } else if (info.variants.size() > 1) {
+            if (invocation.logical_view_count !=
+                    info.variants.size() ||
+                invocation.view_index >=
+                info.variants.size()) {
+                throw std::runtime_error(
+                    "fullscreen sequential descriptor invocation does not "
+                    "match its layered inputs");
+            }
+            variant_index = invocation.view_index;
+        }
         cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_factory.layout(pipeline_handle),
-                                   PELICAN_SET_PASS_INPUT, it->second.descsets[parity].get(), {});
+                                   PELICAN_SET_PASS_INPUT,
+                                   info.variants.at(variant_index)
+                                       .descsets[parity]
+                                       .get(),
+                                   {});
     }
 }
 
@@ -214,7 +246,9 @@ void FullscreenPassContainer::setInputResources(PassId pass_id,
                                                 const std::vector<std::string> &input_buffers,
                                                 const RenderTargetImageViewResolver &rt_views,
                                                 const FrameGraphResourceContainer &frame_graph_resources,
-                                                const std::vector<FullscreenInputSampling> &input_sampling) {
+                                                const std::vector<FullscreenInputSampling> &input_sampling,
+                                                const std::vector<PassInputViewDimension> &input_views,
+                                                GraphicsPipelineViewContract view) {
     std::vector<FrameGraphBufferId> buffer_ids;
     buffer_ids.reserve(input_buffers.size());
     for (const auto &name : input_buffers) {
@@ -229,7 +263,8 @@ void FullscreenPassContainer::setInputResources(PassId pass_id,
     }
     setInputResourcesById(
         pass_id, input_rts, input_rt_history, buffer_ids,
-        rt_views, frame_graph_resources, input_sampling);
+        rt_views, frame_graph_resources, input_sampling,
+        input_views, view);
 }
 
 void FullscreenPassContainer::setInputResourcesById(
@@ -239,7 +274,9 @@ void FullscreenPassContainer::setInputResourcesById(
     const std::vector<FrameGraphBufferId> &input_buffers,
     const RenderTargetImageViewResolver &rt_views,
     const FrameGraphResourceContainer &frame_graph_resources,
-    const std::vector<FullscreenInputSampling> &input_sampling) {
+    const std::vector<FullscreenInputSampling> &input_sampling,
+    const std::vector<PassInputViewDimension> &input_views,
+    GraphicsPipelineViewContract view) {
     const auto pipeline_handle = requirePipelineHandle(pass_id, pipelines);
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
     requireInputBindings(pipeline_factory.reflection(pipeline_handle), input_rts.size(), input_buffers.size());
@@ -250,6 +287,19 @@ void FullscreenPassContainer::setInputResourcesById(
         input_sampling.size() != input_rts.size()) {
         throw std::runtime_error(
             "Fullscreen pass input sampling metadata is inconsistent");
+    }
+    if (!input_views.empty() &&
+        input_views.size() != input_rts.size()) {
+        throw std::runtime_error(
+            "Fullscreen pass input view metadata is inconsistent");
+    }
+    if (view.execution ==
+            GraphicsPipelineViewExecution::multiview &&
+        std::find(input_views.begin(), input_views.end(),
+                  PassInputViewDimension::sequential_2d) !=
+            input_views.end()) {
+        throw std::runtime_error(
+            "Fullscreen multiview pass cannot bind a sequential-only input");
     }
 
     const auto input_count = input_rts.size() + input_buffers.size();
@@ -266,51 +316,139 @@ void FullscreenPassContainer::setInputResourcesById(
     InputTextureInfo info;
     info.input_rt_ids = input_rts;
     info.input_rt_history = input_rt_history;
+    info.input_rt_views =
+        input_views.empty()
+            ? std::vector<PassInputViewDimension>(
+                  input_rts.size(),
+                  PassInputViewDimension::shared_2d)
+            : input_views;
     info.input_sampling =
         input_sampling.empty()
             ? std::vector<FullscreenInputSampling>(
                   input_rts.size())
             : input_sampling;
     info.input_buffer_ids = input_buffers;
+    info.view = view;
     info.binding_revision = next_binding_revision++;
-    for (uint32_t parity = 0; parity < 2; ++parity) {
-        vk::DescriptorSetAllocateInfo alloc_info;
-        alloc_info.descriptorPool = desc_pool.get();
-        alloc_info.descriptorSetCount = 1;
-        alloc_info.pSetLayouts = &layout;
-        info.descsets[parity] = std::move(device.allocateDescriptorSetsUnique(alloc_info).front());
-
-        std::vector<vk::WriteDescriptorSet> writes;
-        std::vector<vk::DescriptorImageInfo> image_infos;
-        std::vector<vk::DescriptorBufferInfo> buffer_infos;
-        image_infos.reserve(input_rts.size());
-        buffer_infos.reserve(input_buffers.size());
-        info.bound_image_views[parity].reserve(input_rts.size());
-        for (uint32_t i = 0; i < input_rts.size(); ++i) {
-            if (!isConcreteRenderTarget(input_rts[i])) {
-                throw std::runtime_error("Fullscreen pass input texture must be a render target");
+    if (std::find_if(
+            input_rts.begin(), input_rts.end(),
+            [](GlobalRenderTargetId target) {
+                return !isConcreteRenderTarget(target);
+            }) != input_rts.end()) {
+        throw std::runtime_error(
+            "Fullscreen pass input texture must be a render target");
+    }
+    std::uint32_t variant_count = 1;
+    if (view.execution ==
+        GraphicsPipelineViewExecution::single_view) {
+        for (std::size_t input = 0;
+             input < input_rts.size(); ++input) {
+            if (info.input_rt_views[input] !=
+                PassInputViewDimension::shared_2d) {
+                variant_count = std::max(
+                    variant_count,
+                    rt_views.arrayLayers(
+                        input_rts[input]));
             }
-            image_infos.push_back(vk::DescriptorImageInfo{
-                input_samplers
-                    .at(samplerIndex(info.input_sampling[i]))
-                    .get(),
-                rt_views.getImageViewForFrame(input_rts[i], input_rt_history[i], parity),
-                vk::ImageLayout::eShaderReadOnlyOptimal});
-            info.bound_image_views[parity].push_back(image_infos.back().imageView);
-            vk::WriteDescriptorSet write{info.descsets[parity].get(), i, 0, 1,
-                                         vk::DescriptorType::eCombinedImageSampler};
-            write.pImageInfo = &image_infos.back();
-            writes.push_back(write);
         }
-        for (uint32_t i = 0; i < input_buffers.size(); ++i) {
-            const auto binding = static_cast<uint32_t>(input_rts.size()) + i;
-            buffer_infos.push_back(frame_graph_resources.descriptorInfo(input_buffers[i]));
-            vk::WriteDescriptorSet write{info.descsets[parity].get(), binding, 0, 1,
-                                         vk::DescriptorType::eStorageBuffer};
-            write.pBufferInfo = &buffer_infos.back();
-            writes.push_back(write);
+    }
+    for (std::size_t input = 0;
+         input < input_rts.size(); ++input) {
+        const auto layers =
+            rt_views.arrayLayers(input_rts[input]);
+        if (view.execution ==
+                GraphicsPipelineViewExecution::multiview &&
+            info.input_rt_views[input] ==
+                PassInputViewDimension::layered_2d_array &&
+            layers < view.view_count) {
+            throw std::runtime_error(
+                "Fullscreen multiview input has too few array layers");
         }
-        device.updateDescriptorSets(writes, {});
+        if (view.execution ==
+                GraphicsPipelineViewExecution::single_view &&
+            info.input_rt_views[input] !=
+                PassInputViewDimension::shared_2d &&
+            layers != variant_count) {
+            throw std::runtime_error(
+                "Fullscreen sequential inputs have inconsistent "
+                "array-layer counts");
+        }
+    }
+    info.variants.resize(variant_count);
+    for (std::uint32_t variant = 0;
+         variant < variant_count; ++variant) {
+        for (uint32_t parity = 0; parity < 2; ++parity) {
+            auto &descriptor_variant =
+                info.variants[variant];
+            vk::DescriptorSetAllocateInfo alloc_info;
+            alloc_info.descriptorPool = desc_pool.get();
+            alloc_info.descriptorSetCount = 1;
+            alloc_info.pSetLayouts = &layout;
+            descriptor_variant.descsets[parity] =
+                std::move(device.allocateDescriptorSetsUnique(alloc_info).front());
+
+            std::vector<vk::WriteDescriptorSet> writes;
+            std::vector<vk::DescriptorImageInfo> image_infos;
+            std::vector<vk::DescriptorBufferInfo> buffer_infos;
+            image_infos.reserve(input_rts.size());
+            buffer_infos.reserve(input_buffers.size());
+            descriptor_variant.bound_image_views[parity]
+                .reserve(input_rts.size());
+            for (uint32_t i = 0; i < input_rts.size(); ++i) {
+                if (!isConcreteRenderTarget(input_rts[i])) {
+                    throw std::runtime_error("Fullscreen pass input texture must be a render target");
+                }
+                const auto dimension =
+                    info.input_rt_views[i];
+                vk::ImageView image_view;
+                if (view.execution ==
+                        GraphicsPipelineViewExecution::multiview &&
+                    dimension ==
+                        PassInputViewDimension::layered_2d_array) {
+                    image_view =
+                        rt_views.getLayeredImageViewForFrame(
+                            input_rts[i],
+                            input_rt_history[i], parity);
+                } else if (
+                    view.execution ==
+                        GraphicsPipelineViewExecution::single_view &&
+                    dimension !=
+                        PassInputViewDimension::shared_2d) {
+                    image_view =
+                        rt_views.getImageLayerViewForFrame(
+                            input_rts[i], variant,
+                            input_rt_history[i], parity);
+                } else {
+                    image_view =
+                        rt_views.getImageViewForFrame(
+                            input_rts[i],
+                            input_rt_history[i], parity);
+                }
+                image_infos.push_back(vk::DescriptorImageInfo{
+                    input_samplers
+                        .at(samplerIndex(info.input_sampling[i]))
+                        .get(),
+                    image_view,
+                    vk::ImageLayout::eShaderReadOnlyOptimal});
+                descriptor_variant.bound_image_views[parity]
+                    .push_back(image_infos.back().imageView);
+                vk::WriteDescriptorSet write{
+                    descriptor_variant.descsets[parity].get(), i, 0, 1,
+                    vk::DescriptorType::eCombinedImageSampler};
+                write.pImageInfo = &image_infos.back();
+                writes.push_back(write);
+            }
+            for (uint32_t i = 0; i < input_buffers.size(); ++i) {
+                const auto binding = static_cast<uint32_t>(input_rts.size()) + i;
+                buffer_infos.push_back(frame_graph_resources.descriptorInfo(input_buffers[i]));
+                vk::WriteDescriptorSet write{
+                    descriptor_variant.descsets[parity].get(), binding, 0, 1,
+                    vk::DescriptorType::eStorageBuffer};
+                write.pBufferInfo = &buffer_infos.back();
+                writes.push_back(write);
+            }
+            device.updateDescriptorSets(writes, {});
+        }
     }
     input_textures.insert_or_assign(pass_id.value, std::move(info));
 }
@@ -328,17 +466,25 @@ void FullscreenPassContainer::rebindInputResources(
         found->second.input_buffer_ids;
     const auto input_sampling =
         found->second.input_sampling;
+    const auto input_views =
+        found->second.input_rt_views;
+    const auto view = found->second.view;
     setInputResourcesById(
         pass_id, input_rts, input_history, input_buffers,
-        rt_views, frame_graph_resources, input_sampling);
+        rt_views, frame_graph_resources, input_sampling,
+        input_views, view);
 }
 
-std::vector<vk::ImageView> FullscreenPassContainer::boundInputImageViewsForTesting(PassId pass_id) const {
+std::vector<vk::ImageView>
+FullscreenPassContainer::boundInputImageViewsForTesting(
+    PassId pass_id,
+    std::uint32_t view_index) const {
     const auto found = input_textures.find(pass_id.value);
     if (found == input_textures.end()) {
         return {};
     }
-    return found->second.bound_image_views[GET_MODULE(RenderTargetContainer).historyFrameIndex()];
+    return found->second.variants.at(view_index).bound_image_views[
+        GET_MODULE(RenderTargetContainer).historyFrameIndex()];
 }
 
 uint64_t FullscreenPassContainer::inputBindingRevisionForTesting(PassId pass_id) const {

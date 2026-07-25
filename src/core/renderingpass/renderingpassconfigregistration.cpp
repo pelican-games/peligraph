@@ -30,10 +30,12 @@
 #include "../launchconfig.hpp"
 #endif
 #include <algorithm>
+#include <array>
 #include <iterator>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <span>
 #include <stdexcept>
 #include <string_view>
@@ -86,6 +88,7 @@ RenderingPassRuntimeDependencies toRuntimeDependencies(
         dependencies.warn_backend_specific_shader_refs,
         std::move(debug_draw_provider),
         std::move(debug_text_provider),
+        nullptr,
     };
 }
 
@@ -111,7 +114,11 @@ std::string gpuOwnerScope(
 
 std::optional<VulkanViewExecutionPlanRequest>
 targetViewExecutionRequest(
-    const CompiledRenderPipeline &pipeline) {
+    const CompiledRenderPipeline &pipeline,
+    const nlohmann::json &config,
+    std::span<const FrameGraphDefinition> graphs,
+    std::span<const ComputeTaskDefinition> compute_tasks,
+    bool enable_multiview_runtime) {
     if (pipeline.graph_variant_policy.variant !=
         RenderPipelineGraphVariant::xr) {
         return std::nullopt;
@@ -122,16 +129,132 @@ targetViewExecutionRequest(
             "compiled XR pipeline lacks an active target-view "
             "policy");
     }
-    return VulkanViewExecutionPlanRequest{
+    VulkanViewExecutionPlanRequest request{
         .view_count =
             pipeline.graph_variant_policy.view_count,
         .preference =
             pipeline.xr_target_policy.view_execution,
-        // Runtime pass implementations do not declare multiview shader
-        // support yet. Auto therefore preserves the proven sequential path;
-        // an authored required policy fails during target planning instead
-        // of silently selecting a non-functional Vulkan path.
     };
+    if (!enable_multiview_runtime) {
+        // The current OpenXR target owns one swapchain image per eye. Keep
+        // production XR sequential until WP203c installs its array target,
+        // while allowing synthetic/embedded view-family targets to exercise
+        // the completed WP203b path explicitly.
+        return request;
+    }
+
+    std::set<std::string, std::less<>> capable_candidates;
+    std::set<std::string, std::less<>> independent_candidates;
+    const auto builtin_fragment =
+        [](std::string_view reference) {
+            static constexpr std::array known{
+                std::string_view{"engine://fullscreen"},
+                std::string_view{"engine://ssao"},
+                std::string_view{"engine://ssao_blur"},
+                std::string_view{"engine://scene_present"},
+                std::string_view{"engine://output_transform"},
+            };
+            return std::find(known.begin(), known.end(),
+                             reference) != known.end();
+        };
+    if (config.contains("rendering_passes") &&
+        config.at("rendering_passes").is_array()) {
+        for (const auto &rendering_pass :
+             config.at("rendering_passes")) {
+            if (!rendering_pass.is_object() ||
+                !rendering_pass.contains("passes") ||
+                !rendering_pass.at("passes").is_array()) {
+                continue;
+            }
+            for (const auto &pass :
+                 rendering_pass.at("passes")) {
+                if (!pass.is_object() ||
+                    !pass.contains("name") ||
+                    !pass.at("name").is_string() ||
+                    !pass.contains("type") ||
+                    !pass.at("type").is_string()) {
+                    continue;
+                }
+                const auto name =
+                    pass.at("name").get<std::string>();
+                const auto type =
+                    pass.at("type").get<std::string>();
+                if (type == "shadow_depth") {
+                    independent_candidates.insert(name);
+                    continue;
+                }
+                if (type != "fullscreen" ||
+                    pass.contains("implementation") ||
+                    !pass.contains("shader") ||
+                    !pass.at("shader").is_object()) {
+                    continue;
+                }
+                const auto &shader = pass.at("shader");
+                if (!shader.contains("vertex") ||
+                    !shader.at("vertex").is_string() ||
+                    !shader.contains("fragment") ||
+                    !shader.at("fragment").is_string()) {
+                    continue;
+                }
+                const auto vertex =
+                    shader.at("vertex").get<std::string>();
+                const auto fragment =
+                    shader.at("fragment").get<std::string>();
+                if (vertex == "engine://fullscreen" &&
+                    builtin_fragment(fragment)) {
+                    capable_candidates.insert(name);
+                }
+            }
+        }
+    }
+    for (const auto &task : compute_tasks) {
+        if (task.schedule == "per_frame") {
+            independent_candidates.insert(task.name);
+        }
+    }
+    const bool sprite_enabled =
+        std::find(pipeline.feature_names.begin(),
+                  pipeline.feature_names.end(),
+                  "sprite") !=
+        pipeline.feature_names.end();
+    for (const auto &graph : graphs) {
+        for (const auto &node : graph.nodes) {
+            if (node.kind == FramePlanNodeKind::anchor &&
+                (!sprite_enabled ||
+                 node.name != "__anchor_sprite")) {
+                independent_candidates.insert(node.name);
+            }
+        }
+    }
+
+    // One request is currently shared by every rendering graph in a variant.
+    // Advertise only names present in all graphs; graph-specific work safely
+    // remains sequential instead of making another graph's plan invalid.
+    const auto present_in_every_graph =
+        [&](const std::string &name) {
+            return !graphs.empty() &&
+                   std::all_of(
+                       graphs.begin(), graphs.end(),
+                       [&](const FrameGraphDefinition &graph) {
+                           return std::find_if(
+                                      graph.nodes.begin(),
+                                      graph.nodes.end(),
+                                      [&](const auto &node) {
+                                          return node.name == name;
+                                      }) != graph.nodes.end();
+                       });
+        };
+    for (const auto &name : capable_candidates) {
+        if (present_in_every_graph(name)) {
+            request.multiview_capable_nodes.push_back(name);
+        }
+    }
+    for (const auto &name : independent_candidates) {
+        if (present_in_every_graph(name)) {
+            request.view_independent_nodes.push_back(name);
+        }
+    }
+    return request;
 }
 
 std::unordered_map<std::string, FramePlan> framePlansByName(
@@ -368,7 +491,12 @@ PreparedRenderingPassConfigVariant prepareRenderingPassConfigVariant(
             swapchain_format,
             GET_MODULE(VulkanManageCore).getPhysDevice(),
             targetViewExecutionRequest(
-                *compiled_pipeline));
+                *compiled_pipeline,
+                composed_rendering_pass_data,
+                graph_definition_list,
+                compute_task_definitions,
+                dependencies.options
+                    .enable_multiview_runtime));
     applyRenderingTargetPlan(render_target_definitions,
                              target_plan_compilation);
     auto target_plans =
@@ -451,12 +579,29 @@ registerPreparedRenderingPassConfigVariant(
         dependencies.options,
         RenderPipelineGpuRegistrationFaultPoint::
             after_compute_tasks);
-    auto compiled_passes =
-        compileRenderingPassesRuntime(
-            pass_definitions,
+    std::vector<CompiledRenderingPass> compiled_passes;
+    compiled_passes.reserve(pass_definitions.size());
+    for (const auto &definition : pass_definitions) {
+        const auto target_plan =
+            prepared.target_plans.find(definition.name);
+        if (target_plan == prepared.target_plans.end() ||
+            target_plan->second == nullptr) {
+            throw std::runtime_error(
+                "Physical target plan not found while compiling rendering "
+                "pass runtime: " +
+                definition.name);
+        }
+        auto runtime_dependencies =
             toRuntimeDependencies(
                 dependencies.runtime, rt_metadata, rt_views,
-                dependencies.frame_graph_resources, gpu_arena));
+                dependencies.frame_graph_resources, gpu_arena);
+        runtime_dependencies.target_plan =
+            target_plan->second.get();
+        compiled_passes.push_back(
+            compileRenderingPassRuntime(
+                definition,
+                std::move(runtime_dependencies)));
+    }
     injectGpuRegistrationFault(
         dependencies.options,
         RenderPipelineGpuRegistrationFaultPoint::

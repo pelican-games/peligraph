@@ -1,17 +1,8 @@
 #ifndef PELICAN_FRAME_GLSL
 #define PELICAN_FRAME_GLSL
 
-#if defined(PELICAN_MULTIVIEW)
-#extension GL_EXT_multiview : require
-#if !defined(PELICAN_VIEW_COUNT)
-#error PELICAN_MULTIVIEW requires PELICAN_VIEW_COUNT
-#endif
-#if PELICAN_VIEW_COUNT < 2 || PELICAN_VIEW_COUNT > 32
-#error PELICAN_VIEW_COUNT must be in [2, 32]
-#endif
-#endif
-
 #include "pelican_sets.glsl"
+#include "pelican_view.glsl"
 
 #if defined(PELICAN_MULTIVIEW)
 struct PelicanFrameData {

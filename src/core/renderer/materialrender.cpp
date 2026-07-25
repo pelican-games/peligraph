@@ -26,7 +26,8 @@ bool isOutsideMaterialRange(uint32_t material_index, const MaterialRange &range)
 void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
                          const PassDefinition &pass,
                          const MaterialRendererDependencies &dependencies,
-                         std::optional<MaterialRange> material_range) {
+                         std::optional<MaterialRange> material_range,
+                         RenderPassViewInvocation invocation) {
     auto &instance_container = dependencies.instance_container;
     const auto &vert_buf_container = dependencies.vert_buf_container;
     const auto &material_container = dependencies.material_container;
@@ -57,7 +58,7 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
         }
 
         material_container.bindResource(cmd_buf, pass_id, pass, draw_call.material,
-                                        current_material_id);
+                                        current_material_id, invocation);
         const auto pipeline_layout = material_container.pipelineLayout(draw_call.material);
         vert_buf_container.bindVertexBuffer(cmd_buf, draw_call.skinned);
         dependencies.frame_resources.bindGraphics(cmd_buf, pipeline_layout);
@@ -133,21 +134,26 @@ MaterialRenderer::MaterialRenderer() = default;
 
 void MaterialRenderer::render(vk::CommandBuffer cmd_buf, PassId pass_id,
                               const PassDefinition &pass,
-                              const MaterialRendererDependencies &dependencies) const {
-    renderMaterialDraws(cmd_buf, pass_id, pass, dependencies, std::nullopt);
+                              const MaterialRendererDependencies &dependencies,
+                              RenderPassViewInvocation invocation) const {
+    renderMaterialDraws(cmd_buf, pass_id, pass, dependencies, std::nullopt,
+                        invocation);
 }
 
 void MaterialRenderer::renderWithMaterialRange(vk::CommandBuffer cmd_buf, PassId pass_id,
                                                const PassDefinition &pass,
                                                uint32_t material_start, uint32_t material_count,
-                                               const MaterialRendererDependencies &dependencies) const {
+                                               const MaterialRendererDependencies &dependencies,
+                                               RenderPassViewInvocation invocation) const {
     if (material_count == 0) {
-        renderMaterialDraws(cmd_buf, pass_id, pass, dependencies, std::nullopt);
+        renderMaterialDraws(cmd_buf, pass_id, pass, dependencies, std::nullopt,
+                            invocation);
         return;
     }
 
     renderMaterialDraws(cmd_buf, pass_id, pass, dependencies,
-                        MaterialRange{material_start, material_count});
+                        MaterialRange{material_start, material_count},
+                        invocation);
 }
 
 void MaterialRenderer::renderShadowDepth(vk::CommandBuffer cmd_buf, PassId pass_id,

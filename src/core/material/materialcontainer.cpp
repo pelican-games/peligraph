@@ -201,7 +201,7 @@ static vk::UniqueDescriptorPool createDescriptorPool(vk::Device device, bool spl
 }
 
 static vk::UniqueDescriptorPool createScreenInputDescriptorPool(
-    vk::Device device, uint32_t max_sets = maxMaterials * 4) {
+    vk::Device device, uint32_t max_sets = maxMaterials * 8) {
     const vk::DescriptorPoolSize pool_size{
         vk::DescriptorType::eCombinedImageSampler,
         max_sets * maxMaterialScreenInputs};
@@ -1070,6 +1070,9 @@ static std::string makeScreenInputPassKey(const PassDefinition &pass) {
         key << ':' << input.contract.name << '=' << input.target.value
             << (input.history ? "@history" : "");
     }
+    for (const auto view : pass.input_target_views) {
+        key << ":view=" << static_cast<int>(view);
+    }
     return key.str();
 }
 
@@ -1112,41 +1115,76 @@ MaterialContainer::buildScreenInputDescriptor(
     InternalMaterialInfo::ScreenInputDescriptor result;
     result.resources = std::move(resources);
     result.binding_revision = next_screen_input_binding_revision++;
-    for (uint32_t parity = 0; parity < 2; ++parity) {
-        vk::DescriptorSetAllocateInfo allocation;
-        allocation.descriptorPool = screen_input_desc_pool.get();
-        allocation.descriptorSetCount = 1;
-        allocation.pSetLayouts = &layout;
-        result.descsets[parity] =
-            std::move(device.allocateDescriptorSetsUnique(allocation).front());
-
-        std::vector<vk::DescriptorImageInfo> image_infos;
-        std::vector<vk::WriteDescriptorSet> writes;
-        image_infos.reserve(result.resources.size());
-        writes.reserve(result.resources.size());
-        result.bound_image_views[parity].reserve(result.resources.size());
-        for (uint32_t binding = 0; binding < result.resources.size(); ++binding) {
-            const auto &resource = result.resources[binding];
-            if (!isConcreteRenderTarget(resource.target)) {
-                throw std::runtime_error(
-                    "material screen input must resolve to a render target: " +
-                    resource.contract.name);
-            }
-            const auto image_view = rt_views.getImageViewForFrame(
-                resource.target, resource.history, parity);
-            image_infos.push_back(vk::DescriptorImageInfo{
-                isDepthScreenInput(resource.contract)
-                    ? screen_nearest_sampler.get()
-                    : screen_linear_sampler.get(),
-                image_view, vk::ImageLayout::eShaderReadOnlyOptimal});
-            result.bound_image_views[parity].push_back(image_view);
-            vk::WriteDescriptorSet write{
-                result.descsets[parity].get(), binding, 0, 1,
-                vk::DescriptorType::eCombinedImageSampler};
-            write.pImageInfo = &image_infos.back();
-            writes.push_back(write);
+    std::uint32_t variant_count = 1;
+    for (const auto &resource : result.resources) {
+        if (!isConcreteRenderTarget(resource.target)) {
+            throw std::runtime_error(
+                "material screen input must resolve to a render target: " +
+                resource.contract.name);
         }
-        device.updateDescriptorSets(writes, {});
+        if (resource.view_dimension !=
+            PassInputViewDimension::shared_2d) {
+            variant_count = std::max(
+                variant_count,
+                rt_views.arrayLayers(resource.target));
+        }
+    }
+    for (const auto &resource : result.resources) {
+        if (resource.view_dimension !=
+                PassInputViewDimension::shared_2d &&
+            rt_views.arrayLayers(resource.target) !=
+                variant_count) {
+            throw std::runtime_error(
+                "material sequential screen inputs have inconsistent "
+                "array-layer counts");
+        }
+    }
+    result.variants.resize(variant_count);
+    for (std::uint32_t variant = 0;
+         variant < variant_count; ++variant) {
+        for (uint32_t parity = 0; parity < 2; ++parity) {
+            auto &descriptor_variant =
+                result.variants[variant];
+            vk::DescriptorSetAllocateInfo allocation;
+            allocation.descriptorPool = screen_input_desc_pool.get();
+            allocation.descriptorSetCount = 1;
+            allocation.pSetLayouts = &layout;
+            descriptor_variant.descsets[parity] =
+                std::move(device.allocateDescriptorSetsUnique(allocation).front());
+
+            std::vector<vk::DescriptorImageInfo> image_infos;
+            std::vector<vk::WriteDescriptorSet> writes;
+            image_infos.reserve(result.resources.size());
+            writes.reserve(result.resources.size());
+            descriptor_variant.bound_image_views[parity]
+                .reserve(result.resources.size());
+            for (uint32_t binding = 0; binding < result.resources.size(); ++binding) {
+                const auto &resource = result.resources[binding];
+                const auto image_view =
+                    resource.view_dimension ==
+                            PassInputViewDimension::shared_2d
+                        ? rt_views.getImageViewForFrame(
+                              resource.target,
+                              resource.history, parity)
+                        : rt_views.getImageLayerViewForFrame(
+                              resource.target, variant,
+                              resource.history, parity);
+                image_infos.push_back(vk::DescriptorImageInfo{
+                    isDepthScreenInput(resource.contract)
+                        ? screen_nearest_sampler.get()
+                        : screen_linear_sampler.get(),
+                    image_view, vk::ImageLayout::eShaderReadOnlyOptimal});
+                descriptor_variant.bound_image_views[parity]
+                    .push_back(image_view);
+                vk::WriteDescriptorSet write{
+                    descriptor_variant.descsets[parity].get(),
+                    binding, 0, 1,
+                    vk::DescriptorType::eCombinedImageSampler};
+                write.pImageInfo = &image_infos.back();
+                writes.push_back(write);
+            }
+            device.updateDescriptorSets(writes, {});
+        }
     }
     return result;
 }
@@ -1190,7 +1228,24 @@ MaterialContainer::ensureScreenInputDescriptor(
                 "' type or footprint does not match pass '" + pass.name +
                 "'");
         }
-        resources.push_back({required, binding->target, binding->history});
+        auto view_dimension =
+            PassInputViewDimension::shared_2d;
+        const auto target_position = std::find(
+            pass.input_targets.begin(),
+            pass.input_targets.end(),
+            binding->target);
+        if (target_position != pass.input_targets.end() &&
+            pass.input_target_views.size() ==
+                pass.input_targets.size()) {
+            view_dimension =
+                pass.input_target_views.at(
+                    static_cast<std::size_t>(
+                        target_position -
+                        pass.input_targets.begin()));
+        }
+        resources.push_back(
+            {required, binding->target, binding->history,
+             view_dimension});
     }
 
     const RenderTargetImageViewResolver rt_views{
@@ -1205,7 +1260,8 @@ MaterialContainer::ensureScreenInputDescriptor(
 void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pass_id,
                                      const PassDefinition &pass,
                                      GlobalMaterialId material_id,
-                                     GlobalMaterialId prev_material_id) const {
+                                     GlobalMaterialId prev_material_id,
+                                     RenderPassViewInvocation invocation) const {
     (void)pass_id;
     const auto &material = materials.get(material_id);
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
@@ -1227,10 +1283,25 @@ void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pass_id,
     if (const auto *screen_inputs =
             ensureScreenInputDescriptor(material_id, pass)) {
         const auto parity = GET_MODULE(RenderTargetContainer).historyFrameIndex();
+        std::size_t variant = 0;
+        if (screen_inputs->variants.size() > 1) {
+            if (invocation.logical_view_count !=
+                    screen_inputs->variants.size() ||
+                invocation.view_index >=
+                screen_inputs->variants.size()) {
+                throw std::runtime_error(
+                    "material screen-input descriptor invocation does not "
+                    "match its layered inputs");
+            }
+            variant = invocation.view_index;
+        }
         cmd_buf.bindDescriptorSets(
             vk::PipelineBindPoint::eGraphics, pipeline_layout,
             PELICAN_SET_PASS_INPUT,
-            {screen_inputs->descsets[parity].get()}, {});
+            {screen_inputs->variants[variant]
+                 .descsets[parity]
+                 .get()},
+            {});
     }
 }
 
@@ -1253,7 +1324,7 @@ MaterialContainer::boundScreenInputImageViewsForTesting(
     GlobalMaterialId material, const PassDefinition &pass) const {
     const auto *descriptor = ensureScreenInputDescriptor(material, pass);
     if (descriptor == nullptr) return {};
-    return descriptor->bound_image_views[
+    return descriptor->variants.front().bound_image_views[
         GET_MODULE(RenderTargetContainer).historyFrameIndex()];
 }
 

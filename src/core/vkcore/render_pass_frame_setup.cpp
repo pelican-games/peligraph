@@ -128,7 +128,20 @@ std::vector<vk::RenderingAttachmentInfo> createColorAttachments(const FrameRende
     for (const auto &rt_id : pass_def.output_color) {
         vk::RenderingAttachmentInfo color_att;
         if (isSwapchainRenderTarget(rt_id)) {
-            color_att.imageView = frame.color_attachment;
+            if (view.execution ==
+                    GraphicsPipelineViewExecution::single_view &&
+                !frame.color_layer_attachments.empty()) {
+                if (invocation.view_index >=
+                    frame.color_layer_attachments.size()) {
+                    throw std::runtime_error(
+                        "sequential frame-target layer is out of range");
+                }
+                color_att.imageView =
+                    frame.color_layer_attachments[
+                        invocation.view_index];
+            } else {
+                color_att.imageView = frame.color_attachment;
+            }
         } else {
             color_att.imageView =
                 colorAttachmentView(

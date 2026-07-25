@@ -18,6 +18,7 @@ class RenderTargetMetadataResolver;
 class ShadowDepthPassContainer;
 class VelocityPassContainer;
 class ShaderLibrary;
+struct VulkanTargetPlan;
 
 struct RenderingPassRuntimeDependencies {
     RenderTarget *render_target = nullptr;
@@ -33,6 +34,7 @@ struct RenderingPassRuntimeDependencies {
     bool warn_backend_specific_shader_refs = false;
     std::function<DebugDraw &()> debug_draw_provider;
     std::function<DebugText &()> debug_text_provider;
+    const VulkanTargetPlan *target_plan = nullptr;
 };
 
 CompiledRenderingPass compileRenderingPassRuntime(const RenderingPassDefinition &definition,
