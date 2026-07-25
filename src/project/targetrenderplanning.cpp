@@ -36,6 +36,8 @@ constexpr std::string_view kColorAttachmentBudgetFact =
     "pelican.vulkan.max_color_attachments@1";
 constexpr std::string_view kMaterializedCandidate =
     "pelican.vulkan.materialized_plan@1";
+constexpr std::string_view kTransientCandidate =
+    "pelican.vulkan.transient_plan@1";
 constexpr std::string_view kTileLocalCandidate =
     "pelican.vulkan.tile_local_plan@1";
 constexpr std::string_view kPinPackageSchema =
@@ -446,6 +448,7 @@ SelectedFormat selectFormat(
 
 std::string materializationReason(
     const TargetLoweringResource &resource, bool tile_candidate,
+    bool transient_candidate,
     bool tile_local_eligible,
     VulkanResourceRepresentation representation) {
     if (representation == VulkanResourceRepresentation::external) {
@@ -485,6 +488,11 @@ std::string materializationReason(
     if (tile_candidate && !tile_local_eligible) {
         return "tile-local constraints were not satisfied; materialized "
                "fallback selected";
+    }
+    if (transient_candidate &&
+        resource.pattern.prefer_transient) {
+        return "transient attachment constraints were not satisfied; "
+               "materialized fallback selected";
     }
     return "desktop materialized sampled representation selected";
 }
@@ -1651,6 +1659,7 @@ CandidateDraft buildCandidateDraft(
     const CompiledLogicalRenderGraph &canonical_graph,
     const TargetLoweringGraph &workspace,
     const TargetEndpoint &endpoint, bool tile_candidate,
+    bool transient_candidate,
     const VulkanTargetPlanRequest &request,
     const ResolvedSampleCountPlan *sample_count_plan,
     const ResolvedVulkanViewExecutionPlan &view_plan,
@@ -1659,7 +1668,8 @@ CandidateDraft buildCandidateDraft(
     CandidateDraft result;
     result.name = std::string{
         tile_candidate ? kTileLocalCandidate
-                       : kMaterializedCandidate};
+        : transient_candidate ? kTransientCandidate
+                              : kMaterializedCandidate};
     result.decisions = view_plan.decisions;
     result.required_features = {
         std::string{kGraphicsCapability},
@@ -1747,7 +1757,7 @@ CandidateDraft buildCandidateDraft(
             representation =
                 VulkanResourceRepresentation::
                     tile_local_attachment;
-        } else if (tile_candidate &&
+        } else if (transient_candidate &&
                    resource.pattern.prefer_transient &&
                    resource.uses.written &&
                    !resource.uses.read &&
@@ -1755,7 +1765,19 @@ CandidateDraft buildCandidateDraft(
                        LogicalMaterializationRequirement::
                            virtual_resource &&
                    !resource.pattern.require_store &&
-                   !exports_depth) {
+                   !exports_depth &&
+                   request.profile.kind !=
+                       PlanningProfileKind::
+                           conservative_debug &&
+                   (!sample_count_plan ||
+                    std::none_of(
+                        sample_count_plan->resources.begin(),
+                        sample_count_plan->resources.end(),
+                        [&](const auto &resolved) {
+                            return resolved.resource ==
+                                       resource.logical.name &&
+                                   resolved.samples != 1;
+                        }))) {
             representation =
                 VulkanResourceRepresentation::
                     transient_attachment;
@@ -1796,6 +1818,7 @@ CandidateDraft buildCandidateDraft(
                 resource.logical.name,
                 materializationReason(
                     resource, tile_candidate,
+                    transient_candidate,
                     tile_local_eligible, representation),
             });
         }
@@ -1869,6 +1892,7 @@ CandidateDraft buildCandidateDraft(
                   "non-aliased transfer source"
                 : materializationReason(
                       resource, tile_candidate,
+                      transient_candidate,
                       tile_local_eligible, representation);
         result.resources.push_back(
             VulkanPhysicalResourcePlan{
@@ -2028,7 +2052,19 @@ CandidateDraft buildCandidateDraft(
                 return scope.kind ==
                        VulkanPhysicalScopeKind::rendering;
             }));
-    result.cost.bandwidth_class = tile_candidate ? 1 : 3;
+    const auto uses_transient =
+        std::any_of(
+            result.resources.begin(),
+            result.resources.end(),
+            [](const auto &resource) {
+                return resource.representation ==
+                       VulkanResourceRepresentation::
+                           transient_attachment;
+            });
+    result.cost.bandwidth_class =
+        tile_candidate ? 1
+        : uses_transient ? 2
+                         : 3;
     return result;
 }
 
@@ -2294,6 +2330,42 @@ const BackendProbeResult &selectedProbe(
     return *found;
 }
 
+void lowerTransientAttachmentStores(
+    std::span<const VulkanPhysicalResourcePlan> resources,
+    std::span<VulkanPhysicalAttachmentPlan> attachments,
+    std::vector<PlanningDecision> &decisions) {
+    std::set<std::string, std::less<>>
+        transient_resources;
+    for (const auto &resource : resources) {
+        if (resource.representation ==
+            VulkanResourceRepresentation::
+                transient_attachment) {
+            transient_resources.insert(
+                resource.logical_resource);
+        }
+    }
+    for (auto &attachment : attachments) {
+        if (!transient_resources.contains(
+                attachment.logical_resource) ||
+            attachment.store_op ==
+                VulkanPhysicalAttachmentStoreOp::
+                    discard) {
+            continue;
+        }
+        attachment.store_op =
+            VulkanPhysicalAttachmentStoreOp::discard;
+        decisions.push_back(PlanningDecision{
+            "pelican.plan.transient_attachment_store_elided@1",
+            attachment.node + " -> " +
+                attachment.logical_resource,
+            "discard",
+            "write-only virtual attachment has no logical "
+            "consumer, so the selected transient backend does not "
+            "store its contents",
+        });
+    }
+}
+
 } // namespace
 
 std::uint64_t vulkanTargetPlanLogicalGraphFingerprint(
@@ -2550,32 +2622,46 @@ VulkanTargetPlan compileVulkanTargetPlan(
             : std::nullopt;
 
     auto materialized = buildCandidateDraft(
-        canonical_graph, workspace, endpoint, false, request,
+        canonical_graph, workspace, endpoint, false, false,
+        request,
+        sample_count_plan ? &*sample_count_plan : nullptr,
+        view_execution, external_depth_export);
+    auto transient = buildCandidateDraft(
+        canonical_graph, workspace, endpoint, false, true,
+        request,
         sample_count_plan ? &*sample_count_plan : nullptr,
         view_execution, external_depth_export);
     auto tile_local = buildCandidateDraft(
-        canonical_graph, workspace, endpoint, true, request,
+        canonical_graph, workspace, endpoint, true, true,
+        request,
         sample_count_plan ? &*sample_count_plan : nullptr,
         view_execution, external_depth_export);
     applyAttachmentBudget(materialized, canonical_graph,
+                          endpoint);
+    applyAttachmentBudget(transient, canonical_graph,
                           endpoint);
     applyAttachmentBudget(tile_local, canonical_graph,
                           endpoint);
 
     auto materialized_probe = probeCandidate(
         topology, providers, request, materialized);
+    auto transient_probe = probeCandidate(
+        topology, providers, request, transient);
     auto tile_probe = probeCandidate(
         topology, providers, request, tile_local);
     auto selection = selectBackendCandidate(
         {std::move(materialized_probe),
+         std::move(transient_probe),
          std::move(tile_probe)},
         request.diagnostic_policy,
         requested_backend_candidate);
     const auto selected_name = selection.selected_candidate;
     const auto &selected_draft =
         selected_name == tile_local.name ? tile_local
-                                         : materialized;
+        : selected_name == transient.name ? transient
+                                          : materialized;
     if (selected_name != tile_local.name &&
+        selected_name != transient.name &&
         selected_name != materialized.name) {
         throw std::runtime_error(
             "target planner selected an unknown finite "
@@ -2722,6 +2808,9 @@ VulkanTargetPlan compileVulkanTargetPlan(
         .applied_pin_package =
             std::move(request.pin_package),
     };
+    lowerTransientAttachmentStores(
+        result.resources, result.attachments,
+        result.decisions);
     validateVulkanPhysicalAttachmentPlans(
         canonical_graph, result.resources,
         result.attachments);

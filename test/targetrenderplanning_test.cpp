@@ -384,13 +384,15 @@ VulkanTargetPlan compile(
     std::vector<VulkanPhysicalResourceFormatCapability>
         format_capabilities = {},
     std::vector<VulkanPhysicalAttachmentPlan>
-        attachments = {}) {
+        attachments = {},
+    PlanningProfile profile = {}) {
     return compileVulkanTargetPlan(
         types, graph, target, providers(),
         VulkanTargetPlanRequest{
             .endpoint = "device:0",
             .provider = std::string{kProvider},
             .pattern_bindings = std::move(bindings),
+            .profile = profile,
             .sample_count = std::move(sample_count),
             .view_execution = std::move(view_execution),
             .external_depth_export =
@@ -404,6 +406,27 @@ VulkanTargetPlan compile(
             .automatic_attachments =
                 std::move(attachments),
         });
+}
+
+CompiledLogicalRenderGraph graphWithWriteOnlyAttachment(
+    const LogicalTypeRegistry &types) {
+    auto graph = hybridGraph(types, 3, false);
+    graph.name = "transient_attachment";
+    graph.resources.push_back(
+        LogicalResourceDesc{
+            .name = "write_only_scratch",
+            .type = sceneLinearHdrV1(types),
+        });
+    LogicalGraphNode scratch;
+    scratch.name = "Scratch";
+    scratch.kind = LogicalGraphNodeKind::render;
+    addWrite(
+        types, scratch,
+        resource(graph, "write_only_scratch"),
+        1, "scratch");
+    graph.nodes.push_back(std::move(scratch));
+    validateCompiledLogicalRenderGraph(types, graph);
+    return graph;
 }
 
 VulkanSampleCountPlanRequest sampleCountRequest(
@@ -528,6 +551,126 @@ TEST_CASE("desktop materializes arbitrary G-buffer attachments while tile keeps 
         compile(types, graph, topology(true), std::move(bindings));
     REQUIRE(vulkanTargetPlanToJson(tile).dump() ==
             vulkanTargetPlanToJson(reordered).dump());
+}
+
+TEST_CASE(
+    "transient candidate elides write-only attachment storage without requiring local reads",
+    "[target-render-planning][transient][attachment]") {
+    const auto types = makeBuiltinLogicalTypeRegistry();
+    const auto graph =
+        graphWithWriteOnlyAttachment(types);
+    auto transient_target = topology(false);
+    transient_target.endpoints.front()
+        .capabilities.push_back(
+            "pelican.vulkan.transient_attachment@1");
+    const std::vector attachments{
+        VulkanPhysicalAttachmentPlan{
+            .node = "Scratch",
+            .logical_resource =
+                "write_only_scratch",
+            .aspect =
+                VulkanPhysicalAttachmentAspect::color,
+            .load_op =
+                VulkanPhysicalAttachmentLoadOp::clear,
+            .store_op =
+                VulkanPhysicalAttachmentStoreOp::store,
+        },
+    };
+
+    const auto automatic = compile(
+        types, graph, transient_target,
+        bindingsFor(types, graph),
+        std::nullopt, std::nullopt, std::nullopt,
+        std::nullopt, std::nullopt, {},
+        attachments);
+    REQUIRE(
+        automatic.backend_selection
+            .selected_candidate ==
+        "pelican.vulkan.transient_plan@1");
+    REQUIRE(
+        physicalResource(
+            automatic, "write_only_scratch")
+            .representation ==
+        VulkanResourceRepresentation::
+            transient_attachment);
+    REQUIRE(
+        automatic.attachments.front().store_op ==
+        VulkanPhysicalAttachmentStoreOp::discard);
+    REQUIRE(std::any_of(
+        automatic.decisions.begin(),
+        automatic.decisions.end(),
+        [](const auto &decision) {
+            return decision.id ==
+                   "pelican.plan.transient_attachment_store_elided@1";
+        }));
+    REQUIRE(std::none_of(
+        automatic.backend_selection.candidates.begin(),
+        automatic.backend_selection.candidates.end(),
+        [](const auto &candidate) {
+            return candidate.candidate ==
+                       "pelican.vulkan.tile_local_plan@1" &&
+                   candidate.feasible;
+        }));
+
+    auto materialized =
+        ejectVulkanPhysicalFragmentPackage(
+            automatic);
+    const auto scratch_resource =
+        std::find_if(
+            materialized.resources.begin(),
+            materialized.resources.end(),
+            [](const auto &resource) {
+                return resource.logical_resource ==
+                       "write_only_scratch";
+            });
+    REQUIRE(
+        scratch_resource !=
+        materialized.resources.end());
+    scratch_resource->representation =
+        VulkanResourceRepresentation::
+            materialized_image;
+    REQUIRE(materialized.attachments.has_value());
+    materialized.attachments->front().store_op =
+        VulkanPhysicalAttachmentStoreOp::store;
+    const auto overridden = compile(
+        types, graph, transient_target,
+        bindingsFor(types, graph),
+        std::nullopt, std::nullopt, std::nullopt,
+        std::nullopt, materialized, {},
+        attachments);
+    REQUIRE(
+        physicalResource(
+            overridden, "write_only_scratch")
+            .representation ==
+        VulkanResourceRepresentation::
+            materialized_image);
+    REQUIRE(
+        overridden.attachments.front().store_op ==
+        VulkanPhysicalAttachmentStoreOp::store);
+
+    const auto conservative = compile(
+        types, graph, transient_target,
+        bindingsFor(types, graph),
+        std::nullopt, std::nullopt, std::nullopt,
+        std::nullopt, std::nullopt, {},
+        attachments,
+        PlanningProfile{
+            PlanningProfileKind::
+                conservative_debug,
+            0});
+    REQUIRE(
+        conservative.backend_selection
+            .selected_candidate ==
+        "pelican.vulkan.materialized_plan@1");
+    REQUIRE(
+        physicalResource(
+            conservative, "write_only_scratch")
+            .representation ==
+        VulkanResourceRepresentation::
+            materialized_image);
+    REQUIRE(
+        conservative.attachments.front().store_op ==
+        VulkanPhysicalAttachmentStoreOp::store);
 }
 
 TEST_CASE("Vulkan target plan pins round-trip and bind a logical graph",
