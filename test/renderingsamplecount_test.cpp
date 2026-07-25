@@ -80,6 +80,22 @@ const VulkanPhysicalResourcePlan &physicalResource(
     return *found;
 }
 
+const VulkanPhysicalAttachmentPlan &physicalAttachment(
+    const VulkanTargetPlan &plan,
+    std::string_view node,
+    std::string_view resource) {
+    const auto found = std::find_if(
+        plan.attachments.begin(),
+        plan.attachments.end(),
+        [&](const auto &candidate) {
+            return candidate.node == node &&
+                   candidate.logical_resource ==
+                       resource;
+        });
+    REQUIRE(found != plan.attachments.end());
+    return *found;
+}
+
 void requireThrowsContaining(const std::function<void()> &operation,
                              std::string_view expected) {
     try {
@@ -171,6 +187,96 @@ TEST_CASE("rendering sample planning discovers a hybrid attachment component",
     REQUIRE(physicalResource(
                 *compilation.plans.front(), "custom_id")
                 .rasterization_samples == 2);
+    REQUIRE(
+        compilation.plans.front()
+            ->attachments.size() == 8);
+    REQUIRE(
+        physicalAttachment(
+            *compilation.plans.front(),
+            "geometry", "albedo")
+            .load_op ==
+        VulkanPhysicalAttachmentLoadOp::clear);
+    REQUIRE(
+        physicalAttachment(
+            *compilation.plans.front(),
+            "geometry", "depth")
+            .store_op ==
+        VulkanPhysicalAttachmentStoreOp::discard);
+    REQUIRE(
+        ejectVulkanPhysicalFragmentPackage(
+            *compilation.plans.front())
+            .schema_version == 2);
+}
+
+TEST_CASE("rendering target bridge links attachment operations into the physical plan",
+          "[target-planning][rendering][physical-attachment][bridge]") {
+    const std::vector targets{
+        target("albedo", vk::Format::eB8G8R8A8Unorm),
+        target("normal", vk::Format::eR16G16B16A16Sfloat),
+        target("custom_id", vk::Format::eR32Uint),
+        target("depth", vk::Format::eD32Sfloat,
+               vk::ImageUsageFlagBits::eDepthStencilAttachment |
+                   vk::ImageUsageFlagBits::eTransferSrc),
+        target("lit", vk::Format::eR16G16B16A16Sfloat),
+        target("display", vk::Format::eB8G8R8A8Srgb),
+    };
+    const auto config = hybridConfig();
+    const auto graphs =
+        parseFrameGraphDefinitionsFromConfigJson(
+            config);
+    const auto facts =
+        RenderingTargetPlanDeviceFacts{
+            .query_attachment_samples =
+                [](const RenderTargetDefinition &) {
+                    return std::vector<std::uint32_t>{
+                        1, 2, 4};
+                },
+        };
+    const auto automatic =
+        compileRenderingTargetPlans(
+            graphs, targets,
+            compileSampleCountPolicy(config),
+            vk::Format::eB8G8R8A8Unorm,
+            facts);
+    auto fragment =
+        ejectVulkanPhysicalFragmentPackage(
+            *automatic.plans.front());
+    const auto attachment = std::find_if(
+        fragment.attachments->begin(),
+        fragment.attachments->end(),
+        [](const auto &candidate) {
+            return candidate.node ==
+                       "geometry" &&
+                   candidate.logical_resource ==
+                       "albedo";
+        });
+    REQUIRE(
+        attachment !=
+        fragment.attachments->end());
+    attachment->load_op =
+        VulkanPhysicalAttachmentLoadOp::discard;
+
+    const std::array fragments{fragment};
+    const auto linked =
+        compileRenderingTargetPlans(
+            graphs, targets,
+            compileSampleCountPolicy(config),
+            vk::Format::eB8G8R8A8Unorm,
+            facts,
+            std::nullopt, std::nullopt, {},
+            {}, fragments);
+    REQUIRE(
+        physicalAttachment(
+            *linked.plans.front(),
+            "geometry", "albedo")
+            .load_op ==
+        VulkanPhysicalAttachmentLoadOp::discard);
+    REQUIRE(
+        linked.plans.front()
+            ->applied_fragment_package ==
+        std::optional<
+            VulkanPhysicalFragmentPackage>{
+            fragment});
 }
 
 TEST_CASE("rendering target bridge applies a verified alternate physical format",

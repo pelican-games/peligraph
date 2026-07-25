@@ -1,7 +1,6 @@
 #include "frameplanner.hpp"
 #include "renderingpassjsonhelpers.hpp"
 #include <algorithm>
-#include <cctype>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -24,13 +23,6 @@ struct PlannerEdges {
     std::vector<Edge> edges;
     std::vector<FramePlanBarrier> barriers;
 };
-
-std::string lowerAscii(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-    });
-    return value;
-}
 
 void appendUnique(std::vector<std::string> &values, std::string value) {
     if (std::find(values.begin(), values.end(), value) == values.end()) {
@@ -128,24 +120,58 @@ void splitHistoryReads(const std::vector<std::string> &authored,
     }
 }
 
-bool loadOpReadsExistingColor(const nlohmann::json &pass_json, bool ui_pass) {
-    if (!pass_json.contains("color_load_op")) {
-        return ui_pass;
+FrameGraphAttachmentLoadOp frameGraphAttachmentLoadOp(
+    vk::AttachmentLoadOp op) {
+    switch (op) {
+    case vk::AttachmentLoadOp::eLoad:
+        return FrameGraphAttachmentLoadOp::load;
+    case vk::AttachmentLoadOp::eClear:
+        return FrameGraphAttachmentLoadOp::clear;
+    case vk::AttachmentLoadOp::eDontCare:
+        return FrameGraphAttachmentLoadOp::discard;
+    default:
+        throw std::runtime_error(
+            "Unsupported frame graph attachment load op");
     }
-    if (!pass_json.at("color_load_op").is_string()) {
-        throw std::runtime_error("Frame graph pass color_load_op must be a string");
-    }
-    return lowerAscii(pass_json.at("color_load_op").get<std::string>()) == "load";
 }
 
-bool depthLoadOpReadsExistingDepth(const nlohmann::json &pass_json) {
-    if (!pass_json.contains("depth_load_op")) {
-        return false;
+FrameGraphAttachmentStoreOp frameGraphAttachmentStoreOp(
+    vk::AttachmentStoreOp op) {
+    switch (op) {
+    case vk::AttachmentStoreOp::eStore:
+        return FrameGraphAttachmentStoreOp::store;
+    case vk::AttachmentStoreOp::eDontCare:
+        return FrameGraphAttachmentStoreOp::discard;
+    default:
+        throw std::runtime_error(
+            "Unsupported frame graph attachment store op");
     }
-    if (!pass_json.at("depth_load_op").is_string()) {
-        throw std::runtime_error("Frame graph pass depth_load_op must be a string");
+}
+
+vk::AttachmentLoadOp parseAttachmentLoadOp(
+    const nlohmann::json &pass_json,
+    std::string_view field,
+    vk::AttachmentLoadOp fallback) {
+    if (!pass_json.contains(field)) {
+        return fallback;
     }
-    return lowerAscii(pass_json.at("depth_load_op").get<std::string>()) == "load";
+    return stringToLoadOp(
+        parseStringField(
+            pass_json, std::string{field},
+            "frame graph pass"));
+}
+
+vk::AttachmentStoreOp parseAttachmentStoreOp(
+    const nlohmann::json &pass_json,
+    std::string_view field,
+    vk::AttachmentStoreOp fallback) {
+    if (!pass_json.contains(field)) {
+        return fallback;
+    }
+    return stringToStoreOp(
+        parseStringField(
+            pass_json, std::string{field},
+            "frame graph pass"));
 }
 
 std::vector<std::string> parseOutputColors(const nlohmann::json &output_json) {
@@ -201,17 +227,61 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
     node.resolution_domain =
         parseRenderResolutionDomain(
             pass_json, type, node.name);
-    const bool ui_pass = type == "ui";
+    const bool overlay_pass =
+        type == "ui" || type == "imgui";
     const auto &output = pass_json.at("output");
     const auto color_outputs = parseOutputColors(output);
     const auto depth_outputs = parseOutputDepth(output);
     appendUnique(node.writes, color_outputs);
     appendUnique(node.writes, depth_outputs);
 
-    if (loadOpReadsExistingColor(pass_json, ui_pass)) {
+    const auto color_load = parseAttachmentLoadOp(
+        pass_json, "color_load_op",
+        overlay_pass
+            ? vk::AttachmentLoadOp::eLoad
+            : vk::AttachmentLoadOp::eClear);
+    const auto color_store = parseAttachmentStoreOp(
+        pass_json, "color_store_op",
+        vk::AttachmentStoreOp::eStore);
+    const auto depth_load = parseAttachmentLoadOp(
+        pass_json, "depth_load_op",
+        vk::AttachmentLoadOp::eClear);
+    const auto depth_store = parseAttachmentStoreOp(
+        pass_json, "depth_store_op",
+        vk::AttachmentStoreOp::eDontCare);
+    for (const auto &resource : color_outputs) {
+        node.attachments.push_back(
+            FrameGraphAttachmentDefinition{
+                .resource = resource,
+                .aspect =
+                    FrameGraphAttachmentAspect::color,
+                .load_op =
+                    frameGraphAttachmentLoadOp(
+                        color_load),
+                .store_op =
+                    frameGraphAttachmentStoreOp(
+                        color_store),
+            });
+    }
+    for (const auto &resource : depth_outputs) {
+        node.attachments.push_back(
+            FrameGraphAttachmentDefinition{
+                .resource = resource,
+                .aspect =
+                    FrameGraphAttachmentAspect::depth,
+                .load_op =
+                    frameGraphAttachmentLoadOp(
+                        depth_load),
+                .store_op =
+                    frameGraphAttachmentStoreOp(
+                        depth_store),
+            });
+    }
+
+    if (color_load == vk::AttachmentLoadOp::eLoad) {
         appendUnique(node.reads, color_outputs);
     }
-    if (depthLoadOpReadsExistingDepth(pass_json)) {
+    if (depth_load == vk::AttachmentLoadOp::eLoad) {
         appendUnique(node.reads, depth_outputs);
     }
 
@@ -427,9 +497,41 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
     }
     appendUnique(node.reads, pass.input_buffers);
     for (const auto target : pass.output_color) {
-        appendUnique(node.writes, renderTargetResourceName(target));
+        const auto resource =
+            renderTargetResourceName(target);
+        appendUnique(node.writes, resource);
+        if (!resource.empty()) {
+            node.attachments.push_back(
+                FrameGraphAttachmentDefinition{
+                    .resource = resource,
+                    .aspect =
+                        FrameGraphAttachmentAspect::color,
+                    .load_op =
+                        frameGraphAttachmentLoadOp(
+                            pass.color_load_op),
+                    .store_op =
+                        frameGraphAttachmentStoreOp(
+                            pass.color_store_op),
+                });
+        }
     }
-    appendUnique(node.writes, renderTargetResourceName(pass.output_depth));
+    const auto depth_resource =
+        renderTargetResourceName(pass.output_depth);
+    appendUnique(node.writes, depth_resource);
+    if (!depth_resource.empty()) {
+        node.attachments.push_back(
+            FrameGraphAttachmentDefinition{
+                .resource = depth_resource,
+                .aspect =
+                    FrameGraphAttachmentAspect::depth,
+                .load_op =
+                    frameGraphAttachmentLoadOp(
+                        pass.depth_load_op),
+                .store_op =
+                    frameGraphAttachmentStoreOp(
+                        pass.depth_store_op),
+            });
+    }
 
     if (pass.color_load_op == vk::AttachmentLoadOp::eLoad) {
         for (const auto target : pass.output_color) {

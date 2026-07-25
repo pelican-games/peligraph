@@ -18,6 +18,35 @@ enum class FramePlanNodeKind {
     output_transform,
 };
 
+enum class FrameGraphAttachmentAspect {
+    color,
+    depth,
+};
+
+enum class FrameGraphAttachmentLoadOp {
+    load,
+    clear,
+    discard,
+};
+
+enum class FrameGraphAttachmentStoreOp {
+    store,
+    discard,
+};
+
+struct FrameGraphAttachmentDefinition {
+    std::string resource;
+    FrameGraphAttachmentAspect aspect =
+        FrameGraphAttachmentAspect::color;
+    FrameGraphAttachmentLoadOp load_op =
+        FrameGraphAttachmentLoadOp::clear;
+    FrameGraphAttachmentStoreOp store_op =
+        FrameGraphAttachmentStoreOp::store;
+
+    bool operator==(
+        const FrameGraphAttachmentDefinition &) const = default;
+};
+
 struct FrameGraphNodeDefinition {
     std::string name;
     FramePlanNodeKind kind = FramePlanNodeKind::render;
@@ -28,6 +57,8 @@ struct FrameGraphNodeDefinition {
     std::vector<std::string> after;
     std::vector<std::string> before;
     std::vector<std::string> region_tags;
+    std::vector<FrameGraphAttachmentDefinition>
+        attachments;
     std::string snapshot_after;
     std::size_t byte_size = 0;
     bool raster_geometry = false;

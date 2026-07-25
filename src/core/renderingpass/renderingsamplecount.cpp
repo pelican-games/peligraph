@@ -376,8 +376,10 @@ std::set<std::string, std::less<>> attachmentResources(
                    std::less<>> &render_targets) {
     std::set<std::string, std::less<>> result;
     for (const auto &node : definition.nodes) {
-        if (node.kind != FramePlanNodeKind::render) continue;
-        for (const auto &resource : node.writes) {
+        for (const auto &attachment :
+             node.attachments) {
+            const auto &resource =
+                attachment.resource;
             if (resource == "swapchain") {
                 result.insert(resource);
                 continue;
@@ -392,6 +394,74 @@ std::set<std::string, std::less<>> attachmentResources(
                     resource);
             }
             result.insert(resource);
+        }
+    }
+    return result;
+}
+
+VulkanPhysicalAttachmentAspect physicalAttachmentAspect(
+    FrameGraphAttachmentAspect aspect) {
+    switch (aspect) {
+    case FrameGraphAttachmentAspect::color:
+        return VulkanPhysicalAttachmentAspect::color;
+    case FrameGraphAttachmentAspect::depth:
+        return VulkanPhysicalAttachmentAspect::depth;
+    }
+    throw std::runtime_error(
+        "unknown frame graph attachment aspect");
+}
+
+VulkanPhysicalAttachmentLoadOp physicalAttachmentLoadOp(
+    FrameGraphAttachmentLoadOp op) {
+    switch (op) {
+    case FrameGraphAttachmentLoadOp::load:
+        return VulkanPhysicalAttachmentLoadOp::load;
+    case FrameGraphAttachmentLoadOp::clear:
+        return VulkanPhysicalAttachmentLoadOp::clear;
+    case FrameGraphAttachmentLoadOp::discard:
+        return VulkanPhysicalAttachmentLoadOp::discard;
+    }
+    throw std::runtime_error(
+        "unknown frame graph attachment load op");
+}
+
+VulkanPhysicalAttachmentStoreOp physicalAttachmentStoreOp(
+    FrameGraphAttachmentStoreOp op) {
+    switch (op) {
+    case FrameGraphAttachmentStoreOp::store:
+        return VulkanPhysicalAttachmentStoreOp::store;
+    case FrameGraphAttachmentStoreOp::discard:
+        return VulkanPhysicalAttachmentStoreOp::discard;
+    }
+    throw std::runtime_error(
+        "unknown frame graph attachment store op");
+}
+
+std::vector<VulkanPhysicalAttachmentPlan>
+physicalAttachmentPlans(
+    const FrameGraphDefinition &definition) {
+    std::vector<VulkanPhysicalAttachmentPlan> result;
+    for (const auto &node : definition.nodes) {
+        result.reserve(
+            result.size() +
+            node.attachments.size());
+        for (const auto &attachment :
+             node.attachments) {
+            result.push_back(
+                VulkanPhysicalAttachmentPlan{
+                    .node = node.name,
+                    .logical_resource =
+                        attachment.resource,
+                    .aspect =
+                        physicalAttachmentAspect(
+                            attachment.aspect),
+                    .load_op =
+                        physicalAttachmentLoadOp(
+                            attachment.load_op),
+                    .store_op =
+                        physicalAttachmentStoreOp(
+                            attachment.store_op),
+                });
         }
     }
     return result;
@@ -1054,6 +1124,9 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
                                   *fragment->second},
                     .fragment_format_capabilities =
                         format_capabilities,
+                    .automatic_attachments =
+                        physicalAttachmentPlans(
+                            definition),
                 });
         plan_value.resolution_plan =
             makeRuntimeResolutionPlan(

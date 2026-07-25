@@ -824,6 +824,76 @@ TEST_CASE(
         RenderResolutionDomain::output);
 }
 
+TEST_CASE(
+    "frame graph preserves per-aspect attachment operations",
+    "[frameplanner][attachment-operations]") {
+    const auto graph =
+        parseFrameGraphDefinitionFromJson(
+            nlohmann::json::parse(R"json({
+      "name":"attachment_operations",
+      "passes":[
+        {"name":"explicit","type":"material",
+         "color_load_op":"dont_care",
+         "color_store_op":"dont_care",
+         "depth_load_op":"load",
+         "depth_store_op":"store",
+         "output":{"color":["first","second"],"depth":"depth"}},
+        {"name":"ui","type":"ui",
+         "output":{"color":"first","depth":null}},
+        {"name":"imgui","type":"imgui",
+         "output":{"color":"second","depth":null}}
+      ]
+    })json"));
+
+    REQUIRE(graph.nodes.at(0).attachments.size() == 3);
+    REQUIRE((
+        graph.nodes.at(0).attachments.at(0) ==
+        FrameGraphAttachmentDefinition{
+            .resource = "first",
+            .aspect =
+                FrameGraphAttachmentAspect::color,
+            .load_op =
+                FrameGraphAttachmentLoadOp::discard,
+            .store_op =
+                FrameGraphAttachmentStoreOp::discard,
+        }));
+    REQUIRE((
+        graph.nodes.at(0).attachments.at(2) ==
+        FrameGraphAttachmentDefinition{
+            .resource = "depth",
+            .aspect =
+                FrameGraphAttachmentAspect::depth,
+            .load_op =
+                FrameGraphAttachmentLoadOp::load,
+            .store_op =
+                FrameGraphAttachmentStoreOp::store,
+        }));
+    REQUIRE(
+        std::find(
+            graph.nodes.at(0).reads.begin(),
+            graph.nodes.at(0).reads.end(),
+            "depth") !=
+        graph.nodes.at(0).reads.end());
+    REQUIRE(
+        graph.nodes.at(1).attachments.front().load_op ==
+        FrameGraphAttachmentLoadOp::load);
+    REQUIRE(
+        graph.nodes.at(2).attachments.front().load_op ==
+        FrameGraphAttachmentLoadOp::load);
+
+    auto malformed = nlohmann::json::parse(R"json({
+      "name":"bad_attachment_op",
+      "passes":[
+        {"name":"bad","type":"fullscreen",
+         "color_load_op":"preserve_somehow",
+         "output":{"color":"display","depth":null}}
+      ]
+    })json");
+    REQUIRE_THROWS(
+        parseFrameGraphDefinitionFromJson(
+            malformed));
+}
+
 TEST_CASE("WP181 frame graph runtime retains one immutable typed pipeline",
           "[wp181][frameplanner][render-pipeline]") {
     FrameGraphDefinition definition;
