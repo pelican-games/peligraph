@@ -126,6 +126,65 @@ FullscreenPushConstantData stringToFullscreenPushConstantData(const std::string 
     throw std::runtime_error("Unknown fullscreen push constant data: " + data_str);
 }
 
+std::string_view renderResolutionDomainName(
+    RenderResolutionDomain domain) {
+    switch (domain) {
+    case RenderResolutionDomain::unclassified:
+        return "unclassified";
+    case RenderResolutionDomain::scene:
+        return "scene";
+    case RenderResolutionDomain::output:
+        return "output";
+    case RenderResolutionDomain::independent:
+        return "independent";
+    }
+    throw std::runtime_error("Unknown render resolution domain");
+}
+
+RenderResolutionDomain defaultRenderResolutionDomain(
+    std::string_view pass_type) {
+    if (pass_type == "material" || pass_type == "velocity") {
+        return RenderResolutionDomain::scene;
+    }
+    if (pass_type == "output_transform" || pass_type == "ui" ||
+        pass_type == "imgui") {
+        return RenderResolutionDomain::output;
+    }
+    if (pass_type == "shadow_depth") {
+        return RenderResolutionDomain::independent;
+    }
+    return RenderResolutionDomain::unclassified;
+}
+
+RenderResolutionDomain parseRenderResolutionDomain(
+    const nlohmann::json &pass_json, std::string_view pass_type,
+    const std::string &pass_name) {
+    if (!pass_json.contains("resolution_domain")) {
+        return defaultRenderResolutionDomain(pass_type);
+    }
+    const auto &encoded = pass_json.at("resolution_domain");
+    if (!encoded.is_string()) {
+        throw std::runtime_error(
+            "Pass resolution_domain must be a string: " + pass_name);
+    }
+    const auto value = encoded.get<std::string>();
+    if (value == "unclassified" || value == "none") {
+        return RenderResolutionDomain::unclassified;
+    }
+    if (value == "scene") {
+        return RenderResolutionDomain::scene;
+    }
+    if (value == "output") {
+        return RenderResolutionDomain::output;
+    }
+    if (value == "independent") {
+        return RenderResolutionDomain::independent;
+    }
+    throw std::runtime_error(
+        "Unknown pass resolution_domain '" + value + "': " +
+        pass_name);
+}
+
 vk::AttachmentLoadOp stringToLoadOp(const std::string &op_str) {
     if (op_str == "Clear" || op_str == "clear") {
         return vk::AttachmentLoadOp::eClear;

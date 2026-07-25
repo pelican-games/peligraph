@@ -281,7 +281,7 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
     requireOnlyKeys(authored_config,
                     {"pipeline", "features", "snapshots", "shader_defines",
                      "draw_sort", "graph_transforms",
-                     "render_strategy"},
+                     "render_strategy", "xr"},
                     "rendering config using pipeline preset");
     appendUniqueArray(resolved, authored_config, "features", "rendering config", false);
     appendUniqueArray(resolved, authored_config, "shader_defines", "rendering config", true);
@@ -317,13 +317,20 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
         }
         resolved["draw_sort"] = authored_config.at("draw_sort");
     }
+    if (authored_config.contains("xr")) {
+        if (!authored_config.at("xr").is_object()) {
+            throw std::runtime_error(
+                "rendering config xr must be an object");
+        }
+        resolved["xr"] = authored_config.at("xr");
+    }
     if (pipeline.contains("settings")) {
         const auto &settings = pipeline.at("settings");
         if (!settings.is_object()) {
             throw std::runtime_error(
                 "rendering config pipeline settings must be an object");
         }
-        requireOnlyKeys(settings, {"msaa"},
+        requireOnlyKeys(settings, {"msaa", "xr"},
                         "rendering config pipeline settings");
         if (settings.contains("msaa")) {
             if (!settings.at("msaa").is_object()) {
@@ -334,6 +341,18 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
             // config uses the same canonical compiler input as an ejected
             // verbose rendering config.
             resolved["multisampling"] = settings.at("msaa");
+        }
+        if (settings.contains("xr")) {
+            if (authored_config.contains("xr")) {
+                throw std::runtime_error(
+                    "rendering config cannot define xr both at top level "
+                    "and in pipeline settings");
+            }
+            if (!settings.at("xr").is_object()) {
+                throw std::runtime_error(
+                    "rendering config pipeline settings xr must be an object");
+            }
+            resolved["xr"] = settings.at("xr");
         }
     }
     return {std::move(resolved), RenderPipelinePresetInfo{
@@ -504,6 +523,10 @@ ResolvedRenderPipeline resolveRenderPipeline(
     }
     result.sample_count_policy =
         compileSampleCountPolicy(result.normalized_config);
+    result.xr_target_policy =
+        compileXrTargetPolicy(
+            result.normalized_config,
+            result.graph_variant_policy.variant);
     suffixRenderingPassNames(result.normalized_config,
                              result.graph_variant_policy
                                  .rendering_pass_name_suffix);
@@ -864,6 +887,16 @@ CompiledRenderPipeline compileRenderPipeline(
         throw std::runtime_error(
             "resolved render pipeline has inconsistent graph variant policy");
     }
+    const auto canonical_xr_target_policy =
+        compileXrTargetPolicy(
+            pipeline.normalized_config,
+            pipeline.graph_variant_policy.variant);
+    if (pipeline.xr_target_policy.authored &&
+        pipeline.xr_target_policy !=
+            canonical_xr_target_policy) {
+        throw std::runtime_error(
+            "resolved render pipeline has inconsistent XR target policy");
+    }
 
     CompiledRenderPipeline result;
     result.shader_defines = pipeline.shader_defines;
@@ -881,6 +914,7 @@ CompiledRenderPipeline compileRenderPipeline(
     }
     result.draw_sorting = compileDrawSorting(pipeline.draw_sort);
     result.sample_count_policy = pipeline.sample_count_policy;
+    result.xr_target_policy = canonical_xr_target_policy;
     result.pipeline_preset = pipeline.pipeline_preset;
     result.graph_variant_policy =
         pipeline.graph_variant_policy;
@@ -1030,6 +1064,11 @@ nlohmann::json serializeCompiledRenderPipelineMetadata(
     if (pipeline.sample_count_policy.authored) {
         metadata["sample_count"] =
             sampleCountPolicyToJson(pipeline.sample_count_policy);
+    }
+    if (pipeline.xr_target_policy.authored) {
+        metadata["xr_target_policy"] =
+            xrTargetPolicyToJson(
+                pipeline.xr_target_policy);
     }
     if (pipeline.pipeline_preset) {
         metadata["pipeline_preset"] = {

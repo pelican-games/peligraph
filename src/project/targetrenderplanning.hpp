@@ -2,6 +2,7 @@
 
 #include "samplecountplanning.hpp"
 #include "targetplanning.hpp"
+#include "vulkanviewplanning.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -47,9 +48,31 @@ struct ResourcePattern {
     std::string provenance;
 };
 
+enum class ResourceExtentKind : std::uint8_t {
+    output_relative,
+    fixed,
+};
+
+std::string_view resourceExtentKindName(ResourceExtentKind kind);
+
+// Typed physical-size contract carried beside a resource pattern. It is
+// intentionally binding-specific: two resources using the same format and
+// materialization pattern may live at different resolutions.
+struct ResourceExtentPlan {
+    ResourceExtentKind kind =
+        ResourceExtentKind::output_relative;
+    float scale_x = 1.0f;
+    float scale_y = 1.0f;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+
+    bool operator==(const ResourceExtentPlan &) const = default;
+};
+
 struct ResourcePatternBinding {
     std::string resource;
     ResourcePattern pattern;
+    std::optional<ResourceExtentPlan> extent;
 };
 
 enum class TargetIrDialect : std::uint8_t {
@@ -102,6 +125,7 @@ struct TargetLoweringNode {
 struct TargetLoweringResource {
     LogicalResourceDesc logical;
     ResourcePattern pattern;
+    std::optional<ResourceExtentPlan> extent;
     TargetIrDialect dialect = TargetIrDialect::logical;
     TargetResourceUseSummary uses;
     TargetResourceLifetime lifetime;
@@ -142,6 +166,15 @@ enum class VulkanResourceRepresentation : std::uint8_t {
 std::string_view vulkanResourceRepresentationName(
     VulkanResourceRepresentation representation);
 
+enum class VulkanResourceViewLayout : std::uint8_t {
+    shared_2d,
+    sequential_2d,
+    layered_2d_array,
+};
+
+std::string_view vulkanResourceViewLayoutName(
+    VulkanResourceViewLayout layout);
+
 struct VulkanPhysicalResourcePlan {
     std::string logical_resource;
     std::string pattern;
@@ -157,6 +190,18 @@ struct VulkanPhysicalResourcePlan {
     std::string reason;
     std::uint32_t rasterization_samples = 1;
     bool resolve_required = false;
+    VulkanResourceViewLayout view_layout =
+        VulkanResourceViewLayout::shared_2d;
+    std::uint32_t array_layers = 1;
+    std::optional<ResourceExtentPlan> extent;
+};
+
+struct VulkanRenderResolutionPlan {
+    std::string render_source_resource;
+    ResourceExtentPlan render_extent;
+    std::string output_source_resource = "swapchain";
+    ResourceExtentPlan output_extent;
+    std::vector<std::string> scene_resources;
 };
 
 enum class VulkanPhysicalScopeKind : std::uint8_t {
@@ -178,6 +223,11 @@ struct VulkanPhysicalScopePlan {
     std::vector<std::string> local_reads;
     std::vector<std::string> region_tags;
     std::uint32_t rasterization_samples = 1;
+    VulkanScopeViewExecution view_execution =
+        VulkanScopeViewExecution::single_view;
+    std::uint32_t view_count = 1;
+    std::uint32_t execution_count = 1;
+    std::uint32_t view_mask = 0;
 };
 
 struct VulkanAliasGroupPlan {
@@ -200,6 +250,7 @@ struct VulkanTargetPlanRequest {
     std::vector<PlanningResourceConstraint> resource_constraints;
     PlanningDiagnosticPolicy diagnostic_policy;
     std::optional<VulkanSampleCountPlanRequest> sample_count;
+    std::optional<VulkanViewExecutionPlanRequest> view_execution;
 };
 
 struct VulkanTargetPlan {
@@ -219,6 +270,9 @@ struct VulkanTargetPlan {
     std::vector<std::string> required_physical_features;
     std::vector<PlanningDecision> decisions;
     std::optional<ResolvedSampleCountPlan> sample_count_plan;
+    VulkanViewExecutionPlan view_execution_plan;
+    std::optional<VulkanRenderResolutionPlan>
+        resolution_plan;
 };
 
 void validateVulkanPhysicalFeatureClosure(

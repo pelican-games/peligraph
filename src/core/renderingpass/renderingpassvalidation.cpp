@@ -270,6 +270,12 @@ void validatePassSpecificFields(const PassDefinition &pass_def, const nlohmann::
         throw std::runtime_error("Only material passes support screen_inputs: " +
                                  pass_def.name);
     }
+    if (!pass_def.isFullscreen() &&
+        pass_json.contains("input_sampling")) {
+        throw std::runtime_error(
+            "Only fullscreen passes support input_sampling: " +
+            pass_def.name);
+    }
 
     if (pass_json.contains("needs_projection_matrix")) {
         throw std::runtime_error(

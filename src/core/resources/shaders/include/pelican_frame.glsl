@@ -1,8 +1,41 @@
 #ifndef PELICAN_FRAME_GLSL
 #define PELICAN_FRAME_GLSL
 
+#if defined(PELICAN_MULTIVIEW)
+#extension GL_EXT_multiview : require
+#if !defined(PELICAN_VIEW_COUNT)
+#error PELICAN_MULTIVIEW requires PELICAN_VIEW_COUNT
+#endif
+#if PELICAN_VIEW_COUNT < 2 || PELICAN_VIEW_COUNT > 32
+#error PELICAN_VIEW_COUNT must be in [2, 32]
+#endif
+#endif
+
 #include "pelican_sets.glsl"
 
+#if defined(PELICAN_MULTIVIEW)
+struct PelicanFrameData {
+    vec4 time_delta;
+    uvec4 frame_index;
+    vec4 resolution;
+    vec4 camera_position;
+    mat4 view;
+    mat4 projection;
+    mat4 previous_view;
+    mat4 previous_projection;
+    vec2 jitter_ndc;
+    vec2 previous_jitter_ndc;
+    uint temporal_reset_epoch;
+    uint previous_temporal_reset_epoch;
+    uvec2 temporal_padding;
+};
+
+layout(set = PELICAN_SET_FRAME, binding = PELICAN_FRAME_UBO_BINDING, std140) uniform PelicanFrameUBO {
+    PelicanFrameData views[PELICAN_VIEW_COUNT];
+} pelicanFrames;
+
+#define pelicanFrame pelicanFrames.views[gl_ViewIndex]
+#else
 layout(set = PELICAN_SET_FRAME, binding = PELICAN_FRAME_UBO_BINDING, std140) uniform PelicanFrameUBO {
     vec4 time_delta;
     uvec4 frame_index;
@@ -18,6 +51,25 @@ layout(set = PELICAN_SET_FRAME, binding = PELICAN_FRAME_UBO_BINDING, std140) uni
     uint previous_temporal_reset_epoch;
     uvec2 temporal_padding;
 } pelicanFrame;
+#endif
+
+struct PelicanResolutionData {
+    vec4 render_resolution;
+    vec4 output_resolution;
+};
+
+#if defined(PELICAN_MULTIVIEW)
+layout(set = PELICAN_SET_FRAME, binding = PELICAN_FRAME_RESOLUTION_UBO_BINDING, std140) uniform PelicanResolutionUBO {
+    PelicanResolutionData views[PELICAN_VIEW_COUNT];
+} pelicanResolutions;
+
+#define pelicanResolution pelicanResolutions.views[gl_ViewIndex]
+#else
+layout(set = PELICAN_SET_FRAME, binding = PELICAN_FRAME_RESOLUTION_UBO_BINDING, std140) uniform PelicanResolutionUBO {
+    vec4 render_resolution;
+    vec4 output_resolution;
+} pelicanResolution;
+#endif
 
 struct PelicanObjectData {
     mat4 model;

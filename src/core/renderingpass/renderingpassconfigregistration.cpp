@@ -33,6 +33,9 @@
 #include <iterator>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <span>
+#include <stdexcept>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
@@ -104,6 +107,31 @@ std::string gpuOwnerScope(
     return "render_pipeline/" +
            std::string{renderPipelineGraphVariantName(
                options.graph_variant)};
+}
+
+std::optional<VulkanViewExecutionPlanRequest>
+targetViewExecutionRequest(
+    const CompiledRenderPipeline &pipeline) {
+    if (pipeline.graph_variant_policy.variant !=
+        RenderPipelineGraphVariant::xr) {
+        return std::nullopt;
+    }
+    if (!pipeline.xr_target_policy.active ||
+        pipeline.graph_variant_policy.view_count == 0) {
+        throw std::runtime_error(
+            "compiled XR pipeline lacks an active target-view "
+            "policy");
+    }
+    return VulkanViewExecutionPlanRequest{
+        .view_count =
+            pipeline.graph_variant_policy.view_count,
+        .preference =
+            pipeline.xr_target_policy.view_execution,
+        // Runtime pass implementations do not declare multiview shader
+        // support yet. Auto therefore preserves the proven sequential path;
+        // an authored required policy fails during target planning instead
+        // of silently selecting a non-functional Vulkan path.
+    };
 }
 
 std::unordered_map<std::string, FramePlan> framePlansByName(
@@ -193,6 +221,29 @@ struct PreparedRenderingPassConfigVariant {
                        std::shared_ptr<const VulkanTargetPlan>>
         target_plans;
 };
+
+void mergeVariantRenderTargetArrayLayers(
+    std::span<PreparedRenderingPassConfigVariant>
+        variants) {
+    std::unordered_map<std::string, std::uint32_t>
+        maximum_layers;
+    for (const auto &variant : variants) {
+        for (const auto &target :
+             variant.render_target_definitions) {
+            auto &layers =
+                maximum_layers[target.name];
+            layers = std::max(
+                layers, target.array_layers);
+        }
+    }
+    for (auto &variant : variants) {
+        for (auto &target :
+             variant.render_target_definitions) {
+            target.array_layers =
+                maximum_layers.at(target.name);
+        }
+    }
+}
 
 PreparedRenderingPassConfigVariant prepareRenderingPassConfigVariant(
     const nlohmann::json &rendering_pass_data,
@@ -315,7 +366,9 @@ PreparedRenderingPassConfigVariant prepareRenderingPassConfigVariant(
             graph_definition_list, render_target_definitions,
             compiled_pipeline->sample_count_policy,
             swapchain_format,
-            GET_MODULE(VulkanManageCore).getPhysDevice());
+            GET_MODULE(VulkanManageCore).getPhysDevice(),
+            targetViewExecutionRequest(
+                *compiled_pipeline));
     applyRenderingTargetPlan(render_target_definitions,
                              target_plan_compilation);
     auto target_plans =
@@ -568,6 +621,12 @@ registerRenderingPassConfigVariantsData(
                 render_strategy_providers,
                 subgraph_replacement_providers));
     }
+    // Flat and XR variants may share logical target names. Allocate the
+    // maximum required layer count before the first mutable registration so
+    // later variants reuse a safe physical superset without expanding live
+    // resources inside the transaction.
+    mergeVariantRenderTargetArrayLayers(
+        prepared_variants);
 
     // Legacy registries are mutable containers rather than isolated
     // candidates. Serialize the checkpoint-to-publication interval so a

@@ -44,7 +44,7 @@ static void changeImageLayoutCommand(vk::CommandBuffer cmd_buf, const ImageWrapp
     barrior.subresourceRange.baseMipLevel = 0;
     barrior.subresourceRange.levelCount = image.mip_levels;
     barrior.subresourceRange.baseArrayLayer = 0;
-    barrior.subresourceRange.layerCount = 1;
+    barrior.subresourceRange.layerCount = image.array_layers;
     barrior.srcAccessMask = info.src_access;
     barrior.dstAccessMask = info.dst_access;
     cmd_buf.pipelineBarrier(info.src_stage, info.dst_stage, {}, {}, {}, {barrior});
@@ -63,6 +63,11 @@ void VulkanUtils::changeImageLayout(const ImageWrapper &image, vk::ImageLayout o
 
 void VulkanUtils::safeTransferMemoryToImage(const ImageWrapper &image, const void *src, vk::DeviceSize bytes_num,
                                             const ImageTransferInfo &info) {
+    if (image.array_layers != 1) {
+        throw std::invalid_argument(
+            "safeTransferMemoryToImage only accepts single-layer images; "
+            "use safeTransferMemoryToImageLevels with explicit array-layer regions");
+    }
     vk::BufferImageCopy image_copy;
     image_copy.bufferOffset = 0;
     image_copy.imageSubresource.aspectMask = vk::ImageAspectFlagBits::eColor;

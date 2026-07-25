@@ -18,6 +18,8 @@ add_library(pelican_project
     surfaceformat.cpp
     targetplanning.cpp
     targetrenderplanning.cpp
+    vulkanviewplanning.cpp
+    xrtargetpolicy.cpp
 )
 
 set_target_properties(pelican_project PROPERTIES CXX_STANDARD 20)

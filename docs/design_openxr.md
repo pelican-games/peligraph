@@ -218,6 +218,27 @@ implementation_plan へコピーする**。タグ参照だけで受け入れ条�
 実装順: XR0 → XR1a → XR1b/1c → **XR2a.0(最重量・OpenXR 非依存なので
 早期着手可)** → XR2a.1/2a.2 → XR2a.3 → XR3a/3b → XR4 → XR2b。
 
+### XR2b進捗(2026-07-25)
+
+WP203aでtarget-planning側を先行実装した。logical XR policyはexact 2-viewのまま、
+後段がendpoint capability / 最大view数 / scope implementation対応から
+single-view、sequential、multiviewまたは混在executionを選ぶ。scopeのview maskと実行回数、
+image resourceのshared/sequential/2D-array layoutは`VulkanTargetPlan`へ残る。
+`xr.view_execution`は`auto` / `sequential` / `multiview`を受理し、必須条件を満たさない
+`multiview`はfallbackせずcompile errorになる。
+
+WP203b phase 1では、internal array imageとlayer別/2D-array view、per-view FrameUBO、
+`gl_ViewIndex` reflection、typed pipeline/pass view contract、dynamic renderingの
+`viewMask`を実装した。synthetic 2-view Vulkan testは一回の描画とsequential referenceの
+左右layer byte一致を検証する。
+
+production shader/pass variantとscope schedulerはまだmultiview対応を宣言していないため、
+通常描画は引き続きsequentialである。OpenXR array swapchain、depth submit、GPU計測gateは
+WP203cに残る。詳細は
+[`design_reviews/2026-07-25_wp203a_report.md`](design_reviews/2026-07-25_wp203a_report.md)。
+phase 1の中間証跡は
+[`design_reviews/2026-07-25_wp203b_phase1_report.md`](design_reviews/2026-07-25_wp203b_phase1_report.md)。
+
 ## 12. 未決事項
 
 1. シミュ時刻と predictedDisplayTime の補間(§3 の分離を前提に、

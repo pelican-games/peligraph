@@ -21,7 +21,7 @@ DECLARE_MODULE(FullscreenPassContainer) {
   private:
     vk::Device device;
 
-    vk::UniqueSampler nearest_sampler, linear_sampler;
+    std::array<vk::UniqueSampler, 6> input_samplers;
     vk::UniqueDescriptorPool desc_pool;
 
     std::unordered_map<PipelineId, PipelineHandle, PipelineId::Hash> pipelines;
@@ -32,6 +32,7 @@ DECLARE_MODULE(FullscreenPassContainer) {
         std::array<vk::UniqueDescriptorSet, 2> descsets;
         std::vector<GlobalRenderTargetId> input_rt_ids;
         std::vector<bool> input_rt_history;
+        std::vector<FullscreenInputSampling> input_sampling;
         std::vector<FrameGraphBufferId> input_buffer_ids;
         std::array<std::vector<vk::ImageView>, 2> bound_image_views;
         uint64_t binding_revision = 0;
@@ -60,19 +61,23 @@ DECLARE_MODULE(FullscreenPassContainer) {
                            const std::vector<bool> &input_rt_history,
                            const std::vector<std::string> &input_buffers,
                            const RenderTargetImageViewResolver &rt_views,
-                           const FrameGraphResourceContainer &frame_graph_resources);
+                           const FrameGraphResourceContainer &frame_graph_resources,
+                           const std::vector<FullscreenInputSampling> &input_sampling = {});
     void setInputResourcesById(
         PassId pass_id,
         const std::vector<GlobalRenderTargetId> &input_rts,
         const std::vector<bool> &input_rt_history,
         const std::vector<FrameGraphBufferId> &input_buffers,
         const RenderTargetImageViewResolver &rt_views,
-        const FrameGraphResourceContainer &frame_graph_resources);
+        const FrameGraphResourceContainer &frame_graph_resources,
+        const std::vector<FullscreenInputSampling> &input_sampling = {});
     void rebindInputResources(
         PassId pass_id,
         const RenderTargetImageViewResolver &rt_views,
         const FrameGraphResourceContainer &frame_graph_resources);
     std::vector<vk::ImageView> boundInputImageViewsForTesting(PassId pass_id) const;
+    std::vector<FullscreenInputSampling>
+    inputSamplingForTesting(PassId pass_id) const;
     uint64_t inputBindingRevisionForTesting(PassId pass_id) const;
     vk::PipelineLayout getPipelineLayout(PassId pass_id) const;
 

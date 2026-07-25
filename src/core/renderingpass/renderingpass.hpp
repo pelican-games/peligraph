@@ -2,6 +2,7 @@
 
 #include "../container.hpp"
 #include "../handle.hpp"
+#include "../shader/graphicsviewcontract.hpp"
 #include "../shader/shaderreference.hpp"
 #include "../../project/renderpipeline.hpp"
 #include "../../project/materialscreeninput.hpp"
@@ -81,11 +82,33 @@ enum class FullscreenPushConstantData {
     eProjectionView,
 };
 
+enum class FullscreenInputFilter : std::uint8_t {
+    linear,
+    nearest,
+};
+
+enum class FullscreenInputAddressMode : std::uint8_t {
+    repeat,
+    mirrored_repeat,
+    clamp_to_edge,
+};
+
+struct FullscreenInputSampling {
+    FullscreenInputFilter filter = FullscreenInputFilter::linear;
+    FullscreenInputAddressMode address_mode =
+        FullscreenInputAddressMode::repeat;
+
+    bool operator==(const FullscreenInputSampling &) const = default;
+};
+
 struct FullscreenPassInfo {
     ShaderReference vert_shader = ShaderReference{"", ShaderStage::vertex, ShaderReferenceKind::explicit_file, false};
     ShaderReference frag_shader = ShaderReference{"", ShaderStage::fragment, ShaderReferenceKind::explicit_file, false};
     FullscreenPushConstantData push_constants = FullscreenPushConstantData::eNone;
     bool uses_light_data = false;
+    // Empty preserves the legacy linear/repeat policy for every image input.
+    // When authored, entries map one-to-one to PassDefinition::input_targets.
+    std::vector<FullscreenInputSampling> input_sampling;
 };
 
 struct DebugDrawPassInfo {
@@ -139,6 +162,17 @@ struct PassImplementationSelection {
     bool operator==(const PassImplementationSelection &) const = default;
 };
 
+// A pass labels the resolution space in which its raster work is defined.
+// The compiler uses the scene domain to derive the camera/jitter render
+// extent. Output and independent work (for example UI and shadow maps) do not
+// participate in that inference.
+enum class RenderResolutionDomain : std::uint8_t {
+    unclassified,
+    scene,
+    output,
+    independent,
+};
+
 struct PassDefinition {
     PassDefinition() : output_depth{noRenderTargetId()} {}
 
@@ -162,6 +196,8 @@ struct PassDefinition {
     vk::ClearColorValue clear_color = vk::ClearColorValue{std::array{0.0f, 0.0f, 0.0f, 1.0f}};
     vk::SampleCountFlagBits rasterization_samples =
         vk::SampleCountFlagBits::e1;
+    RenderResolutionDomain resolution_domain =
+        RenderResolutionDomain::unclassified;
 
     bool isMaterial() const { return std::holds_alternative<MaterialPassInfo>(pass_info); }
     bool isFullscreen() const { return std::holds_alternative<FullscreenPassInfo>(pass_info); }
@@ -220,6 +256,7 @@ struct RenderingPassDefinition {
 struct CompiledPass {
     PassDefinition definition;
     PassId pass_id;
+    GraphicsPipelineViewContract view;
 };
 
 struct CompiledRenderingPass {

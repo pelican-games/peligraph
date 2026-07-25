@@ -47,7 +47,9 @@ CompilerProviderRegistrySnapshot providers() {
     return registry.snapshot();
 }
 
-TargetTopologySnapshot topology(bool tile, std::uint32_t budget = 8) {
+TargetTopologySnapshot topology(
+    bool tile, std::uint32_t budget = 8,
+    std::uint32_t max_multiview_view_count = 0) {
     std::vector<std::string> capabilities{
         "pelican.vulkan.graphics@1",
         "pelican.vulkan.sampled_image@1",
@@ -62,16 +64,26 @@ TargetTopologySnapshot topology(bool tile, std::uint32_t budget = 8) {
              "pelican.vulkan.dynamic_rendering_local_read@1",
              "pelican.vulkan.transient_attachment@1"});
     }
+    std::vector<TargetFact> facts{
+        {"pelican.vulkan.max_color_attachments@1",
+         std::to_string(budget)},
+        {"pelican.vulkan.profile@1",
+         tile ? "tile" : "desktop"},
+    };
+    if (max_multiview_view_count != 0) {
+        capabilities.push_back(
+            "pelican.vulkan.multiview@1");
+        facts.push_back(
+            {"pelican.vulkan.max_multiview_view_count@1",
+             std::to_string(max_multiview_view_count)});
+    }
     return TargetTopologySnapshot{
         tile ? "mock_tile" : "mock_desktop",
         {TargetEndpoint{
             "device:0",
             TargetEndpointKind::vulkan_device,
             std::move(capabilities),
-            {{"pelican.vulkan.max_color_attachments@1",
-              std::to_string(budget)},
-             {"pelican.vulkan.profile@1",
-              tile ? "tile" : "desktop"}},
+            std::move(facts),
         }},
         {},
     };
@@ -318,6 +330,8 @@ VulkanTargetPlan compile(
     TargetTopologySnapshot target,
     std::vector<ResourcePatternBinding> bindings,
     std::optional<VulkanSampleCountPlanRequest> sample_count =
+        std::nullopt,
+    std::optional<VulkanViewExecutionPlanRequest> view_execution =
         std::nullopt) {
     return compileVulkanTargetPlan(
         types, graph, target, providers(),
@@ -326,6 +340,7 @@ VulkanTargetPlan compile(
             .provider = std::string{kProvider},
             .pattern_bindings = std::move(bindings),
             .sample_count = std::move(sample_count),
+            .view_execution = std::move(view_execution),
         });
 }
 
@@ -384,6 +399,21 @@ bool oneScopeContains(const VulkanTargetPlan &plan,
         });
 }
 
+const VulkanPhysicalScopePlan &scopeForNode(
+    const VulkanTargetPlan &plan, std::string_view node) {
+    const auto found = std::find_if(
+        plan.scopes.begin(), plan.scopes.end(),
+        [&](const VulkanPhysicalScopePlan &scope) {
+            return std::find(scope.nodes.begin(),
+                             scope.nodes.end(),
+                             node) != scope.nodes.end();
+        });
+    if (found == plan.scopes.end()) {
+        throw std::runtime_error("test physical scope missing");
+    }
+    return *found;
+}
+
 } // namespace
 
 TEST_CASE("desktop materializes arbitrary G-buffer attachments while tile keeps same-pixel data local",
@@ -431,6 +461,162 @@ TEST_CASE("desktop materializes arbitrary G-buffer attachments while tile keeps 
         compile(types, graph, topology(true), std::move(bindings));
     REQUIRE(vulkanTargetPlanToJson(tile).dump() ==
             vulkanTargetPlanToJson(reordered).dump());
+}
+
+TEST_CASE("view execution planning keeps mono and sequential stereo as explicit physical contracts",
+          "[target-render-planning][view-execution][sequential]") {
+    const auto types = makeBuiltinLogicalTypeRegistry();
+    const auto graph = hybridGraph(types, 3, false);
+
+    const auto mono = compile(
+        types, graph, topology(false),
+        bindingsFor(types, graph));
+    REQUIRE(mono.view_execution_plan.view_count == 1);
+    REQUIRE_FALSE(mono.view_execution_plan.uses_multiview);
+    REQUIRE(std::all_of(
+        mono.scopes.begin(), mono.scopes.end(),
+        [](const VulkanPhysicalScopePlan &scope) {
+            return scope.view_execution ==
+                       VulkanScopeViewExecution::single_view &&
+                   scope.view_count == 1 &&
+                   scope.execution_count == 1 &&
+                   scope.view_mask == 0;
+        }));
+    REQUIRE(std::all_of(
+        mono.resources.begin(), mono.resources.end(),
+        [](const VulkanPhysicalResourcePlan &resource) {
+            return resource.view_layout ==
+                       VulkanResourceViewLayout::shared_2d &&
+                   resource.array_layers == 1;
+        }));
+
+    const auto sequential = compile(
+        types, graph, topology(false),
+        bindingsFor(types, graph), std::nullopt,
+        VulkanViewExecutionPlanRequest{
+            .view_count = 2,
+            .preference =
+                XrViewExecutionPreference::automatic,
+            .multiview_capable_nodes =
+                {"GBuffer", "Lighting", "Forward", "ToneMap"},
+        });
+    REQUIRE_FALSE(
+        sequential.view_execution_plan.uses_multiview);
+    REQUIRE(sequential.view_execution_plan.reason.find(
+                "does not advertise") != std::string::npos);
+    REQUIRE(std::all_of(
+        sequential.scopes.begin(),
+        sequential.scopes.end(),
+        [](const VulkanPhysicalScopePlan &scope) {
+            return scope.view_execution ==
+                       VulkanScopeViewExecution::sequential &&
+                   scope.view_count == 2 &&
+                   scope.execution_count == 2 &&
+                   scope.view_mask == 0;
+        }));
+    REQUIRE(physicalResource(sequential, "scene_color")
+                .view_layout ==
+            VulkanResourceViewLayout::sequential_2d);
+    REQUIRE(std::find(
+                sequential.required_physical_features.begin(),
+                sequential.required_physical_features.end(),
+                "pelican.vulkan.multiview@1") ==
+            sequential.required_physical_features.end());
+}
+
+TEST_CASE("view execution planning selects layered multiview and exposes its Vulkan scope contract",
+          "[target-render-planning][view-execution][multiview]") {
+    const auto types = makeBuiltinLogicalTypeRegistry();
+    const auto graph = hybridGraph(types, 3, false);
+    const auto canonical_before =
+        compiledLogicalRenderGraphToJson(graph).dump();
+    const auto plan = compile(
+        types, graph, topology(false, 8, 2),
+        bindingsFor(types, graph), std::nullopt,
+        VulkanViewExecutionPlanRequest{
+            .view_count = 2,
+            .preference =
+                XrViewExecutionPreference::automatic,
+            .multiview_capable_nodes =
+                {"GBuffer", "Lighting", "Forward", "ToneMap"},
+        });
+
+    REQUIRE(plan.view_execution_plan.uses_multiview);
+    REQUIRE_FALSE(plan.view_execution_plan.mixed_execution);
+    REQUIRE(plan.view_execution_plan
+                .endpoint_supports_multiview);
+    REQUIRE(plan.view_execution_plan
+                .max_multiview_view_count == 2);
+    REQUIRE(std::all_of(
+        plan.scopes.begin(), plan.scopes.end(),
+        [](const VulkanPhysicalScopePlan &scope) {
+            return scope.view_execution ==
+                       VulkanScopeViewExecution::multiview &&
+                   scope.view_count == 2 &&
+                   scope.execution_count == 1 &&
+                   scope.view_mask == 0b11;
+        }));
+    REQUIRE(physicalResource(plan, "gbuffer_0")
+                .view_layout ==
+            VulkanResourceViewLayout::layered_2d_array);
+    REQUIRE(physicalResource(plan, "display_output")
+                .array_layers == 2);
+    REQUIRE(std::find(
+                plan.required_physical_features.begin(),
+                plan.required_physical_features.end(),
+                "pelican.vulkan.multiview@1") !=
+            plan.required_physical_features.end());
+    const auto encoded = vulkanTargetPlanToJson(plan);
+    REQUIRE(encoded.at("view_execution_plan")
+                .at("uses_multiview") == true);
+    REQUIRE(encoded.at("scopes").at(0).contains("view_mask"));
+    REQUIRE(compiledLogicalRenderGraphToJson(graph).dump() ==
+            canonical_before);
+}
+
+TEST_CASE("view execution planning supports mixed scopes and rejects an unsatisfied required policy",
+          "[target-render-planning][view-execution][mixed]") {
+    const auto types = makeBuiltinLogicalTypeRegistry();
+    const auto graph = hybridGraph(types, 3, false);
+    const auto mixed = compile(
+        types, graph, topology(false, 8, 2),
+        bindingsFor(types, graph), std::nullopt,
+        VulkanViewExecutionPlanRequest{
+            .view_count = 2,
+            .preference =
+                XrViewExecutionPreference::automatic,
+            .multiview_capable_nodes =
+                {"GBuffer", "Lighting", "Forward"},
+        });
+
+    REQUIRE(mixed.view_execution_plan.uses_multiview);
+    REQUIRE(mixed.view_execution_plan.mixed_execution);
+    REQUIRE(scopeForNode(mixed, "GBuffer").view_execution ==
+            VulkanScopeViewExecution::multiview);
+    REQUIRE(scopeForNode(mixed, "ToneMap").view_execution ==
+            VulkanScopeViewExecution::sequential);
+    REQUIRE(physicalResource(mixed, "scene_color")
+                .view_layout ==
+            VulkanResourceViewLayout::layered_2d_array);
+    REQUIRE(physicalResource(mixed, "display_output")
+                .view_layout ==
+            VulkanResourceViewLayout::sequential_2d);
+
+    requireThrowsContaining(
+        [&] {
+            (void)compile(
+                types, graph, topology(false, 8, 2),
+                bindingsFor(types, graph), std::nullopt,
+                VulkanViewExecutionPlanRequest{
+                    .view_count = 2,
+                    .preference =
+                        XrViewExecutionPreference::
+                            require_multiview,
+                    .multiview_capable_nodes =
+                        {"GBuffer", "Lighting", "Forward"},
+                });
+        },
+        "ToneMap");
 }
 
 TEST_CASE("neighborhood refraction materializes an opaque snapshot without spilling G-buffer attachments",

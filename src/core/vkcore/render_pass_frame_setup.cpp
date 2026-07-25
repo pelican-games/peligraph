@@ -4,6 +4,49 @@
 
 namespace Pelican {
 
+namespace {
+
+std::uint32_t sequentialAttachmentLayer(
+    GlobalRenderTargetId id,
+    const RenderTargetContainer &rt_container,
+    RenderPassViewInvocation invocation) {
+    const auto layers =
+        rt_container.getMetadata(id).array_layers;
+    if (layers == 1) return 0;
+    if (invocation.logical_view_count == 0 ||
+        invocation.view_index >=
+            invocation.logical_view_count ||
+        layers < invocation.logical_view_count) {
+        throw std::runtime_error(
+            "sequential render-pass invocation does not fit "
+            "the target array-layer contract");
+    }
+    return invocation.view_index;
+}
+
+vk::ImageView colorAttachmentView(
+    GlobalRenderTargetId id,
+    RenderTargetContainer &rt_container,
+    const GraphicsPipelineViewContract &view,
+    RenderPassViewInvocation invocation,
+    bool resolve) {
+    if (view.execution ==
+        GraphicsPipelineViewExecution::multiview) {
+        return resolve
+                   ? rt_container.getLayeredImageView(id)
+                   : rt_container
+                         .getLayeredAttachmentImageView(id);
+    }
+    const auto layer = sequentialAttachmentLayer(
+        id, rt_container, invocation);
+    return resolve
+               ? rt_container.getImageLayerView(id, layer)
+               : rt_container
+                     .getAttachmentImageLayerView(id, layer);
+}
+
+} // namespace
+
 vk::Extent2D getRenderPassTargetExtent(const FrameRenderContext &frame, const PassDefinition &pass_def,
                                        RenderTargetContainer &rt_container) {
     for (const auto &rt_id : pass_def.output_color) {
@@ -76,7 +119,9 @@ void transitionPassInputsToShaderRead(vk::CommandBuffer cmd_buf, const PassDefin
 
 std::vector<vk::RenderingAttachmentInfo> createColorAttachments(const FrameRenderContext &frame,
                                                                 const PassDefinition &pass_def,
-                                                                RenderTargetContainer &rt_container) {
+                                                                RenderTargetContainer &rt_container,
+                                                                const GraphicsPipelineViewContract &view,
+                                                                RenderPassViewInvocation invocation) {
     std::vector<vk::RenderingAttachmentInfo> color_attachments;
     color_attachments.reserve(pass_def.output_color.size());
 
@@ -86,11 +131,15 @@ std::vector<vk::RenderingAttachmentInfo> createColorAttachments(const FrameRende
             color_att.imageView = frame.color_attachment;
         } else {
             color_att.imageView =
-                rt_container.getAttachmentImageView(rt_id);
+                colorAttachmentView(
+                    rt_id, rt_container, view,
+                    invocation, false);
             if (rt_container.hasSeparateAttachment(rt_id)) {
                 color_att.resolveMode = rt_container.resolveMode(rt_id);
                 color_att.resolveImageView =
-                    rt_container.getImageView(rt_id);
+                    colorAttachmentView(
+                        rt_id, rt_container, view,
+                        invocation, true);
                 color_att.resolveImageLayout =
                     vk::ImageLayout::eColorAttachmentOptimal;
             }
@@ -107,16 +156,22 @@ std::vector<vk::RenderingAttachmentInfo> createColorAttachments(const FrameRende
 }
 
 vk::RenderingAttachmentInfo createDepthAttachment(const PassDefinition &pass_def,
-                                                  RenderTargetContainer &rt_container) {
+                                                  RenderTargetContainer &rt_container,
+                                                  const GraphicsPipelineViewContract &view,
+                                                  RenderPassViewInvocation invocation) {
     vk::RenderingAttachmentInfo depth_attachment;
     depth_attachment.imageView =
-        rt_container.getAttachmentImageView(pass_def.output_depth);
+        colorAttachmentView(
+            pass_def.output_depth, rt_container, view,
+            invocation, false);
     depth_attachment.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
     if (rt_container.hasSeparateAttachment(pass_def.output_depth)) {
         depth_attachment.resolveMode =
             rt_container.resolveMode(pass_def.output_depth);
         depth_attachment.resolveImageView =
-            rt_container.getImageView(pass_def.output_depth);
+            colorAttachmentView(
+                pass_def.output_depth, rt_container,
+                view, invocation, true);
         depth_attachment.resolveImageLayout =
             vk::ImageLayout::eDepthAttachmentOptimal;
     }

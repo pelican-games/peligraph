@@ -119,6 +119,9 @@ ShaderReflection reflect(std::span<const uint32_t> spirv) {
     if (module->shader_stage == SPV_REFLECT_SHADER_STAGE_VERTEX_BIT) {
         for (const auto *input : input_variables) {
             if (input->built_in != -1) {
+                reflection.uses_view_index =
+                    reflection.uses_view_index ||
+                    input->built_in == SpvBuiltInViewIndex;
                 continue;
             }
             reflection.vertex_inputs.push_back(vk::VertexInputAttributeDescription{
@@ -127,6 +130,12 @@ ShaderReflection reflect(std::span<const uint32_t> spirv) {
                 static_cast<vk::Format>(input->format),
                 0,
             });
+        }
+    } else {
+        for (const auto *input : input_variables) {
+            reflection.uses_view_index =
+                reflection.uses_view_index ||
+                input->built_in == SpvBuiltInViewIndex;
         }
     }
 
@@ -144,6 +153,8 @@ ShaderReflection merge(std::span<const ShaderReflection> stages) {
     std::map<std::pair<uint32_t, uint32_t>, size_t> binding_indices;
 
     for (const auto &stage : stages) {
+        merged.uses_view_index =
+            merged.uses_view_index || stage.uses_view_index;
         for (const auto &binding : stage.bindings) {
             const auto key = std::make_pair(binding.set, binding.binding);
             auto found = binding_indices.find(key);

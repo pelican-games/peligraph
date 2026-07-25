@@ -1,6 +1,6 @@
 # pelican2 設計文書 索引
 
-最終更新: 2026-07-23(physical target planner runtime統合 / WP191 完了)。文書が矛盾したら
+最終更新: 2026-07-25(XR multiview Vulkan runtime primitives / WP203b phase 1)。文書が矛盾したら
 **凍結済み > ドラフト、設計文書 > 指示書**の順で優先し、実装状態は
 コード・テスト・`design_reviews` の完了レポートを正とする。
 
@@ -56,7 +56,7 @@
 | `design_project_vcs.md` | v1・主要機能実装済み(WP55/57/66) | asset store、assets manifest、project init、外部 DAM 契約 |
 | `design_asset_containers.md` | v1・K1〜K4 実装済み(WP77/79/81/84) | `#` fragment、glTF scene extract、PSD/atlas tools、import rules |
 | `design_animation_graph.md` | v2.1・A0〜A2 + VRM/VRMA 実装済み(WP94〜102/111/121〜134/176〜178) | graph v1、typed VRMA decode/retarget/source。graph v2/live/SpringBone は未 |
-| `design_openxr.md` | v2.1・XR0〜XR4実装済み(WP125〜138) | sequential stereo PCVR、action/pose、mirror、Simulator gate。XR2b/standalone は未 |
+| `design_openxr.md` | v2.1・XR0〜XR4実装済み(WP125〜138)、XR2b planning完了 + runtime phase 1(WP203a/b) | sequential stereo PCVR、action/pose、mirror、Simulator gate。Vulkan multiview primitive済み、production scheduler/standalone は未 |
 | `design_editor_tooling.md` | v2.5・共通 authoring/editor 基盤実装済み(WP149〜172) | typed RPC/service、transaction、undo/save/snapshot/watch/preview。Qt viewport/gizmo は未 |
 | `design_asset_hot_reload.md` | v2.1・HR0〜HR2-G + targeted animation generation 実装済み | 残り HR2-I、U3、VRMA watcher 自動配線 |
 | `design_debug_profiling.md` | D-P0〜D-P2 実装済み(WP139/140/143/145) | debug labels、RenderDoc、GPU/VRAM/XR timing。D-P3以降は未 |

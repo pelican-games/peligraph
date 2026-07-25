@@ -88,6 +88,14 @@ PassDefinition parsePassDefinitionFromJson(const nlohmann::json &pass_json,
 
     parsePassAttachmentOptionsFromJson(pass_def, pass_json);
     parseFullscreenPassInfoIntoDefinition(pass_def, pass_json);
+    if (pass_def.isFullscreen() &&
+        pass_json.contains("input_sampling") &&
+        pass_def.fullscreenInfo().input_sampling.size() !=
+            pass_def.input_targets.size()) {
+        throw std::runtime_error(
+            "Fullscreen pass input_sampling count must match image input count: " +
+            pass_def.name);
+    }
     parseDebugDrawPassInfoIntoDefinition(pass_def, pass_json);
     parseDebugTextPassInfoIntoDefinition(pass_def, pass_json);
     parseShadowDepthPassInfoIntoDefinition(pass_def, pass_json);

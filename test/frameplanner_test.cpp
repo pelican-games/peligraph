@@ -790,6 +790,40 @@ TEST_CASE("frame planner shadow feature plan matches fixture", "[frameplanner]")
     requirePlanFixture(plan_json, fixtureRoot() / "plans" / "shadow_directional_feature_main.json");
 }
 
+TEST_CASE(
+    "frame graph labels default and overridden resolution domains",
+    "[frameplanner][upscale][resolution-domain]") {
+    const auto graph =
+        parseFrameGraphDefinitionFromJson(
+            nlohmann::json::parse(R"json({
+      "name":"resolution_domains",
+      "passes":[
+        {"name":"geometry","type":"material",
+         "output":{"color":"scene","depth":"depth"}},
+        {"name":"shadow","type":"shadow_depth",
+         "output":{"color":null,"depth":"shadow_depth"}},
+        {"name":"custom_scene","type":"fullscreen",
+         "resolution_domain":"scene",
+         "output":{"color":"custom","depth":null}},
+        {"name":"present","type":"output_transform",
+         "output":{"color":"swapchain","depth":null}}
+      ]
+    })json"));
+
+    REQUIRE(
+        graph.nodes.at(0).resolution_domain ==
+        RenderResolutionDomain::scene);
+    REQUIRE(
+        graph.nodes.at(1).resolution_domain ==
+        RenderResolutionDomain::independent);
+    REQUIRE(
+        graph.nodes.at(2).resolution_domain ==
+        RenderResolutionDomain::scene);
+    REQUIRE(
+        graph.nodes.at(3).resolution_domain ==
+        RenderResolutionDomain::output);
+}
+
 TEST_CASE("WP181 frame graph runtime retains one immutable typed pipeline",
           "[wp181][frameplanner][render-pipeline]") {
     FrameGraphDefinition definition;

@@ -13,6 +13,7 @@ struct RenderTargetMetadata {
     vk::Extent2D extent;
     bool history = false;
     std::uint32_t samples = 1;
+    std::uint32_t array_layers = 1;
 };
 
 } // namespace Pelican

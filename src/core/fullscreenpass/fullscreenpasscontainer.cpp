@@ -85,14 +85,42 @@ vk::UniqueDescriptorPool createDescPool(vk::Device device, uint32_t maxSets = 12
     return device.createDescriptorPoolUnique(ci);
 }
 
-vk::UniqueSampler createSampler(vk::Device device, vk::Filter filter) {
+vk::SamplerAddressMode samplerAddressMode(
+    FullscreenInputAddressMode mode) {
+    switch (mode) {
+    case FullscreenInputAddressMode::repeat:
+        return vk::SamplerAddressMode::eRepeat;
+    case FullscreenInputAddressMode::mirrored_repeat:
+        return vk::SamplerAddressMode::eMirroredRepeat;
+    case FullscreenInputAddressMode::clamp_to_edge:
+        return vk::SamplerAddressMode::eClampToEdge;
+    }
+    throw std::runtime_error(
+        "Unknown fullscreen sampler address mode");
+}
+
+std::size_t samplerIndex(FullscreenInputSampling sampling) {
+    constexpr std::size_t address_mode_count = 3;
+    return static_cast<std::size_t>(sampling.filter) *
+               address_mode_count +
+           static_cast<std::size_t>(sampling.address_mode);
+}
+
+vk::UniqueSampler createSampler(
+    vk::Device device, FullscreenInputSampling sampling) {
+    const auto filter =
+        sampling.filter == FullscreenInputFilter::nearest
+            ? vk::Filter::eNearest
+            : vk::Filter::eLinear;
+    const auto address_mode =
+        samplerAddressMode(sampling.address_mode);
     vk::SamplerCreateInfo create_info;
     create_info.magFilter = filter;
     create_info.minFilter = filter;
     create_info.mipmapMode = vk::SamplerMipmapMode::eLinear;
-    create_info.addressModeU = vk::SamplerAddressMode::eRepeat;
-    create_info.addressModeV = vk::SamplerAddressMode::eRepeat;
-    create_info.addressModeW = vk::SamplerAddressMode::eRepeat;
+    create_info.addressModeU = address_mode;
+    create_info.addressModeV = address_mode;
+    create_info.addressModeW = address_mode;
     create_info.mipLodBias = 0.0f;
     create_info.anisotropyEnable = false;
     create_info.maxAnisotropy = 1.0f;
@@ -109,8 +137,21 @@ vk::UniqueSampler createSampler(vk::Device device, vk::Filter filter) {
 
 FullscreenPassContainer::FullscreenPassContainer()
     : device{GET_MODULE(VulkanManageCore).getDevice()},
-      nearest_sampler{createSampler(device, vk::Filter::eNearest)},
-      linear_sampler{createSampler(device, vk::Filter::eLinear)}, desc_pool{createDescPool(device)} {}
+      desc_pool{createDescPool(device)} {
+    for (const auto filter :
+         {FullscreenInputFilter::linear,
+          FullscreenInputFilter::nearest}) {
+        for (const auto address_mode :
+             {FullscreenInputAddressMode::repeat,
+              FullscreenInputAddressMode::mirrored_repeat,
+              FullscreenInputAddressMode::clamp_to_edge}) {
+            const FullscreenInputSampling sampling{
+                filter, address_mode};
+            input_samplers.at(samplerIndex(sampling)) =
+                createSampler(device, sampling);
+        }
+    }
+}
 
 FullscreenPassContainer::~FullscreenPassContainer() {}
 
@@ -172,7 +213,8 @@ void FullscreenPassContainer::setInputResources(PassId pass_id,
                                                 const std::vector<bool> &input_rt_history,
                                                 const std::vector<std::string> &input_buffers,
                                                 const RenderTargetImageViewResolver &rt_views,
-                                                const FrameGraphResourceContainer &frame_graph_resources) {
+                                                const FrameGraphResourceContainer &frame_graph_resources,
+                                                const std::vector<FullscreenInputSampling> &input_sampling) {
     std::vector<FrameGraphBufferId> buffer_ids;
     buffer_ids.reserve(input_buffers.size());
     for (const auto &name : input_buffers) {
@@ -187,7 +229,7 @@ void FullscreenPassContainer::setInputResources(PassId pass_id,
     }
     setInputResourcesById(
         pass_id, input_rts, input_rt_history, buffer_ids,
-        rt_views, frame_graph_resources);
+        rt_views, frame_graph_resources, input_sampling);
 }
 
 void FullscreenPassContainer::setInputResourcesById(
@@ -196,12 +238,18 @@ void FullscreenPassContainer::setInputResourcesById(
     const std::vector<bool> &input_rt_history,
     const std::vector<FrameGraphBufferId> &input_buffers,
     const RenderTargetImageViewResolver &rt_views,
-    const FrameGraphResourceContainer &frame_graph_resources) {
+    const FrameGraphResourceContainer &frame_graph_resources,
+    const std::vector<FullscreenInputSampling> &input_sampling) {
     const auto pipeline_handle = requirePipelineHandle(pass_id, pipelines);
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
     requireInputBindings(pipeline_factory.reflection(pipeline_handle), input_rts.size(), input_buffers.size());
     if (input_rt_history.size() != input_rts.size()) {
         throw std::runtime_error("Fullscreen pass input history metadata is inconsistent");
+    }
+    if (!input_sampling.empty() &&
+        input_sampling.size() != input_rts.size()) {
+        throw std::runtime_error(
+            "Fullscreen pass input sampling metadata is inconsistent");
     }
 
     const auto input_count = input_rts.size() + input_buffers.size();
@@ -218,6 +266,11 @@ void FullscreenPassContainer::setInputResourcesById(
     InputTextureInfo info;
     info.input_rt_ids = input_rts;
     info.input_rt_history = input_rt_history;
+    info.input_sampling =
+        input_sampling.empty()
+            ? std::vector<FullscreenInputSampling>(
+                  input_rts.size())
+            : input_sampling;
     info.input_buffer_ids = input_buffers;
     info.binding_revision = next_binding_revision++;
     for (uint32_t parity = 0; parity < 2; ++parity) {
@@ -238,7 +291,9 @@ void FullscreenPassContainer::setInputResourcesById(
                 throw std::runtime_error("Fullscreen pass input texture must be a render target");
             }
             image_infos.push_back(vk::DescriptorImageInfo{
-                linear_sampler.get(),
+                input_samplers
+                    .at(samplerIndex(info.input_sampling[i]))
+                    .get(),
                 rt_views.getImageViewForFrame(input_rts[i], input_rt_history[i], parity),
                 vk::ImageLayout::eShaderReadOnlyOptimal});
             info.bound_image_views[parity].push_back(image_infos.back().imageView);
@@ -271,9 +326,11 @@ void FullscreenPassContainer::rebindInputResources(
         found->second.input_rt_history;
     const auto input_buffers =
         found->second.input_buffer_ids;
+    const auto input_sampling =
+        found->second.input_sampling;
     setInputResourcesById(
         pass_id, input_rts, input_history, input_buffers,
-        rt_views, frame_graph_resources);
+        rt_views, frame_graph_resources, input_sampling);
 }
 
 std::vector<vk::ImageView> FullscreenPassContainer::boundInputImageViewsForTesting(PassId pass_id) const {
@@ -291,6 +348,15 @@ uint64_t FullscreenPassContainer::inputBindingRevisionForTesting(PassId pass_id)
 
 vk::PipelineLayout FullscreenPassContainer::getPipelineLayout(PassId pass_id) const {
     return GET_MODULE(PipelineFactory).layout(requirePipelineHandle(pass_id, pipelines));
+}
+
+std::vector<FullscreenInputSampling>
+FullscreenPassContainer::inputSamplingForTesting(
+    PassId pass_id) const {
+    const auto found = input_textures.find(pass_id.value);
+    return found == input_textures.end()
+               ? std::vector<FullscreenInputSampling>{}
+               : found->second.input_sampling;
 }
 
 FullscreenPassContainer::RegistrationCheckpoint

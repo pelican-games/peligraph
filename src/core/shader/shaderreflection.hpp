@@ -23,6 +23,7 @@ struct ShaderReflection {
     std::vector<vk::PushConstantRange> push_constants;
     std::vector<vk::VertexInputAttributeDescription> vertex_inputs;
     glm::uvec3 local_size{0, 0, 0};
+    bool uses_view_index = false;
 };
 
 ShaderReflection reflect(std::span<const uint32_t> spirv);

@@ -989,6 +989,24 @@ RPE9 / WP192 では XR / preview の ad-hoc callback を typed
 `CompiledGraphVariantPolicy` へ移し、現行 XR を exact 2-view sequential として
 固定した。multiview は未実装であり、同じ値の別名にはしていない。
 
+WP203aでは、このlogical graph contractを変えずにdevice-dependentな
+`VulkanViewExecutionPlan`を追加した。projectの`xr.view_execution`は
+`auto` / `sequential` / `multiview`を受理し、endpointのversioned multiview capability、
+最大view数、scope implementationの明示対応を使って
+`single_view` / `sequential` / `multiview`へloweringする。scopeには実行回数とview mask、
+image resourceには`shared_2d` / `sequential_2d` / `layered_2d_array`とlayer数を残す。
+fusionとaliasもこのview contractが一致する場合だけ許す。
+
+WP203b phase 1で、physical resourceのarray layer assignmentをinternal image allocationへ
+接続し、layer別2D viewと2D-array view、per-view FrameUBO、`gl_ViewIndex` shader helper /
+reflection、typed graphics pipeline / compiled pass view contract、dynamic renderingの
+`viewMask`を追加した。synthetic Vulkan fixtureでは2-viewを一回で描画し、sequential
+referenceと各layerがbyte一致する。
+
+production pass/shader variantとscope schedulerはまだmultiview対応をadvertiseしない。
+したがって通常の`auto`はsequentialへ理由付きfallbackし、必須指定はcompile errorになる。
+OpenXR array/depth submissionはWP203cであり、phase 1をWP203b完了とは扱わない。
+
 RPE10a / WP193 では compiled pass、frame graph、logical/physical plan、route、
 sample-count、variant policy、draw-sort provider選択を一つの immutable runtime generationへ束ね、
 base-generation CASでpublishする境界を実装した。frameは同じgeneration leaseを全viewで

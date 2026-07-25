@@ -111,23 +111,39 @@ const CompilerProviderRegistrySnapshot &runtimeProviders() {
 
 TargetTopologySnapshot runtimeTopology(
     const RenderingTargetPlanDeviceFacts &facts) {
+    std::vector<std::string> capabilities{
+        "pelican.vulkan.graphics@1",
+        "pelican.vulkan.sampled_image@1",
+        "pelican.vulkan.storage_buffer@1",
+        "pelican.vulkan.transfer_copy@1",
+    };
+    std::vector<TargetFact> target_facts{
+        {"pelican.vulkan.max_color_attachments@1",
+         std::to_string(facts.max_color_attachments)},
+        {"pelican.vulkan.profile@1",
+         "materialized_runtime"},
+    };
+    if (facts.multiview) {
+        if (facts.max_multiview_view_count == 0) {
+            throw std::runtime_error(
+                "runtime Vulkan multiview capability requires a "
+                "non-zero max view count");
+        }
+        capabilities.push_back(
+            std::string{vulkanMultiviewCapability});
+        target_facts.push_back(
+            {std::string{vulkanMaxMultiviewViewCountFact},
+             std::to_string(
+                 facts.max_multiview_view_count)});
+    }
     return TargetTopologySnapshot{
         .name = "runtime_vulkan_device",
         .endpoints =
             {TargetEndpoint{
                 .id = "device:0",
                 .kind = TargetEndpointKind::vulkan_device,
-                .capabilities =
-                    {"pelican.vulkan.graphics@1",
-                     "pelican.vulkan.sampled_image@1",
-                     "pelican.vulkan.storage_buffer@1",
-                     "pelican.vulkan.transfer_copy@1"},
-                .facts =
-                    {{"pelican.vulkan.max_color_attachments@1",
-                      std::to_string(
-                          facts.max_color_attachments)},
-                     {"pelican.vulkan.profile@1",
-                      "materialized_runtime"}},
+                .capabilities = std::move(capabilities),
+                .facts = std::move(target_facts),
             }},
     };
 }
@@ -224,6 +240,22 @@ ResourcePattern runtimeImagePattern(
     };
 }
 
+ResourceExtentPlan runtimeExtentPlan(
+    const RenderTargetDefinition &target) {
+    if (target.fixed_extent) {
+        return ResourceExtentPlan{
+            .kind = ResourceExtentKind::fixed,
+            .width = target.fixed_extent->width,
+            .height = target.fixed_extent->height,
+        };
+    }
+    return ResourceExtentPlan{
+        .kind = ResourceExtentKind::output_relative,
+        .scale_x = target.extent_scale,
+        .scale_y = target.extent_scale,
+    };
+}
+
 std::vector<ResourcePatternBinding> runtimePatternBindings(
     const LogicalTypeRegistry &types,
     const CompiledLogicalRenderGraph &logical_graph,
@@ -242,6 +274,7 @@ std::vector<ResourcePatternBinding> runtimePatternBindings(
                 resource.name,
                 runtimeImagePattern(
                     types, resource.type, swapchain_format, true),
+                ResourceExtentPlan{},
             });
             continue;
         }
@@ -255,6 +288,7 @@ std::vector<ResourcePatternBinding> runtimePatternBindings(
             resource.name,
             runtimeImagePattern(
                 types, resource.type, target->second->format, false),
+            runtimeExtentPlan(*target->second),
         });
     }
     return result;
@@ -347,6 +381,99 @@ const VulkanPhysicalResourcePlan &requirePhysicalResource(
     return *found;
 }
 
+const VulkanPhysicalResourcePlan *findPhysicalResource(
+    const VulkanTargetPlan &plan, std::string_view resource) {
+    const auto found = std::lower_bound(
+        plan.resources.begin(), plan.resources.end(), resource,
+        [](const VulkanPhysicalResourcePlan &candidate,
+           std::string_view name) {
+            return candidate.logical_resource < name;
+        });
+    return found == plan.resources.end() ||
+                   found->logical_resource != resource
+               ? nullptr
+               : &*found;
+}
+
+VulkanRenderResolutionPlan makeRuntimeResolutionPlan(
+    const FrameGraphDefinition &definition,
+    const VulkanTargetPlan &target_plan) {
+    std::set<std::string, std::less<>> scene_resources;
+    for (const auto &node : definition.nodes) {
+        if (node.resolution_domain !=
+            RenderResolutionDomain::scene) {
+            continue;
+        }
+        for (const auto &resource : node.writes) {
+            if (!resource.empty()) {
+                scene_resources.insert(resource);
+            }
+        }
+    }
+
+    std::string output_resource = "swapchain";
+    const auto *output =
+        findPhysicalResource(target_plan, output_resource);
+    if (output == nullptr) {
+        for (auto node = definition.nodes.rbegin();
+             node != definition.nodes.rend() &&
+             output == nullptr;
+             ++node) {
+            for (auto resource = node->writes.rbegin();
+                 resource != node->writes.rend();
+                 ++resource) {
+                output =
+                    findPhysicalResource(
+                        target_plan, *resource);
+                if (output != nullptr) {
+                    output_resource = *resource;
+                    break;
+                }
+            }
+        }
+    }
+    if (output == nullptr || !output->extent) {
+        throw std::runtime_error(
+            "runtime output resource has no physical extent contract");
+    }
+
+    VulkanRenderResolutionPlan result;
+    result.output_source_resource =
+        std::move(output_resource);
+    result.output_extent = *output->extent;
+    result.scene_resources.assign(
+        scene_resources.begin(), scene_resources.end());
+    if (scene_resources.empty()) {
+        result.render_source_resource =
+            result.output_source_resource;
+        result.render_extent = *output->extent;
+        return result;
+    }
+
+    for (const auto &resource : scene_resources) {
+        const auto &physical =
+            requirePhysicalResource(target_plan, resource);
+        if (!physical.extent) {
+            throw std::runtime_error(
+                "scene resolution resource has no physical extent contract: " +
+                resource);
+        }
+        if (result.render_source_resource.empty()) {
+            result.render_source_resource = resource;
+            result.render_extent = *physical.extent;
+            continue;
+        }
+        if (result.render_extent != *physical.extent) {
+            throw std::runtime_error(
+                "scene resolution domain has incompatible physical extents at '" +
+                result.render_source_resource + "' and '" +
+                resource +
+                "'; align their extents or override resolution_domain");
+        }
+    }
+    return result;
+}
+
 void validateRuntimePhysicalPlan(
     const VulkanTargetPlan &plan,
     const std::map<std::string,
@@ -367,6 +494,11 @@ void validateRuntimePhysicalPlan(
                 throw std::runtime_error(
                     "runtime swapchain physical plan is incompatible "
                     "with the current external single-sample target");
+            }
+            if (!resource.extent ||
+                *resource.extent != ResourceExtentPlan{}) {
+                throw std::runtime_error(
+                    "runtime swapchain physical extent contract is incompatible");
             }
             continue;
         }
@@ -391,6 +523,13 @@ void validateRuntimePhysicalPlan(
                 resource.logical_resource + "': planned '" +
                 resource.format + "', RenderTargetDefinition '" +
                 format + "'");
+        }
+        if (!resource.extent ||
+            *resource.extent !=
+                runtimeExtentPlan(*target->second)) {
+            throw std::runtime_error(
+                "runtime physical extent mismatch for '" +
+                resource.logical_resource + "'");
         }
     }
 }
@@ -431,7 +570,9 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
     std::span<const RenderTargetDefinition> render_targets,
     const SampleCountPolicy &policy,
     vk::Format swapchain_format,
-    const RenderingTargetPlanDeviceFacts &device_facts) {
+    const RenderingTargetPlanDeviceFacts &device_facts,
+    std::optional<VulkanViewExecutionPlanRequest>
+        view_execution) {
     const auto target_by_name =
         renderTargetsByName(render_targets);
     const auto types = makeBuiltinLogicalTypeRegistry();
@@ -461,6 +602,8 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
     result.plans.reserve(frame_graphs.size());
     std::map<std::string, std::uint32_t, std::less<>>
         merged_samples;
+    std::map<std::string, std::uint32_t, std::less<>>
+        merged_array_layers;
     for (std::size_t index = 0; index < frame_graphs.size();
          ++index) {
         const auto &definition = frame_graphs[index];
@@ -477,7 +620,7 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
         auto logical_graph = compileLogicalFrameGraphShadow(
             definition, types,
             shadowOptions(definition, types, target_by_name));
-        auto plan = std::make_shared<const VulkanTargetPlan>(
+        auto plan_value =
             compileVulkanTargetPlan(
                 types, logical_graph, topology,
                 runtimeProviders(),
@@ -499,8 +642,15 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
                                     device_facts),
                             .geometry_nodes =
                                 geometryNodes(definition),
-                        },
-                }));
+                    },
+                    .view_execution = view_execution,
+                });
+        plan_value.resolution_plan =
+            makeRuntimeResolutionPlan(
+                definition, plan_value);
+        auto plan =
+            std::make_shared<const VulkanTargetPlan>(
+                std::move(plan_value));
         validateRuntimePhysicalPlan(
             *plan, target_by_name, swapchain_format);
         if (!plan->sample_count_plan) {
@@ -531,6 +681,27 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
                     resolved.resource + "'");
             }
         }
+        for (const auto &resource : plan->resources) {
+            if (resource.logical_resource == "swapchain" ||
+                !target_by_name.contains(
+                    resource.logical_resource)) {
+                continue;
+            }
+            if (resource.array_layers == 0) {
+                throw std::runtime_error(
+                    "runtime physical array-layer contract is zero for render target '" +
+                    resource.logical_resource + "'");
+            }
+            auto [found, inserted] =
+                merged_array_layers.emplace(
+                    resource.logical_resource,
+                    resource.array_layers);
+            if (!inserted) {
+                found->second =
+                    std::max(found->second,
+                             resource.array_layers);
+            }
+        }
         result.plans.push_back(std::move(plan));
     }
 
@@ -549,6 +720,25 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
         [](const auto &left, const auto &right) {
             return left.resource < right.resource;
         });
+    result.array_layer_assignments.reserve(
+        render_targets.size());
+    for (const auto &target : render_targets) {
+        const auto found =
+            merged_array_layers.find(target.name);
+        result.array_layer_assignments.push_back({
+            .resource = target.name,
+            .array_layers =
+                found == merged_array_layers.end()
+                    ? 1u
+                    : found->second,
+        });
+    }
+    std::sort(
+        result.array_layer_assignments.begin(),
+        result.array_layer_assignments.end(),
+        [](const auto &left, const auto &right) {
+            return left.resource < right.resource;
+        });
     return result;
 }
 
@@ -558,20 +748,43 @@ compileRenderingTargetPlansForVulkanDevice(
     std::span<const RenderTargetDefinition> render_targets,
     const SampleCountPolicy &policy,
     vk::Format swapchain_format,
-    vk::PhysicalDevice physical_device) {
+    vk::PhysicalDevice physical_device,
+    std::optional<VulkanViewExecutionPlanRequest>
+        view_execution) {
+    const auto features =
+        physical_device.getFeatures2<
+            vk::PhysicalDeviceFeatures2,
+            vk::PhysicalDeviceVulkan11Features>();
+    const auto properties =
+        physical_device.getProperties2<
+            vk::PhysicalDeviceProperties2,
+            vk::PhysicalDeviceMultiviewProperties>();
+    const auto multiview =
+        features
+            .get<vk::PhysicalDeviceVulkan11Features>()
+            .multiview == VK_TRUE;
     return compileRenderingTargetPlans(
         frame_graphs, render_targets, policy, swapchain_format,
         RenderingTargetPlanDeviceFacts{
             .max_color_attachments =
                 physical_device.getProperties()
                     .limits.maxColorAttachments,
+            .multiview = multiview,
+            .max_multiview_view_count =
+                multiview
+                    ? properties
+                          .get<
+                              vk::PhysicalDeviceMultiviewProperties>()
+                          .maxMultiviewViewCount
+                    : 0u,
             .query_attachment_samples =
                 [physical_device](
                     const RenderTargetDefinition &definition) {
                     return queryAttachmentSampleCounts(
                         physical_device, definition);
                 },
-        });
+        },
+        std::move(view_execution));
 }
 
 void applyRenderingTargetPlan(
@@ -579,12 +792,26 @@ void applyRenderingTargetPlan(
     const RenderingTargetPlanCompilation &compilation) {
     std::map<std::string, std::uint32_t, std::less<>>
         assignments;
+    std::map<std::string, std::uint32_t, std::less<>>
+        array_layer_assignments;
     for (const auto &assignment : compilation.assignments) {
         if (!assignments.emplace(assignment.resource,
                                  assignment.samples)
                  .second) {
             throw std::runtime_error(
                 "duplicate physical sample-count assignment: " +
+                assignment.resource);
+        }
+    }
+    for (const auto &assignment :
+         compilation.array_layer_assignments) {
+        if (assignment.array_layers == 0 ||
+            !array_layer_assignments
+                 .emplace(assignment.resource,
+                          assignment.array_layers)
+                 .second) {
+            throw std::runtime_error(
+                "duplicate or invalid physical array-layer assignment: " +
                 assignment.resource);
         }
     }
@@ -596,6 +823,15 @@ void applyRenderingTargetPlan(
                 target.name);
         }
         target.samples = found->second;
+        const auto layers =
+            array_layer_assignments.find(target.name);
+        if (layers ==
+            array_layer_assignments.end()) {
+            throw std::runtime_error(
+                "missing physical array-layer assignment: " +
+                target.name);
+        }
+        target.array_layers = layers->second;
     }
 }
 

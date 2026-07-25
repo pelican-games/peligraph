@@ -40,6 +40,19 @@ const RenderingSampleCountAssignment &assignment(
     return *found;
 }
 
+const RenderingTargetArrayLayerAssignment &layerAssignment(
+    const RenderingTargetPlanCompilation &compilation,
+    std::string_view resource) {
+    const auto found = std::find_if(
+        compilation.array_layer_assignments.begin(),
+        compilation.array_layer_assignments.end(),
+        [resource](const auto &candidate) {
+            return candidate.resource == resource;
+        });
+    REQUIRE(found != compilation.array_layer_assignments.end());
+    return *found;
+}
+
 const VulkanPhysicalResourcePlan &physicalResource(
     const VulkanTargetPlan &plan, std::string_view resource) {
     const auto found = std::find_if(
@@ -220,6 +233,193 @@ TEST_CASE("color resolve mode follows Vulkan numeric format rules",
     REQUIRE(colorAttachmentResolveMode(
                 vk::Format::eB8G8R8A8Unorm) ==
             vk::ResolveModeFlagBits::eAverage);
+}
+
+TEST_CASE(
+    "runtime target plan carries low-resolution scene and output extent contracts",
+    "[target-planning][upscale][resolution]") {
+    const auto config = nlohmann::json{
+        {"rendering_passes",
+         nlohmann::json::array(
+             {{{"name", "upscale"},
+               {"passes",
+                nlohmann::json::array(
+                    {{{"name", "produce_low"},
+                      {"type", "fullscreen"},
+                      {"resolution_domain", "scene"},
+                      {"output",
+                       {{"color", "low_color"},
+                        {"depth", nullptr}}}},
+                     {{"name", "present"},
+                      {"type", "fullscreen"},
+                      {"input",
+                       nlohmann::json::array(
+                           {"low_color"})},
+                      {"output",
+                       {{"color", "display"},
+                        {"depth", nullptr}}}}})}}})},
+    };
+    auto low =
+        target("low_color",
+               vk::Format::eR8G8B8A8Unorm);
+    low.extent_scale = 0.5f;
+    auto display =
+        target("display",
+               vk::Format::eB8G8R8A8Srgb);
+    const std::vector targets{low, display};
+    const auto graphs =
+        parseFrameGraphDefinitionsFromConfigJson(config);
+    const auto compilation =
+        compileRenderingTargetPlans(
+            graphs, targets, SampleCountPolicy{},
+            vk::Format::eB8G8R8A8Unorm,
+            RenderingTargetPlanDeviceFacts{
+                .query_attachment_samples =
+                    [](const auto &) {
+                        return std::vector<std::uint32_t>{1};
+                    },
+            });
+
+    REQUIRE(compilation.plans.size() == 1);
+    const auto &plan = *compilation.plans.front();
+    REQUIRE(plan.resolution_plan.has_value());
+    REQUIRE(
+        plan.resolution_plan->render_source_resource ==
+        "low_color");
+    REQUIRE(
+        plan.resolution_plan->output_source_resource ==
+        "display");
+    REQUIRE(
+        plan.resolution_plan->render_extent ==
+        ResourceExtentPlan{
+            .kind =
+                ResourceExtentKind::output_relative,
+            .scale_x = 0.5f,
+            .scale_y = 0.5f,
+        });
+    REQUIRE(
+        physicalResource(plan, "low_color").extent ==
+        plan.resolution_plan->render_extent);
+    REQUIRE(
+        vulkanTargetPlanToJson(plan)
+            .at("resolution_plan")
+            .at("render_source_resource") ==
+        "low_color");
+}
+
+TEST_CASE(
+    "scene resolution domain rejects incompatible physical extents",
+    "[target-planning][upscale][resolution]") {
+    const auto config = nlohmann::json{
+        {"rendering_passes",
+         nlohmann::json::array(
+             {{{"name", "invalid_scene_extents"},
+               {"passes",
+                nlohmann::json::array(
+                    {{{"name", "produce_scene"},
+                      {"type", "fullscreen"},
+                      {"resolution_domain", "scene"},
+                      {"output",
+                       {{"color",
+                         nlohmann::json::array(
+                             {"half_color",
+                              "three_quarter_color"})},
+                        {"depth", nullptr}}}},
+                     {{"name", "present"},
+                      {"type", "fullscreen"},
+                      {"input",
+                       nlohmann::json::array(
+                           {"half_color"})},
+                      {"output",
+                       {{"color", "display"},
+                        {"depth", nullptr}}}}})}}})},
+    };
+    auto half =
+        target("half_color",
+               vk::Format::eR8G8B8A8Unorm);
+    half.extent_scale = 0.5f;
+    auto three_quarter =
+        target("three_quarter_color",
+               vk::Format::eR8G8B8A8Unorm);
+    three_quarter.extent_scale = 0.75f;
+    const std::vector targets{
+        half, three_quarter,
+        target("display",
+               vk::Format::eB8G8R8A8Srgb),
+    };
+
+    requireThrowsContaining(
+        [&] {
+            const auto graphs =
+                parseFrameGraphDefinitionsFromConfigJson(
+                    config);
+            (void)compileRenderingTargetPlans(
+                graphs, targets,
+                SampleCountPolicy{},
+                vk::Format::eB8G8R8A8Unorm,
+                RenderingTargetPlanDeviceFacts{
+                    .query_attachment_samples =
+                        [](const auto &) {
+                            return std::vector<
+                                std::uint32_t>{1};
+                        },
+                });
+        },
+        "scene resolution domain has incompatible physical extents");
+}
+
+TEST_CASE("runtime target adapter carries multiview device facts and typed view requests",
+          "[wp203][target-planning][multiview][runtime-adapter]") {
+    const auto config = hybridConfig();
+    const auto graphs =
+        parseFrameGraphDefinitionsFromConfigJson(config);
+    const std::vector targets{
+        target("albedo", vk::Format::eB8G8R8A8Unorm),
+        target("normal", vk::Format::eR16G16B16A16Sfloat),
+        target("custom_id", vk::Format::eR32Uint),
+        target("depth", vk::Format::eD32Sfloat,
+               vk::ImageUsageFlagBits::eDepthStencilAttachment),
+        target("lit", vk::Format::eR16G16B16A16Sfloat),
+        target("display", vk::Format::eB8G8R8A8Srgb),
+    };
+    const auto compilation = compileRenderingTargetPlans(
+        graphs, targets, SampleCountPolicy{},
+        vk::Format::eB8G8R8A8Unorm,
+        RenderingTargetPlanDeviceFacts{
+            .multiview = true,
+            .max_multiview_view_count = 2,
+            .query_attachment_samples =
+                [](const auto &) {
+                    return std::vector<std::uint32_t>{1};
+                },
+        },
+        VulkanViewExecutionPlanRequest{
+            .view_count = 2,
+            .preference =
+                XrViewExecutionPreference::automatic,
+            .multiview_capable_nodes =
+                {"geometry", "lighting", "forward", "present"},
+        });
+
+    REQUIRE(compilation.plans.size() == 1);
+    const auto &plan = *compilation.plans.front();
+    REQUIRE(plan.view_execution_plan.uses_multiview);
+    REQUIRE(plan.view_execution_plan.view_count == 2);
+    REQUIRE(physicalResource(plan, "lit").view_layout ==
+            VulkanResourceViewLayout::layered_2d_array);
+    REQUIRE(physicalResource(plan, "lit").array_layers == 2);
+    REQUIRE(layerAssignment(compilation, "lit").array_layers == 2);
+    REQUIRE(layerAssignment(compilation, "display").array_layers == 2);
+
+    auto materialized_targets = targets;
+    applyRenderingTargetPlan(materialized_targets, compilation);
+    const auto lit = std::find_if(
+        materialized_targets.begin(), materialized_targets.end(),
+        [](const auto &candidate) {
+            return candidate.name == "lit";
+        });
+    REQUIRE(lit != materialized_targets.end());
+    REQUIRE(lit->array_layers == 2);
 }
 
 } // namespace Pelican

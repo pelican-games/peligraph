@@ -71,7 +71,8 @@ DECLARE_MODULE(VulkanManageCore) {
                             std::span<const vk::Format> compatible_view_formats = {},
                             uint32_t mip_levels = 1,
                             vk::SampleCountFlagBits samples =
-                                vk::SampleCountFlagBits::e1) const;
+                                vk::SampleCountFlagBits::e1,
+                            uint32_t array_layers = 1) const;
     void writeImage(const ImageWrapper &dst, const void *src, vk::DeviceSize bytes_num) const;
 };
 

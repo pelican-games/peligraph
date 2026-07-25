@@ -112,6 +112,9 @@ std::vector<vk::DescriptorSetLayoutBinding> frameDescriptorSetLayoutBindings() {
                                        all_stages},
         vk::DescriptorSetLayoutBinding{PELICAN_PREVIOUS_OBJECT_BUFFER_BINDING,
                                        vk::DescriptorType::eStorageBuffer, 1, all_stages},
+        vk::DescriptorSetLayoutBinding{
+            PELICAN_FRAME_RESOLUTION_UBO_BINDING,
+            vk::DescriptorType::eUniformBuffer, 1, all_stages},
     };
 }
 
@@ -128,16 +131,46 @@ void validateFrameBindings(const ShaderReflection &reflection) {
             (binding.binding == PELICAN_LIGHT_UBO_BINDING &&
              binding.type == vk::DescriptorType::eUniformBuffer) ||
             (binding.binding == PELICAN_PREVIOUS_OBJECT_BUFFER_BINDING &&
-             binding.type == vk::DescriptorType::eStorageBuffer);
+             binding.type == vk::DescriptorType::eStorageBuffer) ||
+            (binding.binding ==
+                 PELICAN_FRAME_RESOLUTION_UBO_BINDING &&
+             binding.type ==
+                 vk::DescriptorType::eUniformBuffer);
         if (!valid || binding.count != 1) {
             throw std::runtime_error(
                 "Shader set 0 must use FrameUBO binding 0, ObjectBuffer binding 1, LightUBO binding 2, "
-                "or PreviousObjectBuffer binding 3");
+                "PreviousObjectBuffer binding 3, or FrameResolutionUBO binding 4");
         }
     }
 }
 
 void validateGraphicsReflection(const GraphicsPipelineDesc &desc, const ShaderReflection &reflection) {
+    if (desc.view.execution ==
+        GraphicsPipelineViewExecution::single_view) {
+        if (desc.view.view_count != 1 ||
+            desc.view.view_mask != 0) {
+            throw std::runtime_error(
+                "single-view graphics pipeline requires view_count=1 and view_mask=0");
+        }
+    } else {
+        if (desc.view.view_count < 2 ||
+            desc.view.view_count > 32) {
+            throw std::runtime_error(
+                "multiview graphics pipeline view_count must be in [2, 32]");
+        }
+        const auto expected_mask =
+            desc.view.view_count == 32
+                ? std::numeric_limits<std::uint32_t>::max()
+                : (std::uint32_t{1} << desc.view.view_count) - 1u;
+        if (desc.view.view_mask != expected_mask) {
+            throw std::runtime_error(
+                "multiview graphics pipeline requires a contiguous view mask");
+        }
+        if (!reflection.uses_view_index) {
+            throw std::runtime_error(
+                "multiview graphics pipeline shader contract must consume gl_ViewIndex");
+        }
+    }
     const bool custom_vertex_layout = !desc.vertex_bindings.empty() || !desc.vertex_attributes.empty();
     if (!desc.use_engine_vertex_layout && !desc.use_skinned_vertex_layout && !custom_vertex_layout && !reflection.vertex_inputs.empty()) {
         throw std::runtime_error("GraphicsPipelineDesc requires use_engine_vertex_layout for vertex input shaders");
@@ -327,6 +360,7 @@ vk::UniquePipeline PipelineFactory::createGraphicsPipeline(const GraphicsPipelin
 
     vk::PipelineRenderingCreateInfo rendering_info;
     rendering_info.setColorAttachmentFormats(desc.color_formats);
+    rendering_info.viewMask = desc.view.view_mask;
     if (desc.depth_format) {
         rendering_info.depthAttachmentFormat = *desc.depth_format;
     }

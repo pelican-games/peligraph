@@ -198,6 +198,9 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
     node.raster_geometry =
         type == "material" || type == "shadow_depth" ||
         type == "velocity";
+    node.resolution_domain =
+        parseRenderResolutionDomain(
+            pass_json, type, node.name);
     const bool ui_pass = type == "ui";
     const auto &output = pass_json.at("output");
     const auto color_outputs = parseOutputColors(output);
@@ -413,6 +416,8 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
     node.raster_geometry =
         pass.isMaterial() || pass.isShadowDepth() ||
         pass.isVelocity();
+    node.resolution_domain =
+        pass.resolution_domain;
     for (size_t i = 0; i < pass.input_targets.size(); ++i) {
         if (pass.input_target_history.at(i)) {
             appendUnique(node.reads_history, renderTargetResourceName(pass.input_targets[i]));

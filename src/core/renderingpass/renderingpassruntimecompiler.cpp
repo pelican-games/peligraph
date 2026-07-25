@@ -253,7 +253,8 @@ PassId compileFullscreenPass(const PassDefinition &pass_def, FullscreenRuntimeDe
         dependencies.fullscreen_pass_container.setInputResources(
             pass_id, pass_def.input_targets, pass_def.input_target_history, pass_def.input_buffers,
             dependencies.render_target_views,
-            dependencies.frame_graph_resources);
+            dependencies.frame_graph_resources,
+            pass_def.fullscreenInfo().input_sampling);
     }
 
     return pass_id;

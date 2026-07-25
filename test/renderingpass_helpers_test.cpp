@@ -207,6 +207,41 @@ TEST_CASE("fullscreen pass JSON parser reads explicit fullscreen options", "[ren
     REQUIRE(info.frag_shader.kind == ShaderReferenceKind::stem);
 }
 
+TEST_CASE(
+    "fullscreen pass JSON parser keeps per-input sampling typed",
+    "[renderingpass][upscale][sampling]") {
+    const nlohmann::json pass_json{
+        {"input_sampling",
+         nlohmann::json::array(
+             {{{"filter", "nearest"},
+               {"address", "clamp_to_edge"}},
+              {{"filter", "linear"},
+               {"address", "mirrored_repeat"}}})},
+        {"shader",
+         {{"vertex", "fullscreen"},
+          {"fragment", "upscale"}}},
+    };
+
+    const auto info =
+        parseFullscreenPassInfoFromJson(
+            pass_json, "upscale");
+
+    REQUIRE(info.input_sampling ==
+            std::vector<FullscreenInputSampling>{
+                {FullscreenInputFilter::nearest,
+                 FullscreenInputAddressMode::clamp_to_edge},
+                {FullscreenInputFilter::linear,
+                 FullscreenInputAddressMode::mirrored_repeat},
+            });
+    auto invalid = pass_json;
+    invalid["input_sampling"][0]["address"] =
+        "wrap_somehow";
+    REQUIRE_THROWS_AS(
+        parseFullscreenPassInfoFromJson(
+            invalid, "upscale"),
+        std::runtime_error);
+}
+
 TEST_CASE("fullscreen pass JSON parser rejects explicit shader files and names the stem form", "[renderingpass]") {
     const nlohmann::json pass_json{
         {"shader", {{"vertex", "fullscreen.vert.spv"}, {"fragment", "lighting"}}},

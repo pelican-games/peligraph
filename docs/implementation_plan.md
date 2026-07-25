@@ -71,15 +71,118 @@ ctest --test-dir ./build -C Debug --output-on-failure
 
 | WP | 内容 | 状態 |
 |----|------|------|
-| — | 現在アクティブな WP なし | — |
+| WP203b | XR2b-b — array resource / shader view-index / Vulkan one-execution | 実装中（runtime primitive + synthetic GPU 縦切り済み） |
+| WP203c | XR2b-c — OpenXR array swapchain / depth submit / GPU gate | 未着手 |
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
-(最新完了: WP202b、2026-07-25。本文と完了レポートは archive 参照。)
+(最新完了: WP203a、2026-07-25。本文と完了レポートは archive 参照。)
 
 ## 2. WP 詳細
 
-現在アクティブな WP はない。WP202bでrenderer-wide `RenderStrategy`を
+### XR2b 分割 WP の逐語条件と所有権
+
+初回レビューの逐語条件:
+
+### XR4 — demo、XR2b — multiview
+
+XR4 は XR2a.0〜3 と XR3a/b 完了後に限る。XR2b は XR2a.0 の logical-frame/view contract を保ったまま
+graph/pass の view dimension を追加し、XR2a と同じ semantic image、flat view_count=1 byte 一致、GPU 計測改善を
+gate にする。XR2a の壊れた二回 `Renderer::render()` を互換契約として残してはならない。
+
+分割後の所有権は次で固定する。WP203aはtarget-planningの前提だけを完了し、
+下記の最終gateを満たしたとは扱わない。
+
+| 条件 | 一意の所有 WP |
+|------|---------------|
+| logical-frame/view contractを維持したgraph/pass view dimension、flat view_count=1 byte一致、二回`Renderer::render()`を残さない | WP203b |
+| XR2aと同じsemantic image、OpenXR array/depth submit、GPU計測改善 | WP203c |
+
+### WP203b: XR2b-b — array resource / shader view-index / Vulkan one-execution
+
+**目的**: WP203aのtyped physical view planを実Vulkan resourceとcommand recordingへ接続し、
+同じlogical graphをflatでは既存byteのまま、XR multiviewでは一回のview-masked renderingで実行する。
+
+**実装範囲**:
+
+1. `layered_2d_array` planからinternal render targetのarray layer数、image view種別、
+   attachment viewを生成する。`shared_2d` / `sequential_2d`の既存経路は不変にする。
+2. per-view immutable frame dataを配列化し、engine includeの単一helperで
+   sequential view indexと`gl_ViewIndex`を同じshader sourceへ正規化する。
+3. pass implementationとshader reflectionの両方が満たすtyped multiview capabilityを追加する。
+   対応宣言のないpassは`auto`で逐次へfallbackし、required modeでは名前付きcompile errorにする。
+4. dynamic renderingの`viewMask`とlayer contractをscope planから記録し、multiview scopeを
+   一回だけ実行する。逐次scopeを含む混在graphはdependencyとlayer境界から合法なscheduleを作る。
+5. flat `view_count=1`のcompiled metadata、frame plan、shader bytes、semantic outputを
+   変更前fixtureとbyte比較する。
+
+**受け入れ条件**:
+
+- synthetic 2-view Vulkan targetで左右の異なるview/projectionが同時に正しいlayerへ出る
+- multiview scopeはcommand trace上で一回、sequential fallbackはlogical frame内でview-majorに実行される
+- 対応宣言のないshader/passをmultiviewとして実行しない
+- flat view_count=1 byte一致
+- `Renderer::render()`をviewごとに呼ぶ経路を追加しない
+- 全CTest、Vulkan validation、`git diff --check`が成功する
+
+**非対象**: OpenXR swapchain array化、depth composition、性能合否。これらはWP203cが所有する。
+
+依存: WP203a。見積: 大。
+
+**進捗（2026-07-25、phase 1）**:
+
+- target planのarray layer assignmentをinternal render target allocationへ接続した。
+  2D-array全体viewに加え、mixed/sequential境界用のlayer別2D viewも生成する。
+- `FrameResources`にlogical view配列を保持するmultiview UBO slotを追加した。
+  engine shader includeは同じ`pelicanFrame`名をsequential recordまたは
+  `gl_ViewIndex` recordへ正規化する。
+- shader reflectionの`gl_ViewIndex`検出、graphics pipelineとcompiled passで共有する
+  typed view contract、dynamic renderingの`viewMask`とattachment layer選択を追加した。
+- synthetic 2-view Vulkan testで、異なる左右frame recordを一回のdynamic renderingで
+  別layerへ出し、2回のsequential referenceとbyte一致することを確認した。
+- production configはまだmultiview-capable passをadvertiseしないため、既存XRは安全に
+  sequentialのままである。pass/shader variant compile、layered input descriptor、
+  scope schedulerとlogical-frame target境界の接続がphase 2に残る。
+
+中間証跡:
+[`design_reviews/2026-07-25_wp203b_phase1_report.md`](design_reviews/2026-07-25_wp203b_phase1_report.md)。
+
+### WP203c: XR2b-c — OpenXR array swapchain / depth submit / GPU gate
+
+**目的**: WP203bのVulkan multiview実行をOpenXR compositionへ接続し、見た目と性能の
+XR2b最終gateを満たす。
+
+**実装範囲**:
+
+1. stereo color swapchainを2D arrayとして作成し、各projection viewの
+   `imageArrayIndex`とacquire/wait/releaseを一logical frameの契約へ接続する。
+2. runtime対応時は`XR_KHR_composition_layer_depth`用depth swapchainと
+   `XrCompositionLayerDepthInfoKHR` chainを追加し、非対応runtimeは理由付きでcolor-onlyへfallbackする。
+3. mirror、submission fence、runtime-generation lease、history onceの既存保証を維持する。
+4. sequentialとmultiviewで同じsemantic imageになることを検証し、GPU timestampで
+   改善を計測する。改善しないdeviceでは`auto`選択をdevice profileへ反映できる証跡を残す。
+
+**受け入れ条件**:
+
+- OpenXR protocol fakeでarray index、call order、failure rollback、depth chainを固定する
+- Meta XR Simulatorと実機チェックリストで左右、depth、mirror、session再作成が成功する
+- XR2aと同じsemantic image
+- 対象GPUでsequentialよりGPU計測が改善する
+- 全CTest、OpenXR validation、`git diff --check`が成功する
+
+依存: WP203b。見積: 大。
+
+### 完了地点
+
+WP203aでlogical XR policyとdevice-dependentなVulkan view execution planningを分離した。
+`auto` / `sequential` / required `multiview`、scopeの実行回数とview mask、resourceの
+shared/sequential/layered layout、device capability/fact、理由付きfallbackまで実装済みである。
+WP203b phase 1でarray image/view、per-view UBO、`gl_ViewIndex` reflection、
+typed pipeline/pass view contract、view-masked dynamic renderingのVulkan縦切りまで実装した。
+production pass/shader variantとscope schedulerはまだmultiview対応を宣言しないため、
+通常描画は安全にsequentialのままである。
+
+WP202bでrenderer-wide `RenderStrategy`を
 preset展開後・feature composition前の独立ABIとして実装した。typed renderer facade、
 builtin identity、game-DLL V1/V2 provider、failure-atomicな全config生成を
 flat/preview/XR、logical graph、Vulkan target plan、transaction publicationへ接続した。

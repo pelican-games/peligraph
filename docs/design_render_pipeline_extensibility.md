@@ -692,9 +692,16 @@ request / capabilities / feature decision / config validation へ移した。fea
 - preview: exact 1 view、request-local capture、history / jitter 禁止
 - XR: exact 2 view、sequential 2D resource、history / jitter 禁止、left-eye mirror
 
-XR の multiview は実装済みと偽らず、`GraphVariantViewExecution::sequential` のまま
-保持する。XR2b ではこの typed policy に capability と array-layer lowering を加える。
-public provider 化は typed plan の検証規則が固まってから行う。
+XR のlogical contractは`GraphVariantViewExecution::sequential`のまま保持する。
+WP203aではこれをdevice実行方式の別名にせず、後段の`VulkanViewExecutionPlan`へ
+`auto` / forced sequential / required multiview、scopeごとのexecution/view mask、
+resourceごとのshared/sequential/layered layoutを追加した。deviceとscope implementationの
+両方が対応を明示した場合だけmultiviewを選ぶ。
+
+production pass/shaderはまだ対応をadvertiseしないため、現runtimeは`auto`から
+sequentialへfallbackする。array allocation、view-index shader contract、one-execution
+dynamic rendering、OpenXR depth submitはXR2b後半である。public provider 化は
+そのruntime gateでtyped planの検証規則が固まってから行う。
 
 ### 7.4 TAA jitter は無理に provider 化しない
 

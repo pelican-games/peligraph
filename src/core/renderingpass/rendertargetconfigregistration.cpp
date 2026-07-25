@@ -27,7 +27,8 @@ void registerRenderTargetDefinitions(const std::vector<RenderTargetDefinition> &
                                           definition.fixed_extent, definition.format, definition.usage,
                                           vma::MemoryUsage::eAutoPreferDevice, definition.history,
                                           definition.history_clear_color,
-                                          definition.samples);
+                                          definition.samples,
+                                          definition.array_layers);
     }
 }
 

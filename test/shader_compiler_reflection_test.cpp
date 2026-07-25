@@ -145,13 +145,19 @@ TEST_CASE("shader reflection reports descriptors, push constants, and vertex inp
     REQUIRE(merged.vertex_inputs[2].format == vk::Format::eR32G32Sfloat);
 
     const auto set0_bindings = makeDescriptorSetLayoutBindings(merged, PELICAN_SET_FRAME);
-    REQUIRE(set0_bindings.size() == 4);
+    REQUIRE(set0_bindings.size() == 5);
     REQUIRE(set0_bindings[0].binding == 0);
     REQUIRE(set0_bindings[0].descriptorType == vk::DescriptorType::eUniformBuffer);
     REQUIRE(set0_bindings[1].binding == 1);
     REQUIRE(set0_bindings[1].descriptorType == vk::DescriptorType::eStorageBuffer);
     REQUIRE(set0_bindings[3].binding == PELICAN_PREVIOUS_OBJECT_BUFFER_BINDING);
     REQUIRE(set0_bindings[3].descriptorType == vk::DescriptorType::eStorageBuffer);
+    REQUIRE(
+        set0_bindings[4].binding ==
+        PELICAN_FRAME_RESOLUTION_UBO_BINDING);
+    REQUIRE(
+        set0_bindings[4].descriptorType ==
+        vk::DescriptorType::eUniformBuffer);
 
     const auto set2_bindings = makeDescriptorSetLayoutBindings(merged, PELICAN_SET_MATERIAL);
     REQUIRE(set2_bindings.size() == 5);

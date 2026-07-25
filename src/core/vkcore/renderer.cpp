@@ -254,20 +254,108 @@ void updateFrameLights(LightContainer &light_container) {
     light_container.update();
 }
 
-FrameUniformData updateFrameResources(RenderFrameModules &modules, EngineTime &engine_time,
-                                      vk::Extent2D extent,
-                                      const RenderFrameSnapshot &snapshot) {
+glm::vec4 resolutionVector(vk::Extent2D extent) {
+    const auto inverse_width =
+        extent.width == 0
+            ? 0.0f
+            : 1.0f /
+                  static_cast<float>(extent.width);
+    const auto inverse_height =
+        extent.height == 0
+            ? 0.0f
+            : 1.0f /
+                  static_cast<float>(extent.height);
+    return glm::vec4{
+        static_cast<float>(extent.width),
+        static_cast<float>(extent.height),
+        inverse_width, inverse_height};
+}
+
+vk::Extent2D resolvePlannedExtent(
+    const ResourceExtentPlan &plan,
+    vk::Extent2D output_extent) {
+    if (plan.kind == ResourceExtentKind::fixed) {
+        return {plan.width, plan.height};
+    }
+    return {
+        static_cast<std::uint32_t>(
+            static_cast<float>(output_extent.width) *
+            plan.scale_x),
+        static_cast<std::uint32_t>(
+            static_cast<float>(output_extent.height) *
+            plan.scale_y),
+    };
+}
+
+vk::Extent2D resolveResolutionSourceExtent(
+    std::string_view resource,
+    const CompiledFrameGraphExecution &frame_graph,
+    const RenderTargetContainer &render_targets,
+    vk::Extent2D output_extent) {
+    if (resource == "swapchain") return output_extent;
+    const auto binding =
+        frame_graph.render_target_bindings.find(
+            std::string{resource});
+    if (binding ==
+            frame_graph.render_target_bindings.end() ||
+        !isConcreteRenderTarget(binding->second)) {
+        throw std::runtime_error(
+            "Frame resolution source is not bound to a concrete render target: " +
+            std::string{resource});
+    }
+    return render_targets.getMetadata(binding->second).extent;
+}
+
+struct FrameResolutionExtents {
+    vk::Extent2D render;
+    vk::Extent2D output;
+};
+
+FrameResolutionExtents resolveFrameResolutionExtents(
+    const CompiledFrameGraphExecution &frame_graph,
+    const RenderTargetContainer &render_targets,
+    vk::Extent2D output_extent) {
+    if (!frame_graph.target_plan ||
+        !frame_graph.target_plan->resolution_plan) {
+        return {output_extent, output_extent};
+    }
+    const auto &plan =
+        *frame_graph.target_plan->resolution_plan;
+    const auto render_extent =
+        resolveResolutionSourceExtent(
+            plan.render_source_resource, frame_graph,
+            render_targets, output_extent);
+    const auto planned_render =
+        resolvePlannedExtent(
+            plan.render_extent, output_extent);
+    if (render_extent != planned_render) {
+        throw std::runtime_error(
+            "Runtime render extent does not match the compiled resolution plan");
+    }
+    if (plan.output_source_resource != "swapchain" ||
+        resolvePlannedExtent(
+            plan.output_extent, output_extent) !=
+            output_extent) {
+        throw std::runtime_error(
+            "Runtime output extent does not match the compiled resolution plan");
+    }
+    return {render_extent, output_extent};
+}
+
+FrameUniformData updateFrameResources(
+    RenderFrameModules &modules, EngineTime &engine_time,
+    vk::Extent2D render_extent, vk::Extent2D output_extent,
+    const RenderFrameSnapshot &snapshot) {
     const auto frame_index = engine_time.frameIndex();
-    const auto inverse_width = extent.width == 0 ? 0.0f : 1.0f / static_cast<float>(extent.width);
-    const auto inverse_height = extent.height == 0 ? 0.0f : 1.0f / static_cast<float>(extent.height);
 
     FrameUniformData data;
     data.time_delta = glm::vec4{static_cast<float>(engine_time.now()),
                                 static_cast<float>(engine_time.dt()), 0.0f, 0.0f};
     data.frame_index = glm::uvec4{static_cast<uint32_t>(frame_index),
                                   static_cast<uint32_t>(frame_index >> 32), 0u, 0u};
-    data.resolution = glm::vec4{static_cast<float>(extent.width), static_cast<float>(extent.height),
-                                inverse_width, inverse_height};
+    // Legacy consumers remain output-relative. New render-resolution-aware
+    // shaders use the dedicated PelicanResolutionUBO below.
+    data.resolution = resolutionVector(output_extent);
     data.camera_position = glm::vec4{snapshot.camera_position, 1.0f};
     data.view = snapshot.view;
     data.projection = snapshot.projection_jittered;
@@ -282,6 +370,13 @@ FrameUniformData updateFrameResources(RenderFrameModules &modules, EngineTime &e
                                             modules.instance_container.getPreviousObjectBuf(),
                                             modules.light_container.lightBuffer());
     modules.frame_resources.update(data);
+    modules.frame_resources.updateResolution(
+        FrameResolutionUniformData{
+            .render_resolution =
+                resolutionVector(render_extent),
+            .output_resolution =
+                resolutionVector(output_extent),
+        });
     return data;
 }
 
@@ -699,7 +794,8 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                               nlohmann::json *node_trace,
                               std::uint64_t logical_frame,
                               std::string_view graph_variant,
-                              std::uint32_t view_index) {
+                              std::uint32_t view_index,
+                              std::uint32_t logical_view_count) {
     if (modules.render_timing != nullptr) {
         modules.render_timing->beginGpuRange(
             render_ctx.cmd_buf, render_ctx.in_flight_frame_index, view_index,
@@ -800,7 +896,10 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
         if (execution_node.kind == FramePlanNodeKind::render) {
             const auto &pass = rendering_pass.passes.at(execution_node.index);
             modules.pass_executor.execute(render_ctx, pass,
-                                          pass_executor_dependencies, layout_tracker);
+                                          pass_executor_dependencies, layout_tracker,
+                                          RenderPassViewInvocation{
+                                              logical_view_count,
+                                              view_index});
             if (node_trace != nullptr) {
                 node_trace->push_back(renderNodeTrace(pass, node_index, modules.render_target_container,
                                                       layout_tracker));
@@ -961,7 +1060,10 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                 throw std::runtime_error("output_transform fullscreen pass was not compiled");
             }
             modules.pass_executor.execute(render_ctx, *output_pass,
-                                          pass_executor_dependencies, layout_tracker);
+                                          pass_executor_dependencies, layout_tracker,
+                                          RenderPassViewInvocation{
+                                              logical_view_count,
+                                              view_index});
             if (node_trace != nullptr) {
                 node_trace->push_back(outputTransformTrace(node_index, source_old_layout,
                                                            render_ctx.required_layout, display,
@@ -1032,7 +1134,12 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
     executePlannedFrameGraph(render_ctx, rendering_pass, frame_graph, modules,
                              frame_target_format, layout_tracker,
                              pass_executor_dependencies, node_trace, logical_frame,
-                             graph_variant, view_index);
+                             graph_variant, view_index,
+                             frame_graph.target_plan
+                                 ? frame_graph.target_plan
+                                       ->view_execution_plan
+                                       .view_count
+                                 : 1u);
 }
 
 void rebindFullscreenInputs(RenderFrameModules &modules) {
@@ -1950,10 +2057,16 @@ void Renderer::renderLogicalFrame(
         }
 
         const auto &view = views[view_index];
+        const auto resolution_extents =
+            resolveFrameResolutionExtents(
+                frame_graph,
+                modules.render_target_container,
+                render_ctx.extent);
         glm::vec2 jitter_ndc{0.0f};
         if (frame_projection_jitter) {
             jitter_ndc = projectionJitterSample(*frame_projection_jitter, engine_time.frameIndex(),
-                                                render_ctx.extent.width, render_ctx.extent.height)
+                                                resolution_extents.render.width,
+                                                resolution_extents.render.height)
                              .jitter_ndc;
         }
         snapshots.push_back(buildRenderFrameSnapshot(
@@ -1962,7 +2075,10 @@ void Renderer::renderLogicalFrame(
         const auto &snapshot = snapshots.back();
 
         modules.frame_resources.selectView(render_ctx.in_flight_frame_index, view_index);
-        updateFrameResources(modules, engine_time, render_ctx.extent, snapshot);
+        updateFrameResources(
+            modules, engine_time,
+            resolution_extents.render,
+            resolution_extents.output, snapshot);
 
         nlohmann::json node_trace;
         nlohmann::json *node_trace_ptr = nullptr;

@@ -32,10 +32,17 @@ DECLARE_MODULE(RenderTargetContainer) {
         bool history;
         vk::ClearColorValue history_clear_color;
         std::uint32_t samples;
+        std::uint32_t array_layers;
         std::array<ImageWrapper, 2> images;
-        std::array<vk::UniqueImageView, 2> image_views;
+        std::array<std::vector<vk::UniqueImageView>, 2>
+            image_layer_views;
+        std::array<vk::UniqueImageView, 2>
+            layered_image_views;
         std::array<ImageWrapper, 2> attachment_images;
-        std::array<vk::UniqueImageView, 2> attachment_image_views;
+        std::array<std::vector<vk::UniqueImageView>, 2>
+            attachment_image_layer_views;
+        std::array<vk::UniqueImageView, 2>
+            layered_attachment_image_views;
     };
     ResourceContainer<GlobalRenderTargetId, InternalRenderTarget> render_targets;
 
@@ -60,7 +67,8 @@ DECLARE_MODULE(RenderTargetContainer) {
                                               vma::MemoryUsage memUsage, bool history = false,
                                               vk::ClearColorValue history_clear_color =
                                                   vk::ClearColorValue{std::array{0.0f, 0.0f, 0.0f, 0.0f}},
-                                              std::uint32_t samples = 1);
+                                              std::uint32_t samples = 1,
+                                              std::uint32_t array_layers = 1);
     void recreateForExtent(vk::Extent2D base_extent);
     void resetHistory();
     void advanceHistoryFrame();
@@ -76,7 +84,20 @@ DECLARE_MODULE(RenderTargetContainer) {
     vk::ImageView getImageView(GlobalRenderTargetId id, bool history_read = false) const;
     vk::ImageView getImageViewForFrame(GlobalRenderTargetId id, bool history_read,
                                        uint32_t frame_index) const;
+    vk::ImageView getImageLayerView(
+        GlobalRenderTargetId id, std::uint32_t array_layer,
+        bool history_read = false) const;
+    vk::ImageView getImageLayerViewForFrame(
+        GlobalRenderTargetId id, std::uint32_t array_layer,
+        bool history_read, std::uint32_t frame_index) const;
     vk::ImageView getAttachmentImageView(
+        GlobalRenderTargetId id, bool history_read = false) const;
+    vk::ImageView getAttachmentImageLayerView(
+        GlobalRenderTargetId id, std::uint32_t array_layer,
+        bool history_read = false) const;
+    vk::ImageView getLayeredImageView(
+        GlobalRenderTargetId id, bool history_read = false) const;
+    vk::ImageView getLayeredAttachmentImageView(
         GlobalRenderTargetId id, bool history_read = false) const;
     bool hasSeparateAttachment(GlobalRenderTargetId id) const;
     vk::SampleCountFlagBits sampleCount(GlobalRenderTargetId id) const;

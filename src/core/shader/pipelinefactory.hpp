@@ -1,9 +1,11 @@
 #pragma once
 
+#include "graphicsviewcontract.hpp"
 #include "shaderlibrary.hpp"
 #include "shaderreflection.hpp"
 #include "../container.hpp"
 #include "../resourcecontainer.hpp"
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <optional>
@@ -40,6 +42,7 @@ struct GraphicsPipelineDesc {
     vk::PrimitiveTopology topology = vk::PrimitiveTopology::eTriangleList;
     vk::SampleCountFlagBits rasterization_samples =
         vk::SampleCountFlagBits::e1;
+    GraphicsPipelineViewContract view;
 };
 
 struct ComputePipelineDesc {

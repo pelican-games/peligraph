@@ -3,6 +3,7 @@
 #include "graphvariantpolicy.hpp"
 #include "logicalrendergraph.hpp"
 #include "samplecountplanning.hpp"
+#include "xrtargetpolicy.hpp"
 
 #include <array>
 #include <cstdint>
@@ -164,6 +165,7 @@ struct ResolvedRenderPipeline {
     nlohmann::json material_routing;
     nlohmann::json draw_sort;
     SampleCountPolicy sample_count_policy;
+    CompiledXrTargetPolicy xr_target_policy;
     std::optional<RenderPipelinePresetInfo> pipeline_preset;
     CompiledGraphVariantPolicy graph_variant_policy;
     std::vector<GraphVariantFeatureDecision>
@@ -261,6 +263,7 @@ struct CompiledRenderPipeline {
     std::optional<CompiledMaterialRouting> material_routing;
     CompiledDrawSorting draw_sorting;
     SampleCountPolicy sample_count_policy;
+    CompiledXrTargetPolicy xr_target_policy;
     std::optional<RenderPipelinePresetInfo> pipeline_preset;
     CompiledGraphVariantPolicy graph_variant_policy;
     std::vector<GraphVariantFeatureDecision>

@@ -8,7 +8,12 @@
 namespace Pelican {
 
 void parsePassTypeFromJson(PassDefinition &pass_def, const nlohmann::json &pass_json) {
-    pass_def.pass_info = makePassInfo(parseStringField(pass_json, "type", "pass: " + pass_def.name));
+    const auto pass_type =
+        parseStringField(pass_json, "type", "pass: " + pass_def.name);
+    pass_def.pass_info = makePassInfo(pass_type);
+    pass_def.resolution_domain =
+        parseRenderResolutionDomain(
+            pass_json, pass_type, pass_def.name);
 
     if (pass_def.isUi()
 #if PELICAN_WITH_IMGUI

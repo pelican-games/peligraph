@@ -6160,4 +6160,63 @@ Vulkan handle公開、汎用CPU/external scheduler。
 
 ---
 
+### WP203a(済 2026-07-25): XR2b-a — view execution target planning
+
+参照: [`design_openxr.md`](design_openxr.md) §11、
+[`design_render_graph_compiler.md`](design_render_graph_compiler.md)「それ以後」、
+[`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md) §7.3、
+[`design_reviews/2026-07-25_wp203a_report.md`](design_reviews/2026-07-25_wp203a_report.md)。
+
+初回レビューの逐語条件:
+
+### XR4 — demo、XR2b — multiview
+
+XR4 は XR2a.0〜3 と XR3a/b 完了後に限る。XR2b は XR2a.0 の logical-frame/view contract を保ったまま
+graph/pass の view dimension を追加し、XR2a と同じ semantic image、flat view_count=1 byte 一致、GPU 計測改善を
+gate にする。XR2a の壊れた二回 `Renderer::render()` を互換契約として残してはならない。
+
+**所有範囲**: 本WPはXR2bのtarget-planning前提だけを所有する。最終条件は
+「graph/pass view dimension、flat byte一致、二回`Renderer::render()`を残さない」をWP203b、
+「同じsemantic image、OpenXR array/depth、GPU計測改善」をWP203cが一意に所有する。
+本WP完了をXR2b全体の完了とは扱わない。
+
+**目的**: XRのlogical graph variantとdevice-dependentなVulkan view executionを分離し、
+既存のexact 2-view logical-frame契約を変えずに後段が逐次またはmultiviewを選べるtyped
+physical planを作る。
+
+**実装範囲**:
+
+1. project config / preset settingsへ`xr.view_execution`の
+   `auto` / `sequential` / `multiview`を追加した。`multiview`はrequired指定であり、
+   条件不足時にsilent fallbackしない。
+2. 純粋な`vulkanviewplanning`境界を追加し、endpoint capability、最大view数、
+   view-independent node、implementation対応宣言からscopeごとの
+   `single_view` / `sequential` / `multiview`を理由付きで解決した。
+3. `VulkanTargetPlan`へview count、実行回数、view mask、mixed execution、
+   imageの`shared_2d` / `sequential_2d` / `layered_2d_array`とarray layer数を追加した。
+4. scope fusionとresource aliasはview contractが一致する場合だけ許し、
+   multiviewをphysical feature closureへ含めた。
+5. 実deviceのVulkan 1.1 multiview featureと`maxMultiviewViewCount`をtarget factへ変換し、
+   対応deviceではlogical device featureを有効化した。
+6. production runtimeへXRのexact 2-view requestを接続した。既存pass/shaderは
+   multiview対応をまだ宣言しないため、`auto`は従来のsequentialへfallbackする。
+
+**受け入れ条件**:
+
+- mono、unsupported fallback、full multiview、mixed、required failureを純粋CPU testで固定する
+- scope view mask / execution countとresource layer planがJSONへ残る
+- canonical logical graphをtarget compileが変更しない
+- runtime adapterがdevice feature/factとtyped requestを同じplannerへ渡す
+- OpenXR有効・無効構成、既存Vulkan stereo/headless、全CTest、`git diff --check`が成功する
+- 未実装のarray allocation / shader / OpenXR経路を対応済みとしてadvertiseしない
+
+**非対象**: array image allocation、`gl_ViewIndex` shader helper、one-execution dynamic
+rendering、OpenXR array swapchain、depth composition、GPU性能gate。
+
+依存: XR2a.0〜3、XR3a/b、XR4、WP192、WP191。見積: 中。
+
+完了レポート: `docs/design_reviews/2026-07-25_wp203a_report.md`
+
+---
+
 未完了 WP と運用規則は [active ledger](implementation_plan.md) を参照。

@@ -13,6 +13,7 @@
 #include "../src/core/renderer/camera.hpp"
 #include "../src/core/renderer/debugdraw.hpp"
 #include "../src/core/renderer/debugtext.hpp"
+#include "../src/core/renderer/frameresources.hpp"
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
 #include "../src/core/renderer/shadowdepthpasscontainer.hpp"
 #include "../src/core/renderer/velocitypasscontainer.hpp"
@@ -171,6 +172,101 @@ void main() {
     outColor = vec4(0.2, 0.4, 0.6, 1.0);
 }
 )glsl";
+}
+
+const char *upscaleContractGeneratorFragmentShader() {
+    return R"glsl(
+#version 450
+layout(set = 0, binding = 4, std140) uniform ResolutionContract {
+    vec4 render_resolution;
+    vec4 output_resolution;
+} resolution_contract;
+layout(location = 0) out vec4 outColor;
+void main() {
+    bool valid =
+        all(lessThan(abs(resolution_contract.render_resolution.xy -
+                         vec2(16.0)), vec2(0.01))) &&
+        all(lessThan(abs(resolution_contract.output_resolution.xy -
+                         vec2(32.0)), vec2(0.01)));
+    if (!valid) {
+        outColor = vec4(1.0, 0.0, 1.0, 1.0);
+        return;
+    }
+    outColor = gl_FragCoord.x < 8.0
+        ? vec4(1.0, 0.0, 0.0, 1.0)
+        : vec4(0.0, 0.0, 1.0, 1.0);
+}
+)glsl";
+}
+
+const char *upscaleContractCopyFragmentShader() {
+    return R"glsl(
+#version 450
+layout(set = 0, binding = 4, std140) uniform ResolutionContract {
+    vec4 render_resolution;
+    vec4 output_resolution;
+} resolution_contract;
+layout(set = 1, binding = 0) uniform sampler2D lowColor;
+layout(location = 0) in vec2 inUV;
+layout(location = 0) out vec4 outColor;
+void main() {
+    bool valid =
+        all(lessThan(abs(resolution_contract.render_resolution.xy -
+                         vec2(16.0)), vec2(0.01))) &&
+        all(lessThan(abs(resolution_contract.output_resolution.xy -
+                         vec2(32.0)), vec2(0.01)));
+    outColor = valid
+        ? texture(lowColor, inUV)
+        : vec4(1.0, 0.0, 1.0, 1.0);
+}
+)glsl";
+}
+
+nlohmann::json upscaleContractRenderingConfig() {
+    return nlohmann::json::parse(R"json(
+{
+  "features": ["features/upscale_jitter.json"],
+  "render_targets": [
+    {
+      "name": "low_color",
+      "extent_scale": 0.5,
+      "format": "R8G8B8A8_UNORM",
+      "format_class": "data",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    }
+  ],
+  "rendering_passes": [
+    {
+      "name": "upscale_main",
+      "passes": [
+        {
+          "name": "produce_low",
+          "type": "fullscreen",
+          "resolution_domain": "scene",
+          "output": {"color": "low_color", "depth": null},
+          "shader": {
+            "vertex": "shaders/upscale_fullscreen",
+            "fragment": "shaders/upscale_generate"
+          }
+        },
+        {
+          "name": "upscale",
+          "type": "fullscreen",
+          "input": ["low_color"],
+          "input_sampling": [
+            {"filter": "nearest", "address": "clamp_to_edge"}
+          ],
+          "output": {"color": "swapchain", "depth": null},
+          "shader": {
+            "vertex": "shaders/upscale_fullscreen",
+            "fragment": "shaders/upscale_copy"
+          }
+        }
+      ]
+    }
+  ]
+}
+)json");
 }
 
 nlohmann::json gpuArenaRenderingConfig() {
@@ -463,6 +559,217 @@ TEST_CASE("headless render target renders and reads back RGBA8 frames", "[headle
         }
         SKIP(std::string{"Vulkan headless rendering unavailable: "} + ex.what());
     }
+}
+
+TEST_CASE(
+    "fixed spatial upscale carries render/output extents and per-input sampling",
+    "[headless][render][upscale][resolution-contract]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    std::filesystem::path temp_dir;
+    try {
+        FastModuleContainer modules;
+        temp_dir = makeTempProjectDir();
+        writeTextFile(
+            temp_dir / "scene.json",
+            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+        writeTextFile(temp_dir / "assets.json",
+                      R"json({"models":[]})json");
+        std::filesystem::create_directories(
+            temp_dir / "shaders");
+        std::filesystem::create_directories(
+            temp_dir / "features");
+        writeTextFile(
+            temp_dir / "shaders" /
+                "upscale_fullscreen.vert",
+            gpuArenaFullscreenVertexShader());
+        writeTextFile(
+            temp_dir / "shaders" /
+                "upscale_generate.frag",
+            upscaleContractGeneratorFragmentShader());
+        writeTextFile(
+            temp_dir / "shaders" /
+                "upscale_copy.frag",
+            upscaleContractCopyFragmentShader());
+        writeTextFile(
+            temp_dir / "pipeline.json",
+            upscaleContractRenderingConfig().dump(2));
+        writeTextFile(
+            temp_dir / "features" /
+                "upscale_jitter.json",
+            R"json({
+  "schema":"pelican.render_feature",
+  "version":1,
+  "name":"upscale_jitter",
+  "projection_jitter":{
+    "pattern":"table",
+    "offsets_px":[[-0.5,0.0]]
+  }
+})json");
+
+        auto project =
+            makeProjectConfig("scene.json", "assets.json");
+        project["basic_config"]["default_scene_id"] =
+            "default_scene";
+        project["basic_config"]
+               ["rendering_config_json"] =
+            "pipeline.json";
+        project["basic_config"]
+               ["default_rendering_pass"] =
+            "upscale_main";
+        project["schema"] = "pelican.project";
+        project["version"] = 1;
+        project["name"] =
+            "upscale-resolution-contract";
+        GET_MODULE(ProjectSource)
+            .setProjectData(project.dump());
+        GET_MODULE(PathResolver).setup(
+            temp_dir, false, project.dump());
+
+        auto &launch =
+            GET_MODULE(EngineLaunchConfig);
+        launch.headless = true;
+        launch.headless_extent =
+            vk::Extent2D{32, 32};
+        launch.headless_frames = 1;
+        auto &engine_time =
+            GET_MODULE(EngineTime);
+        engine_time.setup(
+            EngineTime::Mode::fixed_step,
+            1.0 / 60.0);
+
+        auto &renderer = GET_MODULE(Renderer);
+        const auto low_id =
+            GET_MODULE(RenderTargetContainer)
+                .getRenderTargetIdByName(
+                    "low_color");
+        REQUIRE(
+            GET_MODULE(RenderTargetContainer)
+                .getMetadata(low_id)
+                .extent ==
+            vk::Extent2D{16, 16});
+
+        const auto rendering_pass_id =
+            GET_MODULE(RenderingPassContainer)
+                .getRenderingPassIdByName(
+                    "upscale_main");
+        const auto program =
+            GET_MODULE(FrameGraphRuntimeContainer)
+                .findProgram(rendering_pass_id);
+        REQUIRE(program != nullptr);
+        REQUIRE(
+            program->frame_graph.target_plan !=
+            nullptr);
+        REQUIRE(
+            program->frame_graph.target_plan
+                ->resolution_plan.has_value());
+        REQUIRE(
+            program->frame_graph.target_plan
+                ->resolution_plan
+                ->render_source_resource ==
+            "low_color");
+        const auto upscale_pass =
+            std::find_if(
+                program->rendering_pass.passes.begin(),
+                program->rendering_pass.passes.end(),
+                [](const auto &pass) {
+                    return pass.definition.name ==
+                           "upscale";
+                });
+        REQUIRE(
+            upscale_pass !=
+            program->rendering_pass.passes.end());
+        REQUIRE(
+            GET_MODULE(FullscreenPassContainer)
+                .inputSamplingForTesting(
+                    upscale_pass->pass_id) ==
+            std::vector<FullscreenInputSampling>{
+                {FullscreenInputFilter::nearest,
+                 FullscreenInputAddressMode::
+                     clamp_to_edge}});
+
+        engine_time.advance();
+        renderer.render();
+        GET_MODULE(VulkanManageCore).waitIdle();
+
+        bool found_resolution_contract = false;
+        for (std::uint32_t frame = 0;
+             frame < in_flight_frames_num;
+             ++frame) {
+            const auto &resolution =
+                GET_MODULE(FrameResources)
+                    .slotResolutionForTesting(
+                        frame, 0);
+            if (resolution.render_resolution.x ==
+                    16.0f &&
+                resolution.render_resolution.y ==
+                    16.0f &&
+                resolution.output_resolution.x ==
+                    32.0f &&
+                resolution.output_resolution.y ==
+                    32.0f) {
+                found_resolution_contract = true;
+                const auto &frame_data =
+                    GET_MODULE(FrameResources)
+                        .slotDataForTesting(
+                            frame, 0);
+                REQUIRE(
+                    frame_data.jitter_ndc.x ==
+                    -0.0625f);
+                REQUIRE(
+                    frame_data.jitter_ndc.y ==
+                    0.0f);
+            }
+        }
+        REQUIRE(found_resolution_contract);
+
+        const auto pixels =
+            GET_MODULE(RenderTarget)
+                .readbackLastFrameRGBA8();
+        REQUIRE(pixels.size() == 32u * 32u * 4u);
+        std::size_t mismatches = 0;
+        for (std::uint32_t y = 0; y < 32; ++y) {
+            for (std::uint32_t x = 0; x < 32; ++x) {
+                const auto offset =
+                    (static_cast<std::size_t>(y) *
+                         32 +
+                     x) *
+                    4;
+                const std::array<std::uint8_t, 4>
+                    expected =
+                        x < 16
+                            ? std::array<std::uint8_t,
+                                         4>{
+                                  255, 0, 0, 255}
+                            : std::array<std::uint8_t,
+                                         4>{
+                                  0, 0, 255, 255};
+                if (!std::equal(
+                        expected.begin(),
+                        expected.end(),
+                        pixels.begin() +
+                            static_cast<
+                                std::ptrdiff_t>(
+                                offset))) {
+                    ++mismatches;
+                }
+            }
+        }
+        REQUIRE(mismatches == 0);
+
+        GET_MODULE(VulkanManageCore).waitIdle();
+        std::filesystem::remove_all(temp_dir);
+    } catch (const std::exception &error) {
+        if (!temp_dir.empty()) {
+            std::filesystem::remove_all(
+                temp_dir);
+        }
+        SKIP(
+            std::string{
+                "Vulkan upscale rendering unavailable: "} +
+            error.what());
+    }
+#endif
 }
 
 TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
@@ -1251,11 +1558,18 @@ TEST_CASE(
         failed_variant_batch.push_back(
             gpuArenaRegistrationDependencies(
                 std::move(batch_xr_options)));
+#if PELICAN_WITH_OPENXR
+        constexpr auto variant_batch_failure =
+            "Injected variant-batch validation failure";
+#else
+        constexpr auto variant_batch_failure =
+            "XR graph variant is unavailable in this build";
+#endif
         REQUIRE_THROWS_WITH(
             registerRenderingPassConfigVariantsFromJsonData(
                 batch_config, {16, 16},
                 std::move(failed_variant_batch)),
-            "Injected variant-batch validation failure");
+            variant_batch_failure);
         REQUIRE(runtime.snapshot() == generation);
         REQUIRE(
             inspectRenderPipelineGpuRegistryCounts(

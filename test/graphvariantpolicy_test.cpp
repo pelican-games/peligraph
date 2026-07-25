@@ -281,3 +281,84 @@ TEST_CASE("WP192 resolver owns XR and preview policy without injected callbacks"
     REQUIRE(preview.normalized_config.dump().find(
                 "preview_capture") != std::string::npos);
 }
+
+TEST_CASE("WP203 XR target policy separates authoring preference from the logical graph variant",
+          "[wp203][xr][target-policy]") {
+    const auto defaults = compileXrTargetPolicy(
+        Json::object(), RenderPipelineGraphVariant::xr);
+    REQUIRE(defaults.active);
+    REQUIRE_FALSE(defaults.authored);
+    REQUIRE(defaults.view_execution ==
+            XrViewExecutionPreference::automatic);
+
+    const auto declaration = Json{
+        {"xr", {{"view_execution", "multiview"}}},
+    };
+    const auto xr = compileXrTargetPolicy(
+        declaration, RenderPipelineGraphVariant::xr);
+    REQUIRE(xr.active);
+    REQUIRE(xr.authored);
+    REQUIRE(xr.view_execution ==
+            XrViewExecutionPreference::require_multiview);
+    REQUIRE(xrTargetPolicyToJson(xr).at("view_execution") ==
+            "multiview");
+
+    const auto flat = compileXrTargetPolicy(
+        declaration, RenderPipelineGraphVariant::flat);
+    REQUIRE_FALSE(flat.active);
+    REQUIRE(flat.authored);
+    REQUIRE(flat.view_execution ==
+            XrViewExecutionPreference::require_multiview);
+
+    REQUIRE_THROWS_WITH(
+        compileXrTargetPolicy(
+            Json{{"xr", {{"view_execution", "both"}}}},
+            RenderPipelineGraphVariant::xr),
+        "rendering config xr has unknown view_execution: both");
+    REQUIRE_THROWS_WITH(
+        compileXrTargetPolicy(
+            Json{{"xr", {{"surprise", true}}}},
+            RenderPipelineGraphVariant::flat),
+        "rendering config xr has unknown key 'surprise'");
+}
+
+#if PELICAN_WITH_OPENXR
+TEST_CASE("WP203 pipeline preset settings carry an authored XR target preference",
+          "[wp203][xr][target-policy][preset]") {
+    const auto preset = Json{
+        {"schema", "pelican.render_pipeline"},
+        {"version", 1},
+        {"name", "xr_policy_fixture"},
+        {"config", baseConfig()},
+    };
+    const auto authored = Json{
+        {"pipeline",
+         {{"preset", "fixture://xr_policy"},
+          {"settings",
+           {{"xr", {{"view_execution", "sequential"}}}}}}},
+    };
+    const auto resolved = resolveRenderPipeline(
+        RenderPipelineRequest{authored, "XR policy preset"},
+        RenderEnvironmentCapabilities{
+            true, RenderPipelineGraphVariant::xr},
+        RenderPipelineResolveDependencies{
+            .load_pipeline_json =
+                [&preset](std::string_view reference) {
+                    if (reference != "fixture://xr_policy") {
+                        throw std::runtime_error(
+                            "unexpected pipeline reference");
+                    }
+                    return preset.dump();
+                },
+        });
+    REQUIRE(resolved.xr_target_policy.active);
+    REQUIRE(resolved.xr_target_policy.authored);
+    REQUIRE(resolved.xr_target_policy.view_execution ==
+            XrViewExecutionPreference::sequential);
+
+    const auto compiled = compileRenderPipeline(resolved);
+    REQUIRE(serializeCompiledRenderPipelineMetadata(compiled)
+                .at("xr_target_policy")
+                .at("view_execution") == "sequential");
+}
+#endif

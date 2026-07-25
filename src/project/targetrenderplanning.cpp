@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cmath>
 #include <map>
 #include <numeric>
 #include <set>
@@ -141,7 +142,52 @@ ResourcePattern canonicalizePattern(
     return pattern;
 }
 
-std::map<std::string, ResourcePattern, std::less<>>
+struct CanonicalResourcePatternBinding {
+    ResourcePattern pattern;
+    std::optional<ResourceExtentPlan> extent;
+};
+
+ResourceExtentPlan canonicalizeExtent(
+    const LogicalResourceDesc &resource,
+    std::optional<ResourceExtentPlan> extent) {
+    if (resource.type.constructor !=
+        LogicalTypeConstructor::image) {
+        if (extent) {
+            throw std::runtime_error(
+                "resource extent binding applies to a non-image resource: " +
+                resource.name);
+        }
+        return {};
+    }
+    auto result = extent.value_or(ResourceExtentPlan{});
+    switch (result.kind) {
+    case ResourceExtentKind::output_relative:
+        if (!std::isfinite(result.scale_x) ||
+            !std::isfinite(result.scale_y) ||
+            result.scale_x <= 0.0f ||
+            result.scale_y <= 0.0f) {
+            throw std::runtime_error(
+                "output-relative resource extent requires finite positive scales: " +
+                resource.name);
+        }
+        result.width = 0;
+        result.height = 0;
+        break;
+    case ResourceExtentKind::fixed:
+        if (result.width == 0 || result.height == 0) {
+            throw std::runtime_error(
+                "fixed resource extent requires non-zero dimensions: " +
+                resource.name);
+        }
+        result.scale_x = 1.0f;
+        result.scale_y = 1.0f;
+        break;
+    }
+    return result;
+}
+
+std::map<std::string, CanonicalResourcePatternBinding,
+         std::less<>>
 canonicalPatternBindings(
     const LogicalTypeRegistry &types,
     const CompiledLogicalRenderGraph &graph,
@@ -152,7 +198,9 @@ canonicalPatternBindings(
         resources.emplace(resource.name, &resource);
     }
 
-    std::map<std::string, ResourcePattern, std::less<>> result;
+    std::map<std::string, CanonicalResourcePatternBinding,
+             std::less<>>
+        result;
     for (const auto &binding : bindings) {
         requireNonEmpty(binding.resource,
                         "resource pattern binding resource");
@@ -164,7 +212,21 @@ canonicalPatternBindings(
         }
         auto pattern =
             canonicalizePattern(types, *resource->second, binding.pattern);
-        if (!result.emplace(binding.resource, std::move(pattern)).second) {
+        auto extent =
+            resource->second->type.constructor ==
+                    LogicalTypeConstructor::image
+                ? std::optional<ResourceExtentPlan>{
+                      canonicalizeExtent(
+                          *resource->second, binding.extent)}
+                : std::nullopt;
+        if (!result
+                 .emplace(
+                     binding.resource,
+                     CanonicalResourcePatternBinding{
+                         .pattern = std::move(pattern),
+                         .extent = std::move(extent),
+                     })
+                 .second) {
             throw std::runtime_error(
                 "duplicate resource pattern binding: " +
                 binding.resource);
@@ -182,16 +244,19 @@ canonicalPatternBindings(
         }
         result.emplace(
             resource.name,
-            ResourcePattern{
-                .id =
-                    "pelican.render.compile_time_value_pattern@1",
-                .applicable_type =
-                    exactLogicalTypePattern(types, resource.type),
-                .prefer_transient = false,
-                .allow_tile_local = false,
-                .allow_alias = false,
-                .provenance =
-                    "builtin:compile-time-value-pattern-v1",
+            CanonicalResourcePatternBinding{
+                .pattern =
+                    ResourcePattern{
+                        .id =
+                            "pelican.render.compile_time_value_pattern@1",
+                        .applicable_type =
+                            exactLogicalTypePattern(types, resource.type),
+                        .prefer_transient = false,
+                        .allow_tile_local = false,
+                        .allow_alias = false,
+                        .provenance =
+                            "builtin:compile-time-value-pattern-v1",
+                    },
             });
     }
     return result;
@@ -679,6 +744,17 @@ std::string_view resourcePatternFallbackName(
     throw std::runtime_error("unknown ResourcePattern fallback");
 }
 
+std::string_view resourceExtentKindName(
+    ResourceExtentKind kind) {
+    switch (kind) {
+    case ResourceExtentKind::output_relative:
+        return "output_relative";
+    case ResourceExtentKind::fixed:
+        return "fixed";
+    }
+    throw std::runtime_error("unknown resource extent kind");
+}
+
 std::string_view targetIrDialectName(TargetIrDialect dialect) {
     switch (dialect) {
     case TargetIrDialect::logical: return "logical";
@@ -741,7 +817,8 @@ TargetLoweringGraph makeTargetLoweringGraph(
         const auto pattern = patterns.find(resource.name);
         result.resources.push_back(TargetLoweringResource{
             .logical = std::move(resource),
-            .pattern = pattern->second,
+            .pattern = pattern->second.pattern,
+            .extent = pattern->second.extent,
         });
     }
 
@@ -996,6 +1073,18 @@ nlohmann::ordered_json targetLoweringGraphToJson(
                   resource.pattern.estimated_bytes},
                  {"provenance", resource.pattern.provenance},
              }},
+            {"extent",
+             resource.extent
+                 ? nlohmann::ordered_json{
+                       {"kind",
+                        resourceExtentKindName(
+                            resource.extent->kind)},
+                       {"scale_x", resource.extent->scale_x},
+                       {"scale_y", resource.extent->scale_y},
+                       {"width", resource.extent->width},
+                       {"height", resource.extent->height},
+                   }
+                 : nlohmann::ordered_json(nullptr)},
             {"uses",
              nlohmann::ordered_json{
                  {"read", resource.uses.read},
@@ -1052,6 +1141,20 @@ std::string_view vulkanResourceRepresentationName(
         "unknown Vulkan resource representation");
 }
 
+std::string_view vulkanResourceViewLayoutName(
+    VulkanResourceViewLayout layout) {
+    switch (layout) {
+    case VulkanResourceViewLayout::shared_2d:
+        return "shared_2d";
+    case VulkanResourceViewLayout::sequential_2d:
+        return "sequential_2d";
+    case VulkanResourceViewLayout::layered_2d_array:
+        return "layered_2d_array";
+    }
+    throw std::runtime_error(
+        "unknown Vulkan resource view layout");
+}
+
 std::string_view vulkanPhysicalScopeKindName(
     VulkanPhysicalScopeKind kind) {
     switch (kind) {
@@ -1070,6 +1173,7 @@ std::vector<VulkanPhysicalScopePlan> buildPhysicalScopes(
     const CompiledLogicalRenderGraph &canonical_graph,
     const TargetLoweringGraph &workspace,
     std::span<const VulkanPhysicalResourcePlan> resources,
+    const ResolvedVulkanViewExecutionPlan &view_plan,
     bool tile_candidate, const PlanningProfile &profile,
     std::span<const PlanningNodeConstraint> node_constraints,
     std::vector<PlanningDecision> &decisions) {
@@ -1095,6 +1199,8 @@ std::vector<VulkanPhysicalScopePlan> buildPhysicalScopes(
     for (const auto &lowering_node : workspace.nodes) {
         const auto &node = lowering_node.logical;
         const auto kind = physicalScopeKind(node.kind);
+        const auto &node_view = view_plan.requireNode(node.name);
+        const auto execution = node_view.execution;
         const auto rasterization_samples =
             kind == VulkanPhysicalScopeKind::rendering
                 ? nodeRasterizationSamples(
@@ -1109,6 +1215,7 @@ std::vector<VulkanPhysicalScopePlan> buildPhysicalScopes(
             !result.empty() &&
             result.back().kind ==
                 VulkanPhysicalScopeKind::rendering &&
+            result.back().view_execution == execution &&
             result.back().rasterization_samples ==
                 rasterization_samples &&
             !constraintBlocksFusion(constraints, node.name)) {
@@ -1197,6 +1304,10 @@ std::vector<VulkanPhysicalScopePlan> buildPhysicalScopes(
                 .nodes = {node.name},
                 .region_tags = node.region_tags,
                 .rasterization_samples = rasterization_samples,
+                .view_execution = execution,
+                .view_count = node_view.view_count,
+                .execution_count = node_view.execution_count,
+                .view_mask = node_view.view_mask,
             };
             sortAndUnique(scope.region_tags);
             result.push_back(std::move(scope));
@@ -1205,16 +1316,105 @@ std::vector<VulkanPhysicalScopePlan> buildPhysicalScopes(
     return result;
 }
 
+void applyResourceViewLayouts(
+    const TargetLoweringGraph &workspace,
+    const ResolvedVulkanViewExecutionPlan &view_plan,
+    CandidateDraft &candidate) {
+    std::map<std::string, const TargetLoweringResource *,
+             std::less<>>
+        lowering_resources;
+    for (const auto &resource : workspace.resources) {
+        lowering_resources.emplace(resource.logical.name,
+                                   &resource);
+    }
+
+    for (auto &resource : candidate.resources) {
+        const auto lowering =
+            lowering_resources.find(resource.logical_resource);
+        if (lowering == lowering_resources.end() ||
+            lowering->second->logical.type.constructor !=
+                LogicalTypeConstructor::image) {
+            continue;
+        }
+
+        bool multiview_touch = false;
+        bool multiview_write = false;
+        bool sequential_write = false;
+        for (const auto &node : workspace.nodes) {
+            const auto execution =
+                view_plan.requireNode(
+                    node.logical.name).execution;
+            for (const auto &use : node.logical.uses) {
+                const auto reads =
+                    use.input_value &&
+                    use.input_value->resource ==
+                        resource.logical_resource;
+                const auto writes =
+                    use.output_value &&
+                    use.output_value->resource ==
+                        resource.logical_resource;
+                if (!reads && !writes) continue;
+                if (execution ==
+                    VulkanScopeViewExecution::multiview) {
+                    multiview_touch = true;
+                    multiview_write =
+                        multiview_write || writes;
+                } else if (
+                    execution ==
+                        VulkanScopeViewExecution::sequential) {
+                    sequential_write =
+                        sequential_write || writes;
+                }
+            }
+        }
+
+        if (multiview_write ||
+            (multiview_touch && sequential_write)) {
+            resource.view_layout =
+                VulkanResourceViewLayout::layered_2d_array;
+            resource.array_layers =
+                view_plan.summary.view_count;
+            resource.required_physical_features.push_back(
+                std::string{vulkanMultiviewCapability});
+            canonicalizeCapabilities(
+                resource.required_physical_features,
+                "lowered resource physical feature");
+            candidate.required_features.push_back(
+                std::string{vulkanMultiviewCapability});
+        } else if (sequential_write) {
+            resource.view_layout =
+                VulkanResourceViewLayout::sequential_2d;
+        }
+
+        candidate.decisions.push_back(PlanningDecision{
+            "pelican.plan.resource_view_layout@1",
+            resource.logical_resource,
+            std::string{vulkanResourceViewLayoutName(
+                resource.view_layout)},
+            resource.view_layout ==
+                    VulkanResourceViewLayout::layered_2d_array
+                ? "multiview output or a sequential-to-multiview "
+                  "boundary requires all view layers to coexist"
+            : resource.view_layout ==
+                      VulkanResourceViewLayout::sequential_2d
+                ? "view-dependent writes execute once per view"
+                : "resource is shared by all views",
+        });
+    }
+}
+
 CandidateDraft buildCandidateDraft(
     const CompiledLogicalRenderGraph &canonical_graph,
     const TargetLoweringGraph &workspace,
     const TargetEndpoint &endpoint, bool tile_candidate,
     const VulkanTargetPlanRequest &request,
-    const ResolvedSampleCountPlan *sample_count_plan) {
+    const ResolvedSampleCountPlan *sample_count_plan,
+    const ResolvedVulkanViewExecutionPlan &view_plan) {
     CandidateDraft result;
     result.name = std::string{
         tile_candidate ? kTileLocalCandidate
                        : kMaterializedCandidate};
+    result.decisions = view_plan.decisions;
     result.required_features = {
         std::string{kGraphicsCapability},
         std::string{kSampledImageCapability},
@@ -1425,6 +1625,7 @@ CandidateDraft buildCandidateDraft(
                 .required_physical_features =
                     std::move(required_features),
                 .reason = reason,
+                .extent = resource.extent,
             });
         result.decisions.push_back(PlanningDecision{
             "pelican.plan.resource_format_selected@1",
@@ -1480,8 +1681,18 @@ CandidateDraft buildCandidateDraft(
         "target candidate physical feature");
     result.scopes = buildPhysicalScopes(
         canonical_graph, workspace, result.resources,
+        view_plan,
         tile_candidate, request.profile,
         request.node_constraints, result.decisions);
+    applyResourceViewLayouts(
+        workspace, view_plan, result);
+    if (view_plan.summary.uses_multiview) {
+        result.required_features.push_back(
+            std::string{vulkanMultiviewCapability});
+    }
+    canonicalizeCapabilities(
+        result.required_features,
+        "target candidate physical feature");
 
     for (const auto &resource : result.resources) {
         if (isMaterialized(resource.representation)) {
@@ -1640,6 +1851,12 @@ std::vector<PlanningNamePair> deriveLegalAliasCandidates(
                     resources[right].rasterization_samples ||
                 resources[left].resolve_required !=
                     resources[right].resolve_required ||
+                resources[left].view_layout !=
+                    resources[right].view_layout ||
+                resources[left].array_layers !=
+                    resources[right].array_layers ||
+                resources[left].extent !=
+                    resources[right].extent ||
                 !lifetimesDoNotOverlap(
                     resources[left].lifetime,
                     resources[right].lifetime)) {
@@ -1830,6 +2047,8 @@ VulkanTargetPlan compileVulkanTargetPlan(
         canonicalizeTargetTopology(source_topology);
     const auto &endpoint =
         requireEndpoint(topology, request.endpoint);
+    const auto view_execution = resolveVulkanViewExecutionPlan(
+        canonical_graph, endpoint, request.view_execution);
 
     LogicalPlanningOpportunityInput initial_input{
         .profile = request.profile,
@@ -1852,10 +2071,12 @@ VulkanTargetPlan compileVulkanTargetPlan(
 
     auto materialized = buildCandidateDraft(
         canonical_graph, workspace, endpoint, false, request,
-        sample_count_plan ? &*sample_count_plan : nullptr);
+        sample_count_plan ? &*sample_count_plan : nullptr,
+        view_execution);
     auto tile_local = buildCandidateDraft(
         canonical_graph, workspace, endpoint, true, request,
-        sample_count_plan ? &*sample_count_plan : nullptr);
+        sample_count_plan ? &*sample_count_plan : nullptr,
+        view_execution);
     applyAttachmentBudget(materialized, canonical_graph,
                           endpoint);
     applyAttachmentBudget(tile_local, canonical_graph,
@@ -1928,6 +2149,15 @@ VulkanTargetPlan compileVulkanTargetPlan(
             node.required_physical_features = {
                 std::string{kGraphicsCapability}};
         }
+        if (view_execution.requireNode(
+                node.logical.name).execution ==
+            VulkanScopeViewExecution::multiview) {
+            node.required_physical_features.push_back(
+                std::string{vulkanMultiviewCapability});
+            canonicalizeCapabilities(
+                node.required_physical_features,
+                "lowered node physical feature");
+        }
     }
 
     lowerTargetExecutionDialect(workspace);
@@ -1970,6 +2200,7 @@ VulkanTargetPlan compileVulkanTargetPlan(
             selected_draft.required_features,
         .decisions = std::move(decisions),
         .sample_count_plan = std::move(sample_count_plan),
+        .view_execution_plan = view_execution.summary,
     };
 }
 
@@ -1999,6 +2230,25 @@ nlohmann::ordered_json vulkanTargetPlanToJson(
          targetLoweringGraphToJson(plan.lowering_graph)},
         {"required_physical_features",
          plan.required_physical_features},
+        {"view_execution_plan",
+         nlohmann::ordered_json{
+             {"view_count",
+              plan.view_execution_plan.view_count},
+             {"requested",
+              xrViewExecutionPreferenceName(
+                  plan.view_execution_plan.requested)},
+             {"endpoint_supports_multiview",
+              plan.view_execution_plan
+                  .endpoint_supports_multiview},
+             {"max_multiview_view_count",
+              plan.view_execution_plan
+                  .max_multiview_view_count},
+             {"uses_multiview",
+              plan.view_execution_plan.uses_multiview},
+             {"mixed_execution",
+              plan.view_execution_plan.mixed_execution},
+             {"reason", plan.view_execution_plan.reason},
+         }},
     };
     for (const auto &selection :
          plan.graph_transforms) {
@@ -2065,6 +2315,39 @@ nlohmann::ordered_json vulkanTargetPlanToJson(
                  selection.explicitly_selected},
             };
     }
+    if (plan.resolution_plan) {
+        const auto encode_extent =
+            [](const ResourceExtentPlan &extent) {
+                return nlohmann::ordered_json{
+                    {"kind",
+                     resourceExtentKindName(extent.kind)},
+                    {"scale_x", extent.scale_x},
+                    {"scale_y", extent.scale_y},
+                    {"width", extent.width},
+                    {"height", extent.height},
+                };
+            };
+        result["resolution_plan"] =
+            nlohmann::ordered_json{
+                {"render_source_resource",
+                 plan.resolution_plan
+                     ->render_source_resource},
+                {"render_extent",
+                 encode_extent(
+                     plan.resolution_plan
+                         ->render_extent)},
+                {"output_source_resource",
+                 plan.resolution_plan
+                     ->output_source_resource},
+                {"output_extent",
+                 encode_extent(
+                     plan.resolution_plan
+                         ->output_extent)},
+                {"scene_resources",
+                 plan.resolution_plan
+                     ->scene_resources},
+            };
+    }
     for (const auto &selection :
          plan.subgraph_replacements) {
         result["subgraph_replacements"].push_back(
@@ -2121,6 +2404,27 @@ nlohmann::ordered_json vulkanTargetPlanToJson(
                 {"required_physical_features",
                  resource.required_physical_features},
                 {"reason", resource.reason},
+                {"view_layout",
+                 vulkanResourceViewLayoutName(
+                     resource.view_layout)},
+                {"array_layers",
+                 resource.array_layers},
+                {"extent",
+                 resource.extent
+                     ? nlohmann::ordered_json{
+                           {"kind",
+                            resourceExtentKindName(
+                                resource.extent->kind)},
+                           {"scale_x",
+                            resource.extent->scale_x},
+                           {"scale_y",
+                            resource.extent->scale_y},
+                           {"width",
+                            resource.extent->width},
+                           {"height",
+                            resource.extent->height},
+                       }
+                     : nlohmann::ordered_json(nullptr)},
         };
         if (plan.sample_count_plan) {
             resource_json["rasterization_samples"] =
@@ -2139,6 +2443,13 @@ nlohmann::ordered_json vulkanTargetPlanToJson(
                 {"nodes", scope.nodes},
                 {"local_reads", scope.local_reads},
                 {"regions", scope.region_tags},
+                {"view_execution",
+                 vulkanScopeViewExecutionName(
+                     scope.view_execution)},
+                {"view_count", scope.view_count},
+                {"execution_count",
+                 scope.execution_count},
+                {"view_mask", scope.view_mask},
             };
         if (plan.sample_count_plan) {
             scope_json["rasterization_samples"] =

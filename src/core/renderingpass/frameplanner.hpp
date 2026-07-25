@@ -31,6 +31,8 @@ struct FrameGraphNodeDefinition {
     std::string snapshot_after;
     std::size_t byte_size = 0;
     bool raster_geometry = false;
+    RenderResolutionDomain resolution_domain =
+        RenderResolutionDomain::unclassified;
 };
 
 struct FrameGraphDefinition {

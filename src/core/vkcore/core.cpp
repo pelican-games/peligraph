@@ -214,6 +214,7 @@ static std::optional<QueueSet> pickQueues(const vk::PhysicalDevice &phys_device,
 struct DeviceFeatureSupport {
     RequiredVulkanFeatureSupport required;
     bool timeline_semaphore = false;
+    bool multiview = false;
 };
 
 static DeviceFeatureSupport queryDeviceFeatureSupport(vk::PhysicalDevice physical_device) {
@@ -235,6 +236,7 @@ static DeviceFeatureSupport queryDeviceFeatureSupport(vk::PhysicalDevice physica
                 .dynamic_rendering = dynamic.dynamicRendering == VK_TRUE,
             },
         .timeline_semaphore = vk12.timelineSemaphore == VK_TRUE,
+        .multiview = vk11.multiview == VK_TRUE,
     };
 }
 
@@ -352,6 +354,10 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
     features.features.drawIndirectFirstInstance = true; // firstInstance carries the model slot index
     vk::PhysicalDeviceVulkan11Features vk11features;
     vk11features.shaderDrawParameters = true; // necessary for using gl_BaseInstance in shaders
+    // Enable opportunistically when available. Target planning still
+    // requires an implementation/shader declaration before selecting it.
+    vk11features.multiview =
+        feature_support.multiview ? VK_TRUE : VK_FALSE;
 #if PELICAN_WITH_OPENXR
     if (use_openxr && !feature_support.timeline_semaphore) {
         throw OpenXr::VulkanBootstrapError(
@@ -628,13 +634,18 @@ ImageWrapper VulkanManageCore::allocImage(vk::Extent3D extent, vk::Format format
                                           VulkanProcessType type,
                                           std::span<const vk::Format> compatible_view_formats,
                                           uint32_t mip_levels,
-                                          vk::SampleCountFlagBits samples) const {
+                                          vk::SampleCountFlagBits samples,
+                                          uint32_t array_layers) const {
+    if (array_layers == 0) {
+        throw std::runtime_error(
+            "Vulkan image array_layers must be greater than zero");
+    }
     vk::ImageCreateInfo create_info;
     create_info.imageType = vk::ImageType::e2D;
     create_info.format = format;
     create_info.extent = extent;
     create_info.mipLevels = mip_levels;
-    create_info.arrayLayers = 1;
+    create_info.arrayLayers = array_layers;
     create_info.samples = samples;
     create_info.tiling = vk::ImageTiling::eOptimal;
     create_info.usage = usage;
@@ -667,6 +678,7 @@ ImageWrapper VulkanManageCore::allocImage(vk::Extent3D extent, vk::Format format
         .extent = extent,
         .format = format,
         .mip_levels = mip_levels,
+        .array_layers = array_layers,
         .image = std::move(image),
         .allocation = std::move(allocation),
         .samples = samples,

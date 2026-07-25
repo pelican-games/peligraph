@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -24,14 +25,27 @@ struct RenderingSampleCountAssignment {
     bool operator==(const RenderingSampleCountAssignment &) const = default;
 };
 
+struct RenderingTargetArrayLayerAssignment {
+    std::string resource;
+    std::uint32_t array_layers = 1;
+
+    bool operator==(
+        const RenderingTargetArrayLayerAssignment &) const =
+        default;
+};
+
 struct RenderingTargetPlanDeviceFacts {
     std::uint32_t max_color_attachments = 8;
+    bool multiview = false;
+    std::uint32_t max_multiview_view_count = 0;
     AttachmentSampleCapabilityQuery query_attachment_samples;
 };
 
 struct RenderingTargetPlanCompilation {
     std::vector<std::shared_ptr<const VulkanTargetPlan>> plans;
     std::vector<RenderingSampleCountAssignment> assignments;
+    std::vector<RenderingTargetArrayLayerAssignment>
+        array_layer_assignments;
 };
 
 std::vector<CompiledLogicalRenderGraph>
@@ -48,13 +62,17 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
     std::span<const RenderTargetDefinition> render_targets,
     const SampleCountPolicy &policy,
     vk::Format swapchain_format,
-    const RenderingTargetPlanDeviceFacts &device_facts);
+    const RenderingTargetPlanDeviceFacts &device_facts,
+    std::optional<VulkanViewExecutionPlanRequest> view_execution =
+        std::nullopt);
 RenderingTargetPlanCompilation compileRenderingTargetPlansForVulkanDevice(
     std::span<const FrameGraphDefinition> frame_graphs,
     std::span<const RenderTargetDefinition> render_targets,
     const SampleCountPolicy &policy,
     vk::Format swapchain_format,
-    vk::PhysicalDevice physical_device);
+    vk::PhysicalDevice physical_device,
+    std::optional<VulkanViewExecutionPlanRequest> view_execution =
+        std::nullopt);
 
 void applyRenderingTargetPlan(
     std::span<RenderTargetDefinition> render_targets,

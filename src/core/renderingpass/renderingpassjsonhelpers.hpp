@@ -3,6 +3,7 @@
 #include "renderingpass.hpp"
 #include <nlohmann/json.hpp>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <vulkan/vulkan.hpp>
 
@@ -13,6 +14,13 @@ std::string formatToString(vk::Format format);
 vk::ImageUsageFlags stringToUsageFlags(const std::vector<std::string> &usage_strs);
 PassInfo makePassInfo(const std::string &type_str);
 FullscreenPushConstantData stringToFullscreenPushConstantData(const std::string &data_str);
+std::string_view renderResolutionDomainName(
+    RenderResolutionDomain domain);
+RenderResolutionDomain defaultRenderResolutionDomain(
+    std::string_view pass_type);
+RenderResolutionDomain parseRenderResolutionDomain(
+    const nlohmann::json &pass_json, std::string_view pass_type,
+    const std::string &pass_name);
 vk::AttachmentLoadOp stringToLoadOp(const std::string &op_str);
 vk::AttachmentStoreOp stringToStoreOp(const std::string &op_str);
 
