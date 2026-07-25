@@ -263,6 +263,123 @@ TEST_CASE("WP180 hybrid resolver preserves semantic material routing",
     REQUIRE_FALSE(metadata.contains("graph_variant"));
 }
 
+TEST_CASE("target planning authoring compiles to typed graph-scoped controls",
+          "[render-pipeline][target-planning][typed]") {
+    auto authored = baseConfig();
+    authored["target_planning"] = {
+        {"profile",
+         {{"kind", "hazard_stress"}, {"seed", 17}}},
+        {"graphs",
+         {{"main",
+           {{"nodes",
+             {{"scene",
+               {{"serial", true}, {"isolate", true}}}}},
+            {"resources",
+             {{"swapchain", {{"no_alias", true}}}}}}}}},
+        {"diagnostics",
+         {{"strict_warnings",
+           Json::array({"fixture.warning.b", "fixture.warning.a"})}}},
+    };
+
+    const auto resolved = resolveRenderPipeline(
+        RenderPipelineRequest{authored, "target planning fixture"},
+        RenderEnvironmentCapabilities{
+            true, RenderPipelineGraphVariant::xr});
+    REQUIRE(resolved.target_planning.authored);
+    REQUIRE((resolved.target_planning.profile ==
+             PlanningProfile{
+                 PlanningProfileKind::hazard_stress, 17}));
+    REQUIRE(resolved.target_planning.graphs.size() == 1);
+    REQUIRE(resolved.target_planning.graphs.front().graph ==
+            "main#xr");
+    REQUIRE((resolved.target_planning.graphs.front().nodes ==
+             std::vector<PlanningNodeConstraint>{
+                 {"scene", true, true}}));
+    REQUIRE((resolved.target_planning.graphs.front().resources ==
+             std::vector<PlanningResourceConstraint>{
+                 {"swapchain", true}}));
+    REQUIRE((
+        resolved.target_planning.diagnostic_policy
+            .strict_warning_ids ==
+        std::vector<std::string>{
+            "fixture.warning.a", "fixture.warning.b"}));
+
+    const auto compiled = compileRenderPipeline(resolved);
+    REQUIRE(compiled.target_planning ==
+            resolved.target_planning);
+    REQUIRE((
+        serializeCompiledRenderPipelineMetadata(compiled)
+            .at("target_planning") ==
+        Json{
+            {"profile",
+             {{"kind", "hazard_stress"}, {"seed", 17}}},
+            {"graphs",
+             {{"main#xr",
+               {{"nodes",
+                 {{"scene",
+                   {{"serial", true},
+                    {"isolate", true}}}}},
+                {"resources",
+                 {{"swapchain",
+                   {{"no_alias", true}}}}}}}}},
+            {"diagnostics",
+             {{"strict_warnings",
+               Json::array(
+                   {"fixture.warning.a",
+                    "fixture.warning.b"})}}},
+        }));
+}
+
+TEST_CASE("target planning authoring rejects ambiguous controls",
+          "[render-pipeline][target-planning][validation]") {
+    auto authored = baseConfig();
+
+    SECTION("seed belongs only to hazard stress") {
+        authored["target_planning"] = {
+            {"profile",
+             {{"kind", "optimized"}, {"seed", 1}}},
+        };
+        REQUIRE_THROWS_WITH(
+            resolveRenderPipeline(
+                RenderPipelineRequest{
+                    authored, "invalid target planning"},
+                RenderEnvironmentCapabilities{}),
+            Catch::Matchers::ContainsSubstring(
+                "seed is only valid for hazard_stress"));
+    }
+
+    SECTION("constraint flags are typed") {
+        authored["target_planning"] = {
+            {"graphs",
+             {{"main",
+               {{"nodes",
+                 {{"scene", {{"serial", "yes"}}}}}}}}},
+        };
+        REQUIRE_THROWS_WITH(
+            resolveRenderPipeline(
+                RenderPipelineRequest{
+                    authored, "invalid target planning"},
+                RenderEnvironmentCapabilities{}),
+            Catch::Matchers::ContainsSubstring(
+                "serial must be a boolean"));
+    }
+
+    SECTION("strict warning ids are unique") {
+        authored["target_planning"] = {
+            {"diagnostics",
+             {{"strict_warnings",
+               Json::array({"same", "same"})}}},
+        };
+        REQUIRE_THROWS_WITH(
+            resolveRenderPipeline(
+                RenderPipelineRequest{
+                    authored, "invalid target planning"},
+                RenderEnvironmentCapabilities{}),
+            Catch::Matchers::ContainsSubstring(
+                "must not contain duplicates"));
+    }
+}
+
 TEST_CASE("WP184 compiles draw sort providers and XR view policy for every graph variant",
           "[wp184][render-pipeline][draw-sort][typed]") {
     ResolvedRenderPipeline resolved;

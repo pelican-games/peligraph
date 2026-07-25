@@ -157,6 +157,107 @@ TEST_CASE("rendering sample planning discovers a hybrid attachment component",
                 .rasterization_samples == 2);
 }
 
+TEST_CASE("rendering target bridge applies typed graph planning controls",
+          "[target-planning][rendering][bridge]") {
+    const std::vector targets{
+        target("albedo", vk::Format::eB8G8R8A8Unorm),
+        target("normal", vk::Format::eR16G16B16A16Sfloat),
+        target("custom_id", vk::Format::eR32Uint),
+        target("depth", vk::Format::eD32Sfloat,
+               vk::ImageUsageFlagBits::eDepthStencilAttachment |
+                   vk::ImageUsageFlagBits::eTransferSrc),
+        target("lit", vk::Format::eR16G16B16A16Sfloat),
+        target("display", vk::Format::eB8G8R8A8Srgb),
+    };
+    const auto config = hybridConfig();
+    const auto graphs =
+        parseFrameGraphDefinitionsFromConfigJson(config);
+    const auto query = [](const RenderTargetDefinition &) {
+        return std::vector<std::uint32_t>{1, 2, 4};
+    };
+    const TargetPlanningPolicy planning{
+        .profile = {
+            PlanningProfileKind::hazard_stress, 23},
+        .graphs = {
+            PlanningGraphConstraints{
+                .graph = "main",
+                .nodes = {
+                    PlanningNodeConstraint{
+                        .node = "geometry",
+                        .serial = true,
+                    },
+                },
+                .resources = {
+                    PlanningResourceConstraint{
+                        .resource = "depth",
+                        .no_alias = true,
+                    },
+                },
+            },
+        },
+        .authored = true,
+    };
+
+    const auto compilation = compileRenderingTargetPlans(
+        graphs, targets, compileSampleCountPolicy(config),
+        vk::Format::eB8G8R8A8Unorm,
+        RenderingTargetPlanDeviceFacts{
+            .query_attachment_samples = query,
+        },
+        std::nullopt, std::nullopt, planning);
+    REQUIRE(compilation.plans.size() == 1);
+    const auto &plan = *compilation.plans.front();
+    REQUIRE((plan.opportunities.profile ==
+             PlanningProfile{
+                 PlanningProfileKind::hazard_stress, 23}));
+    REQUIRE(std::none_of(
+        plan.opportunities.parallel_candidates.begin(),
+        plan.opportunities.parallel_candidates.end(),
+        [](const PlanningNamePair &pair) {
+            return pair.first == "geometry" ||
+                   pair.second == "geometry";
+        }));
+    REQUIRE(std::none_of(
+        plan.alias_groups.begin(), plan.alias_groups.end(),
+        [](const VulkanAliasGroupPlan &group) {
+            return std::find(
+                       group.resources.begin(),
+                       group.resources.end(),
+                       "depth") != group.resources.end();
+        }));
+
+    auto unknown_graph = planning;
+    unknown_graph.graphs.front().graph = "missing";
+    requireThrowsContaining(
+        [&] {
+            (void)compileRenderingTargetPlans(
+                graphs, targets, compileSampleCountPolicy(config),
+                vk::Format::eB8G8R8A8Unorm,
+                RenderingTargetPlanDeviceFacts{
+                    .query_attachment_samples = query,
+                },
+                std::nullopt, std::nullopt,
+                unknown_graph);
+        },
+        "constraints reference unknown graph: missing");
+
+    auto unknown_node = planning;
+    unknown_node.graphs.front().nodes.front().node =
+        "missing";
+    requireThrowsContaining(
+        [&] {
+            (void)compileRenderingTargetPlans(
+                graphs, targets, compileSampleCountPolicy(config),
+                vk::Format::eB8G8R8A8Unorm,
+                RenderingTargetPlanDeviceFacts{
+                    .query_attachment_samples = query,
+                },
+                std::nullopt, std::nullopt,
+                unknown_node);
+        },
+        "constraint references unknown node: missing");
+}
+
 TEST_CASE("exact rendering sample planning reports an added G-buffer target",
           "[sample-count][rendering]") {
     auto config = hybridConfig();

@@ -160,6 +160,8 @@ struct PlanningDiagnostic {
 
 struct PlanningDiagnosticPolicy {
     std::vector<std::string> strict_warning_ids;
+
+    bool operator==(const PlanningDiagnosticPolicy &) const = default;
 };
 
 std::vector<PlanningDiagnostic> applyPlanningDiagnosticPolicy(
@@ -275,6 +277,29 @@ struct PlanningResourceConstraint {
     bool no_alias = false;
 
     bool operator==(const PlanningResourceConstraint &) const = default;
+};
+
+// Authoring-facing controls shared by target compilers. Constraints are
+// grouped by graph so a pipeline containing preview, XR, and presentation
+// graphs does not accidentally apply a node/resource name to every graph.
+// The profile and diagnostic policy are pipeline-wide defaults; a later
+// physical-plan package may pin compiler-specific choices without widening
+// this portable surface.
+struct PlanningGraphConstraints {
+    std::string graph;
+    std::vector<PlanningNodeConstraint> nodes;
+    std::vector<PlanningResourceConstraint> resources;
+
+    bool operator==(const PlanningGraphConstraints &) const = default;
+};
+
+struct TargetPlanningPolicy {
+    PlanningProfile profile;
+    PlanningDiagnosticPolicy diagnostic_policy;
+    std::vector<PlanningGraphConstraints> graphs;
+    bool authored = false;
+
+    bool operator==(const TargetPlanningPolicy &) const = default;
 };
 
 struct PlanningNamePair {

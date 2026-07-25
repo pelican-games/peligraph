@@ -100,6 +100,269 @@ void suffixRenderingPassNames(nlohmann::json &config,
     }
 }
 
+bool optionalBoolean(const nlohmann::json &object,
+                     std::string_view key,
+                     std::string_view context) {
+    const auto found = object.find(key);
+    if (found == object.end()) return false;
+    if (!found->is_boolean()) {
+        throw std::runtime_error(
+            std::string{context} + " " + std::string{key} +
+            " must be a boolean");
+    }
+    return found->get<bool>();
+}
+
+std::uint64_t optionalUnsignedInteger(
+    const nlohmann::json &object, std::string_view key,
+    std::string_view context) {
+    const auto found = object.find(key);
+    if (found == object.end()) return 0;
+    if (found->is_number_unsigned()) {
+        return found->get<std::uint64_t>();
+    }
+    if (found->is_number_integer()) {
+        const auto value = found->get<std::int64_t>();
+        if (value >= 0) return static_cast<std::uint64_t>(value);
+    }
+    throw std::runtime_error(
+        std::string{context} + " " + std::string{key} +
+        " must be an unsigned integer");
+}
+
+TargetPlanningPolicy compileTargetPlanningPolicy(
+    const nlohmann::json &config,
+    std::string_view graph_name_suffix) {
+    TargetPlanningPolicy result;
+    const auto declaration = config.find("target_planning");
+    if (declaration == config.end()) return result;
+    if (!declaration->is_object()) {
+        throw std::runtime_error(
+            "target_planning must be an object");
+    }
+    result.authored = true;
+    requireOnlyKeys(
+        *declaration, {"profile", "graphs", "diagnostics"},
+        "target_planning");
+
+    if (const auto profile = declaration->find("profile");
+        profile != declaration->end()) {
+        if (!profile->is_object()) {
+            throw std::runtime_error(
+                "target_planning profile must be an object");
+        }
+        requireOnlyKeys(
+            *profile, {"kind", "seed"},
+            "target_planning profile");
+        const auto kind = requireString(
+            *profile, "kind", "target_planning profile");
+        if (kind == "optimized") {
+            result.profile.kind =
+                PlanningProfileKind::optimized;
+        } else if (kind == "conservative_debug") {
+            result.profile.kind =
+                PlanningProfileKind::conservative_debug;
+        } else if (kind == "hazard_stress") {
+            result.profile.kind =
+                PlanningProfileKind::hazard_stress;
+        } else {
+            throw std::runtime_error(
+                "target_planning profile has unknown kind: " +
+                kind);
+        }
+        if (profile->contains("seed") &&
+            result.profile.kind !=
+                PlanningProfileKind::hazard_stress) {
+            throw std::runtime_error(
+                "target_planning profile seed is only valid for "
+                "hazard_stress");
+        }
+        result.profile.seed = optionalUnsignedInteger(
+            *profile, "seed", "target_planning profile");
+    }
+
+    if (const auto diagnostics =
+            declaration->find("diagnostics");
+        diagnostics != declaration->end()) {
+        if (!diagnostics->is_object()) {
+            throw std::runtime_error(
+                "target_planning diagnostics must be an object");
+        }
+        requireOnlyKeys(
+            *diagnostics, {"strict_warnings"},
+            "target_planning diagnostics");
+        if (const auto warnings =
+                diagnostics->find("strict_warnings");
+            warnings != diagnostics->end()) {
+            if (!warnings->is_array()) {
+                throw std::runtime_error(
+                    "target_planning diagnostics strict_warnings "
+                    "must be an array");
+            }
+            for (const auto &warning : *warnings) {
+                if (!warning.is_string() ||
+                    warning.get_ref<const std::string &>().empty()) {
+                    throw std::runtime_error(
+                        "target_planning diagnostics strict_warnings "
+                        "entries must be non-empty strings");
+                }
+                result.diagnostic_policy.strict_warning_ids.push_back(
+                    warning.get<std::string>());
+            }
+            std::sort(
+                result.diagnostic_policy.strict_warning_ids.begin(),
+                result.diagnostic_policy.strict_warning_ids.end());
+            if (std::adjacent_find(
+                    result.diagnostic_policy.strict_warning_ids.begin(),
+                    result.diagnostic_policy.strict_warning_ids.end()) !=
+                result.diagnostic_policy.strict_warning_ids.end()) {
+                throw std::runtime_error(
+                    "target_planning diagnostics strict_warnings "
+                    "must not contain duplicates");
+            }
+        }
+    }
+
+    const auto graphs = declaration->find("graphs");
+    if (graphs == declaration->end()) return result;
+    if (!graphs->is_object()) {
+        throw std::runtime_error(
+            "target_planning graphs must be an object");
+    }
+    result.graphs.reserve(graphs->size());
+    for (auto graph = graphs->begin(); graph != graphs->end();
+         ++graph) {
+        if (graph.key().empty() || !graph.value().is_object()) {
+            throw std::runtime_error(
+                "target_planning graph names must be non-empty and "
+                "values must be objects");
+        }
+        const auto context =
+            "target_planning graph '" + graph.key() + "'";
+        requireOnlyKeys(
+            graph.value(), {"nodes", "resources"}, context);
+        PlanningGraphConstraints compiled{
+            .graph = graph.key() +
+                     std::string{graph_name_suffix},
+        };
+
+        if (const auto nodes = graph->find("nodes");
+            nodes != graph->end()) {
+            if (!nodes->is_object()) {
+                throw std::runtime_error(
+                    context + " nodes must be an object");
+            }
+            compiled.nodes.reserve(nodes->size());
+            for (auto node = nodes->begin();
+                 node != nodes->end(); ++node) {
+                if (node.key().empty() ||
+                    !node.value().is_object()) {
+                    throw std::runtime_error(
+                        context +
+                        " node names must be non-empty and values "
+                        "must be objects");
+                }
+                const auto node_context =
+                    context + " node '" + node.key() + "'";
+                requireOnlyKeys(
+                    node.value(), {"serial", "isolate"},
+                    node_context);
+                compiled.nodes.push_back(
+                    PlanningNodeConstraint{
+                        .node = node.key(),
+                        .serial = optionalBoolean(
+                            node.value(), "serial", node_context),
+                        .isolate = optionalBoolean(
+                            node.value(), "isolate", node_context),
+                    });
+            }
+        }
+
+        if (const auto resources =
+                graph->find("resources");
+            resources != graph->end()) {
+            if (!resources->is_object()) {
+                throw std::runtime_error(
+                    context + " resources must be an object");
+            }
+            compiled.resources.reserve(resources->size());
+            for (auto resource = resources->begin();
+                 resource != resources->end(); ++resource) {
+                if (resource.key().empty() ||
+                    !resource.value().is_object()) {
+                    throw std::runtime_error(
+                        context +
+                        " resource names must be non-empty and "
+                        "values must be objects");
+                }
+                const auto resource_context =
+                    context + " resource '" + resource.key() + "'";
+                requireOnlyKeys(
+                    resource.value(), {"no_alias"},
+                    resource_context);
+                compiled.resources.push_back(
+                    PlanningResourceConstraint{
+                        .resource = resource.key(),
+                        .no_alias = optionalBoolean(
+                            resource.value(), "no_alias",
+                            resource_context),
+                    });
+            }
+        }
+        result.graphs.push_back(std::move(compiled));
+    }
+    return result;
+}
+
+nlohmann::json targetPlanningPolicyToJson(
+    const TargetPlanningPolicy &policy) {
+    nlohmann::json profile{
+        {"kind", planningProfileKindName(policy.profile.kind)},
+    };
+    if (policy.profile.kind ==
+        PlanningProfileKind::hazard_stress) {
+        profile["seed"] = policy.profile.seed;
+    }
+    nlohmann::json result{
+        {"profile", std::move(profile)},
+    };
+    if (!policy.graphs.empty()) {
+        auto graphs = nlohmann::json::object();
+        for (const auto &graph : policy.graphs) {
+            auto declaration = nlohmann::json::object();
+            if (!graph.nodes.empty()) {
+                auto nodes = nlohmann::json::object();
+                for (const auto &node : graph.nodes) {
+                    nodes[node.node] = {
+                        {"serial", node.serial},
+                        {"isolate", node.isolate},
+                    };
+                }
+                declaration["nodes"] = std::move(nodes);
+            }
+            if (!graph.resources.empty()) {
+                auto resources = nlohmann::json::object();
+                for (const auto &resource : graph.resources) {
+                    resources[resource.resource] = {
+                        {"no_alias", resource.no_alias},
+                    };
+                }
+                declaration["resources"] =
+                    std::move(resources);
+            }
+            graphs[graph.graph] = std::move(declaration);
+        }
+        result["graphs"] = std::move(graphs);
+    }
+    if (!policy.diagnostic_policy.strict_warning_ids.empty()) {
+        result["diagnostics"] = {
+            {"strict_warnings",
+             policy.diagnostic_policy.strict_warning_ids},
+        };
+    }
+    return result;
+}
+
 } // namespace
 
 std::string_view materialRouteClassName(MaterialRouteClass route) {
@@ -281,7 +544,7 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
     requireOnlyKeys(authored_config,
                     {"pipeline", "features", "snapshots", "shader_defines",
                      "draw_sort", "graph_transforms",
-                     "render_strategy", "xr"},
+                     "render_strategy", "target_planning", "xr"},
                     "rendering config using pipeline preset");
     appendUniqueArray(resolved, authored_config, "features", "rendering config", false);
     appendUniqueArray(resolved, authored_config, "shader_defines", "rendering config", true);
@@ -316,6 +579,19 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
                 "rendering config draw_sort must be an object");
         }
         resolved["draw_sort"] = authored_config.at("draw_sort");
+    }
+    if (authored_config.contains("target_planning")) {
+        if (!authored_config.at("target_planning").is_object()) {
+            throw std::runtime_error(
+                "rendering config target_planning must be an object");
+        }
+        if (resolved.contains("target_planning")) {
+            throw std::runtime_error(
+                "rendering config cannot override preset target_planning; "
+                "copy/eject the preset first");
+        }
+        resolved["target_planning"] =
+            authored_config.at("target_planning");
     }
     if (authored_config.contains("xr")) {
         if (!authored_config.at("xr").is_object()) {
@@ -523,6 +799,11 @@ ResolvedRenderPipeline resolveRenderPipeline(
     }
     result.sample_count_policy =
         compileSampleCountPolicy(result.normalized_config);
+    result.target_planning =
+        compileTargetPlanningPolicy(
+            result.normalized_config,
+            result.graph_variant_policy
+                .rendering_pass_name_suffix);
     result.xr_target_policy =
         compileXrTargetPolicy(
             result.normalized_config,
@@ -891,6 +1172,18 @@ CompiledRenderPipeline compileRenderPipeline(
         compileXrTargetPolicy(
             pipeline.normalized_config,
             pipeline.graph_variant_policy.variant);
+    const auto canonical_target_planning =
+        compileTargetPlanningPolicy(
+            pipeline.normalized_config,
+            pipeline.graph_variant_policy
+                .rendering_pass_name_suffix);
+    if (pipeline.target_planning.authored &&
+        pipeline.target_planning !=
+            canonical_target_planning) {
+        throw std::runtime_error(
+            "resolved render pipeline has inconsistent target planning "
+            "policy");
+    }
     if (pipeline.xr_target_policy.authored &&
         pipeline.xr_target_policy !=
             canonical_xr_target_policy) {
@@ -914,6 +1207,8 @@ CompiledRenderPipeline compileRenderPipeline(
     }
     result.draw_sorting = compileDrawSorting(pipeline.draw_sort);
     result.sample_count_policy = pipeline.sample_count_policy;
+    result.target_planning =
+        canonical_target_planning;
     result.xr_target_policy = canonical_xr_target_policy;
     result.pipeline_preset = pipeline.pipeline_preset;
     result.graph_variant_policy =
@@ -1064,6 +1359,11 @@ nlohmann::json serializeCompiledRenderPipelineMetadata(
     if (pipeline.sample_count_policy.authored) {
         metadata["sample_count"] =
             sampleCountPolicyToJson(pipeline.sample_count_policy);
+    }
+    if (pipeline.target_planning.authored) {
+        metadata["target_planning"] =
+            targetPlanningPolicyToJson(
+                pipeline.target_planning);
     }
     if (pipeline.xr_target_policy.authored) {
         metadata["xr_target_policy"] =

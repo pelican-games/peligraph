@@ -591,7 +591,8 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
     std::optional<VulkanViewExecutionPlanRequest>
         view_execution,
     std::optional<VulkanExternalDepthExportRequest>
-        external_depth_export) {
+        external_depth_export,
+    TargetPlanningPolicy target_planning) {
     const auto target_by_name =
         renderTargetsByName(render_targets);
     const auto types = makeBuiltinLogicalTypeRegistry();
@@ -619,12 +620,36 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
         graph_attachments;
     graph_attachments.reserve(frame_graphs.size());
     std::set<std::string, std::less<>> all_attachments;
+    std::set<std::string, std::less<>> graph_names;
     for (const auto &definition : frame_graphs) {
+        if (!graph_names.insert(definition.name).second) {
+            throw std::runtime_error(
+                "rendering target planning graph names must be unique: " +
+                definition.name);
+        }
         auto attachments =
             attachmentResources(definition, target_by_name);
         all_attachments.insert(attachments.begin(),
                                attachments.end());
         graph_attachments.push_back(std::move(attachments));
+    }
+    std::map<std::string, const PlanningGraphConstraints *,
+             std::less<>>
+        planning_by_graph;
+    for (const auto &constraints : target_planning.graphs) {
+        if (constraints.graph.empty() ||
+            !graph_names.contains(constraints.graph)) {
+            throw std::runtime_error(
+                "target planning constraints reference unknown graph: " +
+                constraints.graph);
+        }
+        if (!planning_by_graph
+                 .emplace(constraints.graph, &constraints)
+                 .second) {
+            throw std::runtime_error(
+                "duplicate target planning constraints for graph: " +
+                constraints.graph);
+        }
     }
     for (const auto &target : policy.targets) {
         if (!all_attachments.contains(target)) {
@@ -657,6 +682,12 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
         auto logical_graph = compileLogicalFrameGraphShadow(
             definition, types,
             shadowOptions(definition, types, target_by_name));
+        const auto planning =
+            planning_by_graph.find(definition.name);
+        const auto *graph_constraints =
+            planning == planning_by_graph.end()
+                ? nullptr
+                : planning->second;
         auto plan_value =
             compileVulkanTargetPlan(
                 types, logical_graph, topology,
@@ -668,6 +699,18 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
                         runtimePatternBindings(
                             types, logical_graph, target_by_name,
                             swapchain_format),
+                    .profile = target_planning.profile,
+                    .node_constraints =
+                        graph_constraints == nullptr
+                            ? std::vector<PlanningNodeConstraint>{}
+                            : graph_constraints->nodes,
+                    .resource_constraints =
+                        graph_constraints == nullptr
+                            ? std::vector<
+                                  PlanningResourceConstraint>{}
+                            : graph_constraints->resources,
+                    .diagnostic_policy =
+                        target_planning.diagnostic_policy,
                     .sample_count =
                         VulkanSampleCountPlanRequest{
                             .policy = std::move(local_policy),
@@ -791,7 +834,8 @@ compileRenderingTargetPlansForVulkanDevice(
     std::optional<VulkanViewExecutionPlanRequest>
         view_execution,
     std::optional<VulkanExternalDepthExportRequest>
-        external_depth_export) {
+        external_depth_export,
+    TargetPlanningPolicy target_planning) {
     const auto features =
         physical_device.getFeatures2<
             vk::PhysicalDeviceFeatures2,
@@ -850,7 +894,8 @@ compileRenderingTargetPlansForVulkanDevice(
                 },
         },
         std::move(view_execution),
-        std::move(external_depth_export));
+        std::move(external_depth_export),
+        std::move(target_planning));
 }
 
 void applyRenderingTargetPlan(
