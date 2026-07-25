@@ -21,6 +21,8 @@ constexpr std::string_view kDisplayFormatCapability =
     "pelican.vulkan.format_bgra8_unorm@1";
 constexpr std::string_view kDepthFormatCapability =
     "pelican.vulkan.format_d32_sfloat@1";
+constexpr std::string_view kLdrFormatCapability =
+    "pelican.vulkan.format_rgba8_unorm@1";
 
 void requireThrowsContaining(const std::function<void()> &operation,
                              std::string_view expected) {
@@ -60,6 +62,7 @@ TargetTopologySnapshot topology(
         std::string{kHdrFormatCapability},
         std::string{kDisplayFormatCapability},
         std::string{kDepthFormatCapability},
+        std::string{kLdrFormatCapability},
     };
     if (tile) {
         capabilities.insert(
@@ -311,17 +314,26 @@ ResourcePattern patternFor(const LogicalTypeRegistry &types,
         .applicable_type =
             exactLogicalTypePattern(types, resource.type),
         .format_candidates =
-            {ResourceFormatCandidate{
-                display
-                    ? "B8G8R8A8_UNORM"
-                : depth
-                    ? "D32_SFLOAT"
-                    : "R16G16B16A16_SFLOAT",
-                {std::string{
-                    display ? kDisplayFormatCapability
-                    : depth ? kDepthFormatCapability
-                            : kHdrFormatCapability}},
-            }},
+            display
+                ? std::vector<ResourceFormatCandidate>{
+                      {"B8G8R8A8_UNORM",
+                       {std::string{
+                           kDisplayFormatCapability}}},
+                  }
+            : depth
+                ? std::vector<ResourceFormatCandidate>{
+                      {"D32_SFLOAT",
+                       {std::string{
+                           kDepthFormatCapability}}},
+                  }
+                : std::vector<ResourceFormatCandidate>{
+                      {"R16G16B16A16_SFLOAT",
+                       {std::string{
+                           kHdrFormatCapability}}},
+                      {"R8G8B8A8_UNORM",
+                       {std::string{
+                           kLdrFormatCapability}}},
+                  },
         .prefer_transient = !display,
         .allow_tile_local = !display,
         .allow_alias = !display,
@@ -368,7 +380,9 @@ VulkanTargetPlan compile(
     std::optional<VulkanTargetPlanPinPackage>
         pin_package = std::nullopt,
     std::optional<VulkanPhysicalFragmentPackage>
-        fragment_package = std::nullopt) {
+        fragment_package = std::nullopt,
+    std::vector<VulkanPhysicalResourceFormatCapability>
+        format_capabilities = {}) {
     return compileVulkanTargetPlan(
         types, graph, target, providers(),
         VulkanTargetPlanRequest{
@@ -383,6 +397,8 @@ VulkanTargetPlan compile(
                 std::move(pin_package),
             .fragment_package =
                 std::move(fragment_package),
+            .fragment_format_capabilities =
+                std::move(format_capabilities),
         });
 }
 
@@ -713,6 +729,151 @@ TEST_CASE("physical fragments conservatively materialize tile data before splitt
         }));
 }
 
+TEST_CASE("physical fragments select declared alternate formats with target capability evidence",
+          "[target-render-planning][physical-fragment][format]") {
+    const auto types = makeBuiltinLogicalTypeRegistry();
+    const auto graph =
+        hybridGraph(types, 3, false, true);
+    const SampleCountPolicy policy{
+        .request =
+            {SampleCountRequestMode::exact, 4},
+        .scope = SampleCountScope::geometry,
+        .authored = true,
+    };
+    const auto automatic = compile(
+        types, graph, topology(false),
+        bindingsFor(types, graph),
+        sampleCountRequest(graph, policy));
+    REQUIRE(
+        physicalResource(automatic, "gbuffer_0")
+            .format ==
+        "R16G16B16A16_SFLOAT");
+    REQUIRE(
+        physicalResource(automatic, "gbuffer_0")
+            .rasterization_samples == 4);
+
+    auto fragment =
+        ejectVulkanPhysicalFragmentPackage(
+            automatic);
+    const auto edited = std::find_if(
+        fragment.resources.begin(),
+        fragment.resources.end(),
+        [](const auto &resource) {
+            return resource.logical_resource ==
+                   "gbuffer_0";
+        });
+    REQUIRE(edited != fragment.resources.end());
+    edited->format = "R8G8B8A8_UNORM";
+
+    const auto linked = compile(
+        types, graph, topology(false),
+        bindingsFor(types, graph),
+        sampleCountRequest(graph, policy),
+        std::nullopt, std::nullopt,
+        std::nullopt, fragment,
+        {VulkanPhysicalResourceFormatCapability{
+            .logical_resource = "gbuffer_0",
+            .format = "R8G8B8A8_UNORM",
+            .image_usage_supported = true,
+            .supported_samples = {1, 2, 4},
+            .max_array_layers = 1,
+        }});
+    REQUIRE(
+        physicalResource(linked, "gbuffer_0")
+            .format ==
+        "R8G8B8A8_UNORM");
+    REQUIRE(
+        physicalResource(linked, "gbuffer_0")
+            .rasterization_samples == 4);
+    REQUIRE(linked.sample_count_plan.has_value());
+    const auto resolved = std::find_if(
+        linked.sample_count_plan->resources.begin(),
+        linked.sample_count_plan->resources.end(),
+        [](const auto &resource) {
+            return resource.resource == "gbuffer_0";
+        });
+    REQUIRE(
+        resolved !=
+        linked.sample_count_plan->resources.end());
+    REQUIRE(resolved->format == "R8G8B8A8_UNORM");
+    const auto lowering = std::find_if(
+        linked.lowering_graph.resources.begin(),
+        linked.lowering_graph.resources.end(),
+        [](const auto &resource) {
+            return resource.logical.name ==
+                   "gbuffer_0";
+        });
+    REQUIRE(
+        lowering !=
+        linked.lowering_graph.resources.end());
+    REQUIRE(
+        std::find(
+            lowering->required_physical_features.begin(),
+            lowering->required_physical_features.end(),
+            std::string{kLdrFormatCapability}) !=
+        lowering->required_physical_features.end());
+}
+
+TEST_CASE("alternate physical format evidence is fail-closed for usage and samples",
+          "[target-render-planning][physical-fragment][format][reject]") {
+    const auto types = makeBuiltinLogicalTypeRegistry();
+    const auto graph =
+        hybridGraph(types, 3, false, true);
+    const SampleCountPolicy policy{
+        .request =
+            {SampleCountRequestMode::exact, 4},
+        .scope = SampleCountScope::geometry,
+        .authored = true,
+    };
+    const auto automatic = compile(
+        types, graph, topology(false),
+        bindingsFor(types, graph),
+        sampleCountRequest(graph, policy));
+    auto fragment =
+        ejectVulkanPhysicalFragmentPackage(
+            automatic);
+    const auto edited = std::find_if(
+        fragment.resources.begin(),
+        fragment.resources.end(),
+        [](const auto &resource) {
+            return resource.logical_resource ==
+                   "gbuffer_0";
+        });
+    REQUIRE(edited != fragment.resources.end());
+    edited->format = "R8G8B8A8_UNORM";
+
+    const auto compile_with_capability =
+        [&](VulkanPhysicalResourceFormatCapability capability) {
+            return compile(
+                types, graph, topology(false),
+                bindingsFor(types, graph),
+                sampleCountRequest(graph, policy),
+                std::nullopt, std::nullopt,
+                std::nullopt, fragment,
+                {std::move(capability)});
+        };
+    requireThrowsContaining(
+        [&] {
+            (void)compile_with_capability({
+                .logical_resource = "gbuffer_0",
+                .format = "R8G8B8A8_UNORM",
+                .image_usage_supported = false,
+                .supported_samples = {1, 2, 4},
+            });
+        },
+        "does not support the required image usage");
+    requireThrowsContaining(
+        [&] {
+            (void)compile_with_capability({
+                .logical_resource = "gbuffer_0",
+                .format = "R8G8B8A8_UNORM",
+                .image_usage_supported = true,
+                .supported_samples = {1, 2},
+            });
+        },
+        "does not support the selected rasterization sample count");
+}
+
 TEST_CASE("physical fragment verifier rejects stale, aggressive, open-scope, and overlapping edits",
           "[target-render-planning][physical-fragment][reject]") {
     const auto types = makeBuiltinLogicalTypeRegistry();
@@ -814,7 +975,7 @@ TEST_CASE("physical fragment verifier rejects stale, aggressive, open-scope, and
                 std::nullopt, std::nullopt,
                 alternate_format);
         },
-        "keeps the automatic format");
+        "no target format capability");
 
     auto fused = ejectVulkanPhysicalFragmentPackage(
         desktop);

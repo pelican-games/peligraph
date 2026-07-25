@@ -292,9 +292,8 @@ struct VulkanTargetPlanPinPackage {
 
 // A sparse, same-layer edit over the automatically compiled physical plan.
 // V1 permits conservative resource materialization, safe scope splitting,
-// and verified alias groups. The format field round-trips the automatic
-// format; selecting another candidate remains compiler-owned until
-// sample/usage capability verification is available.
+// verified alias groups, and a declared alternate image format when the
+// target bridge supplies matching usage/sample/layer capability evidence.
 struct VulkanPhysicalResourceFragment {
     std::string logical_resource;
     std::optional<std::string> format;
@@ -318,6 +317,22 @@ struct VulkanPhysicalAliasGroupFragment {
 
     bool operator==(
         const VulkanPhysicalAliasGroupFragment &) const = default;
+};
+
+// Target-specific evidence for selecting a non-automatic image format from
+// a ResourcePattern. The target bridge snapshots these facts from the actual
+// device. A fragment cannot infer support from a format name alone.
+struct VulkanPhysicalResourceFormatCapability {
+    std::string logical_resource;
+    std::string format;
+    bool image_usage_supported = false;
+    std::vector<std::uint32_t> supported_samples;
+    std::uint32_t max_array_layers = 1;
+    bool external_depth_export_supported = false;
+
+    bool operator==(
+        const VulkanPhysicalResourceFormatCapability &) const =
+        default;
 };
 
 struct VulkanPhysicalFragmentPackage {
@@ -352,6 +367,8 @@ struct VulkanTargetPlanRequest {
         pin_package;
     std::optional<VulkanPhysicalFragmentPackage>
         fragment_package;
+    std::vector<VulkanPhysicalResourceFormatCapability>
+        fragment_format_capabilities;
 };
 
 struct VulkanTargetPlan {
@@ -417,7 +434,10 @@ VulkanTargetPlan linkVulkanPhysicalFragment(
     const CompiledLogicalRenderGraph &canonical_graph,
     const TargetTopologySnapshot &topology,
     VulkanTargetPlan automatic_plan,
-    VulkanPhysicalFragmentPackage package);
+    VulkanPhysicalFragmentPackage package,
+    std::span<
+        const VulkanPhysicalResourceFormatCapability>
+        format_capabilities = {});
 nlohmann::ordered_json vulkanTargetPlanToJson(
     const VulkanTargetPlan &plan);
 

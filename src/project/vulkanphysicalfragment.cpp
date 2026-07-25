@@ -485,6 +485,134 @@ const ResourceFormatCandidate &requireFormatCandidate(
     return *found;
 }
 
+using FormatCapabilityKey =
+    std::pair<std::string, std::string>;
+
+std::map<
+    FormatCapabilityKey,
+    const VulkanPhysicalResourceFormatCapability *>
+indexFormatCapabilities(
+    std::span<
+        const VulkanPhysicalResourceFormatCapability>
+        capabilities) {
+    std::map<
+        FormatCapabilityKey,
+        const VulkanPhysicalResourceFormatCapability *>
+        result;
+    for (const auto &capability : capabilities) {
+        requireNonEmpty(
+            capability.logical_resource,
+            "Vulkan physical format capability resource");
+        requireNonEmpty(
+            capability.format,
+            "Vulkan physical format capability format");
+        if (capability.max_array_layers == 0) {
+            throw std::runtime_error(
+                "Vulkan physical format capability max array "
+                "layers must be positive: " +
+                capability.logical_resource + " -> " +
+                capability.format);
+        }
+        std::set<std::uint32_t> sample_counts;
+        for (const auto samples :
+             capability.supported_samples) {
+            if (samples == 0 || samples > 64 ||
+                (samples & (samples - 1)) != 0) {
+                throw std::runtime_error(
+                    "Vulkan physical format capability has an "
+                    "invalid sample count: " +
+                    capability.logical_resource + " -> " +
+                    capability.format + " -> " +
+                    std::to_string(samples));
+            }
+            if (!sample_counts.insert(samples).second) {
+                throw std::runtime_error(
+                    "Vulkan physical format capability has a "
+                    "duplicate sample count: " +
+                    capability.logical_resource + " -> " +
+                    capability.format + " -> " +
+                    std::to_string(samples));
+            }
+        }
+        const auto key = FormatCapabilityKey{
+            capability.logical_resource,
+            capability.format,
+        };
+        if (!result.emplace(key, &capability).second) {
+            throw std::runtime_error(
+                "Vulkan physical format capabilities contain a "
+                "duplicate resource/format pair: " +
+                capability.logical_resource + " -> " +
+                capability.format);
+        }
+    }
+    return result;
+}
+
+const VulkanPhysicalResourceFormatCapability &
+requireAlternateFormatCapability(
+    const std::map<
+        FormatCapabilityKey,
+        const VulkanPhysicalResourceFormatCapability *>
+        &capabilities,
+    const VulkanPhysicalResourcePlan &resource,
+    std::string_view format,
+    bool exports_depth) {
+    const auto found = capabilities.find(
+        FormatCapabilityKey{
+            resource.logical_resource,
+            std::string{format},
+        });
+    if (found == capabilities.end()) {
+        throw std::runtime_error(
+            "Vulkan physical fragment has no target format "
+            "capability for alternate format: " +
+            resource.logical_resource + " -> " +
+            std::string{format});
+    }
+    const auto &capability = *found->second;
+    if (!capability.image_usage_supported) {
+        throw std::runtime_error(
+            "Vulkan physical fragment alternate format does not "
+            "support the required image usage: " +
+            resource.logical_resource + " -> " +
+            std::string{format});
+    }
+    if (std::find(
+            capability.supported_samples.begin(),
+            capability.supported_samples.end(),
+            resource.rasterization_samples) ==
+        capability.supported_samples.end()) {
+        throw std::runtime_error(
+            "Vulkan physical fragment alternate format does not "
+            "support the selected rasterization sample count: " +
+            resource.logical_resource + " -> " +
+            std::string{format} + " -> " +
+            std::to_string(
+                resource.rasterization_samples) +
+            " samples");
+    }
+    if (resource.array_layers >
+        capability.max_array_layers) {
+        throw std::runtime_error(
+            "Vulkan physical fragment alternate format does not "
+            "support the selected array layer count: " +
+            resource.logical_resource + " -> " +
+            std::string{format} + " -> " +
+            std::to_string(resource.array_layers));
+    }
+    if (exports_depth &&
+        !capability.external_depth_export_supported) {
+        throw std::runtime_error(
+            "Vulkan physical fragment alternate depth format "
+            "does not support the external transfer-source "
+            "contract: " +
+            resource.logical_resource + " -> " +
+            std::string{format});
+    }
+    return capability;
+}
+
 std::vector<std::string> resourceFeatures(
     const TargetLoweringResource &lowering,
     const VulkanPhysicalResourcePlan &resource,
@@ -1253,7 +1381,10 @@ VulkanTargetPlan linkVulkanPhysicalFragment(
     const CompiledLogicalRenderGraph &canonical_graph,
     const TargetTopologySnapshot &topology,
     VulkanTargetPlan automatic_plan,
-    VulkanPhysicalFragmentPackage source_package) {
+    VulkanPhysicalFragmentPackage source_package,
+    std::span<
+        const VulkanPhysicalResourceFormatCapability>
+        format_capabilities) {
     auto package =
         canonicalizePackage(
             std::move(source_package));
@@ -1322,6 +1453,9 @@ VulkanTargetPlan linkVulkanPhysicalFragment(
         endpoint_capabilities(
             endpoint->capabilities.begin(),
             endpoint->capabilities.end());
+    const auto indexed_format_capabilities =
+        indexFormatCapabilities(
+            format_capabilities);
 
     std::map<std::string,
              TargetLoweringResource *,
@@ -1359,6 +1493,11 @@ VulkanTargetPlan linkVulkanPhysicalFragment(
             physical->second->representation;
         const auto automatic_format =
             physical->second->format;
+        const auto exports_depth =
+            automatic_plan.external_depth_export &&
+            automatic_plan.external_depth_export
+                    ->source_resource ==
+                fragment.logical_resource;
         if (fragment.representation) {
             validateRepresentation(
                 *lowering->second,
@@ -1368,25 +1507,40 @@ VulkanTargetPlan linkVulkanPhysicalFragment(
                 *fragment.representation;
         }
         if (fragment.format) {
-            if (*fragment.format != automatic_format) {
-                throw std::runtime_error(
-                    "Vulkan physical fragment V1 keeps the "
-                    "automatic format because alternate-format "
-                    "sample/usage capability verification is not "
-                    "available yet: " +
-                    fragment.logical_resource);
-            }
             (void)requireFormatCandidate(
                 *lowering->second, *fragment.format);
+            if (*fragment.format != automatic_format) {
+                if (physical->second->representation !=
+                    VulkanResourceRepresentation::
+                        materialized_image) {
+                    throw std::runtime_error(
+                        "Vulkan physical fragment alternate format "
+                        "requires a materialized_image "
+                        "representation: " +
+                        fragment.logical_resource);
+                }
+                (void)requireAlternateFormatCapability(
+                    indexed_format_capabilities,
+                    *physical->second,
+                    *fragment.format,
+                    exports_depth);
+            }
             physical->second->format =
                 *fragment.format;
+            if (*fragment.format != automatic_format &&
+                automatic_plan.sample_count_plan) {
+                for (auto &resolved :
+                     automatic_plan.sample_count_plan
+                         ->resources) {
+                    if (resolved.resource ==
+                        fragment.logical_resource) {
+                        resolved.format =
+                            *fragment.format;
+                    }
+                }
+            }
         }
 
-        const auto exports_depth =
-            automatic_plan.external_depth_export &&
-            automatic_plan.external_depth_export
-                    ->source_resource ==
-                fragment.logical_resource;
         physical->second->stored =
             physical->second->representation ==
                 VulkanResourceRepresentation::external ||
@@ -1507,8 +1661,42 @@ VulkanTargetPlan linkVulkanPhysicalFragment(
     sortAndUniqueCapabilities(
         automatic_plan.required_physical_features,
         "linked Vulkan physical plan feature");
+    const auto selected_probe = std::find_if(
+        automatic_plan.backend_selection
+            .candidates.begin(),
+        automatic_plan.backend_selection
+            .candidates.end(),
+        [&](const BackendProbeResult &candidate) {
+            return candidate.candidate ==
+                   automatic_plan.backend_selection
+                       .selected_candidate;
+        });
+    if (selected_probe ==
+        automatic_plan.backend_selection
+            .candidates.end()) {
+        throw std::runtime_error(
+            "Vulkan physical fragment cannot close the selected "
+            "backend probe");
+    }
+    // The automatic probe declared the requirements of the automatic
+    // lowering. Direct physical edits may select another declared format
+    // or conservatively materialize a resource. Every resulting feature was
+    // checked against the same endpoint above, so close the immutable
+    // selected candidate over that verified set without selecting a
+    // different backend.
+    selected_probe->required_physical_features =
+        automatic_plan.required_physical_features;
+    automatic_plan.backend_selection.decisions.push_back(
+        PlanningDecision{
+            "pelican.plan.physical_fragment_feature_closure@1",
+            automatic_plan.graph,
+            automatic_plan.backend_selection
+                .selected_candidate,
+            "same backend candidate was closed over the "
+            "fragment's endpoint-verified physical features",
+        });
     validateVulkanPhysicalFeatureClosure(
-        probe,
+        *selected_probe,
         automatic_plan.required_physical_features);
 
     automatic_plan.applied_fragment_package =

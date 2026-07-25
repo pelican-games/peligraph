@@ -2696,7 +2696,8 @@ VulkanTargetPlan compileVulkanTargetPlan(
         result = linkVulkanPhysicalFragment(
             canonical_graph, topology,
             std::move(result),
-            std::move(*request.fragment_package));
+            std::move(*request.fragment_package),
+            request.fragment_format_capabilities);
     }
     return result;
 }
