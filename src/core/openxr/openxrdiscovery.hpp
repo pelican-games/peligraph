@@ -55,6 +55,7 @@ DECLARE_MODULE(DiscoveryRuntime) {
     PFN_xrCreateVulkanDeviceKHR create_vulkan_device = nullptr;
     bool discovery_succeeded = false;
     bool win32_time_conversion_enabled = false;
+    bool composition_layer_depth_enabled = false;
 
     XrDiscoveryResult fail(XrDiscoveryAvailability availability, std::string detail);
     bool resolve(const char *name, PFN_xrVoidFunction &function) const;
@@ -86,6 +87,9 @@ DECLARE_MODULE(DiscoveryRuntime) {
     }
     bool win32TimeConversionEnabled() const noexcept {
         return win32_time_conversion_enabled;
+    }
+    bool compositionLayerDepthEnabled() const noexcept {
+        return composition_layer_depth_enabled;
     }
 };
 

@@ -60,6 +60,7 @@ void DiscoveryRuntime::abandon() noexcept {
     create_vulkan_device = nullptr;
     discovery_succeeded = false;
     win32_time_conversion_enabled = false;
+    composition_layer_depth_enabled = false;
 }
 
 XrDiscoveryResult DiscoveryRuntime::fail(XrDiscoveryAvailability availability, std::string detail) {
@@ -113,6 +114,12 @@ XrDiscoveryResult DiscoveryRuntime::discover() {
     // XR2a.2 can still select LOCAL_FLOOR on that API version.
     if (has_extension(XR_EXT_LOCAL_FLOOR_EXTENSION_NAME)) {
         enabled_extensions.push_back(XR_EXT_LOCAL_FLOOR_EXTENSION_NAME);
+    }
+    composition_layer_depth_enabled =
+        has_extension(XR_KHR_COMPOSITION_LAYER_DEPTH_EXTENSION_NAME);
+    if (composition_layer_depth_enabled) {
+        enabled_extensions.push_back(
+            XR_KHR_COMPOSITION_LAYER_DEPTH_EXTENSION_NAME);
     }
 #ifdef _WIN32
     win32_time_conversion_enabled =

@@ -17,6 +17,7 @@ struct FakeRuntime {
     std::string failure;
     bool advertise_vulkan_enable2 = true;
     bool advertise_local_floor = false;
+    bool advertise_composition_depth = false;
     bool advertise_time_conversion = false;
     VkPhysicalDevice selected_physical_device = VK_NULL_HANDLE;
     std::vector<std::string> calls;
@@ -106,6 +107,7 @@ XrResult XRAPI_CALL fakeEnumerateExtensions(
                                                    : "enumerate_extensions_values");
     if (active_fake->failure == "enumerate_extensions") return XR_ERROR_RUNTIME_UNAVAILABLE;
     *count = 1U + (active_fake->advertise_local_floor ? 1U : 0U) +
+             (active_fake->advertise_composition_depth ? 1U : 0U) +
              (active_fake->advertise_time_conversion ? 1U : 0U);
     if (capacity != 0) {
         const auto *name = active_fake->advertise_vulkan_enable2
@@ -119,8 +121,18 @@ XrResult XRAPI_CALL fakeEnumerateExtensions(
                           XR_EXT_LOCAL_FLOOR_EXTENSION_NAME);
             properties[1].extensionVersion = 1;
         }
+        if (active_fake->advertise_composition_depth) {
+            const auto index =
+                1U + (active_fake->advertise_local_floor ? 1U : 0U);
+            std::snprintf(properties[index].extensionName,
+                          sizeof(properties[index].extensionName), "%s",
+                          XR_KHR_COMPOSITION_LAYER_DEPTH_EXTENSION_NAME);
+            properties[index].extensionVersion = 1;
+        }
         if (active_fake->advertise_time_conversion) {
-            const auto index = active_fake->advertise_local_floor ? 2U : 1U;
+            const auto index =
+                1U + (active_fake->advertise_local_floor ? 1U : 0U) +
+                (active_fake->advertise_composition_depth ? 1U : 0U);
             std::snprintf(properties[index].extensionName,
                           sizeof(properties[index].extensionName), "%s",
                           XR_KHR_WIN32_CONVERT_PERFORMANCE_COUNTER_TIME_EXTENSION_NAME);
@@ -136,14 +148,23 @@ XrResult XRAPI_CALL fakeCreateInstance(const XrInstanceCreateInfo *info, XrInsta
     CHECK(XR_VERSION_MINOR(info->applicationInfo.apiVersion) == 0);
     CHECK(info->enabledExtensionCount ==
           1U + (active_fake->advertise_local_floor ? 1U : 0U) +
+              (active_fake->advertise_composition_depth ? 1U : 0U) +
               (active_fake->advertise_time_conversion ? 1U : 0U));
     CHECK(std::string{info->enabledExtensionNames[0]} == XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME);
     if (active_fake->advertise_local_floor) {
         CHECK(std::string{info->enabledExtensionNames[1]} ==
               XR_EXT_LOCAL_FLOOR_EXTENSION_NAME);
     }
+    if (active_fake->advertise_composition_depth) {
+        const auto index =
+            1U + (active_fake->advertise_local_floor ? 1U : 0U);
+        CHECK(std::string{info->enabledExtensionNames[index]} ==
+              XR_KHR_COMPOSITION_LAYER_DEPTH_EXTENSION_NAME);
+    }
     if (active_fake->advertise_time_conversion) {
-        const auto index = active_fake->advertise_local_floor ? 2U : 1U;
+        const auto index =
+            1U + (active_fake->advertise_local_floor ? 1U : 0U) +
+            (active_fake->advertise_composition_depth ? 1U : 0U);
         CHECK(std::string{info->enabledExtensionNames[index]} ==
               XR_KHR_WIN32_CONVERT_PERFORMANCE_COUNTER_TIME_EXTENSION_NAME);
     }
@@ -325,6 +346,27 @@ TEST_CASE("Vulkan required extensions merge uniquely and report missing names",
                           Catch::Matchers::ContainsSubstring("--xr on") &&
                               Catch::Matchers::ContainsSubstring(*missing));
     }
+}
+
+TEST_CASE("OpenXR discovery conditionally enables composition-layer depth",
+          "[openxr][discovery][composition-depth]") {
+    FakeRuntime absent;
+    {
+        FakeScope scope{absent};
+        Pelican::OpenXr::DiscoveryRuntime runtime{fakeApi()};
+        REQUIRE(runtime.discover().availability ==
+                Pelican::XrDiscoveryAvailability::available);
+        CHECK_FALSE(runtime.compositionLayerDepthEnabled());
+    }
+
+    FakeRuntime advertised{
+        .advertise_composition_depth = true,
+    };
+    FakeScope scope{advertised};
+    Pelican::OpenXr::DiscoveryRuntime runtime{fakeApi()};
+    REQUIRE(runtime.discover().availability ==
+            Pelican::XrDiscoveryAvailability::available);
+    CHECK(runtime.compositionLayerDepthEnabled());
 }
 
 TEST_CASE("Vulkan bootstrap requires every feature used by indirect rendering",
