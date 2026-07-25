@@ -1,6 +1,7 @@
 #include "targetrenderplanning.hpp"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cmath>
 #include <map>
@@ -8,6 +9,7 @@
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#include <system_error>
 #include <tuple>
 #include <utility>
 
@@ -36,6 +38,130 @@ constexpr std::string_view kMaterializedCandidate =
     "pelican.vulkan.materialized_plan@1";
 constexpr std::string_view kTileLocalCandidate =
     "pelican.vulkan.tile_local_plan@1";
+constexpr std::string_view kPinPackageSchema =
+    "pelican.vulkan_target_plan_pins";
+constexpr std::uint32_t kPinPackageVersion = 1;
+constexpr std::string_view kFingerprintPrefix =
+    "fnv1a64:";
+
+class StableFingerprint {
+    std::uint64_t value_ =
+        14695981039346656037ULL;
+
+  public:
+    void appendByte(std::uint8_t byte) noexcept {
+        value_ ^= byte;
+        value_ *= 1099511628211ULL;
+    }
+
+    void appendUnsigned(std::uint64_t value) noexcept {
+        for (std::uint32_t shift = 0;
+             shift < 64; shift += 8) {
+            appendByte(static_cast<std::uint8_t>(
+                value >> shift));
+        }
+    }
+
+    void appendString(std::string_view value) noexcept {
+        appendUnsigned(value.size());
+        for (const auto byte : value) {
+            appendByte(static_cast<std::uint8_t>(
+                static_cast<unsigned char>(byte)));
+        }
+    }
+
+    std::uint64_t value() const noexcept {
+        return value_;
+    }
+};
+
+std::string fingerprintString(std::uint64_t fingerprint) {
+    std::array<char, 16> digits{};
+    const auto converted = std::to_chars(
+        digits.data(), digits.data() + digits.size(),
+        fingerprint, 16);
+    if (converted.ec != std::errc{}) {
+        throw std::runtime_error(
+            "failed to encode target-plan fingerprint");
+    }
+    std::string result{kFingerprintPrefix};
+    result.append(
+        digits.size() -
+            static_cast<std::size_t>(
+                converted.ptr - digits.data()),
+        '0');
+    result.append(digits.data(), converted.ptr);
+    return result;
+}
+
+std::uint64_t parseFingerprint(
+    const nlohmann::json &value,
+    std::string_view context) {
+    if (!value.is_string()) {
+        throw std::runtime_error(
+            std::string{context} +
+            " must be an fnv1a64 fingerprint string");
+    }
+    const auto &encoded =
+        value.get_ref<const std::string &>();
+    if (!encoded.starts_with(kFingerprintPrefix) ||
+        encoded.size() !=
+            kFingerprintPrefix.size() + 16) {
+        throw std::runtime_error(
+            std::string{context} +
+            " must use fnv1a64: followed by 16 lowercase hex "
+            "digits");
+    }
+    const auto first =
+        encoded.data() + kFingerprintPrefix.size();
+    const auto last = encoded.data() + encoded.size();
+    std::uint64_t result = 0;
+    const auto parsed =
+        std::from_chars(first, last, result, 16);
+    if (parsed.ec != std::errc{} ||
+        parsed.ptr != last ||
+        std::any_of(
+            first, last, [](char character) {
+                return character >= 'A' &&
+                       character <= 'F';
+            })) {
+        throw std::runtime_error(
+            std::string{context} +
+            " must use fnv1a64: followed by 16 lowercase hex "
+            "digits");
+    }
+    return result;
+}
+
+void requireOnlyKeys(
+    const nlohmann::json &object,
+    std::initializer_list<std::string_view> allowed,
+    std::string_view context) {
+    for (auto field = object.begin();
+         field != object.end(); ++field) {
+        if (std::find(
+                allowed.begin(), allowed.end(),
+                field.key()) == allowed.end()) {
+            throw std::runtime_error(
+                std::string{context} +
+                " has unknown key '" + field.key() + "'");
+        }
+    }
+}
+
+std::string requireJsonString(
+    const nlohmann::json &object, std::string_view key,
+    std::string_view context) {
+    const auto found = object.find(key);
+    if (found == object.end() || !found->is_string() ||
+        found->get_ref<const std::string &>().empty()) {
+        throw std::runtime_error(
+            std::string{context} +
+            " requires non-empty string " +
+            std::string{key});
+    }
+    return found->get<std::string>();
+}
 
 void requireNonEmpty(std::string_view value, std::string_view subject) {
     if (value.empty()) {
@@ -2217,6 +2343,119 @@ const BackendProbeResult &selectedProbe(
 
 } // namespace
 
+std::uint64_t vulkanTargetPlanLogicalGraphFingerprint(
+    const CompiledLogicalRenderGraph &graph) {
+    StableFingerprint fingerprint;
+    fingerprint.appendString(
+        "pelican.vulkan_target_plan.logical_graph@1");
+    fingerprint.appendString(
+        compiledLogicalRenderGraphToJson(graph).dump());
+    return fingerprint.value();
+}
+
+VulkanTargetPlanPinPackage ejectVulkanTargetPlanPinPackage(
+    const VulkanTargetPlan &plan) {
+    requireNonEmpty(plan.graph, "Vulkan target plan graph");
+    requireNonEmpty(
+        plan.backend_selection.selected_candidate,
+        "Vulkan target plan selected backend candidate");
+    return {
+        .graph = plan.graph,
+        .logical_graph_fingerprint =
+            plan.logical_graph_fingerprint,
+        .backend_candidate =
+            plan.backend_selection.selected_candidate,
+    };
+}
+
+nlohmann::ordered_json vulkanTargetPlanPinPackageToJson(
+    const VulkanTargetPlanPinPackage &package) {
+    requireNonEmpty(
+        package.graph, "Vulkan target plan pin graph");
+    requireVersionedName(
+        package.backend_candidate,
+        "Vulkan target plan pinned backend candidate");
+    return {
+        {"schema", kPinPackageSchema},
+        {"version", kPinPackageVersion},
+        {"graph", package.graph},
+        {"logical_graph_fingerprint",
+         fingerprintString(
+             package.logical_graph_fingerprint)},
+        {"pins",
+         nlohmann::ordered_json{
+             {"backend_candidate",
+              package.backend_candidate},
+         }},
+    };
+}
+
+VulkanTargetPlanPinPackage
+vulkanTargetPlanPinPackageFromJson(
+    const nlohmann::json &document) {
+    constexpr std::string_view context =
+        "Vulkan target plan pin package";
+    if (!document.is_object()) {
+        throw std::runtime_error(
+            std::string{context} + " must be an object");
+    }
+    requireOnlyKeys(
+        document,
+        {"schema", "version", "graph",
+         "logical_graph_fingerprint", "pins"},
+        context);
+    if (requireJsonString(
+            document, "schema", context) !=
+        kPinPackageSchema) {
+        throw std::runtime_error(
+            std::string{context} + " schema must be '" +
+            std::string{kPinPackageSchema} + "'");
+    }
+    const auto version = document.find("version");
+    if (version == document.end() ||
+        !version->is_number_integer() ||
+        version->get<std::int64_t>() !=
+            kPinPackageVersion) {
+        throw std::runtime_error(
+            std::string{context} +
+            " version must be exactly 1");
+    }
+    const auto fingerprint =
+        document.find("logical_graph_fingerprint");
+    if (fingerprint == document.end()) {
+        throw std::runtime_error(
+            std::string{context} +
+            " requires logical_graph_fingerprint");
+    }
+    const auto pins = document.find("pins");
+    if (pins == document.end() || !pins->is_object()) {
+        throw std::runtime_error(
+            std::string{context} +
+            " pins must be an object");
+    }
+    requireOnlyKeys(
+        *pins, {"backend_candidate"},
+        "Vulkan target plan pin package pins");
+
+    VulkanTargetPlanPinPackage result{
+        .graph =
+            requireJsonString(document, "graph", context),
+        .logical_graph_fingerprint =
+            parseFingerprint(
+                *fingerprint,
+                "Vulkan target plan pin package "
+                "logical_graph_fingerprint"),
+        .backend_candidate =
+            requireJsonString(
+                *pins, "backend_candidate",
+                "Vulkan target plan pin package pins"),
+    };
+    requireVersionedName(
+        result.backend_candidate,
+        "Vulkan target plan pinned backend candidate");
+    return result;
+}
+
 void validateVulkanPhysicalFeatureClosure(
     const BackendProbeResult &selected_probe,
     std::span<const std::string> lowered_required_features) {
@@ -2264,6 +2503,35 @@ VulkanTargetPlan compileVulkanTargetPlan(
                     "Vulkan target plan endpoint");
     requireVersionedName(request.provider,
                          "Vulkan target plan provider");
+    const auto logical_graph_fingerprint =
+        vulkanTargetPlanLogicalGraphFingerprint(
+            canonical_graph);
+    if (request.pin_package) {
+        if (request.pin_package->graph !=
+            canonical_graph.name) {
+            throw std::runtime_error(
+                "Vulkan target plan pin package graph mismatch: "
+                "expected '" +
+                canonical_graph.name + "', got '" +
+                request.pin_package->graph + "'");
+        }
+        if (request.pin_package
+                ->logical_graph_fingerprint !=
+            logical_graph_fingerprint) {
+            throw std::runtime_error(
+                "Vulkan target plan pin package is stale for graph '" +
+                canonical_graph.name + "': expected " +
+                fingerprintString(
+                    logical_graph_fingerprint) +
+                ", got " +
+                fingerprintString(
+                    request.pin_package
+                        ->logical_graph_fingerprint));
+        }
+        requireVersionedName(
+            request.pin_package->backend_candidate,
+            "Vulkan target plan pinned backend candidate");
+    }
     const auto topology =
         canonicalizeTargetTopology(source_topology);
     const auto &endpoint =
@@ -2314,7 +2582,12 @@ VulkanTargetPlan compileVulkanTargetPlan(
     auto selection = selectBackendCandidate(
         {std::move(materialized_probe),
          std::move(tile_probe)},
-        request.diagnostic_policy);
+        request.diagnostic_policy,
+        request.pin_package
+            ? std::optional<std::string_view>{
+                  request.pin_package
+                      ->backend_candidate}
+            : std::nullopt);
     const auto selected_name = selection.selected_candidate;
     const auto &selected_draft =
         selected_name == tile_local.name ? tile_local
@@ -2440,6 +2713,8 @@ VulkanTargetPlan compileVulkanTargetPlan(
 
     return VulkanTargetPlan{
         .graph = canonical_graph.name,
+        .logical_graph_fingerprint =
+            logical_graph_fingerprint,
         .graph_transforms =
             canonical_graph.graph_transforms,
         .subgraph_replacements =
@@ -2459,6 +2734,8 @@ VulkanTargetPlan compileVulkanTargetPlan(
         .view_execution_plan = view_execution.summary,
         .external_depth_export =
             std::move(external_depth_plan),
+        .applied_pin_package =
+            std::move(request.pin_package),
     };
 }
 
@@ -2475,6 +2752,12 @@ nlohmann::ordered_json vulkanTargetPlanToJson(
         {"schema", "pelican.vulkan_target_plan"},
         {"version", 1},
         {"graph", plan.graph},
+        {"logical_graph_fingerprint",
+         fingerprintString(
+             plan.logical_graph_fingerprint)},
+        {"ejectable_pin_package",
+         vulkanTargetPlanPinPackageToJson(
+             ejectVulkanTargetPlanPinPackage(plan))},
         {"graph_transforms",
          nlohmann::ordered_json::array()},
         {"subgraph_replacements",
@@ -2512,6 +2795,11 @@ nlohmann::ordered_json vulkanTargetPlanToJson(
              {"reason", plan.view_execution_plan.reason},
          }},
     };
+    if (plan.applied_pin_package) {
+        result["applied_pin_package"] =
+            vulkanTargetPlanPinPackageToJson(
+                *plan.applied_pin_package);
+    }
     for (const auto &selection :
          plan.graph_transforms) {
         result["graph_transforms"].push_back(

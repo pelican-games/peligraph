@@ -353,6 +353,50 @@ TEST_CASE(
         resolved.selection->input_config_fingerprint ==
         resolved.selection->output_config_fingerprint);
 
+    auto controlled = authored;
+    controlled["target_planning"] = {
+        {"profile", {{"kind", "optimized"}}},
+    };
+    controlled["vulkan_plan_pins"] = {
+        {"flat", nlohmann::json::array()},
+    };
+    ResolvedRenderStrategyConfig with_controls;
+    {
+        const auto providers = registry.snapshot();
+        with_controls = resolveRenderStrategy(
+            controlled, policy, true, providers);
+    }
+    auto expected_with_controls = controlled;
+    expected_with_controls.erase("render_strategy");
+    REQUIRE(with_controls.config ==
+            expected_with_controls);
+    REQUIRE(
+        with_controls.selection->input_config_fingerprint ==
+        resolved.selection->input_config_fingerprint);
+    REQUIRE(
+        with_controls.selection->output_config_fingerprint ==
+        resolved.selection->output_config_fingerprint);
+    const auto logical_fingerprint =
+        [](const ResolvedRenderStrategyConfig &strategy) {
+            auto graphs =
+                parseFrameGraphDefinitionsFromConfigJson(
+                    strategy.config);
+            applyResolvedRenderStrategySelection(
+                graphs, strategy.selection);
+            const auto targets =
+                parseRenderTargetDefinitionsFromJson(
+                    strategy.config);
+            const auto logical =
+                compileRenderingLogicalGraphs(
+                    graphs, targets);
+            REQUIRE(logical.size() == 1);
+            return vulkanTargetPlanLogicalGraphFingerprint(
+                logical.front());
+        };
+    REQUIRE(
+        logical_fingerprint(with_controls) ==
+        logical_fingerprint(resolved));
+
     auto no_strategy = expected;
     {
         const auto providers = registry.snapshot();

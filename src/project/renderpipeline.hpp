@@ -4,6 +4,7 @@
 #include "logicalrendergraph.hpp"
 #include "samplecountplanning.hpp"
 #include "targetplanning.hpp"
+#include "targetrenderplanning.hpp"
 #include "xrtargetpolicy.hpp"
 
 #include <array>
@@ -167,6 +168,8 @@ struct ResolvedRenderPipeline {
     nlohmann::json draw_sort;
     SampleCountPolicy sample_count_policy;
     TargetPlanningPolicy target_planning;
+    std::vector<VulkanTargetPlanPinPackage>
+        vulkan_plan_pins;
     CompiledXrTargetPolicy xr_target_policy;
     std::optional<RenderPipelinePresetInfo> pipeline_preset;
     CompiledGraphVariantPolicy graph_variant_policy;
@@ -266,6 +269,8 @@ struct CompiledRenderPipeline {
     CompiledDrawSorting draw_sorting;
     SampleCountPolicy sample_count_policy;
     TargetPlanningPolicy target_planning;
+    std::vector<VulkanTargetPlanPinPackage>
+        vulkan_plan_pins;
     CompiledXrTargetPolicy xr_target_policy;
     std::optional<RenderPipelinePresetInfo> pipeline_preset;
     CompiledGraphVariantPolicy graph_variant_policy;

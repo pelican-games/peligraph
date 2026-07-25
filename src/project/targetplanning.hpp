@@ -245,7 +245,9 @@ struct BackendSelection {
 
 BackendSelection selectBackendCandidate(
     std::vector<BackendProbeResult> candidates,
-    const PlanningDiagnosticPolicy &diagnostic_policy = {});
+    const PlanningDiagnosticPolicy &diagnostic_policy = {},
+    std::optional<std::string_view> pinned_candidate =
+        std::nullopt);
 nlohmann::ordered_json backendSelectionToJson(
     const BackendSelection &selection);
 

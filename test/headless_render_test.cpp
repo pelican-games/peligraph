@@ -904,6 +904,19 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
                     .at("backend_selection")
                     .at("selected_candidate") ==
                 "pelican.vulkan.materialized_plan@1");
+        const auto ejected_pins =
+            vulkanTargetPlanPinPackageFromJson(
+                frame_plan_json.at(
+                    "physical_target_plan")
+                    .at("ejectable_pin_package"));
+        REQUIRE(
+            ejected_pins ==
+            ejectVulkanTargetPlanPinPackage(
+                *execution->target_plan));
+        REQUIRE(
+            ejected_pins.logical_graph_fingerprint ==
+            execution->target_plan
+                ->logical_graph_fingerprint);
         const auto physical_lit = std::find_if(
             execution->target_plan->resources.begin(),
             execution->target_plan->resources.end(),

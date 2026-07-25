@@ -592,7 +592,9 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
         view_execution,
     std::optional<VulkanExternalDepthExportRequest>
         external_depth_export,
-    TargetPlanningPolicy target_planning) {
+    TargetPlanningPolicy target_planning,
+    std::span<const VulkanTargetPlanPinPackage>
+        plan_pins) {
     const auto target_by_name =
         renderTargetsByName(render_targets);
     const auto types = makeBuiltinLogicalTypeRegistry();
@@ -651,6 +653,25 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
                 constraints.graph);
         }
     }
+    std::map<std::string,
+             const VulkanTargetPlanPinPackage *,
+             std::less<>>
+        pins_by_graph;
+    for (const auto &package : plan_pins) {
+        if (package.graph.empty() ||
+            !graph_names.contains(package.graph)) {
+            throw std::runtime_error(
+                "Vulkan target plan pins reference unknown graph: " +
+                package.graph);
+        }
+        if (!pins_by_graph
+                 .emplace(package.graph, &package)
+                 .second) {
+            throw std::runtime_error(
+                "duplicate Vulkan target plan pins for graph: " +
+                package.graph);
+        }
+    }
     for (const auto &target : policy.targets) {
         if (!all_attachments.contains(target)) {
             throw std::runtime_error(
@@ -688,6 +709,8 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
             planning == planning_by_graph.end()
                 ? nullptr
                 : planning->second;
+        const auto pin =
+            pins_by_graph.find(definition.name);
         auto plan_value =
             compileVulkanTargetPlan(
                 types, logical_graph, topology,
@@ -726,6 +749,13 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
                     .view_execution = view_execution,
                     .external_depth_export =
                         external_depth_export,
+                    .pin_package =
+                        pin == pins_by_graph.end()
+                            ? std::optional<
+                                  VulkanTargetPlanPinPackage>{}
+                            : std::optional<
+                                  VulkanTargetPlanPinPackage>{
+                                  *pin->second},
                 });
         plan_value.resolution_plan =
             makeRuntimeResolutionPlan(
@@ -835,7 +865,9 @@ compileRenderingTargetPlansForVulkanDevice(
         view_execution,
     std::optional<VulkanExternalDepthExportRequest>
         external_depth_export,
-    TargetPlanningPolicy target_planning) {
+    TargetPlanningPolicy target_planning,
+    std::span<const VulkanTargetPlanPinPackage>
+        plan_pins) {
     const auto features =
         physical_device.getFeatures2<
             vk::PhysicalDeviceFeatures2,
@@ -895,7 +927,8 @@ compileRenderingTargetPlansForVulkanDevice(
         },
         std::move(view_execution),
         std::move(external_depth_export),
-        std::move(target_planning));
+        std::move(target_planning),
+        plan_pins);
 }
 
 void applyRenderingTargetPlan(

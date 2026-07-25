@@ -292,6 +292,43 @@ TEST_CASE("finite backend selection is order-independent and records rejected fi
     requireThrowsContaining(
         [&] { (void)selectBackendCandidate({rejected}); },
         "pelican.plan.directed_link_missing@1");
+
+    auto fast_input = bridgeCandidate("fast", 1);
+    fast_input.bridge.reset();
+    auto slow_input = bridgeCandidate("slow", 9);
+    slow_input.bridge.reset();
+    const auto fast = probeVulkanBackend(
+        mockTopology(false), providers,
+        std::move(fast_input));
+    const auto slow = probeVulkanBackend(
+        mockTopology(false), providers,
+        std::move(slow_input));
+    const auto pinned = selectBackendCandidate(
+        {fast, slow}, {}, std::string_view{"slow"});
+    REQUIRE(pinned.selected_candidate == "slow");
+    REQUIRE(std::any_of(
+        pinned.decisions.begin(), pinned.decisions.end(),
+        [](const PlanningDecision &decision) {
+            return decision.id ==
+                       "pelican.plan.backend_candidate_selected@1" &&
+                   decision.subject == "slow" &&
+                   decision.detail == "explicit decision pin";
+        }));
+    requireThrowsContaining(
+        [&] {
+            (void)selectBackendCandidate(
+                {fast, slow}, {},
+                std::string_view{"missing"});
+        },
+        "not in the finite candidate set: missing");
+    requireThrowsContaining(
+        [&] {
+            (void)selectBackendCandidate(
+                {rejected, fallback}, {},
+                std::string_view{
+                    "fast_but_blocked"});
+        },
+        "pinned backend candidate is infeasible");
 }
 
 TEST_CASE("planning warnings stay advisory unless their stable id is strict",

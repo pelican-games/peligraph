@@ -230,6 +230,71 @@ pelican_player --project mygame --headless --dump-frame-plan   # stderr に出�
 
 出力にはノードごとの `order` / `level` / `reads` / `writes`(`@history` 読みは `reads_history`)と導出された `barriers`、`snapshot_copy` ノードが含まれます。
 
+### target planning と Vulkan plan pin
+
+通常は何も指定せず、`optimized` profile で自動計画します。再現試験や特定部分だけを保守的にしたい場合は、同じ rendering config に portable な `target_planning` を追加できます。
+
+```json
+{
+  "target_planning": {
+    "profile": {
+      "kind": "hazard_stress",
+      "seed": 23
+    },
+    "graphs": {
+      "main": {
+        "nodes": {
+          "transparent": {
+            "serial": true,
+            "isolate": false
+          }
+        },
+        "resources": {
+          "scene_depth": {
+            "no_alias": true
+          }
+        }
+      }
+    },
+    "diagnostics": {
+      "strict_warnings": [
+        "pelican.warning.example@1"
+      ]
+    }
+  }
+}
+```
+
+- profile は `optimized`、`conservative_debug`、`hazard_stress`。`seed` は `hazard_stress` だけに指定できます。
+- node/resource 制約は graph ごとです。`main` と書けば XR variant のコンパイル時には自動的に `main#xr` へ対応し、個々の node/resource 名は変わりません。
+- `serial` / `isolate` / `no_alias` は禁止側だけを明示する設計です。通常 node に `parallel_safe` のような boilerplate は要りません。
+- 未知 graph/node/resource、重複した warning ID、型の違うフラグは runtime object を作る前に compile error になります。
+
+さらに、現在の自動計画が選んだ Vulkan backend candidate を固定したい場合は、まず pin なしで起動し、`get_frame_plan.physical_target_plan.ejectable_pin_package` をそのままコピーします。コピー先は variant 別の `vulkan_plan_pins` 配列です。
+
+```json
+{
+  "vulkan_plan_pins": {
+    "flat": [
+      {
+        "schema": "pelican.vulkan_target_plan_pins",
+        "version": 1,
+        "graph": "main",
+        "logical_graph_fingerprint": "fnv1a64:0123456789abcdef",
+        "pins": {
+          "backend_candidate": "pelican.vulkan.materialized_plan@1"
+        }
+      }
+    ],
+    "xr": []
+  }
+}
+```
+
+貼り付け後は `physical_target_plan.applied_pin_package` に同じ package が出ます。論理 graph が変わった package は `pin package is stale`、現在の device/provider で成立しない candidate は `pinned backend candidate is infeasible` として失敗し、別 candidate へ黙って fallback しません。render strategy の ABI fingerprint から `target_planning` / `vulkan_plan_pins` は分離されているため、pin 自身を貼ったことでは logical fingerprint は変わりません。
+
+v1 pin が固定するのは有限集合の **backend candidate だけ**です。format、resource representation、scope、barrier、alias group を任意値で上書きして validator を迂回する機能ではありません。現在の Vulkan runtime は `materialized_image` plan のみ実行可能なので、CPU planner 上で成立する tile-local candidate でも runtime bridge が未対応なら拒否します。完全な physical plan / fragment の direct authoring は、この versioned 境界へ resource/scope verifier を追加してから段階的に公開します。
+
 ## 6.7 マテリアル(✅M1〜M3.5 = WP58/68/70/76/78/83)
 
 マテリアルは「**`.surface`(シェーダ+パラメータ宣言)+ `.material.json`(値)**」の 2 ファイル方式です。

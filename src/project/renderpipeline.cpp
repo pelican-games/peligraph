@@ -363,6 +363,54 @@ nlohmann::json targetPlanningPolicyToJson(
     return result;
 }
 
+std::vector<VulkanTargetPlanPinPackage>
+compileVulkanTargetPlanPins(
+    const nlohmann::json &config,
+    RenderPipelineGraphVariant variant) {
+    const auto declaration =
+        config.find("vulkan_plan_pins");
+    if (declaration == config.end()) return {};
+    if (!declaration->is_object()) {
+        throw std::runtime_error(
+            "vulkan_plan_pins must be an object");
+    }
+    requireOnlyKeys(
+        *declaration, {"flat", "preview", "xr"},
+        "vulkan_plan_pins");
+    const auto variant_name =
+        renderPipelineGraphVariantName(variant);
+    const auto packages =
+        declaration->find(variant_name);
+    if (packages == declaration->end()) return {};
+    if (!packages->is_array()) {
+        throw std::runtime_error(
+            "vulkan_plan_pins " +
+            std::string{variant_name} +
+            " must be an array");
+    }
+
+    std::vector<VulkanTargetPlanPinPackage> result;
+    result.reserve(packages->size());
+    for (const auto &document : *packages) {
+        result.push_back(
+            vulkanTargetPlanPinPackageFromJson(document));
+    }
+    std::sort(
+        result.begin(), result.end(),
+        [](const auto &left, const auto &right) {
+            return left.graph < right.graph;
+        });
+    if (std::adjacent_find(
+            result.begin(), result.end(),
+            [](const auto &left, const auto &right) {
+                return left.graph == right.graph;
+            }) != result.end()) {
+        throw std::runtime_error(
+            "vulkan_plan_pins has duplicate packages for a graph");
+    }
+    return result;
+}
+
 } // namespace
 
 std::string_view materialRouteClassName(MaterialRouteClass route) {
@@ -544,7 +592,8 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
     requireOnlyKeys(authored_config,
                     {"pipeline", "features", "snapshots", "shader_defines",
                      "draw_sort", "graph_transforms",
-                     "render_strategy", "target_planning", "xr"},
+                     "render_strategy", "target_planning",
+                     "vulkan_plan_pins", "xr"},
                     "rendering config using pipeline preset");
     appendUniqueArray(resolved, authored_config, "features", "rendering config", false);
     appendUniqueArray(resolved, authored_config, "shader_defines", "rendering config", true);
@@ -592,6 +641,20 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
         }
         resolved["target_planning"] =
             authored_config.at("target_planning");
+    }
+    if (authored_config.contains("vulkan_plan_pins")) {
+        if (!authored_config.at("vulkan_plan_pins")
+                 .is_object()) {
+            throw std::runtime_error(
+                "rendering config vulkan_plan_pins must be an object");
+        }
+        if (resolved.contains("vulkan_plan_pins")) {
+            throw std::runtime_error(
+                "rendering config cannot override preset "
+                "vulkan_plan_pins; copy/eject the preset first");
+        }
+        resolved["vulkan_plan_pins"] =
+            authored_config.at("vulkan_plan_pins");
     }
     if (authored_config.contains("xr")) {
         if (!authored_config.at("xr").is_object()) {
@@ -804,6 +867,10 @@ ResolvedRenderPipeline resolveRenderPipeline(
             result.normalized_config,
             result.graph_variant_policy
                 .rendering_pass_name_suffix);
+    result.vulkan_plan_pins =
+        compileVulkanTargetPlanPins(
+            result.normalized_config,
+            result.graph_variant_policy.variant);
     result.xr_target_policy =
         compileXrTargetPolicy(
             result.normalized_config,
@@ -1177,12 +1244,23 @@ CompiledRenderPipeline compileRenderPipeline(
             pipeline.normalized_config,
             pipeline.graph_variant_policy
                 .rendering_pass_name_suffix);
+    const auto canonical_vulkan_plan_pins =
+        compileVulkanTargetPlanPins(
+            pipeline.normalized_config,
+            pipeline.graph_variant_policy.variant);
     if (pipeline.target_planning.authored &&
         pipeline.target_planning !=
             canonical_target_planning) {
         throw std::runtime_error(
             "resolved render pipeline has inconsistent target planning "
             "policy");
+    }
+    if (!pipeline.vulkan_plan_pins.empty() &&
+        pipeline.vulkan_plan_pins !=
+            canonical_vulkan_plan_pins) {
+        throw std::runtime_error(
+            "resolved render pipeline has inconsistent Vulkan plan "
+            "pins");
     }
     if (pipeline.xr_target_policy.authored &&
         pipeline.xr_target_policy !=
@@ -1209,6 +1287,8 @@ CompiledRenderPipeline compileRenderPipeline(
     result.sample_count_policy = pipeline.sample_count_policy;
     result.target_planning =
         canonical_target_planning;
+    result.vulkan_plan_pins =
+        canonical_vulkan_plan_pins;
     result.xr_target_policy = canonical_xr_target_policy;
     result.pipeline_preset = pipeline.pipeline_preset;
     result.graph_variant_policy =
@@ -1364,6 +1444,17 @@ nlohmann::json serializeCompiledRenderPipelineMetadata(
         metadata["target_planning"] =
             targetPlanningPolicyToJson(
                 pipeline.target_planning);
+    }
+    if (!pipeline.vulkan_plan_pins.empty()) {
+        auto pins = nlohmann::json::array();
+        for (const auto &package :
+             pipeline.vulkan_plan_pins) {
+            pins.push_back(
+                vulkanTargetPlanPinPackageToJson(
+                    package));
+        }
+        metadata["vulkan_plan_pins"] =
+            std::move(pins);
     }
     if (pipeline.xr_target_policy.authored) {
         metadata["xr_target_policy"] =

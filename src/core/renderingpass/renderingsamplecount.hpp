@@ -73,7 +73,9 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
         std::nullopt,
     std::optional<VulkanExternalDepthExportRequest>
         external_depth_export = std::nullopt,
-    TargetPlanningPolicy target_planning = {});
+    TargetPlanningPolicy target_planning = {},
+    std::span<const VulkanTargetPlanPinPackage>
+        plan_pins = {});
 RenderingTargetPlanCompilation compileRenderingTargetPlansForVulkanDevice(
     std::span<const FrameGraphDefinition> frame_graphs,
     std::span<const RenderTargetDefinition> render_targets,
@@ -84,7 +86,9 @@ RenderingTargetPlanCompilation compileRenderingTargetPlansForVulkanDevice(
         std::nullopt,
     std::optional<VulkanExternalDepthExportRequest>
         external_depth_export = std::nullopt,
-    TargetPlanningPolicy target_planning = {});
+    TargetPlanningPolicy target_planning = {},
+    std::span<const VulkanTargetPlanPinPackage>
+        plan_pins = {});
 
 void applyRenderingTargetPlan(
     std::span<RenderTargetDefinition> render_targets,

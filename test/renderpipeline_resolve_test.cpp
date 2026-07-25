@@ -380,6 +380,60 @@ TEST_CASE("target planning authoring rejects ambiguous controls",
     }
 }
 
+TEST_CASE("Vulkan plan pins select the current immutable graph variant",
+          "[render-pipeline][vulkan-plan-pins][typed]") {
+    const VulkanTargetPlanPinPackage flat_pin{
+        .graph = "main",
+        .logical_graph_fingerprint = 1,
+        .backend_candidate =
+            "pelican.vulkan.materialized_plan@1",
+    };
+    const VulkanTargetPlanPinPackage xr_pin{
+        .graph = "main#xr",
+        .logical_graph_fingerprint = 2,
+        .backend_candidate =
+            "pelican.vulkan.materialized_plan@1",
+    };
+    auto authored = baseConfig();
+    authored["vulkan_plan_pins"] = {
+        {"flat",
+         Json::array({
+             vulkanTargetPlanPinPackageToJson(flat_pin)})},
+        {"xr",
+         Json::array({
+             vulkanTargetPlanPinPackageToJson(xr_pin)})},
+    };
+
+    const auto resolved = resolveRenderPipeline(
+        RenderPipelineRequest{
+            authored, "Vulkan plan pin fixture"},
+        RenderEnvironmentCapabilities{
+            true, RenderPipelineGraphVariant::xr});
+    REQUIRE(resolved.vulkan_plan_pins ==
+            std::vector<VulkanTargetPlanPinPackage>{
+                xr_pin});
+    const auto compiled =
+        compileRenderPipeline(resolved);
+    REQUIRE(compiled.vulkan_plan_pins ==
+            resolved.vulkan_plan_pins);
+    REQUIRE(
+        serializeCompiledRenderPipelineMetadata(compiled)
+            .at("vulkan_plan_pins") ==
+        Json::array({
+            vulkanTargetPlanPinPackageToJson(xr_pin)}));
+
+    authored["vulkan_plan_pins"]["xr"].push_back(
+        vulkanTargetPlanPinPackageToJson(xr_pin));
+    REQUIRE_THROWS_WITH(
+        resolveRenderPipeline(
+            RenderPipelineRequest{
+                authored, "duplicate Vulkan plan pins"},
+            RenderEnvironmentCapabilities{
+                true, RenderPipelineGraphVariant::xr}),
+        Catch::Matchers::ContainsSubstring(
+            "duplicate packages for a graph"));
+}
+
 TEST_CASE("WP184 compiles draw sort providers and XR view policy for every graph variant",
           "[wp184][render-pipeline][draw-sort][typed]") {
     ResolvedRenderPipeline resolved;

@@ -511,7 +511,8 @@ PreparedRenderingPassConfigVariant prepareRenderingPassConfigVariant(
                 ? std::optional{
                       VulkanExternalDepthExportRequest{}}
                 : std::nullopt,
-            compiled_pipeline->target_planning);
+            compiled_pipeline->target_planning,
+            compiled_pipeline->vulkan_plan_pins);
     applyRenderingTargetPlan(render_target_definitions,
                              target_plan_compilation);
     auto target_plans =

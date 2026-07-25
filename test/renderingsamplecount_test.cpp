@@ -226,6 +226,40 @@ TEST_CASE("rendering target bridge applies typed graph planning controls",
                        "depth") != group.resources.end();
         }));
 
+    const std::vector pins{
+        ejectVulkanTargetPlanPinPackage(plan)};
+    const auto pinned_compilation =
+        compileRenderingTargetPlans(
+            graphs, targets,
+            compileSampleCountPolicy(config),
+            vk::Format::eB8G8R8A8Unorm,
+            RenderingTargetPlanDeviceFacts{
+                .query_attachment_samples = query,
+            },
+            std::nullopt, std::nullopt, planning,
+            pins);
+    REQUIRE(
+        pinned_compilation.plans.front()
+            ->applied_pin_package ==
+        std::optional<VulkanTargetPlanPinPackage>{
+            pins.front()});
+
+    auto stale_pins = pins;
+    stale_pins.front().logical_graph_fingerprint ^= 1;
+    requireThrowsContaining(
+        [&] {
+            (void)compileRenderingTargetPlans(
+                graphs, targets,
+                compileSampleCountPolicy(config),
+                vk::Format::eB8G8R8A8Unorm,
+                RenderingTargetPlanDeviceFacts{
+                    .query_attachment_samples = query,
+                },
+                std::nullopt, std::nullopt, planning,
+                stale_pins);
+        },
+        "pin package is stale");
+
     auto unknown_graph = planning;
     unknown_graph.graphs.front().graph = "missing";
     requireThrowsContaining(

@@ -579,7 +579,8 @@ BackendProbeResult probeVulkanBackend(
 
 BackendSelection selectBackendCandidate(
     std::vector<BackendProbeResult> candidates,
-    const PlanningDiagnosticPolicy &diagnostic_policy) {
+    const PlanningDiagnosticPolicy &diagnostic_policy,
+    std::optional<std::string_view> pinned_candidate) {
     if (candidates.empty()) {
         throw std::runtime_error(
             "backend candidate selection requires a finite non-empty set");
@@ -600,10 +601,41 @@ BackendSelection selectBackendCandidate(
     }
 
     const BackendProbeResult *selected = nullptr;
-    for (const auto &candidate : candidates) {
-        if (!candidate.feasible) continue;
-        if (selected == nullptr || costKey(candidate) < costKey(*selected)) {
-            selected = &candidate;
+    if (pinned_candidate) {
+        requireNonEmpty(
+            *pinned_candidate, "pinned backend candidate");
+        const auto found = std::find_if(
+            candidates.begin(), candidates.end(),
+            [&](const BackendProbeResult &candidate) {
+                return candidate.candidate ==
+                       *pinned_candidate;
+            });
+        if (found == candidates.end()) {
+            throw std::runtime_error(
+                "pinned backend candidate is not in the finite "
+                "candidate set: " +
+                std::string{*pinned_candidate});
+        }
+        if (!found->feasible) {
+            std::ostringstream error;
+            error << "pinned backend candidate is infeasible: "
+                  << found->candidate << " ["
+                  << compilerProviderFingerprint(found->provider)
+                  << ']';
+            for (const auto &failure : found->failures) {
+                error << ' ' << failure.id << ": "
+                      << failure.detail;
+            }
+            throw std::runtime_error(error.str());
+        }
+        selected = &*found;
+    } else {
+        for (const auto &candidate : candidates) {
+            if (!candidate.feasible) continue;
+            if (selected == nullptr ||
+                costKey(candidate) < costKey(*selected)) {
+                selected = &candidate;
+            }
         }
     }
     if (selected == nullptr) {
@@ -650,14 +682,19 @@ BackendSelection selectBackendCandidate(
                 "pelican.plan.backend_candidate_selected@1",
                 candidate.candidate,
                 compilerProviderFingerprint(candidate.provider),
-                "lowest deterministic cost tuple",
+                pinned_candidate
+                    ? "explicit decision pin"
+                    : "lowest deterministic cost tuple",
             });
         } else {
             result.decisions.push_back(PlanningDecision{
                 "pelican.plan.backend_candidate_not_selected@1",
                 candidate.candidate,
                 compilerProviderFingerprint(candidate.provider),
-                "feasible candidate has a higher deterministic cost tuple",
+                pinned_candidate
+                    ? "explicit pin selected another candidate"
+                    : "feasible candidate has a higher deterministic "
+                      "cost tuple",
             });
         }
     }

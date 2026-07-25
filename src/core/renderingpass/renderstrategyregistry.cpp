@@ -1036,6 +1036,19 @@ ResolvedRenderStrategyConfig resolveRenderStrategy(
 
     auto seed = config;
     seed.erase("render_strategy");
+    // Target/physical compiler controls belong to lower layers. They must
+    // survive a renderer-wide strategy expansion, but including them in the
+    // strategy ABI seed would make an ejected physical-plan fingerprint
+    // self-referential when the pin is pasted back into the same config.
+    std::vector<std::pair<std::string, nlohmann::json>>
+        lower_layer_controls;
+    for (const auto *field :
+         {"target_planning", "vulkan_plan_pins"}) {
+        if (!seed.contains(field)) continue;
+        lower_layer_controls.emplace_back(
+            field, seed.at(field));
+        seed.erase(field);
+    }
     const auto parameters_json =
         canonicalJson(request->parameters);
     const auto seed_json = canonicalJson(seed);
@@ -1081,6 +1094,16 @@ ResolvedRenderStrategyConfig resolveRenderStrategy(
             "' reintroduced reserved pipeline preset "
             "control data");
     }
+    for (const auto &control :
+         lower_layer_controls) {
+        const auto &field = control.first;
+        if (candidate.contains(field)) {
+            throw std::runtime_error(
+                "render strategy '" + request->name +
+                "' reintroduced reserved lower-layer control data: " +
+                field);
+        }
+    }
     const auto canonical_candidate =
         canonicalJson(candidate);
     if (canonical_candidate.size() >
@@ -1091,6 +1114,10 @@ ResolvedRenderStrategyConfig resolveRenderStrategy(
     }
     resolved.selection.output_config_fingerprint =
         configFingerprint(canonical_candidate);
+    for (auto &[field, value] :
+         lower_layer_controls) {
+        candidate[field] = std::move(value);
+    }
     return {
         .config = std::move(candidate),
         .selection =

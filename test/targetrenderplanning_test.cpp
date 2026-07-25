@@ -364,7 +364,9 @@ VulkanTargetPlan compile(
     std::optional<VulkanViewExecutionPlanRequest> view_execution =
         std::nullopt,
     std::optional<VulkanExternalDepthExportRequest>
-        external_depth_export = std::nullopt) {
+        external_depth_export = std::nullopt,
+    std::optional<VulkanTargetPlanPinPackage>
+        pin_package = std::nullopt) {
     return compileVulkanTargetPlan(
         types, graph, target, providers(),
         VulkanTargetPlanRequest{
@@ -375,6 +377,8 @@ VulkanTargetPlan compile(
             .view_execution = std::move(view_execution),
             .external_depth_export =
                 std::move(external_depth_export),
+            .pin_package =
+                std::move(pin_package),
         });
 }
 
@@ -500,6 +504,88 @@ TEST_CASE("desktop materializes arbitrary G-buffer attachments while tile keeps 
         compile(types, graph, topology(true), std::move(bindings));
     REQUIRE(vulkanTargetPlanToJson(tile).dump() ==
             vulkanTargetPlanToJson(reordered).dump());
+}
+
+TEST_CASE("Vulkan target plan pins round-trip and bind a logical graph",
+          "[target-render-planning][pin][eject]") {
+    const auto types = makeBuiltinLogicalTypeRegistry();
+    const auto graph = hybridGraph(types, 4, false, true);
+    const auto automatic = compile(
+        types, graph, topology(true),
+        bindingsFor(types, graph));
+    REQUIRE(automatic.backend_selection.selected_candidate ==
+            "pelican.vulkan.tile_local_plan@1");
+    REQUIRE(automatic.logical_graph_fingerprint ==
+            vulkanTargetPlanLogicalGraphFingerprint(graph));
+
+    const auto ejected =
+        ejectVulkanTargetPlanPinPackage(automatic);
+    const auto document =
+        vulkanTargetPlanPinPackageToJson(ejected);
+    REQUIRE(
+        vulkanTargetPlanPinPackageFromJson(document) ==
+        ejected);
+    REQUIRE(document.at("schema") ==
+            "pelican.vulkan_target_plan_pins");
+    REQUIRE(document.at("version") == 1);
+    REQUIRE(document.at("logical_graph_fingerprint")
+                .get<std::string>()
+                .starts_with("fnv1a64:"));
+
+    auto materialized_pin = ejected;
+    materialized_pin.backend_candidate =
+        "pelican.vulkan.materialized_plan@1";
+    const auto pinned = compile(
+        types, graph, topology(true),
+        bindingsFor(types, graph), std::nullopt,
+        std::nullopt, std::nullopt,
+        materialized_pin);
+    REQUIRE(pinned.backend_selection.selected_candidate ==
+            "pelican.vulkan.materialized_plan@1");
+    REQUIRE(pinned.applied_pin_package ==
+            materialized_pin);
+    const auto pinned_json =
+        vulkanTargetPlanToJson(pinned);
+    REQUIRE(pinned_json.at("applied_pin_package") ==
+            vulkanTargetPlanPinPackageToJson(
+                materialized_pin));
+    REQUIRE(pinned_json.at("ejectable_pin_package")
+                .at("pins")
+                .at("backend_candidate") ==
+            "pelican.vulkan.materialized_plan@1");
+
+    auto stale = materialized_pin;
+    stale.logical_graph_fingerprint ^= 1;
+    requireThrowsContaining(
+        [&] {
+            (void)compile(
+                types, graph, topology(true),
+                bindingsFor(types, graph), std::nullopt,
+                std::nullopt, std::nullopt, stale);
+        },
+        "pin package is stale");
+
+    auto wrong_graph = materialized_pin;
+    wrong_graph.graph = "other";
+    requireThrowsContaining(
+        [&] {
+            (void)compile(
+                types, graph, topology(true),
+                bindingsFor(types, graph), std::nullopt,
+                std::nullopt, std::nullopt,
+                wrong_graph);
+        },
+        "pin package graph mismatch");
+
+    auto malformed = document;
+    malformed["pins"]["representation"] =
+        "tile_local_attachment";
+    requireThrowsContaining(
+        [&] {
+            (void)vulkanTargetPlanPinPackageFromJson(
+                malformed);
+        },
+        "unknown key 'representation'");
 }
 
 TEST_CASE("view execution planning keeps mono and sequential stereo as explicit physical contracts",

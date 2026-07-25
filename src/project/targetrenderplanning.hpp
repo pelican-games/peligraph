@@ -267,6 +267,20 @@ struct VulkanExternalDepthExportPlan {
         const VulkanExternalDepthExportPlan &) const = default;
 };
 
+// A same-layer, versioned escape hatch. V1 deliberately pins only the finite
+// backend candidate; resource/scope fields remain compiler-owned until their
+// validators are strong enough for direct authoring. The logical fingerprint
+// prevents a package ejected from an older graph from silently constraining a
+// different graph after hot reload.
+struct VulkanTargetPlanPinPackage {
+    std::string graph;
+    std::uint64_t logical_graph_fingerprint = 0;
+    std::string backend_candidate;
+
+    bool operator==(
+        const VulkanTargetPlanPinPackage &) const = default;
+};
+
 struct VulkanTargetPlanRequest {
     std::string endpoint;
     std::string provider;
@@ -279,10 +293,13 @@ struct VulkanTargetPlanRequest {
     std::optional<VulkanViewExecutionPlanRequest> view_execution;
     std::optional<VulkanExternalDepthExportRequest>
         external_depth_export;
+    std::optional<VulkanTargetPlanPinPackage>
+        pin_package;
 };
 
 struct VulkanTargetPlan {
     std::string graph;
+    std::uint64_t logical_graph_fingerprint = 0;
     std::vector<LogicalGraphTransformSelection>
         graph_transforms;
     std::vector<LogicalSubgraphReplacementSelection>
@@ -303,6 +320,8 @@ struct VulkanTargetPlan {
         resolution_plan;
     std::optional<VulkanExternalDepthExportPlan>
         external_depth_export;
+    std::optional<VulkanTargetPlanPinPackage>
+        applied_pin_package;
 };
 
 void validateVulkanPhysicalFeatureClosure(
@@ -314,6 +333,14 @@ VulkanTargetPlan compileVulkanTargetPlan(
     const TargetTopologySnapshot &topology,
     const CompilerProviderRegistrySnapshot &providers,
     VulkanTargetPlanRequest request);
+std::uint64_t vulkanTargetPlanLogicalGraphFingerprint(
+    const CompiledLogicalRenderGraph &graph);
+VulkanTargetPlanPinPackage ejectVulkanTargetPlanPinPackage(
+    const VulkanTargetPlan &plan);
+nlohmann::ordered_json vulkanTargetPlanPinPackageToJson(
+    const VulkanTargetPlanPinPackage &package);
+VulkanTargetPlanPinPackage vulkanTargetPlanPinPackageFromJson(
+    const nlohmann::json &document);
 nlohmann::ordered_json vulkanTargetPlanToJson(
     const VulkanTargetPlan &plan);
 
