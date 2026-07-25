@@ -21,6 +21,7 @@
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <variant>
+#include <vector>
 
 namespace Pelican {
 
@@ -106,6 +107,10 @@ TEST_CASE("render target JSON parser returns target definitions", "[renderingpas
              {"name", "half_color"},
              {"extent_scale", 0.5},
              {"format", "R8_UNORM"},
+             {"format_candidates",
+              nlohmann::json::array(
+                  {"R8_UNORM",
+                   "R16G16_SFLOAT"})},
              {"usage", nlohmann::json::array({"COLOR_ATTACHMENT", "SAMPLED"})},
          }})},
     };
@@ -117,8 +122,34 @@ TEST_CASE("render target JSON parser returns target definitions", "[renderingpas
     REQUIRE(definitions[0].extent_scale == 0.5f);
     REQUIRE_FALSE(definitions[0].fixed_extent.has_value());
     REQUIRE(definitions[0].format == vk::Format::eR8Unorm);
+    REQUIRE(
+        definitions[0].format_candidates ==
+        std::vector<vk::Format>{
+            vk::Format::eR8Unorm,
+            vk::Format::eR16G16Sfloat});
     REQUIRE(static_cast<bool>(definitions[0].usage & vk::ImageUsageFlagBits::eColorAttachment));
     REQUIRE(static_cast<bool>(definitions[0].usage & vk::ImageUsageFlagBits::eSampled));
+}
+
+TEST_CASE("render target JSON parser rejects malformed format candidates",
+          "[renderingpass][physical-format]") {
+    auto config = nlohmann::json{
+        {"render_targets",
+         nlohmann::json::array({{
+             {"name", "color"},
+             {"extent_scale", 1.0},
+             {"format", "R8G8B8A8_UNORM"},
+             {"usage",
+              nlohmann::json::array(
+                  {"COLOR_ATTACHMENT"})},
+             {"format_candidates", "R16G16B16A16_SFLOAT"},
+         }})},
+    };
+    REQUIRE_THROWS_WITH(
+        parseRenderTargetDefinitionsFromJson(
+            config),
+        Catch::Matchers::ContainsSubstring(
+            "format_candidates must be a string array"));
 }
 
 TEST_CASE("render target JSON parser accepts fixed extents", "[renderingpass]") {

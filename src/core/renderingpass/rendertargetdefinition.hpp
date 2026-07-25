@@ -2,8 +2,9 @@
 
 #include <array>
 #include <cstdint>
-#include <string>
 #include <optional>
+#include <string>
+#include <vector>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
@@ -15,6 +16,10 @@ struct RenderTargetDefinition {
     float extent_scale = 1.0f;
     std::optional<vk::Extent2D> fixed_extent;
     vk::Format format;
+    // The authored format remains the automatic/default choice. Additional
+    // entries are explicit candidates a verified physical fragment may
+    // select for this target.
+    std::vector<vk::Format> format_candidates;
     vk::ImageUsageFlags usage;
     bool history = false;
     vk::ClearColorValue history_clear_color =

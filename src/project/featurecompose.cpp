@@ -1237,6 +1237,48 @@ void mergeUsage(nlohmann::json &target, const nlohmann::json &override_json, con
     target["usage"] = usage;
 }
 
+void mergeFormatCandidates(
+    nlohmann::json &target,
+    const nlohmann::json &override_json,
+    const std::string &name) {
+    auto candidates = std::vector<std::string>{};
+    if (target.contains("format_candidates")) {
+        if (!target.at("format_candidates").is_array()) {
+            throw std::runtime_error(
+                "render target format_candidates must be a "
+                "string array: " +
+                name);
+        }
+        for (const auto &entry :
+             target.at("format_candidates")) {
+            if (!entry.is_string() ||
+                entry.get_ref<const std::string &>().empty()) {
+                throw std::runtime_error(
+                    "render target format_candidates must contain "
+                    "non-empty strings: " +
+                    name);
+            }
+            appendUnique(
+                candidates,
+                entry.get<std::string>());
+        }
+    }
+    const auto additions = parseStringArray(
+        override_json, "format_candidates",
+        "render target override: " + name);
+    for (const auto &candidate : additions) {
+        if (candidate.empty()) {
+            throw std::runtime_error(
+                "render target override format_candidates must "
+                "contain non-empty strings: " +
+                name);
+        }
+    }
+    appendUnique(candidates, additions);
+    target["format_candidates"] =
+        std::move(candidates);
+}
+
 void applyRenderTargetOverrides(nlohmann::json &config, const nlohmann::json &feature) {
     if (!feature.contains("render_target_overrides")) {
         return;
@@ -1260,9 +1302,12 @@ void applyRenderTargetOverrides(nlohmann::json &config, const nlohmann::json &fe
 
         for (auto field = override_json.begin(); field != override_json.end(); ++field) {
             if (field.key() != "format" && field.key() != "usage" &&
+                field.key() != "format_candidates" &&
                 field.key() != "width" && field.key() != "height") {
                 throw std::runtime_error(
-                    "render target override only supports format, usage, width, and height: " + name);
+                    "render target override only supports format, "
+                    "format_candidates, usage, width, and height: " +
+                    name);
             }
         }
         if (override_json.contains("format")) {
@@ -1273,6 +1318,11 @@ void applyRenderTargetOverrides(nlohmann::json &config, const nlohmann::json &fe
         }
         if (override_json.contains("usage")) {
             mergeUsage(*target, override_json, name);
+        }
+        if (override_json.contains(
+                "format_candidates")) {
+            mergeFormatCandidates(
+                *target, override_json, name);
         }
         if (override_json.contains("width")) {
             if (!override_json.at("width").is_number_integer()) {

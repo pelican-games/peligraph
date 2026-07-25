@@ -21,6 +21,21 @@ using ExternalDepthTransferCapabilityQuery =
     std::function<bool(
         const RenderTargetDefinition &)>;
 
+struct RenderingImageFormatCapability {
+    bool image_usage_supported = false;
+    std::vector<std::uint32_t> supported_samples;
+    std::uint32_t max_array_layers = 1;
+    bool external_depth_export_supported = false;
+
+    bool operator==(
+        const RenderingImageFormatCapability &) const =
+        default;
+};
+
+using ImageFormatCapabilityQuery =
+    std::function<RenderingImageFormatCapability(
+        const RenderTargetDefinition &)>;
+
 struct RenderingSampleCountAssignment {
     std::string resource;
     std::uint32_t samples = 1;
@@ -37,6 +52,15 @@ struct RenderingTargetArrayLayerAssignment {
         default;
 };
 
+struct RenderingTargetFormatAssignment {
+    std::string resource;
+    vk::Format format = vk::Format::eUndefined;
+
+    bool operator==(
+        const RenderingTargetFormatAssignment &) const =
+        default;
+};
+
 struct RenderingTargetPlanDeviceFacts {
     std::uint32_t max_color_attachments = 8;
     bool multiview = false;
@@ -45,6 +69,11 @@ struct RenderingTargetPlanDeviceFacts {
     AttachmentSampleCapabilityQuery query_attachment_samples;
     ExternalDepthTransferCapabilityQuery
         supports_external_depth_transfer;
+    // Required for selecting a non-automatic format candidate. Legacy
+    // sample/depth callbacks remain the compatibility source for the
+    // automatic format until their callers migrate to this complete query.
+    ImageFormatCapabilityQuery
+        query_image_format_capability;
 };
 
 struct RenderingTargetPlanCompilation {
@@ -52,6 +81,8 @@ struct RenderingTargetPlanCompilation {
     std::vector<RenderingSampleCountAssignment> assignments;
     std::vector<RenderingTargetArrayLayerAssignment>
         array_layer_assignments;
+    std::vector<RenderingTargetFormatAssignment>
+        format_assignments;
 };
 
 std::vector<CompiledLogicalRenderGraph>

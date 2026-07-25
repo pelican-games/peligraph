@@ -3,6 +3,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <functional>
 #include <stdexcept>
 #include <string_view>
@@ -50,6 +51,21 @@ const RenderingTargetArrayLayerAssignment &layerAssignment(
             return candidate.resource == resource;
         });
     REQUIRE(found != compilation.array_layer_assignments.end());
+    return *found;
+}
+
+const RenderingTargetFormatAssignment &formatAssignment(
+    const RenderingTargetPlanCompilation &compilation,
+    std::string_view resource) {
+    const auto found = std::find_if(
+        compilation.format_assignments.begin(),
+        compilation.format_assignments.end(),
+        [resource](const auto &candidate) {
+            return candidate.resource == resource;
+        });
+    REQUIRE(
+        found !=
+        compilation.format_assignments.end());
     return *found;
 }
 
@@ -155,6 +171,139 @@ TEST_CASE("rendering sample planning discovers a hybrid attachment component",
     REQUIRE(physicalResource(
                 *compilation.plans.front(), "custom_id")
                 .rasterization_samples == 2);
+}
+
+TEST_CASE("rendering target bridge applies a verified alternate physical format",
+          "[target-planning][rendering][physical-format][bridge]") {
+    auto targets = std::vector{
+        target("albedo", vk::Format::eB8G8R8A8Unorm),
+        target("normal", vk::Format::eR16G16B16A16Sfloat),
+        target("custom_id", vk::Format::eR32Uint),
+        target("depth", vk::Format::eD32Sfloat,
+               vk::ImageUsageFlagBits::eDepthStencilAttachment |
+                   vk::ImageUsageFlagBits::eTransferSrc),
+        target("lit", vk::Format::eR16G16B16A16Sfloat),
+        target("display", vk::Format::eB8G8R8A8Srgb),
+    };
+    const auto lit = std::find_if(
+        targets.begin(), targets.end(),
+        [](const auto &candidate) {
+            return candidate.name == "lit";
+        });
+    REQUIRE(lit != targets.end());
+    lit->format_candidates = {
+        vk::Format::eR16G16B16A16Sfloat,
+        vk::Format::eR8G8B8A8Unorm,
+    };
+
+    const auto config = hybridConfig();
+    const auto graphs =
+        parseFrameGraphDefinitionsFromConfigJson(
+            config);
+    const auto facts =
+        RenderingTargetPlanDeviceFacts{
+            .query_image_format_capability =
+                [](const RenderTargetDefinition &) {
+                    return RenderingImageFormatCapability{
+                        .image_usage_supported = true,
+                        .supported_samples = {1, 2, 4},
+                        .max_array_layers = 4,
+                    };
+                },
+        };
+    const auto automatic =
+        compileRenderingTargetPlans(
+            graphs, targets,
+            compileSampleCountPolicy(config),
+            vk::Format::eB8G8R8A8Unorm,
+            facts);
+    REQUIRE(
+        formatAssignment(automatic, "lit").format ==
+        vk::Format::eR16G16B16A16Sfloat);
+
+    auto fragment =
+        ejectVulkanPhysicalFragmentPackage(
+            *automatic.plans.front());
+    const auto resource = std::find_if(
+        fragment.resources.begin(),
+        fragment.resources.end(),
+        [](const auto &candidate) {
+            return candidate.logical_resource ==
+                   "lit";
+        });
+    REQUIRE(resource != fragment.resources.end());
+    resource->format =
+        vk::to_string(
+            vk::Format::eR8G8B8A8Unorm);
+    const std::array fragments{fragment};
+    const auto linked =
+        compileRenderingTargetPlans(
+            graphs, targets,
+            compileSampleCountPolicy(config),
+            vk::Format::eB8G8R8A8Unorm,
+            facts,
+            std::nullopt, std::nullopt, {},
+            {}, fragments);
+    REQUIRE(
+        formatAssignment(linked, "lit").format ==
+        vk::Format::eR8G8B8A8Unorm);
+    REQUIRE(
+        physicalResource(
+            *linked.plans.front(), "lit")
+            .format ==
+        vk::to_string(
+            vk::Format::eR8G8B8A8Unorm));
+    REQUIRE(
+        std::any_of(
+            linked.plans.front()
+                ->sample_count_plan->resources.begin(),
+            linked.plans.front()
+                ->sample_count_plan->resources.end(),
+            [](const auto &candidate) {
+                return candidate.resource == "lit" &&
+                       candidate.format ==
+                           vk::to_string(
+                               vk::Format::
+                                   eR8G8B8A8Unorm);
+            }));
+
+    auto applied_targets = targets;
+    applyRenderingTargetPlan(
+        applied_targets, linked);
+    const auto applied_lit = std::find_if(
+        applied_targets.begin(),
+        applied_targets.end(),
+        [](const auto &candidate) {
+            return candidate.name == "lit";
+        });
+    REQUIRE(applied_lit !=
+            applied_targets.end());
+    REQUIRE(applied_lit->format ==
+            vk::Format::eR8G8B8A8Unorm);
+
+    auto unsupported_facts = facts;
+    unsupported_facts
+        .query_image_format_capability =
+        [](const RenderTargetDefinition &definition) {
+            return RenderingImageFormatCapability{
+                .image_usage_supported =
+                    definition.format !=
+                    vk::Format::eR8G8B8A8Unorm,
+                .supported_samples = {1, 2, 4},
+                .max_array_layers = 4,
+            };
+        };
+    requireThrowsContaining(
+        [&] {
+            (void)compileRenderingTargetPlans(
+                graphs, targets,
+                compileSampleCountPolicy(config),
+                vk::Format::eB8G8R8A8Unorm,
+                unsupported_facts,
+                std::nullopt, std::nullopt, {},
+                {}, fragments);
+        },
+        "does not support the required image usage");
 }
 
 TEST_CASE("rendering target bridge applies typed graph planning controls",

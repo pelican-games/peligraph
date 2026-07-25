@@ -231,6 +231,7 @@ nlohmann::json upscaleContractRenderingConfig() {
       "name": "low_color",
       "extent_scale": 0.5,
       "format": "R8G8B8A8_UNORM",
+      "format_candidates": ["R16G16B16A16_SFLOAT"],
       "format_class": "data",
       "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
     }
@@ -648,6 +649,11 @@ TEST_CASE(
                 .getMetadata(low_id)
                 .extent ==
             vk::Extent2D{16, 16});
+        REQUIRE(
+            GET_MODULE(RenderTargetContainer)
+                .getMetadata(low_id)
+                .format ==
+            vk::Format::eR8G8B8A8Unorm);
 
         const auto rendering_pass_id =
             GET_MODULE(RenderingPassContainer)
@@ -688,6 +694,51 @@ TEST_CASE(
                  FullscreenInputAddressMode::
                      clamp_to_edge}});
 
+        const auto require_upscale_output = [] {
+            const auto pixels =
+                GET_MODULE(RenderTarget)
+                    .readbackLastFrameRGBA8();
+            REQUIRE(
+                pixels.size() ==
+                32u * 32u * 4u);
+            std::size_t mismatches = 0;
+            for (std::uint32_t y = 0; y < 32;
+                 ++y) {
+                for (std::uint32_t x = 0; x < 32;
+                     ++x) {
+                    const auto offset =
+                        (static_cast<std::size_t>(y) *
+                             32 +
+                         x) *
+                        4;
+                    const std::array<
+                        std::uint8_t, 4>
+                        expected =
+                            x < 16
+                                ? std::array<
+                                      std::uint8_t,
+                                      4>{
+                                      255, 0, 0,
+                                      255}
+                                : std::array<
+                                      std::uint8_t,
+                                      4>{
+                                      0, 0, 255,
+                                      255};
+                    if (!std::equal(
+                            expected.begin(),
+                            expected.end(),
+                            pixels.begin() +
+                                static_cast<
+                                    std::ptrdiff_t>(
+                                    offset))) {
+                        ++mismatches;
+                    }
+                }
+            }
+            REQUIRE(mismatches == 0);
+        };
+
         engine_time.advance();
         renderer.render();
         GET_MODULE(VulkanManageCore).waitIdle();
@@ -723,39 +774,101 @@ TEST_CASE(
         }
         REQUIRE(found_resolution_contract);
 
-        const auto pixels =
-            GET_MODULE(RenderTarget)
-                .readbackLastFrameRGBA8();
-        REQUIRE(pixels.size() == 32u * 32u * 4u);
-        std::size_t mismatches = 0;
-        for (std::uint32_t y = 0; y < 32; ++y) {
-            for (std::uint32_t x = 0; x < 32; ++x) {
-                const auto offset =
-                    (static_cast<std::size_t>(y) *
-                         32 +
-                     x) *
-                    4;
-                const std::array<std::uint8_t, 4>
-                    expected =
-                        x < 16
-                            ? std::array<std::uint8_t,
-                                         4>{
-                                  255, 0, 0, 255}
-                            : std::array<std::uint8_t,
-                                         4>{
-                                  0, 0, 255, 255};
-                if (!std::equal(
-                        expected.begin(),
-                        expected.end(),
-                        pixels.begin() +
-                            static_cast<
-                                std::ptrdiff_t>(
-                                offset))) {
-                    ++mismatches;
-                }
-            }
-        }
-        REQUIRE(mismatches == 0);
+        require_upscale_output();
+
+        auto physical_fragment =
+            ejectVulkanPhysicalFragmentPackage(
+                *program->frame_graph.target_plan);
+        const auto low_fragment =
+            std::find_if(
+                physical_fragment.resources.begin(),
+                physical_fragment.resources.end(),
+                [](const auto &resource) {
+                    return resource.logical_resource ==
+                           "low_color";
+                });
+        REQUIRE(
+            low_fragment !=
+            physical_fragment.resources.end());
+        low_fragment->format =
+            vk::to_string(
+                vk::Format::
+                    eR16G16B16A16Sfloat);
+
+        auto replacement =
+            upscaleContractRenderingConfig();
+        replacement["vulkan_physical_fragments"] =
+            nlohmann::json::object();
+        replacement["vulkan_physical_fragments"]
+                   ["flat"] =
+            nlohmann::json::array(
+                {vulkanPhysicalFragmentPackageToJson(
+                    physical_fragment)});
+        writeTextFile(
+            temp_dir / "pipeline.json",
+            replacement.dump(2));
+
+        auto &runtime =
+            GET_MODULE(FrameGraphRuntimeContainer);
+        const auto before_generation =
+            runtime.activeGeneration();
+        REQUIRE(
+            GET_MODULE(watch::ReloadService)
+                .applyRequestForTesting(
+                    watch::ReloadRequest{
+                        watch::makeAssetKey(
+                            "pipeline.json"),
+                        watch::ReloadKind::modified,
+                        {}, 1}));
+        REQUIRE(
+            runtime.activeGeneration() ==
+            before_generation + 1);
+
+        const auto reloaded_low_id =
+            GET_MODULE(RenderTargetContainer)
+                .getRenderTargetIdByName(
+                    "low_color");
+        REQUIRE(
+            GET_MODULE(RenderTargetContainer)
+                .getMetadata(reloaded_low_id)
+                .format ==
+            vk::Format::
+                eR16G16B16A16Sfloat);
+        const auto reloaded_pass_id =
+            GET_MODULE(RenderingPassContainer)
+                .getRenderingPassIdByName(
+                    "upscale_main");
+        const auto reloaded_program =
+            runtime.findProgram(
+                reloaded_pass_id);
+        REQUIRE(reloaded_program != nullptr);
+        REQUIRE(
+            reloaded_program->frame_graph
+                .target_plan != nullptr);
+        const auto reloaded_low_plan =
+            std::find_if(
+                reloaded_program->frame_graph
+                    .target_plan->resources.begin(),
+                reloaded_program->frame_graph
+                    .target_plan->resources.end(),
+                [](const auto &resource) {
+                    return resource.logical_resource ==
+                           "low_color";
+                });
+        REQUIRE(
+            reloaded_low_plan !=
+            reloaded_program->frame_graph
+                .target_plan->resources.end());
+        REQUIRE(
+            reloaded_low_plan->format ==
+            vk::to_string(
+                vk::Format::
+                    eR16G16B16A16Sfloat));
+
+        engine_time.advance();
+        renderer.render();
+        GET_MODULE(VulkanManageCore).waitIdle();
+        require_upscale_output();
 
         GET_MODULE(VulkanManageCore).waitIdle();
         std::filesystem::remove_all(temp_dir);

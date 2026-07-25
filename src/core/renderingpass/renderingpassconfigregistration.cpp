@@ -351,6 +351,7 @@ void mergeVariantRenderTargetPhysicalRequirements(
     struct Requirements {
         std::uint32_t maximum_layers = 1;
         vk::ImageUsageFlags usage;
+        std::optional<vk::Format> format;
     };
     std::unordered_map<std::string, Requirements>
         requirements;
@@ -363,6 +364,15 @@ void mergeVariantRenderTargetPhysicalRequirements(
                 merged.maximum_layers,
                 target.array_layers);
             merged.usage |= target.usage;
+            if (!merged.format) {
+                merged.format = target.format;
+            } else if (*merged.format !=
+                       target.format) {
+                throw std::runtime_error(
+                    "render graph variants require conflicting "
+                    "physical formats for target '" +
+                    target.name + "'");
+            }
         }
     }
     for (auto &variant : variants) {
@@ -373,6 +383,7 @@ void mergeVariantRenderTargetPhysicalRequirements(
             target.array_layers =
                 merged.maximum_layers;
             target.usage = merged.usage;
+            target.format = *merged.format;
         }
     }
 }

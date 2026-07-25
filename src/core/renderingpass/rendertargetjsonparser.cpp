@@ -1,10 +1,11 @@
 #include "rendertargetjsonparser.hpp"
 #include "renderingpassjsonhelpers.hpp"
+#include <algorithm>
+#include <array>
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
 #include <vector>
-#include <array>
 
 namespace Pelican {
 
@@ -45,6 +46,42 @@ vk::ClearColorValue parseHistoryClearColor(const nlohmann::json &rt_json,
         color[i] = value.at(i).get<float>();
     }
     return vk::ClearColorValue{color};
+}
+
+std::vector<vk::Format> parseFormatCandidates(
+    const nlohmann::json &rt_json,
+    const std::string &name,
+    vk::Format automatic_format) {
+    std::vector<vk::Format> result{
+        automatic_format};
+    if (!rt_json.contains("format_candidates")) {
+        return result;
+    }
+    const auto &encoded =
+        rt_json.at("format_candidates");
+    if (!encoded.is_array()) {
+        throw std::runtime_error(
+            "Render target format_candidates must be a string "
+            "array: " +
+            name);
+    }
+    for (const auto &entry : encoded) {
+        if (!entry.is_string() ||
+            entry.get_ref<const std::string &>().empty()) {
+            throw std::runtime_error(
+                "Render target format_candidates must contain "
+                "non-empty strings: " +
+                name);
+        }
+        const auto candidate =
+            stringToFormat(entry.get<std::string>());
+        if (std::find(
+                result.begin(), result.end(),
+                candidate) == result.end()) {
+            result.push_back(candidate);
+        }
+    }
+    return result;
 }
 
 } // namespace
@@ -130,23 +167,31 @@ std::vector<RenderTargetDefinition> parseRenderTargetDefinitionsFromJson(const n
         }
         const bool history = rt_json.value("history", false);
         const auto history_clear_color = parseHistoryClearColor(rt_json, name);
+        const auto format =
+            stringToFormat(format_str);
+        auto format_candidates =
+            parseFormatCandidates(
+                rt_json, name, format);
 
         if (extent_scale <= 0.0f) {
             throw std::runtime_error("Render target extent_scale must be positive: " + name);
         }
 
         definitions.push_back(RenderTargetDefinition{
-            name,
-            format_class,
-            role,
-            extent_scale,
-            fixed_extent,
-            stringToFormat(format_str),
-            stringToUsageFlags(usage_strs),
-            history,
-            history_clear_color,
-            1,
-            1,
+            .name = name,
+            .format_class = format_class,
+            .role = role,
+            .extent_scale = extent_scale,
+            .fixed_extent = fixed_extent,
+            .format = format,
+            .format_candidates =
+                std::move(format_candidates),
+            .usage = stringToUsageFlags(usage_strs),
+            .history = history,
+            .history_clear_color =
+                history_clear_color,
+            .samples = 1,
+            .array_layers = 1,
         });
     }
 

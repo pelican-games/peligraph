@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <limits>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -59,40 +60,75 @@ bool supportsDepthResolve(vk::PhysicalDevice physical_device) {
     return bool(resolve.supportedDepthResolveModes);
 }
 
-std::vector<std::uint32_t> queryAttachmentSampleCounts(
+vk::ImageUsageFlags requiredImageUsage(
+    const RenderTargetDefinition &definition) {
+    auto usage = definition.usage;
+    if (definition.history) {
+        usage |= vk::ImageUsageFlagBits::eTransferDst;
+    }
+    return usage;
+}
+
+RenderingImageFormatCapability
+queryImageFormatCapability(
     vk::PhysicalDevice physical_device,
     const RenderTargetDefinition &definition) {
-    vk::ImageUsageFlags attachment_usage;
-    if (definition.usage &
-        vk::ImageUsageFlagBits::eColorAttachment) {
-        attachment_usage |=
-            vk::ImageUsageFlagBits::eColorAttachment;
-    }
-    const auto depth = isDepthTarget(definition);
-    if (depth) {
-        attachment_usage |=
-            vk::ImageUsageFlagBits::eDepthStencilAttachment;
-    }
+    RenderingImageFormatCapability result;
     try {
-        auto counts = sampleCounts(
-            physical_device
-                .getImageFormatProperties(
-                    definition.format, vk::ImageType::e2D,
-                    vk::ImageTiling::eOptimal, attachment_usage)
-                .sampleCounts);
-        if (depth && !supportsDepthResolve(physical_device)) {
-            counts.erase(
+        const auto properties =
+            physical_device.getImageFormatProperties(
+                definition.format,
+                vk::ImageType::e2D,
+                vk::ImageTiling::eOptimal,
+                requiredImageUsage(definition));
+        result.image_usage_supported = true;
+        result.supported_samples =
+            sampleCounts(properties.sampleCounts);
+        result.max_array_layers =
+            properties.maxArrayLayers;
+        if (isDepthTarget(definition) &&
+            !supportsDepthResolve(
+                physical_device)) {
+            result.supported_samples.erase(
                 std::remove_if(
-                    counts.begin(), counts.end(),
+                    result.supported_samples.begin(),
+                    result.supported_samples.end(),
                     [](const auto samples) {
                         return samples != 1;
                     }),
-                counts.end());
+                result.supported_samples.end());
         }
-        return counts;
     } catch (const vk::SystemError &) {
-        return {1};
+        return result;
     }
+
+    try {
+        (void)physical_device
+            .getImageFormatProperties(
+                definition.format,
+                vk::ImageType::e2D,
+                vk::ImageTiling::eOptimal,
+                requiredImageUsage(definition) |
+                    vk::ImageUsageFlagBits::
+                        eTransferSrc);
+        result.external_depth_export_supported =
+            true;
+    } catch (const vk::SystemError &) {
+        result.external_depth_export_supported =
+            false;
+    }
+    return result;
+}
+
+std::vector<std::uint32_t> queryAttachmentSampleCounts(
+    vk::PhysicalDevice physical_device,
+    const RenderTargetDefinition &definition) {
+    const auto capability =
+        queryImageFormatCapability(
+            physical_device, definition);
+    return capability.image_usage_supported
+               ? capability.supported_samples
+               : std::vector<std::uint32_t>{1};
 }
 
 const CompilerProviderRegistrySnapshot &runtimeProviders() {
@@ -234,7 +270,28 @@ LogicalFrameGraphShadowOptions shadowOptions(
 ResourcePattern runtimeImagePattern(
     const LogicalTypeRegistry &types,
     const LogicalType &type, vk::Format format,
+    std::span<const vk::Format> authored_candidates,
     bool external) {
+    auto candidates =
+        std::vector<ResourceFormatCandidate>{};
+    const auto append = [&](vk::Format candidate) {
+        const auto name = vk::to_string(candidate);
+        if (std::none_of(
+                candidates.begin(), candidates.end(),
+                [&](const auto &existing) {
+                    return existing.format == name;
+                })) {
+            candidates.push_back(
+                ResourceFormatCandidate{
+                    .format = name,
+                });
+        }
+    };
+    append(format);
+    for (const auto candidate :
+         authored_candidates) {
+        append(candidate);
+    }
     return ResourcePattern{
         .id =
             external
@@ -242,10 +299,7 @@ ResourcePattern runtimeImagePattern(
                 : "pelican.render.runtime_materialized_image@1",
         .applicable_type =
             exactLogicalTypePattern(types, type),
-        .format_candidates =
-            {ResourceFormatCandidate{
-                .format = vk::to_string(format),
-            }},
+        .format_candidates = std::move(candidates),
         .prefer_transient = false,
         .allow_tile_local = false,
         .allow_alias = false,
@@ -290,7 +344,8 @@ std::vector<ResourcePatternBinding> runtimePatternBindings(
             result.push_back({
                 resource.name,
                 runtimeImagePattern(
-                    types, resource.type, swapchain_format, true),
+                    types, resource.type, swapchain_format,
+                    {}, true),
                 ResourceExtentPlan{},
             });
             continue;
@@ -304,7 +359,10 @@ std::vector<ResourcePatternBinding> runtimePatternBindings(
         result.push_back({
             resource.name,
             runtimeImagePattern(
-                types, resource.type, target->second->format, false),
+                types, resource.type,
+                target->second->format,
+                target->second->format_candidates,
+                false),
             runtimeExtentPlan(*target->second),
         });
     }
@@ -351,13 +409,142 @@ std::vector<std::string> geometryNodes(
     return result;
 }
 
+std::vector<vk::Format> declaredFormats(
+    const RenderTargetDefinition &target) {
+    auto result = std::vector<vk::Format>{
+        target.format};
+    for (const auto format :
+         target.format_candidates) {
+        if (std::find(
+                result.begin(), result.end(),
+                format) == result.end()) {
+            result.push_back(format);
+        }
+    }
+    return result;
+}
+
+RenderingImageFormatCapability queryFormatCapability(
+    const RenderingTargetPlanDeviceFacts &facts,
+    const RenderTargetDefinition &target,
+    vk::Format format) {
+    auto candidate = target;
+    candidate.format = format;
+    if (facts.query_image_format_capability) {
+        return facts.query_image_format_capability(
+            candidate);
+    }
+    // Compatibility for pure callers that only provided the original
+    // sample/depth callbacks. They prove the authored automatic format, but
+    // never authorize an alternate format.
+    if (format != target.format) {
+        return {};
+    }
+    return RenderingImageFormatCapability{
+        .image_usage_supported = true,
+        .supported_samples =
+            isAttachmentTarget(candidate) &&
+                    facts.query_attachment_samples
+                ? facts.query_attachment_samples(
+                      candidate)
+                : std::vector<std::uint32_t>{1},
+        .max_array_layers =
+            std::numeric_limits<
+                std::uint32_t>::max(),
+        .external_depth_export_supported =
+            facts.supports_external_depth_transfer
+                ? facts
+                      .supports_external_depth_transfer(
+                          candidate)
+                : true,
+    };
+}
+
+std::vector<VulkanPhysicalResourceFormatCapability>
+physicalFormatCapabilities(
+    const CompiledLogicalRenderGraph &logical_graph,
+    const std::map<std::string,
+                   const RenderTargetDefinition *,
+                   std::less<>> &render_targets,
+    const RenderingTargetPlanDeviceFacts &facts) {
+    auto result =
+        std::vector<
+            VulkanPhysicalResourceFormatCapability>{};
+    for (const auto &resource :
+         logical_graph.resources) {
+        if (resource.type.constructor !=
+                LogicalTypeConstructor::image ||
+            resource.name == "swapchain") {
+            continue;
+        }
+        const auto target =
+            render_targets.find(resource.name);
+        if (target == render_targets.end()) {
+            throw std::runtime_error(
+                "runtime format capability has no "
+                "RenderTargetDefinition: " +
+                resource.name);
+        }
+        for (const auto format :
+             declaredFormats(*target->second)) {
+            const auto capability =
+                queryFormatCapability(
+                    facts, *target->second,
+                    format);
+            result.push_back({
+                .logical_resource =
+                    resource.name,
+                .format = vk::to_string(format),
+                .image_usage_supported =
+                    capability
+                        .image_usage_supported,
+                .supported_samples =
+                    capability
+                        .supported_samples,
+                .max_array_layers =
+                    capability.max_array_layers,
+                .external_depth_export_supported =
+                    capability
+                        .external_depth_export_supported,
+            });
+        }
+    }
+    return result;
+}
+
+const VulkanPhysicalResourceFormatCapability &
+requireFormatCapability(
+    std::span<
+        const VulkanPhysicalResourceFormatCapability>
+        capabilities,
+    std::string_view resource,
+    std::string_view format) {
+    const auto found = std::find_if(
+        capabilities.begin(),
+        capabilities.end(),
+        [&](const auto &capability) {
+            return capability.logical_resource ==
+                       resource &&
+                   capability.format == format;
+        });
+    if (found == capabilities.end()) {
+        throw std::runtime_error(
+            "runtime target format capability is missing: " +
+            std::string{resource} + " -> " +
+            std::string{format});
+    }
+    return *found;
+}
+
 std::vector<SampleCountResourceCapability> sampleCapabilities(
     const std::set<std::string, std::less<>> &attachments,
     const std::map<std::string,
                    const RenderTargetDefinition *,
                    std::less<>> &render_targets,
     vk::Format swapchain_format,
-    const RenderingTargetPlanDeviceFacts &facts) {
+    std::span<
+        const VulkanPhysicalResourceFormatCapability>
+        format_capabilities) {
     std::vector<SampleCountResourceCapability> result;
     for (const auto &resource : attachments) {
         if (resource == "swapchain") {
@@ -369,13 +556,23 @@ std::vector<SampleCountResourceCapability> sampleCapabilities(
             continue;
         }
         const auto &target = *render_targets.at(resource);
+        const auto &capability =
+            requireFormatCapability(
+                format_capabilities,
+                resource,
+                vk::to_string(target.format));
+        if (!capability.image_usage_supported) {
+            throw std::runtime_error(
+                "automatic render-target format does not support "
+                "the required image usage: " +
+                resource + " -> " +
+                vk::to_string(target.format));
+        }
         result.push_back({
             .resource = resource,
             .format = vk::to_string(target.format),
             .supported_samples =
-                facts.query_attachment_samples
-                    ? facts.query_attachment_samples(target)
-                    : std::vector<std::uint32_t>{1},
+                capability.supported_samples,
         });
     }
     return result;
@@ -496,7 +693,10 @@ void validateRuntimePhysicalPlan(
     const std::map<std::string,
                    const RenderTargetDefinition *,
                    std::less<>> &render_targets,
-    vk::Format swapchain_format) {
+    vk::Format swapchain_format,
+    std::span<
+        const VulkanPhysicalResourceFormatCapability>
+        format_capabilities) {
     if (!plan.alias_groups.empty()) {
         throw std::runtime_error(
             "current render-target runtime cannot consume physical alias "
@@ -533,13 +733,67 @@ void validateRuntimePhysicalPlan(
                 "materialized_image plans: " +
                 resource.logical_resource);
         }
-        const auto format = vk::to_string(target->second->format);
-        if (resource.format != format) {
+        const auto formats =
+            declaredFormats(*target->second);
+        const auto selected_format =
+            std::find_if(
+                formats.begin(), formats.end(),
+                [&](const auto format) {
+                    return vk::to_string(format) ==
+                           resource.format;
+                });
+        if (selected_format == formats.end()) {
             throw std::runtime_error(
-                "runtime physical format mismatch for '" +
+                "runtime physical format is not a declared "
+                "candidate for '" +
                 resource.logical_resource + "': planned '" +
-                resource.format + "', RenderTargetDefinition '" +
-                format + "'");
+                resource.format + "'");
+        }
+        const auto &capability =
+            requireFormatCapability(
+                format_capabilities,
+                resource.logical_resource,
+                resource.format);
+        if (!capability.image_usage_supported) {
+            throw std::runtime_error(
+                "runtime physical format does not support the "
+                "required image usage for '" +
+                resource.logical_resource + "': " +
+                resource.format);
+        }
+        if (std::find(
+                capability.supported_samples.begin(),
+                capability.supported_samples.end(),
+                resource.rasterization_samples) ==
+            capability.supported_samples.end()) {
+            throw std::runtime_error(
+                "runtime physical format does not support " +
+                std::to_string(
+                    resource.rasterization_samples) +
+                " samples for '" +
+                resource.logical_resource + "': " +
+                resource.format);
+        }
+        if (resource.array_layers >
+            capability.max_array_layers) {
+            throw std::runtime_error(
+                "runtime physical format does not support " +
+                std::to_string(resource.array_layers) +
+                " array layers for '" +
+                resource.logical_resource + "': " +
+                resource.format);
+        }
+        if (plan.external_depth_export &&
+            plan.external_depth_export
+                    ->source_resource ==
+                resource.logical_resource &&
+            !capability
+                 .external_depth_export_supported) {
+            throw std::runtime_error(
+                "runtime physical depth format does not support "
+                "the external transfer-source contract for '" +
+                resource.logical_resource + "': " +
+                resource.format);
         }
         if (!resource.extent ||
             *resource.extent !=
@@ -602,14 +856,17 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
     const auto types = makeBuiltinLogicalTypeRegistry();
     const auto topology = runtimeTopology(device_facts);
     if (external_depth_export &&
-        device_facts
-            .supports_external_depth_transfer) {
+        (device_facts
+             .query_image_format_capability ||
+         device_facts
+             .supports_external_depth_transfer)) {
         std::vector<std::string> compatible;
         for (const auto &target : render_targets) {
             if (isDepthTarget(target) &&
-                device_facts
-                    .supports_external_depth_transfer(
-                        target)) {
+                queryFormatCapability(
+                    device_facts, target,
+                    target.format)
+                    .external_depth_export_supported) {
                 compatible.push_back(target.name);
             }
         }
@@ -709,6 +966,8 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
         merged_samples;
     std::map<std::string, std::uint32_t, std::less<>>
         merged_array_layers;
+    std::map<std::string, vk::Format, std::less<>>
+        merged_formats;
     for (std::size_t index = 0; index < frame_graphs.size();
          ++index) {
         const auto &definition = frame_graphs[index];
@@ -725,6 +984,10 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
         auto logical_graph = compileLogicalFrameGraphShadow(
             definition, types,
             shadowOptions(definition, types, target_by_name));
+        const auto format_capabilities =
+            physicalFormatCapabilities(
+                logical_graph, target_by_name,
+                device_facts);
         const auto planning =
             planning_by_graph.find(definition.name);
         const auto *graph_constraints =
@@ -767,7 +1030,7 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
                                     graph_attachments[index],
                                     target_by_name,
                                     swapchain_format,
-                                    device_facts),
+                                    format_capabilities),
                             .geometry_nodes =
                                 geometryNodes(definition),
                     },
@@ -789,6 +1052,8 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
                             : std::optional<
                                   VulkanPhysicalFragmentPackage>{
                                   *fragment->second},
+                    .fragment_format_capabilities =
+                        format_capabilities,
                 });
         plan_value.resolution_plan =
             makeRuntimeResolutionPlan(
@@ -797,7 +1062,8 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
             std::make_shared<const VulkanTargetPlan>(
                 std::move(plan_value));
         validateRuntimePhysicalPlan(
-            *plan, target_by_name, swapchain_format);
+            *plan, target_by_name, swapchain_format,
+            format_capabilities);
         if (!plan->sample_count_plan) {
             throw std::runtime_error(
                 "runtime Vulkan target plan lacks sample-count lowering");
@@ -846,6 +1112,39 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
                     std::max(found->second,
                              resource.array_layers);
             }
+            const auto &target =
+                *target_by_name.at(
+                    resource.logical_resource);
+            const auto formats =
+                declaredFormats(target);
+            const auto selected_format =
+                std::find_if(
+                    formats.begin(), formats.end(),
+                    [&](const auto format) {
+                        return vk::to_string(format) ==
+                               resource.format;
+                    });
+            if (selected_format ==
+                formats.end()) {
+                throw std::runtime_error(
+                    "runtime physical format is not declared for "
+                    "render target '" +
+                    resource.logical_resource + "': " +
+                    resource.format);
+            }
+            const auto [format_assignment,
+                        format_inserted] =
+                merged_formats.emplace(
+                    resource.logical_resource,
+                    *selected_format);
+            if (!format_inserted &&
+                format_assignment->second !=
+                    *selected_format) {
+                throw std::runtime_error(
+                    "frame graphs require conflicting physical "
+                    "formats for render target '" +
+                    resource.logical_resource + "'");
+            }
         }
         result.plans.push_back(std::move(plan));
     }
@@ -881,6 +1180,25 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
     std::sort(
         result.array_layer_assignments.begin(),
         result.array_layer_assignments.end(),
+        [](const auto &left, const auto &right) {
+            return left.resource < right.resource;
+        });
+    result.format_assignments.reserve(
+        render_targets.size());
+    for (const auto &target : render_targets) {
+        const auto found =
+            merged_formats.find(target.name);
+        result.format_assignments.push_back({
+            .resource = target.name,
+            .format =
+                found == merged_formats.end()
+                    ? target.format
+                    : found->second,
+        });
+    }
+    std::sort(
+        result.format_assignments.begin(),
+        result.format_assignments.end(),
         [](const auto &left, const auto &right) {
             return left.resource < right.resource;
         });
@@ -959,6 +1277,13 @@ compileRenderingTargetPlansForVulkanDevice(
                         vk::FormatFeatureFlagBits::
                             eTransferSrc);
                 },
+            .query_image_format_capability =
+                [physical_device](
+                    const RenderTargetDefinition &definition) {
+                    return queryImageFormatCapability(
+                        physical_device,
+                        definition);
+                },
         },
         std::move(view_execution),
         std::move(external_depth_export),
@@ -974,6 +1299,8 @@ void applyRenderingTargetPlan(
         assignments;
     std::map<std::string, std::uint32_t, std::less<>>
         array_layer_assignments;
+    std::map<std::string, vk::Format, std::less<>>
+        format_assignments;
     std::set<std::string, std::less<>>
         external_depth_sources;
     for (const auto &assignment : compilation.assignments) {
@@ -994,6 +1321,20 @@ void applyRenderingTargetPlan(
                  .second) {
             throw std::runtime_error(
                 "duplicate or invalid physical array-layer assignment: " +
+                assignment.resource);
+        }
+    }
+    for (const auto &assignment :
+         compilation.format_assignments) {
+        if (assignment.format ==
+                vk::Format::eUndefined ||
+            !format_assignments
+                 .emplace(assignment.resource,
+                          assignment.format)
+                 .second) {
+            throw std::runtime_error(
+                "duplicate or invalid physical format "
+                "assignment: " +
                 assignment.resource);
         }
     }
@@ -1022,6 +1363,26 @@ void applyRenderingTargetPlan(
                 target.name);
         }
         target.array_layers = layers->second;
+        const auto format =
+            format_assignments.find(target.name);
+        if (format ==
+            format_assignments.end()) {
+            throw std::runtime_error(
+                "missing physical format assignment: " +
+                target.name);
+        }
+        if (std::find(
+                target.format_candidates.begin(),
+                target.format_candidates.end(),
+                format->second) ==
+                target.format_candidates.end() &&
+            format->second != target.format) {
+            throw std::runtime_error(
+                "physical format assignment is not an authored "
+                "candidate: " +
+                target.name);
+        }
+        target.format = format->second;
         if (external_depth_sources.contains(
                 target.name)) {
             if (!(target.usage &

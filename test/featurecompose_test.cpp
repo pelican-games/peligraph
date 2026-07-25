@@ -877,7 +877,12 @@ TEST_CASE("named render-target binding resolves pass IO history and override key
            "usage":["COLOR_ATTACHMENT"]}
         ]
       },
-      "render_target_overrides":{"$source":{"usage":["TRANSFER_SRC"]}},
+      "render_target_overrides":{
+        "$source":{
+          "usage":["TRANSFER_SRC"],
+          "format_candidates":["R16G16B16A16_SFLOAT"]
+        }
+      },
       "passes":[{
         "insert":"before:present",
         "pass":{
@@ -927,6 +932,10 @@ TEST_CASE("named render-target binding resolves pass IO history and override key
         REQUIRE(target != result.config.at("render_targets").end());
         REQUIRE(std::find(target->at("usage").begin(), target->at("usage").end(),
                           "TRANSFER_SRC") != target->at("usage").end());
+        REQUIRE(
+            target->at("format_candidates") ==
+            nlohmann::json::array(
+                {"R16G16B16A16_SFLOAT"}));
 
         const auto graphs = parseFrameGraphDefinitionsFromConfigJson(result.config);
         REQUIRE(graphs.size() == 1);
