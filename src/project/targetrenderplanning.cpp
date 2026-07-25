@@ -1,7 +1,7 @@
 #include "targetrenderplanning.hpp"
+#include "stablefingerprint.hpp"
 
 #include <algorithm>
-#include <array>
 #include <charconv>
 #include <cmath>
 #include <map>
@@ -41,58 +41,6 @@ constexpr std::string_view kTileLocalCandidate =
 constexpr std::string_view kPinPackageSchema =
     "pelican.vulkan_target_plan_pins";
 constexpr std::uint32_t kPinPackageVersion = 1;
-constexpr std::string_view kFingerprintPrefix =
-    "fnv1a64:";
-
-class StableFingerprint {
-    std::uint64_t value_ =
-        14695981039346656037ULL;
-
-  public:
-    void appendByte(std::uint8_t byte) noexcept {
-        value_ ^= byte;
-        value_ *= 1099511628211ULL;
-    }
-
-    void appendUnsigned(std::uint64_t value) noexcept {
-        for (std::uint32_t shift = 0;
-             shift < 64; shift += 8) {
-            appendByte(static_cast<std::uint8_t>(
-                value >> shift));
-        }
-    }
-
-    void appendString(std::string_view value) noexcept {
-        appendUnsigned(value.size());
-        for (const auto byte : value) {
-            appendByte(static_cast<std::uint8_t>(
-                static_cast<unsigned char>(byte)));
-        }
-    }
-
-    std::uint64_t value() const noexcept {
-        return value_;
-    }
-};
-
-std::string fingerprintString(std::uint64_t fingerprint) {
-    std::array<char, 16> digits{};
-    const auto converted = std::to_chars(
-        digits.data(), digits.data() + digits.size(),
-        fingerprint, 16);
-    if (converted.ec != std::errc{}) {
-        throw std::runtime_error(
-            "failed to encode target-plan fingerprint");
-    }
-    std::string result{kFingerprintPrefix};
-    result.append(
-        digits.size() -
-            static_cast<std::size_t>(
-                converted.ptr - digits.data()),
-        '0');
-    result.append(digits.data(), converted.ptr);
-    return result;
-}
 
 std::uint64_t parseFingerprint(
     const nlohmann::json &value,
@@ -104,33 +52,7 @@ std::uint64_t parseFingerprint(
     }
     const auto &encoded =
         value.get_ref<const std::string &>();
-    if (!encoded.starts_with(kFingerprintPrefix) ||
-        encoded.size() !=
-            kFingerprintPrefix.size() + 16) {
-        throw std::runtime_error(
-            std::string{context} +
-            " must use fnv1a64: followed by 16 lowercase hex "
-            "digits");
-    }
-    const auto first =
-        encoded.data() + kFingerprintPrefix.size();
-    const auto last = encoded.data() + encoded.size();
-    std::uint64_t result = 0;
-    const auto parsed =
-        std::from_chars(first, last, result, 16);
-    if (parsed.ec != std::errc{} ||
-        parsed.ptr != last ||
-        std::any_of(
-            first, last, [](char character) {
-                return character >= 'A' &&
-                       character <= 'F';
-            })) {
-        throw std::runtime_error(
-            std::string{context} +
-            " must use fnv1a64: followed by 16 lowercase hex "
-            "digits");
-    }
-    return result;
+    return parseStableFingerprint64(encoded, context);
 }
 
 void requireOnlyKeys(
@@ -2345,7 +2267,7 @@ const BackendProbeResult &selectedProbe(
 
 std::uint64_t vulkanTargetPlanLogicalGraphFingerprint(
     const CompiledLogicalRenderGraph &graph) {
-    StableFingerprint fingerprint;
+    StableFingerprint64 fingerprint;
     fingerprint.appendString(
         "pelican.vulkan_target_plan.logical_graph@1");
     fingerprint.appendString(
@@ -2380,7 +2302,7 @@ nlohmann::ordered_json vulkanTargetPlanPinPackageToJson(
         {"version", kPinPackageVersion},
         {"graph", package.graph},
         {"logical_graph_fingerprint",
-         fingerprintString(
+         stableFingerprint64String(
              package.logical_graph_fingerprint)},
         {"pins",
          nlohmann::ordered_json{
@@ -2506,6 +2428,8 @@ VulkanTargetPlan compileVulkanTargetPlan(
     const auto logical_graph_fingerprint =
         vulkanTargetPlanLogicalGraphFingerprint(
             canonical_graph);
+    std::optional<std::string_view>
+        requested_backend_candidate;
     if (request.pin_package) {
         if (request.pin_package->graph !=
             canonical_graph.name) {
@@ -2521,16 +2445,48 @@ VulkanTargetPlan compileVulkanTargetPlan(
             throw std::runtime_error(
                 "Vulkan target plan pin package is stale for graph '" +
                 canonical_graph.name + "': expected " +
-                fingerprintString(
+                stableFingerprint64String(
                     logical_graph_fingerprint) +
                 ", got " +
-                fingerprintString(
+                stableFingerprint64String(
                     request.pin_package
                         ->logical_graph_fingerprint));
         }
         requireVersionedName(
             request.pin_package->backend_candidate,
             "Vulkan target plan pinned backend candidate");
+        requested_backend_candidate =
+            request.pin_package->backend_candidate;
+    }
+    if (request.fragment_package) {
+        if (request.fragment_package->graph !=
+            canonical_graph.name) {
+            throw std::runtime_error(
+                "Vulkan physical fragment graph mismatch: expected '" +
+                canonical_graph.name + "', got '" +
+                request.fragment_package->graph + "'");
+        }
+        if (request.fragment_package
+                ->logical_graph_fingerprint !=
+            logical_graph_fingerprint) {
+            throw std::runtime_error(
+                "Vulkan physical fragment is stale for logical graph '" +
+                canonical_graph.name + "'");
+        }
+        requireVersionedName(
+            request.fragment_package->backend_candidate,
+            "Vulkan physical fragment backend candidate");
+        if (requested_backend_candidate &&
+            *requested_backend_candidate !=
+                request.fragment_package
+                    ->backend_candidate) {
+            throw std::runtime_error(
+                "Vulkan target plan pin and physical fragment "
+                "select different backend candidates");
+        }
+        requested_backend_candidate =
+            request.fragment_package
+                ->backend_candidate;
     }
     const auto topology =
         canonicalizeTargetTopology(source_topology);
@@ -2583,11 +2539,7 @@ VulkanTargetPlan compileVulkanTargetPlan(
         {std::move(materialized_probe),
          std::move(tile_probe)},
         request.diagnostic_policy,
-        request.pin_package
-            ? std::optional<std::string_view>{
-                  request.pin_package
-                      ->backend_candidate}
-            : std::nullopt);
+        requested_backend_candidate);
     const auto selected_name = selection.selected_candidate;
     const auto &selected_draft =
         selected_name == tile_local.name ? tile_local
@@ -2711,7 +2663,7 @@ VulkanTargetPlan compileVulkanTargetPlan(
             };
     }
 
-    return VulkanTargetPlan{
+    VulkanTargetPlan result{
         .graph = canonical_graph.name,
         .logical_graph_fingerprint =
             logical_graph_fingerprint,
@@ -2737,6 +2689,16 @@ VulkanTargetPlan compileVulkanTargetPlan(
         .applied_pin_package =
             std::move(request.pin_package),
     };
+    result.automatic_plan_fingerprint =
+        vulkanAutomaticTargetPlanFingerprint(
+            topology, result);
+    if (request.fragment_package) {
+        result = linkVulkanPhysicalFragment(
+            canonical_graph, topology,
+            std::move(result),
+            std::move(*request.fragment_package));
+    }
+    return result;
 }
 
 nlohmann::ordered_json vulkanTargetPlanToJson(
@@ -2753,11 +2715,18 @@ nlohmann::ordered_json vulkanTargetPlanToJson(
         {"version", 1},
         {"graph", plan.graph},
         {"logical_graph_fingerprint",
-         fingerprintString(
+         stableFingerprint64String(
              plan.logical_graph_fingerprint)},
+        {"automatic_plan_fingerprint",
+         stableFingerprint64String(
+             plan.automatic_plan_fingerprint)},
         {"ejectable_pin_package",
          vulkanTargetPlanPinPackageToJson(
              ejectVulkanTargetPlanPinPackage(plan))},
+        {"ejectable_physical_fragment",
+         vulkanPhysicalFragmentPackageToJson(
+             ejectVulkanPhysicalFragmentPackage(
+                 plan))},
         {"graph_transforms",
          nlohmann::ordered_json::array()},
         {"subgraph_replacements",
@@ -2799,6 +2768,11 @@ nlohmann::ordered_json vulkanTargetPlanToJson(
         result["applied_pin_package"] =
             vulkanTargetPlanPinPackageToJson(
                 *plan.applied_pin_package);
+    }
+    if (plan.applied_fragment_package) {
+        result["applied_physical_fragment"] =
+            vulkanPhysicalFragmentPackageToJson(
+                *plan.applied_fragment_package);
     }
     for (const auto &selection :
          plan.graph_transforms) {

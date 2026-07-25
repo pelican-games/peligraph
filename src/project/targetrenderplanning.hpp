@@ -194,6 +194,9 @@ struct VulkanPhysicalResourcePlan {
         VulkanResourceViewLayout::shared_2d;
     std::uint32_t array_layers = 1;
     std::optional<ResourceExtentPlan> extent;
+
+    bool operator==(
+        const VulkanPhysicalResourcePlan &) const = default;
 };
 
 struct VulkanRenderResolutionPlan {
@@ -228,11 +231,17 @@ struct VulkanPhysicalScopePlan {
     std::uint32_t view_count = 1;
     std::uint32_t execution_count = 1;
     std::uint32_t view_mask = 0;
+
+    bool operator==(
+        const VulkanPhysicalScopePlan &) const = default;
 };
 
 struct VulkanAliasGroupPlan {
     std::string id;
     std::vector<std::string> resources;
+
+    bool operator==(
+        const VulkanAliasGroupPlan &) const = default;
 };
 
 struct VulkanSampleCountPlanRequest {
@@ -281,6 +290,51 @@ struct VulkanTargetPlanPinPackage {
         const VulkanTargetPlanPinPackage &) const = default;
 };
 
+// A sparse, same-layer edit over the automatically compiled physical plan.
+// V1 deliberately permits conservative resource materialization, declared
+// format candidates, safe scope splitting, and verified alias groups. Fields
+// whose cross-contract verifier is not implemented remain compiler-owned.
+struct VulkanPhysicalResourceFragment {
+    std::string logical_resource;
+    std::optional<std::string> format;
+    std::optional<VulkanResourceRepresentation> representation;
+
+    bool operator==(
+        const VulkanPhysicalResourceFragment &) const = default;
+};
+
+struct VulkanPhysicalScopeFragment {
+    std::string id;
+    std::vector<std::string> nodes;
+
+    bool operator==(
+        const VulkanPhysicalScopeFragment &) const = default;
+};
+
+struct VulkanPhysicalAliasGroupFragment {
+    std::string id;
+    std::vector<std::string> resources;
+
+    bool operator==(
+        const VulkanPhysicalAliasGroupFragment &) const = default;
+};
+
+struct VulkanPhysicalFragmentPackage {
+    std::string graph;
+    std::uint64_t logical_graph_fingerprint = 0;
+    std::uint64_t automatic_plan_fingerprint = 0;
+    std::string backend_candidate;
+    std::vector<VulkanPhysicalResourceFragment> resources;
+    std::optional<std::vector<VulkanPhysicalScopeFragment>>
+        scopes;
+    std::optional<
+        std::vector<VulkanPhysicalAliasGroupFragment>>
+        alias_groups;
+
+    bool operator==(
+        const VulkanPhysicalFragmentPackage &) const = default;
+};
+
 struct VulkanTargetPlanRequest {
     std::string endpoint;
     std::string provider;
@@ -295,11 +349,14 @@ struct VulkanTargetPlanRequest {
         external_depth_export;
     std::optional<VulkanTargetPlanPinPackage>
         pin_package;
+    std::optional<VulkanPhysicalFragmentPackage>
+        fragment_package;
 };
 
 struct VulkanTargetPlan {
     std::string graph;
     std::uint64_t logical_graph_fingerprint = 0;
+    std::uint64_t automatic_plan_fingerprint = 0;
     std::vector<LogicalGraphTransformSelection>
         graph_transforms;
     std::vector<LogicalSubgraphReplacementSelection>
@@ -322,6 +379,8 @@ struct VulkanTargetPlan {
         external_depth_export;
     std::optional<VulkanTargetPlanPinPackage>
         applied_pin_package;
+    std::optional<VulkanPhysicalFragmentPackage>
+        applied_fragment_package;
 };
 
 void validateVulkanPhysicalFeatureClosure(
@@ -341,6 +400,23 @@ nlohmann::ordered_json vulkanTargetPlanPinPackageToJson(
     const VulkanTargetPlanPinPackage &package);
 VulkanTargetPlanPinPackage vulkanTargetPlanPinPackageFromJson(
     const nlohmann::json &document);
+std::uint64_t vulkanAutomaticTargetPlanFingerprint(
+    const TargetTopologySnapshot &topology,
+    const VulkanTargetPlan &automatic_plan);
+VulkanPhysicalFragmentPackage
+ejectVulkanPhysicalFragmentPackage(
+    const VulkanTargetPlan &plan);
+nlohmann::ordered_json
+vulkanPhysicalFragmentPackageToJson(
+    const VulkanPhysicalFragmentPackage &package);
+VulkanPhysicalFragmentPackage
+vulkanPhysicalFragmentPackageFromJson(
+    const nlohmann::json &document);
+VulkanTargetPlan linkVulkanPhysicalFragment(
+    const CompiledLogicalRenderGraph &canonical_graph,
+    const TargetTopologySnapshot &topology,
+    VulkanTargetPlan automatic_plan,
+    VulkanPhysicalFragmentPackage package);
 nlohmann::ordered_json vulkanTargetPlanToJson(
     const VulkanTargetPlan &plan);
 
