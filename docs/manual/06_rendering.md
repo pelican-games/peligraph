@@ -271,6 +271,32 @@ pelican_player --project mygame --headless --dump-frame-plan   # stderr に出�
 - `serial` / `isolate` / `no_alias` は禁止側だけを明示する設計です。通常 node に `parallel_safe` のような boilerplate は要りません。
 - 未知 graph/node/resource、重複した warning ID、型の違うフラグは runtime object を作る前に compile error になります。
 
+#### 自動 transient attachment
+
+`optimized` profileでは、後段から読まれない一時的なattachmentを自動的に
+`pelican.vulkan.transient_plan@1`へloweringできます。利用者がstorage modeを直接指定する
+fieldはありません。たとえば次のtargetをpassがwriteするだけで、その値をsample、transfer、
+history、external depth exportに使わなければ候補になります。
+
+```json
+{
+  "name": "scratch",
+  "format": "R8G8B8A8_UNORM",
+  "usage": ["COLOR_ATTACHMENT"]
+}
+```
+
+自動選択の条件は、attachment-only、non-history、single-sample、write-onlyであり、対象deviceが
+そのformatと`TRANSIENT_ATTACHMENT` usageを実際に受理することです。選択時はphysical
+representationが`transient_attachment`になり、最後のStoreは自動的にDiscardへloweringされます。
+runtimeはimageへ`VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT`を付け、lazily allocated memoryを
+優先します。対応memory typeがないdeviceではdevice-local memoryへ戻せるため、transientは
+「毎frame VkImageを作り直す」という意味ではなく、attachment内容の永続化を要求しない契約です。
+
+format/usageが非対応、後段readがある、MSAAである、または`conservative_debug` profileなら、
+`pelican.vulkan.materialized_plan@1`へ安全側に戻りStoreを維持します。tile-local readを伴う
+scope fusionとは別機能であり、現在のtransient runtimeはwrite-only subsetだけを実行します。
+
 さらに、現在の自動計画が選んだ Vulkan backend candidate を固定したい場合は、まず pin なしで起動し、`get_frame_plan.physical_target_plan.ejectable_pin_package` をそのままコピーします。コピー先は variant 別の `vulkan_plan_pins` 配列です。
 
 ```json
@@ -387,11 +413,16 @@ v2のattachment編集はlogical dependencyを壊せません。論理readを持�
 操作をdynamic renderingへ適用します。hot reloadもformat変更と同じgeneration transactionで
 prepare/publishされます。
 
+自動planがwrite-only targetを`transient_attachment`にした場合、そのattachmentは初めから
+`discard`です。内容の保存が必要な特殊実験では、ejectした同じfragmentでresourceを
+`materialized_image`へ保守的に変更し、attachmentを`store`へ戻せます。
+
 まだ受理しないのは`materialized_image`からtile-localへの攻めた変更、別の自動scope同士の
-融合/reorder、single-sample surfaceのstore elision、barrier、queue、任意Vulkan flagです。
-現在のproduction runtimeもalias groupと非materialized imageを実行しないため、planner上で
-有効でもruntime capability gateが名指し拒否します。これらは実行機構と検証を同時に追加
-できる版で拡張します。
+融合/reorder、一般のmaterialized single-sample surfaceに対するstore elision、barrier、
+queue、任意Vulkan flagです。現在のproduction runtimeが実行する非materialized imageは上記の
+狭い`transient_attachment` subsetだけで、tile-local imageとalias groupはplanner上で有効でも
+runtime capability gateが名指し拒否します。これらは実行機構と検証を同時に追加できる版で
+拡張します。
 
 ## 6.7 マテリアル(✅M1〜M3.5 = WP58/68/70/76/78/83)
 

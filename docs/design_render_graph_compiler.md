@@ -969,10 +969,11 @@ sample count、resolve requirement、physical scope sample countを一括lowerin
 旧runtime bridgeのJSON再走査、pass type string判定、独自disjoint-setは削除した。
 
 現runtime adapterは実deviceのformat sample count、depth resolve、color attachment budgetを
-target factsへ変換する。current Vulkan executorが実装済みの`materialized_image`だけを
-advertiseし、返されたphysical planのformat/representationを検証してから
-`RenderTargetDefinition.samples`へ適用する。`CompiledFrameGraphExecution`がplan本体を所有し、
-従来の`ResolvedSampleCountPlan`は同じimmutable planへのviewである。
+target factsへ変換する。Vulkan executorが実装済みの`materialized_image`と、write-only /
+single-sample / attachment-onlyに限定した`transient_attachment`だけをadvertiseし、返された
+physical planのformat/representationを検証してから`RenderTargetDefinition`へ適用する。
+`CompiledFrameGraphExecution`がplan本体を所有し、従来の`ResolvedSampleCountPlan`は同じ
+immutable planへのviewである。
 
 gate:
 
@@ -980,7 +981,7 @@ gate:
 - 任意名・追加枚数のG-bufferがlogical outputだけからcomponentへ入る
 - physical resource/scopeのsample countと実attachment metadataが一致する
 - sample countが異なるtile scopeをfusionせず、alias compatibilityにもsample contractを含める
-- current runtimeはtile-local/transient/alias候補を実装済みと偽らない
+- current runtimeは狭いwrite-only transient subset以外のtile-local/alias候補を実装済みと偽らない
 - standard/hybrid headless、feature composition、XR回帰、全CTestが成功する
 
 ### それ以後
@@ -1270,12 +1271,14 @@ gate:
 
 ### RPE12b — verified Vulkan physical fragment
 
-状態: **WP204 Phase B v1 + verified alternate-format sliceで実装済み
+状態: **WP204 Phase B v1 + verified alternate-format / attachment-operation /
+transient-runtime sliceで実装済み
 (2026-07-26)**。自動target compilerを通常経路に残したまま、同じphysical層の一部だけを
 編集して自動planへ戻す境界を実装した。
 
 `VulkanPhysicalFragmentPackage`のschemaは
-`pelican.vulkan_physical_fragment` version 1であり、次を持つ。
+`pelican.vulkan_physical_fragment` version 1 / 2である。version 1は次を持ち、
+version 2はさらにsparse attachment operation overrideを持つ。
 
 - graphとcompiled logical graph fingerprint
 - canonical target/device/provider環境を含むautomatic plan fingerprint
@@ -1283,8 +1286,10 @@ gate:
 - sparse resource override
 - 任意のcomplete scope partition
 - 任意のalias group集合
+- version 2では`(node, logical_resource)`ごとの任意の`load_op` / `store_op`
 
-自動plan dumpは全resource/scope/aliasを含む`ejectable_physical_fragment`を常に出す。
+自動plan dumpは全resource/scope/aliasと、契約を持つ全attachmentを含む
+`ejectable_physical_fragment`を出す。
 configの`vulkan_physical_fragments.flat|preview|xr[]`は現在のimmutable graph variantに
 対応するpackageだけを選び、graphごとの重複を拒否する。適用結果は
 `applied_physical_fragment`として再観測できる。package無しの経路は従来のautomatic
@@ -1296,7 +1301,7 @@ sample/view execution、external depth contractを束縛する。logical graph�
 device factsやprovider generationが変わったpackageはstaleとしてrejectし、別planへ
 黙ってfallbackしない。
 
-v1が受理する編集は意図的に狭い。
+v1/v2が共通して受理する編集は意図的に狭い。
 
 - resource representationはautomatic値の維持、またはautomatic
   transient/tile-local imageの`materialized_image`化だけ
@@ -1309,6 +1314,12 @@ v1が受理する編集は意図的に狭い。
 - alias groupはaliasable resource、単一所属、同一representation/format/sample/view/
   extent、lifetime非重複をすべて満たす場合だけ
 
+version 2のattachment overrideはlogical readとLoadの一致を維持し、対象を
+materialized/external resourceへ限定する。StoreからDiscardへの手動変更は、別MSAA resolveが
+論理値を保存し、同じmultisample surfaceを後続attachmentがLoadしない場合だけ許可する。
+automatic transient loweringによるDiscardはこの手動overrideとは別に、write-only
+resourceの候補選択時に証明する。
+
 linkerは編集後にscope-resource boundaryを再計算し、tile/transient resourceのscope越境、
 不正なsampled dependency、未知resource/node、node重複/欠落を拒否する。resourceごとの
 format、sample plan、required feature、external-depth contractを同期し、selected endpoint
@@ -1317,6 +1328,15 @@ capabilityと同じbackend candidateのfeature closureを再検証してから`V
 同名targetを共有するgraphおよびflat/XR variant間のformat競合をGPU登録前に拒否する。
 現runtime adapterが実装していないtile-local / alias結果はparser成功と実行可能性を混同せず、
 runtime capability gateでrejectする。
+
+automatic planningにはmaterialized/tile-localと独立した
+`pelican.vulkan.transient_plan@1`を追加した。attachment-only、non-history、
+single-sample、write-onlyのvirtual resourceで、対象device/formatがtransient usageを
+受理するときだけ選び、automatic StoreをDiscardへloweringする。runtimeはrepresentationを
+typed storage modeへ変換し、imageへ`VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT`を付け、
+lazily allocated memoryを優先する。`conservative_debug`、非対応format、後段readでは
+materialized + Storeへ戻る。physical fragmentはtransientをmaterializeしてStoreを増やす
+保守的なescape hatchを維持する。
 
 renderer strategyはこのlower-layer controlを生成・解釈しない。
 `vulkan_physical_fragments`も`target_planning` / `vulkan_plan_pins`と同様にstrategy ABI
@@ -1332,11 +1352,12 @@ gate:
 - flat/preview/XR variant選択とduplicate graph packageを検証する
 - OpenXR OFF / ON、headless Vulkan runtimeで既定経路とfragment routeを維持する
 - headless hot reloadでalternate formatの実image/pipeline世代交換と出力一致を検証する
+- write-only transientのdevice/format gate、Store elision、実allocation、hot reloadを検証する
 
 次の候補:
 
 1. WP203c の Meta XR Simulator/物理 HMD と対象 GPU 実測 gate
-2. WP204 後続 — load-store / scope fusion・queue・barrierのaggressive physical
+2. WP204 後続 — 一般のload-store / scope fusion・queue・barrierのaggressive physical
    verifierと、tile-local / alias runtime gate
 3. `NativeScope` は具体的な Vulkan-only 使用例が得られてから ABI 設計
 4. CPU / external domain は計測と具体的な二候補 task が得られてから

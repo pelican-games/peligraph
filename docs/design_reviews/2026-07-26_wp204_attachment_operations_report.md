@@ -7,6 +7,11 @@
 判定: **authoring lowering、pure verifier、Vulkan runtime、hot reload実描画、
 OpenXR OFF/ON回帰まで完了**
 
+> 後続でwrite-only single-sample attachmentのautomatic Store elisionと
+> transient image runtimeまで完了した。現在の境界は
+> [`2026-07-26_wp204_transient_runtime_report.md`](2026-07-26_wp204_transient_runtime_report.md)
+> を参照する。
+
 ## 1. 実装した境界
 
 通常のproject設定は従来どおりpass-wideの`color_load_op` / `color_store_op` /
@@ -115,7 +120,7 @@ ONへ戻した後もruntime compiler、XR composition、headless Vulkanの代表
 ## 8. 残る境界
 
 - automatic scopeをまたぐfusion/reorder
-- single-sample surfaceのstore elisionと一般liveness証明
+- 一般のmaterialized single-sample surfaceのstore elisionとliveness証明
 - queue family / barrierの手動記述
 - tile-local / alias planのruntime実行と対象GPU gate
 - open external boundary、complete raw physical plan、`NativeScope`

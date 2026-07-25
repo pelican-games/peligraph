@@ -937,6 +937,8 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 | RPE12a / WP204 Phase A（済 2026-07-26） | graph-scoped target planning control、logical fingerprint付きVulkan backend decision pin/eject | variant別package、round-trip、stale/unknown/infeasible reject、strategy fingerprint非自己参照、headless runtime観測 |
 | RPE12b / WP204 Phase B v1（済 2026-07-26） | environment-bound Vulkan physical fragment、pure verifier/linker、runtime route | conservative materialize、split-only scope、alias/lifetime/capability検証、variant別round-trip、OpenXR OFF/ON |
 | RPE12b / WP204 alternate-format slice（済 2026-07-26） | authored format candidate、target固有device evidence、runtime format assignment | undeclared/unsupported reject、sample/layer/external-depth再検証、flat/XR競合reject、Vulkan hot reload実描画 |
+| RPE12b / WP204 attachment-operation slice（済 2026-07-26） | version 2 physical attachment load/store、runtime lowering | logical/MSAA verifier、dynamic rendering、hot reload実描画 |
+| RPE12b / WP204 transient-runtime slice（済 2026-07-26） | write-only attachmentの独立候補、device/format gate、runtime storage mode | automatic Store discard、transient usage、lazy-memory preference、OpenXR OFF/ON |
 
 ### 12.1 いま着手する範囲
 
@@ -958,8 +960,9 @@ multisample attachmentとsingle-sample resolved imageを分離し、後段sample
 imageだけを見る。WP191ではこの連結成分解決を`VulkanTargetPlan`へ移し、runtimeは
 `FrameGraphDefinition`からlogical shadow graphを経て得たphysical format /
 representation / sample-count contractを検証・適用する。現runtime adapterは実装済みの
-materialized imageだけをtarget topologyへadvertiseし、tile-local / transient / alias planを
-誤って実行しない。WP192ではflat / preview / XRを
+materialized imageと、device/format検証済みのwrite-only single-sample transient attachment
+だけをtarget topologyへadvertiseする。tile-local / alias planは引き続き誤って実行しない。
+WP192ではflat / preview / XRを
 `GraphVariantPolicyRequest + GraphVariantPolicyCapabilities` から
 `CompiledGraphVariantPolicy`へ純粋compileし、feature decision、history/jitter、
 view execution、resource layout、terminal、mirror、pass suffixを一つの値に集約した。
@@ -1003,6 +1006,12 @@ environment fingerprintはdevice factsとprovider generationを含み、logical 
 image usage、sample count、array layer、external-depth transfer capabilityを実deviceから
 snapshotしてlinkする。選択formatはsample planとGPU target/pipeline登録へ同時に適用し、
 同名targetを共有するgraph/variantの競合はpublish前にrejectする。
+attachment-operation sliceではversion 2 fragmentのper-attachment load/storeをlogical/MSAA
+契約へ照合してdynamic renderingへ適用した。transient-runtime sliceでは
+materialized/tile-localと独立した候補を追加し、write-only virtual attachmentに限って
+automatic StoreをDiscardへloweringする。実deviceのformat/usage照合後にruntime storage mode、
+transient image usage、lazy-memory preferenceへ接続し、非対応deviceと
+`conservative_debug`ではmaterialized + Storeへ戻す。
 各段階の詳細gateは
 `design_render_graph_compiler.md` §12 を正とする。
 
@@ -1011,7 +1020,7 @@ snapshotしてlinkする。選択formatはsample planとGPU target/pipeline登�
 - OIT の方式選定
 - `PassInfo` の未知 custom pass kind ABI
 - public `GraphVariantProvider` の ABI 凍結
-- load-store / scope-fusion / queue-barrier physical fragment
+- 一般のload-store / scope-fusion / queue-barrier physical fragment
 - complete raw physical plan の公開形式
 - `NativeScope` の game-DLL ABI
 - bindless / GPU-driven sort
@@ -1022,7 +1031,8 @@ snapshotしてlinkする。選択formatはsample planとGPU target/pipeline登�
 
 backend candidateだけを固定するWP204 Phase Aのpinと、自動planへ安全な部分編集を戻す
 Phase B v1 fragment、宣言済み候補からdevice検証済みmaterialized-image formatを選ぶ
-runtime sliceは実装済みである。それより強いload-store / scope-fusion / queue-barrier、
+runtime slice、verified attachment operation、write-only transient runtimeは実装済みである。
+それより強い一般のload-store / scope-fusion / queue-barrier、
 complete raw plan、`NativeScope`は、現在のverifierを
 具体的な利用要求と対象GPU fixtureで拡張してから公開形式・ABIを凍結する。
 Vulkan physical plan と `NativeScope` という入口自体は本設計で予約済みであり、
