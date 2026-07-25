@@ -100,22 +100,24 @@ renderLogicalFrame(frame_input, views[N]):
   既存 `IFrameTarget` の 1 acquire/1 submit/present 契約は **flat 専用
   として不変**。XR は別の **`IXrCompositionTarget`** が
   `beginLogicalFrame / beginView(i) / endView(i) / endLogicalFrame`・
-  二個の arraySize=1 swapchain・projection layer・単一 xrEndFrame を
+  stereo array swapchain・projection layer・単一 xrEndFrame を
   所有。renderer は target 非依存の logical-frame core から per-view
   context を受け取る(XR target を IFrameTarget の一実装として偽装
   しない)
-- **swapchain 状態機械**: 各 swapchain を独立に
+- **swapchain 状態機械**: color と optional depth の各 swapchain を独立に
   `idle → acquired → waited → submitted → released` で追跡。
   `XR_TIMEOUT_EXPIRED` は同じ acquired image への wait 再試行
-  (wait 成功前に release しない)。片方の失敗時は成功済みの他方を
+  (wait 成功前に release しない)。途中失敗時は成功済み swapchain を
   合法順で unwind し、未 submit image を参照する layer を渡さない。
   session が継続可能なら zero-layer xrEndFrame で閉じ、loss は
-  generation teardown へ。**左右各段の失敗位置を protocol trace の
+  generation teardown へ。**各段の失敗位置を protocol trace の
   表駆動 gate に**
-- swapchain 規範 = **view ごとに arraySize=1 を二個**(recommended
-  extent 差をそのまま扱える)。acquire→wait→submit→release を
-  各 swapchain で行い、**両 view を 1 枚の projection layer として
-  1 回の xrEndFrame へ**
+- XR2a.1 の初期実装は view ごとの `arraySize=1` を二個使った。WP203c 以後の
+  production 規範は **`arraySize=2` の color swapchain 一個**である。
+  PRIMARY_STEREO の共通 extent を選び、color image を一回だけ
+  acquire→wait→submit→releaseし、左右の projection view は同じ image の
+  `imageArrayIndex=0/1` を参照する。これにより sequential layer rendering と
+  一回の multiview rendering が同じ composition target を共有する
 - release 時 layout は runtime 要求(desktop の PRESENT_SRC 遷移を
   流用しない)
 
@@ -239,9 +241,31 @@ anchorは一回だけ実行する。synthetic Vulkan fixtureはruntime compiler�
 layered sampler/pipelineを生成する経路と、一回のmultiview描画がsequential referenceの
 左右layerとbyte一致することを検証する。
 
-現在のOpenXR targetはeyeごとの2D swapchainであるため、通常XRは意図的にsequentialのまま
-である。WP203cが2D-array swapchainとdepth submitを導入した時点でproduction capability
-flagを有効化し、このview-family経路へ接続する。詳細は
+WP203cでは OpenXR target を 2-layer color array swapchain へ移し、
+`imageArrayIndex=0/1` と一回の acquire/wait/release を view-family 経路へ接続した。
+`XR_KHR_composition_layer_depth` が利用でき、compiled graph の typed external depth
+export と runtime/Vulkan の format・extent・usage 条件が一致する場合は、2-layer depth
+swapchain を作成する。renderer は sequential resource なら layer ごと、multiview resource
+なら array 全体を copy し、各 projection view に
+`XrCompositionLayerDepthInfoKHR` を chain する。extension/format/extent が不適合なら
+depth image を参照せず color-only で提出する。
+
+`xr.view_execution: "auto"` は capability gate に加えて
+`xr.multiview_auto` の device profile を使う。profile は Vulkan
+`vendor_id` を必須、`device_id` / `driver_version` / `device_name_contains` /
+compiled `graph` を任意の絞り込みとして、別 run で測った
+`sequential_gpu_ms` / `multiview_gpu_ms` / `sample_count` / `source` を保持する。
+一致 profile が無い device は optimize-by-default で multiview、一致 profile がある場合は
+実測 gain が `minimum_gain_percent` 以上のときだけ multiview となる。同じ specificity
+なら宣言順、より具体的な profile は宣言順によらず優先する。required `multiview` と
+明示 `sequential` はこの性能選択を上書きするが、required mode の capability 検査は残る。
+
+選択証跡は physical target plan の
+`view_execution_plan.auto_gate` に device identity、graph、profile、measurement、gain、
+reason として残る。GPU 実測値は
+`get_status.gpu_timing.logical_frame_averages` から取得できる。実装証跡と未完了の外部 gate は
+[`design_reviews/2026-07-26_wp203c_implementation_report.md`](design_reviews/2026-07-26_wp203c_implementation_report.md)。
+従来段階の詳細は
 [`design_reviews/2026-07-25_wp203a_report.md`](design_reviews/2026-07-25_wp203a_report.md)。
 phase 1の中間証跡は
 [`design_reviews/2026-07-25_wp203b_phase1_report.md`](design_reviews/2026-07-25_wp203b_phase1_report.md)。
@@ -252,7 +276,7 @@ phase 2の証跡は
 
 1. シミュ時刻と predictedDisplayTime の補間(§3 の分離を前提に、
    interactive XR での update 位相)— XR1b 実装所見で
-2. 深度 submit — XR2b と同時
+2. 深度 submit の Simulator/物理 HMD 実証 — 実装と protocol fake は WP203c で済み
 3. world-space UI パネル — UI トラック合流点
 4. standalone = SA トラック(backlog)
 5. haptics — XR3 の余力次第

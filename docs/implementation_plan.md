@@ -71,11 +71,12 @@ ctest --test-dir ./build -C Debug --output-on-failure
 
 | WP | 内容 | 状態 |
 |----|------|------|
-| WP203c | XR2b-c — OpenXR array swapchain / depth submit / GPU gate | 未着手 |
+| WP203c | XR2b-c — OpenXR array swapchain / depth submit / GPU gate | 実装済み・Simulator/実機 gate待ち |
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
-(最新完了: WP203b、2026-07-26。本文はarchive、完了レポートはdesign_reviews参照。)
+(最新の全受け入れ完了: WP203b、2026-07-26。WP203c はローカル実装・自動テスト済みだが、
+Simulator/物理 HMD と対象 GPU の実測を残すため active のまま。)
 
 ## 2. WP 詳細
 
@@ -130,8 +131,26 @@ shared/sequential/layered layout、device capability/fact、理由付きfallback
 WP203bでarray image/view、per-view UBO、`gl_ViewIndex` reflection、typed pipeline/pass
 view contract、view-masked dynamic renderingに加え、production fullscreen shader variant、
 layered input descriptor、mixed-scope scheduler、Renderer view-family境界まで実装した。
-通常OpenXR描画はtargetがeye別2D swapchainである間だけ安全にsequentialを維持する。
-次の実装はWP203cのarray swapchain / composition depth / semantic・GPU計測gateである。
+
+WP203c のローカル実装では、OpenXR color target を 2-layer 2D-array swapchain へ移し、
+左右 projection view の `imageArrayIndex` と一回の acquire/wait/release を接続した。
+`XR_KHR_composition_layer_depth` が使え、compiled external depth export と format/extent が
+一致するときは 2-layer depth swapchain へ各 layer を copy して
+`XrCompositionLayerDepthInfoKHR` を提出する。非対応・不一致時は理由を保持したまま
+color-only へ戻る。
+
+`xr.multiview_auto` の device/driver/graph 別実測 profile と
+`get_status.gpu_timing.logical_frame_averages` を追加し、`auto` は profile が無ければ
+optimize-by-default、実測 profile があれば `minimum_gain_percent` を満たすときだけ
+multiview を選ぶ。physical target plan の `view_execution_plan.auto_gate` に device identity、
+選択、測定値、理由を残し、hot reload 時にも再解決する。synthetic Vulkan fixture の
+sequential/multiview semantic byte 一致と OpenXR protocol fake は通過済みである。
+
+残る受け入れ gate は、**この実装を使った** Meta XR Simulator と物理 HMD での
+左右/depth/mirror/session lifecycle 確認、および対象 GPU で別 run の
+sequential/multiview 計測を profile に記録すること。session loss 後の再生成は従来どおり
+別の未配線事項である。実装証跡は
+[`design_reviews/2026-07-26_wp203c_implementation_report.md`](design_reviews/2026-07-26_wp203c_implementation_report.md)。
 
 WP202bでrenderer-wide `RenderStrategy`を
 preset展開後・feature composition前の独立ABIとして実装した。typed renderer facade、
@@ -255,8 +274,10 @@ Vulkan-only利用例を得てから進める。
 - **OpenXR トラック**: XR0〜XR4 と Simulator blocker 修正まで実装済み
   (WP125〜138)。Vulkan bootstrap、session loop、左右眼 sequential
   composition、action/pose、reference space、feature policy、left-eye
-  mirror、VRM demo を Meta XR Simulator で検証済み。残りは XR2b
-  multiview/depth submit、物理 HMD gate、Quest standalone SA0〜SA3
+  mirror、VRM demo を Meta XR Simulator で検証済み。WP203a〜c で
+  multiview planning/runtime、2-layer OpenXR color/depth composition、
+  実測 device profile gate まで実装済み。残りは現実装の Simulator 再確認、
+  物理 HMD/対象 GPU 実測 gate、Quest standalone SA0〜SA3
 - **bindless バックエンド**: 2026-07-08 方向決定 — classic(set 2)と併用(`design_material_shading.md` §3-5)。生成アクセサが差を吸収、M2 のデータ形(SSBO + 参照)が前提工事。実装は M2 の後・GPU 駆動系(WP36 パーティクル・大規模シーン)の需要と同時に WP 化。**web/モバイルの床に PC を縛らせない**(web は将来やるとしてもシンプルな 3D/2D — ユーザー確認)
 - **web ビルド(WASM)**: 将来の可能性としてのみ保持(2026-07-08)。守るべき不変条件は全部現行規律(純ロジック規律・データ契約が抽象・classic 床・dist-bake/WGSL レーン)— 特別な保全作業なし。進めるときは案 B(WASM ゲームコア + TS レンダラ接合)→ 案 A(C++ WebGPU 実行系、データ契約の兄弟執行器)。**RHI の後付けは禁止**(本体の C++ インターフェースへの制約源にしない)
 - **アセットホットリロード**: HR0〜HR2-G 完了。WP147 で model

@@ -87,6 +87,10 @@ before/after をレポート」の形(WP82 起動高速化の流儀を標準化)
 
 - **階層タイミング**: パス内の feature 由来サブ区間もラベル単位で計測。
   get_status.gpu_timing を階層 JSON に(additive)
+- **論理フレーム集計**: 120-frame ring を `graph_variant` ごとの
+  `logical_frame_history[]` / `logical_frame_averages[]` として公開する。
+  XR の sequential と multiview は別 process で測り、この静的測定値を
+  `xr.multiview_auto` device profile に転記する(live feedback はしない)
 - **フレーム履歴オーバーレイ**: ImGui に直近 120 フレームの
   パス別積み上げグラフ(Plan viewer の隣)
 - **VRAM 予算**: `VK_EXT_memory_budget` + 自前 allocator 統計
@@ -148,9 +152,10 @@ before/after をレポート」の形(WP82 起動高速化の流儀を標準化)
 2. **OPT-XR: Release 実機ベースライン** — Release フルゲート常設化 +
    Quest 3 実機で D-P2 の XR timing 計測。72Hz 予算(13.9ms)に対する
    パス別内訳を最初のレポートに
-3. **OPT-MV: multiview 評価** — 現行は view 逐次描画(WP129)。
-   `VK_KHR_multiview` で geometry 系パスの CPU/GPU 削減を**計測付きで
-   評価**(効果が薄ければ入れない — 判断材料をレポートに)
+3. **OPT-MV: multiview 評価** — WP203a〜c で mixed-scope Vulkan multiview、
+   OpenXR array/depth composition、device profile gate、論理フレーム GPU 集計まで実装。
+   残りは Quest 3/Link の対象 GPU で sequential と multiview を別 run で測り、
+   効果が薄い device を profile で sequential に固定する外部 gate
 4. **OPT-CULL/BATCH**: 描画件数系(頻度順ソート・instance 統合)は
    実プロジェクトの数字が出てから(現 example では過剰最適化)
 

@@ -705,10 +705,17 @@ single / sequential / multiviewを一つのlogical frame内で実行する。cus
 material passは明示対応をまだ持たないため逐次へ残り、誤ってmultiview pipelineとして
 実行されない。
 
-現在のOpenXR targetはview-family array attachmentを提供しないためproduction flagは
-無効であり、通常XRの`auto`はsequentialのままである。array swapchain、depth submit、
-semantic/performance gateはWP203cで接続する。public provider capability bitは、その
-OpenXR gateでABIとfailure modeを固定してから追加する。
+WP203c で OpenXR target は 2-layer color array attachment を提供し、
+production view-family capability を有効化した。typed external depth export が
+runtime の depth format/extent と一致する場合は optional 2-layer depth swapchain へ
+copy して composition depth を chain し、不一致時は color-only へ戻る。
+`auto` の性能判断は physical planner の data-only `multiview_auto` device profile で行い、
+選択と実測証跡を `view_execution_plan.auto_gate` に残す。profile が無い device は
+optimize-by-default、profile がある device は要求 gain を満たす場合だけ multiview とする。
+
+custom providerやmaterial passは引き続き明示 capability を持たないため逐次scopeに残る。
+public provider capability bitは、外部 provider で必要なABIと failure mode が具体化してから
+追加する。
 
 ### 7.4 TAA jitter は無理に provider 化しない
 

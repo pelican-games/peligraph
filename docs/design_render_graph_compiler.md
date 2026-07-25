@@ -1011,8 +1011,20 @@ logical frameに一回だけ残る。未対応material/custom passはadvertise�
 multiviewではplannerまたはruntime compileが名前付きで拒否する。
 
 synthetic Vulkan fixtureではruntime pass compilation、layered descriptor、2-view一回描画を
-通し、sequential referenceと各layerがbyte一致する。OpenXR array/depth submissionと
-実targetでのsemantic/performance gateはWP203cの所有である。
+通し、sequential referenceと各layerがbyte一致する。
+
+WP203c で physical plan の external depth export を実 resource と OpenXR composition
+target へ接続した。OpenXR は一個の 2-layer color array swapchain を使い、sequential
+scope は各 layer、multiview scope は array view へ描く。depth extension と
+format/extent/usage が成立するときは typed depth producer から optional 2-layer depth
+swapchain へ copy し、それ以外は color-only へ安全に縮退する。
+
+device-dependent `auto` は compile 入力の Vulkan device identity と
+`xr.multiview_auto` の測定 profile を純粋に解決する。physical plan の
+`view_execution_plan.auto_gate` は selection、matched profile、graph、GPU measurement、
+gain、理由を保持するため、runtime は JSON を再解釈しない。hot reload は同じ compiler
+境界を通り、active device の profile を再評価する。synthetic semantic gate は済み、
+Meta XR Simulator/物理 HMD と対象 GPU の実測 gate は WP203c の外部受け入れ作業として残る。
 
 RPE10a / WP193 では compiled pass、frame graph、logical/physical plan、route、
 sample-count、variant policy、draw-sort provider選択を一つの immutable runtime generationへ束ね、
@@ -1214,7 +1226,7 @@ gate:
 
 次の候補:
 
-1. XR2b で multiview / array-layer / depth-submit lowering
+1. WP203c の Meta XR Simulator/物理 HMD と対象 GPU 実測 gate
 2. physical plan eject / direct authoring fixture
 3. `NativeScope` は具体的な Vulkan-only 使用例が得られてから ABI 設計
 4. CPU / external domain は計測と具体的な二候補 task が得られてから

@@ -440,18 +440,58 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 | `preview graph config requires rendering_passes` | 合成後の config に `rendering_passes` が無い(§6.13) |
 | `golden inventory: FAIL` + `- <issue>` | `test/golden/inventory.json` と `test/golden/` の実体が食い違う(§6.10) |
 
-## 6.12 OpenXR ステレオレンダリング(✅WP125〜138)
+## 6.12 OpenXR ステレオレンダリング(✅WP125〜138 / WP203a〜c実装済み)
 
 `--xr on|auto` で起動すると([第2章](02_getting_started.md))、レンダラは**論理フレーム**単位の二眼描画に切り替わります。
 
 - **論理フレーム / view 分離(WP128)**: `renderLogicalFrame(target, view_count)` が共有更新(アニメ・リロード・共有アップロード・**temporal history の advance**)を論理フレームにつき**一回**だけ行い、view ごとに camera / projection / FrameUBO を切り替えてグラフを実行します。FrameUBO は in-flight × view のスロット制で、眼間の汚染を構造的に防ぎます。flat の `render()` は view_count=1 の互換アダプタです(golden byte 一致で保証)。
-- **コンポジション(WP129)**: XR 用は `IFrameTarget` とは別系統の `IXrCompositionTarget`。view ごとの swapchain 2 個 + per-swapchain 状態機械で、両 view を 1 つの projection layer・**単一の `xrEndFrame`** で提出します。
+- **コンポジション(WP129/203c)**: XR 用は `IFrameTarget` とは別系統の `IXrCompositionTarget`。現在は **2-layer の color array swapchain を一個**使い、一回だけ acquire/wait/release します。左右の projection view は同じ image の `imageArrayIndex=0/1` を参照し、1 つの projection layer・**単一の `xrEndFrame`** で提出します。
+- **optional composition depth(WP203c)**: `XR_KHR_composition_layer_depth`、compiled graph の external depth export、OpenXR/Vulkan の format/usage 条件が成立すると 2-layer depth swapchain を作ります。各フレームで source format/extent も一致したときだけ有効化し、sequential 描画なら layer ごと、multiview 描画なら array 全体を copy して左右の `XrCompositionLayerDepthInfoKHR` を提出します。不一致なら利用可能な depth swapchain も idle のままにし、color-only へ戻ります。
+- **view execution(WP203a〜c)**: `xr.view_execution` は `"auto"` / `"sequential"` / `"multiview"`。`auto` は対応済み scope だけを multiview にし、material/custom pass は capability を明示するまで sequential のまま混在実行します。required `"multiview"` は対応不能な device/pass を fallback せず compile error にします。選択根拠は `get_frame_plan` の `physical_target_plan.view_execution_plan.auto_gate` で確認できます。
 - **座標系(WP131)**: `world_from_stage = inverse(フレーム開始時の active camera view)` — flat のカメラ API は不変のまま、XR アダプタ内でのみ変換します。reference space は STAGE → LOCAL_FLOOR → LOCAL の優先選択で、LOCAL への fallback 時は「床は非保証」を `get_status.xr` が明示します。
 - **feature policy(WP133)**: flat / XR の両グラフを起動時にコンパイルし、**XR グラフからは TAA・projection jitter・velocity・history・UI の feature を自動除外**します。除外できない構成(config 直書きの history 読み・UI パス・未知の history feature)は XR 起動を名指しで拒否します — **history を持つ自作 feature は `--xr on` を止める**ことに注意してください(vrm_xr_demo の config が features 空配列なのはこのため)。XR の出入り境界では temporal reset が 1 回入ります。
 - **ミラー(WP133)**: デスクトップウィンドウには左眼の best-effort ミラー(scale + letterbox、UI はミラー側にのみ重畳)。ウィンドウが詰まっても **HMD のフレームループは待たされません**。XR 中の従来 capture は名指しで拒否されます(headless / golden は常に flat 経路)。
 - **ImGui は XR 中に出ません(✅WP138・v1 仕様)**: XR グラフには `imgui` パスが無いため、**XR session が active な間はエンジンが ImGui frame を begin しません**([src/core/imgui/imguiruntime.cpp](../../src/core/imgui/imguiruntime.cpp) の `isImGuiRuntimeEnabled()` が headless / rpc / リプレイ / golden と同列で `xr_active` を弾きます)。論理フレーム境界でゲートが閉じた場合、開始済みのフレームは `endFrameIfStarted()` で閉じられます。ミラーへの ImGui 表示は将来の別 WP です([第7章](07_input_ui.md) §7.1)。
-- **実ランタイム検証(✅WP136/138)**: Meta XR Simulator **v201.0** 上の `--xr on` 経路は検証済みです — `FOCUSED` 到達 / `shouldRender=true` / 連続 1000 XR フレーム / デスクトップミラー 1000 present・0 drop・0 failure / 190.5 秒連続運転 / Vulkan validation エラー 0。Simulator 検証で見つかった 3 つの blocker(XR 中の ImGui frame 不整合・`timelineSemaphore` 未有効化による validation エラー・診断ログが無く観測できないこと)は WP138 で修正済みです。
-- ⚠ 制限: **物理 HMD(Quest 3 Link 等)での表示確認は依然として未実施**です。focus loss / regain も未確認です(Simulator v201.0 が focus-loss イベントを発行しないランタイム制約のため、エンジン側の契約は headless の fake fixture で固定しています)。multiview(XR2b)・深度 submit・world-space UI は 📐。session loss 時の再生成は loop に未配線で、現状は安全に終了します。
+- **実ランタイム検証(✅WP136/138)**: Meta XR Simulator **v201.0** 上の旧 sequential composition 経路は検証済みです — `FOCUSED` 到達 / `shouldRender=true` / 連続 1000 XR フレーム / デスクトップミラー 1000 present・0 drop・0 failure / 190.5 秒連続運転 / Vulkan validation エラー 0。Simulator 検証で見つかった 3 つの blocker(XR 中の ImGui frame 不整合・`timelineSemaphore` 未有効化による validation エラー・診断ログが無く観測できないこと)は WP138 で修正済みです。
+- ⚠ 制限: WP203c の array color/depth composition と multiview は protocol fake・synthetic Vulkan fixture まで通過していますが、**この現実装を Meta XR Simulator と物理 HMD(Quest 3 Link 等)で表示確認する gate は未実施**です。focus loss / regain も未確認です(Simulator v201.0 が focus-loss イベントを発行しないランタイム制約のため、エンジン側の契約は headless の fake fixture で固定しています)。world-space UI は 📐。session loss 時の再生成は loop に未配線で、現状は安全に終了します。
+
+`auto` を実測で調整する場合は rendering config の `xr` に profile を置きます。
+
+```json
+{
+  "xr": {
+    "view_execution": "auto",
+    "multiview_auto": {
+      "minimum_gain_percent": 2.0,
+      "profiles": [
+        {
+          "id": "quest3_link_main",
+          "vendor_id": 4318,
+          "device_id": 9860,
+          "driver_version": 123456,
+          "device_name_contains": "GeForce",
+          "graph": "main#xr",
+          "measurement": {
+            "sequential_gpu_ms": 8.0,
+            "multiview_gpu_ms": 6.5,
+            "sample_count": 120,
+            "source": "get_status.gpu_timing"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+`vendor_id` は必須、`device_id` / `driver_version` / `device_name_contains` / `graph` は任意です。より多くの任意条件が一致する profile を優先し、同じ具体度なら先に書いた profile が勝ちます。一致 profile が無ければ optimize-by-default で multiview、一致すれば `minimum_gain_percent` 以上かつ strictly faster のときだけ multiview を選びます。
+
+測定は次のように**別プロセス**で行います。同じ 120-frame ring に二つの mode を混ぜると平均から分離できません。
+
+1. `engine://features/gpu_timing.json` を有効にし、`view_execution: "sequential"` で起動します。warm-up 後 120 frame 以上動かし、`get_status.gpu_timing.logical_frame_averages[]` の XR graph の `average_total_ms` と `frame_count` を控えます。
+2. process を終了し、測定 profile を一旦外した `view_execution: "auto"` で同じ scene を起動します。profile 未一致時の optimize-by-default が、対応 scope の multiview 候補です。同じ方法で平均を控えます。全 pass が対応する構成では required `"multiview"` も使えます。
+3. device 値は `get_frame_plan.physical_target_plan.view_execution_plan.auto_gate.device` から写し、二つの平均と十分な小さい方の `frame_count` を profile の measurement に記録します。
+4. `view_execution: "auto"` で再起動し、`auto_gate.selection` / `profile_id` / `measured_gain_percent` / `reason` が意図どおりか確認します。
 
 ## 6.13 グラフ variant(flat / XR / preview)(✅WP133/172)
 
@@ -541,6 +581,8 @@ XR session が active な間は `capture_xr_unsupported` で拒否されます(v
 | `enabled` / `supported` / `reason` | feature の有無 / キューが timestamp を持つか / `enabled`・`graphics_queue_timestamps_unsupported`・`feature_not_enabled` |
 | `history_capacity` / `history_count` | 論理フレーム単位の履歴リング(容量 120)|
 | `dropped_samples` | best-effort な提出が失敗して捨てた sample 数 |
+| `logical_frame_history[]` | 履歴内の論理フレームごとの `{logical_frame, graph_variant, total_ms, supported_sample_count}` |
+| `logical_frame_averages[]` | graph variant ごとの `{graph_variant, frame_count, average_total_ms, min_total_ms, max_total_ms}`。XR multiview profile の測定元 |
 | `logical_frame_total_sum_views_ms` | 最新フレームの view 行の**単純合計**(左右眼を平均しません)|
 | `views[]` | `{logical_frame, graph_variant, view_index, label, barriers_ms, body_ms, total_ms}`。`label` は flat/0 → `flat`、xr/0 → `left`、xr/1 → `right`、xr/2 → `mirror` |
 | `nodes[]` | `{..., node_ordinal, node_kind, node_name, subrange, identity, supported, reason, ms}` |
@@ -577,7 +619,7 @@ GUI では ImGui の `Pelican Engine Stats` → `Memory`(heap 別の Size / Usag
 
 ### 決定性との関係・未実装
 
-- 計測値は**診断専用**で、simulation や render policy にフィードバックしません。rpc の 2 回一致比較では `gpu_timing` と `memory` を丸ごと `<measured>` に正規化して除外します。一方 `frame` / `time` / `seed` などの simulation state と最終 RGBA8 は正規化しません。`.rdc` の byte 一致は決定性ゲートにしません。
+- live の計測値は**診断専用**で、その場の simulation や render policy へ自動 feedback しません。XR の `auto` が読むのは人が rendering config に固定した device profile だけです。rpc の 2 回一致比較では `gpu_timing` と `memory` を丸ごと `<measured>` に正規化して除外します。一方 `frame` / `time` / `seed` などの simulation state と最終 RGBA8 は正規化しません。`.rdc` の byte 一致は決定性ゲートにしません。
 - 📐 未実装: buffer / pipeline / texture / sampler の網羅命名と submit 境界の queue label(D-P0b)、ImGui からのキャプチャボタン、XR 中のキャプチャ、Tracy、validation 常設 CI、crash 診断(minidump / `VK_EXT_device_fault`)。
 - 🚧 CPU フェーズ計測は `update` / `render` / `present_wait` の 3 区間が上のログに出るだけです(`get_status.cpu_timing` はありません)。
 
@@ -594,7 +636,7 @@ GUI では ImGui の `Pelican Engine Stats` → `Memory`(heap 別の Size / Usag
 - [../design_taa_jitter.md](../design_taa_jitter.md) — TAA + projection jitter(v2.1・J1/J1b/J1c + 標準 TAA すべて実装済み)
 - [../design_usd_openpbr.md](../design_usd_openpbr.md) — USD レーン + OpenPBR(v2.1・M-PBR0/U-USD0 実装済み)
 - [../openpbr_1_1_1_mapping.md](../openpbr_1_1_1_mapping.md) — OpenPBR 写像表の正
-- [../design_openxr.md](../design_openxr.md) — OpenXR(v2.1・XR0〜XR4 + Simulator gate 実装済み。XR2b・物理HMD gate は未)
+- [../design_openxr.md](../design_openxr.md) — OpenXR(v2.1・XR0〜XR4 + WP203a〜c local implementation済み。現実装のSimulator/物理HMD・対象GPU実測gateは未)
 - [../design_2d_game_layer.md](../design_2d_game_layer.md) — 2D ゲーム層(v2.4・S2D 実装済み)
 - [../design_asset_hot_reload.md](../design_asset_hot_reload.md) — アセットホットリロード(v2.1・HR0〜HR2-G 実装済み)
 - [../design_debug_profiling.md](../design_debug_profiling.md) — デバッグ・プロファイリング(v1.1・条件付き受理。D-P0a/D-P1a/D-P2a/D-P2b 実装済み、§6.14)
