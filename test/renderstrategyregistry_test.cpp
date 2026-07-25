@@ -410,6 +410,7 @@ TEST_CASE(
     }
 }
 
+#if PELICAN_WITH_OPENXR
 TEST_CASE(
     "WP202b strategy can replace the whole renderer seed and observes the XR facade",
     "[render-strategy][provider][xr][wp202b]") {
@@ -512,6 +513,7 @@ TEST_CASE(
     registry.releaseOwner(owner);
     internal::releaseRegistrationOwner(owner);
 }
+#endif
 
 TEST_CASE(
     "WP202b strategy executes after preset expansion and keeps preset provenance",

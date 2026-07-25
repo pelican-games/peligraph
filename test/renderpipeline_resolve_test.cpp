@@ -148,6 +148,7 @@ TEST_CASE("WP180 flat resolver preserves FeatureCompose bytes without modules",
     REQUIRE(resolved.diagnostics.front().subject == "flat");
 }
 
+#if PELICAN_WITH_OPENXR
 TEST_CASE("WP180 XR resolution preserves policy order suffix and metadata",
           "[wp180][render-pipeline][resolve][xr]") {
     const std::unordered_map<std::string, Json> features{
@@ -222,6 +223,7 @@ TEST_CASE("WP180 XR resolution preserves policy order suffix and metadata",
                        "xr:known_incompatible";
         }));
 }
+#endif
 
 TEST_CASE("WP180 hybrid resolver preserves semantic material routing",
           "[wp180][render-pipeline][resolve][hybrid]") {
@@ -265,6 +267,13 @@ TEST_CASE("WP180 hybrid resolver preserves semantic material routing",
 
 TEST_CASE("target planning authoring compiles to typed graph-scoped controls",
           "[render-pipeline][target-planning][typed]") {
+#if PELICAN_WITH_OPENXR
+    constexpr auto selected_variant = RenderPipelineGraphVariant::xr;
+    const auto selected_graph = std::string{"main#xr"};
+#else
+    constexpr auto selected_variant = RenderPipelineGraphVariant::flat;
+    const auto selected_graph = std::string{"main"};
+#endif
     auto authored = baseConfig();
     authored["target_planning"] = {
         {"profile",
@@ -284,14 +293,14 @@ TEST_CASE("target planning authoring compiles to typed graph-scoped controls",
     const auto resolved = resolveRenderPipeline(
         RenderPipelineRequest{authored, "target planning fixture"},
         RenderEnvironmentCapabilities{
-            true, RenderPipelineGraphVariant::xr});
+            true, selected_variant});
     REQUIRE(resolved.target_planning.authored);
     REQUIRE((resolved.target_planning.profile ==
              PlanningProfile{
                  PlanningProfileKind::hazard_stress, 17}));
     REQUIRE(resolved.target_planning.graphs.size() == 1);
     REQUIRE(resolved.target_planning.graphs.front().graph ==
-            "main#xr");
+            selected_graph);
     REQUIRE((resolved.target_planning.graphs.front().nodes ==
              std::vector<PlanningNodeConstraint>{
                  {"scene", true, true}}));
@@ -307,27 +316,29 @@ TEST_CASE("target planning authoring compiles to typed graph-scoped controls",
     const auto compiled = compileRenderPipeline(resolved);
     REQUIRE(compiled.target_planning ==
             resolved.target_planning);
-    REQUIRE((
+    auto expected_target_planning = Json{
+        {"profile",
+         {{"kind", "hazard_stress"}, {"seed", 17}}},
+        {"graphs", Json::object()},
+        {"diagnostics",
+         {{"strict_warnings",
+           Json::array(
+               {"fixture.warning.a",
+                "fixture.warning.b"})}}},
+    };
+    expected_target_planning["graphs"][selected_graph] = {
+        {"nodes",
+         {{"scene",
+           {{"serial", true},
+            {"isolate", true}}}}},
+        {"resources",
+         {{"swapchain",
+           {{"no_alias", true}}}}},
+    };
+    REQUIRE(
         serializeCompiledRenderPipelineMetadata(compiled)
             .at("target_planning") ==
-        Json{
-            {"profile",
-             {{"kind", "hazard_stress"}, {"seed", 17}}},
-            {"graphs",
-             {{"main#xr",
-               {{"nodes",
-                 {{"scene",
-                   {{"serial", true},
-                    {"isolate", true}}}}},
-                {"resources",
-                 {{"swapchain",
-                   {{"no_alias", true}}}}}}}}},
-            {"diagnostics",
-             {{"strict_warnings",
-               Json::array(
-                   {"fixture.warning.a",
-                    "fixture.warning.b"})}}},
-        }));
+        expected_target_planning);
 }
 
 TEST_CASE("target planning authoring rejects ambiguous controls",
@@ -394,6 +405,15 @@ TEST_CASE("Vulkan plan pins select the current immutable graph variant",
         .backend_candidate =
             "pelican.vulkan.materialized_plan@1",
     };
+#if PELICAN_WITH_OPENXR
+    constexpr auto selected_variant = RenderPipelineGraphVariant::xr;
+    constexpr auto selected_variant_name = "xr";
+    const auto &selected_pin = xr_pin;
+#else
+    constexpr auto selected_variant = RenderPipelineGraphVariant::flat;
+    constexpr auto selected_variant_name = "flat";
+    const auto &selected_pin = flat_pin;
+#endif
     auto authored = baseConfig();
     authored["vulkan_plan_pins"] = {
         {"flat",
@@ -408,10 +428,10 @@ TEST_CASE("Vulkan plan pins select the current immutable graph variant",
         RenderPipelineRequest{
             authored, "Vulkan plan pin fixture"},
         RenderEnvironmentCapabilities{
-            true, RenderPipelineGraphVariant::xr});
+            true, selected_variant});
     REQUIRE(resolved.vulkan_plan_pins ==
             std::vector<VulkanTargetPlanPinPackage>{
-                xr_pin});
+                selected_pin});
     const auto compiled =
         compileRenderPipeline(resolved);
     REQUIRE(compiled.vulkan_plan_pins ==
@@ -420,16 +440,16 @@ TEST_CASE("Vulkan plan pins select the current immutable graph variant",
         serializeCompiledRenderPipelineMetadata(compiled)
             .at("vulkan_plan_pins") ==
         Json::array({
-            vulkanTargetPlanPinPackageToJson(xr_pin)}));
+            vulkanTargetPlanPinPackageToJson(selected_pin)}));
 
-    authored["vulkan_plan_pins"]["xr"].push_back(
-        vulkanTargetPlanPinPackageToJson(xr_pin));
+    authored["vulkan_plan_pins"][selected_variant_name].push_back(
+        vulkanTargetPlanPinPackageToJson(selected_pin));
     REQUIRE_THROWS_WITH(
         resolveRenderPipeline(
             RenderPipelineRequest{
                 authored, "duplicate Vulkan plan pins"},
             RenderEnvironmentCapabilities{
-                true, RenderPipelineGraphVariant::xr}),
+                true, selected_variant}),
         Catch::Matchers::ContainsSubstring(
             "duplicate packages for a graph"));
 }
@@ -464,6 +484,15 @@ TEST_CASE("Vulkan physical fragments select the current immutable graph variant"
             },
         },
     };
+#if PELICAN_WITH_OPENXR
+    constexpr auto selected_variant = RenderPipelineGraphVariant::xr;
+    constexpr auto selected_variant_name = "xr";
+    const auto &selected_fragment = xr_fragment;
+#else
+    constexpr auto selected_variant = RenderPipelineGraphVariant::flat;
+    constexpr auto selected_variant_name = "flat";
+    const auto &selected_fragment = flat_fragment;
+#endif
     auto authored = baseConfig();
     authored["vulkan_physical_fragments"] = {
         {"flat",
@@ -480,11 +509,11 @@ TEST_CASE("Vulkan physical fragments select the current immutable graph variant"
         RenderPipelineRequest{
             authored, "Vulkan physical fragment fixture"},
         RenderEnvironmentCapabilities{
-            true, RenderPipelineGraphVariant::xr});
+            true, selected_variant});
     REQUIRE(
         resolved.vulkan_physical_fragments ==
         std::vector<VulkanPhysicalFragmentPackage>{
-            xr_fragment});
+            selected_fragment});
     const auto compiled =
         compileRenderPipeline(resolved);
     REQUIRE(
@@ -495,19 +524,19 @@ TEST_CASE("Vulkan physical fragments select the current immutable graph variant"
             .at("vulkan_physical_fragments") ==
         Json::array({
             vulkanPhysicalFragmentPackageToJson(
-                xr_fragment)}));
+                selected_fragment)}));
 
-    authored["vulkan_physical_fragments"]["xr"]
+    authored["vulkan_physical_fragments"][selected_variant_name]
         .push_back(
             vulkanPhysicalFragmentPackageToJson(
-                xr_fragment));
+                selected_fragment));
     REQUIRE_THROWS_WITH(
         resolveRenderPipeline(
             RenderPipelineRequest{
                 authored,
                 "duplicate Vulkan physical fragments"},
             RenderEnvironmentCapabilities{
-                true, RenderPipelineGraphVariant::xr}),
+                true, selected_variant}),
         Catch::Matchers::ContainsSubstring(
             "duplicate packages for a graph"));
 }
@@ -521,11 +550,14 @@ TEST_CASE("WP184 compiles draw sort providers and XR view policy for every graph
         {"xr_view_policy", "per_view"},
     };
 
-    for (const auto variant : {
-             RenderPipelineGraphVariant::flat,
-             RenderPipelineGraphVariant::preview,
-             RenderPipelineGraphVariant::xr,
-         }) {
+    auto variants = std::vector{
+        RenderPipelineGraphVariant::flat,
+        RenderPipelineGraphVariant::preview,
+    };
+#if PELICAN_WITH_OPENXR
+    variants.push_back(RenderPipelineGraphVariant::xr);
+#endif
+    for (const auto variant : variants) {
         const auto variant_name =
             std::string{renderPipelineGraphVariantName(variant)};
         CAPTURE(variant_name);
@@ -685,6 +717,15 @@ TEST_CASE("WP180 preview precompile resolves presets through the shared boundary
 
 TEST_CASE("WP181 compiles dump metadata into a typed immutable runtime contract",
           "[wp181][render-pipeline][compile][typed]") {
+#if PELICAN_WITH_OPENXR
+    constexpr auto selected_variant = RenderPipelineGraphVariant::xr;
+    const auto selected_variant_name = std::string{"xr"};
+    const auto selected_suffix = std::string{"#xr"};
+#else
+    constexpr auto selected_variant = RenderPipelineGraphVariant::flat;
+    const auto selected_variant_name = std::string{"flat"};
+    const auto selected_suffix = std::string{};
+#endif
     ResolvedRenderPipeline resolved;
     resolved.normalized_config = {{"authoring_only", true}};
     resolved.shader_defines = {"PELICAN_TYPED_FIXTURE"};
@@ -717,9 +758,10 @@ TEST_CASE("WP181 compiles dump metadata into a typed immutable runtime contract"
     resolved.graph_variant_policy =
         compileGraphVariantPolicy(
             GraphVariantPolicyRequest{
-                RenderPipelineGraphVariant::xr});
+                selected_variant});
     resolved.diagnostics = {
-        {RenderPipelineDiagnosticKind::graph_variant_selected, "xr",
+        {RenderPipelineDiagnosticKind::graph_variant_selected,
+         selected_variant_name,
          "selected_by_environment"},
         {RenderPipelineDiagnosticKind::feature_excluded, "xr_excluded",
          "xr"},
@@ -734,9 +776,9 @@ TEST_CASE("WP181 compiles dump metadata into a typed immutable runtime contract"
     REQUIRE(pipeline->shader_defines ==
             std::vector<std::string>{"PELICAN_TYPED_FIXTURE"});
     REQUIRE(pipeline->graph_variant_policy.variant ==
-            RenderPipelineGraphVariant::xr);
+            selected_variant);
     REQUIRE(pipeline->graph_variant_policy
-                .rendering_pass_name_suffix == "#xr");
+                .rendering_pass_name_suffix == selected_suffix);
     REQUIRE(pipeline->projection_jitter.has_value());
     REQUIRE(pipeline->projection_jitter->pattern ==
             ProjectionJitterPattern::table);
@@ -772,19 +814,7 @@ TEST_CASE("WP181 compiles dump metadata into a typed immutable runtime contract"
 
     const auto metadata = serializeCompiledRenderPipelineMetadata(*pipeline);
     REQUIRE_FALSE(metadata.contains("authoring_only"));
-    REQUIRE(metadata == Json{
-                            {"projection_jitter", *resolved.projection_jitter},
-                            {"feature_instances", resolved.feature_instances},
-                            {"material_routing", resolved.material_routing},
-                            {"pipeline_preset",
-                             {{"ref", "fixture://typed_pipeline"},
-                              {"name", "typed_pipeline_v1"},
-                              {"version", 1}}},
-                            {"graph_variant", "xr"},
-                            {"excluded_features",
-                             Json::array({"xr_excluded"})},
-                        });
-    const auto expected_metadata = Json{
+    auto expected_metadata = Json{
         {"projection_jitter", *resolved.projection_jitter},
         {"feature_instances", resolved.feature_instances},
         {"material_routing", resolved.material_routing},
@@ -792,9 +822,13 @@ TEST_CASE("WP181 compiles dump metadata into a typed immutable runtime contract"
          {{"ref", "fixture://typed_pipeline"},
           {"name", "typed_pipeline_v1"},
           {"version", 1}}},
-        {"graph_variant", "xr"},
-        {"excluded_features", Json::array({"xr_excluded"})},
     };
+#if PELICAN_WITH_OPENXR
+    expected_metadata["graph_variant"] = "xr";
+    expected_metadata["excluded_features"] =
+        Json::array({"xr_excluded"});
+#endif
+    REQUIRE(metadata == expected_metadata);
     REQUIRE(metadata.dump() == expected_metadata.dump());
 }
 
