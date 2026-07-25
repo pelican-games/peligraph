@@ -26,8 +26,12 @@ struct FakeRuntime {
     std::uint32_t enumerate_images_count = 0;
     bool should_render = true;
     bool saw_projection_layer = false;
+    bool saw_depth_chain = false;
     bool saw_zero_layer = false;
     bool graphics_release_layout_is_runtime_layout = false;
+    bool composition_depth_enabled = false;
+    float expected_near_z = 0.05F;
+    float expected_far_z = 1000.0F;
 };
 
 thread_local FakeRuntime *active_fake = nullptr;
@@ -44,8 +48,8 @@ XrSession fakeSession() {
     return reinterpret_cast<XrSession>(std::uintptr_t{0x201});
 }
 XrSpace fakeSpace() { return reinterpret_cast<XrSpace>(std::uintptr_t{0x301}); }
-XrSwapchain fakeSwapchain(std::uint32_t view) {
-    return reinterpret_cast<XrSwapchain>(std::uintptr_t{0x401 + view});
+XrSwapchain fakeSwapchain(std::uint32_t kind) {
+    return reinterpret_cast<XrSwapchain>(std::uintptr_t{0x401 + kind});
 }
 VkInstance fakeVkInstance() {
     return reinterpret_cast<VkInstance>(std::uintptr_t{0x501});
@@ -57,7 +61,7 @@ VkDevice fakeVkDevice() {
     return reinterpret_cast<VkDevice>(std::uintptr_t{0x503});
 }
 
-std::uint32_t viewFor(XrSwapchain swapchain) {
+std::uint32_t swapchainKind(XrSwapchain swapchain) {
     if (swapchain == fakeSwapchain(0)) return 0;
     if (swapchain == fakeSwapchain(1)) return 1;
     FAIL("unknown fake swapchain");
@@ -65,6 +69,9 @@ std::uint32_t viewFor(XrSwapchain swapchain) {
 }
 
 std::string eye(std::uint32_t view) { return view == 0 ? "L" : "R"; }
+std::string swapchainName(std::uint32_t kind) {
+    return kind == 0 ? "color" : "depth";
+}
 
 XrResult XRAPI_CALL fakeCreateSession(XrInstance, const XrSessionCreateInfo *,
                                       XrSession *session) {
@@ -127,13 +134,36 @@ XrResult XRAPI_CALL fakeEndFrame(XrSession, const XrFrameEndInfo *info) {
     CHECK(layer.space == fakeSpace());
     REQUIRE(layer.viewCount == 2);
     for (std::uint32_t view = 0; view < 2; ++view) {
-        CHECK(layer.views[view].subImage.swapchain == fakeSwapchain(view));
-        CHECK(layer.views[view].subImage.imageArrayIndex == 0);
+        CHECK(layer.views[view].subImage.swapchain == fakeSwapchain(0));
+        CHECK(layer.views[view].subImage.imageArrayIndex == view);
         CHECK(layer.views[view].subImage.imageRect.offset.x == 0);
         CHECK(layer.views[view].subImage.imageRect.offset.y == 0);
         CHECK(layer.views[view].subImage.imageRect.extent.width ==
-              static_cast<std::int32_t>(64 + view * 8));
+              72);
         CHECK(layer.views[view].subImage.imageRect.extent.height == 64);
+        if (active_fake->composition_depth_enabled) {
+            REQUIRE(layer.views[view].next != nullptr);
+            const auto &depth =
+                *reinterpret_cast<
+                    const XrCompositionLayerDepthInfoKHR *>(
+                    layer.views[view].next);
+            CHECK(depth.type ==
+                  XR_TYPE_COMPOSITION_LAYER_DEPTH_INFO_KHR);
+            CHECK(depth.subImage.swapchain ==
+                  fakeSwapchain(1));
+            CHECK(depth.subImage.imageArrayIndex == view);
+            CHECK(depth.subImage.imageRect.extent.width == 72);
+            CHECK(depth.subImage.imageRect.extent.height == 64);
+            CHECK(depth.minDepth == 0.0F);
+            CHECK(depth.maxDepth == 1.0F);
+            CHECK(depth.nearZ ==
+                  active_fake->expected_near_z);
+            CHECK(depth.farZ ==
+                  active_fake->expected_far_z);
+            active_fake->saw_depth_chain = true;
+        } else {
+            CHECK(layer.views[view].next == nullptr);
+        }
     }
     active_fake->saw_projection_layer = true;
     return XR_SUCCESS;
@@ -172,28 +202,33 @@ XrResult XRAPI_CALL fakeEnumerateViewConfigurationViews(
 XrResult XRAPI_CALL fakeEnumerateSwapchainFormats(XrSession, std::uint32_t capacity,
                                                   std::uint32_t *count,
                                                   std::int64_t *formats) {
-    *count = 2;
+    *count = 3;
     if (capacity == 0) return XR_SUCCESS;
-    REQUIRE(capacity >= 2);
+    REQUIRE(capacity >= 3);
     formats[0] = VK_FORMAT_B8G8R8A8_UNORM;
     formats[1] = static_cast<std::int64_t>(static_cast<VkFormat>(test_format));
+    formats[2] = VK_FORMAT_D32_SFLOAT;
     return XR_SUCCESS;
 }
 XrResult XRAPI_CALL fakeCreateSwapchain(XrSession,
                                         const XrSwapchainCreateInfo *info,
                                         XrSwapchain *swapchain) {
-    const auto view = active_fake->create_count++;
-    active_fake->calls.emplace_back("create:" + eye(view));
-    REQUIRE(view < 2);
-    active_fake->swapchain_create_infos[view] = *info;
-    if (active_fake->failure == "create_" + eye(view)) {
+    const auto kind = active_fake->create_count++;
+    active_fake->calls.emplace_back(
+        "create:" + swapchainName(kind));
+    REQUIRE(kind < 2);
+    active_fake->swapchain_create_infos[kind] = *info;
+    if (active_fake->failure ==
+        "create_" + swapchainName(kind)) {
         return XR_ERROR_RUNTIME_FAILURE;
     }
-    *swapchain = fakeSwapchain(view);
+    *swapchain = fakeSwapchain(kind);
     return XR_SUCCESS;
 }
 XrResult XRAPI_CALL fakeDestroySwapchain(XrSwapchain swapchain) {
-    active_fake->calls.emplace_back("destroy:" + eye(viewFor(swapchain)));
+    active_fake->calls.emplace_back(
+        "destroy:" +
+        swapchainName(swapchainKind(swapchain)));
     return XR_SUCCESS;
 }
 XrResult XRAPI_CALL fakeEnumerateSwapchainImages(
@@ -205,40 +240,50 @@ XrResult XRAPI_CALL fakeEnumerateSwapchainImages(
 XrResult XRAPI_CALL fakeAcquireSwapchainImage(
     XrSwapchain swapchain, const XrSwapchainImageAcquireInfo *,
     std::uint32_t *image_index) {
-    const auto view = viewFor(swapchain);
-    active_fake->calls.emplace_back("acquire:" + eye(view));
-    if (active_fake->failure == "acquire_" + eye(view)) {
+    const auto kind = swapchainKind(swapchain);
+    active_fake->calls.emplace_back(
+        "acquire:" + swapchainName(kind));
+    if (active_fake->failure ==
+        "acquire_" + swapchainName(kind)) {
         return XR_ERROR_RUNTIME_FAILURE;
     }
-    *image_index = 10 + view;
+    *image_index = 10 + kind;
     return XR_SUCCESS;
 }
 XrResult XRAPI_CALL fakeWaitSwapchainImage(XrSwapchain swapchain,
                                            const XrSwapchainImageWaitInfo *) {
-    const auto view = viewFor(swapchain);
-    active_fake->calls.emplace_back("wait:" + eye(view));
-    if (active_fake->timeout_once[view] && active_fake->wait_counts[view]++ == 0) {
+    const auto kind = swapchainKind(swapchain);
+    active_fake->calls.emplace_back(
+        "wait:" + swapchainName(kind));
+    if (active_fake->timeout_once[kind] &&
+        active_fake->wait_counts[kind]++ == 0) {
         return XR_TIMEOUT_EXPIRED;
     }
-    if (active_fake->failure == "wait_" + eye(view)) {
+    if (active_fake->failure ==
+        "wait_" + swapchainName(kind)) {
         return XR_ERROR_RUNTIME_FAILURE;
     }
-    if (active_fake->failure == "loss_wait_" + eye(view)) {
+    if (active_fake->failure ==
+        "loss_wait_" + swapchainName(kind)) {
         return XR_ERROR_SESSION_LOST;
     }
-    if (active_fake->failure == "loss_pending_wait_" + eye(view)) {
+    if (active_fake->failure ==
+        "loss_pending_wait_" + swapchainName(kind)) {
         return XR_SESSION_LOSS_PENDING;
     }
-    if (active_fake->failure == "instance_loss_wait_" + eye(view)) {
+    if (active_fake->failure ==
+        "instance_loss_wait_" + swapchainName(kind)) {
         return XR_ERROR_INSTANCE_LOST;
     }
     return XR_SUCCESS;
 }
 XrResult XRAPI_CALL fakeReleaseSwapchainImage(
     XrSwapchain swapchain, const XrSwapchainImageReleaseInfo *) {
-    const auto view = viewFor(swapchain);
-    active_fake->calls.emplace_back("release:" + eye(view));
-    if (active_fake->failure == "release_" + eye(view)) {
+    const auto kind = swapchainKind(swapchain);
+    active_fake->calls.emplace_back(
+        "release:" + swapchainName(kind));
+    if (active_fake->failure ==
+        "release_" + swapchainName(kind)) {
         return XR_ERROR_RUNTIME_FAILURE;
     }
     return XR_SUCCESS;
@@ -310,13 +355,25 @@ Pelican::OpenXr::XrSessionDependencies sessionDependencies() {
 }
 
 class FakeGraphics final : public Pelican::OpenXr::IXrCompositionGraphics {
+    bool has_depth = false;
+
   public:
     void initialize(
         const Pelican::OpenXr::XrCompositionGraphicsConfig &config) override {
         active_fake->calls.emplace_back("graphics_init");
-        CHECK(config.swapchains[0] == fakeSwapchain(0));
-        CHECK(config.swapchains[1] == fakeSwapchain(1));
+        CHECK(config.color_swapchain == fakeSwapchain(0));
+        has_depth =
+            config.depth_swapchain != XR_NULL_HANDLE;
+        if (has_depth) {
+            CHECK(config.depth_swapchain ==
+                  fakeSwapchain(1));
+        }
+        CHECK(config.extent == vk::Extent2D{72, 64});
         CHECK(config.color_format == test_format);
+        CHECK(config.depth_format ==
+              (has_depth
+                   ? vk::Format::eD32Sfloat
+                   : vk::Format::eUndefined));
         active_fake->graphics_release_layout_is_runtime_layout =
             config.release_layout == vk::ImageLayout::eColorAttachmentOptimal &&
             config.release_layout != vk::ImageLayout::ePresentSrcKHR;
@@ -325,13 +382,45 @@ class FakeGraphics final : public Pelican::OpenXr::IXrCompositionGraphics {
     }
 
     Pelican::FrameRenderContext beginView(std::uint32_t view,
-                                          std::uint32_t image_index,
+                                          Pelican::OpenXr::
+                                              XrCompositionAcquiredImages images,
                                           std::uint32_t in_flight) override {
         active_fake->calls.emplace_back("begin:" + eye(view));
-        CHECK(image_index == 10 + view);
+        CHECK(images.color == 10);
+        CHECK(images.depth ==
+              (has_depth
+                   ? std::optional<std::uint32_t>{11}
+                   : std::nullopt));
         return {
-            .extent = vk::Extent2D{64 + view * 8, 64},
+            .color_base_array_layer = view,
+            .color_array_layers = 1,
+            .extent = vk::Extent2D{72, 64},
             .required_layout = vk::ImageLayout::eColorAttachmentOptimal,
+            .in_flight_frame_index = in_flight,
+        };
+    }
+
+    Pelican::FrameRenderContext beginViewFamily(
+        Pelican::OpenXr::XrCompositionAcquiredImages images,
+        std::uint32_t in_flight) override {
+        active_fake->calls.emplace_back("begin:family");
+        CHECK(images.color == 10);
+        CHECK(images.depth ==
+              (has_depth
+                   ? std::optional<std::uint32_t>{11}
+                   : std::nullopt));
+        return {
+            .color_layer_attachments =
+                {vk::ImageView{
+                     reinterpret_cast<VkImageView>(
+                         std::uintptr_t{0x701})},
+                 vk::ImageView{
+                     reinterpret_cast<VkImageView>(
+                         std::uintptr_t{0x702})}},
+            .color_array_layers = 2,
+            .extent = vk::Extent2D{72, 64},
+            .required_layout =
+                vk::ImageLayout::eColorAttachmentOptimal,
             .in_flight_frame_index = in_flight,
         };
     }
@@ -343,8 +432,20 @@ class FakeGraphics final : public Pelican::OpenXr::IXrCompositionGraphics {
         }
     }
 
+    void submitViewFamily(std::uint32_t) override {
+        active_fake->calls.emplace_back("submit:family");
+        if (active_fake->failure == "submit_family") {
+            throw std::runtime_error(
+                "fake GPU family submit failure");
+        }
+    }
+
     void waitForSubmission(std::uint32_t view, std::uint32_t) override {
         active_fake->calls.emplace_back("gpu_wait:" + eye(view));
+    }
+
+    void waitForViewFamilySubmission(std::uint32_t) override {
+        active_fake->calls.emplace_back("gpu_wait:family");
     }
 };
 
@@ -378,6 +479,9 @@ Pelican::OpenXr::XrCompositionDependencies compositionDependencies(
         .vulkan = nullptr,
         .renderer_color_format = test_format,
         .image_wait_timeout = 1,
+        .composition_layer_depth_enabled =
+            active_fake != nullptr &&
+            active_fake->composition_depth_enabled,
     };
 }
 
@@ -391,7 +495,7 @@ void submitBoth(Pelican::OpenXr::XrCompositionTarget &target) {
 
 } // namespace
 
-TEST_CASE("OpenXR composition owns two arraySize-one swapchains and one projection layer",
+TEST_CASE("OpenXR composition owns one two-layer color swapchain and one projection layer",
           "[openxr][composition]") {
     FakeRuntime fake;
     FakeScope scope{fake};
@@ -400,19 +504,27 @@ TEST_CASE("OpenXR composition owns two arraySize-one swapchains and one projecti
     Pelican::OpenXr::XrCompositionTarget target{
         compositionDependencies(session), std::make_unique<FakeGraphics>()};
 
-    REQUIRE(fake.create_count == 2);
-    for (std::uint32_t view = 0; view < 2; ++view) {
-        const auto &info = fake.swapchain_create_infos[view];
-        CHECK(info.arraySize == 1);
-        CHECK(info.faceCount == 1);
-        CHECK(info.mipCount == 1);
-        CHECK(info.sampleCount == 1);
-        CHECK(info.width == 64 + view * 8);
-        CHECK(info.height == 64);
-        CHECK(info.format ==
-              static_cast<std::int64_t>(static_cast<VkFormat>(test_format)));
-        CHECK(info.usageFlags == XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT);
-    }
+    REQUIRE(fake.create_count == 1);
+    const auto &info = fake.swapchain_create_infos[0];
+    CHECK(info.arraySize == 2);
+    CHECK(info.faceCount == 1);
+    CHECK(info.mipCount == 1);
+    CHECK(info.sampleCount == 1);
+    CHECK(info.width == 72);
+    CHECK(info.height == 64);
+    CHECK(info.format ==
+          static_cast<std::int64_t>(
+              static_cast<VkFormat>(test_format)));
+    CHECK(info.usageFlags ==
+          XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT);
+    const auto capabilities =
+        target.compositionCapabilities();
+    CHECK(capabilities.array_color_swapchain);
+    CHECK(capabilities.view_family_execution);
+    CHECK_FALSE(capabilities.depth_submission);
+    CHECK(capabilities.depth_reason ==
+          "XR_KHR_composition_layer_depth_not_enabled");
+    CHECK(target.supportsViewFamilyExecution());
     CHECK(fake.graphics_release_layout_is_runtime_layout);
     CHECK(fake.enumerate_images_count == 0);
 
@@ -422,9 +534,9 @@ TEST_CASE("OpenXR composition owns two arraySize-one swapchains and one projecti
     target.endLogicalFrame();
 
     CHECK(fake.calls == std::vector<std::string>{
-                            "acquire:L", "wait:L", "acquire:R", "wait:R",
+                            "acquire:color", "wait:color",
                             "begin:L", "submit:L", "begin:R", "submit:R",
-                            "gpu_wait:L", "gpu_wait:R", "release:L", "release:R",
+                            "gpu_wait:L", "gpu_wait:R", "release:color",
                             "end_projection"});
     CHECK(fake.saw_projection_layer);
     CHECK_FALSE(fake.saw_zero_layer);
@@ -433,6 +545,85 @@ TEST_CASE("OpenXR composition owns two arraySize-one swapchains and one projecti
     CHECK(target.swapchainState(1) ==
           Pelican::OpenXr::XrSwapchainState::released);
     CHECK_FALSE(target.generationTeardownRequired());
+}
+
+TEST_CASE("OpenXR composition submits both array layers through one view-family command",
+          "[openxr][composition][view-family]") {
+    FakeRuntime fake;
+    FakeScope scope{fake};
+    Pelican::OpenXr::SessionRuntime session{
+        sessionDependencies()};
+    makeReady(fake, session);
+    Pelican::OpenXr::XrCompositionTarget target{
+        compositionDependencies(session),
+        std::make_unique<FakeGraphics>()};
+
+    auto frame = beginFrame(fake, session);
+    target.prepareFrame(frame.timing, frame.views);
+    target.beginLogicalFrame(2);
+    const auto context =
+        target.beginViewFamily(2);
+    CHECK(context.color_array_layers == 2);
+    CHECK(context.color_layer_attachments.size() == 2);
+    target.endViewFamily();
+    target.endLogicalFrame();
+
+    CHECK(fake.calls ==
+          std::vector<std::string>{
+              "acquire:color", "wait:color",
+              "begin:family", "submit:family",
+              "gpu_wait:family", "release:color",
+              "end_projection"});
+    CHECK(fake.saw_projection_layer);
+}
+
+TEST_CASE("OpenXR composition submits a two-layer depth swapchain chain when enabled",
+          "[openxr][composition][composition-depth]") {
+    FakeRuntime fake{
+        .composition_depth_enabled = true,
+        .expected_near_z = 0.1F,
+        .expected_far_z = 500.0F,
+    };
+    FakeScope scope{fake};
+    Pelican::OpenXr::SessionRuntime session{
+        sessionDependencies()};
+    makeReady(fake, session);
+    Pelican::OpenXr::XrCompositionTarget target{
+        compositionDependencies(session),
+        std::make_unique<FakeGraphics>()};
+
+    REQUIRE(fake.create_count == 2);
+    const auto &depth_info =
+        fake.swapchain_create_infos[1];
+    CHECK(depth_info.arraySize == 2);
+    CHECK(depth_info.width == 72);
+    CHECK(depth_info.height == 64);
+    CHECK(depth_info.format == VK_FORMAT_D32_SFLOAT);
+    CHECK(depth_info.usageFlags ==
+          XR_SWAPCHAIN_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
+    const auto capabilities =
+        target.compositionCapabilities();
+    CHECK(capabilities.depth_submission);
+    CHECK(capabilities.depth_format ==
+          vk::Format::eD32Sfloat);
+    CHECK(capabilities.depth_reason.empty());
+
+    auto frame = beginFrame(fake, session);
+    target.prepareFrame(
+        frame.timing, frame.views, 0.1F, 500.0F);
+    target.beginLogicalFrame(2);
+    (void)target.beginViewFamily(2);
+    target.endViewFamily();
+    target.endLogicalFrame();
+
+    CHECK(fake.calls ==
+          std::vector<std::string>{
+              "acquire:color", "wait:color",
+              "acquire:depth", "wait:depth",
+              "begin:family", "submit:family",
+              "gpu_wait:family", "release:depth",
+              "release:color", "end_projection"});
+    CHECK(fake.saw_depth_chain);
 }
 
 TEST_CASE("OpenXR composition retains a submitted generation until both view fences complete",
@@ -463,10 +654,12 @@ TEST_CASE("OpenXR composition retains a submitted generation until both view fen
 
 TEST_CASE("OpenXR swapchain wait timeout retries the same acquired image",
           "[openxr][composition][timeout]") {
-    for (const auto timeout_view : {0U, 1U}) {
-        DYNAMIC_SECTION("timeout view " << timeout_view) {
+    for (const bool with_depth : {false, true}) {
+        DYNAMIC_SECTION("depth " << with_depth) {
             FakeRuntime fake;
-            fake.timeout_once[timeout_view] = true;
+            fake.composition_depth_enabled = with_depth;
+            const auto timeout_kind = with_depth ? 1U : 0U;
+            fake.timeout_once[timeout_kind] = true;
             FakeScope scope{fake};
             Pelican::OpenXr::SessionRuntime session{sessionDependencies()};
             makeReady(fake, session);
@@ -477,11 +670,13 @@ TEST_CASE("OpenXR swapchain wait timeout retries the same acquired image",
             submitBoth(target);
             target.endLogicalFrame();
 
-            CHECK(fake.wait_counts[timeout_view] == 2);
+            CHECK(fake.wait_counts[timeout_kind] == 2);
             CHECK(std::count(fake.calls.begin(), fake.calls.end(),
-                             "acquire:" + eye(timeout_view)) == 1);
+                             "acquire:" +
+                                 swapchainName(timeout_kind)) == 1);
             CHECK(std::count(fake.calls.begin(), fake.calls.end(),
-                             "wait:" + eye(timeout_view)) == 2);
+                             "wait:" +
+                                 swapchainName(timeout_kind)) == 2);
             CHECK(fake.saw_projection_layer);
         }
     }
@@ -492,40 +687,31 @@ TEST_CASE("OpenXR partial failures unwind each swapchain legally and close zero-
     struct Case {
         const char *failure;
         std::vector<std::string> expected;
-        Pelican::OpenXr::XrSwapchainState left;
-        Pelican::OpenXr::XrSwapchainState right;
+        Pelican::OpenXr::XrSwapchainState state;
         bool teardown;
     };
     const std::vector<Case> cases{
-        {"acquire_L", {"acquire:L", "end_zero"},
-         Pelican::OpenXr::XrSwapchainState::idle,
+        {"acquire_color",
+         {"acquire:color", "end_zero"},
          Pelican::OpenXr::XrSwapchainState::idle, false},
-        {"acquire_R", {"acquire:L", "wait:L", "acquire:R", "release:L", "end_zero"},
-         Pelican::OpenXr::XrSwapchainState::released,
-         Pelican::OpenXr::XrSwapchainState::idle, false},
-        {"wait_L", {"acquire:L", "wait:L", "end_zero"},
-         Pelican::OpenXr::XrSwapchainState::acquired,
-         Pelican::OpenXr::XrSwapchainState::idle, true},
-        {"wait_R", {"acquire:L", "wait:L", "acquire:R", "wait:R", "release:L", "end_zero"},
-         Pelican::OpenXr::XrSwapchainState::released,
+        {"wait_color",
+         {"acquire:color", "wait:color", "end_zero"},
          Pelican::OpenXr::XrSwapchainState::acquired, true},
-        {"submit_L", {"acquire:L", "wait:L", "acquire:R", "wait:R", "begin:L", "submit:L",
-                      "release:L", "release:R", "end_zero"},
-         Pelican::OpenXr::XrSwapchainState::released,
+        {"submit_L",
+         {"acquire:color", "wait:color",
+          "begin:L", "submit:L", "release:color",
+          "end_zero"},
          Pelican::OpenXr::XrSwapchainState::released, true},
-        {"submit_R", {"acquire:L", "wait:L", "acquire:R", "wait:R", "begin:L", "submit:L",
-                      "begin:R", "submit:R", "gpu_wait:L", "release:L", "release:R", "end_zero"},
-         Pelican::OpenXr::XrSwapchainState::released,
+        {"submit_R",
+         {"acquire:color", "wait:color",
+          "begin:L", "submit:L", "begin:R", "submit:R",
+          "gpu_wait:L", "release:color", "end_zero"},
          Pelican::OpenXr::XrSwapchainState::released, true},
-        {"release_L", {"acquire:L", "wait:L", "acquire:R", "wait:R", "begin:L", "submit:L",
-                       "begin:R", "submit:R", "gpu_wait:L", "gpu_wait:R", "release:L",
-                       "release:R", "end_zero"},
-         Pelican::OpenXr::XrSwapchainState::submitted,
-         Pelican::OpenXr::XrSwapchainState::released, true},
-        {"release_R", {"acquire:L", "wait:L", "acquire:R", "wait:R", "begin:L", "submit:L",
-                       "begin:R", "submit:R", "gpu_wait:L", "gpu_wait:R", "release:L",
-                       "release:R", "end_zero"},
-         Pelican::OpenXr::XrSwapchainState::released,
+        {"release_color",
+         {"acquire:color", "wait:color",
+          "begin:L", "submit:L", "begin:R", "submit:R",
+          "gpu_wait:L", "gpu_wait:R", "release:color",
+          "end_zero"},
          Pelican::OpenXr::XrSwapchainState::submitted, true},
     };
 
@@ -546,9 +732,73 @@ TEST_CASE("OpenXR partial failures unwind each swapchain legally and close zero-
                 target.endLogicalFrame();
             }());
             CHECK(fake.calls == test.expected);
-            CHECK(target.swapchainState(0) == test.left);
-            CHECK(target.swapchainState(1) == test.right);
+            CHECK(target.swapchainState(0) == test.state);
+            CHECK(target.swapchainState(1) == test.state);
             CHECK(target.generationTeardownRequired() == test.teardown);
+            CHECK(fake.saw_zero_layer);
+            CHECK_FALSE(fake.saw_projection_layer);
+        }
+    }
+}
+
+TEST_CASE("OpenXR depth failures preserve legal color and depth release order",
+          "[openxr][composition][composition-depth][unwind]") {
+    struct Case {
+        const char *failure;
+        std::vector<std::string> expected;
+        Pelican::OpenXr::XrSwapchainState color;
+        Pelican::OpenXr::XrSwapchainState depth;
+        bool teardown;
+    };
+    const std::vector<Case> cases{
+        {"acquire_depth",
+         {"acquire:color", "wait:color",
+          "acquire:depth", "release:color", "end_zero"},
+         Pelican::OpenXr::XrSwapchainState::released,
+         Pelican::OpenXr::XrSwapchainState::idle, false},
+        {"wait_depth",
+         {"acquire:color", "wait:color",
+          "acquire:depth", "wait:depth",
+          "release:color", "end_zero"},
+         Pelican::OpenXr::XrSwapchainState::released,
+         Pelican::OpenXr::XrSwapchainState::acquired, true},
+        {"release_depth",
+         {"acquire:color", "wait:color",
+          "acquire:depth", "wait:depth",
+          "begin:L", "submit:L", "begin:R", "submit:R",
+          "gpu_wait:L", "gpu_wait:R",
+          "release:depth", "release:color", "end_zero"},
+         Pelican::OpenXr::XrSwapchainState::released,
+         Pelican::OpenXr::XrSwapchainState::submitted, true},
+    };
+
+    for (const auto &test : cases) {
+        DYNAMIC_SECTION(test.failure) {
+            FakeRuntime fake{
+                .failure = test.failure,
+                .composition_depth_enabled = true,
+            };
+            FakeScope scope{fake};
+            Pelican::OpenXr::SessionRuntime session{
+                sessionDependencies()};
+            makeReady(fake, session);
+            Pelican::OpenXr::XrCompositionTarget target{
+                compositionDependencies(session),
+                std::make_unique<FakeGraphics>()};
+            auto frame = beginFrame(fake, session);
+            target.prepareFrame(frame.timing, frame.views);
+
+            CHECK_THROWS([&] {
+                submitBoth(target);
+                target.endLogicalFrame();
+            }());
+            CHECK(fake.calls == test.expected);
+            CHECK(target.swapchainState(0) ==
+                  test.color);
+            CHECK(target.depthSwapchainState() ==
+                  test.depth);
+            CHECK(target.generationTeardownRequired() ==
+                  test.teardown);
             CHECK(fake.saw_zero_layer);
             CHECK_FALSE(fake.saw_projection_layer);
         }
@@ -562,11 +812,11 @@ TEST_CASE("OpenXR session loss routes to generation teardown without another fra
         Pelican::OpenXr::XrTerminalPath terminal_path;
     };
     for (const auto &test : {
-             LossCase{"loss_wait_R",
+             LossCase{"loss_wait_color",
                       Pelican::OpenXr::XrTerminalPath::loss_pending},
-             LossCase{"loss_pending_wait_R",
+             LossCase{"loss_pending_wait_color",
                       Pelican::OpenXr::XrTerminalPath::loss_pending},
-             LossCase{"instance_loss_wait_R",
+             LossCase{"instance_loss_wait_color",
                       Pelican::OpenXr::XrTerminalPath::instance_loss_pending},
          }) {
         DYNAMIC_SECTION(test.failure) {
@@ -582,8 +832,8 @@ TEST_CASE("OpenXR session loss routes to generation teardown without another fra
 
             CHECK_THROWS(target.beginLogicalFrame(2));
             CHECK(fake.calls == std::vector<std::string>{
-                                    "acquire:L", "wait:L", "acquire:R",
-                                    "wait:R", "release:L"});
+                                    "acquire:color",
+                                    "wait:color"});
             CHECK(session.terminalPath() == test.terminal_path);
             CHECK(target.generationTeardownRequired());
             CHECK_FALSE(fake.saw_zero_layer);
@@ -623,10 +873,10 @@ TEST_CASE("OpenXR discarded renderable timing still closes with zero layers",
     CHECK(fake.saw_zero_layer);
 }
 
-TEST_CASE("OpenXR second swapchain creation failure destroys the first",
-          "[openxr][composition][creation]") {
+TEST_CASE("OpenXR color swapchain creation failure is fatal",
+          "[openxr][composition][creation][color]") {
     FakeRuntime fake;
-    fake.failure = "create_R";
+    fake.failure = "create_color";
     FakeScope scope{fake};
     Pelican::OpenXr::SessionRuntime session{sessionDependencies()};
 
@@ -635,6 +885,33 @@ TEST_CASE("OpenXR second swapchain creation failure destroys the first",
             compositionDependencies(session), std::make_unique<FakeGraphics>()),
         Catch::Matchers::ContainsSubstring("xrCreateSwapchain"));
     CHECK(fake.calls ==
-          std::vector<std::string>{"create:L", "create:R", "destroy:L"});
+          std::vector<std::string>{"create:color"});
+    CHECK(fake.enumerate_images_count == 0);
+}
+
+TEST_CASE("OpenXR depth swapchain creation failure falls back to color-only",
+          "[openxr][composition][creation][composition-depth]") {
+    FakeRuntime fake{
+        .failure = "create_depth",
+        .composition_depth_enabled = true,
+    };
+    FakeScope scope{fake};
+    Pelican::OpenXr::SessionRuntime session{
+        sessionDependencies()};
+    {
+        Pelican::OpenXr::XrCompositionTarget target{
+            compositionDependencies(session),
+            std::make_unique<FakeGraphics>()};
+        const auto capabilities =
+            target.compositionCapabilities();
+        CHECK_FALSE(capabilities.depth_submission);
+        CHECK(capabilities.depth_reason.find(
+                  "depth_swapchain_creation_failed") !=
+              std::string::npos);
+    }
+    CHECK(fake.calls ==
+          std::vector<std::string>{
+              "create:color", "create:depth",
+              "graphics_init", "destroy:color"});
     CHECK(fake.enumerate_images_count == 0);
 }

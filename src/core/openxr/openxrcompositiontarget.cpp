@@ -3,10 +3,13 @@
 #include "../vkcore/core.hpp"
 #include "../vkcore/image.hpp"
 
+#include <algorithm>
 #include <array>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -64,11 +67,13 @@ bool isLossResult(XrResult result) {
            result == XR_SESSION_LOSS_PENDING;
 }
 
-vk::UniqueImageView createImageView(vk::Device device, vk::Image image,
-                                    vk::Format format, vk::ImageAspectFlags aspect) {
+vk::UniqueImageView createImageView(
+    vk::Device device, vk::Image image, vk::Format format,
+    vk::ImageAspectFlags aspect, vk::ImageViewType type,
+    std::uint32_t base_array_layer, std::uint32_t layer_count) {
     vk::ImageViewCreateInfo info;
     info.image = image;
-    info.viewType = vk::ImageViewType::e2D;
+    info.viewType = type;
     info.format = format;
     info.components = {
         vk::ComponentSwizzle::eR,
@@ -76,31 +81,263 @@ vk::UniqueImageView createImageView(vk::Device device, vk::Image image,
         vk::ComponentSwizzle::eB,
         vk::ComponentSwizzle::eA,
     };
-    info.subresourceRange = {aspect, 0, 1, 0, 1};
+    info.subresourceRange = {
+        aspect, 0, 1, base_array_layer, layer_count};
     return device.createImageViewUnique(info);
 }
 
 class VulkanXrCompositionGraphics final : public IXrCompositionGraphics {
-    struct ViewResources {
-        vk::Extent2D extent;
+    struct SwapchainResources {
         std::vector<vk::Image> images;
-        std::vector<vk::UniqueImageView> image_views;
-        ImageWrapper depth_image;
-        vk::UniqueImageView depth_view;
+        std::vector<vk::UniqueImageView> layered_views;
+        std::array<
+            std::vector<vk::UniqueImageView>,
+            xr_stereo_view_count>
+            layer_views;
     };
+
+    static constexpr std::uint32_t view_family_command_slot =
+        xr_stereo_view_count;
+    static constexpr std::uint32_t command_slots_per_frame =
+        xr_stereo_view_count + 1;
 
     VulkanManageCore &vulkan;
     vk::Device device;
-    std::array<ViewResources, xr_stereo_view_count> views;
+    SwapchainResources color;
+    SwapchainResources depth;
     std::vector<CommandBufWrapper> command_buffers;
+    vk::Extent2D extent{};
     vk::Format color_format = vk::Format::eUndefined;
+    vk::Format depth_format = vk::Format::eUndefined;
     vk::ImageLayout release_layout = runtime_release_layout;
 
-    CommandBufWrapper &command(std::uint32_t view_index,
+    CommandBufWrapper &command(std::uint32_t slot,
                                std::uint32_t in_flight_frame_index) {
         return command_buffers.at(static_cast<std::size_t>(in_flight_frame_index) *
-                                      xr_stereo_view_count +
-                                  view_index);
+                                      command_slots_per_frame +
+                                  slot);
+    }
+
+    void enumerateSwapchain(
+        PFN_xrEnumerateSwapchainImages enumerate,
+        XrSwapchain swapchain, vk::Format format,
+        vk::ImageAspectFlags aspect, std::string_view debug_name,
+        SwapchainResources &resources) {
+        std::uint32_t image_count = 0;
+        requireSuccess(
+            "xrEnumerateSwapchainImages",
+            enumerate(swapchain, 0, &image_count, nullptr));
+        if (image_count == 0) {
+            throw std::runtime_error(
+                "OpenXR swapchain has no Vulkan images");
+        }
+        std::vector<XrSwapchainImageVulkan2KHR> xr_images(
+            image_count,
+            XrSwapchainImageVulkan2KHR{
+                XR_TYPE_SWAPCHAIN_IMAGE_VULKAN2_KHR});
+        std::uint32_t returned_count = 0;
+        requireSuccess(
+            "xrEnumerateSwapchainImages",
+            enumerate(
+                swapchain, image_count, &returned_count,
+                reinterpret_cast<
+                    XrSwapchainImageBaseHeader *>(
+                    xr_images.data())));
+        if (returned_count != image_count) {
+            throw std::runtime_error(
+                "OpenXR swapchain image count changed during enumeration");
+        }
+
+        resources.images.reserve(image_count);
+        resources.layered_views.reserve(image_count);
+        for (auto &views : resources.layer_views) {
+            views.reserve(image_count);
+        }
+        for (std::uint32_t image_index = 0;
+             image_index < image_count; ++image_index) {
+            const vk::Image image{
+                xr_images[image_index].image};
+            resources.images.push_back(image);
+            resources.layered_views.push_back(
+                createImageView(
+                    device, image, format, aspect,
+                    vk::ImageViewType::e2DArray, 0,
+                    xr_stereo_view_count));
+            for (std::uint32_t layer = 0;
+                 layer < xr_stereo_view_count; ++layer) {
+                resources.layer_views[layer].push_back(
+                    createImageView(
+                        device, image, format, aspect,
+                        vk::ImageViewType::e2D, layer, 1));
+            }
+
+            const auto base =
+                "xr/" + std::string{debug_name} +
+                "/swapchain/image/" +
+                std::to_string(image_index);
+            vulkan.getDebugUtils().nameImage(
+                image, (base + "/image").c_str());
+            vulkan.getDebugUtils().nameImageView(
+                resources.layered_views.back().get(),
+                (base + "/array-view").c_str());
+            for (std::uint32_t layer = 0;
+                 layer < xr_stereo_view_count; ++layer) {
+                vulkan.getDebugUtils().nameImageView(
+                    resources.layer_views[layer]
+                        .back()
+                        .get(),
+                    (base + "/layer/" +
+                     std::to_string(layer) + "/view")
+                        .c_str());
+            }
+        }
+    }
+
+    FrameRenderContext begin(
+        std::uint32_t command_slot,
+        std::uint32_t base_array_layer,
+        std::uint32_t array_layers,
+        XrCompositionAcquiredImages images,
+        std::uint32_t in_flight_frame_index) {
+        if (images.color >= color.images.size()) {
+            throw std::runtime_error(
+                "OpenXR acquired color image index is out of range");
+        }
+        if (images.depth &&
+            (*images.depth >= depth.images.size() ||
+             depth_format == vk::Format::eUndefined)) {
+            throw std::runtime_error(
+                "OpenXR acquired depth image index is out of range");
+        }
+        if (!images.depth &&
+            depth_format != vk::Format::eUndefined) {
+            throw std::runtime_error(
+                "OpenXR composition depth image was not acquired");
+        }
+
+        auto &cmd =
+            command(command_slot, in_flight_frame_index);
+        if (device.waitForFences(
+                {cmd.getFence()}, VK_TRUE, UINT64_MAX) !=
+            vk::Result::eSuccess) {
+            throw std::runtime_error(
+                "OpenXR composition command fence wait failed");
+        }
+        cmd.recordBegin();
+
+        std::vector<vk::ImageMemoryBarrier> barriers;
+        barriers.reserve(images.depth ? 2u : 1u);
+        vk::ImageMemoryBarrier color_barrier;
+        color_barrier.oldLayout =
+            vk::ImageLayout::eUndefined;
+        color_barrier.newLayout =
+            vk::ImageLayout::eColorAttachmentOptimal;
+        color_barrier.srcQueueFamilyIndex =
+            VK_QUEUE_FAMILY_IGNORED;
+        color_barrier.dstQueueFamilyIndex =
+            VK_QUEUE_FAMILY_IGNORED;
+        color_barrier.image = color.images[images.color];
+        color_barrier.subresourceRange = {
+            vk::ImageAspectFlagBits::eColor, 0, 1,
+            base_array_layer, array_layers};
+        color_barrier.dstAccessMask =
+            vk::AccessFlagBits::eColorAttachmentRead |
+            vk::AccessFlagBits::eColorAttachmentWrite;
+        barriers.push_back(color_barrier);
+
+        if (images.depth) {
+            vk::ImageMemoryBarrier depth_barrier;
+            depth_barrier.oldLayout =
+                vk::ImageLayout::eUndefined;
+            depth_barrier.newLayout =
+                vk::ImageLayout::eDepthStencilAttachmentOptimal;
+            depth_barrier.srcQueueFamilyIndex =
+                VK_QUEUE_FAMILY_IGNORED;
+            depth_barrier.dstQueueFamilyIndex =
+                VK_QUEUE_FAMILY_IGNORED;
+            depth_barrier.image =
+                depth.images[*images.depth];
+            depth_barrier.subresourceRange = {
+                vk::ImageAspectFlagBits::eDepth, 0, 1,
+                base_array_layer, array_layers};
+            depth_barrier.dstAccessMask =
+                vk::AccessFlagBits::eDepthStencilAttachmentRead |
+                vk::AccessFlagBits::eDepthStencilAttachmentWrite;
+            barriers.push_back(depth_barrier);
+        }
+        cmd->pipelineBarrier(
+            vk::PipelineStageFlagBits::eTopOfPipe,
+            vk::PipelineStageFlagBits::eColorAttachmentOutput |
+                vk::PipelineStageFlagBits::eEarlyFragmentTests |
+                vk::PipelineStageFlagBits::eLateFragmentTests,
+            {}, {}, {}, barriers);
+
+        const vk::Viewport viewport{
+            0.0F, 0.0F,
+            static_cast<float>(extent.width),
+            static_cast<float>(extent.height),
+            0.0F, 1.0F};
+        cmd->setViewport(0, {viewport});
+        cmd->setScissor(
+            0, {vk::Rect2D{{0, 0}, extent}});
+
+        FrameRenderContext context{
+            .cmd_buf = *cmd,
+            .color_image = color.images[images.color],
+            .color_attachment =
+                array_layers == xr_stereo_view_count
+                    ? color.layered_views[images.color].get()
+                    : color.layer_views[base_array_layer]
+                          [images.color]
+                              .get(),
+            .color_base_array_layer =
+                base_array_layer,
+            .color_array_layers = array_layers,
+            .extent = extent,
+            .image_prepared_semaphore = {},
+            .required_layout = release_layout,
+            .in_flight_frame_index =
+                in_flight_frame_index,
+        };
+        if (array_layers == xr_stereo_view_count) {
+            context.color_layer_attachments.reserve(
+                xr_stereo_view_count);
+            for (std::uint32_t layer = 0;
+                 layer < xr_stereo_view_count; ++layer) {
+                context.color_layer_attachments.push_back(
+                    color.layer_views[layer]
+                        [images.color]
+                            .get());
+            }
+        }
+        if (images.depth) {
+            context.depth_image =
+                depth.images[*images.depth];
+            context.depth_attachment =
+                array_layers == xr_stereo_view_count
+                    ? depth.layered_views[*images.depth].get()
+                    : depth.layer_views[base_array_layer]
+                          [*images.depth]
+                              .get();
+            context.depth_base_array_layer =
+                base_array_layer;
+            context.depth_array_layers = array_layers;
+            context.depth_format = depth_format;
+            if (array_layers ==
+                xr_stereo_view_count) {
+                context.depth_layer_attachments.reserve(
+                    xr_stereo_view_count);
+                for (std::uint32_t layer = 0;
+                     layer < xr_stereo_view_count;
+                     ++layer) {
+                    context.depth_layer_attachments.push_back(
+                        depth.layer_views[layer]
+                            [*images.depth]
+                                .get());
+                }
+            }
+        }
+        return context;
     }
 
   public:
@@ -117,116 +354,68 @@ class VulkanXrCompositionGraphics final : public IXrCompositionGraphics {
                 "OpenXR composition graphics has no image enumeration function");
         }
         color_format = config.color_format;
+        depth_format = config.depth_format;
+        extent = config.extent;
         release_layout = config.release_layout;
-        command_buffers =
-            vulkan.allocCmdBufs(in_flight_frames_num * xr_stereo_view_count);
-
-        for (std::uint32_t view = 0; view < xr_stereo_view_count; ++view) {
-            std::uint32_t image_count = 0;
-            requireSuccess("xrEnumerateSwapchainImages",
-                           config.enumerate_swapchain_images(config.swapchains[view], 0,
-                                                             &image_count, nullptr));
-            if (image_count == 0) {
-                throw std::runtime_error("OpenXR swapchain has no Vulkan images");
-            }
-            std::vector<XrSwapchainImageVulkan2KHR> xr_images(
-                image_count, XrSwapchainImageVulkan2KHR{
-                                 XR_TYPE_SWAPCHAIN_IMAGE_VULKAN2_KHR});
-            std::uint32_t returned_count = 0;
-            requireSuccess(
-                "xrEnumerateSwapchainImages",
-                config.enumerate_swapchain_images(
-                    config.swapchains[view], image_count, &returned_count,
-                    reinterpret_cast<XrSwapchainImageBaseHeader *>(xr_images.data())));
-            if (returned_count != image_count) {
-                throw std::runtime_error(
-                    "OpenXR swapchain image count changed during enumeration");
-            }
-
-            auto &resources = views[view];
-            resources.extent = vk::Extent2D{
-                config.views[view].recommendedImageRectWidth,
-                config.views[view].recommendedImageRectHeight};
-            resources.images.reserve(image_count);
-            resources.image_views.reserve(image_count);
-            for (std::uint32_t image_index = 0; image_index < image_count;
-                 ++image_index) {
-                const auto &xr_image = xr_images[image_index];
-                const vk::Image image{xr_image.image};
-                resources.images.push_back(image);
-                resources.image_views.push_back(createImageView(
-                    device, image, color_format, vk::ImageAspectFlagBits::eColor));
-                const auto base = "xr/view/" + std::to_string(view) +
-                                  "/swapchain/image/" + std::to_string(image_index);
-                vulkan.getDebugUtils().nameImage(image, (base + "/image").c_str());
-                vulkan.getDebugUtils().nameImageView(
-                    resources.image_views.back().get(), (base + "/view").c_str());
-            }
-
-            resources.depth_image = vulkan.allocImage(
-                vk::Extent3D{resources.extent, 1}, vk::Format::eD32Sfloat,
-                vk::ImageUsageFlagBits::eDepthStencilAttachment,
-                vma::MemoryUsage::eAutoPreferDevice, {});
-            resources.depth_view = createImageView(
-                device, resources.depth_image.image.get(), resources.depth_image.format,
-                vk::ImageAspectFlagBits::eDepth);
-            const auto depth_base = "xr/view/" + std::to_string(view) + "/depth";
-            vulkan.getDebugUtils().nameImage(resources.depth_image.image.get(),
-                                             (depth_base + "/image").c_str());
-            vulkan.getDebugUtils().nameImageView(resources.depth_view.get(),
-                                                 (depth_base + "/view").c_str());
+        if (!config.extent.width || !config.extent.height ||
+            config.color_swapchain == XR_NULL_HANDLE ||
+            color_format == vk::Format::eUndefined) {
+            throw std::runtime_error(
+                "OpenXR composition graphics has an invalid array swapchain");
+        }
+        if ((config.depth_swapchain == XR_NULL_HANDLE) !=
+            (depth_format == vk::Format::eUndefined)) {
+            throw std::runtime_error(
+                "OpenXR composition depth swapchain contract is inconsistent");
+        }
+        command_buffers = vulkan.allocCmdBufs(
+            in_flight_frames_num *
+            command_slots_per_frame);
+        enumerateSwapchain(
+            config.enumerate_swapchain_images,
+            config.color_swapchain, color_format,
+            vk::ImageAspectFlagBits::eColor,
+            "color", color);
+        if (config.depth_swapchain != XR_NULL_HANDLE) {
+            enumerateSwapchain(
+                config.enumerate_swapchain_images,
+                config.depth_swapchain, depth_format,
+                vk::ImageAspectFlagBits::eDepth,
+                "depth", depth);
         }
     }
 
     FrameRenderContext beginView(std::uint32_t view_index,
-                                 std::uint32_t image_index,
+                                 XrCompositionAcquiredImages images,
                                  std::uint32_t in_flight_frame_index) override {
-        auto &resources = views.at(view_index);
-        if (image_index >= resources.images.size()) {
-            throw std::runtime_error(
-                "OpenXR acquired swapchain image index is out of range");
+        if (view_index >= xr_stereo_view_count) {
+            throw std::out_of_range(
+                "OpenXR composition view index is out of range");
         }
-        auto &cmd = command(view_index, in_flight_frame_index);
-        if (device.waitForFences({cmd.getFence()}, VK_TRUE, UINT64_MAX) !=
-            vk::Result::eSuccess) {
-            throw std::runtime_error("OpenXR composition command fence wait failed");
-        }
-        cmd.recordBegin();
+        return begin(
+            view_index, view_index, 1,
+            std::move(images), in_flight_frame_index);
+    }
 
-        vk::ImageMemoryBarrier barrier;
-        barrier.oldLayout = vk::ImageLayout::eUndefined;
-        barrier.newLayout = vk::ImageLayout::eColorAttachmentOptimal;
-        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image = resources.images[image_index];
-        barrier.subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
-        barrier.dstAccessMask = vk::AccessFlagBits::eColorAttachmentRead |
-                                vk::AccessFlagBits::eColorAttachmentWrite;
-        cmd->pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe,
-                             vk::PipelineStageFlagBits::eColorAttachmentOutput, {}, {},
-                             {}, {barrier});
-
-        vk::Viewport viewport{0.0F, 0.0F,
-                              static_cast<float>(resources.extent.width),
-                              static_cast<float>(resources.extent.height), 0.0F, 1.0F};
-        cmd->setViewport(0, {viewport});
-        cmd->setScissor(0, {vk::Rect2D{{0, 0}, resources.extent}});
-
-        return FrameRenderContext{
-            .cmd_buf = *cmd,
-            .color_image = resources.images[image_index],
-            .color_attachment = resources.image_views[image_index].get(),
-            .depth_attachment = resources.depth_view.get(),
-            .extent = resources.extent,
-            .image_prepared_semaphore = {},
-            .required_layout = release_layout,
-            .in_flight_frame_index = in_flight_frame_index,
-        };
+    FrameRenderContext beginViewFamily(
+        XrCompositionAcquiredImages images,
+        std::uint32_t in_flight_frame_index) override {
+        return begin(
+            view_family_command_slot, 0,
+            xr_stereo_view_count, std::move(images),
+            in_flight_frame_index);
     }
 
     void submitView(std::uint32_t view_index,
                     std::uint32_t in_flight_frame_index) override {
         command(view_index, in_flight_frame_index).recordEndSubmit();
+    }
+
+    void submitViewFamily(
+        std::uint32_t in_flight_frame_index) override {
+        command(view_family_command_slot,
+                in_flight_frame_index)
+            .recordEndSubmit();
     }
 
     void waitForSubmission(std::uint32_t view_index,
@@ -235,6 +424,20 @@ class VulkanXrCompositionGraphics final : public IXrCompositionGraphics {
         if (device.waitForFences({fence}, VK_TRUE, UINT64_MAX) !=
             vk::Result::eSuccess) {
             throw std::runtime_error("OpenXR composition GPU submission failed to finish");
+        }
+    }
+
+    void waitForViewFamilySubmission(
+        std::uint32_t in_flight_frame_index) override {
+        const auto &fence =
+            command(view_family_command_slot,
+                    in_flight_frame_index)
+                .getFence();
+        if (device.waitForFences(
+                {fence}, VK_TRUE, UINT64_MAX) !=
+            vk::Result::eSuccess) {
+            throw std::runtime_error(
+                "OpenXR composition view-family GPU submission failed to finish");
         }
     }
 };
@@ -251,14 +454,17 @@ makeProductionGraphics(const XrCompositionDependencies &dependencies) {
 } // namespace
 
 class XrCompositionTarget::Impl {
-    struct ViewState {
+    struct SwapchainFrameState {
         XrSwapchain swapchain = XR_NULL_HANDLE;
         XrSwapchainState state = XrSwapchainState::idle;
         std::uint32_t image_index = 0;
+        bool release_attempted = false;
+    };
+
+    struct ViewState {
         bool view_begun = false;
         bool view_ended = false;
         bool submission_complete = false;
-        bool release_attempted = false;
     };
 
     XrCompositionDependencies dependencies;
@@ -272,13 +478,21 @@ class XrCompositionTarget::Impl {
         XrViewConfigurationView{XR_TYPE_VIEW_CONFIGURATION_VIEW},
         XrViewConfigurationView{XR_TYPE_VIEW_CONFIGURATION_VIEW},
     };
+    XrCompositionCapabilities capabilities;
+    SwapchainFrameState color;
+    SwapchainFrameState depth;
     std::array<ViewState, xr_stereo_view_count> views;
     std::optional<XrDisplayTiming> display_timing;
     XrLocatedViews located_views;
+    float near_z = 0.05F;
+    float far_z = 1000.0F;
     std::uint32_t in_flight_frame_index = 0;
     std::uint32_t next_view = 0;
     bool frame_prepared = false;
     bool logical_frame_begun = false;
+    bool view_family_begun = false;
+    bool view_family_ended = false;
+    bool view_family_submission_complete = false;
     bool teardown_required = false;
 
     void resolveApi() {
@@ -327,14 +541,37 @@ class XrCompositionTarget::Impl {
         for (const auto &view : view_configs) {
             if (view.recommendedImageRectWidth == 0 ||
                 view.recommendedImageRectHeight == 0 ||
+                view.maxImageRectWidth == 0 ||
+                view.maxImageRectHeight == 0 ||
                 view.maxSwapchainSampleCount < 1) {
                 throw std::runtime_error(
                     "OpenXR view configuration cannot support the XR2a.1 swapchain");
             }
         }
+        const auto desired_width = std::max(
+            view_configs[0].recommendedImageRectWidth,
+            view_configs[1].recommendedImageRectWidth);
+        const auto desired_height = std::max(
+            view_configs[0].recommendedImageRectHeight,
+            view_configs[1].recommendedImageRectHeight);
+        const auto shared_max_width = std::min(
+            view_configs[0].maxImageRectWidth,
+            view_configs[1].maxImageRectWidth);
+        const auto shared_max_height = std::min(
+            view_configs[0].maxImageRectHeight,
+            view_configs[1].maxImageRectHeight);
+        capabilities.extent = vk::Extent2D{
+            std::min(desired_width, shared_max_width),
+            std::min(desired_height, shared_max_height),
+        };
+        if (!capabilities.extent.width ||
+            !capabilities.extent.height) {
+            throw std::runtime_error(
+                "OpenXR PRIMARY_STEREO has no common array-swapchain extent");
+        }
     }
 
-    std::int64_t selectFormat() {
+    std::vector<std::int64_t> enumerateFormats() {
         std::uint32_t count = 0;
         requireSuccess("xrEnumerateSwapchainFormats",
                        api.enumerate_swapchain_formats(session_runtime.sessionHandle(), 0,
@@ -351,6 +588,11 @@ class XrCompositionTarget::Impl {
             throw std::runtime_error(
                 "OpenXR swapchain format count changed during enumeration");
         }
+        return formats;
+    }
+
+    std::int64_t selectColorFormat(
+        std::span<const std::int64_t> formats) {
         const auto expected = static_cast<std::int64_t>(
             static_cast<VkFormat>(dependencies.renderer_color_format));
         for (const auto format : formats) {
@@ -360,25 +602,95 @@ class XrCompositionTarget::Impl {
             "OpenXR runtime does not support the renderer's compiled flat target format");
     }
 
-    void createSwapchains(std::int64_t format) {
-        for (std::uint32_t view = 0; view < xr_stereo_view_count; ++view) {
-            XrSwapchainCreateInfo info{XR_TYPE_SWAPCHAIN_CREATE_INFO};
-            info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
-            info.format = format;
-            info.sampleCount = 1;
-            info.width = view_configs[view].recommendedImageRectWidth;
-            info.height = view_configs[view].recommendedImageRectHeight;
-            info.faceCount = 1;
-            info.arraySize = 1;
-            info.mipCount = 1;
-            const auto result = api.create_swapchain(session_runtime.sessionHandle(), &info,
-                                                     &views[view].swapchain);
-            if (isLossResult(result)) reportLoss(result);
-            if (XR_FAILED(result) || result == XR_SESSION_LOSS_PENDING ||
-                views[view].swapchain == XR_NULL_HANDLE) {
-                views[view].swapchain = XR_NULL_HANDLE;
-                throw XrCompositionError{"xrCreateSwapchain", result};
+    std::optional<vk::Format> selectDepthFormat(
+        std::span<const std::int64_t> formats) {
+        if (!dependencies.composition_layer_depth_enabled) {
+            capabilities.depth_reason =
+                "XR_KHR_composition_layer_depth_not_enabled";
+            return std::nullopt;
+        }
+        static constexpr std::array preferred{
+            vk::Format::eD32Sfloat,
+            vk::Format::eD24UnormS8Uint,
+            vk::Format::eD32SfloatS8Uint,
+        };
+        for (const auto candidate : preferred) {
+            const auto raw = static_cast<std::int64_t>(
+                static_cast<VkFormat>(candidate));
+            if (std::find(formats.begin(), formats.end(), raw) ==
+                formats.end()) {
+                continue;
             }
+            if (dependencies.vulkan != nullptr) {
+                const auto properties =
+                    dependencies.vulkan->getPhysDevice()
+                        .getFormatProperties(candidate);
+                if (!(properties.optimalTilingFeatures &
+                      vk::FormatFeatureFlagBits::
+                          eDepthStencilAttachment)) {
+                    continue;
+                }
+            }
+            return candidate;
+        }
+        capabilities.depth_reason =
+            "no_common_openxr_vulkan_depth_format";
+        return std::nullopt;
+    }
+
+    XrSwapchain createSwapchain(
+        std::int64_t format, XrSwapchainUsageFlags usage) {
+        XrSwapchainCreateInfo info{
+            XR_TYPE_SWAPCHAIN_CREATE_INFO};
+        info.usageFlags = usage;
+        info.format = format;
+        info.sampleCount = 1;
+        info.width = capabilities.extent.width;
+        info.height = capabilities.extent.height;
+        info.faceCount = 1;
+        info.arraySize = xr_stereo_view_count;
+        info.mipCount = 1;
+        XrSwapchain swapchain = XR_NULL_HANDLE;
+        const auto result = api.create_swapchain(
+            session_runtime.sessionHandle(), &info,
+            &swapchain);
+        if (isLossResult(result)) reportLoss(result);
+        if (XR_FAILED(result) ||
+            result == XR_SESSION_LOSS_PENDING ||
+            swapchain == XR_NULL_HANDLE) {
+            if (swapchain != XR_NULL_HANDLE) {
+                (void)api.destroy_swapchain(swapchain);
+            }
+            throw XrCompositionError{
+                "xrCreateSwapchain", result};
+        }
+        return swapchain;
+    }
+
+    void createSwapchains(
+        std::int64_t color_format,
+        std::optional<vk::Format> depth_format) {
+        color.swapchain = createSwapchain(
+            color_format,
+            XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT);
+        capabilities.array_color_swapchain = true;
+        capabilities.view_family_execution = true;
+
+        if (!depth_format) return;
+        try {
+            depth.swapchain = createSwapchain(
+                static_cast<std::int64_t>(
+                    static_cast<VkFormat>(*depth_format)),
+                XR_SWAPCHAIN_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
+            capabilities.depth_submission = true;
+            capabilities.depth_format = *depth_format;
+            capabilities.depth_reason.clear();
+        } catch (const XrCompositionError &error) {
+            if (isLossResult(error.result())) throw;
+            depth.swapchain = XR_NULL_HANDLE;
+            capabilities.depth_reason =
+                "depth_swapchain_creation_failed_xr_result_" +
+                std::to_string(error.result());
         }
     }
 
@@ -391,24 +703,31 @@ class XrCompositionTarget::Impl {
         frame_prepared = false;
         logical_frame_begun = false;
         next_view = 0;
+        view_family_begun = false;
+        view_family_ended = false;
+        view_family_submission_complete = false;
         display_timing.reset();
         located_views = {};
         in_flight_frame_index =
             (in_flight_frame_index + 1) % in_flight_frames_num;
     }
 
-    bool releaseView(std::uint32_t view_index) noexcept {
-        auto &view = views[view_index];
-        if (view.release_attempted) return false;
-        view.release_attempted = true;
+    bool releaseSwapchain(
+        SwapchainFrameState &swapchain) noexcept {
+        if (swapchain.swapchain == XR_NULL_HANDLE ||
+            swapchain.release_attempted) {
+            return false;
+        }
+        swapchain.release_attempted = true;
         XrSwapchainImageReleaseInfo info{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
-        const auto result = api.release_swapchain_image(view.swapchain, &info);
+        const auto result = api.release_swapchain_image(
+            swapchain.swapchain, &info);
         if (XR_FAILED(result) || result == XR_SESSION_LOSS_PENDING) {
             teardown_required = true;
             if (isLossResult(result)) reportLoss(result);
             return false;
         }
-        view.state = XrSwapchainState::released;
+        swapchain.state = XrSwapchainState::released;
         return true;
     }
 
@@ -423,30 +742,60 @@ class XrCompositionTarget::Impl {
 
     void abortFrame() noexcept {
         bool all_submissions_complete = true;
-        for (std::uint32_t view_index = 0; view_index < xr_stereo_view_count;
-             ++view_index) {
-            auto &view = views[view_index];
-            if (view.state == XrSwapchainState::submitted &&
-                !view.submission_complete) {
+        if (view_family_ended &&
+            !view_family_submission_complete) {
+            try {
+                graphics->waitForViewFamilySubmission(
+                    in_flight_frame_index);
+                view_family_submission_complete = true;
+            } catch (...) {
+                teardown_required = true;
+                all_submissions_complete = false;
+            }
+        } else {
+            for (std::uint32_t view_index = 0;
+                 view_index < xr_stereo_view_count;
+                 ++view_index) {
+                auto &view = views[view_index];
+                if (!view.view_ended ||
+                    view.submission_complete) {
+                    continue;
+                }
                 try {
-                    graphics->waitForSubmission(view_index, in_flight_frame_index);
+                    graphics->waitForSubmission(
+                        view_index,
+                        in_flight_frame_index);
                     view.submission_complete = true;
                 } catch (...) {
                     teardown_required = true;
                     all_submissions_complete = false;
-                    continue;
                 }
             }
-            if (view.state == XrSwapchainState::waited ||
-                (view.state == XrSwapchainState::submitted &&
-                 view.submission_complete)) {
-                (void)releaseView(view_index);
-            } else if (view.state == XrSwapchainState::acquired) {
+        }
+
+        const auto release_if_legal =
+            [&](SwapchainFrameState &swapchain) {
+                if (swapchain.swapchain ==
+                    XR_NULL_HANDLE) {
+                    return;
+                }
+                if ((swapchain.state ==
+                         XrSwapchainState::waited ||
+                     swapchain.state ==
+                         XrSwapchainState::submitted) &&
+                    all_submissions_complete) {
+                    (void)releaseSwapchain(swapchain);
+                } else if (
+                    swapchain.state ==
+                    XrSwapchainState::acquired) {
                 // xrReleaseSwapchainImage before a successful wait is illegal.
                 // Leave this image to generation teardown instead.
-                teardown_required = true;
-            }
-        }
+                    teardown_required = true;
+                }
+            };
+        // Release the auxiliary depth image before the projection color image.
+        release_if_legal(depth);
+        release_if_legal(color);
         closeZeroLayerAfterFailure();
         if (all_submissions_complete) {
             submission_lease.reset();
@@ -454,31 +803,47 @@ class XrCompositionTarget::Impl {
         resetFrameFlags();
     }
 
-    void acquireAndWait(std::uint32_t view_index) {
-        auto &view = views[view_index];
+    void acquireAndWait(
+        SwapchainFrameState &swapchain) {
+        if (swapchain.swapchain == XR_NULL_HANDLE) {
+            return;
+        }
         XrSwapchainImageAcquireInfo acquire_info{
             XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
         const auto acquire_result = api.acquire_swapchain_image(
-            view.swapchain, &acquire_info, &view.image_index);
+            swapchain.swapchain, &acquire_info,
+            &swapchain.image_index);
         if (XR_FAILED(acquire_result) || acquire_result == XR_SESSION_LOSS_PENDING) {
             if (isLossResult(acquire_result)) reportLoss(acquire_result);
             throw XrCompositionError{"xrAcquireSwapchainImage", acquire_result};
         }
-        view.state = XrSwapchainState::acquired;
+        swapchain.state = XrSwapchainState::acquired;
 
         XrSwapchainImageWaitInfo wait_info{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
         wait_info.timeout = dependencies.image_wait_timeout;
         while (true) {
             const auto wait_result =
-                api.wait_swapchain_image(view.swapchain, &wait_info);
+                api.wait_swapchain_image(
+                    swapchain.swapchain, &wait_info);
             if (wait_result == XR_TIMEOUT_EXPIRED) continue;
             if (XR_FAILED(wait_result) || wait_result == XR_SESSION_LOSS_PENDING) {
                 if (isLossResult(wait_result)) reportLoss(wait_result);
                 throw XrCompositionError{"xrWaitSwapchainImage", wait_result};
             }
-            view.state = XrSwapchainState::waited;
+            swapchain.state = XrSwapchainState::waited;
             return;
         }
+    }
+
+    XrCompositionAcquiredImages acquiredImages() const {
+        return {
+            .color = color.image_index,
+            .depth =
+                capabilities.depth_submission
+                    ? std::optional{
+                          depth.image_index}
+                    : std::nullopt,
+        };
     }
 
   public:
@@ -501,22 +866,37 @@ class XrCompositionTarget::Impl {
         resolveApi();
         try {
             queryViews();
-            const auto format = selectFormat();
-            createSwapchains(format);
+            const auto formats = enumerateFormats();
+            const auto color_format =
+                selectColorFormat(formats);
+            const auto depth_format =
+                selectDepthFormat(formats);
+            createSwapchains(
+                color_format, depth_format);
             this->graphics->initialize(XrCompositionGraphicsConfig{
                 .enumerate_swapchain_images = api.enumerate_swapchain_images,
-                .swapchains = {views[0].swapchain, views[1].swapchain},
+                .color_swapchain =
+                    color.swapchain,
+                .depth_swapchain =
+                    depth.swapchain,
                 .views = view_configs,
+                .extent = capabilities.extent,
                 .color_format = dependencies.renderer_color_format,
+                .depth_format =
+                    capabilities.depth_format,
                 .release_layout = runtime_release_layout,
             });
         } catch (...) {
             this->graphics.reset();
-            for (auto view = xr_stereo_view_count; view-- > 0;) {
-                if (views[view].swapchain != XR_NULL_HANDLE) {
-                    (void)api.destroy_swapchain(views[view].swapchain);
-                    views[view].swapchain = XR_NULL_HANDLE;
-                }
+            if (depth.swapchain != XR_NULL_HANDLE) {
+                (void)api.destroy_swapchain(
+                    depth.swapchain);
+                depth.swapchain = XR_NULL_HANDLE;
+            }
+            if (color.swapchain != XR_NULL_HANDLE) {
+                (void)api.destroy_swapchain(
+                    color.swapchain);
+                color.swapchain = XR_NULL_HANDLE;
             }
             throw;
         }
@@ -524,16 +904,18 @@ class XrCompositionTarget::Impl {
 
     ~Impl() {
         graphics.reset();
-        for (auto view = xr_stereo_view_count; view-- > 0;) {
-            if (views[view].swapchain != XR_NULL_HANDLE &&
-                api.destroy_swapchain != nullptr) {
-                (void)api.destroy_swapchain(views[view].swapchain);
-            }
+        if (api.destroy_swapchain == nullptr) return;
+        if (depth.swapchain != XR_NULL_HANDLE) {
+            (void)api.destroy_swapchain(depth.swapchain);
+        }
+        if (color.swapchain != XR_NULL_HANDLE) {
+            (void)api.destroy_swapchain(color.swapchain);
         }
     }
 
     void prepareFrame(const XrDisplayTiming &timing,
-                      const XrLocatedViews &new_views) {
+                      const XrLocatedViews &new_views,
+                      float new_near_z, float new_far_z) {
         if (teardown_required) {
             throw std::logic_error(
                 "OpenXR composition generation requires teardown");
@@ -547,9 +929,16 @@ class XrCompositionTarget::Impl {
             throw std::logic_error(
                 "OpenXR projection frame requires two located renderable views");
         }
+        if (!(new_near_z > 0.0F &&
+              new_far_z > new_near_z)) {
+            throw std::logic_error(
+                "OpenXR composition depth range requires 0 < nearZ < farZ");
+        }
         display_timing.emplace(timing.predictedDisplayTime(),
                                timing.predictedDisplayPeriod(), true);
         located_views = new_views;
+        near_z = new_near_z;
+        far_z = new_far_z;
         frame_prepared = true;
     }
 
@@ -567,24 +956,33 @@ class XrCompositionTarget::Impl {
             throw std::logic_error(
                 "OpenXR composition requires one prepared two-view logical frame");
         }
+        const auto reusable =
+            [](const SwapchainFrameState &state) {
+                return state.swapchain ==
+                           XR_NULL_HANDLE ||
+                       state.state ==
+                           XrSwapchainState::idle ||
+                       state.state ==
+                           XrSwapchainState::released;
+            };
+        if (!reusable(color) || !reusable(depth)) {
+            throw std::logic_error(
+                "OpenXR array swapchain generation is not reusable");
+        }
+        color.state = XrSwapchainState::idle;
+        color.release_attempted = false;
+        depth.state = XrSwapchainState::idle;
+        depth.release_attempted = false;
         for (auto &view : views) {
-            if (view.state != XrSwapchainState::idle &&
-                view.state != XrSwapchainState::released) {
-                throw std::logic_error(
-                    "OpenXR swapchain generation is not reusable");
-            }
-            view.state = XrSwapchainState::idle;
             view.view_begun = false;
             view.view_ended = false;
             view.submission_complete = false;
-            view.release_attempted = false;
         }
         logical_frame_begun = true;
         next_view = 0;
         try {
-            for (std::uint32_t view = 0; view < xr_stereo_view_count; ++view) {
-                acquireAndWait(view);
-            }
+            acquireAndWait(color);
+            acquireAndWait(depth);
         } catch (...) {
             abortFrame();
             throw;
@@ -594,13 +992,17 @@ class XrCompositionTarget::Impl {
     FrameRenderContext beginView(std::uint32_t view_index) {
         if (!logical_frame_begun || view_index != next_view ||
             view_index >= xr_stereo_view_count ||
-            views[view_index].state != XrSwapchainState::waited ||
+            color.state != XrSwapchainState::waited ||
+            (capabilities.depth_submission &&
+             depth.state != XrSwapchainState::waited) ||
+            view_family_begun ||
             views[view_index].view_begun) {
             throw std::logic_error("OpenXR composition view begin is out of order");
         }
         try {
-            auto context = graphics->beginView(view_index, views[view_index].image_index,
-                                               in_flight_frame_index);
+            auto context = graphics->beginView(
+                view_index, acquiredImages(),
+                in_flight_frame_index);
             views[view_index].view_begun = true;
             return context;
         } catch (...) {
@@ -610,29 +1012,98 @@ class XrCompositionTarget::Impl {
         }
     }
 
+    FrameRenderContext beginViewFamily(
+        std::uint32_t view_count) {
+        if (!logical_frame_begun ||
+            view_count != xr_stereo_view_count ||
+            next_view != 0 || view_family_begun ||
+            color.state != XrSwapchainState::waited ||
+            (capabilities.depth_submission &&
+             depth.state != XrSwapchainState::waited)) {
+            throw std::logic_error(
+                "OpenXR composition view-family begin is out of order");
+        }
+        try {
+            auto context =
+                graphics->beginViewFamily(
+                    acquiredImages(),
+                    in_flight_frame_index);
+            view_family_begun = true;
+            return context;
+        } catch (...) {
+            teardown_required = true;
+            abortFrame();
+            throw;
+        }
+    }
+
+    void retainSubmissionLease(
+        GpuSubmissionLease lease) {
+        if (submission_lease != nullptr &&
+            lease != nullptr &&
+            submission_lease.get() != lease.get()) {
+            throw std::logic_error(
+                "OpenXR composition frame cannot span GPU submission leases");
+        }
+        if (submission_lease == nullptr) {
+            submission_lease = std::move(lease);
+        }
+    }
+
     void endView(
         std::uint32_t view_index,
         GpuSubmissionLease lease) {
         if (!logical_frame_begun || view_index != next_view ||
             view_index >= xr_stereo_view_count ||
             !views[view_index].view_begun || views[view_index].view_ended ||
-            views[view_index].state != XrSwapchainState::waited) {
+            view_family_begun ||
+            color.state != XrSwapchainState::waited) {
             throw std::logic_error("OpenXR composition view end is out of order");
         }
-        if (submission_lease != nullptr &&
-            lease != nullptr &&
-            submission_lease.get() != lease.get()) {
+        try {
+            graphics->submitView(
+                view_index, in_flight_frame_index);
+            retainSubmissionLease(std::move(lease));
+            views[view_index].view_ended = true;
+            color.state = XrSwapchainState::submitted;
+            if (capabilities.depth_submission) {
+                depth.state = XrSwapchainState::submitted;
+            }
+            ++next_view;
+            if (next_view < xr_stereo_view_count) {
+                // The second layer remains available under the same acquired
+                // array image even though the first command was submitted.
+                color.state = XrSwapchainState::waited;
+                if (capabilities.depth_submission) {
+                    depth.state = XrSwapchainState::waited;
+                }
+            }
+        } catch (...) {
+            teardown_required = true;
+            abortFrame();
+            throw;
+        }
+    }
+
+    void endViewFamily(
+        GpuSubmissionLease lease) {
+        if (!logical_frame_begun ||
+            !view_family_begun ||
+            view_family_ended || next_view != 0 ||
+            color.state != XrSwapchainState::waited) {
             throw std::logic_error(
-                "OpenXR composition views cannot span GPU submission leases");
+                "OpenXR composition view-family end is out of order");
         }
         try {
-            graphics->submitView(view_index, in_flight_frame_index);
-            if (submission_lease == nullptr) {
-                submission_lease = std::move(lease);
+            graphics->submitViewFamily(
+                in_flight_frame_index);
+            retainSubmissionLease(std::move(lease));
+            view_family_ended = true;
+            next_view = xr_stereo_view_count;
+            color.state = XrSwapchainState::submitted;
+            if (capabilities.depth_submission) {
+                depth.state = XrSwapchainState::submitted;
             }
-            views[view_index].state = XrSwapchainState::submitted;
-            views[view_index].view_ended = true;
-            ++next_view;
         } catch (...) {
             teardown_required = true;
             abortFrame();
@@ -645,31 +1116,29 @@ class XrCompositionTarget::Impl {
             throw std::logic_error(
                 "OpenXR composition logical frame ended before both submissions");
         }
-        if (submission_lease == nullptr) {
-            submission_lease = std::move(lease);
-        } else if (
-            lease != nullptr &&
-            submission_lease.get() != lease.get()) {
-            throw std::logic_error(
-                "OpenXR composition frame cannot span GPU submission leases");
-        }
+        retainSubmissionLease(std::move(lease));
         try {
-            for (std::uint32_t view = 0; view < xr_stereo_view_count; ++view) {
-                graphics->waitForSubmission(view, in_flight_frame_index);
-                views[view].submission_complete = true;
-            }
-            for (std::uint32_t view = 0; view < xr_stereo_view_count; ++view) {
-                auto &state = views[view];
-                state.release_attempted = true;
-                XrSwapchainImageReleaseInfo info{
-                    XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
-                const auto result = api.release_swapchain_image(state.swapchain, &info);
-                if (XR_FAILED(result) || result == XR_SESSION_LOSS_PENDING) {
-                    teardown_required = true;
-                    if (isLossResult(result)) reportLoss(result);
-                    throw XrCompositionError{"xrReleaseSwapchainImage", result};
+            if (view_family_ended) {
+                graphics->waitForViewFamilySubmission(
+                    in_flight_frame_index);
+                view_family_submission_complete = true;
+            } else {
+                for (std::uint32_t view = 0;
+                     view < xr_stereo_view_count;
+                     ++view) {
+                    graphics->waitForSubmission(
+                        view, in_flight_frame_index);
+                    views[view].submission_complete = true;
                 }
-                state.state = XrSwapchainState::released;
+            }
+            if (capabilities.depth_submission &&
+                !releaseSwapchain(depth)) {
+                throw std::runtime_error(
+                    "xrReleaseSwapchainImage failed for composition depth");
+            }
+            if (!releaseSwapchain(color)) {
+                throw std::runtime_error(
+                    "xrReleaseSwapchainImage failed for composition color");
             }
 
             std::array<XrCompositionLayerProjectionView, xr_stereo_view_count>
@@ -679,18 +1148,43 @@ class XrCompositionTarget::Impl {
                     XrCompositionLayerProjectionView{
                         XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},
                 };
+            std::array<XrCompositionLayerDepthInfoKHR,
+                       xr_stereo_view_count>
+                depth_views{
+                    XrCompositionLayerDepthInfoKHR{
+                        XR_TYPE_COMPOSITION_LAYER_DEPTH_INFO_KHR},
+                    XrCompositionLayerDepthInfoKHR{
+                        XR_TYPE_COMPOSITION_LAYER_DEPTH_INFO_KHR},
+                };
             for (std::uint32_t view = 0; view < xr_stereo_view_count; ++view) {
                 projection_views[view].pose = located_views.views[view].pose;
                 projection_views[view].fov = located_views.views[view].fov;
-                projection_views[view].subImage.swapchain = views[view].swapchain;
+                projection_views[view].subImage.swapchain =
+                    color.swapchain;
                 projection_views[view].subImage.imageRect.offset = {0, 0};
                 projection_views[view].subImage.imageRect.extent = {
                     static_cast<std::int32_t>(
-                        view_configs[view].recommendedImageRectWidth),
+                        capabilities.extent.width),
                     static_cast<std::int32_t>(
-                        view_configs[view].recommendedImageRectHeight),
+                        capabilities.extent.height),
                 };
-                projection_views[view].subImage.imageArrayIndex = 0;
+                projection_views[view].subImage.imageArrayIndex = view;
+                if (capabilities.depth_submission) {
+                    auto &depth_view = depth_views[view];
+                    depth_view.subImage.swapchain =
+                        depth.swapchain;
+                    depth_view.subImage.imageRect =
+                        projection_views[view]
+                            .subImage.imageRect;
+                    depth_view.subImage.imageArrayIndex =
+                        view;
+                    depth_view.minDepth = 0.0F;
+                    depth_view.maxDepth = 1.0F;
+                    depth_view.nearZ = near_z;
+                    depth_view.farZ = far_z;
+                    projection_views[view].next =
+                        &depth_view;
+                }
             }
             XrCompositionLayerProjection projection_layer{
                 XR_TYPE_COMPOSITION_LAYER_PROJECTION};
@@ -722,7 +1216,19 @@ class XrCompositionTarget::Impl {
         if (view_index >= xr_stereo_view_count) {
             throw std::out_of_range("OpenXR swapchain state view is out of range");
         }
-        return views[view_index].state;
+        return color.state;
+    }
+
+    XrSwapchainState depthState() const {
+        return depth.state;
+    }
+
+    bool supportsViewFamilyExecution() const noexcept {
+        return capabilities.view_family_execution;
+    }
+
+    XrCompositionCapabilities compositionCapabilities() const {
+        return capabilities;
     }
 };
 
@@ -738,8 +1244,10 @@ XrCompositionTarget::XrCompositionTarget(
 XrCompositionTarget::~XrCompositionTarget() = default;
 
 void XrCompositionTarget::prepareFrame(const XrDisplayTiming &display_timing,
-                                       const XrLocatedViews &located_views) {
-    impl->prepareFrame(display_timing, located_views);
+                                       const XrLocatedViews &located_views,
+                                       float near_z, float far_z) {
+    impl->prepareFrame(
+        display_timing, located_views, near_z, far_z);
 }
 
 void XrCompositionTarget::endFrameWithoutLayers(
@@ -755,10 +1263,24 @@ FrameRenderContext XrCompositionTarget::beginView(std::uint32_t view_index) {
     return impl->beginView(view_index);
 }
 
+bool XrCompositionTarget::supportsViewFamilyExecution() const noexcept {
+    return impl->supportsViewFamilyExecution();
+}
+
+FrameRenderContext XrCompositionTarget::beginViewFamily(
+    std::uint32_t view_count) {
+    return impl->beginViewFamily(view_count);
+}
+
 void XrCompositionTarget::endView(
     std::uint32_t view_index,
     GpuSubmissionLease lease) {
     impl->endView(view_index, std::move(lease));
+}
+
+void XrCompositionTarget::endViewFamily(
+    GpuSubmissionLease lease) {
+    impl->endViewFamily(std::move(lease));
 }
 
 void XrCompositionTarget::endLogicalFrame(GpuSubmissionLease lease) {
@@ -778,6 +1300,16 @@ bool XrCompositionTarget::generationTeardownRequired() const noexcept {
 XrSwapchainState
 XrCompositionTarget::swapchainState(std::uint32_t view_index) const {
     return impl->state(view_index);
+}
+
+XrSwapchainState
+XrCompositionTarget::depthSwapchainState() const {
+    return impl->depthState();
+}
+
+XrCompositionCapabilities
+XrCompositionTarget::compositionCapabilities() const {
+    return impl->compositionCapabilities();
 }
 
 } // namespace Pelican::OpenXr

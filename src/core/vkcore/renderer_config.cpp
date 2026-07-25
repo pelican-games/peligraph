@@ -271,6 +271,11 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
         const auto base_extent = baseExtentFromConfig(config);
         RenderingPassConfigRegistrationDependencies::Options xr_options;
         xr_options.graph_variant = RenderPipelineGraphVariant::xr;
+        // The OpenXR composition target owns one two-layer color swapchain
+        // and exposes a command context spanning the full view family.
+        // Device and per-pass capability checks still decide which scopes
+        // may compile to multiview; unsupported scopes remain sequential.
+        xr_options.enable_multiview_runtime = true;
         xr_options.publish_enabled_features = false;
         xr_options.gpu_owner_scope =
             "render_pipeline/variants";

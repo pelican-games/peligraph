@@ -913,7 +913,8 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                     image_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                     image_barrier.image = render_ctx.color_image;
                     image_barrier.subresourceRange = {
-                        vk::ImageAspectFlagBits::eColor, 0, 1, 0,
+                        vk::ImageAspectFlagBits::eColor, 0, 1,
+                        render_ctx.color_base_array_layer,
                         render_ctx.color_array_layers};
                     render_ctx.cmd_buf.pipelineBarrier(
                         vk::PipelineStageFlagBits::eColorAttachmentOutput,

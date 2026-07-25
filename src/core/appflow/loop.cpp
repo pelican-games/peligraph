@@ -237,6 +237,8 @@ OpenXr::XrCompositionDependencies resolveXrCompositionDependencies(
         .session_runtime = &session,
         .vulkan = &GET_MODULE(VulkanManageCore),
         .renderer_color_format = GET_MODULE(RenderTarget).getSwapchainFormat(),
+        .composition_layer_depth_enabled =
+            discovery.compositionLayerDepthEnabled(),
     };
 }
 #endif
@@ -507,7 +509,10 @@ void Loop::run() {
                 renderer.selectGraphVariant(RenderGraphVariant::xr);
                 const auto render_start = Clock::now();
                 if (xr_frame_renderable) {
-                    xr_target->prepareFrame(display_timing, located_views);
+                    xr_target->prepareFrame(
+                        display_timing, located_views,
+                        camera_projection.znear,
+                        camera_projection.zfar);
                     const auto view_parameters = OpenXr::buildRenderViewParameters(
                         active_camera_view, located_views.views,
                         camera_projection.znear, camera_projection.zfar);

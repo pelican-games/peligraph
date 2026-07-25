@@ -20,7 +20,13 @@ struct FrameRenderContext {
     // A view-family context exposes the full-array attachment above and the
     // compatible per-layer views here for mixed sequential/multiview scopes.
     std::vector<vk::ImageView> color_layer_attachments;
+    std::vector<vk::ImageView> depth_layer_attachments;
+    std::uint32_t color_base_array_layer = 0;
     std::uint32_t color_array_layers = 1;
+    vk::Image depth_image;
+    std::uint32_t depth_base_array_layer = 0;
+    std::uint32_t depth_array_layers = 1;
+    vk::Format depth_format = vk::Format::eUndefined;
     vk::Extent2D extent;
     vk::Semaphore image_prepared_semaphore;
     vk::ImageLayout required_layout;
