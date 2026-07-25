@@ -27,6 +27,10 @@ struct FrameRenderContext {
     std::uint32_t depth_base_array_layer = 0;
     std::uint32_t depth_array_layers = 1;
     vk::Format depth_format = vk::Format::eUndefined;
+    vk::ImageLayout depth_copy_layout =
+        vk::ImageLayout::eUndefined;
+    vk::ImageLayout depth_required_layout =
+        vk::ImageLayout::eUndefined;
     vk::Extent2D extent;
     vk::Semaphore image_prepared_semaphore;
     vk::ImageLayout required_layout;

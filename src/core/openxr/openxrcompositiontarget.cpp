@@ -67,6 +67,16 @@ bool isLossResult(XrResult result) {
            result == XR_SESSION_LOSS_PENDING;
 }
 
+vk::ImageAspectFlags depthLayoutAspect(
+    vk::Format format) {
+    if (format == vk::Format::eD24UnormS8Uint ||
+        format == vk::Format::eD32SfloatS8Uint) {
+        return vk::ImageAspectFlagBits::eDepth |
+               vk::ImageAspectFlagBits::eStencil;
+    }
+    return vk::ImageAspectFlagBits::eDepth;
+}
+
 vk::UniqueImageView createImageView(
     vk::Device device, vk::Image image, vk::Format format,
     vk::ImageAspectFlags aspect, vk::ImageViewType type,
@@ -250,7 +260,7 @@ class VulkanXrCompositionGraphics final : public IXrCompositionGraphics {
             depth_barrier.oldLayout =
                 vk::ImageLayout::eUndefined;
             depth_barrier.newLayout =
-                vk::ImageLayout::eDepthStencilAttachmentOptimal;
+                vk::ImageLayout::eTransferDstOptimal;
             depth_barrier.srcQueueFamilyIndex =
                 VK_QUEUE_FAMILY_IGNORED;
             depth_barrier.dstQueueFamilyIndex =
@@ -258,16 +268,16 @@ class VulkanXrCompositionGraphics final : public IXrCompositionGraphics {
             depth_barrier.image =
                 depth.images[*images.depth];
             depth_barrier.subresourceRange = {
-                vk::ImageAspectFlagBits::eDepth, 0, 1,
+                depthLayoutAspect(depth_format), 0, 1,
                 base_array_layer, array_layers};
             depth_barrier.dstAccessMask =
-                vk::AccessFlagBits::eDepthStencilAttachmentRead |
-                vk::AccessFlagBits::eDepthStencilAttachmentWrite;
+                vk::AccessFlagBits::eTransferWrite;
             barriers.push_back(depth_barrier);
         }
         cmd->pipelineBarrier(
             vk::PipelineStageFlagBits::eTopOfPipe,
             vk::PipelineStageFlagBits::eColorAttachmentOutput |
+                vk::PipelineStageFlagBits::eTransfer |
                 vk::PipelineStageFlagBits::eEarlyFragmentTests |
                 vk::PipelineStageFlagBits::eLateFragmentTests,
             {}, {}, {}, barriers);
@@ -323,6 +333,11 @@ class VulkanXrCompositionGraphics final : public IXrCompositionGraphics {
                 base_array_layer;
             context.depth_array_layers = array_layers;
             context.depth_format = depth_format;
+            context.depth_copy_layout =
+                vk::ImageLayout::eTransferDstOptimal;
+            context.depth_required_layout =
+                vk::ImageLayout::
+                    eDepthStencilAttachmentOptimal;
             if (array_layers ==
                 xr_stereo_view_count) {
                 context.depth_layer_attachments.reserve(
@@ -493,6 +508,7 @@ class XrCompositionTarget::Impl {
     bool view_family_begun = false;
     bool view_family_ended = false;
     bool view_family_submission_complete = false;
+    bool depth_submission_active = false;
     bool teardown_required = false;
 
     void resolveApi() {
@@ -609,33 +625,38 @@ class XrCompositionTarget::Impl {
                 "XR_KHR_composition_layer_depth_not_enabled";
             return std::nullopt;
         }
-        static constexpr std::array preferred{
-            vk::Format::eD32Sfloat,
-            vk::Format::eD24UnormS8Uint,
-            vk::Format::eD32SfloatS8Uint,
-        };
-        for (const auto candidate : preferred) {
-            const auto raw = static_cast<std::int64_t>(
-                static_cast<VkFormat>(candidate));
-            if (std::find(formats.begin(), formats.end(), raw) ==
-                formats.end()) {
-                continue;
-            }
-            if (dependencies.vulkan != nullptr) {
-                const auto properties =
-                    dependencies.vulkan->getPhysDevice()
-                        .getFormatProperties(candidate);
-                if (!(properties.optimalTilingFeatures &
-                      vk::FormatFeatureFlagBits::
-                          eDepthStencilAttachment)) {
-                    continue;
-                }
-            }
-            return candidate;
+        if (dependencies.renderer_depth_format ==
+            vk::Format::eUndefined) {
+            capabilities.depth_reason =
+                "compiled_graph_has_no_external_depth_export";
+            return std::nullopt;
         }
-        capabilities.depth_reason =
-            "no_common_openxr_vulkan_depth_format";
-        return std::nullopt;
+        const auto candidate =
+            dependencies.renderer_depth_format;
+        const auto raw = static_cast<std::int64_t>(
+            static_cast<VkFormat>(candidate));
+        if (std::find(formats.begin(), formats.end(), raw) ==
+            formats.end()) {
+            capabilities.depth_reason =
+                "compiled_depth_format_not_supported_by_openxr_runtime";
+            return std::nullopt;
+        }
+        if (dependencies.vulkan != nullptr) {
+            const auto properties =
+                dependencies.vulkan->getPhysDevice()
+                    .getFormatProperties(candidate);
+            const auto required =
+                vk::FormatFeatureFlagBits::
+                    eDepthStencilAttachment |
+                vk::FormatFeatureFlagBits::eTransferDst;
+            if ((properties.optimalTilingFeatures &
+                 required) != required) {
+                capabilities.depth_reason =
+                    "compiled_depth_format_lacks_vulkan_transfer_destination";
+                return std::nullopt;
+            }
+        }
+        return candidate;
     }
 
     XrSwapchain createSwapchain(
@@ -681,7 +702,8 @@ class XrCompositionTarget::Impl {
             depth.swapchain = createSwapchain(
                 static_cast<std::int64_t>(
                     static_cast<VkFormat>(*depth_format)),
-                XR_SWAPCHAIN_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
+                XR_SWAPCHAIN_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                    XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT);
             capabilities.depth_submission = true;
             capabilities.depth_format = *depth_format;
             capabilities.depth_reason.clear();
@@ -706,6 +728,7 @@ class XrCompositionTarget::Impl {
         view_family_begun = false;
         view_family_ended = false;
         view_family_submission_complete = false;
+        depth_submission_active = false;
         display_timing.reset();
         located_views = {};
         in_flight_frame_index =
@@ -839,7 +862,7 @@ class XrCompositionTarget::Impl {
         return {
             .color = color.image_index,
             .depth =
-                capabilities.depth_submission
+                depth_submission_active
                     ? std::optional{
                           depth.image_index}
                     : std::nullopt,
@@ -950,6 +973,22 @@ class XrCompositionTarget::Impl {
         session_runtime.endFrame(timing);
     }
 
+    bool configureExternalDepthSubmission(
+        vk::Format source_format,
+        vk::Extent2D source_extent) {
+        if (logical_frame_begun) {
+            throw std::logic_error(
+                "OpenXR composition depth cannot be reconfigured "
+                "during a logical frame");
+        }
+        depth_submission_active =
+            source_format != vk::Format::eUndefined &&
+            capabilities.depth_submission &&
+            source_format == capabilities.depth_format &&
+            source_extent == capabilities.extent;
+        return depth_submission_active;
+    }
+
     void beginLogicalFrame(std::uint32_t view_count) {
         if (!frame_prepared || logical_frame_begun ||
             view_count != xr_stereo_view_count) {
@@ -982,7 +1021,9 @@ class XrCompositionTarget::Impl {
         next_view = 0;
         try {
             acquireAndWait(color);
-            acquireAndWait(depth);
+            if (depth_submission_active) {
+                acquireAndWait(depth);
+            }
         } catch (...) {
             abortFrame();
             throw;
@@ -993,7 +1034,7 @@ class XrCompositionTarget::Impl {
         if (!logical_frame_begun || view_index != next_view ||
             view_index >= xr_stereo_view_count ||
             color.state != XrSwapchainState::waited ||
-            (capabilities.depth_submission &&
+            (depth_submission_active &&
              depth.state != XrSwapchainState::waited) ||
             view_family_begun ||
             views[view_index].view_begun) {
@@ -1018,7 +1059,7 @@ class XrCompositionTarget::Impl {
             view_count != xr_stereo_view_count ||
             next_view != 0 || view_family_begun ||
             color.state != XrSwapchainState::waited ||
-            (capabilities.depth_submission &&
+            (depth_submission_active &&
              depth.state != XrSwapchainState::waited)) {
             throw std::logic_error(
                 "OpenXR composition view-family begin is out of order");
@@ -1066,7 +1107,7 @@ class XrCompositionTarget::Impl {
             retainSubmissionLease(std::move(lease));
             views[view_index].view_ended = true;
             color.state = XrSwapchainState::submitted;
-            if (capabilities.depth_submission) {
+            if (depth_submission_active) {
                 depth.state = XrSwapchainState::submitted;
             }
             ++next_view;
@@ -1074,7 +1115,7 @@ class XrCompositionTarget::Impl {
                 // The second layer remains available under the same acquired
                 // array image even though the first command was submitted.
                 color.state = XrSwapchainState::waited;
-                if (capabilities.depth_submission) {
+                if (depth_submission_active) {
                     depth.state = XrSwapchainState::waited;
                 }
             }
@@ -1101,7 +1142,7 @@ class XrCompositionTarget::Impl {
             view_family_ended = true;
             next_view = xr_stereo_view_count;
             color.state = XrSwapchainState::submitted;
-            if (capabilities.depth_submission) {
+            if (depth_submission_active) {
                 depth.state = XrSwapchainState::submitted;
             }
         } catch (...) {
@@ -1131,7 +1172,7 @@ class XrCompositionTarget::Impl {
                     views[view].submission_complete = true;
                 }
             }
-            if (capabilities.depth_submission &&
+            if (depth_submission_active &&
                 !releaseSwapchain(depth)) {
                 throw std::runtime_error(
                     "xrReleaseSwapchainImage failed for composition depth");
@@ -1169,7 +1210,7 @@ class XrCompositionTarget::Impl {
                         capabilities.extent.height),
                 };
                 projection_views[view].subImage.imageArrayIndex = view;
-                if (capabilities.depth_submission) {
+                if (depth_submission_active) {
                     auto &depth_view = depth_views[view];
                     depth_view.subImage.swapchain =
                         depth.swapchain;
@@ -1253,6 +1294,13 @@ void XrCompositionTarget::prepareFrame(const XrDisplayTiming &display_timing,
 void XrCompositionTarget::endFrameWithoutLayers(
     const XrDisplayTiming &display_timing) {
     impl->endFrameWithoutLayers(display_timing);
+}
+
+bool XrCompositionTarget::configureExternalDepthSubmission(
+    vk::Format source_format,
+    vk::Extent2D source_extent) {
+    return impl->configureExternalDepthSubmission(
+        source_format, source_extent);
 }
 
 void XrCompositionTarget::beginLogicalFrame(std::uint32_t view_count) {

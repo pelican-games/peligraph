@@ -38,6 +38,7 @@
 #include "deletionqueue.hpp"
 #include "core.hpp"
 #include "debugutils.hpp"
+#include "externaldepthsubmission.hpp"
 #include "render_pass_dispatch.hpp"
 #include "render_pass_executor.hpp"
 #include "render_pass_frame_setup.hpp"
@@ -1916,6 +1917,65 @@ nlohmann::json Renderer::currentFramePlanJson() const {
     return result;
 }
 
+std::optional<vk::Format>
+Renderer::xrCompositionDepthFormat() const {
+    if (!xr_rendering_pass_id) {
+        return std::nullopt;
+    }
+    const auto *frame_graph_runtime =
+        FastModuleContainer::tryGet<
+            FrameGraphRuntimeContainer>();
+    const auto generation =
+        frame_graph_runtime != nullptr
+            ? frame_graph_runtime->snapshot()
+            : nullptr;
+    const auto *program =
+        generation != nullptr
+            ? generation->find(
+                  *xr_rendering_pass_id)
+            : nullptr;
+    if (program == nullptr ||
+        program->frame_graph.target_plan == nullptr ||
+        !program->frame_graph.target_plan
+             ->external_depth_export) {
+        return std::nullopt;
+    }
+    const auto &export_plan =
+        *program->frame_graph.target_plan
+             ->external_depth_export;
+    const auto binding =
+        program->frame_graph
+            .render_target_bindings.find(
+                export_plan.source_resource);
+    if (binding ==
+            program->frame_graph
+                .render_target_bindings.end() ||
+        !isConcreteRenderTarget(binding->second)) {
+        throw std::runtime_error(
+            "XR external depth plan is not bound to a concrete "
+            "render target");
+    }
+    const auto *render_targets =
+        FastModuleContainer::tryGet<
+            RenderTargetContainer>();
+    if (render_targets == nullptr) {
+        throw std::runtime_error(
+            "XR external depth format requires the render-target "
+            "runtime");
+    }
+    const auto metadata =
+        render_targets->getMetadata(binding->second);
+    if (export_plan.format !=
+            vk::to_string(metadata.format) ||
+        !(metadata.usage &
+          vk::ImageUsageFlagBits::eTransferSrc)) {
+        throw std::runtime_error(
+            "XR external depth plan does not match its physical "
+            "render target");
+    }
+    return metadata.format;
+}
+
 std::vector<std::string> Renderer::currentFramePlanOrderForTesting() const {
     const auto *frame_graph_runtime = FastModuleContainer::tryGet<FrameGraphRuntimeContainer>();
     const auto generation =
@@ -2206,6 +2266,27 @@ void Renderer::renderLogicalFrame(
             "target does not expose a view-family command context");
     }
 
+    const auto external_depth_export =
+        resolveRuntimeExternalDepthExport(
+            frame_graph,
+            modules.render_target_container);
+    const auto external_depth_submission_active =
+        target.configureExternalDepthSubmission(
+            external_depth_export
+                ? external_depth_export
+                      ->source.format
+                : vk::Format::eUndefined,
+            external_depth_export
+                ? external_depth_export
+                      ->source.extent
+                : vk::Extent2D{});
+    if (external_depth_submission_active &&
+        !external_depth_export) {
+        throw std::runtime_error(
+            "logical-frame target activated external depth without "
+            "a compiled export source");
+    }
+
     target.beginLogicalFrame(view_count);
     if (use_view_family_execution) {
         const auto render_ctx =
@@ -2350,6 +2431,16 @@ void Renderer::renderLogicalFrame(
                 graph_variant_policy.variant),
             0, view_count, per_view_sort,
             schedule);
+        if (external_depth_submission_active) {
+            recordExternalDepthExport(
+                render_ctx,
+                *external_depth_export,
+                modules.render_target_container,
+                modules.vk_utils,
+                render_target_layout_tracker,
+                0, view_count, true,
+                node_trace_ptr);
+        }
 #if PELICAN_WITH_OPENXR
         if (graph_variant_policy.mirror_output ==
             GraphVariantMirrorOutput::left_eye) {
@@ -2455,6 +2546,16 @@ void Renderer::renderLogicalFrame(
                                view_index,
                                view_count,
                                per_view_sort);
+        if (external_depth_submission_active) {
+            recordExternalDepthExport(
+                render_ctx,
+                *external_depth_export,
+                modules.render_target_container,
+                modules.vk_utils,
+                render_target_layout_tracker,
+                view_index, view_count, false,
+                node_trace_ptr);
+        }
 #if PELICAN_WITH_OPENXR
         if (graph_variant_policy.mirror_output ==
                 GraphVariantMirrorOutput::left_eye &&

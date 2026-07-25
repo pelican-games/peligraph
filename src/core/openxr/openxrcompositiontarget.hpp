@@ -70,6 +70,7 @@ struct XrCompositionDependencies {
     SessionRuntime *session_runtime = nullptr;
     VulkanManageCore *vulkan = nullptr;
     vk::Format renderer_color_format = vk::Format::eUndefined;
+    vk::Format renderer_depth_format = vk::Format::eUndefined;
     XrDuration image_wait_timeout = XR_INFINITE_DURATION;
     bool composition_layer_depth_enabled = false;
 };
@@ -115,6 +116,9 @@ class XrCompositionTarget final : public IXrCompositionTarget {
                       float near_z = 0.05F,
                       float far_z = 1000.0F) override;
     void endFrameWithoutLayers(const XrDisplayTiming &display_timing) override;
+    bool configureExternalDepthSubmission(
+        vk::Format source_format,
+        vk::Extent2D source_extent) override;
     void beginLogicalFrame(std::uint32_t view_count) override;
     FrameRenderContext beginView(std::uint32_t view_index) override;
     bool supportsViewFamilyExecution() const noexcept override;

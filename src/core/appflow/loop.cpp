@@ -237,6 +237,10 @@ OpenXr::XrCompositionDependencies resolveXrCompositionDependencies(
         .session_runtime = &session,
         .vulkan = &GET_MODULE(VulkanManageCore),
         .renderer_color_format = GET_MODULE(RenderTarget).getSwapchainFormat(),
+        .renderer_depth_format =
+            GET_MODULE(Renderer)
+                .xrCompositionDepthFormat()
+                .value_or(vk::Format::eUndefined),
         .composition_layer_depth_enabled =
             discovery.compositionLayerDepthEnabled(),
     };

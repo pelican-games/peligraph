@@ -39,6 +39,13 @@ struct RenderViewParameters {
 class ILogicalFrameTarget {
   public:
     virtual ~ILogicalFrameTarget() = default;
+    // Called once before beginLogicalFrame. Undefined disables the optional
+    // export. A true result promises that subsequent contexts expose a
+    // compatible external depth image for this logical frame.
+    virtual bool configureExternalDepthSubmission(
+        vk::Format, vk::Extent2D) {
+        return false;
+    }
     virtual void beginLogicalFrame(std::uint32_t view_count) = 0;
     virtual FrameRenderContext beginView(std::uint32_t view_index) = 0;
     virtual bool supportsViewFamilyExecution() const noexcept {
@@ -98,6 +105,8 @@ DECLARE_MODULE(Renderer) {
     Renderer();
     ~Renderer();
     nlohmann::json currentFramePlanJson() const;
+    std::optional<vk::Format>
+    xrCompositionDepthFormat() const;
     std::vector<std::string> currentFramePlanOrderForTesting() const;
     void setExecutionTracingForTesting(bool enabled) { execution_tracing_for_testing = enabled; }
     const nlohmann::json &lastExecutionTraceForTesting() const { return last_execution_trace; }

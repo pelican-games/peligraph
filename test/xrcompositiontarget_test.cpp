@@ -30,6 +30,7 @@ struct FakeRuntime {
     bool saw_zero_layer = false;
     bool graphics_release_layout_is_runtime_layout = false;
     bool composition_depth_enabled = false;
+    bool expect_depth_submission = true;
     float expected_near_z = 0.05F;
     float expected_far_z = 1000.0F;
 };
@@ -141,7 +142,8 @@ XrResult XRAPI_CALL fakeEndFrame(XrSession, const XrFrameEndInfo *info) {
         CHECK(layer.views[view].subImage.imageRect.extent.width ==
               72);
         CHECK(layer.views[view].subImage.imageRect.extent.height == 64);
-        if (active_fake->composition_depth_enabled) {
+        if (active_fake->composition_depth_enabled &&
+            active_fake->expect_depth_submission) {
             REQUIRE(layer.views[view].next != nullptr);
             const auto &depth =
                 *reinterpret_cast<
@@ -387,17 +389,28 @@ class FakeGraphics final : public Pelican::OpenXr::IXrCompositionGraphics {
                                           std::uint32_t in_flight) override {
         active_fake->calls.emplace_back("begin:" + eye(view));
         CHECK(images.color == 10);
-        CHECK(images.depth ==
-              (has_depth
-                   ? std::optional<std::uint32_t>{11}
-                   : std::nullopt));
-        return {
+        CHECK_FALSE((images.depth.has_value() &&
+                     !has_depth));
+        Pelican::FrameRenderContext context{
             .color_base_array_layer = view,
             .color_array_layers = 1,
             .extent = vk::Extent2D{72, 64},
             .required_layout = vk::ImageLayout::eColorAttachmentOptimal,
             .in_flight_frame_index = in_flight,
         };
+        if (images.depth) {
+            CHECK(*images.depth == 11);
+            context.depth_base_array_layer = view;
+            context.depth_array_layers = 1;
+            context.depth_format =
+                vk::Format::eD32Sfloat;
+            context.depth_copy_layout =
+                vk::ImageLayout::eTransferDstOptimal;
+            context.depth_required_layout =
+                vk::ImageLayout::
+                    eDepthStencilAttachmentOptimal;
+        }
+        return context;
     }
 
     Pelican::FrameRenderContext beginViewFamily(
@@ -405,11 +418,9 @@ class FakeGraphics final : public Pelican::OpenXr::IXrCompositionGraphics {
         std::uint32_t in_flight) override {
         active_fake->calls.emplace_back("begin:family");
         CHECK(images.color == 10);
-        CHECK(images.depth ==
-              (has_depth
-                   ? std::optional<std::uint32_t>{11}
-                   : std::nullopt));
-        return {
+        CHECK_FALSE((images.depth.has_value() &&
+                     !has_depth));
+        Pelican::FrameRenderContext context{
             .color_layer_attachments =
                 {vk::ImageView{
                      reinterpret_cast<VkImageView>(
@@ -423,6 +434,18 @@ class FakeGraphics final : public Pelican::OpenXr::IXrCompositionGraphics {
                 vk::ImageLayout::eColorAttachmentOptimal,
             .in_flight_frame_index = in_flight,
         };
+        if (images.depth) {
+            CHECK(*images.depth == 11);
+            context.depth_array_layers = 2;
+            context.depth_format =
+                vk::Format::eD32Sfloat;
+            context.depth_copy_layout =
+                vk::ImageLayout::eTransferDstOptimal;
+            context.depth_required_layout =
+                vk::ImageLayout::
+                    eDepthStencilAttachmentOptimal;
+        }
+        return context;
     }
 
     void submitView(std::uint32_t view, std::uint32_t) override {
@@ -478,6 +501,12 @@ Pelican::OpenXr::XrCompositionDependencies compositionDependencies(
         .session_runtime = &session,
         .vulkan = nullptr,
         .renderer_color_format = test_format,
+        .renderer_depth_format =
+            active_fake != nullptr &&
+                    active_fake
+                        ->composition_depth_enabled
+                ? vk::Format::eD32Sfloat
+                : vk::Format::eUndefined,
         .image_wait_timeout = 1,
         .composition_layer_depth_enabled =
             active_fake != nullptr &&
@@ -486,6 +515,13 @@ Pelican::OpenXr::XrCompositionDependencies compositionDependencies(
 }
 
 void submitBoth(Pelican::OpenXr::XrCompositionTarget &target) {
+    const auto capabilities =
+        target.compositionCapabilities();
+    (void)target.configureExternalDepthSubmission(
+        capabilities.depth_submission
+            ? capabilities.depth_format
+            : vk::Format::eUndefined,
+        vk::Extent2D{72, 64});
     target.beginLogicalFrame(2);
     (void)target.beginView(0);
     target.endView(0);
@@ -600,7 +636,8 @@ TEST_CASE("OpenXR composition submits a two-layer depth swapchain chain when ena
     CHECK(depth_info.height == 64);
     CHECK(depth_info.format == VK_FORMAT_D32_SFLOAT);
     CHECK(depth_info.usageFlags ==
-          XR_SWAPCHAIN_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
+          (XR_SWAPCHAIN_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+           XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT));
     const auto capabilities =
         target.compositionCapabilities();
     CHECK(capabilities.depth_submission);
@@ -611,6 +648,9 @@ TEST_CASE("OpenXR composition submits a two-layer depth swapchain chain when ena
     auto frame = beginFrame(fake, session);
     target.prepareFrame(
         frame.timing, frame.views, 0.1F, 500.0F);
+    CHECK(target.configureExternalDepthSubmission(
+        vk::Format::eD32Sfloat,
+        vk::Extent2D{72, 64}));
     target.beginLogicalFrame(2);
     (void)target.beginViewFamily(2);
     target.endViewFamily();
@@ -624,6 +664,42 @@ TEST_CASE("OpenXR composition submits a two-layer depth swapchain chain when ena
               "gpu_wait:family", "release:depth",
               "release:color", "end_projection"});
     CHECK(fake.saw_depth_chain);
+}
+
+TEST_CASE("OpenXR keeps an available depth swapchain idle for a color-only graph",
+          "[openxr][composition][composition-depth][fallback]") {
+    FakeRuntime fake{
+        .composition_depth_enabled = true,
+        .expect_depth_submission = false,
+    };
+    FakeScope scope{fake};
+    Pelican::OpenXr::SessionRuntime session{
+        sessionDependencies()};
+    makeReady(fake, session);
+    Pelican::OpenXr::XrCompositionTarget target{
+        compositionDependencies(session),
+        std::make_unique<FakeGraphics>()};
+
+    auto frame = beginFrame(fake, session);
+    target.prepareFrame(frame.timing, frame.views);
+    CHECK_FALSE(
+        target.configureExternalDepthSubmission(
+            vk::Format::eUndefined,
+            vk::Extent2D{}));
+    target.beginLogicalFrame(2);
+    (void)target.beginViewFamily(2);
+    target.endViewFamily();
+    target.endLogicalFrame();
+
+    CHECK(fake.calls ==
+          std::vector<std::string>{
+              "acquire:color", "wait:color",
+              "begin:family", "submit:family",
+              "gpu_wait:family", "release:color",
+              "end_projection"});
+    CHECK_FALSE(fake.saw_depth_chain);
+    CHECK(target.depthSwapchainState() ==
+          Pelican::OpenXr::XrSwapchainState::idle);
 }
 
 TEST_CASE("OpenXR composition retains a submitted generation until both view fences complete",
