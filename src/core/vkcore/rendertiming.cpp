@@ -127,6 +127,10 @@ nlohmann::json disabledGpuTimingStatusJson() {
         {"history_capacity", gpu_timing_history_capacity},
         {"history_count", 0},
         {"dropped_samples", 0},
+        {"logical_frame_averages",
+         nlohmann::json::array()},
+        {"logical_frame_history",
+         nlohmann::json::array()},
         {"logical_frame_total_sum_views_ms", 0.0},
         {"views", nlohmann::json::array()},
         {"nodes", nlohmann::json::array()},
@@ -373,6 +377,63 @@ void RenderTiming::publishSnapshot() {
         for (const auto &sample : frame.samples) nodes.push_back(sampleJson(sample));
     }
 
+    struct LogicalFrameAggregate {
+        double total_ms = 0.0;
+        double min_ms =
+            std::numeric_limits<double>::max();
+        double max_ms = 0.0;
+        std::uint64_t frame_count = 0;
+    };
+    nlohmann::json logical_frame_history =
+        nlohmann::json::array();
+    std::map<std::string, LogicalFrameAggregate>
+        logical_frame_aggregates;
+    for (const auto &frame : gpu_history) {
+        double total_ms = 0.0;
+        std::uint64_t supported_samples = 0;
+        for (const auto &sample : frame.samples) {
+            if (!sample.supported) continue;
+            total_ms += sample.ms;
+            ++supported_samples;
+        }
+        logical_frame_history.push_back({
+            {"logical_frame",
+             frame.logical_frame},
+            {"graph_variant",
+             frame.graph_variant},
+            {"total_ms", total_ms},
+            {"supported_sample_count",
+             supported_samples},
+        });
+        auto &aggregate =
+            logical_frame_aggregates[
+                frame.graph_variant];
+        aggregate.total_ms += total_ms;
+        aggregate.min_ms =
+            std::min(aggregate.min_ms, total_ms);
+        aggregate.max_ms =
+            std::max(aggregate.max_ms, total_ms);
+        ++aggregate.frame_count;
+    }
+    nlohmann::json logical_frame_averages =
+        nlohmann::json::array();
+    for (const auto &[graph_variant, aggregate] :
+         logical_frame_aggregates) {
+        logical_frame_averages.push_back({
+            {"graph_variant", graph_variant},
+            {"frame_count",
+             aggregate.frame_count},
+            {"average_total_ms",
+             aggregate.total_ms /
+                 static_cast<double>(
+                     aggregate.frame_count)},
+            {"min_total_ms",
+             aggregate.min_ms},
+            {"max_total_ms",
+             aggregate.max_ms},
+        });
+    }
+
     double logical_frame_total_sum_views_ms = 0.0;
     if (!gpu_history.empty()) {
         const auto &latest = gpu_history.back();
@@ -442,6 +503,10 @@ void RenderTiming::publishSnapshot() {
         {"history_capacity", gpu_timing_history_capacity},
         {"history_count", gpu_history.size()},
         {"dropped_samples", dropped_samples},
+        {"logical_frame_averages",
+         std::move(logical_frame_averages)},
+        {"logical_frame_history",
+         std::move(logical_frame_history)},
         {"logical_frame_total_sum_views_ms", logical_frame_total_sum_views_ms},
         {"views", std::move(views)},
         {"nodes", std::move(nodes)},

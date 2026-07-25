@@ -4259,6 +4259,19 @@ void GoldenHarness::runGpuTimingIdentity() {
     REQUIRE(status.at("history_capacity") == 120);
     REQUIRE(status.at("history_count") == 1);
     REQUIRE(status.at("dropped_samples") == 0);
+    REQUIRE(status.at("logical_frame_history")
+                .size() == 1);
+    REQUIRE(status.at("logical_frame_history")
+                .at(0)
+                .at("logical_frame") == 0);
+    REQUIRE(status.at("logical_frame_averages")
+                .size() == 1);
+    REQUIRE(status.at("logical_frame_averages")
+                .at(0)
+                .at("graph_variant") == "flat");
+    REQUIRE(status.at("logical_frame_averages")
+                .at(0)
+                .at("frame_count") == 1);
     REQUIRE(status.at("views").size() == 1);
     REQUIRE(status.at("views").at(0).at("view_index") == 0);
     REQUIRE(status.at("views").at(0).at("label") == "flat");
@@ -4319,6 +4332,17 @@ void GoldenHarness::runGpuTimingRing() {
     REQUIRE(status.at("history_capacity") == 120);
     REQUIRE(status.at("history_count") == 120);
     REQUIRE(status.at("dropped_samples") == 0);
+    REQUIRE(status.at("logical_frame_history")
+                .size() == 120);
+    REQUIRE(status.at("logical_frame_history")
+                .front()
+                .at("logical_frame") == 3);
+    REQUIRE(status.at("logical_frame_history")
+                .back()
+                .at("logical_frame") == 122);
+    REQUIRE(status.at("logical_frame_averages")
+                .at(0)
+                .at("frame_count") == 120);
     REQUIRE(status.at("nodes").size() == 120 * plan.size() * 2);
     REQUIRE(status.at("nodes").front().at("logical_frame") == 3);
     REQUIRE(status.at("nodes").back().at("logical_frame") == 122);

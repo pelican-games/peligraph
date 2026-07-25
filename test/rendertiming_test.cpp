@@ -61,6 +61,12 @@ TEST_CASE("disabled GPU timing status keeps the additive v2 schema",
     REQUIRE(status.at("history_capacity") == 120);
     REQUIRE(status.at("history_count") == 0);
     REQUIRE(status.at("dropped_samples") == 0);
+    REQUIRE(status.at(
+                "logical_frame_averages")
+                .empty());
+    REQUIRE(status.at(
+                "logical_frame_history")
+                .empty());
     REQUIRE(status.at("views").empty());
     REQUIRE(status.at("nodes").empty());
 }
