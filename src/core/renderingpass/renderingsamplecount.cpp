@@ -572,7 +572,9 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
     vk::Format swapchain_format,
     const RenderingTargetPlanDeviceFacts &device_facts,
     std::optional<VulkanViewExecutionPlanRequest>
-        view_execution) {
+        view_execution,
+    std::optional<VulkanExternalDepthExportRequest>
+        external_depth_export) {
     const auto target_by_name =
         renderTargetsByName(render_targets);
     const auto types = makeBuiltinLogicalTypeRegistry();
@@ -644,6 +646,8 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
                                 geometryNodes(definition),
                     },
                     .view_execution = view_execution,
+                    .external_depth_export =
+                        external_depth_export,
                 });
         plan_value.resolution_plan =
             makeRuntimeResolutionPlan(
@@ -750,7 +754,9 @@ compileRenderingTargetPlansForVulkanDevice(
     vk::Format swapchain_format,
     vk::PhysicalDevice physical_device,
     std::optional<VulkanViewExecutionPlanRequest>
-        view_execution) {
+        view_execution,
+    std::optional<VulkanExternalDepthExportRequest>
+        external_depth_export) {
     const auto features =
         physical_device.getFeatures2<
             vk::PhysicalDeviceFeatures2,
@@ -784,7 +790,8 @@ compileRenderingTargetPlansForVulkanDevice(
                         physical_device, definition);
                 },
         },
-        std::move(view_execution));
+        std::move(view_execution),
+        std::move(external_depth_export));
 }
 
 void applyRenderingTargetPlan(
@@ -794,6 +801,8 @@ void applyRenderingTargetPlan(
         assignments;
     std::map<std::string, std::uint32_t, std::less<>>
         array_layer_assignments;
+    std::set<std::string, std::less<>>
+        external_depth_sources;
     for (const auto &assignment : compilation.assignments) {
         if (!assignments.emplace(assignment.resource,
                                  assignment.samples)
@@ -815,6 +824,14 @@ void applyRenderingTargetPlan(
                 assignment.resource);
         }
     }
+    for (const auto &plan : compilation.plans) {
+        if (plan != nullptr &&
+            plan->external_depth_export) {
+            external_depth_sources.insert(
+                plan->external_depth_export
+                    ->source_resource);
+        }
+    }
     for (auto &target : render_targets) {
         const auto found = assignments.find(target.name);
         if (found == assignments.end()) {
@@ -832,6 +849,19 @@ void applyRenderingTargetPlan(
                 target.name);
         }
         target.array_layers = layers->second;
+        if (external_depth_sources.contains(
+                target.name)) {
+            if (!(target.usage &
+                  vk::ImageUsageFlagBits::
+                      eDepthStencilAttachment)) {
+                throw std::runtime_error(
+                    "external depth export source is not a depth "
+                    "attachment RenderTargetDefinition: " +
+                    target.name);
+            }
+            target.usage |=
+                vk::ImageUsageFlagBits::eTransferSrc;
+        }
     }
 }
 

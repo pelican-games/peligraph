@@ -64,7 +64,9 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
     vk::Format swapchain_format,
     const RenderingTargetPlanDeviceFacts &device_facts,
     std::optional<VulkanViewExecutionPlanRequest> view_execution =
-        std::nullopt);
+        std::nullopt,
+    std::optional<VulkanExternalDepthExportRequest>
+        external_depth_export = std::nullopt);
 RenderingTargetPlanCompilation compileRenderingTargetPlansForVulkanDevice(
     std::span<const FrameGraphDefinition> frame_graphs,
     std::span<const RenderTargetDefinition> render_targets,
@@ -72,7 +74,9 @@ RenderingTargetPlanCompilation compileRenderingTargetPlansForVulkanDevice(
     vk::Format swapchain_format,
     vk::PhysicalDevice physical_device,
     std::optional<VulkanViewExecutionPlanRequest> view_execution =
-        std::nullopt);
+        std::nullopt,
+    std::optional<VulkanExternalDepthExportRequest>
+        external_depth_export = std::nullopt);
 
 void applyRenderingTargetPlan(
     std::span<RenderTargetDefinition> render_targets,

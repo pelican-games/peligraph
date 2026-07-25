@@ -276,6 +276,7 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
         // Device and per-pass capability checks still decide which scopes
         // may compile to multiview; unsupported scopes remain sequential.
         xr_options.enable_multiview_runtime = true;
+        xr_options.enable_external_depth_export = true;
         xr_options.publish_enabled_features = false;
         xr_options.gpu_owner_scope =
             "render_pipeline/variants";

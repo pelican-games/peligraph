@@ -399,7 +399,8 @@ TEST_CASE("runtime target adapter carries multiview device facts and typed view 
                 XrViewExecutionPreference::automatic,
             .multiview_capable_nodes =
                 {"geometry", "lighting", "forward", "present"},
-        });
+        },
+        VulkanExternalDepthExportRequest{});
 
     REQUIRE(compilation.plans.size() == 1);
     const auto &plan = *compilation.plans.front();
@@ -410,6 +411,12 @@ TEST_CASE("runtime target adapter carries multiview device facts and typed view 
     REQUIRE(physicalResource(plan, "lit").array_layers == 2);
     REQUIRE(layerAssignment(compilation, "lit").array_layers == 2);
     REQUIRE(layerAssignment(compilation, "display").array_layers == 2);
+    REQUIRE(plan.external_depth_export.has_value());
+    REQUIRE(plan.external_depth_export->source_resource ==
+            "depth");
+    REQUIRE(plan.external_depth_export->format ==
+            vk::to_string(vk::Format::eD32Sfloat));
+    REQUIRE(plan.external_depth_export->array_layers == 2);
 
     auto materialized_targets = targets;
     applyRenderingTargetPlan(materialized_targets, compilation);
@@ -420,6 +427,15 @@ TEST_CASE("runtime target adapter carries multiview device facts and typed view 
         });
     REQUIRE(lit != materialized_targets.end());
     REQUIRE(lit->array_layers == 2);
+    const auto depth = std::find_if(
+        materialized_targets.begin(),
+        materialized_targets.end(),
+        [](const auto &candidate) {
+            return candidate.name == "depth";
+        });
+    REQUIRE(depth != materialized_targets.end());
+    REQUIRE(depth->usage &
+            vk::ImageUsageFlagBits::eTransferSrc);
 }
 
 } // namespace Pelican

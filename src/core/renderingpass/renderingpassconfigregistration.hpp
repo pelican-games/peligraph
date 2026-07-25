@@ -72,6 +72,10 @@ struct RenderingPassConfigRegistrationDependencies {
         // provide one command context spanning the complete view family.
         // OpenXR enables this after its array-swapchain target is installed.
         bool enable_multiview_runtime = false;
+        // Requests a typed device-depth export from each graph. The target
+        // compiler keeps the inferred source materialized and adds the image
+        // usage required by an external compositor copy.
+        bool enable_external_depth_export = false;
         bool publish_enabled_features = true;
         std::string gpu_owner_scope;
         std::function<void()> prepare_additional_gpu_resources;

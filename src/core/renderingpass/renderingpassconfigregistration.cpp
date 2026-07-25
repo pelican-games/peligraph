@@ -136,10 +136,8 @@ targetViewExecutionRequest(
             pipeline.xr_target_policy.view_execution,
     };
     if (!enable_multiview_runtime) {
-        // The current OpenXR target owns one swapchain image per eye. Keep
-        // production XR sequential until WP203c installs its array target,
-        // while allowing synthetic/embedded view-family targets to exercise
-        // the completed WP203b path explicitly.
+        // Preserve the typed XR request while an embedding target or device
+        // profile keeps production execution sequential.
         return request;
     }
 
@@ -345,25 +343,34 @@ struct PreparedRenderingPassConfigVariant {
         target_plans;
 };
 
-void mergeVariantRenderTargetArrayLayers(
+void mergeVariantRenderTargetPhysicalRequirements(
     std::span<PreparedRenderingPassConfigVariant>
         variants) {
-    std::unordered_map<std::string, std::uint32_t>
-        maximum_layers;
+    struct Requirements {
+        std::uint32_t maximum_layers = 1;
+        vk::ImageUsageFlags usage;
+    };
+    std::unordered_map<std::string, Requirements>
+        requirements;
     for (const auto &variant : variants) {
         for (const auto &target :
              variant.render_target_definitions) {
-            auto &layers =
-                maximum_layers[target.name];
-            layers = std::max(
-                layers, target.array_layers);
+            auto &merged =
+                requirements[target.name];
+            merged.maximum_layers = std::max(
+                merged.maximum_layers,
+                target.array_layers);
+            merged.usage |= target.usage;
         }
     }
     for (auto &variant : variants) {
         for (auto &target :
              variant.render_target_definitions) {
+            const auto &merged =
+                requirements.at(target.name);
             target.array_layers =
-                maximum_layers.at(target.name);
+                merged.maximum_layers;
+            target.usage = merged.usage;
         }
     }
 }
@@ -496,7 +503,12 @@ PreparedRenderingPassConfigVariant prepareRenderingPassConfigVariant(
                 graph_definition_list,
                 compute_task_definitions,
                 dependencies.options
-                    .enable_multiview_runtime));
+                    .enable_multiview_runtime),
+            dependencies.options
+                    .enable_external_depth_export
+                ? std::optional{
+                      VulkanExternalDepthExportRequest{}}
+                : std::nullopt);
     applyRenderingTargetPlan(render_target_definitions,
                              target_plan_compilation);
     auto target_plans =
@@ -766,11 +778,11 @@ registerRenderingPassConfigVariantsData(
                 render_strategy_providers,
                 subgraph_replacement_providers));
     }
-    // Flat and XR variants may share logical target names. Allocate the
-    // maximum required layer count before the first mutable registration so
-    // later variants reuse a safe physical superset without expanding live
-    // resources inside the transaction.
-    mergeVariantRenderTargetArrayLayers(
+    // Flat and XR variants may share logical target names. Allocate the union
+    // of image usage plus the maximum layer count before the first mutable
+    // registration so later variants reuse a safe physical superset without
+    // expanding live resources inside the transaction.
+    mergeVariantRenderTargetPhysicalRequirements(
         prepared_variants);
 
     // Legacy registries are mutable containers rather than isolated
