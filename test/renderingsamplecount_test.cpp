@@ -438,4 +438,54 @@ TEST_CASE("runtime target adapter carries multiview device facts and typed view 
             vk::ImageUsageFlagBits::eTransferSrc);
 }
 
+TEST_CASE("runtime depth export stays disabled when the device format cannot be a transfer source",
+          "[target-planning][external-depth][fallback]") {
+    const auto config = hybridConfig();
+    const auto graphs =
+        parseFrameGraphDefinitionsFromConfigJson(config);
+    const std::vector targets{
+        target("albedo", vk::Format::eB8G8R8A8Unorm),
+        target("normal", vk::Format::eR16G16B16A16Sfloat),
+        target("custom_id", vk::Format::eR32Uint),
+        target("depth", vk::Format::eD32Sfloat,
+               vk::ImageUsageFlagBits::eDepthStencilAttachment),
+        target("lit", vk::Format::eR16G16B16A16Sfloat),
+        target("display", vk::Format::eB8G8R8A8Srgb),
+    };
+    const auto compilation =
+        compileRenderingTargetPlans(
+            graphs, targets, SampleCountPolicy{},
+            vk::Format::eB8G8R8A8Unorm,
+            RenderingTargetPlanDeviceFacts{
+                .query_attachment_samples =
+                    [](const auto &) {
+                        return std::vector<std::uint32_t>{1};
+                    },
+                .supports_external_depth_transfer =
+                    [](const auto &) {
+                        return false;
+                    },
+            },
+            std::nullopt,
+            VulkanExternalDepthExportRequest{});
+
+    REQUIRE(compilation.plans.size() == 1);
+    REQUIRE_FALSE(
+        compilation.plans.front()
+            ->external_depth_export);
+    auto materialized_targets = targets;
+    applyRenderingTargetPlan(
+        materialized_targets, compilation);
+    const auto depth = std::find_if(
+        materialized_targets.begin(),
+        materialized_targets.end(),
+        [](const auto &candidate) {
+            return candidate.name == "depth";
+        });
+    REQUIRE(depth != materialized_targets.end());
+    REQUIRE_FALSE(
+        depth->usage &
+        vk::ImageUsageFlagBits::eTransferSrc);
+}
+
 } // namespace Pelican

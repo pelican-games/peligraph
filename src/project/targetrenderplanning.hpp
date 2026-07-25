@@ -247,6 +247,11 @@ struct VulkanSampleCountPlanRequest {
 // graph structure; an explicit source is the escape hatch for custom graphs.
 struct VulkanExternalDepthExportRequest {
     std::optional<std::string> source_resource;
+    // Null means the embedding target did not constrain formats. A present
+    // (possibly empty) list is the exact set whose physical images support
+    // transfer-source use on the selected device.
+    std::optional<std::vector<std::string>>
+        compatible_source_resources;
     bool required = false;
 };
 

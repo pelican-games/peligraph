@@ -34,6 +34,60 @@ struct LogicalFrameNodeInvocation {
     }
 };
 
+// Maps one logical view execution onto source and destination image-array
+// ranges. It is shared by external depth today and remains generic for future
+// compositor/video exports.
+struct ViewLayerCopyPlan {
+    std::uint32_t source_base_array_layer = 0;
+    std::uint32_t destination_base_array_layer = 0;
+    std::uint32_t array_layers = 1;
+
+    bool operator==(const ViewLayerCopyPlan &) const =
+        default;
+};
+
+inline ViewLayerCopyPlan planViewLayerCopy(
+    std::uint32_t source_array_layers,
+    std::uint32_t destination_base_array_layer,
+    std::uint32_t destination_array_layers,
+    std::uint32_t view_index,
+    std::uint32_t logical_view_count,
+    bool view_family) {
+    if (source_array_layers == 0 ||
+        destination_array_layers == 0 ||
+        logical_view_count == 0 ||
+        view_index >= logical_view_count) {
+        throw std::runtime_error(
+            "view-layer copy has an invalid image or logical-view "
+            "range");
+    }
+    if (view_family) {
+        if (source_array_layers <
+                logical_view_count ||
+            destination_array_layers <
+                logical_view_count) {
+            throw std::runtime_error(
+                "view-family copy does not preserve every logical "
+                "view layer");
+        }
+        return {
+            .source_base_array_layer = 0,
+            .destination_base_array_layer =
+                destination_base_array_layer,
+            .array_layers = logical_view_count,
+        };
+    }
+    return {
+        .source_base_array_layer =
+            source_array_layers >= logical_view_count
+                ? view_index
+                : 0u,
+        .destination_base_array_layer =
+            destination_base_array_layer,
+        .array_layers = 1,
+    };
+}
+
 inline std::vector<LogicalFrameNodeInvocation>
 buildLogicalFrameViewFamilySchedule(
     std::span<const FrameGraphExecutionNode> nodes,

@@ -699,6 +699,28 @@ TEST_CASE("external depth export infers camera depth and keeps it materialized a
     REQUIRE(encoded.at("external_depth_export")
                 .at("array_layers") == 2);
 
+    const auto mixed = compile(
+        types, graph, topology(false, 8, 2),
+        bindingsFor(types, graph), std::nullopt,
+        VulkanViewExecutionPlanRequest{
+            .view_count = 2,
+            .preference =
+                XrViewExecutionPreference::automatic,
+            .multiview_capable_nodes =
+                {"Lighting", "ToneMap", "ShadowDepth"},
+        },
+        VulkanExternalDepthExportRequest{});
+    REQUIRE(mixed.view_execution_plan.uses_multiview);
+    REQUIRE(mixed.view_execution_plan.mixed_execution);
+    REQUIRE(scopeForNode(mixed, "Forward")
+                .view_execution ==
+            VulkanScopeViewExecution::sequential);
+    REQUIRE(mixed.external_depth_export
+                ->view_layout ==
+            VulkanResourceViewLayout::layered_2d_array);
+    REQUIRE(mixed.external_depth_export
+                ->array_layers == 2);
+
     const auto explicit_shadow = compile(
         types, graph, topology(false),
         bindingsFor(types, graph), std::nullopt,
@@ -732,7 +754,7 @@ TEST_CASE("external depth export remains optional but diagnoses an unsatisfied r
                     .required = true,
                 });
         },
-        "found no written device/projection depth");
+        "found no written compatible device/projection depth");
 }
 
 TEST_CASE("neighborhood refraction materializes an opaque snapshot without spilling G-buffer attachments",

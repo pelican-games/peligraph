@@ -579,6 +579,24 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
         renderTargetsByName(render_targets);
     const auto types = makeBuiltinLogicalTypeRegistry();
     const auto topology = runtimeTopology(device_facts);
+    if (external_depth_export &&
+        device_facts
+            .supports_external_depth_transfer) {
+        std::vector<std::string> compatible;
+        for (const auto &target : render_targets) {
+            if (isDepthTarget(target) &&
+                device_facts
+                    .supports_external_depth_transfer(
+                        target)) {
+                compatible.push_back(target.name);
+            }
+        }
+        std::sort(
+            compatible.begin(), compatible.end());
+        external_depth_export
+            ->compatible_source_resources =
+            std::move(compatible);
+    }
 
     std::vector<std::set<std::string, std::less<>>>
         graph_attachments;
@@ -788,6 +806,17 @@ compileRenderingTargetPlansForVulkanDevice(
                     const RenderTargetDefinition &definition) {
                     return queryAttachmentSampleCounts(
                         physical_device, definition);
+                },
+            .supports_external_depth_transfer =
+                [physical_device](
+                    const RenderTargetDefinition &definition) {
+                    return bool(
+                        physical_device
+                            .getFormatProperties(
+                                definition.format)
+                            .optimalTilingFeatures &
+                        vk::FormatFeatureFlagBits::
+                            eTransferSrc);
                 },
         },
         std::move(view_execution),

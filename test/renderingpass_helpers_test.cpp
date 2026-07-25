@@ -1081,4 +1081,38 @@ TEST_CASE(
     require_error(3, "view count");
 }
 
+TEST_CASE(
+    "view-layer copy planning preserves sequential and family image ranges",
+    "[renderingpass][view-execution][layer-copy]") {
+    REQUIRE(
+        planViewLayerCopy(
+            1, 1, 1, 1, 2, false) ==
+        ViewLayerCopyPlan{
+            .source_base_array_layer = 0,
+            .destination_base_array_layer = 1,
+            .array_layers = 1,
+        });
+    REQUIRE(
+        planViewLayerCopy(
+            2, 1, 1, 1, 2, false) ==
+        ViewLayerCopyPlan{
+            .source_base_array_layer = 1,
+            .destination_base_array_layer = 1,
+            .array_layers = 1,
+        });
+    REQUIRE(
+        planViewLayerCopy(
+            2, 0, 2, 0, 2, true) ==
+        ViewLayerCopyPlan{
+            .source_base_array_layer = 0,
+            .destination_base_array_layer = 0,
+            .array_layers = 2,
+        });
+    REQUIRE_THROWS_WITH(
+        planViewLayerCopy(
+            1, 0, 2, 0, 2, true),
+        Catch::Matchers::ContainsSubstring(
+            "does not preserve every logical view layer"));
+}
+
 } // namespace Pelican

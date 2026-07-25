@@ -17,6 +17,9 @@ namespace Pelican {
 using AttachmentSampleCapabilityQuery =
     std::function<std::vector<std::uint32_t>(
         const RenderTargetDefinition &)>;
+using ExternalDepthTransferCapabilityQuery =
+    std::function<bool(
+        const RenderTargetDefinition &)>;
 
 struct RenderingSampleCountAssignment {
     std::string resource;
@@ -39,6 +42,8 @@ struct RenderingTargetPlanDeviceFacts {
     bool multiview = false;
     std::uint32_t max_multiview_view_count = 0;
     AttachmentSampleCapabilityQuery query_attachment_samples;
+    ExternalDepthTransferCapabilityQuery
+        supports_external_depth_transfer;
 };
 
 struct RenderingTargetPlanCompilation {

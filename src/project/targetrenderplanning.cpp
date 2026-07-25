@@ -466,6 +466,25 @@ selectExternalDepthExport(
     if (!request) return std::nullopt;
 
     const auto device_depth = deviceDepthV1(types);
+    const std::optional<
+        std::set<std::string, std::less<>>>
+        compatible =
+            request->compatible_source_resources
+                ? std::optional{
+                      std::set<std::string,
+                               std::less<>>{
+                          request
+                              ->compatible_source_resources
+                              ->begin(),
+                          request
+                              ->compatible_source_resources
+                              ->end()}}
+                : std::nullopt;
+    const auto is_compatible =
+        [&](std::string_view resource) {
+            return !compatible ||
+                   compatible->contains(resource);
+        };
     std::map<std::string, const LogicalResourceDesc *,
              std::less<>>
         resources;
@@ -502,7 +521,9 @@ selectExternalDepthExport(
             const auto found = resources.find(
                 use.output_value->resource);
             if (found == resources.end() ||
-                found->second->type != device_depth) {
+                found->second->type != device_depth ||
+                !is_compatible(
+                    use.output_value->resource)) {
                 continue;
             }
             auto [candidate, inserted] =
@@ -534,6 +555,13 @@ selectExternalDepthExport(
             throw std::runtime_error(
                 "external depth export source must have typed "
                 "device/projection depth semantics: " +
+                *request->source_resource);
+        }
+        if (!is_compatible(
+                *request->source_resource)) {
+            throw std::runtime_error(
+                "external depth export source does not support "
+                "the required physical transfer operation: " +
                 *request->source_resource);
         }
         if (!candidates.contains(
@@ -576,7 +604,7 @@ selectExternalDepthExport(
         if (request->required) {
             throw std::runtime_error(
                 "required external depth export found no written "
-                "device/projection depth resource");
+                "compatible device/projection depth resource");
         }
         return std::nullopt;
     }
@@ -1845,6 +1873,40 @@ CandidateDraft buildCandidateDraft(
         request.node_constraints, result.decisions);
     applyResourceViewLayouts(
         workspace, view_plan, result);
+    if (external_depth_export &&
+        view_plan.summary.uses_multiview) {
+        const auto found = std::find_if(
+            result.resources.begin(),
+            result.resources.end(),
+            [&](const VulkanPhysicalResourcePlan &resource) {
+                return resource.logical_resource ==
+                       external_depth_export
+                           ->source_resource;
+            });
+        if (found == result.resources.end()) {
+            throw std::runtime_error(
+                "external depth export source was not physically "
+                "lowered");
+        }
+        if (found->array_layers <
+            view_plan.summary.view_count) {
+            found->view_layout =
+                VulkanResourceViewLayout::
+                    layered_2d_array;
+            found->array_layers =
+                view_plan.summary.view_count;
+            result.decisions.push_back(
+                PlanningDecision{
+                    "pelican.plan.external_depth_view_family_storage@1",
+                    found->logical_resource,
+                    std::to_string(
+                        found->array_layers),
+                    "view-family submission requires every "
+                    "sequential or multiview depth result to "
+                    "remain available until the compositor copy",
+                });
+        }
+    }
     if (view_plan.summary.uses_multiview) {
         result.required_features.push_back(
             std::string{vulkanMultiviewCapability});
