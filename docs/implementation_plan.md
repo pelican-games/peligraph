@@ -72,7 +72,7 @@ ctest --test-dir ./build -C Debug --output-on-failure
 | WP | 内容 | 状態 |
 |----|------|------|
 | WP203c | XR2b-c — OpenXR array swapchain / depth submit / GPU gate | 実装済み・Simulator/実機 gate待ち |
-| WP204 | physical plan eject / direct authoring | Phase A(pin/eject)実装済み・physical fragment verifier待ち |
+| WP204 | physical plan eject / direct authoring | Phase B v1(fragment verifier/linker/runtime route)実装済み・aggressive physical control待ち |
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
@@ -145,25 +145,46 @@ XR2b最終gateを満たす。
    (`target_planning` / `vulkan_plan_pins`)を除外して、pin貼り付けによる自己参照を防いだ。
    control data 自体は strategy 出力へ failure-atomic に復元する。
 
-**残る Phase B**:
+**Phase B v1(実装済み 2026-07-26)**:
 
-1. resource representation / store / alias group / scope groupingを直接記述する
-   versioned physical fragment schemaを定義する。
-2. logical resource/value、scope node、lifetime、sample/view/extent、required capability、
-   external output boundaryを照合する pure verifierを先に実装する。
-3. open boundaryを標準planへlinkし、全boundaryが閉じた後だけruntime prepareへ渡す。
-4. 現runtimeが未実装のtile-local/aliasを「parserが受けたから実行可能」と扱わず、
-   executor capability不足として名指し拒否する。
+1. `pelican.vulkan_physical_fragment` v1を追加した。graph、logical fingerprint、
+   automatic plan fingerprint、backend candidate、sparse resource override、任意の
+   complete scope partition / alias groupをsame-layerでcanonical round-tripする。
+2. resource overrideはautomatic representationの維持、またはautomatic
+   transient/tile-local imageの`materialized_image`化だけを許可する。format fieldは
+   automatic formatをround-tripするが、別formatはsample/usage capability照合が未実装のため
+   fail-closedで拒否する。
+3. scopeは全nodeのexact ordered partitionとし、automatic scopeのsplitだけを許可する。
+   異なるautomatic scopeのfusion、node重複/欠落、tile/transient resourceのscope越境、
+   不正なsampled dependencyを拒否する。
+4. alias groupはaliasable resourceだけを受け、representation / format / sample /
+   view layout / extentの一致、重複所属なし、lifetime非重複を照合する。
+5. canonical target topology、device facts、provider selection/generation、lowering graph、
+   resource/scope/alias/sample/view/external-depth contractをautomatic plan fingerprintへ含め、
+   stale artifactを拒否する。link後にendpoint capabilityとfeature closureを再検証する。
+6. `vulkan_physical_fragments.flat|preview|xr[]`をpipeline/runtime target compilerへ接続し、
+   dumpへ`ejectable_physical_fragment` / `applied_physical_fragment`を残す。現runtimeが
+   実行できないtile-local/alias結果は既存capability gateで名指し拒否する。
+7. `target_planning` / `vulkan_plan_pins`と同様にfragmentをstrategy fingerprintから除外し、
+   lower-layer control貼り戻しによる自己参照を防いだ。
 
-**Phase B受け入れ条件**:
+**Phase B v1受け入れ結果**:
 
-- 同じ層の parse → canonical dump → parse が byte-equivalent
-- logical fingerprint、target facts、provider generationの変化でstale artifactを拒否
-- malformed/open boundary、overlap lifetime、sample/view不一致、capability growthを拒否
-- automatic plan、sparse physical fragment、complete physical planが同じruntime verifierを通る
-- pin/fragment無しの既定 config は既存 plan と実行コストを変えない
+- parse → canonical dump → parse、full eject、sparse editを同じlinkerで検証済み
+- logical fingerprint、target facts、provider generation変化のstale rejectを検証済み
+- malformed schema、scope boundary、overlap lifetime、physical compatibility、
+  capability growthのrejectを検証済み
+- fragment無しのautomatic planは従来経路のままで、追加runtime workを持たない
+- OpenXR OFF / ONの両構成でvariant選択と関連runtime regressionを検証済み
 
-依存: RPE6c1/WP191、WP202b。見積: Phase B は大。
+**残る WP204 後続**:
+
+1. alternate formatをformat feature / usage / sample-countまで再解決するverifier
+2. explicit load/store、scope fusion/reorder、queue/barrierを扱うaggressive physical fragment
+3. tile-local / alias planを実行するruntime adapterと対象GPU gate
+4. open external boundary、complete raw physical plan、`NativeScope`
+
+依存: RPE6c1/WP191、WP202b。見積: 後続は大。
 
 ### 完了地点
 
@@ -218,9 +239,11 @@ preset の同一 watcher-frame 変更を一つのtransactionへcoalesceし、pre
 window swapchain、offscreen、OpenXR各eye、独立desktop mirrorの実submission fenceが
 使用generationを保持し、旧GPU resourceは最後の対応fence完了より前にretireされない。
 失敗時はactive generation、registry、config cache、watch dependencyを維持する。
-physical plan eject / direct authoring は WP204 Phase A の backend decision pin まで
-実装済みである。次は resource/scope を持つ physical fragment verifier と linker を
-Phase B として進める。`NativeScope`は具体的な Vulkan-only利用例を得てから進める。
+physical plan eject / direct authoring は WP204 Phase B v1 まで実装済みである。
+自動planへconservative resource materialization、split-only scope partition、verified alias
+groupをlinkできる。次はalternate format / load-store等のaggressive controlと
+tile-local / alias runtimeを具体的なGPU gate付きで進める。`NativeScope`は具体的な
+Vulkan-only利用例を得てから進める。
 
 ## 3. トラック現況(WP 化待ちを含む)
 

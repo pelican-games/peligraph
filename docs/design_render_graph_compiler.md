@@ -1254,10 +1254,9 @@ renderer-wide strategyはphysical controlの意味を所有しない。このた
 責務衝突として候補全体をrejectする。これにより、ejectしたpackageを貼ったこと自体で
 logical fingerprintが変わる自己参照を防ぐ。
 
-v1はbackend decision pinであり、resource/scope/Vulkan値をuncheckedに上書きするdirect
-physical planではない。次段はresource/value、lifetime、sample/view/extent、scope node、
-capability closure、external boundaryを検証するphysical fragment verifierを先に作り、その
-verifierを通る範囲だけschema v2以降へ追加する。
+このv1はbackend decision pinであり、resource/scope/Vulkan値をuncheckedに上書きする
+direct physical planではない。resource/scope編集はpin schemaを広げず、次のRPE12bで
+独立したphysical fragment schemaとverifier/linkerへ分離する。
 
 gate:
 
@@ -1269,10 +1268,68 @@ gate:
 - Plan Viewer/RPCのphysical planからejectでき、適用provenanceを再観測できる
 - strategy有無でlower-layer control追加前後のlogical fingerprintが変わらない
 
+### RPE12b — verified Vulkan physical fragment
+
+状態: **WP204 Phase B v1で実装済み(2026-07-26)**。自動target compilerを通常経路に
+残したまま、同じphysical層の一部だけを編集して自動planへ戻す境界を実装した。
+
+`VulkanPhysicalFragmentPackage`のschemaは
+`pelican.vulkan_physical_fragment` version 1であり、次を持つ。
+
+- graphとcompiled logical graph fingerprint
+- canonical target/device/provider環境を含むautomatic plan fingerprint
+- 自動選択済みbackend candidate
+- sparse resource override
+- 任意のcomplete scope partition
+- 任意のalias group集合
+
+自動plan dumpは全resource/scope/aliasを含む`ejectable_physical_fragment`を常に出す。
+configの`vulkan_physical_fragments.flat|preview|xr[]`は現在のimmutable graph variantに
+対応するpackageだけを選び、graphごとの重複を拒否する。適用結果は
+`applied_physical_fragment`として再観測できる。package無しの経路は従来のautomatic
+planをそのまま使う。
+
+automatic plan fingerprintはcanonical topology/device facts、backend probeと
+provider generation、lowering graph、required feature、resource/scope/alias、
+sample/view execution、external depth contractを束縛する。logical graphが同じでも
+device factsやprovider generationが変わったpackageはstaleとしてrejectし、別planへ
+黙ってfallbackしない。
+
+v1が受理する編集は意図的に狭い。
+
+- resource representationはautomatic値の維持、またはautomatic
+  transient/tile-local imageの`materialized_image`化だけ
+- format fieldはautomatic formatのcanonical round-tripだけ。alternate formatは
+  format usage / sample capability再解決が未実装なのでreject
+- scopeは全nodeのexact ordered partitionで、単一automatic scopeのsplitだけ。
+  異なるautomatic scopeのfusion/reorderはreject
+- alias groupはaliasable resource、単一所属、同一representation/format/sample/view/
+  extent、lifetime非重複をすべて満たす場合だけ
+
+linkerは編集後にscope-resource boundaryを再計算し、tile/transient resourceのscope越境、
+不正なsampled dependency、未知resource/node、node重複/欠落を拒否する。resourceごとの
+required featureを更新し、selected endpoint capabilityとbackend probeのfeature closureを
+再検証してから`VulkanTargetPlan`を返す。現runtime adapterが実装していないtile-local /
+alias結果はparser成功と実行可能性を混同せず、runtime capability gateでrejectする。
+
+renderer strategyはこのlower-layer controlを生成・解釈しない。
+`vulkan_physical_fragments`も`target_planning` / `vulkan_plan_pins`と同様にstrategy ABI
+seedとconfig fingerprintから退避し、callback後にfailure-atomicに復元する。
+
+gate:
+
+- full ejectとsparse packageが同じparse/canonical dump/link経路を通る
+- malformed schema、stale logical/environment fingerprint、candidate不一致をrejectする
+- aggressive representation変更、alternate format、illegal scope fusion/boundaryをrejectする
+- alias compatibilityとlifetime overlap、feature/capability growthをrejectする
+- flat/preview/XR variant選択とduplicate graph packageを検証する
+- OpenXR OFF / ON、headless Vulkan runtimeで既定経路とfragment routeを維持する
+
 次の候補:
 
 1. WP203c の Meta XR Simulator/物理 HMD と対象 GPU 実測 gate
-2. WP204 Phase B — physical fragment verifier / linker とsame-layer round-trip
+2. WP204 後続 — alternate format / load-store / scope fusion・queue・barrierの
+   aggressive physical verifierと、tile-local / alias runtime gate
 3. `NativeScope` は具体的な Vulkan-only 使用例が得られてから ABI 設計
 4. CPU / external domain は計測と具体的な二候補 task が得られてから
    `design_heterogeneous_execution_graph.md` の HEG3 / HEG4 として実装

@@ -291,9 +291,10 @@ struct VulkanTargetPlanPinPackage {
 };
 
 // A sparse, same-layer edit over the automatically compiled physical plan.
-// V1 deliberately permits conservative resource materialization, declared
-// format candidates, safe scope splitting, and verified alias groups. Fields
-// whose cross-contract verifier is not implemented remain compiler-owned.
+// V1 permits conservative resource materialization, safe scope splitting,
+// and verified alias groups. The format field round-trips the automatic
+// format; selecting another candidate remains compiler-owned until
+// sample/usage capability verification is available.
 struct VulkanPhysicalResourceFragment {
     std::string logical_resource;
     std::optional<std::string> format;

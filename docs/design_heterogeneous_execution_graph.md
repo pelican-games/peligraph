@@ -904,8 +904,16 @@ completion、required capabilityだけを検証する。未指定情報は隠れ
 portable な `target_planning` は profile / node / resource constraintを通常compilerへ渡し、
 Vulkan固有の `pelican.vulkan_target_plan_pins` v1 はcompiled logical fingerprintと有限な
 backend candidateだけを同じphysical層へeject/importする。これはphysical fragmentそのもの
-ではない。resource/scopeを直接書く入口は、open boundary、lifetime、sample/view/extent、
-capability closureを検証するlinkerが完成するまで受理しない。
+ではない。
+
+同日のWP204 Phase B v1では梯子の4を狭いverified subsetとして実装した。
+`pelican.vulkan_physical_fragment` v1はautomatic physical planを基準に、conservative
+resource materialization、automatic scope内のsplit、compatibleなalias groupを
+same-layerでeject/importする。logical graphに加えてtarget/device factsとprovider
+generationをfingerprintへ束縛し、scope boundary、lifetime、sample/view/extent、
+required capability closureをlink時に再検証する。これはopen fragmentやcomplete raw
+physical planではない。alternate format、load/store、scope fusion、queue/barrier、
+native/external boundaryは対応verifierができるまで受理しない。
 
 ## 14. 段階導入
 
@@ -957,7 +965,10 @@ capability closureを検証するlinkerが完成するまで受理しない。
 - WP191でmaterialized imageのformat / sample-count contractだけを現Vulkan runtimeへ接続
 - WP204 Phase Aでgraph-scoped target policyと、logical fingerprint付きbackend decision
   pinのeject/importをruntime target compilerへ接続
-- tile-local / alias / NativeScope、CPU・external・video runtime workはまだ追加しない
+- WP204 Phase B v1でenvironment-bound physical fragment、conservative resource
+  materialization、split-only scope、alias verifierを同じruntime target compilerへ接続
+- tile-local / aliasのruntime実行、aggressive physical control、NativeScope、
+  CPU・external・video runtime workはまだ追加しない
 
 ### HEG3 — 実証後の異種 domain
 

@@ -334,7 +334,7 @@ v1 pin が固定するのは有限集合の **backend candidate だけ**です�
 }
 ```
 
-eject結果は全resource/scope/alias groupを含みますが、手書きpackageの`resources`は変更するresourceだけに減らせます。`scopes`または`alias_groups`自体を省略すると、その部分は自動planを維持します。空配列は「scopeなし」または「aliasなし」という明示指定です。
+eject結果は全resource/scope/alias groupを含みますが、手書きpackageの`resources`は変更するresourceだけに減らせます。`scopes`または`alias_groups`自体を省略すると、その部分は自動planを維持します。`alias_groups: []`はaliasなしの明示指定です。`scopes`は全nodeのexact partitionなので、空配列が有効なのはnodeを持たないgraphだけです。
 
 v1 verifierが許可する編集は次です。
 
