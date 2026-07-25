@@ -322,6 +322,127 @@ TEST_CASE("WP203 XR target policy separates authoring preference from the logica
         "rendering config xr has unknown key 'surprise'");
 }
 
+TEST_CASE("WP203c XR multiview auto profiles resolve measured device evidence",
+          "[wp203c][xr][multiview][device-profile]") {
+    const auto declaration = Json{
+        {"xr",
+         {{"view_execution", "auto"},
+          {"multiview_auto",
+           {{"minimum_gain_percent", 2.0},
+            {"profiles",
+             Json::array({
+                 {
+                     {"id", "vendor_fallback"},
+                     {"vendor_id", 4318},
+                     {"measurement",
+                      {
+                          {"sequential_gpu_ms", 8.0},
+                          {"multiview_gpu_ms", 8.4},
+                          {"sample_count", 240},
+                          {"source", "gpu_timestamp/vendor"},
+                      }},
+                 },
+                 {
+                     {"id", "exact_graph_win"},
+                     {"vendor_id", 4318},
+                     {"device_id", 9860},
+                     {"device_name_contains", "mock gpu"},
+                     {"graph", "main#xr"},
+                     {"measurement",
+                      {
+                          {"sequential_gpu_ms", 8.0},
+                          {"multiview_gpu_ms", 6.0},
+                          {"sample_count", 300},
+                          {"source", "gpu_timestamp/exact"},
+                      }},
+                 },
+             })}}}}},
+    };
+    const auto policy = compileXrTargetPolicy(
+        declaration,
+        RenderPipelineGraphVariant::xr);
+    REQUIRE(policy.multiview_auto_authored);
+    REQUIRE(policy.multiview_auto
+                .minimum_gain_percent == 2.0);
+    REQUIRE(policy.multiview_auto.profiles.size() == 2);
+
+    const XrMultiviewDeviceIdentity exact{
+        .vendor_id = 4318,
+        .device_id = 9860,
+        .driver_version = 7,
+        .device_name = "Mock GPU Ultra",
+    };
+    const auto beneficial =
+        resolveXrMultiviewAutoPolicy(
+            policy.multiview_auto, exact,
+            "main#xr");
+    REQUIRE(beneficial.matched_profile);
+    REQUIRE(beneficial.profile_id ==
+            "exact_graph_win");
+    REQUIRE(beneficial.selection ==
+            XrMultiviewAutoSelection::multiview);
+    REQUIRE(beneficial.measured_gain_percent ==
+            25.0);
+
+    auto other = exact;
+    other.device_id = 1;
+    const auto regression =
+        resolveXrMultiviewAutoPolicy(
+            policy.multiview_auto, other,
+            "main#xr");
+    REQUIRE(regression.profile_id ==
+            "vendor_fallback");
+    REQUIRE(regression.selection ==
+            XrMultiviewAutoSelection::sequential);
+    REQUIRE(regression.measurement
+                ->sample_count == 240);
+
+    other.vendor_id = 1234;
+    const auto defaulted =
+        resolveXrMultiviewAutoPolicy(
+            policy.multiview_auto, other,
+            "main#xr");
+    REQUIRE_FALSE(defaulted.matched_profile);
+    REQUIRE(defaulted.profile_id ==
+            "optimize_by_default");
+    REQUIRE(defaulted.selection ==
+            XrMultiviewAutoSelection::multiview);
+
+    const auto encoded =
+        xrTargetPolicyToJson(policy);
+    REQUIRE(encoded.at("multiview_auto")
+                .at("authored") == true);
+    REQUIRE(encoded.at("multiview_auto")
+                .at("policy")
+                .at("profiles")
+                .size() == 2);
+
+    REQUIRE_THROWS_WITH(
+        compileXrTargetPolicy(
+            Json{
+                {"xr",
+                 {{"multiview_auto",
+                   {{"profiles",
+                     Json::array({
+                         {
+                             {"id", "invalid"},
+                             {"vendor_id", 4318},
+                             {"measurement",
+                              {
+                                  {"sequential_gpu_ms", 8.0},
+                                  {"multiview_gpu_ms", 7.0},
+                                  {"sample_count", 0},
+                                  {"source", "gpu_timestamp"},
+                              }},
+                         },
+                     })}}}}},
+            },
+            RenderPipelineGraphVariant::xr),
+        "rendering config xr multiview_auto profile "
+        "'invalid' measurement sample_count must be "
+        "greater than zero");
+}
+
 #if PELICAN_WITH_OPENXR
 TEST_CASE("WP203 pipeline preset settings carry an authored XR target preference",
           "[wp203][xr][target-policy][preset]") {

@@ -2505,6 +2505,10 @@ nlohmann::ordered_json vulkanTargetPlanToJson(
               plan.view_execution_plan.uses_multiview},
              {"mixed_execution",
               plan.view_execution_plan.mixed_execution},
+             {"auto_gate",
+              resolvedXrMultiviewAutoPolicyToJson(
+                  plan.view_execution_plan
+                      .automatic_policy)},
              {"reason", plan.view_execution_plan.reason},
          }},
     };

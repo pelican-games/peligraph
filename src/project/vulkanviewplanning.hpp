@@ -16,6 +16,14 @@ inline constexpr std::string_view vulkanMultiviewCapability =
     "pelican.vulkan.multiview@1";
 inline constexpr std::string_view vulkanMaxMultiviewViewCountFact =
     "pelican.vulkan.max_multiview_view_count@1";
+inline constexpr std::string_view vulkanVendorIdFact =
+    "pelican.vulkan.vendor_id@1";
+inline constexpr std::string_view vulkanDeviceIdFact =
+    "pelican.vulkan.device_id@1";
+inline constexpr std::string_view vulkanDriverVersionFact =
+    "pelican.vulkan.driver_version@1";
+inline constexpr std::string_view vulkanDeviceNameFact =
+    "pelican.vulkan.device_name@1";
 
 enum class VulkanScopeViewExecution : std::uint8_t {
     single_view,
@@ -30,6 +38,7 @@ struct VulkanViewExecutionPlanRequest {
     std::uint32_t view_count = 1;
     XrViewExecutionPreference preference =
         XrViewExecutionPreference::automatic;
+    XrMultiviewAutoPolicy automatic_policy;
     // View-independent nodes execute once and may feed every view. This is
     // intended for work such as a shared shadow pass.
     std::vector<std::string> view_independent_nodes;
@@ -46,6 +55,7 @@ struct VulkanViewExecutionPlan {
     std::uint32_t max_multiview_view_count = 0;
     bool uses_multiview = false;
     bool mixed_execution = false;
+    ResolvedXrMultiviewAutoPolicy automatic_policy;
     std::string reason;
 };
 

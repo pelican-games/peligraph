@@ -1,6 +1,7 @@
 #pragma once
 
 #include "graphvariantpolicy.hpp"
+#include "xrmultiviewprofile.hpp"
 
 #include <nlohmann/json_fwd.hpp>
 
@@ -24,6 +25,8 @@ std::string_view xrViewExecutionPreferenceName(
 struct CompiledXrTargetPolicy {
     XrViewExecutionPreference view_execution =
         XrViewExecutionPreference::automatic;
+    XrMultiviewAutoPolicy multiview_auto;
+    bool multiview_auto_authored = false;
     bool authored = false;
     bool active = false;
 

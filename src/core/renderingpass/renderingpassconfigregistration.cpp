@@ -134,6 +134,8 @@ targetViewExecutionRequest(
             pipeline.graph_variant_policy.view_count,
         .preference =
             pipeline.xr_target_policy.view_execution,
+        .automatic_policy =
+            pipeline.xr_target_policy.multiview_auto,
     };
     if (!enable_multiview_runtime) {
         // Preserve the typed XR request while an embedding target or device

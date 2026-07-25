@@ -34,11 +34,20 @@ CompiledXrTargetPolicy compileXrTargetPolicy(
     result.authored = true;
     for (auto field = declaration->begin();
          field != declaration->end(); ++field) {
-        if (field.key() != "view_execution") {
+        if (field.key() != "view_execution" &&
+            field.key() != "multiview_auto") {
             throw std::runtime_error(
                 "rendering config xr has unknown key '" +
                 field.key() + "'");
         }
+    }
+    if (const auto automatic =
+            declaration->find("multiview_auto");
+        automatic != declaration->end()) {
+        result.multiview_auto =
+            compileXrMultiviewAutoPolicy(
+                *automatic);
+        result.multiview_auto_authored = true;
     }
     const auto execution =
         declaration->find("view_execution");
@@ -72,6 +81,14 @@ nlohmann::ordered_json xrTargetPolicyToJson(
         {"authored", policy.authored},
         {"view_execution",
          xrViewExecutionPreferenceName(policy.view_execution)},
+        {"multiview_auto",
+         nlohmann::ordered_json{
+             {"authored",
+              policy.multiview_auto_authored},
+             {"policy",
+              xrMultiviewAutoPolicyToJson(
+                  policy.multiview_auto)},
+         }},
     };
 }
 

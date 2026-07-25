@@ -51,7 +51,8 @@ CompilerProviderRegistrySnapshot providers() {
 
 TargetTopologySnapshot topology(
     bool tile, std::uint32_t budget = 8,
-    std::uint32_t max_multiview_view_count = 0) {
+    std::uint32_t max_multiview_view_count = 0,
+    const XrMultiviewDeviceIdentity *device = nullptr) {
     std::vector<std::string> capabilities{
         "pelican.vulkan.graphics@1",
         "pelican.vulkan.sampled_image@1",
@@ -79,6 +80,21 @@ TargetTopologySnapshot topology(
         facts.push_back(
             {"pelican.vulkan.max_multiview_view_count@1",
              std::to_string(max_multiview_view_count)});
+    }
+    if (device != nullptr) {
+        facts.insert(
+            facts.end(),
+            {
+                {std::string{vulkanVendorIdFact},
+                 std::to_string(device->vendor_id)},
+                {std::string{vulkanDeviceIdFact},
+                 std::to_string(device->device_id)},
+                {std::string{vulkanDriverVersionFact},
+                 std::to_string(
+                     device->driver_version)},
+                {std::string{vulkanDeviceNameFact},
+                 device->device_name},
+            });
     }
     return TargetTopologySnapshot{
         tile ? "mock_tile" : "mock_desktop",
@@ -595,6 +611,109 @@ TEST_CASE("view execution planning selects layered multiview and exposes its Vul
     REQUIRE(encoded.at("scopes").at(0).contains("view_mask"));
     REQUIRE(compiledLogicalRenderGraphToJson(graph).dump() ==
             canonical_before);
+}
+
+TEST_CASE("automatic multiview honors measured device profiles while required mode overrides them",
+          "[target-render-planning][view-execution][device-profile][wp203c]") {
+    const auto types = makeBuiltinLogicalTypeRegistry();
+    const auto graph = hybridGraph(types, 3, false);
+    const XrMultiviewDeviceIdentity device{
+        .vendor_id = 4318,
+        .device_id = 9860,
+        .driver_version = 77,
+        .device_name = "Mock GPU",
+    };
+    const XrMultiviewAutoPolicy measured_regression{
+        .minimum_gain_percent = 0.0,
+        .profiles =
+            {XrMultiviewDeviceProfile{
+                .id = "mock_regression",
+                .vendor_id = 4318,
+                .device_id = 9860,
+                .measurement = {
+                    .sequential_gpu_ms = 5.0,
+                    .multiview_gpu_ms = 5.5,
+                    .sample_count = 300,
+                    .source =
+                        "RenderTiming/gpu_timestamp",
+                },
+            }},
+    };
+    const auto capable_nodes =
+        std::vector<std::string>{
+            "GBuffer", "Lighting", "Forward",
+            "ToneMap"};
+
+    const auto automatic = compile(
+        types, graph,
+        topology(false, 8, 2, &device),
+        bindingsFor(types, graph), std::nullopt,
+        VulkanViewExecutionPlanRequest{
+            .view_count = 2,
+            .preference =
+                XrViewExecutionPreference::automatic,
+            .automatic_policy =
+                measured_regression,
+            .multiview_capable_nodes =
+                capable_nodes,
+        });
+    REQUIRE_FALSE(
+        automatic.view_execution_plan
+            .uses_multiview);
+    REQUIRE(automatic.view_execution_plan
+                .automatic_policy
+                .matched_profile);
+    REQUIRE(automatic.view_execution_plan
+                .automatic_policy
+                .profile_id ==
+            "mock_regression");
+    REQUIRE(automatic.view_execution_plan.reason.find(
+                "device performance profile") !=
+            std::string::npos);
+    REQUIRE(std::all_of(
+        automatic.scopes.begin(),
+        automatic.scopes.end(),
+        [](const auto &scope) {
+            return scope.view_execution ==
+                   VulkanScopeViewExecution::sequential;
+        }));
+    const auto encoded =
+        vulkanTargetPlanToJson(automatic);
+    REQUIRE(encoded.at("view_execution_plan")
+                .at("auto_gate")
+                .at("selection") ==
+            "sequential");
+    REQUIRE(encoded.at("view_execution_plan")
+                .at("auto_gate")
+                .at("measurement")
+                .at("sample_count") == 300);
+    REQUIRE(encoded.at("view_execution_plan")
+                .at("auto_gate")
+                .at("device")
+                .at("device_id") == 9860);
+    REQUIRE(encoded.at("view_execution_plan")
+                .at("auto_gate")
+                .at("graph") == graph.name);
+
+    const auto required = compile(
+        types, graph,
+        topology(false, 8, 2, &device),
+        bindingsFor(types, graph), std::nullopt,
+        VulkanViewExecutionPlanRequest{
+            .view_count = 2,
+            .preference =
+                XrViewExecutionPreference::
+                    require_multiview,
+            .automatic_policy =
+                measured_regression,
+            .multiview_capable_nodes =
+                capable_nodes,
+        });
+    REQUIRE(required.view_execution_plan
+                .uses_multiview);
+    REQUIRE(required.view_execution_plan
+                .automatic_policy.selection ==
+            XrMultiviewAutoSelection::sequential);
 }
 
 TEST_CASE("view execution planning supports mixed scopes and rejects an unsatisfied required policy",

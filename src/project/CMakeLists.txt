@@ -19,6 +19,7 @@ add_library(pelican_project
     targetplanning.cpp
     targetrenderplanning.cpp
     vulkanviewplanning.cpp
+    xrmultiviewprofile.cpp
     xrtargetpolicy.cpp
 )
 

@@ -41,6 +41,7 @@ struct RenderingTargetPlanDeviceFacts {
     std::uint32_t max_color_attachments = 8;
     bool multiview = false;
     std::uint32_t max_multiview_view_count = 0;
+    XrMultiviewDeviceIdentity device_identity;
     AttachmentSampleCapabilityQuery query_attachment_samples;
     ExternalDepthTransferCapabilityQuery
         supports_external_depth_transfer;

@@ -123,6 +123,23 @@ TargetTopologySnapshot runtimeTopology(
         {"pelican.vulkan.profile@1",
          "materialized_runtime"},
     };
+    if (facts.device_identity.vendor_id != 0) {
+        target_facts.push_back(
+            {std::string{vulkanVendorIdFact},
+             std::to_string(
+                 facts.device_identity.vendor_id)});
+        target_facts.push_back(
+            {std::string{vulkanDeviceIdFact},
+             std::to_string(
+                 facts.device_identity.device_id)});
+        target_facts.push_back(
+            {std::string{vulkanDriverVersionFact},
+             std::to_string(
+                 facts.device_identity.driver_version)});
+        target_facts.push_back(
+            {std::string{vulkanDeviceNameFact},
+             facts.device_identity.device_name});
+    }
     if (facts.multiview) {
         if (facts.max_multiview_view_count == 0) {
             throw std::runtime_error(
@@ -787,11 +804,13 @@ compileRenderingTargetPlansForVulkanDevice(
         features
             .get<vk::PhysicalDeviceVulkan11Features>()
             .multiview == VK_TRUE;
+    const auto device_properties =
+        physical_device.getProperties();
     return compileRenderingTargetPlans(
         frame_graphs, render_targets, policy, swapchain_format,
         RenderingTargetPlanDeviceFacts{
             .max_color_attachments =
-                physical_device.getProperties()
+                device_properties
                     .limits.maxColorAttachments,
             .multiview = multiview,
             .max_multiview_view_count =
@@ -801,6 +820,17 @@ compileRenderingTargetPlansForVulkanDevice(
                               vk::PhysicalDeviceMultiviewProperties>()
                           .maxMultiviewViewCount
                     : 0u,
+            .device_identity = {
+                .vendor_id =
+                    device_properties.vendorID,
+                .device_id =
+                    device_properties.deviceID,
+                .driver_version =
+                    device_properties.driverVersion,
+                .device_name =
+                    device_properties
+                        .deviceName.data(),
+            },
             .query_attachment_samples =
                 [physical_device](
                     const RenderTargetDefinition &definition) {

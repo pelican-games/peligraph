@@ -50,6 +50,43 @@ std::optional<std::uint32_t> endpointUnsignedFact(
     return value;
 }
 
+std::optional<std::string_view> endpointStringFact(
+    const TargetEndpoint &endpoint,
+    std::string_view name) {
+    const auto found = std::find_if(
+        endpoint.facts.begin(), endpoint.facts.end(),
+        [&](const TargetFact &fact) {
+            return fact.name == name;
+        });
+    if (found == endpoint.facts.end()) {
+        return std::nullopt;
+    }
+    return found->value;
+}
+
+XrMultiviewDeviceIdentity endpointDeviceIdentity(
+    const TargetEndpoint &endpoint) {
+    XrMultiviewDeviceIdentity result;
+    result.vendor_id =
+        endpointUnsignedFact(
+            endpoint, vulkanVendorIdFact)
+            .value_or(0);
+    result.device_id =
+        endpointUnsignedFact(
+            endpoint, vulkanDeviceIdFact)
+            .value_or(0);
+    result.driver_version =
+        endpointUnsignedFact(
+            endpoint, vulkanDriverVersionFact)
+            .value_or(0);
+    if (const auto name =
+            endpointStringFact(
+                endpoint, vulkanDeviceNameFact)) {
+        result.device_name = *name;
+    }
+    return result;
+}
+
 bool isViewDependentNode(LogicalGraphNodeKind kind) {
     return kind == LogicalGraphNodeKind::render ||
            kind == LogicalGraphNodeKind::compute ||
@@ -189,6 +226,16 @@ ResolvedVulkanViewExecutionPlan resolveVulkanViewExecutionPlan(
     const auto endpoint_can_execute =
         endpoint_has_capability &&
         max_view_count.value_or(0) >= request.view_count;
+    const auto automatic_policy =
+        resolveXrMultiviewAutoPolicy(
+            request.automatic_policy,
+            endpointDeviceIdentity(endpoint),
+            graph.name);
+    const auto automatic_allows_multiview =
+        request.preference !=
+            XrViewExecutionPreference::automatic ||
+        automatic_policy.selection ==
+            XrMultiviewAutoSelection::multiview;
 
     std::vector<std::string> incompatible_nodes;
     std::size_t view_dependent_count = 0;
@@ -248,7 +295,18 @@ ResolvedVulkanViewExecutionPlan resolveVulkanViewExecutionPlan(
         endpoint_has_capability;
     result.summary.max_multiview_view_count =
         max_view_count.value_or(0);
+    result.summary.automatic_policy =
+        automatic_policy;
     result.nodes.reserve(known_nodes.size());
+    result.decisions.push_back(PlanningDecision{
+        "pelican.plan.multiview_auto_gate@1",
+        graph.name,
+        std::string{
+            xrMultiviewAutoSelectionName(
+                automatic_policy.selection)} +
+            ":" + automatic_policy.profile_id,
+        automatic_policy.reason,
+    });
 
     bool has_sequential = false;
     for (const auto &[name, node] : known_nodes) {
@@ -263,6 +321,7 @@ ResolvedVulkanViewExecutionPlan resolveVulkanViewExecutionPlan(
             const auto allow_multiview =
                 request.preference !=
                     XrViewExecutionPreference::sequential &&
+                automatic_allows_multiview &&
                 endpoint_can_execute &&
                 capable.contains(name);
             if (allow_multiview) {
@@ -286,10 +345,16 @@ ResolvedVulkanViewExecutionPlan resolveVulkanViewExecutionPlan(
                 } else if (!endpoint_has_capability) {
                     reason =
                         "endpoint does not advertise multiview";
-                } else {
+                } else if (!endpoint_can_execute) {
                     reason =
                         "requested view count exceeds the endpoint "
                         "multiview limit";
+                } else {
+                    reason =
+                        "device performance profile '" +
+                        automatic_policy.profile_id +
+                        "' selects sequential execution for "
+                        "automatic mode";
                 }
             }
         } else if (independent.contains(name)) {
@@ -355,6 +420,13 @@ ResolvedVulkanViewExecutionPlan resolveVulkanViewExecutionPlan(
             result.summary.reason =
                 "requested view count exceeds the endpoint "
                 "multiview limit";
+        } else if (!automatic_allows_multiview) {
+            result.summary.reason =
+                "device performance profile '" +
+                automatic_policy.profile_id +
+                "' selects sequential execution for automatic "
+                "mode: " +
+                automatic_policy.reason;
         } else {
             result.summary.reason =
                 "no view-dependent scope declared a "

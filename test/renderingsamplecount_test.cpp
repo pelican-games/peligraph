@@ -388,6 +388,12 @@ TEST_CASE("runtime target adapter carries multiview device facts and typed view 
         RenderingTargetPlanDeviceFacts{
             .multiview = true,
             .max_multiview_view_count = 2,
+            .device_identity = {
+                .vendor_id = 4318,
+                .device_id = 9860,
+                .driver_version = 77,
+                .device_name = "Mock GPU",
+            },
             .query_attachment_samples =
                 [](const auto &) {
                     return std::vector<std::uint32_t>{1};
@@ -397,6 +403,22 @@ TEST_CASE("runtime target adapter carries multiview device facts and typed view 
             .view_count = 2,
             .preference =
                 XrViewExecutionPreference::automatic,
+            .automatic_policy = {
+                .profiles =
+                    {XrMultiviewDeviceProfile{
+                        .id =
+                            "runtime_adapter_fast",
+                        .vendor_id = 4318,
+                        .device_id = 9860,
+                        .measurement = {
+                            .sequential_gpu_ms = 6.0,
+                            .multiview_gpu_ms = 4.0,
+                            .sample_count = 240,
+                            .source =
+                                "RenderTiming/gpu_timestamp",
+                        },
+                    }},
+            },
             .multiview_capable_nodes =
                 {"geometry", "lighting", "forward", "present"},
         },
@@ -406,6 +428,13 @@ TEST_CASE("runtime target adapter carries multiview device facts and typed view 
     const auto &plan = *compilation.plans.front();
     REQUIRE(plan.view_execution_plan.uses_multiview);
     REQUIRE(plan.view_execution_plan.view_count == 2);
+    REQUIRE(plan.view_execution_plan
+                .automatic_policy
+                .matched_profile);
+    REQUIRE(plan.view_execution_plan
+                .automatic_policy
+                .profile_id ==
+            "runtime_adapter_fast");
     REQUIRE(physicalResource(plan, "lit").view_layout ==
             VulkanResourceViewLayout::layered_2d_array);
     REQUIRE(physicalResource(plan, "lit").array_layers == 2);
