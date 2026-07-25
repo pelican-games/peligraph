@@ -296,9 +296,12 @@ pelican_player --project mygame --headless --dump-frame-plan   # stderr に出�
 
 v1 pin が固定するのは有限集合の **backend candidate だけ**です。resource/scopeを編集する場合は、次の別schemaを使います。
 
-### Vulkan physical fragment v1
+### Vulkan physical fragment v1 / v2
 
 `physical_target_plan.ejectable_physical_fragment`を丸ごとコピーし、対応するvariantの`vulkan_physical_fragments`へ貼ります。
+attachment契約を持つ現在のrender graphはversion 2をejectします。version 1は
+resource/scope/aliasだけを扱う既存packageとして引き続き読めますが、`attachments`は
+version 2だけのfieldです。
 
 ```json
 {
@@ -306,7 +309,7 @@ v1 pin が固定するのは有限集合の **backend candidate だけ**です�
     "flat": [
       {
         "schema": "pelican.vulkan_physical_fragment",
-        "version": 1,
+        "version": 2,
         "graph": "main",
         "logical_graph_fingerprint": "fnv1a64:0123456789abcdef",
         "automatic_plan_fingerprint": "fnv1a64:fedcba9876543210",
@@ -328,7 +331,15 @@ v1 pin が固定するのは有限集合の **backend candidate だけ**です�
             "nodes": ["lighting"]
           }
         ],
-        "alias_groups": []
+        "alias_groups": [],
+        "attachments": [
+          {
+            "node": "geometry",
+            "logical_resource": "gbuffer_albedo",
+            "load_op": "discard",
+            "store_op": "store"
+          }
+        ]
       }
     ]
   }
@@ -355,18 +366,32 @@ link時には、対象deviceのrequired image usage（historyなら`TRANSFER_DST
 sample count、array layer上限、external depthなら`TRANSFER_SRC`契約を再照合します。
 候補未宣言、非`materialized_image`、device非対応の変更はfallbackせずrejectされます。
 
-v1 verifierが許可する編集は次です。
+v1/v2 verifierが許可する編集は次です。
 
 - resource representationの維持、または自動`tile_local_attachment` / `transient_attachment`から`materialized_image`への保守的な変更
 - 自動planが選んだformatの保持、または`format_candidates`で宣言され、実device capabilityを満たす`materialized_image` formatへの変更
 - 自動scopeをさらに分けるexact ordered partition。tile-local値が新しいscope境界をまたぐ場合は、そのresourceを先にmaterializeする
 - format、representation、sample count、view layout、extentが一致し、論理lifetimeが重ならないresourceだけのalias group
+- v2では`(node, logical_resource)`で特定したraster attachmentの`load_op` / `store_op`。
+  `load_op`は`load|clear|discard`、`store_op`は`store|discard`で、未記述fieldは自動planを維持する
 
 貼り付け後は`applied_physical_fragment`で適用内容を再観測できます。logical graphだけでなく、変更前の自動plan、target facts、選択候補、provider generationも`automatic_plan_fingerprint`へ束縛されます。いずれかが変わった古いfragmentはstale errorとなり、部分的に推測して修復しません。
 
 同じ名前のtargetを複数graphやflat/XR variantが共有する場合、全planは同じphysical formatを選ぶ必要があります。異なるformatを同時に使う設計ならtarget名を分けてください。hot reloadでformatを変更した場合は、新しいruntime generationのimage・view・pipelineを作ってから一括publishし、旧generationは既存のGPU lease規則でretireします。
 
-v1は`materialized_image`からtile-localへの攻めた変更、別の自動scope同士の融合、load/store、barrier、queue、任意Vulkan flagをまだ受理しません。現在のproduction runtimeもalias groupと非materialized imageを実行しないため、planner上で有効でもruntime capability gateが名指し拒否します。これらは実行機構と検証を同時に追加できる版で拡張します。
+v2のattachment編集はlogical dependencyを壊せません。論理readを持つattachmentは必ず
+`load`、readを持たないattachmentは`load`にできません。編集対象は現在
+`materialized_image`またはexternal targetに限定されます。`store`から`discard`への変更は、
+別MSAA resolveが論理値を保存し、そのmultisample surfaceを後続attachmentがloadしない場合だけ
+許可されます。通常raster、output transform、UI、ImGuiはいずれもlink済みのattachmentごとの
+操作をdynamic renderingへ適用します。hot reloadもformat変更と同じgeneration transactionで
+prepare/publishされます。
+
+まだ受理しないのは`materialized_image`からtile-localへの攻めた変更、別の自動scope同士の
+融合/reorder、single-sample surfaceのstore elision、barrier、queue、任意Vulkan flagです。
+現在のproduction runtimeもalias groupと非materialized imageを実行しないため、planner上で
+有効でもruntime capability gateが名指し拒否します。これらは実行機構と検証を同時に追加
+できる版で拡張します。
 
 ## 6.7 マテリアル(✅M1〜M3.5 = WP58/68/70/76/78/83)
 

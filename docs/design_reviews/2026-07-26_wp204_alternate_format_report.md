@@ -6,6 +6,10 @@
 
 判定: **pure verifier、Vulkan runtime適用、hot reload実描画、OpenXR OFF/ON回帰まで完了**
 
+> 後続でper-attachment load/storeのverified runtime sliceも完了した。現在のWP204境界は
+> [`2026-07-26_wp204_attachment_operations_report.md`](2026-07-26_wp204_attachment_operations_report.md)
+> を参照。
+
 ## 1. 実装した境界
 
 ### 1.1 authoring contract
@@ -116,7 +120,7 @@ GPU登録前に名指しrejectされることを固定した。
 全対象が成功した。追加したheadless alternate-format test単独では23 assertions / 1 caseが
 成功している。
 
-## 6. 残る境界
+## 6. このslice完了時点で残っていた境界
 
 - explicit load/store
 - automatic scopeをまたぐfusion/reorder

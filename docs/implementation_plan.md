@@ -72,7 +72,7 @@ ctest --test-dir ./build -C Debug --output-on-failure
 | WP | 内容 | 状態 |
 |----|------|------|
 | WP203c | XR2b-c — OpenXR array swapchain / depth submit / GPU gate | 実装済み・Simulator/実機 gate待ち |
-| WP204 | physical plan eject / direct authoring | Phase B v1 + verified alternate-format runtime slice実装済み・load/store等のaggressive physical control待ち |
+| WP204 | physical plan eject / direct authoring | Phase B v2 + verified format/attachment runtime slice実装済み・scope/queue等のaggressive physical control待ち |
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
@@ -194,9 +194,29 @@ XR2b最終gateを満たす。
    pipelineを世代交換し、reload前後の出力画素一致を検証した。OpenXR OFF / ONの両構成と
    XR protocol/runtime fixtureも回帰済みである。
 
+**Phase B v2 follow-up — verified attachment operations(実装済み 2026-07-26)**:
+
+1. physical fragment version 2へ任意の`attachments`を追加した。各entryは
+   `(node, logical_resource)`をidentityとし、`load_op: load|clear|discard`と
+   `store_op: store|discard`だけを疎に上書きする。v1 parser互換と、attachmentを持たない
+   pure planの既存fingerprintを維持した。
+2. pass-wideの簡潔なauthoring設定をFrameGraphのcolor/depth attachmentごとの型付き契約へ
+   展開し、automatic physical planへ運ぶ。未知のload/store値は黙って既定値へ落とさず
+   config parse時に拒否する。
+3. verifierはnode/resourceの存在、raster write、logical readとLoadの一致を照合する。
+   編集はmaterialized/external resourceに限定し、Store→Discardは別MSAA resolveが値を保存し、
+   後続attachmentがmultisample surfaceをLoadしない場合だけ許可する。
+4. runtime compilerはlink済み操作をpassのcolor attachmentごと・depth attachmentごとに
+   適用する。通常dynamic rendering、output transform、UI、ImGui、layout transition判定、
+   execution traceが同じ物理契約を参照する。authoringのpass-wide値はfallbackとして保持する。
+5. headless Vulkan hot reloadでalternate formatと`Clear`→`Discard`を同じgenerationへ
+   prepare/publishし、実行passの`eDontCare`適用とreload前後の画素一致を確認した。
+   OpenXR OFF / ONの両構成、multiview、XR composition/runtime fixtureを回帰済みである。
+
 **残る WP204 後続**:
 
-1. explicit load/store、scope fusion/reorder、queue/barrierを扱うaggressive physical fragment
+1. automatic scopeをまたぐfusion/reorder、single-sample store elision、
+   queue/barrierを扱うaggressive physical fragment
 2. tile-local / alias planを実行するruntime adapterと対象GPU gate
 3. open external boundary、complete raw physical plan、`NativeScope`
 
@@ -255,11 +275,12 @@ preset の同一 watcher-frame 変更を一つのtransactionへcoalesceし、pre
 window swapchain、offscreen、OpenXR各eye、独立desktop mirrorの実submission fenceが
 使用generationを保持し、旧GPU resourceは最後の対応fence完了より前にretireされない。
 失敗時はactive generation、registry、config cache、watch dependencyを維持する。
-physical plan eject / direct authoring は WP204 Phase B v1とverified alternate-format
-runtime sliceまで実装済みである。
+physical plan eject / direct authoring は WP204 Phase B v2とverified alternate-format /
+per-attachment operation runtime sliceまで実装済みである。
 自動planへconservative resource materialization、split-only scope partition、verified alias
-group、宣言済みかつdevice検証済みのmaterialized-image format変更をlinkできる。
-次はload/store等のaggressive controlと
+group、宣言済みかつdevice検証済みのmaterialized-image format変更、logical dependencyと
+MSAA resolveを壊さないattachment load/store変更をlinkしてproduction runtimeで実行できる。
+次はscope fusion/reorder、single-sample store elision、queue/barrier等のaggressive controlと
 tile-local / alias runtimeを具体的なGPU gate付きで進める。`NativeScope`は具体的な
 Vulkan-only利用例を得てから進める。
 

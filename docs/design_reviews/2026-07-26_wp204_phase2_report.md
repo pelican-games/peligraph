@@ -6,10 +6,12 @@
 
 判定: **Phase B v1 実装・OpenXR OFF/ON ローカル自動テスト完了**
 
-> 後続でalternate formatのpure verifierとVulkan runtime vertical sliceを実装した。
+> 後続でalternate formatとper-attachment load/storeのverified runtime sliceを実装した。
 > 現在の境界は
+> [`2026-07-26_wp204_attachment_operations_report.md`](2026-07-26_wp204_attachment_operations_report.md)
+> を参照。途中経過は
 > [`2026-07-26_wp204_alternate_format_report.md`](2026-07-26_wp204_alternate_format_report.md)
-> を参照。本書の「alternate format未対応」はPhase B v1完了時点の履歴である。
+> に残す。本書の未対応項目はPhase B v1完了時点の履歴である。
 
 ## 1. 実装結果
 
