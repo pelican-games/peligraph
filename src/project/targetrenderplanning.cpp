@@ -452,6 +452,143 @@ struct CandidateDraft {
     BackendCostEstimate cost;
 };
 
+struct ExternalDepthExportSelection {
+    std::string source_resource;
+    std::string reason;
+};
+
+std::optional<ExternalDepthExportSelection>
+selectExternalDepthExport(
+    const LogicalTypeRegistry &types,
+    const TargetLoweringGraph &workspace,
+    const std::optional<VulkanExternalDepthExportRequest>
+        &request) {
+    if (!request) return std::nullopt;
+
+    const auto device_depth = deviceDepthV1(types);
+    std::map<std::string, const LogicalResourceDesc *,
+             std::less<>>
+        resources;
+    for (const auto &resource : workspace.resources) {
+        resources.emplace(resource.logical.name,
+                          &resource.logical);
+    }
+
+    struct Candidate {
+        std::string resource;
+        std::size_t latest_write = 0;
+        bool camera_surface = false;
+    };
+    std::map<std::string, Candidate, std::less<>>
+        candidates;
+    for (std::size_t node_index = 0;
+         node_index < workspace.nodes.size(); ++node_index) {
+        const auto &node =
+            workspace.nodes[node_index].logical;
+        bool writes_non_depth_image = false;
+        for (const auto &use : node.uses) {
+            if (!use.output_value) continue;
+            const auto found = resources.find(
+                use.output_value->resource);
+            if (found == resources.end()) continue;
+            if (found->second->type.constructor ==
+                    LogicalTypeConstructor::image &&
+                found->second->type != device_depth) {
+                writes_non_depth_image = true;
+            }
+        }
+        for (const auto &use : node.uses) {
+            if (!use.output_value) continue;
+            const auto found = resources.find(
+                use.output_value->resource);
+            if (found == resources.end() ||
+                found->second->type != device_depth) {
+                continue;
+            }
+            auto [candidate, inserted] =
+                candidates.try_emplace(
+                    use.output_value->resource,
+                    Candidate{
+                        .resource =
+                            use.output_value->resource,
+                    });
+            (void)inserted;
+            candidate->second.latest_write =
+                node_index;
+            candidate->second.camera_surface =
+                candidate->second.camera_surface ||
+                writes_non_depth_image;
+        }
+    }
+
+    if (request->source_resource) {
+        const auto found =
+            resources.find(*request->source_resource);
+        if (found == resources.end()) {
+            throw std::runtime_error(
+                "external depth export names an unknown logical "
+                "resource: " +
+                *request->source_resource);
+        }
+        if (found->second->type != device_depth) {
+            throw std::runtime_error(
+                "external depth export source must have typed "
+                "device/projection depth semantics: " +
+                *request->source_resource);
+        }
+        if (!candidates.contains(
+                *request->source_resource)) {
+            throw std::runtime_error(
+                "external depth export source is never written by "
+                "the logical graph: " +
+                *request->source_resource);
+        }
+        return ExternalDepthExportSelection{
+            *request->source_resource,
+            "explicit external depth source selected by target "
+            "policy",
+        };
+    }
+
+    const Candidate *selected = nullptr;
+    const auto prefer = [&](const Candidate &candidate) {
+        if (selected == nullptr ||
+            candidate.camera_surface >
+                selected->camera_surface ||
+            (candidate.camera_surface ==
+                 selected->camera_surface &&
+             candidate.latest_write >
+                 selected->latest_write) ||
+            (candidate.camera_surface ==
+                 selected->camera_surface &&
+             candidate.latest_write ==
+                 selected->latest_write &&
+             candidate.resource <
+                 selected->resource)) {
+            selected = &candidate;
+        }
+    };
+    for (const auto &[name, candidate] : candidates) {
+        (void)name;
+        prefer(candidate);
+    }
+    if (selected == nullptr) {
+        if (request->required) {
+            throw std::runtime_error(
+                "required external depth export found no written "
+                "device/projection depth resource");
+        }
+        return std::nullopt;
+    }
+    return ExternalDepthExportSelection{
+        selected->resource,
+        selected->camera_surface
+            ? "inferred latest typed depth associated with a "
+              "camera color surface"
+            : "inferred latest written typed device depth",
+    };
+}
+
 class DisjointSet {
     std::vector<std::size_t> parents_;
 
@@ -1409,7 +1546,9 @@ CandidateDraft buildCandidateDraft(
     const TargetEndpoint &endpoint, bool tile_candidate,
     const VulkanTargetPlanRequest &request,
     const ResolvedSampleCountPlan *sample_count_plan,
-    const ResolvedVulkanViewExecutionPlan &view_plan) {
+    const ResolvedVulkanViewExecutionPlan &view_plan,
+    const std::optional<ExternalDepthExportSelection>
+        &external_depth_export) {
     CandidateDraft result;
     result.name = std::string{
         tile_candidate ? kTileLocalCandidate
@@ -1450,6 +1589,10 @@ CandidateDraft buildCandidateDraft(
         const auto external =
             resource.logical.materialization ==
             LogicalMaterializationRequirement::external;
+        const auto exports_depth =
+            external_depth_export &&
+            external_depth_export->source_resource ==
+                resource.logical.name;
         const auto read_requires_materialization =
             resource.uses.widest_read ==
                 LogicalReadFootprintKind::neighborhood ||
@@ -1471,7 +1614,8 @@ CandidateDraft buildCandidateDraft(
             !resource.uses.produced_by_snapshot &&
             resource.logical.materialization !=
                 LogicalMaterializationRequirement::required &&
-            !external && !resource.pattern.require_store;
+            !external && !resource.pattern.require_store &&
+            !exports_depth;
 
         VulkanResourceRepresentation representation;
         if (external) {
@@ -1503,7 +1647,8 @@ CandidateDraft buildCandidateDraft(
                    resource.logical.materialization ==
                        LogicalMaterializationRequirement::
                            virtual_resource &&
-                   !resource.pattern.require_store) {
+                   !resource.pattern.require_store &&
+                   !exports_depth) {
             representation =
                 VulkanResourceRepresentation::
                     transient_attachment;
@@ -1579,7 +1724,8 @@ CandidateDraft buildCandidateDraft(
                     kTransientAttachmentCapability});
         }
         if (resource.uses.produced_by_snapshot ||
-            resource.uses.transfer_access) {
+            resource.uses.transfer_access ||
+            exports_depth) {
             required_features.push_back(
                 std::string{kTransferCopyCapability});
         }
@@ -1605,13 +1751,18 @@ CandidateDraft buildCandidateDraft(
                 VulkanResourceRepresentation::external &&
             resource.pattern.allow_alias &&
             !resource.pattern.require_store &&
+            !exports_depth &&
             resource.logical.materialization !=
                 LogicalMaterializationRequirement::external &&
             resource.uses.widest_read !=
                 LogicalReadFootprintKind::temporal;
-        const auto reason = materializationReason(
-            resource, tile_candidate, tile_local_eligible,
-            representation);
+        const auto reason =
+            exports_depth
+                ? "external depth export requires a materialized, "
+                  "non-aliased transfer source"
+                : materializationReason(
+                      resource, tile_candidate,
+                      tile_local_eligible, representation);
         result.resources.push_back(
             VulkanPhysicalResourcePlan{
                 .logical_resource = resource.logical.name,
@@ -1642,6 +1793,14 @@ CandidateDraft buildCandidateDraft(
                 representation)},
             reason,
         });
+        if (exports_depth) {
+            result.decisions.push_back(PlanningDecision{
+                "pelican.plan.external_depth_export_source@1",
+                resource.logical.name,
+                "materialized_transfer_source",
+                external_depth_export->reason,
+            });
+        }
         if (read_requires_materialization &&
             representation !=
                 VulkanResourceRepresentation::
@@ -2062,6 +2221,10 @@ VulkanTargetPlan compileVulkanTargetPlan(
     auto workspace = makeTargetLoweringGraph(
         types, canonical_graph, request.pattern_bindings,
         initial_opportunities.node_order);
+    const auto external_depth_export =
+        selectExternalDepthExport(
+            types, workspace,
+            request.external_depth_export);
     auto sample_count_plan =
         request.sample_count
             ? std::optional<ResolvedSampleCountPlan>{
@@ -2072,11 +2235,11 @@ VulkanTargetPlan compileVulkanTargetPlan(
     auto materialized = buildCandidateDraft(
         canonical_graph, workspace, endpoint, false, request,
         sample_count_plan ? &*sample_count_plan : nullptr,
-        view_execution);
+        view_execution, external_depth_export);
     auto tile_local = buildCandidateDraft(
         canonical_graph, workspace, endpoint, true, request,
         sample_count_plan ? &*sample_count_plan : nullptr,
-        view_execution);
+        view_execution, external_depth_export);
     applyAttachmentBudget(materialized, canonical_graph,
                           endpoint);
     applyAttachmentBudget(tile_local, canonical_graph,
@@ -2182,6 +2345,37 @@ VulkanTargetPlan compileVulkanTargetPlan(
         "physical.vulkan lowering",
     });
 
+    std::optional<VulkanExternalDepthExportPlan>
+        external_depth_plan;
+    if (external_depth_export) {
+        const auto *resource = findPhysicalResource(
+            selected_draft.resources,
+            external_depth_export->source_resource);
+        if (resource == nullptr ||
+            resource->representation !=
+                VulkanResourceRepresentation::
+                    materialized_image ||
+            !resource->stored ||
+            resource->format.empty()) {
+            throw std::runtime_error(
+                "external depth export did not lower to a stored "
+                "materialized image: " +
+                external_depth_export->source_resource);
+        }
+        external_depth_plan =
+            VulkanExternalDepthExportPlan{
+                .source_resource =
+                    resource->logical_resource,
+                .format = resource->format,
+                .view_layout =
+                    resource->view_layout,
+                .array_layers =
+                    resource->array_layers,
+                .reason =
+                    external_depth_export->reason,
+            };
+    }
+
     return VulkanTargetPlan{
         .graph = canonical_graph.name,
         .graph_transforms =
@@ -2201,6 +2395,8 @@ VulkanTargetPlan compileVulkanTargetPlan(
         .decisions = std::move(decisions),
         .sample_count_plan = std::move(sample_count_plan),
         .view_execution_plan = view_execution.summary,
+        .external_depth_export =
+            std::move(external_depth_plan),
     };
 }
 
@@ -2346,6 +2542,25 @@ nlohmann::ordered_json vulkanTargetPlanToJson(
                 {"scene_resources",
                  plan.resolution_plan
                      ->scene_resources},
+            };
+    }
+    if (plan.external_depth_export) {
+        result["external_depth_export"] =
+            nlohmann::ordered_json{
+                {"source_resource",
+                 plan.external_depth_export
+                     ->source_resource},
+                {"format",
+                 plan.external_depth_export->format},
+                {"view_layout",
+                 vulkanResourceViewLayoutName(
+                     plan.external_depth_export
+                         ->view_layout)},
+                {"array_layers",
+                 plan.external_depth_export
+                     ->array_layers},
+                {"reason",
+                 plan.external_depth_export->reason},
             };
     }
     for (const auto &selection :

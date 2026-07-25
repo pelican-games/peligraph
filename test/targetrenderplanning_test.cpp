@@ -19,6 +19,8 @@ constexpr std::string_view kHdrFormatCapability =
     "pelican.vulkan.format_rgba16_sfloat@1";
 constexpr std::string_view kDisplayFormatCapability =
     "pelican.vulkan.format_bgra8_unorm@1";
+constexpr std::string_view kDepthFormatCapability =
+    "pelican.vulkan.format_d32_sfloat@1";
 
 void requireThrowsContaining(const std::function<void()> &operation,
                              std::string_view expected) {
@@ -56,6 +58,7 @@ TargetTopologySnapshot topology(
         "pelican.vulkan.transfer_copy@1",
         std::string{kHdrFormatCapability},
         std::string{kDisplayFormatCapability},
+        std::string{kDepthFormatCapability},
     };
     if (tile) {
         capabilities.insert(
@@ -281,18 +284,26 @@ ResourcePattern patternFor(const LogicalTypeRegistry &types,
                            const LogicalResourceDesc &resource) {
     const auto display =
         resource.type == displayEncodedV1(types);
+    const auto depth =
+        resource.type == deviceDepthV1(types);
     return ResourcePattern{
         .id = display
                   ? "pelican.render.display_output_pattern@1"
+              : depth
+                  ? "pelican.render.device_depth_pattern@1"
                   : "pelican.render.frame_color_pattern@1",
         .applicable_type =
             exactLogicalTypePattern(types, resource.type),
         .format_candidates =
             {ResourceFormatCandidate{
-                display ? "B8G8R8A8_UNORM"
-                        : "R16G16B16A16_SFLOAT",
+                display
+                    ? "B8G8R8A8_UNORM"
+                : depth
+                    ? "D32_SFLOAT"
+                    : "R16G16B16A16_SFLOAT",
                 {std::string{
                     display ? kDisplayFormatCapability
+                    : depth ? kDepthFormatCapability
                             : kHdrFormatCapability}},
             }},
         .prefer_transient = !display,
@@ -303,9 +314,12 @@ ResourcePattern patternFor(const LogicalTypeRegistry &types,
             ResourcePatternFallback::materialize,
         .estimated_bytes =
             display ? 4ULL * 1024ULL * 1024ULL
+            : depth ? 4ULL * 1024ULL * 1024ULL
                     : 8ULL * 1024ULL * 1024ULL,
-        .provenance = display ? "builtin:display-v1"
-                              : "builtin:frame-color-v1",
+        .provenance =
+            display ? "builtin:display-v1"
+            : depth ? "builtin:device-depth-v1"
+                    : "builtin:frame-color-v1",
     };
 }
 
@@ -332,7 +346,9 @@ VulkanTargetPlan compile(
     std::optional<VulkanSampleCountPlanRequest> sample_count =
         std::nullopt,
     std::optional<VulkanViewExecutionPlanRequest> view_execution =
-        std::nullopt) {
+        std::nullopt,
+    std::optional<VulkanExternalDepthExportRequest>
+        external_depth_export = std::nullopt) {
     return compileVulkanTargetPlan(
         types, graph, target, providers(),
         VulkanTargetPlanRequest{
@@ -341,6 +357,8 @@ VulkanTargetPlan compile(
             .pattern_bindings = std::move(bindings),
             .sample_count = std::move(sample_count),
             .view_execution = std::move(view_execution),
+            .external_depth_export =
+                std::move(external_depth_export),
         });
 }
 
@@ -359,7 +377,12 @@ VulkanSampleCountPlanRequest sampleCountRequest(
         }
         capabilities.push_back({
             .resource = entry.name,
-            .format = "R16G16B16A16_SFLOAT",
+            .format =
+                semanticTypeIdName(
+                    entry.type.semantic) ==
+                        "pelican.render.depth@1"
+                    ? "D32_SFLOAT"
+                    : "R16G16B16A16_SFLOAT",
             .supported_samples =
                 entry.name == limited_resource
                     ? std::vector<std::uint32_t>{1, 2}
@@ -617,6 +640,99 @@ TEST_CASE("view execution planning supports mixed scopes and rejects an unsatisf
                 });
         },
         "ToneMap");
+}
+
+TEST_CASE("external depth export infers camera depth and keeps it materialized across tile lowering",
+          "[target-render-planning][external-depth][tile][multiview]") {
+    const auto types = makeBuiltinLogicalTypeRegistry();
+    auto graph = hybridGraph(types, 3, false, true);
+    graph.resources.push_back(LogicalResourceDesc{
+        .name = "shadow_depth",
+        .type = deviceDepthV1(types),
+    });
+    LogicalGraphNode shadow;
+    shadow.name = "ShadowDepth";
+    shadow.kind = LogicalGraphNodeKind::render;
+    shadow.declaration_index = 100;
+    shadow.after = {"ToneMap"};
+    addWrite(types, shadow,
+             resource(graph, "shadow_depth"), 1,
+             "depth");
+    graph.nodes.push_back(std::move(shadow));
+    validateCompiledLogicalRenderGraph(types, graph);
+
+    const auto plan = compile(
+        types, graph, topology(true, 8, 2),
+        bindingsFor(types, graph), std::nullopt,
+        VulkanViewExecutionPlanRequest{
+            .view_count = 2,
+            .preference =
+                XrViewExecutionPreference::automatic,
+            .multiview_capable_nodes =
+                {"GBuffer", "Lighting", "Forward",
+                 "ToneMap", "ShadowDepth"},
+        },
+        VulkanExternalDepthExportRequest{});
+
+    REQUIRE(plan.external_depth_export.has_value());
+    REQUIRE(plan.external_depth_export->source_resource ==
+            "scene_depth");
+    REQUIRE(plan.external_depth_export->format ==
+            "D32_SFLOAT");
+    REQUIRE(plan.external_depth_export->view_layout ==
+            VulkanResourceViewLayout::layered_2d_array);
+    REQUIRE(plan.external_depth_export->array_layers == 2);
+    const auto &depth =
+        physicalResource(plan, "scene_depth");
+    REQUIRE(depth.representation ==
+            VulkanResourceRepresentation::materialized_image);
+    REQUIRE(depth.stored);
+    REQUIRE_FALSE(depth.aliasable);
+    REQUIRE(std::find(
+                depth.required_physical_features.begin(),
+                depth.required_physical_features.end(),
+                "pelican.vulkan.transfer_copy@1") !=
+            depth.required_physical_features.end());
+    const auto encoded = vulkanTargetPlanToJson(plan);
+    REQUIRE(encoded.at("external_depth_export")
+                .at("source_resource") == "scene_depth");
+    REQUIRE(encoded.at("external_depth_export")
+                .at("array_layers") == 2);
+
+    const auto explicit_shadow = compile(
+        types, graph, topology(false),
+        bindingsFor(types, graph), std::nullopt,
+        std::nullopt,
+        VulkanExternalDepthExportRequest{
+            .source_resource = "shadow_depth",
+        });
+    REQUIRE(explicit_shadow.external_depth_export
+                ->source_resource == "shadow_depth");
+}
+
+TEST_CASE("external depth export remains optional but diagnoses an unsatisfied required request",
+          "[target-render-planning][external-depth][diagnostic]") {
+    const auto types = makeBuiltinLogicalTypeRegistry();
+    const auto graph = hybridGraph(types, 3, false);
+
+    const auto optional = compile(
+        types, graph, topology(false),
+        bindingsFor(types, graph), std::nullopt,
+        std::nullopt,
+        VulkanExternalDepthExportRequest{});
+    REQUIRE_FALSE(optional.external_depth_export);
+
+    requireThrowsContaining(
+        [&] {
+            (void)compile(
+                types, graph, topology(false),
+                bindingsFor(types, graph), std::nullopt,
+                std::nullopt,
+                VulkanExternalDepthExportRequest{
+                    .required = true,
+                });
+        },
+        "found no written device/projection depth");
 }
 
 TEST_CASE("neighborhood refraction materializes an opaque snapshot without spilling G-buffer attachments",

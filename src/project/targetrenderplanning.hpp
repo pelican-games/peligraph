@@ -241,6 +241,27 @@ struct VulkanSampleCountPlanRequest {
     std::vector<std::string> geometry_nodes;
 };
 
+// Requests a device/projection-depth image that remains materialized after
+// logical graph execution so an external compositor can consume it.  An
+// omitted source lets the target compiler infer the camera depth from typed
+// graph structure; an explicit source is the escape hatch for custom graphs.
+struct VulkanExternalDepthExportRequest {
+    std::optional<std::string> source_resource;
+    bool required = false;
+};
+
+struct VulkanExternalDepthExportPlan {
+    std::string source_resource;
+    std::string format;
+    VulkanResourceViewLayout view_layout =
+        VulkanResourceViewLayout::shared_2d;
+    std::uint32_t array_layers = 1;
+    std::string reason;
+
+    bool operator==(
+        const VulkanExternalDepthExportPlan &) const = default;
+};
+
 struct VulkanTargetPlanRequest {
     std::string endpoint;
     std::string provider;
@@ -251,6 +272,8 @@ struct VulkanTargetPlanRequest {
     PlanningDiagnosticPolicy diagnostic_policy;
     std::optional<VulkanSampleCountPlanRequest> sample_count;
     std::optional<VulkanViewExecutionPlanRequest> view_execution;
+    std::optional<VulkanExternalDepthExportRequest>
+        external_depth_export;
 };
 
 struct VulkanTargetPlan {
@@ -273,6 +296,8 @@ struct VulkanTargetPlan {
     VulkanViewExecutionPlan view_execution_plan;
     std::optional<VulkanRenderResolutionPlan>
         resolution_plan;
+    std::optional<VulkanExternalDepthExportPlan>
+        external_depth_export;
 };
 
 void validateVulkanPhysicalFeatureClosure(
