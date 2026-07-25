@@ -72,6 +72,7 @@ ctest --test-dir ./build -C Debug --output-on-failure
 | WP | 内容 | 状態 |
 |----|------|------|
 | WP203c | XR2b-c — OpenXR array swapchain / depth submit / GPU gate | 実装済み・Simulator/実機 gate待ち |
+| WP204 | physical plan eject / direct authoring | Phase A(pin/eject)実装済み・physical fragment verifier待ち |
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
@@ -122,6 +123,47 @@ XR2b最終gateを満たす。
 - 全CTest、OpenXR validation、`git diff --check`が成功する
 
 依存: WP203b。見積: 大。
+
+### WP204: physical plan eject / direct authoring
+
+**目的**: 通常は自動 target compiler を使いながら、再現試験や特殊 backend 実験では
+同じ physical 層の決定を固定し、最終的には typed boundary を持つ physical fragment を
+標準 plan へ link できるようにする。physical から logical への逆変換は行わない。
+
+**Phase A(実装済み 2026-07-26)**:
+
+1. rendering config の `target_planning` を `PlanningProfile`、graph-scoped
+   `serial` / `isolate` / `no_alias`、strict warning policy へ型変換し、
+   `VulkanTargetPlanRequest` まで接続した。
+2. `pelican.vulkan_target_plan_pins` v1 を追加した。自動 plan の
+   `ejectable_pin_package` は compiled logical graph の FNV fingerprint と選択済み
+   backend candidate を持ち、`vulkan_plan_pins.flat/preview/xr[]` へ同じ package を
+   貼り戻せる。
+3. package は同一 graph/fingerprintだけに適用し、未知・stale・infeasible candidateを
+   fallbackせず拒否する。適用結果は `applied_pin_package` に残す。
+4. `RenderStrategy` の ABI seed / config fingerprint から lower-layer control
+   (`target_planning` / `vulkan_plan_pins`)を除外して、pin貼り付けによる自己参照を防いだ。
+   control data 自体は strategy 出力へ failure-atomic に復元する。
+
+**残る Phase B**:
+
+1. resource representation / store / alias group / scope groupingを直接記述する
+   versioned physical fragment schemaを定義する。
+2. logical resource/value、scope node、lifetime、sample/view/extent、required capability、
+   external output boundaryを照合する pure verifierを先に実装する。
+3. open boundaryを標準planへlinkし、全boundaryが閉じた後だけruntime prepareへ渡す。
+4. 現runtimeが未実装のtile-local/aliasを「parserが受けたから実行可能」と扱わず、
+   executor capability不足として名指し拒否する。
+
+**Phase B受け入れ条件**:
+
+- 同じ層の parse → canonical dump → parse が byte-equivalent
+- logical fingerprint、target facts、provider generationの変化でstale artifactを拒否
+- malformed/open boundary、overlap lifetime、sample/view不一致、capability growthを拒否
+- automatic plan、sparse physical fragment、complete physical planが同じruntime verifierを通る
+- pin/fragment無しの既定 config は既存 plan と実行コストを変えない
+
+依存: RPE6c1/WP191、WP202b。見積: Phase B は大。
 
 ### 完了地点
 
@@ -176,9 +218,9 @@ preset の同一 watcher-frame 変更を一つのtransactionへcoalesceし、pre
 window swapchain、offscreen、OpenXR各eye、独立desktop mirrorの実submission fenceが
 使用generationを保持し、旧GPU resourceは最後の対応fence完了より前にretireされない。
 失敗時はactive generation、registry、config cache、watch dependencyを維持する。
-renderer の次候補は XR2b multiview / array-layer / depth-submit lowering、または
-physical plan eject / direct authoring fixtureである。`NativeScope`は具体的な
-Vulkan-only利用例を得てから進める。
+physical plan eject / direct authoring は WP204 Phase A の backend decision pin まで
+実装済みである。次は resource/scope を持つ physical fragment verifier と linker を
+Phase B として進める。`NativeScope`は具体的な Vulkan-only利用例を得てから進める。
 
 ## 3. トラック現況(WP 化待ちを含む)
 

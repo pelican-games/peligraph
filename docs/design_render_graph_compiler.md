@@ -1224,10 +1224,55 @@ gate:
 - flat/preview/XR、production headless、V1→V2 reload、invalid ABI、rollback、
   shutdown後失効を維持する
 
+### RPE12a — target policy authoring / Vulkan decision pin
+
+状態: **WP204 Phase Aで実装済み(2026-07-26)**。通常経路を手書き physical plan に
+置き換える前に、既存 compiler の portable control と target-specific pin を別の型として
+公開した。
+
+`target_planning` は pipeline-wide profile/diagnostic policy と graph-scoped
+node/resource constraint を `TargetPlanningPolicy` へcompileする。graph 単位にしたのは、
+flat/preview/XR や複数 entrypoint 間で同名でない node/resource へ制約を誤適用しないためで
+ある。XR variantではgraph名だけを `#xr` へ解決し、node/resource名は論理名のまま使う。
+
+`VulkanTargetPlanPinPackage` v1 は次だけを持つ。
+
+- package schema/version
+- compiled logical graph名
+- canonical logical JSONから得た `fnv1a64` fingerprint
+- versioned backend candidate pin
+
+自動 plan dump は同じ層へ戻せる `ejectable_pin_package` を常に出す。config の
+`vulkan_plan_pins.flat/preview/xr[]` は現在の immutable graph variantに対応するpackageだけを
+選び、target bridgeがgraphごとに `VulkanTargetPlanRequest` へ渡す。適用済みpackageは
+`applied_pin_package`へ残す。fingerprint不一致、有限候補集合に無いpin、probe不成立の
+candidateはすべてcompile errorであり、pinを黙って解除しない。
+
+renderer-wide strategyはphysical controlの意味を所有しない。このため
+`target_planning` / `vulkan_plan_pins`をstrategy ABI seedとinput/output config fingerprint
+から除外し、callback完了後に元のcontrolを復元する。providerが同名controlを生成した場合は
+責務衝突として候補全体をrejectする。これにより、ejectしたpackageを貼ったこと自体で
+logical fingerprintが変わる自己参照を防ぐ。
+
+v1はbackend decision pinであり、resource/scope/Vulkan値をuncheckedに上書きするdirect
+physical planではない。次段はresource/value、lifetime、sample/view/extent、scope node、
+capability closure、external boundaryを検証するphysical fragment verifierを先に作り、その
+verifierを通る範囲だけschema v2以降へ追加する。
+
+gate:
+
+- target control無しの既定 plan/deterministic selectionを維持する
+- profile、graph-scoped constraint、strict warningがruntime target compilerまで届く
+- pin packageのsame-layer parse/dumpとlogical fingerprintが決定的
+- pinで自動cost選択と異なるfeasible candidateを選べる
+- stale/unknown/infeasible pinと未知graph/node/resourceをprepare前に拒否する
+- Plan Viewer/RPCのphysical planからejectでき、適用provenanceを再観測できる
+- strategy有無でlower-layer control追加前後のlogical fingerprintが変わらない
+
 次の候補:
 
 1. WP203c の Meta XR Simulator/物理 HMD と対象 GPU 実測 gate
-2. physical plan eject / direct authoring fixture
+2. WP204 Phase B — physical fragment verifier / linker とsame-layer round-trip
 3. `NativeScope` は具体的な Vulkan-only 使用例が得られてから ABI 設計
 4. CPU / external domain は計測と具体的な二候補 task が得られてから
    `design_heterogeneous_execution_graph.md` の HEG3 / HEG4 として実装

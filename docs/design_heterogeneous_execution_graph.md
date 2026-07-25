@@ -900,6 +900,13 @@ completion、required capabilityだけを検証する。未指定情報は隠れ
 上位を bypass するほど portability、自動最適化、診断、hot reload 保証が減る。eject / dump は
 同じ層の round-trip のみ保証し、physical plan から logical graph を復元しない。
 
+2026-07-26 の WP204 Phase A では、この梯子の 3 と 4 の間に最小の実行可能な境界を置いた。
+portable な `target_planning` は profile / node / resource constraintを通常compilerへ渡し、
+Vulkan固有の `pelican.vulkan_target_plan_pins` v1 はcompiled logical fingerprintと有限な
+backend candidateだけを同じphysical層へeject/importする。これはphysical fragmentそのもの
+ではない。resource/scopeを直接書く入口は、open boundary、lifetime、sample/view/extent、
+capability closureを検証するlinkerが完成するまで受理しない。
+
 ## 14. 段階導入
 
 ### HEG0 — 設計予約(本書)
@@ -948,6 +955,8 @@ completion、required capabilityだけを検証する。未指定情報は隠れ
 - `ResourcePattern`とresource bindingを分離し、追加G-bufferを固定enumなしで計画
 - read footprint / materialization / lifetimeからtile-local、snapshot、alias候補を導出
 - WP191でmaterialized imageのformat / sample-count contractだけを現Vulkan runtimeへ接続
+- WP204 Phase Aでgraph-scoped target policyと、logical fingerprint付きbackend decision
+  pinのeject/importをruntime target compilerへ接続
 - tile-local / alias / NativeScope、CPU・external・video runtime workはまだ追加しない
 
 ### HEG3 — 実証後の異種 domain

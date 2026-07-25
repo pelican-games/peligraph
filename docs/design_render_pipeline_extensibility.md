@@ -44,6 +44,12 @@ tagged region / subgraph replacementを実装した。元のlogical graphを破�
 置換後のlocal candidateをtyped graphへ再compileしてからtarget loweringへ渡す。
 global transformとstrategyはこの二つの小さなABIへ押し込まず、RPE11c / RPE11dで
 独立したextension pointとして実装した。
+RPE12a / WP204 Phase A はさらに下流の target planning control と、compiled logical
+graph fingerprint に束縛された versioned Vulkan backend decision pin を実装した。
+自動 plan の dump は同じ物理層へ戻せる pin package を常に出し、古い graph、
+未知 candidate、現在の device で infeasible な candidate は fallback せず reject する。
+resource / scope / synchronization を直接記述する完全な physical fragment は Phase B で
+verifier / linker を先に実装してから公開する。
 
 関連文書:
 
@@ -233,9 +239,17 @@ eject は層別にする。物理 plan を論理 graph へ損失なく戻すこ�
 必要な tooling:
 
 - `dump-resolved-render-pipeline` — typed plan と選択理由を見る診断
+- 実装済みの `physical_target_plan.ejectable_pin_package` — 現在選択された
+  backend candidate を logical graph fingerprint 付きで同じ物理層へコピーする
 - 将来の `eject-render-pipeline` — resolved authoring / logical graph / Vulkan physical
-  plan のいずれかを同じ層の編集形式で project へコピー
+  fragment / complete plan のいずれかを同じ層の編集形式で project へコピー
 - 元 preset の名前・版・content hash を provenance として残す
+
+最初の package schema は `pelican.vulkan_target_plan_pins` version 1 とし、
+`graph`、`logical_graph_fingerprint`、`pins.backend_candidate` だけを持つ。
+config の `vulkan_plan_pins.flat|preview|xr` へ貼り戻すと同じ candidate を選び、
+適用結果は `applied_pin_package` で再観測できる。これは完全な physical plan の
+公開形式ではなく、有限候補の選択だけを固定する狭い escape hatch である。
 
 ### 3.3 Policy provider — アルゴリズムを交換する入口
 
@@ -907,6 +921,7 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 | RPE11b / WP201（済 2026-07-24） | tagged region、typed boundary contract、builtin/game DLL subgraph replacement | immutable candidate再compile、1→N fullscreen展開、境界不変、provenance、failure atomic、reload/rollback/unload |
 | RPE11c / WP202a（済 2026-07-24） | global `GraphTransformProviderV1`、graph-set boundary、順序付き変換chain | full-config candidate再compile、internal target/pass追加、external/history/required境界と常設node保護、provenance、reload/rollback/unload |
 | RPE11d / WP202b（済 2026-07-25） | renderer-wide `RenderStrategyProviderV1`、typed renderer facade、preset後の全config生成 | feature/variant/logical/physical再compile、config fingerprint provenance、preview/headless、reload/rollback/unload |
+| RPE12a / WP204 Phase A（済 2026-07-26） | graph-scoped target planning control、logical fingerprint付きVulkan backend decision pin/eject | variant別package、round-trip、stale/unknown/infeasible reject、strategy fingerprint非自己参照、headless runtime観測 |
 
 ### 12.1 いま着手する範囲
 
@@ -958,6 +973,13 @@ WP202bではさらに上流のpreset展開後・feature composition前へrendere
 持つrenderer facadeを受け、renderer seed config全体を生成する。出力は通常の
 feature/variant/logical/physical compilerを迂回しない。V1はstartup config compilerが
 所有しないlive material/light/geometry inventoryを公開せず、後続contractへ残す。
+WP204 Phase Aでは下流の`target_planning`をtyped policyとしてcompileし、自動
+`VulkanTargetPlan`からversion 1のdecision pinをejectしてvariant別configへ戻す経路を
+追加した。pinはlogical graph fingerprintを持ち、hot reload後のstale packageや
+device/provider上で成立しないcandidateを黙って別案へ変えない。lower-layer controlは
+renderer strategyのseed/output fingerprintから除外し、貼り戻したpinが自分自身の
+fingerprintを変える循環を防ぐ。resource/scopeを手動記述するPhase Bは同じruntime
+verifierをautomatic planと共有してから追加する。
 各段階の詳細gateは
 `design_render_graph_compiler.md` §12 を正とする。
 
@@ -966,7 +988,7 @@ feature/variant/logical/physical compilerを迂回しない。V1はstartup confi
 - OIT の方式選定
 - `PassInfo` の未知 custom pass kind ABI
 - public `GraphVariantProvider` の ABI 凍結
-- physical plan eject / direct authoring の公開形式
+- resource / scope physical fragment と complete physical plan の公開形式
 - `NativeScope` の game-DLL ABI
 - bindless / GPU-driven sort
 - forward object へ SSR / SSAO / decal を適用する個別方式
@@ -974,9 +996,12 @@ feature/variant/logical/physical compilerを迂回しない。V1はstartup confi
 - 汎用 CPU task scheduler / execution linker(計測と具体的二候補 task が先)
 - 動画 encode/decode dialect / backend(codec、session、backpressure は需要時に設計)
 
-これらは RPE6b0〜RPE6c1 の typed graph / physical plan fixture と具体的な利用要求を得てから
-公開形式・ABI を凍結する。Vulkan physical plan と `NativeScope` という入口自体は本設計で
-予約済みであり、論理型へ押し込んで代替しない。
+backend candidateだけを固定するWP204 Phase Aのversion 1 pinは実装済みである。
+それより強いresource / scope fragment、complete plan、`NativeScope`は
+RPE6b0〜RPE6c1のtyped graph / physical plan fixtureと具体的な利用要求に加え、
+WP204 Phase Bのverifier / linkerが成立してから公開形式・ABIを凍結する。
+Vulkan physical plan と `NativeScope` という入口自体は本設計で予約済みであり、
+論理型へ押し込んで代替しない。
 
 ## 13. 横断受け入れ条件
 
