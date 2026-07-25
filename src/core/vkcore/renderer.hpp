@@ -14,6 +14,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -40,11 +41,24 @@ class ILogicalFrameTarget {
     virtual ~ILogicalFrameTarget() = default;
     virtual void beginLogicalFrame(std::uint32_t view_count) = 0;
     virtual FrameRenderContext beginView(std::uint32_t view_index) = 0;
+    virtual bool supportsViewFamilyExecution() const noexcept {
+        return false;
+    }
+    virtual FrameRenderContext beginViewFamily(
+        std::uint32_t) {
+        throw std::runtime_error(
+            "logical-frame target does not support view-family execution");
+    }
     // Targets that submit per view must capture the lease before this call
     // returns after a successful submit.
     virtual void endView(
         std::uint32_t view_index,
         GpuSubmissionLease lease = {}) = 0;
+    virtual void endViewFamily(
+        GpuSubmissionLease = {}) {
+        throw std::runtime_error(
+            "logical-frame target does not support view-family execution");
+    }
     // Implementations must capture the lease before returning (or throwing)
     // after any successful GPU submit, and release it only after completion.
     virtual void endLogicalFrame(GpuSubmissionLease lease = {}) = 0;

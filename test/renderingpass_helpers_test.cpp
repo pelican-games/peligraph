@@ -12,6 +12,7 @@
 #include "../src/core/renderingpass/rendertargetmetadataresolver.hpp"
 #include "../src/core/renderingpass/rendertargetnameresolver.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
+#include "../src/core/renderingpass/viewexecutionscheduler.hpp"
 #include "../src/core/userpublic/render/pass_implementation_abi_v1.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
@@ -965,6 +966,119 @@ TEST_CASE("rendering pass runtime compiler requires fullscreen dependencies", "[
     definition.passes = {fullscreen_pass};
 
     REQUIRE_THROWS_AS(compileRenderingPassRuntime(definition), std::runtime_error);
+}
+
+TEST_CASE(
+    "view-family scheduler expands mixed physical scopes in node-major order",
+    "[renderingpass][view-execution][schedule]") {
+    const std::vector<FrameGraphExecutionNode> nodes{
+        {.name = "SharedShadow"},
+        {.name = "GBuffer"},
+        {.name = "Transparent"},
+        {.name = "Present"},
+    };
+    VulkanTargetPlan plan;
+    plan.view_execution_plan.view_count = 2;
+    plan.view_execution_plan.uses_multiview = true;
+    plan.view_execution_plan.mixed_execution = true;
+    plan.scopes = {
+        {
+            .id = "shared",
+            .nodes = {"SharedShadow"},
+            .view_execution =
+                VulkanScopeViewExecution::single_view,
+            .view_count = 1,
+            .execution_count = 1,
+        },
+        {
+            .id = "gbuffer",
+            .nodes = {"GBuffer"},
+            .view_execution =
+                VulkanScopeViewExecution::multiview,
+            .view_count = 2,
+            .execution_count = 1,
+            .view_mask = 0b11,
+        },
+        {
+            .id = "sequential",
+            .nodes = {"Transparent"},
+            .view_execution =
+                VulkanScopeViewExecution::sequential,
+            .view_count = 2,
+            .execution_count = 2,
+        },
+        {
+            .id = "present",
+            .nodes = {"Present"},
+            .view_execution =
+                VulkanScopeViewExecution::multiview,
+            .view_count = 2,
+            .execution_count = 1,
+            .view_mask = 0b11,
+        },
+    };
+
+    const auto schedule =
+        buildLogicalFrameViewFamilySchedule(
+            nodes, plan, 2);
+    REQUIRE(schedule.size() == 5);
+    REQUIRE(schedule[0].node_index == 0);
+    REQUIRE(schedule[0].execution ==
+            VulkanScopeViewExecution::single_view);
+    REQUIRE(schedule[1].node_index == 1);
+    REQUIRE(schedule[1].execution ==
+            VulkanScopeViewExecution::multiview);
+    REQUIRE(schedule[2].node_index == 2);
+    REQUIRE(schedule[2].view_index == 0);
+    REQUIRE(schedule[2].firstExecution());
+    REQUIRE_FALSE(schedule[2].lastExecution());
+    REQUIRE(schedule[3].node_index == 2);
+    REQUIRE(schedule[3].view_index == 1);
+    REQUIRE_FALSE(schedule[3].firstExecution());
+    REQUIRE(schedule[3].lastExecution());
+    REQUIRE(schedule[4].node_index == 3);
+    REQUIRE(schedule[4].execution ==
+            VulkanScopeViewExecution::multiview);
+    REQUIRE(schedule[4].logical_view_count == 2);
+}
+
+TEST_CASE(
+    "view-family scheduler rejects incomplete or inconsistent physical contracts",
+    "[renderingpass][view-execution][schedule][diagnostic]") {
+    const std::vector<FrameGraphExecutionNode> nodes{
+        {.name = "A"},
+        {.name = "B"},
+    };
+    VulkanTargetPlan plan;
+    plan.view_execution_plan.view_count = 2;
+    plan.scopes = {
+        {
+            .id = "broken",
+            .nodes = {"A"},
+            .view_execution =
+                VulkanScopeViewExecution::sequential,
+            .view_count = 2,
+            .execution_count = 1,
+        },
+    };
+    const auto require_error =
+        [&](std::uint32_t view_count,
+            std::string_view expected) {
+            try {
+                (void)buildLogicalFrameViewFamilySchedule(
+                    nodes, plan, view_count);
+                FAIL("schedule did not reject an invalid contract");
+            } catch (const std::runtime_error &error) {
+                REQUIRE(std::string_view{error.what()}.find(expected) !=
+                        std::string_view::npos);
+            }
+        };
+    require_error(
+        2, "inconsistent view-execution contract");
+
+    plan.scopes.front().execution_count = 2;
+    require_error(2, "no scope");
+    require_error(3, "view count");
 }
 
 } // namespace Pelican

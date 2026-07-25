@@ -52,6 +52,14 @@ std::optional<std::uint32_t> endpointUnsignedFact(
 
 bool isViewDependentNode(LogicalGraphNodeKind kind) {
     return kind == LogicalGraphNodeKind::render ||
+           kind == LogicalGraphNodeKind::compute ||
+           kind == LogicalGraphNodeKind::anchor ||
+           kind == LogicalGraphNodeKind::snapshot_copy ||
+           kind == LogicalGraphNodeKind::output_transform;
+}
+
+bool isMultiviewRasterNode(LogicalGraphNodeKind kind) {
+    return kind == LogicalGraphNodeKind::render ||
            kind == LogicalGraphNodeKind::output_transform;
 }
 
@@ -78,7 +86,7 @@ std::set<std::string, std::less<>> canonicalViewNodeSet(
                 " references unknown logical node: " + name);
         }
         if (require_render_scope &&
-            !isViewDependentNode(known->second->kind)) {
+            !isMultiviewRasterNode(known->second->kind)) {
             throw std::runtime_error(
                 std::string{subject} +
                 " may contain only render or output nodes: " +
