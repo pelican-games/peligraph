@@ -917,6 +917,21 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
             ejected_pins.logical_graph_fingerprint ==
             execution->target_plan
                 ->logical_graph_fingerprint);
+        const auto ejected_fragment =
+            vulkanPhysicalFragmentPackageFromJson(
+                frame_plan_json.at(
+                    "physical_target_plan")
+                    .at(
+                        "ejectable_physical_fragment"));
+        REQUIRE(
+            ejected_fragment ==
+            ejectVulkanPhysicalFragmentPackage(
+                *execution->target_plan));
+        REQUIRE(
+            ejected_fragment
+                .automatic_plan_fingerprint ==
+            execution->target_plan
+                ->automatic_plan_fingerprint);
         const auto physical_lit = std::find_if(
             execution->target_plan->resources.begin(),
             execution->target_plan->resources.end(),

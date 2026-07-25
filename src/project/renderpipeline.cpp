@@ -411,6 +411,56 @@ compileVulkanTargetPlanPins(
     return result;
 }
 
+std::vector<VulkanPhysicalFragmentPackage>
+compileVulkanPhysicalFragments(
+    const nlohmann::json &config,
+    RenderPipelineGraphVariant variant) {
+    const auto declaration =
+        config.find("vulkan_physical_fragments");
+    if (declaration == config.end()) return {};
+    if (!declaration->is_object()) {
+        throw std::runtime_error(
+            "vulkan_physical_fragments must be an object");
+    }
+    requireOnlyKeys(
+        *declaration, {"flat", "preview", "xr"},
+        "vulkan_physical_fragments");
+    const auto variant_name =
+        renderPipelineGraphVariantName(variant);
+    const auto packages =
+        declaration->find(variant_name);
+    if (packages == declaration->end()) return {};
+    if (!packages->is_array()) {
+        throw std::runtime_error(
+            "vulkan_physical_fragments " +
+            std::string{variant_name} +
+            " must be an array");
+    }
+
+    std::vector<VulkanPhysicalFragmentPackage> result;
+    result.reserve(packages->size());
+    for (const auto &document : *packages) {
+        result.push_back(
+            vulkanPhysicalFragmentPackageFromJson(
+                document));
+    }
+    std::sort(
+        result.begin(), result.end(),
+        [](const auto &left, const auto &right) {
+            return left.graph < right.graph;
+        });
+    if (std::adjacent_find(
+            result.begin(), result.end(),
+            [](const auto &left, const auto &right) {
+                return left.graph == right.graph;
+            }) != result.end()) {
+        throw std::runtime_error(
+            "vulkan_physical_fragments has duplicate packages "
+            "for a graph");
+    }
+    return result;
+}
+
 } // namespace
 
 std::string_view materialRouteClassName(MaterialRouteClass route) {
@@ -593,7 +643,8 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
                     {"pipeline", "features", "snapshots", "shader_defines",
                      "draw_sort", "graph_transforms",
                      "render_strategy", "target_planning",
-                     "vulkan_plan_pins", "xr"},
+                     "vulkan_plan_pins",
+                     "vulkan_physical_fragments", "xr"},
                     "rendering config using pipeline preset");
     appendUniqueArray(resolved, authored_config, "features", "rendering config", false);
     appendUniqueArray(resolved, authored_config, "shader_defines", "rendering config", true);
@@ -655,6 +706,26 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
         }
         resolved["vulkan_plan_pins"] =
             authored_config.at("vulkan_plan_pins");
+    }
+    if (authored_config.contains(
+            "vulkan_physical_fragments")) {
+        if (!authored_config
+                 .at("vulkan_physical_fragments")
+                 .is_object()) {
+            throw std::runtime_error(
+                "rendering config vulkan_physical_fragments "
+                "must be an object");
+        }
+        if (resolved.contains(
+                "vulkan_physical_fragments")) {
+            throw std::runtime_error(
+                "rendering config cannot override preset "
+                "vulkan_physical_fragments; copy/eject the preset "
+                "first");
+        }
+        resolved["vulkan_physical_fragments"] =
+            authored_config.at(
+                "vulkan_physical_fragments");
     }
     if (authored_config.contains("xr")) {
         if (!authored_config.at("xr").is_object()) {
@@ -869,6 +940,10 @@ ResolvedRenderPipeline resolveRenderPipeline(
                 .rendering_pass_name_suffix);
     result.vulkan_plan_pins =
         compileVulkanTargetPlanPins(
+            result.normalized_config,
+            result.graph_variant_policy.variant);
+    result.vulkan_physical_fragments =
+        compileVulkanPhysicalFragments(
             result.normalized_config,
             result.graph_variant_policy.variant);
     result.xr_target_policy =
@@ -1248,6 +1323,10 @@ CompiledRenderPipeline compileRenderPipeline(
         compileVulkanTargetPlanPins(
             pipeline.normalized_config,
             pipeline.graph_variant_policy.variant);
+    const auto canonical_vulkan_physical_fragments =
+        compileVulkanPhysicalFragments(
+            pipeline.normalized_config,
+            pipeline.graph_variant_policy.variant);
     if (pipeline.target_planning.authored &&
         pipeline.target_planning !=
             canonical_target_planning) {
@@ -1261,6 +1340,13 @@ CompiledRenderPipeline compileRenderPipeline(
         throw std::runtime_error(
             "resolved render pipeline has inconsistent Vulkan plan "
             "pins");
+    }
+    if (!pipeline.vulkan_physical_fragments.empty() &&
+        pipeline.vulkan_physical_fragments !=
+            canonical_vulkan_physical_fragments) {
+        throw std::runtime_error(
+            "resolved render pipeline has inconsistent Vulkan "
+            "physical fragments");
     }
     if (pipeline.xr_target_policy.authored &&
         pipeline.xr_target_policy !=
@@ -1289,6 +1375,8 @@ CompiledRenderPipeline compileRenderPipeline(
         canonical_target_planning;
     result.vulkan_plan_pins =
         canonical_vulkan_plan_pins;
+    result.vulkan_physical_fragments =
+        canonical_vulkan_physical_fragments;
     result.xr_target_policy = canonical_xr_target_policy;
     result.pipeline_preset = pipeline.pipeline_preset;
     result.graph_variant_policy =
@@ -1455,6 +1543,17 @@ nlohmann::json serializeCompiledRenderPipelineMetadata(
         }
         metadata["vulkan_plan_pins"] =
             std::move(pins);
+    }
+    if (!pipeline.vulkan_physical_fragments.empty()) {
+        auto fragments = nlohmann::json::array();
+        for (const auto &package :
+             pipeline.vulkan_physical_fragments) {
+            fragments.push_back(
+                vulkanPhysicalFragmentPackageToJson(
+                    package));
+        }
+        metadata["vulkan_physical_fragments"] =
+            std::move(fragments);
     }
     if (pipeline.xr_target_policy.authored) {
         metadata["xr_target_policy"] =

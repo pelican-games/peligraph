@@ -594,7 +594,9 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
         external_depth_export,
     TargetPlanningPolicy target_planning,
     std::span<const VulkanTargetPlanPinPackage>
-        plan_pins) {
+        plan_pins,
+    std::span<const VulkanPhysicalFragmentPackage>
+        physical_fragments) {
     const auto target_by_name =
         renderTargetsByName(render_targets);
     const auto types = makeBuiltinLogicalTypeRegistry();
@@ -672,6 +674,26 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
                 package.graph);
         }
     }
+    std::map<std::string,
+             const VulkanPhysicalFragmentPackage *,
+             std::less<>>
+        fragments_by_graph;
+    for (const auto &package : physical_fragments) {
+        if (package.graph.empty() ||
+            !graph_names.contains(package.graph)) {
+            throw std::runtime_error(
+                "Vulkan physical fragments reference unknown "
+                "graph: " +
+                package.graph);
+        }
+        if (!fragments_by_graph
+                 .emplace(package.graph, &package)
+                 .second) {
+            throw std::runtime_error(
+                "duplicate Vulkan physical fragments for graph: " +
+                package.graph);
+        }
+    }
     for (const auto &target : policy.targets) {
         if (!all_attachments.contains(target)) {
             throw std::runtime_error(
@@ -711,6 +733,9 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
                 : planning->second;
         const auto pin =
             pins_by_graph.find(definition.name);
+        const auto fragment =
+            fragments_by_graph.find(
+                definition.name);
         auto plan_value =
             compileVulkanTargetPlan(
                 types, logical_graph, topology,
@@ -756,6 +781,14 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
                             : std::optional<
                                   VulkanTargetPlanPinPackage>{
                                   *pin->second},
+                    .fragment_package =
+                        fragment ==
+                                fragments_by_graph.end()
+                            ? std::optional<
+                                  VulkanPhysicalFragmentPackage>{}
+                            : std::optional<
+                                  VulkanPhysicalFragmentPackage>{
+                                  *fragment->second},
                 });
         plan_value.resolution_plan =
             makeRuntimeResolutionPlan(
@@ -867,7 +900,9 @@ compileRenderingTargetPlansForVulkanDevice(
         external_depth_export,
     TargetPlanningPolicy target_planning,
     std::span<const VulkanTargetPlanPinPackage>
-        plan_pins) {
+        plan_pins,
+    std::span<const VulkanPhysicalFragmentPackage>
+        physical_fragments) {
     const auto features =
         physical_device.getFeatures2<
             vk::PhysicalDeviceFeatures2,
@@ -928,7 +963,8 @@ compileRenderingTargetPlansForVulkanDevice(
         std::move(view_execution),
         std::move(external_depth_export),
         std::move(target_planning),
-        plan_pins);
+        plan_pins,
+        physical_fragments);
 }
 
 void applyRenderingTargetPlan(

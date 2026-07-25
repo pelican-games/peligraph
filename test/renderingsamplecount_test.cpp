@@ -244,6 +244,47 @@ TEST_CASE("rendering target bridge applies typed graph planning controls",
         std::optional<VulkanTargetPlanPinPackage>{
             pins.front()});
 
+    const std::vector physical_fragments{
+        ejectVulkanPhysicalFragmentPackage(plan)};
+    const auto fragment_compilation =
+        compileRenderingTargetPlans(
+            graphs, targets,
+            compileSampleCountPolicy(config),
+            vk::Format::eB8G8R8A8Unorm,
+            RenderingTargetPlanDeviceFacts{
+                .query_attachment_samples = query,
+            },
+            std::nullopt, std::nullopt, planning,
+            {}, physical_fragments);
+    REQUIRE(
+        fragment_compilation.plans.front()
+            ->applied_fragment_package ==
+        std::optional<VulkanPhysicalFragmentPackage>{
+            physical_fragments.front()});
+    REQUIRE(
+        fragment_compilation.plans.front()
+            ->resources == plan.resources);
+    REQUIRE(
+        fragment_compilation.plans.front()
+            ->scopes == plan.scopes);
+
+    auto stale_fragments = physical_fragments;
+    stale_fragments.front()
+        .automatic_plan_fingerprint ^= 1;
+    requireThrowsContaining(
+        [&] {
+            (void)compileRenderingTargetPlans(
+                graphs, targets,
+                compileSampleCountPolicy(config),
+                vk::Format::eB8G8R8A8Unorm,
+                RenderingTargetPlanDeviceFacts{
+                    .query_attachment_samples = query,
+                },
+                std::nullopt, std::nullopt, planning,
+                {}, stale_fragments);
+        },
+        "stale for the current target facts/provider generation");
+
     auto stale_pins = pins;
     stale_pins.front().logical_graph_fingerprint ^= 1;
     requireThrowsContaining(
@@ -259,6 +300,22 @@ TEST_CASE("rendering target bridge applies typed graph planning controls",
                 stale_pins);
         },
         "pin package is stale");
+
+    auto unknown_fragments = physical_fragments;
+    unknown_fragments.front().graph = "missing";
+    requireThrowsContaining(
+        [&] {
+            (void)compileRenderingTargetPlans(
+                graphs, targets,
+                compileSampleCountPolicy(config),
+                vk::Format::eB8G8R8A8Unorm,
+                RenderingTargetPlanDeviceFacts{
+                    .query_attachment_samples = query,
+                },
+                std::nullopt, std::nullopt, planning,
+                {}, unknown_fragments);
+        },
+        "physical fragments reference unknown graph: missing");
 
     auto unknown_graph = planning;
     unknown_graph.graphs.front().graph = "missing";

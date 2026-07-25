@@ -170,6 +170,8 @@ struct ResolvedRenderPipeline {
     TargetPlanningPolicy target_planning;
     std::vector<VulkanTargetPlanPinPackage>
         vulkan_plan_pins;
+    std::vector<VulkanPhysicalFragmentPackage>
+        vulkan_physical_fragments;
     CompiledXrTargetPolicy xr_target_policy;
     std::optional<RenderPipelinePresetInfo> pipeline_preset;
     CompiledGraphVariantPolicy graph_variant_policy;
@@ -271,6 +273,8 @@ struct CompiledRenderPipeline {
     TargetPlanningPolicy target_planning;
     std::vector<VulkanTargetPlanPinPackage>
         vulkan_plan_pins;
+    std::vector<VulkanPhysicalFragmentPackage>
+        vulkan_physical_fragments;
     CompiledXrTargetPolicy xr_target_policy;
     std::optional<RenderPipelinePresetInfo> pipeline_preset;
     CompiledGraphVariantPolicy graph_variant_policy;

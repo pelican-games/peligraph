@@ -1043,7 +1043,8 @@ ResolvedRenderStrategyConfig resolveRenderStrategy(
     std::vector<std::pair<std::string, nlohmann::json>>
         lower_layer_controls;
     for (const auto *field :
-         {"target_planning", "vulkan_plan_pins"}) {
+         {"target_planning", "vulkan_plan_pins",
+          "vulkan_physical_fragments"}) {
         if (!seed.contains(field)) continue;
         lower_layer_controls.emplace_back(
             field, seed.at(field));

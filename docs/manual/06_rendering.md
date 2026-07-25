@@ -291,9 +291,61 @@ pelican_player --project mygame --headless --dump-frame-plan   # stderr に出�
 }
 ```
 
-貼り付け後は `physical_target_plan.applied_pin_package` に同じ package が出ます。論理 graph が変わった package は `pin package is stale`、現在の device/provider で成立しない candidate は `pinned backend candidate is infeasible` として失敗し、別 candidate へ黙って fallback しません。render strategy の ABI fingerprint から `target_planning` / `vulkan_plan_pins` は分離されているため、pin 自身を貼ったことでは logical fingerprint は変わりません。
+貼り付け後は `physical_target_plan.applied_pin_package` に同じ package が出ます。論理 graph が変わった package は `pin package is stale`、現在の device/provider で成立しない candidate は `pinned backend candidate is infeasible` として失敗し、別 candidate へ黙って fallback しません。render strategy の ABI fingerprint から `target_planning` / `vulkan_plan_pins` / `vulkan_physical_fragments` は分離されているため、これらを貼ったこと自体では logical fingerprint は変わりません。
 
-v1 pin が固定するのは有限集合の **backend candidate だけ**です。format、resource representation、scope、barrier、alias group を任意値で上書きして validator を迂回する機能ではありません。現在の Vulkan runtime は `materialized_image` plan のみ実行可能なので、CPU planner 上で成立する tile-local candidate でも runtime bridge が未対応なら拒否します。完全な physical plan / fragment の direct authoring は、この versioned 境界へ resource/scope verifier を追加してから段階的に公開します。
+v1 pin が固定するのは有限集合の **backend candidate だけ**です。resource/scopeを編集する場合は、次の別schemaを使います。
+
+### Vulkan physical fragment v1
+
+`physical_target_plan.ejectable_physical_fragment`を丸ごとコピーし、対応するvariantの`vulkan_physical_fragments`へ貼ります。
+
+```json
+{
+  "vulkan_physical_fragments": {
+    "flat": [
+      {
+        "schema": "pelican.vulkan_physical_fragment",
+        "version": 1,
+        "graph": "main",
+        "logical_graph_fingerprint": "fnv1a64:0123456789abcdef",
+        "automatic_plan_fingerprint": "fnv1a64:fedcba9876543210",
+        "backend_candidate": "pelican.vulkan.tile_local_plan@1",
+        "resources": [
+          {
+            "logical_resource": "gbuffer_albedo",
+            "format": "R8G8B8A8_UNORM",
+            "representation": "materialized_image"
+          }
+        ],
+        "scopes": [
+          {
+            "id": "manual:geometry",
+            "nodes": ["geometry"]
+          },
+          {
+            "id": "manual:lighting",
+            "nodes": ["lighting"]
+          }
+        ],
+        "alias_groups": []
+      }
+    ]
+  }
+}
+```
+
+eject結果は全resource/scope/alias groupを含みますが、手書きpackageの`resources`は変更するresourceだけに減らせます。`scopes`または`alias_groups`自体を省略すると、その部分は自動planを維持します。空配列は「scopeなし」または「aliasなし」という明示指定です。
+
+v1 verifierが許可する編集は次です。
+
+- resource representationの維持、または自動`tile_local_attachment` / `transient_attachment`から`materialized_image`への保守的な変更
+- 自動planが選んだformatの明示的な保持。別formatはsample/usage capabilityを再解決するverifierが入るまでv1では変更不可
+- 自動scopeをさらに分けるexact ordered partition。tile-local値が新しいscope境界をまたぐ場合は、そのresourceを先にmaterializeする
+- format、representation、sample count、view layout、extentが一致し、論理lifetimeが重ならないresourceだけのalias group
+
+貼り付け後は`applied_physical_fragment`で適用内容を再観測できます。logical graphだけでなく、変更前の自動plan、target facts、選択候補、provider generationも`automatic_plan_fingerprint`へ束縛されます。いずれかが変わった古いfragmentはstale errorとなり、部分的に推測して修復しません。
+
+v1は`materialized_image`からtile-localへの攻めた変更、別の自動scope同士の融合、format変更、load/store、barrier、queue、任意Vulkan flagをまだ受理しません。現在のproduction runtimeもalias groupと非materialized imageを実行しないため、planner上で有効でもruntime capability gateが名指し拒否します。これらは実行機構と検証を同時に追加できる版で拡張します。
 
 ## 6.7 マテリアル(✅M1〜M3.5 = WP58/68/70/76/78/83)
 

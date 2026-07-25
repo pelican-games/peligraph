@@ -75,7 +75,9 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
         external_depth_export = std::nullopt,
     TargetPlanningPolicy target_planning = {},
     std::span<const VulkanTargetPlanPinPackage>
-        plan_pins = {});
+        plan_pins = {},
+    std::span<const VulkanPhysicalFragmentPackage>
+        physical_fragments = {});
 RenderingTargetPlanCompilation compileRenderingTargetPlansForVulkanDevice(
     std::span<const FrameGraphDefinition> frame_graphs,
     std::span<const RenderTargetDefinition> render_targets,
@@ -88,7 +90,9 @@ RenderingTargetPlanCompilation compileRenderingTargetPlansForVulkanDevice(
         external_depth_export = std::nullopt,
     TargetPlanningPolicy target_planning = {},
     std::span<const VulkanTargetPlanPinPackage>
-        plan_pins = {});
+        plan_pins = {},
+    std::span<const VulkanPhysicalFragmentPackage>
+        physical_fragments = {});
 
 void applyRenderingTargetPlan(
     std::span<RenderTargetDefinition> render_targets,

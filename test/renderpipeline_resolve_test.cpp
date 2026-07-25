@@ -434,6 +434,84 @@ TEST_CASE("Vulkan plan pins select the current immutable graph variant",
             "duplicate packages for a graph"));
 }
 
+TEST_CASE("Vulkan physical fragments select the current immutable graph variant",
+          "[render-pipeline][vulkan-physical-fragments][typed]") {
+    const VulkanPhysicalFragmentPackage flat_fragment{
+        .graph = "main",
+        .logical_graph_fingerprint = 1,
+        .automatic_plan_fingerprint = 11,
+        .backend_candidate =
+            "pelican.vulkan.materialized_plan@1",
+        .resources = {
+            VulkanPhysicalResourceFragment{
+                .logical_resource = "swapchain",
+                .representation =
+                    VulkanResourceRepresentation::external,
+            },
+        },
+    };
+    const VulkanPhysicalFragmentPackage xr_fragment{
+        .graph = "main#xr",
+        .logical_graph_fingerprint = 2,
+        .automatic_plan_fingerprint = 22,
+        .backend_candidate =
+            "pelican.vulkan.materialized_plan@1",
+        .resources = {
+            VulkanPhysicalResourceFragment{
+                .logical_resource = "swapchain",
+                .representation =
+                    VulkanResourceRepresentation::external,
+            },
+        },
+    };
+    auto authored = baseConfig();
+    authored["vulkan_physical_fragments"] = {
+        {"flat",
+         Json::array({
+             vulkanPhysicalFragmentPackageToJson(
+                 flat_fragment)})},
+        {"xr",
+         Json::array({
+             vulkanPhysicalFragmentPackageToJson(
+                 xr_fragment)})},
+    };
+
+    const auto resolved = resolveRenderPipeline(
+        RenderPipelineRequest{
+            authored, "Vulkan physical fragment fixture"},
+        RenderEnvironmentCapabilities{
+            true, RenderPipelineGraphVariant::xr});
+    REQUIRE(
+        resolved.vulkan_physical_fragments ==
+        std::vector<VulkanPhysicalFragmentPackage>{
+            xr_fragment});
+    const auto compiled =
+        compileRenderPipeline(resolved);
+    REQUIRE(
+        compiled.vulkan_physical_fragments ==
+        resolved.vulkan_physical_fragments);
+    REQUIRE(
+        serializeCompiledRenderPipelineMetadata(compiled)
+            .at("vulkan_physical_fragments") ==
+        Json::array({
+            vulkanPhysicalFragmentPackageToJson(
+                xr_fragment)}));
+
+    authored["vulkan_physical_fragments"]["xr"]
+        .push_back(
+            vulkanPhysicalFragmentPackageToJson(
+                xr_fragment));
+    REQUIRE_THROWS_WITH(
+        resolveRenderPipeline(
+            RenderPipelineRequest{
+                authored,
+                "duplicate Vulkan physical fragments"},
+            RenderEnvironmentCapabilities{
+                true, RenderPipelineGraphVariant::xr}),
+        Catch::Matchers::ContainsSubstring(
+            "duplicate packages for a graph"));
+}
+
 TEST_CASE("WP184 compiles draw sort providers and XR view policy for every graph variant",
           "[wp184][render-pipeline][draw-sort][typed]") {
     ResolvedRenderPipeline resolved;

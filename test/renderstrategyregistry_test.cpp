@@ -360,6 +360,9 @@ TEST_CASE(
     controlled["vulkan_plan_pins"] = {
         {"flat", nlohmann::json::array()},
     };
+    controlled["vulkan_physical_fragments"] = {
+        {"flat", nlohmann::json::array()},
+    };
     ResolvedRenderStrategyConfig with_controls;
     {
         const auto providers = registry.snapshot();
