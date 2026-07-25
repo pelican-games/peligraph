@@ -33,6 +33,7 @@ DECLARE_MODULE(RenderTargetContainer) {
         vk::ClearColorValue history_clear_color;
         std::uint32_t samples;
         std::uint32_t array_layers;
+        RenderTargetStorageMode storage_mode;
         std::array<ImageWrapper, 2> images;
         std::array<std::vector<vk::UniqueImageView>, 2>
             image_layer_views;
@@ -68,7 +69,9 @@ DECLARE_MODULE(RenderTargetContainer) {
                                               vk::ClearColorValue history_clear_color =
                                                   vk::ClearColorValue{std::array{0.0f, 0.0f, 0.0f, 0.0f}},
                                               std::uint32_t samples = 1,
-                                              std::uint32_t array_layers = 1);
+                                              std::uint32_t array_layers = 1,
+                                              RenderTargetStorageMode storage_mode =
+                                                  RenderTargetStorageMode::materialized);
     void recreateForExtent(vk::Extent2D base_extent);
     void resetHistory();
     void advanceHistoryFrame();

@@ -26,6 +26,7 @@ struct RenderingImageFormatCapability {
     std::vector<std::uint32_t> supported_samples;
     std::uint32_t max_array_layers = 1;
     bool external_depth_export_supported = false;
+    bool transient_attachment_supported = false;
 
     bool operator==(
         const RenderingImageFormatCapability &) const =
@@ -61,6 +62,16 @@ struct RenderingTargetFormatAssignment {
         default;
 };
 
+struct RenderingTargetRepresentationAssignment {
+    std::string resource;
+    VulkanResourceRepresentation representation =
+        VulkanResourceRepresentation::materialized_image;
+
+    bool operator==(
+        const RenderingTargetRepresentationAssignment &) const =
+        default;
+};
+
 struct RenderingTargetPlanDeviceFacts {
     std::uint32_t max_color_attachments = 8;
     bool multiview = false;
@@ -74,6 +85,7 @@ struct RenderingTargetPlanDeviceFacts {
     // automatic format until their callers migrate to this complete query.
     ImageFormatCapabilityQuery
         query_image_format_capability;
+    bool transient_attachments = false;
 };
 
 struct RenderingTargetPlanCompilation {
@@ -83,6 +95,8 @@ struct RenderingTargetPlanCompilation {
         array_layer_assignments;
     std::vector<RenderingTargetFormatAssignment>
         format_assignments;
+    std::vector<RenderingTargetRepresentationAssignment>
+        representation_assignments;
 };
 
 std::vector<CompiledLogicalRenderGraph>
@@ -93,7 +107,7 @@ compileRenderingLogicalGraphs(
 // Adapts the existing FrameGraphDefinition into the canonical logical/target
 // planner. The returned VulkanTargetPlan is authoritative for the concrete
 // image format, representation, and rasterization sample count consumed by
-// the current materialized-image runtime.
+// the adaptive render-target runtime.
 RenderingTargetPlanCompilation compileRenderingTargetPlans(
     std::span<const FrameGraphDefinition> frame_graphs,
     std::span<const RenderTargetDefinition> render_targets,

@@ -635,7 +635,9 @@ ImageWrapper VulkanManageCore::allocImage(vk::Extent3D extent, vk::Format format
                                           std::span<const vk::Format> compatible_view_formats,
                                           uint32_t mip_levels,
                                           vk::SampleCountFlagBits samples,
-                                          uint32_t array_layers) const {
+                                          uint32_t array_layers,
+                                          vk::MemoryPropertyFlags
+                                              preferred_memory_flags) const {
     if (array_layers == 0) {
         throw std::runtime_error(
             "Vulkan image array_layers must be greater than zero");
@@ -670,6 +672,8 @@ ImageWrapper VulkanManageCore::allocImage(vk::Extent3D extent, vk::Format format
     vma::AllocationCreateInfo alloc_info;
     alloc_info.flags = alloc_flags;
     alloc_info.usage = mem_usage;
+    alloc_info.preferredFlags =
+        preferred_memory_flags;
 
     // vma-hpp v3.3.0 以降、戻り値は pair<UniqueAllocation, UniqueImage> (allocation が先)
     auto [allocation, image] = allocator->createImageUnique(create_info, alloc_info);

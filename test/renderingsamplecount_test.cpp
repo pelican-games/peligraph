@@ -69,6 +69,22 @@ const RenderingTargetFormatAssignment &formatAssignment(
     return *found;
 }
 
+const RenderingTargetRepresentationAssignment &
+representationAssignment(
+    const RenderingTargetPlanCompilation &compilation,
+    std::string_view resource) {
+    const auto found = std::find_if(
+        compilation.representation_assignments.begin(),
+        compilation.representation_assignments.end(),
+        [resource](const auto &candidate) {
+            return candidate.resource == resource;
+        });
+    REQUIRE(
+        found !=
+        compilation.representation_assignments.end());
+    return *found;
+}
+
 const VulkanPhysicalResourcePlan &physicalResource(
     const VulkanTargetPlan &plan, std::string_view resource) {
     const auto found = std::find_if(
@@ -102,6 +118,7 @@ void requireThrowsContaining(const std::function<void()> &operation,
         operation();
         FAIL("operation did not throw");
     } catch (const std::runtime_error &error) {
+        INFO(error.what());
         REQUIRE(std::string_view{error.what()}.find(expected) !=
                 std::string_view::npos);
     }
@@ -139,6 +156,21 @@ nlohmann::json hybridConfig() {
                       {"type", "fullscreen"},
                       {"output",
                        {{"color", nlohmann::json::array({"display"})},
+                        {"depth", nullptr}}}}})}}})},
+    };
+}
+
+nlohmann::json writeOnlyAttachmentConfig() {
+    return {
+        {"rendering_passes",
+         nlohmann::json::array(
+             {{{"name", "transient"},
+               {"passes",
+                nlohmann::json::array(
+                    {{{"name", "transient_probe"},
+                      {"type", "fullscreen"},
+                      {"output",
+                       {{"color", "scratch"},
                         {"depth", nullptr}}}}})}}})},
     };
 }
@@ -277,6 +309,181 @@ TEST_CASE("rendering target bridge links attachment operations into the physical
         std::optional<
             VulkanPhysicalFragmentPackage>{
             fragment});
+}
+
+TEST_CASE(
+    "runtime target adapter executes supported write-only attachments as transient",
+    "[target-planning][rendering][transient-attachment][runtime-adapter]") {
+    const auto config =
+        writeOnlyAttachmentConfig();
+    const auto graphs =
+        parseFrameGraphDefinitionsFromConfigJson(
+            config);
+    auto scratch =
+        target(
+            "scratch",
+            vk::Format::eR8G8B8A8Unorm,
+            vk::ImageUsageFlagBits::
+                eColorAttachment);
+    scratch.format_candidates = {
+        vk::Format::eR16G16B16A16Sfloat};
+    const std::vector targets{scratch};
+    const auto supported_facts =
+        RenderingTargetPlanDeviceFacts{
+            .query_image_format_capability =
+                [](const RenderTargetDefinition &) {
+                    return RenderingImageFormatCapability{
+                        .image_usage_supported = true,
+                        .supported_samples = {1},
+                        .max_array_layers = 1,
+                        .transient_attachment_supported =
+                            true,
+                    };
+                },
+            .transient_attachments = true,
+        };
+
+    const auto transient =
+        compileRenderingTargetPlans(
+            graphs, targets,
+            compileSampleCountPolicy(config),
+            vk::Format::eB8G8R8A8Unorm,
+            supported_facts);
+    REQUIRE(transient.plans.size() == 1);
+    const auto &plan = *transient.plans.front();
+    REQUIRE(
+        plan.backend_selection
+            .selected_candidate ==
+        "pelican.vulkan.transient_plan@1");
+    REQUIRE(
+        physicalResource(plan, "scratch")
+            .representation ==
+        VulkanResourceRepresentation::
+            transient_attachment);
+    REQUIRE(
+        physicalAttachment(
+            plan, "transient_probe", "scratch")
+            .store_op ==
+        VulkanPhysicalAttachmentStoreOp::discard);
+    REQUIRE(
+        representationAssignment(
+            transient, "scratch")
+            .representation ==
+        VulkanResourceRepresentation::
+            transient_attachment);
+
+    auto applied_targets = targets;
+    applyRenderingTargetPlan(
+        applied_targets, transient);
+    REQUIRE(
+        applied_targets.front().storage_mode ==
+        RenderTargetStorageMode::
+            transient_attachment);
+
+    auto unsupported_facts = supported_facts;
+    unsupported_facts
+        .query_image_format_capability =
+        [](const RenderTargetDefinition &definition) {
+            return RenderingImageFormatCapability{
+                .image_usage_supported = true,
+                .supported_samples = {1},
+                .max_array_layers = 1,
+                .transient_attachment_supported =
+                    definition.format ==
+                    vk::Format::
+                        eR16G16B16A16Sfloat,
+            };
+        };
+    const auto unsupported =
+        compileRenderingTargetPlans(
+            graphs, targets,
+            compileSampleCountPolicy(config),
+            vk::Format::eB8G8R8A8Unorm,
+            unsupported_facts);
+    REQUIRE(
+        unsupported.plans.front()
+            ->backend_selection
+            .selected_candidate ==
+        "pelican.vulkan.materialized_plan@1");
+    REQUIRE(
+        representationAssignment(
+            unsupported, "scratch")
+            .representation ==
+        VulkanResourceRepresentation::
+            materialized_image);
+
+    const auto conservative =
+        compileRenderingTargetPlans(
+            graphs, targets,
+            compileSampleCountPolicy(config),
+            vk::Format::eB8G8R8A8Unorm,
+            supported_facts,
+            std::nullopt, std::nullopt,
+            TargetPlanningPolicy{
+                .profile = {
+                    PlanningProfileKind::
+                        conservative_debug,
+                    0},
+                .authored = true,
+            });
+    REQUIRE(
+        conservative.plans.front()
+            ->backend_selection
+            .selected_candidate ==
+        "pelican.vulkan.materialized_plan@1");
+    REQUIRE(
+        physicalAttachment(
+            *conservative.plans.front(),
+            "transient_probe", "scratch")
+            .store_op ==
+        VulkanPhysicalAttachmentStoreOp::store);
+
+    auto alternate_fragment =
+        ejectVulkanPhysicalFragmentPackage(
+            plan);
+    const auto fragment_resource =
+        std::find_if(
+            alternate_fragment.resources.begin(),
+            alternate_fragment.resources.end(),
+            [](const auto &resource) {
+                return resource.logical_resource ==
+                       "scratch";
+            });
+    REQUIRE(
+        fragment_resource !=
+        alternate_fragment.resources.end());
+    fragment_resource->format =
+        vk::to_string(
+            vk::Format::
+                eR16G16B16A16Sfloat);
+    const std::array fragments{
+        alternate_fragment};
+    auto format_sensitive_facts =
+        supported_facts;
+    format_sensitive_facts
+        .query_image_format_capability =
+        [](const RenderTargetDefinition &definition) {
+            return RenderingImageFormatCapability{
+                .image_usage_supported = true,
+                .supported_samples = {1},
+                .max_array_layers = 1,
+                .transient_attachment_supported =
+                    definition.format ==
+                    vk::Format::
+                        eR8G8B8A8Unorm,
+            };
+        };
+    requireThrowsContaining(
+        [&] {
+            (void)compileRenderingTargetPlans(
+                graphs, targets,
+                compileSampleCountPolicy(config),
+                vk::Format::eB8G8R8A8Unorm,
+                format_sensitive_facts,
+                std::nullopt, std::nullopt, {},
+                {}, fragments);
+        },
+        "alternate format requires a materialized_image");
 }
 
 TEST_CASE("rendering target bridge applies a verified alternate physical format",

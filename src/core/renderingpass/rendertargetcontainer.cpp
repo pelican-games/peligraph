@@ -199,7 +199,9 @@ ImageWrapper createRenderTargetImage(const std::string &name, vk::Extent2D base_
                                      vma::MemoryUsage memory_usage,
                                      vk::SampleCountFlagBits samples =
                                          vk::SampleCountFlagBits::e1,
-                                     std::uint32_t array_layers = 1) {
+                                     std::uint32_t array_layers = 1,
+                                     RenderTargetStorageMode storage_mode =
+                                         RenderTargetStorageMode::materialized) {
     const auto &vkcore = GET_MODULE(VulkanManageCore);
     const auto features = vkcore.getPhysDevice().getFormatProperties(format).optimalTilingFeatures;
     vk::FormatFeatureFlags required;
@@ -217,9 +219,18 @@ ImageWrapper createRenderTargetImage(const std::string &name, vk::Extent2D base_
         throw std::runtime_error("Render target format lacks required color capability: " + name);
     }
     const auto extent = resolveRenderTargetExtent(name, base_extent, extent_scale, fixed_extent);
+    const auto preferred_memory =
+        storage_mode ==
+                RenderTargetStorageMode::
+                    transient_attachment
+            ? vk::MemoryPropertyFlags{
+                  vk::MemoryPropertyFlagBits::
+                      eLazilyAllocated}
+            : vk::MemoryPropertyFlags{};
     return vkcore.allocImage(vk::Extent3D{extent.width, extent.height, 1}, format, usage,
                              memory_usage, {}, VulkanProcessType::graphics,
-                             {}, 1, samples, array_layers);
+                             {}, 1, samples, array_layers,
+                             preferred_memory);
 }
 
 void clearHistoryImages(const std::array<ImageWrapper, 2> &images,
@@ -276,11 +287,36 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
                                                                  bool history,
                                                                  vk::ClearColorValue history_clear_color,
                                                                  std::uint32_t samples,
-                                                                 std::uint32_t array_layers) {
+                                                                 std::uint32_t array_layers,
+                                                                 RenderTargetStorageMode storage_mode) {
     if (array_layers == 0) {
         throw std::runtime_error(
             "Render target array_layers must be greater than zero: " +
             name);
+    }
+    if (storage_mode ==
+        RenderTargetStorageMode::
+            transient_attachment) {
+        const auto attachment_usage =
+            vk::ImageUsageFlagBits::eColorAttachment |
+            vk::ImageUsageFlagBits::
+                eDepthStencilAttachment;
+        if (!(usage & attachment_usage) ||
+            bool(usage & ~vk::ImageUsageFlags{
+                              attachment_usage})) {
+            throw std::runtime_error(
+                "Transient render target may only use color/depth "
+                "attachment usage: " +
+                name);
+        }
+        if (history || samples != 1) {
+            throw std::runtime_error(
+                "Transient render target must be non-history and "
+                "single-sample: " +
+                name);
+        }
+        usage |= vk::ImageUsageFlagBits::
+            eTransientAttachment;
     }
     if (history && !(usage & vk::ImageUsageFlagBits::eSampled)) {
         throw std::runtime_error("History render target requires SAMPLED usage: " + name);
@@ -308,6 +344,8 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
         if (existing.fixed_extent != fixed_extent) note("fixed_extent");
         if (existing.history != history) note("history");
         if (existing.samples != samples) note("samples");
+        if (existing.storage_mode != storage_mode)
+            note("storage_mode");
         // A previously allocated array image is a safe physical superset for
         // a sequential/flat registration. Expanding a live image during a
         // candidate transaction is not failure-atomic, so it remains an
@@ -345,7 +383,8 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
         images[i] = createRenderTargetImage(name, base_extent, extent_scale, fixed_extent,
                                             format, usage, memUsage,
                                             vk::SampleCountFlagBits::e1,
-                                            array_layers);
+                                            array_layers,
+                                            storage_mode);
         image_layer_views[i] =
             createSequentialImageViews(device, images[i]);
         layered_image_views[i] =
@@ -357,7 +396,7 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
             attachment_images[i] = createRenderTargetImage(
                 name, base_extent, extent_scale, fixed_extent, format,
                 attachment_usage, memUsage, sample_count,
-                array_layers);
+                array_layers, storage_mode);
             attachment_image_layer_views[i] =
                 createSequentialImageViews(
                     device, attachment_images[i]);
@@ -391,6 +430,7 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::stri
         .history_clear_color = history_clear_color,
         .samples = samples,
         .array_layers = array_layers,
+        .storage_mode = storage_mode,
         .images = std::move(images),
         .image_layer_views =
             std::move(image_layer_views),
@@ -436,7 +476,8 @@ void RenderTargetContainer::recreateForExtent(vk::Extent2D base_extent) {
                                                      rt.fixed_extent, rt.format, rt.usage,
                                                      rt.memory_usage,
                                                      vk::SampleCountFlagBits::e1,
-                                                     rt.array_layers);
+                                                     rt.array_layers,
+                                                     rt.storage_mode);
             next_layer_views[i] =
                 createSequentialImageViews(
                     device, next_images[i]);
@@ -451,7 +492,8 @@ void RenderTargetContainer::recreateForExtent(vk::Extent2D base_extent) {
                 next_attachment_images[i] = createRenderTargetImage(
                     rt.name, base_extent, rt.extent_scale, rt.fixed_extent,
                     rt.format, attachment_usage, rt.memory_usage,
-                    toSampleCount(rt.samples), rt.array_layers);
+                    toSampleCount(rt.samples), rt.array_layers,
+                    rt.storage_mode);
                 next_attachment_layer_views[i] =
                     createSequentialImageViews(
                         device, next_attachment_images[i]);
@@ -538,6 +580,7 @@ RenderTargetMetadata RenderTargetContainer::getMetadata(GlobalRenderTargetId id)
         rt.history,
         rt.samples,
         rt.array_layers,
+        rt.storage_mode,
     };
 }
 

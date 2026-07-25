@@ -22,6 +22,13 @@ namespace {
 
 constexpr std::string_view kRuntimeProvider =
     "pelican.vulkan.runtime_target_lowering@1";
+constexpr std::string_view kTransientAttachmentCapability =
+    "pelican.vulkan.transient_attachment@1";
+
+using TransientAttachmentFormatSet =
+    std::set<
+        std::pair<std::string, std::string>,
+        std::less<>>;
 
 bool isAttachmentTarget(const RenderTargetDefinition &definition) {
     return bool(definition.usage &
@@ -32,6 +39,21 @@ bool isAttachmentTarget(const RenderTargetDefinition &definition) {
 bool isDepthTarget(const RenderTargetDefinition &definition) {
     return bool(definition.usage &
                 vk::ImageUsageFlagBits::eDepthStencilAttachment);
+}
+
+bool isTransientAttachmentCandidate(
+    const RenderTargetDefinition &definition) {
+    const auto attachment_usage =
+        vk::ImageUsageFlagBits::eColorAttachment |
+        vk::ImageUsageFlagBits::
+            eDepthStencilAttachment;
+    return !definition.history &&
+           bool(definition.usage &
+                attachment_usage) &&
+           !bool(
+               definition.usage &
+               ~vk::ImageUsageFlags{
+                   attachment_usage});
 }
 
 std::vector<std::uint32_t> sampleCounts(
@@ -117,6 +139,24 @@ queryImageFormatCapability(
         result.external_depth_export_supported =
             false;
     }
+    if (isTransientAttachmentCandidate(
+            definition)) {
+        try {
+            (void)physical_device
+                .getImageFormatProperties(
+                    definition.format,
+                    vk::ImageType::e2D,
+                    vk::ImageTiling::eOptimal,
+                    requiredImageUsage(definition) |
+                        vk::ImageUsageFlagBits::
+                            eTransientAttachment);
+            result.transient_attachment_supported =
+                true;
+        } catch (const vk::SystemError &) {
+            result.transient_attachment_supported =
+                false;
+        }
+    }
     return result;
 }
 
@@ -138,7 +178,7 @@ const CompilerProviderRegistrySnapshot &runtimeProviders() {
             .id = std::string{kRuntimeProvider},
             .kind = CompilerProviderKind::target_lowering,
             .content_hash =
-                "builtin:runtime-materialized-target-lowering-v1",
+                "builtin:runtime-adaptive-attachment-lowering-v2",
         });
         return registry.snapshot();
     }();
@@ -157,8 +197,15 @@ TargetTopologySnapshot runtimeTopology(
         {"pelican.vulkan.max_color_attachments@1",
          std::to_string(facts.max_color_attachments)},
         {"pelican.vulkan.profile@1",
-         "materialized_runtime"},
+         facts.transient_attachments
+             ? "adaptive_attachment_runtime"
+             : "materialized_runtime"},
     };
+    if (facts.transient_attachments) {
+        capabilities.push_back(
+            std::string{
+                kTransientAttachmentCapability});
+    }
     if (facts.device_identity.vendor_id != 0) {
         target_facts.push_back(
             {std::string{vulkanVendorIdFact},
@@ -261,7 +308,12 @@ LogicalFrameGraphShadowOptions shadowOptions(
                         ? deviceDepthV1(types)
                         : legacyOpaqueImageV1(types),
             .materialization =
-                LogicalMaterializationRequirement::required,
+                isTransientAttachmentCandidate(
+                    *target->second)
+                    ? LogicalMaterializationRequirement::
+                          virtual_resource
+                    : LogicalMaterializationRequirement::
+                          required,
         });
     }
     return result;
@@ -271,7 +323,8 @@ ResourcePattern runtimeImagePattern(
     const LogicalTypeRegistry &types,
     const LogicalType &type, vk::Format format,
     std::span<const vk::Format> authored_candidates,
-    bool external) {
+    bool external,
+    bool transient_attachment) {
     auto candidates =
         std::vector<ResourceFormatCandidate>{};
     const auto append = [&](vk::Format candidate) {
@@ -296,18 +349,22 @@ ResourcePattern runtimeImagePattern(
         .id =
             external
                 ? "pelican.render.runtime_external_image@1"
+            : transient_attachment
+                ? "pelican.render.runtime_transient_attachment@1"
                 : "pelican.render.runtime_materialized_image@1",
         .applicable_type =
             exactLogicalTypePattern(types, type),
         .format_candidates = std::move(candidates),
-        .prefer_transient = false,
+        .prefer_transient = transient_attachment,
         .allow_tile_local = false,
         .allow_alias = false,
-        .require_store = true,
+        .require_store = !transient_attachment,
         .local_read_fallback =
             ResourcePatternFallback::materialize,
         .provenance =
-            "builtin:current-materialized-render-target-runtime-v1",
+            transient_attachment
+                ? "builtin:runtime-transient-attachment-v1"
+                : "builtin:runtime-materialized-render-target-v1",
     };
 }
 
@@ -333,7 +390,9 @@ std::vector<ResourcePatternBinding> runtimePatternBindings(
     const std::map<std::string,
                    const RenderTargetDefinition *,
                    std::less<>> &render_targets,
-    vk::Format swapchain_format) {
+    vk::Format swapchain_format,
+    const TransientAttachmentFormatSet
+        &transient_formats) {
     std::vector<ResourcePatternBinding> result;
     for (const auto &resource : logical_graph.resources) {
         if (resource.type.constructor !=
@@ -345,7 +404,7 @@ std::vector<ResourcePatternBinding> runtimePatternBindings(
                 resource.name,
                 runtimeImagePattern(
                     types, resource.type, swapchain_format,
-                    {}, true),
+                    {}, true, false),
                 ResourceExtentPlan{},
             });
             continue;
@@ -362,7 +421,11 @@ std::vector<ResourcePatternBinding> runtimePatternBindings(
                 types, resource.type,
                 target->second->format,
                 target->second->format_candidates,
-                false),
+                false,
+                transient_formats.contains({
+                    resource.name,
+                    vk::to_string(
+                        target->second->format)})),
             runtimeExtentPlan(*target->second),
         });
     }
@@ -531,6 +594,35 @@ RenderingImageFormatCapability queryFormatCapability(
                           candidate)
                 : true,
     };
+}
+
+TransientAttachmentFormatSet
+transientAttachmentFormats(
+    std::span<const RenderTargetDefinition> render_targets,
+    const RenderingTargetPlanDeviceFacts &facts) {
+    TransientAttachmentFormatSet result;
+    if (!facts.transient_attachments) {
+        return result;
+    }
+    for (const auto &target : render_targets) {
+        if (!isTransientAttachmentCandidate(target)) {
+            continue;
+        }
+        for (const auto format :
+             declaredFormats(target)) {
+            const auto capability =
+                queryFormatCapability(
+                    facts, target, format);
+            if (capability.image_usage_supported &&
+                capability
+                    .transient_attachment_supported) {
+                result.emplace(
+                    target.name,
+                    vk::to_string(format));
+            }
+        }
+    }
+    return result;
 }
 
 std::vector<VulkanPhysicalResourceFormatCapability>
@@ -769,7 +861,9 @@ void validateRuntimePhysicalPlan(
     vk::Format swapchain_format,
     std::span<
         const VulkanPhysicalResourceFormatCapability>
-        format_capabilities) {
+        format_capabilities,
+    const TransientAttachmentFormatSet
+        &transient_formats) {
     if (!plan.alias_groups.empty()) {
         throw std::runtime_error(
             "current render-target runtime cannot consume physical alias "
@@ -799,12 +893,62 @@ void validateRuntimePhysicalPlan(
                 "runtime physical image has no RenderTargetDefinition: " +
                 resource.logical_resource);
         }
+        const auto transient =
+            resource.representation ==
+            VulkanResourceRepresentation::
+                transient_attachment;
         if (resource.representation !=
-            VulkanResourceRepresentation::materialized_image) {
+                VulkanResourceRepresentation::
+                    materialized_image &&
+            !transient) {
             throw std::runtime_error(
-                "current render-target runtime only consumes "
-                "materialized_image plans: " +
+                "current render-target runtime cannot consume "
+                "physical representation for: " +
                 resource.logical_resource);
+        }
+        if (transient) {
+            if (!isTransientAttachmentCandidate(
+                    *target->second)) {
+                throw std::runtime_error(
+                    "runtime transient attachment is not supported "
+                    "by the target format/usage contract: " +
+                    resource.logical_resource);
+            }
+            if (resource.stored ||
+                resource.resolve_required ||
+                resource.rasterization_samples != 1) {
+                throw std::runtime_error(
+                    "runtime transient attachment must be "
+                    "single-sample, unresolved, and unstored: " +
+                    resource.logical_resource);
+            }
+            const auto first_attachment =
+                std::find_if(
+                    plan.attachments.begin(),
+                    plan.attachments.end(),
+                    [&](const auto &attachment) {
+                        return attachment
+                                   .logical_resource ==
+                               resource.logical_resource;
+                    });
+            if (first_attachment ==
+                    plan.attachments.end() ||
+                std::any_of(
+                    first_attachment,
+                    plan.attachments.end(),
+                    [&](const auto &attachment) {
+                        return attachment
+                                       .logical_resource ==
+                                   resource.logical_resource &&
+                               attachment.store_op !=
+                                   VulkanPhysicalAttachmentStoreOp::
+                                       discard;
+                    })) {
+                throw std::runtime_error(
+                    "runtime transient attachment requires every "
+                    "writer to discard its store: " +
+                    resource.logical_resource);
+            }
         }
         const auto formats =
             declaredFormats(*target->second);
@@ -821,6 +965,16 @@ void validateRuntimePhysicalPlan(
                 "candidate for '" +
                 resource.logical_resource + "': planned '" +
                 resource.format + "'");
+        }
+        if (transient &&
+            !transient_formats.contains({
+                resource.logical_resource,
+                resource.format})) {
+            throw std::runtime_error(
+                "runtime transient attachment format is not "
+                "supported by the target device: " +
+                resource.logical_resource + " -> " +
+                resource.format);
         }
         const auto &capability =
             requireFormatCapability(
@@ -928,6 +1082,9 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
         renderTargetsByName(render_targets);
     const auto types = makeBuiltinLogicalTypeRegistry();
     const auto topology = runtimeTopology(device_facts);
+    const auto transient_formats =
+        transientAttachmentFormats(
+            render_targets, device_facts);
     if (external_depth_export &&
         (device_facts
              .query_image_format_capability ||
@@ -1041,6 +1198,9 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
         merged_array_layers;
     std::map<std::string, vk::Format, std::less<>>
         merged_formats;
+    std::map<std::string, VulkanResourceRepresentation,
+             std::less<>>
+        merged_representations;
     for (std::size_t index = 0; index < frame_graphs.size();
          ++index) {
         const auto &definition = frame_graphs[index];
@@ -1082,7 +1242,8 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
                     .pattern_bindings =
                         runtimePatternBindings(
                             types, logical_graph, target_by_name,
-                            swapchain_format),
+                            swapchain_format,
+                            transient_formats),
                     .profile = target_planning.profile,
                     .node_constraints =
                         graph_constraints == nullptr
@@ -1139,7 +1300,8 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
                 std::move(plan_value));
         validateRuntimePhysicalPlan(
             *plan, target_by_name, swapchain_format,
-            format_capabilities);
+            format_capabilities,
+            transient_formats);
         if (!plan->sample_count_plan) {
             throw std::runtime_error(
                 "runtime Vulkan target plan lacks sample-count lowering");
@@ -1221,6 +1383,19 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
                     "formats for render target '" +
                     resource.logical_resource + "'");
             }
+            const auto [representation_assignment,
+                        representation_inserted] =
+                merged_representations.emplace(
+                    resource.logical_resource,
+                    resource.representation);
+            if (!representation_inserted &&
+                representation_assignment->second !=
+                    resource.representation) {
+                throw std::runtime_error(
+                    "frame graphs require conflicting physical "
+                    "representations for render target '" +
+                    resource.logical_resource + "'");
+            }
         }
         result.plans.push_back(std::move(plan));
     }
@@ -1275,6 +1450,26 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
     std::sort(
         result.format_assignments.begin(),
         result.format_assignments.end(),
+        [](const auto &left, const auto &right) {
+            return left.resource < right.resource;
+        });
+    result.representation_assignments.reserve(
+        render_targets.size());
+    for (const auto &target : render_targets) {
+        const auto found =
+            merged_representations.find(target.name);
+        result.representation_assignments.push_back({
+            .resource = target.name,
+            .representation =
+                found == merged_representations.end()
+                    ? VulkanResourceRepresentation::
+                          materialized_image
+                    : found->second,
+        });
+    }
+    std::sort(
+        result.representation_assignments.begin(),
+        result.representation_assignments.end(),
         [](const auto &left, const auto &right) {
             return left.resource < right.resource;
         });
@@ -1360,6 +1555,7 @@ compileRenderingTargetPlansForVulkanDevice(
                         physical_device,
                         definition);
                 },
+            .transient_attachments = true,
         },
         std::move(view_execution),
         std::move(external_depth_export),
@@ -1377,6 +1573,9 @@ void applyRenderingTargetPlan(
         array_layer_assignments;
     std::map<std::string, vk::Format, std::less<>>
         format_assignments;
+    std::map<std::string, VulkanResourceRepresentation,
+             std::less<>>
+        representation_assignments;
     std::set<std::string, std::less<>>
         external_depth_sources;
     for (const auto &assignment : compilation.assignments) {
@@ -1411,6 +1610,17 @@ void applyRenderingTargetPlan(
             throw std::runtime_error(
                 "duplicate or invalid physical format "
                 "assignment: " +
+                assignment.resource);
+        }
+    }
+    for (const auto &assignment :
+         compilation.representation_assignments) {
+        if (!representation_assignments
+                 .emplace(assignment.resource,
+                          assignment.representation)
+                 .second) {
+            throw std::runtime_error(
+                "duplicate physical representation assignment: " +
                 assignment.resource);
         }
     }
@@ -1459,6 +1669,40 @@ void applyRenderingTargetPlan(
                 target.name);
         }
         target.format = format->second;
+        const auto representation =
+            representation_assignments.find(
+                target.name);
+        if (representation ==
+            representation_assignments.end()) {
+            throw std::runtime_error(
+                "missing physical representation assignment: " +
+                target.name);
+        }
+        switch (representation->second) {
+        case VulkanResourceRepresentation::
+            materialized_image:
+            target.storage_mode =
+                RenderTargetStorageMode::materialized;
+            break;
+        case VulkanResourceRepresentation::
+            transient_attachment:
+            if (!isTransientAttachmentCandidate(target) ||
+                target.samples != 1) {
+                throw std::runtime_error(
+                    "physical transient attachment assignment is "
+                    "incompatible with RenderTargetDefinition: " +
+                    target.name);
+            }
+            target.storage_mode =
+                RenderTargetStorageMode::
+                    transient_attachment;
+            break;
+        default:
+            throw std::runtime_error(
+                "physical representation assignment is not "
+                "implemented by the render-target runtime: " +
+                target.name);
+        }
         if (external_depth_sources.contains(
                 target.name)) {
             if (!(target.usage &

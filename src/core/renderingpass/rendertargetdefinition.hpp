@@ -1,5 +1,7 @@
 #pragma once
 
+#include "rendertargetstoragemode.hpp"
+
 #include <array>
 #include <cstdint>
 #include <optional>
@@ -26,6 +28,8 @@ struct RenderTargetDefinition {
         vk::ClearColorValue{std::array{0.0f, 0.0f, 0.0f, 0.0f}};
     std::uint32_t samples = 1;
     std::uint32_t array_layers = 1;
+    RenderTargetStorageMode storage_mode =
+        RenderTargetStorageMode::materialized;
 };
 
 } // namespace Pelican

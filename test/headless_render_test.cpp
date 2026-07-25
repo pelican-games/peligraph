@@ -234,12 +234,29 @@ nlohmann::json upscaleContractRenderingConfig() {
       "format_candidates": ["R16G16B16A16_SFLOAT"],
       "format_class": "data",
       "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    {
+      "name": "transient_scratch",
+      "extent_scale": 0.5,
+      "format": "R8G8B8A8_UNORM",
+      "format_class": "data",
+      "usage": ["COLOR_ATTACHMENT"]
     }
   ],
   "rendering_passes": [
     {
       "name": "upscale_main",
       "passes": [
+        {
+          "name": "transient_probe",
+          "type": "fullscreen",
+          "resolution_domain": "scene",
+          "output": {"color": "transient_scratch", "depth": null},
+          "shader": {
+            "vertex": "shaders/upscale_fullscreen",
+            "fragment": "shaders/upscale_generate"
+          }
+        },
         {
           "name": "produce_low",
           "type": "fullscreen",
@@ -654,6 +671,24 @@ TEST_CASE(
                 .getMetadata(low_id)
                 .format ==
             vk::Format::eR8G8B8A8Unorm);
+        const auto transient_id =
+            GET_MODULE(RenderTargetContainer)
+                .getRenderTargetIdByName(
+                    "transient_scratch");
+        const auto transient_metadata =
+            GET_MODULE(RenderTargetContainer)
+                .getMetadata(transient_id);
+        REQUIRE(
+            transient_metadata.storage_mode ==
+            RenderTargetStorageMode::
+                transient_attachment);
+        REQUIRE(
+            transient_metadata.usage &
+            vk::ImageUsageFlagBits::
+                eTransientAttachment);
+        REQUIRE_FALSE(
+            transient_metadata.usage &
+            vk::ImageUsageFlagBits::eSampled);
 
         const auto rendering_pass_id =
             GET_MODULE(RenderingPassContainer)
@@ -674,6 +709,66 @@ TEST_CASE(
                 ->resolution_plan
                 ->render_source_resource ==
             "low_color");
+        REQUIRE(
+            program->frame_graph.target_plan
+                ->backend_selection
+                .selected_candidate ==
+            "pelican.vulkan.transient_plan@1");
+        const auto transient_resource =
+            std::find_if(
+                program->frame_graph.target_plan
+                    ->resources.begin(),
+                program->frame_graph.target_plan
+                    ->resources.end(),
+                [](const auto &resource) {
+                    return resource.logical_resource ==
+                           "transient_scratch";
+                });
+        REQUIRE(
+            transient_resource !=
+            program->frame_graph.target_plan
+                ->resources.end());
+        REQUIRE(
+            transient_resource->representation ==
+            VulkanResourceRepresentation::
+                transient_attachment);
+        const auto transient_attachment =
+            std::find_if(
+                program->frame_graph.target_plan
+                    ->attachments.begin(),
+                program->frame_graph.target_plan
+                    ->attachments.end(),
+                [](const auto &attachment) {
+                    return attachment.node ==
+                               "transient_probe" &&
+                           attachment
+                                   .logical_resource ==
+                               "transient_scratch";
+                });
+        REQUIRE(
+            transient_attachment !=
+            program->frame_graph.target_plan
+                ->attachments.end());
+        REQUIRE(
+            transient_attachment->store_op ==
+            VulkanPhysicalAttachmentStoreOp::
+                discard);
+        const auto transient_pass =
+            std::find_if(
+                program->rendering_pass.passes.begin(),
+                program->rendering_pass.passes.end(),
+                [](const auto &pass) {
+                    return pass.definition.name ==
+                           "transient_probe";
+                });
+        REQUIRE(
+            transient_pass !=
+            program->rendering_pass.passes.end());
+        REQUIRE(
+            transient_pass->definition
+                .colorAttachmentOperations(0)
+                .store_op ==
+            vk::AttachmentStoreOp::eDontCare);
         const auto upscale_pass =
             std::find_if(
                 program->rendering_pass.passes.begin(),
@@ -887,6 +982,41 @@ TEST_CASE(
             vk::to_string(
                 vk::Format::
                     eR16G16B16A16Sfloat));
+        const auto reloaded_transient_id =
+            GET_MODULE(RenderTargetContainer)
+                .getRenderTargetIdByName(
+                    "transient_scratch");
+        const auto reloaded_transient_metadata =
+            GET_MODULE(RenderTargetContainer)
+                .getMetadata(
+                    reloaded_transient_id);
+        REQUIRE(
+            reloaded_transient_metadata.storage_mode ==
+            RenderTargetStorageMode::
+                transient_attachment);
+        REQUIRE(
+            reloaded_transient_metadata.usage &
+            vk::ImageUsageFlagBits::
+                eTransientAttachment);
+        const auto reloaded_transient_plan =
+            std::find_if(
+                reloaded_program->frame_graph
+                    .target_plan->resources.begin(),
+                reloaded_program->frame_graph
+                    .target_plan->resources.end(),
+                [](const auto &resource) {
+                    return resource.logical_resource ==
+                           "transient_scratch";
+                });
+        REQUIRE(
+            reloaded_transient_plan !=
+            reloaded_program->frame_graph
+                .target_plan->resources.end());
+        REQUIRE(
+            reloaded_transient_plan
+                ->representation ==
+            VulkanResourceRepresentation::
+                transient_attachment);
         const auto reloaded_produce_low =
             std::find_if(
                 reloaded_program
