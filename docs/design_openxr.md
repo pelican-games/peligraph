@@ -218,7 +218,7 @@ implementation_plan へコピーする**。タグ参照だけで受け入れ条�
 実装順: XR0 → XR1a → XR1b/1c → **XR2a.0(最重量・OpenXR 非依存なので
 早期着手可)** → XR2a.1/2a.2 → XR2a.3 → XR3a/3b → XR4 → XR2b。
 
-### XR2b進捗(2026-07-25)
+### XR2b進捗(2026-07-26)
 
 WP203aでtarget-planning側を先行実装した。logical XR policyはexact 2-viewのまま、
 後段がendpoint capability / 最大view数 / scope implementation対応から
@@ -227,17 +227,26 @@ image resourceのshared/sequential/2D-array layoutは`VulkanTargetPlan`へ残る
 `xr.view_execution`は`auto` / `sequential` / `multiview`を受理し、必須条件を満たさない
 `multiview`はfallbackせずcompile errorになる。
 
-WP203b phase 1では、internal array imageとlayer別/2D-array view、per-view FrameUBO、
+WP203bでは、internal array imageとlayer別/2D-array view、per-view FrameUBO、
 `gl_ViewIndex` reflection、typed pipeline/pass view contract、dynamic renderingの
-`viewMask`を実装した。synthetic 2-view Vulkan testは一回の描画とsequential referenceの
-左右layer byte一致を検証する。
+`viewMask`を実装した。phase 2でengine fullscreen shaderのmultiview variant、
+shared 2D / sequential 2D / layered 2D-array input descriptor、node-major mixed-scope
+scheduler、`ILogicalFrameTarget`のview-family command境界まで接続した。
 
-production shader/pass variantとscope schedulerはまだmultiview対応を宣言していないため、
-通常描画は引き続きsequentialである。OpenXR array swapchain、depth submit、GPU計測gateは
-WP203cに残る。詳細は
+production capabilityはbuiltin fullscreen実装と最終SPIR-V reflectionの両方でgateする。
+未対応material/custom passは逐次scopeに残り、per-frame computeとview-independent
+anchorは一回だけ実行する。synthetic Vulkan fixtureはruntime compilerがphysical planから
+layered sampler/pipelineを生成する経路と、一回のmultiview描画がsequential referenceの
+左右layerとbyte一致することを検証する。
+
+現在のOpenXR targetはeyeごとの2D swapchainであるため、通常XRは意図的にsequentialのまま
+である。WP203cが2D-array swapchainとdepth submitを導入した時点でproduction capability
+flagを有効化し、このview-family経路へ接続する。詳細は
 [`design_reviews/2026-07-25_wp203a_report.md`](design_reviews/2026-07-25_wp203a_report.md)。
 phase 1の中間証跡は
 [`design_reviews/2026-07-25_wp203b_phase1_report.md`](design_reviews/2026-07-25_wp203b_phase1_report.md)。
+phase 2の証跡は
+[`design_reviews/2026-07-26_wp203b_phase2_report.md`](design_reviews/2026-07-26_wp203b_phase2_report.md)。
 
 ## 12. 未決事項
 

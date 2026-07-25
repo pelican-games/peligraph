@@ -6219,4 +6219,63 @@ rendering、OpenXR array swapchain、depth composition、GPU性能gate。
 
 ---
 
+### WP203b（済 2026-07-26）: XR2b-b — array resource / shader view-index / Vulkan one-execution
+
+**目的**: WP203aのtyped physical view planを実Vulkan resourceとcommand recordingへ接続し、
+同じlogical graphをflatでは既存byteのまま、XR multiviewでは一回のview-masked renderingで実行する。
+
+**実装範囲**:
+
+1. `layered_2d_array` planからinternal render targetのarray layer数、image view種別、
+   attachment viewを生成する。`shared_2d` / `sequential_2d`の既存経路は不変にする。
+2. per-view immutable frame dataを配列化し、engine includeの単一helperで
+   sequential view indexと`gl_ViewIndex`を同じshader sourceへ正規化する。
+3. pass implementationとshader reflectionの両方が満たすtyped multiview capabilityを追加する。
+   対応宣言のないpassは`auto`で逐次へfallbackし、required modeでは名前付きcompile errorにする。
+4. dynamic renderingの`viewMask`とlayer contractをscope planから記録し、multiview scopeを
+   一回だけ実行する。逐次scopeを含む混在graphはdependencyとlayer境界から合法なscheduleを作る。
+5. flat `view_count=1`のcompiled metadata、frame plan、shader bytes、semantic outputを
+   変更前fixtureとbyte比較する。
+
+**受け入れ条件**:
+
+- synthetic 2-view Vulkan targetで左右の異なるview/projectionが同時に正しいlayerへ出る
+- multiview scopeはcommand trace上で一回、sequential fallbackはlogical frame内でview-majorに実行される
+- 対応宣言のないshader/passをmultiviewとして実行しない
+- flat view_count=1 byte一致
+- `Renderer::render()`をviewごとに呼ぶ経路を追加しない
+- 全CTest、Vulkan validation、`git diff --check`が成功する
+
+**非対象**: OpenXR swapchain array化、depth composition、性能合否。これらはWP203cが所有する。
+
+依存: WP203a。見積: 大。
+
+**完了内容（phase 1: 2026-07-25、phase 2: 2026-07-26）**:
+
+- target planのarray layer assignmentをinternal render target allocationへ接続した。
+  2D-array全体viewに加え、mixed/sequential境界用のlayer別2D viewも生成する。
+- `FrameResources`にlogical view配列を保持するmultiview UBO slotを追加した。
+  engine shader includeは同じ`pelicanFrame`名をsequential recordまたは
+  `gl_ViewIndex` recordへ正規化する。
+- shader reflectionの`gl_ViewIndex`検出、graphics pipelineとcompiled passで共有する
+  typed view contract、dynamic renderingの`viewMask`とattachment layer選択を追加した。
+- synthetic 2-view Vulkan testで、異なる左右frame recordを一回のdynamic renderingで
+  別layerへ出し、2回のsequential referenceとbyte一致することを確認した。
+- engine fullscreen passだけを事前capabilityの対象にし、runtime shader variantの
+  `gl_ViewIndex` reflectionを最終gateにした。custom/material passは逐次へ残る。
+- fullscreen/material screen inputにshared 2D、view別2D、2D-array descriptorを追加し、
+  target planのinput dimensionと一致しないinvocationをfail-fastにした。
+- physical scopeをnode-majorのsingle/sequential/multiview invocationへ展開するschedulerと、
+  `ILogicalFrameTarget`の一command-context view-family境界をRendererへ接続した。
+  compute、snapshot、sprite、swapchain barrierもview/layer契約を明示的に扱う。
+- current OpenXR targetはeye別2D swapchainのためproduction capability flagをまだ有効化しない。
+  通常XRは安全にsequentialのままで、array swapchain/depth接続だけをWP203cへ残す。
+
+中間証跡:
+[`design_reviews/2026-07-25_wp203b_phase1_report.md`](design_reviews/2026-07-25_wp203b_phase1_report.md)。
+完了証跡:
+[`design_reviews/2026-07-26_wp203b_phase2_report.md`](design_reviews/2026-07-26_wp203b_phase2_report.md)。
+
+---
+
 未完了 WP と運用規則は [active ledger](implementation_plan.md) を参照。

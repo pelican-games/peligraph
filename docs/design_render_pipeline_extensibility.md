@@ -698,10 +698,17 @@ WP203aではこれをdevice実行方式の別名にせず、後段の`VulkanView
 resourceごとのshared/sequential/layered layoutを追加した。deviceとscope implementationの
 両方が対応を明示した場合だけmultiviewを選ぶ。
 
-production pass/shaderはまだ対応をadvertiseしないため、現runtimeは`auto`から
-sequentialへfallbackする。array allocation、view-index shader contract、one-execution
-dynamic rendering、OpenXR depth submitはXR2b後半である。public provider 化は
-そのruntime gateでtyped planの検証規則が固まってから行う。
+WP203bではbuiltin fullscreen implementationだけがtyped capabilityをadvertiseし、
+engine shader variantの最終SPIR-V reflectionを二つ目のgateにする。runtime compilerは
+physical input dimensionとview contractをcompiled passへ残し、mixed scope schedulerが
+single / sequential / multiviewを一つのlogical frame内で実行する。custom providerや
+material passは明示対応をまだ持たないため逐次へ残り、誤ってmultiview pipelineとして
+実行されない。
+
+現在のOpenXR targetはview-family array attachmentを提供しないためproduction flagは
+無効であり、通常XRの`auto`はsequentialのままである。array swapchain、depth submit、
+semantic/performance gateはWP203cで接続する。public provider capability bitは、その
+OpenXR gateでABIとfailure modeを固定してから追加する。
 
 ### 7.4 TAA jitter は無理に provider 化しない
 

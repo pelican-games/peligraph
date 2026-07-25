@@ -997,15 +997,22 @@ WP203aでは、このlogical graph contractを変えずにdevice-dependentな
 image resourceには`shared_2d` / `sequential_2d` / `layered_2d_array`とlayer数を残す。
 fusionとaliasもこのview contractが一致する場合だけ許す。
 
-WP203b phase 1で、physical resourceのarray layer assignmentをinternal image allocationへ
+WP203bで、physical resourceのarray layer assignmentをinternal image allocationへ
 接続し、layer別2D viewと2D-array view、per-view FrameUBO、`gl_ViewIndex` shader helper /
 reflection、typed graphics pipeline / compiled pass view contract、dynamic renderingの
-`viewMask`を追加した。synthetic Vulkan fixtureでは2-viewを一回で描画し、sequential
-referenceと各layerがbyte一致する。
+`viewMask`を追加した。runtime compilerはimmutable target planをpassごとに受け取り、
+input edgeを`shared_2d` / `sequential_2d` / `layered_2d_array`へ注釈して、同じengine
+fullscreen sourceからscalarまたはarray sampler variantを生成する。
 
-production pass/shader variantとscope schedulerはまだmultiview対応をadvertiseしない。
-したがって通常の`auto`はsequentialへ理由付きfallbackし、必須指定はcompile errorになる。
-OpenXR array/depth submissionはWP203cであり、phase 1をWP203b完了とは扱わない。
+view-family schedulerはphysical scopeをdependency順のnode-major invocationへloweringする。
+`single_view`は一回、`sequential`はview数回、`multiview`はview mask付きで一回である。
+barrierとtiming rangeはnodeの最初/最後のinvocationへ対応し、frame/history publicationは
+logical frameに一回だけ残る。未対応material/custom passはadvertiseされず、required
+multiviewではplannerまたはruntime compileが名前付きで拒否する。
+
+synthetic Vulkan fixtureではruntime pass compilation、layered descriptor、2-view一回描画を
+通し、sequential referenceと各layerがbyte一致する。OpenXR array/depth submissionと
+実targetでのsemantic/performance gateはWP203cの所有である。
 
 RPE10a / WP193 では compiled pass、frame graph、logical/physical plan、route、
 sample-count、variant policy、draw-sort provider選択を一つの immutable runtime generationへ束ね、
