@@ -7,6 +7,23 @@ FetchContent_MakeAvailable(Catch2)
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
 include(Catch)
 
+if(MSVC AND PELICAN_LEAN_TEST_ARTIFACTS)
+  # A separate linker PDB and incremental-link database for every test
+  # duplicates pelican_core's Debug symbols hundreds of times. Keep Debug
+  # code generation and assertions, but make routine test artifacts lean.
+  # Disable PELICAN_LEAN_TEST_ARTIFACTS when an individual test needs to be
+  # debugged with full linker symbols.
+  add_link_options(
+    "$<$<CONFIG:Debug>:/DEBUG:NONE>"
+    "$<$<CONFIG:Debug>:/INCREMENTAL:NO>"
+    "$<$<CONFIG:RelWithDebInfo>:/DEBUG:NONE>"
+    "$<$<CONFIG:RelWithDebInfo>:/INCREMENTAL:NO>"
+  )
+  message(STATUS
+    "Pelican test artifacts: lean MSVC linking "
+    "(no linker PDB or incremental-link database)")
+endif()
+
 function(pelican_define_test source_name)
 cmake_parse_arguments(PELICAN_TEST "GOLDEN;GPU" "" "" ${ARGN})
 set(target_name pelican_test_${source_name})

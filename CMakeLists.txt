@@ -61,6 +61,16 @@ if(PELICAN_WITH_JOLT_PHYSICS AND PELICAN_WITH_BUILTIN_PHYSICS)
       "Enable Pelican's built-in sphere/box/capsule query provider" FORCE)
 endif()
 option(PELICAN_ENABLE_ASAN "Build targets with AddressSanitizer (intended for test builds)" OFF)
+option(
+  PELICAN_LEAN_TEST_ARTIFACTS
+  "Avoid large MSVC linker PDB and incremental-link files for test executables"
+  ON
+)
+option(
+  PELICAN_AUTO_STAGE_SDK
+  "Copy pelican_core, static dependencies, and public headers into dist after linking"
+  OFF
+)
 set(PELICAN_PROJECT "" CACHE PATH "Project directory whose code/ sources are built as a hot-reloadable game DLL")
 
 if(PELICAN_ENABLE_ASAN)
@@ -90,6 +100,11 @@ FetchContent_Declare(
   battery-embed
   GIT_REPOSITORY https://github.com/batterycenter/embed.git
   GIT_TAG        v1.2.19
+  PATCH_COMMAND
+    ${CMAKE_COMMAND}
+      "-DBATTERY_EMBED_SOURCE_DIR=<SOURCE_DIR>"
+      -P
+      "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_battery_embed_low_write.cmake"
 )
 FetchContent_MakeAvailable(battery-embed)
 

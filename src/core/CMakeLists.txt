@@ -98,57 +98,62 @@ endif()
 target_link_libraries(pelican_core PUBLIC nlohmann_json)
 target_link_libraries(pelican_core PRIVATE picosha2)
 
-# build distributable dir
-## list up static lib dependencies
-get_target_property(PELICAN_DEPENDS_RAW pelican_core LINK_LIBRARIES)
-foreach(DEP IN LISTS PELICAN_DEPENDS_RAW)
-  if(TARGET ${DEP})
-    get_target_property(DEPTYPE ${DEP} TYPE)
-    if(${DEPTYPE} MATCHES "STATIC_LIBRARY")
+if(PELICAN_AUTO_STAGE_SDK)
+  # SDK staging intentionally remains opt-in. A Debug pelican_core archive is
+  # about 1 GiB, so copying it after every routine engine/test relink causes
+  # substantial write amplification.
+
+  ## list up static lib dependencies
+  get_target_property(PELICAN_DEPENDS_RAW pelican_core LINK_LIBRARIES)
+  foreach(DEP IN LISTS PELICAN_DEPENDS_RAW)
+    if(TARGET ${DEP})
+      get_target_property(DEPTYPE ${DEP} TYPE)
+      if(${DEPTYPE} MATCHES "STATIC_LIBRARY")
+        message(STATUS "pelican depdends: ${DEP}")
+        list(APPEND PELICAN_DEPENDS $<TARGET_FILE:${DEP}>)
+      endif()
+    elseif(EXISTS ${DEP})
+      list(APPEND PELICAN_DEPENDS ${DEP})
       message(STATUS "pelican depdends: ${DEP}")
-      list(APPEND PELICAN_DEPENDS $<TARGET_FILE:${DEP}>)
     endif()
-  elseif(EXISTS ${DEP})
-    list(APPEND PELICAN_DEPENDS ${DEP})
-    message(STATUS "pelican depdends: ${DEP}")
-  endif()
-endforeach()
-
-## copy library files
-add_custom_command(
-  TARGET pelican_core POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E make_directory ${PELICAN_INCLUDE_DIR} ${PELICAN_LIB_DIR}
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:pelican_core> ${PELICAN_LIB_DIR}
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different ${PELICAN_DEPENDS} ${PELICAN_LIB_DIR}
-  COMMAND_EXPAND_LISTS
-)
-
-## list up public headers
-function(pelican_copy_headers SRC_PATH DST_PATH)
-  message(STATUS "pelican_copy_headers ${SRC_PATH} -> ${DST_PATH}")
-  file(GLOB_RECURSE HEADERS ${SRC_PATH}/*.hpp)
-  message(STATUS "headers: ${HEADERS}")
-  foreach(HEADERFILE ${HEADERS})
-    file(RELATIVE_PATH RPATH ${SRC_PATH} ${HEADERFILE})
-    message(STATUS "header ${HEADERFILE} -> ${PELICAN_INCLUDE_DIR}/${DST_PATH}/${RPATH}")
-    add_custom_command(
-      TARGET pelican_core POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different ${HEADERFILE} ${PELICAN_INCLUDE_DIR}/${DST_PATH}/${RPATH}
-    )
   endforeach()
-endfunction()
-pelican_copy_headers(${CMAKE_CURRENT_SOURCE_DIR}/userpublic .)
-pelican_copy_headers(${CMAKE_CURRENT_SOURCE_DIR}/ecs ./ecs)
-add_custom_command(
-  TARGET pelican_core POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different
-          ${CMAKE_CURRENT_SOURCE_DIR}/handle.hpp
-          ${PELICAN_INCLUDE_DIR}/handle.hpp
-)
-add_custom_command(
-  TARGET pelican_core POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E make_directory ${PELICAN_INCLUDE_DIR}/phys
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different
-          ${CMAKE_CURRENT_SOURCE_DIR}/phys/physquery.hpp
-          ${PELICAN_INCLUDE_DIR}/phys/physquery.hpp
-)
+
+  ## copy library files
+  add_custom_command(
+    TARGET pelican_core POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${PELICAN_INCLUDE_DIR} ${PELICAN_LIB_DIR}
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:pelican_core> ${PELICAN_LIB_DIR}
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${PELICAN_DEPENDS} ${PELICAN_LIB_DIR}
+    COMMAND_EXPAND_LISTS
+  )
+
+  ## list up public headers
+  function(pelican_copy_headers SRC_PATH DST_PATH)
+    message(STATUS "pelican_copy_headers ${SRC_PATH} -> ${DST_PATH}")
+    file(GLOB_RECURSE HEADERS ${SRC_PATH}/*.hpp)
+    message(STATUS "headers: ${HEADERS}")
+    foreach(HEADERFILE ${HEADERS})
+      file(RELATIVE_PATH RPATH ${SRC_PATH} ${HEADERFILE})
+      message(STATUS "header ${HEADERFILE} -> ${PELICAN_INCLUDE_DIR}/${DST_PATH}/${RPATH}")
+      add_custom_command(
+        TARGET pelican_core POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${HEADERFILE} ${PELICAN_INCLUDE_DIR}/${DST_PATH}/${RPATH}
+      )
+    endforeach()
+  endfunction()
+  pelican_copy_headers(${CMAKE_CURRENT_SOURCE_DIR}/userpublic .)
+  pelican_copy_headers(${CMAKE_CURRENT_SOURCE_DIR}/ecs ./ecs)
+  add_custom_command(
+    TARGET pelican_core POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_CURRENT_SOURCE_DIR}/handle.hpp
+            ${PELICAN_INCLUDE_DIR}/handle.hpp
+  )
+  add_custom_command(
+    TARGET pelican_core POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${PELICAN_INCLUDE_DIR}/phys
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_CURRENT_SOURCE_DIR}/phys/physquery.hpp
+            ${PELICAN_INCLUDE_DIR}/phys/physquery.hpp
+  )
+endif()
