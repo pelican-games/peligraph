@@ -2,6 +2,7 @@
 #include "../src/core/log.hpp"
 #include "../src/core/renderingpass/graphtransformregistry.hpp"
 #include "../src/core/renderingpass/passimplementationregistry.hpp"
+#include "../src/core/renderingpass/renderstrategyregistry.hpp"
 #include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
 #include "../src/core/renderer/drawqueuebuilder.hpp"
 #include "../src/core/renderer/renderpolicyregistry.hpp"
@@ -97,6 +98,8 @@ struct FixtureControls {
     StatusFn subgraph_registration_status = nullptr;
     StatusFn graph_transform_registration_status =
         nullptr;
+    StatusFn render_strategy_registration_status =
+        nullptr;
     VoidFn arm_next_sort = nullptr;
     BoolFn sort_entered = nullptr;
     VoidFn resume_sort = nullptr;
@@ -131,6 +134,9 @@ FixtureControls fixtureControls(const GameLogicReloadStatus &status) {
         fixtureFunction<FixtureControls::StatusFn>(
             module,
             "pelican_render_graph_transform_fixture_registration_status"),
+        fixtureFunction<FixtureControls::StatusFn>(
+            module,
+            "pelican_render_strategy_fixture_registration_status"),
         fixtureFunction<FixtureControls::VoidFn>(
             module, "pelican_render_policy_fixture_arm_next_sort"),
         fixtureFunction<FixtureControls::BoolFn>(
@@ -354,6 +360,30 @@ std::string resolveGraphTransformImplementation() {
         .implementation;
 }
 
+std::string resolveRenderStrategyImplementation() {
+    const auto config = nlohmann::json{
+        {"render_strategy",
+         {{"name", "fixture.renderer"},
+          {"provider", "fixture.render_strategy"},
+          {"parameters",
+           nlohmann::json::object()}}},
+        {"fixture_seed", true},
+    };
+    const auto policy =
+        compileGraphVariantPolicy(
+            GraphVariantPolicyRequest{});
+    const auto providers =
+        renderStrategyRegistry().snapshot();
+    const auto resolved =
+        resolveRenderStrategy(
+            config, policy, true, providers);
+    if (!resolved.selection) {
+        throw std::runtime_error(
+            "render strategy did not produce provenance");
+    }
+    return resolved.selection->implementation;
+}
+
 } // namespace
 
 TEST_CASE("public render providers survive reload rollback and in-flight unload",
@@ -383,6 +413,9 @@ TEST_CASE("public render providers survive reload rollback and in-flight unload"
     REQUIRE(static_cast<RenderGraphTransform::Status>(
                 controls.graph_transform_registration_status()) ==
             RenderGraphTransform::Status::ok);
+    REQUIRE(static_cast<RenderStrategy::Status>(
+                controls.render_strategy_registration_status()) ==
+            RenderStrategy::Status::ok);
     REQUIRE(buildOrder() == std::vector<std::uint32_t>{30, 20, 10});
     REQUIRE(resolveFullscreenFragment() ==
             "shaders/fixture_composite_v1");
@@ -397,6 +430,9 @@ TEST_CASE("public render providers survive reload rollback and in-flight unload"
     REQUIRE(
         resolveGraphTransformImplementation() ==
         "fixture.render.graph_transform_v1@1");
+    REQUIRE(
+        resolveRenderStrategyImplementation() ==
+        "fixture.render.strategy_v1@1");
 
     replaceFixture(fixture_v2, live_dll);
     controls.arm_next_sort();
@@ -457,6 +493,9 @@ TEST_CASE("public render providers survive reload rollback and in-flight unload"
     REQUIRE(static_cast<RenderGraphTransform::Status>(
                 controls.graph_transform_registration_status()) ==
             RenderGraphTransform::Status::ok);
+    REQUIRE(static_cast<RenderStrategy::Status>(
+                controls.render_strategy_registration_status()) ==
+            RenderStrategy::Status::ok);
     REQUIRE(buildOrder() == std::vector<std::uint32_t>{10, 20, 30});
     REQUIRE(resolveFullscreenFragment() ==
             "shaders/fixture_composite_v2");
@@ -471,6 +510,9 @@ TEST_CASE("public render providers survive reload rollback and in-flight unload"
     REQUIRE(
         resolveGraphTransformImplementation() ==
         "fixture.render.graph_transform_v2@1");
+    REQUIRE(
+        resolveRenderStrategyImplementation() ==
+        "fixture.render.strategy_v2@1");
 
     replaceFixture(fixture_bad_abi, live_dll);
     REQUIRE_FALSE(reloader.reloadNow([] {}, [] {}));
@@ -489,6 +531,9 @@ TEST_CASE("public render providers survive reload rollback and in-flight unload"
     REQUIRE(
         resolveGraphTransformImplementation() ==
         "fixture.render.graph_transform_v2@1");
+    REQUIRE(
+        resolveRenderStrategyImplementation() ==
+        "fixture.render.strategy_v2@1");
 
     replaceFixture(fixture_v1, live_dll);
     int rebuild_calls = 0;
@@ -514,6 +559,9 @@ TEST_CASE("public render providers survive reload rollback and in-flight unload"
     REQUIRE(
         resolveGraphTransformImplementation() ==
         "fixture.render.graph_transform_v2@1");
+    REQUIRE(
+        resolveRenderStrategyImplementation() ==
+        "fixture.render.strategy_v2@1");
 
     reloader.shutdown();
     REQUIRE_THROWS_WITH(
@@ -531,6 +579,10 @@ TEST_CASE("public render providers survive reload rollback and in-flight unload"
         resolveGraphTransformImplementation(),
         Catch::Matchers::ContainsSubstring(
             "logical graph transform provider 'fixture.graph_transform' is not registered"));
+    REQUIRE_THROWS_WITH(
+        resolveRenderStrategyImplementation(),
+        Catch::Matchers::ContainsSubstring(
+            "render strategy provider 'fixture.render_strategy' is not registered"));
     const auto builtin = renderPolicyRegistry().resolveDrawSortProvider(
         builtinStateBatchedDrawSortProvider);
     REQUIRE(builtin.info().owner == internal::engineRegistrationOwner);

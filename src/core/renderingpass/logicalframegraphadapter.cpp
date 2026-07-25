@@ -290,6 +290,8 @@ CompiledLogicalRenderGraph compileLogicalFrameGraphShadow(
         definition.graph_transforms;
     result.subgraph_replacements =
         definition.subgraph_replacements;
+    result.render_strategy =
+        definition.render_strategy;
 
     validateCompiledLogicalRenderGraph(types, result);
     return result;

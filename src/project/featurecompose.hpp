@@ -22,6 +22,11 @@ struct RenderFeatureComposeDependencies {
     // allowlists.  Registration normally supplies the same PathResolver-backed
     // loader to both seams.
     RenderPipelinePresetLoader load_pipeline_json;
+    // Runs after preset expansion and before feature parsing. The production
+    // renderer uses this pure seam for an optional renderer-wide strategy;
+    // the returned config is still compiled by every normal validation stage.
+    std::function<nlohmann::json(const nlohmann::json &)>
+        transform_resolved_config;
 };
 
 struct RenderFeatureComposeResult {

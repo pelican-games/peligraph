@@ -42,8 +42,8 @@ RPE11a / WP200 は最初の公開 `PassImplementation` 境界として fullscree
 transaction snapshot経路へ通した。RPE11b / WP201 はgraph構造を変更する別境界として
 tagged region / subgraph replacementを実装した。元のlogical graphを破壊せず、
 置換後のlocal candidateをtyped graphへ再compileしてからtarget loweringへ渡す。
-global transformとstrategyはこの二つの小さなABIへ押し込まず、後続の独立した
-extension pointとして残す。
+global transformとstrategyはこの二つの小さなABIへ押し込まず、RPE11c / RPE11dで
+独立したextension pointとして実装した。
 
 関連文書:
 
@@ -566,9 +566,46 @@ plannerが再解析し、依存と型から最適化を決める。provider選�
 contract fingerprint、owner / identity / generation / version / capabilityはlogical graphと
 target planのprovenanceへ残す。
 
-subgraph provider snapshotはpass implementation snapshotより後、graph-transform snapshotは
-その後に取得し、三つを全variantのpublicationまで保持する。DLL owner解放も
-pass→subgraph→graph-transformの順に行い、shared/exclusive lockの順序逆転を避ける。
+subgraph provider snapshotはpass implementation snapshotより後、graph-transform snapshot、
+render-strategy snapshotの順に取得し、四つを全variantのpublicationまで保持する。
+DLL owner解放もpass→subgraph→graph-transform→render-strategyの順に行い、
+shared/exclusive lockの順序逆転を避ける。
+
+### 6.8 Global `GraphTransform` v1
+
+RPE11c / WP202aは、feature compositionとgraph variant rewrite後のnormalized config全体を
+順序付きchainで変換する。`GraphTransform`は既存graph-setのtyped boundaryを受け、
+internal target/pass/buffer/compute taskを追加できるが、external/history/required resource、
+material route、canonical anchor、terminalを変えられない。各candidateは全logical graphへ
+再compileされ、検証済みの値だけがtagged subgraphとtarget loweringへ進む。
+
+これはrendererをゼロから選ぶ入口ではなく、既に選ばれたrenderer graphにMSAAや追加buffer、
+platform specialization等の構造変換を適用する境界である。
+
+### 6.9 Renderer-wide `RenderStrategy` v1
+
+RPE11d / WP202bはpreset展開後・feature composition前のrenderer seed config全体を生成する。
+
+```json
+{
+  "render_strategy": {
+    "name": "project.custom_renderer",
+    "provider": "project.render_strategy",
+    "parameters": {}
+  }
+}
+```
+
+provider未指定時は`builtin.authored_config_v1`がselectorを除いたseedをそのまま返す。
+strategy出力はfeature composition、canonical color、flat/preview/XR policy、
+`GraphTransform`、tagged subgraph、logical compile、Vulkan target loweringを迂回しない。
+provider失敗や後段rejectはlocal candidateを捨て、元seedとactive generationを維持する。
+
+V1 callbackはgraph variantと、現在利用可能なcompiler機構を示すtyped renderer facadeを
+受ける。startup config compilerが所有していないlive material/light/geometry inventoryは
+公開しない。これらが必要なrendererは、実際に消費可能なscene contractを追加する後続ABIで
+扱う。詳細な契約とprovenanceは
+[`design_render_graph_compiler.md`](design_render_graph_compiler.md) §12を正とする。
 
 ## 7. Material route、MSAA、XR はどう分けるか
 
@@ -848,6 +885,7 @@ registry、typed plan、validation の小さな mechanism 自体は renderer cor
 | RPE11a / WP200（済 2026-07-24） | fullscreen `PassImplementationProviderV1`、typed logical contract、builtin/game DLL同一registry | shader pair限定差し替え、contract不変、owner/generation provenance、failure atomic、reload/rollback/unload |
 | RPE11b / WP201（済 2026-07-24） | tagged region、typed boundary contract、builtin/game DLL subgraph replacement | immutable candidate再compile、1→N fullscreen展開、境界不変、provenance、failure atomic、reload/rollback/unload |
 | RPE11c / WP202a（済 2026-07-24） | global `GraphTransformProviderV1`、graph-set boundary、順序付き変換chain | full-config candidate再compile、internal target/pass追加、external/history/required境界と常設node保護、provenance、reload/rollback/unload |
+| RPE11d / WP202b（済 2026-07-25） | renderer-wide `RenderStrategyProviderV1`、typed renderer facade、preset後の全config生成 | feature/variant/logical/physical再compile、config fingerprint provenance、preview/headless、reload/rollback/unload |
 
 ### 12.1 いま着手する範囲
 
@@ -892,6 +930,13 @@ typed input/output境界を作り、builtin identityまたはgame DLL provider�
 local config candidateへspliceして全logical graphを再compileする経路を追加した。
 元graphやactive runtimeは破壊せず、resource/type/materialization/境界が一致した候補だけを
 target loweringとpublicationへ進める。v1は連続fullscreen regionと既存resourceに限定する。
+WP202aではその外側に順序付きglobal `GraphTransform` chainを追加し、external/history/
+required boundaryと常設nodeを守ったfull-config candidateだけを再compileして採用する。
+WP202bではさらに上流のpreset展開後・feature composition前へrenderer-wide
+`RenderStrategy`を追加した。strategyはtyped graph variantと利用可能なcompiler capabilityを
+持つrenderer facadeを受け、renderer seed config全体を生成する。出力は通常の
+feature/variant/logical/physical compilerを迂回しない。V1はstartup config compilerが
+所有しないlive material/light/geometry inventoryを公開せず、後続contractへ残す。
 各段階の詳細gateは
 `design_render_graph_compiler.md` §12 を正とする。
 

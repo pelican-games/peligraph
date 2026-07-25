@@ -4,6 +4,7 @@
 #include "../loader/basicconfig.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../renderingpass/rendertargetjsonparser.hpp"
+#include "../renderingpass/renderstrategyregistry.hpp"
 #include "../vkcore/renderer.hpp"
 #include "../vkcore/rendertarget.hpp"
 #include "../../project/renderpipeline.hpp"
@@ -171,6 +172,8 @@ nlohmann::json buildRuntimeAnnotations() {
 
     const auto swapchain_format = GET_MODULE(RenderTarget).getSwapchainFormat();
     const auto target_extent = GET_MODULE(RenderTarget).getExtent();
+    const auto strategy_providers =
+        renderStrategyRegistry().snapshot();
     auto resolved = resolveRenderPipeline(
         RenderPipelineRequest{raw, "plan viewer annotations"},
         RenderEnvironmentCapabilities{true,
@@ -191,6 +194,16 @@ nlohmann::json buildRuntimeAnnotations() {
                 return resolveRenderTargetFormatClassesV2(
                     config, swapchain_format, target_extent, hdr);
             },
+            .resolve_render_strategy =
+                [&strategy_providers](
+                    const nlohmann::json &config,
+                    const CompiledGraphVariantPolicy
+                        &policy) {
+                    return resolveRenderStrategy(
+                               config, policy, true,
+                               strategy_providers)
+                        .config;
+                },
         });
     auto composed = std::move(resolved.normalized_config);
     appendImGuiPassToCanonicalGraphs(composed);

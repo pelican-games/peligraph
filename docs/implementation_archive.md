@@ -6095,4 +6095,69 @@ renderer strategyは別ABIのままにする。
 
 ---
 
+### WP202b(済 2026-07-25): RPE11d — renderer-wide RenderStrategy
+
+参照: [`design_render_pipeline_extensibility.md`](design_render_pipeline_extensibility.md) §3、§12、
+[`design_render_graph_compiler.md`](design_render_graph_compiler.md) §5、§8、§12、
+[`design_reviews/2026-07-25_wp202b_report.md`](design_reviews/2026-07-25_wp202b_report.md)。
+
+**目的**: presetやverbose authoringを出発点としてrenderer seed config全体を生成する
+拡張点を、既存graphを変形する`GraphTransform`、部分置換、physical loweringから分離する。
+strategy出力を通常compilerへ戻し、active runtimeを直接変更する万能callbackにしない。
+
+**実装範囲**:
+
+1. public C ABI `RenderStrategy::ProviderV1`を追加した。strategy名、object parameters、
+   canonical seed config JSONとfingerprint、typed renderer facade contractを入力し、
+   semantic implementation idと完全な候補config JSONを返す。
+2. top-level `render_strategy` selectorを追加した。`name`は必須、`provider`と
+   object `parameters`は任意で、provider省略時は`builtin.authored_config_v1`が
+   selectorを除いたseedを返す。selector未指定configはcallbackもprovenanceも追加しない。
+3. preset展開後、feature parsing / composition前にstrategyを一回適用する。
+   preset overlayから追加できるが、preset自身のstrategyを暗黙overrideしない。
+4. facade V1へfeature composition、canonical color、graph variant、logical compile、
+   graph transform、tagged subgraph、Vulkan target lowering capabilityとruntime shader
+   compiler availabilityをversioned descriptorとして公開した。
+5. strategy出力をlocal object candidateへparseし、feature composition、canonical color、
+   flat/preview/XR policy、global transform、tagged subgraph、typed logical compile、
+   physical target loweringを通常どおり通した。`render_strategy` / `pipeline` control再導入と
+   不正candidateをrejectする。
+6. strategy名、provider/implementation、facade/output contract、graph variant、
+   input/output config fingerprint、owner/identity/generation/version/capabilityを
+   pipeline、logical graph、Vulkan target planへ伝播した。
+7. owner-aware registryとimmutable snapshotを追加し、
+   pass→subgraph→graph-transform→render-strategyのlock/release順をgame DLLの
+   initialize/reload/rollback/shutdownへ接続した。
+8. preview compilerとplan viewerも同じstrategy解決経路へ接続した。
+9. CPU identity/全config生成/preset/invalid candidate/lifetime test、public DLL V1/V2、
+   production hybrid/GPU-arena headless provenanceを回帰化した。
+
+**制約**:
+
+- V1はstartup config compilerが所有しないlive material/light/geometry inventoryを
+  facade capabilityとして公開しない。
+- V1出力はauthoring config JSONであり、logical graphやVulkan physical planの直書きではない。
+- providerは後段compiler、graph invariant、target capability検証を迂回できない。
+- strategyがstrategyを再帰的に生成することはできない。
+
+**受け入れ条件**:
+
+- builtin identityとgame DLLが同じtyped renderer-facade callbackを通る
+- preset展開後・feature composition前という順序を固定する
+- flat/preview/XRでtyped graph variant contractを渡す
+- malformed/non-object/control再導入/後段rejectで元seedとactive runtimeを変更しない
+- config fingerprintとprovider generation provenanceをpipeline/logical/targetへ保持する
+- snapshot lease中にowner/DLLをretireしない
+- V1→V2 reload、invalid ABI、rebuild rollback、shutdown後失効を維持する
+- production headless、関連CPU test、`git diff --check`が成功する
+
+**非対象**: live scene inventory contract、physical plan direct authoring、`NativeScope`、
+Vulkan handle公開、汎用CPU/external scheduler。
+
+依存: WP180、WP185〜WP196、WP200、WP201、WP202a。見積: 中。
+
+完了レポート: `docs/design_reviews/2026-07-25_wp202b_report.md`
+
+---
+
 未完了 WP と運用規則は [active ledger](implementation_plan.md) を参照。

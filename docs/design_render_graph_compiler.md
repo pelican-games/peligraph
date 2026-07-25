@@ -1126,13 +1126,73 @@ gate:
 - logical/pipeline/target planへproviderとgraph fingerprint provenanceを保持する
 - preset overlay、production GPU registration、V1→V2 reload、rollback、shutdownを維持する
 
+### RPE11d — renderer-wide RenderStrategy
+
+状態: **WP202bで実装済み(2026-07-25)**。`RenderStrategy`は既存graphの一部を
+変形する`GraphTransform`ではなく、preset展開済みのrenderer seed config全体から
+新しいrenderer configを生成する独立した拡張点である。
+
+```json
+{
+  "render_strategy": {
+    "name": "project.path_traced_preview",
+    "provider": "project.render_strategy",
+    "parameters": {}
+  }
+}
+```
+
+provider未指定時は`builtin.authored_config_v1`がselectorを除いたseedをそのまま返す。
+selector自体が無ければcallbackを通さず、既存configとdumpを変えない。preset overlayから
+strategyを追加できるが、preset自身がstrategyを持つ場合は暗黙overrideを許さず、presetを
+copy/ejectしてから編集する。
+
+実行位置はpreset展開後、feature parsing / compositionより前である。出力は通常どおり
+feature composition、canonical color pipeline、flat/preview/XR graph variant、
+global `GraphTransform`、tagged subgraph replacement、typed logical compile、
+Vulkan target loweringをすべて通る。strategy出力が`render_strategy`または展開済みの
+`pipeline` controlを再導入すること、非object／malformed JSON、または後段compilerに
+不正なconfigを渡すことは候補全体の失敗になり、元seedとactive runtimeを変更しない。
+
+public C ABI `RenderStrategy::ProviderV1`が受けるrenderer facade contractは、現時点で
+実際に利用可能な機構だけをversioned capabilityとして公開する。
+
+- feature composition / canonical color pipeline
+- graph variant policy(history、jitter、view family/execution、resource layout、terminal、
+  mirror、view count)
+- typed logical compile
+- global graph transform / tagged subgraph
+- Vulkan target lowering
+- runtime shader compiler availability
+
+V1はstartup config compilerが所有していないlive material / light / geometry inventoryを
+偽って公開しない。したがってV1でrenderer構造全体の生成はできるが、scene inventoryを
+走査して完全なpath tracerを組み立てるcontractは後続ABIの対象である。将来追加する場合も
+V1 facade capabilityへ破壊的に足さず、新しいversioned contractとして公開する。
+
+選択結果はstrategy名、provider / implementation、facade/output contract、graph variant、
+input/output config fingerprint、owner / identity / generation / version / capabilityを
+`CompiledRenderPipeline`、`CompiledLogicalRenderGraph`、`VulkanTargetPlan`へ残す。
+pass→subgraph→graph-transform→render-strategyの順でsnapshot lockとowner releaseを統一し、
+flat/preview/XRの全候補がpublicationを終えるまで同じprovider generationをleaseする。
+preview compilerとplan viewerも同じstrategy解決経路を使う。
+
+gate:
+
+- builtin identityとgame DLLが同じtyped renderer-facade callbackを通る
+- preset展開後かつfeature composition前に一回だけ実行する
+- strategy出力を通常のfeature/variant/logical/physical compilerへ戻す
+- malformed JSON、非object、control再導入、後段compiler rejectをfailure-atomicに扱う
+- pipeline/logical/target planへcontractとconfig fingerprint provenanceを保持する
+- flat/preview/XR、production headless、V1→V2 reload、invalid ABI、rollback、
+  shutdown後失効を維持する
+
 次の候補:
 
 1. XR2b で multiview / array-layer / depth-submit lowering
-2. renderer-wide `RenderStrategy` fixture（WP202b。global transformとは別ABI）
-3. physical plan eject / direct authoring fixture
-4. `NativeScope` は具体的な Vulkan-only 使用例が得られてから ABI 設計
-5. CPU / external domain は計測と具体的な二候補 task が得られてから
+2. physical plan eject / direct authoring fixture
+3. `NativeScope` は具体的な Vulkan-only 使用例が得られてから ABI 設計
+4. CPU / external domain は計測と具体的な二候補 task が得られてから
    `design_heterogeneous_execution_graph.md` の HEG3 / HEG4 として実装
 
 ## 13. north-star acceptance scenarios

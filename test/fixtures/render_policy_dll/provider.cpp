@@ -1,11 +1,13 @@
 #include <render/draw_sort_abi_v1.hpp>
 #include <render/graph_transform_abi_v1.hpp>
 #include <render/pass_implementation_abi_v1.hpp>
+#include <render/render_strategy_abi_v1.hpp>
 #include <render/subgraph_replacement_abi_v1.hpp>
 
 #include <atomic>
 #include <cstdint>
 #include <limits>
+#include <string_view>
 
 #ifdef _WIN32
 #define PELICAN_FIXTURE_EXPORT extern "C" __declspec(dllexport)
@@ -27,6 +29,8 @@ constexpr char subgraph_provider_name[] =
     "fixture.subgraph";
 constexpr char graph_transform_provider_name[] =
     "fixture.graph_transform";
+constexpr char render_strategy_provider_name[] =
+    "fixture.render_strategy";
 constexpr char pass_vertex_shader[] = "shaders/fixture_fullscreen";
 #if PELICAN_RENDER_POLICY_FIXTURE_VERSION == 1
 constexpr char pass_implementation_id[] =
@@ -37,6 +41,8 @@ constexpr char subgraph_implementation_id[] =
     "fixture.render.subgraph_v1@1";
 constexpr char graph_transform_implementation_id[] =
     "fixture.render.graph_transform_v1@1";
+constexpr char render_strategy_implementation_id[] =
+    "fixture.render.strategy_v1@1";
 constexpr char subgraph_json[] =
     R"json([{
       "name": "fixture_tone_v1",
@@ -57,6 +63,8 @@ constexpr char subgraph_implementation_id[] =
     "fixture.render.subgraph_v2@1";
 constexpr char graph_transform_implementation_id[] =
     "fixture.render.graph_transform_v2@1";
+constexpr char render_strategy_implementation_id[] =
+    "fixture.render.strategy_v2@1";
 constexpr char subgraph_json[] =
     R"json([{
       "name": "fixture_tone_v2",
@@ -86,6 +94,10 @@ std::atomic<std::uint32_t>
     graph_transform_registration_status{
         static_cast<std::uint32_t>(
             RenderGraphTransform::Status::unavailable)};
+std::atomic<std::uint32_t>
+    render_strategy_registration_status{
+        static_cast<std::uint32_t>(
+            RenderStrategy::Status::unavailable)};
 
 RenderPolicy::Status sortItems(
     void *, const RenderPolicy::DrawSortInputV1 *input,
@@ -355,6 +367,99 @@ RenderGraphTransform::Status resolveGraphTransform(
     return RenderGraphTransform::Status::ok;
 }
 
+bool equalsRange(
+    const char *data, std::uint32_t size,
+    std::string_view expected) noexcept {
+    return data != nullptr &&
+           std::string_view{data, size} == expected;
+}
+
+RenderStrategy::Status resolveRenderStrategy(
+    void *,
+    const RenderStrategy::ResolveRenderStrategyInputV1
+        *input,
+    RenderStrategy::RenderStrategyOutputV1
+        *output) noexcept {
+    if (input == nullptr || output == nullptr ||
+        input->struct_size <
+            sizeof(RenderStrategy::
+                       ResolveRenderStrategyInputV1) ||
+        input->version !=
+            RenderStrategy::descriptorVersionV1 ||
+        input->reserved0 != 0 ||
+        input->reserved1 != 0 ||
+        input->reserved2 != 0 ||
+        input->reserved3 != 0 ||
+        input->reserved4 != 0 ||
+        input->contract == nullptr ||
+        input->strategy_name_utf8 == nullptr ||
+        input->strategy_name_size == 0 ||
+        input->parameters_json_utf8 == nullptr ||
+        input->parameters_json_size == 0 ||
+        input->seed_config_json_utf8 == nullptr ||
+        input->seed_config_json_size == 0 ||
+        input->seed_config_fingerprint == 0 ||
+        output->struct_size <
+            sizeof(RenderStrategy::
+                       RenderStrategyOutputV1) ||
+        output->version !=
+            RenderStrategy::descriptorVersionV1) {
+        return RenderStrategy::Status::invalid_argument;
+    }
+
+    const auto &contract = *input->contract;
+    const auto &policy =
+        contract.graph_variant_policy;
+    if (contract.struct_size <
+            sizeof(RenderStrategy::
+                       RendererFacadeContractV1) ||
+        contract.version !=
+            RenderStrategy::descriptorVersionV1 ||
+        contract.reserved0 != 0 ||
+        contract.reserved1 != 0 ||
+        contract.reserved2 != 0 ||
+        contract.reserved3 != 0 ||
+        contract.reserved4 != 0 ||
+        contract.reserved5 != 0 ||
+        !equalsRange(
+            contract.contract_id_utf8,
+            contract.contract_id_size,
+            RenderStrategy::rendererFacadeContractIdV1) ||
+        !equalsRange(
+            contract.output_contract_id_utf8,
+            contract.output_contract_id_size,
+            RenderStrategy::authoredConfigContractIdV1) ||
+        contract.capability_bits !=
+            RenderStrategy::builtinFacadeCapabilitiesV1 ||
+        contract.runtime_shader_compiler_enabled > 1 ||
+        policy.struct_size <
+            sizeof(RenderStrategy::GraphVariantPolicyV1) ||
+        policy.version !=
+            RenderStrategy::descriptorVersionV1 ||
+        policy.reserved0 != 0 ||
+        policy.reserved1 != 0 ||
+        policy.reserved2 != 0 ||
+        policy.reserved3 != 0 ||
+        policy.reserved4 != 0) {
+        return RenderStrategy::Status::invalid_argument;
+    }
+
+    *output =
+        RenderStrategy::descriptor<
+            RenderStrategy::RenderStrategyOutputV1>();
+    output->implementation_id_utf8 =
+        render_strategy_implementation_id;
+    output->implementation_id_size =
+        static_cast<std::uint32_t>(
+            sizeof(render_strategy_implementation_id) -
+            1);
+    output->config_json_utf8 =
+        input->seed_config_json_utf8;
+    output->config_json_size =
+        input->seed_config_json_size;
+    return RenderStrategy::Status::ok;
+}
+
 struct Registration {
     Registration() noexcept {
         auto api = RenderPolicy::descriptor<RenderPolicy::ApiV1>();
@@ -471,6 +576,42 @@ struct Registration {
             static_cast<std::uint32_t>(
                 transform_status),
             std::memory_order_release);
+
+        auto strategy_api =
+            RenderStrategy::descriptor<
+                RenderStrategy::ApiV1>();
+        auto strategy_status =
+            RenderStrategy::getApiV1(
+                RenderStrategy::abiVersionV1,
+                &strategy_api);
+        if (strategy_status ==
+            RenderStrategy::Status::ok) {
+            auto provider =
+                RenderStrategy::descriptor<
+                    RenderStrategy::ProviderV1>();
+            provider.capability_bits =
+                RenderStrategy::
+                    builtinProviderCapabilitiesV1;
+            provider.name_utf8 =
+                render_strategy_provider_name;
+            provider.name_size =
+                static_cast<std::uint32_t>(
+                    sizeof(
+                        render_strategy_provider_name) -
+                    1);
+            provider.resolve_render_strategy =
+                resolveRenderStrategy;
+            RenderStrategy::ProviderHandleV1
+                handle{};
+            strategy_status =
+                strategy_api.register_provider(
+                    strategy_api.context, &provider,
+                    &handle);
+        }
+        render_strategy_registration_status.store(
+            static_cast<std::uint32_t>(
+                strategy_status),
+            std::memory_order_release);
     }
 };
 
@@ -498,6 +639,12 @@ pelican_render_subgraph_fixture_registration_status() {
 PELICAN_FIXTURE_EXPORT std::uint32_t
 pelican_render_graph_transform_fixture_registration_status() {
     return graph_transform_registration_status.load(
+        std::memory_order_acquire);
+}
+
+PELICAN_FIXTURE_EXPORT std::uint32_t
+pelican_render_strategy_fixture_registration_status() {
+    return render_strategy_registration_status.load(
         std::memory_order_acquire);
 }
 

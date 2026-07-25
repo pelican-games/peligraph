@@ -6,6 +6,7 @@
 #include "graphtransformregistry.hpp"
 #include "passimplementationregistry.hpp"
 #include "renderpipelinegpuarena.hpp"
+#include "renderstrategyregistry.hpp"
 #include "renderingpassconfigjsonparser.hpp"
 #include "renderingpassconfigloader.hpp"
 #include "renderingpasscontainer.hpp"
@@ -198,20 +199,25 @@ PreparedRenderingPassConfigVariant prepareRenderingPassConfigVariant(
     RenderingPassConfigRegistrationDependencies &dependencies,
     const GraphTransformRegistrySnapshot
         &graph_transform_providers,
+    const RenderStrategyRegistrySnapshot
+        &render_strategy_providers,
     const SubgraphReplacementRegistrySnapshot
         &subgraph_replacement_providers) {
     const auto swapchain_format =
         dependencies.runtime.render_target.getSwapchainFormat();
     const auto target_extent = dependencies.runtime.render_target.getExtent();
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    constexpr bool runtime_shader_compiler_enabled = true;
+#else
+    constexpr bool runtime_shader_compiler_enabled = false;
+#endif
+    std::optional<RenderStrategySelection>
+        resolved_render_strategy;
     auto resolved = resolveRenderPipeline(
         RenderPipelineRequest{rendering_pass_data,
                               "rendering pass registration"},
         RenderEnvironmentCapabilities{
-#if PELICAN_RUNTIME_SHADER_COMPILER
-            true,
-#else
-            false,
-#endif
+            runtime_shader_compiler_enabled,
             dependencies.options.graph_variant,
         },
         RenderPipelineResolveDependencies{
@@ -230,6 +236,23 @@ PreparedRenderingPassConfigVariant prepareRenderingPassConfigVariant(
                 return resolveRenderTargetFormatClassesV2(
                     config, swapchain_format, target_extent, hdr_enabled);
             },
+            .resolve_render_strategy =
+                [&render_strategy_providers,
+                 &resolved_render_strategy,
+                 runtime_shader_compiler_enabled](
+                    const nlohmann::json &config,
+                    const CompiledGraphVariantPolicy
+                        &graph_variant_policy) {
+                    auto generated =
+                        resolveRenderStrategy(
+                            config,
+                            graph_variant_policy,
+                            runtime_shader_compiler_enabled,
+                            render_strategy_providers);
+                    resolved_render_strategy =
+                        generated.selection;
+                    return std::move(generated.config);
+                },
         });
     auto compiled_pipeline_value =
         compileRenderPipeline(resolved);
@@ -271,11 +294,16 @@ PreparedRenderingPassConfigVariant prepareRenderingPassConfigVariant(
     applyResolvedLogicalGraphTransformSelections(
         graph_definition_list,
         resolved_transforms.selections);
+    applyResolvedRenderStrategySelection(
+        graph_definition_list,
+        resolved_render_strategy);
     applyResolvedTaggedSubgraphSelections(
         graph_definition_list,
         resolved_subgraphs.graphs);
     compiled_pipeline_value.graph_transforms =
         resolved_transforms.selections;
+    compiled_pipeline_value.render_strategy =
+        resolved_render_strategy;
     auto compiled_pipeline =
         std::make_shared<const CompiledRenderPipeline>(
             std::move(compiled_pipeline_value));
@@ -514,16 +542,18 @@ registerRenderingPassConfigVariantsData(
     }
 
     // Acquire provider leases in the same order used by game-DLL owner
-    // release (pass implementation, subgraph replacement, then graph
-    // transform). Keeping one immutable set across every variant avoids
-    // mixed generations and a shared/exclusive lock-order inversion during
-    // hot reload.
+    // release (pass implementation, subgraph replacement, graph transform,
+    // then render strategy). Keeping one immutable set across every variant
+    // avoids mixed generations and a shared/exclusive lock-order inversion
+    // during hot reload.
     auto pass_implementation_providers =
         passImplementationRegistry().snapshot();
     auto subgraph_replacement_providers =
         subgraphReplacementRegistry().snapshot();
     auto graph_transform_providers =
         graphTransformRegistry().snapshot();
+    auto render_strategy_providers =
+        renderStrategyRegistry().snapshot();
 
     // Every pure CPU candidate is completed before any mutable GPU registry
     // checkpoint is opened.
@@ -535,6 +565,7 @@ registerRenderingPassConfigVariantsData(
             prepareRenderingPassConfigVariant(
                 rendering_pass_data, variant,
                 graph_transform_providers,
+                render_strategy_providers,
                 subgraph_replacement_providers));
     }
 

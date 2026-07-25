@@ -500,6 +500,46 @@ void validateCompiledLogicalRenderGraph(
                                  graph.name);
     }
 
+    if (graph.render_strategy) {
+        const auto &selection =
+            *graph.render_strategy;
+        requireName(
+            selection.name,
+            "render strategy name");
+        requireName(
+            selection.provider,
+            "render strategy provider");
+        requireName(
+            selection.implementation,
+            "render strategy implementation");
+        requireName(
+            selection.contract,
+            "render strategy contract");
+        requireName(
+            selection.output_contract,
+            "render strategy output contract");
+        if (selection.graph_variant != "flat" &&
+            selection.graph_variant != "preview" &&
+            selection.graph_variant != "xr") {
+            throw std::runtime_error(
+                "logical graph render strategy has an "
+                "invalid graph variant: " +
+                selection.graph_variant);
+        }
+        if (selection.facade_capability_bits == 0 ||
+            selection.input_config_fingerprint == 0 ||
+            selection.output_config_fingerprint == 0 ||
+            selection.provider_identity == 0 ||
+            selection.provider_generation == 0 ||
+            selection.provider_version == 0 ||
+            selection.provider_capability_bits == 0) {
+            throw std::runtime_error(
+                "logical graph render strategy has "
+                "incomplete provider or config provenance: " +
+                selection.name);
+        }
+    }
+
     std::set<std::string, std::less<>>
         transform_names;
     std::set<std::uint32_t>
@@ -733,6 +773,40 @@ nlohmann::ordered_json compiledLogicalRenderGraphToJson(
             {"consumer", nlohmann::ordered_json{{"node", edge.consumer_node},
                                                  {"port", edge.consumer_port}}},
         });
+    }
+    if (graph.render_strategy) {
+        const auto &selection =
+            *graph.render_strategy;
+        result["render_strategy"] =
+            nlohmann::ordered_json{
+                {"name", selection.name},
+                {"provider", selection.provider},
+                {"implementation",
+                 selection.implementation},
+                {"contract", selection.contract},
+                {"output_contract",
+                 selection.output_contract},
+                {"graph_variant",
+                 selection.graph_variant},
+                {"facade_capability_bits",
+                 selection.facade_capability_bits},
+                {"input_config_fingerprint",
+                 selection.input_config_fingerprint},
+                {"output_config_fingerprint",
+                 selection.output_config_fingerprint},
+                {"provider_owner",
+                 selection.provider_owner},
+                {"provider_identity",
+                 selection.provider_identity},
+                {"provider_generation",
+                 selection.provider_generation},
+                {"provider_version",
+                 selection.provider_version},
+                {"provider_capability_bits",
+                 selection.provider_capability_bits},
+                {"explicitly_selected",
+                 selection.explicitly_selected},
+            };
     }
     result["graph_transforms"] =
         nlohmann::ordered_json::array();

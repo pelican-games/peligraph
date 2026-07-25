@@ -280,12 +280,26 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
     // workflow so a preset update cannot silently reinterpret a deep merge.
     requireOnlyKeys(authored_config,
                     {"pipeline", "features", "snapshots", "shader_defines",
-                     "draw_sort", "graph_transforms"},
+                     "draw_sort", "graph_transforms",
+                     "render_strategy"},
                     "rendering config using pipeline preset");
     appendUniqueArray(resolved, authored_config, "features", "rendering config", false);
     appendUniqueArray(resolved, authored_config, "shader_defines", "rendering config", true);
     appendUniqueArray(resolved, authored_config, "graph_transforms",
                       "rendering config", false);
+    if (authored_config.contains("render_strategy")) {
+        if (!authored_config.at("render_strategy").is_object()) {
+            throw std::runtime_error(
+                "rendering config render_strategy must be an object");
+        }
+        if (resolved.contains("render_strategy")) {
+            throw std::runtime_error(
+                "rendering config cannot override preset render_strategy; "
+                "copy/eject the preset first");
+        }
+        resolved["render_strategy"] =
+            authored_config.at("render_strategy");
+    }
     if (authored_config.contains("snapshots")) {
         if (resolved.contains("snapshots")) {
             throw std::runtime_error(
@@ -444,6 +458,18 @@ ResolvedRenderPipeline resolveRenderPipeline(
                 return include;
             },
             dependencies.load_pipeline_json,
+            [&dependencies, &graph_variant_policy](
+                const nlohmann::json &config) {
+                if (dependencies.resolve_render_strategy) {
+                    return dependencies.resolve_render_strategy(
+                        config, graph_variant_policy);
+                }
+                if (config.contains("render_strategy")) {
+                    throw std::runtime_error(
+                        "render strategy resolver is unavailable");
+                }
+                return config;
+            },
         });
 
     ResolvedRenderPipeline result;
@@ -868,6 +894,39 @@ CompiledRenderPipeline compileRenderPipeline(
 nlohmann::json serializeCompiledRenderPipelineMetadata(
     const CompiledRenderPipeline &pipeline) {
     nlohmann::json metadata = nlohmann::json::object();
+    if (pipeline.render_strategy) {
+        const auto &selection =
+            *pipeline.render_strategy;
+        metadata["render_strategy"] = {
+            {"name", selection.name},
+            {"provider", selection.provider},
+            {"implementation",
+             selection.implementation},
+            {"contract", selection.contract},
+            {"output_contract",
+             selection.output_contract},
+            {"graph_variant",
+             selection.graph_variant},
+            {"facade_capability_bits",
+             selection.facade_capability_bits},
+            {"input_config_fingerprint",
+             selection.input_config_fingerprint},
+            {"output_config_fingerprint",
+             selection.output_config_fingerprint},
+            {"provider_owner",
+             selection.provider_owner},
+            {"provider_identity",
+             selection.provider_identity},
+            {"provider_generation",
+             selection.provider_generation},
+            {"provider_version",
+             selection.provider_version},
+            {"provider_capability_bits",
+             selection.provider_capability_bits},
+            {"explicitly_selected",
+             selection.explicitly_selected},
+        };
+    }
     if (!pipeline.graph_transforms.empty()) {
         auto transforms = nlohmann::json::array();
         for (const auto &selection :

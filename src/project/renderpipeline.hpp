@@ -148,6 +148,10 @@ struct RenderPipelineResolveDependencies {
         normalize_config;
     std::function<void(nlohmann::json &)> transform_config;
     std::function<void(const nlohmann::json &)> validate_config;
+    std::function<nlohmann::json(
+        const nlohmann::json &,
+        const CompiledGraphVariantPolicy &)>
+        resolve_render_strategy;
 };
 
 struct ResolvedRenderPipeline {
@@ -263,6 +267,8 @@ struct CompiledRenderPipeline {
         graph_variant_feature_decisions;
     std::vector<LogicalGraphTransformSelection>
         graph_transforms;
+    std::optional<RenderStrategySelection>
+        render_strategy;
     std::vector<RenderPipelineDiagnostic> diagnostics;
     bool used_features = false;
 };

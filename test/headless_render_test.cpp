@@ -22,6 +22,7 @@
 #include "../src/core/renderingpass/graphtransformregistry.hpp"
 #include "../src/core/renderingpass/renderingpassconfigregistration.hpp"
 #include "../src/core/renderingpass/renderpipelinegpuarena.hpp"
+#include "../src/core/renderingpass/renderstrategyregistry.hpp"
 #include "../src/core/renderingpass/rendertargetcontainer.hpp"
 #include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
 #include "../src/core/shader/pipelinefactory.hpp"
@@ -175,6 +176,9 @@ void main() {
 nlohmann::json gpuArenaRenderingConfig() {
     return nlohmann::json::parse(R"json(
 {
+  "render_strategy": {
+    "name": "headless.gpu_arena"
+  },
   "graph_transforms": [
     {"name": "gpu_arena.identity"}
   ],
@@ -487,6 +491,9 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
                      {{"samples", 4},
                       {"fallback", "lower_supported"},
                       {"scope", "geometry"}}}}}}},
+                {"render_strategy",
+                 {{"name",
+                   "headless.hybrid_authored"}}},
                 {"graph_transforms",
                  nlohmann::json::array(
                      {{{"name",
@@ -537,6 +544,23 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
         REQUIRE(execution->render_pipeline != nullptr);
         REQUIRE(
             execution->render_pipeline
+                ->render_strategy.has_value());
+        REQUIRE(
+            execution->target_plan
+                ->render_strategy ==
+            execution->render_pipeline
+                ->render_strategy);
+        REQUIRE(
+            execution->render_pipeline
+                ->render_strategy->name ==
+            "headless.hybrid_authored");
+        REQUIRE(
+            execution->render_pipeline
+                ->render_strategy->provider ==
+            std::string{
+                builtinAuthoredRenderStrategyProvider});
+        REQUIRE(
+            execution->render_pipeline
                 ->graph_transforms.size() == 1);
         REQUIRE(
             execution->target_plan
@@ -551,6 +575,15 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
                 builtinLogicalGraphTransformProvider});
         const auto frame_plan_json =
             renderer.currentFramePlanJson();
+        REQUIRE(
+            frame_plan_json.at("render_strategy")
+                .at("name") ==
+            "headless.hybrid_authored");
+        REQUIRE(
+            frame_plan_json.at("physical_target_plan")
+                .at("render_strategy")
+                .at("name") ==
+            "headless.hybrid_authored");
         const auto runtime_generation =
             GET_MODULE(FrameGraphRuntimeContainer)
                 .activeGeneration();
@@ -1044,6 +1077,18 @@ TEST_CASE(
                 gpuArenaRegistrationDependencies({}));
         REQUIRE(registered.runtime_generation == 1);
         REQUIRE(registered.target_plans.size() == 1);
+        REQUIRE(
+            registered.target_plans.front()
+                ->render_strategy.has_value());
+        REQUIRE(
+            registered.target_plans.front()
+                ->render_strategy->name ==
+            "headless.gpu_arena");
+        REQUIRE(
+            registered.target_plans.front()
+                ->render_strategy->provider ==
+            std::string{
+                builtinAuthoredRenderStrategyProvider});
         REQUIRE(
             registered.target_plans.front()
                 ->graph_transforms.size() == 1);

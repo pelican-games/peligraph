@@ -4,6 +4,7 @@
 #include "../../project/logicalrendergraph.hpp"
 #include <cstddef>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -41,6 +42,8 @@ struct FrameGraphDefinition {
         graph_transforms;
     std::vector<LogicalSubgraphReplacementSelection>
         subgraph_replacements;
+    std::optional<RenderStrategySelection>
+        render_strategy;
 };
 
 struct FramePlanNode {

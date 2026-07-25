@@ -196,6 +196,27 @@ struct LogicalGraphTransformSelection {
         const LogicalGraphTransformSelection &) const = default;
 };
 
+struct RenderStrategySelection {
+    std::string name;
+    std::string provider;
+    std::string implementation;
+    std::string contract;
+    std::string output_contract;
+    std::string graph_variant;
+    std::uint64_t facade_capability_bits = 0;
+    std::uint64_t input_config_fingerprint = 0;
+    std::uint64_t output_config_fingerprint = 0;
+    std::uint64_t provider_owner = 0;
+    std::uint64_t provider_identity = 0;
+    std::uint32_t provider_generation = 0;
+    std::uint32_t provider_version = 0;
+    std::uint64_t provider_capability_bits = 0;
+    bool explicitly_selected = false;
+
+    bool operator==(
+        const RenderStrategySelection &) const = default;
+};
+
 struct LogicalSubgraphReplacementSelection {
     std::string region;
     std::string provider;
@@ -235,6 +256,8 @@ struct CompiledLogicalRenderGraph {
     std::vector<LogicalSubgraphReplacementSelection>
         subgraph_replacements;
     std::vector<LogicalCompileDecision> decisions;
+    std::optional<RenderStrategySelection>
+        render_strategy;
 };
 
 std::vector<LogicalDataEdge> deriveLogicalDataEdges(

@@ -1513,7 +1513,17 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         config, dependencies.load_pipeline_json
                     ? dependencies.load_pipeline_json
                     : dependencies.load_feature_json);
-    const auto &resolved_config = preset_resolution.config;
+    auto resolved_config = preset_resolution.config;
+    if (dependencies.transform_resolved_config) {
+        resolved_config =
+            dependencies.transform_resolved_config(
+                resolved_config);
+        if (!resolved_config.is_object()) {
+            throw std::runtime_error(
+                "resolved rendering config transform must "
+                "return an object");
+        }
+    }
 
     const auto feature_instances = parseFeatureInstances(resolved_config);
     std::vector<std::string> shader_defines;

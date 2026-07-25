@@ -208,6 +208,8 @@ struct VulkanTargetPlan {
         graph_transforms;
     std::vector<LogicalSubgraphReplacementSelection>
         subgraph_replacements;
+    std::optional<RenderStrategySelection>
+        render_strategy;
     BackendSelection backend_selection;
     LogicalPlanningOpportunityReport opportunities;
     TargetLoweringGraph lowering_graph;

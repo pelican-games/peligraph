@@ -1,6 +1,7 @@
 #include "previewgraph.hpp"
 
 #include "renderingpassconfigloader.hpp"
+#include "renderstrategyregistry.hpp"
 #include "../../project/renderpipeline.hpp"
 
 #include <stdexcept>
@@ -27,6 +28,8 @@ PreviewGraphProgram precompilePreviewGraph(
     bool runtime_shader_compiler_enabled) {
     const auto base = loadRenderingPassConfigJsonFromString(
         rendering_config_json, "preview graph");
+    const auto strategy_providers =
+        renderStrategyRegistry().snapshot();
     auto resolved = resolveRenderPipeline(
         RenderPipelineRequest{base, "preview graph"},
         RenderEnvironmentCapabilities{
@@ -35,6 +38,18 @@ PreviewGraphProgram precompilePreviewGraph(
         RenderPipelineResolveDependencies{
             .load_feature_json = load_feature_json,
             .load_pipeline_json = load_feature_json,
+            .resolve_render_strategy =
+                [&strategy_providers,
+                 runtime_shader_compiler_enabled](
+                    const nlohmann::json &config,
+                    const CompiledGraphVariantPolicy
+                        &policy) {
+                    return resolveRenderStrategy(
+                               config, policy,
+                               runtime_shader_compiler_enabled,
+                               strategy_providers)
+                        .config;
+                },
         });
 
     PreviewGraphProgram result;

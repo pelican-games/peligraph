@@ -75,11 +75,17 @@ ctest --test-dir ./build -C Debug --output-on-failure
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
-(最新完了: WP201、2026-07-24。本文と完了レポートは archive 参照。)
+(最新完了: WP202b、2026-07-25。本文と完了レポートは archive 参照。)
 
 ## 2. WP 詳細
 
-現在アクティブな WP はない。WP201 でtagged region / subgraph replacementを
+現在アクティブな WP はない。WP202bでrenderer-wide `RenderStrategy`を
+preset展開後・feature composition前の独立ABIとして実装した。typed renderer facade、
+builtin identity、game-DLL V1/V2 provider、failure-atomicな全config生成を
+flat/preview/XR、logical graph、Vulkan target plan、transaction publicationへ接続した。
+WP202aでは順序付きglobal `GraphTransform` chainを実装し、protected boundaryと
+canonical nodeを維持したfull-config candidateだけを再compileして採用する。
+WP201 でtagged region / subgraph replacementを
 public game-DLL providerまで縦切りし、元graphを破壊しないcandidate再compile、
 typed boundary不変検証、logical/target provenance、transaction snapshotへ接続した。
 WP200 ではfullscreen passのshader pair差し替えを
@@ -98,8 +104,8 @@ window swapchain、offscreen、OpenXR各eye、独立desktop mirrorの実submissi
 使用generationを保持し、旧GPU resourceは最後の対応fence完了より前にretireされない。
 失敗時はactive generation、registry、config cache、watch dependencyを維持する。
 renderer の次候補は XR2b multiview / array-layer / depth-submit lowering、または
-global transform / renderer strategyの独立fixtureである。physical direct authoringや
-NativeScopeは具体的な利用例を得てから進める。
+physical plan eject / direct authoring fixtureである。`NativeScope`は具体的な
+Vulkan-only利用例を得てから進める。
 
 ## 3. トラック現況(WP 化待ちを含む)
 
@@ -142,11 +148,14 @@ NativeScopeは具体的な利用例を得てから進める。
   generation-owned registry lease(WP195)、submission-fence lifetime と
   pipeline watcher publication(RPE10b3 / WP196)、fullscreen
   PassImplementation provider(RPE11a / WP200)、tagged region / subgraph replacement
-  (RPE11b / WP201)、global GraphTransform(RPE11c / WP202a)まで完了。builtin identityと
+  (RPE11b / WP201)、global GraphTransform(RPE11c / WP202a)、renderer-wide
+  RenderStrategy(RPE11d / WP202b)まで完了。builtin identityと
   game DLL差し替えproviderは同じtyped
   boundary contractを使い、replacement candidateは全logical graphを再compileしてから
   target loweringへ進む。global transformは順序付きfull-config candidateとして実装し、
-  renderer strategyとは同じ万能callbackへ統合せず、次の個別fixtureとして残す。
+  renderer strategyはpreset後のseed config全体を生成する別ABIとして実装した。
+  strategy V1のfacadeは現compilerが実際に消費できる機構だけを公開し、live
+  material/light/geometry inventoryは後続versionへ残す。
   RPE6c0/1 では [HEG] の immutable canonical / disposable lowering seam、
   dialect legality、pairwise endpoint relationを置くが、汎用 CPU scheduler、execution linker、
   動画 backend は計測・具体需要まで実装しない。logical effectは作者を信頼する任意宣言、
