@@ -734,6 +734,20 @@ add_executable(pelican_test_physics_feature_probe physics_feature_probe.cpp)
 set_target_properties(pelican_test_physics_feature_probe PROPERTIES CXX_STANDARD 20)
 target_link_libraries(pelican_test_physics_feature_probe PRIVATE pelican_core)
 add_test(NAME physics_feature_probe COMMAND pelican_test_physics_feature_probe)
+
+# Keep the purge configuration compile- and behavior-checked even when the
+# main test build enables physics. This target intentionally does not link
+# pelican_core; it exercises the standalone unavailable-service stub.
+add_executable(pelican_test_physics_off_feature_probe
+    physics_feature_probe.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/phys/physicsservice_stub.cpp
+)
+set_target_properties(pelican_test_physics_off_feature_probe PROPERTIES CXX_STANDARD 20)
+target_compile_definitions(pelican_test_physics_off_feature_probe PRIVATE
+    PELICAN_WITH_PHYSICS=0
+)
+add_test(NAME physics_off_feature_probe COMMAND pelican_test_physics_off_feature_probe)
+
 pelican_define_test(projectconfig_test pelican_core glm)
 target_compile_definitions(pelican_test_projectconfig_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"

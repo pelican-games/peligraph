@@ -6,6 +6,10 @@
 
 namespace Pelican::Physics {
 
+// Physics API/service/provider V2 is the only accepted service surface.
+// The V1 suffixes in this file identify the still-current descriptor and
+// query-payload layouts embedded by that V2 surface; they do not expose a
+// Physics API V1 or ProviderV1 compatibility path.
 inline constexpr std::uint32_t descriptorVersionV1 = 1;
 inline constexpr std::size_t descriptorHeaderSize = 16;
 inline constexpr std::uint32_t maximumProviderNameBytesV1 = 127;
@@ -175,9 +179,10 @@ struct ProviderOverlapQueryV1 {
 };
 
 struct ProviderRaycastHitV1 {
-    // A V1 provider returns at most one hit per input collider. The engine
-    // validates the index/distance/normal, reconstructs the position from the
-    // canonical ray, restores identity/metadata, and applies canonical order.
+    // A provider callback using the V1 query payload returns at most one hit
+    // per input collider. The engine validates the index/distance/normal,
+    // reconstructs the position from the canonical ray, restores
+    // identity/metadata, and applies canonical order.
     std::uint32_t collider_index = 0;
     std::uint32_t reserved = 0;
     float distance = 0.0F;
@@ -185,7 +190,8 @@ struct ProviderRaycastHitV1 {
 };
 
 struct ProviderOverlapHitV1 {
-    // A V1 provider returns at most one hit per input collider.
+    // A provider callback using the V1 query payload returns at most one hit
+    // per input collider.
     std::uint32_t collider_index = 0;
     std::uint32_t reserved = 0;
 };

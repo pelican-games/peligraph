@@ -4,6 +4,13 @@ Date: 2026-07-15
 
 Status: query boundary, built-in provider, purge configurations, and optional Jolt provider implemented
 
+> **2026-07-26 supersession:** WP214 removed the Physics API/service/provider V1
+> acceptance surface. The current boundary is `ApiV2` / `ServiceV2` /
+> `ProviderV2` in `physics/abi_v2.hpp`. Names ending in `V1` that remain in
+> `physics/query_types.hpp` identify the payload-layout version used by V2;
+> they are not a legacy provider path. See
+> [`2026-07-26_wp214_report.md`](2026-07-26_wp214_report.md).
+
 ## Outcome
 
 Physics queries now cross a versioned `PhysicsServiceV1` / `ProviderV1` function-table boundary.
