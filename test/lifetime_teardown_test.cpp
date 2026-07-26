@@ -6,6 +6,7 @@
 #include "../src/core/vkcore/deletionqueue.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <algorithm>
 #include <array>
@@ -194,7 +195,9 @@ PELICAN_REGISTER_EVENT(LifetimeTeardownEvent);
 
 TEST_CASE("Exceptional teardown drains every explicit queue in normative order",
           "[wp171][teardown][fault-injection]") {
-    for (const auto &fault_step : normative_teardown_steps) {
+    for (const auto fault : runtime_teardown_order) {
+        const auto fault_step =
+            std::string{runtimeTeardownStepName(fault)};
         CAPTURE(fault_step);
         internal::clearPendingEvents();
         module_destruction_trace.clear();
@@ -210,10 +213,15 @@ TEST_CASE("Exceptional teardown drains every explicit queue in normative order",
             (void)GET_MODULE(BehaviorAttachmentArena);
             seedExplicitQueues(callback_count, invalid_owner_count);
 
-            teardown.run();
+            const auto result = teardown.run();
 
             REQUIRE(FastModuleContainer::phase() ==
                     ModuleRuntimePhase::shutting_down);
+            REQUIRE_FALSE(result.succeeded());
+            REQUIRE(result.failed(fault));
+            REQUIRE_THROWS_WITH(
+                requireRuntimeTeardownSuccess(result),
+                "runtime teardown failed at " + fault_step);
             REQUIRE(GET_MODULE(LifetimePermutationQueue).core.pendingCount() == 0);
             REQUIRE_FALSE(GET_MODULE(LifetimePermutationQueue)
                               .core.acceptingResources());
@@ -248,8 +256,10 @@ TEST_CASE("Runtime reset drains work without entering terminal shutdown",
         seedExplicitQueues(callback_count, invalid_owner_count);
         FastModuleContainer::enterRunningPhase();
 
-        teardown.run();
+        const auto result = teardown.run();
 
+        REQUIRE(result.succeeded());
+        REQUIRE(teardown.run().succeeded());
         REQUIRE(observation.steps == normative_teardown_steps);
         REQUIRE(FastModuleContainer::phase() == ModuleRuntimePhase::running);
         auto &queue = GET_MODULE(LifetimePermutationQueue).core;

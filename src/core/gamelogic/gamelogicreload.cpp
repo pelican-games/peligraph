@@ -439,7 +439,7 @@ bool isGameLogicReloadInProgress() noexcept {
 namespace {
 void runtimeTeardown() {
     RuntimeTeardownGuard guard;
-    guard.run();
+    requireRuntimeTeardownSuccess(guard.run());
 }
 
 void rebuildCurrentScene() {

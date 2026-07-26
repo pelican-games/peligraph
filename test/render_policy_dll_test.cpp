@@ -1,3 +1,4 @@
+#include "../src/core/appflow/teardown.hpp"
 #include "../src/core/gamelogic/gamelogicreload.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/renderingpass/graphtransformregistry.hpp"
@@ -433,6 +434,27 @@ TEST_CASE("public render providers survive reload rollback and in-flight unload"
     REQUIRE(
         resolveRenderStrategyImplementation() ==
         "fixture.render.strategy_v1@1");
+
+    // A best-effort runtime teardown still runs every step, but hot reload
+    // must treat any recorded failure as a transaction failure. In
+    // particular, the old provider remains callable because its DLL was not
+    // unloaded.
+    int teardown_rollback_rebuilds = 0;
+    REQUIRE_FALSE(reloader.reloadNow(
+        [] {
+            requireRuntimeTeardownSuccess(RuntimeTeardownResult{
+                .failed_steps = runtimeTeardownStepBit(
+                    RuntimeTeardownStep::owner_callbacks),
+            });
+        },
+        [&] { ++teardown_rollback_rebuilds; }));
+    REQUIRE(teardown_rollback_rebuilds == 1);
+    REQUIRE(reloader.status().generation == 1);
+    REQUIRE_THAT(reloader.status().last_error,
+                 Catch::Matchers::ContainsSubstring("owner-callbacks"));
+    REQUIRE(buildOrder() == std::vector<std::uint32_t>{30, 20, 10});
+    REQUIRE(resolveFullscreenFragment() ==
+            "shaders/fixture_composite_v1");
 
     replaceFixture(fixture_v2, live_dll);
     controls.arm_next_sort();

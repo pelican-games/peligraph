@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <functional>
 #include <optional>
 #include <string_view>
@@ -29,6 +30,7 @@ inline constexpr std::array runtime_teardown_order{
     RuntimeTeardownStep::pending_events,
     RuntimeTeardownStep::deletion_queue,
 };
+static_assert(runtime_teardown_order.size() <= 32);
 
 constexpr std::string_view runtimeTeardownStepName(RuntimeTeardownStep step) {
     switch (step) {
@@ -62,13 +64,35 @@ enum class RuntimeTeardownMode {
     terminal_shutdown,
 };
 
-void teardownRuntimeNoThrow() noexcept;
-void teardownRuntimeNoThrow(const RuntimeTeardownActions &actions) noexcept;
+constexpr std::uint32_t runtimeTeardownStepBit(RuntimeTeardownStep step) {
+    return std::uint32_t{1} << static_cast<std::uint32_t>(step);
+}
+
+struct RuntimeTeardownResult {
+    std::uint32_t failed_steps = 0;
+
+    bool succeeded() const noexcept {
+        return failed_steps == 0;
+    }
+
+    bool failed(RuntimeTeardownStep step) const noexcept {
+        return (failed_steps & runtimeTeardownStepBit(step)) != 0;
+    }
+};
+
+RuntimeTeardownResult teardownRuntimeNoThrow() noexcept;
+RuntimeTeardownResult
+teardownRuntimeNoThrow(const RuntimeTeardownActions &actions) noexcept;
+
+// Converts a best-effort teardown report into a transaction failure. Runtime
+// reload must call this before unloading code which may still own callbacks.
+void requireRuntimeTeardownSuccess(const RuntimeTeardownResult &result);
 
 class RuntimeTeardownGuard {
     bool completed = false;
     RuntimeTeardownMode mode = RuntimeTeardownMode::runtime_reset;
     std::optional<RuntimeTeardownActions> actions;
+    RuntimeTeardownResult result;
 
   public:
     RuntimeTeardownGuard() = default;
@@ -83,7 +107,7 @@ class RuntimeTeardownGuard {
     RuntimeTeardownGuard &operator=(const RuntimeTeardownGuard &) = delete;
     ~RuntimeTeardownGuard();
 
-    void run() noexcept;
+    RuntimeTeardownResult run() noexcept;
 };
 
 } // namespace Pelican

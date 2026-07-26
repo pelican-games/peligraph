@@ -11,22 +11,37 @@
 #include "../vkcore/deletionqueue.hpp"
 #include "../userpublic/details/event/registerer.hpp"
 
+#include <stdexcept>
+#include <string>
+
 namespace Pelican {
 namespace {
 
 template <class Function>
-void cleanupStep(const char *name, Function &&function) noexcept {
+bool cleanupStep(const char *name, Function &&function) noexcept {
     try {
         function();
+        return true;
     } catch (const std::exception &error) {
-        if (logger != nullptr) {
-            LOG_ERROR(logger, "runtime teardown step '{}' failed: {}", name, error.what());
+        try {
+            if (logger != nullptr) {
+                LOG_ERROR(logger, "runtime teardown step '{}' failed: {}", name,
+                          error.what());
+            }
+        } catch (...) {
         }
     } catch (...) {
-        if (logger != nullptr) {
-            LOG_ERROR(logger, "runtime teardown step '{}' failed with a non-standard exception", name);
+        try {
+            if (logger != nullptr) {
+                LOG_ERROR(
+                    logger,
+                    "runtime teardown step '{}' failed with a non-standard exception",
+                    name);
+            }
+        } catch (...) {
         }
     }
+    return false;
 }
 
 const std::function<void()> &actionFor(const RuntimeTeardownActions &actions,
@@ -88,36 +103,62 @@ void runProductionStep(RuntimeTeardownStep step) {
 
 } // namespace
 
-void teardownRuntimeNoThrow(const RuntimeTeardownActions &actions) noexcept {
+RuntimeTeardownResult
+teardownRuntimeNoThrow(const RuntimeTeardownActions &actions) noexcept {
+    RuntimeTeardownResult result;
     for (const auto step : runtime_teardown_order) {
         const auto &action = actionFor(actions, step);
-        if (action) cleanupStep(runtimeTeardownStepName(step).data(), action);
+        if (action &&
+            !cleanupStep(runtimeTeardownStepName(step).data(), action)) {
+            result.failed_steps |= runtimeTeardownStepBit(step);
+        }
     }
+    return result;
 }
 
-void teardownRuntimeNoThrow() noexcept {
+RuntimeTeardownResult teardownRuntimeNoThrow() noexcept {
+    RuntimeTeardownResult result;
     for (const auto step : runtime_teardown_order) {
-        cleanupStep(runtimeTeardownStepName(step).data(),
-                    [step] { runProductionStep(step); });
+        if (!cleanupStep(runtimeTeardownStepName(step).data(),
+                         [step] { runProductionStep(step); })) {
+            result.failed_steps |= runtimeTeardownStepBit(step);
+        }
     }
+    return result;
+}
+
+void requireRuntimeTeardownSuccess(const RuntimeTeardownResult &result) {
+    if (result.succeeded()) {
+        return;
+    }
+
+    std::string message = "runtime teardown failed at";
+    for (const auto step : runtime_teardown_order) {
+        if (result.failed(step)) {
+            message += " ";
+            message += runtimeTeardownStepName(step);
+        }
+    }
+    throw std::runtime_error(std::move(message));
 }
 
 RuntimeTeardownGuard::~RuntimeTeardownGuard() {
     run();
 }
 
-void RuntimeTeardownGuard::run() noexcept {
+RuntimeTeardownResult RuntimeTeardownGuard::run() noexcept {
     if (completed) {
-        return;
+        return result;
     }
     completed = true;
     if (mode == RuntimeTeardownMode::terminal_shutdown)
         FastModuleContainer::beginShutdown();
     if (actions) {
-        teardownRuntimeNoThrow(*actions);
+        result = teardownRuntimeNoThrow(*actions);
     } else {
-        teardownRuntimeNoThrow();
+        result = teardownRuntimeNoThrow();
     }
+    return result;
 }
 
 } // namespace Pelican
