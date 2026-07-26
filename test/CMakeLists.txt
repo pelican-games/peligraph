@@ -311,9 +311,14 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
       glm
     )
 
-    foreach(physics_fixture_version IN ITEMS 1 2)
+    foreach(physics_fixture_revision IN ITEMS 1 2)
+      if(physics_fixture_revision EQUAL 1)
+        set(physics_fixture_name initial)
+      else()
+        set(physics_fixture_name updated)
+      endif()
       set(physics_fixture_target
-          pelican_physics_provider_fixture_v${physics_fixture_version})
+          pelican_physics_provider_fixture_${physics_fixture_name})
       add_library(${physics_fixture_target} SHARED
         fixtures/physics_provider_dll/provider.cpp
         ${CMAKE_SOURCE_DIR}/src/player/gamelogic_entry.cpp
@@ -321,7 +326,7 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
       set_target_properties(${physics_fixture_target} PROPERTIES
         CXX_STANDARD 20
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
-        OUTPUT_NAME "pelican_physics_provider_fixture_v${physics_fixture_version}"
+        OUTPUT_NAME "pelican_physics_provider_fixture_${physics_fixture_name}"
       )
       add_dependencies(${physics_fixture_target}
         pelican_test_physics_provider_dll_test)
@@ -333,7 +338,7 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
       )
       target_compile_definitions(${physics_fixture_target} PRIVATE
         PELICAN_GAME_DLL=1
-        PELICAN_PHYSICS_FIXTURE_VERSION=${physics_fixture_version}
+        PELICAN_PHYSICS_FIXTURE_REVISION=${physics_fixture_revision}
       )
     endforeach()
 
@@ -356,15 +361,15 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
     )
     target_compile_definitions(pelican_physics_provider_fixture_bad_abi PRIVATE
       PELICAN_GAME_DLL=1
-      PELICAN_PHYSICS_FIXTURE_VERSION=2
+      PELICAN_PHYSICS_FIXTURE_REVISION=2
       PELICAN_GAME_LOGIC_ABI_VERSION=999
     )
 
     add_test(
       NAME physics_provider_game_dll_e2e
       COMMAND ${CMAKE_COMMAND} -E env
-        "PELICAN_PHYSICS_FIXTURE_V1=$<TARGET_FILE:pelican_physics_provider_fixture_v1>"
-        "PELICAN_PHYSICS_FIXTURE_V2=$<TARGET_FILE:pelican_physics_provider_fixture_v2>"
+        "PELICAN_PHYSICS_FIXTURE_INITIAL=$<TARGET_FILE:pelican_physics_provider_fixture_initial>"
+        "PELICAN_PHYSICS_FIXTURE_UPDATED=$<TARGET_FILE:pelican_physics_provider_fixture_updated>"
         "PELICAN_PHYSICS_FIXTURE_BAD_ABI=$<TARGET_FILE:pelican_physics_provider_fixture_bad_abi>"
         $<TARGET_FILE:pelican_test_physics_provider_dll_test>
         "[physics-provider-dll]"

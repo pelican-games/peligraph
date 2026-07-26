@@ -184,8 +184,8 @@ constexpr const char *configuredProviderName() {
 TEST_CASE("public game DLL physics provider survives reload rollback and in-flight unload",
           "[physics-provider-dll]") {
     ensureLogger();
-    const auto fixture_v1 = requiredFixture("PELICAN_PHYSICS_FIXTURE_V1");
-    const auto fixture_v2 = requiredFixture("PELICAN_PHYSICS_FIXTURE_V2");
+    const auto fixture_initial = requiredFixture("PELICAN_PHYSICS_FIXTURE_INITIAL");
+    const auto fixture_updated = requiredFixture("PELICAN_PHYSICS_FIXTURE_UPDATED");
     const auto fixture_bad_abi = requiredFixture("PELICAN_PHYSICS_FIXTURE_BAD_ABI");
 
     FastModuleContainer modules;
@@ -196,12 +196,12 @@ TEST_CASE("public game DLL physics provider survives reload rollback and in-flig
 
     Sandbox sandbox;
     const auto live_dll = sandbox.root() / "physics_provider_live.dll";
-    replaceFixture(fixture_v1, live_dll);
+    replaceFixture(fixture_initial, live_dll);
 
     GameLogicReloader reloader;
     REQUIRE(reloader.initialize(live_dll));
     REQUIRE(reloader.status().generation == 1);
-    REQUIRE(physics_internal::activeProviderName() == "fixture.physics.v1");
+    REQUIRE(physics_internal::activeProviderName() == "fixture.physics.initial");
     auto controls = fixtureControls(reloader.status());
     REQUIRE(static_cast<Physics::Status>(controls.registration_status()) ==
             Physics::Status::ok);
@@ -217,19 +217,20 @@ TEST_CASE("public game DLL physics provider survives reload rollback and in-flig
     REQUIRE(fallback_overlap.empty());
 #endif
 
-    // A V1 DLL cannot claim the additive V2 operation. Capability routing
+    // The initial V2 DLL does not claim shape cast. Capability routing
     // therefore falls through to the configured backend when present.
-    const auto v1_shape_cast = queryShapeCast(world);
+    const auto initial_shape_cast = queryShapeCast(world);
 #if PELICAN_WITH_JOLT_PHYSICS || PELICAN_WITH_BUILTIN_PHYSICS
-    REQUIRE(v1_shape_cast);
-    REQUIRE(v1_shape_cast->time_of_impact == Catch::Approx(0.15F).margin(2.0e-4F));
+    REQUIRE(initial_shape_cast);
+    REQUIRE(initial_shape_cast->time_of_impact ==
+            Catch::Approx(0.15F).margin(2.0e-4F));
 #else
-    REQUIRE_FALSE(v1_shape_cast);
+    REQUIRE_FALSE(initial_shape_cast);
 #endif
 
     // The source DLL can be overwritten because the loader owns a shadow copy.
-    // Keep a V1 callback in flight while another engine thread attempts reload.
-    replaceFixture(fixture_v2, live_dll);
+    // Keep the initial callback in flight while another engine thread attempts reload.
+    replaceFixture(fixture_updated, live_dll);
     controls.arm_next_raycast();
     std::vector<phys::RaycastQueryHit> in_flight_hits;
     std::exception_ptr query_error;
@@ -276,21 +277,21 @@ TEST_CASE("public game DLL physics provider survives reload rollback and in-flig
     REQUIRE(reload_result);
     requireFixtureHit(in_flight_hits, 0.625F);
     REQUIRE(reloader.status().generation == 2);
-    REQUIRE(physics_internal::activeProviderName() == "fixture.physics.v2");
+    REQUIRE(physics_internal::activeProviderName() == "fixture.physics.updated");
     requireFixtureHit(queryRay(world), 1.375F);
     requireFixtureShapeCast(queryShapeCast(world));
 
-    // Candidate validation must not disturb the live V2 provider.
+    // Candidate validation must not disturb the live provider.
     replaceFixture(fixture_bad_abi, live_dll);
     REQUIRE_FALSE(reloader.reloadNow([] {}, [] {}));
     REQUIRE(reloader.status().generation == 2);
-    REQUIRE(physics_internal::activeProviderName() == "fixture.physics.v2");
+    REQUIRE(physics_internal::activeProviderName() == "fixture.physics.updated");
     requireFixtureHit(queryRay(world), 1.375F);
     requireFixtureShapeCast(queryShapeCast(world));
 
     // A failure after candidate activation reloads the previous shadow under a
-    // fresh owner. The failed V1 callback table must not survive rollback.
-    replaceFixture(fixture_v1, live_dll);
+    // fresh owner. The failed initial callback table must not survive rollback.
+    replaceFixture(fixture_initial, live_dll);
     int rebuild_calls = 0;
     REQUIRE_FALSE(reloader.reloadNow([] {}, [&] {
         if (++rebuild_calls == 1) {
@@ -299,7 +300,7 @@ TEST_CASE("public game DLL physics provider survives reload rollback and in-flig
     }));
     REQUIRE(rebuild_calls == 2);
     REQUIRE(reloader.status().generation == 2);
-    REQUIRE(physics_internal::activeProviderName() == "fixture.physics.v2");
+    REQUIRE(physics_internal::activeProviderName() == "fixture.physics.updated");
     requireFixtureHit(queryRay(world), 1.375F);
     requireFixtureShapeCast(queryShapeCast(world));
 

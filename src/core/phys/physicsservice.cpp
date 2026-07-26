@@ -74,7 +74,7 @@ phys::Shape fromAbi(const ShapeV1 &shape) {
             shape.radius,
         };
     case ShapeKindV1::provider:
-        throw std::invalid_argument("custom provider shapes are not available in PhysicsServiceV1");
+        throw std::invalid_argument("custom provider shapes are not available in PhysicsServiceV2");
     }
     throw std::invalid_argument("unknown physics shape kind");
 }
@@ -303,31 +303,6 @@ Status serviceShapeCastAll(void *context, const ShapeCastQueryV2 *query,
     }
 }
 
-Status getService(void *context, std::uint32_t client_version, ServiceV1 *out) noexcept {
-    if (context != &service_context_token || out == nullptr ||
-        out->struct_size < descriptorHeaderSize) {
-        return Status::invalid_argument;
-    }
-    if (out->version != descriptorVersionV1) return Status::unsupported_version;
-    if (out->reserved0 != 0 || out->reserved1 != 0) return Status::reserved_not_zero;
-    if (client_version != serviceVersionV1) return Status::unsupported_version;
-
-    const auto caller_size = out->struct_size;
-    auto produced = descriptor<ServiceV1>();
-    produced.service_version = serviceVersionV1;
-    produced.minimum_client_service_version = serviceVersionV1;
-    // These bits describe the stable operations understood by the service,
-    // not a snapshot of a hot-reloadable provider. A call returns unavailable
-    // when neither the active game overlay nor the configured backend supplies
-    // the requested operation.
-    produced.capability_bits = builtinQueryCapabilitiesV1;
-    produced.context = &service_context_token;
-    produced.raycast_all = serviceRaycastAll;
-    produced.overlap_all = serviceOverlapAll;
-    std::memcpy(out, &produced, std::min<std::size_t>(caller_size, sizeof(produced)));
-    return Status::ok;
-}
-
 Status getServiceV2(void *context, std::uint32_t client_version,
                     ServiceV2 *out) noexcept {
     if (context != &service_context_token || out == nullptr ||
@@ -351,15 +326,6 @@ Status getServiceV2(void *context, std::uint32_t client_version,
     return Status::ok;
 }
 
-Status registerProvider(void *context, const ProviderV1 *provider,
-                        ProviderHandleV1 *out_handle) noexcept {
-    if (context != &service_context_token || provider == nullptr || out_handle == nullptr)
-        return Status::invalid_argument;
-    const auto owner = internal::currentRegistrationOwner();
-    if (owner == internal::engineRegistrationOwner) return Status::wrong_owner;
-    return physics_internal::registerProvider(*provider, owner, *out_handle);
-}
-
 Status registerProviderV2(void *context, const ProviderV2 *provider,
                           ProviderHandleV2 *out_handle) noexcept {
     if (context != &service_context_token || provider == nullptr || out_handle == nullptr)
@@ -369,7 +335,7 @@ Status registerProviderV2(void *context, const ProviderV2 *provider,
     return physics_internal::registerProvider(*provider, owner, *out_handle);
 }
 
-Status unregisterProvider(void *context, ProviderHandleV1 handle) noexcept {
+Status unregisterProvider(void *context, ProviderHandleV2 handle) noexcept {
     if (context != &service_context_token) return Status::invalid_argument;
     const auto owner = internal::currentRegistrationOwner();
     if (owner == internal::engineRegistrationOwner) return Status::wrong_owner;
@@ -377,27 +343,6 @@ Status unregisterProvider(void *context, ProviderHandleV1 handle) noexcept {
 }
 
 } // namespace
-
-Status getApiV1(std::uint32_t client_abi_version, ApiV1 *out_api) noexcept {
-    if (out_api == nullptr || out_api->struct_size < descriptorHeaderSize)
-        return Status::invalid_argument;
-    if (out_api->version != descriptorVersionV1) return Status::unsupported_version;
-    if (out_api->reserved0 != 0 || out_api->reserved1 != 0)
-        return Status::reserved_not_zero;
-    if (client_abi_version != abiVersionV1) return Status::unsupported_version;
-
-    const auto caller_size = out_api->struct_size;
-    auto produced = descriptor<ApiV1>();
-    produced.engine_abi_version = abiVersionV1;
-    produced.minimum_client_abi_version = abiVersionV1;
-    produced.capability_bits = api_query_service | api_provider_registration;
-    produced.context = &service_context_token;
-    produced.get_service = getService;
-    produced.register_provider = registerProvider;
-    produced.unregister_provider = unregisterProvider;
-    std::memcpy(out_api, &produced, std::min<std::size_t>(caller_size, sizeof(produced)));
-    return Status::ok;
-}
 
 Status getApiV2(std::uint32_t client_abi_version, ApiV2 *out_api) noexcept {
     if (out_api == nullptr || out_api->struct_size < descriptorHeaderSize)

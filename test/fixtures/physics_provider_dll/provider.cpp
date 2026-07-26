@@ -9,22 +9,22 @@
 #define PELICAN_FIXTURE_EXPORT extern "C" __attribute__((visibility("default")))
 #endif
 
-#ifndef PELICAN_PHYSICS_FIXTURE_VERSION
-#define PELICAN_PHYSICS_FIXTURE_VERSION 1
+#ifndef PELICAN_PHYSICS_FIXTURE_REVISION
+#define PELICAN_PHYSICS_FIXTURE_REVISION 1
 #endif
 
 namespace {
 
 using namespace Pelican;
 
-#if PELICAN_PHYSICS_FIXTURE_VERSION == 1
-constexpr char provider_name[] = "fixture.physics.v1";
+#if PELICAN_PHYSICS_FIXTURE_REVISION == 1
+constexpr char provider_name[] = "fixture.physics.initial";
 constexpr float provider_distance = 0.625F;
-#elif PELICAN_PHYSICS_FIXTURE_VERSION == 2
-constexpr char provider_name[] = "fixture.physics.v2";
+#elif PELICAN_PHYSICS_FIXTURE_REVISION == 2
+constexpr char provider_name[] = "fixture.physics.updated";
 constexpr float provider_distance = 1.375F;
 #else
-#error Unsupported PELICAN_PHYSICS_FIXTURE_VERSION
+#error Unsupported PELICAN_PHYSICS_FIXTURE_REVISION
 #endif
 
 std::atomic_bool block_next_raycast{false};
@@ -68,7 +68,7 @@ Physics::Status raycastAll(void *, const Physics::ProviderRaycastQueryV1 *query,
     return Physics::Status::ok;
 }
 
-#if PELICAN_PHYSICS_FIXTURE_VERSION == 2
+#if PELICAN_PHYSICS_FIXTURE_REVISION == 2
 Physics::Status shapeCastAll(void *, const Physics::ProviderShapeCastQueryV2 *query,
                              Physics::ProviderShapeCastHitV2 *hits,
                              std::uint32_t capacity,
@@ -97,33 +97,21 @@ Physics::Status shapeCastAll(void *, const Physics::ProviderShapeCastQueryV2 *qu
 
 struct Registration {
     Registration() noexcept {
-#if PELICAN_PHYSICS_FIXTURE_VERSION == 1
-        auto api = Physics::descriptor<Physics::ApiV1>();
-        auto status = Physics::getApiV1(Physics::abiVersionV1, &api);
-        if (status == Physics::Status::ok) {
-            auto provider = Physics::descriptor<Physics::ProviderV1>();
-            provider.capability_bits = Physics::query_raycast_all;
-            provider.name_utf8 = provider_name;
-            provider.name_size = static_cast<std::uint32_t>(sizeof(provider_name) - 1);
-            provider.raycast_all = raycastAll;
-            Physics::ProviderHandleV1 handle{};
-            status = api.register_provider(api.context, &provider, &handle);
-        }
-#else
         auto api = Physics::descriptor<Physics::ApiV2>();
         auto status = Physics::getApiV2(Physics::abiVersionV2, &api);
         if (status == Physics::Status::ok) {
             auto provider = Physics::descriptor<Physics::ProviderV2>();
-            provider.capability_bits =
-                Physics::query_raycast_all | Physics::query_shape_cast_all;
+            provider.capability_bits = Physics::query_raycast_all;
             provider.name_utf8 = provider_name;
             provider.name_size = static_cast<std::uint32_t>(sizeof(provider_name) - 1);
             provider.raycast_all = raycastAll;
+#if PELICAN_PHYSICS_FIXTURE_REVISION == 2
+            provider.capability_bits |= Physics::query_shape_cast_all;
             provider.shape_cast_all = shapeCastAll;
+#endif
             Physics::ProviderHandleV2 handle{};
             status = api.register_provider(api.context, &provider, &handle);
         }
-#endif
         registration_status.store(static_cast<std::uint32_t>(status),
                                   std::memory_order_release);
     }

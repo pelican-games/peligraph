@@ -30,7 +30,7 @@ struct ProviderDispatch {
 };
 
 struct RegisteredProvider {
-    Physics::ProviderHandleV1 handle{};
+    Physics::ProviderHandleV2 handle{};
     internal::RegistrationOwner owner = internal::engineRegistrationOwner;
     ProviderDispatch dispatch{};
     std::string name;
@@ -48,7 +48,7 @@ Registry &registry() {
     return *value;
 }
 
-bool validHandle(Physics::ProviderHandleV1 handle) {
+bool validHandle(Physics::ProviderHandleV2 handle) {
     return handle.identity != 0 && handle.generation != 0 && handle.reserved == 0;
 }
 
@@ -76,16 +76,6 @@ const RegisteredProvider *activeGameProviderLocked(const Registry &value) {
         }
     }
     return nullptr;
-}
-
-ProviderDispatch dispatchFor(const Physics::ProviderV1 &provider) {
-    return ProviderDispatch{
-        provider.capability_bits,
-        provider.context,
-        provider.raycast_all,
-        provider.overlap_all,
-        nullptr,
-    };
 }
 
 ProviderDispatch dispatchFor(const Physics::ProviderV2 &provider) {
@@ -279,30 +269,6 @@ Physics::Status invokeProvider(const ProviderDispatch &provider,
     return Physics::Status::ok;
 }
 
-bool validProvider(const Physics::ProviderV1 &provider) {
-    constexpr auto known_capabilities = Physics::builtinQueryCapabilitiesV1;
-    if (provider.struct_size < sizeof(Physics::ProviderV1) ||
-        provider.version != Physics::descriptorVersionV1 ||
-        provider.reserved0 != 0 || provider.reserved1 != 0 || provider.reserved2 != 0 ||
-        provider.provider_version != Physics::providerVersionV1 ||
-        provider.minimum_engine_provider_version > Physics::providerVersionV1 ||
-        (provider.capability_bits & ~known_capabilities) != 0 ||
-        provider.capability_bits == 0 || provider.name_utf8 == nullptr ||
-        provider.name_size == 0 ||
-        provider.name_size > Physics::maximumProviderNameBytesV1) {
-        return false;
-    }
-    if ((provider.capability_bits & Physics::query_raycast_all) != 0 &&
-        provider.raycast_all == nullptr) {
-        return false;
-    }
-    if ((provider.capability_bits & Physics::query_overlap_all) != 0 &&
-        provider.overlap_all == nullptr) {
-        return false;
-    }
-    return true;
-}
-
 bool validProvider(const Physics::ProviderV2 &provider) {
     constexpr auto known_capabilities = Physics::builtinQueryCapabilitiesV2;
     if (provider.struct_size < sizeof(Physics::ProviderV2) ||
@@ -335,7 +301,7 @@ Physics::Status registerProviderDispatch(ProviderDispatch dispatch,
                                          const char *name_utf8,
                                          std::uint32_t name_size,
                                          internal::RegistrationOwner owner,
-                                         Physics::ProviderHandleV1 &out_handle) {
+                                         Physics::ProviderHandleV2 &out_handle) {
     auto &value = registry();
     std::unique_lock lock{value.mutex};
     if (findByOwner(value, owner) != nullptr) {
@@ -345,7 +311,7 @@ Physics::Status registerProviderDispatch(ProviderDispatch dispatch,
         return Physics::Status::out_of_memory;
     }
     RegisteredProvider registered;
-    registered.handle = Physics::ProviderHandleV1{value.next_identity++, 1, 0};
+    registered.handle = Physics::ProviderHandleV2{value.next_identity++, 1, 0};
     registered.owner = owner;
     registered.dispatch = dispatch;
     registered.name.assign(name_utf8, name_size);
@@ -355,23 +321,6 @@ Physics::Status registerProviderDispatch(ProviderDispatch dispatch,
 }
 
 } // namespace
-
-Physics::Status registerProvider(const Physics::ProviderV1 &provider,
-                                 internal::RegistrationOwner owner,
-                                 Physics::ProviderHandleV1 &out_handle) noexcept {
-    out_handle = {};
-    if (!validProvider(provider)) {
-        return Physics::Status::invalid_argument;
-    }
-    try {
-        return registerProviderDispatch(dispatchFor(provider), provider.name_utf8,
-                                        provider.name_size, owner, out_handle);
-    } catch (const std::bad_alloc &) {
-        return Physics::Status::out_of_memory;
-    } catch (...) {
-        return Physics::Status::provider_error;
-    }
-}
 
 Physics::Status registerProvider(const Physics::ProviderV2 &provider,
                                  internal::RegistrationOwner owner,
@@ -390,7 +339,7 @@ Physics::Status registerProvider(const Physics::ProviderV2 &provider,
     }
 }
 
-Physics::Status unregisterProvider(Physics::ProviderHandleV1 handle,
+Physics::Status unregisterProvider(Physics::ProviderHandleV2 handle,
                                    internal::RegistrationOwner owner) noexcept {
     if (!validHandle(handle)) {
         return Physics::Status::invalid_argument;

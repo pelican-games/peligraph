@@ -35,26 +35,13 @@ ColliderComponent sphereCollider(float radius = 1.0F) {
     return collider;
 }
 
-Physics::ApiV1 physicsApi() {
-    auto api = Physics::descriptor<Physics::ApiV1>();
-    REQUIRE(Physics::getApiV1(Physics::abiVersionV1, &api) == Physics::Status::ok);
-    return api;
-}
-
-Physics::ServiceV1 physicsService(const Physics::ApiV1 &api) {
-    auto service = Physics::descriptor<Physics::ServiceV1>();
-    REQUIRE(api.get_service(api.context, Physics::serviceVersionV1, &service) ==
-            Physics::Status::ok);
-    return service;
-}
-
-Physics::ApiV2 physicsApiV2() {
+Physics::ApiV2 physicsApi() {
     auto api = Physics::descriptor<Physics::ApiV2>();
     REQUIRE(Physics::getApiV2(Physics::abiVersionV2, &api) == Physics::Status::ok);
     return api;
 }
 
-Physics::ServiceV2 physicsServiceV2(const Physics::ApiV2 &api) {
+Physics::ServiceV2 physicsService(const Physics::ApiV2 &api) {
     auto service = Physics::descriptor<Physics::ServiceV2>();
     REQUIRE(api.get_service(api.context, Physics::serviceVersionV2, &service) ==
             Physics::Status::ok);
@@ -129,8 +116,8 @@ Physics::Status fakeRaycastAll(void *context,
     return Physics::Status::ok;
 }
 
-Physics::ProviderV1 fakeProvider(FakeProviderState &state) {
-    auto provider = Physics::descriptor<Physics::ProviderV1>();
+Physics::ProviderV2 fakeProvider(FakeProviderState &state) {
+    auto provider = Physics::descriptor<Physics::ProviderV2>();
     provider.capability_bits = Physics::query_raycast_all;
     provider.name_utf8 = "test.fake";
     provider.name_size = 9;
@@ -272,8 +259,8 @@ Physics::Status blockingRaycastAll(void *context,
     return Physics::Status::ok;
 }
 
-Physics::ProviderV1 blockingProvider(BlockingProviderState &state) {
-    auto provider = Physics::descriptor<Physics::ProviderV1>();
+Physics::ProviderV2 blockingProvider(BlockingProviderState &state) {
+    auto provider = Physics::descriptor<Physics::ProviderV2>();
     provider.capability_bits = Physics::query_raycast_all;
     provider.name_utf8 = "test.blocking";
     provider.name_size = 13;
@@ -295,7 +282,7 @@ constexpr const char *configuredProviderName() {
 } // namespace
 
 #if PELICAN_WITH_JOLT_PHYSICS || PELICAN_WITH_BUILTIN_PHYSICS
-TEST_CASE("PhysicsServiceV1 negotiates and exposes the configured provider",
+TEST_CASE("PhysicsServiceV2 negotiates and exposes the configured provider",
           "[physics-service]") {
     ensureLogger();
     FastModuleContainer modules;
@@ -308,8 +295,8 @@ TEST_CASE("PhysicsServiceV1 negotiates and exposes the configured provider",
     REQUIRE((api.capability_bits & Physics::api_query_service) != 0);
     REQUIRE((api.capability_bits & Physics::api_provider_registration) != 0);
     const auto service = physicsService(api);
-    REQUIRE((service.capability_bits & Physics::builtinQueryCapabilitiesV1) ==
-            Physics::builtinQueryCapabilitiesV1);
+    REQUIRE((service.capability_bits & Physics::builtinQueryCapabilitiesV2) ==
+            Physics::builtinQueryCapabilitiesV2);
 
     auto query = Physics::descriptor<Physics::RaycastQueryV1>();
     query.ray.origin = {0.0F, 0.0F, 0.0F};
@@ -509,11 +496,11 @@ TEST_CASE("game-owned physics provider activates explicitly and is released by o
     FakeProviderState state;
     auto provider = fakeProvider(state);
     const auto owner = internal::allocateRegistrationOwner();
-    Physics::ProviderHandleV1 handle{};
+    Physics::ProviderHandleV2 handle{};
     {
         internal::ScopedRegistrationOwner owner_scope{owner};
         REQUIRE(api.register_provider(api.context, &provider, &handle) == Physics::Status::ok);
-        Physics::ProviderHandleV1 duplicate_handle{};
+        Physics::ProviderHandleV2 duplicate_handle{};
         REQUIRE(api.register_provider(api.context, &provider, &duplicate_handle) ==
                 Physics::Status::duplicate_provider);
     }
@@ -523,8 +510,8 @@ TEST_CASE("game-owned physics provider activates explicitly and is released by o
     REQUIRE(physics_internal::activeProviderName() == "test.fake");
 
     const auto active_service = physicsService(api);
-    REQUIRE((active_service.capability_bits & Physics::builtinQueryCapabilitiesV1) ==
-            Physics::builtinQueryCapabilitiesV1);
+    REQUIRE((active_service.capability_bits & Physics::builtinQueryCapabilitiesV2) ==
+            Physics::builtinQueryCapabilitiesV2);
 
     const phys::QueryFilter filter{};
     const auto hits = world.raycastAll(
@@ -592,8 +579,8 @@ TEST_CASE("PhysicsServiceV2 routes shape casts and contains malformed V2 results
     world.bindCollider("second", sphereCollider(),
                        PhysWorldTransform{.pos = {5.0F, 0.0F, 0.0F}});
 
-    const auto api = physicsApiV2();
-    const auto service = physicsServiceV2(api);
+    const auto api = physicsApi();
+    const auto service = physicsService(api);
     REQUIRE((service.capability_bits & Physics::builtinQueryCapabilitiesV2) ==
             Physics::builtinQueryCapabilitiesV2);
     REQUIRE(service.shape_cast_all != nullptr);
@@ -674,7 +661,7 @@ TEST_CASE("provider owner release waits for in-flight callbacks",
     BlockingProviderState state;
     auto provider = blockingProvider(state);
     const auto owner = internal::allocateRegistrationOwner();
-    Physics::ProviderHandleV1 handle{};
+    Physics::ProviderHandleV2 handle{};
     {
         internal::ScopedRegistrationOwner owner_scope{owner};
         REQUIRE(api.register_provider(api.context, &provider, &handle) ==
@@ -721,7 +708,7 @@ TEST_CASE("provider owner release waits for in-flight callbacks",
     REQUIRE(query_hits[0].distance == Catch::Approx(0.5F));
 }
 
-TEST_CASE("PhysicsServiceV1 contains malformed provider results",
+TEST_CASE("PhysicsServiceV2 contains malformed provider results",
           "[physics-service]") {
     ensureLogger();
     FastModuleContainer modules;
@@ -737,7 +724,7 @@ TEST_CASE("PhysicsServiceV1 contains malformed provider results",
     FakeProviderState state;
     auto provider = fakeProvider(state);
     const auto owner = internal::allocateRegistrationOwner();
-    Physics::ProviderHandleV1 handle{};
+    Physics::ProviderHandleV2 handle{};
     {
         internal::ScopedRegistrationOwner owner_scope{owner};
         REQUIRE(api.register_provider(api.context, &provider, &handle) == Physics::Status::ok);
@@ -769,21 +756,25 @@ TEST_CASE("PhysicsServiceV1 contains malformed provider results",
     physics_internal::releaseProviderOwner(owner);
 }
 
-TEST_CASE("PhysicsServiceV1 rejects malformed descriptors and unknown provider bits",
+TEST_CASE("PhysicsServiceV2 preserves version checks and rejects malformed providers",
           "[physics-service]") {
-    auto api = Physics::descriptor<Physics::ApiV1>();
+    auto api = Physics::descriptor<Physics::ApiV2>();
     api.reserved0 = 1;
-    REQUIRE(Physics::getApiV1(Physics::abiVersionV1, &api) ==
+    REQUIRE(Physics::getApiV2(Physics::abiVersionV2, &api) ==
             Physics::Status::reserved_not_zero);
 
-    api = Physics::descriptor<Physics::ApiV1>();
-    REQUIRE(Physics::getApiV1(Physics::abiVersionV1 + 1, &api) ==
+    api = Physics::descriptor<Physics::ApiV2>();
+    REQUIRE(Physics::getApiV2(Physics::abiVersionV2 + 1, &api) ==
             Physics::Status::unsupported_version);
 
     api = physicsApi();
+    auto service = Physics::descriptor<Physics::ServiceV2>();
+    REQUIRE(api.get_service(api.context, Physics::serviceVersionV2 + 1, &service) ==
+            Physics::Status::unsupported_version);
+
     FakeProviderState state;
     auto provider = fakeProvider(state);
-    Physics::ProviderHandleV1 handle{};
+    Physics::ProviderHandleV2 handle{};
     REQUIRE(api.register_provider(api.context, &provider, &handle) ==
             Physics::Status::wrong_owner);
 
@@ -807,8 +798,8 @@ TEST_CASE("PhysicsServiceV2 rejects malformed descriptors and unknown bits",
     REQUIRE(Physics::getApiV2(Physics::abiVersionV2 + 1, &api) ==
             Physics::Status::unsupported_version);
 
-    api = physicsApiV2();
-    const auto service = physicsServiceV2(api);
+    api = physicsApi();
+    const auto service = physicsService(api);
     auto query = Physics::descriptor<Physics::ShapeCastQueryV2>();
     query.filter.flags |= 1U << 31U;
     std::uint32_t hit_count = 0;
@@ -828,7 +819,7 @@ TEST_CASE("PhysicsServiceV2 rejects malformed descriptors and unknown bits",
     }
 
     provider = fakeShapeProvider(state);
-    provider.struct_size = sizeof(Physics::ProviderV1);
+    provider.struct_size = offsetof(Physics::ProviderV2, shape_cast_all);
     {
         internal::ScopedRegistrationOwner owner_scope{owner};
         REQUIRE(api.register_provider(api.context, &provider, &handle) ==

@@ -1,17 +1,12 @@
 #pragma once
 
-#include "../export.hpp"
-
 #include <cstddef>
 #include <cstdint>
 #include <type_traits>
 
 namespace Pelican::Physics {
 
-inline constexpr std::uint32_t abiVersionV1 = 1;
 inline constexpr std::uint32_t descriptorVersionV1 = 1;
-inline constexpr std::uint32_t serviceVersionV1 = 1;
-inline constexpr std::uint32_t providerVersionV1 = 1;
 inline constexpr std::size_t descriptorHeaderSize = 16;
 inline constexpr std::uint32_t maximumProviderNameBytesV1 = 127;
 
@@ -210,87 +205,10 @@ using ProviderOverlapAllV1Fn = Status (*)(
     void *, const ProviderOverlapQueryV1 *, ProviderOverlapHitV1 *,
     std::uint32_t, std::uint32_t *) noexcept;
 
-// Provider callbacks are noexcept and may be invoked concurrently. The
-// provider and its context must remain alive until unregister_provider returns.
-// Report failures with Status; do not call register_provider or
-// unregister_provider recursively from a callback.
-struct ProviderV1 {
-    std::uint32_t struct_size = sizeof(ProviderV1);
-    std::uint32_t version = descriptorVersionV1;
-    std::uint32_t reserved0 = 0;
-    std::uint32_t reserved1 = 0;
-    std::uint32_t provider_version = providerVersionV1;
-    std::uint32_t minimum_engine_provider_version = providerVersionV1;
-    std::uint64_t capability_bits = 0;
-    const char *name_utf8 = nullptr;
-    std::uint32_t name_size = 0;
-    std::uint32_t reserved2 = 0;
-    void *context = nullptr;
-    ProviderRaycastAllV1Fn raycast_all = nullptr;
-    ProviderOverlapAllV1Fn overlap_all = nullptr;
-};
-
-struct ProviderHandleV1 {
-    std::uint64_t identity = 0;
-    std::uint32_t generation = 0;
-    std::uint32_t reserved = 0;
-};
-
-struct ServiceV1 {
-    std::uint32_t struct_size = sizeof(ServiceV1);
-    std::uint32_t version = descriptorVersionV1;
-    std::uint32_t reserved0 = 0;
-    std::uint32_t reserved1 = 0;
-    std::uint32_t service_version = serviceVersionV1;
-    std::uint32_t minimum_client_service_version = serviceVersionV1;
-    // Operations understood by this service revision. A callback can still
-    // return unavailable when no active provider implements that operation.
-    std::uint64_t capability_bits = 0;
-    void *context = nullptr;
-    Status (*raycast_all)(void *, const RaycastQueryV1 *, RaycastHitV1 *,
-                          std::uint32_t, std::uint32_t *) noexcept = nullptr;
-    Status (*overlap_all)(void *, const OverlapQueryV1 *, OverlapHitV1 *,
-                          std::uint32_t, std::uint32_t *) noexcept = nullptr;
-};
-
-enum PhysicsApiCapabilityBitsV1 : std::uint64_t {
-    api_query_service = 1ULL << 0U,
-    api_provider_registration = 1ULL << 1U,
-};
-
-using GetServiceV1Fn = Status (*)(void *, std::uint32_t, ServiceV1 *) noexcept;
-using RegisterProviderV1Fn = Status (*)(void *, const ProviderV1 *, ProviderHandleV1 *) noexcept;
-using UnregisterProviderV1Fn = Status (*)(void *, ProviderHandleV1) noexcept;
-
-// Game DLL providers register while their DLL is loading, under the loader's
-// registration owner. Calls made later, outside that scope, return wrong_owner;
-// this lets hot reload wait for callbacks and unload the DLL safely.
-struct ApiV1 {
-    std::uint32_t struct_size = sizeof(ApiV1);
-    std::uint32_t version = descriptorVersionV1;
-    std::uint32_t reserved0 = 0;
-    std::uint32_t reserved1 = 0;
-    std::uint32_t engine_abi_version = abiVersionV1;
-    std::uint32_t minimum_client_abi_version = abiVersionV1;
-    std::uint64_t capability_bits = 0;
-    void *context = nullptr;
-    GetServiceV1Fn get_service = nullptr;
-    RegisterProviderV1Fn register_provider = nullptr;
-    UnregisterProviderV1Fn unregister_provider = nullptr;
-};
-
-PELICAN_API Status getApiV1(std::uint32_t client_abi_version, ApiV1 *out_api) noexcept;
-
 static_assert(sizeof(DescriptorHeaderV1) == descriptorHeaderSize);
-static_assert(std::is_standard_layout_v<ApiV1>);
-static_assert(std::is_standard_layout_v<ServiceV1>);
-static_assert(std::is_standard_layout_v<ProviderV1>);
 static_assert(std::is_trivially_copyable_v<ShapeV1>);
 static_assert(std::is_standard_layout_v<ProviderRaycastHitV1>);
 static_assert(std::is_trivially_copyable_v<ProviderRaycastHitV1>);
 static_assert(sizeof(ProviderRaycastHitV1) == 24);
-static_assert(offsetof(ApiV1, struct_size) == 0);
-static_assert(offsetof(ServiceV1, struct_size) == 0);
-static_assert(offsetof(ProviderV1, struct_size) == 0);
 
 } // namespace Pelican::Physics
