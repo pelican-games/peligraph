@@ -97,6 +97,32 @@ TEST_CASE("import manifest accepts deterministic K3 deliveries", "[import-manife
     CHECK(manifest.outputs.size() == 2);
 }
 
+TEST_CASE("import manifest requires version 1 for versioned Pelican outputs",
+          "[import-manifest][wp213]") {
+    for (const std::string_view schema : {"pelican.transform_seq", "pelican.scene",
+                                          "pelican.layout", "pelican.atlas"}) {
+        DYNAMIC_SECTION(std::string{schema}) {
+            const auto versionedManifest = [schema](nlohmann::json output) {
+                output["file"] = "output.json";
+                output["schema"] = schema;
+                output["sha256"] = std::string(64, 'e');
+                return nlohmann::json{
+                    {"schema", "pelican.import"},
+                    {"version", 1},
+                    {"tool", {{"name", "version-gate-test"}}},
+                    {"source", {{"file", "source.asset"}}},
+                    {"outputs", {std::move(output)}},
+                };
+            };
+
+            CHECK_THROWS_WITH(parseImportManifestJson(versionedManifest({})),
+                              Catch::Matchers::ContainsSubstring(std::string{schema} +
+                                                                 " requires version 1"));
+            CHECK(parseImportManifestJson(versionedManifest({{"version", 1}})).outputs.size() == 1);
+        }
+    }
+}
+
 TEST_CASE("import manifest accepts khronos.ktx2 outputs from the ktx2 recipe",
           "[import-manifest]") {
     // pelican-import-tools の ktx2 レシピは ("khronos.ktx2", 2) を出力する。
