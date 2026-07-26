@@ -564,8 +564,24 @@ void PolygonInstanceContainer::triggerUpdate(
     // Clear the published view before compiling the next immutable queue.
     compiled_draw_queue = {};
 
-    if (draw_inventory.empty())
+    if (frame_plan.opaque_provider.empty() ||
+        frame_plan.transparent_provider.empty()) {
+        throw std::invalid_argument(
+            "draw queue frame plan requires non-empty provider names");
+    }
+    if (frame_plan.sort_views.empty() ||
+        frame_plan.sort_views.size() > maxDrawSortViews) {
+        throw std::invalid_argument(
+            "draw queue frame plan requires one or two sort views");
+    }
+    if (draw_inventory.empty()) {
+        compiled_draw_queue =
+            CompiledDrawQueueSet::makeEmpty(
+                frame_plan.material_filters,
+                static_cast<std::uint32_t>(
+                    frame_plan.sort_views.size()));
         return;
+    }
 
     for (size_t i = 0; i < model_instances_data.size(); ++i) {
         if (!model_history_valid[i]) {
@@ -612,21 +628,11 @@ void PolygonInstanceContainer::triggerUpdate(
             sizeof(MorphInstanceGpuData) * morph_instances.size());
     }
 
-    if (frame_plan.opaque_provider.empty() ||
-        frame_plan.transparent_provider.empty()) {
-        throw std::invalid_argument(
-            "draw queue frame plan requires non-empty provider names");
-    }
-    if (frame_plan.sort_views.empty() ||
-        frame_plan.sort_views.size() > maxDrawSortViews) {
-        throw std::invalid_argument(
-            "draw queue frame plan requires one or two sort views");
-    }
-
     // Resolve the frame-varying world bounds into a temporary immutable
     // snapshot. The declaration inventory and its object-space sources stay
     // unchanged across builds.
     auto frame_items = draw_inventory;
+    const auto &materials = GET_MODULE(MaterialContainer);
     for (auto &item : frame_items) {
         const auto instance = item.stable_identity.instance.index;
         if (!instance_slots.alive(instance) ||
@@ -650,6 +656,9 @@ void PolygonInstanceContainer::triggerUpdate(
         item.world_bounds = resolveDrawWorldBounds(
             *item.bounds_source, model_instances_data[instance], palette,
             weights);
+        item.material_tags =
+            materials.tagsForMaterial(
+                item.pipeline_material_key.material);
     }
 
     // Compile phase/view variants without changing the live inventory. The
@@ -672,6 +681,8 @@ void PolygonInstanceContainer::triggerUpdate(
         const auto request = [&](DrawQueuePhase phase) {
             return DrawQueueBuildRequest{
                 .items = frame_items,
+                .material_filters =
+                    frame_plan.material_filters,
                 .max_draw_indirect_count = max_draw_indirect_count,
                 .target_phase = phase,
                 .logical_view = view.logical_view,
@@ -1435,17 +1446,22 @@ const BufferWrapper &PolygonInstanceContainer::getPreviousObjectBuf() const { re
 const std::vector<DrawIndirectInfo> &
 PolygonInstanceContainer::getDrawCalls(
     bool first_person_view, std::optional<MaterialPhase> phase,
-    std::uint32_t sort_view_index) const {
+    std::uint32_t sort_view_index,
+    std::optional<MaterialDrawTagFilterId>
+        material_filter) const {
     const auto visibility = first_person_view
                                 ? DrawQueueView::first_person
                                 : DrawQueueView::third_person;
     if (!phase) {
-        return compiled_draw_queue.allDrawRanges(sort_view_index, visibility);
+        return compiled_draw_queue.allDrawRanges(
+            sort_view_index, visibility,
+            material_filter);
     }
     return compiled_draw_queue.drawRanges(
         *phase == MaterialPhase::opaque ? DrawQueuePhase::opaque
                                         : DrawQueuePhase::transparent,
-        sort_view_index, visibility);
+        sort_view_index, visibility,
+        material_filter);
 }
 
 } // namespace Pelican

@@ -171,6 +171,45 @@ TEST_CASE("material format parses optional render path and exact pass separately
                         Catch::Matchers::ContainsSubstring("pass must match"));
 }
 
+TEST_CASE("material format parses canonical stable draw tags",
+          "[material-format][draw-tag][wp206a]") {
+    auto input = nlohmann::json{
+        {"schema", "pelican.material"},
+        {"version", 1},
+        {"materials",
+         {{{"name", "hero"},
+           {"tags", {"outline", "character"}}}}},
+    };
+    const auto parsed =
+        parseMaterialFormatJson(input);
+    REQUIRE(parsed.warnings.empty());
+    REQUIRE(parsed.materials.front().tags ==
+            std::vector<std::string>{
+                "character", "outline"});
+
+    auto invalid = input;
+    invalid["materials"][0]["tags"] =
+        {"outline", "outline"};
+    REQUIRE_THROWS_WITH(
+        parseMaterialFormatJson(invalid),
+        Catch::Matchers::ContainsSubstring(
+            "duplicate tag: outline"));
+
+    invalid = input;
+    invalid["materials"][0]["tags"] = {""};
+    REQUIRE_THROWS_WITH(
+        parseMaterialFormatJson(invalid),
+        Catch::Matchers::ContainsSubstring(
+            "tag is empty or too long"));
+
+    invalid = input;
+    invalid["materials"][0]["tags"] = "outline";
+    REQUIRE_THROWS_WITH(
+        parseMaterialFormatJson(invalid),
+        Catch::Matchers::ContainsSubstring(
+            "tags must be an array of strings"));
+}
+
 TEST_CASE("full material format round-trips into typed fields and warnings", "[material-format]") {
     const auto document =
         parseMaterialFormatJson(readJson(fixtureRoot() / "valid" / "full.json"), surfaceCatalog());

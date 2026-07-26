@@ -107,6 +107,7 @@ DECLARE_MODULE(MaterialContainer) {
         };
 
         PipelineHandle pipeline;
+        std::vector<std::string> tags;
         MaterialRouteClass route = MaterialRouteClass::deferred_geometry;
         MaterialShaderContract shader_contract = MaterialShaderContract::gbuffer_v1;
         std::optional<std::string> exact_pass;
@@ -228,6 +229,10 @@ DECLARE_MODULE(MaterialContainer) {
         std::span<const watch::AssetKey> material_documents);
 
     bool isRenderRequired(const PassDefinition &pass, GlobalMaterialId material) const;
+    const std::vector<std::string> &
+    tagsForMaterial(GlobalMaterialId material) const {
+        return materials.get(material).tags;
+    }
     MaterialRouteClass routeForMaterial(GlobalMaterialId material) const {
         return materials.get(material).route;
     }

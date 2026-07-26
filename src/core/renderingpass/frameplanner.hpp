@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Pelican {
@@ -82,6 +83,7 @@ struct FrameGraphNodeDefinition {
     bool raster_geometry = false;
     RenderResolutionDomain resolution_domain =
         RenderResolutionDomain::unclassified;
+    std::optional<MaterialDrawTagFilter> material_filter;
 };
 
 struct FrameGraphDefinition {
@@ -108,6 +110,7 @@ struct FramePlanNode {
     std::vector<std::string> writes;
     std::string snapshot_after;
     std::size_t byte_size = 0;
+    std::optional<MaterialDrawTagFilter> material_filter;
 };
 
 struct FramePlanBarrier {
@@ -135,5 +138,12 @@ std::vector<std::string> framePlanOrder(const FramePlan &plan);
 nlohmann::json framePlanToJson(
     const FramePlan &plan,
     const CompiledRenderPipeline *render_pipeline = nullptr);
+void applyMaterialDrawFilterResolutionToFramePlanJson(
+    nlohmann::json &plan_json,
+    std::string_view pass_name,
+    MaterialDrawTagFilterId filter_id,
+    std::size_t resolved_draw_count,
+    const std::vector<std::string> &unmatched_include,
+    const std::vector<std::string> &unmatched_exclude);
 
 } // namespace Pelican

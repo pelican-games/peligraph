@@ -434,6 +434,9 @@ LoweredMaterial lowerMaterial(const MaterialDefinition &material,
     validateVariantSurface(material, surface);
     LoweredMaterial lowered;
     lowered.name = material.name;
+    lowered.tags = canonicalizeMaterialDrawTags(
+        material.tags,
+        "material '" + material.name + "'");
     lowered.surface = material.surface.value_or("<surface>");
     lowered.defines = material.defines;
     lowered.values_layout = makeSurfaceStd140Layout(surface);
@@ -538,6 +541,11 @@ std::string dumpLoweredMaterial(const LoweredMaterial &material) {
     std::ostringstream out;
     out << "material: " << material.name << '\n';
     out << "surface: " << material.surface << '\n';
+    if (!material.tags.empty()) {
+        out << "tags:\n";
+        for (const auto &tag : material.tags)
+            out << "  - " << tag << '\n';
+    }
     out << "layer: C-material (lowered from B surface source)\n";
     out << "hooks:";
     const auto hooks = surfaceHookNames(material.hooks);

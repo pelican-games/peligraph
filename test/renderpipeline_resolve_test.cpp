@@ -672,11 +672,18 @@ TEST_CASE("WP180 resolve failure cannot publish partial registration state",
 
 TEST_CASE("WP180 preview precompile resolves presets through the shared boundary",
           "[wp180][render-pipeline][resolve][preview]") {
+    auto preview_config = baseConfig();
+    preview_config["rendering_passes"][0]
+                  ["passes"][0]
+                  ["material_filter"] = {
+        {"include", {"preview_selected"}},
+        {"exclude", {"preview_hidden"}},
+    };
     const auto preset = Json{
         {"schema", "pelican.render_pipeline"},
         {"version", 1},
         {"name", "preview_fixture_v1"},
-        {"config", baseConfig()},
+        {"config", std::move(preview_config)},
     };
     const auto load_pipeline = [&preset](std::string_view ref) {
         if (ref != "fixture://preview_pipeline") {
@@ -697,6 +704,32 @@ TEST_CASE("WP180 preview precompile resolves presets through the shared boundary
             std::string::npos);
     REQUIRE(program.pass_names ==
             std::vector<std::string>{"scene", "output_transform"});
+    const auto &preview_passes =
+        program.composed_config
+            .at("rendering_passes")
+            .at(0)
+            .at("passes");
+    const auto preview_material =
+        std::find_if(
+            preview_passes.begin(),
+            preview_passes.end(),
+            [](const Json &pass) {
+                return pass.value(
+                           "name",
+                           std::string{}) ==
+                       "scene";
+            });
+    REQUIRE(
+        preview_material !=
+        preview_passes.end());
+    REQUIRE(
+        preview_material->at("material_filter")
+            .at("include") ==
+        Json{"preview_selected"});
+    REQUIRE(
+        preview_material->at("material_filter")
+            .at("exclude") ==
+        Json{"preview_hidden"});
 
     const auto resolved = resolveRenderPipeline(
         RenderPipelineRequest{authored, "preview typed fixture"},

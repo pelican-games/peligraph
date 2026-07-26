@@ -4,6 +4,7 @@
 #include "../handle.hpp"
 #include "../shader/graphicsviewcontract.hpp"
 #include "../shader/shaderreference.hpp"
+#include "../../project/materialdrawtag.hpp"
 #include "../../project/renderpipeline.hpp"
 #include "../../project/materialscreeninput.hpp"
 #include <array>
@@ -77,6 +78,7 @@ struct MaterialPassInfo {
     uint32_t material_start = 0;
     uint32_t material_count = 0;
     MaterialPassContract contract = MaterialPassContract::legacy_gbuffer_v1;
+    std::optional<MaterialDrawTagFilter> material_filter;
     std::vector<MaterialPassScreenInputBinding> screen_inputs;
     // Feature-owned public resources share the material pass-input descriptor
     // ABI but are not authored by individual .surface files.

@@ -322,6 +322,28 @@ std::vector<std::string> parseDefines(const nlohmann::json &material, const std:
     return defines;
 }
 
+std::vector<std::string> parseTags(const nlohmann::json &material,
+                                   const std::string &name) {
+    const auto found = material.find("tags");
+    if (found == material.end()) return {};
+    const auto context = materialContext(name);
+    if (!found->is_array()) {
+        throw std::runtime_error(
+            context + " tags must be an array of strings");
+    }
+    std::vector<std::string> tags;
+    tags.reserve(found->size());
+    for (const auto &entry : *found) {
+        if (!entry.is_string()) {
+            throw std::runtime_error(
+                context + " tags must be an array of strings");
+        }
+        tags.push_back(entry.get<std::string>());
+    }
+    return canonicalizeMaterialDrawTags(
+        std::move(tags), context);
+}
+
 const SurfaceParamDefinition *findSurfaceParam(const SurfaceFormatDocument &surface,
                                                std::string_view name) {
     const auto it = std::find_if(surface.params.begin(), surface.params.end(), [name](const auto &param) {
@@ -598,12 +620,13 @@ MaterialDefinition parseMaterial(const nlohmann::json &material, size_t index,
                                  ".surface and use 'values' for overrides");
     }
     appendUnknownKeyWarnings(material,
-                             {"name", "base", "shader", "defines", "surface", "values",
+                             {"name", "tags", "base", "shader", "defines", "surface", "values",
                               "textures", "routing", "render_path", "pass"},
                              context, warnings);
 
     MaterialDefinition parsed;
     parsed.name = name;
+    parsed.tags = parseTags(material, name);
     parsed.base = parseBase(material, name, warnings);
     parsed.defines = parseDefines(material, name);
     if (const auto shader = optionalString(material, "shader", context)) {

@@ -87,6 +87,7 @@ TEST_CASE("lowered material binder resolves overridden texture references by dec
           "[material-binding][texture-override]") {
     LoweredMaterial lowered;
     lowered.name = "paint";
+    lowered.tags = {"character", "outline"};
     lowered.textures = {
         LoweredTextureBinding{"color", 7, "project://color.png",
                               SurfaceTextureRole::color, LoweredTextureView::srgb,
@@ -106,6 +107,7 @@ TEST_CASE("lowered material binder resolves overridden texture references by dec
             throw std::runtime_error("unexpected texture request");
         });
     REQUIRE(destination.custom_textures.size() == 2);
+    REQUIRE(destination.tags == lowered.tags);
     REQUIRE(destination.custom_textures[0].texture == GlobalTextureId{101});
     REQUIRE(destination.custom_textures[1].texture == GlobalTextureId{202});
     REQUIRE(destination.shader_contract ==

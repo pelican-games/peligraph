@@ -685,6 +685,8 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     if (materials.size() >= maxMaterials) {
         throw std::runtime_error("Material capacity exceeded");
     }
+    info.tags = canonicalizeMaterialDrawTags(
+        std::move(info.tags), "registered material");
     const auto rendering =
         resolveMaterialPipelineRenderingContract(info);
     validateMaterialCapabilities(info, rendering);
@@ -811,6 +813,7 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     const auto gpu_data = makeMaterialGpuData(info);
     const auto material_id = materials.reg(InternalMaterialInfo{
         .pipeline = pipeline,
+        .tags = std::move(info.tags),
         .route = info.route,
         .shader_contract = info.shader_contract,
         .exact_pass = std::move(info.exact_pass),

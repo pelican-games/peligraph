@@ -2,11 +2,18 @@
 
 #include "renderingpass.hpp"
 #include <nlohmann/json.hpp>
+#include <optional>
+#include <string_view>
 
 namespace Pelican {
 
 class RenderTargetMetadataResolver;
 class RenderTargetNameResolver;
+
+std::optional<MaterialDrawTagFilter>
+parseMaterialDrawTagFilterFromJson(
+    const nlohmann::json &pass_json,
+    std::string_view context);
 
 void parseMaterialPassInfoFromJson(PassDefinition &pass_def, const nlohmann::json &pass_json);
 void parseMaterialPassScreenInputsFromJson(

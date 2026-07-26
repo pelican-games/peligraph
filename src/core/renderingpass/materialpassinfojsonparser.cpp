@@ -8,12 +8,67 @@
 
 namespace Pelican {
 
+std::optional<MaterialDrawTagFilter>
+parseMaterialDrawTagFilterFromJson(
+    const nlohmann::json &pass_json,
+    std::string_view context) {
+    const auto found = pass_json.find("material_filter");
+    if (found == pass_json.end()) return std::nullopt;
+    if (!found->is_object()) {
+        throw std::runtime_error(
+            std::string{context} +
+            " material_filter must be an object");
+    }
+    for (auto entry = found->begin();
+         entry != found->end(); ++entry) {
+        if (entry.key() != "include" &&
+            entry.key() != "exclude") {
+            throw std::runtime_error(
+                std::string{context} +
+                " material_filter has unknown field '" +
+                entry.key() + "'");
+        }
+    }
+    const auto parse = [&](std::string_view field) {
+        const auto entry = found->find(std::string{field});
+        if (entry == found->end()) {
+            return std::vector<std::string>{};
+        }
+        if (!entry->is_array()) {
+            throw std::runtime_error(
+                std::string{context} +
+                " material_filter." +
+                std::string{field} +
+                " must be an array of strings");
+        }
+        std::vector<std::string> tags;
+        tags.reserve(entry->size());
+        for (const auto &tag : *entry) {
+            if (!tag.is_string()) {
+                throw std::runtime_error(
+                    std::string{context} +
+                    " material_filter." +
+                    std::string{field} +
+                    " must be an array of strings");
+            }
+            tags.push_back(tag.get<std::string>());
+        }
+        return tags;
+    };
+    return makeMaterialDrawTagFilter(
+        parse("include"), parse("exclude"),
+        std::string{context} + " material_filter");
+}
+
 void parseMaterialPassInfoFromJson(PassDefinition &pass_def, const nlohmann::json &pass_json) {
     if (!pass_def.isMaterial()) {
         return;
     }
 
     auto &material_info = pass_def.materialInfo();
+    material_info.material_filter =
+        parseMaterialDrawTagFilterFromJson(
+            pass_json, "Material pass '" + pass_def.name + "'");
     if (pass_json.contains("material_contract")) {
         const auto &contract = pass_json.at("material_contract");
         if (!contract.is_string()) {

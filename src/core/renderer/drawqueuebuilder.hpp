@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string>
 #include <vector>
 #include <vulkan/vulkan.hpp>
 
@@ -104,6 +105,10 @@ struct DrawItemSnapshot {
     std::uint64_t declaration_ordinal = 0;
     DrawIndexedArguments indexed{};
     DrawPipelineMaterialKey pipeline_material_key{};
+    // Canonical material-side authoring tags. They are copied into this
+    // immutable snapshot before queue compilation and never reach the Vulkan
+    // execution loop.
+    std::vector<std::string> material_tags;
     MaterialRouteClass route = MaterialRouteClass::deferred_geometry;
     MaterialPhase phase = MaterialPhase::opaque;
     std::shared_ptr<const ModelPrimitiveBoundsSource> bounds_source;
@@ -128,6 +133,7 @@ MaterialPhase drawPhaseForMaterialRoute(MaterialRouteClass route) noexcept;
 
 struct DrawQueueBuildRequest {
     std::span<const DrawItemSnapshot> items;
+    std::span<const MaterialDrawTagFilter> material_filters;
     std::uint32_t max_draw_indirect_count = 0;
     DrawQueuePhase target_phase = DrawQueuePhase::mixed;
     RenderPolicy::DrawSortLogicalViewV1 logical_view =
@@ -136,13 +142,30 @@ struct DrawQueueBuildRequest {
     std::array<float, 3> logical_view_forward{0.0F, 0.0F, -1.0F};
 };
 
+struct MaterialDrawFilterResolution {
+    MaterialDrawTagFilterId filter_id{};
+    std::size_t resolved_draw_count = 0;
+    std::vector<std::string> unmatched_include;
+    std::vector<std::string> unmatched_exclude;
+
+    bool operator==(const MaterialDrawFilterResolution &) const = default;
+};
+
 class CompiledDrawQueue {
     friend class DrawQueueBuilder;
+    friend class CompiledDrawQueueSet;
+
+    struct FilterPublication {
+        MaterialDrawTagFilter filter;
+        MaterialDrawFilterResolution resolution;
+        std::array<std::vector<DrawIndirectInfo>, 2> draw_ranges;
+    };
 
     DrawSortProviderInfo provider_;
     std::vector<DrawItemSnapshot> ordered_items_;
     std::vector<RenderCommand> indirect_records_;
     std::array<std::vector<DrawIndirectInfo>, 2> draw_ranges_;
+    std::vector<FilterPublication> material_filters_;
 
   public:
     const DrawSortProviderInfo &provider() const noexcept { return provider_; }
@@ -155,7 +178,13 @@ class CompiledDrawQueue {
     }
     std::span<const std::byte> indirectBytes() const noexcept;
     const std::vector<DrawIndirectInfo> &
-    drawRanges(DrawQueueView view) const noexcept;
+    drawRanges(
+        DrawQueueView view,
+        std::optional<MaterialDrawTagFilterId> filter_id =
+            std::nullopt) const;
+    const MaterialDrawFilterResolution *
+    materialFilterResolution(
+        MaterialDrawTagFilterId filter_id) const noexcept;
 };
 
 class DrawQueueBuilder {
@@ -177,20 +206,38 @@ struct CompiledDrawQueueVariant {
 // whose offsets have already been rebased into that flattened storage.
 class CompiledDrawQueueSet {
     struct Variant {
+        struct FilterRanges {
+            MaterialDrawTagFilterId filter_id{};
+            std::array<std::vector<DrawIndirectInfo>, 2> draw_ranges;
+        };
+
         DrawQueuePhase phase = DrawQueuePhase::opaque;
         std::uint32_t sort_view_index = 0;
         CompiledDrawQueue queue;
         std::array<std::vector<DrawIndirectInfo>, 2> draw_ranges;
+        std::vector<FilterRanges> material_filters;
+    };
+
+    struct FilterPublication {
+        MaterialDrawTagFilter filter;
+        MaterialDrawFilterResolution resolution;
+        std::vector<std::array<std::vector<DrawIndirectInfo>, 2>>
+            all_ranges;
     };
 
     std::vector<Variant> variants_;
     std::vector<RenderCommand> indirect_records_;
     std::vector<std::array<std::vector<DrawIndirectInfo>, 2>> all_ranges_;
+    std::vector<FilterPublication> material_filters_;
 
     const Variant &variant(DrawQueuePhase phase,
                            std::uint32_t sort_view_index) const;
 
   public:
+    static CompiledDrawQueueSet
+    makeEmpty(
+        std::span<const MaterialDrawTagFilter> material_filters,
+        std::uint32_t sort_view_count);
     static CompiledDrawQueueSet
     combine(std::vector<CompiledDrawQueueVariant> variants);
 
@@ -205,10 +252,22 @@ class CompiledDrawQueueSet {
     std::span<const std::byte> indirectBytes() const noexcept;
     const std::vector<DrawIndirectInfo> &
     drawRanges(DrawQueuePhase phase, std::uint32_t sort_view_index,
-               DrawQueueView visibility_view) const;
+               DrawQueueView visibility_view,
+               std::optional<MaterialDrawTagFilterId> filter_id =
+                   std::nullopt) const;
     const std::vector<DrawIndirectInfo> &
     allDrawRanges(std::uint32_t sort_view_index,
-                  DrawQueueView visibility_view) const;
+                  DrawQueueView visibility_view,
+                  std::optional<MaterialDrawTagFilterId> filter_id =
+                      std::nullopt) const;
+    const MaterialDrawFilterResolution *
+    materialFilterResolution(
+        MaterialDrawTagFilterId filter_id) const noexcept;
+    const MaterialDrawFilterResolution *
+    materialFilterResolution(
+        DrawQueuePhase phase,
+        std::uint32_t sort_view_index,
+        MaterialDrawTagFilterId filter_id) const noexcept;
     const CompiledDrawQueue &
     queue(DrawQueuePhase phase, std::uint32_t sort_view_index) const {
         return variant(phase, sort_view_index).queue;

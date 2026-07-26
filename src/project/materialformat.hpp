@@ -1,5 +1,6 @@
 #pragma once
 
+#include "materialdrawtag.hpp"
 #include "renderpipeline.hpp"
 #include "surfaceformat.hpp"
 
@@ -75,6 +76,7 @@ struct MaterialBase {
 
 struct MaterialDefinition {
     std::string name;
+    std::vector<std::string> tags;
     MaterialBase base;
     std::optional<std::string> shader;
     std::vector<std::string> defines;

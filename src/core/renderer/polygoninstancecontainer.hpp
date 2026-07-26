@@ -198,6 +198,7 @@ struct DrawQueueFramePlan {
     std::string_view transparent_provider =
         builtinBackToFrontDrawSortProvider;
     std::span<const DrawQueueSortView> sort_views;
+    std::span<const MaterialDrawTagFilter> material_filters;
 };
 
 // A fully allocated CPU candidate for one model instance. Staging performs all
@@ -340,7 +341,27 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     const std::vector<DrawIndirectInfo> &
     getDrawCalls(bool first_person_view = false,
                  std::optional<MaterialPhase> phase = std::nullopt,
-                 std::uint32_t sort_view_index = 0) const;
+                 std::uint32_t sort_view_index = 0,
+                 std::optional<MaterialDrawTagFilterId>
+                     material_filter = std::nullopt) const;
+    const MaterialDrawFilterResolution *
+    materialFilterResolution(
+        MaterialDrawTagFilterId filter_id) const noexcept {
+        return compiled_draw_queue
+            .materialFilterResolution(filter_id);
+    }
+    const MaterialDrawFilterResolution *
+    materialFilterResolution(
+        MaterialPhase phase,
+        MaterialDrawTagFilterId filter_id,
+        std::uint32_t sort_view_index = 0) const noexcept {
+        return compiled_draw_queue
+            .materialFilterResolution(
+                phase == MaterialPhase::opaque
+                    ? DrawQueuePhase::opaque
+                    : DrawQueuePhase::transparent,
+                sort_view_index, filter_id);
+    }
     size_t instanceCountForTesting() const { return instance_slots.liveCount(); }
     size_t slotCountForTesting() const { return model_instances_data.size(); }
     ModelInstanceId modelInstanceIdForTesting(std::uint32_t index) const;

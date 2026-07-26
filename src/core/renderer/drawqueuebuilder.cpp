@@ -112,6 +112,18 @@ void validateSnapshot(const DrawItemSnapshot &item) {
             }
         }
     }
+    for (const auto &tag : item.material_tags) {
+        validateMaterialDrawTag(
+            tag, "DrawItemSnapshot material");
+    }
+    if (!std::is_sorted(item.material_tags.begin(),
+                        item.material_tags.end()) ||
+        std::adjacent_find(item.material_tags.begin(),
+                           item.material_tags.end()) !=
+            item.material_tags.end()) {
+        throw std::invalid_argument(
+            "DrawItemSnapshot material tags must be canonical");
+    }
 }
 
 RenderPolicy::MaterialRouteV1 providerRoute(MaterialRouteClass route) {
@@ -371,8 +383,35 @@ std::span<const std::byte> CompiledDrawQueue::indirectBytes() const noexcept {
 }
 
 const std::vector<DrawIndirectInfo> &
-CompiledDrawQueue::drawRanges(DrawQueueView view) const noexcept {
+CompiledDrawQueue::drawRanges(
+    DrawQueueView view,
+    std::optional<MaterialDrawTagFilterId> filter_id) const {
+    if (filter_id) {
+        const auto found = std::find_if(
+            material_filters_.begin(), material_filters_.end(),
+            [&](const auto &entry) {
+                return entry.filter.id == *filter_id;
+            });
+        if (found == material_filters_.end()) {
+            throw std::out_of_range(
+                "compiled draw queue material filter is unavailable");
+        }
+        return found->draw_ranges[viewIndex(view)];
+    }
     return draw_ranges_[viewIndex(view)];
+}
+
+const MaterialDrawFilterResolution *
+CompiledDrawQueue::materialFilterResolution(
+    MaterialDrawTagFilterId filter_id) const noexcept {
+    const auto found = std::find_if(
+        material_filters_.begin(), material_filters_.end(),
+        [&](const auto &entry) {
+            return entry.filter.id == filter_id;
+        });
+    return found == material_filters_.end()
+               ? nullptr
+               : &found->resolution;
 }
 
 CompiledDrawQueue
@@ -422,6 +461,19 @@ DrawQueueBuilder::build(const DrawQueueBuildRequest &request,
         if (!declaration_ordinals.insert(item.declaration_ordinal).second) {
             throw std::invalid_argument(
                 "DrawItemSnapshot declaration ordinals must be unique");
+        }
+    }
+    std::unordered_set<
+        MaterialDrawTagFilterId,
+        MaterialDrawTagFilterId::Hash>
+        material_filter_ids;
+    material_filter_ids.reserve(request.material_filters.size());
+    for (const auto &filter : request.material_filters) {
+        validateMaterialDrawTagFilter(
+            filter, "DrawQueueBuilder material filter");
+        if (!material_filter_ids.insert(filter.id).second) {
+            throw std::invalid_argument(
+                "DrawQueueBuilder material filter ids must be unique");
         }
     }
 
@@ -492,8 +544,10 @@ DrawQueueBuilder::build(const DrawQueueBuildRequest &request,
         result.indirect_records_.push_back(materialize(item));
     }
 
-    const auto build_ranges = [&](DrawQueueView view) {
-        auto &output = result.draw_ranges_[viewIndex(view)];
+    const auto build_ranges =
+        [&](DrawQueueView view,
+            const MaterialDrawTagFilter *filter,
+            std::vector<DrawIndirectInfo> &output) {
         std::optional<std::size_t> first;
         const auto flush = [&](std::size_t end) {
             if (!first) return;
@@ -516,7 +570,10 @@ DrawQueueBuilder::build(const DrawQueueBuildRequest &request,
         for (std::size_t index = 0; index < result.ordered_items_.size();
              ++index) {
             const auto &item = result.ordered_items_[index];
-            if (!isVisible(item.view_mask, view)) {
+            if (!isVisible(item.view_mask, view) ||
+                (filter != nullptr &&
+                 !materialDrawTagFilterMatches(
+                     item.material_tags, *filter))) {
                 flush(index);
                 continue;
             }
@@ -529,8 +586,61 @@ DrawQueueBuilder::build(const DrawQueueBuildRequest &request,
         flush(result.ordered_items_.size());
     };
 
-    build_ranges(DrawQueueView::third_person);
-    build_ranges(DrawQueueView::first_person);
+    build_ranges(
+        DrawQueueView::third_person, nullptr,
+        result.draw_ranges_[viewIndex(
+            DrawQueueView::third_person)]);
+    build_ranges(
+        DrawQueueView::first_person, nullptr,
+        result.draw_ranges_[viewIndex(
+            DrawQueueView::first_person)]);
+
+    std::vector<std::string> observed_tags;
+    for (const auto &item : result.ordered_items_) {
+        observed_tags.insert(
+            observed_tags.end(),
+            item.material_tags.begin(),
+            item.material_tags.end());
+    }
+    std::sort(observed_tags.begin(), observed_tags.end());
+    observed_tags.erase(
+        std::unique(observed_tags.begin(), observed_tags.end()),
+        observed_tags.end());
+
+    result.material_filters_.reserve(
+        request.material_filters.size());
+    for (const auto &filter : request.material_filters) {
+        CompiledDrawQueue::FilterPublication publication;
+        publication.filter = filter;
+        publication.resolution.filter_id = filter.id;
+        publication.resolution.resolved_draw_count =
+            static_cast<std::size_t>(std::count_if(
+                result.ordered_items_.begin(),
+                result.ordered_items_.end(),
+                [&](const auto &item) {
+                    return materialDrawTagFilterMatches(
+                        item.material_tags, filter);
+                }));
+        std::set_difference(
+            filter.include.begin(), filter.include.end(),
+            observed_tags.begin(), observed_tags.end(),
+            std::back_inserter(
+                publication.resolution.unmatched_include));
+        std::set_difference(
+            filter.exclude.begin(), filter.exclude.end(),
+            observed_tags.begin(), observed_tags.end(),
+            std::back_inserter(
+                publication.resolution.unmatched_exclude));
+        for (const auto view :
+             {DrawQueueView::third_person,
+              DrawQueueView::first_person}) {
+            build_ranges(
+                view, &publication.filter,
+                publication.draw_ranges[viewIndex(view)]);
+        }
+        result.material_filters_.push_back(
+            std::move(publication));
+    }
     return result;
 }
 
@@ -545,6 +655,46 @@ const CompiledDrawQueueSet::Variant &CompiledDrawQueueSet::variant(
         throw std::out_of_range("compiled draw queue phase/view is unavailable");
     }
     return *found;
+}
+
+CompiledDrawQueueSet CompiledDrawQueueSet::makeEmpty(
+    std::span<const MaterialDrawTagFilter> material_filters,
+    std::uint32_t sort_view_count) {
+    if (sort_view_count == 0 ||
+        sort_view_count > 2) {
+        throw std::invalid_argument(
+            "empty compiled draw queue set requires one or two sort views");
+    }
+    CompiledDrawQueueSet result;
+    result.all_ranges_.resize(sort_view_count);
+    std::unordered_set<
+        MaterialDrawTagFilterId,
+        MaterialDrawTagFilterId::Hash>
+        ids;
+    result.material_filters_.reserve(
+        material_filters.size());
+    for (const auto &filter : material_filters) {
+        validateMaterialDrawTagFilter(
+            filter,
+            "empty compiled draw queue material filter");
+        if (!ids.insert(filter.id).second) {
+            throw std::invalid_argument(
+                "empty compiled draw queue material filter ids must be unique");
+        }
+        FilterPublication publication;
+        publication.filter = filter;
+        publication.resolution.filter_id =
+            filter.id;
+        publication.resolution.unmatched_include =
+            filter.include;
+        publication.resolution.unmatched_exclude =
+            filter.exclude;
+        publication.all_ranges.resize(
+            sort_view_count);
+        result.material_filters_.push_back(
+            std::move(publication));
+    }
+    return result;
 }
 
 CompiledDrawQueueSet CompiledDrawQueueSet::combine(
@@ -599,6 +749,39 @@ CompiledDrawQueueSet CompiledDrawQueueSet::combine(
     }
 
     result.all_ranges_.resize(view_count);
+    const auto &reference_filters =
+        variants.front().queue.material_filters_;
+    result.material_filters_.reserve(
+        reference_filters.size());
+    for (const auto &filter : reference_filters) {
+        FilterPublication publication;
+        publication.filter = filter.filter;
+        publication.resolution.filter_id =
+            filter.filter.id;
+        publication.resolution.unmatched_include =
+            filter.filter.include;
+        publication.resolution.unmatched_exclude =
+            filter.filter.exclude;
+        publication.all_ranges.resize(view_count);
+        result.material_filters_.push_back(
+            std::move(publication));
+    }
+    for (const auto &entry : variants) {
+        if (entry.queue.material_filters_.size() !=
+            reference_filters.size()) {
+            throw std::invalid_argument(
+                "compiled draw queue set material filters are inconsistent");
+        }
+        for (std::size_t filter_index = 0;
+             filter_index < reference_filters.size();
+             ++filter_index) {
+            if (entry.queue.material_filters_[filter_index].filter !=
+                reference_filters[filter_index].filter) {
+                throw std::invalid_argument(
+                    "compiled draw queue set material filters are inconsistent");
+            }
+        }
+    }
     std::size_t total_records = 0;
     for (const auto &entry : variants) {
         if (entry.queue.indirectRecords().size() >
@@ -632,6 +815,65 @@ CompiledDrawQueueSet CompiledDrawQueueSet::combine(
             all.insert(all.end(), compiled.draw_ranges[index].begin(),
                        compiled.draw_ranges[index].end());
         }
+        compiled.material_filters.reserve(
+            compiled.queue.material_filters_.size());
+        for (std::size_t filter_index = 0;
+             filter_index <
+             compiled.queue.material_filters_.size();
+             ++filter_index) {
+            const auto &source =
+                compiled.queue.material_filters_[filter_index];
+            Variant::FilterRanges filtered{
+                .filter_id = source.filter.id,
+                .draw_ranges = source.draw_ranges,
+            };
+            for (auto &view_ranges :
+                 filtered.draw_ranges) {
+                for (auto &range : view_ranges) {
+                    range.offset +=
+                        base * sizeof(RenderCommand);
+                }
+            }
+            auto &published =
+                result.material_filters_[filter_index];
+            for (const auto visibility :
+                 {DrawQueueView::third_person,
+                  DrawQueueView::first_person}) {
+                const auto index =
+                    viewIndex(visibility);
+                auto &all =
+                    published.all_ranges
+                        [compiled.sort_view_index][index];
+                all.insert(
+                    all.end(),
+                    filtered.draw_ranges[index].begin(),
+                    filtered.draw_ranges[index].end());
+            }
+            if (compiled.sort_view_index == 0) {
+                published.resolution.resolved_draw_count +=
+                    source.resolution.resolved_draw_count;
+                std::vector<std::string> unmatched_include;
+                std::set_intersection(
+                    published.resolution.unmatched_include.begin(),
+                    published.resolution.unmatched_include.end(),
+                    source.resolution.unmatched_include.begin(),
+                    source.resolution.unmatched_include.end(),
+                    std::back_inserter(unmatched_include));
+                published.resolution.unmatched_include =
+                    std::move(unmatched_include);
+                std::vector<std::string> unmatched_exclude;
+                std::set_intersection(
+                    published.resolution.unmatched_exclude.begin(),
+                    published.resolution.unmatched_exclude.end(),
+                    source.resolution.unmatched_exclude.begin(),
+                    source.resolution.unmatched_exclude.end(),
+                    std::back_inserter(unmatched_exclude));
+                published.resolution.unmatched_exclude =
+                    std::move(unmatched_exclude);
+            }
+            compiled.material_filters.push_back(
+                std::move(filtered));
+        }
         result.variants_.push_back(std::move(compiled));
     }
     return result;
@@ -645,21 +887,98 @@ CompiledDrawQueueSet::indirectBytes() const noexcept {
 
 const std::vector<DrawIndirectInfo> &CompiledDrawQueueSet::drawRanges(
     DrawQueuePhase phase, std::uint32_t sort_view_index,
-    DrawQueueView visibility_view) const {
+    DrawQueueView visibility_view,
+    std::optional<MaterialDrawTagFilterId> filter_id) const {
     static const std::vector<DrawIndirectInfo> empty;
-    if (variants_.empty() && sort_view_index == 0) return empty;
-    return variant(phase, sort_view_index)
-        .draw_ranges[viewIndex(visibility_view)];
+    if (variants_.empty()) {
+        if (sort_view_index >=
+            all_ranges_.size()) {
+            throw std::out_of_range(
+                "compiled draw queue sort view is unavailable");
+        }
+        if (filter_id &&
+            materialFilterResolution(
+                *filter_id) == nullptr) {
+            throw std::out_of_range(
+                "compiled draw queue set material filter is unavailable");
+        }
+        return empty;
+    }
+    const auto &selected =
+        variant(phase, sort_view_index);
+    if (!filter_id) {
+        return selected
+            .draw_ranges[viewIndex(visibility_view)];
+    }
+    const auto found = std::find_if(
+        selected.material_filters.begin(),
+        selected.material_filters.end(),
+        [&](const auto &entry) {
+            return entry.filter_id == *filter_id;
+        });
+    if (found == selected.material_filters.end()) {
+        throw std::out_of_range(
+            "compiled draw queue set material filter is unavailable");
+    }
+    return found->draw_ranges[
+        viewIndex(visibility_view)];
 }
 
 const std::vector<DrawIndirectInfo> &CompiledDrawQueueSet::allDrawRanges(
-    std::uint32_t sort_view_index, DrawQueueView visibility_view) const {
+    std::uint32_t sort_view_index,
+    DrawQueueView visibility_view,
+    std::optional<MaterialDrawTagFilterId> filter_id) const {
     static const std::vector<DrawIndirectInfo> empty;
-    if (all_ranges_.empty() && sort_view_index == 0) return empty;
     if (sort_view_index >= all_ranges_.size()) {
         throw std::out_of_range("compiled draw queue sort view is unavailable");
     }
+    if (filter_id) {
+        const auto found = std::find_if(
+            material_filters_.begin(),
+            material_filters_.end(),
+            [&](const auto &entry) {
+                return entry.filter.id == *filter_id;
+            });
+        if (found == material_filters_.end()) {
+            throw std::out_of_range(
+                "compiled draw queue set material filter is unavailable");
+        }
+        return found->all_ranges[sort_view_index]
+                                [viewIndex(visibility_view)];
+    }
     return all_ranges_[sort_view_index][viewIndex(visibility_view)];
+}
+
+const MaterialDrawFilterResolution *
+CompiledDrawQueueSet::materialFilterResolution(
+    MaterialDrawTagFilterId filter_id) const noexcept {
+    const auto found = std::find_if(
+        material_filters_.begin(), material_filters_.end(),
+        [&](const auto &entry) {
+            return entry.filter.id == filter_id;
+        });
+    return found == material_filters_.end()
+               ? nullptr
+               : &found->resolution;
+}
+
+const MaterialDrawFilterResolution *
+CompiledDrawQueueSet::materialFilterResolution(
+    DrawQueuePhase phase,
+    std::uint32_t sort_view_index,
+    MaterialDrawTagFilterId filter_id) const noexcept {
+    const auto found = std::find_if(
+        variants_.begin(), variants_.end(),
+        [&](const Variant &candidate) {
+            return candidate.phase == phase &&
+                   candidate.sort_view_index ==
+                       sort_view_index;
+        });
+    if (found == variants_.end()) {
+        return nullptr;
+    }
+    return found->queue
+        .materialFilterResolution(filter_id);
 }
 
 } // namespace Pelican

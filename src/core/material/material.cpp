@@ -5,6 +5,7 @@
 namespace Pelican {
 
 void applyLoweredMaterial(MaterialInfo &destination, const LoweredMaterial &lowered) {
+    destination.tags = lowered.tags;
     destination.custom_values_layout = lowered.values_layout;
     destination.custom_values = lowered.values;
     destination.render_state = lowered.render_state;

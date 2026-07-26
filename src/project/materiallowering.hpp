@@ -64,6 +64,7 @@ struct DeferredEligibility {
 
 struct LoweredMaterial {
     std::string name;
+    std::vector<std::string> tags;
     std::string surface;
     std::vector<std::string> defines;
     Std140Layout values_layout;

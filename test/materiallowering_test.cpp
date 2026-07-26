@@ -72,6 +72,7 @@ TEST_CASE("material overrides bind by name without changing declaration layout",
     const auto surface = parseSurfaceFormat(readFixture(), "wp76.surface");
     MaterialDefinition material;
     material.name = "named_override";
+    material.tags = {"character", "outline"};
     material.surface = "project://wp76.surface";
     SurfaceParamValue scalar;
     scalar.type = SurfaceParamType::floating;
@@ -81,6 +82,9 @@ TEST_CASE("material overrides bind by name without changing declaration layout",
         MaterialTextureOverride{"normal_detail", "project://textures/custom_normal.png"});
 
     const auto lowered = lowerMaterial(material, surface);
+    REQUIRE(lowered.tags ==
+            std::vector<std::string>{
+                "character", "outline"});
     REQUIRE(readAt<float>(lowered.values, 28) == Catch::Approx(42.0f));
     REQUIRE(readAt<float>(lowered.values, 0) == Catch::Approx(2.0f));
     REQUIRE(lowered.textures.size() == 3);

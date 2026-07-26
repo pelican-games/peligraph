@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
+#include <numeric>
 #include <optional>
 #include <tuple>
 #include <vector>
@@ -188,6 +189,53 @@ void requireSameBytes(std::span<const std::byte> actual,
     REQUIRE(std::equal(actual.begin(), actual.end(), expected_bytes.begin()));
 }
 
+DrawItemSnapshot withTags(
+    DrawItemSnapshot snapshot,
+    std::vector<std::string> tags) {
+    snapshot.material_tags =
+        canonicalizeMaterialDrawTags(
+            std::move(tags), "test material");
+    return snapshot;
+}
+
+std::vector<std::uint32_t> selectedPrimitiveIds(
+    const CompiledDrawQueue &queue,
+    MaterialDrawTagFilterId filter_id,
+    DrawQueueView view =
+        DrawQueueView::third_person) {
+    std::vector<std::uint32_t> result;
+    for (const auto &range :
+         queue.drawRanges(view, filter_id)) {
+        REQUIRE(
+            range.stride == sizeof(RenderCommand));
+        const auto first =
+            static_cast<std::size_t>(
+                range.offset /
+                sizeof(RenderCommand));
+        for (std::uint32_t draw = 0;
+             draw < range.draw_count; ++draw) {
+            result.push_back(
+                queue.orderedItems()
+                    .at(first + draw)
+                    .stable_identity
+                    .primitive_index);
+        }
+    }
+    std::sort(result.begin(), result.end());
+    return result;
+}
+
+std::uint32_t totalDrawCount(
+    const std::vector<DrawIndirectInfo> &ranges) {
+    return std::accumulate(
+        ranges.begin(), ranges.end(),
+        std::uint32_t{0},
+        [](std::uint32_t total,
+           const DrawIndirectInfo &range) {
+            return total + range.draw_count;
+        });
+}
+
 } // namespace
 
 TEST_CASE("state_batched_v1 reproduces the legacy command bytes and view ranges",
@@ -316,6 +364,241 @@ TEST_CASE("draw queue compilation is repeatable, input preserving, and fail fast
                         .max_draw_indirect_count = 64},
                         provider),
                     std::invalid_argument);
+}
+
+TEST_CASE(
+    "WP206a material tag selection is invariant under registration and sort order",
+    "[renderer][draw-queue][draw-tag][wp206a]") {
+    const auto selected_filter =
+        makeMaterialDrawTagFilter(
+            {"ghost", "outline"}, {"hidden"},
+            "selected filter");
+    const auto unknown_include =
+        makeMaterialDrawTagFilter(
+            {"not_registered"}, {},
+            "unknown include filter");
+    const auto unknown_exclude =
+        makeMaterialDrawTagFilter(
+            {}, {"not_registered"},
+            "unknown exclude filter");
+    const std::array filters{
+        selected_filter,
+        unknown_include,
+        unknown_exclude,
+    };
+
+    std::vector first_input{
+        withTags(
+            item(0, 0, 0, false,
+                 PrimitiveViewVisibility::both,
+                 0, 0),
+            {"outline"}),
+        withTags(
+            item(1, 1, 0, false,
+                 PrimitiveViewVisibility::both,
+                 1, 3),
+            {"hidden", "outline"}),
+        withTags(
+            item(2, 2, 0, false,
+                 PrimitiveViewVisibility::both,
+                 2, 6),
+            {"environment"}),
+        withTags(
+            item(3, 3, 0, false,
+                 PrimitiveViewVisibility::both,
+                 3, 9),
+            {"character", "outline"}),
+    };
+    auto second_input = first_input;
+    std::reverse(
+        second_input.begin(),
+        second_input.end());
+    for (auto &snapshot : second_input) {
+        snapshot.pipeline_material_key.material =
+            GlobalMaterialId{
+                20 -
+                snapshot.pipeline_material_key
+                    .material.value};
+    }
+
+    const auto provider = builtinProvider();
+    const auto first = DrawQueueBuilder::build(
+        DrawQueueBuildRequest{
+            .items = first_input,
+            .material_filters = filters,
+            .max_draw_indirect_count = 64,
+        },
+        provider);
+    const auto second = DrawQueueBuilder::build(
+        DrawQueueBuildRequest{
+            .items = second_input,
+            .material_filters = filters,
+            .max_draw_indirect_count = 64,
+        },
+        provider);
+
+    const std::vector<std::uint32_t>
+        expected{0, 3};
+    REQUIRE(
+        selectedPrimitiveIds(
+            first, selected_filter.id) ==
+        expected);
+    REQUIRE(
+        selectedPrimitiveIds(
+            second, selected_filter.id) ==
+        expected);
+    REQUIRE(
+        first.materialFilterResolution(
+                 selected_filter.id)
+            ->resolved_draw_count == 2);
+    REQUIRE(
+        first.materialFilterResolution(
+                 selected_filter.id)
+            ->unmatched_include ==
+        std::vector<std::string>{"ghost"});
+    REQUIRE(
+        first.drawRanges(
+                 DrawQueueView::third_person,
+                 unknown_include.id)
+            .empty());
+    REQUIRE(
+        first.materialFilterResolution(
+                 unknown_include.id)
+            ->unmatched_include ==
+        std::vector<std::string>{
+            "not_registered"});
+    REQUIRE(
+        totalDrawCount(first.drawRanges(
+            DrawQueueView::third_person,
+            unknown_exclude.id)) ==
+        first_input.size());
+    REQUIRE(
+        first.materialFilterResolution(
+                 unknown_exclude.id)
+            ->unmatched_exclude ==
+        std::vector<std::string>{
+            "not_registered"});
+}
+
+TEST_CASE(
+    "WP206a resolved filters survive flat and two-view queue publication",
+    "[renderer][draw-queue][draw-tag][xr][wp206a]") {
+    const auto filter =
+        makeMaterialDrawTagFilter(
+            {"fx"}, {}, "fx filter");
+    const std::array filters{filter};
+    const std::vector input{
+        withTags(
+            item(0, 1, 0, false,
+                 PrimitiveViewVisibility::both,
+                 0, 0),
+            {"fx"}),
+        withTags(
+            transparentItem(
+                1, 1, 0.0F, -2.0F, 2),
+            {"fx", "transparent"}),
+        withTags(
+            item(2, 3, 0, false,
+                 PrimitiveViewVisibility::both,
+                 2, 6),
+            {"base"}),
+    };
+
+    const auto compile = [&](std::uint32_t view_count) {
+        std::vector<CompiledDrawQueueVariant>
+            variants;
+        for (std::uint32_t view = 0;
+             view < view_count; ++view) {
+            const auto request =
+                [&](DrawQueuePhase phase) {
+                    return DrawQueueBuildRequest{
+                        .items = input,
+                        .material_filters =
+                            filters,
+                        .max_draw_indirect_count =
+                            64,
+                        .target_phase = phase,
+                        .logical_view_origin =
+                            {static_cast<float>(
+                                 view),
+                             0.0F, 0.0F},
+                    };
+                };
+            variants.push_back({
+                .phase =
+                    DrawQueuePhase::opaque,
+                .sort_view_index = view,
+                .queue =
+                    DrawQueueBuilder::build(
+                        request(
+                            DrawQueuePhase::
+                                opaque),
+                        builtinProvider()),
+            });
+            variants.push_back({
+                .phase =
+                    DrawQueuePhase::transparent,
+                .sort_view_index = view,
+                .queue =
+                    DrawQueueBuilder::build(
+                        request(
+                            DrawQueuePhase::
+                                transparent),
+                        backToFrontProvider()),
+            });
+        }
+        return CompiledDrawQueueSet::combine(
+            std::move(variants));
+    };
+
+    const auto flat = compile(1);
+    const auto xr = compile(2);
+    const auto empty_xr =
+        CompiledDrawQueueSet::makeEmpty(
+            filters, 2);
+    REQUIRE(
+        flat.materialFilterResolution(filter.id)
+            ->resolved_draw_count == 2);
+    REQUIRE(
+        xr.materialFilterResolution(filter.id)
+            ->resolved_draw_count == 2);
+    REQUIRE(
+        xr.materialFilterResolution(
+              DrawQueuePhase::opaque, 0,
+              filter.id)
+            ->resolved_draw_count == 1);
+    REQUIRE(
+        xr.materialFilterResolution(
+              DrawQueuePhase::transparent, 0,
+              filter.id)
+            ->resolved_draw_count == 1);
+    REQUIRE(
+        empty_xr.materialFilterResolution(
+                    filter.id)
+            ->resolved_draw_count == 0);
+    REQUIRE(
+        empty_xr.materialFilterResolution(
+                    filter.id)
+            ->unmatched_include ==
+        std::vector<std::string>{"fx"});
+    REQUIRE(
+        empty_xr.drawRanges(
+                    DrawQueuePhase::opaque,
+                    1,
+                    DrawQueueView::
+                        third_person,
+                    filter.id)
+            .empty());
+    for (std::uint32_t view = 0;
+         view < 2; ++view) {
+        REQUIRE(
+            totalDrawCount(
+                xr.allDrawRanges(
+                    view,
+                    DrawQueueView::
+                        third_person,
+                    filter.id)) == 2);
+    }
 }
 
 TEST_CASE("RPE5 bounds use indexed vertices and current deformation envelopes",

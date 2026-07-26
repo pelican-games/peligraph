@@ -76,6 +76,7 @@ std::string nonValuesSignature(const MaterialDefinition &material) {
         {"emissive_texture", material.base.emissive_texture},
         {"shader", material.shader},
         {"defines", material.defines},
+        {"tags", material.tags},
         {"surface", material.surface},
         {"render_path", materialRenderPathName(material.render_path)},
         {"pass", material.exact_pass},

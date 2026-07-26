@@ -751,6 +751,78 @@ TEST_CASE("material pass info parser applies explicit material range", "[renderi
     REQUIRE(pass_def.materialInfo().material_count == 7);
 }
 
+TEST_CASE("material pass info parser compiles stable include and exclude tags",
+          "[renderingpass][draw-tag][wp206a]") {
+    PassDefinition pass_def;
+    pass_def.name = "outline";
+    pass_def.pass_info = MaterialPassInfo{};
+
+    parseMaterialPassInfoFromJson(
+        pass_def,
+        nlohmann::json{
+            {"material_filter",
+             {{"include",
+               {"outline", "character"}},
+              {"exclude", {"hidden"}}}},
+        });
+
+    REQUIRE(
+        pass_def.materialInfo()
+            .material_filter.has_value());
+    const auto &filter =
+        *pass_def.materialInfo().material_filter;
+    REQUIRE(filter.include ==
+            std::vector<std::string>{
+                "character", "outline"});
+    REQUIRE(filter.exclude ==
+            std::vector<std::string>{"hidden"});
+    REQUIRE(
+        filter.id ==
+        materialDrawTagFilterId(
+            filter.include, filter.exclude));
+
+    auto invalid = nlohmann::json{
+        {"material_filter",
+         {{"include", {""}}}},
+    };
+    REQUIRE_THROWS_WITH(
+        parseMaterialPassInfoFromJson(
+            pass_def, invalid),
+        Catch::Matchers::ContainsSubstring(
+            "tag is empty or too long"));
+
+    invalid = {
+        {"material_filter",
+         {{"include", {"outline", "outline"}}}},
+    };
+    REQUIRE_THROWS_WITH(
+        parseMaterialPassInfoFromJson(
+            pass_def, invalid),
+        Catch::Matchers::ContainsSubstring(
+            "duplicate tag: outline"));
+
+    invalid = {
+        {"material_filter",
+         {{"include", {"outline"}},
+          {"exclude", {"outline"}}}},
+    };
+    REQUIRE_THROWS_WITH(
+        parseMaterialPassInfoFromJson(
+            pass_def, invalid),
+        Catch::Matchers::ContainsSubstring(
+            "includes and excludes the same tag"));
+
+    invalid = {
+        {"material_filter",
+         {{"any", {"outline"}}}},
+    };
+    REQUIRE_THROWS_WITH(
+        parseMaterialPassInfoFromJson(
+            pass_def, invalid),
+        Catch::Matchers::ContainsSubstring(
+            "unknown field 'any'"));
+}
+
 TEST_CASE("material pass screen inputs resolve named typed targets and reject mismatches",
           "[renderingpass][material-screen-input][rpe6b1]") {
     const RenderTargetNameResolver names{[](const std::string &name) {

@@ -2290,6 +2290,59 @@ nlohmann::json Renderer::currentFramePlanJson() const {
     result["gpu_owner_scope"] = program->owner_scope;
     result["retained_resource_lease_count"] =
         program->resource_leases.size();
+    if (const auto *instances =
+            FastModuleContainer::tryGet<
+                PolygonInstanceContainer>();
+        instances != nullptr &&
+        result.contains("nodes") &&
+        result.at("nodes").is_array()) {
+        for (const auto &compiled_pass :
+             program->rendering_pass.passes) {
+            if (!compiled_pass.definition.isMaterial() ||
+                !compiled_pass.definition
+                     .materialInfo()
+                     .material_filter) {
+                continue;
+            }
+            const auto &filter =
+                *compiled_pass.definition
+                     .materialInfo()
+                     .material_filter;
+            const auto contract =
+                compiled_pass.definition
+                    .materialInfo()
+                    .contract;
+            const auto *resolution =
+                contract ==
+                        MaterialPassContract::
+                            legacy_gbuffer_v1
+                    ? instances
+                          ->materialFilterResolution(
+                              filter.id)
+                    : instances
+                          ->materialFilterResolution(
+                              materialPassPhase(
+                                  contract),
+                              filter.id);
+            if (resolution == nullptr) {
+                resolution =
+                    instances
+                        ->materialFilterResolution(
+                            filter.id);
+            }
+            if (resolution == nullptr) continue;
+            applyMaterialDrawFilterResolutionToFramePlanJson(
+                result,
+                compiled_pass.definition.name,
+                filter.id,
+                resolution
+                    ->resolved_draw_count,
+                resolution
+                    ->unmatched_include,
+                resolution
+                    ->unmatched_exclude);
+        }
+    }
     if (generation->gpu_arena != nullptr) {
         nlohmann::json scopes = nlohmann::json::array();
         for (const auto &scope :
@@ -2510,6 +2563,33 @@ void Renderer::renderLogicalFrame(
         program->rendering_pass;
     const auto &frame_graph =
         program->frame_graph;
+    std::vector<MaterialDrawTagFilter>
+        material_draw_filters;
+    std::map<std::uint64_t, std::size_t>
+        material_draw_filter_indices;
+    for (const auto &pass :
+         rendering_pass.passes) {
+        if (!pass.definition.isMaterial() ||
+            !pass.definition.materialInfo()
+                 .material_filter) {
+            continue;
+        }
+        const auto &filter =
+            *pass.definition.materialInfo()
+                 .material_filter;
+        const auto [entry, inserted] =
+            material_draw_filter_indices.emplace(
+                filter.id.value,
+                material_draw_filters.size());
+        if (inserted) {
+            material_draw_filters.push_back(filter);
+        } else if (
+            material_draw_filters[entry->second] !=
+            filter) {
+            throw std::runtime_error(
+                "material draw filter stable-id collision");
+        }
+    }
     const auto frame_projection_jitter =
         projectionJitterSettingsFor(frame_graph);
 
@@ -2752,6 +2832,8 @@ void Renderer::renderLogicalFrame(
                 .transparent_provider =
                     draw_sorting.transparent.provider,
                 .sort_views = sort_views,
+                .material_filters =
+                    material_draw_filters,
             });
 
         const auto frame_target_format =
@@ -2918,6 +3000,8 @@ void Renderer::renderLogicalFrame(
                 .opaque_provider = draw_sorting.opaque.provider,
                 .transparent_provider = draw_sorting.transparent.provider,
                 .sort_views = sort_views,
+                .material_filters =
+                    material_draw_filters,
             });
         } else {
             if (render_ctx.in_flight_frame_index != *logical_in_flight_frame) {

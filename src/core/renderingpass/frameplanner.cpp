@@ -1,4 +1,5 @@
 #include "frameplanner.hpp"
+#include "materialpassinfojsonparser.hpp"
 #include "renderingpassjsonhelpers.hpp"
 #include "../../project/materialscreeninput.hpp"
 #include <algorithm>
@@ -416,6 +417,19 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
             pass_json, "Frame graph pass '" + node.name + "'");
 
     const auto type = pass_json.value("type", std::string{});
+    if (type == "material") {
+        node.material_filter =
+            parseMaterialDrawTagFilterFromJson(
+                pass_json,
+                "Frame graph material pass '" +
+                    node.name + "'");
+    } else if (pass_json.contains(
+                   "material_filter")) {
+        throw std::runtime_error(
+            "Only material frame graph passes support "
+            "material_filter: " +
+            node.name);
+    }
     if (type == "canonical_anchor") {
         node.kind = FramePlanNodeKind::anchor;
         return node;
@@ -719,6 +733,10 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
         pass.isVelocity();
     node.resolution_domain =
         pass.resolution_domain;
+    if (pass.isMaterial()) {
+        node.material_filter =
+            pass.materialInfo().material_filter;
+    }
     for (size_t i = 0; i < pass.input_targets.size(); ++i) {
         if (pass.input_target_history.at(i)) {
             appendUnique(node.reads_history, renderTargetResourceName(pass.input_targets[i]));
@@ -1167,6 +1185,7 @@ FramePlan planFrameGraph(const FrameGraphDefinition &definition) {
             node_def.writes,
             node_def.snapshot_after,
             node_def.byte_size,
+            node_def.material_filter,
         });
     }
 
@@ -1207,6 +1226,23 @@ nlohmann::json framePlanToJson(
             node_json["semantics"] = "fixed_once_before_transparency";
             node_json["sequential_refraction"] = false;
         }
+        if (node.material_filter) {
+            node_json["material_filter"] = {
+                {"include",
+                 node.material_filter->include},
+                {"exclude",
+                 node.material_filter->exclude},
+                {"filter_id",
+                 stableFingerprint64String(
+                     node.material_filter
+                         ->id.value)},
+                {"resolved_draw_count", nullptr},
+                {"resolution_provenance",
+                 materialDrawTagFilterProvenance},
+                {"resolution_state",
+                 "pending_draw_queue_compile"},
+            };
+        }
         nodes_json.push_back(std::move(node_json));
     }
 
@@ -1236,6 +1272,57 @@ nlohmann::json framePlanToJson(
         }
     }
     return result;
+}
+
+void applyMaterialDrawFilterResolutionToFramePlanJson(
+    nlohmann::json &plan_json,
+    std::string_view pass_name,
+    MaterialDrawTagFilterId filter_id,
+    std::size_t resolved_draw_count,
+    const std::vector<std::string> &unmatched_include,
+    const std::vector<std::string> &unmatched_exclude) {
+    if (!plan_json.is_object() ||
+        !plan_json.contains("nodes") ||
+        !plan_json.at("nodes").is_array()) {
+        throw std::invalid_argument(
+            "frame plan JSON has no node array");
+    }
+    const auto node = std::find_if(
+        plan_json["nodes"].begin(),
+        plan_json["nodes"].end(),
+        [&](const auto &candidate) {
+            return candidate.is_object() &&
+                   candidate.value(
+                       "name", std::string{}) ==
+                       pass_name;
+        });
+    if (node == plan_json["nodes"].end() ||
+        !node->contains("material_filter") ||
+        !node->at("material_filter").is_object()) {
+        throw std::invalid_argument(
+            "frame plan material filter node is unavailable: " +
+            std::string{pass_name});
+    }
+    auto &metadata =
+        (*node)["material_filter"];
+    const auto expected_id =
+        stableFingerprint64String(
+            filter_id.value);
+    if (metadata.value(
+            "filter_id", std::string{}) !=
+        expected_id) {
+        throw std::invalid_argument(
+            "frame plan material filter id mismatch: " +
+            std::string{pass_name});
+    }
+    metadata["resolved_draw_count"] =
+        resolved_draw_count;
+    metadata["unmatched_include"] =
+        unmatched_include;
+    metadata["unmatched_exclude"] =
+        unmatched_exclude;
+    metadata["resolution_state"] =
+        "resolved";
 }
 
 } // namespace Pelican

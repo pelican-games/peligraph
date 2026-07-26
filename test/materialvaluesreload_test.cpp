@@ -353,6 +353,34 @@ TEST_CASE("HR1-M updates one same-layout material and rolls back invalid candida
         REQUIRE(std::equal(after_failure.begin(), after_failure.end(),
                            before_failure.begin(), before_failure.end()));
 
+        const auto tag_change = nlohmann::json{
+            {"schema", "pelican.material"},
+            {"version", 1},
+            {"materials", nlohmann::json::array({
+                {{"name", "material_a"},
+                 {"tags", {"outline"}},
+                 {"surface", "project://wp76.surface"},
+                 {"values", {{"scalar_first", 20.0}}}},
+                {{"name", "material_b"},
+                 {"surface", "project://wp76.surface"},
+                 {"values", {{"scalar_first", 9.0}}}}
+            })}};
+        writeText(path_a, tag_change.dump(2));
+        REQUIRE_FALSE(reload.applyRequestForTesting(
+            {key_a, watch::ReloadKind::modified, {}, 1}));
+        after_failure =
+            materials.materialGpuValuesForTesting(
+                material_a);
+        REQUIRE(std::equal(
+            after_failure.begin(),
+            after_failure.end(),
+            before_failure.begin(),
+            before_failure.end()));
+        REQUIRE(
+            materials.tagsForMaterial(
+                material_a)
+                .empty());
+
         writeTwoMaterials(path_a, 20.0, 9.0, "project://alternate.surface");
         REQUIRE_FALSE(reload.applyRequestForTesting(
             {key_a, watch::ReloadKind::modified, {}, 1}));
@@ -360,7 +388,7 @@ TEST_CASE("HR1-M updates one same-layout material and rolls back invalid candida
         REQUIRE(std::equal(after_failure.begin(), after_failure.end(),
                            before_failure.begin(), before_failure.end()));
         const auto status = reload.transactions().status();
-        REQUIRE(status.failed == 4);
+        REQUIRE(status.failed == 5);
         REQUIRE(status.last_reload_error);
         REQUIRE(status.last_reload_error->message.find("material_a") != std::string::npos);
         GET_MODULE(VulkanManageCore).waitIdle();

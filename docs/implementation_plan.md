@@ -58,8 +58,28 @@ ctest --test-dir ./build -C Debug --output-on-failure
 - Catch2 v3。`test/CMakeLists.txt` の `pelican_define_test(<name> [libs...])` で登録
 - GPU 必須テストは Vulkan デバイス列挙失敗時に `SKIP()` すること
 
+### 版の扱い(2026-07-26 改訂・ユーザー決定)
+
+全ての versioned 形式は版フィールドを持ち、**現行版ちょうど 1 つだけを受理する**。
+版が省略可能な形式は必須化する。**旧版を受理する分岐・旧版を新版へ昇格する処理を
+足さない。** 版を上げるときは旧版の受理を同時に削除する。
+
+理由: 現時点で外部利用者が存在しないため、旧版互換は誰のためでもない負債である。
+**版システム自体は将来のために維持する** — 実際に互換が必要になった時点で、その
+利用者に合わせて移行方針を定める。版フィールドを今削ると、そのとき全形式へ足し
+直しになる。
+
+**例外(消してはならないもの)**: ABI の版一致チェック
+(`client_abi_version != current → unsupported_version`)は互換残しではなく
+**食い違い検出**である。ゲーム DLL がエンジンと食い違ったときに silent crash では
+なく明確なエラーにするためのものなので、単一版受理のまま保持する。
+
+これは 2026-07-08 の「ランタイムは v1 だけを読む」を、対象と例外を明確にして
+置き換えたものである(旧文は §3 の RenderWorld / ECS 項に残る)。
+
 ### 禁止事項
 
+- **旧版受理の追加**(上記「版の扱い」)。版を増やす WP は旧版の受理を同時に削除する
 - `src/core/ecs/` の無関係変更。変更禁止そのものは 2026-07-08 の
   ユーザー決定で解除済みだが、ECS 変更は WP の明示範囲に限定し、
   lifecycle / generation / failure-atomic 規約を回帰テストで固定する
@@ -73,14 +93,15 @@ ctest --test-dir ./build -C Debug --output-on-failure
 |----|------|------|
 | WP203c | XR2b-c — OpenXR array swapchain / depth submit / GPU gate | 実装済み・Simulator/実機 gate待ち |
 | WP204 | physical plan eject / direct authoring | verified format/attachment + transient/tile-local/alias + dependency-safe reorder/fusion runtime実装済み・general scope/queueと実機GPU gate待ち |
+| WP213 | 版の単一化 A — import manifest の version 必須化 | 新規登録(2026-07-26) |
+| WP214 | 版の単一化 B — physics service V1 の削除 | 新規登録(2026-07-26) |
 
-WP205 の public shadow contract slice を閉じた後の描画候補は次。番号は実装順を固定するための
+WP206a の stable draw tag/filter slice を閉じた後の描画候補は次。番号は実装順を固定するための
 予約であり、各候補は着手前に下記の設計/受け入れ条件をレビューして active へ昇格する。
 
 | 候補 | 内容 | 状態 |
 |---|---|---|
-| WP206a | stable draw tag/filter | 計画済み |
-| WP206b | pass-local material variant / multipass route | 計画済み・WP206a依存 |
+| WP206b | pass-local material variant / multipass route | 計画済み・WP206a実装済み |
 | WP207a | compute Frame/Light + sampled resource port | 計画済み |
 | WP207b | material/geometry typed frame-graph resource port | 計画済み・WP207a依存 |
 | WP208 | lighting data contract v2 + clustered dogfood | 計画済み・WP207b依存 |
@@ -92,10 +113,70 @@ WP205 の public shadow contract slice を閉じた後の描画候補は次。�
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
-(最新の全受け入れ完了: WP205、2026-07-26。WP203c はローカル実装・自動テスト済みだが、
+(最新の全受け入れ完了: WP206a、2026-07-26。WP203c はローカル実装・自動テスト済みだが、
 Simulator/物理 HMD と対象 GPU の実測を残すため active のまま。)
 
 ## 2. WP 詳細
+
+### WP213: 版の単一化 A — import manifest の version 必須化
+
+前提: §0「版の扱い」(2026-07-26 ユーザー決定)。**版フィールドは残し、受理を
+現行版ちょうど 1 つに絞る。** 省略許容は版システムを弱めているので必須化する。
+
+現状(センサス実測):
+
+- `src/project/importmanifest.cpp:134-166` — `pelican.transform_seq` /
+  `.scene` / `.layout` / `.atlas` は **version キーが無くても通る**。あれば 1 必須
+- `pelican.material` は required ==1、`khronos.ktx2` は required ==2(こちらは
+  KTX2 コンテナ版なので現状維持)
+- `tool.version`(`:181`)は自由文字列で比較しない — 現状維持
+
+実装:
+
+1. 上記 4 形式の version を**必須化**し、欠落は名前入りエラーで reject
+2. `projects/` 配下の既存 manifest に version を追記(欠落しているもの)
+3. `test/importmanifest_test.cpp` の「省略しても通る」ケースを**負例へ反転**
+4. `docs/design_asset_format_policy.md` の該当規則(R10)と実装を一致させる
+
+依存: なし(WP204 の領域外)。見積: 小。
+排他: `src/project/importmanifest.cpp` + `projects/` の manifest + 該当テスト +
+docs。**`src/core/` に触らない**。
+
+受け入れ = 4 形式の version 必須化 + 負例テスト + 既存全テスト green +
+golden byte 不変 + player 8 秒 + CI green
+
+### WP214: 版の単一化 B — physics service V1 の削除
+
+前提: §0「版の扱い」。**V2 が現行であり、V1 は旧版受理にあたる。**
+ただし**版一致チェック自体は残す**(`client_version != serviceVersionV2` で
+`unsupported_version` を返す形は保持)。
+
+現状(センサス実測):
+
+- `src/core/phys/physicsservice.cpp:306-322` が `getService`(V1)、
+  `:331-348` が `getServiceV2`。**両方 export されている**
+- 本体実装は V2。V1 を使っているのは**テスト fixture のみ**:
+  `test/fixtures/physics_provider_dll/provider.cpp:102`、
+  `test/fixtures/public_api_link/flipbook_client.cpp:39`、
+  `test/physics_feature_probe.cpp`
+- WP107 記録: 「Builtin と Jolt を同じ Provider V2 へ実装」
+
+実装:
+
+1. 上記 3 つのテスト fixture を V2 へ移行
+2. `getService`(V1)・`serviceVersionV1`・`abiVersionV1` 系の**受理経路**を削除。
+   `physicsservice_stub.cpp:11` も同様
+3. **`getServiceV2` の版一致チェックは残す**(食い違い検出のため)
+4. 公開ヘッダ(`src/core/userpublic/physics/abi_v1.hpp` / `abi_v2.hpp`)の
+   扱いを判断: v1 ヘッダを削除するか、宣言だけ残して実装を落とすか。
+   **削除する場合は SDK 配置(`src/core/CMakeLists.txt:144`)からも外す**
+
+依存: なし(WP204 の領域外)。見積: 小〜中。
+排他: `src/core/phys/` の service 面 + `src/core/userpublic/physics/` +
+該当テスト fixture。**renderingpass / vkcore / project に触らない**。
+
+受け入れ = V1 経路の削除 + V2 の版一致チェック保持 + 3 fixture の移行 +
+既存全テスト green + golden byte 不変 + player 8 秒 + CI green
 
 ### XR2b 分割 WP の逐語条件と所有権
 
@@ -318,31 +399,6 @@ XR2b最終gateを満たす。
    hatchとして残す。
 5. physical指定はWP204 fragmentへlinkし、logical configへVulkan fieldを漏らさない。
 6. feature未参照時に追加pass/resource/variantを持たない。
-
-#### WP206a: stable draw tag/filter
-
-**目的**: draw-call ordinalである`material_range`を通常authoringの選別手段から外し、
-material/draw identityに追従する安定tagを導入する。
-
-**実装範囲**:
-
-1. material側のtag宣言とmaterial pass側のinclude/exclude filterをadditive v1語彙として
-   定義する。
-2. string照合はDrawQueueBuilder/compile段で解決し、runtime Vulkan loopはcompactな
-   resolved filterだけを消費する。
-3. sort、visibility、material登録順、hot reloadで選択結果を安定させる。
-4. `material_range`は既存fixture/low-level制御として維持できるが、manual/cookbookの
-   推奨経路から外す。
-
-**受け入れ条件**:
-
-- material登録順とdraw sortを変えてもtag選択が不変
-- include/exclude、unknown/empty tag、複数tagのfixture
-- flat/XR/previewで同じlogical selection
-- plan dumpにauthored tagとresolved draw count/provenance
-- feature off既存golden不変
-
-依存: なし。ただしWP204 closure後に着手。見積: 中。
 
 #### WP206b: pass-local material variant / multipass route
 

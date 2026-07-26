@@ -7,6 +7,7 @@
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
 #include "../src/core/renderingpass/rendertargetmetadataresolver.hpp"
 #include "../src/core/renderingpass/rendertargetnameresolver.hpp"
+#include <catch2/matchers/catch_matchers_string.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <array>
 #include <cstdlib>
@@ -904,6 +905,92 @@ TEST_CASE(
     REQUIRE(
         graph.nodes.at(3).resolution_domain ==
         RenderResolutionDomain::output);
+}
+
+TEST_CASE(
+    "frame plan preserves authored material tag filters with compile provenance",
+    "[frameplanner][draw-tag][wp206a]") {
+    const auto graph =
+        parseFrameGraphDefinitionFromJson(
+            nlohmann::json::parse(R"json({
+      "name":"tagged_material",
+      "passes":[
+        {"name":"outline","type":"material",
+         "material_filter":{
+           "include":["outline","character"],
+           "exclude":["hidden"]
+         },
+         "output":{"color":"scene","depth":"depth"}}
+      ]
+    })json"));
+    REQUIRE(
+        graph.nodes.front()
+            .material_filter.has_value());
+
+    auto plan_json =
+        framePlanToJson(planFrameGraph(graph));
+    const auto &filter =
+        plan_json.at("nodes")
+            .at(0)
+            .at("material_filter");
+    REQUIRE(
+        filter.at("include") ==
+        nlohmann::json{
+            "character", "outline"});
+    REQUIRE(
+        filter.at("exclude") ==
+        nlohmann::json{"hidden"});
+    REQUIRE(
+        filter.at("filter_id")
+            .get<std::string>()
+            .starts_with("fnv1a64:"));
+    REQUIRE(
+        filter.at("resolved_draw_count")
+            .is_null());
+    REQUIRE(
+        filter.at("resolution_provenance") ==
+        std::string{
+            materialDrawTagFilterProvenance});
+    REQUIRE(
+        filter.at("resolution_state") ==
+        "pending_draw_queue_compile");
+
+    applyMaterialDrawFilterResolutionToFramePlanJson(
+        plan_json, "outline",
+        graph.nodes.front()
+            .material_filter->id,
+        7, {"missing_include"},
+        {"missing_exclude"});
+    const auto &resolved =
+        plan_json.at("nodes")
+            .at(0)
+            .at("material_filter");
+    REQUIRE(
+        resolved.at("resolved_draw_count") ==
+        7);
+    REQUIRE(
+        resolved.at("unmatched_include") ==
+        nlohmann::json{"missing_include"});
+    REQUIRE(
+        resolved.at("unmatched_exclude") ==
+        nlohmann::json{"missing_exclude"});
+    REQUIRE(
+        resolved.at("resolution_state") ==
+        "resolved");
+
+    auto invalid =
+        nlohmann::json::parse(R"json({
+      "name":"bad_filter",
+      "passes":[
+        {"name":"present","type":"fullscreen",
+         "material_filter":{"include":["outline"]},
+         "output":{"color":"scene","depth":null}}
+      ]
+    })json");
+    REQUIRE_THROWS_WITH(
+        parseFrameGraphDefinitionFromJson(invalid),
+        Catch::Matchers::ContainsSubstring(
+            "Only material frame graph passes"));
 }
 
 TEST_CASE(

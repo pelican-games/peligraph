@@ -32,6 +32,7 @@ inline constexpr bool isValidMaterialId(GlobalMaterialId material_id) {
 
 struct MaterialInfo {
     ShaderBundleId vert_shader, frag_shader;
+    std::vector<std::string> tags;
     bool skinned = false;
     GlobalTextureId base_color_texture;
     GlobalTextureId metallic_roughness_texture;

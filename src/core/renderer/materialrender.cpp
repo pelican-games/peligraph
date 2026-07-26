@@ -37,9 +37,16 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
         contract == MaterialPassContract::legacy_gbuffer_v1
             ? std::optional<MaterialPhase>{}
             : std::optional{materialPassPhase(contract)};
+    const auto material_filter =
+        pass.materialInfo().material_filter
+            ? std::optional{
+                  pass.materialInfo()
+                      .material_filter->id}
+            : std::nullopt;
     const auto &draw_calls = instance_container.getDrawCalls(
         dependencies.first_person_view, phase,
-        dependencies.draw_sort_view_index);
+        dependencies.draw_sort_view_index,
+        material_filter);
     if (draw_calls.empty()) {
         return;
     }
