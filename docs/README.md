@@ -71,6 +71,8 @@
 - `implementation_plan.md` — 未完了 WP の詳細・受け入れ基準・ウェーブ運用(active ledger)
 - `implementation_archive.md` — 完了済み WP の一覧・詳細(逐語 archive)
 - `adding_features.md` — 機能追加レシピ集(cookbook)
+- `render_mechanism_coverage.md` — user-spaceで書ける描画技法と、不足する再利用可能機構の現行監査
+- `render_authoring_ergonomics.md` — 描画機構の書き味・診断・配布上の摩擦と、誤認を除いた改善優先度
 - `ci.md` — Windows/MSVC CPU gate、`gpu` ラベル、SKIP exact policy の運用
 - `example_assets.md` — example の外部 binary asset 22件の取得・provenance・ライセンス台帳
 - `rendering_phase1_review.md` — Validation Run の流儀

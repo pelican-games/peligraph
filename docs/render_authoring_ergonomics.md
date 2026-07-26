@@ -1,201 +1,239 @@
-# 描画 authoring の使い勝手と回りくどさの棚卸し(v1)
+# 描画 authoring の使い勝手と回りくどさの棚卸し(v2)
 
-対象読者: エンジン担当、および feature / material / シェーダをユーザー空間で書く人。
+対象読者: feature / material / shader をユーザー空間で書く人、およびその公開面を
+実装するエンジン担当。
 
-ステータス: v1(2026-07-19)。実コード実測に基づく指摘。関連文書:
-[`render_mechanism_coverage.md`](render_mechanism_coverage.md)(**何が書けるか**の分析。
-本書は**書けるものが書きやすいか**の分析)。
+ステータス: **v2(2026-07-26)**。v1 の指摘を実コード・CPU test・headless Vulkanへ
+再照合し、`extent_scale`、custom texture binding、graphics buffer input の事実誤認を
+訂正した。機構カバレッジは
+[`render_mechanism_coverage.md`](render_mechanism_coverage.md)、監査記録は
+[`design_reviews/2026-07-26_render_capability_authoring_audit_codex.md`](design_reviews/2026-07-26_render_capability_authoring_audit_codex.md)。
 
-## 0. この文書の位置づけ
+## 0. 評価方法
 
-カバレッジ分析(前掲)は「技法がユーザー空間で到達可能か」を判定した。本書はその一段
-手前、**到達可能なものを実際に書くときの摩擦**を扱う。指摘は 2 系統に分ける。
+本書は「書けるか」ではなく、**正しい機能へ辿り着き、変更し、診断し、配布するまでが
+扱いやすいか**を評価する。問題を次の4種類に分ける。
 
-- **A. 使い勝手** — feature / material を書く人が実際に踏む問題
-- **B. 回りくどさ** — 内部設計の構造的な重さ(読む・変更するコスト)
-
-各項目に根拠(file:line)と直し方を付けた。優先順位は §C。
-
-## A. 使い勝手の問題
-
-### A-1. feature を 1 個でも使うと出荷ビルドで動かない ★最重要
-
-feature インスタンスが 1 つでも存在し、`runtime_shader_compiler_enabled` が false の
-場合、composer は例外を投げる。
-
-- 根拠: [featurecompose.cpp:1581](../src/project/featurecompose.cpp:1581)
-- 一方 `dist-bake`(バリアント焼き出し)は未実装であることを
-  [design_build_tiers.md:99](design_build_tiers.md) が自認している
-
-**帰結**: shaderc を積まない配布構成では、**feature を使うプロジェクトが起動できない**。
-「feature 層 = ユーザー空間」という理念の成果物が出荷物に乗らないため、理念と実装の
-乖離としては本書で最大である。開発ビルドで作った絵が配布できない、という形で必ず
-表面化する。
-
-**直し方**: `dist-bake`(stem × 実使用 define 集合の事前焼き)を実装する。規模は大きい
-が回避不能。暫定策として「feature 使用時は dist 構成で明示エラー」ではなく
-**「dist 構成を選んだ時点で必要な variant 一覧を出力する」**だけでも実害が減る。
-
-### A-2. `material_range: {start, count}` でオブジェクトを選ぶ
-
-material パスの描画対象は material の**内部インデックス範囲**で絞る。
-
-- 根拠: [materialpassinfojsonparser.cpp:30](../src/core/renderingpass/materialpassinfojsonparser.cpp:30)
-
-**帰結**: ユーザーは自分のマテリアルが何番になるか知る手段がなく、マテリアルを 1 つ
-足すと範囲が全部ずれる。生インデックスを公開 API にした典型的な悪例。輪郭線パス・
-キャラのみの SSS パス・反射に映すオブジェクト選別など、**選択的パスを書く技法すべての
-足を引っ張る**(カバレッジ分析の G14)。
-
-**直し方**: layer / tag による選別を導入し、`material_range` は内部専用に戻す。
-tag は material 側の宣言(`"tags": ["character", "outline"]`)+ パス側の
-`"draw_tags": ["character"]` で足りる。
-
-### A-3. RT サイズが「誰かが display と書いたか」に暗黙依存
-
-`extent_scale` の基準寸法は、`format_class: "display"` を持つ RT から拾われる。
-
-- 根拠: [frameplanner.cpp:589](../src/core/renderingpass/frameplanner.cpp:589)〜605
-
-**帰結**: 自分の RT の解像度が**他の RT の属性**で決まる。config を読んでも基準が
-どこから来たか追いにくく、display 指定を持つ RT を消すと無関係な feature の解像度が
-壊れる。
-
-**直し方**: 基準を明示させる — `"extent_of": "swapchain"` / `"extent_of": "scene_color"`
-+ `"extent_scale": 0.5`。既定値だけ現行動作に合わせれば互換で入る。
-
-### A-4. descriptor binding 番号を手計算させている
-
-custom texture の binding は算術で決まる。
-
-- 根拠: [shader_contract.md:206](shader_contract.md) — split sampler は
-  `set 2 binding 7+2i` / sampler `8+2i`、combined fallback は `7+i`
-
-**帰結**: C 層(生シェーダ)を書く人が宣言順から binding 番号を計算する。1 個挿入すると
-以降が全部ずれ、しかもズレは実行時の壊れた絵として現れる(コンパイルは通る)。
-
-**直し方**: 生成アクセサ `<stem>.params.glsl` の方針は既に設計にあるので、**binding
-定数もそこに生成する**(`#define MY_TEX_BINDING 9` 相当)。手計算を消す。
-
-### A-5. insert が文字列ミニ言語 + 位置挿入で、順序が暗黙
-
-`"insert": "before:lighting_pass"` を parse し、pass 配列へ positional insert する。
-
-- 根拠: [featurecompose.cpp:551](../src/project/featurecompose.cpp:551)、
-  `insert:end` のみ「パスちょうど 1 個」の特殊規則
-  [featurecompose.cpp:1378](../src/project/featurecompose.cpp:1378)
-
-**帰結**: **同じアンカーに 2 つの feature が挿した場合、順序は config の feature 宣言順に
-暗黙依存**する。TAA と bloom の前後関係を決めたい人が「features 配列の行順」で戦う。
-順序が config の別の場所に隠れているため、feature 単体を読んでも挙動が確定しない。
-
-**直し方**: 明示順序(`"order": 100`)を持たせ、**同一アンカー・同一 order の衝突は
-起動時エラー**にする。暗黙順序に依存した挙動を作らせない。
-
-### A-6. compute と graphics で依存宣言の文法が違い、互いに繋がらない
-
-| 種別 | 依存の宣言方法 |
+| 種類 | 例 |
 |---|---|
-| compute task | `reads[]` / `writes[]` / `after[]` / `before[]` |
-| graphics pass | `input[]` / `output{}` / `insert` |
+| authoring | stable nameではなくdraw ordinalを指定させる |
+| diagnostics | 合法な候補や最終bindingを知るためコードを読む |
+| maintenance | 層と型の所有者が名前から判別しにくい |
+| delivery | 開発buildで動くfeatureをshaderc OFFで配布できない |
 
-- 根拠: [computetask.cpp:342](../src/core/renderingpass/computetask.cpp:342) と
-  feature の pass 宣言([shadow_directional.json](../src/core/resources/features/shadow_directional.json))
+機構不足そのものはカバレッジ文書で扱い、本書では重複して「使いにくい」と数えない。
 
-**帰結**: 同じ「依存」の概念に語彙が二重にあり、覚える量が倍になる。さらに致命的なのは
-**両者が接続できない**(compute が書いた buffer を graphics パスが読めない = カバレッジ
-分析の G2)。この非対称が G2 の原因そのものである。
+## 1. 現在も有効な問題
 
-**直し方**: 依存語彙を `reads` / `writes` に統一し、pass の `input`/`output` はその糖衣と
-する。**同時に graphics 側の buffer input を開放**すれば、使い勝手の改善と機構ギャップの
-解消が 1 つの WP で片付く。
+### U1. feature 使用 project の shaderc OFF 配布が未完成
 
-## B. 回りくどさ(内部設計)
+feature instance が存在し、`runtime_shader_compiler_enabled == false` の場合、
+composer は起動を拒否する。
 
-### B-1. 「計画」を表す型が 160 個
+- [featurecompose.cpp:1581](../src/project/featurecompose.cpp:1581)
+- [design_build_tiers.md:99](design_build_tiers.md)
 
-`src/project` + `src/core/renderingpass` のヘッダ 23 本のうち、名前に
-plan / graph / pipeline / pass / program / request / resolved / compiled を含む型が
-**160 個**。`Compiled〜` が 19 種、`FrameGraph〜` が 8 種。
+`dist-config` は存在するが、実使用の stem × define 集合を事前compileして同梱する
+`dist-bake` は未実装である。これは「書き味」より重い **delivery blocker** である。
+PC開発をshaderc ONで続ける回避策はあるが、Quest/cross-buildや小さい配布物へ進む前に
+解消が必要になる。
 
-**帰結**: 層の分離自体は正しい設計判断だが、**層の数だけ名前が増える**運用になっている。
-1 つの意味論変更が何段の型変換を通るのか追うコストが高く、新規参入(将来の自分を含む)
-の障壁になる。
+### U2. `material_range` は安定したmaterial identityではなくdraw ordinal
 
-**直し方**: 型を減らすのは危険なので、**層ごとの命名規約を固定し索引を 1 枚作る**方が
-現実的(`Logical〜` / `Target〜` / `Vulkan〜` / `Compiled〜` の 4 接頭辞に整理し、
-どの層の語彙かを名前で判別できるようにする)。
+parser名はmaterial rangeだが、実行時はdraw callを走査しながら増やした
+`draw_index`にstart/countを適用する。
 
-### B-2. ほぼ同名の enum が 2 つ、変換は各所で inline
+- [materialpassinfojsonparser.cpp:30](../src/core/renderingpass/materialpassinfojsonparser.cpp:30)
+- [materialrender.cpp:50](../src/core/renderer/materialrender.cpp:50)
 
-- `VulkanScopeViewExecution { single_view, sequential, multiview }`
-  ([vulkanviewplanning.hpp:28](../src/project/vulkanviewplanning.hpp:28))
-- `GraphicsPipelineViewExecution { single_view, multiview }`
-  ([graphicsviewcontract.hpp:8](../src/core/shader/graphicsviewcontract.hpp:8))
+scene、sort、visibility、material routeの変化でordinalが変わるため、ユーザーが
+選択的SSS、outline、decal等の対象を安定指定するAPIとして使えない。
 
-層が違う(scope は `sequential` を持つ)ので存在は妥当だが、**変換関数が無く各所で
-case を書いている**([vulkanviewplanning.cpp:150](../src/project/vulkanviewplanning.cpp:150)
-等)。読むたびに「今どちらの view execution か」を確認させられる。
+**改善方針**:
 
-**直し方**: 名前で層を明示(`ScopeViewExecution` / `PipelineViewExecution`)し、
-変換を 1 箇所の関数に集約する。小さいが読み負荷への効果は大きい。
+- material/drawにstring tagを宣言する
+- passはinclude/exclude tagを宣言する
+- `material_range`は低レベルfixture/内部制御として残しても、通常のmanual/cookbookから外す
+- tag filterはDrawQueueBuilder側で解決し、Vulkan executorへ文字列を持ち込まない
 
-### B-3. 設計文書の status 欄が WP 台帳になっている
+### U3. raw fullscreen/compute inputはbinding順を人が合わせる
 
-`design_render_pipeline_extensibility.md` の冒頭は RPE6b0 / 6b1 / 6c0 / 6c1 / 7 / 8 / 9 /
-10a / 10b1 / 10b2 / 10b3 / 11a / 11b / 12a Phase A … と実装履歴の羅列。
-`design_render_graph_compiler.md` と `design_heterogeneous_execution_graph.md` も同様で、
-**3 文書が互いに「あちらが正」と宣言し合っている**。
+`.surface`のparams/custom texture/screen inputはgenerated includeが宣言とaccessorを作る。
+一方、raw fullscreen/compute shaderはJSONのinput/reads順とset 1 bindingを人が一致させる。
 
-**帰結**: 「今の契約は何か」を知るために実装履歴を読まされる。入口が存在しないため、
-新しく feature を書こうとする人が最初に迷子になる。
+- `.surface`生成: [surfacecompiler.cpp:55](../src/core/shader/surfacecompiler.cpp:55)
+- fullscreen binding: [fullscreenpasscontainer.cpp:451](../src/core/fullscreenpass/fullscreenpasscontainer.cpp:451)
+- 現manual: [manual/06_rendering.md](manual/06_rendering.md)
 
-**直し方**: 実装台帳で既に行った **active / archive 分離と同じ処置**をする。本文は
-現在形の契約だけ、履歴は `docs/design_reviews/` か archive セクションへ。加えて
-**「feature を書くならまずこれ」の 1 枚**(authoring リファレンス)を新設する。
+順番を挿し替えるとshader compileは通ってもresourceの意味が入れ替わり得る。
 
-### B-4. 理念と実装のズレ: pass kind は今も閉じた if 連鎖
+**改善方針**:
 
-heterogeneous 設計の決定 6 は「execution domain を閉じた enum にしない」だが、実体は
-`makePassInfo(type_str)` の if 連鎖で、未知 type は `Unknown pass type` で throw。
+- logical resource name、descriptor kind、view dimensionからvirtual generated includeを作る
+- 通常shaderはnamed accessorを使う
+- raw `layout(set=1,binding=N)`はC-layer escape hatchとして維持する
+- reflectionとauthoring manifestが不一致ならpipeline作成前にresource名付きでrejectする
 
-- 根拠: [renderingpassjsonhelpers.cpp:83](../src/core/renderingpass/renderingpassjsonhelpers.cpp:83)
-- material contract も 4 種の閉集合
-  ([renderpipeline.hpp:46](../src/project/renderpipeline.hpp:46))
+### U4. 同じanchorへ挿すfeature間の関係が発見しにくい
 
-`PassImplementation` registry(RPE11a)で**実装**は差し替え可能になったが、**種類**は
-依然エンジン専管である。宣言(設計文書)と実態(コード)が食い違っている箇所として
-記録しておく。
+`insert: before:/after:`は単なる配列挿入だけではなく、既に明示edgeへ変換される。
+pass自身の`after`/`before`もframe plannerで有効である。
 
-**直し方**: どちらかに揃える。①実際に pass kind を開く(registry 化)か、②設計文書
-側で「v1 では pass kind は閉集合、開くのは実装差し替えまで」と**現状を正しく書く**。
-②のほうが安全で、①は需要が出てから。
+- [featurecompose.cpp:1402](../src/project/featurecompose.cpp:1402)
+- [frameplanner.cpp:374](../src/core/renderingpass/frameplanner.cpp:374)
 
-## C. 優先順位(効果 ÷ 労力)
+したがって「順序を指定できない」は誤りである。残る問題は、独立feature同士が同じanchorへ
+挿入され、data edgeもexplicit edgeも無いとき、宣言順がstable tie-breakになることが
+feature単体から見えない点である。
 
-| 順 | 施策 | 対象 | 規模 | 効果 |
-|---|---|---|---|---|
-| 1 | **feature authoring リファレンス 1 枚**(現在形のみ)+ 3 設計文書の履歴を archive へ | B-3 | 半日 | 入口の復活。今すぐ効く |
-| 2 | **insert の明示順序 + 衝突エラー** | A-5 | 小 | 暗黙依存の除去 |
-| 3 | **`extent_of` の明示指定** | A-3 | 小 | 暗黙結合の除去 |
-| 4 | **binding 定数の生成**(`<stem>.params.glsl` に含める) | A-4 | 小 | 手計算事故の根絶 |
-| 5 | **view execution enum の改名 + 変換集約** | B-2 | 小 | 読み負荷 |
-| 6 | **依存語彙の統一 + graphics の buffer input 開放** | A-6 / G2 | 中 | 使い勝手と機構ギャップを同時解消。**機構側でも最優先候補** |
-| 7 | **layer / tag による選別** | A-2 / G14 | 中 | 選択的パス技法が解禁 |
-| 8 | **設計文書の pass kind 記述を実態に合わせる** | B-4 | 小 | 宣言と実装の一致 |
-| 9 | **dist-bake** | A-1 | 大 | 理念の実効化。避けられない |
-| — | 型命名規約の整理 + 索引 | B-1 | 中 | 中長期の保守性 |
+**改善方針**:
 
-**1〜5 の合計で 1〜2 日**。ここだけで「触りにくさ」の主要因が消える。6 は
-カバレッジ分析側でも解禁数最大の項目なので、機構拡張と使い勝手改善の交点として
-最も投資効率が良い。
+- 新しいnumeric orderを主契約にせず、既存のnamed `after`/`before`を優先する
+- plan dumpにtie-break理由とfeature provenanceを出す
+- 同anchor・無関係passは既定では決定的に許可し、strict/CI opt-in warningを出す
+- output/resource hazardは従来どおりhard error
 
-## D. 判定の限界
+これはlogical authoringへ過剰な安全宣言を要求せず、既定を自動・高速に保つ。
 
-- 静的読解のみ。実際に feature を書くと別の摩擦(エラーメッセージの分かりにくさ、
-  失敗時の診断情報の粒度)が出る可能性が高い
-- material 側の authoring(`.surface` の書き味)は本書では未評価。B 層 hook の
-  使い勝手は実際に BRDF を 1 本書いて確かめるのが早い
-- エラーメッセージの質は本書の対象外だが、`Unknown pass type` のように
-  **候補一覧を出さない**メッセージが散見される。authoring リファレンス整備と
-  同時に見直す価値がある
+### U5. material/geometryだけresource portの表現力が狭い
+
+computeとgraphicsはframe planner内部で同じreads/writes graphへ正規化され、
+fullscreenはcompute bufferを読める。文法が違うこと自体は各domainの自然な糖衣であり、
+全面改名の理由にはならない。
+
+残る非対称はmaterial passである。
+
+- buffer inputは明示reject:
+  [renderingpassvalidation.cpp:17](../src/core/renderingpass/renderingpassvalidation.cpp:17)
+- image inputはbuiltin screen semanticsだけ:
+  [materialscreeninput.cpp:10](../src/project/materialscreeninput.cpp:10)
+
+**改善方針**:
+
+- `input/output`と`reads/writes`のschema名を無理に統一しない
+- compiler IRのtyped portは共通化したまま、material vertex/fragment向けportを追加する
+- U3のnamed generated includeと同じWPで縦切りする
+
+### U6. errorとcapability discoveryに候補一覧が不足
+
+`Unknown pass type`、`Unknown format`、unknown material screen input等は、失敗した値は出すが
+合法候補や対象deviceで利用できる代替を常に出すわけではない。
+
+**改善方針**:
+
+- static enum/registry由来のerrorは合法候補一覧を含める
+- device-dependentなformat/sample/viewは「要求」「device evidence」「fallback候補」を
+  physical plan dumpに出す
+- feature compose → logical graph → target plan → runtime registrationのどの段で止まったかを
+  diagnostic codeで固定する
+
+独立した大規模diagnostic subsystemを作らず、各機構WPのreject testへ候補一覧を含める。
+
+## 2. v1から取り下げた指摘
+
+### R1. `extent_scale`がdisplay RTへ暗黙依存する
+
+取り下げる。実際のrender target allocationはrendererから渡る`base_extent`に対する
+output-relative scaleである。
+
+- [renderingpassconfigregistration.cpp:547](../src/core/renderingpass/renderingpassconfigregistration.cpp:547)
+- [renderingsamplecount.cpp:504](../src/core/renderingpass/renderingsamplecount.cpp:504)
+
+v1が参照した`frameplanner.cpp:580`はsnapshotのestimated byte-sizeを計算する補助経路で、
+実RTのextent決定ではない。upscale用のrender/output resolution contractも既に存在する。
+
+### R2. custom texture binding番号を手計算させている
+
+取り下げる。`.surface` compilerはcustom textureのdescriptor宣言と
+`pelican_sample_<name>()`を生成する。
+
+- [surfacecompiler.cpp:55](../src/core/shader/surfacecompiler.cpp:55)
+
+手計算が残るのはU3のraw fullscreen/compute escape hatchである。
+
+### R3. computeとgraphicsが互いに接続できない
+
+取り下げる。fullscreen buffer input、planner上の共通resource edge、実Vulkan fixtureが
+存在する。
+
+- [renderingpasstargetjsonparser.cpp:155](../src/core/renderingpass/renderingpasstargetjsonparser.cpp:155)
+- [headless_render_test.cpp:131](../test/headless_render_test.cpp:131)
+
+material/geometry portだけをU5として残す。
+
+### R4. feature authoringの入口文書が無い
+
+取り下げる。現在は次が入口として機能する。
+
+- [manual/06_rendering.md](manual/06_rendering.md)
+- [adding_features.md](adding_features.md)
+- [shader_contract.md](shader_contract.md)
+
+新しい重複referenceを作らず、機構追加時にこの3文書の現在形を更新する。
+
+## 3. 内部の回りくどさ
+
+### M1. plan/graph/pipeline型が多い
+
+logical、target、Vulkan physical、compiled/runtimeを分ける設計自体は必要である。
+型数だけをKPIに一括統合すると、ユーザーが求める「論理を自動compileしつつ物理層を
+部分的に換骨奪胎する」境界を壊す。
+
+**方針**:
+
+- 横断rename/統合WPは作らない
+- `Logical*` / `Target*` / `VulkanPhysical*` / `Runtime*`の層別codemapを維持する
+- 新しい意味論を足す所有WP内でだけ重複変換を集約する
+- same-layer copy structはcanonical dump/ABI/failure-atomicityの必要性を確認してから減らす
+
+### M2. view execution語彙が近い
+
+scope executionとpipeline view contractは保持する情報が違うため、enumの存在は妥当である。
+変換のinline重複が見つかった場合はWP204/XRの所有変更内で1関数へ集約する。独立rename
+だけのコミットは作らない。
+
+### M3. design文書のstatusが履歴化している
+
+manual/cookbookは現在形だが、RPE/RGC/HEGの冒頭statusはWP履歴が長い。これはauthoring
+blockerではなくmaintenance負債である。
+
+**方針**:
+
+- 現契約を本文、完了証跡を`design_reviews/`と`implementation_archive.md`へ置く
+- 機構WPで該当段落を触るときに履歴を移す
+- 文書だけの大規模移動と挙動変更を同一commitにしない
+
+### M4. pass kind / material contractは閉集合
+
+現状は「providerで実装を差し替えられるが、authoring kindはv1閉集合」である。
+この契約を正確に書き、具体的なcustom geometry dogfoodが出るまで汎用registry化しない。
+inverted-hull等はまず既存material kindのpass-local variantで解けるかを検証する。
+
+## 4. 実装計画への反映
+
+使い勝手だけの細切れWPを増やさず、機構の縦切りへ同梱する。
+
+| 順 | mechanism WP | 同時に解消する使い勝手 |
+|---|---|---|
+| 1 | public shadow contract | resource名、feature provenance、失敗段のdiagnostic |
+| 2 | draw tag + multipass material route | U2、pass-local surface/stateの発見性 |
+| 3 | compute/material typed resource port | U3、U5、named generated include |
+| 4 | lighting data v2 + clustered dogfood | fixed light cap、format/capability diagnostic |
+| 5 | texture dimension/subresource/sampler | sampler default、合法format/view候補 |
+| 6 | indirect dispatch/draw | plan dumpのexecution provenance |
+| parallel | `dist-bake` | U1。shaderc OFF delivery |
+
+U4のanchor tie診断とU6の候補一覧は、それぞれの所有parser/compilerを触る最初のWPへ
+小さく同梱する。
+
+## 5. 受け入れの書き味
+
+各後続WPは機能テストに加え、次のauthoring gateを持つ。
+
+1. 最小project fixtureがengine内部ID/binding番号を記述しない。
+2. copied builtin featureとproject-owned featureが同じ公開契約を使う。
+3. errorはresource/pass/feature名、失敗段、合法候補または不足capabilityを出す。
+4. `--dump-frame-plan`またはRPC plan dumpだけで最終order/resource/view/providerを追える。
+5. feature未参照時は追加pass/resource/variantを持たない。
+6. flat/preview/XR/hot reloadの影響範囲を明示し、必要なfixtureを通す。
+7. manual/cookbookの既存入口を更新し、重複する新referenceを作らない。

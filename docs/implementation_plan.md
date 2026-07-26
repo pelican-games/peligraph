@@ -74,6 +74,23 @@ ctest --test-dir ./build -C Debug --output-on-failure
 | WP203c | XR2b-c — OpenXR array swapchain / depth submit / GPU gate | 実装済み・Simulator/実機 gate待ち |
 | WP204 | physical plan eject / direct authoring | verified format/attachment + transient/tile-local/alias runtime実装済み・aggressive scope/queueと実機GPU gate待ち |
 
+WP204 の現在の runtime slice を閉じた後の描画候補は次。番号は実装順を固定するための
+予約であり、各候補は着手前に下記の設計/受け入れ条件をレビューして active へ昇格する。
+
+| 候補 | 内容 | 状態 |
+|---|---|---|
+| WP205 | public shadow contract + B-layer shadow reception | 計画済み・WP204 closure待ち |
+| WP206a | stable draw tag/filter | 計画済み |
+| WP206b | pass-local material variant / multipass route | 計画済み・WP206a依存 |
+| WP207a | compute Frame/Light + sampled resource port | 計画済み |
+| WP207b | material/geometry typed frame-graph resource port | 計画済み・WP207a依存 |
+| WP208 | lighting data contract v2 + clustered dogfood | 計画済み・WP207b依存 |
+| WP209a | static texture dimension + material sampler authoring | 計画済み |
+| WP209b | RT mip/layer/subresource view | 計画済み・WP204/WP209a依存 |
+| WP210 | indirect dispatch + GPU-written draw arguments | 計画済み・WP207b依存、実 workload gate |
+| WP211 | `dist-bake` + shaderc OFF feature delivery | 並行候補・配布/Quest前必須 |
+| WP212 | VRS/foveation backend contract | Quest SA2 device/計測待ち |
+
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
 (最新の全受け入れ完了: WP203b、2026-07-26。WP203c はローカル実装・自動テスト済みだが、
@@ -265,6 +282,275 @@ XR2b最終gateを満たす。
 3. open external boundary、complete raw physical plan、`NativeScope`
 
 依存: RPE6c1/WP191、WP202b。見積: 後続は大。
+
+### WP205〜212候補: 描画 mechanism / authoring / delivery
+
+正本:
+
+- [`render_mechanism_coverage.md`](render_mechanism_coverage.md) v3
+- [`render_authoring_ergonomics.md`](render_authoring_ergonomics.md) v2
+- [`design_reviews/2026-07-26_render_capability_authoring_audit_codex.md`](design_reviews/2026-07-26_render_capability_authoring_audit_codex.md)
+
+共通方針:
+
+1. technique名をengine enumへ足さず、typed resource/view/execution/selection語彙を足す。
+2. parser/APIだけで完了にせず、project-owned feature/material/shaderのdogfoodを1本通す。
+3. logical authoringはtrust-first / optimize-by-default。矛盾はhard error、単なる曖昧tieは
+   deterministic + advisoryとする。
+4. 通常経路はlogical nameからgenerated accessorを作り、raw bindingはC-layer escape
+   hatchとして残す。
+5. physical指定はWP204 fragmentへlinkし、logical configへVulkan fieldを漏らさない。
+6. feature未参照時に追加pass/resource/variantを持たない。
+
+#### WP205: public shadow contract + B-layer shadow reception
+
+**目的**: 現在常に`1.0`を返す`pelican_shadow()`を、特権のない
+`shadow_directional` featureが供給するtyped shadow resource/light relationへ接続する。
+
+**実装範囲**:
+
+1. shadow image、light-space transform、light index/relationをlogical contractとして定義する。
+2. standard surface libraryへ同contractをbindし、feature未参照時はwork/resourceを増やさず
+   unshadowed `1.0`へ解決する。
+3. 最初はmanual depth compareでよい。comparison sampler一般化はWP209aへ分離できる。
+4. copied project featureもengine同梱featureと同じcontractを使い、shader/atlas policyを
+   project側で変更できる。
+5. failure messageとplan dumpにproducer、consumer、view policy、fallback理由を残す。
+
+**受け入れ条件**:
+
+- B-layer materialがdirectional shadowを受けるheadless Vulkan golden
+- feature off byte不変
+- projectへcopyしたfeatureで同じgolden
+- flat / preview / sequential XR / multiviewのcontract test
+- resize、pipeline hot reload、candidate rollbackで旧generationを破壊しない
+- validation error 0、全CTest、`git diff --check`
+
+非目標: CSM、point/cube shadow、VSM、VRS。依存: WP204 closure。見積: 中。
+
+#### WP206a: stable draw tag/filter
+
+**目的**: draw-call ordinalである`material_range`を通常authoringの選別手段から外し、
+material/draw identityに追従する安定tagを導入する。
+
+**実装範囲**:
+
+1. material側のtag宣言とmaterial pass側のinclude/exclude filterをadditive v1語彙として
+   定義する。
+2. string照合はDrawQueueBuilder/compile段で解決し、runtime Vulkan loopはcompactな
+   resolved filterだけを消費する。
+3. sort、visibility、material登録順、hot reloadで選択結果を安定させる。
+4. `material_range`は既存fixture/low-level制御として維持できるが、manual/cookbookの
+   推奨経路から外す。
+
+**受け入れ条件**:
+
+- material登録順とdraw sortを変えてもtag選択が不変
+- include/exclude、unknown/empty tag、複数tagのfixture
+- flat/XR/previewで同じlogical selection
+- plan dumpにauthored tagとresolved draw count/provenance
+- feature off既存golden不変
+
+依存: なし。ただしWP204 closure後に着手。見積: 中。
+
+#### WP206b: pass-local material variant / multipass route
+
+**目的**: 同一mesh/materialをbase passと別surface/render-stateのoverlay passへ参加させ、
+特殊技法を専用engine pass kindなしで書けるようにする。
+
+**実装範囲**:
+
+1. WP206a tag filterを入口に、pass-local surface/state variantまたは同等のtyped material
+   routeを設計する。
+2. existing surfaceのfront cull/additive/depth authoringを再利用する。render state parserを
+   再実装しない。
+3. material contractの全面plugin化は行わず、まず既存material kind内のmultipassを縦切りする。
+4. variant shader/pipelineはruntime generationに所有させ、hot reloadをfailure-atomicにする。
+
+**受け入れ条件**:
+
+- entity/mesh/material複製なしのproject-owned inverted-hull outline
+- `outline`専用pass kind、hardcoded shader名、engine-only material flagを追加しない
+- base-only materialの描画byte不変
+- transparent/deferred/forward routeとの重複・順序を名前入りで検証
+- flat / preview / sequential XR / multiview / hot reloadを回帰
+
+依存: WP206a。見積: 中〜大。着手前にmaterial routeの小設計レビューを行う。
+
+#### WP207a: compute Frame/Light + sampled resource port
+
+**目的**: computeをstorage-onlyの孤立した実行器から、graphicsと同じpublic frame factsと
+typed sampled resourceを消費できるdomainへ拡張する。
+
+**実装範囲**:
+
+1. compute pipelineへgraphicsと同じFrame/Light setをbindする。
+2. declared image inputをsampled image + sampler、storage imageのどちらで使うかtyped port/
+   reflectionで照合する。
+3. fullscreen/computeのlogical resource名からvirtual generated includeを作り、通常shaderから
+   set/binding番号を除く。raw layoutはescape hatchとして維持する。
+4. dispatch groupは本WPでは定数のまま。indirectはWP210。
+5. plannerは既存reads/writes/after/beforeをそのまま共通IRへloweringし、schema名の全面改名を
+   行わない。
+
+**受け入れ条件**:
+
+- computeがcamera/light/timeとsampled depth/colorを読みstorage buffer/imageへ書くGPU test
+- generated includeとreflectionのdescriptor kind/view dimension不一致をresource名付きreject
+- fullscreen buffer inputの既存GPU test不変
+- sequential/multiviewでper-view/shared inputの契約を検証
+- feature off追加descriptor更新なし
+
+依存: WP204 closure。見積: 中。
+
+#### WP207b: material/geometry typed frame-graph resource port
+
+**目的**: material vertex/fragmentがcomputeや別passのbuffer/imageをlogical nameで読み、
+GPU simulation結果をgeometryへ接続できるようにする。
+
+**実装範囲**:
+
+1. material screen imageのbuiltin semanticだけでなく、typed buffer/image portを追加する。
+2. vertex/fragment visibility、read footprint、view dimension、history、producer edgeを
+   logical contractへ運ぶ。
+3. generated surface accessorを拡張し、binding番号とdescriptor形を隠す。
+4. physical buffer/image usageとbarrierはtarget/Vulkan loweringで導出する。
+
+**受け入れ条件**:
+
+- compute write → material vertex displacementのproject-owned dogfood
+- same-frame edge、barrier、history/view mismatch、missing producerのfixture
+- deferred/forwardのroute双方で必要なconsumerだけがresourceをbind
+- hot reload/recreate/rollbackでdescriptorがactive generationへ再bind
+- 既存refraction screen inputとsurface byte golden不変
+
+依存: WP207a。見積: 大。
+
+#### WP208: lighting data contract v2 + clustered dogfood
+
+**目的**: 8 directional + 16 point + 8 spotの固定UBOをscalableなtyped inventoryへ移し、
+forward/deferredが同じlight selection結果を消費する。
+
+**実装範囲**:
+
+1. standard directional/point/spotをpresetとして維持しつつ、device-limitまで拡張できる
+   storage inventoryへloweringする。
+2. area/cookie/IES等の追加dataをfeature-owned typed buffer/resource indexで拡張できる形にする。
+3. rasterまたはcompute clustered/tiled light selectionをproject-owned featureとしてdogfoodする。
+4. light algorithm、tile size、list encodingをengine固定しない。
+5. desktop/tile target plan、XR view policy、overflow/fallback理由をplanへ残す。
+
+**受け入れ条件**:
+
+- 32灯を超えるfixtureでCPU light inventoryとGPU selection/resultが一致
+- forward/deferred consumerが同じselection contractを読む
+- cluster feature offで従来small-light pathの画素/CPU costを維持
+- overflow、unsupported format/storage、tile-GPU fallbackが名前入り診断
+- GPU timing/VRAMを記録し、採用判断をレポート化
+
+依存: WP207b。見積: 大。
+
+#### WP209a: static texture dimension + material sampler authoring
+
+**目的**: project-owned KTX2の2D array/cubemap/3Dとmaterial sampler stateをpublic
+surface contractへ追加する。
+
+**実装範囲**:
+
+1. texture dimension、array layers/faces/mipsをloader metadataとgenerated accessorへ運ぶ。
+2. filter/address/compare/anisotropyをtyped sampler宣言にし、device capabilityで解決する。
+3. 既定値は現行2D/linear behaviorを維持し、未使用dimensionのdescriptor costを増やさない。
+4. fullscreen input samplingの既存filter/address実装を壊さない。
+
+**受け入れ条件**:
+
+- 2D/cube/array/3D KTX2 positive fixtureとdimension mismatch reject
+- 2D strip IBLの既存経路不変 + native cubemap dogfood
+- compare/anisotropy unsupported deviceの理由付きfallback/reject
+- generated accessorからraw binding/dimensionを隠す
+
+依存: なし。見積: 中〜大。
+
+#### WP209b: RT mip/layer/subresource view
+
+**目的**: runtime render targetへmip/layerとper-pass subresource viewを宣言し、
+logical image relationからVulkan viewをloweringする。
+
+**実装範囲**:
+
+1. authored mip/layer count、view range、per-mip/layer render/sample/storage bindingをtyped化する。
+2. XR内部2D-array実装を直接schemaへ露出せず、同じlowering backendとして再利用する。
+3. alias/transient/tile-local/MSAA/history/format candidateとのcompatibilityをWP204 verifierへ追加する。
+4. depth pyramidを最初のdogfoodとし、runtime IBL/froxelは後続featureで試す。
+
+**受け入れ条件**:
+
+- multi-mip depth pyramidのplan/runtime/GPU result
+- out-of-range、overlap write、view type、sample/history/XR mismatch reject
+- physical fragment eject/link round-trip
+- resize、hot reload、alias generation ownershipを回帰
+
+依存: WP204、WP209a。見積: 大。
+
+#### WP210: indirect dispatch + GPU-written draw arguments
+
+**目的**: GPU workloadが次frameの固定最大数だけでなく、同frameのdispatch/draw countと
+indirect argumentsを生成できるようにする。
+
+**実装範囲**:
+
+1. buffer usage/typed argument layout、`dispatchIndirect`、barrierを先に縦切りする。
+2. DrawQueue/rendererへGPU-written indexed indirect/count pathを追加する。
+3. device feature、count clamp、zero count、CPU fallback、validationをcompiled planへ残す。
+4. fixed descriptorで成立するdogfoodを先に行い、bindlessを暗黙依存にしない。
+
+**受け入れ条件**:
+
+- GPU particleまたはocclusion cullingの一方をproject-owned dogfoodにする
+- GPU生成count 0/1/max/overflow、rollback、hot reload、XR view count test
+- CPU fallbackとのsemantic image一致
+- GPU timingでCPU pathより有利なworkload範囲を記録
+- descriptor pressureが実測blockerになるまでbindless WPを作らない
+
+依存: WP207b。見積: 大。
+
+#### WP211: `dist-bake` + shaderc OFF feature delivery
+
+**目的**: 開発buildで動くfeature/material/compute構成を、runtime shader compiler無しで
+同じsemantic imageの配布物として起動する。
+
+**実装範囲**:
+
+1. composed feature instancesと実使用define集合からdeterministic variant manifestを生成する。
+2. surface/fullscreen/compute stemをhost PCのVulkan SDK toolchainでcompileし、
+   reflection/binding manifestとtarget profileを同梱する。
+3. runtimeはprecompiled artifactを通常cache/provider境界から読み、featureがあることだけを
+   理由に起動拒否しない。
+4. 通常build/testへPython依存を戻さない。
+
+**受け入れ条件**:
+
+- TAA + shadow + custom project feature + custom surfaceを含むshaderc OFF headless golden
+- ON/OFFでsemantic image一致
+- clean directoryで同じmanifest/SPIR-V hash
+- stale/missing/wrong-target artifactの名前入りreject
+- PC packageと将来cross-target packageを同じmanifest schemaで表現
+
+依存: `dist-config` / WP198。mechanism WPと並行可能。Quest SA開始前の必須gate。見積: 大。
+
+#### WP212: VRS/foveation backend contract
+
+**開始条件**: Quest SA2で実機device facts、利用可能なOpenXR/Vulkan foveation extension、
+baseline GPU timingが得られていること。
+
+**方針**:
+
+- foveation policyはversioned user feature vocabulary、device extension bindingはbackend
+- unsupported deviceは理由付き通常resolution fallback
+- jitter/upscale/multiview/render resolutionと同じtyped graph/target contractで解決
+- 「Questなら常に必須」と仮定せず、72/90Hzの計測でauto policyを決める
+
+見積: device facts取得後に再見積。
 
 ### 完了地点
 
