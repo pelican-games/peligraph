@@ -60,15 +60,35 @@ ImagePixelFormat imageFormat(Ktx2Format format) {
     throw std::runtime_error("Unknown KTX2 pixel format");
 }
 
+LoadedImageDimension imageDimension(
+    Ktx2Dimension dimension) {
+    switch (dimension) {
+    case Ktx2Dimension::TwoD:
+        return LoadedImageDimension::TwoD;
+    case Ktx2Dimension::Cube:
+        return LoadedImageDimension::Cube;
+    case Ktx2Dimension::TwoDArray:
+        return LoadedImageDimension::TwoDArray;
+    case Ktx2Dimension::ThreeD:
+        return LoadedImageDimension::ThreeD;
+    }
+    throw std::runtime_error("Unknown KTX2 texture dimension");
+}
+
 LoadedImage loadedKtx2(Ktx2Image parsed) {
     LoadedImage loaded;
     loaded.width = parsed.width;
     loaded.height = parsed.height;
+    loaded.depth = parsed.depth;
+    loaded.array_layers = parsed.array_layers;
+    loaded.dimension = imageDimension(parsed.dimension);
     loaded.format = imageFormat(parsed.format);
     loaded.pixels = std::move(parsed.payload);
     loaded.levels.reserve(parsed.levels.size());
     for (const auto &level : parsed.levels)
-        loaded.levels.push_back({level.offset, level.size, level.width, level.height});
+        loaded.levels.push_back(
+            {level.offset, level.size, level.width,
+             level.height, level.depth});
     return loaded;
 }
 
@@ -366,6 +386,21 @@ LoadedImage loadStbImageFile(const std::filesystem::path &path) {
 }
 
 } // namespace
+
+std::string_view loadedImageDimensionName(
+    LoadedImageDimension dimension) {
+    switch (dimension) {
+    case LoadedImageDimension::TwoD:
+        return "2d";
+    case LoadedImageDimension::Cube:
+        return "cube";
+    case LoadedImageDimension::TwoDArray:
+        return "2d_array";
+    case LoadedImageDimension::ThreeD:
+        return "3d";
+    }
+    return "unknown";
+}
 
 size_t LoadedImage::bytesPerPixel() const {
     switch (format) {

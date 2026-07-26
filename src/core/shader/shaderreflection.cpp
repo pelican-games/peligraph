@@ -63,6 +63,12 @@ ReflectedImageViewDimension imageViewDimension(
     if (!isImageDescriptor(type)) {
         return ReflectedImageViewDimension::none;
     }
+    if (binding.image.dim == SpvDimCube) {
+        return ReflectedImageViewDimension::cube;
+    }
+    if (binding.image.dim == SpvDim3D) {
+        return ReflectedImageViewDimension::three_d;
+    }
     if (binding.image.dim != SpvDim2D) {
         return ReflectedImageViewDimension::other;
     }
@@ -94,6 +100,10 @@ std::string_view reflectedImageViewDimensionName(
         return "2d";
     case ReflectedImageViewDimension::two_d_array:
         return "2d_array";
+    case ReflectedImageViewDimension::cube:
+        return "cube";
+    case ReflectedImageViewDimension::three_d:
+        return "3d";
     case ReflectedImageViewDimension::other:
         return "other";
     }

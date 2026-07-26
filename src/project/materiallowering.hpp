@@ -48,7 +48,37 @@ struct LoweredTextureBinding {
     SurfaceTextureRole role = SurfaceTextureRole::data;
     LoweredTextureView view = LoweredTextureView::unorm;
     MaterialDummyTexture missing_default = MaterialDummyTexture::white;
+    SurfaceTextureDimension dimension =
+        SurfaceTextureDimension::two_d;
+    SurfaceTextureSampler sampler;
 };
+
+struct MaterialSamplerCapabilities {
+    bool comparison_sampling = true;
+    bool sampler_anisotropy = false;
+    float max_sampler_anisotropy = 1.0f;
+};
+
+struct ResolvedMaterialSampler {
+    SurfaceTextureFilter filter = SurfaceTextureFilter::linear;
+    SurfaceTextureFilter mip_filter =
+        SurfaceTextureFilter::linear;
+    SurfaceTextureAddressMode address =
+        SurfaceTextureAddressMode::repeat;
+    SurfaceTextureCompare compare =
+        SurfaceTextureCompare::none;
+    bool anisotropy_enabled = false;
+    float max_anisotropy = 1.0f;
+    std::string resolution = "exact";
+
+    bool operator==(const ResolvedMaterialSampler &) const =
+        default;
+};
+
+ResolvedMaterialSampler resolveMaterialSampler(
+    const SurfaceTextureSampler &request,
+    const MaterialSamplerCapabilities &capabilities,
+    std::string_view context);
 
 struct MaterialLoweringCapabilities {
     std::size_t max_custom_textures = 25;

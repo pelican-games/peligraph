@@ -61,6 +61,9 @@ struct MaterialInfo {
         std::optional<GlobalTextureId> texture;
         SurfaceTextureRole role = SurfaceTextureRole::data;
         MaterialDummyTexture missing_default = MaterialDummyTexture::white;
+        SurfaceTextureDimension dimension =
+            SurfaceTextureDimension::two_d;
+        SurfaceTextureSampler sampler;
     };
     std::vector<CustomTextureBinding> custom_textures;
     Std140Layout custom_values_layout;

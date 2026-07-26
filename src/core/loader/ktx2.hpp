@@ -16,16 +16,27 @@ enum class Ktx2Format {
     Bc7Srgb,
 };
 
+enum class Ktx2Dimension {
+    TwoD,
+    Cube,
+    TwoDArray,
+    ThreeD,
+};
+
 struct Ktx2Level {
     std::size_t offset = 0;
     std::size_t size = 0;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    std::uint32_t depth = 1;
 };
 
 struct Ktx2Image {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    std::uint32_t depth = 1;
+    std::uint32_t array_layers = 1;
+    Ktx2Dimension dimension = Ktx2Dimension::TwoD;
     Ktx2Format format = Ktx2Format::Rgba8Unorm;
     std::vector<std::byte> payload;
     std::vector<Ktx2Level> levels;

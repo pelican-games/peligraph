@@ -26,6 +26,7 @@ struct VulkanRuntimeCapabilities {
     bool timeline_semaphore = false;
     bool multiview = false;
     bool dynamic_rendering_local_read = false;
+    bool sampler_anisotropy = false;
 };
 
 enum class VulkanProcessType {
@@ -100,7 +101,9 @@ DECLARE_MODULE(VulkanManageCore) {
                             uint32_t array_layers = 1,
                             vk::MemoryPropertyFlags
                                 preferred_memory_flags = {},
-                            vk::ImageCreateFlags image_flags = {}) const;
+                            vk::ImageCreateFlags image_flags = {},
+                            vk::ImageType image_type =
+                                vk::ImageType::e2D) const;
     ImageWrapper allocAliasingImage(
         const ImageWrapper &allocation_owner) const;
     void writeImage(const ImageWrapper &dst, const void *src, vk::DeviceSize bytes_num) const;

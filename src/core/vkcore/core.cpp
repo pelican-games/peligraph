@@ -217,6 +217,7 @@ struct DeviceFeatureSupport {
     bool timeline_semaphore = false;
     bool multiview = false;
     bool dynamic_rendering_local_read = false;
+    bool sampler_anisotropy = false;
 };
 
 static std::vector<std::string> supportedDeviceExtensions(
@@ -242,6 +243,8 @@ static DeviceFeatureSupport queryDeviceFeatureSupport(vk::PhysicalDevice physica
             },
         .timeline_semaphore = vk12.timelineSemaphore == VK_TRUE,
         .multiview = vk11.multiview == VK_TRUE,
+        .sampler_anisotropy =
+            core.samplerAnisotropy == VK_TRUE,
     };
 
     const auto extensions = supportedDeviceExtensions(physical_device);
@@ -377,6 +380,9 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
     vk::PhysicalDeviceFeatures2 features;
     features.features.multiDrawIndirect = true; // necessary for multi draw indirect
     features.features.drawIndirectFirstInstance = true; // firstInstance carries the model slot index
+    features.features.samplerAnisotropy =
+        feature_support.sampler_anisotropy ? VK_TRUE
+                                           : VK_FALSE;
     vk::PhysicalDeviceVulkan11Features vk11features;
     vk11features.shaderDrawParameters = true; // necessary for using gl_BaseInstance in shaders
     // Enable opportunistically when available. Target planning still
@@ -412,6 +418,8 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
         .multiview = feature_support.multiview,
         .dynamic_rendering_local_read =
             feature_support.dynamic_rendering_local_read,
+        .sampler_anisotropy =
+            feature_support.sampler_anisotropy,
     };
 
 #if PELICAN_WITH_OPENXR
@@ -579,10 +587,11 @@ VulkanManageCore::VulkanManageCore() {
                                    : "VK_EXT_memory_budget_not_supported");
     LOG_INFO(logger,
              "Vulkan optional features: timeline_semaphore={}, multiview={}, "
-             "dynamic_rendering_local_read={}",
+             "dynamic_rendering_local_read={}, sampler_anisotropy={}",
              runtime_capabilities.timeline_semaphore,
              runtime_capabilities.multiview,
-             runtime_capabilities.dynamic_rendering_local_read);
+             runtime_capabilities.dynamic_rendering_local_read,
+             runtime_capabilities.sampler_anisotropy);
     LOG_INFO(logger, "vulkan core initialized");
 }
 VulkanManageCore::~VulkanManageCore() {}
@@ -750,14 +759,26 @@ ImageWrapper VulkanManageCore::allocImage(vk::Extent3D extent, vk::Format format
                                           vk::MemoryPropertyFlags
                                               preferred_memory_flags,
                                           vk::ImageCreateFlags
-                                              image_flags) const {
+                                              image_flags,
+                                          vk::ImageType
+                                              image_type) const {
     if (array_layers == 0) {
         throw std::runtime_error(
             "Vulkan image array_layers must be greater than zero");
     }
+    if (image_type == vk::ImageType::e3D &&
+        array_layers != 1) {
+        throw std::runtime_error(
+            "Vulkan 3D images require exactly one array layer");
+    }
+    if (image_type != vk::ImageType::e3D &&
+        extent.depth != 1) {
+        throw std::runtime_error(
+            "Vulkan non-3D images require extent.depth=1");
+    }
     vk::ImageCreateInfo create_info;
     create_info.flags = image_flags;
-    create_info.imageType = vk::ImageType::e2D;
+    create_info.imageType = image_type;
     create_info.format = format;
     create_info.extent = extent;
     create_info.mipLevels = mip_levels;
@@ -795,6 +816,7 @@ ImageWrapper VulkanManageCore::allocImage(vk::Extent3D extent, vk::Format format
     return ImageWrapper{
         .extent = extent,
         .format = format,
+        .image_type = image_type,
         .mip_levels = mip_levels,
         .array_layers = array_layers,
         .allocation =
@@ -823,7 +845,8 @@ ImageWrapper VulkanManageCore::allocAliasingImage(
 
     vk::ImageCreateInfo create_info;
     create_info.flags = allocation_owner.create_flags;
-    create_info.imageType = vk::ImageType::e2D;
+    create_info.imageType =
+        allocation_owner.image_type;
     create_info.format = allocation_owner.format;
     create_info.extent = allocation_owner.extent;
     create_info.mipLevels = allocation_owner.mip_levels;
@@ -839,6 +862,7 @@ ImageWrapper VulkanManageCore::allocAliasingImage(
     return ImageWrapper{
         .extent = allocation_owner.extent,
         .format = allocation_owner.format,
+        .image_type = allocation_owner.image_type,
         .mip_levels = allocation_owner.mip_levels,
         .array_layers = allocation_owner.array_layers,
         .allocation = allocation_owner.allocation,

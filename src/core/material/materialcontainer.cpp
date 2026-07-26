@@ -41,6 +41,21 @@ constexpr size_t maxMaterials = 1024;
 constexpr uint32_t maxMaterialPassInputs = 8;
 constexpr uint32_t maxMaterialPassDescriptors = 32;
 
+static bool supportsDepthComparisonSampling(
+    vk::Format format) {
+    switch (format) {
+    case vk::Format::eD16Unorm:
+    case vk::Format::eX8D24UnormPack32:
+    case vk::Format::eD32Sfloat:
+    case vk::Format::eD16UnormS8Uint:
+    case vk::Format::eD24UnormS8Uint:
+    case vk::Format::eD32SfloatS8Uint:
+        return true;
+    default:
+        return false;
+    }
+}
+
 struct MaterialPipelineRenderingContract {
     std::vector<vk::Format> color_formats;
     std::optional<vk::Format> depth_format;
@@ -487,6 +502,102 @@ static void validateMaterialCapabilities(
     }
 }
 
+static ReflectedImageViewDimension reflectedTextureDimension(
+    SurfaceTextureDimension dimension) {
+    switch (dimension) {
+    case SurfaceTextureDimension::two_d:
+        return ReflectedImageViewDimension::two_d;
+    case SurfaceTextureDimension::cube:
+        return ReflectedImageViewDimension::cube;
+    case SurfaceTextureDimension::two_d_array:
+        return ReflectedImageViewDimension::two_d_array;
+    case SurfaceTextureDimension::three_d:
+        return ReflectedImageViewDimension::three_d;
+    }
+    throw std::runtime_error(
+        "unknown material texture dimension");
+}
+
+static void validateMaterialTextureReflection(
+    const MaterialInfo &info,
+    const ShaderReflection &reflection,
+    bool split_custom_samplers) {
+    for (std::size_t index = 0;
+         index < info.custom_textures.size(); ++index) {
+        const auto &texture = info.custom_textures[index];
+        const auto image_binding =
+            materialCustomTextureFirstBinding +
+            static_cast<std::uint32_t>(
+                index *
+                (split_custom_samplers ? 2u : 1u));
+        const auto expected_type =
+            split_custom_samplers
+                ? vk::DescriptorType::eSampledImage
+                : vk::DescriptorType::
+                      eCombinedImageSampler;
+        const auto image = std::find_if(
+            reflection.bindings.begin(),
+            reflection.bindings.end(),
+            [&](const auto &binding) {
+                return binding.set ==
+                           imageDescriptorSetNumber &&
+                       binding.binding ==
+                           image_binding;
+            });
+        if (image == reflection.bindings.end()) {
+            throw std::runtime_error(
+                "material texture '" + texture.name +
+                "' is absent from shader reflection at binding " +
+                std::to_string(image_binding));
+        }
+        const auto expected_dimension =
+            reflectedTextureDimension(
+                texture.dimension);
+        if (image->count != 1 ||
+            image->type != expected_type ||
+            image->image_view_dimension !=
+                expected_dimension) {
+            throw std::runtime_error(
+                "material texture '" + texture.name +
+                "' shader reflection mismatch at binding " +
+                std::to_string(image_binding) +
+                ": expected " +
+                vk::to_string(expected_type) + " " +
+                std::string{
+                    reflectedImageViewDimensionName(
+                        expected_dimension)} +
+                ", found " +
+                vk::to_string(image->type) + " " +
+                std::string{
+                    reflectedImageViewDimensionName(
+                        image->image_view_dimension)});
+        }
+        if (!split_custom_samplers) {
+            continue;
+        }
+        const auto sampler_binding =
+            image_binding + 1;
+        const auto sampler = std::find_if(
+            reflection.bindings.begin(),
+            reflection.bindings.end(),
+            [&](const auto &binding) {
+                return binding.set ==
+                           imageDescriptorSetNumber &&
+                       binding.binding ==
+                           sampler_binding;
+            });
+        if (sampler == reflection.bindings.end() ||
+            sampler->count != 1 ||
+            sampler->type !=
+                vk::DescriptorType::eSampler) {
+            throw std::runtime_error(
+                "material texture '" + texture.name +
+                "' split sampler reflection mismatch at binding " +
+                std::to_string(sampler_binding));
+        }
+    }
+}
+
 static std::vector<MaterialPassInputContract>
 resolveReflectedMaterialPassInputs(
     PipelineHandle pipeline,
@@ -636,6 +747,59 @@ static vk::UniqueSampler createSampler(vk::Device device, vk::Filter filter) {
     return device.createSamplerUnique(create_info);
 }
 
+static vk::Filter materialTextureFilter(
+    SurfaceTextureFilter filter) {
+    return filter == SurfaceTextureFilter::nearest
+               ? vk::Filter::eNearest
+               : vk::Filter::eLinear;
+}
+
+static vk::SamplerMipmapMode materialTextureMipmapMode(
+    SurfaceTextureFilter filter) {
+    return filter == SurfaceTextureFilter::nearest
+               ? vk::SamplerMipmapMode::eNearest
+               : vk::SamplerMipmapMode::eLinear;
+}
+
+static vk::SamplerAddressMode materialTextureAddressMode(
+    SurfaceTextureAddressMode address) {
+    switch (address) {
+    case SurfaceTextureAddressMode::repeat:
+        return vk::SamplerAddressMode::eRepeat;
+    case SurfaceTextureAddressMode::mirrored_repeat:
+        return vk::SamplerAddressMode::eMirroredRepeat;
+    case SurfaceTextureAddressMode::clamp_to_edge:
+        return vk::SamplerAddressMode::eClampToEdge;
+    }
+    throw std::runtime_error(
+        "unknown material texture address mode");
+}
+
+static vk::CompareOp materialTextureCompareOp(
+    SurfaceTextureCompare compare) {
+    switch (compare) {
+    case SurfaceTextureCompare::none:
+    case SurfaceTextureCompare::always:
+        return vk::CompareOp::eAlways;
+    case SurfaceTextureCompare::never:
+        return vk::CompareOp::eNever;
+    case SurfaceTextureCompare::less:
+        return vk::CompareOp::eLess;
+    case SurfaceTextureCompare::equal:
+        return vk::CompareOp::eEqual;
+    case SurfaceTextureCompare::less_equal:
+        return vk::CompareOp::eLessOrEqual;
+    case SurfaceTextureCompare::greater:
+        return vk::CompareOp::eGreater;
+    case SurfaceTextureCompare::not_equal:
+        return vk::CompareOp::eNotEqual;
+    case SurfaceTextureCompare::greater_equal:
+        return vk::CompareOp::eGreaterOrEqual;
+    }
+    throw std::runtime_error(
+        "unknown material texture comparison");
+}
+
 static vk::UniqueSampler createScreenSampler(vk::Device device,
                                              vk::Filter filter) {
     vk::SamplerCreateInfo create_info;
@@ -714,10 +878,31 @@ createMaterialResourceSampler(
         create_info);
 }
 
-static vk::UniqueImageView createImageView(vk::Device device, const ImageWrapper &image, vk::Format format) {
+static vk::ImageViewType materialTextureViewType(
+    SurfaceTextureDimension dimension) {
+    switch (dimension) {
+    case SurfaceTextureDimension::two_d:
+        return vk::ImageViewType::e2D;
+    case SurfaceTextureDimension::cube:
+        return vk::ImageViewType::eCube;
+    case SurfaceTextureDimension::two_d_array:
+        return vk::ImageViewType::e2DArray;
+    case SurfaceTextureDimension::three_d:
+        return vk::ImageViewType::e3D;
+    }
+    throw std::runtime_error(
+        "unknown material texture dimension");
+}
+
+static vk::UniqueImageView createImageView(
+    vk::Device device, const ImageWrapper &image,
+    vk::Format format,
+    SurfaceTextureDimension dimension =
+        SurfaceTextureDimension::two_d) {
     vk::ImageViewCreateInfo create_info;
     create_info.image = image.image.get();
-    create_info.viewType = vk::ImageViewType::e2D;
+    create_info.viewType =
+        materialTextureViewType(dimension);
     create_info.format = format;
     create_info.components.r = vk::ComponentSwizzle::eR;
     create_info.components.g = vk::ComponentSwizzle::eG;
@@ -727,7 +912,11 @@ static vk::UniqueImageView createImageView(vk::Device device, const ImageWrapper
     create_info.subresourceRange.baseMipLevel = 0;
     create_info.subresourceRange.levelCount = image.mip_levels;
     create_info.subresourceRange.baseArrayLayer = 0;
-    create_info.subresourceRange.layerCount = 1;
+    create_info.subresourceRange.layerCount =
+        dimension ==
+                SurfaceTextureDimension::three_d
+            ? 1
+            : image.array_layers;
 
     return device.createImageViewUnique(create_info);
 }
@@ -760,6 +949,52 @@ vk::Sampler MaterialContainer::materialResourceSampler(
                 device, sampling);
     }
     return sampler.get();
+}
+
+vk::Sampler MaterialContainer::materialTextureSampler(
+    const ResolvedMaterialSampler &sampler) {
+    const MaterialSamplerKey key{
+        sampler.filter, sampler.mip_filter, sampler.address,
+        sampler.compare, sampler.anisotropy_enabled,
+        sampler.max_anisotropy};
+    const auto existing =
+        custom_texture_samplers.find(key);
+    if (existing != custom_texture_samplers.end()) {
+        return existing->second.get();
+    }
+
+    vk::SamplerCreateInfo create_info;
+    create_info.magFilter =
+        materialTextureFilter(sampler.filter);
+    create_info.minFilter = create_info.magFilter;
+    create_info.mipmapMode =
+        materialTextureMipmapMode(sampler.mip_filter);
+    create_info.addressModeU =
+        materialTextureAddressMode(sampler.address);
+    create_info.addressModeV = create_info.addressModeU;
+    create_info.addressModeW = create_info.addressModeU;
+    create_info.mipLodBias = 0.0f;
+    create_info.anisotropyEnable =
+        sampler.anisotropy_enabled;
+    create_info.maxAnisotropy =
+        sampler.anisotropy_enabled
+            ? sampler.max_anisotropy
+            : 1.0f;
+    create_info.compareEnable =
+        sampler.compare != SurfaceTextureCompare::none;
+    create_info.compareOp =
+        materialTextureCompareOp(sampler.compare);
+    create_info.minLod = 0.0f;
+    create_info.maxLod = VK_LOD_CLAMP_NONE;
+    create_info.borderColor =
+        vk::BorderColor::eIntOpaqueBlack;
+    create_info.unnormalizedCoordinates = false;
+    auto created =
+        device.createSamplerUnique(create_info);
+    const auto handle = created.get();
+    custom_texture_samplers.emplace(
+        key, std::move(created));
+    return handle;
 }
 
 GlobalTextureId MaterialContainer::registerTexture(vk::Extent3D extent, const void *data) {
@@ -807,6 +1042,8 @@ GlobalTextureId MaterialContainer::registerTexture(vk::Extent3D extent, const vo
         .image = std::move(image),
         .linear_view = std::move(linear_view),
         .srgb_view = std::move(srgb_view),
+        .dimension = SurfaceTextureDimension::two_d,
+        .view_type = vk::ImageViewType::e2D,
     });
 }
 
@@ -823,6 +1060,115 @@ vk::Format vkFormatForLoaded(ImagePixelFormat format) {
     case ImagePixelFormat::Bc7Srgb: return vk::Format::eBc7SrgbBlock;
     }
     throw std::runtime_error("Unknown loaded image format");
+}
+
+SurfaceTextureDimension surfaceTextureDimension(
+    LoadedImageDimension dimension) {
+    switch (dimension) {
+    case LoadedImageDimension::TwoD:
+        return SurfaceTextureDimension::two_d;
+    case LoadedImageDimension::Cube:
+        return SurfaceTextureDimension::cube;
+    case LoadedImageDimension::TwoDArray:
+        return SurfaceTextureDimension::two_d_array;
+    case LoadedImageDimension::ThreeD:
+        return SurfaceTextureDimension::three_d;
+    }
+    throw std::runtime_error(
+        "Unknown loaded image dimension");
+}
+
+vk::ImageType materialTextureImageType(
+    SurfaceTextureDimension dimension) {
+    return dimension ==
+                   SurfaceTextureDimension::three_d
+               ? vk::ImageType::e3D
+               : vk::ImageType::e2D;
+}
+
+vk::ImageCreateFlags materialTextureImageFlags(
+    SurfaceTextureDimension dimension) {
+    return dimension ==
+                   SurfaceTextureDimension::cube
+               ? vk::ImageCreateFlagBits::eCubeCompatible
+               : vk::ImageCreateFlags{};
+}
+
+void validateLoadedTextureShape(
+    const LoadedImage &loaded, std::string_view name,
+    const vk::PhysicalDeviceLimits &limits) {
+    if (loaded.width == 0 || loaded.height == 0 ||
+        loaded.depth == 0 || loaded.array_layers == 0) {
+        throw std::runtime_error(
+            "Texture '" + std::string{name} +
+            "' has a zero-sized dimension or array layer count");
+    }
+    switch (loaded.dimension) {
+    case LoadedImageDimension::TwoD:
+        if (loaded.depth != 1 || loaded.array_layers != 1) {
+            throw std::runtime_error(
+                "Texture '" + std::string{name} +
+                "' dimension 2d requires depth=1 and "
+                "array_layers=1");
+        }
+        if (loaded.width > limits.maxImageDimension2D ||
+            loaded.height > limits.maxImageDimension2D) {
+            throw std::runtime_error(
+                "Texture '" + std::string{name} +
+                "' dimension 2d exceeds device "
+                "maxImageDimension2D " +
+                std::to_string(limits.maxImageDimension2D));
+        }
+        break;
+    case LoadedImageDimension::Cube:
+        if (loaded.width != loaded.height ||
+            loaded.depth != 1 ||
+            loaded.array_layers != 6) {
+            throw std::runtime_error(
+                "Texture '" + std::string{name} +
+                "' dimension cube requires square faces, "
+                "depth=1, and exactly 6 array layers");
+        }
+        if (loaded.width > limits.maxImageDimensionCube) {
+            throw std::runtime_error(
+                "Texture '" + std::string{name} +
+                "' dimension cube exceeds device "
+                "maxImageDimensionCube " +
+                std::to_string(limits.maxImageDimensionCube));
+        }
+        break;
+    case LoadedImageDimension::TwoDArray:
+        if (loaded.depth != 1) {
+            throw std::runtime_error(
+                "Texture '" + std::string{name} +
+                "' dimension 2d_array requires depth=1");
+        }
+        if (loaded.width > limits.maxImageDimension2D ||
+            loaded.height > limits.maxImageDimension2D ||
+            loaded.array_layers > limits.maxImageArrayLayers) {
+            throw std::runtime_error(
+                "Texture '" + std::string{name} +
+                "' dimension 2d_array exceeds device 2D "
+                "dimension or array-layer limits");
+        }
+        break;
+    case LoadedImageDimension::ThreeD:
+        if (loaded.array_layers != 1) {
+            throw std::runtime_error(
+                "Texture '" + std::string{name} +
+                "' dimension 3d requires array_layers=1");
+        }
+        if (loaded.width > limits.maxImageDimension3D ||
+            loaded.height > limits.maxImageDimension3D ||
+            loaded.depth > limits.maxImageDimension3D) {
+            throw std::runtime_error(
+                "Texture '" + std::string{name} +
+                "' dimension 3d exceeds device "
+                "maxImageDimension3D " +
+                std::to_string(limits.maxImageDimension3D));
+        }
+        break;
+    }
 }
 
 void requireCompressedTextureFeatures(vk::PhysicalDevice physical_device, vk::Format format,
@@ -848,6 +1194,17 @@ MaterialContainer::createTextureResource(const LoadedImage &loaded, std::string_
     const auto &vkcore = GET_MODULE(VulkanManageCore);
     const auto format = vkFormatForLoaded(loaded.format);
     requireCompressedTextureFeatures(vkcore.getPhysDevice(), format, name);
+    validateLoadedTextureShape(
+        loaded, name,
+        vkcore.getPhysDevice().getProperties().limits);
+    const auto dimension =
+        surfaceTextureDimension(loaded.dimension);
+    const auto image_type =
+        materialTextureImageType(dimension);
+    const auto image_flags =
+        materialTextureImageFlags(dimension);
+    const vk::Extent3D extent{
+        loaded.width, loaded.height, loaded.depth};
 
     const bool rgba8 = loaded.format == ImagePixelFormat::Rgba8Unorm ||
                        loaded.format == ImagePixelFormat::Rgba8Srgb;
@@ -858,19 +1215,29 @@ MaterialContainer::createTextureResource(const LoadedImage &loaded, std::string_
     const auto compatible = rgba8 ? std::span<const vk::Format>{rgba_formats}
                                   : bc7 ? std::span<const vk::Format>{bc7_formats}
                                         : std::span<const vk::Format>{};
-    auto image = vkcore.allocImage({loaded.width, loaded.height, 1}, format,
-                                   vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst |
-                                       vk::ImageUsageFlagBits::eTransferSrc,
-                                   vma::MemoryUsage::eAutoPreferDevice, {}, VulkanProcessType::graphics,
-                                   compatible, loaded.mipLevels());
+    auto image = vkcore.allocImage(
+        extent, format,
+        vk::ImageUsageFlagBits::eSampled |
+            vk::ImageUsageFlagBits::eTransferDst |
+            vk::ImageUsageFlagBits::eTransferSrc,
+        vma::MemoryUsage::eAutoPreferDevice, {},
+        VulkanProcessType::graphics, compatible,
+        loaded.mipLevels(), vk::SampleCountFlagBits::e1,
+        loaded.array_layers, {}, image_flags, image_type);
     std::vector<vk::BufferImageCopy> regions;
     regions.reserve(loaded.levels.size());
     for (std::uint32_t mip = 0; mip < loaded.levels.size(); ++mip) {
         const auto &level = loaded.levels[mip];
         vk::BufferImageCopy copy;
         copy.bufferOffset = level.offset;
-        copy.imageSubresource = {vk::ImageAspectFlagBits::eColor, mip, 0, 1};
-        copy.imageExtent = vk::Extent3D{level.width, level.height, 1};
+        copy.imageSubresource = {
+            vk::ImageAspectFlagBits::eColor, mip, 0,
+            loaded.dimension ==
+                    LoadedImageDimension::ThreeD
+                ? 1u
+                : loaded.array_layers};
+        copy.imageExtent = vk::Extent3D{
+            level.width, level.height, level.depth};
         regions.push_back(copy);
     }
     GET_MODULE(VulkanUtils).safeTransferMemoryToImageLevels(
@@ -884,7 +1251,9 @@ MaterialContainer::createTextureResource(const LoadedImage &loaded, std::string_
     const auto linear_format = rgba8 ? vk::Format::eR8G8B8A8Unorm
                                      : bc7 ? vk::Format::eBc7UnormBlock : format;
     requireCompressedTextureFeatures(vkcore.getPhysDevice(), linear_format, name);
-    auto linear_view = createImageView(device, image, linear_format);
+    auto linear_view =
+        createImageView(device, image, linear_format,
+                        dimension);
     vk::UniqueImageView srgb_view;
     if (rgba8 || bc7) {
         const auto srgb_format = rgba8 ? vk::Format::eR8G8B8A8Srgb : vk::Format::eBc7SrgbBlock;
@@ -894,9 +1263,13 @@ MaterialContainer::createTextureResource(const LoadedImage &loaded, std::string_
         if ((features & required) != required)
             throw std::runtime_error("KTX2 texture '" + std::string{name} + "' SRGB view " +
                                      vk::to_string(srgb_format) + " lacks sampled/linear-filter GPU support");
-        srgb_view = createImageView(device, image, srgb_format);
+        srgb_view = createImageView(
+            device, image, srgb_format, dimension);
     }
-    return {std::move(image), std::move(linear_view), std::move(srgb_view)};
+    return {
+        std::move(image), std::move(linear_view),
+        std::move(srgb_view), dimension,
+        materialTextureViewType(dimension)};
 }
 
 GlobalTextureId MaterialContainer::registerTexture(const LoadedImage &loaded, std::string_view name) {
@@ -944,10 +1317,14 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         }
     }
     const auto pipeline = pipeline_it->second;
-    validateShaderResourceInterfaceReflection(
-        resource_interface,
+    const auto &pipeline_reflection =
         GET_MODULE(PipelineFactory)
-            .reflection(pipeline),
+            .reflection(pipeline);
+    validateMaterialTextureReflection(
+        info, pipeline_reflection,
+        split_custom_samplers);
+    validateShaderResourceInterfaceReflection(
+        resource_interface, pipeline_reflection,
         PELICAN_SET_PASS_INPUT);
     auto pass_inputs =
         resolveReflectedMaterialPassInputs(
@@ -970,10 +1347,30 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     std::vector<InternalMaterialInfo::TextureBinding> texture_bindings;
     texture_bindings.reserve(texture_binding_count +
                              info.custom_textures.size() * (split_custom_samplers ? 2 : 1));
+    std::vector<std::pair<std::string,
+                          ResolvedMaterialSampler>>
+        custom_sampler_resolutions;
+    custom_sampler_resolutions.reserve(
+        info.custom_textures.size());
 
     const auto setImageInfo = [&](uint32_t binding, GlobalTextureId texture, vk::Sampler sampler,
-                                  bool srgb) {
+                                  bool srgb,
+                                  SurfaceTextureDimension
+                                      expected_dimension =
+                                          SurfaceTextureDimension::two_d,
+                                  std::optional<ResolvedMaterialSampler>
+                                      sampler_resolution =
+                                          std::nullopt) {
         const auto &tex = textures.get(texture);
+        if (tex.dimension != expected_dimension) {
+            throw std::runtime_error(
+                "declared dimension " +
+                std::string{surfaceTextureDimensionName(
+                    expected_dimension)} +
+                " does not match loaded texture dimension " +
+                std::string{surfaceTextureDimensionName(
+                    tex.dimension)});
+        }
         if (srgb && !tex.srgb_view) {
             throw std::runtime_error("Color texture does not provide an SRGB view");
         }
@@ -981,7 +1378,11 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         image_infos[binding].imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
         image_infos[binding].sampler = sampler;
         texture_bindings.push_back({texture, binding,
-                                    vk::DescriptorType::eCombinedImageSampler, sampler, srgb});
+                                    vk::DescriptorType::eCombinedImageSampler,
+                                    sampler, srgb,
+                                    expected_dimension,
+                                    std::move(
+                                        sampler_resolution)});
     };
 
     setImageInfo(baseColorBinding, info.base_color_texture, linear_sampler.get(), true);
@@ -994,20 +1395,75 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     }
     for (std::size_t i = 0; i < info.custom_textures.size(); ++i) {
         const auto &custom = info.custom_textures[i];
+        if (!custom.texture &&
+            custom.dimension !=
+                SurfaceTextureDimension::two_d) {
+            throw std::runtime_error(
+                "material texture '" + custom.name +
+                "' declares dimension " +
+                std::string{surfaceTextureDimensionName(
+                    custom.dimension)} +
+                " and requires a matching resolved texture; "
+                "the 2d semantic dummy is not compatible");
+        }
         const auto texture = custom.texture.value_or(
             GET_MODULE(StandardMaterialResource).defaultTexture(custom.missing_default));
         try {
+            const auto &resource =
+                textures.get(texture);
+            const auto &runtime_capabilities =
+                GET_MODULE(VulkanManageCore)
+                    .getRuntimeCapabilities();
+            const auto limits =
+                GET_MODULE(VulkanManageCore)
+                    .getPhysDevice()
+                    .getProperties()
+                    .limits;
+            const auto resolved_sampler =
+                resolveMaterialSampler(
+                    custom.sampler,
+                    MaterialSamplerCapabilities{
+                        .comparison_sampling =
+                            supportsDepthComparisonSampling(
+                                resource.image.format),
+                        .sampler_anisotropy =
+                            runtime_capabilities
+                                .sampler_anisotropy,
+                        .max_sampler_anisotropy =
+                            limits.maxSamplerAnisotropy,
+                    },
+                    "material texture '" + custom.name +
+                        "'");
+            if (resolved_sampler.resolution != "exact") {
+                LOG_WARNING(
+                    logger,
+                    "Material texture '{}' sampler resolved with "
+                    "reason '{}': requested anisotropy={}, "
+                    "device max={}",
+                    custom.name,
+                    resolved_sampler.resolution,
+                    custom.sampler.anisotropy,
+                    limits.maxSamplerAnisotropy);
+            }
+            const auto custom_sampler =
+                materialTextureSampler(resolved_sampler);
             const auto binding = materialCustomTextureFirstBinding + static_cast<std::uint32_t>(
                 i * (split_custom_samplers ? 2 : 1));
-            setImageInfo(binding, texture, linear_sampler.get(),
-                         custom.role == SurfaceTextureRole::color);
+            setImageInfo(
+                binding, texture, custom_sampler,
+                custom.role == SurfaceTextureRole::color,
+                custom.dimension, resolved_sampler);
+            custom_sampler_resolutions.emplace_back(
+                custom.name, resolved_sampler);
             if (split_custom_samplers) {
                 texture_bindings.back().descriptor_type = vk::DescriptorType::eSampledImage;
                 image_infos[binding + 1] = image_infos[binding];
                 texture_bindings.push_back({texture, binding + 1,
                                             vk::DescriptorType::eSampler,
-                                            linear_sampler.get(),
-                                            custom.role == SurfaceTextureRole::color});
+                                            custom_sampler,
+                                            custom.role == SurfaceTextureRole::color,
+                                            custom.dimension,
+                                            resolved_sampler});
             }
         } catch (const std::exception &error) {
             throw std::runtime_error("material texture '" + custom.name + "': " + error.what());
@@ -1079,6 +1535,8 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         .occlusion_strength = info.occlusion_strength,
         .vat = info.vat,
         .texture_bindings = std::move(texture_bindings),
+        .custom_sampler_resolutions =
+            std::move(custom_sampler_resolutions),
         .custom_values_layout = info.custom_values_layout,
         .custom_values = info.custom_values,
         .descriptor_revision = 0,
@@ -1501,29 +1959,64 @@ std::function<void()> MaterialContainer::prepareSurfaceMaterialReload(
 
 bool MaterialContainer::textureShapeMatches(GlobalTextureId texture,
                                             const LoadedImage &image) const {
-    const auto &live = textures.get(texture).image;
-    return live.extent == vk::Extent3D{image.width, image.height, 1} &&
+    const auto &resource = textures.get(texture);
+    const auto &live = resource.image;
+    return resource.dimension ==
+               surfaceTextureDimension(image.dimension) &&
+           live.extent ==
+               vk::Extent3D{image.width, image.height,
+                            image.depth} &&
+           live.array_layers == image.array_layers &&
            live.format == vkFormatForLoaded(image.format) &&
            live.mip_levels == image.mipLevels();
 }
 
 void MaterialContainer::validateTextureReload(GlobalTextureId texture,
                                               const LoadedImage &image) const {
+    const auto &vkcore = GET_MODULE(VulkanManageCore);
+    validateLoadedTextureShape(
+        image, "reload candidate",
+        vkcore.getPhysDevice().getProperties().limits);
+    const auto candidate_dimension =
+        surfaceTextureDimension(image.dimension);
     const bool has_srgb_view = image.format == ImagePixelFormat::Rgba8Unorm ||
                                image.format == ImagePixelFormat::Rgba8Srgb ||
                                image.format == ImagePixelFormat::Bc7Unorm ||
                                image.format == ImagePixelFormat::Bc7Srgb;
+    const auto candidate_format =
+        vkFormatForLoaded(image.format);
     const auto reverse = texture_materials.find(texture);
     if (reverse == texture_materials.end()) return;
     for (const auto material_id : reverse->second) {
         const auto &material = materials.get(material_id);
-        if (!has_srgb_view && std::any_of(material.texture_bindings.begin(),
-                                         material.texture_bindings.end(),
-                                         [texture](const auto &binding) {
-                                             return binding.texture == texture && binding.srgb;
-                                         })) {
-            throw std::runtime_error(
-                "reloaded color texture format does not provide an SRGB view");
+        for (const auto &binding :
+             material.texture_bindings) {
+            if (binding.texture != texture) continue;
+            if (binding.expected_dimension !=
+                candidate_dimension) {
+                throw std::runtime_error(
+                    "reloaded texture dimension " +
+                    std::string{surfaceTextureDimensionName(
+                        candidate_dimension)} +
+                    " does not match material declaration " +
+                    std::string{surfaceTextureDimensionName(
+                        binding.expected_dimension)});
+            }
+            if (!has_srgb_view && binding.srgb) {
+                throw std::runtime_error(
+                    "reloaded color texture format does not "
+                    "provide an SRGB view");
+            }
+            if (binding.sampler_resolution &&
+                binding.sampler_resolution->compare !=
+                    SurfaceTextureCompare::none &&
+                !supportsDepthComparisonSampling(
+                    candidate_format)) {
+                throw std::runtime_error(
+                    "reloaded texture format is not a depth "
+                    "format required by "
+                    "its material sampler");
+            }
         }
     }
 }
@@ -1531,7 +2024,9 @@ void MaterialContainer::validateTextureReload(GlobalTextureId texture,
 void MaterialContainer::uploadTextureInPlace(GlobalTextureId texture,
                                              const LoadedImage &image) const {
     if (!textureShapeMatches(texture, image)) {
-        throw std::runtime_error("in-place texture upload requires identical extent/format/mips");
+        throw std::runtime_error(
+            "in-place texture upload requires identical "
+            "dimension/extent/layers/format/mips");
     }
     // The logical image handle must stay unchanged, so there is no old image
     // to defer. Drain prior readers before writing the live allocation.
@@ -1542,8 +2037,14 @@ void MaterialContainer::uploadTextureInPlace(GlobalTextureId texture,
         const auto &level = image.levels[mip];
         vk::BufferImageCopy copy;
         copy.bufferOffset = level.offset;
-        copy.imageSubresource = {vk::ImageAspectFlagBits::eColor, mip, 0, 1};
-        copy.imageExtent = vk::Extent3D{level.width, level.height, 1};
+        copy.imageSubresource = {
+            vk::ImageAspectFlagBits::eColor, mip, 0,
+            image.dimension ==
+                    LoadedImageDimension::ThreeD
+                ? 1u
+                : image.array_layers};
+        copy.imageExtent = vk::Extent3D{
+            level.width, level.height, level.depth};
         regions.push_back(copy);
     }
     GET_MODULE(VulkanUtils).safeTransferMemoryToImageLevels(
@@ -1683,8 +2184,30 @@ MaterialContainer::textureViewsForTesting(GlobalTextureId texture) const {
     return {resource.linear_view.get(), resource.srgb_view.get()};
 }
 
+std::optional<ResolvedMaterialSampler>
+MaterialContainer::materialSamplerResolutionForTesting(
+    GlobalMaterialId material,
+    std::string_view texture_name) const {
+    const auto &resolutions =
+        materials.get(material)
+            .custom_sampler_resolutions;
+    const auto found = std::find_if(
+        resolutions.begin(), resolutions.end(),
+        [&](const auto &entry) {
+            return entry.first == texture_name;
+        });
+    return found == resolutions.end()
+               ? std::nullopt
+               : std::optional{found->second};
+}
+
 std::vector<uint8_t> MaterialContainer::texturePixelsForTesting(GlobalTextureId texture) const {
     const auto &resource = textures.get(texture);
+    if (resource.dimension !=
+        SurfaceTextureDimension::two_d) {
+        throw std::runtime_error(
+            "texture test readback only supports dimension 2d");
+    }
     if (resource.image.format != vk::Format::eR8G8B8A8Unorm &&
         resource.image.format != vk::Format::eR8G8B8A8Srgb) {
         throw std::runtime_error("texture test readback only supports RGBA8");

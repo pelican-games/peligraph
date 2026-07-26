@@ -14,6 +14,8 @@ enum class ReflectedImageViewDimension {
     none,
     two_d,
     two_d_array,
+    cube,
+    three_d,
     other,
 };
 

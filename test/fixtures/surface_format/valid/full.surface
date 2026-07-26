@@ -7,7 +7,7 @@
 //!   - { name: clip_plane, type: vec4, default: [0.0, 1.0, 0.0, 0.0] }
 //!   - { name: layer_count, type: int, default: 3, min: 1, max: 8 }
 //! textures:
-//!   - { name: flow_map, default: "engine://textures/flat_gray", color_space: linear, sampler: repeat }
+//!   - { name: flow_map, default: "engine://textures/flat_gray", color_space: linear, sampler: { address: repeat } }
 //! screen_inputs: [opaque_color, "opaque_depth"]
 //! capabilities: []
 

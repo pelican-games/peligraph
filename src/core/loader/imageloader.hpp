@@ -19,16 +19,28 @@ enum class ImagePixelFormat {
     Bc7Srgb,
 };
 
+enum class LoadedImageDimension {
+    TwoD,
+    Cube,
+    TwoDArray,
+    ThreeD,
+};
+
 struct LoadedImageLevel {
     size_t offset = 0;
     size_t size = 0;
     uint32_t width = 0;
     uint32_t height = 0;
+    uint32_t depth = 1;
 };
 
 struct LoadedImage {
     uint32_t width = 0;
     uint32_t height = 0;
+    uint32_t depth = 1;
+    uint32_t array_layers = 1;
+    LoadedImageDimension dimension =
+        LoadedImageDimension::TwoD;
     ImagePixelFormat format = ImagePixelFormat::Rgba8Unorm;
     std::vector<std::byte> pixels;
     std::vector<LoadedImageLevel> levels;
@@ -37,6 +49,9 @@ struct LoadedImage {
     bool isBlockCompressed() const noexcept;
     uint32_t mipLevels() const noexcept { return static_cast<uint32_t>(levels.empty() ? 1 : levels.size()); }
 };
+
+std::string_view loadedImageDimensionName(
+    LoadedImageDimension dimension);
 
 LoadedImage loadImageFile(const std::filesystem::path &path);
 LoadedImage loadImageMemory(std::span<const std::byte> data, std::string_view name);

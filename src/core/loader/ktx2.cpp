@@ -37,11 +37,14 @@ template <class T> T readLe(std::span<const std::byte> data, std::size_t offset,
     return value;
 }
 
-std::uint32_t fullMipCount(std::uint32_t width, std::uint32_t height) {
+std::uint32_t fullMipCount(std::uint32_t width,
+                           std::uint32_t height,
+                           std::uint32_t depth) {
     std::uint32_t count = 1;
-    while (width > 1 || height > 1) {
+    while (width > 1 || height > 1 || depth > 1) {
         width = std::max(1u, width / 2);
         height = std::max(1u, height / 2);
+        depth = std::max(1u, depth / 2);
         ++count;
     }
     return count;
@@ -67,9 +70,80 @@ FormatInfo formatInfo(std::uint32_t vk_format, std::string_view name) {
     }
 }
 
-std::uint64_t expectedLevelSize(const FormatInfo &format, std::uint32_t width, std::uint32_t height) {
-    if (!format.block_compressed) return std::uint64_t{width} * height * 4;
-    return std::uint64_t{std::max(1u, (width + 3) / 4)} * std::max(1u, (height + 3) / 4) * 16;
+std::uint64_t checkedMultiply(std::uint64_t left,
+                              std::uint64_t right,
+                              std::string_view name) {
+    if (right != 0 &&
+        left > std::numeric_limits<std::uint64_t>::max() /
+                   right) {
+        invalid(name, "mip level byte size overflows uint64");
+    }
+    return left * right;
+}
+
+std::uint64_t expectedLevelSize(
+    const FormatInfo &format, std::uint32_t width,
+    std::uint32_t height, std::uint32_t depth,
+    std::uint32_t array_layers, std::string_view name) {
+    auto size = format.block_compressed
+                    ? checkedMultiply(
+                          checkedMultiply(
+                              std::max(1u, (width + 3) / 4),
+                              std::max(1u, (height + 3) / 4),
+                              name),
+                          16, name)
+                    : checkedMultiply(
+                          checkedMultiply(width, height, name),
+                          4, name);
+    size = checkedMultiply(size, depth, name);
+    return checkedMultiply(size, array_layers, name);
+}
+
+struct TextureShape {
+    Ktx2Dimension dimension = Ktx2Dimension::TwoD;
+    std::uint32_t depth = 1;
+    std::uint32_t array_layers = 1;
+};
+
+TextureShape textureShape(
+    std::uint32_t width, std::uint32_t height,
+    std::uint32_t depth, std::uint32_t layer_count,
+    std::uint32_t face_count, std::string_view name) {
+    if (width == 0 || height == 0) {
+        invalid(name, "width and height must be non-zero");
+    }
+    if (face_count != 1 && face_count != 6) {
+        invalid(name, "faceCount must be 1 or 6");
+    }
+    if (depth != 0) {
+        if (face_count != 1) {
+            invalid(name,
+                    "3D textures cannot contain cubemap faces");
+        }
+        if (layer_count != 0) {
+            unsupported(name,
+                        "3D array textures are outside the "
+                        "WP209a public dimension set");
+        }
+        return {Ktx2Dimension::ThreeD, depth, 1};
+    }
+    if (face_count == 6) {
+        if (layer_count != 0) {
+            unsupported(name,
+                        "cubemap arrays are outside the WP209a "
+                        "public dimension set");
+        }
+        if (width != height) {
+            invalid(name,
+                    "cubemap width and height must match");
+        }
+        return {Ktx2Dimension::Cube, 1, 6};
+    }
+    if (layer_count != 0) {
+        return {Ktx2Dimension::TwoDArray, 1,
+                layer_count};
+    }
+    return {Ktx2Dimension::TwoD, 1, 1};
 }
 
 void validateDfd(std::span<const std::byte> data, std::uint32_t offset, std::uint32_t length,
@@ -134,10 +208,9 @@ Ktx2Image parseKtx2(std::span<const std::byte> data, std::string_view name) {
 
     const auto format = formatInfo(vk_format, name);
     if (type_size != 1) unsupported(name, "typeSize must be 1 for the supported formats");
-    if (width == 0 || height == 0) invalid(name, "2D width and height must be non-zero");
-    if (depth != 0) unsupported(name, "3D textures are not supported");
-    if (layer_count != 0) unsupported(name, "array textures are not supported");
-    if (face_count != 1) unsupported(name, "cubemaps are not supported");
+    const auto shape = textureShape(
+        width, height, depth, layer_count, face_count,
+        name);
     if (supercompression != 0)
         unsupported(name, "supercompression scheme " + std::to_string(supercompression) +
                               " is not supported (Basis/zstd are future extensions)");
@@ -146,7 +219,8 @@ Ktx2Image parseKtx2(std::span<const std::byte> data, std::string_view name) {
     if ((kvd_offset == 0) != (kvd_length == 0) ||
         (kvd_length != 0 && (kvd_offset > data.size() || kvd_length > data.size() - kvd_offset)))
         invalid(name, "key/value data range is invalid");
-    const auto expected_mips = fullMipCount(width, height);
+    const auto expected_mips = fullMipCount(
+        width, height, shape.depth);
     if (level_count != expected_mips)
         invalid(name, "incomplete mip chain: expected " + std::to_string(expected_mips) +
                           " levels for " + std::to_string(width) + "x" + std::to_string(height) +
@@ -161,6 +235,9 @@ Ktx2Image parseKtx2(std::span<const std::byte> data, std::string_view name) {
     Ktx2Image result;
     result.width = width;
     result.height = height;
+    result.depth = shape.depth;
+    result.array_layers = shape.array_layers;
+    result.dimension = shape.dimension;
     result.format = format.format;
     result.levels.reserve(level_count);
     const auto protected_end = std::max<std::uint64_t>(
@@ -171,12 +248,15 @@ Ktx2Image parseKtx2(std::span<const std::byte> data, std::string_view name) {
     level_ranges.reserve(level_count);
     std::uint32_t level_width = width;
     std::uint32_t level_height = height;
+    std::uint32_t level_depth = shape.depth;
     for (std::uint32_t level = 0; level < level_count; ++level) {
         const auto entry = headerSize + std::size_t{level} * levelEntrySize;
         const auto byte_offset = readLe<std::uint64_t>(data, entry, name);
         const auto byte_length = readLe<std::uint64_t>(data, entry + 8, name);
         const auto uncompressed_length = readLe<std::uint64_t>(data, entry + 16, name);
-        const auto expected = expectedLevelSize(format, level_width, level_height);
+        const auto expected = expectedLevelSize(
+            format, level_width, level_height, level_depth,
+            shape.array_layers, name);
         if (byte_length != expected || uncompressed_length != expected)
             invalid(name, "level " + std::to_string(level) + " byte length is " +
                               std::to_string(byte_length) + ", expected " + std::to_string(expected));
@@ -196,10 +276,13 @@ Ktx2Image parseKtx2(std::span<const std::byte> data, std::string_view name) {
         const auto packed_offset = result.payload.size();
         result.payload.insert(result.payload.end(), data.begin() + static_cast<std::size_t>(byte_offset),
                               data.begin() + static_cast<std::size_t>(byte_offset + byte_length));
-        result.levels.push_back({packed_offset, static_cast<std::size_t>(byte_length),
-                                 level_width, level_height});
+        result.levels.push_back(
+            {packed_offset,
+             static_cast<std::size_t>(byte_length), level_width,
+             level_height, level_depth});
         level_width = std::max(1u, level_width / 2);
         level_height = std::max(1u, level_height / 2);
+        level_depth = std::max(1u, level_depth / 2);
     }
     return result;
 }

@@ -103,8 +103,8 @@ WP206b の pass-local material variant slice を閉じた後の描画候補は�
 |---|---|---|
 | WP207a | compute Frame/Light + sampled resource port | ✅ 完了（2026-07-26、archive） |
 | WP207b | material/geometry typed frame-graph resource port | ✅ 完了（2026-07-26、archive） |
-| WP208 | lighting data contract v2 + clustered dogfood | 計画済み・WP207b依存 |
-| WP209a | static texture dimension + material sampler authoring | 計画済み |
+| WP208 | lighting data contract v2 + clustered dogfood | ✅ 完了（2026-07-26、archive） |
+| WP209a | static texture dimension + material sampler authoring | ✅ 完了（2026-07-26、archive） |
 | WP209b | RT mip/layer/subresource view | 計画済み・WP204/WP209a依存 |
 | WP210 | indirect dispatch + GPU-written draw arguments | 計画済み・WP207b依存、実 workload gate |
 | WP211 | `dist-bake` + shaderc OFF feature delivery | 並行候補・配布/Quest前必須 |
@@ -112,7 +112,7 @@ WP206b の pass-local material variant slice を閉じた後の描画候補は�
 
 完了済み WP の一覧・依存関係・本文は
 [`implementation_archive.md`](implementation_archive.md) に逐語保存する。
-(最新の全受け入れ完了: WP207b、2026-07-26。WP203c はローカル実装・自動テスト済みだが、
+(最新の全受け入れ完了: WP209a、2026-07-26。WP203c はローカル実装・自動テスト済みだが、
 Simulator/物理 HMD と対象 GPU の実測を残すため active のまま。)
 
 ## 2. WP 詳細
@@ -384,7 +384,7 @@ XR2b最終gateを満たす。
 
 正本:
 
-- [`render_mechanism_coverage.md`](render_mechanism_coverage.md) v7
+- [`render_mechanism_coverage.md`](render_mechanism_coverage.md) v8
 - [`render_authoring_ergonomics.md`](render_authoring_ergonomics.md) v6
 - [`design_reviews/2026-07-26_render_capability_authoring_audit_codex.md`](design_reviews/2026-07-26_render_capability_authoring_audit_codex.md)
 
@@ -405,50 +405,10 @@ WP207a/WP207bは2026-07-26に完了した。実装内容と受け入れ結果は
 [`design_reviews/2026-07-26_wp207b_material_resource_ports.md`](design_reviews/2026-07-26_wp207b_material_resource_ports.md)
 を参照する。
 
-#### WP208: lighting data contract v2 + clustered dogfood
-
-**目的**: 8 directional + 16 point + 8 spotの固定UBOをscalableなtyped inventoryへ移し、
-forward/deferredが同じlight selection結果を消費する。
-
-**実装範囲**:
-
-1. standard directional/point/spotをpresetとして維持しつつ、device-limitまで拡張できる
-   storage inventoryへloweringする。
-2. area/cookie/IES等の追加dataをfeature-owned typed buffer/resource indexで拡張できる形にする。
-3. rasterまたはcompute clustered/tiled light selectionをproject-owned featureとしてdogfoodする。
-4. light algorithm、tile size、list encodingをengine固定しない。
-5. desktop/tile target plan、XR view policy、overflow/fallback理由をplanへ残す。
-
-**受け入れ条件**:
-
-- 32灯を超えるfixtureでCPU light inventoryとGPU selection/resultが一致
-- forward/deferred consumerが同じselection contractを読む
-- cluster feature offで従来small-light pathの画素/CPU costを維持
-- overflow、unsupported format/storage、tile-GPU fallbackが名前入り診断
-- GPU timing/VRAMを記録し、採用判断をレポート化
-
-依存: WP207b。見積: 大。
-
-#### WP209a: static texture dimension + material sampler authoring
-
-**目的**: project-owned KTX2の2D array/cubemap/3Dとmaterial sampler stateをpublic
-surface contractへ追加する。
-
-**実装範囲**:
-
-1. texture dimension、array layers/faces/mipsをloader metadataとgenerated accessorへ運ぶ。
-2. filter/address/compare/anisotropyをtyped sampler宣言にし、device capabilityで解決する。
-3. 既定値は現行2D/linear behaviorを維持し、未使用dimensionのdescriptor costを増やさない。
-4. fullscreen input samplingの既存filter/address実装を壊さない。
-
-**受け入れ条件**:
-
-- 2D/cube/array/3D KTX2 positive fixtureとdimension mismatch reject
-- 2D strip IBLの既存経路不変 + native cubemap dogfood
-- compare/anisotropy unsupported deviceの理由付きfallback/reject
-- generated accessorからraw binding/dimensionを隠す
-
-依存: なし。見積: 中〜大。
+WP208/WP209a は2026-07-26に完了した。実装内容と受け入れ結果は
+[`implementation_archive.md`](implementation_archive.md)および
+[`design_reviews/2026-07-26_wp209a_static_texture_sampler.md`](design_reviews/2026-07-26_wp209a_static_texture_sampler.md)
+を参照する。
 
 #### WP209b: RT mip/layer/subresource view
 

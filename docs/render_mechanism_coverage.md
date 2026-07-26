@@ -1,14 +1,12 @@
-# 描画機構カバレッジ分析: 何がユーザー空間で書けて、何が書けないか(v7)
+# 描画機構カバレッジ分析: 何がユーザー空間で書けて、何が書けないか(v8)
 
 対象読者: エンジン担当、および feature / material / shader をユーザー空間で書く人。
 
-ステータス: **v7(2026-07-26)**。84 行の技法候補を現行コードとテストへ再照合し、
-v2 の件数不整合、G2/G13、material screen input、sampler/texture dimension、
-raster tiled lighting の誤判定を訂正した。v4のWP206a stable tag selectionに続き、
-v5ではWP206bのpass-local named variantとinverted-hull dogfood、v6ではWP207aの
-compute Frame/Lightとfullscreen/compute named image port、v7ではWP207bのmaterial
-vertex/fragment typed buffer/image consumerとcompute→vertex displacement dogfoodを反映した。
-instance/draw-owned layerとopaque/transparent phaseを跨ぐvariant queueは後続である。監査記録は
+ステータス: **v8(2026-07-26)**。84 行の技法候補を現行コードとテストへ再照合し、
+WP207bのmaterial typed resource consumer、WP208のscalable lighting/cluster selection、
+WP209aのstatic texture dimension/material sampler authoringまで反映した。
+instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、runtime
+subresource viewは後続である。監査記録は
 [`design_reviews/2026-07-26_render_capability_authoring_audit_codex.md`](design_reviews/2026-07-26_render_capability_authoring_audit_codex.md)。
 
 ## 0. 判定規則
@@ -52,8 +50,8 @@ instance/draw-owned layerとopaque/transparent phaseを跨ぐvariant queueは後
 | 項目 | 現在の境界 |
 |---|---|
 | graphics buffer input | fullscreen はraw storage buffer、material/geometryはtyped readonly storage bufferに対応。material write/atomicは未公開 |
-| sampler | fullscreen/compute named image port は filter/address 指定可。material custom texture は固定 sampler、compare/anisotropy 未公開(G12) |
-| texture dimension | XR 内部 array は存在。project authored static cube/array/3D と RT mip/layer/subresource view が未公開(G4/G10) |
+| sampler | fullscreen/compute named image port は filter/address 指定可。material custom texture は filter/mip-filter/address/compare/anisotropy を typed 宣言できる。compare の実 binding は compatible depth image provider待ち |
+| texture dimension | project authored KTX2 の 2D/cube/2D-array/3D は公開済み。RT mip/layer/subresource view は未公開(G10) |
 | render state | surface単位とpass-local named variantに対応済み。同一opaque/transparent phase内で別state/surfaceを使える。phase跨ぎはvariant-aware draw queue待ち |
 | pass kind | implementation provider は差し替え可。authoring kind と material contract は v1 閉集合(G15) |
 | object selection | material単位は安定tag/filter対応済み。instance/draw-owned tag/layerは未公開(G14)。`material_range`はlegacy draw-call ordinal |
@@ -82,14 +80,14 @@ instance/draw-owned layerとopaque/transparent phaseを跨ぐvariant queueは後
 
 | # | 技法 | 判定 | 根拠・制約 |
 |---|---|---|---|
-| B1 | tiled/clustered lighting(raster) | **△** | fullscreen raster 自体は可。標準 light 32灯、format/consumer の実 dogfood 未完(G5) |
-| B2 | tiled/clustered lighting(compute) | **△** | compute→material typed consumerは実装済み。scalable light inventoryとclustered dogfoodが不足(G5) |
+| B1 | tiled/clustered lighting(raster) | **○** | scalable inventoryとproject-owned clustered selectionをhybrid consumerで実GPU dogfood済み(WP208) |
+| B2 | tiled/clustered lighting(compute) | **○** | compute selection、typed buffer、32灯超のGPU結果を実証済み(WP208) |
 | B3 | area light(LTC) | **△** | LUT 評価は可。light schema に shape/orientation/size が無い(G5) |
 | B4 | light cookie / IES | **△** | texture は可。lightごとのresource indexが無い(G5/G9) |
 | B5 | custom non-shadow attenuation | **○** | `lighting` hook |
 | B6 | auto exposure / histogram | **△** | downsample は可。storage image/buffer histogram は構成可能だが実 feature 未検証 |
 | B7 | prebaked light probe(SH) | **△** | texture/params 持込み可。placement/bake は外部 |
-| B8 | dynamic GI(DDGI / SSGI) | **SSGI △ / DDGI ✕** | SSGI は fullscreen 候補。DDGIのcompute image inputは解消したが、3D/static arrayとprobe inventoryが不足(G4/G5) |
+| B8 | dynamic GI(DDGI / SSGI) | **SSGI △ / DDGI ✕** | compute image inputとstatic 3D/arrayは解消したが、probe inventory/runtime subresourceが不足(G5/G10) |
 | B9 | lightmap | **△** | texture は可。標準 geometry の第2 UV 契約を dogfood する必要あり |
 
 ### C. shadow
@@ -98,7 +96,7 @@ instance/draw-owned layerとopaque/transparent phaseを跨ぐvariant queueは後
 |---|---|---|---|
 | C1 | B-layer material shadow reception | **✕** | `pelican_shadow()` が 1.0(G6a) |
 | C2 | cascaded shadow map | **✕** | public shadow contract と任意 view family が無い(G6a/G6b) |
-| C3 | point/spot shadow | **✕** | shadow contract、view、cube/array、light schema(G4/G5/G6a/G6b) |
+| C3 | point/spot shadow | **✕** | static cube/arrayは公開済み。shadow relation、任意view、light schemaが不足(G5/G6a/G6b) |
 | C4 | PCSS / PCF | **✕** | shadow resource が未公開(G6a)。manual compare は可能なので comparison sampler 自体は必須条件ではない |
 | C5 | screen-space contact shadow | **△** | fullscreen depth ray march で構成可能。実 feature/golden 未作成 |
 | C6 | shadow cache / virtual shadow map | **✕** | view、mip/layer、residency(G6b/G8/G10) |
@@ -108,7 +106,7 @@ instance/draw-owned layerとopaque/transparent phaseを跨ぐvariant queueは後
 
 | # | 技法 | 判定 | 根拠・制約 |
 |---|---|---|---|
-| D1 | prebaked IBL | **○** | 2D octahedral/strip texture で実装可能。native cubemap は G4 |
+| D1 | prebaked IBL | **○** | 2D octahedral/stripに加えてnative cubemapをmaterialから利用可能(WP209a) |
 | D2 | runtime prefilter / dynamic environment | **✕** | capture view と authored mip/subresource view が無い(G6b/G10) |
 | D3 | parallax-corrected reflection probe | **△** | baked texture + hook。probe selection/data は material単位または G5 |
 | D4 | post SSR | **△** | scene color + depth fullscreen で構成可能。実 feature 未作成 |
@@ -122,9 +120,9 @@ instance/draw-owned layerとopaque/transparent phaseを跨ぐvariant queueは後
 |---|---|---|---|
 | E1 | analytic height fog | **○** | fullscreen + depth |
 | E2 | radial god ray | **○** | fullscreen chain |
-| E3 | froxel volumetric fog | **△** | 2D atlasなら可能。native 3D image path は G4/G10 |
+| E3 | froxel volumetric fog | **△** | static 3D textureは可能。runtime 3D target/subresource viewはG10 |
 | E4 | ray-marched cloud | **△** | fullscreen 可。3D noise は 2D atlas/外部 bake |
-| E5 | physical atmosphere(Bruneton) | **△** | LUT 持込み可。compute image inputは解消したがruntime 3D LUTはG4 |
+| E5 | physical atmosphere(Bruneton) | **△** | static 3D LUT持込みとcompute image inputは可能。runtime生成3D LUTはG10 |
 
 ### F. post process
 
@@ -137,7 +135,7 @@ instance/draw-owned layerとopaque/transparent phaseを跨ぐvariant queueは後
 | F5 | GTAO + bent normal | **△** | AO は可。G-buffer/lighting consumer の追加が必要 |
 | F6 | depth of field | **△** | fullscreen/downsample で構成可能。実 feature 未作成 |
 | F7 | motion blur | **△** | velocity は実装済み。blur feature 未作成 |
-| F8 | LUT color grading | **○** | 2D strip LUT で可能。3D LUT は G4 |
+| F8 | LUT color grading | **○** | 2D stripとstatic 3D LUTを利用可能(WP209a) |
 | F9 | chromatic aberration/vignette/grain/flare | **○** | fullscreen |
 | F10 | sharpen(CAS class) | **○** | fullscreen |
 | F11 | depth/normal post outline | **△** | fullscreen で構成可能。標準 dogfood 未作成 |
@@ -208,7 +206,7 @@ G 番号は v3 で意味を修正した。v2 の G2/G13 をそのまま参照し
 | **G1（解消済み、WP207a）** | compute pipelineへFrame/Light setとnamed sampled/storage image portを実装。fullscreenも同じgenerated interfaceを使う | clustered compute、DDGI、runtime LUTの入力境界 |
 | **G2（解消済み、WP207b）** | material vertex/fragmentへtyped readonly buffer/sampled image port、element/stage schema、generated accessor、世代固定descriptorを実装 | FFT ocean、GPU simulation consumer。PPLL write/storage imageは別拡張 |
 | **G3** | authored dispatchが定数、indirect dispatchが無い | GPU culling、adaptive work |
-| **G4** | static cube/array/3D texture dimensionをprojectから宣言できない | native IBL、3D noise/LUT |
+| **G4（解消済み、WP209a）** | project-owned KTX2の2D/cube/2D-array/3D、generated accessor、reflection/runtime view照合を実装 | native IBL、3D noise/LUT |
 | **G5** | light/custom scene data schemaがdir/point/spotと固定上限中心 | many lights、area/cookie/IES、capsule |
 | **G6a** | public shadow resource/light relationが無く`pelican_shadow()`がstub | material shadow、PCF/PCSS |
 | **G6b** | passへ任意のcamera/view familyを供給できない | CSM、point shadow、planar reflection |
@@ -217,7 +215,7 @@ G 番号は v3 で意味を修正した。v2 の G2/G13 をそのまま参照し
 | **G9** | bindless/descriptor indexing contractが無い | large resource tables、RT/virtualized workload |
 | **G10** | authored RT mip/layer/subresource viewが無い | depth pyramid、runtime IBL、froxel |
 | **G11** | VRS/fragment density/foveation backend contractが無い | XR foveation |
-| **G12** | material samplerのaddress/filter/compare/anisotropy authoringが無い | hardware PCF、special filtering |
+| **G12（authoring解消済み、WP209a）** | material samplerのfilter/mip-filter/address/compare/anisotropyを実装。hardware compareの実利用はcompatible depth image provider待ち | hardware PCF、special filtering |
 | **G13（解消済み、WP206b）** | pass-local named surface/render-state variantを実装。同一phase routeに対応し、opaque/transparent phase跨ぎだけをvariant-aware draw queueへ残す | duplicate-free inverted hull、special overlay |
 | **G14** | material-owned stable tag/filterは実装済みだが、instance/draw-owned tag/layerが未公開 | 同じmaterialを共有するinstanceの個別SSS/outline/decal/reflection |
 | **G15** | material/geometry pass contractがv1閉集合 | custom geometry stage/output |
@@ -241,8 +239,9 @@ additive/front/depth surface state、TAA、MSAA、upscale resolution contractで
 1. public directional shadow reception
 2. ~~実装済みtag選択 + pass-local variantによる inverted-hull outline~~（WP206bで実GPU dogfood済み）
 3. compute result → material vertex displacement
-4. scalable light inventoryを使う raster/compute clustered lighting
-5. authored mip/layer viewを使う depth pyramid
+4. ~~scalable light inventoryを使う raster/compute clustered lighting~~（WP208で実GPU dogfood済み）
+5. ~~static native cubemapを使うmaterial sampling~~（WP209aで実GPU dogfood済み）
+6. authored mip/layer viewを使う depth pyramid
 
 ## 5. 実装順
 
@@ -256,8 +255,8 @@ additive/front/depth surface state、TAA、MSAA、upscale resolution contractで
 2. G6a public shadow contract
 3. material-owned G14はWP206a、G13の同一phase variantはWP206bで完了。必要なdogfoodでG15、instance/draw-owned G14とphase跨ぎqueueは実需要時に拡張
 4. G1はWP207a、G2はWP207bで完了
-5. 次はG5 lighting data v2 + clustered dogfood
-6. G4/G10/G12 texture dimension/subresource/sampler
+5. G5 lighting data v2 + clustered dogfoodはWP208で完了
+6. G4とG12 authoringはWP209aで完了。次はG10をWP209bのdepth pyramidで閉じる
 7. G3/G8 GPU-driven execution。G9 bindlessは実測需要時
 8. delivery laneとして`dist-bake`
 9. G11 VRSはQuest device gate後

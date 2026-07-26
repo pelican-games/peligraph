@@ -253,6 +253,163 @@ void pelican_surface_v1(in PelicanSurfaceInputV1 input_data,
 #endif
 }
 
+TEST_CASE("surface texture dimensions compile to matching GLSL and SPIR-V reflection",
+          "[surface-compiler][texture][wp209a]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    ScopedSpvLinkEnvironment environment{nullptr};
+    constexpr std::string_view source = R"surface(//! pelican.surface v1
+//! language: glsl
+//! textures:
+//!   - { name: color_map, default: "project://color.ktx2", color_space: linear, dimension: 2d }
+//!   - { name: environment, default: "project://environment.ktx2", color_space: linear, dimension: cube, sampler: { address: clamp_to_edge } }
+//!   - { name: layers, default: "project://layers.ktx2", color_space: linear, dimension: 2d_array }
+//!   - { name: volume, default: "project://volume.ktx2", color_space: linear, dimension: 3d }
+
+void pelican_surface_v1(in PelicanSurfaceInputV1 input_data,
+                        inout PelicanSurfaceV1 surface) {
+    surface.base_color *= pelican_sample_color_map(input_data.uv);
+    surface.emissive += pelican_sample_environment(vec3(1.0, 0.0, 0.0)).rgb;
+    surface.emissive += pelican_sample_layers(vec3(input_data.uv, 0.0)).rgb;
+    surface.emissive += pelican_sample_volume(vec3(input_data.uv, 0.5)).rgb;
+}
+)surface";
+    const auto surface = parseSurfaceFormat(
+        source, "texture_dimensions.surface");
+    const auto composition = composeSurfaceShaders(
+        surface, "texture_dimensions.surface",
+        SurfacePass::forward);
+    const auto params = std::find_if(
+        composition.virtual_includes.begin(),
+        composition.virtual_includes.end(),
+        [](const auto &include) {
+            return include.first ==
+                   "__pelican_surface_params.glsl";
+        });
+    REQUIRE(params !=
+            composition.virtual_includes.end());
+    REQUIRE(params->second.find(
+                "uniform sampler2D pelican_texture_color_map") !=
+            std::string::npos);
+    REQUIRE(params->second.find(
+                "uniform samplerCube pelican_texture_environment") !=
+            std::string::npos);
+    REQUIRE(params->second.find(
+                "uniform sampler2DArray pelican_texture_layers") !=
+            std::string::npos);
+    REQUIRE(params->second.find(
+                "uniform sampler3D pelican_texture_volume") !=
+            std::string::npos);
+
+    ShaderCompiler compiler;
+    const auto compiled = compileSurfaceShaders(
+        compiler, surface,
+        "texture_dimensions.surface",
+        SurfacePass::forward);
+    requireCompiled(compiled);
+    const auto reflection = merge(std::array{
+        reflect(compiled.vertex.spirv),
+        reflect(compiled.fragment.spirv),
+    });
+    const auto require_image =
+        [&](std::uint32_t binding,
+            ReflectedImageViewDimension dimension) {
+            const auto found = std::find_if(
+                reflection.bindings.begin(),
+                reflection.bindings.end(),
+                [&](const auto &reflected) {
+                    return reflected.set == 2 &&
+                           reflected.binding == binding;
+                });
+            REQUIRE(found != reflection.bindings.end());
+            REQUIRE(found->type ==
+                    vk::DescriptorType::
+                        eCombinedImageSampler);
+            REQUIRE(found->image_view_dimension ==
+                    dimension);
+        };
+    require_image(
+        7, ReflectedImageViewDimension::two_d);
+    require_image(
+        8, ReflectedImageViewDimension::cube);
+    require_image(
+        9,
+        ReflectedImageViewDimension::two_d_array);
+    require_image(
+        10, ReflectedImageViewDimension::three_d);
+#if PELICAN_WITH_SPIRV_LINK
+    {
+        ScopedSpvLinkEnvironment linked_environment{
+            "experimental"};
+        const auto linked = compileSurfaceShaders(
+            compiler, surface,
+            "texture_dimensions.surface",
+            SurfacePass::forward);
+        requireCompiled(linked);
+        REQUIRE(linked.experimental_spv_link);
+    }
+#endif
+#endif
+}
+
+TEST_CASE("comparison texture accessors use shadow sampler signatures",
+          "[surface-compiler][sampler][wp209a]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    ScopedSpvLinkEnvironment environment{nullptr};
+    constexpr std::string_view source = R"surface(//! pelican.surface v1
+//! language: glsl
+//! textures:
+//!   - { name: shadow, default: "project://shadow.ktx2", color_space: linear, dimension: 2d_array, sampler: { compare: less_equal, address: clamp_to_edge } }
+
+void pelican_surface_v1(in PelicanSurfaceInputV1 input_data,
+                        inout PelicanSurfaceV1 surface) {
+    float visible = pelican_sample_shadow(
+        vec3(input_data.uv, 0.0), 0.5);
+    surface.base_color.rgb *= visible;
+}
+)surface";
+    const auto surface = parseSurfaceFormat(
+        source, "comparison_texture.surface");
+    const auto composition = composeSurfaceShaders(
+        surface, "comparison_texture.surface",
+        SurfacePass::forward);
+    const auto params = std::find_if(
+        composition.virtual_includes.begin(),
+        composition.virtual_includes.end(),
+        [](const auto &include) {
+            return include.first ==
+                   "__pelican_surface_params.glsl";
+        });
+    REQUIRE(params !=
+            composition.virtual_includes.end());
+    REQUIRE(params->second.find(
+                "uniform sampler2DArrayShadow "
+                "pelican_texture_shadow") !=
+            std::string::npos);
+    REQUIRE(params->second.find(
+                "float pelican_sample_shadow("
+                "vec3 coordinates, float reference)") !=
+            std::string::npos);
+
+    ShaderCompiler compiler;
+    requireCompiled(compileSurfaceShaders(
+        compiler, surface,
+        "comparison_texture.surface",
+        SurfacePass::forward));
+#if PELICAN_WITH_SPIRV_LINK
+    {
+        ScopedSpvLinkEnvironment linked_environment{
+            "experimental"};
+        const auto linked = compileSurfaceShaders(
+            compiler, surface,
+            "comparison_texture.surface",
+            SurfacePass::forward);
+        requireCompiled(linked);
+        REQUIRE(linked.experimental_spv_link);
+    }
+#endif
+#endif
+}
+
 TEST_CASE(
     "clustered lighting adds typed buffers only to forward surface variants",
     "[surface-compiler][resource-port][clustered][wp208]") {

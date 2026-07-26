@@ -8,6 +8,7 @@ namespace Pelican {
 struct ImageWrapper {
     vk::Extent3D extent;
     vk::Format format;
+    vk::ImageType image_type = vk::ImageType::e2D;
     uint32_t mip_levels = 1;
     uint32_t array_layers = 1;
     // Images are destroyed before their allocation. The shared owner also

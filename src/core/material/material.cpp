@@ -25,6 +25,8 @@ void applyLoweredMaterial(MaterialInfo &destination, const LoweredMaterial &lowe
             std::nullopt,
             texture.role,
             texture.missing_default,
+            texture.dimension,
+            texture.sampler,
         });
     }
 }

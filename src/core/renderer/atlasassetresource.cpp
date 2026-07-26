@@ -65,6 +65,13 @@ ImageWrapper uploadRgba8Srgb(vk::Extent3D extent, const void *pixels, std::size_
 }
 
 ImageWrapper uploadAtlasImage(const LoadedImage &loaded, std::string_view name) {
+    if (loaded.dimension != LoadedImageDimension::TwoD) {
+        throw std::runtime_error(
+            "Atlas texture '" + std::string{name} +
+            "' requires dimension 2d, found " +
+            std::string{
+                loadedImageDimensionName(loaded.dimension)});
+    }
     vk::Format format;
     switch (loaded.format) {
     case ImagePixelFormat::Rgba8Unorm:
@@ -142,7 +149,9 @@ std::uint16_t AtlasAssetResource::registerPage(const AtlasPageSource &source) {
     const auto source_name = source.embedded_resource.empty()
                                  ? source.image_path.string()
                                  : "engine://" + source.embedded_resource;
-    if (!supported_color || loaded.width != static_cast<std::uint32_t>(source.size.width) ||
+    if (!supported_color ||
+        loaded.dimension != LoadedImageDimension::TwoD ||
+        loaded.width != static_cast<std::uint32_t>(source.size.width) ||
         loaded.height != static_cast<std::uint32_t>(source.size.height))
         throw std::runtime_error("atlas page image does not match declared RGBA8/BC7 size: " + source_name);
     const auto id = static_cast<std::uint16_t>(pages.size());

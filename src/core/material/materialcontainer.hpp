@@ -21,6 +21,7 @@
 #include <optional>
 #include <span>
 #include <string_view>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -73,6 +74,10 @@ DECLARE_MODULE(MaterialContainer) {
         ImageWrapper image;
         vk::UniqueImageView linear_view;
         vk::UniqueImageView srgb_view;
+        SurfaceTextureDimension dimension =
+            SurfaceTextureDimension::two_d;
+        vk::ImageViewType view_type =
+            vk::ImageViewType::e2D;
     };
     struct StagedMaterialDescriptor {
         GlobalMaterialId material;
@@ -91,6 +96,10 @@ DECLARE_MODULE(MaterialContainer) {
             vk::DescriptorType descriptor_type = vk::DescriptorType::eCombinedImageSampler;
             vk::Sampler sampler;
             bool srgb = false;
+            SurfaceTextureDimension expected_dimension =
+                SurfaceTextureDimension::two_d;
+            std::optional<ResolvedMaterialSampler>
+                sampler_resolution;
         };
 
         struct ScreenInputResource {
@@ -151,6 +160,9 @@ DECLARE_MODULE(MaterialContainer) {
         float occlusion_strength = 1.0f;
         std::optional<MaterialInfo::VatPlaybackInfo> vat;
         std::vector<TextureBinding> texture_bindings;
+        std::vector<std::pair<std::string,
+                              ResolvedMaterialSampler>>
+            custom_sampler_resolutions;
         Std140Layout custom_values_layout;
         std::vector<std::byte> custom_values;
         mutable std::uint64_t descriptor_revision = 0;
@@ -168,6 +180,12 @@ DECLARE_MODULE(MaterialContainer) {
                        std::unordered_set<GlobalMaterialId, GlobalMaterialId::Hash>,
                        GlobalTextureId::Hash>
         texture_materials;
+    using MaterialSamplerKey =
+        std::tuple<SurfaceTextureFilter, SurfaceTextureFilter,
+                   SurfaceTextureAddressMode,
+                   SurfaceTextureCompare, bool, float>;
+    std::map<MaterialSamplerKey, vk::UniqueSampler>
+        custom_texture_samplers;
     BufferWrapper material_buffer;
     std::unique_ptr<TextureReloadHandler> texture_reload_handler;
     std::unique_ptr<MaterialValuesReloadHandler> material_values_reload_handler;
@@ -195,6 +213,8 @@ DECLARE_MODULE(MaterialContainer) {
         const RenderTargetImageViewResolver &rt_views) const;
     vk::Sampler materialResourceSampler(
         ShaderResourcePortSampling sampling) const;
+    vk::Sampler materialTextureSampler(
+        const ResolvedMaterialSampler &sampler);
     const InternalMaterialInfo::ScreenInputDescriptor *ensureScreenInputDescriptor(
         GlobalMaterialId material, const PassDefinition &pass) const;
 
@@ -248,6 +268,18 @@ DECLARE_MODULE(MaterialContainer) {
     void updateMaterialValues(GlobalMaterialId material,
                               std::span<const std::byte> values);
     std::pair<vk::ImageView, vk::ImageView> textureViewsForTesting(GlobalTextureId texture) const;
+    SurfaceTextureDimension textureDimensionForTesting(
+        GlobalTextureId texture) const {
+        return textures.get(texture).dimension;
+    }
+    vk::ImageViewType textureViewTypeForTesting(
+        GlobalTextureId texture) const {
+        return textures.get(texture).view_type;
+    }
+    std::optional<ResolvedMaterialSampler>
+    materialSamplerResolutionForTesting(
+        GlobalMaterialId material,
+        std::string_view texture_name) const;
     std::vector<uint8_t> texturePixelsForTesting(GlobalTextureId texture) const;
     uint32_t textureMipLevelsForTesting(GlobalTextureId texture) const { return textures.get(texture).image.mip_levels; }
     size_t textureCountForTesting() const { return textures.size(); }

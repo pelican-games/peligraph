@@ -103,6 +103,117 @@ TEST_CASE("material overrides bind by name without changing declaration layout",
     REQUIRE(lowered.render_state.depth_compare == SurfaceDepthCompare::greater_equal);
 }
 
+TEST_CASE("material lowering carries texture dimension and sampler contract",
+          "[material-lowering][texture][wp209a]") {
+    const auto surface = parseSurfaceFormat(
+        "//! pelican.surface v1\n"
+        "//! language: glsl\n"
+        "//! textures:\n"
+        "//!   - { name: environment, default: "
+        "\"project://environment.ktx2\", color_space: linear, "
+        "dimension: cube, sampler: { filter: nearest, "
+        "mip_filter: nearest, address: clamp_to_edge, "
+        "anisotropy: 4 } }\n\n"
+        "void pelican_surface_v1("
+        "in PelicanSurfaceInputV1 input_data, "
+        "inout PelicanSurfaceV1 surface) {}\n",
+        "environment.surface");
+    MaterialDefinition material;
+    material.name = "sky";
+    material.surface =
+        "project://environment.surface";
+
+    const auto lowered =
+        lowerMaterial(material, surface);
+    REQUIRE(lowered.textures.size() == 1);
+    const auto &texture = lowered.textures.front();
+    REQUIRE(texture.dimension ==
+            SurfaceTextureDimension::cube);
+    REQUIRE(texture.sampler.filter ==
+            SurfaceTextureFilter::nearest);
+    REQUIRE(texture.sampler.mip_filter ==
+            SurfaceTextureFilter::nearest);
+    REQUIRE(texture.sampler.address ==
+            SurfaceTextureAddressMode::clamp_to_edge);
+    REQUIRE(texture.sampler.anisotropy ==
+            Catch::Approx(4.0f));
+}
+
+TEST_CASE("material sampler resolution is deterministic and names fallbacks",
+          "[material-lowering][sampler][wp209a]") {
+    SurfaceTextureSampler request;
+    request.filter = SurfaceTextureFilter::nearest;
+    request.mip_filter =
+        SurfaceTextureFilter::nearest;
+    request.address =
+        SurfaceTextureAddressMode::clamp_to_edge;
+    request.anisotropy = 8.0f;
+
+    const auto clamped = resolveMaterialSampler(
+        request,
+        MaterialSamplerCapabilities{
+            .comparison_sampling = true,
+            .sampler_anisotropy = true,
+            .max_sampler_anisotropy = 4.0f,
+        },
+        "material texture 'environment'");
+    REQUIRE(clamped.filter ==
+            SurfaceTextureFilter::nearest);
+    REQUIRE(clamped.mip_filter ==
+            SurfaceTextureFilter::nearest);
+    REQUIRE(clamped.address ==
+            SurfaceTextureAddressMode::clamp_to_edge);
+    REQUIRE(clamped.anisotropy_enabled);
+    REQUIRE(clamped.max_anisotropy ==
+            Catch::Approx(4.0f));
+    REQUIRE(clamped.resolution ==
+            "anisotropy_clamped_to_device_limit");
+
+    const auto disabled = resolveMaterialSampler(
+        request,
+        MaterialSamplerCapabilities{
+            .comparison_sampling = true,
+            .sampler_anisotropy = false,
+            .max_sampler_anisotropy = 1.0f,
+        },
+        "material texture 'environment'");
+    REQUIRE_FALSE(disabled.anisotropy_enabled);
+    REQUIRE(disabled.max_anisotropy ==
+            Catch::Approx(1.0f));
+    REQUIRE(disabled.resolution ==
+            "anisotropy_disabled_feature_unavailable");
+
+    request.anisotropy_fallback =
+        SurfaceTextureAnisotropyFallback::reject;
+    REQUIRE_THROWS_WITH(
+        resolveMaterialSampler(
+            request,
+            MaterialSamplerCapabilities{
+                .comparison_sampling = true,
+                .sampler_anisotropy = false,
+                .max_sampler_anisotropy = 1.0f,
+            },
+            "material texture 'environment'"),
+        Catch::Matchers::ContainsSubstring("environment") &&
+            Catch::Matchers::ContainsSubstring(
+                "samplerAnisotropy"));
+
+    request.anisotropy = 1.0f;
+    request.compare = SurfaceTextureCompare::less_equal;
+    REQUIRE_THROWS_WITH(
+        resolveMaterialSampler(
+            request,
+            MaterialSamplerCapabilities{
+                .comparison_sampling = false,
+                .sampler_anisotropy = true,
+                .max_sampler_anisotropy = 16.0f,
+            },
+            "material texture 'shadow'"),
+        Catch::Matchers::ContainsSubstring("shadow") &&
+            Catch::Matchers::ContainsSubstring(
+                "comparison sampling"));
+}
+
 TEST_CASE("named material variants lower through the ordinary surface and route logic",
           "[material-lowering][material-variant][wp206b]") {
     const auto base_surface = parseSurfaceFormat(

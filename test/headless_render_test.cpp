@@ -1125,6 +1125,294 @@ TEST_CASE("headless render target renders and reads back RGBA8 frames", "[headle
 }
 
 TEST_CASE(
+    "KTX2 cubemap material samples the declared face through Vulkan",
+    "[headless][render][texture][wp209a]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    std::filesystem::path temp_dir;
+    bool runtime_ready = false;
+    try {
+        FastModuleContainer modules;
+        temp_dir = makeTempProjectDir();
+        writeTextFile(
+            temp_dir / "scene.json",
+            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+        writeTextFile(
+            temp_dir / "assets.json",
+            R"json({"models":[]})json");
+        writeTextFile(
+            temp_dir / "hybrid.json",
+            nlohmann::json{
+                {"pipeline",
+                 {{"preset",
+                   "engine://render_pipelines/hybrid_v1.json"}}},
+            }
+                .dump(2));
+
+        auto project =
+            makeProjectConfig("scene.json", "assets.json");
+        project["basic_config"]["default_scene_id"] =
+            "default_scene";
+        project["basic_config"]["rendering_config_json"] =
+            "hybrid.json";
+        project["basic_config"]["default_rendering_pass"] =
+            "main_render";
+        GET_MODULE(ProjectSource).setSourceByData(
+            project.dump());
+        GET_MODULE(PathResolver).setup(temp_dir, false);
+        auto &launch = GET_MODULE(EngineLaunchConfig);
+        launch.headless = true;
+        launch.headless_extent = vk::Extent2D{32, 32};
+        launch.headless_frames = 1;
+        GET_MODULE(EngineTime).setup(
+            EngineTime::Mode::fixed_step, 1.0 / 60.0);
+
+        auto &renderer = GET_MODULE(Renderer);
+        const auto main_render_id =
+            GET_MODULE(RenderingPassContainer)
+                .getRenderingPassIdByName("main_render");
+        const auto execution =
+            GET_MODULE(FrameGraphRuntimeContainer)
+                .find(main_render_id);
+        REQUIRE(execution != nullptr);
+        REQUIRE(execution->render_pipeline != nullptr);
+        runtime_ready = true;
+
+        constexpr std::string_view surface_source =
+            R"surface(//! pelican.surface v1
+//! language: glsl
+//! textures:
+//!   - { name: environment, default: "project://textures/environment.ktx2", color_space: linear, dimension: cube, sampler: { filter: linear, mip_filter: nearest, address: clamp_to_edge, anisotropy: 4 } }
+
+void pelican_surface_v1(in PelicanSurfaceInputV1 input_data,
+                        inout PelicanSurfaceV1 surface) {
+    surface.base_color = vec4(1.0);
+    surface.emissive =
+        pelican_sample_environment(
+            vec3(1.0, 0.0, 0.0)).rgb;
+}
+
+vec3 pelican_lighting_v1(
+    in PelicanSurfaceV1 surface,
+    in PelicanSurfaceInputV1 input_data) {
+    return surface.emissive;
+}
+)surface";
+        constexpr std::string_view surface_reference =
+            "project://shaders/cubemap.surface";
+        const auto surface = parseSurfaceFormat(
+            surface_source, surface_reference);
+        const auto lowered = lowerSurfaceDefaults(
+            surface, surface_reference);
+        REQUIRE(lowered.route ==
+                MaterialRouteClass::forward_opaque);
+        const auto shaders =
+            GET_MODULE(ShaderLibrary)
+                .loadFromSurfaceForMaterial(
+                    surface, surface_reference,
+                    lowered,
+                    execution->render_pipeline
+                        ->shader_defines);
+
+        constexpr std::array cube_texels{
+            std::array<std::uint8_t, 4>{
+                255, 0, 0, 255},
+            std::array<std::uint8_t, 4>{
+                0, 255, 0, 255},
+            std::array<std::uint8_t, 4>{
+                0, 0, 255, 255},
+            std::array<std::uint8_t, 4>{
+                255, 255, 0, 255},
+            std::array<std::uint8_t, 4>{
+                255, 0, 255, 255},
+            std::array<std::uint8_t, 4>{
+                0, 255, 255, 255},
+        };
+        const auto loaded_cube = loadImageMemory(
+            TestKtx2::makeRgba8Unorm1x1(
+                0, 0, 6, cube_texels),
+            "environment.ktx2");
+        auto &materials = GET_MODULE(MaterialContainer);
+        const auto cube_texture =
+            materials.registerTexture(
+                loaded_cube, "environment.ktx2");
+        REQUIRE(
+            materials.textureDimensionForTesting(
+                cube_texture) ==
+            SurfaceTextureDimension::cube);
+        REQUIRE(
+            materials.textureViewTypeForTesting(
+                cube_texture) ==
+            vk::ImageViewType::eCube);
+
+        constexpr std::array array_texels{
+            std::array<std::uint8_t, 4>{
+                16, 32, 48, 255},
+            std::array<std::uint8_t, 4>{
+                64, 80, 96, 255},
+            std::array<std::uint8_t, 4>{
+                112, 128, 144, 255},
+        };
+        const auto array_texture =
+            materials.registerTexture(
+                loadImageMemory(
+                    TestKtx2::makeRgba8Unorm1x1(
+                        0, 3, 1, array_texels),
+                    "layers.ktx2"),
+                "layers.ktx2");
+        REQUIRE(
+            materials.textureDimensionForTesting(
+                array_texture) ==
+            SurfaceTextureDimension::two_d_array);
+        REQUIRE(
+            materials.textureViewTypeForTesting(
+                array_texture) ==
+            vk::ImageViewType::e2DArray);
+
+        constexpr std::array<
+            std::array<std::uint8_t, 4>, 1>
+            volume_texels{
+            std::array<std::uint8_t, 4>{
+                160, 176, 192, 255},
+        };
+        const auto volume_texture =
+            materials.registerTexture(
+                loadImageMemory(
+                    TestKtx2::makeRgba8Unorm1x1(
+                        1, 0, 1, volume_texels),
+                    "volume.ktx2"),
+                "volume.ktx2");
+        REQUIRE(
+            materials.textureDimensionForTesting(
+                volume_texture) ==
+            SurfaceTextureDimension::three_d);
+        REQUIRE(
+            materials.textureViewTypeForTesting(
+                volume_texture) ==
+            vk::ImageViewType::e3D);
+
+        const auto &standard =
+            GET_MODULE(StandardMaterialResource);
+        const auto make_material = [&] {
+            return MaterialInfo{
+                .vert_shader = shaders.vertex,
+                .frag_shader = shaders.fragment,
+                .base_color_texture =
+                    standard.whiteTexture(),
+                .metallic_roughness_texture =
+                    standard
+                        .metallicRoughnessDefaultTexture(),
+                .normal_texture =
+                    standard.normalDefaultTexture(),
+                .emissive_texture =
+                    standard.emissiveDefaultTexture(),
+            };
+        };
+
+        auto mismatched = make_material();
+        applyLoweredMaterialForRoute(
+            mismatched, lowered,
+            [&](std::string_view,
+                SurfaceTextureRole) {
+                return standard.whiteTexture();
+            });
+        REQUIRE_THROWS_WITH(
+            materials.registerMaterial(
+                std::move(mismatched)),
+            Catch::Matchers::ContainsSubstring(
+                "environment") &&
+                Catch::Matchers::ContainsSubstring(
+                    "declared dimension cube") &&
+                Catch::Matchers::ContainsSubstring(
+                    "loaded texture dimension 2d"));
+
+        auto material = make_material();
+        applyLoweredMaterialForRoute(
+            material, lowered,
+            [&](std::string_view reference,
+                SurfaceTextureRole role) {
+                REQUIRE(static_cast<bool>(
+                    reference ==
+                    "project://textures/environment.ktx2"));
+                REQUIRE(
+                    role == SurfaceTextureRole::data);
+                return cube_texture;
+            });
+        const auto material_id =
+            materials.registerMaterial(
+                std::move(material));
+        REQUIRE(isValidMaterialId(material_id));
+        const auto sampler =
+            materials.materialSamplerResolutionForTesting(
+                material_id, "environment");
+        REQUIRE(sampler.has_value());
+        REQUIRE(sampler->filter ==
+                SurfaceTextureFilter::linear);
+        REQUIRE(sampler->mip_filter ==
+                SurfaceTextureFilter::nearest);
+        REQUIRE(sampler->address ==
+                SurfaceTextureAddressMode::clamp_to_edge);
+        REQUIRE((
+            sampler->resolution == "exact" ||
+            sampler->resolution ==
+                "anisotropy_clamped_to_device_limit" ||
+            sampler->resolution ==
+                "anisotropy_disabled_feature_unavailable"));
+
+        ModelTemplate model;
+        model.asset_id = ModelAssetId{209};
+        model.material_primitives = {
+            ModelTemplate::MaterialPrimitives{
+                .material = material_id,
+                .primitives = {
+                    GET_MODULE(VertBufContainer)
+                        .addPrimitiveEntry(
+                            makeScreenQuad(
+                                0.8f, 0.0f))},
+                .source_material_index = 0,
+            },
+        };
+        const auto instance =
+            GET_MODULE(PolygonInstanceContainer)
+                .placeModelInstance(model);
+        REQUIRE(
+            GET_MODULE(PolygonInstanceContainer)
+                .isModelInstanceAlive(instance));
+        auto &camera = GET_MODULE(Camera);
+        camera.setPos({0.0f, 0.0f, 2.0f});
+        camera.setDir({0.0f, 0.0f, -1.0f});
+        camera.setUp({0.0f, 1.0f, 0.0f});
+
+        renderer.render();
+        GET_MODULE(VulkanManageCore).waitIdle();
+        const auto pixels =
+            GET_MODULE(RenderTarget)
+                .readbackLastFrameRGBA8();
+        REQUIRE(pixels.size() == 32u * 32u * 4u);
+        const auto center =
+            (16u * 32u + 16u) * 4u;
+        REQUIRE(pixels[center] > 180);
+        REQUIRE(pixels[center + 1] < 40);
+        REQUIRE(pixels[center + 2] < 40);
+
+        GET_MODULE(VulkanManageCore).waitIdle();
+        std::filesystem::remove_all(temp_dir);
+    } catch (const std::exception &error) {
+        if (!temp_dir.empty()) {
+            std::filesystem::remove_all(temp_dir);
+        }
+        if (runtime_ready) {
+            throw;
+        }
+        SKIP(
+            std::string{
+                "Vulkan cubemap rendering unavailable: "} +
+            error.what());
+    }
+#endif
+}
+
+TEST_CASE(
     "compute output displaces material vertices through typed resource ports",
     "[headless][render][material-resource][wp207b]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER

@@ -52,6 +52,102 @@ std::string accessorFunction(SurfaceParamType type) {
     throw std::runtime_error("unknown surface parameter type while generating GLSL shim");
 }
 
+std::string textureCoordinateType(
+    SurfaceTextureDimension dimension) {
+    return dimension == SurfaceTextureDimension::two_d
+               ? "vec2"
+               : "vec3";
+}
+
+std::string textureObjectType(
+    SurfaceTextureDimension dimension) {
+    switch (dimension) {
+    case SurfaceTextureDimension::two_d:
+        return "texture2D";
+    case SurfaceTextureDimension::cube:
+        return "textureCube";
+    case SurfaceTextureDimension::two_d_array:
+        return "texture2DArray";
+    case SurfaceTextureDimension::three_d:
+        return "texture3D";
+    }
+    throw std::runtime_error(
+        "unknown surface texture dimension");
+}
+
+std::string textureSamplerType(
+    const SurfaceTextureDefinition &texture) {
+    const auto comparison =
+        texture.sampler.compare !=
+        SurfaceTextureCompare::none;
+    switch (texture.dimension) {
+    case SurfaceTextureDimension::two_d:
+        return comparison ? "sampler2DShadow"
+                          : "sampler2D";
+    case SurfaceTextureDimension::cube:
+        return comparison ? "samplerCubeShadow"
+                          : "samplerCube";
+    case SurfaceTextureDimension::two_d_array:
+        return comparison ? "sampler2DArrayShadow"
+                          : "sampler2DArray";
+    case SurfaceTextureDimension::three_d:
+        if (comparison) {
+            throw std::runtime_error(
+                "comparison sampling is unavailable for a 3d "
+                "surface texture");
+        }
+        return "sampler3D";
+    }
+    throw std::runtime_error(
+        "unknown surface texture dimension");
+}
+
+std::string textureAccessorReturnType(
+    const SurfaceTextureDefinition &texture) {
+    return texture.sampler.compare ==
+                   SurfaceTextureCompare::none
+               ? "vec4"
+               : "float";
+}
+
+std::string textureAccessorArguments(
+    const SurfaceTextureDefinition &texture) {
+    auto result =
+        textureCoordinateType(texture.dimension) +
+        " coordinates";
+    if (texture.sampler.compare !=
+        SurfaceTextureCompare::none) {
+        result += ", float reference";
+    }
+    return result;
+}
+
+std::string textureSampleCoordinates(
+    const SurfaceTextureDefinition &texture) {
+    if (texture.sampler.compare ==
+        SurfaceTextureCompare::none) {
+        return "coordinates";
+    }
+    return texture.dimension ==
+                   SurfaceTextureDimension::two_d
+               ? "vec3(coordinates, reference)"
+               : "vec4(coordinates, reference)";
+}
+
+std::string textureAccessorCall(
+    const SurfaceTextureDefinition &texture) {
+    auto result =
+        "pelican_sample_" + texture.name + "(" +
+        textureCoordinateType(texture.dimension) +
+        "(0.0)";
+    if (texture.sampler.compare !=
+        SurfaceTextureCompare::none) {
+        result += ", 0.0";
+    }
+    result += ")";
+    return result;
+}
+
 vk::ShaderStageFlags resourceStages(
     SurfaceResourcePortStage stage) {
     switch (stage) {
@@ -197,23 +293,49 @@ std::string makeParamsInclude(
     }
     for (std::size_t i = 0; i < surface.textures.size(); ++i) {
         const auto &texture = surface.textures[i];
+        const auto sampler_type =
+            textureSamplerType(texture);
+        const auto return_type =
+            textureAccessorReturnType(texture);
+        const auto arguments =
+            textureAccessorArguments(texture);
+        const auto coordinates =
+            textureSampleCoordinates(texture);
         if (split_samplers) {
             const auto image_binding = materialCustomTextureFirstBinding +
                                        static_cast<std::uint32_t>(i * 2);
             const auto sampler_binding = image_binding + 1;
             source << "layout(set = PELICAN_SET_MATERIAL, binding = " << image_binding
-                   << ") uniform texture2D pelican_texture_" << texture.name << "_image;\n";
+                   << ") uniform "
+                   << textureObjectType(texture.dimension)
+                   << " pelican_texture_" << texture.name
+                   << "_image;\n";
             source << "layout(set = PELICAN_SET_MATERIAL, binding = " << sampler_binding
-                   << ") uniform sampler pelican_texture_" << texture.name << "_sampler;\n";
-            source << "vec4 pelican_sample_" << texture.name
-                   << "(vec2 uv) { return texture(sampler2D(pelican_texture_" << texture.name
-                   << "_image, pelican_texture_" << texture.name << "_sampler), uv); }\n";
+                   << ") uniform "
+                   << (texture.sampler.compare ==
+                               SurfaceTextureCompare::none
+                           ? "sampler"
+                           : "samplerShadow")
+                   << " pelican_texture_" << texture.name
+                   << "_sampler;\n";
+            source << return_type << " pelican_sample_"
+                   << texture.name << "(" << arguments
+                   << ") { return texture(" << sampler_type
+                   << "(pelican_texture_" << texture.name
+                   << "_image, pelican_texture_"
+                   << texture.name << "_sampler), "
+                   << coordinates << "); }\n";
         } else {
             const auto binding = materialCustomTextureFirstBinding + static_cast<std::uint32_t>(i);
             source << "layout(set = PELICAN_SET_MATERIAL, binding = " << binding
-                   << ") uniform sampler2D pelican_texture_" << texture.name << ";\n";
-            source << "vec4 pelican_sample_" << texture.name
-                   << "(vec2 uv) { return texture(pelican_texture_" << texture.name << ", uv); }\n";
+                   << ") uniform " << sampler_type
+                   << " pelican_texture_" << texture.name
+                   << ";\n";
+            source << return_type << " pelican_sample_"
+                   << texture.name << "(" << arguments
+                   << ") { return texture(pelican_texture_"
+                   << texture.name << ", " << coordinates
+                   << "); }\n";
         }
     }
     for (std::size_t i = 0; i < surface.screen_inputs.size(); ++i) {
@@ -324,7 +446,7 @@ std::string makeTemplateHookStubs(const SurfaceFormatDocument &surface, vk::Shad
     std::ostringstream keep_alive;
     for (const auto &param : surface.params) keep_alive << "pelican_param_" << param.name << "();";
     for (const auto &texture : surface.textures) {
-        keep_alive << "pelican_sample_" << texture.name << "(vec2(0.0));";
+        keep_alive << textureAccessorCall(texture) << ";";
     }
     for (const auto &resource : surface.resource_ports) {
         const auto stages =
@@ -476,8 +598,15 @@ std::string makeUserLibrarySource(const SurfaceFormatDocument &surface, std::str
                << "() { return " << defaultValueForAccessor(param.type) << "; }\n";
     }
     for (const auto &texture : surface.textures) {
-        source << "vec4 pelican_sample_" << texture.name
-               << "(vec2 uv) { return vec4(0.0); }\n";
+        source << textureAccessorReturnType(texture)
+               << " pelican_sample_" << texture.name
+               << "(" << textureAccessorArguments(texture)
+               << ") { return "
+               << (texture.sampler.compare ==
+                           SurfaceTextureCompare::none
+                       ? "vec4(0.0)"
+                       : "0.0")
+               << "; }\n";
     }
     for (const auto &input : surface.screen_inputs) {
         source << "vec4 pelican_screen_" << input
@@ -535,7 +664,7 @@ std::string makeUserLibrarySource(const SurfaceFormatDocument &surface, std::str
     }
     for (const auto &param : surface.params) source << "pelican_param_" << param.name << "();\n";
     for (const auto &texture : surface.textures) {
-        source << "pelican_sample_" << texture.name << "(vec2(0.0));\n";
+        source << textureAccessorCall(texture) << ";\n";
     }
     for (const auto &input : surface.screen_inputs) {
         source << "pelican_screen_" << input << "(vec2(0.0));\n";

@@ -51,11 +51,68 @@ enum class SurfaceTextureRole {
     data,
 };
 
+enum class SurfaceTextureDimension : std::uint8_t {
+    two_d,
+    cube,
+    two_d_array,
+    three_d,
+};
+
+std::string_view surfaceTextureDimensionName(
+    SurfaceTextureDimension dimension);
+
+enum class SurfaceTextureFilter : std::uint8_t {
+    nearest,
+    linear,
+};
+
+enum class SurfaceTextureAddressMode : std::uint8_t {
+    repeat,
+    mirrored_repeat,
+    clamp_to_edge,
+};
+
+enum class SurfaceTextureCompare : std::uint8_t {
+    none,
+    never,
+    less,
+    equal,
+    less_equal,
+    greater,
+    not_equal,
+    greater_equal,
+    always,
+};
+
+enum class SurfaceTextureAnisotropyFallback : std::uint8_t {
+    disable,
+    reject,
+};
+
+struct SurfaceTextureSampler {
+    SurfaceTextureFilter filter = SurfaceTextureFilter::linear;
+    SurfaceTextureFilter mip_filter = SurfaceTextureFilter::linear;
+    SurfaceTextureAddressMode address =
+        SurfaceTextureAddressMode::repeat;
+    SurfaceTextureCompare compare =
+        SurfaceTextureCompare::none;
+    float anisotropy = 1.0f;
+    SurfaceTextureAnisotropyFallback
+        anisotropy_fallback =
+            SurfaceTextureAnisotropyFallback::disable;
+
+    bool operator==(const SurfaceTextureSampler &) const =
+        default;
+};
+
 struct SurfaceTextureDefinition {
     std::string name;
     std::string default_reference;
     std::string color_space;
     SurfaceTextureRole role = SurfaceTextureRole::data;
+    SurfaceTextureDimension dimension =
+        SurfaceTextureDimension::two_d;
+    SurfaceTextureSampler sampler;
 };
 
 enum class SurfaceResourcePortKind : std::uint8_t {

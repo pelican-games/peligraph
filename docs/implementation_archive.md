@@ -6545,4 +6545,58 @@ GPU simulation結果をgeometryへ接続できるようにする。
 
 ---
 
+### WP208（済 2026-07-26）: lighting data contract v2 + clustered dogfood
+
+**目的**: 固定上限の LightUBO だけに依存せず、forward/deferred が同じ scalable な
+light inventory と selection contract を消費できるようにする。
+
+**完了内容**:
+
+- directional/point/spot を typed record として storage inventory へ pack し、容量超過を
+  決定的に切り詰めて理由を残す `LightInventoryV2` を追加した。
+- project-owned `clustered_lighting` feature が compute で tile ごとの light list を生成し、
+  generated lighting v2 interface を通じて hybrid の consumer が同じ結果を読む。
+- tile size、tile capacity、list encoding、overflow policy は feature/selection policy 側に置き、
+  technique 名や固定アルゴリズムを renderer の enum に追加していない。
+- feature 無効時は既存 lighting v1 を維持し、cluster 用 pass/resource/descriptor を追加しない。
+- 32灯を超える CPU inventory、deterministic overflow、feature compose、resource port、
+  shader contract と headless Vulkan の実 selection/readback を回帰した。
+
+---
+
+### WP209a（済 2026-07-26）: static texture dimension + material sampler authoring
+
+**目的**: project-owned KTX2 の cubemap / 2D array / 3D と material sampler state を
+public surface contractへ追加する。
+
+**完了内容**:
+
+- current `pelican.surface v1` の additive field として
+  `dimension: 2d|cube|2d_array|3d` と typed `sampler` mapping を追加した。別版や旧構文を
+  受理する分岐はなく、省略時は従来の 2D / linear / repeat / no-compare / anisotropy 1。
+- KTX2 loader から mip ごとの width/height/depth、array layer/face と dimension を運び、
+  2D/cube/2D-array/3D の image/view/upload を作る。cube array と 3D array は現公開集合外として
+  名前付きで拒否する。
+- generated accessor は `sampler2D` / `samplerCube` / `sampler2DArray` / `sampler3D`
+  および対応する shadow sampler を生成し、reflection と runtime binding が宣言 dimension と
+  image view type を照合する。
+- filter、mip filter、address、compare、anisotropy を material ごとに解決する。
+  anisotropy は device limit へ clamp、feature 不在時は明示 policy に従って disable/reject し、
+  解決理由を保持する。compare は compatible depth format 以外を理由付きで拒否する。
+- native cubemap の六面 upload と +X face の赤画素 readback、dimension mismatch、
+  KTX2 shape、generated GLSL/SPIR-V reflection、sampler capability policy を CPU/Vulkan test で
+  回帰した。
+
+意図的制限:
+
+- 現行 KTX2 公開 format は color texture である。comparison accessor の authoring/compile は
+  完成しているが、実際の hardware depth compare には depth-format image を供給する後続の
+  shadow/RT subresource 経路が必要。
+- runtime render target の mip/layer/subresource view は WP209b。
+
+設計・完了証跡:
+[`design_reviews/2026-07-26_wp209a_static_texture_sampler.md`](design_reviews/2026-07-26_wp209a_static_texture_sampler.md)。
+
+---
+
 未完了 WP と運用規則は [active ledger](implementation_plan.md) を参照。

@@ -1,4 +1,5 @@
 #include "../src/core/loader/imageloader.hpp"
+#include "ktx2_test_writer.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -294,6 +295,116 @@ TEST_CASE("KTX2 test writer round-trips complete RGBA8 mip levels and sRGB known
     const auto encoded = 188.0 / 255.0;
     const auto linear = std::pow((encoded + 0.055) / 1.055, 2.4);
     REQUIRE(linear == Catch::Approx(0.502886).margin(0.00001));
+}
+
+TEST_CASE("KTX2 loader preserves cube array and volume texture shapes",
+          "[imageloader][ktx2][wp209a]") {
+    constexpr std::array cube_texels{
+        std::array<std::uint8_t, 4>{255, 0, 0, 255},
+        std::array<std::uint8_t, 4>{0, 255, 0, 255},
+        std::array<std::uint8_t, 4>{0, 0, 255, 255},
+        std::array<std::uint8_t, 4>{255, 255, 0, 255},
+        std::array<std::uint8_t, 4>{255, 0, 255, 255},
+        std::array<std::uint8_t, 4>{0, 255, 255, 255},
+    };
+    const auto cube = loadImageMemory(
+        TestKtx2::makeRgba8Unorm1x1(
+            0, 0, 6, cube_texels),
+        "environment_cube.ktx2");
+    REQUIRE(cube.dimension ==
+            LoadedImageDimension::Cube);
+    REQUIRE(cube.depth == 1);
+    REQUIRE(cube.array_layers == 6);
+    REQUIRE(cube.levels.size() == 1);
+    REQUIRE(cube.levels.front().depth == 1);
+    REQUIRE(cube.levels.front().size == 24);
+    REQUIRE(static_cast<std::uint8_t>(
+                cube.pixels[0]) == 255);
+    REQUIRE(static_cast<std::uint8_t>(
+                cube.pixels[4]) == 0);
+    REQUIRE(static_cast<std::uint8_t>(
+                cube.pixels[5]) == 255);
+
+    constexpr std::array array_texels{
+        std::array<std::uint8_t, 4>{1, 2, 3, 4},
+        std::array<std::uint8_t, 4>{5, 6, 7, 8},
+        std::array<std::uint8_t, 4>{9, 10, 11, 12},
+    };
+    const auto array = loadImageMemory(
+        TestKtx2::makeRgba8Unorm1x1(
+            0, 3, 1, array_texels),
+        "material_array.ktx2");
+    REQUIRE(array.dimension ==
+            LoadedImageDimension::TwoDArray);
+    REQUIRE(array.array_layers == 3);
+    REQUIRE(array.levels.front().size == 12);
+
+    constexpr std::array<std::array<std::uint8_t, 4>, 1>
+        volume_texel{
+        std::array<std::uint8_t, 4>{13, 14, 15, 16},
+    };
+    const auto volume = loadImageMemory(
+        TestKtx2::makeRgba8Unorm1x1(
+            1, 0, 1, volume_texel),
+        "lookup_volume.ktx2");
+    REQUIRE(volume.dimension ==
+            LoadedImageDimension::ThreeD);
+    REQUIRE(volume.depth == 1);
+    REQUIRE(volume.array_layers == 1);
+    REQUIRE(volume.levels.front().depth == 1);
+}
+
+TEST_CASE("KTX2 shape errors reject unsupported aggregate dimensions by name",
+          "[imageloader][ktx2][wp209a]") {
+    const auto expect_error =
+        [](const std::vector<std::byte> &bytes,
+           std::string_view detail) {
+            try {
+                (void)loadImageMemory(
+                    bytes, "bad_shape.ktx2");
+                FAIL("invalid KTX2 shape should be rejected");
+            } catch (const std::runtime_error &error) {
+                REQUIRE(contains(
+                    error.what(), "bad_shape.ktx2"));
+                REQUIRE(contains(error.what(), detail));
+            }
+        };
+
+    constexpr std::array cube_array_texels{
+        std::array<std::uint8_t, 4>{1, 1, 1, 1},
+        std::array<std::uint8_t, 4>{2, 2, 2, 2},
+        std::array<std::uint8_t, 4>{3, 3, 3, 3},
+        std::array<std::uint8_t, 4>{4, 4, 4, 4},
+        std::array<std::uint8_t, 4>{5, 5, 5, 5},
+        std::array<std::uint8_t, 4>{6, 6, 6, 6},
+        std::array<std::uint8_t, 4>{7, 7, 7, 7},
+        std::array<std::uint8_t, 4>{8, 8, 8, 8},
+        std::array<std::uint8_t, 4>{9, 9, 9, 9},
+        std::array<std::uint8_t, 4>{10, 10, 10, 10},
+        std::array<std::uint8_t, 4>{11, 11, 11, 11},
+        std::array<std::uint8_t, 4>{12, 12, 12, 12},
+    };
+    expect_error(
+        TestKtx2::makeRgba8Unorm1x1(
+            0, 2, 6, cube_array_texels),
+        "cubemap arrays");
+
+    constexpr std::array volume_array_texels{
+        std::array<std::uint8_t, 4>{1, 2, 3, 4},
+        std::array<std::uint8_t, 4>{5, 6, 7, 8},
+    };
+    expect_error(
+        TestKtx2::makeRgba8Unorm1x1(
+            1, 2, 1, volume_array_texels),
+        "3D array textures");
+
+    auto nonsquare =
+        TestKtx2::makeRgba8Unorm1x1(
+            0, 0, 6,
+            std::span<const std::array<std::uint8_t, 4>>{
+                cube_array_texels.data(), 6});
+    writeLe32(nonsquare, 24, 2);
+    expect_error(nonsquare, "width and height must match");
 }
 
 TEST_CASE("KTX2 parser rejects subset violations with the texture name", "[imageloader][ktx2]") {

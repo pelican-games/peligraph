@@ -197,7 +197,10 @@ bool sameTextureContract(const SurfaceTextureDefinition &left,
                          const SurfaceTextureDefinition &right) {
     return left.name == right.name &&
            left.default_reference == right.default_reference &&
-           left.color_space == right.color_space && left.role == right.role;
+           left.color_space == right.color_space &&
+           left.role == right.role &&
+           left.dimension == right.dimension &&
+           left.sampler == right.sampler;
 }
 
 bool materialBindingContractMatches(const SurfaceFormatDocument &left,

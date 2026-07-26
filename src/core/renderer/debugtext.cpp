@@ -62,6 +62,10 @@ vk::Format vkFormatForImage(ImagePixelFormat format) {
 }
 
 ImageWrapper createImageFromLoaded(const LoadedImage &loaded) {
+    if (loaded.dimension != LoadedImageDimension::TwoD) {
+        throw std::runtime_error(
+            "DebugText atlas requires texture dimension 2d");
+    }
     vk::Extent3D extent{loaded.width, loaded.height, 1};
     auto &vkcore = GET_MODULE(VulkanManageCore);
     auto image = vkcore.allocImage(extent, vkFormatForImage(loaded.format),

@@ -1,9 +1,12 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <span>
+#include <stdexcept>
 #include <vector>
 
 namespace Pelican::TestKtx2 {
@@ -67,7 +70,18 @@ inline std::vector<std::byte> makeRgba8Srgb188() {
     return bytes;
 }
 
-inline std::vector<std::byte> makeRgba8UnormSingleMip() {
+inline std::vector<std::byte> makeRgba8Unorm1x1(
+    std::uint32_t depth, std::uint32_t layers,
+    std::uint32_t faces,
+    std::span<const std::array<std::uint8_t, 4>> texels) {
+    const auto image_count =
+        static_cast<std::size_t>(std::max(1u, depth)) *
+        static_cast<std::size_t>(std::max(1u, layers)) *
+        static_cast<std::size_t>(faces);
+    if (texels.size() != image_count) {
+        throw std::invalid_argument(
+            "KTX2 test texel count does not match shape");
+    }
     static constexpr std::array<std::uint8_t, 12> id{
         0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A,
     };
@@ -77,9 +91,9 @@ inline std::vector<std::byte> makeRgba8UnormSingleMip() {
     appendLe(bytes, std::uint32_t{1});
     appendLe(bytes, std::uint32_t{1});
     appendLe(bytes, std::uint32_t{1});
-    appendLe(bytes, std::uint32_t{0});
-    appendLe(bytes, std::uint32_t{0});
-    appendLe(bytes, std::uint32_t{1});
+    appendLe(bytes, depth);
+    appendLe(bytes, layers);
+    appendLe(bytes, faces);
     appendLe(bytes, std::uint32_t{1});
     appendLe(bytes, std::uint32_t{0});
     appendLe(bytes, std::uint32_t{104}); // DFD follows one level entry
@@ -90,8 +104,10 @@ inline std::vector<std::byte> makeRgba8UnormSingleMip() {
     appendLe(bytes, std::uint64_t{0});
     bytes.resize(104);
     writeLe64(bytes, 80, 196);
-    writeLe64(bytes, 88, 4);
-    writeLe64(bytes, 96, 4);
+    const auto payload_size =
+        static_cast<std::uint64_t>(texels.size() * 4);
+    writeLe64(bytes, 88, payload_size);
+    writeLe64(bytes, 96, payload_size);
     appendLe(bytes, std::uint32_t{92});
     appendLe(bytes, std::uint32_t{0});
     appendLe(bytes, std::uint16_t{2});
@@ -108,8 +124,22 @@ inline std::vector<std::byte> makeRgba8UnormSingleMip() {
         appendLe(bytes, std::uint32_t{0});
         appendLe(bytes, std::uint32_t{255});
     }
-    bytes.insert(bytes.end(), 4, std::byte{64});
+    for (const auto &texel : texels) {
+        for (const auto channel : texel) {
+            bytes.push_back(
+                static_cast<std::byte>(channel));
+        }
+    }
     return bytes;
+}
+
+inline std::vector<std::byte>
+makeRgba8UnormSingleMip() {
+    constexpr std::array<std::array<std::uint8_t, 4>, 1>
+        texels{
+        std::array<std::uint8_t, 4>{64, 64, 64, 64},
+    };
+    return makeRgba8Unorm1x1(0, 0, 1, texels);
 }
 
 } // namespace Pelican::TestKtx2

@@ -326,6 +326,59 @@ void validateVariantSurface(const MaterialDefinition &material,
 
 } // namespace
 
+ResolvedMaterialSampler resolveMaterialSampler(
+    const SurfaceTextureSampler &request,
+    const MaterialSamplerCapabilities &capabilities,
+    std::string_view context) {
+    ResolvedMaterialSampler result;
+    result.filter = request.filter;
+    result.mip_filter = request.mip_filter;
+    result.address = request.address;
+    result.compare = request.compare;
+
+    if (request.compare != SurfaceTextureCompare::none &&
+        !capabilities.comparison_sampling) {
+        throw std::runtime_error(
+            std::string{context} +
+            " requests comparison sampling but the selected "
+            "texture format/device does not advertise sampled "
+            "depth-comparison support");
+    }
+
+    if (request.anisotropy <= 1.0f) {
+        return result;
+    }
+
+    const auto anisotropy_available =
+        capabilities.sampler_anisotropy &&
+        std::isfinite(capabilities.max_sampler_anisotropy) &&
+        capabilities.max_sampler_anisotropy > 1.0f;
+    if (!anisotropy_available) {
+        if (request.anisotropy_fallback ==
+            SurfaceTextureAnisotropyFallback::reject) {
+            throw std::runtime_error(
+                std::string{context} + " requests anisotropy " +
+                std::to_string(request.anisotropy) +
+                " with fallback=reject, but Vulkan feature "
+                "samplerAnisotropy is not enabled");
+        }
+        result.resolution =
+            "anisotropy_disabled_feature_unavailable";
+        return result;
+    }
+
+    result.max_anisotropy = std::min(
+        request.anisotropy,
+        capabilities.max_sampler_anisotropy);
+    result.anisotropy_enabled =
+        result.max_anisotropy > 1.0f;
+    if (result.max_anisotropy < request.anisotropy) {
+        result.resolution =
+            "anisotropy_clamped_to_device_limit";
+    }
+    return result;
+}
+
 DeferredEligibility evaluateDeferredEligibility(
     const MaterialDefinition &material,
     const SurfaceFormatDocument &surface) {
@@ -500,6 +553,8 @@ LoweredMaterial lowerMaterial(const MaterialDefinition &material,
             texture.role == SurfaceTextureRole::color ? LoweredTextureView::srgb
                                                        : LoweredTextureView::unorm,
             inferDummy(texture.name),
+            texture.dimension,
+            texture.sampler,
         });
         if (override_value != texture_overrides.end()) {
             texture_overrides.erase(override_value);

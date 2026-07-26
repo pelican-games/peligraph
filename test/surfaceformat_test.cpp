@@ -65,6 +65,8 @@ void requireSameOpenPbrDeclarations(const SurfaceFormatDocument &expected,
         REQUIRE(right.default_reference == left.default_reference);
         REQUIRE(right.color_space == left.color_space);
         REQUIRE(right.role == left.role);
+        REQUIRE(right.dimension == left.dimension);
+        REQUIRE(right.sampler == left.sampler);
     }
 }
 
@@ -118,10 +120,9 @@ TEST_CASE("surface format preserves ordered declarations and the code split offs
     REQUIRE(document.textures.front().color_space == "linear");
     REQUIRE(document.screen_inputs == std::vector<std::string>{"opaque_color", "opaque_depth"});
 
-    REQUIRE(document.warnings.size() == 3);
+    REQUIRE(document.warnings.size() == 2);
     REQUIRE(contains(document.warnings.at(0), "editor_group"));
-    REQUIRE(contains(document.warnings.at(1), "sampler"));
-    REQUIRE(contains(document.warnings.at(2), "capabilities"));
+    REQUIRE(contains(document.warnings.at(1), "capabilities"));
     REQUIRE(source.substr(document.code_offset) == document.code);
     REQUIRE(document.code.starts_with("\nvoid pelican_surface_v1"));
 }
@@ -205,6 +206,102 @@ void pelican_vertex_displace_v1(inout PelicanVertexV1 vertex) {
             SurfaceResourcePortKind::image);
     REQUIRE(document.resource_ports[1].stage ==
             SurfaceResourcePortStage::fragment);
+}
+
+TEST_CASE("surface texture declarations preserve dimension and sampler policy",
+          "[surface-format][texture][wp209a]") {
+    constexpr std::string_view source = R"surface(//! pelican.surface v1
+//! language: glsl
+//! textures:
+//!   - { name: color_map, default: "project://color.ktx2", color_space: srgb, dimension: 2d }
+//!   - { name: environment, default: "project://environment.ktx2", color_space: linear, dimension: cube, sampler: { filter: nearest, mip_filter: linear, address: clamp_to_edge, compare: less_equal, anisotropy: 8, anisotropy_fallback: reject } }
+//!   - { name: layers, default: "project://layers.ktx2", color_space: linear, dimension: 2d_array, sampler: { address: mirrored_repeat } }
+//!   - { name: volume, default: "project://volume.ktx2", color_space: linear, dimension: 3d }
+
+void pelican_surface_v1(in PelicanSurfaceInputV1 input_data,
+                        inout PelicanSurfaceV1 surface) {}
+)surface";
+
+    const auto document =
+        parseSurfaceFormat(source, "texture_contract.surface");
+    REQUIRE(document.textures.size() == 4);
+
+    const auto &color = document.textures[0];
+    REQUIRE(color.dimension ==
+            SurfaceTextureDimension::two_d);
+    REQUIRE(color.sampler ==
+            SurfaceTextureSampler{});
+
+    const auto &environment = document.textures[1];
+    REQUIRE(environment.dimension ==
+            SurfaceTextureDimension::cube);
+    REQUIRE(environment.sampler.filter ==
+            SurfaceTextureFilter::nearest);
+    REQUIRE(environment.sampler.mip_filter ==
+            SurfaceTextureFilter::linear);
+    REQUIRE(environment.sampler.address ==
+            SurfaceTextureAddressMode::clamp_to_edge);
+    REQUIRE(environment.sampler.compare ==
+            SurfaceTextureCompare::less_equal);
+    REQUIRE(environment.sampler.anisotropy ==
+            Catch::Approx(8.0f));
+    REQUIRE(environment.sampler.anisotropy_fallback ==
+            SurfaceTextureAnisotropyFallback::reject);
+
+    REQUIRE(document.textures[2].dimension ==
+            SurfaceTextureDimension::two_d_array);
+    REQUIRE(document.textures[2].sampler.address ==
+            SurfaceTextureAddressMode::mirrored_repeat);
+    REQUIRE(document.textures[3].dimension ==
+            SurfaceTextureDimension::three_d);
+}
+
+TEST_CASE("surface texture contract errors name the declaration and valid domain",
+          "[surface-format][texture][wp209a]") {
+    const auto expect_error =
+        [](std::string_view declaration,
+           std::string_view detail) {
+            const auto source =
+                std::string{
+                    "//! pelican.surface v1\n"
+                    "//! language: glsl\n"
+                    "//! textures:\n"
+                    "//!   - "} +
+                std::string{declaration} +
+                "\n\nvoid pelican_surface_v1("
+                "in PelicanSurfaceInputV1 input_data, "
+                "inout PelicanSurfaceV1 surface) {}\n";
+            try {
+                (void)parseSurfaceFormat(
+                    source, "bad_texture_contract.surface");
+                FAIL("invalid texture contract should be rejected");
+            } catch (const std::runtime_error &error) {
+                REQUIRE(contains(error.what(), "named_texture"));
+                REQUIRE(contains(error.what(), detail));
+            }
+        };
+
+    expect_error(
+        "{ name: named_texture, default: \"project://a.ktx2\", "
+        "color_space: linear, dimension: rectangle }",
+        "2d, cube, 2d_array, 3d");
+    expect_error(
+        "{ name: named_texture, default: \"project://a.ktx2\", "
+        "color_space: linear, dimension: 3d, "
+        "sampler: { compare: less } }",
+        "comparison is unavailable");
+    expect_error(
+        "{ name: named_texture, default: \"project://a.ktx2\", "
+        "color_space: linear, sampler: { anisotropy: 0.5 } }",
+        "greater than or equal to 1");
+    expect_error(
+        "{ name: named_texture, default: \"project://a.ktx2\", "
+        "color_space: linear, sampler: { filter: cubic } }",
+        "nearest, linear");
+    expect_error(
+        "{ name: named_texture, default: \"project://a.ktx2\", "
+        "color_space: linear, sampler: repeat }",
+        "current pelican.surface v1 schema");
 }
 
 TEST_CASE("surface buffer resource ports require an explicit element",

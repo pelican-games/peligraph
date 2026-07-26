@@ -4,7 +4,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <initializer_list>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
@@ -456,8 +458,11 @@ SurfaceTextureDefinition parseTextureDefinition(std::string_view mapping,
     const auto name = name_field == nullptr ? std::string{"<unnamed>"}
                                             : parseStringToken(*name_field, base_context + " name");
     const auto context = surfaceContext(source_name) + " texture '" + name + "'";
-    appendUnknownFieldWarnings(fields, {"name", "default", "color_space", "role"}, context,
-                               warnings);
+    appendUnknownFieldWarnings(
+        fields,
+        {"name", "default", "color_space", "role", "dimension",
+         "sampler"},
+        context, warnings);
 
     if (name_field == nullptr) {
         throw std::runtime_error(context + " requires name");
@@ -496,7 +501,143 @@ SurfaceTextureDefinition parseTextureDefinition(std::string_view mapping,
                                      "' conflicts with color_space '" + color_space + "'");
         }
     }
-    return SurfaceTextureDefinition{name, default_reference, color_space, role};
+
+    auto dimension = SurfaceTextureDimension::two_d;
+    if (const auto *dimension_field =
+            findField(fields, "dimension")) {
+        const auto value = parseStringToken(
+            *dimension_field, context + " dimension");
+        if (value == "2d") {
+            dimension = SurfaceTextureDimension::two_d;
+        } else if (value == "cube") {
+            dimension = SurfaceTextureDimension::cube;
+        } else if (value == "2d_array") {
+            dimension =
+                SurfaceTextureDimension::two_d_array;
+        } else if (value == "3d") {
+            dimension = SurfaceTextureDimension::three_d;
+        } else {
+            throw std::runtime_error(
+                context + " has unknown dimension '" + value +
+                "'; expected one of: 2d, cube, 2d_array, 3d");
+        }
+    }
+
+    SurfaceTextureSampler sampler;
+    if (const auto *sampler_field = findField(fields, "sampler")) {
+        const auto sampler_context = context + " sampler";
+        const auto sampler_token = trim(*sampler_field);
+        if (!sampler_token.starts_with('{')) {
+            throw std::runtime_error(
+                sampler_context +
+                " must be an inline mapping in the current "
+                "pelican.surface v1 schema");
+        } else {
+            const auto sampler_fields = parseInlineFields(sampler_token, sampler_context);
+            appendUnknownFieldWarnings(
+                sampler_fields, {"filter", "mip_filter", "address", "compare", "anisotropy", "anisotropy_fallback"},
+                sampler_context, warnings);
+
+            const auto parse_filter = [&](const std::string &token, std::string_view field_context) {
+                const auto value = parseStringToken(token, field_context);
+                if (value == "nearest") {
+                    return SurfaceTextureFilter::nearest;
+                }
+                if (value == "linear") {
+                    return SurfaceTextureFilter::linear;
+                }
+                throw std::runtime_error(std::string{field_context} + " has unknown value '" + value +
+                                         "'; expected one of: nearest, linear");
+            };
+            if (const auto *field = findField(sampler_fields, "filter")) {
+                sampler.filter = parse_filter(*field, sampler_context + " filter");
+            }
+            if (const auto *field = findField(sampler_fields, "mip_filter")) {
+                sampler.mip_filter = parse_filter(*field, sampler_context + " mip_filter");
+            }
+            if (const auto *field = findField(sampler_fields, "address")) {
+                const auto value = parseStringToken(*field, sampler_context + " address");
+                if (value == "repeat") {
+                    sampler.address = SurfaceTextureAddressMode::repeat;
+                } else if (value == "mirrored_repeat") {
+                    sampler.address = SurfaceTextureAddressMode::mirrored_repeat;
+                } else if (value == "clamp_to_edge") {
+                    sampler.address = SurfaceTextureAddressMode::clamp_to_edge;
+                } else {
+                    throw std::runtime_error(sampler_context + " address has unknown value '" + value +
+                                             "'; expected one of: repeat, "
+                                             "mirrored_repeat, clamp_to_edge");
+                }
+            }
+            if (const auto *field = findField(sampler_fields, "compare")) {
+                const auto value = parseStringToken(*field, sampler_context + " compare");
+                if (value == "none") {
+                    sampler.compare = SurfaceTextureCompare::none;
+                } else if (value == "never") {
+                    sampler.compare = SurfaceTextureCompare::never;
+                } else if (value == "less") {
+                    sampler.compare = SurfaceTextureCompare::less;
+                } else if (value == "equal") {
+                    sampler.compare = SurfaceTextureCompare::equal;
+                } else if (value == "less_equal") {
+                    sampler.compare = SurfaceTextureCompare::less_equal;
+                } else if (value == "greater") {
+                    sampler.compare = SurfaceTextureCompare::greater;
+                } else if (value == "not_equal") {
+                    sampler.compare = SurfaceTextureCompare::not_equal;
+                } else if (value == "greater_equal") {
+                    sampler.compare = SurfaceTextureCompare::greater_equal;
+                } else if (value == "always") {
+                    sampler.compare = SurfaceTextureCompare::always;
+                } else {
+                    throw std::runtime_error(sampler_context + " compare has unknown value '" + value +
+                                             "'; expected one of: none, never, less, "
+                                             "equal, less_equal, greater, not_equal, "
+                                             "greater_equal, always");
+                }
+            }
+            if (const auto *field = findField(sampler_fields, "anisotropy")) {
+                try {
+                    const auto value = nlohmann::json::parse(trim(*field));
+                    if (!value.is_number()) {
+                        throw std::runtime_error(sampler_context + " anisotropy must be a finite number "
+                                                                   "greater than or equal to 1");
+                    }
+                    const auto parsed = value.get<double>();
+                    if (!std::isfinite(parsed) || parsed < 1.0 ||
+                        parsed > static_cast<double>(std::numeric_limits<float>::max())) {
+                        throw std::runtime_error(sampler_context + " anisotropy must be a finite number "
+                                                                   "greater than or equal to 1");
+                    }
+                    sampler.anisotropy = static_cast<float>(parsed);
+                } catch (const nlohmann::json::exception &) {
+                    throw std::runtime_error(sampler_context + " anisotropy must be a finite number "
+                                                               "greater than or equal to 1");
+                }
+            }
+            if (const auto *field = findField(sampler_fields, "anisotropy_fallback")) {
+                const auto value = parseStringToken(*field, sampler_context + " anisotropy_fallback");
+                if (value == "disable") {
+                    sampler.anisotropy_fallback = SurfaceTextureAnisotropyFallback::disable;
+                } else if (value == "reject") {
+                    sampler.anisotropy_fallback = SurfaceTextureAnisotropyFallback::reject;
+                } else {
+                    throw std::runtime_error(sampler_context + " anisotropy_fallback has unknown value '" + value +
+                                             "'; expected one of: disable, reject");
+                }
+            }
+        }
+    }
+    if (dimension == SurfaceTextureDimension::three_d &&
+        sampler.compare != SurfaceTextureCompare::none) {
+        throw std::runtime_error(
+            context +
+            " sampler comparison is unavailable for dimension "
+            "3d; use 2d, cube, or 2d_array");
+    }
+    return SurfaceTextureDefinition{
+        name, default_reference, color_space, role,
+        dimension, sampler};
 }
 
 ShaderResourceBufferElement parseResourceBufferElement(
@@ -1040,6 +1181,21 @@ std::string_view surfaceParamTypeName(SurfaceParamType type) {
         return "int";
     case SurfaceParamType::color:
         return "color";
+    }
+    return "unknown";
+}
+
+std::string_view surfaceTextureDimensionName(
+    SurfaceTextureDimension dimension) {
+    switch (dimension) {
+    case SurfaceTextureDimension::two_d:
+        return "2d";
+    case SurfaceTextureDimension::cube:
+        return "cube";
+    case SurfaceTextureDimension::two_d_array:
+        return "2d_array";
+    case SurfaceTextureDimension::three_d:
+        return "3d";
     }
     return "unknown";
 }

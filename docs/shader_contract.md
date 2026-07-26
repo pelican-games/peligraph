@@ -21,6 +21,41 @@ SRGB/UNORM の両 view を持つ。binding 6 の `MaterialBuffer` は既存 96 b
 続けて 256 byte の custom value payload を持つ。payload 内の member offset は `.surface`
 params の宣言順で計算した std140 layout が正であり、JSON object の列挙順には依存しない。
 
+### static texture dimension / material sampler（WP209a）
+
+current `pelican.surface v1` の custom texture は dimension と sampler policy を宣言できる。
+これは現行版への additive field であり、別版や旧構文の受理分岐はない。`sampler` は必ず
+inline mapping で記述する。
+
+```glsl
+//! textures:
+//!   - { name: environment, default: "project://textures/environment.ktx2", color_space: linear, dimension: cube, sampler: { filter: linear, mip_filter: linear, address: clamp_to_edge, compare: none, anisotropy: 4, anisotropy_fallback: disable } }
+```
+
+| `dimension` | generated object | accessor |
+|---|---|---|
+| `2d`（既定） | `sampler2D` | `vec4 pelican_sample_<name>(vec2 coordinates)` |
+| `cube` | `samplerCube` | `vec4 pelican_sample_<name>(vec3 direction)` |
+| `2d_array` | `sampler2DArray` | `vec4 pelican_sample_<name>(vec3 uv_layer)` |
+| `3d` | `sampler3D` | `vec4 pelican_sample_<name>(vec3 coordinates)` |
+
+`sampler` の field は `filter: nearest|linear`、`mip_filter: nearest|linear`、
+`address: repeat|mirrored_repeat|clamp_to_edge`、
+`compare: none|never|less|equal|less_equal|greater|not_equal|greater_equal|always`、
+`anisotropy: 1以上の有限数`、`anisotropy_fallback: disable|reject`。
+省略時は linear / linear / repeat / none / 1 / disable であり、既存2D materialの
+descriptorや画素を変えない。
+
+compareを有効にすると戻り値は`float`になり、accessor末尾へ`float reference`を足した
+shadow samplerになる。3D comparisonはschemaで拒否する。anisotropyは利用可能ならdevice
+limitへclampし、利用不能ならfallback policyに従ってdisableまたは名前付きrejectする。
+
+KTX2 loader、generated GLSL、SPIR-V reflection、Vulkan image/view、material bindingは
+同じdimensionを照合し、不一致をtexture名付きで拒否する。non-2D宣言には一致する実textureが
+必要で、2D semantic dummyへ暗黙fallbackしない。現行のstatic KTX2公開集合は
+2D/cube/2D-array/3Dであり、cube arrayと3D arrayは対象外。現行KTX2 formatはcolorなので、
+hardware depth compareを実行するにはcompatible depth-format imageを供給する後続経路が要る。
+
 set 0 layout は reflection の有無にかかわらず `PipelineFactory` が全 pipeline に挿入する。
 reflection が set 0 を宣言する場合は上記 5 binding の型・個数と一致しなければ pipeline 作成を拒否する。
 set 1 以降は従来どおり reflection から生成し、高い set だけを使う場合も途中に空 layout を置く。
